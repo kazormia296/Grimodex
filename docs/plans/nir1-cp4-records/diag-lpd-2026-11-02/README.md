@@ -39,3 +39,32 @@ integrator だけが見る診断。**正式の測定に数えず、集計・閾�
 2. **child の無効化 8 件が最大の群（4.0%）で、案 1 では減らない**。親の 3 件を全部直しても 8/201 が残り、物差し 1% を超える。HOLD を解くには、`path-not-current` の分岐の特定が先。
 3. LP-A1 の効果は dev で確認された（cancelledBeforeBegin 0、index-ready 起因の再 query 0）。ただし dev fixture での 201 件の 1 回で、正式の候補での効果は再測定まで不明。
 4. 次の診断（案）：`attach_paths` の `PathNotCurrent` の分岐（a)〜(f)）と、(b) の Unavailable の理由を ticket／join の note に足して、もう一度走らせる（build と trace で約 30〜40 分）。
+
+---
+
+# 第 2 回（run `lpd-diag-2`）：child の無効化 8 件の分岐が確定した
+
+2026-11-02（JST）11:43〜11:59。`path-not-current` の分岐を区別する追加の計装（診断の枝 `claude/cp4-lp-diag` の `df32c29d`、`761bdd61`。HEAD `761bdd61`）で、同じ手順（eval build → feature つき worker → 静けさの確認 → 編集 trace 200 cycle、Q=201、setup は `lpd-diag-setup` を再利用）。記録：`observation.json` sha256 `94930724…386f0`、`receipt.json` sha256 `fc7d93de…bd1e1`、`.node` sha256 `bd21d77e…20101`、worker sha256 `4e93b66f…f928c`（Main の path と eval-build が bytes 一致）。置き場所は diag worktree の `.artifacts/cp4/lpd-diag-2/`。dev 専用・CP-4 の結果ではない点は第 1 回と同じ。
+
+## 結果（Q=201）
+
+| 区分 | 件数 |
+|---|---|
+| 完全に使えた | 190 |
+| 親の ticket の失敗 | 3（すべて登録の拒否。stale 0） |
+| child の合流の無効化 | 8 |
+| cancelledBeforeBegin／index-ready 起因の再 query | 0／0 |
+
+表示されなかった合計は 11/201（5.5%）で、第 1 回（11）と同じ。
+
+## 分岐
+
+- **child の 8 件：全件 `stage = edge-holds-false`、`tokenMismatch = ["freshness-token"]` のみ**。query Scene の source token、decision token、scope authority など、ほかの token は一致していた。`path` の序数は全件 `targetOrdinal 0`／`edgeOrdinal 0`。合流の所要は 4.5〜9.2 ms（成功は p50 10.4 ms）。評価の時点の feed の位置は 8 件とも `feedHeadSequence == feedAcknowledgedThroughSequence`（29、64、95、122、152、160、175、199。cycle に概ね比例して進む＝**約 1 cycle に 1 transaction**）。
+- `freshness_token` は `Nir1EntityRelationFreshness`（`semantic_epoch_id`、`dependency_set_digest`、`declaration_set_id`、`declaration_set_digest`、`last_evaluated_run_id`、`edge_count`、**`feed_acknowledged_through_sequence`**、**`feed_head_sequence`**）の digest（`nir1_entity_relation.rs:170-180`、`:2830`）。worker の答えを作った時点の token と、合流の時点の live の token の間で、**feed の位置、または `last_evaluated_run_id`（incremental Freshness の cycle ごとに変わる値）が動いた**ことで不一致になったと読める【推測。token の成分の差分は worker の frame に無く、記録していない】。
+- **親の 3 件：全件 `postflight-identity-drift`**、`inner = null`、`dataVersionDelta 1`、`totalChangesDelta 0`、登録の窓は 12.3〜13.6 ms。第 1 回と同じ型（登録の検証は通っていて、別の接続の commit が 1 回入っただけで拒否）。
+
+## 含意（診断の範囲で）
+
+1. **child の 8 件は identity（`ReadIdentity`）ではなく、A3 の `freshness_token` が feed の位置と Run の id を束縛していることが原因**。X1-5 が「本文だけの保存で B を dirty にしない」とした後も、本文の保存は feed を 1 transaction 進め、incremental Freshness が Run を進めるので、**Graph の答えを作ってから合流までの間にその cycle が入ると token が合わなくなる**。
+2. **親の drift と child の token の不一致は、同じ上流（別の接続の commit＝本文の保存に続く incremental Freshness の cycle など）から来ている可能性がある**【推測。未確認】。確かめるには、incremental Freshness の cycle の commit の窓を記録して、失敗した 11 件の窓（登録・query・合流）と突き合わせる。
+3. 案 1（登録の identity の絞り込み）は child の 8 件に効かない。効きうる直し方は 2 種類：(i) `freshness_token` から B と無関係な動く成分（feed の位置、Run の id）を外す（契約・要件の改訂。X1-5 と同じ型）、(ii) Graph の query の窓の間は、incremental Freshness など background の commit を出さない（lifecycle／scheduling。契約を変えない見込み）。(ii) が通れば 3 群（登録の拒否、stale、child の無効化）をまとめて直せる可能性がある。
