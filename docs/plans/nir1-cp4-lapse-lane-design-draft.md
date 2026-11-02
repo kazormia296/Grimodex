@@ -1,7 +1,7 @@
 # NIR-1 CP-4：編集 trace に残る表示の欠落（失効と窓外）の別 lane の設計案（草稿）
 
 状態：**草稿の改訂 2**（2026-11-03）。改訂 1（`5d68cadc`、`d81a5ae7`）の後に起きたこと（LP-A1 の merge、診断 run 3 回、背景の commit の調査、gate の実装と PR）を反映した（末尾の「改訂の記録」）。改訂 1 は未 push だが、その存在と「診断の前の版」であることはユーザーに示してある（contracts `02a8555a` の「提示した事実」）。この文書は製品・harness・fixture・S2・S4・閾値・Gold を変えない（docs だけ）。
-基点：master `8dd7a9c0`（PR #776＝LP-A1 を含む。この branch へは `74e3b361` で merge）。§1 の測定は S4b'''（`60bf9dc4`）・候補 `22b74a25`（DR-CP4-S6-2、PR #775）。§2・§3 の file:line は、断りの無いかぎり改訂 1 の基点 `22b74a25` のもの（LP-A1 で `useNir1RelatedScenes.ts` の行は動いた）。
+基点：master `2014ac50`（PR #777＝gate を含む。この branch へは `e4127083` で merge。その前の基点 `8dd7a9c0`〔PR #776＝LP-A1 を含む〕は `74e3b361` で merge した）。§1 の測定は S4b'''（`60bf9dc4`）・候補 `22b74a25`（DR-CP4-S6-2、PR #775）。§2・§3 の file:line は、断りの無いかぎり改訂 1 の基点 `22b74a25` のもの（LP-A1 で `useNir1RelatedScenes.ts` の行は動いた）。
 **HOLD は変わっていない。** 正式の再測定はしていない（§4）。
 
 方向の確認（contracts の記録。「案 N」は記録ごとに別物を指すので、内容と hash を添える）：
@@ -34,7 +34,7 @@
    正式の run は計装していないので、正式の 11 件（LP-B・LP-S・LP-C）が dev と同じ分岐かは**推論**（受領書の形が同じ。§3.0）。
 
 3. **原因の候補が 1 つの上流に絞れた**（dev の診断 2 回と時刻の突き合わせ。状況証拠。gate を入れた同じ build の 3 回で欠落が 22/402 → 1/603 になったことが傍証）：欠落 22/22 件（第 1・2 回の 11＋11）で、Graph の窓（登録・query・child の合流の token）に incremental Freshness の cycle の commit（予約か publish）が重なっていた。直接の計装ではなく、時刻の写像（±5 ms）による状況証拠。
-4. そこで **LP-B／LP-S／LP-C の個別の直しより先に、共通の gate（LP-GATE）で扱う**ことにした（**integrator の判断**。DR-CQD-GATE §9.2 の末尾）。ユーザーが選んだのは、gate（Graph の窓の間、背景の Freshness の commit を待たせる仕組み）を設計・実装・PR まで進めること（`b14a92d6`、「2から行きましょう」。その記録の読み 1 に『「から」は案 1 を排除する文言ではない』とある）で、LP-B1〜B4／LP-C1〜C3 の個別案を選択肢として示して不採用にしたわけではない。gate は、Graph の窓の間、Freshness の cycle を native の lease で待たせ、上限で延期する。契約・IPC・閾値・Gold・読みは変えない。PR #777（**OPEN**、head `e7d6fe4a`、merge は `fd764de5` の条件つきで許可済み）。個別案の評価は §3.1〜3.3 に「なぜ採らなかったか」として残す。
+4. そこで **LP-B／LP-S／LP-C の個別の直しより先に、共通の gate（LP-GATE）で扱う**ことにした（**integrator の判断**。DR-CQD-GATE §9.2 の末尾）。ユーザーが選んだのは、gate（Graph の窓の間、背景の Freshness の commit を待たせる仕組み）を設計・実装・PR まで進めること（`b14a92d6`、「2から行きましょう」。その記録の読み 1 に『「から」は案 1 を排除する文言ではない』とある）で、LP-B1〜B4／LP-C1〜C3 の個別案を選択肢として示して不採用にしたわけではない。gate は、Graph の窓の間、Freshness の cycle を native の lease で待たせ、上限で延期する。契約・IPC・閾値・Gold・読みは変えない。PR #777（**MERGED**。squash、master `2014ac50`、2026-11-03 02:12 JST。`fd764de5` の条件〔新しい head `e7d6fe4a` で canonical Quick と `ci.yml` が成功、master の Full が赤でない、未解決のレビューなし〕を確かめてから merge した。`ci.yml` の性能 job は 1 回落ちて、その job だけの再実行で成功した）。個別案の評価は §3.1〜3.3 に「なぜ採らなかったか」として残す。
 5. **dev の第 3〜5 回**（gate を取り込んだ同じ dev build で 3 回、dev 専用・**CP-4 の結果ではない**）で、表示の欠落は 11/201（第 1・2 回の各回、5.5%）→ **0／1／0 /201（3 回で 1/603＝0.17%）**。1 件は第 4 回の child の合流の無効化で、gate の設計に書いた『残る隙間』の 1 番（Graph の待ちが上限 100 ms で尽きて窓なしで進み、`freshness-token` が動いた。§3.5）。603 件から言える本当の割合の 95% 上限は約 0.8%（片側。両側なら約 0.9%。おおよその見積もり）で、物差し 1% を下回るが余裕は小さい。dev の結果で、正式の候補での割合は再測定まで分からない。
 6. **残る隙間**がある（§3.5）：窓を開くときに Freshness の区間が in-flight で 100 ms を超える場合、child の合流が lease の期限 500 ms を超える場合、Freshness 以外の commit（保存・audit・D-final など。F10 の一般形）。stale と #139 は dev で 0 だったが、正式の測定では未確認。
 7. **正式の再測定はしていない。** 再測定の実行、S4 の扱い、候補単位の S6 の許可リスト、Gold の後退の危険、N2／N4 の扱いは、手順案を示してユーザーに確認する（§4、§6）。緩和（失効の読みの変更など）は採らない。列挙は §5。
@@ -171,7 +171,7 @@
 ### 3.4 LP-GATE：Graph の窓の間、Freshness の cycle を待たせる native の lease（改訂 2 で追加）
 
 - 選択の経緯：調査の直し方の候補を、ユーザーに 3 つ示した（`b14a92d6` の「提示した事実」）。(iii-d) 保存の直後に Freshness を起こす（最小・保存の時機に頼り、保存以外の引き金〔別の window、AI の書込み、連続した編集〕には効かない）、gate（引き金を問わず仕組みで保証）、token から feed の位置を外す（契約の改訂）。ユーザーは gate を選んだ（「2から行きましょう」）。(iii-d) と token の案を gate では採らなかったのは **integrator の判断**（DR-CQD-GATE §9.2 の末尾。ユーザーの決定ではない）。ただし (iii-d)（保存の直後に Freshness を起こす）は、残る隙間の 1 番（第 4 回で実際に起きた。§3.5）への補助の候補として排除していない。token の案は契約の改訂なので、委任の外のまま。
-- 実装：PR #777（branch `claude/cp4-lp-gate`、head `e7d6fe4a`、基点 master `8dd7a9c0`。**OPEN**）。判断は `docs/plans/nir1-lane-decisions/cq-deferred-decisions.md` の §9（DR-CQD-GATE-1〜10）。owner／lifecycle の matrix は §9.3、技術的な threat model は §9.4、実装後の追記は §9.5、独立レビューへの対応は §9.6。
+- 実装：PR #777（branch `claude/cp4-lp-gate`、head `e7d6fe4a`、基点 master `8dd7a9c0`。**MERGED**、master `2014ac50`）。判断は `docs/plans/nir1-lane-decisions/cq-deferred-decisions.md` の §9（DR-CQD-GATE-1〜10）。owner／lifecycle の matrix は §9.3、技術的な threat model は §9.4、実装後の追記は §9.5、独立レビューへの対応は §9.6。
 - 何をするか（§9.2 の要約）：
   - 置き場所（GATE-1）：native の新しい module `electron/native/grimodex-node/src/nir1_graph_commit_gate.rs` の `GraphCommitGate`（memory だけ。durable にしない）。共有の `grimodex-db`、TS の製品コード、`ipcContract.ts`、preload、schema／migration は変えない。
   - Freshness の区間（GATE-2）：`run_narrative_freshness_cycle_supervised` の先頭で gate に入り、cycle 全体（予約、評価、publish、requeue など）を 1 つの区間にする。
@@ -230,8 +230,8 @@ gate が覆わないもの。dev の第 3〜5 回では、1 番が 1 回、2 番
 
 1. **LP-A1**：済み（PR #776、`8dd7a9c0`）。
 2. **診断（LP-D）**：第 1〜5 回は済み（第 3〜5 回は gate を取り込んだ build。dev 専用の枝 `claude/cp4-lp-diag`。DR-CP4-LPD-1。台帳なし、正式の測定に数えない）。改訂 1 の計装の項目 (a)〜(d) のうち、(a) 登録の分岐と query の時点の drift、(b) `Invalidated` の出所は決まった（§3.0）。(c) Main の commit の時刻は DB の timestamp との突き合わせ（±5 ms）で補った。(d) 製品の `read_seal` と harness の startSeal の差は、登録の拒否が `inner = null`・`seal = null` の post-flight の drift だったので主因ではないと読む（推論）。
-3. **gate（LP-GATE）**：PR #777 を merge する（`fd764de5` の条件つきで許可済み。条件を満たさなければ merge せずに報告）。
-4. **master の Full**：gate の merge の後、master の canonical Full を回して結果を見る（`fd764de5` の読みの 3 で、通常の検証に含まれる）。
+3. **gate（LP-GATE）**：済み（PR #777、master `2014ac50`。`fd764de5` の条件を満たしたことを確かめて merge した）。
+4. **master の Full**：gate の merge の後、master の canonical Full を起動した（run `41489075187`、base `8dd7a9c0`、head `2014ac50`。`fd764de5` の読みの 3 で、通常の検証に含まれる）。**この文書を書いた時点で結果は未確認**。赤なら優先して対応する。
 5. **dev run の追加 2 回**（第 4・5 回。`02a8555a`）：済み。同じ build で `lpd-diag-4`、`lpd-diag-5`。dev 専用・正式の測定に数えない。結果は §3.4（603 件で欠落 1。第 4 回の 1 件は『残る隙間』の 1 番）。
 6. **正式な再測定の手順案をユーザーに出す**（`02a8555a` の 1：結果を報告した後に手順案を出す。**再測定の実行は含まれない**）。手順案に書くこと：
    - (a) 新しい候補（gate と LP-A1 を含む master）で ⑤ の全部（SP-P4、parity、Gold、N2〜N4、trace 2 本）をやり直す。Gold は同じ候補と S4 の parity を要求する。`22b74a25` の Gold（pool 270/270）は持ち越せず、**Gold が後退する危険**もある。
@@ -272,7 +272,7 @@ gate が覆わないもの。dev の第 3〜5 回では、1 番が 1 回、2 番
 
 **事実（改訂 1 で起案者がコードで確認。基点 `22b74a25`）**：hook の `index-ready` の listener（`useNir1RelatedScenes.ts:147-150`）と cleanup の abort、`recoverRaw` が `rawOnly` で begin を送らないこと（`:218-227`、`fetch:164-168`）、fetch の `cancelled` の返却位置と begin の呼出し、`begin.rs:84` が Chronicle の query status を読み `:230` の dense が別であること、emit が publish の後（`build.rs:45-49`）、worker の再構築の最小間隔 1 s・backoff 2 s（`product.rs:93-96`、`:2817-2834`）、worker の登録の拒否（`nir1-c-query-worker.rs:250`、`nir1_graph_product.rs:2786`、`nir1_graph.rs:686` の drift 判定）、再計算の JSON の `outOfWindowExceeds: true`・`outOfWindowU 12`・`lapse.total 15`、台帳の key。K6/4 draft の F4／X7 の文言（`nir1-final-request-eval-proposal-4-draft.md:142,155`）。独立レビューが確かめた点（8 件の時刻と封印、#139、F4 の探索窓、firstSnapshot の相関 4/4 対 0/181、S2 の pin に製品の file が無いこと、K6/2・K6/4・dsn に固定した文言が無いこと）。
 
-**事実（改訂 2 で起案者が突き合わせた）**：PR #776 は MERGED（merge commit `8dd7a9c0`）、PR #775 は MERGED、PR #777 は OPEN（head `e7d6fe4a`、branch `claude/cp4-lp-gate`）。診断の枝の HEAD `2e1c8815` は gate `59c5415e` を `b828fa26` で取り込み、`lpd.rs` の schema を `nir1-lpd-diag/1` → `nir1-lpd-diag/2` にした。gate の branch で `59c5415e` の後は `f0519ace`（試験）と `e7d6fe4a`（DR）だけ。§3.0・§3.4 の数値（件数、counter、p50・150 ms 超・max、窓の長さ）は contracts の `diag-lpd-2026-11-02/README.md`（訂正を含む `0befe563` の時点）の表と一致（生データの `observation.json` から独立に再計算して一致を確かめた）。DR-CQD-GATE-1〜10 と §9.3／§9.4 の位置は gate の branch の `cq-deferred-decisions.md` で確認。冒頭の表の記録の hash と原文は contracts の各 `user-confirmation-*.md` で確認。
+**事実（改訂 2 で起案者が突き合わせた）**：PR #776 は MERGED（merge commit `8dd7a9c0`）、PR #775 は MERGED、PR #777 は MERGED（merge commit `2014ac50`。merge 時の head は `e7d6fe4a`、branch `claude/cp4-lp-gate`）。診断の枝の HEAD `2e1c8815` は gate `59c5415e` を `b828fa26` で取り込み、`lpd.rs` の schema を `nir1-lpd-diag/1` → `nir1-lpd-diag/2` にした。gate の branch で `59c5415e` の後は `f0519ace`（試験）と `e7d6fe4a`（DR）だけ。§3.0・§3.4 の数値（件数、counter、p50・150 ms 超・max、窓の長さ）は contracts の `diag-lpd-2026-11-02/README.md`（訂正を含む `0befe563` の時点）の表と一致（生データの `observation.json` から独立に再計算して一致を確かめた）。DR-CQD-GATE-1〜10 と §9.3／§9.4 の位置は gate の branch の `cq-deferred-decisions.md` で確認。冒頭の表の記録の hash と原文は contracts の各 `user-confirmation-*.md` で確認。
 
 **仮説・推論（確かめていない）**：
 
@@ -312,5 +312,6 @@ gate が覆わないもの。dev の第 3〜5 回では、1 番が 1 回、2 番
 - §4：現在地に合わせた（gate の merge → master の Full → dev run の追加 2 回 → 正式な再測定の手順案）。再測定の実行・S4・N2／N4・K6/4 の記録の取り直しはユーザーの確認が要る、と明記した。
 - §5：緩和の列挙に「dev の診断を正式の測定の代わりに数える」を足した。§6：確認済みと未確認を分けた。§7：事実・推論・未確認を分けて更新した。
 - 独立レビュー（Opus、read-only）の反映：窓の時間の意味（`open_window` の待ちで lease の保持時間ではない）、max の伸びの説明、gate を選んだ経緯の帰属（integrator の判断とユーザーの選択の区別）、『原因の確定』を『原因の特定（状況証拠）』に弱めた、token の成分は調査の読み、1/603 の上限と正式の物差しの違い、gate の記述の補足（lifecycle の停止、番）、K6/4 の記録の取り直しの扱い。
+- 追補（#777 の merge の後）：基点を master `2014ac50` に更新し、PR #777 の状態を MERGED に直した。master の Full（run `41489075187`）は起動済みで、結果は未確認。
 - 追補（診断 第 4・5 回の後）：§要点の 5、§3.4（第 4・5 回の表と読み）、§3.5（1 番が 1 回、2 番が 2 回起きた）、§4 の 5、§7 を、同じ build の 603 件（欠落 1）に更新した。第 4 回の 1 件は gate の設計に書いた『残る隙間』の 1 番で、設計の予定された代償。
 - 契約・閾値・Gold・読み・harness は変えていない。
