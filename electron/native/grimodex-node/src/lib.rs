@@ -28,6 +28,7 @@ mod nir1_generation;
 mod nir1_generation_owner;
 #[cfg(test)]
 mod nir1_graph_activation_tests;
+mod nir1_graph_commit_gate;
 mod nir1_graph_dfinal;
 #[cfg(feature = "nir1-graph-eval")]
 mod nir1_graph_eval;
