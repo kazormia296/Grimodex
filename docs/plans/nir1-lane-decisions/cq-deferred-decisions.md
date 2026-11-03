@@ -406,3 +406,8 @@ commit：`4e3d6442`（gate の module と単体試験）、`983197da`（Graph �
   - gate の単体試験は 1 thread（手動の時計）。system clock の試験は `join` の後に読む。
   - 実 DB の試験は await／`join` の後に counter だけを読む。`related_scenes/graph_tests.rs` の窓の試験は、この thread の `declare`／`release_window`／`start` だけで数を動かす。
 - 再現と確認：同じ test binary を `taskset -c 0`（1 CPU）、`--test-threads=16` で回した。直す前は `nir1_graph_product::tests::gate` を 100 回回して 25 回落ちた（owner の panic 13、unavailable 12。ほかの試験は 0）。直した後は filter `gate`（gate の単体、owner の gate、名に gate を含むほかの試験の 60 件）を 100 回回して 0 回。
+
+## 10. DR-CP4-V-6 との関係（2026-11-04。上の本文は直さない）
+
+- ユーザーの確認（contracts `ea0a8750`、案 A）により、Chronicle の proof の fast path（`nir1_chronicle_index/canonical.rs`）に限って、`ReadIdentity` の判定の規則に「汎用の AI audit の append だけで繋がった状態の引継ぎ」を足す。詳細と前提の確認は `cp4-decisions.md` の DR-CP4-V-6。
+- 冒頭の「監査（`grimodex-semantic` の順序と内容）」は変えない（append の SQL・順序・内容・durability は同じ。txn の中で identity を読む SELECT だけが増える）。`ReadIdentity` の値と読み方、Graph 側（`nir1_graph.rs`、`c_query_freshness.rs`）の使い方、§4 の「`ReadIdentity` の検査は触らない」の対象（Graph の owner の状態機械と F10 の stale／drift）も変えない。
