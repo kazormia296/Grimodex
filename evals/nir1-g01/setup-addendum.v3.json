@@ -225,8 +225,10 @@
           "freshnessSettle": {
             "when": "once-per-opening-before-the-b-poll",
             "settledWhen": "cursor-acknowledged-at-least-head-no-active-run-no-reservation",
-            "limit": "FRESHNESS_SETTLE_WAIT_MS（60000 ms）",
-            "interval": "FRESHNESS_SETTLE_INTERVAL_MS（250 ms）",
+            "limit": "FRESHNESS_SETTLE_WAIT_MS",
+            "limitMs": 60000,
+            "interval": "FRESHNESS_SETTLE_INTERVAL_MS",
+            "intervalMs": 250,
             "maintenanceQuiet": "not-waited",
             "onNotSettled": "new-generation-only"
           },
@@ -281,13 +283,13 @@
         ]
       },
       "limits": [
-        "(i) 世代不変の分岐（A-2）の有効性は、製品の X1-5 の分類（本文だけの保存は同じ transaction で Chronicle だけを dirty にし、B の世代は上がらない。#773、8187fbfc）と Freshness の静止に依る。producer と sourceDigest／dependencySetDigest の照合は「同じ世代の行が mutation の前後で書き換わっていない」ことの検査でしかなく（build のときに書いた行の読み戻しなので、作り直さなければ必ず一致する）、「B の入力が変わっていない」ことの保証ではない。harness が照合するのは Graph の関係の入力（Codex の entry、Relation、pin の id の列。graphInputsDigest。control と sample）の同一性だけで、B の入力の全体（metadata、D1、V1、Freshness の authority の上の cache）の同一性はどこでも照合しない。",
+        "(i) 世代不変の分岐（A-2）の有効性は、製品の X1-5 の分類（本文だけの保存は同じ transaction で Chronicle だけを dirty にし、B の世代は上がらない。#773、8187fbfc）と Freshness の静止に依る。producer と sourceDigest／dependencySetDigest の照合は「同じ世代の行が mutation の前後で書き換わっていない」ことの検査でしかなく（build のときに書いた行の読み戻しなので、作り直さなければ必ず一致する）、「B の入力が変わっていない」ことの保証ではない。harness が照合するのは Graph の関係の入力（Codex の entry、Relation、pin の id の列。graphInputsDigest。control と sample）の同一性だけで、B（metadata、D1、V1、Freshness の authority の上の cache）の入力の全体の同一性はどこでも照合しない。",
         "(ii) 世代不変の分岐では「B が current」の意味が、「B が mutation の後に新しく作られ封印された」から「B が mutation の前と同じ世代のまま dirty でない」に変わる（measurementPoint の改名と measurementPointDefinition）。",
         "(iii) 静止は 1 回の開きで 1 回だけ待ち、Chronicle の build の後の再判定でも待ち直さないので、静止の後に feed に追記された event は見ない。",
         "(iv) この規則は、S4b'''（60bf9dc4）の候補 22b74a25 の正式の測定で K24-G01-N2 と N4 が blocked:b-seal-not-published になったのを見た後に決めた、S2 追補 #4 の読みの変更である（ユーザーの確認 contracts ac2e93d6。restore の地点は緩めていない）。",
         "(v) 開き直しで宣言が失われる製品の欠陥があると、N2／N3／N4 は宣言の失効と区別できない形で g01-mira が返らない（v2 の規則でも同じ。開き直しの後に宣言が残ることを確かめる段は足さない）。",
         "(vi) 静止が上限（FRESHNESS_SETTLE_WAIT_MS）に届いたときは、その開きは (A-1) だけの待ちに戻り、(A-1) を満たさなければ v2 と同じく b-seal-not-published で次の開き直しに回り、使い切れば blocked で止まる。",
-        "(vii) X1-5（#773、8187fbfc）は S4b'''（60bf9dc4）の基点に入っていたが、封印待ちの前提を X1-5 の下で確かめた記録は、読んだ範囲に無い（S4b''' の前の独立レビューの記録、作者の宣言、最終関門の記録）。ユーザーの確認 a7027915 の範囲 1 に「X1-5 の候補での再測定」があり、X1-5 を候補に含めたのは計画どおり。",
+        "(vii) X1-5（#773、8187fbfc）は S4b'''（60bf9dc4）の基点に入っていたが、封印待ちの前提を X1-5 の下で確かめた記録は、読んだ範囲に無い（S4b''' の前の独立レビューの記録、作者の宣言、最終関門の記録）。ユーザーの確認 a7027915（user-confirmation-2026-11-01-g04-v2c-build.md）の「確認の範囲（integrator の読み）」の 1 に「X1-5 の候補での再測定」とある。",
         "(viii) 本文だけの保存の地点では formal の run が feed の読取りを注入する。feed の表が読めないと run は例外で止まる（blocked ではなく fail-closed。v2 に無かった停止）。(A-2) は feed の読取りの注入を前提にし、注入が無い呼び出しでは (A-1) だけになる。"
       ]
     },
