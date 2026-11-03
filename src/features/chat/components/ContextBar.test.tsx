@@ -962,7 +962,7 @@ describe("ContextBar outline chip (Phase 4 後続)", () => {
     render(<ContextBar {...defaultProps} pinnedEntries={[]} />);
     const pills = screen.getByTestId("pills-visible");
     expect(
-      within(pills).queryByText(/Project outline/),
+      within(pills).queryByText(/プロジェクトのアウトライン/),
     ).not.toBeInTheDocument();
   });
 
@@ -975,7 +975,9 @@ describe("ContextBar outline chip (Phase 4 後続)", () => {
       />,
     );
     const pills = screen.getByTestId("pills-visible");
-    expect(within(pills).getByText("Project outline")).toBeInTheDocument();
+    expect(
+      within(pills).getByText("プロジェクトのアウトライン"),
+    ).toBeInTheDocument();
   });
 
   it("chapterOutlines が祖先順で全件 chip 表示される", () => {
@@ -1004,7 +1006,7 @@ describe("ContextBar outline chip (Phase 4 後続)", () => {
       />,
     );
     const pills = screen.getByTestId("pills-visible");
-    await user.click(within(pills).getByText("Project outline"));
+    await user.click(within(pills).getByText("プロジェクトのアウトライン"));
     expect(
       screen.getByText("全3部構成。テーマは復讐の代償。"),
     ).toBeInTheDocument();

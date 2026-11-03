@@ -133,6 +133,16 @@ A changed synthesis body leaves declaration/component digests unchanged but
 fails the final request seal. Repair/unknown-contract refusal and UTF-16
 surrogate boundaries are also covered.
 
+Event Synthesis component contract 3 (2026-11-03) lists the four event
+actualities and gives other-actuality clusters an `unresolved` / `[]` exit.
+`contracts.json` holds the current v3 bytes; the v2 bytes are frozen in
+`superseded-contracts.json`, and Native selects the frozen contract whose digest
+matches each receipt, so this v2-sealed golden (and existing v2 runs) still
+replay. `production-golden-v3-synthesis-requests.json` pins the live TS v3
+request seals over the same synthesis inputs, and Native reproduces them. It is
+a request-seal fixture, not a new journey receipt; no v3 cold journey golden
+was regenerated.
+
 The same four corrupt-copy probes assert specific failures: removing a required
 receipt or changing its saved digest fails the original revision receipt roster;
 removing an unselected visible catalog span fails snapshot/catalog payload

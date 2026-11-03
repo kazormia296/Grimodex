@@ -32,7 +32,10 @@ export const INITIAL_JS_GRAPH_BUDGET = {
   // 失う不具合の修正（右クリックメニューを閉じたときのフォーカスの戻し先と、開いている
   // エディタを見せるだけのときのフォーカス移動）が初期 graph の tree と layout に入るため
   // （実測 raw 4,261,293 → 4,261,421 で +128、gzip は上限の内側）。
-  absoluteMax: { rawBytes: 4_261_500, gzipBytes: 1_350_000 },
+  // raw は 4_261_500 から 200 byte だけ上げた。日本語の画面に英語のまま残っていた 14 件の
+  // 訳を ja.json（初期 graph）に入れたため。日本語は UTF-8 で 1 文字 3 byte になる（実測
+  // raw 4,261,421 → 4,261,613 で +192、gzip は上限の内側）。
+  absoluteMax: { rawBytes: 4_261_700, gzipBytes: 1_350_000 },
 };
 const INITIAL_CSS_MAX_BYTES = 240_000;
 const INITIAL_CSS_MAX_GZIP_BYTES = 42_000;

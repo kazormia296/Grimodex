@@ -4,6 +4,10 @@ import { bindEvidenceSpanCatalog } from "@/features/narrative-extraction/evidenc
 import { buildChroniclePromptDigests } from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
 import { buildCitationIdObservationPromptArtifactFromCaptured } from "./citationIdObservation";
 import { buildSynthesisPromptArtifact } from "./runEventSynthesisTask";
+import {
+  frozenContractForDigest,
+  withComponentContract,
+} from "./chronicleFrozenContracts.testSupport";
 
 const golden = JSON.parse(
   readFileSync(
@@ -59,7 +63,18 @@ it("matches every independent persisted two-window request with production TS bu
         clusterRef: outputs[0].clusterRef,
         observations: outputs[0].rawObservations.observations,
       });
-      expect(await buildChroniclePromptDigests(artifact)).toEqual(expected);
+      // Sealed under Event Synthesis v2, which stays accepted beside v3.
+      const frozen = await frozenContractForDigest(
+        execution.stageId,
+        receipt.componentContractDigest,
+      );
+      expect(frozen?.contractVersion).toBe("2");
+      if (!frozen) return;
+      expect(
+        await buildChroniclePromptDigests(
+          withComponentContract(artifact, frozen),
+        ),
+      ).toEqual(expected);
     }
   }
   expect(usedWindows.size).toBe(2);

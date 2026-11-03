@@ -8,34 +8,61 @@ use serde_json::{json, Value};
 use super::super::material_membership::RevisionMaterialMembership;
 use super::{QueryIdentityState, RetrievalQueryContext, RevisionEligibilityReason as Reason};
 
+/// (stage, contract id, version, component contract digest) reviewed as
+/// non-story static input. Event Synthesis v2 and v3 are both accepted so
+/// existing v2 extraction results stay eligible (user decision 2026-11-03).
+const REVIEWED_STATIC_CONTRACTS: [(&str, &str, &str, &str); 3] = [
+    (
+        "narrative_observation_extract",
+        "chronicle.observation-extraction.prompt",
+        "5",
+        "sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22",
+    ),
+    (
+        "narrative_event_synthesize",
+        "chronicle.event-synthesis.prompt",
+        "2",
+        "sha256:5e63b1a1c4c3a3aba76689732e3876deae5ea230f15d961d74932e16b3b876ff",
+    ),
+    (
+        "narrative_event_synthesize",
+        "chronicle.event-synthesis.prompt",
+        "3",
+        "sha256:c5365b446a2f7bf85081b67174beb5001df51963b3b2a515860938ddefd406f7",
+    ),
+];
+
+/// One receipt's (stage, digest) is classified only when it is a reviewed entry
+/// and the frozen accepted contract bytes reproduce that exact digest.
+fn reviewed_static_contract(stage: &str, digest: &str) -> Result<bool> {
+    let Some((_, id, version, expected)) =
+        REVIEWED_STATIC_CONTRACTS
+            .iter()
+            .find(|(reviewed_stage, _, _, reviewed_digest)| {
+                *reviewed_stage == stage && *reviewed_digest == digest
+            })
+    else {
+        return Ok(false);
+    };
+    let Some(contract) =
+        super::super::material_membership_root::accepted_static_contract(stage, digest)?
+    else {
+        return Ok(false);
+    };
+    Ok(contract["contractId"] == *id
+        && contract["contractVersion"] == *version
+        && canonical_json_digest(
+            &json!({"schemaVersion":1,"contextSetVersion":"chronicle.context-set/1",
+            "stageId":stage,"componentContract":contract}),
+        )? == *expected)
+}
+
 fn static_contracts(membership: &RevisionMaterialMembership) -> Result<bool> {
-    let contracts: Value = serde_json::from_str(include_str!("../material_roster/contracts.json"))?;
     if membership.verified_receipts.is_empty() {
         return Ok(false);
     }
     for receipt in &membership.verified_receipts {
-        let (id, version, digest) = match receipt.stage_id.as_str() {
-            "narrative_observation_extract" => (
-                "chronicle.observation-extraction.prompt",
-                "5",
-                "sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22",
-            ),
-            "narrative_event_synthesize" => (
-                "chronicle.event-synthesis.prompt",
-                "2",
-                "sha256:5e63b1a1c4c3a3aba76689732e3876deae5ea230f15d961d74932e16b3b876ff",
-            ),
-            _ => return Ok(false),
-        };
-        let contract = &contracts[&receipt.stage_id];
-        if contract["contractId"] != id
-            || contract["contractVersion"] != version
-            || receipt.component_contract_digest != digest
-            || canonical_json_digest(
-                &json!({"schemaVersion":1,"contextSetVersion":"chronicle.context-set/1",
-                "stageId":receipt.stage_id,"componentContract":contract}),
-            )? != digest
-        {
+        if !reviewed_static_contract(&receipt.stage_id, &receipt.component_contract_digest)? {
             return Ok(false);
         }
     }
@@ -293,4 +320,48 @@ pub(super) fn check(
             Err(reason) => Some(reason),
         },
     )
+}
+
+#[cfg(test)]
+mod static_contract_tests {
+    use super::*;
+
+    const V2: &str = "sha256:5e63b1a1c4c3a3aba76689732e3876deae5ea230f15d961d74932e16b3b876ff";
+    const V3: &str = "sha256:c5365b446a2f7bf85081b67174beb5001df51963b3b2a515860938ddefd406f7";
+
+    #[test]
+    fn event_synthesis_v2_and_v3_are_both_reviewed_static_inputs() {
+        assert!(reviewed_static_contract("narrative_event_synthesize", V2).expect("v2"));
+        assert!(reviewed_static_contract("narrative_event_synthesize", V3).expect("v3"));
+        assert!(reviewed_static_contract(
+            "narrative_observation_extract",
+            "sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22",
+        )
+        .expect("observation"));
+    }
+
+    #[test]
+    fn unknown_digest_version_or_stage_is_not_reviewed() {
+        for (stage, digest) in [
+            ("narrative_event_synthesize", "sha256:unknown"),
+            // A reviewed digest never classifies under another stage.
+            ("narrative_observation_extract", V3),
+            ("narrative_structured_repair", V2),
+        ] {
+            assert!(!reviewed_static_contract(stage, digest).expect("digest"));
+        }
+        // A frozen v1 contract is absent, so no v1 digest can be reproduced.
+        let mut v1 = super::super::super::material_membership_root::accepted_static_contract(
+            "narrative_event_synthesize",
+            V2,
+        )
+        .expect("lookup")
+        .expect("v2 contract");
+        v1["contractVersion"] = json!("1");
+        let v1_digest = canonical_json_digest(&json!({"schemaVersion":1,
+            "contextSetVersion":"chronicle.context-set/1",
+            "stageId":"narrative_event_synthesize","componentContract":v1}))
+        .expect("v1 digest");
+        assert!(!reviewed_static_contract("narrative_event_synthesize", &v1_digest).expect("v1"));
+    }
 }

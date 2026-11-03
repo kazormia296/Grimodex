@@ -87,6 +87,10 @@ import {
 } from "./aiTasks/citationIdObservation";
 import { runObservationExtractionTask } from "./aiTasks/runObservationExtractionTask";
 import { runEventSynthesisTask } from "./aiTasks/runEventSynthesisTask";
+import {
+  contractFollowingSynthesisResponse,
+  promptText,
+} from "./aiTasks/eventSynthesisContractResponder.testSupport";
 import { buildNarrativeSourceView } from "@/features/narrative-extraction/source/sourceView";
 import { resolveEvidenceReference } from "@/features/narrative-extraction/evidence/resolveEvidence";
 import { planExtractionWindows } from "@/features/chronicle/extraction/windowPlanner";
@@ -232,7 +236,12 @@ const CATALOG_EVENT: ExistingChronicleEventCatalogRecord = {
 };
 
 type ModalityClaim = {
-  readonly actuality: "actual" | "rumored" | "planned" | "dreamed";
+  readonly actuality:
+    | "actual"
+    | "rumored"
+    | "planned"
+    | "dreamed"
+    | "hypothetical";
   readonly quote: string;
   readonly predicate: string;
   readonly assertion: RawChronicleEventObservation["assertion"];
@@ -275,6 +284,17 @@ const MODALITY_CLAIMS: readonly ModalityClaim[] = [
     participants: [{ surface: "魚", role: "agent" }],
   },
 ];
+
+const HYPOTHETICAL_CLAIM: ModalityClaim = {
+  actuality: "hypothetical",
+  quote: "もし西の堤防が切れれば、下町は水に沈むだろう。",
+  predicate: "下町が水に沈む",
+  assertion: {
+    attribution: "character:技師",
+    narrativeFrame: "hypothetical",
+  },
+  participants: [{ surface: "下町", role: "theme" }],
+};
 
 function modalityPayload(
   claim: ModalityClaim,
@@ -353,6 +373,7 @@ async function modalityArtifacts(runId: string) {
 async function runFixedModalityCoordinator(
   claims: readonly ModalityClaim[],
   promote: boolean,
+  synthesis: "fixed" | "contract-following" = "fixed",
 ) {
   const runId = "run-modality-citation";
   const snapshot = await modalitySnapshot(claims);
@@ -409,6 +430,30 @@ async function runFixedModalityCoordinator(
         }),
       synthesizeWithAi: (input) => {
         synthesisInputs.push(...input.observations);
+        if (synthesis === "contract-following") {
+          // Fixed response that follows the exit only when the prompt offers it.
+          return runEventSynthesisTask({
+            ...input,
+            send: async (messages) => ({
+              text: contractFollowingSynthesisResponse({
+                prompt: promptText(messages),
+                clusterRef: input.clusterRef,
+                observations: input.observations,
+              }),
+              inputTokens: 1,
+              outputTokens: 1,
+            }),
+            repairSend: async (messages) => ({
+              text: contractFollowingSynthesisResponse({
+                prompt: promptText(messages),
+                clusterRef: input.clusterRef,
+                observations: input.observations,
+              }),
+              inputTokens: 1,
+              outputTokens: 1,
+            }),
+          });
+        }
         expect(input.observations).toHaveLength(1);
         const primary = input.observations[0]!;
         // Fixed response describes the same event; never the outer speech/hearing act.
@@ -592,11 +637,44 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
     expect(result.proposals[0]!.evidenceAnchorIds.length).toBeGreaterThan(0);
   });
 
-  it.each(["rumored", "planned", "dreamed"] as const)(
+  it("completes a hypothetical-only run with an unresolved empty synthesis when the model follows the contract", async () => {
+    const { result, artifacts } = await runFixedModalityCoordinator(
+      [HYPOTHETICAL_CLAIM],
+      false,
+      "contract-following",
+    );
+    expect(artifacts.merged.map((item) => item.payload.actuality)).toEqual([
+      "hypothetical",
+    ]);
+    expect(artifacts.hypotheses).toEqual([]);
+    expect(result.proposals).toEqual([]);
+    expect(failMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the actual control and drops the hypothetical observation in a contract-following run", async () => {
+    const control = MODALITY_CLAIMS[0]!;
+    const { result, artifacts } = await runFixedModalityCoordinator(
+      [control, HYPOTHETICAL_CLAIM],
+      false,
+      "contract-following",
+    );
+    expect(artifacts.hypotheses.map((item) => item.actuality)).toEqual([
+      "actual",
+    ]);
+    expect(
+      result.proposals.map((item) => ({
+        title: item.title,
+        actuality: item.actuality,
+      })),
+    ).toEqual([{ title: control.predicate, actuality: "actual" }]);
+    expect(failMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["rumored", "planned", "dreamed", "hypothetical"] as const)(
     "rejects unjustified actual synthesis of a %s event while retaining the independent actual Proposal",
     async (actuality) => {
       const control = MODALITY_CLAIMS[0]!;
-      const nonactual = MODALITY_CLAIMS.find(
+      const nonactual = [...MODALITY_CLAIMS, HYPOTHETICAL_CLAIM].find(
         (claim) => claim.actuality === actuality,
       )!;
       const { result, artifacts } = await runFixedModalityCoordinator(

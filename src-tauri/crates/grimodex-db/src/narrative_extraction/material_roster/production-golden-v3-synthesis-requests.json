@@ -1,0 +1,18 @@
+{
+  "provenance": "live TypeScript buildSynthesisPromptArtifact (Event Synthesis component contract 3) over the unchanged production-golden.json synthesis inputs; request seals only, no model call or receipt",
+  "componentContractVersion": "3",
+  "requests": [
+    {
+      "rootStageExecutionId": "120c13e5-977b-453a-a92c-f7f4a5bcb944",
+      "contextSetDigest": "sha256:ab285c50aad9e2630fbf2e4d9c41379fc456cc31a4ab347212e423ec9da2f939",
+      "componentContractDigest": "sha256:c5365b446a2f7bf85081b67174beb5001df51963b3b2a515860938ddefd406f7",
+      "finalRequestDigest": "sha256:3f87c204f352f41b61e3a86eb8709f09319a4059face12bc8e1f0dea389f162c"
+    },
+    {
+      "rootStageExecutionId": "0b164187-1edd-41f5-ba9e-5ca3ef10e70b",
+      "contextSetDigest": "sha256:a49f629da182745375b1ae3038c4dc32aaa435e74b1e78a8b1966205326de793",
+      "componentContractDigest": "sha256:c5365b446a2f7bf85081b67174beb5001df51963b3b2a515860938ddefd406f7",
+      "finalRequestDigest": "sha256:b923a8267e2093699c888ce77cf2dddfaff85d6691a0c73896fb5340331149d8"
+    }
+  ]
+}

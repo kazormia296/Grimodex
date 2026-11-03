@@ -174,7 +174,9 @@ export function StorySoFarCoverage() {
                 onClick={handleGenerateAll}
                 className="w-full rounded bg-primary px-2 py-1 text-xs text-primary-foreground hover:opacity-90"
               >
-                Generate all ({totalPreceding - withSynopsis} missing)
+                {t("chat.storySoFar.generateAll", {
+                  count: totalPreceding - withSynopsis,
+                })}
               </button>
             )}
           </div>,

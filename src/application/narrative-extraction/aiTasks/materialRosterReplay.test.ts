@@ -4,6 +4,11 @@ import { bindEvidenceSpanCatalog } from "@/features/narrative-extraction/evidenc
 import { buildChroniclePromptDigests } from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
 import { buildCitationIdObservationPromptArtifactFromCaptured } from "./citationIdObservation";
 import { buildSynthesisPromptArtifact } from "./runEventSynthesisTask";
+import {
+  currentFrozenContracts,
+  frozenContractForDigest,
+  withComponentContract,
+} from "./chronicleFrozenContracts.testSupport";
 
 const directory =
   "src-tauri/crates/grimodex-db/src/narrative_extraction/material_roster/";
@@ -12,6 +17,7 @@ const golden = JSON.parse(
 );
 it("replays independent cold production receipt seals with the live TS builders", async () => {
   const contracts: Record<string, unknown> = {};
+  const sealedVersions: Record<string, Set<string>> = {};
   const snap = golden.snapshot;
   for (const receipt of golden.receipts) {
     const execution = receipt.stageExecution;
@@ -43,15 +49,49 @@ it("replays independent cold production receipt seals with the live TS builders"
         observations: output.rawObservations.observations,
       });
     }
-    const digests = await buildChroniclePromptDigests(artifact);
+    // The receipt seal selects one frozen accepted contract (current or superseded).
+    const frozen = await frozenContractForDigest(
+      execution.stageId,
+      receipt.componentContractDigest,
+    );
+    expect(frozen).not.toBeNull();
+    if (!frozen) return;
+    const digests = await buildChroniclePromptDigests(
+      withComponentContract(artifact, frozen),
+    );
     expect(digests).toEqual({
       contextSetDigest: receipt.contextSetDigest,
       componentContractDigest: receipt.componentContractDigest,
       finalRequestDigest: receipt.finalRequestDigest,
     });
     contracts[execution.stageId] = artifact.componentContract;
+    (sealedVersions[execution.stageId] ??= new Set()).add(
+      frozen.contractVersion,
+    );
   }
-  expect(contracts).toEqual(
-    JSON.parse(readFileSync(directory + "contracts.json", "utf8")),
+  expect(contracts).toEqual(currentFrozenContracts());
+  // This cold fixture was sealed under Event Synthesis v2, which stays accepted beside v3.
+  expect([...(sealedVersions.narrative_event_synthesize ?? [])]).toEqual(["2"]);
+});
+
+it("pins the live v3 Event Synthesis requests that Native replays for the same inputs", async () => {
+  const expected = JSON.parse(
+    readFileSync(
+      directory + "production-golden-v3-synthesis-requests.json",
+      "utf8",
+    ),
   );
+  const actual = [];
+  for (const output of golden.outputs) {
+    const artifact = buildSynthesisPromptArtifact({
+      clusterRef: output.clusterRef,
+      observations: output.rawObservations.observations,
+    });
+    expect(artifact.componentContract.contractVersion).toBe("3");
+    actual.push({
+      rootStageExecutionId: output.rootStageExecutionId,
+      ...(await buildChroniclePromptDigests(artifact)),
+    });
+  }
+  expect(actual).toEqual(expected.requests);
 });
