@@ -694,6 +694,7 @@ requirements:
       - scripts/quality/nir1-graph/porter.mjs
       - evals/nir1-g01/setup-addendum.v1.json
       - evals/nir1-g01/setup-addendum.v2.json
+      - evals/nir1-g01/setup-addendum.v3.json
       - evals/nir1-graph/declaration-addendum.v1.json
       - evals/nir1-graph/declaration-addendum.v2.json
       - evals/nir1-graph/observation-prep.v1.json
