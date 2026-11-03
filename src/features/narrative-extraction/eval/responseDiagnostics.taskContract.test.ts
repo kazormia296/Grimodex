@@ -179,9 +179,18 @@ describe("Chronicle response diagnostics and task callback contract", () => {
       "contextId=event-observation:eval-window-001:obs-001 inputRef=observation:eval-window-001:obs-001",
     );
     expect(context).toContain("- localId=eval-window-001:obs-001;");
-    expect(JSON.parse(shape!)).toMatchObject({
+    // Line 1 is the event example; line 2 is the unresolved empty exit (contract 3).
+    const [eventShape, unresolvedShape] = shape!.trim().split("\n");
+    expect(JSON.parse(eventShape!)).toMatchObject({
       clusterRef: "<event-cluster-ref-from-context>",
       events: [{ observationRefs: ["<observation-localId-from-context>"] }],
+    });
+    expect(
+      JSON.parse(unresolvedShape!.slice(unresolvedShape!.indexOf("{"))),
+    ).toEqual({
+      clusterRef: "<event-cluster-ref-from-context>",
+      resolution: "unresolved",
+      events: [],
     });
     expect(shape).not.toContain('"obs-1"');
     expect(`${instruction}${shape}`).not.toContain("eval-window-");

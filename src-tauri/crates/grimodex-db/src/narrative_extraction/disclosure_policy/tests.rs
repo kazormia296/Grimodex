@@ -82,28 +82,50 @@ fn reader_identity_is_the_only_supported_constrained_non_scene_axis() {
 }
 #[test]
 fn static_classification_is_content_version_and_digest_bound() {
-    let contracts: Value =
-        serde_json::from_str(include_str!("../material_roster/contracts.json")).expect("contracts");
+    let contract = |stage: &str, digest: &str| {
+        accepted_static_contract(stage, digest)
+            .expect("lookup")
+            .expect("frozen accepted contract")
+    };
     let stages = [
-        ("narrative_observation_extract", OBSERVATION_DIGEST),
-        ("narrative_event_synthesize", SYNTHESIS_DIGEST),
+        ("narrative_observation_extract", OBSERVATION_DIGEST, "5"),
+        ("narrative_event_synthesize", SYNTHESIS_V2_DIGEST, "2"),
+        ("narrative_event_synthesize", SYNTHESIS_V3_DIGEST, "3"),
     ];
-    for (stage, digest) in stages {
-        assert!(known_static_contract(stage, digest, &contracts[stage]).expect("digest"));
-        let mut changed = contracts[stage].clone();
+    for (stage, digest, version) in stages {
+        let reviewed = contract(stage, digest);
+        assert_eq!(reviewed["contractVersion"], version);
+        assert!(known_static_contract(stage, digest, &reviewed).expect("digest"));
+        let mut changed = reviewed.clone();
         changed["instruction"] = json!("story secret");
         assert!(!known_static_contract(stage, digest, &changed).expect("digest"));
-        assert!(
-            !known_static_contract(stage, "sha256:unknown", &contracts[stage]).expect("digest")
-        );
-        changed = contracts[stage].clone();
-        changed["contractVersion"] = json!("unknown");
-        assert!(!known_static_contract(stage, digest, &changed).expect("digest"));
+        assert!(!known_static_contract(stage, "sha256:unknown", &reviewed).expect("digest"));
+        for other in ["unknown", "1"] {
+            changed = reviewed.clone();
+            changed["contractVersion"] = json!(other);
+            assert!(!known_static_contract(stage, digest, &changed).expect("digest"));
+        }
     }
+    // v2 bytes never classify under the v3 digest, nor v3 bytes under v2.
+    let v2 = contract("narrative_event_synthesize", SYNTHESIS_V2_DIGEST);
+    let v3 = contract("narrative_event_synthesize", SYNTHESIS_V3_DIGEST);
+    assert!(
+        !known_static_contract("narrative_event_synthesize", SYNTHESIS_V3_DIGEST, &v2)
+            .expect("digest")
+    );
+    assert!(
+        !known_static_contract("narrative_event_synthesize", SYNTHESIS_V2_DIGEST, &v3)
+            .expect("digest")
+    );
+    assert!(
+        accepted_static_contract("narrative_event_synthesize", "sha256:unknown")
+            .expect("lookup")
+            .is_none()
+    );
     assert!(!known_static_contract(
         "unknown",
         OBSERVATION_DIGEST,
-        &contracts["narrative_observation_extract"]
+        &contract("narrative_observation_extract", OBSERVATION_DIGEST)
     )
     .expect("digest"));
 }

@@ -1,5 +1,6 @@
 //! Approved read-only diagnostic policy. Never grants product search eligibility.
 use super::{
+    material_membership_root::accepted_static_contract,
     material_roster::{inspect_material_roster, RosterStatus},
     project_scope_authority::load_live_project_scope_authority,
     reconciliation_envelope::{
@@ -15,30 +16,58 @@ use serde_json::{json, Value};
 pub const POLICY_REF: &str = "nir1.scene-body-reader-history/1";
 const OBSERVATION_DIGEST: &str =
     "sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22";
-const SYNTHESIS_DIGEST: &str =
+/// Event Synthesis v2 stays reviewed so existing v2 extraction results keep
+/// their classification beside v3 (user decision 2026-11-03).
+const SYNTHESIS_V2_DIGEST: &str =
     "sha256:5e63b1a1c4c3a3aba76689732e3876deae5ea230f15d961d74932e16b3b876ff";
+/// v3 adds only static instruction text and a placeholder unresolved output
+/// example; content reviewed 2026-11-03 (no new kind of model-visible data).
+const SYNTHESIS_V3_DIGEST: &str =
+    "sha256:c5365b446a2f7bf85081b67174beb5001df51963b3b2a515860938ddefd406f7";
+
+/// (stage, contract id, version, component contract digest) whose instruction
+/// AND output shape were reviewed as non-story static text.
+const REVIEWED_STATIC_CONTRACTS: [(&str, &str, &str, &str); 3] = [
+    (
+        "narrative_observation_extract",
+        "chronicle.observation-extraction.prompt",
+        "5",
+        OBSERVATION_DIGEST,
+    ),
+    (
+        "narrative_event_synthesize",
+        "chronicle.event-synthesis.prompt",
+        "2",
+        SYNTHESIS_V2_DIGEST,
+    ),
+    (
+        "narrative_event_synthesize",
+        "chronicle.event-synthesis.prompt",
+        "3",
+        SYNTHESIS_V3_DIGEST,
+    ),
+];
 fn decision(status: &str, reason: &str) -> Value {
     json!({"status":status,"reason":reason})
 }
 
-// These are the two contracts whose instruction AND output shape were reviewed
-// as non-story static text. Matching a name alone never confers this classification.
+// Only the reviewed (stage, id, version, digest) entries classify. Matching a
+// name alone never confers this classification.
 fn known_static_contract(stage: &str, digest: &str, contract: &Value) -> Result<bool> {
-    let (id, version, expected) = match stage {
-        "narrative_observation_extract" => (
-            "chronicle.observation-extraction.prompt",
-            "5",
-            OBSERVATION_DIGEST,
-        ),
-        "narrative_event_synthesize" => ("chronicle.event-synthesis.prompt", "2", SYNTHESIS_DIGEST),
-        _ => return Ok(false),
+    let Some((_, id, version, expected)) =
+        REVIEWED_STATIC_CONTRACTS
+            .iter()
+            .find(|(reviewed_stage, _, _, reviewed_digest)| {
+                *reviewed_stage == stage && *reviewed_digest == digest
+            })
+    else {
+        return Ok(false);
     };
-    Ok(contract["contractId"] == id
-        && contract["contractVersion"] == version
-        && digest == expected
+    Ok(contract["contractId"] == *id
+        && contract["contractVersion"] == *version
         && canonical_json_digest(
             &json!({"schemaVersion":1,"contextSetVersion":"chronicle.context-set/1","stageId":stage,"componentContract":contract}),
-        )? == expected)
+        )? == *expected)
 }
 
 fn material_admission(i: &Value) -> Value {
@@ -161,11 +190,13 @@ pub fn inspect_diagnostic_disclosure(
         report["membership"] = serde_json::to_value(roster)?;
         return Ok(report);
     }
-    let contracts: Value = serde_json::from_str(include_str!("material_roster/contracts.json"))?;
     let mut classified = Vec::new();
     let mut all_static = true;
     for receipt in &roster.verified_receipts {
-        let c = &contracts[&receipt.stage_id];
+        let contract =
+            accepted_static_contract(&receipt.stage_id, &receipt.component_contract_digest)?
+                .unwrap_or(Value::Null);
+        let c = &contract;
         let known =
             known_static_contract(&receipt.stage_id, &receipt.component_contract_digest, c)?;
         all_static &= known;

@@ -76,8 +76,12 @@ pub(super) fn resolve(
                 "citation-repair-recipe-not-implemented",
             ));
         }
+        let accepted_contract = match receipt["componentContractDigest"].as_str() {
+            Some(digest) => prompt::accepted_contract(&stage, digest)?,
+            None => None,
+        };
         if ![prompt::OBSERVATION, prompt::SYNTHESIS].contains(&stage.as_str())
-            || receipt["componentContractDigest"] != prompt::contract_digest(&stage)?
+            || accepted_contract.is_none()
             || receipt["contextSetVersion"] != "chronicle.context-set/1"
         {
             return Ok(Outcome::Unsupported("component-recipe-unsupported"));
@@ -265,7 +269,11 @@ pub(super) fn resolve(
     }
     let syn_proof = prompt::proof(
         syn_receipts[0],
-        prompt::synthesis(&root.cluster_ref, observations)?,
+        prompt::synthesis(
+            &root.cluster_ref,
+            &string_at(syn_receipts[0], "/componentContractDigest")?,
+            observations,
+        )?,
     )?;
     proofs.push(syn_proof);
     Ok(Outcome::Complete(materials, proofs))

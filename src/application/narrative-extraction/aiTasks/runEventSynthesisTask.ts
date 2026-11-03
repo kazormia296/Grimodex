@@ -113,10 +113,25 @@ const EVENT_COMPONENT_CONTRACT = {
 本文全量は再送しません。Observation Ref と短い Evidence 表示だけを使います。未知の Observation Ref は出力しないでください。
 出力の clusterRef は Context Set の event-cluster 値を一字一句そのまま使用し、出力例のプレースホルダーを値としてコピーしないでください。
 出力の events[].observationRefs は、このリクエストの Context Set にある同一候補 Cluster の Observation 行の localId 値だけを一字一句そのままコピーしてください。
-contextId や inputRef、出力例のプレースホルダーは参照値ではありません。event-observation: や observation: を追加せず、localId の接頭辞・区切り・桁数を省略、推測、正規化しないでください。別リクエストや別 Cluster の ID は使用しないでください。`,
-  outputShape:
-    '{"clusterRef":"<event-cluster-ref-from-context>","resolution":"single-event","events":[{"observationRefs":["<observation-localId-from-context>"],"titleSuggestion":"短いタイトル","summary":"要約","actuality":"actual","significance":"major"}]}',
+contextId や inputRef、出力例のプレースホルダーは参照値ではありません。event-observation: や observation: を追加せず、localId の接頭辞・区切り・桁数を省略、推測、正規化しないでください。別リクエストや別 Cluster の ID は使用しないでください。
+events[].actuality に使えるのは "actual"、"attempted"、"prevented"、"rumored" の 4 種類だけです。年表の出来事にできるのは、この 4 種類のいずれかの actuality を持つ Observation だけです。伝聞・噂の "rumored" も 4 種類に含まれます。
+それ以外の actuality（"planned"、"intended"、"hypothetical"、"counterfactual"、"dreamed"、"unknown" など）の Observation は、4 種類のどれかへ書き換えず、どの event の observationRefs にも入れずに省いてください。
+1 つの event の observationRefs には同じ actuality の Observation だけを入れ、event の actuality はそれらの Observation の actuality と同じ値にしてください。4 種類の Observation とそれ以外の Observation が同じ Cluster にある場合は、4 種類の Observation だけで event を作り、それ以外は参照しないでください。
+Cluster の Observation がすべて 4 種類以外なら、event を作らず、resolution を "unresolved"、events を [] にして返してください。`,
+  outputShape: `{"clusterRef":"<event-cluster-ref-from-context>","resolution":"single-event","events":[{"observationRefs":["<observation-localId-from-context>"],"titleSuggestion":"短いタイトル","summary":"要約","actuality":"actual","significance":"major"}]}
+4 種類の actuality の Observation が Cluster に無い場合: {"clusterRef":"<event-cluster-ref-from-context>","resolution":"unresolved","events":[]}`,
 } as const;
+
+/**
+ * Structured-repair expected shape. It is a dynamic Context Set value of the
+ * repair child, so it does not change the synthesis component contract digest.
+ */
+function eventSynthesisRepairExpectedShape(clusterRef: string): string {
+  const cluster = JSON.stringify(clusterRef);
+  return `{"clusterRef":${cluster},"resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}
+events[].actuality は "actual"、"attempted"、"prevented"、"rumored" のいずれかです。それ以外の actuality の event は、4 種類のどれかへ書き換えず events から除いてください。
+events が空になる場合: {"clusterRef":${cluster},"resolution":"unresolved","events":[]}`;
+}
 
 export function buildSynthesisPromptArtifact(
   input: RunEventSynthesisTaskInput,
@@ -627,7 +642,7 @@ export async function runEventSynthesisTask(
 
   const repaired = await runStructuredRepairTask({
     brokenText: response.text,
-    expectedShape: `{"clusterRef":${JSON.stringify(input.clusterRef)},"resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}`,
+    expectedShape: eventSynthesisRepairExpectedShape(input.clusterRef),
     projectId,
     ...(repairStageExecution ? { stageExecution: repairStageExecution } : {}),
     ...(repairStageExecution
