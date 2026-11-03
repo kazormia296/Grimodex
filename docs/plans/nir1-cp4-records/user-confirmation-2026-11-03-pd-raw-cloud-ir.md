@@ -28,3 +28,11 @@ PD／AI 生成の原稿では、Raw の満杯率は LLM なし・費用 0 円で
 - 質問「IR をクラウド LLM（OpenRouter）で抽出するときの費用の上限はどうしますか？（model は製品の Chronicle の評価と同じ openai/gpt-5.6-luna、reasoning medium を使います。上限に達したら止めて報告します）」→ **回答（自由記述）：「どうせ対したクレジット入ってないので気にしないで良いです」**
 - 質問「OpenRouter の API key をどう渡しますか？…」→ **回答：「ファイルで渡す (推奨)」**
 - 読み：費用の上限は OpenRouter の口座の残高で決まる（integrator は別の上限を置かないが、使った費用は記録して報告する）。key は `~/.config/grimodex-eval/openrouter.key`（repo の外）から抽出の command の中だけで読み、表示・記録しない。ファイルの権限が 644 だったので integrator が 600 に直した（中身は読んでいない）。
+
+## 追記 2：key の経路（同日、AskUserQuestion）
+
+- 提示した事実：製品は key を OS の keyring 経由の safeStorage でしか保存できず（`electron/main/keyStore.ts:193-194` が basic_text／unknown を拒む）、隔離した評価環境には keyring が無い。harness は launch のたびに偽 AI の env を立てる（`product-journey-harness.mjs:5240`）。reasoning medium は製品の抽出の経路から指定できない（既定のまま）。全提案を非 secret の child にして承認するので「IR が最大に出る条件」になる。計画は `ir-cloud-extraction-plan-2026-11-03.md`（`3aef986a`）。
+- 質問「評価用の Grimodex に OpenRouter の key をどう渡しますか？…」
+  - 選択肢：デスクトップの keyring を使う (推奨)／評価専用の口を製品に足す／手元の中継で渡す
+  - **回答：「デスクトップの keyring を使う (推奨)」**
+- 読み：製品の `save_api_key` をそのまま使い、評価の間だけ評価用の Electron をユーザーのデスクトップの D-Bus（keyring）につなぐ。コードは変えない。暗号化された key は評価用の profile にだけ残り、終わったら profile ごと消す（消す前に中身を確かめる）。key の値は表示・記録しない。表示は Xvfb のまま。旧 keyring からの取り込みを防ぐ印（`legacy-keyring-migration-v1.json`）を先に置く。
