@@ -122,7 +122,17 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
   const isContainer = isFolder;
 
   return (
-    <ContextMenuContent className="min-w-[192px]">
+    <ContextMenuContent
+      className="min-w-[192px]"
+      // 「名前を変更」などで入力欄がフォーカスを取ったら、メニューを開く前の要素
+      // （ツリーのスクロール領域）へ戻さない。戻すと、autoFocus した名前の入力欄が
+      // blur して、打つ前に確定される。
+      onCloseAutoFocus={(event) => {
+        if (document.activeElement instanceof HTMLInputElement) {
+          event.preventDefault();
+        }
+      }}
+    >
       {/* Open (Scene/Note only) */}
       {(isScene || isNote) && (
         <>

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { SPLITTER_GUTTER_PX, STRIPE_SIZE } from "./layoutConstants";
-import { useLayoutStore } from "./layoutStore";
+import { registerEditorFocusHandler, useLayoutStore } from "./layoutStore";
 import {
   buildDefaultLayoutState,
   findPanelLocation,
@@ -112,6 +112,28 @@ describe("useLayoutStore", () => {
   });
 
   describe("setEditorOpen", () => {
+    it("moves focus to the editor only when it was closed", () => {
+      const focusEditor = vi.fn();
+      registerEditorFocusHandler(focusEditor);
+      try {
+        // node 環境には requestAnimationFrame が無く、フォーカスは同期で移る。
+        useLayoutStore.setState({
+          layout: buildDefaultLayoutState({ editorOpen: true }),
+        });
+
+        // すでに開いているエディタを「見せる」だけ（新しいシーンを開く
+        // revealEditor）では、名前の入力欄などからフォーカスを奪わない。
+        useLayoutStore.getState().showPanel("editor");
+        expect(focusEditor).not.toHaveBeenCalled();
+
+        useLayoutStore.getState().setEditorOpen(false);
+        useLayoutStore.getState().setEditorOpen(true);
+        expect(focusEditor).toHaveBeenCalledTimes(1);
+      } finally {
+        registerEditorFocusHandler(null);
+      }
+    });
+
     it("preserves center segment ratios across hide and show", () => {
       // editor + 1 center tool（editor を広め 0.7 / tool 0.3 に設定）
       useLayoutStore.getState().movePanelToNewSlot("scenes", "center", 1);
