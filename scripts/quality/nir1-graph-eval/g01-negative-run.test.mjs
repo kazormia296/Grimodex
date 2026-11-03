@@ -14,7 +14,7 @@ import {
 } from "./g01-negatives.mjs";
 import { createG01NegativeRun, rowProbeOf } from "./g01-negative-run.mjs";
 import { TRACE_MAINTENANCE_SEAM } from "./trace-record.mjs";
-import { INDEX_KEYS } from "./workspace-db.mjs";
+import { FRESHNESS_CONSUMER_ID, INDEX_KEYS } from "./workspace-db.mjs";
 import { REPO_ROOT } from "./test-support.mjs";
 
 const TARGET = {
@@ -42,7 +42,14 @@ function workspace() {
     CREATE TABLE codex_relations (id TEXT, project_id TEXT, from_codex_id TEXT, to_codex_id TEXT, relation_type TEXT);
     CREATE TABLE scene_codex_pins (scene_id TEXT, entry_id TEXT, created_at TEXT);
     CREATE TABLE narrative_semantic_index_metadata (project_id TEXT, index_key TEXT, generation INTEGER, dirty_cache_flag INTEGER, source_digest TEXT, dependency_set_digest TEXT, producer_id TEXT, producer_version TEXT);
+    CREATE TABLE narrative_change_events (project_id TEXT, canonical_sequence INTEGER);
+    CREATE TABLE narrative_change_cursors (project_id TEXT, consumer_id TEXT, acknowledged_through_sequence INTEGER, active_run_id TEXT, reserved_through_sequence INTEGER);
   `);
+  // DR-CP4-S4-8: Freshness の feed（cursor は head に届いている＝静止）。
+  db.prepare("INSERT INTO narrative_change_events VALUES ('p', 1)").run();
+  db.prepare(
+    "INSERT INTO narrative_change_cursors VALUES ('p', ?, 1, NULL, NULL)",
+  ).run(FRESHNESS_CONSUMER_ID);
   db.prepare(
     "INSERT INTO tree_nodes VALUES ('s-query', 'p', 'scene', NULL, 'a')",
   ).run();
@@ -327,6 +334,82 @@ test("O-16: 宣言の後は対照・mutation・Main の開き直し（新しい�
           ids: IDS,
         }),
       /\[precheck\]/u,
+    );
+  } finally {
+    rmSync(ws.dir, { recursive: true, force: true });
+  }
+});
+
+test("DR-CP4-S4-8: N2 の mutation と N4 の宣言の前の保存は、workspace の feed が静止していれば B の世代不変（dirty でない）でも通し、sealBranch に残す", async () => {
+  const ws = workspace();
+  try {
+    const events = [];
+    const handlers = {
+      graphProbe: reachedProbe,
+      // X1-5 の下の本文だけの保存: B は触られない（世代 4、dirty でない）。
+      resaveBody: () => ({
+        ok: true,
+        value: {
+          before: { sha256: "o", version: 1 },
+          after: { sha256: "o", version: 2 },
+        },
+      }),
+      draftThenOriginal: () => ({
+        ok: true,
+        value: {
+          revisionId: "v2",
+          originalSha256: "o",
+          draftSha256: "d",
+          afterSha256: "o",
+        },
+      }),
+    };
+    const relaunch = async (label) => {
+      events.push(`launch:${label}`);
+      return fakeSession(label, handlers, events);
+    };
+    const stop = async () => {};
+    const first = fakeSession("s0", handlers, events);
+    const proc = { session: first, dbPath: ws.file };
+    const n2 = createG01NegativeRun({ id: "K24-G01-N2", target: TARGET });
+    await n2.afterDeclaration({
+      page: first.page,
+      ids: IDS,
+      proc,
+      relaunch,
+      stop,
+    });
+    const [sealed] = n2.state.step.sealAttempts;
+    assert.equal(n2.state.step.blocked, null);
+    assert.equal(sealed.outcome, "sealed");
+    assert.equal(sealed.sealBranch, "unchanged");
+    assert.equal(sealed.chronicle.recheckBranch, "unchanged");
+    // 静止の待ちは注入された workspace の feed を読んだ。
+    assert.equal(sealed.freshnessSettle.settled, true);
+    assert.deepEqual(
+      [
+        sealed.freshnessSettle.final.head,
+        sealed.freshnessSettle.final.acknowledged,
+      ],
+      [1, 1],
+    );
+    // 測定点は mutation の前と同じ世代。
+    assert.equal(n2.measurementProbe({}).bGeneration, 4);
+    const n4 = createG01NegativeRun({ id: "K24-G01-N4", target: TARGET });
+    const session = await n4.beforeDeclaration({
+      page: first.page,
+      ids: IDS,
+      proc,
+      relaunch,
+      stop,
+    });
+    assert.equal(session.label, "before-declaration-reopen-0");
+    assert.deepEqual(
+      n4.state.beforeDeclarationSealAttempts.map((row) => [
+        row.outcome,
+        row.sealBranch,
+      ]),
+      [["sealed", "unchanged"]],
     );
   } finally {
     rmSync(ws.dir, { recursive: true, force: true });

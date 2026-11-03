@@ -13,6 +13,9 @@
 //      開き直し（`reopenUntilSealed`。setup の seal の session と同じ上限）、
 //      B の新しい封印と Chronicle を待ち（届かなければ blocked）、SP/1 の SP-P1
 //      を DB から照合し直す。N4 の宣言の前の保存の後も同じ開き直しで待つ。
+//      本文だけの保存の地点（N2 の mutation、N4 の宣言の前の保存）では、
+//      Freshness の静止を待てれば B の世代不変（dirty でない）も封印として
+//      通す（DR-CP4-S4-8 の案 A′。restore の地点は新しい世代だけ）。
 //   4. 測った sample の「届いた」は `g01FrameReached`、結果は
 //      `frozen-diagnostics.mjs` の `assessG01Negative`。
 // 測定の Main は B-ROUTE の journey seam で起動する（`g01NegativeLaunchEnv`）。
@@ -24,11 +27,14 @@ import { G01_N4_DRAFT_SUFFIX, G01_NEGATIVES } from "./frozen-diagnostics.mjs";
 import {
   B_SEAL_REOPENS,
   B_SEAL_WAIT_MS,
+  FRESHNESS_SETTLE_INTERVAL_MS,
+  FRESHNESS_SETTLE_WAIT_MS,
   bSealPublished,
   indexStateProbe,
 } from "./frozen-setup-driver.mjs";
 import { verifySeedPins } from "./seed-pin.mjs";
 import { traceMaintenanceEnv } from "./trace-record.mjs";
+import { waitFreshnessSettled } from "./workspace-db.mjs";
 
 /** The poll interval of the wait (the setup's B seal wait polls every 500 ms). */
 export const G01_NEGATIVE_POLL_MS = 500;
@@ -121,10 +127,61 @@ export async function prepareG01NegativeBeforeDeclaration({
 }
 
 /**
+ * DR-CP4-S4-8 (1)(A-2): B は mutation の前と同じ世代のまま dirty でない。
+ * 前の B があり（`previous >= 1`）、世代が等しく（上がっても下がっても外れる）、
+ * producer が同じで、`sourceDigest`／`dependencySetDigest` も前と同じこと。
+ * digest と producer の照合は「同じ世代の行が mutation の前後で書き換わって
+ * いない」ことの検査でしかない（build のときに書いた行の読み戻しなので、作り
+ * 直さなければ必ず一致する）。この分岐が頼るのは、製品の X1-5 の分類（本文
+ * だけの保存は Chronicle だけを suspend する）と、先に待つ Freshness の静止。
+ */
+export function bSealUnchanged(metadata, before) {
+  const prior = before?.b ?? null;
+  const row = metadata?.b ?? null;
+  if (!prior || !row) return false;
+  const previous = Number(prior.generation);
+  return (
+    Number.isInteger(previous) &&
+    previous >= 1 &&
+    Number(row.generation) === previous &&
+    row.dirty === false &&
+    (row.producerId ?? null) === (prior.producerId ?? null) &&
+    (row.producerVersion ?? null) === (prior.producerVersion ?? null) &&
+    (row.sourceDigest ?? null) === (prior.sourceDigest ?? null) &&
+    (row.dependencySetDigest ?? null) === (prior.dependencySetDigest ?? null)
+  );
+}
+
+/**
+ * DR-CP4-S4-8 (1): 封印の判定の地点別の規則。`"new-generation"`（A-1: setup の
+ * b-seal と同じ、前より新しい世代で dirty でない）は全地点で通る。
+ * `"unchanged"`（A-2: `bSealUnchanged`）は `allowUnchanged`（本文だけの保存の
+ * 地点で、Freshness の静止を待てたとき）だけ通る。どちらでもなければ null。
+ */
+export function g01SealBranch(
+  metadata,
+  before,
+  { allowUnchanged = false } = {},
+) {
+  if (bSealPublished(metadata, Number(before?.b?.generation ?? 0)))
+    return "new-generation";
+  if (allowUnchanged && bSealUnchanged(metadata, before)) return "unchanged";
+  return null;
+}
+
+/**
  * The wait after the mutation (the setup's `b-seal` rule): a B generation
  * newer than the one before the mutation and not dirty, within `limitMs`
  * (B_SEAL_WAIT_MS). The Chronicle Index is built after it through the query
  * route, as the setup's `chronicle-index` step (`reopenUntilSealed`).
+ *
+ * DR-CP4-S4-8 (1): 本文だけの保存の地点（`allowUnchanged`）で、feed を読む関数
+ * `readFreshness` が注入されているときだけ、先に Freshness の静止を既存の
+ * `waitFreshnessSettled`（上限 FRESHNESS_SETTLE_WAIT_MS、間隔
+ * FRESHNESS_SETTLE_INTERVAL_MS）で待ち、静止したら以後の poll で A-1 または
+ * A-2 で通す。静止しなければ、また注入が無い・restore の地点なら、今の A-1
+ * だけの待ちのまま。待ちの起点は静止の待ちの前で、1 回の開きの上限は
+ * `limitMs` のまま（静止の待ちの時間を含む）。
  */
 export async function waitG01NegativeSealed({
   readIndex,
@@ -132,16 +189,44 @@ export async function waitG01NegativeSealed({
   limitMs = B_SEAL_WAIT_MS,
   sleep = delay,
   now = () => Date.now(),
+  allowUnchanged = false,
+  readFreshness = null,
 }) {
   const started = now();
-  const previous = Number(before?.b?.generation ?? 0);
+  let freshnessSettle = null;
+  if (allowUnchanged && typeof readFreshness === "function")
+    freshnessSettle = await waitFreshnessSettled({
+      read: readFreshness,
+      limitMs: FRESHNESS_SETTLE_WAIT_MS,
+      intervalMs: FRESHNESS_SETTLE_INTERVAL_MS,
+      now,
+      sleep,
+    });
+  const unchangedAllowed = freshnessSettle?.settled === true;
   for (;;) {
     const metadata = readIndex();
-    // Review P3 (a): the driver's own b-seal rule.
-    if (bSealPublished(metadata, previous))
-      return { ok: true, waitedMs: now() - started, metadata };
+    // Review P3 (a): the driver's own b-seal rule (A-1), or A-2 where allowed.
+    const branch = g01SealBranch(metadata, before, {
+      allowUnchanged: unchangedAllowed,
+    });
+    if (branch)
+      return {
+        ok: true,
+        waitedMs: now() - started,
+        metadata,
+        branch,
+        unchangedAllowed,
+        freshnessSettle,
+      };
     if (now() - started >= limitMs)
-      return { ok: false, waitedMs: now() - started, metadata };
+      return {
+        ok: false,
+        waitedMs: now() - started,
+        metadata,
+        branch: null,
+        unchangedAllowed,
+        freshnessSettle,
+      };
     await sleep(G01_NEGATIVE_POLL_MS);
   }
 }
@@ -361,6 +446,14 @@ export async function runG01NegativeControl({
  * session rule), each waiting B_SEAL_WAIT_MS for a new sealed generation.
  * `openSession({ attempt, dirLabel })` returns a session with `close()`;
  * the records have the setup receipt's `sealAttempts` fields.
+ *
+ * DR-CP4-S4-8 (1)(3): `allowUnchanged` は本文だけの保存の地点（N2 の mutation、
+ * N4 の宣言の前の保存）だけ true にする（restore の地点は既定の false のまま
+ * A-1 だけ）。`readFreshness` は feed を読む関数（呼び出し口が
+ * `readFreshnessFeed(dbPath, projectId)` を包んで注入する）。各 entry の
+ * `outcome` の語は変えず、通った分岐を `sealBranch`（`"new-generation"`／
+ * `"unchanged"`、通らなければ null）に、静止の待ちの記録を `freshnessSettle`
+ * に残す。
  */
 export async function reopenUntilSealed({
   closeCurrent,
@@ -371,13 +464,20 @@ export async function reopenUntilSealed({
   reopens = B_SEAL_REOPENS,
   wait = waitG01NegativeSealed,
   label = "measure",
+  allowUnchanged = false,
+  readFreshness = null,
 }) {
   await closeCurrent();
   const sealAttempts = [];
   for (let attempt = 0; attempt <= reopens; attempt++) {
     const dirLabel = `${label}-reopen-${attempt}`;
     const session = await openSession({ attempt, dirLabel });
-    const sealed = await wait({ readIndex, before });
+    const sealed = await wait({
+      readIndex,
+      before,
+      allowUnchanged,
+      readFreshness,
+    });
     sealAttempts.push({
       session: label,
       attempt,
@@ -386,6 +486,8 @@ export async function reopenUntilSealed({
       published: sealed.ok,
       waitedMs: sealed.waitedMs,
       metadata: sealed.metadata ?? null,
+      sealBranch: sealed.ok ? (sealed.branch ?? null) : null,
+      freshnessSettle: sealed.freshnessSettle ?? null,
     });
     if (sealed.ok) {
       // The setup's chronicle-index step: the Index through the query route
@@ -403,7 +505,13 @@ export async function reopenUntilSealed({
       };
       // Review P3 (a): a B that went dirty again after its seal (the
       // driver's bDirtiedAfterSeal) is rebuilt only by a new opening.
-      if (!bSealPublished(metadata, Number(before?.b?.generation ?? 0))) {
+      // DR-CP4-S4-8 (1): 同じ地点別の規則でもう一度判定する（A-2 は、この開き
+      // で静止を待てたときだけ。静止はもう一度待たない）。
+      const recheckBranch = g01SealBranch(metadata, before, {
+        allowUnchanged: allowUnchanged && sealed.unchangedAllowed === true,
+      });
+      sealAttempts.at(-1).chronicle.recheckBranch = recheckBranch;
+      if (recheckBranch === null) {
         sealAttempts.at(-1).outcome = "sealed-then-dirty";
         await session.close();
         continue;
@@ -446,6 +554,7 @@ export async function runG01NegativeStep({
   openSession,
   buildChronicle,
   reopen = reopenUntilSealed,
+  readFreshness = null,
 }) {
   const spec = specOf(id);
   const scene = { projectId: ids.projectId, sceneId: sceneOf(ids, target) };
@@ -507,12 +616,16 @@ export async function runG01NegativeStep({
       };
     mutation = result.value;
   }
+  // DR-CP4-S4-8 (1): N2 の mutation（同じ本文の再保存）は本文だけの保存の
+  // 地点、N3／N4 の restore は restore の地点（A-1 だけ）。
   const reopened = await reopen({
     closeCurrent,
     openSession,
     readIndex,
     before: indexBefore,
     buildChronicle,
+    allowUnchanged: spec.mutation === "resave-same-body",
+    readFreshness,
   });
   if (!reopened.ok)
     return {

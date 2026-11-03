@@ -10,6 +10,8 @@ import {
   answerKindOf,
   askUntilDecided,
   assertG01RetryFixed,
+  bSealUnchanged,
+  g01SealBranch,
   G01_CONTROL_GAP_MS,
   G01_GRAPH_READY_WAIT_MS,
   effectiveAnswerOf,
@@ -25,7 +27,11 @@ import {
   runG01NegativeStep,
   waitG01NegativeSealed,
 } from "./g01-negatives.mjs";
-import { B_SEAL_REOPENS, B_SEAL_WAIT_MS } from "./frozen-setup-driver.mjs";
+import {
+  B_SEAL_REOPENS,
+  B_SEAL_WAIT_MS,
+  FRESHNESS_SETTLE_WAIT_MS,
+} from "./frozen-setup-driver.mjs";
 import { TRACE_MAINTENANCE_SEAM } from "./trace-record.mjs";
 
 const TARGET = {
@@ -1036,5 +1042,334 @@ test("integrator の決定: 聞き直しの上限は対照・sample とも 60 �
         samples: [{ repeat: 2, retry: { limit: 30, gapMs: 250 } }],
       }),
     /\[precheck\].*sample 2/u,
+  );
+});
+
+// DR-CP4-S4-8（案 A′）: 本文だけの保存の地点（N2 の mutation、N4 の宣言の前の
+// 保存）では Freshness の静止を待った後に A-1 または A-2、restore の地点
+// （N3、N4 の mutation）は A-1 だけ。
+const sealed = (generation, dirty = false, extra = {}) => ({
+  b: {
+    generation,
+    dirty,
+    sourceDigest: "src",
+    dependencySetDigest: "dep",
+    producerId: "producer",
+    producerVersion: "1",
+    ...extra,
+  },
+  chronicle: { generation: 3, dirty: false },
+});
+const SETTLED_FEED = {
+  head: 3,
+  acknowledged: 3,
+  activeRun: false,
+  reserved: false,
+};
+const PENDING_FEED = {
+  head: 3,
+  acknowledged: 2,
+  activeRun: false,
+  reserved: false,
+};
+function fakeClock() {
+  let at = 0;
+  return {
+    now: () => at,
+    sleep: async (ms) => {
+      at += ms;
+    },
+  };
+}
+const waitWith = (clock, input) =>
+  waitG01NegativeSealed({ ...input, now: clock.now, sleep: clock.sleep });
+
+test("DR-CP4-S4-8 (1): A-1（新しい世代で dirty でない）は全地点で通り、sealBranch は new-generation", async () => {
+  for (const [allowUnchanged, readFreshness] of [
+    [false, null],
+    [false, () => SETTLED_FEED],
+    [true, () => SETTLED_FEED],
+    [true, () => PENDING_FEED],
+    [true, null],
+  ]) {
+    const clock = fakeClock();
+    const result = await waitWith(clock, {
+      readIndex: () => sealed(5),
+      before: sealed(4),
+      allowUnchanged,
+      readFreshness,
+    });
+    assert.equal(result.ok, true, String(allowUnchanged));
+    assert.equal(result.branch, "new-generation");
+  }
+  assert.equal(g01SealBranch(sealed(5), sealed(4)), "new-generation");
+  // restore の地点の開き直し（既定の allowUnchanged=false）も A-1 で通す。
+  const clock = fakeClock();
+  let opened = 0;
+  const restored = await reopenUntilSealed({
+    closeCurrent: async () => {},
+    openSession: async () => {
+      opened += 1;
+      return { close: async () => {} };
+    },
+    buildChronicle: async () => ({ ok: true }),
+    readIndex: () => (opened >= 2 ? sealed(5) : sealed(4, true)),
+    before: sealed(4),
+    readFreshness: () => SETTLED_FEED,
+    wait: (input) => waitWith(clock, input),
+  });
+  assert.equal(restored.ok, true);
+  assert.deepEqual(
+    restored.sealAttempts.map((row) => [row.outcome, row.sealBranch]),
+    [
+      ["not-published", null],
+      ["sealed", "new-generation"],
+    ],
+  );
+});
+
+test("DR-CP4-S4-8 (1): A-2（同じ世代で dirty でない）は本文だけの保存の地点で、Freshness の静止を待てたときだけ通る", async () => {
+  const clock = fakeClock();
+  const feeds = [PENDING_FEED, PENDING_FEED, SETTLED_FEED];
+  let feedReads = 0;
+  const result = await waitWith(clock, {
+    readIndex: () => sealed(4),
+    before: sealed(4),
+    allowUnchanged: true,
+    readFreshness: () => {
+      feedReads += 1;
+      return feeds.shift() ?? SETTLED_FEED;
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.branch, "unchanged");
+  assert.equal(result.freshnessSettle.settled, true);
+  assert.equal(feedReads, 3);
+  // 静止の待ちが先（2 回の間隔）で、その後の最初の poll で通る。
+  assert.equal(result.waitedMs, 2 * 250);
+  assert.equal(
+    g01SealBranch(sealed(4), sealed(4), { allowUnchanged: true }),
+    "unchanged",
+  );
+  assert.equal(g01SealBranch(sealed(4), sealed(4)), null);
+});
+
+test("DR-CP4-S4-8 (1): restore の地点（N3、N4 の mutation）では世代不変は通らず、開き直しを使い切って b-seal-not-published。N2 は同じ状態で通る", async () => {
+  const restore = (input) => ({
+    ok: true,
+    value: {
+      revisionId: input.revisionId,
+      restoredSha256: input.revisionId === "v1" ? "o" : "d",
+      afterSha256: input.revisionId === "v1" ? "o" : "d",
+    },
+  });
+  const { page } = fakePage({
+    restoreVersion: restore,
+    resaveBody: () => ({
+      ok: true,
+      value: {
+        before: { sha256: "o", version: 3 },
+        after: { sha256: "o", version: 4 },
+      },
+    }),
+  });
+  const run = async (id, before) => {
+    const clock = fakeClock();
+    let feedReads = 0;
+    const step = await runG01NegativeStep({
+      id,
+      page,
+      ids: IDS,
+      target: TARGET,
+      before,
+      readIndex: () => sealed(4),
+      readPins: () => pins([pin("e-orin")]),
+      readGraphInputs: () => ({}),
+      closeCurrent: async () => {},
+      openSession: async () => ({ close: async () => {} }),
+      buildChronicle: async () => ({ ok: true }),
+      readFreshness: () => {
+        feedReads += 1;
+        return SETTLED_FEED;
+      },
+      reopen: (input) =>
+        reopenUntilSealed({ ...input, wait: (w) => waitWith(clock, w) }),
+    });
+    return { step, feedReads };
+  };
+  for (const [id, before] of [
+    ["K24-G01-N3", { revisionId: "v1", sha256: "o" }],
+    ["K24-G01-N4", { revisionId: "v2", draftSha256: "d", originalSha256: "o" }],
+  ]) {
+    const { step, feedReads } = await run(id, before);
+    assert.equal(step.blocked?.reason, "b-seal-not-published", id);
+    assert.equal(step.blocked.openings, 1 + B_SEAL_REOPENS, id);
+    assert.ok(
+      step.sealAttempts.every(
+        (row) =>
+          row.outcome === "not-published" &&
+          row.sealBranch === null &&
+          row.waitedMs === B_SEAL_WAIT_MS,
+      ),
+      id,
+    );
+    // restore の地点では静止の待ちもしない（今の規則のまま）。
+    assert.equal(feedReads, 0, id);
+  }
+  const n2 = await run("K24-G01-N2", null);
+  assert.equal(n2.step.blocked, null);
+  assert.deepEqual(
+    n2.step.sealAttempts.map((row) => [row.outcome, row.sealBranch]),
+    [["sealed", "unchanged"]],
+  );
+  assert.ok(n2.feedReads >= 1);
+});
+
+test("DR-CP4-S4-8 (1): 静止しない・feed の読取りが注入されていないときは世代不変を通さない（上限は B_SEAL_WAIT_MS のまま。A-1 は通る）", async () => {
+  const pending = fakeClock();
+  const notSettled = await waitWith(pending, {
+    readIndex: () => sealed(4),
+    before: sealed(4),
+    allowUnchanged: true,
+    readFreshness: () => PENDING_FEED,
+  });
+  assert.equal(notSettled.ok, false);
+  assert.equal(notSettled.branch, null);
+  assert.equal(notSettled.freshnessSettle.settled, false);
+  assert.equal(notSettled.freshnessSettle.limitMs, FRESHNESS_SETTLE_WAIT_MS);
+  // 静止の待ちを含めて 1 回の開きの上限は B_SEAL_WAIT_MS。
+  assert.equal(notSettled.waitedMs, B_SEAL_WAIT_MS);
+  // 静止しなくても、その後に新しい世代が来れば A-1 で通る（今の道のまま）。
+  const later = fakeClock();
+  const advanced = await waitWith(later, {
+    readIndex: () =>
+      later.now() >= FRESHNESS_SETTLE_WAIT_MS + 1000 ? sealed(5) : sealed(4),
+    before: sealed(4),
+    allowUnchanged: true,
+    readFreshness: () => PENDING_FEED,
+  });
+  assert.equal(advanced.branch, "new-generation");
+  const none = fakeClock();
+  const noReader = await waitWith(none, {
+    readIndex: () => sealed(4),
+    before: sealed(4),
+    allowUnchanged: true,
+  });
+  assert.equal(noReader.ok, false);
+  assert.equal(noReader.freshnessSettle, null);
+  assert.equal(noReader.waitedMs, B_SEAL_WAIT_MS);
+  // reopenUntilSealed でも、注入が無ければ使い切って blocked。
+  const opened = fakeClock();
+  const exhausted = await reopenUntilSealed({
+    closeCurrent: async () => {},
+    openSession: async () => ({ close: async () => {} }),
+    buildChronicle: async () => ({ ok: true }),
+    readIndex: () => sealed(4),
+    before: sealed(4),
+    allowUnchanged: true,
+    wait: (input) => waitWith(opened, input),
+  });
+  assert.equal(exhausted.reason, "b-seal-not-published");
+  assert.equal(exhausted.sealAttempts.length, 1 + B_SEAL_REOPENS);
+});
+
+test("DR-CP4-S4-8 (1): 世代不変の分岐は previous が 0・前の B が無い・世代が上下する・dirty・producer や digest の行が違えば通らない", async () => {
+  const cases = [
+    ["previous 0", sealed(0), sealed(0)],
+    ["before.b null", { b: null, chronicle: null }, sealed(4)],
+    ["before null", null, sealed(4)],
+    ["now b null", sealed(4), { b: null, chronicle: null }],
+    ["lower", sealed(4), sealed(3)],
+    ["higher", sealed(4), sealed(5)],
+    ["dirty", sealed(4), sealed(4, true)],
+    ["producerId", sealed(4), sealed(4, false, { producerId: "other" })],
+    ["producerVersion", sealed(4), sealed(4, false, { producerVersion: "2" })],
+    ["sourceDigest", sealed(4), sealed(4, false, { sourceDigest: "x" })],
+    [
+      "dependencySetDigest",
+      sealed(4),
+      sealed(4, false, { dependencySetDigest: "x" }),
+    ],
+  ];
+  for (const [name, before, now] of cases)
+    assert.equal(bSealUnchanged(now, before), false, name);
+  assert.equal(bSealUnchanged(sealed(4), sealed(4)), true);
+  // 待ちでも通らない（previous 0、下がった世代）。
+  for (const [name, before, now] of [
+    cases[0],
+    cases[4],
+    cases[6],
+    cases[7],
+    cases[9],
+  ]) {
+    const clock = fakeClock();
+    const result = await waitWith(clock, {
+      readIndex: () => now,
+      before,
+      allowUnchanged: true,
+      readFreshness: () => SETTLED_FEED,
+    });
+    assert.equal(result.ok, false, name);
+  }
+});
+
+test("DR-CP4-S4-8 (1)(3): 世代不変で封印した後の Chronicle の build で B が dirty になれば sealed-then-dirty で次の開き直し。sealBranch を entry ごとに残す", async () => {
+  const clock = fakeClock();
+  let state = sealed(4);
+  let opened = 0;
+  const result = await reopenUntilSealed({
+    closeCurrent: async () => {},
+    openSession: async () => {
+      opened += 1;
+      // 2 回目の開きの wake が B を作り直す。
+      if (opened === 2) state = sealed(5, false, { sourceDigest: "src2" });
+      return { close: async () => {} };
+    },
+    buildChronicle: async () => {
+      if (opened === 1) state = sealed(4, true);
+      return { ok: true };
+    },
+    readIndex: () => state,
+    before: sealed(4),
+    allowUnchanged: true,
+    readFreshness: () => SETTLED_FEED,
+    label: "before-declaration",
+    wait: (input) => waitWith(clock, input),
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    result.sealAttempts.map((row) => [
+      row.dirLabel,
+      row.outcome,
+      row.sealBranch,
+      row.chronicle?.recheckBranch ?? null,
+    ]),
+    [
+      ["before-declaration-reopen-0", "sealed-then-dirty", "unchanged", null],
+      [
+        "before-declaration-reopen-1",
+        "sealed",
+        "new-generation",
+        "new-generation",
+      ],
+    ],
+  );
+  assert.equal(result.sealAttempts[0].freshnessSettle.settled, true);
+  // 世代不変のまま Chronicle も使えれば、そのまま通る。
+  const steady = fakeClock();
+  const unchanged = await reopenUntilSealed({
+    closeCurrent: async () => {},
+    openSession: async () => ({ close: async () => {} }),
+    buildChronicle: async () => ({ ok: true }),
+    readIndex: () => sealed(4),
+    before: sealed(4),
+    allowUnchanged: true,
+    readFreshness: () => SETTLED_FEED,
+    wait: (input) => waitWith(steady, input),
+  });
+  assert.equal(unchanged.ok, true);
+  assert.deepEqual(
+    unchanged.sealAttempts.map((row) => [row.outcome, row.sealBranch]),
+    [["sealed", "unchanged"]],
   );
 });

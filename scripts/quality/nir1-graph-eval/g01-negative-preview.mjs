@@ -39,6 +39,7 @@ import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
 import { HARNESS_PAGE, sha256, startSession } from "./session.mjs";
 import { captureBodyNonce, runTraceDeclaration } from "./trace-runner.mjs";
 import {
+  readFreshnessFeed,
   readIndexMetadata,
   readQuerySceneSeedPins,
   readWorkspaceRows,
@@ -156,6 +157,8 @@ async function main() {
     });
     const readIndex = () => readIndexMetadata(dbPath, ids.projectId);
     const readGraphInputs = () => readWorkspaceRows(dbPath, ids.projectId);
+    // DR-CP4-S4-8 (1): 本文だけの保存の地点の静止の待ちに渡す feed の読取り。
+    const readFreshness = () => readFreshnessFeed(dbPath, ids.projectId);
     const readCounters = async () =>
       JSON.parse(await current.session.addon("nir1GraphEvalDiagnostics"));
     // One measurement Main on the B-ROUTE journey seam (the addendum's
@@ -195,6 +198,9 @@ async function main() {
         readIndex,
         before,
         label: "before-declaration",
+        // DR-CP4-S4-8 (1): N4 の宣言の前の保存は本文だけの保存の地点。
+        allowUnchanged: true,
+        readFreshness,
         buildChronicle: async (session) =>
           buildIndex(session.session.page, ids).then(
             (value) => ({ ok: true, ...value }),
@@ -276,6 +282,7 @@ async function main() {
         readPins: () =>
           readQuerySceneSeedPins(dbPath, ids.projectId, ids.querySceneId),
         readGraphInputs,
+        readFreshness,
         closeCurrent: stopCurrent,
         openSession: async ({ dirLabel }) => {
           const value = await open(dirLabel);
@@ -396,7 +403,7 @@ async function main() {
     `${JSON.stringify({ preview: true, ...report }, null, 1)}\n`,
   );
   process.stdout.write(
-    `${JSON.stringify({ run: options.run, control: report.control?.status ?? null, sealAttempts: report.step?.sealAttempts?.map((row) => [row.attempt, row.outcome, row.waitedMs]) ?? null, step: report.step ? { blocked: report.step.blocked, spP1: report.step.spP1Recheck?.status } : null, frames: report.samples?.map((row) => row.frameReached) ?? null, assessment: report.assessment ?? null, problems: report.problems.map((row) => row.split("\n")[0]) })}\n`,
+    `${JSON.stringify({ run: options.run, control: report.control?.status ?? null, sealAttempts: report.step?.sealAttempts?.map((row) => [row.attempt, row.outcome, row.sealBranch ?? null, row.waitedMs]) ?? null, beforeDeclarationSealAttempts: report.beforeDeclarationSealAttempts?.map((row) => [row.attempt, row.outcome, row.sealBranch ?? null, row.waitedMs]) ?? null, step: report.step ? { blocked: report.step.blocked, spP1: report.step.spP1Recheck?.status } : null, frames: report.samples?.map((row) => row.frameReached) ?? null, assessment: report.assessment ?? null, problems: report.problems.map((row) => row.split("\n")[0]) })}\n`,
   );
 }
 
