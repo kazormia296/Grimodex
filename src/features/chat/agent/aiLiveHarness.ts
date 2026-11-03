@@ -41,7 +41,7 @@ export function liveApiKey(): string | undefined {
 }
 
 /** 既定モデル（安価で tool calling 対応）。`OPENROUTER_MODEL` で上書き可。 */
-export const DEFAULT_LIVE_MODEL = "openai/gpt-4o-mini";
+export const DEFAULT_LIVE_MODEL = "openai/gpt-6-luna";
 
 export const OPENROUTER_REASONING_EFFORTS = [
   "minimal",

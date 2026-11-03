@@ -181,13 +181,13 @@ Quality Manifestに登録済みのHeavy commandを一括実行する。API key�
 export OPENROUTER_API_KEY
 pnpm qualify:ai-live -- \
   --candidate HEAD \
-  --model openai/gpt-5.6-luna \
+  --model openai/gpt-6-luna \
   --reasoning-effort medium
 
 # 1経路だけを評価
 pnpm qualify:ai-live -- \
   --candidate HEAD \
-  --model openai/gpt-5.6-luna \
+  --model openai/gpt-6-luna \
   --reasoning-effort medium \
   --suite heavy-rust-post-effect-live
 ```

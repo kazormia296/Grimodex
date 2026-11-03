@@ -2067,7 +2067,7 @@ heavyEvaluations:
     reason: Maintainer-local live model qualification for desktop prompt surfaces; requires a billed OpenRouter model, while wording checks remain Light evidence.
   - id: heavy-narrative-chronicle-production
     suiteId: narrative-extraction
-    command: OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:chronicle:production:live
+    command: OPENROUTER_MODEL=openai/gpt-6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:chronicle:production:live
     reason: Maintainer-local Production Chronicle full seam (observation→evidence→cluster→synthesis→match→proposal). Missing credentials are INCOMPLETE and semantic threshold misses are HOLD.
   - id: heavy-narrative-chronicle-motif-boundary-diagnostic
     suiteId: narrative-extraction
@@ -2075,7 +2075,7 @@ heavyEvaluations:
     reason: Maintainer-local diagnostic-only Production Chronicle run for the five chronicle-motif-boundary-v1 cases. It is not part of Live Model Qualification defaultProfile or formal certification and can never produce certification eligibility.
   - id: heavy-narrative-chronicle-legacy-baseline
     suiteId: narrative-extraction
-    command: OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:live
+    command: OPENROUTER_MODEL=openai/gpt-6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:live
     reason: Measures the current production Chronicle Prompt and Parser against Human Gold with billed OpenRouter access; the legacy schema lacks exact Evidence and semantic dimensions, so completion is explicitly not certification.
   - id: heavy-web-ai-consent-live
     suiteId: tool-policy
