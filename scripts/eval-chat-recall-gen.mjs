@@ -13,7 +13,7 @@
  *
  * env:
  *   OPENROUTER_API_KEY (必須) / OPEN_ROUTER_API_KEY も可
- *   OPENROUTER_MODEL  (既定 openai/gpt-4o-mini)
+ *   OPENROUTER_MODEL  (既定 openai/gpt-6-luna)
  *   CHAT_GEN_SCENARIOS (各言語の生成シナリオ数。既定 6)
  */
 import fs from "fs";
@@ -32,7 +32,7 @@ if (!KEY) {
   );
   process.exit(1);
 }
-const MODEL = process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini";
+const MODEL = process.env.OPENROUTER_MODEL ?? "openai/gpt-6-luna";
 const N = Number(process.env.CHAT_GEN_SCENARIOS ?? 6);
 const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 

@@ -2,7 +2,7 @@
  * Billed OpenRouter migration baseline.
  *
  * Run explicitly with an ephemeral environment credential:
- *   OPENROUTER_API_KEY=... OPENROUTER_MODEL=openai/gpt-5.6-luna \
+ *   OPENROUTER_API_KEY=... OPENROUTER_MODEL=openai/gpt-6-luna \
  *     pnpm eval:narrative:live
  *
  * This exercises the current production legacy Prompt/Parser. It records a
@@ -75,7 +75,7 @@ describeLive("Chronicle legacy OpenRouter baseline", () => {
     "measures isolated Human Gold cases once and writes credential-free replay artifacts",
     async () => {
       const cases = await loadCases();
-      const model = process.env.OPENROUTER_MODEL ?? "openai/gpt-5.6-luna";
+      const model = process.env.OPENROUTER_MODEL ?? "openai/gpt-6-luna";
       const effort = reasoningEffort();
       const runId = `chronicle-legacy-${new Date()
         .toISOString()
