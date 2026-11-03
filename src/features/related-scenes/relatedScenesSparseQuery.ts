@@ -43,10 +43,26 @@ export interface RelatedScenesSparseQueryArgs {
 export function buildRelatedScenesSparseQuery(
   args: RelatedScenesSparseQueryArgs,
 ): string {
-  const { tailQuery, body, docJson, language, codexTargets } = args;
+  const { tailQuery, body, language } = args;
   // recallParamsForLang と同じ述語。英語は従来の文字列のまま。
   if (language.startsWith("en")) return buildSparseQuery(tailQuery, body);
 
+  // 組立ては呼出し元で `fts_search` の Promise の外（同期）に評価される。ここで投げると sparse だけでなく
+  // 一覧全体が失敗するので、Codex の行が壊れていても（別名の JSON に文字列でない要素があるなど）
+  // 従来の query に戻す。
+  try {
+    return buildJapaneseSparseQuery(args) ?? buildSparseQuery(tailQuery, body);
+  } catch {
+    return buildSparseQuery(tailQuery, body);
+  }
+}
+
+/** 日本語の分岐。3 codepoint 以上の語が 1 つも残らなければ null。 */
+function buildJapaneseSparseQuery({
+  body,
+  docJson,
+  codexTargets,
+}: RelatedScenesSparseQueryArgs): string | null {
   const matchText = docJsonToMatchText(docJson) ?? body;
   const candidates = [
     ...mentionedCodexTerms(matchText, codexTargets),
@@ -54,17 +70,19 @@ export function buildRelatedScenesSparseQuery(
   ];
 
   const terms: string[] = [];
+  // FTS5 の trigram は既定で大文字小文字を区別しないので、重複も区別せずに除く（枠を無駄に使わない）。
   const seen = new Set<string>();
   for (const candidate of candidates) {
     for (const token of tokenizeFtsQuery(candidate)) {
       if (codepointLength(token) < SPARSE_MIN_TERM_CODEPOINTS) continue;
-      if (seen.has(token)) continue;
-      seen.add(token);
+      const key = token.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
       terms.push(token);
       if (terms.length >= SPARSE_MAX_TERMS) return terms.join(" ");
     }
   }
-  return terms.length > 0 ? terms.join(" ") : buildSparseQuery(tailQuery, body);
+  return terms.length > 0 ? terms.join(" ") : null;
 }
 
 /**

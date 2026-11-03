@@ -169,7 +169,7 @@ describe("fetchRelatedPastScenes — sparse の query", () => {
     expect(mockSearch.mock.calls[0][0].query).toBe(tailOf(rubyDoc));
   });
 
-  it("日本語で Codex が空・3 字以上の語も無いときは従来の query で 1 回呼ぶ", async () => {
+  it("日本語で Codex が空ならカタカナの seed だけ、3 字以上の語も無ければ従来の query で、どちらも 1 回呼ぶ", async () => {
     await fetchRelatedPastScenes("B");
     expect(mockSparse).toHaveBeenCalledOnce();
     // 既定の本文「本文テキスト本文テキスト」はカタカナ「テキスト」が残るので、それだけになる。

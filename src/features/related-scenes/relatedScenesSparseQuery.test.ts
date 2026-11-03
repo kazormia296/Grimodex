@@ -340,3 +340,37 @@ describe("buildRelatedScenesSparseQuery: matcher の使い回し", () => {
     expect(build(docJson, targets).query).toBe("長谷部");
   });
 });
+
+describe("buildRelatedScenesSparseQuery：壊れた Codex の行と境界", () => {
+  it("別名の JSON に文字列でない要素があっても投げず、従来の query に戻す", () => {
+    const docJson = docText("千尋は藤原千尋の妹に会った。アリアナもいた。");
+    const broken: CodexMatchTarget = {
+      ...entry("e1", "藤原千尋"),
+      aliases: '["千尋", 1]',
+    };
+    const { body, query } = build(docJson, [broken]);
+    expect(query).toBe(buildSparseQuery(TAIL, body));
+  });
+
+  it("除外の別名の JSON に文字列でない要素があっても投げず、従来の query に戻す", () => {
+    const docJson = docText("長谷部が来た。");
+    const broken: CodexMatchTarget = {
+      ...entry("e1", "長谷部"),
+      excludedAliases: "[{}]",
+    };
+    const { body, query } = build(docJson, [broken]);
+    expect(query).toBe(buildSparseQuery(TAIL, body));
+  });
+
+  it("大文字小文字だけが違う語は 1 回だけ出す（trigram は大小を区別しない）", () => {
+    const docJson = docText("Aria arrived. ARIA said nothing.");
+    const { query } = build(docJson, [entry("e1", "Aria")]);
+    expect(query).toBe("Aria");
+  });
+
+  it("段落の境目でカタカナの列はつながらない", () => {
+    const docJson = docText("アリア", "セレネス");
+    const { query } = build(docJson);
+    expect(query.split(" ").sort()).toEqual(["アリア", "セレネス"]);
+  });
+});
