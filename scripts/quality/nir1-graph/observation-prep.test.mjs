@@ -168,21 +168,108 @@ function rootWithPrep(prep) {
   return root;
 }
 
-// S2 追補 #12 の独立レビューの P3-2: the names follow the current state (the
-// body is unchanged): S4b''' 60bf9dc4 revoked (0d456ee2), the draft awaits
-// the fifth re-freeze's S4b''''.
-test("the committed observation-prep files validate (draft: S4b''' 60bf9dc4 revoked, awaiting the fifth re-freeze's S4b'''')", async () => {
-  // DR-CP4-S4-7: the revocation commit deletes S4b'''s freeze record and puts
-  // S2 back to its draft (the bytes before S4b'', 6cb7e05c); S4b''' fills it
-  // again (DR-CP4-S4-5 and S4-6 did the same for the old S4b and S4b').
+// S2 追補 #12 の独立レビューの P3-2: the names follow the current state:
+// S4b''' 60bf9dc4 was revoked (0d456ee2) and the fifth re-freeze's S4b''''
+// fills S2 again (DR-CP4-S4-8; S4-5〜S4-7 did the same for the old S4b〜S4b''').
+test("the committed observation-prep files validate (frozen again by the fifth re-freeze's S4b'''')", async () => {
   const result = await validateNir1ObservationPrep({ repoRoot });
   assert.deepEqual(result.errors, []);
   assert.equal(result.status, "passed");
-  assert.equal(result.formalReady, false);
-  assert.equal(result.placeholders.length, 20);
+  assert.equal(result.formalReady, true);
+  assert.deepEqual(result.placeholders, []);
+  // S4 の最終関門の P2-1、DR-CP4-Q-2: the frozen S2's review states the facts
+  // (the notification record at bf5b3799, K's attribution, the pair limit).
+  // DR-CP4-S4-5／S4-6: and the earlier re-freezes. DR-CP4-S4-7: and the fourth
+  // (the old S4b'', G-04 v2, the independent reviews, the retaken records and
+  // the K6/4 :317 order deviation). DR-CP4-S4-8: and the fifth (the old
+  // S4b''' and its revocation, v3 frozen on its code review, the user's
+  // approval and re-approval of the order deviation, the pre-S4b'''' review's
+  // P2-2 (K2/4 :418) and P3-1 (the declaration addendum's :198)).
   const prep = await json(OBSERVATION_PREP_FILES.prep);
-  assert.equal(prep.review, null);
-  assert.equal(prep.status, "draft-awaiting-s3-review-and-s4-freeze");
+  for (const word of [
+    "docs/plans/nir1-cp4-records/user-notification-2026-10-30.md",
+    "bf5b3799f9a8220d43f15e3479ad15e66b8c8928",
+    "確認ではなく",
+    "integrator が #757（DR-CP4-Q-1）",
+    "#759（DR-CP4-Q-2）",
+    "組の最少 24 を満たす",
+    "DR-CP4-S4-5",
+    "b7d7495034ee693e82b9a6e55bbcbfd433215012",
+    "sp-p4-1",
+    "parity-1",
+    "user-confirmation-2026-10-31-refreeze.md",
+    "DR-CP4-S4-6",
+    "9f52e7da37b84603424d0b7e6ecee8e019d1c7c9",
+    "sp-p4-s5r3-1",
+    "trace-editing-s5r3-1",
+    "user-confirmation-2026-10-31-trace-refreeze.md",
+    "8913f127",
+    "68180464",
+    "DR-CP4-S4-7",
+    "557e683ccd884955e220f21bd15119f115995d29",
+    "user-confirmation-2026-11-01-g04-v2c-build.md",
+    "integrator の読み",
+    "独立期待値レビュー（8857f618",
+    "規則文の意味の独立期待値レビュー（12a738ac",
+    "B1 の独立コードレビュー（f2ebdd98）",
+    "e42e99900f80a3e10f58702f6eaa884e3e478649",
+    "K6/4 :317",
+    "ユーザーの異議があれば止める",
+    "S4b''' を S3 が見た記録は無い",
+    "DR-CP4-S4-8",
+    "60bf9dc44a5f751551a9ce0195abb87f5c97543d",
+    "0d456ee2",
+    "383133bb",
+    "565a1115",
+    "ac7e1059",
+    "bfc5a609",
+    "0423cfe0",
+    "user-confirmation-2026-11-03-s4-5th-design.md",
+    ":418",
+    "a1fd9f64",
+    ":198",
+    "665abc0f",
+    "ac2e93d6",
+    "S4b'''' を S3 が見た記録は無い",
+  ])
+    assert.ok(prep.review.conditions.includes(word), word);
+  assert.ok(!prep.review.conditions.includes("S4b の時点で repo に無い"));
+  for (const word of ["665abc0f", "ac2e93d6", "c7f02c7e", "55861126"])
+    assert.ok(prep.review.userConfirmationsScope.includes(word), word);
+  // S4b'''': the SP-N record retaken on the fifth re-freeze's candidate
+  // (contracts 8edd6496, candidate ddccf426) and the R5 check of 56d4ec54
+  // kept (the user re-approved its order deviation in ac2e93d6).
+  for (const word of [
+    "8edd649625d317fdbcb593c0a94a5e48e9c7d3aa",
+    "5d72cefea1fa98d80253f199e2f8878d10306a742e8cb1e79e05a6df98f00735",
+    "ddccf4268d577271331afdb71fe7d3bff1ef7fd3",
+    "19adb6a03b0391b2528209c348d734dc65d2e388",
+    "DR-CP4-S4-8",
+  ])
+    assert.ok(prep.r5Gate.syntheticDetection.record.includes(word), word);
+  for (const old of ["2d33e6a8", "20ccd115"])
+    assert.ok(
+      !prep.r5Gate.syntheticDetection.record.startsWith(
+        `docs/plans/nir1-cp4-records/sp-synthetic-detection-record.md（commit ${old}`,
+      ),
+      old,
+    );
+  for (const word of [
+    "56d4ec54ae576665ce5561698fca59881926d2e8",
+    "r5-check-r5-1102",
+    "fa04baa444163b89d76beae467120366c5da55ca8e77a827eb597b06ad601f90",
+    "8fb525ed-be32-4df4-8f92-1bffba4ca24d",
+    "179139b4926a6ef249da78b56e581c2fd7c083de",
+    "665abc0f",
+    "ac2e93d6",
+  ])
+    assert.ok(prep.r5Gate.r5CheckRecord.includes(word), word);
+  assert.ok(!prep.r5Gate.r5CheckRecord.includes("事前に確認していない"));
+  assert.ok(
+    prep.r5Gate.r5CheckRecord.startsWith(
+      "docs/plans/nir1-cp4-records/r5-check-r5-1102/",
+    ),
+  );
 });
 
 test("the draft copy of the committed S2 validates as a draft (S4 tokens, not formal)", async () => {
@@ -213,11 +300,15 @@ test("a draft with placeholders is never usable for a formal run", async () => {
   }
 });
 
-test("DR-CP4-S4-7／S4-8: the committed draft (S4b''' revoked, awaiting S4b'''') is refused by the formal gate at HEAD", async () => {
-  await assert.rejects(
-    assertObservationPrepFormal({ repoRoot }),
-    /\[precheck\].*(placeholder|draft)/u,
-  );
+test("DR-CP4-S4-8 S4b'''': the committed frozen record passes the formal gate at HEAD (git)", async (t) => {
+  const ctx = await context();
+  if (!ctx.sourcePinGit) {
+    t.skip("shallow clone: the commits are checked by the formal gate");
+    return;
+  }
+  assert.deepEqual(await assertObservationPrepFormal({ repoRoot }), {
+    proceed: true,
+  });
 });
 
 test("setup addendum: the K2/4 table row for G-01 and the fixture digests", async () => {
@@ -5724,9 +5815,9 @@ test("S2 追補 #11（DR-CP4-P-7）: S2 binds G-04 v2 (freeze.v2, the three new 
 
 // S2 追補 #12（DR-CP4-P-8）: S2 names the setup addendum v3 at every leaf the
 // current version is bound or read through, keeps v2 only where it records
-// S2 追補 #11's binding, discloses (h), and stays a draft (S4b'''' fills the
-// placeholders).
-test("S2 追補 #12（DR-CP4-P-8）: S2 binds the setup addendum v3, the two pins of the fifth re-freeze and (h), and is still a draft", async () => {
+// S2 追補 #11's binding, and discloses (h). S4b'''' (DR-CP4-S4-8) filled the
+// placeholders: boundFiles[0] holds v3's commit and sha256, not v2's.
+test("S2 追補 #12（DR-CP4-P-8）: S2 binds the setup addendum v3, the two pins of the fifth re-freeze and (h); S4b'''' filled boundFiles[0] with v3's bytes", async () => {
   const ctx = await context();
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   const check = (copy) => observationPrepErrors(copy, ctx);
@@ -5746,10 +5837,6 @@ test("S2 追補 #12（DR-CP4-P-8）: S2 binds the setup addendum v3, the two pin
   assert.ok(
     !prep.runnerHandoff[20].includes("v1 と同じ afterMutationReadings"),
   );
-  const fill = prep.placeholders.find(
-    (row) => row.token === "S4:setup-addendum-commit",
-  ).fill;
-  assert.ok(fill.includes("setup-addendum.v3.json"), fill);
   for (const row of prep.placeholders)
     assert.ok(!/setup-addendum\.v2\.json/u.test(row.fill), row.token);
   // v2 のまま残す葉は追補 #11 の束縛の記録（g04RevisionReadings.rule）だけで、
@@ -5806,11 +5893,17 @@ test("S2 追補 #12（DR-CP4-P-8）: S2 binds the setup addendum v3, the two pin
     assert.ok(prep.setupReadings.source.pinRule.includes(word), word);
   assert.ok(prep.setupReadings.source.decisions.includes("DR-CP4-P-8"));
   assert.ok(prep.setupReadings.status.includes("追補 #12"));
-  // S2 はまだ draft（S4b'''' が placeholder を埋める）。
-  assert.equal(prep.status, "draft-awaiting-s3-review-and-s4-freeze");
-  assert.equal(prep.placeholders.length, 20);
-  assert.equal(prep.boundFiles[0].commit, "S4:setup-addendum-commit");
-  assert.equal(prep.boundFiles[0].sha256, "S4:setup-addendum-sha256");
+  // S4b'''' が placeholder を埋めた（v3 の bytes。v2 の fd6b0c3c… ではない）。
+  assert.equal(prep.status, "frozen-before-observation");
+  assert.deepEqual(prep.placeholders, []);
+  assert.equal(
+    prep.boundFiles[0].commit,
+    "ac7e1059a8c9c6bd295f9771087e70c3922d3e0e",
+  );
+  assert.equal(
+    prep.boundFiles[0].sha256,
+    "dd1fb8721e5cf084025e22e4912912c5da7685074380cc14d9d824ff57a8082c",
+  );
   // 変異: setup の葉を v2 に戻す（d1、診断の run、boundFiles）。
   detects(prep, check, (p) => (p.d1.addenda[0] = V2), /d1\.addenda must be/u);
   detects(
