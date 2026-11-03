@@ -22,6 +22,12 @@ import {
 } from "@/features/narrative-extraction/reconciler/stageExecution";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
 import { digestStableJson } from "@/features/narrative-extraction/source/digest";
+import { CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_VERSION } from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
+import { checkHypothesisActuality } from "@/features/chronicle/extraction/hypothesisActualityGate";
+import {
+  contractFollowingSynthesisResponse,
+  promptText,
+} from "./eventSynthesisContractResponder.testSupport";
 
 const blockPolicyMock = vi.hoisted(() => vi.fn(() => false));
 const blockLicenseMock = vi.hoisted(() => vi.fn(() => false));
@@ -838,8 +844,9 @@ describe("structured repair root-object contract", () => {
   );
 
   it("keeps repaired event output at the caller's root schema", async () => {
-    const expectedShape =
-      '{"clusterRef":"cluster-1","resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}';
+    const expectedShape = `{"clusterRef":"cluster-1","resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}
+events[].actuality は "actual"、"attempted"、"prevented"、"rumored" のいずれかです。それ以外の actuality の event は、4 種類のどれかへ書き換えず events から除いてください。
+events が空になる場合: {"clusterRef":"cluster-1","resolution":"unresolved","events":[]}`;
     const repair = captureRepairSend(repairedEvents);
     const parentStage = createStageExecutionContext({
       projectId: "project-test",
@@ -1226,6 +1233,252 @@ describe("structured repair root-object contract", () => {
     expect(stageAudit).toMatchObject({
       rawObservationsDigest,
       parsedOutputDigest,
+    });
+  });
+});
+
+describe("event synthesis actuality contract (component contract 3)", () => {
+  const hypotheticalObservation: RawChronicleEventObservation = {
+    localId: "obs-h",
+    evidence: [
+      {
+        sourceRef: "S0001",
+        quote: "もし西の堤防が切れれば、下町は水に沈むだろう",
+      },
+    ],
+    assertion: {
+      attribution: "character:技師",
+      narrativeFrame: "hypothetical",
+    },
+    payload: {
+      predicate: "下町が水に沈む",
+      actuality: "hypothetical",
+      participants: [],
+      temporalExpressions: [],
+      durationKind: "unknown",
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    blockPolicyMock.mockReturnValue(false);
+    blockLicenseMock.mockReturnValue(false);
+  });
+
+  function contractSend(
+    observations: readonly RawChronicleEventObservation[],
+    prompts: string[],
+  ): EventSynthesisSend {
+    return async (messages) => {
+      const prompt = promptText(messages);
+      prompts.push(prompt);
+      return {
+        text: contractFollowingSynthesisResponse({
+          prompt,
+          clusterRef: "cluster-h",
+          observations,
+        }),
+        ...usage,
+      };
+    };
+  }
+
+  function contractRepairSend(
+    observations: readonly RawChronicleEventObservation[],
+    prompts: string[],
+  ): StructuredRepairSend {
+    return async (messages) => {
+      const prompt = promptText(messages);
+      prompts.push(prompt);
+      return {
+        text: contractFollowingSynthesisResponse({
+          prompt,
+          clusterRef: "cluster-h",
+          observations,
+        }),
+        ...usage,
+      };
+    };
+  }
+
+  it("lists only the four Chronicle actualities and gives the unresolved empty exit", async () => {
+    const prompts: string[] = [];
+    await runEventSynthesisTask({
+      clusterRef: "cluster-h",
+      observations: [hypotheticalObservation],
+      projectId: "project-test",
+      send: contractSend([hypotheticalObservation], prompts),
+      repairOnFailure: false,
+    });
+
+    expect(CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_VERSION).toBe("3");
+    const prompt = prompts[0] ?? "";
+    expect(prompt).toContain(
+      'events[].actuality に使えるのは "actual"、"attempted"、"prevented"、"rumored" の 4 種類だけです。',
+    );
+    expect(prompt).toContain("4 種類のどれかへ書き換えず");
+    expect(prompt).toContain('"unknown"');
+    expect(prompt).toContain(
+      '{"clusterRef":"<event-cluster-ref-from-context>","resolution":"unresolved","events":[]}',
+    );
+  });
+
+  it("returns a root-success unresolved terminal for a hypothetical-only cluster", async () => {
+    const prompts: string[] = [];
+    const repairPrompts: string[] = [];
+    const terminalOutputs: ChronicleSynthesisTerminalOutput[] = [];
+    const result = await runEventSynthesisTask({
+      clusterRef: "cluster-h",
+      observations: [hypotheticalObservation],
+      projectId: "project-test",
+      stageExecution: createEventStageExecution({
+        projectId: "project-test",
+        runId: "run-hypothetical",
+        taskId: "task-hypothetical",
+        attemptId: "attempt-hypothetical",
+        stageExecutionId: "event-hypothetical",
+      }),
+      send: contractSend([hypotheticalObservation], prompts),
+      repairSend: contractRepairSend([hypotheticalObservation], repairPrompts),
+      createStageExecutionId: () => "repair-hypothetical",
+      onTerminalOutput: (output) => {
+        terminalOutputs.push(output);
+      },
+    });
+
+    expect(result).toEqual([]);
+    expect(repairPrompts).toEqual([]);
+    expect(terminalOutputs).toHaveLength(1);
+    expect(terminalOutputs[0]).toMatchObject({
+      disposition: "root-success",
+      clusterRef: "cluster-h",
+      hypotheses: [],
+      eventOutput: {
+        clusterRef: "cluster-h",
+        resolution: "unresolved",
+        events: [],
+      },
+    });
+  });
+
+  it("repairs a hypothetical event into the unresolved empty terminal without promoting it", async () => {
+    const repairPrompts: string[] = [];
+    const terminalOutputs: ChronicleSynthesisTerminalOutput[] = [];
+    const result = await runEventSynthesisTask({
+      clusterRef: "cluster-h",
+      observations: [hypotheticalObservation],
+      projectId: "project-test",
+      stageExecution: createEventStageExecution({
+        projectId: "project-test",
+        runId: "run-hypothetical-repair",
+        taskId: "task-hypothetical-repair",
+        attemptId: "attempt-hypothetical-repair",
+        stageExecutionId: "event-hypothetical-repair",
+      }),
+      // The root ignores the contract and echoes the hypothetical actuality.
+      send: async () => ({
+        text: JSON.stringify({
+          clusterRef: "cluster-h",
+          resolution: "single-event",
+          events: [
+            {
+              observationRefs: ["obs-h"],
+              titleSuggestion: "下町が水に沈む",
+              summary: "下町が水に沈む",
+              actuality: "hypothetical",
+              significance: "major",
+            },
+          ],
+        }),
+        ...usage,
+      }),
+      repairSend: contractRepairSend([hypotheticalObservation], repairPrompts),
+      createStageExecutionId: () => "repair-hypothetical-child",
+      onTerminalOutput: (output) => {
+        terminalOutputs.push(output);
+      },
+    });
+
+    expect(result).toEqual([]);
+    expect(repairPrompts).toHaveLength(1);
+    expect(repairPrompts[0]).toContain(
+      '{"clusterRef":"cluster-h","resolution":"unresolved","events":[]}',
+    );
+    expect(repairPrompts[0]).toContain(
+      '"actual"、"attempted"、"prevented"、"rumored"',
+    );
+    expect(terminalOutputs).toHaveLength(1);
+    expect(terminalOutputs[0]).toMatchObject({
+      disposition: "repair-success",
+      hypotheses: [],
+      eventOutput: { resolution: "unresolved", events: [] },
+    });
+  });
+
+  it("builds a mixed cluster event only from the Chronicle-actuality observations", async () => {
+    const mixed = [observation, hypotheticalObservation];
+    const prompts: string[] = [];
+    const terminalOutputs: ChronicleSynthesisTerminalOutput[] = [];
+    const result = await runEventSynthesisTask({
+      clusterRef: "cluster-h",
+      observations: mixed,
+      projectId: "project-test",
+      stageExecution: createEventStageExecution({
+        projectId: "project-test",
+        runId: "run-mixed",
+        taskId: "task-mixed",
+        attemptId: "attempt-mixed",
+        stageExecutionId: "event-mixed",
+      }),
+      send: contractSend(mixed, prompts),
+      repairOnFailure: false,
+      onTerminalOutput: (output) => {
+        terminalOutputs.push(output);
+      },
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      observationRefs: ["obs-1"],
+      actuality: "actual",
+    });
+    expect(checkHypothesisActuality(result[0]!, mixed)).toEqual({ ok: true });
+    expect(terminalOutputs[0]).toMatchObject({
+      disposition: "root-success",
+      eventOutput: { resolution: "single-event" },
+    });
+  });
+
+  it("leaves a promoted hypothetical event to the actuality gate, which rejects it", async () => {
+    const result = await runEventSynthesisTask({
+      clusterRef: "cluster-h",
+      observations: [hypotheticalObservation],
+      projectId: "project-test",
+      send: async () => ({
+        text: JSON.stringify({
+          clusterRef: "cluster-h",
+          resolution: "single-event",
+          events: [
+            {
+              observationRefs: ["obs-h"],
+              titleSuggestion: "下町が水に沈む",
+              summary: "下町が水に沈む",
+              actuality: "actual",
+              significance: "major",
+            },
+          ],
+        }),
+        ...usage,
+      }),
+      repairOnFailure: false,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(
+      checkHypothesisActuality(result[0]!, [hypotheticalObservation]),
+    ).toEqual({
+      ok: false,
+      reason: "hypothesis-observation-actuality-mismatch",
     });
   });
 });
