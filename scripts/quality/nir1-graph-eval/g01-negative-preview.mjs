@@ -188,7 +188,7 @@ async function main() {
       await openWorkspace(session.page, workspacePath, ids);
       return current;
     };
-    const reopenAfterWrites = async (before) => {
+    const reopenAfterWrites = async (before, mutationFeedHead = null) => {
       const reopened = await reopenUntilSealed({
         closeCurrent: stopCurrent,
         openSession: async ({ dirLabel }) => {
@@ -201,6 +201,7 @@ async function main() {
         // DR-CP4-S4-8 (1): N4 の宣言の前の保存は本文だけの保存の地点。
         allowUnchanged: true,
         readFreshness,
+        mutationFeedHead,
         buildChronicle: async (session) =>
           buildIndex(session.session.page, ids).then(
             (value) => ({ ok: true, ...value }),
@@ -239,7 +240,12 @@ async function main() {
     let blocked = before.blocked;
     // N4's saves before the declaration: B is sealed again first.
     if (!blocked && before.prepared?.kind === "draft-then-original") {
-      const reopened = await reopenAfterWrites(indexBeforeWrites);
+      // レビュー P2-2: 保存の直後（Main を止める前）の feed（開示用）。
+      report.beforeDeclarationFeedAfterSaves = readFreshness();
+      const reopened = await reopenAfterWrites(
+        indexBeforeWrites,
+        report.beforeDeclarationFeedAfterSaves?.head ?? null,
+      );
       report.beforeDeclarationSealAttempts = reopened.sealAttempts;
       if (!reopened.ok) blocked = { reason: "b-seal-not-published" };
       else

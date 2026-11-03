@@ -287,6 +287,8 @@ test("O-16: 宣言の後は対照・mutation・Main の開き直し（新しい�
     assert.equal(run.state.control.status, "reached");
     assert.equal(run.state.step.spP1Recheck.status, "match");
     assert.equal(run.state.step.sealAttempts[0].outcome, "sealed");
+    // レビュー P3-7: 世代 4→5 の封印は A-1（新しい世代）で通った。
+    assert.equal(run.state.step.sealAttempts[0].sealBranch, "new-generation");
     assert.ok(
       events.indexOf("s0:graphProbe") < events.indexOf("s0:resaveBody"),
     );
@@ -395,6 +397,9 @@ test("DR-CP4-S4-8: N2 の mutation と N4 の宣言の前の保存は、workspac
     );
     // 測定点は mutation の前と同じ世代。
     assert.equal(n2.measurementProbe({}).bGeneration, 4);
+    // レビュー P2-2: mutation の直後の feed の head と、静止がそれを含んだか。
+    assert.equal(n2.state.step.feedAfterMutation.head, 1);
+    assert.equal(sealed.settleCoversMutation, true);
     const n4 = createG01NegativeRun({ id: "K24-G01-N4", target: TARGET });
     const session = await n4.beforeDeclaration({
       page: first.page,
@@ -410,6 +415,11 @@ test("DR-CP4-S4-8: N2 の mutation と N4 の宣言の前の保存は、workspac
         row.sealBranch,
       ]),
       [["sealed", "unchanged"]],
+    );
+    assert.equal(n4.state.beforeDeclarationFeedAfterSaves.head, 1);
+    assert.equal(
+      n4.state.beforeDeclarationSealAttempts[0].settleCoversMutation,
+      true,
     );
   } finally {
     rmSync(ws.dir, { recursive: true, force: true });

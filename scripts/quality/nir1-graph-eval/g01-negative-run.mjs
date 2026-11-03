@@ -91,6 +91,8 @@ export function createG01NegativeRun({ id, root, target = null }) {
     target: goal,
     before: null,
     beforeDeclarationSealAttempts: null,
+    // レビュー P2-2: N4 の宣言の前の保存の直後（Main を止める前）の feed。
+    beforeDeclarationFeedAfterSaves: null,
     control: null,
     step: null,
     graphTries: [],
@@ -111,6 +113,7 @@ export function createG01NegativeRun({ id, root, target = null }) {
     label,
     before,
     allowUnchanged = false,
+    mutationFeedHead = null,
   }) => {
     const readIndex = () => readIndexMetadata(proc.dbPath, ids.projectId);
     let current = proc.session;
@@ -138,6 +141,7 @@ export function createG01NegativeRun({ id, root, target = null }) {
       label,
       allowUnchanged,
       readFreshness: freshnessReader(proc, ids),
+      mutationFeedHead,
     });
     return reopened;
   };
@@ -157,7 +161,9 @@ export function createG01NegativeRun({ id, root, target = null }) {
       if (state.before.prepared?.kind !== "draft-then-original") return null;
       // N4's saves: B (and the Chronicle Index) sealed again before the
       // declaration, by reopening the Main. DR-CP4-S4-8 (1): 本文だけの保存の
-      // 地点（静止を待てれば世代不変の分岐も通す）。
+      // 地点（静止を待てれば世代不変の分岐も通す）。レビュー P2-2: 保存の
+      // 直後の feed を開示用に残す（規則にしない）。
+      state.beforeDeclarationFeedAfterSaves = freshnessReader(proc, ids)();
       const reopened = await reopen({
         proc,
         ids,
@@ -166,6 +172,7 @@ export function createG01NegativeRun({ id, root, target = null }) {
         label: "before-declaration",
         before: indexBefore,
         allowUnchanged: true,
+        mutationFeedHead: state.beforeDeclarationFeedAfterSaves?.head ?? null,
       });
       state.beforeDeclarationSealAttempts = reopened.sealAttempts;
       if (!reopened.ok)
@@ -322,6 +329,7 @@ export function createG01NegativeRun({ id, root, target = null }) {
         step: state.step ? { ...state.step, session: undefined } : null,
         beforeDeclaration: state.before,
         beforeDeclarationSealAttempts: state.beforeDeclarationSealAttempts,
+        beforeDeclarationFeedAfterSaves: state.beforeDeclarationFeedAfterSaves,
         graphTries: state.graphTries,
       };
     },

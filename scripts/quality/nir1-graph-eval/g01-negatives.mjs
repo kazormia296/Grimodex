@@ -128,7 +128,7 @@ export async function prepareG01NegativeBeforeDeclaration({
 
 /**
  * DR-CP4-S4-8 (1)(A-2): B は mutation の前と同じ世代のまま dirty でない。
- * 前の B があり（`previous >= 1`）、世代が等しく（上がっても下がっても外れる）、
+ * 前の B があって dirty でなく（`previous >= 1`）、世代が等しく（上がっても下がっても外れる）、
  * producer が同じで、`sourceDigest`／`dependencySetDigest` も前と同じこと。
  * digest と producer の照合は「同じ世代の行が mutation の前後で書き換わって
  * いない」ことの検査でしかない（build のときに書いた行の読み戻しなので、作り
@@ -143,6 +143,7 @@ export function bSealUnchanged(metadata, before) {
   return (
     Number.isInteger(previous) &&
     previous >= 1 &&
+    prior.dirty === false &&
     Number(row.generation) === previous &&
     row.dirty === false &&
     (row.producerId ?? null) === (prior.producerId ?? null) &&
@@ -170,10 +171,12 @@ export function g01SealBranch(
 }
 
 /**
- * The wait after the mutation (the setup's `b-seal` rule): a B generation
- * newer than the one before the mutation and not dirty, within `limitMs`
- * (B_SEAL_WAIT_MS). The Chronicle Index is built after it through the query
- * route, as the setup's `chronicle-index` step (`reopenUntilSealed`).
+ * The wait after the mutation, within `limitMs` (B_SEAL_WAIT_MS) per
+ * opening: by default the setup's `b-seal` rule only (A-1: a B generation
+ * newer than the one before the mutation and not dirty); A-2 only where the
+ * paragraph below allows it. The Chronicle Index is built after it through
+ * the query route, as the setup's `chronicle-index` step
+ * (`reopenUntilSealed`).
  *
  * DR-CP4-S4-8 (1): 本文だけの保存の地点（`allowUnchanged`）で、feed を読む関数
  * `readFreshness` が注入されているときだけ、先に Freshness の静止を既存の
@@ -440,10 +443,26 @@ export async function runG01NegativeControl({
 }
 
 /**
+ * レビュー P2-2（開示用の記録。規則にしない）: 静止した時の acknowledged が
+ * mutation の直後の feed の head 以上だったか。head が無い（feed の読取りが
+ * 注入されていない）、または静止しなかった・待たなかったときは null。
+ */
+export function settleCoversMutation(freshnessSettle, mutationFeedHead) {
+  if (!Number.isInteger(mutationFeedHead)) return null;
+  if (freshnessSettle?.settled !== true) return null;
+  const acknowledged = freshnessSettle.final?.acknowledged;
+  return Number.isInteger(acknowledged)
+    ? acknowledged >= mutationFeedHead
+    : null;
+}
+
+/**
  * DR-CP4-O-3 (7): after the mutation the measurement Main is closed and
  * reopened on the same workspace with the B-ROUTE seam (its wake runs the
  * gated B build), at most 1 + B_SEAL_REOPENS openings (the setup's seal
- * session rule), each waiting B_SEAL_WAIT_MS for a new sealed generation.
+ * session rule), each waiting at most B_SEAL_WAIT_MS for B by the rule of
+ * the point (`waitG01NegativeSealed`: A-1 everywhere, A-2 only at a
+ * body-only save point after the Freshness settled).
  * `openSession({ attempt, dirLabel })` returns a session with `close()`;
  * the records have the setup receipt's `sealAttempts` fields.
  *
@@ -453,7 +472,10 @@ export async function runG01NegativeControl({
  * `readFreshnessFeed(dbPath, projectId)` を包んで注入する）。各 entry の
  * `outcome` の語は変えず、通った分岐を `sealBranch`（`"new-generation"`／
  * `"unchanged"`、通らなければ null）に、静止の待ちの記録を `freshnessSettle`
- * に残す。
+ * に残す。レビュー P2-2: `mutationFeedHead`（mutation の直後、前の Main を
+ * 止める前に読んだ feed の head）があれば、各 entry の `settleCoversMutation`
+ * に「静止した時の acknowledged がその head 以上だったか」を残す（開示用の
+ * 記録だけで、封印の規則にはしない）。
  */
 export async function reopenUntilSealed({
   closeCurrent,
@@ -466,6 +488,7 @@ export async function reopenUntilSealed({
   label = "measure",
   allowUnchanged = false,
   readFreshness = null,
+  mutationFeedHead = null,
 }) {
   await closeCurrent();
   const sealAttempts = [];
@@ -488,6 +511,10 @@ export async function reopenUntilSealed({
       metadata: sealed.metadata ?? null,
       sealBranch: sealed.ok ? (sealed.branch ?? null) : null,
       freshnessSettle: sealed.freshnessSettle ?? null,
+      settleCoversMutation: settleCoversMutation(
+        sealed.freshnessSettle,
+        mutationFeedHead,
+      ),
     });
     if (sealed.ok) {
       // The setup's chronicle-index step: the Index through the query route
@@ -618,20 +645,28 @@ export async function runG01NegativeStep({
   }
   // DR-CP4-S4-8 (1): N2 の mutation（同じ本文の再保存）は本文だけの保存の
   // 地点、N3／N4 の restore は restore の地点（A-1 だけ）。
+  const bodyOnly = spec.mutation === "resave-same-body";
+  // レビュー P2-2: 本文だけの保存の地点の mutation の直後（前の Main を止める
+  // 前）の feed の状態。開示用の記録だけで、規則にしない（注入が無い・restore
+  // の地点なら null。restore の地点は今のまま feed を読まない）。
+  const feedAfterMutation =
+    bodyOnly && typeof readFreshness === "function" ? readFreshness() : null;
   const reopened = await reopen({
     closeCurrent,
     openSession,
     readIndex,
     before: indexBefore,
     buildChronicle,
-    allowUnchanged: spec.mutation === "resave-same-body",
+    allowUnchanged: bodyOnly,
     readFreshness,
+    mutationFeedHead: feedAfterMutation?.head ?? null,
   });
   if (!reopened.ok)
     return {
       id,
       mutation,
       indexBefore,
+      feedAfterMutation,
       sealAttempts: reopened.sealAttempts,
       session: reopened.session ?? null,
       blocked: {
@@ -644,6 +679,7 @@ export async function runG01NegativeStep({
     id,
     mutation,
     indexBefore,
+    feedAfterMutation,
     sealAttempts: reopened.sealAttempts,
     session: reopened.session,
     spP1Recheck,

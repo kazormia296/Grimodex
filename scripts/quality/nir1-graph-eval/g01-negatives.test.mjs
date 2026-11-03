@@ -12,6 +12,7 @@ import {
   assertG01RetryFixed,
   bSealUnchanged,
   g01SealBranch,
+  settleCoversMutation,
   G01_CONTROL_GAP_MS,
   G01_GRAPH_READY_WAIT_MS,
   effectiveAnswerOf,
@@ -1290,6 +1291,8 @@ test("DR-CP4-S4-8 (1): 世代不変の分岐は previous が 0・前の B が無
       sealed(4),
       sealed(4, false, { dependencySetDigest: "x" }),
     ],
+    // レビュー P3-4: mutation の前の B が dirty なら current ではない。
+    ["prior dirty", sealed(4, true), sealed(4)],
   ];
   for (const [name, before, now] of cases)
     assert.equal(bSealUnchanged(now, before), false, name);
@@ -1301,6 +1304,7 @@ test("DR-CP4-S4-8 (1): 世代不変の分岐は previous が 0・前の B が無
     cases[6],
     cases[7],
     cases[9],
+    cases.at(-1),
   ]) {
     const clock = fakeClock();
     const result = await waitWith(clock, {
@@ -1372,4 +1376,131 @@ test("DR-CP4-S4-8 (1)(3): 世代不変で封印した後の Chronicle の build 
     unchanged.sealAttempts.map((row) => [row.outcome, row.sealBranch]),
     [["sealed", "unchanged"]],
   );
+});
+
+test("レビュー P3-1: 1 回の開きの総時間（静止の待ちを含む）は注入した時計で B_SEAL_WAIT_MS 以下", async () => {
+  const scenarios = [
+    // 静止しない（静止の待ちを上限まで使う）→ A-1 だけの待ちの残り。
+    ["pending", () => PENDING_FEED, true],
+    // 静止に時間がかかり、その後も B は通らない。
+    [
+      "slow-settle",
+      (() => {
+        let reads = 0;
+        return () => (++reads > 100 ? SETTLED_FEED : PENDING_FEED);
+      })(),
+      true,
+    ],
+    ["no-reader", null, true],
+    ["restore", () => SETTLED_FEED, false],
+  ];
+  for (const [name, readFreshness, allowUnchanged] of scenarios) {
+    const clock = fakeClock();
+    const started = clock.now();
+    const result = await waitWith(clock, {
+      readIndex: () => sealed(4, true),
+      before: sealed(4),
+      allowUnchanged,
+      readFreshness,
+    });
+    const elapsed = clock.now() - started;
+    assert.equal(result.ok, false, name);
+    assert.ok(elapsed <= B_SEAL_WAIT_MS, `${name}: ${elapsed}`);
+    assert.equal(result.waitedMs, elapsed, name);
+  }
+  // reopenUntilSealed の各回の開きも同じ上限（時計で開きの間を測る）。
+  const clock = fakeClock();
+  const marks = [];
+  const exhausted = await reopenUntilSealed({
+    closeCurrent: async () => {},
+    openSession: async () => {
+      marks.push(clock.now());
+      return { close: async () => marks.push(clock.now()) };
+    },
+    buildChronicle: async () => ({ ok: true }),
+    readIndex: () => sealed(4, true),
+    before: sealed(4),
+    allowUnchanged: true,
+    readFreshness: () => PENDING_FEED,
+    wait: (input) => waitWith(clock, input),
+  });
+  assert.equal(exhausted.sealAttempts.length, 1 + B_SEAL_REOPENS);
+  for (let at = 0; at < marks.length; at += 2)
+    assert.ok(marks[at + 1] - marks[at] <= B_SEAL_WAIT_MS, String(at));
+});
+
+test("レビュー P2-2: mutation の直後（前の Main を止める前）の feed の head を残し、静止した時の acknowledged がそれ以上だったかを各開きに残す（規則にはしない）", async () => {
+  const { page } = fakePage({
+    resaveBody: () => ({
+      ok: true,
+      value: {
+        before: { sha256: "o", version: 3 },
+        after: { sha256: "o", version: 4 },
+      },
+    }),
+  });
+  const events = [];
+  const feeds = [
+    { head: 5, acknowledged: 4, activeRun: false, reserved: false },
+    { head: 5, acknowledged: 5, activeRun: false, reserved: false },
+  ];
+  const clock = fakeClock();
+  const step = await runG01NegativeStep({
+    id: "K24-G01-N2",
+    page,
+    ids: IDS,
+    target: TARGET,
+    before: null,
+    readIndex: () => sealed(4),
+    readPins: () => pins([pin("e-orin")]),
+    readGraphInputs: () => ({}),
+    closeCurrent: async () => events.push("close-current"),
+    openSession: async () => ({ close: async () => {} }),
+    buildChronicle: async () => ({ ok: true }),
+    readFreshness: () => {
+      events.push("feed");
+      return feeds.length > 1 ? feeds.shift() : feeds[0];
+    },
+    reopen: (input) =>
+      reopenUntilSealed({ ...input, wait: (w) => waitWith(clock, w) }),
+  });
+  assert.equal(step.blocked, null);
+  assert.equal(step.feedAfterMutation.head, 5);
+  // 前の Main を止める前に読む。
+  assert.deepEqual(events.slice(0, 2), ["feed", "close-current"]);
+  assert.deepEqual(
+    step.sealAttempts.map((row) => [row.sealBranch, row.settleCoversMutation]),
+    [["unchanged", true]],
+  );
+  // 注入が無ければ記録は null（規則も今のまま A-1 だけ）。
+  const bare = await runG01NegativeStep({
+    id: "K24-G01-N2",
+    page,
+    ids: IDS,
+    target: TARGET,
+    before: null,
+    readIndex: () => sealed(4),
+    readPins: () => pins([pin("e-orin")]),
+    readGraphInputs: () => ({}),
+    closeCurrent: async () => {},
+    openSession: async () => ({ close: async () => {} }),
+    buildChronicle: async () => ({ ok: true }),
+    reopen: async (input) => ({
+      ok: true,
+      session: {},
+      sealAttempts: [{ outcome: "sealed", head: input.mutationFeedHead }],
+    }),
+  });
+  assert.equal(bare.feedAfterMutation, null);
+  assert.equal(bare.sealAttempts[0].head, null);
+  // 突き合わせの真偽（静止しなかった・head が無いときは null）。
+  const settled = (acknowledged) => ({
+    settled: true,
+    final: { acknowledged },
+  });
+  assert.equal(settleCoversMutation(settled(5), 5), true);
+  assert.equal(settleCoversMutation(settled(4), 5), false);
+  assert.equal(settleCoversMutation({ settled: false, final: {} }, 5), null);
+  assert.equal(settleCoversMutation(null, 5), null);
+  assert.equal(settleCoversMutation(settled(5), null), null);
 });
