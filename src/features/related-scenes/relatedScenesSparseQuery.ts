@@ -68,6 +68,26 @@ export function buildRelatedScenesSparseQuery(
 }
 
 /**
+ * matcher の構築（全項目の正規表現）は Raw の取得の前に同期で走るので、同じ配列には 1 回だけ作る。
+ * `completionTargets` は更新のたびに新しい配列に置き換わる（`codexStore` の upsert／再読込）ので、
+ * 配列の同一性で使い回してよい。matcher は呼出しごとに `lastIndex` を戻すので状態を持ち越さない。
+ */
+const matcherCache = new WeakMap<
+  readonly CodexMatchTarget[],
+  ReturnType<typeof createCodexMatcher>
+>();
+
+function matcherFor(
+  codexTargets: readonly CodexMatchTarget[],
+): ReturnType<typeof createCodexMatcher> {
+  const cached = matcherCache.get(codexTargets);
+  if (cached) return cached;
+  const matcher = createCodexMatcher([...codexTargets]);
+  matcherCache.set(codexTargets, matcher);
+  return matcher;
+}
+
+/**
  * 言及された Codex の項目を、一致回数の多い順（同数は最初の位置が早い順）に並べ、
  * 項目ごとに `[名前, ...別名]`（除外の別名は除く。最大 3 語）を出す。
  * 短い別名による言及も数える（一致を長さで絞らない）。
@@ -77,7 +97,7 @@ function mentionedCodexTerms(
   codexTargets: readonly CodexMatchTarget[],
 ): string[] {
   if (!text || codexTargets.length === 0) return [];
-  const matches = createCodexMatcher([...codexTargets])(text);
+  const matches = matcherFor(codexTargets)(text);
   const stats = new Map<string, { count: number; first: number }>();
   for (const match of matches) {
     const stat = stats.get(match.entryId);

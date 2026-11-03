@@ -325,3 +325,18 @@ describe("buildRelatedScenesSparseQuery：壊れた docJson", () => {
     expect(query).toBe("長谷部");
   });
 });
+
+describe("buildRelatedScenesSparseQuery: matcher の使い回し", () => {
+  it("同じ配列では同じ結果を返し、新しい配列の Codex の変更は反映する", () => {
+    const docJson = docText("長谷部は藤原千尋に会った。");
+    const targets = [entry("e1", "長谷部")];
+    expect(build(docJson, targets).query).toBe("長谷部");
+    // 同じ配列で 2 回目（使い回した matcher が状態を持ち越さない）
+    expect(build(docJson, targets).query).toBe("長谷部");
+    // store の更新は新しい配列になる。足した項目は反映される
+    const next = [...targets, entry("e2", "藤原千尋")];
+    expect(build(docJson, next).query).toBe("長谷部 藤原千尋");
+    // 古い配列は古い Codex のまま
+    expect(build(docJson, targets).query).toBe("長谷部");
+  });
+});
