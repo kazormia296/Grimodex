@@ -39,16 +39,19 @@ The diagnostic is not a general Scope V2 or ADR-002 resolver. `allowSecrets=fals
 ## Static component classification
 
 The full instruction and output-shape bytes were read in
-`src-tauri/crates/grimodex-db/src/narrative_extraction/material_roster/contracts.json`.
-Both are generic instructions/schema examples. Neither contains a scene's source
+`src-tauri/crates/grimodex-db/src/narrative_extraction/material_roster/contracts.json`
+(current contracts) and `superseded-contracts.json` (Event Synthesis v2, kept so
+existing v2 extraction results remain replayable and classified beside v3).
+All are generic instructions/schema examples. None contains a scene's source
 text, a project identity, or a story-specific claim. Placeholder values and enum
 labels describe the output contract; dynamic context rows remain subject to the
 complete material recipe. Classification does not exempt model output or Evidence.
 
-| Stage                           | Contract and version                            | Reviewed content                                                                                       | Component contract digest                                                 |
-| ------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| `narrative_observation_extract` | `chronicle.observation-extraction.prompt` / `5` | Generic observation, citation-ID, modality and attribution instructions; placeholder JSON output shape | `sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22` |
-| `narrative_event_synthesize`    | `chronicle.event-synthesis.prompt` / `2`        | Generic cluster/observation reference rules; placeholder event-hypothesis output shape                 | `sha256:5e63b1a1c4c3a3aba76689732e3876deae5ea230f15d961d74932e16b3b876ff` |
+| Stage                           | Contract and version                            | Reviewed content                                                                                                                                                                                                                                               | Component contract digest                                                 |
+| ------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `narrative_observation_extract` | `chronicle.observation-extraction.prompt` / `5` | Generic observation, citation-ID, modality and attribution instructions; placeholder JSON output shape                                                                                                                                                         | `sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22` |
+| `narrative_event_synthesize`    | `chronicle.event-synthesis.prompt` / `2`        | Generic cluster/observation reference rules; placeholder event-hypothesis output shape                                                                                                                                                                         | `sha256:5e63b1a1c4c3a3aba76689732e3876deae5ea230f15d961d74932e16b3b876ff` |
+| `narrative_event_synthesize`    | `chronicle.event-synthesis.prompt` / `3`        | v2 rules plus the four allowed event actuality labels, the omit-not-rewrite rule for other actualities, and a placeholder `unresolved` / `[]` output example. Reviewed 2026-11-03: instruction text and output example only; no new kind of model-visible data | `sha256:c5365b446a2f7bf85081b67174beb5001df51963b3b2a515860938ddefd406f7` |
 
 A changed contract requires new content review and classification. No unknown
 contract is disclosure-exempt. The existing TS/Native replay parity check remains

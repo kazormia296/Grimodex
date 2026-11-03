@@ -1162,6 +1162,7 @@ requirements:
     implementedBy:
       - src/features/narrative-extraction/ir/inferences/eventHypothesis.ts
       - src/features/chronicle/extraction/eventSynthesis.ts
+      - src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts
       - src/features/chronicle/extraction/proposalPlanner.ts
       - src/application/narrative-extraction/extractionCoordinator.ts
       - src/features/narrative-extraction/ir/observations/eventOccurrence.ts
@@ -1196,6 +1197,8 @@ requirements:
       - evals/narrative/reference-predictions/chronicle-015-v1/README.md
     lightTests:
       - src/features/chronicle/extraction/eventSynthesis.test.ts
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts
+      - src/application/narrative-extraction/extractionCoordinator.test.ts
       - src/features/chronicle/extraction/proposalPlanner.test.ts
       - src/application/narrative-extraction/aiTasks/citationIdObservation.test.ts
       - src/features/chronicle/extraction/observationMerger.test.ts
