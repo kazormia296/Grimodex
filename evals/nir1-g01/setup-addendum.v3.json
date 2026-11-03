@@ -36,7 +36,7 @@
     "path": "evals/nir1-g01/setup-addendum.v2.json",
     "sha256": "fd6b0c3cabb2713f58c6883bc6d3062e4db967517351d3dd4d3eefd204cc84b8",
     "commit": "c65e352d0cdb03d237b8ce39d9e0212db22208b4",
-    "rule": "v2 の bytes は変えない（v1 も変えない）。新しい版は v2 の写しで、変えたのは mutation の後の B の封印の規則（DR-CP4-S4-8 (1)〜(3)、(8)）を述べる葉だけ: afterMutationReadings.resealAfterMutation の rule、sealRule、measurementPoint と、そこに足した measurementPointDefinition、sealPoints、records、limits、K24-G01-N2／N3／N4 の measurementProcess の「B の seal が current に戻り」の句（地点ごとの規則への参照にした。N3 の restore の地点の規則は v2 と同じ）、addendumId、status、reviewPlan、review、この supersedes。宣言の行・値・宣言の時期と場所・負例の操作（K2/4 :416 の再保存と restore）・期待・対照・sample・聞き直しの規則と上限・判定（verdict、inconclusiveWhen）・開き直しと待ちの上限（reopensMax、waitMs）・blocked の reason は v2 と同じ。"
+    "rule": "v2 の bytes は変えない（v1 も変えない）。新しい版は v2 の写しで、変えたのは mutation の後の B の封印の規則（DR-CP4-S4-8 (1)〜(3)、(8)）を述べる葉だけ: afterMutationReadings.status（DR-CP4-S4-8 による変更を足した）、afterMutationReadings.resealAfterMutation の rule、sealRule、measurementPoint と、そこに足した measurementPointDefinition、sealPoints、records、limits、K24-G01-N2／N3／N4 の measurementProcess の「B の seal が current に戻り」の句（地点ごとの規則への参照にした。N3 の restore の地点の規則は v2 と同じ）、addendumId、status、reviewPlan、review、この supersedes。宣言の行・値・宣言の時期と場所・負例の操作（K2/4 :416 の再保存と restore）・期待・対照・sample・聞き直しの規則と上限・判定（verdict、inconclusiveWhen）・開き直しと待ちの上限（reopensMax、waitMs）・blocked の reason は v2 と同じ。"
   },
   "declarationValues": {
     "target": "saved-body-full-and-title",
@@ -203,10 +203,10 @@
   "review": null,
   "seedPinStepNote": "SP/1（nir1-graph-case-seed-pin-proposal/1。2026-10-27 に確認）の seed の pin の段（evals/nir1-graph/seed-pin-addendum.v2.json）を先に置き、この addendum の宣言の段はその後に置く。G-02〜G-08 の seed の pin の段は setupOrder の「foreshadows, foreshadow Codex links and pins」の段の直後（maintenance の有効化と setupTimeline の前）、G-01 は g01-mira の pin の後（typed Revision の prepare と B の seal の前）にある。宣言の段は declarationPlace (ii) のとおり測定の workspace を開いた後、Graph の arm の最初の query の前で、K2/4 の内容（宣言する Scene、値、期待値、負例）は変えない。診断用の負例（宣言しない run を含む）も seed の pin の段を含む workspace で取る（SP/1 の設計: Graph が要求された状態の負例になる）。",
   "afterMutationReadings": {
-    "status": "S2 追補 #4 の提案（DR-CP4-O-6 の対照の読み、O-14／O-15 の聞き直しの規則、O-5 (v)(vii)(xi)、O-9、O-17。DR-CP4-P-1）。S3 の 7 回目が追補 #4 の版を確かめた（observation-prep.v1.json の reviewerQuestions P-S2-7 と P-S2-8 の決定 a。判定は accept-with-conditions で、この file の review）。7 回目の後に、K24-G01-N4 の beforeDeclaration（追補 #5、c5d481c4）と、この節の retry.rule と graphTries（追補 #6、94fc8ed4）が変わり、その変更を S3 が見た記録は無い。数値は harness の定数（scripts/quality/nir1-graph-eval/g01-negatives.mjs の G01_CONTROL_ATTEMPTS、G01_SAMPLE_ATTEMPTS、G01_CONTROL_GAP_MS、G01_GRAPH_READY_WAIT_MS。master 950751d0）を正とした（O-6 の「最大 10 回、間隔 1.2 s」と O-15 の「30 回」は古い文面）。",
+    "status": "S2 追補 #4 の提案（DR-CP4-O-6 の対照の読み、O-14／O-15 の聞き直しの規則、O-5 (v)(vii)(xi)、O-9、O-17。DR-CP4-P-1）。S3 の 7 回目が追補 #4 の版を確かめた（observation-prep.v1.json の reviewerQuestions P-S2-7 と P-S2-8 の決定 a。判定は accept-with-conditions で、この file の review）。7 回目の後に、K24-G01-N4 の beforeDeclaration（追補 #5、c5d481c4）と、この節の retry.rule と graphTries（追補 #6、94fc8ed4）が変わり、その変更を S3 が見た記録は無い。数値は harness の定数（scripts/quality/nir1-graph-eval/g01-negatives.mjs の G01_CONTROL_ATTEMPTS、G01_SAMPLE_ATTEMPTS、G01_CONTROL_GAP_MS、G01_GRAPH_READY_WAIT_MS。値は master 950751d0 の版のままで、DR-CP4-S4-8 の後の読み元の pin は S2 追補 #12 が束縛する）を正とした（O-6 の「最大 10 回、間隔 1.2 s」と O-15 の「30 回」は古い文面）。v3 で、この節の resealAfterMutation（mutation の後の B の封印の規則）を DR-CP4-S4-8 で変えた。これは K24-G01-N2／N4 が formal の測定で blocked になったのを見た後の読みの変更で、S3 は見ておらず、v3 の review の独立コードレビューが見た（ユーザーの確認 contracts ac2e93d6）。",
     "appliesTo": ["K24-G01-N2", "K24-G01-N3", "K24-G01-N4"],
     "resealAfterMutation": {
-      "rule": "mutation（N4 は宣言の前の保存も）の後に、測定の Main を閉じ、同じ workspace で B-ROUTE の journey seam の Main を開き直し、B が地点ごとの封印の規則（sealPoints。DR-CP4-S4-8 (1)）を満たすのを待つ。本文だけの保存の地点（N2 の mutation〔resave-same-body〕と、N4 の宣言の前の保存〔beforeDeclarationWriter の saveSceneContent-then-createRevision。本文の保存と版の用意〕）では、開き直した Main で先に Freshness の静止（製品の Freshness の feed の cursor が head に届き、進行中の run も予約も無い。上限と間隔は frozen-setup-driver.mjs の既存の FRESHNESS_SETTLE_WAIT_MS と FRESHNESS_SETTLE_INTERVAL_MS で、新しい定数は足さない。maintenance の静止は待たない）を 1 回待ち、静止したら (A-1) 前より新しい B の世代が dirty でない、または (A-2) B が mutation の前と同じ世代（前の世代が 1 以上で、mutation の前の B も dirty でない）で dirty でなく、producer（id と version）と sourceDigest／dependencySetDigest の行が前と同じ、のどちらかで通す。静止しなければ (A-1) だけで待つ。restore の地点（N3 の mutation、N4 の mutation）は (A-1) だけで、世代不変は認めない（v2 と同じ）。1 回の開きの待ちの上限は、静止の待ちを含めて setup の seal の session と同じ（waitMs）。封印したら、開いた Main で query の経路で Chronicle の Index を作り、metadata で使えることを確かめる（使えなければ開き直さずに止める）。Chronicle の build の後に同じ地点の規則で B をもう一度判定し（(A-2) はその開きで静止を待てたときだけ。静止は待ち直さない）、外れたら（sealed-then-dirty）次の開き直し。静止しない、どちらの分岐も満たさないときも、v2 と同じく b-seal-not-published として次の開き直しに回す。開き直しの上限と待ちの上限は setup の seal の session と同じ（frozen-setup-driver.mjs の B_SEAL_REOPENS、B_SEAL_WAIT_MS）。使い切れば blocked（b-seal-not-published、Chronicle なら chronicle-index-not-usable。case の判定に数えない。reason は足さない）。負例の測定点は、開き直した Main で current な B と C の世代（measurementPoint）で、測定の前の probe はこの世代と照合する（DR-CP4-O-3 (7)、O-9、O-17 (2)、DR-CP4-S4-8 (1)〜(3)）。",
+      "rule": "mutation（N4 は宣言の前の保存も）の後に、測定の Main を閉じ、同じ workspace で B-ROUTE の journey seam の Main を開き直し、B が地点ごとの封印の規則（sealPoints。DR-CP4-S4-8 (1)）を満たすのを待つ。本文だけの保存の地点（N2 の mutation〔resave-same-body〕と、N4 の宣言の前の保存〔beforeDeclarationWriter の saveSceneContent-then-createRevision。本文の保存と版の用意〕）では、開き直した Main で先に Freshness の静止（製品の Freshness の feed の cursor が head に届き、進行中の run も予約も無い。上限と間隔は frozen-setup-driver.mjs の既存の FRESHNESS_SETTLE_WAIT_MS と FRESHNESS_SETTLE_INTERVAL_MS で、新しい定数は足さない。maintenance の静止は待たない）を 1 回待ち、静止したら (A-1) 前より新しい B の世代が dirty でない、または (A-2) B が mutation の前と同じ世代（前の世代が 1 以上で、mutation の前の B も dirty でない）で dirty でなく、producer（id と version）と sourceDigest／dependencySetDigest の行が前と同じ、のどちらかで通す。静止しなければ (A-1) だけで待つ。restore の地点（N3 の mutation、N4 の mutation）は (A-1) だけで、世代不変は認めない（v2 と同じ）。1 回の開きの待ちの上限は、静止の待ちを含めて setup の seal の session と同じ（waitMs）。封印したら、開いた Main で query の経路で Chronicle の Index を作り、metadata で使えることを確かめる（使えなければ開き直さずに止める）。Chronicle の build の後に同じ地点の規則で B をもう一度判定し（(A-2) はその開きで静止を待てたときだけ。静止は待ち直さない）、外れたら（sealed-then-dirty）次の開き直し。どちらの分岐も満たさないとき（静止しなかった開きは (A-1) だけの待ちなので、(A-1) を満たさなければ満たさない）は、v2 と同じく b-seal-not-published として次の開き直しに回す。開き直しの上限と待ちの上限は setup の seal の session と同じ（frozen-setup-driver.mjs の B_SEAL_REOPENS、B_SEAL_WAIT_MS）。使い切れば blocked（b-seal-not-published、Chronicle なら chronicle-index-not-usable。case の判定に数えない。reason は足さない）。負例の測定点は、開き直した Main で current な B と C の世代（measurementPoint）で、測定の前の probe はこの世代と照合する（DR-CP4-O-3 (7)、O-9、O-17 (2)、DR-CP4-S4-8 (1)〜(3)）。sealPoints の地点名と実装の鍵の対応: K24-G01-N2:mutation は spec.mutation が resave-same-body（step の label は measure）、K24-G01-N4:beforeDeclaration は宣言前の保存の kind が draft-then-original（label は before-declaration。操作は本文の保存、版の用意、元の本文の再保存の 3 段）、K24-G01-N3:mutation と K24-G01-N4:mutation は spec.mutation がそれぞれ restore-same-bytes-body-version と restore-different-bytes-body-version。",
       "reopenMain": true,
       "reopensMax": 2,
       "waitMs": 120000,
@@ -214,7 +214,7 @@
       "chronicle": "query-route-build-then-usable",
       "blocked": ["b-seal-not-published", "chronicle-index-not-usable"],
       "measurementPoint": "reopened-main-current-generation",
-      "measurementPointDefinition": "mutation の後に開き直した Main で current な B と C の世代。世代不変の分岐（sealBranch が unchanged）では B は mutation の前と同じ世代、C は新しい世代（v2 の reopened-main-sealed-generation を、B が新しく封印されない分岐に合わせて改めた）。",
+      "measurementPointDefinition": "mutation の後に開き直した Main で、Chronicle の build の後の最後の判定で current だった B と C の世代。最後の判定の分岐（chronicle.recheckBranch）が unchanged なら B は mutation の前と同じ世代、new-generation なら B は前より新しい世代。C は build の後の current な世代で、harness は使えること（usable）だけを確かめ、世代が新しいことは確かめない（v2 の reopened-main-sealed-generation を、B が新しく封印されない分岐に合わせて改めた）。",
       "sealPoints": {
         "bodyOnlySave": {
           "points": ["K24-G01-N2:mutation", "K24-G01-N4:beforeDeclaration"],
@@ -225,8 +225,8 @@
           "freshnessSettle": {
             "when": "once-per-opening-before-the-b-poll",
             "settledWhen": "cursor-acknowledged-at-least-head-no-active-run-no-reservation",
-            "limit": "FRESHNESS_SETTLE_WAIT_MS",
-            "interval": "FRESHNESS_SETTLE_INTERVAL_MS",
+            "limit": "FRESHNESS_SETTLE_WAIT_MS（60000 ms）",
+            "interval": "FRESHNESS_SETTLE_INTERVAL_MS（250 ms）",
             "maintenanceQuiet": "not-waited",
             "onNotSettled": "new-generation-only"
           },
@@ -261,7 +261,7 @@
         ]
       },
       "records": {
-        "rule": "封印の待ちの各回の記録（N2 は step.sealAttempts、N4 は宣言の前の保存の beforeDeclarationSealAttempts と mutation の step.sealAttempts）の outcome の語（sealed、not-published、sealed-then-dirty）は v2 と同じ。通った分岐を sealBranch（new-generation、unchanged、通らなかった回は null）、静止の待ちの記録を freshnessSettle（待たなかった回は null）、Chronicle の build の後の再判定の分岐を chronicle.recheckBranch に残す。settleCoversMutation（静止した時の acknowledged が、mutation の直後に読んだ feed の head 以上だったか。読めない・静止しなかったときは null）と、mutation の直後（前の Main を止める前）の feed の状態（N2 は step.feedAfterMutation、N4 の宣言の前の保存は beforeDeclarationFeedAfterSaves。restore の地点は読まず null）は開示用の記録で、封印の規則ではない（false や null でも封印の判定は進む）。S7 は mutation ごとに sealBranch を開示する。",
+        "rule": "封印の待ちの各回の記録（N2 と N3 は step.sealAttempts、N4 は宣言の前の保存の beforeDeclarationSealAttempts と mutation の step.sealAttempts）の outcome の語（sealed、not-published、sealed-then-dirty）は v2 と同じ。最初の判定で通った分岐を sealBranch（new-generation、unchanged。outcome が not-published の回は null。sealed-then-dirty の回は最初の判定の分岐を保ち、chronicle.recheckBranch が null になる）、静止の待ちの記録を freshnessSettle（待たなかった回は null）、Chronicle の build の後の再判定の分岐を chronicle.recheckBranch に残す。settleCoversMutation（静止した時の acknowledged が、mutation の直後に読んだ feed の head 以上だったか。読めない・静止しなかったときは null）と、mutation の直後（前の Main を止める前）の feed の状態（N2 は step.feedAfterMutation、N4 の宣言の前の保存は beforeDeclarationFeedAfterSaves。restore の地点は読まず null）は開示用の記録で、封印の規則ではない（false や null でも封印の判定は進む）。S7 は mutation ごとに sealBranch（最初の判定の分岐）と chronicle.recheckBranch（最後の判定の分岐）を開示する。",
         "outcomeWords": ["sealed", "not-published", "sealed-then-dirty"],
         "sealAttemptFields": [
           "sealBranch",
@@ -281,12 +281,14 @@
         ]
       },
       "limits": [
-        "(i) 世代不変の分岐（A-2）の有効性は、製品の X1-5 の分類（本文だけの保存は同じ transaction で Chronicle だけを dirty にし、B の世代は上がらない。#773、8187fbfc）と Freshness の静止に依る。producer と sourceDigest／dependencySetDigest の照合は「同じ世代の行が mutation の前後で書き換わっていない」ことの検査でしかなく（build のときに書いた行の読み戻しなので、作り直さなければ必ず一致する）、「B の入力が変わっていない」ことの保証ではない。入力の同一性は harness 既存の graphInputsDigest（Codex の entry、Relation、pin。control と sample）が見る。",
+        "(i) 世代不変の分岐（A-2）の有効性は、製品の X1-5 の分類（本文だけの保存は同じ transaction で Chronicle だけを dirty にし、B の世代は上がらない。#773、8187fbfc）と Freshness の静止に依る。producer と sourceDigest／dependencySetDigest の照合は「同じ世代の行が mutation の前後で書き換わっていない」ことの検査でしかなく（build のときに書いた行の読み戻しなので、作り直さなければ必ず一致する）、「B の入力が変わっていない」ことの保証ではない。harness が照合するのは Graph の関係の入力（Codex の entry、Relation、pin の id の列。graphInputsDigest。control と sample）の同一性だけで、B の入力の全体（metadata、D1、V1、Freshness の authority の上の cache）の同一性はどこでも照合しない。",
         "(ii) 世代不変の分岐では「B が current」の意味が、「B が mutation の後に新しく作られ封印された」から「B が mutation の前と同じ世代のまま dirty でない」に変わる（measurementPoint の改名と measurementPointDefinition）。",
         "(iii) 静止は 1 回の開きで 1 回だけ待ち、Chronicle の build の後の再判定でも待ち直さないので、静止の後に feed に追記された event は見ない。",
         "(iv) この規則は、S4b'''（60bf9dc4）の候補 22b74a25 の正式の測定で K24-G01-N2 と N4 が blocked:b-seal-not-published になったのを見た後に決めた、S2 追補 #4 の読みの変更である（ユーザーの確認 contracts ac2e93d6。restore の地点は緩めていない）。",
         "(v) 開き直しで宣言が失われる製品の欠陥があると、N2／N3／N4 は宣言の失効と区別できない形で g01-mira が返らない（v2 の規則でも同じ。開き直しの後に宣言が残ることを確かめる段は足さない）。",
-        "(vi) 静止が上限（FRESHNESS_SETTLE_WAIT_MS）に届いたときは、その開きは (A-1) だけの待ちに戻り、(A-1) を満たさなければ v2 と同じく b-seal-not-published で次の開き直しに回り、使い切れば blocked で止まる。"
+        "(vi) 静止が上限（FRESHNESS_SETTLE_WAIT_MS）に届いたときは、その開きは (A-1) だけの待ちに戻り、(A-1) を満たさなければ v2 と同じく b-seal-not-published で次の開き直しに回り、使い切れば blocked で止まる。",
+        "(vii) X1-5（#773、8187fbfc）は S4b'''（60bf9dc4）の基点に入っていたが、封印待ちの前提を X1-5 の下で確かめた記録は、読んだ範囲に無い（S4b''' の前の独立レビューの記録、作者の宣言、最終関門の記録）。ユーザーの確認 a7027915 の範囲 1 に「X1-5 の候補での再測定」があり、X1-5 を候補に含めたのは計画どおり。",
+        "(viii) 本文だけの保存の地点では formal の run が feed の読取りを注入する。feed の表が読めないと run は例外で止まる（blocked ではなく fail-closed。v2 に無かった停止）。(A-2) は feed の読取りの注入を前提にし、注入が無い呼び出しでは (A-1) だけになる。"
       ]
     },
     "seedRequested": {
