@@ -18,3 +18,11 @@ PD の原稿の IR をクラウド LLM で作る試運転（`t-ja-1`、branch `c
 ## 読みの根拠と範囲（integrator の読み）
 
 ユーザーは案 1（prompt を設計に合わせる）に傾いているが、**まだ決定ではない**。Fable（effort high、read-only）に案の比較と推奨を聞き、その結果をユーザーに示してから決めてもらう。それまで合成の prompt・schema は変えない。
+
+## 追記：Fable の意見を示した後の決定（同日、AskUserQuestion）
+
+- 示した事実：Fable（`fable-synthesis-actuality-advice-2026-11-03.md`、contracts `77a61c03`）は案 1 を推奨。合成の prompt の版が 2→3 に上がり、Rust の開示の方針（`disclosure_policy.rs:33`、`retrieval_admission/disclosure.rs:24`）は 1 組しか受け付けないので、版 3 だけにすると版 2 の既存の抽出結果が IR で使えなくなる。
+- 質問「合成の段の不具合を案 1（prompt を設計に合わせる。Fable も推奨）で直すとき、prompt の版が 2→3 に上がります。版 2 で作られた既存の抽出結果をどう扱いますか？」
+  - 選択肢：版 2 と 3 の両方を受け入れる (推奨)／版 3 だけにする／今は直さない
+  - **回答：「版 2 と 3 の両方を受け入れる (推奨)」**
+- 読み：案 1 で直す（ユーザーは前の返答で案 1 に傾いており、この回答の選択肢は案 1 を前提にしている）。Rust の開示の方針と retrieval admission は版 2（既存の digest）と版 3 の両方を受け入れる。NIR-1 の開示の方針の文書（`nir1-diagnostic-disclosure-policy.md`）の「changed contract requires new content review」は、integrator が内容の review（足すのは指示の文と出力例だけで、LLM に渡すデータの種類は増えない）を行い、DR と PR 本文に残す。閾値・Gold・新しい送信先は変えない。
