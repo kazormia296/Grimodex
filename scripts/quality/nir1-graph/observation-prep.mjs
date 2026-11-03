@@ -1,7 +1,9 @@
 // CP-4 S2: validator of the documents fixed before the first Graph observation.
 //
-//   evals/nir1-g01/setup-addendum.v2.json          K2/4 setup addendum (G-01;
-//                                                  v1 is kept, references only)
+//   evals/nir1-g01/setup-addendum.v3.json          K2/4 setup addendum (G-01;
+//                                                  v2 and v1 are kept; v3 is
+//                                                  v2 with the B reseal rule
+//                                                  changed, DR-CP4-S4-8)
 //   evals/nir1-graph/declaration-addendum.v2.json  K2/4 addendum (G-02/04/07/08;
 //                                                  v1 without G-04 is kept)
 //   evals/nir1-graph/observation-prep.v1.json      D1, D2, D10, sample plan,
@@ -40,7 +42,7 @@ import {
 } from "./seed-pin-addendum.mjs";
 
 export const OBSERVATION_PREP_FILES = Object.freeze({
-  setupAddendum: "evals/nir1-g01/setup-addendum.v2.json",
+  setupAddendum: "evals/nir1-g01/setup-addendum.v3.json",
   declarationAddendum: "evals/nir1-graph/declaration-addendum.v2.json",
   prep: "evals/nir1-graph/observation-prep.v1.json",
   traceEditing: "evals/nir1-graph/trace-editing.v1.json",
@@ -142,8 +144,25 @@ export const SETUP_ADDENDUM_V1 = Object.freeze({
   path: "evals/nir1-g01/setup-addendum.v1.json",
   sha256: "ade7c40256c159f2da1341cfa885401542f6d6621a99ca394bcdb255b7271f46",
 });
-/** The current version's id (v1 is nir1-g01-setup-addendum/1). */
-export const SETUP_ADDENDUM_ID = "nir1-g01-setup-addendum/2";
+/**
+ * S2 追補 #12 の独立レビューの P3-5: the commit v2's supersedes binds v1 at
+ * (fixed by v2's sha256). The validator keeps checking v1's working-tree
+ * bytes and the formal gate v1 at this commit, as before v3.
+ */
+export const SETUP_ADDENDUM_V1_COMMIT =
+  "cf1c83e3c4d491032511cb6f11fecb5699bc3ed5";
+/**
+ * S2 追補 #12（DR-CP4-P-8）: the G-01 setup addendum v3 supersedes v2 (bytes
+ * kept; v2 itself supersedes v1). v3 differs from v2 in the leaves of the B
+ * reseal rule after the mutation only (DR-CP4-S4-8 (1)〜(3)、(8)). Like the
+ * other new versions, v3 binds the version just before it (one step).
+ */
+export const SETUP_ADDENDUM_V2 = Object.freeze({
+  path: "evals/nir1-g01/setup-addendum.v2.json",
+  sha256: "fd6b0c3cabb2713f58c6883bc6d3062e4db967517351d3dd4d3eefd204cc84b8",
+});
+/** The current version's id (v1 is …/1, v2 is …/2). */
+export const SETUP_ADDENDUM_ID = "nir1-g01-setup-addendum/3";
 const SETUP_V1_SCENES = "4 つの Scene（G-01 と G-02／G-07／G-08 の追加 Scene）";
 const SETUP_V2_SCENES =
   "5 つの Scene（G-01 と G-02／G-04／G-07／G-08 の追加 Scene）";
@@ -152,8 +171,10 @@ const SETUP_V2_SCENES =
  * The setup addendum v2 read back to v1: v1's freeze reference (the note may
  * only add to v1's), the declaration addendum's path and Scene count (K2/4 の
  * 5 件目, DR-CP4-G4-2) and the seed pin addendum's path (B2b-1 review P2-1).
+ * S2 追補 #12: v2 is no longer the current version; this read-back is kept
+ * for the record of v2 (the test of v2 as a copy of v1).
  */
-const SETUP_V1_COPY = Object.freeze({
+export const SETUP_V1_COPY = Object.freeze({
   ...SETUP_ADDENDUM_V1,
   readBack(copy) {
     const v1 = this.json;
@@ -181,6 +202,75 @@ const SETUP_V1_COPY = Object.freeze({
       SEED_PIN_ADDENDUM_V1.path,
       "seedPinStepNote",
     );
+    return copy;
+  },
+});
+
+/**
+ * S2 追補 #12（DR-CP4-P-8）: the phrases v3 changed in v2's text, each read
+ * back exactly once (v3's phrase, then v2's).
+ */
+const SETUP_V3_STATUS_SOURCE = Object.freeze([
+  "値は master 950751d0 の版のままで、DR-CP4-S4-8 の後の読み元の pin は S2 追補 #12 が束縛する",
+  "master 950751d0",
+]);
+const SETUP_V3_STATUS_ADDED = Object.freeze([
+  "v3 で、この節の resealAfterMutation（mutation の後の B の封印の規則）を DR-CP4-S4-8 で変えた。これは K24-G01-N2／N4 が formal の測定で blocked になったのを見た後の読みの変更で、S3 は見ておらず、v3 の review の独立コードレビューが見た（ユーザーの確認 contracts ac2e93d6）。",
+  "",
+]);
+const SETUP_V3_MEASUREMENT_PHRASE = Object.freeze([
+  "B が地点ごとの封印の規則（afterMutationReadings.resealAfterMutation.sealPoints。本文だけの保存の地点は Freshness の静止の後に、前より新しい世代か mutation の前と同じ世代で dirty でない。restore の地点は前より新しい世代で dirty でない）を満たし",
+  "B の seal が current に戻り",
+]);
+/** The keys v3 added to resealAfterMutation (removed when read back). */
+const SETUP_V3_RESEAL_KEYS = Object.freeze([
+  "measurementPointDefinition",
+  "sealPoints",
+  "records",
+  "limits",
+]);
+
+/**
+ * S2 追補 #12（DR-CP4-P-8）: the setup addendum v3 read back to v2. The
+ * status phrase and the added sentence, and the three mutated negatives'
+ * measurementProcess phrase, go back exactly once; resealAfterMutation's
+ * rule, sealRule and measurementPoint take v2's values and the four added
+ * keys go (the new rule is checked by G01_RESEAL and sealPoints instead);
+ * reviewPlan takes v2's value (VERSION_FIELDS keeps it, so the read-back
+ * restores it). Any other leaf left different fails the copy check.
+ */
+const SETUP_V2_COPY = Object.freeze({
+  ...SETUP_ADDENDUM_V2,
+  readBack(copy) {
+    const v2 = this.json;
+    const readings = copy.afterMutationReadings;
+    readings.status = readBackOnce(
+      readBackOnce(
+        readings.status,
+        ...SETUP_V3_STATUS_SOURCE,
+        "afterMutationReadings.status",
+      ),
+      ...SETUP_V3_STATUS_ADDED,
+      "afterMutationReadings.status",
+    );
+    const reseal = readings.resealAfterMutation;
+    const v2Reseal = v2.afterMutationReadings.resealAfterMutation;
+    for (const key of ["rule", "sealRule", "measurementPoint"])
+      reseal[key] = v2Reseal[key];
+    for (const key of SETUP_V3_RESEAL_KEYS) {
+      if (!Object.hasOwn(reseal, key))
+        throw new Error(`resealAfterMutation.${key} must be v3's`);
+      delete reseal[key];
+    }
+    for (const id of G01_MUTATED) {
+      const row = copy.diagnosticNegatives.find((entry) => entry.id === id);
+      row.measurementProcess = readBackOnce(
+        row.measurementProcess,
+        ...SETUP_V3_MEASUREMENT_PHRASE,
+        `${id}.measurementProcess`,
+      );
+    }
+    copy.reviewPlan = v2.reviewPlan;
     return copy;
   },
 });
@@ -449,13 +539,12 @@ export const SOURCE_PINS = Object.freeze(
     ],
     // S2 追補 #9（DR-CP4-P-5）: frozen-k64-run.mjs and frozen-setup-driver.mjs
     // moved to the T-1〜T-5 pins. S2 追補 #10（DR-CP4-P-6）: trace-runner.mjs
-    // moved to the V-4 pin.
+    // moved to the V-4 pin. S2 追補 #12（DR-CP4-P-8）: g01-negatives.mjs and
+    // g01-negative-preview.mjs moved to the s4-5-g01-reseal-current pin.
     [
       "s5b-diagnostics-wiring",
       "950751d040b29b6d78a067a003dc19b196cfb692",
       [
-        "g01-negative-preview.mjs",
-        "g01-negatives.mjs",
         "renderer/cp4-diagnostic-probe.ts",
         "renderer/cp4-harness.ts",
         "renderer/nir1RelatedScenesApi.timing.ts",
@@ -464,11 +553,10 @@ export const SOURCE_PINS = Object.freeze(
     ],
     // S2 追補 #6（DR-CP4-Q-1、DR-CP4-P-3）: #757 last changed these three
     // (frozen-diagnostics.mjs moved to sp-p4-ir-pair-limit in S2 追補 #8).
-    [
-      "sp-p4-ir-timeout",
-      "43e3f40b5d653c62d5aca4ca795917b67310992c",
-      ["g01-negative-run.mjs"],
-    ],
+    // S2 追補 #12（DR-CP4-P-8）: g01-negative-run.mjs moved to the
+    // s4-5-g01-reseal-current pin, so this pin only checks the ancestor (the
+    // role and commit stay: SP-P4's C3 names them).
+    ["sp-p4-ir-timeout", "43e3f40b5d653c62d5aca4ca795917b67310992c", []],
     // S2 追補 #7（DR-CP4-S4-1、DR-CP4-P-4）: #758 last changed these five
     // (nir1-retrieval/contract.mjs is outside the harness directory;
     // diagnostic-runner.mjs moved to sp-p4-ir-pair-limit in S2 追補 #8).
@@ -554,9 +642,29 @@ export const SOURCE_PINS = Object.freeze(
       "2bf48fad6d29fc60af2255bacab292031ff15725",
       ["trace-frozen.mjs"],
     ],
+    // S2 追補 #12（DR-CP4-P-8）: frozen-k64-admission.mjs moved to the
+    // s4-5-addendum-v3-paths pin, so this pin only checks the ancestor.
     [
       "g4-b2b1-addendum-v2-paths",
       "c5b46714054c040cbe5c270ad657f6252b82eaeb",
+      [],
+    ],
+    // S2 追補 #12（DR-CP4-P-8、DR-CP4-S4-8）: the fifth re-freeze's changes
+    // (branch claude/cp4-s4-5th, base master a1cd6675). Each file is held by
+    // the branch commit that last changes it: f31d99e0 (the N2／N4 reseal
+    // rule and its review fixes in g01-negatives.mjs and the two callers that
+    // pass the Freshness feed) and ee43c197 (the S2 files of
+    // frozen-k64-admission.mjs pointed at the setup addendum v3). Like the
+    // T-1〜T-5, V-2〜V-4 and G-04 v2 pins, S4's PR brings them to master with
+    // its merge commit, never a squash.
+    [
+      "s4-5-g01-reseal-current",
+      "f31d99e07a81acdebe949f22225e19ec5f39cc76",
+      ["g01-negative-preview.mjs", "g01-negative-run.mjs", "g01-negatives.mjs"],
+    ],
+    [
+      "s4-5-addendum-v3-paths",
+      "ee43c197bcdadc9c630c8d3a68a156b741a75f0d",
       ["frozen-k64-admission.mjs"],
     ],
     [
@@ -726,6 +834,23 @@ export const S4_PROCEDURE_WORDS = Object.freeze({
     // integrator's reading of the record.
     "integrator の読み",
   ],
+  // S2 追補 #12（DR-CP4-S4-8、DR-CP4-P-8）: (h) the fifth re-freeze — S4b'''
+  // is revoked after K24-G01-N2／N4 were blocked in its formal measurement;
+  // the reseal rule decided after that observation (restore not loosened),
+  // the user's confirmation (K6/4 R5 order re-approved) on record, SP-N's
+  // record retaken because test-support.mjs changed, and only the new S4's
+  // results used (S6 allows the new S4b'''' alone).
+  h: [
+    "DR-CP4-S4-8",
+    "60bf9dc44a5f751551a9ce0195abb87f5c97543d",
+    "22b74a25ff8dadfa45247e5bc866afe3afd48fb7",
+    "user-confirmation-2026-11-03-s4-5th-design.md",
+    "restore の地点は緩めていない",
+    "K6/4 の R5 の順の逸脱",
+    "test-support.mjs",
+    "新しい S4 の結果だけ",
+    "S6 の許可リストは新しい S4b'''' だけ",
+  ],
 });
 /**
  * S2 追補 #5（P-S2-9 (b)）: the formal entries whose harness closure the
@@ -758,8 +883,10 @@ export const BLOCKED_TABLE_SOURCE = Object.freeze({
  * S2 追補 #4: the harness constants S2's readings copy, parsed from the
  * pinned bytes (never imported or run) and compared with S2's values.
  * S2 追補 #6: each file is read at the commit of the pin that holds it
- * (frozen-diagnostics.mjs at sp-p4-ir-timeout, the others at
- * s5b-diagnostics-wiring), and SP_P4_IR_TIMEOUT_LIMIT is DR-CP4-Q-1's C2 K.
+ * (harnessPinOf; at S2 追補 #6 frozen-diagnostics.mjs at sp-p4-ir-timeout,
+ * the others at s5b-diagnostics-wiring), and SP_P4_IR_TIMEOUT_LIMIT is
+ * DR-CP4-Q-1's C2 K. S2 追補 #12（DR-CP4-P-8）: g01-negatives.mjs is read at
+ * the s4-5-g01-reseal-current pin (the four values are those of 950751d0).
  * S2 追補 #8（DR-CP4-Q-2）: frozen-diagnostics.mjs is read at the
  * sp-p4-ir-pair-limit pin, and SP_P4_IR_TIMEOUT_PAIR_LIMIT is the pair limit
  * (S3's C2: at least 24 IR-compared pairs of 30).
@@ -1128,14 +1255,127 @@ const G01_VERDICT = Object.freeze({
     "g01-mira-entity-reached",
   ],
 });
-/** S2 追補 #4（DR-CP4-O-3 (7)、O-9、O-17 (2)）: the reseal after the mutation. */
+/**
+ * S2 追補 #4（DR-CP4-O-3 (7)、O-9、O-17 (2)）: the reseal after the mutation.
+ * S2 追補 #12（DR-CP4-S4-8 (1)〜(3)、DR-CP4-P-8）: the setup addendum v3's
+ * rule — at the body-only saves a new B generation or, after the Freshness
+ * settle, the generation unchanged; at the restores a new generation only —
+ * measured at the B and C generations current in the reopened Main.
+ */
 const G01_RESEAL = Object.freeze({
   reopenMain: true,
-  sealRule: "new-b-generation-not-dirty",
+  sealRule:
+    "new-b-generation-not-dirty-or-unchanged-after-freshness-settle-at-body-only-save",
   chronicle: "query-route-build-then-usable",
   blocked: ["b-seal-not-published", "chronicle-index-not-usable"],
-  measurementPoint: "reopened-main-sealed-generation",
+  measurementPoint: "reopened-main-current-generation",
 });
+/**
+ * S2 追補 #12（DR-CP4-S4-8 (1)、DR-CP4-P-8）: v3's sealPoints, the rule at
+ * each point. The restores pass a new generation only and never wait for the
+ * settle (no loosening there); the body-only saves pass either branch, the
+ * unchanged one only after the settle (its limit and interval are the
+ * pinned driver's FRESHNESS_SETTLE_WAIT_MS／FRESHNESS_SETTLE_INTERVAL_MS).
+ * The independent review of S2 追補 #12 (P2-1): the whole structure is the
+ * expected object exactly — an added key (a new point group, `alsoPasses`,
+ * `onTimeout`, `unchangedRequiresAnyOf`) fails, not only a changed value.
+ */
+function g01SealPoints(c) {
+  return {
+    bodyOnlySave: {
+      points: ["K24-G01-N2:mutation", "K24-G01-N4:beforeDeclaration"],
+      operations: ["resave-same-body", "saveSceneContent-then-createRevision"],
+      freshnessSettle: {
+        when: "once-per-opening-before-the-b-poll",
+        settledWhen:
+          "cursor-acknowledged-at-least-head-no-active-run-no-reservation",
+        limit: "FRESHNESS_SETTLE_WAIT_MS",
+        limitMs: c.FRESHNESS_SETTLE_WAIT_MS,
+        interval: "FRESHNESS_SETTLE_INTERVAL_MS",
+        intervalMs: c.FRESHNESS_SETTLE_INTERVAL_MS,
+        maintenanceQuiet: "not-waited",
+        onNotSettled: "new-generation-only",
+      },
+      passes: ["new-generation", "unchanged"],
+      unchangedRequires: [
+        "freshness-settled",
+        "previous-generation-at-least-1",
+        "previous-not-dirty",
+        "same-generation",
+        "not-dirty",
+        "same-producer-id-and-version",
+        "same-source-digest",
+        "same-dependency-set-digest",
+      ],
+    },
+    restore: {
+      points: ["K24-G01-N3:mutation", "K24-G01-N4:mutation"],
+      operations: [
+        "restore-same-bytes-body-version",
+        "restore-different-bytes-body-version",
+      ],
+      freshnessSettle: "not-waited",
+      passes: ["new-generation"],
+    },
+    chronicleRecheck: "same-point-rule-no-second-settle",
+    onNeither: "b-seal-not-published-then-next-opening",
+    unchangedConstants: [
+      "B_SEAL_REOPENS",
+      "B_SEAL_WAIT_MS",
+      "FRESHNESS_SETTLE_WAIT_MS",
+      "FRESHNESS_SETTLE_INTERVAL_MS",
+    ],
+  };
+}
+/**
+ * The JSON of `value` with every object's keys sorted: the exact structure
+ * compared without the key order (a reordered key is no loosening).
+ */
+const canonical = (value) =>
+  JSON.stringify(value, (_, item) =>
+    isObject(item)
+      ? Object.fromEntries(
+          Object.keys(item)
+            .sort()
+            .map((key) => [key, item[key]]),
+        )
+      : item,
+  );
+/** The exact structure, key order free (canonical). */
+const exactly = (left, right) =>
+  left !== undefined && canonical(left) === canonical(right);
+/**
+ * S2 追補 #12: v3's records — the outcome words (v2's), the fields the
+ * harness (s4-5-g01-reseal-current) adds to each seal attempt and to the
+ * Chronicle recheck, and the feed records kept for disclosure only. Every
+ * key but the prose `rule` is compared exactly (review P2-1).
+ */
+const G01_SEAL_RECORDS = Object.freeze({
+  outcomeWords: ["sealed", "not-published", "sealed-then-dirty"],
+  sealAttemptFields: ["sealBranch", "freshnessSettle", "settleCoversMutation"],
+  sealBranch: ["new-generation", "unchanged", null],
+  chronicleFields: ["recheckBranch"],
+  feedAfterMutation: {
+    "K24-G01-N2": "step.feedAfterMutation",
+    "K24-G01-N4": "beforeDeclarationFeedAfterSaves",
+  },
+  disclosureOnly: [
+    "settleCoversMutation",
+    "step.feedAfterMutation",
+    "beforeDeclarationFeedAfterSaves",
+  ],
+});
+/** S2 追補 #12: v3's limits (i)〜(viii), in order. */
+const G01_SEAL_LIMIT_MARKS = Object.freeze([
+  "(i) ",
+  "(ii) ",
+  "(iii) ",
+  "(iv) ",
+  "(v) ",
+  "(vi) ",
+  "(vii) ",
+  "(viii) ",
+]);
 const G01_MUTATED = Object.freeze(["K24-G01-N2", "K24-G01-N3", "K24-G01-N4"]);
 /** S2 追補 #4（DR-CP4-O-7）: the SP-P4 comparison rules. */
 const SP_P4_RULE_IDS = Object.freeze(["current", "ir-complete-pairs"]);
@@ -1502,6 +1742,10 @@ const READINGS_AFTER_DEV = Object.freeze([
   // S4a'''（4 回目の凍結のやり直し、S2 追補 #11）: G-04 v2 の S2 への写し（旧 S4b'' の
   // 下の観測の後にユーザーと integrator が決めた版）。
   "g04-v2-after-observation",
+  // S4a''''（5 回目の凍結のやり直し、S2 追補 #12）: v3 の resealAfterMutation の封印の
+  // 規則（旧 S4b''' の下の正式の測定で N2／N4 が blocked になったのを見た後に決めた。
+  // DR-CP4-S4-8）。
+  "seal-rule-after-blocked",
 ]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -1734,6 +1978,60 @@ const holds = (row, spec) =>
   Object.entries(spec).every(([key, value]) => same(row[key], value));
 
 /**
+ * S2 追補 #12（DR-CP4-S4-8 (1)〜(3)、(8)、DR-CP4-P-8）: v3's seal points,
+ * records and limits. The restore points stay at a new generation only with
+ * no settle (a loosening there fails here); the body-only saves' settle
+ * limit and interval are the pinned driver's constants.
+ */
+function sealPointErrors(errors, reseal, c) {
+  // Review P2-1: the structure is compared exactly (keys and values, key
+  // order free), each part with its own error, then the whole (a new key at
+  // the top, such as a new point group, fails there). The prose leaves
+  // (resealAfterMutation.rule, measurementPointDefinition, records.rule, the
+  // limits' text, reviewPlan) are outside this check; once frozen, S2's
+  // boundFiles[0] sha256 binds them.
+  const points = reseal?.sealPoints;
+  const want = g01SealPoints(c);
+  if (!exactly(points?.restore, want.restore))
+    errors.push(
+      "afterMutationReadings.resealAfterMutation.sealPoints.restore must keep the restores (K24-G01-N3:mutation, K24-G01-N4:mutation) at a new B generation only, without the Freshness settle, and nothing else (v2's rule, not loosened; DR-CP4-S4-8 (1))",
+    );
+  if (!exactly(points?.bodyOnlySave, want.bodyOnlySave))
+    errors.push(
+      `afterMutationReadings.resealAfterMutation.sealPoints.bodyOnlySave must pass the body-only saves (K24-G01-N2:mutation, K24-G01-N4:beforeDeclaration) at a new generation or, after the Freshness settle once per opening (the pinned driver's FRESHNESS_SETTLE_WAIT_MS ${String(c.FRESHNESS_SETTLE_WAIT_MS)} ms, FRESHNESS_SETTLE_INTERVAL_MS ${String(c.FRESHNESS_SETTLE_INTERVAL_MS)} ms; no maintenance quiet), the generation unchanged with all of ${want.bodyOnlySave.unchangedRequires.join(", ")}, and nothing else (DR-CP4-S4-8 (1))`,
+    );
+  if (!exactly(points, want))
+    errors.push(
+      "afterMutationReadings.resealAfterMutation.sealPoints must be exactly the two point groups, recheck after the Chronicle build by the same point's rule without a second settle, send neither branch to b-seal-not-published and the next opening, and keep B_SEAL_REOPENS, B_SEAL_WAIT_MS and the settle constants unchanged (DR-CP4-S4-8 (1))",
+    );
+  const records = reseal?.records;
+  const { rule: recordsRule, ...recordsStructure } = isObject(records)
+    ? records
+    : {};
+  if (
+    !isObject(records) ||
+    !exactly(recordsStructure, G01_SEAL_RECORDS) ||
+    !nonBlank(recordsRule)
+  )
+    errors.push(
+      `afterMutationReadings.resealAfterMutation.records must keep v2's outcome words and name exactly the harness's fields ${[...G01_SEAL_RECORDS.sealAttemptFields, ...G01_SEAL_RECORDS.chronicleFields].join(", ")} and the disclosure-only feed records, with its rule (DR-CP4-S4-8 (3))`,
+    );
+  const limits = reseal?.limits;
+  if (
+    !nonBlank(reseal?.measurementPointDefinition) ||
+    !Array.isArray(limits) ||
+    limits.length !== G01_SEAL_LIMIT_MARKS.length ||
+    limits.some(
+      (limit, at) =>
+        !nonBlank(limit) || !limit.startsWith(G01_SEAL_LIMIT_MARKS[at]),
+    )
+  )
+    errors.push(
+      "afterMutationReadings.resealAfterMutation must define the measurement point and disclose the limits (i)〜(viii) (DR-CP4-S4-8 (2)、(8))",
+    );
+}
+
+/**
  * S2 追補 #4（DR-CP4-O-6、O-14、O-15、O-5 (v)(vii)(viii)(xi)）: the reading
  * of K24-G01-N2〜N4 after the mutation — the reseal, the seed's source, the
  * control and the sample (reached / not-reached / undetermined), the re-ask
@@ -1766,8 +2064,9 @@ function afterMutationReadingErrors(errors, addendum, ctx) {
     !nonBlank(reseal.rule)
   )
     errors.push(
-      "afterMutationReadings.resealAfterMutation must reopen the measurement Main until a new B generation is sealed and the Chronicle Index is usable, within the setup's B_SEAL_REOPENS and B_SEAL_WAIT_MS, measuring at the reopened Main's sealed generation (DR-CP4-O-3 (7)、O-9、O-17)",
+      "afterMutationReadings.resealAfterMutation must reopen the measurement Main until B meets the rule of its seal point (a new generation, or at a body-only save the generation unchanged after the Freshness settle) and the Chronicle Index is usable, within the setup's B_SEAL_REOPENS and B_SEAL_WAIT_MS, measuring at the B and C generations current in the reopened Main (DR-CP4-O-3 (7)、O-9、O-17、DR-CP4-S4-8 (1)〜(3))",
     );
+  sealPointErrors(errors, reseal, c);
   const seed = readings.seedRequested;
   if (
     seed?.source !== "renderer-parent-fetch-seed" ||
@@ -1906,14 +2205,36 @@ export function setupAddendumErrors(addendum, ctx) {
   if (addendum.addendumId !== SETUP_ADDENDUM_ID)
     errors.push(`addendumId must be ${SETUP_ADDENDUM_ID}`);
   // Written after a Graph runtime observation as a copy of v1 with the
-  // references changed (flag true; B2b-1 review P2-1, P3-2).
+  // references changed (flag true; B2b-1 review P2-1, P3-2). S2 追補 #12
+  // （DR-CP4-P-8）: v3 is a copy of v2 with the B reseal rule changed; it
+  // binds v2 (one step, like the other new versions).
   supersededCopyErrors(
     errors,
     addendum,
-    { ...SETUP_V1_COPY, json: ctx.supersededSetupAddendum?.json },
+    { ...SETUP_V2_COPY, json: ctx.supersededSetupAddendum?.json },
     ctx.supersededSetupAddendum,
     ctx.sourcePinGit,
   );
+  // Review P3-5: v1 stays bound too — its working-tree bytes, the commit v2's
+  // supersedes names, and (git) v1's bytes at that commit.
+  if (
+    ctx.supersededSetupAddendumV1?.sha256 !== SETUP_ADDENDUM_V1.sha256 ||
+    ctx.supersededSetupAddendum?.json?.supersedes?.commit !==
+      SETUP_ADDENDUM_V1_COMMIT
+  )
+    errors.push(
+      `supersedes: v2 must bind ${SETUP_ADDENDUM_V1.path} at ${SETUP_ADDENDUM_V1_COMMIT}, whose bytes (sha256 ${SETUP_ADDENDUM_V1.sha256}) are unchanged in the working tree`,
+    );
+  else if (
+    ctx.sourcePinGit &&
+    ctx.sourcePinGit.blobSha(
+      SETUP_ADDENDUM_V1_COMMIT,
+      SETUP_ADDENDUM_V1.path,
+    ) !== SETUP_ADDENDUM_V1.sha256
+  )
+    errors.push(
+      `supersedes: ${SETUP_ADDENDUM_V1_COMMIT} does not hold ${SETUP_ADDENDUM_V1.path} with sha256 ${SETUP_ADDENDUM_V1.sha256}`,
+    );
   fixtureIdErrors(
     errors,
     "references.g01Fixture",
@@ -4667,7 +4988,8 @@ export async function loadObservationPrepContext({ repoRoot }) {
   } catch {
     // Absent or unreadable: the supersedes check fails closed.
   }
-  // The v1 addenda the current versions supersede (B2b-1); null if absent
+  // The versions the current ones supersede (B2b-1: v1; S2 追補 #12: v2 for
+  // the setup addendum v3); null if absent
   // or unreadable (the supersedes checks fail closed).
   const superseded = async (relative) => {
     try {
@@ -4677,7 +4999,10 @@ export async function loadObservationPrepContext({ repoRoot }) {
       return null;
     }
   };
-  const supersededSetupAddendum = await superseded(SETUP_ADDENDUM_V1.path);
+  // S2 追補 #12: the setup addendum v3 supersedes v2.
+  const supersededSetupAddendum = await superseded(SETUP_ADDENDUM_V2.path);
+  // Review P3-5: and v1, which v2 supersedes.
+  const supersededSetupAddendumV1 = await superseded(SETUP_ADDENDUM_V1.path);
   const supersededSeedPinAddendum = await superseded(SEED_PIN_ADDENDUM_V1.path);
   const formal = PROCEDURE_V1;
   let procedureFormal = null;
@@ -4719,6 +5044,7 @@ export async function loadObservationPrepContext({ repoRoot }) {
     declarationAddendum: parsed.declarationAddendum,
     supersededDeclarationAddendum,
     supersededSetupAddendum,
+    supersededSetupAddendumV1,
     supersededSeedPinAddendum,
     procedureDraft: parsed.procedureDraft,
     procedureFormal,
@@ -4841,19 +5167,28 @@ export function formalReferenceErrors(rows, head, git) {
 }
 
 /**
- * The (path, commit, sha256) of the v1 bytes each current addendum version
- * supersedes, as the formal gate checks them against git (B2b-1 review P3-2).
+ * The (path, commit, sha256) of the bytes each current addendum version
+ * supersedes (v1, or v2 for the setup addendum v3; S2 追補 #12), as the
+ * formal gate checks them against git (B2b-1 review P3-2).
  */
 export function supersededReferences(parsed) {
   return [
-    [parsed?.setupAddendum, SETUP_ADDENDUM_V1],
+    // S2 追補 #12: the setup addendum v3 supersedes v2.
+    [parsed?.setupAddendum, SETUP_ADDENDUM_V2],
     [parsed?.declarationAddendum, DECLARATION_ADDENDUM_V1],
     [parsed?.seedPinAddendum, SEED_PIN_ADDENDUM_V1],
-  ].map(([document, v1]) => ({
-    path: v1.path,
-    commit: document?.supersedes?.commit,
-    sha256: v1.sha256,
-  }));
+  ]
+    .map(([document, v1]) => ({
+      path: v1.path,
+      commit: document?.supersedes?.commit,
+      sha256: v1.sha256,
+    }))
+    .concat({
+      // Review P3-5: v1, which v2 supersedes, at the commit v2 names.
+      path: SETUP_ADDENDUM_V1.path,
+      commit: SETUP_ADDENDUM_V1_COMMIT,
+      sha256: SETUP_ADDENDUM_V1.sha256,
+    });
 }
 
 /**

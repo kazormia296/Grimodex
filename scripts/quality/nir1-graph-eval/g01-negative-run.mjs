@@ -34,6 +34,7 @@ import {
   g01NegativeTargets,
 } from "./frozen-diagnostics.mjs";
 import {
+  readFreshnessFeed,
   readIndexMetadata,
   readQuerySceneSeedPins,
   readWorkspaceRows,
@@ -90,6 +91,8 @@ export function createG01NegativeRun({ id, root, target = null }) {
     target: goal,
     before: null,
     beforeDeclarationSealAttempts: null,
+    // レビュー P2-2: N4 の宣言の前の保存の直後（Main を止める前）の feed。
+    beforeDeclarationFeedAfterSaves: null,
     control: null,
     step: null,
     graphTries: [],
@@ -98,7 +101,20 @@ export function createG01NegativeRun({ id, root, target = null }) {
     readCounters: null,
     ids: null,
   };
-  const reopen = async ({ proc, ids, relaunch, stop, label, before }) => {
+  // DR-CP4-S4-8 (1): 本文だけの保存の地点の静止の待ちに渡す feed の読取り
+  // （read-only）。
+  const freshnessReader = (proc, ids) => () =>
+    readFreshnessFeed(proc.dbPath, ids.projectId);
+  const reopen = async ({
+    proc,
+    ids,
+    relaunch,
+    stop,
+    label,
+    before,
+    allowUnchanged = false,
+    mutationFeedHead = null,
+  }) => {
     const readIndex = () => readIndexMetadata(proc.dbPath, ids.projectId);
     let current = proc.session;
     const reopened = await reopenUntilSealed({
@@ -123,6 +139,9 @@ export function createG01NegativeRun({ id, root, target = null }) {
             (error) => ({ ok: false, error: String(error?.message ?? error) }),
           ),
       label,
+      allowUnchanged,
+      readFreshness: freshnessReader(proc, ids),
+      mutationFeedHead,
     });
     return reopened;
   };
@@ -141,7 +160,10 @@ export function createG01NegativeRun({ id, root, target = null }) {
       if (state.before.blocked) throw blocked(state, state.before.blocked);
       if (state.before.prepared?.kind !== "draft-then-original") return null;
       // N4's saves: B (and the Chronicle Index) sealed again before the
-      // declaration, by reopening the Main.
+      // declaration, by reopening the Main. DR-CP4-S4-8 (1): 本文だけの保存の
+      // 地点（静止を待てれば世代不変の分岐も通す）。レビュー P2-2: 保存の
+      // 直後の feed を開示用に残す（規則にしない）。
+      state.beforeDeclarationFeedAfterSaves = freshnessReader(proc, ids)();
       const reopened = await reopen({
         proc,
         ids,
@@ -149,6 +171,8 @@ export function createG01NegativeRun({ id, root, target = null }) {
         stop,
         label: "before-declaration",
         before: indexBefore,
+        allowUnchanged: true,
+        mutationFeedHead: state.beforeDeclarationFeedAfterSaves?.head ?? null,
       });
       state.beforeDeclarationSealAttempts = reopened.sealAttempts;
       if (!reopened.ok)
@@ -182,6 +206,7 @@ export function createG01NegativeRun({ id, root, target = null }) {
         readPins: () =>
           readQuerySceneSeedPins(proc.dbPath, ids.projectId, ids.querySceneId),
         readGraphInputs,
+        readFreshness: freshnessReader(proc, ids),
         closeCurrent: async () => {
           await stop(current);
           current = null;
@@ -212,9 +237,11 @@ export function createG01NegativeRun({ id, root, target = null }) {
       return measuring;
     },
     /**
-     * The measurement point of a negative: the B (and C) generation sealed
-     * by the reopened Main after the mutation (S2: measured once B is
-     * current again), in place of the setup's.
+     * The measurement point of a negative: the B (and C) generation current
+     * in the reopened Main after the mutation (S2: measured once B is
+     * current again), in place of the setup's. DR-CP4-S4-8 (3): 世代不変の
+     * 分岐（`sealBranch: "unchanged"`）では、開き直した Main が封印した世代
+     * ではなく mutation の前と同じ世代。
      */
     measurementProbe(base) {
       const last = state.step?.sealAttempts?.at(-1);
@@ -302,6 +329,7 @@ export function createG01NegativeRun({ id, root, target = null }) {
         step: state.step ? { ...state.step, session: undefined } : null,
         beforeDeclaration: state.before,
         beforeDeclarationSealAttempts: state.beforeDeclarationSealAttempts,
+        beforeDeclarationFeedAfterSaves: state.beforeDeclarationFeedAfterSaves,
         graphTries: state.graphTries,
       };
     },

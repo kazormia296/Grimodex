@@ -181,7 +181,7 @@ test("DR-CP4-G4-7: the declared runs are the committed addenda's (G-01 and the d
     S2_FILES.declarationAddendum,
     "evals/nir1-graph/declaration-addendum.v2.json",
   );
-  assert.equal(S2_FILES.g01Addendum, "evals/nir1-g01/setup-addendum.v2.json");
+  assert.equal(S2_FILES.g01Addendum, "evals/nir1-g01/setup-addendum.v3.json");
   assert.deepEqual(committed, DECLARED);
   // The plans declare exactly these runs.
   assert.deepEqual(

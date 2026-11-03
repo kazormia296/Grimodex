@@ -22,6 +22,7 @@ import {
   SEED_PIN_ADDENDUM_PATH,
   SEED_PIN_ADDENDUM_V1,
   SP1,
+  supersededCopyErrors,
 } from "./seed-pin-addendum.mjs";
 import { execFileSync } from "node:child_process";
 import {
@@ -38,6 +39,9 @@ import {
   PLACEHOLDER,
   S4_PROCEDURE_WORDS,
   SETUP_ADDENDUM_V1,
+  SETUP_ADDENDUM_V1_COMMIT,
+  SETUP_ADDENDUM_V2,
+  SETUP_V1_COPY,
   SOURCE_PINS,
   assertObservationPrepFormal,
   harnessPinOf,
@@ -164,7 +168,10 @@ function rootWithPrep(prep) {
   return root;
 }
 
-test("the committed observation-prep files validate (frozen again by S4b''')", async () => {
+// S2 追補 #12 の独立レビューの P3-2: the names follow the current state:
+// S4b''' 60bf9dc4 was revoked (0d456ee2) and the fifth re-freeze's S4b''''
+// fills S2 again (DR-CP4-S4-8; S4-5〜S4-7 did the same for the old S4b〜S4b''').
+test("the committed observation-prep files validate (frozen again by the fifth re-freeze's S4b'''')", async () => {
   const result = await validateNir1ObservationPrep({ repoRoot });
   assert.deepEqual(result.errors, []);
   assert.equal(result.status, "passed");
@@ -174,7 +181,10 @@ test("the committed observation-prep files validate (frozen again by S4b''')", a
   // (the notification record at bf5b3799, K's attribution, the pair limit).
   // DR-CP4-S4-5／S4-6: and the earlier re-freezes. DR-CP4-S4-7: and the fourth
   // (the old S4b'', G-04 v2, the independent reviews, the retaken records and
-  // the K6/4 :317 order deviation).
+  // the K6/4 :317 order deviation). DR-CP4-S4-8: and the fifth (the old
+  // S4b''' and its revocation, v3 frozen on its code review, the user's
+  // approval and re-approval of the order deviation, the pre-S4b'''' review's
+  // P2-2 (K2/4 :418) and P3-1 (the declaration addendum's :198)).
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   for (const word of [
     "docs/plans/nir1-cp4-records/user-notification-2026-10-30.md",
@@ -206,30 +216,55 @@ test("the committed observation-prep files validate (frozen again by S4b''')", a
     "K6/4 :317",
     "ユーザーの異議があれば止める",
     "S4b''' を S3 が見た記録は無い",
+    "DR-CP4-S4-8",
+    "60bf9dc44a5f751551a9ce0195abb87f5c97543d",
+    "0d456ee2",
+    "383133bb",
+    "565a1115",
+    "ac7e1059",
+    "bfc5a609",
+    "0423cfe0",
+    "user-confirmation-2026-11-03-s4-5th-design.md",
+    ":418",
+    "a1fd9f64",
+    ":198",
+    "665abc0f",
+    "ac2e93d6",
+    "S4b'''' を S3 が見た記録は無い",
   ])
     assert.ok(prep.review.conditions.includes(word), word);
   assert.ok(!prep.review.conditions.includes("S4b の時点で repo に無い"));
-  // S4b''': the SP-N record retaken on the G-04 v2 candidate (contracts
-  // 20ccd115) and the R5 check retaken with G-04 v2's setup (56d4ec54).
+  for (const word of ["665abc0f", "ac2e93d6", "c7f02c7e", "55861126"])
+    assert.ok(prep.review.userConfirmationsScope.includes(word), word);
+  // S4b'''': the SP-N record retaken on the fifth re-freeze's candidate
+  // (contracts 8edd6496, candidate ddccf426) and the R5 check of 56d4ec54
+  // kept (the user re-approved its order deviation in ac2e93d6).
   for (const word of [
-    "20ccd115fd171377f06690cc31533a00b795b0a0",
-    "179139b4",
-    "aef7c0a1",
-    "DR-CP4-S4-7",
+    "8edd649625d317fdbcb593c0a94a5e48e9c7d3aa",
+    "5d72cefea1fa98d80253f199e2f8878d10306a742e8cb1e79e05a6df98f00735",
+    "ddccf4268d577271331afdb71fe7d3bff1ef7fd3",
+    "19adb6a03b0391b2528209c348d734dc65d2e388",
+    "DR-CP4-S4-8",
   ])
     assert.ok(prep.r5Gate.syntheticDetection.record.includes(word), word);
-  assert.ok(
-    !prep.r5Gate.syntheticDetection.record.startsWith(
-      "docs/plans/nir1-cp4-records/sp-synthetic-detection-record.md（commit 2d33e6a8",
-    ),
-  );
+  for (const old of ["2d33e6a8", "20ccd115"])
+    assert.ok(
+      !prep.r5Gate.syntheticDetection.record.startsWith(
+        `docs/plans/nir1-cp4-records/sp-synthetic-detection-record.md（commit ${old}`,
+      ),
+      old,
+    );
   for (const word of [
     "56d4ec54ae576665ce5561698fca59881926d2e8",
     "r5-check-r5-1102",
     "fa04baa444163b89d76beae467120366c5da55ca8e77a827eb597b06ad601f90",
     "8fb525ed-be32-4df4-8f92-1bffba4ca24d",
+    "179139b4926a6ef249da78b56e581c2fd7c083de",
+    "665abc0f",
+    "ac2e93d6",
   ])
     assert.ok(prep.r5Gate.r5CheckRecord.includes(word), word);
+  assert.ok(!prep.r5Gate.r5CheckRecord.includes("事前に確認していない"));
   assert.ok(
     prep.r5Gate.r5CheckRecord.startsWith(
       "docs/plans/nir1-cp4-records/r5-check-r5-1102/",
@@ -265,7 +300,7 @@ test("a draft with placeholders is never usable for a formal run", async () => {
   }
 });
 
-test("S4b''': the committed frozen record passes the formal gate at HEAD (git)", async (t) => {
+test("DR-CP4-S4-8 S4b'''': the committed frozen record passes the formal gate at HEAD (git)", async (t) => {
   const ctx = await context();
   if (!ctx.sourcePinGit) {
     t.skip("shallow clone: the commits are checked by the formal gate");
@@ -1378,17 +1413,31 @@ test("SP/1: addenda and traces point at the seed pin step", async () => {
   }
 });
 
-test("DR-CP4-G4-7 B2b-1: the G-01 setup addendum v2 is v1 with the references only changed, and supersedes v1's unchanged bytes", async () => {
+// S2 追補 #12（DR-CP4-P-8）: v2 is no longer the current version (v3 is);
+// this test stays as the record of v2 — its bytes unchanged and, through the
+// validator's read-back (SETUP_V1_COPY), a copy of v1 with the references
+// only changed. The current version's checks are in the v3 test below.
+test("DR-CP4-G4-7 B2b-1 (record after S2 追補 #12): the G-01 setup addendum v2 is v1 with the references only changed, and supersedes v1's unchanged bytes", async () => {
   const ctx = await context();
-  assert.equal(
-    OBSERVATION_PREP_FILES.setupAddendum,
-    "evals/nir1-g01/setup-addendum.v2.json",
-  );
   const v1Bytes = await readFile(path.join(repoRoot, SETUP_ADDENDUM_V1.path));
   assert.equal(sha256(v1Bytes), SETUP_ADDENDUM_V1.sha256);
   const v1 = JSON.parse(v1Bytes);
-  const v2 = await json(OBSERVATION_PREP_FILES.setupAddendum);
-  assert.deepEqual(setupAddendumErrors(v2, ctx), []);
+  const v2Bytes = await readFile(path.join(repoRoot, SETUP_ADDENDUM_V2.path));
+  assert.equal(SETUP_ADDENDUM_V2.path, "evals/nir1-g01/setup-addendum.v2.json");
+  assert.equal(sha256(v2Bytes), SETUP_ADDENDUM_V2.sha256);
+  const v2 = JSON.parse(v2Bytes);
+  const v1Copy = (addendum, git = ctx.sourcePinGit) => {
+    const errors = [];
+    supersededCopyErrors(
+      errors,
+      addendum,
+      { ...SETUP_V1_COPY, json: v1 },
+      { sha256: SETUP_ADDENDUM_V1.sha256, json: v1 },
+      git,
+    );
+    return errors;
+  };
+  assert.deepEqual(v1Copy(v2), []);
   assert.equal(v2.addendumId, "nir1-g01-setup-addendum/2");
   // DR-CP4-S4-7 (2b): frozen on the B2b-1 independent code review (contracts
   // 294f708f); the reviewer saw 9dbc5d6c, the fix (flag, note) came after.
@@ -1473,44 +1522,8 @@ test("DR-CP4-G4-7 B2b-1: the G-01 setup addendum v2 is v1 with the references on
   assert.ok(
     setupAddendumErrors(v1, ctx).some((e) => /graphCaseFreeze/u.test(e)),
   );
-  const oldFreeze = clone(v2);
-  oldFreeze.references.graphCaseFreeze = v1.references.graphCaseFreeze;
-  assert.ok(
-    setupAddendumErrors(oldFreeze, ctx).some((e) => /graphCaseFreeze/u.test(e)),
-  );
-  const oldSeedPin = clone(v2);
-  oldSeedPin.seedPinStepNote = v1.seedPinStepNote;
-  assert.ok(
-    setupAddendumErrors(oldSeedPin, ctx).some((e) =>
-      /seedPinStepNote/u.test(e),
-    ),
-  );
-  for (const mutate of [
-    (a) => delete a.supersedes,
-    (a) => (a.supersedes.sha256 = flip(a.supersedes.sha256)),
-    (a) => (a.supersedes.path = SEED_PIN_ADDENDUM_V1.path),
-    (a) => (a.supersedes.commit = "cf1c83e3"),
-  ]) {
-    const mutated = clone(v2);
-    mutate(mutated);
-    assert.ok(
-      setupAddendumErrors(mutated, ctx).some((e) => /supersedes/u.test(e)),
-    );
-  }
-  for (const changed of ["1".repeat(64), null])
-    assert.ok(
-      setupAddendumErrors(v2, {
-        ...ctx,
-        supersededSetupAddendum: changed && {
-          ...ctx.supersededSetupAddendum,
-          sha256: changed,
-        },
-      }).some((e) => /supersedes/u.test(e)),
-    );
-
-  // B2b-1 review P2-1, P3-1, P3-2: the flag true holds only for a copy of v1.
+  // B2b-1 review P2-1, P3-1, P3-2: v2's flag true holds only for a copy of v1.
   const copyError = (e) => /references only changed/u.test(e);
-  assert.ok(!setupAddendumErrors(v2, ctx).some(copyError));
   for (const mutate of [
     (a) => (a.declarationTiming = `${a.declarationTiming} 追記。`),
     (a) => (a.declarations[0].vetoNote = "観測の後に書き直した。"),
@@ -1525,34 +1538,399 @@ test("DR-CP4-G4-7 B2b-1: the G-01 setup addendum v2 is v1 with the references on
   ]) {
     const mutated = clone(v2);
     mutate(mutated);
+    assert.ok(v1Copy(mutated).some(copyError));
+  }
+  assert.ok(
+    v1Copy(v2, { blobSha: () => null }).some((e) =>
+      /supersedes\.commit/u.test(e),
+    ),
+  );
+});
+
+// S2 追補 #12（DR-CP4-P-8、DR-CP4-S4-8）: v3 is the current version, a copy of
+// v2 with the B reseal rule after the mutation changed (the leaves
+// supersedes.rule lists), binding v2 (one step) and frozen on the v3
+// independent code review.
+test("S2 追補 #12: the G-01 setup addendum v3 is v2 with the reseal rule changed only, supersedes v2's unchanged bytes and is frozen on the v3 code review", async () => {
+  const ctx = await context();
+  assert.equal(
+    OBSERVATION_PREP_FILES.setupAddendum,
+    "evals/nir1-g01/setup-addendum.v3.json",
+  );
+  const v2Bytes = await readFile(path.join(repoRoot, SETUP_ADDENDUM_V2.path));
+  assert.equal(sha256(v2Bytes), SETUP_ADDENDUM_V2.sha256);
+  const v2 = JSON.parse(v2Bytes);
+  const v3Bytes = await readFile(
+    path.join(repoRoot, OBSERVATION_PREP_FILES.setupAddendum),
+  );
+  assert.equal(
+    sha256(v3Bytes),
+    "dd1fb8721e5cf084025e22e4912912c5da7685074380cc14d9d824ff57a8082c",
+  );
+  const v3 = JSON.parse(v3Bytes);
+  assert.deepEqual(setupAddendumErrors(v3, ctx), []);
+  assert.equal(v3.addendumId, "nir1-g01-setup-addendum/3");
+  assert.equal(v3.status, "frozen-after-independent-review");
+  assert.equal(
+    v3.review.recordSha256,
+    "89c738f24d0c9457fc0a8bce7cfc0e46f25c2a622a543ef72bd09e8dc73c016e",
+  );
+  assert.ok(
+    v3.review.record.includes("0423cfe0cdec7a01459873388c6b6a78b4007ebd"),
+  );
+  assert.equal(v3.graphRuntimeObservedBeforeAuthoring, true);
+  assert.deepEqual(
+    {
+      path: v3.supersedes.path,
+      sha256: v3.supersedes.sha256,
+      commit: v3.supersedes.commit,
+    },
+    {
+      path: SETUP_ADDENDUM_V2.path,
+      sha256: SETUP_ADDENDUM_V2.sha256,
+      commit: "c65e352d0cdb03d237b8ce39d9e0212db22208b4",
+    },
+  );
+  // Read v3 back to v2 here (independently of the validator's read-back):
+  // every other leaf is v2's.
+  const back = clone(v3);
+  const v2Back = clone(v2);
+  for (const key of [
+    "addendumId",
+    "status",
+    "review",
+    "supersedes",
+    "graphRuntimeObservedBeforeAuthoring",
+  ]) {
+    delete back[key];
+    delete v2Back[key];
+  }
+  back.reviewPlan = v2.reviewPlan;
+  const readings = back.afterMutationReadings;
+  readings.status = readings.status
+    .replace(
+      "値は master 950751d0 の版のままで、DR-CP4-S4-8 の後の読み元の pin は S2 追補 #12 が束縛する",
+      "master 950751d0",
+    )
+    .replace(/。v3 で、この節の resealAfterMutation.*ac2e93d6）。$/u, "。");
+  const reseal = readings.resealAfterMutation;
+  for (const key of ["rule", "sealRule", "measurementPoint"])
+    reseal[key] = v2.afterMutationReadings.resealAfterMutation[key];
+  for (const key of [
+    "measurementPointDefinition",
+    "sealPoints",
+    "records",
+    "limits",
+  ])
+    delete reseal[key];
+  for (const row of back.diagnosticNegatives.slice(1))
+    row.measurementProcess = row.measurementProcess.replace(
+      /B が地点ごとの封印の規則（afterMutationReadings\.resealAfterMutation\.sealPoints。[^）]*）を満たし/u,
+      "B の seal が current に戻り",
+    );
+  assert.deepEqual(back, v2Back);
+  // The rule v3 states (the restores stay at a new generation only).
+  const points = v3.afterMutationReadings.resealAfterMutation.sealPoints;
+  assert.deepEqual(points.restore.passes, ["new-generation"]);
+  assert.equal(points.restore.freshnessSettle, "not-waited");
+  assert.deepEqual(points.bodyOnlySave.passes, ["new-generation", "unchanged"]);
+  assert.equal(
+    points.bodyOnlySave.freshnessSettle.limitMs,
+    ctx.harnessConstants.FRESHNESS_SETTLE_WAIT_MS,
+  );
+
+  // v2 itself is not the current version (its id, its supersedes of v1).
+  assert.ok(setupAddendumErrors(v2, ctx).some((e) => /addendumId/u.test(e)));
+  assert.ok(setupAddendumErrors(v2, ctx).some((e) => /supersedes/u.test(e)));
+  const v1 = await json(SETUP_ADDENDUM_V1.path);
+  const oldFreeze = clone(v3);
+  oldFreeze.references.graphCaseFreeze = v1.references.graphCaseFreeze;
+  assert.ok(
+    setupAddendumErrors(oldFreeze, ctx).some((e) => /graphCaseFreeze/u.test(e)),
+  );
+  const oldSeedPin = clone(v3);
+  oldSeedPin.seedPinStepNote = v1.seedPinStepNote;
+  assert.ok(
+    setupAddendumErrors(oldSeedPin, ctx).some((e) =>
+      /seedPinStepNote/u.test(e),
+    ),
+  );
+  for (const mutate of [
+    (a) => delete a.supersedes,
+    (a) => (a.supersedes.sha256 = flip(a.supersedes.sha256)),
+    (a) => (a.supersedes.path = SETUP_ADDENDUM_V1.path),
+    (a) => (a.supersedes.sha256 = SETUP_ADDENDUM_V1.sha256),
+    (a) => (a.supersedes.commit = "c65e352d"),
+  ]) {
+    const mutated = clone(v3);
+    mutate(mutated);
+    assert.ok(
+      setupAddendumErrors(mutated, ctx).some((e) => /supersedes/u.test(e)),
+    );
+  }
+  // S2 追補 #12 の独立レビューの P3-5: v1's working-tree bytes and (git)
+  // its bytes at the commit v2 names stay checked.
+  for (const changed of ["1".repeat(64), null])
+    assert.ok(
+      setupAddendumErrors(v3, {
+        ...ctx,
+        supersededSetupAddendumV1: changed && {
+          ...ctx.supersededSetupAddendumV1,
+          sha256: changed,
+        },
+      }).some((e) => /setup-addendum\.v1\.json/u.test(e)),
+    );
+  if (ctx.sourcePinGit)
+    assert.ok(
+      setupAddendumErrors(v3, {
+        ...ctx,
+        sourcePinGit: {
+          ...ctx.sourcePinGit,
+          blobSha: (commit, file) =>
+            commit === SETUP_ADDENDUM_V1_COMMIT
+              ? null
+              : ctx.sourcePinGit.blobSha(commit, file),
+        },
+      }).some((e) => e.includes(`${SETUP_ADDENDUM_V1_COMMIT} does not hold`)),
+    );
+  for (const changed of ["1".repeat(64), null])
+    assert.ok(
+      setupAddendumErrors(v3, {
+        ...ctx,
+        supersededSetupAddendum: changed && {
+          ...ctx.supersededSetupAddendum,
+          sha256: changed,
+        },
+      }).some((e) => /supersedes/u.test(e)),
+    );
+
+  // The flag true holds only for a copy of v2 with the listed leaves changed:
+  // any other leaf, an added key, or a leaf the read-back must restore left
+  // unrestorable (reviewPlan is restored by the read-back, not skipped).
+  const copyError = (e) => /references only changed/u.test(e);
+  assert.ok(!setupAddendumErrors(v3, ctx).some(copyError));
+  for (const mutate of [
+    (a) => (a.declarationTiming = `${a.declarationTiming} 追記。`),
+    (a) => (a.declarations[0].vetoNote = "観測の後に書き直した。"),
+    (a) => (a.afterMutationReadings.retry.gapMs = 300),
+    (a) => (a.afterMutationReadings.resealAfterMutation.reopensMax = 3),
+    (a) => (a.afterMutationReadings.resealAfterMutation.extra = true),
+    (a) => delete a.afterMutationReadings.resealAfterMutation.records,
+    (a) =>
+      (a.afterMutationReadings.status = a.afterMutationReadings.status.replace(
+        "S2 追補 #12 が束縛する",
+        "S2 が束縛する",
+      )),
+    (a) =>
+      (a.afterMutationReadings.status = `${a.afterMutationReadings.status}追記。`),
+    (a) =>
+      (a.diagnosticNegatives[3].measurementProcess =
+        a.diagnosticNegatives[3].measurementProcess.replace(
+          "restore の地点は",
+          "どの地点も",
+        )),
+    (a) =>
+      (a.diagnosticNegatives[0].measurementProcess = `${a.diagnosticNegatives[0].measurementProcess} 追記。`),
+    (a) => (a.extra = true),
+  ]) {
+    const mutated = clone(v3);
+    mutate(mutated);
     assert.equal(mutated.graphRuntimeObservedBeforeAuthoring, true);
     assert.ok(setupAddendumErrors(mutated, ctx).some(copyError));
   }
-  for (const id of ["nir1-g01-setup-addendum/1", "nir1-g01-setup-addendum/3"]) {
-    const mutated = clone(v2);
+  for (const id of ["nir1-g01-setup-addendum/1", "nir1-g01-setup-addendum/2"]) {
+    const mutated = clone(v3);
     mutated.addendumId = id;
     assert.ok(
       setupAddendumErrors(mutated, ctx).some((e) => /addendumId/u.test(e)),
     );
   }
   assert.ok(
-    setupAddendumErrors(v2, {
+    setupAddendumErrors(v3, {
       ...ctx,
       sourcePinGit: { blobSha: () => null },
     }).some((e) => /supersedes\.commit/u.test(e)),
   );
 });
 
-test("B2b-1 review P3-2: the formal gate checks each addendum's superseded v1 bytes at its commit (git)", async () => {
+// S2 追補 #12（DR-CP4-S4-8 (1)〜(3)、DR-CP4-P-8）: the validator checks v3's
+// seal points — a restore point loosened to the unchanged branch, the settle
+// skipped or its limit off the pinned driver's, a records field renamed or a
+// limit dropped all fail (the copy check alone would not catch a change to
+// the leaves v3 added).
+test("S2 追補 #12: G01_RESEAL and sealPoints hold v3's per-point rule exactly (restore at a new generation only, the body-only saves after the settle with the driver's constants; an added key fails; the prose is bound by S2's sha256, not by this check)", async () => {
+  const ctx = await context();
+  const v3 = await json(OBSERVATION_PREP_FILES.setupAddendum);
+  const reseal = v3.afterMutationReadings.resealAfterMutation;
+  assert.equal(
+    reseal.sealRule,
+    "new-b-generation-not-dirty-or-unchanged-after-freshness-settle-at-body-only-save",
+  );
+  assert.equal(reseal.measurementPoint, "reopened-main-current-generation");
+  assert.equal(reseal.sealPoints.bodyOnlySave.freshnessSettle.limitMs, 60000);
+  assert.equal(reseal.sealPoints.bodyOnlySave.freshnessSettle.intervalMs, 250);
+  // The records' field names are the pinned harness's (s4-5-g01-reseal-current).
+  const pin = harnessPinOf(`${H4}g01-negatives.mjs`);
+  assert.equal(pin.role, "s4-5-g01-reseal-current");
+  const show = (file) =>
+    execFileSync("git", ["show", `${pin.commit}:${H4}${file}`], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+  const negatives = show("g01-negatives.mjs");
+  const run = show("g01-negative-run.mjs");
+  for (const field of [
+    ...reseal.records.sealAttemptFields,
+    ...reseal.records.chronicleFields,
+    "feedAfterMutation",
+  ])
+    assert.match(negatives, new RegExp(`\\b${field}\\b`, "u"), field);
+  assert.match(run, /\bbeforeDeclarationFeedAfterSaves\b/u);
+  for (const word of reseal.records.sealBranch.filter(Boolean))
+    assert.ok(negatives.includes(`"${word}"`), word);
+  const check = (copy) => setupAddendumErrors(copy, ctx);
+  const R = (mutate, pattern) =>
+    detects(
+      v3,
+      check,
+      (a) => mutate(a.afterMutationReadings.resealAfterMutation),
+      pattern,
+    );
+  const restoreError = /sealPoints\.restore must keep the restores/u;
+  R((r) => r.sealPoints.restore.passes.push("unchanged"), restoreError);
+  R((r) => (r.sealPoints.restore.freshnessSettle = "once"), restoreError);
+  R((r) => r.sealPoints.restore.points.pop(), restoreError);
+  R((r) => delete r.sealPoints.restore, restoreError);
+  const bodyError = /sealPoints\.bodyOnlySave must pass the body-only saves/u;
+  R((r) => r.sealPoints.bodyOnlySave.passes.pop(), bodyError);
+  R((r) => r.sealPoints.bodyOnlySave.unchangedRequires.shift(), bodyError);
+  R(
+    (r) => (r.sealPoints.bodyOnlySave.freshnessSettle.limitMs = 120000),
+    bodyError,
+  );
+  R(
+    (r) => (r.sealPoints.bodyOnlySave.freshnessSettle.intervalMs = 100),
+    bodyError,
+  );
+  R(
+    (r) =>
+      (r.sealPoints.bodyOnlySave.freshnessSettle.maintenanceQuiet = "waited"),
+    bodyError,
+  );
+  R(
+    (r) => (r.sealPoints.bodyOnlySave.freshnessSettle.onNotSettled = "pass"),
+    bodyError,
+  );
+  R(
+    (r) => r.sealPoints.bodyOnlySave.points.push("K24-G01-N3:mutation"),
+    bodyError,
+  );
+  const pointsError = /sealPoints must be exactly the two point groups/u;
+  R((r) => (r.sealPoints.chronicleRecheck = "settle-again"), pointsError);
+  R((r) => r.sealPoints.unchangedConstants.pop(), pointsError);
+  // S2 追補 #12 の独立レビューの P2-1（§2 の表）: an added key fails too — the
+  // structure is compared exactly, not only the keys the spec names.
+  R((r) => (r.sealPoints.restore.alsoPasses = ["unchanged"]), restoreError);
+  R(
+    (r) =>
+      (r.sealPoints.declarationRestore = {
+        points: ["K24-G01-N3:mutation"],
+        passes: ["unchanged"],
+      }),
+    pointsError,
+  );
+  R(
+    (r) =>
+      (r.sealPoints.bodyOnlySave.freshnessSettle.onTimeout =
+        "unchanged-anyway"),
+    bodyError,
+  );
+  R(
+    (r) =>
+      (r.sealPoints.bodyOnlySave.unchangedRequiresAnyOf = [
+        "freshness-settled",
+      ]),
+    bodyError,
+  );
+  R((r) => (r.records.sealBranchAlso = ["unchanged"]), /records must keep/u);
+  R(
+    (r) => (r.sealPoints.bodyOnlySave.freshnessSettle.limitMs = "60000"),
+    bodyError,
+  );
+  R((r) => delete r.records.rule, /records must keep/u);
+  // The key order is free (a reordered object is the same structure).
+  const reordered = clone(v3);
+  const rp = reordered.afterMutationReadings.resealAfterMutation;
+  rp.sealPoints = Object.fromEntries(Object.entries(rp.sealPoints).reverse());
+  rp.records = Object.fromEntries(Object.entries(rp.records).reverse());
+  assert.deepEqual(check(reordered), []);
+  R((r) => (r.records.sealAttemptFields[0] = "branch"), /records must keep/u);
+  R((r) => r.records.outcomeWords.pop(), /records must keep/u);
+  R((r) => r.records.disclosureOnly.pop(), /records must keep/u);
+  R((r) => r.limits.pop(), /disclose the limits/u);
+  R((r) => (r.measurementPointDefinition = " "), /disclose the limits/u);
+  const resealError = /resealAfterMutation must reopen the measurement Main/u;
+  R((r) => (r.sealRule = "new-b-generation-not-dirty"), resealError);
+  R(
+    (r) => (r.measurementPoint = "reopened-main-sealed-generation"),
+    resealError,
+  );
+  // The prose leaves are outside the machine check (review P2-1): rewriting
+  // resealAfterMutation.rule, measurementPointDefinition, records.rule, a
+  // limit's text after its mark or reviewPlan passes the validator. Once
+  // frozen, S2's boundFiles[0] sha256 (S4b'''': v3's dd1fb872…) binds them,
+  // and the v3 test above fixes that sha256.
+  for (const mutate of [
+    (a) =>
+      (a.afterMutationReadings.resealAfterMutation.rule +=
+        "restore の地点も世代不変を通す。"),
+    (a) =>
+      (a.afterMutationReadings.resealAfterMutation.limits[3] =
+        "(iv) restore の地点も緩めた。"),
+    (a) =>
+      (a.afterMutationReadings.resealAfterMutation.measurementPointDefinition =
+        "任意の文。"),
+    (a) =>
+      (a.afterMutationReadings.resealAfterMutation.records.rule = "任意の文。"),
+    (a) => (a.reviewPlan = "任意の文。"),
+  ]) {
+    const prose = clone(v3);
+    mutate(prose);
+    assert.deepEqual(check(prose), []);
+  }
+  // With the pinned driver's settle limit read otherwise, the check follows it.
+  assert.ok(
+    setupAddendumErrors(v3, {
+      ...ctx,
+      harnessConstants: {
+        ...ctx.harnessConstants,
+        FRESHNESS_SETTLE_WAIT_MS: 30000,
+      },
+    }).some((e) => bodyError.test(e)),
+  );
+});
+
+// S2 追補 #12（DR-CP4-P-8）: the setup addendum's row is v2 (v3 supersedes
+// v2) at v3's supersedes.commit.
+test("B2b-1 review P3-2: the formal gate checks each addendum's superseded bytes at its commit (git)", async () => {
   const ctx = await context();
   const rows = supersededReferences(ctx.parsed);
+  assert.equal(rows[0].commit, "c65e352d0cdb03d237b8ce39d9e0212db22208b4");
   assert.deepEqual(
     rows.map((row) => [row.path, row.sha256]),
     [
-      [SETUP_ADDENDUM_V1.path, SETUP_ADDENDUM_V1.sha256],
+      [SETUP_ADDENDUM_V2.path, SETUP_ADDENDUM_V2.sha256],
       [DECLARATION_ADDENDUM_V1.path, DECLARATION_ADDENDUM_V1.sha256],
       [SEED_PIN_ADDENDUM_V1.path, SEED_PIN_ADDENDUM_V1.sha256],
+      // S2 追補 #12 の独立レビューの P3-5: v1, which v2 supersedes, at the
+      // commit v2 names.
+      [SETUP_ADDENDUM_V1.path, SETUP_ADDENDUM_V1.sha256],
     ],
+  );
+  assert.equal(rows[3].commit, SETUP_ADDENDUM_V1_COMMIT);
+  assert.equal(
+    SETUP_ADDENDUM_V1_COMMIT,
+    (await json(SETUP_ADDENDUM_V2.path)).supersedes.commit,
   );
   const run = (args) =>
     execFileSync("git", args, {
@@ -2553,6 +2931,9 @@ test("S2 追補 #2 P2-1: setupReadings pin master commits and copy L-24's closed
       "g4-b1-freeze-v2-constants",
       "g4-b2a-declaration-v2-path",
       "g4-b2b1-addendum-v2-paths",
+      // S2 追補 #12（N2／N4 の封印待ちの修正。5 回目の凍結のやり直し、DR-CP4-P-8）。
+      "s4-5-g01-reseal-current",
+      "s4-5-addendum-v3-paths",
       // S2 追補 #5（P-S2-9 (b)。正式の入口の閉包の file を最後に変えた commit）。
       "pr1-native-eval-feature",
       "p1-harness-core",
@@ -2947,7 +3328,12 @@ test("S2 追補 #2 P3-1 / P3-2: forbidden paths are found anywhere in the path; 
   );
   // S4a(3)（S4 の最終関門の P2-2）: the two readings chosen after the dev runs
   // (K24-G01 retry limit 30→60, SP-P4 ir-complete-pairs and K=6) are listed.
-  for (const id of ["g01-retry-limit", "sp-p4-ir-timeout-limit"]) {
+  // S4a''''（DR-CP4-S4-8）: the seal rule chosen after N2／N4 were blocked.
+  for (const id of [
+    "g01-retry-limit",
+    "sp-p4-ir-timeout-limit",
+    "seal-rule-after-blocked",
+  ]) {
     const without = clone(declaration);
     without.readingsChosenAfterDevObservation =
       without.readingsChosenAfterDevObservation.filter((row) => row.id !== id);
@@ -3071,7 +3457,8 @@ test("S2 追補 #3: blockedCaseJudgement equals the pinned harness's BLOCKED_CON
 const H4 = "scripts/quality/nir1-graph-eval/";
 const ORPHAN = "0123456789abcdef0123456789abcdef01234567";
 /**
- * S2 追補 #9（DR-CP4-P-5）／#10（DR-CP4-P-6）／#11（DR-CP4-P-7）: the pins at
+ * S2 追補 #9（DR-CP4-P-5）／#10（DR-CP4-P-6）／#11（DR-CP4-P-7）／#12
+ * （DR-CP4-P-8）: the pins at
  * branch commits that S4's PR brings to master with its merge commit (gh pr
  * merge --merge).
  */
@@ -3086,6 +3473,9 @@ const BRANCH_PIN_ROLES = new Set([
   "g4-b1-freeze-v2-constants",
   "g4-b2a-declaration-v2-path",
   "g4-b2b1-addendum-v2-paths",
+  // S2 追補 #12（DR-CP4-P-8）.
+  "s4-5-g01-reseal-current",
+  "s4-5-addendum-v3-paths",
 ]);
 const gitText = (args) =>
   execFileSync("git", args, { cwd: repoRoot, encoding: "utf8" }).trim();
@@ -3159,7 +3549,7 @@ test("S2 追補 #4 (A): each pin is a master commit and each bytes pin holds tha
   );
 });
 
-test("S2 追補 #4／#6／#7／#9／#10／#11 (A): the bytes pins hold every non-test harness file #754, #756, #757, #758, #759, T-1〜T-5, V-2〜V-4 and the G-04 v2 closure files changed, each at the commit that last changed it", async (t) => {
+test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold every non-test harness file #754, #756, #757, #758, #759, T-1〜T-5, V-2〜V-4, the G-04 v2 closure files and the fifth re-freeze changed, each at the commit that last changed it", async (t) => {
   const ctx = await context();
   if (!ctx.sourcePinGit) {
     t.skip("shallow clone");
@@ -3198,8 +3588,23 @@ test("S2 追補 #4／#6／#7／#9／#10／#11 (A): the bytes pins hold every non
       "g4-b2b1-addendum-v2-paths",
     ],
   );
-  const newest = g4Pins.at(-1);
+  const g4Newest = g4Pins.at(-1);
   const g4Paths = g4Pins.flatMap((pin) => pin.paths);
+  // S2 追補 #12（DR-CP4-P-8）: the two pins of the fifth re-freeze (branch
+  // claude/cp4-s4-5th, base master a1cd6675); the newest (ee43c197) is where
+  // every pin's last change is read now. The G-04 v2 range keeps its tip
+  // (c5b46714); the files it changed that the fifth re-freeze changed again
+  // are held by the new pins.
+  const s45Pins = SOURCE_PINS.filter((pin) => pin.role.startsWith("s4-5-"));
+  assert.deepEqual(
+    s45Pins.map((pin) => [pin.role, pin.commit]),
+    [
+      ["s4-5-g01-reseal-current", "f31d99e07a81acdebe949f22225e19ec5f39cc76"],
+      ["s4-5-addendum-v3-paths", "ee43c197bcdadc9c630c8d3a68a156b741a75f0d"],
+    ],
+  );
+  const newest = s45Pins.at(-1);
+  const s45Paths = s45Pins.flatMap((pin) => pin.paths);
   const master = gitText(["rev-parse", "refs/remotes/origin/master"]);
   // S2 追補 #9（DR-CP4-P-5）／#10（DR-CP4-P-6）: the two T-1〜T-5 pins and
   // the four V-2〜V-4 pins are branch commits that S4's PR brings to master
@@ -3256,10 +3661,14 @@ test("S2 追補 #4／#6／#7／#9／#10／#11 (A): the bytes pins hold every non
   )
     .flatMap((pin) => pin.paths)
     .concat(g4Paths.filter((file) => changed.includes(file)))
+    // S2 追補 #12: g01-negatives.mjs, g01-negative-preview.mjs,
+    // g01-negative-run.mjs and frozen-k64-admission.mjs moved to the new pins.
+    .concat(s45Paths.filter((file) => changed.includes(file)))
     .filter((file) => file.startsWith(H4))
     .sort();
   assert.deepEqual(held, changed);
-  // #757 が変えた test 以外の file は 3 つ（diagnostic-runner.mjs と frozen-diagnostics.mjs は後の PR でも変わり、後の pin にある）。
+  // #757 が変えた test 以外の file は 3 つ（diagnostic-runner.mjs と frozen-diagnostics.mjs は後の PR でも変わり、後の pin にある。
+  // S2 追補 #12: g01-negative-run.mjs は s4-5-g01-reseal-current の pin に移り、sp-p4-ir-timeout は ancestor）。
   assert.deepEqual(
     nonTest(
       gitText([
@@ -3275,6 +3684,7 @@ test("S2 追補 #4／#6／#7／#9／#10／#11 (A): the bytes pins hold every non
       ...sp.paths,
       `${H4}diagnostic-runner.mjs`,
       `${H4}frozen-diagnostics.mjs`,
+      `${H4}g01-negative-run.mjs`,
     ].sort(),
   );
   // #758 が変えた試験と文書以外の file は 5 つ（試験専用の test-support.mjs は pin しない。
@@ -3373,10 +3783,19 @@ test("S2 追補 #4／#6／#7／#9／#10／#11 (A): the bytes pins hold every non
   assert.ok(ctx.sourcePinGit.isAncestor(g4Base, g4Pins[0].commit));
   assert.deepEqual(
     nonTest(
-      gitText(["diff", "--name-only", g4Base, newest.commit, "--", "scripts"]),
+      gitText([
+        "diff",
+        "--name-only",
+        g4Base,
+        g4Newest.commit,
+        "--",
+        "scripts",
+      ]),
     ),
     [
       ...g4Paths,
+      // S2 追補 #12: moved to s4-5-addendum-v3-paths.
+      `${H4}frozen-k64-admission.mjs`,
       "scripts/quality/nir1-graph/observation-prep.mjs",
       "scripts/quality/nir1-graph/seed-pin-addendum.mjs",
       `${H4}dev-fixtures/dev-shape-g04.v1.json`,
@@ -3384,9 +3803,62 @@ test("S2 追補 #4／#6／#7／#9／#10／#11 (A): the bytes pins hold every non
     ].sort(),
   );
   for (const pin of g4Pins) {
-    assert.ok(ctx.sourcePinGit.isAncestor(pin.commit, newest.commit), pin.role);
-    assert.equal(pin.paths.length, 1, pin.role);
+    assert.ok(
+      ctx.sourcePinGit.isAncestor(pin.commit, g4Newest.commit),
+      pin.role,
+    );
+    // S2 追補 #12: g4-b2b1-addendum-v2-paths holds no file (ancestor).
+    assert.equal(
+      pin.paths.length,
+      pin.role === "g4-b2b1-addendum-v2-paths" ? 0 : 1,
+      pin.role,
+    );
   }
+  // S2 追補 #12（DR-CP4-P-8、独立レビューの P2-1）: the fifth re-freeze
+  // (master a1cd6675 to the branch's ee43c197) changed four non-test scripts
+  // files; all four are held by the two new pins (at the commit that last
+  // changed each) and by no other pin. A file left at its old pin would only
+  // fail at the run's admission (assertSourcePins), so this fixes it here.
+  const s45Base = "a1cd667501d1fb4c80255a94c9737d15ccc3ad18";
+  assert.ok(ctx.sourcePinGit.isAncestor(g4Newest.commit, s45Base));
+  assert.ok(ctx.sourcePinGit.isAncestor(s45Base, s45Pins[0].commit));
+  assert.ok(ctx.sourcePinGit.isAncestor(s45Pins[0].commit, newest.commit));
+  assert.deepEqual(
+    nonTest(
+      gitText(["diff", "--name-only", s45Base, newest.commit, "--", "scripts"]),
+    ),
+    [...s45Paths].sort(),
+  );
+  const moved = {
+    "g01-negatives.mjs": ["s4-5-g01-reseal-current", "s5b-diagnostics-wiring"],
+    "g01-negative-preview.mjs": [
+      "s4-5-g01-reseal-current",
+      "s5b-diagnostics-wiring",
+    ],
+    "g01-negative-run.mjs": ["s4-5-g01-reseal-current", "sp-p4-ir-timeout"],
+    "frozen-k64-admission.mjs": [
+      "s4-5-addendum-v3-paths",
+      "g4-b2b1-addendum-v2-paths",
+    ],
+  };
+  for (const [name, [role, from]] of Object.entries(moved)) {
+    assert.equal(harnessPinOf(H4 + name)?.role, role, name);
+    assert.equal(
+      SOURCE_PINS.filter((pin) => pin.paths.includes(H4 + name)).length,
+      1,
+      name,
+    );
+    assert.ok(
+      !SOURCE_PINS.find((pin) => pin.role === from).paths.includes(H4 + name),
+      `${name} left ${from}`,
+    );
+  }
+  for (const role of ["sp-p4-ir-timeout", "g4-b2b1-addendum-v2-paths"])
+    assert.equal(
+      SOURCE_PINS.find((pin) => pin.role === role).check,
+      "ancestor",
+      role,
+    );
   for (const pin of SOURCE_PINS)
     for (const file of pin.paths) {
       const last = gitText([
@@ -3508,7 +3980,9 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
     [
       // S2 追補 #9: T-5（b0df31f0）の pin。
       ["frozen-setup-driver.mjs", "b0df31f0"],
-      ["g01-negatives.mjs", "950751d0"],
+      // S2 追補 #12（DR-CP4-P-8）: the s4-5-g01-reseal-current pin (f31d99e0);
+      // the four values are 950751d0's (checked below).
+      ["g01-negatives.mjs", "f31d99e0"],
       // S2 追補 #8: #759 の pin（値は SOURCE_PINS から読む）。
       [
         "frozen-diagnostics.mjs",
@@ -3531,6 +4005,25 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
     harnessPinOf(`${H4}frozen-diagnostics.mjs`).role,
     "sp-p4-ir-pair-limit",
   );
+  // S2 追補 #12: the g01-negatives.mjs constants read at the new pin are the
+  // values of 950751d0 and of DR-CP4-S4-8's base (909b71b3); the change did
+  // not move them.
+  for (const commit of [
+    "950751d040b29b6d78a067a003dc19b196cfb692",
+    "909b71b3",
+  ]) {
+    const text = execFileSync(
+      "git",
+      ["show", `${commit}:${H4}g01-negatives.mjs`],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+    for (const name of HARNESS_CONSTANTS[`${H4}g01-negatives.mjs`])
+      assert.equal(
+        parseHarnessConstant(text, name),
+        ctx.harnessConstants[name],
+        `${name} at ${commit}`,
+      );
+  }
   // 変異: 組の上限は #757（43e3f40b）の bytes には無い。
   const before759 = execFileSync(
     "git",
@@ -4563,9 +5056,10 @@ test("S2 追補 #6 (P3-2): retry.rule and graphTries are the harness's re-ask di
     retry.graphTries.counters,
   );
   assert.equal(asked.tries[0].cached, true);
-  // askGraph が graphTries に残す欄（g01-negative-run.mjs、sp-p4-ir-timeout の pin の bytes）。
+  // askGraph が graphTries に残す欄（g01-negative-run.mjs の pin の bytes。S2 追補 #12 で
+  // sp-p4-ir-timeout から s4-5-g01-reseal-current に移った）。
   const pin = harnessPinOf(`${H4}g01-negative-run.mjs`);
-  assert.equal(pin.role, "sp-p4-ir-timeout");
+  assert.equal(pin.role, "s4-5-g01-reseal-current");
   const text = execFileSync(
     "git",
     ["show", `${pin.commit}:${H4}g01-negative-run.mjs`],
@@ -4872,7 +5366,14 @@ test("S2 追補 #7: each added eval script and each #758 file is pinned at the m
     ...ADDENDUM7_OUTSIDE,
     "s4-rehearsal-admission": rehearsal.paths,
     "g4-b2a-declaration-v2-path": [`${H4}trace-frozen.mjs`],
-    "g4-b2b1-addendum-v2-paths": [`${H4}frozen-k64-admission.mjs`],
+    // S2 追補 #12（DR-CP4-P-8）: frozen-k64-admission.mjs moved on to the
+    // fifth re-freeze's pin, with the three g01 files.
+    "s4-5-addendum-v3-paths": [`${H4}frozen-k64-admission.mjs`],
+    "s4-5-g01-reseal-current": [
+      `${H4}g01-negative-preview.mjs`,
+      `${H4}g01-negative-run.mjs`,
+      `${H4}g01-negatives.mjs`,
+    ],
   };
   let mutated = 0;
   for (const [role, files] of Object.entries(targets)) {
@@ -4913,7 +5414,8 @@ test("S2 追補 #7: each added eval script and each #758 file is pinned at the m
     }
   }
   // S2 追補 #8: diagnostic-runner.mjs は #759 の pin へ移った（13 file）。
-  assert.equal(mutated, 13);
+  // S2 追補 #12: g01 の 3 file を足した（16 file）。
+  assert.equal(mutated, 16);
   // 移した file を旧い pin（950751d0、43e3f40b、82d42746）の bytes と比べると落ちる。
   for (const [name, old, role] of [
     [
@@ -4922,10 +5424,33 @@ test("S2 追補 #7: each added eval script and each #758 file is pinned at the m
       "s4-rehearsal-admission",
     ],
     // S2 追補 #11: G-04 v2 の pin に移った 3 file を元の pin の bytes と比べると落ちる。
+    // S2 追補 #12: frozen-k64-admission.mjs はさらに s4-5-addendum-v3-paths に移った。
     [
       "frozen-k64-admission.mjs",
       "82d427465b16a12809c6f93adad74ac97859c85a",
-      "g4-b2b1-addendum-v2-paths",
+      "s4-5-addendum-v3-paths",
+    ],
+    // S2 追補 #12（DR-CP4-P-8）: 移した 4 file を元の pin（c5b46714、950751d0、
+    // 43e3f40b）の bytes と比べると落ちる。
+    [
+      "frozen-k64-admission.mjs",
+      "c5b46714054c040cbe5c270ad657f6252b82eaeb",
+      "s4-5-addendum-v3-paths",
+    ],
+    [
+      "g01-negatives.mjs",
+      "950751d040b29b6d78a067a003dc19b196cfb692",
+      "s4-5-g01-reseal-current",
+    ],
+    [
+      "g01-negative-preview.mjs",
+      "950751d040b29b6d78a067a003dc19b196cfb692",
+      "s4-5-g01-reseal-current",
+    ],
+    [
+      "g01-negative-run.mjs",
+      "43e3f40b5d653c62d5aca4ca795917b67310992c",
+      "s4-5-g01-reseal-current",
     ],
     [
       "trace-frozen.mjs",
@@ -4966,6 +5491,7 @@ test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge comm
   assert.deepEqual(observationPrepErrors(prep, ctx), []);
   // S2 追補 #9（DR-CP4-S4-5）: (e) the re-freeze. S2 追補 #10（DR-CP4-S4-6）:
   // (f) the third re-freeze. S2 追補 #11（DR-CP4-S4-7）: (g) the fourth.
+  // S2 追補 #12（DR-CP4-S4-8）: (h) the fifth.
   assert.deepEqual(Object.keys(S4_PROCEDURE_WORDS), [
     "a",
     "b",
@@ -4974,6 +5500,7 @@ test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge comm
     "e",
     "f",
     "g",
+    "h",
   ]);
   let mutated = 0;
   for (const [item, words] of Object.entries(S4_PROCEDURE_WORDS))
@@ -4987,7 +5514,7 @@ test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge comm
       );
       mutated += 1;
     }
-  assert.equal(mutated, 32);
+  assert.equal(mutated, 41);
   detects(
     prep,
     (copy) => observationPrepErrors(copy, ctx),
@@ -5101,8 +5628,9 @@ test("S2 追補 #11（DR-CP4-P-7）: S2 binds G-04 v2 (freeze.v2, the three new 
     path: "evals/nir1-graph/freeze.v2.json",
     sha256: "8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d",
   });
+  // S2 追補 #12: the setup addendum moved on to v3 (the S2 追補 #12 test).
   assert.deepEqual(prep.d1.addenda, [
-    "evals/nir1-g01/setup-addendum.v2.json",
+    "evals/nir1-g01/setup-addendum.v3.json",
     "evals/nir1-graph/declaration-addendum.v2.json",
   ]);
   assert.ok(prep.d1.runs.includes("G-04/base"));
@@ -5119,7 +5647,7 @@ test("S2 追補 #11（DR-CP4-P-7）: S2 binds G-04 v2 (freeze.v2, the three new 
     ),
   );
   assert.ok(
-    prep.runnerHandoff[20].includes("evals/nir1-g01/setup-addendum.v2.json"),
+    prep.runnerHandoff[20].includes("evals/nir1-g01/setup-addendum.v3.json"),
   );
   for (const row of prep.placeholders)
     assert.ok(!/addendum\.v1\.json/u.test(row.fill), row.token);
@@ -5282,6 +5810,114 @@ test("S2 追補 #11（DR-CP4-P-7）: S2 binds G-04 v2 (freeze.v2, the three new 
         (row) => row.id !== "K24-G04-N1",
       )),
     /diagnosticRuns must be/u,
+  );
+});
+
+// S2 追補 #12（DR-CP4-P-8）: S2 names the setup addendum v3 at every leaf the
+// current version is bound or read through, keeps v2 only where it records
+// S2 追補 #11's binding, and discloses (h). S4b'''' (DR-CP4-S4-8) filled the
+// placeholders: boundFiles[0] holds v3's commit and sha256, not v2's.
+test("S2 追補 #12（DR-CP4-P-8）: S2 binds the setup addendum v3, the two pins of the fifth re-freeze and (h); S4b'''' filled boundFiles[0] with v3's bytes", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  assert.deepEqual(check(prep), []);
+  const V2 = "evals/nir1-g01/setup-addendum.v2.json";
+  const V3 = "evals/nir1-g01/setup-addendum.v3.json";
+  assert.equal(OBSERVATION_PREP_FILES.setupAddendum, V3);
+  assert.equal(prep.d1.addenda[0], V3);
+  for (const id of ["K24-G01-N1", "K24-G01-N2", "K24-G01-N3", "K24-G01-N4"])
+    assert.equal(
+      prep.diagnosticRuns.find((row) => row.id === id).source,
+      V3,
+      id,
+    );
+  assert.equal(prep.boundFiles[0].path, V3);
+  assert.ok(prep.runnerHandoff[20].includes(V3));
+  assert.ok(
+    !prep.runnerHandoff[20].includes("v1 と同じ afterMutationReadings"),
+  );
+  for (const row of prep.placeholders)
+    assert.ok(!/setup-addendum\.v2\.json/u.test(row.fill), row.token);
+  // v2 のまま残す葉は追補 #11 の束縛の記録（g04RevisionReadings.rule）だけで、
+  // 追補 #12 の移し替えを追記した。
+  const count = (text) => String(text).split(V2).length - 1;
+  assert.equal(
+    count(JSON.stringify(prep)),
+    count(prep.g04RevisionReadings.rule),
+  );
+  assert.equal(count(prep.g04RevisionReadings.rule), 1);
+  for (const word of ["S2 追補 #12", V3, "s4-5-addendum-v3-paths"])
+    assert.ok(prep.g04RevisionReadings.rule.includes(word), word);
+  // pins: 新しい 2 つの bytes の pin と、ancestor になった 2 つ。
+  const pinOf = (role) =>
+    prep.setupReadings.source.pins.find((row) => row.role === role);
+  assert.deepEqual(
+    pinOf("s4-5-g01-reseal-current").files.map((row) => [row.path, row.sha256]),
+    [
+      [
+        `${H4}g01-negative-preview.mjs`,
+        "1679051d739f578fffac8d819c0d85e857b465b09407f9768fcf8a98ed09c749",
+      ],
+      [
+        `${H4}g01-negative-run.mjs`,
+        "c134e680b25a79f1b1b7429b8cea15c1ae7d654bc4a71f22a06089da8dc06caa",
+      ],
+      [
+        `${H4}g01-negatives.mjs`,
+        "800ba4a427c7d21e48db27de13e48704fb8478f961f2f86d25581bb3f4a01a31",
+      ],
+    ],
+  );
+  assert.deepEqual(
+    pinOf("s4-5-addendum-v3-paths").files.map((row) => [row.path, row.sha256]),
+    [
+      [
+        `${H4}frozen-k64-admission.mjs`,
+        "0723afc86b3cfab800abffea03296aca5387e2a414e469472fc9fb4ce34ffd28",
+      ],
+    ],
+  );
+  for (const role of ["sp-p4-ir-timeout", "g4-b2b1-addendum-v2-paths"]) {
+    assert.equal(pinOf(role).check, "ancestor", role);
+    assert.deepEqual(pinOf(role).files, [], role);
+    assert.ok(pinOf(role).pr.includes("S2 追補 #12"), role);
+  }
+  for (const word of ["S2 追補 #12", "s4-5-g01-reseal-current"])
+    assert.ok(pinOf("s5b-diagnostics-wiring").pr.includes(word), word);
+  for (const word of [
+    "追補 #12（DR-CP4-P-8",
+    "f31d99e07a81acdebe949f22225e19ec5f39cc76",
+    "ee43c197bcdadc9c630c8d3a68a156b741a75f0d",
+  ])
+    assert.ok(prep.setupReadings.source.pinRule.includes(word), word);
+  assert.ok(prep.setupReadings.source.decisions.includes("DR-CP4-P-8"));
+  assert.ok(prep.setupReadings.status.includes("追補 #12"));
+  // S4b'''' が placeholder を埋めた（v3 の bytes。v2 の fd6b0c3c… ではない）。
+  assert.equal(prep.status, "frozen-before-observation");
+  assert.deepEqual(prep.placeholders, []);
+  assert.equal(
+    prep.boundFiles[0].commit,
+    "ac7e1059a8c9c6bd295f9771087e70c3922d3e0e",
+  );
+  assert.equal(
+    prep.boundFiles[0].sha256,
+    "dd1fb8721e5cf084025e22e4912912c5da7685074380cc14d9d824ff57a8082c",
+  );
+  // 変異: setup の葉を v2 に戻す（d1、診断の run、boundFiles）。
+  detects(prep, check, (p) => (p.d1.addenda[0] = V2), /d1\.addenda must be/u);
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.diagnosticRuns.find((row) => row.id === "K24-G01-N3").source = V2),
+    /diagnosticRuns K24-G01-N3\.source must be/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.boundFiles[0].path = V2),
+    /boundFiles must be exactly/u,
   );
 });
 
