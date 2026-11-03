@@ -1,0 +1,616 @@
+// 融合の枠の評価（段階 2）：PD の原稿の IR をクラウド LLM で作り、IR の共通枠の使用率を
+// 測る renderer 側の部品。
+//
+// 段階 1 の `renderer.ts`（Scene の canonical writer）と L0 の
+// `scripts/quality/nir1-retrieval/renderer.ts`（measureHybrid／finalizeHybrid／buildIr）を
+// 写して変えたもの（既存の file は変えない）。違いは次のとおり。
+// - Scene は L0 と同じく 1 件ずつ folder に入れる（folder が読書順、Scene は folder 内の a0）。
+//   地点を進めるときは同じ project に Scene を足す。
+// - AI 設定（provider／model）と key は製品の IPC（save_ai_settings／save_api_key）で入れる。
+// - 抽出は製品の `startChronicleExtraction`（useAi=true）。全提案を
+//   `reviseChronicleProposal({secret:false})` で child にし、child を承認する（計画 §2.4）。
+// - 返すのは件数・enum・不透明 ID・Scene の位置だけ。本文・題名・抜粋・LLM の応答は返さない。
+import { generateNKeysBetween } from "fractional-indexing";
+import { invoke } from "@/lib/tauri";
+import {
+  getCurrentWorkspaceIdentity,
+  setCurrentWorkspaceIdentity,
+} from "@/runtime/workspaceIdentity";
+import { setCurrentRuntimeProjectId } from "@/runtime/projectIdentity";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import { createProject, listProjects } from "@/features/project/api";
+import {
+  getCurrentProjectId,
+  useProjectStore,
+} from "@/features/project/projectStore";
+import { listNodes, loadSceneContent } from "@/features/tree/api";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { usePhaseStore } from "@/features/codex/phaseStore";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
+import { prosemirrorToText } from "@/lib/prosemirror";
+import { useDebugLogStore } from "@/lib/debugLog";
+import { fetchRelatedPastScenes } from "@/features/related-scenes/fetchRelatedScenes";
+import {
+  beginRelatedScenes,
+  continueRelatedScenes,
+  listenRelatedScenesIndexReady,
+  releaseRelatedScenes,
+} from "@/features/related-scenes/nir1RelatedScenesApi";
+import { buildSemanticRecallQuery } from "@/features/chat/semanticRecall";
+import {
+  semanticIndexStatus,
+  semanticReindexAll,
+} from "@/features/semantic-search/api";
+import {
+  getAiSettings,
+  hasApiKey,
+  saveAiSettings,
+  saveApiKey,
+} from "@/features/chat/api";
+import { useAiSettingsStore } from "@/features/chat/store";
+import { captureMutationAuthority } from "@/features/concurrency/mutationAuthority";
+import { listEvents } from "@/features/chronicle/api";
+import { buildLiveChronicleExistingEventCatalog } from "@/features/chronicle/extraction/existingEventCatalog";
+import { useChronicleExtractionStore } from "@/features/chronicle/chronicleExtractionStore";
+import {
+  discardChronicleTaskResumeCandidate,
+  discoverChronicleTaskResumeCandidates,
+  startChronicleExtraction,
+} from "@/features/chronicle/extractEventsApi";
+import {
+  decideChronicleProposal,
+  reviseChronicleProposal,
+} from "@/features/chronicle/chronicleExtractionApi";
+
+interface SceneSeed {
+  /** 読書順の位置（1 始まり）。 */
+  position: number;
+  paragraphs: string[];
+}
+
+let openRevision = 0;
+let active: {
+  projectId: string;
+  language: "ja" | "en";
+  positions: Map<string, number>;
+  lastFolderKey: string | null;
+} | null = null;
+let readyEvents = 0;
+let unlistenReady: (() => void) | null = null;
+
+const sceneId = (position: number) =>
+  `fir-s${String(position).padStart(4, "0")}`;
+const folderId = (position: number) =>
+  `fir-f${String(position).padStart(4, "0")}`;
+
+/** NEX_ などの code だけを残す。本文や key が混ざる余地のある message は返さない。 */
+function errorCode(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.match(/\bNEX_[A-Z0-9_]+\b/u)?.[0] ??
+    message.match(/^\[[a-z-]+\]/u)?.[0] ??
+    fallback
+  );
+}
+
+function requireActive() {
+  if (!active) throw new Error("[precheck] no prepared case");
+  return active;
+}
+
+async function prepare(input: {
+  workspacePath: string;
+  projectId: string;
+  language: "ja" | "en";
+}) {
+  await invoke("open_workspace", { path: input.workspacePath });
+  setCurrentWorkspaceIdentity({
+    path: input.workspacePath,
+    openRevision: ++openRevision,
+  });
+  publishCurrentProjectId(input.projectId);
+  setCurrentRuntimeProjectId(input.projectId);
+  await createProject({
+    id: input.projectId,
+    title: "Fusion slot IR evaluation",
+    language: input.language,
+  });
+  useProjectStore.setState({
+    currentProjectId: input.projectId,
+    projects: await listProjects(),
+  });
+  await useTreeStore
+    .getState()
+    .reloadTreeOrThrow(input.projectId, openRevision);
+  usePhaseStore.setState({ resolutionMode: "reading" });
+  unlistenReady?.();
+  readyEvents = 0;
+  unlistenReady = await listenRelatedScenesIndexReady((id) => {
+    if (id === input.projectId) readyEvents++;
+  });
+  active = {
+    projectId: input.projectId,
+    language: input.language,
+    positions: new Map(),
+    lastFolderKey: null,
+  };
+  return { ok: true };
+}
+
+/** provider と model だけを上書きする。reasoning は製品の経路から指定できないので触らない。 */
+async function configureAi(input: { provider: "openrouter"; model: string }) {
+  const current = await getAiSettings();
+  await saveAiSettings({
+    ...current,
+    provider: input.provider,
+    model: input.model,
+  });
+  await useAiSettingsStore.getState().loadSettings();
+  const loaded = useAiSettingsStore.getState().settings;
+  return {
+    provider: loaded?.provider ?? null,
+    model: loaded?.model ?? null,
+    reasoningEffortOverride: loaded?.reasoningEffortOverride ?? null,
+    thinkingEnabled: loaded?.thinkingEnabled ?? null,
+  };
+}
+
+/** 製品の save_api_key（safeStorage）で key を入れる。値は返さず、記録もしない。 */
+async function installKey(key: string) {
+  try {
+    await saveApiKey("openrouter", key, null);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const backend = message.match(/backend: ([a-z_]+)/u)?.[1] ?? null;
+    throw new Error(
+      `[key] save_api_key failed${backend ? ` (backend ${backend})` : ""}${
+        message.includes("safeStorage unavailable") ? " (unavailable)" : ""
+      }`,
+    );
+  }
+  const present = await hasApiKey("openrouter", null);
+  await useAiSettingsStore.getState().loadSettings();
+  return { present, storeHasApiKey: useAiSettingsStore.getState().hasApiKey };
+}
+
+/** Scene を読書順に足す。1 件ずつ folder に入れる（L0 の流儀）。 */
+async function addScenes(scenes: SceneSeed[]) {
+  const state = requireActive();
+  const sorted = [...scenes].sort((a, b) => a.position - b.position);
+  const keys = generateNKeysBetween(state.lastFolderKey, null, sorted.length);
+  for (const [index, scene] of sorted.entries()) {
+    const title = `S${scene.position}`;
+    await invoke("tree_node_create", {
+      payload: {
+        ...createCanonicalWriteContext("human"),
+        id: folderId(scene.position),
+        projectId: state.projectId,
+        parentId: null,
+        nodeType: "folder",
+        title,
+        sortOrder: keys[index],
+        content: null,
+        canonicalPayload: { parentId: null, sortOrder: keys[index], title },
+      },
+    });
+    await invoke("tree_node_create", {
+      payload: {
+        ...createCanonicalWriteContext("human"),
+        id: sceneId(scene.position),
+        projectId: state.projectId,
+        parentId: folderId(scene.position),
+        nodeType: "scene",
+        title,
+        sortOrder: "a0",
+        content: JSON.stringify({
+          type: "doc",
+          content: scene.paragraphs.map((text) => ({
+            type: "paragraph",
+            content: [{ type: "text", text }],
+          })),
+        }),
+        canonicalPayload: {
+          parentId: folderId(scene.position),
+          sortOrder: "a0",
+          title,
+        },
+      },
+    });
+    state.positions.set(sceneId(scene.position), scene.position);
+  }
+  state.lastFolderKey = keys[keys.length - 1] ?? state.lastFolderKey;
+  const nodes = await listNodes(state.projectId);
+  const sceneCount = nodes.filter((node) => node.nodeType === "scene").length;
+  if (sceneCount !== state.positions.size)
+    throw new Error("[artifact] setup scene count mismatch");
+  await useTreeStore
+    .getState()
+    .reloadTreeOrThrow(state.projectId, openRevision);
+  for (const scene of sorted) {
+    const expected = scene.paragraphs.map((p) => `${p}\n`).join("");
+    if (
+      prosemirrorToText(await loadSceneContent(sceneId(scene.position))) !==
+      expected
+    )
+      throw new Error(
+        `[artifact] persisted source differs: ${sceneId(scene.position)}`,
+      );
+  }
+  return { sceneCount };
+}
+
+function positionsOfRefs(refs: readonly unknown[]): number[] {
+  const state = requireActive();
+  const found = new Set<number>();
+  for (const ref of refs) {
+    const text = typeof ref === "string" ? ref : JSON.stringify(ref);
+    for (const [id, position] of state.positions)
+      if (text.includes(id)) found.add(position);
+  }
+  return [...found].sort((a, b) => a - b);
+}
+
+/** 未解決の resume 候補は次の解析を拒むので、失敗の後に捨てる。 */
+async function discardResumeCandidates() {
+  const state = requireActive();
+  const workspace = getCurrentWorkspaceIdentity();
+  if (!workspace) throw new Error("[precheck] no workspace identity");
+  const scope = {
+    projectId: state.projectId,
+    workspacePath: workspace.path,
+    openRevision: workspace.openRevision,
+  };
+  const candidates = await discoverChronicleTaskResumeCandidates(scope);
+  const discarded: string[] = [];
+  for (const candidate of candidates) {
+    try {
+      await discardChronicleTaskResumeCandidate({
+        candidate,
+        authority: captureMutationAuthority(
+          state.projectId,
+          getCurrentProjectId,
+        ),
+        workspacePath: workspace.path,
+        openRevision: workspace.openRevision,
+      });
+      discarded.push("discarded");
+    } catch (error) {
+      discarded.push(errorCode(error, "discard-failed"));
+    }
+  }
+  return { candidates: candidates.length, results: discarded };
+}
+
+/**
+ * 1 Scene を抽出し、全提案を非 secret の child にして承認する。
+ * 返すのは件数・enum・位置だけ（題名・note・evidence の引用は返さない）。
+ */
+async function extractScene(position: number) {
+  const state = requireActive();
+  const workspace = getCurrentWorkspaceIdentity();
+  if (!workspace) throw new Error("[precheck] no workspace identity");
+  const started = performance.now();
+  useChronicleExtractionStore.getState().clearProjection();
+  let runId: string;
+  try {
+    const existing = await listEvents(state.projectId);
+    ({ runId } = await startChronicleExtraction({
+      projectId: state.projectId,
+      folderId: folderId(position),
+      language: state.language,
+      sceneIds: [sceneId(position)],
+      authority: captureMutationAuthority(state.projectId, getCurrentProjectId),
+      workspacePath: workspace.path,
+      openRevision: workspace.openRevision,
+      existingEvents: buildLiveChronicleExistingEventCatalog(existing),
+    }));
+  } catch (error) {
+    const code = errorCode(error, "extraction-failed");
+    let recovery = null;
+    try {
+      recovery = await discardResumeCandidates();
+    } catch (recoveryError) {
+      recovery = { error: errorCode(recoveryError, "recovery-failed") };
+    }
+    return {
+      position,
+      status: "failed",
+      errorCode: code,
+      recovery,
+      durationMs: performance.now() - started,
+      proposals: [],
+    };
+  }
+  const extractedMs = performance.now() - started;
+  const projection = useChronicleExtractionStore.getState().projection;
+  if (!projection || projection.runId !== runId)
+    return {
+      position,
+      status: "failed",
+      errorCode: "projection-missing",
+      durationMs: extractedMs,
+      proposals: [],
+    };
+  const proposals = [];
+  for (const proposal of [...projection.proposals]) {
+    const row: Record<string, unknown> = {
+      applicability: proposal.applicability,
+      statusBefore: proposal.status,
+      secretBefore: proposal.payload?.disclosure.secret ?? null,
+      actuality: proposal.payload?.actuality ?? null,
+      significance: proposal.payload?.significance ?? null,
+      evidenceCount: proposal.evidence.length,
+      evidencePositions: positionsOfRefs(
+        proposal.payload?.evidenceDocumentRefs ?? [],
+      ),
+      revealPositions: positionsOfRefs(
+        proposal.payload ? [proposal.payload.disclosure.revealDocumentRef] : [],
+      ),
+      revised: false,
+      approved: false,
+      error: null as string | null,
+    };
+    if (proposal.applicability !== "applicable" || proposal.application) {
+      row.error = "not-applicable";
+      proposals.push(row);
+      continue;
+    }
+    try {
+      // 順序は revise が先、承認が後（逆だと decision が古い revision を指して失効する）。
+      await reviseChronicleProposal({
+        proposalId: proposal.proposalId,
+        patch: { secret: false },
+      });
+      row.revised = true;
+      await decideChronicleProposal({
+        proposalId: proposal.proposalId,
+        status: "approved",
+      });
+      row.approved = true;
+    } catch (error) {
+      row.error = errorCode(
+        error,
+        row.revised ? "approve-failed" : "revise-failed",
+      );
+    }
+    proposals.push(row);
+  }
+  return {
+    position,
+    status: "completed",
+    runId,
+    errorCode: null,
+    extractedMs,
+    durationMs: performance.now() - started,
+    proposals,
+  };
+}
+
+async function buildRaw(input: { first: boolean }) {
+  const state = requireActive();
+  const before = await semanticIndexStatus(state.projectId);
+  if (input.first && before.indexedChunkCount !== 0)
+    throw new Error("[precheck] fresh DB already contains vectors");
+  const started = performance.now();
+  await semanticReindexAll(state.projectId, `fusion-ir-${state.projectId}`);
+  const status = await semanticIndexStatus(state.projectId);
+  if (
+    status.staleChunkCount !== 0 ||
+    status.indexedSceneCount !== state.positions.size ||
+    status.nonemptySceneCount !== state.positions.size
+  )
+    throw new Error(
+      "[artifact] full build did not publish all expected scenes",
+    );
+  return {
+    durationMs: performance.now() - started,
+    indexedChunkCount: status.indexedChunkCount,
+    indexedSceneCount: status.indexedSceneCount,
+  };
+}
+
+/** 製品の hybrid の fetch を 1 回呼び、件数・enum・位置だけを返す。session は必ず解放する。 */
+async function sampleHybrid(position: number) {
+  const state = requireActive();
+  const id = sceneId(position);
+  useTreeStore.setState({ activeSceneId: id });
+  useDebugLogStore.getState().clear();
+  const started = performance.now();
+  const sample = await fetchRelatedPastScenes(id, { mode: "hybrid" });
+  const durationMs = performance.now() - started;
+  try {
+    const failures = useDebugLogStore
+      .getState()
+      .entries.filter(
+        (entry) =>
+          entry.tag === "RelatedScenes" &&
+          (entry.level === "warn" || entry.level === "error"),
+      ).length;
+    const toPosition = (sid: string) => state.positions.get(sid) ?? -1;
+    const result = sample.result;
+    return {
+      status: sample.status,
+      rawStatus: sample.rawStatus,
+      initialSnapshot: sample.initialSnapshot
+        ? {
+            indexUsable: sample.initialSnapshot.indexUsable,
+            querySupported: sample.initialSnapshot.querySupported,
+          }
+        : null,
+      completion: sample.completion
+        ? {
+            outcome: sample.completion.outcome,
+            deadlineExceeded: sample.completion.deadlineExceeded,
+          }
+        : null,
+      resultKind: result.kind,
+      irStatus: result.ir.status,
+      irReason: "reason" in result.ir ? result.ir.reason : null,
+      rows:
+        result.kind === "fused"
+          ? result.scenes.map((row) => ({
+              position: toPosition(row.sceneId),
+              kind: row.kind,
+            }))
+          : result.scenes.map((row) => ({
+              position: toPosition(row.sceneId),
+              kind: "raw",
+            })),
+      rawCount: sample.rawScenes.length,
+      rawPositions: sample.rawScenes.map((row) => toPosition(row.sceneId)),
+      durationMs,
+      failures,
+    };
+  } finally {
+    sample.session?.release();
+  }
+}
+
+/**
+ * 別 operation の probe：begin→continue（deadline なし）→release。continue の列は
+ * floor・Scene ごとの最大・上限 8 件を通った後のもの（floor 前の候補は見えない）。
+ */
+async function probe(position: number) {
+  const state = requireActive();
+  const workspace = getCurrentWorkspaceIdentity();
+  if (!workspace) throw new Error("[precheck] no workspace identity");
+  const id = sceneId(position);
+  const body = prosemirrorToText(await loadSceneContent(id));
+  const query = buildSemanticRecallQuery({ userMessage: "", sceneBody: body });
+  const begin = await beginRelatedScenes({
+    expectedWorkspacePath: workspace.path,
+    projectId: state.projectId,
+    currentSceneId: id,
+    query,
+  });
+  if (begin.ir.status !== "pending")
+    return {
+      status: "unavailable",
+      reason: begin.ir.reason,
+      admittedPositions: [],
+    };
+  const ticket = begin.ir.operationTicket;
+  try {
+    const answer = await continueRelatedScenes(ticket);
+    if (answer.status !== "available")
+      return {
+        status: "unavailable",
+        reason: answer.reason,
+        admittedPositions: [],
+      };
+    return {
+      status: "available",
+      reason: null,
+      admittedPositions: answer.scenes.map(
+        (scene) => state.positions.get(scene.sceneId) ?? -1,
+      ),
+    };
+  } finally {
+    await releaseRelatedScenes(ticket).catch(() => undefined);
+  }
+}
+
+/**
+ * 承認の後、IR が使える（indexUsable）まで待つ。`related-scenes:index-ready` を数え、
+ * 実際の query 経路で確かめる（L0 の buildIr と同じ考え方。上限は伸ばす）。
+ */
+async function waitIrUsable(input: { position: number; timeoutMs: number }) {
+  const eventsAtStart = readyEvents;
+  const started = performance.now();
+  const probes: { indexUsable: boolean | null; outcome: string | null }[] = [];
+  while (performance.now() - started < input.timeoutMs) {
+    const sample = await sampleHybrid(input.position);
+    probes.push({
+      indexUsable: sample.initialSnapshot?.indexUsable ?? null,
+      outcome: sample.completion?.outcome ?? null,
+    });
+    if (sample.initialSnapshot?.indexUsable === true)
+      return {
+        usable: true,
+        durationMs: performance.now() - started,
+        readyEvents: readyEvents - eventsAtStart,
+        attempts: probes.length,
+        last: probes[probes.length - 1],
+      };
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return {
+    usable: false,
+    durationMs: performance.now() - started,
+    readyEvents: readyEvents - eventsAtStart,
+    attempts: probes.length,
+    last: probes[probes.length - 1] ?? null,
+  };
+}
+
+/**
+ * 使用量：ai_audit_events の execution.* の件数と、成功の usage の token 合計。
+ * ai_usage の行もあれば合計する。数字だけを返す（payload の本文は返さない）。
+ */
+async function usage() {
+  const state = requireActive();
+  const rows = async (sql: string, params: unknown[] = []) =>
+    (
+      await invoke<{ rows: Record<string, unknown>[] }>("db_execute", {
+        sql,
+        params,
+        method: "all",
+      })
+    ).rows;
+  const byType = await rows(
+    "SELECT event_type AS t, count(*) AS n FROM ai_audit_events WHERE event_type LIKE 'execution.%' GROUP BY event_type",
+  );
+  const succeeded = await rows(
+    "SELECT payload FROM ai_audit_events WHERE event_type = 'execution.succeeded'",
+  );
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let missingUsage = 0;
+  for (const row of succeeded) {
+    try {
+      const parsed = JSON.parse(String(row.payload)) as {
+        usage?: { inputTokens?: number | null; outputTokens?: number | null };
+      };
+      const input = parsed.usage?.inputTokens;
+      const output = parsed.usage?.outputTokens;
+      if (typeof input === "number") inputTokens += input;
+      if (typeof output === "number") outputTokens += output;
+      if (typeof input !== "number" || typeof output !== "number")
+        missingUsage++;
+    } catch {
+      missingUsage++;
+    }
+  }
+  const aiUsage = await rows(
+    "SELECT count(*) AS n, sum(tokens_in) AS tin, sum(tokens_out) AS tout, sum(cost_usd) AS cost, sum(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS nocost FROM ai_usage WHERE project_id = ?",
+    [state.projectId],
+  );
+  return {
+    auditExecutions: Object.fromEntries(
+      byType.map((row) => [String(row.t), Number(row.n)]),
+    ),
+    succeeded: succeeded.length,
+    inputTokens,
+    outputTokens,
+    missingUsage,
+    aiUsage: aiUsage[0] ?? null,
+  };
+}
+
+Object.assign(window, {
+  fusionIrEvaluation: {
+    prepare,
+    configureAi,
+    installKey,
+    addScenes,
+    extractScene,
+    discardResumeCandidates,
+    buildRaw,
+    sampleHybrid,
+    probe,
+    waitIrUsable,
+    usage,
+    readyEvents: () => readyEvents,
+    ready: true,
+  },
+});
