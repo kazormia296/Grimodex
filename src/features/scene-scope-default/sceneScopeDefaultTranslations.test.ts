@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import i18next from "@/lib/i18n";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { ensureSceneScopeDefaultTranslations } from "./sceneScopeDefaultTranslations";
+import {
+  ensureSceneScopeDefaultTranslations,
+  SCENE_SCOPE_DEFAULT_TRANSLATIONS,
+} from "./sceneScopeDefaultTranslations";
 
 // Read the files themselves: i18next deep-merges added bundles into the
 // imported JSON objects at runtime.
@@ -37,6 +40,18 @@ describe("scene scope default translations（DR-SDEF-52）", () => {
     }
     // The Scope field's own strings stay in the startup files.
     expect(ja.editor.sceneDetail).toHaveProperty("scopeDefaultBadge");
+  });
+
+  it("has the same keys in ja and en", () => {
+    const keys = (value: unknown, prefix = ""): string[] =>
+      value !== null && typeof value === "object"
+        ? Object.entries(value).flatMap(([key, child]) =>
+            keys(child, `${prefix}${key}.`),
+          )
+        : [prefix.slice(0, -1)];
+    const { ja: jaStrings, en: enStrings } = SCENE_SCOPE_DEFAULT_TRANSLATIONS;
+    expect(keys(enStrings).sort()).toEqual(keys(jaStrings).sort());
+    expect(keys(jaStrings).length).toBeGreaterThan(0);
   });
 
   it("register both locales without replacing existing resources", () => {

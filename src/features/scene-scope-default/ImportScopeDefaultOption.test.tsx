@@ -74,7 +74,8 @@ describe("取り込みの画面のチェック（SDEF/1 R14、DR-SDEF-31）", ()
       'import.sceneScopeApplyValue:{"value":"timeline:local / editor.sceneDetail.refWorldlinePrime / editor.sceneDetail.refLayerManuscript"}',
     );
     fireEvent.click(box);
-    expect(onChange).toHaveBeenCalledWith(true);
+    // ON carries the version of the default shown (P3-b).
+    expect(onChange).toHaveBeenCalledWith({ expectedVersion: 1 });
   });
 
   it("is unavailable for a new project, which has no default", () => {

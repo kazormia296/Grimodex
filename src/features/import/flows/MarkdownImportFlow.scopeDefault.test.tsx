@@ -67,7 +67,9 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-async function runImport(applyScopeDefault: boolean) {
+async function runImport(
+  applyScopeDefault: false | { expectedVersion: number },
+) {
   const { container } = render(
     <MarkdownImportFlow
       importTarget="currentProject"
@@ -103,7 +105,9 @@ describe("取り込みのチェック（SDEF/1 R14、A7、DR-SDEF-31）", () => 
   });
 
   it("passes the ON state with the imported Scenes after the import finished", async () => {
-    await runImport(true);
-    expect(h.applyAfterImport).toHaveBeenCalledWith(true, ["scene-imported"]);
+    await runImport({ expectedVersion: 3 });
+    expect(h.applyAfterImport).toHaveBeenCalledWith({ expectedVersion: 3 }, [
+      "scene-imported",
+    ]);
   });
 });

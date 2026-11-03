@@ -48,15 +48,24 @@ describe("applyScopeDefaultAfterImport（SDEF/1 R14、A7）", () => {
       skipped: 0,
       failed: 1,
     });
-    await applyScopeDefaultAfterImport(true, ["s1", "s2"]);
+    await applyScopeDefaultAfterImport({ expectedVersion: 5 }, ["s1", "s2"]);
     expect(h.apply).toHaveBeenCalledWith({
       workspacePath: "/workspace",
       projectId: "project-1",
       sceneIds: ["s1", "s2"],
       target: "unknown",
+      // The version of the default the import screen showed (P3-b).
+      expectedVersion: 5,
     });
     expect(h.warning).toHaveBeenCalledWith(
       'settings.project.sceneScopeApplyResult:{"applied":1,"failed":1}',
     );
+  });
+
+  it("does not apply a default that changed after the screen showed it (P3-b)", async () => {
+    h.apply.mockResolvedValue({ status: "default-changed" });
+    await applyScopeDefaultAfterImport({ expectedVersion: 5 }, ["s1"]);
+    expect(h.error).toHaveBeenCalledWith("import.sceneScopeApplyChanged");
+    expect(h.success).not.toHaveBeenCalled();
   });
 });

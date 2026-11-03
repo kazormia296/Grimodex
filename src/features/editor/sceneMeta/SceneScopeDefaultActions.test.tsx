@@ -213,6 +213,19 @@ describe("SceneScopeDefaultActions（rev2 §7.3、DR-SDEF-30・32）", () => {
       await screen.findByText("settings.project.sceneScopeDefaultConflict"),
     ).toBeTruthy();
     expect(onApplied).not.toHaveBeenCalled();
+    // P3-a: the moved default is read again, so the next attempt carries the
+    // current version instead of colliding until the Scene changes.
+    await waitFor(() => expect(h.read).toHaveBeenCalledTimes(2));
+    h.apply.mockResolvedValue({
+      status: "done",
+      applied: 1,
+      skipped: 0,
+      failed: 0,
+    });
+    h.read.mockClear();
+    fireEvent.click(await screen.findByTestId("scene-scope-apply-default"));
+    fireEvent.click(screen.getByTestId("scene-scope-apply-run"));
+    await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
   });
 
   it("offers nothing when the project has no default", async () => {

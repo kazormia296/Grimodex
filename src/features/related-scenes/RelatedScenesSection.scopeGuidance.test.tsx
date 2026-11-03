@@ -164,12 +164,36 @@ describe("関連場面の Scope の案内（rev2 §7.4、DR-SDEF-33）", () => {
     });
     h.invoke.mockResolvedValueOnce(binding("unknown"));
     h.invoke.mockResolvedValueOnce(binding("explicit"));
-    render(<RelatedScenesSection enabled />);
+    const { rerender } = render(<RelatedScenesSection enabled />);
     fireEvent.click(await screen.findByTestId("scope-default-actions"));
     expect(
       await screen.findByTestId("nir1-scope-guidance-applied"),
     ).toBeTruthy();
     expect(screen.getByText("relatedScenes.scopeApplied")).toBeTruthy();
+
+    // P3-c: another Scene starts without the previous Scene's note.
+    useTreeStore.setState({
+      nodes: [
+        { id: "scene-1", projectId: "project-1", nodeType: "scene" },
+        { id: "scene-2", projectId: "project-1", nodeType: "scene" },
+      ],
+      activeSceneId: "scene-2",
+    } as never);
+    // An explicit Scene with an unresolved axis: the stale note would show.
+    h.invoke.mockResolvedValue(
+      binding("explicit", {
+        ...MAIN_LINE,
+        worldline: { kind: "unresolved", reason: "x" },
+      }),
+    );
+    h.hook.mockReturnValue({
+      sceneId: "scene-2",
+      loading: false,
+      fetch: unsupported,
+    });
+    rerender(<RelatedScenesSection enabled />);
+    expect(await screen.findByTestId("nir1-scope-guidance")).toBeTruthy();
+    expect(screen.queryByTestId("nir1-scope-guidance-applied")).toBeNull();
   });
 
   it("以前からの場面は未設定の文言で、1 クリックの「既定を当てる」は出さない", async () => {
