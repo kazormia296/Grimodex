@@ -62,4 +62,15 @@ mutation の前に書いた。実装の後に分かったことは、行の本�
 
 ## 実装後の追記
 
-（実装の後に書く。上の行の本文は直さない。）
+上の行の本文は直さない。実装の後に分かったことと、行の読み方の補足をここに書く。
+
+| ID | 日付 | 内容 |
+|---|---|---|
+| DR-SDEF-16 | 2026-11-04 | 実装の commit：`78a4ad5a`（この文書と台帳）、`09a8de5e`（SCHEMA 44 と保護一覧）、`6c2c54c6`（reader／writer、判定と経路、N-API）、`a47921d2`（受入れ試験）、と本追記の commit。途中の commit が単独で compile することは確かめていない（最後の commit で全体を検証した）。 |
+| DR-SDEF-17 | 2026-11-04 | DR-SDEF-11 の (2) の延長：renderer の Drizzle に載せない表は、browser の mock（`src/lib/browser-mock.ts` の `RUST_ONLY_BROWSER_TABLES`）からも外す必要があった（`schema.contract.test.ts` の「browser の DB の表の一覧」の試験が、契約の表から Rust 専用の表を引いた集合と比べるため）。mock の一覧に 1 行足した。renderer の製品の挙動は変えない。 |
+| DR-SDEF-18 | 2026-11-04 | 章（folder）の削除の undo：renderer の `deleteTreeSubtree` は配下の node を 1 つずつ別の Undo Journal で消し、undo は親から順に各 node の journal で作り直す（`validate_tree_replay_target_in_tx` が journal の対象の id を照合する）。試験はこの手順で、配下の全場面が `unknown` になることを固定した（rev2 §4.1 の読みのとおり）。 |
+| DR-SDEF-19 | 2026-11-04 | DR-SDEF-6 の route の読み：付箋の昇格（`apply_map_write`）は route を持たないので None を渡す。tree の作成で renderer の authority context が無い Native の直接呼出し（`tree_node_create`）も None。どちらも origin と lineage の検証の後で、R7 (b) の route の条件は満たされたと読む（DR-SDEF-6 のとおり）。 |
+| DR-SDEF-20 | 2026-11-04 | PR-2 への注：既定の writer は registry を作らない（MD4）。registry の行がまだ無い project（generic import で場面が 1 つも無い project など）では `set` が `NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE` で失敗する（既存の registry の writer も同じ）。`project_create` と、場面のある project では registry が在る。画面の扱いは PR-2 で決める。 |
+| DR-SDEF-21 | 2026-11-04 | DR-SDEF-11 の (3) の読み：契約の MD5 の「generic SQL の拒否一覧」は、rev2 §3.4 が `execute.rs:4470-4500`（`narrative_scope_registries` は :4491）と位置で指した一覧で、実体は K3 の表の台帳の「列挙に無い表」の固定（`D2A_UNLISTED_SCHEMA_TABLES`）だった。renderer の generic SQL の書込みを実際に拒否するのは `protected-writers.json`（Rust の authorizer が `include_str!` する）で、MD5 の 2 つの一覧のどちらにも加えた。列挙に無い表に加えたので、K3/2 の確認の時点（schema 41）の 27 を固定していた `narrative_` の未列挙の数の試験を 28 に改め、理由を書いた。closed の 26 と read-open の 58（確認された数）は変えない。generic SQL の読取は registry と同じく閉じていない（MD5 の「renderer は typed command だけで読み書きする」は、Drizzle に載せないことと PR-2 の renderer の実装で守る）。 |
+| DR-SDEF-22 | 2026-11-04 | 品質の検査への追随：(1) `validate-native-writer-ownership.mjs` の `narrative.authority` の module に `scene_scope_default.rs` を足した（保護表を書く SQL の正本の module）。(2) `scripts/local-ci-full-workload-allocation.json` の digest を、内容を変えた 3 file（`schema-contract.json`、`nir1_capacity_fixtures.rs`、`c2zc_restore_fixture.rs`。後の 2 つは引数と field を 1 つ足しただけで、量の見積りは変わらない）について更新した（SCHEMA 43 の #673 と同じ扱い）。(3) 新しい試験が Agent Writer の型を import して `validate-semantic-core-boundary` に当たったので、型を名指さずに wire の JSON から作る形に直した（DR-X1-5-13 と同じ直し方。許可リストは変えない）。(4) `migrate.rs` の v43 の試験の版の固定（43）を `SCHEMA_VERSION` に改めた。 |
+| DR-SDEF-23 | 2026-11-04 | 「修正の前に落ちる」ことの確かめ方：修正の前の版は既定の表も writer も無く、試験が compile できない。代わりに、実装の該当箇所だけを一時的に元の挙動に戻した版で試験を走らせ、落ちることを確かめてから戻した。(i) 判定が常に「しない」を返す版：A1 の試験（tree・AI 計画・付箋の forward が explicit）、A2 の陽性の対照を含む試験、判定の全組の試験が落ちた。(ii) registry の writer の拒否を外した版：A5 が落ちた。(iii) 初回の registry を空にした版：A6 の schema 2 からの更新の試験と、`project_create` の語彙の試験が落ちた。A2 の陰性（unknown のまま）と A4 は修正の前も成り立つ性質なので、修正の前には落ちない。 |

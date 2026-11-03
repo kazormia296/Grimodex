@@ -4600,7 +4600,10 @@ mod tests {
 
         // The `narrative_` tables outside the ledger stay
         // "unlisted" (K3/2: 27 at schema 41).  They are not closed by prefix
-        // and are not widened into the ledger by this change.
+        // and are not widened into the ledger by this change.  SCHEMA 44
+        // (SDEF/1, `nir1-scene-scope-default-proposal/1`) adds
+        // `narrative_scope_project_defaults` here like the registry, so the
+        // closed and read-open counts above are unchanged.
         let narrative_unlisted = D2A_UNLISTED_SCHEMA_TABLES
             .iter()
             .filter(|name| name.starts_with("narrative_"))
@@ -4611,8 +4614,8 @@ mod tests {
         }
         assert_eq!(
             narrative_unlisted.len(),
-            27,
-            "K3/2 pins the 27 unlisted narrative_ tables"
+            28,
+            "K3/2 pins the 27 unlisted narrative_ tables, plus SDEF/1's default table"
         );
 
         // Unlisted tables stay readable and writable exactly as at a153743b.

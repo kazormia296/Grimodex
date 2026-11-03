@@ -158,6 +158,8 @@ const RUST_ONLY_BROWSER_TABLES = new Set([
   "post_effect_annotations_fts_en",
   "nir1_chat_input_captures",
   "nir1_chat_input_submission_keys",
+  // SDEF/1 MD5: the project Scene Scope default is Native-owned (typed commands only).
+  "narrative_scope_project_defaults",
 ]);
 
 function executableCreateSql(createSql: string, columnNames: string[]): string {

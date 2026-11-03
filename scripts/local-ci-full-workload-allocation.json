@@ -93,11 +93,11 @@
     },
     {
       "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",
-      "sha256": "ca5e27f9d0f647864654575fd342ef9351d14a88877ab3d7cd6db3449d15d23b"
+      "sha256": "6a9c937e583199dd5b1891fc852a76f1f2613e443168a354807ea461e53d76ee"
     },
     {
       "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs",
-      "sha256": "eb5748d28bd3553d742c6ffb6a3bae3bea42dfd3c968a12c20f0b5b7043e919c"
+      "sha256": "deb4643e2cc3e1a6a9ffb8beee2d3c843dd06cd7611c92ff183b0257be4ba73e"
     },
     {
       "path": "electron/scripts/product-journey-harness.mjs",

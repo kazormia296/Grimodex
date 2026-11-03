@@ -12054,7 +12054,7 @@ mod tests {
         db.migrate().expect("migrate v42 to v43");
         db.with_conn(|conn| {
             let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-            assert_eq!(version, 43);
+            // SCHEMA 44 (SDEF/1) migrates further on top of the v43 step.
             assert_eq!(version, grimodex_core::SCHEMA_VERSION);
             assert_eq!(v43_declaration_column_names(conn)?, V43_DECLARATION_COLUMNS);
             let non_null: i64 = conn.query_row(
@@ -12127,7 +12127,11 @@ mod tests {
             db.with_conn(|conn| {
                 let version: i32 =
                     conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-                assert_eq!(version, 43, "kept={kept} dropped={dropped} marker={marker}");
+                assert_eq!(
+                    version,
+                    grimodex_core::SCHEMA_VERSION,
+                    "kept={kept} dropped={dropped} marker={marker}"
+                );
                 assert_eq!(v43_declaration_column_names(conn)?, V43_DECLARATION_COLUMNS);
                 assert_eq!(v43_v1_binding_rows(conn)?, v1_rows);
                 Ok(())

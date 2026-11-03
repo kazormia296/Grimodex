@@ -30,7 +30,6 @@ use super::{
     read_narrative_scene_scope, update_narrative_scene_scope_registry,
     NarrativeSceneScopeRegistryUpdatePayload,
 };
-use crate::agent_writes::RendererCanonicalWriteContext;
 use crate::domain_writes::{
     project_create, tree_node_create, tree_node_create_with_authority, tree_node_delete,
     ProjectCreatePayload, ProjectSceneScopeDefaultInit, TreeNodeCreatePayload,
@@ -284,8 +283,10 @@ fn renderer_context(
     route: &str,
     caller: &str,
     controls: &[&str],
-) -> RendererCanonicalWriteContext {
-    serde_json::from_value(json!({
+) -> Value {
+    // The renderer's authority context as the Native writer deserializes it
+    // (the type itself is the Agent Writer's; this test only builds the wire).
+    json!({
         "requestId": payload.request_id,
         "eventUid": payload.event_uid,
         "origin": payload.origin,
@@ -294,8 +295,7 @@ fn renderer_context(
         "controls": controls,
         "originalTransactionId": payload.original_transaction_id,
         "undoJournalId": payload.undo_journal_id,
-    }))
-    .expect("renderer context")
+    })
 }
 
 // ---------------------------------------------------------------- MD1 ----
@@ -811,7 +811,12 @@ fn replayed_tree_creations_stay_unknown() {
             "change-feed",
         ],
     );
-    tree_node_create_with_authority(&db, undo, Some(context)).expect("undo the delete");
+    tree_node_create_with_authority(
+        &db,
+        undo,
+        Some(serde_json::from_value(context).expect("renderer context")),
+    )
+    .expect("undo the delete");
     assert_eq!(
         marker(&db, P1, "s-undo"),
         NarrativeScopeCompatibilityMarkerV1::Unknown
@@ -922,7 +927,12 @@ fn external_import_and_restore_creations_stay_unknown() {
             "change-feed",
         ],
     );
-    tree_node_create_with_authority(&db, routed, Some(context)).expect("routed import scene");
+    tree_node_create_with_authority(
+        &db,
+        routed,
+        Some(serde_json::from_value(context).expect("renderer context")),
+    )
+    .expect("routed import scene");
     // Restore origin (the future Trash restorer wiring, R11).
     let mut restore = create_payload(P1, "s-restore", "scene");
     restore.origin = NarrativeChangeOrigin::Restore;
