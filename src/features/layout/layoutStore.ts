@@ -649,6 +649,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       guardInlineAiPending()
     )
       return;
+    const wasOpen = get().layout.center.editorOpen;
     const vp = getViewport();
     set((state) => ({
       layout: reduceLayout(state.layout, {
@@ -657,7 +658,11 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       }),
     }));
     scheduleSave(get);
-    if (open) scheduleEditorFocus();
+    // 閉じていたエディタを開いたときだけフォーカスを移す。すでに開いているときの
+    // showPanel("editor")（openEditorDocument の revealEditor）は「見せる」だけで、
+    // フォーカスは focusEditor で明示する。ここで移すと、新しいシーンの名前の
+    // 入力欄からフォーカスを奪う。
+    if (open && !wasOpen) scheduleEditorFocus();
   },
 
   togglePanel: (panel) => {

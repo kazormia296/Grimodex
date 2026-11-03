@@ -28,7 +28,11 @@ export const INITIAL_JS_GRAPH_BUDGET = {
   // 4,248,578 → 4,261,293 で +12,715、gzip は上限の内側）。層（OverlayLayer）を lazy に
   // すると共有 module が細かい chunk に割れて全部 preload され、raw 4,286,482 に増えたので
   // 採らなかった。
-  absoluteMax: { rawBytes: 4_261_300, gzipBytes: 1_350_000 },
+  // raw は 4_261_300 から 200 byte だけ上げた。Scenes の名前変更の入力欄がフォーカスを
+  // 失う不具合の修正（右クリックメニューを閉じたときのフォーカスの戻し先と、開いている
+  // エディタを見せるだけのときのフォーカス移動）が初期 graph の tree と layout に入るため
+  // （実測 raw 4,261,293 → 4,261,421 で +128、gzip は上限の内側）。
+  absoluteMax: { rawBytes: 4_261_500, gzipBytes: 1_350_000 },
 };
 const INITIAL_CSS_MAX_BYTES = 240_000;
 const INITIAL_CSS_MAX_GZIP_BYTES = 42_000;
