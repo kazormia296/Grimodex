@@ -145,6 +145,13 @@ export const SETUP_ADDENDUM_V1 = Object.freeze({
   sha256: "ade7c40256c159f2da1341cfa885401542f6d6621a99ca394bcdb255b7271f46",
 });
 /**
+ * S2 追補 #12 の独立レビューの P3-5: the commit v2's supersedes binds v1 at
+ * (fixed by v2's sha256). The validator keeps checking v1's working-tree
+ * bytes and the formal gate v1 at this commit, as before v3.
+ */
+export const SETUP_ADDENDUM_V1_COMMIT =
+  "cf1c83e3c4d491032511cb6f11fecb5699bc3ed5";
+/**
  * S2 追補 #12（DR-CP4-P-8）: the G-01 setup addendum v3 supersedes v2 (bytes
  * kept; v2 itself supersedes v1). v3 differs from v2 in the leaves of the B
  * reseal rule after the mutation only (DR-CP4-S4-8 (1)〜(3)、(8)). Like the
@@ -1269,54 +1276,79 @@ const G01_RESEAL = Object.freeze({
  * settle (no loosening there); the body-only saves pass either branch, the
  * unchanged one only after the settle (its limit and interval are the
  * pinned driver's FRESHNESS_SETTLE_WAIT_MS／FRESHNESS_SETTLE_INTERVAL_MS).
+ * The independent review of S2 追補 #12 (P2-1): the whole structure is the
+ * expected object exactly — an added key (a new point group, `alsoPasses`,
+ * `onTimeout`, `unchangedRequiresAnyOf`) fails, not only a changed value.
  */
-const G01_SEAL_POINTS = Object.freeze({
-  bodyOnlySave: Object.freeze({
-    points: ["K24-G01-N2:mutation", "K24-G01-N4:beforeDeclaration"],
-    operations: ["resave-same-body", "saveSceneContent-then-createRevision"],
-    passes: ["new-generation", "unchanged"],
-    unchangedRequires: [
-      "freshness-settled",
-      "previous-generation-at-least-1",
-      "previous-not-dirty",
-      "same-generation",
-      "not-dirty",
-      "same-producer-id-and-version",
-      "same-source-digest",
-      "same-dependency-set-digest",
+function g01SealPoints(c) {
+  return {
+    bodyOnlySave: {
+      points: ["K24-G01-N2:mutation", "K24-G01-N4:beforeDeclaration"],
+      operations: ["resave-same-body", "saveSceneContent-then-createRevision"],
+      freshnessSettle: {
+        when: "once-per-opening-before-the-b-poll",
+        settledWhen:
+          "cursor-acknowledged-at-least-head-no-active-run-no-reservation",
+        limit: "FRESHNESS_SETTLE_WAIT_MS",
+        limitMs: c.FRESHNESS_SETTLE_WAIT_MS,
+        interval: "FRESHNESS_SETTLE_INTERVAL_MS",
+        intervalMs: c.FRESHNESS_SETTLE_INTERVAL_MS,
+        maintenanceQuiet: "not-waited",
+        onNotSettled: "new-generation-only",
+      },
+      passes: ["new-generation", "unchanged"],
+      unchangedRequires: [
+        "freshness-settled",
+        "previous-generation-at-least-1",
+        "previous-not-dirty",
+        "same-generation",
+        "not-dirty",
+        "same-producer-id-and-version",
+        "same-source-digest",
+        "same-dependency-set-digest",
+      ],
+    },
+    restore: {
+      points: ["K24-G01-N3:mutation", "K24-G01-N4:mutation"],
+      operations: [
+        "restore-same-bytes-body-version",
+        "restore-different-bytes-body-version",
+      ],
+      freshnessSettle: "not-waited",
+      passes: ["new-generation"],
+    },
+    chronicleRecheck: "same-point-rule-no-second-settle",
+    onNeither: "b-seal-not-published-then-next-opening",
+    unchangedConstants: [
+      "B_SEAL_REOPENS",
+      "B_SEAL_WAIT_MS",
+      "FRESHNESS_SETTLE_WAIT_MS",
+      "FRESHNESS_SETTLE_INTERVAL_MS",
     ],
-  }),
-  settle: Object.freeze({
-    when: "once-per-opening-before-the-b-poll",
-    settledWhen:
-      "cursor-acknowledged-at-least-head-no-active-run-no-reservation",
-    limit: "FRESHNESS_SETTLE_WAIT_MS",
-    interval: "FRESHNESS_SETTLE_INTERVAL_MS",
-    maintenanceQuiet: "not-waited",
-    onNotSettled: "new-generation-only",
-  }),
-  restore: Object.freeze({
-    points: ["K24-G01-N3:mutation", "K24-G01-N4:mutation"],
-    operations: [
-      "restore-same-bytes-body-version",
-      "restore-different-bytes-body-version",
-    ],
-    freshnessSettle: "not-waited",
-    passes: ["new-generation"],
-  }),
-  chronicleRecheck: "same-point-rule-no-second-settle",
-  onNeither: "b-seal-not-published-then-next-opening",
-  unchangedConstants: [
-    "B_SEAL_REOPENS",
-    "B_SEAL_WAIT_MS",
-    "FRESHNESS_SETTLE_WAIT_MS",
-    "FRESHNESS_SETTLE_INTERVAL_MS",
-  ],
-});
+  };
+}
+/**
+ * The JSON of `value` with every object's keys sorted: the exact structure
+ * compared without the key order (a reordered key is no loosening).
+ */
+const canonical = (value) =>
+  JSON.stringify(value, (_, item) =>
+    isObject(item)
+      ? Object.fromEntries(
+          Object.keys(item)
+            .sort()
+            .map((key) => [key, item[key]]),
+        )
+      : item,
+  );
+/** The exact structure, key order free (canonical). */
+const exactly = (left, right) =>
+  left !== undefined && canonical(left) === canonical(right);
 /**
  * S2 追補 #12: v3's records — the outcome words (v2's), the fields the
  * harness (s4-5-g01-reseal-current) adds to each seal attempt and to the
- * Chronicle recheck, and the feed records kept for disclosure only.
+ * Chronicle recheck, and the feed records kept for disclosure only. Every
+ * key but the prose `rule` is compared exactly (review P2-1).
  */
 const G01_SEAL_RECORDS = Object.freeze({
   outcomeWords: ["sealed", "not-published", "sealed-then-dirty"],
@@ -1948,36 +1980,37 @@ const holds = (row, spec) =>
  * limit and interval are the pinned driver's constants.
  */
 function sealPointErrors(errors, reseal, c) {
+  // Review P2-1: the structure is compared exactly (keys and values, key
+  // order free), each part with its own error, then the whole (a new key at
+  // the top, such as a new point group, fails there). The prose leaves
+  // (resealAfterMutation.rule, measurementPointDefinition, records.rule, the
+  // limits' text, reviewPlan) are outside this check; once frozen, S2's
+  // boundFiles[0] sha256 binds them.
   const points = reseal?.sealPoints;
-  const body = points?.bodyOnlySave;
-  const { settle, bodyOnlySave: bodySpec } = G01_SEAL_POINTS;
-  if (!holds(points?.restore, G01_SEAL_POINTS.restore))
+  const want = g01SealPoints(c);
+  if (!exactly(points?.restore, want.restore))
     errors.push(
-      "afterMutationReadings.resealAfterMutation.sealPoints.restore must keep the restores (K24-G01-N3:mutation, K24-G01-N4:mutation) at a new B generation only, without the Freshness settle (v2's rule, not loosened; DR-CP4-S4-8 (1))",
+      "afterMutationReadings.resealAfterMutation.sealPoints.restore must keep the restores (K24-G01-N3:mutation, K24-G01-N4:mutation) at a new B generation only, without the Freshness settle, and nothing else (v2's rule, not loosened; DR-CP4-S4-8 (1))",
     );
-  if (
-    !holds(body, bodySpec) ||
-    !holds(body?.freshnessSettle, settle) ||
-    body.freshnessSettle.limitMs !== c.FRESHNESS_SETTLE_WAIT_MS ||
-    body.freshnessSettle.intervalMs !== c.FRESHNESS_SETTLE_INTERVAL_MS
-  )
+  if (!exactly(points?.bodyOnlySave, want.bodyOnlySave))
     errors.push(
-      `afterMutationReadings.resealAfterMutation.sealPoints.bodyOnlySave must pass the body-only saves (K24-G01-N2:mutation, K24-G01-N4:beforeDeclaration) at a new generation or, after the Freshness settle once per opening (the pinned driver's FRESHNESS_SETTLE_WAIT_MS ${String(c.FRESHNESS_SETTLE_WAIT_MS)} ms, FRESHNESS_SETTLE_INTERVAL_MS ${String(c.FRESHNESS_SETTLE_INTERVAL_MS)} ms; no maintenance quiet), the generation unchanged with all of ${G01_SEAL_POINTS.bodyOnlySave.unchangedRequires.join(", ")} (DR-CP4-S4-8 (1))`,
+      `afterMutationReadings.resealAfterMutation.sealPoints.bodyOnlySave must pass the body-only saves (K24-G01-N2:mutation, K24-G01-N4:beforeDeclaration) at a new generation or, after the Freshness settle once per opening (the pinned driver's FRESHNESS_SETTLE_WAIT_MS ${String(c.FRESHNESS_SETTLE_WAIT_MS)} ms, FRESHNESS_SETTLE_INTERVAL_MS ${String(c.FRESHNESS_SETTLE_INTERVAL_MS)} ms; no maintenance quiet), the generation unchanged with all of ${want.bodyOnlySave.unchangedRequires.join(", ")}, and nothing else (DR-CP4-S4-8 (1))`,
     );
-  if (
-    !holds(points, {
-      chronicleRecheck: G01_SEAL_POINTS.chronicleRecheck,
-      onNeither: G01_SEAL_POINTS.onNeither,
-      unchangedConstants: G01_SEAL_POINTS.unchangedConstants,
-    })
-  )
+  if (!exactly(points, want))
     errors.push(
-      "afterMutationReadings.resealAfterMutation.sealPoints must recheck after the Chronicle build by the same point's rule without a second settle, send neither branch to b-seal-not-published and the next opening, and keep B_SEAL_REOPENS, B_SEAL_WAIT_MS and the settle constants unchanged (DR-CP4-S4-8 (1))",
+      "afterMutationReadings.resealAfterMutation.sealPoints must be exactly the two point groups, recheck after the Chronicle build by the same point's rule without a second settle, send neither branch to b-seal-not-published and the next opening, and keep B_SEAL_REOPENS, B_SEAL_WAIT_MS and the settle constants unchanged (DR-CP4-S4-8 (1))",
     );
   const records = reseal?.records;
-  if (!holds(records, G01_SEAL_RECORDS) || !nonBlank(records?.rule))
+  const { rule: recordsRule, ...recordsStructure } = isObject(records)
+    ? records
+    : {};
+  if (
+    !isObject(records) ||
+    !exactly(recordsStructure, G01_SEAL_RECORDS) ||
+    !nonBlank(recordsRule)
+  )
     errors.push(
-      `afterMutationReadings.resealAfterMutation.records must keep v2's outcome words and name the harness's fields ${[...G01_SEAL_RECORDS.sealAttemptFields, ...G01_SEAL_RECORDS.chronicleFields].join(", ")} and the disclosure-only feed records (DR-CP4-S4-8 (3))`,
+      `afterMutationReadings.resealAfterMutation.records must keep v2's outcome words and name exactly the harness's fields ${[...G01_SEAL_RECORDS.sealAttemptFields, ...G01_SEAL_RECORDS.chronicleFields].join(", ")} and the disclosure-only feed records, with its rule (DR-CP4-S4-8 (3))`,
     );
   const limits = reseal?.limits;
   if (
@@ -2178,6 +2211,26 @@ export function setupAddendumErrors(addendum, ctx) {
     ctx.supersededSetupAddendum,
     ctx.sourcePinGit,
   );
+  // Review P3-5: v1 stays bound too — its working-tree bytes, the commit v2's
+  // supersedes names, and (git) v1's bytes at that commit.
+  if (
+    ctx.supersededSetupAddendumV1?.sha256 !== SETUP_ADDENDUM_V1.sha256 ||
+    ctx.supersededSetupAddendum?.json?.supersedes?.commit !==
+      SETUP_ADDENDUM_V1_COMMIT
+  )
+    errors.push(
+      `supersedes: v2 must bind ${SETUP_ADDENDUM_V1.path} at ${SETUP_ADDENDUM_V1_COMMIT}, whose bytes (sha256 ${SETUP_ADDENDUM_V1.sha256}) are unchanged in the working tree`,
+    );
+  else if (
+    ctx.sourcePinGit &&
+    ctx.sourcePinGit.blobSha(
+      SETUP_ADDENDUM_V1_COMMIT,
+      SETUP_ADDENDUM_V1.path,
+    ) !== SETUP_ADDENDUM_V1.sha256
+  )
+    errors.push(
+      `supersedes: ${SETUP_ADDENDUM_V1_COMMIT} does not hold ${SETUP_ADDENDUM_V1.path} with sha256 ${SETUP_ADDENDUM_V1.sha256}`,
+    );
   fixtureIdErrors(
     errors,
     "references.g01Fixture",
@@ -4944,6 +4997,8 @@ export async function loadObservationPrepContext({ repoRoot }) {
   };
   // S2 追補 #12: the setup addendum v3 supersedes v2.
   const supersededSetupAddendum = await superseded(SETUP_ADDENDUM_V2.path);
+  // Review P3-5: and v1, which v2 supersedes.
+  const supersededSetupAddendumV1 = await superseded(SETUP_ADDENDUM_V1.path);
   const supersededSeedPinAddendum = await superseded(SEED_PIN_ADDENDUM_V1.path);
   const formal = PROCEDURE_V1;
   let procedureFormal = null;
@@ -4985,6 +5040,7 @@ export async function loadObservationPrepContext({ repoRoot }) {
     declarationAddendum: parsed.declarationAddendum,
     supersededDeclarationAddendum,
     supersededSetupAddendum,
+    supersededSetupAddendumV1,
     supersededSeedPinAddendum,
     procedureDraft: parsed.procedureDraft,
     procedureFormal,
@@ -5117,11 +5173,18 @@ export function supersededReferences(parsed) {
     [parsed?.setupAddendum, SETUP_ADDENDUM_V2],
     [parsed?.declarationAddendum, DECLARATION_ADDENDUM_V1],
     [parsed?.seedPinAddendum, SEED_PIN_ADDENDUM_V1],
-  ].map(([document, v1]) => ({
-    path: v1.path,
-    commit: document?.supersedes?.commit,
-    sha256: v1.sha256,
-  }));
+  ]
+    .map(([document, v1]) => ({
+      path: v1.path,
+      commit: document?.supersedes?.commit,
+      sha256: v1.sha256,
+    }))
+    .concat({
+      // Review P3-5: v1, which v2 supersedes, at the commit v2 names.
+      path: SETUP_ADDENDUM_V1.path,
+      commit: SETUP_ADDENDUM_V1_COMMIT,
+      sha256: SETUP_ADDENDUM_V1.sha256,
+    });
 }
 
 /**

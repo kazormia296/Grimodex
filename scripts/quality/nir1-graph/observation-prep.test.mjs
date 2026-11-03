@@ -39,6 +39,7 @@ import {
   PLACEHOLDER,
   S4_PROCEDURE_WORDS,
   SETUP_ADDENDUM_V1,
+  SETUP_ADDENDUM_V1_COMMIT,
   SETUP_ADDENDUM_V2,
   SETUP_V1_COPY,
   SOURCE_PINS,
@@ -167,7 +168,10 @@ function rootWithPrep(prep) {
   return root;
 }
 
-test("the committed observation-prep files validate (draft: S4b'' 557e683c revoked, awaiting S4b''')", async () => {
+// S2 追補 #12 の独立レビューの P3-2: the names follow the current state (the
+// body is unchanged): S4b''' 60bf9dc4 revoked (0d456ee2), the draft awaits
+// the fifth re-freeze's S4b''''.
+test("the committed observation-prep files validate (draft: S4b''' 60bf9dc4 revoked, awaiting the fifth re-freeze's S4b'''')", async () => {
   // DR-CP4-S4-7: the revocation commit deletes S4b'''s freeze record and puts
   // S2 back to its draft (the bytes before S4b'', 6cb7e05c); S4b''' fills it
   // again (DR-CP4-S4-5 and S4-6 did the same for the old S4b and S4b').
@@ -209,7 +213,7 @@ test("a draft with placeholders is never usable for a formal run", async () => {
   }
 });
 
-test("DR-CP4-S4-7: the committed draft (S4b'' revoked) is refused by the formal gate at HEAD", async () => {
+test("DR-CP4-S4-7／S4-8: the committed draft (S4b''' revoked, awaiting S4b'''') is refused by the formal gate at HEAD", async () => {
   await assert.rejects(
     assertObservationPrepFormal({ repoRoot }),
     /\[precheck\].*(placeholder|draft)/u,
@@ -1573,6 +1577,31 @@ test("S2 追補 #12: the G-01 setup addendum v3 is v2 with the reseal rule chang
       setupAddendumErrors(mutated, ctx).some((e) => /supersedes/u.test(e)),
     );
   }
+  // S2 追補 #12 の独立レビューの P3-5: v1's working-tree bytes and (git)
+  // its bytes at the commit v2 names stay checked.
+  for (const changed of ["1".repeat(64), null])
+    assert.ok(
+      setupAddendumErrors(v3, {
+        ...ctx,
+        supersededSetupAddendumV1: changed && {
+          ...ctx.supersededSetupAddendumV1,
+          sha256: changed,
+        },
+      }).some((e) => /setup-addendum\.v1\.json/u.test(e)),
+    );
+  if (ctx.sourcePinGit)
+    assert.ok(
+      setupAddendumErrors(v3, {
+        ...ctx,
+        sourcePinGit: {
+          ...ctx.sourcePinGit,
+          blobSha: (commit, file) =>
+            commit === SETUP_ADDENDUM_V1_COMMIT
+              ? null
+              : ctx.sourcePinGit.blobSha(commit, file),
+        },
+      }).some((e) => e.includes(`${SETUP_ADDENDUM_V1_COMMIT} does not hold`)),
+    );
   for (const changed of ["1".repeat(64), null])
     assert.ok(
       setupAddendumErrors(v3, {
@@ -1638,7 +1667,7 @@ test("S2 追補 #12: the G-01 setup addendum v3 is v2 with the reseal rule chang
 // skipped or its limit off the pinned driver's, a records field renamed or a
 // limit dropped all fail (the copy check alone would not catch a change to
 // the leaves v3 added).
-test("S2 追補 #12: G01_RESEAL and sealPoints hold v3's per-point rule (restore at a new generation only, the body-only saves after the settle with the driver's constants)", async () => {
+test("S2 追補 #12: G01_RESEAL and sealPoints hold v3's per-point rule exactly (restore at a new generation only, the body-only saves after the settle with the driver's constants; an added key fails; the prose is bound by S2's sha256, not by this check)", async () => {
   const ctx = await context();
   const v3 = await json(OBSERVATION_PREP_FILES.setupAddendum);
   const reseal = v3.afterMutationReadings.resealAfterMutation;
@@ -1705,11 +1734,45 @@ test("S2 追補 #12: G01_RESEAL and sealPoints hold v3's per-point rule (restore
     (r) => r.sealPoints.bodyOnlySave.points.push("K24-G01-N3:mutation"),
     bodyError,
   );
+  const pointsError = /sealPoints must be exactly the two point groups/u;
+  R((r) => (r.sealPoints.chronicleRecheck = "settle-again"), pointsError);
+  R((r) => r.sealPoints.unchangedConstants.pop(), pointsError);
+  // S2 追補 #12 の独立レビューの P2-1（§2 の表）: an added key fails too — the
+  // structure is compared exactly, not only the keys the spec names.
+  R((r) => (r.sealPoints.restore.alsoPasses = ["unchanged"]), restoreError);
   R(
-    (r) => (r.sealPoints.chronicleRecheck = "settle-again"),
-    /sealPoints must recheck/u,
+    (r) =>
+      (r.sealPoints.declarationRestore = {
+        points: ["K24-G01-N3:mutation"],
+        passes: ["unchanged"],
+      }),
+    pointsError,
   );
-  R((r) => r.sealPoints.unchangedConstants.pop(), /sealPoints must recheck/u);
+  R(
+    (r) =>
+      (r.sealPoints.bodyOnlySave.freshnessSettle.onTimeout =
+        "unchanged-anyway"),
+    bodyError,
+  );
+  R(
+    (r) =>
+      (r.sealPoints.bodyOnlySave.unchangedRequiresAnyOf = [
+        "freshness-settled",
+      ]),
+    bodyError,
+  );
+  R((r) => (r.records.sealBranchAlso = ["unchanged"]), /records must keep/u);
+  R(
+    (r) => (r.sealPoints.bodyOnlySave.freshnessSettle.limitMs = "60000"),
+    bodyError,
+  );
+  R((r) => delete r.records.rule, /records must keep/u);
+  // The key order is free (a reordered object is the same structure).
+  const reordered = clone(v3);
+  const rp = reordered.afterMutationReadings.resealAfterMutation;
+  rp.sealPoints = Object.fromEntries(Object.entries(rp.sealPoints).reverse());
+  rp.records = Object.fromEntries(Object.entries(rp.records).reverse());
+  assert.deepEqual(check(reordered), []);
   R((r) => (r.records.sealAttemptFields[0] = "branch"), /records must keep/u);
   R((r) => r.records.outcomeWords.pop(), /records must keep/u);
   R((r) => r.records.disclosureOnly.pop(), /records must keep/u);
@@ -1721,6 +1784,29 @@ test("S2 追補 #12: G01_RESEAL and sealPoints hold v3's per-point rule (restore
     (r) => (r.measurementPoint = "reopened-main-sealed-generation"),
     resealError,
   );
+  // The prose leaves are outside the machine check (review P2-1): rewriting
+  // resealAfterMutation.rule, measurementPointDefinition, records.rule, a
+  // limit's text after its mark or reviewPlan passes the validator. Once
+  // frozen, S2's boundFiles[0] sha256 (S4b'''': v3's dd1fb872…) binds them,
+  // and the v3 test above fixes that sha256.
+  for (const mutate of [
+    (a) =>
+      (a.afterMutationReadings.resealAfterMutation.rule +=
+        "restore の地点も世代不変を通す。"),
+    (a) =>
+      (a.afterMutationReadings.resealAfterMutation.limits[3] =
+        "(iv) restore の地点も緩めた。"),
+    (a) =>
+      (a.afterMutationReadings.resealAfterMutation.measurementPointDefinition =
+        "任意の文。"),
+    (a) =>
+      (a.afterMutationReadings.resealAfterMutation.records.rule = "任意の文。"),
+    (a) => (a.reviewPlan = "任意の文。"),
+  ]) {
+    const prose = clone(v3);
+    mutate(prose);
+    assert.deepEqual(check(prose), []);
+  }
   // With the pinned driver's settle limit read otherwise, the check follows it.
   assert.ok(
     setupAddendumErrors(v3, {
@@ -1745,7 +1831,15 @@ test("B2b-1 review P3-2: the formal gate checks each addendum's superseded bytes
       [SETUP_ADDENDUM_V2.path, SETUP_ADDENDUM_V2.sha256],
       [DECLARATION_ADDENDUM_V1.path, DECLARATION_ADDENDUM_V1.sha256],
       [SEED_PIN_ADDENDUM_V1.path, SEED_PIN_ADDENDUM_V1.sha256],
+      // S2 追補 #12 の独立レビューの P3-5: v1, which v2 supersedes, at the
+      // commit v2 names.
+      [SETUP_ADDENDUM_V1.path, SETUP_ADDENDUM_V1.sha256],
     ],
+  );
+  assert.equal(rows[3].commit, SETUP_ADDENDUM_V1_COMMIT);
+  assert.equal(
+    SETUP_ADDENDUM_V1_COMMIT,
+    (await json(SETUP_ADDENDUM_V2.path)).supersedes.commit,
   );
   const run = (args) =>
     execFileSync("git", args, {
