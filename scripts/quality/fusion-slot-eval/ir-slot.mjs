@@ -491,6 +491,8 @@ export async function runIrSlot(options) {
       checkpoints: CHECKPOINTS,
       checkpointSceneCount: "ceil(fraction × N)、2 以上（段階 1 と同じ）",
       queryRule: "地点の末尾から最大 10 件。位置 2 以上（段階 1 と同じ）",
+      scope:
+        "案 B（新しい場面は project の既定の scope＝本筋を受け継ぐ）の既定の状態を再現：Scene を入れた後・抽出の前に、registry に timeline:main／worldline:prime／layer:manuscript を入れ、全 Scene の scope を製品の narrative_scene_scope_update で explicit（query と material は同じ本筋の exact、holder と audience は reader）にし、DB の binding が全部 explicit であることを確かめる",
       checkpointConstruction:
         "1 つの project に読書順で Scene を足す（Scene ごとに folder、1 件ずつ抽出）。前の地点の probe の admitted が、足した後も残るかを地点ごとに確かめる",
       repeats: options.repeats,
@@ -718,6 +720,12 @@ export async function runIrSlot(options) {
           paragraphs: scene.paragraphs,
         })),
       );
+      // 案 B の既定の再現：抽出の前に、足した Scene の scope を本筋の explicit にする。
+      checkpoint.scope = await page.evaluate(
+        (positions) => window.fusionIrEvaluation.applyMainScope(positions),
+        fresh.map((scene) => scene.index),
+      );
+      log(`${label} scope: ${JSON.stringify(checkpoint.scope)}`);
       for (const scene of skip ? [] : fresh) {
         const result = await withTimeout(
           page.evaluate(

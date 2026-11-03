@@ -280,6 +280,121 @@ function positionsOfRefs(refs: readonly unknown[]): number[] {
   return [...found].sort((a, b) => a - b);
 }
 
+// 案 B（新しい場面は project の既定の scope＝本筋を受け継ぐ）の既定の状態の再現。製品の
+// 実装の前なので、作者の UI（SceneScopeRegistryEditor／SceneScopeEditor）と同じ IPC で入れる。
+export const MAIN_SCOPE_REFS = {
+  timeline: "timeline:main",
+  worldline: "worldline:prime",
+  narrativeLayer: "layer:manuscript",
+} as const;
+const exact = (ref: string) => ({ kind: "exact", ref });
+const MAIN_SCOPE = {
+  timeline: exact(MAIN_SCOPE_REFS.timeline),
+  worldline: exact(MAIN_SCOPE_REFS.worldline),
+  narrativeLayer: exact(MAIN_SCOPE_REFS.narrativeLayer),
+};
+interface ScopeRegistry {
+  registryVersion: string;
+  timelineRefs: string[];
+  worldlineRefs: string[];
+  narrativeLayerRefs: string[];
+}
+interface ScopeReadResult {
+  registry: ScopeRegistry;
+  registryRevision: number;
+  binding: { version: number; compatibilityMarker: string };
+}
+
+/**
+ * registry に本筋の語彙を入れ（無ければ）、指定の Scene の scope を explicit の本筋にする。
+ * query と material は同じ exact、holder と audience は reader。最後に DB の binding を数える。
+ */
+async function applyMainScope(positions: number[]) {
+  const state = requireActive();
+  const workspace = getCurrentWorkspaceIdentity();
+  if (!workspace) throw new Error("[precheck] no workspace identity");
+  const read = (position: number) =>
+    invoke<ScopeReadResult>("narrative_scene_scope_read", {
+      expectedWorkspacePath: workspace.path,
+      projectId: state.projectId,
+      sceneId: sceneId(position),
+    });
+  const writeIds = () => ({
+    requestId: crypto.randomUUID(),
+    sessionId: "fusion-ir-scope",
+    eventUid: crypto.randomUUID(),
+    updatedAt: new Date().toISOString(),
+  });
+  const first = await read(positions[0]);
+  const has = (refs: string[], ref: string) => refs.includes(ref);
+  let registryUpdated = false;
+  if (
+    !has(first.registry.timelineRefs, MAIN_SCOPE_REFS.timeline) ||
+    !has(first.registry.worldlineRefs, MAIN_SCOPE_REFS.worldline) ||
+    !has(first.registry.narrativeLayerRefs, MAIN_SCOPE_REFS.narrativeLayer)
+  ) {
+    const add = (refs: string[], ref: string) =>
+      has(refs, ref) ? refs : [...refs, ref];
+    await invoke("narrative_scene_scope_registry_update", {
+      expectedWorkspacePath: workspace.path,
+      payload: {
+        projectId: state.projectId,
+        ...writeIds(),
+        baseVersion: first.registryRevision,
+        registry: {
+          ...first.registry,
+          timelineRefs: add(
+            first.registry.timelineRefs,
+            MAIN_SCOPE_REFS.timeline,
+          ),
+          worldlineRefs: add(
+            first.registry.worldlineRefs,
+            MAIN_SCOPE_REFS.worldline,
+          ),
+          narrativeLayerRefs: add(
+            first.registry.narrativeLayerRefs,
+            MAIN_SCOPE_REFS.narrativeLayer,
+          ),
+        },
+      },
+    });
+    registryUpdated = true;
+  }
+  let updated = 0;
+  for (const position of positions) {
+    const current = await read(position);
+    await invoke("narrative_scene_scope_update", {
+      expectedWorkspacePath: workspace.path,
+      payload: {
+        projectId: state.projectId,
+        sceneId: sceneId(position),
+        ...writeIds(),
+        baseVersion: current.binding.version,
+        scope: {
+          schemaVersion: 1,
+          compatibilityMarker: "explicit",
+          queryIdentity: MAIN_SCOPE,
+          materialConstraint: MAIN_SCOPE,
+          knowledgeHolder: { kind: "reader" },
+          audience: { kind: "reader" },
+        },
+      },
+    });
+    updated++;
+  }
+  const markers = (
+    await invoke<{ rows: { m: string; n: number }[] }>("db_execute", {
+      sql: "SELECT compatibility_marker AS m, count(*) AS n FROM narrative_scene_scope_bindings WHERE project_id = ? GROUP BY compatibility_marker",
+      params: [state.projectId],
+      method: "all",
+    })
+  ).rows;
+  const byMarker = Object.fromEntries(markers.map((r) => [r.m, Number(r.n)]));
+  if ((byMarker.explicit ?? 0) !== state.positions.size || markers.length !== 1)
+    throw new Error("[artifact] not every scene scope binding is explicit");
+  return { registryUpdated, updated, markers: byMarker };
+}
+
 /** 未解決の resume 候補は次の解析を拒むので、失敗の後に捨てる。 */
 async function discardResumeCandidates() {
   const state = requireActive();
@@ -652,6 +767,7 @@ Object.assign(window, {
     addScenes,
     extractScene,
     discardResumeCandidates,
+    applyMainScope,
     buildRaw,
     sampleHybrid,
     probe,
