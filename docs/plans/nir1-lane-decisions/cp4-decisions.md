@@ -909,6 +909,21 @@ branch `claude/cp4-s4-5th`、基点 master `a1cd6675`、DR の commit `909b71b3`
 - **直さなかったもの（理由）**：P3-2（wrapper の試験が本物の `Date.now`／`setTimeout` で待つ）：wrapper の `reopen` は `waitG01NegativeSealed` の時計を外から注入する口を持たず、口を足すと formal の経路の file（`g01-negative-run.mjs`）に試験のためだけの引数が増える。退行は fail-closed（遅れて落ちる）で、時計の上限は `g01-negatives.test.mjs` の注入した時計の試験が見ている。P3-3（preview の `allowUnchanged`／`readFreshness`／feed の記録に試験が無い）：preview は dev の予告専用で formal の閉包の外にあり、Electron を起動するので単体試験の形にならない。次の段の dev の予告で実際の値を見る。P2-1（pin の移し替え）：S2 追補 #12 の作業で、この段では触らない（`g01-negatives.mjs`・`g01-negative-preview.mjs`〔`s5b-diagnostics-wiring`〕と `g01-negative-run.mjs`〔`sp-p4-ir-timeout`〕の 3 つ）。P3-6（静止は 1 回だけ待つ）：v3 の限界の開示で扱う。
 - **気づいた点**：`settleCoversMutation` が false または null の開きでも、封印の判定は今のまま進む（開示だけ）。v3 と S7 では、この欄を「静止が mutation の event を含んでいたことの照合」としてだけ書き、規則に見えないようにする。
 
+### DR-CP4-S4-8 の dev の予告の結果（第 1 段。2026-11-03。integrator。CP-4 の結果に数えない）
+
+候補 `fcea1624`（master `a1cd6675` ＋ 第 1 段の harness の修正）の build（`eval-native-build.mjs` ＋ feature つき worker。worktree clean、worker の sha は target と eval-build で一致）で、dev-lantern fixture の dev setup の後に `g01-negative-preview.mjs`（`--samples 3`）を N3、N2、N4 の順に 1 回ずつ走らせた。台帳なし・受領書なし・`countsInCaseJudgement: false`。
+
+| 負例 | 封印（B） | 通った分岐 | 待ち | 判定 |
+|---|---|---|---|---|
+| N3（restore 同 bytes） | gen 2、dirty false | `new-generation`（再判定も同じ） | 514 ms | established（frame 3/3、SP-P1 match） |
+| N2（同じ本文の再保存） | gen 1（mutation 前と同じ）、dirty false。Chronicle gen 3、dirty false | **`unchanged`**（再判定も `unchanged`） | 1036 ms（うち静止 1030 ms、5 poll） | established（frame 3/3、SP-P1 match） |
+| N4 の宣言前の保存（本文だけの 2 回の保存と版の用意） | gen 1、dirty false | **`unchanged`** | 1041 ms | （次の行の restore と合わせて判定） |
+| N4 の restore（違う bytes） | gen 2、dirty false。Chronicle は build 後 | `new-generation` | 512 ms | established（frame 3/3、SP-P1 match） |
+
+- **確かめられたこと**: (1) 修正前に blocked になった N2／N4 の 2 地点が、X1-5 の下で封印された（B は世代不変のまま dirty でない）。(2) 静止の待ちは実際に効いている：N2 の mutation の直後の feed は head 22、acknowledged 21（未処理 1 件）で、開き直した Main が 5 poll（1030 ms）で acknowledged 22 まで処理してから通った（`settleCoversMutation: true`）。N4 の宣言前の保存の後は head 22、acknowledged 20（未処理 2 件）で、同じく静止を待って通った（`true`）。静止を待たずに最初の poll で通ったのではない。(3) restore の地点（N3、N4 の mutation）は今までと同じく `new-generation` で、所要も正式の測定の N3（515 ms）と同じ（514、512 ms）。(4) 通った後の再判定、対照（reached）、SP-P1、frame の到達は 3 件とも問題なし。`problems` は空。
+- **確かめられなかったこと／限界**: (a) gate（LP-GATE）が動いている状態での挙動は、予告の report に gate の counter が出ないので観測していない。診断の枝（dev 専用）の build は master との差が計装だけで、そこでは gate の効果が観測された（DR-CP4-LPD-1）ので、同じ build 手順の候補でも動いていると推論するが、この予告では確かめていない。再測定の前の dev 確認で見る。(b) 各 1 回の予告で、負荷の高い状況（静止が 60 s に届く場合）は試していない。届いたときは A-1 だけの待ちに戻り、今までどおり `b-seal-not-published` で止まる（緩和ではなく安全側）。(c) `settleCoversMutation` が false でも封印は進む（規則にしていない）。S7 では照合用の記録としてだけ扱う。(d) 予告は dev fixture で、凍結した G-case の材料では走らせていない。
+- **次**: 止める条件（dev の予告で問題が出る）には当たらなかったので、DR-CP4-S4-8 (5) の順の次（v3 の草案と path の向け直し→失効→…）に進む。
+
 ## T（測定の process が cold DB の未処理の Freshness のイベントを処理して Index を無効化する競合の harness 修正。2026-10-31。integrator の依頼、⑤ の parity の試行 1〔`parity-1`〕の `G-08/graph-index-unusable` の blocked の原因。S4 の凍結の後の変更で、merge には S4 の凍結のやり直しとユーザーの判断が要る）
 
 | ID | 日付 | レーン／PR | 判断 | 信頼境界 | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
