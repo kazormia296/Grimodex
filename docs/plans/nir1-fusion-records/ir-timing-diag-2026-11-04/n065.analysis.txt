@@ -1,0 +1,146 @@
+status complete [] counts {'proposals': 236, 'approved': 65, 'scenes': 18} reject {'runs': 17, 'rejectedRuns': 12, 'rejected': 171, 'errors': []}
+outcomes {('timeout', 'unavailable', 'timeout'): 299, ('ir-ready', 'empty', None): 1}
+deadlineExceeded 299 / 300
+--- renderer (ms)
+fetch→rawReady                           n= 300 p50=  121.00 p90=  164.40 max= 2768.30
+rawReady→return                          n= 300 p50=   11.60 p90=   12.31 max=   16.40
+begin IPC 往復                             n= 300 p50=  118.25 p90=  160.92 max= 2760.60
+beginResolved→rawReady                   n= 300 p50=    0.30 p90=    0.80 max=    3.40
+beginResolved→sparse                     n= 300 p50=    0.20 p90=    0.80 max=    3.40
+continue IPC 往復                          n=   1 p50=   10.50 p90=   10.50 max=   10.50
+rawReady→IR到着(continue-resolved)         n=   1 p50=   10.20 p90=   10.20 max=   10.20
+beginResolved→IR到着                       n=   1 p50=   10.60 p90=   10.60 max=   10.60
+--- native spans per op (ms, 同じ op 内の合計)
+begin:begin.blocking                                    n= 300 p50=  115.13 p90=  154.53 max= 2753.45
+begin:begin.build_schedule                              n= 300 p50=    0.00 p90=    0.00 max=    0.01
+begin:begin.first_snapshot_txn                          n= 300 p50=    3.42 p90=    4.80 max=   16.58
+begin:begin.prepare_query_embedding                     n= 300 p50=  110.60 p90=  147.10 max= 2744.62
+begin:begin.semantic_search                             n= 300 p50=    0.24 p90=    0.27 max=    1.61
+begin:begin.source_recheck                              n= 300 p50=    0.20 p90=    0.31 max=    1.87
+begin:begin.spawn_queue                                 n= 300 p50=    0.03 p90=    1.04 max=    4.37
+begin:begin.total                                       n= 300 p50=  115.68 p90=  155.77 max= 2758.04
+begin:conn.lock                                         n= 300 p50=    1.08 p90=    2.15 max=    3.69
+begin:proof.total                                       n= 300 p50=    0.05 p90=    0.07 max=    2.32
+begin:query_context.read                                n= 300 p50=    2.01 p90=    2.73 max=   13.67
+continue:conn.lock                                      n=   1 p50=    0.00 p90=    0.00 max=    0.00
+continue:continue.current_operation                     n=   1 p50=    0.31 p90=    0.31 max=    0.31
+continue:continue.spawn_queue                           n=   1 p50=    0.02 p90=    0.02 max=    0.02
+continue:continue.total                                 n= 300 p50=   11.66 p90=   13.07 max=   86.85
+continue:proof.total                                    n=   1 p50=    0.04 p90=    0.04 max=    0.04
+continue:validate_binding.query_context                 n=   1 p50=    0.00 p90=    0.00 max=    0.00
+continue:validate_binding.total                         n=   1 p50=    0.06 p90=    0.06 max=    0.06
+scoring:conn.lock                                       n= 300 p50=    0.01 p90=    0.01 max=    1.07
+scoring:edge_eval.nir1-chronicle-eligibility-set        n= 300 p50=    3.95 p90=    5.35 max=   18.31
+scoring:edge_eval.scene-body                            n= 300 p50=    0.04 p90=    0.09 max=    0.50
+scoring:edge_eval.scope-dependency-projection-v1        n= 300 p50=    5.00 p90=    6.73 max=   31.73
+scoring:edge_eval.scope_read_load                       n= 300 p50=    1.66 p90=    2.17 max=   10.00
+scoring:edge_eval.snapshot-document                     n= 300 p50=    0.03 p90=    0.05 max=    0.46
+scoring:proof.binding_read                              n= 300 p50=    0.43 p90=    0.67 max=    2.52
+scoring:proof.consumer_freshness                        n= 300 p50=    0.04 p90=    0.06 max=    1.19
+scoring:proof.edge_eval                                 n= 300 p50=    9.19 p90=   13.03 max=   86.85
+scoring:proof.edge_states                               n= 300 p50=    0.03 p90=    0.03 max=    0.09
+scoring:proof.find_edges                                n= 300 p50=    0.03 p90=    0.04 max=    0.69
+scoring:proof.generic_canonical                         n= 300 p50=    0.12 p90=    0.14 max=    0.48
+scoring:proof.pending_read                              n= 300 p50=    0.06 p90=    0.07 max=    0.62
+scoring:proof.roster_read_1                             n= 300 p50=    4.71 p90=    6.96 max=   20.34
+scoring:proof.run_reference                             n= 300 p50=    0.00 p90=    0.00 max=    0.00
+scoring:proof.semantic_epoch                            n= 300 p50=    0.03 p90=    0.08 max=    2.86
+scoring:proof.still_current                             n= 300 p50=    3.04 p90=    3.75 max=   16.92
+scoring:proof.total                                     n= 300 p50=   18.36 p90=   24.79 max=   98.70
+scoring:qualify.admit_loop                              n= 300 p50=    1.07 p90=    1.36 max=   12.60
+scoring:query_context.read                              n= 300 p50=    1.94 p90=    2.42 max=   14.31
+scoring:scoring.audited_query_current                   n= 300 p50=    0.01 p90=    0.01 max=    0.02
+scoring:scoring.cosine                                  n= 300 p50=    0.07 p90=    0.08 max=    0.21
+scoring:scoring.final_validate                          n= 300 p50=    0.06 p90=    0.07 max=    1.12
+scoring:scoring.qualify                                 n= 300 p50=   21.37 p90=   28.05 max=  105.83
+scoring:scoring.qualify_txn                             n= 300 p50=   21.41 p90=   28.44 max=  105.90
+scoring:scoring.run                                     n= 300 p50=   21.67 p90=   28.67 max=  106.30
+scoring:scoring.sort                                    n= 300 p50=    0.01 p90=    0.02 max=    0.05
+scoring:scoring.spawn_queue                             n= 300 p50=    0.03 p90=    0.51 max=    3.40
+scoring:scoring.title_txn                               n= 300 p50=    0.09 p90=    0.12 max=    1.21
+scoring:scoring.titles                                  n= 300 p50=    0.01 p90=    0.04 max=    0.51
+scoring:still_current.q1                                n= 300 p50=    1.46 p90=    1.80 max=    9.31
+scoring:still_current.q2                                n= 300 p50=    1.55 p90=    1.84 max=   12.90
+scoring:validate_binding.query_context                  n= 300 p50=    1.98 p90=    2.48 max=   14.38
+scoring:validate_binding.total                          n= 300 p50=   20.31 p90=   26.92 max=  100.72
+--- native derived (ms)
+beginReturn→scoringNotified                             n= 300 p50=   21.49 p90=   28.44 max=  106.30
+scoringLaunch→notified                                  n= 300 p50=   21.96 p90=   29.03 max=  106.33
+beginReturn→continueArrive                              n= 300 p50=    2.95 p90=    5.77 max=   14.68
+beginReturn→continueReturn                              n= 300 p50=   14.52 p90=   17.47 max=   91.55
+--- values
+begin:begin.checks                                      n=300 p50=1.0 min=1 max=1 sum=300
+begin:begin.first_snapshot_txn_enter_us                 n=300 p50=1079.0 min=15 max=3693 sum=244982
+begin:conn.sleeps                                       n=3000 p50=0.0 min=0 max=3 sum=216
+begin:proof.fast_hit                                    n=300 p50=1.0 min=1 max=1 sum=300
+calls/begin:begin.blocking                              n=300 p50=1.0 min=1 max=1 sum=300
+calls/begin:begin.build_schedule                        n=300 p50=1.0 min=1 max=1 sum=300
+calls/begin:begin.first_snapshot_txn                    n=300 p50=1.0 min=1 max=1 sum=300
+calls/begin:begin.prepare_query_embedding               n=300 p50=1.0 min=1 max=1 sum=300
+calls/begin:begin.semantic_search                       n=300 p50=1.0 min=1 max=1 sum=300
+calls/begin:begin.source_recheck                        n=300 p50=1.0 min=1 max=1 sum=300
+calls/begin:begin.spawn_queue                           n=300 p50=1.0 min=1 max=1 sum=300
+calls/begin:begin.total                                 n=300 p50=1.0 min=1 max=1 sum=300
+calls/begin:conn.lock                                   n=300 p50=10.0 min=10 max=10 sum=3000
+calls/begin:proof.total                                 n=300 p50=1.0 min=1 max=1 sum=300
+calls/begin:query_context.read                          n=300 p50=1.0 min=1 max=1 sum=300
+calls/continue:conn.lock                                n=1 p50=2.0 min=2 max=2 sum=2
+calls/continue:continue.current_operation               n=1 p50=1.0 min=1 max=1 sum=1
+calls/continue:continue.spawn_queue                     n=1 p50=1.0 min=1 max=1 sum=1
+calls/continue:continue.total                           n=300 p50=1.0 min=1 max=1 sum=300
+calls/continue:proof.total                              n=1 p50=1.0 min=1 max=1 sum=1
+calls/continue:validate_binding.query_context           n=1 p50=1.0 min=1 max=1 sum=1
+calls/continue:validate_binding.total                   n=1 p50=1.0 min=1 max=1 sum=1
+calls/scoring:conn.lock                                 n=300 p50=5.0 min=5 max=5 sum=1500
+calls/scoring:edge_eval.nir1-chronicle-eligibility-set  n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:edge_eval.scene-body                      n=300 p50=2.0 min=2 max=2 sum=600
+calls/scoring:edge_eval.scope-dependency-projection-v1  n=300 p50=2.0 min=2 max=2 sum=600
+calls/scoring:edge_eval.scope_read_load                 n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:edge_eval.snapshot-document               n=300 p50=2.0 min=2 max=2 sum=600
+calls/scoring:proof.binding_read                        n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:proof.consumer_freshness                  n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:proof.edge_eval                           n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:proof.edge_states                         n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:proof.find_edges                          n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:proof.generic_canonical                   n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:proof.pending_read                        n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:proof.roster_read_1                       n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:proof.run_reference                       n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:proof.semantic_epoch                      n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:proof.still_current                       n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:proof.total                               n=300 p50=2.0 min=2 max=2 sum=600
+calls/scoring:qualify.admit_loop                        n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:query_context.read                        n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:scoring.audited_query_current             n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:scoring.cosine                            n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:scoring.final_validate                    n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:scoring.qualify                           n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:scoring.qualify_txn                       n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:scoring.run                               n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:scoring.sort                              n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:scoring.spawn_queue                       n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:scoring.title_txn                         n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:scoring.titles                            n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:still_current.q1                          n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:still_current.q2                          n=300 p50=1.0 min=1 max=1 sum=300
+calls/scoring:validate_binding.query_context            n=300 p50=2.0 min=2 max=2 sum=600
+calls/scoring:validate_binding.total                    n=300 p50=2.0 min=2 max=2 sum=600
+continue:conn.sleeps                                    n=2 p50=0.0 min=0 max=0 sum=0
+continue:continue.current                               n=1 p50=1.0 min=1 max=1 sum=1
+continue:continue.response_ready_on_arrival             n=300 p50=0.0 min=0 max=0 sum=0
+continue:proof.fast_hit                                 n=1 p50=1.0 min=1 max=1 sum=1
+continue:query_context.reuse_hit                        n=1 p50=1.0 min=1 max=1 sum=1
+scoring:conn.sleeps                                     n=1500 p50=0.0 min=0 max=1 sum=2
+scoring:proof.edges                                     n=300 p50=7.0 min=7 max=7 sum=2100
+scoring:proof.fast_hit                                  n=600 p50=0.5 min=0 max=1 sum=300
+scoring:proof.identity_present                          n=300 p50=1.0 min=1 max=1 sum=300
+scoring:qualify.admitted                                n=300 p50=30.0 min=30 max=30 sum=9000
+scoring:qualify.candidates                              n=300 p50=30.0 min=30 max=30 sum=9000
+scoring:query_context.reuse_hit                         n=300 p50=1.0 min=1 max=1 sum=300
+scoring:scoring.control_checks                          n=300 p50=45001.0 min=45001 max=45001 sum=13500300
+scoring:scoring.ok                                      n=300 p50=0.0 min=0 max=1 sum=1
+scoring:scoring.qualify_txn_enter_us                    n=300 p50=12.0 min=8 max=2839 sum=9726
+scoring:scoring.rows                                    n=300 p50=0.0 min=0 max=1 sum=60
+scoring:scoring.title_txn_enter_us                      n=300 p50=11.0 min=9 max=33 sum=3516
+scoring:scoring.vectors                                 n=300 p50=30.0 min=30 max=30 sum=9000
+scoring:still_current.candidates                        n=300 p50=30.0 min=30 max=30 sum=9000
