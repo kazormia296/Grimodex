@@ -637,5 +637,8 @@ pub fn reconcile_chronicle_index_runtime(
 }
 
 #[cfg(test)]
+#[path = "audit_only_tests.rs"]
+mod audit_only_tests;
+#[cfg(test)]
 #[path = "query_context_reuse_tests.rs"]
 mod query_context_reuse_tests;
