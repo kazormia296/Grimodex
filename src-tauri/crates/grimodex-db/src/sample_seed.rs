@@ -949,4 +949,49 @@ mod tests {
             assert!(human > 0, "human attribution must remain non-zero");
         }
     }
+
+    /// SDEF/1 A2 and R13: the bundled sample writes `unknown` Scenes even when
+    /// its project had a default before seeding, and its registry carries the
+    /// main-line vocabulary.
+    #[test]
+    fn sdef_sample_scenes_stay_unknown_with_the_main_line_vocabulary() {
+        let db = make_test_db();
+        let seed = parse_seed(SEED_V2);
+        crate::narrative_extraction::scene_scope_default_tests::set_main_line_default(
+            &db,
+            &seed.project.id,
+        );
+        let now_dt = chrono::Utc::now().to_rfc3339();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        db.with_conn(|conn| {
+            insert_seed_rows(
+                conn,
+                &seed,
+                "ja",
+                FULL_AI_POLICY,
+                &now_dt,
+                now_ms,
+                SEED_V2_EXTRA,
+            )?;
+            Ok(())
+        })
+        .expect("seed inserts");
+        let markers =
+            crate::narrative_extraction::scene_scope_default_tests::markers(&db, &seed.project.id);
+        assert!(!markers.is_empty());
+        assert!(
+            markers.iter().all(|(_, marker)| marker == "unknown"),
+            "{markers:?}"
+        );
+        let timeline: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT timeline_refs_json FROM narrative_scope_registries WHERE project_id = ?1",
+                    [&seed.project.id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("registry");
+        assert_eq!(timeline, "[\"timeline:main\"]");
+    }
 }

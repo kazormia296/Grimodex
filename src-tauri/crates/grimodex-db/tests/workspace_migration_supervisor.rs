@@ -738,6 +738,112 @@ fn schema_42_workspace_without_scene_body_declaration_columns_shadow_migrates_to
     .expect("verify migrated v43 workspace");
 }
 
+/// SDEF/1 A6 (R15): a schema 43 workspace gains the project Scene Scope default
+/// table, no project gets a row, and no binding or registry changes.
+#[test]
+fn schema_43_workspace_without_scope_default_table_shadow_migrates_to_44() {
+    let ws = temp_workspace("v43-scope-default");
+    let db_path = ws.join("grimodex.db");
+    let read_rows = |conn: &rusqlite::Connection| -> anyhow::Result<(Vec<String>, Vec<String>)> {
+        let bindings = conn
+            .prepare(
+                "SELECT project_id || '|' || scene_id || '|' || scene_incarnation_id || '|' ||
+                        compatibility_marker || '|' || query_identity_json || '|' ||
+                        material_constraint_json || '|' || version || '|' || source_token ||
+                        '|' || updated_at
+                   FROM narrative_scene_scope_bindings ORDER BY project_id, scene_id",
+            )?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let registries = conn
+            .prepare(
+                "SELECT project_id || '|' || timeline_refs_json || '|' || worldline_refs_json ||
+                        '|' || narrative_layer_refs_json || '|' || version || '|' || source_token
+                   FROM narrative_scope_registries ORDER BY project_id",
+            )?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok((bindings, registries))
+    };
+    let before = {
+        let db = Database::new(&db_path).expect("new");
+        db.migrate().expect("migrate current");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('v43-project', 'v43')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+                 VALUES ('v43-scene', 'v43-project', 'scene', 'Scene', 'a0')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_scope_registries (
+                    project_id, registry_version, timeline_refs_json, worldline_refs_json,
+                    narrative_layer_refs_json, version, source_token, updated_at
+                 ) VALUES ('v43-project', 'narrative-scene-scope-registry/1', '[]', '[]', '[]',
+                    1, ?1, '2026-10-01T00:00:00.000Z')",
+                [format!("sha256:{}", "c".repeat(64))],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_scene_scope_bindings (
+                    project_id, scene_id, scene_incarnation_id, compatibility_marker,
+                    query_identity_json, material_constraint_json, knowledge_holder_json,
+                    audience_json, version, source_token, updated_at
+                 ) VALUES ('v43-project', 'v43-scene', 'v43-incarnation', 'unknown',
+                    '{}', '{}', '{}', '{}', 2, ?1, '2026-10-01T00:00:00.000Z')",
+                [format!("sha256:{}", "d".repeat(64))],
+            )?;
+            let rows = read_rows(conn)?;
+            conn.execute_batch(
+                "DROP TABLE narrative_scope_project_defaults;
+                 PRAGMA user_version = 43;",
+            )?;
+            assert!(
+                !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?,
+                "a v43 workspace lacks the v44 default table"
+            );
+            Ok(rows)
+        })
+        .expect("shape a v43 workspace")
+    };
+
+    let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("migrate");
+    match outcome {
+        WorkspaceOpenDbOutcome::Migrated {
+            from_schema,
+            to_schema,
+            opened,
+            ..
+        } => {
+            assert_eq!(from_schema, 43);
+            assert_eq!(to_schema, SCHEMA_VERSION);
+            drop(opened);
+        }
+        other => panic!("expected a staged v43 -> v44 migration, got {other:?}"),
+    }
+    assert_eq!(live_user_version(&ws), SCHEMA_VERSION);
+
+    let db = Database::new(&db_path).expect("reopen migrated");
+    db.with_conn(|conn| {
+        assert!(grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?);
+        let defaults: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_scope_project_defaults",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(defaults, 0, "no existing project gets a default");
+        assert_eq!(
+            read_rows(conn)?,
+            before,
+            "bindings and registries are unchanged"
+        );
+        Ok(())
+    })
+    .expect("verify migrated v44 workspace");
+}
+
 #[test]
 fn prepare_database_refuses_safe_mode_authority() {
     let newer_ws = temp_workspace("prep-newer");

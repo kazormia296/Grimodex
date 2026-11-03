@@ -10083,4 +10083,86 @@ mod tests {
         })
         .expect("verify atomic restore rollback");
     }
+
+    /// SDEF/1 A1/A2 (AI tree plan): a forward plan's new Scene inherits the
+    /// project default; the redo of the same plan writes `unknown` (R7 (b)).
+    #[test]
+    fn sdef_ai_tree_plan_forward_scene_inherits_and_its_redo_stays_unknown() {
+        let db = fixture();
+        seed_ai_tree_authority(&db, "moved");
+        crate::narrative_extraction::scene_scope_default_tests::set_main_line_default(&db, "p1");
+        let mut create = ai_tree_payload("sdef-ai-create");
+        create.kind = "scaffold".to_string();
+        create.creates[0].id = "sdef-ai-scene".to_string();
+        create.creates[0].node_type = "scene".to_string();
+        create.creates[0].title = "AI Scene".to_string();
+        create.creates[0].temp_id = Some("tmp:scene".to_string());
+        create.updates.clear();
+        create.ops = Some(vec![json!({
+            "op": "create",
+            "tempId": "tmp:scene",
+            "parentRef": "root",
+            "nodeType": "scene",
+            "title": "AI Scene",
+            "pos": {},
+        })]);
+        let forward = apply_ai_tree_plan(&db, create.clone()).expect("AI scene scaffold");
+        let marker = |db: &Database| {
+            crate::narrative_extraction::scene_scope_default_tests::markers(db, "p1")
+                .into_iter()
+                .find(|(scene, _)| scene == "sdef-ai-scene")
+                .map(|(_, marker)| marker)
+        };
+        assert_eq!(marker(&db).as_deref(), Some("explicit"));
+        let original_transaction_id = forward["maintenanceTransactionId"]
+            .as_str()
+            .expect("forward transaction")
+            .to_string();
+        let undo_journal_id = forward["undoJournalId"]
+            .as_str()
+            .expect("undo journal")
+            .to_string();
+        let history_controls = vec![
+            "original-transaction".to_string(),
+            "journal-lineage".to_string(),
+            "typed-writer".to_string(),
+            "occ".to_string(),
+            "change-event".to_string(),
+            "change-feed".to_string(),
+        ];
+        undo_ai_tree_plan(
+            &db,
+            UndoAiTreePlanPayload {
+                request_id: "sdef-ai-undo".to_string(),
+                project_id: "p1".to_string(),
+                session_id: "ai-tree-session".to_string(),
+                updated_at: "2026-08-13T01:01:00Z".to_string(),
+                original_transaction_id: original_transaction_id.clone(),
+                undo_journal_id: undo_journal_id.clone(),
+                authority_route: "history-replay".to_string(),
+                caller: "history-controller".to_string(),
+                controls: history_controls.clone(),
+                provenance: None,
+                writes_authority_protected_field: false,
+                expected_versions: vec![AiTreeNodeVersionInput {
+                    id: "sdef-ai-scene".to_string(),
+                    version: 1,
+                }],
+            },
+        )
+        .expect("undo AI scene scaffold");
+        assert_eq!(marker(&db), None, "the undo removed the Scene");
+        let mut redo = create;
+        redo.request_id = "sdef-ai-redo".to_string();
+        redo.updated_at = "2026-08-13T01:02:00Z".to_string();
+        redo.redo = true;
+        redo.original_transaction_id = Some(original_transaction_id);
+        redo.undo_journal_id = Some(undo_journal_id);
+        redo.authority_route = "history-replay".to_string();
+        redo.caller = "history-controller".to_string();
+        redo.controls = history_controls;
+        redo.provenance = None;
+        apply_ai_tree_plan(&db, redo).expect("redo AI scene scaffold");
+        assert_eq!(marker(&db).as_deref(), Some("unknown"));
+    }
 }

@@ -1992,4 +1992,23 @@ mod tests {
         assert!(roots[0]["payoff_to_pos"].is_null());
         assert_eq!(roots[0]["version"], 0);
     }
+
+    /// SDEF/1 A2: a body save that repairs a missing binding writes `unknown`
+    /// even when the project has a default (R10).
+    #[test]
+    fn sdef_body_save_repair_does_not_inherit_the_project_default() {
+        let db = test_db();
+        crate::narrative_extraction::scene_scope_default_tests::set_main_line_default(&db, "p1");
+        db.execute(
+            "DELETE FROM narrative_scene_scope_bindings WHERE scene_id = 's1'",
+            &[],
+            "run",
+        )
+        .expect("lose the binding");
+        save_scene_body_bundle(&db, payload()).expect("save body");
+        assert_eq!(
+            crate::narrative_extraction::scene_scope_default_tests::markers(&db, "p1"),
+            vec![("s1".to_string(), "unknown".to_string())]
+        );
+    }
 }

@@ -225,6 +225,57 @@ fn previous_release_shaped_database_migrates_and_preserves_rows() {
     assert_eq!(manifest["targetSchemaVersion"], Value::from(SCHEMA_VERSION));
 
     assert_release_fixture_rows(&db_path);
+    assert_release_scope_vocabulary_without_default(&db_path);
+}
+
+/// SDEF/1 A6 (R13, R15): an upgrade from the last public release gives every
+/// existing project the main-line vocabulary when its registry is first
+/// created, keeps its Scenes `legacy-absent`, and gives no project a default.
+fn assert_release_scope_vocabulary_without_default(db_path: &std::path::Path) {
+    let conn = rusqlite::Connection::open(db_path).expect("open migrated fixture");
+    for project in [
+        release_schema_fixture::PROJECT_ID,
+        release_schema_fixture::SECOND_PROJECT_ID,
+    ] {
+        let refs: (String, String, String) = conn
+            .query_row(
+                "SELECT timeline_refs_json, worldline_refs_json, narrative_layer_refs_json
+                   FROM narrative_scope_registries WHERE project_id = ?1",
+                [project],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("registry row");
+        assert_eq!(
+            refs,
+            (
+                "[\"timeline:main\"]".to_string(),
+                "[\"worldline:prime\"]".to_string(),
+                "[\"layer:manuscript\"]".to_string()
+            ),
+            "{project}"
+        );
+    }
+    for scene in [
+        release_schema_fixture::SCENE_ID,
+        release_schema_fixture::SECOND_SCENE_ID,
+    ] {
+        let marker: String = conn
+            .query_row(
+                "SELECT compatibility_marker FROM narrative_scene_scope_bindings WHERE scene_id = ?1",
+                [scene],
+                |row| row.get(0),
+            )
+            .expect("binding row");
+        assert_eq!(marker, "legacy-absent", "{scene}");
+    }
+    let defaults: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM narrative_scope_project_defaults",
+            [],
+            |row| row.get(0),
+        )
+        .expect("default table");
+    assert_eq!(defaults, 0, "no project gets a default");
 }
 
 #[test]

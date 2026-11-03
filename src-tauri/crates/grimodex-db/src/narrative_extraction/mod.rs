@@ -169,6 +169,9 @@ mod reconciliation_envelope;
 mod repair;
 mod retrieval_admission;
 mod scene_scope;
+mod scene_scope_default;
+#[cfg(test)]
+pub(crate) mod scene_scope_default_tests;
 pub mod scene_body_declaration;
 mod scene_scope_projection;
 mod scope_dependency_projection;
