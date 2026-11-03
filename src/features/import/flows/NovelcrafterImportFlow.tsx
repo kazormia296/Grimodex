@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
+import { applyScopeDefaultAfterImport } from "@/features/scene-scope-default/importApply";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -91,6 +92,8 @@ interface Props {
   enforceBrowserLimits?: boolean;
   onBusyChange?: (busy: boolean) => void;
   onFailedChange?: (failed: boolean) => void;
+  /** SDEF/1 R14: apply the Scope default to the imported scenes afterwards. */
+  applyScopeDefault?: boolean;
 }
 
 export function NovelcrafterImportFlow({
@@ -99,6 +102,7 @@ export function NovelcrafterImportFlow({
   enforceBrowserLimits = false,
   onBusyChange,
   onFailedChange,
+  applyScopeDefault = false,
 }: Props) {
   const { t } = useTranslation();
   const [phase, setPhase] = useState<Phase>("idle");
@@ -199,9 +203,13 @@ export function NovelcrafterImportFlow({
         const { imported: snippetsImported, errors: snippetErrors } =
           await importSnippets(parsed.snippets, setProgress);
         allErrors.push(...snippetErrors);
-        const { imported: chaptersImported, errors: chapterErrors } =
-          await importChapters(parsed.chapters, setProgress);
+        const {
+          imported: chaptersImported,
+          errors: chapterErrors,
+          sceneIds: importedSceneIds,
+        } = await importChapters(parsed.chapters, setProgress);
         allErrors.push(...chapterErrors);
+        await applyScopeDefaultAfterImport(applyScopeDefault, importedSceneIds);
         const {
           imported: chatsImported,
           errors: chatErrors,
@@ -245,6 +253,7 @@ export function NovelcrafterImportFlow({
       reloadTree,
       reloadSessions,
       onFailedChange,
+      applyScopeDefault,
     ],
   );
 

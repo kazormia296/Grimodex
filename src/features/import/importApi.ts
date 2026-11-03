@@ -552,13 +552,20 @@ export async function importSnippets(
 // Novel body (chapters / scenes from novel.md)
 // ─────────────────────────────────────────────────────────────────
 
+export interface ImportTreeResult {
+  imported: number;
+  errors: string[];
+  /** The Scenes this import created (SDEF/1 R14: the targets of the loop). */
+  sceneIds: string[];
+}
+
 /**
  * Insert a recursive folder/scene tree, appended after existing top-level nodes.
  */
 export async function importTree(
   roots: ImportedNode[],
   onProgress?: (p: ImportProgress) => void,
-): Promise<{ imported: number; errors: string[] }> {
+): Promise<ImportTreeResult> {
   let imported = 0;
   const errors: string[] = [];
   // Imported scenes get their content via the Native scene writer, outside the
@@ -571,7 +578,7 @@ export async function importTree(
   const total = countTreeNodes(roots);
   if (total === 0) {
     onProgress?.({ total: 0, done: 0, currentName: "" });
-    return { imported: 0, errors };
+    return { imported: 0, errors, sceneIds: [] };
   }
 
   const allRoots = (await listNodes(getCurrentProjectId(), null)).slice();
@@ -662,7 +669,7 @@ export async function importTree(
   }
 
   onProgress?.({ total, done: total, currentName: "" });
-  return { imported, errors };
+  return { imported, errors, sceneIds: createdSceneIds };
 }
 
 function countTreeNodes(nodes: ImportedNode[]): number {
@@ -681,7 +688,7 @@ function countTreeNodes(nodes: ImportedNode[]): number {
 export async function importChapters(
   chapters: ParsedChapter[],
   onProgress?: (p: ImportProgress) => void,
-): Promise<{ imported: number; errors: string[] }> {
+): Promise<ImportTreeResult> {
   return importTree(chaptersToImportedNodes(chapters), onProgress);
 }
 

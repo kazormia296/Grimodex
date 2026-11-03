@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
+import { applyScopeDefaultAfterImport } from "@/features/scene-scope-default/importApply";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { parseNovelFile } from "@/lib/novelFormat";
@@ -44,6 +45,8 @@ interface Props {
   enforceBrowserLimits?: boolean;
   onBusyChange?: (busy: boolean) => void;
   onFailedChange?: (failed: boolean) => void;
+  /** SDEF/1 R14: apply the Scope default to the imported scenes afterwards. */
+  applyScopeDefault?: boolean;
 }
 
 const DEFAULT_TYPE = "character";
@@ -54,6 +57,7 @@ export function NovelImportFlow({
   enforceBrowserLimits = false,
   onBusyChange,
   onFailedChange,
+  applyScopeDefault = false,
 }: Props) {
   const { t } = useTranslation();
   const [phase, setPhase] = useState<SimpleImportPhase>("idle");
@@ -182,12 +186,14 @@ export function NovelImportFlow({
 
       let sceneCount = 0;
       if (plan.bodyLineCount > 0) {
-        const { imported, errors: treeErrors } = await importTree(
-          [plan.scene],
-          setProgress,
-        );
+        const {
+          imported,
+          errors: treeErrors,
+          sceneIds,
+        } = await importTree([plan.scene], setProgress);
         sceneCount = imported;
         allErrors.push(...treeErrors);
+        await applyScopeDefaultAfterImport(applyScopeDefault, sceneIds);
       }
 
       setErrors(allErrors);
@@ -212,6 +218,7 @@ export function NovelImportFlow({
     reloadCodex,
     reloadTree,
     onFailedChange,
+    applyScopeDefault,
   ]);
 
   return (

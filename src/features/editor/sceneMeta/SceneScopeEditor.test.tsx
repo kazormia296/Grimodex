@@ -75,6 +75,11 @@ vi.mock("./SceneScopeFields", () => ({
   ),
 }));
 vi.mock("./SceneScopePrincipals", () => ({ SceneScopePrincipals: () => null }));
+// The project default badge and action read their own command; these request
+// epoch tests count only the binding and registry calls.
+vi.mock("./SceneScopeDefaultActions", () => ({
+  SceneScopeDefaultActions: () => null,
+}));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -349,9 +354,10 @@ describe("SceneScopeEditor request epochs", () => {
     expect(
       invokeMock.mock.calls[3][1].payload.scope.queryIdentity.timeline,
     ).toEqual({ kind: "exact", ref: "timeline:local" });
+    // rev2 §7.3 (A8): an unset binding follows the query into the material.
     expect(
       invokeMock.mock.calls[3][1].payload.scope.materialConstraint.timeline,
-    ).toEqual({ kind: "any" });
+    ).toEqual({ kind: "exact", ref: "timeline:local" });
     await act(async () =>
       retrySave.resolve({
         registry: recovered.registry,
