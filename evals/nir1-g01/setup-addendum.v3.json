@@ -1,7 +1,7 @@
 {
   "schemaVersion": "nir1-c-body-setup-addendum/1",
   "addendumId": "nir1-g01-setup-addendum/3",
-  "status": "draft-awaiting-independent-review",
+  "status": "frozen-after-independent-review",
   "graphRuntimeObservedBeforeAuthoring": true,
   "purpose": "K2/4 の「setup の addendum（G-01 と、G-02／G-07／G-08 の追加 Scene）」の G-01 の分。宣言する Scene と値、期待する excerpt の範囲、宣言の時期と場所、診断用の負例を、G-01 の R+IR+Graph（本文の開示を含む）を観測するどの実行よりも前に固定する。fixture v1 は変えない。",
   "contract": {
@@ -200,7 +200,14 @@
   ],
   "diagnosticNegativeRule": "負例は Gold ではなく診断用の期待値で、Gold の run とは別の run で行い、結果は診断として記録するだけで、case の判定（pass、hold、blocked）に数えない。",
   "reviewPlan": "独立コードレビューの reviewer（別の agent、read-only）が確かめること: v2 との差分が supersedes.rule に挙げた葉だけであること（v2 と v1 の bytes が変わっていないこと）、resealAfterMutation の地点ごとの規則（sealPoints）と records の欄の名前が harness（scripts/quality/nir1-graph-eval/g01-negatives.mjs、g01-negative-run.mjs）の実装と一致すること、restore の地点の規則が v2 より緩くなっていないこと、limits の開示 (i)〜(vi) が DR-CP4-S4-8 (2)(8) と合うこと、宣言の行・値・負例の操作・期待・対照・判定・聞き直しと待ちの上限が v2 と同じであること。この版は Graph の runtime の観測（S4b''' の候補 22b74a25 の正式の測定で N2／N4 が blocked:b-seal-not-published になったこと）の後に書いた。確かめた記録をこの file に束縛し（review の欄に記録の path と sha256 を書き、status を frozen-after-independent-review にする）、この file は凍結の後は変えない。",
-  "review": null,
+  "review": {
+    "reviewer": "v3 の独立コードレビューの reviewer（別の agent、Opus、read-only。Graph runtime を実行せず、測定の受領書を読んでいない）",
+    "reviewedAt": "2026-11-03",
+    "record": "docs/plans/nir1-cp4-records/s4-5th-v3-code-review-2026-11-03/review-v3.md（commit 0423cfe0cdec7a01459873388c6b6a78b4007ebd〔claude/nir1-contracts。この枝は master に merge しないので hash で引く〕の bytes。SHA-256 89c738f24d0c9457fc0a8bce7cfc0e46f25c2a622a543ef72bd09e8dc73c016e。v3 の草案 e112d2dc と path の向け直し ee43c197〔失効 0d456ee2 の後〕の本レビューの報告の本文。判定は (b) 修正してから受入れ可、P1 なし、P2×4、P3×8）。同じ directory の review-v3-recheck.md（SHA-256 ba3224525eb6adb6055ffa4d41a42d2d17555e5a1f93a6e70e98eb32b1fe9522。修正差分の再確認。判定 (a) 受入れ可、任意の P3×3）と README.md は integrator の要旨",
+    "recordSha256": "89c738f24d0c9457fc0a8bce7cfc0e46f25c2a622a543ef72bd09e8dc73c016e",
+    "verdict": "(b) 修正してから受入れ可（P1 なし、P2×4、P3×8）。修正差分の再確認で (a) 受入れ可（任意の P3×3）",
+    "conditions": "reviewer が本レビューで読んだこの file の bytes は 7b128636 の前の版（54b69bc2247e90c7b022d429eb1b268060dd0a616f5e21fb3da6d92c7d1e7176）で、v1・v2 の bytes（ade7c402…、fd6b0c3c…）が変わっていないこと、v2 との葉の差分が supersedes.rule に挙げた葉だけであること、v3 を v2 に読み戻すと一致することを確かめた。P2×4 は integrator が直し（7b128636。SHA-256 5578c52684ffdb8165ed9bc367fefd616070043a97403c93daea77d244ba8e0f）、reviewer が修正差分を再確認して (a) とした（review-v3-recheck.md）。その後、任意の P3×3（limits (vii) の引用元と評価の語、limits (i) の括弧、sealPoints.bodyOnlySave.freshnessSettle の limit／interval を名前と数値〔limitMs 60000、intervalMs 250〕の欄に分ける）を integrator が直し（38b464ea。SHA-256 cd1358cc44d1105c46e2368e49f4022134ff113529bde5fc539e2bdcccc5cc5a）、**この 3 件の直しを reviewer は見直していない**（再確認の文書が、直す場合は葉の目視と v2 への読み戻しで足り再レビューは要らないとしたことに従った）。integrator が、v2 への読み戻しの一致、7b128636 の版からの変更が上の葉だけであること、値が frozen-setup-driver.mjs:167-168 と一致することを確かめた。凍結の commit が変えたのは status と review の 2 つの欄だけ。これは独立コードレビュー（実装と文書の差分の正しさと迂回路を見るレビュー）で、S3 の独立レビューでも、fixture の独立期待値レビューでも、ユーザーの確認でもない。K2/4 の文、確認済み契約、閾値・Gold は変えていない。ユーザーは規則の変更（案 A′）を認めている（contracts ac2e93d6）。"
+  },
   "seedPinStepNote": "SP/1（nir1-graph-case-seed-pin-proposal/1。2026-10-27 に確認）の seed の pin の段（evals/nir1-graph/seed-pin-addendum.v2.json）を先に置き、この addendum の宣言の段はその後に置く。G-02〜G-08 の seed の pin の段は setupOrder の「foreshadows, foreshadow Codex links and pins」の段の直後（maintenance の有効化と setupTimeline の前）、G-01 は g01-mira の pin の後（typed Revision の prepare と B の seal の前）にある。宣言の段は declarationPlace (ii) のとおり測定の workspace を開いた後、Graph の arm の最初の query の前で、K2/4 の内容（宣言する Scene、値、期待値、負例）は変えない。診断用の負例（宣言しない run を含む）も seed の pin の段を含む workspace で取る（SP/1 の設計: Graph が要求された状態の負例になる）。",
   "afterMutationReadings": {
     "status": "S2 追補 #4 の提案（DR-CP4-O-6 の対照の読み、O-14／O-15 の聞き直しの規則、O-5 (v)(vii)(xi)、O-9、O-17。DR-CP4-P-1）。S3 の 7 回目が追補 #4 の版を確かめた（observation-prep.v1.json の reviewerQuestions P-S2-7 と P-S2-8 の決定 a。判定は accept-with-conditions で、この file の review）。7 回目の後に、K24-G01-N4 の beforeDeclaration（追補 #5、c5d481c4）と、この節の retry.rule と graphTries（追補 #6、94fc8ed4）が変わり、その変更を S3 が見た記録は無い。数値は harness の定数（scripts/quality/nir1-graph-eval/g01-negatives.mjs の G01_CONTROL_ATTEMPTS、G01_SAMPLE_ATTEMPTS、G01_CONTROL_GAP_MS、G01_GRAPH_READY_WAIT_MS。値は master 950751d0 の版のままで、DR-CP4-S4-8 の後の読み元の pin は S2 追補 #12 が束縛する）を正とした（O-6 の「最大 10 回、間隔 1.2 s」と O-15 の「30 回」は古い文面）。v3 で、この節の resealAfterMutation（mutation の後の B の封印の規則）を DR-CP4-S4-8 で変えた。これは K24-G01-N2／N4 が formal の測定で blocked になったのを見た後の読みの変更で、S3 は見ておらず、v3 の review の独立コードレビューが見た（ユーザーの確認 contracts ac2e93d6）。",
