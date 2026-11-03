@@ -41,13 +41,15 @@ export function SceneScopeDefaultActions({
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Bumped when the default moved under a confirmation, so the next attempt
+  // reads the current default and its version (P3-a).
+  const [reloadTick, setReloadTick] = useState(0);
   const { projectId, sceneId } = binding;
 
   useEffect(() => {
     let live = true;
     setCurrent(null);
     setConfirming(false);
-    setError(null);
     readScopeProjectDefault(workspacePath, projectId)
       .then((value) => {
         if (live) setCurrent(value);
@@ -59,6 +61,10 @@ export function SceneScopeDefaultActions({
     return () => {
       live = false;
     };
+  }, [workspacePath, projectId, sceneId, reloadTick]);
+
+  useEffect(() => {
+    setError(null);
   }, [workspacePath, projectId, sceneId]);
 
   const value = current?.default;
@@ -101,6 +107,7 @@ export function SceneScopeDefaultActions({
           setError(t("settings.project.sceneScopeApplyNoDefault"));
         } else if (result.status === "default-changed") {
           setError(t("settings.project.sceneScopeDefaultConflict"));
+          setReloadTick((tick) => tick + 1);
         } else if (result.applied === 0) {
           setError(
             t("settings.project.sceneScopeApplyResult", {

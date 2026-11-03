@@ -15,11 +15,20 @@ import {
 // Registers this feature's lazy strings (DR-SDEF-52).
 import "./sceneScopeDefaultTranslations";
 
+/**
+ * The import screen's choice: off, or on with the version of the default the
+ * screen showed ("当てる値"). A default changed since then is not applied.
+ */
+export type ScopeDefaultImportChoice =
+  | false
+  | undefined
+  | { expectedVersion: number };
+
 export async function applyScopeDefaultAfterImport(
-  enabled: boolean | undefined,
+  choice: ScopeDefaultImportChoice,
   sceneIds: readonly string[],
 ): Promise<ScopeApplyResult | null> {
-  if (!enabled || sceneIds.length === 0) return null;
+  if (!choice || sceneIds.length === 0) return null;
   const workspacePath = useWorkspaceStore.getState().activeWorkspacePath;
   if (!workspacePath) return null;
   try {
@@ -28,10 +37,11 @@ export async function applyScopeDefaultAfterImport(
       projectId: getCurrentProjectId(),
       sceneIds,
       target: "unknown",
+      expectedVersion: choice.expectedVersion,
     });
-    if (result.status !== "done") {
-      // Without an expected version the default cannot have "changed"; both
-      // non-done outcomes mean nothing was written.
+    if (result.status === "default-changed") {
+      toast.error(i18next.t("import.sceneScopeApplyChanged"));
+    } else if (result.status !== "done") {
       toast.error(i18next.t("settings.project.sceneScopeApplyNoDefault"));
     } else {
       (result.failed > 0 ? toast.warning : toast.success)(

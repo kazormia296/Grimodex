@@ -12,6 +12,7 @@ import { ScanImportFlow } from "./flows/ScanImportFlow";
 import { ImportWizard } from "./wizard/ImportWizard";
 import { GenericImportWizardPreview } from "./wizard/generic/GenericImportWizardPreview";
 import { ImportScopeDefaultOption } from "@/features/scene-scope-default/ImportScopeDefaultOption";
+import type { ScopeDefaultImportChoice } from "@/features/scene-scope-default/importApply";
 
 interface Props {
   open: boolean;
@@ -56,7 +57,8 @@ export function ImportDialogBody({
   const [flowFailed, setFlowFailed] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   // SDEF/1 R14: OFF by default; the scan flow and the previews do not use it.
-  const [applyScopeDefault, setApplyScopeDefault] = useState(false);
+  const [applyScopeDefault, setApplyScopeDefault] =
+    useState<ScopeDefaultImportChoice>(false);
   const [genericWizardOpen, setGenericWizardOpen] = useState(false);
   const interactionLocked = flowBusy || flowFailed;
 
@@ -208,7 +210,7 @@ export function ImportDialogBody({
           {source !== "scan" && (
             <ImportScopeDefaultOption
               importTarget={importTarget}
-              checked={applyScopeDefault}
+              checked={applyScopeDefault !== false}
               onChange={setApplyScopeDefault}
               disabled={interactionLocked}
             />

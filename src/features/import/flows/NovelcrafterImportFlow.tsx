@@ -1,5 +1,8 @@
 import { useState, useCallback, useEffect } from "react";
-import { applyScopeDefaultAfterImport } from "@/features/scene-scope-default/importApply";
+import {
+  applyScopeDefaultAfterImport,
+  type ScopeDefaultImportChoice,
+} from "@/features/scene-scope-default/importApply";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -93,7 +96,7 @@ interface Props {
   onBusyChange?: (busy: boolean) => void;
   onFailedChange?: (failed: boolean) => void;
   /** SDEF/1 R14: apply the Scope default to the imported scenes afterwards. */
-  applyScopeDefault?: boolean;
+  applyScopeDefault?: ScopeDefaultImportChoice;
 }
 
 export function NovelcrafterImportFlow({

@@ -3,8 +3,9 @@ import { useTranslation } from "react-i18next";
 import { isElectron } from "@/lib/tauri";
 import {
   readScopeProjectDefault,
-  type ScopeDefaultValue,
+  type ScopeProjectDefault,
 } from "@/lib/sceneScopeDefault";
+import type { ScopeDefaultImportChoice } from "./importApply";
 import { describeScopeDefault } from "./describeDefault";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
@@ -26,22 +27,24 @@ export function ImportScopeDefaultOption({
 }: {
   importTarget: ImportTarget;
   checked: boolean;
-  onChange: (checked: boolean) => void;
+  /** ON carries the version of the default shown here (P3-b). */
+  onChange: (choice: ScopeDefaultImportChoice) => void;
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
   const workspacePath = useWorkspaceStore((state) => state.activeWorkspacePath);
-  const [value, setValue] = useState<ScopeDefaultValue | null>(null);
+  const [current, setCurrent] = useState<ScopeProjectDefault | null>(null);
+  const value = current?.default ?? null;
   const hasDefault = value?.state === "set";
 
   useEffect(() => {
     let live = true;
-    setValue(null);
+    setCurrent(null);
     if (!isElectron() || !workspacePath || importTarget !== "currentProject")
       return;
     readScopeProjectDefault(workspacePath, getCurrentProjectId())
-      .then((current) => {
-        if (live) setValue(current.default);
+      .then((read) => {
+        if (live) setCurrent(read);
       })
       .catch(() => {
         // Unreadable: the check stays off.
@@ -64,7 +67,13 @@ export function ImportScopeDefaultOption({
         data-testid="import-scene-scope-apply-default"
         checked={checked && available}
         disabled={disabled || !available}
-        onChange={(event) => onChange(event.target.checked)}
+        onChange={(event) =>
+          onChange(
+            event.target.checked && current
+              ? { expectedVersion: current.version }
+              : false,
+          )
+        }
         className="mt-0.5"
       />
       <span>

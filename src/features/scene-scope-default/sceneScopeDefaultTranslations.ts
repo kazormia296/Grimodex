@@ -50,6 +50,8 @@ export const SCENE_SCOPE_DEFAULT_TRANSLATIONS = {
       sceneScopeApplyNoDefault:
         "今のプロジェクトには Scope の既定がありません。",
       sceneScopeApplyValue: "当てる値：{{value}}",
+      sceneScopeApplyChanged:
+        "取り込みの間に Scope の既定が変わったため、取り込んだ場面には当てませんでした。設定 > プロジェクトから当ててください。",
     },
     relatedScenes: {
       scopeUnknown:
@@ -105,6 +107,8 @@ export const SCENE_SCOPE_DEFAULT_TRANSLATIONS = {
         'A new project has no default scope. After importing, choose one in Settings > Project and use "Apply the default to unset scenes".',
       sceneScopeApplyNoDefault: "The current project has no default scope.",
       sceneScopeApplyValue: "Value to apply: {{value}}",
+      sceneScopeApplyChanged:
+        "The default scope changed during the import, so it was not applied to the imported scenes. Apply it from Settings > Project.",
     },
     relatedScenes: {
       scopeUnknown:

@@ -182,6 +182,8 @@ export function RelatedScenesSection({
               >
                 <Suspense fallback={text}>
                   <RelatedScenesScopeGuidance
+                    // A new Scene starts without the previous "applied" note.
+                    key={sceneId}
                     sceneId={sceneId}
                     fallback={text}
                   />
