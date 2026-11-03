@@ -315,6 +315,31 @@ async function measurePositions(page, positions, repeats) {
   return queries;
 }
 
+/** 抽出の集計：Scene ごとの提案の件数の分布、承認、失敗、時間。件数だけ。 */
+export function summarizeExtraction(extraction) {
+  const distribution = {};
+  for (const e of extraction)
+    if (e.status === "completed")
+      distribution[e.proposalCount] = (distribution[e.proposalCount] ?? 0) + 1;
+  const durations = extraction.map((e) => e.durationMs).filter((d) => typeof d === "number");
+  const proposals = extraction.flatMap((e) => e.proposals ?? []);
+  return {
+    scenes: extraction.length,
+    completed: extraction.filter((e) => e.status === "completed").length,
+    failed: extraction.filter((e) => e.status !== "completed").length,
+    failureCodes: extraction.filter((e) => e.errorCode).map((e) => e.errorCode),
+    proposalCountDistribution: distribution,
+    proposals: proposals.length,
+    approved: proposals.filter((p) => p.approved).length,
+    proposalErrors: proposals.filter((p) => p.error).map((p) => p.error),
+    secretBefore: proposals.filter((p) => p.secretBefore === true).length,
+    durationMs: {
+      total: durations.reduce((a, b) => a + b, 0),
+      max: durations.length ? Math.max(...durations) : null,
+    },
+  };
+}
+
 const probeMap = async (page, positions) => {
   const map = new Map();
   for (const position of positions) {
@@ -580,7 +605,11 @@ export async function runIrSlot(options) {
       const positions = queryPositions(count);
       checkpoint.irWait = await page.evaluate(
         (input) => window.fusionIrEvaluation.waitIrUsable(input),
-        { position: positions[positions.length - 1], timeoutMs: IR_WAIT_MS },
+        {
+          position: positions[positions.length - 1],
+          timeoutMs: IR_WAIT_MS,
+          requireReadyEvent: records.extraction.some((e) => e.approvedCount > 0),
+        },
       );
       log(`${label} IR wait: ${JSON.stringify(checkpoint.irWait)}`);
       // 地点の作り方（§2.5）：前の地点の probe の admitted が、足した後も残るか。
@@ -609,7 +638,6 @@ export async function runIrSlot(options) {
       log(`${label}: Scene ${count}、query ${positions.length}、${JSON.stringify(checkpoint.summary.categories)}`);
     }
     records.summary = summarizeQueries(records.checkpoints.flatMap((c) => c.queries));
-    records.usage = await page.evaluate(() => window.fusionIrEvaluation.usage());
     records.status = records.extraction.every((e) => e.status === "completed")
       ? "complete"
       : "complete-with-failures";
@@ -618,7 +646,16 @@ export async function runIrSlot(options) {
     records.errors.push(error instanceof Error ? error.message : String(error));
   } finally {
     key = null;
+    records.extractionSummary = summarizeExtraction(records.extraction);
     if (app) {
+      if (!records.usage) {
+        try {
+          const [page] = app.windows();
+          records.usage = await page.evaluate(() => window.fusionIrEvaluation.usage());
+        } catch {
+          records.usage = null;
+        }
+      }
       try {
         const calls = await app.evaluate(() =>
           (globalThis.nir1IpcTrace?.calls ?? []).filter((c) => c.command === "send_chat_message"),

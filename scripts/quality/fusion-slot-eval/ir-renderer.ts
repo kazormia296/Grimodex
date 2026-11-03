@@ -409,9 +409,9 @@ async function extractScene(position: number) {
 
 async function buildRaw(input: { first: boolean }) {
   const state = requireActive();
+  // 抽出の後に作るので、初回でも既に vector がある可能性がある。止めずに記録する。
   const before = await semanticIndexStatus(state.projectId);
-  if (input.first && before.indexedChunkCount !== 0)
-    throw new Error("[precheck] fresh DB already contains vectors");
+  const chunksBefore = before.indexedChunkCount;
   const started = performance.now();
   await semanticReindexAll(state.projectId, `fusion-ir-${state.projectId}`);
   const status = await semanticIndexStatus(state.projectId);
@@ -424,6 +424,8 @@ async function buildRaw(input: { first: boolean }) {
       "[artifact] full build did not publish all expected scenes",
     );
   return {
+    first: input.first,
+    chunksBefore,
     durationMs: performance.now() - started,
     indexedChunkCount: status.indexedChunkCount,
     indexedSceneCount: status.indexedSceneCount,
@@ -535,33 +537,46 @@ async function probe(position: number) {
  * 承認の後、IR が使える（indexUsable）まで待つ。`related-scenes:index-ready` を数え、
  * 実際の query 経路で確かめる（L0 の buildIr と同じ考え方。上限は伸ばす）。
  */
-async function waitIrUsable(input: { position: number; timeoutMs: number }) {
+async function waitIrUsable(input: {
+  position: number;
+  timeoutMs: number;
+  /** 承認が無い地点では build の event を待たない。 */
+  requireReadyEvent: boolean;
+}) {
+  // begin のたびに Native が IR の build を予約し、公開すると index-ready を出す。承認の後の
+  // build を待つため、usable に加えて、この関数の開始より後の index-ready を 1 回以上要る。
+  // event が来ないまま usable が 30 秒続いたら（作り直す物が無い）受け入れ、印を付ける。
   const eventsAtStart = readyEvents;
   const started = performance.now();
+  let usableSince: number | null = null;
   const probes: { indexUsable: boolean | null; outcome: string | null }[] = [];
+  const result = (usable: boolean, acceptedWithoutEvent: boolean) => ({
+    usable,
+    acceptedWithoutEvent,
+    durationMs: performance.now() - started,
+    readyEvents: readyEvents - eventsAtStart,
+    attempts: probes.length,
+    notUsableAttempts: probes.filter((p) => p.indexUsable !== true).length,
+    last: probes[probes.length - 1] ?? null,
+  });
   while (performance.now() - started < input.timeoutMs) {
     const sample = await sampleHybrid(input.position);
     probes.push({
       indexUsable: sample.initialSnapshot?.indexUsable ?? null,
       outcome: sample.completion?.outcome ?? null,
     });
-    if (sample.initialSnapshot?.indexUsable === true)
-      return {
-        usable: true,
-        durationMs: performance.now() - started,
-        readyEvents: readyEvents - eventsAtStart,
-        attempts: probes.length,
-        last: probes[probes.length - 1],
-      };
+    const usable = sample.initialSnapshot?.indexUsable === true;
+    if (usable) {
+      usableSince ??= performance.now();
+      if (!input.requireReadyEvent || readyEvents > eventsAtStart)
+        return result(true, false);
+      if (performance.now() - usableSince >= 30000) return result(true, true);
+    } else {
+      usableSince = null;
+    }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  return {
-    usable: false,
-    durationMs: performance.now() - started,
-    readyEvents: readyEvents - eventsAtStart,
-    attempts: probes.length,
-    last: probes[probes.length - 1] ?? null,
-  };
+  return result(false, false);
 }
 
 /**
