@@ -9,6 +9,8 @@ import type {
   Binding,
   ScopeRead,
 } from "@/features/editor/sceneMeta/sceneScopeTypes";
+// Registers this feature's lazy strings (DR-SDEF-52).
+import "@/features/scene-scope-default/sceneScopeDefaultTranslations";
 
 function hasUnresolvedAxis(binding: Binding): boolean {
   return Object.values(binding.queryIdentity).some(
@@ -37,6 +39,7 @@ export default function RelatedScenesScopeGuidance({
   );
   const [read, setRead] = useState<ScopeRead | null>(null);
   const [tick, setTick] = useState(0);
+  const [applied, setApplied] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -64,6 +67,18 @@ export default function RelatedScenesScopeGuidance({
     binding?.compatibilityMarker === "legacy-absent";
   const unresolved =
     binding?.compatibilityMarker === "explicit" && hasUnresolvedAxis(binding);
+  // DR-SDEF-38: the shown result belongs to the query made before the apply;
+  // say when the new Scope takes effect instead of looking ineffective.
+  if (applied && binding?.compatibilityMarker === "explicit")
+    return (
+      <p
+        role="status"
+        data-testid="nir1-scope-guidance-applied"
+        className="px-3 py-2 text-[11px] text-muted-foreground"
+      >
+        {t("relatedScenes.scopeApplied")}
+      </p>
+    );
   if (!binding || !workspacePath || (!unset && !unresolved)) return fallback;
 
   const openScope = () =>
@@ -75,9 +90,11 @@ export default function RelatedScenesScopeGuidance({
     >
       <p>
         {t(
-          unset
+          binding.compatibilityMarker === "unknown"
             ? "relatedScenes.scopeUnknown"
-            : "relatedScenes.scopeUnresolved",
+            : binding.compatibilityMarker === "legacy-absent"
+              ? "relatedScenes.scopeLegacy"
+              : "relatedScenes.scopeUnresolved",
         )}
       </p>
       <button
@@ -94,7 +111,10 @@ export default function RelatedScenesScopeGuidance({
         <SceneScopeDefaultActions
           workspacePath={workspacePath}
           binding={binding}
-          onApplied={() => setTick((value) => value + 1)}
+          onApplied={() => {
+            setApplied(true);
+            setTick((value) => value + 1);
+          }}
         />
       )}
     </div>

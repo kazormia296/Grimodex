@@ -1,27 +1,20 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  MAIN_LINE_REFS,
   readScopeProjectDefault,
   type ScopeProjectDefault,
 } from "@/lib/sceneScopeDefault";
 import { applyScopeDefaultToScenes } from "@/features/scene-scope-default/applyScopeDefault";
+import {
+  describeScopeDefault,
+  isMainLineAxes,
+} from "@/features/scene-scope-default/describeDefault";
 import type { Binding } from "./sceneScopeTypes";
+// Registers this feature's lazy strings (DR-SDEF-52).
+import "@/features/scene-scope-default/sceneScopeDefaultTranslations";
 
 function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function isMainLine(binding: Binding): boolean {
-  const query = binding.queryIdentity;
-  return (
-    query.timeline.kind === "exact" &&
-    query.timeline.ref === MAIN_LINE_REFS.timeline &&
-    query.worldline.kind === "exact" &&
-    query.worldline.ref === MAIN_LINE_REFS.worldline &&
-    query.narrativeLayer.kind === "exact" &&
-    query.narrativeLayer.ref === MAIN_LINE_REFS.narrativeLayer
-  );
 }
 
 /**
@@ -35,10 +28,13 @@ export function SceneScopeDefaultActions({
   workspacePath,
   binding,
   onApplied,
+  hasUnsavedDraft = false,
 }: {
   workspacePath: string;
   binding: Binding;
   onApplied: () => void | Promise<void>;
+  /** The Scope field has unsaved edits that applying would discard. */
+  hasUnsavedDraft?: boolean;
 }) {
   const { t } = useTranslation();
   const [current, setCurrent] = useState<ScopeProjectDefault | null>(null);
@@ -73,6 +69,18 @@ export function SceneScopeDefaultActions({
     sameJson(binding.queryIdentity, value.queryIdentity) &&
     sameJson(binding.materialConstraint, value.materialConstraint);
   const canApply = !explicit && value?.state === "set";
+  // The default is named by its actual value (PR-2 review P2-2): "本筋" only
+  // when it is the main line.
+  const valueLabel =
+    value?.state === "set" ? describeScopeDefault(value.queryIdentity, t) : "";
+  // The note compares with the project default when there is one, otherwise
+  // with the main line; a Scene equal to the default never gets it.
+  const differsFromReference =
+    explicit &&
+    !matchesDefault &&
+    (value?.state === "set"
+      ? !sameJson(binding.queryIdentity, value.queryIdentity)
+      : !isMainLineAxes(binding.queryIdentity));
 
   const apply = () => {
     setBusy(true);
@@ -85,11 +93,14 @@ export function SceneScopeDefaultActions({
         binding.compatibilityMarker === "legacy-absent"
           ? "legacy-absent"
           : "unknown",
+      expectedVersion: current?.version,
     })
       .then(async (result) => {
         setConfirming(false);
         if (result.status === "no-default") {
           setError(t("settings.project.sceneScopeApplyNoDefault"));
+        } else if (result.status === "default-changed") {
+          setError(t("settings.project.sceneScopeDefaultConflict"));
         } else if (result.applied === 0) {
           setError(
             t("settings.project.sceneScopeApplyResult", {
@@ -115,15 +126,17 @@ export function SceneScopeDefaultActions({
           data-testid="scene-scope-default-badge"
           className="self-start rounded bg-primary/10 px-1.5 py-px text-[9px] font-bold text-primary"
         >
-          {t("editor.sceneDetail.scopeDefaultBadge")}
+          {t("editor.sceneDetail.scopeDefaultBadge", { value: valueLabel })}
         </span>
       )}
-      {explicit && !isMainLine(binding) && (
+      {differsFromReference && (
         <p
           data-testid="scene-scope-not-main-line"
           className="text-[10px] text-muted-foreground"
         >
-          {t("editor.sceneDetail.scopeNotMainLine")}
+          {value?.state === "set"
+            ? t("editor.sceneDetail.scopeNotDefault", { value: valueLabel })
+            : t("editor.sceneDetail.scopeNotMainLine")}
         </p>
       )}
       {canApply && !confirming && (
@@ -142,7 +155,14 @@ export function SceneScopeDefaultActions({
           data-testid="scene-scope-apply-confirm"
           className="flex flex-col gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-950 dark:text-amber-100"
         >
-          <p>{t("editor.sceneDetail.scopeApplyConfirm")}</p>
+          <p>
+            {t("editor.sceneDetail.scopeApplyConfirm", { value: valueLabel })}
+          </p>
+          {hasUnsavedDraft && (
+            <p data-testid="scene-scope-apply-unsaved-warning">
+              {t("editor.sceneDetail.scopeApplyUnsavedWarning")}
+            </p>
+          )}
           {binding.compatibilityMarker === "legacy-absent" && (
             <p data-testid="scene-scope-apply-legacy-warning">
               {t("editor.sceneDetail.scopeApplyLegacyWarning")}

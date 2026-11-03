@@ -238,6 +238,32 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
     draft && !separateMaterial
       ? { ...draft, materialConstraint: draft.queryIdentity }
       : draft;
+  const unsavedDraft = Boolean(
+    effectiveDraft &&
+    read &&
+    JSON.stringify([
+      effectiveDraft.queryIdentity,
+      effectiveDraft.materialConstraint,
+      effectiveDraft.knowledgeHolder,
+      effectiveDraft.audience,
+    ]) !==
+      JSON.stringify([
+        read.binding.queryIdentity,
+        read.binding.materialConstraint,
+        read.binding.knowledgeHolder,
+        read.binding.audience,
+      ]),
+  );
+  // rev2 §7.3 / §5.3: saving an earlier Scene while the vocabulary is empty
+  // makes an explicit binding with unresolved axes, so no interpretation
+  // appears any more. Say so before the save.
+  const legacyWithEmptyRegistry = Boolean(
+    read &&
+    read.binding.compatibilityMarker === "legacy-absent" &&
+    read.registry.timelineRefs.length === 0 &&
+    read.registry.worldlineRefs.length === 0 &&
+    read.registry.narrativeLayerRefs.length === 0,
+  );
   const materialMismatch = Boolean(
     effectiveDraft &&
     !sameScopeAxes(
@@ -479,7 +505,17 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
             workspacePath={workspacePath}
             binding={read.binding}
             onApplied={reloadScope}
+            hasUnsavedDraft={unsavedDraft}
           />
+          {legacyWithEmptyRegistry && (
+            <p
+              role="status"
+              data-testid="scene-scope-legacy-empty-registry"
+              className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-950 dark:text-amber-100"
+            >
+              {t("editor.sceneDetail.scopeLegacyEmptyRegistry")}
+            </p>
+          )}
           <SceneScopeFields
             draft={effectiveDraft}
             registry={read.registry}

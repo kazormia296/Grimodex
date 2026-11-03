@@ -12,6 +12,8 @@ import {
   applyScopeDefaultToScenes,
   type ScopeApplyResult,
 } from "./applyScopeDefault";
+// Registers this feature's lazy strings (DR-SDEF-52).
+import "./sceneScopeDefaultTranslations";
 
 export async function applyScopeDefaultAfterImport(
   enabled: boolean | undefined,
@@ -27,7 +29,9 @@ export async function applyScopeDefaultAfterImport(
       sceneIds,
       target: "unknown",
     });
-    if (result.status === "no-default") {
+    if (result.status !== "done") {
+      // Without an expected version the default cannot have "changed"; both
+      // non-done outcomes mean nothing was written.
       toast.error(i18next.t("settings.project.sceneScopeApplyNoDefault"));
     } else {
       (result.failed > 0 ? toast.warning : toast.success)(

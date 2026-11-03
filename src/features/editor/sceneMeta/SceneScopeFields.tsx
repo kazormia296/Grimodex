@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import type { Binding, Constraint, Registry } from "./sceneScopeTypes";
+import { scopeRefLabel } from "@/features/scene-scope-default/describeDefault";
 
 type Translate = (key: string) => string;
 
@@ -8,21 +9,6 @@ const AXES = [
   ["worldline", "worldlineRefs", "editor.sceneDetail.axisWorldline"],
   ["narrativeLayer", "narrativeLayerRefs", "editor.sceneDetail.axisLayer"],
 ] as const;
-
-// Known refs get a display name; the stored ref itself is never translated
-// (rev2 §7.2), and every other ref is shown as written.
-const KNOWN_REF_LABELS: Record<string, string> = {
-  "timeline:main": "editor.sceneDetail.refTimelineMain",
-  "worldline:prime": "editor.sceneDetail.refWorldlinePrime",
-  "layer:manuscript": "editor.sceneDetail.refLayerManuscript",
-};
-
-export function scopeRefLabel(ref: string, t: Translate): string {
-  const key = Object.hasOwn(KNOWN_REF_LABELS, ref)
-    ? KNOWN_REF_LABELS[ref]
-    : undefined;
-  return key ? t(key) : ref;
-}
 
 function unresolved(): Constraint {
   return { kind: "unresolved", reason: "scene-scope-axis-unresolved" };

@@ -571,10 +571,7 @@
         "tagEmpty": "Skipped a character book entry with an empty tag"
       },
       "defaultProjectTitle": "Imported"
-    },
-    "sceneScopeApplyDefault": "After importing, apply the default scope (main line) to the imported scenes (if they include flashbacks or similar, change those scenes afterwards)",
-    "sceneScopeApplyNewProject": "A new project has no default scope. After importing, choose one in Settings > Project and use \"Apply the default to unset scenes\".",
-    "sceneScopeApplyNoDefault": "The current project has no default scope."
+    }
   },
   "novelExport": {
     "title": "Export as AI Novelist file",
@@ -1282,24 +1279,7 @@
       "trashRetentionDesc": "Items past the retention period are deleted on the next startup / hourly cleanup.",
       "trashRetentionUnlimited": "Unlimited",
       "semanticEvalTitle": "Dev only: run the query set through live search to measure recall/threshold",
-      "semanticEvalButton": "Run search eval",
-      "sceneScopeDefault": "Default scope for new scenes",
-      "sceneScopeDefaultHint": "New scenes start with this scope. For flashbacks, dreams, other worldlines or stories within the story, change the scope of each scene after creating it. Changing the default does not change existing scenes. Scenes brought back by undo, redo, the trash or a snapshot, scenes synced from an external folder, and imported scenes start unset (for imports, you can choose to apply the default after importing).",
-      "sceneScopeDefaultNone": "No default (new scenes start unset)",
-      "sceneScopeDefaultSet": "Use a default",
-      "sceneScopeDefaultSave": "Save default",
-      "sceneScopeDefaultSaved": "Saved the default scope",
-      "sceneScopeNoVocabulary": "This project has no scope vocabulary yet. Create the first scene to choose a default.",
-      "sceneScopeRefUnregistered": "The chosen value is not in the scope vocabulary. Add it under \"Scope registry\" in a scene's scope field first.",
-      "sceneScopeRegistryWarning": "Using this value adds it to the scope vocabulary. This invalidates every approved interpretation and body declaration in this project; they must be recreated.",
-      "sceneScopeDefaultInvalid": "The default scope record of this project cannot be read. No default is used and new scenes start unset.",
-      "sceneScopeDefaultConflict": "The default changed elsewhere. Check the reloaded value.",
-      "sceneScopeApplyUnset": "Apply the default to unset scenes",
-      "sceneScopeApplyLegacy": "Apply the default to earlier scenes",
-      "sceneScopeApplyConfirm": "This applies the default to {{count}} scenes. Approved interpretations and body declarations tied to those scenes are invalidated.",
-      "sceneScopeApplyNone": "There are no scenes to apply the default to.",
-      "sceneScopeApplyResult": "Applied to {{applied}} scenes. {{failed}} could not be applied.",
-      "sceneScopeApplyNoDefault": "There is no default scope to apply. Choose one in Settings > Project."
+      "semanticEvalButton": "Run search eval"
     },
     "keys": {
       "search": "Search keybindings…",
@@ -4106,13 +4086,16 @@
       "scopeConflictCurrentRegistry": "Current Native registry",
       "scopeMaterialSeparate": "Set the material scope separately",
       "scopeMaterialMismatch": "This scene's position and its material scope differ. If you save this, scenes in another scope may see this scene as material.",
-      "scopeDefaultBadge": "Main line (project default)",
+      "scopeDefaultBadge": "Project default ({{value}})",
       "scopeNotMainLine": "This scene is outside the main line. Only interpretations from scenes in the same scope appear.",
       "scopeApplyDefault": "Apply the default",
-      "scopeApplyConfirm": "This applies the project default scope to this scene. Approved interpretations and body declarations tied to this scene are invalidated.",
+      "scopeApplyConfirm": "This applies the project default scope ({{value}}) to this scene. Approved interpretations and body declarations tied to this scene are invalidated.",
       "scopeApplyLegacyWarning": "Once applied, an earlier scene cannot go back to its earlier state.",
       "scopeApplyRun": "Apply",
-      "scopeRegistryWarning": "Saving a changed vocabulary invalidates every approved interpretation and body declaration in this project; they must be recreated."
+      "scopeRegistryWarning": "Saving a changed vocabulary invalidates every approved interpretation and body declaration in this project; they must be recreated.",
+      "scopeNotDefault": "This scene's scope differs from the project default ({{value}}). Only interpretations from scenes in the same scope appear.",
+      "scopeApplyUnsavedWarning": "Unsaved changes in the scope field will be discarded.",
+      "scopeLegacyEmptyRegistry": "The scope vocabulary is empty. Saving now records the scene as set with unresolved axes, and approved interpretations stop appearing. Add values under \"Scope registry\" first."
     },
     "layers": {
       "title": "Body layers",
@@ -4240,11 +4223,7 @@
     "noActiveScene": "Select a scene to see related earlier scenes.",
     "loading": "Searching…",
     "empty": "No related earlier scenes found.",
-    "untitled": "(Untitled)",
-    "scopeUnknown": "Approved interpretations do not appear because this scene's scope is unset. Scenes brought back by undo, redo, the trash or a snapshot, and imported scenes, start unset.",
-    "scopeUnresolved": "Approved interpretations do not appear because this scene's scope has an unresolved axis.",
-    "scopeOpen": "Set the scope",
-    "scopeApplyDefault": "Apply the default"
+    "untitled": "(Untitled)"
   },
   "sceneContext": {
     "codexSection": "Codex",

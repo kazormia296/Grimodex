@@ -101,6 +101,19 @@ interface ProjectState {
   deleteProjectById: (projectId: string) => Promise<void>;
 }
 
+/**
+ * SDEF/1 R12 (DR-SDEF-28): only the creation screen's main-line check adds
+ * the `sceneScopeDefault` option. Every other caller (imports, the evaluation
+ * harness) gets no option, so the project has no Scene Scope default.
+ */
+export function projectCreateOptions(
+  input: Pick<CreateProjectInput, "sceneScopeMainLine">,
+): { sceneScopeDefault: "main-line" } | undefined {
+  return input.sceneScopeMainLine === true
+    ? { sceneScopeDefault: "main-line" }
+    : undefined;
+}
+
 let loadProjectGeneration = 0;
 let projectStrictQuiescenceTail: Promise<void> = Promise.resolve();
 let projectLoadCommitTail: Promise<void> = Promise.resolve();
@@ -701,9 +714,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
               pov: input.pov || undefined,
               tense: input.tense || undefined,
             },
-            input.sceneScopeMainLine
-              ? { sceneScopeDefault: "main-line" }
-              : undefined,
+            projectCreateOptions(input),
           );
           deletedProjectIds.delete(createdRow.id);
           try {

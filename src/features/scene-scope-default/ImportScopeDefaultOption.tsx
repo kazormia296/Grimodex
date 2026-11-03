@@ -1,10 +1,16 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { isElectron } from "@/lib/tauri";
-import { readScopeProjectDefault } from "@/lib/sceneScopeDefault";
+import {
+  readScopeProjectDefault,
+  type ScopeDefaultValue,
+} from "@/lib/sceneScopeDefault";
+import { describeScopeDefault } from "./describeDefault";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import type { ImportTarget } from "@/features/import/importTarget";
+// Registers this feature's lazy strings (DR-SDEF-52).
+import "./sceneScopeDefaultTranslations";
 
 /**
  * The import screen's check "apply the default to the imported scenes"
@@ -25,16 +31,17 @@ export function ImportScopeDefaultOption({
 }) {
   const { t } = useTranslation();
   const workspacePath = useWorkspaceStore((state) => state.activeWorkspacePath);
-  const [hasDefault, setHasDefault] = useState(false);
+  const [value, setValue] = useState<ScopeDefaultValue | null>(null);
+  const hasDefault = value?.state === "set";
 
   useEffect(() => {
     let live = true;
-    setHasDefault(false);
+    setValue(null);
     if (!isElectron() || !workspacePath || importTarget !== "currentProject")
       return;
     readScopeProjectDefault(workspacePath, getCurrentProjectId())
-      .then((value) => {
-        if (live) setHasDefault(value.default.state === "set");
+      .then((current) => {
+        if (live) setValue(current.default);
       })
       .catch(() => {
         // Unreadable: the check stays off.
@@ -64,6 +71,16 @@ export function ImportScopeDefaultOption({
         <span className="text-foreground">
           {t("import.sceneScopeApplyDefault")}
         </span>
+        {available && value?.state === "set" && (
+          <>
+            <br />
+            <span data-testid="import-scene-scope-default-value">
+              {t("import.sceneScopeApplyValue", {
+                value: describeScopeDefault(value.queryIdentity, t),
+              })}
+            </span>
+          </>
+        )}
         {!available && (
           <>
             <br />

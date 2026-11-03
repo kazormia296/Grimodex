@@ -1,15 +1,27 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { readScopeProjectDefault } from "@/lib/sceneScopeDefault";
 import {
   applyScopeDefaultToScenes,
   countScopeMarkers,
+  type ScopeApplyResult,
   type ScopeApplyTarget,
 } from "./applyScopeDefault";
+import { describeScopeDefault } from "./describeDefault";
+// Registers this feature's lazy strings (DR-SDEF-52).
+import "./sceneScopeDefaultTranslations";
 
 type Phase =
   | { kind: "idle" }
   | { kind: "counting"; target: ScopeApplyTarget }
-  | { kind: "confirm"; target: ScopeApplyTarget; count: number }
+  | {
+      kind: "confirm";
+      target: ScopeApplyTarget;
+      count: number;
+      /** The saved default the author is asked about (PR-2 review P2-1). */
+      value: string;
+      version: number;
+    }
   | { kind: "running"; target: ScopeApplyTarget }
   | { kind: "message"; text: string };
 
@@ -41,8 +53,18 @@ export function ScopeDefaultApplyPanel({
 
   const start = (target: ScopeApplyTarget) => {
     setPhase({ kind: "counting", target });
-    void countScopeMarkers({ workspacePath, projectId, sceneIds })
-      .then((counts) => {
+    void Promise.all([
+      readScopeProjectDefault(workspacePath, projectId),
+      countScopeMarkers({ workspacePath, projectId, sceneIds }),
+    ])
+      .then(([current, counts]) => {
+        if (current.default.state !== "set") {
+          setPhase({
+            kind: "message",
+            text: t("settings.project.sceneScopeApplyNoDefault"),
+          });
+          return;
+        }
         const count =
           target === "unknown" ? counts.unknown : counts.legacyAbsent;
         setPhase(
@@ -51,7 +73,13 @@ export function ScopeDefaultApplyPanel({
                 kind: "message",
                 text: t("settings.project.sceneScopeApplyNone"),
               }
-            : { kind: "confirm", target, count },
+            : {
+                kind: "confirm",
+                target,
+                count,
+                value: describeScopeDefault(current.default.queryIdentity, t),
+                version: current.version,
+              },
         );
       })
       .catch((cause: unknown) =>
@@ -62,19 +90,24 @@ export function ScopeDefaultApplyPanel({
       );
   };
 
-  const run = (target: ScopeApplyTarget) => {
+  const run = (target: ScopeApplyTarget, expectedVersion: number) => {
     setPhase({ kind: "running", target });
     void applyScopeDefaultToScenes({
       workspacePath,
       projectId,
       sceneIds,
       target,
+      expectedVersion,
     })
-      .then((result) => {
-        if (result.status === "no-default") {
+      .then((result: ScopeApplyResult) => {
+        if (result.status !== "done") {
           setPhase({
             kind: "message",
-            text: t("settings.project.sceneScopeApplyNoDefault"),
+            text: t(
+              result.status === "no-default"
+                ? "settings.project.sceneScopeApplyNoDefault"
+                : "settings.project.sceneScopeDefaultConflict",
+            ),
           });
           return;
         }
@@ -131,6 +164,7 @@ export function ScopeDefaultApplyPanel({
           <p>
             {t("settings.project.sceneScopeApplyConfirm", {
               count: phase.count,
+              value: phase.value,
             })}
           </p>
           {phase.target === "legacy-absent" && (
@@ -147,8 +181,9 @@ export function ScopeDefaultApplyPanel({
             <button
               type="button"
               data-testid="scope-default-apply-run"
-              onClick={() => run(phase.target)}
-              className="rounded border border-border px-2 py-0.5 hover:bg-accent"
+              disabled={disabled}
+              onClick={() => run(phase.target, phase.version)}
+              className="rounded border border-border px-2 py-0.5 hover:bg-accent disabled:opacity-50"
             >
               {t("editor.sceneDetail.scopeApplyRun")}
             </button>

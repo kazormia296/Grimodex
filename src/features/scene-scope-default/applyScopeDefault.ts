@@ -22,6 +22,8 @@ export type ScopeApplyTarget = "unknown" | "legacy-absent";
 
 export type ScopeApplyResult =
   | { status: "no-default" }
+  /** The default changed after the author confirmed its value (P2-1). */
+  | { status: "default-changed" }
   | {
       status: "done";
       applied: number;
@@ -113,9 +115,19 @@ export async function applyScopeDefaultToScenes({
   projectId,
   sceneIds,
   target,
-}: ApplyInput & { target: ScopeApplyTarget }): Promise<ScopeApplyResult> {
+  expectedVersion,
+}: ApplyInput & {
+  target: ScopeApplyTarget;
+  /**
+   * The default version the author saw in the confirmation. When it moved,
+   * nothing is written: a value the author did not confirm is never applied.
+   */
+  expectedVersion?: number;
+}): Promise<ScopeApplyResult> {
   const current = await readScopeProjectDefault(workspacePath, projectId);
   if (current.default.state !== "set") return { status: "no-default" };
+  if (expectedVersion !== undefined && current.version !== expectedVersion)
+    return { status: "default-changed" };
   const axes = current.default;
   let applied = 0;
   let skipped = 0;

@@ -570,10 +570,7 @@
         "tagEmpty": "キャラクターブックにタグが空のエントリがあるためスキップしました"
       },
       "defaultProjectTitle": "取り込んだプロジェクト"
-    },
-    "sceneScopeApplyDefault": "取り込みのあと、取り込んだ場面に既定の Scope（本筋）を当てる（回想などが含まれる場合は、あとで場面ごとに変えてください）",
-    "sceneScopeApplyNewProject": "新しいプロジェクトには Scope の既定がありません。取り込んだあと、設定 > プロジェクトで既定を選び、「未設定の場面に既定を当てる」を使ってください。",
-    "sceneScopeApplyNoDefault": "今のプロジェクトには Scope の既定がありません。"
+    }
   },
   "novelExport": {
     "title": "AIのべりすと形式でエクスポート",
@@ -1281,24 +1278,7 @@
       "trashRetentionDesc": "保持期間を超えた屑は次回の起動 / 1 時間ごとの掃除で削除されます。",
       "trashRetentionUnlimited": "無期限",
       "semanticEvalTitle": "開発専用: クエリ集を実機検索に流して Recall/閾値を計測",
-      "semanticEvalButton": "検索評価を実行",
-      "sceneScopeDefault": "新しい場面の Scope の既定",
-      "sceneScopeDefaultHint": "新しく作る場面は、この Scope で作られます。回想・夢・別の世界線・作中作の場面は、作ったあと場面ごとに変えてください。既定を変えても、既にある場面は変わりません。取り消し・やり直し・ゴミ箱・スナップショットで戻した場面、外部フォルダから同期した場面、取り込んだ場面は未設定になります（取り込みは画面で選べば、取り込みのあとに既定を当てます）。",
-      "sceneScopeDefaultNone": "既定なし（新しい場面は未設定）",
-      "sceneScopeDefaultSet": "既定を使う",
-      "sceneScopeDefaultSave": "既定を保存",
-      "sceneScopeDefaultSaved": "Scope の既定を保存しました",
-      "sceneScopeNoVocabulary": "このプロジェクトにはまだ Scope の語彙がありません。最初の場面を作ると選べるようになります。",
-      "sceneScopeRefUnregistered": "選んだ値が Scope の語彙にありません。場面の Scope 欄の「Scope の語彙」で追加してから選んでください。",
-      "sceneScopeRegistryWarning": "この値を使うには Scope の語彙に追加します。追加すると、このプロジェクトの承認済みの解釈と本文の宣言がすべて失効し、作り直しが必要になります。",
-      "sceneScopeDefaultInvalid": "このプロジェクトの Scope の既定の記録を読めません。既定は使われず、新しい場面は未設定で作られます。",
-      "sceneScopeDefaultConflict": "ほかの画面で既定が変わりました。読み直した値を確かめてください。",
-      "sceneScopeApplyUnset": "未設定の場面に既定を当てる",
-      "sceneScopeApplyLegacy": "以前からの場面にも既定を当てる",
-      "sceneScopeApplyConfirm": "{{count}} 件の場面に既定を当てます。当てた場面に結びついた承認済みの解釈と本文の宣言は失効します。",
-      "sceneScopeApplyNone": "当てる対象の場面はありません。",
-      "sceneScopeApplyResult": "{{applied}} 件に当てました。{{failed}} 件は当てられませんでした。",
-      "sceneScopeApplyNoDefault": "Scope の既定が無いので当てられません。設定 > プロジェクトで既定を選んでください。"
+      "semanticEvalButton": "検索評価を実行"
     },
     "keys": {
       "search": "キーバインドを検索…",
@@ -4078,7 +4058,7 @@
       "beatsChip": "ビート {{count}}",
       "scope": "適用範囲（Scope）",
       "queryIdentity": "この場面の位置",
-      "materialConstraint": "材料として見せる範囲",
+      "materialConstraint": "この場面を材料として見せる範囲",
       "constraintAny": "制約なし",
       "constraintUnresolved": "未解決",
       "axisTimeline": "時間軸",
@@ -4099,13 +4079,16 @@
       "scopeConflictCurrentRegistry": "今の語彙",
       "scopeMaterialSeparate": "材料の範囲を別に決める",
       "scopeMaterialMismatch": "この場面の位置と材料として見せる範囲が違います。このまま保存すると、違う Scope の場面にこの場面の材料が見えることがあります。",
-      "scopeDefaultBadge": "本筋（プロジェクトの既定）",
+      "scopeDefaultBadge": "プロジェクトの既定（{{value}}）",
       "scopeNotMainLine": "この場面は本筋以外の Scope です。同じ Scope の場面の解釈だけが出ます。",
       "scopeApplyDefault": "既定を当てる",
-      "scopeApplyConfirm": "この場面にプロジェクトの既定の Scope を当てます。この場面に結びついた承認済みの解釈と本文の宣言は失効します。",
+      "scopeApplyConfirm": "この場面にプロジェクトの既定の Scope（{{value}}）を当てます。この場面に結びついた承認済みの解釈と本文の宣言は失効します。",
       "scopeApplyLegacyWarning": "以前からの場面に当てると、「以前からの場面」には戻せません。",
       "scopeApplyRun": "当てる",
-      "scopeRegistryWarning": "語彙を変えて保存すると、このプロジェクトの承認済みの解釈と本文の宣言がすべて失効し、作り直しが必要になります。"
+      "scopeRegistryWarning": "語彙を変えて保存すると、このプロジェクトの承認済みの解釈と本文の宣言がすべて失効し、作り直しが必要になります。",
+      "scopeNotDefault": "この場面はプロジェクトの既定（{{value}}）と違う Scope です。同じ Scope の場面の解釈だけが出ます。",
+      "scopeApplyUnsavedWarning": "Scope 欄の保存していない変更は捨てられます。",
+      "scopeLegacyEmptyRegistry": "Scope の語彙が空です。このまま保存すると軸が未解決のまま「設定済み」になり、承認済みの解釈が出なくなります。先に「Scope の語彙」で追加してください。"
     },
     "layers": {
       "title": "本文レイヤー",
@@ -4233,11 +4216,7 @@
     "noActiveScene": "シーンを選ぶと、関連する過去シーンが表示されます",
     "loading": "検索中…",
     "empty": "関連する過去シーンは見つかりませんでした",
-    "untitled": "(無題)",
-    "scopeUnknown": "この場面の Scope が未設定のため、承認済みの解釈は出ません。取り消し・やり直し・ゴミ箱・スナップショットで戻した場面や、取り込んだ場面は未設定になります。",
-    "scopeUnresolved": "この場面の Scope に未解決の軸があるため、承認済みの解釈は出ません。",
-    "scopeOpen": "Scope を設定",
-    "scopeApplyDefault": "既定を当てる"
+    "untitled": "(無題)"
   },
   "sceneContext": {
     "codexSection": "Codex",

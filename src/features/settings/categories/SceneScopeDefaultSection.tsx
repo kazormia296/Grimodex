@@ -10,11 +10,13 @@ import {
   type ScopeProjectDefault,
 } from "@/lib/sceneScopeDefault";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { scopeRefLabel } from "@/features/editor/sceneMeta/SceneScopeFields";
+import { scopeRefLabel } from "@/features/scene-scope-default/describeDefault";
 import type { ScopeRead } from "@/features/editor/sceneMeta/sceneScopeTypes";
 import { ScopeDefaultApplyPanel } from "@/features/scene-scope-default/ScopeDefaultApplyPanel";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
+// Registers this feature's lazy strings (DR-SDEF-52).
+import "@/features/scene-scope-default/sceneScopeDefaultTranslations";
 
 type Axis = keyof typeof MAIN_LINE_REFS;
 type Refs = Record<Axis, string>;
@@ -174,6 +176,19 @@ export function SceneScopeDefaultSection({
 
   const savedSet =
     load.kind === "ready" && load.current.default.state === "set";
+  // PR-2 review P2-1: while the form differs from the saved default, the
+  // apply buttons would apply the saved value, not the shown one. Stop them
+  // until the form is saved (or put back).
+  const formDiffers =
+    load.kind === "ready" &&
+    (load.current.default.state === "set"
+      ? !useDefault ||
+        AXES.some(
+          ([axis]) =>
+            load.current.default.state === "set" &&
+            load.current.default.queryIdentity[axis].ref !== refs[axis],
+        )
+      : useDefault);
 
   return (
     <SettingSection title={t("settings.project.sceneScopeDefault")}>
@@ -245,7 +260,6 @@ export function SceneScopeDefaultSection({
                 data-testid="scene-scope-default-registry-warning"
                 className="text-xs text-amber-700 dark:text-amber-300"
               >
-                {t("settings.project.sceneScopeRefUnregistered")}{" "}
                 {t("settings.project.sceneScopeRegistryWarning")}
               </p>
             )}
@@ -253,7 +267,7 @@ export function SceneScopeDefaultSection({
               <button
                 type="button"
                 data-testid="scene-scope-default-save"
-                disabled={saving}
+                disabled={saving || (useDefault && unregistered)}
                 onClick={save}
                 className="rounded-md border border-border px-3 py-1 text-sm hover:bg-accent disabled:opacity-50"
               >
@@ -269,12 +283,21 @@ export function SceneScopeDefaultSection({
                 {notice}
               </p>
             )}
+            {savedSet && formDiffers && (
+              <p
+                role="status"
+                data-testid="scene-scope-default-unsaved"
+                className="text-xs text-muted-foreground"
+              >
+                {t("settings.project.sceneScopeApplyNeedsSave")}
+              </p>
+            )}
             <ScopeDefaultApplyPanel
               workspacePath={workspacePath}
               projectId={projectId}
               sceneIds={sceneIds}
               allowLegacy
-              disabled={!savedSet}
+              disabled={!savedSet || formDiffers}
             />
           </>
         )}
