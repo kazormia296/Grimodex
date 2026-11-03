@@ -590,6 +590,7 @@ mod contract {
                 GEN_PROJECT,
                 SCENE_ID,
                 SCENE_UPDATED_AT,
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             conn.execute(
                 "UPDATE narrative_scene_scope_bindings SET scene_incarnation_id=?2

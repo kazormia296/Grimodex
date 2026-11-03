@@ -381,6 +381,7 @@ pub fn save_scene_body_bundle(
                 &payload.project_id,
                 &payload.scene_id,
                 existing_scene_updated_at,
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             let mut before_foreshadows = BTreeMap::new();
             if payload.include_sidecars {
@@ -980,7 +981,11 @@ mod tests {
         .expect("insert scene");
         db.with_conn(|conn| {
             crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
-                conn, "p1", "s1", "fixture",
+                conn,
+                "p1",
+                "s1",
+                "fixture",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )
         })
         .expect("seed scene scope binding");

@@ -2948,6 +2948,7 @@ pub fn apply_project_snapshot_restore(
                     &payload.project_id,
                     scene_id,
                     updated_at,
+                    crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                 )?;
                 // A snapshot may replace an existing scene row. Preserve its
                 // Native incarnation, but bind the restored source timestamp
@@ -3179,6 +3180,7 @@ mod tests {
                     project_id,
                     scene_id,
                     "2026-07-30T00:00:00.000Z",
+                    crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                 )?;
             }
             conn.execute(
@@ -3297,6 +3299,7 @@ mod tests {
                 "p1",
                 "t1",
                 "2026-07-30T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             conn.execute(
                 "UPDATE narrative_scene_scope_bindings

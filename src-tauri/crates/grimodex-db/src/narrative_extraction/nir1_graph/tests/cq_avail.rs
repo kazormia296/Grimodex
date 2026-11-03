@@ -268,6 +268,7 @@ fn novel_fixture_shaped(
                     PROJECT,
                     &scene_id,
                     "2026-09-17T00:00:00.000Z",
+                    crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                 )?;
                 scene_ids.push(scene_id);
             }
@@ -2096,6 +2097,7 @@ fn same_entity_product_fixture(revisions: usize, total_summary_bytes: usize) -> 
                 PROJECT,
                 scene_id,
                 "2026-09-17T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
         }
         let body: String = "物語".repeat(per_entity_chars / 2 + 1);

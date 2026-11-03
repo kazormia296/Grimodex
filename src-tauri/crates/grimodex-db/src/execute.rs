@@ -3139,6 +3139,7 @@ mod tests {
                 "p1",
                 "s1",
                 "2026-10-17T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )
         })
         .expect("binding");

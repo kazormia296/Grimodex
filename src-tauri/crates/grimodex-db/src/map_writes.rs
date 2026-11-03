@@ -779,11 +779,25 @@ fn promote_sticky(tx: &Transaction<'_>, payload: &MapWritePayload) -> anyhow::Re
                 ],
             )?;
             if target_type == "scene" {
+                // SDEF/1 MD1: `apply_map_write` has already validated the
+                // origin and lineage; only a forward promotion inherits.
+                let scene_scope_init = crate::narrative_extraction::scene_scope_init_for_create(
+                    &crate::narrative_extraction::SceneCreateLineage {
+                        origin: payload.origin,
+                        original_transaction_id: payload.original_transaction_id.as_deref(),
+                        undo_journal_id: payload.undo_journal_id.as_deref(),
+                        authority_route: None,
+                        redo: false,
+                        source_uri: None,
+                        source_mtime: None,
+                    },
+                );
                 crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
                     tx,
                     project_id,
                     new_entity_id,
                     updated_at,
+                    scene_scope_init,
                 )?;
             }
             (target_type.to_string(), Some(new_entity_id), None, None)

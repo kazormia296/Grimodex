@@ -89,7 +89,13 @@ fn fixture() -> Database {
         ensure_scope_registry_in_tx(conn, "p1", NOW)?;
         ensure_scope_registry_in_tx(conn, "p2", NOW)?;
         for (project, scene) in [("p1", "s1"), ("p1", "s2"), ("p1", "s4"), ("p2", "s3")] {
-            ensure_scene_scope_binding_in_tx(conn, project, scene, NOW)?;
+            ensure_scene_scope_binding_in_tx(
+                conn,
+                project,
+                scene,
+                NOW,
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+            )?;
         }
         Ok(())
     })

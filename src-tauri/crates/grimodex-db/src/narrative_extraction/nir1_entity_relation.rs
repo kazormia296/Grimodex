@@ -4709,6 +4709,7 @@ pub(super) mod tests {
                 "default-project",
                 "nir1",
                 "2026-09-15T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             conn.execute(
                 "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
@@ -4756,18 +4757,21 @@ pub(super) mod tests {
                 "default-project",
                 "a3-source",
                 "2026-09-17T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             super::super::ensure_scene_scope_binding_in_tx(
                 conn,
                 "default-project",
                 "nir1",
                 "2026-09-17T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             super::super::ensure_scene_scope_binding_in_tx(
                 conn,
                 "default-project",
                 "a3-future",
                 "2026-09-17T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             Ok(())
         })?;
@@ -9921,6 +9925,7 @@ pub(super) mod tests {
                 "default-project",
                 "nir1",
                 "2026-09-17T00:00:07.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             Ok(())
         })?;

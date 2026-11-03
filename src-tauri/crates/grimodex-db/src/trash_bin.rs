@@ -410,6 +410,7 @@ fn restore_scene_in_tx(
         project_id,
         &new_id,
         &updated_at,
+        crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
     )?;
     Ok(RestoredStructure {
         new_id: new_id.clone(),

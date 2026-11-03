@@ -1943,6 +1943,7 @@ mod tests {
                 &project_id,
                 &scene_id,
                 "2026-07-29T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             for (id, ordinal) in [(&event_delete_id, "a0"), (&event_clear_id, "a1")] {
                 conn.execute(

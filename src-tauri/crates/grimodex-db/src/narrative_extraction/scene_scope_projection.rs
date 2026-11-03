@@ -851,6 +851,7 @@ pub(in crate::narrative_extraction) mod tests {
                         project,
                         id,
                         "2026-10-17T00:00:00.000Z",
+                        crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                     )?;
                 }
             }
@@ -1170,7 +1171,13 @@ pub(in crate::narrative_extraction) mod tests {
                  VALUES ('s3', 'p1', 'scene', 's3', 'c0')",
                 [],
             )?;
-            ensure_scene_scope_binding_in_tx(conn, P, "s3", "2026-10-17T04:00:00.000Z")?;
+            ensure_scene_scope_binding_in_tx(
+                conn,
+                P,
+                "s3",
+                "2026-10-17T04:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+            )?;
             Ok(())
         })
         .expect("recreate under the same id");

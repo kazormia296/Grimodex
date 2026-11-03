@@ -11220,6 +11220,7 @@ mod tests {
                 "scope-current",
                 "scope-scene",
                 "2026-09-14T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             conn.execute(
                 "DELETE FROM narrative_scene_scope_bindings
@@ -12019,6 +12020,7 @@ mod tests {
                         "proj-v43",
                         scene,
                         "2026-10-17T00:00:00.000Z",
+                        crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                     )?;
                 }
                 let rows = v43_v1_binding_rows(conn)?;

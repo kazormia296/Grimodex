@@ -479,6 +479,7 @@ fn seed_catalog_and_authorities(
                 NIR1_CAPACITY_FIXTURE_PROJECT_ID,
                 scene_id,
                 NIR1_CAPACITY_UPDATED_AT,
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
         }
         for ordinal in 0..filler_scenes {
@@ -499,6 +500,7 @@ fn seed_catalog_and_authorities(
                 NIR1_CAPACITY_FIXTURE_PROJECT_ID,
                 &scene_id,
                 NIR1_CAPACITY_UPDATED_AT,
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
         }
         for entry in entries {

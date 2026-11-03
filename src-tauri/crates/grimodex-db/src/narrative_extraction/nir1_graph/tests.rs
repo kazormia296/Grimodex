@@ -5825,6 +5825,7 @@ fn scene_join_reads_a1_binding_tokens_for_bound_scenes() -> Result<()> {
             PROJECT,
             "bound",
             SCENE_UPDATED_AT,
+            crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
         )
     })?;
     let (incarnation, scope): (String, String) = db.with_conn(|conn| {
@@ -6240,6 +6241,7 @@ fn scene_join_never_reads_scene_body() -> Result<()> {
             PROJECT,
             "scene-c",
             SCENE_UPDATED_AT,
+            crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
         )
     })?;
     let reads = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
@@ -6717,6 +6719,7 @@ fn measure_scene_join_capacity_and_frame_bytes() -> Result<()> {
                 )?;
                 crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
                     conn, PROJECT, scene, updated_at,
+                    crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                 )?;
             }
             Ok(())

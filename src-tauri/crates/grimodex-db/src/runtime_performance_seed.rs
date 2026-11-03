@@ -619,6 +619,7 @@ pub fn seed_runtime_performance_fixture(
                             &payload.project_id,
                             &node.id,
                             &updated_at,
+                            crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                         )?;
                     }
                 }

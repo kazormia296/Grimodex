@@ -269,6 +269,7 @@ fn insert_seed_rows(
                 project_id,
                 &node.id,
                 now_dt,
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )
             .map_err(|error| {
                 rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(

@@ -52,6 +52,7 @@ fn database(path: &Path) -> Database {
             "generation-project",
             GENERATION_SCENE_ID,
             GENERATION_SCENE_UPDATED_AT,
+            crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
         )?;
         conn.execute(
             "UPDATE narrative_scene_scope_bindings SET scene_incarnation_id=?2
@@ -4049,6 +4050,7 @@ fn s4_insert_scene(db: &Database, updated_at: &str, content: &str) {
             "generation-project",
             S4_SCENE_ID,
             updated_at,
+            crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
         )?;
         conn.execute(
             "UPDATE chat_sessions SET node_id=?1 WHERE id='generation-session'",

@@ -54,7 +54,13 @@ pub(super) fn add_scene(env: &Env, id: &str, parent: Option<&str>, resolved_a1: 
              VALUES (?1, ?2, ?3, 'scene', ?4, ?1, ?5)",
             params![id, PROJECT, parent, format!("Title of {id}"), body_json("Body.")],
         )?;
-        ensure_scene_scope_binding_in_tx(conn, PROJECT, id, NOW)?;
+        ensure_scene_scope_binding_in_tx(
+            conn,
+            PROJECT,
+            id,
+            NOW,
+            crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+        )?;
         Ok(())
     });
     set_a1(env.db().db(), PROJECT, id, resolved_a1);

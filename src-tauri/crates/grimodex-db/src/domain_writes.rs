@@ -1495,6 +1495,20 @@ pub struct ProjectCreatePayload {
     pub target_readers: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// SDEF/1 R12: the only way a project starts with a Scene Scope default.
+    /// Absent (the evaluation harnesses, migration, generic import) means no
+    /// default. Omitted from serialization when absent so the idempotency
+    /// fingerprint of every request without it is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_scope_default: Option<ProjectSceneScopeDefaultInit>,
+}
+
+/// The closed set of project-creation defaults (SDEF/1 R12). Any other value
+/// is refused by deserialization; the renderer cannot carry a Scope value here.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum ProjectSceneScopeDefaultInit {
+    #[serde(rename = "main-line")]
+    MainLine,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1757,6 +1771,19 @@ pub fn project_create(db: &Database, payload: ProjectCreatePayload) -> anyhow::R
         // append so the epoch has an immutable creation-event lineage, and
         // before the idempotency receipt so the entire bootstrap is atomic.
         mint_c2zc_project_birth_epoch_in_tx(&tx, &payload.project_id, &payload.event_uid)?;
+        // SDEF/1 R12: the default is written in the project's own transaction,
+        // after the registry (with the main-line vocabulary, R13) and the project's
+        // own creation event, so `project.create` stays the project's first event.
+        if let Some(ProjectSceneScopeDefaultInit::MainLine) = payload.scene_scope_default {
+            crate::narrative_extraction::write_main_line_project_default_in_tx(
+                &tx,
+                &payload.project_id,
+                &payload.request_id,
+                &payload.session_id,
+                &format!("{}:scene-scope-default", payload.event_uid),
+                &payload.updated_at,
+            )?;
+        }
         let mut response = project;
         response
             .as_object_mut()
@@ -3281,6 +3308,21 @@ pub fn tree_node_create_with_authority(
             &payload.id,
             "create",
         )?;
+        // SDEF/1 MD1: decided by Native after the origin and lineage checks,
+        // from the validated identity only (no renderer field).
+        let scene_scope_init = crate::narrative_extraction::scene_scope_init_for_create(
+            &crate::narrative_extraction::SceneCreateLineage {
+                origin: payload.origin,
+                original_transaction_id: payload.original_transaction_id.as_deref(),
+                undo_journal_id: payload.undo_journal_id.as_deref(),
+                authority_route: renderer_context
+                    .as_ref()
+                    .map(|context| context.authority_route.as_str()),
+                redo: false,
+                source_uri: payload.source_uri.as_deref(),
+                source_mtime: payload.source_mtime.as_deref(),
+            },
+        );
         if let Some(parent_id) = payload.parent_id.as_deref() {
             anyhow::ensure!(
                 parent_id != payload.id,
@@ -3327,6 +3369,7 @@ pub fn tree_node_create_with_authority(
                 &payload.project_id,
                 &payload.id,
                 &now,
+                scene_scope_init,
             )?;
         }
         let row = select_tree_node(&tx, &payload.project_id, &payload.id)?;
@@ -5500,6 +5543,20 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                 )?;
             }
         }
+        // SDEF/1 MD1: one decision for every Scene this plan creates, from the
+        // validated authority context (origin, lineage, route, redo). AI plan
+        // creates carry no external source.
+        let scene_scope_init = crate::narrative_extraction::scene_scope_init_for_create(
+            &crate::narrative_extraction::SceneCreateLineage {
+                origin: authority_context.origin,
+                original_transaction_id: payload.original_transaction_id.as_deref(),
+                undo_journal_id: payload.undo_journal_id.as_deref(),
+                authority_route: Some(authority_context.authority_route.as_str()),
+                redo: payload.redo,
+                source_uri: None,
+                source_mtime: None,
+            },
+        );
 
         if authority_context.authority_route == "interactive-agent-command" && !payload.redo {
             validate_ai_tree_native_projection_in_tx(&tx, &payload)?;
@@ -5618,6 +5675,7 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                     &payload.project_id,
                     &create.id,
                     &payload.updated_at,
+                    scene_scope_init,
                 )?;
             }
         }
@@ -6607,6 +6665,7 @@ mod tests {
                 "p1",
                 "moved",
                 "2026-08-13T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             Ok(())
         })
@@ -6713,6 +6772,7 @@ mod tests {
             target_readers: None,
             created_at: "2026-08-13T00:00:00.000Z".to_string(),
             updated_at: "2026-08-13T00:00:00.000Z".to_string(),
+            scene_scope_default: None,
         }
     }
 

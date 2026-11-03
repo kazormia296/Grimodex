@@ -1368,6 +1368,7 @@ fn set_scope_holder(db: &Database, scene: &str, tag: &str, character: &str) -> R
             PROJECT,
             scene,
             "2026-10-18T16:20:00.000Z",
+            crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
         )
     })?;
     let current =
@@ -1687,7 +1688,13 @@ fn x13_authority_read_time_by_scene_count() -> Result<()> {
                      VALUES (?1, ?2, 'scene', 'Scene', '{}', ?3)",
                     rusqlite::params![id, PROJECT, format!("a{index:05}")],
                 )?;
-                ensure_scene_scope_binding_in_tx(conn, PROJECT, &id, "2026-10-18T00:00:00.000Z")?;
+                ensure_scene_scope_binding_in_tx(
+                    conn,
+                    PROJECT,
+                    &id,
+                    "2026-10-18T00:00:00.000Z",
+                    crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+                )?;
             }
             Ok(())
         })?;
@@ -1731,7 +1738,13 @@ fn x13_folder_move_time_by_subtree_size() -> Result<()> {
                      VALUES (?1, ?2, 'm-folder', 'scene', 'Scene', '{}', ?3)",
                     rusqlite::params![id, PROJECT, format!("a{index:05}")],
                 )?;
-                ensure_scene_scope_binding_in_tx(conn, PROJECT, &id, "2026-10-18T00:00:00.000Z")?;
+                ensure_scene_scope_binding_in_tx(
+                    conn,
+                    PROJECT,
+                    &id,
+                    "2026-10-18T00:00:00.000Z",
+                    crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+                )?;
             }
             Ok(())
         })?;
