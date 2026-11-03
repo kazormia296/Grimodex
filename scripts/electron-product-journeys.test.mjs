@@ -224,7 +224,7 @@ function createFakeTreeUi({
       click: async () => {
         clicks += 1;
         calls.push(`click ${name}`);
-        const node = addNode(name === "New scene" ? "scene" : "folder");
+        const node = addNode(name === "新しいシーン" ? "scene" : "folder");
         await afterMenuItemClick({ clickIndex: clicks, node, addNode });
       },
     }),
@@ -364,18 +364,18 @@ test("a click reported as failed is not repeated once its node exists", async (t
   const created = await clickCreateMenuItem(
     fakes.header,
     fakes.page,
-    "New scene",
+    "新しいシーン",
     { findCreatedNodes, settle: fakeClock() },
   );
 
   assert.deepEqual(created, [{ id: "scene-new" }]);
   assert.deepEqual(fakes.calls, [
     OPEN_CREATE_MENU,
-    "click menuitem New scene 5000",
+    "click menuitem 新しいシーン 5000",
   ]);
   assert.match(
     log.mock.calls[0].arguments[0],
-    /"New scene": click reported as failed on attempt 1 \(locator\.click: Timeout 5000ms exceeded\.\) but the node exists \(scene-new\); not retrying$/u,
+    /"新しいシーン": click reported as failed on attempt 1 \(locator\.click: Timeout 5000ms exceeded\.\) but the node exists \(scene-new\); not retrying$/u,
   );
 });
 
@@ -388,7 +388,7 @@ test("a failed click is retried after Escape when no node appears within the bou
   };
 
   assert.equal(
-    await clickCreateMenuItem(fakes.header, fakes.page, "New folder", {
+    await clickCreateMenuItem(fakes.header, fakes.page, "新しいフォルダー", {
       findCreatedNodes,
       settle: fakeClock(),
     }),
@@ -397,10 +397,10 @@ test("a failed click is retried after Escape when no node appears within the bou
 
   assert.deepEqual(fakes.calls, [
     OPEN_CREATE_MENU,
-    "click menuitem New folder 5000",
+    "click menuitem 新しいフォルダー 5000",
     "press Escape",
     OPEN_CREATE_MENU,
-    "click menuitem New folder 5000",
+    "click menuitem 新しいフォルダー 5000",
   ]);
   // The default 1.5 s window is polled every 250 ms, both ends included.
   assert.equal(asked, 7);
@@ -411,7 +411,7 @@ test("the last click error is rethrown only after every attempt found no node", 
   const fakes = createMenuFakes(errors);
 
   await assert.rejects(
-    clickCreateMenuItem(fakes.header, fakes.page, "New scene", {
+    clickCreateMenuItem(fakes.header, fakes.page, "新しいシーン", {
       findCreatedNodes: async () => [],
       settle: fakeClock(),
     }),
@@ -436,7 +436,7 @@ test("the last attempt also accepts the node of the click it reported as failed"
       : [];
 
   assert.deepEqual(
-    await clickCreateMenuItem(fakes.header, fakes.page, "New scene", {
+    await clickCreateMenuItem(fakes.header, fakes.page, "新しいシーン", {
       findCreatedNodes,
       settle: fakeClock(),
     }),
@@ -448,21 +448,21 @@ test("the last attempt also accepts the node of the click it reported as failed"
 test("without a node finder a failed click is retried exactly as before", async () => {
   const recovered = createMenuFakes([clickTimeout(), undefined]);
   assert.equal(
-    await clickCreateMenuItem(recovered.header, recovered.page, "New scene"),
+    await clickCreateMenuItem(recovered.header, recovered.page, "新しいシーン"),
     null,
   );
   assert.deepEqual(recovered.calls, [
     OPEN_CREATE_MENU,
-    "click menuitem New scene 5000",
+    "click menuitem 新しいシーン 5000",
     "press Escape",
     OPEN_CREATE_MENU,
-    "click menuitem New scene 5000",
+    "click menuitem 新しいシーン 5000",
   ]);
 
   const errors = [1, 2, 3, 4].map((n) => new Error(`click ${n} failed`));
   const exhausted = createMenuFakes(errors);
   await assert.rejects(
-    clickCreateMenuItem(exhausted.header, exhausted.page, "New scene"),
+    clickCreateMenuItem(exhausted.header, exhausted.page, "新しいシーン"),
     (error) => error === errors[3],
   );
   assert.equal(
@@ -483,7 +483,7 @@ test("failing to open the menu or to read the nodes is not retried", async () =>
         }),
       },
       createMenuFakes([]).page,
-      "New scene",
+      "新しいシーン",
     ),
     (error) => error === openError,
   );
@@ -491,7 +491,7 @@ test("failing to open the menu or to read the nodes is not retried", async () =>
   const fakes = createMenuFakes([clickTimeout(), undefined]);
   const readError = new Error("db_execute rejected: database is locked");
   await assert.rejects(
-    clickCreateMenuItem(fakes.header, fakes.page, "New scene", {
+    clickCreateMenuItem(fakes.header, fakes.page, "新しいシーン", {
       findCreatedNodes: async () => {
         throw readError;
       },
@@ -515,7 +515,7 @@ test("scene creation does not repeat a click that the app already handled", asyn
   const scene = await createSceneThroughUi(ui.harness, ui.page);
 
   assert.equal(scene.sceneId, "scene-created-1");
-  assert.deepEqual(ui.clickCalls(), ["click New scene"]);
+  assert.deepEqual(ui.clickCalls(), ["click 新しいシーン"]);
   assert.equal(ui.calls.includes("press Escape"), false);
   assert.deepEqual(ui.nodeIds("scene"), ["scene-old", "scene-created-1"]);
 });
@@ -559,7 +559,7 @@ test("folder creation does not repeat a click that the app already handled", asy
     projectId: "project-1",
     title: "Part.1",
   });
-  assert.deepEqual(ui.clickCalls(), ["click New folder"]);
+  assert.deepEqual(ui.clickCalls(), ["click 新しいフォルダー"]);
   assert.deepEqual(ui.nodeIds("folder"), ["folder-created-1"]);
 });
 
@@ -587,7 +587,7 @@ test("folder scope anchor creation neither repeats a handled click nor accepts a
   const anchor = await createFolderScopeAnchor(handled.harness, handled.page);
   assert.equal(anchor.id, "folder-created-1");
   assert.equal(anchor.title, "Product Journey Folder");
-  assert.deepEqual(handled.clickCalls(), ["click New folder"]);
+  assert.deepEqual(handled.clickCalls(), ["click 新しいフォルダー"]);
   assert.deepEqual(handled.nodeIds("folder"), ["folder-created-1"]);
 
   const doubled = createFakeTreeUi({

@@ -2254,7 +2254,7 @@ async function createForegroundSceneThroughUi(context, marker) {
   for (let attempt = 1; ; attempt += 1) {
     await header.locator('button[title="新規作成"]').click();
     const clicked = await context.page
-      .getByRole("menuitem", { name: "New scene", exact: true })
+      .getByRole("menuitem", { name: "新しいシーン", exact: true })
       .click({ timeout: 5_000 })
       .then(() => true)
       .catch((error) => {
