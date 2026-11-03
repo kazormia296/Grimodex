@@ -1211,7 +1211,7 @@
         {
           "role": "s4-5-g01-reseal-current",
           "commit": "f31d99e07a81acdebe949f22225e19ec5f39cc76",
-          "pr": "5 回目の凍結のやり直し（枝 claude/cp4-s4-5th、基点 master a1cd6675。DR-CP4-S4-8 (1)〜(3)）。K24-G01-N2／N4 の封印待ちを地点ごとの規則（本文だけの保存の地点は Freshness の静止の後に世代不変も通す。restore の地点は今のまま）にした g01-negatives.mjs（8e8aea2e）と、その独立コードレビューの反映（f31d99e0）、静止の待ちに Freshness の feed の読取りを渡す呼び出し口の g01-negative-run.mjs と g01-negative-preview.mjs。この pin は 3 file を最後に変えた f31d99e0 の bytes（S2 追補 #12、DR-CP4-P-8。g01-negatives.mjs と g01-negative-preview.mjs は s5b-diagnostics-wiring、g01-negative-run.mjs は sp-p4-ir-timeout の pin から移した）。harness の定数（G01_CONTROL_ATTEMPTS ほか 4 つ）はこの pin の bytes から読む（値は 950751d0 と同じ）。commit は branch の commit で、S4 の PR を merge commit で入れると master の祖先になる",
+          "pr": "5 回目の凍結のやり直し（枝 claude/cp4-s4-5th、基点 master a1cd6675。DR-CP4-S4-8 (1)〜(3)）。K24-G01-N2／N4 の封印待ちを地点ごとの規則（本文だけの保存の地点は Freshness の静止の後に世代不変も通す。restore の地点は今のまま）にした g01-negatives.mjs（8e8aea2e）と、その独立コードレビューの反映（f31d99e0）、静止の待ちに Freshness の feed の読取りを渡す呼び出し口の g01-negative-run.mjs と g01-negative-preview.mjs。この pin は 3 file を最後に変えた f31d99e0 の bytes（S2 追補 #12、DR-CP4-P-8。g01-negatives.mjs と g01-negative-preview.mjs は s5b-diagnostics-wiring、g01-negative-run.mjs は sp-p4-ir-timeout の pin から移した）。harness の 4 つの定数（G01_CONTROL_ATTEMPTS、G01_SAMPLE_ATTEMPTS、G01_CONTROL_GAP_MS、G01_GRAPH_READY_WAIT_MS）はこの pin の bytes から読む（値は 950751d0 と同じ）。commit は branch の commit で、S4 の PR を merge commit で入れると master の祖先になる",
           "check": "bytes",
           "files": [
             {
