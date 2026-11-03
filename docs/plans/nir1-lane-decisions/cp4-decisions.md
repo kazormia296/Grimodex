@@ -971,6 +971,23 @@ S2 追補 #12（`383133bb`、訂正 `2cad25f3`）の独立コードレビュー�
 - **試験（Node 24.18.0、HEAD `e2c23781`）**：`node --test --test-reporter=tap scripts/quality/nir1-graph/observation-prep.test.mjs` を単体で 85/85、`scripts/quality/nir1-graph/*.test.mjs` 128/128（件数は同じ。足した検査は既存の 3 つの試験の中）、`scripts/quality/nir1-graph-eval/*.test.mjs` 611/611、`impact-map`・`eval-fixtures`・`quality-workflow` 75/75、`node scripts/quality/eval-fixtures.mjs` exit 0。prettier と eslint を通る。
 - **変異の確認**（`e2c23781` の `observation-prep.mjs` に 1 つずつ入れて `observation-prep.test.mjs` を走らせ、`git checkout --` で戻し、`git hash-object` が HEAD の blob と一致することを毎回確かめた）：(p) `sealPoints` 全体の完全一致を前の `holds` に戻す → 1 件 fail（`declarationRestore` の変異）。(q) `records` の完全一致を `holds` に戻す → 1 件 fail（`sealBranchAlso`）。(r) restore の完全一致を `holds` に戻す → 1 件 fail（`alsoPasses`）。(s) 形式の gate から v1 の行を外す → 1 件 fail。(t) v1 の作業木の bytes の照合を外す → 1 件 fail（v3 の試験）。5 件とも、validator の側だけを戻すと狙った試験が落ちる。レビューの §2 の表の 5 種（`alsoPasses`、`declarationRestore`、`onTimeout`、`unchangedRequiresAnyOf`、`records.sealBranchAlso`）は試験の中の変異（`detects`）で落ちることを確かめた。
 
+### DR-CP4-S4-8 の実装後の追記 4（S4a''''。2026-11-03）
+
+DR-CP4-S4-8 (5) の順の S4a''''（作者の宣言への開示）だけを行った。S2 の JSON（draft のまま、placeholder 20 個は `S4:`）、v3、harness、pin の対象の file、`test-support.mjs`、`constants.mjs` は変えていない。S4b'''' の前の独立レビュー、S4b''''、manifest は行っていない。push はしていない。
+
+- **commit**：`8599a51e`（`evals/nir1-graph/observation-prep-author-declaration.v1.json`、`scripts/quality/nir1-graph/observation-prep.mjs` の `READINGS_AFTER_DEV`、`observation-prep.test.mjs` の宣言の試験）→ この追記。作者の宣言の sha256 は `99c6e387…`（旧 S4b''' が束縛した bytes）から `3acd86d71429d65522a7b9ccc584db22dab78706e257f155a10d3d82e62f994d`。S4b'''' はこの値を `S4:author-declaration-sha256` に埋める。
+- **足したもの**（前例 S4a''' `13f04b26`・`8020b22b`・`02ede6bb` の構造。`readFiles` と `decisionSummariesSeen` は前例と同じく変えていない。この段で読んだ DR の行〔S4-8、P-8、S6-2、LPD-1〕は `PERMITTED_DECISION_ROWS` の外で、contracts の file は `FORBIDDEN_READ` の型〔`nir1-cp4-records/`〕にあたり、`readFiles` に書くと `authorDeclarationErrors` が拒むので、revisions の文で開示した）：
+  - `revisions` に 2026-11-03 の 2 行。1 行目は S2 追補 #12 と S4a'''' で行ったこと（失効 `0d456ee2`、harness `8e8aea2e`・`f31d99e0`、v3 の草案・反映・凍結 `e112d2dc`・`7b128636`・`38b464ea`・`bfc5a609`、path `ee43c197`、追補 #12 `383133bb`・`2cad25f3`・`e2c23781`）、変えていないもの、builder が読んだ範囲と読んでいない範囲。2 行目は開示する限界 (1)〜(7)（v3 の `limits` (i)(ii)(iii)(v)(vii)、機械検査の範囲と `reviewPlan` の (i)〜(vi)、K6/4 :317 の R5 の順の再承認、SP-N と K6/4 の取り直し）。
+  - `graphRuntimeOutputObservedScope` に 1 節（旧 S4b'''・候補 `22b74a25` の下の観測と DR-CP4-S6-2 の結果、LP-A1・LP-GATE・dev の診断 run 5 回・#778、5 回目の S4 の dev の予告、false の字義と事実の食い違いが広がったこと）。
+  - `readingsChosenAfterDevObservation` に `seal-rule-after-blocked`（reading、chosenBy、basis）。validator の `READINGS_AFTER_DEV` の末尾にも同じ id を足し、宣言の試験の loop（`g01-retry-limit`、`sp-p4-ir-timeout-limit` と同じ形：欠けると落ちる、`chosenBy` が空だと落ちる）に足した。
+- **指示と事実が違った点（事実のほうを書いた）**：
+  - (a) 独立レビュー 4 回の reviewer を指示は「Opus の subagent」と書いたが、読んだ記録で model が書かれているのは設計の草稿（別の Opus。この行の advisor の列）と v3（Opus。contracts `0423cfe0`）だけで、harness の実装（追記 2）と S2 追補 #12（DR-CP4-P-8 の追記 2）は「別の agent、read-only」としか書かれていない。宣言にはそのとおり書き、model は記録に無いと書いた。
+  - (b) 指示は dev の診断 run を「5 回（欠落 1/603）」と書いたが、contracts の `diag-lpd-2026-11-02/README.md` では 1/603 は gate を取り込んだ build の第 3〜5 回で、gate を含まない第 1・2 回は各 11/201。両方を書いた。
+  - (c) 指示は SP-N の検出力の記録の取り直しを「S4a'''' の時点では未実施」と書くよう求めたが、contracts に `8edd6496`（2026-11-03 11:52 JST、題「SP-N の検出力の記録を取り直す（候補 ddccf426。test-support.mjs が ee43c197 で変わったため）」）があった。宣言には、この commit があること、builder は題と変更 file の一覧だけを見て本文と結果を読んでいないこと、S4a'''' は `test-support.mjs` を変えないことを書いた。
+- **出典が repo と contracts に無い事実**：2026-11-03 にユーザーが「前に出てた、『開き直しで宣言が失われる』っていうのはどういうことですか？」と質問し（自由記述）、integrator が限界を説明して、選択（限界として開示）の見直しと dev での開き直しだけの確認の可否を尋ね、返答がまだ無いこと。出典は integrator から S4a'''' の builder への指示書で、contracts の commit の題（`8edd6496` まで）にこの質問の記録は無い。宣言の限界 (3) にそう書いた。返答の内容によっては、C′（DR-CP4-S4-8 の代替案）の扱いと宣言の限界 (3) の文が変わりうる。
+- **試験（Node 24.18.0、HEAD `8599a51e`）**：`node --test --test-reporter=tap scripts/quality/nir1-graph/observation-prep.test.mjs` 単体 85/85、`scripts/quality/nir1-graph/*.test.mjs` 128/128、`scripts/quality/nir1-graph-eval/*.test.mjs` 611/611、`node scripts/quality/eval-fixtures.mjs` exit 0、変えた 3 file の `prettier --check` が通る。`authorDeclarationErrors` は宣言で `[]`、`seal-rule-after-blocked` の行を抜くと `readingsChosenAfterDevObservation must list …` を返すことを直に確かめた。
+- **S4b'''' へ渡すこと**：作者の宣言の commit は `8599a51e`、sha256 は上の値。S3 が S2 追補 #12 と S4a'''' を見た記録は無い。
+
 ## T（測定の process が cold DB の未処理の Freshness のイベントを処理して Index を無効化する競合の harness 修正。2026-10-31。integrator の依頼、⑤ の parity の試行 1〔`parity-1`〕の `G-08/graph-index-unusable` の blocked の原因。S4 の凍結の後の変更で、merge には S4 の凍結のやり直しとユーザーの判断が要る）
 
 | ID | 日付 | レーン／PR | 判断 | 信頼境界 | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
