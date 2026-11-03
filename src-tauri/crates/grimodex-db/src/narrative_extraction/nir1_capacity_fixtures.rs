@@ -839,11 +839,18 @@ fn make_fixture_scope_a3_eligible(db: &Database, registry_reference_count: usize
         registry_reference_count >= 3,
         "A3-eligible fixture needs three explicit scope references"
     );
-    registry.timeline_refs.push("timeline:main".to_owned());
-    registry.worldline_refs.push("worldline:prime".to_owned());
-    registry
-        .narrative_layer_refs
-        .push("layer:manuscript".to_owned());
+    // SDEF/1 R13: a registry created for a new project already holds the
+    // main-line vocabulary, so add each main-line reference only when absent.
+    // The resulting registry is the same as before R13 (main line first).
+    for (refs, reference) in [
+        (&mut registry.timeline_refs, "timeline:main"),
+        (&mut registry.worldline_refs, "worldline:prime"),
+        (&mut registry.narrative_layer_refs, "layer:manuscript"),
+    ] {
+        if !refs.iter().any(|existing| existing == reference) {
+            refs.push(reference.to_owned());
+        }
+    }
     for ordinal in 0..registry_reference_count - 3 {
         registry
             .timeline_refs

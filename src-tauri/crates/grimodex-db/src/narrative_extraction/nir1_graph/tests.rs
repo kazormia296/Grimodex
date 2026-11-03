@@ -1977,17 +1977,26 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
     let current = authority
         .with_read_transaction(|conn| read_narrative_scene_scope(conn, PROJECT, SOURCE_SCENE))?;
     let mut registry = current.registry;
+    // SDEF/1 R13: a new project's registry starts with the main-line
+    // vocabulary; a preseed made before R13 has an empty one. Either way the
+    // variant ends with exactly the main-line vocabulary.
+    let main_line = (
+        vec!["timeline:main".to_owned()],
+        vec!["worldline:prime".to_owned()],
+        vec!["layer:manuscript".to_owned()],
+    );
+    let refs = (
+        registry.timeline_refs.clone(),
+        registry.worldline_refs.clone(),
+        registry.narrative_layer_refs.clone(),
+    );
     ensure!(
-        registry.timeline_refs.is_empty()
-            && registry.worldline_refs.is_empty()
-            && registry.narrative_layer_refs.is_empty(),
+        refs == (Vec::new(), Vec::new(), Vec::new()) || refs == main_line,
         "Q2 preseed registry changed"
     );
-    registry.timeline_refs.push("timeline:main".into());
-    registry.worldline_refs.push("worldline:prime".into());
-    registry
-        .narrative_layer_refs
-        .push("layer:manuscript".into());
+    registry.timeline_refs = main_line.0;
+    registry.worldline_refs = main_line.1;
+    registry.narrative_layer_refs = main_line.2;
     update_narrative_scene_scope_registry(
         &authority,
         NarrativeSceneScopeRegistryUpdatePayload {
