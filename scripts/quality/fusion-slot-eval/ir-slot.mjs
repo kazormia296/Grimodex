@@ -24,12 +24,25 @@
 //       --scenes <scenes/<key>.json> --output <runs-ir/ の下の新しい dir> \
 //       --build-receipt <receipt> --ja-model <onnx> --en-model <onnx> \
 //       [--stop-after key|first-scene|all] [--repeats 3]
+//
+// 抽出をしない mode（--skip-extraction yes）：LLM に送らず、key も keyring も使わない
+// （起動の外側で DBUS_SESSION_BUS_ADDRESS も除く）。承認 0 のまま Scene を入れ、
+// buildRaw → waitIrUsable → sampleHybrid → probe → 分類 → 集計の測定側の経路だけを通す。
+// 地点は --checkpoints（例 "1" や "0.25,0.5,0.75,1"。既定は全地点）で選ぶ。
 import assert from "node:assert/strict";
 import process from "node:process";
 import console from "node:console";
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -70,12 +83,40 @@ function parseArgs(args) {
     "key-file": DEFAULT_KEY_FILE,
     "stop-after": "all",
     repeats: "3",
+    "skip-extraction": "no",
+    checkpoints: "all",
   };
   for (let i = 0; i < args.length; i += 2) {
-    assert.ok(args[i].startsWith("--") && args[i + 1], "--name value の形で渡す");
+    assert.ok(
+      args[i].startsWith("--") && args[i + 1],
+      "--name value の形で渡す",
+    );
     options[args[i].slice(2)] = args[i + 1];
   }
-  for (const name of ["scenes", "output", "build-receipt", "ja-model", "en-model", "key-file"])
+  assert.ok(
+    ["yes", "no"].includes(options["skip-extraction"]),
+    "[precheck] --skip-extraction は yes／no",
+  );
+  options.skipExtraction = options["skip-extraction"] === "yes";
+  options.checkpointList =
+    options.checkpoints === "all"
+      ? CHECKPOINTS
+      : options.checkpoints.split(",").map(Number);
+  assert.ok(
+    options.checkpointList.length > 0 &&
+      options.checkpointList.every((f) => CHECKPOINTS.includes(f)),
+    "[precheck] --checkpoints は 0.25／0.5／0.75／1 の部分集合",
+  );
+  options.irWaitMs = Number(options["ir-wait-ms"] ?? IR_WAIT_MS);
+  assert.ok(Number.isInteger(options.irWaitMs) && options.irWaitMs > 0);
+  for (const name of [
+    "scenes",
+    "output",
+    "build-receipt",
+    "ja-model",
+    "en-model",
+    "key-file",
+  ])
     assert.ok(
       options[name] && path.isAbsolute(options[name]),
       `[precheck] --${name} は絶対 path`,
@@ -89,14 +130,21 @@ function parseArgs(args) {
   return options;
 }
 
-/** 起動の環境：偽 AI なし、Xvfb の display、Wayland・proxy なし、keyring の D-Bus あり。 */
-export function assertLaunchEnvironment(env) {
+/**
+ * 起動の環境：偽 AI なし、Xvfb の display、Wayland・proxy なし。keyring の D-Bus は、key を
+ * 入れる mode では要り、抽出をしない mode では無いこと（keyring に触れない）を確かめる。
+ */
+export function assertLaunchEnvironment(env, { keyring = true } = {}) {
   assert.equal(
     env.GRIMODEX_PRODUCT_JOURNEY_FAKE_AI,
     undefined,
     "[precheck] 偽の AI の env が立っている",
   );
-  assert.equal(env.GRIMODEX_LOCAL_CI_XVFB, "1", "[precheck] local-ci-xvfb の下で走らせる");
+  assert.equal(
+    env.GRIMODEX_LOCAL_CI_XVFB,
+    "1",
+    "[precheck] local-ci-xvfb の下で走らせる",
+  );
   assert.ok(
     env.DISPLAY && !["", ":0", ":1"].includes(env.DISPLAY),
     "[precheck] ユーザーの display を使わない",
@@ -112,11 +160,22 @@ export function assertLaunchEnvironment(env) {
     "all_proxy",
   ])
     assert.equal(env[name], undefined, `[precheck] ${name} を除いて起動する`);
-  assert.equal(env.ELECTRON_OZONE_PLATFORM_HINT, "x11", "[precheck] ozone は x11");
-  assert.ok(
-    env.DBUS_SESSION_BUS_ADDRESS,
-    "[precheck] keyring の経路にデスクトップの DBUS_SESSION_BUS_ADDRESS が要る",
+  assert.equal(
+    env.ELECTRON_OZONE_PLATFORM_HINT,
+    "x11",
+    "[precheck] ozone は x11",
   );
+  if (keyring)
+    assert.ok(
+      env.DBUS_SESSION_BUS_ADDRESS,
+      "[precheck] keyring の経路にデスクトップの DBUS_SESSION_BUS_ADDRESS が要る",
+    );
+  else
+    assert.equal(
+      env.DBUS_SESSION_BUS_ADDRESS,
+      undefined,
+      "[precheck] 抽出をしない mode では DBUS_SESSION_BUS_ADDRESS を除いて起動する",
+    );
 }
 
 /** key を読む。形式は接頭辞と長さだけを確かめる。値・長さの数字は返さない。 */
@@ -125,17 +184,24 @@ export async function readOpenRouterKey(file) {
   assert.equal(info.mode & 0o077, 0, "[precheck] key の file の権限は 600");
   const key = (await readFile(file, "utf8")).trim();
   assert.ok(
-    key.startsWith("sk-or-") && key.length >= 40 && key.length <= 200 && !/\s/u.test(key),
+    key.startsWith("sk-or-") &&
+      key.length >= 40 &&
+      key.length <= 200 &&
+      !/\s/u.test(key),
     "[precheck] key の形式（接頭辞と長さ）が想定と違う",
   );
   return key;
 }
 
 const gdbus = (args) =>
-  execFileSync("gdbus", ["call", "--session", "--dest", "org.freedesktop.secrets", ...args], {
-    encoding: "utf8",
-    timeout: 10000,
-  });
+  execFileSync(
+    "gdbus",
+    ["call", "--session", "--dest", "org.freedesktop.secrets", ...args],
+    {
+      encoding: "utf8",
+      timeout: 10000,
+    },
+  );
 
 /**
  * keyring の全項目の、秘密以外の property（GetAll：Attributes／Label／Created／Modified／
@@ -231,7 +297,10 @@ async function verifyBuild(receiptPath) {
     artifacts[file] = current.sha256;
   }
   const manifest = JSON.parse(await readFile(built.sourceManifest, "utf8"));
-  assert.equal(sha256(await readFile(built.sourceManifest)), built.sourceManifestSha256);
+  assert.equal(
+    sha256(await readFile(built.sourceManifest)),
+    built.sourceManifestSha256,
+  );
   const changed = [];
   for (const [file, digest] of Object.entries(manifest)) {
     const current = await readFile(path.join(ROOT, file)).catch(() => null);
@@ -248,7 +317,10 @@ async function verifyBuild(receiptPath) {
 // 段階 1 の raw-fullness.mjs の placeModels を写した（export されていないため）。
 async function placeModels(userData, options) {
   const manifest = JSON.parse(
-    await readFile(path.join(ROOT, "evals/nir1-retrieval/manifest.json"), "utf8"),
+    await readFile(
+      path.join(ROOT, "evals/nir1-retrieval/manifest.json"),
+      "utf8",
+    ),
   );
   const models = {};
   for (const language of ["ja", "en"]) {
@@ -280,10 +352,17 @@ async function placeModels(userData, options) {
 /** profile の中身（相対 path と大きさだけ）。消す前に確かめるため。 */
 async function listTree(directory, prefix = "") {
   const entries = [];
-  for (const entry of await readdir(path.join(directory, prefix), { withFileTypes: true })) {
+  for (const entry of await readdir(path.join(directory, prefix), {
+    withFileTypes: true,
+  })) {
     const relative = path.join(prefix, entry.name);
-    if (entry.isDirectory()) entries.push(...(await listTree(directory, relative)));
-    else entries.push({ path: relative, bytes: (await stat(path.join(directory, relative))).size });
+    if (entry.isDirectory())
+      entries.push(...(await listTree(directory, relative)));
+    else
+      entries.push({
+        path: relative,
+        bytes: (await stat(path.join(directory, relative))).size,
+      });
   }
   return entries;
 }
@@ -305,11 +384,18 @@ async function measurePositions(page, positions, repeats) {
     const samples = [];
     for (let r = 0; r < repeats; r++)
       samples.push(
-        await page.evaluate((p) => window.fusionIrEvaluation.sampleHybrid(p), position),
+        await page.evaluate(
+          (p) => window.fusionIrEvaluation.sampleHybrid(p),
+          position,
+        ),
       );
     const probe = await page
       .evaluate((p) => window.fusionIrEvaluation.probe(p), position)
-      .catch(() => ({ status: "probe-failed", reason: null, admittedPositions: [] }));
+      .catch(() => ({
+        status: "probe-failed",
+        reason: null,
+        admittedPositions: [],
+      }));
     queries.push({ evidenceScope: EVIDENCE_SCOPE, position, samples, probe });
   }
   return queries;
@@ -321,7 +407,9 @@ export function summarizeExtraction(extraction) {
   for (const e of extraction)
     if (e.status === "completed")
       distribution[e.proposalCount] = (distribution[e.proposalCount] ?? 0) + 1;
-  const durations = extraction.map((e) => e.durationMs).filter((d) => typeof d === "number");
+  const durations = extraction
+    .map((e) => e.durationMs)
+    .filter((d) => typeof d === "number");
   const proposals = extraction.flatMap((e) => e.proposals ?? []);
   return {
     scenes: extraction.length,
@@ -367,10 +455,13 @@ export async function runIrSlot(options) {
   assert.equal(work.schemaVersion, "fusion-slot-pd-scenes/1");
   // 本番の作品は、下書きでない事前登録とその sha256 が揃うときだけ（段階 1 と同じ gate）。
   const gate = await assertRunnable(work.role, options);
-  assertLaunchEnvironment(process.env);
+  const skip = options.skipExtraction;
+  assertLaunchEnvironment(process.env, { keyring: !skip });
   await mkdir(output, { recursive: true });
   const salt = randomBytes(32).toString("hex");
-  await writeFile(path.join(output, "salt.private"), `${salt}\n`, { mode: 0o600 });
+  await writeFile(path.join(output, "salt.private"), `${salt}\n`, {
+    mode: 0o600,
+  });
   const records = {
     schemaVersion: "fusion-slot-ir/1",
     evidenceScope: EVIDENCE_SCOPE,
@@ -384,6 +475,8 @@ export async function runIrSlot(options) {
     sceneCount: work.scenes.length,
     scenesFileSha256: sha256(scenesBytes),
     stopAfter: options["stop-after"],
+    skipExtraction: skip,
+    checkpointList: options.checkpointList,
     ai: {
       provider: PROVIDER,
       model: MODEL,
@@ -424,13 +517,20 @@ export async function runIrSlot(options) {
       path.join(output, "records.in-progress.json"),
       JSON.stringify(records, null, 2) + "\n",
     );
-  const log = (line) => process.stdout.write(`[${new Date().toISOString()}] ${line}\n`);
+  const log = (line) =>
+    process.stdout.write(`[${new Date().toISOString()}] ${line}\n`);
   let keyringBefore = null;
   try {
     records.candidate = {
-      head: execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim(),
+      head: execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: ROOT,
+        encoding: "utf8",
+      }).trim(),
       statusClean:
-        execFileSync("git", ["status", "--porcelain=v1"], { cwd: ROOT, encoding: "utf8" }) === "",
+        execFileSync("git", ["status", "--porcelain=v1"], {
+          cwd: ROOT,
+          encoding: "utf8",
+        }) === "",
     };
     records.build = await verifyBuild(path.resolve(options["build-receipt"]));
     records.harness = Object.fromEntries(
@@ -440,12 +540,23 @@ export async function runIrSlot(options) {
           ["classify", path.join(import.meta.dirname, "ir-classify.mjs")],
           ["renderer", path.join(import.meta.dirname, "ir-renderer.ts")],
           ["rendererHtml", path.join(import.meta.dirname, "ir-renderer.html")],
-          ["observer", path.join(ROOT, "scripts/quality/nir1-retrieval/electron-observer.mjs")],
-        ].map(async ([name, file]) => [name, (await artifactIdentity(file)).sha256]),
+          [
+            "observer",
+            path.join(
+              ROOT,
+              "scripts/quality/nir1-retrieval/electron-observer.mjs",
+            ),
+          ],
+        ].map(async ([name, file]) => [
+          name,
+          (await artifactIdentity(file)).sha256,
+        ]),
       ),
     );
-    key = await readOpenRouterKey(options["key-file"]);
-    keyringBefore = keyringSnapshot();
+    if (!skip) {
+      key = await readOpenRouterKey(options["key-file"]);
+      keyringBefore = keyringSnapshot();
+    }
     await mkdir(userData, { recursive: true });
     records.models = await placeModels(userData, options);
     // この評価用の profile は、ユーザーの旧 keyring の key を取り込まない。
@@ -488,91 +599,131 @@ export async function runIrSlot(options) {
       ...process.env,
       ELECTRON_RENDERER_URL: rendererUrl,
       GRIMODEX_USER_DATA_DIR: userData,
-      GRIMODEX_NODE_PATH: path.join(ROOT, "electron/native/grimodex-node/grimodex-node.node"),
+      GRIMODEX_NODE_PATH: path.join(
+        ROOT,
+        "electron/native/grimodex-node/grimodex-node.node",
+      ),
       GRIMODEX_NIR1_PRODUCTION_MAIN: path.join(ROOT, "dist-electron/main.cjs"),
     };
     delete env.ELECTRON_RUN_AS_NODE;
-    assertLaunchEnvironment(env);
+    assertLaunchEnvironment(env, { keyring: !skip });
     app = await _electron.launch({
       executablePath: require("electron"),
-      args: [path.join(ROOT, "scripts/quality/nir1-retrieval/electron-observer.mjs")],
+      args: [
+        path.join(ROOT, "scripts/quality/nir1-retrieval/electron-observer.mjs"),
+      ],
       cwd: ROOT,
       env,
       timeout: 60000,
     });
     const page = await app.firstWindow();
-    await page.waitForFunction(() => window.fusionIrEvaluation?.ready === true, null, {
-      timeout: 120000,
-    });
+    await page.waitForFunction(
+      () => window.fusionIrEvaluation?.ready === true,
+      null,
+      {
+        timeout: 120000,
+      },
+    );
     const mainEnv = await app.evaluate(({ safeStorage }) => ({
       fakeAi: process.env.GRIMODEX_PRODUCT_JOURNEY_FAKE_AI ?? null,
       electron: process.versions.electron,
       encryptionAvailable: safeStorage.isEncryptionAvailable(),
       backend: safeStorage.getSelectedStorageBackend(),
     }));
-    assert.equal(mainEnv.fakeAi, null, "[precheck] main に偽の AI の env が立っている");
+    assert.equal(
+      mainEnv.fakeAi,
+      null,
+      "[precheck] main に偽の AI の env が立っている",
+    );
     records.electronVersion = mainEnv.electron;
     records.safeStorage = {
       encryptionAvailable: mainEnv.encryptionAvailable,
       backend: mainEnv.backend,
     };
-    log(`safeStorage backend=${mainEnv.backend} available=${mainEnv.encryptionAvailable}`);
-    assert.ok(
-      mainEnv.encryptionAvailable && !["basic_text", "unknown"].includes(mainEnv.backend),
-      "[key] safeStorage の backend が keyring でない（key の経路が動かない）",
+    log(
+      `safeStorage backend=${mainEnv.backend} available=${mainEnv.encryptionAvailable}`,
     );
-    await page.evaluate(
-      (input) => window.fusionIrEvaluation.prepare(input),
-      {
-        workspacePath: path.join(output, "workspaces", "ir"),
-        projectId: "fusion-ir",
-        language: work.language,
-      },
-    );
-    records.aiSettings = await page.evaluate(
-      (input) => window.fusionIrEvaluation.configureAi(input),
-      { provider: PROVIDER, model: MODEL },
-    );
-    assert.equal(records.aiSettings.provider, PROVIDER);
-    assert.equal(records.aiSettings.model, MODEL);
-    records.keyInstall = await page
-      .evaluate((value) => window.fusionIrEvaluation.installKey(value), key)
-      .catch((error) => {
-        // Playwright の error に引数は入らないが、念のため message の先頭の code だけを残す。
-        const message = String(error?.message ?? error);
-        throw new Error(message.match(/\[key\][^\n]*/u)?.[0] ?? "[key] installKey failed");
-      });
-    key = null;
-    assert.equal(records.keyInstall.present, true, "[key] has_api_key が false");
-    records.keyring = { afterKeySave: keyringDiff(keyringBefore, keyringSnapshot()) };
-    log(`keyring after key save: ${JSON.stringify(records.keyring.afterKeySave)}`);
-    assert.equal(
-      records.keyring.afterKeySave.changed + records.keyring.afterKeySave.removed,
-      0,
-      "[key] keyring の既存の項目が変わった（抽出に進まない）",
-    );
+    if (!skip)
+      assert.ok(
+        mainEnv.encryptionAvailable &&
+          !["basic_text", "unknown"].includes(mainEnv.backend),
+        "[key] safeStorage の backend が keyring でない（key の経路が動かない）",
+      );
+    await page.evaluate((input) => window.fusionIrEvaluation.prepare(input), {
+      workspacePath: path.join(output, "workspaces", "ir"),
+      projectId: "fusion-ir",
+      language: work.language,
+    });
+    if (!skip) {
+      records.aiSettings = await page.evaluate(
+        (input) => window.fusionIrEvaluation.configureAi(input),
+        { provider: PROVIDER, model: MODEL },
+      );
+      assert.equal(records.aiSettings.provider, PROVIDER);
+      assert.equal(records.aiSettings.model, MODEL);
+      records.keyInstall = await page
+        .evaluate((value) => window.fusionIrEvaluation.installKey(value), key)
+        .catch((error) => {
+          // Playwright の error に引数は入らないが、念のため message の先頭の code だけを残す。
+          const message = String(error?.message ?? error);
+          throw new Error(
+            message.match(/\[key\][^\n]*/u)?.[0] ?? "[key] installKey failed",
+          );
+        });
+      key = null;
+      assert.equal(
+        records.keyInstall.present,
+        true,
+        "[key] has_api_key が false",
+      );
+      records.keyring = {
+        afterKeySave: keyringDiff(keyringBefore, keyringSnapshot()),
+      };
+      log(
+        `keyring after key save: ${JSON.stringify(records.keyring.afterKeySave)}`,
+      );
+      assert.equal(
+        records.keyring.afterKeySave.changed +
+          records.keyring.afterKeySave.removed,
+        0,
+        "[key] keyring の既存の項目が変わった（抽出に進まない）",
+      );
+    }
     await writeProgress();
     if (options["stop-after"] === "key") {
-      records.status = "key-route-ok";
+      records.status = skip ? "launch-ok-without-key" : "key-route-ok";
       return records;
     }
 
     const extracted = new Set();
     let previous = null;
     let firstRaw = true;
-    for (const fraction of CHECKPOINTS) {
+    for (const fraction of options.checkpointList) {
       const count = checkpointSceneCount(fraction, work.scenes.length);
       const label = `p${Math.round(fraction * 100)}`;
-      const checkpoint = { fraction, sceneCount: count, extraction: [], queries: [] };
+      const checkpoint = {
+        fraction,
+        sceneCount: count,
+        extraction: [],
+        queries: [],
+      };
       records.checkpoints.push(checkpoint);
-      const fresh = work.scenes.slice(0, count).filter((scene) => !extracted.has(scene.index));
+      const fresh = work.scenes
+        .slice(0, count)
+        .filter((scene) => !extracted.has(scene.index));
       checkpoint.added = await page.evaluate(
         (scenes) => window.fusionIrEvaluation.addScenes(scenes),
-        fresh.map((scene) => ({ position: scene.index, paragraphs: scene.paragraphs })),
+        fresh.map((scene) => ({
+          position: scene.index,
+          paragraphs: scene.paragraphs,
+        })),
       );
-      for (const scene of fresh) {
+      for (const scene of skip ? [] : fresh) {
         const result = await withTimeout(
-          page.evaluate((p) => window.fusionIrEvaluation.extractScene(p), scene.index),
+          page.evaluate(
+            (p) => window.fusionIrEvaluation.extractScene(p),
+            scene.index,
+          ),
           SCENE_TIMEOUT_MS,
           `extraction of position ${scene.index}`,
         );
@@ -580,7 +731,9 @@ export async function runIrSlot(options) {
         const summary = {
           evidenceScope: EVIDENCE_SCOPE,
           ...result,
-          runId: result.runId ? sha256(`${salt}:${result.runId}`).slice(0, 16) : null,
+          runId: result.runId
+            ? sha256(`${salt}:${result.runId}`).slice(0, 16)
+            : null,
           proposalCount: result.proposals.length,
           approvedCount: result.proposals.filter((p) => p.approved).length,
         };
@@ -593,7 +746,9 @@ export async function runIrSlot(options) {
         if (options["stop-after"] === "first-scene") break;
       }
       if (options["stop-after"] === "first-scene") {
-        records.usage = await page.evaluate(() => window.fusionIrEvaluation.usage());
+        records.usage = await page.evaluate(() =>
+          window.fusionIrEvaluation.usage(),
+        );
         records.status = "first-scene-done";
         return records;
       }
@@ -602,13 +757,16 @@ export async function runIrSlot(options) {
         { first: firstRaw },
       );
       firstRaw = false;
+      if (skip) for (const scene of fresh) extracted.add(scene.index);
       const positions = queryPositions(count);
       checkpoint.irWait = await page.evaluate(
         (input) => window.fusionIrEvaluation.waitIrUsable(input),
         {
           position: positions[positions.length - 1],
-          timeoutMs: IR_WAIT_MS,
-          requireReadyEvent: records.extraction.some((e) => e.approvedCount > 0),
+          timeoutMs: options.irWaitMs,
+          requireReadyEvent: records.extraction.some(
+            (e) => e.approvedCount > 0,
+          ),
         },
       );
       log(`${label} IR wait: ${JSON.stringify(checkpoint.irWait)}`);
@@ -621,9 +779,15 @@ export async function runIrSlot(options) {
           to: label,
           ...comparison,
         });
-        log(`${previous.label}→${label} admitted 比較: ${JSON.stringify(comparison)}`);
+        log(
+          `${previous.label}→${label} admitted 比較: ${JSON.stringify(comparison)}`,
+        );
       }
-      checkpoint.queries = await measurePositions(page, positions, options.repeats);
+      checkpoint.queries = await measurePositions(
+        page,
+        positions,
+        options.repeats,
+      );
       checkpoint.summary = summarizeQueries(checkpoint.queries);
       previous = {
         label,
@@ -631,16 +795,25 @@ export async function runIrSlot(options) {
         admitted: new Map(
           checkpoint.queries
             .filter((q) => q.probe.status === "available")
-            .map((q) => [q.position, q.probe.admittedPositions.filter((p) => p > 0 && p < q.position)]),
+            .map((q) => [
+              q.position,
+              q.probe.admittedPositions.filter((p) => p > 0 && p < q.position),
+            ]),
         ),
       };
       await writeProgress();
-      log(`${label}: Scene ${count}、query ${positions.length}、${JSON.stringify(checkpoint.summary.categories)}`);
+      log(
+        `${label}: Scene ${count}、query ${positions.length}、${JSON.stringify(checkpoint.summary.categories)}`,
+      );
     }
-    records.summary = summarizeQueries(records.checkpoints.flatMap((c) => c.queries));
-    records.status = records.extraction.every((e) => e.status === "completed")
-      ? "complete"
-      : "complete-with-failures";
+    records.summary = summarizeQueries(
+      records.checkpoints.flatMap((c) => c.queries),
+    );
+    records.status = skip
+      ? "complete-without-extraction"
+      : records.extraction.every((e) => e.status === "completed")
+        ? "complete"
+        : "complete-with-failures";
   } catch (error) {
     key = null;
     records.errors.push(error instanceof Error ? error.message : String(error));
@@ -651,14 +824,18 @@ export async function runIrSlot(options) {
       if (!records.usage) {
         try {
           const [page] = app.windows();
-          records.usage = await page.evaluate(() => window.fusionIrEvaluation.usage());
+          records.usage = await page.evaluate(() =>
+            window.fusionIrEvaluation.usage(),
+          );
         } catch {
           records.usage = null;
         }
       }
       try {
         const calls = await app.evaluate(() =>
-          (globalThis.nir1IpcTrace?.calls ?? []).filter((c) => c.command === "send_chat_message"),
+          (globalThis.nir1IpcTrace?.calls ?? []).filter(
+            (c) => c.command === "send_chat_message",
+          ),
         );
         records.aiCalls = {
           sendChatMessage: calls.length,
@@ -700,8 +877,12 @@ export async function runIrSlot(options) {
         const contents = await listTree(userData);
         records.profile = {
           files: contents.length,
-          aiKeysJsonPresent: contents.some((entry) => entry.path === "ai-keys.json"),
-          topLevel: [...new Set(contents.map((entry) => entry.path.split(path.sep)[0]))].sort(),
+          aiKeysJsonPresent: contents.some(
+            (entry) => entry.path === "ai-keys.json",
+          ),
+          topLevel: [
+            ...new Set(contents.map((entry) => entry.path.split(path.sep)[0])),
+          ].sort(),
         };
         await writeFile(
           path.join(output, "profile-contents.json"),
@@ -715,12 +896,18 @@ export async function runIrSlot(options) {
     }
     records.finishedAt = new Date().toISOString();
     records.durationMs = Date.now() - startedAt;
-    await writeFile(path.join(output, "records.json"), JSON.stringify(records, null, 2) + "\n");
+    await writeFile(
+      path.join(output, "records.json"),
+      JSON.stringify(records, null, 2) + "\n",
+    );
   }
   return records;
 }
 
-if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+if (
+  process.argv[1] &&
+  pathToFileURL(process.argv[1]).href === import.meta.url
+) {
   const options = parseArgs(process.argv.slice(2));
   const records = await runIrSlot(options);
   console.log(
