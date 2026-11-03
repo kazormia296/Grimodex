@@ -1885,6 +1885,232 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     );
   });
 
+  describe("project Scene Scope default（SDEF/1 MD5、DR-SDEF-25・26）", () => {
+    const mainLine = {
+      timeline: { kind: "exact", ref: "timeline:main" },
+      worldline: { kind: "exact", ref: "worldline:prime" },
+      narrativeLayer: { kind: "exact", ref: "layer:manuscript" },
+    };
+    const readResult = {
+      projectId: "project-1",
+      default: {
+        state: "set",
+        queryIdentity: mainLine,
+        materialConstraint: mainLine,
+      },
+      version: 1,
+      sourceToken:
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      updatedAt: "2026-11-04T00:00:00.000Z",
+    };
+    const updatePayload = {
+      projectId: "project-1",
+      requestId: "default-request-1",
+      sessionId: "default-session-1",
+      eventUid: "default-event-1",
+      baseVersion: 0,
+      updatedAt: "2026-11-04T00:00:00.000Z",
+      default: {
+        state: "set",
+        queryIdentity: mainLine,
+        materialConstraint: mainLine,
+      },
+    };
+    const callerIdentity = {
+      profileId: "profile-1",
+      callerId: "caller-1",
+      callerEpoch: 2,
+      senderId: 7,
+      workspaceId: null,
+      sessionId: "session-1",
+    };
+
+    it("read は typed request だけを Native へ渡し、caller identity を末尾の引数にする", async () => {
+      const method = vi.fn().mockResolvedValue(JSON.stringify(readResult));
+      const { backend } = fakeBackend({
+        narrativeScopeProjectDefaultRead: method,
+      });
+      const env = await dispatchInvoke(
+        "narrative_scope_project_default_read",
+        {
+          expectedWorkspacePath: "/workspace/project-1",
+          projectId: "project-1",
+          callerIdentity,
+        },
+        { backend, shell: noShell },
+      );
+      expect(env).toEqual({ ok: true, value: readResult });
+      expect(method).toHaveBeenCalledExactlyOnceWith(
+        {
+          expectedWorkspacePath: "/workspace/project-1",
+          projectId: "project-1",
+        },
+        JSON.stringify(callerIdentity),
+      );
+    });
+
+    it("read は未知の key と空の値を Native の前に拒否する", async () => {
+      const method = vi.fn().mockResolvedValue(JSON.stringify(readResult));
+      const { backend } = fakeBackend({
+        narrativeScopeProjectDefaultRead: method,
+      });
+      for (const args of [
+        {
+          expectedWorkspacePath: "/workspace/project-1",
+          projectId: "project-1",
+          sceneId: "scene-1",
+        },
+        { expectedWorkspacePath: "/workspace/project-1", projectId: "" },
+        { projectId: "project-1" },
+      ]) {
+        const env = await dispatchInvoke(
+          "narrative_scope_project_default_read",
+          args,
+          { backend, shell: noShell },
+        );
+        expect(env.ok).toBe(false);
+      }
+      expect(method).not.toHaveBeenCalled();
+      const unavailable = await dispatchInvoke(
+        "narrative_scope_project_default_read",
+        {
+          expectedWorkspacePath: "/workspace/project-1",
+          projectId: "project-1",
+        },
+        { backend: fakeBackend().backend, shell: noShell },
+      );
+      expect(unavailable).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("IPC_BACKEND_UNAVAILABLE"),
+      });
+    });
+
+    it("update は baseVersion 0 の set と none を通し、payload をそのまま一度だけ渡す", async () => {
+      const method = vi.fn().mockResolvedValue(JSON.stringify(readResult));
+      const { backend } = fakeBackend({
+        narrativeScopeProjectDefaultUpdate: method,
+      });
+      const env = await dispatchInvoke(
+        "narrative_scope_project_default_update",
+        {
+          expectedWorkspacePath: "/workspace/project-1",
+          payload: updatePayload,
+          callerIdentity,
+        },
+        { backend, shell: noShell },
+      );
+      expect(env).toEqual({ ok: true, value: readResult });
+      expect(method).toHaveBeenCalledExactlyOnceWith(
+        {
+          expectedWorkspacePath: "/workspace/project-1",
+          payload: updatePayload,
+        },
+        JSON.stringify(callerIdentity),
+      );
+      const none = {
+        ...updatePayload,
+        baseVersion: 3,
+        default: { state: "none" },
+      };
+      await expect(
+        dispatchInvoke(
+          "narrative_scope_project_default_update",
+          { expectedWorkspacePath: "/workspace/project-1", payload: none },
+          { backend, shell: noShell },
+        ),
+      ).resolves.toMatchObject({ ok: true });
+      expect(method).toHaveBeenLastCalledWith({
+        expectedWorkspacePath: "/workspace/project-1",
+        payload: none,
+      });
+    });
+
+    it("update は未知の key・負の version・閉じていない既定を Native の前に拒否する", async () => {
+      const method = vi.fn().mockResolvedValue(JSON.stringify(readResult));
+      const { backend } = fakeBackend({
+        narrativeScopeProjectDefaultUpdate: method,
+      });
+      const flashback = {
+        ...mainLine,
+        timeline: { kind: "exact", ref: "timeline:flashback" },
+      };
+      const { eventUid: _eventUid, ...missingEventUid } = updatePayload;
+      const invalidPayloads: unknown[] = [
+        { ...updatePayload, extra: true },
+        missingEventUid,
+        { ...updatePayload, baseVersion: -1 },
+        { ...updatePayload, baseVersion: 1.5 },
+        { ...updatePayload, requestId: "" },
+        {
+          ...updatePayload,
+          default: { state: "none", queryIdentity: mainLine },
+        },
+        { ...updatePayload, default: { state: "any" } },
+        {
+          ...updatePayload,
+          default: { ...updatePayload.default, extra: 1 },
+        },
+        {
+          ...updatePayload,
+          default: {
+            ...updatePayload.default,
+            queryIdentity: { ...mainLine, timeline: { kind: "any" } },
+          },
+        },
+        {
+          ...updatePayload,
+          default: {
+            ...updatePayload.default,
+            queryIdentity: {
+              ...mainLine,
+              timeline: { kind: "unresolved", reason: "x" },
+            },
+          },
+        },
+        {
+          ...updatePayload,
+          default: {
+            ...updatePayload.default,
+            queryIdentity: {
+              ...mainLine,
+              timeline: { kind: "exact", ref: "timeline:main", extra: 1 },
+            },
+          },
+        },
+        {
+          ...updatePayload,
+          default: {
+            ...updatePayload.default,
+            queryIdentity: { ...mainLine, holder: { kind: "reader" } },
+          },
+        },
+        {
+          ...updatePayload,
+          default: { ...updatePayload.default, materialConstraint: flashback },
+        },
+      ];
+      for (const payload of invalidPayloads) {
+        const env = await dispatchInvoke(
+          "narrative_scope_project_default_update",
+          { expectedWorkspacePath: "/workspace/project-1", payload },
+          { backend, shell: noShell },
+        );
+        expect(env.ok).toBe(false);
+      }
+      const unknownTop = await dispatchInvoke(
+        "narrative_scope_project_default_update",
+        {
+          expectedWorkspacePath: "/workspace/project-1",
+          payload: updatePayload,
+          sceneId: "scene-1",
+        },
+        { backend, shell: noShell },
+      );
+      expect(unknownTop.ok).toBe(false);
+      expect(method).not.toHaveBeenCalled();
+    });
+  });
+
   it("A1 scene scope mutation は未知の引数を拒否し、typed payloadを一度だけ渡す", async () => {
     const method = vi
       .fn()
@@ -3601,6 +3827,67 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       ok: false,
       error: expect.stringContaining("IPC_BACKEND_UNAVAILABLE"),
     });
+  });
+
+  it("project_create は sceneScopeDefault を無いか main-line だけ通す（SDEF/1 R12、DR-SDEF-28）", async () => {
+    const projectCreate = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify({ id: "project-1" }));
+    const { backend } = fakeBackend({ projectCreate: projectCreate as never });
+    const payload = {
+      projectId: "project-1",
+      requestId: "project-request-1",
+      sessionId: "project-session-1",
+      eventUid: "project-event-1",
+      origin: "human",
+      authorityRoute: "human-direct",
+      caller: "manual-wrapper",
+      controls: [
+        "runtime-policy",
+        "actor-context",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: null,
+      writesAuthorityProtectedField: false,
+      originalTransactionId: null,
+      undoJournalId: null,
+      title: "Novel",
+      genre: null,
+      pov: null,
+      tense: null,
+      language: "ja",
+      styleGuide: null,
+      aiInstructions: null,
+      outline: null,
+      targetReaders: null,
+      createdAt: "2026-11-04T00:00:00.000Z",
+      updatedAt: "2026-11-04T00:00:00.000Z",
+    };
+    const withDefault = { ...payload, sceneScopeDefault: "main-line" };
+    await expect(
+      dispatchInvoke(
+        "project_create",
+        { payload: withDefault },
+        { backend, shell: noShell },
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    expect(projectCreate).toHaveBeenLastCalledWith(withDefault);
+
+    for (const value of [null, "", "any", "Main-Line", 1, { kind: "main" }]) {
+      const env = await dispatchInvoke(
+        "project_create",
+        { payload: { ...payload, sceneScopeDefault: value } },
+        { backend, shell: noShell },
+      );
+      expect(env).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("sceneScopeDefault"),
+      });
+    }
+    expect(projectCreate).toHaveBeenCalledTimes(1);
   });
 
   it("map promotion bundles は relation/position の原子payloadを検証する", async () => {
@@ -6225,6 +6512,8 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_scene_scope_read",
       "narrative_scene_scope_registry_update",
       "narrative_scene_scope_update",
+      "narrative_scope_project_default_read",
+      "narrative_scope_project_default_update",
       "nir1_entity_relation_revision_create",
       "nir1_entity_relation_revision_prepare",
       "nir1_entity_relation_revision_read",

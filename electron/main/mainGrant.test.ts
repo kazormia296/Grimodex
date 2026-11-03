@@ -210,6 +210,13 @@ describe("F1 GRANT_REQUIRED_COMMANDS", () => {
     expect(
       isGrantRequiredCommand("narrative_scene_scope_registry_update"),
     ).toBe(false);
+    // SDEF/1 (DR-SDEF-27): the project Scene Scope default entries need none.
+    expect(isGrantRequiredCommand("narrative_scope_project_default_read")).toBe(
+      false,
+    );
+    expect(
+      isGrantRequiredCommand("narrative_scope_project_default_update"),
+    ).toBe(false);
   });
 });
 
