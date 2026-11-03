@@ -19,7 +19,11 @@ import {
 import { setCurrentRuntimeProjectId } from "@/runtime/projectIdentity";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
-import { createProject, listProjects } from "@/features/project/api";
+import {
+  createProject,
+  listProjects,
+  updateProject,
+} from "@/features/project/api";
 import {
   getCurrentProjectId,
   useProjectStore,
@@ -134,6 +138,13 @@ async function prepare(input: {
     title: "Fusion slot IR evaluation",
     language: input.language,
   });
+  // IR の query は project の読書順の軸（DB の phase_resolution_mode が reading）を要る。
+  // renderer の store だけでなく、L0 の setup と同じく製品の project の patch で DB に入れる。
+  const patched = await updateProject(input.projectId, {
+    phaseResolutionMode: "reading",
+  });
+  if (patched?.phaseResolutionMode !== "reading")
+    throw new Error("[artifact] project phaseResolutionMode was not persisted");
   useProjectStore.setState({
     currentProjectId: input.projectId,
     projects: await listProjects(),
