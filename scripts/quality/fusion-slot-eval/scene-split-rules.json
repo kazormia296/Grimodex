@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "fusion-slot-pd-split/1",
+  "evidenceScope": "not-cp4-evidence",
+  "boundary": "見出し（青空文庫は大・中・小見出しの注記。注記が 1 つも無い作品では、漢数字だけの「第…章」「（…）」「…」の行。Gutenberg は CHAPTER の見出しのうち直後に 40 語以上の段落があるもの）ごとに節を区切る。見出しのある作品では最初の見出しより前（前書き・目次など）を落とす。見出しの文字は本文に入れない",
+  "order": "短すぎる節を次の節と合わせてから、長すぎる節を分ける",
+  "shortMerge": "大きさが minPerScene 未満の節は次の節と合わせる（合わせても未満ならさらに次と）。末尾に残ったら直前の Scene に合わせる",
+  "longSplit": "大きさが maxPerScene を超える節は、段落の境目で k = ceil(大きさ / maxPerScene) 個にほぼ等分する（累積の大きさが total*j/k に近い境目で切る）。どれかが上限を超えたら k を 1 ずつ増やす（k は段落数まで）",
+  "languages": {
+    "ja": {
+      "unit": "chars",
+      "unitDefinition": "空白（全角を含む）を除いた code point の数",
+      "maxPerScene": 6000,
+      "minPerScene": 300
+    },
+    "en": {
+      "unit": "words",
+      "unitDefinition": "空白で区切った語の数",
+      "maxPerScene": 2500,
+      "minPerScene": 120
+    }
+  },
+  "decidedFrom": "指示書の目安の数値をそのまま使う。本番の作品の結果を見て変えない"
+}
