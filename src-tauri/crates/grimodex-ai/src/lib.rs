@@ -2876,7 +2876,13 @@ pub enum ResponseBlock {
     },
     Thinking {
         content: String,
+        // None は key ごと出さない。renderer の single-shot transport
+        // （`singleShotTransport.ts`）は key があれば string を要求するので、
+        // `null` を出すと OpenRouter の `reasoning`／Ollama の `thinking` を返す応答で
+        // 抽出が失敗する。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
 }
@@ -6652,6 +6658,61 @@ mod tests {
             })
             .collect();
         assert_eq!(thinking, vec!["考えた内容".to_string()]);
+    }
+
+    #[test]
+    fn test_thinking_block_omits_absent_summary_and_signature_when_serialized() {
+        // OpenRouter の `reasoning` から作る Thinking は summary／signature を持たない。
+        // 直列化で `null` を出すと renderer の single-shot transport が拒むので、key を出さない。
+        let json = serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": { "content": "本文", "reasoning": "考えた内容" }
+            }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+        });
+        let resp = parse_openai_response(&json, &ParseOpenAIOptions::default()).unwrap();
+        let blocks = serde_json::to_value(&resp.blocks).unwrap();
+        let thinking = blocks
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["type"] == "thinking")
+            .expect("thinking block");
+        let object = thinking.as_object().unwrap();
+        assert_eq!(
+            object.get("content"),
+            Some(&serde_json::json!("考えた内容"))
+        );
+        assert!(
+            !object.contains_key("summary"),
+            "summary must be omitted: {thinking}"
+        );
+        assert!(
+            !object.contains_key("signature"),
+            "signature must be omitted: {thinking}"
+        );
+
+        // 値があるときは string のまま出し、読み戻しても同じになる。
+        let with_values = ResponseBlock::Thinking {
+            content: "c".to_string(),
+            summary: Some("s".to_string()),
+            signature: Some("sig".to_string()),
+        };
+        let value = serde_json::to_value(&with_values).unwrap();
+        assert_eq!(value["summary"], serde_json::json!("s"));
+        assert_eq!(value["signature"], serde_json::json!("sig"));
+        let without: ResponseBlock =
+            serde_json::from_value(serde_json::json!({ "type": "thinking", "content": "c" }))
+                .unwrap();
+        assert!(matches!(
+            without,
+            ResponseBlock::Thinking {
+                summary: None,
+                signature: None,
+                ..
+            }
+        ));
     }
 
     // ----- Hermes tool protocol -----
