@@ -1,6 +1,6 @@
 # 関連場面：日本語の sparse 腕を直す最小の一手（設計草稿）
 
-- 状態：**草稿 改訂 1**（独立レビュー〔判定 (b) 修正してから受入れ可〕の指摘を反映。ユーザーの確認の前。実装はまだ始めない）
+- 状態：**改訂 2（実装済み）**。改訂 1 は独立レビュー〔判定 (b) 修正してから受入れ可〕の指摘を反映した草稿。2026-11-03 にユーザーが §8.2 の残りを決め、実装した（§9）。本文の §2〜§8 は改訂 1 の記述のまま残し、実装で変えた点は §9 に書く。
 - 日付：2026-11-01
 - 基点：origin/master `2ad1e536`。製品のコードはこの worktree と `claude-cp4-s5cand`（`86427ee5`）で読んだ。
   両者で `src/features/related-scenes`、`src/features/codex`、`src/lib`、`semanticRecall.ts`、`fts.rs`、
@@ -55,6 +55,7 @@
 ### 2.2 新しい関数
 
 `seedTerms.ts` に新しい純関数を足し、既存の `buildSparseQuery` は**変えずに残す**（英語、harness、liveEval が使う）。
+（実装では新しい file `relatedScenesSparseQuery.ts` に置き、`seedTerms.ts` は 1 byte も変えていない。§9）
 
 ```ts
 export function buildRelatedScenesSparseQuery(args: {
@@ -492,3 +493,33 @@ liveEval の近似（下記）で測られている。sparse が働くように�
 - 1 項目あたり 3 語、全体 8 語の上限（§2.2）。
 - 英語の分岐と既存の `buildSparseQuery` は変えない。
 - 次に起案するもの（意見）：過去限定（上限が過去でない枠の約 5 件にあると分かったため）と、本番と同じ経路の日本語の評価（§4 の 3）。
+
+## 9. 決定と実装の記録（2026-11-03）
+
+### 9.1 ユーザーの決定
+
+§8.2 の 6 点は次のとおり決まった（記録は branch `claude/nir1-contracts` の `user-confirmation-2026-11-01-g04-c-redesign.md`、`6d8b370a`、`665a30f3`）。
+
+1. 入れる時期：A（CP-4 の測定の後に入れ、L0 の corpus で Raw だけを測り直す）。CP-4 の正式な再測定は 2026-11-03 に終わった。
+2. (a) 語が無いとき：今の query に戻す（推奨のまま）。
+3. (b) CP-4 の harness：据え置き（推奨のまま）。harness の 2 か所は `buildSparseQuery` を直接呼び続ける。
+4. (c) 短い別名による言及：**(i) 数える**。
+5. (d) Codex が変わったら取り直すか：取り直さない（推奨のまま）。
+6. Codex の種類：**全種類**（integrator の推奨は「人物と場所だけ」だった。item・lore の普通名詞に近い名前による枠の消費と誤言及は測っていない）。
+
+### 9.2 実装で決めた点（技術判断）
+
+- 新しい関数は新しい file `src/features/related-scenes/relatedScenesSparseQuery.ts` に置いた。`seedTerms.ts` は変えていない（CP-4 の harness が import するので、harness の build の中身を変えないため）。S4b'''' の S2 の pin の path と R5 の記録の path に、変更した file との交差は無い。
+- 組立てが投げたとき（Codex の別名の JSON に文字列でない要素があるなど）は従来の query に戻す。組立ては `fts_search` の Promise の外で同期に評価されるので、投げると一覧全体が失敗するため（独立レビューの P2）。
+- 重複は大小を区別せずに除く（FTS5 の trigram は既定で大小を区別しない）。
+- matcher は `completionTargets` の配列ごとに 1 回だけ作る（WeakMap）。store は更新のたびに新しい配列に置き換える（独立レビューが全ての set を確かめた）。合成（500 項目・1 万字、node 24）で、関数全体の 2 回目以降の平均は 2.20→1.04 ms、最大 3.23→1.88 ms、初回は約 5.7 ms で変わらない。memo の有無は結果を変えないので、試験は memo を外しても通る（性能だけの変更）。
+- 「1 項目 3 語」は空白で分ける前の表記で数える（§2.2 の手順 4 のあと手順 6）。複数語の Latin の別名は 1 項目で多くの語を出しうる。2 字の名前も 3 つの枠の 1 つに数える。
+
+### 9.3 L0 の Raw だけの測り直し（参考。正式な測定ではない）
+
+`scripts/quality/run-nir1-retrieval.mjs --mode raw`（標準 build の受領書つき、Xvfb、本番の ONNX）を、master `cbf33077` と実装の枝 `eb12fb49`（独立レビューの直しの前）で 1 回ずつ回した。直しの後の head での測り直しは PR に書く。凍結物（manifest、corpus、freeze）は変えていない。
+
+- 両方 `baseline-complete`。24 query すべてで、結果の場面・並び・点数・抜粋が一致した。品質（recall@8／nDCG@8）も同じ（全体 0.910／0.896、ja 0.819／0.835、en 1.000／0.957）。§5.2 の見込み（顔ぶれ・並び・点数は変わらない）と合う。
+- warm の時間：ja の p50 は 21.0→20.4 ms で増えていない。全体の p95（B）は 63.1→73.9 ms だが、差は en の裾（p95 29.4→63.3 ms）から来ていて、en の経路のコードは変えていない。ホストでは別のセッションの試験が並行して動いていて、静かな環境での測定ではない。L0 の凍結時の B（54.2 ms）とも環境が違う。
+- 確かめていないこと：L0 の corpus には Codex が無いので、Codex 由来の語の効果と所要時間はこの測定に現れない。実際の小説での効果、dense と合わせた最終の一覧、gate・救済の幅の妥当性は §8.1 のまま。
+
