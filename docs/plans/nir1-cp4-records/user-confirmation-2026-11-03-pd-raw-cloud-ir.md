@@ -22,3 +22,9 @@ PD／AI 生成の原稿では、Raw の満杯率は LLM なし・費用 0 円で
 1. 青空文庫（日本語）と Project Gutenberg（英語）の保護期間の切れた作品を integrator が取得し、repo の外の使い捨てディレクトリに置き、Raw の満杯率を測る。記録には件数と ID だけを残し、本文は repo・contracts に置かない。測る前に、作品の選び方・Scene の分割規則・指標・判断規則（D0、D1、κ の下限。`853c8e27`）を事前登録する。CP-4 の証拠にしない（`not-cp4-evidence`）。
 2. IR はクラウド LLM（OpenRouter を想定）で PD の本文を Chronicle 抽出する方向。PD の本文はユーザーのデータでも秘密でもないが、課金の送信なので、**実行の前に model・費用の上限・API key の渡し方をユーザーに確認する**（この回答は方向の選択で、費用の上限と key はまだ決まっていない）。提案の承認は harness が代行し、「作者が承認する率」は測らない。
 3. 含まないもの：Graph の入口の新設、AI 生成の原稿、ユーザーのデータの送信、閾値・Gold・融合の枠の変更。
+
+## 追記：費用の上限と API key（同日、AskUserQuestion）
+
+- 質問「IR をクラウド LLM（OpenRouter）で抽出するときの費用の上限はどうしますか？（model は製品の Chronicle の評価と同じ openai/gpt-5.6-luna、reasoning medium を使います。上限に達したら止めて報告します）」→ **回答（自由記述）：「どうせ対したクレジット入ってないので気にしないで良いです」**
+- 質問「OpenRouter の API key をどう渡しますか？…」→ **回答：「ファイルで渡す (推奨)」**
+- 読み：費用の上限は OpenRouter の口座の残高で決まる（integrator は別の上限を置かないが、使った費用は記録して報告する）。key は `~/.config/grimodex-eval/openrouter.key`（repo の外）から抽出の command の中だけで読み、表示・記録しない。ファイルの権限が 644 だったので integrator が 600 に直した（中身は読んでいない）。
