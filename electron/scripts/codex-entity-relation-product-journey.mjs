@@ -14,7 +14,7 @@ export const CODEX_ENTITY_RELATION_REVIEW_SELECTORS = Object.freeze([
   '[data-stripe-icon="scenes"]',
   '[data-panel-header]:has(span[role="heading"]:text-is("シーン"))',
   'button[title="新規作成"]',
-  '[role="menuitem"]:text-is("New folder")',
+  '[role="menuitem"]:text-is("新しいフォルダー")',
   '[data-node-row]',
   'button[title="シーンを追加"]',
   '[data-stripe-icon="codex"]',
@@ -217,7 +217,7 @@ export async function createFolderThroughUi(harness, page, title) {
   for (let attempt = 1; ; attempt += 1) {
     await header.locator('button[title="新規作成"]').click();
     const clicked = await page
-      .getByRole("menuitem", { name: "New folder", exact: true })
+      .getByRole("menuitem", { name: "新しいフォルダー", exact: true })
       .click({ timeout: 5_000 })
       .then(() => true)
       .catch((error) => {

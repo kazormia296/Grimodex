@@ -122,7 +122,7 @@ describe("TimelineContextMenu", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("「Clear story-time」クリックで updateStoryTime(null) が呼ばれる (story軸)", () => {
+  it("「作中時間を解除」クリックで updateStoryTime(null) が呼ばれる (story軸)", () => {
     render(
       <TimelineContextMenu
         node={scene}
@@ -132,12 +132,12 @@ describe("TimelineContextMenu", () => {
         axisMode="story"
       />,
     );
-    fireEvent.click(screen.getByText(/Clear story-time/i));
+    fireEvent.click(screen.getByText("作中時間を解除"));
     expect(mockUpdateStoryTime).toHaveBeenCalledWith("scene-1", null);
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("story軸以外では Clear story-time ボタンが表示されない", () => {
+  it("story軸以外では「作中時間を解除」ボタンが表示されない", () => {
     render(
       <TimelineContextMenu
         node={scene}
@@ -147,7 +147,7 @@ describe("TimelineContextMenu", () => {
         axisMode="reading"
       />,
     );
-    expect(screen.queryByText(/Clear story-time/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("作中時間を解除")).not.toBeInTheDocument();
   });
 
   it("Escape キーで onClose が呼ばれる", () => {

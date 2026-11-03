@@ -2040,10 +2040,10 @@
     "promptCopied": "プロンプト全文をコピーしました",
     "copyFailed": "コピーに失敗しました",
     "placeholderStreaming": "生成中…",
-    "placeholderScene": "Ask about this scene...",
-    "placeholderGlobal": "Ask about this project...",
-    "placeholderCodex": "Ask about this Codex entry...",
-    "placeholderSnippet": "Ask about this snippet...",
+    "placeholderScene": "このシーンについて質問...",
+    "placeholderGlobal": "このプロジェクトについて質問...",
+    "placeholderCodex": "この Codex エントリについて質問...",
+    "placeholderSnippet": "このスニペットについて質問...",
     "noScenes": "シーンがありません",
     "globalScopeOn": "Project scope ON — クリックでシーンに戻す",
     "globalScopeOff": "Project scope OFF — クリックでプロジェクト全体に切り替え",
@@ -2218,13 +2218,13 @@
       "windowFillUnknown": "実効コンテキスト容量が不明なため、使用率を計算できません",
       "windowFillRow": "ウィンドウ使用率",
       "multiSummaryWarning": "{{count}} 回要約済み — 新セッション推奨",
-      "cacheRebuilt": "cache rebuilt",
+      "cacheRebuilt": "キャッシュ再構築",
       "cacheRebuiltModel": "モデル変更",
       "cacheRebuiltInstructions": "AI指示変更",
       "cacheRebuiltBudget": "予算配分変更",
       "projectInfo": "プロジェクト情報",
       "sceneTokens": "シーン: {{count}} tokens",
-      "projectOutline": "Project outline",
+      "projectOutline": "プロジェクトのアウトライン",
       "projectOutlineTitle": "プロジェクト全体の outline",
       "chapterOutline": "Outline: {{title}}",
       "chapterOutlineTitle": "{{title}} の outline",
@@ -2317,7 +2317,7 @@
       "failedCount": "({{count}}件失敗)",
       "partialSuccess": "{{succeeded}}/{{total}}件のSynopsisを生成しました（{{failed}}件失敗）",
       "success": "{{count}}件のSynopsisを生成しました",
-      "generateAll": "Generate all ({{count}} missing)"
+      "generateAll": "未記入の {{count}} 件をまとめて生成"
     },
     "selectionToolbar": {
       "insertToEditor": "エディタに挿入",
@@ -4153,7 +4153,7 @@
         "placeholder": "指示を入力…"
       },
       "sceneBeat": {
-        "label": "Scene beat",
+        "label": "シーンビート",
         "desc": "AI 生成用のビート（局所プロンプト）を挿入"
       }
     },
@@ -4994,9 +4994,9 @@
     "addScene": "シーンを追加",
     "addNote": "ノートを追加",
     "addFolder": "フォルダーを追加",
-    "newScene": "New scene",
-    "newNote": "New note",
-    "newFolder": "New folder",
+    "newScene": "新しいシーン",
+    "newNote": "新しいノート",
+    "newFolder": "新しいフォルダー",
     "mentionCount": "{{title}}({{count}}回)",
     "create": "新規作成",
     "undo": "元に戻す (Ctrl+Z)",
@@ -6146,7 +6146,7 @@
     "ctx": {
       "openInEditor": "Editor で開く",
       "openInSide": "サイドで開く",
-      "clearStoryTime": "Clear story-time",
+      "clearStoryTime": "作中時間を解除",
       "showInScenes": "Scenes で表示",
       "delete": "削除"
     },
@@ -6168,11 +6168,11 @@
       "empty": "シーンを選択すると詳細が表示されます",
       "close": "インスペクターを閉じる",
       "status": "Status",
-      "storyTimeLabel": "Story-time label",
+      "storyTimeLabel": "作中時間のラベル",
       "hasOrder": "配置済み",
       "unscheduled": "Unscheduled",
       "synopsis": "Synopsis",
-      "phases": "Phases anchored ({{n}})",
+      "phases": "このシーンに紐づく Phase（{{n}}）",
       "created": "Created",
       "labelPlaceholder": "T1"
     },
