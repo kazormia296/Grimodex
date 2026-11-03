@@ -149,7 +149,7 @@ pub enum NirQualifiedRead {
 #[allow(clippy::large_enum_variant)]
 pub enum NirQueryStatusRead {
     Available {
-        query_context: RetrievalQueryContext,
+        query_context: Arc<RetrievalQueryContext>,
         index_usable: bool,
         snapshot: Option<NirQuerySnapshot>,
     },
@@ -250,6 +250,16 @@ pub fn read_chronicle_query_status_with_control(
     scene: &str,
     control: &mut dyn GraphWorkControl,
 ) -> Result<NirQueryStatusRead> {
+    // DR-CP4-V-6: this read is also a DR-CP4-V-1 P2 fill point. Its context is
+    // kept only when the identity before the context read, the identity the
+    // proof check observed and the identity read again after it all match
+    // (a Read transaction; nothing is kept in a Write transaction).
+    // Outside a transaction the context reader below fails exactly as before.
+    let before = if conn.is_autocommit() {
+        None
+    } else {
+        ReadIdentity::read(conn)?
+    };
     let RetrievalQueryContextRead::Available(query_context) =
         read_retrieval_query_context(conn, project, scene)?
     else {
@@ -257,13 +267,21 @@ pub fn read_chronicle_query_status_with_control(
             reason: Reason::QueryUnavailable,
         });
     };
-    let snapshot = current_proof_with_control(conn, runtime, project, control)?.map(|proof| {
-        NirQuerySnapshot {
-            owner: runtime.owner(),
-            proof,
-            query: QueryBinding::from(&query_context),
+    let query_context = Arc::new(query_context);
+    let proof = runtime.lock()?.proofs.get(project).cloned();
+    let mut snapshot = None;
+    if let Some(proof) = proof {
+        if let Some(identity) = proof_current_observed(conn, runtime, &proof, control)? {
+            if let Some(identity) = identity.filter(|identity| before.as_ref() == Some(identity)) {
+                keep_query_context(conn, &proof, identity, project, scene, &query_context)?;
+            }
+            snapshot = Some(NirQuerySnapshot {
+                owner: runtime.owner(),
+                proof,
+                query: QueryBinding::from(&*query_context),
+            });
         }
-    });
+    }
     let index_usable = snapshot.is_some();
     Ok(NirQueryStatusRead::Available {
         query_context,
@@ -520,28 +538,47 @@ fn validated_query_context(
     };
     let query = Arc::new(query);
     if let Some(identity) = identity {
-        if ReadIdentity::read(conn)?.as_ref() == Some(&identity) {
-            let mut entries = proof
-                .validated_query_contexts
-                .lock()
-                .map_err(|_| anyhow::anyhow!("NIR1 query context lock poisoned"))?;
-            // An entry of another state can never match again for this
-            // connection state; keep only the current state's contexts.
-            entries.retain(|entry| entry.identity == identity);
-            if kept(&entries, &identity).is_none() {
-                if entries.len() >= QUERY_CONTEXT_REUSE_LIMIT {
-                    entries.remove(0);
-                }
-                entries.push(ValidatedQueryContext {
-                    identity,
-                    project: project.into(),
-                    scene: scene.into(),
-                    context: Arc::clone(&query),
-                });
-            }
-        }
+        keep_query_context(conn, proof, identity, project, scene, &query)?;
     }
     Ok(Some(query))
+}
+
+/// Keep `query` for `identity` (observed by the proof check of this same
+/// transaction) only when the identity read again now still matches, as
+/// `validated_read` is (`canonical.rs`).
+fn keep_query_context(
+    conn: &Connection,
+    proof: &IndexProof,
+    identity: ReadIdentity,
+    project: &str,
+    scene: &str,
+    query: &Arc<RetrievalQueryContext>,
+) -> Result<()> {
+    if ReadIdentity::read(conn)?.as_ref() != Some(&identity) {
+        return Ok(());
+    }
+    let mut entries = proof
+        .validated_query_contexts
+        .lock()
+        .map_err(|_| anyhow::anyhow!("NIR1 query context lock poisoned"))?;
+    // An entry of another state can never match again for this
+    // connection state; keep only the current state's contexts.
+    entries.retain(|entry| entry.identity == identity);
+    let known = entries.iter().any(|entry| {
+        entry.identity == identity && entry.project == project && entry.scene == scene
+    });
+    if !known {
+        if entries.len() >= QUERY_CONTEXT_REUSE_LIMIT {
+            entries.remove(0);
+        }
+        entries.push(ValidatedQueryContext {
+            identity,
+            project: project.into(),
+            scene: scene.into(),
+            context: Arc::clone(query),
+        });
+    }
+    Ok(())
 }
 
 pub fn read_chronicle_evidence_navigation(

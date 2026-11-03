@@ -231,10 +231,11 @@ fn validated(f: &Fixture) -> (NirQuerySnapshot, Option<Context>) {
         f,
         "CREATE TABLE IF NOT EXISTS inv_unrelated_rows (value INTEGER)",
     );
+    // The status read validates the proof and keeps its query context.
     let snapshot = snapshot(f);
     let (first, reads) = read(f, &snapshot);
     assert!(first.is_some(), "the original query is current");
-    assert!(reads > 0, "the first validation is complete");
+    assert_eq!(reads, 0, "the status read's context is reused");
     let (again, reads) = read(f, &snapshot);
     assert!(same(&first, &again) && reads == 0, "same state reuses");
     (snapshot, first)
@@ -452,4 +453,68 @@ fn nir1_audit_only_inheritance_keeps_the_batch_identical_to_a_complete_check() {
         QueryBinding::from(inherited.query_context()),
         QueryBinding::from(complete.query_context())
     );
+}
+
+/// DR-CP4-V-6: the begin status read keeps its query context under the
+/// DR-CP4-V-1 P2 rule, so the qualify after the query embedding's audit-only
+/// commits reuses it instead of reading the Scope authority again.
+#[test]
+fn nir1_status_read_context_is_reused_across_audit_only_commits() {
+    let f = published();
+    let snapshot = snapshot(&f);
+    forget(&snapshot);
+    let scene = scene(&f);
+    // The begin status read: it validates the proof and keeps its context.
+    let (status, read_tables) =
+        f.db.with_read_transaction(|conn| {
+            Ok(recording_tables(conn, true, || {
+                read_chronicle_query_status(conn, &f.runtime, f.project(), &scene)
+            }))
+        })
+        .expect("status read");
+    let NirQueryStatusRead::Available {
+        query_context,
+        snapshot: Some(_),
+        ..
+    } = status.expect("status")
+    else {
+        panic!("usable status");
+    };
+    for audit in ["ai_audit_events", "sqlite_sequence"] {
+        assert!(
+            !read_tables.contains(audit),
+            "{audit} read by the status read"
+        );
+    }
+    append(&f);
+    append(&f);
+    let (after, reads) = read(&f, &snapshot);
+    assert_eq!(reads, 0, "qualify reuses the status read's context");
+    assert!(after.is_some_and(|after| Arc::ptr_eq(&after, &query_context)));
+}
+
+#[test]
+fn nir1_status_read_keeps_no_context_in_a_write_transaction() {
+    let f = published();
+    let snapshot = snapshot(&f);
+    forget(&snapshot);
+    let scene = scene(&f);
+    f.db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch("CREATE TABLE inv_write_state (value INTEGER)")?;
+        let NirQueryStatusRead::Available { .. } =
+            read_chronicle_query_status(&tx, &f.runtime, f.project(), &scene)?
+        else {
+            panic!("status");
+        };
+        tx.rollback()?;
+        Ok(())
+    })
+    .expect("write transaction");
+    assert!(snapshot
+        .proof
+        .validated_query_contexts
+        .lock()
+        .expect("context cache")
+        .is_empty());
 }
