@@ -4107,6 +4107,34 @@ impl Database {
                 ON narrative_scene_scope_bindings(project_id, version);
             ",
         )?;
+        // SCHEMA_VERSION 44 / SDEF/1 (`nir1-scene-scope-default-proposal/1`):
+        // the project's Scene Scope default, zero or one row per project. The
+        // migration only creates the table; no existing project gets a row and
+        // no registry or binding changes (R15). `none` keeps the row (R5).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_scope_project_defaults (
+                project_id                TEXT NOT NULL PRIMARY KEY
+                    REFERENCES projects(id) ON DELETE CASCADE,
+                schema_version            INTEGER NOT NULL CHECK(schema_version = 1),
+                state                     TEXT NOT NULL CHECK(state IN ('set', 'none')),
+                query_identity_json       TEXT
+                    CHECK(query_identity_json IS NULL OR (json_valid(query_identity_json)
+                      AND json_type(query_identity_json) = 'object')),
+                material_constraint_json  TEXT
+                    CHECK(material_constraint_json IS NULL OR (json_valid(material_constraint_json)
+                      AND json_type(material_constraint_json) = 'object')),
+                version                   INTEGER NOT NULL CHECK(version >= 1),
+                source_token              TEXT NOT NULL
+                    CHECK(length(source_token) = 71
+                      AND source_token GLOB 'sha256:*'
+                      AND substr(source_token, 8) NOT GLOB '*[^0-9a-f]*'),
+                updated_at                TEXT NOT NULL,
+                CHECK((state = 'set' AND query_identity_json IS NOT NULL
+                        AND material_constraint_json IS NOT NULL)
+                   OR (state = 'none' AND query_identity_json IS NULL
+                        AND material_constraint_json IS NULL))
+            );",
+        )?;
         // SCHEMA_VERSION 37 / NIR-1 D2b: immutable references to existing
         // message/artifact bodies and one durable attempt terminal. These
         // rows record observations; they do not authorize dispatch or history.

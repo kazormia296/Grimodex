@@ -4488,6 +4488,7 @@ mod tests {
         "narrative_revision_source_basis",
         "narrative_runtime_policy",
         "narrative_scene_scope_bindings",
+        "narrative_scope_project_defaults",
         "narrative_scope_registries",
         "narrative_semantic_epochs",
         "narrative_semantic_index_metadata",
