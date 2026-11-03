@@ -17,6 +17,7 @@ import {
   setCurrentWorkspaceIdentity,
 } from "@/runtime/workspaceIdentity";
 import { setCurrentRuntimeProjectId } from "@/runtime/projectIdentity";
+import { useWorkspaceStore } from "@/features/workspace/store";
 import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { createProject, listProjects } from "@/features/project/api";
 import {
@@ -93,6 +94,18 @@ function errorCode(error: unknown, fallback: string): string {
   );
 }
 
+/**
+ * 診断用の error の形：ASCII 以外（日本語の本文）を "?" に替え、識別子らしい長い英数字列
+ * （key の可能性がある）を伏せ、240 字で切る。原因の分類にだけ使う。
+ */
+function errorShape(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message
+    .replace(/[^\x20-\x7e]+/gu, "?")
+    .replace(/[A-Za-z0-9_-]{32,}/gu, "<long>")
+    .slice(0, 240);
+}
+
 function requireActive() {
   if (!active) throw new Error("[precheck] no prepared case");
   return active;
@@ -107,6 +120,12 @@ async function prepare(input: {
   setCurrentWorkspaceIdentity({
     path: input.workspacePath,
     openRevision: ++openRevision,
+  });
+  // AI の監査は renderer の workspace store の active な workspace を要る（製品は workspace を
+  // 開く流れで設定する）。
+  useWorkspaceStore.setState({
+    activeWorkspacePath: input.workspacePath,
+    workspaceSwitchInProgress: false,
   });
   publishCurrentProjectId(input.projectId);
   setCurrentRuntimeProjectId(input.projectId);
@@ -306,6 +325,7 @@ async function extractScene(position: number) {
     }));
   } catch (error) {
     const code = errorCode(error, "extraction-failed");
+    const shape = errorShape(error);
     let recovery = null;
     try {
       recovery = await discardResumeCandidates();
@@ -316,6 +336,7 @@ async function extractScene(position: number) {
       position,
       status: "failed",
       errorCode: code,
+      errorShape: shape,
       recovery,
       durationMs: performance.now() - started,
       proposals: [],
