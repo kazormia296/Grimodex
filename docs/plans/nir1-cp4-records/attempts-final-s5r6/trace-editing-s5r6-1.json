@@ -1,0 +1,16 @@
+{
+  "schema": "nir1-cp4-attempt/1",
+  "runName": "trace-editing-s5r6-1",
+  "status": "completed",
+  "candidate": {
+    "commit": "cbf3307739db9310e2e1d65d947a811591fd77f2",
+    "tree": "0ad15da4cdf2d0eab13981e964729d6820feedf6"
+  },
+  "s4Commit": "3734e501c456f3fef22ded01a0084be457a60c1a",
+  "runKind": "trace",
+  "key": "trace:evals/nir1-graph/trace-editing.v1.json:ac7e1059a8c9c6bd295f9771087e70c3922d3e0e:7e72a040104dee7a90493ad7a353cfc883f1671197febd1c4f0e34a7dbfcbd0d:cbf3307739db9310e2e1d65d947a811591fd77f2",
+  "attempt": 1,
+  "startedAtUtc": "2026-11-03T06:35:17.489Z",
+  "finishedAtUtc": "2026-11-03T06:45:03.230Z",
+  "variants": null
+}

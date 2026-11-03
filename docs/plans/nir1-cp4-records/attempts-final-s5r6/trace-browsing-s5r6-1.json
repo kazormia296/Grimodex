@@ -1,0 +1,16 @@
+{
+  "schema": "nir1-cp4-attempt/1",
+  "runName": "trace-browsing-s5r6-1",
+  "status": "completed",
+  "candidate": {
+    "commit": "cbf3307739db9310e2e1d65d947a811591fd77f2",
+    "tree": "0ad15da4cdf2d0eab13981e964729d6820feedf6"
+  },
+  "s4Commit": "3734e501c456f3fef22ded01a0084be457a60c1a",
+  "runKind": "trace",
+  "key": "trace:evals/nir1-graph/trace-browsing.v1.json:ac7e1059a8c9c6bd295f9771087e70c3922d3e0e:54e5e39153f4157da5244c1d0dab3b4528c6ab55d692e6a1c19263e44de47347:cbf3307739db9310e2e1d65d947a811591fd77f2",
+  "attempt": 1,
+  "startedAtUtc": "2026-11-03T06:45:24.767Z",
+  "finishedAtUtc": "2026-11-03T06:49:07.553Z",
+  "variants": null
+}

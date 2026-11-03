@@ -1,0 +1,385 @@
+{
+ "neg-n2-s5r6-1": {
+  "assessment": {
+   "id": "K24-G01-N2",
+   "mutation": "resave-same-body",
+   "countsInCaseJudgement": false,
+   "outcome": "established",
+   "reasons": [],
+   "returnedIn": []
+  },
+  "control": "reached",
+  "beforeDeclarationSealAttempts": null,
+  "beforeDeclarationFeedAfterSaves": null,
+  "step": {
+   "mutation": {
+    "before": {
+     "sha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491",
+     "version": 0
+    },
+    "after": {
+     "sha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491",
+     "version": 1
+    }
+   },
+   "feedAfterMutation": {
+    "consumerId": "narrative-incremental-freshness/v1",
+    "head": 19,
+    "cursor": true,
+    "acknowledged": 18,
+    "activeRun": false,
+    "reserved": false,
+    "pendingEvents": 1,
+    "pendingSequences": 1
+   },
+   "sealAttempts": [
+    {
+     "session": "measure",
+     "attempt": 0,
+     "dirLabel": "measure-reopen-0",
+     "outcome": "sealed",
+     "published": true,
+     "waitedMs": 1040,
+     "metadata": {
+      "b": {
+       "generation": 1,
+       "dirty": false,
+       "sourceDigest": "sha256:07ab83088d7d5593316f94a620b7fdda40f146994629ef4114da5ded91669b07",
+       "dependencySetDigest": "sha256:d3001bd063004549641d25c8252f7728134434bf3c60a1887e2ae616fe9d23ac",
+       "producerId": "nir1-reviewed-entity-relation-v1",
+       "producerVersion": "nir1-reviewed-entity-relation/v1"
+      },
+      "chronicle": {
+       "generation": 2,
+       "dirty": true,
+       "sourceDigest": "sha256:3157183d9c47f4a8ea15a9a72691f65277af2393ba9c76a8a9fc9fdf16692500",
+       "dependencySetDigest": "sha256:608ac39fd8e6b007706b729de319e0af1045c60f6d9c5ea4e5942c7482eb3d78",
+       "producerId": "nir1-reviewed-chronicle-v1",
+       "producerVersion": "nir1-reviewed-chronicle/v1"
+      }
+     },
+     "sealBranch": "unchanged",
+     "freshnessSettle": {
+      "settled": true,
+      "waitedMs": 1034,
+      "polls": 5,
+      "limitMs": 60000,
+      "intervalMs": 250,
+      "initial": {
+       "consumerId": "narrative-incremental-freshness/v1",
+       "head": 19,
+       "cursor": true,
+       "acknowledged": 18,
+       "activeRun": false,
+       "reserved": false,
+       "pendingEvents": 1,
+       "pendingSequences": 1
+      },
+      "final": {
+       "consumerId": "narrative-incremental-freshness/v1",
+       "head": 19,
+       "cursor": true,
+       "acknowledged": 19,
+       "activeRun": false,
+       "reserved": false,
+       "pendingEvents": 0,
+       "pendingSequences": 0
+      }
+     },
+     "settleCoversMutation": true,
+     "chronicle": {
+      "build": {
+       "ok": true
+      },
+      "metadata": {
+       "b": {
+        "generation": 1,
+        "dirty": false,
+        "sourceDigest": "sha256:07ab83088d7d5593316f94a620b7fdda40f146994629ef4114da5ded91669b07",
+        "dependencySetDigest": "sha256:d3001bd063004549641d25c8252f7728134434bf3c60a1887e2ae616fe9d23ac",
+        "producerId": "nir1-reviewed-entity-relation-v1",
+        "producerVersion": "nir1-reviewed-entity-relation/v1"
+       },
+       "chronicle": {
+        "generation": 3,
+        "dirty": false,
+        "sourceDigest": "sha256:3157183d9c47f4a8ea15a9a72691f65277af2393ba9c76a8a9fc9fdf16692500",
+        "dependencySetDigest": "sha256:608ac39fd8e6b007706b729de319e0af1045c60f6d9c5ea4e5942c7482eb3d78",
+        "producerId": "nir1-reviewed-chronicle-v1",
+        "producerVersion": "nir1-reviewed-chronicle/v1"
+       }
+      },
+      "usable": true,
+      "recheckBranch": "unchanged"
+     }
+    }
+   ],
+   "blocked": null,
+   "spP1Recheck": {
+    "status": "match",
+    "productSeed": "7ebf6e1f-5df1-41a1-876d-b657fafa9402",
+    "pinCount": 1
+   }
+  }
+ },
+ "neg-n3-s5r6-1": {
+  "assessment": {
+   "id": "K24-G01-N3",
+   "mutation": "restore-same-bytes-body-version",
+   "countsInCaseJudgement": false,
+   "outcome": "established",
+   "reasons": [],
+   "returnedIn": []
+  },
+  "control": "reached",
+  "beforeDeclarationSealAttempts": null,
+  "beforeDeclarationFeedAfterSaves": null,
+  "step": {
+   "mutation": {
+    "revisionId": "9da2905c-d4f5-49d1-8344-9a75f1874f38",
+    "version": 1,
+    "replayed": false,
+    "afterSha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491",
+    "restoredSha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491"
+   },
+   "feedAfterMutation": null,
+   "sealAttempts": [
+    {
+     "session": "measure",
+     "attempt": 0,
+     "dirLabel": "measure-reopen-0",
+     "outcome": "sealed",
+     "published": true,
+     "waitedMs": 511,
+     "metadata": {
+      "b": {
+       "generation": 2,
+       "dirty": false,
+       "sourceDigest": "sha256:07ab83088d7d5593316f94a620b7fdda40f146994629ef4114da5ded91669b07",
+       "dependencySetDigest": "sha256:d3001bd063004549641d25c8252f7728134434bf3c60a1887e2ae616fe9d23ac",
+       "producerId": "nir1-reviewed-entity-relation-v1",
+       "producerVersion": "nir1-reviewed-entity-relation/v1"
+      },
+      "chronicle": {
+       "generation": 2,
+       "dirty": true,
+       "sourceDigest": "sha256:3157183d9c47f4a8ea15a9a72691f65277af2393ba9c76a8a9fc9fdf16692500",
+       "dependencySetDigest": "sha256:608ac39fd8e6b007706b729de319e0af1045c60f6d9c5ea4e5942c7482eb3d78",
+       "producerId": "nir1-reviewed-chronicle-v1",
+       "producerVersion": "nir1-reviewed-chronicle/v1"
+      }
+     },
+     "sealBranch": "new-generation",
+     "freshnessSettle": null,
+     "settleCoversMutation": null,
+     "chronicle": {
+      "build": {
+       "ok": true
+      },
+      "metadata": {
+       "b": {
+        "generation": 2,
+        "dirty": false,
+        "sourceDigest": "sha256:07ab83088d7d5593316f94a620b7fdda40f146994629ef4114da5ded91669b07",
+        "dependencySetDigest": "sha256:d3001bd063004549641d25c8252f7728134434bf3c60a1887e2ae616fe9d23ac",
+        "producerId": "nir1-reviewed-entity-relation-v1",
+        "producerVersion": "nir1-reviewed-entity-relation/v1"
+       },
+       "chronicle": {
+        "generation": 3,
+        "dirty": false,
+        "sourceDigest": "sha256:3157183d9c47f4a8ea15a9a72691f65277af2393ba9c76a8a9fc9fdf16692500",
+        "dependencySetDigest": "sha256:608ac39fd8e6b007706b729de319e0af1045c60f6d9c5ea4e5942c7482eb3d78",
+        "producerId": "nir1-reviewed-chronicle-v1",
+        "producerVersion": "nir1-reviewed-chronicle/v1"
+       }
+      },
+      "usable": true,
+      "recheckBranch": "new-generation"
+     }
+    }
+   ],
+   "blocked": null,
+   "spP1Recheck": {
+    "status": "match",
+    "productSeed": "7ebf6e1f-5df1-41a1-876d-b657fafa9402",
+    "pinCount": 1
+   }
+  }
+ },
+ "neg-n4-s5r6-1": {
+  "assessment": {
+   "id": "K24-G01-N4",
+   "mutation": "restore-different-bytes-body-version",
+   "countsInCaseJudgement": false,
+   "outcome": "established",
+   "reasons": [],
+   "returnedIn": []
+  },
+  "control": "reached",
+  "beforeDeclarationSealAttempts": [
+   {
+    "session": "before-declaration",
+    "attempt": 0,
+    "dirLabel": "before-declaration-reopen-0",
+    "outcome": "sealed",
+    "published": true,
+    "waitedMs": 1041,
+    "metadata": {
+     "b": {
+      "generation": 1,
+      "dirty": false,
+      "sourceDigest": "sha256:07ab83088d7d5593316f94a620b7fdda40f146994629ef4114da5ded91669b07",
+      "dependencySetDigest": "sha256:d3001bd063004549641d25c8252f7728134434bf3c60a1887e2ae616fe9d23ac",
+      "producerId": "nir1-reviewed-entity-relation-v1",
+      "producerVersion": "nir1-reviewed-entity-relation/v1"
+     },
+     "chronicle": {
+      "generation": 1,
+      "dirty": true,
+      "sourceDigest": "sha256:3157183d9c47f4a8ea15a9a72691f65277af2393ba9c76a8a9fc9fdf16692500",
+      "dependencySetDigest": "sha256:608ac39fd8e6b007706b729de319e0af1045c60f6d9c5ea4e5942c7482eb3d78",
+      "producerId": "nir1-reviewed-chronicle-v1",
+      "producerVersion": "nir1-reviewed-chronicle/v1"
+     }
+    },
+    "sealBranch": "unchanged",
+    "freshnessSettle": {
+     "settled": true,
+     "waitedMs": 1035,
+     "polls": 5,
+     "limitMs": 60000,
+     "intervalMs": 250,
+     "initial": {
+      "consumerId": "narrative-incremental-freshness/v1",
+      "head": 19,
+      "cursor": true,
+      "acknowledged": 17,
+      "activeRun": false,
+      "reserved": false,
+      "pendingEvents": 2,
+      "pendingSequences": 2
+     },
+     "final": {
+      "consumerId": "narrative-incremental-freshness/v1",
+      "head": 19,
+      "cursor": true,
+      "acknowledged": 19,
+      "activeRun": false,
+      "reserved": false,
+      "pendingEvents": 0,
+      "pendingSequences": 0
+     }
+    },
+    "settleCoversMutation": true,
+    "chronicle": {
+     "build": {
+      "ok": true
+     },
+     "metadata": {
+      "b": {
+       "generation": 1,
+       "dirty": false,
+       "sourceDigest": "sha256:07ab83088d7d5593316f94a620b7fdda40f146994629ef4114da5ded91669b07",
+       "dependencySetDigest": "sha256:d3001bd063004549641d25c8252f7728134434bf3c60a1887e2ae616fe9d23ac",
+       "producerId": "nir1-reviewed-entity-relation-v1",
+       "producerVersion": "nir1-reviewed-entity-relation/v1"
+      },
+      "chronicle": {
+       "generation": 2,
+       "dirty": false,
+       "sourceDigest": "sha256:3157183d9c47f4a8ea15a9a72691f65277af2393ba9c76a8a9fc9fdf16692500",
+       "dependencySetDigest": "sha256:608ac39fd8e6b007706b729de319e0af1045c60f6d9c5ea4e5942c7482eb3d78",
+       "producerId": "nir1-reviewed-chronicle-v1",
+       "producerVersion": "nir1-reviewed-chronicle/v1"
+      }
+     },
+     "usable": true,
+     "recheckBranch": "unchanged"
+    }
+   }
+  ],
+  "beforeDeclarationFeedAfterSaves": {
+   "consumerId": "narrative-incremental-freshness/v1",
+   "head": 19,
+   "cursor": true,
+   "acknowledged": 17,
+   "activeRun": false,
+   "reserved": false,
+   "pendingEvents": 2,
+   "pendingSequences": 2
+  },
+  "step": {
+   "mutation": {
+    "revisionId": "f8b1bee3-1322-405c-8601-72d3ef635ada",
+    "version": 3,
+    "replayed": false,
+    "afterSha256": "fdd2431a824348c0198c2024a539d85679089833cda60f42be38a0edef3cd923",
+    "restoredSha256": "fdd2431a824348c0198c2024a539d85679089833cda60f42be38a0edef3cd923"
+   },
+   "feedAfterMutation": null,
+   "sealAttempts": [
+    {
+     "session": "measure",
+     "attempt": 0,
+     "dirLabel": "measure-reopen-0",
+     "outcome": "sealed",
+     "published": true,
+     "waitedMs": 510,
+     "metadata": {
+      "b": {
+       "generation": 2,
+       "dirty": false,
+       "sourceDigest": "sha256:07ab83088d7d5593316f94a620b7fdda40f146994629ef4114da5ded91669b07",
+       "dependencySetDigest": "sha256:d3001bd063004549641d25c8252f7728134434bf3c60a1887e2ae616fe9d23ac",
+       "producerId": "nir1-reviewed-entity-relation-v1",
+       "producerVersion": "nir1-reviewed-entity-relation/v1"
+      },
+      "chronicle": {
+       "generation": 3,
+       "dirty": false,
+       "sourceDigest": "sha256:3157183d9c47f4a8ea15a9a72691f65277af2393ba9c76a8a9fc9fdf16692500",
+       "dependencySetDigest": "sha256:608ac39fd8e6b007706b729de319e0af1045c60f6d9c5ea4e5942c7482eb3d78",
+       "producerId": "nir1-reviewed-chronicle-v1",
+       "producerVersion": "nir1-reviewed-chronicle/v1"
+      }
+     },
+     "sealBranch": "new-generation",
+     "freshnessSettle": null,
+     "settleCoversMutation": null,
+     "chronicle": {
+      "build": {
+       "ok": true
+      },
+      "metadata": {
+       "b": {
+        "generation": 2,
+        "dirty": false,
+        "sourceDigest": "sha256:07ab83088d7d5593316f94a620b7fdda40f146994629ef4114da5ded91669b07",
+        "dependencySetDigest": "sha256:d3001bd063004549641d25c8252f7728134434bf3c60a1887e2ae616fe9d23ac",
+        "producerId": "nir1-reviewed-entity-relation-v1",
+        "producerVersion": "nir1-reviewed-entity-relation/v1"
+       },
+       "chronicle": {
+        "generation": 4,
+        "dirty": false,
+        "sourceDigest": "sha256:3157183d9c47f4a8ea15a9a72691f65277af2393ba9c76a8a9fc9fdf16692500",
+        "dependencySetDigest": "sha256:608ac39fd8e6b007706b729de319e0af1045c60f6d9c5ea4e5942c7482eb3d78",
+        "producerId": "nir1-reviewed-chronicle-v1",
+        "producerVersion": "nir1-reviewed-chronicle/v1"
+       }
+      },
+      "usable": true,
+      "recheckBranch": "new-generation"
+     }
+    }
+   ],
+   "blocked": null,
+   "spP1Recheck": {
+    "status": "match",
+    "productSeed": "7ebf6e1f-5df1-41a1-876d-b657fafa9402",
+    "pinCount": 1
+   }
+  }
+ }
+}
