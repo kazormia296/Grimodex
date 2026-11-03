@@ -40,8 +40,8 @@ import {
 const DEFAULT_SCENE_TITLE = "シーン 1";
 const SCENES_PANEL_TITLE = "シーン";
 const CREATE_BUTTON_TITLE = "新規作成";
-const NEW_SCENE_MENU_ITEM = "New scene";
-const NEW_FOLDER_MENU_ITEM = "New folder";
+const NEW_SCENE_MENU_ITEM = "新しいシーン"; // ja.json scenes.newScene
+const NEW_FOLDER_MENU_ITEM = "新しいフォルダー"; // ja.json scenes.newFolder
 const JOURNEY_TEXT = `PRODUCT-JOURNEY-${Date.now()}`;
 const PENDING_SAVE_TEXT = `PENDING-SAVE-JOURNEY-${Date.now()}`;
 const PENDING_PROJECT_SAVE_TEXT = `PENDING-PROJECT-SAVE-JOURNEY-${Date.now()}`;

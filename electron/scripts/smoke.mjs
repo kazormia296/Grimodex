@@ -102,7 +102,7 @@ const PERF_FILTER_TARGET_TITLE = `PERF SCENE ${String(
 ).padStart(3, "0")}`;
 const SCENES_PANEL_TITLE = "シーン"; // ja.json layout.panel.scenes
 const CREATE_BUTTON_TITLE = "新規作成"; // ja.json scenes.create
-const NEW_SCENE_MENU_ITEM = "New scene"; // ja.json scenes.newScene
+const NEW_SCENE_MENU_ITEM = "新しいシーン"; // ja.json scenes.newScene
 const DEFAULT_SCENE_TITLE = "シーン 1"; // ja.json tree.defaultScene + 連番
 const LAUNCH_TIMEOUT_MS = 60_000;
 const MEMORY_SAMPLE_INTERVAL_MS = 100;
@@ -2837,7 +2837,7 @@ async function phaseWrite() {
           .filter(Boolean),
       );
 
-    // シーン作成: パネルヘッダの「＋」→ New scene → インライン rename を Enter で確定
+    // シーン作成: パネルヘッダの「＋」→ 新しいシーン → インライン rename を Enter で確定
     await header.locator(`button[title="${CREATE_BUTTON_TITLE}"]`).click();
     await page
       .getByRole("menuitem", { name: NEW_SCENE_MENU_ITEM, exact: true })

@@ -4158,8 +4158,8 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
   );
   assert.match(
     foregroundSceneHelperBody,
-    /getByRole\("menuitem",\s*\{ name: "New scene", exact: true \}\)/,
-    "foreground UI scene helper must select the canonical New scene menu item",
+    /getByRole\("menuitem",\s*\{ name: "新しいシーン", exact: true \}\)/,
+    "foreground UI scene helper must select the canonical 新しいシーン menu item",
   );
   assert.match(
     foregroundSceneHelperBody,
