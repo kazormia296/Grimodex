@@ -63,7 +63,7 @@ const require = createRequire(import.meta.url);
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 export const PROVIDER = "openrouter";
-export const MODEL = "openai/gpt-5.6-luna";
+export const MODEL = "openai/gpt-6-luna";
 const SCENE_TIMEOUT_MS = 15 * 60 * 1000;
 const IR_WAIT_MS = 5 * 60 * 1000;
 // 費用の外挿に使う単価（推測）。計画 §4 が先行の calibration helper から引いた値で、
