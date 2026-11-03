@@ -85,7 +85,7 @@
     },
     {
       "path": "experiments/lfm25-encoder-phase0/uv.lock",
-      "sha256": "77c89f94ff8a7aea8a746ee9711bf4d423aac0fa256418ebe105da2438aab663"
+      "sha256": "cecde8aa0bcbcc4e39714337a191dd97aac91375b1bedd64908f2b7969e27f52"
     },
     {
       "path": "scripts/nir1-c-query-worker-ci.sh",
