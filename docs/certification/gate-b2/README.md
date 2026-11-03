@@ -48,13 +48,13 @@ Quality Manifest の Heavy command は維持し、Live Model Qualification の�
 export OPENROUTER_API_KEY
 pnpm qualify:ai-live -- \
   --candidate HEAD \
-  --model openai/gpt-5.6-luna \
+  --model openai/gpt-6-luna \
   --reasoning-effort medium
 
 # 特定経路だけを評価
 pnpm qualify:ai-live -- \
   --candidate HEAD \
-  --model openai/gpt-5.6-luna \
+  --model openai/gpt-6-luna \
   --reasoning-effort medium \
   --suite heavy-narrative-chronicle-production
 ```

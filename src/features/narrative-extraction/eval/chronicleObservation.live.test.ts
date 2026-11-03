@@ -2,7 +2,7 @@
  * Billed OpenRouter observation-path live eval.
  *
  * Run explicitly with an ephemeral environment credential:
- *   OPENROUTER_API_KEY=... OPENROUTER_MODEL=openai/gpt-5.6-luna \
+ *   OPENROUTER_API_KEY=... OPENROUTER_MODEL=openai/gpt-6-luna \
  *     pnpm eval:narrative:observation:live
  *
  * Exercises production `runObservationExtractionTask` prompt/parser.
@@ -43,7 +43,7 @@ vi.mock("@/features/ai-usage/recordAiUsage", () => ({
 vi.mock("@/features/chat/modelRouting", () => ({
   resolveRoleSendOverride: () => ({
     apiVariant: undefined,
-    model: process.env.OPENROUTER_MODEL ?? "openai/gpt-5.6-luna",
+    model: process.env.OPENROUTER_MODEL ?? "openai/gpt-6-luna",
     provider: "openrouter",
     endpointId: undefined,
   }),
@@ -148,7 +148,7 @@ describeLive("Chronicle observation OpenRouter live eval", () => {
     async () => {
       const cases = await loadCases();
       const evidenceMode = evidenceModeFromEnv();
-      const model = process.env.OPENROUTER_MODEL ?? "openai/gpt-5.6-luna";
+      const model = process.env.OPENROUTER_MODEL ?? "openai/gpt-6-luna";
       const effort = reasoningEffort();
       const runId = `chronicle-observation-${new Date()
         .toISOString()

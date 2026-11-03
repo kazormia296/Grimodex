@@ -8,7 +8,7 @@
  * 既定 SKIP。実行（実トークン課金あり）:
  *   OPENROUTER_API_KEY=sk-... pnpm test --run \
  *     src/features/ai-verification/singleShot.live.test.ts
- *   モデル上書き: OPENROUTER_MODEL（既定 openai/gpt-4o-mini）。
+ *   モデル上書き: OPENROUTER_MODEL（既定 openai/gpt-6-luna）。
  *
  * 検証範囲の境界: ここで検証するのは「本番プロンプト × 実モデル応答 × 本番パーサ」の
  * 挙動。本番の Tauri→Rust トランスポート（provider routing / prompt cache /
