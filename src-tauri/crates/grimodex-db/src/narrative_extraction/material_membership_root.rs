@@ -9,6 +9,7 @@ mod replay;
 mod required;
 #[path = "material_roster/segments.rs"]
 mod segments;
+pub(in crate::narrative_extraction) use prompt::accepted_contract as accepted_static_contract;
 pub use prompt::{Digests as RequestDigests, RequestProof};
 pub use segments::Material;
 
@@ -437,6 +438,7 @@ mod material_roster_tests {
                     .expect("synthesis output");
                 prompt::synthesis(
                     &string_at(output, "/clusterRef").expect("cluster"),
+                    &string_at(receipt, "/componentContractDigest").expect("digest"),
                     array_at(output, "/rawObservations/observations").expect("observations"),
                 )
                 .expect("synthesis recipe")
@@ -444,6 +446,48 @@ mod material_roster_tests {
             prompt::proof(receipt, digest)
                 .expect("all three digests match preexisting independent seals");
         }
+    }
+
+    #[test]
+    fn native_replay_matches_live_ts_v3_synthesis_request_seals() {
+        let g = golden();
+        let v3: Value = serde_json::from_str(include_str!(
+            "material_roster/production-golden-v3-synthesis-requests.json"
+        ))
+        .expect("TS-produced v3 request seals");
+        let requests = array_at(&v3, "/requests").expect("requests");
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            let output = array_at(&g, "/outputs")
+                .expect("outputs")
+                .iter()
+                .find(|o| o["rootStageExecutionId"] == request["rootStageExecutionId"])
+                .expect("synthesis output");
+            let digest = prompt::synthesis(
+                &string_at(output, "/clusterRef").expect("cluster"),
+                &string_at(request, "/componentContractDigest").expect("digest"),
+                array_at(output, "/rawObservations/observations").expect("observations"),
+            )
+            .expect("v3 recipe");
+            assert_eq!(digest.context_set_digest, request["contextSetDigest"]);
+            assert_eq!(
+                digest.component_contract_digest,
+                request["componentContractDigest"]
+            );
+            assert_eq!(digest.final_request_digest, request["finalRequestDigest"]);
+        }
+    }
+
+    #[test]
+    fn unknown_component_contract_digest_has_no_replay_recipe() {
+        let g = golden();
+        let output = &g["outputs"][0];
+        assert!(prompt::synthesis(
+            &string_at(output, "/clusterRef").expect("cluster"),
+            "sha256:unknown",
+            array_at(output, "/rawObservations/observations").expect("observations"),
+        )
+        .is_err());
     }
 
     #[test]
@@ -458,6 +502,7 @@ mod material_roster_tests {
         observations[0]["payload"]["predicate"] = Value::String("changed text".into());
         let digest = prompt::synthesis(
             &string_at(output, "/clusterRef").expect("cluster"),
+            &string_at(receipt, "/componentContractDigest").expect("digest"),
             &observations,
         )
         .expect("recipe");

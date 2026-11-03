@@ -186,6 +186,7 @@ pub(super) fn observation(
     ensure!(joined == text, "segment-roster-incomplete");
     let digests = super::prompt::replay(
         super::prompt::OBSERVATION,
+        &string_at(receipt, "/componentContractDigest")?,
         vec![(
             format!("observation-citation-window:{window_id}"),
             format!("citation-window:{window_id}"),

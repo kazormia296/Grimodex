@@ -1,5 +1,7 @@
-//! Exact chronicle.prompt/1 replay. Contract bytes are frozen from the TS
-//! builders and checked against them by materialRosterReplay.test.ts.
+//! Exact chronicle.prompt/1 replay. Current contract bytes are frozen from the
+//! TS builders and checked against them by materialRosterReplay.test.ts.
+//! Superseded contract bytes stay frozen so receipts sealed under an older
+//! accepted version remain replayable (Event Synthesis v2 beside v3).
 use anyhow::{ensure, Result};
 use grimodex_core::canonical_json_digest;
 use serde::Serialize;
@@ -26,23 +28,48 @@ pub struct RequestProof {
     pub persisted: Digests,
 }
 
-pub(super) fn contract(stage: &str) -> Result<Value> {
-    let contracts: Value = serde_json::from_str(include_str!("contracts.json"))?;
-    contracts
-        .get(stage)
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("unknown recipe"))
+/// Accepted component contracts for one stage: the current contract first,
+/// then superseded versions whose persisted receipts remain replayable.
+fn accepted_contracts(stage: &str) -> Result<Vec<Value>> {
+    let current: Value = serde_json::from_str(include_str!("contracts.json"))?;
+    let superseded: Value = serde_json::from_str(include_str!("superseded-contracts.json"))?;
+    let mut contracts: Vec<Value> = current.get(stage).cloned().into_iter().collect();
+    if let Some(older) = superseded.get(stage).and_then(Value::as_array) {
+        contracts.extend(older.iter().cloned());
+    }
+    Ok(contracts)
 }
 
-pub(super) fn contract_digest(stage: &str) -> Result<String> {
+fn contract_digest_of(stage: &str, contract: &Value) -> Result<String> {
     Ok(canonical_json_digest(
         &json!({"schemaVersion":1,"contextSetVersion":VERSION,
-        "stageId":stage,"componentContract":contract(stage)?}),
+        "stageId":stage,"componentContract":contract}),
     )?)
 }
 
+/// The frozen accepted contract whose canonical digest equals `digest`.
+/// A digest outside the frozen set never selects a contract.
+pub(in crate::narrative_extraction) fn accepted_contract(
+    stage: &str,
+    digest: &str,
+) -> Result<Option<Value>> {
+    for contract in accepted_contracts(stage)? {
+        if contract_digest_of(stage, &contract)? == digest {
+            return Ok(Some(contract));
+        }
+    }
+    Ok(None)
+}
+
 /// IDs are unique. Match JS code-unit ordering, including astral characters.
-pub(super) fn replay(stage: &str, mut inputs: Vec<(String, String, String)>) -> Result<Digests> {
+/// `component_contract_digest` selects one frozen accepted contract.
+pub(super) fn replay(
+    stage: &str,
+    component_contract_digest: &str,
+    mut inputs: Vec<(String, String, String)>,
+) -> Result<Digests> {
+    let c = accepted_contract(stage, component_contract_digest)?
+        .ok_or_else(|| anyhow::anyhow!("component-recipe-unsupported"))?;
     inputs.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
     ensure!(
         inputs.windows(2).all(|p| p[0].0 != p[1].0),
@@ -59,8 +86,7 @@ pub(super) fn replay(stage: &str, mut inputs: Vec<(String, String, String)>) -> 
         })
         .collect();
     let context_set_digest = canonical_json_digest(&json!({"version":VERSION,"entries":entries}))?;
-    let component_contract_digest = contract_digest(stage)?;
-    let c = contract(stage)?;
+    let component_contract_digest = contract_digest_of(stage, &c)?;
     let sections = if inputs.is_empty() {
         "(no model-visible context)".into()
     } else {
@@ -101,7 +127,11 @@ pub(super) fn proof(receipt: &Value, reconstructed: Digests) -> Result<RequestPr
     })
 }
 
-pub(super) fn synthesis(cluster: &str, observations: &[Value]) -> Result<Digests> {
+pub(super) fn synthesis(
+    cluster: &str,
+    component_contract_digest: &str,
+    observations: &[Value],
+) -> Result<Digests> {
     let mut inputs = vec![(
         format!("event-cluster:{cluster}"),
         format!("cluster:{cluster}"),
@@ -131,5 +161,5 @@ pub(super) fn synthesis(cluster: &str, observations: &[Value]) -> Result<Digests
             row,
         ));
     }
-    replay(SYNTHESIS, inputs)
+    replay(SYNTHESIS, component_contract_digest, inputs)
 }
