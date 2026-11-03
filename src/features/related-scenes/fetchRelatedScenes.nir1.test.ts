@@ -7,6 +7,9 @@ import type {
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
+import { useCodexStore } from "@/features/codex/codexStore";
+import type { CodexMatchRow } from "@/features/codex/codexMatchTargets";
+import { buildSparseQuery } from "./seedTerms";
 import type { SemanticSearchHit } from "@/features/semantic-search/api";
 import type { Nir1AdmittedScene } from "./nir1RelatedScenesResult";
 import type { Nir1RelatedScenesSession } from "./nir1RelatedScenesSession";
@@ -163,6 +166,7 @@ beforeEach(() => {
     })),
   } as never);
   usePhaseStore.setState({ resolutionMode: "reading" });
+  useCodexStore.setState({ completionTargets: [] });
   h.load.mockResolvedValue(doc("保存された本文"));
   h.semantic.mockResolvedValue(hits);
   h.sparse.mockResolvedValue([]);
@@ -991,5 +995,67 @@ describe("begin を送るかの印（LP-A1）", () => {
     expect((await pending).status).toBe("cancelled");
     expect(h.begin).not.toHaveBeenCalled();
     expect(decisions).toEqual([]);
+  });
+});
+
+// 設計 §6.2：hybrid の経路でも sparse（fts_search）は 1 回だけで、日本語は Codex の言及で組む。
+// begin の query（Native の query binding）は tail のままで、Codex の行は入らない（決定 (d)）。
+describe("NIR1 production fetch — sparse の query", () => {
+  const codexRow = (id: string, name: string): CodexMatchRow => ({
+    id,
+    name,
+    type: "item",
+    aliases: "[]",
+    excludedAliases: "[]",
+  });
+
+  it("日本語：Codex の言及で組み、begin の query は tail のまま", async () => {
+    h.load.mockResolvedValue(doc("長谷部は聖剣ルミナを抜いた。"));
+    useCodexStore.setState({
+      completionTargets: [
+        codexRow("e1", "長谷部"),
+        codexRow("e2", "聖剣ルミナ"),
+      ],
+    });
+    await fetchHybrid();
+    expect(h.sparse).toHaveBeenCalledExactlyOnceWith({
+      projectId: "p1",
+      query: "長谷部 聖剣ルミナ ルミナ",
+    });
+    expect(h.begin.mock.calls[0][0].query).toBe("長谷部は聖剣ルミナを抜いた。");
+  });
+
+  it("日本語で 3 字以上の語が無いときは従来の query で 1 回呼ぶ（Codex が非空でも）", async () => {
+    useCodexStore.setState({ completionTargets: [codexRow("e1", "長谷部")] });
+    await fetchHybrid();
+    expect(h.sparse).toHaveBeenCalledExactlyOnceWith({
+      projectId: "p1",
+      query: buildSparseQuery("保存された本文", "保存された本文\n"),
+    });
+    expect(h.sparse.mock.calls[0][0].query).toBe("保存された本文");
+  });
+
+  it("英語：Codex があっても従来の buildSparseQuery の文字列", async () => {
+    h.language = "en";
+    const text = "Aria met 長谷部 at Valdor.";
+    h.load.mockResolvedValue(doc(text));
+    useCodexStore.setState({ completionTargets: [codexRow("e1", "長谷部")] });
+    await fetchHybrid();
+    expect(h.sparse).toHaveBeenCalledExactlyOnceWith({
+      projectId: "p1",
+      query: buildSparseQuery(text, `${text}\n`),
+    });
+  });
+
+  it("IR の登録に失敗した Raw だけの経路でも、日本語の query で 1 回呼ぶ", async () => {
+    h.listenReady.mockRejectedValue(new Error("registration failed"));
+    h.load.mockResolvedValue(doc("長谷部は笑った。"));
+    useCodexStore.setState({ completionTargets: [codexRow("e1", "長谷部")] });
+    await fetchHybrid();
+    expect(h.begin).not.toHaveBeenCalled();
+    expect(h.sparse).toHaveBeenCalledExactlyOnceWith({
+      projectId: "p1",
+      query: "長谷部",
+    });
   });
 });
