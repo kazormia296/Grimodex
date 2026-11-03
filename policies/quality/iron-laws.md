@@ -376,6 +376,14 @@ merge and fetch, compare the actual squash merge commit's first parent (`<merge-
 An explicitly requested non-squash method must, before merge, have a method-specific actual-base/post-merge
 verification procedure defined and approved; if absent, stop before merge. Do not reuse the squash
 first-parent rule or add general non-squash verification logic.
+The one defined non-squash method is the CP-4 observation-prep freeze PR (the S4 PR that introduces
+`evals/nir1-graph/observation-prep-freeze.v1.json`; DR-CP4-S4-1, DR-CP4-S4-3): its freeze-record commit and the
+commits named by its bytes pins must stay ancestors of `origin/master`, so it is merged with
+`gh pr merge --merge --match-head-commit` and the candidate head, never squash or rebase. Before merge it meets the
+ordinary PR conditions above. After merge and fetch, verify that the merge commit is included in `origin/master`, that
+the freeze-record commit and every pinned commit are its ancestors, and that the observation-prep admission
+(`readAdmittedObservationPrep`, which applies `assertObservationPrepAdmits`) passes at that master head. A failed check
+stops the lane; it is not a reason to fall back to squash. No other PR uses this method.
 Do not require repeated tree equality checks or user-facing SHA recitation except on mismatch or request. On the
 release path, an upstream-base change is exempt from a Full rerun only when candidate HEAD and PR diff are unchanged and the
 upstream delta is editorial docs/ADR-only: it must change no executable, build, dependency, CI, policy,
