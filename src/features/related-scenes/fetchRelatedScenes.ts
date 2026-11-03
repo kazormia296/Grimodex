@@ -22,7 +22,8 @@ import {
   selectRelatedPastScenes,
   type RelatedScene,
 } from "./selectRelatedScenes";
-import { buildSparseQuery } from "./seedTerms";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { buildRelatedScenesSparseQuery } from "./relatedScenesSparseQuery";
 import { fetchNir1RelatedPastScenes } from "./fetchNir1RelatedScenes";
 import type {
   Nir1RelatedScenesFetchOptions,
@@ -81,9 +82,17 @@ export async function fetchRelatedPastScenes(
   const query = buildSemanticRecallQuery({ userMessage: "", sceneBody: body });
   if (!query.trim()) return [];
 
-  const params = recallParamsForLang(getCurrentProjectLanguage());
-  // sparse は本文全体の固有名詞 seed で拡張 (③)。dense は tail seed のまま (低 blast)。
-  const sparseQuery = buildSparseQuery(query, body);
+  const language = getCurrentProjectLanguage();
+  const params = recallParamsForLang(language);
+  // sparse は本文全体の固有名詞 seed で拡張 (③)。日本語は Codex の言及とルビも使い、
+  // tail を入れない。英語は従来の文字列のまま。dense は tail seed のまま (低 blast)。
+  const sparseQuery = buildRelatedScenesSparseQuery({
+    tailQuery: query,
+    body,
+    docJson: json ?? "",
+    language,
+    codexTargets: useCodexStore.getState().completionTargets,
+  });
   // dense と sparse を並列取得。dense 失敗→空、sparse 失敗→dense 単独へ退避。
   const [hits, sparseSceneIds] = await Promise.all([
     semanticSearch({

@@ -55,7 +55,8 @@ import {
   RELATED_SCENES_MAX,
   RELATED_SCENES_RELATIVE_GAP,
 } from "./relatedScenesConfig";
-import { buildSparseQuery } from "./seedTerms";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { buildRelatedScenesSparseQuery } from "./relatedScenesSparseQuery";
 
 let nextQueryGeneration = 0;
 
@@ -196,9 +197,17 @@ export async function fetchNir1RelatedPastScenes(
       rescueMargin: SEMANTIC_RECALL_RESCUE_MARGIN,
       relativeRescue: { gap: RELATED_SCENES_RELATIVE_GAP },
     };
+    // 日本語は Codex の言及とルビで組む（同期・IPC なし）。英語は従来の文字列のまま。
+    // Native の query binding は tail だけを束ね、Codex の変更では取り直さない。
     const sparse = fetchSparseSceneIds({
       projectId,
-      query: buildSparseQuery(query, body),
+      query: buildRelatedScenesSparseQuery({
+        tailQuery: query,
+        body,
+        docJson: json ?? "",
+        language,
+        codexTargets: useCodexStore.getState().completionTargets,
+      }),
     }).catch(() => {
       debugLog.warn(
         "RelatedScenes",
