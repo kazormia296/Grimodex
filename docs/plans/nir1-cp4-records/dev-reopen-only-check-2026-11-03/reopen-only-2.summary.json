@@ -1,0 +1,178 @@
+{
+ "run": "reopen-only-2",
+ "control": "reached",
+ "controlFinalSceneIds": [
+  "cp4-dev-margin",
+  "cp4-dev-board",
+  "cp4-dev-ink",
+  "cp4-dev-jars"
+ ],
+ "declStateAfterDeclaration": {
+  "kind": "declared",
+  "effective": true,
+  "expiredBy": [],
+  "blocker": null
+ },
+ "declStateBeforeReopen": {
+  "kind": "declared",
+  "effective": true,
+  "expiredBy": [],
+  "blocker": null
+ },
+ "declStateAfterReopen": {
+  "kind": "declared",
+  "effective": true,
+  "expiredBy": [],
+  "blocker": null
+ },
+ "declStateAfterSamples": {
+  "kind": "declared",
+  "effective": true,
+  "expiredBy": [],
+  "blocker": null
+ },
+ "declRowBeforeReopen": {
+  "bindingRow": {
+   "present": true,
+   "version": 3,
+   "sourceToken": "sha256:98fb292366a2eb16631c36404b3f8a6e3c2601d2534fa030f6a94c1df25e2895",
+   "updatedAt": "2026-11-03T00:55:18.193Z",
+   "declarationPresent": true,
+   "bodyDeclarationToken": "sha256:395d731bab9331a1e7a8018fa56859cfc7bd2b54a6ced509f2e410982e57de36",
+   "declarationId": "03ae0282-4a65-4b50-8761-0c731269580a",
+   "declaredAt": "2026-11-03T03:29:29.027Z",
+   "bodySourceToken": "v0@2026-11-03T00:55:18.059654558+00:00",
+   "canonicalDigest": "sha256:18ddc0a54c5e92862bd0490f78dd10326efaa88467b18621b10684d4dbbf0df2"
+  },
+  "sceneBody": {
+   "version": 0,
+   "updatedAt": "2026-11-03T00:55:18.059654558+00:00",
+   "charCount": 71,
+   "contentSha256": "sha256:9bba52bae681c786dd6333f86f2526ca9f62df47bf3acf74f9c23e099993b5f1"
+  }
+ },
+ "declRowAfterReopen": {
+  "bindingRow": {
+   "present": true,
+   "version": 3,
+   "sourceToken": "sha256:98fb292366a2eb16631c36404b3f8a6e3c2601d2534fa030f6a94c1df25e2895",
+   "updatedAt": "2026-11-03T00:55:18.193Z",
+   "declarationPresent": true,
+   "bodyDeclarationToken": "sha256:395d731bab9331a1e7a8018fa56859cfc7bd2b54a6ced509f2e410982e57de36",
+   "declarationId": "03ae0282-4a65-4b50-8761-0c731269580a",
+   "declaredAt": "2026-11-03T03:29:29.027Z",
+   "bodySourceToken": "v0@2026-11-03T00:55:18.059654558+00:00",
+   "canonicalDigest": "sha256:18ddc0a54c5e92862bd0490f78dd10326efaa88467b18621b10684d4dbbf0df2"
+  },
+  "sceneBody": {
+   "version": 0,
+   "updatedAt": "2026-11-03T00:55:18.059654558+00:00",
+   "charCount": 71,
+   "contentSha256": "sha256:9bba52bae681c786dd6333f86f2526ca9f62df47bf3acf74f9c23e099993b5f1"
+  }
+ },
+ "sealAttempts": [
+  {
+   "attempt": 0,
+   "outcome": "sealed",
+   "sealBranch": "unchanged",
+   "waitedMs": 23,
+   "b": {
+    "generation": 1,
+    "dirty": false
+   },
+   "chronicle": {
+    "generation": 3,
+    "dirty": false
+   },
+   "chronicleUsable": true,
+   "recheckBranch": "unchanged",
+   "freshnessSettled": true
+  }
+ ],
+ "indexBeforeReopen": {
+  "b": [
+   1,
+   false
+  ],
+  "chronicle": [
+   2,
+   false
+  ]
+ },
+ "indexAfterReopen": {
+  "b": [
+   1,
+   false
+  ],
+  "chronicle": [
+   3,
+   false
+  ]
+ },
+ "spP1": "match",
+ "graphInputsSameAsControl": true,
+ "samples": [
+  {
+   "repeat": 0,
+   "frameReached": true,
+   "targetReturned": true,
+   "returnedSceneIds": [
+    "cp4-dev-margin",
+    "cp4-dev-board",
+    "cp4-dev-ink",
+    "cp4-dev-jars"
+   ],
+   "graphOutcome": "graph-ready",
+   "decided": true,
+   "tries": 3,
+   "graphOnlyScene": "cp4-dev-jars",
+   "a3Eligible": true
+  },
+  {
+   "repeat": 1,
+   "frameReached": true,
+   "targetReturned": true,
+   "returnedSceneIds": [
+    "cp4-dev-margin",
+    "cp4-dev-board",
+    "cp4-dev-ink",
+    "cp4-dev-jars"
+   ],
+   "graphOutcome": "graph-ready",
+   "decided": true,
+   "tries": 1,
+   "graphOnlyScene": "cp4-dev-jars",
+   "a3Eligible": true
+  },
+  {
+   "repeat": 2,
+   "frameReached": true,
+   "targetReturned": true,
+   "returnedSceneIds": [
+    "cp4-dev-margin",
+    "cp4-dev-board",
+    "cp4-dev-ink",
+    "cp4-dev-jars"
+   ],
+   "graphOutcome": "graph-ready",
+   "decided": true,
+   "tries": 5,
+   "graphOnlyScene": "cp4-dev-jars",
+   "a3Eligible": true
+  }
+ ],
+ "assessmentAsN2": {
+  "id": "K24-G01-N2",
+  "mutation": "resave-same-body",
+  "countsInCaseJudgement": false,
+  "outcome": "not-established",
+  "reasons": [],
+  "returnedIn": [
+   0,
+   1,
+   2
+  ]
+ },
+ "problems": []
+}
