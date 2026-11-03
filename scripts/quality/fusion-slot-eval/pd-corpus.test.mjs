@@ -8,11 +8,8 @@ import {
 } from "./pd-corpus.mjs";
 
 test("青空文庫の行：ルビは親文字だけ、注記と外字は除く", () => {
-  assert.equal(cleanAozoraLine("　三年｜前《まえ》の夏《なつ》"), "三年前の夏");
-  assert.equal(
-    cleanAozoraLine("紫※［＃「くさかんむり／宛」］《しをん》色"),
-    "紫色",
-  );
+  assert.equal(cleanAozoraLine("　山｜田《だ》の川《かわ》"), "山田の川");
+  assert.equal(cleanAozoraLine("赤※［＃「木＋亜」］《あ》の木"), "赤の木");
   assert.equal(cleanAozoraLine("［＃８字下げ］序"), "序");
 });
 
