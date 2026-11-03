@@ -1400,6 +1400,13 @@ describe("event synthesis actuality contract (component contract 3)", () => {
     });
 
     expect(result).toEqual([]);
+    // 振る舞い（修復が unresolved／[] の終端で成功する）を先に見る。prompt の文字列は後で補助的に見る。
+    expect(terminalOutputs).toHaveLength(1);
+    expect(terminalOutputs[0]).toMatchObject({
+      disposition: "repair-success",
+      hypotheses: [],
+      eventOutput: { resolution: "unresolved", events: [] },
+    });
     expect(repairPrompts).toHaveLength(1);
     expect(repairPrompts[0]).toContain(
       '{"clusterRef":"cluster-h","resolution":"unresolved","events":[]}',
@@ -1407,12 +1414,6 @@ describe("event synthesis actuality contract (component contract 3)", () => {
     expect(repairPrompts[0]).toContain(
       '"actual"、"attempted"、"prevented"、"rumored"',
     );
-    expect(terminalOutputs).toHaveLength(1);
-    expect(terminalOutputs[0]).toMatchObject({
-      disposition: "repair-success",
-      hypotheses: [],
-      eventOutput: { resolution: "unresolved", events: [] },
-    });
   });
 
   it("builds a mixed cluster event only from the Chronicle-actuality observations", async () => {
