@@ -3237,7 +3237,12 @@ test("S2 追補 #2 P3-1 / P3-2: forbidden paths are found anywhere in the path; 
   );
   // S4a(3)（S4 の最終関門の P2-2）: the two readings chosen after the dev runs
   // (K24-G01 retry limit 30→60, SP-P4 ir-complete-pairs and K=6) are listed.
-  for (const id of ["g01-retry-limit", "sp-p4-ir-timeout-limit"]) {
+  // S4a''''（DR-CP4-S4-8）: the seal rule chosen after N2／N4 were blocked.
+  for (const id of [
+    "g01-retry-limit",
+    "sp-p4-ir-timeout-limit",
+    "seal-rule-after-blocked",
+  ]) {
     const without = clone(declaration);
     without.readingsChosenAfterDevObservation =
       without.readingsChosenAfterDevObservation.filter((row) => row.id !== id);

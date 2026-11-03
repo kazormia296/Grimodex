@@ -1742,6 +1742,10 @@ const READINGS_AFTER_DEV = Object.freeze([
   // S4a'''（4 回目の凍結のやり直し、S2 追補 #11）: G-04 v2 の S2 への写し（旧 S4b'' の
   // 下の観測の後にユーザーと integrator が決めた版）。
   "g04-v2-after-observation",
+  // S4a''''（5 回目の凍結のやり直し、S2 追補 #12）: v3 の resealAfterMutation の封印の
+  // 規則（旧 S4b''' の下の正式の測定で N2／N4 が blocked になったのを見た後に決めた。
+  // DR-CP4-S4-8）。
+  "seal-rule-after-blocked",
 ]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
