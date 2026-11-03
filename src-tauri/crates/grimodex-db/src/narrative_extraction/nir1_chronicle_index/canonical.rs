@@ -69,13 +69,39 @@ pub(super) fn proof_current_observed(
     }
     let read_identity = super::read_identity::ReadIdentity::read(conn)?;
     if let Some(identity) = &read_identity {
-        let validated = proof
+        let mut validated = proof
             .validated_read
             .lock()
             .map_err(|_| anyhow::anyhow!("NIR1 proof read lock poisoned"))?;
         if validated.as_ref() == Some(identity) {
             return Ok((runtime.current_epoch(conn)? == Ok(proof.runtime_epoch))
                 .then(|| read_identity.clone()));
+        }
+        // DR-CP4-V-6: only generic AI-audit appends of this connection were
+        // committed since the verdict, and the complete check never reads
+        // audit rows. The runtime epoch is still compared every time; nothing
+        // moves unless it matches.
+        let previous = validated.clone();
+        if let Some(previous) = previous.filter(|previous| {
+            super::read_identity::joined_by_audit_only_commits(previous, identity)
+        }) {
+            if runtime.current_epoch(conn)? != Ok(proof.runtime_epoch) {
+                return Ok(None);
+            }
+            *validated = Some(identity.clone());
+            drop(validated);
+            // The kept query contexts read no audit rows either; they name the
+            // current state from now on.
+            for entry in proof
+                .validated_query_contexts
+                .lock()
+                .map_err(|_| anyhow::anyhow!("NIR1 query context lock poisoned"))?
+                .iter_mut()
+                .filter(|entry| entry.identity == previous)
+            {
+                entry.identity = identity.clone();
+            }
+            return Ok(Some(read_identity.clone()));
         }
     }
     if !is_generic_freshness_canonical(conn)? {

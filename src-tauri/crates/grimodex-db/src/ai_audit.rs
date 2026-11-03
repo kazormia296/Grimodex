@@ -5,6 +5,9 @@
 //! Project chains cascade only with their owner; the workspace chain records
 //! executions (such as pre-project connection probes) without a project FK.
 
+use crate::narrative_extraction::nir1_chronicle_index::read_identity::{
+    record_audit_only_commit, ReadIdentity,
+};
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -1497,9 +1500,22 @@ fn append_ai_audit_events_with_durability(
         }
         AiAuditCommitDurability::ConnectionDefault => None,
     };
+    // DR-CP4-V-6: both states are read under this transaction's write lock
+    // (after BEGIN IMMEDIATE, before COMMIT), so no other commit falls between
+    // them. A failed read only means nothing is recorded; it never fails the
+    // append, and the append's SQL, order and content are unchanged.
+    let mut audit_only = None;
     let result = run_ai_audit_immediate_transaction(conn, || {
-        append_ai_audit_events_in_transaction(conn, project_id, events)
+        let before = ReadIdentity::read_in_audit_append(conn);
+        let appended = append_ai_audit_events_in_transaction(conn, project_id, events)?;
+        audit_only = before.zip(ReadIdentity::read_in_audit_append(conn));
+        Ok(appended)
     });
+    if result.is_ok() {
+        if let Some((before, after)) = audit_only {
+            record_audit_only_commit(before, after);
+        }
+    }
     finish_durable_commit(durable_commit, result)
 }
 
