@@ -41,7 +41,13 @@ vi.mock("react-i18next", () => ({
 }));
 // The default badge/action is covered by its own test; here only its presence.
 vi.mock("@/features/editor/sceneMeta/SceneScopeDefaultActions", () => ({
-  SceneScopeDefaultActions: () => <div data-testid="scope-default-actions" />,
+  SceneScopeDefaultActions: ({ onApplied }: { onApplied: () => void }) => (
+    <button
+      type="button"
+      data-testid="scope-default-actions"
+      onClick={onApplied}
+    />
+  ),
 }));
 
 import { RelatedScenesSection } from "./RelatedScenesSection";
@@ -150,6 +156,22 @@ describe("関連場面の Scope の案内（rev2 §7.4、DR-SDEF-33）", () => {
     );
   });
 
+  it("当てた後は、関連場面が次に開き直したときに反映されることを案内する（DR-SDEF-38）", async () => {
+    h.hook.mockReturnValue({
+      sceneId: "scene-1",
+      loading: false,
+      fetch: unsupported,
+    });
+    h.invoke.mockResolvedValueOnce(binding("unknown"));
+    h.invoke.mockResolvedValueOnce(binding("explicit"));
+    render(<RelatedScenesSection enabled />);
+    fireEvent.click(await screen.findByTestId("scope-default-actions"));
+    expect(
+      await screen.findByTestId("nir1-scope-guidance-applied"),
+    ).toBeTruthy();
+    expect(screen.getByText("relatedScenes.scopeApplied")).toBeTruthy();
+  });
+
   it("以前からの場面は未設定の文言で、1 クリックの「既定を当てる」は出さない", async () => {
     h.hook.mockReturnValue({
       sceneId: "scene-1",
@@ -159,6 +181,9 @@ describe("関連場面の Scope の案内（rev2 §7.4、DR-SDEF-33）", () => {
     h.invoke.mockResolvedValue(binding("legacy-absent"));
     render(<RelatedScenesSection enabled />);
     expect(await screen.findByTestId("nir1-scope-guidance")).toBeTruthy();
+    // Its own wording: the undo/redo/import sentence is about unset Scenes.
+    expect(screen.getByText("relatedScenes.scopeLegacy")).toBeTruthy();
+    expect(screen.queryByText("relatedScenes.scopeUnknown")).toBeNull();
     expect(screen.queryByTestId("scope-default-actions")).toBeNull();
   });
 

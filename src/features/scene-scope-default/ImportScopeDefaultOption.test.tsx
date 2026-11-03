@@ -11,18 +11,37 @@ import { useWorkspaceStore } from "@/features/workspace/store";
 
 const h = vi.hoisted(() => ({ read: vi.fn() }));
 vi.mock("@/lib/tauri", () => ({ invoke: vi.fn(), isElectron: () => true }));
-vi.mock("@/lib/sceneScopeDefault", () => ({ readScopeProjectDefault: h.read }));
+vi.mock("@/lib/sceneScopeDefault", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/sceneScopeDefault")>()),
+  readScopeProjectDefault: h.read,
+}));
 vi.mock("@/features/project/projectStore", () => ({
   getCurrentProjectId: () => "project-1",
 }));
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, options?: Record<string, unknown>) =>
+      options ? `${key}:${JSON.stringify(options)}` : key,
+  }),
 }));
 
 import { ImportScopeDefaultOption } from "./ImportScopeDefaultOption";
 
+const LOCAL = {
+  timeline: { kind: "exact", ref: "timeline:local" },
+  worldline: { kind: "exact", ref: "worldline:prime" },
+  narrativeLayer: { kind: "exact", ref: "layer:manuscript" },
+};
+
 function defaultState(state: "set" | "none") {
-  return { projectId: "project-1", default: { state }, version: 1 };
+  return {
+    projectId: "project-1",
+    default:
+      state === "set"
+        ? { state, queryIdentity: LOCAL, materialConstraint: LOCAL }
+        : { state },
+    version: 1,
+  };
 }
 
 beforeEach(() => {
@@ -47,6 +66,13 @@ describe("取り込みの画面のチェック（SDEF/1 R14、DR-SDEF-31）", ()
     ) as HTMLInputElement;
     expect(box.checked).toBe(false);
     await waitFor(() => expect(box.disabled).toBe(false));
+    // The value is the project's actual default, not an assumed main line
+    // (PR-2 review P2-2).
+    expect(
+      screen.getByTestId("import-scene-scope-default-value").textContent,
+    ).toBe(
+      'import.sceneScopeApplyValue:{"value":"timeline:local / editor.sceneDetail.refWorldlinePrime / editor.sceneDetail.refLayerManuscript"}',
+    );
     fireEvent.click(box);
     expect(onChange).toHaveBeenCalledWith(true);
   });

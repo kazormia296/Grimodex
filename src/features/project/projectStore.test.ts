@@ -10,6 +10,7 @@ import {
   _scheduleTimelapseInitializationForTests,
   _scheduleWorkspaceBackgroundIntegrationsForTests,
   LAST_ACTIVE_PROJECT_KEY,
+  projectCreateOptions,
   useProjectStore,
 } from "./projectStore";
 import { PROJECT_ID } from "./constants";
@@ -1258,6 +1259,18 @@ describe("useProjectStore", () => {
     });
   });
 
+  describe("projectCreateOptions（SDEF/1 R12、PR-2 review P2-4）", () => {
+    it("adds the main-line option only for the creation screen's check", () => {
+      expect(projectCreateOptions({})).toBeUndefined();
+      expect(
+        projectCreateOptions({ sceneScopeMainLine: false }),
+      ).toBeUndefined();
+      expect(projectCreateOptions({ sceneScopeMainLine: true })).toEqual({
+        sceneScopeDefault: "main-line",
+      });
+    });
+  });
+
   describe("createNewProject", () => {
     it("does not mutate the Project table when strict quiescence fails", async () => {
       await useProjectStore.getState().initCurrentProject();
@@ -1367,6 +1380,23 @@ describe("useProjectStore", () => {
         workspaceSwitchInProgress: false,
       });
       expect(isQuiescenceLeaseActive()).toBe(false);
+    });
+
+    it("passes the main-line option to the Native create only when asked (SDEF/1 R12)", async () => {
+      await useProjectStore.getState().initCurrentProject();
+      const spy = vi.spyOn(projectApi, "createProject");
+      try {
+        await useProjectStore.getState().createNewProject({ title: "Plain" });
+        expect(spy.mock.calls.at(-1)?.[1]).toBeUndefined();
+        await useProjectStore
+          .getState()
+          .createNewProject({ title: "Main line", sceneScopeMainLine: true });
+        expect(spy.mock.calls.at(-1)?.[1]).toEqual({
+          sceneScopeDefault: "main-line",
+        });
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it("creates a project row and switches to it", async () => {

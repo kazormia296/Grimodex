@@ -2057,6 +2057,22 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
             queryIdentity: { ...mainLine, timeline: { kind: "any" } },
           },
         },
+        // A non-exact kind is refused even when it carries a ref
+        // (PR-2 review: surviving mutant of the `kind` check).
+        {
+          ...updatePayload,
+          default: {
+            ...updatePayload.default,
+            queryIdentity: {
+              ...mainLine,
+              timeline: { kind: "any", ref: "timeline:main" },
+            },
+            materialConstraint: {
+              ...mainLine,
+              timeline: { kind: "any", ref: "timeline:main" },
+            },
+          },
+        },
         {
           ...updatePayload,
           default: {

@@ -146,6 +146,23 @@ describe("applyScopeDefaultToScenes（SDEF/1 R14・R16・R18、DR-SDEF-30）", (
     expect(updates.map(([, args]) => args.payload.sceneId)).toEqual(["c"]);
   });
 
+  it("writes nothing when the default moved after the confirmation (PR-2 review P2-1)", async () => {
+    backend({ a: "unknown" });
+    await expect(
+      applyScopeDefaultToScenes({
+        ...input,
+        sceneIds: ["a"],
+        target: "unknown",
+        expectedVersion: 0,
+      }),
+    ).resolves.toEqual({ status: "default-changed" });
+    expect(
+      invokeMock.mock.calls.some(
+        ([command]) => command === "narrative_scene_scope_update",
+      ),
+    ).toBe(false);
+  });
+
   it("writes nothing without a set default", async () => {
     backend({ a: "unknown" }, { defaultState: "none" });
     await expect(

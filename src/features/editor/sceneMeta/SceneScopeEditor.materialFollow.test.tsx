@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import {
   act,
+  cleanup,
   fireEvent,
   render,
   screen,
@@ -153,6 +154,22 @@ describe("Scope 欄の query と material の追随（rev2 §7.3、A8、DR-SDEF-
     const scope = savedScope();
     expect(scope.queryIdentity.timeline).toEqual(FLASHBACK);
     expect(scope.materialConstraint.timeline).toEqual(MAIN);
+  });
+
+  it("warns before saving an earlier Scene while the vocabulary is empty (rev2 §7.3)", async () => {
+    const value = read({ compatibilityMarker: "legacy-absent" });
+    value.registry.timelineRefs = [];
+    value.registry.worldlineRefs = [];
+    value.registry.narrativeLayerRefs = [];
+    await renderWith(value);
+    expect(
+      screen.getByTestId("scene-scope-legacy-empty-registry"),
+    ).toBeTruthy();
+    cleanup();
+    await renderWith(read({ compatibilityMarker: "legacy-absent" }));
+    expect(
+      screen.queryByTestId("scene-scope-legacy-empty-registry"),
+    ).toBeNull();
   });
 
   it("a saved explicit binding whose values differ starts separate and is not rewritten", async () => {

@@ -18,7 +18,10 @@ vi.mock("@/features/scene-scope-default/applyScopeDefault", () => ({
   applyScopeDefaultToScenes: h.apply,
 }));
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, options?: Record<string, unknown>) =>
+      options ? `${key}:${JSON.stringify(options)}` : key,
+  }),
 }));
 
 import { SceneScopeDefaultActions } from "./SceneScopeDefaultActions";
@@ -116,6 +119,8 @@ describe("SceneScopeDefaultActions（rev2 §7.3、DR-SDEF-30・32）", () => {
       projectId: "project-1",
       sceneIds: ["scene-1"],
       target: "unknown",
+      // The version the author confirmed (PR-2 review P2-1).
+      expectedVersion: 1,
     });
   });
 
@@ -141,6 +146,73 @@ describe("SceneScopeDefaultActions（rev2 §7.3、DR-SDEF-30・32）", () => {
         expect.objectContaining({ target: "legacy-absent" }),
       ),
     );
+  });
+
+  it("names a default outside the main line by its value and never calls it the main line (PR-2 review P2-2)", async () => {
+    const local = {
+      ...MAIN,
+      timeline: { kind: "exact", ref: "timeline:local" },
+    } as const;
+    h.read.mockResolvedValue({
+      projectId: "project-1",
+      default: {
+        state: "set",
+        queryIdentity: local,
+        materialConstraint: local,
+      },
+      version: 4,
+      sourceToken: null,
+      updatedAt: null,
+    });
+    render(
+      <SceneScopeDefaultActions
+        workspacePath="/workspace"
+        binding={binding("explicit", local)}
+        onApplied={vi.fn()}
+      />,
+    );
+    const badge = await screen.findByTestId("scene-scope-default-badge");
+    expect(badge.textContent).toContain("timeline:local");
+    expect(badge.textContent).not.toContain("sceneScopeMainLine");
+    expect(screen.queryByTestId("scene-scope-not-main-line")).toBeNull();
+    cleanup();
+
+    // A main-line Scene in that project differs from the default.
+    render(
+      <SceneScopeDefaultActions
+        workspacePath="/workspace"
+        binding={binding("explicit")}
+        onApplied={vi.fn()}
+      />,
+    );
+    const note = await screen.findByTestId("scene-scope-not-main-line");
+    expect(note.textContent).toContain("editor.sceneDetail.scopeNotDefault");
+    expect(note.textContent).toContain("timeline:local");
+  });
+
+  it("warns that applying discards unsaved edits and reports a default changed after the confirmation", async () => {
+    h.apply.mockResolvedValue({ status: "default-changed" });
+    const onApplied = vi.fn();
+    render(
+      <SceneScopeDefaultActions
+        workspacePath="/workspace"
+        binding={binding("unknown")}
+        onApplied={onApplied}
+        hasUnsavedDraft
+      />,
+    );
+    fireEvent.click(await screen.findByTestId("scene-scope-apply-default"));
+    expect(
+      screen.getByTestId("scene-scope-apply-confirm").textContent,
+    ).toContain("settings.project.sceneScopeMainLine");
+    expect(
+      screen.getByTestId("scene-scope-apply-unsaved-warning"),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByTestId("scene-scope-apply-run"));
+    expect(
+      await screen.findByText("settings.project.sceneScopeDefaultConflict"),
+    ).toBeTruthy();
+    expect(onApplied).not.toHaveBeenCalled();
   });
 
   it("offers nothing when the project has no default", async () => {

@@ -12,6 +12,7 @@ vi.mock("sonner", () => ({
 }));
 vi.mock("@/lib/i18n", () => ({
   default: {
+    addResourceBundle: vi.fn(),
     t: (key: string, options?: Record<string, unknown>) =>
       options ? `${key}:${JSON.stringify(options)}` : key,
   },

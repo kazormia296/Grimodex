@@ -98,6 +98,45 @@ describe("設定 > プロジェクトの Scope の既定（DR-SDEF-29）", () =>
     ).toBe(false);
   });
 
+  it("stops applying while the form differs from the saved default, and while there is none (PR-2 review P2-1)", async () => {
+    route({
+      narrative_scope_project_default_read: () => ({
+        ...NONE,
+        default: {
+          state: "set",
+          queryIdentity: MAIN,
+          materialConstraint: MAIN,
+        },
+        version: 2,
+      }),
+    });
+    renderSection();
+    const apply = (await screen.findByTestId(
+      "scope-default-apply-unset",
+    )) as HTMLButtonElement;
+    expect(apply.disabled).toBe(false);
+    fireEvent.change(screen.getByTestId("scene-scope-default-mode"), {
+      target: { value: "none" },
+    });
+    expect(apply.disabled).toBe(true);
+    expect(screen.getByTestId("scene-scope-default-unsaved")).toBeTruthy();
+    fireEvent.change(screen.getByTestId("scene-scope-default-mode"), {
+      target: { value: "set" },
+    });
+    expect(apply.disabled).toBe(false);
+    cleanup();
+
+    route({ narrative_scope_project_default_read: () => NONE });
+    renderSection();
+    expect(
+      (
+        (await screen.findByTestId(
+          "scope-default-apply-unset",
+        )) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+  });
+
   it("explains a project without a vocabulary instead of the raw error (PR-1 P3-2)", async () => {
     route({
       narrative_scope_project_default_read: () => NONE,
@@ -166,6 +205,12 @@ describe("設定 > プロジェクトの Scope の既定（DR-SDEF-29）", () =>
     expect(
       await screen.findByTestId("scene-scope-default-registry-warning"),
     ).toBeTruthy();
+    // Saving would be refused (REF_UNREGISTERED): the save waits for the
+    // vocabulary.
+    expect(
+      (screen.getByTestId("scene-scope-default-save") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
     fireEvent.change(screen.getByTestId("scene-scope-default-timeline"), {
       target: { value: "timeline:main" },
     });
