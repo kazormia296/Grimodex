@@ -52,14 +52,20 @@ const OPENCODE_PERMISSION = JSON.stringify({
   },
 });
 
+// Claude CLI は alias（opus／sonnet／haiku）を最新へ解決するので、日付なしの全 ID は並べず、
+// 各 family の最新と、保存済みの設定との互換で残す ID だけを持つ。
 const CLAUDE_MODELS = [
   { id: "opus", name: "Opus (latest alias)" },
   { id: "sonnet", name: "Sonnet (latest alias)" },
   { id: "haiku", name: "Haiku (latest alias)" },
+  { id: "claude-fable-5-1", name: "Claude Fable 5.1" },
+  { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
+  { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
+  { id: "claude-haiku-5-5", name: "Claude Haiku 5.5" },
   { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
   { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
   { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5" },
-  { id: "claude-3-5-haiku-20241022", name: "Claude Haiku 3.5" },
+  { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
 ] as const;
 
 export interface CliCommandSpec {

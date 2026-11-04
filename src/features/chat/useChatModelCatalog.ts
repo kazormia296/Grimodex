@@ -27,7 +27,8 @@ import { isDynamicCapsStale } from "./agent/dynamicModelCaps";
  *   キャッシュキーにも endpointId を含めて別エンドポイント同士で衝突/上書きさせない。
  * - 「設定済み」の定義:
  *   - キー必須プロバイダ(openrouter/openai/anthropic/sakana/ai-novelist)は has_api_key が true。
- *     ※ Anthropic / AI のべりすと は静的リストを返すので、キー無しでモデルを出すと送信時に
+ *     ※ Anthropic は GET /v1/models で取得し、キー無し・取得失敗のときは固定の予備を返す。
+ *       AI のべりすと は静的リストを返す。どちらもキー無しでモデルを出すと送信時に
  *       必ず失敗する → ここでキーの有無で必ずゲートする。
  *   - キー不要(ollama/openai-compatible)はモデルが 1 件以上取得できたときのみ採用
  *     (= エンドポイント未設定なら空で落ちる)。

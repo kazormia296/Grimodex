@@ -1,6 +1,6 @@
 import { getDynamicModelMeta } from "./agent/dynamicModelCaps";
 
-// LAST_UPDATED: 2026-06-10
+// LAST_UPDATED: 2026-11-04
 /**
  * 主要 AI モデルの推定料金テーブル（USD / 1M tokens）。
  *
@@ -31,8 +31,15 @@ export interface ModelPricing {
  * キーは小文字、provider prefix なし。
  */
 const PRICING: Record<string, ModelPricing> = {
-  // Anthropic Claude 4.x (Anthropic 直叩き用 fallback)
+  // Anthropic Claude 5.x / 4.x (Anthropic 直叩き用 fallback)
+  "claude-fable-5-1": { inputPerMillion: 10, outputPerMillion: 50 },
   "claude-fable-5": { inputPerMillion: 10, outputPerMillion: 50 },
+  "claude-opus-5-5": { inputPerMillion: 4, outputPerMillion: 20 },
+  "claude-opus-5": { inputPerMillion: 5, outputPerMillion: 25 },
+  "claude-sonnet-5-5": { inputPerMillion: 2, outputPerMillion: 10 },
+  "claude-sonnet-5": { inputPerMillion: 2, outputPerMillion: 10 },
+  // haiku-5-5 は 100K token 以下の prompt の価格。超えると 0.50 / 2.50。
+  "claude-haiku-5-5": { inputPerMillion: 0.1, outputPerMillion: 0.5 },
   "claude-opus-4-8": { inputPerMillion: 5, outputPerMillion: 25 },
   "claude-opus-4-7": { inputPerMillion: 5, outputPerMillion: 25 },
   "claude-opus-4-6": { inputPerMillion: 5, outputPerMillion: 25 },

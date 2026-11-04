@@ -631,9 +631,17 @@ describe("structured browser AI transport", () => {
 describe("fetchModels", () => {
   it("returns static list for Anthropic", async () => {
     const models = await fetchModels("anthropic", "sk-test");
-    expect(models).toHaveLength(6);
-    expect(models[0].id).toBe("claude-fable-5");
-    expect(models[4].id).toBe("claude-sonnet-4-6");
+    expect(models).toHaveLength(12);
+    expect(models[0].id).toBe("claude-fable-5-1");
+    expect(models.map((m) => m.id)).toEqual(
+      expect.arrayContaining([
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+        "claude-haiku-4-5-20251001",
+      ]),
+    );
+    expect(models.some((m) => m.id.includes("mythos"))).toBe(false);
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
