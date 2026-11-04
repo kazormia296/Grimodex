@@ -9,7 +9,7 @@ use super::super::{
     },
     dependency_edges::{consumer_dependency_set_digest, find_edges_by_consumer},
     evaluator::{BuildAction, EvidenceFreshness},
-    restore_rebuild::evaluate_owned_edges_from_db_in_tx_with_control,
+    restore_rebuild::evaluate_owned_edges_from_db_in_tx_with_observed_eligibility,
     revision_eligibility::pending,
     semantic_epoch::get_current_epoch,
 };
@@ -69,13 +69,39 @@ pub(super) fn proof_current_observed(
     }
     let read_identity = super::read_identity::ReadIdentity::read(conn)?;
     if let Some(identity) = &read_identity {
-        let validated = proof
+        let mut validated = proof
             .validated_read
             .lock()
             .map_err(|_| anyhow::anyhow!("NIR1 proof read lock poisoned"))?;
         if validated.as_ref() == Some(identity) {
             return Ok((runtime.current_epoch(conn)? == Ok(proof.runtime_epoch))
                 .then(|| read_identity.clone()));
+        }
+        // DR-CP4-V-6: only generic AI-audit appends of this connection were
+        // committed since the verdict, and the complete check never reads
+        // audit rows. The runtime epoch is still compared every time; nothing
+        // moves unless it matches.
+        let previous = validated.clone();
+        if let Some(previous) = previous.filter(|previous| {
+            super::read_identity::joined_by_audit_only_commits(previous, identity)
+        }) {
+            if runtime.current_epoch(conn)? != Ok(proof.runtime_epoch) {
+                return Ok(None);
+            }
+            *validated = Some(identity.clone());
+            drop(validated);
+            // The kept query contexts read no audit rows either; they name the
+            // current state from now on.
+            for entry in proof
+                .validated_query_contexts
+                .lock()
+                .map_err(|_| anyhow::anyhow!("NIR1 query context lock poisoned"))?
+                .iter_mut()
+                .filter(|entry| entry.identity == previous)
+            {
+                entry.identity = identity.clone();
+            }
+            return Ok(Some(read_identity.clone()));
         }
     }
     if !is_generic_freshness_canonical(conn)? {
@@ -92,13 +118,15 @@ pub(super) fn proof_current_observed(
     let BindingRead::Registered(current) = binding::read(conn, &proof.project)? else {
         return Ok(None);
     };
-    if current.dirty
-        || current != proof.binding
-        || {
-            control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Source)?;
-            source::read_eligibility_source_with_control(conn, &proof.project, control)?.digest
-                != current.source_digest
-        }
+    if current.dirty || current != proof.binding {
+        return Ok(None);
+    }
+    control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+    // The roster is read once per complete check: the eligibility Edge below
+    // compares against this same read of this transaction (DR-CP4-V-5 (b)).
+    let roster_digest =
+        source::read_eligibility_source_with_control(conn, &proof.project, control)?.digest;
+    if roster_digest != current.source_digest
         || get_current_epoch(conn, &proof.project)?
             .is_none_or(|epoch| epoch.id != proof.semantic_epoch)
     {
@@ -174,9 +202,14 @@ pub(super) fn proof_current_observed(
             return Ok(None);
         }
     }
-    for observation in
-        evaluate_owned_edges_from_db_in_tx_with_control(conn, &proof.project, &edges, control)?
-    {
+    // Only reads of this transaction lie between the roster read and here.
+    for observation in evaluate_owned_edges_from_db_in_tx_with_observed_eligibility(
+        conn,
+        &proof.project,
+        &edges,
+        roster_digest,
+        control,
+    )? {
         if observation.freshness != EvidenceFreshness::Fresh
             || observation.build_action != BuildAction::None
             || observation.reason_code.is_some()
