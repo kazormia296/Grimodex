@@ -291,6 +291,7 @@ requirements:
       - electron/main/narrativeMaintenanceShutdown.test.ts
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
+      - electron/main/narrativeMaintenanceTriggers.stall.test.ts
       - electron/main/foregroundBarrierRelease.test.ts
       - electron/main/narrativeMaintenanceDelivery.test.ts
       - electron/main/workspaceLifecycleView.test.ts
@@ -1371,6 +1372,7 @@ requirements:
       - electron/main/narrativeMaintenanceShutdown.test.ts
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
+      - electron/main/narrativeMaintenanceTriggers.stall.test.ts
       - electron/main/foregroundBarrierRelease.test.ts
       - scripts/quality/validate-execution-state-authority.mjs
       - src/features/codex/CodexEntityRelationReviewDialog.tsx

@@ -479,6 +479,36 @@ mod material_roster_tests {
     }
 
     #[test]
+    fn native_replay_matches_live_ts_v4_synthesis_request_seals() {
+        let g = golden();
+        let v4: Value = serde_json::from_str(include_str!(
+            "material_roster/production-golden-v4-synthesis-requests.json"
+        ))
+        .expect("TS-produced v4 request seals");
+        let requests = array_at(&v4, "/requests").expect("requests");
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            let output = array_at(&g, "/outputs")
+                .expect("outputs")
+                .iter()
+                .find(|o| o["rootStageExecutionId"] == request["rootStageExecutionId"])
+                .expect("synthesis output");
+            let digest = prompt::synthesis(
+                &string_at(output, "/clusterRef").expect("cluster"),
+                &string_at(request, "/componentContractDigest").expect("digest"),
+                array_at(output, "/rawObservations/observations").expect("observations"),
+            )
+            .expect("v4 recipe");
+            assert_eq!(digest.context_set_digest, request["contextSetDigest"]);
+            assert_eq!(
+                digest.component_contract_digest,
+                request["componentContractDigest"]
+            );
+            assert_eq!(digest.final_request_digest, request["finalRequestDigest"]);
+        }
+    }
+
+    #[test]
     fn unknown_component_contract_digest_has_no_replay_recipe() {
         let g = golden();
         let output = &g["outputs"][0];
