@@ -81,13 +81,13 @@ describe("getModelCapabilities", () => {
   });
 
   it.each(["claude-haiku-4-5-20251001", "claude-haiku-4-5"])(
-    "%s: budget_tokens thinking、adaptive・effort 非対応、200K/64K",
+    "%s: 200K/64K、thinking・effort は送らない（既存の挙動）",
     (id) => {
       const caps = getModelCapabilities(id);
       expect(caps.contextWindow).toBe(200_000);
       expect(caps.maxOutputTokens).toBe(64_000);
       expect(caps.supportsAdaptiveThinking).toBe(false);
-      expect(caps.supportsThinking).toBe(true);
+      expect(caps.supportsThinking).toBe(false);
       expect(caps.supportsEffort).toBe(false);
     },
   );
@@ -420,12 +420,14 @@ describe("buildThinkingParams", () => {
     expect(withFlag).toEqual(withDefault);
   });
 
-  it("budget_tokens モデル (Haiku 4.5) は enabled を返し effort は付けない", () => {
-    const params = buildThinkingParams("claude-haiku-4-5-20251001", "medium");
-    expect(params.thinking?.type).toBe("enabled");
-    expect(params.thinking?.budget_tokens).toBe(8_000);
-    expect(params.effort).toBeUndefined();
-  });
+  it.each(["claude-haiku-4-5-20251001", "claude-haiku-4-5"])(
+    "thinking/effort を送らないモデル (%s) は空を返す",
+    (id) => {
+      const params = buildThinkingParams(id, "medium");
+      expect(params.thinking).toBeUndefined();
+      expect(params.effort).toBeUndefined();
+    },
+  );
 
   it("qwen3 (reasoning モデル): reasoningEnabled=true, reasoningEffort を返す", () => {
     const params = buildThinkingParams("qwen3", "high");

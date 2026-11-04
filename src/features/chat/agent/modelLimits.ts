@@ -97,11 +97,13 @@ const ANTHROPIC_GEN5_CAPABILITIES: ModelCapabilityDefinition = {
   supportsReasoning: false,
 };
 
+// thinking は送らない（既存の挙動のまま。budget_tokens 方式に切り替えると費用と遅延が
+// 変わるので、この不具合の修正には含めない）。
 const CLAUDE_HAIKU_4_5_CAPABILITIES: ModelCapabilityDefinition = {
   contextWindow: 200_000,
   maxOutputTokens: 64_000,
   supportsTools: true,
-  supportsThinking: true,
+  supportsThinking: false,
   supportsAdaptiveThinking: false,
   supportsEffort: false,
   supportsMaxEffort: false,
@@ -161,7 +163,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
     supportsMaxEffort: true,
     supportsReasoning: false,
   },
-  // Anthropic — Haiku 4.5 (budget_tokens thinking, adaptive・effort 非対応, 200K/64K)。
+  // Anthropic — Haiku 4.5（200K/64K。thinking・effort は送らない＝既存の挙動）。
   // 日付つき ID（既存の保存設定）と /v1/models の日付なしの別名の両方を持つ。
   "claude-haiku-4-5-20251001": CLAUDE_HAIKU_4_5_CAPABILITIES,
   "claude-haiku-4-5": CLAUDE_HAIKU_4_5_CAPABILITIES,
