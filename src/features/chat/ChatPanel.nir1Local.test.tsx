@@ -10,6 +10,10 @@ const nir1 = vi.hoisted(() => ({
   imported: 0,
   props: [] as Array<Record<string, unknown>>,
   accepted: [] as unknown[],
+  // The stub (like the real panel) wires acceptedRef in a passive effect. The
+  // lazy panel can be in the DOM before that effect runs, so a test that sends
+  // must wait for this flag, not only for the stub element.
+  wired: false,
 }));
 vi.mock("./nir1/nir1LocalGenerationAvailability", () => ({
   get NIR1_LOCAL_GENERATION_UI_ENABLED() {
@@ -26,6 +30,7 @@ vi.mock("./nir1/Nir1LocalGenerationPanel", async () => {
       nir1.props.push(props as unknown as Record<string, unknown>);
       useEffect(() => {
         props.acceptedRef.current = (send) => nir1.accepted.push(send);
+        nir1.wired = true;
       }, [props.acceptedRef]);
       return <div data-testid="nir1-panel-stub" />;
     },
@@ -179,6 +184,7 @@ beforeEach(() => {
   nir1.enabled = false;
   nir1.props.length = 0;
   nir1.accepted.length = 0;
+  nir1.wired = false;
   useAiSettingsStore.setState({
     settings: { ...DEFAULT_AI_SETTINGS, provider: "anthropic", model: "m" },
     hasApiKey: true,
@@ -211,6 +217,7 @@ describe("ChatPanel と local 生成の結線（DR-DD1C-7）", () => {
     setChat({ sendMessage, sessions: [session(LOCAL, "scene-1")] });
     render(<ChatPanel />);
     await screen.findByTestId("nir1-panel-stub");
+    await waitFor(() => expect(nir1.wired).toBe(true));
     expect(nir1.props.at(-1)).toMatchObject({
       conversationId: LOCAL,
       sceneId: "scene-1",
