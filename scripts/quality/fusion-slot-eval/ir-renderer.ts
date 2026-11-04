@@ -171,6 +171,38 @@ async function prepare(input: {
   return { ok: true };
 }
 
+const CANONICAL_CUTOVER_MARKER = "narrative-c2-canonical-freshness-v1";
+
+/** workspace の Generic Freshness の正本への切り替え（C2-ZC cutover）が済んだか。 */
+async function canonicalCutoverDone(): Promise<boolean> {
+  const rows = (
+    await invoke<{ rows: { n: number }[] }>("db_execute", {
+      sql: "SELECT count(*) AS n FROM schema_data_migrations WHERE migration_id = ?",
+      params: [CANONICAL_CUTOVER_MARKER],
+      method: "all",
+    })
+  ).rows;
+  return Number(rows[0]?.n ?? 0) > 0;
+}
+
+/**
+ * cutover が済むまで待つ。済む前は IR の build が入口ではじかれる（build.rs の
+ * CanonicalAuthorityUnavailable）。本測定の 1 作品目では、project の作成の直後から
+ * Scene の追加と抽出が続き、保守の流れが cutover まで進まなかった（2026-11-04）。
+ * 製品の保守を待つだけで、harness は保守を起動しない。
+ */
+async function waitCanonicalCutover(input: { timeoutMs: number }) {
+  const started = performance.now();
+  let polls = 0;
+  while (performance.now() - started < input.timeoutMs) {
+    polls++;
+    if (await canonicalCutoverDone())
+      return { done: true, polls, durationMs: performance.now() - started };
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return { done: false, polls, durationMs: performance.now() - started };
+}
+
 /** provider と model だけを上書きする。reasoning は製品の経路から指定できないので触らない。 */
 async function configureAi(input: { provider: "openrouter"; model: string }) {
   const current = await getAiSettings();
@@ -739,6 +771,8 @@ Object.assign(window, {
     extractScene,
     discardResumeCandidates,
     verifyMainScope,
+    waitCanonicalCutover,
+    canonicalCutoverDone,
     buildRaw,
     sampleHybrid,
     probe,

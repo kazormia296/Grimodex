@@ -73,6 +73,8 @@ export const PRICE_ASSUMPTION = Object.freeze({
   outputUsdPerMillion: 1.5,
   source: "計画 §4 の calibration helper の値（推測。現行の単価は未確認）",
 });
+const CUTOVER_WAIT_MS = 180000;
+
 const DEFAULT_KEY_FILE = path.join(
   os.homedir(),
   ".config/grimodex-eval/openrouter.key",
@@ -709,6 +711,17 @@ export async function runIrSlot(options) {
       projectId: "fusion-ir",
       language: work.language,
     });
+    // 保守の cutover（Generic Freshness の正本への切り替え）が済む前に書き込みを始めると、
+    // IR の build が入口ではじかれ続ける。済むまで待ってから Scene を足す。
+    records.canonicalCutover = await page.evaluate(
+      (input) => window.fusionIrEvaluation.waitCanonicalCutover(input),
+      { timeoutMs: CUTOVER_WAIT_MS },
+    );
+    log(`canonical cutover: ${JSON.stringify(records.canonicalCutover)}`);
+    assert.ok(
+      records.canonicalCutover.done,
+      "[artifact] 保守の canonical cutover が済まない（IR が作れない）",
+    );
     if (!skip) {
       records.aiSettings = await page.evaluate(
         (input) => window.fusionIrEvaluation.configureAi(input),
@@ -833,6 +846,16 @@ export async function runIrSlot(options) {
         },
       );
       log(`${label} IR wait: ${JSON.stringify(checkpoint.irWait)}`);
+      if (!checkpoint.irWait.usable) {
+        // IR が使えないまま測っても主指標に使えない（D1）。抽出の費用を使い続けないよう、
+        // cutover の状態を記録してこの作品を打ち切る（finally の後片付けは通る）。
+        checkpoint.canonicalCutoverDone = await page.evaluate(() =>
+          window.fusionIrEvaluation.canonicalCutoverDone(),
+        );
+        throw new Error(
+          `[artifact] ${label} で IR が usable にならない（cutover ${checkpoint.canonicalCutoverDone ? "済み" : "未了"}）`,
+        );
+      }
       // 地点の作り方（§2.5）：前の地点の probe の admitted が、足した後も残るか。
       if (previous) {
         const after = await probeMap(page, previous.positions);
