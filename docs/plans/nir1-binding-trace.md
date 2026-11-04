@@ -156,6 +156,14 @@ journey golden was regenerated). The task also reports a response whose
 `observationRefs` do not all resolve to the cluster's localIds as invalid
 (Native rejects such a terminal output), so a thinned-out repair is never an
 apparent success.
+The acceptance is all-or-nothing: one unresolved ref in any event makes the
+response invalid (it goes to repair, or yields no rows), where the normalizer
+alone used to keep the resolvable events. The evaluation parser identifier
+`event-synthesis-normalizer/1` is unchanged because the normalizer is
+unchanged; the rule lives in the task and in `canonicalSynthesisParseStatus`.
+Synthesis parse-failure rates from before and after 2026-11-04 therefore follow
+different acceptance rules and are not compared directly. No threshold or Gold
+changed.
 
 The same four corrupt-copy probes assert specific failures: removing a required
 receipt or changing its saved digest fails the original revision receipt roster;

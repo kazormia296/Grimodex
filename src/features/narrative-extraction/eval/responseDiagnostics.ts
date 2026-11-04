@@ -83,6 +83,13 @@ interface ChronicleOutputDiagnostic {
   readonly schemaRejectedCount: number;
   /** Schema-valid rows dropped by the production normalizer. */
   readonly normalizerDroppedCount: number;
+  /**
+   * Rows the production normalizer alone keeps. For synthesis this is not the
+   * task result: a response with an unresolvable observation ref is invalid, so
+   * the task returns no rows while this can still be positive. Read it together
+   * with the entry's expectedParseStatus (observation stages differ; see
+   * salvagedCount).
+   */
   readonly acceptedCount: number;
   readonly rejectedCount: number;
   /** Final rows retained while the canonical stage status was invalid. */

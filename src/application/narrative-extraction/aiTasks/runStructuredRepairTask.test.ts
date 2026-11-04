@@ -846,8 +846,8 @@ describe("structured repair root-object contract", () => {
   it("keeps repaired event output at the caller's root schema", async () => {
     const expectedShape = `{"clusterRef":"cluster-1","resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}
 clusterRef は "cluster-1" をそのまま使い、event-cluster: などの接頭辞を付けないでください。
-events[].observationRefs は壊れた出力の値を一字一句そのまま保ち、短縮・接頭辞の省略・正規化をしないでください。使える localId はこの cluster の ["obs-1"] だけです。例の値は形の見本で、event ごとの値は壊れた出力から取ります。
-events[].significance は "major"、"scene-level"、"minor"、"incidental" のいずれかです。それ以外の値は、この 4 種類のうち最も近いものに直してください。
+使える localId はこの cluster の ["obs-1"] だけです。events[].observationRefs は、壊れた出力の値がそのどれかと一致するなら一字一句そのまま保ち（短縮・正規化をしない）、一致しない値（event-observation: などの余分な接頭辞付き）は、同じ Observation を指す localId に直してください。例の値は形の見本で、event ごとの値は壊れた出力から取ります。
+events[].significance は "major"、"scene-level"、"minor"、"incidental" のいずれかです。それ以外の値（"moderate" など）は event を除かず、判断が付かなければ "minor" に直してください。
 events[].actuality は "actual"、"attempted"、"prevented"、"rumored" のいずれかです。それ以外の actuality の event は、4 種類のどれかへ書き換えず events から除いてください。
 events が空になる場合: {"clusterRef":"cluster-1","resolution":"unresolved","events":[]}`;
     const repair = captureRepairSend(repairedEvents);
@@ -1586,11 +1586,15 @@ describe("event synthesis reference and enum clarity (component contract 4)", ()
       `clusterRef は "${clusterRef}" をそのまま使い、event-cluster: などの接頭辞を付けないでください。`,
     );
     expect(prompt).toContain(
-      "events[].observationRefs は壊れた出力の値を一字一句そのまま保ち、短縮・接頭辞の省略・正規化をしないでください。",
+      '使える localId はこの cluster の ["window-001:obs-009"] だけです。',
     );
-    expect(prompt).toContain('["window-001:obs-009"] だけです');
+    // One priority rule: a value that matches a localId is kept as is; a value
+    // that does not (extra prefix) is mapped back to the localId.
     expect(prompt).toContain(
-      'events[].significance は "major"、"scene-level"、"minor"、"incidental" のいずれかです。',
+      "壊れた出力の値がそのどれかと一致するなら一字一句そのまま保ち（短縮・正規化をしない）、一致しない値（event-observation: などの余分な接頭辞付き）は、同じ Observation を指す localId に直してください。",
+    );
+    expect(prompt).toContain(
+      'events[].significance は "major"、"scene-level"、"minor"、"incidental" のいずれかです。それ以外の値（"moderate" など）は event を除かず、判断が付かなければ "minor" に直してください。',
     );
     // The example ref is a real localId of the cluster, not the old "obs-1".
     expect(prompt).not.toContain('"obs-1"');
@@ -1701,6 +1705,176 @@ describe("event synthesis reference and enum clarity (component contract 4)", ()
     expect(result[0]?.observationRefs).toEqual(["window-001:obs-009"]);
     expect(terminals).toHaveLength(1);
     expect(terminals[0]?.disposition).toBe("repair-success");
+  });
+
+  describe("all-or-nothing acceptance across several events and refs", () => {
+    const secondObservation: RawChronicleEventObservation = {
+      ...windowObservation,
+      localId: "window-001:obs-010",
+      evidence: [{ sourceRef: "S0010", quote: "彼は水の中へ潜った" }],
+      payload: { ...windowObservation.payload, predicate: "河童が潜る" },
+    };
+    const observations = [windowObservation, secondObservation];
+
+    function twoEventResponse(
+      first: readonly string[],
+      second: readonly string[],
+    ): string {
+      const event = (refs: readonly string[], title: string) => ({
+        observationRefs: refs,
+        titleSuggestion: title,
+        summary: `${title}。`,
+        actuality: "actual",
+        significance: "minor",
+      });
+      return JSON.stringify({
+        clusterRef,
+        resolution: "multiple-events",
+        events: [event(first, "体色の変化"), event(second, "潜る")],
+      });
+    }
+
+    async function run(
+      responseText: string,
+      options: {
+        readonly repairText?: string;
+        readonly repairOnFailure?: boolean;
+      } = {},
+    ) {
+      const stageExecution = createEventStageExecution({
+        projectId: "project-test",
+        runId: "run-multi",
+        taskId: "task-multi",
+        attemptId: "attempt-multi",
+        stageExecutionId: "stage-multi",
+      });
+      const statuses: Array<"parsed" | "invalid"> = [];
+      const terminals: ChronicleSynthesisTerminalOutput[] = [];
+      const repair = captureRepairSend(options.repairText ?? "not-json");
+      const result = await runEventSynthesisTask({
+        clusterRef,
+        observations,
+        projectId: "project-test",
+        stageExecution,
+        send: async () => ({ text: responseText, ...usage }),
+        repairOnFailure: options.repairOnFailure ?? false,
+        repairSend: repair.send,
+        createStageExecutionId: () => "repair-multi",
+        onParseStatus: (status) => statuses.push(status),
+        onTerminalOutput: (output) => {
+          terminals.push(output);
+        },
+      });
+      return { result, statuses, terminals, repair };
+    }
+
+    it("accepts several events whose refs all resolve", async () => {
+      const { result, statuses, terminals } = await run(
+        twoEventResponse(["window-001:obs-009"], ["window-001:obs-010"]),
+      );
+
+      expect(statuses).toEqual(["parsed"]);
+      expect(result.map((hypothesis) => hypothesis.observationRefs)).toEqual([
+        ["window-001:obs-009"],
+        ["window-001:obs-010"],
+      ]);
+      expect(terminals).toHaveLength(1);
+      expect(terminals[0]?.disposition).toBe("root-success");
+    });
+
+    it.each([
+      [
+        "a known and an unknown ref in one event",
+        twoEventResponse(
+          ["window-001:obs-009", "obs-010"],
+          ["window-001:obs-010"],
+        ),
+      ],
+      [
+        "an unknown ref only in the second event",
+        twoEventResponse(["window-001:obs-009"], ["obs-010"]),
+      ],
+    ])(
+      "treats %s as invalid, never as a partial success",
+      async (_label, text) => {
+        const { result, statuses, terminals, repair } = await run(text);
+
+        expect(result).toEqual([]);
+        expect(statuses).toEqual(["invalid"]);
+        expect(terminals).toEqual([]);
+        // repairOnFailure=false: the repair child is not asked.
+        expect(repair.captured()).toBeNull();
+      },
+    );
+
+    it("sends a partly unresolved response to repair and accepts the verbatim repair", async () => {
+      const broken = twoEventResponse(["window-001:obs-009"], ["obs-010"]);
+      const repaired = twoEventResponse(
+        ["window-001:obs-009"],
+        ["window-001:obs-010"],
+      );
+      const { result, statuses, terminals, repair } = await run(broken, {
+        repairText: repaired,
+        repairOnFailure: true,
+      });
+
+      const prompt = repair.captured()?.prompt ?? "";
+      expect(prompt).toContain(
+        '使える localId はこの cluster の ["window-001:obs-009","window-001:obs-010"] だけです。',
+      );
+      // The broken text reaches the repair child, so it can see its own refs.
+      expect(prompt).toContain('"observationRefs":["obs-010"]');
+      expect(statuses).toEqual(["parsed"]);
+      // Each event keeps its own ref; the first localId is not copied to all.
+      expect(result.map((hypothesis) => hypothesis.observationRefs)).toEqual([
+        ["window-001:obs-009"],
+        ["window-001:obs-010"],
+      ]);
+      expect(terminals).toHaveLength(1);
+      expect(terminals[0]?.disposition).toBe("repair-success");
+    });
+
+    it("repairs an extra event-observation: prefix on a ref back to its localId", async () => {
+      const broken = twoEventResponse(
+        ["event-observation:window-001:obs-009"],
+        ["window-001:obs-010"],
+      );
+      const repaired = twoEventResponse(
+        ["window-001:obs-009"],
+        ["window-001:obs-010"],
+      );
+      const { result, statuses, terminals, repair } = await run(broken, {
+        repairText: repaired,
+        repairOnFailure: true,
+      });
+
+      const prompt = repair.captured()?.prompt ?? "";
+      expect(prompt).toContain("event-observation:window-001:obs-009");
+      expect(prompt).toContain(
+        "一致しない値（event-observation: などの余分な接頭辞付き）",
+      );
+      expect(statuses).toEqual(["parsed"]);
+      expect(result.map((hypothesis) => hypothesis.observationRefs)).toEqual([
+        ["window-001:obs-009"],
+        ["window-001:obs-010"],
+      ]);
+      expect(terminals[0]?.disposition).toBe("repair-success");
+    });
+
+    it("stays invalid when the repair keeps the extra prefix", async () => {
+      const prefixed = twoEventResponse(
+        ["event-observation:window-001:obs-009"],
+        ["window-001:obs-010"],
+      );
+      const { result, statuses, terminals } = await run(prefixed, {
+        repairText: prefixed,
+        repairOnFailure: true,
+      });
+
+      expect(result).toEqual([]);
+      expect(statuses).toEqual(["invalid"]);
+      expect(terminals).toEqual([]);
+    });
   });
 
   it("keeps the unresolved empty exit valid (no refs to resolve)", async () => {

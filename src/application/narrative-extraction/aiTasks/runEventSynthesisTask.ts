@@ -143,8 +143,8 @@ function eventSynthesisRepairExpectedShape(
   const exampleRefs = JSON.stringify(localIds.slice(0, 1));
   return `{"clusterRef":${cluster},"resolution":"single-event","events":[{"observationRefs":${exampleRefs},"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}
 clusterRef は ${cluster} をそのまま使い、event-cluster: などの接頭辞を付けないでください。
-events[].observationRefs は壊れた出力の値を一字一句そのまま保ち、短縮・接頭辞の省略・正規化をしないでください。使える localId はこの cluster の ${localIdList} だけです。例の値は形の見本で、event ごとの値は壊れた出力から取ります。
-events[].significance は "major"、"scene-level"、"minor"、"incidental" のいずれかです。それ以外の値は、この 4 種類のうち最も近いものに直してください。
+使える localId はこの cluster の ${localIdList} だけです。events[].observationRefs は、壊れた出力の値がそのどれかと一致するなら一字一句そのまま保ち（短縮・正規化をしない）、一致しない値（event-observation: などの余分な接頭辞付き）は、同じ Observation を指す localId に直してください。例の値は形の見本で、event ごとの値は壊れた出力から取ります。
+events[].significance は "major"、"scene-level"、"minor"、"incidental" のいずれかです。それ以外の値（"moderate" など）は event を除かず、判断が付かなければ "minor" に直してください。
 events[].actuality は "actual"、"attempted"、"prevented"、"rumored" のいずれかです。それ以外の actuality の event は、4 種類のどれかへ書き換えず events から除いてください。
 events が空になる場合: {"clusterRef":${cluster},"resolution":"unresolved","events":[]}`;
 }
@@ -252,7 +252,10 @@ async function recordEventStageAudit(
  * the clusterRef is the input's, and every event's observationRefs resolve to
  * this cluster's localIds. Native rejects a terminal output whose refs are not
  * all known, so a response that normalization would silently thin out must be
- * invalid here (and eligible for repair), never an apparent success.
+ * invalid here (and eligible for repair), never an apparent success. The
+ * predicate is all-or-nothing: one unknown ref in any event (a mix of known
+ * and unknown refs, or only a later event) makes the whole response invalid;
+ * the known events are not kept as a partial success.
  */
 function acceptedSynthesisValue(
   parsed: unknown,
