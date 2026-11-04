@@ -79,11 +79,117 @@ describe("getModelCapabilities", () => {
     expect(caps.supportsMaxEffort).toBe(false);
   });
 
-  it("claude-haiku-4-5: thinking/effort 非対応", () => {
-    const caps = getModelCapabilities("claude-haiku-4-5-20251001");
-    expect(caps.supportsAdaptiveThinking).toBe(false);
-    expect(caps.supportsThinking).toBe(false);
-    expect(caps.supportsEffort).toBe(false);
+  it.each(["claude-haiku-4-5-20251001", "claude-haiku-4-5"])(
+    "%s: 200K/64K、thinking・effort は送らない（既存の挙動）",
+    (id) => {
+      const caps = getModelCapabilities(id);
+      expect(caps.contextWindow).toBe(200_000);
+      expect(caps.maxOutputTokens).toBe(64_000);
+      expect(caps.supportsAdaptiveThinking).toBe(false);
+      expect(caps.supportsThinking).toBe(false);
+      expect(caps.supportsEffort).toBe(false);
+    },
+  );
+
+  it.each([
+    "claude-fable-5-1",
+    "claude-fable-5",
+    "claude-opus-5-5",
+    "claude-opus-5",
+    "claude-sonnet-5-5",
+    "claude-sonnet-5",
+    "claude-haiku-5-5",
+  ])(
+    "Anthropic 5 系 %s: 1M/128K、adaptive＋effort、budget 方式は使わない",
+    (id) => {
+      const caps = getModelCapabilities(id);
+      expect(caps.contextWindow).toBe(1_000_000);
+      expect(caps.maxOutputTokens).toBe(128_000);
+      expect(caps.contextWindowSource).toBe("hardcoded");
+      expect(caps.supportsAdaptiveThinking).toBe(true);
+      expect(caps.supportsThinking).toBe(false);
+      expect(caps.supportsEffort).toBe(true);
+      expect(caps.supportsMaxEffort).toBe(true);
+      // OpenRouter 経由（ドット表記・prefix）でも同じに解決する。
+      const viaOpenRouter = getModelCapabilities(
+        `anthropic/${id.replace(/(\d)-(\d)$/u, "$1.$2")}`,
+      );
+      expect(viaOpenRouter.contextWindow).toBe(1_000_000);
+      expect(viaOpenRouter.supportsAdaptiveThinking).toBe(true);
+    },
+  );
+
+  it("5 系は adaptive を返し、budget_tokens の thinking を組み立てない", () => {
+    for (const id of ["claude-opus-5-5", "claude-haiku-5-5"]) {
+      const params = buildThinkingParams(id, "high");
+      expect(params.thinking?.type).toBe("adaptive");
+      expect(params.thinking?.effort).toBe("high");
+      expect(buildThinkingParams(id, "high", "summarized", false)).toEqual({});
+    }
+  });
+
+  describe("将来の Anthropic 世代（能力表に無い major≥5）", () => {
+    it.each([
+      "claude-opus-6",
+      "claude-opus-6-1",
+      "claude-sonnet-5-6",
+      "claude-haiku-6",
+      "claude-fable-6-20271001",
+      "anthropic/claude-opus-6.1",
+    ])("%s は同じ family の最新の既知の能力（5 系）に解決する", (id) => {
+      const caps = getModelCapabilities(id);
+      expect(caps.contextWindowSource).toBe("hardcoded");
+      expect(caps.contextWindow).toBe(1_000_000);
+      expect(caps.supportsAdaptiveThinking).toBe(true);
+      expect(caps.supportsThinking).toBe(false);
+      expect(buildThinkingParams(id, "medium").thinking?.type).toBe("adaptive");
+    });
+
+    it("major<5 や知らない family は 5 系の一般則の対象にしない", () => {
+      for (const id of [
+        "claude-haiku-4-9",
+        "claude-opus-4-9",
+        "claude-mythos-5",
+        "claude-unknown-7",
+      ]) {
+        const caps = getModelCapabilities(id);
+        expect(caps.supportsAdaptiveThinking).toBe(false);
+        expect(caps.supportsThinking).toBe(false);
+        expect(caps.contextWindowSource).toBe("default");
+      }
+    });
+  });
+
+  describe("能力表に無い Claude（GET /v1/models が返す旧世代・限定提供）", () => {
+    it.each([
+      "claude-opus-4-1-20250805",
+      "claude-opus-4-20250514",
+      "claude-sonnet-4-20250514",
+      "claude-sonnet-4-5",
+      "claude-3-7-sonnet-20250219",
+      "claude-3-haiku-20240307",
+      "claude-mythos-5",
+      "anthropic/claude-3.5-sonnet",
+    ])(
+      "%s は 8k に落とさず 200K の推定で扱い、thinking／effort は付けない",
+      (id) => {
+        const caps = getModelCapabilities(id);
+        expect(caps.contextWindow).toBe(200_000);
+        expect(caps.contextWindowSource).toBe("default");
+        expect(caps.contextWindowIsEffective).toBe(false);
+        expect(caps.supportsTools).toBe(true);
+        expect(caps.supportsThinking).toBe(false);
+        expect(caps.supportsAdaptiveThinking).toBe(false);
+        expect(caps.supportsEffort).toBe(false);
+        expect(buildThinkingParams(id, "medium")).toEqual({});
+      },
+    );
+
+    it("Claude 以外の未知のモデルは従来どおり 8k の既定", () => {
+      expect(getModelCapabilities("some-unknown-model").contextWindow).toBe(
+        8_000,
+      );
+    });
   });
 
   it("claude-opus-4-5: budget_tokens thinking", () => {
@@ -313,11 +419,14 @@ describe("buildThinkingParams", () => {
     expect(withFlag).toEqual(withDefault);
   });
 
-  it("thinking/effort 非対応モデル (Haiku 4.5) は空を返す", () => {
-    const params = buildThinkingParams("claude-haiku-4-5-20251001", "medium");
-    expect(params.thinking).toBeUndefined();
-    expect(params.effort).toBeUndefined();
-  });
+  it.each(["claude-haiku-4-5-20251001", "claude-haiku-4-5"])(
+    "thinking/effort を送らないモデル (%s) は空を返す",
+    (id) => {
+      const params = buildThinkingParams(id, "medium");
+      expect(params.thinking).toBeUndefined();
+      expect(params.effort).toBeUndefined();
+    },
+  );
 
   it("qwen3 (reasoning モデル): reasoningEnabled=true, reasoningEffort を返す", () => {
     const params = buildThinkingParams("qwen3", "high");
