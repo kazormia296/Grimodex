@@ -1182,6 +1182,7 @@ requirements:
       - src/features/narrative-extraction/eval/productionChronicleCapabilities.ts
       - src/features/narrative-extraction/eval/chronicle015Reference.ts
       - docs/plans/chronicle-evaluation-contract-v2.md
+      - docs/plans/nir-extraction-artifact-contract.md
       - evals/narrative/contracts/chronicle-v2/actual-gate-collapse.json
       - evals/narrative/contracts/chronicle-v2/contract.schema.json
       - src/features/narrative-extraction/eval/chronicleV2Contract.ts

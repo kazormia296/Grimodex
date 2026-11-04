@@ -106,6 +106,10 @@ describe("DR-NAC-2 artifact kind の一覧と版", () => {
     expect(replay).toContain('"/localId"');
     expect(replay).toContain('"/windowId"');
     expect(replay).toContain('id.starts_with(&format!("{w}:"))');
+    // クラスタの observationRefs と snapshot の evidence catalog の版も、名前で読まれる。
+    expect(replay).toContain('"observationRefs"');
+    expect(replay).toContain('["evidence"]["catalog"]["segmentationVersion"]');
+    expect(replay).toContain('"/windows"');
   });
 });
 
@@ -138,6 +142,17 @@ const ASSERTION_FIELD_ROLES = {
   attribution: "identity",
   narrativeFrame: "identity",
 } as const satisfies Record<keyof NarrativeAssertionContext, FieldRole>;
+
+type Participant = Payload["participants"][number];
+
+/**
+ * participants は配列ごと JSON.stringify されるので、要素の field も全て同一性に入る
+ * （要素の型に field が増えると tsc が落ちる）。
+ */
+const PARTICIPANT_FIELD_ROLES = {
+  surface: "identity",
+  role: "identity",
+} as const satisfies Record<keyof Participant, FieldRole>;
 
 const PAYLOAD_FIELD_ROLES = {
   predicate: "identity",
@@ -220,6 +235,14 @@ const IDENTITY_MUTATORS = {
     baseObservation({
       payload: { participants: [{ surface: "兵", role: "patient" }] },
     }),
+  "participant.surface": () =>
+    baseObservation({
+      payload: { participants: [{ surface: "民", role: "agent" }] },
+    }),
+  "participant.role": () =>
+    baseObservation({
+      payload: { participants: [{ surface: "兵", role: "theme" }] },
+    }),
   "payload.locationSurface": () =>
     baseObservation({ payload: { locationSurface: "南門" } }),
   "payload.temporalExpressions": () =>
@@ -263,12 +286,14 @@ describe("DR-NAC-3 観測の内容ベース同一性キー", () => {
       ...tableKeys("evidence", EVIDENCE_FIELD_ROLES, "identity"),
       ...tableKeys("assertion", ASSERTION_FIELD_ROLES, "identity"),
       ...tableKeys("payload", PAYLOAD_FIELD_ROLES, "identity"),
+      ...tableKeys("participant", PARTICIPANT_FIELD_ROLES, "identity"),
     ];
     const excluded = [
       ...tableKeys("observation", OBSERVATION_FIELD_ROLES, "excluded"),
       ...tableKeys("evidence", EVIDENCE_FIELD_ROLES, "excluded"),
       ...tableKeys("assertion", ASSERTION_FIELD_ROLES, "excluded"),
       ...tableKeys("payload", PAYLOAD_FIELD_ROLES, "excluded"),
+      ...tableKeys("participant", PARTICIPANT_FIELD_ROLES, "excluded"),
     ];
     expect(identity.sort()).toEqual(Object.keys(IDENTITY_MUTATORS).sort());
     expect(excluded.sort()).toEqual(Object.keys(EXCLUDED_MUTATORS).sort());
@@ -291,15 +316,46 @@ describe("DR-NAC-3 観測の内容ベース同一性キー", () => {
     },
   );
 
-  it("evidence は集合として扱う（順序に依らず、同じ内容なら畳まれる）", () => {
+  it("evidence は整列した多重集合として扱う（順序に依らず、重複は保持する）", () => {
     const a = { sourceRef: "E000001", quote: "一つ目。" };
     const b = { sourceRef: "E000002", quote: "二つ目。" };
+    // 順序が違っても、同じ内容なら畳まれる。
     expect(
       mergedCount(
         baseObservation({ evidence: [a, b] }),
         baseObservation({ localId: "window-002:obs-001", evidence: [b, a] }),
       ),
     ).toBe(1);
+    // 重複は除かない。[a, a] と [a] は別の観測のまま。
+    expect(
+      mergedCount(
+        baseObservation({ evidence: [a, a] }),
+        baseObservation({ localId: "window-002:obs-001", evidence: [a] }),
+      ),
+    ).toBe(2);
+    // 重複の数が同じなら畳まれる。
+    expect(
+      mergedCount(
+        baseObservation({ evidence: [a, a] }),
+        baseObservation({ localId: "window-002:obs-001", evidence: [a, a] }),
+      ),
+    ).toBe(1);
+  });
+
+  it("participants の要素は JSON のキー順も含めて比較する（surface／role の全 field が入る）", () => {
+    // observationMerger は participants を JSON.stringify で丸ごと入れるので、
+    // 要素の field の追加・削除に加え、キーの挿入順の違いも identity を変える。
+    // 現状の挙動を pin する（モデル出力は schema を通った後の正規形なので、実害は無い）。
+    expect(
+      mergedCount(
+        baseObservation({
+          payload: { participants: [{ surface: "兵", role: "agent" }] },
+        }),
+        baseObservation({
+          payload: { participants: [{ role: "agent", surface: "兵" }] },
+        }),
+      ),
+    ).toBe(2);
   });
 
   it("participants と temporalExpressions は順序を含めて比較する", () => {
@@ -427,13 +483,15 @@ interface MutationSite {
 
 /** 製品コード（test を除く）での、指定 table への DML／DDL の場所を集める。 */
 function productionMutationSites(table: string): MutationSite[] {
+  // `UPDATE OR REPLACE <table>`（OR 句）と `main.<table>`（schema 修飾）、引用符付きも拾う。
   const pattern = new RegExp(
-    `\\b(DELETE\\s+FROM|INSERT(?:\\s+OR\\s+\\w+)?\\s+INTO|REPLACE\\s+INTO|UPDATE|DROP\\s+TABLE(?:\\s+IF\\s+EXISTS)?|ALTER\\s+TABLE|TRUNCATE(?:\\s+TABLE)?)\\s+["\`]?${table}\\b`,
+    `\\b(DELETE\\s+FROM|INSERT(?:\\s+OR\\s+\\w+)?\\s+INTO|REPLACE\\s+INTO|UPDATE(?:\\s+OR\\s+\\w+)?|DROP\\s+TABLE(?:\\s+IF\\s+EXISTS)?|ALTER\\s+TABLE|TRUNCATE(?:\\s+TABLE)?)\\s+(?:["\`]?\\w+["\`]?\\.)?["\`]?${table}\\b`,
     "giu",
   );
   const sites: MutationSite[] = [];
   // scripts/ と electron/scripts/ は使い捨ての DB を操作する開発・CI の harness で、製品に同梱されない。
-  for (const root of ["src-tauri/crates", "electron", "src"]) {
+  // src-tauri/src は frozen legacy の Tauri shell だが、製品に同梱されうるので対象に含める。
+  for (const root of ["src-tauri/crates", "src-tauri/src", "electron", "src"]) {
     const absoluteRoot = path.join(REPO_ROOT, root);
     for (const absolute of walkFiles(absoluteRoot)) {
       const relative = path.relative(REPO_ROOT, absolute).replaceAll("\\", "/");
@@ -504,7 +562,11 @@ describe("DR-NAC-4 保持の方針と依存", () => {
     expect(artifactDelete).toBeLessThan(runDelete);
   });
 
-  it("artifact 行に依存する読み手（契約が挙げる 7 経路）が今も在る", () => {
+  it("artifact 行に依存する読み手（契約が挙げる 11 経路。網羅ではなく既知の読み手）が今も在る", () => {
+    // 存在確認だけを固定する（目印の文字列が cfg(test) を除いた本文に在る）。
+    // 各経路の振る舞いは、それぞれの Rust 試験が固定する。
+    // artifact を読む箇所はこの表で全部ではない。消す経路を作るときは、
+    // `FROM narrative_extraction_artifacts` を読む全箇所を棚卸しする（契約 §5.3）。
     const base = "src-tauri/crates/grimodex-db/src/narrative_extraction/";
     const dependencies: readonly (readonly [string, string, string])[] = [
       // [file, 目印, 依存の名前]
@@ -543,9 +605,35 @@ describe("DR-NAC-4 保持の方針と依存", () => {
         "fn accepted(",
         "material roster の replay（完了した Task／Attempt の artifact を厳密に選ぶ）",
       ],
+      [
+        "src-tauri/crates/grimodex-db/src/nir1_generation.rs",
+        "NIR1_GENERATION_ARTIFACT_MISSING",
+        "NIR-1 generation の入力束縛（artifact の存在と digest を検証する）",
+      ],
+      [
+        `${base}scope_authority_runtime.rs`,
+        `FROM ${TABLE}`,
+        "scope authority（artifact から scope authority document を読む）",
+      ],
+      [
+        `${base}material_membership_root.rs`,
+        `FROM ${TABLE}`,
+        "material membership root（run の artifact から root を作る）",
+      ],
+      [
+        `${base}stage_provenance.rs`,
+        `FROM ${TABLE} a,`,
+        "stage provenance（stage-synthesis-outputs を読む）",
+      ],
     ];
     for (const [file, marker, name] of dependencies) {
-      expect(readRepoFile(file), `${name}: ${file}`).toContain(marker);
+      const body = file.endsWith(".rs")
+        ? stripRustCfgTest(readRepoFile(file))
+        : readRepoFile(file);
+      expect(body, `${name}: ${file}`).toContain(marker);
     }
+    // restore／rebuild の読み出しは製品コードに 2 箇所ある（片方だけが消えても気づく）。
+    const restore = stripRustCfgTest(readRepoFile(`${base}restore_rebuild.rs`));
+    expect(restore.split(`FROM ${TABLE} artifact`).length - 1).toBe(2);
   });
 });

@@ -1605,6 +1605,158 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
     expect(new Set(anchors.map((anchor) => anchor.documentRef)).size).toBe(1);
   });
 
+  it("DR-NAC-5: citation-id-v2（製品の AI lane の既定）でも、観測の evidence は catalog の文ごとに anchor へ解決され、同じ文が 2 回出る本文は別の anchor になる", async () => {
+    const repeated = "鐘が鳴った。";
+    const between = "兵は黙っていた。";
+    const built = await buildNarrativeCorpusSnapshot({
+      snapshotId: "snapshot-coord-trace-citation",
+      language: "ja",
+      origin: { kind: "grimodex-project", projectId: "project-a" },
+      documents: [
+        {
+          sourceKey: "project:scene:one",
+          parentSourceKey: null,
+          title: "鐘",
+          orderIndex: 0,
+          proseMirrorJson: prose(`${repeated}${between}${repeated}`),
+          origin: {
+            kind: "project-node",
+            projectId: "project-a",
+            nodeId: "scene-one",
+            sourceVersion: 1,
+            sourceUpdatedAt: "2026-08-09T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+      ],
+      omissions: [],
+      createdAt: "2026-08-10T00:00:00.000Z",
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+
+    await expect(
+      runChronicleExtractionCoordinator(
+        {
+          projectId: "project-a",
+          folderId: "folder-1",
+          language: "ja",
+          sceneIds: ["scene-one"],
+          authority: authority(),
+          runId: "run-trace-citation",
+        },
+        {
+          useAi: true,
+          evidenceMode: CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+          buildSnapshot: async () => ({
+            ok: true as const,
+            snapshot: built.snapshot,
+            scopeAuthorityDocuments: [],
+            flush: { status: "already-clean" as const, blockedDocuments: [] },
+          }),
+          observeWithAi: (input) =>
+            runObservationExtractionTask({
+              ...input,
+              repairOnFailure: false,
+              send: async () => {
+                const binding = input.evidenceSpanCatalogBinding;
+                if (!binding) throw new Error("real citation binding missing");
+                // 同じ文は catalog 上で別の segment（別の evidenceRef）になる。
+                const spans = binding.windows
+                  .flatMap((window) => window.segments)
+                  .filter(
+                    (segment) =>
+                      segment.kind === "span" && segment.text === repeated,
+                  );
+                expect(spans).toHaveLength(2);
+                const rows = spans.map((segment, index) => ({
+                  localId: `model-${index}`,
+                  evidenceRefs: [segment.evidenceRef],
+                  assertion: {
+                    attribution: "narrator",
+                    narrativeFrame: "story-world",
+                  },
+                  payload: {
+                    predicate: index === 0 ? "最初の鐘" : "二度目の鐘",
+                    actuality: "actual",
+                    participants: [],
+                    temporalExpressions: [],
+                    durationKind: "instant",
+                  },
+                }));
+                return {
+                  text: JSON.stringify({ observations: rows }),
+                  inputTokens: 1,
+                  outputTokens: 1,
+                };
+              },
+            }),
+          synthesizeWithAi: async () => {
+            throw new Error("stop-after-merge");
+          },
+        },
+      ),
+    ).rejects.toThrow("stop-after-merge");
+
+    const savedArtifacts = finishMock.mock.calls.flatMap(
+      ([payload]) =>
+        (
+          payload as {
+            artifacts?: readonly {
+              artifactKind: string;
+              payloadJson: unknown;
+            }[];
+          }
+        ).artifacts ?? [],
+    );
+    const payloadOf = <T>(kind: string): T => {
+      const found = savedArtifacts.filter(
+        (artifact) => artifact.artifactKind === kind,
+      );
+      expect(found, `${kind} は 1 件だけ保存される`).toHaveLength(1);
+      return found[0]!.payloadJson as T;
+    };
+    const raw = payloadOf<{
+      observations: readonly RawChronicleEventObservation[];
+    }>(CHRONICLE_EXTRACT_ARTIFACT_KINDS.observations);
+    const resolved = payloadOf<{
+      anchors: readonly ResolvedEvidenceAnchor[];
+    }>(CHRONICLE_EXTRACT_ARTIFACT_KINDS.resolvedEvidence);
+
+    // citation mode の raw の evidence は { sourceRef, quote } だけで、prefix／suffix は付かない。
+    expect(raw.observations.map((item) => item.localId)).toEqual([
+      "window-001:obs-001",
+      "window-001:obs-002",
+    ]);
+    for (const observation of raw.observations) {
+      expect(Object.keys(observation.evidence[0]!).sort()).toEqual([
+        "quote",
+        "sourceRef",
+      ]);
+      expect(observation.evidence[0]!.quote).toBe(repeated);
+    }
+    // 2 観測は別の sourceRef（別の catalog segment）を引き、別の範囲の anchor に解決される。
+    expect(
+      new Set(raw.observations.map((item) => item.evidence[0]!.sourceRef)).size,
+    ).toBe(2);
+    expect(resolved.anchors).toHaveLength(2);
+    expect(resolved.anchors[0]!.canonicalRange).not.toEqual(
+      resolved.anchors[1]!.canonicalRange,
+    );
+    // 観測 → anchor の対応は (sourceRef, quote) の一致で 1 対 1 に辿れる
+    // （legacy-v1 と違い、同じ文の出現位置が同じ鍵にならない）。
+    for (const observation of raw.observations) {
+      const evidence = observation.evidence[0]!;
+      const matches = resolved.anchors.filter(
+        (anchor) =>
+          chronicleEvidenceTupleKey(anchor.sourceRef, anchor.quote) ===
+          chronicleEvidenceTupleKey(evidence.sourceRef, evidence.quote),
+      );
+      expect(matches).toHaveLength(1);
+      expect(matches[0]!.quote).toBe(repeated);
+    }
+  });
+
   it("hydrates a completed Observation receipt after restart and continues the same Run at Synthesis", async () => {
     const quote = "教会の尖塔が砲撃で崩れ落ちた。";
     const built = await buildNarrativeCorpusSnapshot({
