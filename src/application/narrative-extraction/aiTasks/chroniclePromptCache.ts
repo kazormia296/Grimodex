@@ -4,11 +4,13 @@ import {
 } from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
 
 /**
- * Shortest static prefix (in UTF-16 code units) worth sending as a cache
- * segment. Anthropic caches only prefixes of at least 512 tokens on the
- * smallest models, and a token is never shorter than one code unit for
- * Japanese text, so a shorter prefix can never be cached. Below this the
- * prompt is sent unsplit and keeps its original (user-only) shape.
+ * Floor (in UTF-16 code units) below which a static prefix is not split.
+ * Anthropic caches only prefixes of at least 512 tokens on the smallest
+ * models, and Japanese text costs about one token or less per character, so a
+ * shorter prefix is practically never cached and keeps its original user-only
+ * shape. This is a heuristic floor, not a guarantee: whether a longer prefix
+ * really clears the model's minimum is shown only by `cacheWriteTokens` and
+ * `cacheReadTokens` in the audit usage.
  */
 export const CHRONICLE_PROMPT_CACHE_MIN_PREFIX_CHARS = 512;
 
