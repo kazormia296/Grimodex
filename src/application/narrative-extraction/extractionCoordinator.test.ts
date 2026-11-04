@@ -1484,6 +1484,127 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
     }
   });
 
+  it("DR-NAC-5: 同じ文が 2 回出る本文で、prefix／suffix が別の出現位置を指す 2 観測は、(sourceRef, quote) だけでは区別できない anchor になる", async () => {
+    const repeated = "鐘が鳴った。";
+    const between = "兵は黙っていた。";
+    const built = await buildNarrativeCorpusSnapshot({
+      snapshotId: "snapshot-coord-trace-repeat",
+      language: "ja",
+      origin: { kind: "grimodex-project", projectId: "project-a" },
+      documents: [
+        {
+          sourceKey: "project:scene:one",
+          parentSourceKey: null,
+          title: "鐘",
+          orderIndex: 0,
+          proseMirrorJson: prose(`${repeated}${between}${repeated}`),
+          origin: {
+            kind: "project-node",
+            projectId: "project-a",
+            nodeId: "scene-one",
+            sourceVersion: 1,
+            sourceUpdatedAt: "2026-08-09T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+      ],
+      omissions: [],
+      createdAt: "2026-08-10T00:00:00.000Z",
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+
+    await expect(
+      runChronicleExtractionCoordinator(
+        {
+          projectId: "project-a",
+          folderId: "folder-1",
+          language: "ja",
+          sceneIds: ["scene-one"],
+          authority: authority(),
+          runId: "run-trace-repeat",
+        },
+        {
+          useAi: true,
+          evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,
+          buildSnapshot: async () => ({
+            ok: true as const,
+            snapshot: built.snapshot,
+            scopeAuthorityDocuments: [],
+            flush: { status: "already-clean" as const, blockedDocuments: [] },
+          }),
+          observeWithAi: async ({ windows }) => {
+            const ref = windows[0]?.sourceRef ?? "";
+            const at = (
+              predicate: string,
+              hint: { prefix?: string; suffix?: string },
+            ): RawChronicleEventObservation => ({
+              localId: "model-local",
+              evidence: [{ sourceRef: ref, quote: repeated, ...hint }],
+              assertion: {
+                attribution: "narrator",
+                narrativeFrame: "story-world",
+              },
+              payload: {
+                predicate,
+                actuality: "actual",
+                participants: [],
+                temporalExpressions: [],
+                durationKind: "instant",
+              },
+            });
+            return [
+              at("最初の鐘", { suffix: between }),
+              at("二度目の鐘", { prefix: between }),
+            ];
+          },
+          synthesizeWithAi: async () => {
+            throw new Error("stop-after-merge");
+          },
+        },
+      ),
+    ).rejects.toThrow("stop-after-merge");
+
+    const resolved = finishMock.mock.calls
+      .flatMap(
+        ([payload]) =>
+          (
+            payload as {
+              artifacts?: readonly {
+                artifactKind: string;
+                payloadJson: unknown;
+              }[];
+            }
+          ).artifacts ?? [],
+      )
+      .filter(
+        (artifact) =>
+          artifact.artifactKind ===
+          CHRONICLE_EXTRACT_ARTIFACT_KINDS.resolvedEvidence,
+      )
+      .map(
+        (artifact) =>
+          artifact.payloadJson as {
+            anchors: readonly ResolvedEvidenceAnchor[];
+          },
+      );
+    expect(resolved).toHaveLength(1);
+    const anchors = resolved[0]!.anchors;
+    // 2 観測は別の出現位置に解決され、anchor の範囲は違う。
+    expect(anchors).toHaveLength(2);
+    expect(anchors[0]!.canonicalRange).not.toEqual(anchors[1]!.canonicalRange);
+    // しかし (sourceRef, quote) は同じなので、この鍵の lookup は 2 つを区別できない
+    // （coordinator の照合段と proposalPlanner は、同じ document なら先頭の anchor を使う）。
+    expect(
+      new Set(
+        anchors.map((anchor) =>
+          chronicleEvidenceTupleKey(anchor.sourceRef, anchor.quote),
+        ),
+      ).size,
+    ).toBe(1);
+    expect(new Set(anchors.map((anchor) => anchor.documentRef)).size).toBe(1);
+  });
+
   it("hydrates a completed Observation receipt after restart and continues the same Run at Synthesis", async () => {
     const quote = "教会の尖塔が砲撃で崩れ落ちた。";
     const built = await buildNarrativeCorpusSnapshot({

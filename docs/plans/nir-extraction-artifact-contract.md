@@ -28,7 +28,7 @@ Chronicle 抽出は、場面の本文から「観測」（モデルが本文か�
 ユーザーの方針（2026-11-05）に従う。
 
 - 観測は、モデルが本文を読んだときの**解釈の一例**であり、確定した事実ではない。Codex の項目や、作者が承認した Revision と同じ重さを持たない。
-- 承認は記録された決定（`narrative_proposal_decisions`）だけが作る。承認された提案の Revision だけが正本側（IR、Graph、chat の `chronicleSnapshot`）に届く。観測、仮説、承認されなかった提案は届かない。IR の対象は承認済みの Revision だけで（`nir1_chronicle_index/source.rs` の `EligibilitySource`、`retrieval_admission/build.rs` の `BuildCandidate`）、観測を直接読む経路は無い。
+- 承認は記録された決定（`narrative_proposal_decisions`）だけが作る。承認された提案の Revision だけが正本側（IR、Graph、chat の `chronicleSnapshot`）に届く。観測、仮説、承認されなかった提案は届かない。IR の roster（`nir1_chronicle_index/source.rs` の `EligibilitySource`）の digest には未承認・不適格の Revision も入るが（空の index も失効できるように）、retrieval に admit されるのは承認済みの Revision だけである（`retrieval_admission/build.rs` の `BuildCandidate`）。観測は roster にも admit にも入らず、観測を直接読む経路は無い。
 - 今は、観測を検索・表示・chat の文脈に出す経路を作らない。run を跨いだ再利用もしない。
 - 観測は本文だけを読んだ AI の読みなので、ネタバレは存在しない（結果的に正しくても、読者が本文から辿り着ける）。観測に開示制限（secret／reveal）は付けない。提案が持つ `disclosure` の既定（`secret: true`）は観測には無く、必要としない。
 - 将来、観測を見せる口や Consumer を作るときの**必須の条件**: Codex と承認済み Revision から、機械的にも見た目でも**明確に区別できる**こと（「AI の観測であり、承認されていない」と判別できる出所の表示を持つ）。また、新しい保存範囲・送信先・authority を伴うので、AGENTS.md の NIR-1 の委任の外で、ユーザーの確認が要る。
@@ -150,7 +150,7 @@ evidence.resolved@1            anchors[] = { id: "anchor-NNNN", sourceRef, quote
 1. **anchor は観測を指さない。** anchor に `localId` や観測への参照は無い。辿る向きは観測 → anchor だけで、anchor → 観測は、`(sourceRef, quote)` が同じ evidence を持つ観測を全て探すしかない。
 2. **解決できなかった evidence は痕跡を残さない。** `not-found`、`ambiguous`、`invalid` の evidence は anchor を作らず、`evidence.resolved@1` にも失敗の記録が無い。task の `outputJson.anchorCount` と観測の evidence 数の差から件数が分かるだけで、どの観測のどの evidence かは残らない。
 3. **同じ `(sourceRef, quote)` を引く観測が複数あると、anchor が観測ごとに作られる。** 重複した anchor が残り（`id` は連番で別）、照合の lookup は先頭の 1 つを使う。
-4. **`prefix`／`suffix` で絞り込まれた evidence が、同じ文の別の出現位置に解決された場合、`(sourceRef, quote)` だけでは区別できない。** lookup は `documentRef` が違う場合だけ曖昧（null）とし、同じ document 内の別の範囲は区別しない。コードを読んだ範囲の推論で、再現する試験は無い。
+4. **`prefix`／`suffix` で絞り込まれた evidence が、同じ文の別の出現位置に解決された場合、`(sourceRef, quote)` だけでは区別できない。** lookup は `documentRef` が違う場合だけ曖昧（null）とし、同じ document 内の別の範囲は区別しない。同じ文が 2 回出る本文で、`prefix`／`suffix` が別の出現位置を指す 2 観測が、範囲の違う 2 つの anchor に解決され、`(sourceRef, quote)` が同じになることを、coordinator を通した試験で確かめた。
 5. **lookup が 2 箇所に実装されている**（coordinator の照合段と `proposalPlanner.ts`）。同じ規則だが、共有されていない。
 
 これらを直す（anchor に観測の参照を持たせる、失敗を記録する、など）には、`evidence.resolved@1` の形の変更が要り、DR-NAC-2 の規則に従って `@2` として扱う。
@@ -166,12 +166,12 @@ evidence.resolved@1            anchors[] = { id: "anchor-NNNN", sourceRef, quote
 
 ## 8. 固定する試験
 
-| 判断     | 固定するもの                                                                                                                                                                                                         | 試験                                                                                  |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| DR-NAC-2 | kind の一覧と版（10 件）、`<名前>@<整数>` の形、Rust の resume 検証・stage provenance・IR・replay が同じ文字列と anchor／observation の field を読むこと                                                             | `src/features/chronicle/extraction/extractionArtifactContract.test.ts`                |
-| DR-NAC-3 | 同一性キーに入る field（型の対応表で増減を tsc が検出。実行時は field を 1 つずつ変えて畳まれない／畳まれることを確認）、evidence の集合扱い、participants／temporalExpressions の順序、first-wins、`localId` 非依存 | 同上                                                                                  |
-| DR-NAC-4 | artifact を消す製品コードは `domain_writes.rs` だけ、追記は `repository.rs` の 1 箇所だけ、run／project を消すのも `domain_writes.rs` だけ、artifact の削除が run の削除より前、依存 7 経路が今も在ること            | 同上                                                                                  |
-| DR-NAC-5 | coordinator を通した fixture で、raw → resolved → merged の対応（`(sourceRef, quote)`）、`localId` の形、anchor の連番、重複 anchor、解決できなかった evidence が痕跡を残さないこと、anchor が観測を指さないこと     | `src/application/narrative-extraction/extractionCoordinator.test.ts`（"DR-NAC-5: …"） |
+| 判断     | 固定するもの                                                                                                                                                                                                                                                                                      | 試験                                                                                  |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| DR-NAC-2 | kind の一覧と版（10 件）、`<名前>@<整数>` の形、Rust の resume 検証・stage provenance・IR・replay が同じ文字列と anchor／observation の field を読むこと                                                                                                                                          | `src/features/chronicle/extraction/extractionArtifactContract.test.ts`                |
+| DR-NAC-3 | 同一性キーに入る field（型の対応表で増減を tsc が検出。実行時は field を 1 つずつ変えて畳まれない／畳まれることを確認）、evidence の集合扱い、participants／temporalExpressions の順序、first-wins、`localId` 非依存                                                                              | 同上                                                                                  |
+| DR-NAC-4 | artifact を消す製品コードは `domain_writes.rs` だけ、追記は `repository.rs` の 1 箇所だけ、run／project を消すのも `domain_writes.rs` だけ、artifact の削除が run の削除より前、依存 7 経路が今も在ること                                                                                         | 同上                                                                                  |
+| DR-NAC-5 | coordinator を通した fixture で、raw → resolved → merged の対応（`(sourceRef, quote)`）、`localId` の形、anchor の連番、重複 anchor、解決できなかった evidence が痕跡を残さないこと、anchor が観測を指さないこと、同じ文が 2 回出る本文で `(sourceRef, quote)` が同じ別範囲の anchor ができること | `src/application/narrative-extraction/extractionCoordinator.test.ts`（"DR-NAC-5: …"） |
 
 この契約を変える変更は、試験が落ちる。落ちたら、実装を直す前に本書の該当節を読み、契約を変えるなら本書と試験を一緒に更新する。
 
