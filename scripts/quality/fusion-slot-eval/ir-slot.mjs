@@ -33,7 +33,7 @@ import assert from "node:assert/strict";
 import process from "node:process";
 import console from "node:console";
 import { createHash, randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   cp,
   mkdir,
@@ -57,6 +57,7 @@ import {
   opaqueWorkId,
 } from "./raw-fullness.mjs";
 import { compareAdmitted, summarizeQueries } from "./ir-classify.mjs";
+import { makeKeyFifo, readKeyFromFifo } from "./fifo-key.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "../../..");
 const require = createRequire(import.meta.url);
@@ -70,16 +71,16 @@ export const PROVIDERS = {
 };
 const SCENE_TIMEOUT_MS = 15 * 60 * 1000;
 const IR_WAIT_MS = 5 * 60 * 1000;
-// 費用の外挿に使う単価（provider ごと）。cache の割引は数えない。
+// 費用の外挿に使う単価（model ごと）。cache の割引は数えない。表に無い model は見積もらない。
 export const PRICE_ASSUMPTIONS = Object.freeze({
   // 計画 §4 が先行の calibration helper から引いた値で、OpenRouter の現行の単価は未確認。
-  openrouter: Object.freeze({
+  "openai/gpt-6-luna": Object.freeze({
     inputUsdPerMillion: 0.25,
     outputUsdPerMillion: 1.5,
     source: "計画 §4 の calibration helper の値（推測。現行の単価は未確認）",
   }),
   // claude-opus-5-5 の Anthropic の公表の単価（2026-11-04 時点の資料）。
-  anthropic: Object.freeze({
+  "claude-opus-5-5": Object.freeze({
     inputUsdPerMillion: 4,
     outputUsdPerMillion: 20,
     source: "claude-opus-5-5 の公表の単価（cache の割引は数えない）",
@@ -214,6 +215,77 @@ export async function readProviderKey(file, provider) {
     "[precheck] key の形式（接頭辞と長さ）が想定と違う",
   );
   return key;
+}
+
+/**
+ * 製品（packaged の Grimodex）の profile に safeStorage で保存された key を、復号の script を
+ * 子 process で起動して FIFO で受け取る。値は返り値だけに持ち、記録しない。
+ */
+async function readProductKey(options) {
+  const store = options["product-key-store"];
+  assertOutsideRepo(store);
+  const { fifo, cleanup } = makeKeyFifo(os.tmpdir());
+  const abort = new globalThis.AbortController();
+  const lines = [];
+  try {
+    // 読み手を先に開く（書き手は ENXIO の間待つ）。
+    const reading = readKeyFromFifo(fifo, { signal: abort.signal });
+    const env = { ...process.env };
+    delete env.ELECTRON_RUN_AS_NODE;
+    const child = spawn(
+      require("electron"),
+      [
+        path.join(
+          ROOT,
+          "scripts/quality/fusion-slot-eval/product-key-to-fifo.mjs",
+        ),
+        "--store",
+        store,
+        "--service",
+        `grimodex-${options.provider}`,
+        "--fifo",
+        fifo,
+        "--prefix",
+        PROVIDERS[options.provider].keyPrefix,
+      ],
+      { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    // 子の出力は [product-key] の行だけ残す（key を出さない作り）。
+    for (const stream of [child.stdout, child.stderr])
+      stream.on("data", (chunk) => {
+        for (const line of chunk.toString().split("\n"))
+          if (line.startsWith("[product-key]")) lines.push(line.slice(0, 200));
+      });
+    const exited = new Promise((resolve) => child.on("exit", resolve));
+    exited.then((code) => {
+      if (code !== 0) abort.abort();
+    });
+    const value = await reading;
+    const code = await exited;
+    assert.equal(
+      code,
+      0,
+      `[key] 復号の script が失敗した（${lines.join(" ")}）`,
+    );
+    assert.ok(
+      value.startsWith(PROVIDERS[options.provider].keyPrefix) &&
+        value.length >= 40 &&
+        value.length <= 300 &&
+        !/\s/u.test(value),
+      "[precheck] key の形式（接頭辞と長さ）が想定と違う",
+    );
+    return {
+      key: value,
+      status: { source: "product-profile-safeStorage", lines },
+    };
+  } catch (error) {
+    throw new Error(
+      `[key] 製品の profile の key を受け取れない（${lines.join(" ") || (error instanceof Error ? error.message : "error")}）`,
+      { cause: error },
+    );
+  } finally {
+    cleanup();
+  }
 }
 
 const gdbus = (args) =>
@@ -531,7 +603,7 @@ export async function runIrSlot(options) {
       provider: options.provider,
       model: options.model,
       reasoning:
-        "製品の抽出の経路から reasoning を指定できないので、provider／model の既定のまま（Anthropic は製品の能力表の effort）",
+        "製品の抽出の経路から reasoning を指定できないので、製品の既定のまま（provider／model と製品の設定の既定）",
       keyRoute:
         options.provider === "anthropic"
           ? "製品（packaged の Grimodex）の profile に safeStorage で保存された key を、app 名 Grimodex の Electron で復号して FIFO で渡し、評価用の profile に製品の save_api_key で入れる。平文はディスクに残さず、値は記録しない"
@@ -608,7 +680,14 @@ export async function runIrSlot(options) {
         ]),
       ),
     );
-    if (!skip) {
+    if (!skip && options["product-key-store"]) {
+      // 製品の profile の key：keyring の snapshot を先に取り、harness が作った FIFO に復号の
+      // script（app 名 Grimodex）が 1 回だけ書く。script が keyring を変えても前後の比較で分かる。
+      keyringBefore = keyringSnapshot();
+      const result = await readProductKey(options);
+      key = result.key;
+      records.productKey = result.status;
+    } else if (!skip) {
       key = await readProviderKey(options["key-file"], options.provider);
       keyringBefore = keyringSnapshot();
     }
@@ -976,14 +1055,17 @@ export async function runIrSlot(options) {
     if (vite) await vite.close();
     if (records.usage) {
       const { inputTokens, outputTokens } = records.usage;
-      const price = PRICE_ASSUMPTIONS[options.provider];
-      records.costEstimateUsd = {
-        value:
-          (inputTokens * price.inputUsdPerMillion +
-            outputTokens * price.outputUsdPerMillion) /
-          1e6,
-        priceAssumption: price,
-      };
+      const price = PRICE_ASSUMPTIONS[options.model] ?? null;
+      records.costEstimateUsd = price
+        ? {
+            value:
+              (inputTokens * price.inputUsdPerMillion +
+                outputTokens * price.outputUsdPerMillion) /
+              1e6,
+            model: options.model,
+            priceAssumption: price,
+          }
+        : { value: null, model: options.model, reason: "単価の表に無い model" };
     }
     if (keyringBefore) {
       try {
