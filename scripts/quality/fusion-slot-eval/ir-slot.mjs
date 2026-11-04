@@ -62,16 +62,28 @@ const ROOT = path.resolve(import.meta.dirname, "../../..");
 const require = createRequire(import.meta.url);
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-export const PROVIDER = "openrouter";
-export const MODEL = "openai/gpt-6-luna";
+// provider ごとの既定の model と key の接頭辞。--provider／--model で選ぶ。
+// 2026-11-04：ユーザーの依頼で、評価は Anthropic を優先する（OpenRouter は予備）。
+export const PROVIDERS = {
+  openrouter: { model: "openai/gpt-6-luna", keyPrefix: "sk-or-" },
+  anthropic: { model: "claude-opus-5-5", keyPrefix: "sk-ant-" },
+};
 const SCENE_TIMEOUT_MS = 15 * 60 * 1000;
 const IR_WAIT_MS = 5 * 60 * 1000;
-// 費用の外挿に使う単価（推測）。計画 §4 が先行の calibration helper から引いた値で、
-// この model の OpenRouter の現行の単価を確かめたものではない。
-export const PRICE_ASSUMPTION = Object.freeze({
-  inputUsdPerMillion: 0.25,
-  outputUsdPerMillion: 1.5,
-  source: "計画 §4 の calibration helper の値（推測。現行の単価は未確認）",
+// 費用の外挿に使う単価（provider ごと）。cache の割引は数えない。
+export const PRICE_ASSUMPTIONS = Object.freeze({
+  // 計画 §4 が先行の calibration helper から引いた値で、OpenRouter の現行の単価は未確認。
+  openrouter: Object.freeze({
+    inputUsdPerMillion: 0.25,
+    outputUsdPerMillion: 1.5,
+    source: "計画 §4 の calibration helper の値（推測。現行の単価は未確認）",
+  }),
+  // claude-opus-5-5 の Anthropic の公表の単価（2026-11-04 時点の資料）。
+  anthropic: Object.freeze({
+    inputUsdPerMillion: 4,
+    outputUsdPerMillion: 20,
+    source: "claude-opus-5-5 の公表の単価（cache の割引は数えない）",
+  }),
 });
 const CUTOVER_WAIT_MS = 180000;
 
@@ -87,6 +99,7 @@ function parseArgs(args) {
     repeats: "3",
     "skip-extraction": "no",
     checkpoints: "all",
+    provider: "openrouter",
   };
   for (let i = 0; i < args.length; i += 2) {
     assert.ok(
@@ -100,6 +113,11 @@ function parseArgs(args) {
     "[precheck] --skip-extraction は yes／no",
   );
   options.skipExtraction = options["skip-extraction"] === "yes";
+  assert.ok(
+    Object.hasOwn(PROVIDERS, options.provider),
+    "[precheck] --provider は openrouter／anthropic",
+  );
+  options.model ??= PROVIDERS[options.provider].model;
   options.checkpointList =
     options.checkpoints === "all"
       ? CHECKPOINTS
@@ -180,15 +198,18 @@ export function assertLaunchEnvironment(env, { keyring = true } = {}) {
     );
 }
 
-/** key を読む。形式は接頭辞と長さだけを確かめる。値・長さの数字は返さない。 */
-export async function readOpenRouterKey(file) {
+/**
+ * key を読む。形式は接頭辞と長さだけを確かめる。値・長さの数字は返さない。file は通常の
+ * file か、product-key-to-fifo.mjs が書く FIFO（平文をディスクに残さない経路）。
+ */
+export async function readProviderKey(file, provider) {
   const info = await stat(file);
   assert.equal(info.mode & 0o077, 0, "[precheck] key の file の権限は 600");
   const key = (await readFile(file, "utf8")).trim();
   assert.ok(
-    key.startsWith("sk-or-") &&
+    key.startsWith(PROVIDERS[provider].keyPrefix) &&
       key.length >= 40 &&
-      key.length <= 200 &&
+      key.length <= 300 &&
       !/\s/u.test(key),
     "[precheck] key の形式（接頭辞と長さ）が想定と違う",
   );
@@ -507,12 +528,14 @@ export async function runIrSlot(options) {
     skipExtraction: skip,
     checkpointList: options.checkpointList,
     ai: {
-      provider: PROVIDER,
-      model: MODEL,
+      provider: options.provider,
+      model: options.model,
       reasoning:
-        "製品の抽出の経路から reasoning を指定できないので、OpenRouter／model の既定のまま",
+        "製品の抽出の経路から reasoning を指定できないので、provider／model の既定のまま（Anthropic は製品の能力表の effort）",
       keyRoute:
-        "デスクトップの keyring：製品の save_api_key（Electron safeStorage）。key は repo の外の file から node が読み、値は記録しない",
+        options.provider === "anthropic"
+          ? "製品（packaged の Grimodex）の profile に safeStorage で保存された key を、app 名 Grimodex の Electron で復号して FIFO で渡し、評価用の profile に製品の save_api_key で入れる。平文はディスクに残さず、値は記録しない"
+          : "デスクトップの keyring：製品の save_api_key（Electron safeStorage）。key は repo の外の file から node が読み、値は記録しない",
     },
     design: {
       condition:
@@ -586,7 +609,7 @@ export async function runIrSlot(options) {
       ),
     );
     if (!skip) {
-      key = await readOpenRouterKey(options["key-file"]);
+      key = await readProviderKey(options["key-file"], options.provider);
       keyringBefore = keyringSnapshot();
     }
     await mkdir(userData, { recursive: true });
@@ -725,12 +748,15 @@ export async function runIrSlot(options) {
     if (!skip) {
       records.aiSettings = await page.evaluate(
         (input) => window.fusionIrEvaluation.configureAi(input),
-        { provider: PROVIDER, model: MODEL },
+        { provider: options.provider, model: options.model },
       );
-      assert.equal(records.aiSettings.provider, PROVIDER);
-      assert.equal(records.aiSettings.model, MODEL);
+      assert.equal(records.aiSettings.provider, options.provider);
+      assert.equal(records.aiSettings.model, options.model);
       records.keyInstall = await page
-        .evaluate((value) => window.fusionIrEvaluation.installKey(value), key)
+        .evaluate((input) => window.fusionIrEvaluation.installKey(input), {
+          provider: options.provider,
+          key,
+        })
         .catch((error) => {
           // Playwright の error に引数は入らないが、念のため message の先頭の code だけを残す。
           const message = String(error?.message ?? error);
@@ -950,12 +976,13 @@ export async function runIrSlot(options) {
     if (vite) await vite.close();
     if (records.usage) {
       const { inputTokens, outputTokens } = records.usage;
+      const price = PRICE_ASSUMPTIONS[options.provider];
       records.costEstimateUsd = {
         value:
-          (inputTokens * PRICE_ASSUMPTION.inputUsdPerMillion +
-            outputTokens * PRICE_ASSUMPTION.outputUsdPerMillion) /
+          (inputTokens * price.inputUsdPerMillion +
+            outputTokens * price.outputUsdPerMillion) /
           1e6,
-        priceAssumption: PRICE_ASSUMPTION,
+        priceAssumption: price,
       };
     }
     if (keyringBefore) {

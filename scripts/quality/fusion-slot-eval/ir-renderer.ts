@@ -204,7 +204,10 @@ async function waitCanonicalCutover(input: { timeoutMs: number }) {
 }
 
 /** provider と model だけを上書きする。reasoning は製品の経路から指定できないので触らない。 */
-async function configureAi(input: { provider: "openrouter"; model: string }) {
+async function configureAi(input: {
+  provider: "openrouter" | "anthropic";
+  model: string;
+}) {
   const current = await getAiSettings();
   await saveAiSettings({
     ...current,
@@ -222,9 +225,12 @@ async function configureAi(input: { provider: "openrouter"; model: string }) {
 }
 
 /** 製品の save_api_key（safeStorage）で key を入れる。値は返さず、記録もしない。 */
-async function installKey(key: string) {
+async function installKey(input: {
+  provider: "openrouter" | "anthropic";
+  key: string;
+}) {
   try {
-    await saveApiKey("openrouter", key, null);
+    await saveApiKey(input.provider, input.key, null);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const backend = message.match(/backend: ([a-z_]+)/u)?.[1] ?? null;
@@ -234,7 +240,7 @@ async function installKey(key: string) {
       }`,
     );
   }
-  const present = await hasApiKey("openrouter", null);
+  const present = await hasApiKey(input.provider, null);
   await useAiSettingsStore.getState().loadSettings();
   return { present, storeHasApiKey: useAiSettingsStore.getState().hasApiKey };
 }
