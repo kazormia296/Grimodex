@@ -196,10 +196,7 @@ impl AiProvider {
         match self {
             AiProvider::OpenRouter => "https://openrouter.ai/api/v1/models".to_string(),
             AiProvider::OpenAI => "https://api.openai.com/v1/models".to_string(),
-            AiProvider::Anthropic => {
-                // Anthropic doesn't have a list models endpoint; return empty
-                String::new()
-            }
+            AiProvider::Anthropic => "https://api.anthropic.com/v1/models".to_string(),
             AiProvider::Ollama => format!("{}/api/tags", ep.ollama.trim_end_matches('/')),
             AiProvider::OpenaiCompatible => {
                 format!("{}/models", ep.openai_compat_custom.trim_end_matches('/'))
@@ -572,6 +569,120 @@ fn parse_openrouter_model(m: &serde_json::Value) -> Option<AiModel> {
         pricing_prompt,
         pricing_completion,
     })
+}
+
+/// Anthropic `/v1/models` の 1 ページあたりの取得件数（API の上限）。
+const ANTHROPIC_MODELS_PAGE_LIMIT: u32 = 1000;
+/// `has_more` が真のまま終わらない異常な応答でも無限ループしないための page 数の上限。
+const ANTHROPIC_MODELS_MAX_PAGES: usize = 10;
+const ANTHROPIC_MODELS_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Anthropic `/v1/models` の 1 件を `AiModel` に写す。
+/// `supported_parameters` は意図して `None` のまま: renderer の動的能力
+/// （`mergeDynamicCaps` が thinking／effort を落とす）に流さず、Anthropic の能力は
+/// renderer の能力表で持つ。
+fn parse_anthropic_model(m: &serde_json::Value) -> Option<AiModel> {
+    let id = m["id"].as_str().filter(|id| !id.is_empty())?;
+    let name = m["display_name"]
+        .as_str()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(id);
+    Some(AiModel {
+        id: id.to_string(),
+        name: name.to_string(),
+        api_variant: None,
+        context_length: m["max_input_tokens"].as_u64().filter(|n| *n > 0),
+        max_completion_tokens: m["max_tokens"].as_u64().filter(|n| *n > 0),
+        supported_parameters: None,
+        effective_context_length: None,
+        effective_context_source: None,
+        pricing_prompt: None,
+        pricing_completion: None,
+    })
+}
+
+/// `models_url`（`.../v1/models`）を `limit`／`after_id` で辿り、全ページの一覧を返す。
+/// header は chat と同じ `x-api-key`／`anthropic-version`。HTTP エラーは本文の message を出す。
+async fn fetch_anthropic_models(
+    client: &reqwest::Client,
+    models_url: &str,
+    api_key: &str,
+) -> anyhow::Result<Vec<AiModel>> {
+    let mut models: Vec<AiModel> = Vec::new();
+    let mut after_id: Option<String> = None;
+    for _ in 0..ANTHROPIC_MODELS_MAX_PAGES {
+        let mut url = reqwest::Url::parse(models_url)?;
+        {
+            let mut query = url.query_pairs_mut();
+            query.append_pair("limit", &ANTHROPIC_MODELS_PAGE_LIMIT.to_string());
+            if let Some(after_id) = after_id.as_deref() {
+                query.append_pair("after_id", after_id);
+            }
+        }
+        let resp = client
+            .get(url)
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .timeout(ANTHROPIC_MODELS_REQUEST_TIMEOUT)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(parse_anthropic_http_error(status, &body_text));
+        }
+        let body: serde_json::Value = resp.json().await?;
+        if let Some(data) = body["data"].as_array() {
+            models.extend(data.iter().filter_map(parse_anthropic_model));
+        }
+        let next = body["last_id"].as_str().filter(|id| !id.is_empty());
+        match (body["has_more"].as_bool().unwrap_or(false), next) {
+            (true, Some(last_id)) if after_id.as_deref() != Some(last_id) => {
+                after_id = Some(last_id.to_string());
+            }
+            (true, _) => {
+                tracing::warn!("Anthropic /v1/models paging did not advance; stopping");
+                return Ok(models);
+            }
+            _ => return Ok(models),
+        }
+    }
+    tracing::warn!("Anthropic /v1/models exceeded the page limit; returning the pages read so far");
+    Ok(models)
+}
+
+/// キー未登録・取得失敗のときの固定の予備（新しい順、限定提供の mythos は含めない）。
+/// haiku-4-5 は保存済みの設定との互換のため日付つきの ID を残す
+/// （renderer の能力表は日付なしの別名も持つ）。
+fn anthropic_fallback_models() -> Vec<AiModel> {
+    [
+        ("claude-fable-5-1", "Claude Fable 5.1"),
+        ("claude-fable-5", "Claude Fable 5"),
+        ("claude-opus-5-5", "Claude Opus 5.5"),
+        ("claude-opus-5", "Claude Opus 5"),
+        ("claude-opus-4-8", "Claude Opus 4.8"),
+        ("claude-opus-4-7", "Claude Opus 4.7"),
+        ("claude-opus-4-6", "Claude Opus 4.6"),
+        ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
+        ("claude-sonnet-5", "Claude Sonnet 5"),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+        ("claude-haiku-5-5", "Claude Haiku 5.5"),
+        ("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
+    ]
+    .into_iter()
+    .map(|(id, name)| AiModel {
+        id: id.to_string(),
+        name: name.to_string(),
+        api_variant: None,
+        context_length: None,
+        max_completion_tokens: None,
+        supported_parameters: None,
+        effective_context_length: None,
+        effective_context_source: None,
+        pricing_prompt: None,
+        pricing_completion: None,
+    })
+    .collect()
 }
 
 const OLLAMA_METADATA_CONCURRENCY: usize = 4;
@@ -1307,83 +1418,29 @@ pub async fn fetch_models_for(
     endpoints: ProviderEndpoints<'_>,
     selected_model: Option<&str>,
 ) -> anyhow::Result<Vec<AiModel>> {
-    // 静的リストを持つプロバイダは HTTP を叩かずに返す
+    // 静的リストを持つプロバイダは HTTP を叩かずに返す。Anthropic だけは
+    // GET /v1/models で最新の一覧を取り、キー未登録・取得失敗のときに固定の予備を返す。
     match provider {
         AiProvider::Anthropic => {
-            return Ok(vec![
-                AiModel {
-                    id: "claude-fable-5".to_string(),
-                    name: "Claude Fable 5".to_string(),
-                    api_variant: None,
-                    context_length: None,
-                    max_completion_tokens: None,
-                    supported_parameters: None,
-                    effective_context_length: None,
-                    effective_context_source: None,
-                    pricing_prompt: None,
-                    pricing_completion: None,
-                },
-                AiModel {
-                    id: "claude-opus-4-8".to_string(),
-                    name: "Claude Opus 4.8".to_string(),
-                    api_variant: None,
-                    context_length: None,
-                    max_completion_tokens: None,
-                    supported_parameters: None,
-                    effective_context_length: None,
-                    effective_context_source: None,
-                    pricing_prompt: None,
-                    pricing_completion: None,
-                },
-                AiModel {
-                    id: "claude-opus-4-7".to_string(),
-                    name: "Claude Opus 4.7".to_string(),
-                    api_variant: None,
-                    context_length: None,
-                    max_completion_tokens: None,
-                    supported_parameters: None,
-                    effective_context_length: None,
-                    effective_context_source: None,
-                    pricing_prompt: None,
-                    pricing_completion: None,
-                },
-                AiModel {
-                    id: "claude-opus-4-6".to_string(),
-                    name: "Claude Opus 4.6".to_string(),
-                    api_variant: None,
-                    context_length: None,
-                    max_completion_tokens: None,
-                    supported_parameters: None,
-                    effective_context_length: None,
-                    effective_context_source: None,
-                    pricing_prompt: None,
-                    pricing_completion: None,
-                },
-                AiModel {
-                    id: "claude-sonnet-4-6".to_string(),
-                    name: "Claude Sonnet 4.6".to_string(),
-                    api_variant: None,
-                    context_length: None,
-                    max_completion_tokens: None,
-                    supported_parameters: None,
-                    effective_context_length: None,
-                    effective_context_source: None,
-                    pricing_prompt: None,
-                    pricing_completion: None,
-                },
-                AiModel {
-                    id: "claude-haiku-4-5-20251001".to_string(),
-                    name: "Claude Haiku 4.5".to_string(),
-                    api_variant: None,
-                    context_length: None,
-                    max_completion_tokens: None,
-                    supported_parameters: None,
-                    effective_context_length: None,
-                    effective_context_source: None,
-                    pricing_prompt: None,
-                    pricing_completion: None,
-                },
-            ]);
+            if api_key.trim().is_empty() {
+                return Ok(anthropic_fallback_models());
+            }
+            let url = provider.models_url(endpoints, None);
+            return match fetch_anthropic_models(&reqwest::Client::new(), &url, api_key).await {
+                Ok(models) if !models.is_empty() => Ok(models),
+                Ok(_) => {
+                    tracing::warn!(
+                        "Anthropic /v1/models returned no usable models; using built-in list"
+                    );
+                    Ok(anthropic_fallback_models())
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        "Anthropic /v1/models unavailable; using built-in list: {error:#}"
+                    );
+                    Ok(anthropic_fallback_models())
+                }
+            };
         }
         AiProvider::AiNovelist => {
             let legacy = static_legacy_ainoverist_models();
@@ -8044,6 +8101,208 @@ mod tests {
         let err = super::parse_anthropic_http_error(reqwest::StatusCode::BAD_REQUEST, body);
         assert!(err.to_string().contains("400"));
         assert!(err.to_string().contains("Extra inputs are not permitted"));
+    }
+
+    #[test]
+    fn parse_anthropic_model_maps_limits_and_leaves_capabilities_to_the_renderer() {
+        let m = serde_json::json!({
+            "type": "model",
+            "id": "claude-opus-5-5",
+            "display_name": "Claude Opus 5.5",
+            "created_at": "2026-10-01T00:00:00Z",
+            "max_input_tokens": 1000000,
+            "max_tokens": 128000,
+            "capabilities": { "thinking": { "supported": true } }
+        });
+        let model = super::parse_anthropic_model(&m).unwrap();
+        assert_eq!(model.id, "claude-opus-5-5");
+        assert_eq!(model.name, "Claude Opus 5.5");
+        assert_eq!(model.context_length, Some(1_000_000));
+        assert_eq!(model.max_completion_tokens, Some(128_000));
+        // renderer の動的能力経路（thinking／effort を落とす）に流さない。
+        assert!(model.supported_parameters.is_none());
+        assert!(model.pricing_prompt.is_none());
+    }
+
+    #[test]
+    fn parse_anthropic_model_falls_back_to_id_and_rejects_missing_id() {
+        let model =
+            super::parse_anthropic_model(&serde_json::json!({ "id": "claude-x-1" })).unwrap();
+        assert_eq!(model.name, "claude-x-1");
+        assert_eq!(model.context_length, None);
+        assert_eq!(model.max_completion_tokens, None);
+        assert!(
+            super::parse_anthropic_model(&serde_json::json!({ "display_name": "n" })).is_none()
+        );
+        assert!(super::parse_anthropic_model(&serde_json::json!({ "id": "" })).is_none());
+    }
+
+    #[test]
+    fn anthropic_fallback_models_cover_the_current_generation_without_mythos() {
+        let models = super::anthropic_fallback_models();
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids[0], "claude-fable-5-1");
+        for id in [
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-haiku-4-5-20251001",
+        ] {
+            assert!(ids.contains(&id), "missing {id}");
+        }
+        assert!(ids.iter().all(|id| !id.contains("mythos")));
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len());
+    }
+
+    #[test]
+    fn anthropic_models_url_points_at_the_models_endpoint() {
+        let ep = ProviderEndpoints {
+            ollama: "",
+            openai_compat_custom: "",
+        };
+        assert_eq!(
+            AiProvider::Anthropic.models_url(ep, None),
+            "https://api.anthropic.com/v1/models"
+        );
+    }
+
+    async fn read_test_http_head(stream: &mut TcpStream) -> anyhow::Result<String> {
+        let mut request = Vec::new();
+        loop {
+            let mut chunk = [0u8; 4096];
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        Ok(String::from_utf8(request)?)
+    }
+
+    /// 与えた応答（status, body）を順に返し、受け取った request の先頭部を記録する server。
+    async fn spawn_anthropic_models_server(
+        responses: Vec<(&'static str, String)>,
+    ) -> anyhow::Result<(String, tokio::task::JoinHandle<Vec<String>>)> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let url = format!("http://{}/v1/models", listener.local_addr()?);
+        let handle = tokio::spawn(async move {
+            let mut heads = Vec::new();
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                heads.push(read_test_http_head(&mut stream).await.unwrap());
+                write_test_http_response(&mut stream, status, &[], &body)
+                    .await
+                    .unwrap();
+            }
+            heads
+        });
+        Ok((url, handle))
+    }
+
+    fn anthropic_models_page(ids: &[&str], has_more: bool) -> String {
+        serde_json::json!({
+            "data": ids.iter().map(|id| serde_json::json!({
+                "type": "model",
+                "id": id,
+                "display_name": format!("Name {id}"),
+                "max_input_tokens": 1000000,
+                "max_tokens": 128000
+            })).collect::<Vec<_>>(),
+            "has_more": has_more,
+            "first_id": ids.first(),
+            "last_id": ids.last()
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn fetch_anthropic_models_follows_has_more_with_after_id_and_sends_headers(
+    ) -> anyhow::Result<()> {
+        let (url, server) = spawn_anthropic_models_server(vec![
+            (
+                "200 OK",
+                anthropic_models_page(&["claude-a", "claude-b"], true),
+            ),
+            ("200 OK", anthropic_models_page(&["claude-c"], false)),
+        ])
+        .await?;
+
+        let models =
+            super::fetch_anthropic_models(&reqwest::Client::new(), &url, "sk-ant-test").await?;
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["claude-a", "claude-b", "claude-c"]);
+        assert_eq!(models[0].name, "Name claude-a");
+
+        let heads = server.await?;
+        assert_eq!(heads.len(), 2);
+        assert!(
+            heads[0].starts_with("GET /v1/models?limit=1000 "),
+            "{}",
+            heads[0]
+        );
+        assert!(
+            heads[1].starts_with("GET /v1/models?limit=1000&after_id=claude-b "),
+            "{}",
+            heads[1]
+        );
+        for head in &heads {
+            let lower = head.to_ascii_lowercase();
+            assert!(lower.contains("x-api-key: sk-ant-test"), "{head}");
+            assert!(lower.contains("anthropic-version: 2023-06-01"), "{head}");
+            assert!(!lower.contains("authorization:"), "{head}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fetch_anthropic_models_stops_when_paging_does_not_advance() -> anyhow::Result<()> {
+        // has_more が真のまま last_id が進まない異常な応答でも 2 回で止まる。
+        let (url, server) = spawn_anthropic_models_server(vec![
+            ("200 OK", anthropic_models_page(&["claude-a"], true)),
+            ("200 OK", anthropic_models_page(&["claude-a"], true)),
+        ])
+        .await?;
+        let models =
+            super::fetch_anthropic_models(&reqwest::Client::new(), &url, "sk-ant-test").await?;
+        assert_eq!(models.len(), 2);
+        assert_eq!(server.await?.len(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fetch_anthropic_models_reports_http_error_message() -> anyhow::Result<()> {
+        let body = r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#;
+        let (url, server) =
+            spawn_anthropic_models_server(vec![("401 Unauthorized", body.to_string())]).await?;
+        let error = super::fetch_anthropic_models(&reqwest::Client::new(), &url, "bad")
+            .await
+            .unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("401"), "{text}");
+        assert!(text.contains("invalid x-api-key"), "{text}");
+        server.await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fetch_models_for_anthropic_without_key_returns_the_built_in_list_without_http(
+    ) -> anyhow::Result<()> {
+        let ep = ProviderEndpoints {
+            ollama: "",
+            openai_compat_custom: "",
+        };
+        for key in ["", "   "] {
+            let models = fetch_models_for(&AiProvider::Anthropic, key, ep, None).await?;
+            assert_eq!(models.len(), super::anthropic_fallback_models().len());
+            assert_eq!(models[0].id, "claude-fable-5-1");
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
