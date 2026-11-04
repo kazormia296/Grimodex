@@ -32,7 +32,9 @@ export function SceneScopePrincipals({
       onChange={(event) => onChange(field, fromValue(event.target.value))}
       className="rounded border border-border bg-background px-1.5 py-1 text-[10px] text-foreground"
     >
-      <option value="reader">reader</option>
+      <option value="reader">
+        {t("editor.sceneDetail.principalReader", "reader")}
+      </option>
       {characters.map((entry) => (
         <option key={entry.id} value={`character:${entry.id}`}>
           {entry.name}

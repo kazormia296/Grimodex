@@ -487,6 +487,12 @@ const INTERNAL_COMMANDS = new Set([
   "narrative_scene_scope_read",
   "narrative_scene_scope_registry_update",
   "narrative_scene_scope_update",
+  // Project Scene Scope default (SDEF/1 MD5, DR-SDEF-27): local DB only; the
+  // reader returns the closed default value and its version, never prose. Like
+  // the Scope commands above, Native's entry checks the registered caller and
+  // workspace while restricted, and no Main grant is needed.
+  "narrative_scope_project_default_read",
+  "narrative_scope_project_default_update",
   "nir1_entity_relation_revision_create",
   // Prepare resolves live identities and persists only a typed draft. The
   // renderer receives an opaque metadata receipt; qualified material is read

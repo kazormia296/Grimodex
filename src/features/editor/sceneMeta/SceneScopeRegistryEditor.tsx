@@ -172,6 +172,18 @@ export function SceneScopeRegistryEditor({
             </button>
           </div>
         ))}
+        {/* SDEF/1 R19 (DR-SDEF-32): a registry change invalidates the whole
+            project's dependents, so say so before the save. */}
+        {JSON.stringify(normalizedRegistry(draft)) !==
+          JSON.stringify(normalizedRegistry(registry)) && (
+          <p
+            role="status"
+            data-testid="scene-scope-registry-warning"
+            className="text-[10px] text-amber-700 dark:text-amber-300"
+          >
+            {t("editor.sceneDetail.scopeRegistryWarning")}
+          </p>
+        )}
         {error && <span className="text-[10px] text-destructive">{error}</span>}
         <button
           type="button"

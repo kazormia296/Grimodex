@@ -1,4 +1,8 @@
 import { useState, useCallback, useEffect } from "react";
+import {
+  applyScopeDefaultAfterImport,
+  type ScopeDefaultImportChoice,
+} from "@/features/scene-scope-default/importApply";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { parseKakuyomuZip } from "../kakuyomuParser";
@@ -36,6 +40,8 @@ interface Props {
   enforceBrowserLimits?: boolean;
   onBusyChange?: (busy: boolean) => void;
   onFailedChange?: (failed: boolean) => void;
+  /** SDEF/1 R14: apply the Scope default to the imported scenes afterwards. */
+  applyScopeDefault?: ScopeDefaultImportChoice;
 }
 
 export function KakuyomuImportFlow({
@@ -44,6 +50,7 @@ export function KakuyomuImportFlow({
   enforceBrowserLimits = false,
   onBusyChange,
   onFailedChange,
+  applyScopeDefault = false,
 }: Props) {
   const { t } = useTranslation();
   const [phase, setPhase] = useState<SimpleImportPhase>("idle");
@@ -148,11 +155,13 @@ export function KakuyomuImportFlow({
         }
       }
 
-      const { imported, errors: treeErrors } = await importTree(
-        parsed.tree,
-        setProgress,
-      );
+      const {
+        imported,
+        errors: treeErrors,
+        sceneIds,
+      } = await importTree(parsed.tree, setProgress);
       allErrors.push(...treeErrors);
+      await applyScopeDefaultAfterImport(applyScopeDefault, sceneIds);
       setErrors(allErrors);
       await reloadTree(getCurrentProjectId());
       setPhase("done");
@@ -178,6 +187,7 @@ export function KakuyomuImportFlow({
     t,
     reloadTree,
     onFailedChange,
+    applyScopeDefault,
   ]);
 
   return (

@@ -544,6 +544,8 @@ describe("importChapters", () => {
 
     expect(result.imported).toBe(2); // chapter + scene
     expect(result.errors).toHaveLength(0);
+    // SDEF/1 R14: only the created Scenes are the loop's targets.
+    expect(result.sceneIds).toEqual(["scene-1"]);
     expect(mockCreateNode).toHaveBeenCalledTimes(2);
     for (const call of mockCreateNode.mock.calls) {
       expect(call[1]).toEqual(

@@ -12,6 +12,7 @@ import { Loader2 } from "lucide-react";
 import { CollapsibleSection } from "@/features/layout/CollapsibleSection";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { debugLog } from "@/lib/debugLog";
+import { isElectron } from "@/lib/tauri";
 import { Nir1RelatedSceneRow } from "./Nir1RelatedSceneRow";
 import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
 import { isNir1GraphUiEnabled } from "./nir1GraphAvailability";
@@ -26,6 +27,11 @@ const Nir1GraphRelatedScenes = lazy(() => import("./Nir1GraphRelatedScenes"));
 // The seed line and the seed candidates (DR-SEEDSUG-1): their own lazy chunk,
 // requested only while the Graph UI constant is on.
 const Nir1GraphSeedPanel = lazy(() => import("./Nir1GraphSeedPanel"));
+// The Scope cause of an `unsupported-query` (DR-SDEF-33): its own lazy chunk,
+// requested only in Electron while that reason is shown.
+const RelatedScenesScopeGuidance = lazy(
+  () => import("./RelatedScenesScopeGuidance"),
+);
 
 /** A failed Graph chunk or render falls back to the R/R+IR rows. */
 class Nir1GraphBoundary extends Component<
@@ -153,18 +159,40 @@ export function RelatedScenesSection({
             </Suspense>
           </Nir1GraphBoundary>
         )}
-        {unavailable && (
-          <p
-            data-testid="nir1-unavailable"
-            className="px-3 py-2 text-[11px] text-muted-foreground"
-          >
-            {t(
-              unavailable === "unsupported-query"
-                ? "relatedScenes.irUnsupported"
-                : "relatedScenes.irUnavailable",
-            )}
-          </p>
-        )}
+        {unavailable &&
+          (() => {
+            const text = (
+              <p
+                data-testid="nir1-unavailable"
+                className="px-3 py-2 text-[11px] text-muted-foreground"
+              >
+                {t(
+                  unavailable === "unsupported-query"
+                    ? "relatedScenes.irUnsupported"
+                    : "relatedScenes.irUnavailable",
+                )}
+              </p>
+            );
+            return unavailable === "unsupported-query" &&
+              sceneId &&
+              isElectron() ? (
+              <Nir1GraphBoundary
+                fallback={text}
+                message="scope guidance unavailable"
+              >
+                <Suspense fallback={text}>
+                  <RelatedScenesScopeGuidance
+                    // A new Scene starts without the previous "applied" note.
+                    key={sceneId}
+                    sceneId={sceneId}
+                    fallback={text}
+                  />
+                </Suspense>
+              </Nir1GraphBoundary>
+            ) : (
+              text
+            );
+          })()}
         {!sceneId ? (
           <p className="px-3 py-2 text-[11px] text-muted-foreground">
             {t("relatedScenes.noActiveScene")}

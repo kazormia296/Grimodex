@@ -16,6 +16,8 @@ import { usePhaseStore } from "@/features/codex/phaseStore";
 import type { PhaseResolutionMode } from "@/features/codex/phaseResolver";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { GENRE_VALUES } from "@/features/project/genreOptions";
+import { isElectron } from "@/lib/tauri";
+import { SceneScopeDefaultSection } from "./SceneScopeDefaultSection";
 
 const LANGUAGE_OPTIONS = [
   { value: "ja", label: "日本語" },
@@ -95,6 +97,7 @@ export function ProjectCategory() {
   const updateProjectDefaults = useWorkspaceStore(
     (s) => s.updateProjectDefaults,
   );
+  const workspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
 
   async function handleSaveAsDefaults() {
     try {
@@ -209,6 +212,13 @@ export function ProjectCategory() {
           </select>
         </SettingRow>
       </SettingSection>
+
+      {isElectron() && workspacePath && (
+        <SceneScopeDefaultSection
+          workspacePath={workspacePath}
+          projectId={project.id}
+        />
+      )}
 
       <SettingSection title={t("settings.project.namingRules")}>
         <SettingRow label={t("settings.project.folderNaming")}>

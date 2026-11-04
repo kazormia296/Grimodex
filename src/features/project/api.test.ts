@@ -302,6 +302,32 @@ describe("createProject", () => {
       }),
     });
   });
+
+  it("sends sceneScopeDefault only when the creation screen asks (SDEF/1 R12, A7)", async () => {
+    invokeMock.mockClear();
+    await createProject({ id: "project-plain", title: "Novel" });
+    const plain = invokeMock.mock.calls.at(-1)?.[1] as {
+      payload: Record<string, unknown>;
+    };
+    // No key at all (not even `undefined`): imports and the evaluation
+    // harness create a project without a Scene Scope default.
+    expect(Object.hasOwn(plain.payload, "sceneScopeDefault")).toBe(false);
+
+    await createProject(
+      { id: "project-main", title: "Novel" },
+      { sceneScopeDefault: "main-line" },
+    );
+    const mainLine = invokeMock.mock.calls.at(-1)?.[1] as {
+      payload: Record<string, unknown>;
+    };
+    expect(mainLine.payload.sceneScopeDefault).toBe("main-line");
+
+    await createProject({ id: "project-empty", title: "Novel" }, {});
+    const empty = invokeMock.mock.calls.at(-1)?.[1] as {
+      payload: Record<string, unknown>;
+    };
+    expect(Object.hasOwn(empty.payload, "sceneScopeDefault")).toBe(false);
+  });
 });
 
 describe("deleteProject", () => {

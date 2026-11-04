@@ -878,6 +878,16 @@ export interface NapiBackendLike {
     payload: unknown,
     callerIdentity?: string,
   ): Promise<string>;
+  /** Project Scene Scope default reader (SDEF/1 MD5, DR-SDEF-25). */
+  narrativeScopeProjectDefaultRead?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
+  /** Project Scene Scope default writer (SDEF/1 MD4/MD5, DR-SDEF-25). */
+  narrativeScopeProjectDefaultUpdate?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
   /**
    * Scene body declaration (CB-2). A typed entry apart from the A1 save. It
    * needs the one-time grant Main attaches as the trailing sidecar and stays
@@ -4038,6 +4048,15 @@ function requireProjectCreatePayload(args: CommandArgs): CommandArgs {
   ]) {
     requireNullableStringField(payload, key, command);
   }
+  // SDEF/1 R12 (DR-SDEF-28): absent, or exactly the closed value "main-line".
+  if (
+    Object.hasOwn(payload, "sceneScopeDefault") &&
+    payload.sceneScopeDefault !== "main-line"
+  ) {
+    throw new Error(
+      `invalid args \`sceneScopeDefault\` for command \`${command}\`: expected "main-line" or no field`,
+    );
+  }
   return payload;
 }
 
@@ -7162,6 +7181,177 @@ function requireSceneScopeMutationRequest(
   };
 }
 
+const SCOPE_DEFAULT_AXES = ["timeline", "worldline", "narrativeLayer"] as const;
+
+function rejectUnknownKeys(
+  value: CommandArgs,
+  allowed: readonly string[],
+  path: string,
+  command: string,
+): void {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) {
+      throw new Error(
+        `invalid args \`${path}${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+}
+
+function requireExactScopeDefaultAxes(
+  parent: CommandArgs,
+  key: "queryIdentity" | "materialConstraint",
+  command: string,
+): Record<string, string> {
+  const value = parent[key];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      `invalid args \`payload.default.${key}\` for command \`${command}\`: expected an object`,
+    );
+  }
+  const axes = value as CommandArgs;
+  rejectUnknownKeys(
+    axes,
+    SCOPE_DEFAULT_AXES,
+    `payload.default.${key}.`,
+    command,
+  );
+  const refs: Record<string, string> = {};
+  for (const axis of SCOPE_DEFAULT_AXES) {
+    const constraint = axes[axis];
+    const path = `payload.default.${key}.${axis}`;
+    if (
+      constraint === null ||
+      typeof constraint !== "object" ||
+      Array.isArray(constraint)
+    ) {
+      throw new Error(
+        `invalid args \`${path}\` for command \`${command}\`: expected an exact constraint`,
+      );
+    }
+    const record = constraint as CommandArgs;
+    rejectUnknownKeys(record, ["kind", "ref"], `${path}.`, command);
+    if (
+      record.kind !== "exact" ||
+      typeof record.ref !== "string" ||
+      record.ref.length === 0
+    ) {
+      throw new Error(
+        `invalid args \`${path}\` for command \`${command}\`: the default must be exact`,
+      );
+    }
+    refs[axis] = record.ref;
+  }
+  return refs;
+}
+
+/**
+ * Main re-validation of the project Scene Scope default reader (SDEF/1 MD5,
+ * DR-SDEF-26). Native checks the same request again.
+ */
+function requireScopeProjectDefaultReadRequest(args: CommandArgs): CommandArgs {
+  const command = "narrative_scope_project_default_read";
+  // `callerIdentity` is Main-only D2a identity; it is never forwarded into
+  // the deny-unknown-fields Native request.
+  rejectUnknownKeys(
+    args,
+    ["expectedWorkspacePath", "projectId", "callerIdentity"],
+    "",
+    command,
+  );
+  return {
+    expectedWorkspacePath: requireNonEmptyString(
+      args,
+      "expectedWorkspacePath",
+      command,
+    ),
+    projectId: requireNonEmptyString(args, "projectId", command),
+  };
+}
+
+/**
+ * Main re-validation of the project Scene Scope default writer (SDEF/1 R2,
+ * MD4, MD5, DR-SDEF-26): exact keys, `baseVersion` >= 0 (the first write of a
+ * project without a row expects 0), and the closed default value.
+ */
+function requireScopeProjectDefaultUpdateRequest(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_scope_project_default_update";
+  rejectUnknownKeys(
+    args,
+    ["expectedWorkspacePath", "payload", "callerIdentity"],
+    "",
+    command,
+  );
+  const payload = requireRecord(args, "payload", command);
+  const payloadKeys = [
+    "projectId",
+    "requestId",
+    "sessionId",
+    "eventUid",
+    "baseVersion",
+    "updatedAt",
+    "default",
+  ];
+  rejectUnknownKeys(payload, payloadKeys, "payload.", command);
+  for (const key of payloadKeys) requirePresent(payload, key, command);
+  for (const key of [
+    "projectId",
+    "requestId",
+    "sessionId",
+    "eventUid",
+    "updatedAt",
+  ]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  if (
+    typeof payload.baseVersion !== "number" ||
+    !Number.isSafeInteger(payload.baseVersion) ||
+    payload.baseVersion < 0
+  ) {
+    throw new Error(
+      `invalid args \`payload.baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+    );
+  }
+  const value = requireRecord(payload, "default", command);
+  if (value.state === "none") {
+    rejectUnknownKeys(value, ["state"], "payload.default.", command);
+  } else if (value.state === "set") {
+    rejectUnknownKeys(
+      value,
+      ["state", "queryIdentity", "materialConstraint"],
+      "payload.default.",
+      command,
+    );
+    const query = requireExactScopeDefaultAxes(value, "queryIdentity", command);
+    const material = requireExactScopeDefaultAxes(
+      value,
+      "materialConstraint",
+      command,
+    );
+    for (const axis of SCOPE_DEFAULT_AXES) {
+      if (query[axis] !== material[axis]) {
+        throw new Error(
+          `invalid args \`payload.default.materialConstraint.${axis}\` for command \`${command}\`: the material constraint must equal the query identity`,
+        );
+      }
+    }
+  } else {
+    throw new Error(
+      `invalid args \`payload.default.state\` for command \`${command}\`: expected "set" or "none"`,
+    );
+  }
+  return {
+    expectedWorkspacePath: requireNonEmptyString(
+      args,
+      "expectedWorkspacePath",
+      command,
+    ),
+    payload,
+  };
+}
+
 /**
  * Key under which Electron main attaches its `own-data-read` classification of
  * a generic DB command to the dispatch args (a `boolean` for `db_execute`, a
@@ -9848,6 +10038,34 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
             a,
             "narrative_scene_body_declaration_state",
           ),
+          callerIdentityWire(a),
+        ),
+      ),
+  },
+  narrative_scope_project_default_read: {
+    run: async (b, a) =>
+      parseWire(
+        await callPublicationEntry1(
+          requireNapiMethod(
+            b,
+            b.narrativeScopeProjectDefaultRead,
+            "narrativeScopeProjectDefaultRead",
+          ),
+          requireScopeProjectDefaultReadRequest(a),
+          callerIdentityWire(a),
+        ),
+      ),
+  },
+  narrative_scope_project_default_update: {
+    run: async (b, a) =>
+      parseWire(
+        await callPublicationEntry1(
+          requireNapiMethod(
+            b,
+            b.narrativeScopeProjectDefaultUpdate,
+            "narrativeScopeProjectDefaultUpdate",
+          ),
+          requireScopeProjectDefaultUpdateRequest(a),
           callerIdentityWire(a),
         ),
       ),

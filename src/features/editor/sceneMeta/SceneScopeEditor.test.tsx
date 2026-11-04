@@ -75,6 +75,11 @@ vi.mock("./SceneScopeFields", () => ({
   ),
 }));
 vi.mock("./SceneScopePrincipals", () => ({ SceneScopePrincipals: () => null }));
+// The project default badge and action read their own command; these request
+// epoch tests count only the binding and registry calls.
+vi.mock("./SceneScopeDefaultActions", () => ({
+  SceneScopeDefaultActions: () => null,
+}));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -275,6 +280,80 @@ describe("SceneScopeEditor request epochs", () => {
     expect(invokeMock).toHaveBeenCalledTimes(3);
   });
 
+  it("keeps a separate local material over a peer's material after an OCC conflict (PR-2 review P2-3)", async () => {
+    const initialRead = deferred<ScopeRead>();
+    const staleSave = deferred<ScopeUpdate>();
+    const recoveryRead = deferred<ScopeRead>();
+    const retrySave = deferred<ScopeUpdate>();
+    invokeMock
+      .mockReset()
+      .mockReturnValueOnce(initialRead.promise)
+      .mockReturnValueOnce(staleSave.promise)
+      .mockReturnValueOnce(recoveryRead.promise)
+      .mockReturnValueOnce(retrySave.promise);
+    render(<SceneScopeEditor node={node("scene-a")} />);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1));
+    // A saved explicit binding whose query and material differ starts with
+    // the material set separately, so the material does not follow.
+    const initial = scope("scene-a", 1);
+    initial.binding.compatibilityMarker = "explicit";
+    initial.binding.queryIdentity.timeline = {
+      kind: "exact",
+      ref: "timeline:main",
+    };
+    initial.binding.materialConstraint.timeline = {
+      kind: "exact",
+      ref: "timeline:main",
+    };
+    await act(async () => initialRead.resolve(initial));
+    expect(
+      (screen.getByTestId("scene-scope-material-separate") as HTMLInputElement)
+        .checked,
+    ).toBe(true);
+
+    fireEvent.click(screen.getByTestId("scene-scope-test-edit"));
+    fireEvent.click(screen.getByTestId("scene-scope-binding-save"));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
+    staleSave.reject(
+      new Error(
+        "NEX_SCENE_SCOPE_VERSION_MISMATCH: expected base version 1, current is 2",
+      ),
+    );
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(3));
+    const recovered = scope("scene-a", 2);
+    recovered.binding.compatibilityMarker = "explicit";
+    recovered.binding.materialConstraint.timeline = {
+      kind: "exact",
+      ref: "timeline:peer",
+    };
+    await act(async () => recoveryRead.resolve(recovered));
+    await waitFor(() =>
+      expect(screen.getByTestId("scene-scope-editor").textContent).toContain(
+        "v2",
+      ),
+    );
+
+    fireEvent.click(screen.getByTestId("scene-scope-binding-save"));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(4));
+    const retried = invokeMock.mock.calls[3][1].payload.scope;
+    expect(retried.queryIdentity.timeline).toEqual({
+      kind: "exact",
+      ref: "timeline:local",
+    });
+    // The peer's material is shown, never copied into the local draft.
+    expect(retried.materialConstraint.timeline).toEqual({
+      kind: "exact",
+      ref: "timeline:main",
+    });
+    expect(retried.materialConstraint.worldline).toEqual({ kind: "any" });
+    await act(async () =>
+      retrySave.resolve({
+        registry: recovered.registry,
+        binding: recovered.binding,
+      }),
+    );
+  });
+
   it("rebases an OCC conflict and saves the local draft without navigation", async () => {
     const initialRead = deferred<ScopeRead>();
     const staleSave = deferred<ScopeUpdate>();
@@ -349,9 +428,10 @@ describe("SceneScopeEditor request epochs", () => {
     expect(
       invokeMock.mock.calls[3][1].payload.scope.queryIdentity.timeline,
     ).toEqual({ kind: "exact", ref: "timeline:local" });
+    // rev2 §7.3 (A8): an unset binding follows the query into the material.
     expect(
       invokeMock.mock.calls[3][1].payload.scope.materialConstraint.timeline,
-    ).toEqual({ kind: "any" });
+    ).toEqual({ kind: "exact", ref: "timeline:local" });
     await act(async () =>
       retrySave.resolve({
         registry: recovered.registry,
