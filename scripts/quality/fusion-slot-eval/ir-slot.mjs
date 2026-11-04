@@ -720,9 +720,9 @@ export async function runIrSlot(options) {
           paragraphs: scene.paragraphs,
         })),
       );
-      // 案 B の既定の再現：抽出の前に、足した Scene の scope を本筋の explicit にする。
+      // 案 B（製品の既定）：抽出の前に、足した Scene が本筋の既定を受け継いだかを確かめる。
       checkpoint.scope = await page.evaluate(
-        (positions) => window.fusionIrEvaluation.applyMainScope(positions),
+        (positions) => window.fusionIrEvaluation.verifyMainScope(positions),
         fresh.map((scene) => scene.index),
       );
       log(`${label} scope: ${JSON.stringify(checkpoint.scope)}`);
