@@ -1,3 +1,4 @@
+import { Suspense, lazy } from "react";
 import { X } from "lucide-react";
 import type { Editor } from "@tiptap/core";
 import { useTranslation } from "react-i18next";
@@ -5,9 +6,17 @@ import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtens
 import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
 import { BeatsHeader } from "@/features/editor/BeatsHeader";
 import { ScenePropertyGrid } from "@/features/editor/sceneMeta/ScenePropertyGrid";
-import { SceneScopeEditor } from "@/features/editor/sceneMeta/SceneScopeEditor";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import { isElectron } from "@/lib/tauri";
+
+// The Scope field renders only in Electron. It is a lazy chunk so the startup
+// graph does not carry it (DR-SDEF-32 (6)); the browser build never fetches it.
+const SceneScopeEditor = lazy(() =>
+  import("@/features/editor/sceneMeta/SceneScopeEditor").then((m) => ({
+    default: m.SceneScopeEditor,
+  })),
+);
 
 interface SceneMetaPanelProps {
   sceneId: string;
@@ -65,7 +74,11 @@ export function SceneMetaPanel({
         )}
       </div>
       {isScene && node && <ScenePropertyGrid node={node} />}
-      {isScene && node && <SceneScopeEditor node={node} />}
+      {isScene && node && isElectron() && (
+        <Suspense fallback={null}>
+          <SceneScopeEditor node={node} />
+        </Suspense>
+      )}
       <SynopsisHeader sceneId={sceneId} editor={editor} />
       <BeatsHeader
         sceneId={sceneId}

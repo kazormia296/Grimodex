@@ -11,6 +11,8 @@ import { NovelImportFlow } from "./flows/NovelImportFlow";
 import { ScanImportFlow } from "./flows/ScanImportFlow";
 import { ImportWizard } from "./wizard/ImportWizard";
 import { GenericImportWizardPreview } from "./wizard/generic/GenericImportWizardPreview";
+import { ImportScopeDefaultOption } from "@/features/scene-scope-default/ImportScopeDefaultOption";
+import type { ScopeDefaultImportChoice } from "@/features/scene-scope-default/importApply";
 
 interface Props {
   open: boolean;
@@ -54,6 +56,9 @@ export function ImportDialogBody({
   const [flowBusy, setFlowBusy] = useState(false);
   const [flowFailed, setFlowFailed] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
+  // SDEF/1 R14: OFF by default; the scan flow and the previews do not use it.
+  const [applyScopeDefault, setApplyScopeDefault] =
+    useState<ScopeDefaultImportChoice>(false);
   const [genericWizardOpen, setGenericWizardOpen] = useState(false);
   const interactionLocked = flowBusy || flowFailed;
 
@@ -202,6 +207,14 @@ export function ImportDialogBody({
               disabled={interactionLocked}
             />
           )}
+          {source !== "scan" && (
+            <ImportScopeDefaultOption
+              importTarget={importTarget}
+              checked={applyScopeDefault !== false}
+              onChange={setApplyScopeDefault}
+              disabled={interactionLocked}
+            />
+          )}
 
           <div
             key={flowKey}
@@ -210,6 +223,7 @@ export function ImportDialogBody({
             {source === "novelcrafter" && (
               <NovelcrafterImportFlow
                 importTarget={importTarget}
+                applyScopeDefault={applyScopeDefault}
                 onClose={handleClose}
                 onBusyChange={handleBusyChange}
                 onFailedChange={handleFailureChange}
@@ -218,6 +232,7 @@ export function ImportDialogBody({
             {source === "kakuyomu" && (
               <KakuyomuImportFlow
                 importTarget={importTarget}
+                applyScopeDefault={applyScopeDefault}
                 onClose={handleClose}
                 onBusyChange={handleBusyChange}
                 onFailedChange={handleFailureChange}
@@ -226,6 +241,7 @@ export function ImportDialogBody({
             {source === "markdown" && (
               <MarkdownImportFlow
                 importTarget={importTarget}
+                applyScopeDefault={applyScopeDefault}
                 markdownMode={markdownMode}
                 onMarkdownModeChange={setMarkdownMode}
                 onClose={handleClose}
@@ -236,6 +252,7 @@ export function ImportDialogBody({
             {source === "novel" && (
               <NovelImportFlow
                 importTarget={importTarget}
+                applyScopeDefault={applyScopeDefault}
                 onClose={handleClose}
                 onBusyChange={handleBusyChange}
                 onFailedChange={handleFailureChange}

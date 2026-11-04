@@ -8,6 +8,7 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import { SceneScopeFields } from "./SceneScopeFields";
 import { SceneScopeRegistryEditor } from "./SceneScopeRegistryEditor";
 import { SceneScopePrincipals } from "./SceneScopePrincipals";
+import { SceneScopeDefaultActions } from "./SceneScopeDefaultActions";
 import { isBodyDeclarationUiEnabled } from "./bodyDeclaration/bodyDeclarationAvailability";
 import { UNSAVED_SCENE_EDITS } from "./bodyDeclaration/useUnsavedSceneEdits";
 import type {
@@ -42,6 +43,39 @@ function sameIdentity(
     left.workspacePath === right.workspacePath &&
     left.projectId === right.projectId &&
     left.sceneId === right.sceneId
+  );
+}
+
+const MARKER_LABEL_KEYS: Record<Binding["compatibilityMarker"], string> = {
+  explicit: "editor.sceneDetail.markerExplicit",
+  unknown: "editor.sceneDetail.markerUnknown",
+  "legacy-absent": "editor.sceneDetail.markerLegacyAbsent",
+};
+
+function sameConstraint(left: Constraint, right: Constraint): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function sameScopeAxes(
+  left: Binding["queryIdentity"],
+  right: Binding["queryIdentity"],
+): boolean {
+  return (
+    sameConstraint(left.timeline, right.timeline) &&
+    sameConstraint(left.worldline, right.worldline) &&
+    sameConstraint(left.narrativeLayer, right.narrativeLayer)
+  );
+}
+
+/**
+ * rev2 §7.3 (DR-SDEF-32): the material follows the query unless the author
+ * opens "set the material separately". A saved explicit binding whose two
+ * values already differ starts separate, so nothing is rewritten silently.
+ */
+function startsSeparate(binding: Binding): boolean {
+  return (
+    binding.compatibilityMarker === "explicit" &&
+    !sameScopeAxes(binding.queryIdentity, binding.materialConstraint)
   );
 }
 
@@ -91,6 +125,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
   const [conflictSnapshot, setConflictSnapshot] = useState<ScopeRead | null>(
     null,
   );
+  const [separateMaterial, setSeparateMaterial] = useState(false);
   const requestEpoch = useRef(0);
   const draftRef = useRef<Binding | null>(null);
   const identityRef = useRef<SceneScopeIdentity>({
@@ -160,6 +195,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
         if (!isCurrent()) return;
         setRead(value);
         setDraft(value.binding);
+        setSeparateMaterial(startsSeparate(value.binding));
       })
       .catch((cause: unknown) => {
         if (isCurrent()) {
@@ -188,6 +224,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
     value: Constraint,
   ) => {
     if (loading || saving) return;
+    if (group === "materialConstraint" && !separateMaterial) return;
     setDraft((current) =>
       current
         ? { ...current, [group]: { ...current[group], [axis]: value } }
@@ -195,10 +232,90 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
     );
   };
 
+  // While the material follows the query, the shown and saved material is
+  // the query itself.
+  const effectiveDraft =
+    draft && !separateMaterial
+      ? { ...draft, materialConstraint: draft.queryIdentity }
+      : draft;
+  const unsavedDraft = Boolean(
+    effectiveDraft &&
+    read &&
+    JSON.stringify([
+      effectiveDraft.queryIdentity,
+      effectiveDraft.materialConstraint,
+      effectiveDraft.knowledgeHolder,
+      effectiveDraft.audience,
+    ]) !==
+      JSON.stringify([
+        read.binding.queryIdentity,
+        read.binding.materialConstraint,
+        read.binding.knowledgeHolder,
+        read.binding.audience,
+      ]),
+  );
+  // rev2 §7.3 / §5.3: saving an earlier Scene while the vocabulary is empty
+  // makes an explicit binding with unresolved axes, so no interpretation
+  // appears any more. Say so before the save.
+  const legacyWithEmptyRegistry = Boolean(
+    read &&
+    read.binding.compatibilityMarker === "legacy-absent" &&
+    read.registry.timelineRefs.length === 0 &&
+    read.registry.worldlineRefs.length === 0 &&
+    read.registry.narrativeLayerRefs.length === 0,
+  );
+  const materialMismatch = Boolean(
+    effectiveDraft &&
+    !sameScopeAxes(
+      effectiveDraft.queryIdentity,
+      effectiveDraft.materialConstraint,
+    ),
+  );
+
   const scopeControlsDisabled = loading || saving;
 
+  // A registry write or an applied default changes the binding: hide both
+  // writers until a matching fresh read succeeds.
+  const reloadScope = async () => {
+    const refreshEpoch = requestEpoch.current;
+    const refreshIdentity = identity;
+    const isCurrentRefresh = () =>
+      requestEpoch.current === refreshEpoch &&
+      sameIdentity(identityRef.current, refreshIdentity);
+    if (!isCurrentRefresh() || !refreshIdentity.workspacePath) return;
+    // The registry write invalidates the binding snapshot immediately.
+    // Hide both writers until a matching fresh read succeeds; an old
+    // OCC version must never remain actionable after this boundary.
+    setRead(null);
+    setDraft(null);
+    setLoading(true);
+    setError(null);
+    try {
+      const fresh = await invoke<ScopeRead>("narrative_scene_scope_read", {
+        expectedWorkspacePath: refreshIdentity.workspacePath,
+        projectId: refreshIdentity.projectId,
+        sceneId: refreshIdentity.sceneId,
+      });
+      if (!isCurrentRefresh()) return;
+      // Replace the read and draft from one Native snapshot so the
+      // next binding update carries the current OCC version.
+      setRead(fresh);
+      setDraft(fresh.binding);
+      setSeparateMaterial(startsSeparate(fresh.binding));
+    } catch (cause: unknown) {
+      if (isCurrentRefresh()) {
+        setRead(null);
+        setDraft(null);
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    } finally {
+      if (isCurrentRefresh()) setLoading(false);
+    }
+  };
+
   const save = () => {
-    if (!draft || !workspacePath || scopeControlsDisabled) return;
+    if (!effectiveDraft || !workspacePath || scopeControlsDisabled) return;
+    const draft = effectiveDraft;
     const epoch = requestEpoch.current;
     const requestIdentity = identity;
     const isCurrent = () =>
@@ -236,6 +353,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
           current ? { ...current, binding: value.binding } : current,
         );
         setDraft(value.binding);
+        setSeparateMaterial(startsSeparate(value.binding));
         setConflictSnapshot(null);
       })
       .catch((cause: unknown) => {
@@ -319,8 +437,15 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
           {t("editor.sceneDetail.scope", "Scope")}
         </span>
         {draft && (
-          <span className="ms-auto text-[9px] text-muted-foreground">
-            {draft.compatibilityMarker} · v{draft.version}
+          <span
+            data-testid="scene-scope-marker"
+            className="ms-auto text-[9px] text-muted-foreground"
+          >
+            {t(
+              MARKER_LABEL_KEYS[draft.compatibilityMarker],
+              draft.compatibilityMarker,
+            )}{" "}
+            · v{draft.version}
           </span>
         )}
       </div>
@@ -362,7 +487,7 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
           )}
         </div>
       )}
-      {draft && read && workspacePath && (
+      {draft && effectiveDraft && read && workspacePath && (
         <fieldset
           data-testid="scene-scope-controls"
           disabled={scopeControlsDisabled}
@@ -374,52 +499,54 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
             workspacePath={workspacePath}
             registry={read.registry}
             registryRevision={read.registryRevision}
-            onSaved={async (_update: RegistryUpdate) => {
-              const refreshEpoch = requestEpoch.current;
-              const refreshIdentity = identity;
-              const isCurrentRefresh = () =>
-                requestEpoch.current === refreshEpoch &&
-                sameIdentity(identityRef.current, refreshIdentity);
-              if (!isCurrentRefresh() || !refreshIdentity.workspacePath) return;
-              // The registry write invalidates the binding snapshot immediately.
-              // Hide both writers until a matching fresh read succeeds; an old
-              // OCC version must never remain actionable after this boundary.
-              setRead(null);
-              setDraft(null);
-              setLoading(true);
-              setError(null);
-              try {
-                const fresh = await invoke<ScopeRead>(
-                  "narrative_scene_scope_read",
-                  {
-                    expectedWorkspacePath: refreshIdentity.workspacePath,
-                    projectId: refreshIdentity.projectId,
-                    sceneId: refreshIdentity.sceneId,
-                  },
-                );
-                if (!isCurrentRefresh()) return;
-                // Replace the read and draft from one Native snapshot so the
-                // next binding update carries the current OCC version.
-                setRead(fresh);
-                setDraft(fresh.binding);
-              } catch (cause: unknown) {
-                if (isCurrentRefresh()) {
-                  setRead(null);
-                  setDraft(null);
-                  setError(
-                    cause instanceof Error ? cause.message : String(cause),
-                  );
-                }
-              } finally {
-                if (isCurrentRefresh()) setLoading(false);
-              }
-            }}
+            onSaved={(_update: RegistryUpdate) => reloadScope()}
           />
+          <SceneScopeDefaultActions
+            workspacePath={workspacePath}
+            binding={read.binding}
+            onApplied={reloadScope}
+            hasUnsavedDraft={unsavedDraft}
+          />
+          {legacyWithEmptyRegistry && (
+            <p
+              role="status"
+              data-testid="scene-scope-legacy-empty-registry"
+              className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-950 dark:text-amber-100"
+            >
+              {t("editor.sceneDetail.scopeLegacyEmptyRegistry")}
+            </p>
+          )}
           <SceneScopeFields
-            draft={draft}
+            draft={effectiveDraft}
             registry={read.registry}
+            materialLocked={!separateMaterial}
             onAxisChange={updateAxis}
           />
+          <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+            <input
+              type="checkbox"
+              data-testid="scene-scope-material-separate"
+              checked={separateMaterial}
+              onChange={(event) => {
+                // Opening keeps the shown (followed) values as the start of
+                // the separate material; closing makes it follow again.
+                if (event.target.checked && effectiveDraft) {
+                  setDraft(effectiveDraft);
+                }
+                setSeparateMaterial(event.target.checked);
+              }}
+            />
+            {t("editor.sceneDetail.scopeMaterialSeparate")}
+          </label>
+          {materialMismatch && (
+            <p
+              role="status"
+              data-testid="scene-scope-material-mismatch"
+              className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-950 dark:text-amber-100"
+            >
+              {t("editor.sceneDetail.scopeMaterialMismatch")}
+            </p>
+          )}
           <SceneScopePrincipals
             knowledgeHolder={draft.knowledgeHolder}
             audience={draft.audience}

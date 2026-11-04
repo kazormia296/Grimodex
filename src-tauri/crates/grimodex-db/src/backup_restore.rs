@@ -2974,6 +2974,7 @@ mod tests {
                         "restore-v42",
                         scene,
                         "2026-10-17T00:00:00.000Z",
+                        crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                     )?;
                 }
                 Ok(())
@@ -3056,6 +3057,7 @@ mod tests {
                     "restore-scope",
                     "restore-scope-scene",
                     "2026-09-14T00:00:00.000Z",
+                    crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                 )?;
                 Ok(())
             })
@@ -3142,6 +3144,7 @@ mod tests {
                                 project,
                                 scene,
                                 "2026-10-17T00:00:00.000Z",
+                                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                             )?;
                         }
                     }

@@ -1,4 +1,8 @@
 import { useState, useCallback, useEffect } from "react";
+import {
+  applyScopeDefaultAfterImport,
+  type ScopeDefaultImportChoice,
+} from "@/features/scene-scope-default/importApply";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { openFolderDialog } from "@/lib/dialog";
@@ -57,6 +61,8 @@ interface Props {
   enforceBrowserLimits?: boolean;
   onBusyChange?: (busy: boolean) => void;
   onFailedChange?: (failed: boolean) => void;
+  /** SDEF/1 R14: apply the Scope default to the imported scenes afterwards. */
+  applyScopeDefault?: ScopeDefaultImportChoice;
 }
 
 async function readDirRecursive(
@@ -75,6 +81,7 @@ export function MarkdownImportFlow({
   enforceBrowserLimits = false,
   onBusyChange,
   onFailedChange,
+  applyScopeDefault = false,
 }: Props) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<MarkdownImportMode>(markdownMode);
@@ -288,6 +295,10 @@ export function MarkdownImportFlow({
           : await importTree(parsed.tree, setProgress);
 
       allErrors.push(...importResult.errors);
+      await applyScopeDefaultAfterImport(
+        applyScopeDefault,
+        importResult.sceneIds,
+      );
       setErrors(allErrors);
       await reloadTree(getCurrentProjectId());
 
@@ -315,7 +326,15 @@ export function MarkdownImportFlow({
       onFailedChange?.(true);
       setPhase("failed");
     }
-  }, [parsed, importTarget, applyMetadata, t, reloadTree, onFailedChange]);
+  }, [
+    parsed,
+    importTarget,
+    applyMetadata,
+    t,
+    reloadTree,
+    onFailedChange,
+    applyScopeDefault,
+  ]);
 
   const clearLocalState = useCallback(() => {
     setPhase("idle");

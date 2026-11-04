@@ -58,6 +58,10 @@ export async function createProject(
         | "targetReaders"
       >
     >,
+  // SDEF/1 R12 (DR-SDEF-28): the key is sent only when the creation screen
+  // asks for it. Without it (imports, the evaluation harness) the project has
+  // no Scene Scope default.
+  options?: { sceneScopeDefault?: "main-line" },
 ): Promise<Project> {
   const now = new Date().toISOString();
   const result = await invoke<
@@ -77,6 +81,9 @@ export async function createProject(
       targetReaders: data.targetReaders ?? null,
       createdAt: now,
       updatedAt: now,
+      ...(options?.sceneScopeDefault === "main-line"
+        ? { sceneScopeDefault: "main-line" }
+        : {}),
     },
   });
   const { __writeReceipt: _receipt, ...project } = result;

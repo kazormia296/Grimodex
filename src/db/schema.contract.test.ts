@@ -63,6 +63,9 @@ const RUST_ONLY_TABLES = new Set([
   "post_effect_annotations_fts_en",
   "nir1_chat_input_captures",
   "nir1_chat_input_submission_keys",
+  // SDEF/1 MD5: the project Scene Scope default is Native-owned; the renderer
+  // reads and writes it only through typed commands, never through Drizzle.
+  "narrative_scope_project_defaults",
 ]);
 
 // FTS and Native-owned authority tables remain Rust-only physical storage.

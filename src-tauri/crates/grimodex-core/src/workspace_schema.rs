@@ -727,9 +727,11 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// or row, so Decision reads for one Revision or Proposal stop scanning the
 /// workspace. Version 43 adds the two nullable Scene body declaration columns
 /// ([`SCENE_BODY_DECLARATION_COLUMNS`]) to `narrative_scene_scope_bindings`; it
-/// never promotes or backfills an existing row.
+/// never promotes or backfills an existing row. Version 44 adds the project
+/// Scene Scope default table (`narrative_scope_project_defaults`, SDEF/1); no
+/// existing project gets a row.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 43
+    Ok(SCHEMA_VERSION == 44
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -772,6 +774,7 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v35_nir1_index_storage(conn)?
         && has_v36_scene_scope_storage(conn)?
         && has_v43_scene_body_declaration_columns(conn)?
+        && has_v44_scene_scope_project_default_storage(conn)?
         && has_v37_generation_storage(conn)?
         && has_v38_current_human_capture_storage(conn)?
         && has_v39_chat_input_submission_key_storage(conn)?
@@ -1204,6 +1207,37 @@ fn has_v43_scene_body_declaration_columns(conn: &Connection) -> anyhow::Result<b
                 && column.primary_key == 0
         })
     }))
+}
+
+/// SCHEMA 44 (SDEF/1). The project Scene Scope default table: its columns,
+/// declared types and the cascade to `projects`. Row content is validated by
+/// the Native reader, not here.
+fn has_v44_scene_scope_project_default_storage(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_scope_project_defaults")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "narrative_scope_project_defaults")?;
+    let expected = [
+        ("project_id", "TEXT"),
+        ("schema_version", "INTEGER"),
+        ("state", "TEXT"),
+        ("query_identity_json", "TEXT"),
+        ("material_constraint_json", "TEXT"),
+        ("version", "INTEGER"),
+        ("source_token", "TEXT"),
+        ("updated_at", "TEXT"),
+    ];
+    Ok(expected.iter().all(|(name, kind)| {
+        columns
+            .iter()
+            .any(|column| column.name == *name && column.declared_type == *kind)
+    }) && foreign_key_matches(
+        conn,
+        "narrative_scope_project_defaults",
+        "project_id",
+        "projects",
+        "id",
+    )?)
 }
 
 fn has_v36_scene_scope_storage(conn: &Connection) -> anyhow::Result<bool> {

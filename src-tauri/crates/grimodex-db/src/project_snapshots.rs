@@ -2948,6 +2948,7 @@ pub fn apply_project_snapshot_restore(
                     &payload.project_id,
                     scene_id,
                     updated_at,
+                    crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                 )?;
                 // A snapshot may replace an existing scene row. Preserve its
                 // Native incarnation, but bind the restored source timestamp
@@ -3179,6 +3180,7 @@ mod tests {
                     project_id,
                     scene_id,
                     "2026-07-30T00:00:00.000Z",
+                    crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                 )?;
             }
             conn.execute(
@@ -3297,6 +3299,7 @@ mod tests {
                 "p1",
                 "t1",
                 "2026-07-30T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             conn.execute(
                 "UPDATE narrative_scene_scope_bindings
@@ -5166,5 +5169,25 @@ mod tests {
         assert_eq!(declaration_cells(&db, "t1"), cells_before);
         assert_eq!(v1_columns(&db, "t1"), v1_before);
         assert_eq!(declaration_event_count(&db), events_before);
+    }
+
+    /// SDEF/1 A2: a project snapshot body restore rebuilds the bindings as
+    /// `unknown` even when the project has a default (R10), and the default
+    /// itself is not captured or restored.
+    #[test]
+    fn sdef_snapshot_body_restore_does_not_inherit_the_project_default() {
+        let db = fixture();
+        create_project_snapshot(&db, empty_snapshot("s-sdef")).expect("create snapshot");
+        crate::narrative_extraction::scene_scope_default_tests::set_main_line_default(&db, "p1");
+        let restore =
+            canonical_restore_payload(&db, "restore-sdef", "s-sdef", vec![RestoreScope::Body]);
+        apply_project_snapshot_restore(&db, restore).expect("restore body");
+        assert_eq!(raw_binding(&db, "t1").1, "unknown");
+        let default = db
+            .with_read_transaction(|conn| {
+                crate::narrative_extraction::read_narrative_scope_project_default(conn, "p1")
+            })
+            .expect("read default");
+        assert_eq!(default.version, 1, "the restore keeps the current default");
     }
 }

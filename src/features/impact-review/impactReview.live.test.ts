@@ -12,7 +12,7 @@
  * 既定 SKIP（キー無しは describe.skipIf でスキップ）。実行（実トークン課金あり）:
  *   OPENROUTER_API_KEY=sk-... pnpm test --run \
  *     src/features/impact-review/impactReview.live.test.ts
- *   モデル上書き: OPENROUTER_MODEL（既定 openai/gpt-4o-mini。本番 impact_review は
+ *   モデル上書き: OPENROUTER_MODEL（既定 openai/gpt-6-luna。本番 impact_review は
  *   ロール設定で Opus へルーティングされるため anthropic 系での実行を推奨）。
  */
 import { describe, it, expect, vi } from "vitest";

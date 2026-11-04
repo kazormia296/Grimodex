@@ -13233,6 +13233,70 @@ impl Backend {
         .await
     }
 
+    /// Read the project's Scene Scope default (SDEF/1 R1). The renderer
+    /// supplies identity only; Main's typed IPC and its re-validation are a
+    /// later change (PR-2). Same admission as the other Scope entries.
+    #[napi]
+    pub async fn narrative_scope_project_default_read(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            expected_workspace_path: String,
+            project_id: String,
+        }
+
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            admit_publication_entry(&state, caller_identity)?;
+            let request: Request = from_wire("payload", payload)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
+            let response = workspace.authority.db().with_read_transaction(|conn| {
+                narrative_extraction::read_narrative_scope_project_default(
+                    conn,
+                    &request.project_id,
+                )
+            })?;
+            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Set or clear the project's Scene Scope default (SDEF/1 R3-R5, MD4) with
+    /// Native OCC, idempotency, closed-type and registry-membership checks. It
+    /// writes no binding, registry, authority token or narrative feed.
+    #[napi]
+    pub async fn narrative_scope_project_default_update(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            expected_workspace_path: String,
+            payload: narrative_extraction::NarrativeScopeProjectDefaultUpdatePayload,
+        }
+
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            admit_publication_entry(&state, caller_identity)?;
+            let request: Request = from_wire("payload", payload)?;
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
+            let response = narrative_extraction::update_narrative_scope_project_default(
+                workspace.authority.db(),
+                request.payload,
+            )?;
+            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
     // ─────────────────────── semantic Phase 3 Batch 4 ───────────────────
     // 全DB commandはrun_semantic_wireがinvoke開始時のDB Arc + 4cache epochを
     // 一貫pinする。各closureは共有runtimeだけを呼び、workspaceを再解決しない。

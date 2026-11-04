@@ -553,6 +553,7 @@ fn create_fixture_domain(db: &Database) -> Result<FixtureApplication> {
             target_readers: None,
             created_at: timestamp.clone(),
             updated_at: timestamp.clone(),
+            scene_scope_default: None,
         },
     )
     .context("creating fixture project through typed writer")?;

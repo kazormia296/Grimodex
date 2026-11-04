@@ -89,8 +89,12 @@ describe("D2a profile egress gate", () => {
     const first = activateGateForTest(gate);
     // A second consumed token closes nothing new and never reaches Native.
     const second = activateGateForTest(gate);
-    await expect(second).rejects.toThrow(/PROFILE_ACTIVATION_REFUSED:not-reserved/u);
-    await vi.waitFor(() => expect(profileActivationCommit).toHaveBeenCalledOnce());
+    await expect(second).rejects.toThrow(
+      /PROFILE_ACTIVATION_REFUSED:not-reserved/u,
+    );
+    await vi.waitFor(() =>
+      expect(profileActivationCommit).toHaveBeenCalledOnce(),
+    );
     expect(gate.restricted).toBe(true);
     expect(() => gate.assertInvoke("send_chat_message", {})).toThrow(
       new RegExp(`${D2A_EGRESS_DENIED_MARKER} old-external-ai`),
@@ -933,9 +937,7 @@ describe("D2a profile egress gate", () => {
         activation: "ready",
       },
     });
-    expect(gate.issueCallerIdentity(11).workspaceId).toBe(
-      "/workspace-normal",
-    );
+    expect(gate.issueCallerIdentity(11).workspaceId).toBe("/workspace-normal");
   });
 
   it("keeps an unchanged proof pending across a delayed Transition and Ready event", async () => {
@@ -1038,7 +1040,10 @@ describe("D2a profile egress gate", () => {
 
   describe("license-control (K3/2 L-1)", () => {
     const LICENSE_COMMANDS = [
-      ["activate_license", { key: "GRIM-8CA5F5B0-4C44-4E5B-B7C5-F8C3D3E3E3E3" }],
+      [
+        "activate_license",
+        { key: "GRIM-8CA5F5B0-4C44-4E5B-B7C5-F8C3D3E3E3E3" },
+      ],
       ["revalidate_license", {}],
       ["deactivate_license", {}],
     ] as const;
@@ -1337,6 +1342,45 @@ describe("D2a profile egress gate", () => {
       expect(() =>
         gate.assertInvoke(command, { callerIdentity }),
       ).not.toThrow();
+    }
+  });
+
+  it("classifies the project Scene Scope default entries as internal like the Scope commands (SDEF/1 MD5, DR-SDEF-27)", async () => {
+    const ledgers = d2aRouteLedgersForTest();
+    const entries = [
+      "narrative_scope_project_default_read",
+      "narrative_scope_project_default_update",
+    ];
+    for (const command of entries) {
+      expect(Object.hasOwn(NAPI_COMMANDS, command), command).toBe(true);
+      expect(ledgers.internal, command).toContain(command);
+      for (const other of [
+        "denied",
+        "licenseControl",
+        "ownDataRead",
+        "nir1Publication",
+        "nir1RestrictedOnly",
+      ] as const) {
+        expect(ledgers[other], `${other} / ${command}`).not.toContain(command);
+      }
+    }
+    // The existing Scope commands sit in the same ledger.
+    for (const command of [
+      "narrative_scene_scope_read",
+      "narrative_scene_scope_update",
+      "narrative_scene_scope_registry_update",
+    ]) {
+      expect(ledgers.internal, command).toContain(command);
+    }
+    const restricted = await createProfileEgressGate(backend());
+    const callerIdentity = restricted.issueCallerIdentity(11);
+    const unrestricted = await createProfileEgressGate(null);
+    for (const command of entries) {
+      expect(() =>
+        restricted.assertInvoke(command, { callerIdentity }),
+      ).not.toThrow();
+      expect(() => restricted.assertInvoke(command, {})).not.toThrow();
+      expect(() => unrestricted.assertInvoke(command, {})).not.toThrow();
     }
   });
 

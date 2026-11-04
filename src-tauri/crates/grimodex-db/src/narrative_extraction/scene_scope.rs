@@ -87,12 +87,74 @@ pub struct NarrativeSceneScopeRegistryUpdatePayload {
     pub registry: NarrativeSceneScopeRegistryV1,
 }
 
-fn default_registry() -> NarrativeSceneScopeRegistryV1 {
+/// The main-line vocabulary (SDEF/1 R13). A registry created for the first
+/// time carries these three references; vocabulary alone changes no
+/// behaviour, because a new Scene is still `unknown` without a project default.
+pub(crate) const MAIN_LINE_TIMELINE_REF: &str = "timeline:main";
+pub(crate) const MAIN_LINE_WORLDLINE_REF: &str = "worldline:prime";
+pub(crate) const MAIN_LINE_LAYER_REF: &str = "layer:manuscript";
+
+/// The registry inserted when a project has no registry row yet (project
+/// creation, the sample, a lazy repair, the A1 migration backfill). Existing
+/// rows are never replaced (`ON CONFLICT DO NOTHING`).
+fn initial_registry() -> NarrativeSceneScopeRegistryV1 {
     NarrativeSceneScopeRegistryV1 {
         registry_version: NARRATIVE_SCENE_SCOPE_REGISTRY_CONTRACT_ID.to_owned(),
-        timeline_refs: Vec::new(),
-        worldline_refs: Vec::new(),
-        narrative_layer_refs: Vec::new(),
+        timeline_refs: vec![MAIN_LINE_TIMELINE_REF.to_owned()],
+        worldline_refs: vec![MAIN_LINE_WORLDLINE_REF.to_owned()],
+        narrative_layer_refs: vec![MAIN_LINE_LAYER_REF.to_owned()],
+    }
+}
+
+/// How a binding creation treats the project Scope default (SDEF/1 MD2). The
+/// inheriting value is produced only by [`scene_scope_init_for_create`]; every
+/// other creation, repair, restore, sample, seed and fixture passes
+/// `UnknownRepairOrRestore`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SceneScopeInit {
+    NewSceneInheritProjectDefault,
+    UnknownRepairOrRestore,
+}
+
+/// The origin, lineage, route and external source of one Scene creation, as
+/// the creating writer has already validated them (SDEF/1 MD1).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SceneCreateLineage<'a> {
+    pub(crate) origin: NarrativeChangeOrigin,
+    pub(crate) original_transaction_id: Option<&'a str>,
+    pub(crate) undo_journal_id: Option<&'a str>,
+    /// `None` when a Native caller writes without a renderer authority context.
+    pub(crate) authority_route: Option<&'a str>,
+    pub(crate) redo: bool,
+    pub(crate) source_uri: Option<&'a str>,
+    pub(crate) source_mtime: Option<&'a str>,
+}
+
+/// The one inheritance decision (SDEF/1 R7 (a)-(c), MD1). Only the three
+/// creation writers (`tree_node_create_with_authority`, `apply_ai_tree_plan`,
+/// `promote_sticky`) call it, after validating origin and lineage and inside
+/// their transaction. (d) -- a `set` default whose references are members of
+/// the same snapshot's registry -- is checked by the binding creation itself.
+pub(crate) fn scene_scope_init_for_create(lineage: &SceneCreateLineage<'_>) -> SceneScopeInit {
+    // (a) the author or an applied AI plan creates the Scene.
+    let forward_origin = matches!(
+        lineage.origin,
+        NarrativeChangeOrigin::Human | NarrativeChangeOrigin::AiApply
+    );
+    // (b) no history replay of any kind.
+    let not_replayed = lineage.original_transaction_id.is_none()
+        && lineage.undo_journal_id.is_none()
+        && !lineage.redo
+        && !matches!(
+            lineage.authority_route,
+            Some("history-replay" | "restore-or-migration")
+        );
+    // (c) not a copy of an external file (an empty string still counts).
+    let no_external_source = lineage.source_uri.is_none() && lineage.source_mtime.is_none();
+    if forward_origin && not_replayed && no_external_source {
+        SceneScopeInit::NewSceneInheritProjectDefault
+    } else {
+        SceneScopeInit::UnknownRepairOrRestore
     }
 }
 
@@ -134,7 +196,7 @@ fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     .map_err(Into::into)
 }
 
-fn read_registry_in_tx(
+pub(super) fn read_registry_in_tx(
     conn: &Connection,
     project_id: &str,
 ) -> Result<NarrativeSceneScopeRegistryV1> {
@@ -436,6 +498,7 @@ pub(crate) fn ensure_scene_scope_binding_in_tx(
     project_id: &str,
     scene_id: &str,
     updated_at: &str,
+    init: SceneScopeInit,
 ) -> Result<()> {
     anyhow::ensure!(
         table_exists(conn, "narrative_scope_registries")?
@@ -456,22 +519,70 @@ pub(crate) fn ensure_scene_scope_binding_in_tx(
     if exists {
         return Ok(());
     }
+    let inherited = match init {
+        SceneScopeInit::NewSceneInheritProjectDefault => {
+            inherited_binding(conn, project_id, scene_id, updated_at, &registry)
+        }
+        SceneScopeInit::UnknownRepairOrRestore => None,
+    };
+    let binding = match inherited {
+        Some(binding) => binding,
+        None => {
+            let mut binding = NarrativeSceneScopeBindingV1 {
+                schema_version: 1,
+                project_id: project_id.to_owned(),
+                scene_id: scene_id.to_owned(),
+                scene_incarnation_id: Uuid::new_v4().to_string(),
+                compatibility_marker: NarrativeScopeCompatibilityMarkerV1::Unknown,
+                query_identity: default_query_identity(),
+                material_constraint: default_material_constraint(),
+                knowledge_holder: NarrativeScopePrincipalV1::Reader {},
+                audience: NarrativeScopePrincipalV1::Reader {},
+                version: 1,
+                source_token: "pending".to_owned(),
+                updated_at: updated_at.to_owned(),
+            };
+            binding.source_token = narrative_scene_scope::source_token(&registry, &binding)?;
+            binding
+        }
+    };
+    insert_binding_in_tx(conn, &binding)
+}
+
+/// The explicit binding a new Scene inherits from its project default, or
+/// `None` (SDEF/1 R8, MD3). The default row is read on the same connection as
+/// `registry`, so both come from the same transaction snapshot, and only the
+/// row of this exact project is read. A missing, `none`, unreadable, corrupt or
+/// dangling default -- any failure at all -- yields `None`, and the caller
+/// writes `unknown`; the creation itself never fails because of the default.
+fn inherited_binding(
+    conn: &Connection,
+    project_id: &str,
+    scene_id: &str,
+    updated_at: &str,
+    registry: &NarrativeSceneScopeRegistryV1,
+) -> Option<NarrativeSceneScopeBindingV1> {
+    let (query_identity, material_constraint) =
+        super::scene_scope_default::inheritable_project_default_in_tx(conn, project_id)
+            .ok()
+            .flatten()?;
     let mut binding = NarrativeSceneScopeBindingV1 {
         schema_version: 1,
         project_id: project_id.to_owned(),
         scene_id: scene_id.to_owned(),
         scene_incarnation_id: Uuid::new_v4().to_string(),
-        compatibility_marker: NarrativeScopeCompatibilityMarkerV1::Unknown,
-        query_identity: default_query_identity(),
-        material_constraint: default_material_constraint(),
+        compatibility_marker: NarrativeScopeCompatibilityMarkerV1::Explicit,
+        query_identity,
+        material_constraint,
         knowledge_holder: NarrativeScopePrincipalV1::Reader {},
         audience: NarrativeScopePrincipalV1::Reader {},
         version: 1,
         source_token: "pending".to_owned(),
         updated_at: updated_at.to_owned(),
     };
-    binding.source_token = narrative_scene_scope::source_token(&registry, &binding)?;
-    insert_binding_in_tx(conn, &binding)
+    binding.source_token = narrative_scene_scope::source_token(registry, &binding).ok()?;
+    narrative_scene_scope::validate_binding(&binding, registry).ok()?;
+    Some(binding)
 }
 
 fn persisted_legacy_binding(
@@ -497,7 +608,7 @@ pub(crate) fn ensure_scope_registry_in_tx(
     if !table_exists(conn, "narrative_scope_registries")? {
         return Ok(());
     }
-    let registry = default_registry();
+    let registry = initial_registry();
     let source_token = registry_source_token(&registry, 1)?;
     conn.execute(
         "INSERT INTO narrative_scope_registries (
@@ -1455,6 +1566,13 @@ pub fn update_narrative_scene_scope_registry(
                 payload.base_version,
                 current.0
             );
+            // SDEF/1 R3: a registry update cannot remove a reference the
+            // project default uses. Checked before anything is written.
+            super::scene_scope_default::ensure_project_default_fits_registry_in_tx(
+                tx,
+                &payload.project_id,
+                &payload.registry,
+            )?;
             let next_version = payload.base_version.checked_add(1).context("scope registry version overflow")?;
             let next_token = registry_source_token(&payload.registry, next_version)?;
             let before = canonical_scope_registry_snapshot(tx, &payload.project_id)?;
@@ -2022,7 +2140,13 @@ mod tests {
                  VALUES ('s1', 'p1', 'scene', 'Scene', 'a0')",
                 [],
             )?;
-            ensure_scene_scope_binding_in_tx(conn, "p1", "s1", "2026-09-13T00:00:00.000Z")?;
+            ensure_scene_scope_binding_in_tx(
+                conn,
+                "p1",
+                "s1",
+                "2026-09-13T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+            )?;
             Ok(())
         })
         .expect("seed database");
@@ -2055,7 +2179,7 @@ mod tests {
 
     #[test]
     fn legacy_binding_is_explicitly_unresolved() {
-        let registry = default_registry();
+        let registry = initial_registry();
         let binding =
             legacy_binding("p1", "s1", "2026-01-01T00:00:00Z".into(), &registry).expect("binding");
         assert_eq!(
@@ -2119,11 +2243,13 @@ mod tests {
                 event_uid: "registry-digest-b-event".into(),
                 base_version: 1,
                 updated_at: same_timestamp.into(),
+                // SDEF/1 R13: A is now the main-line vocabulary, so B is a
+                // different (empty) vocabulary.
                 registry: NarrativeSceneScopeRegistryV1 {
                     registry_version: NARRATIVE_SCENE_SCOPE_REGISTRY_CONTRACT_ID.into(),
-                    timeline_refs: vec!["timeline:main".into()],
-                    worldline_refs: vec!["worldline:prime".into()],
-                    narrative_layer_refs: vec!["layer:manuscript".into()],
+                    timeline_refs: Vec::new(),
+                    worldline_refs: Vec::new(),
+                    narrative_layer_refs: Vec::new(),
                 },
             },
         )
@@ -2138,7 +2264,7 @@ mod tests {
                 event_uid: "registry-digest-a-again-event".into(),
                 base_version: 2,
                 updated_at: same_timestamp.into(),
-                registry: default_registry(),
+                registry: initial_registry(),
             },
         )
         .expect("registry B to A");
@@ -2177,7 +2303,13 @@ mod tests {
                      VALUES (?1, 'p1', 'scene', ?1, ?1)",
                     [scene_id],
                 )?;
-                ensure_scene_scope_binding_in_tx(conn, "p1", scene_id, "2026-09-13T00:05:00.000Z")?;
+                ensure_scene_scope_binding_in_tx(
+                    conn,
+                    "p1",
+                    scene_id,
+                    "2026-09-13T00:05:00.000Z",
+                    crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+                )?;
             }
             Ok(())
         })
@@ -2387,7 +2519,13 @@ mod tests {
                  VALUES ('s1', 'p1', 'scene', 'Reused scene', 'a0')",
                 [],
             )?;
-            ensure_scene_scope_binding_in_tx(conn, "p1", "s1", "2026-09-13T00:12:00.000Z")?;
+            ensure_scene_scope_binding_in_tx(
+                conn,
+                "p1",
+                "s1",
+                "2026-09-13T00:12:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+            )?;
             Ok(())
         })
         .expect("reuse scene id with a new persisted binding");
@@ -2432,7 +2570,13 @@ mod tests {
                      VALUES (?1, 'p1', 'scene', ?1, ?1)",
                     [scene_id],
                 )?;
-                ensure_scene_scope_binding_in_tx(conn, "p1", scene_id, "2026-09-13T00:13:00.000Z")?;
+                ensure_scene_scope_binding_in_tx(
+                    conn,
+                    "p1",
+                    scene_id,
+                    "2026-09-13T00:13:00.000Z",
+                    crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+                )?;
             }
             Ok(())
         })

@@ -1033,6 +1033,7 @@ mod tests {
                 PROJECT,
                 "after-target",
                 "2026-09-17T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )
         })?;
         set_story_keys(&db, &[("a3-source", Some("k-0a"))])?;
@@ -1055,6 +1056,7 @@ mod tests {
                 PROJECT,
                 "before-target",
                 "2026-09-17T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )
         })?;
         let moved = {

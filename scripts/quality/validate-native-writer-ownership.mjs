@@ -104,6 +104,8 @@ const WRITER_TO_MODULES = {
     // A1 scope registry and scene bindings extend the existing project Scope
     // authority and are written only by the typed Native scope module.
     "src-tauri/crates/grimodex-db/src/narrative_extraction/scene_scope.rs",
+    // SDEF/1: the project Scene Scope default writer.
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/scene_scope_default.rs",
   ],
   "narrative.revision-envelope": [
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",

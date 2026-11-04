@@ -24,6 +24,7 @@ import {
   ContextMenuShortcut,
 } from "@/components/ui/context-menu";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { isElectron } from "@/lib/tauri";
 
 const EMPTY_LABEL_IDS: readonly string[] = Object.freeze([]);
 
@@ -301,6 +302,20 @@ export function TreeContextMenu({ node, onStartRename }: TreeContextMenuProps) {
                 >
                   <Sparkles className="h-3 w-3 shrink-0" />
                   <span>{t("aiTree.reorganizeHere", "AI で構成を再編")}</span>
+                </ContextMenuItem>
+              )}
+              {scenesContext.openChapterScopeDefault && isElectron() && (
+                <ContextMenuItem
+                  inset
+                  data-testid="tree-apply-scope-default"
+                  onSelect={() =>
+                    scenesContext.openChapterScopeDefault?.({
+                      folderId: node.id,
+                      title: node.title,
+                    })
+                  }
+                >
+                  {t("tree.applyScopeDefaultToChapter")}
                 </ContextMenuItem>
               )}
             </>

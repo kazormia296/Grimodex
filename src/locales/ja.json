@@ -415,7 +415,8 @@
       "seedSourceLabel": "コピー元 Project",
       "seedNoTypes": "コピー可能な Codex type がありません",
       "success": "プロジェクトを作成しました",
-      "failed": "プロジェクトの作成に失敗しました"
+      "failed": "プロジェクトの作成に失敗しました",
+      "sceneScopeMainLine": "新しい場面を「本筋」で作る（あとで変えられます）"
     },
     "delete": {
       "action": "プロジェクトを削除",
@@ -3680,7 +3681,8 @@
     },
     "errors": {
       "deleteFailed": "ノード削除に失敗しました"
-    }
+    },
+    "applyScopeDefaultToChapter": "この章の未設定の場面に既定を当てる"
   },
   "commandPalette": {
     "placeholder": "コマンドを検索…",
@@ -4053,7 +4055,40 @@
       "noMatches": "該当なし",
       "synopsisChip": "あらすじ",
       "synopsisEmpty": "未記入",
-      "beatsChip": "ビート {{count}}"
+      "beatsChip": "ビート {{count}}",
+      "scope": "適用範囲（Scope）",
+      "queryIdentity": "この場面の位置",
+      "materialConstraint": "この場面を材料として見せる範囲",
+      "constraintAny": "制約なし",
+      "constraintUnresolved": "未解決",
+      "axisTimeline": "時間軸",
+      "axisWorldline": "世界線",
+      "axisLayer": "語りの層",
+      "markerExplicit": "設定済み",
+      "markerUnknown": "未設定",
+      "markerLegacyAbsent": "以前からの場面（未設定）",
+      "scopeRegistry": "Scope の語彙",
+      "holder": "知っている人",
+      "audience": "読み手",
+      "principalReader": "読者",
+      "refTimelineMain": "本筋の時間",
+      "refWorldlinePrime": "本筋の世界線",
+      "refLayerManuscript": "本編",
+      "scopeConflict": "編集中に場面の Scope が変わりました。下書きを確かめて、もう一度保存してください。",
+      "scopeConflictCurrent": "今の Scope",
+      "scopeConflictCurrentRegistry": "今の語彙",
+      "scopeMaterialSeparate": "材料の範囲を別に決める",
+      "scopeMaterialMismatch": "この場面の位置と材料として見せる範囲が違います。このまま保存すると、違う Scope の場面にこの場面の材料が見えることがあります。",
+      "scopeDefaultBadge": "プロジェクトの既定（{{value}}）",
+      "scopeNotMainLine": "この場面は本筋以外の Scope です。同じ Scope の場面の解釈だけが出ます。",
+      "scopeApplyDefault": "既定を当てる",
+      "scopeApplyConfirm": "この場面にプロジェクトの既定の Scope（{{value}}）を当てます。この場面に結びついた承認済みの解釈と本文の宣言は失効します。",
+      "scopeApplyLegacyWarning": "以前からの場面に当てると、「以前からの場面」には戻せません。",
+      "scopeApplyRun": "当てる",
+      "scopeRegistryWarning": "語彙を変えて保存すると、このプロジェクトの承認済みの解釈と本文の宣言がすべて失効し、作り直しが必要になります。",
+      "scopeNotDefault": "この場面はプロジェクトの既定（{{value}}）と違う Scope です。同じ Scope の場面の解釈だけが出ます。",
+      "scopeApplyUnsavedWarning": "Scope 欄の保存していない変更は捨てられます。",
+      "scopeLegacyEmptyRegistry": "Scope の語彙が空です。このまま保存すると軸が未解決のまま「設定済み」になり、承認済みの解釈が出なくなります。先に「Scope の語彙」で追加してください。"
     },
     "layers": {
       "title": "本文レイヤー",

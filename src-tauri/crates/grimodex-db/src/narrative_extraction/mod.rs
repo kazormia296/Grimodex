@@ -124,6 +124,13 @@ pub use scene_scope::{
     NarrativeSceneScopeRegistryUpdatePayload, NarrativeSceneScopeUpdatePayload,
     NarrativeSceneScopeUpdateV1,
 };
+pub(crate) use scene_scope::{scene_scope_init_for_create, SceneCreateLineage, SceneScopeInit};
+pub(crate) use scene_scope_default::write_main_line_project_default_in_tx;
+pub use scene_scope_default::{
+    read_narrative_scope_project_default, update_narrative_scope_project_default,
+    NarrativeScopeProjectDefaultReadV1, NarrativeScopeProjectDefaultUpdatePayload,
+    NarrativeScopeProjectDefaultValueV1, NARRATIVE_SCOPE_PROJECT_DEFAULT_CONTRACT_ID,
+};
 mod human_derivation;
 pub mod human_material_basis;
 mod human_materialization;
@@ -162,6 +169,9 @@ mod reconciliation_envelope;
 mod repair;
 mod retrieval_admission;
 mod scene_scope;
+mod scene_scope_default;
+#[cfg(test)]
+pub(crate) mod scene_scope_default_tests;
 pub mod scene_body_declaration;
 mod scene_scope_projection;
 mod scope_dependency_projection;

@@ -501,9 +501,195 @@ fn assert_scope_batch_matches_single_reads_after_write_and_rollback(
             evaluate_owned_edges_from_db_in_tx(&tx, f.project(), &[wrong_run]).is_err(),
             "shared project authority cannot substitute for each sealed Run binding"
         );
+        // DR-CP4-V-5 (a): both Scope edges share one sealed Run, so the batch
+        // reads its documents once. A later batch after a write to that sealed
+        // corpus (and after its rollback) must not see the earlier read.
+        let scope_runs = edges
+            .iter()
+            .filter(|edge| {
+                edge.source_object_identity
+                    .starts_with("scope-dependency:v1:")
+            })
+            .map(|edge| edge.owning_run_id.clone().expect("Run-bound Scope edge"))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            scope_runs.len(),
+            1,
+            "the memo is shared by both Scope edges"
+        );
+        let shown =
+            |result: anyhow::Result<Vec<_>>| format!("{:?}", result.map_err(|e| e.to_string()));
+        tx.execute_batch("SAVEPOINT sealed_corpus_change")?;
+        assert_eq!(
+            tx.execute(
+                "UPDATE narrative_extraction_artifacts SET payload_digest='sha256:changed'
+                  WHERE run_id=?1 AND artifact_kind='source.snapshot@1'",
+                [scope_runs.first().expect("Run")],
+            )?,
+            1
+        );
+        let corrupted = shown(single());
+        assert_ne!(
+            corrupted,
+            shown(Ok(before.clone())),
+            "the sealed corpus is part of the verdict"
+        );
+        assert_eq!(
+            shown(evaluate_owned_edges_from_db_in_tx(&tx, f.project(), &edges)),
+            corrupted,
+            "a batch after the write reads the sealed corpus again"
+        );
+        tx.execute_batch("ROLLBACK TO sealed_corpus_change; RELEASE sealed_corpus_change")?;
+        assert_eq!(
+            evaluate_owned_edges_from_db_in_tx(&tx, f.project(), &edges)?,
+            before,
+            "the rolled-back corpus cannot escape its batch either"
+        );
         Ok(())
     })
     .expect("same-snapshot batch equivalence and authority lifetime");
+}
+
+#[test]
+fn nir1_sealed_documents_memo_never_answers_for_another_run_or_project() {
+    use crate::narrative_extraction::{
+        scope_authority_runtime::load_sealed_snapshot_document_bindings_in_tx,
+        scope_dependency_projection::SealedDocumentsMemo,
+    };
+    let f = Fixture::new();
+    let run = f.manifest["runId"].as_str().expect("Run").to_owned();
+    let refs = |documents: &[crate::narrative_extraction::scope_authority_runtime::SealedSnapshotDocumentBinding]| {
+        documents
+            .iter()
+            .map(|d| (d.document_ref.clone(), d.source_key.clone(), d.node_id.clone()))
+            .collect::<Vec<_>>()
+    };
+    f.db.with_read_transaction(|tx| {
+        let direct = refs(&load_sealed_snapshot_document_bindings_in_tx(
+            tx,
+            f.project(),
+            &run,
+        )?);
+        assert!(!direct.is_empty());
+        let mut memo = SealedDocumentsMemo::default();
+        assert_eq!(refs(memo.documents_in_tx(tx, f.project(), &run)?), direct);
+        let other_run = memo
+            .documents_in_tx(tx, f.project(), "unrelated-run")
+            .expect_err("another Run is read, not answered from the memo");
+        assert_eq!(
+            other_run.to_string(),
+            load_sealed_snapshot_document_bindings_in_tx(tx, f.project(), "unrelated-run")
+                .expect_err("direct")
+                .to_string()
+        );
+        let other_project = memo
+            .documents_in_tx(tx, "other-project", &run)
+            .expect_err("another project is read, not answered from the memo");
+        assert!(other_project
+            .to_string()
+            .contains("NEX_SCOPE_AUTHORITY_OWNER_MISMATCH"));
+        assert_eq!(refs(memo.documents_in_tx(tx, f.project(), &run)?), direct);
+        Ok(())
+    })
+    .expect("memo key");
+}
+
+#[test]
+fn nir1_complete_check_shares_its_roster_read_only_with_the_eligibility_edge() {
+    use super::test_support::{assert_stopped, StopAt};
+    use crate::narrative_extraction::GraphWorkStage;
+    use crate::narrative_extraction::{
+        dependency_edges::find_edges_by_consumer,
+        nir1_entity_relation_index::NeverStopGraphWorkControl,
+        restore_rebuild::{
+            evaluate_owned_edges_from_db_in_tx, evaluate_owned_edges_from_db_in_tx_with_control,
+            evaluate_owned_edges_from_db_in_tx_with_observed_eligibility,
+        },
+        source_revision::ForegroundValidationControl,
+    };
+    let f = Fixture::new();
+    let (plan, docs) = f.prepare();
+    publish_chronicle_index_build(&f.db, &f.runtime, plan, f.outcomes(docs)).expect("publication");
+    f.db.with_read_transaction(|tx| {
+        let edges = find_edges_by_consumer(tx, f.project(), "semantic-index", INDEX_KEY)?;
+        let eligibility = edges
+            .iter()
+            .position(|edge| edge.source_object_identity == source::source_key(f.project()))
+            .expect("the eligibility Edge is part of the complete check");
+        assert!(edges.len() > 1);
+        let digest = source::read_eligibility_source(tx, f.project())?.digest;
+        let plain = evaluate_owned_edges_from_db_in_tx(tx, f.project(), &edges)?;
+        let shared =
+            |digest: &str, control: &mut dyn crate::narrative_extraction::GraphWorkControl| {
+                evaluate_owned_edges_from_db_in_tx_with_observed_eligibility(
+                    tx,
+                    f.project(),
+                    &edges,
+                    digest.to_owned(),
+                    control,
+                )
+            };
+        // The same read gives the same observations, field for field.
+        assert_eq!(shared(&digest, &mut ForegroundValidationControl)?, plain);
+        // The shared digest is what the eligibility Edge compares; nothing else moves.
+        let other = shared(
+            &format!("sha256:{}", "0".repeat(64)),
+            &mut ForegroundValidationControl,
+        )?;
+        assert_ne!(other[eligibility], plain[eligibility]);
+        for (index, (left, right)) in other.iter().zip(&plain).enumerate() {
+            if index != eligibility {
+                assert_eq!(left, right);
+            }
+        }
+        // The owner checks stay outside the shared read.
+        let refused = |result: anyhow::Result<Vec<_>>| {
+            let error = result.expect_err("refused");
+            assert!(crate::narrative_extraction::is_validation_terminated(
+                &error
+            ));
+            error.to_string()
+        };
+        assert_eq!(
+            refused(shared(&digest, &mut NeverStopGraphWorkControl)),
+            refused(evaluate_owned_edges_from_db_in_tx_with_control(
+                tx,
+                f.project(),
+                &edges,
+                &mut NeverStopGraphWorkControl,
+            ))
+        );
+        assert_stopped(shared(&digest, &mut StopAt(GraphWorkStage::Source)));
+        // Another project's eligibility key is rejected exactly as before.
+        let mut foreign = edges.clone();
+        foreign[eligibility].source_object_identity = source::source_key("other-project");
+        let shown =
+            |result: anyhow::Result<Vec<_>>| format!("{:?}", result.map_err(|e| e.to_string()));
+        assert_eq!(
+            shown(
+                evaluate_owned_edges_from_db_in_tx_with_observed_eligibility(
+                    tx,
+                    f.project(),
+                    &foreign,
+                    digest.clone(),
+                    &mut ForegroundValidationControl,
+                )
+            ),
+            shown(evaluate_owned_edges_from_db_in_tx(
+                tx,
+                f.project(),
+                &foreign
+            ))
+        );
+        Ok(())
+    })
+    .expect("roster shared inside one complete check only");
+    f.db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        assert!(super::query::current_proof(&tx, &f.runtime, f.project())?.is_some());
+        Ok(())
+    })
+    .expect("the complete check still accepts the current proof");
 }
 
 #[test]

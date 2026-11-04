@@ -361,7 +361,13 @@ fn probe_scene(db: &Database, id: &str) -> Result<()> {
              VALUES (?1, ?2, 'scene', 'Probe', '{}', 'z0')",
             params![id, PROJECT],
         )?;
-        super::ensure_scene_scope_binding_in_tx(conn, PROJECT, id, "2026-11-01T00:00:00.000Z")?;
+        super::ensure_scene_scope_binding_in_tx(
+            conn,
+            PROJECT,
+            id,
+            "2026-11-01T00:00:00.000Z",
+            crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+        )?;
         Ok(())
     })
 }

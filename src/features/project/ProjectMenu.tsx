@@ -76,6 +76,7 @@ export function ProjectMenu({
     timelapseEnabled: boolean;
     seedFromProjectId?: string;
     seedTypeSlugs: string[];
+    sceneScopeMainLine: boolean;
   }) {
     try {
       await createNewProject({
@@ -85,6 +86,7 @@ export function ProjectMenu({
         timelapseEnabled: data.timelapseEnabled,
         seedFromProjectId: data.seedFromProjectId,
         seedTypeSlugs: data.seedTypeSlugs,
+        sceneScopeMainLine: data.sceneScopeMainLine,
       });
       toast.success(t("project.create.success"));
     } catch (e) {

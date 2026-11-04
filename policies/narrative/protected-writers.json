@@ -475,6 +475,13 @@
   },
   {
     "aggregate": "narrative-authority",
+    "table": "narrative_scope_project_defaults",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-authority",
     "table": "narrative_application_contributions",
     "protection": "table",
     "writer": "narrative.authority",

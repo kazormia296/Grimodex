@@ -15,6 +15,8 @@ export interface CreateProjectFormData {
   timelapseEnabled: boolean;
   seedFromProjectId?: string;
   seedTypeSlugs: string[];
+  /** SDEF/1 R12: "create new scenes in the main line" (default ON). */
+  sceneScopeMainLine: boolean;
 }
 
 interface CreateProjectDialogProps {
@@ -68,6 +70,7 @@ export function CreateProjectDialog({
     defaultWritingLanguage(currentUiLanguage()),
   );
   const [timelapseEnabled, setTimelapseEnabled] = useState(true);
+  const [sceneScopeMainLine, setSceneScopeMainLine] = useState(true);
   const [seedFromProjectId, setSeedFromProjectId] = useState(
     defaultSourceProjectId,
   );
@@ -83,6 +86,7 @@ export function CreateProjectDialog({
       setGenre("");
       setLanguage(defaultWritingLanguage(currentUiLanguage()));
       setTimelapseEnabled(true);
+      setSceneScopeMainLine(true);
       setSeedFromProjectId(defaultSourceProjectId);
       setSelectedTypeSlugs(new Set());
       setIsSaving(false);
@@ -123,6 +127,7 @@ export function CreateProjectDialog({
         genre,
         language,
         timelapseEnabled,
+        sceneScopeMainLine,
         seedFromProjectId:
           selectedTypeSlugs.size > 0 ? seedFromProjectId : undefined,
         seedTypeSlugs: [...selectedTypeSlugs],
@@ -251,6 +256,24 @@ export function CreateProjectDialog({
               </span>
               <br />
               {t("project.create.timelapseHint")}
+            </span>
+          </label>
+
+          <label
+            className={cn(
+              "flex cursor-pointer items-start gap-2 text-xs text-muted-foreground",
+              phoneWorkspace && "min-h-11",
+            )}
+          >
+            <input
+              type="checkbox"
+              data-testid="project-scene-scope-main-line-checkbox"
+              checked={sceneScopeMainLine}
+              onChange={(e) => setSceneScopeMainLine(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span className="text-foreground">
+              {t("project.create.sceneScopeMainLine")}
             </span>
           </label>
 

@@ -182,10 +182,60 @@ describe("CreateProjectDialog", () => {
         genre: "Fantasy",
         language: "en",
         timelapseEnabled: true,
+        sceneScopeMainLine: true,
         seedFromProjectId: undefined,
         seedTypeSlugs: [],
       });
     });
+  });
+
+  it("passes the main-line check (default ON) and its OFF state (SDEF/1 R12, A7)", async () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    const { unmount } = render(
+      <CreateProjectDialog
+        open
+        onClose={() => {}}
+        projects={[]}
+        defaultSourceProjectId=""
+        onCreate={onCreate}
+      />,
+    );
+    const check = screen.getByTestId(
+      "project-scene-scope-main-line-checkbox",
+    ) as HTMLInputElement;
+    expect(check.checked).toBe(true);
+    fireEvent.change(screen.getByTestId("project-title-input"), {
+      target: { value: "On" },
+    });
+    fireEvent.click(screen.getByTestId("project-create-submit"));
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenLastCalledWith(
+        expect.objectContaining({ title: "On", sceneScopeMainLine: true }),
+      ),
+    );
+    unmount();
+
+    render(
+      <CreateProjectDialog
+        open
+        onClose={() => {}}
+        projects={[]}
+        defaultSourceProjectId=""
+        onCreate={onCreate}
+      />,
+    );
+    fireEvent.click(
+      screen.getByTestId("project-scene-scope-main-line-checkbox"),
+    );
+    fireEvent.change(screen.getByTestId("project-title-input"), {
+      target: { value: "Off" },
+    });
+    fireEvent.click(screen.getByTestId("project-create-submit"));
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenLastCalledWith(
+        expect.objectContaining({ title: "Off", sceneScopeMainLine: false }),
+      ),
+    );
   });
 
   it("includes selected codex types in onCreate payload", async () => {
@@ -217,6 +267,7 @@ describe("CreateProjectDialog", () => {
         genre: "",
         language: "ja",
         timelapseEnabled: true,
+        sceneScopeMainLine: true,
         seedFromProjectId: "proj-a",
         seedTypeSlugs: ["character"],
       });

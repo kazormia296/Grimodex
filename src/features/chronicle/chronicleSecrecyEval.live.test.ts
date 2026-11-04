@@ -34,7 +34,7 @@ import type {
 } from "./api";
 
 const KEY = process.env.OPENROUTER_API_KEY;
-const GEN_MODEL = process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini";
+const GEN_MODEL = process.env.OPENROUTER_MODEL ?? "openai/gpt-6-luna";
 const JUDGE_MODEL = process.env.OPENROUTER_JUDGE_MODEL ?? "openai/gpt-4o";
 const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 

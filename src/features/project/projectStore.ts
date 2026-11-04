@@ -33,6 +33,7 @@ import {
   type MutationAuthority,
 } from "@/features/concurrency/mutationAuthority";
 import { runProjectLoadWithFailureToast } from "./projectLoadFailure";
+import { projectCreateOptions, projectRowInput } from "./projectCreateRow";
 import {
   applyProjectMetadata,
   getFallbackProjectLanguage,
@@ -61,6 +62,8 @@ interface CreateProjectInput {
   timelapseEnabled?: boolean;
   seedFromProjectId?: string;
   seedTypeSlugs?: string[];
+  /** SDEF/1 R12: create new scenes in the main line (creation screen only). */
+  sceneScopeMainLine?: boolean;
 }
 
 interface ProjectLoadLifecycleOptions {
@@ -690,14 +693,10 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           // cannot replace currentProjectId until this initialization either
           // completes or rolls back.
           assertProjectLifecycleAuthority(generation, authority);
-          const createdRow = await createProjectRow({
-            id: crypto.randomUUID(),
-            title: input.title.trim(),
-            genre: input.genre || undefined,
-            language: input.language || undefined,
-            pov: input.pov || undefined,
-            tense: input.tense || undefined,
-          });
+          const createdRow = await createProjectRow(
+            projectRowInput(input),
+            projectCreateOptions(input),
+          );
           deletedProjectIds.delete(createdRow.id);
           try {
             if (!isCurrentMutationAuthority(authority)) {

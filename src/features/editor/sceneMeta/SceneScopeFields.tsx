@@ -1,10 +1,13 @@
 import { useTranslation } from "react-i18next";
 import type { Binding, Constraint, Registry } from "./sceneScopeTypes";
+import { scopeRefLabel } from "@/features/scene-scope-default/describeDefault";
+
+type Translate = (key: string) => string;
 
 const AXES = [
-  ["timeline", "timelineRefs"],
-  ["worldline", "worldlineRefs"],
-  ["narrativeLayer", "narrativeLayerRefs"],
+  ["timeline", "timelineRefs", "editor.sceneDetail.axisTimeline"],
+  ["worldline", "worldlineRefs", "editor.sceneDetail.axisWorldline"],
+  ["narrativeLayer", "narrativeLayerRefs", "editor.sceneDetail.axisLayer"],
 ] as const;
 
 function unresolved(): Constraint {
@@ -37,11 +40,15 @@ function selectConstraint(value: string, refs: readonly string[]): Constraint {
   return refs.includes(ref) ? { kind: "exact", ref } : unresolved();
 }
 
-function constraintOptions(refs: readonly string[], allowAny: boolean) {
+function constraintOptions(
+  refs: readonly string[],
+  allowAny: boolean,
+  t: Translate,
+) {
   return [
-    ...(allowAny ? [[ANY_OPTION, "Any"]] : []),
-    [UNRESOLVED_OPTION, "Unresolved"],
-    ...refs.map((ref) => [exactOption(ref), ref]),
+    ...(allowAny ? [[ANY_OPTION, t("editor.sceneDetail.constraintAny")]] : []),
+    [UNRESOLVED_OPTION, t("editor.sceneDetail.constraintUnresolved")],
+    ...refs.map((ref) => [exactOption(ref), scopeRefLabel(ref, t)]),
   ];
 }
 
@@ -50,14 +57,17 @@ function renderSelect(
   refs: readonly string[],
   allowAny: boolean,
   onChange: (value: Constraint) => void,
+  t: Translate,
+  disabled = false,
 ) {
   return (
     <select
       value={constraintValue(value)}
+      disabled={disabled}
       onChange={(event) => onChange(selectConstraint(event.target.value, refs))}
-      className="min-w-0 flex-1 rounded border border-border bg-background px-1.5 py-1 text-[10px] text-foreground"
+      className="min-w-0 flex-1 rounded border border-border bg-background px-1.5 py-1 text-[10px] text-foreground disabled:opacity-60"
     >
-      {constraintOptions(refs, allowAny).map(([option, label]) => (
+      {constraintOptions(refs, allowAny, t).map(([option, label]) => (
         <option key={option} value={option}>
           {label}
         </option>
@@ -73,23 +83,32 @@ function renderRow(
   refs: readonly string[],
   onQueryChange: (value: Constraint) => void,
   onMaterialChange: (value: Constraint) => void,
+  t: Translate,
+  materialLocked: boolean,
 ) {
   return (
     <div className="grid grid-cols-[64px_minmax(0,1fr)_minmax(0,1fr)] items-center gap-1.5">
       <span className="text-[10px] text-muted-foreground">{label}</span>
-      {renderSelect(query, refs, false, onQueryChange)}
-      {renderSelect(material, refs, true, onMaterialChange)}
+      {renderSelect(query, refs, false, onQueryChange, t)}
+      {renderSelect(material, refs, true, onMaterialChange, t, materialLocked)}
     </div>
   );
 }
 
+/**
+ * The query and material selects of the three axes. While `materialLocked`,
+ * the material column follows the query (rev2 §7.3, DR-SDEF-32) and is
+ * shown read-only.
+ */
 export function SceneScopeFields({
   draft,
   registry,
   onAxisChange,
+  materialLocked = false,
 }: {
   draft: Binding;
   registry: Registry;
+  materialLocked?: boolean;
   onAxisChange: (
     group: "queryIdentity" | "materialConstraint",
     axis: "timeline" | "worldline" | "narrativeLayer",
@@ -104,15 +123,17 @@ export function SceneScopeFields({
         <span>{t("editor.sceneDetail.queryIdentity", "Query")}</span>
         <span>{t("editor.sceneDetail.materialConstraint", "Material")}</span>
       </div>
-      {AXES.map(([axis, refsKey]) => (
+      {AXES.map(([axis, refsKey, labelKey]) => (
         <div key={axis}>
           {renderRow(
-            axis === "narrativeLayer" ? "layer" : axis,
+            t(labelKey),
             draft.queryIdentity[axis],
             draft.materialConstraint[axis],
             registry[refsKey],
             (value) => onAxisChange("queryIdentity", axis, value),
             (value) => onAxisChange("materialConstraint", axis, value),
+            t,
+            materialLocked,
           )}
         </div>
       ))}

@@ -89,7 +89,13 @@ fn add_scene(db: &Database, id: &str, sort_order: &str) -> Result<()> {
                 sort_order
             ],
         )?;
-        ensure_scene_scope_binding_in_tx(conn, PROJECT, id, "2026-09-17T00:00:00.000Z")?;
+        ensure_scene_scope_binding_in_tx(
+            conn,
+            PROJECT,
+            id,
+            "2026-09-17T00:00:00.000Z",
+            crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+        )?;
         Ok(())
     })?;
     let current = db.with_read_transaction(|conn| read_narrative_scene_scope(conn, PROJECT, id))?;

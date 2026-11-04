@@ -60,6 +60,12 @@ const ManageLabelsDialog = lazy(async () => {
   return { default: module.ManageLabelsDialog };
 });
 
+const ChapterScopeDefaultDialog = lazy(async () => {
+  const module =
+    await import("@/features/scene-scope-default/ChapterScopeDefaultDialog");
+  return { default: module.ChapterScopeDefaultDialog };
+});
+
 const EMPTY_CHAR_COUNTS: Record<string, number> = {};
 
 export function ScenesPanel() {
@@ -172,10 +178,16 @@ export function ScenesPanel() {
   );
   const [manageLabelsOpen, setManageLabelsOpen] = useState(false);
   const [aiTree, setAiTree] = useState<OpenAiTreeArgs | null>(null);
+  const [chapterScope, setChapterScope] = useState<{
+    folderId: string;
+    title: string;
+  } | null>(null);
   const scenesPanelContextValue = useMemo(
     () => ({
       openManageLabels: () => setManageLabelsOpen(true),
       openAiTree: (args: OpenAiTreeArgs) => setAiTree(args),
+      openChapterScopeDefault: (args: { folderId: string; title: string }) =>
+        setChapterScope(args),
     }),
     [],
   );
@@ -511,6 +523,16 @@ export function ScenesPanel() {
               mode={aiTree.mode}
               rootRef={aiTree.rootRef}
               rootTitle={aiTree.rootTitle}
+            />
+          </Suspense>
+        )}
+
+        {chapterScope && (
+          <Suspense fallback={null}>
+            <ChapterScopeDefaultDialog
+              folderId={chapterScope.folderId}
+              title={chapterScope.title}
+              onClose={() => setChapterScope(null)}
             />
           </Suspense>
         )}

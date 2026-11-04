@@ -1307,3 +1307,256 @@ fn scanner_skips_test_items_and_non_write_statements() {
     assert!(writes_scope_column(" sort_order = ?1 "));
     assert!(writes_version("title = ?1, version = version + 1"));
 }
+
+/// For every line, the innermost function (rustfmt layout) whose body
+/// contains it. Computed once per file: each `fn` line opens a range that ends
+/// at the first line equal to its indentation plus `}`.
+fn function_of_each_line(lines: &[String]) -> Vec<Option<String>> {
+    let mut owner: Vec<Option<String>> = vec![None; lines.len()];
+    let mut depth_of: Vec<usize> = vec![0; lines.len()];
+    for (index, line) in lines.iter().enumerate() {
+        let Some(name) = function_name(line) else {
+            continue;
+        };
+        let closing = format!("{}}}", " ".repeat(indent_of(line)));
+        let mut end = index;
+        while end + 1 < lines.len() && lines[end].trim_end() != closing {
+            end += 1;
+        }
+        let depth = indent_of(line) + 1;
+        for slot in index..=end {
+            if depth >= depth_of[slot] {
+                depth_of[slot] = depth;
+                owner[slot] = Some(name.clone());
+            }
+        }
+    }
+    owner
+}
+
+/// The text of the call starting at `(line_index, column)` up to its matching
+/// parenthesis, and its last top-level argument.
+fn call_last_argument(lines: &[String], line_index: usize, column: usize) -> String {
+    let mut text = String::new();
+    for line in &lines[line_index..] {
+        text.push_str(line);
+        text.push('\n');
+        if text.len() > 8_192 {
+            break;
+        }
+    }
+    let bytes = text.as_bytes();
+    let open = text[column..].find('(').expect("call parenthesis") + column;
+    let mut depth = 0usize;
+    let mut arguments = Vec::new();
+    let mut start = open + 1;
+    for (offset, byte) in bytes[open..].iter().enumerate() {
+        let position = open + offset;
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    arguments.push(text[start..position].trim().to_string());
+                    break;
+                }
+            }
+            b',' if depth == 1 => {
+                arguments.push(text[start..position].trim().to_string());
+                start = position + 1;
+            }
+            _ => {}
+        }
+    }
+    arguments
+        .into_iter()
+        .rev()
+        .find(|argument| !argument.is_empty())
+        .expect("call has arguments")
+}
+
+/// SDEF/1 A3 (`nir1-scene-scope-default-proposal/1`, MD1/MD2): the inheriting
+/// value reaches the binding creation only through the one decision function,
+/// which only the three allowed creation writers call, and every other binding
+/// creation passes the closed "do not inherit" value written out literally.
+#[test]
+fn scene_scope_default_inheritance_is_reachable_only_from_the_three_creation_writers() {
+    const INHERIT: &str = "NewSceneInheritProjectDefault";
+    const DO_NOT_INHERIT: &str = "SceneScopeInit::UnknownRepairOrRestore";
+    const DECIDE: &str = "scene_scope_init_for_create(";
+    const ENSURE: &str = "ensure_scene_scope_binding_in_tx(";
+    const SCENE_SCOPE: &str =
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/scene_scope.rs";
+    const ALLOWED: &[(&str, &str)] = &[
+        (
+            "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+            "tree_node_create_with_authority",
+        ),
+        (
+            "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+            "apply_ai_tree_plan",
+        ),
+        (
+            "src-tauri/crates/grimodex-db/src/map_writes.rs",
+            "promote_sticky",
+        ),
+    ];
+    let sources = load_production_sources(&repo_root());
+    let mut inherit_sites = Vec::new();
+    let mut decide_sites = BTreeSet::new();
+    let mut variable_calls = BTreeSet::new();
+    let mut literal_calls = Vec::new();
+    for source in &sources {
+        let owners = function_of_each_line(&source.lines);
+        for (index, line) in source.lines.iter().enumerate() {
+            if !line.contains(INHERIT) && !line.contains(DECIDE) && !line.contains(ENSURE) {
+                continue;
+            }
+            let function = owners[index].clone();
+            if line.contains(INHERIT) {
+                inherit_sites.push((
+                    source.path.clone(),
+                    function.clone(),
+                    line.trim().to_string(),
+                ));
+            }
+            if line.contains(DECIDE) && function_name(line).is_none() {
+                decide_sites.insert((source.path.clone(), function.clone().unwrap_or_default()));
+            }
+            if let Some(column) = line.find(ENSURE) {
+                if function_name(line).is_some() || line.trim_start().starts_with("use ") {
+                    continue;
+                }
+                let last = call_last_argument(&source.lines, index, column);
+                let site = (source.path.clone(), function.clone().unwrap_or_default());
+                if last.ends_with(DO_NOT_INHERIT) {
+                    literal_calls.push(site);
+                } else {
+                    assert_eq!(
+                        last, "scene_scope_init",
+                        "{site:?}: a binding creation must pass the literal `{DO_NOT_INHERIT}` or the decision's result"
+                    );
+                    assert!(
+                        variable_calls.insert(site.clone()),
+                        "{site:?}: more than one inheriting creation"
+                    );
+                }
+            }
+        }
+    }
+    let allowed: BTreeSet<(String, String)> = ALLOWED
+        .iter()
+        .map(|(path, function)| (path.to_string(), function.to_string()))
+        .collect();
+    assert_eq!(
+        decide_sites, allowed,
+        "only the three writers call the decision"
+    );
+    assert_eq!(
+        variable_calls, allowed,
+        "only the three writers pass the decision's result"
+    );
+    // The production creations that never inherit (R10): body-save repair,
+    // sample, capacity fixtures (two), snapshot restore, performance seed and
+    // Trash restore. A new binding creation must be classified here.
+    let literal: Vec<(&str, &str)> = literal_calls
+        .iter()
+        .map(|(path, function)| (path.as_str(), function.as_str()))
+        .collect();
+    assert_eq!(
+        literal,
+        vec![
+            (
+                "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",
+                "seed_catalog_and_authorities"
+            ),
+            (
+                "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",
+                "seed_catalog_and_authorities"
+            ),
+            (
+                "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
+                "apply_project_snapshot_restore"
+            ),
+            (
+                "src-tauri/crates/grimodex-db/src/runtime_performance_seed.rs",
+                "seed_runtime_performance_fixture"
+            ),
+            (
+                "src-tauri/crates/grimodex-db/src/sample_seed.rs",
+                "insert_seed_rows"
+            ),
+            (
+                "src-tauri/crates/grimodex-db/src/scene_body.rs",
+                "save_scene_body_bundle"
+            ),
+            (
+                "src-tauri/crates/grimodex-db/src/trash_bin.rs",
+                "restore_scene_in_tx"
+            ),
+        ],
+        "the non-inheriting binding creations"
+    );
+
+    // Each allowed writer binds `scene_scope_init` once, from the decision.
+    for (path, function) in ALLOWED {
+        let source = sources
+            .iter()
+            .find(|source| source.path == *path)
+            .expect("source");
+        let def = source
+            .lines
+            .iter()
+            .position(|line| function_name(line).as_deref() == Some(*function))
+            .expect("allowed writer");
+        let body = function_body(&source.lines, def);
+        assert_eq!(
+            body.matches("let scene_scope_init =").count(),
+            1,
+            "{function}"
+        );
+        assert_eq!(
+            body.matches("scene_scope_init =").count(),
+            1,
+            "{function}: never reassigned"
+        );
+        assert!(
+            body.contains(
+                "let scene_scope_init = crate::narrative_extraction::scene_scope_init_for_create("
+            ),
+            "{function}"
+        );
+    }
+
+    // The inheriting constant: the enum variant, the decision's one branch,
+    // and the binding creation's match arm -- nowhere else.
+    let functions: Vec<Option<String>> = inherit_sites.iter().map(|site| site.1.clone()).collect();
+    assert!(
+        inherit_sites.iter().all(|site| site.0 == SCENE_SCOPE),
+        "{inherit_sites:#?}"
+    );
+    assert_eq!(inherit_sites.len(), 3, "{inherit_sites:#?}");
+    assert!(inherit_sites
+        .iter()
+        .any(|site| site.2 == "NewSceneInheritProjectDefault,"));
+    assert!(functions.contains(&Some("scene_scope_init_for_create".to_string())));
+    assert!(inherit_sites.iter().any(|site| site.1.as_deref()
+        == Some("ensure_scene_scope_binding_in_tx")
+        && site.2.contains("=>")));
+    let scene_scope = sources
+        .iter()
+        .find(|source| source.path == SCENE_SCOPE)
+        .expect("scene_scope.rs");
+    let decision = scene_scope
+        .lines
+        .iter()
+        .position(|line| function_name(line).as_deref() == Some("scene_scope_init_for_create"))
+        .expect("decision function");
+    let body = function_body(&scene_scope.lines, decision);
+    assert_eq!(
+        body.matches(INHERIT).count(),
+        1,
+        "the decision returns it from one branch"
+    );
+    assert_eq!(body.matches("UnknownRepairOrRestore").count(), 1);
+}
