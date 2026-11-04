@@ -529,8 +529,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
             : null;
         if (recoveryBinding !== null) {
           const getBinding = backend?.getNarrativeMaintenanceWorkspaceBinding;
-          let currentBinding: NarrativeMaintenanceWorkspaceBinding | null =
-            null;
+          let currentBinding: NarrativeMaintenanceWorkspaceBinding | null = null;
           try {
             if (typeof getBinding !== "function") {
               throw new Error("native workspace binding is unavailable");
@@ -616,10 +615,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
             response.workspaceBinding,
           );
         }
-        if (
-          recoveryBinding !== null &&
-          recoveryDiscoveryBinding === recoveryBinding
-        ) {
+        if (recoveryBinding !== null && recoveryDiscoveryBinding === recoveryBinding) {
           recoveryDiscoveryBinding = null;
         }
         // A durable wake cannot be ACKed merely because a timer was armed.
@@ -816,11 +812,23 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     if (lastWakeReason !== "before-cutover" || exhaustedAtMs !== null) return;
     exhaustedAtMs = Date.now();
     consecutiveExhaustions += 1;
-    warn(
-      "[narrative-maintenance] before-cutover rediscovery exhausted; a Freshness NOT_READY may restart it after",
-      narrativeMaintenanceExhaustedRestartCooldownMs(consecutiveExhaustions),
-      "ms",
+    // Once the cooldown sits at its cap, every further stall would log the
+    // same line each minute; report the first time only.
+    const cooldownMs = narrativeMaintenanceExhaustedRestartCooldownMs(
+      consecutiveExhaustions,
     );
+    if (
+      consecutiveExhaustions === 1 ||
+      narrativeMaintenanceExhaustedRestartCooldownMs(
+        consecutiveExhaustions - 1,
+      ) < NARRATIVE_MAINTENANCE_EXHAUSTED_RESTART_MAX_MS
+    ) {
+      warn(
+        "[narrative-maintenance] before-cutover chain stalled; a Freshness NOT_READY may restart it after",
+        cooldownMs,
+        "ms",
+      );
+    }
   };
 
   const chainIdle = (): boolean =>
@@ -859,25 +867,46 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     (discoveryInFlight && discoveryReason === "before-cutover") ||
     pendingEvent?.reason === "before-cutover";
 
+  // The maintenance scheduler is still working through (or retrying) the
+  // chain's work; a chain that merely waits for it has not stalled.
+  const schedulerWorking = (): boolean => {
+    try {
+      const state = scheduler.getQuiescenceState?.();
+      return state !== undefined && (state.inFlight || state.timerScheduled);
+    } catch {
+      return false;
+    }
+  };
+
   /**
-   * DR-MPS-2: a before-cutover chain that ran out of rediscoveries has no
-   * live work left, so only a Freshness NOT_READY can restart it, and only
-   * once its backoff has elapsed.
+   * DR-MPS-2 / DR-MPS-7: a before-cutover chain with no live work left (no
+   * timer, discovery, pending event or retry in the coordinator, and nothing
+   * running or scheduled in the scheduler) has stalled: either its
+   * rediscoveries ran out, or a cycle ended without being accepted (for
+   * example yielded to a foreground write) and never asked for another
+   * discovery. Only a Freshness NOT_READY can restart it, and only once its
+   * backoff has elapsed; the backoff starts when the stall is first seen.
    */
   const exhaustedChainMayRestart = (): boolean => {
     if (
       lastWakeReason !== "before-cutover" ||
-      exhaustedAtMs === null ||
       !chainIdle() ||
-      rediscoveryAttempts < NARRATIVE_MAINTENANCE_MAX_REDISCOVERY_ATTEMPTS
+      schedulerWorking()
     ) {
       return false;
     }
+    markExhausted();
+    if (exhaustedAtMs === null) return false;
     const elapsedMs = Date.now() - exhaustedAtMs;
+    if (elapsedMs < 0) {
+      // The wall clock moved backwards: re-anchor instead of restarting
+      // without any cooldown.
+      exhaustedAtMs = Date.now();
+      return false;
+    }
     return (
-      elapsedMs < 0 ||
       elapsedMs >=
-        narrativeMaintenanceExhaustedRestartCooldownMs(consecutiveExhaustions)
+      narrativeMaintenanceExhaustedRestartCooldownMs(consecutiveExhaustions)
     );
   };
 
@@ -1069,15 +1098,6 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       // fingerprint and the exhaustion count so unchanged work backs off
       // further instead of resetting.
       const restartingExhausted = beforeCutoverChainActive();
-      // The last accepted cycle may never have called requestRediscovery;
-      // an idle chain at the cap is exhausted all the same.
-      if (
-        restartingExhausted &&
-        chainIdle() &&
-        rediscoveryAttempts >= NARRATIVE_MAINTENANCE_MAX_REDISCOVERY_ATTEMPTS
-      ) {
-        markExhausted();
-      }
       if (restartingExhausted && !exhaustedChainMayRestart()) return;
       recoveryDiscoveryBinding = null;
       const generation = ++chainGeneration;
@@ -1246,7 +1266,10 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     },
     async dispose(): Promise<void> {
       if (disposed) {
-        await Promise.all([discoveryPromise, wakeOutboxDrainPromise]);
+        await Promise.all([
+          discoveryPromise,
+          wakeOutboxDrainPromise,
+        ]);
         return;
       }
       disposed = true;

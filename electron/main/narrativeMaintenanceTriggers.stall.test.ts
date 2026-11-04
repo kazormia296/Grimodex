@@ -38,6 +38,8 @@ function createHarness() {
     verifyFresh: false,
     cutoverDone: false,
     discoverCalls: 0,
+    /** true の間、cycle は前景の書き込みに譲られて受理されない（onCycleAccepted が来ない）。 */
+    preempted: false,
   };
   let coordinator: NarrativeMaintenanceTriggerCoordinator | null = null;
 
@@ -46,6 +48,7 @@ function createHarness() {
     requestManyWithBinding: vi.fn((work: readonly unknown[]) => {
       if (work.length === 0) return;
       setTimeout(() => {
+        if (state.preempted) return;
         if (!state.writesActive) state.verifyFresh = true;
         coordinator?.requestRediscovery(); // bootstrap の onCycleAccepted と同じ
       }, 30);
@@ -173,6 +176,26 @@ describe("narrative maintenance: 書き込み中に再発見が尽きたあと�
     harness.state.writesActive = false;
     await vi.advanceTimersByTimeAsync(70_000);
 
+    expect(harness.state.cutoverDone).toBe(true);
+    await harness.dispose();
+  });
+
+  it("cycle が譲られ続けて受理されない chain も、譲られなくなれば自力で再開して cutover する", async () => {
+    const harness = createHarness();
+    harness.state.preempted = true;
+    harness.state.writesActive = false;
+    harness.freshness.start();
+
+    // 受理された cycle が無いので requestRediscovery は一度も呼ばれず、再発見の上限にも届かない。
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(harness.state.cutoverDone).toBe(false);
+    const callsWhilePreempted = harness.state.discoverCalls;
+    // 暴走しない（backoff が効いて poll ごとには回らない）。
+    expect(callsWhilePreempted).toBeLessThanOrEqual(12);
+
+    harness.state.preempted = false;
+    await vi.advanceTimersByTimeAsync(70_000);
+    expect(harness.state.discoverCalls).toBeGreaterThan(callsWhilePreempted);
     expect(harness.state.cutoverDone).toBe(true);
     await harness.dispose();
   });

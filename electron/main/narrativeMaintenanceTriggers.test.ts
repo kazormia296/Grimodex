@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createNarrativeMaintenanceTriggerCoordinator } from "./narrativeMaintenanceTriggers.js";
+import {
+  createNarrativeMaintenanceTriggerCoordinator,
+} from "./narrativeMaintenanceTriggers.js";
 import type {
   NarrativeMaintenanceRequest,
   NarrativeMaintenanceScheduler,
@@ -221,11 +223,9 @@ describe("narrative maintenance trigger coordinator", () => {
 
   it("discovers workspace-wide work from workspace:opened and enqueues the returned binding", async () => {
     const scheduler = makeScheduler();
-    const discoverNarrativeMaintenanceWork = vi
-      .fn()
-      .mockResolvedValue(
-        discovery("authority-open", 4, [[backfill("project-1")]]),
-      );
+    const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
+      discovery("authority-open", 4, [[backfill("project-1")]]),
+    );
     const coordinator = createNarrativeMaintenanceTriggerCoordinator(
       { discoverNarrativeMaintenanceWork },
       scheduler,
@@ -289,18 +289,13 @@ describe("narrative maintenance trigger coordinator", () => {
   });
 
   it("starts exact recovery discovery with a generic planner scan when no wake reason remains", async () => {
-    const binding = {
-      authorityId: "recovered-current-authority",
-      generation: 14,
-    };
+    const binding = { authorityId: "recovered-current-authority", generation: 14 };
     const scheduler = makeScheduler();
-    const discoverNarrativeMaintenanceWork = vi
-      .fn()
-      .mockResolvedValue(
-        discovery(binding.authorityId, binding.generation, [
-          [backfill("recovered-current-project")],
-        ]),
-      );
+    const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
+      discovery(binding.authorityId, binding.generation, [
+        [backfill("recovered-current-project")],
+      ]),
+    );
     const coordinator = createNarrativeMaintenanceTriggerCoordinator(
       {
         getNarrativeMaintenanceWorkspaceBinding: () => binding,
@@ -323,19 +318,14 @@ describe("narrative maintenance trigger coordinator", () => {
   });
 
   it("rejects exact recovery discovery if its proven binding is no longer current", async () => {
-    const expectedBinding = {
-      authorityId: "recovered-authority",
-      generation: 14,
-    };
+    const expectedBinding = { authorityId: "recovered-authority", generation: 14 };
     const currentBinding = { authorityId: "later-authority", generation: 15 };
     const scheduler = makeScheduler();
-    const discoverNarrativeMaintenanceWork = vi
-      .fn()
-      .mockResolvedValue(
-        discovery(expectedBinding.authorityId, expectedBinding.generation, [
-          [backfill("stale-recovery-project")],
-        ]),
-      );
+    const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
+      discovery(expectedBinding.authorityId, expectedBinding.generation, [
+        [backfill("stale-recovery-project")],
+      ]),
+    );
     const coordinator = createNarrativeMaintenanceTriggerCoordinator(
       {
         getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
@@ -353,21 +343,16 @@ describe("narrative maintenance trigger coordinator", () => {
   });
 
   it("carries a same-binding outbox ACK into proof-scoped rediscovery", async () => {
-    const binding = {
-      authorityId: "authority-outbox-recovery",
-      generation: 18,
-    };
+    const binding = { authorityId: "authority-outbox-recovery", generation: 18 };
     const scheduler = makeScheduler();
     const ackNarrativeMaintenanceWakeOutbox = vi
       .fn()
       .mockResolvedValue({ status: "accepted", acknowledged: 1 });
-    const discoverNarrativeMaintenanceWork = vi
-      .fn()
-      .mockResolvedValue(
-        discovery(binding.authorityId, binding.generation, [
-          [backfill("outbox-recovery-project")],
-        ]),
-      );
+    const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
+      discovery(binding.authorityId, binding.generation, [
+        [backfill("outbox-recovery-project")],
+      ]),
+    );
     const coordinator = createNarrativeMaintenanceTriggerCoordinator(
       {
         getNarrativeMaintenanceWorkspaceBinding: () => binding,
@@ -399,10 +384,7 @@ describe("narrative maintenance trigger coordinator", () => {
   });
 
   it("never carries a stale wake ACK into replacement-binding discovery", async () => {
-    const originalBinding = {
-      authorityId: "authority-outbox-old",
-      generation: 18,
-    };
+    const originalBinding = { authorityId: "authority-outbox-old", generation: 18 };
     const replacementBinding = {
       authorityId: "authority-outbox-new",
       generation: 19,
@@ -416,15 +398,11 @@ describe("narrative maintenance trigger coordinator", () => {
     const ackNarrativeMaintenanceWakeOutbox = vi
       .fn()
       .mockResolvedValue({ status: "accepted", acknowledged: 1 });
-    const discoverNarrativeMaintenanceWork = vi
-      .fn()
-      .mockResolvedValue(
-        discovery(
-          replacementBinding.authorityId,
-          replacementBinding.generation,
-          [[backfill("replacement-outbox-project")]],
-        ),
-      );
+    const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
+      discovery(replacementBinding.authorityId, replacementBinding.generation, [
+        [backfill("replacement-outbox-project")],
+      ]),
+    );
     const coordinator = createNarrativeMaintenanceTriggerCoordinator(
       {
         getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
@@ -880,6 +858,200 @@ describe("narrative maintenance trigger coordinator", () => {
     coordinator.dispose();
   });
 
+  describe("DR-MPS-7 stalled chain that never reached the rediscovery cap", () => {
+    const staleWork = () =>
+      discovery("authority-stale", 1, [
+        [backfill("stale-project", "before-cutover")],
+      ]);
+
+    it("restarts an idle chain at the cap whose last cycle never asked for another rediscovery", async () => {
+      const scheduler = makeScheduler();
+      const warn = vi.fn();
+      const discoverNarrativeMaintenanceWork = vi
+        .fn()
+        .mockResolvedValue(staleWork());
+      const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+        { discoverNarrativeMaintenanceWork },
+        scheduler,
+        { warn },
+      );
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.runAllTimersAsync();
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        coordinator.requestRediscovery();
+        await vi.runAllTimersAsync();
+      }
+      // attempts == 3, but no 4th requestRediscovery ever arrives, so the
+      // chain was never marked exhausted by the rediscovery path.
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(4);
+      expect(warn).not.toHaveBeenCalled();
+
+      coordinator.requestBeforeCutoverPreparation(); // first sighting: starts the 5 s
+      await vi.runAllTimersAsync();
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(4);
+      expect(warn).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(5_100);
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.runAllTimersAsync();
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(5);
+      coordinator.dispose();
+    });
+
+    it("keeps restarting a chain whose cycle never reaches the scheduler's accepted callback", async () => {
+      const scheduler = makeScheduler();
+      const discoverNarrativeMaintenanceWork = vi
+        .fn()
+        .mockResolvedValue(staleWork());
+      const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+        { discoverNarrativeMaintenanceWork },
+        scheduler,
+      );
+      // Not even one cycle is accepted (each is preempted by a foreground
+      // write): requestRediscovery is never called, attempts stay at 0.
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.runAllTimersAsync();
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(1);
+
+      coordinator.requestBeforeCutoverPreparation(); // k = 1: 5 s
+      await vi.advanceTimersByTimeAsync(4_900);
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.runAllTimersAsync();
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(200);
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.runAllTimersAsync();
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(2);
+
+      // The restarted chain stalls the same way: it is not abandoned, and
+      // the backoff grows (k = 2: 10 s).
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.advanceTimersByTimeAsync(9_800);
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.runAllTimersAsync();
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(400);
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.runAllTimersAsync();
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(3);
+      coordinator.dispose();
+    });
+
+    it("does not restart while the maintenance scheduler is still running or retrying", async () => {
+      const state = { inFlight: true, timerScheduled: false };
+      const scheduler = {
+        requestManyWithBinding: vi.fn(),
+        getQuiescenceState: () => ({
+          mutationRevision: 0,
+          workspaceBinding: null,
+          queueIdle: false,
+          hasMore: false,
+          ...state,
+        }),
+      } as unknown as NarrativeMaintenanceScheduler;
+      const discoverNarrativeMaintenanceWork = vi
+        .fn()
+        .mockResolvedValue(staleWork());
+      const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+        { discoverNarrativeMaintenanceWork },
+        scheduler,
+      );
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.runAllTimersAsync();
+      // A long cycle (or a scheduled retry) is not a stall, however long
+      // NOT_READY keeps arriving.
+      for (let poll = 0; poll < 30; poll += 1) {
+        coordinator.requestBeforeCutoverPreparation();
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(1);
+      state.inFlight = false;
+      state.timerScheduled = true;
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.advanceTimersByTimeAsync(10_000);
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.runAllTimersAsync();
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(1);
+
+      // Once the scheduler is idle the stall is real: backoff, then restart.
+      state.timerScheduled = false;
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.advanceTimersByTimeAsync(5_100);
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.runAllTimersAsync();
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(2);
+      coordinator.dispose();
+    });
+
+    it("does not advance the chain while a discovery is in flight even after the backoff has passed", async () => {
+      const scheduler = makeScheduler();
+      const slow = deferred<ReturnType<typeof staleWork>>();
+      const discoverNarrativeMaintenanceWork = vi
+        .fn()
+        .mockResolvedValueOnce(staleWork())
+        .mockResolvedValueOnce(staleWork())
+        .mockResolvedValueOnce(staleWork())
+        .mockReturnValueOnce(slow.promise)
+        .mockResolvedValue(staleWork());
+      const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+        { discoverNarrativeMaintenanceWork },
+        scheduler,
+      );
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.runAllTimersAsync();
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        coordinator.requestRediscovery();
+        await vi.runAllTimersAsync();
+      }
+      coordinator.requestRediscovery(); // 3rd rediscovery: the slow one
+      await vi.advanceTimersByTimeAsync(300);
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(4);
+      coordinator.requestRediscovery(); // the accepted cycle's 4th: exhausted
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const revision = coordinator.getQuiescenceState?.().mutationRevision;
+      coordinator.requestBeforeCutoverPreparation();
+      expect(coordinator.getQuiescenceState?.().mutationRevision).toBe(
+        revision,
+      );
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(4);
+
+      slow.resolve(staleWork());
+      await vi.runAllTimersAsync();
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.runAllTimersAsync();
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(5);
+      coordinator.dispose();
+    });
+
+    it("never restarts without a cooldown when the wall clock moves backwards", async () => {
+      const scheduler = makeScheduler();
+      const discoverNarrativeMaintenanceWork = vi
+        .fn()
+        .mockResolvedValue(staleWork());
+      const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+        { discoverNarrativeMaintenanceWork },
+        scheduler,
+      );
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.runAllTimersAsync();
+      coordinator.requestBeforeCutoverPreparation(); // stall seen: k = 1
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      vi.setSystemTime(Date.now() - 3_600_000);
+      for (let poll = 0; poll < 3; poll += 1) {
+        coordinator.requestBeforeCutoverPreparation();
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(1);
+      // The cooldown counts from the re-anchored time.
+      await vi.advanceTimersByTimeAsync(5_100);
+      coordinator.requestBeforeCutoverPreparation();
+      await vi.runAllTimersAsync();
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(2);
+      coordinator.dispose();
+    });
+  });
+
   it("does not restart a settled non-empty before-cutover chain from the next poll", async () => {
     const scheduler = makeScheduler();
     const discoverNarrativeMaintenanceWork = vi
@@ -1044,11 +1216,9 @@ describe("narrative maintenance trigger coordinator", () => {
       backfill(`project-${index}`),
     );
     const secondPage = [backfill("project-32")];
-    const discoverNarrativeMaintenanceWork = vi
-      .fn()
-      .mockResolvedValue(
-        discovery("authority-many", 2, [firstPage, secondPage]),
-      );
+    const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
+      discovery("authority-many", 2, [firstPage, secondPage]),
+    );
     const coordinator = createNarrativeMaintenanceTriggerCoordinator(
       { discoverNarrativeMaintenanceWork },
       scheduler,
@@ -1107,14 +1277,12 @@ describe("narrative maintenance trigger coordinator", () => {
     const warn = vi.fn();
     const coordinator = createNarrativeMaintenanceTriggerCoordinator(
       {
-        discoverNarrativeMaintenanceWork: vi
-          .fn()
-          .mockResolvedValue(
-            discovery("authority-digest", 1, [
-              [backfill("p1")],
-              [{ ...backfill("p2"), graphContractDigest: "renderer-forged" }],
-            ]),
-          ),
+        discoverNarrativeMaintenanceWork: vi.fn().mockResolvedValue(
+          discovery("authority-digest", 1, [
+            [backfill("p1")],
+            [{ ...backfill("p2"), graphContractDigest: "renderer-forged" }],
+          ]),
+        ),
       },
       scheduler,
       { warn },
@@ -1172,9 +1340,7 @@ describe("narrative maintenance trigger coordinator", () => {
       .fn()
       .mockReturnValueOnce(firstResponse)
       .mockResolvedValueOnce(
-        discovery("authority-restore", 5, [
-          [backfill("restore-project", "restore-completed")],
-        ]),
+        discovery("authority-restore", 5, [[backfill("restore-project", "restore-completed")]]),
       );
     const coordinator = createNarrativeMaintenanceTriggerCoordinator(
       { discoverNarrativeMaintenanceWork },
@@ -1210,9 +1376,7 @@ describe("narrative maintenance trigger coordinator", () => {
     const discoverNarrativeMaintenanceWork = vi
       .fn()
       .mockResolvedValueOnce(
-        discovery("authority-restore", 5, [
-          [backfill("restore-project", "restore-completed")],
-        ]),
+        discovery("authority-restore", 5, [[backfill("restore-project", "restore-completed")]]),
       )
       .mockResolvedValueOnce(
         discovery("authority-open", 6, [[backfill("ordinary-project")]]),
@@ -1239,12 +1403,7 @@ describe("narrative maintenance trigger coordinator", () => {
     );
     expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(2);
     expect(scheduler.requestManyWithBinding).toHaveBeenLastCalledWith(
-      [
-        expect.objectContaining({
-          projectId: "ordinary-project",
-          reason: "workspace-opened",
-        }),
-      ],
+      [expect.objectContaining({ projectId: "ordinary-project", reason: "workspace-opened" })],
       { authorityId: "authority-open", generation: 6 },
     );
     coordinator.dispose();
@@ -1271,9 +1430,7 @@ describe("narrative maintenance trigger coordinator", () => {
     await vi.runOnlyPendingTimersAsync();
     coordinator.handleBackendEvent("workspace:opened", {});
     resolveOld(
-      discovery("authority-old", 8, [
-        [backfill("old-project", "restore-completed")],
-      ]),
+      discovery("authority-old", 8, [[backfill("old-project", "restore-completed")]]),
     );
     await vi.runAllTimersAsync();
 
@@ -1299,13 +1456,9 @@ describe("narrative maintenance trigger coordinator", () => {
 
   it("wakes on the trusted in-session semantic epoch rotation event", async () => {
     const scheduler = makeScheduler();
-    const discoverNarrativeMaintenanceWork = vi
-      .fn()
-      .mockResolvedValue(
-        discovery("authority-live", 10, [
-          [backfill("rotated-project", "semantic-epoch-rotated")],
-        ]),
-      );
+    const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
+      discovery("authority-live", 10, [[backfill("rotated-project", "semantic-epoch-rotated")]]),
+    );
     const coordinator = createNarrativeMaintenanceTriggerCoordinator(
       {
         getNarrativeMaintenanceWorkspaceBinding: () => ({
@@ -1354,7 +1507,9 @@ describe("narrative maintenance trigger coordinator", () => {
       authorityId: "authority-a",
       generation: 1,
     });
-    bDiscovery.resolve(discovery("authority-b", 2, [[backfill("project-b")]]));
+    bDiscovery.resolve(
+      discovery("authority-b", 2, [[backfill("project-b")]]),
+    );
     await vi.runAllTimersAsync();
 
     expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledOnce();
@@ -1411,9 +1566,9 @@ describe("narrative maintenance trigger coordinator", () => {
     const coordinator = createNarrativeMaintenanceTriggerCoordinator(
       {
         getNarrativeMaintenanceWorkspaceBinding: () => binding,
-        listNarrativeMaintenanceWakeOutbox: vi
-          .fn()
-          .mockResolvedValue([{ id: "wake-1" }]),
+        listNarrativeMaintenanceWakeOutbox: vi.fn().mockResolvedValue([
+          { id: "wake-1" },
+        ]),
         ackNarrativeMaintenanceWakeOutbox,
         discoverNarrativeMaintenanceWork,
       },
@@ -1427,9 +1582,7 @@ describe("narrative maintenance trigger coordinator", () => {
     );
     expect(ackNarrativeMaintenanceWakeOutbox).not.toHaveBeenCalled();
 
-    pendingDiscovery.resolve(
-      discovery("authority-outbox", 7, [[backfill("p1")]]),
-    );
+    pendingDiscovery.resolve(discovery("authority-outbox", 7, [[backfill("p1")]]));
     await vi.runAllTimersAsync();
 
     expect(scheduler.requestManyWithBinding).toHaveBeenCalledWith(
@@ -1450,15 +1603,13 @@ describe("narrative maintenance trigger coordinator", () => {
     const coordinator = createNarrativeMaintenanceTriggerCoordinator(
       {
         getNarrativeMaintenanceWorkspaceBinding: () => binding,
-        listNarrativeMaintenanceWakeOutbox: vi
-          .fn()
-          .mockResolvedValue([{ id: "wake-1" }]),
+        listNarrativeMaintenanceWakeOutbox: vi.fn().mockResolvedValue([
+          { id: "wake-1" },
+        ]),
         ackNarrativeMaintenanceWakeOutbox,
-        discoverNarrativeMaintenanceWork: vi
-          .fn()
-          .mockResolvedValue(
-            discovery("replacement-authority", 8, [[backfill("p1")]]),
-          ),
+        discoverNarrativeMaintenanceWork: vi.fn().mockResolvedValue(
+          discovery("replacement-authority", 8, [[backfill("p1")]]),
+        ),
       },
       scheduler,
       { warn: vi.fn() },
@@ -1484,9 +1635,7 @@ describe("narrative maintenance trigger coordinator", () => {
         listNarrativeMaintenanceWakeOutbox: vi
           .fn()
           .mockRejectedValueOnce(
-            new Error(
-              "workspace lifecycle has active owners or unacknowledged work",
-            ),
+            new Error("workspace lifecycle has active owners or unacknowledged work"),
           )
           .mockResolvedValueOnce([]),
         ackNarrativeMaintenanceWakeOutbox: vi.fn(),

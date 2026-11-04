@@ -90,5 +90,36 @@ main の検証と renderer が共有する型付き IPC の payload を変える
   `narrativeMaintenanceTriggers.stall.test.ts`（Freshness と coordinator の実物を配線した再現。書き込みが止まれば cutover まで進む、
   書き込みが止まらない 10 分で discover 52 回〔上限 56〕、書き込みが無ければ従来どおり、cutover 後は discover しない、
   書き込みが止まってから 70 s 以内に cutover）。
-- 残る課題: (1) 受理された cycle が `onCycleAccepted` を呼ばず、かつ attempts が上限未満のまま止まる chain は、今回の再点火の対象外
-  （従来どおり）。(2) begin の理由の wire 化（DR-MPS-5）。(3) 再点火のたびの Verify が前景の書き込みに譲られる頻度の実測は無い。
+- 残る課題: (1) は独立レビューで穴と確認され、DR-MPS-7 で閉じた。(2) begin の理由の wire 化（DR-MPS-5）。(3) 再点火のたびの Verify が前景の書き込みに譲られる頻度の実測は無い。
+
+## DR-MPS-7 独立レビューの反映（2026-11-04）
+
+- 穴（P2 二件、同じ原因）: 再発見を進めるのは `onCycleAccepted` → `requestRediscovery` だけで、cycle が前景の書き込みに譲られる
+  〔`NEX_MAINTENANCE_ATTEMPT_CANCELLED`〕、not-admitted、deferred、workspace-unavailable で終わると届かない。そのとき chain は
+  attempts < 3 のまま idle になり、枯渇の記録（DR-MPS-6 の 2 経路とも attempts が上限なのを前提）が付かず、再点火した chain も
+  同じ状態に入って NOT_READY が永久に無視された。scratch と stall 試験（修正前は落ちる）で確かめた。
+- 修正: 枯渇（stalled）の定義を「attempts が上限」から「生きた仕事が無い」に広げた。coordinator に timer／in-flight／pendingEvent／
+  pendingRetry が無く、かつ maintenance scheduler が実行中でも retry の timer 待ちでもない（`getQuiescenceState` の
+  `inFlight`／`timerScheduled`。取得できなければ idle 扱い）chain を、Freshness の NOT_READY が最初に見た時点で停止と記録し、
+  cooldown をその時点から数える。cooldown 経過後の NOT_READY が新しい chain を始める。k は停止のたびに増え、再点火した chain が
+  また受理されずに止まっても backoff が伸びる（5→10→…→60 s）。scheduler が実行中の長い cycle（Rebuild 等）の間は停止とは見なさず、
+  数え始めもしない。契約・閾値（再発見 3 回）・Rust は変えない。DR-MPS-3 の matrix の「発見は済み、受理待ち」は、
+  scheduler が実行中ならそのまま「捨てる」、scheduler も idle なら停止として backoff の対象になる。
+- 置き換えた試験: 旧「does not restart an exhausted before-cutover chain from a repeated NOT_READY」（枯渇後は何度 NOT_READY が来ても
+  再開しない）は、「…from a NOT_READY inside its backoff」に置き換えた。旧設計の保証（idle poll ごとに Verify が暴走しない）は
+  cooldown で保たれる（最短 5 s に 1 回、k が増えて最大 60 s に 1 回、各回は発見＋再発見で最大 4 回）。変わったのは
+  「backoff 経過後は再開する」点だけで、これが修正の目的（書き込みが止まれば自力で再開する）。DR-MPS-1 の
+  「active なら捨てる」は cooldown 内・scheduler 実行中・higher-value wake active の間は従来どおり。
+- 総回数の上限は置かない（採らない案）: 上限で打ち切ると、書き込みが続いたあとに止まった場合に、元の不具合
+  （IR が永久に使えない）が再び起きる。停止条件は cutover、planner が空、work の fingerprint の変化、新しい authority の chain。
+  進捗のない恒久的な Verify 失敗では、60 s ごとに最大 4 回の discover と cycle が cutover まで続くが、頻度は上限で抑えられる。
+  warn は k が上限の cooldown に達した最初の 1 回までとし、その後は間引く。
+- fingerprint の前提: k を戻す条件は fingerprint の変化のまま。planner が毎回違う fingerprint を返す場合は、再発見の
+  attempts も毎回 0 に戻る（従来からの挙動で、この修正の前から変わらない）。再点火の頻度の下限は、どの場合も 5 s に 1 回。
+  DR-MPS-2 の「10 分で再点火 15 回未満」は fingerprint が安定している場合の見積もりである。
+- 時計: cooldown は壁時計（`Date.now()`）。時刻が戻った場合は cooldown 無しで再点火せず、起点を現在時刻に取り直して待つ。
+- 試験: `narrativeMaintenanceTriggers.test.ts` の DR-MPS-7 の 5 本（attempts==3 で idle の chain の再開、受理されない cycle の再点火と
+  backoff の伸び、scheduler 実行中・retry 待ちの間は再点火しない、discovery in-flight の間は cooldown 経過後も generation を進めない、
+  時計の逆行）と、`.stall.test.ts` の「cycle が譲られ続ける chain も自力で再開する」。変異（idle の検出の削除、scheduler の判定の削除、
+  chainIdle の削除、時計の分岐の削除）で落ちることを確かめた。
+- 差分の整理: 前の commit に混ざっていた prettier の整形だけの hunk は戻した（base も整形されておらず、`electron/main` は lint の対象外）。
