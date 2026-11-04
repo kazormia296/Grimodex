@@ -845,6 +845,9 @@ describe("structured repair root-object contract", () => {
 
   it("keeps repaired event output at the caller's root schema", async () => {
     const expectedShape = `{"clusterRef":"cluster-1","resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}
+clusterRef は "cluster-1" をそのまま使い、event-cluster: などの接頭辞を付けないでください。
+events[].observationRefs は壊れた出力の値を一字一句そのまま保ち、短縮・接頭辞の省略・正規化をしないでください。使える localId はこの cluster の ["obs-1"] だけです。例の値は形の見本で、event ごとの値は壊れた出力から取ります。
+events[].significance は "major"、"scene-level"、"minor"、"incidental" のいずれかです。それ以外の値は、この 4 種類のうち最も近いものに直してください。
 events[].actuality は "actual"、"attempted"、"prevented"、"rumored" のいずれかです。それ以外の actuality の event は、4 種類のどれかへ書き換えず events から除いてください。
 events が空になる場合: {"clusterRef":"cluster-1","resolution":"unresolved","events":[]}`;
     const repair = captureRepairSend(repairedEvents);
@@ -1110,9 +1113,9 @@ events が空になる場合: {"clusterRef":"cluster-1","resolution":"unresolved
       `--- contextId=event-cluster:${clusterRef} inputRef=cluster:${clusterRef} ---\n${clusterRef}`,
     );
     expect(prompt).toContain(
-      "出力の clusterRef は Context Set の event-cluster 値を一字一句そのまま使用し、出力例のプレースホルダーを値としてコピーしないでください。",
+      "event-cluster: や cluster: を追加せず、出力例のプレースホルダーを値としてコピーしないでください。",
     );
-    expect(prompt).toContain('"clusterRef":"<event-cluster-ref-from-context>"');
+    expect(prompt).toContain('"clusterRef":"<cluster-ref-from-context>"');
   });
 
   it("keeps the static event component contract digest across cluster refs", async () => {
@@ -1237,7 +1240,7 @@ events が空になる場合: {"clusterRef":"cluster-1","resolution":"unresolved
   });
 });
 
-describe("event synthesis actuality contract (component contract 3)", () => {
+describe("event synthesis actuality contract (component contract 3 wording, kept in 4)", () => {
   const hypotheticalObservation: RawChronicleEventObservation = {
     localId: "obs-h",
     evidence: [
@@ -1311,7 +1314,6 @@ describe("event synthesis actuality contract (component contract 3)", () => {
       repairOnFailure: false,
     });
 
-    expect(CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_VERSION).toBe("3");
     const prompt = prompts[0] ?? "";
     expect(prompt).toContain(
       'events[].actuality に使えるのは "actual"、"attempted"、"prevented"、"rumored" の 4 種類だけです。',
@@ -1319,7 +1321,7 @@ describe("event synthesis actuality contract (component contract 3)", () => {
     expect(prompt).toContain("4 種類のどれかへ書き換えず");
     expect(prompt).toContain('"unknown"');
     expect(prompt).toContain(
-      '{"clusterRef":"<event-cluster-ref-from-context>","resolution":"unresolved","events":[]}',
+      '{"clusterRef":"<cluster-ref-from-context>","resolution":"unresolved","events":[]}',
     );
   });
 
@@ -1481,5 +1483,245 @@ describe("event synthesis actuality contract (component contract 3)", () => {
       ok: false,
       reason: "hypothesis-observation-actuality-mismatch",
     });
+  });
+});
+
+describe("event synthesis reference and enum clarity (component contract 4)", () => {
+  // Shapes taken from the 2026-11-04 claude-sonnet-5-5 evaluation (PD novels,
+  // quotes shortened): the model copied the contextId heading as clusterRef,
+  // answered significance "moderate", and the repair shortened the localIds.
+  const windowObservation: RawChronicleEventObservation = {
+    localId: "window-001:obs-009",
+    evidence: [{ sourceRef: "S0009", quote: "全身すっかり緑色に変わっていた" }],
+    assertion: { attribution: "narrator", narrativeFrame: "story-world" },
+    payload: {
+      predicate: "河童の体色が変わる",
+      actuality: "actual",
+      participants: [],
+      temporalExpressions: [],
+      durationKind: "instant",
+    },
+  };
+  const clusterRef = "cluster-0009";
+
+  function response(overrides: {
+    readonly clusterRef?: string;
+    readonly observationRefs?: readonly string[];
+    readonly significance?: string;
+  }): string {
+    return JSON.stringify({
+      clusterRef: overrides.clusterRef ?? clusterRef,
+      resolution: "single-event",
+      events: [
+        {
+          observationRefs: overrides.observationRefs ?? [
+            windowObservation.localId,
+          ],
+          titleSuggestion: "河童の体色の変化に気づく",
+          summary: "河童の体が緑色に変わっていることに気づく。",
+          actuality: "actual",
+          significance: overrides.significance ?? "minor",
+        },
+      ],
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    blockPolicyMock.mockReturnValue(false);
+  });
+
+  it("tells the model to use the body cluster value, not the heading, and lists the four significances", async () => {
+    const prompts: string[] = [];
+    await runEventSynthesisTask({
+      clusterRef,
+      observations: [windowObservation],
+      projectId: "project-test",
+      send: async (messages) => {
+        prompts.push(promptText(messages));
+        return { text: response({}), ...usage };
+      },
+      repairOnFailure: false,
+    });
+
+    expect(CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_VERSION).toBe("4");
+    const prompt = prompts[0] ?? "";
+    const [instruction, rest] = prompt.split(
+      "# Context Set (chronicle.prompt/1)",
+    );
+    // The heading the model sees is still contextId=event-cluster:<value>.
+    expect(rest).toContain(
+      `--- contextId=event-cluster:${clusterRef} inputRef=cluster:${clusterRef} ---\n${clusterRef}`,
+    );
+    expect(instruction).toContain(
+      "event-cluster の見出し行（contextId=event-cluster:X）の下に書かれた本文の値 X",
+    );
+    expect(instruction).toContain(
+      "event-cluster: や cluster: を追加せず、出力例のプレースホルダーを値としてコピーしないでください。",
+    );
+    expect(instruction).toContain(
+      'events[].significance に使えるのは "major"、"scene-level"、"minor"、"incidental" の 4 種類だけです。',
+    );
+    // The output example no longer carries the "event-cluster" word.
+    const shape = rest!.split("# Output (JSON only)")[1]!;
+    expect(shape).not.toContain("event-cluster");
+    expect(shape).toContain('"clusterRef":"<cluster-ref-from-context>"');
+  });
+
+  it("tells the repair to keep refs verbatim and lists the four significances", async () => {
+    const repair = captureRepairSend(response({}));
+    await runEventSynthesisTask({
+      clusterRef,
+      observations: [windowObservation],
+      projectId: "project-test",
+      send: async () => ({
+        text: response({ clusterRef: `event-cluster:${clusterRef}` }),
+        ...usage,
+      }),
+      repairSend: repair.send,
+    });
+
+    const prompt = repair.captured()?.prompt ?? "";
+    expect(prompt).toContain(
+      `clusterRef は "${clusterRef}" をそのまま使い、event-cluster: などの接頭辞を付けないでください。`,
+    );
+    expect(prompt).toContain(
+      "events[].observationRefs は壊れた出力の値を一字一句そのまま保ち、短縮・接頭辞の省略・正規化をしないでください。",
+    );
+    expect(prompt).toContain('["window-001:obs-009"] だけです');
+    expect(prompt).toContain(
+      'events[].significance は "major"、"scene-level"、"minor"、"incidental" のいずれかです。',
+    );
+    // The example ref is a real localId of the cluster, not the old "obs-1".
+    expect(prompt).not.toContain('"obs-1"');
+  });
+
+  it.each([
+    [
+      "event-cluster: prefix on clusterRef",
+      { clusterRef: `event-cluster:${clusterRef}` },
+    ],
+    ["significance moderate", { significance: "moderate" }],
+    ["shortened localId (obs-009)", { observationRefs: ["obs-009"] }],
+  ])(
+    "reports %s as invalid and emits no terminal output",
+    async (_label, overrides) => {
+      const stageExecution = createEventStageExecution({
+        projectId: "project-test",
+        runId: "run-clarity",
+        taskId: "task-clarity",
+        attemptId: "attempt-clarity",
+        stageExecutionId: "stage-clarity",
+      });
+      const statuses: Array<"parsed" | "invalid"> = [];
+      const terminals: ChronicleSynthesisTerminalOutput[] = [];
+      const result = await runEventSynthesisTask({
+        clusterRef,
+        observations: [windowObservation],
+        projectId: "project-test",
+        stageExecution,
+        send: async () => ({ text: response(overrides), ...usage }),
+        repairOnFailure: false,
+        onParseStatus: (status) => statuses.push(status),
+        onTerminalOutput: (output) => {
+          terminals.push(output);
+        },
+      });
+
+      expect(result).toEqual([]);
+      expect(statuses).toEqual(["invalid"]);
+      expect(terminals).toEqual([]);
+    },
+  );
+
+  it("does not pass a repaired response whose refs were shortened (apparent success) to Native", async () => {
+    const stageExecution = createEventStageExecution({
+      projectId: "project-test",
+      runId: "run-apparent",
+      taskId: "task-apparent",
+      attemptId: "attempt-apparent",
+      stageExecutionId: "stage-apparent",
+    });
+    const statuses: Array<"parsed" | "invalid"> = [];
+    const terminals: ChronicleSynthesisTerminalOutput[] = [];
+    // Root: prefixed clusterRef. Repair: fixes clusterRef but shortens the ref.
+    const repair = captureRepairSend(
+      response({ observationRefs: ["obs-009"] }),
+    );
+    const result = await runEventSynthesisTask({
+      clusterRef,
+      observations: [windowObservation],
+      projectId: "project-test",
+      stageExecution,
+      send: async () => ({
+        text: response({ clusterRef: `event-cluster:${clusterRef}` }),
+        ...usage,
+      }),
+      repairSend: repair.send,
+      createStageExecutionId: () => "repair-apparent",
+      onParseStatus: (status) => statuses.push(status),
+      onTerminalOutput: (output) => {
+        terminals.push(output);
+      },
+    });
+
+    expect(repair.captured()).not.toBeNull();
+    expect(result).toEqual([]);
+    expect(statuses).toEqual(["invalid"]);
+    expect(terminals).toEqual([]);
+  });
+
+  it("still accepts a repaired response that keeps the localId verbatim", async () => {
+    const stageExecution = createEventStageExecution({
+      projectId: "project-test",
+      runId: "run-kept",
+      taskId: "task-kept",
+      attemptId: "attempt-kept",
+      stageExecutionId: "stage-kept",
+    });
+    const terminals: ChronicleSynthesisTerminalOutput[] = [];
+    const repair = captureRepairSend(response({}));
+    const result = await runEventSynthesisTask({
+      clusterRef,
+      observations: [windowObservation],
+      projectId: "project-test",
+      stageExecution,
+      send: async () => ({
+        text: response({ clusterRef: `event-cluster:${clusterRef}` }),
+        ...usage,
+      }),
+      repairSend: repair.send,
+      createStageExecutionId: () => "repair-kept",
+      onTerminalOutput: (output) => {
+        terminals.push(output);
+      },
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.observationRefs).toEqual(["window-001:obs-009"]);
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]?.disposition).toBe("repair-success");
+  });
+
+  it("keeps the unresolved empty exit valid (no refs to resolve)", async () => {
+    const statuses: Array<"parsed" | "invalid"> = [];
+    const result = await runEventSynthesisTask({
+      clusterRef,
+      observations: [windowObservation],
+      projectId: "project-test",
+      send: async () => ({
+        text: JSON.stringify({
+          clusterRef,
+          resolution: "unresolved",
+          events: [],
+        }),
+        ...usage,
+      }),
+      repairOnFailure: false,
+      onParseStatus: (status) => statuses.push(status),
+    });
+
+    expect(result).toEqual([]);
+    expect(statuses).toEqual(["parsed"]);
   });
 });
