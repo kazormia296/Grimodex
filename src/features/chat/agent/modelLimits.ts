@@ -81,18 +81,42 @@ const DEFAULT_CAPABILITIES: ModelCapabilityDefinition = {
   supportsReasoning: false,
 };
 
+/**
+ * Anthropic 5 系（fable／opus／sonnet／haiku の 5・5.5）の共通の能力。
+ * 1M context／128K 出力、adaptive thinking のみ（budget_tokens は 400）、
+ * effort は low〜max（xhigh は製品の EffortLevel に無いので持たない）。
+ */
+const ANTHROPIC_GEN5_CAPABILITIES: ModelCapabilityDefinition = {
+  contextWindow: 1_000_000,
+  maxOutputTokens: 128_000,
+  supportsTools: true,
+  supportsThinking: false,
+  supportsAdaptiveThinking: true,
+  supportsEffort: true,
+  supportsMaxEffort: true,
+  supportsReasoning: false,
+};
+
+const CLAUDE_HAIKU_4_5_CAPABILITIES: ModelCapabilityDefinition = {
+  contextWindow: 200_000,
+  maxOutputTokens: 64_000,
+  supportsTools: true,
+  supportsThinking: true,
+  supportsAdaptiveThinking: false,
+  supportsEffort: false,
+  supportsMaxEffort: false,
+  supportsReasoning: false,
+};
+
 const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
-  // Anthropic — Fable 5 (adaptive thinking + max effort)
-  "claude-fable-5": {
-    contextWindow: 1_000_000,
-    maxOutputTokens: 128_000,
-    supportsTools: true,
-    supportsThinking: false,
-    supportsAdaptiveThinking: true,
-    supportsEffort: true,
-    supportsMaxEffort: true,
-    supportsReasoning: false,
-  },
+  // Anthropic — 5 系（新しい順）。ID は /v1/models が返す日付なしの形。
+  "claude-fable-5-1": ANTHROPIC_GEN5_CAPABILITIES,
+  "claude-fable-5": ANTHROPIC_GEN5_CAPABILITIES,
+  "claude-opus-5-5": ANTHROPIC_GEN5_CAPABILITIES,
+  "claude-opus-5": ANTHROPIC_GEN5_CAPABILITIES,
+  "claude-sonnet-5-5": ANTHROPIC_GEN5_CAPABILITIES,
+  "claude-sonnet-5": ANTHROPIC_GEN5_CAPABILITIES,
+  "claude-haiku-5-5": ANTHROPIC_GEN5_CAPABILITIES,
   // Anthropic — Opus 4.8 (adaptive thinking + max effort)
   "claude-opus-4-8": {
     contextWindow: 1_000_000,
@@ -126,7 +150,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
     supportsMaxEffort: true,
     supportsReasoning: false,
   },
-  // Anthropic — Sonnet 4.6 (adaptive thinking, 1M context)
+  // Anthropic — Sonnet 4.6 (adaptive thinking, 1M context, effort low〜max)
   "claude-sonnet-4-6": {
     contextWindow: 1_000_000,
     maxOutputTokens: 64_000,
@@ -134,20 +158,13 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
     supportsThinking: false,
     supportsAdaptiveThinking: true,
     supportsEffort: true,
-    supportsMaxEffort: false,
+    supportsMaxEffort: true,
     supportsReasoning: false,
   },
-  // Anthropic — Haiku 4.5 (no thinking, effort 非対応)
-  "claude-haiku-4-5-20251001": {
-    contextWindow: 200_000,
-    maxOutputTokens: 64_000,
-    supportsTools: true,
-    supportsThinking: false,
-    supportsAdaptiveThinking: false,
-    supportsEffort: false,
-    supportsMaxEffort: false,
-    supportsReasoning: false,
-  },
+  // Anthropic — Haiku 4.5 (budget_tokens thinking, adaptive・effort 非対応, 200K/64K)。
+  // 日付つき ID（既存の保存設定）と /v1/models の日付なしの別名の両方を持つ。
+  "claude-haiku-4-5-20251001": CLAUDE_HAIKU_4_5_CAPABILITIES,
+  "claude-haiku-4-5": CLAUDE_HAIKU_4_5_CAPABILITIES,
   // Anthropic — Opus 4.5 (budget_tokens thinking, effort 非対応)
   "claude-opus-4-5": {
     contextWindow: 200_000,
@@ -364,12 +381,19 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
 const OPENROUTER_PREFIXED: Record<string, string> = {
   "openai/gpt-4o": "gpt-4o",
   "openai/gpt-4o-mini": "gpt-4o-mini",
+  "anthropic/claude-fable-5-1": "claude-fable-5-1",
   "anthropic/claude-fable-5": "claude-fable-5",
+  "anthropic/claude-opus-5-5": "claude-opus-5-5",
+  "anthropic/claude-opus-5": "claude-opus-5",
+  "anthropic/claude-sonnet-5-5": "claude-sonnet-5-5",
+  "anthropic/claude-sonnet-5": "claude-sonnet-5",
+  "anthropic/claude-haiku-5-5": "claude-haiku-5-5",
   "anthropic/claude-opus-4-8": "claude-opus-4-8",
   "anthropic/claude-opus-4-7": "claude-opus-4-7",
   "anthropic/claude-opus-4-6": "claude-opus-4-6",
   "anthropic/claude-sonnet-4-6": "claude-sonnet-4-6",
   "anthropic/claude-haiku-4-5-20251001": "claude-haiku-4-5-20251001",
+  "anthropic/claude-haiku-4-5": "claude-haiku-4-5",
   "anthropic/claude-opus-4-5": "claude-opus-4-5",
   "anthropic/claude-sonnet-4-5-20250929": "claude-sonnet-4-5-20250929",
   "qwen/qwen3": "qwen3",
@@ -432,7 +456,52 @@ function resolveHardcoded(model: string): ModelCapabilityDefinition {
     if (model.startsWith(key)) return MODEL_CAPABILITIES[key];
   }
 
-  return DEFAULT_CAPABILITIES;
+  return resolveFutureAnthropicGeneration(model) ?? DEFAULT_CAPABILITIES;
+}
+
+interface AnthropicVersionedKey {
+  family: string;
+  version: number;
+  key: string;
+}
+
+/** 能力表の日付なし `claude-<family>-<major>[-<minor>]`（major≥5）を family ごとに新しい順へ。 */
+const KNOWN_GEN5_PLUS_BY_FAMILY: ReadonlyMap<string, AnthropicVersionedKey[]> =
+  (() => {
+    const byFamily = new Map<string, AnthropicVersionedKey[]>();
+    for (const key of Object.keys(MODEL_CAPABILITIES)) {
+      const m = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?$/u.exec(key);
+      if (!m || Number(m[2]) < 5) continue;
+      const entry = {
+        family: m[1],
+        version: Number(m[2]) * 100 + Number(m[3] ?? 0),
+        key,
+      };
+      byFamily.set(m[1], [...(byFamily.get(m[1]) ?? []), entry]);
+    }
+    for (const entries of byFamily.values())
+      entries.sort((a, b) => b.version - a.version);
+    return byFamily;
+  })();
+
+/**
+ * 能力表に無い将来の Anthropic 世代（`claude-<family>-<major>[-<minor>]`、major≥5。
+ * `anthropic/` prefix・ドット表記・日付サフィックス可）を、同じ family で最新の既知の
+ * 能力に解決する。5 系以降は adaptive thinking のみ（budget_tokens は 400）なので、
+ * DEFAULT_CAPABILITIES（8k／thinking 無し）や 4.5 系の budget 方式に誤分類しない。
+ * 窓などが実際と違い得る点は、Anthropic の動的メタが能力表の外にある限りの近似。
+ * major<5 や知らない family（限定提供の mythos 等）は対象外（undefined）。
+ */
+function resolveFutureAnthropicGeneration(
+  model: string,
+): ModelCapabilityDefinition | undefined {
+  const m =
+    /^(?:anthropic\/)?claude-([a-z]+)-(\d+)(?:[-.](\d{1,2}))?(?:-\d{8})?(?::[a-z]+)?$/u.exec(
+      model.toLowerCase(),
+    );
+  if (!m || Number(m[2]) < 5) return undefined;
+  const latest = KNOWN_GEN5_PLUS_BY_FAMILY.get(m[1])?.[0];
+  return latest ? MODEL_CAPABILITIES[latest.key] : undefined;
 }
 
 function materializeHardcodedCapabilities(

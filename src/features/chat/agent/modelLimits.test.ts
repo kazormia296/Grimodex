@@ -72,18 +72,89 @@ describe("getModelCapabilities", () => {
     expect(caps.supportsTools).toBe(true);
   });
 
-  it("claude-sonnet-4-6: adaptive thinking, no max effort, 1M context", () => {
+  it("claude-sonnet-4-6: adaptive thinking, effort low〜max, 1M context", () => {
     const caps = getModelCapabilities("claude-sonnet-4-6");
     expect(caps.contextWindow).toBe(1_000_000);
     expect(caps.supportsAdaptiveThinking).toBe(true);
-    expect(caps.supportsMaxEffort).toBe(false);
+    expect(caps.supportsMaxEffort).toBe(true);
   });
 
-  it("claude-haiku-4-5: thinking/effort 非対応", () => {
-    const caps = getModelCapabilities("claude-haiku-4-5-20251001");
-    expect(caps.supportsAdaptiveThinking).toBe(false);
-    expect(caps.supportsThinking).toBe(false);
-    expect(caps.supportsEffort).toBe(false);
+  it.each(["claude-haiku-4-5-20251001", "claude-haiku-4-5"])(
+    "%s: budget_tokens thinking、adaptive・effort 非対応、200K/64K",
+    (id) => {
+      const caps = getModelCapabilities(id);
+      expect(caps.contextWindow).toBe(200_000);
+      expect(caps.maxOutputTokens).toBe(64_000);
+      expect(caps.supportsAdaptiveThinking).toBe(false);
+      expect(caps.supportsThinking).toBe(true);
+      expect(caps.supportsEffort).toBe(false);
+    },
+  );
+
+  it.each([
+    "claude-fable-5-1",
+    "claude-fable-5",
+    "claude-opus-5-5",
+    "claude-opus-5",
+    "claude-sonnet-5-5",
+    "claude-sonnet-5",
+    "claude-haiku-5-5",
+  ])(
+    "Anthropic 5 系 %s: 1M/128K、adaptive＋effort、budget 方式は使わない",
+    (id) => {
+      const caps = getModelCapabilities(id);
+      expect(caps.contextWindow).toBe(1_000_000);
+      expect(caps.maxOutputTokens).toBe(128_000);
+      expect(caps.contextWindowSource).toBe("hardcoded");
+      expect(caps.supportsAdaptiveThinking).toBe(true);
+      expect(caps.supportsThinking).toBe(false);
+      expect(caps.supportsEffort).toBe(true);
+      expect(caps.supportsMaxEffort).toBe(true);
+      // OpenRouter 経由（ドット表記・prefix）でも同じに解決する。
+      const viaOpenRouter = getModelCapabilities(
+        `anthropic/${id.replace(/(\d)-(\d)$/u, "$1.$2")}`,
+      );
+      expect(viaOpenRouter.contextWindow).toBe(1_000_000);
+      expect(viaOpenRouter.supportsAdaptiveThinking).toBe(true);
+    },
+  );
+
+  it("5 系は adaptive を返し、budget_tokens の thinking を組み立てない", () => {
+    for (const id of ["claude-opus-5-5", "claude-haiku-5-5"]) {
+      const params = buildThinkingParams(id, "high");
+      expect(params.thinking?.type).toBe("adaptive");
+      expect(params.thinking?.effort).toBe("high");
+      expect(buildThinkingParams(id, "high", "summarized", false)).toEqual({});
+    }
+  });
+
+  describe("将来の Anthropic 世代（能力表に無い major≥5）", () => {
+    it.each([
+      "claude-opus-6",
+      "claude-opus-6-1",
+      "claude-sonnet-5-6",
+      "claude-haiku-6",
+      "claude-fable-6-20271001",
+      "anthropic/claude-opus-6.1",
+    ])("%s は同じ family の最新の既知の能力（5 系）に解決する", (id) => {
+      const caps = getModelCapabilities(id);
+      expect(caps.contextWindowSource).toBe("hardcoded");
+      expect(caps.contextWindow).toBe(1_000_000);
+      expect(caps.supportsAdaptiveThinking).toBe(true);
+      expect(caps.supportsThinking).toBe(false);
+      expect(buildThinkingParams(id, "medium").thinking?.type).toBe("adaptive");
+    });
+
+    it("major<5 や知らない family は一般則の対象にしない", () => {
+      for (const id of [
+        "claude-haiku-4-9",
+        "claude-opus-4-9",
+        "claude-mythos-5",
+        "claude-unknown-7",
+      ]) {
+        expect(getModelCapabilities(id).contextWindowSource).toBe("default");
+      }
+    });
   });
 
   it("claude-opus-4-5: budget_tokens thinking", () => {
@@ -313,9 +384,10 @@ describe("buildThinkingParams", () => {
     expect(withFlag).toEqual(withDefault);
   });
 
-  it("thinking/effort 非対応モデル (Haiku 4.5) は空を返す", () => {
+  it("budget_tokens モデル (Haiku 4.5) は enabled を返し effort は付けない", () => {
     const params = buildThinkingParams("claude-haiku-4-5-20251001", "medium");
-    expect(params.thinking).toBeUndefined();
+    expect(params.thinking?.type).toBe("enabled");
+    expect(params.thinking?.budget_tokens).toBe(8_000);
     expect(params.effort).toBeUndefined();
   });
 
