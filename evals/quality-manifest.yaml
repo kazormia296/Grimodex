@@ -1102,6 +1102,7 @@ requirements:
       - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
       - src/application/narrative-extraction/extractionCoordinator.ts
       - src/features/chronicle/extraction/schemas.ts
+      - docs/plans/nir-extraction-artifact-contract.md
       - src/features/narrative-extraction/evidence/resolveEvidence.ts
       - src/features/narrative-extraction/eval/fixtureSnapshot.ts
       - src/features/narrative-extraction/eval/caseSchema.ts
@@ -1135,6 +1136,7 @@ requirements:
       - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts
       - src/application/narrative-extraction/extractionCoordinator.test.ts
       - src/application/narrative-extraction/extractionCoordinator.citation.test.ts
+      - src/features/chronicle/extraction/extractionArtifactContract.test.ts
       - src/features/narrative-extraction/eval/observationAdapter.citation.test.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.citation.test.ts
       - src/features/narrative-extraction/evidence/resolveEvidence.test.ts
@@ -1203,6 +1205,7 @@ requirements:
       - src/features/chronicle/extraction/proposalPlanner.test.ts
       - src/application/narrative-extraction/aiTasks/citationIdObservation.test.ts
       - src/features/chronicle/extraction/observationMerger.test.ts
+      - src/features/chronicle/extraction/extractionArtifactContract.test.ts
       - src/features/narrative-extraction/eval/scorer.test.ts
       - src/features/narrative-extraction/eval/legacyChronicleAdapter.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts

@@ -724,6 +724,7 @@ rules:
     paths:
       - docs/plans/narrative-evidence-id-v1.md
       - docs/plans/chronicle-evaluation-contract-v2.md
+      - docs/plans/nir-extraction-artifact-contract.md
       - src/features/narrative-extraction/**
       - src/features/chronicle/extraction/**
       - src/application/narrative-extraction/aiTasks/**

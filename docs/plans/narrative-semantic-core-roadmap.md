@@ -547,6 +547,8 @@ Feature Domain Schemas remain typed and feature-specific. The migration unifies 
 | D3   | Phase, State, State Transition           | Enables longitudinal character and world-state maintenance.                                           |
 | D4   | Plot Thread and Foreshadow               | Adds promise, setup, payoff, and plot-structure maintenance after identity and time are stable.       |
 
+D2 の保存済み Artifact（Chronicle 抽出の途中の記録）の互換 adapter の前提となる契約: [nir-extraction-artifact-contract.md](nir-extraction-artifact-contract.md)。
+
 Each wave must provide:
 
 - Shared Narrative IR typed payloads.

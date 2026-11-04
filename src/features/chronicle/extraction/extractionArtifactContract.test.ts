@@ -504,7 +504,7 @@ describe("DR-NAC-4 保持の方針と依存", () => {
     expect(artifactDelete).toBeLessThan(runDelete);
   });
 
-  it("artifact 行に依存する読み手（契約が挙げる 6 経路）が今も在る", () => {
+  it("artifact 行に依存する読み手（契約が挙げる 7 経路）が今も在る", () => {
     const base = "src-tauri/crates/grimodex-db/src/narrative_extraction/";
     const dependencies: readonly (readonly [string, string, string])[] = [
       // [file, 目印, 依存の名前]
@@ -526,7 +526,12 @@ describe("DR-NAC-4 保持の方針と依存", () => {
       [
         `${base}restore_rebuild.rs`,
         `FROM ${TABLE} artifact`,
-        "restore（artifact を読んで再構築する）",
+        "restore／rebuild（durable graph state の digest に artifact を含める）",
+      ],
+      [
+        `${base}verify_coverage.rs`,
+        "fn verify_application_revision_artifact_references_with_control(",
+        "適用済み Revision が束縛する artifact の存在検証",
       ],
       [
         `${base}nir1_chronicle_index/evidence.rs`,
