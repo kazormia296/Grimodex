@@ -1,5 +1,5 @@
 // NIR-1 DA-1 ST4 (K3/2 `nir1-publication` と Scope の Native の検査): 6 つの NIR
-// command と Scope の 3 command が、restricted の profile では Main が発行して
+// command と Scope の 3 command（SDEF/1 で既定の 2 command を加えた）が、restricted の profile では Main が発行して
 // 登録した caller identity でだけ開始でき、unrestricted は現行どおり検査なしで
 // 通ることを、実 Backend の N-API で固定する。identity は末尾の任意引数（Main の
 // non-enumerable な sidecar の wire）で、typed request の形は変えない。
@@ -136,6 +136,26 @@ function entries(backend, workspace) {
           identity,
         ),
       ),
+    // SDEF/1 (DR-SDEF-13): the project Scene Scope default entries take the
+    // same admission as the other Scope entries.
+    narrative_scope_project_default_read: (identity) =>
+      backend.narrativeScopeProjectDefaultRead(
+        ...withIdentity(
+          [workspaceRequest(workspace, { projectId: "no-project" })],
+          identity,
+        ),
+      ),
+    narrative_scope_project_default_update: (identity) =>
+      backend.narrativeScopeProjectDefaultUpdate(
+        ...withIdentity(
+          [
+            workspaceRequest(workspace, {
+              payload: { projectId: "no-project" },
+            }),
+          ],
+          identity,
+        ),
+      ),
   };
 }
 
@@ -150,6 +170,8 @@ const COMMANDS = [
   "narrative_scene_scope_read",
   "narrative_scene_scope_update",
   "narrative_scene_scope_registry_update",
+  "narrative_scope_project_default_read",
+  "narrative_scope_project_default_update",
 ];
 
 async function restrictedRig(label) {

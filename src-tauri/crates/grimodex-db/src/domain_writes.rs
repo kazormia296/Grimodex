@@ -1495,6 +1495,20 @@ pub struct ProjectCreatePayload {
     pub target_readers: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// SDEF/1 R12: the only way a project starts with a Scene Scope default.
+    /// Absent (the evaluation harnesses, migration, generic import) means no
+    /// default. Omitted from serialization when absent so the idempotency
+    /// fingerprint of every request without it is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_scope_default: Option<ProjectSceneScopeDefaultInit>,
+}
+
+/// The closed set of project-creation defaults (SDEF/1 R12). Any other value
+/// is refused by deserialization; the renderer cannot carry a Scope value here.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum ProjectSceneScopeDefaultInit {
+    #[serde(rename = "main-line")]
+    MainLine,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1757,6 +1771,19 @@ pub fn project_create(db: &Database, payload: ProjectCreatePayload) -> anyhow::R
         // append so the epoch has an immutable creation-event lineage, and
         // before the idempotency receipt so the entire bootstrap is atomic.
         mint_c2zc_project_birth_epoch_in_tx(&tx, &payload.project_id, &payload.event_uid)?;
+        // SDEF/1 R12: the default is written in the project's own transaction,
+        // after the registry (with the main-line vocabulary, R13) and the project's
+        // own creation event, so `project.create` stays the project's first event.
+        if let Some(ProjectSceneScopeDefaultInit::MainLine) = payload.scene_scope_default {
+            crate::narrative_extraction::write_main_line_project_default_in_tx(
+                &tx,
+                &payload.project_id,
+                &payload.request_id,
+                &payload.session_id,
+                &format!("{}:scene-scope-default", payload.event_uid),
+                &payload.updated_at,
+            )?;
+        }
         let mut response = project;
         response
             .as_object_mut()
@@ -3281,6 +3308,21 @@ pub fn tree_node_create_with_authority(
             &payload.id,
             "create",
         )?;
+        // SDEF/1 MD1: decided by Native after the origin and lineage checks,
+        // from the validated identity only (no renderer field).
+        let scene_scope_init = crate::narrative_extraction::scene_scope_init_for_create(
+            &crate::narrative_extraction::SceneCreateLineage {
+                origin: payload.origin,
+                original_transaction_id: payload.original_transaction_id.as_deref(),
+                undo_journal_id: payload.undo_journal_id.as_deref(),
+                authority_route: renderer_context
+                    .as_ref()
+                    .map(|context| context.authority_route.as_str()),
+                redo: false,
+                source_uri: payload.source_uri.as_deref(),
+                source_mtime: payload.source_mtime.as_deref(),
+            },
+        );
         if let Some(parent_id) = payload.parent_id.as_deref() {
             anyhow::ensure!(
                 parent_id != payload.id,
@@ -3327,6 +3369,7 @@ pub fn tree_node_create_with_authority(
                 &payload.project_id,
                 &payload.id,
                 &now,
+                scene_scope_init,
             )?;
         }
         let row = select_tree_node(&tx, &payload.project_id, &payload.id)?;
@@ -5500,6 +5543,20 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                 )?;
             }
         }
+        // SDEF/1 MD1: one decision for every Scene this plan creates, from the
+        // validated authority context (origin, lineage, route, redo). AI plan
+        // creates carry no external source.
+        let scene_scope_init = crate::narrative_extraction::scene_scope_init_for_create(
+            &crate::narrative_extraction::SceneCreateLineage {
+                origin: authority_context.origin,
+                original_transaction_id: payload.original_transaction_id.as_deref(),
+                undo_journal_id: payload.undo_journal_id.as_deref(),
+                authority_route: Some(authority_context.authority_route.as_str()),
+                redo: payload.redo,
+                source_uri: None,
+                source_mtime: None,
+            },
+        );
 
         if authority_context.authority_route == "interactive-agent-command" && !payload.redo {
             validate_ai_tree_native_projection_in_tx(&tx, &payload)?;
@@ -5618,6 +5675,7 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                     &payload.project_id,
                     &create.id,
                     &payload.updated_at,
+                    scene_scope_init,
                 )?;
             }
         }
@@ -6607,6 +6665,7 @@ mod tests {
                 "p1",
                 "moved",
                 "2026-08-13T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             Ok(())
         })
@@ -6713,6 +6772,7 @@ mod tests {
             target_readers: None,
             created_at: "2026-08-13T00:00:00.000Z".to_string(),
             updated_at: "2026-08-13T00:00:00.000Z".to_string(),
+            scene_scope_default: None,
         }
     }
 
@@ -10022,5 +10082,87 @@ mod tests {
             Ok(())
         })
         .expect("verify atomic restore rollback");
+    }
+
+    /// SDEF/1 A1/A2 (AI tree plan): a forward plan's new Scene inherits the
+    /// project default; the redo of the same plan writes `unknown` (R7 (b)).
+    #[test]
+    fn sdef_ai_tree_plan_forward_scene_inherits_and_its_redo_stays_unknown() {
+        let db = fixture();
+        seed_ai_tree_authority(&db, "moved");
+        crate::narrative_extraction::scene_scope_default_tests::set_main_line_default(&db, "p1");
+        let mut create = ai_tree_payload("sdef-ai-create");
+        create.kind = "scaffold".to_string();
+        create.creates[0].id = "sdef-ai-scene".to_string();
+        create.creates[0].node_type = "scene".to_string();
+        create.creates[0].title = "AI Scene".to_string();
+        create.creates[0].temp_id = Some("tmp:scene".to_string());
+        create.updates.clear();
+        create.ops = Some(vec![json!({
+            "op": "create",
+            "tempId": "tmp:scene",
+            "parentRef": "root",
+            "nodeType": "scene",
+            "title": "AI Scene",
+            "pos": {},
+        })]);
+        let forward = apply_ai_tree_plan(&db, create.clone()).expect("AI scene scaffold");
+        let marker = |db: &Database| {
+            crate::narrative_extraction::scene_scope_default_tests::markers(db, "p1")
+                .into_iter()
+                .find(|(scene, _)| scene == "sdef-ai-scene")
+                .map(|(_, marker)| marker)
+        };
+        assert_eq!(marker(&db).as_deref(), Some("explicit"));
+        let original_transaction_id = forward["maintenanceTransactionId"]
+            .as_str()
+            .expect("forward transaction")
+            .to_string();
+        let undo_journal_id = forward["undoJournalId"]
+            .as_str()
+            .expect("undo journal")
+            .to_string();
+        let history_controls = vec![
+            "original-transaction".to_string(),
+            "journal-lineage".to_string(),
+            "typed-writer".to_string(),
+            "occ".to_string(),
+            "change-event".to_string(),
+            "change-feed".to_string(),
+        ];
+        undo_ai_tree_plan(
+            &db,
+            UndoAiTreePlanPayload {
+                request_id: "sdef-ai-undo".to_string(),
+                project_id: "p1".to_string(),
+                session_id: "ai-tree-session".to_string(),
+                updated_at: "2026-08-13T01:01:00Z".to_string(),
+                original_transaction_id: original_transaction_id.clone(),
+                undo_journal_id: undo_journal_id.clone(),
+                authority_route: "history-replay".to_string(),
+                caller: "history-controller".to_string(),
+                controls: history_controls.clone(),
+                provenance: None,
+                writes_authority_protected_field: false,
+                expected_versions: vec![AiTreeNodeVersionInput {
+                    id: "sdef-ai-scene".to_string(),
+                    version: 1,
+                }],
+            },
+        )
+        .expect("undo AI scene scaffold");
+        assert_eq!(marker(&db), None, "the undo removed the Scene");
+        let mut redo = create;
+        redo.request_id = "sdef-ai-redo".to_string();
+        redo.updated_at = "2026-08-13T01:02:00Z".to_string();
+        redo.redo = true;
+        redo.original_transaction_id = Some(original_transaction_id);
+        redo.undo_journal_id = Some(undo_journal_id);
+        redo.authority_route = "history-replay".to_string();
+        redo.caller = "history-controller".to_string();
+        redo.controls = history_controls;
+        redo.provenance = None;
+        apply_ai_tree_plan(&db, redo).expect("redo AI scene scaffold");
+        assert_eq!(marker(&db).as_deref(), Some("unknown"));
     }
 }

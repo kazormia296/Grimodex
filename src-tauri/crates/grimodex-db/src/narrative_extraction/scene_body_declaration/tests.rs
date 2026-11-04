@@ -39,7 +39,13 @@ fn fixture() -> Database {
                     ('s3', 'p2', 'scene', 'Three', 'a0', '{\"type\":\"doc\"}');",
         )?;
         for (project, scene) in [("p1", "s1"), ("p1", "s2"), ("p2", "s3")] {
-            ensure_scene_scope_binding_in_tx(conn, project, scene, NOW)?;
+            ensure_scene_scope_binding_in_tx(
+                conn,
+                project,
+                scene,
+                NOW,
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+            )?;
         }
         Ok(())
     })
@@ -939,7 +945,13 @@ fn declaration_scene_delete_restore_with_the_same_id_and_redeclare() {
              VALUES ('s1', 'p1', 'scene', 'One', 'a0', '{\"type\":\"doc\"}')",
             [],
         )?;
-        ensure_scene_scope_binding_in_tx(conn, "p1", "s1", NOW)?;
+        ensure_scene_scope_binding_in_tx(
+            conn,
+            "p1",
+            "s1",
+            NOW,
+            crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+        )?;
         Ok(())
     })
     .unwrap();
@@ -1072,8 +1084,16 @@ mod pending_and_indexes {
         seed_run_and_catalog(&db).unwrap();
         // The Scene's binding row is part of the Scope authority; it must
         // exist before the Revision is created against that authority.
-        db.with_conn(|conn| ensure_scene_scope_binding_in_tx(conn, PROJECT, SCENE, NOW))
-            .unwrap();
+        db.with_conn(|conn| {
+            ensure_scene_scope_binding_in_tx(
+                conn,
+                PROJECT,
+                SCENE,
+                NOW,
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+            )
+        })
+        .unwrap();
         let created = create_nir1_entity_relation_revision(&db, request(&db)).unwrap();
         approve_typed_revision(&db, "nir1-run", &created).unwrap();
         let snapshot = db

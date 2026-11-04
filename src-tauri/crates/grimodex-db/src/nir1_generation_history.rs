@@ -2607,6 +2607,7 @@ mod generation_storage_adapter {
                     "generation-project",
                     "generation-scene",
                     "2026-10-11 00:00:00",
+                    crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                 )?;
                 connection.execute(
                     "INSERT OR IGNORE INTO chat_sessions(id,project_id,node_id)

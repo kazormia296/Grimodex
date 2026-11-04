@@ -420,7 +420,13 @@ fn approve_typed_revision_in(f: &Fixture) -> String {
              VALUES ('nir1', ?1, 'scene', 'NIR1', '{}', 'z0')",
             [f.project()],
         )?;
-        crate::narrative_extraction::ensure_scene_scope_binding_in_tx(conn, f.project(), "nir1", NOW)?;
+        crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+            conn,
+            f.project(),
+            "nir1",
+            NOW,
+            crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+        )?;
         conn.execute_batch(
             "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
              VALUES ('nir1-alice', 'default-project', 'character', 'Alice', 'Alice', '2026-09-12T00:00:00Z'),

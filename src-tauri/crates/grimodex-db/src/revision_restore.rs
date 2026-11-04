@@ -442,6 +442,7 @@ mod tests {
                 PROJECT,
                 "scene-1",
                 "fixture",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             Ok(())
         })
