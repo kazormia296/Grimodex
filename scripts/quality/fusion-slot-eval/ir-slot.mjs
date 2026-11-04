@@ -55,7 +55,6 @@ import {
   assertRunnable,
   checkpointSceneCount,
   opaqueWorkId,
-  queryPositions,
 } from "./raw-fullness.mjs";
 import { compareAdmitted, summarizeQueries } from "./ir-classify.mjs";
 
@@ -378,8 +377,26 @@ const withTimeout = (promise, ms, label) => {
   ]).finally(() => clearTimeout(timer));
 };
 
+/**
+ * query の位置：その地点で足した Scene 全部（位置 2 以上）。各位置は足した地点で 1 回だけ引く
+ * （related は前の Scene しか見ない）。段階 1 の「末尾 10 件」では Raw が 8 件未満の sample が
+ * D0 の 200 に届かない見込み（段階 1 の query 238・満杯 190）なので、本測定の前に広げた。
+ */
+export function addedQueryPositions(previousCount, count) {
+  const positions = [];
+  for (let p = Math.max(2, previousCount + 1); p <= count; p++)
+    positions.push(p);
+  return positions;
+}
+
+/** 前の Scene の数の層（主指標を層別して出す）。 */
+export function priorScenesBucket(position) {
+  const prior = position - 1;
+  return prior < 8 ? "lt8" : prior <= 30 ? "8to30" : "gt30";
+}
+
 /** 測定：各 query 位置で hybrid を repeats 回、その後に probe を 1 回。 */
-async function measurePositions(page, positions, repeats) {
+async function measurePositions(page, positions, repeats, count) {
   const queries = [];
   for (const position of positions) {
     const samples = [];
@@ -397,7 +414,16 @@ async function measurePositions(page, positions, repeats) {
         reason: null,
         admittedPositions: [],
       }));
-    queries.push({ evidenceScope: EVIDENCE_SCOPE, position, samples, probe });
+    queries.push({
+      evidenceScope: EVIDENCE_SCOPE,
+      position,
+      priorScenes: position - 1,
+      priorScenesBucket: priorScenesBucket(position),
+      // 段階 1 と並べるための部分集合：引いた地点の末尾 10 件に入るか。
+      tail10: position > count - 10,
+      samples,
+      probe,
+    });
   }
   return queries;
 }
@@ -491,9 +517,10 @@ export async function runIrSlot(options) {
         "IR が最大に出る条件の下での枠の使用率：harness が全提案を reviseChronicleProposal({secret:false}) で child にし、child を承認する（製品の既定では secret のまま承認すると IR に出ない）",
       checkpoints: CHECKPOINTS,
       checkpointSceneCount: "ceil(fraction × N)、2 以上（段階 1 と同じ）",
-      queryRule: "地点の末尾から最大 10 件。位置 2 以上（段階 1 と同じ）",
+      queryRule:
+        "その地点で足した Scene 全部（位置 2 以上）。各位置は足した地点で 1 回だけ引く。前の Scene の数（<8／8〜30／>30）で層別し、引いた地点の末尾 10 件（tail10）の部分集合も別に集計する",
       scope:
-        "案 B（新しい場面は project の既定の scope＝本筋を受け継ぐ）の既定の状態を再現：Scene を入れた後・抽出の前に、registry に timeline:main／worldline:prime／layer:manuscript を入れ、全 Scene の scope を製品の narrative_scene_scope_update で explicit（query と material は同じ本筋の exact、holder と audience は reader）にし、DB の binding が全部 explicit であることを確かめる",
+        "案 B（製品の既定、SDEF #791・#793）：project を作成画面と同じ option（sceneScopeDefault: main-line）で作り、足した Scene が既定（本筋の exact、holder と audience は reader、marker は explicit）を受け継いだかを読んで確かめる。harness は scope を書かない",
       checkpointConstruction:
         "1 つの project に読書順で Scene を足す（Scene ごとに folder、1 件ずつ抽出）。前の地点の probe の admitted が、足した後も残るかを地点ごとに確かめる",
       repeats: options.repeats,
@@ -725,6 +752,7 @@ export async function runIrSlot(options) {
 
     const extracted = new Set();
     let previous = null;
+    let previousCount = 0;
     let firstRaw = true;
     for (const fraction of options.checkpointList) {
       const count = checkpointSceneCount(fraction, work.scenes.length);
@@ -792,11 +820,12 @@ export async function runIrSlot(options) {
       );
       firstRaw = false;
       if (skip) for (const scene of fresh) extracted.add(scene.index);
-      const positions = queryPositions(count);
+      const positions = addedQueryPositions(previousCount, count);
+      previousCount = count;
       checkpoint.irWait = await page.evaluate(
         (input) => window.fusionIrEvaluation.waitIrUsable(input),
         {
-          position: positions[positions.length - 1],
+          position: positions.at(-1) ?? count,
           timeoutMs: options.irWaitMs,
           requireReadyEvent: records.extraction.some(
             (e) => e.approvedCount > 0,
@@ -821,6 +850,7 @@ export async function runIrSlot(options) {
         page,
         positions,
         options.repeats,
+        count,
       );
       checkpoint.summary = summarizeQueries(checkpoint.queries);
       previous = {
@@ -840,8 +870,18 @@ export async function runIrSlot(options) {
         `${label}: Scene ${count}、query ${positions.length}、${JSON.stringify(checkpoint.summary.categories)}`,
       );
     }
-    records.summary = summarizeQueries(
-      records.checkpoints.flatMap((c) => c.queries),
+    const allQueries = records.checkpoints.flatMap((c) => c.queries);
+    records.summary = summarizeQueries(allQueries);
+    records.summaryByPriorScenes = Object.fromEntries(
+      ["lt8", "8to30", "gt30"].map((bucket) => [
+        bucket,
+        summarizeQueries(
+          allQueries.filter((q) => q.priorScenesBucket === bucket),
+        ),
+      ]),
+    );
+    records.summaryTail10 = summarizeQueries(
+      allQueries.filter((q) => q.tail10),
     );
     records.status = skip
       ? "complete-without-extraction"
