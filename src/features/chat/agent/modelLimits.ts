@@ -155,12 +155,12 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
   // Anthropic — Sonnet 4.6 (adaptive thinking, 1M context, effort low〜max)
   "claude-sonnet-4-6": {
     contextWindow: 1_000_000,
-    maxOutputTokens: 128_000,
+    maxOutputTokens: 64_000,
     supportsTools: true,
     supportsThinking: false,
     supportsAdaptiveThinking: true,
     supportsEffort: true,
-    supportsMaxEffort: true,
+    supportsMaxEffort: false,
     supportsReasoning: false,
   },
   // Anthropic — Haiku 4.5（200K/64K。thinking・effort は送らない＝既存の挙動）。

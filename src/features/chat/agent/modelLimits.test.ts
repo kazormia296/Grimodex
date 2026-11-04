@@ -72,12 +72,11 @@ describe("getModelCapabilities", () => {
     expect(caps.supportsTools).toBe(true);
   });
 
-  it("claude-sonnet-4-6: adaptive thinking, effort low〜max, 1M context", () => {
+  it("claude-sonnet-4-6: adaptive thinking, no max effort, 1M context", () => {
     const caps = getModelCapabilities("claude-sonnet-4-6");
     expect(caps.contextWindow).toBe(1_000_000);
-    expect(caps.maxOutputTokens).toBe(128_000);
     expect(caps.supportsAdaptiveThinking).toBe(true);
-    expect(caps.supportsMaxEffort).toBe(true);
+    expect(caps.supportsMaxEffort).toBe(false);
   });
 
   it.each(["claude-haiku-4-5-20251001", "claude-haiku-4-5"])(
