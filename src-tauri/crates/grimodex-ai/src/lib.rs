@@ -1259,6 +1259,29 @@ fn openai_max_tokens(params: &ChatParams<'_>) -> u32 {
     }
 }
 
+/// thinking を既定で常に使う（切れない、または既定で on の）Anthropic の世代か。Fable／Mythos の
+/// 全版と、Opus／Sonnet／Haiku の世代 5 以降。4.x（adaptive は任意、Haiku 4.5 は thinking なし）
+/// は従来どおり。`anthropic/` の接頭辞（OpenRouter の表記）も受ける。
+pub(crate) fn anthropic_model_thinking_always_on(model: &str) -> bool {
+    let m = model.rsplit('/').next().unwrap_or(model);
+    let Some(rest) = m.strip_prefix("claude-") else {
+        return false;
+    };
+    if rest.starts_with("fable-") || rest.starts_with("mythos-") {
+        return true;
+    }
+    for family in ["opus-", "sonnet-", "haiku-"] {
+        if let Some(version) = rest.strip_prefix(family) {
+            let digits = version.bytes().take_while(u8::is_ascii_digit).count();
+            return digits > 0
+                && version[..digits]
+                    .parse::<u32>()
+                    .is_ok_and(|major| major >= 5);
+        }
+    }
+    false
+}
+
 /// Resolve the exact output-token limit written to the provider request body.
 ///
 /// Native audit calls this from the same [`ChatParams`] snapshot as the request
@@ -1280,7 +1303,13 @@ pub fn effective_request_max_output_tokens(params: &ChatParams<'_>) -> u32 {
         return ai_novelist::length_for(params.model);
     }
     if matches!(params.provider, AiProvider::Anthropic) {
-        return 4096;
+        // thinking を切れない世代は、thinking の token も max_tokens に数えられる。4096 では
+        // 抽出の JSON が途中で切れた（claude-opus-5-5、2026-11-04）。
+        return if anthropic_model_thinking_always_on(params.model) {
+            32_000
+        } else {
+            4096
+        };
     }
     openai_max_tokens(params)
 }
@@ -4404,9 +4433,15 @@ pub fn prepare_post_effect_request(
 ) -> anyhow::Result<PreparedPostEffectRequest> {
     match settings.provider {
         AiProvider::Anthropic => {
+            // thinking を切れない世代は thinking も max_tokens に数えられる（chat と同じ規則）。
+            let max_tokens = if anthropic_model_thinking_always_on(&settings.model) {
+                32_000
+            } else {
+                4096
+            };
             let body = serde_json::json!({
                 "model": settings.model,
-                "max_tokens": 4096,
+                "max_tokens": max_tokens,
                 "system": system_prompt,
                 "messages": [{
                     "role": "user",
@@ -4416,7 +4451,7 @@ pub fn prepare_post_effect_request(
             Ok(PreparedPostEffectRequest {
                 route: PostEffectRequestRoute::AnthropicMessages,
                 body,
-                output_token_limit: explicit_post_effect_limit("max_tokens", 4096),
+                output_token_limit: explicit_post_effect_limit("max_tokens", max_tokens),
             })
         }
         AiProvider::AiNovelist => {
@@ -5955,6 +5990,58 @@ mod tests {
     }
 
     #[test]
+    fn prepared_post_effect_anthropic_uses_32k_for_thinking_always_on_models() {
+        for (model, expected) in [
+            ("claude-opus-5-5", 32_000),
+            ("claude-fable-5-1", 32_000),
+            ("claude-sonnet-4-6", 4096),
+        ] {
+            let prepared = prepare_post_effect_request(
+                &post_effect_settings(AiProvider::Anthropic, model),
+                "system exact",
+                None,
+                "scene exact",
+            )
+            .expect("prepare Anthropic request");
+            assert_eq!(prepared.body["max_tokens"], expected, "model={model}");
+            assert_eq!(
+                prepared.output_token_limit,
+                explicit_post_effect_limit("max_tokens", expected),
+                "model={model}"
+            );
+        }
+    }
+
+    #[test]
+    fn anthropic_thinking_always_on_generations() {
+        for model in [
+            "claude-opus-5-5",
+            "claude-opus-5",
+            "claude-sonnet-5-5",
+            "claude-sonnet-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-1",
+            "claude-fable-5",
+            "claude-mythos-5-1",
+            "anthropic/claude-opus-5-5",
+            "claude-opus-6",
+        ] {
+            assert!(anthropic_model_thinking_always_on(model), "{model}");
+        }
+        for model in [
+            "claude-opus-4-8",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5-20251001",
+            "claude-test",
+            "gpt-5",
+            "claude-opus-",
+        ] {
+            assert!(!anthropic_model_thinking_always_on(model), "{model}");
+        }
+    }
+
+    #[test]
     fn prepared_post_effect_responses_body_is_exact_for_every_supported_provider() {
         for (provider, expected_limit) in [
             (AiProvider::OpenAI, 32_000),
@@ -6707,6 +6794,34 @@ mod tests {
             ),
             32_000
         );
+        // thinking を切れない Anthropic の世代は 32k（claude-opus-5-5 は 4096 で JSON が切れた）。
+        for model in [
+            "claude-opus-5-5",
+            "claude-opus-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-1",
+            "claude-fable-5",
+        ] {
+            assert_eq!(
+                mt(&settings, &AiProvider::Anthropic, model, None, None, None),
+                32_000,
+                "model={model}"
+            );
+        }
+        // 4.x は従来どおり 4096（renderer が予約値を渡さないとき）。
+        for model in [
+            "claude-opus-4-8",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5-20251001",
+        ] {
+            assert_eq!(
+                mt(&settings, &AiProvider::Anthropic, model, None, None, None),
+                4096,
+                "model={model}"
+            );
+        }
         // 非 reasoning は従来どおり 4096。
         for (provider, model) in [
             (AiProvider::OpenRouter, "openai/gpt-4o-mini"),
