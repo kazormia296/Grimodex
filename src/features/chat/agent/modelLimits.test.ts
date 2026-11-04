@@ -75,6 +75,7 @@ describe("getModelCapabilities", () => {
   it("claude-sonnet-4-6: adaptive thinking, effort low〜max, 1M context", () => {
     const caps = getModelCapabilities("claude-sonnet-4-6");
     expect(caps.contextWindow).toBe(1_000_000);
+    expect(caps.maxOutputTokens).toBe(128_000);
     expect(caps.supportsAdaptiveThinking).toBe(true);
     expect(caps.supportsMaxEffort).toBe(true);
   });
@@ -145,15 +146,50 @@ describe("getModelCapabilities", () => {
       expect(buildThinkingParams(id, "medium").thinking?.type).toBe("adaptive");
     });
 
-    it("major<5 や知らない family は一般則の対象にしない", () => {
+    it("major<5 や知らない family は 5 系の一般則の対象にしない", () => {
       for (const id of [
         "claude-haiku-4-9",
         "claude-opus-4-9",
         "claude-mythos-5",
         "claude-unknown-7",
       ]) {
-        expect(getModelCapabilities(id).contextWindowSource).toBe("default");
+        const caps = getModelCapabilities(id);
+        expect(caps.supportsAdaptiveThinking).toBe(false);
+        expect(caps.supportsThinking).toBe(false);
+        expect(caps.contextWindowSource).toBe("default");
       }
+    });
+  });
+
+  describe("能力表に無い Claude（GET /v1/models が返す旧世代・限定提供）", () => {
+    it.each([
+      "claude-opus-4-1-20250805",
+      "claude-opus-4-20250514",
+      "claude-sonnet-4-20250514",
+      "claude-sonnet-4-5",
+      "claude-3-7-sonnet-20250219",
+      "claude-3-haiku-20240307",
+      "claude-mythos-5",
+      "anthropic/claude-3.5-sonnet",
+    ])(
+      "%s は 8k に落とさず 200K の推定で扱い、thinking／effort は付けない",
+      (id) => {
+        const caps = getModelCapabilities(id);
+        expect(caps.contextWindow).toBe(200_000);
+        expect(caps.contextWindowSource).toBe("default");
+        expect(caps.contextWindowIsEffective).toBe(false);
+        expect(caps.supportsTools).toBe(true);
+        expect(caps.supportsThinking).toBe(false);
+        expect(caps.supportsAdaptiveThinking).toBe(false);
+        expect(caps.supportsEffort).toBe(false);
+        expect(buildThinkingParams(id, "medium")).toEqual({});
+      },
+    );
+
+    it("Claude 以外の未知のモデルは従来どおり 8k の既定", () => {
+      expect(getModelCapabilities("some-unknown-model").contextWindow).toBe(
+        8_000,
+      );
     });
   });
 

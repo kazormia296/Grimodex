@@ -1448,9 +1448,7 @@ describe("CliAiManager", () => {
     const capture = manager.handlers.test_cli_connection({
       binaryPath: "/usr/local/bin/claude",
     });
-    await expect(capture).rejects.toThrow(
-      "CLI command timed out after 10000ms",
-    );
+    await expect(capture).rejects.toThrow("CLI command timed out after 10000ms");
 
     await expect(manager.quiesceForProfileEgress()).rejects.toThrow(
       "CLI egress transport did not quiesce",

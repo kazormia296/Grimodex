@@ -52,6 +52,8 @@ const OPENCODE_PERMISSION = JSON.stringify({
   },
 });
 
+// Claude CLI は alias（opus／sonnet／haiku）を最新へ解決するので、日付なしの全 ID は並べず、
+// 各 family の最新と、保存済みの設定との互換で残す ID だけを持つ。
 const CLAUDE_MODELS = [
   { id: "opus", name: "Opus (latest alias)" },
   { id: "sonnet", name: "Sonnet (latest alias)" },
@@ -2148,28 +2150,34 @@ export function createCliAiManager(
       let runnerQuiescence: Promise<boolean>;
       try {
         runnerQuiescence = trackedRunner.quiesceForProfileEgress
-          ? waitForRunnerQuiescence(trackedRunner.quiesceForProfileEgress())
+          ? waitForRunnerQuiescence(
+              trackedRunner.quiesceForProfileEgress(),
+            )
           : Promise.resolve(true);
       } catch {
         runnerQuiescence = Promise.resolve(false);
       }
-      const [stopped, commandsSettled, handlersSettled, runnerQuiesced] =
-        await Promise.all([
-          Promise.all(
-            activeLifecycles.map((lifecycle) => waitForLifecycle(lifecycle)),
+      const [
+        stopped,
+        commandsSettled,
+        handlersSettled,
+        runnerQuiesced,
+      ] = await Promise.all([
+        Promise.all(
+          activeLifecycles.map((lifecycle) => waitForLifecycle(lifecycle)),
+        ),
+        Promise.all(
+          activeRunnerOperations.map((operation) =>
+            waitForRunnerOperation(operation),
           ),
-          Promise.all(
-            activeRunnerOperations.map((operation) =>
-              waitForRunnerOperation(operation),
-            ),
+        ),
+        Promise.all(
+          activeHandlerOperations.map((operation) =>
+            waitForRunnerOperation(operation),
           ),
-          Promise.all(
-            activeHandlerOperations.map((operation) =>
-              waitForRunnerOperation(operation),
-            ),
-          ),
-          runnerQuiescence,
-        ]);
+        ),
+        runnerQuiescence,
+      ]);
       if (disposeError) throw toError(disposeError);
       if (
         stopped.some((value) => !value) ||

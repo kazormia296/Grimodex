@@ -153,7 +153,7 @@ const MODEL_CAPABILITIES: Record<string, ModelCapabilityDefinition> = {
   // Anthropic — Sonnet 4.6 (adaptive thinking, 1M context, effort low〜max)
   "claude-sonnet-4-6": {
     contextWindow: 1_000_000,
-    maxOutputTokens: 64_000,
+    maxOutputTokens: 128_000,
     supportsTools: true,
     supportsThinking: false,
     supportsAdaptiveThinking: true,
@@ -456,7 +456,31 @@ function resolveHardcoded(model: string): ModelCapabilityDefinition {
     if (model.startsWith(key)) return MODEL_CAPABILITIES[key];
   }
 
-  return resolveFutureAnthropicGeneration(model) ?? DEFAULT_CAPABILITIES;
+  return (
+    resolveFutureAnthropicGeneration(model) ??
+    resolveUnlistedAnthropicModel(model) ??
+    DEFAULT_CAPABILITIES
+  );
+}
+
+/**
+ * 能力表に無い他の Claude（旧世代・限定提供など。GET /v1/models は契約で使える
+ * 全モデルを返し、Anthropic は動的メタを使わないので能力表だけが頼り）。
+ * 8k の DEFAULT に落とすと compaction と出力予約が壊れるため、context は 200K と
+ * 見積もる。出力上限は不明なので DEFAULT の既定値のまま、thinking／effort は送らない。
+ * 推定値なので contextWindowSource は "default"（確定値として扱わない）。
+ */
+const UNLISTED_CLAUDE_CAPABILITIES: ModelCapabilityDefinition = {
+  ...DEFAULT_CAPABILITIES,
+  contextWindow: 200_000,
+};
+
+function resolveUnlistedAnthropicModel(
+  model: string,
+): ModelCapabilityDefinition | undefined {
+  return /^(?:anthropic\/)?claude-/u.test(model.toLowerCase())
+    ? UNLISTED_CLAUDE_CAPABILITIES
+    : undefined;
 }
 
 interface AnthropicVersionedKey {
@@ -507,7 +531,9 @@ function resolveFutureAnthropicGeneration(
 function materializeHardcodedCapabilities(
   definition: ModelCapabilityDefinition,
 ): ModelCapabilities {
-  const isFallback = definition === DEFAULT_CAPABILITIES;
+  const isFallback =
+    definition === DEFAULT_CAPABILITIES ||
+    definition === UNLISTED_CLAUDE_CAPABILITIES;
   return {
     ...definition,
     modelContextWindow: definition.contextWindow,

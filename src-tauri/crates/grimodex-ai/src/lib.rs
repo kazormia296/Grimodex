@@ -576,6 +576,8 @@ const ANTHROPIC_MODELS_PAGE_LIMIT: u32 = 1000;
 /// `has_more` が真のまま終わらない異常な応答でも無限ループしないための page 数の上限。
 const ANTHROPIC_MODELS_MAX_PAGES: usize = 10;
 const ANTHROPIC_MODELS_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// 通信断のとき固定の予備へ戻るまでの待ちを 30 秒の request timeout より短くする。
+const ANTHROPIC_MODELS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Anthropic `/v1/models` の 1 件を `AiModel` に写す。
 /// `supported_parameters` は意図して `None` のまま: renderer の動的能力
@@ -609,6 +611,7 @@ async fn fetch_anthropic_models(
     api_key: &str,
 ) -> anyhow::Result<Vec<AiModel>> {
     let mut models: Vec<AiModel> = Vec::new();
+    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut after_id: Option<String> = None;
     for _ in 0..ANTHROPIC_MODELS_MAX_PAGES {
         let mut url = reqwest::Url::parse(models_url)?;
@@ -633,7 +636,12 @@ async fn fetch_anthropic_models(
         }
         let body: serde_json::Value = resp.json().await?;
         if let Some(data) = body["data"].as_array() {
-            models.extend(data.iter().filter_map(parse_anthropic_model));
+            // 異常な応答で同じ ID が重なっても一覧に二重に並べない（先勝ち）。
+            models.extend(
+                data.iter()
+                    .filter_map(parse_anthropic_model)
+                    .filter(|model| seen_ids.insert(model.id.clone())),
+            );
         }
         let next = body["last_id"].as_str().filter(|id| !id.is_empty());
         match (body["has_more"].as_bool().unwrap_or(false), next) {
@@ -649,6 +657,40 @@ async fn fetch_anthropic_models(
     }
     tracing::warn!("Anthropic /v1/models exceeded the page limit; returning the pages read so far");
     Ok(models)
+}
+
+/// 一覧の取得用 client。`x-api-key` は独自 header で redirect 越しに別 host へ転送され得る
+/// ので redirect は辿らない（3xx は失敗として予備へ戻る）。
+fn anthropic_models_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(ANTHROPIC_MODELS_CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Anthropic の一覧。キー未登録（空白のみ含む）なら HTTP を呼ばずに、取得失敗・空応答なら
+/// warn を残して、固定の予備を返す。キーは trim して header に渡す。
+async fn anthropic_models_or_fallback(
+    client: &reqwest::Client,
+    models_url: &str,
+    api_key: &str,
+) -> Vec<AiModel> {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        return anthropic_fallback_models();
+    }
+    match fetch_anthropic_models(client, models_url, api_key).await {
+        Ok(models) if !models.is_empty() => models,
+        Ok(_) => {
+            tracing::warn!("Anthropic /v1/models returned no usable models; using built-in list");
+            anthropic_fallback_models()
+        }
+        Err(error) => {
+            tracing::warn!("Anthropic /v1/models unavailable; using built-in list: {error:#}");
+            anthropic_fallback_models()
+        }
+    }
 }
 
 /// キー未登録・取得失敗のときの固定の予備（新しい順、限定提供の mythos は含めない）。
@@ -1422,25 +1464,10 @@ pub async fn fetch_models_for(
     // GET /v1/models で最新の一覧を取り、キー未登録・取得失敗のときに固定の予備を返す。
     match provider {
         AiProvider::Anthropic => {
-            if api_key.trim().is_empty() {
-                return Ok(anthropic_fallback_models());
-            }
             let url = provider.models_url(endpoints, None);
-            return match fetch_anthropic_models(&reqwest::Client::new(), &url, api_key).await {
-                Ok(models) if !models.is_empty() => Ok(models),
-                Ok(_) => {
-                    tracing::warn!(
-                        "Anthropic /v1/models returned no usable models; using built-in list"
-                    );
-                    Ok(anthropic_fallback_models())
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        "Anthropic /v1/models unavailable; using built-in list: {error:#}"
-                    );
-                    Ok(anthropic_fallback_models())
-                }
-            };
+            return Ok(
+                anthropic_models_or_fallback(&anthropic_models_client(), &url, api_key).await,
+            );
         }
         AiProvider::AiNovelist => {
             let legacy = static_legacy_ainoverist_models();
@@ -8261,8 +8288,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_anthropic_models_stops_when_paging_does_not_advance() -> anyhow::Result<()> {
-        // has_more が真のまま last_id が進まない異常な応答でも 2 回で止まる。
+    async fn fetch_anthropic_models_stops_when_paging_does_not_advance_and_dedupes_ids(
+    ) -> anyhow::Result<()> {
+        // has_more が真のまま last_id が進まない異常な応答でも 2 回で止まり、重なった ID は 1 件。
         let (url, server) = spawn_anthropic_models_server(vec![
             ("200 OK", anthropic_models_page(&["claude-a"], true)),
             ("200 OK", anthropic_models_page(&["claude-a"], true)),
@@ -8270,8 +8298,44 @@ mod tests {
         .await?;
         let models =
             super::fetch_anthropic_models(&reqwest::Client::new(), &url, "sk-ant-test").await?;
-        assert_eq!(models.len(), 2);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["claude-a"]);
         assert_eq!(server.await?.len(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fetch_anthropic_models_stops_when_has_more_has_no_last_id() -> anyhow::Result<()> {
+        let body = serde_json::json!({
+            "data": [{ "type": "model", "id": "claude-a" }],
+            "has_more": true
+        })
+        .to_string();
+        let (url, server) = spawn_anthropic_models_server(vec![("200 OK", body)]).await?;
+        let models =
+            super::fetch_anthropic_models(&reqwest::Client::new(), &url, "sk-ant-test").await?;
+        assert_eq!(models.len(), 1);
+        assert_eq!(server.await?.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fetch_anthropic_models_stops_at_the_page_limit() -> anyhow::Result<()> {
+        // has_more が真で last_id が毎回進む異常な応答でも MAX_PAGES 回で止まる。
+        // server は MAX_PAGES 回しか応答せず閉じるので、11 回目を要求すれば Err になる。
+        let ids: Vec<String> = (0..super::ANTHROPIC_MODELS_MAX_PAGES)
+            .map(|i| format!("claude-{i}"))
+            .collect();
+        let (url, server) = spawn_anthropic_models_server(
+            ids.iter()
+                .map(|id| ("200 OK", anthropic_models_page(&[id.as_str()], true)))
+                .collect(),
+        )
+        .await?;
+        let models =
+            super::fetch_anthropic_models(&reqwest::Client::new(), &url, "sk-ant-test").await?;
+        assert_eq!(models.len(), super::ANTHROPIC_MODELS_MAX_PAGES);
+        assert_eq!(server.await?.len(), super::ANTHROPIC_MODELS_MAX_PAGES);
         Ok(())
     }
 
@@ -8291,17 +8355,111 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_models_for_anthropic_without_key_returns_the_built_in_list_without_http(
-    ) -> anyhow::Result<()> {
-        let ep = ProviderEndpoints {
-            ollama: "",
-            openai_compat_custom: "",
-        };
-        for key in ["", "   "] {
-            let models = fetch_models_for(&AiProvider::Anthropic, key, ep, None).await?;
+    async fn anthropic_models_or_fallback_without_key_makes_no_request() -> anyhow::Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let url = format!("http://{}/v1/models", listener.local_addr()?);
+        for key in ["", "   ", "\n\t"] {
+            let models =
+                super::anthropic_models_or_fallback(&reqwest::Client::new(), &url, key).await;
             assert_eq!(models.len(), super::anthropic_fallback_models().len());
             assert_eq!(models[0].id, "claude-fable-5-1");
         }
+        // 1 回も接続されていない（空の x-api-key を送らない）。
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), listener.accept())
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn anthropic_models_or_fallback_returns_the_live_list_and_sends_a_trimmed_key(
+    ) -> anyhow::Result<()> {
+        let (url, server) = spawn_anthropic_models_server(vec![(
+            "200 OK",
+            anthropic_models_page(&["claude-opus-9", "claude-sonnet-9"], false),
+        )])
+        .await?;
+        let models =
+            super::anthropic_models_or_fallback(&reqwest::Client::new(), &url, " sk-ant-test\n")
+                .await;
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["claude-opus-9", "claude-sonnet-9"]);
+        let heads = server.await?;
+        assert!(
+            heads[0]
+                .to_ascii_lowercase()
+                .contains("x-api-key: sk-ant-test\r\n"),
+            "{}",
+            heads[0]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn anthropic_models_or_fallback_uses_the_built_in_list_on_failure_or_empty_data(
+    ) -> anyhow::Result<()> {
+        let unauthorized = r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#;
+        let cases: Vec<(&'static str, String)> = vec![
+            ("401 Unauthorized", unauthorized.to_string()),
+            ("500 Internal Server Error", "{}".to_string()),
+            ("200 OK", r#"{"data":[],"has_more":false}"#.to_string()),
+            ("200 OK", r#"{"data":[{"type":"model"}]}"#.to_string()),
+            ("200 OK", "not json".to_string()),
+        ];
+        for (status, body) in cases {
+            let (url, server) = spawn_anthropic_models_server(vec![(status, body.clone())]).await?;
+            let models =
+                super::anthropic_models_or_fallback(&reqwest::Client::new(), &url, "sk-ant-test")
+                    .await;
+            server.await?;
+            let ids: Vec<String> = models.into_iter().map(|m| m.id).collect();
+            let expected: Vec<String> = super::anthropic_fallback_models()
+                .into_iter()
+                .map(|m| m.id)
+                .collect();
+            assert_eq!(ids, expected, "{status} {body}");
+        }
+        // 接続できない（通信断）ときも予備へ戻る。
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let url = format!("http://{}/v1/models", listener.local_addr()?);
+        drop(listener);
+        let models =
+            super::anthropic_models_or_fallback(&super::anthropic_models_client(), &url, "k").await;
+        assert_eq!(models.len(), super::anthropic_fallback_models().len());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn anthropic_models_client_does_not_follow_redirects_with_the_api_key(
+    ) -> anyhow::Result<()> {
+        let other = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let location = format!("http://{}/v1/models", other.local_addr()?);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let url = format!("http://{}/v1/models", listener.local_addr()?);
+        let redirecting = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_test_http_head(&mut stream).await.unwrap();
+            write_test_http_response(
+                &mut stream,
+                "302 Found",
+                &[("Location", location.as_str())],
+                "",
+            )
+            .await
+            .unwrap();
+        });
+        let models =
+            super::anthropic_models_or_fallback(&super::anthropic_models_client(), &url, "sk-ant")
+                .await;
+        redirecting.await?;
+        assert_eq!(models.len(), super::anthropic_fallback_models().len());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), other.accept())
+                .await
+                .is_err()
+        );
         Ok(())
     }
 
