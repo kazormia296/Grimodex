@@ -619,6 +619,7 @@ pub fn seed_runtime_performance_fixture(
                             &payload.project_id,
                             &node.id,
                             &updated_at,
+                            crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                         )?;
                     }
                 }
@@ -1283,5 +1284,23 @@ mod tests {
             Ok(())
         })
         .expect("verify validation failures are non-mutating");
+    }
+
+    /// SDEF/1 A2: the performance seed writes `unknown` Scenes even when the
+    /// project has a default (R10).
+    #[test]
+    fn sdef_seed_does_not_inherit_the_project_default() {
+        let db = database();
+        crate::narrative_extraction::scene_scope_default_tests::set_main_line_default(
+            &db, PROJECT_ID,
+        );
+        seed_runtime_performance_fixture(&db, payload()).expect("seed fixture");
+        let markers =
+            crate::narrative_extraction::scene_scope_default_tests::markers(&db, PROJECT_ID);
+        assert!(!markers.is_empty());
+        assert!(
+            markers.iter().all(|(_, marker)| marker == "unknown"),
+            "{markers:?}"
+        );
     }
 }

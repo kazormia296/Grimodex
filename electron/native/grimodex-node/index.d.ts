@@ -783,6 +783,18 @@ export declare class Backend {
    */
   narrativeSceneScopeRegistryUpdate(payload: any, callerIdentity?: string | undefined | null): Promise<string>
   /**
+   * Read the project's Scene Scope default (SDEF/1 R1). The renderer
+   * supplies identity only; Main's typed IPC and its re-validation are a
+   * later change (PR-2). Same admission as the other Scope entries.
+   */
+  narrativeScopeProjectDefaultRead(payload: any, callerIdentity?: string | undefined | null): Promise<string>
+  /**
+   * Set or clear the project's Scene Scope default (SDEF/1 R3-R5, MD4) with
+   * Native OCC, idempotency, closed-type and registry-membership checks. It
+   * writes no binding, registry, authority token or narrative feed.
+   */
+  narrativeScopeProjectDefaultUpdate(payload: any, callerIdentity?: string | undefined | null): Promise<string>
+  /**
    * Rebuild可能なsemantic background indexingを協調停止する。
    * 4-cache epochをrotateし、既にpin済みのscene/bulk jobはitem/chunk境界で
    * `IPC_DERIVED_CANCELLED` を返す。途中生成したindex payloadはcommitしない。

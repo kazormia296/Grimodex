@@ -157,6 +157,7 @@ impl OracleFixture {
                     PROJECT,
                     SCENE_SHARED,
                     "2026-09-17T00:00:09.000Z",
+                    crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                 )?;
                 for (scene, entity) in [
                     (SCENE_SEED_ONLY, "nir1-alice"),

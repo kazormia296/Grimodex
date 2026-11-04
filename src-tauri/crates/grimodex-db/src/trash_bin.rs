@@ -410,6 +410,7 @@ fn restore_scene_in_tx(
         project_id,
         &new_id,
         &updated_at,
+        crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
     )?;
     Ok(RestoredStructure {
         new_id: new_id.clone(),
@@ -1435,5 +1436,17 @@ mod tests {
             .map(|r| r["preview_text"].as_str().unwrap_or_default())
             .collect();
         assert_eq!(previews, vec!["i3", "i2"], "新しい 2 件だけが残る");
+    }
+
+    /// SDEF/1 A2: a Scene restored from the Trash is `unknown` even when the
+    /// project has a default (R10).
+    #[test]
+    fn sdef_trash_restore_does_not_inherit_the_project_default() {
+        let db = test_db();
+        crate::narrative_extraction::scene_scope_default_tests::set_main_line_default(&db, PROJECT);
+        create(&db, scene_structure_payload("trash-sdef")).expect("create Trash row");
+        let restored = restore(&db, restore_request("trash-sdef")).expect("restore Scene");
+        let markers = crate::narrative_extraction::scene_scope_default_tests::markers(&db, PROJECT);
+        assert_eq!(markers, vec![(restored.new_id, "unknown".to_string())]);
     }
 }

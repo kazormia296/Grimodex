@@ -376,6 +376,7 @@ fn fixture_db_for_payload_kind_with_source_token(
                 target_readers: None,
                 created_at: DECLARATION_CREATED_AT.to_owned(),
                 updated_at: DECLARATION_CREATED_AT.to_owned(),
+                scene_scope_default: None,
             },
         )
         .expect("seed fixture project through production writer");

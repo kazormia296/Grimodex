@@ -53,7 +53,11 @@ const REPO_ROOT = path.resolve(
 // SCHEMA_VERSION 43 only adds two nullable Scene body declaration columns to
 // narrative_scene_scope_bindings (no row is promoted); the Native declaration
 // writer that fills them is a later change and the concern matrix is unchanged.
-export const EXPECTED_SCHEMA_VERSION = 43;
+// SCHEMA_VERSION 44 only adds the project Scene Scope default table
+// (narrative_scope_project_defaults, SDEF/1). Its typed Native writer is not a
+// semantic interpreter and generic writes are blocked by the protected-writer
+// registry, so the concern matrix is unchanged.
+export const EXPECTED_SCHEMA_VERSION = 44;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

@@ -779,11 +779,25 @@ fn promote_sticky(tx: &Transaction<'_>, payload: &MapWritePayload) -> anyhow::Re
                 ],
             )?;
             if target_type == "scene" {
+                // SDEF/1 MD1: `apply_map_write` has already validated the
+                // origin and lineage; only a forward promotion inherits.
+                let scene_scope_init = crate::narrative_extraction::scene_scope_init_for_create(
+                    &crate::narrative_extraction::SceneCreateLineage {
+                        origin: payload.origin,
+                        original_transaction_id: payload.original_transaction_id.as_deref(),
+                        undo_journal_id: payload.undo_journal_id.as_deref(),
+                        authority_route: None,
+                        redo: false,
+                        source_uri: None,
+                        source_mtime: None,
+                    },
+                );
                 crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
                     tx,
                     project_id,
                     new_entity_id,
                     updated_at,
+                    scene_scope_init,
                 )?;
             }
             (target_type.to_string(), Some(new_entity_id), None, None)
@@ -2359,5 +2373,70 @@ mod tests {
             Ok(())
         })
         .expect("inspect Map replay lineage");
+    }
+
+    /// SDEF/1 A1/A2 (sticky promotion): a forward promotion to a Scene inherits
+    /// the project default; a promotion replayed with redo lineage does not.
+    #[test]
+    fn sdef_sticky_promotion_to_a_scene_inherits_only_when_forward() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO map_stickies
+                   (id, board_id, title, body, palette_id, color_slot)
+                   VALUES ('sticky-2', 'board-1', 'Second', '{}', 'post-it-playful', 0);
+                 INSERT INTO map_node_positions
+                   (id, board_id, node_ref_type, sticky_id, x, y)
+                   VALUES ('position-2', 'board-1', 'sticky', 'sticky-2', 30, 40);",
+            )?;
+            Ok(())
+        })
+        .expect("seed a second sticky");
+        crate::narrative_extraction::scene_scope_default_tests::set_main_line_default(&db, "p1");
+        let promote = |request: &str, sticky: &str, position: &str, scene: &str| -> Value {
+            json!({
+                "kind": "promote-sticky",
+                "requestId": request,
+                "sessionId": "session-map",
+                "eventUid": format!("{request}:event"),
+                "projectId": "p1",
+                "boardId": "board-1",
+                "targetType": "scene",
+                "newEntityId": scene,
+                "title": "Promoted",
+                "body": "{}",
+                "positionId": position,
+                "stickyId": sticky,
+                "sortOrder": "a0",
+                "createdAt": "2026-11-04T00:00:00.000Z",
+                "updatedAt": "2026-11-04T00:00:00.000Z",
+            })
+        };
+        let forward: MapWritePayload = serde_json::from_value(promote(
+            "sdef-promote",
+            "sticky-1",
+            "position-1",
+            "sdef-scene-1",
+        ))
+        .expect("forward payload");
+        let receipt = apply_map_write(&db, forward).expect("forward promotion");
+        let mut replay = promote(
+            "sdef-promote-redo",
+            "sticky-2",
+            "position-2",
+            "sdef-scene-2",
+        );
+        replay["origin"] = json!("redo");
+        replay["originalTransactionId"] = receipt["maintenanceTransactionId"].clone();
+        replay["undoJournalId"] = receipt["undoJournalId"].clone();
+        let replay: MapWritePayload = serde_json::from_value(replay).expect("redo payload");
+        apply_map_write(&db, replay).expect("replayed promotion");
+        assert_eq!(
+            crate::narrative_extraction::scene_scope_default_tests::markers(&db, "p1"),
+            vec![
+                ("sdef-scene-1".to_string(), "explicit".to_string()),
+                ("sdef-scene-2".to_string(), "unknown".to_string()),
+            ]
+        );
     }
 }

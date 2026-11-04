@@ -16995,6 +16995,7 @@ mod tests {
                 project_id,
                 &scene_id,
                 "2026-10-17T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )
         })
         .expect("bind scene");

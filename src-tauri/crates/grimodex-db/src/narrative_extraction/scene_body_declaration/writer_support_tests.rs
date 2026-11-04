@@ -108,7 +108,13 @@ fn seed(db: &Database) {
             (PROJECT, SECOND_SCENE),
             (OTHER_PROJECT, OTHER_SCENE),
         ] {
-            ensure_scene_scope_binding_in_tx(conn, project, scene, NOW)?;
+            ensure_scene_scope_binding_in_tx(
+                conn,
+                project,
+                scene,
+                NOW,
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+            )?;
         }
         Ok(())
     })

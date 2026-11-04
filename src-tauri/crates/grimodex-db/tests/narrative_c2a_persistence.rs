@@ -205,6 +205,7 @@ fn migrated_db() -> Database {
             target_readers: None,
             created_at: "2026-01-01T00:00:00.000Z".to_owned(),
             updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            scene_scope_default: None,
         },
     )
     .expect("seed project A through production writer");

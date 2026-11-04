@@ -4107,6 +4107,34 @@ impl Database {
                 ON narrative_scene_scope_bindings(project_id, version);
             ",
         )?;
+        // SCHEMA_VERSION 44 / SDEF/1 (`nir1-scene-scope-default-proposal/1`):
+        // the project's Scene Scope default, zero or one row per project. The
+        // migration only creates the table; no existing project gets a row and
+        // no registry or binding changes (R15). `none` keeps the row (R5).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_scope_project_defaults (
+                project_id                TEXT NOT NULL PRIMARY KEY
+                    REFERENCES projects(id) ON DELETE CASCADE,
+                schema_version            INTEGER NOT NULL CHECK(schema_version = 1),
+                state                     TEXT NOT NULL CHECK(state IN ('set', 'none')),
+                query_identity_json       TEXT
+                    CHECK(query_identity_json IS NULL OR (json_valid(query_identity_json)
+                      AND json_type(query_identity_json) = 'object')),
+                material_constraint_json  TEXT
+                    CHECK(material_constraint_json IS NULL OR (json_valid(material_constraint_json)
+                      AND json_type(material_constraint_json) = 'object')),
+                version                   INTEGER NOT NULL CHECK(version >= 1),
+                source_token              TEXT NOT NULL
+                    CHECK(length(source_token) = 71
+                      AND source_token GLOB 'sha256:*'
+                      AND substr(source_token, 8) NOT GLOB '*[^0-9a-f]*'),
+                updated_at                TEXT NOT NULL,
+                CHECK((state = 'set' AND query_identity_json IS NOT NULL
+                        AND material_constraint_json IS NOT NULL)
+                   OR (state = 'none' AND query_identity_json IS NULL
+                        AND material_constraint_json IS NULL))
+            );",
+        )?;
         // SCHEMA_VERSION 37 / NIR-1 D2b: immutable references to existing
         // message/artifact bodies and one durable attempt terminal. These
         // rows record observations; they do not authorize dispatch or history.
@@ -11192,6 +11220,7 @@ mod tests {
                 "scope-current",
                 "scope-scene",
                 "2026-09-14T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             conn.execute(
                 "DELETE FROM narrative_scene_scope_bindings
@@ -11991,6 +12020,7 @@ mod tests {
                         "proj-v43",
                         scene,
                         "2026-10-17T00:00:00.000Z",
+                        crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
                     )?;
                 }
                 let rows = v43_v1_binding_rows(conn)?;
@@ -12024,7 +12054,7 @@ mod tests {
         db.migrate().expect("migrate v42 to v43");
         db.with_conn(|conn| {
             let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-            assert_eq!(version, 43);
+            // SCHEMA 44 (SDEF/1) migrates further on top of the v43 step.
             assert_eq!(version, grimodex_core::SCHEMA_VERSION);
             assert_eq!(v43_declaration_column_names(conn)?, V43_DECLARATION_COLUMNS);
             let non_null: i64 = conn.query_row(
@@ -12097,7 +12127,11 @@ mod tests {
             db.with_conn(|conn| {
                 let version: i32 =
                     conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-                assert_eq!(version, 43, "kept={kept} dropped={dropped} marker={marker}");
+                assert_eq!(
+                    version,
+                    grimodex_core::SCHEMA_VERSION,
+                    "kept={kept} dropped={dropped} marker={marker}"
+                );
                 assert_eq!(v43_declaration_column_names(conn)?, V43_DECLARATION_COLUMNS);
                 assert_eq!(v43_v1_binding_rows(conn)?, v1_rows);
                 Ok(())

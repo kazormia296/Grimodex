@@ -381,6 +381,7 @@ pub fn save_scene_body_bundle(
                 &payload.project_id,
                 &payload.scene_id,
                 existing_scene_updated_at,
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
             let mut before_foreshadows = BTreeMap::new();
             if payload.include_sidecars {
@@ -980,7 +981,11 @@ mod tests {
         .expect("insert scene");
         db.with_conn(|conn| {
             crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
-                conn, "p1", "s1", "fixture",
+                conn,
+                "p1",
+                "s1",
+                "fixture",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )
         })
         .expect("seed scene scope binding");
@@ -1986,5 +1991,24 @@ mod tests {
         assert!(roots[0]["payoff_from_pos"].is_null());
         assert!(roots[0]["payoff_to_pos"].is_null());
         assert_eq!(roots[0]["version"], 0);
+    }
+
+    /// SDEF/1 A2: a body save that repairs a missing binding writes `unknown`
+    /// even when the project has a default (R10).
+    #[test]
+    fn sdef_body_save_repair_does_not_inherit_the_project_default() {
+        let db = test_db();
+        crate::narrative_extraction::scene_scope_default_tests::set_main_line_default(&db, "p1");
+        db.execute(
+            "DELETE FROM narrative_scene_scope_bindings WHERE scene_id = 's1'",
+            &[],
+            "run",
+        )
+        .expect("lose the binding");
+        save_scene_body_bundle(&db, payload()).expect("save body");
+        assert_eq!(
+            crate::narrative_extraction::scene_scope_default_tests::markers(&db, "p1"),
+            vec![("s1".to_string(), "unknown".to_string())]
+        );
     }
 }
