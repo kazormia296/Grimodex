@@ -56,10 +56,14 @@ const CLAUDE_MODELS = [
   { id: "opus", name: "Opus (latest alias)" },
   { id: "sonnet", name: "Sonnet (latest alias)" },
   { id: "haiku", name: "Haiku (latest alias)" },
+  { id: "claude-fable-5-1", name: "Claude Fable 5.1" },
+  { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
+  { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
+  { id: "claude-haiku-5-5", name: "Claude Haiku 5.5" },
   { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
   { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
   { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5" },
-  { id: "claude-3-5-haiku-20241022", name: "Claude Haiku 3.5" },
+  { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
 ] as const;
 
 export interface CliCommandSpec {
@@ -2144,34 +2148,28 @@ export function createCliAiManager(
       let runnerQuiescence: Promise<boolean>;
       try {
         runnerQuiescence = trackedRunner.quiesceForProfileEgress
-          ? waitForRunnerQuiescence(
-              trackedRunner.quiesceForProfileEgress(),
-            )
+          ? waitForRunnerQuiescence(trackedRunner.quiesceForProfileEgress())
           : Promise.resolve(true);
       } catch {
         runnerQuiescence = Promise.resolve(false);
       }
-      const [
-        stopped,
-        commandsSettled,
-        handlersSettled,
-        runnerQuiesced,
-      ] = await Promise.all([
-        Promise.all(
-          activeLifecycles.map((lifecycle) => waitForLifecycle(lifecycle)),
-        ),
-        Promise.all(
-          activeRunnerOperations.map((operation) =>
-            waitForRunnerOperation(operation),
+      const [stopped, commandsSettled, handlersSettled, runnerQuiesced] =
+        await Promise.all([
+          Promise.all(
+            activeLifecycles.map((lifecycle) => waitForLifecycle(lifecycle)),
           ),
-        ),
-        Promise.all(
-          activeHandlerOperations.map((operation) =>
-            waitForRunnerOperation(operation),
+          Promise.all(
+            activeRunnerOperations.map((operation) =>
+              waitForRunnerOperation(operation),
+            ),
           ),
-        ),
-        runnerQuiescence,
-      ]);
+          Promise.all(
+            activeHandlerOperations.map((operation) =>
+              waitForRunnerOperation(operation),
+            ),
+          ),
+          runnerQuiescence,
+        ]);
       if (disposeError) throw toError(disposeError);
       if (
         stopped.some((value) => !value) ||
