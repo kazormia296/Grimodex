@@ -15,6 +15,24 @@ export type NarrativeMaintenanceWakeReason =
 
 export const NARRATIVE_MAINTENANCE_REDISCOVERY_DELAY_MS = 250;
 export const NARRATIVE_MAINTENANCE_MAX_REDISCOVERY_ATTEMPTS = 3;
+/**
+ * DR-MPS-2: a before-cutover chain whose rediscoveries ran out (the planner
+ * keeps returning the same work because foreground writes invalidate its
+ * evidence) may be restarted by a Freshness NOT_READY only after
+ * `BASE * 2^(k-1)` ms, capped, where k counts consecutive exhaustions.
+ */
+export const NARRATIVE_MAINTENANCE_EXHAUSTED_RESTART_BASE_MS = 5_000;
+export const NARRATIVE_MAINTENANCE_EXHAUSTED_RESTART_MAX_MS = 60_000;
+
+export function narrativeMaintenanceExhaustedRestartCooldownMs(
+  consecutiveExhaustions: number,
+): number {
+  const exponent = Math.max(0, Math.min(consecutiveExhaustions - 1, 16));
+  return Math.min(
+    NARRATIVE_MAINTENANCE_EXHAUSTED_RESTART_BASE_MS * 2 ** exponent,
+    NARRATIVE_MAINTENANCE_EXHAUSTED_RESTART_MAX_MS,
+  );
+}
 
 interface NarrativeMaintenanceDiscoveryBackend {
   getNarrativeMaintenanceWorkspaceBinding?():
@@ -368,6 +386,10 @@ export function createNarrativeMaintenanceTriggerCoordinator(
   let mutationRevision = 0;
   let rediscoveryAttempts = 0;
   let lastDiscoveryFingerprint: string | null = null;
+  // DR-MPS-2: set when a before-cutover chain's rediscoveries run out;
+  // `consecutiveExhaustions` survives restarts that see the same work.
+  let exhaustedAtMs: number | null = null;
+  let consecutiveExhaustions = 0;
   let pendingWakeOutboxAck: {
     ids: string[];
     workspaceBinding: NarrativeMaintenanceWorkspaceBinding;
@@ -413,6 +435,11 @@ export function createNarrativeMaintenanceTriggerCoordinator(
 
   const noteMutation = (): void => {
     mutationRevision += 1;
+  };
+
+  const resetExhaustion = (): void => {
+    exhaustedAtMs = null;
+    consecutiveExhaustions = 0;
   };
 
   const clearTimer = (): void => {
@@ -502,7 +529,8 @@ export function createNarrativeMaintenanceTriggerCoordinator(
             : null;
         if (recoveryBinding !== null) {
           const getBinding = backend?.getNarrativeMaintenanceWorkspaceBinding;
-          let currentBinding: NarrativeMaintenanceWorkspaceBinding | null = null;
+          let currentBinding: NarrativeMaintenanceWorkspaceBinding | null =
+            null;
           try {
             if (typeof getBinding !== "function") {
               throw new Error("native workspace binding is unavailable");
@@ -588,7 +616,10 @@ export function createNarrativeMaintenanceTriggerCoordinator(
             response.workspaceBinding,
           );
         }
-        if (recoveryBinding !== null && recoveryDiscoveryBinding === recoveryBinding) {
+        if (
+          recoveryBinding !== null &&
+          recoveryDiscoveryBinding === recoveryBinding
+        ) {
           recoveryDiscoveryBinding = null;
         }
         // A durable wake cannot be ACKed merely because a timer was armed.
@@ -652,6 +683,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           }
           rediscoveryAttempts = 0;
           lastDiscoveryFingerprint = null;
+          resetExhaustion();
         } else {
           // A phase transition changes the DB-aware planner result and starts
           // a fresh bounded chain. If a stale/pure planner returns the exact
@@ -664,6 +696,9 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           if (fingerprint !== lastDiscoveryFingerprint) {
             rediscoveryAttempts = 0;
             lastDiscoveryFingerprint = fingerprint;
+            // The planner moved to different work: real progress, so the
+            // restart backoff starts over.
+            resetExhaustion();
           }
         }
       } catch (error) {
@@ -777,9 +812,27 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     void trackedDiscovery;
   };
 
+  const markExhausted = (): void => {
+    if (lastWakeReason !== "before-cutover" || exhaustedAtMs !== null) return;
+    exhaustedAtMs = Date.now();
+    consecutiveExhaustions += 1;
+    warn(
+      "[narrative-maintenance] before-cutover rediscovery exhausted; a Freshness NOT_READY may restart it after",
+      narrativeMaintenanceExhaustedRestartCooldownMs(consecutiveExhaustions),
+      "ms",
+    );
+  };
+
+  const chainIdle = (): boolean =>
+    timer === null &&
+    !discoveryInFlight &&
+    pendingEvent === null &&
+    pendingRetryDelayMs === null;
+
   const requestRediscovery = (): void => {
     if (disposed || lastWakeReason === null) return;
     if (rediscoveryAttempts >= NARRATIVE_MAINTENANCE_MAX_REDISCOVERY_ATTEMPTS) {
+      markExhausted();
       return;
     }
     rediscoveryAttempts += 1;
@@ -805,6 +858,28 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     (timer !== null && scheduledReason === "before-cutover") ||
     (discoveryInFlight && discoveryReason === "before-cutover") ||
     pendingEvent?.reason === "before-cutover";
+
+  /**
+   * DR-MPS-2: a before-cutover chain that ran out of rediscoveries has no
+   * live work left, so only a Freshness NOT_READY can restart it, and only
+   * once its backoff has elapsed.
+   */
+  const exhaustedChainMayRestart = (): boolean => {
+    if (
+      lastWakeReason !== "before-cutover" ||
+      exhaustedAtMs === null ||
+      !chainIdle() ||
+      rediscoveryAttempts < NARRATIVE_MAINTENANCE_MAX_REDISCOVERY_ATTEMPTS
+    ) {
+      return false;
+    }
+    const elapsedMs = Date.now() - exhaustedAtMs;
+    return (
+      elapsedMs < 0 ||
+      elapsedMs >=
+        narrativeMaintenanceExhaustedRestartCooldownMs(consecutiveExhaustions)
+    );
+  };
 
   const higherValueWakeActive = (): boolean =>
     isHigherValueWake(scheduledReason) ||
@@ -957,6 +1032,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       const generation = ++chainGeneration;
       rediscoveryAttempts = 0;
       lastDiscoveryFingerprint = null;
+      resetExhaustion();
       lastWakeReason = "semantic-epoch-rotated";
       clearTimer();
       pendingRetryDelayMs = null;
@@ -988,12 +1064,31 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       // discovery is not made stale by its own retry signal. Restore and
       // epoch wakes carry stronger authority and must remain pending while a
       // before-cutover callback is being delivered.
-      if (beforeCutoverChainActive() || higherValueWakeActive()) return;
+      if (higherValueWakeActive()) return;
+      // DR-MPS-2: an exhausted chain restarts after a backoff, keeping the
+      // fingerprint and the exhaustion count so unchanged work backs off
+      // further instead of resetting.
+      const restartingExhausted = beforeCutoverChainActive();
+      // The last accepted cycle may never have called requestRediscovery;
+      // an idle chain at the cap is exhausted all the same.
+      if (
+        restartingExhausted &&
+        chainIdle() &&
+        rediscoveryAttempts >= NARRATIVE_MAINTENANCE_MAX_REDISCOVERY_ATTEMPTS
+      ) {
+        markExhausted();
+      }
+      if (restartingExhausted && !exhaustedChainMayRestart()) return;
       recoveryDiscoveryBinding = null;
       const generation = ++chainGeneration;
       noteMutation();
       rediscoveryAttempts = 0;
-      lastDiscoveryFingerprint = null;
+      if (restartingExhausted) {
+        exhaustedAtMs = null;
+      } else {
+        lastDiscoveryFingerprint = null;
+        resetExhaustion();
+      }
       lastWakeReason = "before-cutover";
       clearTimer();
       pendingRetryDelayMs = null;
@@ -1035,6 +1130,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       noteMutation();
       rediscoveryAttempts = 0;
       lastDiscoveryFingerprint = null;
+      resetExhaustion();
       const pendingAck = pendingWakeOutboxAck;
       if (pendingAck !== null) {
         if (sameBinding(pendingAck.workspaceBinding, currentBinding)) {
@@ -1103,6 +1199,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           ? "semantic-epoch-rotated"
           : wakeReasonFromEventPayload(payload);
       lastDiscoveryFingerprint = null;
+      resetExhaustion();
       lastWakeReason = reason;
       clearTimer();
       pendingRetryDelayMs = null;
@@ -1149,10 +1246,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     },
     async dispose(): Promise<void> {
       if (disposed) {
-        await Promise.all([
-          discoveryPromise,
-          wakeOutboxDrainPromise,
-        ]);
+        await Promise.all([discoveryPromise, wakeOutboxDrainPromise]);
         return;
       }
       disposed = true;

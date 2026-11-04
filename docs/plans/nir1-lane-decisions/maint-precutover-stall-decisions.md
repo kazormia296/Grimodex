@@ -77,3 +77,18 @@ worker／owner／終了処理／lifecycle の技術判断の事前委任（U3）
 `RelatedScenesUnavailableReason`（`electron/shared/relatedScenesSearchWire.ts` の閉じた union）の拡張か field の追加が要り、
 main の検証と renderer が共有する型付き IPC の payload を変えるので、新しい契約になる。この lane の委任の外なので入れない。
 契約を変えずに main の log へ出す手は、理由が Native から main へ渡らないため Rust 側の変更が要る。今回は含めず、別の小変更として残す。
+
+## DR-MPS-6 実装後の追記（2026-11-04）
+
+- 枯渇の記録は 2 か所で付く。`requestRediscovery` が上限で打ち切るとき（bootstrap の `onCycleAccepted` 由来）と、
+  Freshness の NOT_READY が「生きた仕事が無く、attempts が上限」の chain を見つけたとき（最後の受理 cycle が
+  `requestRediscovery` を呼ばなかった場合でも詰まらないように）。後者では cooldown がその時点から数え始まる。
+- 再点火の枝は `lastDiscoveryFingerprint` を保持する。null に戻すと、再点火後の最初の discovery が「fingerprint が変わった」
+  と見なされて k が毎回 1 に戻り、backoff が効かなくなる。
+- 試験: `narrativeMaintenanceTriggers.test.ts`（cooldown 内の NOT_READY は何も変えない、5 s・10 s の cooldown 経過で
+  再点火、上限 60 s、work の変化と空の結果で k が戻る、restore／epoch の wake を押しのけない）、
+  `narrativeMaintenanceTriggers.stall.test.ts`（Freshness と coordinator の実物を配線した再現。書き込みが止まれば cutover まで進む、
+  書き込みが止まらない 10 分で discover 52 回〔上限 56〕、書き込みが無ければ従来どおり、cutover 後は discover しない、
+  書き込みが止まってから 70 s 以内に cutover）。
+- 残る課題: (1) 受理された cycle が `onCycleAccepted` を呼ばず、かつ attempts が上限未満のまま止まる chain は、今回の再点火の対象外
+  （従来どおり）。(2) begin の理由の wire 化（DR-MPS-5）。(3) 再点火のたびの Verify が前景の書き込みに譲られる頻度の実測は無い。
