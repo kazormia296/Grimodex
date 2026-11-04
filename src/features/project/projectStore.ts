@@ -33,6 +33,7 @@ import {
   type MutationAuthority,
 } from "@/features/concurrency/mutationAuthority";
 import { runProjectLoadWithFailureToast } from "./projectLoadFailure";
+import { projectCreateOptions, projectRowInput } from "./projectCreateRow";
 import {
   applyProjectMetadata,
   getFallbackProjectLanguage,
@@ -99,19 +100,6 @@ interface ProjectState {
   createNewProject: (input: CreateProjectInput) => Promise<Project>;
   /** Delete a Project. Switches away if deleting the current one. */
   deleteProjectById: (projectId: string) => Promise<void>;
-}
-
-/**
- * SDEF/1 R12 (DR-SDEF-28): only the creation screen's main-line check adds
- * the `sceneScopeDefault` option. Every other caller (imports, the evaluation
- * harness) gets no option, so the project has no Scene Scope default.
- */
-export function projectCreateOptions(
-  input: Pick<CreateProjectInput, "sceneScopeMainLine">,
-): { sceneScopeDefault: "main-line" } | undefined {
-  return input.sceneScopeMainLine === true
-    ? { sceneScopeDefault: "main-line" }
-    : undefined;
 }
 
 let loadProjectGeneration = 0;
@@ -706,14 +694,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           // completes or rolls back.
           assertProjectLifecycleAuthority(generation, authority);
           const createdRow = await createProjectRow(
-            {
-              id: crypto.randomUUID(),
-              title: input.title.trim(),
-              genre: input.genre || undefined,
-              language: input.language || undefined,
-              pov: input.pov || undefined,
-              tense: input.tense || undefined,
-            },
+            projectRowInput(input),
             projectCreateOptions(input),
           );
           deletedProjectIds.delete(createdRow.id);

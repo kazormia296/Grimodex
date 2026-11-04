@@ -10,9 +10,9 @@ import {
   _scheduleTimelapseInitializationForTests,
   _scheduleWorkspaceBackgroundIntegrationsForTests,
   LAST_ACTIVE_PROJECT_KEY,
-  projectCreateOptions,
   useProjectStore,
 } from "./projectStore";
+import { projectCreateOptions } from "./projectCreateRow";
 import { PROJECT_ID } from "./constants";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
