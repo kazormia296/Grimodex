@@ -1603,6 +1603,76 @@ mod narrative_freshness_restore_lock_tests {
     }
 
     #[test]
+    fn freshness_scheduler_defers_stale_liveness_without_recovery() {
+        // DR-MPS-8: a cycle that outlives the liveness bound before heartbeat
+        // registration keeps the workspace Ready instead of retiring it.
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-freshness-stale-liveness-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = TestRoot(root.clone());
+        let workspace_path = root.join("workspace");
+        let resources = root.join("resources");
+        std::fs::create_dir_all(&workspace_path).expect("workspace directory");
+
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed project");
+
+        let authority = WorkspaceAuthority::from_database_for_test(database, workspace_path)
+            .expect("workspace authority");
+        let state = Arc::new(
+            AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+                .expect("app state"),
+        );
+        install_test_workspace(&state, authority);
+
+        // The post-cycle revalidation hook runs between cycle completion and
+        // heartbeat registration, so sleeping here ages the capability past
+        // the unchanged 5 s bound.
+        let deferred = run_narrative_freshness_cycle_inner(&state, || {
+            std::thread::sleep(std::time::Duration::from_secs(6));
+        })
+        .expect("a stale liveness attestation is not a scheduler failure");
+        if let Some(result) = &deferred {
+            let result: serde_json::Value =
+                serde_json::from_str(result).expect("deferred result JSON");
+            assert_ne!(result["status"], "workspace-unavailable");
+            assert_ne!(result["reason"], "freshness-recovery-required");
+            assert_ne!(
+                result["cutoverNotReady"], true,
+                "a deferred cycle must not start a before-cutover chain"
+            );
+        }
+        assert!(
+            state.ws.inner.lock().expect("workspace state").is_some(),
+            "a stale liveness attestation must not detach the authority"
+        );
+
+        // The next cycle mints liveness normally and reaches the cutover gate.
+        let next = run_narrative_freshness_cycle_inner(&state, || {})
+            .expect("the following cycle runs on the same authority")
+            .expect("not-ready cutover notifies the activation owner");
+        let next: serde_json::Value = serde_json::from_str(&next).expect("next result JSON");
+        assert_eq!(next["cutoverNotReady"], true);
+
+        let active = state.ws.inner.lock().expect("workspace state").take();
+        drop(active);
+        drop(state);
+        drop(cleanup);
+        assert!(!root.exists(), "fixture must clean up");
+    }
+
+    #[test]
     fn freshness_scheduler_surfaces_unexpected_cutover_marker_errors() {
         let root = std::env::temp_dir().join(format!(
             "grimodex-node-freshness-cutover-marker-{}-{}",
@@ -6572,21 +6642,54 @@ fn run_narrative_freshness_cycle_body(
     // is fail-soft and will be retried by the next wake.  Marker/schema,
     // malformed evidence, or any other unexpected failure remains visible to
     // the scheduler caller instead of silently leaving a split authority.
-    let liveness_evidence = narrative_extraction::record_live_scheduler_heartbeat(
+    //
+    // DR-MPS-8: a successful cycle can reach heartbeat registration after the
+    // liveness age bound when foreground writes keep the connection busy (a
+    // bulk Scene import followed by extraction). The cycle already committed
+    // and the authority is intact, so that one stale attestation is skipped:
+    // no liveness, no cutover attempt, no recovery. The next scheduler wake
+    // runs a fresh cycle and retries both. The bound itself is unchanged.
+    let liveness_evidence = match narrative_extraction::record_live_scheduler_heartbeat(
         current_workspace.authority.db(),
         &binding.authority_id,
         binding.generation,
         successful_cycle,
-    )?;
-    let cutover_result = current_workspace.authority.db().with_conn(|conn| {
-        narrative_extraction::cut_over_workspace_freshness(conn, &liveness_evidence)
-    });
-    let mut cutover_not_ready = false;
-    if let Err(error) = cutover_result {
-        if !is_expected_c2zc_cutover_not_ready(&error) {
-            return Err(AppError::Anyhow(error));
+    ) {
+        Ok(evidence) => Some(evidence),
+        Err(error)
+            if error
+                .downcast_ref::<narrative_extraction::SchedulerLivenessCycleStale>()
+                .is_some() =>
+        {
+            tracing::warn!(
+                target: "narrative.maintenance",
+                "freshness cycle outlived its liveness bound before heartbeat; liveness and cutover deferred to the next cycle"
+            );
+            None
         }
-        cutover_not_ready = true;
+        Err(error) => return Err(AppError::Anyhow(error)),
+    };
+    let mut cutover_not_ready = false;
+    if let Some(liveness_evidence) = &liveness_evidence {
+        let cutover_result = current_workspace.authority.db().with_conn(|conn| {
+            narrative_extraction::cut_over_workspace_freshness(conn, liveness_evidence)
+        });
+        if let Err(error) = cutover_result {
+            if !is_expected_c2zc_cutover_not_ready(&error) {
+                return Err(AppError::Anyhow(error));
+            }
+            cutover_not_ready = true;
+        }
+    } else {
+        // A deferred cycle did not pass the cutover gate. Only the CI hold
+        // result requires that fact to be explicit; ordinary results stay
+        // silent so a post-cutover workspace does not start a before-cutover
+        // maintenance chain on every busy cycle. A pre-cutover workspace gets
+        // the usual NOT_READY signal from the next cycle.
+        cutover_not_ready = matches!(
+            cycle_outcome,
+            narrative_extraction::IncrementalFreshnessCycleOutcome::Held(_)
+        );
     }
 
     // The quiescence state is an acceptance-only extension of the existing

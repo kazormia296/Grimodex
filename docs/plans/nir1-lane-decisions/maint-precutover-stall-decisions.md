@@ -123,3 +123,52 @@ main の検証と renderer が共有する型付き IPC の payload を変える
   時計の逆行）と、`.stall.test.ts` の「cycle が譲られ続ける chain も自力で再開する」。変異（idle の検出の削除、scheduler の判定の削除、
   chainIdle の削除、時計の分岐の削除）で落ちることを確かめた。
 - 差分の整理: 前の commit に混ざっていた prettier の整形だけの hunk は戻した（base も整形されておらず、`electron/main` は lint の対象外）。
+
+## DR-MPS-8 原因（2 件目）：成功した Freshness の cycle が、heartbeat の期限切れで recovery に送られる（2026-11-05）
+
+- 症状: PD の評価の本測定（第 4 版）で、Scene を 18〜29 件まとめて足した直後の 10〜35 秒に、
+  `[workspace-lifecycle-diag] producer=freshness cause=E boundary=handoff state=recovery-required` が出る（4 回の切り替えのうち 4 回）。
+  そのたびに抽出が失敗し、2 回目の後は復帰しないまま run が止まった。
+- error の本文（dev 専用の診断の枝で取得。製品には出力先が無い）:
+  `NEX_C2ZC_SCHEDULER_LIVENESS_CYCLE_STALE: completed Incremental Freshness cycle exceeded its monotonic age bound before heartbeat registration`。
+- 機構: `run_incremental_freshness_cycle_with_liveness_capability_and_hold_and_lifecycle_control` は、cycle が返った時点で
+  `completed_at` を取る。その後の次の 3 つの合計が `MAX_SCHEDULER_LIVENESS_AGE`（5 s）を超えると、`record_live_scheduler_heartbeat` が拒む。
+  - connection epoch の読み取り（`with_conn`）
+  - `revalidate_narrative_workspace_after_cycle`
+  - heartbeat の project の読み取り（`with_conn`）
+
+  Scene の一括追加と抽出の commit が続くと、接続の待ちで 5 s を超える。
+- 不具合の本体: 拒否は正しい（古い cycle は liveness を名乗れない）。しかし native の scheduler が、その拒否を `?` で
+  cycle の失敗として返していた。そのため、cycle が commit 済みで authority も無傷なのに、retire と recovery に送っていた。
+- 再試行の上限（`MAX_ATTEMPTS_PER_BATCH`）の枯渇は原因ではなかった。本測定の DB では、Freshness の batch は全部 completed で、
+  attempt の失敗の記録も無い。
+
+## DR-MPS-9 修正：期限切れの liveness は、その cycle の heartbeat と cutover だけを見送る
+
+- 共有 crate: 期限切れを型 `SchedulerLivenessCycleStale` で返す。文言は従来と同じ。分類は DR-JF-3 と同じく型で行い、文字列では照合しない。
+- native（`run_narrative_freshness_cycle_body`）: この型だけを受け止める。その cycle では liveness を作らず、cutover も試みない。
+  retire も recovery もせず、通常の結果を返す。次の wake の cycle で、heartbeat と cutover をやり直す。
+  - それ以外の heartbeat の失敗は、従来どおり recovery に送る（DATABASE_MISMATCH、SCOPE_MISSING、registry の破損）。
+  - 見送った cycle は `cutoverNotReady` を出さない。cutover の後の workspace で、混むたびに保守の chain を起こさないためである。
+    cutover の前なら、次の cycle が通常の NOT_READY を出す。
+  - CI の hold の結果は、cutover を通っていないことを明示する必要があるので、`cutoverNotReady: true` のままにする。
+- 変えないもの:
+  - 5 s の上限と、古い cycle を拒む gate（`completed_cycle_capability_expires_before_a_late_heartbeat` はそのまま通る）。
+  - IPC、wire、DB の契約。
+  - 他の Freshness の失敗の扱い。
+- 信頼境界: 新しい送信先・保存範囲・契約・閾値の変更は無い。委任の根拠は U3（NIR-1 の lifecycle の技術判断）。
+- 試験:
+  - native の `freshness_scheduler_defers_stale_liveness_without_recovery`：post-cycle の hook で 6 s 待たせ、authority が外れず、
+    recovery の結果を返さず、`cutoverNotReady` も出さないことを確かめる。次の cycle が通常どおり NOT_READY に達することも確かめる。
+    分類を外す変異では、recovery の結果が返って落ちる。
+  - crate の `narrative_c2zc_liveness_binding` で、型で分類できることを確かめる。
+
+## DR-MPS-10 残る課題（この修正に含めない）
+
+- 2 回目の recovery が戻らない件: 本測定では 2 回目の recovery の後、DB 操作が
+  `workspace lifecycle has active owners or unacknowledged work` のまま止まった。診断の run（1 回だけ発生）では再現していない。
+  - この修正は引き金を消すが、復帰が詰まる機構は未解明のままである。
+  - 候補: 失敗した前景の Execution が non-Completed のまま残り、recovery の admit が NotAdmitted を返し続ける。
+  - 別の課題として扱う。
+- Freshness の error の本文が製品のどこにも残らない件: native に tracing の subscriber が無い。
+  値だけの診断（固定の `NEX_` コード）を足すかは、別に判断する。

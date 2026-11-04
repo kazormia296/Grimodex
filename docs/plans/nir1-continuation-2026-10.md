@@ -137,6 +137,7 @@ Session B のパケットで一覧として通知する委任判断（未記録�
 - SDEF PR-1（場面の Scope の既定〔案 B〕の Native と保存。2026-11-04）: DR-SDEF-1〜24（16〜24 は実装後の追記。記録先は [scope-default-decisions.md](nir1-lane-decisions/scope-default-decisions.md) と PR 本文）。U3 の委任ではなく、確認済み契約 `nir1-scene-scope-default-proposal/1#scope-storage-authority`（contracts `10d4a54e`、SHA-256 `fa9cc9c7…7da17ede`。確認台帳の 2026-11-04 補足〔SDEF/1〕）の範囲内の技術判断。
 - SDEF PR-2（場面の Scope の既定〔案 B〕の IPC と画面。2026-11-04）: DR-SDEF-25〜53（35〜41 は実装後の追記、42〜53 は独立レビューと確かめの反映。記録先は [scope-default-decisions.md](nir1-lane-decisions/scope-default-decisions.md) の「PR-2」の節と PR 本文）。PR-1 と同じ確認済み契約 `nir1-scene-scope-default-proposal/1#scope-storage-authority`（SHA-256 `fa9cc9c7…7da17ede`）の R12・R14・R16・R19 の画面と MD5 の IPC の実装で、U3 の委任ではない。
 - MPS（保守が cutover の前で止まる不具合の修正。2026-11-04）: DR-MPS-1〜7（6・7 は実装後の追記と独立レビューの反映。記録先は [maint-precutover-stall-decisions.md](nir1-lane-decisions/maint-precutover-stall-decisions.md) と PR 本文）。U3 の委任（lifecycle の技術判断）の範囲内。再発見の枯渇を記録し、Freshness の NOT_READY 由来の再点火だけを backoff（5 s×2^(k-1)、上限 60 s）付きで許す。閾値（再発見 3 回）・契約・Rust は変えない。begin の理由の wire 化は新しい契約なので入れていない（DR-MPS-5）。
+- MPS の 2 件目（2026-11-05）: DR-MPS-8〜10（記録先は [maint-precutover-stall-decisions.md](nir1-lane-decisions/maint-precutover-stall-decisions.md) と PR 本文）。U3 の委任の範囲内。成功した Freshness の cycle が heartbeat の期限（5 s）を過ぎたときは、その cycle の liveness と cutover だけを見送り、recovery に送らない。上限・gate・契約は変えない。2 回目の recovery が戻らない件と、error の本文が残らない件は別の課題として残す。
 
 
 ### 3.3. レーンの判断記録の置き場所
