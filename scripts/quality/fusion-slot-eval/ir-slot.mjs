@@ -43,6 +43,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { appendFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -618,7 +619,32 @@ export async function runIrSlot(options) {
       env,
       timeout: 60000,
     });
+    // 抽出の途中で workspace の authority が差し替わる件（試運転の位置 15）の発生源を追うため、
+    // main と renderer の出力のうち workspace／authority／recovery／restore／rollback の行だけを
+    // run の dir に残す（1 行 400 字まで）。測定の値には使わない。
+    const traceFile = path.join(output, "workspace-trace.log");
+    const TRACE_PATTERN = /workspace|authority|recovery|restore|rollback/i;
+    const traceLine = (source, line) => {
+      if (TRACE_PATTERN.test(line))
+        appendFileSync(
+          traceFile,
+          `[${new Date().toISOString()}] ${source} ${line.slice(0, 400)}\n`,
+        );
+    };
+    for (const [source, stream] of [
+      ["main:stdout", app.process().stdout],
+      ["main:stderr", app.process().stderr],
+    ]) {
+      let pending = "";
+      stream?.on("data", (chunk) => {
+        pending += chunk.toString();
+        const lines = pending.split("\n");
+        pending = lines.pop() ?? "";
+        for (const line of lines) traceLine(source, line);
+      });
+    }
     const page = await app.firstWindow();
+    page.on("console", (message) => traceLine("renderer", message.text()));
     await page.waitForFunction(
       () => window.fusionIrEvaluation?.ready === true,
       null,
