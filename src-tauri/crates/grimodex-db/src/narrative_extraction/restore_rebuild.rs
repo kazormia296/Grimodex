@@ -700,8 +700,48 @@ pub(crate) fn evaluate_owned_edges_from_db_in_tx_with_control(
     edges: &[DependencyEdge],
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Vec<EdgeObservation>> {
+    evaluate_owned_edges_with_reads(
+        conn,
+        project_id,
+        edges,
+        super::source_revision::SourceBatchReads::default(),
+        control,
+    )
+}
+
+/// [`evaluate_owned_edges_from_db_in_tx_with_control`] for a complete check
+/// that has just read the project's Chronicle eligibility roster in this same
+/// transaction (DR-CP4-V-5 (b)). `observed_chronicle_eligibility_digest` must
+/// be that read's digest for `project_id`, with no write between the read and
+/// this call; the eligibility Edge then compares against it instead of reading
+/// the whole roster a second time. Every other check is unchanged.
+pub(crate) fn evaluate_owned_edges_from_db_in_tx_with_observed_eligibility(
+    conn: &Connection,
+    project_id: &str,
+    edges: &[DependencyEdge],
+    observed_chronicle_eligibility_digest: String,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Vec<EdgeObservation>> {
+    evaluate_owned_edges_with_reads(
+        conn,
+        project_id,
+        edges,
+        super::source_revision::SourceBatchReads::with_chronicle_eligibility_digest(
+            observed_chronicle_eligibility_digest,
+        ),
+        control,
+    )
+}
+
+fn evaluate_owned_edges_with_reads(
+    conn: &Connection,
+    project_id: &str,
+    edges: &[DependencyEdge],
+    // Owned by value: the batch's reads end with this call (DR-CP4-V-5).
+    mut reads: super::source_revision::SourceBatchReads,
+    control: &mut dyn GraphWorkControl,
+) -> anyhow::Result<Vec<EdgeObservation>> {
     anyhow::ensure!(!conn.is_autocommit(), "Edge batch requires a transaction");
-    let mut scope_read = None;
     edges
         .iter()
         .map(|edge| {
@@ -716,7 +756,7 @@ pub(crate) fn evaluate_owned_edges_from_db_in_tx_with_control(
                 run_id,
                 source_kind,
                 &edge.source_object_identity,
-                &mut scope_read,
+                &mut reads,
                 control,
             )?;
             let state = ResolvedEdgeSourceState {

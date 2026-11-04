@@ -160,7 +160,8 @@ pub fn validation_terminated(
 /// in one place so every reader makes the same distinction from routine
 /// Source absence/staleness.
 pub(crate) fn is_validation_capacity_exceeded(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<ValidationTerminated>()
+    error
+        .downcast_ref::<ValidationTerminated>()
         .is_some_and(|error| error.reason == ValidationTerminationReason::CapacityExceeded)
 }
 
@@ -399,6 +400,35 @@ pub(crate) fn resolve_current_source_state_with_control(
     )
 }
 
+/// The reads one bounded, read-only edge batch shares (DR-CP4-V-5). The batch
+/// creates it empty (or with the roster digest its own complete check just
+/// observed in the same transaction) and drops it when it returns: nothing in
+/// it outlives the batch, crosses a write in the caller, or reaches another
+/// transaction, proof or Run binding.
+#[derive(Default)]
+pub(super) struct SourceBatchReads {
+    /// The batch's one project Scope read (authority and Scene bindings).
+    scope_read: Option<LiveProjectScopeRead>,
+    /// Sealed Run document bindings, once per (project, Run).
+    sealed_documents: super::scope_dependency_projection::SealedDocumentsMemo,
+    /// The Chronicle eligibility roster digest the caller read in this same
+    /// transaction for this batch's project (DR-CP4-V-5 (b)).
+    chronicle_eligibility_digest: Option<String>,
+}
+
+impl SourceBatchReads {
+    /// `digest` must be the result of
+    /// `nir1_chronicle_index::source::read_eligibility_source_with_control`
+    /// for the batch's project, read in the same transaction with no write
+    /// between that read and the batch.
+    pub(super) fn with_chronicle_eligibility_digest(digest: String) -> Self {
+        Self {
+            chronicle_eligibility_digest: Some(digest),
+            ..Self::default()
+        }
+    }
+}
+
 /// Only the bounded, read-only edge batch owns this temporary authority.
 /// Each versioned Scope Source still verifies its sealed Run/document binding.
 /// Do not retain this state between batches or across a write in the caller.
@@ -408,21 +438,27 @@ pub(super) fn resolve_current_source_state_in_batch_with_control(
     run_id: &str,
     source_kind: &str,
     source_key: &str,
-    scope_read: &mut Option<LiveProjectScopeRead>,
+    reads: &mut SourceBatchReads,
     control: &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
 ) -> anyhow::Result<CurrentSourceState> {
     anyhow::ensure!(!conn.is_autocommit(), "Source batch requires a transaction");
     control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+    let SourceBatchReads {
+        scope_read,
+        sealed_documents,
+        chronicle_eligibility_digest,
+    } = reads;
     let resolved = if source_kind == "scope-dependency-projection-v1" {
         (|| {
             let read = shared_scope_read(conn, project_id, scope_read)?;
             ensure_non_empty_token(
-                super::scope_dependency_projection::resolve_with_authority_in_tx(
+                super::scope_dependency_projection::resolve_with_authority_and_memo_in_tx(
                     conn,
                     project_id,
                     run_id,
                     source_key,
                     &read.authority,
+                    sealed_documents,
                 )?,
             )
         })()
@@ -436,6 +472,11 @@ pub(super) fn resolve_current_source_state_in_batch_with_control(
                 project_id, source_key, read,
             )?)
         })()
+    } else if let (true, Some(digest)) = (
+        source_kind == super::nir1_chronicle_index::SOURCE_KIND,
+        chronicle_eligibility_digest.as_deref(),
+    ) {
+        observed_chronicle_eligibility(project_id, source_key, digest, control)
     } else {
         resolve_source_revision_with_control(
             conn,
@@ -447,6 +488,30 @@ pub(super) fn resolve_current_source_state_in_batch_with_control(
         )
     };
     current_source_state_from_resolution(source_kind, resolved)
+}
+
+/// The Chronicle branch of [`resolve_source_revision_with_control`] with the
+/// roster digest already read in this transaction (DR-CP4-V-5 (b)). Only the
+/// roster read is shared: the owner check, the full-eligibility refusal and the
+/// exact project key check run for every edge, in the same order.
+fn observed_chronicle_eligibility(
+    project_id: &str,
+    source_key: &str,
+    digest: &str,
+    control: &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
+) -> anyhow::Result<CurrentSourceRevision> {
+    control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+    if !control.allows_full_eligibility() {
+        return Err(validation_terminated(
+            ValidationTerminationReason::ContextUnavailable,
+            "Chronicle eligibility requires a caller-owned validation context",
+        ));
+    }
+    anyhow::ensure!(
+        source_key == super::nir1_chronicle_index::source::source_key(project_id),
+        "NEX_SOURCE_KEY_INVALID: eligibility Source must belong to the exact project"
+    );
+    ensure_non_empty_token(digest.to_owned())
 }
 
 /// The batch's one project Scope read (authority and validated Scene
