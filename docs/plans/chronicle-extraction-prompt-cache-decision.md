@@ -20,15 +20,18 @@
   無視するので分割しない。それ以外は従来どおり単一の user message。
 - 分割するとき、prefix を `{role:"system"}` の message と `systemCacheSegments: [prefix]` で、残りを user message で渡す。
   chat と同じ仕組みで、Rust・IPC・契約の変更は無い。
-- prefix が 512 字未満なら分割しない（Anthropic の最小 512 token に届かず、cache されないのに role だけ変わるため）。
+- prefix が 512 字未満なら分割しない（Anthropic の最小 512 token に届かない見込みで、cache されないのに role だけ変わるため。字数は下限の目安で保証ではない）。
   structured repair の指示は短く、この条件で従来どおりになる。
+- 本番の observation は citation-id-v2 の契約（`CITATION_ID_OBSERVATION_CONTRACT`、定数）で、同じ builder を通る。
+  prefix は約 2,200 字で Scene・catalog を含まない（試験で固定）。structured repair は約 170 字の legacy でも
+  citation-id でも prefix が短く、分割しても Scene の内容は入らない。
 - cache の segment に入れないもの：Scene 本文・cluster ref・Observation 行・evidence catalog・repair の壊れた出力
   （毎回変わる）。出力形式（outputShape）も静的だが Context Set の後ろにあるため prefix cache の対象にできない。
   順序は変えない（変えると prompt の指示の変更になる）。
 - route の解決は `resolveChatAuditRoute`（transport が封じるのと同じ override > settings の優先順）を使う。解決の
   後から settings が変わると分割の有無と実 route がずれ得るが、結果は「cache が効かない」か「system と user に
   分かれる」だけで、送る文字列は変わらない。
-- `input.send`（試験・live eval の注入）の経路は従来のまま。
+- `input.send`（試験・live eval の注入）の経路は従来のまま（分割しない）。live eval では cache は働かない。
 
 ## 監査
 
