@@ -80,6 +80,11 @@ export const PRICE_ASSUMPTIONS = Object.freeze({
     source: "計画 §4 の calibration helper の値（推測。現行の単価は未確認）",
   }),
   // claude-opus-5-5 の Anthropic の公表の単価（2026-11-04 時点の資料）。
+  "claude-sonnet-5-5": Object.freeze({
+    inputUsdPerMillion: 2,
+    outputUsdPerMillion: 10,
+    source: "claude-sonnet-5-5 の公表の単価（cache の割引は数えない）",
+  }),
   "claude-opus-5-5": Object.freeze({
     inputUsdPerMillion: 4,
     outputUsdPerMillion: 20,
