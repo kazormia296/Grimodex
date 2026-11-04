@@ -71,7 +71,19 @@ impl Fixture {
             .collect()
     }
 
-    pub fn outcome(&self, document: ChronicleRetrievalDocument, skip: bool) -> NirEmbeddedDocument {
+    /// The five-event embedding audit of `document` (`skip`: the token-limit
+    /// shape), with the bindings it names.
+    pub fn outcome_audit(
+        &self,
+        document: &ChronicleRetrievalDocument,
+        skip: bool,
+    ) -> (
+        Vec<AppendAiAuditEvent>,
+        String,
+        String,
+        NirEmbeddingIdentity,
+        Vec<u8>,
+    ) {
         let execution_id = uuid::Uuid::new_v4().to_string();
         let operation_id = uuid::Uuid::new_v4().to_string();
         let identity = NirEmbeddingIdentity {
@@ -133,6 +145,12 @@ impl Fixture {
                 event("execution.succeeded",json!({"modelDispatched":true,"localPipelineCompleted":true,"onnxResultObserved":true})),
             ]);
         }
+        (events, execution_id, operation_id, identity, embedding)
+    }
+
+    pub fn outcome(&self, document: ChronicleRetrievalDocument, skip: bool) -> NirEmbeddedDocument {
+        let (events, execution_id, operation_id, identity, embedding) =
+            self.outcome_audit(&document, skip);
         self.db
             .append_ai_audit_events(self.project(), &events)
             .expect("normal durable audit append");

@@ -145,6 +145,9 @@ fn nir1_premise_generic_audit_append_writes_only_audit_rows() {
         })
         .expect("append");
     assert_eq!(result.expect("generic append").inserted_count, 1);
+    // The write authorizer does not report SQLite's own AUTOINCREMENT write
+    // to `sqlite_sequence`; that table is covered by the read-side premise
+    // tests (the complete check, the status read and qualify never read it).
     assert_eq!(
         written,
         BTreeSet::from(["ai_audit_events".to_owned()]),
@@ -171,10 +174,16 @@ fn nir1_premise_complete_check_and_query_context_never_read_audit_rows() {
         })
         .expect("complete check");
     assert!(context.is_some(), "the complete check accepts the proof");
-    assert!(
-        read.contains("narrative_proposals") && read.contains("narrative_dependency_edges"),
-        "the recorder saw the complete check: {read:?}"
-    );
+    // The recorder saw the complete check's branches: the roster, the edges,
+    // the Scope authority (tree) and the sealed Run corpus.
+    for table in [
+        "narrative_proposals",
+        "narrative_dependency_edges",
+        "tree_nodes",
+        "narrative_extraction_artifacts",
+    ] {
+        assert!(read.contains(table), "{table} not read: {read:?}");
+    }
     for audit in ["ai_audit_events", "sqlite_sequence"] {
         assert!(
             !read.contains(audit),
@@ -517,4 +526,175 @@ fn nir1_status_read_keeps_no_context_in_a_write_transaction() {
         .lock()
         .expect("context cache")
         .is_empty());
+}
+
+/// Install a write recorder on the Database's connection while `body` runs
+/// through the Database API (which takes the connection itself).
+fn recording_writes<T>(db: &Database, body: impl FnOnce() -> T) -> (T, BTreeSet<String>) {
+    let seen = Arc::new(Mutex::new(BTreeSet::new()));
+    let sink = Arc::clone(&seen);
+    db.with_conn(|conn| {
+        conn.flush_prepared_statement_cache();
+        conn.authorizer(Some(move |context: AuthContext<'_>| {
+            if let AuthAction::Insert { table_name }
+            | AuthAction::Update { table_name, .. }
+            | AuthAction::Delete { table_name } = context.action
+            {
+                sink.lock().expect("tables").insert(table_name.to_owned());
+            }
+            Authorization::Allow
+        }))?;
+        Ok(())
+    })
+    .expect("install recorder");
+    let value = body();
+    db.with_conn(|conn| {
+        conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+        conn.flush_prepared_statement_cache();
+        Ok(())
+    })
+    .expect("remove recorder");
+    let tables = seen.lock().expect("tables").clone();
+    (value, tables)
+}
+
+#[test]
+fn nir1_premise_every_audit_append_shape_writes_only_audit_rows() {
+    // Appends need no publication; the build plan gives the documents.
+    let f = Fixture::new();
+    let (_, docs) = f.prepare();
+    let doc = docs.into_iter().next().expect("a document");
+    let only_audit = BTreeSet::from(["ai_audit_events".to_owned()]);
+    // The Fixture's five-event embedding audit through the Database API.
+    let (_, written) = recording_writes(&f.db, || f.outcome(doc.clone(), false));
+    assert_eq!(written, only_audit, "Fixture outcome()");
+    for skip in [false, true] {
+        // The generic append (connection default durability).
+        let (events, ..) = f.outcome_audit(&doc, skip);
+        let (result, written) = recording_writes(&f.db, || {
+            f.db.append_ai_audit_events_for_scope(Some(f.project()), &events)
+        });
+        assert_eq!(result.expect("generic").inserted_count, events.len());
+        assert_eq!(written, only_audit, "generic append, skip {skip}");
+        // The external dispatch append: with request.dispatched it commits
+        // power-loss durable (PRAGMA synchronous around the transaction).
+        let (events, ..) = f.outcome_audit(&doc, skip);
+        assert_eq!(
+            events.iter().any(|e| e.event_type == "request.dispatched"),
+            !skip
+        );
+        let (result, written) = recording_writes(&f.db, || {
+            f.db.append_external_ai_audit_events_for_scope(Some(f.project()), &events)
+        });
+        assert_eq!(result.expect("external").inserted_count, events.len());
+        assert_eq!(written, only_audit, "external append, skip {skip}");
+    }
+}
+
+#[test]
+fn nir1_premise_whole_qualify_never_reads_audit_rows() {
+    let f = published();
+    crate::ai_audit::append_ai_audit_events_for_scope(
+        &f.db.lock().expect("conn"),
+        Some(f.project()),
+        &[audit_event()],
+    )
+    .expect("an audit row exists");
+    let snapshot = snapshot(&f);
+    forget(&snapshot);
+    let (qualified, read) =
+        f.db.with_read_transaction(|conn| {
+            Ok(recording_tables(conn, true, || {
+                qualify_chronicle_index_snapshot(conn, &f.runtime, &snapshot)
+            }))
+        })
+        .expect("qualify");
+    assert!(matches!(
+        qualified.expect("qualify"),
+        NirQualifiedRead::Qualified(_)
+    ));
+    for table in [
+        "narrative_proposals",
+        "tree_nodes",
+        "narrative_extraction_artifacts",
+    ] {
+        assert!(read.contains(table), "{table} not read: {read:?}");
+    }
+    for audit in ["ai_audit_events", "sqlite_sequence"] {
+        assert!(!read.contains(audit), "{audit} read by qualify: {read:?}");
+    }
+}
+
+#[test]
+fn nir1_append_rolled_back_at_commit_is_not_an_audit_only_commit() {
+    let f = published();
+    // A deferred foreign key violated by a temp trigger on every audit row:
+    // the append body succeeds (both states are read) and COMMIT fails.
+    write(
+        &f,
+        "CREATE TEMP TABLE inv_parent (id INTEGER PRIMARY KEY);
+         CREATE TEMP TABLE inv_child (parent INTEGER REFERENCES inv_parent(id)
+             DEFERRABLE INITIALLY DEFERRED);
+         CREATE TEMP TRIGGER inv_fail_commit AFTER INSERT ON main.ai_audit_events
+         BEGIN INSERT INTO inv_child VALUES (999); END;",
+    );
+    let (snapshot, first) = validated(&f);
+    let error =
+        f.db.append_ai_audit_events_for_scope(Some(f.project()), &[audit_event()])
+            .expect_err("COMMIT fails on the deferred foreign key");
+    assert!(error.to_string().contains("FOREIGN KEY"), "{error:#}");
+    let (after, reads) = read(&f, &snapshot);
+    assert!(after.is_some() && !same(&first, &after));
+    assert!(
+        reads > 0,
+        "an append that did not commit is never inherited"
+    );
+}
+
+#[test]
+fn nir1_audit_only_inheritance_never_covers_a_user_version_change() {
+    let f = published();
+    let (snapshot, first) = validated(&f);
+    append(&f);
+    let version: i64 =
+        f.db.with_conn(|conn| Ok(conn.pragma_query_value(None, "user_version", |r| r.get(0))?))
+            .expect("user_version");
+    write(&f, &format!("PRAGMA user_version={}", version + 1));
+    let (after, reads) = read(&f, &snapshot);
+    assert!(
+        !(reads == 0 && same(&first, &after)),
+        "a user_version change is never inherited"
+    );
+}
+
+#[test]
+fn nir1_audit_only_states_keep_their_bounds() {
+    use super::super::read_identity::{state_for_test as state, AuditOnlyStates};
+    // One connection's list keeps its last `max_states` states.
+    let mut states = AuditOnlyStates::new(4, 3);
+    for changes in 0..5 {
+        states.record(state("c", changes), state("c", changes + 1));
+    }
+    assert!(states.joined(&state("c", 3), &state("c", 5)));
+    assert!(!states.joined(&state("c", 2), &state("c", 5)), "pushed out");
+    assert!(
+        !states.joined(&state("c", 3), &state("c", 4)),
+        "not the last"
+    );
+    // Another write between appends starts the list again.
+    states.record(state("c", 7), state("c", 8));
+    assert!(!states.joined(&state("c", 5), &state("c", 8)));
+    assert!(states.joined(&state("c", 7), &state("c", 8)));
+    // Connections beyond `max_connections` push out the least recently used.
+    let mut states = AuditOnlyStates::new(2, 3);
+    states.record(state("a", 0), state("a", 1));
+    states.record(state("b", 0), state("b", 1));
+    states.record(state("a", 1), state("a", 2)); // `a` used again
+    states.record(state("c", 0), state("c", 1)); // pushes out `b`
+    assert!(states.joined(&state("a", 0), &state("a", 2)));
+    assert!(!states.joined(&state("b", 0), &state("b", 1)), "pushed out");
+    assert!(states.joined(&state("c", 0), &state("c", 1)));
+    // States of different connections are never joined.
+    states.record(state("a", 2), state("d", 3));
+    assert!(!states.joined(&state("a", 2), &state("d", 3)));
 }
