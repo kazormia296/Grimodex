@@ -2,6 +2,10 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockNarrativeAiTask } from "./narrativeAiTaskGuard";
+import {
+  buildChroniclePromptRequest,
+  resolveChroniclePromptRoute,
+} from "./chroniclePromptCache";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { digestStableJson } from "@/features/narrative-extraction/source/digest";
@@ -531,6 +535,10 @@ export async function runEventSynthesisTask(
         },
       }
     : baseAuditContext;
+  const promptRequest = buildChroniclePromptRequest(
+    promptArtifact,
+    input.send ? null : await resolveChroniclePromptRoute(ov),
+  );
   const response = input.send
     ? await input.send([{ role: "user", content: prompt }], {
         ...auditContext,
@@ -539,13 +547,13 @@ export async function runEventSynthesisTask(
           : {}),
       })
     : await sendChatMessageWithThinking(
-        [{ role: "user", content: prompt }],
+        promptRequest.messages,
         {
           ...auditContext,
           pathId: "narrative_event_synthesize",
         },
         undefined,
-        undefined,
+        promptRequest.systemCacheSegments,
         ov.apiVariant,
         undefined,
         ov.model,

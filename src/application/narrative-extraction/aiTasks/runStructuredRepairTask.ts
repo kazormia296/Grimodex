@@ -2,6 +2,11 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockNarrativeAiTask } from "./narrativeAiTaskGuard";
+import {
+  buildChroniclePromptRequest,
+  resolveChroniclePromptRoute,
+  type ChroniclePromptRequest,
+} from "./chroniclePromptCache";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import type { AiAuditJsonObject } from "@/features/ai-audit/types";
@@ -498,6 +503,12 @@ export async function runStructuredRepairTask(
           },
         }
       : baseAuditContext;
+  const promptRequest: ChroniclePromptRequest = promptArtifact
+    ? buildChroniclePromptRequest(
+        promptArtifact,
+        input.send ? null : await resolveChroniclePromptRoute(ov),
+      )
+    : { messages: [{ role: "user", content: prompt }] };
   const response = input.send
     ? await input.send([{ role: "user", content: prompt }], {
         ...auditContext,
@@ -506,13 +517,13 @@ export async function runStructuredRepairTask(
           : {}),
       })
     : await sendChatMessageWithThinking(
-        [{ role: "user", content: prompt }],
+        promptRequest.messages,
         {
           ...auditContext,
           pathId: "narrative_structured_repair",
         },
         undefined,
-        undefined,
+        promptRequest.systemCacheSegments,
         ov.apiVariant,
         undefined,
         ov.model,
