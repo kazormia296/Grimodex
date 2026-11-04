@@ -1071,15 +1071,20 @@ fn is_ainoverist_v1(params: &ChatParams<'_>) -> bool {
 /// OpenRouter 経由でも OpenAI o系 / gpt-5系などの reasoning モデルは hidden
 /// reasoning トークンが `max_tokens` に課金されるため、4096 では content が空
 /// (finish_reason:length)になりうる。該当モデルを検出して予算に余裕を持たせる
-/// (OpenAI 直叩きの 32k 余裕と同根)。`gpt-5-chat` は非 reasoning なので除外する。
+/// (OpenAI 直叩きの 32k 余裕と同根)。gpt は世代の数が 5 以上を reasoning とみなす
+/// (`gpt-6-luna` など。`gpt-5` だけを見ていた頃は 4096 で JSON が途中で切れた)。
+/// `gpt-N-chat` は非 reasoning なので除外する。
 pub(crate) fn is_openrouter_reasoning_model(model: &str) -> bool {
     // provider プレフィックス(`openai/` `deepseek/` 等)を剥がして素のモデル名で判定。
     let m = model.rsplit('/').next().unwrap_or(model);
-    if m.starts_with("gpt-5-chat") {
-        return false;
+    if let Some(rest) = m.strip_prefix("gpt-") {
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 {
+            let generation: u32 = rest[..digits].parse().unwrap_or(0);
+            return generation >= 5 && !rest[digits..].starts_with("-chat");
+        }
     }
-    m.starts_with("gpt-5")
-        || m.starts_with("o1")
+    m.starts_with("o1")
         || m.starts_with("o3")
         || m.starts_with("o4")
         || m.starts_with("deepseek-r1")
@@ -6517,6 +6522,10 @@ mod tests {
             "openai/gpt-5-pro",
             "gpt-5",
             "openai/gpt-5-2025-08-01", // 日付サフィックスでも検出
+            "openai/gpt-5.1",
+            "openai/gpt-6-luna", // 次の世代も検出(4096 で JSON が切れた)
+            "gpt-6",
+            "openai/gpt-7-mini",
             "openai/o1",
             "openai/o1-mini",
             "openai/o3-mini",
@@ -6530,7 +6539,9 @@ mod tests {
         for m in [
             "openai/gpt-5-chat",
             "gpt-5-chat",
+            "openai/gpt-6-chat",
             "openai/gpt-4o-mini",
+            "openai/gpt-4.1",
             "openai/gpt-4o",
             "anthropic/claude-opus-4-8",
             "meta-llama/llama-3.1-70b-instruct",
@@ -6594,6 +6605,18 @@ mod tests {
                 &settings,
                 &AiProvider::OpenRouter,
                 "deepseek/deepseek-r1",
+                None,
+                None,
+                None
+            ),
+            32_000
+        );
+        // 次の世代の gpt も 32k(gpt-6-luna は 4096 で JSON が途中で切れた)。
+        assert_eq!(
+            mt(
+                &settings,
+                &AiProvider::OpenRouter,
+                "openai/gpt-6-luna",
                 None,
                 None,
                 None
