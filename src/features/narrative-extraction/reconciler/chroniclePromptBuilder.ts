@@ -57,6 +57,9 @@ export interface ChroniclePromptDigests {
   readonly finalRequestDigest: Sha256Digest;
 }
 
+/** Heading that opens the dynamic Context Set section of every Chronicle prompt. */
+const CHRONICLE_CONTEXT_SET_HEADING = "# Context Set (chronicle.prompt/1)";
+
 const CONTEXT_EXPOSURES = new Set<ContextSetEntry["exposure"]>([
   "model-visible",
   "deterministic-stage",
@@ -246,7 +249,7 @@ export function buildChroniclePromptArtifact(
   const content = [
     input.componentContract.instruction,
     "",
-    "# Context Set (chronicle.prompt/1)",
+    CHRONICLE_CONTEXT_SET_HEADING,
     renderModelContext(contextSet, modelInputs),
     "",
     "# Output (JSON only)",
@@ -290,4 +293,34 @@ export async function buildChroniclePromptDigests(
     componentContractDigest,
     finalRequestDigest,
   };
+}
+
+export interface ChroniclePromptCacheSplit {
+  /**
+   * Request-invariant leading text: the component contract's static
+   * instruction and the Context Set heading. It never contains a Context Set
+   * value, so it is byte-identical across calls of one stage contract.
+   */
+  readonly staticPrefix: string;
+  /** Everything after the prefix: Context Set values and the output shape. */
+  readonly dynamicRest: string;
+}
+
+/**
+ * Split an already-built prompt into the cacheable static prefix and the
+ * remainder, without changing a single character: `staticPrefix + dynamicRest`
+ * is always exactly `artifact.messages[0].content`, so every digest (which
+ * covers the unsplit message) stays valid. Returns null when the content does
+ * not have the builder's shape, so callers fail closed to the unsplit prompt.
+ *
+ * The output shape is also static, but it follows the dynamic Context Set, so
+ * a prefix cache cannot cover it and it stays in `dynamicRest`.
+ */
+export function splitChroniclePromptForCache(
+  artifact: ChroniclePromptArtifact,
+): ChroniclePromptCacheSplit | null {
+  const content = artifact.messages[0].content;
+  const staticPrefix = `${artifact.componentContract.instruction}\n\n${CHRONICLE_CONTEXT_SET_HEADING}\n`;
+  if (!content.startsWith(staticPrefix)) return null;
+  return { staticPrefix, dynamicRest: content.slice(staticPrefix.length) };
 }

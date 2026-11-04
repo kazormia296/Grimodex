@@ -87,6 +87,8 @@ export interface ChatResponsePayload {
   stopReason: string;
   inputTokens?: number;
   outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 }
 
 function normalizeSingleShotResponse(value: unknown): ChatResponsePayload {
@@ -161,7 +163,13 @@ function normalizeSingleShotResponse(value: unknown): ChatResponsePayload {
   if (typeof value.stopReason !== "string") {
     throw new TypeError("Single-shot response stopReason is invalid");
   }
-  const optionalToken = (key: "inputTokens" | "outputTokens") => {
+  const optionalToken = (
+    key:
+      | "inputTokens"
+      | "outputTokens"
+      | "cacheReadTokens"
+      | "cacheWriteTokens",
+  ) => {
     const raw = value[key];
     if (raw === undefined || raw === null) return undefined;
     if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) {
@@ -171,11 +179,15 @@ function normalizeSingleShotResponse(value: unknown): ChatResponsePayload {
   };
   const inputTokens = optionalToken("inputTokens");
   const outputTokens = optionalToken("outputTokens");
+  const cacheReadTokens = optionalToken("cacheReadTokens");
+  const cacheWriteTokens = optionalToken("cacheWriteTokens");
   return {
     blocks,
     stopReason: value.stopReason,
     ...(inputTokens === undefined ? {} : { inputTokens }),
     ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+    ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
   };
 }
 
@@ -995,6 +1007,8 @@ export async function invokeSingleShotChat(
       usage: {
         inputTokens: normalizedResponse.inputTokens ?? null,
         outputTokens: normalizedResponse.outputTokens ?? null,
+        cacheReadTokens: normalizedResponse.cacheReadTokens ?? null,
+        cacheWriteTokens: normalizedResponse.cacheWriteTokens ?? null,
         stopReason: normalizedResponse.stopReason,
       },
       metadata: completionMetadata,

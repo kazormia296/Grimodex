@@ -2,6 +2,10 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockNarrativeAiTask } from "./narrativeAiTaskGuard";
+import {
+  buildChroniclePromptRequest,
+  resolveChroniclePromptRoute,
+} from "./chroniclePromptCache";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { digestStableJson } from "@/features/narrative-extraction/source/digest";
@@ -56,7 +60,11 @@ export type EventSynthesisSend = (
 ) => Promise<
   Pick<
     Awaited<ReturnType<typeof sendChatMessageWithThinking>>,
-    "text" | "inputTokens" | "outputTokens"
+    | "text"
+    | "inputTokens"
+    | "outputTokens"
+    | "cacheReadTokens"
+    | "cacheWriteTokens"
   >
 >;
 
@@ -185,6 +193,8 @@ async function recordEventStageAudit(
     readonly provider: string | null | undefined;
     readonly tokensIn?: number;
     readonly tokensOut?: number;
+    readonly cacheReadTokens?: number;
+    readonly cacheWriteTokens?: number;
   },
   modelExecutionBinding?: StageModelExecutionBindingV1,
   onStageReceipt?: RunEventSynthesisTaskInput["onStageReceipt"],
@@ -223,6 +233,8 @@ async function recordEventStageAudit(
     provider: usage.provider,
     tokensIn: usage.tokensIn,
     tokensOut: usage.tokensOut,
+    cacheReadTokens: usage.cacheReadTokens,
+    cacheWriteTokens: usage.cacheWriteTokens,
     projectId: input.stageExecution.projectId,
     metadata: {
       pathId: NARRATIVE_EVENT_SYNTHESIZE_PATH,
@@ -531,6 +543,10 @@ export async function runEventSynthesisTask(
         },
       }
     : baseAuditContext;
+  const promptRequest = buildChroniclePromptRequest(
+    promptArtifact,
+    input.send ? null : await resolveChroniclePromptRoute(ov),
+  );
   const response = input.send
     ? await input.send([{ role: "user", content: prompt }], {
         ...auditContext,
@@ -539,13 +555,13 @@ export async function runEventSynthesisTask(
           : {}),
       })
     : await sendChatMessageWithThinking(
-        [{ role: "user", content: prompt }],
+        promptRequest.messages,
         {
           ...auditContext,
           pathId: "narrative_event_synthesize",
         },
         undefined,
-        undefined,
+        promptRequest.systemCacheSegments,
         ov.apiVariant,
         undefined,
         ov.model,
@@ -559,6 +575,8 @@ export async function runEventSynthesisTask(
       provider: ov.provider,
       tokensIn: response.inputTokens,
       tokensOut: response.outputTokens,
+      cacheReadTokens: response.cacheReadTokens,
+      cacheWriteTokens: response.cacheWriteTokens,
       projectId,
       metadata: { pathId: NARRATIVE_EVENT_SYNTHESIZE_PATH },
     });
@@ -578,6 +596,8 @@ export async function runEventSynthesisTask(
           provider: ov.provider,
           tokensIn: response.inputTokens,
           tokensOut: response.outputTokens,
+          cacheReadTokens: response.cacheReadTokens,
+          cacheWriteTokens: response.cacheWriteTokens,
         },
         sealedModelBinding,
         emitStageReceipt,
@@ -622,6 +642,8 @@ export async function runEventSynthesisTask(
           provider: ov.provider,
           tokensIn: response.inputTokens,
           tokensOut: response.outputTokens,
+          cacheReadTokens: response.cacheReadTokens,
+          cacheWriteTokens: response.cacheWriteTokens,
         },
         sealedModelBinding,
         emitStageReceipt,
@@ -672,6 +694,8 @@ export async function runEventSynthesisTask(
           provider: ov.provider,
           tokensIn: response.inputTokens,
           tokensOut: response.outputTokens,
+          cacheReadTokens: response.cacheReadTokens,
+          cacheWriteTokens: response.cacheWriteTokens,
         },
         sealedModelBinding,
         emitStageReceipt,
@@ -695,6 +719,8 @@ export async function runEventSynthesisTask(
         provider: ov.provider,
         tokensIn: response.inputTokens,
         tokensOut: response.outputTokens,
+        cacheReadTokens: response.cacheReadTokens,
+        cacheWriteTokens: response.cacheWriteTokens,
       },
       sealedModelBinding,
       emitStageReceipt,

@@ -2,6 +2,11 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockNarrativeAiTask } from "./narrativeAiTaskGuard";
+import {
+  buildChroniclePromptRequest,
+  resolveChroniclePromptRoute,
+  type ChroniclePromptRequest,
+} from "./chroniclePromptCache";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import type { AiAuditJsonObject } from "@/features/ai-audit/types";
@@ -92,7 +97,11 @@ export type StructuredRepairSend = (
 ) => Promise<
   Pick<
     Awaited<ReturnType<typeof sendChatMessageWithThinking>>,
-    "text" | "inputTokens" | "outputTokens"
+    | "text"
+    | "inputTokens"
+    | "outputTokens"
+    | "cacheReadTokens"
+    | "cacheWriteTokens"
   >
 >;
 
@@ -271,6 +280,8 @@ async function recordStructuredRepairStageAudit(
     readonly provider: string | null | undefined;
     readonly tokensIn?: number;
     readonly tokensOut?: number;
+    readonly cacheReadTokens?: number;
+    readonly cacheWriteTokens?: number;
   },
   modelExecutionBinding?: StageModelExecutionBindingV1,
   onStageReceipt?: RunStructuredRepairTaskInput["onStageReceipt"],
@@ -308,6 +319,8 @@ async function recordStructuredRepairStageAudit(
     provider: usage.provider,
     tokensIn: usage.tokensIn,
     tokensOut: usage.tokensOut,
+    cacheReadTokens: usage.cacheReadTokens,
+    cacheWriteTokens: usage.cacheWriteTokens,
     projectId: input.stageExecution.projectId,
     metadata: {
       pathId: NARRATIVE_STRUCTURED_REPAIR_PATH,
@@ -498,6 +511,12 @@ export async function runStructuredRepairTask(
           },
         }
       : baseAuditContext;
+  const promptRequest: ChroniclePromptRequest = promptArtifact
+    ? buildChroniclePromptRequest(
+        promptArtifact,
+        input.send ? null : await resolveChroniclePromptRoute(ov),
+      )
+    : { messages: [{ role: "user", content: prompt }] };
   const response = input.send
     ? await input.send([{ role: "user", content: prompt }], {
         ...auditContext,
@@ -506,13 +525,13 @@ export async function runStructuredRepairTask(
           : {}),
       })
     : await sendChatMessageWithThinking(
-        [{ role: "user", content: prompt }],
+        promptRequest.messages,
         {
           ...auditContext,
           pathId: "narrative_structured_repair",
         },
         undefined,
-        undefined,
+        promptRequest.systemCacheSegments,
         ov.apiVariant,
         undefined,
         ov.model,
@@ -539,6 +558,8 @@ export async function runStructuredRepairTask(
         provider: ov.provider,
         tokensIn: response.inputTokens,
         tokensOut: response.outputTokens,
+        cacheReadTokens: response.cacheReadTokens,
+        cacheWriteTokens: response.cacheWriteTokens,
       },
       sealedModelBinding,
       emitStageReceipt,
@@ -555,6 +576,8 @@ export async function runStructuredRepairTask(
       provider: ov.provider,
       tokensIn: response.inputTokens,
       tokensOut: response.outputTokens,
+      cacheReadTokens: response.cacheReadTokens,
+      cacheWriteTokens: response.cacheWriteTokens,
       projectId,
       metadata: {
         pathId: NARRATIVE_STRUCTURED_REPAIR_PATH,

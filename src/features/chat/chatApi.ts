@@ -248,6 +248,9 @@ export interface ChatMessageResult {
   }>;
   inputTokens?: number;
   outputTokens?: number;
+  /** Prompt cache reads/writes when the provider reported them. */
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 }
 
 /**
@@ -322,6 +325,12 @@ export async function sendChatMessageWithThinking(
     thinkingBlocks,
     inputTokens: response.inputTokens,
     outputTokens: response.outputTokens,
+    ...(response.cacheReadTokens === undefined
+      ? {}
+      : { cacheReadTokens: response.cacheReadTokens }),
+    ...(response.cacheWriteTokens === undefined
+      ? {}
+      : { cacheWriteTokens: response.cacheWriteTokens }),
   };
 }
 
