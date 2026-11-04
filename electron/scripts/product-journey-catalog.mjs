@@ -449,6 +449,7 @@ export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS = Object.freeze([
   "electron/main/narrativeMaintenanceDelivery.test.ts",
   "electron/main/narrativeMaintenanceTriggers.ts",
   "electron/main/narrativeMaintenanceTriggers.test.ts",
+  "electron/main/narrativeMaintenanceTriggers.stall.test.ts",
 ]);
 export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_GLOB =
   "electron/main/narrativeMaintenance*.ts";
