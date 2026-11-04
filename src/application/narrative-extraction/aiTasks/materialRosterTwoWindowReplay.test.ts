@@ -63,7 +63,7 @@ it("matches every independent persisted two-window request with production TS bu
         clusterRef: outputs[0].clusterRef,
         observations: outputs[0].rawObservations.observations,
       });
-      // Sealed under Event Synthesis v2, which stays accepted beside v3.
+      // Sealed under Event Synthesis v2, which stays accepted beside v3 and v4.
       const frozen = await frozenContractForDigest(
         execution.stageId,
         receipt.componentContractDigest,

@@ -91,6 +91,7 @@ fn static_classification_is_content_version_and_digest_bound() {
         ("narrative_observation_extract", OBSERVATION_DIGEST, "5"),
         ("narrative_event_synthesize", SYNTHESIS_V2_DIGEST, "2"),
         ("narrative_event_synthesize", SYNTHESIS_V3_DIGEST, "3"),
+        ("narrative_event_synthesize", SYNTHESIS_V4_DIGEST, "4"),
     ];
     for (stage, digest, version) in stages {
         let reviewed = contract(stage, digest);
@@ -106,17 +107,31 @@ fn static_classification_is_content_version_and_digest_bound() {
             assert!(!known_static_contract(stage, digest, &changed).expect("digest"));
         }
     }
-    // v2 bytes never classify under the v3 digest, nor v3 bytes under v2.
-    let v2 = contract("narrative_event_synthesize", SYNTHESIS_V2_DIGEST);
-    let v3 = contract("narrative_event_synthesize", SYNTHESIS_V3_DIGEST);
-    assert!(
-        !known_static_contract("narrative_event_synthesize", SYNTHESIS_V3_DIGEST, &v2)
-            .expect("digest")
-    );
-    assert!(
-        !known_static_contract("narrative_event_synthesize", SYNTHESIS_V2_DIGEST, &v3)
-            .expect("digest")
-    );
+    // Each Event Synthesis version's bytes classify only under its own digest.
+    let synthesis = [
+        (
+            SYNTHESIS_V2_DIGEST,
+            contract("narrative_event_synthesize", SYNTHESIS_V2_DIGEST),
+        ),
+        (
+            SYNTHESIS_V3_DIGEST,
+            contract("narrative_event_synthesize", SYNTHESIS_V3_DIGEST),
+        ),
+        (
+            SYNTHESIS_V4_DIGEST,
+            contract("narrative_event_synthesize", SYNTHESIS_V4_DIGEST),
+        ),
+    ];
+    for (digest, _) in &synthesis {
+        for (other_digest, other_bytes) in &synthesis {
+            if digest != other_digest {
+                assert!(
+                    !known_static_contract("narrative_event_synthesize", digest, other_bytes)
+                        .expect("digest")
+                );
+            }
+        }
+    }
     assert!(
         accepted_static_contract("narrative_event_synthesize", "sha256:unknown")
             .expect("lookup")

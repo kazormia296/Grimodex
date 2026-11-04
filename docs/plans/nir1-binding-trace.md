@@ -143,6 +143,20 @@ request seals over the same synthesis inputs, and Native reproduces them. It is
 a request-seal fixture, not a new journey receipt; no v3 cold journey golden
 was regenerated.
 
+Event Synthesis component contract 4 (2026-11-04) tells the model to copy the
+body value of the `event-cluster` heading as `clusterRef` (no `event-cluster:`
+or `cluster:` prefix) and lists the four `significance` labels; the output
+example placeholder is `<cluster-ref-from-context>`. The Context Set
+declarations are unchanged, so the context-set digests are the same. The v3
+bytes move to `superseded-contracts.json` beside v2 and Native selects the
+frozen contract whose digest matches each receipt, so v2/v3-sealed runs still
+replay. `production-golden-v4-synthesis-requests.json` pins the live TS v4
+request seals over the same synthesis inputs (request seals only; no v4 cold
+journey golden was regenerated). The task also reports a response whose
+`observationRefs` do not all resolve to the cluster's localIds as invalid
+(Native rejects such a terminal output), so a thinned-out repair is never an
+apparent success.
+
 The same four corrupt-copy probes assert specific failures: removing a required
 receipt or changing its saved digest fails the original revision receipt roster;
 removing an unselected visible catalog span fails snapshot/catalog payload
