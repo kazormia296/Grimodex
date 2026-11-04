@@ -1020,7 +1020,8 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
       }
       // それ以外は Rust 側 fetch_models に委譲する。OpenRouter / Ollama は
       // capability 登録と送信前 refresh と同じ provider-scoped fetch を共有する。
-      // (Anthropic / AiNovelist は静的リスト、OpenAI 互換は active endpoint を叩く)
+      // (Anthropic は GET /v1/models（キー未登録・失敗時は固定の予備）、AiNovelist は静的リスト、
+      // OpenAI 互換は active endpoint を叩く。Anthropic は動的 caps に登録しない）
       const models = isDynamicCapsProvider(requestedProvider)
         ? await refreshDynamicCapsForProvider(requestedProvider, {
             force: true,
