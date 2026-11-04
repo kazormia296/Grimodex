@@ -97,6 +97,8 @@ import { planExtractionWindows } from "@/features/chronicle/extraction/windowPla
 import { rekeyObservationsForWindow } from "@/features/chronicle/extraction/windowExtractor";
 import { loadInlineJsonArtifact } from "./artifactRepository";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
+import type { ResolvedEvidenceAnchor } from "@/features/narrative-extraction/evidence/types";
+import { chronicleEvidenceTupleKey } from "@/features/chronicle/extraction/evidenceTupleKey";
 import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
 import type { ExistingChronicleEventCatalogRecord } from "@/features/chronicle/extraction/existingEventMatcher";
@@ -1287,6 +1289,199 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         ],
       }),
     );
+  });
+
+  it("DR-NAC-5: 観測の evidence は (sourceRef, quote) の一致で evidence.resolved@1 の anchor に辿れる。解決できなかった evidence は痕跡を残さない", async () => {
+    const quoteOne = "教会の尖塔が砲撃で崩れ落ちた。";
+    const quoteMissing = "この文は本文に存在しない。";
+    const built = await buildNarrativeCorpusSnapshot({
+      snapshotId: "snapshot-coord-trace",
+      language: "ja",
+      origin: { kind: "grimodex-project", projectId: "project-a" },
+      documents: [
+        {
+          sourceKey: "project:scene:one",
+          parentSourceKey: null,
+          title: "籠城",
+          orderIndex: 0,
+          proseMirrorJson: prose(quoteOne),
+          origin: {
+            kind: "project-node",
+            projectId: "project-a",
+            nodeId: "scene-one",
+            sourceVersion: 3,
+            sourceUpdatedAt: "2026-08-09T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+      ],
+      omissions: [],
+      createdAt: "2026-08-10T00:00:00.000Z",
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+
+    const makeObservation = (
+      sourceRef: string,
+      quote: string,
+      predicate: string,
+    ): RawChronicleEventObservation => ({
+      localId: "model-local",
+      evidence: [{ sourceRef, quote }],
+      assertion: { attribution: "narrator", narrativeFrame: "story-world" },
+      payload: {
+        predicate,
+        actuality: "actual",
+        participants: [],
+        temporalExpressions: [],
+        durationKind: "instant",
+      },
+    });
+
+    // 合成で止めて、それまでに保存された artifact を finish_task の payload から読む。
+    await expect(
+      runChronicleExtractionCoordinator(
+        {
+          projectId: "project-a",
+          folderId: "folder-1",
+          language: "ja",
+          sceneIds: ["scene-one"],
+          authority: authority(),
+          runId: "run-trace",
+        },
+        {
+          useAi: true,
+          evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,
+          createId: (() => {
+            let n = 0;
+            return () => `id-${++n}`;
+          })(),
+          buildSnapshot: async () => ({
+            ok: true as const,
+            snapshot: built.snapshot,
+            scopeAuthorityDocuments: [],
+            flush: { status: "already-clean" as const, blockedDocuments: [] },
+          }),
+          observeWithAi: async ({ windows }) => {
+            const ref = windows[0]?.sourceRef ?? "";
+            return [
+              makeObservation(ref, quoteOne, "崩れ落ちた"),
+              // 同じ文を別の述語で引く観測（merge では畳まれない）。
+              makeObservation(ref, quoteOne, "砲撃された"),
+              // 本文に無い quote（解決できない）。
+              makeObservation(ref, quoteMissing, "存在しない"),
+              // 1 件目と内容が同一の観測（merge で畳まれる）。
+              makeObservation(ref, quoteOne, "崩れ落ちた"),
+            ];
+          },
+          synthesizeWithAi: async () => {
+            throw new Error("stop-after-merge");
+          },
+        },
+      ),
+    ).rejects.toThrow("stop-after-merge");
+
+    const savedArtifacts = finishMock.mock.calls.flatMap(
+      ([payload]) =>
+        (
+          payload as {
+            artifacts?: readonly {
+              artifactKind: string;
+              payloadJson: unknown;
+            }[];
+          }
+        ).artifacts ?? [],
+    );
+    const payloadOf = <T>(kind: string): T => {
+      const found = savedArtifacts.filter(
+        (artifact) => artifact.artifactKind === kind,
+      );
+      expect(found, `${kind} は 1 件だけ保存される`).toHaveLength(1);
+      return found[0]!.payloadJson as T;
+    };
+    const raw = payloadOf<{
+      observations: readonly RawChronicleEventObservation[];
+    }>(CHRONICLE_EXTRACT_ARTIFACT_KINDS.observations);
+    const resolved = payloadOf<{
+      anchors: readonly ResolvedEvidenceAnchor[];
+    }>(CHRONICLE_EXTRACT_ARTIFACT_KINDS.resolvedEvidence);
+    const merged = payloadOf<{
+      observations: readonly RawChronicleEventObservation[];
+    }>(CHRONICLE_EXTRACT_ARTIFACT_KINDS.mergedObservations);
+
+    // localId は window ごとの連番で、run を跨ぐ安定 ID ではない。
+    expect(raw.observations.map((item) => item.localId)).toEqual([
+      "window-001:obs-001",
+      "window-001:obs-002",
+      "window-001:obs-003",
+      "window-001:obs-004",
+    ]);
+    // merge は先に来た行を残し、内容が同一の 4 件目を畳む。
+    expect(merged.observations.map((item) => item.localId)).toEqual([
+      "window-001:obs-001",
+      "window-001:obs-002",
+      "window-001:obs-003",
+    ]);
+
+    // anchor は raw の evidence の順に採番される run 内の連番で、解決できた分だけ。
+    expect(resolved.anchors.map((anchor) => anchor.id)).toEqual([
+      "anchor-0001",
+      "anchor-0002",
+      "anchor-0003",
+    ]);
+
+    // (sourceRef, quote) から anchor へ辿る（coordinator の match 段と proposalPlanner が使う鍵）。
+    const anchorsFor = (
+      evidence: RawChronicleEventObservation["evidence"][number],
+    ) =>
+      resolved.anchors.filter(
+        (anchor) =>
+          chronicleEvidenceTupleKey(anchor.sourceRef, anchor.quote) ===
+          chronicleEvidenceTupleKey(evidence.sourceRef, evidence.quote),
+      );
+    const documentSourceKeyOf = (documentRef: string) =>
+      built.snapshot.documents.find((document) => document.ref === documentRef)
+        ?.sourceKey;
+
+    const [first, second, unresolved] = merged.observations;
+    for (const observation of [first!, second!]) {
+      const anchors = anchorsFor(observation.evidence[0]!);
+      expect(anchors.length).toBeGreaterThan(0);
+      for (const anchor of anchors) {
+        expect(anchor.quote).toBe(quoteOne);
+        expect(documentSourceKeyOf(anchor.documentRef)).toBe(
+          "project:scene:one",
+        );
+      }
+    }
+    // 同じ文を引く観測が複数あると、同じ (sourceRef, quote) の anchor が観測ごとに作られる
+    // （raw の 3 件 = 1・2・4 件目。lookup は先頭を使う）。
+    expect(anchorsFor(first!.evidence[0]!)).toHaveLength(3);
+    // 解決できなかった evidence は anchor を作らず、失敗の痕跡も artifact に残らない。
+    expect(anchorsFor(unresolved!.evidence[0]!)).toHaveLength(0);
+    expect(JSON.stringify(resolved)).not.toContain(quoteMissing);
+
+    // 現状の限界: anchor は観測の localId を持たない（辿る向きは観測 → anchor のみ）。
+    for (const anchor of resolved.anchors) {
+      expect(
+        Object.keys(anchor).filter((key) => /observation|localId/iu.test(key)),
+      ).toEqual([]);
+    }
+    // anchor が参照する (sourceRef, quote) は、必ず raw の evidence の部分集合。
+    const rawTuples = new Set(
+      raw.observations.flatMap((item) =>
+        item.evidence.map((evidence) =>
+          chronicleEvidenceTupleKey(evidence.sourceRef, evidence.quote),
+        ),
+      ),
+    );
+    for (const anchor of resolved.anchors) {
+      expect(
+        rawTuples.has(
+          chronicleEvidenceTupleKey(anchor.sourceRef, anchor.quote),
+        ),
+      ).toBe(true);
+    }
   });
 
   it("hydrates a completed Observation receipt after restart and continues the same Run at Synthesis", async () => {
