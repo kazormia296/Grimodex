@@ -1643,16 +1643,12 @@ mod narrative_freshness_restore_lock_tests {
             std::thread::sleep(std::time::Duration::from_secs(6));
         })
         .expect("a stale liveness attestation is not a scheduler failure");
-        if let Some(result) = &deferred {
-            let result: serde_json::Value =
-                serde_json::from_str(result).expect("deferred result JSON");
-            assert_ne!(result["status"], "workspace-unavailable");
-            assert_ne!(result["reason"], "freshness-recovery-required");
-            assert_ne!(
-                result["cutoverNotReady"], true,
-                "a deferred cycle must not start a before-cutover chain"
-            );
-        }
+        // An idle, non-CI cycle that skipped liveness returns no result: not
+        // the recovery transfer result and not a before-cutover signal.
+        assert!(
+            deferred.is_none(),
+            "a deferred idle cycle must stay silent, got {deferred:?}"
+        );
         assert!(
             state.ws.inner.lock().expect("workspace state").is_some(),
             "a stale liveness attestation must not detach the authority"

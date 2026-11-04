@@ -152,6 +152,8 @@ main の検証と renderer が共有する型付き IPC の payload を変える
   - 見送った cycle は `cutoverNotReady` を出さない。cutover の後の workspace で、混むたびに保守の chain を起こさないためである。
     cutover の前なら、次の cycle が通常の NOT_READY を出す。
   - CI の hold の結果は、cutover を通っていないことを明示する必要があるので、`cutoverNotReady: true` のままにする。
+    見送った cycle では `require_held_cutover_not_ready` は構造上必ず通るので、「Held なのに gate を通った」の検出は次の cycle に移る。
+    安全性は、CI の seam が DB から読む quiescence state の marker の判定（`state.marker === null`）が担う。
 - 変えないもの:
   - 5 s の上限と、古い cycle を拒む gate（`completed_cycle_capability_expires_before_a_late_heartbeat` はそのまま通る）。
   - IPC、wire、DB の契約。
@@ -159,7 +161,7 @@ main の検証と renderer が共有する型付き IPC の payload を変える
 - 信頼境界: 新しい送信先・保存範囲・契約・閾値の変更は無い。委任の根拠は U3（NIR-1 の lifecycle の技術判断）。
 - 試験:
   - native の `freshness_scheduler_defers_stale_liveness_without_recovery`：post-cycle の hook で 6 s 待たせ、authority が外れず、
-    recovery の結果を返さず、`cutoverNotReady` も出さないことを確かめる。次の cycle が通常どおり NOT_READY に達することも確かめる。
+    結果を返さない（recovery の結果も `cutoverNotReady` も出さない）ことを確かめる。次の cycle が通常どおり NOT_READY に達することも確かめる。
     分類を外す変異では、recovery の結果が返って落ちる。
   - crate の `narrative_c2zc_liveness_binding` で、型で分類できることを確かめる。
 
