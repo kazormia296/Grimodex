@@ -60,7 +60,11 @@ export type EventSynthesisSend = (
 ) => Promise<
   Pick<
     Awaited<ReturnType<typeof sendChatMessageWithThinking>>,
-    "text" | "inputTokens" | "outputTokens"
+    | "text"
+    | "inputTokens"
+    | "outputTokens"
+    | "cacheReadTokens"
+    | "cacheWriteTokens"
   >
 >;
 
@@ -189,6 +193,8 @@ async function recordEventStageAudit(
     readonly provider: string | null | undefined;
     readonly tokensIn?: number;
     readonly tokensOut?: number;
+    readonly cacheReadTokens?: number;
+    readonly cacheWriteTokens?: number;
   },
   modelExecutionBinding?: StageModelExecutionBindingV1,
   onStageReceipt?: RunEventSynthesisTaskInput["onStageReceipt"],
@@ -227,6 +233,8 @@ async function recordEventStageAudit(
     provider: usage.provider,
     tokensIn: usage.tokensIn,
     tokensOut: usage.tokensOut,
+    cacheReadTokens: usage.cacheReadTokens,
+    cacheWriteTokens: usage.cacheWriteTokens,
     projectId: input.stageExecution.projectId,
     metadata: {
       pathId: NARRATIVE_EVENT_SYNTHESIZE_PATH,
@@ -567,6 +575,8 @@ export async function runEventSynthesisTask(
       provider: ov.provider,
       tokensIn: response.inputTokens,
       tokensOut: response.outputTokens,
+      cacheReadTokens: response.cacheReadTokens,
+      cacheWriteTokens: response.cacheWriteTokens,
       projectId,
       metadata: { pathId: NARRATIVE_EVENT_SYNTHESIZE_PATH },
     });
@@ -586,6 +596,8 @@ export async function runEventSynthesisTask(
           provider: ov.provider,
           tokensIn: response.inputTokens,
           tokensOut: response.outputTokens,
+          cacheReadTokens: response.cacheReadTokens,
+          cacheWriteTokens: response.cacheWriteTokens,
         },
         sealedModelBinding,
         emitStageReceipt,
@@ -630,6 +642,8 @@ export async function runEventSynthesisTask(
           provider: ov.provider,
           tokensIn: response.inputTokens,
           tokensOut: response.outputTokens,
+          cacheReadTokens: response.cacheReadTokens,
+          cacheWriteTokens: response.cacheWriteTokens,
         },
         sealedModelBinding,
         emitStageReceipt,
@@ -680,6 +694,8 @@ export async function runEventSynthesisTask(
           provider: ov.provider,
           tokensIn: response.inputTokens,
           tokensOut: response.outputTokens,
+          cacheReadTokens: response.cacheReadTokens,
+          cacheWriteTokens: response.cacheWriteTokens,
         },
         sealedModelBinding,
         emitStageReceipt,
@@ -703,6 +719,8 @@ export async function runEventSynthesisTask(
         provider: ov.provider,
         tokensIn: response.inputTokens,
         tokensOut: response.outputTokens,
+        cacheReadTokens: response.cacheReadTokens,
+        cacheWriteTokens: response.cacheWriteTokens,
       },
       sealedModelBinding,
       emitStageReceipt,

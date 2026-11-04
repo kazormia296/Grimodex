@@ -606,6 +606,60 @@ describe("single-shot AI audit contracts", () => {
     );
   });
 
+  it("records provider cache read/write tokens in the audit usage", async () => {
+    invokeMock.mockResolvedValueOnce({
+      blocks: [{ type: "text", content: "result" }],
+      stopReason: "end_turn",
+      inputTokens: 40,
+      outputTokens: 5,
+      cacheReadTokens: 1100,
+      cacheWriteTokens: 0,
+    } as never);
+    const response = await invokeSingleShotChat(
+      {
+        messages: [{ role: "user", content: "exact prompt" }],
+        provider: null,
+        model: null,
+        apiVariant: null,
+      },
+      { projectId: "project-1", pathId: "synopsis" },
+    );
+    expect(response.cacheReadTokens).toBe(1100);
+    expect(completeMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        usage: {
+          inputTokens: 40,
+          outputTokens: 5,
+          cacheReadTokens: 1100,
+          cacheWriteTokens: 0,
+          stopReason: "end_turn",
+        },
+      }),
+    );
+  });
+
+  it("keeps cache usage null when the provider reports none", async () => {
+    await invokeSingleShotChat(
+      {
+        messages: [{ role: "user", content: "exact prompt" }],
+        provider: null,
+        model: null,
+        apiVariant: null,
+      },
+      { projectId: "project-1", pathId: "synopsis" },
+    );
+    expect(completeMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        usage: expect.objectContaining({
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+        }),
+      }),
+    );
+  });
+
   it("rejects Chronicle v2 begin metadata when protected fields are missing", async () => {
     await expect(
       invokeSingleShotChat(

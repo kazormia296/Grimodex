@@ -28,16 +28,19 @@ export interface ChroniclePromptRequest {
 
 /**
  * Mirrors `supports_prompt_cache` in grimodex-ai (Anthropic, or OpenRouter
- * routed to a Claude model) and additionally excludes the Responses API,
- * which ignores cache segments, so a split there would only change roles.
+ * routed to a Claude model) and additionally excludes OpenRouter's
+ * Responses API variant, which ignores cache segments, so a split there would
+ * only change roles.
  */
 export function supportsChroniclePromptCache(
   route: ChroniclePromptRoute,
 ): boolean {
-  if (route.apiVariant === "responses") return false;
+  // Anthropic never uses the Responses API, so a leftover global
+  // `modelApiVariant` must not switch the cache off for it.
   if (route.provider === "anthropic") return true;
   return (
     route.provider === "openrouter" &&
+    route.apiVariant !== "responses" &&
     route.model !== null &&
     route.model.includes("claude")
   );

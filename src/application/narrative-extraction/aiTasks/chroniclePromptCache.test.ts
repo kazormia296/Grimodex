@@ -13,12 +13,20 @@ import { runObservationExtractionTask } from "./runObservationExtractionTask";
 import { runStructuredRepairTask } from "./runStructuredRepairTask";
 import {
   buildChroniclePromptArtifact,
+  buildChroniclePromptDigests,
   splitChroniclePromptForCache,
 } from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
-import { NARRATIVE_STAGE_IDS } from "@/features/narrative-extraction/reconciler/stageExecution";
+import {
+  createChildStageExecutionContext,
+  createStageExecutionContext,
+  NARRATIVE_STAGE_IDS,
+} from "@/features/narrative-extraction/reconciler/stageExecution";
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
+import { auditRequestFromChatArgs } from "@/features/ai-audit/transportContext";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
 
 const sendMock = vi.hoisted(() => vi.fn());
+const routeFailure = vi.hoisted(() => ({ fail: false }));
 const overrideMock = vi.hoisted(() =>
   vi.fn(() => ({
     apiVariant: null as string | null,
@@ -31,6 +39,17 @@ const overrideMock = vi.hoisted(() =>
 vi.mock("@/features/chat/chatApi", () => ({
   sendChatMessageWithThinking: sendMock,
 }));
+vi.mock("@/features/chat/lazyTransportApi", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/features/chat/lazyTransportApi")>();
+  return {
+    ...actual,
+    loadSingleShotTransport: async () => {
+      if (routeFailure.fail) throw new Error("route resolution failed");
+      return actual.loadSingleShotTransport();
+    },
+  };
+});
 vi.mock("@/features/ai-policy/policyGuard", () => ({
   blockIfPolicyOff: () => false,
 }));
@@ -40,6 +59,7 @@ vi.mock("@/features/license/gate", () => ({
 vi.mock("@/features/ai-usage/recordAiUsage", () => ({
   recordAiUsage: vi.fn(),
 }));
+const recordAiUsageMock = vi.mocked(recordAiUsage);
 vi.mock("@/features/chat/modelRouting", () => ({
   resolveRoleSendOverride: overrideMock,
 }));
@@ -93,6 +113,7 @@ beforeEach(() => {
   sendMock.mockReset();
   sendMock.mockResolvedValue({ text: "{}", inputTokens: 1, outputTokens: 1 });
   overrideMock.mockReset();
+  routeFailure.fail = false;
 });
 
 describe("splitChroniclePromptForCache", () => {
@@ -181,6 +202,13 @@ describe("supportsChroniclePromptCache", () => {
         route("openrouter", "anthropic/claude-x", "responses" as never),
       ),
     ).toBe(false);
+    // Anthropic never uses the Responses API, so a leftover global
+    // `modelApiVariant` must not switch its cache off.
+    expect(
+      supportsChroniclePromptCache(
+        route("anthropic", "claude-sonnet-5-5", "responses" as never),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -363,5 +391,155 @@ describe("Chronicle stage requests", () => {
       "BROKEN-MARKER",
     );
     expect(modelVisibleText(call!)).toContain("BROKEN-MARKER");
+  });
+
+  it("falls back to the single user message when route resolution fails", async () => {
+    routeFailure.fail = true;
+    await runSynthesis("cluster-A", ANTHROPIC);
+    const [call] = sentCalls();
+    expect(call!.systemCacheSegments).toBeUndefined();
+    expect(call!.messages.map((m) => m.role)).toEqual(["user"]);
+    expect(call!.messages[0]!.content).toBe(
+      buildSynthesisPromptArtifact({ clusterRef: "cluster-A", observations })
+        .messages[0].content,
+    );
+  });
+
+  it("an injected send is never split, even on an Anthropic route", async () => {
+    overrideMock.mockReturnValue(ANTHROPIC as never);
+    const injected = vi.fn(async () => ({
+      text: "{}",
+      inputTokens: 1,
+      outputTokens: 1,
+    }));
+    await runEventSynthesisTask({
+      clusterRef: "cluster-A",
+      observations,
+      projectId: "project-test",
+      repairOnFailure: false,
+      send: injected,
+    });
+    expect(sendMock).not.toHaveBeenCalled();
+    const messages = (
+      injected.mock.calls[0] as unknown as [{ role: string; content: string }[]]
+    )[0];
+    expect(messages.map((m) => m.role)).toEqual(["user"]);
+  });
+
+  it("legacy structured repair with a stage execution stays unsplit (prefix below the floor)", async () => {
+    overrideMock.mockReturnValue(ANTHROPIC as never);
+    const parent = createStageExecutionContext({
+      projectId: "project-test",
+      runId: "run-1",
+      taskId: "task-1",
+      attemptId: "attempt-1",
+      stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+      stageExecutionId: "parent-1",
+    });
+    const stageExecution = createChildStageExecutionContext(
+      parent,
+      NARRATIVE_STAGE_IDS.structuredRepair,
+      "repair-1",
+    );
+    await runStructuredRepairTask({
+      brokenText: "壊れた出力 BROKEN-MARKER",
+      expectedShape: '{"observations":[]}',
+      projectId: "project-test",
+      stageExecution,
+      responseValidator: () => "invalid",
+    }).catch(() => undefined);
+    const [call] = sentCalls();
+    expect(call).toBeDefined();
+    expect(call!.systemCacheSegments).toBeUndefined();
+    expect(call!.messages.map((m) => m.role)).toEqual(["user"]);
+    expect(call!.messages[0]!.content).toContain("BROKEN-MARKER");
+  });
+
+  it("audit: the split changes the wire shape but not the stage digests", async () => {
+    const stageExecution = createStageExecutionContext({
+      projectId: "project-test",
+      runId: "run-1",
+      taskId: "task-1",
+      attemptId: "attempt-1",
+      stageId: NARRATIVE_STAGE_IDS.eventSynthesis,
+      stageExecutionId: "synthesis-1",
+    });
+    const run = async (override: Record<string, string | null>) => {
+      overrideMock.mockReturnValue(override as never);
+      await runEventSynthesisTask({
+        clusterRef: "cluster-A",
+        observations,
+        projectId: "project-test",
+        repairOnFailure: false,
+        stageExecution,
+      }).catch(() => undefined);
+    };
+    await run(ANTHROPIC);
+    await run({
+      apiVariant: null,
+      model: "gpt-5",
+      provider: "openai",
+      endpointId: null,
+    });
+    expect(sendMock).toHaveBeenCalledTimes(2);
+    const [split, unsplit] = sentCalls();
+    const canonical = buildSynthesisPromptArtifact({
+      clusterRef: "cluster-A",
+      observations,
+    });
+    const digests = await buildChroniclePromptDigests(canonical);
+
+    // Both routes seal the same three digests (computed from the canonical
+    // single-message artifact, never from the wire form).
+    for (const call of sendMock.mock.calls) {
+      const stage = (
+        call[1] as {
+          metadata: { chronicleStage: Record<string, unknown> };
+        }
+      ).metadata.chronicleStage;
+      expect(stage.contextSetDigest).toBe(digests.contextSetDigest);
+      expect(stage.componentContractDigest).toBe(
+        digests.componentContractDigest,
+      );
+      expect(stage.finalRequestDigest).toBe(digests.finalRequestDigest);
+    }
+
+    // finalRequestDigest is therefore the digest of the concatenation of the
+    // wire messages, not of the wire form: the audit request carries the
+    // system segment and the user remainder separately.
+    expect(modelVisibleText(split!)).toBe(canonical.messages[0].content);
+    const splitAudit = auditRequestFromChatArgs({
+      messages: split!.messages,
+      systemCacheSegments: split!.systemCacheSegments,
+    });
+    expect(splitAudit.messages!.map((m) => m.role)).toEqual(["system", "user"]);
+    expect(splitAudit.modelVisibleContext).toMatchObject({
+      systemCacheSegments: split!.systemCacheSegments,
+    });
+    const unsplitAudit = auditRequestFromChatArgs({
+      messages: unsplit!.messages,
+      systemCacheSegments: unsplit!.systemCacheSegments,
+    });
+    expect(unsplitAudit.messages!.map((m) => m.role)).toEqual(["user"]);
+    expect(unsplitAudit.modelVisibleContext).toBeUndefined();
+  });
+
+  it("records cache read/write tokens in the usage ledger when the provider reports them", async () => {
+    sendMock.mockResolvedValue({
+      text: "{}",
+      inputTokens: 40,
+      outputTokens: 5,
+      cacheReadTokens: 1100,
+      cacheWriteTokens: 0,
+    });
+    await runSynthesis("cluster-A", ANTHROPIC);
+    expect(recordAiUsageMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        surface: "narrative_event_synthesize",
+        tokensIn: 40,
+        cacheReadTokens: 1100,
+        cacheWriteTokens: 0,
+      }),
+    );
   });
 });

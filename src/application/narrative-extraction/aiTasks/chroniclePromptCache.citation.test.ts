@@ -14,6 +14,7 @@ import {
 } from "./citationIdObservation";
 import { CHRONICLE_PROMPT_CACHE_MIN_PREFIX_CHARS } from "./chroniclePromptCache";
 import { runObservationExtractionTask } from "./runObservationExtractionTask";
+import { runStructuredRepairTask } from "./runStructuredRepairTask";
 
 const sendMock = vi.hoisted(() => vi.fn());
 
@@ -183,5 +184,32 @@ describe("citation-id Chronicle prompts and prompt cache", () => {
     expect(split.staticPrefix).not.toContain("BROKEN-MARKER");
     expect(split.staticPrefix).not.toContain("門が開いた");
     expect(split.dynamicRest).toContain("BROKEN-MARKER");
+  });
+
+  it("citation-id repair task: sends the long contract as a cache segment, not the broken text", async () => {
+    const { binding } = await fixture();
+    await runStructuredRepairTask({
+      brokenText: "BROKEN-MARKER",
+      expectedShape: CITATION_ID_OBSERVATION_EXPECTED_SHAPE,
+      evidenceMode: CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+      evidenceSpanCatalogBinding: binding,
+      projectId: "citation-task-test",
+      responseValidator: () => "invalid",
+    }).catch(() => undefined);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    const [messages, , , segments] = sendMock.mock.calls[0]! as [
+      { role: string; content: string }[],
+      unknown,
+      unknown,
+      string[],
+    ];
+    expect(messages.map((m) => m.role)).toEqual(["system", "user"]);
+    expect(segments).toHaveLength(1);
+    expect(segments[0]).toBe(messages[0]!.content);
+    expect(segments[0]!.length).toBeGreaterThanOrEqual(
+      CHRONICLE_PROMPT_CACHE_MIN_PREFIX_CHARS,
+    );
+    expect(segments[0]).not.toContain("BROKEN-MARKER");
+    expect(messages[1]!.content).toContain("BROKEN-MARKER");
   });
 });
