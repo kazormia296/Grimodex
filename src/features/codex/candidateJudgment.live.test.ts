@@ -10,7 +10,7 @@
  * 既定 SKIP。実行（実トークン課金あり）:
  *   OPENROUTER_API_KEY=sk-... pnpm test --run \
  *     src/features/codex/candidateJudgment.live.test.ts
- *   モデル上書き: OPENROUTER_MODEL（既定 openai/gpt-4o-mini）。
+ *   モデル上書き: OPENROUTER_MODEL（既定 openai/gpt-6-luna）。
  *
  * 検証範囲: 「本番プロンプト × 実モデル応答 × 本番パーサ」。本番の Tauri→Rust
  * トランスポート (send_chat_message の provider routing / usage 台帳) は範囲外。

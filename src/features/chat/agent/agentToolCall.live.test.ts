@@ -11,7 +11,7 @@
  * 既定 SKIP。実行（実トークン課金あり）:
  *   OPENROUTER_API_KEY=sk-... pnpm test --run \
  *     src/features/chat/agent/agentToolCall.live.test.ts
- *   モデル上書き: OPENROUTER_MODEL（既定 openai/gpt-4o-mini）。
+ *   モデル上書き: OPENROUTER_MODEL（既定 openai/gpt-6-luna）。
  */
 import { describe, it, expect, vi } from "vitest";
 

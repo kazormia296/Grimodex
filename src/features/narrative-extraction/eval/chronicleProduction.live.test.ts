@@ -71,7 +71,7 @@ vi.mock("@/features/ai-usage/recordAiUsage", () => ({
 vi.mock("@/features/chat/modelRouting", () => ({
   resolveRoleSendOverride: () => ({
     apiVariant: undefined,
-    model: process.env.OPENROUTER_MODEL ?? "openai/gpt-5.6-luna",
+    model: process.env.OPENROUTER_MODEL ?? "openai/gpt-6-luna",
     provider: "openrouter",
     endpointId: undefined,
   }),
@@ -284,7 +284,7 @@ describeLive("Chronicle production OpenRouter live qualification", () => {
         !process.env.NARRATIVE_EVAL_LIMIT;
       const diagnosticOnly =
         suite.diagnosticOnly || attempt === 2 || !fullCertificationRun;
-      const model = process.env.OPENROUTER_MODEL ?? "openai/gpt-5.6-luna";
+      const model = process.env.OPENROUTER_MODEL ?? "openai/gpt-6-luna";
       const effort = reasoningEffort();
       const startedAt = new Date().toISOString();
       const runId =
