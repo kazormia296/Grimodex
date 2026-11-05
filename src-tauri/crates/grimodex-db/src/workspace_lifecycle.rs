@@ -1675,7 +1675,8 @@ impl WorkspaceLifecycleCore {
     }
 
     /// The DB rejection decision and safe evidence use the same snapshot.
-    pub(crate) fn snapshot_with_diagnostic(
+    /// Native recovery diagnostics read the same values-only evidence.
+    pub fn snapshot_with_diagnostic(
         &self,
     ) -> Result<(LifecycleSnapshot, LifecycleDiagnostic), LifecycleError> {
         let state = self.lock_state()?;
