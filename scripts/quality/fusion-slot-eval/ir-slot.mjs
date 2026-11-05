@@ -119,6 +119,15 @@ function parseArgs(args) {
     "[precheck] --skip-extraction は yes／no",
   );
   options.skipExtraction = options["skip-extraction"] === "yes";
+  // 診断（IR の到着の分布）：測定の済んだ run の workspace の写しで query だけを流す。
+  // 抽出も key も使わない。結果は評価の証拠にしない（status は latency-diagnostic）。
+  if (options["reuse-workspace"]) {
+    assert.ok(
+      path.isAbsolute(options["reuse-workspace"]),
+      "[precheck] --reuse-workspace は絶対 path",
+    );
+    options.skipExtraction = true;
+  }
   assert.ok(
     Object.hasOwn(PROVIDERS, options.provider),
     "[precheck] --provider は openrouter／anthropic",
@@ -813,11 +822,81 @@ export async function runIrSlot(options) {
           !["basic_text", "unknown"].includes(mainEnv.backend),
         "[key] safeStorage の backend が keyring でない（key の経路が動かない）",
       );
-    await page.evaluate((input) => window.fusionIrEvaluation.prepare(input), {
-      workspacePath: path.join(output, "workspaces", "ir"),
-      projectId: "fusion-ir",
-      language: work.language,
-    });
+    const reuse = options["reuse-workspace"];
+    if (reuse) {
+      const sourceRecords = JSON.parse(
+        await readFile(path.join(reuse, "records.json"), "utf8"),
+      );
+      const source = sourceRecords.checkpoints
+        .filter((c) => (c.queries ?? []).length > 0)
+        .at(-1);
+      assert.ok(source, "[precheck] reuse: query のある地点が無い");
+      await cp(
+        path.join(reuse, "workspaces", "ir"),
+        path.join(output, "workspaces", "ir"),
+        { recursive: true, errorOnExist: true, force: false },
+      );
+      records.reuse = {
+        sourceRunId: sourceRecords.runId,
+        sourceFraction: source.fraction,
+        positions: source.queries.map((q) => q.position),
+      };
+    }
+    records.prepare = await page.evaluate(
+      (input) => window.fusionIrEvaluation.prepare(input),
+      {
+        workspacePath: path.join(output, "workspaces", "ir"),
+        projectId: "fusion-ir",
+        language: work.language,
+        attach: Boolean(reuse),
+      },
+    );
+    if (reuse) {
+      log(`reuse prepare: ${JSON.stringify(records.prepare)}`);
+      records.irTap = await page.evaluate(() =>
+        window.fusionIrEvaluation.installIrArrivalTap(),
+      );
+      log(`IR tap: ${JSON.stringify(records.irTap)}`);
+      records.canonicalCutover = await page.evaluate(
+        (input) => window.fusionIrEvaluation.waitCanonicalCutover(input),
+        { timeoutMs: CUTOVER_WAIT_MS },
+      );
+      log(`canonical cutover: ${JSON.stringify(records.canonicalCutover)}`);
+      const positions = records.reuse.positions;
+      const checkpoint = {
+        fraction: records.reuse.sourceFraction,
+        sceneCount: records.prepare.scenes,
+        queries: [],
+      };
+      records.checkpoints.push(checkpoint);
+      checkpoint.raw = await page.evaluate(
+        (input) => window.fusionIrEvaluation.buildRaw(input),
+        { first: true },
+      );
+      checkpoint.irWait = await page.evaluate(
+        (input) => window.fusionIrEvaluation.waitIrUsable(input),
+        {
+          position: positions.at(-1),
+          timeoutMs: options.irWaitMs,
+          requireReadyEvent: true,
+        },
+      );
+      log(`reuse IR wait: ${JSON.stringify(checkpoint.irWait)}`);
+      assert.ok(
+        checkpoint.irWait.usable,
+        "[artifact] reuse: IR が usable にならない",
+      );
+      checkpoint.queries = await measurePositions(
+        page,
+        positions,
+        options.repeats,
+        records.prepare.scenes,
+      );
+      checkpoint.summary = summarizeQueries(checkpoint.queries);
+      log(`reuse: ${JSON.stringify(checkpoint.summary.categories)}`);
+      records.status = "latency-diagnostic";
+      return records;
+    }
     // 保守の cutover（Generic Freshness の正本への切り替え）が済む前に書き込みを始めると、
     // IR の build が入口ではじかれ続ける。済むまで待ってから Scene を足す。
     records.canonicalCutover = await page.evaluate(

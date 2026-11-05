@@ -119,6 +119,8 @@ async function prepare(input: {
   workspacePath: string;
   projectId: string;
   language: "ja" | "en";
+  /** 診断（--reuse-workspace）：測定の済んだ workspace の写しを開き、project を作らない。 */
+  attach?: boolean;
 }) {
   await invoke("open_workspace", { path: input.workspacePath });
   setCurrentWorkspaceIdentity({
@@ -133,6 +135,7 @@ async function prepare(input: {
   });
   publishCurrentProjectId(input.projectId);
   setCurrentRuntimeProjectId(input.projectId);
+  if (input.attach) return attachExisting(input);
   // 作成画面の「本筋を既定にする」と同じ option（R12）。新しい Scene はこの既定を受け継ぐ。
   await createProject(
     {
@@ -169,6 +172,107 @@ async function prepare(input: {
     lastFolderKey: null,
   };
   return { ok: true };
+}
+
+/** 診断：既にある project を開き、Scene の位置を id（fir-sNNNN）から戻す。 */
+async function attachExisting(input: {
+  projectId: string;
+  language: "ja" | "en";
+}) {
+  const projects = await listProjects();
+  const project = projects.find((p) => p.id === input.projectId);
+  if (!project) throw new Error("[precheck] reuse: project が無い");
+  if (project.phaseResolutionMode !== "reading")
+    throw new Error("[precheck] reuse: phaseResolutionMode が reading でない");
+  useProjectStore.setState({ currentProjectId: input.projectId, projects });
+  await useTreeStore
+    .getState()
+    .reloadTreeOrThrow(input.projectId, openRevision);
+  usePhaseStore.setState({ resolutionMode: "reading" });
+  unlistenReady?.();
+  readyEvents = 0;
+  unlistenReady = await listenRelatedScenesIndexReady((id) => {
+    if (id === input.projectId) readyEvents++;
+  });
+  const positions = new Map<string, number>();
+  for (const node of await listNodes(input.projectId)) {
+    const match = /^fir-s(\d{4})$/u.exec(node.id);
+    if (match) positions.set(node.id, Number(match[1]));
+  }
+  active = {
+    projectId: input.projectId,
+    language: input.language,
+    positions,
+    lastFolderKey: null,
+  };
+  return { ok: true, attached: true, scenes: positions.size };
+}
+
+/**
+ * 診断（--reuse-workspace）：bridge の invoke を包み、IR の continue が解決した時刻を
+ * renderer の時計で残す。製品の結果（窓の判定）は変えない。包めなければ installed=false。
+ */
+type IrTapRecord = { start: number; end: number | null; status: string | null };
+let irTap: { continues: IrTapRecord[]; pending: Promise<unknown>[] } | null =
+  null;
+function installIrArrivalTap() {
+  const original = (window as unknown as { grimodex?: Record<string, unknown> })
+    .grimodex;
+  if (!original) return { installed: false, reason: "no-bridge" };
+  const tap = {
+    continues: [] as IrTapRecord[],
+    pending: [] as Promise<unknown>[],
+  };
+  const originalInvoke = original.invoke as (
+    cmd: string,
+    args?: unknown,
+  ) => Promise<unknown>;
+  const wrapped = new Proxy(original, {
+    get(target, prop) {
+      if (prop !== "invoke") return Reflect.get(target, prop);
+      return (cmd: string, args?: unknown) => {
+        const promise = originalInvoke(cmd, args);
+        if (cmd === "related_scenes_continue") {
+          const record: IrTapRecord = {
+            start: performance.now(),
+            end: null,
+            status: null,
+          };
+          tap.continues.push(record);
+          tap.pending.push(
+            promise.then(
+              (envelope) => {
+                record.end = performance.now();
+                const value = (
+                  envelope as { ok?: boolean; value?: { status?: unknown } }
+                )?.value;
+                record.status =
+                  typeof value?.status === "string" ? value.status : "unknown";
+              },
+              () => {
+                record.end = performance.now();
+                record.status = "rejected";
+              },
+            ),
+          );
+        }
+        return promise;
+      };
+    },
+  });
+  try {
+    Object.defineProperty(window, "grimodex", {
+      value: wrapped,
+      configurable: true,
+      writable: true,
+    });
+  } catch (error) {
+    return { installed: false, reason: errorShape(error) };
+  }
+  const installed =
+    (window as unknown as { grimodex?: unknown }).grimodex === wrapped;
+  if (installed) irTap = tap;
+  return { installed, reason: installed ? null : "not-replaced" };
 }
 
 const CANONICAL_CUTOVER_MARKER = "narrative-c2-canonical-freshness-v1";
@@ -573,9 +677,34 @@ async function sampleHybrid(position: number) {
   const id = sceneId(position);
   useTreeStore.setState({ activeSceneId: id });
   useDebugLogStore.getState().clear();
+  if (irTap) {
+    irTap.continues.length = 0;
+    irTap.pending.length = 0;
+  }
   const started = performance.now();
   const sample = await fetchRelatedPastScenes(id, { mode: "hybrid" });
   const durationMs = performance.now() - started;
+  // 診断：窓の判定の後も session を保ったまま IR の到着を待つ（上限 10 s）。
+  let irArrival: {
+    afterRawMs: number | null;
+    status: string | null;
+    continues: number;
+  } | null = null;
+  if (irTap) {
+    await Promise.race([
+      Promise.allSettled(irTap.pending),
+      new Promise((resolve) => setTimeout(resolve, 10_000)),
+    ]);
+    const last = irTap.continues.at(-1);
+    irArrival = {
+      afterRawMs:
+        last?.end != null && sample.timing.tRawReadyMs !== null
+          ? last.end - sample.timing.tRawReadyMs
+          : null,
+      status: last?.status ?? null,
+      continues: irTap.continues.length,
+    };
+  }
   try {
     const failures = useDebugLogStore
       .getState()
@@ -631,6 +760,7 @@ async function sampleHybrid(position: number) {
             : sample.timing.tReturnMs - sample.timing.tRawReadyMs,
         nativeRawReadyElapsedMs:
           sample.timing.native?.rawReadyElapsedMs ?? null,
+        ...(irArrival ? { irArrival } : {}),
       },
     };
   } finally {
@@ -795,6 +925,7 @@ async function usage() {
 Object.assign(window, {
   fusionIrEvaluation: {
     prepare,
+    installIrArrivalTap,
     configureAi,
     installKey,
     addScenes,
