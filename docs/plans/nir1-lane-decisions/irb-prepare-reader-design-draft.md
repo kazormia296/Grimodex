@@ -349,9 +349,14 @@ DR-IRB-1（数える行を変えない）と計測（挙動不変、dev 用）�
 
 委任が及ぶ場合に worker の技術判断で進めてよいもの（DR-IRB-3 の reader の仕様、DR-IRB-4 (i)(ii) の memo の範囲）と、そうでないものを分ける。
 
-1. **audit chain の検証範囲（DR-IRB-5 (b)）。委任の外の可能性が高い。** publish の write tx で全件検証している chain を、
-   reader での検証済みの高水位と、tx 内での `high_water+1..tail` の検証＋高水位の hash の照合に変える案がある。
-   publish の時点で何を検証したことになるかが変わるので、worker の技術判断ではなく**信頼境界の変更**。計測の後に、案を並べて聞く。
+1. **audit chain の検証範囲（DR-IRB-5 (b)）。2026-11-05 にユーザーが脅威モデルを確定した。** Merkle 木などの構造の変更はせず、当面は小さい変更で進める（ユーザー「当面は小さい変更で進めてください」）。
+   変更の中身：全件の検証は残し、読取の snapshot（prepare の側）で行う。publish の書込みの tx では、検証済みの位置（高水位）より後ろの行と、高水位の行の hash の一致だけを確かめ、合わなければ publish しない。
+   確定した脅威モデル（GDX-PRECHECK-001 の 4 点。ユーザーの回答「この内容で確定してよい」）：
+   - 信頼するもの：native の audit の書き手（`append_ai_audit_events_in_transaction` の追記だけ）と、renderer の SQL から `ai_audit_events` への変更の拒否（`execute.rs` の authorizer）。信頼しないもの：renderer の引数、モデルの出力（今と同じ）。
+   - 範囲内の攻撃は今と同じ。範囲外は、外からのローカルの DB の改ざん（OS・管理者・別の process）。関連場面の確認済みの脅威モデル（`nir1-related-scenes-precheck.md` の Out of scope）と、Attribution の設計書（chain の検証は自己申告の整合性診断で、管理者への耐性はない）どおり。
+   - 必須の防御：全件の検証、tx の中の高水位より後ろの検証と高水位の hash の一致、不一致なら fail-closed。
+   - 受け入れる影響：読取の検証と publish の間に、範囲外の手段で高水位より前の行の中身だけが書き換えられたときは、その publish では検出しない（次の build の全件の検証で検出される）。
+     実装は、計測で audit chain の検証が publish を重くしていると分かった場合だけ行う。脅威モデルを変える変更（actor・範囲・防御・受入れのどれか）が要る場合は、もう一度確認を取る。
 2. **前景の read の lock 待ちの期限と D＝40 ms の関係。** 期限を付けるなら値の選び方が要る。irb-decisions.md の §3 の保留と同じ。案を並べて聞く。
 3. **事前登録の新しい版。** build の挙動が変わるので、PD 評価の取り直しには事前登録の新しい版が要る。いつ入れるかは評価の進行との相談。
 4. **index-ready の遅れの許容。** 連続編集中に index-ready が遅れうること（§5）を許容するか。審査は、`docs`・`policies`・`evals`・`scripts` の grep で、index-ready を時間条件にした gate を見つけなかった（確認台帳での最終確認は別）。
