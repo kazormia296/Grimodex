@@ -8,7 +8,8 @@ use sha2::{Digest, Sha256};
 
 use super::super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
 
-const QUERIES: &[&str] = &[
+// DEV-ONLY (claude/irb-prepare-timing): widened so the timing test can replay the queries one by one.
+pub(super) const QUERIES: &[&str] = &[
     "SELECT s.* FROM narrative_proposal_sets s WHERE s.project_id=?1 ORDER BY s.id",
     "SELECT p.* FROM narrative_proposals p JOIN narrative_proposal_sets s ON s.id=p.proposal_set_id WHERE s.project_id=?1 ORDER BY p.id",
     "SELECT r.* FROM narrative_proposal_revisions r JOIN narrative_proposals p ON p.id=r.proposal_id JOIN narrative_proposal_sets s ON s.id=p.proposal_set_id WHERE s.project_id=?1 ORDER BY r.id",
