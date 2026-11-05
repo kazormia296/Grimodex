@@ -1009,6 +1009,68 @@ describe("runChronicleExtractionCoordinator citation-ID lane", () => {
     },
   );
 
+  it("plans a long newline-free paragraph so every catalog entry is visible in some window", async () => {
+    const sentence = "The courier crossed the quiet bridge before dawn. ";
+    const longParagraph = sentence.repeat(260).slice(0, 13_000);
+    const built = await buildNarrativeCorpusSnapshot({
+      snapshotId: "snapshot-citation-long-paragraph",
+      language: "ja",
+      origin: { kind: "grimodex-project", projectId: "project-a" },
+      documents: [
+        {
+          sourceKey: "project:scene:one",
+          parentSourceKey: null,
+          title: "橋",
+          orderIndex: 0,
+          proseMirrorJson: prose(longParagraph),
+          origin: {
+            kind: "project-node",
+            projectId: "project-a",
+            nodeId: "scene-one",
+            sourceVersion: 1,
+            sourceUpdatedAt: "2026-09-05T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+      ],
+      omissions: [],
+      createdAt: "2026-09-05T00:00:00.000Z",
+    });
+    if (!built.ok) throw new Error("long paragraph snapshot did not build");
+    const observationCalls: Array<{
+      readonly windowId: string;
+      readonly bindingDigest: string;
+      readonly bindingWindowCount: number;
+      readonly bindingCatalog: unknown;
+      readonly bindingSnapshot: unknown;
+    }> = [];
+
+    const result = await runChronicleExtractionCoordinator(
+      request("run-citation-long-paragraph"),
+      {
+        useAi: true,
+        createId: createIdFactory("long-paragraph"),
+        buildSnapshot: snapshotBuild(built.snapshot),
+        observeWithAi: idObserver(observationCalls),
+        synthesizeWithAi: successfulSynthesizer(),
+      },
+    );
+
+    expect(result.runId).toBe("run-citation-long-paragraph");
+    // 13k chars over a 6000-char owned budget: 3 windows, none dropped.
+    expect(observationCalls.length).toBeGreaterThan(1);
+    // Both the run-creation plan and the source.window-plan@1 task plan carry
+    // the sealed catalog, so they cannot diverge from the sealed source views.
+    expect(planExtractionWindowsMock).toHaveBeenCalled();
+    for (const call of planExtractionWindowsMock.mock.calls) {
+      expect(call[1]).toMatchObject({
+        evidenceCatalog: expect.objectContaining({
+          kind: "narrative-evidence-span-catalog",
+        }),
+      });
+    }
+  });
+
   it("rejects an evidence coverage hole before the first observer dispatch", async () => {
     const snapshot = await fixtureSnapshot("snapshot-citation-coverage-hole");
     planExtractionWindowsMock.mockImplementationOnce(() => ({ windows: [] }));

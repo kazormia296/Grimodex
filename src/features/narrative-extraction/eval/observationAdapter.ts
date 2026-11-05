@@ -122,7 +122,16 @@ export async function prepareObservationEvalCase(
   const requestIdentityPrefix =
     options.requestIdentity ?? `narrative-eval:${evalCase.id}:observation`;
   const fixture = await buildNarrativeEvalFixture(evalCase);
-  const plan = planExtractionWindows(fixture.snapshot);
+  // The catalog is derived from the sealed snapshot alone, so build it before
+  // planning: the planner widens a window's context (never its owned range)
+  // when a catalog entry would otherwise fit in no window.
+  const evidenceSpanCatalogForPlan =
+    evidenceMode === CITATION_ID_OBSERVATION_EVIDENCE_MODE
+      ? await buildEvidenceSpanCatalog(fixture.snapshot)
+      : undefined;
+  const plan = planExtractionWindows(fixture.snapshot, {
+    evidenceCatalog: evidenceSpanCatalogForPlan,
+  });
   const documentByRef = new Map(
     fixture.snapshot.documents.map((document) => [document.ref, document]),
   );
@@ -177,7 +186,9 @@ export async function prepareObservationEvalCase(
   let prompt = buildObservationExtractionPrompt(windows);
   let versions = OBSERVATION_CHRONICLE_EVAL_VERSIONS;
   if (evidenceMode === CITATION_ID_OBSERVATION_EVIDENCE_MODE) {
-    evidenceSpanCatalog = await buildEvidenceSpanCatalog(fixture.snapshot);
+    evidenceSpanCatalog =
+      evidenceSpanCatalogForPlan ??
+      (await buildEvidenceSpanCatalog(fixture.snapshot));
     // Full-corpus coverage is a separate precheck from each request's subset
     // binding. A missing occurrence must never become a successful empty run.
     assertEvidenceSpanCatalogCoverage(evidenceSpanCatalog, windowInputs);
