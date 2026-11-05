@@ -7,9 +7,13 @@ use super::super::nir1_entity_relation_index::GraphWorkControl;
 use super::super::{
     c2zc_canonical_cutover::is_generic_freshness_canonical,
     dependency_edges::{canonical_source_object_identity, find_edges_by_consumer, DependencyEdge},
+    material_membership_root::RunProofMemo,
     project_scope_authority::load_live_project_scope_authority,
     retrieval_admission::{
-        build::{finalize_build_candidate_with_control, preflight_build_candidate, BuildCandidate},
+        build::{
+            finalize_build_candidate_with_control, preflight_build_candidate_with_memo,
+            BuildCandidate,
+        },
         ChronicleRetrievalDocument,
     },
     revision_eligibility::pending::{self, FeedSnapshot},
@@ -171,13 +175,25 @@ pub(super) fn read_snapshot_with_control(
     // local. Only preflight-passing candidates contribute to the one global
     // scope preload, so a missing scope row in an ineligible roster entry
     // cannot suppress a valid candidate.
+    //
+    // Roots of one Run share the Run-level receipt, artifact and Snapshot
+    // proofs. This memo is local to this call (one read transaction): it is
+    // dropped before the snapshot is returned and is never part of it.
     let mut preflights = Vec::new();
+    let mut run_proofs = RunProofMemo::default();
     for revision in &roster.revisions {
         control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Row)?;
-        if let Ok(preflight) = preflight_build_candidate(conn, project, revision, &authority)? {
+        if let Ok(preflight) = preflight_build_candidate_with_memo(
+            conn,
+            project,
+            revision,
+            &authority,
+            &mut run_proofs,
+        )? {
             preflights.push(preflight);
         }
     }
+    drop(run_proofs);
     let material_source_keys = preflights
         .iter()
         .flat_map(|preflight| {
