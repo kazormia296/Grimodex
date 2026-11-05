@@ -710,6 +710,39 @@ function tamperSnapshotArtifact(
   });
 }
 
+async function longParagraphSnapshot(
+  snapshotId: string,
+): Promise<NarrativeCorpusSnapshot> {
+  const sentence = "The courier crossed the quiet bridge before dawn. ";
+  const longParagraph = sentence.repeat(260).slice(0, 13_000);
+  const built = await buildNarrativeCorpusSnapshot({
+    snapshotId,
+    language: "ja",
+    origin: { kind: "grimodex-project", projectId: "project-a" },
+    documents: [
+      {
+        sourceKey: "project:scene:one",
+        parentSourceKey: null,
+        title: "橋",
+        orderIndex: 0,
+        proseMirrorJson: prose(longParagraph),
+        origin: {
+          kind: "project-node",
+          projectId: "project-a",
+          nodeId: "scene-one",
+          sourceVersion: 1,
+          sourceUpdatedAt: "2026-09-05T00:00:00.000Z",
+          sourceUri: null,
+        },
+      },
+    ],
+    omissions: [],
+    createdAt: "2026-09-05T00:00:00.000Z",
+  });
+  if (!built.ok) throw new Error("long paragraph snapshot did not build");
+  return built.snapshot;
+}
+
 describe("runChronicleExtractionCoordinator citation-ID lane", () => {
   beforeEach(() => {
     setCurrentWorkspaceIdentity({ path: "/workspace/a", openRevision: 1 });
@@ -1010,33 +1043,9 @@ describe("runChronicleExtractionCoordinator citation-ID lane", () => {
   );
 
   it("plans a long newline-free paragraph so every catalog entry is visible in some window", async () => {
-    const sentence = "The courier crossed the quiet bridge before dawn. ";
-    const longParagraph = sentence.repeat(260).slice(0, 13_000);
-    const built = await buildNarrativeCorpusSnapshot({
-      snapshotId: "snapshot-citation-long-paragraph",
-      language: "ja",
-      origin: { kind: "grimodex-project", projectId: "project-a" },
-      documents: [
-        {
-          sourceKey: "project:scene:one",
-          parentSourceKey: null,
-          title: "橋",
-          orderIndex: 0,
-          proseMirrorJson: prose(longParagraph),
-          origin: {
-            kind: "project-node",
-            projectId: "project-a",
-            nodeId: "scene-one",
-            sourceVersion: 1,
-            sourceUpdatedAt: "2026-09-05T00:00:00.000Z",
-            sourceUri: null,
-          },
-        },
-      ],
-      omissions: [],
-      createdAt: "2026-09-05T00:00:00.000Z",
-    });
-    if (!built.ok) throw new Error("long paragraph snapshot did not build");
+    const snapshot = await longParagraphSnapshot(
+      "snapshot-citation-long-paragraph",
+    );
     const observationCalls: Array<{
       readonly windowId: string;
       readonly bindingDigest: string;
@@ -1050,7 +1059,7 @@ describe("runChronicleExtractionCoordinator citation-ID lane", () => {
       {
         useAi: true,
         createId: createIdFactory("long-paragraph"),
-        buildSnapshot: snapshotBuild(built.snapshot),
+        buildSnapshot: snapshotBuild(snapshot),
         observeWithAi: idObserver(observationCalls),
         synthesizeWithAi: successfulSynthesizer(),
       },
@@ -1061,7 +1070,7 @@ describe("runChronicleExtractionCoordinator citation-ID lane", () => {
     expect(observationCalls.length).toBeGreaterThan(1);
     // Both the run-creation plan and the source.window-plan@1 task plan carry
     // the sealed catalog, so they cannot diverge from the sealed source views.
-    expect(planExtractionWindowsMock).toHaveBeenCalled();
+    expect(planExtractionWindowsMock).toHaveBeenCalledTimes(2);
     for (const call of planExtractionWindowsMock.mock.calls) {
       expect(call[1]).toMatchObject({
         evidenceCatalog: expect.objectContaining({
@@ -1069,6 +1078,73 @@ describe("runChronicleExtractionCoordinator citation-ID lane", () => {
         }),
       });
     }
+  });
+
+  it("re-plans a long paragraph on cold resume from the persisted catalog without a coverage failure", async () => {
+    const snapshot = await longParagraphSnapshot(
+      "snapshot-citation-long-paragraph-resume",
+    );
+    const prefix = await createInterruptedIdRun(
+      snapshot,
+      "run-citation-long-paragraph-resume",
+    );
+    const originalPlan = prefix.artifacts.find(
+      (artifact) =>
+        artifact.artifactKind === CHRONICLE_EXTRACT_ARTIFACT_KINDS.windowPlan,
+    )?.payloadJson;
+    if (!originalPlan) throw new Error("original window plan is missing");
+
+    // Only the snapshot task is durable, so the resume re-runs
+    // source.window-plan@1 from the companion's persisted catalog.
+    const snapshotOnly = new Set([CHRONICLE_EXTRACT_TASK_KINDS.snapshot]);
+    installResumeMocks(
+      prefix,
+      "run-citation-long-paragraph-resume",
+      artifactsForTaskKinds(prefix, snapshotOnly),
+      snapshotOnly,
+    );
+    planExtractionWindowsMock.mockClear();
+    const buildSnapshot = vi.fn(async () => {
+      throw new Error("resume must not rebuild a live snapshot");
+    });
+    const observationCalls: Array<{
+      readonly windowId: string;
+      readonly bindingDigest: string;
+      readonly bindingWindowCount: number;
+      readonly bindingCatalog: unknown;
+      readonly bindingSnapshot: unknown;
+    }> = [];
+
+    const resumed = await runChronicleExtractionCoordinator(
+      {
+        ...request("run-citation-long-paragraph-resume", true),
+        specDigest: coordinatorContractDigest(prefix),
+      },
+      {
+        useAi: true,
+        createId: createIdFactory("long-paragraph-resume"),
+        buildSnapshot,
+        observeWithAi: idObserver(observationCalls),
+        synthesizeWithAi: successfulSynthesizer(),
+      },
+    );
+
+    expect(resumed.runId).toBe("run-citation-long-paragraph-resume");
+    expect(buildSnapshot).not.toHaveBeenCalled();
+    expect(planExtractionWindowsMock).toHaveBeenCalledTimes(1);
+    expect(planExtractionWindowsMock.mock.calls[0]?.[1]).toMatchObject({
+      evidenceCatalog: expect.objectContaining({
+        kind: "narrative-evidence-span-catalog",
+      }),
+    });
+    const resumedPlan = finishPayloads()
+      .flatMap((payload) => payload.artifacts ?? [])
+      .find(
+        (artifact) =>
+          artifact.artifactKind === CHRONICLE_EXTRACT_ARTIFACT_KINDS.windowPlan,
+      )?.payloadJson;
+    expect(resumedPlan).toEqual(originalPlan);
+    expect(observationCalls.length).toBeGreaterThan(1);
   });
 
   it("rejects an evidence coverage hole before the first observer dispatch", async () => {
