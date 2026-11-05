@@ -106,6 +106,22 @@ function irArrivalTapPlugin() {
     name: "fusion-ir-arrival-tap",
     enforce: "pre",
     transform(code, id) {
+      // 窓が切れて Raw だけになると製品は IR の operation を手放し、Native は以後の IR を
+      // expired で返す（到着が隠れる）。診断の mode では手放さず、sample の後片付けで閉じる。
+      if (
+        id.endsWith("/src/features/related-scenes/nir1RelatedScenesSession.ts")
+      ) {
+        const hold = "releaseOperation(): void {\n      if (!ticket) return;";
+        assert.equal(
+          code.split(hold).length,
+          2,
+          "[precheck] reuse: releaseOperation が見つからない",
+        );
+        return code.replace(
+          hold,
+          "releaseOperation(): void {\n      if (!ticket || (globalThis as { __firHoldIr?: boolean }).__firHoldIr) return;",
+        );
+      }
       if (!id.endsWith("/src/features/related-scenes/nir1RelatedScenesApi.ts"))
         return null;
       assert.equal(

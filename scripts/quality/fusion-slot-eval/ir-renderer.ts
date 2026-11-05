@@ -253,8 +253,9 @@ function installIrArrivalTap() {
       ),
     );
   };
+  (globalThis as unknown as { __firHoldIr?: boolean }).__firHoldIr = true;
   irTap = tap;
-  return { installed: true, mode: "vite-transform" };
+  return { installed: true, mode: "vite-transform", holdIrOperation: true };
 }
 
 const CANONICAL_CUTOVER_MARKER = "narrative-c2-canonical-freshness-v1";
