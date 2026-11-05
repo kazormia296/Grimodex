@@ -18,6 +18,8 @@ import {
   RELATED_SCENES_IR_EXTRA_WAIT_MS,
 } from "./relatedScenesConfig";
 
+/** Raw-ready（100）＋ D を過ぎた時刻。D の値に追随する（DR-IRW-1）。 */
+const AFTER_DEADLINE = 100 + RELATED_SCENES_IR_EXTRA_WAIT_MS + 5;
 const h = vi.hoisted(() => ({
   load: vi.fn(),
   semantic: vi.fn(),
@@ -394,8 +396,8 @@ describe("NIR1 production fetch orchestration", () => {
     h.continue.mockReturnValue(ir.promise);
     const pending = fetchHybrid();
     await drain();
-    h.now = 120;
-    await vi.advanceTimersByTimeAsync(20);
+    h.now = AFTER_DEADLINE;
+    await vi.advanceTimersByTimeAsync(RELATED_SCENES_IR_EXTRA_WAIT_MS + 10);
     const response = await pending;
     expect(response.result).toMatchObject({
       kind: "raw",
@@ -423,7 +425,7 @@ describe("NIR1 production fetch orchestration", () => {
       h.continue.mockReturnValue(ir.promise);
       const pending = fetchHybrid();
       await drain();
-      h.now = 120;
+      h.now = AFTER_DEADLINE;
       if (kind === "reject") ir.reject(new Error("private error details"));
       else ir.resolve({ status: "unavailable", reason: "failed" });
       const response = await pending;
@@ -442,7 +444,7 @@ describe("NIR1 production fetch orchestration", () => {
     const original = fusion.fuseNir1RelatedScenes;
     vi.spyOn(fusion, "fuseNir1RelatedScenes").mockImplementation((raw, ir) => {
       const result = original(raw, ir);
-      if (result.kind === "fused") h.now = 120;
+      if (result.kind === "fused") h.now = AFTER_DEADLINE;
       return result;
     });
     const response = await fetchHybrid();
@@ -651,8 +653,8 @@ describe("NIR1 Graph join wiring (CP-3a)", () => {
     h.graphContinue.mockReturnValue(graph.promise);
     const pending = fetchHybrid(seeded());
     await drain();
-    h.now = 120;
-    await vi.advanceTimersByTimeAsync(20);
+    h.now = AFTER_DEADLINE;
+    await vi.advanceTimersByTimeAsync(RELATED_SCENES_IR_EXTRA_WAIT_MS + 10);
     const response = await pending;
     expect(response.graphOutcome).toBe("graph-late");
     expect(response).not.toHaveProperty("graph");
@@ -709,8 +711,8 @@ describe("NIR1 Graph join wiring (CP-3a)", () => {
     h.graphContinue.mockReturnValue(new Promise(() => {}));
     const pending = fetchHybrid(seeded());
     await drain();
-    h.now = 120;
-    await vi.advanceTimersByTimeAsync(20);
+    h.now = AFTER_DEADLINE;
+    await vi.advanceTimersByTimeAsync(RELATED_SCENES_IR_EXTRA_WAIT_MS + 10);
     const response = await pending;
     expect(response.result).toMatchObject({
       kind: "raw",
@@ -844,8 +846,8 @@ describe("follow-up の子の Graph の窓と timing の印（K6/4 の批准 12�
       return value;
     });
     await drain();
-    h.now = 120;
-    await vi.advanceTimersByTimeAsync(20);
+    h.now = AFTER_DEADLINE;
+    await vi.advanceTimersByTimeAsync(RELATED_SCENES_IR_EXTRA_WAIT_MS + 10);
     expect(returned).toBe(false);
     expect(h.graphSettle).not.toHaveBeenCalled();
     h.now = 150;
@@ -890,8 +892,8 @@ describe("follow-up の子の Graph の窓と timing の印（K6/4 の批准 12�
     h.graphContinue.mockReturnValue(graph.promise);
     const pending = fetchHybrid(seeded());
     await drain();
-    h.now = 120;
-    await vi.advanceTimersByTimeAsync(20);
+    h.now = AFTER_DEADLINE;
+    await vi.advanceTimersByTimeAsync(RELATED_SCENES_IR_EXTRA_WAIT_MS + 10);
     const response = await pending;
     expect(response.graphOutcome).toBe("graph-late");
     expect(response.timing.refreshTrigger).toBeNull();
@@ -904,8 +906,8 @@ describe("follow-up の子の Graph の窓と timing の印（K6/4 の批准 12�
     h.graphContinue.mockReturnValue(new Promise(() => {}));
     const pending = fetchHybrid(child());
     await drain();
-    h.now = 120;
-    await vi.advanceTimersByTimeAsync(20);
+    h.now = AFTER_DEADLINE;
+    await vi.advanceTimersByTimeAsync(RELATED_SCENES_IR_EXTRA_WAIT_MS + 10);
     const response = await pending;
     expect(response.result).toMatchObject({
       kind: "raw",

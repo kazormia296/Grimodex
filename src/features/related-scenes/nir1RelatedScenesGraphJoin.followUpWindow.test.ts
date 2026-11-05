@@ -112,9 +112,9 @@ describe("follow-up の子の Graph の窓 W_f（K6/4 の批准 12）", () => {
     vi.restoreAllMocks();
   });
 
-  it("W_f は D より長い 100 ms で、D の値は変えない", () => {
+  it("W_f は D より長い 100 ms で、D は 40 ms（DR-IRW-1）", () => {
     expect(RELATED_SCENES_FOLLOW_UP_GRAPH_WINDOW_MS).toBe(100);
-    expect(RELATED_SCENES_IR_EXTRA_WAIT_MS).toBe(10.840000000596048);
+    expect(RELATED_SCENES_IR_EXTRA_WAIT_MS).toBe(40);
   });
 
   it("子は IR が ready でも D で公開せず、W_f の内に届いた Graph で 1 回だけ公開する", async () => {
@@ -187,7 +187,7 @@ describe("follow-up の子の Graph の窓 W_f（K6/4 の批准 12）", () => {
     const h = start(RELATED_SCENES_FOLLOW_UP_GRAPH_WINDOW_MS);
     await advanceTo(D_AT);
     const out = await h.promise;
-    expect(out.publishedAtMs).toBeLessThan(RAW_READY_AT_MS + 20);
+    expect(out.publishedAtMs).toBeLessThan(D_AT + 10);
     expect(out.completion.outcome).toBe("timeout");
     expect(out.completion.deadlineExceeded).toBe(true);
     expect(out.result).toMatchObject({
@@ -196,9 +196,9 @@ describe("follow-up の子の Graph の窓 W_f（K6/4 の批准 12）", () => {
     });
     expect(h.settled).toEqual(["unused"]);
     // W_f の内に Graph が来ても、IR の timeout の後の合流には混ぜない。
-    clock = RAW_READY_AT_MS + 30;
+    clock = D_AT + 5;
     h.graph.resolve({ status: "available", graph: "g" });
-    clock = RAW_READY_AT_MS + 31;
+    clock = D_AT + 6;
     h.ir.resolve(AVAILABLE);
     await flush();
     expect(h.resolved()).toBe(1);
@@ -288,10 +288,10 @@ describe("follow-up の子の Graph の窓 W_f（K6/4 の批准 12）", () => {
     await flush();
     await advanceTo(D_AT);
     const out = await h.promise;
-    expect(out.publishedAtMs).toBeLessThan(RAW_READY_AT_MS + 20);
+    expect(out.publishedAtMs).toBeLessThan(D_AT + 10);
     expect(out.graphOutcome).toBe("graph-late");
     expect(out.graphWindowMs).toBe(RELATED_SCENES_IR_EXTRA_WAIT_MS);
-    clock = RAW_READY_AT_MS + 14;
+    clock = D_AT + 3;
     h.graph.resolve({ status: "available", graph: "late" });
     await flush();
     expect(out.graph).toBeNull();
