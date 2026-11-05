@@ -214,6 +214,7 @@ DR-MPS-10 の 1 件目は、停止の時刻を突き合わせると成り立た�
   - `code` は error の Display から、固定の `NEX_` コードだけを取り出した値である。`fixed_code(message)` の規則：
     直前が `[A-Za-z0-9_]` でも path の区切り（`/` と `\`）でもない位置にある最初の `NEX_` から、`[A-Z0-9_]` が続く限りを取る。
     長さ 5〜96 だけ受け付け、それ以外は `None`。prose・小文字・path は通さない。
+    コードの直後が英小文字（`NEX_Abc`）なら、途中で切れた値を出さないよう `None`。
   - path の区切りの直後の `NEX_` は受け付けない（`/tmp/NEX_A` は `None`）。利用者が付けた file 名の断片を stderr に出さないためで、
     固定のコードは文の先頭か `(`、`:`、空白の後に現れる。
   - 無いときは key 自体を出さない（`skip_serializing_if`）。既存の record の key の集合は変わらない。
@@ -221,7 +222,7 @@ DR-MPS-10 の 1 件目は、停止の時刻を突き合わせると成り立た�
   `NEX_` コードは `[A-Z0-9_]` だけで `_` でつながるので、product journey の stderr 判定（`\b` 区切りの errors?／failed 等）には当たらない。
   新しい送信先・保存範囲・契約・閾値は無い。委任の根拠は AGENTS.md の NIR-1 の残レーンの lifecycle の技術判断（U3）。
 - 変えないもの: handoff の制御の流れ、戻り値、lock の順序、他の producer の record、IPC・wire・DB の契約。
-- 試験: `fixed_code` の表（コード付きの本文、`Anyhow(NEX_A_B)`、`xNEX_A`、`nex_a`、path の直後、97 字、`NEX_` だけ）と、
+- 試験: `fixed_code` の表（コード付きの本文、`Anyhow(NEX_A_B)`、`xNEX_A`、`nex_a`、`NEX_Abc`、path の直後、97 字、`NEX_` だけ）と、
   `code` 付きの record の key の集合。JS 側は `isMainProcessErrorMessage` が `code` 付きの record で false になること。
 
 ## DR-MPS-13 recovery の pump の無言の出口に、値だけの診断を足す（2026-11-05）
@@ -235,7 +236,8 @@ DR-MPS-10 の 1 件目は、停止の時刻を突き合わせると成り立た�
   - (e) state が RecoveryRequired なのに、選べる descriptor が無い
 - 判断: target 無しの呼出しに限り、出口ごとに 1 行を stderr に書く。`producer: "recovery-pump"`、`boundary: "recovery-pump"`、
   `cause: "D"`（deferred。error ではなく「今は進めない」）、`exit` は固定の列挙：
-  `transition-pending`（a。Recover の ticket が Maintenance の descriptor を指すときだけ。普通の Open／Restore の Transition では出さない）、
+  `transition-pending`（a。Recover の ticket が Maintenance の descriptor を指すときだけ。普通の Open／Restore の Transition では出さない。
+  正常に進行中の Recover Transition を並行の pump が観測した場合も 1 行出る。revision ごとに 1 回で害は無い）、
   `binding-unproven`（b）、`authority-unopened`（c。`code` に `fixed_code` を入れる）、`admission-pending`（d）、
   `no-actionable-descriptor`（e。state が RecoveryRequired のときだけ）。lifecycle の値は共有 core の診断（既存の `LifecycleDiagnostic`）を使う。
   pump が見ている descriptor が state の descriptor と違う場合（Ready のまま残る descriptor）は、`descriptorId` と `owner` に pump 側の値を入れる。

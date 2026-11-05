@@ -101,6 +101,14 @@ pub(super) fn fixed_code(message: &str) -> Option<String> {
                 .iter()
                 .take_while(|&&byte| matches!(byte, b'A'..=b'Z' | b'0'..=b'9' | b'_'))
                 .count();
+            // A lowercase letter right after the token means it is a prefix of
+            // a longer word, not a whole code: do not emit a truncated value.
+            if bytes
+                .get(start + len)
+                .is_some_and(|byte| byte.is_ascii_lowercase())
+            {
+                return None;
+            }
             return (FIXED_CODE_MIN_LEN..=FIXED_CODE_MAX_LEN)
                 .contains(&len)
                 .then(|| message[start..start + len].to_owned());
@@ -376,7 +384,7 @@ mod tests {
         let long_ok = format!("NEX_{}", "A".repeat(92));
         let too_long = format!("NEX_{}", "A".repeat(93));
         assert_eq!(long_ok.len(), 96);
-        let cases: [(&str, Option<&str>); 14] = [
+        let cases: [(&str, Option<&str>); 16] = [
             (
                 "NEX_C2ZC_SCHEDULER_LIVENESS_CYCLE_STALE: completed Incremental Freshness cycle exceeded its age bound",
                 Some("NEX_C2ZC_SCHEDULER_LIVENESS_CYCLE_STALE"),
@@ -390,6 +398,9 @@ mod tests {
             ("nex_a", None),
             ("NEX_a", None),
             ("NEX_", None),
+            // A code cut off by a following lowercase letter is not a code.
+            ("NEX_Abc", None),
+            ("NEX_A_b", None),
             // A path separator is not a code boundary: file names stay out.
             ("/tmp/NEX_A", None),
             ("C:\\work\\NEX_A", None),
