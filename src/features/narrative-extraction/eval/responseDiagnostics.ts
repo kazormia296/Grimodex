@@ -83,6 +83,13 @@ interface ChronicleOutputDiagnostic {
   readonly schemaRejectedCount: number;
   /** Schema-valid rows dropped by the production normalizer. */
   readonly normalizerDroppedCount: number;
+  /**
+   * Rows the production normalizer alone keeps. For synthesis this is not the
+   * task result: a response with an unresolvable observation ref is invalid, so
+   * the task returns no rows while this can still be positive. Read it together
+   * with the entry's expectedParseStatus (observation stages differ; see
+   * salvagedCount).
+   */
   readonly acceptedCount: number;
   readonly rejectedCount: number;
   /** Final rows retained while the canonical stage status was invalid. */
@@ -159,15 +166,18 @@ export function canonicalObservationParseStatus(
 
 /**
  * Mirror the production synthesis task's `onParseStatus` rule. Unlike the
- * observation task, synthesis treats a wrong clusterRef as invalid; unknown
- * observation refs remain a normalizer filtering concern.
+ * observation task, synthesis is invalid for a wrong clusterRef and for any
+ * observation ref outside the cluster: Native rejects a terminal output whose
+ * refs are not all known, so the task never reports such a response as parsed.
  */
 export function canonicalSynthesisParseStatus(
   diagnostic: ChronicleSynthesisResponseDiagnostic,
 ): ChronicleTaskParseStatus {
   return diagnostic.schema.status === "valid" &&
     !diagnostic.refs.errors.some(
-      (error) => error.code === "CLUSTER_REF_MISMATCH",
+      (error) =>
+        error.code === "CLUSTER_REF_MISMATCH" ||
+        error.code === "UNKNOWN_OBSERVATION_REF",
     )
     ? "parsed"
     : "invalid";

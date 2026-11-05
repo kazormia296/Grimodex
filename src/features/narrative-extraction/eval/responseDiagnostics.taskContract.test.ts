@@ -115,6 +115,17 @@ async function runSyntheticRekeyedSynthesis(
   expect(onParseStatus).toHaveBeenCalledExactlyOnceWith(
     canonicalSynthesisParseStatus(diagnostic),
   );
+  if (canonicalSynthesisParseStatus(diagnostic) === "invalid") {
+    // A ref outside the cluster is invalid, never an apparent success: no
+    // typed terminal output reaches Native and the receipt is a failure.
+    expect(result).toEqual([]);
+    expect(onTerminalOutput).not.toHaveBeenCalled();
+    expect(onStageReceipt.mock.calls[0]?.[0]).toMatchObject({
+      parseStatus: "invalid",
+      terminalStatus: "failed",
+    });
+    return { result, diagnostic, prompt: send.mock.calls[0]![0][0]!.content };
+  }
   expect(onParseStatus).toHaveBeenCalledWith("parsed");
   const requestMetadata = send.mock.calls[0]![1]?.metadata?.chronicleStage;
   const receipt = onStageReceipt.mock.calls[0]?.[0];
@@ -182,13 +193,13 @@ describe("Chronicle response diagnostics and task callback contract", () => {
     // Line 1 is the event example; line 2 is the unresolved empty exit (contract 3).
     const [eventShape, unresolvedShape] = shape!.trim().split("\n");
     expect(JSON.parse(eventShape!)).toMatchObject({
-      clusterRef: "<event-cluster-ref-from-context>",
+      clusterRef: "<cluster-ref-from-context>",
       events: [{ observationRefs: ["<observation-localId-from-context>"] }],
     });
     expect(
       JSON.parse(unresolvedShape!.slice(unresolvedShape!.indexOf("{"))),
     ).toEqual({
-      clusterRef: "<event-cluster-ref-from-context>",
+      clusterRef: "<cluster-ref-from-context>",
       resolution: "unresolved",
       events: [],
     });
@@ -284,7 +295,7 @@ describe("Chronicle response diagnostics and task callback contract", () => {
     expect(result).toEqual([]);
   });
 
-  it("matches synthesis onParseStatus for ref filtering and cluster mismatch", async () => {
+  it("matches synthesis onParseStatus for unknown refs and cluster mismatch", async () => {
     const refFilteredResponse = JSON.stringify({
       clusterRef: "cluster-1",
       resolution: "single-event",
@@ -316,7 +327,7 @@ describe("Chronicle response diagnostics and task callback contract", () => {
     expect(refFilteredStatus).toBe(
       canonicalSynthesisParseStatus(refFilteredDiagnostic),
     );
-    expect(refFilteredStatus).toBe("parsed");
+    expect(refFilteredStatus).toBe("invalid");
     expect(refFilteredResult).toEqual([]);
 
     const wrongClusterResponse = JSON.stringify({

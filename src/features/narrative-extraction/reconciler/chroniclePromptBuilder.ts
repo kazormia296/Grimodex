@@ -15,7 +15,7 @@ export const CHRONICLE_CONTEXT_SET_VERSION = "chronicle.context-set/1" as const;
 export const CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_ID =
   "chronicle.event-synthesis.prompt" as const;
 export const CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_VERSION =
-  "3" as const;
+  "4" as const;
 
 export interface ChroniclePromptComponentContract {
   readonly contractId: string;

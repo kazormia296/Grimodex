@@ -520,7 +520,12 @@ describeLive("Chronicle production OpenRouter live qualification", () => {
                     "Synthesis diagnostic parseStatus disagreed with the canonical task callback",
                   );
                 }
-                if (diagnostic.output.acceptedCount !== hypotheses.length) {
+                // An invalid response (wrong cluster, unknown ref) yields no rows.
+                const expectedHypothesisCount =
+                  expectedParseStatus === "parsed"
+                    ? diagnostic.output.acceptedCount
+                    : 0;
+                if (expectedHypothesisCount !== hypotheses.length) {
                   throw new Error(
                     "Synthesis diagnostic output count disagreed with the canonical task result",
                   );

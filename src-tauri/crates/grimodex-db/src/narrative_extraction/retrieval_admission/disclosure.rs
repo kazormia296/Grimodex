@@ -9,9 +9,9 @@ use super::super::material_membership::RevisionMaterialMembership;
 use super::{QueryIdentityState, RetrievalQueryContext, RevisionEligibilityReason as Reason};
 
 /// (stage, contract id, version, component contract digest) reviewed as
-/// non-story static input. Event Synthesis v2 and v3 are both accepted so
-/// existing v2 extraction results stay eligible (user decision 2026-11-03).
-const REVIEWED_STATIC_CONTRACTS: [(&str, &str, &str, &str); 3] = [
+/// non-story static input. Event Synthesis v2, v3 and v4 are all accepted so
+/// existing extraction results stay eligible (user decision 2026-11-03).
+const REVIEWED_STATIC_CONTRACTS: [(&str, &str, &str, &str); 4] = [
     (
         "narrative_observation_extract",
         "chronicle.observation-extraction.prompt",
@@ -29,6 +29,12 @@ const REVIEWED_STATIC_CONTRACTS: [(&str, &str, &str, &str); 3] = [
         "chronicle.event-synthesis.prompt",
         "3",
         "sha256:c5365b446a2f7bf85081b67174beb5001df51963b3b2a515860938ddefd406f7",
+    ),
+    (
+        "narrative_event_synthesize",
+        "chronicle.event-synthesis.prompt",
+        "4",
+        "sha256:20bb71b13fa5f4b4ef85a12edd1698d420a1e42dcb48dcacb77581bc6fa8478f",
     ),
 ];
 
@@ -328,11 +334,13 @@ mod static_contract_tests {
 
     const V2: &str = "sha256:5e63b1a1c4c3a3aba76689732e3876deae5ea230f15d961d74932e16b3b876ff";
     const V3: &str = "sha256:c5365b446a2f7bf85081b67174beb5001df51963b3b2a515860938ddefd406f7";
+    const V4: &str = "sha256:20bb71b13fa5f4b4ef85a12edd1698d420a1e42dcb48dcacb77581bc6fa8478f";
 
     #[test]
-    fn event_synthesis_v2_and_v3_are_both_reviewed_static_inputs() {
+    fn event_synthesis_v2_v3_and_v4_are_all_reviewed_static_inputs() {
         assert!(reviewed_static_contract("narrative_event_synthesize", V2).expect("v2"));
         assert!(reviewed_static_contract("narrative_event_synthesize", V3).expect("v3"));
+        assert!(reviewed_static_contract("narrative_event_synthesize", V4).expect("v4"));
         assert!(reviewed_static_contract(
             "narrative_observation_extract",
             "sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22",
@@ -346,6 +354,7 @@ mod static_contract_tests {
             ("narrative_event_synthesize", "sha256:unknown"),
             // A reviewed digest never classifies under another stage.
             ("narrative_observation_extract", V3),
+            ("narrative_observation_extract", V4),
             ("narrative_structured_repair", V2),
         ] {
             assert!(!reviewed_static_contract(stage, digest).expect("digest"));

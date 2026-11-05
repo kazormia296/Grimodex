@@ -70,28 +70,52 @@ it("replays independent cold production receipt seals with the live TS builders"
     );
   }
   expect(contracts).toEqual(currentFrozenContracts());
-  // This cold fixture was sealed under Event Synthesis v2, which stays accepted beside v3.
+  // This cold fixture was sealed under Event Synthesis v2, which stays accepted beside v3 and v4.
   expect([...(sealedVersions.narrative_event_synthesize ?? [])]).toEqual(["2"]);
 });
 
-it("pins the live v3 Event Synthesis requests that Native replays for the same inputs", async () => {
-  const expected = JSON.parse(
-    readFileSync(
-      directory + "production-golden-v3-synthesis-requests.json",
-      "utf8",
-    ),
-  );
-  const actual = [];
-  for (const output of golden.outputs) {
-    const artifact = buildSynthesisPromptArtifact({
-      clusterRef: output.clusterRef,
-      observations: output.rawObservations.observations,
-    });
-    expect(artifact.componentContract.contractVersion).toBe("3");
-    actual.push({
-      rootStageExecutionId: output.rootStageExecutionId,
-      ...(await buildChroniclePromptDigests(artifact)),
-    });
-  }
-  expect(actual).toEqual(expected.requests);
-});
+const pinnedRequests = [
+  {
+    version: "4",
+    file: "production-golden-v4-synthesis-requests.json",
+    frozenDigest: undefined,
+  },
+  {
+    version: "3",
+    file: "production-golden-v3-synthesis-requests.json",
+    frozenDigest:
+      "sha256:c5365b446a2f7bf85081b67174beb5001df51963b3b2a515860938ddefd406f7",
+  },
+] as const;
+
+it.each(pinnedRequests)(
+  "pins the Event Synthesis v$version requests that Native replays for the same inputs",
+  async ({ version, file, frozenDigest }) => {
+    const expected = JSON.parse(readFileSync(directory + file, "utf8"));
+    expect(expected.componentContractVersion).toBe(version);
+    const actual = [];
+    for (const output of golden.outputs) {
+      const live = buildSynthesisPromptArtifact({
+        clusterRef: output.clusterRef,
+        observations: output.rawObservations.observations,
+      });
+      // v4 is the live contract; v3 is rebuilt from its frozen superseded bytes.
+      let artifact = live;
+      if (frozenDigest) {
+        const frozen = await frozenContractForDigest(
+          live.stageId,
+          frozenDigest,
+        );
+        expect(frozen?.contractVersion).toBe(version);
+        if (!frozen) return;
+        artifact = withComponentContract(live, frozen);
+      }
+      expect(artifact.componentContract.contractVersion).toBe(version);
+      actual.push({
+        rootStageExecutionId: output.rootStageExecutionId,
+        ...(await buildChroniclePromptDigests(artifact)),
+      });
+    }
+    expect(actual).toEqual(expected.requests);
+  },
+);
