@@ -101,6 +101,12 @@ fn completed_cycle_capability_expires_before_a_late_heartbeat() {
     assert!(error
         .to_string()
         .contains("NEX_C2ZC_SCHEDULER_LIVENESS_CYCLE_STALE"));
+    assert!(
+        error
+            .downcast_ref::<grimodex_db::narrative_extraction::SchedulerLivenessCycleStale>()
+            .is_some(),
+        "the scheduler classifies a stale attestation by type (DR-MPS-8)"
+    );
 }
 
 #[test]
