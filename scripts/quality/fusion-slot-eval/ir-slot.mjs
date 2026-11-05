@@ -719,6 +719,10 @@ export async function runIrSlot(options) {
           ["driver", import.meta.filename],
           ["classify", path.join(import.meta.dirname, "ir-classify.mjs")],
           ["renderer", path.join(import.meta.dirname, "ir-renderer.ts")],
+          [
+            "errorRecord",
+            path.join(import.meta.dirname, "ir-error-record.mjs"),
+          ],
           ["rendererHtml", path.join(import.meta.dirname, "ir-renderer.html")],
           [
             "observer",
@@ -1045,7 +1049,11 @@ export async function runIrSlot(options) {
         records.extraction.push(summary);
         checkpoint.extraction.push(scene.index);
         log(
-          `${label} 抽出 位置 ${scene.index}: ${result.status} 提案 ${summary.proposalCount} 承認 ${summary.approvedCount} ${Math.round(result.durationMs / 1000)}s${result.errorCode ? ` ${result.errorCode}` : ""}`,
+          `${label} 抽出 位置 ${scene.index}: ${result.status} 提案 ${summary.proposalCount} 承認 ${summary.approvedCount} ${Math.round(result.durationMs / 1000)}s${result.errorCode ? ` ${result.errorCode}` : ""}${
+            result.connectionWait
+              ? ` 失敗まで ${Math.round(result.failedAtMs / 1000)}s discard ${Math.round(result.discardMs / 1000)}s 接続待ち ${Math.round(result.connectionWait.waitedMs / 1000)}s${result.connectionWait.ready ? "" : "（上限）"}`
+              : ""
+          }`,
         );
         await writeProgress();
         if (options["stop-after"] === "first-scene") break;

@@ -11,6 +11,11 @@
 //   `reviseChronicleProposal({secret:false})` で child にし、child を承認する（計画 §2.4）。
 // - 返すのは件数・enum・不透明 ID・Scene の位置だけ。本文・題名・抜粋・LLM の応答は返さない。
 import { generateNKeysBetween } from "fractional-indexing";
+import {
+  describeErrorChain,
+  sanitizeMessage,
+  waitUntilConnectionReady,
+} from "./ir-error-record.mjs";
 import { invoke } from "@/lib/tauri";
 import {
   getCurrentWorkspaceIdentity,
@@ -100,14 +105,13 @@ function errorCode(error: unknown, fallback: string): string {
 
 /**
  * 診断用の error の形：ASCII 以外（日本語の本文）を "?" に替え、識別子らしい長い英数字列
- * （key の可能性がある）を伏せ、240 字で切る。原因の分類にだけ使う。
+ * （key の可能性がある）を伏せ、240 字で切る。drizzle の "params:" 以降（英語の作品では
+ * 本文が入りうる）は切り捨てる。原因の分類にだけ使う。
  */
 function errorShape(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message
-    .replace(/[^\x20-\x7e]+/gu, "?")
-    .replace(/[A-Za-z0-9_-]{32,}/gu, "<long>")
-    .slice(0, 240);
+  return sanitizeMessage(
+    error instanceof Error ? error.message : String(error),
+  );
 }
 
 function requireActive() {
@@ -491,6 +495,51 @@ async function verifyMainScope(positions: number[]) {
   return { inherited, markers: byMarker };
 }
 
+const CONNECTION_WAIT_TIMEOUT_MS = 120_000;
+const CONNECTION_WAIT_POLL_MS = 1000;
+
+/**
+ * 抽出の失敗の後、次の位置へ進む前に、native の接続が空くまで待つ（上限つき）。
+ * 失敗の原因は、関連場面の IR の build が単一の接続を握り、前景の db_execute と
+ * renderer の read が待たされることだった。lifecycle の状態を renderer から読む
+ * command は無い（getWorkspaceLifecycleView は main 専用。store の workspaceLifecycleStatus は
+ * push の projection で、この harness は購読せず、接続の占有も映さない）ので、
+ * 軽い読み（cutover marker の件数）が速く返る状態が 2 回続くことを Ready とする。
+ * 上限に達したら記録して先へ進む（失敗した Scene を除かず数える決まりは変えない）。
+ */
+async function waitForConnectionReady() {
+  return waitUntilConnectionReady({
+    probe: canonicalCutoverDone,
+    describeFailure: probeFailureLabel,
+    timeoutMs: CONNECTION_WAIT_TIMEOUT_MS,
+    pollMs: CONNECTION_WAIT_POLL_MS,
+  }).catch((error: unknown) => ({
+    // 待ちそのものが投げても、failed の record を返す（抽出の失敗の記録を失わない）。
+    ready: false,
+    timedOut: false,
+    waitedMs: 0,
+    polls: 0,
+    lastState: { phase: "wait-failed", failure: probeFailureLabel(error) },
+  }));
+}
+
+/**
+ * probe の失敗の label。renderer の read は 10 s で打ち切られる（IPC_TIMEOUT）ので、
+ * 接続の占有による打ち切りと本物の失敗を区別できるよう、IpcInvokeError の code を残す。
+ * NEX_ code ／ [xxx] を優先し、次に /^[A-Z0-9_]{3,64}$/ の code、無ければ fallback。
+ */
+function probeFailureLabel(error: unknown): string {
+  const fromMessage = errorCode(error, "");
+  if (fromMessage) return fromMessage;
+  const code =
+    typeof error === "object" && error !== null
+      ? (error as { code?: unknown }).code
+      : undefined;
+  return typeof code === "string" && /^[A-Z0-9_]{3,64}$/u.test(code)
+    ? code
+    : "probe-failed";
+}
+
 /** 未解決の resume 候補は次の解析を拒むので、失敗の後に捨てる。 */
 async function discardResumeCandidates() {
   const state = requireActive();
@@ -546,21 +595,33 @@ async function extractScene(position: number) {
       existingEvents: buildLiveChronicleExistingEventCatalog(existing),
     }));
   } catch (error) {
+    // 経過は discard の前に取る（discard が接続の待ちで長引いても、失敗までの時間と混ぜない）。
+    const failedAtMs = performance.now() - started;
     const code = errorCode(error, "extraction-failed");
     const shape = errorShape(error);
+    const errorChain = describeErrorChain(error);
     let recovery = null;
+    const discardStarted = performance.now();
     try {
       recovery = await discardResumeCandidates();
     } catch (recoveryError) {
       recovery = { error: errorCode(recoveryError, "recovery-failed") };
     }
+    const discardMs = performance.now() - discardStarted;
+    // durationMs は従来の意味（開始から discard の終わりまで）。待ちは含めない。
+    const durationMs = performance.now() - started;
+    const connectionWait = await waitForConnectionReady();
     return {
       position,
       status: "failed",
       errorCode: code,
       errorShape: shape,
+      errorChain,
+      failedAtMs,
+      discardMs,
+      connectionWait,
       recovery,
-      durationMs: performance.now() - started,
+      durationMs,
       proposals: [],
     };
   }
