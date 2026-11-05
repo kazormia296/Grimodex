@@ -834,6 +834,7 @@ fn validate_receipt_lifecycle_binding(
     run_id: &str,
     receipt: &ChronicleStageTerminalReceipt,
 ) -> anyhow::Result<()> {
+    let _irb = crate::irb_timing::span("validate_receipt_lifecycle_binding");
     let execution = &receipt.stage_execution;
     let task_kind: Option<String> = conn
         .query_row(
@@ -912,6 +913,7 @@ fn validate_receipt_lifecycle_binding(
         execution.run_id, execution.task_id, execution.attempt_id
     );
     if let Some(response_digest) = receipt.response_digest.as_deref() {
+        let _irb = crate::irb_timing::span("audit_count.with_response");
         // The transport records terminal stage audits with
         // execution_id = stageExecutionId and
         // operation_id = "runId:taskId:attemptId"
@@ -953,6 +955,7 @@ fn validate_receipt_lifecycle_binding(
             operation_id
         );
     } else {
+        let _irb = crate::irb_timing::span("audit_count.no_response");
         // A no-response terminal is not exempt from transport evidence.
         // `emitChronicleStageAuditSkippedReceipt` writes the same exact
         // execution/receipt binding with a JSON null response digest.
@@ -1017,6 +1020,7 @@ pub(crate) fn load_verified_stage_receipts_for_hydration(
     project_id: &str,
     run_id: &str,
 ) -> anyhow::Result<Vec<Value>> {
+    let _irb = crate::irb_timing::span("hydrate_receipts");
     let mut receipt_stmt = conn.prepare(
         "SELECT task_id, attempt_id, stage_execution_id, receipt_json,
                 receipt_digest, model_binding_digest, terminal_status
@@ -1723,6 +1727,7 @@ pub(crate) fn load_v2_context_artifact(
     revision_id: &str,
     envelope: &Value,
 ) -> anyhow::Result<VerifiedV2ContextArtifact> {
+    let _irb = crate::irb_timing::span("load_v2_context_artifact");
     let summary_json: String = conn.query_row(
         "SELECT s.summary_json FROM narrative_proposal_sets s
          JOIN narrative_proposals p ON p.proposal_set_id = s.id

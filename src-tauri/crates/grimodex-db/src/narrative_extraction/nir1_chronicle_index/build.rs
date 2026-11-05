@@ -81,7 +81,11 @@ pub fn prepare_chronicle_index_build_with_control(
         Ok(value) => value,
         Err(reason) => return Ok(NirIndexBuildRead::Unavailable { reason }),
     };
-    if super::query::current_proof_with_control(conn, runtime, project, control)?.is_some() {
+    let irb_proof = crate::irb_timing::span("prepare.current_proof");
+    let irb_usable =
+        super::query::current_proof_with_control(conn, runtime, project, control)?.is_some();
+    drop(irb_proof);
+    if irb_usable {
         return Ok(NirIndexBuildRead::AlreadyUsable);
     }
     let snapshot = match read_snapshot_with_control(conn, project, control)? {
@@ -118,7 +122,9 @@ pub(super) fn read_snapshot_with_control(
     project: &str,
     control: &mut dyn GraphWorkControl,
 ) -> Result<std::result::Result<BuildSnapshot, Reason>> {
+    let irb_total = crate::irb_timing::span("snapshot.total");
     control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+    let irb_head = crate::irb_timing::span("snapshot.canonical_and_binding");
     if !is_generic_freshness_canonical(conn)? {
         return Ok(Err(Reason::CanonicalAuthorityUnavailable));
     }
@@ -138,21 +144,28 @@ pub(super) fn read_snapshot_with_control(
     // temporary publication can precede the evaluation that immediately
     // dirties it again. This is a scheduling precheck; all new-pool admission
     // and conditional-publication checks below remain mandatory.
+    drop(irb_head);
+    let irb_prev = crate::irb_timing::span("snapshot.previous_pending");
     if prior.is_some() {
         let previous_edges = find_edges_by_consumer(conn, project, "semantic-index", INDEX_KEY)?;
         if pending::read(conn, project, &previous_edges)?.is_err() {
             return Ok(Err(Reason::PendingChange));
         }
     }
+    drop(irb_prev);
     let Some(epoch) = get_current_epoch(conn, project)? else {
         return Ok(Err(Reason::CurrentEpochUnavailable));
     };
+    let irb_roster = crate::irb_timing::span("snapshot.roster_source");
     let roster = source::read_eligibility_source_with_control(conn, project, control)?;
+    drop(irb_roster);
+    crate::irb_timing::record_count("snapshot.roster_revisions", roster.revisions.len() as u64);
     let language: String = conn.query_row(
         "SELECT language FROM projects WHERE id=?1",
         [project],
         |row| row.get(0),
     )?;
+    let irb_authority = crate::irb_timing::span("snapshot.scope_authority");
     let authority = match load_live_project_scope_authority(
         conn,
         project,
@@ -167,17 +180,24 @@ pub(super) fn read_snapshot_with_control(
         }
         Err(_) => return Ok(Err(Reason::ScopeUnavailable)),
     };
+    drop(irb_authority);
     // Keep membership, approval, binding, and disclosure checks candidate
     // local. Only preflight-passing candidates contribute to the one global
     // scope preload, so a missing scope row in an ineligible roster entry
     // cannot suppress a valid candidate.
+    let irb_preflight = crate::irb_timing::span("snapshot.preflight_loop");
     let mut preflights = Vec::new();
     for revision in &roster.revisions {
         control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Row)?;
+        let irb_one = crate::irb_timing::span("preflight.one");
         if let Ok(preflight) = preflight_build_candidate(conn, project, revision, &authority)? {
             preflights.push(preflight);
         }
+        drop(irb_one);
     }
+    drop(irb_preflight);
+    crate::irb_timing::record_count("snapshot.preflight_passed", preflights.len() as u64);
+    let irb_preload = crate::irb_timing::span("snapshot.material_scope_preload");
     let material_source_keys = preflights
         .iter()
         .flat_map(|preflight| {
@@ -202,26 +222,38 @@ pub(super) fn read_snapshot_with_control(
         }
         Err(_) => return Ok(Err(Reason::ScopeUnavailable)),
     };
+    drop(irb_preload);
+    let irb_finalize = crate::irb_timing::span("snapshot.finalize_loop");
     let mut candidates = Vec::new();
     for preflight in preflights {
         control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Row)?;
-        if let Ok(candidate) = finalize_build_candidate_with_control(
+        let irb_one = crate::irb_timing::span("finalize.one");
+        let finalized = finalize_build_candidate_with_control(
             conn,
             project,
             &authority,
             preflight,
             &material_scope_cache,
             control,
-        )? {
+        )?;
+        drop(irb_one);
+        if let Ok(candidate) = finalized {
             candidates.push(candidate);
         }
     }
+    drop(irb_finalize);
+    crate::irb_timing::record_count("snapshot.candidates", candidates.len() as u64);
+    let irb_tail = crate::irb_timing::span("snapshot.edges_and_feed");
     let edges = input_edges(project, &roster.digest, &candidates)?;
     let feed = match pending::read(conn, project, &edges)? {
         Ok(value) => value,
         Err(_) => return Ok(Err(Reason::PendingChange)),
     };
+    drop(irb_tail);
+    let irb_guard = crate::irb_timing::span("snapshot.input_guard");
     let input_guard = super::input_guard::read(conn, project, control)?;
+    drop(irb_guard);
+    drop(irb_total);
     Ok(Ok(BuildSnapshot {
         input_guard,
         prior,

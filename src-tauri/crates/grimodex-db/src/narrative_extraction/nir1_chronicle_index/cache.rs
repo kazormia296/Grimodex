@@ -16,6 +16,7 @@ pub fn read_reusable_chronicle_embeddings(
     plan: &NirIndexBuildPlan,
     identity: &NirEmbeddingIdentity,
 ) -> Result<Vec<NirEmbeddedDocument>> {
+    let _irb = crate::irb_timing::span("reusable_embeddings");
     ensure!(
         !conn.is_autocommit(),
         "NIR1 cache read requires a read transaction"

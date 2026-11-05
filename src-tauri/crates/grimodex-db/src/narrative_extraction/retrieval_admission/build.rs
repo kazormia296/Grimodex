@@ -80,15 +80,19 @@ pub(in crate::narrative_extraction) fn preflight_build_candidate(
     // Replay the sealed membership once even when the current row is
     // unapproved. It remains candidate-local data and must not contribute to
     // the global scope union until all preliminary gates below pass.
+    let irb_membership = crate::irb_timing::span("preflight.membership");
     let membership = match read_revision_material_membership(conn, project, revision)? {
         MaterialMembershipRead::Complete(value) => value,
         MaterialMembershipRead::Unavailable { .. } => {
             return Ok(Err(Reason::MembershipUnavailable))
         }
     };
+    drop(irb_membership);
+    let irb_current = crate::irb_timing::span("preflight.current_read");
     let Some(current) = current::read(conn, project, revision)? else {
         return Ok(Err(Reason::RevisionNotCurrentHumanApproved));
     };
+    drop(irb_current);
     if membership.proposal_id != current.proposal_id
         || membership
             .lineage
@@ -105,10 +109,12 @@ pub(in crate::narrative_extraction) fn preflight_build_candidate(
         Ok(value) => value,
         Err(_) => return Ok(Err(Reason::BindingInvalid)),
     };
+    let irb_disclosure = crate::irb_timing::span("preflight.disclosure_prepare");
     let disclosure = match disclosure::prepare(&membership, authority, &envelope, &payload)? {
         Ok(value) => value,
         Err(reason) => return Ok(Err(reason)),
     };
+    drop(irb_disclosure);
     Ok(Ok(BuildCandidatePreflight {
         revision_id: revision.to_owned(),
         proposal_id: current.proposal_id,
@@ -160,6 +166,7 @@ pub(in crate::narrative_extraction) fn finalize_build_candidate_with_control(
         Ok(scopes) => scopes,
         Err(_) => return Ok(Err(Reason::MaterialAuthorityUnavailable)),
     };
+    let irb_freshness = crate::irb_timing::span("finalize.freshness");
     let mut context = super::super::source_revision::validation_context(conn, control);
     let canonical = match freshness::read_with_validation_context(
         &mut context,
@@ -171,6 +178,7 @@ pub(in crate::narrative_extraction) fn finalize_build_candidate_with_control(
             return Ok(Err(Reason::CanonicalFreshness(reason)))
         }
     };
+    drop(irb_freshness);
     let Some(document) = statement(
         &preflight.revision_id,
         &preflight.envelope_digest,

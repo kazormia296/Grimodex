@@ -91,6 +91,7 @@ pub(super) fn read_root_material(
     project_id: &str,
     revision_id: &str,
 ) -> Result<RootMaterialRead> {
+    let _irb = crate::irb_timing::span("root_material");
     anyhow::ensure!(
         !project_id.trim().is_empty() && !revision_id.trim().is_empty(),
         "nonempty identity required"

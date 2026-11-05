@@ -857,6 +857,8 @@ pub mod ime_export;
 pub mod impact_review_baselines;
 pub mod import;
 mod integrity;
+// DEV-ONLY timing instrumentation (claude/irb-prepare-timing; never merged).
+pub(crate) mod irb_timing;
 pub mod lint_ignores;
 pub mod lint_terms;
 pub mod map_writes;

@@ -38,6 +38,9 @@ pub(crate) const SOURCE_KIND: &str = "nir1-chronicle-eligibility-set";
 
 #[cfg(test)]
 mod invalidate_tests;
+// DEV-ONLY (claude/irb-prepare-timing): `#[ignore]` timing harness.
+#[cfg(test)]
+mod irb_timing_test;
 #[cfg(test)]
 mod publish_tests;
 #[cfg(test)]
