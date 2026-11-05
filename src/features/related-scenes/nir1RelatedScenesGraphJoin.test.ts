@@ -119,7 +119,7 @@ describe("awaitNir1RelatedScenesWithGraph", () => {
     h.ir.resolve(AVAILABLE);
     await flush();
     clock = DEADLINE_MS;
-    vi.advanceTimersByTime(20);
+    vi.advanceTimersByTime(RELATED_SCENES_IR_EXTRA_WAIT_MS + 10);
     const out = await h.promise;
     expect(out.publishedAtMs).toBeCloseTo(DEADLINE_MS);
     expect(out.completion.outcome).toBe("ir-ready");
@@ -175,7 +175,7 @@ describe("awaitNir1RelatedScenesWithGraph", () => {
     h.graph.resolve({ status: "available", graph: "g" });
     await flush();
     clock = DEADLINE_MS;
-    vi.advanceTimersByTime(20);
+    vi.advanceTimersByTime(RELATED_SCENES_IR_EXTRA_WAIT_MS + 10);
     const out = await h.promise;
     expect(out.completion.outcome).toBe("timeout");
     expect(out.completion.deadlineExceeded).toBe(true);
@@ -241,7 +241,7 @@ describe("awaitNir1RelatedScenesWithGraph", () => {
     h.graph.resolve({ status: "available", graph: "late" });
     await flush();
     expect(h.settled).toEqual([]);
-    vi.advanceTimersByTime(20);
+    vi.advanceTimersByTime(RELATED_SCENES_IR_EXTRA_WAIT_MS + 10);
     const out = await h.promise;
     expect(out.graphOutcome).toBe("graph-late");
     expect(out.graph).toBeNull();
