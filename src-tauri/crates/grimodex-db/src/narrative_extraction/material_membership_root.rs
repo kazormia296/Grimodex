@@ -86,19 +86,46 @@ pub struct RootMaterialRead {
 /// prepare that owns the read transaction, borrowed by each Root read, and
 /// dropped with that call frame. It can therefore not outlive the read
 /// snapshot it was filled under, cannot leak through a panic, and is not
-/// shared by reentrant or concurrent readers. Every cached value is a pure
-/// function of rows inside that one snapshot; SQL errors are never cached
-/// (they propagate), and for deterministic verification failures only the
-/// classification that callers actually use is cached.
+/// shared by reentrant or concurrent readers.
+///
+/// What is cached (every value is a pure function of rows inside that one
+/// snapshot):
+/// - the hydrated receipts, the Snapshot authority and every accepted artifact:
+///   **successes only**. A failure is never stored, so the next Root of the
+///   Run recomputes it exactly as a memo-less read would. This keeps the
+///   classification of every error with the verifier that raised it (some
+///   verifiers re-wrap SQL errors into plain messages, so a failure cannot be
+///   told from an SQL error afterwards) and costs nothing in practice because
+///   a failed Run is rare;
+/// - the artifact-row scan: its result, including the terminal issue that
+///   stopped it (`ArtifactScan::abort`), because that classification is made
+///   by the scan itself and a SQL error inside the scan propagates uncached.
+///
+/// Dropping early: a prepare may tell the memo how many roster revisions
+/// belong to each Run (`expect_revisions`) and report each finished revision
+/// (`finish_revision`); when a Run has no revision left its proofs are
+/// dropped (`release_run`), so peak memory follows the Runs still in use
+/// rather than every Run of the roster. The counts only decide *when* to
+/// drop. A Run that is dropped while a later Root still needs it is simply
+/// verified again in the same transaction and gives the same result, and a
+/// Run that is never counted down stays until the memo is dropped; a wrong
+/// count therefore costs recomputation or memory, never correctness.
 #[derive(Default)]
 pub(in crate::narrative_extraction) struct RunProofMemo {
-    /// `None` is a (non-SQL) hydration failure: callers only use its class.
-    receipts: HashMap<RunKey, Option<Rc<Vec<Value>>>>,
-    artifacts: HashMap<RunKey, Rc<ArtifactScan>>,
-    /// `false` is a (non-SQL) Snapshot authority failure.
-    snapshot_authority: HashMap<RunKey, bool>,
+    runs: HashMap<RunKey, RunProofs>,
     /// Keyed by Run alone: `replay::accepted` reads by Run, not by project.
-    accepted: HashMap<(String, String, String), Rc<replay::AcceptedArtifact>>,
+    accepted: HashMap<String, HashMap<(String, String), Rc<replay::AcceptedArtifact>>>,
+    /// Roster revisions left per Run, and the Run each roster revision was
+    /// counted under. Empty unless `expect_revisions` was called.
+    remaining: HashMap<RunKey, usize>,
+    revision_run: HashMap<String, String>,
+}
+
+#[derive(Default)]
+struct RunProofs {
+    receipts: Option<Rc<Vec<Value>>>,
+    artifacts: Option<Rc<ArtifactScan>>,
+    snapshot_authority_verified: bool,
 }
 
 type RunKey = (String, String);
@@ -113,15 +140,46 @@ fn run_key(project_id: &str, run_id: &str) -> RunKey {
 /// reported.
 struct ArtifactScan {
     artifacts: Vec<VerifiedArtifact>,
-    snapshots: Vec<Value>,
+    /// How many `source.snapshot@1` rows the Run has, and the few facts the
+    /// Root read checks on the first of them. The payload itself is not kept:
+    /// the accepted artifact holds the only copy the replay needs.
+    snapshot_count: usize,
+    snapshot: Option<SnapshotFacts>,
     issues: Vec<(RosterStatus, &'static str, &'static str)>,
     abort: Option<(RosterStatus, &'static str, &'static str)>,
+}
+
+/// The parts of a `source.snapshot@1` payload that the citation companion and
+/// catalog-coverage checks read.
+struct SnapshotFacts {
+    evidence_mode: Option<String>,
+    has_catalog_entries: bool,
+    catalog_digest: Option<Value>,
+    catalog_inner_digest: Option<Value>,
+}
+
+impl SnapshotFacts {
+    fn of(payload: &Value) -> Self {
+        Self {
+            evidence_mode: payload
+                .pointer("/evidence/mode")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            has_catalog_entries: payload
+                .pointer("/evidence/catalog/entries")
+                .and_then(Value::as_array)
+                .is_some(),
+            catalog_digest: payload.pointer("/evidence/catalogDigest").cloned(),
+            catalog_inner_digest: payload.pointer("/evidence/catalog/digest").cloned(),
+        }
+    }
 }
 
 fn scan_run_artifacts(conn: &Connection, run_id: &str) -> Result<ArtifactScan> {
     let mut scan = ArtifactScan {
         artifacts: vec![],
-        snapshots: vec![],
+        snapshot_count: 0,
+        snapshot: None,
         issues: vec![],
         abort: None,
     };
@@ -172,7 +230,10 @@ fn scan_run_artifacts(conn: &Connection, run_id: &str) -> Result<ArtifactScan> {
             return Ok(scan);
         }
         if kind == "source.snapshot@1" {
-            scan.snapshots.push(payload);
+            scan.snapshot_count += 1;
+            if scan.snapshot.is_none() {
+                scan.snapshot = Some(SnapshotFacts::of(&payload));
+            }
         }
         scan.artifacts.push(VerifiedArtifact {
             artifact_id: id,
@@ -184,23 +245,21 @@ fn scan_run_artifacts(conn: &Connection, run_id: &str) -> Result<ArtifactScan> {
 }
 
 impl RunProofMemo {
-    /// `Ok(None)` is a deterministic, non-SQL verification failure.
+    /// `Err` is returned as it is, SQL or not: failures are never cached.
     fn hydrated_receipts(
         &mut self,
         conn: &Connection,
         project_id: &str,
         run_id: &str,
-    ) -> Result<Option<Rc<Vec<Value>>>> {
+    ) -> Result<Rc<Vec<Value>>> {
         let key = run_key(project_id, run_id);
-        if let Some(cached) = self.receipts.get(&key) {
-            return Ok(cached.clone());
+        if let Some(cached) = self.runs.get(&key).and_then(|run| run.receipts.as_ref()) {
+            return Ok(Rc::clone(cached));
         }
-        let loaded = match load_verified_stage_receipts_for_hydration(conn, project_id, run_id) {
-            Ok(value) => Some(Rc::new(value)),
-            Err(error) if error.downcast_ref::<rusqlite::Error>().is_some() => return Err(error),
-            Err(_) => None,
-        };
-        self.receipts.insert(key, loaded.clone());
+        let loaded = Rc::new(load_verified_stage_receipts_for_hydration(
+            conn, project_id, run_id,
+        )?);
+        self.runs.entry(key).or_default().receipts = Some(Rc::clone(&loaded));
         Ok(loaded)
     }
 
@@ -211,32 +270,35 @@ impl RunProofMemo {
         run_id: &str,
     ) -> Result<Rc<ArtifactScan>> {
         let key = run_key(project_id, run_id);
-        if let Some(cached) = self.artifacts.get(&key) {
+        if let Some(cached) = self.runs.get(&key).and_then(|run| run.artifacts.as_ref()) {
             return Ok(Rc::clone(cached));
         }
         let scan = Rc::new(scan_run_artifacts(conn, run_id)?);
-        self.artifacts.insert(key, Rc::clone(&scan));
+        self.runs.entry(key).or_default().artifacts = Some(Rc::clone(&scan));
         Ok(scan)
     }
 
-    /// `Ok(false)` is a deterministic, non-SQL authority failure.
-    fn snapshot_authority_verified(
+    /// `Err` is returned as it is, SQL or not: only a success is cached.
+    fn verify_snapshot_authority(
         &mut self,
         conn: &Connection,
         project_id: &str,
         run_id: &str,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         let key = run_key(project_id, run_id);
-        if let Some(cached) = self.snapshot_authority.get(&key) {
-            return Ok(*cached);
+        if self
+            .runs
+            .get(&key)
+            .is_some_and(|run| run.snapshot_authority_verified)
+        {
+            return Ok(());
         }
-        let verified = match load_verified_chronicle_snapshot_for_apply(conn, project_id, run_id) {
-            Ok(_) => true,
-            Err(error) if error.downcast_ref::<rusqlite::Error>().is_some() => return Err(error),
-            Err(_) => false,
-        };
-        self.snapshot_authority.insert(key, verified);
-        Ok(verified)
+        load_verified_chronicle_snapshot_for_apply(conn, project_id, run_id)?;
+        self.runs
+            .entry(key)
+            .or_default()
+            .snapshot_authority_verified = true;
+        Ok(())
     }
 
     /// Only successes are cached: the caller classifies an error by message.
@@ -247,13 +309,89 @@ impl RunProofMemo {
         task: &str,
         kind: &str,
     ) -> Result<Rc<replay::AcceptedArtifact>> {
-        let key = (run_id.to_owned(), task.to_owned(), kind.to_owned());
-        if let Some(cached) = self.accepted.get(&key) {
+        let key = (task.to_owned(), kind.to_owned());
+        if let Some(cached) = self.accepted.get(run_id).and_then(|run| run.get(&key)) {
             return Ok(Rc::clone(cached));
         }
         let artifact = Rc::new(replay::accepted(conn, run_id, task, kind)?);
-        self.accepted.insert(key, Rc::clone(&artifact));
+        self.accepted
+            .entry(run_id.to_owned())
+            .or_default()
+            .insert(key, Rc::clone(&artifact));
         Ok(artifact)
+    }
+
+    /// Drop every proof held for one Run. Safe at any time: a later Root of
+    /// the Run verifies it again and gets the same result.
+    pub(in crate::narrative_extraction) fn release_run(&mut self, project_id: &str, run_id: &str) {
+        self.runs.remove(&run_key(project_id, run_id));
+        self.accepted.remove(run_id);
+    }
+
+    /// Runs whose proofs are held right now.
+    #[cfg(test)]
+    pub(in crate::narrative_extraction) fn held_runs(&self) -> usize {
+        self.runs.len().max(self.accepted.len())
+    }
+
+    /// Count, for each Run, the roster revisions that belong to it, so
+    /// `finish_revision` can drop a Run's proofs once its last revision is
+    /// done. One SELECT over the project's revisions; a revision it cannot
+    /// place is not counted and its Run is simply kept.
+    pub(in crate::narrative_extraction) fn expect_revisions(
+        &mut self,
+        conn: &Connection,
+        project_id: &str,
+        revisions: &[String],
+    ) -> Result<()> {
+        self.remaining.clear();
+        self.revision_run.clear();
+        let wanted: std::collections::HashSet<&str> =
+            revisions.iter().map(String::as_str).collect();
+        let mut stmt = conn.prepare(
+            "SELECT r.id, s.run_id
+             FROM narrative_proposal_revisions r
+             JOIN narrative_proposals p ON p.id = r.proposal_id
+             JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+             WHERE s.project_id = ?1",
+        )?;
+        let rows = stmt.query_map([project_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (revision, run) = row?;
+            if wanted.contains(revision.as_str()) {
+                self.revision_run.insert(revision, run);
+            }
+        }
+        for revision in revisions {
+            if let Some(run) = self.revision_run.get(revision) {
+                *self.remaining.entry(run_key(project_id, run)).or_default() += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// One counted roster revision is done (whatever its outcome). The last
+    /// one of a Run releases the Run's proofs.
+    pub(in crate::narrative_extraction) fn finish_revision(
+        &mut self,
+        project_id: &str,
+        revision_id: &str,
+    ) {
+        let Some(run) = self.revision_run.get(revision_id) else {
+            return;
+        };
+        let key = run_key(project_id, run);
+        let Some(left) = self.remaining.get_mut(&key) else {
+            return;
+        };
+        *left = left.saturating_sub(1);
+        if *left == 0 {
+            self.remaining.remove(&key);
+            let run = key.1.clone();
+            self.release_run(project_id, &run);
+        }
     }
 }
 
@@ -375,13 +513,19 @@ pub(in crate::narrative_extraction) fn read_root_material_with_memo(
                 return Ok(report);
             }
         };
-    let Some(receipts) = memo.hydrated_receipts(conn, project_id, &run_id)? else {
-        report.issue(
-            RosterStatus::Inconsistent,
-            "receipt-hydration-invalid",
-            "receipt/model-binding/task-attempt/audit",
-        );
-        return Ok(report);
+    let receipts = match memo.hydrated_receipts(conn, project_id, &run_id) {
+        Ok(value) => value,
+        Err(error) => {
+            if error.downcast_ref::<rusqlite::Error>().is_some() {
+                return Err(error);
+            }
+            report.issue(
+                RosterStatus::Inconsistent,
+                "receipt-hydration-invalid",
+                "receipt/model-binding/task-attempt/audit",
+            );
+            return Ok(report);
+        }
     };
     for receipt in receipts.iter() {
         report.verified_receipts.push(VerifiedReceipt {
@@ -403,8 +547,7 @@ pub(in crate::narrative_extraction) fn read_root_material_with_memo(
         report.issue(*status, code, binding);
         return Ok(report);
     }
-    let snapshots = &scan.snapshots;
-    if snapshots.is_empty() {
+    if scan.snapshot_count == 0 {
         report.issue(
             RosterStatus::Incomplete,
             "snapshot-binding-missing",
@@ -412,7 +555,7 @@ pub(in crate::narrative_extraction) fn read_root_material_with_memo(
         );
         return Ok(report);
     }
-    if snapshots.len() != 1 {
+    if scan.snapshot_count != 1 {
         report.issue(
             RosterStatus::Incomplete,
             "snapshot-selector-unresolved",
@@ -423,7 +566,10 @@ pub(in crate::narrative_extraction) fn read_root_material_with_memo(
     // Reuse the production reader's accepted Task/Attempt, Run seal, output
     // CAS and nested snapshot checks; hashing whichever snapshot survived is
     // not an independent membership seal.
-    if !memo.snapshot_authority_verified(conn, project_id, &run_id)? {
+    if let Err(error) = memo.verify_snapshot_authority(conn, project_id, &run_id) {
+        if error.downcast_ref::<rusqlite::Error>().is_some() {
+            return Err(error);
+        }
         report.issue(
             RosterStatus::Inconsistent,
             "snapshot-authority-invalid",
@@ -431,6 +577,9 @@ pub(in crate::narrative_extraction) fn read_root_material_with_memo(
         );
         return Ok(report);
     }
+    let Some(snapshot) = scan.snapshot.as_ref() else {
+        anyhow::bail!("artifact scan counted a snapshot without its facts");
+    };
     let coverage: Value = match serde_json::from_str(&coverage_json) {
         Ok(value) => value,
         Err(_) => {
@@ -452,15 +601,7 @@ pub(in crate::narrative_extraction) fn read_root_material_with_memo(
         return Ok(report);
     }
     report.protocol = Some("citation-id-v2".into());
-    if snapshots[0]
-        .pointer("/evidence/mode")
-        .and_then(Value::as_str)
-        != mode
-        || snapshots[0]
-            .pointer("/evidence/catalog/entries")
-            .and_then(Value::as_array)
-            .is_none()
-    {
+    if snapshot.evidence_mode.as_deref() != mode || !snapshot.has_catalog_entries {
         report.issue(
             RosterStatus::Inconsistent,
             "citation-companion-binding-invalid",
@@ -468,9 +609,8 @@ pub(in crate::narrative_extraction) fn read_root_material_with_memo(
         );
         return Ok(report);
     }
-    if coverage.get("evidenceCatalogDigest") != snapshots[0].pointer("/evidence/catalogDigest")
-        || snapshots[0].pointer("/evidence/catalogDigest")
-            != snapshots[0].pointer("/evidence/catalog/digest")
+    if coverage.get("evidenceCatalogDigest") != snapshot.catalog_digest.as_ref()
+        || snapshot.catalog_digest != snapshot.catalog_inner_digest
     {
         report.issue(
             RosterStatus::Inconsistent,

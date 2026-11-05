@@ -178,9 +178,14 @@ pub(super) fn read_snapshot_with_control(
     //
     // Roots of one Run share the Run-level receipt, artifact and Snapshot
     // proofs. This memo is local to this call (one read transaction): it is
-    // dropped before the snapshot is returned and is never part of it.
+    // dropped before the snapshot is returned and is never part of it. The
+    // roster is counted per Run up front so a Run's proofs are dropped as soon
+    // as its last roster revision is done (the roster order is by proposal id,
+    // so a Run's revisions are spread over the whole walk). The count only
+    // times that drop; a wrong count costs recomputation, not correctness.
     let mut preflights = Vec::new();
     let mut run_proofs = RunProofMemo::default();
+    run_proofs.expect_revisions(conn, project, &roster.revisions)?;
     for revision in &roster.revisions {
         control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Row)?;
         if let Ok(preflight) = preflight_build_candidate_with_memo(
@@ -192,6 +197,7 @@ pub(super) fn read_snapshot_with_control(
         )? {
             preflights.push(preflight);
         }
+        run_proofs.finish_revision(project, revision);
     }
     drop(run_proofs);
     let material_source_keys = preflights
