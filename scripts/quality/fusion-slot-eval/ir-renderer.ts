@@ -209,95 +209,43 @@ async function attachExisting(input: {
 }
 
 /**
- * 診断（--reuse-workspace）：bridge の invoke を包み、IR の continue が解決した時刻を
- * renderer の時計で残す。製品の結果（窓の判定）は変えない。包めなければ installed=false。
+ * 診断（--reuse-workspace）：IR の continue が解決した時刻を renderer の時計で残す。
+ * contextBridge の bridge は差し替えられないので、driver が診断の mode のときだけ vite の変換で
+ * `related_scenes_continue` の Promise を `globalThis.__firIrTap` に渡す。製品の結果は変えない。
  */
 type IrTapRecord = { start: number; end: number | null; status: string | null };
 let irTap: { continues: IrTapRecord[]; pending: Promise<unknown>[] } | null =
   null;
 function installIrArrivalTap() {
-  const original = (window as unknown as { grimodex?: Record<string, unknown> })
-    .grimodex;
-  if (!original) return { installed: false, reason: "no-bridge" };
   const tap = {
     continues: [] as IrTapRecord[],
     pending: [] as Promise<unknown>[],
   };
-  const originalInvoke = original.invoke as (
-    cmd: string,
-    args?: unknown,
-  ) => Promise<unknown>;
-  const wrapped = new Proxy(original, {
-    get(target, prop) {
-      if (prop !== "invoke") return Reflect.get(target, prop);
-      return (cmd: string, args?: unknown) => {
-        const promise = originalInvoke(cmd, args);
-        if (cmd === "related_scenes_continue") {
-          const record: IrTapRecord = {
-            start: performance.now(),
-            end: null,
-            status: null,
-          };
-          tap.continues.push(record);
-          tap.pending.push(
-            promise.then(
-              (envelope) => {
-                record.end = performance.now();
-                const value = (
-                  envelope as { ok?: boolean; value?: { status?: unknown } }
-                )?.value;
-                record.status =
-                  typeof value?.status === "string" ? value.status : "unknown";
-              },
-              () => {
-                record.end = performance.now();
-                record.status = "rejected";
-              },
-            ),
-          );
-        }
-        return promise;
-      };
-    },
-  });
-  // window.grimodex は contextBridge が再定義を禁じる。まず window を、だめなら bridge の
-  // invoke の property を差し替える（製品の tauri.ts は呼出しのたびに bridge.invoke を読む）。
-  const attempts: string[] = [];
-  let installed = false;
-  try {
-    Object.defineProperty(window, "grimodex", {
-      value: wrapped,
-      configurable: true,
-      writable: true,
-    });
-    installed =
-      (window as unknown as { grimodex?: unknown }).grimodex === wrapped;
-  } catch (error) {
-    attempts.push(`window: ${errorShape(error)}`);
-  }
-  if (!installed) {
-    const replacement = (wrapped as Record<string, unknown>).invoke;
-    try {
-      (original as Record<string, unknown>).invoke = replacement;
-      installed = original.invoke === replacement;
-      if (!installed) attempts.push("bridge.invoke: assignment ignored");
-    } catch (error) {
-      attempts.push(`bridge.invoke assign: ${errorShape(error)}`);
-    }
-    if (!installed)
-      try {
-        Object.defineProperty(original, "invoke", {
-          value: replacement,
-          configurable: true,
-          writable: true,
-        });
-        installed = original.invoke === replacement;
-      } catch (error) {
-        attempts.push(`bridge.invoke define: ${errorShape(error)}`);
-      }
-  }
-  if (installed) irTap = tap;
-  return { installed, reason: installed ? null : attempts.join("; ") };
+  (globalThis as unknown as { __firIrTap?: unknown }).__firIrTap = (
+    promise: Promise<unknown>,
+  ) => {
+    const record: IrTapRecord = {
+      start: performance.now(),
+      end: null,
+      status: null,
+    };
+    tap.continues.push(record);
+    tap.pending.push(
+      promise.then(
+        (value) => {
+          record.end = performance.now();
+          const status = (value as { status?: unknown } | null)?.status;
+          record.status = typeof status === "string" ? status : "unknown";
+        },
+        () => {
+          record.end = performance.now();
+          record.status = "rejected";
+        },
+      ),
+    );
+  };
+  irTap = tap;
+  return { installed: true, mode: "vite-transform" };
 }
 
 const CANONICAL_CUTOVER_MARKER = "narrative-c2-canonical-freshness-v1";

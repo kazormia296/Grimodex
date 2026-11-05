@@ -98,6 +98,29 @@ const DEFAULT_KEY_FILE = path.join(
   ".config/grimodex-eval/openrouter.key",
 );
 
+/** 診断の mode だけの vite の変換：`related_scenes_continue` の Promise を hook に渡す。 */
+function irArrivalTapPlugin() {
+  const needle =
+    'return invoke("related_scenes_continue", { operationTicket });';
+  return {
+    name: "fusion-ir-arrival-tap",
+    enforce: "pre",
+    transform(code, id) {
+      if (!id.endsWith("/src/features/related-scenes/nir1RelatedScenesApi.ts"))
+        return null;
+      assert.equal(
+        code.split(needle).length,
+        2,
+        "[precheck] reuse: IR の continue の呼出しが見つからない",
+      );
+      return code.replace(
+        needle,
+        'const firIrPromise = invoke("related_scenes_continue", { operationTicket }); (globalThis as { __firIrTap?: (p: Promise<unknown>) => void }).__firIrTap?.(firIrPromise); return firIrPromise as Promise<RelatedScenesContinueResponse>;',
+      );
+    },
+  };
+}
+
 function parseArgs(args) {
   const options = {
     "key-file": DEFAULT_KEY_FILE,
@@ -734,6 +757,8 @@ export async function runIrSlot(options) {
     vite = await createServer({
       root: ROOT,
       cacheDir: path.join(output, "vite-cache"),
+      // 診断（--reuse-workspace）のときだけ：IR の continue の Promise を renderer の記録へ渡す。
+      plugins: options["reuse-workspace"] ? [irArrivalTapPlugin()] : [],
       server: { host: "127.0.0.1", port: 0, strictPort: false, open: false },
       clearScreen: false,
       logLevel: "warn",
