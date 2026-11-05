@@ -131,6 +131,15 @@
 - 作品ごとの値の違い（m-ja-2 の 86.7％ と m-en-1 の 11.8％、m-ja-1 の 23.1％）は、作品・言語・抽出の条件（m-ja-1 は修正前の prompt）・build の違いを分けられない（事前登録 §10）。
 - 採否の閾値は置かない（事前登録 §6）。枠の案の採否はユーザーが結果を見て決める。
 
+### 公開の文献から足す限界（2026-11-05、記録の後に追記。指標・判断規則・読みは変えない）
+
+出典は integrator の調査の文書 `/home/grimodex/fusion-eval-data/design-notes/nir-prior-art-2026-11-05.md`（repo の外。§3 の V4〜V6、§7 で本文と照合済みのもの）。
+
+- **標本の実効の大きさは sample の数より小さい。** 表の件数は 3 の倍数で、同じ query の 3 回の反復を数えている。D0 の 219 は約 73 query・3 作品にあたり、Wilson の区間は sample の数で計算しているので実効の n は約 1/3 になる。作品が 3 つだと、作品を単位にした bootstrap も不安定になる（multiway bootstrap、Bowyer 2025、Smucker 2009）。値は「この 3 作品の中の値」で、作品をまたぐ一般化は主張しない。D0 の数え方は事前登録どおり sample の数のまま変えない。
+- **1 回の run の値で、非決定性の分散を含まない。** 抽出の失敗の数・提案の数・IR の admitted は、run ごとに変わりうる。
+- **「全提案を非 secret で承認」は、IR が最大に出る条件であると同時に、不忠実な解釈も通す条件。** 枠に入った IR の中身の正しさ（その 1 件が関連場面として適切か）は測っていない（FABLES：要約の claim の忠実さは 69〜91％）。枠の使用率は「IR が枠を使う機会」で、関連場面の改善を示す値ではない（事前登録 §1 の目的どおり）。
+- **言語の間で比べない。** 日英の差は、IR の floor（ja 0.813、en 0.66。`policies/narrative/nir1-related-scenes-ranking.json`）の校正の差を含む。m-en-1 の「IR の admitted 0 件」の診断では、floor の校正と、IR の build の preflight を通る revision が 509 件中 318 件だったこと（IRB の計測。理由は調査中）の両方を候補にする。
+
 ## 置いたもの
 
 - `records-m-ja-1-v3.json`、`records-m-ja-2-v5.json`、`records-m-en-1-v5.json`：harness の出力（`runs-ir/main3-m-ja-1`、`main5-m-ja-2`、`main5-m-en-1` の `records.json` の写し）。
