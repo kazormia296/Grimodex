@@ -171,7 +171,8 @@ DR-IRB-3 以降の番号は草稿の仮番号。DR-IRB-1 と DR-IRB-2 は実装�
    `Some(false)` は `Idle`、`None` は `Stopped` のまま。**この 3 つは authority の接続に残す。**
    - **`WorkspaceAuthority::main_database_file_identity`（`state.rs:86-100`）は呼ばない。** 中で `self.db.with_conn` を呼んで Database の `Mutex` を取り直す
      （`LIB:810-814` の `with_conn` は `lock_conn`）。この tx の closure は同じ mutex を握っているので、std の `Mutex` は再入できず自己 deadlock する
-     （`NMC:1243` の注釈も「mutex を握る callback から呼ばない」）。`build_once` が持つのは `request.database()` だけで `WorkspaceAuthority` は見えない（§1.1 の「`Database` は path を持たない」）。
+     （`NMC:1243` の注釈も「mutex を握る callback から呼ばない」）。**訂正（§2.2.4）：** `build_once` の `request.database()` は `PinnedWorkspaceDb`＝`Arc<WorkspaceAuthority>`（`state.rs:167`）で、
+     `path()`・`lease()`・`identity()` は見える。見えないのは `Database`（path を持たない。§1.1）の側。これらを使う reader の入口は `WorkspaceAuthority` 側に置く案も取れる。
    - **reader を開く path は、この tx から得た値だけを使う。** 別に組み立てた path や設定の path は使わない（`nir1_graph.rs:498` は `authority.path().join("grimodex.db")` だが、ここでは authority の実際に開いた file と同じものを使う）。
    - **`:memory:`**（関連場面の既存試験の fixture にある）は reader で開けない。path が `:memory:` か空のときの扱いは未決：
      (a) その試験の fixture を file の DB に直す（既定。製品の workspace は常に file）、(b) その場合だけ従来の authority の prepare を使う（製品に 2 本の経路が残る）。
@@ -200,50 +201,237 @@ DR-IRB-3 以降の番号は草稿の仮番号。DR-IRB-1 と DR-IRB-2 は実装�
 6. **エラーの型付き写像。** `NirIndexUnavailableReason` に reader 用の理由を足し（他の `match` への影響を確認する）、
    `NB:174-182` で `Retry` に写す。
 
-   | reader の事象                                                                                              | 写像                                             | 理由                       |
-   | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------ | -------------------------- |
-   | open の失敗（file の不在・権限・IO）、`SQLITE_BUSY`／`LOCKED`（busy_timeout 0）                            | `Retry`。連続 K 回で `Stopped`（K は未決）と log | 一時的。予約を残す         |
-   | 手順 1 と reader の file identity の不一致、schema の不一致                                                | `Stopped`                                        | authority が差し替わった   |
-   | participant の stop、generation の変更、runtime の epoch の変更で hook が止めた（`validation_terminated`） | 従来どおり `Err` → `Stopped`                     | 失効。予約を解くのが正しい |
-   | reason の無い `SQLITE_INTERRUPT`                                                                           | `Retry`                                          | 想定外。予約を残して再試行 |
+   | reader の事象                                                                                              | 写像                                                                              | 理由                       |
+   | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | -------------------------- |
+   | open の失敗（file の不在・権限・IO）、`SQLITE_BUSY`／`LOCKED`（busy_timeout 0）                            | `Retry`。連続 K 回で `Stopped`（K は未決）と log                                  | 一時的。予約を残す         |
+   | 手順 1 と reader の file identity の不一致、schema の不一致                                                | `Stopped`                                                                         | authority が差し替わった   |
+   | participant の stop、generation の変更、runtime の epoch の変更で hook が止めた（`validation_terminated`） | `Err` → `Stopped`（epoch 変更は従来は `Stale`→`Retry`。製品では等価。§2.2 の E3） | 失効。予約を解くのが正しい |
+   | reason の無い `SQLITE_INTERRUPT`                                                                           | `Retry`                                                                           | 想定外。予約を残して再試行 |
 
 7. **reader は `build_once` の戻りまでに必ず drop する。** `PinnedWorkspaceDb` を持つ間（authority と共有 lease が生きている間）に閉じる。plan・proof・thread-local に接続を残さない。
 8. **observability。** `NB:285-287` の tracing に、`reader_open_ms`、`stale_streak`、`prepare_ms` の段別、`outcome` を足す（§5）。
 
-### 2.2. owner／lifecycle 行列（草稿。mutation の前に GDX-PRECHECK-001 で確定する）
+### 2.2. owner／lifecycle 行列（案。mutation の前に GDX-PRECHECK-001 で確定する）
 
 reader は background／async lifecycle に新しい handle を持ち込むので、`policies/quality/iron-laws.md:90-95` が求める有限の行列を置く。
-「終了の証跡」は kill 要求や error event ではなく、接続が実際に閉じたこと（drop の計数、または file の rename／削除が通ること）。
-**この表は草稿で、各行の証跡の試験はまだ無い。** 空欄・「実装時に確認」の行が残る間は `[precheck]` で止める。
+「終了の証跡」は kill 要求や error event ではなく、接続が実際に閉じたこと（`sqlite3_close` の成功。§2.2.2 の E5）。
+**この行列はコードと lifecycle の読みから埋めた案で、試験はまだ無い。** 状態が「判断待ち」「測定待ち」の行が残る間は `[precheck]` で止める。
+外部送信・subprocess・onClosed は reader に無い（§2.2.3）。
 
-| 行  | 事象                                                                                                                             | 所有者・閉じ方                                                                                                                                                                                                     | 終了の証跡                                                                                                                                                | 状態               |
-| --- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
-| E1  | 入口：build loop の開始（`NB:21`、`NB:45-57`）→ `build_once`                                                                     | reservation（`builds.reserve`）は loop の所有。reader は `build_once` の中だけ。reader を開く前に `current_request` と `participant.stop_requested()` を確かめ、手順 1 の admission が `Some(true)` のときだけ開く | open の前に stop なら open しない（試験 d）                                                                                                               | 草稿               |
-| E2  | Retry の再入：`Ready`／`Retry`／`Idle` で 250 ms 眠って次の `build_once`（`NB:45-57`）                                           | 反復ごとに reader を新しく開閉する。反復をまたいで保持しない。同じ project の同時の `build_once` が無いことは reservation に依存（実装時に確認）                                                                   | 各反復の戻りで open 数が 0（試験 d）                                                                                                                      | 実装時に確認       |
-| E3  | admission の closure：participant の stop、generation の変更、runtime の epoch の変更（pause／resume／stop／workspace の差替え） | 手順 1 の `(owner, epoch)` と reader の hook（stop・deadline・`cancellation_epoch`）。publish の `native_build_is_current`（`CI/runtime.rs:158-`）が再照合する                                                     | hook が `SQLITE_INTERRUPT`（`validation_terminated`）を返し、reader が drop される。publish は `Stale`／`Stopped` で proof を install しない（試験 d・i） | 草稿               |
-| E4  | open 中（pending-start）に stop が入る                                                                                           | open は短い同期処理。open の前後で `stop_requested` を見て、後なら即 drop して `Stopped`                                                                                                                           | open 直後の stop で接続が残らない（試験 d）                                                                                                               | 実装時に確認       |
-| E5  | 実行中の handle の所有                                                                                                           | `build_once` のスタックの上の guard（drop で閉じる）1 つだけ。`PinnedWorkspaceDb`（authority と共有 lease）より先に閉じる。plan・proof・thread-local・`Arc` に接続を渡さない                                       | guard の drop 計数。`PinnedWorkspaceDb` の drop の前に 0（試験 d）                                                                                        | 草稿               |
-| E6  | cancellation                                                                                                                     | hook が stop・deadline・`cancellation_epoch` を見て中断する。中断の粒度は progress handler の間隔（値は未確認）                                                                                                    | 中断後に `Err` が返り、reader が drop される                                                                                                              | 間隔は実装時に確認 |
-| E7  | bounded wait：transition／shutdown が participant の解放を待つ（`workspace_lifecycle.rs:1697-1700`、`NB:28-30`）                 | reader は participant の内側で開閉するので、待ちの上限は「hook の間隔＋ cleanup」。Windows の restore では file が掴まれたままにならない                                                                           | E6 の中断から reader の close までの時間の上限（試験 d。上限の値は未決）                                                                                  | 値は未決           |
-| E8  | cleanup の失敗（tx の rollback／`PRAGMA` の失敗）                                                                                | quarantine や retire にせず、接続を捨てて `Retry`（§2.1 の 2）。authority の `connection_health` は触らない                                                                                                        | reader が drop される。`builds` の予約は残る（試験 e）                                                                                                    | 草稿               |
-| E9  | panic（`unwrap`／hook／operation の中）                                                                                          | guard の `Drop` で閉じる（`catch_unwind` に頼らない）。`NB` 側の join の失敗は従来どおり `break` で予約を解く（`NB:54`）                                                                                           | panic の後に reader が残らない（試験 d の 3 通り目）                                                                                                      | 草稿               |
-| E10 | `build_once` の戻り：`Ready`／`Stale`／`PendingChange`／`Idle`／`Stopped`／`Retry`／`Err`                                        | すべての戻りの経路で reader は閉じ済み                                                                                                                                                                             | 戻り値ごとに open 数が 0（試験 d）                                                                                                                        | 草稿               |
-| E11 | error／timeout の所有：`SQLITE_BUSY`／`LOCKED`（busy_timeout 0）、open の失敗                                                    | 型付きの `Retry`、連続 K 回で `Stopped`（§2.1 の 6）。`Err` で返さない（`NB:54`）                                                                                                                                  | 試験 e。K は未決                                                                                                                                          | K は未決           |
-| E12 | 永続する restart の状態                                                                                                          | **なし**。reader は table・列・proof・cache を書かない。再起動後は従来どおり `rebuild_requested` から始まる                                                                                                        | schema の差分が無いこと（試験 c）                                                                                                                         | 草稿               |
+略記：`WL`＝`src-tauri/crates/grimodex-db/src/workspace_lifecycle.rs`、`ST`＝`src-tauri/crates/grimodex-db/src/state.rs`、
+`WLV`＝`electron/native/grimodex-node/src/workspace_lifecycle_view.rs`、`LN`＝`electron/native/grimodex-node/src/lib.rs`、
+`RS`＝`electron/native/grimodex-node/src/related_scenes.rs`、`REG`＝`electron/native/grimodex-node/src/related_scenes_build_registry.rs`、
+`BEG`＝`electron/native/grimodex-node/src/related_scenes/begin.rs`、`RT`＝`CI/runtime.rs`、`PUB`＝`CI/publish.rs`、
+`IG`＝`CI/input_guard.rs`、`RB`＝`src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission/build.rs`
+（`NB`・`NMC`・`LIB`・`CI` は §1 の略記）。
+
+#### 2.2.1. 状態の一覧
+
+| 行  | 事象                                                        | 状態                                               |
+| --- | ----------------------------------------------------------- | -------------------------------------------------- |
+| E1  | 入口・開始・pending-start、admission の閉鎖（開く前の条件） | 案あり                                             |
+| E2  | retry／再入（loop、generation の回転）                      | 確認済み（草稿の前提を訂正。許容を明記する）       |
+| E3  | stop・epoch・shutdown による取消しの伝わり方                | 案あり（epoch の写像は製品の呼び手が無いので等価） |
+| E4  | open 中に stop が入る                                       | 案あり                                             |
+| E5  | 生きている handle の所有、実際の終了の証拠                  | 案あり（証拠の取り方を `close()` の成功へ変更）    |
+| E6  | cancellation の粒度                                         | 測定待ち（preflight に `control.check` が無い）    |
+| E7  | bounded wait（transition・shutdown が待つ時間）             | 測定待ち（上限は導く値。待つ側に上限が無い）       |
+| E8  | cleanup 失敗・close 失敗                                    | 判断待ち（close の証拠が取れないときの扱い）       |
+| E9  | panic                                                       | 確認済み（草稿の「guard の Drop に頼る」を訂正）   |
+| E10 | `build_once` の戻りの全経路                                 | 案あり（構造で保証する）                           |
+| E11 | error／timeout の所有と写像                                 | 判断待ち（K）                                      |
+| E12 | 永続する restart の状態                                     | 確認済み                                           |
+| E13 | reader の同時数（新設）                                     | 判断待ち（authority あたり 1 本の上限）            |
+| E14 | authority の健全性・共有 lease との関係（新設）             | 案あり                                             |
+
+#### 2.2.2. 行ごとの案
+
+owner の連鎖（読んで確かめた事実）：
+
+- `begin` が participant を取り（`BEG:46-50`）、`schedule` がそれを loop の task へ move し（`NB:11`、`NB:39`）、task は **loop 全体と 250 ms の眠りの間も**保持する（`NB:32-58`）。
+  count は `WL:1735` で増え、`WL:912-917` の Drop（`WL:1760-1763`）で減る。
+- 待つ側：transition の physical exclusive は participant が 0 であることを要求する（`WL:3741`）。native の待ちは **2 ms 刻みで上限が無く**（`WLV:378-386`）、
+  open／restore／recovery-restore の 3 入口が使う（`LN:11173-11175`、`LN:11649-11652`、`LN:11941-11944`）。shutdown も 10 ms 刻みで上限が無い（`LN:3790-3798`。コメントのとおり main の 30 秒の観測枠は native の fence を解かない）。
+  **reader の停止遅延は open／restore／shutdown の遅延にそのまま乗り、止まらない reader は hang になる。**
+- `request.database()` は `PinnedWorkspaceDb`＝`Arc<WorkspaceAuthority>`（`ST:167`、`src-tauri/crates/grimodex-semantic/src/runtime.rs:185` の `SemanticRequest::database`）。`WorkspaceAuthority` は `path()`（`ST:68`）と共有 lease（`ST:72`）を持つ。
+  build の task は `request` をこの Arc ごと loop の間保持するので、**reader が開いている間は authority と共有 lease が必ず生きている**（reader 専用の lease は要らない）。
+
+##### E1 入口・開始・pending-start・admission の閉鎖
+
+- **決め方。** 入口は 2 つだけ（grep 済み）：`BEG:294-296`（`snapshot.supported_profile && current_request`）と `RS:378-396`（`reconcile`。napi は `LN:12950`）。どちらも `build::schedule`（`NB:8-66`）に集まる。
+  開始の順は `current_request`（`NB:14`）→ `reserve`（`NB:17-24`）→ `tokio::spawn`（`NB:28`）で、reserve と spawn の間に失敗しうる処理は無い（予約の取り残しが無い）。
+  **pending-start（予約〜blocking pool で `build_once` が走り出すまで）は participant と予約だけを持ち、reader を持たない。** reader を開くのは `build_once` の中だけ（`NB:146`）。
+- **開く前の条件（admission の閉鎖）は 3 段。** (1) `NB:153` の `current_request`：transition 中は `active_database` が `begin_workspace_participant` の `ActiveOperations`（`WL:1721-1733`、`ST:419-435`）を受けて `false` になり、`Stopped`。
+  (2) 手順 1 の authority tx：入口の `check_participant`（`NMC:1488`）が stop を `Err` にする。(3) 手順 1 が `Some(true)` を返したときだけ reader を開く。
+  `Idle` と `AlreadyUsable` は reader を開かない（reader の open は `Some(true)` かつ proof が無い場合だけ）。
+- **試験案。** (d) に「stop 済みの participant では reader を開かない（open 数 0）」を足す。`current_request` が `false` になる transition 中の `build_once` が `Stopped` を返し、open が 0。
+- **未決。** なし。
+
+##### E2 retry／再入
+
+- **決め方。** 反復ごとに reader を開き、`build_once` の戻りまでに閉じる（反復をまたいで保持しない）。loop は `Ready`／`Retry`／`Idle` の後に 250 ms 眠る（`NB:44-57`）。眠っている間は reader を持たず、participant と予約だけを持つ。
+- **草稿の前提の訂正。** 草稿の E2 は「同じ project の同時の `build_once` が無い」を実装時の確認としたが、**成り立たない場合がある。** 予約は `(authority の identity, project)` と generation で管理され、
+  新しい generation が来ると `keys` を消して取り直せる（`REG:26-30`。`REG:5-6` のコメントのとおり、置き換えられた旧 job は後から終わる）。旧 generation の `build_once` は、`NB:116` の generation 比較か hook で止まるまで reader を持つ。
+  つまり **同じ project で旧と新の 2 本の reader が一時的に共存しうる**。どちらも読むだけで、書込みの競合は無い。
+- **許容するか上限を置くか。** E13 の「authority あたり 1 本」を採れば共存しない（新が `Retry` で待つ）。採らないなら、共存を許容と明記し、試験 (q) で上限（`CAPACITY`＝128 ×2 generation、`RS:35`）を確かめる。
+- **試験案。** (q)：generation を回転させ、旧の `build_once` が走行中のまま新の `schedule` を呼ぶ。open 数の最大値と、両方が戻った後の 0 を確かめる。
+- **未決。** E13。
+
+##### E3 取消しの伝わり方（stop・epoch・shutdown）
+
+- **stop の集合。** `WorkspaceParticipant::stop_requested`（`WL:622-637`）は shutdown_requested、compatibility_switching、Transition、RecoveryRequired、Closed のどれかで true。
+  transition の admission が `stop_for_workspace_transition` を呼ぶ（`LN:2660`）。shutdown は `request_shutdown`（`LN:11371`、`WL:1937-1960`）の後に `finish_workspace_shutdown`（`LN:11377`）を走らせる。
+  **したがって shutdown の前に `shutdown_requested` が立つ。** hook の `participant_termination`（`NMC:1026-1032`）→ `SQLITE_INTERRUPT` → `map_interrupted_error`（`NMC:1192-`）で `validation_terminated` になる。
+- **runtime の epoch。** `cancellation_epoch` は `bind_embedding_generation`（`RT:211`）と `pause`／`resume`／`stop`（`RT:245`）が回す。hook 側の受け口は既にある：
+  `NarrativeMaintenanceGraphControlConfig.workspace_generation: Option<(Arc<AtomicU64>, u64)>`（`NMC:250`、比較は `NMC:1033-1040`）に `(runtime.native_build_cancellation_epoch(), admitted_epoch)` を渡せる。
+  新しい field は要らない。ただし `with_participant_read_transaction` の既定の config はこの slot を使わない（`NMC:1244-1258` は `ParticipantSqlControl`（`NMC:278-281`）の stop と deadline だけ）ので、reader の入口（`with_participant_chronicle_reader`）が config を組む。
+- **epoch 変更の写像は、製品では等価。** 今の動きは「epoch が変わっても prepare は最後まで走り、publish が `Stale`（`PUB:82-84`）→ `Retry`」。reader が hook で早く止めると `Err` → `NB:54` の `break` に変わる。
+  差を見る：製品で Chronicle runtime の `pause`／`resume`／`stop` を呼ぶ箇所は **grep で見つからない**（`nir1_entity_relation_index.rs:1017` と `nir1_entity_relation.rs:11242-12327` は試験）。
+  製品で epoch が回るのは `bind_embedding_generation` だけで、これは generation の回転でもあり、`current_request` が `false`（`NB:153`）になるので、`Retry` でも次の反復で `Stopped` になる。**どちらでも loop は止まる。**
+  この等価は「製品の呼び手が無い」という grep の結果に依存する。呼び手が増えたら `Retry` へ写す（reader の写像表の 3 行目を `Retry` にする）。回帰の防ぎ方は試験 (i)。
+- **publish 側の再照合。** 草稿が引いた `native_build_is_current` ではなく、publish は `PUB:75-77`（owner）と `PUB:82-84`（`current_epoch(conn)` が plan の epoch と一致するか）で再照合する。reader の結果は authority の IMMEDIATE tx でしか効力を持たない。
+- **試験案。** (i)：手順 1 の後に generation を回す／participant を stop する。publish が `Stale` か `Stopped` で、proof が install されない。(d)：hook が `SQLITE_INTERRUPT` で止め、reader が閉じる。
+- **未決。** なし（等価の前提を PR 本文に残す）。
+
+##### E4 open 中の stop
+
+- **決め方。** open は短い同期処理（file を開き pragma と temp meta を作るだけ）。open 後に `with_participant_sql_scope_fenced` の入口が `check_participant`（`NMC:1488`）を再度行うので、
+  open の間に入った stop はここで `Err` になり、reader は呼び出し側の scope の終わりで閉じる。**open 直後に別の stop 確認を足す必要は無い**（草稿の「open の前後で `stop_requested` を見る」のうち後ろは scope が担う）。前の確認だけ、無駄な open を避けるために置く。
+- **注意。** `Database::from_connection`（`LIB:285-293`）は pragma も temp meta も作らない。open 側で自前の設定（§2.1 の 2）を行う。
+- **試験案。** (d)：open 直後（scope に入る前）に stop を立てる hook（試験用の failpoint）で、`Stopped` と open 数 0。
+- **未決。** なし。
+
+##### E5 生きている handle の所有と終了の証拠
+
+- **所有者。** reader は **`with_participant_chronicle_reader` の関数の中の局所**にする（closure 形式。guard を返さない）。`build_once` の他の段（embedding、publish）は reader を見ない。
+  drop の順は Rust の規則で、reader → `build_once` の戻り → `spawn_blocking` の closure が持つ clone（`NB:36-39`）→ task が持つ `request`・`participant`、の順に必ず外側が後になる。
+  plan・proof・thread-local・`Arc` に接続を渡さない（`BuildSnapshot` は値だけ）。
+- **終了の証拠。** rusqlite 0.40.1 の `Drop for InnerConnection` は `close()` の結果を捨てる（`inner_connection.rs:400-406`）。つまり **drop は終了の証拠にならず、失敗すれば handle と file が残る。**
+  証拠は「`sqlite3_close` が成功したこと」にする。reader を包んだ `Database` に対し、scope の後で `retire_connection_for_recovery()`（`NMC:1602-`）を明示的に呼ぶ。`Ok(())` が close の証拠、
+  `Err`（`NEX_MAINTENANCE_CONNECTION_RETIREMENT_CLOSE_FAILED`）と `retirement_close_pending()`（`NMC:1641`）が未証明を表す。
+  生きている reader の数は、runtime の `AtomicUsize`（E13 の slot と同じ）に持ち、**close の証拠を得た後にだけ**減らす。
+- **観測の窓口。** `foreground_connection_waiter_count`（`NMC:1689`）と同じ `#[doc(hidden)] pub` で、cross-crate の試験が読める。
+- **試験案。** (d)：戻り値別（`Ready`／`Stale`／`PendingChange`／`Idle`／`Stopped`／`Retry`／`Err`）に open 数 0。
+  (r)：OS の証跡。Linux は `/proc/self/fd` で `grimodex.db` を指す fd の数が build 前と同じ（authority の分）に戻る。Windows は build 後に DB file の rename が通る（hosted の 3 OS で）。
+  順序の証跡：participant 数を先に読み、0 のときに reader 数を読むと必ず 0（participant の admission は transition 中に閉じているので reader は増えない）。これを transition の試験の中で繰り返し検査する。
+- **未決。** E8（close の証拠が取れないとき）。
+
+##### E6 cancellation の粒度
+
+- **確認した事実。** hook の間隔は 1,000 VM step（`NMC:1524`）。**ただし SQLite の progress handler は 1 つの statement の通算 step で数える**（推測。SQLite の `vdbe.c` の実装による。試験 (p) で確かめる）ので、短い statement は hook が一度も呼ばれない。
+  Rust 側の `control.check` は `read_snapshot_with_control` の段境界、候補の loop（`CI/build.rs:175-179` と `:206-218`）、`input_guard` の行ごと・8 KiB ごと（`IG:44`、`IG:51`、`IG:68`、`IG:76`）にある。
+  **一方、`preflight_build_candidate`（`RB:70-75`）は `control` を受け取らない**（`RB` の control の出現は `finalize_build_candidate_with_control` 側。`material_membership_root.rs` と `stage_provenance.rs` の replay も 0 件）。
+  よって **取消しが効くまでの最長の区間は「1 候補の preflight」**（root_material の hydrate と receipt の replay。平均は 10.2 s／491 候補＝約 21 ms。最大は未測定）。
+- **決め方。** 次のどちらか。(a) 1 候補の preflight の最大値を測り、その値を E7 の導く値として受け入れる（コード変更なし）。(b) `preflight_build_candidate` に `control` を渡し、候補内の replay の境界で確認する（grimodex-db の読取経路のシグネチャ変更。意味は変えない）。
+  **推奨は (a)** で、最大値が大きければ (b)。
+- **試験案。** (p)：preflight の途中で stop を立て、reader の close までを測る（写し 2 つ。最大の 1 候補の preflight の ms も同時に測る）。dev 枝 `claude/irb-prepare-timing` の計測の仕掛けを使える。
+- **未決。** 測定の結果で (a)／(b)。
+
+##### E7 bounded wait
+
+- **待つ側に上限が無い**（上の連鎖）。したがって上限は待つ側で決めず、**reader の停止遅延として導く**：
+  `max(hook の間隔に相当する SQL の時間, 1 候補の preflight の最大, input_guard の 8 KiB 区間)` ＋ cleanup（`NMC:1093-1140` の progress 解除と rollback、`retire_connection_for_recovery` の close）。
+- reader は participant の内側で開閉する（E5）ので、上の遅延が過ぎれば participant が外れ、physical exclusive が通る。Windows の restore で file が掴まれたままにならないのは、この順序による。
+- **試験案。** (p) の測定値を記録する。**値の上限は測定の後に決める（今は書かない）。** main の 30 秒の観測枠（`LN:3787-3788`）よりずっと小さいことを確かめる。
+- **未決。** 上限の値（測定後）。
+
+##### E8 cleanup 失敗・close 失敗
+
+- **既存の動き。** `Database::from_connection(reader)` を `with_participant_*` に通すと、cleanup（rollback・progress 解除・busy_timeout の復元）の失敗は **reader 側の `Database`** に `quarantine_connection`（`NMC:1549-1560`）と
+  `retire_connection_for_recovery`（`NMC:1564`）を走らせる。authority の `connection_health` は別のインスタンスなので触らない。草稿の「quarantine や retire にせず」は「**reader 自身の health にだけ**」と書き直す。
+  この自動の retire は reader の close そのものなので、むしろ E5 の証拠に使える。
+- **判断が要る点。** close の証拠が取れない（`retire_connection_for_recovery` が `Err`）とき、handle は `retired_connections` に残るだけで、drop しても閉じない（E5）。選択肢：
+  (a) その authority の reader を二度と開かない（slot の permit を戻さず、`Retry`→K 回で `Stopped`。error を log に 1 回）。authority を開き直す（workspace の再 open）まで Chronicle の build は止まる。fail-closed。
+  (b) 閉じるまで同じ reader を保持して再試行する。participant を持ち続けることになり、transition を止めるので採らない。
+  **推奨は (a)。** C-query の process 寿命の fence（`WL:546-554` の `WorkspaceQuarantineFence`）と同じ考え方（cleanup を証明できなければ解放しない）。
+- **試験案。** (e) に「cleanup の failpoint（`MaintenanceCleanupFailpoint`、`NMC` の試験用）で reader が使えなくなり、authority は `connection_reusable()`＝true のまま」を足す。
+- **未決。** (a) の採否。
+
+##### E9 panic
+
+- **訂正。** 草稿の「guard の `Drop` で閉じる（`catch_unwind` に頼らない）」は不正確。(1) drop は閉じた証拠にならない（E5）。(2) 既存の scope が 2 段の `catch_unwind` を持つ：
+  内側（`NMC:1067`）が cleanup を済ませて `resume_unwind`（`NMC:1179`）、外側（`NMC:1520`）が reader 側の `Database` を `quarantine`＋`retire`（`NMC:1539-1543`）してから `resume_unwind`（`NMC:1546`）する。
+  よって operation 内の panic では **scope が reader を explicit に close してから unwind する**。
+- **戻りの扱い。** panic は `spawn_blocking` の `JoinError` になり、`NB:54` の `_ => break` で loop が終わり予約が解ける（`NB:59-63`）。**この経路は authority の `connection_health` を変えない**（今の authority の prepare で panic すると authority が quarantine＋retire されるのと違い、reader 版は影響が reader に閉じる。利点）。
+- **前提の確認。** `Cargo.toml` に `panic =` の指定は無い（grep 済み）ので既定の unwind。`.cargo/` には `audit.toml` だけ。
+- **試験案。** (s)：operation 内で panic を起こす（試験用の hook）。reader 数 0、`retirement_close_pending()==false`、authority の `connection_reusable()==true`、`builds` の予約が解ける。
+- **未決。** なし。
+
+##### E10 `build_once` の戻りの全経路
+
+- **決め方。** E5 の構造（reader が関数の局所）で、`Ready`／`Stale`（`Retry`）／`PendingChange`（`Retry`）／`Idle`／`Stopped`／`Retry`／`Err`／panic のどの戻りでも、reader は `build_once` の次の段（embedding、publish）より前に閉じ済み。
+  `NB:157-173` の authority tx と reader の呼び出しは別の呼び出しで、reader の呼び出しの戻りが先に来る。
+- **試験案。** (d)（E5 と共通）。**`build_once` には現状で直接の試験が無い**（grep 済み）。fixture は `nir1_generation_owner_tests.rs` の `AppState` の組み立てが前例。試験の費用が大きいので、(d)(e)(i)(q)(s) を 1 つの harness にまとめる。
+- **未決。** harness の置き場（`related_scenes/build.rs` の `#[cfg(test)]` か、別 file）。
+
+##### E11 error／timeout の所有と写像
+
+- **分類点は `NB:173` の `?`。** 今は wrapper の `Err` が全部 `?` で `NB:54` に落ちる。reader 版は wrapper の戻りを分ける：
+  `ValidationTerminated`（`source_revision.rs:152-157` の型。`downcast_ref` で判別）→ 従来どおり `Err`（`Stopped`）、
+  それ以外の open 失敗・`SQLITE_BUSY`／`LOCKED`（busy_timeout 0）・cleanup 失敗→ `Retry`。§2.1 の 6 の表のとおり。
+- **transition 中に `Retry` で空回りしない理由。** 手順 1 の authority tx が `NMC:1488` の `check_participant` で先に `Err` になり、reader の分類に届かない。
+- **timeout。** reader には wall-clock の deadline を置かない（`ParticipantSqlControl::default()` は deadline 無し、`NMC:283-289`）。prepare は O(N) の仕事で、今の authority の prepare も deadline を持たない。新しい上限を足すと挙動が変わる（閾値の追加）ので足さない。
+- **K（連続して `Retry` が続く回数の上限）。** 値は未決。永続する open 失敗（権限・file の不在）を `Retry` で 250 ms ごとに繰り返さないための上限。超えたら `Stopped`（予約を解く。次の `begin` で再開）と error を 1 回 log。
+  **選択肢：** (a) K 回で `Stopped`、(b) 無期限に `Retry` するが §5 の対策 2 の backoff で間隔を延ばす。推奨は (a)。K は open の費用の測定（§7）の後に、ユーザーかレビューが決める。
+- **試験案。** (e)：BUSY と open 失敗が `Retry` になり予約が残る。K 回で `Stopped`。`ValidationTerminated` は `Err` のまま。
+- **未決。** K、(a)／(b)。
+
+##### E12 永続する restart の状態
+
+- **なし。** reader は table・列・proof・cache を書かない（`OPEN_READ_ONLY`＋`query_only`）。書くのは `temp.grimodex_connection_meta` だけ（TEMP。connection とともに消える）。
+  `builds` の予約、E11 の連続回数、E13 の slot は **process-local** で、永続しない。再起動後は従来どおり `rebuild_requested` から始まる。
+- **process が落ちた場合。** read-only の接続は write lock を持たない。WAL の読み取り印（read mark）は OS の lock なので process 終了で解ける。DB に回復の仕事は残らない。
+- **試験案。** (c)：schema の差分が無い。reader が書込みを試みると error。
+- **未決。** なし（`SAVEPOINT`／`RELEASE` が `query_only` で通ることは (c) で確かめる。推測）。
+
+##### E13 reader の同時数（新設）
+
+- **事象。** reader の open が無制限だと、同時に走る build の数だけ接続とメモリ（`cache_size`）が増える。予約の上限は `CAPACITY`＝128（`RS:35`、`RS:51`）で、E2 のとおり generation の回転で 2 倍になりうる。
+- **案。** `NirChronicleIndexRuntime` に **authority あたり 1 本の slot**（`AtomicUsize` ＋ RAII の permit）を置く。`build_once` の最初（`current_request` の後、authority tx の前）で try-acquire し、取れなければ `Retry`（DB を触らない）。
+  permit は E5 の close の証拠の後にだけ戻す（証拠が取れなければ戻さない。E8 (a)）。今も prepare は authority の mutex で直列なので、直列化という意味は変わらない。
+- **判断が要る点。** 1 本という上限は新しい並行度の規則。複数 project の build が reader を待つ（今は mutex を待つ）。E2 の共存を許容する案を採るなら slot は要らない。
+- **試験案。** (q)：2 本目が `Retry`、1 本目が戻った後に取れる。panic・`Err`・close 失敗でも permit の扱いが E5／E8 のとおり。
+- **未決。** 採否（推奨は採る）。
+
+##### E14 authority の健全性・共有 lease との関係（新設）
+
+- **共有 lease。** reader は `request` が持つ `PinnedWorkspaceDb`（E5 の連鎖）の内側にあり、lease は reader より長生きする。cross-process の restore／migration は shared lease が生きている間は file を置換できない（`src-tauri/crates/grimodex-db/src/open.rs:705-707` の保守 thread と同じ考え方）。
+  reader 専用の lease は取らない。
+- **authority が quarantine／retire されたとき。** `ensure_connection_reusable`（`LIB:424-` の `lock_conn_with_check`）が手順 1 の authority tx を `Err` にする。reader は開かない。
+  手順 1 の後に authority が retire される場合（recovery の transition）は participant の stop が先に立つので E3 で止まる。publish は authority の IMMEDIATE tx で `Err`（fail-closed）。
+- **file identity。** 手順 1 の identity と reader の identity が一致しなければ `Stopped`（§2.1 の 2）。比較は path 基準で、外部 process による差し替えは脅威モデルの外（workspace の共有 lease が置換を拒む）と明記する。
+  `sqlite_database_file_identity`（`maintenance_lifecycle.rs:623`）は `pub(crate)` で使える。`sqlite_database_path_in_tx`（`:589`）は module 内の `fn` なので、使うなら可視性を `pub(crate)` に上げる（grimodex-db の内側の変更）。
+- **試験案。** (t)：authority を quarantine した状態で `build_once` が reader を開かず `Err`（`Stopped`）。(j)：identity の不一致。
+- **未決。** なし。
+
+#### 2.2.3. 適用しない項目
+
+- **外部送信・subprocess。** reader は同じ process 内の SQLite 接続で、送信も子 process も無い。embedding の推論（`embed_nir1_documents_with_control`）は既存のままで、この変更の対象外。
+- **`onClosed`／error event／rejected promise。** reader に非同期の通知は無い。終了は同期の `close()` の戻りで決まる（E5）。task の側の終了は `JoinError` と `NB:54` が所有する（既存）。
+- **既存のままの点（この変更の対象外）。** `schedule` の task が panic すると予約の解放（`NB:59-63`）が飛ぶ。generation の回転で次の予約が keys を消す（`REG:26-30`）ので、取り残しは次の generation までに限られる。
+
+#### 2.2.4. 草稿の他の節で訂正が要る点（この行列を読んで見つかったもの）
+
+1. §2.1 の 1：「`build_once` が持つのは `request.database()` だけで `WorkspaceAuthority` は見えない」は誤り。`request.database()` は `PinnedWorkspaceDb`＝`Arc<WorkspaceAuthority>` で、`path()`・`lease()`・`identity()` が見える。
+   `main_database_file_identity` を tx の中で呼べない理由（同じ mutex の再入）は変わらない。
+2. §2.1 の 6 の表の 3 行目の「従来どおり」：epoch 変更は従来は `Stale`→`Retry` で、reader が hook で止めると `Stopped` になる。製品では等価（E3）。
+3. §2.1 の 2 の「progress hook は … `cancellation_epoch` を見る」：既定の config では見ない。reader の入口が `workspace_generation` に渡す（E3）。
+4. §3 の「lifecycle の epoch」の行：publish の再照合は `native_build_is_current` ではなく `PUB:75-77` と `PUB:82-84`。
+5. §2.1 の 1 の「crate 内限り」：`sqlite_database_path_in_tx` は module 内の `fn`。`sqlite_database_file_identity` は `pub(crate)`（E14）。
 
 ## 3. 守る不変条件と、それを破りうる箇所
 
-| 不変条件                                   | reader 案での扱い                                                                                                                                         | 破りうる箇所と対策                                                                                                                                                                                                                                                   |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| snapshot の一貫性                          | reader の 1 つの `BEGIN DEFERRED` tx。WAL の read snapshot は commit 済みの状態だけを見る。prepare の内部は今と同じ                                       | `rebuild_requested`・prepare・embedding の読みは今も別 tx。tx の間に入力が動けば、publish の CAS が `Stale` で拾う。**prepare から publish までの窓は今も embedding の区間で存在する。reader は窓の種類を増やさず、長さを prepare の分だけ伸ばす**                   |
-| publish の CAS と `input_guard`            | DB の値の比較で、接続に依存しない（`CI/build.rs:240-292`）。authority の IMMEDIATE tx のまま                                                              | prepare が読んで CAS が覆わない入力があれば、窓が長くなって露出する。**scope authority・language・evidence の読みが CAS の対象かを、実装前に一覧で確かめる**（今は窓が短いので気づかれにくい）。DR-IRB-5 (a) の `archived` の確認と同じ種類                          |
-| lifecycle の epoch                         | epoch は authority の tx で取り、publish が再照合する。reader の hook は `cancellation_epoch` を見る                                                      | 取得（手順 1）と reader の snapshot の間に pause／resume／stop が入る → publish の照合で `Stale`（fail-closed）。`native_reader_epoch()` は contention でも `None` を返す（`CI/runtime.rs:196-203`）ので、build には**使わない**（`None` を `Stopped` と取り違える） |
-| fail-closed                                | READ_ONLY かつ `query_only`。reader の失敗は `Retry` か `Stopped` で、publish を通らない                                                                  | `Err` を返すと予約が消える（`NB:54`）。型付き写像（§2.1 の 6）で防ぐ                                                                                                                                                                                                 |
-| 関連場面の IR の窓 D＝40 ms と index-ready | 前景の mutex 待ちが prepare の分だけ消える。build の時間は D 自体を変えない。変わるのは、IR が D の窓に収まる回数と、index-ready が来る時刻               | 連続編集で `Stale` が続くと index-ready が遅れる（§5）。D の定数は `relatedScenesConfig.ts:13`                                                                                                                                                                       |
-| 保守・Freshness・cutover                   | reader は何も書かない。Freshness の複数 tx の途中を読んでも、publish の `pending::read` との比較が拾う。cutover は authority の epoch 側で変わらない      | IR の build が前景扱いの取得をしなくなる。保守が先に進み、Freshness の ack が早く進む方向（推測）。**保守の mutex の時間が伸びて、前景の read が止まる別の経路にならないか**は、計測の後に再確認する                                                                 |
-| Windows の restore の file 置換            | reader は participant と共有 lease の内側で開閉する。transition と shutdown は participant の解放を待つ（`workspace_lifecycle.rs:1697-1700`、`NB:28-30`） | reader の cleanup 失敗や panic で接続が残ると、file が掴まれたままになる。**`build_once` の戻りまでに必ず drop**（panic でも drop される形にする）。長命にしない                                                                                                     |
-| WAL の checkpoint                          | authority は `wal_autocheckpoint=1000`（PASSIVE）と `journal_size_limit`（64 MiB、`LIB:337-344`）                                                         | 長い read snapshot は checkpoint を止め、`-wal` が伸びる。書込みの量が少なければ小さい（推測）。N が数千のときに測る（§7）                                                                                                                                           |
-| schema と file の同一性                    | reader は authority の後に開く                                                                                                                            | migration や差し替え中の読みを防ぐため、file identity と schema の照合を open の直後に行う（§2.1 の 2）                                                                                                                                                              |
+| 不変条件                                   | reader 案での扱い                                                                                                                                                                                  | 破りうる箇所と対策                                                                                                                                                                                                                                                   |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| snapshot の一貫性                          | reader の 1 つの `BEGIN DEFERRED` tx。WAL の read snapshot は commit 済みの状態だけを見る。prepare の内部は今と同じ                                                                                | `rebuild_requested`・prepare・embedding の読みは今も別 tx。tx の間に入力が動けば、publish の CAS が `Stale` で拾う。**prepare から publish までの窓は今も embedding の区間で存在する。reader は窓の種類を増やさず、長さを prepare の分だけ伸ばす**                   |
+| publish の CAS と `input_guard`            | DB の値の比較で、接続に依存しない（`CI/build.rs:240-292`）。authority の IMMEDIATE tx のまま                                                                                                       | prepare が読んで CAS が覆わない入力があれば、窓が長くなって露出する。**scope authority・language・evidence の読みが CAS の対象かを、実装前に一覧で確かめる**（今は窓が短いので気づかれにくい）。DR-IRB-5 (a) の `archived` の確認と同じ種類                          |
+| lifecycle の epoch                         | epoch は authority の tx で取り、publish が再照合する（`publish.rs:75-77`、`:82-84`）。reader の hook は、入口が `workspace_generation` に渡したときだけ `cancellation_epoch` を見る（§2.2 の E3） | 取得（手順 1）と reader の snapshot の間に pause／resume／stop が入る → publish の照合で `Stale`（fail-closed）。`native_reader_epoch()` は contention でも `None` を返す（`CI/runtime.rs:196-203`）ので、build には**使わない**（`None` を `Stopped` と取り違える） |
+| fail-closed                                | READ_ONLY かつ `query_only`。reader の失敗は `Retry` か `Stopped` で、publish を通らない                                                                                                           | `Err` を返すと予約が消える（`NB:54`）。型付き写像（§2.1 の 6）で防ぐ                                                                                                                                                                                                 |
+| 関連場面の IR の窓 D＝40 ms と index-ready | 前景の mutex 待ちが prepare の分だけ消える。build の時間は D 自体を変えない。変わるのは、IR が D の窓に収まる回数と、index-ready が来る時刻                                                        | 連続編集で `Stale` が続くと index-ready が遅れる（§5）。D の定数は `relatedScenesConfig.ts:13`                                                                                                                                                                       |
+| 保守・Freshness・cutover                   | reader は何も書かない。Freshness の複数 tx の途中を読んでも、publish の `pending::read` との比較が拾う。cutover は authority の epoch 側で変わらない                                               | IR の build が前景扱いの取得をしなくなる。保守が先に進み、Freshness の ack が早く進む方向（推測）。**保守の mutex の時間が伸びて、前景の read が止まる別の経路にならないか**は、計測の後に再確認する                                                                 |
+| Windows の restore の file 置換            | reader は participant と共有 lease の内側で開閉する。transition と shutdown は participant の解放を待つ（`workspace_lifecycle.rs:1697-1700`、`NB:28-30`）                                          | reader の cleanup 失敗や panic で接続が残ると、file が掴まれたままになる。**`build_once` の戻りまでに必ず drop**（panic でも drop される形にする）。長命にしない                                                                                                     |
+| WAL の checkpoint                          | authority は `wal_autocheckpoint=1000`（PASSIVE）と `journal_size_limit`（64 MiB、`LIB:337-344`）                                                                                                  | 長い read snapshot は checkpoint を止め、`-wal` が伸びる。書込みの量が少なければ小さい（推測）。N が数千のときに測る（§7）                                                                                                                                           |
+| schema と file の同一性                    | reader は authority の後に開く                                                                                                                                                                     | migration や差し替え中の読みを防ぐため、file identity と schema の照合を open の直後に行う（§2.1 の 2）                                                                                                                                                              |
 
 ## 4. 信頼境界
 
@@ -319,7 +507,12 @@ Scene の変更頻度だけを測らない。
 | (l)  | 既存の IR の build・hydration・material roster の golden が、authority 版と reader 版の両方で通る                                                                                                         | 同値性                                                                                                                                     |
 | (m)  | reader の open の順序：temp meta の作成が `query_only` の前。reader 上で `current_epoch` を直接呼ぶ試験（temp meta ありは `ConnectionChanged`、なしは `Err`）で §1.5 の 2 通りの倒れ方を固定する          | 誤って reader で呼んだときに黙って空にならないこと                                                                                         |
 | (n)  | 手順 1 が `Database` の `Mutex` を握ったまま `main_database_file_identity` を呼ばない（deadlock 回帰）。`:memory:` の扱い                                                                                 | §2.1 の 1                                                                                                                                  |
-| (o)  | owner／lifecycle 行列（§2.2）の E1〜E12 の証跡                                                                                                                                                            | 行ごとに 1 つ以上の試験                                                                                                                    |
+| (o)  | owner／lifecycle 行列（§2.2）の E1〜E14 の証跡                                                                                                                                                            | 行ごとに 1 つ以上の試験。`build_once` には直接の試験が無いので、(d)(e)(i)(q)(s) を 1 つの harness にまとめる（E10）                        |
+| (p)  | 取消し→reader の close までの時間を測る：prepare の途中（preflight の区間）で stop を立てる。1 候補の preflight の最大の ms も記録する。短い statement で progress hook が呼ばれるかを確かめる            | E6／E7。写し 2 つ（m-ja-2、m-en-1）で。上限の値は測定の後に決める                                                                          |
+| (q)  | reader の同時数：generation を回転して旧の `build_once` が走行中のまま新を `schedule` する。slot を採るなら 2 本目が `Retry`、採らないなら open 数の最大値を記録する                                      | E2／E13                                                                                                                                    |
+| (r)  | OS の終了の証跡：Linux は `/proc/self/fd` の `grimodex.db` の fd 数が build 前に戻る。Windows は build 後に DB file の rename が通る。participant 数が 0 のとき reader 数も 0                             | E5／E7／E10。hosted の 3 OS で                                                                                                             |
+| (s)  | operation 内の panic：reader 数 0、`retirement_close_pending()==false`、authority の `connection_reusable()==true`、`builds` の予約が解ける                                                               | E9                                                                                                                                         |
+| (t)  | authority を quarantine した状態の `build_once` は reader を開かず `Err`（`Stopped`）。cleanup の failpoint で reader が使えなくなっても authority は `connection_reusable()==true`                       | E8／E14                                                                                                                                    |
 
 ## 7. 計測で決める分岐
 
@@ -383,6 +576,13 @@ DR-IRB-1（数える行を変えない）と計測（挙動不変、dev 用）�
 7. **version 列（案 2b）。** migration を伴う新しい契約。採らない推奨。
 8. **`NirIndexUnavailableReason` の variant の追加。** internal の値だけなら技術判断。wire や IPC に出るなら新しい契約。
 9. **U3 の委任が IRB に及ぶか。** 及ばない場合、reader の追加は新しい owner／lifecycle を持つので、ユーザーの確認が要る。及ぶ場合も、§2.2 の行列の確定と GDX-PRECHECK-001 は省けない。
+10. **§2.2 の行列で残った判断（ユーザーかレビューが決める）。**
+    - E11：reader の `Retry` の連続回数の上限 K と、(a) K 回で `Stopped`／(b) 無期限に `Retry`＋backoff の選択（推奨は (a)）。
+    - E8：close の証拠（`retire_connection_for_recovery` の成功）が取れないとき、その authority の reader を二度と開かず fail-closed にするか（推奨は開かない）。
+    - E13：reader を authority あたり 1 本に制限する新しい並行度の規則を採るか。採らないなら E2 の「generation 回転時の 2 本の共存」を許容と明記する。
+    - E6：1 候補の preflight の最大値を測り、(a) 受け入れるか (b) `preflight_build_candidate` に `control` を渡すか（grimodex-db の読取経路のシグネチャ変更。意味は変えない）。
+    - E7：取消し→close の遅延の上限の値は測定の後に決める（今は書かない）。
+    - E3：epoch 変更の写像が「製品では等価」なのは、Chronicle runtime の `pause`／`resume`／`stop` に製品の呼び手が無いという grep の結果に依存する。この前提を PR 本文に残すか。
 
 ## 9. 変えないもの・まだ決めていないもの
 
@@ -395,10 +595,10 @@ DR-IRB-1（数える行を変えない）と計測（挙動不変、dev 用）�
 ## 10. 検証（この草稿について）
 
 - 文書だけ。コード・試験・測定は実行していない。
-- `prettier --check` を、この file に対して実行する。
+- `prettier --check` を、この file に対して実行する。§2.2 の行列を足した後に `prettier --write` と `--check` を実行し、合格した（表の桁そろえで他の節の表の空白も変わった）。cargo・測定・試験は実行していない。
 - 写しの DB の読み取り（`mode=ro`）は、§1.4 の集計だけ。本文・題名は読んでいない。
 
-## 10. 先行実装と文献（2026-11-05 の調べ。抜粋が主で、採用の前に一次資料で確かめる）
+## 11. 先行実装と文献（2026-11-05 の調べ。抜粋が主で、採用の前に一次資料で確かめる）
 
 - **読取専用の接続を分けるのは標準の形。** GRDB.swift の `DatabasePool`（書込み 1＋読取の pool、WAL）、Android Room の `ConnectionPool`（読取側は `PRAGMA query_only = 1`）、Mozilla mozStorage の非同期接続、Signal Desktop の SQL の worker。Zed の議論 #64530 は、単一の Mutex の接続という同じ症状に、読取接続の分離と背景の書込み queue を提案している。DR-IRB-3 はこの形で、rusqlite の `OpenFlags::SQLITE_OPEN_READ_ONLY` と `query_only` で足り、依存は増えない。
 - **長い読取は WAL の checkpoint を止める**（SQLite の `wal.html` の checkpoint starvation、GRDB の文書）。prepare を 1 つの長い読取 tx で行うと `-wal` が伸びる。計測で prepare 中の `-wal` の大きさを見る。DR-IRB-4 で prepare を短くするか、chunk の間で読取を手放す。
@@ -407,3 +607,7 @@ DR-IRB-1（数える行を変えない）と計測（挙動不変、dev 用）�
 - **audit 連鎖の増分の検証（§8 のユーザーの判断の材料）。** RFC 9162 の consistency proof、Crosby & Wallach（USENIX Security 2009）の history tree は O(log n) で検証する。線形の鎖で「検証済みの高水位から後ろだけ」を検証すると、高水位より前の行の payload だけを書き換える改ざんは publish の時点では検出できなくなる（保証が変わる）。高水位を DB の外（keyring など）に置く案は保存範囲の拡大で委任の外。Rust の crate では `ct-merkle`（RFC 6962、README に監査は未実施と明記）がある。
 - **採らないもの。** Turso／libSQL の MVCC（beta、ファイルの形式が変わる）、SQLite の `BEGIN CONCURRENT`（実験の branch）、Electron の worker_threads で native addon を読むこと（Electron の文書が非推奨）。Electron の `utilityProcess` に DB を移すのは確実だが変更が大きく、今回は in-process の読取接続から始める（C-query worker の別 process の前例はある）。
 - 全文と出典：integrator の scratchpad の `exa-results/local-first-sqlite-background-index-2026-11-05.md`（repo の外）。
+- **NIR の先行研究の調査からの補足**（`/home/grimodex/fusion-eval-data/design-notes/nir-prior-art-2026-11-05.md`、2026-11-05 に Fable と相談して反映）：
+  - 変更の伝播だけでは再計算より速くならず、memo と組み合わせて速くなる（Acar 2009 [照合済]、Adapton [抜粋]）。DR-IRB-4（run ごとの memo）を DR-IRB-3 より先にする順序と合う。
+  - §8 の 2（前景の read の lock 待ちに期限を付ける案）を検討するとき、SQLite の progress handler は VM の命令の数で呼ばれ、時間の上限にならない（[抜粋]、forum の報告）。期限は壁時計の側で持つ必要がある。
+  - 同じ文書 §5 の 8（WHERE の無い `COUNT(*)` は 1 つの命令で全件を数え、命令の数の上限では止まらない、[推測]）は、IRB ではなく Graph の worker の query の確認項目。DR-IRB-1 の COUNT は WHERE つきで、走査自体を index に置き換えた。
