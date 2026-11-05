@@ -581,7 +581,7 @@ describe("Chronicle response diagnostics", () => {
         salvagedCount: 0,
       },
     });
-    expect(canonicalSynthesisParseStatus(allUnknownRefs)).toBe("parsed");
+    expect(canonicalSynthesisParseStatus(allUnknownRefs)).toBe("invalid");
   });
 
   it("reports synthesis schema errors and preserves only static field paths", () => {

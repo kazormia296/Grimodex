@@ -9,7 +9,10 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { normalizeEventSynthesis } from "@/features/chronicle/extraction/eventSynthesis";
 import { parseRawEventSynthesisResult } from "@/features/chronicle/extraction/schemas";
 import type { AiAuditJsonObject } from "@/features/ai-audit/types";
-import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
+import type {
+  EventHypothesis,
+  RawEventSynthesisResult,
+} from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
 import {
   runStructuredRepairTask,
@@ -111,24 +114,37 @@ const EVENT_COMPONENT_CONTRACT = {
   contractVersion: CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_VERSION,
   instruction: `あなたは小説の出来事統合アシスタントです。同一候補 Cluster 内の Observation を評価し、Event Hypothesis を JSON で返してください。
 本文全量は再送しません。Observation Ref と短い Evidence 表示だけを使います。未知の Observation Ref は出力しないでください。
-出力の clusterRef は Context Set の event-cluster 値を一字一句そのまま使用し、出力例のプレースホルダーを値としてコピーしないでください。
+出力の clusterRef は、Context Set の event-cluster の見出し行（contextId=event-cluster:X）の下に書かれた本文の値 X（例：contextId=event-cluster:cluster-0001 なら cluster-0001）を一字一句そのまま使用してください。contextId や inputRef は参照値ではなく、event-cluster: や cluster: を追加せず、出力例のプレースホルダーを値としてコピーしないでください。
 出力の events[].observationRefs は、このリクエストの Context Set にある同一候補 Cluster の Observation 行の localId 値だけを一字一句そのままコピーしてください。
 contextId や inputRef、出力例のプレースホルダーは参照値ではありません。event-observation: や observation: を追加せず、localId の接頭辞・区切り・桁数を省略、推測、正規化しないでください。別リクエストや別 Cluster の ID は使用しないでください。
+events[].significance に使えるのは "major"、"scene-level"、"minor"、"incidental" の 4 種類だけです。
 events[].actuality に使えるのは "actual"、"attempted"、"prevented"、"rumored" の 4 種類だけです。年表の出来事にできるのは、この 4 種類のいずれかの actuality を持つ Observation だけです。伝聞・噂の "rumored" も 4 種類に含まれます。
 それ以外の actuality（"planned"、"intended"、"hypothetical"、"counterfactual"、"dreamed"、"unknown" など）の Observation は、4 種類のどれかへ書き換えず、どの event の observationRefs にも入れずに省いてください。
 1 つの event の observationRefs には同じ actuality の Observation だけを入れ、event の actuality はそれらの Observation の actuality と同じ値にしてください。4 種類の Observation とそれ以外の Observation が同じ Cluster にある場合は、4 種類の Observation だけで event を作り、それ以外は参照しないでください。
 Cluster の Observation がすべて 4 種類以外なら、event を作らず、resolution を "unresolved"、events を [] にして返してください。`,
-  outputShape: `{"clusterRef":"<event-cluster-ref-from-context>","resolution":"single-event","events":[{"observationRefs":["<observation-localId-from-context>"],"titleSuggestion":"短いタイトル","summary":"要約","actuality":"actual","significance":"major"}]}
-4 種類の actuality の Observation が Cluster に無い場合: {"clusterRef":"<event-cluster-ref-from-context>","resolution":"unresolved","events":[]}`,
+  outputShape: `{"clusterRef":"<cluster-ref-from-context>","resolution":"single-event","events":[{"observationRefs":["<observation-localId-from-context>"],"titleSuggestion":"短いタイトル","summary":"要約","actuality":"actual","significance":"major"}]}
+4 種類の actuality の Observation が Cluster に無い場合: {"clusterRef":"<cluster-ref-from-context>","resolution":"unresolved","events":[]}`,
 } as const;
 
 /**
  * Structured-repair expected shape. It is a dynamic Context Set value of the
  * repair child, so it does not change the synthesis component contract digest.
+ * The cluster's own observation localIds are already model-visible in the
+ * synthesis request and in the broken response; they are repeated here only so
+ * the repair keeps them verbatim instead of shortening them to an example form.
  */
-function eventSynthesisRepairExpectedShape(clusterRef: string): string {
+function eventSynthesisRepairExpectedShape(
+  clusterRef: string,
+  observations: readonly RawChronicleEventObservation[],
+): string {
   const cluster = JSON.stringify(clusterRef);
-  return `{"clusterRef":${cluster},"resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}
+  const localIds = observations.map((observation) => observation.localId);
+  const localIdList = JSON.stringify(localIds);
+  const exampleRefs = JSON.stringify(localIds.slice(0, 1));
+  return `{"clusterRef":${cluster},"resolution":"single-event","events":[{"observationRefs":${exampleRefs},"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}
+clusterRef は ${cluster} をそのまま使い、event-cluster: などの接頭辞を付けないでください。
+使える localId はこの cluster の ${localIdList} だけです。events[].observationRefs は、壊れた出力の値がそのどれかと一致するなら一字一句そのまま保ち（短縮・正規化をしない）、一致しない値（event-observation: などの余分な接頭辞付き）は、同じ Observation を指す localId に直してください。例の値は形の見本で、event ごとの値は壊れた出力から取ります。
+events[].significance は "major"、"scene-level"、"minor"、"incidental" のいずれかです。それ以外の値（"moderate" など）は event を除かず、判断が付かなければ "minor" に直してください。
 events[].actuality は "actual"、"attempted"、"prevented"、"rumored" のいずれかです。それ以外の actuality の event は、4 種類のどれかへ書き換えず events から除いてください。
 events が空になる場合: {"clusterRef":${cluster},"resolution":"unresolved","events":[]}`;
 }
@@ -231,6 +247,32 @@ async function recordEventStageAudit(
   });
 }
 
+/**
+ * The single acceptance predicate for a synthesis response: the schema parses,
+ * the clusterRef is the input's, and every event's observationRefs resolve to
+ * this cluster's localIds. Native rejects a terminal output whose refs are not
+ * all known, so a response that normalization would silently thin out must be
+ * invalid here (and eligible for repair), never an apparent success. The
+ * predicate is all-or-nothing: one unknown ref in any event (a mix of known
+ * and unknown refs, or only a later event) makes the whole response invalid;
+ * the known events are not kept as a partial success.
+ */
+function acceptedSynthesisValue(
+  parsed: unknown,
+  input: RunEventSynthesisTaskInput,
+): RawEventSynthesisResult | null {
+  const result = parseRawEventSynthesisResult(parsed);
+  if (!result.ok || result.value.clusterRef !== input.clusterRef) return null;
+  const known = new Set(
+    input.observations.map((observation) => observation.localId),
+  );
+  return result.value.events.every((event) =>
+    event.observationRefs.every((ref) => known.has(ref)),
+  )
+    ? result.value
+    : null;
+}
+
 async function parseSynthesisFromText(
   responseText: string,
   input: RunEventSynthesisTaskInput,
@@ -247,7 +289,7 @@ async function parseSynthesisFromText(
   } catch {
     return null;
   }
-  const schemaResult = parseRawEventSynthesisResult(parsed);
+  const accepted = acceptedSynthesisValue(parsed, input);
   const allowedObservationRefs = new Set(
     input.observations.map((observation) => observation.localId),
   );
@@ -257,30 +299,25 @@ async function parseSynthesisFromText(
       allowedObservationRefs,
       createId: input.createId,
     }),
-    status:
-      schemaResult.ok && schemaResult.value.clusterRef === input.clusterRef
-        ? "parsed"
-        : "invalid",
-    eventOutput:
-      schemaResult.ok && schemaResult.value.clusterRef === input.clusterRef
-        ? {
-            clusterRef: schemaResult.value.clusterRef,
-            resolution: schemaResult.value.resolution,
-            events: schemaResult.value.events,
-          }
-        : null,
+    status: accepted ? "parsed" : "invalid",
+    eventOutput: accepted
+      ? {
+          clusterRef: accepted.clusterRef,
+          resolution: accepted.resolution,
+          events: accepted.events,
+        }
+      : null,
   };
 }
 
 function synthesisParseStatus(
   responseText: string,
-  expectedClusterRef: string,
+  input: RunEventSynthesisTaskInput,
 ): "parsed" | "invalid" {
   const jsonText = extractJsonObject(responseText);
   if (!jsonText) return "invalid";
   try {
-    const result = parseRawEventSynthesisResult(JSON.parse(jsonText));
-    return result.ok && result.value.clusterRef === expectedClusterRef
+    return acceptedSynthesisValue(JSON.parse(jsonText), input)
       ? "parsed"
       : "invalid";
   } catch {
@@ -306,17 +343,17 @@ async function chronicleStageDigestBinding(
     const jsonText = extractJsonObject(responseText);
     if (jsonText) {
       try {
-        const parsed = parseRawEventSynthesisResult(JSON.parse(jsonText));
-        if (parsed.ok && parsed.value.clusterRef === input.clusterRef) {
+        const accepted = acceptedSynthesisValue(JSON.parse(jsonText), input);
+        if (accepted) {
           parsedOutputDigest = await digestParsedSynthesisOutput({
             input,
             rawObservationsDigest,
             eventOutput: {
-              clusterRef: parsed.value.clusterRef,
-              resolution: parsed.value.resolution,
-              events: parsed.value.events,
+              clusterRef: accepted.clusterRef,
+              resolution: accepted.resolution,
+              events: accepted.events,
             },
-            eventCount: parsed.value.events.length,
+            eventCount: accepted.events.length,
           });
         }
       } catch {
@@ -474,10 +511,7 @@ export async function runEventSynthesisTask(
           metadata?: AiAuditJsonObject,
           responseDigest?: Sha256Digest,
         ) => {
-          const parseStatus = synthesisParseStatus(
-            responseText,
-            input.clusterRef,
-          );
+          const parseStatus = synthesisParseStatus(responseText, input);
           const digestBinding = await chronicleStageDigestBinding(
             input,
             responseText,
@@ -642,13 +676,16 @@ export async function runEventSynthesisTask(
 
   const repaired = await runStructuredRepairTask({
     brokenText: response.text,
-    expectedShape: eventSynthesisRepairExpectedShape(input.clusterRef),
+    expectedShape: eventSynthesisRepairExpectedShape(
+      input.clusterRef,
+      input.observations,
+    ),
     projectId,
     ...(repairStageExecution ? { stageExecution: repairStageExecution } : {}),
     ...(repairStageExecution
       ? {
           responseValidator: (candidate: string) =>
-            synthesisParseStatus(candidate, input.clusterRef),
+            synthesisParseStatus(candidate, input),
           terminalOutputDigests: async (
             candidate: string,
             parseStatus: "parsed" | "invalid",

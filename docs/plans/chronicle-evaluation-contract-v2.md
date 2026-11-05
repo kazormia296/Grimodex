@@ -285,6 +285,8 @@ actualの正規化器にはGoldを引数として渡さず、GoldのID・述語�
 
 ## ObservationとProposalの分離
 
+保存される途中の記録（観測の位置付け、kind の版、同一性キー、保持）の契約は [nir-extraction-artifact-contract.md](nir-extraction-artifact-contract.md) に置く。
+
 Observationの採点では、原文の4主張を忠実に捉えているかを評価する。
 原文による裏付けがある軽微な主張は、後段のProposalの選別方針によって抑制されても、Observationの評価対象に残す。
 
