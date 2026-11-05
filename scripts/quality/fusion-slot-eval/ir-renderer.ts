@@ -213,7 +213,12 @@ async function attachExisting(input: {
  * contextBridge の bridge は差し替えられないので、driver が診断の mode のときだけ vite の変換で
  * `related_scenes_continue` の Promise を `globalThis.__firIrTap` に渡す。製品の結果は変えない。
  */
-type IrTapRecord = { start: number; end: number | null; status: string | null };
+type IrTapRecord = {
+  start: number;
+  end: number | null;
+  status: string | null;
+  reason?: string | null;
+};
 let irTap: { continues: IrTapRecord[]; pending: Promise<unknown>[] } | null =
   null;
 function installIrArrivalTap() {
@@ -234,8 +239,12 @@ function installIrArrivalTap() {
       promise.then(
         (value) => {
           record.end = performance.now();
-          const status = (value as { status?: unknown } | null)?.status;
+          const { status, reason } = (value ?? {}) as {
+            status?: unknown;
+            reason?: unknown;
+          };
           record.status = typeof status === "string" ? status : "unknown";
+          record.reason = typeof reason === "string" ? reason : null;
         },
         () => {
           record.end = performance.now();
@@ -661,6 +670,7 @@ async function sampleHybrid(position: number) {
   let irArrival: {
     afterRawMs: number | null;
     status: string | null;
+    reason: string | null;
     continues: number;
   } | null = null;
   if (irTap) {
@@ -675,6 +685,7 @@ async function sampleHybrid(position: number) {
           ? last.end - sample.timing.tRawReadyMs
           : null,
       status: last?.status ?? null,
+      reason: last?.reason ?? null,
       continues: irTap.continues.length,
     };
   }
