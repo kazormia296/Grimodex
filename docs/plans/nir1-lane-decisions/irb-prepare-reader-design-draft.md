@@ -341,6 +341,24 @@ Scene の変更頻度だけを測らない。
 | 承認の burst の間隔の分布                                                                                                                                                                        | burst が多い                                            | debounce（3c）の要否を判断（§8）                                                                                                    |
 | 評価 run への影響（reader の CPU の競合）                                                                                                                                                        | PD 評価の時間条件に影響                                 | 評価と衝突しない時期に入れる（§8）                                                                                                  |
 
+### 7.1 計測の結果（2026-11-05、run の後。dev 枝 `claude/irb-prepare-timing` の `c840ddb3`、REPS=3、run の DB の写し）
+
+|                          | m-ja-2（候補 491、receipt 1,452、audit 26,381 行）                                                    | m-en-1（roster 509・候補 318、receipt 1,546、audit 29,928 行）                        |
+| ------------------------ | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| prepare（DR-IRB-1 の前） | 39.6 s（audit の COUNT 29.5 s＝74.5％）                                                               | 86.0 s（audit の COUNT 74.3 s＝86％）                                                 |
+| prepare（DR-IRB-1 の後） | **10.2 s**（audit の COUNT 0.56 s）                                                                   | **12.3 s**（1.38 s）                                                                  |
+| 前景の probe の最大      | prepare の全体（ずっと塞がる）                                                                        | 同じ                                                                                  |
+| 後の残りの内訳           | root_material 5.1 s（うち receipt の hydrate 1.3 s）、finalize.freshness 3.0 s、membership の他 1.7 s | root_material 8.4 s（hydrate 2.6 s）、finalize.freshness 1.5 s、membership の他 2.0 s |
+| receipt の検証の回数     | 6,934（receipt の 4.8 倍）                                                                            | 14,291（9.2 倍）                                                                      |
+| publish の読む段         | 約 1.1 s（audit の連鎖の全件検証 0.55 s、snapshot_current 0.25 s、evidence 0.30 s）                   | 約 0.9 s（0.55 s、0.18 s、0.16 s）                                                    |
+
+分岐の結論：
+
+- **DR-IRB-5（publish の短縮）は今は採らない。** publish の読む段は約 1 s で、audit の連鎖の全件検証は 0.55 s。§8 の 1 の脅威モデルは確定済みだが、「計測で重いと分かった場合だけ実装する」条件に当たらない。
+- **DR-IRB-4 を先にする。** root_material（同じ run の receipt と artifact を候補ごとに再生）が最大で、検証が receipt の 4.8〜9.2 倍繰り返されている。prepare の read tx の中だけの run ごとの memo で、root_material の大半（推定 4〜7 s）を消せる見込み。finalize.freshness の batch 化は次。
+- **DR-IRB-3（reader）はなお要る。** DR-IRB-4 の後も prepare は O(N) で、数千件の作品では前景を秒単位で塞ぐ。
+- 別件：m-en-1 は roster 509 のうち preflight を通るのが 318（m-ja-2 は 491／491）。m-en-1 の「IR の admitted 0 件」の手掛かり。未調査。
+
 ## 8. ユーザーの判断が要るもの
 
 **前提：IRB は U3 の対象レーンに入っていない**（冒頭）。以下の「worker の技術判断で進めてよいもの」は、**U3 の委任がこの lane に及ぶと確認できた場合に限る**。
