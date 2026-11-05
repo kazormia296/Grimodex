@@ -822,6 +822,50 @@ pub(crate) fn persist_chronicle_stage_bundle(
     )
 }
 
+/// Audit evidence for a terminal stage receipt that carries a response digest.
+///
+/// `scope_id` repeats the project binding so SQLite seeks the
+/// `(scope_id, operation_id, sequence)` index instead of scanning the whole
+/// ledger. The receipt replay runs for every reviewed revision while the
+/// related-scenes IR build holds the single native connection, so a full
+/// scan here grows with both the ledger and the roster and stalls foreground
+/// reads (DR-IRB-1). The predicate is the schema CHECK on `ai_audit_events`
+/// verbatim (`project_id IS NOT NULL AND scope_id = 'project:' || project_id`),
+/// so it never changes which rows match, for any `project_id`.
+const STAGE_RECEIPT_AUDIT_COUNT_SQL: &str = "SELECT COUNT(*) FROM ai_audit_events
+      WHERE scope_id = 'project:' || ?1
+        AND project_id = ?1
+        AND execution_id = ?2
+        AND operation_id = ?3
+        AND json_extract(payload,
+                '$.metadata.chronicleStage.stageExecution.stageExecutionId') = ?2
+        AND json_extract(payload,
+                '$.metadata.chronicleStage.responseDigest') = ?4
+        AND json_extract(payload,
+                '$.metadata.chronicleStage.stageExecutionReceiptDigest') = ?5
+        AND json_extract(payload,
+                '$.metadata.chronicleStage.parseStatus') = ?6
+        AND json_extract(payload,
+                '$.metadata.chronicleStage.terminalStatus') = ?7";
+
+/// Audit evidence for a no-response terminal stage receipt. Same scope seek
+/// as [`STAGE_RECEIPT_AUDIT_COUNT_SQL`] (DR-IRB-1).
+const STAGE_RECEIPT_NO_RESPONSE_AUDIT_COUNT_SQL: &str = "SELECT COUNT(*) FROM ai_audit_events
+      WHERE scope_id = 'project:' || ?1
+        AND project_id = ?1
+        AND execution_id = ?2
+        AND operation_id = ?3
+        AND json_extract(payload,
+                '$.metadata.chronicleStage.stageExecution.stageExecutionId') = ?2
+        AND json_type(payload,
+                '$.metadata.chronicleStage.responseDigest') = 'null'
+        AND json_extract(payload,
+                '$.metadata.chronicleStage.stageExecutionReceiptDigest') = ?4
+        AND json_extract(payload,
+                '$.metadata.chronicleStage.parseStatus') = ?5
+        AND json_extract(payload,
+                '$.metadata.chronicleStage.terminalStatus') = ?6";
+
 /// CAS every receipt's lifecycle coordinates and transport evidence against
 /// durable Native state: the receipt's Task must belong to this Run, its
 /// Attempt must belong to that Task, and a receipt claiming an AI response
@@ -919,20 +963,7 @@ fn validate_receipt_lifecycle_binding(
         // digest into the chronicleStage metadata. CAS all of them so a
         // receipt cannot borrow another stage's audit trail.
         let audited: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM ai_audit_events
-                  WHERE project_id = ?1
-                    AND execution_id = ?2
-                    AND operation_id = ?3
-                    AND json_extract(payload,
-                            '$.metadata.chronicleStage.stageExecution.stageExecutionId') = ?2
-                    AND json_extract(payload,
-                            '$.metadata.chronicleStage.responseDigest') = ?4
-                    AND json_extract(payload,
-                            '$.metadata.chronicleStage.stageExecutionReceiptDigest') = ?5
-                    AND json_extract(payload,
-                            '$.metadata.chronicleStage.parseStatus') = ?6
-                    AND json_extract(payload,
-                            '$.metadata.chronicleStage.terminalStatus') = ?7",
+            STAGE_RECEIPT_AUDIT_COUNT_SQL,
             params![
                 project_id,
                 execution.stage_execution_id,
@@ -957,20 +988,7 @@ fn validate_receipt_lifecycle_binding(
         // `emitChronicleStageAuditSkippedReceipt` writes the same exact
         // execution/receipt binding with a JSON null response digest.
         let audited: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM ai_audit_events
-                  WHERE project_id = ?1
-                    AND execution_id = ?2
-                    AND operation_id = ?3
-                    AND json_extract(payload,
-                            '$.metadata.chronicleStage.stageExecution.stageExecutionId') = ?2
-                    AND json_type(payload,
-                            '$.metadata.chronicleStage.responseDigest') = 'null'
-                    AND json_extract(payload,
-                            '$.metadata.chronicleStage.stageExecutionReceiptDigest') = ?4
-                    AND json_extract(payload,
-                            '$.metadata.chronicleStage.parseStatus') = ?5
-                    AND json_extract(payload,
-                            '$.metadata.chronicleStage.terminalStatus') = ?6",
+            STAGE_RECEIPT_NO_RESPONSE_AUDIT_COUNT_SQL,
             params![
                 project_id,
                 execution.stage_execution_id,
@@ -2579,4 +2597,43 @@ fn has_credential_shape(value: &str) -> bool {
                 || lower[index + marker.len()..].trim_start().starts_with(':')
         })
     })
+}
+
+#[cfg(test)]
+mod audit_count_plan_tests {
+    use super::{STAGE_RECEIPT_AUDIT_COUNT_SQL, STAGE_RECEIPT_NO_RESPONSE_AUDIT_COUNT_SQL};
+    use crate::Database;
+    use std::path::Path;
+
+    /// DR-IRB-1: the receipt replay runs once per receipt for every reviewed
+    /// revision inside the IR build's prepare, which holds the single native
+    /// connection. Both audit counts must seek the project scope index; a
+    /// full scan of the ledger made the prepare grow with ledger × roster and
+    /// stalled foreground reads past the renderer's 10 s read timeout.
+    #[test]
+    fn stage_receipt_audit_counts_seek_the_project_scope_index() {
+        let db = Database::new(Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            for (sql, arity) in [
+                (STAGE_RECEIPT_AUDIT_COUNT_SQL, 7usize),
+                (STAGE_RECEIPT_NO_RESPONSE_AUDIT_COUNT_SQL, 6usize),
+            ] {
+                let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+                assert_eq!(statement.parameter_count(), arity, "{sql}");
+                let values: Vec<String> = (0..arity).map(|i| format!("v{i}")).collect();
+                let plan = statement
+                    .query_map(rusqlite::params_from_iter(values.iter()), |row| {
+                        row.get::<_, String>(3)
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join("\n");
+                assert!(!plan.contains("SCAN ai_audit_events"), "{plan}");
+                assert!(plan.contains("USING INDEX idx_ai_audit_scope_"), "{plan}");
+                assert!(plan.contains("scope_id=?"), "{plan}");
+            }
+            Ok(())
+        })
+        .expect("explain audit counts");
+    }
 }
