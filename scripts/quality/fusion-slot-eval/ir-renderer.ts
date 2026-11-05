@@ -260,19 +260,44 @@ function installIrArrivalTap() {
       };
     },
   });
+  // window.grimodex は contextBridge が再定義を禁じる。まず window を、だめなら bridge の
+  // invoke の property を差し替える（製品の tauri.ts は呼出しのたびに bridge.invoke を読む）。
+  const attempts: string[] = [];
+  let installed = false;
   try {
     Object.defineProperty(window, "grimodex", {
       value: wrapped,
       configurable: true,
       writable: true,
     });
+    installed =
+      (window as unknown as { grimodex?: unknown }).grimodex === wrapped;
   } catch (error) {
-    return { installed: false, reason: errorShape(error) };
+    attempts.push(`window: ${errorShape(error)}`);
   }
-  const installed =
-    (window as unknown as { grimodex?: unknown }).grimodex === wrapped;
+  if (!installed) {
+    const replacement = (wrapped as Record<string, unknown>).invoke;
+    try {
+      (original as Record<string, unknown>).invoke = replacement;
+      installed = original.invoke === replacement;
+      if (!installed) attempts.push("bridge.invoke: assignment ignored");
+    } catch (error) {
+      attempts.push(`bridge.invoke assign: ${errorShape(error)}`);
+    }
+    if (!installed)
+      try {
+        Object.defineProperty(original, "invoke", {
+          value: replacement,
+          configurable: true,
+          writable: true,
+        });
+        installed = original.invoke === replacement;
+      } catch (error) {
+        attempts.push(`bridge.invoke define: ${errorShape(error)}`);
+      }
+  }
   if (installed) irTap = tap;
-  return { installed, reason: installed ? null : "not-replaced" };
+  return { installed, reason: installed ? null : attempts.join("; ") };
 }
 
 const CANONICAL_CUTOVER_MARKER = "narrative-c2-canonical-freshness-v1";
