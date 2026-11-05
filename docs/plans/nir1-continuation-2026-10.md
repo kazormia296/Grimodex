@@ -139,6 +139,7 @@ Session B のパケットで一覧として通知する委任判断（未記録�
 - MPS（保守が cutover の前で止まる不具合の修正。2026-11-04）: DR-MPS-1〜7（6・7 は実装後の追記と独立レビューの反映。記録先は [maint-precutover-stall-decisions.md](nir1-lane-decisions/maint-precutover-stall-decisions.md) と PR 本文）。U3 の委任（lifecycle の技術判断）の範囲内。再発見の枯渇を記録し、Freshness の NOT_READY 由来の再点火だけを backoff（5 s×2^(k-1)、上限 60 s）付きで許す。閾値（再発見 3 回）・契約・Rust は変えない。begin の理由の wire 化は新しい契約なので入れていない（DR-MPS-5）。
 - MPS の 2 件目（2026-11-05）: DR-MPS-8〜10（記録先は [maint-precutover-stall-decisions.md](nir1-lane-decisions/maint-precutover-stall-decisions.md) と PR 本文）。U3 の委任の範囲内。成功した Freshness の cycle が heartbeat の期限（5 s）を過ぎたときは、その cycle の liveness と cutover だけを見送り、recovery に送らない。上限・gate・契約は変えない。2 回目の recovery が戻らない件と、error の本文が残らない件は別の課題として残す。
 - NAC（Chronicle 抽出の途中の記録の契約〔案 0〕。2026-11-05）: DR-NAC-1〜6（記録先は [nir-extraction-artifact-contract.md](nir-extraction-artifact-contract.md)）。U3 の委任ではなくユーザーの依頼「案 0 の契約の固めも進めておいてください」の範囲。文書と試験だけで製品コードの挙動は変えない。観測の位置付け、kind の版の凍結、観測の内容ベース同一性キー、保持の方針と既知の 11 の依存（網羅ではない）、観測と根拠の対応（legacy-v1 と citation-id-v2 の両方。辿れない 5 点は直さず報告）。観測の「本文だけ」は製品の契約ではなく、文脈を注入するときは種類で開示を決め直す。試験は `src/features/chronicle/extraction/extractionArtifactContract.test.ts` と `extractionCoordinator.test.ts` の DR-NAC-5。
+- IRW（関連場面の IR の窓。2026-11-05）: DR-IRW-1〜3（記録先は [irw-decisions.md](nir1-lane-decisions/irw-decisions.md) と PR 本文）。閾値の変更で委任の外。ユーザーの回答「変えていいです」に基づく。D を 10.84 ms から 40 ms に。L0 の P、K6/4、DR-WF-1 の「D は変えない」を上書きする。CP-4 の評価の手順は 10.84 ms のまま（取り直すときは新しい版）。
 
 
 ### 3.3. レーンの判断記録の置き場所
