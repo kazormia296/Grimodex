@@ -335,8 +335,8 @@ pub use c2zc_canonical_cutover::{
     canonical_application_freshness, cut_over_workspace_freshness,
     inspect_workspace_cutover_readiness_with_liveness, record_live_scheduler_heartbeat,
     CanonicalCutoverReadiness, CanonicalCutoverReceipt, CanonicalFreshnessAuthority,
-    CanonicalFreshnessRow, SchedulerLivenessEvidence, C2_ZC_CUTOVER_CONTRACT_VERSION,
-    C2_ZC_CUTOVER_MIGRATION_ID,
+    CanonicalFreshnessRow, SchedulerLivenessCycleStale, SchedulerLivenessEvidence,
+    C2_ZC_CUTOVER_CONTRACT_VERSION, C2_ZC_CUTOVER_MIGRATION_ID,
 };
 pub(crate) use c2zc_canonical_cutover::{
     mint_c2zc_import_project_birth_epoch_in_tx, mint_c2zc_project_birth_epoch_in_tx,

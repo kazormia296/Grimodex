@@ -109,6 +109,25 @@ pub struct CanonicalCutoverReceipt {
 
 const MAX_SCHEDULER_LIVENESS_AGE: Duration = Duration::from_secs(5);
 
+/// A successful Incremental Freshness cycle that reached heartbeat
+/// registration after `MAX_SCHEDULER_LIVENESS_AGE`. The cycle itself and the
+/// Database authority are intact; only its liveness attestation expired
+/// (DR-MPS-8). The N-API scheduler classifies this by type, never by message,
+/// and skips liveness and cutover for that one cycle instead of transferring
+/// the workspace to recovery. The age bound and the rejection are unchanged.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct SchedulerLivenessCycleStale;
+
+impl std::fmt::Display for SchedulerLivenessCycleStale {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(
+            "NEX_C2ZC_SCHEDULER_LIVENESS_CYCLE_STALE: completed Incremental Freshness cycle exceeded its monotonic age bound before heartbeat registration",
+        )
+    }
+}
+
+impl std::error::Error for SchedulerLivenessCycleStale {}
+
 struct LiveSchedulerReceipt {
     evidence: SchedulerLivenessEvidence,
     authority_id: String,
@@ -594,10 +613,9 @@ pub fn record_live_scheduler_heartbeat(
         successful_cycle.connection_epoch() == connection_epoch,
         "NEX_C2ZC_SCHEDULER_LIVENESS_CYCLE_DATABASE_MISMATCH: completed Incremental Freshness cycle belongs to a different Database authority"
     );
-    anyhow::ensure!(
-        successful_cycle.is_fresh_for_liveness(MAX_SCHEDULER_LIVENESS_AGE),
-        "NEX_C2ZC_SCHEDULER_LIVENESS_CYCLE_STALE: completed Incremental Freshness cycle exceeded its monotonic age bound before heartbeat registration"
-    );
+    if !successful_cycle.is_fresh_for_liveness(MAX_SCHEDULER_LIVENESS_AGE) {
+        return Err(SchedulerLivenessCycleStale.into());
+    }
     anyhow::ensure!(
         !project_ids.is_empty(),
         "NEX_C2ZC_SCHEDULER_LIVENESS_SCOPE_MISSING: workspace has no project"
