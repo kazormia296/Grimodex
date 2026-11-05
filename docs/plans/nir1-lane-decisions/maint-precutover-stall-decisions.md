@@ -258,12 +258,19 @@ DR-MPS-10 の 1 件目は、停止の時刻を突き合わせると成り立た�
 - 事実: DR-MPS-11 のとおり、2 回目の recovery が戻らないことは観測されていない。「戻る」ことを固定する試験が無い。
   fixture を読んで分かったこと：
   - receipt の slot は 256 件で、2 回分は尽きない。
-  - ただし target 無しの pump は、reconcile の前に、ACK されていない receipt を先頭から replay する
-    （`first_completed_maintenance_recovery_receipt`）。そのため、ACK を挟まずに 2 回目の descriptor を取り上げることはできない。
-    2 回目の descriptor は、main が 1 回目の receipt を ACK するまで unresolved のまま待つ（既存の仕様。既存の試験が固定している）。
-- 判断: 同じ process で maintenance descriptor の recovery を 2 回続けて起こす試験を 1 本足す。ACK の扱いは試験の中で明示する。
+  - pump の入口は 2 つある。main の N-API（`reconcile_narrative_maintenance_recovery`、target 無し）は、reconcile の前に
+    ACK されていない receipt を先頭から replay する（`first_completed_maintenance_recovery_receipt`）。この入口では、
+    2 回目の descriptor は main が 1 回目の receipt を ACK するまで取り上げられない（既存の仕様。既存の試験が固定している）。
+  - Freshness の tick（`reconcile_maintenance_recovery_with_open_lock`）は replay を通らず、descriptor を直接 reconcile する。
+    **Freshness が起こした recovery の 2 回目は、1 回目の receipt が ACK されていなくても進む**。DR-MPS-11 の停止（Freshness 由来の
+    handoff の 2 回目）は、この ACK 待ちでは説明されない。
+- 判断: 同じ process で maintenance descriptor の recovery を 2 回続けて起こす試験を、入口ごとに 1 本ずつ足す。
+  - Freshness の入口（`freshness_pump_recovers_twice_without_an_intervening_ack`）：ACK を挟まずに 2 回とも Ready に戻り、
+    unresolved の descriptor が残らず、receipt が 2 件とも main の ACK を待つことを確かめる。
+  - main の入口（`two_consecutive_maintenance_recoveries_return_to_ready`）：ACK の扱いを試験の中で明示する。
   1 回目の後に ACK せずに pump を呼ぶと 1 回目の receipt が replay され、2 回目の descriptor が unresolved のまま残ることを確かめる。
   ACK した後の pump で 2 回目が回復し、Ready に戻り、2 つ目の descriptor の id が 1 つ目より大きく、unresolved の descriptor が残らないことを確かめる。
-- 残る課題: main が ACK しないまま新しい descriptor が出ると、pump は黙って待つ（replay は診断の対象外）。この待ちが長引く場合の観測は、
+- 残る課題: main の入口では、main が ACK しないまま新しい descriptor が出ると黙って待つ（replay は診断の対象外。
+  Freshness の入口は待たない）。この待ちが長引く場合の観測は、
   必要になった時点で別に判断する。
 - 信頼境界・変えないもの: 試験だけ。製品のコードは変えない。新しい送信先・保存・契約・閾値は無い。委任の根拠は U3。

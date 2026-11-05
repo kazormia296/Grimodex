@@ -18913,10 +18913,64 @@ mod narrative_maintenance_admission_unwind_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// DR-MPS-14: the Freshness tick pumps the descriptor directly
+    /// (`reconcile_maintenance_recovery_with_open_lock`) without the main
+    /// replay gate, so a second Freshness-originated recovery is not held by
+    /// the first, still-unACKed receipt.
+    #[tokio::test]
+    async fn freshness_pump_recovers_twice_without_an_intervening_ack() {
+        let (backend, root) = backend_with_active_workspace("freshness-recovery-twice");
+        let is_ready = || {
+            matches!(
+                backend
+                    .state
+                    .workspace_lifecycle
+                    .lifecycle_snapshot()
+                    .expect("snapshot")
+                    .state,
+                LifecycleState::Ready(_)
+            )
+        };
+        let first = retain_maintenance_descriptor(&backend);
+        let first_result = reconcile_maintenance_recovery_with_open_lock(&backend.state)
+            .expect("first Freshness pump")
+            .expect("first descriptor reconciled");
+        assert_eq!(first_result.descriptor_id, first);
+        assert_eq!(first_result.reason, "maintenance-recovery-complete");
+        assert!(is_ready(), "the first recovery returns to Ready");
+
+        let second = retain_maintenance_descriptor(&backend);
+        assert!(second > first, "descriptor ids only grow");
+        let second_result = reconcile_maintenance_recovery_with_open_lock(&backend.state)
+            .expect("second Freshness pump")
+            .expect("second descriptor reconciled without an ACK");
+        assert_eq!(second_result.descriptor_id, second);
+        assert_eq!(second_result.reason, "maintenance-recovery-complete");
+        assert!(is_ready(), "the second recovery returns to Ready");
+        assert!(backend
+            .state
+            .workspace_lifecycle
+            .recovery_descriptor_ids()
+            .expect("descriptors after the second recovery")
+            .is_empty());
+        assert_eq!(
+            backend
+                .state
+                .narrative_maintenance_recovery_receipts
+                .lock()
+                .expect("receipts")
+                .len(),
+            2,
+            "both proofs wait for main's ACK"
+        );
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// DR-MPS-14: two maintenance-descriptor recoveries in one process both
-    /// return to Ready. The pump replays an unACKed receipt before it looks
-    /// at a new descriptor, so the second recovery is only reachable after
-    /// main ACKs the first proof; that ordering is part of the contract.
+    /// return to Ready through main's N-API pump. That entry replays an
+    /// unACKed receipt before it looks at a new descriptor, so through main
+    /// the second recovery is only reachable after the first ACK.
     #[tokio::test]
     async fn two_consecutive_maintenance_recoveries_return_to_ready() {
         let (backend, root) = backend_with_active_workspace("recovery-twice");
