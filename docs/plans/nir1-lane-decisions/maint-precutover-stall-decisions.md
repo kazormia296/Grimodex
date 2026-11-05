@@ -167,10 +167,39 @@ main の検証と renderer が共有する型付き IPC の payload を変える
 
 ## DR-MPS-10 残る課題（この修正に含めない）
 
-- 2 回目の recovery が戻らない件: 本測定では 2 回目の recovery の後、DB 操作が
+- 2 回目の recovery が戻らない件（**DR-MPS-11 で訂正。戻らないことは観測されていない**）: 本測定では 2 回目の recovery の後、DB 操作が
   `workspace lifecycle has active owners or unacknowledged work` のまま止まった。診断の run（1 回だけ発生）では再現していない。
   - この修正は引き金を消すが、復帰が詰まる機構は未解明のままである。
   - 候補: 失敗した前景の Execution が non-Completed のまま残り、recovery の admit が NotAdmitted を返し続ける。
   - 別の課題として扱う。
 - Freshness の error の本文が製品のどこにも残らない件: native に tracing の subscriber が無い。
   値だけの診断（固定の `NEX_` コード）を足すかは、別に判断する。
+
+## DR-MPS-11 訂正：「2 回目の recovery が戻らない」は観測されていない（2026-11-05）
+
+DR-MPS-10 の 1 件目は、停止の時刻を突き合わせると成り立たない。PD の評価の本測定（第 4 版）の 2 作品とも、
+2 回目の handoff の 1 秒以内に harness が終了していて、recovery が戻るかどうかは一度も観測されていない。
+
+| 作品 | 2 回目の handoff（`[workspace-lifecycle-diag]`、rev 6、descriptor 2） | 抽出の失敗 | run の終了 |
+|---|---|---|---|
+| m-ja-2 | 17:04:15.409Z | 位置 89 が 17:04:15.399Z（in-flight の抽出）。位置 90〜117 は約 12 ms 間隔で 350 ms 以内に全部 | 17:04:16Z |
+| m-en-1 | 18:11:32.144Z | 位置 37（in-flight）、38〜54 を同様に連続で | 18:11:32Z |
+
+- 機構：harness（`scripts/quality/fusion-slot-eval/ir-renderer.ts` の抽出のループ）は、抽出の IPC の失敗を catch して
+  `extraction-failed` と記録し、待たずに次の位置へ進む。recovery の最中の DB 操作は、lifecycle の state が
+  RecoveryRequired／Transition の間は participant の拒否として `workspace lifecycle has active owners or unacknowledged work` になる
+  （`workspace_lifecycle.rs` の `begin_workspace_participant`）。これは recovery の途中の正常な一時状態で、残りの位置が
+  全部これで落ち、その後の IPC の失敗で harness が終了した。
+- 1 回目が続けられた理由：in-flight の抽出の失敗が handoff の約 3 秒後に返り（m-ja-2 の位置 60 は 16:34:45.05Z、handoff は 16:34:41.95Z）、
+  その間に recovery が済んでいた。2 回目は in-flight の抽出の失敗が handoff と同時に返った。**1 回目と 2 回目の違いは回数ではなく、
+  in-flight の抽出の失敗が返った時刻**と読む。revision の算術（rev 3 → 6 がちょうど +3＝admit・activate・次の handoff）も、
+  1 回目の recovery が 1 往復で済んだことと合う。診断の run（`diag-freshness-1`、1 回発生）は復帰した。
+- 第 4 版の `extraction-failed`（m-ja-2 で 33 件、m-en-1 で 19 件）のうち、m-ja-2 の位置 90〜117 と m-en-1 の位置 38〜54 は
+  harness の連続の失敗で、model の出力の失敗ではない（位置 89・37 は recovery で中断された抽出）。
+- 読んで確かめた潜在の穴（今回の停止がここを通った証拠は無い）：native の recovery の pump（`reconcile_maintenance_recovery_descriptor`）には、
+  値を何も残さずに `Ok(None)` で終わる出口がある（target が無いときの NotAdmitted、authority を開けないときの `Err(_) => {}`、
+  process-local の binding が無い descriptor、`Transition` の state での早期の return）。recovery が本当に詰まった場合も、今は区別できない。
+- 扱い：DR-MPS-10 の 1 件目は「戻らない」ではなく「**戻るかどうかが観測できない**」に改める。pump の出口に値だけの診断を足すこと、
+  2 回続けて recovery しても Ready に戻ることを試験で固定することは、別の PR で判断を記録してから行う。harness の待ちの無さは、
+  次の事前登録の版で直す（今の第 5 版の run の道具は凍結のまま）。#801 で引き金（liveness の期限切れの recovery）は消えていて、
+  第 5 版の run ではここまで handoff は起きていない。
