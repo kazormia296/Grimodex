@@ -3,7 +3,7 @@
 出所は PD 評価の本測定 第 5 版（`fusion-eval-data/pd-2026-11`、m-ja-2、117 Scene、2026-11-05）の抽出の失敗の調査
 （読むだけ。DB の写しとコードで確かめた）。基点は `origin/master` の `d45fa7e8`、branch は `claude/irb-audit-scope-index`。
 
-委任の根拠は U3（NIR-1 の残レーンの worker／lifecycle の技術判断）。閾値・送信先・保存・契約は変えない。
+根拠は、ユーザーの依頼（2026-11-05、引き継いだ NIR-1 の作業と「CI 待ちの間も実装を進めましょう」）の範囲の不具合の修正であること。IRB が AGENTS.md の U3 の対象レーン（C-resource、C-body、C-product、D-final 追補、D-transport、D-dispatch、H-store／H-current、DI-1、E）に含まれるかは確かめられていないので、U3 は根拠にしない。委任の外の項目（閾値の緩和、新しい送信先、保存範囲の拡大、新しい契約）には当たらない。閾値・送信先・保存・契約は変えない。
 
 ## 1. 事実
 
