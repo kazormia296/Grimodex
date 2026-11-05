@@ -618,6 +618,20 @@ async function sampleHybrid(position: number) {
       rawPositions: sample.rawScenes.map((row) => toPosition(row.sceneId)),
       durationMs,
       failures,
+      // 診断（分類・集計には使わない）：IR の窓（Raw ＋ RELATED_SCENES_IR_EXTRA_WAIT_MS）と
+      // の位置関係を見るための相対時間。renderer の時計どうし・Native どうしでだけ引く。
+      timing: {
+        rawReadyAfterFetchMs:
+          sample.timing.tRawReadyMs === null
+            ? null
+            : sample.timing.tRawReadyMs - sample.timing.tFetchMs,
+        returnAfterRawMs:
+          sample.timing.tRawReadyMs === null
+            ? null
+            : sample.timing.tReturnMs - sample.timing.tRawReadyMs,
+        nativeRawReadyElapsedMs:
+          sample.timing.native?.rawReadyElapsedMs ?? null,
+      },
     };
   } finally {
     sample.session?.release();
@@ -635,12 +649,14 @@ async function probe(position: number) {
   const id = sceneId(position);
   const body = prosemirrorToText(await loadSceneContent(id));
   const query = buildSemanticRecallQuery({ userMessage: "", sceneBody: body });
+  const tBegin = performance.now();
   const begin = await beginRelatedScenes({
     expectedWorkspacePath: workspace.path,
     projectId: state.projectId,
     currentSceneId: id,
     query,
   });
+  const tBeginReturned = performance.now();
   if (begin.ir.status !== "pending")
     return {
       status: "unavailable",
@@ -650,11 +666,18 @@ async function probe(position: number) {
   const ticket = begin.ir.operationTicket;
   try {
     const answer = await continueRelatedScenes(ticket);
+    // 診断（分類・集計には使わない）：begin の往復と、begin が返ってから IR が届くまで。
+    const timing = {
+      beginRoundTripMs: tBeginReturned - tBegin,
+      irAfterBeginMs: performance.now() - tBeginReturned,
+      nativeRawReadyElapsedMs: begin.timing?.rawReadyElapsedMs ?? null,
+    };
     if (answer.status !== "available")
       return {
         status: "unavailable",
         reason: answer.reason,
         admittedPositions: [],
+        timing,
       };
     return {
       status: "available",
@@ -662,6 +685,7 @@ async function probe(position: number) {
       admittedPositions: answer.scenes.map(
         (scene) => state.positions.get(scene.sceneId) ?? -1,
       ),
+      timing,
     };
   } finally {
     await releaseRelatedScenes(ticket).catch(() => undefined);
