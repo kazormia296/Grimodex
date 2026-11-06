@@ -661,3 +661,50 @@ fn shutdown_forces_a_stuck_reader_at_the_bound() {
         assert!(reader.join().expect("reader thread").is_err());
     });
 }
+
+/// E7 (P3-3): shutdown の実際の経路（`request_shutdown`→`finish_workspace_shutdown`）。
+/// 止まらない reader は本番の上限（2 s）で participant の count から外れるが、
+/// 止まった build は `request` の pin を握ったままなので、その後の
+/// `wait_for_sole_owner` の待ち（最大 10 s）で error になる（fail-closed）。
+/// pin は Harness の `authority` が代わりに握る。
+#[test]
+fn shutdown_through_the_real_path_forces_the_reader_then_stops_at_the_pin_wait() {
+    let h = Harness::new();
+    let participant = h.participant();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let reader = spawn_stuck_reader(scope, &h, &participant, entered_tx, release_rx);
+        entered_rx.recv().expect("reader entered");
+        let _ = h.state.workspace_lifecycle.request_shutdown();
+        h.state.request_workspace_shutdown();
+        let state = Arc::clone(&h.state);
+        let started = Instant::now();
+        let shutdown = scope.spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(crate::finish_workspace_shutdown(state))
+        });
+        let core = h.state.ws.lifecycle_core().clone();
+        while core.workspace_participant_count().expect("count") != 0 {
+            assert!(started.elapsed() < Duration::from_secs(8), "never forced");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            started.elapsed()
+                >= Duration::from_millis(grimodex_db::READER_STOP_BOUNDED_WAIT_MS - 100),
+            "not before the production bound: {:?}",
+            started.elapsed()
+        );
+        assert!(h.runtime().chronicle_reader_slot_blocked());
+        let error = shutdown
+            .join()
+            .expect("shutdown thread")
+            .expect_err("a held pin ends the shutdown");
+        assert!(error.to_string().contains("実行中のDB操作"), "{error}");
+        release_tx.send(()).expect("release");
+        assert!(reader.join().expect("reader thread").is_err());
+    });
+}

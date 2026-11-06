@@ -474,11 +474,12 @@ impl NirChronicleIndexRuntime {
         // while it is open, so a waiting side whose bounded wait passed can
         // force it out of the participant count and block this slot.
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let _hold = participant.register_reader_hold(
+        let hold = participant.register_reader_hold(
             self.owner,
             Arc::clone(&stop),
             Arc::clone(&self.reader_slot_blocked),
         );
+        let forced_probe = Arc::clone(&stop);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             reader.with_participant_chronicle_reader_stoppable(
                 participant,
@@ -487,8 +488,27 @@ impl NirChronicleIndexRuntime {
                 operation,
             )
         }));
+        #[cfg(test)]
+        if let Some(hook) = AFTER_READER_SCOPE_HOOK.with(|slot| slot.borrow_mut().take()) {
+            hook();
+        }
+        // Drop the registration first, then read the flag: a force takes the
+        // lifecycle lock to set it, and the drop takes the same lock, so a
+        // force either already set the flag (seen below) or can no longer
+        // reach this reader. A force that landed after the scope's last
+        // check (during commit or close) has counted the participant out, so
+        // an `Ok` plan must not go on to embedding and publish.
+        drop(hold);
+        let forced = forced_probe.load(Ordering::Acquire);
         match outcome {
             Ok(result) => {
+                let result = match result {
+                    Ok(_) if forced => Err(crate::narrative_extraction::validation_terminated(
+                        crate::narrative_extraction::ValidationTerminationReason::Cancelled,
+                        "NIR1 chronicle reader was forced out by a bounded wait",
+                    )),
+                    other => other,
+                };
                 let unproven = matches!(
                     result
                         .as_ref()
@@ -588,4 +608,12 @@ impl NirChronicleIndexRuntime {
         state.proofs.insert(proof.project.clone(), Arc::new(proof));
         Ok(true)
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test hook: runs after the reader scope returned and before its hold is
+    /// dropped (the window a forced stop can land in after the last check).
+    pub(super) static AFTER_READER_SCOPE_HOOK:
+        std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }

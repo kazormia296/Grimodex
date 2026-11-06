@@ -790,3 +790,63 @@ fn a_reader_that_stops_in_time_is_not_forced_and_a_plain_participant_is_never_fo
     assert!(!f.runtime.chronicle_reader_slot_blocked());
     drop(f.runtime.try_acquire_reader_permit().expect("slot is free"));
 }
+
+/// E7 (P3-1): a force that lands after the scope's last check (commit／close)
+/// must not let an `Ok` plan go on as a counted-out participant. The result is
+/// read as a typed `Cancelled`, the slot is blocked, the participant is out.
+#[test]
+fn a_force_after_the_scope_returned_turns_an_ok_into_cancelled() {
+    let f = Fixture::new();
+    let (core, p) = participant();
+    let admission = admit(&f);
+    let wait = crate::ReaderStopBoundedWait::with_bound(&core, std::time::Duration::ZERO);
+    runtime::AFTER_READER_SCOPE_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move || {
+            assert_eq!(wait.poll(), 1, "the hold is still registered here");
+        }));
+    });
+    let error = on_reader(&f, &admission, &p, |_| Ok(7))
+        .expect_err("a forced reader never returns Ok to its caller");
+    assert_eq!(termination(&error), ValidationTerminationReason::Cancelled);
+    assert_eq!(core.workspace_participant_count().expect("count"), 0);
+    assert!(f.runtime.chronicle_reader_slot_blocked());
+    assert!(f.runtime.try_acquire_reader_permit().is_none());
+}
+
+/// E7 (P3-3): a forced reader's participant leaves the count, but a second,
+/// unrelated participant stays counted, so the waiting side still waits for it.
+#[test]
+fn another_participant_stays_counted_while_a_reader_is_forced() {
+    let f = Fixture::new();
+    let (core, p) = participant();
+    let other = core
+        .begin_workspace_participant()
+        .expect("other participant");
+    let admission = admit(&f);
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::scope(|scope| {
+        let (fr, ar, pr) = (&f, &admission, &p);
+        let reader = scope.spawn(move || {
+            on_reader(fr, ar, pr, |_| {
+                entered_tx.send(()).expect("entered");
+                let _ = release_rx.recv_timeout(std::time::Duration::from_secs(30));
+                Ok(())
+            })
+        });
+        entered_rx.recv().expect("reader entered");
+        assert_eq!(core.workspace_participant_count().expect("count"), 2);
+        let wait = crate::ReaderStopBoundedWait::with_bound(&core, std::time::Duration::ZERO);
+        assert_eq!(wait.poll(), 1);
+        assert_eq!(
+            core.workspace_participant_count().expect("count"),
+            1,
+            "only the reader's participant is counted out"
+        );
+        release_tx.send(()).expect("release");
+        assert!(reader.join().expect("reader thread").is_err());
+    });
+    assert_eq!(core.workspace_participant_count().expect("count"), 1);
+    drop(other);
+    assert_eq!(core.workspace_participant_count().expect("count"), 0);
+}
