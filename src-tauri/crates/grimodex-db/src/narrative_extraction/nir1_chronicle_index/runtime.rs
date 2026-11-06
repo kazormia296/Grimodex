@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex, MutexGuard,
     },
 };
@@ -10,16 +10,130 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{
-    super::retrieval_admission::build::BuildCandidate, binding::StoredBinding,
-    NirEmbeddingIdentity, NirIndexUnavailableReason,
+    super::{
+        nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage},
+        retrieval_admission::build::BuildCandidate,
+    },
+    binding::StoredBinding,
+    ChronicleReaderError, NirEmbeddingIdentity, NirIndexUnavailableReason,
 };
-use crate::{read_sqlite_source_revision, Database};
+use crate::{read_sqlite_source_revision, workspace_lifecycle::WorkspaceParticipant, Database};
 
 pub struct NirChronicleIndexRuntime {
     owner: u64,
     connection_epoch: Option<String>,
     cancellation_epoch: Arc<AtomicU64>,
     state: Mutex<RuntimeState>,
+    /// DR-IRB-3 (E13): one dedicated-reader slot per authority. Process-local.
+    reader_slot: Arc<AtomicUsize>,
+    /// Set when a reader's close was not proven: the slot is then never given
+    /// back (E8 (a)) and callers can tell it from a slot merely in use.
+    reader_slot_blocked: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// DR-IRB-3: the process-local capability that lets one dedicated reader
+/// prepare an index build. It is minted only inside the authority's read
+/// transaction (`chronicle_reader_admission`), carries the admitted runtime
+/// owner/epoch and the exact main database file the authority has open, and
+/// is opaque to callers: they can only pass it back.
+#[derive(Debug)]
+pub struct ChronicleReaderAdmission {
+    pub(crate) owner: u64,
+    pub(crate) runtime_epoch: u64,
+    /// The project this admission was made for. A prepare for another project
+    /// would take this admission's proof verdict for its own.
+    pub(crate) project: String,
+    pub(crate) target: ChronicleReaderTarget,
+    pub(crate) proof_current: bool,
+}
+
+#[derive(Debug)]
+pub(crate) enum ChronicleReaderTarget {
+    File {
+        path: std::path::PathBuf,
+        identity: String,
+    },
+    /// In-memory or unnamed main database: a second connection cannot see it.
+    Unsupported,
+}
+
+impl ChronicleReaderAdmission {
+    /// A usable proof already exists: no preparation (and no reader) is needed.
+    pub fn already_usable(&self) -> bool {
+        self.proof_current
+    }
+
+    /// Whether a dedicated reader can be opened for this authority. `false`
+    /// must become a typed stop, never a silent fallback.
+    pub fn reader_available(&self) -> bool {
+        matches!(self.target, ChronicleReaderTarget::File { .. })
+    }
+}
+
+/// The scheduling verdict of `chronicle_reader_admission`, mirroring
+/// `rebuild_requested` (`Some(false)` / `None` / `Some(true)`).
+#[derive(Debug)]
+pub enum ChronicleReaderAdmissionRead {
+    Idle,
+    Stopped,
+    Admitted(ChronicleReaderAdmission),
+}
+
+/// The right to open this authority's single reader (E13). Until a reader
+/// connection is actually open, dropping the permit gives the slot back, so an
+/// early return or an error between taking it and opening a reader cannot
+/// block the authority. `with_chronicle_reader` turns it into an
+/// `OpenReaderSlot` once the connection is open; from then on only a proven
+/// close gives the slot back (E5/E8 (a)).
+#[must_use]
+#[derive(Debug)]
+pub struct ReaderPermit {
+    slot: Arc<AtomicUsize>,
+    blocked: Arc<std::sync::atomic::AtomicBool>,
+    armed: bool,
+}
+
+impl ReaderPermit {
+    /// Give the slot back explicitly (the same as dropping the permit).
+    pub fn release_unused(self) {}
+
+    fn into_open_slot(mut self) -> OpenReaderSlot {
+        self.armed = false;
+        OpenReaderSlot {
+            slot: Arc::clone(&self.slot),
+            blocked: Arc::clone(&self.blocked),
+            consumed: false,
+        }
+    }
+}
+
+impl Drop for ReaderPermit {
+    fn drop(&mut self) {
+        if self.armed {
+            self.slot.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+/// A slot held by a reader connection that is open or being opened. It is
+/// consumed explicitly: given back after close evidence
+/// (`release_with_close_evidence`) or kept and marked blocked after a failed
+/// verdict (`block_reader_slot`). If it is dropped without either (a panic
+/// before the close verdict, including inside the open itself), the close was
+/// never judged, so the slot stays taken and `Drop` marks it blocked (E8 (a),
+/// fail-closed). A drop is never close evidence.
+struct OpenReaderSlot {
+    slot: Arc<AtomicUsize>,
+    blocked: Arc<std::sync::atomic::AtomicBool>,
+    consumed: bool,
+}
+
+impl Drop for OpenReaderSlot {
+    fn drop(&mut self) {
+        if !self.consumed {
+            self.blocked.store(true, Ordering::SeqCst);
+        }
+    }
 }
 
 pub(super) struct RuntimeState {
@@ -126,6 +240,8 @@ impl NirChronicleIndexRuntime {
             owner,
             connection_epoch,
             cancellation_epoch: Arc::new(AtomicU64::new(1)),
+            reader_slot: Arc::new(AtomicUsize::new(0)),
+            reader_slot_blocked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             state: Mutex::new(RuntimeState {
                 epoch: 1,
                 embedding_generation: None,
@@ -204,6 +320,185 @@ impl NirChronicleIndexRuntime {
 
     pub(super) fn owner(&self) -> u64 {
         self.owner
+    }
+
+    /// DR-IRB-3: run inside the authority's read transaction in place of
+    /// `rebuild_requested`. Same verdict, and for `Some(true)` it also admits
+    /// the build (owner/epoch), reads the main database file from this very
+    /// connection (never through `WorkspaceAuthority::main_database_file_identity`,
+    /// which re-enters the connection mutex this transaction already holds)
+    /// and decides whether a usable proof already exists.
+    pub fn chronicle_reader_admission(
+        &self,
+        conn: &Connection,
+        project: &str,
+        control: &mut dyn GraphWorkControl,
+    ) -> Result<ChronicleReaderAdmissionRead> {
+        match self.rebuild_requested(conn, project)? {
+            Some(false) => return Ok(ChronicleReaderAdmissionRead::Idle),
+            None => return Ok(ChronicleReaderAdmissionRead::Stopped),
+            Some(true) => {}
+        }
+        control.check(GraphWorkStage::Source)?;
+        let Some((owner, runtime_epoch)) = self.admit_native_build(conn)? else {
+            return Ok(ChronicleReaderAdmissionRead::Stopped);
+        };
+        let proof_current =
+            super::query::current_proof_with_control(conn, self, project, control)?.is_some();
+        let path = crate::narrative_extraction::sqlite_database_path_in_tx(conn)?;
+        let target = if path.trim().is_empty() || path == ":memory:" {
+            ChronicleReaderTarget::Unsupported
+        } else {
+            ChronicleReaderTarget::File {
+                identity: crate::narrative_extraction::sqlite_database_file_identity_in_tx(conn)?,
+                path: path.into(),
+            }
+        };
+        Ok(ChronicleReaderAdmissionRead::Admitted(
+            ChronicleReaderAdmission {
+                owner,
+                runtime_epoch,
+                project: project.to_owned(),
+                target,
+                proof_current,
+            },
+        ))
+    }
+
+    /// DR-IRB-3 (E13): take this authority's single reader slot, or `None`.
+    pub fn try_acquire_reader_permit(&self) -> Option<ReaderPermit> {
+        self.reader_slot
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| ReaderPermit {
+                slot: Arc::clone(&self.reader_slot),
+                blocked: Arc::clone(&self.reader_slot_blocked),
+                armed: true,
+            })
+    }
+
+    /// `true` once a reader's close was not proven. The slot is then taken
+    /// for good (fail-closed, E8 (a)): a caller that finds no permit can tell
+    /// this permanent state from a reader that is merely in use.
+    pub fn chronicle_reader_slot_blocked(&self) -> bool {
+        self.reader_slot_blocked.load(Ordering::SeqCst)
+    }
+
+    /// Give the slot back after the reader's `sqlite3_close` was proven.
+    fn release_with_close_evidence(&self, mut open: OpenReaderSlot) {
+        debug_assert!(Arc::ptr_eq(&open.slot, &self.reader_slot));
+        open.consumed = true;
+        open.slot.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// The reader's close was not proven: keep the slot taken and say so.
+    fn block_reader_slot(&self, mut open: OpenReaderSlot) {
+        debug_assert!(Arc::ptr_eq(&open.slot, &self.reader_slot));
+        open.consumed = true;
+        self.reader_slot_blocked.store(true, Ordering::SeqCst);
+    }
+
+    /// Test fixture for other crates: leave the slot as an unproven close
+    /// would (taken for good and marked blocked).
+    #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+    #[doc(hidden)]
+    pub fn block_chronicle_reader_slot_for_test(&self) {
+        let permit = self
+            .try_acquire_reader_permit()
+            .expect("reader slot free for the test fixture");
+        self.block_reader_slot(permit.into_open_slot());
+    }
+
+    /// Number of permits currently held (readers possibly open). Exposed only
+    /// for cross-crate deterministic tests.
+    #[doc(hidden)]
+    pub fn live_chronicle_readers(&self) -> usize {
+        self.reader_slot.load(Ordering::SeqCst)
+    }
+
+    /// DR-IRB-3: run `operation` on a dedicated read-only connection.
+    ///
+    /// The permit comes from `try_acquire_reader_permit`; this method owns it
+    /// from here on. The reader is opened on exactly the file the admission
+    /// names, read under the participant's scope, then explicitly closed; the
+    /// permit returns only when that close is proven. A panic inside
+    /// `operation` is handled the same way before it is resumed.
+    pub fn with_chronicle_reader<T>(
+        &self,
+        permit: ReaderPermit,
+        admission: &ChronicleReaderAdmission,
+        participant: &WorkspaceParticipant,
+        operation: impl FnOnce(&Connection) -> Result<T>,
+    ) -> Result<T> {
+        // Before the open starts, dropping the permit (also by unwinding)
+        // gives the slot back.
+        if !Arc::ptr_eq(&permit.slot, &self.reader_slot) || admission.owner != self.owner {
+            anyhow::bail!("NIR1 chronicle reader admission belongs to another runtime");
+        }
+        let open_started = std::time::Instant::now();
+        // From here a connection may exist without a close verdict, so the
+        // slot is held as an `OpenReaderSlot`: a panic inside the open (where
+        // the connection's own `Drop` swallows a failed close) leaves it
+        // unconsumed and blocks the slot instead of giving it back.
+        let open_slot = permit.into_open_slot();
+        let reader = match Database::open_chronicle_reader(admission) {
+            Ok(reader) => reader,
+            Err(error) => {
+                if matches!(
+                    error.downcast_ref::<ChronicleReaderError>(),
+                    Some(ChronicleReaderError::CloseUnproven(_))
+                ) {
+                    // A connection was opened and could not be closed.
+                    tracing::error!(%error, "NIR1 chronicle reader close unproven; reader slot kept");
+                    self.block_reader_slot(open_slot);
+                } else {
+                    // Every other open error closed (or never opened) the
+                    // connection: the open path proves that before returning.
+                    self.release_with_close_evidence(open_slot);
+                }
+                return Err(error);
+            }
+        };
+        tracing::debug!(target:"grimodex::nir1_index",
+            reader_open_ms=open_started.elapsed().as_millis(),"NIR1 chronicle reader opened");
+        let cancellation = (
+            self.native_build_cancellation_epoch(),
+            admission.runtime_epoch,
+        );
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reader.with_participant_chronicle_reader(participant, cancellation, operation)
+        }));
+        match outcome {
+            Ok(result) => {
+                let unproven = matches!(
+                    result
+                        .as_ref()
+                        .err()
+                        .and_then(|error| error.downcast_ref::<ChronicleReaderError>()),
+                    Some(ChronicleReaderError::CloseUnproven(_))
+                );
+                if unproven {
+                    tracing::error!("NIR1 chronicle reader close unproven; reader slot kept");
+                    self.block_reader_slot(open_slot);
+                } else {
+                    self.release_with_close_evidence(open_slot);
+                }
+                result
+            }
+            Err(payload) => {
+                // The scope already retired the reader before unwinding.
+                // Re-prove it (retiring twice is harmless) before the slot
+                // is given back.
+                match reader.prove_chronicle_reader_closed() {
+                    Ok(()) => self.release_with_close_evidence(open_slot),
+                    Err(error) => {
+                        tracing::error!(%error, "NIR1 chronicle reader close unproven after panic; reader slot kept");
+                        self.block_reader_slot(open_slot);
+                    }
+                }
+                std::panic::resume_unwind(payload)
+            }
+        }
     }
 
     /// The shell supplies its actual pinned SemanticRuntime generation, never

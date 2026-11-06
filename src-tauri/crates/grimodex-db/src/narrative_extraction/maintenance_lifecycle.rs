@@ -586,7 +586,7 @@ fn semantic_epoch_number_in_tx(
     u64::try_from(number).map_err(|_| ownership_error("semantic epoch number is negative"))
 }
 
-fn sqlite_database_path_in_tx(conn: &Connection) -> anyhow::Result<String> {
+pub(crate) fn sqlite_database_path_in_tx(conn: &Connection) -> anyhow::Result<String> {
     let path: String = conn.query_row(
         "SELECT file FROM pragma_database_list WHERE name = 'main'",
         [],
@@ -608,7 +608,7 @@ fn sqlite_database_path_in_tx(conn: &Connection) -> anyhow::Result<String> {
 /// underlying inode; path-only checks are therefore not absence evidence.
 /// Use stable filesystem identity only; size and mtime change during ordinary
 /// SQLite writes and must not make a live database look like a replacement.
-fn sqlite_database_file_identity_in_tx(conn: &Connection) -> anyhow::Result<String> {
+pub(crate) fn sqlite_database_file_identity_in_tx(conn: &Connection) -> anyhow::Result<String> {
     let path = sqlite_database_path_in_tx(conn)?;
     if path == ":memory:" {
         return Ok(path);

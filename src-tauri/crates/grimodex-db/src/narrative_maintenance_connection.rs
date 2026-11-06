@@ -7,6 +7,9 @@
 //! the lifetime of the `Database` value.
 
 use super::Database;
+use crate::narrative_extraction::nir1_chronicle_index::{
+    ChronicleReaderAdmission, ChronicleReaderError, ChronicleReaderTarget,
+};
 use crate::narrative_extraction::nir1_entity_relation_index::{
     GraphProgressCallback, GraphWorkControl, GraphWorkStage,
 };
@@ -26,6 +29,10 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 const UNUSABLE_CODE: &str = "NIR1_MAINTENANCE_CONNECTION_UNUSABLE";
+/// DR-IRB-3: page cache of the dedicated Chronicle reader, in SQLite's
+/// negative-KiB form (16 MiB, the authority's value). A starting point: the
+/// reader's cache is private to its connection, so it is set explicitly.
+const CHRONICLE_READER_CACHE_SIZE: i64 = -16_000;
 
 const TERMINATION_NONE: u8 = 0;
 const TERMINATION_CANCELLED: u8 = 1;
@@ -1571,6 +1578,202 @@ impl Database {
         result
     }
 
+    /// DR-IRB-3: open the dedicated Chronicle reader on exactly the main
+    /// database file the authority admitted (see `chronicle_reader_admission`).
+    /// Crate-private on purpose: the only entry callers outside this crate have
+    /// is `NirChronicleIndexRuntime::with_chronicle_reader`, which owns the
+    /// reader slot and the close evidence.
+    pub(crate) fn open_chronicle_reader(admission: &ChronicleReaderAdmission) -> Result<Database> {
+        match &admission.target {
+            ChronicleReaderTarget::File { path, identity } => {
+                Self::open_chronicle_reader_at(path, identity)
+            }
+            ChronicleReaderTarget::Unsupported => Err(anyhow::Error::new(
+                ChronicleReaderError::UnsupportedDatabase,
+            )),
+        }
+    }
+
+    /// Open order matters. Flags and `busy_timeout(0)` first; the same
+    /// defensive SQL settings as the authority (`new_with_busy_timeout`); then
+    /// the TEMP connection meta (shared code reads it; a later
+    /// `query_only` would refuse the CREATE); `query_only` last. The file
+    /// identity read through the new connection must equal `expected_identity`.
+    pub(crate) fn open_chronicle_reader_at(
+        path: &std::path::Path,
+        expected_identity: &str,
+    ) -> Result<Database> {
+        let open_failed = |error: rusqlite::Error| -> anyhow::Error {
+            let busy = matches!(
+                &error,
+                SqliteError::SqliteFailure(failure, _)
+                    if matches!(failure.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+            );
+            anyhow::Error::new(if busy {
+                ChronicleReaderError::Busy(error.to_string())
+            } else {
+                ChronicleReaderError::OpenFailed(error.to_string())
+            })
+        };
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(open_failed)?;
+        let configured = (|| -> rusqlite::Result<()> {
+            conn.busy_timeout(Duration::ZERO)?;
+            conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+            conn.set_db_config(
+                rusqlite::config::DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA,
+                false,
+            )?;
+            conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DQS_DDL, false)?;
+            conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DQS_DML, false)?;
+            conn.set_db_config(
+                rusqlite::config::DbConfig::SQLITE_DBCONFIG_WRITABLE_SCHEMA,
+                false,
+            )?;
+            conn.execute_batch(&format!(
+                "PRAGMA temp_store=MEMORY;
+                 PRAGMA mmap_size=0;
+                 PRAGMA cache_size={CHRONICLE_READER_CACHE_SIZE};
+                 CREATE TEMP TABLE grimodex_connection_meta (
+                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                     epoch TEXT NOT NULL
+                 );"
+            ))?;
+            #[cfg(test)]
+            if CHRONICLE_OPEN_PANIC_FAILPOINT.with(std::cell::Cell::get) {
+                panic!("chronicle reader open failpoint");
+            }
+            conn.execute(
+                "INSERT INTO temp.grimodex_connection_meta (singleton, epoch) VALUES (1, ?1)",
+                rusqlite::params![uuid::Uuid::new_v4().to_string()],
+            )?;
+            conn.execute_batch("PRAGMA query_only=ON")?;
+            Ok(())
+        })();
+        if let Err(error) = configured {
+            return Self::close_failed_chronicle_reader(conn, open_failed(error));
+        }
+        let identity = crate::narrative_extraction::sqlite_database_file_identity_in_tx(&conn);
+        if !matches!(&identity, Ok(identity) if identity == expected_identity) {
+            let mismatch = match identity {
+                Ok(_) => anyhow::Error::new(ChronicleReaderError::IdentityMismatch),
+                Err(error) => anyhow::Error::new(ChronicleReaderError::OpenFailed(format!(
+                    "reader file identity unavailable: {error}"
+                ))),
+            };
+            return Self::close_failed_chronicle_reader(conn, mismatch);
+        }
+        Ok(Database::from_connection(conn))
+    }
+
+    /// A reader that failed to open fully is closed explicitly; if even that
+    /// close fails, the error says so (the caller must keep its slot).
+    fn close_failed_chronicle_reader(conn: Connection, error: anyhow::Error) -> Result<Database> {
+        match conn.close() {
+            Ok(()) => Err(error),
+            Err((_, close)) => Err(anyhow::Error::new(ChronicleReaderError::CloseUnproven(
+                format!("{close}; while failing with: {error}"),
+            ))),
+        }
+    }
+
+    /// DR-IRB-3: read one SQLite snapshot on a dedicated reader (`self` is the
+    /// reader from `open_chronicle_reader`) under the participant's scope,
+    /// then close it explicitly. `cancellation` is
+    /// `(runtime cancellation epoch, admitted epoch)`: a change stops the read
+    /// as a typed termination. The foreground waiter probe is deliberately not
+    /// attached (the reader never contends with foreground work). `Ok(())` of
+    /// `retire_connection_for_recovery` with no pending retired handle is the
+    /// close evidence; without it the result is `ChronicleReaderError::
+    /// CloseUnproven` and the caller must not give its reader slot back.
+    /// Crate-private: `self` must be a reader, never an authority (the close
+    /// retires the connection).
+    pub(crate) fn with_participant_chronicle_reader<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        cancellation: (Arc<AtomicU64>, u64),
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        let stop = Arc::new(AtomicBool::new(false));
+        let operation_stop = Arc::clone(&stop);
+        let generation = cancellation.clone();
+        let config = NarrativeMaintenanceGraphControlConfig {
+            workspace_generation: Some(cancellation),
+            ..Default::default()
+        };
+        let check = move || -> Result<()> {
+            check_participant_sql_control(participant, &operation_stop, None)?;
+            if generation.0.load(Ordering::Acquire) != generation.1 {
+                return Err(validation_terminated(
+                    ValidationTerminationReason::WorkspaceGenerationChanged,
+                    "NIR1 chronicle reader epoch changed",
+                ));
+            }
+            Ok(())
+        };
+        let result = self.with_participant_sql_scope_fenced(
+            participant,
+            &ParticipantSqlFence::Admission { probe: None },
+            config,
+            stop,
+            None,
+            None,
+            |conn| {
+                check()?;
+                let tx = conn.unchecked_transaction()?;
+                let value = match operation(&tx) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        // Prefer the typed stop over a SQLite error it caused.
+                        check()?;
+                        return Err(error);
+                    }
+                };
+                check()?;
+                tx.commit()?;
+                Ok(value)
+            },
+        );
+        match self.prove_chronicle_reader_closed() {
+            Ok(()) => result,
+            Err(closed) => Err(match result {
+                Ok(_) => closed,
+                Err(operation) => {
+                    closed.context(format!("reader operation also failed: {operation}"))
+                }
+            }),
+        }
+    }
+
+    /// Close the reader's connection and prove it. Safe to repeat.
+    pub(crate) fn prove_chronicle_reader_closed(&self) -> Result<()> {
+        #[cfg(test)]
+        if CHRONICLE_CLOSE_PANIC_FAILPOINT.with(std::cell::Cell::get) {
+            panic!("chronicle reader close judgment failpoint");
+        }
+        #[cfg(test)]
+        if CHRONICLE_CLOSE_FAILPOINT.with(std::cell::Cell::get) {
+            return Err(anyhow::Error::new(ChronicleReaderError::CloseUnproven(
+                "close failpoint".into(),
+            )));
+        }
+        self.retire_connection_for_recovery().map_err(|error| {
+            anyhow::Error::new(ChronicleReaderError::CloseUnproven(error.to_string()))
+        })?;
+        if self.retirement_close_pending() {
+            return Err(anyhow::Error::new(ChronicleReaderError::CloseUnproven(
+                "a retired reader handle is still pending close".into(),
+            )));
+        }
+        Ok(())
+    }
+
     pub(crate) fn ensure_connection_reusable(&self) -> Result<()> {
         self.connection_health.ensure_reusable()
     }
@@ -1693,6 +1896,31 @@ impl Database {
     pub(crate) fn foreground_connection_waiting(&self) -> bool {
         self.foreground_connection_waiter_count() > 0
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static CHRONICLE_CLOSE_FAILPOINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static CHRONICLE_CLOSE_PANIC_FAILPOINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static CHRONICLE_OPEN_PANIC_FAILPOINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test-only: panic inside the close judgment (sticky until cleared).
+#[cfg(test)]
+pub(crate) fn set_chronicle_reader_close_panic_failpoint_for_test(enabled: bool) {
+    CHRONICLE_CLOSE_PANIC_FAILPOINT.with(|point| point.set(enabled));
+}
+
+/// Test-only: panic while the reader connection is being configured.
+#[cfg(test)]
+pub(crate) fn set_chronicle_reader_open_panic_failpoint_for_test(enabled: bool) {
+    CHRONICLE_OPEN_PANIC_FAILPOINT.with(|point| point.set(enabled));
+}
+
+/// Test-only: make the dedicated reader's close proof fail (sticky until cleared).
+#[cfg(test)]
+pub(crate) fn set_chronicle_reader_close_failpoint_for_test(enabled: bool) {
+    CHRONICLE_CLOSE_FAILPOINT.with(|point| point.set(enabled));
 }
 
 #[cfg(test)]
@@ -2700,6 +2928,148 @@ mod tests {
             0
         );
         core.close().expect("owner released after panic retirement");
+    }
+
+    /// A migrated workspace file and its identity, for dedicated-reader tests.
+    fn reader_workspace() -> (std::path::PathBuf, Database, String) {
+        let path = std::env::temp_dir().join(format!("irb-reader-{}.db", uuid::Uuid::new_v4()));
+        let authority = Database::new(&path).expect("authority");
+        authority.migrate().expect("migrate");
+        let identity =
+            crate::narrative_extraction::sqlite_database_file_identity(&path).expect("identity");
+        (path, authority, identity)
+    }
+
+    fn remove_workspace(path: &std::path::Path) {
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    fn generation(value: u64) -> (Arc<AtomicU64>, u64) {
+        (Arc::new(AtomicU64::new(value)), value)
+    }
+
+    #[test]
+    fn chronicle_reader_scope_reads_one_snapshot_then_proves_the_close() {
+        let (path, _authority, identity) = reader_workspace();
+        let reader = Database::open_chronicle_reader_at(&path, &identity).expect("reader");
+        let (core, participant) = test_participant();
+        let value = reader
+            .with_participant_chronicle_reader(&participant, generation(1), |conn| {
+                assert!(!conn.is_autocommit(), "one read snapshot");
+                Ok(conn.query_row("SELECT 41 + 1", [], |row| row.get::<_, i64>(0))?)
+            })
+            .expect("reader scope");
+        assert_eq!(value, 42);
+        assert!(!reader.retirement_close_pending());
+        assert!(!reader.connection_reusable(), "the reader is spent");
+        assert!(reader.with_conn(|_| Ok(())).is_err());
+        assert_eq!(core.workspace_participant_count().expect("count"), 1);
+        drop(participant);
+        core.close().expect("participant released");
+        remove_workspace(&path);
+    }
+
+    #[test]
+    fn chronicle_reader_scope_stops_for_a_stopped_participant_and_still_closes() {
+        let (path, _authority, identity) = reader_workspace();
+        let reader = Database::open_chronicle_reader_at(&path, &identity).expect("reader");
+        let (core, participant) = test_participant();
+        core.request_shutdown().expect("shutdown");
+        let error = reader
+            .with_participant_chronicle_reader(&participant, generation(1), |_| Ok(()))
+            .expect_err("stopped");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        assert!(!reader.retirement_close_pending());
+        assert!(reader.with_conn(|_| Ok(())).is_err(), "closed");
+        remove_workspace(&path);
+    }
+
+    #[test]
+    fn chronicle_reader_scope_interrupts_a_running_statement_on_an_epoch_change() {
+        let (path, _authority, identity) = reader_workspace();
+        let reader = Database::open_chronicle_reader_at(&path, &identity).expect("reader");
+        let (_core, participant) = test_participant();
+        let epoch = Arc::new(AtomicU64::new(1));
+        let rotate = Arc::clone(&epoch);
+        let error = reader
+            .with_participant_chronicle_reader(&participant, (epoch, 1), |conn| {
+                rotate.store(2, Ordering::Release);
+                Ok(conn.query_row(
+                    "WITH RECURSIVE walk(value) AS (
+                        SELECT 1 UNION ALL SELECT value + 1 FROM walk WHERE value < 10000000
+                     ) SELECT sum(value) FROM walk",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .expect_err("the epoch change must interrupt the statement");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::WorkspaceGenerationChanged
+        );
+        assert!(!reader.retirement_close_pending());
+        remove_workspace(&path);
+    }
+
+    #[test]
+    fn chronicle_reader_cleanup_failure_still_ends_with_a_proven_close() {
+        let (path, _authority, identity) = reader_workspace();
+        let reader = Database::open_chronicle_reader_at(&path, &identity).expect("reader");
+        let (_core, participant) = test_participant();
+        set_maintenance_cleanup_failpoints_for_test(MaintenanceCleanupFailpoints {
+            progress_reset: true,
+            ..MaintenanceCleanupFailpoints::NONE
+        });
+        let error = reader
+            .with_participant_chronicle_reader(&participant, generation(1), |_| Ok(1))
+            .expect_err("cleanup failure stays an error");
+        assert!(error
+            .to_string()
+            .contains("progress handler reset failpoint"));
+        assert!(!reader.retirement_close_pending());
+        assert!(!reader.connection_reusable());
+        remove_workspace(&path);
+    }
+
+    #[test]
+    fn chronicle_reader_close_without_evidence_is_a_typed_error() {
+        let (path, _authority, identity) = reader_workspace();
+        let reader = Database::open_chronicle_reader_at(&path, &identity).expect("reader");
+        let (_core, participant) = test_participant();
+        // A retired handle that could not be closed is still pending.
+        let leaked = Connection::open_in_memory().expect("handle");
+        reader
+            .retired_connections
+            .lock()
+            .expect("baton")
+            .push(leaked);
+        let error = reader
+            .with_participant_chronicle_reader(&participant, generation(1), |_| Ok(()))
+            .expect_err("pending close is not evidence");
+        assert!(matches!(
+            error.downcast_ref::<ChronicleReaderError>(),
+            Some(ChronicleReaderError::CloseUnproven(_))
+        ));
+        assert!(reader.retirement_close_pending());
+        remove_workspace(&path);
+    }
+
+    #[test]
+    fn chronicle_reader_open_requires_the_admitted_identity_and_closes_on_refusal() {
+        let (path, _authority, _identity) = reader_workspace();
+        let error = Database::open_chronicle_reader_at(&path, "dev:0:ino:0")
+            .err()
+            .expect("identity mismatch");
+        assert!(matches!(
+            error.downcast_ref::<ChronicleReaderError>(),
+            Some(ChronicleReaderError::IdentityMismatch)
+        ));
+        remove_workspace(&path);
     }
 
     #[test]

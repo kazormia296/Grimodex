@@ -427,7 +427,9 @@ pub use legacy_backfill::{
     BackfillStatus, BackfillSummary, LegacyBackfillBootstrapOutcome, LegacyBackfillFaultOutcome,
 };
 pub use maintenance_lifecycle::resolve_reused_maintenance_run;
-pub(crate) use maintenance_lifecycle::sqlite_database_file_identity;
+pub(crate) use maintenance_lifecycle::{
+    sqlite_database_file_identity, sqlite_database_file_identity_in_tx, sqlite_database_path_in_tx,
+};
 pub use repair::{
     repair_narrative_dependency_declarations_for_project,
     repair_narrative_dependency_declarations_for_request, seal_repair_plan, RepairOutcome,
