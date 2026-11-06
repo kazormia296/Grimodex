@@ -103,9 +103,9 @@ function GraphOnlyRow({
 
 /**
  * The Related Scenes rows with a `graph-ready` Graph (CP-3b). A lazy chunk:
- * requested only while `NIR1_GRAPH_UI_ENABLED` is on and the fetch carries a
- * Graph payload or `restart-required` (DR-CP3B-7). `fetch.result` is read,
- * never changed.
+ * requested at mount of the section while `NIR1_GRAPH_UI_ENABLED` is on
+ * (DR-PUBG-37-1; DR-CP3B-7 had it on the Graph payload). `fetch.result` is
+ * read, never changed.
  */
 export default function Nir1GraphRelatedScenes({ fetch, querySceneId }: Props) {
   const { t } = useTranslation();
