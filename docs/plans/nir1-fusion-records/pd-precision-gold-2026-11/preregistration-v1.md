@@ -1,6 +1,6 @@
 # 事前登録（**確定・第 1 版（2026-11-06）**）：融合の枠の候補の precision を測る小さな Gold
 
-- 状態：**下書き・未確定**（2026-11-06）。**ユーザーの決定（2026-11-06）：閾値 (a) L＝0.5、AI 注釈 gpt-6-luna（OpenRouter）、60 query、run 1 は既存 run**。§12 の残りの確認が済むまで、注釈の開始・AI への送信・新しい run をしない。確定したら sha256 を記録してから測る。
+- 状態：**確定・第 1 版**（2026-11-06。§13 の確認の後に確定。下書きは `preregistration-draft.md`）。**ユーザーの決定（2026-11-06）：閾値 (a) L＝0.5、AI 注釈 gpt-6-luna（OpenRouter）、60 query、run 1 は既存 run**。§12 の確認は §13 で済んだ。run 2 の起動は同じ machine の重い job が止まってから。
 - 目的：枠の数と Raw 偏重の見直し（判断文書 `fusion-slot-review-2026-11-06.md`）に要る値、すなわち **IR の Raw 外の候補の rank 1〜3 と Raw の rank 6〜8 の precision**。第 5・6 版は枠の使用率（機会）だけを測り、候補の正しさは測っていない。
 - ユーザーの決定（2026-11-06）：(1) 測定の lane を起こす、(2) arm に「8 超」（表示を 8 件を超えて末尾に +1／+2）を含める、(3) 注釈者はユーザー＋AI（Claude とは別系列の model）、(4) 閾値の置き方は (a)（Raw の rank 6〜8 との相対＋strict の下限 L＝0.5、Δ＝0。§7）、(5) AI は OpenRouter 経由の `openai/gpt-6-luna`、(6) 60 query（2 作品を合わせて層ごと 15）、(7) run 1 は第 6 版の既存の run。
 - evidenceScope：**`not-cp4-evidence`**（既存の Gold G-01〜08 には当てない）。
