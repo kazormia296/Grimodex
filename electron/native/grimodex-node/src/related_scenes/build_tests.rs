@@ -121,9 +121,10 @@ fn reader_reason(outcome: &BuildOutcome) -> Option<Reason> {
     }
 }
 
-/// (d) The reader never outlives a phase: a plan, a stop, a busy slot and an
-/// error all leave zero readers, and the permit of an early return is given
-/// back.
+/// (d) The reader never outlives a phase: the two exits exercised here (a plan
+/// and a `Stopped` admission) leave zero readers and the permit of an early
+/// return is given back. The busy slot is (q) and the open failure is (e)
+/// below; an admission error is not reachable without a broken authority.
 #[test]
 fn every_prepare_exit_leaves_no_reader_and_gives_the_slot_back() {
     let h = Harness::new();
@@ -143,6 +144,28 @@ fn every_prepare_exit_leaves_no_reader_and_gives_the_slot_back() {
         .expect("stopped");
     assert!(matches!(outcome(stopped), BuildOutcome::Stopped));
     assert_eq!(h.runtime().live_chronicle_readers(), 0);
+}
+
+/// P3-5 (iii): a slot whose reader close was never proven is blocked for good
+/// (E8 (a)). The next prepare stops at once (no `ReaderSlotBusy` retry streak)
+/// and touches neither the slot nor the database.
+#[test]
+fn a_blocked_slot_stops_the_build_at_once() {
+    let h = Harness::new();
+    let request = h.request();
+    let participant = h.participant();
+    h.runtime().block_chronicle_reader_slot_for_test();
+    assert!(h.runtime().chronicle_reader_slot_blocked());
+    assert_eq!(h.runtime().live_chronicle_readers(), 1);
+    let blocked = outcome(h.prepare(&request, &participant).expect("blocked slot"));
+    assert!(
+        matches!(blocked, BuildOutcome::Stopped),
+        "{}",
+        blocked.label()
+    );
+    assert!(h.runtime().chronicle_reader_slot_blocked(), "still blocked");
+    assert!(h.runtime().try_acquire_reader_permit().is_none());
+    assert_eq!(h.runtime().live_chronicle_readers(), 1, "never given back");
 }
 
 /// (q) A second build while a reader is in flight is a slot `Retry`, touches
@@ -213,6 +236,7 @@ fn open_failure_is_a_reader_retry() {
     let request = h.request();
     let participant = h.participant();
     if !make_unreadable(&h.root.join("grimodex.db")) {
+        eprintln!("skip: open_failure_is_a_reader_retry (root では権限が効かない)");
         return;
     }
     let retry = outcome(h.prepare(&request, &participant).expect("open failure"));
@@ -284,6 +308,7 @@ async fn the_task_keeps_its_reservation_while_retrying_then_stops_after_k() {
     let request = h.request();
     let participant = h.participant();
     if !make_unreadable(&h.root.join("grimodex.db")) {
+        eprintln!("skip: the_task_keeps_its_reservation_while_retrying_then_stops_after_k (root では権限が効かない)");
         return;
     }
     let key = (request.database().identity(), h.project.clone());

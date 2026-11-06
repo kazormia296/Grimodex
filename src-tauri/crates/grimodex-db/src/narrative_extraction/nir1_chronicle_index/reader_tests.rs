@@ -416,6 +416,102 @@ fn unproven_close_keeps_the_slot_and_is_typed() {
     assert!(f.db.connection_reusable(), "the authority is untouched");
 }
 
+/// E8 (a), P3-1: a panic before the close verdict leaves the slot unconsumed.
+/// The slot stays taken and is marked blocked (not merely "in use"), so the
+/// caller stops instead of retrying.
+#[test]
+fn panic_before_the_close_verdict_blocks_the_slot_for_good() {
+    let f = Fixture::new();
+    let (_core, p) = participant();
+    let admission = admit(&f);
+    crate::narrative_maintenance_connection::set_chronicle_reader_close_panic_failpoint_for_test(
+        true,
+    );
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        let _ = on_reader(&f, &admission, &p, |_| Ok(()));
+    }));
+    crate::narrative_maintenance_connection::set_chronicle_reader_close_panic_failpoint_for_test(
+        false,
+    );
+    assert!(panic.is_err(), "the panic propagates");
+    assert_eq!(f.runtime.live_chronicle_readers(), 1, "slot kept");
+    assert!(
+        f.runtime.chronicle_reader_slot_blocked(),
+        "an unjudged close is blocked, not 'in use'"
+    );
+    assert!(f.runtime.try_acquire_reader_permit().is_none());
+    assert!(f.db.connection_reusable(), "the authority is untouched");
+}
+
+/// E8 (a), P3-1: a panic while the connection is being opened (where the
+/// connection's own `Drop` would swallow a failed close) also blocks the slot.
+#[test]
+fn panic_during_the_reader_open_blocks_the_slot_for_good() {
+    let f = Fixture::new();
+    let (_core, p) = participant();
+    let admission = admit(&f);
+    crate::narrative_maintenance_connection::set_chronicle_reader_open_panic_failpoint_for_test(
+        true,
+    );
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        let _ = on_reader(&f, &admission, &p, |_| Ok(()));
+    }));
+    crate::narrative_maintenance_connection::set_chronicle_reader_open_panic_failpoint_for_test(
+        false,
+    );
+    assert!(panic.is_err(), "the panic propagates");
+    assert!(f.runtime.chronicle_reader_slot_blocked());
+    assert!(f.runtime.try_acquire_reader_permit().is_none());
+    assert!(f.db.connection_reusable());
+}
+
+/// Counterpart of the two above: a clean reader gives the slot back and does
+/// not mark it blocked.
+#[test]
+fn a_clean_reader_does_not_block_the_slot() {
+    let f = Fixture::new();
+    let (_core, p) = participant();
+    let admission = admit(&f);
+    on_reader(&f, &admission, &p, |_| Ok(())).expect("clean reader");
+    assert!(!f.runtime.chronicle_reader_slot_blocked());
+    assert_eq!(f.runtime.live_chronicle_readers(), 0);
+}
+
+/// P3-5 (ii): the reader's snapshot is taken first; when the authority commits
+/// afterwards (a human withdrawal here), publishing that plan is `Stale`.
+/// The reader itself saw the older, consistent snapshot.
+#[test]
+fn authority_commit_after_the_reader_snapshot_makes_the_plan_stale() {
+    let f = Fixture::new();
+    let (_core, p) = participant();
+    let admission = admit(&f);
+    let NirIndexBuildRead::Ready { plan, documents } =
+        prepare_on_reader(&f, &admission, &p).expect("reader prepare")
+    else {
+        panic!("reader prepare must be ready");
+    };
+    let revision = documents[0].revision_id.clone();
+    let outcomes = f.outcomes(documents);
+    f.hold(&revision);
+    assert!(matches!(
+        publish_chronicle_index_build(&f.db, &f.runtime, plan, outcomes).expect("stale publish"),
+        NirIndexPublishRead::Stale
+    ));
+    assert_eq!(f.published_count(), 0, "nothing was published");
+    // A reader opened after the commit sees the new state and publishes.
+    let admission = admit(&f);
+    let NirIndexBuildRead::Ready { plan, documents } =
+        prepare_on_reader(&f, &admission, &p).expect("fresh reader prepare")
+    else {
+        panic!("fresh reader prepare must be ready");
+    };
+    assert!(matches!(
+        publish_chronicle_index_build(&f.db, &f.runtime, plan, f.outcomes(documents))
+            .expect("fresh publish"),
+        NirIndexPublishRead::Published { .. }
+    ));
+}
+
 /// (j) A reader on another file than the admitted one is refused and closed.
 #[test]
 fn reader_refuses_a_different_file_identity() {

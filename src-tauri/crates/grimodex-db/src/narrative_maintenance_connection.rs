@@ -1642,6 +1642,10 @@ impl Database {
                      epoch TEXT NOT NULL
                  );"
             ))?;
+            #[cfg(test)]
+            if CHRONICLE_OPEN_PANIC_FAILPOINT.with(std::cell::Cell::get) {
+                panic!("chronicle reader open failpoint");
+            }
             conn.execute(
                 "INSERT INTO temp.grimodex_connection_meta (singleton, epoch) VALUES (1, ?1)",
                 rusqlite::params![uuid::Uuid::new_v4().to_string()],
@@ -1749,6 +1753,10 @@ impl Database {
 
     /// Close the reader's connection and prove it. Safe to repeat.
     pub(crate) fn prove_chronicle_reader_closed(&self) -> Result<()> {
+        #[cfg(test)]
+        if CHRONICLE_CLOSE_PANIC_FAILPOINT.with(std::cell::Cell::get) {
+            panic!("chronicle reader close judgment failpoint");
+        }
         #[cfg(test)]
         if CHRONICLE_CLOSE_FAILPOINT.with(std::cell::Cell::get) {
             return Err(anyhow::Error::new(ChronicleReaderError::CloseUnproven(
@@ -1893,6 +1901,20 @@ impl Database {
 #[cfg(test)]
 thread_local! {
     static CHRONICLE_CLOSE_FAILPOINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static CHRONICLE_CLOSE_PANIC_FAILPOINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static CHRONICLE_OPEN_PANIC_FAILPOINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test-only: panic inside the close judgment (sticky until cleared).
+#[cfg(test)]
+pub(crate) fn set_chronicle_reader_close_panic_failpoint_for_test(enabled: bool) {
+    CHRONICLE_CLOSE_PANIC_FAILPOINT.with(|point| point.set(enabled));
+}
+
+/// Test-only: panic while the reader connection is being configured.
+#[cfg(test)]
+pub(crate) fn set_chronicle_reader_open_panic_failpoint_for_test(enabled: bool) {
+    CHRONICLE_OPEN_PANIC_FAILPOINT.with(|point| point.set(enabled));
 }
 
 /// Test-only: make the dedicated reader's close proof fail (sticky until cleared).
