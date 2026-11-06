@@ -547,9 +547,10 @@ describe("the first read and a re-read (DR-PUBG-39-1, DR-PUBG-39-2)", () => {
     const gate = deferred<unknown>();
     installNative({ state: () => gate.promise });
     const seen: boolean[] = [];
+    // Observe from before the mount, so a section drawn together with it is seen.
     const observer = new MutationObserver(() => seen.push(root() !== null));
-    const { container } = renderSection();
     observer.observe(document.body, { childList: true, subtree: true });
+    const { container } = renderSection();
     await waitFor(() => expect(calls(STATE)).toHaveLength(1));
     await act(async () => gate.reject(refusal("gate-closed")));
     await act(async () => {
@@ -558,6 +559,35 @@ describe("the first read and a re-read (DR-PUBG-39-1, DR-PUBG-39-2)", () => {
     observer.disconnect();
     expect(container.firstChild).toBeNull();
     expect(seen).not.toContain(true);
+  });
+
+  it("first draws the answered state after a Scene switch, in the host's order of refresh keys", async () => {
+    const { update } = renderSection(makeNode(), "1:1");
+    await ready("draft");
+    const gate = deferred<unknown>();
+    native.state = () => gate.promise;
+    const states: (string | null)[] = [];
+    const observer = new MutationObserver(() => states.push(stateOf()));
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+    });
+    // The new Scene arrives with the old key, which the host clears at once
+    // and then replaces with the new Scene's own.
+    update(makeNode({ id: "scene-2" }), "1:1");
+    update(makeNode({ id: "scene-2" }), "");
+    update(makeNode({ id: "scene-2" }), "2:2");
+    expect(root()).toBeNull();
+    await act(async () => gate.resolve(noneWire()));
+    await ready("draft");
+    await act(async () => {
+      await Promise.resolve();
+    });
+    observer.disconnect();
+    expect(calls(STATE)).toHaveLength(2);
+    expect(states.filter((state) => state !== null)[0]).toBe("draft");
+    expect(states).not.toContain("loading");
   });
 
   it.each([
@@ -692,15 +722,18 @@ describe("the first read and a re-read (DR-PUBG-39-1, DR-PUBG-39-2)", () => {
     expect(screen.queryByTestId("body-declaration-form")).toBeNull();
   });
 
-  it("starts the confirmations again when A1 or the registry is saved, but not for the first scope read", async () => {
+  it("starts the confirmations again when the Scope changes, or is shown for the first time", async () => {
     const { update } = renderSection(makeNode(), "");
     await ready("draft");
     tick(["story", "auto"]);
-    // The scope read arrives for the first time: "" to a value is no change.
+    // The Scope is shown (the first value after ""): confirm again, now that
+    // the author can see it.
     update(makeNode(), "5:1");
+    for (const axis of BODY_DECLARATION_AXES) {
+      expect(axisBox(axis).checked).toBe(false);
+    }
     await ready("draft");
-    expect(axisBox("story").checked).toBe(true);
-    expect(axisBox("auto").checked).toBe(true);
+    tick(["story", "auto"]);
     // A saved A1 is a new thing to confirm.
     const gate = deferred<unknown>();
     native.state = () => gate.promise;
@@ -711,6 +744,22 @@ describe("the first read and a re-read (DR-PUBG-39-1, DR-PUBG-39-2)", () => {
     }
     await act(async () => gate.resolve(noneWire()));
     await ready("draft");
+    for (const axis of BODY_DECLARATION_AXES) {
+      expect(axisBox(axis).checked).toBe(false);
+    }
+  });
+
+  it("drops the confirmations when the re-read ends with another kind of form", async () => {
+    renderSection();
+    await ready("draft");
+    tick(["story", "pov"]);
+    const { gate } = rereadWith(null);
+    expect(axisBox("story").checked).toBe(true);
+    // The draft became an expired declaration meanwhile (a declaration made in
+    // another window, then expired): what was ticked was for a draft.
+    await act(async () => gate.resolve(declaredWire(false, ["content"])));
+    await ready("expired");
+    expect(declareButton()).toHaveTextContent("改めて宣言する");
     for (const axis of BODY_DECLARATION_AXES) {
       expect(axisBox(axis).checked).toBe(false);
     }

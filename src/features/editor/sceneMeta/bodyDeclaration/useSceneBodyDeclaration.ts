@@ -63,6 +63,11 @@ export type BodyDeclarationOutcome =
  * while the state is read again.
  */
 export type RetainedDeclareForm = {
+  /**
+   * Which form it is. A confirmation belongs to one kind of form: when a read
+   * ends with another kind, the form starts again (DR-CB3-26 (1)).
+   */
+  readonly shape: "draft" | "paused" | "expired";
   /** A stored declaration that is not effective (paused or expired). */
   readonly expired: boolean;
   /** The form was usable before the re-read, so its layout is kept whole. */
@@ -169,13 +174,26 @@ function canDeclareFrom(view: BodyDeclarationSnapshot): boolean {
 }
 
 /** The form a snapshot shows (none, or declared but not in use), if any. */
-function formOf(view: BodyDeclarationSnapshot): RetainedDeclareForm | null {
+export function declareFormOf(
+  view: BodyDeclarationSnapshot,
+): RetainedDeclareForm | null {
   const state = view.state;
   if (state.kind === "none") {
-    return { expired: false, couldDeclare: canDeclareFrom(view) };
+    return {
+      shape: "draft",
+      expired: false,
+      couldDeclare: canDeclareFrom(view),
+    };
   }
-  if (state.kind === "declared" && declaredStanding(state) !== "effective") {
-    return { expired: true, couldDeclare: canDeclareFrom(view) };
+  if (state.kind === "declared") {
+    const standing = declaredStanding(state);
+    if (standing !== "effective") {
+      return {
+        shape: standing,
+        expired: true,
+        couldDeclare: canDeclareFrom(view),
+      };
+    }
   }
   return null;
 }
@@ -204,11 +222,11 @@ export function useSceneBodyDeclaration(
   const key = active
     ? JSON.stringify([workspacePath, projectId, sceneId])
     : null;
-  const triggerSignature = JSON.stringify([
+  const refreshKey = input.refreshKey;
+  const contentSignature = JSON.stringify([
     input.version ?? null,
     input.updatedAt ?? null,
     input.title ?? null,
-    input.refreshKey ?? null,
   ]);
 
   const [state, setState] = useState<HookState>(() =>
@@ -224,15 +242,24 @@ export function useSceneBodyDeclaration(
       ? { workspacePath: workspacePath as string, projectId, sceneId }
       : null,
   };
-  const signatureRef = useRef(triggerSignature);
-  signatureRef.current = triggerSignature;
+  const contentRef = useRef(contentSignature);
+  contentRef.current = contentSignature;
+  const refreshRef = useRef(refreshKey);
+  refreshRef.current = refreshKey;
 
   const epochRef = useRef(0);
   const inFlightRef = useRef<"read" | "declare" | "revoke" | null>(null);
   const pendingRef = useRef(false);
   const stickyRef = useRef<"hidden" | "restart-required" | null>(null);
   const readyRef = useRef<BodyDeclarationSnapshot | null>(null);
-  const handledSignatureRef = useRef(triggerSignature);
+  const handledContentRef = useRef(contentSignature);
+  // The refreshKey last seen, the last real (non-empty) one of this Scene, and
+  // whether that one still belongs to the previous Scene (see the effect).
+  const handledRefreshRef = useRef(refreshKey);
+  const scopeKeyRef = useRef<string | number | undefined | null>(
+    refreshKey === "" ? null : refreshKey,
+  );
+  const scopeStaleRef = useRef(false);
   const lastEffectiveRef = useRef(false);
 
   const startRead = useCallback(function run(
@@ -263,7 +290,7 @@ export function useSceneBodyDeclaration(
         retainedForm: !sameScene
           ? null
           : current.status === "ready" && current.view !== null
-            ? formOf(current.view)
+            ? declareFormOf(current.view)
             : current.status === "loading"
               ? current.retainedForm
               : null,
@@ -365,7 +392,12 @@ export function useSceneBodyDeclaration(
     stickyRef.current = null;
     readyRef.current = null;
     lastEffectiveRef.current = false;
-    handledSignatureRef.current = signatureRef.current;
+    handledContentRef.current = contentRef.current;
+    handledRefreshRef.current = refreshRef.current;
+    // The refreshKey of the Scene just left may still be passed for one render
+    // (the host clears it right after): it is not this Scene's.
+    scopeKeyRef.current = refreshRef.current === "" ? null : refreshRef.current;
+    scopeStaleRef.current = refreshRef.current !== "";
     if (targetRef.current.scene === null) {
       setState(emptyState(targetRef.current.key, "off"));
     } else {
@@ -380,11 +412,34 @@ export function useSceneBodyDeclaration(
 
   // A change of the Scene row or a saved A1/registry expires declarations:
   // read again (once, however many arrive while a read is running).
+  //
+  // The host passes "" while it reads the Scope (a Scene switch, or the
+  // registry refresh after a save). Neither the step to "" nor the first value
+  // after a Scene switch is news: the declaration read does not depend on the
+  // Scope read, and a trigger there would queue a second read behind the first
+  // and draw the loading state at the first paint (DR-PUBG-39-2). A value that
+  // differs from the Scene's last real one is a saved A1 or registry, even
+  // when it comes back through "".
   useEffect(() => {
-    if (handledSignatureRef.current === triggerSignature) return;
-    handledSignatureRef.current = triggerSignature;
-    startRead(false);
-  }, [triggerSignature, startRead]);
+    const contentChanged = handledContentRef.current !== contentSignature;
+    handledContentRef.current = contentSignature;
+    let scopeChanged = false;
+    if (handledRefreshRef.current !== refreshKey) {
+      handledRefreshRef.current = refreshKey;
+      if (refreshKey === "") {
+        if (scopeStaleRef.current) {
+          scopeKeyRef.current = null;
+          scopeStaleRef.current = false;
+        }
+      } else {
+        scopeStaleRef.current = false;
+        scopeChanged =
+          scopeKeyRef.current !== null && scopeKeyRef.current !== refreshKey;
+        scopeKeyRef.current = refreshKey;
+      }
+    }
+    if (contentChanged || scopeChanged) startRead(false);
+  }, [contentSignature, refreshKey, startRead]);
 
   // Coming back to the window: the Scene may have been changed elsewhere.
   useEffect(() => {

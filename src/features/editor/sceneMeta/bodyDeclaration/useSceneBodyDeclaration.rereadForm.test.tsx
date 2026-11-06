@@ -124,6 +124,7 @@ describe("retainedForm (DR-PUBG-39-1)", () => {
     rerender({ ...BASE, version: 2 });
     expect(result.current.status).toBe("loading");
     expect(result.current.retainedForm).toEqual({
+      shape: "draft",
       expired: false,
       couldDeclare: true,
     });
@@ -141,6 +142,7 @@ describe("retainedForm (DR-PUBG-39-1)", () => {
     invokeMock.mockReturnValueOnce(new Promise(() => {}));
     rerender({ ...BASE, version: 2 });
     expect(result.current.retainedForm).toEqual({
+      shape: "expired",
       expired: true,
       couldDeclare: true,
     });
@@ -151,6 +153,7 @@ describe("retainedForm (DR-PUBG-39-1)", () => {
     invokeMock.mockReturnValueOnce(new Promise(() => {}));
     blocked.rerender({ ...BASE, sceneId: "scene-2", version: 2 });
     expect(blocked.result.current.retainedForm).toEqual({
+      shape: "draft",
       expired: false,
       couldDeclare: false,
     });
@@ -188,5 +191,63 @@ describe("retainedForm (DR-PUBG-39-1)", () => {
     expect(result.current.retainedForm).not.toBeNull();
     await act(async () => second.resolve(noneWire()));
     expect(result.current.status).toBe("ready");
+  });
+});
+
+describe("the Scope read around a Scene switch (DR-PUBG-39-2)", () => {
+  const calls = () => invokeMock.mock.calls.length;
+
+  it("does not queue a second read for the Scope that follows a Scene switch", async () => {
+    invokeMock.mockResolvedValueOnce(noneWire());
+    const { result, rerender } = mount({ ...BASE, refreshKey: "1:1" });
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const first = deferred<unknown>();
+    invokeMock.mockReturnValueOnce(first.promise);
+    // The host passes the old key for one render, then "", then the new one.
+    rerender({ ...BASE, sceneId: "scene-2", refreshKey: "1:1" });
+    rerender({ ...BASE, sceneId: "scene-2", refreshKey: "" });
+    rerender({ ...BASE, sceneId: "scene-2", refreshKey: "2:2" });
+    expect(calls()).toBe(2);
+    await act(async () => first.resolve(noneWire()));
+    // The answer is committed as ready, not replaced by a queued re-read.
+    expect(result.current.status).toBe("ready");
+    expect(result.current.answered).toBe(true);
+    expect(calls()).toBe(2);
+  });
+
+  it("does not read for the first Scope value of a Scene opened without one", async () => {
+    invokeMock.mockResolvedValueOnce(noneWire());
+    const { result, rerender } = mount({ ...BASE, refreshKey: "" });
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    rerender({ ...BASE, refreshKey: "3:1" });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(calls()).toBe(1);
+    expect(result.current.status).toBe("ready");
+  });
+
+  it("still reads again for a saved A1 and for a registry refresh that passes through the empty key", async () => {
+    invokeMock.mockResolvedValue(noneWire());
+    const { result, rerender } = mount({ ...BASE, refreshKey: "4:1" });
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(calls()).toBe(1);
+    rerender({ ...BASE, refreshKey: "5:1" });
+    await waitFor(() => expect(calls()).toBe(2));
+    // The registry refresh clears the key while it reads the Scope again.
+    rerender({ ...BASE, refreshKey: "" });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(calls()).toBe(2);
+    rerender({ ...BASE, refreshKey: "5:2" });
+    await waitFor(() => expect(calls()).toBe(3));
+    // The same key coming back is no news.
+    rerender({ ...BASE, refreshKey: "" });
+    rerender({ ...BASE, refreshKey: "5:2" });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(calls()).toBe(3);
   });
 });

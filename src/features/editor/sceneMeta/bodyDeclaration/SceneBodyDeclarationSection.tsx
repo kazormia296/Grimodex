@@ -35,6 +35,7 @@ import {
 import { ensureBodyDeclarationTranslations } from "./bodyDeclarationTranslations";
 import { declaredStanding, type DeclaredStanding } from "./declaredStanding";
 import {
+  declareFormOf,
   useSceneBodyDeclaration,
   type BodyDeclarationOutcome,
 } from "./useSceneBodyDeclaration";
@@ -91,18 +92,12 @@ export function SceneBodyDeclarationSection({
   });
   const unsaved = unsavedEdits.useUnsavedSceneEdits(node.id);
   // The confirmations belong to the A1 and registry that were on screen when
-  // they were ticked. A saved A1 or registry (a new refreshKey) is a new thing
-  // to confirm, so the form starts again. The first value after "" (the scope
-  // not read yet) is not a change.
+  // they were ticked. Any new refreshKey (a saved A1 or registry, or the Scope
+  // shown for the first time, after "") is a new thing to confirm, so the form
+  // starts again.
   const [scopeEpoch, setScopeEpoch] = useState({ key: refreshKey, count: 0 });
   if (scopeEpoch.key !== refreshKey) {
-    setScopeEpoch({
-      key: refreshKey,
-      count:
-        scopeEpoch.key === "" || scopeEpoch.key === undefined
-          ? scopeEpoch.count
-          : scopeEpoch.count + 1,
-    });
+    setScopeEpoch({ key: refreshKey, count: scopeEpoch.count + 1 });
   }
   const { status, view, retainedForm } = declaration;
   if (status === "off" || status === "hidden") return null;
@@ -118,9 +113,6 @@ export function SceneBodyDeclarationSection({
     view !== null && view.state.kind === "declared"
       ? declaredStanding(view.state)
       : null;
-  // Declared but not in use right now (paused or expired): the author can
-  // declare again unless a blocker forbids it.
-  const notEffective = standing === "paused" || standing === "expired";
   const stateKey =
     status === "ready"
       ? kind === "none"
@@ -145,9 +137,15 @@ export function SceneBodyDeclarationSection({
   }[stateKey];
   const announcedBanner =
     stateKey === "unknown" || stateKey === "restart-required";
-  const holdingForm = status === "loading" && retainedForm !== null;
-  const showForm =
-    (status === "ready" && (kind === "none" || notEffective)) || holdingForm;
+  // The form that is shown: this answer's, or (while the same Scene is read
+  // again) the one that was showing.
+  const form =
+    status === "ready" && view !== null
+      ? declareFormOf(view)
+      : status === "loading"
+        ? retainedForm
+        : null;
+  const holdingForm = status === "loading" && form !== null;
 
   return (
     <section
@@ -233,12 +231,12 @@ export function SceneBodyDeclarationSection({
         </>
       )}
 
-      {showForm && (
+      {form !== null && (
         <DeclareForm
-          key={`${workspacePath ?? ""}\u0000${node.projectId}\u0000${node.id}\u0000${scopeEpoch.count}`}
+          key={`${workspacePath ?? ""}\u0000${node.projectId}\u0000${node.id}\u0000${scopeEpoch.count}\u0000${form.shape}\u0000${form.couldDeclare}`}
           sceneId={node.id}
-          expired={holdingForm ? retainedForm.expired : notEffective}
-          holdingLayout={holdingForm && retainedForm.couldDeclare}
+          expired={form.expired}
+          holdingLayout={holdingForm && form.couldDeclare}
           canDeclare={declaration.canDeclare}
           busy={declaration.busy}
           unsaved={unsaved}
