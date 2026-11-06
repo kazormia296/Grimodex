@@ -61,6 +61,8 @@ use std::ops::{Deref, DerefMut};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, TryLockError};
+#[cfg(test)]
+use std::time::Duration;
 use std::time::Instant;
 
 use napi::bindgen_prelude::*;
