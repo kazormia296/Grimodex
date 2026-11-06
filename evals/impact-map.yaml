@@ -317,6 +317,7 @@ rules:
       - electron/main/narrativeMaintenance.wiring.test.ts
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
+      - electron/main/narrativeMaintenanceTriggers.stall.test.ts
       - src-tauri/crates/grimodex-db/tests/narrative_terminal_failure_projection.rs
       - src-tauri/crates/grimodex-db/tests/narrative_scope_authority_runtime.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
@@ -723,6 +724,7 @@ rules:
     paths:
       - docs/plans/narrative-evidence-id-v1.md
       - docs/plans/chronicle-evaluation-contract-v2.md
+      - docs/plans/nir-extraction-artifact-contract.md
       - src/features/narrative-extraction/**
       - src/features/chronicle/extraction/**
       - src/application/narrative-extraction/aiTasks/**
@@ -1327,6 +1329,7 @@ rules:
       - electron/main/narrativeMaintenance.wiring.test.ts
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
+      - electron/main/narrativeMaintenanceTriggers.stall.test.ts
       - electron/main/narrativeFreshness.ts
       - electron/main/narrativeFreshness.test.ts
       - electron/main/ipc.ts

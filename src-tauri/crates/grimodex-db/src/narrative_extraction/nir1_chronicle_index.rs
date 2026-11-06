@@ -37,6 +37,8 @@ pub(crate) const INDEX_KEY: &str = "nir1-reviewed-chronicle:v1";
 pub(crate) const SOURCE_KIND: &str = "nir1-chronicle-eligibility-set";
 
 #[cfg(test)]
+mod freshness_share_tests;
+#[cfg(test)]
 mod invalidate_tests;
 #[cfg(test)]
 mod publish_tests;
@@ -44,6 +46,8 @@ mod publish_tests;
 mod query_tests;
 #[cfg(test)]
 mod read_identity_tests;
+#[cfg(test)]
+mod run_proof_memo_tests;
 #[cfg(test)]
 mod source_tests;
 #[cfg(test)]

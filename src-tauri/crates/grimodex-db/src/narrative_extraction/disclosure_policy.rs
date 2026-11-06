@@ -16,18 +16,24 @@ use serde_json::{json, Value};
 pub const POLICY_REF: &str = "nir1.scene-body-reader-history/1";
 const OBSERVATION_DIGEST: &str =
     "sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22";
-/// Event Synthesis v2 stays reviewed so existing v2 extraction results keep
-/// their classification beside v3 (user decision 2026-11-03).
+/// Event Synthesis v2 and v3 stay reviewed so existing extraction results keep
+/// their classification beside v4 (user decision 2026-11-03).
 const SYNTHESIS_V2_DIGEST: &str =
     "sha256:5e63b1a1c4c3a3aba76689732e3876deae5ea230f15d961d74932e16b3b876ff";
 /// v3 adds only static instruction text and a placeholder unresolved output
 /// example; content reviewed 2026-11-03 (no new kind of model-visible data).
 const SYNTHESIS_V3_DIGEST: &str =
     "sha256:c5365b446a2f7bf85081b67174beb5001df51963b3b2a515860938ddefd406f7";
+/// v4 adds only static instruction text (clusterRef is the body value without an
+/// `event-cluster:` prefix; the four significance labels) and renames the
+/// output-example placeholder; content reviewed 2026-11-04 (no new kind of
+/// model-visible data).
+const SYNTHESIS_V4_DIGEST: &str =
+    "sha256:20bb71b13fa5f4b4ef85a12edd1698d420a1e42dcb48dcacb77581bc6fa8478f";
 
 /// (stage, contract id, version, component contract digest) whose instruction
 /// AND output shape were reviewed as non-story static text.
-const REVIEWED_STATIC_CONTRACTS: [(&str, &str, &str, &str); 3] = [
+const REVIEWED_STATIC_CONTRACTS: [(&str, &str, &str, &str); 4] = [
     (
         "narrative_observation_extract",
         "chronicle.observation-extraction.prompt",
@@ -45,6 +51,12 @@ const REVIEWED_STATIC_CONTRACTS: [(&str, &str, &str, &str); 3] = [
         "chronicle.event-synthesis.prompt",
         "3",
         SYNTHESIS_V3_DIGEST,
+    ),
+    (
+        "narrative_event_synthesize",
+        "chronicle.event-synthesis.prompt",
+        "4",
+        SYNTHESIS_V4_DIGEST,
     ),
 ];
 fn decision(status: &str, reason: &str) -> Value {

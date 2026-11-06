@@ -715,6 +715,10 @@ pub(crate) fn load_sealed_snapshot_document_bindings_in_tx(
     project_id: &str,
     run_id: &str,
 ) -> anyhow::Result<Vec<SealedSnapshotDocumentBinding>> {
+    #[cfg(test)]
+    super::nir1_capacity::project_read_probe::record(
+        super::nir1_capacity::project_read_probe::Read::SealedDocuments,
+    );
     anyhow::ensure!(!conn.is_autocommit(),
         "NEX_SCOPE_AUTHORITY_TRANSACTION_REQUIRED: sealed snapshot lookup requires a caller-owned transaction");
     let (durable_project_id, snapshot_digest): (String, Option<String>) = conn.query_row(

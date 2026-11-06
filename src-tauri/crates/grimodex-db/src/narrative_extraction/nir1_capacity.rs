@@ -666,6 +666,9 @@ pub(crate) mod project_read_probe {
         QueryViewpoint,
         /// A single Scene's scope read by its own statements.
         SceneScope,
+        /// A Run's sealed Snapshot document bindings (its corpus artifact,
+        /// parsed and verified).
+        SealedDocuments,
     }
 
     thread_local! {

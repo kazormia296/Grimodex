@@ -558,6 +558,19 @@ pub(crate) fn resolve_edge_source_state_with_control(
     edge: &DependencyEdge,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<ResolvedEdgeSourceState> {
+    resolve_edge_source_state_with_control_and_reads(conn, project_id, run_id, edge, control, None)
+}
+
+/// [`resolve_edge_source_state_with_control`] that may share the reads of one
+/// Prepare's candidate loop (DR-IRB-6).
+pub(super) fn resolve_edge_source_state_with_control_and_reads(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    edge: &DependencyEdge,
+    control: &mut dyn GraphWorkControl,
+    reads: Option<&mut super::source_revision::CandidateFreshnessReads>,
+) -> anyhow::Result<ResolvedEdgeSourceState> {
     control.check(GraphWorkStage::Source)?;
     let Some(source_kind) = infer_source_kind(&edge.source_object_identity) else {
         return Ok(ResolvedEdgeSourceState {
@@ -567,13 +580,14 @@ pub(crate) fn resolve_edge_source_state_with_control(
             current_digest: None,
         });
     };
-    let state = resolve_current_source_state_with_control(
+    let state = super::source_revision::resolve_current_source_state_with_control_and_reads(
         conn,
         project_id,
         run_id,
         source_kind,
         &edge.source_object_identity,
         control,
+        reads,
     )?;
     control.check(GraphWorkStage::Source)?;
     Ok(ResolvedEdgeSourceState {
@@ -615,15 +629,19 @@ pub(crate) fn build_edge_comparison_input(
     build_edge_comparison_input_from_source_state(edge, &source_state)
 }
 
-pub(crate) fn build_edge_comparison_input_with_control(
+/// The control-aware comparison input, which may share the reads of one
+/// Prepare's candidate loop (DR-IRB-6). `reads: None` is the ordinary path.
+pub(super) fn build_edge_comparison_input_with_control_and_reads(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
     edge: &DependencyEdge,
     control: &mut dyn GraphWorkControl,
+    reads: Option<&mut super::source_revision::CandidateFreshnessReads>,
 ) -> anyhow::Result<EdgeComparisonInput> {
-    let source_state =
-        resolve_edge_source_state_with_control(conn, project_id, run_id, edge, control)?;
+    let source_state = resolve_edge_source_state_with_control_and_reads(
+        conn, project_id, run_id, edge, control, reads,
+    )?;
     control.check(GraphWorkStage::Edge)?;
     build_edge_comparison_input_from_source_state(edge, &source_state)
 }
@@ -675,7 +693,22 @@ pub(crate) fn evaluate_edge_from_db_with_control(
     edge: &DependencyEdge,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<EdgeObservation> {
-    let input = build_edge_comparison_input_with_control(conn, project_id, run_id, edge, control)?;
+    evaluate_edge_from_db_with_control_and_reads(conn, project_id, run_id, edge, control, None)
+}
+
+/// [`evaluate_edge_from_db_with_control`] that may share the reads of one
+/// Prepare's candidate loop (DR-IRB-6).
+pub(super) fn evaluate_edge_from_db_with_control_and_reads(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    edge: &DependencyEdge,
+    control: &mut dyn GraphWorkControl,
+    reads: Option<&mut super::source_revision::CandidateFreshnessReads>,
+) -> anyhow::Result<EdgeObservation> {
+    let input = build_edge_comparison_input_with_control_and_reads(
+        conn, project_id, run_id, edge, control, reads,
+    )?;
     control.check(GraphWorkStage::Edge)?;
     Ok(evaluate_edge(&input))
 }

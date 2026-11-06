@@ -291,6 +291,7 @@ requirements:
       - electron/main/narrativeMaintenanceShutdown.test.ts
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
+      - electron/main/narrativeMaintenanceTriggers.stall.test.ts
       - electron/main/foregroundBarrierRelease.test.ts
       - electron/main/narrativeMaintenanceDelivery.test.ts
       - electron/main/workspaceLifecycleView.test.ts
@@ -1101,6 +1102,7 @@ requirements:
       - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
       - src/application/narrative-extraction/extractionCoordinator.ts
       - src/features/chronicle/extraction/schemas.ts
+      - docs/plans/nir-extraction-artifact-contract.md
       - src/features/narrative-extraction/evidence/resolveEvidence.ts
       - src/features/narrative-extraction/eval/fixtureSnapshot.ts
       - src/features/narrative-extraction/eval/caseSchema.ts
@@ -1134,6 +1136,7 @@ requirements:
       - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts
       - src/application/narrative-extraction/extractionCoordinator.test.ts
       - src/application/narrative-extraction/extractionCoordinator.citation.test.ts
+      - src/features/chronicle/extraction/extractionArtifactContract.test.ts
       - src/features/narrative-extraction/eval/observationAdapter.citation.test.ts
       - src/features/narrative-extraction/eval/productionChronicleAdapter.citation.test.ts
       - src/features/narrative-extraction/evidence/resolveEvidence.test.ts
@@ -1179,6 +1182,7 @@ requirements:
       - src/features/narrative-extraction/eval/productionChronicleCapabilities.ts
       - src/features/narrative-extraction/eval/chronicle015Reference.ts
       - docs/plans/chronicle-evaluation-contract-v2.md
+      - docs/plans/nir-extraction-artifact-contract.md
       - evals/narrative/contracts/chronicle-v2/actual-gate-collapse.json
       - evals/narrative/contracts/chronicle-v2/contract.schema.json
       - src/features/narrative-extraction/eval/chronicleV2Contract.ts
@@ -1202,6 +1206,7 @@ requirements:
       - src/features/chronicle/extraction/proposalPlanner.test.ts
       - src/application/narrative-extraction/aiTasks/citationIdObservation.test.ts
       - src/features/chronicle/extraction/observationMerger.test.ts
+      - src/features/chronicle/extraction/extractionArtifactContract.test.ts
       - src/features/narrative-extraction/eval/scorer.test.ts
       - src/features/narrative-extraction/eval/legacyChronicleAdapter.test.ts
       - src/features/narrative-extraction/eval/corpusContract.test.ts
@@ -1371,6 +1376,7 @@ requirements:
       - electron/main/narrativeMaintenanceShutdown.test.ts
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
+      - electron/main/narrativeMaintenanceTriggers.stall.test.ts
       - electron/main/foregroundBarrierRelease.test.ts
       - scripts/quality/validate-execution-state-authority.mjs
       - src/features/codex/CodexEntityRelationReviewDialog.tsx

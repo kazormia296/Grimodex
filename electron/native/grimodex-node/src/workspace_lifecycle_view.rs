@@ -141,6 +141,17 @@ impl WorkspaceLifecycleViewAdapter {
         Ok(self.core.snapshot()?)
     }
 
+    /// Values-only lifecycle evidence for failure diagnostics. The core lock
+    /// is released before this returns; an unavailable core yields `None`.
+    pub(crate) fn lifecycle_diagnostic(
+        &self,
+    ) -> Option<grimodex_db::workspace_lifecycle::LifecycleDiagnostic> {
+        self.core
+            .snapshot_with_diagnostic()
+            .ok()
+            .map(|(_, evidence)| evidence)
+    }
+
     pub(crate) fn current_transition_ticket(&self) -> AppResult<Option<AdmissionTicket>> {
         Ok(self.lock_projection()?.transition_ticket.clone())
     }

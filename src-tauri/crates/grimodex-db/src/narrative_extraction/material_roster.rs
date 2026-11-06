@@ -4,7 +4,9 @@ use anyhow::Result;
 use rusqlite::Connection;
 use serde::Serialize;
 
-use super::material_membership_root::{read_root_material, Material, RequestProof};
+use super::material_membership_root::{
+    read_root_material_with_memo, Material, RequestProof, RunProofMemo,
+};
 pub use super::material_membership_root::{
     RosterIssue, RosterStatus, VerifiedArtifact, VerifiedReceipt,
 };
@@ -33,7 +35,8 @@ pub fn inspect_material_roster(
     project_id: &str,
     revision_id: &str,
 ) -> Result<MaterialRosterReport> {
-    let root = read_root_material(conn, project_id, revision_id)?;
+    let root =
+        read_root_material_with_memo(conn, project_id, revision_id, &mut RunProofMemo::default())?;
     Ok(MaterialRosterReport {
         diagnostic_only: true,
         status: root.status,

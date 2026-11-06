@@ -1603,6 +1603,72 @@ mod narrative_freshness_restore_lock_tests {
     }
 
     #[test]
+    fn freshness_scheduler_defers_stale_liveness_without_recovery() {
+        // DR-MPS-8: a cycle that outlives the liveness bound before heartbeat
+        // registration keeps the workspace Ready instead of retiring it.
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-freshness-stale-liveness-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = TestRoot(root.clone());
+        let workspace_path = root.join("workspace");
+        let resources = root.join("resources");
+        std::fs::create_dir_all(&workspace_path).expect("workspace directory");
+
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed project");
+
+        let authority = WorkspaceAuthority::from_database_for_test(database, workspace_path)
+            .expect("workspace authority");
+        let state = Arc::new(
+            AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+                .expect("app state"),
+        );
+        install_test_workspace(&state, authority);
+
+        // The post-cycle revalidation hook runs between cycle completion and
+        // heartbeat registration, so sleeping here ages the capability past
+        // the unchanged 5 s bound.
+        let deferred = run_narrative_freshness_cycle_inner(&state, || {
+            std::thread::sleep(std::time::Duration::from_secs(6));
+        })
+        .expect("a stale liveness attestation is not a scheduler failure");
+        // An idle, non-CI cycle that skipped liveness returns no result: not
+        // the recovery transfer result and not a before-cutover signal.
+        assert!(
+            deferred.is_none(),
+            "a deferred idle cycle must stay silent, got {deferred:?}"
+        );
+        assert!(
+            state.ws.inner.lock().expect("workspace state").is_some(),
+            "a stale liveness attestation must not detach the authority"
+        );
+
+        // The next cycle mints liveness normally and reaches the cutover gate.
+        let next = run_narrative_freshness_cycle_inner(&state, || {})
+            .expect("the following cycle runs on the same authority")
+            .expect("not-ready cutover notifies the activation owner");
+        let next: serde_json::Value = serde_json::from_str(&next).expect("next result JSON");
+        assert_eq!(next["cutoverNotReady"], true);
+
+        let active = state.ws.inner.lock().expect("workspace state").take();
+        drop(active);
+        drop(state);
+        drop(cleanup);
+        assert!(!root.exists(), "fixture must clean up");
+    }
+
+    #[test]
     fn freshness_scheduler_surfaces_unexpected_cutover_marker_errors() {
         let root = std::env::temp_dir().join(format!(
             "grimodex-node-freshness-cutover-marker-{}-{}",
@@ -3190,12 +3256,37 @@ struct MaintenanceRecoveryReconciliation {
     rebound_binding: Option<MaintenanceWorkspaceBinding>,
 }
 
+/// Values-only evidence for a recovery-pump exit that returns without a
+/// result (DR-MPS-13). Only the unfiltered 1 s pump reports. The lifecycle
+/// evidence is read here, after any lifecycle lock was released; a failed
+/// read or write never changes the pump's outcome.
+fn note_recovery_pump_exit(
+    state: &AppState,
+    target: Option<&WorkspaceRecoveryTarget>,
+    exit: lifecycle_failure_diagnostics::PumpExit,
+    descriptor_id: Option<grimodex_db::workspace_lifecycle::RecoveryDescriptorId>,
+    code: Option<String>,
+) {
+    if target.is_some() {
+        return;
+    }
+    if let Some(evidence) = state.workspace_lifecycle.lifecycle_diagnostic() {
+        lifecycle_failure_diagnostics::recovery_pump_exit(
+            exit,
+            descriptor_id.map(|descriptor_id| descriptor_id.get()),
+            code,
+            evidence,
+        );
+    }
+}
+
 fn reconcile_maintenance_recovery_descriptor(
     state: &AppState,
     target: Option<&WorkspaceRecoveryTarget>,
 ) -> std::result::Result<Option<MaintenanceRecoveryReconciliation>, AppError> {
     let snapshot = state.workspace_lifecycle.lifecycle_snapshot()?;
     let transition_ticket = state.workspace_lifecycle.current_transition_ticket()?;
+    let recovery_required = matches!(snapshot.state, LifecycleState::RecoveryRequired { .. });
     let descriptor_ids = match snapshot.state {
         LifecycleState::RecoveryRequired { descriptor_id } => vec![descriptor_id],
         LifecycleState::Ready(_) => state.workspace_lifecycle.recovery_descriptor_ids()?,
@@ -3212,7 +3303,36 @@ fn reconcile_maintenance_recovery_descriptor(
             .and_then(|ticket| ticket.recovery_descriptor_id)
             .into_iter()
             .collect(),
-        _ => return Ok(None),
+        _ => {
+            // A Recover ticket for a maintenance descriptor that is left in a
+            // Transition is an orphan this pump cannot act on. An ordinary
+            // Open/Restore Transition stays silent.
+            if matches!(snapshot.state, LifecycleState::Transition { .. }) {
+                let orphan = transition_ticket
+                    .as_ref()
+                    .filter(|ticket| ticket.kind == AdmissionKind::Recover)
+                    .and_then(|ticket| ticket.recovery_descriptor_id)
+                    .filter(|descriptor_id| {
+                        state
+                            .workspace_lifecycle
+                            .recovery_descriptor(*descriptor_id)
+                            .is_ok_and(|descriptor| {
+                                descriptor.owner
+                                    == grimodex_db::workspace_lifecycle::RecoveryDescriptorOwner::Maintenance
+                            })
+                    });
+                if orphan.is_some() {
+                    note_recovery_pump_exit(
+                        state,
+                        target,
+                        lifecycle_failure_diagnostics::PumpExit::TransitionPending,
+                        orphan,
+                        None,
+                    );
+                }
+            }
+            return Ok(None);
+        }
     };
     let active_authority = state.workspace_lifecycle.recovery_authority(&state.ws)?;
     let mut selected: Option<(
@@ -3250,6 +3370,13 @@ fn reconcile_maintenance_recovery_descriptor(
                     "NEX_MAINTENANCE_RECOVERY_BINDING_MISSING"
                 )));
             }
+            note_recovery_pump_exit(
+                state,
+                target,
+                lifecycle_failure_diagnostics::PumpExit::BindingUnproven,
+                Some(descriptor_id),
+                None,
+            );
             continue;
         }
         // A failed close leaves the old SQLite handle and its shared lease in
@@ -3294,10 +3421,25 @@ fn reconcile_maintenance_recovery_descriptor(
                 break;
             }
             Err(error) if target.is_some() => return Err(error),
-            Err(_) => {}
+            Err(error) => note_recovery_pump_exit(
+                state,
+                target,
+                lifecycle_failure_diagnostics::PumpExit::AuthorityUnopened,
+                Some(descriptor_id),
+                lifecycle_failure_diagnostics::fixed_code(&error.to_string()),
+            ),
         }
     }
     let Some((descriptor_id, authority)) = selected else {
+        if recovery_required {
+            note_recovery_pump_exit(
+                state,
+                target,
+                lifecycle_failure_diagnostics::PumpExit::NoActionableDescriptor,
+                None,
+                None,
+            );
+        }
         return Ok(None);
     };
     // Resolution releases the descriptor responsibility only after the
@@ -3339,6 +3481,13 @@ fn reconcile_maintenance_recovery_descriptor(
                 // descriptor remains unresolved.  Keep the descriptor pending and
                 // let the next recovery pump retry after W2 has joined; do not
                 // enter a partial Transition that activation cannot complete.
+                note_recovery_pump_exit(
+                    state,
+                    target,
+                    lifecycle_failure_diagnostics::PumpExit::AdmissionPending,
+                    Some(descriptor_id),
+                    None,
+                );
                 return Ok(target.map(|_| MaintenanceRecoveryReconciliation {
                     descriptor_id,
                     reason: "maintenance-recovery-admission-pending".to_owned(),
@@ -6572,21 +6721,54 @@ fn run_narrative_freshness_cycle_body(
     // is fail-soft and will be retried by the next wake.  Marker/schema,
     // malformed evidence, or any other unexpected failure remains visible to
     // the scheduler caller instead of silently leaving a split authority.
-    let liveness_evidence = narrative_extraction::record_live_scheduler_heartbeat(
+    //
+    // DR-MPS-8: a successful cycle can reach heartbeat registration after the
+    // liveness age bound when foreground writes keep the connection busy (a
+    // bulk Scene import followed by extraction). The cycle already committed
+    // and the authority is intact, so that one stale attestation is skipped:
+    // no liveness, no cutover attempt, no recovery. The next scheduler wake
+    // runs a fresh cycle and retries both. The bound itself is unchanged.
+    let liveness_evidence = match narrative_extraction::record_live_scheduler_heartbeat(
         current_workspace.authority.db(),
         &binding.authority_id,
         binding.generation,
         successful_cycle,
-    )?;
-    let cutover_result = current_workspace.authority.db().with_conn(|conn| {
-        narrative_extraction::cut_over_workspace_freshness(conn, &liveness_evidence)
-    });
-    let mut cutover_not_ready = false;
-    if let Err(error) = cutover_result {
-        if !is_expected_c2zc_cutover_not_ready(&error) {
-            return Err(AppError::Anyhow(error));
+    ) {
+        Ok(evidence) => Some(evidence),
+        Err(error)
+            if error
+                .downcast_ref::<narrative_extraction::SchedulerLivenessCycleStale>()
+                .is_some() =>
+        {
+            tracing::warn!(
+                target: "narrative.maintenance",
+                "freshness cycle outlived its liveness bound before heartbeat; liveness and cutover deferred to the next cycle"
+            );
+            None
         }
-        cutover_not_ready = true;
+        Err(error) => return Err(AppError::Anyhow(error)),
+    };
+    let mut cutover_not_ready = false;
+    if let Some(liveness_evidence) = &liveness_evidence {
+        let cutover_result = current_workspace.authority.db().with_conn(|conn| {
+            narrative_extraction::cut_over_workspace_freshness(conn, liveness_evidence)
+        });
+        if let Err(error) = cutover_result {
+            if !is_expected_c2zc_cutover_not_ready(&error) {
+                return Err(AppError::Anyhow(error));
+            }
+            cutover_not_ready = true;
+        }
+    } else {
+        // A deferred cycle did not pass the cutover gate. Only the CI hold
+        // result requires that fact to be explicit; ordinary results stay
+        // silent so a post-cutover workspace does not start a before-cutover
+        // maintenance chain on every busy cycle. A pre-cutover workspace gets
+        // the usual NOT_READY signal from the next cycle.
+        cutover_not_ready = matches!(
+            cycle_outcome,
+            narrative_extraction::IncrementalFreshnessCycleOutcome::Held(_)
+        );
     }
 
     // The quiescence state is an acceptance-only extension of the existing
@@ -7811,12 +7993,17 @@ impl Backend {
                                 .mark_connection_retired()
                                 .map_err(|error| Error::from_reason(error.to_string()))?;
                         }
+                        // Only the fixed `NEX_` code of the returned error is
+                        // kept for the values-only diagnostic (DR-MPS-12).
+                        let error_code =
+                            lifecycle_failure_diagnostics::fixed_code(&error.to_string());
                         let descriptor_id = lifecycle_permit
                             .transfer_to_recovery_diagnosed(|evidence| {
-                                lifecycle_failure_diagnostics::handoff(
+                                lifecycle_failure_diagnostics::handoff_with_code(
                                     Producer::Freshness,
                                     failure_class,
                                     evidence,
+                                    error_code,
                                 )
                             })
                             .map_err(|error| Error::from_reason(error.to_string()))?;
@@ -18722,6 +18909,156 @@ mod narrative_maintenance_admission_unwind_tests {
         let refusal = backend.timelapse_append_batch("diagnostic-project".into(), "diagnostic-session".into(), event())
             .await.expect_err("shutdown refusal");
         assert!(!refusal.to_string().contains("WORKSPACE_SWITCHING"));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// DR-MPS-14: the Freshness tick pumps the descriptor directly
+    /// (`reconcile_maintenance_recovery_with_open_lock`) without the main
+    /// replay gate, so a second Freshness-originated recovery is not held by
+    /// the first, still-unACKed receipt.
+    #[tokio::test]
+    async fn freshness_pump_recovers_twice_without_an_intervening_ack() {
+        let (backend, root) = backend_with_active_workspace("freshness-recovery-twice");
+        let is_ready = || {
+            matches!(
+                backend
+                    .state
+                    .workspace_lifecycle
+                    .lifecycle_snapshot()
+                    .expect("snapshot")
+                    .state,
+                LifecycleState::Ready(_)
+            )
+        };
+        let first = retain_maintenance_descriptor(&backend);
+        let first_result = reconcile_maintenance_recovery_with_open_lock(&backend.state)
+            .expect("first Freshness pump")
+            .expect("first descriptor reconciled");
+        assert_eq!(first_result.descriptor_id, first);
+        assert_eq!(first_result.reason, "maintenance-recovery-complete");
+        assert!(is_ready(), "the first recovery returns to Ready");
+
+        let second = retain_maintenance_descriptor(&backend);
+        assert!(second > first, "descriptor ids only grow");
+        let second_result = reconcile_maintenance_recovery_with_open_lock(&backend.state)
+            .expect("second Freshness pump")
+            .expect("second descriptor reconciled without an ACK");
+        assert_eq!(second_result.descriptor_id, second);
+        assert_eq!(second_result.reason, "maintenance-recovery-complete");
+        assert!(is_ready(), "the second recovery returns to Ready");
+        assert!(backend
+            .state
+            .workspace_lifecycle
+            .recovery_descriptor_ids()
+            .expect("descriptors after the second recovery")
+            .is_empty());
+        assert_eq!(
+            backend
+                .state
+                .narrative_maintenance_recovery_receipts
+                .lock()
+                .expect("receipts")
+                .len(),
+            2,
+            "both proofs wait for main's ACK"
+        );
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// DR-MPS-14: two maintenance-descriptor recoveries in one process both
+    /// return to Ready through main's N-API pump. That entry replays an
+    /// unACKed receipt before it looks at a new descriptor, so through main
+    /// the second recovery is only reachable after the first ACK.
+    #[tokio::test]
+    async fn two_consecutive_maintenance_recoveries_return_to_ready() {
+        let (backend, root) = backend_with_active_workspace("recovery-twice");
+        let reconcile = || async {
+            serde_json::from_str::<serde_json::Value>(
+                &backend
+                    .reconcile_narrative_maintenance_recovery(None)
+                    .await
+                    .expect("pump reconciles"),
+            )
+            .expect("pump JSON")
+        };
+        let is_ready = || {
+            matches!(
+                backend
+                    .state
+                    .workspace_lifecycle
+                    .lifecycle_snapshot()
+                    .expect("snapshot")
+                    .state,
+                LifecycleState::Ready(_)
+            )
+        };
+
+        let first = retain_maintenance_descriptor(&backend);
+        let first_result = reconcile().await;
+        assert_eq!(first_result["reason"], "maintenance-recovery-complete");
+        assert_eq!(first_result["descriptorId"], first.get());
+        assert!(is_ready(), "the first recovery returns to Ready");
+        assert!(backend
+            .state
+            .workspace_lifecycle
+            .recovery_descriptor_ids()
+            .expect("descriptors after the first recovery")
+            .is_empty());
+
+        // The second failure happens while the first receipt is still unACKed
+        // (receipt capacity is 256, so the slot is not the constraint).
+        let second = retain_maintenance_descriptor(&backend);
+        assert!(second > first, "descriptor ids only grow");
+        let replay = reconcile().await;
+        assert_eq!(
+            replay["descriptorId"],
+            first.get(),
+            "an unACKed receipt is replayed before a new descriptor is taken"
+        );
+        assert_eq!(
+            backend
+                .state
+                .workspace_lifecycle
+                .recovery_descriptor_ids()
+                .expect("second descriptor still pending")
+                .len(),
+            1
+        );
+        backend
+            .ack_narrative_maintenance_recovery(first.to_string())
+            .expect("ACK the first proof");
+
+        let second_result = reconcile().await;
+        assert_eq!(second_result["reason"], "maintenance-recovery-complete");
+        assert_eq!(second_result["descriptorId"], second.get());
+        assert!(is_ready(), "the second recovery returns to Ready");
+        assert!(backend
+            .state
+            .workspace_lifecycle
+            .recovery_descriptor_ids()
+            .expect("descriptors after the second recovery")
+            .is_empty());
+        assert_eq!(
+            backend
+                .state
+                .narrative_maintenance_recovery_receipts
+                .lock()
+                .expect("receipts")
+                .len(),
+            1,
+            "only the second proof is left to ACK"
+        );
+        backend
+            .ack_narrative_maintenance_recovery(second.to_string())
+            .expect("ACK the second proof");
+        assert!(backend
+            .state
+            .narrative_maintenance_recovery_receipts
+            .lock()
+            .expect("receipts")
+            .is_empty());
         drop(backend);
         let _ = std::fs::remove_dir_all(root);
     }
