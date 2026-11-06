@@ -23,9 +23,30 @@ export interface WindowPlan {
   readonly windows: readonly ExtractionWindow[];
 }
 
+/**
+ * Structural view of the sealed evidence span catalog that the planner needs.
+ * `EvidenceSpanCatalog` satisfies it; the planner does not import the catalog
+ * module so the dependency direction stays features/narrative-extraction ->
+ * features/chronicle.
+ */
+export interface EvidenceCoverageCatalog {
+  readonly entries: readonly {
+    readonly documentRef: string;
+    readonly canonicalRange: CanonicalRange;
+  }[];
+}
+
 export interface PlanWindowsOptions {
   readonly maxOwnedChars?: number;
   readonly contextRadiusChars?: number;
+  /**
+   * citation-id-v2 only. When given, a window's context is widened (and only
+   * its context: owned ranges, windowId and sourceRef never change) just far
+   * enough that every catalog entry fits entirely in at least one window's
+   * source view. Without it, or when every entry already fits, the plan is
+   * byte-identical to the plan made without it.
+   */
+  readonly evidenceCatalog?: EvidenceCoverageCatalog;
 }
 
 function sourceViewRef(index: number): string {
@@ -89,13 +110,18 @@ function subtractRanges(
   });
 }
 
+interface ContextRadii {
+  left: number;
+  right: number;
+}
+
 function contextForOwned(
   owned: CanonicalRange,
   textLength: number,
-  radius: number,
+  radii: ContextRadii,
 ): CanonicalRange[] {
-  const left = clampRange(owned.start - radius, owned.start, textLength);
-  const right = clampRange(owned.end, owned.end + radius, textLength);
+  const left = clampRange(owned.start - radii.left, owned.start, textLength);
+  const right = clampRange(owned.end, owned.end + radii.right, textLength);
   return [left, right].filter(
     (range): range is CanonicalRange => range !== null,
   );
@@ -223,6 +249,69 @@ function splitOwnedRanges(
   return ranges;
 }
 
+function coverOf(
+  owned: CanonicalRange,
+  radii: ContextRadii,
+  textLength: number,
+): CanonicalRange {
+  return {
+    start: Math.max(0, owned.start - radii.left),
+    end: Math.min(textLength, owned.end + radii.right),
+  };
+}
+
+/**
+ * Widen only the context radii so that each evidence entry is fully inside at
+ * least one window's source view (owned plus context). Entries already inside
+ * some window change nothing. For an entry that is not, the window that owns
+ * part of it and needs the smallest extension (ties: the earliest window) is
+ * widened to the entry's far end. The owned partition is never touched, and no
+ * entry is dropped: a window is only ever widened here, at planning time,
+ * before any source view or coverage assertion exists.
+ */
+function widenRadiiForEvidence(
+  ownedRanges: readonly CanonicalRange[],
+  radii: ContextRadii[],
+  entries: readonly CanonicalRange[],
+  textLength: number,
+): void {
+  const sorted = [...entries]
+    .map((entry) => ({
+      start: Math.max(0, entry.start),
+      end: Math.min(textLength, entry.end),
+    }))
+    .filter((entry) => entry.end > entry.start)
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  for (const entry of sorted) {
+    let best = -1;
+    let bestCost = Number.POSITIVE_INFINITY;
+    let covered = false;
+    for (let index = 0; index < ownedRanges.length; index += 1) {
+      const owned = ownedRanges[index];
+      const cover = coverOf(owned, radii[index], textLength);
+      if (cover.start <= entry.start && entry.end <= cover.end) {
+        covered = true;
+        break;
+      }
+      if (owned.start < entry.end && entry.start < owned.end) {
+        const cost =
+          Math.max(0, cover.start - entry.start) +
+          Math.max(0, entry.end - cover.end);
+        if (cost < bestCost) {
+          best = index;
+          bestCost = cost;
+        }
+      }
+    }
+    if (covered || best < 0) continue;
+    const owned = ownedRanges[best];
+    radii[best] = {
+      left: Math.max(radii[best].left, owned.start - entry.start),
+      right: Math.max(radii[best].right, entry.end - owned.end),
+    };
+  }
+}
+
 /**
  * Plan extraction windows: one scene → one window unless the owned text
  * exceeds the budget; then split on block → sentence → grapheme boundaries.
@@ -236,16 +325,36 @@ export function planExtractionWindows(
   const contextRadius =
     options.contextRadiusChars ?? DEFAULT_CONTEXT_RADIUS_CHARS;
 
+  const entriesByDocument = new Map<string, CanonicalRange[]>();
+  for (const entry of options.evidenceCatalog?.entries ?? []) {
+    const bucket = entriesByDocument.get(entry.documentRef);
+    if (bucket) bucket.push(entry.canonicalRange);
+    else entriesByDocument.set(entry.documentRef, [entry.canonicalRange]);
+  }
+
   const windows: ExtractionWindow[] = [];
   let sourceIndex = 0;
 
   for (const document of snapshot.documents) {
     const ownedRanges = splitOwnedRanges(document, maxOwned);
-    for (const owned of ownedRanges) {
+    const radii: ContextRadii[] = ownedRanges.map(() => ({
+      left: contextRadius,
+      right: contextRadius,
+    }));
+    const evidenceEntries = entriesByDocument.get(document.ref);
+    if (evidenceEntries) {
+      widenRadiiForEvidence(
+        ownedRanges,
+        radii,
+        evidenceEntries,
+        document.canonical.text.length,
+      );
+    }
+    for (const [ownedIndex, owned] of ownedRanges.entries()) {
       const contextCandidates = contextForOwned(
         owned,
         document.canonical.text.length,
-        contextRadius,
+        radii[ownedIndex],
       );
       const contextRanges = mergeAdjacent(
         subtractRanges(owned, contextCandidates),
