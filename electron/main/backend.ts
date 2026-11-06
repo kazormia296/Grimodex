@@ -54,13 +54,47 @@ const STATE_FILE_UNREADABLE =
 /**
  * The closed reason of the last failed `initBackend`, when Native's Backend
  * constructor refused an unreadable profile state file (R-7). Only the code
- * is kept: the message (paths, the OS error) stays in the log and the error
- * box. `null` when the backend loaded or failed for another cause.
+ * is kept: the message (paths, the OS error) stays in the log only (the
+ * error box shows a fixed text, DR-PUBG-33-1). `null` when the backend loaded or failed for another cause.
  */
 export function getBackendConstructionFailure():
   | "state-file-unreadable"
   | null {
   return constructionFailure;
+}
+
+/**
+ * fail-soft の起動で Backend を作れなかったときの `dialog.showErrorBox` の文面
+ * （DR-PUBG-33-1）。Main に i18n の仕組みは無いので、`unsavedEditsGuard.ts` の
+ * 確認 dialog と同じく日本語と英語を 1 つの文面に併記する。Native の message、
+ * path、内部の code は含めない（診断は `console.error` の log にだけ残る）。
+ * 種類は閉じた code だけで分け、それ以外の原因は 1 つの汎用の文にまとめる。
+ */
+export function backendLoadFailureDialogText(
+  failure: "state-file-unreadable" | null,
+): { title: string; content: string } {
+  const title =
+    "Grimodex バックエンドの読み込みに失敗しました / Failed to load the Grimodex backend";
+  const cause =
+    failure === "state-file-unreadable"
+      ? [
+          "データの状態ファイルを読み込めませんでした。",
+          "Grimodex could not read its data state file.",
+        ]
+      : [
+          "バックエンドを読み込めませんでした。",
+          "Grimodex could not load its backend.",
+        ];
+  return {
+    title,
+    content: [
+      cause[0],
+      "DB を伴う機能は動作しません(起動は継続します)。Grimodex を終了して、もう一度起動してください。改善しない場合は、アプリのログを添えて報告してください。",
+      "",
+      cause[1],
+      "Features that use the database will not work (the app keeps running). Quit and restart Grimodex. If this continues, report it with the app log.",
+    ].join("\n"),
+  };
 }
 
 /**
@@ -250,10 +284,10 @@ export function initBackend({
       instance = null;
       throw e instanceof Error ? e : new Error(message);
     }
-    dialog.showErrorBox(
-      "Grimodex バックエンドの読み込みに失敗しました",
-      `${message}\n\nDB を伴う機能は動作しません（fail-soft で起動は継続します）。`,
-    );
+    // Native の文（path・OS の error・内部の code）は log にだけ残し、
+    // dialog には出さない（DR-PUBG-33-1）。
+    const text = backendLoadFailureDialogText(constructionFailure);
+    dialog.showErrorBox(text.title, text.content);
     instance = null;
     return null;
   }
