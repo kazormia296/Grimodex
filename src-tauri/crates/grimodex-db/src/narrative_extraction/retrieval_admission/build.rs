@@ -29,7 +29,8 @@ pub(in crate::narrative_extraction) struct BuildCandidate {
     pub document: ChronicleRetrievalDocument,
     pub sources: Vec<MaterialSourceBasisEntry>,
     pub evidence: Vec<MaterialEvidenceEntry>,
-    pub active_scope_controls: Vec<MaterialSourceBasisEntry>,
+    /// The candidate's active Scope controls, decoded once at build.
+    pub active_scope_controls: Vec<super::super::scene_scope::ParsedScopeControl>,
     pub material_scopes: Vec<super::super::scene_scope::MaterialSceneScope>,
     pub material_scope_authority_revision_token: String,
     pub canonical: RevisionFreshnessSnapshot,
@@ -39,18 +40,32 @@ pub(in crate::narrative_extraction) struct BuildCandidate {
 
 impl BuildCandidate {
     pub(in crate::narrative_extraction) fn admits(&self, query: &RetrievalQueryContext) -> bool {
+        self.admits_with_memo(
+            query,
+            &mut super::super::scene_scope::ProjectionRevisionMemo::default(),
+        )
+    }
+
+    /// `admits` for one pass over many candidates of the same `query`; `memo`
+    /// belongs to that pass (see `ProjectionRevisionMemo`).
+    pub(in crate::narrative_extraction) fn admits_with_memo(
+        &self,
+        query: &RetrievalQueryContext,
+        memo: &mut super::super::scene_scope::ProjectionRevisionMemo,
+    ) -> bool {
         if self.disclosure.check_query(query).is_some() {
             return false;
         }
         if query.scope_authority_revision_token != self.material_scope_authority_revision_token {
             return false;
         }
-        super::super::scene_scope::check_material_constraints(
+        super::super::scene_scope::check_material_constraints_with_memo(
             &self.material_scopes,
             query,
             &query.authority,
             &self.active_scope_controls,
             &self.owning_run_id,
+            memo,
         )
         .is_none()
     }
@@ -228,7 +243,9 @@ pub(in crate::narrative_extraction) fn finalize_build_candidate_with_control(
         document,
         sources: preflight.membership.material_basis.source_basis.clone(),
         evidence: preflight.membership.material_basis.evidence_set.clone(),
-        active_scope_controls: preflight.membership.active_scope_controls.clone(),
+        active_scope_controls: super::super::scene_scope::ParsedScopeControl::parse_all(
+            &preflight.membership.active_scope_controls,
+        ),
         material_scopes,
         material_scope_authority_revision_token: authority.source.revision_token.clone(),
         canonical,
