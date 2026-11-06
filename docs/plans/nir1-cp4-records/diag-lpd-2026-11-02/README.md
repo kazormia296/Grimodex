@@ -211,3 +211,12 @@ ticket の発行から settle までの所要（ms）：
 - dev fixture・計装の入った build・3 回（603 件）。run ごとの揺れは小さく見える（0／1／0）が、正式の候補では未確認。
 - 残る隙間は 1 番が 1 回、2 番が 2 回見えた。3 番（Freshness 以外の commit）と 4 番（天井）は、この 3 回の範囲では欠落を作らなかった。
 - 正式の再測定（新しい候補。S4 の扱い）、Gold、N2／N4（blocked）、K6/4 の検出力の記録は動かしていない。
+
+## 追記（2026-11-07）：隙間 3 の診断（LP-D 4。DR-CP4-LAPSE-2）
+
+dev 専用の枝 `claude/cp4-lp-diag`（`8cf81725` の計装、`e1b4ab65` の記録。merge しない・push しない）で、書き手ごとの commit の区間を記録して編集 trace を 3 回（lpd-diag-6-1〜3、各 200 cycles）走らせた。結果は integrator だけが見るもので、CP-4 の判定・集計・閾値の選択には使わない（DR-CP4-LPD-1 の規則 (4)）。詳細は同 dir の `gap3-commit-instrumentation-2026-11-07.md`（計装）と `gap3-diag-results-2026-11-07.md`（結果）。
+
+- drift の起きる区間と gate の lease の間に入った commit は、3 run・603 窓でどの書き手も 0 件（95％ 上限は約 0.5％）。gate の待ちの期限切れも 0。
+- ただしこの 0 は trace の拍子による。書き込みが一様に来るなら lease の間に約 4 件／run 入る見込みで、AI の書込み・MCP・maintenance の頻度は示していない（この trace では maintenance・D-final・migration・trusted SQL は動いていない）。上限を言うには §9.6 (2) の注入の表が要る。
+- 隙間 3 とは別に、表示の欠落が 2 種類見えた：(a) run 3 で Chronicle の publish が親の begin の 45〜135 ms 後に来た親が 4／201、(b) `graph-late` が 2／603（begin 自身の audit の区間が最長 294 ms。以前の「遅い群」17 件中 16 件がこれに一致）。
+- run 1・2 の exit 1 は集計段の precheck（N-7）：harness の D は 10.84 ms のままで、製品の窓は #802 で 40 ms。run 自体の失敗ではない。run 3 の exit 0 は begin 206 回に対して native の記録が 202 件で行が作られなかったためで、きれいな run の意味ではない。3 run とも native の記録は完全。
