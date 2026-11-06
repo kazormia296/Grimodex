@@ -19,8 +19,8 @@ mod types;
 pub(crate) use binding::is_complete_registered as is_complete_registered_chronicle_index;
 pub(crate) use binding::is_registered as is_registered_chronicle_index;
 pub use build::{
-    prepare_chronicle_index_build, prepare_chronicle_index_build_with_control, NirIndexBuildPlan,
-    NirIndexBuildRead,
+    prepare_chronicle_index_build, prepare_chronicle_index_build_on_reader,
+    prepare_chronicle_index_build_with_control, NirIndexBuildPlan, NirIndexBuildRead,
 };
 pub use cache::read_reusable_chronicle_embeddings;
 pub use publish::{
@@ -28,7 +28,10 @@ pub use publish::{
     publish_chronicle_index_build_with_participant,
 };
 pub use query::*;
-pub use runtime::NirChronicleIndexRuntime;
+pub(crate) use runtime::ChronicleReaderTarget;
+pub use runtime::{
+    ChronicleReaderAdmission, ChronicleReaderAdmissionRead, NirChronicleIndexRuntime, ReaderPermit,
+};
 pub use types::*;
 
 pub(crate) const PRODUCER_ID: &str = "nir1-reviewed-chronicle-v1";
@@ -46,6 +49,8 @@ mod publish_tests;
 mod query_tests;
 #[cfg(test)]
 mod read_identity_tests;
+#[cfg(test)]
+mod reader_tests;
 #[cfg(test)]
 mod run_proof_memo_tests;
 #[cfg(test)]

@@ -2650,4 +2650,45 @@ mod audit_count_plan_tests {
         })
         .expect("explain audit counts");
     }
+
+    /// DR-IRB-3 (k): the dedicated read-only reader (READ_ONLY, `query_only`,
+    /// its own page cache) plans both audit counts exactly as the authority
+    /// does, so moving the prepare there cannot bring back the full scan.
+    #[test]
+    fn stage_receipt_audit_counts_seek_the_scope_index_on_a_chronicle_reader() {
+        let path =
+            std::env::temp_dir().join(format!("irb-reader-plan-{}.db", uuid::Uuid::new_v4()));
+        let db = Database::new(&path).expect("open database");
+        db.migrate().expect("migrate database");
+        let identity = super::super::sqlite_database_file_identity(&path).expect("identity");
+        let reader = Database::open_chronicle_reader_at(&path, &identity).expect("reader");
+        reader
+            .with_conn(|conn| {
+                let query_only: i64 = conn.pragma_query_value(None, "query_only", |r| r.get(0))?;
+                assert_eq!(query_only, 1);
+                for (sql, arity) in [
+                    (STAGE_RECEIPT_AUDIT_COUNT_SQL, 7usize),
+                    (STAGE_RECEIPT_NO_RESPONSE_AUDIT_COUNT_SQL, 6usize),
+                ] {
+                    let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+                    let values: Vec<String> = (0..arity).map(|i| format!("v{i}")).collect();
+                    let plan = statement
+                        .query_map(rusqlite::params_from_iter(values.iter()), |row| {
+                            row.get::<_, String>(3)
+                        })?
+                        .collect::<Result<Vec<_>, _>>()?
+                        .join("\n");
+                    assert!(!plan.contains("SCAN ai_audit_events"), "{plan}");
+                    assert!(plan.contains("USING INDEX idx_ai_audit_scope_"), "{plan}");
+                    assert!(plan.contains("scope_id=?"), "{plan}");
+                }
+                Ok(())
+            })
+            .expect("explain audit counts on the reader");
+        drop(reader);
+        drop(db);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
 }

@@ -21,7 +21,8 @@ use super::super::{
 };
 use super::{
     binding::{self, BindingRead, StoredBinding},
-    source, NirChronicleIndexRuntime, NirIndexUnavailableReason as Reason, INDEX_KEY,
+    source, ChronicleReaderAdmission, NirChronicleIndexRuntime,
+    NirIndexUnavailableReason as Reason, INDEX_KEY,
 };
 
 /// A consumed Native capability. No serialization, cloning, or caller fields.
@@ -46,6 +47,7 @@ pub enum NirIndexBuildRead {
     },
 }
 
+#[derive(Debug)]
 pub(super) struct BuildSnapshot {
     pub input_guard: String,
     pub prior: Option<StoredBinding>,
@@ -102,6 +104,61 @@ pub fn prepare_chronicle_index_build_with_control(
             project: project.into(),
             owner: runtime.owner(),
             runtime_epoch,
+            snapshot,
+        },
+        documents,
+    })
+}
+
+/// DR-IRB-3: prepare on the dedicated read-only reader. Unlike
+/// `prepare_chronicle_index_build_with_control` this never reads or checks the
+/// connection-bound runtime epoch or proof: those belong to the authority's
+/// connection (`chronicle_reader_admission`), and the reader has its own TEMP
+/// connection meta. The plan carries the admission's owner and epoch, so a
+/// reader result is only a candidate: publication re-checks both on the
+/// authority. Everything from `read_snapshot_with_control` on is shared with
+/// the authority path.
+pub fn prepare_chronicle_index_build_on_reader(
+    conn: &Connection,
+    runtime: &NirChronicleIndexRuntime,
+    admission: &ChronicleReaderAdmission,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<NirIndexBuildRead> {
+    control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Source)?;
+    ensure!(
+        !conn.is_autocommit(),
+        "NIR1 preparation requires a read transaction"
+    );
+    ensure!(
+        conn.pragma_query_value(None, "query_only", |row| row.get::<_, i64>(0))? == 1,
+        "NIR1 reader preparation requires a query_only connection"
+    );
+    ensure!(
+        !project.trim().is_empty() && project.trim() == project,
+        "exact project identity required"
+    );
+    ensure!(
+        admission.owner == runtime.owner(),
+        "NIR1 reader admission belongs to another runtime"
+    );
+    if admission.proof_current {
+        return Ok(NirIndexBuildRead::AlreadyUsable);
+    }
+    let snapshot = match read_snapshot_with_control(conn, project, control)? {
+        Ok(value) => value,
+        Err(reason) => return Ok(NirIndexBuildRead::Unavailable { reason }),
+    };
+    let documents = snapshot
+        .candidates
+        .iter()
+        .map(|candidate| candidate.document.clone())
+        .collect();
+    Ok(NirIndexBuildRead::Ready {
+        plan: NirIndexBuildPlan {
+            project: project.into(),
+            owner: admission.owner,
+            runtime_epoch: admission.runtime_epoch,
             snapshot,
         },
         documents,
