@@ -1858,6 +1858,16 @@ fn canonical_single_node_gold_frame(
     Ok(frame)
 }
 
+/// A live C-query quarantine still refuses same-workspace admission, now with
+/// its own restart-only marker instead of the transient `WORKSPACE_SWITCHING`
+/// (DR-PUBG-36-1). Refusal itself is unchanged; only the reported kind is.
+fn is_quarantine_refusal(error: &crate::AppError) -> bool {
+    let wire = error.to_string();
+    matches!(error, crate::AppError::WorkspaceQuarantined)
+        && wire.contains("WORKSPACE_QUARANTINED")
+        && !wire.contains("WORKSPACE_SWITCHING")
+}
+
 fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
     const PROJECT: &str = "nir1-capacity-fixture-project";
     const SOURCE_SCENE: &str = "nir1-capacity-scene"; // reading rank a0
@@ -2560,7 +2570,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 Err(error) => error,
             };
             ensure!(
-                immediate_reloan_error.to_string().contains("WORKSPACE_SWITCHING"),
+                is_quarantine_refusal(&immediate_reloan_error),
                 "live quarantine did not fence same-workspace admission: {immediate_reloan_error:#}"
             );
 
@@ -2597,7 +2607,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 Err(error) => error,
             };
             ensure!(
-                reloan_error.to_string().contains("WORKSPACE_SWITCHING"),
+                is_quarantine_refusal(&reloan_error),
                 "quarantine did not reject same-workspace admission: {reloan_error:#}"
             );
             assert!(
@@ -3009,7 +3019,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 Err(error) => error,
             };
             ensure!(
-                workspace_reloan_error.to_string().contains("WORKSPACE_SWITCHING"),
+                is_quarantine_refusal(&workspace_reloan_error),
                 "request-writer quarantine failed to retain workspace protection: {workspace_reloan_error:#}"
             );
 
@@ -3736,7 +3746,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                     Err(error) => error,
                 };
                 ensure!(
-                    reloan_error.to_string().contains("WORKSPACE_SWITCHING"),
+                    is_quarantine_refusal(&reloan_error),
                     "same-workspace reloan was not rejected: {reloan_error:#}"
                 );
                 eprintln!(
@@ -3804,7 +3814,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                     Err(error) => error,
                 };
                 ensure!(
-                    reloan_error.to_string().contains("WORKSPACE_SWITCHING"),
+                    is_quarantine_refusal(&reloan_error),
                     "same-workspace reloan was not rejected: {reloan_error:#}"
                 );
                 eprintln!(
@@ -3851,7 +3861,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                     Err(error) => error,
                 };
                 ensure!(
-                    reloan_error.to_string().contains("WORKSPACE_SWITCHING"),
+                    is_quarantine_refusal(&reloan_error),
                     "same-workspace reloan was not rejected: {reloan_error:#}"
                 );
                 eprintln!(

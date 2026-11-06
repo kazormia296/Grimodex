@@ -46,12 +46,8 @@ import {
   applyCloseFailureToDialogState,
   classifyCloseFailure,
 } from "@/application/lifecycle/closeFailureClassification";
-import { subscribeAutoSaveUnsavedState } from "@/hooks/useAutoSave";
-import {
-  createUnsavedEditsReporter,
-  onUnsavedEditsRetained,
-} from "@/lib/unsavedEditsGuard";
-import { applyApplicationTheme } from "./applicationTheme";
+import { useApplicationTheme } from "./applicationTheme";
+import { useUnsavedEditsBootstrap } from "./unsavedEditsBootstrap";
 
 export { applyCloseFailureToDialogState, classifyCloseFailure };
 
@@ -130,6 +126,7 @@ export function ApplicationBootstrapHost({
   useReleaseNotesGate();
   useExternalMountListener();
   useLicenseStateListener();
+  useUnsavedEditsBootstrap();
 
   const foregroundEditorScopeKey = createEditorInputScopeKey({
     projectId: currentProjectId,
@@ -219,37 +216,7 @@ export function ApplicationBootstrapHost({
     };
   }, []);
 
-  // PUB-G #36 (DR-PUBG-36-1): tell Main whether unsaved edits exist (it reads
-  // the flag only before a fatal exit) and show a sticky notice if the author
-  // chose to go back instead of exiting. Nothing is stored or moved.
-  useEffect(() => {
-    const unsubscribe = subscribeAutoSaveUnsavedState(
-      createUnsavedEditsReporter(),
-    );
-    const unlisten = onUnsavedEditsRetained(() => {
-      toast.error(i18next.t("unsavedEditsGuard.retained"), {
-        id: "unsaved-edits-retained",
-        duration: Infinity,
-      });
-    });
-    return () => {
-      unsubscribe();
-      unlisten();
-    };
-  }, []);
-
-  useEffect(
-    () => applyApplicationTheme(theme, colorTheme),
-    [theme, colorTheme],
-  );
-
-  useEffect(() => {
-    if (theme !== "system") return;
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = () => applyApplicationTheme("system", colorTheme);
-    media.addEventListener("change", handler);
-    return () => media.removeEventListener("change", handler);
-  }, [theme, colorTheme]);
+  useApplicationTheme(theme, colorTheme);
 
   useEffect(() => {
     document.documentElement.style.setProperty(

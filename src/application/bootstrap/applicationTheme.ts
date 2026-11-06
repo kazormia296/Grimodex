@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+
 import {
   COLOR_THEMES,
   DEFAULT_COLOR_THEME,
@@ -36,4 +38,20 @@ export function applyApplicationTheme(
   for (const property of THEME_CSS_VARS) {
     html.style.setProperty(property, palette[property]);
   }
+}
+
+/** Apply the theme and follow the OS scheme while the theme is "system". */
+export function useApplicationTheme(theme: string, colorTheme?: string): void {
+  useEffect(
+    () => applyApplicationTheme(theme, colorTheme),
+    [theme, colorTheme],
+  );
+
+  useEffect(() => {
+    if (theme !== "system") return;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = () => applyApplicationTheme("system", colorTheme);
+    media.addEventListener("change", handler);
+    return () => media.removeEventListener("change", handler);
+  }, [theme, colorTheme]);
 }
