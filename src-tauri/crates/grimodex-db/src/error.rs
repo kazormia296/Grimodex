@@ -30,6 +30,15 @@ pub enum AppError {
     #[error("WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected")]
     WorkspaceSwitching,
 
+    /// C-query の quarantine が workspace を fence している間の DB アクセス拒否。
+    /// 再起動まで解けないため、一時的な `WORKSPACE_SWITCHING` とは別の固定
+    /// マーカー `WORKSPACE_QUARANTINED` を持つ — FE
+    /// `src/features/concurrency/workspaceQuarantined.ts` と対。変更時は両方同時に。
+    #[error(
+        "WORKSPACE_QUARANTINED: workspace is quarantined; DB access is rejected until restart"
+    )]
+    WorkspaceQuarantined,
+
     /// アクティブな workspace が無い状態での DB / メタアクセス。
     #[error("No workspace is open")]
     NoWorkspace,
@@ -85,6 +94,12 @@ mod tests {
         // (workspaceSwitching.ts / debugLog rootCause 経由の版数判定など)。
         // variant の Display からマーカーが消えると FE の分岐が静かに壊れる。
         assert!(AppError::WorkspaceSwitching
+            .to_string()
+            .contains("WORKSPACE_SWITCHING"));
+        assert!(AppError::WorkspaceQuarantined
+            .to_string()
+            .contains("WORKSPACE_QUARANTINED"));
+        assert!(!AppError::WorkspaceQuarantined
             .to_string()
             .contains("WORKSPACE_SWITCHING"));
         assert!(AppError::NoWorkspace

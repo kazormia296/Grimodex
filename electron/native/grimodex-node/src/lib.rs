@@ -6556,9 +6556,12 @@ fn revalidate_narrative_workspace_after_cycle<'a>(
         .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
     let current_authority = match active_database(&state.ws) {
         Ok(current_authority) => current_authority,
-        Err(AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive) => {
-            return Ok(None)
-        }
+        Err(
+            AppError::NoWorkspace
+            | AppError::WorkspaceSwitching
+            | AppError::WorkspaceQuarantined
+            | AppError::SafeModeActive,
+        ) => return Ok(None),
         Err(error) if error.to_string().contains("NEX_WORKSPACE_BINDING_CHANGED") => {
             // A restore helper may have published the replacement authority
             // before the lifecycle supervisor has emitted its post-Join
@@ -6613,9 +6616,12 @@ fn run_narrative_freshness_cycle_body(
     let ci_config = state.narrative_maintenance_ci_seam.config();
     let authority = match active_database(&state.ws) {
         Ok(authority) => authority,
-        Err(AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive) => {
-            return Ok(None)
-        }
+        Err(
+            AppError::NoWorkspace
+            | AppError::WorkspaceSwitching
+            | AppError::WorkspaceQuarantined
+            | AppError::SafeModeActive,
+        ) => return Ok(None),
         // No DB work has started: shutdown between the supervisor's pin
         // and this admission is an ordinary stopped cycle, not recovery work.
         Err(AppError::Anyhow(error))
@@ -8107,7 +8113,10 @@ impl Backend {
         let workspace = match active_workspace_snapshot(&self.state.ws) {
             Ok(workspace) => workspace,
             Err(
-                AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                AppError::NoWorkspace
+                | AppError::WorkspaceSwitching
+                | AppError::WorkspaceQuarantined
+                | AppError::SafeModeActive,
             ) => return Ok(None),
             Err(error) => return Err(app_err_to_napi(error)),
         };
@@ -8262,7 +8271,10 @@ impl Backend {
             let snapshot = match active_workspace_snapshot(&state.ws) {
                 Ok(snapshot) => snapshot,
                 Err(
-                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                    AppError::NoWorkspace
+                    | AppError::WorkspaceSwitching
+                    | AppError::WorkspaceQuarantined
+                    | AppError::SafeModeActive,
                 ) => {
                     return Ok(serde_json::json!({
                         "status": "workspace-unavailable",
@@ -8284,7 +8296,10 @@ impl Backend {
             let current_snapshot = match active_workspace_snapshot(&state.ws) {
                 Ok(snapshot) => snapshot,
                 Err(
-                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                    AppError::NoWorkspace
+                    | AppError::WorkspaceSwitching
+                    | AppError::WorkspaceQuarantined
+                    | AppError::SafeModeActive,
                 ) => {
                     return Ok(serde_json::json!({
                         "status": "workspace-unavailable",
@@ -8333,7 +8348,10 @@ impl Backend {
             let workspace = match active_workspace_snapshot(&state.ws) {
                 Ok(workspace) => workspace,
                 Err(
-                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                    AppError::NoWorkspace
+                    | AppError::WorkspaceSwitching
+                    | AppError::WorkspaceQuarantined
+                    | AppError::SafeModeActive,
                 ) => return Ok("[]".to_string()),
                 Err(error) => return Err(error),
             };
@@ -8369,7 +8387,10 @@ impl Backend {
             let authority = match active_database(&state.ws) {
                 Ok(authority) => authority,
                 Err(
-                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                    AppError::NoWorkspace
+                    | AppError::WorkspaceSwitching
+                    | AppError::WorkspaceQuarantined
+                    | AppError::SafeModeActive,
                 ) => {
                     return Ok(serde_json::json!({
                         "status": "workspace-unavailable",
@@ -8745,6 +8766,7 @@ impl Backend {
                         Err(
                             AppError::NoWorkspace
                             | AppError::WorkspaceSwitching
+                            | AppError::WorkspaceQuarantined
                             | AppError::SafeModeActive,
                         ) => {
                             return Ok(serde_json::json!({
@@ -8778,6 +8800,7 @@ impl Backend {
                         Err(
                             AppError::NoWorkspace
                             | AppError::WorkspaceSwitching
+                            | AppError::WorkspaceQuarantined
                             | AppError::SafeModeActive,
                         ) => {
                             return Ok(serde_json::json!({
@@ -8930,6 +8953,7 @@ impl Backend {
                                         Err(
                                             AppError::NoWorkspace
                                             | AppError::WorkspaceSwitching
+                                            | AppError::WorkspaceQuarantined
                                             | AppError::SafeModeActive,
                                         ) => {
                                             return Ok(serde_json::json!({
@@ -9872,7 +9896,10 @@ impl Backend {
             let authority = match active_database(&state.ws) {
                 Ok(authority) => authority,
                 Err(
-                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                    AppError::NoWorkspace
+                    | AppError::WorkspaceSwitching
+                    | AppError::WorkspaceQuarantined
+                    | AppError::SafeModeActive,
                 ) => {
                     return Ok(serde_json::json!({
                         "status": "workspace-unavailable",
@@ -9976,7 +10003,10 @@ impl Backend {
             let authority = match active_database(&state.ws) {
                 Ok(authority) => authority,
                 Err(
-                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                    AppError::NoWorkspace
+                    | AppError::WorkspaceSwitching
+                    | AppError::WorkspaceQuarantined
+                    | AppError::SafeModeActive,
                 ) => {
                     return Ok(serde_json::json!({
                         "status": "workspace-unavailable",
@@ -9988,7 +10018,10 @@ impl Backend {
             let current_snapshot = match active_workspace_snapshot(&state.ws) {
                 Ok(snapshot) => snapshot,
                 Err(
-                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                    AppError::NoWorkspace
+                    | AppError::WorkspaceSwitching
+                    | AppError::WorkspaceQuarantined
+                    | AppError::SafeModeActive,
                 ) => {
                     return Ok(serde_json::json!({
                         "status": "workspace-unavailable",
@@ -10069,7 +10102,10 @@ impl Backend {
             let latest_snapshot = match active_workspace_snapshot(&state.ws) {
                 Ok(snapshot) => snapshot,
                 Err(
-                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                    AppError::NoWorkspace
+                    | AppError::WorkspaceSwitching
+                    | AppError::WorkspaceQuarantined
+                    | AppError::SafeModeActive,
                 ) => {
                     return Ok(serde_json::json!({
                         "status": "workspace-unavailable",
@@ -10152,7 +10188,10 @@ impl Backend {
             let authority = match active_database(&state.ws) {
                 Ok(authority) => authority,
                 Err(
-                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                    AppError::NoWorkspace
+                    | AppError::WorkspaceSwitching
+                    | AppError::WorkspaceQuarantined
+                    | AppError::SafeModeActive,
                 ) => {
                     return Ok(serde_json::json!({
                         "status": "workspace-unavailable",
@@ -10164,7 +10203,10 @@ impl Backend {
             let current_snapshot = match active_workspace_snapshot(&state.ws) {
                 Ok(snapshot) => snapshot,
                 Err(
-                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                    AppError::NoWorkspace
+                    | AppError::WorkspaceSwitching
+                    | AppError::WorkspaceQuarantined
+                    | AppError::SafeModeActive,
                 ) => {
                     return Ok(serde_json::json!({
                         "status": "workspace-unavailable",
@@ -10235,7 +10277,10 @@ impl Backend {
             let latest_snapshot = match active_workspace_snapshot(&state.ws) {
                 Ok(snapshot) => snapshot,
                 Err(
-                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                    AppError::NoWorkspace
+                    | AppError::WorkspaceSwitching
+                    | AppError::WorkspaceQuarantined
+                    | AppError::SafeModeActive,
                 ) => {
                     return Ok(serde_json::json!({
                         "status": "workspace-unavailable",

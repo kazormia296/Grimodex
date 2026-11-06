@@ -430,6 +430,7 @@ fn db_participant(
     };
     result.map_err(|error| match error {
         LifecycleError::ActiveOperations => AppError::WorkspaceSwitching,
+        LifecycleError::WorkspaceQuarantined => AppError::WorkspaceQuarantined,
         other => AppError::from(other),
     })
 }
@@ -641,6 +642,48 @@ mod tests {
         ).expect_err("compatibility refusal");
         assert!(matches!(error, AppError::WorkspaceSwitching));
         assert_eq!(core.workspace_participant_count().expect("released"), 0);
+    }
+
+    #[test]
+    fn quarantined_workspace_refuses_db_with_its_own_marker_not_switching() {
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-state-quarantine-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        let authority = WorkspaceAuthority::from_database_for_test(db, path).expect("authority");
+        let state = WorkspaceState {
+            inner: Mutex::new(Some(ActiveWorkspace::new(authority.clone()))),
+            safe_mode: crate::recovery::SafeModeState::default(),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
+            open_lock: Mutex::new(Default::default()),
+        };
+        // A fence needs a Ready binding with a physical file identity.
+        state
+            .switching
+            .core()
+            .set_ready(
+                LiveBinding::new(
+                    authority.path().to_string_lossy(),
+                    "ws-quarantine",
+                    authority.identity(),
+                    0,
+                )
+                .with_main_database_file_identity("test-db-quarantine".to_string()),
+            )
+            .expect("ready");
+        let snapshot = active_workspace_snapshot(&state).expect("snapshot");
+        assert!(leak_c_query_quarantine_fence_for_test(snapshot));
+        let error = with_db_state(&state, |_db| -> anyhow::Result<()> {
+            panic!("no DB under quarantine")
+        })
+        .expect_err("quarantine refusal");
+        assert!(matches!(error, AppError::WorkspaceQuarantined));
+        let wire = error.to_string();
+        assert!(wire.contains("WORKSPACE_QUARANTINED"));
+        // The unsaved-edit guard on the renderer must not mistake it for a
+        // transient switch that clears by retrying.
+        assert!(!wire.contains("WORKSPACE_SWITCHING"));
     }
 
     #[test]
