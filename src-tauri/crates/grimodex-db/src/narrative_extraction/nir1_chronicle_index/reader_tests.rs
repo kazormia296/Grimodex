@@ -478,7 +478,7 @@ fn a_clean_reader_does_not_block_the_slot() {
 }
 
 /// P3-5 (ii): the reader's snapshot is taken first; when the authority commits
-/// afterwards (a human withdrawal here), publishing that plan is `Stale`.
+/// afterwards (a human `held` decision here), publishing that plan is `Stale`.
 /// The reader itself saw the older, consistent snapshot.
 #[test]
 fn authority_commit_after_the_reader_snapshot_makes_the_plan_stale() {

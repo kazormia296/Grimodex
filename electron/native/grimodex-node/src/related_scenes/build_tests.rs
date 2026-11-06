@@ -124,7 +124,7 @@ fn reader_reason(outcome: &BuildOutcome) -> Option<Reason> {
 /// (d) The reader never outlives a phase: the two exits exercised here (a plan
 /// and a `Stopped` admission) leave zero readers and the permit of an early
 /// return is given back. The busy slot is (q) and the open failure is (e)
-/// below; an admission error is not reachable without a broken authority.
+/// below; an admission error is exercised by (t) `a_retired_authority_opens_no_reader`.
 #[test]
 fn every_prepare_exit_leaves_no_reader_and_gives_the_slot_back() {
     let h = Harness::new();
