@@ -46,6 +46,11 @@ import {
   applyCloseFailureToDialogState,
   classifyCloseFailure,
 } from "@/application/lifecycle/closeFailureClassification";
+import { subscribeAutoSaveUnsavedState } from "@/hooks/useAutoSave";
+import {
+  createUnsavedEditsReporter,
+  onUnsavedEditsRetained,
+} from "@/lib/unsavedEditsGuard";
 import { applyApplicationTheme } from "./applicationTheme";
 
 export { applyCloseFailureToDialogState, classifyCloseFailure };
@@ -211,6 +216,25 @@ export function ApplicationBootstrapHost({
       closeControllerRef.current = null;
       unlisten?.();
       window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, []);
+
+  // PUB-G #36 (DR-PUBG-36-1): tell Main whether unsaved edits exist (it reads
+  // the flag only before a fatal exit) and show a sticky notice if the author
+  // chose to go back instead of exiting. Nothing is stored or moved.
+  useEffect(() => {
+    const unsubscribe = subscribeAutoSaveUnsavedState(
+      createUnsavedEditsReporter(),
+    );
+    const unlisten = onUnsavedEditsRetained(() => {
+      toast.error(i18next.t("unsavedEditsGuard.retained"), {
+        id: "unsaved-edits-retained",
+        duration: Infinity,
+      });
+    });
+    return () => {
+      unsubscribe();
+      unlisten();
     };
   }, []);
 

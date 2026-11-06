@@ -122,4 +122,116 @@ describe("narrative maintenance quit finalizer", () => {
     expect(exit).toHaveBeenCalledExactlyOnceWith(1);
     expect(error).toHaveBeenCalled();
   });
+
+  describe("confirmFatalExit (PUB-G #36)", () => {
+    const failing = () =>
+      vi.fn().mockRejectedValue(new Error("cleanup failed"));
+
+    it("asks before the fatal exit; exit keeps exit(1)", async () => {
+      const order: string[] = [];
+      const confirmFatalExit = vi.fn(async () => {
+        order.push("confirm");
+        return "exit" as const;
+      });
+      const exit = vi.fn(() => order.push("exit"));
+      const finalizer = createNarrativeMaintenanceQuitFinalizer({
+        dispose: failing(),
+        complete: vi.fn(),
+        quit: vi.fn(),
+        exit,
+        confirmFatalExit,
+        maxAttempts: 1,
+      });
+
+      await finalizer(event());
+
+      expect(order).toEqual(["confirm", "exit"]);
+      expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+    });
+
+    it("stay cancels the exit and lets a later quit run the finalizer again", async () => {
+      const dispose = failing();
+      const exit = vi.fn();
+      const quit = vi.fn();
+      const confirmFatalExit = vi
+        .fn<() => Promise<"exit" | "stay">>()
+        .mockResolvedValueOnce("stay")
+        .mockResolvedValueOnce("exit");
+      const finalizer = createNarrativeMaintenanceQuitFinalizer({
+        dispose,
+        complete: vi.fn(),
+        quit,
+        exit,
+        confirmFatalExit,
+        maxAttempts: 1,
+      });
+
+      const first = event();
+      await finalizer(first);
+      expect(first.preventDefault).toHaveBeenCalledOnce();
+      expect(exit).not.toHaveBeenCalled();
+      expect(quit).not.toHaveBeenCalled();
+
+      // The author later quits again; the whole finalizer retries.
+      const second = event();
+      await finalizer(second);
+      expect(second.preventDefault).toHaveBeenCalledOnce();
+      expect(dispose).toHaveBeenCalledTimes(2);
+      expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+    });
+
+    it("a throwing confirmation keeps the fatal exit", async () => {
+      const exit = vi.fn();
+      const error = vi.fn();
+      const finalizer = createNarrativeMaintenanceQuitFinalizer({
+        dispose: failing(),
+        complete: vi.fn(),
+        quit: vi.fn(),
+        exit,
+        error,
+        confirmFatalExit: () => {
+          throw new Error("dialog gone");
+        },
+        maxAttempts: 1,
+      });
+
+      await finalizer(event());
+
+      expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+    });
+
+    it("is not asked when shutdown succeeds", async () => {
+      const confirmFatalExit = vi.fn();
+      const quit = vi.fn();
+      const finalizer = createNarrativeMaintenanceQuitFinalizer({
+        dispose: vi.fn().mockResolvedValue(undefined),
+        complete: vi.fn(),
+        quit,
+        exit: vi.fn(),
+        confirmFatalExit,
+      });
+
+      await finalizer(event());
+
+      expect(confirmFatalExit).not.toHaveBeenCalled();
+      expect(quit).toHaveBeenCalledOnce();
+    });
+
+    it("an independent cleanup failure is also confirmed before exit", async () => {
+      const confirmFatalExit = vi.fn().mockResolvedValue("stay");
+      const exit = vi.fn();
+      const finalizer = createNarrativeMaintenanceQuitFinalizer({
+        dispose: vi.fn().mockResolvedValue(undefined),
+        complete: vi.fn().mockRejectedValue(new Error("cleanup failed")),
+        quit: vi.fn(),
+        exit,
+        confirmFatalExit,
+      });
+
+      await finalizer(event());
+
+      expect(confirmFatalExit).toHaveBeenCalledOnce();
+      expect(exit).not.toHaveBeenCalled();
+    });
+  });
 });

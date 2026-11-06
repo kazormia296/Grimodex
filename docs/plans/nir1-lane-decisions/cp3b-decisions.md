@@ -159,6 +159,7 @@ U3 の委任（継続計画 §3.1）の外に当たる要素は、CP-3b の範�
 PUB-G で `NIR1_GRAPH_UI_ENABLED` を true にする PR（`BODY_DECLARATION_UI_ENABLED` と Native の gate を同じ承認で変える。DR-CP3B-2）の前に、次を満たす。
 
 1. **必須（DR-CP3B-8、integrator 追記 P2-2）**：quarantine の下の未保存の編集への手当て。autosave の toast `autoSave.workspaceSwitching`（「自動で再保存されます」）が quarantine の下では誤りであることと、Main の `exit(1)` による終了で未保存の編集が失われうることを、D7 (B)（Native が quarantine で拒否した participant の error に marker を付け、toast を「再起動が必要」に変える）か同等のもので直す。Native と Core の変更を要するので CP-3b の範囲外。
+   - **2026-11-06：(B+) を実装（PR 番号は integrator が追記）**。判断は下の DR-PUBG-36-1。
 2. **必須（DR-CP3B-7、integrator 追記 P3-8、R-6）**：段階的に見える表示の手当て。定数が true のとき、lazy chunk の初回の取得の間は fallback の R/R+IR の行から Graph の行へ一度切り替わる。Section の mount で chunk を先に取る（定数が true のときだけ）などで、DSN §3.1「段階的な表示はしない」の趣旨を満たす。Graph の chunk の初回の取得と表示の体感を実機で確かめる。
 3. DR-CP3A-55 の lease 越しの end-to-end（実機の Native と renderer を通した Graph-only の click）。CP-3b の renderer の試験は Native を mock しており、その代わりにならない。
 4. seed の読取の待ち：hook の `run()` の中の 1 回の DB 読取（`LIMIT 1`）。D の窓は Raw-ready からなので P の値には入らないが、利用者の待ちは増える。CP-4 で測る。
@@ -166,3 +167,18 @@ PUB-G で `NIR1_GRAPH_UI_ENABLED` を true にする PR（`BODY_DECLARATION_UI_E
 6. 宣言の取消の通知（DR-CP3B-9）は同じ renderer の CB-3 の UI の取消だけを拾う。別の窓、MCP、restore による取消は click の再検証が拒否し、次の query で消える（K2/4 の (a)）。
 7. CP-4：`fuseNir1RelatedScenesGraph` は DOM に依らない pure な関数で、R+IR+Graph の arm から `{ result, queryBinding, querySceneId, graphOutcome, graph }` で呼べる。`fetch.result` は変えないので、R と R+IR の receipt と harness（`scripts/quality/nir1-retrieval/renderer.ts`）は影響を受けない（S-5、F-8）。compare mode は build の source manifest の全 file の sha を確かめるので、CP-3b の後の compare は build し直しが要る（通常の手順）。
 8. `restart-required` の文言の出方（DR-CP3B-18 の R3）：文言は IR が揃ったときだけ出る（IR が期限に間に合わなければ `graph-unavailable:ir-not-ready`、IR が unavailable なら `cancelled`）。quarantine は process の全体の状態なので、PUB-G で文言を必須の案内にするなら、IR の到着に依らずに出す経路を決める。
+
+## PUB-G #36 の追補（quarantine の下の未保存の編集への手当て。2026-11-06）
+
+### DR-PUBG-36-1（案 (B+) の選択はユーザー、2026-11-06）
+
+DR-CP3B-8 と引継ぎ 1 の「D7 (B) か同等のもの」を、次の (B+) で実装した。(C)（本文の退避）は採らない。
+
+- **変えないもの**：保存先と保存範囲（schema、table、列、新しい永続の置き場、退避ファイルは作らない）。fail-closed（quarantine の下の DB アクセスは拒否のまま）。IPC の契約の意味（error は文字列ワイヤのまま、object 化しない。`errorInfo.code` の語彙に 1 つ足しただけ）。quarantine の判定（`quarantines_workspace`）と、Open／Restore／Transition の拒否の経路（`ActiveOperations` のまま）。
+- **足したもの**：
+  1. **固定 code `WORKSPACE_QUARANTINED`**。Core（`grimodex-db`）の `LifecycleError::WorkspaceQuarantined` を、通常の DB participant の入口（`begin_workspace_participant_diagnosed`）が `Ready` の workspace を quarantine が fence しているときだけ返す。`with_db` の変換（`state.rs` の `db_participant`）は `AppError::WorkspaceQuarantined`（Display は `WORKSPACE_QUARANTINED: …`、`WORKSPACE_SWITCHING` を含まない）にする。**これまでは `ActiveOperations` → `AppError::WorkspaceSwitching` に丸められ、renderer の `WORKSPACE_SWITCHING` と toast「自動で再保存されます」になっていた。** Native の `app_err_to_napi` は Display をそのまま載せるので落とさない。Native の「workspace-unavailable」を返す 17 箇所の `NoWorkspace | WorkspaceSwitching | SafeModeActive` の pattern には `WorkspaceQuarantined` を並べ、挙動を変えない（利用不可として扱う）。IPC の分類（`classifyKnownIpcError`、`tauri.ts`、`grimodex-bridge.d.ts`）に `WORKSPACE_QUARANTINED`（retryable＝false）を足した。
+  2. **renderer の toast と再試行の停止**。`useAutoSave` は quarantine の拒否を受けると、`autoSave.workspaceQuarantined`（保存できない、内容を控える、再起動が要る）を 1 度だけ sticky で出し、timer と drain の再試行を止める（編集は未保存として数え続ける。`flush` は保存を試みず元の拒否を投げるので、quiesce は fail closed のまま）。`cancel`（利用者の明示の破棄）で解く。
+  3. **exit 前の確認の IPC**。renderer は「未保存の編集があるか」の boolean だけを Main に報告する（`report_unsaved_edits`、Main 処理の shell command。Native へ行かず、`INTERNAL_COMMANDS` に入れて restricted 中も通す）。Main は報告を保持するだけで、Native の終了観測の失敗で `exit(1)` する直前（`narrativeMaintenanceShutdown.ts` の `confirmFatalExit`）に、生存中の窓が未保存を報告していれば `dialog.showMessageBox`（日本語と英語。既定は「戻って内容を控える」）で「このまま終了する」か「戻る」を尋ねる。戻る場合は quit を取り消し（finalizer を再び走らせられる状態に戻す）、その窓へ Main event `app:unsaved-edits-retained` を送って sticky の通知（`unsavedEditsGuard.retained`）を出す。**文章は保存も移動もしない。**
+- **信頼境界**：新しい送信先、保存先、authority は無い。報告は boolean 1 つで、text・path・ID を含まず、Main が引数を厳密（`{ hasUnsaved: boolean }`）に再検証する。event は Main 専用で、renderer からは送れない。
+- **到達性の注記**：window が既に閉じた後（close veto を通った quit）は、renderer の閉じるときの失敗ダイアログ（再試行・復旧用ファイルの書き出し・破棄）が先に未保存を扱うので、Main は閉じた窓について尋ねない（destroyed の owner は無視し、flag を捨てる）。尋ねるのは `will-quit` の時点で窓が生きているとき（`app.quit()` 等が close veto を待たずに `will-quit` に入る経路。`index.ts` の `rendererTeardown` の注記）に限る。
+

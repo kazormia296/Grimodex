@@ -10,7 +10,7 @@ import path from "node:path";
 import { realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
-import { app, dialog, safeStorage } from "electron";
+import { app, dialog, safeStorage, webContents } from "electron";
 
 import {
   getBackend,
@@ -65,6 +65,10 @@ import {
   createNarrativeMaintenanceQuitFinalizer,
   runIndependentShutdownCleanups,
 } from "./narrativeMaintenanceShutdown.js";
+import {
+  createUnsavedEditsGuard,
+  showUnsavedFatalExitDialog,
+} from "./unsavedEditsGuard.js";
 import type { NarrativeMaintenanceTriggerCoordinator } from "./narrativeMaintenanceTriggers.js";
 import { configureLinuxGraphics } from "./linuxGraphics.js";
 import { createMozkeyInstallerManager } from "./mozkeyInstaller.js";
@@ -637,7 +641,19 @@ if (!gotSingleInstanceLock) {
     // lifecycle shutdown so Native cannot enter Transition while the
     // renderer still needs its workspace authority to flush.
     let rendererTeardown: Promise<void> = Promise.resolve();
+    // PUB-G #36 (DR-PUBG-36-1): each window reports whether it still holds
+    // unsaved edits; a fatal shutdown failure asks before it calls exit(1).
+    const unsavedEditsGuard = createUnsavedEditsGuard({
+      isOwnerAlive: (ownerId) => {
+        const target = webContents.fromId(ownerId);
+        return target !== undefined && !target.isDestroyed();
+      },
+      confirm: () => showUnsavedFatalExitDialog(dialog),
+      notifyRetained: (ownerId, channel, payload) =>
+        sendMainEventToWindow(ownerId, channel, payload),
+    });
     const quitFinalizer = createNarrativeMaintenanceQuitFinalizer({
+      confirmFatalExit: () => unsavedEditsGuard.confirmBeforeFatalExit(),
       dispose: async () => {
         // Native shutdown observes Open/Restore through the shared lifecycle
         // owner. Always issue that idempotent request even when the scheduler
@@ -815,6 +831,9 @@ if (!gotSingleInstanceLock) {
         return {
           ...sharedShellHandlers,
           ...(win ? codexApp.handlersForOwner(win.webContents.id) : {}),
+          ...(win
+            ? unsavedEditsGuard.handlersForOwner(win.webContents.id)
+            : {}),
         };
       },
       keyStore,

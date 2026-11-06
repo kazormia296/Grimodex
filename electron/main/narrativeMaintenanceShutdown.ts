@@ -17,6 +17,14 @@ export interface NarrativeMaintenanceQuitFinalizerOptions {
   maxAttempts?: number;
   /** Monotonic Native observation budget; independent cleanup is not bound by it. */
   nativeObservationBudgetMs?: number;
+  /**
+   * Asked once when shutdown could not be proven, right before the fatal
+   * `exit(1)`. `stay` cancels the exit (the quit stays vetoed and a later quit
+   * runs the whole finalizer again); `exit` or a throw keeps the fatal exit.
+   * Absent means the previous behaviour. It must not save or move any text
+   * (DR-PUBG-36-1).
+   */
+  confirmFatalExit?(): "exit" | "stay" | Promise<"exit" | "stay">;
 }
 
 /** Attempt every independent teardown, including after another one rejects. */
@@ -128,6 +136,20 @@ export function createNarrativeMaintenanceQuitFinalizer(
       [nativeResult, independentResult],
     );
     if (!maintenanceComplete || !independentCleanupComplete) {
+      if (options.confirmFatalExit) {
+        let decision: "exit" | "stay" = "exit";
+        try {
+          decision = await options.confirmFatalExit();
+        } catch (error) {
+          reportError(error);
+        }
+        if (decision === "stay") {
+          // The quit was vetoed above. Allow the next quit to try again; the
+          // author has been told to copy their unsaved text out first.
+          finalizationStarted = false;
+          return;
+        }
+      }
       fatalExitRequested = true;
       options.exit(1);
       return;
