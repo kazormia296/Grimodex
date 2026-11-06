@@ -12,8 +12,11 @@ import {
   buildSelection,
   candidatesOf,
   cohenKappa,
+  compareRuns,
+  failureImpact,
   fileSha256,
   irOutsideStats,
+  jaccard,
   kappaTable,
   makeRng,
   median,
@@ -21,8 +24,10 @@ import {
   queryFacts,
   queryHash,
   reproduceIrRows,
+  runPrecisionDelta,
   selectQueries,
   stratumOf,
+  unionLabelMaps,
   wilson,
   zeroUpper95,
   SEED,
@@ -402,4 +407,191 @@ test("AI 注釈に欠けた組があっても aggregate は欠けを分母から
   assert.equal(out.judgement.validQueries, 41);
   assert.equal(out.annotators.ai.complete, false);
   assert.equal(out.kappa.userVsAi.strict.n, all.length - 8);
+});
+
+// ---- run 2（事前登録 §5） --------------------------------------------------------------------
+const PG = path.resolve(HERE, "..");
+const readPg = (name) => JSON.parse(fs.readFileSync(path.join(PG, name), "utf8"));
+const run2Records = {
+  "m-ja-2": readPg("records-m-ja-2-run2.json"),
+  "g-ja-1": readPg("records-g-ja-1-run2.json"),
+};
+const sel1 = readPg("selection-run1.json");
+const buildRun2 = () =>
+  JSON.parse(
+    JSON.stringify(
+      buildSelection({
+        recordsByWork: run2Records,
+        recordsMeta: readPg("selection-run2.json").sources,
+        fixedFrom: sel1,
+        prior: sel1,
+        preregSha256: readPg("selection-run2.json").preregistration.sha256,
+        fixedFromSha256: fileSha256(path.join(PG, "selection-run1.json")),
+        priorSha256: fileSha256(path.join(PG, "selection-run1.json")),
+      }),
+    ),
+  );
+
+test("run 2 の records が SHA256SUMS と一致し、事前登録の path・sha256 を持つ（status は complete／complete-with-failures）", () => {
+  const sums = fs.readFileSync(path.join(PG, "SHA256SUMS"), "utf8");
+  for (const work of ["m-ja-2", "g-ja-1"]) {
+    const name = `records-${work}-run2.json`;
+    const line = sums.split("\n").find((l) => l.endsWith(`  ${name}`));
+    assert.equal(line.split("  ")[0], fileSha256(path.join(PG, name)));
+  }
+  assert.equal(run2Records["m-ja-2"].status, "complete");
+  assert.equal(run2Records["g-ja-1"].status, "complete-with-failures");
+  const prereg = fileSha256(path.resolve(HERE, "../preregistration-v1.md"));
+  for (const r of Object.values(run2Records)) assert.equal(r.preregistration.sha256, prereg);
+  // 本文を含まない：日本語の文字列は design／ai の説明だけ
+  const cjk = /[぀-ヿ㐀-鿿]/u;
+  for (const r of Object.values(run2Records)) {
+    const hits = [];
+    (function walk(v, p) {
+      if (typeof v === "string") { if (cjk.test(v)) hits.push(p); }
+      else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${p}[${i}]`));
+      else if (v && typeof v === "object") for (const k of Object.keys(v)) walk(v[k], `${p}.${k}`);
+    })(r, "$");
+    assert.ok(hits.every((h) => /^\$\.(ai|design|costEstimateUsd)\./u.test(h)), hits.join(","));
+  }
+});
+
+test("jaccard：既知の値（両方空は null、片方空は 0、重複は無視）", () => {
+  assert.equal(jaccard([1, 2, 3], [2, 3, 4]), 0.5);
+  assert.equal(jaccard([1, 2], [1, 2]), 1);
+  assert.equal(jaccard([1, 2], [3, 4]), 0);
+  assert.equal(jaccard([], [1]), 0);
+  assert.equal(jaccard([], []), null);
+  assert.equal(jaccard([1, 1, 2], [2, 2, 3]), 1 / 3);
+});
+
+const mkQ = (work, pos, stratum, cands) => ({
+  work, queryPosition: pos, stratum, queryHash: `h${work}${pos}`, probeStatus: "available",
+  candidates: cands.map(([origin, rank, position, extra = {}]) => ({ position, rank, origin, pairId: `${work}|${pos}|${position}`, ...extra })),
+});
+
+test("compareRuns：Jaccard・新しい組・失った組・層ごとの中央値（合成の既知値）", () => {
+  const a = [
+    mkQ("w", 10, "s1", [["ir", 1, 1], ["ir", 2, 2], ["raw", 6, 6]]),
+    mkQ("w", 11, "s1", [["ir", 1, 3], ["raw", 6, 6]]),
+    mkQ("w", 12, "s2", [["ir", 1, 4]]),
+    mkQ("w", 13, "s2", []),
+  ];
+  const b = [
+    mkQ("w", 10, "s1", [["ir", 1, 2], ["ir", 2, 5], ["raw", 6, 6]]), // 共通 {2,6}、和 {1,2,5,6}＝2/4
+    mkQ("w", 11, "s1", [["ir", 1, 3], ["raw", 6, 6]]), // 同一＝1
+    mkQ("w", 12, "s2", [["ir", 1, 7]]), // 0
+    mkQ("w", 13, "s2", []), // 両方空＝null
+  ];
+  const sel2 = { queries: b.map((q) => ({ ...q, candidates: q.candidates })) };
+  const out = compareRuns({ queries: a }, sel2);
+  assert.deepEqual(out.perQuery.map((r) => r.jaccardAll), [0.5, 1, 0, null]);
+  assert.deepEqual(out.perQuery.map((r) => r.jaccardIr), [1 / 3, 1, 0, null]);
+  assert.deepEqual(out.jaccard.byStratum.s1.jaccardAll, { n: 2, median: 0.75 });
+  assert.deepEqual(out.jaccard.byStratum.s2.jaccardAll, { n: 1, median: 0 });
+  assert.deepEqual(out.jaccard.overall.jaccardAll, { n: 3, median: 0.5 });
+  assert.equal(out.pairs.run1, 6);
+  assert.equal(out.pairs.run2, 6);
+  assert.equal(out.pairs.common, 4); // (10,2)・(10,6)・(11,3)・(11,6)
+  assert.equal(out.pairs.rankOrOriginChangedInCommon, 1); // (10,2) は ir2→ir1
+  assert.deepEqual(out.newPairList.map((p) => p.pairId), ["w|10|5", "w|12|7"]);
+  assert.deepEqual(out.lostPairList.map((p) => p.pairId), ["w|10|1", "w|12|4"]);
+  assert.equal(out.pairs.newPairRate, 2 / 6);
+  assert.equal(out.pairs.lostPairs, 2);
+  assert.equal(out.pairs.rawPairsIdentical, true);
+  assert.equal(out.pairs.queriesWithNewPair, 2);
+  // query の集合が違えば止める
+  assert.throws(() => compareRuns({ queries: a }, { queries: b.slice(1) }), /一致しない/u);
+  assert.throws(() => compareRuns({ queries: a }, { queries: b.map((q) => ({ ...q, queryHash: "x" })) }), /hash/u);
+});
+
+test("runPrecisionDelta：rank ごとの run 間の差（合成の既知値。新しい組だけの precision・未注釈の数）", () => {
+  const s1 = { queries: [mkQ("w", 10, "s1", [["ir", 1, 1], ["ir", 2, 2], ["raw", 6, 6]])] };
+  const s2 = {
+    queries: [mkQ("w", 10, "s1", [["ir", 1, 1, { newPair: false }], ["ir", 2, 5, { newPair: true }], ["raw", 6, 6, { newPair: false }]])],
+  };
+  const labelMap = new Map([["w|10|1", "strict"], ["w|10|2", "none"], ["w|10|5", "partial"], ["w|10|6", "none"]]);
+  const strict = runPrecisionDelta({ sel1: s1, sel2: s2, labelMap, level: "strict" });
+  assert.equal(strict.groups.ir1.diff, 0); // 同じ組・同じ label
+  assert.equal(strict.groups.ir2.run1.p, 0);
+  assert.equal(strict.groups.ir2.run2.p, 0); // partial は strict に数えない
+  assert.equal(strict.groups.ir2.newOnly.n, 1);
+  const partial = runPrecisionDelta({ sel1: s1, sel2: s2, labelMap, level: "partial" });
+  assert.equal(partial.groups.ir2.diff, 1); // 0/1 → 1/1
+  assert.equal(partial.groups.irAll.run1.p, 0.5);
+  assert.equal(partial.groups.irAll.run2.p, 1);
+  assert.equal(partial.groups.irAll.diff, 0.5);
+  assert.equal(partial.groups.raw8.diff, null); // 組が無い rank
+  // 新しい組が未注釈なら分母から外れ、数える
+  const lack = runPrecisionDelta({ sel1: s1, sel2: s2, labelMap: new Map([["w|10|1", "strict"], ["w|10|2", "none"], ["w|10|6", "none"]]) });
+  assert.equal(lack.groups.ir2.run2.n, 0);
+  assert.equal(lack.groups.ir2.run2.unlabeled, 1);
+  assert.equal(lack.groups.ir2.diff, null);
+});
+
+test("unionLabelMaps：同じ組の label が食い違えば止める", () => {
+  const u = unionLabelMaps(new Map([["a", "none"]]), new Map([["a", "none"], ["b", "strict"]]));
+  assert.equal(u.size, 2);
+  assert.throws(() => unionLabelMaps(new Map([["a", "none"]]), new Map([["a", "strict"]])), /食い違|違う label/u);
+});
+
+test("selection-run2.json：決定的で、現在の run 2 の records・run 1 の selection から再生成した値と一致する", () => {
+  const saved = readPg("selection-run2.json");
+  assert.deepEqual(buildRun2(), saved);
+  assert.deepEqual(buildRun2(), buildRun2());
+  assert.equal(saved.run, 2);
+  assert.equal(saved.seed, sel1.seed);
+  assert.equal(JSON.stringify(saved).includes('"text"'), false);
+  // 候補は位置・rank・由来・pairId・newPair だけ（本文のキーを持たない）
+  for (const q of saved.queries)
+    for (const c of q.candidates) assert.deepEqual(Object.keys(c).sort(), ["newPair", "origin", "pairId", "position", "rank"]);
+});
+
+test("run 1 と run 2 の query 集合が一致し（作品・位置・層・hash）、newPair の印は「run 1 に無い組」と一致する", () => {
+  const sel2 = readPg("selection-run2.json");
+  assert.deepEqual(
+    sel2.queries.map((q) => [q.work, q.queryPosition, q.stratum, q.queryHash]),
+    sel1.queries.map((q) => [q.work, q.queryPosition, q.stratum, q.queryHash]),
+  );
+  const run1Pairs = new Set(sel1.queries.flatMap((q) => q.candidates.map((c) => c.pairId)));
+  const cands = sel2.queries.flatMap((q) => q.candidates);
+  for (const c of cands) assert.equal(c.newPair, !run1Pairs.has(c.pairId), c.pairId);
+  // Raw の組は run 間で変わらない（新しい組は IR だけ）
+  assert.equal(cands.filter((c) => c.origin === "raw" && c.newPair).length, 0);
+  assert.equal(sel2.candidateCounts.newPairs, cands.filter((c) => c.newPair).length);
+  assert.equal(sel2.selectedCounts.total, 60);
+  assert.equal(sel2.probeUnavailableSelected, 0);
+});
+
+test("run-comparison.json が現在の selection から再生成した値と一致する（Jaccard の中央値・新しい組の数）", () => {
+  const saved = readPg("run-comparison.json");
+  const fresh = JSON.parse(JSON.stringify(compareRuns(sel1, readPg("selection-run2.json"))));
+  const { inputs: _i, failureImpact: _f, ...rest } = saved;
+  assert.deepEqual(fresh, rest);
+  assert.equal(fresh.stratumMismatches, 0);
+  assert.equal(fresh.pairs.newPairs, saved.newPairList.length);
+  assert.equal(fresh.pairs.run1, 269);
+  assert.equal(fresh.pairs.run2, 271);
+  assert.equal(
+    saved.inputs.selection2.sha256,
+    fileSha256(path.join(PG, "selection-run2.json")),
+  );
+});
+
+test("failureImpact：g-ja-1 の抽出の失敗（run 1＝10、run 2＝11）と IR の時間切れ（33／27）は選んだ query の候補に届かない", () => {
+  const sel2 = readPg("selection-run2.json");
+  const out = failureImpact({ records1: recordsByWork, records2: run2Records, sel1, sel2 });
+  assert.equal(out["g-ja-1"].run1.extraction.failed, 10);
+  assert.equal(out["g-ja-1"].run2.extraction.failed, 11);
+  assert.equal(out["g-ja-1"].run1.irTimeout.allSamples, 33);
+  assert.equal(out["g-ja-1"].run2.irTimeout.allSamples, 27);
+  for (const w of ["m-ja-2", "g-ja-1"])
+    for (const run of ["run1", "run2"]) {
+      assert.equal(out[w][run].probeUnavailable.allQueries, 0); // probe は全 query で available
+      assert.equal(out[w][run].failedSceneInAdmittedPositions, 0); // 失敗した Scene は IR の候補に出ない
+      assert.equal(out[w][run].irTimeout.selectedQueries, 0); // 時間切れは選んだ query の標本に無い
+    }
+  assert.equal(out["m-ja-2"].run1.extraction.failed, 0);
+  assert.equal(out["m-ja-2"].run2.extraction.failed, 0);
+  assert.ok(out["g-ja-1"].run2.positions.selectedQueryMax < out["g-ja-1"].run2.positions.irTimeoutMin);
 });

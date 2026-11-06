@@ -24,7 +24,7 @@ import {
   writeAnnotationFile,
 } from "./annotate-ai.mjs";
 import { aggregate } from "./agg-pg.mjs";
-import { anonId, excludedQueries, ingestSheet, planSheet, renderSheet } from "./render-annotation-sheet.mjs";
+import { anonId, excludedQueries, firstSeenLabels, ingestSheet, planSheet, planSheetRun2, renderSheet } from "./render-annotation-sheet.mjs";
 import { assertOutsideRepo, loadPrompt } from "./pg-common.mjs";
 
 const cand = (w, q, p, origin, rank) => ({ position: p, rank, origin, pairId: `${w}|${q}|${p}` });
@@ -463,4 +463,49 @@ test("sheet：匿名 ID は決定的で Scene だけから決まり、参照の�
   assert.equal(ann.labels.length, 5);
   // 対応表だけが ID と（作品・位置）の対応を持つ
   assert.ok(!sheet.includes(String(plan[0].queryPosition) + "|"));
+});
+
+test("sheet（run 2 の追加分）：新しい組だけ・既出は前の sheet の参照・R01 の名前・往復で取り込める", () => {
+  const sel1 = selection;
+  // run 2：query 5 は候補が 1 つ入れ替わる（新 4）、query 6 は同じ、query 7 は新規（今の Scene が前の sheet に無い）
+  const sel2 = {
+    seed: "fx",
+    queries: [
+      { ...sel1.queries[0], candidates: [cand("wk-zz", 5, 1, "ir", 1), { ...cand("wk-zz", 5, 4, "ir", 2), newPair: true }, cand("wk-zz", 5, 2, "raw", 6), cand("wk-zz", 5, 3, "raw", 7)].map((c) => ({ newPair: false, ...c })) },
+      { ...sel1.queries[1], candidates: sel1.queries[1].candidates.map((c) => ({ ...c, newPair: false })) },
+      { work: "wk-zz", queryPosition: 6 + 0, rawCount: 0, stratum: "short-le30", probeStatus: "available", candidates: [] },
+    ].slice(0, 2),
+  };
+  sel2.queries[0].candidates.sort((a, b) => a.position - b.position);
+  const plan1 = planSheet(sel1);
+  const plan2 = planSheetRun2(sel2, sel1);
+  assert.deepEqual(plan2, planSheetRun2(sel2, sel1)); // 決定的
+  assert.equal(plan2.length, 1); // 新しい組がある query だけ
+  assert.equal(plan2[0].id, "R01");
+  assert.equal(plan2[0].candidates.length, 1);
+  assert.equal(plan2[0].candidates[0].position, 4);
+  // 匿名 ID は run 1 と同じ規則（同じ Scene は同じ ID）
+  assert.equal(plan2[0].anonId, anonId("fx", "wk-zz", 5));
+  const seen1 = firstSeenLabels(plan1);
+  assert.ok(seen1.has(plan2[0].anonId)); // 今の Scene は前の sheet に出ている
+  assert.ok(seen1.has(plan2[0].candidates[0].anonId)); // Scene 4 は前の sheet に出ている（query 6 の候補）
+  const sheet = renderSheet({
+    selection: sel2, scenes, annotator: "user", plan: plan2, prompt,
+    title: "追加分", idExample: "R01",
+    seenInit: new Map([...seen1].map(([id, label]) => [id, `前の sheet の ${label}`])),
+    notes: ["- これは追加分です。"],
+  });
+  for (const hidden of ["wk-zz", "raw", "rank", "origin", "IR", "由来", "順位", "作品"]) assert.ok(!sheet.includes(hidden), hidden);
+  assert.equal((sheet.match(/^判定:$/gmu) ?? []).length, 1);
+  assert.equal((sheet.match(/> 本文/gu) ?? []).length, 0); // 本文は全て前の sheet に出ている：参照だけ
+  assert.equal((sheet.match(/^→ ID [0-9a-f]{6}（既出：前の sheet の Q\d+(-C\d+)?）$/gmu) ?? []).length, 2);
+  assert.match(sheet, /^### R01-C1 候補$/mu);
+  // 往復：R01-C1 の取り込み（対応表の run2 部分だけ）
+  const filled = sheet.replace(/^判定:$/gmu, "判定: p");
+  const ann = ingestSheet(filled, { selectionSha256: "y", queries: plan2 }, { annotator: "user" });
+  assert.deepEqual(ann.labels, [{ work: "wk-zz", queryPosition: 5, candidatePosition: 4, label: "partial" }]);
+  // 前の sheet の ID と別の Scene が衝突しないこと：plan1 と plan2 の ID の対応が一意
+  const owner = new Map();
+  for (const q of [...plan1, ...plan2])
+    for (const [pos, id] of [[q.queryPosition, q.anonId], ...q.candidates.map((c) => [c.position, c.anonId])]) assert.equal(owner.get(id) ?? pos, (owner.set(id, pos), pos));
 });

@@ -6,6 +6,8 @@
 // 使い方：
 //   node agg-pg.mjs selection --records m-ja-2=<records> g-ja-1=<records> \
 //        [--seed <種>] [--fixed-from <selection-run1.json>] [--prior <selection-run1.json>] [--out <file>]
+//   node agg-pg.mjs compare --selection1 <selection-run1.json> --selection2 <selection-run2.json> \
+//        [--records1 m-ja-2=<f> g-ja-1=<f> --records2 m-ja-2=<f> g-ja-1=<f>] [--out <file>]   （run 2 の run 間の差。§5）
 //   node agg-pg.mjs aggregate --selection <selection.json> --user <annotations.json> \
 //        [--ai <annotations.json>] [--ai2 <annotations.json>] [--out <file>]
 import crypto from "node:crypto";
@@ -244,6 +246,8 @@ export function buildSelection({
   fixedFrom = null,
   prior = null,
   preregSha256 = null,
+  fixedFromSha256 = null,
+  priorSha256 = null,
 }) {
   const factsByWork = Object.fromEntries(
     Object.entries(recordsByWork).map(([w, r]) => [w, queryFacts(r, w)]),
@@ -296,6 +300,7 @@ export function buildSelection({
     evidenceScope: "not-cp4-evidence",
     preregistration: { name: "preregistration-precision-gold-v1.md", sha256: preregSha256 },
     run: fixedFrom ? 2 : 1,
+    ...(fixedFrom ? { derivedFrom: { fixedFromSha256, priorSha256: prior ? priorSha256 : null } } : {}),
     seed: fixedFrom ? fixedFrom.seed : seed,
     quota: QUOTA,
     perStratum: PER_STRATUM,
@@ -729,6 +734,259 @@ function breakdownOf(queries, maps) {
   return out;
 }
 
+// ---- run 2（事前登録 §5）：run 間の差 ----------------------------------------------------------
+// run 2 は同じ query（run 1 の位置で固定）で候補を取り直す。注釈は組に付くので、run 1 に無い組（newPair）だけ追加で注釈する。
+// 報告するのは、query ごとの候補集合の Jaccard、新しい組の割合、rank ごとの precision の差（注釈の後に計算）。
+
+/** 2 つの集合の Jaccard。両方が空なら定義できないので null（中央値から外す）。 */
+export function jaccard(a, b) {
+  const x = new Set(a);
+  const y = new Set(b);
+  if (x.size === 0 && y.size === 0) return null;
+  let inter = 0;
+  for (const v of x) if (y.has(v)) inter += 1;
+  return inter / (x.size + y.size - inter);
+}
+
+const queryKey = (q) => `${q.work}|${q.queryPosition}`;
+const nonNull = (list) => list.filter((v) => v !== null);
+const medianCell = (values) => ({ n: values.length, median: median(values) });
+
+/**
+ * run 1・run 2 の selection（本文なし）の比較。query の集合（作品・位置・層・hash）が同一であることを検査し、
+ * query ごとの Jaccard（全候補・IR だけ）、層ごと・作品ごとの中央値、新しい組・失った組の一覧と割合を出す。
+ * run 2 の selection は run 1 を `--fixed-from` で固定して作るので、query の集合は一致するはずで、違えば止める。
+ */
+export function compareRuns(sel1, sel2) {
+  const keys1 = sel1.queries.map(queryKey);
+  const keys2 = sel2.queries.map(queryKey);
+  if (JSON.stringify(keys1) !== JSON.stringify(keys2))
+    throw new Error("run 1 と run 2 の query の集合（作品・位置・順序）が一致しない");
+  const hashMismatch = sel1.queries.filter((q, i) => q.queryHash !== sel2.queries[i].queryHash).length;
+  if (hashMismatch > 0) throw new Error(`query の hash が run 間で違う（${hashMismatch} 件）`);
+  const stratumMismatches = sel1.queries.filter((q, i) => q.stratum !== sel2.queries[i].stratum).length;
+
+  const perQuery = [];
+  const newPairs = [];
+  const lostPairs = [];
+  let commonPairs = 0;
+  let rankChanged = 0;
+  for (let i = 0; i < sel1.queries.length; i += 1) {
+    const q1 = sel1.queries[i];
+    const q2 = sel2.queries[i];
+    const byPair1 = new Map(q1.candidates.map((c) => [c.pairId, c]));
+    const byPair2 = new Map(q2.candidates.map((c) => [c.pairId, c]));
+    const positions = (q, origin) => q.candidates.filter((c) => !origin || c.origin === origin).map((c) => c.position);
+    for (const c of q2.candidates) {
+      const before = byPair1.get(c.pairId);
+      if (!before)
+        newPairs.push({
+          work: q2.work, queryPosition: q2.queryPosition, stratum: q2.stratum,
+          candidatePosition: c.position, origin: c.origin, rank: c.rank, pairId: c.pairId,
+        });
+      else {
+        commonPairs += 1;
+        if (before.origin !== c.origin || before.rank !== c.rank) rankChanged += 1;
+      }
+    }
+    for (const c of q1.candidates)
+      if (!byPair2.has(c.pairId))
+        lostPairs.push({
+          work: q1.work, queryPosition: q1.queryPosition, stratum: q1.stratum,
+          candidatePosition: c.position, origin: c.origin, rank: c.rank, pairId: c.pairId,
+        });
+    perQuery.push({
+      work: q2.work,
+      queryPosition: q2.queryPosition,
+      stratum: q2.stratum,
+      run1: { candidates: q1.candidates.length, ir: positions(q1, "ir").length },
+      run2: { candidates: q2.candidates.length, ir: positions(q2, "ir").length },
+      jaccardAll: jaccard(positions(q1), positions(q2)),
+      jaccardIr: jaccard(positions(q1, "ir"), positions(q2, "ir")),
+      rawIdentical: JSON.stringify(positions(q1, "raw")) === JSON.stringify(positions(q2, "raw")),
+      newPairs: q2.candidates.filter((c) => !byPair1.has(c.pairId)).length,
+    });
+  }
+
+  const medians = (rows) => ({
+    queries: rows.length,
+    jaccardAll: medianCell(nonNull(rows.map((r) => r.jaccardAll))),
+    jaccardIr: medianCell(nonNull(rows.map((r) => r.jaccardIr))),
+  });
+  const countBy = (list, keyFn) => list.reduce((acc, x) => ((acc[keyFn(x)] = (acc[keyFn(x)] ?? 0) + 1), acc), {});
+  const total1 = sel1.queries.reduce((a, q) => a + q.candidates.length, 0);
+  const total2 = sel2.queries.reduce((a, q) => a + q.candidates.length, 0);
+  const queriesWithNew = perQuery.filter((r) => r.newPairs > 0);
+  return {
+    schemaVersion: "fusion-slot-pg-run-comparison/1",
+    evidenceScope: "not-cp4-evidence",
+    queries: perQuery.length,
+    stratumMismatches,
+    pairs: {
+      run1: total1,
+      run2: total2,
+      common: commonPairs,
+      rankOrOriginChangedInCommon: rankChanged,
+      newPairs: newPairs.length,
+      newPairRate: ratio(newPairs.length, total2),
+      lostPairs: lostPairs.length,
+      lostPairRate: ratio(lostPairs.length, total1),
+      newByOrigin: countBy(newPairs, (p) => p.origin),
+      newByRank: countBy(newPairs, (p) => `${p.origin}${p.rank}`),
+      newByWork: countBy(newPairs, (p) => p.work),
+      newByStratum: countBy(newPairs, (p) => p.stratum),
+      queriesWithNewPair: queriesWithNew.length,
+      queriesWithoutNewPair: perQuery.length - queriesWithNew.length,
+      rawPairsIdentical: perQuery.every((r) => r.rawIdentical),
+    },
+    jaccard: {
+      definition:
+        "query ごとの候補集合（Scene の位置の集合。all＝IR の rank 1〜3＋Raw の rank 6〜8、ir＝IR だけ）の |∩|/|∪|。両方空の query は null で中央値から外す。Raw の候補は run 間で同一なので、all は ir より高く出る",
+      overall: medians(perQuery),
+      byStratum: Object.fromEntries(
+        [...new Set(perQuery.map((r) => r.stratum))]
+          .sort((x, y) => STRATA.findIndex((s) => s.id === x) - STRATA.findIndex((s) => s.id === y))
+          .map((id) => [id, medians(perQuery.filter((r) => r.stratum === id))]),
+      ),
+      byWork: Object.fromEntries(
+        [...new Set(perQuery.map((r) => r.work))].map((w) => [w, medians(perQuery.filter((r) => r.work === w))]),
+      ),
+    },
+    perQuery,
+    newPairList: newPairs,
+    lostPairList: lostPairs,
+  };
+}
+
+/** 複数の注釈の Map(pairId → label) を 1 つにまとめる（同じ組に違う label があれば止める）。 */
+export function unionLabelMaps(...maps) {
+  const out = new Map();
+  for (const map of maps)
+    for (const [id, label] of map) {
+      if (out.has(id) && out.get(id) !== label) throw new Error(`同じ組に違う label がある: ${id}`);
+      out.set(id, label);
+    }
+  return out;
+}
+
+/**
+ * rank ごとの precision の run 間の差（run 2 − run 1）。注釈（同じ注釈者の labelMap。run 1 の注釈＋run 2 の追加分）の後に使う。
+ * 各 run の組は、その run の selection の候補（組は run をまたいで同じ 1 組なので label は共通）。差は点推定どうしで、
+ * 区間は付けない（2 run は同じ query の取り直しで、確率性の全体は測れない）。`newOnly` は run 2 の新しい組だけの precision。
+ */
+export function runPrecisionDelta({ sel1, sel2, labelMap, level = "strict" }) {
+  const test = level === "strict" ? isStrict : isPartial;
+  const tally = (selection, filter = () => true) => {
+    const acc = Object.fromEntries(GROUPS.map((g) => [g, { k: 0, n: 0, unlabeled: 0 }]));
+    for (const q of selection.queries)
+      for (const c of q.candidates) {
+        if (!filter(c)) continue;
+        for (const g of groupsOf(c)) {
+          const label = labelMap.get(c.pairId);
+          if (label === undefined) acc[g].unlabeled += 1;
+          else {
+            acc[g].n += 1;
+            if (test(label)) acc[g].k += 1;
+          }
+        }
+      }
+    return acc;
+  };
+  const a1 = tally(sel1);
+  const a2 = tally(sel2);
+  const aNew = tally(sel2, (c) => c.newPair === true);
+  const out = {};
+  for (const g of GROUPS) {
+    const c1 = cell(a1[g].k, a1[g].n);
+    const c2 = cell(a2[g].k, a2[g].n);
+    out[g] = {
+      run1: { ...c1, unlabeled: a1[g].unlabeled },
+      run2: { ...c2, unlabeled: a2[g].unlabeled },
+      newOnly: { ...cell(aNew[g].k, aNew[g].n), unlabeled: aNew[g].unlabeled },
+      diff: c1.p === null || c2.p === null ? null : c2.p - c1.p,
+    };
+  }
+  return { level, groups: out };
+}
+
+/**
+ * 抽出の失敗・IR の時間切れ・probe が候補に与える影響の観測（本文なし）。records（run 1・run 2）と selection から数える。
+ * 候補（IR の Raw 外 rank 1〜3）は probe の `admittedPositions`（deadline なし）から取るので、
+ * ・probe が available でない query は候補（IR）を取れない（available でなければ admittedPositions が空）。
+ * ・抽出に失敗した Scene は IR の索引に載らず、admittedPositions に出ない（観測：全 query で 0 件）。
+ * ・IR の時間切れ（サンプルの irStatus が unavailable）は表示の行にだけ効き、probe の候補には効かない。
+ */
+export function failureImpact({ records1, records2, sel1, sel2 }) {
+  const failedOf = (records) =>
+    records.extraction.filter((e) => e.status !== "completed").map((e) => e.position).sort((a, b) => a - b);
+  const works = [...new Set(sel2.queries.map((q) => q.work))];
+  const out = {};
+  for (const work of works) {
+    const runs = { run1: records1[work], run2: records2[work] };
+    const failed = { run1: failedOf(runs.run1), run2: failedOf(runs.run2) };
+    const selected = { run1: sel1.queries.filter((q) => q.work === work), run2: sel2.queries.filter((q) => q.work === work) };
+    const perRun = {};
+    for (const run of ["run1", "run2"]) {
+      const queries = runs[run].checkpoints.flatMap((c) => c.queries ?? []);
+      const byPosition = new Map(queries.map((q) => [q.position, q]));
+      const failedSet = new Set(failed[run]);
+      const sel = selected[run];
+      const hasStatus = (q, status) => q.samples.some((s) => s.irStatus === status);
+      const countStatus = (list, status) => list.reduce((a, q) => a + q.samples.filter((s) => s.irStatus === status).length, 0);
+      const timeoutPositions = queries.filter((q) => hasStatus(q, "unavailable")).map((q) => q.position);
+      const selectedRaw = sel.map((q) => byPosition.get(q.queryPosition));
+      const failedAdmitted = queries.reduce(
+        (a, q) => a + (q.probe?.admittedPositions ?? []).filter((p) => failedSet.has(p)).length,
+        0,
+      );
+      perRun[run] = {
+        extraction: { failed: failed[run].length, positions: failed[run] },
+        probeUnavailable: { allQueries: queries.filter((q) => q.probe?.status !== "available").length, selected: sel.filter((q) => q.probeStatus !== "available").length },
+        // irStatus が unavailable のサンプルが時間切れ（records の summary の ir-timeout と一致）、empty は IR が空（時間切れではない）
+        irTimeout: {
+          allQueries: queries.filter((q) => hasStatus(q, "unavailable")).length,
+          allSamples: countStatus(queries, "unavailable"),
+          selectedQueries: selectedRaw.filter((q) => hasStatus(q, "unavailable")).length,
+        },
+        irEmpty: {
+          allQueries: queries.filter((q) => hasStatus(q, "empty")).length,
+          allSamples: countStatus(queries, "empty"),
+          selectedQueries: selectedRaw.filter((q) => hasStatus(q, "empty")).length,
+        },
+        // 位置の範囲（選んだ query が時間切れ・失敗の位置より前に偏っているかを読むため）
+        positions: {
+          selectedQueryMax: sel.length ? Math.max(...sel.map((q) => q.queryPosition)) : null,
+          irTimeoutMin: timeoutPositions.length ? Math.min(...timeoutPositions) : null,
+          extractionFailedMin: failed[run].length ? failed[run][0] : null,
+        },
+        failedSceneInAdmittedPositions: failedAdmitted,
+        selectedQueriesAfterAFailedScene: sel.filter((q) => failed[run].some((p) => p < q.queryPosition)).length,
+        selectedQueriesOwnSceneFailed: sel.filter((q) => failedSet.has(q.queryPosition)).length,
+        selectedQueriesWithoutIrCandidate: sel.filter((q) => !q.candidates.some((c) => c.origin === "ir")).length,
+        selectedFailedScenesAsRawCandidate: sel.reduce(
+          (a, q) => a + q.candidates.filter((c) => c.origin === "raw" && failedSet.has(c.position)).length,
+          0,
+        ),
+      };
+    }
+    const irPairs = (queries) => queries.flatMap((q) => q.candidates.filter((c) => c.origin === "ir").map((c) => ({ q, c })));
+    const f1 = new Set(failed.run1);
+    const f2 = new Set(failed.run2);
+    // run 2 の新しい IR の組のうち、run 1 では抽出に失敗していた Scene（run 1 では候補になれなかった）／
+    // run 1 の IR の組のうち、run 2 で抽出に失敗した Scene（run 2 では候補になれない）
+    const newIr = irPairs(selected.run2).filter(({ c }) => c.newPair === true);
+    const run1Ir = irPairs(selected.run1);
+    out[work] = {
+      ...perRun,
+      newIrPairs: newIr.length,
+      newIrPairsOnSceneFailedInRun1: newIr.filter(({ c }) => f1.has(c.position)).length,
+      run1IrPairs: run1Ir.length,
+      run1IrPairsOnSceneFailedInRun2: run1Ir.filter(({ c }) => f2.has(c.position)).length,
+    };
+  }
+  return out;
+}
+
 // ---- 入出力 ----------------------------------------------------------------------------
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -736,11 +994,12 @@ function parseArgs(argv) {
   for (let i = 0; i < rest.length; ) {
     const name = rest[i];
     if (!name.startsWith("--")) throw new Error(`引数の形が不正: ${name}`);
-    if (name === "--records") {
+    if (name === "--records" || name === "--records1" || name === "--records2") {
+      const bucket = name === "--records" ? opts.records : (opts[name.slice(2)] = {});
       i += 1;
       while (i < rest.length && !rest[i].startsWith("--")) {
         const [k, ...p] = rest[i].split("=");
-        opts.records[k] = p.join("=");
+        bucket[k] = p.join("=");
         i += 1;
       }
     } else {
@@ -780,6 +1039,8 @@ export function main(argv) {
       seed: opts.seed ?? SEED,
       fixedFrom: opts["fixed-from"] ? readJson(opts["fixed-from"]) : null,
       prior: opts.prior ? readJson(opts.prior) : null,
+      fixedFromSha256: opts["fixed-from"] ? fileSha256(opts["fixed-from"]) : null,
+      priorSha256: opts.prior ? fileSha256(opts.prior) : null,
       preregSha256: fs.existsSync(PREREG_PATH) ? fileSha256(PREREG_PATH) : null,
     });
     writeOrPrint(selection, opts.out);
@@ -797,7 +1058,23 @@ export function main(argv) {
     );
     return;
   }
-  throw new Error("使い方: agg-pg.mjs selection|aggregate ...（冒頭のコメントを参照）");
+  if (opts.command === "compare") {
+    if (!opts.selection1 || !opts.selection2) throw new Error("--selection1 と --selection2 が要る");
+    const sel1 = readJson(opts.selection1);
+    const sel2 = readJson(opts.selection2);
+    const comparison = compareRuns(sel1, sel2);
+    comparison.inputs = {
+      selection1: { file: path.basename(opts.selection1), sha256: fileSha256(opts.selection1) },
+      selection2: { file: path.basename(opts.selection2), sha256: fileSha256(opts.selection2) },
+    };
+    if (opts.records1 && opts.records2) {
+      const load = (m) => Object.fromEntries(WORKS.map((w) => [w, readJson(m[w])]));
+      comparison.failureImpact = failureImpact({ records1: load(opts.records1), records2: load(opts.records2), sel1, sel2 });
+    }
+    writeOrPrint(comparison, opts.out);
+    return;
+  }
+  throw new Error("使い方: agg-pg.mjs selection|aggregate|compare ...（冒頭のコメントを参照）");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) main(process.argv.slice(2));
