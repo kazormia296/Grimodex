@@ -2880,8 +2880,10 @@ mod parsed_scope_control_tests {
             assert!(parsed.identity.is_none(), "key {key:?}");
         }
         // A key that decodes but is not canonical is rejected like before.
+        // Trailing whitespace is accepted by the JSON reader, so this key decodes,
+        // but the re-encoded canonical form differs from it.
         let key = identity().source_key().expect("key");
-        let noncanonical = format!("{key}00");
+        let noncanonical = format!("{key} ");
         let parsed =
             ParsedScopeControl::parse(&entry("scope-dependency-projection-v1", &noncanonical));
         assert!(parsed.identity.is_none());

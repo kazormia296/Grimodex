@@ -241,6 +241,8 @@ pub struct RetrievalQueryContext {
 }
 
 impl RetrievalQueryContext {
+    /// Positions index `authority.mappings`, so the index assumes the authority is not
+    /// mutated after construction (it is built once in `query_context` and never changed).
     /// The first authority mapping of `source_key`, or `None`. Same answer as a
     /// linear `find`, without a scan per candidate.
     pub(super) fn mapping_for_source_key(
