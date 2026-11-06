@@ -28,7 +28,11 @@ vi.mock("@/components/ui/popover", () => ({
 
 import { ChronicleInspector, DraftTextField } from "./ChronicleInspector";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
-import { flushAllAutoSaves } from "@/hooks/useAutoSave";
+import {
+  AlreadyNotifiedSaveError,
+  discardAllAutoSaves,
+  flushAllAutoSaves,
+} from "@/hooks/useAutoSave";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 
 const NOW = "2026-06-27T00:00:00.000Z";
@@ -111,6 +115,28 @@ describe("DraftTextField — ローカル下書き＋trailing debounce commit", 
     await vi.advanceTimersByTimeAsync(500);
     expect(onCommit).toHaveBeenCalledTimes(1);
     expect(onCommit).toHaveBeenCalledWith("あいう");
+  });
+
+  it("commit の失敗は元の error を cause に載せた AlreadyNotifiedSaveError で再 throw する", async () => {
+    const cause = Object.assign(new Error("WORKSPACE_QUARANTINED: fenced"), {
+      code: "WORKSPACE_QUARANTINED",
+    });
+    const onCommit = vi.fn().mockRejectedValue(cause);
+    const { getByRole } = render(
+      <DraftTextField
+        value="初期"
+        onCommit={onCommit}
+        documentKey={draftDocumentKey}
+      />,
+    );
+    fireEvent.change(getByRole("textbox"), { target: { value: "編集後" } });
+
+    const reason = await flushAllAutoSaves().catch((e: unknown) =>
+      e instanceof AggregateError ? e.errors[0] : e,
+    );
+    expect(reason).toBeInstanceOf(AlreadyNotifiedSaveError);
+    expect((reason as AlreadyNotifiedSaveError).cause).toBe(cause);
+    discardAllAutoSaves();
   });
 
   it("blur で pending を即 flush する", async () => {

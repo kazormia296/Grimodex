@@ -378,8 +378,8 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
           toast.error(i18next.t("phase.updateFailed"));
         }
         debugLog.error("PhaseStore", "updatePhase", errorDetail(error));
+        opts?.onFailure?.(error);
       }
-      opts?.onFailure?.(error);
       return null;
     }
     if (get().projectEpoch !== epoch) return null;

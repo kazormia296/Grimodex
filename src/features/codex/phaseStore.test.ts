@@ -360,6 +360,30 @@ describe("phaseStore", () => {
       }
     });
 
+    it("衝突（PhaseVersionConflictError）では onFailure を呼ばない", async () => {
+      const { toast } = await import("sonner");
+      const toastSpy = vi.spyOn(toast, "error").mockImplementation(() => 0);
+      try {
+        const { PhaseVersionConflictError } = await import("./phaseOcc");
+        mockUpdatePhase.mockRejectedValueOnce(
+          new PhaseVersionConflictError(mockPhase.id),
+        );
+        const onFailure = vi.fn();
+        const result = await usePhaseStore
+          .getState()
+          .updatePhase(
+            mockPhase.id,
+            { label: "x" },
+            { baseVersion: 1, onFailure },
+          );
+        expect(result).toBeNull();
+        expect(onFailure).not.toHaveBeenCalled();
+        expect(toastSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        toastSpy.mockRestore();
+      }
+    });
+
     it("quarantine 以外の失敗は従来の toast のまま cause を渡す", async () => {
       const { toast } = await import("sonner");
       const toastSpy = vi.spyOn(toast, "error").mockImplementation(() => 0);
