@@ -40,18 +40,32 @@ pub(in crate::narrative_extraction) struct BuildCandidate {
 
 impl BuildCandidate {
     pub(in crate::narrative_extraction) fn admits(&self, query: &RetrievalQueryContext) -> bool {
+        self.admits_with_memo(
+            query,
+            &mut super::super::scene_scope::ProjectionRevisionMemo::default(),
+        )
+    }
+
+    /// `admits` for one pass over many candidates of the same `query`; `memo`
+    /// belongs to that pass (see `ProjectionRevisionMemo`).
+    pub(in crate::narrative_extraction) fn admits_with_memo(
+        &self,
+        query: &RetrievalQueryContext,
+        memo: &mut super::super::scene_scope::ProjectionRevisionMemo,
+    ) -> bool {
         if self.disclosure.check_query(query).is_some() {
             return false;
         }
         if query.scope_authority_revision_token != self.material_scope_authority_revision_token {
             return false;
         }
-        super::super::scene_scope::check_material_constraints(
+        super::super::scene_scope::check_material_constraints_with_memo(
             &self.material_scopes,
             query,
             &query.authority,
             &self.active_scope_controls,
             &self.owning_run_id,
+            memo,
         )
         .is_none()
     }
