@@ -151,6 +151,12 @@ import type {
   WebSearchConfig,
 } from "./agent/agentTypes";
 import type { ThinkingParams } from "./agent/modelLimits";
+import {
+  toChatMessageResult,
+  type ChatMessageResult,
+} from "./chatMessageResult";
+
+export type { ChatMessageResult };
 
 /** Send a tool-aware agent message and return a structured response. */
 export async function sendAgentMessage(
@@ -239,20 +245,6 @@ export async function sendAgentMessage(
   return response;
 }
 
-export interface ChatMessageResult {
-  text: string;
-  thinkingBlocks: Array<{
-    thinking: string;
-    summary?: string;
-    signature?: string;
-  }>;
-  inputTokens?: number;
-  outputTokens?: number;
-  /** Prompt cache reads/writes when the provider reported them. */
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
-}
-
 /**
  * Send a simple (non-tool) chat message with optional thinking params.
  * `model` は機能別モデル override（None/空なら Rust が settings.model に解決）。
@@ -301,37 +293,7 @@ export async function sendChatMessageWithThinking(
     },
     auditContext,
   );
-  const text = response.blocks
-    .filter((b) => b.type === "text")
-    .map((b) => (b as { type: "text"; content: string }).content)
-    .join("\n");
-  const thinkingBlocks = response.blocks
-    .filter((b) => b.type === "thinking")
-    .map((b) => {
-      const tb = b as {
-        type: "thinking";
-        content: string;
-        summary?: string;
-        signature?: string;
-      };
-      return {
-        thinking: tb.content,
-        summary: tb.summary,
-        signature: tb.signature,
-      };
-    });
-  return {
-    text,
-    thinkingBlocks,
-    inputTokens: response.inputTokens,
-    outputTokens: response.outputTokens,
-    ...(response.cacheReadTokens === undefined
-      ? {}
-      : { cacheReadTokens: response.cacheReadTokens }),
-    ...(response.cacheWriteTokens === undefined
-      ? {}
-      : { cacheWriteTokens: response.cacheWriteTokens }),
-  };
+  return toChatMessageResult(response);
 }
 
 export type { StreamCallbacks } from "./chatStreamTransport";
