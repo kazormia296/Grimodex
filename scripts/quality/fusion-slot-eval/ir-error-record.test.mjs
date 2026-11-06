@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { setImmediate } from "node:timers";
 import {
   MAX_CAUSE_DEPTH,
   describeError,
@@ -56,6 +57,41 @@ test("sanitizeMessage：Failed query の SQL の識別子の引用符は残す",
   // 印より前の引用は伏せる。
   assert.ok(
     !sanitizeMessage(`wrap "${BODY}" Failed query: select 1`).includes("Once"),
+  );
+});
+
+test("sanitizeMessage：製品の固定の診断 code は 32 字以上でも伏せない", () => {
+  // coordinator は new Error("Snapshot build failed: " + code の連結) を投げる（code も cause も無い）。
+  assert.equal(
+    sanitizeMessage("Snapshot build failed: SNAPSHOT_SCOPE_VALIDATION_FAILED"),
+    "Snapshot build failed: SNAPSHOT_SCOPE_VALIDATION_FAILED",
+  );
+  assert.equal(
+    sanitizeMessage(
+      "Snapshot build failed: SNAPSHOT_SOURCE_READ_FAILED, SNAPSHOT_DOCUMENT_ORIGIN_MISMATCH",
+    ),
+    "Snapshot build failed: SNAPSHOT_SOURCE_READ_FAILED, SNAPSHOT_DOCUMENT_ORIGIN_MISMATCH",
+  );
+  assert.equal(
+    sanitizeMessage("x NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED y"),
+    "x NEX_CHRONICLE_WORKSPACE_AUTHORITY_CHANGED y",
+  );
+  // 接頭辞が違う、小文字が混ざる、前後に英数字が続く列は今までどおり伏せる。
+  assert.equal(
+    sanitizeMessage("OTHER_PREFIX_ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+    "<long>",
+  );
+  assert.equal(
+    sanitizeMessage("SNAPSHOT_scope_validation_failed_lowercase"),
+    "<long>",
+  );
+  assert.equal(
+    sanitizeMessage("SNAPSHOT_SCOPE_VALIDATION_FAILEDabc"),
+    "<long>",
+  );
+  assert.equal(
+    sanitizeMessage("ab-SNAPSHOT_SCOPE_VALIDATION_FAILED"),
+    "<long>",
   );
 });
 

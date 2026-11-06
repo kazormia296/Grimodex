@@ -18,6 +18,9 @@ const SQL_MARKER = /Failed query:/iu;
 const DOUBLE_QUOTED = /"[^"]*(?:"|$)/gu;
 const SINGLE_QUOTED = /(?<![A-Za-z0-9])'(?:[^']*'(?![A-Za-z0-9])|[^']*$)/gu;
 
+// 製品の固定の診断 code。完全一致だけを伏せの例外にする（前後に英数字が続けば一体の列として伏せる）。
+const FIXED_DIAGNOSTIC_CODE = /^(?:SNAPSHOT|NEX)_[A-Z0-9_]{3,64}$/u;
+
 function maskQuoted(text) {
   return text.replace(DOUBLE_QUOTED, '"<q>"').replace(SINGLE_QUOTED, "'<q>'");
 }
@@ -26,6 +29,9 @@ function maskQuoted(text) {
  * 診断用の message：params 以降を切り捨て、引用部（"..."、'...'）を "<q>" に伏せ
  * （"Failed query:" の SQL は除く）、ASCII 以外を "?"、識別子らしい長い英数字列を
  * "<long>"、240 字で切る。原因の分類にだけ使う。
+ * 製品の固定の診断 code（SNAPSHOT_／NEX_ で始まる大文字の語。例
+ * SNAPSHOT_SCOPE_VALIDATION_FAILED は 32 字）は語彙が決まっていて本文を含まないので、
+ * 32 字以上でも伏せない（第 5 版では "<long>" に伏せられて原因を分けられなかった）。
  * @param {string} message
  * @returns {string}
  */
@@ -40,7 +46,9 @@ export function sanitizeMessage(message) {
       : maskQuoted(head);
   return masked
     .replace(/[^\x20-\x7e]+/gu, "?")
-    .replace(/[A-Za-z0-9_-]{32,}/gu, "<long>")
+    .replace(/[A-Za-z0-9_-]{32,}/gu, (run) =>
+      FIXED_DIAGNOSTIC_CODE.test(run) ? run : "<long>",
+    )
     .slice(0, MESSAGE_MAX);
 }
 
@@ -138,9 +146,11 @@ export function describeErrorChain(error) {
  * }} input
  */
 export async function waitUntilConnectionReady(input) {
-  const now = input.now ?? (() => performance.now());
+  // node と renderer の両方で読むので、node: の import ではなく globalThis から取る。
+  const now = input.now ?? (() => globalThis.performance.now());
   const sleep =
-    input.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    input.sleep ??
+    ((ms) => new Promise((resolve) => globalThis.setTimeout(resolve, ms)));
   const describeFailure = input.describeFailure ?? (() => "probe-failed");
   const timeoutMs = input.timeoutMs ?? 120_000;
   const pollMs = input.pollMs ?? 1000;
