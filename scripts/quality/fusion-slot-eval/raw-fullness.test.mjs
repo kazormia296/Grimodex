@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   assertRunnable,
   checkpointSceneCount,
@@ -29,6 +33,50 @@ test("本番の作品は事前登録が無いと走らない", async () => {
     preregistration: null,
   });
   await assert.rejects(assertRunnable("main", {}), /preregistration/);
+});
+
+test("記憶の対照の AI 原稿は本番と同じく事前登録が要り、知らない role は拒む", async () => {
+  await assert.rejects(assertRunnable("control-ai-gen", {}), /preregistration/);
+  await assert.rejects(assertRunnable("control", {}), /unknown role/);
+  const dir = await mkdtemp(path.join(os.tmpdir(), "prereg-"));
+  try {
+    const confirmed = path.join(dir, "confirmed.md");
+    await writeFile(confirmed, "# 事前登録（確定）\n");
+    const digest = createHash("sha256")
+      .update(await readFile(confirmed))
+      .digest("hex");
+    assert.deepEqual(
+      await assertRunnable("control-ai-gen", {
+        preregistration: confirmed,
+        "preregistration-sha256": digest,
+      }),
+      {
+        role: "control-ai-gen",
+        preregistration: { path: confirmed, sha256: digest },
+      },
+    );
+    const draft = path.join(dir, "draft.md");
+    await writeFile(draft, "# 事前登録（下書き）\n");
+    const draftDigest = createHash("sha256")
+      .update(await readFile(draft))
+      .digest("hex");
+    await assert.rejects(
+      assertRunnable("control-ai-gen", {
+        preregistration: draft,
+        "preregistration-sha256": draftDigest,
+      }),
+      /下書き/,
+    );
+    await assert.rejects(
+      assertRunnable("control-ai-gen", {
+        preregistration: confirmed,
+        "preregistration-sha256": draftDigest,
+      }),
+      /sha256/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("集計：満杯率・≤6・≤5 と D0", () => {

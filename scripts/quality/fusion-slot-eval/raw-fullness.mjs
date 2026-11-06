@@ -10,7 +10,8 @@
 //   `fetchRelatedPastScenes`（Raw だけ）を呼び、件数（0〜8）を記録する。
 // - 記録は件数・地点・作品の不透明 ID（run ごとの salt で hash）・Scene の位置だけ。
 //   本文・題名・抜粋は書かない。全記録に evidenceScope: not-cp4-evidence。
-// - 本番（role が main）の作品は、確定した事前登録の file とその sha256 が無いと走らせない。
+// - 本番（role が main）と記憶の対照の AI 原稿（role が control-ai-gen）の作品は、確定した事前登録の
+//   file とその sha256 が無いと走らせない。
 //
 // 使い方（隔離は L0 と同じく scripts/local-ci-xvfb.mjs の下で）:
 //   node scripts/local-ci-xvfb.mjs node scripts/quality/fusion-slot-eval/raw-fullness.mjs \
@@ -96,7 +97,11 @@ async function exists(file) {
 /** 本番の作品は、確定した（下書きでない）事前登録とその sha256 が揃うときだけ測る。 */
 export async function assertRunnable(role, options) {
   if (role === "trial") return { role, preregistration: null };
-  assert.equal(role, "main", `[precheck] unknown role: ${role}`);
+  // 記憶の対照の AI 原稿は測る作品なので、本番と同じ gate を通す（試運転の扱いにしない）。
+  assert.ok(
+    role === "main" || role === "control-ai-gen",
+    `[precheck] unknown role: ${role}`,
+  );
   const file = options.preregistration;
   const expected = options["preregistration-sha256"];
   assert.ok(
