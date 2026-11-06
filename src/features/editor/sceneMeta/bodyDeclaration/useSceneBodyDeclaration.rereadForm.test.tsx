@@ -227,6 +227,16 @@ describe("the Scope read around a Scene switch (DR-PUBG-39-2)", () => {
     expect(result.current.status).toBe("ready");
   });
 
+  it("reads again for a registry save that passes through the empty key, when the Scene was mounted with a real key", async () => {
+    invokeMock.mockResolvedValue(noneWire());
+    const { result, rerender } = mount({ ...BASE, refreshKey: "4:1" });
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(calls()).toBe(1);
+    rerender({ ...BASE, refreshKey: "" });
+    rerender({ ...BASE, refreshKey: "4:2" });
+    await waitFor(() => expect(calls()).toBe(2));
+  });
+
   it("still reads again for a saved A1 and for a registry refresh that passes through the empty key", async () => {
     invokeMock.mockResolvedValue(noneWire());
     const { result, rerender } = mount({ ...BASE, refreshKey: "4:1" });

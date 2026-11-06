@@ -260,6 +260,8 @@ export function useSceneBodyDeclaration(
     refreshKey === "" ? null : refreshKey,
   );
   const scopeStaleRef = useRef(false);
+  // The Scene the effect last ran for (undefined before the first run).
+  const lastKeyRef = useRef<string | null | undefined>(undefined);
   const lastEffectiveRef = useRef(false);
 
   const startRead = useCallback(function run(
@@ -394,10 +396,16 @@ export function useSceneBodyDeclaration(
     lastEffectiveRef.current = false;
     handledContentRef.current = contentRef.current;
     handledRefreshRef.current = refreshRef.current;
-    // The refreshKey of the Scene just left may still be passed for one render
-    // (the host clears it right after): it is not this Scene's.
+    // On a switch from another Scene, the refreshKey of the Scene just left
+    // may still be passed for one render (the host clears it right after): it
+    // is not this Scene's. When there was no Scene before (the first mount),
+    // the value is this Scene's own, and a later registry refresh through ""
+    // must still be told from it.
+    const switched =
+      lastKeyRef.current !== undefined && lastKeyRef.current !== key;
+    lastKeyRef.current = key;
     scopeKeyRef.current = refreshRef.current === "" ? null : refreshRef.current;
-    scopeStaleRef.current = refreshRef.current !== "";
+    scopeStaleRef.current = switched && refreshRef.current !== "";
     if (targetRef.current.scene === null) {
       setState(emptyState(targetRef.current.key, "off"));
     } else {
