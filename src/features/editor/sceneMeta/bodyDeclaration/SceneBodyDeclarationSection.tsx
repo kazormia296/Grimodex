@@ -13,6 +13,12 @@
  * revoking needs no confirmation. Every message comes from a closed code, and
  * no raw error text, excerpt, body, digest or token is rendered. While the
  * product UI constant is off the hook does nothing and this renders nothing.
+ *
+ * Two rules about when it is drawn (DR-PUBG-39-1, DR-PUBG-39-2): nothing is
+ * drawn until the first read of the Scene has been answered with something
+ * that is shown, so a closed gate never flashes a title or a loading banner;
+ * and a re-read (focus, autosave) keeps the declare form mounted, disabled,
+ * so the five confirmations are not lost to it.
  */
 import { useEffect, useRef, useState } from "react";
 import { Info, LoaderCircle, ShieldAlert, ShieldCheck } from "lucide-react";
@@ -84,8 +90,24 @@ export function SceneBodyDeclarationSection({
     refreshKey,
   });
   const unsaved = unsavedEdits.useUnsavedSceneEdits(node.id);
-  const { status, view } = declaration;
+  // The confirmations belong to the A1 and registry that were on screen when
+  // they were ticked. A saved A1 or registry (a new refreshKey) is a new thing
+  // to confirm, so the form starts again. The first value after "" (the scope
+  // not read yet) is not a change.
+  const [scopeEpoch, setScopeEpoch] = useState({ key: refreshKey, count: 0 });
+  if (scopeEpoch.key !== refreshKey) {
+    setScopeEpoch({
+      key: refreshKey,
+      count:
+        scopeEpoch.key === "" || scopeEpoch.key === undefined
+          ? scopeEpoch.count
+          : scopeEpoch.count + 1,
+    });
+  }
+  const { status, view, retainedForm } = declaration;
   if (status === "off" || status === "hidden") return null;
+  // The first read has not been answered: draw nothing, not even the title.
+  if (!declaration.answered) return null;
 
   const codeText = (code: BodyDeclarationRefusalCode | null): string =>
     t(
@@ -123,7 +145,9 @@ export function SceneBodyDeclarationSection({
   }[stateKey];
   const announcedBanner =
     stateKey === "unknown" || stateKey === "restart-required";
-  const showForm = status === "ready" && (kind === "none" || notEffective);
+  const holdingForm = status === "loading" && retainedForm !== null;
+  const showForm =
+    (status === "ready" && (kind === "none" || notEffective)) || holdingForm;
 
   return (
     <section
@@ -211,9 +235,10 @@ export function SceneBodyDeclarationSection({
 
       {showForm && (
         <DeclareForm
-          key={`${workspacePath ?? ""}\u0000${node.projectId}\u0000${node.id}`}
+          key={`${workspacePath ?? ""}\u0000${node.projectId}\u0000${node.id}\u0000${scopeEpoch.count}`}
           sceneId={node.id}
-          expired={notEffective}
+          expired={holdingForm ? retainedForm.expired : notEffective}
+          holdingLayout={holdingForm && retainedForm.couldDeclare}
           canDeclare={declaration.canDeclare}
           busy={declaration.busy}
           unsaved={unsaved}
@@ -492,6 +517,7 @@ function OutcomeNotice({
 function DeclareForm({
   sceneId,
   expired,
+  holdingLayout,
   canDeclare,
   busy,
   unsaved,
@@ -500,6 +526,8 @@ function DeclareForm({
 }: {
   sceneId: string;
   expired: boolean;
+  /** A re-read is running and the form was usable: keep its lines in place. */
+  holdingLayout: boolean;
   canDeclare: boolean;
   busy: "declare" | "revoke" | null;
   unsaved: boolean;
@@ -581,7 +609,7 @@ function DeclareForm({
           </label>
         ))}
       </fieldset>
-      {!allConfirmed && !disabled && (
+      {!allConfirmed && (!disabled || holdingLayout) && (
         <span className="wrap-anywhere text-[9px] text-muted-foreground">
           {t(`${PREFIX}.axesPending`)}
         </span>

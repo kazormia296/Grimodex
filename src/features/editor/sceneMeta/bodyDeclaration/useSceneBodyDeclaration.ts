@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isBodyDeclarationUiEnabled } from "./bodyDeclarationAvailability";
 import { notifyNir1GraphOnlyRevoked } from "@/features/related-scenes/nir1GraphOnlyRevocation";
+import { declaredStanding } from "./declaredStanding";
 import {
   declareBody,
   readBodyDeclarationState,
@@ -55,6 +56,19 @@ export type BodyDeclarationOutcome =
       readonly code: BodyDeclarationRefusalCode;
     };
 
+/**
+ * The declare form the screen showed just before a re-read began (DR-PUBG-39-1).
+ * It carries no snapshot, no token and no "effective": only which form it was,
+ * so the form (and what the author ticked in it) can stay mounted, disabled,
+ * while the state is read again.
+ */
+export type RetainedDeclareForm = {
+  /** A stored declaration that is not effective (paused or expired). */
+  readonly expired: boolean;
+  /** The form was usable before the re-read, so its layout is kept whole. */
+  readonly couldDeclare: boolean;
+};
+
 export type UseSceneBodyDeclarationInput = {
   readonly workspacePath: string | null;
   readonly projectId: string;
@@ -74,6 +88,18 @@ export type UseSceneBodyDeclarationResult = {
   readonly status: BodyDeclarationStatus;
   /** The latest answer, only while the status is `ready`. */
   readonly view: BodyDeclarationSnapshot | null;
+  /**
+   * True once the first read of this Scene has been answered with anything
+   * that is shown (ready, unknown or restart-required). Until then the screen
+   * renders nothing, so a closed gate never flashes a title (DR-PUBG-39-2). It
+   * stays true through re-reads and drops with a hidden answer or another Scene.
+   */
+  readonly answered: boolean;
+  /**
+   * While `loading` is a re-read of the same Scene, the form that was showing
+   * before it; otherwise null. Never an "effective" or a snapshot.
+   */
+  readonly retainedForm: RetainedDeclareForm | null;
   /** The code of the failed read, while the status is `unknown`. */
   readonly failure: BodyDeclarationRefusalCode | null;
   /** The operation in flight (a read is the `loading` status). */
@@ -105,6 +131,10 @@ type HookState = {
   readonly busy: "declare" | "revoke" | null;
   readonly outcome: BodyDeclarationOutcome | null;
   readonly becameInvalid: boolean;
+  /** An answer that is shown was received for this Scene (see the result). */
+  readonly answered: boolean;
+  /** Only meaningful while `loading`; see the result. */
+  readonly retainedForm: RetainedDeclareForm | null;
 };
 
 const HIDING_CODES: ReadonlySet<BodyDeclarationRefusalCode> = new Set([
@@ -125,7 +155,29 @@ function emptyState(
     busy: null,
     outcome: null,
     becameInvalid: false,
+    answered: false,
+    retainedForm: null,
   };
+}
+
+function canDeclareFrom(view: BodyDeclarationSnapshot): boolean {
+  return (
+    view.occ !== null &&
+    view.state.blocker === null &&
+    view.state.kind !== "unavailable"
+  );
+}
+
+/** The form a snapshot shows (none, or declared but not in use), if any. */
+function formOf(view: BodyDeclarationSnapshot): RetainedDeclareForm | null {
+  const state = view.state;
+  if (state.kind === "none") {
+    return { expired: false, couldDeclare: canDeclareFrom(view) };
+  }
+  if (state.kind === "declared" && declaredStanding(state) !== "effective") {
+    return { expired: true, couldDeclare: canDeclareFrom(view) };
+  }
+  return null;
 }
 
 type Target = {
@@ -200,15 +252,27 @@ export function useSceneBodyDeclaration(
     const epoch = epochRef.current;
     inFlightRef.current = "read";
     readyRef.current = null;
-    setState((current) => ({
-      ...emptyState(target.key, "loading"),
-      busy: null,
-      // The outcome of the author's own operation stays until the state is
-      // read again for any other reason; then it would sit beside a newer
-      // banner it no longer describes.
-      outcome:
-        keepOutcome && current.key === target.key ? current.outcome : null,
-    }));
+    setState((current) => {
+      const sameScene = current.key === target.key;
+      return {
+        ...emptyState(target.key, "loading"),
+        busy: null,
+        // Only the shape of the form carries over a re-read (never the view),
+        // so a loading state still shows nothing effective (DR-CB3-6).
+        answered: sameScene && current.answered,
+        retainedForm: !sameScene
+          ? null
+          : current.status === "ready" && current.view !== null
+            ? formOf(current.view)
+            : current.status === "loading"
+              ? current.retainedForm
+              : null,
+        // The outcome of the author's own operation stays until the state is
+        // read again for any other reason; then it would sit beside a newer
+        // banner it no longer describes.
+        outcome: keepOutcome && sameScene ? current.outcome : null,
+      };
+    });
     void readBodyDeclarationState(target.scene).then((result) => {
       if (epoch !== epochRef.current) return;
       inFlightRef.current = null;
@@ -224,6 +288,8 @@ export function useSceneBodyDeclaration(
             failure: null,
             busy: null,
             becameInvalid: false,
+            answered: false,
+            retainedForm: null,
           }));
         } else if (code === "restart-required") {
           stickyRef.current = "restart-required";
@@ -234,6 +300,8 @@ export function useSceneBodyDeclaration(
             failure: code,
             busy: null,
             becameInvalid: false,
+            answered: true,
+            retainedForm: null,
           }));
         } else {
           setState((current) => ({
@@ -243,6 +311,8 @@ export function useSceneBodyDeclaration(
             failure: code,
             busy: null,
             becameInvalid: false,
+            answered: true,
+            retainedForm: null,
           }));
         }
       } else if (result.snapshot.state.blocker === "scene-not-found") {
@@ -258,6 +328,8 @@ export function useSceneBodyDeclaration(
           failure: null,
           busy: null,
           becameInvalid: false,
+          answered: false,
+          retainedForm: null,
         }));
       } else {
         stickyRef.current = null;
@@ -273,6 +345,8 @@ export function useSceneBodyDeclaration(
           failure: null,
           busy: null,
           becameInvalid,
+          answered: true,
+          retainedForm: null,
         }));
       }
       if (pendingRef.current) {
@@ -426,12 +500,9 @@ export function useSceneBodyDeclaration(
     busy: current.busy,
     outcome: current.outcome,
     becameInvalid: current.becameInvalid,
-    canDeclare:
-      canAct &&
-      view !== null &&
-      view.occ !== null &&
-      view.state.blocker === null &&
-      view.state.kind !== "unavailable",
+    answered: current.answered,
+    retainedForm: current.status === "loading" ? current.retainedForm : null,
+    canDeclare: canAct && view !== null && canDeclareFrom(view),
     canRevoke: canAct && view !== null && view.declarationToken !== null,
     declare,
     revoke,
