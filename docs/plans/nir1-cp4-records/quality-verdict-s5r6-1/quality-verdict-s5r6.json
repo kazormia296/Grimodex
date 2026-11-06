@@ -1,0 +1,2277 @@
+{
+  "schema": "nir1-cp4-quality-verdict/1",
+  "positioning": "outside-procedure-supplementary-record",
+  "allowList": {
+    "s4Commit": "3734e501c456f3fef22ded01a0084be457a60c1a",
+    "candidate": "cbf3307739db9310e2e1d65d947a811591fd77f2"
+  },
+  "policy": {
+    "percentile": 0.95,
+    "b": 54.2,
+    "d": 10.84,
+    "limit": 65.04,
+    "source": {
+      "B": "Raw-only p95(t_return-t_fetch), actual Electron IPC route only",
+      "D": "min(100ms, 0.20*B)",
+      "hybridP95Limit": "B+D",
+      "percentileRule": "nearest-rank sorted[ceil(p*N)-1]; pooled equal query counts"
+    },
+    "metricTolerance": 1e-12
+  },
+  "blockedDetermination": "ledger",
+  "variants": [
+    {
+      "variantKey": "G-01/v1",
+      "caseId": "G-01",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 30,
+        "notDisplayed": 0
+      },
+      "lists": {
+        "rPlusIr": [
+          "g01-question"
+        ],
+        "graph": [
+          "g01-question",
+          "g01-mira"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.6309297535714575
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.6309297535714574
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 26,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 32.799999952316284,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "pass",
+          "improved": true,
+          "matchesPredeclared": true,
+          "rPlusIr": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          },
+          "graph": {
+            "recallAt8": 1,
+            "ndcgAt8": 0.6309297535714575
+          },
+          "predeclared": {
+            "rPlusIr": {
+              "recallAt8": 0,
+              "ndcgAt8": 0
+            },
+            "rPlusIrPlusGraph": {
+              "recallAt8": 1,
+              "ndcgAt8": 0.6309297535714574
+            }
+          }
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 1,
+          "deltaNdcgAt8": 0.6309297535714575
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-02/base",
+      "caseId": "G-02",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 30,
+        "notDisplayed": 0
+      },
+      "lists": {
+        "rPlusIr": [
+          "g02-attach",
+          "g02-probe"
+        ],
+        "graph": [
+          "g02-attach",
+          "g02-probe",
+          "g02-tamsin-first"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 22.19999998807907,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 184.80000001192093,
+          "status": "fail"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 1,
+          "deltaNdcgAt8": 0.5
+        },
+        "hybrid-p95": {
+          "status": "fail",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-03/base",
+      "caseId": "G-03",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 30,
+        "notDisplayed": 0
+      },
+      "lists": {
+        "rPlusIr": [
+          "g03-c4",
+          "g03-c3",
+          "g03-c2",
+          "g03-c1",
+          "g03-c7",
+          "g03-c6",
+          "g03-c5",
+          "g03-c8"
+        ],
+        "graph": [
+          "g03-c4",
+          "g03-c3",
+          "g03-c2",
+          "g03-c1",
+          "g03-c7",
+          "g03-c6",
+          "g03-c5",
+          "g03-c8"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 62.69999998807907,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 233.5,
+          "status": "fail"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0,
+          "deltaNdcgAt8": 0
+        },
+        "hybrid-p95": {
+          "status": "fail",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "caseId": "G-03",
+      "expectedGraph": "unavailable",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 0,
+        "notDisplayed": 0
+      },
+      "lists": {
+        "rPlusIr": [
+          "g03-c4",
+          "g03-c3",
+          "g03-c2",
+          "g03-c1",
+          "g03-c7",
+          "g03-c6",
+          "g03-c5",
+          "g03-c8"
+        ],
+        "graph": [
+          "g03-c4",
+          "g03-c3",
+          "g03-c2",
+          "g03-c1",
+          "g03-c7",
+          "g03-c6",
+          "g03-c5",
+          "g03-c8"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 161.80000001192093,
+          "status": "fail"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 30.100000023841858,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "n/a",
+        "checked": 0,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0,
+          "deltaNdcgAt8": 0
+        },
+        "hybrid-p95": {
+          "status": "fail",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "n/a"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-04/base",
+      "caseId": "G-04",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 30,
+        "notDisplayed": 0
+      },
+      "lists": {
+        "rPlusIr": [
+          "g04-control"
+        ],
+        "graph": [
+          "g04-control",
+          "g04-lio-landing"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 0.5,
+          "ndcgAt8": 0.4966392596877323
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0.5,
+          "ndcgAt8": 0.4966392596877323
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 22.69999998807907,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 193.60000002384186,
+          "status": "fail"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0.5,
+          "deltaNdcgAt8": 0.4966392596877323
+        },
+        "hybrid-p95": {
+          "status": "fail",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-05/base",
+      "caseId": "G-05",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 30,
+        "notDisplayed": 0
+      },
+      "lists": {
+        "rPlusIr": [
+          "g05-control",
+          "g05-xan-watch"
+        ],
+        "graph": [
+          "g05-control",
+          "g05-xan-watch"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0.5,
+          "ndcgAt8": 0.4966392596877323
+        },
+        "graph": {
+          "recallAt8": 0.5,
+          "ndcgAt8": 0.4966392596877323
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0.5,
+          "ndcgAt8": 0.4966392596877323
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0.5,
+          "ndcgAt8": 0.4966392596877323
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 61.89999997615814,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 27.900000035762787,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0,
+          "deltaNdcgAt8": 0
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-06/base",
+      "caseId": "G-06",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 30,
+        "notDisplayed": 0
+      },
+      "lists": {
+        "rPlusIr": [
+          "g06-c1",
+          "g06-c7",
+          "g06-c2",
+          "g06-c5",
+          "g06-c6",
+          "g06-c4",
+          "g06-c8",
+          "g06-c3"
+        ],
+        "graph": [
+          "g06-c1",
+          "g06-c7",
+          "g06-c2",
+          "g06-c5",
+          "g06-c6",
+          "g06-c4",
+          "g06-c8",
+          "g06-c3"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 25.200000047683716,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 30.5,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0,
+          "deltaNdcgAt8": 0
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-07/base",
+      "caseId": "G-07",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 30,
+        "notDisplayed": 0
+      },
+      "lists": {
+        "rPlusIr": [
+          "g07-attach",
+          "g07-probe"
+        ],
+        "graph": [
+          "g07-attach",
+          "g07-probe",
+          "g07-pell-dock"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 22.900000035762787,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 28.400000035762787,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 1,
+          "deltaNdcgAt8": 0.5
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "caseId": "G-08",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 30,
+        "notDisplayed": 0
+      },
+      "lists": {
+        "rPlusIr": [
+          "g08-control",
+          "g08-attach"
+        ],
+        "graph": [
+          "g08-control",
+          "g08-attach",
+          "g08-cass-attic"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 160.30000001192093,
+          "status": "fail"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 64.89999997615814,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 1,
+          "deltaNdcgAt8": 0.5
+        },
+        "hybrid-p95": {
+          "status": "fail",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-08/graph-index-unusable",
+      "caseId": "G-08",
+      "expectedGraph": "unavailable",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 0,
+        "notDisplayed": 0
+      },
+      "lists": {
+        "rPlusIr": [
+          "g08-control",
+          "g08-attach"
+        ],
+        "graph": [
+          "g08-control",
+          "g08-attach"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 122.70000004768372,
+          "status": "fail"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 28.100000023841858,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "n/a",
+        "checked": 0,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0,
+          "deltaNdcgAt8": 0
+        },
+        "hybrid-p95": {
+          "status": "fail",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "n/a"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-08/graph-recovered",
+      "caseId": "G-08",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 30,
+        "notDisplayed": 0
+      },
+      "lists": {
+        "rPlusIr": [
+          "g08-control",
+          "g08-attach"
+        ],
+        "graph": [
+          "g08-control",
+          "g08-attach",
+          "g08-cass-attic"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 205.30000001192093,
+          "status": "fail"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 29,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 1,
+          "deltaNdcgAt8": 0.5
+        },
+        "hybrid-p95": {
+          "status": "fail",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-08/chronicle-index-unusable",
+      "caseId": "G-08",
+      "expectedGraph": "unavailable",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 0,
+        "notDisplayed": 0
+      },
+      "lists": {
+        "rPlusIr": [
+          "g08-control",
+          "g08-attach"
+        ],
+        "graph": [
+          "g08-control",
+          "g08-attach"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 21.400000035762787,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 21.30000001192093,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "n/a",
+        "checked": 0,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0,
+          "deltaNdcgAt8": 0
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "n/a"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-08/both-indexes-unusable",
+      "caseId": "G-08",
+      "expectedGraph": "unavailable",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 0,
+        "notDisplayed": 0
+      },
+      "lists": {
+        "rPlusIr": [
+          "g08-control",
+          "g08-attach"
+        ],
+        "graph": [
+          "g08-control",
+          "g08-attach"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 20.399999976158142,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 21.5,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "n/a",
+        "checked": 0,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0,
+          "deltaNdcgAt8": 0
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "n/a"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "conditions": {
+    "g01-predeclared-improvement": {
+      "status": "pass",
+      "improved": true,
+      "matchesPredeclared": true,
+      "rPlusIr": {
+        "recallAt8": 0,
+        "ndcgAt8": 0
+      },
+      "graph": {
+        "recallAt8": 1,
+        "ndcgAt8": 0.6309297535714575
+      },
+      "predeclared": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.6309297535714574
+        }
+      },
+      "variantKey": "G-01/v1"
+    },
+    "macro-non-regression": {
+      "status": "not-evaluable",
+      "components": {
+        "g-case": {
+          "status": "pass",
+          "variants": 13,
+          "recallAt8": {
+            "rPlusIr": 0.038461538461538464,
+            "graph": 0.46153846153846156
+          },
+          "ndcgAt8": {
+            "rPlusIr": 0.038203019975979406,
+            "graph": 0.27878525176514785
+          }
+        },
+        "existing-24-graph-arm": {
+          "status": "not-evaluable",
+          "reason": "no-graph-arm-receipt-for-the-existing-24-queries"
+        }
+      }
+    },
+    "hybrid-p95": {
+      "status": "pass",
+      "populationNote": "G-case measured samples of the gold receipts, pooled per arm; not the 24-query P population",
+      "limitMs": 65.04,
+      "percentile": 0.95,
+      "hybridArm": {
+        "arm": "hybrid",
+        "n": 390,
+        "failedCount": 0,
+        "p95Ms": 55.30000001192093,
+        "status": "pass"
+      },
+      "graphArm": {
+        "arm": "graph",
+        "n": 390,
+        "failedCount": 0,
+        "p95Ms": 31.5,
+        "status": "pass"
+      },
+      "parityHybridDisclosure": {
+        "n": 360,
+        "failedCount": 0,
+        "p95Ms": 25.400000035762787,
+        "status": "pass",
+        "countsInVerdict": false
+      }
+    },
+    "evidence-validity": {
+      "status": "not-evaluable",
+      "components": {
+        "edge-binding": {
+          "status": "pass",
+          "variants": 9,
+          "checked": 270,
+          "skipped": 0
+        },
+        "utf16-range": {
+          "status": "not-evaluable",
+          "reason": "not-in-the-receipt"
+        },
+        "explicit-pin-association": {
+          "status": "not-evaluable",
+          "reason": "not-in-the-receipt"
+        },
+        "raw-excerpt-unchanged": {
+          "status": "not-evaluable",
+          "reason": "not-in-the-receipt"
+        },
+        "added-scene-body-anchor": {
+          "status": "not-evaluable",
+          "reason": "not-in-the-receipt"
+        }
+      }
+    },
+    "forbidden-contribution": {
+      "status": "not-evaluable",
+      "components": {
+        "a-forbidden-scene-or-blocked-candidate": {
+          "status": "pass",
+          "violatingSamples": 0,
+          "baselineForbiddenSamples": 0,
+          "outsideExpectationSamples": 0
+        },
+        "b-late-graph-in-display": {
+          "status": "pass",
+          "violatingSamples": 0
+        },
+        "c-existing-24-graph-appearance-and-dto": {
+          "status": "not-evaluable",
+          "reason": "not-in-the-receipt"
+        }
+      }
+    }
+  },
+  "verdict": {
+    "verdict": "hold",
+    "reasons": [
+      "unverified-required-items"
+    ],
+    "failed": [],
+    "held": [],
+    "unverified": [
+      "macro-non-regression",
+      "evidence-validity",
+      "forbidden-contribution"
+    ]
+  },
+  "notEvaluable": [
+    {
+      "condition": "macro-non-regression",
+      "component": "existing-24-graph-arm",
+      "reason": "no-graph-arm-receipt-for-the-existing-24-queries"
+    },
+    {
+      "condition": "evidence-validity",
+      "component": "utf16-range",
+      "reason": "not-in-the-receipt"
+    },
+    {
+      "condition": "evidence-validity",
+      "component": "explicit-pin-association",
+      "reason": "not-in-the-receipt"
+    },
+    {
+      "condition": "evidence-validity",
+      "component": "raw-excerpt-unchanged",
+      "reason": "not-in-the-receipt"
+    },
+    {
+      "condition": "evidence-validity",
+      "component": "added-scene-body-anchor",
+      "reason": "not-in-the-receipt"
+    },
+    {
+      "condition": "forbidden-contribution",
+      "component": "c-existing-24-graph-appearance-and-dto",
+      "reason": "not-in-the-receipt"
+    }
+  ],
+  "bindings": {
+    "script": [
+      {
+        "path": "scripts/quality/nir1-graph-eval/quality-verdict.mjs",
+        "sha256": "e83ec512e04e20d62be25c911eebad1dd59dc4c957b5923f0e9ab0f1a0bb66fc"
+      },
+      {
+        "path": "scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs",
+        "sha256": "0027b27a3f60313313680155415005abaf2243858fcd249ee12899a8f942aa16"
+      },
+      {
+        "path": "scripts/quality/nir1-graph-eval/followup.mjs",
+        "sha256": "8e997ab8cfde1b5ad8d2012b1e58882a2677a9378c6f52e9f8ba247b3ed712a7"
+      },
+      {
+        "path": "scripts/quality/nir1-graph-eval/receipt.mjs",
+        "sha256": "77a181a9f6ee430a2fe3c647ccba206f2e1f34dae0e605081fe86ccbd53aebe8"
+      },
+      {
+        "path": "scripts/quality/nir1-graph-eval/constants.mjs",
+        "sha256": "00150071d688cca889d369a7505c95f453bd9787ce8de6b7b536d0da68fa2e40"
+      },
+      {
+        "path": "scripts/quality/nir1-graph-eval/join.mjs",
+        "sha256": "7dd0d790de8f027caa4c23c757d76dc03ad00d8732b8484f4f992be37ed5481d"
+      },
+      {
+        "path": "scripts/quality/nir1-retrieval/contract.mjs",
+        "sha256": "ec6a73277f3b26075c71bdfab945b2c2b83d9883067da4139d60d6cad090f963"
+      }
+    ],
+    "receipts": [
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s5r6-1/G-01_v1.receipt.json",
+        "sha256": "2b0190548b7cf2481cc1d5d8aaca3f9a2699ec5a63610ddef450407558017499"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s5r6-1/G-02_base.receipt.json",
+        "sha256": "3b8867d7316c84e3bf09c48bad4af6720e97812d571aa43502c4742633079241"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s5r6-1/G-03_base.receipt.json",
+        "sha256": "a72bf64026a3ee3d338bb1a6a87f3f26be72ed20896db2f117982d1357c08f9c"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s5r6-1/G-03_frontier-exceeded.receipt.json",
+        "sha256": "d25a8e813764537d831b9c1c36c4490e803f36f8ddfdb4065ac7df16f1c21201"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s5r6-1/G-04_base.receipt.json",
+        "sha256": "cd0a5b00f8b213c20b8915804a0dd2a326450cb85b98fbe20d3e682ea2615182"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s5r6-1/G-05_base.receipt.json",
+        "sha256": "f4ed2d4db153b8a10111256fc3ef2491abb8ae9d6386877c72a7625c6e6d191c"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s5r6-1/G-06_base.receipt.json",
+        "sha256": "6b4c84dcaff73f69abb757fc5be0e822cae6f4b9b9a900a26939e38ddf056994"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s5r6-1/G-07_base.receipt.json",
+        "sha256": "7b91b84df4d44f87ef3024b4a99aaa8f1ab6a7f0f56b1f0f1b18ba3b5ebafce6"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s5r6-1/G-08_base-usable.receipt.json",
+        "sha256": "95f7928fb02db667f45875e1e265ea654ac8f05e66650e87705c267bab0f255b"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s5r6-1/G-08_both-indexes-unusable.receipt.json",
+        "sha256": "e608f4d15ea9707e4047df02882112874cee385f78f80bf722f20a8a457059fb"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s5r6-1/G-08_chronicle-index-unusable.receipt.json",
+        "sha256": "2cb1809520380e522424e771dc066cb099faa64e4820d7501df3d51efae9397f"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s5r6-1/G-08_graph-index-unusable.receipt.json",
+        "sha256": "edddc93594984b636350119de4245d9c6e665d11e60cb85a53ec091c3d7eb910"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s5r6-1/G-08_graph-recovered.receipt.json",
+        "sha256": "0be46a5f643d43f16b318033d45319bd30772d6b6710645765dc329ac0214af5"
+      }
+    ],
+    "parityReceipts": [
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s5r6-1/G-02_base.receipt.json",
+        "sha256": "188d22873e280ac67ed5b78981fb873fadd492e3b543fd87d3212aa446113b96"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s5r6-1/G-03_base.receipt.json",
+        "sha256": "08177c9f8d37616f2bb85fbb6ca1aabda481486a3d6826f32399857f563474f1"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s5r6-1/G-03_frontier-exceeded.receipt.json",
+        "sha256": "a1f7f0563447d51d25da788b3e4c02fd9cc91eee60fe220f3b4658c85dd98d97"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s5r6-1/G-04_base.receipt.json",
+        "sha256": "dcac5e599a472f9c9fb83a2f989b5d5d567601ad1d42d0c72654fcbae4548e89"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s5r6-1/G-05_base.receipt.json",
+        "sha256": "462d341ab45eadc11a2e9634e62a5786b15c8a97f10fa1654a8b9b730080e290"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s5r6-1/G-06_base.receipt.json",
+        "sha256": "9b5188f2281ca7aa19accb64eedcdcab779bc74a90de7138dd2c52ced405cf5b"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s5r6-1/G-07_base.receipt.json",
+        "sha256": "ecb5c0ce1a3f16df9e5d6ea97634ac09703074f30bd067adbf3fecb9a1c94942"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s5r6-1/G-08_base-usable.receipt.json",
+        "sha256": "8cc43f16e9d6dc3d15731a22db7350fa1f5471346875df24f7af72411396da91"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s5r6-1/G-08_both-indexes-unusable.receipt.json",
+        "sha256": "13c4b1d2efc9b9eda32cd3e1af1b40435182b91cf5fb69dafec4623b2067a9b4"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s5r6-1/G-08_chronicle-index-unusable.receipt.json",
+        "sha256": "bf7a59db0e9a16205b6f627c0ed271671d3f4cea9c7755939cbb14609c4b513a"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s5r6-1/G-08_graph-index-unusable.receipt.json",
+        "sha256": "dddbe13a77a21894f7713bb480c6da4fa25fe29b9968da95db55c0d1501f8e72"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s5r6-1/G-08_graph-recovered.receipt.json",
+        "sha256": "4ebf6e13194a485069e5a5b79515f6b83a73b3b9971d3da1674e2a2fafc0e57a"
+      }
+    ],
+    "allowList": {
+      "path": "/home/grimodex/worktrees/Grimodex/claude-cp4-quality-verdict/.artifacts/cp4-quality-verdict/allow-list.json",
+      "sha256": "6c95f73662692761bf17a2e06405088f628300216b7df2c29e0c47c9ae924989"
+    },
+    "ledger": {
+      "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/attempts-final-s5r6/gold-s5r6-1.json",
+      "sha256": "388ad3c663658e57e5abdd41c2d00c7c7a6bf1f466f0fe47733528157bfbacd0"
+    },
+    "procedure": {
+      "path": "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json",
+      "sha256": "1c2428df322fa717d1a3ae5d4c99fb2dbafcbac2c8fb5b4126499dcc36cc0bea"
+    },
+    "manifests": [
+      {
+        "path": "evals/nir1-graph/manifest.v1.json",
+        "sha256": "6860d10445260a5677524f002dd994a009cc97d36d4fa4114acfb50c5974e966"
+      },
+      {
+        "path": "evals/nir1-retrieval/manifest.json",
+        "sha256": "fbc6ac25a0171aac48bee27a859d2b582ed748f82adc1b5ccd28057110c950f3"
+      }
+    ],
+    "fixtures": [
+      {
+        "path": "evals/nir1-g01/fixture.v1.json",
+        "sha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79"
+      },
+      {
+        "path": "evals/nir1-graph/g02-directed-relation.v1.json",
+        "sha256": "c9e9ea0c41e6818d19722d6e2c4255cac96b54cd55f0808f88357ad74416946c"
+      },
+      {
+        "path": "evals/nir1-graph/g03-bounded-two-hop.v1.json",
+        "sha256": "39aec43a66f3ede60249cc74f5524fbe8201ca20ff629c98d54fc05cc360f76d"
+      },
+      {
+        "path": "evals/nir1-graph/g04-scope-exact-unknown.v2.json",
+        "sha256": "96d44ec362f30352d6cb971c208f2ab71aed944d008cab9eb65ca2ab57c218e1"
+      },
+      {
+        "path": "evals/nir1-graph/g05-current-revision-freshness.v1.json",
+        "sha256": "52c5ac72bf5886bcc6fc1c901575bc91e36a17c7d236191a610d5dcb31093c28"
+      },
+      {
+        "path": "evals/nir1-graph/g06-evidence-anchor-path.v1.json",
+        "sha256": "acb55cbd352949ced010dbbc2e3b06fed4dad9144488172cbe76cd6105d7b40a"
+      },
+      {
+        "path": "evals/nir1-graph/g07-reading-before-reveal.v1.json",
+        "sha256": "385eaa732f48c10417a775430615ee4b0e245818e87b525ce7c1509ea83d12d0"
+      },
+      {
+        "path": "evals/nir1-graph/g08-graph-index-fallback.v1.json",
+        "sha256": "0415561e3834eff5c1f04d1a66e49177209b6755c79015d3b7944f374600a4c9"
+      }
+    ],
+    "k62": {
+      "path": "docs/plans/nir1-final-request-eval-proposal-2-draft.md",
+      "sha256": "4ccca08314c022fd969308fa969e6fcb3e2c439fe12757bfec0e901b905676f8",
+      "text": "同じ許容誤差 1e-12"
+    }
+  }
+}
