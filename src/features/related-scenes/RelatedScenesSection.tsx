@@ -95,6 +95,17 @@ export function RelatedScenesSection({
   useEffect(() => {
     setResumedTick(pauseTick);
   }, [pauseTick]);
+  // DR-PUBG-37-1: with the Graph UI constant on, request the Graph chunks at
+  // mount so the first Graph payload does not first show the R/R+IR rows as the
+  // Suspense fallback. Same specifiers as the `lazy()` calls above, so the
+  // request is shared. A failed preload is swallowed: the lazy component
+  // requests the chunk again and Nir1GraphBoundary handles that failure.
+  // While the constant is false nothing is imported.
+  useEffect(() => {
+    if (!isNir1GraphUiEnabled()) return;
+    void import("./Nir1GraphRelatedScenes").catch(() => {});
+    void import("./Nir1GraphSeedPanel").catch(() => {});
+  }, []);
   const { sceneId, fetch, loading } = useNir1RelatedScenes(
     enabled && open && !paused,
   );

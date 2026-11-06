@@ -7,8 +7,11 @@ import { useProjectStore } from "@/features/project/projectStore";
 import type { Nir1RelatedScenesFetchResult } from "./nir1RelatedScenesFetchTypes";
 
 // The Graph UI on (mocked) and the real `PROFILE_ACTIVATION_UI_ENABLED`
-// (false): `profile-not-restricted` must not request the Graph chunk at all
-// (DA-2 ST3 R3-4 (B), DR-DA2-33). The pass-through mock counts the requests.
+// (false): `profile-not-restricted` must not draw the Graph view (DA-2 ST3
+// R3-4 (B), DR-DA2-33). Since DR-PUBG-37-1 the section preloads the Graph chunk
+// at mount while the Graph UI is on, whatever the outcome, so the request is
+// made once either way; the view itself is what must stay unrendered. The
+// pass-through mock counts the requests.
 const h = vi.hoisted(() => ({ fetch: vi.fn(), graphRequests: 0 }));
 vi.mock("./fetchRelatedScenes", () => ({ fetchRelatedPastScenes: h.fetch }));
 vi.mock("./nir1RelatedScenesApi", () => ({
@@ -80,7 +83,7 @@ afterEach(() => {
 });
 
 describe("RelatedScenesSection with the Graph UI on and the activation UI closed", () => {
-  it("never requests the Graph chunk for profile-not-restricted, and does for restart-required", async () => {
+  it("never draws the Graph view for profile-not-restricted, and does for restart-required", async () => {
     expect(PROFILE_ACTIVATION_UI_ENABLED).toBe(false);
     h.fetch.mockResolvedValue(
       rawFetch("graph-unavailable:profile-not-restricted"),
@@ -89,7 +92,7 @@ describe("RelatedScenesSection with the Graph UI on and the activation UI closed
     await settle();
     await vi.waitFor(() => expect(screen.getByText("Raw a")).toBeTruthy());
     await settle();
-    expect(h.graphRequests).toBe(0);
+    expect(screen.queryByTestId("nir1-graph-restart-required")).toBeNull();
     expect(screen.queryByTestId("profile-activation-guidance")).toBeNull();
     cleanup();
 
