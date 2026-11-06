@@ -237,13 +237,13 @@ describe("DetailsTab Phase preview", () => {
       1,
       "phase-1",
       { summaryOverride: "phase summary changed" },
-      { baseVersion: 3 },
+      { baseVersion: 3, onFailure: expect.any(Function) },
     );
     expect(phaseState.updatePhase).toHaveBeenNthCalledWith(
       2,
       "phase-1",
       { contentOverride: "phase content changed" },
-      { baseVersion: 4 },
+      { baseVersion: 4, onFailure: expect.any(Function) },
     );
   });
 
@@ -328,7 +328,7 @@ describe("DetailsTab Phase preview", () => {
     expect(phaseState.updatePhase).toHaveBeenCalledWith(
       phase.id,
       { summaryOverride: "summary after peer body" },
-      { baseVersion: 4 },
+      { baseVersion: 4, onFailure: expect.any(Function) },
     );
   });
 
@@ -485,7 +485,7 @@ describe("DetailsTab Phase preview", () => {
     expect(phaseState.updatePhase).toHaveBeenCalledWith(
       phase.id,
       { summaryOverride: "local winner" },
-      { baseVersion: 8 },
+      { baseVersion: 8, onFailure: expect.any(Function) },
     );
     expect(
       useEditorSessionStore.getState().isDocumentDirty(phaseDocumentKey),

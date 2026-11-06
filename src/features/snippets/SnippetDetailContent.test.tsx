@@ -3,7 +3,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, fireEvent, act, waitFor } from "@testing-library/react";
 import { SnippetDetailContent } from "./SnippetDetailContent";
 import type { Snippet } from "./api";
-import { flushAllAutoSaves } from "@/hooks/useAutoSave";
+import {
+  AlreadyNotifiedSaveError,
+  discardAllAutoSaves,
+  flushAllAutoSaves,
+  hasAnyPendingOrFailedAutoSave,
+} from "@/hooks/useAutoSave";
+import { isWorkspaceQuarantinedError } from "@/features/concurrency/workspaceQuarantined";
 import {
   copyWithAttribution,
   handleCopyWithAttribution,
@@ -450,6 +456,39 @@ describe("SnippetDetailContent — autosave flush on unmount", () => {
     expect(onSave.mock.calls[0]?.[2]).toEqual({ baseVersion: 6 });
     onSave.mockResolvedValue({ persisted: true, version: 7 });
     await flushAllAutoSaves();
+  });
+
+  it("carries a store quarantine cause through AlreadyNotifiedSaveError and stops retrying", async () => {
+    const quarantined = Object.assign(
+      new Error("WORKSPACE_QUARANTINED: fenced"),
+      { code: "WORKSPACE_QUARANTINED" },
+    );
+    const onSave = vi
+      .fn()
+      .mockResolvedValue({ persisted: false, cause: quarantined });
+    const { getByTestId } = render(
+      <SnippetDetailContent
+        snippet={fakeSnippet({ version: 6 })}
+        onSave={onSave}
+        onDelete={vi.fn()}
+      />,
+    );
+    fireEvent.change(getByTestId("snippet-detail-title"), {
+      target: { value: "unsaved" },
+    });
+
+    const first = await flushAllAutoSaves().catch((e: unknown) => e);
+    const reason =
+      first instanceof AggregateError ? (first.errors[0] as unknown) : first;
+    expect(reason).toBeInstanceOf(AlreadyNotifiedSaveError);
+    expect((reason as AlreadyNotifiedSaveError).cause).toBe(quarantined);
+    expect(isWorkspaceQuarantinedError(reason)).toBe(true);
+    expect(hasAnyPendingOrFailedAutoSave()).toBe(true);
+
+    // The fence cannot clear: a second quiesce does not write again.
+    await flushAllAutoSaves().catch(() => undefined);
+    expect(onSave).toHaveBeenCalledTimes(1);
+    discardAllAutoSaves();
   });
 
   it("adopts a peer title save and never writes the stale title with a later body save", async () => {

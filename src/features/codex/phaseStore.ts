@@ -18,6 +18,7 @@ import {
   linearizeSceneTimeIndex,
   type SceneTimeIndex,
 } from "./context/sceneTimeIndex";
+import { notifyIfWorkspaceQuarantined } from "@/features/concurrency/notifyWorkspaceQuarantined";
 import { notifySameRendererDocumentWrite } from "@/features/concurrency/documentWriteNotification";
 
 export interface PhaseState {
@@ -54,7 +55,15 @@ export interface PhaseState {
         | "contextModeOverride"
       >
     >,
-    opts?: { baseVersion?: number; preexistingDraft?: boolean },
+    opts?: {
+      baseVersion?: number;
+      preexistingDraft?: boolean;
+      /**
+       * 保存の拒否（衝突以外）を握りつぶして null を返すとき、元の error を
+       * 呼び出し側へ渡す。AutoSave が quarantine の印を見分けるのに使う。
+       */
+      onFailure?: (cause: unknown) => void;
+    },
   ): Promise<CodexEntryPhase | null>;
   deletePhase(id: string): Promise<void>;
   upsertDetailOverride(
@@ -365,9 +374,12 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
       if (error instanceof PhaseVersionConflictError) {
         toast.error(i18next.t("phase.editConflict"));
       } else {
-        toast.error(i18next.t("phase.updateFailed"));
+        if (!notifyIfWorkspaceQuarantined(error)) {
+          toast.error(i18next.t("phase.updateFailed"));
+        }
         debugLog.error("PhaseStore", "updatePhase", errorDetail(error));
       }
+      opts?.onFailure?.(error);
       return null;
     }
     if (get().projectEpoch !== epoch) return null;

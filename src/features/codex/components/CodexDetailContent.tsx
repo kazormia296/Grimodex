@@ -53,7 +53,7 @@ import { ForeshadowTab } from "./ForeshadowTab";
 import { ConsistencyTab } from "./ConsistencyTab";
 import { isJapaneseProjectLanguage } from "@/features/ime/language";
 import { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
-import type { VersionedSaveOutcome } from "@/lib/saveOutcome";
+import { saveOutcomeCause, type VersionedSaveOutcome } from "@/lib/saveOutcome";
 import {
   createEditorInstanceId,
   type DocumentKey,
@@ -433,6 +433,7 @@ export function CodexDetailContent({
       if (!outcome.persisted) {
         throw new AlreadyNotifiedSaveError(
           `codex text save not persisted: ${entry.id}`,
+          { cause: saveOutcomeCause(outcome) },
         );
       }
       return outcome;
@@ -628,6 +629,7 @@ export function CodexDetailContent({
       if (!outcome.persisted) {
         throw new AlreadyNotifiedSaveError(
           `codex structural save not persisted: ${entry.id}`,
+          { cause: saveOutcomeCause(outcome) },
         );
       }
     }

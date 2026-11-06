@@ -607,6 +607,77 @@ describe("createAutoSave", () => {
     });
   });
 
+  describe("store 経由の quarantine（AlreadyNotifiedSaveError の cause。PUB-G #36 の引継ぎ）", () => {
+    const notifiedQuarantine = () =>
+      new AlreadyNotifiedSaveError("codex save not persisted: codex-1", {
+        cause: Object.assign(new Error("WORKSPACE_QUARANTINED: fenced"), {
+          code: "WORKSPACE_QUARANTINED",
+        }),
+      });
+
+    it("sticky の案内を 1 回出し、汎用の失敗 toast は出さない", async () => {
+      const saveFn = vi.fn().mockRejectedValue(notifiedQuarantine());
+      const autoSave = createAutoSave(saveFn, 500);
+
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(toast.error).toHaveBeenCalledTimes(1);
+      expect(toast.error).toHaveBeenCalledWith(
+        i18next.t("autoSave.workspaceQuarantined"),
+        expect.objectContaining({
+          id: "autosave-workspace-quarantined",
+          duration: Infinity,
+        }),
+      );
+    });
+
+    it("再試行を止め、未保存として数え、flush は元の拒否を伝える", async () => {
+      const saveFn = vi.fn().mockRejectedValue(notifiedQuarantine());
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+      try {
+        autoSave.schedule();
+        await vi.advanceTimersByTimeAsync(500);
+        autoSave.schedule();
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(saveFn).toHaveBeenCalledTimes(1);
+        expect(toast.error).toHaveBeenCalledTimes(1);
+        expect(hasAnyPendingOrFailedAutoSave()).toBe(true);
+
+        await expect(autoSave.flush()).rejects.toBeInstanceOf(
+          AlreadyNotifiedSaveError,
+        );
+        expect(saveFn).toHaveBeenCalledTimes(1);
+        expect(hasAnyPendingOrFailedAutoSave()).toBe(true);
+
+        autoSave.cancel();
+        expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+      } finally {
+        unregister();
+      }
+    });
+
+    it("quarantine 以外の AlreadyNotifiedSaveError は従来どおり toast を出さず、再試行も止めない", async () => {
+      const saveFn = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new AlreadyNotifiedSaveError("not persisted", {
+            cause: new Error("boom"),
+          }),
+        )
+        .mockResolvedValue(undefined);
+      const autoSave = createAutoSave(saveFn, 500);
+
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(toast.error).not.toHaveBeenCalled();
+
+      await autoSave.flush();
+      expect(saveFn).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("未保存が無ければ hasAnyPendingOrFailedAutoSave は false", async () => {
     const saveFn = vi.fn().mockResolvedValue(undefined);
     const autoSave = createAutoSave(saveFn, 500);
