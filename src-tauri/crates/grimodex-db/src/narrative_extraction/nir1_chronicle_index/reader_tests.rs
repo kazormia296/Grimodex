@@ -679,3 +679,114 @@ fn a_runtime_pause_interrupts_a_running_reader_statement() {
     );
     assert_eq!(f.runtime.live_chronicle_readers(), 0);
 }
+
+/// E7: 待つ側の上限を試験で縮めた値。
+const SHORT_BOUND: std::time::Duration = std::time::Duration::from_millis(60);
+
+/// E7 (p'): stop を無視して止まらない reader。待つ側は上限（試験では短縮）で
+/// 先に進み、reader の participant は count から外れ、slot は塞がり、
+/// authority の transition は physical exclusive まで完了できる。
+/// reader が遅れて終わっても slot は戻らず、participant は二重に減らない。
+#[test]
+fn a_reader_that_ignores_stop_is_forced_at_the_bound_and_its_slot_is_blocked() {
+    let f = Fixture::new();
+    let (core, p) = participant();
+    let admission = admit(&f);
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::scope(|scope| {
+        let (fr, ar, pr) = (&f, &admission, &p);
+        let reader = scope.spawn(move || {
+            on_reader(fr, ar, pr, |_| {
+                entered_tx.send(()).expect("entered");
+                // stop を見ずに寝る（試験用）。
+                let _ = release_rx.recv_timeout(std::time::Duration::from_secs(30));
+                Ok(())
+            })
+        });
+        entered_rx.recv().expect("reader entered");
+        assert_eq!(core.workspace_participant_count().expect("count"), 1);
+        assert_eq!(f.runtime.live_chronicle_readers(), 1);
+
+        let ticket = match core
+            .begin_transition(crate::AdmissionKind::Open)
+            .expect("Open admission")
+        {
+            crate::AdmissionOutcome::Admitted(ticket) => ticket,
+            crate::AdmissionOutcome::NotAdmitted { .. } => panic!("Open admitted"),
+        };
+        assert!(
+            matches!(
+                core.physical_exclusive_for_ticket(&ticket),
+                Err(crate::LifecycleError::ActiveOperations)
+            ),
+            "before the bound the live reader's participant still blocks the exclusive"
+        );
+
+        // 上限の前は何も強制しない。
+        let wait = crate::ReaderStopBoundedWait::with_bound(&core, SHORT_BOUND);
+        assert_eq!(wait.poll(), 0, "not forced before the bound");
+        assert_eq!(core.workspace_participant_count().expect("count"), 1);
+        assert!(!f.runtime.chronicle_reader_slot_blocked());
+
+        // 上限を過ぎたら一度だけ強制する。
+        std::thread::sleep(SHORT_BOUND * 2);
+        assert_eq!(wait.poll(), 1, "the reader is forced once at the bound");
+        assert_eq!(wait.poll(), 0, "and not again");
+        assert_eq!(core.workspace_participant_count().expect("count"), 0);
+        assert!(f.runtime.chronicle_reader_slot_blocked());
+        assert!(f.runtime.try_acquire_reader_permit().is_none());
+
+        // 順序：participant が外れた後で、同じ lifecycle lock の下で exclusive が通る。
+        let exclusive = core
+            .physical_exclusive_for_ticket(&ticket)
+            .expect("the transition reaches its physical exclusive");
+        drop(exclusive);
+
+        // reader が遅れて終わる。stop 済みなので typed な停止で、close は証明される
+        // が slot は戻らない。
+        release_tx.send(()).expect("release the reader");
+        let late = reader.join().expect("reader thread").expect_err("stopped");
+        assert_eq!(termination(&late), ValidationTerminationReason::Cancelled);
+    });
+    assert!(f.runtime.chronicle_reader_slot_blocked());
+    assert!(
+        f.runtime.try_acquire_reader_permit().is_none(),
+        "never given back"
+    );
+    assert_eq!(
+        f.runtime.live_chronicle_readers(),
+        1,
+        "the slot stays taken"
+    );
+    drop(p);
+    assert_eq!(
+        core.workspace_participant_count().expect("count"),
+        0,
+        "the late drop of the participant does not count twice"
+    );
+    assert!(f.db.connection_reusable(), "the authority is untouched");
+}
+
+/// E7: 通常は上限に達しない。reader が上限より前に終われば slot は戻り、
+/// 上限を過ぎた poll も何も強制しない。reader でない participant は強制されない。
+#[test]
+fn a_reader_that_stops_in_time_is_not_forced_and_a_plain_participant_is_never_forced() {
+    let f = Fixture::new();
+    let (core, p) = participant();
+    let admission = admit(&f);
+    on_reader(&f, &admission, &p, |_| Ok(())).expect("clean reader");
+    assert_eq!(f.runtime.live_chronicle_readers(), 0);
+    assert!(!f.runtime.chronicle_reader_slot_blocked());
+
+    // reader の scope が終われば registration は無い。participant は残る。
+    let wait = crate::ReaderStopBoundedWait::with_bound(&core, std::time::Duration::ZERO);
+    assert_eq!(wait.poll(), 0, "no reader is open: nothing to force");
+    assert_eq!(
+        core.workspace_participant_count().expect("count"),
+        1,
+        "a participant that is not a reader is awaited, never forced"
+    );
+    assert!(!f.runtime.chronicle_reader_slot_blocked());
+    drop(f.runtime.try_acquire_reader_permit().expect("slot is free"));
+}

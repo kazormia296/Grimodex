@@ -527,3 +527,137 @@ fn a_stop_during_the_reader_prepare_closes_the_reader_promptly() {
     eprintln!("IRB3_STOP_TO_READER_CLOSE_MS={}", worst.as_millis());
     assert!(worst < Duration::from_secs(2), "{worst:?}");
 }
+
+/// 上限を試験で縮めた値（E7。本番は `READER_STOP_BOUNDED_WAIT_MS`＝2 s）。
+const E7_SHORT_BOUND: Duration = Duration::from_millis(80);
+
+/// 止まらない reader を、build と同じ経路（`with_chronicle_reader`）で作る。
+/// closure は stop を見ずに `release` を待つ。`entered` は reader が入った合図。
+fn spawn_stuck_reader<'scope, 'env>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    h: &'env Harness,
+    participant: &'env WorkspaceParticipant,
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+) -> std::thread::ScopedJoinHandle<'scope, Result<()>> {
+    scope.spawn(move || {
+        let runtime = h.runtime();
+        let permit = runtime.try_acquire_reader_permit().expect("reader slot");
+        let mut control = NeverStops;
+        let admission = match h
+            .authority
+            .db()
+            .with_participant_read_transaction(participant, |conn| {
+                runtime.chronicle_reader_admission(conn, &h.project, &mut control)
+            })
+            .expect("admission")
+        {
+            index::ChronicleReaderAdmissionRead::Admitted(admission) => admission,
+            _ => panic!("the cold workspace needs a build"),
+        };
+        runtime.with_chronicle_reader(permit, &admission, participant, |_| {
+            entered.send(()).expect("entered");
+            let _ = release.recv_timeout(Duration::from_secs(30));
+            Ok(())
+        })
+    })
+}
+
+/// 止まらない reader の admission 用：stop を見ない control（試験用）。
+struct NeverStops;
+
+impl GraphWorkControl for NeverStops {
+    fn check(&mut self, _stage: GraphWorkStage) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn allows_full_eligibility(&self) -> bool {
+        true
+    }
+}
+
+/// E7: transition の physical exclusive の待ちは、止まらない reader を上限で
+/// 強制して先に進む。slot は塞がり、次の build は即 `Stopped`。
+#[test]
+fn a_transition_forces_a_stuck_reader_at_the_bound_and_the_next_build_stops() {
+    let h = Harness::new();
+    let participant = h.participant();
+    // transition 中は request を pin できないので、先に取る。
+    let request = h.request();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let reader = spawn_stuck_reader(scope, &h, &participant, entered_tx, release_rx);
+        entered_rx.recv().expect("reader entered");
+        h.state
+            .workspace_lifecycle
+            .begin_transition_kind(grimodex_db::AdmissionKind::Open)
+            .expect("transition admitted");
+        let core = h.state.ws.lifecycle_core().clone();
+        assert_eq!(core.workspace_participant_count().expect("count"), 1);
+        let started = Instant::now();
+        let exclusive = h
+            .state
+            .workspace_lifecycle
+            .acquire_transition_physical_exclusive_with_reader_bound(
+                grimodex_db::ReaderStopBoundedWait::with_bound(&core, E7_SHORT_BOUND),
+            )
+            .expect("the transition goes on at the bound");
+        let waited = started.elapsed();
+        assert!(waited >= E7_SHORT_BOUND, "not before the bound: {waited:?}");
+        assert!(waited < Duration::from_secs(10), "{waited:?}");
+        assert_eq!(core.workspace_participant_count().expect("count"), 0);
+        assert!(h.runtime().chronicle_reader_slot_blocked());
+        drop(exclusive);
+
+        // 次の build は reader を開かずに即 Stopped（slot は戻らない）。
+        // (transition 中は新しい participant を取れないので、reader が使っている
+        // participant で呼ぶ。slot が先に判定されるので participant には触れない。)
+        let next = outcome(h.prepare(&request, &participant).expect("blocked"));
+        assert!(matches!(next, BuildOutcome::Stopped), "{}", next.label());
+
+        release_tx.send(()).expect("release");
+        assert!(
+            reader.join().expect("reader thread").is_err(),
+            "stopped late"
+        );
+    });
+    assert!(
+        h.runtime().chronicle_reader_slot_blocked(),
+        "never given back"
+    );
+    assert!(h.runtime().try_acquire_reader_permit().is_none());
+}
+
+/// E7: shutdown の待ちも同じ上限。reader でない participant は待ち続ける。
+#[test]
+fn shutdown_forces_a_stuck_reader_at_the_bound() {
+    let h = Harness::new();
+    let participant = h.participant();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("runtime");
+    std::thread::scope(|scope| {
+        let reader = spawn_stuck_reader(scope, &h, &participant, entered_tx, release_rx);
+        entered_rx.recv().expect("reader entered");
+        let core = h.state.ws.lifecycle_core().clone();
+        let started = Instant::now();
+        runtime
+            .block_on(
+                h.state
+                    .workspace_lifecycle
+                    .wait_participants_gone_for_shutdown(
+                        grimodex_db::ReaderStopBoundedWait::with_bound(&core, E7_SHORT_BOUND),
+                    ),
+            )
+            .expect("shutdown goes on at the bound");
+        assert!(started.elapsed() >= E7_SHORT_BOUND);
+        assert_eq!(core.workspace_participant_count().expect("count"), 0);
+        assert!(h.runtime().chronicle_reader_slot_blocked());
+        release_tx.send(()).expect("release");
+        assert!(reader.join().expect("reader thread").is_err());
+    });
+}

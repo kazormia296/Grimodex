@@ -367,6 +367,11 @@ impl NirChronicleIndexRuntime {
 
     /// DR-IRB-3 (E13): take this authority's single reader slot, or `None`.
     pub fn try_acquire_reader_permit(&self) -> Option<ReaderPermit> {
+        // A blocked slot never comes back, even if its reader has since ended
+        // (a forced reader's late close is not evidence the waiter relied on).
+        if self.reader_slot_blocked.load(Ordering::SeqCst) {
+            return None;
+        }
         self.reader_slot
             .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
             .ok()
@@ -465,8 +470,22 @@ impl NirChronicleIndexRuntime {
             self.native_build_cancellation_epoch(),
             admission.runtime_epoch,
         );
+        // E7: the reader is registered with the participant's lifecycle core
+        // while it is open, so a waiting side whose bounded wait passed can
+        // force it out of the participant count and block this slot.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _hold = participant.register_reader_hold(
+            self.owner,
+            Arc::clone(&stop),
+            Arc::clone(&self.reader_slot_blocked),
+        );
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            reader.with_participant_chronicle_reader(participant, cancellation, operation)
+            reader.with_participant_chronicle_reader_stoppable(
+                participant,
+                cancellation,
+                stop,
+                operation,
+            )
         }));
         match outcome {
             Ok(result) => {
@@ -480,6 +499,11 @@ impl NirChronicleIndexRuntime {
                 if unproven {
                     tracing::error!("NIR1 chronicle reader close unproven; reader slot kept");
                     self.block_reader_slot(open_slot);
+                } else if self.reader_slot_blocked.load(Ordering::SeqCst) {
+                    // E7: the waiting side forced this reader out. The close
+                    // is proven now, but the slot stays blocked: the forced
+                    // state was published before this evidence existed.
+                    self.block_reader_slot(open_slot);
                 } else {
                     self.release_with_close_evidence(open_slot);
                 }
@@ -490,6 +514,9 @@ impl NirChronicleIndexRuntime {
                 // Re-prove it (retiring twice is harmless) before the slot
                 // is given back.
                 match reader.prove_chronicle_reader_closed() {
+                    Ok(()) if self.reader_slot_blocked.load(Ordering::SeqCst) => {
+                        self.block_reader_slot(open_slot)
+                    }
                     Ok(()) => self.release_with_close_evidence(open_slot),
                     Err(error) => {
                         tracing::error!(%error, "NIR1 chronicle reader close unproven after panic; reader slot kept");
