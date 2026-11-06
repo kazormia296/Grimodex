@@ -1,7 +1,7 @@
 //! Candidate-scoped, one/two-window, identity-merge no-repair recipes.
 //! This is deliberately narrower than every citation-ID production path.
 use super::super::stage_provenance::VerifiedV2ContextArtifact;
-use super::{array_at, prompt, required, segments, string_at};
+use super::{array_at, prompt, required, segments, string_at, RunProofMemo};
 use anyhow::{ensure, Result};
 use rusqlite::{params, Connection};
 use serde_json::Value;
@@ -15,7 +15,12 @@ pub(super) struct AcceptedArtifact {
 }
 
 /// Select an exact accepted Task/Attempt, never whichever artifact survived.
-fn accepted(conn: &Connection, run: &str, task: &str, kind: &str) -> Result<AcceptedArtifact> {
+pub(super) fn accepted(
+    conn: &Connection,
+    run: &str,
+    task: &str,
+    kind: &str,
+) -> Result<AcceptedArtifact> {
     let mut stmt = conn.prepare("SELECT t.id, a.id, f.id, f.payload_digest, f.payload_json
         FROM narrative_extraction_tasks t JOIN narrative_extraction_attempts a
         ON a.task_id=t.id AND a.attempt_number=t.attempt_count AND a.status='completed'
@@ -63,6 +68,7 @@ pub(super) enum Outcome {
 
 pub(super) fn resolve(
     conn: &Connection,
+    memo: &mut RunProofMemo,
     run: &str,
     root: &VerifiedV2ContextArtifact,
     coverage: &Value,
@@ -93,8 +99,8 @@ pub(super) fn resolve(
             "no-repair-terminal-binding-invalid"
         );
     }
-    let snapshot = accepted(conn, run, "source.snapshot@1", "source.snapshot@1")?;
-    let plan = accepted(conn, run, "source.window-plan@1", "source.window-plan@1")?;
+    let snapshot = memo.accepted_artifact(conn, run, "source.snapshot@1", "source.snapshot@1")?;
+    let plan = memo.accepted_artifact(conn, run, "source.window-plan@1", "source.window-plan@1")?;
     let windows = array_at(&plan.payload, "/windows")?;
     ensure!(
         coverage["windowCount"].as_u64() == Some(windows.len() as u64),
@@ -108,13 +114,13 @@ pub(super) fn resolve(
     {
         return Ok(Outcome::Unsupported("catalog-recipe-unsupported"));
     }
-    let raw = accepted(
+    let raw = memo.accepted_artifact(
         conn,
         run,
         "chronicle.observe-events@1",
         "chronicle.raw-observations@1",
     )?;
-    let merged = accepted(
+    let merged = memo.accepted_artifact(
         conn,
         run,
         "chronicle.merge-local-observations@1",
@@ -125,13 +131,13 @@ pub(super) fn resolve(
             "nonidentity-merge-recipe-not-implemented",
         ));
     }
-    let clusters = accepted(
+    let clusters = memo.accepted_artifact(
         conn,
         run,
         "chronicle.cluster-event-observations@1",
         "chronicle.event-clusters@1",
     )?;
-    let synthesis = accepted(
+    let synthesis = memo.accepted_artifact(
         conn,
         run,
         "chronicle.synthesize-event@1",

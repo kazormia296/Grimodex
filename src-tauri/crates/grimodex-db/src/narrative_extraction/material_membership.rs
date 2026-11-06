@@ -9,8 +9,8 @@ use std::cell::Cell;
 
 use super::human_material_basis::{MaterialBasis, MaterialSourceBasisEntry};
 use super::material_membership_root::{
-    read_root_material, Material, RequestProof, RosterIssue, RosterStatus, VerifiedArtifact,
-    VerifiedReceipt,
+    read_root_material_with_memo, Material, RequestProof, RosterIssue, RosterStatus, RunProofMemo,
+    VerifiedArtifact, VerifiedReceipt,
 };
 
 #[cfg(test)]
@@ -75,6 +75,22 @@ pub fn read_revision_material_membership(
     project_id: &str,
     revision_id: &str,
 ) -> Result<MaterialMembershipRead> {
+    read_revision_material_membership_with_memo(
+        conn,
+        project_id,
+        revision_id,
+        &mut RunProofMemo::default(),
+    )
+}
+
+/// The same read, reusing the Run-level proofs that `memo` collected from
+/// other Roots read under this same read transaction (see `RunProofMemo`).
+pub(in crate::narrative_extraction) fn read_revision_material_membership_with_memo(
+    conn: &Connection,
+    project_id: &str,
+    revision_id: &str,
+    memo: &mut RunProofMemo,
+) -> Result<MaterialMembershipRead> {
     #[cfg(test)]
     MATERIAL_MEMBERSHIP_READ_COUNT.with(|count| count.set(count.get() + 1));
     ensure!(
@@ -100,7 +116,7 @@ pub fn read_revision_material_membership(
     };
     let root = &chain[0];
     let selected = &chain[chain.len() - 1];
-    let replay = read_root_material(conn, project_id, &root.id)?;
+    let replay = read_root_material_with_memo(conn, project_id, &root.id, memo)?;
     if replay.status != RosterStatus::Complete {
         return Ok(MaterialMembershipRead::Unavailable {
             status: replay.status,

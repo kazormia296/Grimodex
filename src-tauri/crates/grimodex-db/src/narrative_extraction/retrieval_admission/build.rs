@@ -8,8 +8,10 @@ use serde_json::Value;
 use super::super::{
     human_material_basis::{MaterialEvidenceEntry, MaterialSourceBasisEntry},
     material_membership::{
-        read_revision_material_membership, MaterialMembershipRead, RevisionMaterialMembership,
+        read_revision_material_membership_with_memo, MaterialMembershipRead,
+        RevisionMaterialMembership,
     },
+    material_membership_root::RunProofMemo,
     revision_eligibility::{freshness, RevisionFreshnessRead, RevisionFreshnessSnapshot},
 };
 use super::{
@@ -67,11 +69,30 @@ pub(in crate::narrative_extraction) struct BuildCandidatePreflight {
     pub disclosure: disclosure::VerifiedDisclosureMaterial,
 }
 
+#[cfg(test)]
 pub(in crate::narrative_extraction) fn preflight_build_candidate(
     conn: &Connection,
     project: &str,
     revision: &str,
     authority: &NarrativeProjectScopeAuthorityV1,
+) -> Result<std::result::Result<BuildCandidatePreflight, Reason>> {
+    preflight_build_candidate_with_memo(
+        conn,
+        project,
+        revision,
+        authority,
+        &mut RunProofMemo::default(),
+    )
+}
+
+/// `preflight_build_candidate` that shares Run-level proofs with the other
+/// candidates of the same prepare (one read transaction).
+pub(in crate::narrative_extraction) fn preflight_build_candidate_with_memo(
+    conn: &Connection,
+    project: &str,
+    revision: &str,
+    authority: &NarrativeProjectScopeAuthorityV1,
+    memo: &mut RunProofMemo,
 ) -> Result<std::result::Result<BuildCandidatePreflight, Reason>> {
     ensure!(
         !conn.is_autocommit(),
@@ -80,12 +101,13 @@ pub(in crate::narrative_extraction) fn preflight_build_candidate(
     // Replay the sealed membership once even when the current row is
     // unapproved. It remains candidate-local data and must not contribute to
     // the global scope union until all preliminary gates below pass.
-    let membership = match read_revision_material_membership(conn, project, revision)? {
-        MaterialMembershipRead::Complete(value) => value,
-        MaterialMembershipRead::Unavailable { .. } => {
-            return Ok(Err(Reason::MembershipUnavailable))
-        }
-    };
+    let membership =
+        match read_revision_material_membership_with_memo(conn, project, revision, memo)? {
+            MaterialMembershipRead::Complete(value) => value,
+            MaterialMembershipRead::Unavailable { .. } => {
+                return Ok(Err(Reason::MembershipUnavailable))
+            }
+        };
     let Some(current) = current::read(conn, project, revision)? else {
         return Ok(Err(Reason::RevisionNotCurrentHumanApproved));
     };

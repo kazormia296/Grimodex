@@ -45,6 +45,8 @@ mod query_tests;
 #[cfg(test)]
 mod read_identity_tests;
 #[cfg(test)]
+mod run_proof_memo_tests;
+#[cfg(test)]
 mod source_tests;
 #[cfg(test)]
 mod test_support;
