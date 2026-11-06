@@ -13,10 +13,10 @@ use super::super::evaluator::{BuildAction, EvidenceFreshness};
 use super::super::material_membership::RevisionMaterialMembership;
 use super::super::publish_runtime::worst_edge_state_for_consumer;
 use super::super::restore_rebuild::{
-    evaluate_edge_from_db, evaluate_edge_from_db_with_control,
+    evaluate_edge_from_db, evaluate_edge_from_db_with_control_and_reads,
 };
 use super::super::source_revision::{
-    is_validation_terminated, validation_terminated, ValidationContext,
+    is_validation_terminated, validation_terminated, CandidateFreshnessReads, ValidationContext,
     ValidationTerminationReason,
 };
 use super::super::nir1_entity_relation_index::GraphWorkControl;
@@ -41,7 +41,7 @@ pub(in crate::narrative_extraction) fn read(
     project: &str,
     membership: &RevisionMaterialMembership,
 ) -> Result<RevisionFreshnessRead> {
-    read_impl(conn, project, membership, None)
+    read_impl(conn, project, membership, None, None)
 }
 
 /// Context-bound counterpart for foreground Apply and bounded Freshness.
@@ -56,7 +56,24 @@ pub(in crate::narrative_extraction) fn read_with_validation_context(
 ) -> Result<RevisionFreshnessRead> {
     let conn = context.connection();
     let control = context.control();
-    read_impl(conn, project, membership, Some(control))
+    read_impl(conn, project, membership, Some(control), None)
+}
+
+/// [`read_with_validation_context`] for Prepare's candidate loop, which shares
+/// the Scope read and the sealed Run bindings of its Scope-dependency Sources
+/// across candidates (DR-IRB-6). Everything else is read per candidate, in the
+/// same order and with the same `control.check` calls. An autocommit
+/// connection shares nothing: the ordinary path makes its own snapshot there.
+pub(in crate::narrative_extraction) fn read_with_validation_context_and_reads(
+    context: &mut ValidationContext<'_, '_>,
+    project: &str,
+    membership: &RevisionMaterialMembership,
+    reads: &mut CandidateFreshnessReads,
+) -> Result<RevisionFreshnessRead> {
+    let conn = context.connection();
+    let control = context.control();
+    let reads = (!conn.is_autocommit()).then_some(reads);
+    read_impl(conn, project, membership, Some(control), reads)
 }
 
 fn read_impl(
@@ -64,6 +81,7 @@ fn read_impl(
     project: &str,
     membership: &RevisionMaterialMembership,
     mut control: Option<&mut dyn GraphWorkControl>,
+    mut reads: Option<&mut CandidateFreshnessReads>,
 ) -> Result<RevisionFreshnessRead> {
     let revision = &membership.revision_id;
     match is_generic_freshness_canonical(conn) {
@@ -219,7 +237,14 @@ fn read_impl(
             return Ok(unavailable(Reason::CurrentSourceUnavailable));
         }
         let observed_result = match control.as_deref_mut() {
-            Some(control) => evaluate_edge_from_db_with_control(conn, project, owner, edge, control),
+            Some(control) => evaluate_edge_from_db_with_control_and_reads(
+                conn,
+                project,
+                owner,
+                edge,
+                control,
+                reads.as_deref_mut(),
+            ),
             None => evaluate_edge_from_db(conn, project, owner, edge),
         };
         let observed = match observed_result {

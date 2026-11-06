@@ -158,6 +158,7 @@ pub(in crate::narrative_extraction) fn finalize_build_candidate(
         preflight,
         material_scope_cache,
         &mut control,
+        None,
     )
 }
 
@@ -168,6 +169,7 @@ pub(in crate::narrative_extraction) fn finalize_build_candidate_with_control(
     preflight: BuildCandidatePreflight,
     material_scope_cache: &super::super::scene_scope::MaterialSceneScopeCache,
     control: &mut dyn super::super::nir1_entity_relation_index::GraphWorkControl,
+    reads: Option<&mut super::super::source_revision::CandidateFreshnessReads>,
 ) -> Result<std::result::Result<BuildCandidate, Reason>> {
     let material_source_keys = preflight
         .membership
@@ -183,11 +185,20 @@ pub(in crate::narrative_extraction) fn finalize_build_candidate_with_control(
         Err(_) => return Ok(Err(Reason::MaterialAuthorityUnavailable)),
     };
     let mut context = super::super::source_revision::validation_context(conn, control);
-    let canonical = match freshness::read_with_validation_context(
-        &mut context,
-        project,
-        &preflight.membership,
-    )? {
+    // `reads: None` (the single-candidate callers) is the ordinary path; the
+    // Prepare's finalize loop shares its Scope-dependency reads (DR-IRB-6).
+    let freshness_read = match reads {
+        Some(reads) => freshness::read_with_validation_context_and_reads(
+            &mut context,
+            project,
+            &preflight.membership,
+            reads,
+        )?,
+        None => {
+            freshness::read_with_validation_context(&mut context, project, &preflight.membership)?
+        }
+    };
+    let canonical = match freshness_read {
         RevisionFreshnessRead::Fresh(value) => value,
         RevisionFreshnessRead::Unavailable { reason } => {
             return Ok(Err(Reason::CanonicalFreshness(reason)))

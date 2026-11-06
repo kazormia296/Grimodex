@@ -224,7 +224,12 @@ pub(super) fn read_snapshot_with_control(
         }
         Err(_) => return Ok(Err(Reason::ScopeUnavailable)),
     };
+    // The candidates' Freshness reads share the Scope read and the sealed Run
+    // bindings of their Scope-dependency Sources (DR-IRB-6). Like the Run proof
+    // memo, this is a local of this call (one read transaction) and is dropped
+    // before the snapshot is returned; it is never part of it.
     let mut candidates = Vec::new();
+    let mut freshness_reads = super::super::source_revision::CandidateFreshnessReads::default();
     for preflight in preflights {
         control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Row)?;
         if let Ok(candidate) = finalize_build_candidate_with_control(
@@ -234,10 +239,12 @@ pub(super) fn read_snapshot_with_control(
             preflight,
             &material_scope_cache,
             control,
+            Some(&mut freshness_reads),
         )? {
             candidates.push(candidate);
         }
     }
+    drop(freshness_reads);
     let edges = input_edges(project, &roster.digest, &candidates)?;
     let feed = match pending::read(conn, project, &edges)? {
         Ok(value) => value,

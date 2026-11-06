@@ -242,6 +242,29 @@ pub(crate) fn resolve_source_revision_with_control(
     source_key: &str,
     control: &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
 ) -> anyhow::Result<CurrentSourceRevision> {
+    resolve_source_revision_with_control_and_reads(
+        conn,
+        project_id,
+        run_id,
+        source_kind,
+        source_key,
+        control,
+        None,
+    )
+}
+
+/// [`resolve_source_revision_with_control`] that may share the reads of one
+/// Prepare's candidate loop (DR-IRB-6). `reads: None` is the ordinary path; the
+/// only Source kind that uses `Some` is the Scope dependency projection.
+pub(super) fn resolve_source_revision_with_control_and_reads(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    source_kind: &str,
+    source_key: &str,
+    control: &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
+    reads: Option<&mut CandidateFreshnessReads>,
+) -> anyhow::Result<CurrentSourceRevision> {
     control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
     if source_kind == super::nir1_entity_relation_index::SOURCE_KIND {
         if !control.allows_full_eligibility() {
@@ -293,7 +316,15 @@ pub(crate) fn resolve_source_revision_with_control(
     // canonical implementation. Re-check after it returns so a SQLite
     // interruption or a stop arriving during that read cannot be normalized
     // by a caller into an ordinary missing/stale diagnostic.
-    match resolve_source_revision(conn, project_id, run_id, source_kind, source_key) {
+    let resolved = match reads {
+        // Only inside a read transaction: an autocommit caller keeps the
+        // ordinary path, whose own savepoint establishes its snapshot.
+        Some(reads) if source_kind == SCOPE_DEPENDENCY_SOURCE_KIND && !conn.is_autocommit() => {
+            reads.resolve_scope_dependency(conn, project_id, run_id, source_key)
+        }
+        _ => resolve_source_revision(conn, project_id, run_id, source_kind, source_key),
+    };
+    match resolved {
         Ok(current) => {
             control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
             Ok(current)
@@ -386,16 +417,39 @@ pub(crate) fn resolve_current_source_state_with_control(
     source_key: &str,
     control: &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
 ) -> anyhow::Result<CurrentSourceState> {
+    resolve_current_source_state_with_control_and_reads(
+        conn,
+        project_id,
+        run_id,
+        source_kind,
+        source_key,
+        control,
+        None,
+    )
+}
+
+/// [`resolve_current_source_state_with_control`] that may share the reads of
+/// one Prepare's candidate loop (DR-IRB-6).
+pub(super) fn resolve_current_source_state_with_control_and_reads(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    source_kind: &str,
+    source_key: &str,
+    control: &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
+    reads: Option<&mut CandidateFreshnessReads>,
+) -> anyhow::Result<CurrentSourceState> {
     control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
     current_source_state_from_resolution(
         source_kind,
-        resolve_source_revision_with_control(
+        resolve_source_revision_with_control_and_reads(
             conn,
             project_id,
             run_id,
             source_kind,
             source_key,
             control,
+            reads,
         ),
     )
 }
@@ -426,6 +480,92 @@ impl SourceBatchReads {
             chronicle_eligibility_digest: Some(digest),
             ..Self::default()
         }
+    }
+}
+
+const SCOPE_DEPENDENCY_SOURCE_KIND: &str = "scope-dependency-projection-v1";
+
+/// The reads one Prepare shares across the candidates of its finalize loop
+/// (DR-IRB-6): the project's one Scope read (authority and Scene bindings) and
+/// the sealed Run document bindings, once per (project, Run), for the
+/// Scope-dependency Sources that each candidate's Freshness resolves.
+///
+/// The Prepare creates it as a local of the finalize loop inside its read
+/// transaction and drops it when the loop ends; it is never part of the
+/// `BuildSnapshot`. Only a successful read is kept, so a failing read is made
+/// again for the next candidate and fails the same way. Nothing else of a
+/// candidate's Freshness is shared: every other read, comparison and
+/// `control.check` runs as it does without it.
+///
+/// Contract: nothing writes to this connection while the reads are alive. The
+/// loop itself performs no write, and its `control.check` must only observe a
+/// stop and never write to this connection (the production control reads a
+/// stop flag). As a cheap guard against a control that breaks this, the reads
+/// remember the connection's `total_changes()` when they are first used and
+/// are discarded and read again as soon as it differs. That guard sees only the
+/// rows an INSERT, UPDATE or DELETE changes (what `total_changes()` counts), not
+/// schema or pragma changes, and not a transaction boundary on this connection
+/// (a COMMIT and a new BEGIN move the snapshot without changing
+/// `total_changes()`), so it narrows the contract and does not replace it.
+///
+/// The reads also belong to one project: they remember the `project_id` they
+/// were first used for, and a call for another project discards them and reads
+/// again (in production, too, not only under `debug_assert`).
+#[derive(Default)]
+pub(super) struct CandidateFreshnessReads {
+    reads: SourceBatchReads,
+    /// `conn.total_changes()` when the reads were first used (or last discarded).
+    changes: Option<u64>,
+    /// The project the reads were first used for (or last discarded for).
+    project: Option<String>,
+}
+
+impl CandidateFreshnessReads {
+    fn guard(&mut self, conn: &Connection, project_id: &str) {
+        let now = conn.total_changes();
+        let same_project = self.project.as_deref() == Some(project_id);
+        match self.changes {
+            Some(at) if at == now && same_project => {}
+            Some(_) => {
+                self.reads = SourceBatchReads::default();
+                self.changes = Some(now);
+                self.project = Some(project_id.to_owned());
+            }
+            None => {
+                self.changes = Some(now);
+                self.project = Some(project_id.to_owned());
+            }
+        }
+    }
+
+    /// The Scope dependency branch of the batch path: the same reads in the same
+    /// order (the project Scope read first, then the identity, the sealed
+    /// binding and the projection revision), with the Scope read and the sealed
+    /// bindings taken from, and kept in, this object.
+    fn resolve_scope_dependency(
+        &mut self,
+        conn: &Connection,
+        project_id: &str,
+        run_id: &str,
+        source_key: &str,
+    ) -> anyhow::Result<CurrentSourceRevision> {
+        self.guard(conn, project_id);
+        let SourceBatchReads {
+            scope_read,
+            sealed_documents,
+            ..
+        } = &mut self.reads;
+        let read = shared_scope_read(conn, project_id, scope_read)?;
+        ensure_non_empty_token(
+            super::scope_dependency_projection::resolve_with_authority_and_memo_in_tx(
+                conn,
+                project_id,
+                run_id,
+                source_key,
+                &read.authority,
+                sealed_documents,
+            )?,
+        )
     }
 }
 
