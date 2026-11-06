@@ -3,7 +3,8 @@
 // 1 回目を注釈（ai）、2 回目を安定性（ai2）に使う。理由の文章は求めず、応答の本文は保存しない（label だけ）。
 //
 // --dry-run：送信範囲（送る本文の件数・文字数・model・endpoint。本文そのものは出さない）だけを出して終わる。
-//            key は読まず、通信しない。
+//            key は読まず、Scene の本文も送らない。通信するのは単価の取得（OpenRouter の公開 API への key なしの GET 1 回）だけで、
+//            --no-price-fetch で止められる（単価は仮定値になり「未確認」と表示する）。
 // 実送信：次が揃うときだけ。
 //   --privacy-record <json>  §8 の「学習に使われない設定」の確認の記録（checkedAt／accountSetting／providerTerms／checkedBy）
 //   key の経路は評価の harness（ir-slot.mjs）と同じ：
@@ -12,8 +13,8 @@
 //   key の値・長さは表示も記録もしない。
 //
 // 使い方：
-//   node annotate-ai.mjs --selection <selection.json> --dry-run
-//   node annotate-ai.mjs --selection <selection.json> --out-dir <dir> --state <repo 外の jsonl> \
+//   node annotate-ai.mjs --selection <selection.json> --dry-run [--no-price-fetch]
+//   node annotate-ai.mjs --selection <selection.json> --out-dir <repo 外の dir> --state <repo 外の jsonl> \
 //        --privacy-record <json> [--key-file <path> | --product-key-store <ai-keys.json>] \
 //        [--repeats 2] [--concurrency 4] [--model openai/gpt-6-luna] [--harness-root <評価 harness の worktree>]
 import assert from "node:assert/strict";
@@ -39,11 +40,24 @@ export const DEFAULT_KEY_FILE = path.join(os.homedir(), ".config/grimodex-eval/o
 export const DEFAULT_HARNESS_ROOT = "/home/grimodex/worktrees/Grimodex/claude-fusion-ir-eval-v6";
 const KEY_PREFIX = "sk-or-";
 const MAX_TOKENS = 4096;
+// 1 組・1 回（repeat）あたりの送信の試行の上限。state に残る「送信開始」の数で数え、再開をまたいで守る。
 const MAX_ATTEMPTS = 3;
-// 費用の見積り（推測）：harness（ir-slot.mjs）の PRICE_ASSUMPTIONS と同じ単価。OpenRouter の現行の掲載値は未確認。
-const PRICE = { inputUsdPerMillion: 0.25, outputUsdPerMillion: 1.5 };
+// 1 回の HTTP 要求の上限時間。推論 model で max_tokens は 4096（推論 token を含む）。遅い provider でも 1 回は
+// 2 分以内に返ると見て 120 秒。超えたら中断して失敗として数え、止まったままの worker を作らない。
+export const REQUEST_TIMEOUT_MS = 120_000;
+// 429／5xx の 1 回の試行の中での再送（待ちは 2 s、4 s、8 s）。
+const HTTP_RETRIES = 3;
+// 認証・支払いの失敗（401／402／403）は全組に共通。続けても無駄なので run を止め、この失敗は試行に数えない。
+const FATAL_STATUSES = new Set([401, 402, 403]);
+// 費用の見積り。単価は dry-run 時に OpenRouter の公開 API から取る。取れなければ下の仮定値（未確認）を使う。
+export const PRICING_URL = "https://openrouter.ai/api/v1/models/openai/gpt-6-luna/endpoints";
+export const PRICING_TIMEOUT_MS = 15_000;
+const ASSUMED_PRICE = { inputUsdPerMillion: 0.25, outputUsdPerMillion: 1.5 }; // harness（ir-slot.mjs）の仮定値。未確認
 const TOKENS_PER_CHAR = 1.5; // 日本語の保守的な見積り（推測）
-const OUTPUT_TOKENS_PER_CALL = 200; // 短い JSON のみ。推論 token の分は未確認
+const OUTPUT_TOKENS_PER_CALL = 200; // 短い JSON の分
+// 推論 model は出力の前に推論 token を使い、課金も出力に数える。実測が無いので 1 回 1,000 token と仮定（推測）。
+// 上限は max_tokens（4096）で、全回がそこまで使った場合の費用を upperBoundUsd に出す。
+const REASONING_TOKENS_PER_CALL = 1000;
 
 /** 注釈する組（selection の全候補）。 */
 export function pairsOf(selection) {
@@ -92,8 +106,54 @@ export function parseLabel(content) {
   }
 }
 
+/** 単価の仮定値（未確認）。 */
+export function assumedPricing(reason = "not-fetched") {
+  return {
+    source: "assumed",
+    confirmed: false,
+    reason,
+    inputUsdPerMillion: { min: ASSUMED_PRICE.inputUsdPerMillion, max: ASSUMED_PRICE.inputUsdPerMillion },
+    outputUsdPerMillion: { min: ASSUMED_PRICE.outputUsdPerMillion, max: ASSUMED_PRICE.outputUsdPerMillion },
+  };
+}
+
+/** endpoints の応答から単価（USD／100 万 token）の最小・最大を取る。取れなければ null。 */
+export function pricingFromEndpoints(json) {
+  const endpoints = json?.data?.endpoints;
+  if (!Array.isArray(endpoints) || endpoints.length === 0) return null;
+  const perMillion = (field) => {
+    const values = endpoints.map((e) => Number(e?.pricing?.[field]) * 1e6);
+    return values.every((v) => Number.isFinite(v) && v >= 0) ? { min: Math.min(...values), max: Math.max(...values) } : null;
+  };
+  const input = perMillion("prompt");
+  const output = perMillion("completion");
+  if (!input || !output) return null;
+  return {
+    source: "openrouter-public-api",
+    confirmed: true,
+    url: PRICING_URL,
+    endpointCount: endpoints.length,
+    inputUsdPerMillion: input,
+    outputUsdPerMillion: output,
+  };
+}
+
+/**
+ * OpenRouter の公開 API（key なし・本文なしの GET）から単価を取る。取れなければ仮定値（未確認）。
+ * 投稿先の provider は routing で決まるため、全 endpoint の最小と最大を取り、見積りは最大で出す。
+ */
+export async function fetchPricing(fetchImpl = globalThis.fetch) {
+  try {
+    const res = await fetchImpl(PRICING_URL, { method: "GET", signal: AbortSignal.timeout(PRICING_TIMEOUT_MS) });
+    if (!res.ok) return assumedPricing(`HTTP ${res.status}`);
+    return pricingFromEndpoints(await res.json()) ?? assumedPricing("unexpected-shape");
+  } catch (error) {
+    return assumedPricing(`error:${error?.name ?? "unknown"}`);
+  }
+}
+
 /** 送信範囲の要約（本文を含まない）。 */
-export function sendScope({ selection, scenes, prompt, model, repeats }) {
+export function sendScope({ selection, scenes, prompt, model, repeats, pricing = assumedPricing() }) {
   const pairs = pairsOf(selection);
   const distinctScenes = new Set();
   let currentChars = 0;
@@ -116,7 +176,9 @@ export function sendScope({ selection, scenes, prompt, model, repeats }) {
   const bodyChars = (currentChars + candidateChars) * repeats;
   const totalChars = bodyChars + systemChars * calls;
   const inputTokens = Math.round(totalChars * TOKENS_PER_CHAR);
-  const outputTokens = calls * OUTPUT_TOKENS_PER_CALL;
+  const outputTokens = calls * (OUTPUT_TOKENS_PER_CALL + REASONING_TOKENS_PER_CALL);
+  const usd = (inTokens, outTokens, p) =>
+    (inTokens * p.inputUsdPerMillion.max + outTokens * p.outputUsdPerMillion.max) / 1e6;
   return {
     model,
     endpoint: ENDPOINT,
@@ -131,11 +193,15 @@ export function sendScope({ selection, scenes, prompt, model, repeats }) {
     systemPromptChars: systemChars,
     maxChars: { perPairBodies: maxPairChars },
     totalInputChars: totalChars,
+    pricing,
     estimate: {
-      note: "推測（単価は harness の仮定値で OpenRouter の現行掲載値は未確認、token は 1.5 token／字、出力は 1 回 200 token と仮定）",
+      note: `推測（単価：${pricing.confirmed ? "OpenRouter の公開 API の掲載値、endpoint 間の最大を使う" : "仮定値で未確認"}。token は 1.5 token／字、出力は 1 回 ${OUTPUT_TOKENS_PER_CALL} token、推論 token は 1 回 ${REASONING_TOKENS_PER_CALL} と仮定。再送は含まない）`,
+      priceConfirmed: pricing.confirmed,
       inputTokens,
       outputTokens,
-      usd: (inputTokens * PRICE.inputUsdPerMillion + outputTokens * PRICE.outputUsdPerMillion) / 1e6,
+      usd: usd(inputTokens, outputTokens, pricing),
+      // 全回が max_tokens（推論 token を含む出力の上限）まで使った場合。1 回目の試行だけで、再送（最大 3 試行）は含まない。
+      upperBoundUsd: usd(inputTokens, calls * MAX_TOKENS, pricing),
     },
     scenesFiles: Object.fromEntries(
       Object.entries(scenes).map(([w, s]) => [w, { sha256: s.sha256 }]),
@@ -212,96 +278,174 @@ export function readPrivacyRecord(file) {
 }
 
 // ---- 送信 ------------------------------------------------------------------------------
-async function callOnce({ key, body, fetchImpl }) {
-  let lastStatus = null;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const res = await fetchImpl(ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/kazormia296/Grimodex",
-        "X-Title": "Grimodex precision gold annotation",
-      },
-      body: JSON.stringify(body),
-    });
-    if (res.ok) return res.json();
-    lastStatus = res.status;
-    await res.text(); // 本文（エラー）は読み捨て、保存も表示もしない
-    if (res.status !== 429 && res.status < 500) break;
-    await new Promise((r) => setTimeout(r, 2000 * 2 ** attempt));
+/** 失敗の記録用（本文・URL・key を持たない）。status は HTTP の状態（無ければ null）、kind は例外の種類。 */
+export class CallError extends Error {
+  constructor({ status = null, kind }) {
+    super(`OpenRouter が失敗（${status ?? kind}）`);
+    this.name = "CallError";
+    this.status = status;
+    this.kind = kind;
   }
-  throw new Error(`OpenRouter が失敗（HTTP ${lastStatus}）`);
 }
 
-/** state（jsonl：label と数値だけ。応答の本文・key は無い）から、完了済みと試行回数を読む。 */
+/** 例外から「種類」だけを取る（message は URL や内部の文言を含みうるので使わない）。 */
+export function errorKind(error) {
+  const name = typeof error?.name === "string" && /^[A-Za-z]{1,40}$/u.test(error.name) ? error.name : "Error";
+  const code = error?.cause?.code;
+  return typeof code === "string" && /^[A-Z0-9_]{1,40}$/u.test(code) ? `${name}:${code}` : name;
+}
+
+const isPermanent = (status) => status !== null && status !== 429 && status < 500;
+
+async function callOnce({ key, body, fetchImpl, retryBaseMs = 2000, timeoutMs = REQUEST_TIMEOUT_MS }) {
+  let lastStatus = null;
+  for (let retry = 0; retry <= HTTP_RETRIES; retry += 1) {
+    let res;
+    try {
+      res = await fetchImpl(ENDPOINT, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://github.com/kazormia296/Grimodex",
+          "X-Title": "Grimodex precision gold annotation",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      throw new CallError({ kind: errorKind(error) });
+    }
+    if (res.ok) {
+      try {
+        return await res.json();
+      } catch (error) {
+        throw new CallError({ status: res.status, kind: `body:${errorKind(error)}` });
+      }
+    }
+    lastStatus = res.status;
+    await res.text().catch(() => {}); // 本文（エラー）は読み捨て、保存も表示もしない
+    if (isPermanent(res.status) || retry === HTTP_RETRIES) break;
+    await new Promise((r) => setTimeout(r, retryBaseMs * 2 ** retry));
+  }
+  throw new CallError({ status: lastStatus, kind: "http" });
+}
+
+/**
+ * state（jsonl：label・数値・失敗の種類だけ。応答の本文・key は無い）を読む。
+ * 行の phase：sending（送信の開始。送る前に書く）／result（応答）／failed（失敗）。phase の無い行は旧形式の応答。
+ * attempts は「送信の開始」の数（途中で落ちた送信も数える）から、認証の失敗（fatal）を引いたもの。
+ */
 export function loadState(file) {
   const done = new Map();
   const attempts = new Map();
-  if (file && fs.existsSync(file))
-    for (const line of fs.readFileSync(file, "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      const e = JSON.parse(line);
+  const entries = [];
+  if (file && fs.existsSync(file)) {
+    const lines = fs.readFileSync(file, "utf8").split("\n").filter((l) => l.trim());
+    lines.forEach((line, i) => {
+      let e;
+      try {
+        e = JSON.parse(line);
+      } catch (error) {
+        if (i === lines.length - 1) return; // 書込み中に落ちた最終行だけは無視する
+        throw error;
+      }
+      entries.push(e);
       const id = `${e.pairId}#${e.repeat}`;
-      attempts.set(id, (attempts.get(id) ?? 0) + 1);
-      if (e.label) done.set(id, e);
-    }
-  return { done, attempts };
+      if (e.phase === "sending") attempts.set(id, (attempts.get(id) ?? 0) + 1);
+      else if (e.phase === "failed") {
+        if (e.fatal) attempts.set(id, (attempts.get(id) ?? 0) - 1);
+      } else {
+        if (e.phase === undefined) attempts.set(id, (attempts.get(id) ?? 0) + 1);
+        if (e.label) done.set(id, e);
+      }
+    });
+  }
+  return { done, attempts, entries };
 }
 
-export async function runAnnotation({ selection, scenes, prompt, model, repeats, concurrency, key, stateFile, fetchImpl = globalThis.fetch }) {
+export async function runAnnotation({
+  selection, scenes, prompt, model, repeats, concurrency, key, stateFile, fetchImpl = globalThis.fetch, retryBaseMs = 2000, timeoutMs = REQUEST_TIMEOUT_MS,
+}) {
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
   const { done, attempts } = loadState(stateFile);
   const jobs = [];
+  let exhausted = 0;
   for (const p of pairsOf(selection))
     for (let repeat = 1; repeat <= repeats; repeat += 1) {
       const id = `${p.pairId}#${repeat}`;
-      if (!done.has(id) && (attempts.get(id) ?? 0) < MAX_ATTEMPTS) jobs.push({ ...p, repeat, id });
+      if (done.has(id)) continue;
+      if ((attempts.get(id) ?? 0) >= MAX_ATTEMPTS) exhausted += 1;
+      else jobs.push({ ...p, repeat, id, attempted: attempts.get(id) ?? 0 });
     }
+  const append = (entry) =>
+    fs.appendFileSync(stateFile, `${JSON.stringify({ ...entry, at: new Date().toISOString() })}\n`, { mode: 0o600 });
+  const summary = { scheduled: jobs.length, exhausted, sent: 0, labeled: 0, failed: 0, halted: null };
   let next = 0;
-  const worker = async () => {
-    while (next < jobs.length) {
-      const job = jobs[next++];
-      const cur = scenes[job.work].byPosition.get(job.queryPosition);
-      const cand = scenes[job.work].byPosition.get(job.candidatePosition);
-      const body = requestBody(model, buildMessages(prompt.system, sceneText(cur), sceneText(cand)));
-      const data = await callOnce({ key, body, fetchImpl });
-      const entry = {
-        pairId: job.pairId,
-        repeat: job.repeat,
-        label: parseLabel(data.choices?.[0]?.message?.content),
-        returnedModel: typeof data.model === "string" ? data.model : null,
-        provider: typeof data.provider === "string" ? data.provider : null,
-        finishReason: data.choices?.[0]?.finish_reason ?? null,
-        usage: {
-          promptTokens: data.usage?.prompt_tokens ?? null,
-          completionTokens: data.usage?.completion_tokens ?? null,
-          cost: data.usage?.cost ?? null,
-        },
-        at: new Date().toISOString(),
-      };
-      fs.appendFileSync(stateFile, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+  const runJob = async (job) => {
+    const cur = scenes[job.work].byPosition.get(job.queryPosition);
+    const cand = scenes[job.work].byPosition.get(job.candidatePosition);
+    const body = requestBody(model, buildMessages(prompt.system, sceneText(cur), sceneText(cand)));
+    const base = { pairId: job.pairId, repeat: job.repeat };
+    let attempt = job.attempted;
+    while (attempt < MAX_ATTEMPTS && !summary.halted) {
+      attempt += 1;
+      append({ ...base, phase: "sending", attempt }); // 送る前に書く：途中で落ちても同じ組を無制限には送り直さない
+      summary.sent += 1;
+      try {
+        const data = await callOnce({ key, body, fetchImpl, retryBaseMs, timeoutMs });
+        const label = parseLabel(data.choices?.[0]?.message?.content);
+        append({
+          ...base,
+          phase: "result",
+          attempt,
+          label,
+          returnedModel: typeof data.model === "string" ? data.model : null,
+          provider: typeof data.provider === "string" ? data.provider : null,
+          finishReason: data.choices?.[0]?.finish_reason ?? null,
+          usage: {
+            promptTokens: data.usage?.prompt_tokens ?? null,
+            completionTokens: data.usage?.completion_tokens ?? null,
+            cost: data.usage?.cost ?? null,
+          },
+        });
+        if (label) {
+          summary.labeled += 1;
+          return;
+        }
+      } catch (error) {
+        const failure = error instanceof CallError ? error : new CallError({ kind: errorKind(error) });
+        const fatal = FATAL_STATUSES.has(failure.status);
+        append({ ...base, phase: "failed", attempt, status: failure.status, errorKind: failure.kind, ...(fatal ? { fatal: true } : {}) });
+        summary.failed += 1;
+        if (fatal) summary.halted = `HTTP ${failure.status}`;
+        if (fatal || isPermanent(failure.status)) return; // 続けても同じ。次の再開で最大の試行回数まで
+      }
     }
   };
+  const worker = async () => {
+    while (next < jobs.length && !summary.halted) await runJob(jobs[next++]);
+  };
   await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, worker));
-  return { scheduled: jobs.length };
+  return summary;
 }
 
-/** state から注釈 file（ai／ai2…）を作る。未完了があれば null。 */
+/** state から注釈 file（ai／ai2…）を作る。未完了の組があっても作り、欠けは meta.missing に記録する。 */
 export function buildAnnotationFiles({ selection, selectionSha256, stateFile, repeats, prompt, model, privacy }) {
-  const entries = fs
-    .readFileSync(stateFile, "utf8")
-    .split("\n")
-    .filter((l) => l.trim())
-    .map((l) => JSON.parse(l));
+  const { entries } = loadState(stateFile);
   const pairs = pairsOf(selection);
   const files = [];
   for (let repeat = 1; repeat <= repeats; repeat += 1) {
     const mine = entries.filter((e) => e.repeat === repeat);
-    const labelOf = new Map(mine.filter((e) => e.label).map((e) => [e.pairId, e]));
+    const results = mine.filter((e) => e.phase !== "sending" && e.phase !== "failed");
+    const sent = mine.filter((e) => e.phase === "sending").length;
+    const failed = mine.filter((e) => e.phase === "failed").length;
+    const labelOf = new Map(results.filter((e) => e.label).map((e) => [e.pairId, e]));
     const missing = pairs.filter((p) => !labelOf.has(p.pairId)).length;
-    const invalid = mine.filter((e) => !e.label).length;
+    const invalid = results.filter((e) => !e.label).length;
     const used = pairs.map((p) => labelOf.get(p.pairId)).filter(Boolean);
-    const sum = (f) => used.reduce((a, e) => a + (e.usage[f] ?? 0), 0);
+    // token・費用は、label が取れなかった応答も課金されるので、応答の全部で数える
+    const sum = (f) => results.reduce((a, e) => a + (e.usage?.[f] ?? 0), 0);
     files.push({
       name: repeat === 1 ? "ai" : `ai${repeat}`,
       missing,
@@ -320,8 +464,13 @@ export function buildAnnotationFiles({ selection, selectionSha256, stateFile, re
           dataCollection: "deny",
           privacyRecord: privacy,
           repeat,
+          totalPairs: pairs.length,
           labeled: used.length,
+          // 付けられなかった組（応答が無い・label が取れない）。集計は欠けた組を分母から外す。complete は missing が 0
+          missing,
+          complete: missing === 0,
           invalidResponses: invalid,
+          attempts: { sent, failed, interrupted: Math.max(0, sent - results.length - failed) },
           firstAt: used.map((e) => e.at).sort()[0] ?? null,
           lastAt: used.map((e) => e.at).sort().at(-1) ?? null,
           usage: { promptTokens: sum("promptTokens"), completionTokens: sum("completionTokens"), cost: sum("cost") },
@@ -335,6 +484,19 @@ export function buildAnnotationFiles({ selection, selectionSha256, stateFile, re
   return files;
 }
 
+/** 注釈 file を書く。未完了の file は再開で上書きでき、完了済みの file は内容が同じときだけ何もしない。 */
+export function writeAnnotationFile(dir, f) {
+  const file = path.join(dir, `annotations-${f.name}.json`);
+  const text = `${JSON.stringify(f.body, null, 2)}\n`;
+  if (fs.existsSync(file)) {
+    const existing = fs.readFileSync(file, "utf8");
+    if (existing === text) return file;
+    assert.ok(JSON.parse(existing).meta?.complete === false, `[precheck] 完了済みの注釈 file を上書きしない: ${file}`);
+  }
+  fs.writeFileSync(file, text, { mode: 0o600 });
+  return file;
+}
+
 function parseArgs(argv) {
   const opts = {};
   for (let i = 0; i < argv.length; ) {
@@ -342,6 +504,9 @@ function parseArgs(argv) {
     assert.ok(name.startsWith("--"), `引数の形が不正: ${name}`);
     if (name === "--dry-run") {
       opts.dryRun = true;
+      i += 1;
+    } else if (name === "--no-price-fetch") {
+      opts.noPriceFetch = true;
       i += 1;
     } else {
       assert.ok(argv[i + 1] !== undefined, `${name} に値が要る`);
@@ -367,8 +532,9 @@ export async function main(argv) {
   for (const work of new Set(selection.queries.map((q) => q.work)))
     scenes[work] = loadScenes(scenesDir, selection, work);
   const prompt = loadPrompt();
+  const pricing = opts.noPriceFetch ? assumedPricing("--no-price-fetch") : await fetchPricing();
   const scope = {
-    ...sendScope({ selection, scenes, prompt, model, repeats }),
+    ...sendScope({ selection, scenes, prompt, model, repeats, pricing }),
     promptFileSha256: prompt.fileSha256,
     systemPromptSha256: prompt.systemSha256,
     selectionSha256,
@@ -380,25 +546,29 @@ export async function main(argv) {
   // ---- 実送信（この script の dry-run 以外）。§8：学習に使われない設定の確認の記録が先。
   assert.ok(opts["privacy-record"], "[precheck] --privacy-record（§8 の確認の記録）が要る");
   assert.ok(opts["out-dir"] && opts.state, "--out-dir と --state が要る");
+  // §4 の独立性：ユーザーの注釈の取り込みが終わるまで、AI の注釈は repo（contracts）に置かない
   assertOutsideRepo(opts.state);
+  assertOutsideRepo(opts["out-dir"]);
   const privacy = readPrivacyRecord(opts["privacy-record"]);
   process.stdout.write(`${JSON.stringify({ mode: "send", ...scope }, null, 2)}\n`);
   const key = await obtainKey(opts);
-  await runAnnotation({ selection, scenes, prompt, model, repeats, concurrency, key, stateFile: opts.state });
+  const run = await runAnnotation({ selection, scenes, prompt, model, repeats, concurrency, key, stateFile: opts.state });
   const files = buildAnnotationFiles({
     selection, selectionSha256, stateFile: opts.state, repeats, prompt, model,
     privacy: { sha256: privacy.sha256, checkedAt: privacy.record.checkedAt },
   });
-  const incomplete = files.filter((f) => f.missing > 0);
-  if (incomplete.length > 0) {
-    process.stdout.write(`${JSON.stringify({ complete: false, missing: Object.fromEntries(incomplete.map((f) => [f.name, f.missing])) })}\n`);
-    process.exitCode = 1;
-    return;
-  }
   fs.mkdirSync(opts["out-dir"], { recursive: true });
-  for (const f of files)
-    fs.writeFileSync(path.join(opts["out-dir"], `annotations-${f.name}.json`), `${JSON.stringify(f.body, null, 2)}\n`, { flag: "wx" });
-  process.stdout.write(`${JSON.stringify({ complete: true, files: files.map((f) => f.name) })}\n`);
+  for (const f of files) writeAnnotationFile(opts["out-dir"], f);
+  const incomplete = files.filter((f) => f.missing > 0);
+  process.stdout.write(
+    `${JSON.stringify({
+      complete: incomplete.length === 0,
+      files: files.map((f) => f.name),
+      run: { scheduled: run.scheduled, exhausted: run.exhausted, sent: run.sent, labeled: run.labeled, failed: run.failed, halted: run.halted },
+      ...(incomplete.length > 0 ? { missing: Object.fromEntries(incomplete.map((f) => [f.name, f.missing])) } : {}),
+    })}\n`,
+  );
+  if (incomplete.length > 0) process.exitCode = 1;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) await main(process.argv.slice(2));

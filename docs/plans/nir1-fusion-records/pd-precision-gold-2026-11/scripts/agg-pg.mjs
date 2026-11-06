@@ -11,12 +11,12 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // ---- 事前登録の固定値（§2〜§7） -------------------------------------------------------------
 export const SEED = "2026-11-06-precision-gold-1";
-export const PREREG_PATH =
-  "/home/grimodex/fusion-eval-data/pd-2026-11/preregistration-precision-gold-v1.md";
+// contracts に置いた事前登録の写し（repo の外の原本 preregistration-precision-gold-v1.md と sha256 が同一）。
+export const PREREG_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "../preregistration-v1.md");
 export const WORKS = ["m-ja-2", "g-ja-1"]; // 割当ての優先順（先に列挙した作品の層の順序は出力順にも使う）
 export const QUOTA = { "m-ja-2": 8, "g-ja-1": 7 };
 export const PER_STRATUM = 15;
@@ -578,10 +578,13 @@ function armTables(queries, maps) {
 function judgement(queries, maps, seed, kappaUserAi) {
   const primaries = ["user", "ai"].filter((r) => maps[r]);
   const reasons = [];
-  // (1) 有効な query：候補を取れ（probe が available）、注釈者の全員が全ての組を付けた query。
+  // (1) 有効な query：候補を取れ（probe が available で、候補が 1 件以上）、注釈者の全員が全ての組を付けた query。
+  //     候補が 0 件の query は §7 の「候補を取れ」に当たらないので有効に数えない（every が空で真になるのを避ける）。
+  const withoutCandidates = queries.filter((q) => q.candidates.length === 0).length;
   const validQueries = queries.filter(
     (q) =>
       q.probeStatus === "available" &&
+      q.candidates.length > 0 &&
       q.candidates.every((c) => primaries.every((r) => maps[r].has(c.pairId))),
   ).length;
   if (validQueries < D0_MIN_VALID_QUERIES)
@@ -608,7 +611,7 @@ function judgement(queries, maps, seed, kappaUserAi) {
     for (const r of IR_RANKS) {
       const cellR = precisionTable(allPairs(queries), variant, "strict", maps)[`ir${r}`];
       const rows = pairedRows(queries, variant, "strict", maps, [r]);
-      const diff = pairedDifference(rows, `${seed}|bootstrap|${variant}|ir${r}`);
+      const diff = pairedDifference(rows, `${seed}|bootstrap|${variant}|strict|ir${r}`);
       const rel = diff.delta !== null && diff.delta >= DELTA;
       const floor = cellR.wilson95 !== null && cellR.wilson95[0] >= FLOOR_L;
       const pass = rel && floor;
@@ -647,6 +650,7 @@ function judgement(queries, maps, seed, kappaUserAi) {
     indeterminate: globalIndeterminate,
     indeterminateReasons: reasons,
     validQueries,
+    queriesWithoutCandidates: withoutCandidates,
     unavailableQueries: unavailable,
     byVariant,
   };

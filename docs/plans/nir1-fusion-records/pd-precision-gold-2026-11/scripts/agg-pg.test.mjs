@@ -341,3 +341,65 @@ test("判断規則 §7：十分な数なら rank 1 から連続して通る最�
   assert.equal(ranks[2].floor.pass, false);
   assert.equal(out.kappa.userVsAi.strict.kappa, 1);
 });
+
+test("有効 query：候補が 0 件の query は有効に数えず、判断不能の閾値（40）にも効く", () => {
+  const mk = (q, withCandidates) => ({
+    work: "w", queryPosition: q, priorScenes: q - 1, rawCount: 8, stratum: "full-gt30", probeStatus: "available",
+    candidates: withCandidates ? [cand("w", q, 1, "ir", 1), cand("w", q, 2, "raw", 6)] : [],
+  });
+  const queries = [...Array.from({ length: 40 }, (_, i) => mk(100 + i, true)), ...Array.from({ length: 3 }, (_, i) => mk(200 + i, false))];
+  const labels = queries.flatMap((q) => q.candidates.map((c) => ["w", q.queryPosition, c.position, "strict"]));
+  const run = (qs, ls) =>
+    aggregate({ selection: { seed: "fx", queries: qs }, selectionSha256: "x", annotations: { user: annot("user", ls), ai: annot("ai", ls) } });
+  const out = run(queries, labels);
+  assert.equal(out.judgement.validQueries, 40); // 候補 0 件の 3 query は数えない（every が空で真になる誤りを避ける）
+  assert.equal(out.judgement.queriesWithoutCandidates, 3);
+  assert.ok(!out.judgement.indeterminateReasons.some((r) => /有効 query/u.test(r)));
+  // 候補ありが 39 なら、候補 0 件の query を足しても 40 未満で判断不能になる
+  const fewer = queries.filter((q) => q.queryPosition !== 100);
+  const out39 = run(fewer, labels.filter((l) => l[1] !== 100));
+  assert.equal(out39.judgement.validQueries, 39);
+  assert.ok(out39.judgement.indeterminateReasons.some((r) => /有効 query が 40 未満（39）/u.test(r)));
+});
+
+test("bootstrap の seed：判断規則の strict の rank r は paired の strict.ir{r} と同じ区間", () => {
+  const queries = Array.from({ length: 50 }, (_, i) => {
+    const q = 100 + i;
+    return {
+      work: "w", queryPosition: q, priorScenes: q - 1, rawCount: 8, stratum: "full-gt30", probeStatus: "available",
+      candidates: [cand("w", q, 1, "ir", 1), cand("w", q, 2, "raw", 6), cand("w", q, 3, "raw", 7)],
+    };
+  });
+  const labels = queries.flatMap((q, i) =>
+    q.candidates.map((c, j) => ["w", q.queryPosition, c.position, (i + j) % 3 === 0 ? "none" : "strict"]),
+  );
+  const out = aggregate({
+    selection: { seed: "fx", queries }, selectionSha256: "x",
+    annotations: { user: annot("user", labels), ai: annot("ai", labels) },
+  });
+  assert.deepEqual(out.judgement.byVariant.user.ranks[0].relative.ci95, out.paired.user.strict.ir1.ci95);
+  assert.deepEqual(out.judgement.byVariant.ai.ranks[0].relative.ci95, out.paired.ai.strict.ir1.ci95);
+});
+
+test("AI 注釈に欠けた組があっても aggregate は欠けを分母から外して読め、有効 query が減る", () => {
+  const queries = Array.from({ length: 45 }, (_, i) => {
+    const q = 100 + i;
+    return {
+      work: "w", queryPosition: q, priorScenes: q - 1, rawCount: 8, stratum: "full-gt30", probeStatus: "available",
+      candidates: [cand("w", q, 1, "ir", 1), cand("w", q, 2, "raw", 6)],
+    };
+  });
+  const all = queries.flatMap((q) => q.candidates.map((c) => ["w", q.queryPosition, c.position, "strict"]));
+  const missingTail = all.slice(0, all.length - 8); // AI は末尾 8 組が欠け（= 4 query が欠け）
+  const out = aggregate({
+    selection: { seed: "fx", queries }, selectionSha256: "x",
+    annotations: {
+      user: annot("user", all),
+      ai: { ...annot("ai", missingTail), meta: { missing: 8, complete: false } },
+    },
+  });
+  assert.equal(out.coverage.ai.labeled, all.length - 8);
+  assert.equal(out.judgement.validQueries, 41);
+  assert.equal(out.annotators.ai.complete, false);
+  assert.equal(out.kappa.userVsAi.strict.n, all.length - 8);
+});

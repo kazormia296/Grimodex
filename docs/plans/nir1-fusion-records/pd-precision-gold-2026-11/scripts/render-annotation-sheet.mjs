@@ -1,6 +1,7 @@
 // 注釈の表示（本文を含む）を repo の外に作る／注釈者が記入した表示を注釈 file に取り込む。
 // この script 自体は本文を含まない。出力（sheet-<annotator>.md・sheet-key.json）は repo の外だけ。
-// 候補は由来（IR／Raw）・順位・位置・作品を隠し、seed 固定で混ぜる。対応表は sheet-key.json。
+// 候補は由来（IR／Raw）・順位・位置・作品を隠し、seed 固定で混ぜる。Scene には匿名 ID（seed 固定の hash の 6 桁）を付け、
+// 同じ Scene の 2 回目以降は本文を繰り返さず参照だけにする。候補 0 件の query は出さない。対応表は sheet-key.json。
 //
 // 使い方：
 //   node render-annotation-sheet.mjs --selection <selection-run1.json> --annotator <user|…> \
@@ -30,9 +31,16 @@ const quote = (text) =>
     .map((line) => (line === "" ? ">" : `> ${line}`))
     .join("\n");
 
-/** sheet の順序と対応表（本文なし）。 */
+/** Scene の匿名 ID：種・作品・位置だけから決まる固定の 6 桁（由来・順位・query には依らない。IR／Raw で形も同じ）。 */
+export const anonId = (seed, work, position) => mixKey(seed, "anon", work, position).slice(0, 6);
+
+/**
+ * sheet の順序と対応表（本文なし）。候補が 0 件の query は sheet に出さない（excluded に記録）。
+ * Scene ごとに匿名 ID を付け、対応（作品・位置）は対応表（sheet-key.json）だけに置く。
+ */
 export function planSheet(selection, seed = selection.seed) {
-  const queries = [...selection.queries]
+  const withCandidates = selection.queries.filter((q) => q.candidates.length > 0);
+  const queries = [...withCandidates]
     .sort((a, b) =>
       byMixKey(
         mixKey(seed, "sheet-query", a.work, a.queryPosition),
@@ -43,6 +51,7 @@ export function planSheet(selection, seed = selection.seed) {
       id: `Q${String(i + 1).padStart(2, "0")}`,
       work: q.work,
       queryPosition: q.queryPosition,
+      anonId: anonId(seed, q.work, q.queryPosition),
       candidates: [...q.candidates]
         .sort((a, b) =>
           byMixKey(
@@ -50,17 +59,37 @@ export function planSheet(selection, seed = selection.seed) {
             mixKey(seed, "sheet-cand", q.work, q.queryPosition, b.position),
           ),
         )
-        .map((c, j) => ({ id: `C${j + 1}`, position: c.position })),
+        .map((c, j) => ({ id: `C${j + 1}`, position: c.position, anonId: anonId(seed, q.work, c.position) })),
     }));
+  // 別の Scene が同じ ID になったら（確率は小さい）、種を変えずに止める
+  const owner = new Map();
+  for (const q of queries)
+    for (const [work, position, id] of [[q.work, q.queryPosition, q.anonId], ...q.candidates.map((c) => [q.work, c.position, c.anonId])]) {
+      const key = `${work}|${position}`;
+      assert.ok(!owner.has(id) || owner.get(id) === key, `[precheck] 匿名 ID が衝突した: ${id}`);
+      owner.set(id, key);
+    }
   return queries;
 }
+
+/** 候補が 0 件で sheet に出さない query（対応表に記録する。本文なし）。 */
+export const excludedQueries = (selection) =>
+  selection.queries
+    .filter((q) => q.candidates.length === 0)
+    .map((q) => ({ work: q.work, queryPosition: q.queryPosition, reason: "no-candidates" }));
 
 export function renderSheet({ selection, scenes, annotator, plan = planSheet(selection), prompt }) {
   const lines = [
     `# 注釈シート（${annotator}）`,
     "",
-    "各質問は「今の Scene」と複数の「候補」を並べます。候補ごとに、下の設問に従って**判定**を記入してください。",
-    "候補の順序は無作為で、由来・順位は隠してあります。他の注釈者の値は見えません。",
+    "## 読み方",
+    "",
+    "- 各質問（Q01…）は「今の Scene」と複数の「候補」を並べます。候補ごとに、下の設問に従って**判定**を記入してください。",
+    "- 候補の順序は無作為です。他の注釈者の値は見えません。",
+    "- **ID**（6 桁）は Scene を区別するだけの番号で、他の意味はありません。同じ ID は同じ Scene です。",
+    "- 同じ Scene が前に出ているとき、本文は繰り返さず「→ ID xxxxxx（既出：Q03-C2）」のように参照だけを書きます。",
+    "  本文は参照先の見出し（同じ ID）に戻って読んでください。判定はその Scene について、いまの質問の文脈で付けます。",
+    "- 注釈の途中は、selection の file と sheet-key.json を開かないでください（候補の件数などから、候補の出どころを推測できてしまうため）。",
     "",
     "判定の記入：`判定:` の後に **s**（strict）／**p**（partial のみ）／**n**（none）のどれか 1 文字（`strict`／`partial`／`none`／`2`／`1`／`0` も可）。",
     "",
@@ -68,14 +97,23 @@ export function renderSheet({ selection, scenes, annotator, plan = planSheet(sel
     "",
     "---",
   ];
+  const seen = new Map(); // anonId → 初出の見出しの名前（sheet の順で最初に出た場所）
+  const emit = (id, label, work, position) => {
+    const scene = scenes[work].byPosition.get(position);
+    assert.ok(scene, `${work}@${position} の Scene が無い`);
+    if (seen.has(id)) lines.push(`ID: ${id}`, "", `→ ID ${id}（既出：${seen.get(id)}）`);
+    else {
+      seen.set(id, label);
+      lines.push(`ID: ${id}`, "", quote(sceneText(scene)));
+    }
+  };
   for (const q of plan) {
-    const current = scenes[q.work].byPosition.get(q.queryPosition);
-    assert.ok(current, `${q.work}@${q.queryPosition} の Scene が無い`);
-    lines.push("", `## ${q.id}`, "", `### ${q.id} 今の Scene`, "", quote(sceneText(current)));
+    lines.push("", `## ${q.id}`, "", `### ${q.id} 今の Scene`, "");
+    emit(q.anonId, q.id, q.work, q.queryPosition);
     for (const c of q.candidates) {
-      const scene = scenes[q.work].byPosition.get(c.position);
-      assert.ok(scene, `${q.work}@${c.position} の Scene が無い`);
-      lines.push("", `### ${q.id}-${c.id} 候補`, "", quote(sceneText(scene)), "", "判定:");
+      lines.push("", `### ${q.id}-${c.id} 候補`, "");
+      emit(c.anonId, `${q.id}-${c.id}`, q.work, c.position);
+      lines.push("", "判定:");
     }
     lines.push("", "---");
   }
@@ -187,17 +225,20 @@ export function main(argv) {
   const keyFile = path.join(outDir, "sheet-key.json");
   fs.writeFileSync(sheetFile, sheet, { flag: "wx", mode: 0o600 });
   const key = {
-    schemaVersion: "fusion-slot-pg-sheet-key/1",
+    schemaVersion: "fusion-slot-pg-sheet-key/2",
     selectionSha256,
     seed: selection.seed,
     promptFileSha256: prompt.fileSha256,
     queries: plan,
+    excludedQueries: excludedQueries(selection),
   };
   // 対応表は annotator によらず同じ順序（seed 固定）。既にあれば内容が同じことだけ確かめる。
   const keyText = `${JSON.stringify(key, null, 2)}\n`;
   if (fs.existsSync(keyFile)) assert.equal(fs.readFileSync(keyFile, "utf8"), keyText, "[precheck] sheet-key.json が既存と違う");
   else fs.writeFileSync(keyFile, keyText, { mode: 0o600 });
   const candidates = plan.reduce((a, q) => a + q.candidates.length, 0);
+  const appearances = plan.reduce((a, q) => a + 1 + q.candidates.length, 0);
+  const distinctScenes = new Set(plan.flatMap((q) => [q.anonId, ...q.candidates.map((c) => c.anonId)])).size;
   process.stdout.write(
     `${JSON.stringify({
       sheet: sheetFile,
@@ -205,7 +246,11 @@ export function main(argv) {
       sheetSha256: fileSha256(sheetFile),
       keySha256: fileSha256(keyFile),
       queries: plan.length,
+      excludedQueries: excludedQueries(selection).length,
       candidates,
+      sceneAppearances: appearances,
+      distinctScenes,
+      references: appearances - distinctScenes,
       sheetChars: sheet.length,
     }, null, 2)}\n`,
   );
