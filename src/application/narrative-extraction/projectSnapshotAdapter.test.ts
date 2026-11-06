@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { DrizzleQueryError } from "drizzle-orm/errors";
+import { IpcInvokeError } from "@/lib/tauri";
 import type { MutationAuthority } from "@/features/concurrency/mutationAuthority";
 import {
   buildProjectNarrativeSnapshot,
+  classifySnapshotReadFailure,
   collectNarrativeExternalSourceUris,
   derivePersistedNarrativeSceneScope,
   flushProjectNarrativeScope,
@@ -902,5 +905,266 @@ describe("derivePersistedNarrativeSceneScope", () => {
       ok: false,
       reason: "folder-unavailable",
     });
+  });
+});
+
+// DR-IRB-2: a read or transport failure while the snapshot reads or re-verifies
+// its source is reported as SNAPSHOT_SOURCE_READ_FAILED. Any other exception
+// keeps its previous, conservative code. Every path still fails closed.
+const SELECT_SQL = 'select "content" from "tree_nodes" where "id" = ?';
+const SECRET_BODY = "secret-scene-body-text";
+
+function ipcTimeout(): IpcInvokeError {
+  return new IpcInvokeError("db_execute", {
+    code: "IPC_TIMEOUT",
+    message: "IPC timeout after 10000ms: db_execute",
+    retryable: false,
+    outcome: "unknown",
+    details: { timeoutMs: 10_000 },
+  });
+}
+
+function nativeDbFailure(): IpcInvokeError {
+  return new IpcInvokeError("db_execute", {
+    code: "UNKNOWN",
+    message: `database is locked ${SECRET_BODY}`,
+    retryable: false,
+    outcome: "failed",
+  });
+}
+
+function failedSelect(cause: Error): DrizzleQueryError {
+  return new DrizzleQueryError(SELECT_SQL, [SECRET_BODY], cause);
+}
+
+describe("classifySnapshotReadFailure", () => {
+  it("recognizes an IPC caller timeout by its typed code or its wire text", () => {
+    expect(classifySnapshotReadFailure(ipcTimeout())).toBe("ipc-timeout");
+    expect(
+      classifySnapshotReadFailure(
+        new Error("IPC timeout after 10000ms: db_execute"),
+      ),
+    ).toBe("ipc-timeout");
+  });
+
+  it("recognizes a failed SELECT, and its timeout cause first", () => {
+    expect(classifySnapshotReadFailure(failedSelect(nativeDbFailure()))).toBe(
+      "query-failed",
+    );
+    expect(classifySnapshotReadFailure(failedSelect(ipcTimeout()))).toBe(
+      "ipc-timeout",
+    );
+  });
+
+  it("does not treat the failed query of a write as a read failure", () => {
+    const failedWrite = new DrizzleQueryError(
+      'update "tree_nodes" set "content" = ? where "id" = ?',
+      [SECRET_BODY, "scene-a"],
+      nativeDbFailure(),
+    );
+    expect(classifySnapshotReadFailure(failedWrite)).toBe("other");
+  });
+
+  it("keeps a lifecycle cancellation apart from a read failure", () => {
+    const cancelled = new IpcInvokeError("db_execute", {
+      code: "IPC_READ_CANCELLED",
+      message: "IPC_READ_CANCELLED: read cancelled: db_execute",
+      retryable: true,
+      outcome: "failed",
+    });
+    expect(classifySnapshotReadFailure(cancelled)).toBe("lifecycle");
+    expect(classifySnapshotReadFailure(failedSelect(cancelled))).toBe(
+      "lifecycle",
+    );
+  });
+
+  it("does not look inside an AggregateError's pending-mutation failures", () => {
+    expect(
+      classifySnapshotReadFailure(
+        new AggregateError(
+          [ipcTimeout()],
+          "One or more scoped mutations failed",
+        ),
+      ),
+    ).toBe("other");
+  });
+
+  it("classifies everything else as other, including cyclic causes", () => {
+    const cyclic = new Error("cyclic");
+    Object.defineProperty(cyclic, "cause", { value: cyclic });
+    for (const value of [
+      new Error("external source changed"),
+      new RangeError(
+        "Narrative corpus exceeds the 900-Scene single-read limit",
+      ),
+      cyclic,
+      "IPC timeout after 10000ms: db_execute",
+      null,
+      undefined,
+    ]) {
+      expect(classifySnapshotReadFailure(value)).toBe("other");
+    }
+  });
+});
+
+describe("buildProjectNarrativeSnapshot read-failure diagnostics", () => {
+  const REQUEST = {
+    projectId: "project-a",
+    folderId: "folder-a",
+    language: "ja" as const,
+    sceneIds: ["scene-a", "scene-b"],
+    authority: AUTHORITY,
+  };
+
+  function scopeValidator(
+    outcomes: readonly (Error | "ok")[],
+  ): NonNullable<ProjectSnapshotAdapterServices["validateSceneScope"]> {
+    let call = 0;
+    return vi.fn(async () => {
+      const outcome = outcomes[Math.min(call, outcomes.length - 1)];
+      call += 1;
+      if (outcome !== "ok") throw outcome;
+      return { ok: true as const, sceneIds: ["scene-a", "scene-b"] };
+    });
+  }
+
+  function rowLoader(
+    outcomes: readonly (Error | "ok")[],
+  ): ProjectSnapshotAdapterServices["loadSourceRows"] {
+    let call = 0;
+    return vi.fn(async () => {
+      const outcome = outcomes[Math.min(call, outcomes.length - 1)];
+      call += 1;
+      if (outcome !== "ok") throw outcome;
+      return [row("scene-a", 0), row("scene-b", 1)];
+    });
+  }
+
+  async function failureOf(svc: ProjectSnapshotAdapterServices) {
+    const result = await buildProjectNarrativeSnapshot(REQUEST, svc);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected the snapshot to fail closed");
+    expect(result.diagnostics).toHaveLength(1);
+    const [only] = result.diagnostics;
+    expect(only.message).not.toContain(SECRET_BODY);
+    expect(only.message).not.toContain("tree_nodes");
+    return only;
+  }
+
+  const sites: ReadonlyArray<{
+    name: string;
+    build: (error: Error) => ProjectSnapshotAdapterServices;
+  }> = [
+    {
+      name: "the post-seal scope validation",
+      build: (error) =>
+        services({ validateSceneScope: scopeValidator(["ok", error]) }),
+    },
+    {
+      name: "the external source settlement",
+      build: (error) =>
+        services({
+          settleExternalSourceMutations: vi.fn(async () => {
+            throw error;
+          }),
+        }),
+    },
+    {
+      name: "the pre-publication scope validation",
+      build: (error) =>
+        services({ validateSceneScope: scopeValidator(["ok", "ok", error]) }),
+    },
+  ];
+
+  describe.each(sites)("$name", ({ build }) => {
+    it("reports an IPC timeout as SNAPSHOT_SOURCE_READ_FAILED", async () => {
+      const failure = await failureOf(build(ipcTimeout()));
+      expect(failure.code).toBe("SNAPSHOT_SOURCE_READ_FAILED");
+      expect(failure.message).toContain("(cause: ipc-timeout)");
+    });
+
+    it("reports a failed Drizzle SELECT as SNAPSHOT_SOURCE_READ_FAILED", async () => {
+      const failure = await failureOf(build(failedSelect(nativeDbFailure())));
+      expect(failure.code).toBe("SNAPSHOT_SOURCE_READ_FAILED");
+      expect(failure.message).toContain("(cause: query-failed)");
+    });
+
+    it("keeps SNAPSHOT_SOURCE_CHANGED for an unclassified error", async () => {
+      const failure = await failureOf(
+        build(new Error("external source changed")),
+      );
+      expect(failure.code).toBe("SNAPSHOT_SOURCE_CHANGED");
+      expect(failure.message).toContain("(cause: other)");
+    });
+
+    it("keeps SNAPSHOT_SOURCE_CHANGED for a rejected pending mutation", async () => {
+      const failure = await failureOf(
+        build(
+          new AggregateError(
+            [ipcTimeout()],
+            "One or more scoped mutations failed",
+          ),
+        ),
+      );
+      expect(failure.code).toBe("SNAPSHOT_SOURCE_CHANGED");
+    });
+
+    it("keeps SNAPSHOT_SOURCE_CHANGED for a lifecycle cancellation", async () => {
+      const failure = await failureOf(
+        build(
+          new IpcInvokeError("db_execute", {
+            code: "IPC_READ_CANCELLED",
+            message: "IPC_READ_CANCELLED: read cancelled: db_execute",
+            retryable: true,
+            outcome: "failed",
+          }),
+        ),
+      );
+      expect(failure.code).toBe("SNAPSHOT_SOURCE_CHANGED");
+      expect(failure.message).toContain("(cause: lifecycle)");
+    });
+  });
+
+  it("keeps SNAPSHOT_SCOPE_VALIDATION_FAILED for the first validation, with the cause", async () => {
+    const failure = await failureOf(
+      services({ validateSceneScope: scopeValidator([ipcTimeout()]) }),
+    );
+    expect(failure.code).toBe("SNAPSHOT_SCOPE_VALIDATION_FAILED");
+    expect(failure.message).toContain("(cause: ipc-timeout)");
+  });
+
+  it.each([
+    { name: "the first read", outcomes: [ipcTimeout()] },
+    { name: "the verification read", outcomes: ["ok", ipcTimeout()] },
+    { name: "the publication read", outcomes: ["ok", "ok", ipcTimeout()] },
+  ] as const)(
+    "reports an IPC timeout of $name as SNAPSHOT_SOURCE_READ_FAILED",
+    async ({ outcomes }) => {
+      const failure = await failureOf(
+        services({ loadSourceRows: rowLoader(outcomes) }),
+      );
+      expect(failure.code).toBe("SNAPSHOT_SOURCE_READ_FAILED");
+      expect(failure.message).toContain("(cause: ipc-timeout)");
+    },
+  );
+
+  it("keeps SNAPSHOT_SOURCE_READ_FAILED and names a non-timeout cause as other", async () => {
+    const failure = await failureOf(
+      services({ loadSourceRows: rowLoader([new Error("boom")]) }),
+    );
+    expect(failure.code).toBe("SNAPSHOT_SOURCE_READ_FAILED");
+    expect(failure.message).toContain("(cause: other)");
+  });
+
+  it("keeps SNAPSHOT_SOURCE_CHANGED when a re-read differs", async () => {
+    const stable = [row("scene-a", 0), row("scene-b", 1)];
+    const changed = [stable[0], { ...stable[1], version: 99 }];
+    const loadSourceRows = vi
+      .fn<ProjectSnapshotAdapterServices["loadSourceRows"]>()
+      .mockResolvedValueOnce(stable)
+      .mockResolvedValueOnce(changed);
+    const failure = await failureOf(services({ loadSourceRows }));
+    expect(failure.code).toBe("SNAPSHOT_SOURCE_CHANGED");
+    expect(failure.message).not.toContain("(cause:");
   });
 });
