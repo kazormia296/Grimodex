@@ -46,7 +46,8 @@ import {
   applyCloseFailureToDialogState,
   classifyCloseFailure,
 } from "@/application/lifecycle/closeFailureClassification";
-import { applyApplicationTheme } from "./applicationTheme";
+import { useApplicationTheme } from "./applicationTheme";
+import { useUnsavedEditsBootstrap } from "./unsavedEditsBootstrap";
 
 export { applyCloseFailureToDialogState, classifyCloseFailure };
 
@@ -125,6 +126,7 @@ export function ApplicationBootstrapHost({
   useReleaseNotesGate();
   useExternalMountListener();
   useLicenseStateListener();
+  useUnsavedEditsBootstrap();
 
   const foregroundEditorScopeKey = createEditorInputScopeKey({
     projectId: currentProjectId,
@@ -214,18 +216,7 @@ export function ApplicationBootstrapHost({
     };
   }, []);
 
-  useEffect(
-    () => applyApplicationTheme(theme, colorTheme),
-    [theme, colorTheme],
-  );
-
-  useEffect(() => {
-    if (theme !== "system") return;
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = () => applyApplicationTheme("system", colorTheme);
-    media.addEventListener("change", handler);
-    return () => media.removeEventListener("change", handler);
-  }, [theme, colorTheme]);
+  useApplicationTheme(theme, colorTheme);
 
   useEffect(() => {
     document.documentElement.style.setProperty(

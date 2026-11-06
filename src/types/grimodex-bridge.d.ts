@@ -9,6 +9,7 @@
 
 export type GrimodexIpcErrorCode =
   | "WORKSPACE_SWITCHING"
+  | "WORKSPACE_QUARANTINED"
   | "NO_WORKSPACE_OPEN"
   | "RERANKER_BUSY"
   | "IPC_UNIMPLEMENTED"

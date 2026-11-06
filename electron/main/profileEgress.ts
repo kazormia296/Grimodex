@@ -525,6 +525,10 @@ const INTERNAL_COMMANDS = new Set([
   "repair_integrity",
   "repair_narrative_dependency_declarations",
   "reply_to_annotation",
+  // PUB-G #36 (DR-PUBG-36-1): the renderer reports one boolean ("has unsaved
+  // edits") to Main for the fatal-exit confirmation. Main-local, carries no
+  // text, never forwarded to Native, and must keep working while restricted.
+  "report_unsaved_edits",
   // DA-2 (DR-DA2-16): Main's confirmation runs the activation; the renderer
   // receives a closed status code only. Never forwarded to Native.
   "request_profile_activation",

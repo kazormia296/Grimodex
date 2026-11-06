@@ -56,6 +56,7 @@ const AI_IPC_TIMEOUT_MS = 300_000; // 5 minutes
 
 export type IpcInvokeErrorCode =
   | "WORKSPACE_SWITCHING"
+  | "WORKSPACE_QUARANTINED"
   | "NO_WORKSPACE_OPEN"
   | "RERANKER_BUSY"
   | "IPC_UNIMPLEMENTED"
@@ -146,6 +147,9 @@ function classifyLegacyIpcError(message: string): IpcInvokeFailureInfo {
   const base = { message, outcome: "failed" as const };
   if (message.includes("WORKSPACE_SWITCHING")) {
     return { ...base, code: "WORKSPACE_SWITCHING", retryable: true };
+  }
+  if (message.includes("WORKSPACE_QUARANTINED")) {
+    return { ...base, code: "WORKSPACE_QUARANTINED", retryable: false };
   }
   if (/No workspace is open/i.test(message)) {
     return { ...base, code: "NO_WORKSPACE_OPEN", retryable: true };

@@ -17,6 +17,18 @@ export interface NarrativeMaintenanceQuitFinalizerOptions {
   maxAttempts?: number;
   /** Monotonic Native observation budget; independent cleanup is not bound by it. */
   nativeObservationBudgetMs?: number;
+  /**
+   * Asked once when shutdown could not be proven, right before the fatal
+   * `exit(1)`. `stay` cancels the exit (the quit stays vetoed and a later quit
+   * runs the whole finalizer again); `exit` or a throw keeps the fatal exit.
+   * A `will-quit` that re-enters while the confirmation is open is only
+   * vetoed. Whether anything is left to go back to (a window still alive with
+   * unsaved edits) is the confirmation's own check after the answer, so a
+   * `stay` is never overridden here (DR-PUBG-36-1).
+   * Absent means the previous behaviour. It must not save or move any text
+   * (DR-PUBG-36-1).
+   */
+  confirmFatalExit?(): "exit" | "stay" | Promise<"exit" | "stay">;
 }
 
 /** Attempt every independent teardown, including after another one rejects. */
@@ -67,6 +79,10 @@ export function createNarrativeMaintenanceQuitFinalizer(
   return async (event) => {
     if (cleanupComplete || fatalExitRequested) return;
     event.preventDefault();
+    // A will-quit while the confirmation is open (the dialog has no parent
+    // window, so a window can still close and ask to quit) is vetoed and
+    // consumed here. The confirmation re-counts the live windows after the
+    // answer and turns a `stay` with none left into `exit`.
     if (finalizationStarted) return;
     finalizationStarted = true;
 
@@ -128,6 +144,20 @@ export function createNarrativeMaintenanceQuitFinalizer(
       [nativeResult, independentResult],
     );
     if (!maintenanceComplete || !independentCleanupComplete) {
+      if (options.confirmFatalExit) {
+        let decision: "exit" | "stay" = "exit";
+        try {
+          decision = await options.confirmFatalExit();
+        } catch (error) {
+          reportError(error);
+        }
+        if (decision === "stay") {
+          // The quit was vetoed above. Allow the next quit to try again; the
+          // author has been told to copy their unsaved text out first.
+          finalizationStarted = false;
+          return;
+        }
+      }
       fatalExitRequested = true;
       options.exit(1);
       return;

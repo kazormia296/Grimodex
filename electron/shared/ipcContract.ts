@@ -29,10 +29,15 @@ import {
   PROFILE_EGRESS_STATE_EVENT,
   PROFILE_EGRESS_STATUS_COMMAND,
 } from "./profileEgressStatusWire.js";
+import {
+  REPORT_UNSAVED_EDITS_COMMAND,
+  UNSAVED_EDITS_RETAINED_EVENT,
+} from "./unsavedEditsWire.js";
 import { parseWorkspaceRestoreOutcome } from "./workspaceRestoreOutcome.js";
 
 export type IpcErrorCode =
   | "WORKSPACE_SWITCHING"
+  | "WORKSPACE_QUARANTINED"
   | "WORKSPACE_SAFE_MODE"
   | "NO_WORKSPACE_OPEN"
   | "RERANKER_BUSY"
@@ -194,6 +199,10 @@ export function classifyKnownIpcError(
   if (message.includes("WORKSPACE_SWITCHING")) {
     return { ...base, code: "WORKSPACE_SWITCHING", retryable: true };
   }
+  // Held until restart: retrying cannot clear it, unlike a workspace switch.
+  if (message.includes("WORKSPACE_QUARANTINED")) {
+    return { ...base, code: "WORKSPACE_QUARANTINED", retryable: false };
+  }
   if (message.includes("WORKSPACE_SAFE_MODE")) {
     return { ...base, code: "WORKSPACE_SAFE_MODE", retryable: false };
   }
@@ -343,6 +352,9 @@ export const MAIN_EVENT_CHANNEL_ALLOWLIST = [
   // plaintext or ids. Main sends it itself, so it is not a backend event and
   // the profile gate's backend-event filter does not apply.
   PROFILE_EGRESS_STATE_EVENT,
+  // PUB-G #36 (DR-PUBG-36-1): a window whose owner chose "go back" before a
+  // fatal exit is told to show a sticky "copy your text out" notice.
+  UNSAVED_EDITS_RETAINED_EVENT,
 ] as const;
 
 /** listen 用の全イベント一覧。送信元別 allowlist の union。 */
@@ -12227,6 +12239,9 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   // closed codes only.
   PROFILE_ACTIVATION_REQUEST_COMMAND,
   PROFILE_EGRESS_STATUS_COMMAND,
+  // PUB-G #36 (DR-PUBG-36-1): the renderer's "has unsaved edits" flag for
+  // the fatal-exit confirmation. Main-local; never reaches Native.
+  REPORT_UNSAVED_EDITS_COMMAND,
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

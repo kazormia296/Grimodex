@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   BACKEND_EVENT_CHANNEL_ALLOWLIST,
+  classifyKnownIpcError,
   clampZoomFactor,
   dispatchInvoke,
   EVENT_CHANNEL_ALLOWLIST,
@@ -12098,5 +12099,44 @@ describe("DA-2 profile activation contract (DR-DA2-9, DR-DA2-16)", () => {
         "profile-egress:state",
       ),
     ).toBe(false);
+  });
+});
+
+describe("PUB-G #36 unsaved-edits guard contract (DR-PUBG-36-1)", () => {
+  it("report_unsaved_edits is a Main-processed command, never a Native one", () => {
+    expect(SHELL_COMMAND_NAMES).toContain("report_unsaved_edits");
+    expect(Object.keys(NAPI_COMMANDS)).not.toContain("report_unsaved_edits");
+  });
+
+  it("the retained notice is a Main event only", () => {
+    expect(MAIN_EVENT_CHANNEL_ALLOWLIST).toContain(
+      "app:unsaved-edits-retained",
+    );
+    expect(
+      (BACKEND_EVENT_CHANNEL_ALLOWLIST as readonly string[]).includes(
+        "app:unsaved-edits-retained",
+      ),
+    ).toBe(false);
+    expect(
+      (RENDERER_EVENT_CHANNEL_ALLOWLIST as readonly string[]).includes(
+        "app:unsaved-edits-retained",
+      ),
+    ).toBe(false);
+  });
+
+  it("WORKSPACE_QUARANTINED is its own non-retryable code, not WORKSPACE_SWITCHING", () => {
+    const quarantined = classifyKnownIpcError(
+      "WORKSPACE_QUARANTINED: workspace is quarantined; DB access is rejected until restart",
+    );
+    expect(quarantined).toMatchObject({
+      code: "WORKSPACE_QUARANTINED",
+      retryable: false,
+      outcome: "failed",
+    });
+    expect(
+      classifyKnownIpcError(
+        "WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected",
+      )?.code,
+    ).toBe("WORKSPACE_SWITCHING");
   });
 });

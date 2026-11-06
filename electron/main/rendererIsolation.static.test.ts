@@ -693,6 +693,19 @@ describe("DA-2: spellchecker、grant を伴わない activation、gate の entry
     );
   });
 
+  it("index.ts wires the unsaved-edits guard's window count and the finalizer (PUB-G #36)", () => {
+    const index = stripComments(
+      readFileSync(path.join(MAIN_DIR, "index.ts"), "utf8"),
+    ).replace(/\s+/g, " ");
+    for (const wiring of [
+      "liveWindowCount: () => BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed()) .length,",
+      "confirm: () => showUnsavedFatalExitDialog(dialog),",
+      "confirmFatalExit: () => unsavedEditsGuard.confirmBeforeFatalExit(),",
+    ]) {
+      expect(index, wiring).toContain(wiring);
+    }
+  });
+
   /**
    * Every reference of the gate-opening N-API, by line. The `typeof` check
    * and the `Pick<NapiBackendLike, …>` type are named as such; any other

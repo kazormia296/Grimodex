@@ -1304,6 +1304,12 @@ pub enum LifecycleError {
     InvalidState,
     #[error("workspace lifecycle has active owners or unacknowledged work")]
     ActiveOperations,
+    /// An ordinary DB participant was refused because a C-query quarantine
+    /// fences the live workspace. Unlike `ActiveOperations`, this does not
+    /// clear by waiting: the fence is held until restart, so callers must not
+    /// treat it as a transient workspace switch.
+    #[error("workspace is quarantined by a C-query fence")]
+    WorkspaceQuarantined,
     #[error("workspace transition {operation_id} was vetoed by a C-query quarantine")]
     TransitionVetoed { operation_id: OperationId },
     #[error("workspace operation {0} has not confirmed worker Join")]
@@ -1724,14 +1730,22 @@ impl WorkspaceLifecycleCore {
         if matches!(
             state.state,
             LifecycleState::Transition { .. } | LifecycleState::RecoveryRequired { .. }
-        ) || matches!(
+        ) {
+            let evidence = lifecycle_diagnostic_locked(&state);
+            drop(state);
+            on_rejection(evidence);
+            return Err(LifecycleError::ActiveOperations);
+        }
+        // A quarantine over a Ready workspace never clears by waiting, so it
+        // gets its own error instead of the transient `ActiveOperations`.
+        if matches!(
             &state.state,
             LifecycleState::Ready(binding) if quarantines_workspace(&state, binding)
         ) {
             let evidence = lifecycle_diagnostic_locked(&state);
             drop(state);
             on_rejection(evidence);
-            return Err(LifecycleError::ActiveOperations);
+            return Err(LifecycleError::WorkspaceQuarantined);
         }
         state.workspace_participants = state.workspace_participants.saturating_add(1);
         Ok(WorkspaceParticipant {

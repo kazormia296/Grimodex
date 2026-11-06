@@ -3,6 +3,7 @@ import {
   createAutoSave,
   flushAllAutoSaves,
   registerAutoSaveForQuiesce,
+  hasAnyPendingOrFailedAutoSave,
   AlreadyNotifiedSaveError,
 } from "@/hooks/useAutoSave";
 
@@ -539,6 +540,86 @@ describe("createAutoSave", () => {
     expect(toast.error).toHaveBeenCalledWith(
       i18next.t("autoSave.workspaceSwitching"),
     );
+  });
+
+  describe("WORKSPACE_QUARANTINED 拒否 (PUB-G #36)", () => {
+    const quarantined = () =>
+      Object.assign(
+        new Error(
+          "WORKSPACE_QUARANTINED: workspace is quarantined; DB access is rejected until restart",
+        ),
+        { code: "WORKSPACE_QUARANTINED" },
+      );
+
+    it("切替とは別の文言で toast し、切替の文言は出さない", async () => {
+      const saveFn = vi.fn().mockRejectedValue(quarantined());
+      const autoSave = createAutoSave(saveFn, 500);
+
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(toast.error).toHaveBeenCalledTimes(1);
+      expect(toast.error).toHaveBeenCalledWith(
+        i18next.t("autoSave.workspaceQuarantined"),
+        expect.objectContaining({ duration: Infinity }),
+      );
+      expect(toast.error).not.toHaveBeenCalledWith(
+        i18next.t("autoSave.workspaceSwitching"),
+      );
+    });
+
+    it("自動の再試行を止める: timer も次の schedule も saveFn を再び呼ばない", async () => {
+      const saveFn = vi.fn().mockRejectedValue(quarantined());
+      const autoSave = createAutoSave(saveFn, 500);
+
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(saveFn).toHaveBeenCalledTimes(1);
+
+      // Typing again must not re-arm a save against the fence.
+      autoSave.schedule();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(saveFn).toHaveBeenCalledTimes(1);
+      expect(toast.error).toHaveBeenCalledTimes(1);
+    });
+
+    it("未保存として数え続け、flush は保存を試みず元の拒否を伝える", async () => {
+      const saveFn = vi.fn().mockRejectedValue(quarantined());
+      const autoSave = createAutoSave(saveFn, 500);
+      const unregister = registerAutoSaveForQuiesce(autoSave);
+      try {
+        autoSave.schedule();
+        await vi.advanceTimersByTimeAsync(500);
+        expect(hasAnyPendingOrFailedAutoSave()).toBe(true);
+
+        await expect(autoSave.flush()).rejects.toMatchObject({
+          code: "WORKSPACE_QUARANTINED",
+        });
+        expect(saveFn).toHaveBeenCalledTimes(1);
+        expect(hasAnyPendingOrFailedAutoSave()).toBe(true);
+
+        // Explicit discard is the only way out and clears the latch.
+        autoSave.cancel();
+        expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+      } finally {
+        unregister();
+      }
+    });
+  });
+
+  it("未保存が無ければ hasAnyPendingOrFailedAutoSave は false", async () => {
+    const saveFn = vi.fn().mockResolvedValue(undefined);
+    const autoSave = createAutoSave(saveFn, 500);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+    try {
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+      autoSave.schedule();
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(true);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(hasAnyPendingOrFailedAutoSave()).toBe(false);
+    } finally {
+      unregister();
+    }
   });
 });
 

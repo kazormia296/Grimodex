@@ -4616,7 +4616,11 @@
     "failed": "Auto-save failed: {{reason}}",
     "recovered": "Auto-save recovered; your changes are saved",
     "workspaceSwitching": "Could not save while switching workspaces (your changes are kept and will be re-saved automatically)",
+    "workspaceQuarantined": "Cannot save. Changes cannot be written to the database in this state. Copy the text you are editing to keep it, then restart the app.",
     "unresolvedChanges": "The workspace was not switched because some changes are unsaved or still in conflict"
+  },
+  "unsavedEditsGuard": {
+    "retained": "Unsaved edits remain. The app could not shut down safely, so copy the text you are editing to keep it, then quit the app."
   },
   "closeSaveFailure": {
     "title": "Closing was stopped because changes could not be saved",
