@@ -201,6 +201,19 @@ DR-CP3B-8 と引継ぎ 1 の「D7 (B) か同等のもの」を、次の (B+) で
   6. 「控える」の案内は unmount 済み（retiring）の文書の本文には届かない（既存の閉じるときの書き出しが受け皿）。
 - **CI の修正（hosted ci.yml run 42236058101。2026-11-07）**：C-query worker の隔離試験 `native_worker_quarantines_live_request_writer_after_cleanup_timeout` が `WORKSPACE_QUARANTINED` で落ちた。この試験（と同じ形の Q2 の quarantine 試験 5 本、`nir1_graph/tests.rs`）は、quarantine の後に `active_workspace_snapshot` が**拒否される**こと（＝quarantine が workspace の保護を保持していること）を確かめ、拒否の文字列に `WORKSPACE_SWITCHING` を期待していた。master でもこの経路は `ActiveOperations` → `AppError::WorkspaceSwitching` で**拒否されており、成功していた書込みは無い**。本 PR が変えたのは拒否の種類（印）だけで、拒否するかどうかは変えていない。よって製品の順序の変更や quarantine 専用の入口は要らず、**試験の期待を新しい印に合わせた**（`is_quarantine_refusal`：variant が `AppError::WorkspaceQuarantined`、wire に `WORKSPACE_QUARANTINED` を含み `WORKSPACE_SWITCHING` を含まない）。fail-closed への影響は無い（一般の participant は quarantine の下で引き続き拒否され、試験はむしろ「一時的な切替と取り違えない」ことまで固める）。Transition／RecoveryRequired の `ActiveOperations` を期待する試験（`physical_exclusive_for_ticket`、`close`、Transition 中の participant）は経路が変わらないので触らない。併せて Frontend の architecture ratchet（`ApplicationBootstrapHost.tsx` 314 行 > 300、baseline 290）を、上限を緩めずに直した：未保存の報告と sticky 通知の配線を `src/application/bootstrap/unsavedEditsBootstrap.ts` の `useUnsavedEditsBootstrap` に、theme の 2 つの effect を `applicationTheme.ts` の `useApplicationTheme` に移し（挙動は不変）、host は 281 行、baseline の `largest-host-lines` を 290 → 281 に縮めた。
 
+## PUB-G #33 の追補（`dialog.showErrorBox` が Native の文をそのまま出す。2026-11-07）
+
+### DR-PUBG-33-1（`showErrorBox` を固定の文面にする）
+
+出典は [da2b-renderer-decisions.md](da2b-renderer-decisions.md) の DR-DA2B-R13（読めない file の行）と続行計画の DA-2a／DA-2b の引き継ぎ (5)。`electron/main/backend.ts` の fail-soft の経路は、`dialog.showErrorBox("Grimodex バックエンドの読み込みに失敗しました", \`${message}\n\n…\`)` で Native の message（`PROFILE_EGRESS_UNAVAILABLE:state-file-unreadable` と OS の error。`grimodex-node.node が見つかりません: <path>` のような path を含む文も）をそのまま利用者に見せていた。
+
+- **判断**：dialog の本文を固定の文面にし、Native の message は出さない。種類は既存の閉じた code（`constructionFailure`。状態ファイルが読めない）だけで 2 つに分け（状態ファイルを読めない／バックエンドを読み込めない）、それ以外の原因は後者にまとめる。文面は `backendLoadFailureDialogText`（export した純関数）。何が起きたか・DB を伴う機能が動かないが起動は続くこと・終了してもう一度起動すること・改善しなければログを添えて報告すること、だけを書く。
+- **言語**：Main に i18n の仕組みは無い（locale を引く箇所も無い）。既存の Main の確認 dialog（`unsavedEditsGuard.ts`、DR-PUBG-36-1）と同じく、日本語と英語を 1 つの文面に併記する。title も併記。
+- **文面（本文）**：「データの状態ファイルを読み込めませんでした。（または「バックエンドを読み込めませんでした。」）DB を伴う機能は動作しません(起動は継続します)。Grimodex を終了して、もう一度起動してください。改善しない場合は、アプリのログを添えて報告してください。」と、その英訳（Grimodex could not read its data state file. / could not load its backend. Features that use the database will not work (the app keeps running). Quit and restart Grimodex. If this continues, report it with the app log.）。
+- **信頼境界**：Native の message（path、OS の error、内部の code）は信頼境界の内側の診断情報で、利用者の画面には出さない。原文は既存の `console.error`（`[grimodex-electron] napi backend load failed: …`）にだけ残る（診断のため。変えない）。新しい送信先、保存先、保存範囲、authority は無い。
+- **変えないもの**：IPC の契約、`getBackendConstructionFailure` の closed code と判定の正規表現、fail-fast（CI acceptance。dialog を出さず throw）の経路、fail-soft で起動を続けて `null` を返す挙動、log の文、gate（定数は閉じたまま）、`dialog.showErrorBox` を使うこと自体（dialog の種類は替えない）。
+- **試験**：`electron/main/backend.test.ts` の「initBackend error box (DR-PUBG-33-1)」。(1) 状態ファイルの code＋OS の error＋path、別の原因（path つき）の 2 通りで、title と本文に `PROFILE_EGRESS`、`state-file-unreadable`、`os error`、OS の文、path、fake の path が含まれず、日本語と英語の案内が含まれ、原文は `console.error` に残る。(2) code だけで 2 つの文に分かれる。(3) fail-fast は dialog を呼ばない。本文に Native の message を戻す変異で (1) が落ちることを確かめた。
+- **未検証**：実機の Electron の dialog の見え方（起動しない）。併記は 1 つの dialog に ja と en が並ぶ形で、利用者の言語だけを選ぶ形ではない（Main に言語設定を持ち込むのは範囲外）。
 ### DR-PUBG-36-2（引継ぎの実装。store の拒否の cause を `useAutoSave` へ届ける。2026-11-07）
 
 DR-PUBG-36-1 の追補 P2-2 の引継ぎ（「Codex・phase・snippet・Chronicle の store の失敗を `cause` 付きで伝える別 PR」）を実装した。技術判断は AGENTS.md の事前委任の範囲（新しい契約・authority・送信先・保存範囲は足さない）。
