@@ -26,6 +26,9 @@ pub struct NirChronicleIndexRuntime {
     state: Mutex<RuntimeState>,
     /// DR-IRB-3 (E13): one dedicated-reader slot per authority. Process-local.
     reader_slot: Arc<AtomicUsize>,
+    /// Set when a reader's close was not proven: the slot is then never given
+    /// back (E8 (a)) and callers can tell it from a slot merely in use.
+    reader_slot_blocked: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// DR-IRB-3: the process-local capability that lets one dedicated reader
@@ -37,6 +40,9 @@ pub struct NirChronicleIndexRuntime {
 pub struct ChronicleReaderAdmission {
     pub(crate) owner: u64,
     pub(crate) runtime_epoch: u64,
+    /// The project this admission was made for. A prepare for another project
+    /// would take this admission's proof verdict for its own.
+    pub(crate) project: String,
     pub(crate) target: ChronicleReaderTarget,
     pub(crate) proof_current: bool,
 }
@@ -73,21 +79,43 @@ pub enum ChronicleReaderAdmissionRead {
     Admitted(ChronicleReaderAdmission),
 }
 
-/// One in-flight reader of one authority. Dropping it does NOT give the slot
-/// back: only `release_unused` (no reader was ever opened) or the reader's
-/// proven close does. An unproven close keeps the slot taken for good, so
-/// that authority never opens another reader (E8 (a), fail-closed).
+/// The right to open this authority's single reader (E13). Until a reader
+/// connection is actually open, dropping the permit gives the slot back, so an
+/// early return or an error between taking it and opening a reader cannot
+/// block the authority. `with_chronicle_reader` turns it into an
+/// `OpenReaderSlot` once the connection is open; from then on only a proven
+/// close gives the slot back (E5/E8 (a)).
 #[must_use]
 #[derive(Debug)]
 pub struct ReaderPermit {
     slot: Arc<AtomicUsize>,
+    armed: bool,
 }
 
 impl ReaderPermit {
-    /// Give the slot back when no reader connection was ever opened.
-    pub fn release_unused(self) {
-        self.slot.fetch_sub(1, Ordering::SeqCst);
+    /// Give the slot back explicitly (the same as dropping the permit).
+    pub fn release_unused(self) {}
+
+    fn into_open_slot(mut self) -> OpenReaderSlot {
+        self.armed = false;
+        OpenReaderSlot {
+            slot: Arc::clone(&self.slot),
+        }
     }
+}
+
+impl Drop for ReaderPermit {
+    fn drop(&mut self) {
+        if self.armed {
+            self.slot.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+/// A slot held by an open reader connection. It has no `Drop`: dropping it
+/// leaves the slot taken, because a drop is not close evidence.
+struct OpenReaderSlot {
+    slot: Arc<AtomicUsize>,
 }
 
 pub(super) struct RuntimeState {
@@ -195,6 +223,7 @@ impl NirChronicleIndexRuntime {
             connection_epoch,
             cancellation_epoch: Arc::new(AtomicU64::new(1)),
             reader_slot: Arc::new(AtomicUsize::new(0)),
+            reader_slot_blocked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             state: Mutex::new(RuntimeState {
                 epoch: 1,
                 embedding_generation: None,
@@ -311,6 +340,7 @@ impl NirChronicleIndexRuntime {
             ChronicleReaderAdmission {
                 owner,
                 runtime_epoch,
+                project: project.to_owned(),
                 target,
                 proof_current,
             },
@@ -324,13 +354,27 @@ impl NirChronicleIndexRuntime {
             .ok()
             .map(|_| ReaderPermit {
                 slot: Arc::clone(&self.reader_slot),
+                armed: true,
             })
     }
 
+    /// `true` once a reader's close was not proven. The slot is then taken
+    /// for good (fail-closed, E8 (a)): a caller that finds no permit can tell
+    /// this permanent state from a reader that is merely in use.
+    pub fn chronicle_reader_slot_blocked(&self) -> bool {
+        self.reader_slot_blocked.load(Ordering::SeqCst)
+    }
+
     /// Give the slot back after the reader's `sqlite3_close` was proven.
-    pub(crate) fn release_with_close_evidence(&self, permit: ReaderPermit) {
-        debug_assert!(Arc::ptr_eq(&permit.slot, &self.reader_slot));
-        permit.slot.fetch_sub(1, Ordering::SeqCst);
+    fn release_with_close_evidence(&self, open: OpenReaderSlot) {
+        debug_assert!(Arc::ptr_eq(&open.slot, &self.reader_slot));
+        open.slot.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// The reader's close was not proven: keep the slot taken and say so.
+    fn block_reader_slot(&self, open: OpenReaderSlot) {
+        debug_assert!(Arc::ptr_eq(&open.slot, &self.reader_slot));
+        self.reader_slot_blocked.store(true, Ordering::SeqCst);
     }
 
     /// Number of permits currently held (readers possibly open). Exposed only
@@ -354,25 +398,27 @@ impl NirChronicleIndexRuntime {
         participant: &WorkspaceParticipant,
         operation: impl FnOnce(&Connection) -> Result<T>,
     ) -> Result<T> {
+        // Until a connection is open, dropping the permit (also by unwinding)
+        // gives the slot back.
         if !Arc::ptr_eq(&permit.slot, &self.reader_slot) || admission.owner != self.owner {
-            permit.release_unused();
             anyhow::bail!("NIR1 chronicle reader admission belongs to another runtime");
         }
         let open_started = std::time::Instant::now();
         let reader = match Database::open_chronicle_reader(admission) {
             Ok(reader) => reader,
             Err(error) => {
-                if !matches!(
+                if matches!(
                     error.downcast_ref::<ChronicleReaderError>(),
                     Some(ChronicleReaderError::CloseUnproven(_))
                 ) {
-                    permit.release_unused();
-                } else {
+                    // A connection was opened and could not be closed.
                     tracing::error!(%error, "NIR1 chronicle reader close unproven; reader slot kept");
+                    self.block_reader_slot(permit.into_open_slot());
                 }
                 return Err(error);
             }
         };
+        let open_slot = permit.into_open_slot();
         tracing::debug!(target:"grimodex::nir1_index",
             reader_open_ms=open_started.elapsed().as_millis(),"NIR1 chronicle reader opened");
         let cancellation = (
@@ -393,8 +439,9 @@ impl NirChronicleIndexRuntime {
                 );
                 if unproven {
                     tracing::error!("NIR1 chronicle reader close unproven; reader slot kept");
+                    self.block_reader_slot(open_slot);
                 } else {
-                    self.release_with_close_evidence(permit);
+                    self.release_with_close_evidence(open_slot);
                 }
                 result
             }
@@ -403,9 +450,10 @@ impl NirChronicleIndexRuntime {
                 // Re-prove it (retiring twice is harmless) before the slot
                 // is given back.
                 match reader.prove_chronicle_reader_closed() {
-                    Ok(()) => self.release_with_close_evidence(permit),
+                    Ok(()) => self.release_with_close_evidence(open_slot),
                     Err(error) => {
                         tracing::error!(%error, "NIR1 chronicle reader close unproven after panic; reader slot kept");
+                        self.block_reader_slot(open_slot);
                     }
                 }
                 std::panic::resume_unwind(payload)

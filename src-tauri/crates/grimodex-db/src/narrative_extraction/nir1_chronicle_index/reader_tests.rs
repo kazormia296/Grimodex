@@ -162,6 +162,37 @@ fn reader_is_read_only_and_prepare_refuses_a_writable_connection() {
         })
         .expect_err("a writable connection is not a reader");
     assert!(error.to_string().contains("query_only"), "{error:#}");
+    // `query_only` alone is not enough: the main database must be read-only.
+    let error =
+        f.db.with_read_transaction(|conn| {
+            conn.execute_batch("PRAGMA query_only=ON")?;
+            let result = prepare_chronicle_index_build_on_reader(
+                conn,
+                &f.runtime,
+                &admission,
+                f.project(),
+                &mut control,
+            )
+            .map(|_| ());
+            conn.execute_batch("PRAGMA query_only=OFF")?;
+            result
+        })
+        .expect_err("a writable main database is not a reader");
+    assert!(error.to_string().contains("read-only"), "{error:#}");
+    // An admission made for one project is not a verdict for another.
+    let error = on_reader(&f, &admission, &p, |conn| {
+        let mut control = super::super::source_revision::ForegroundValidationControl;
+        prepare_chronicle_index_build_on_reader(
+            conn,
+            &f.runtime,
+            &admission,
+            "another-project",
+            &mut control,
+        )
+        .map(|_| ())
+    })
+    .expect_err("project mismatch");
+    assert!(error.to_string().contains("project"), "{error:#}");
     assert!(f.db.connection_reusable());
 }
 
@@ -334,22 +365,32 @@ fn admission_records_a_current_proof_and_prepare_reports_it() {
     ));
 }
 
-/// E13 slot: one per authority; a drop alone never gives it back.
+/// E13 slot: one per authority. Until a reader is open, dropping the permit
+/// (an early return, an error, an unwind) gives the slot back.
 #[test]
-fn reader_slot_is_single_and_only_explicit_release_returns_it() {
+fn reader_slot_is_single_and_a_permit_dropped_before_open_gives_it_back() {
     let f = Fixture::new();
     let first = f.runtime.try_acquire_reader_permit().expect("first");
     assert!(f.runtime.try_acquire_reader_permit().is_none());
     assert_eq!(f.runtime.live_chronicle_readers(), 1);
+    assert!(
+        !f.runtime.chronicle_reader_slot_blocked(),
+        "in use is not blocked"
+    );
     first.release_unused();
     assert_eq!(f.runtime.live_chronicle_readers(), 0);
     drop(f.runtime.try_acquire_reader_permit().expect("again"));
+    assert_eq!(f.runtime.live_chronicle_readers(), 0, "drop gives it back");
+    let unwound = catch_unwind(AssertUnwindSafe(|| {
+        let _permit = f.runtime.try_acquire_reader_permit().expect("permit");
+        panic!("between permit and open");
+    }));
+    assert!(unwound.is_err());
     assert_eq!(
         f.runtime.live_chronicle_readers(),
-        1,
-        "a dropped permit is not close evidence"
+        0,
+        "unwind gives it back"
     );
-    assert!(f.runtime.try_acquire_reader_permit().is_none());
 }
 
 /// E5/E8: without close evidence the slot stays taken and the error is typed.
@@ -368,6 +409,10 @@ fn unproven_close_keeps_the_slot_and_is_typed() {
     );
     assert_eq!(f.runtime.live_chronicle_readers(), 1);
     assert!(f.runtime.try_acquire_reader_permit().is_none());
+    assert!(
+        f.runtime.chronicle_reader_slot_blocked(),
+        "an unproven close is told apart from a slot in use"
+    );
     assert!(f.db.connection_reusable(), "the authority is untouched");
 }
 
@@ -471,4 +516,70 @@ fn raw_busy_inside_the_reader_maps_to_reader_busy() {
     ));
     assert_eq!(reason(&busy), Some(NirIndexUnavailableReason::ReaderBusy));
     assert_eq!(reason(&anyhow::anyhow!("other")), None);
+}
+
+/// The admission's proof verdict is computed, not assumed: with the hint true
+/// and a proof the runtime still holds as current, the admission says so.
+#[test]
+fn admission_computes_the_current_proof_verdict() {
+    let f = Fixture::new();
+    let (plan, docs) = f.prepare();
+    publish_chronicle_index_build(&f.db, &f.runtime, plan, f.outcomes(docs)).expect("publish");
+    // No proof of this state is current yet after a change the hint sees: the
+    // generation moves, so the hint is true and a full check rejects the proof.
+    f.db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_semantic_index_metadata SET generation=generation+1 WHERE project_id=?1",
+            [f.project()],
+        )?;
+        Ok(())
+    })
+    .expect("generation moves");
+    let ChronicleReaderAdmissionRead::Admitted(rejected) = admission_read(&f) else {
+        panic!("the hint is true after the change");
+    };
+    assert!(!rejected.already_usable(), "a stale proof is not usable");
+    // The verdict is the runtime's own: a proof validated for exactly this
+    // committed state (its read identity) is current although the hint is true.
+    let proof = f
+        .runtime
+        .lock()
+        .expect("runtime")
+        .proofs
+        .get(f.project())
+        .cloned()
+        .expect("proof");
+    let identity =
+        f.db.with_read_transaction(|conn| Ok(ReadIdentity::read(conn)?.expect("identity")))
+            .expect("identity");
+    *proof.validated_read.lock().expect("cache") = Some(identity);
+    let ChronicleReaderAdmissionRead::Admitted(current) = admission_read(&f) else {
+        panic!("the hint is still true");
+    };
+    assert!(current.already_usable());
+}
+
+/// A runtime pause while the reader's statement is running is seen by the
+/// progress hook, not only at the next check.
+#[test]
+fn a_runtime_pause_interrupts_a_running_reader_statement() {
+    let f = Fixture::new();
+    let (_core, p) = participant();
+    let admission = admit(&f);
+    let error = on_reader(&f, &admission, &p, |conn| {
+        f.runtime.pause().expect("pause rotates the epoch");
+        Ok(conn.query_row(
+            "WITH RECURSIVE walk(value) AS (
+                SELECT 1 UNION ALL SELECT value + 1 FROM walk WHERE value < 10000000
+             ) SELECT sum(value) FROM walk",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?)
+    })
+    .expect_err("the pause must interrupt the statement");
+    assert_eq!(
+        termination(&error),
+        ValidationTerminationReason::WorkspaceGenerationChanged
+    );
+    assert_eq!(f.runtime.live_chronicle_readers(), 0);
 }

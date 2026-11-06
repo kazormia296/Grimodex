@@ -181,6 +181,26 @@ fn make_unreadable(path: &std::path::Path) -> bool {
     std::fs::File::open(path).is_err()
 }
 
+/// A slot merely in use is a counted `Retry`, and a permit given back is not a
+/// block. (The blocked-slot `Stopped` needs a close that cannot be proven; its
+/// `chronicle_reader_slot_blocked` flag is a grimodex-db test.)
+#[test]
+fn a_busy_slot_retries_and_a_returned_permit_is_not_a_block() {
+    let h = Harness::new();
+    let request = h.request();
+    let participant = h.participant();
+    let held = h.runtime().try_acquire_reader_permit().expect("in use");
+    let busy = outcome(h.prepare(&request, &participant).expect("busy"));
+    assert_eq!(reader_reason(&busy), Some(Reason::ReaderSlotBusy));
+    drop(held);
+    // The permit given back is not a block.
+    assert!(!h.runtime().chronicle_reader_slot_blocked());
+    assert!(matches!(
+        h.prepare(&request, &participant).expect("free"),
+        Prepared::Ready { .. }
+    ));
+}
+
 /// (e) An open failure is a reader `Retry` and gives the slot back. (A file
 /// replaced under the authority is not detectable here: the admission names
 /// the path through the authority's connection and takes the identity of

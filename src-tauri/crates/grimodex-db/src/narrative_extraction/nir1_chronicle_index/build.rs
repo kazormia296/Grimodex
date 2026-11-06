@@ -139,8 +139,12 @@ pub fn prepare_chronicle_index_build_on_reader(
         "exact project identity required"
     );
     ensure!(
-        admission.owner == runtime.owner(),
-        "NIR1 reader admission belongs to another runtime"
+        conn.is_readonly(rusqlite::MAIN_DB)?,
+        "NIR1 reader preparation requires a read-only main database"
+    );
+    ensure!(
+        admission.owner == runtime.owner() && admission.project == project,
+        "NIR1 reader admission belongs to another runtime or project"
     );
     if admission.proof_current {
         return Ok(NirIndexBuildRead::AlreadyUsable);

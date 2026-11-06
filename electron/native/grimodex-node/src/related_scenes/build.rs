@@ -273,6 +273,15 @@ fn prepare_on_reader(
     let db = request.database();
     let runtime = db.nir_chronicle_index_runtime();
     let Some(permit) = runtime.try_acquire_reader_permit() else {
+        if runtime.chronicle_reader_slot_blocked() {
+            // A reader's close was not proven: the slot never comes back
+            // (E8 (a)), so retrying cannot help. Stop now; a workspace
+            // re-open starts a new authority with a free slot.
+            tracing::warn!(target:"grimodex::nir1_index", project=%project,
+                "NIR1 reader slot blocked by an unproven close; stopping the index build");
+            return Ok(Prepared::Finished(BuildOutcome::Stopped));
+        }
+        // Another build's reader is in flight: wait for it (counted by K).
         return Ok(Prepared::Finished(BuildOutcome::ReaderRetry(
             index::NirIndexUnavailableReason::ReaderSlotBusy,
         )));

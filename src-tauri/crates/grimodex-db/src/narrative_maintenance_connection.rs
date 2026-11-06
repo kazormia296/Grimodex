@@ -1580,7 +1580,10 @@ impl Database {
 
     /// DR-IRB-3: open the dedicated Chronicle reader on exactly the main
     /// database file the authority admitted (see `chronicle_reader_admission`).
-    pub fn open_chronicle_reader(admission: &ChronicleReaderAdmission) -> Result<Database> {
+    /// Crate-private on purpose: the only entry callers outside this crate have
+    /// is `NirChronicleIndexRuntime::with_chronicle_reader`, which owns the
+    /// reader slot and the close evidence.
+    pub(crate) fn open_chronicle_reader(admission: &ChronicleReaderAdmission) -> Result<Database> {
         match &admission.target {
             ChronicleReaderTarget::File { path, identity } => {
                 Self::open_chronicle_reader_at(path, identity)
@@ -1682,7 +1685,9 @@ impl Database {
     /// `retire_connection_for_recovery` with no pending retired handle is the
     /// close evidence; without it the result is `ChronicleReaderError::
     /// CloseUnproven` and the caller must not give its reader slot back.
-    pub fn with_participant_chronicle_reader<T, F>(
+    /// Crate-private: `self` must be a reader, never an authority (the close
+    /// retires the connection).
+    pub(crate) fn with_participant_chronicle_reader<T, F>(
         &self,
         participant: &WorkspaceParticipant,
         cancellation: (Arc<AtomicU64>, u64),
