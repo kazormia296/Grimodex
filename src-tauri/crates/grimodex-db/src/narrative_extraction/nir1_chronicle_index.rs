@@ -39,6 +39,30 @@ pub(crate) const PRODUCER_VERSION: &str = "nir1-reviewed-chronicle/v1";
 pub(crate) const INDEX_KEY: &str = "nir1-reviewed-chronicle:v1";
 pub(crate) const SOURCE_KIND: &str = "nir1-chronicle-eligibility-set";
 
+/// Cross-crate test support (`workspace-maintenance-test-support`): write the
+/// cold reviewed-child workspace database (project `default-project`, one
+/// reviewed Run, two approved children) to `path` and return its project id.
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+#[doc(hidden)]
+pub fn write_reviewed_child_cold_database_for_test(
+    path: &std::path::Path,
+) -> anyhow::Result<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    flate2::read::GzDecoder::new(
+        include_bytes!("../../tests/support/nir1-reviewed-child-cold.db.gz").as_slice(),
+    )
+    .read_to_end(&mut bytes)?;
+    std::fs::write(path, bytes)?;
+    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/support/nir1-reviewed-child-cold.json"
+    ))?;
+    Ok(manifest["projectId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("fixture manifest has no projectId"))?
+        .to_owned())
+}
+
 #[cfg(test)]
 mod freshness_share_tests;
 #[cfg(test)]

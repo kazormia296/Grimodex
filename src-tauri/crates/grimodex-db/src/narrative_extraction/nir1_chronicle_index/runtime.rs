@@ -358,6 +358,7 @@ impl NirChronicleIndexRuntime {
             permit.release_unused();
             anyhow::bail!("NIR1 chronicle reader admission belongs to another runtime");
         }
+        let open_started = std::time::Instant::now();
         let reader = match Database::open_chronicle_reader(admission) {
             Ok(reader) => reader,
             Err(error) => {
@@ -372,6 +373,8 @@ impl NirChronicleIndexRuntime {
                 return Err(error);
             }
         };
+        tracing::debug!(target:"grimodex::nir1_index",
+            reader_open_ms=open_started.elapsed().as_millis(),"NIR1 chronicle reader opened");
         let cancellation = (
             self.native_build_cancellation_epoch(),
             admission.runtime_epoch,

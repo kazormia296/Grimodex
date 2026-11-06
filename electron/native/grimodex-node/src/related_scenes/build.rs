@@ -5,11 +5,37 @@ use grimodex_semantic::runtime::{
     SemanticEmbeddingIdentity,
 };
 
+/// DR-IRB-3 (E11): how many reader-caused `Retry` in a row end the build task
+/// as `Stopped`. 250 ms × 40 ≒ 10 s, the same length as the renderer's read
+/// IPC deadline (`IPC_TIMEOUT_MS`): a transient `BUSY` is waited out for up to
+/// that long, and a persistent open failure is not retried forever. User
+/// decision of 2026-11-06.
+const MAX_CONSECUTIVE_READER_RETRIES: u32 = 40;
+const RETRY_DELAY: Duration = Duration::from_millis(250);
+
 pub(super) fn schedule(
     state: Arc<AppState>,
     request: SemanticRequest,
     participant: grimodex_db::workspace_lifecycle::WorkspaceParticipant,
     project: String,
+) -> Result<()> {
+    schedule_with(
+        state,
+        request,
+        participant,
+        project,
+        RETRY_DELAY,
+        MAX_CONSECUTIVE_READER_RETRIES,
+    )
+}
+
+fn schedule_with(
+    state: Arc<AppState>,
+    request: SemanticRequest,
+    participant: grimodex_db::workspace_lifecycle::WorkspaceParticipant,
+    project: String,
+    retry_delay: Duration,
+    max_reader_retries: u32,
 ) -> Result<()> {
     if !current_request(&state, &request)? {
         return Ok(());
@@ -29,6 +55,11 @@ pub(super) fn schedule(
         // Keep the workspace participant across every retry and blocking
         // build. A transition must observe this task before publishing a
         // replacement authority.
+        //
+        // Consecutive `Retry` outcomes caused by the dedicated reader
+        // (open failure, BUSY, slot taken, unproven close). Local to this
+        // task, so a new generation's task counts for itself.
+        let mut reader_retry_streak: u32 = 0;
         loop {
             let Some(state) = weak_state.upgrade() else {
                 break;
@@ -41,8 +72,25 @@ pub(super) fn schedule(
                 build_once(&work_state, &work_request, &work_participant, &work_project)
             })
             .await;
-            match result {
-                Ok(Ok(BuildOutcome::Ready)) => {
+            let outcome = match result {
+                Ok(Ok(outcome)) => outcome,
+                _ => break,
+            };
+            let (next_streak, verdict) =
+                next_reader_retry_streak(reader_retry_streak, &outcome, max_reader_retries);
+            reader_retry_streak = next_streak;
+            tracing::debug!(target:"grimodex::nir1_index", outcome=outcome.label(),
+                reader_retry_streak,"NIR1 build outcome");
+            if let StreakVerdict::Stop(reason) = verdict {
+                // Logged once: the loop ends here and the reservation below
+                // is released (the next `begin` starts a fresh task).
+                tracing::warn!(target:"grimodex::nir1_index", identity=key.0, project=%project,
+                    ?reason, max_reader_retries,
+                    "NIR1 reader retries exhausted; stopping the Related Scenes index build");
+                break;
+            }
+            match outcome {
+                BuildOutcome::Ready => {
                     state
                         .events
                         .emit("related-scenes:index-ready", json!({"projectId":project}));
@@ -50,11 +98,11 @@ pub(super) fn schedule(
                 // Pending Feed work can outlive the originating query. Keep
                 // its single workspace-bound rebuild alive until the actual
                 // canonical state settles or the pinned runtime is revoked.
-                Ok(Ok(BuildOutcome::Retry | BuildOutcome::Idle)) => {}
-                _ => break,
+                BuildOutcome::Retry | BuildOutcome::ReaderRetry(_) | BuildOutcome::Idle => {}
+                BuildOutcome::Stopped => break,
             }
             drop(state);
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(retry_delay).await;
         }
         if let Some(state) = weak_state.upgrade() {
             if let Ok(mut builds) = lock(&state.related_scenes.builds) {
@@ -68,8 +116,66 @@ pub(super) fn schedule(
 enum BuildOutcome {
     Ready,
     Retry,
+    /// A `Retry` caused by the dedicated reader (DR-IRB-3). Counted against
+    /// `MAX_CONSECUTIVE_READER_RETRIES`.
+    ReaderRetry(index::NirIndexUnavailableReason),
     Idle,
     Stopped,
+}
+
+impl BuildOutcome {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Retry => "retry",
+            Self::ReaderRetry(_) => "reader-retry",
+            Self::Idle => "idle",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum StreakVerdict {
+    Continue,
+    Stop(index::NirIndexUnavailableReason),
+}
+
+/// The reader-retry counter: a reader-caused `Retry` adds one and `K` of them
+/// in a row stop the task; every other outcome (`Ready`, `Idle`, an ordinary
+/// `Retry`) resets it.
+fn next_reader_retry_streak(
+    streak: u32,
+    outcome: &BuildOutcome,
+    max_reader_retries: u32,
+) -> (u32, StreakVerdict) {
+    match outcome {
+        BuildOutcome::ReaderRetry(reason) => {
+            let streak = streak.saturating_add(1);
+            if streak >= max_reader_retries {
+                (streak, StreakVerdict::Stop(*reason))
+            } else {
+                (streak, StreakVerdict::Continue)
+            }
+        }
+        _ => (0, StreakVerdict::Continue),
+    }
+}
+
+/// E11: reader reasons are either transient (`Retry`, bounded by the streak)
+/// or mean the authority is not the file that was admitted (`Stopped`).
+fn reader_reason_outcome(reason: index::NirIndexUnavailableReason) -> Option<BuildOutcome> {
+    use index::NirIndexUnavailableReason as Reason;
+    match reason {
+        Reason::ReaderOpenFailed
+        | Reason::ReaderBusy
+        | Reason::ReaderSlotBusy
+        | Reason::ReaderCloseUnproven => Some(BuildOutcome::ReaderRetry(reason)),
+        Reason::ReaderIdentityMismatch | Reason::ReaderUnavailableForMemoryDatabase => {
+            Some(BuildOutcome::Stopped)
+        }
+        _ => None,
+    }
 }
 
 /// The detached Chronicle build is a lifecycle participant, but the
@@ -143,6 +249,95 @@ fn audit(audit: SemanticEmbeddingAuditBinding) -> index::NirEmbeddingAuditBindin
     }
 }
 
+/// What the reader-side half of one build produced. The plan is consumed
+/// immediately; keep it inline rather than boxing it.
+#[allow(clippy::large_enum_variant)]
+enum Prepared {
+    Finished(BuildOutcome),
+    Ready {
+        plan: index::NirIndexBuildPlan,
+        documents: Vec<grimodex_db::narrative_extraction::ChronicleRetrievalDocument>,
+    },
+}
+
+/// The authority admission and the dedicated-reader prepare of one build
+/// (DR-IRB-3). The reader slot permit is taken first and is always either
+/// consumed by `with_chronicle_reader` or given back here: no early return
+/// leaves it taken unless the reader's close was not proven (E8 (a)).
+fn prepare_on_reader(
+    request: &SemanticRequest,
+    participant: &WorkspaceParticipant,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+) -> Result<Prepared> {
+    let db = request.database();
+    let runtime = db.nir_chronicle_index_runtime();
+    let Some(permit) = runtime.try_acquire_reader_permit() else {
+        return Ok(Prepared::Finished(BuildOutcome::ReaderRetry(
+            index::NirIndexUnavailableReason::ReaderSlotBusy,
+        )));
+    };
+    let admission = match db.with_participant_read_transaction(participant, |conn| {
+        runtime.chronicle_reader_admission(conn, project, &mut *control)
+    }) {
+        Ok(index::ChronicleReaderAdmissionRead::Admitted(admission)) => admission,
+        Ok(index::ChronicleReaderAdmissionRead::Idle) => {
+            permit.release_unused();
+            return Ok(Prepared::Finished(BuildOutcome::Idle));
+        }
+        Ok(index::ChronicleReaderAdmissionRead::Stopped) => {
+            permit.release_unused();
+            return Ok(Prepared::Finished(BuildOutcome::Stopped));
+        }
+        Err(error) => {
+            permit.release_unused();
+            return Err(error);
+        }
+    };
+    if admission.already_usable() {
+        permit.release_unused();
+        return Ok(Prepared::Finished(BuildOutcome::Idle));
+    }
+    if !admission.reader_available() {
+        // An in-memory authority has no second connection. Stop with a typed
+        // reason; never fall back to preparing on the authority silently.
+        permit.release_unused();
+        return Ok(Prepared::Finished(BuildOutcome::Stopped));
+    }
+    let prepared = runtime.with_chronicle_reader(permit, &admission, participant, |conn| {
+        index::prepare_chronicle_index_build_on_reader(
+            conn,
+            runtime,
+            &admission,
+            project,
+            &mut *control,
+        )
+    });
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return match index::chronicle_reader_error_reason(&error)
+                .and_then(reader_reason_outcome)
+            {
+                Some(outcome) => {
+                    tracing::debug!(target:"grimodex::nir1_index", error=%error,
+                        "NIR1 reader prepare ended without a plan");
+                    Ok(Prepared::Finished(outcome))
+                }
+                None => Err(error),
+            }
+        }
+    };
+    Ok(match prepared {
+        index::NirIndexBuildRead::Ready { plan, documents } => Prepared::Ready { plan, documents },
+        index::NirIndexBuildRead::AlreadyUsable => Prepared::Finished(BuildOutcome::Idle),
+        index::NirIndexBuildRead::Unavailable {
+            reason: index::NirIndexUnavailableReason::PendingChange,
+        } => Prepared::Finished(BuildOutcome::Retry),
+        _ => Prepared::Finished(BuildOutcome::Stopped),
+    })
+}
+
 fn build_once(
     state: &AppState,
     request: &SemanticRequest,
@@ -154,30 +349,10 @@ fn build_once(
         return Ok(BuildOutcome::Stopped);
     }
     let db = request.database();
-    match db.with_participant_read_transaction(participant, |conn| {
-        db.nir_chronicle_index_runtime()
-            .rebuild_requested(conn, project)
-    })? {
-        Some(false) => return Ok(BuildOutcome::Idle),
-        None => return Ok(BuildOutcome::Stopped),
-        Some(true) => {}
-    }
     let mut control = RelatedScenesBuildControl::new(state, request, participant);
-    let prepared = db.with_participant_read_transaction(participant, |conn| {
-        index::prepare_chronicle_index_build_with_control(
-            conn,
-            db.nir_chronicle_index_runtime(),
-            project,
-            &mut control,
-        )
-    })?;
-    let (plan, documents) = match prepared {
-        index::NirIndexBuildRead::Ready { plan, documents } => (plan, documents),
-        index::NirIndexBuildRead::AlreadyUsable => return Ok(BuildOutcome::Idle),
-        index::NirIndexBuildRead::Unavailable {
-            reason: index::NirIndexUnavailableReason::PendingChange,
-        } => return Ok(BuildOutcome::Retry),
-        _ => return Ok(BuildOutcome::Stopped),
+    let (plan, documents) = match prepare_on_reader(request, participant, project, &mut control)? {
+        Prepared::Ready { plan, documents } => (plan, documents),
+        Prepared::Finished(outcome) => return Ok(outcome),
     };
     let prepared_at = Instant::now();
     let model = identity(
@@ -294,3 +469,7 @@ fn build_once(
         _ => Ok(BuildOutcome::Stopped),
     }
 }
+
+#[cfg(test)]
+#[path = "build_tests.rs"]
+mod tests;
