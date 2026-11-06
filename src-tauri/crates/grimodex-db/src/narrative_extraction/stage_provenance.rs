@@ -24,6 +24,16 @@ use super::models::{
     ProposalSeed,
 };
 
+#[cfg(test)]
+thread_local! {
+    /// Calls of the durable receipt hydration / per-receipt lifecycle check on
+    /// this thread, so tests can prove a prepare verifies each Run once.
+    pub(crate) static RECEIPT_HYDRATION_COUNT: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    pub(crate) static RECEIPT_LIFECYCLE_BINDING_COUNT: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 const CLOSURE_ARTIFACT_KIND: &str = "chronicle.stage-provenance-closure@1";
 const CLOSURE_KIND: &str = "chronicle-stage-provenance-closure";
 const MODEL_BINDING_KIND: &str = "chronicle-stage-model-binding";
@@ -878,6 +888,8 @@ fn validate_receipt_lifecycle_binding(
     run_id: &str,
     receipt: &ChronicleStageTerminalReceipt,
 ) -> anyhow::Result<()> {
+    #[cfg(test)]
+    RECEIPT_LIFECYCLE_BINDING_COUNT.with(|count| count.set(count.get() + 1));
     let execution = &receipt.stage_execution;
     let task_kind: Option<String> = conn
         .query_row(
@@ -1035,6 +1047,8 @@ pub(crate) fn load_verified_stage_receipts_for_hydration(
     project_id: &str,
     run_id: &str,
 ) -> anyhow::Result<Vec<Value>> {
+    #[cfg(test)]
+    RECEIPT_HYDRATION_COUNT.with(|count| count.set(count.get() + 1));
     let mut receipt_stmt = conn.prepare(
         "SELECT task_id, attempt_id, stage_execution_id, receipt_json,
                 receipt_digest, model_binding_digest, terminal_status
