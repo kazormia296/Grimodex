@@ -233,5 +233,122 @@ pub struct RetrievalQueryContext {
     pub canonical_source_text: String,
     pub(super) authority:
         grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
+    /// `authority.mappings` position by `source_key`, built once with the
+    /// authority. The first mapping of a key wins, exactly like
+    /// `mappings.iter().find(|m| m.source_key == key)`.
+    pub(super) mapping_position_by_source_key: std::collections::HashMap<String, usize>,
     pub(super) _verified: (),
+}
+
+impl RetrievalQueryContext {
+    /// Positions index `authority.mappings`, so the index assumes the authority is not
+    /// mutated after construction (it is built once in `query_context` and never changed).
+    /// The first authority mapping of `source_key`, or `None`. Same answer as a
+    /// linear `find`, without a scan per candidate.
+    pub(super) fn mapping_for_source_key(
+        &self,
+        source_key: &str,
+    ) -> Option<
+        &grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityMappingV1,
+    > {
+        self.mapping_position_by_source_key
+            .get(source_key)
+            .map(|&position| &self.authority.mappings[position])
+    }
+}
+
+/// First-wins position index of `authority.mappings` by `source_key`.
+pub(super) fn index_mappings_by_source_key(
+    authority: &grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
+) -> std::collections::HashMap<String, usize> {
+    let mut positions = std::collections::HashMap::with_capacity(authority.mappings.len());
+    for (position, mapping) in authority.mappings.iter().enumerate() {
+        positions
+            .entry(mapping.source_key.clone())
+            .or_insert(position);
+    }
+    positions
+}
+
+#[cfg(test)]
+mod mapping_index_tests {
+    use super::*;
+    use grimodex_core::narrative_project_scope_authority::{
+        build_narrative_project_scope_authority_v1, NarrativeProjectScopeAuthoritySceneInputV1,
+        NarrativeProjectScopeAuthorityV1,
+    };
+
+    fn authority(scene_ids: &[&str]) -> NarrativeProjectScopeAuthorityV1 {
+        let scenes = scene_ids
+            .iter()
+            .map(|id| NarrativeProjectScopeAuthoritySceneInputV1 {
+                scene_id: (*id).into(),
+                raw_story_key: None,
+            })
+            .collect::<Vec<_>>();
+        build_narrative_project_scope_authority_v1("p1", &scenes).expect("authority")
+    }
+
+    fn source_keys(authority: &NarrativeProjectScopeAuthorityV1) -> Vec<String> {
+        authority
+            .mappings
+            .iter()
+            .map(|m| m.source_key.clone())
+            .collect()
+    }
+
+    /// The index answers exactly what `find` answered: the same mapping (by
+    /// position), for present, repeated and absent keys.
+    fn assert_same_as_find(authority: &NarrativeProjectScopeAuthorityV1, keys: &[&str]) {
+        let index = index_mappings_by_source_key(authority);
+        for key in keys {
+            let by_find = authority.mappings.iter().position(|m| m.source_key == *key);
+            let by_index = index.get(*key).copied();
+            assert_eq!(by_index, by_find, "key {key}");
+        }
+    }
+
+    #[test]
+    fn index_matches_find_for_present_and_absent_keys_in_any_order() {
+        let mut forward = authority(&["a", "b", "c", "d"]);
+        let mut keys = source_keys(&forward);
+        keys.extend(["project:absent".to_owned(), String::new()]);
+        let keys = keys.iter().map(String::as_str).collect::<Vec<_>>();
+        assert_same_as_find(&forward, &keys);
+        forward.mappings.reverse();
+        assert_same_as_find(&forward, &keys);
+    }
+
+    #[test]
+    fn index_keeps_the_first_mapping_of_a_repeated_key_like_find() {
+        let mut repeated = authority(&["a", "b", "c"]);
+        // A later mapping for the same key, with a different Scene: `find`
+        // answers the first one, so must the index.
+        let mut later = repeated.mappings[0].clone();
+        later.scene_ref = "scene:later".into();
+        later.reading_rank = 99;
+        repeated.mappings.push(later);
+        let keys = source_keys(&repeated);
+        let keys = keys.iter().map(String::as_str).collect::<Vec<_>>();
+        let repeated_key = repeated.mappings[0].source_key.clone();
+        let index = index_mappings_by_source_key(&repeated);
+        assert_same_as_find(&repeated, &keys);
+        assert_eq!(index[&repeated_key], 0);
+        assert_ne!(repeated.mappings[index[&repeated_key]].reading_rank, 99);
+        // And with the repeat placed before the original.
+        repeated.mappings.rotate_right(1);
+        assert_same_as_find(&repeated, &keys);
+        assert_eq!(
+            repeated.mappings[index_mappings_by_source_key(&repeated)[&repeated_key]].reading_rank,
+            99
+        );
+    }
+
+    #[test]
+    fn index_of_an_empty_authority_has_no_key() {
+        let mut empty = authority(&["a"]);
+        empty.mappings.clear();
+        assert!(index_mappings_by_source_key(&empty).is_empty());
+        assert_same_as_find(&empty, &["project:a", "project:scene:a"]);
+    }
 }

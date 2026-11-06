@@ -284,12 +284,7 @@ impl VerifiedDisclosureMaterial {
             return Some(Reason::Secret);
         }
         for source in &self.story_source_keys {
-            let Some(mapping) = query
-                .authority
-                .mappings
-                .iter()
-                .find(|m| m.source_key == *source)
-            else {
+            let Some(mapping) = query.mapping_for_source_key(source) else {
                 return Some(Reason::MaterialAuthorityUnavailable);
             };
             if mapping.scene_ref == query.query_scene_ref
