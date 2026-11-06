@@ -78,7 +78,8 @@ pub struct NirQualifiedDocument {
 pub struct NirEvidenceHandle {
     owner: u64,
     proof: Arc<IndexProof>,
-    query: QueryBinding,
+    // Shared by every handle of one qualification instead of copied per handle.
+    query: Arc<QueryBinding>,
     candidate: usize,
     evidence: usize,
 }
@@ -351,12 +352,18 @@ fn qualify_proof(
     query: Arc<RetrievalQueryContext>,
     control: &mut dyn GraphWorkControl,
 ) -> Result<NirQualifiedRead> {
-    let binding = QueryBinding::from(&*query);
+    let binding = Arc::new(QueryBinding::from(&*query));
     let mut documents = Vec::new();
+    // One query, one authority: the pass shares its `projection_revision` answers.
+    let mut revision_memo = super::super::scene_scope::ProjectionRevisionMemo::default();
     for (index, candidate) in proof.candidates.iter().enumerate() {
         control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Row)?;
         // This gate executes before vectors enter any scorer, ranker or limit.
-        if candidate.embedding.is_none() || !candidate.verified.admits(&query) {
+        if candidate.embedding.is_none()
+            || !candidate
+                .verified
+                .admits_with_memo(&query, &mut revision_memo)
+        {
             continue;
         }
         let evidence = candidate
@@ -366,7 +373,7 @@ fn qualify_proof(
             .map(|(evidence, _)| NirEvidenceHandle {
                 owner: runtime.owner(),
                 proof: proof.clone(),
-                query: binding.clone(),
+                query: Arc::clone(&binding),
                 candidate: index,
                 evidence,
             })

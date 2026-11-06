@@ -116,7 +116,7 @@ pub fn read_revision_retrieval_eligibility(
         &material_scopes,
         &query,
         &query.authority,
-        &membership.active_scope_controls,
+        &super::scene_scope::ParsedScopeControl::parse_all(&membership.active_scope_controls),
         &membership.run_id,
     ) {
         return Ok(unavailable(reason));

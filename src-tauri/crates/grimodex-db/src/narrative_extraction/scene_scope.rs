@@ -2026,12 +2026,108 @@ pub(crate) fn select_material_scene_scopes(
         .collect()
 }
 
+/// An active Scope control with its dependency identity decoded once.
+///
+/// Decoding a `scope-dependency-projection-v1` Source key (hex, JSON and a
+/// canonical re-encoding) depends only on the key, so a Build candidate does it
+/// at build instead of on every query. `identity` is `Some` exactly when the
+/// kind is `scope-dependency-projection-v1` and the key decodes; every other
+/// control keeps `None`, the same outcome the per-query decode gave.
+#[derive(Debug)]
+pub(crate) struct ParsedScopeControl {
+    control: super::human_material_basis::MaterialSourceBasisEntry,
+    identity: Option<grimodex_core::narrative_scope_dependency_projection::ScopeDependencyIdentity>,
+}
+
+impl ParsedScopeControl {
+    pub(crate) fn parse(control: &super::human_material_basis::MaterialSourceBasisEntry) -> Self {
+        use grimodex_core::narrative_scope_dependency_projection::ScopeDependencyIdentity;
+        let identity = (control.source_kind == "scope-dependency-projection-v1")
+            .then(|| ScopeDependencyIdentity::from_source_key(&control.source_key).ok())
+            .flatten();
+        Self {
+            control: control.clone(),
+            identity,
+        }
+    }
+
+    pub(crate) fn parse_all(
+        controls: &[super::human_material_basis::MaterialSourceBasisEntry],
+    ) -> Vec<Self> {
+        controls.iter().map(Self::parse).collect()
+    }
+}
+
+/// `projection_revision` answers for one query pass.
+///
+/// `projection_revision(identity, authority)` is a pure function of the decoded
+/// identity (a bijection with the control's Source key) and the authority. One
+/// pass over the candidates of one query reads one authority, so candidates
+/// that share a control key share the answer. Create one memo per pass and use
+/// it with that pass's authority only; nothing here outlives the pass or is
+/// shared between queries.
+#[derive(Debug, Default)]
+pub(crate) struct ProjectionRevisionMemo {
+    answers: std::collections::HashMap<String, Option<String>>,
+    #[cfg(debug_assertions)]
+    authority_address: Option<usize>,
+}
+
+impl ProjectionRevisionMemo {
+    fn matches(
+        &mut self,
+        source_key: &str,
+        identity: &grimodex_core::narrative_scope_dependency_projection::ScopeDependencyIdentity,
+        authority: &grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
+        revision_token: &str,
+    ) -> bool {
+        #[cfg(debug_assertions)]
+        {
+            let address = authority as *const _ as usize;
+            debug_assert_eq!(
+                *self.authority_address.get_or_insert(address),
+                address,
+                "a ProjectionRevisionMemo serves one authority"
+            );
+        }
+        if let Some(answer) = self.answers.get(source_key) {
+            return answer.as_deref() == Some(revision_token);
+        }
+        let answer = grimodex_core::narrative_scope_dependency_projection::projection_revision(
+            identity, authority,
+        )
+        .ok();
+        let matches = answer.as_deref() == Some(revision_token);
+        self.answers.insert(source_key.to_owned(), answer);
+        matches
+    }
+}
+
 pub(crate) fn check_material_constraints(
     material_scopes: &[MaterialSceneScope],
     query: &super::retrieval_admission::RetrievalQueryContext,
     authority: &grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
-    active_scope_controls: &[super::human_material_basis::MaterialSourceBasisEntry],
+    active_scope_controls: &[ParsedScopeControl],
     owning_run_id: &str,
+) -> Option<super::retrieval_admission::RevisionEligibilityReason> {
+    check_material_constraints_with_memo(
+        material_scopes,
+        query,
+        authority,
+        active_scope_controls,
+        owning_run_id,
+        &mut ProjectionRevisionMemo::default(),
+    )
+}
+
+/// `check_material_constraints` with the pass's `projection_revision` memo.
+pub(crate) fn check_material_constraints_with_memo(
+    material_scopes: &[MaterialSceneScope],
+    query: &super::retrieval_admission::RetrievalQueryContext,
+    authority: &grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
+    active_scope_controls: &[ParsedScopeControl],
+    owning_run_id: &str,
+    memo: &mut ProjectionRevisionMemo,
 ) -> Option<super::retrieval_admission::RevisionEligibilityReason> {
     for material_scope in material_scopes {
         let scope = &material_scope.binding;
@@ -2043,26 +2139,28 @@ pub(crate) fn check_material_constraints(
         // re-authorize a historical row from the current DB scope alone.
         let exact_current_control_count = active_scope_controls
             .iter()
-            .filter(|control| match control.source_kind.as_str() {
-                "project-scope-authority" => {
-                    control.source_key == query.scope_authority_source_key
-                        && control.revision_token == query.scope_authority_revision_token
-                }
-                "scope-dependency-projection-v1" => {
-                    use grimodex_core::narrative_scope_dependency_projection::{
-                        projection_revision, ScopeDependencyIdentity,
-                    };
-                    ScopeDependencyIdentity::from_source_key(&control.source_key)
-                        .ok()
-                        .is_some_and(|identity| {
+            .filter(|parsed| {
+                let control = &parsed.control;
+                match control.source_kind.as_str() {
+                    "project-scope-authority" => {
+                        control.source_key == query.scope_authority_source_key
+                            && control.revision_token == query.scope_authority_revision_token
+                    }
+                    "scope-dependency-projection-v1" => {
+                        parsed.identity.as_ref().is_some_and(|identity| {
                             identity.project_id == query.project_id
                                 && identity.run_id == owning_run_id
                                 && !identity.secret
-                                && projection_revision(&identity, authority).ok().as_deref()
-                                    == Some(control.revision_token.as_str())
+                                && memo.matches(
+                                    &control.source_key,
+                                    identity,
+                                    authority,
+                                    &control.revision_token,
+                                )
                         })
+                    }
+                    _ => false,
                 }
-                _ => false,
             })
             .count();
         if exact_current_control_count != 1 {
@@ -2731,5 +2829,169 @@ mod tests {
             })
             .expect("read scope feed");
         assert_eq!(feed_count, 3);
+    }
+}
+
+#[cfg(test)]
+mod parsed_scope_control_tests {
+    use super::*;
+    use grimodex_core::narrative_scope_dependency_projection::ScopeDependencyIdentity;
+
+    fn entry(
+        kind: &str,
+        key: &str,
+    ) -> super::super::human_material_basis::MaterialSourceBasisEntry {
+        super::super::human_material_basis::MaterialSourceBasisEntry {
+            source_kind: kind.into(),
+            source_key: key.into(),
+            revision_token: "sha256:token".into(),
+            revision_observed_at: None,
+        }
+    }
+
+    fn identity() -> ScopeDependencyIdentity {
+        ScopeDependencyIdentity {
+            project_id: "p1".into(),
+            run_id: "run-1".into(),
+            anchor_document_ref: "document:a".into(),
+            anchor_scene_ref: "scene:a".into(),
+            reveal_document_ref: "document:b".into(),
+            reveal_scene_ref: "scene:b".into(),
+            secret: false,
+        }
+    }
+
+    #[test]
+    fn a_projection_control_decodes_its_identity_once_exactly_as_from_source_key() {
+        let key = identity().source_key().expect("key");
+        let parsed = ParsedScopeControl::parse(&entry("scope-dependency-projection-v1", &key));
+        assert_eq!(parsed.identity, Some(identity()));
+        assert_eq!(
+            parsed.identity,
+            ScopeDependencyIdentity::from_source_key(&key).ok()
+        );
+        assert_eq!(parsed.control.source_key, key);
+    }
+
+    #[test]
+    fn an_undecodable_projection_key_has_no_identity() {
+        for key in ["", "project:scope-dependency:zz", "not-a-key", "project:a"] {
+            let parsed = ParsedScopeControl::parse(&entry("scope-dependency-projection-v1", key));
+            assert!(parsed.identity.is_none(), "key {key:?}");
+        }
+        // A key that decodes but is not canonical is rejected like before.
+        // Trailing whitespace is accepted by the JSON reader, so this key decodes,
+        // but the re-encoded canonical form differs from it.
+        let key = identity().source_key().expect("key");
+        let noncanonical = format!("{key} ");
+        let parsed =
+            ParsedScopeControl::parse(&entry("scope-dependency-projection-v1", &noncanonical));
+        assert!(parsed.identity.is_none());
+    }
+
+    #[test]
+    fn other_kinds_never_carry_an_identity_even_with_a_projection_key() {
+        let key = identity().source_key().expect("key");
+        for kind in ["project-scope-authority", "unknown-kind", ""] {
+            assert!(ParsedScopeControl::parse(&entry(kind, &key))
+                .identity
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn parse_all_keeps_the_order_and_the_entries() {
+        let key = identity().source_key().expect("key");
+        let controls = vec![
+            entry("project-scope-authority", "project:scope-authority:p1"),
+            entry("scope-dependency-projection-v1", &key),
+        ];
+        let parsed = ParsedScopeControl::parse_all(&controls);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].control, controls[0]);
+        assert_eq!(parsed[1].control, controls[1]);
+        assert!(parsed[0].identity.is_none());
+        assert!(parsed[1].identity.is_some());
+    }
+
+    fn authority(
+    ) -> grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1 {
+        use grimodex_core::narrative_project_scope_authority::{
+            build_narrative_project_scope_authority_v1, NarrativeProjectScopeAuthoritySceneInputV1,
+        };
+        let scenes = ["a", "b", "c"]
+            .into_iter()
+            .map(|id| NarrativeProjectScopeAuthoritySceneInputV1 {
+                scene_id: id.into(),
+                raw_story_key: None,
+            })
+            .collect::<Vec<_>>();
+        build_narrative_project_scope_authority_v1("p1", &scenes).expect("authority")
+    }
+
+    fn identity_in(
+        authority: &grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
+    ) -> ScopeDependencyIdentity {
+        ScopeDependencyIdentity {
+            anchor_scene_ref: authority.mappings[0].scene_ref.clone(),
+            reveal_scene_ref: authority.mappings[1].scene_ref.clone(),
+            ..identity()
+        }
+    }
+
+    #[test]
+    fn the_memo_answers_like_a_direct_projection_revision_comparison() {
+        use grimodex_core::narrative_scope_dependency_projection::projection_revision;
+        let authority = authority();
+        let identity = identity_in(&authority);
+        let key = identity.source_key().expect("key");
+        let token = projection_revision(&identity, &authority).expect("revision");
+        let mut memo = ProjectionRevisionMemo::default();
+        // First call computes, later calls read the memo; both give the direct answer.
+        for _ in 0..3 {
+            assert!(memo.matches(&key, &identity, &authority, &token));
+            assert!(!memo.matches(&key, &identity, &authority, "sha256:other"));
+            assert!(!memo.matches(&key, &identity, &authority, ""));
+        }
+        assert_eq!(memo.answers.len(), 1);
+    }
+
+    #[test]
+    fn the_memo_keeps_an_unprojectable_identity_as_no_match() {
+        let authority = authority();
+        let identity = ScopeDependencyIdentity {
+            anchor_scene_ref: "scene:nowhere".into(),
+            ..identity_in(&authority)
+        };
+        let key = identity.source_key().expect("key");
+        let mut memo = ProjectionRevisionMemo::default();
+        for _ in 0..2 {
+            assert!(!memo.matches(&key, &identity, &authority, "sha256:any"));
+        }
+        assert_eq!(memo.answers.get(&key), Some(&None));
+    }
+
+    #[test]
+    fn the_memo_separates_identities_by_their_control_key() {
+        use grimodex_core::narrative_scope_dependency_projection::projection_revision;
+        let authority = authority();
+        let first = identity_in(&authority);
+        let second = ScopeDependencyIdentity {
+            reveal_scene_ref: authority.mappings[2].scene_ref.clone(),
+            ..first.clone()
+        };
+        let (first_key, second_key) = (
+            first.source_key().expect("key"),
+            second.source_key().expect("key"),
+        );
+        let first_token = projection_revision(&first, &authority).expect("revision");
+        let second_token = projection_revision(&second, &authority).expect("revision");
+        assert_ne!(first_token, second_token);
+        let mut memo = ProjectionRevisionMemo::default();
+        assert!(memo.matches(&first_key, &first, &authority, &first_token));
+        assert!(!memo.matches(&second_key, &second, &authority, &first_token));
+        assert!(memo.matches(&second_key, &second, &authority, &second_token));
+        assert!(memo.matches(&first_key, &first, &authority, &first_token));
+        assert_eq!(memo.answers.len(), 2);
     }
 }

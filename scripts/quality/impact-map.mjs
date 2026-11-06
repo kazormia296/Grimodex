@@ -586,6 +586,8 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-graph-eval/frozen-k64-plan.test.mjs",
         "scripts/quality/nir1-graph-eval/frozen-k64-admission.test.mjs",
         "scripts/quality/nir1-graph-eval/frozen-k64-run.test.mjs",
+        // CP-4 QV: the quality verdict applied to recorded receipts (DR-CP4-QV-1).
+        "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
       ],
       [
         "node",
