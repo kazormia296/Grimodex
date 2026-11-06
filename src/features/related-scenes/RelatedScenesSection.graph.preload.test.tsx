@@ -31,7 +31,6 @@ vi.mock("./Nir1GraphSeedPanel", async (importOriginal) => {
   h.seedPanelLoaded.value += 1;
   return importOriginal();
 });
-import { RelatedScenesSection } from "./RelatedScenesSection";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -44,18 +43,29 @@ afterEach(() => {
   cleanup();
 });
 
+// The mock factories run once per file, so each case resets the module cache
+// and loads the section afresh: the counts do not depend on the run order.
+async function mountSection() {
+  vi.resetModules();
+  h.graphLoaded.value = 0;
+  h.seedPanelLoaded.value = 0;
+  const { RelatedScenesSection } = await import("./RelatedScenesSection");
+  render(<RelatedScenesSection />);
+}
+
 describe("RelatedScenesSection preloads the Graph chunks (DR-PUBG-37-1)", () => {
   it("does not request the Graph chunks at mount while the constant is false", async () => {
     h.enabled.value = false;
-    render(<RelatedScenesSection />);
+    await mountSection();
     await act(async () => {});
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(h.graphLoaded.value).toBe(0);
     expect(h.seedPanelLoaded.value).toBe(0);
   });
 
   it("requests the Graph and seed panel chunks at mount while the constant is true", async () => {
     h.enabled.value = true;
-    render(<RelatedScenesSection />);
+    await mountSection();
     await vi.waitFor(() => {
       expect(h.graphLoaded.value).toBe(1);
       expect(h.seedPanelLoaded.value).toBe(1);

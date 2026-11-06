@@ -5,6 +5,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type ComponentType,
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
@@ -19,14 +20,56 @@ import { isNir1GraphUiEnabled } from "./nir1GraphAvailability";
 import { useNir1RelatedScenes } from "./useNir1RelatedScenes";
 import type { Nir1RelatedScenesFetchResult } from "./nir1RelatedScenesFetchTypes";
 
-// The Graph view (CP-3b) is a lazy chunk requested only while the Graph UI
-// constant is on and the fetch carries a Graph payload, `restart-required` or
-// (with `PROFILE_ACTIVATION_UI_ENABLED` on too) `profile-not-restricted`
-// (DR-CP3B-7, DR-DA2-33). While the constant is false nothing below fetches it.
-const Nir1GraphRelatedScenes = lazy(() => import("./Nir1GraphRelatedScenes"));
+// A lazy chunk that can be requested ahead of its first render (DR-PUBG-37-1).
+// `lazy()` calls its factory on the first render and suspends on whatever
+// promise it gets, even for a module that is already loaded; the retry commit
+// then waits out React's fallback throttle, so the fallback rows would still
+// show for a moment. Once the preload has loaded the module, the factory
+// returns a thenable that resolves synchronously, so the first render reads the
+// component without suspending. Before that (or after a failed preload) it is
+// the plain `import()`, whose failure Nir1GraphBoundary handles. (A failed
+// module is cached by the browser, so it is not retried: fail-closed holds.)
+function preloadableLazy<P extends object>(
+  load: () => Promise<{ default: ComponentType<P> }>,
+) {
+  let loaded: { default: ComponentType<P> } | null = null;
+  const Component = lazy(() =>
+    loaded
+      ? (syncThenable(loaded) as unknown as Promise<{
+          default: ComponentType<P>;
+        }>)
+      : load(),
+  );
+  const preload = () => {
+    void load()
+      .then((mod) => {
+        loaded = mod;
+      })
+      .catch(() => {});
+  };
+  return { Component, preload };
+}
+
+function syncThenable<T>(value: T) {
+  return {
+    then(onFulfilled: (value: T) => unknown) {
+      onFulfilled(value);
+    },
+  };
+}
+
+// The Graph view (CP-3b) is a lazy chunk. While the Graph UI constant is on it
+// is requested at mount (DR-PUBG-37-1, which revises the DR-CP3B-7 condition
+// "only when the fetch carries a Graph payload"); while the constant is false
+// nothing below fetches it. It is drawn for a Graph payload, `restart-required`
+// or (with `PROFILE_ACTIVATION_UI_ENABLED` on too) `profile-not-restricted`
+// (DR-CP3B-7, DR-DA2-33).
+const graphView = preloadableLazy(() => import("./Nir1GraphRelatedScenes"));
+const Nir1GraphRelatedScenes = graphView.Component;
 // The seed line and the seed candidates (DR-SEEDSUG-1): their own lazy chunk,
-// requested only while the Graph UI constant is on.
-const Nir1GraphSeedPanel = lazy(() => import("./Nir1GraphSeedPanel"));
+// requested at mount while the Graph UI constant is on.
+const seedPanel = preloadableLazy(() => import("./Nir1GraphSeedPanel"));
+const Nir1GraphSeedPanel = seedPanel.Component;
 // The Scope cause of an `unsupported-query` (DR-SDEF-33): its own lazy chunk,
 // requested only in Electron while that reason is shown.
 const RelatedScenesScopeGuidance = lazy(
@@ -95,16 +138,15 @@ export function RelatedScenesSection({
   useEffect(() => {
     setResumedTick(pauseTick);
   }, [pauseTick]);
-  // DR-PUBG-37-1: with the Graph UI constant on, request the Graph chunks at
-  // mount so the first Graph payload does not first show the R/R+IR rows as the
-  // Suspense fallback. Same specifiers as the `lazy()` calls above, so the
-  // request is shared. A failed preload is swallowed: the lazy component
-  // requests the chunk again and Nir1GraphBoundary handles that failure.
-  // While the constant is false nothing is imported.
+  // DR-PUBG-37-1: with the Graph UI constant on, load the Graph chunks at
+  // mount so the first Graph payload does not first show the R/R+IR rows as
+  // the Suspense fallback. A failed preload is swallowed: the lazy component
+  // imports again and Nir1GraphBoundary handles that failure. While the
+  // constant is false nothing is imported.
   useEffect(() => {
     if (!isNir1GraphUiEnabled()) return;
-    void import("./Nir1GraphRelatedScenes").catch(() => {});
-    void import("./Nir1GraphSeedPanel").catch(() => {});
+    graphView.preload();
+    seedPanel.preload();
   }, []);
   const { sceneId, fetch, loading } = useNir1RelatedScenes(
     enabled && open && !paused,

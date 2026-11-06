@@ -27,9 +27,18 @@ vi.mock("./Nir1GraphRelatedScenes", async (importOriginal) => {
   h.graphRequests += 1;
   return importOriginal();
 });
+// The Graph view calls the fusion whenever it renders: the count tells whether
+// `showsGraph` drew the view (the module request alone is made by the preload).
+vi.mock("./nir1GraphFusion", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./nir1GraphFusion")>();
+  return {
+    fuseNir1RelatedScenesGraph: vi.fn(actual.fuseNir1RelatedScenesGraph),
+  };
+});
 vi.mock("./nir1GraphSeed", () => ({
   selectNir1GraphSeed: vi.fn(async () => "seed"),
 }));
+import { fuseNir1RelatedScenesGraph } from "./nir1GraphFusion";
 import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
 import { RelatedScenesSection } from "./RelatedScenesSection";
 
@@ -83,8 +92,11 @@ afterEach(() => {
 });
 
 describe("RelatedScenesSection with the Graph UI on and the activation UI closed", () => {
-  it("never draws the Graph view for profile-not-restricted, and does for restart-required", async () => {
+  it("never renders the Graph view for profile-not-restricted, and does for restart-required", async () => {
     expect(PROFILE_ACTIVATION_UI_ENABLED).toBe(false);
+    // Warm the module cache so a Graph view that is wrongly drawn renders
+    // within `settle` instead of suspending on the chunk request.
+    await import("./Nir1GraphRelatedScenes");
     h.fetch.mockResolvedValue(
       rawFetch("graph-unavailable:profile-not-restricted"),
     );
@@ -92,7 +104,7 @@ describe("RelatedScenesSection with the Graph UI on and the activation UI closed
     await settle();
     await vi.waitFor(() => expect(screen.getByText("Raw a")).toBeTruthy());
     await settle();
-    expect(screen.queryByTestId("nir1-graph-restart-required")).toBeNull();
+    expect(fuseNir1RelatedScenesGraph).not.toHaveBeenCalled();
     expect(screen.queryByTestId("profile-activation-guidance")).toBeNull();
     cleanup();
 
@@ -103,6 +115,7 @@ describe("RelatedScenesSection with the Graph UI on and the activation UI closed
     await vi.waitFor(() =>
       expect(screen.getByTestId("nir1-graph-restart-required")).toBeTruthy(),
     );
+    expect(fuseNir1RelatedScenesGraph).toHaveBeenCalled();
     expect(h.graphRequests).toBe(1);
   });
 });
