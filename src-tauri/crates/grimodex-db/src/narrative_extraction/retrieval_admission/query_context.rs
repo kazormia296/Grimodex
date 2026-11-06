@@ -173,6 +173,7 @@ pub fn read_retrieval_query_context(
                 },
             ),
         };
+    let mapping_position_by_source_key = super::types::index_mappings_by_source_key(&authority);
     Ok(RetrievalQueryContextRead::Available(
         RetrievalQueryContext {
             project_id: project.into(),
@@ -201,6 +202,7 @@ pub fn read_retrieval_query_context(
             saved_content_json: source.saved_content_json,
             canonical_source_text: source.canonical_source_text,
             authority,
+            mapping_position_by_source_key,
             _verified: (),
         },
     ))

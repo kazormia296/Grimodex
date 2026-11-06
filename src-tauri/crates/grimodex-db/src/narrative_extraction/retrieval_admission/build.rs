@@ -29,7 +29,8 @@ pub(in crate::narrative_extraction) struct BuildCandidate {
     pub document: ChronicleRetrievalDocument,
     pub sources: Vec<MaterialSourceBasisEntry>,
     pub evidence: Vec<MaterialEvidenceEntry>,
-    pub active_scope_controls: Vec<MaterialSourceBasisEntry>,
+    /// The candidate's active Scope controls, decoded once at build.
+    pub active_scope_controls: Vec<super::super::scene_scope::ParsedScopeControl>,
     pub material_scopes: Vec<super::super::scene_scope::MaterialSceneScope>,
     pub material_scope_authority_revision_token: String,
     pub canonical: RevisionFreshnessSnapshot,
@@ -228,7 +229,9 @@ pub(in crate::narrative_extraction) fn finalize_build_candidate_with_control(
         document,
         sources: preflight.membership.material_basis.source_basis.clone(),
         evidence: preflight.membership.material_basis.evidence_set.clone(),
-        active_scope_controls: preflight.membership.active_scope_controls.clone(),
+        active_scope_controls: super::super::scene_scope::ParsedScopeControl::parse_all(
+            &preflight.membership.active_scope_controls,
+        ),
         material_scopes,
         material_scope_authority_revision_token: authority.source.revision_token.clone(),
         canonical,
