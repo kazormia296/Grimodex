@@ -23,6 +23,7 @@ vi.mock("electron", () => ({
 }));
 
 const {
+  backendLoadFailureDialogText,
   getBackendConstructionFailure,
   initBackend,
   resolveGraphWorkerPath,
@@ -244,6 +245,81 @@ describe("initBackend startup policy", () => {
       vi.unstubAllEnvs();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// DR-PUBG-33-1: fail-soft の dialog に Native の文を出さない。原文は log にだけ残す。
+describe("initBackend error box (DR-PUBG-33-1)", () => {
+  const nativeMessages = [
+    "PROFILE_EGRESS_UNAVAILABLE:state-file-unreadable: Permission denied (os error 13) at /home/secret-user/.config/Grimodex/profile-egress-state.json",
+    "database is locked: /home/secret-user/.local/share/Grimodex/grimodex.db",
+  ];
+
+  it("shows a fixed text without the Native message, path or code, and keeps the original in the log", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grimodex-backend-33-"));
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      nativeMessages.forEach((message, index) => {
+        const fake = path.join(root, `fake-backend-${index}.cjs`);
+        writeFileSync(
+          fake,
+          `exports.Backend = class { constructor() { throw new Error(${JSON.stringify(message)}); } };`,
+        );
+        vi.stubEnv("GRIMODEX_NODE_PATH", fake);
+        dialogMock.showErrorBox.mockReset();
+        errorLog.mockClear();
+
+        expect(initBackend()).toBeNull();
+
+        expect(dialogMock.showErrorBox).toHaveBeenCalledOnce();
+        const [title, content] = dialogMock.showErrorBox.mock.calls[0] as [
+          string,
+          string,
+        ];
+        const shown = `${title}\n${content}`;
+        for (const leaked of [
+          "PROFILE_EGRESS",
+          "state-file-unreadable",
+          "os error",
+          "Permission denied",
+          "database is locked",
+          "/home/",
+          "secret-user",
+          "grimodex.db",
+          fake,
+        ]) {
+          expect(shown, leaked).not.toContain(leaked);
+        }
+        expect(shown).toContain("もう一度起動");
+        expect(shown).toContain("restart");
+        // 診断のため、原文は既存の log に残る。
+        expect(
+          errorLog.mock.calls.some((call) => String(call[0]).includes(message)),
+        ).toBe(true);
+      });
+    } finally {
+      errorLog.mockRestore();
+      dialogMock.showErrorBox.mockReset();
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("splits the text only by the closed state-file code", () => {
+    const unreadable = backendLoadFailureDialogText("state-file-unreadable");
+    const other = backendLoadFailureDialogText(null);
+    expect(unreadable.content).toContain("状態ファイル");
+    expect(unreadable.content).toContain("state file");
+    expect(other.content).not.toContain("状態ファイル");
+    expect(other.title).toBe(unreadable.title);
+  });
+
+  it("does not call the error box in fail-fast mode", () => {
+    vi.stubEnv("GRIMODEX_NODE_PATH", "/tmp/grimodex-missing-backend.node");
+    dialogMock.showErrorBox.mockReset();
+    expect(() => initBackend({ failFast: true })).toThrow();
+    expect(dialogMock.showErrorBox).not.toHaveBeenCalled();
+    vi.unstubAllEnvs();
   });
 });
 
