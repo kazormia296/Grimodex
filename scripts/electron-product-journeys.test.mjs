@@ -640,6 +640,61 @@ test("Native lifecycle evidence preserves existing stderr classifications", () =
   }
 });
 
+test("Native lifecycle evidence with a fixed code or a pump exit is not a stderr error", () => {
+  // DR-MPS-12/13: a fixed NEX_ code on a handoff and the recovery-pump exits
+  // are values-only metadata. Their words must not trip the stderr verdict.
+  const base = {
+    version: 1,
+    pid: 1,
+    timestampMs: 1,
+    site: null,
+    revision: 3,
+    shutdownRequested: false,
+    descriptorId: 1,
+    owner: "Maintenance",
+    rootOperationId: 1,
+  };
+  const line = (record) =>
+    `[workspace-lifecycle-diag] ${JSON.stringify({ ...base, ...record })}`;
+  const code = "NEX_C2ZC_SCHEDULER_LIVENESS_CYCLE_STALE";
+  const records = [
+    line({
+      producer: "freshness",
+      cause: "E",
+      boundary: "handoff",
+      state: "recovery-required",
+      code,
+    }),
+  ];
+  for (const exit of [
+    "transition-pending",
+    "binding-unproven",
+    "authority-unopened",
+    "admission-pending",
+    "no-actionable-descriptor",
+  ]) {
+    for (const withCode of [false, true]) {
+      records.push(
+        line({
+          producer: "recovery-pump",
+          cause: "D",
+          boundary: "recovery-pump",
+          state: "ready",
+          exit,
+          ...(withCode ? { code } : {}),
+        }),
+      );
+    }
+  }
+  for (const record of records) {
+    assert.equal(isMainProcessErrorMessage(record), false, record);
+    assert.equal(
+      isMainProcessErrorMessage(`${record}\nactual worker failed`),
+      true,
+    );
+  }
+});
+
 test("package.json exposes the runner and canonical product journey contracts", async () => {
   const packageJson = JSON.parse(await read("package.json"));
   assert.equal(

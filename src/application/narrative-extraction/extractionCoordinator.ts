@@ -1274,7 +1274,12 @@ async function executeTask(
       if (!snapshotPayload) {
         throw new Error("Missing source.snapshot@1 artifact");
       }
-      const plan = planExtractionWindows(snapshotPayload.snapshot);
+      // Same input as the run-creation plan (the sealed catalog travels in the
+      // snapshot companion), so this re-plan cannot diverge from the source
+      // views that were sealed with the snapshot.
+      const plan = planExtractionWindows(snapshotPayload.snapshot, {
+        evidenceCatalog: snapshotPayload.evidence?.catalog ?? undefined,
+      });
       const draft = buildInlineJsonArtifact(
         CHRONICLE_EXTRACT_ARTIFACT_KINDS.windowPlan,
         { windows: plan.windows },
@@ -2186,7 +2191,9 @@ export async function runChronicleExtractionCoordinator(
           evidenceCatalog,
         )
       : undefined;
-    const windowPlan = planExtractionWindows(snapshotResult.snapshot);
+    const windowPlan = planExtractionWindows(snapshotResult.snapshot, {
+      evidenceCatalog: evidenceCatalog ?? undefined,
+    });
     const sourceViews = await buildSourceViewsForPlan(
       snapshotResult.snapshot,
       windowPlan,
