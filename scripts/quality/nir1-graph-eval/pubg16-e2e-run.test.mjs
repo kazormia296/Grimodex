@@ -43,6 +43,10 @@ const REACHED_PAGE = {
   },
   errors: [],
 };
+const REACHED_SETTLES = [
+  { settle: "unused", status: "settled", reason: null, ok: true },
+  { settle: "used", status: "settled", reason: null, ok: true },
+];
 const REACHED_NATIVE = [
   { begin: "started", disposition: "unused" },
   { begin: "cached", disposition: null },
@@ -85,6 +89,7 @@ test("every stage reached is allReached, in the stage order", () => {
     page: REACHED_PAGE,
     native: REACHED_NATIVE,
     settledSlot: "empty",
+    settles: REACHED_SETTLES,
   });
   assert.equal(judged.allReached, true);
   assert.equal(judged.firstMissing, null);
@@ -102,6 +107,7 @@ test("no Graph-only row stops at the continue stage (fixture side)", () => {
     page,
     native: REACHED_NATIVE,
     settledSlot: "empty",
+    settles: REACHED_SETTLES,
   });
   assert.equal(judged.allReached, false);
   assert.equal(judged.firstMissing, "continue-available-graph-only");
@@ -116,6 +122,7 @@ test("an unavailable click is not a reach, and neither is a missing cached begin
     },
     native: REACHED_NATIVE,
     settledSlot: "empty",
+    settles: REACHED_SETTLES,
   });
   assert.equal(unavailable.firstMissing, "click-keep-click");
   assert.equal(unavailable.stages.click.reason, "failed");
@@ -123,18 +130,15 @@ test("an unavailable click is not a reach, and neither is a missing cached begin
     page: REACHED_PAGE,
     native: [REACHED_NATIVE[0], { begin: "pending", disposition: null }],
     settledSlot: "empty",
+    settles: REACHED_SETTLES,
   });
   assert.equal(notCached.firstMissing, "requery-cached");
-  const thrown = judgeReach({
-    page: { ...REACHED_PAGE, errors: ["settle failed"] },
-    native: REACHED_NATIVE,
-    settledSlot: "empty",
-  });
-  assert.equal(thrown.firstMissing, "used-settle");
+
   const slot = judgeReach({
     page: REACHED_PAGE,
     native: REACHED_NATIVE,
     settledSlot: "suspended",
+    settles: REACHED_SETTLES,
   });
   assert.equal(slot.firstMissing, "slot-empty");
 });
@@ -176,4 +180,33 @@ test("not-activated is the unavailable answer with that reason only", () => {
     }).notActivated,
     false,
   );
+});
+
+test("used settle is reached only when its answer is settled", () => {
+  const judge = (settles) =>
+    judgeReach({
+      page: REACHED_PAGE,
+      native: REACHED_NATIVE,
+      settledSlot: "empty",
+      settles,
+    });
+  // 失効や未知の settle は例外でなく `unavailable: cancelled` で戻る。
+  const cancelled = judge([
+    REACHED_SETTLES[0],
+    { settle: "used", status: "unavailable", reason: "cancelled", ok: true },
+  ]);
+  assert.equal(cancelled.reached["used-settle"], false);
+  assert.equal(cancelled.firstMissing, "used-settle");
+  assert.equal(cancelled.stages.settles[1].reason, "cancelled");
+  // 呼出しが投げた場合、応答が無い場合、used の行が無い場合。
+  assert.equal(
+    judge([REACHED_SETTLES[0], { settle: "used", status: null, ok: false }])
+      .reached["used-settle"],
+    false,
+  );
+  assert.equal(judge([REACHED_SETTLES[0]]).reached["used-settle"], false);
+  assert.equal(judge(undefined).reached["used-settle"], false);
+  // slot empty は used settle の根拠にならない。
+  assert.equal(judge([]).reached["slot-empty"], true);
+  assert.equal(judge(REACHED_SETTLES).allReached, true);
 });

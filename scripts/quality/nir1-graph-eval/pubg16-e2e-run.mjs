@@ -86,7 +86,7 @@ export function parseArgs(argv) {
  * heldSample の出力と Native の記録から、各段の status・reason・ms と到達の有無
  * だけを取り出す（本文・識別子を含まない）。pure で、試験つき。
  */
-export function judgeReach({ page, native, settledSlot }) {
+export function judgeReach({ page, native, settledSlot, settles }) {
   const out = page ?? {};
   const rows = native ?? [];
   const begin = out.begin ?? {};
@@ -123,6 +123,12 @@ export function judgeReach({ page, native, settledSlot }) {
       continueStatus: requery.graph?.status ?? null,
       continueReason: requery.graph?.reason ?? null,
     },
+    settles: (settles ?? []).map((row) => ({
+      settle: row.settle ?? null,
+      status: row.status ?? null,
+      reason: row.reason ?? null,
+      ok: row.ok ?? null,
+    })),
     native: rows.map((row) => ({
       begin: row.begin,
       reason: row.reason,
@@ -139,15 +145,26 @@ export function judgeReach({ page, native, settledSlot }) {
     // Graph-only の handle の click の成功は `qualified`（Native の keep_click の
     // entry を引いて再確認できたとき）。
     "click-keep-click": click?.status === "qualified",
-    "unused-settle": out.settle?.status === "settled",
+    "unused-settle":
+      out.settle?.status === "settled" &&
+      (settles ?? []).some(
+        (row) =>
+          row.settle === "unused" &&
+          row.ok === true &&
+          row.status === "settled",
+      ),
     "graph-ready": (out.graphReady?.count ?? 0) > 0,
     "requery-cached": rows.slice(1).some((row) => row.begin === "cached"),
     "requery-continue-available": requery?.graph?.status === "available",
-    // cached の begin は ticket を持たず、Native の記録に disposition が出ない
-    // （heldSample も used settle の応答を記録しない）。到達は「再 continue が
-    // available の後で used settle の呼出しが例外なく戻った（errors 0）」で見る。
-    "used-settle":
-      requery?.graph?.status === "available" && (out.errors ?? []).length === 0,
+    // used settle の応答の status。renderer の timing shim が settle の応答を
+    // `__cp4IpcTiming` に積む（label は settle の値）。settle は失効や未知でも例外を
+    // 出さず `unavailable: cancelled` を返すので、`settled` だけを到達とする。
+    "used-settle": (settles ?? []).some(
+      (row) =>
+        row.settle === "used" && row.ok === true && row.status === "settled",
+    ),
+    // owner の slot。cached の begin は owner の slot を使わないので、これは
+    // used settle の根拠ではなく、heldSample が終わって owner が空に戻ったこと。
     "slot-empty": settledSlot === "empty",
   };
   return {
@@ -239,7 +256,19 @@ async function oneHeldSample({ session, page, input }) {
   );
   const settled = await waitQuiet(session, null);
   const records = (await json(session.addon("nir1GraphEvalSamples"))).records;
+  // settle の応答（timing shim の行）。ticket・識別子は含まない。
+  const settles = await page.evaluate(() =>
+    (globalThis.__cp4IpcTiming ?? [])
+      .filter((row) => row.settle !== null)
+      .map((row) => ({
+        settle: row.settle,
+        status: row.status,
+        reason: row.reason,
+        ok: row.ok,
+      })),
+  );
   return {
+    settles,
     quietAtStart: quiet.reachedQuiet,
     settledSlot: settled.slot,
     page: result.ok ? result.value : { error: result.error },
