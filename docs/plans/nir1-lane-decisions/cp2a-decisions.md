@@ -193,3 +193,19 @@ fake には `retire_started`、`retire_hold`、`retire_release`、`retire_quaran
 - §3.4 (a)：需要の記録は project 単位。ticket が stale か busy で解決した需要も未充足として数える。
 - §1.2、§1.6：Core に read-only の照会 `c_query_quarantine_binding` を足した（経路の判定に使う）。
 - TASK（`cp2a-task.md`）：§3.2.1 の `demand_unserved: AtomicBool` は project ごとの集合に置き換わった。§3.2.2 の「warming、stale、busy を返したら true」は、ticket の解決も対象になった。§3.2.8（Restore、Open）は participant 経路の拒否を含む。§2.3 の lib.rs は 4 か所から 5 か所（22 行）になった。
+
+## 試験の flake の修正（2026-11-06）
+
+CI の Electron native の job で `nir1_graph_product::tests::quarantine_fence_path_quarantines_the_slot` がまれに落ちた（`fixture.diagnostics().quarantines` が 0）。原因は、`SessionGuard::drop` が slot の lock の下で `Phase::Quarantined` を設定し、`drop(slot)` の後で quarantines を数えていたこと。試験は phase が Quarantined になるのを待った直後に数を読むので、その間に読むと 0 になる。製品の観測（phase と診断の数）の順序の問題で、quarantine の意味は変わらない。
+
+| ID | 判断 | 信頼境界 | 代替案と不採用の理由 | 結論 |
+|---|---|---|---|---|
+| CP2a-D46 | quarantine の数の加算（`bump(&diagnostics.quarantines)`）を、`slot.phase = Phase::Quarantined` の設定の前、slot の lock の中へ移す。phase が Quarantined と観測できるときには、数が既に加算されている | 診断の数と phase の観測の順序だけ。lock の順序（slot → cache）、quarantine の意味、公開 gate、送信先、保存、契約、閾値は変えない。`bump` は lock を取らない atomic の加算（Relaxed）なので、slot の lock の中で呼んでも新しい lock の辺は生まれない。phase を読む `slot_kind` と `is_quarantined` は slot の lock を取るので、lock の解放が happens-before になり、Relaxed の読みでも加算が見える | 試験側で数を待つ（`wait_until` で `quarantines == 1`）。試験は通るが、phase が Quarantined なのに数が 0 と観測できる製品の不一致の窓が残る。目的は製品の観測の一貫性なので採らない | 採用。U3 委任の C-product レーンの worker／owner の技術判断 |
+
+検証：
+
+- 旧の順序（`drop(slot)` と加算の間に 50 ms の sleep）で、対象の試験が落ちることを確かめた。
+- 新の順序で、加算と phase の設定の後（lock を外した後）に同じ 50 ms の sleep を入れても、対象の試験が通ることを確かめた。
+- 一時的な変更は元に戻し、`git diff` に残っていないことを確かめた。
+- 対象の試験を 25 回繰り返して 25/25 pass。`nir1_graph_product` の試験全体は 107 passed、1 ignored。
+- `cargo clippy --lib --features licensing,legacy-keyring-migration -- -D warnings` は OK。`--all-targets` は `nir1_local_entry_tests.rs` の既存の `nonminimal_bool` 1 件（この変更の外）で止まる。

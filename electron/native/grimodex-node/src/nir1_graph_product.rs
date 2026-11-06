@@ -2143,11 +2143,14 @@ impl Drop for SessionGuard {
                 self.shared.quarantined.store(true, Ordering::SeqCst);
                 *cache = None;
             }
+            // The count is added before the phase is published, still under the slot
+            // lock (a plain atomic add, no lock taken), so an observer that reads the
+            // phase as Quarantined also reads the count as already added.
+            bump(&self.shared.diagnostics.quarantines);
             slot.phase = Phase::Quarantined {
                 binding: self.binding.clone(),
             };
             drop(slot);
-            bump(&self.shared.diagnostics.quarantines);
         } else if self.shared.closed.load(Ordering::SeqCst) {
             slot.phase = Phase::Closed;
         } else {
