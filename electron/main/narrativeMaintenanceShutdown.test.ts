@@ -181,8 +181,10 @@ describe("narrative maintenance quit finalizer", () => {
     });
 
     // The confirmation has no parent window: while it is open the renderer
-    // can still close itself, and window-all-closed asks the app to quit.
-    it("a will-quit re-entering during the confirmation turns stay into exit", async () => {
+    // can still close itself, and window-all-closed asks the app to quit. The
+    // finalizer only vetoes that quit; whether a window is left to go back to
+    // is the confirmation's own re-count (guard), so `stay` is kept here.
+    it("a will-quit re-entering during the confirmation is only vetoed and stay stays", async () => {
       const exit = vi.fn();
       const quit = vi.fn();
       let release!: (value: "stay") => void;
@@ -209,7 +211,7 @@ describe("narrative maintenance quit finalizer", () => {
       release("stay");
       await pending;
 
-      expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+      expect(exit).not.toHaveBeenCalled();
       expect(quit).not.toHaveBeenCalled();
     });
 

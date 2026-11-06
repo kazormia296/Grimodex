@@ -129,7 +129,9 @@ export function createUnsavedEditsGuard(
  * remote session) would otherwise wait on it forever instead of ending the
  * process that already could not shut down safely. A human who is present
  * answers well within a minute; past it the previous fatal `exit(1)` applies
- * (DR-PUBG-36-1).
+ * (DR-PUBG-36-1). The limit works on Linux and Windows. On macOS a message box
+ * without a parent window runs synchronously, which stops Main's event loop
+ * and its timers, so there the answer is judged after the box returns.
  */
 export const FATAL_EXIT_CONFIRM_TIMEOUT_MS = 60_000;
 
@@ -156,13 +158,21 @@ export async function showUnsavedFatalExitDialog(
 ): Promise<FatalExitDecision> {
   const abort = new AbortController();
   let timedOut = false;
+  let answered: { response: number } | undefined;
   const timer = setTimeout(() => {
-    timedOut = true;
-    abort.abort();
+    // One microtask later, so an answer that already settled has its record
+    // (below) written first; the order is fixed: answer, then limit.
+    queueMicrotask(() => {
+      timedOut = true;
+      abort.abort();
+    });
   }, timeoutMs);
   try {
-    // An aborted dialog resolves as if cancelled, so `timedOut` decides, not
-    // the response; a platform that ignores `signal` is still cut off below.
+    // An aborted dialog resolves as if cancelled, so the response of a box
+    // that settled after the limit is never used: only an answer recorded
+    // before `timedOut` counts, and anything else is `exit`. A platform that
+    // ignores `signal` (or runs the box synchronously, as macOS does without
+    // a parent window) is cut off below only where the event loop can run.
     const shown = dialog.showMessageBox({
       type: "warning",
       title: "Grimodex",
@@ -180,14 +190,19 @@ export async function showUnsavedFatalExitDialog(
       noLink: true,
       signal: abort.signal,
     });
+    void shown.then(
+      (result) => {
+        if (!timedOut) answered = result;
+      },
+      () => {},
+    );
     const expired = new Promise<"timeout">((resolve) => {
       abort.signal.addEventListener("abort", () => resolve("timeout"), {
         once: true,
       });
     });
-    const outcome = await Promise.race([shown, expired]);
-    if (outcome === "timeout" || timedOut) return "exit";
-    return outcome.response === 1 ? "exit" : "stay";
+    await Promise.race([shown, expired]);
+    return answered !== undefined && answered.response !== 1 ? "stay" : "exit";
   } finally {
     clearTimeout(timer);
   }

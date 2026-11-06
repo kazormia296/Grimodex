@@ -11,6 +11,7 @@ import {
   UNSAVED_EDITS_RETAINED_EVENT,
   parseUnsavedEditsReport,
 } from "../shared/unsavedEditsWire.js";
+import { createNarrativeMaintenanceQuitFinalizer } from "./narrativeMaintenanceShutdown.js";
 
 function makeGuard(
   options: {
@@ -172,6 +173,84 @@ describe("unsaved edits guard", () => {
   });
 });
 
+describe("unsaved edits guard with the quit finalizer", () => {
+  const failingDispose = () =>
+    vi.fn(() => Promise.reject(new Error("cleanup failed")));
+  const quitEvent = () => ({ preventDefault: vi.fn() });
+
+  function wire(options: Parameters<typeof makeGuard>[0]) {
+    const made = makeGuard(options);
+    made.report(1, true);
+    const dispose = failingDispose();
+    const exit = vi.fn();
+    const quit = vi.fn();
+    const finalizer = createNarrativeMaintenanceQuitFinalizer({
+      dispose,
+      complete: vi.fn(),
+      quit,
+      exit,
+      confirmFatalExit: () => made.guard.confirmBeforeFatalExit(),
+      maxAttempts: 1,
+    });
+    return { ...made, dispose, exit, quit, finalizer };
+  }
+
+  it("on stay the finalizer starts over at the next quit", async () => {
+    const { finalizer, dispose, exit, confirm } = wire({ decision: "stay" });
+
+    await finalizer(quitEvent());
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(exit).not.toHaveBeenCalled();
+
+    // The flag was reset, so the next quit runs the whole finalizer again.
+    await finalizer(quitEvent());
+    expect(dispose).toHaveBeenCalledTimes(2);
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it("a quit re-entering during the dialog with a live window still stays", async () => {
+    const again: { run?: () => Promise<void> } = {};
+    const { finalizer, exit, notifyRetained } = wire({
+      decision: "stay",
+      whileOpen: () => {
+        void again.run?.();
+      },
+    });
+    again.run = () => finalizer(quitEvent());
+
+    await finalizer(quitEvent());
+    // Let the re-entered call settle.
+    await Promise.resolve();
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(notifyRetained).toHaveBeenCalledExactlyOnceWith(
+      1,
+      UNSAVED_EDITS_RETAINED_EVENT,
+      { kind: "unsaved-edits-retained" },
+    );
+  });
+
+  it("a quit re-entering during the dialog exits when no window is left", async () => {
+    const windows = { count: 1 };
+    const again: { run?: () => Promise<void> } = {};
+    const { finalizer, exit, notifyRetained } = wire({
+      decision: "stay",
+      windows,
+      whileOpen: () => {
+        windows.count = 0;
+        void again.run?.();
+      },
+    });
+    again.run = () => finalizer(quitEvent());
+
+    await finalizer(quitEvent());
+
+    expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+    expect(notifyRetained).not.toHaveBeenCalled();
+  });
+});
+
 describe("unsaved fatal exit dialog", () => {
   const show = (response: number) =>
     showUnsavedFatalExitDialog({
@@ -227,6 +306,23 @@ describe("unsaved fatal exit dialog", () => {
       const result = showUnsavedFatalExitDialog({ showMessageBox }, 1_000);
       await vi.advanceTimersByTimeAsync(1_000);
       await expect(result).resolves.toBe("exit");
+    });
+
+    it("an answer already given wins over a timer that fires right after", async () => {
+      vi.useFakeTimers();
+      let answer!: (value: { response: number }) => void;
+      const showMessageBox = vi.fn(
+        () =>
+          new Promise<{ response: number }>((resolve) => {
+            answer = resolve;
+          }),
+      );
+      const result = showUnsavedFatalExitDialog({ showMessageBox }, 1_000);
+      // The author chose "go back"; the limit passes before the continuation
+      // runs (a box that blocked Main, or the same turn).
+      answer({ response: 0 });
+      vi.advanceTimersByTime(1_000);
+      await expect(result).resolves.toBe("stay");
     });
 
     it("an answer in time wins and leaves no timer behind", async () => {
