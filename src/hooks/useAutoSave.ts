@@ -4,6 +4,7 @@ import i18next from "@/lib/i18n";
 import { announce } from "@/lib/a11y/announcer";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { isWorkspaceSwitchingError } from "@/features/concurrency/workspaceSwitching";
+import { isWorkspaceQuarantinedError } from "@/features/concurrency/workspaceQuarantined";
 import { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
 import {
   createQuiescenceProviderId,
@@ -66,8 +67,37 @@ const autoSavePendingWorkChecks = new WeakMap<AutoSave, () => boolean>();
 let autoSaveRegistryRevision = 0;
 const MAX_REGISTRY_DRAIN_ROUNDS = 50;
 
+const unsavedStateListeners = new Set<(hasUnsaved: boolean) => void>();
+
+/**
+ * Subscribe to "does any AutoSave still hold unsaved work". Fires with the
+ * current value on every state change that can flip it (callers dedupe).
+ * Used to tell Electron main, which reads it only before a fatal exit.
+ */
+export function subscribeAutoSaveUnsavedState(
+  listener: (hasUnsaved: boolean) => void,
+): () => void {
+  unsavedStateListeners.add(listener);
+  return () => {
+    unsavedStateListeners.delete(listener);
+  };
+}
+
+function notifyAutoSaveUnsavedState(): void {
+  if (unsavedStateListeners.size === 0) return;
+  const hasUnsaved = hasAnyPendingOrFailedAutoSave();
+  for (const listener of [...unsavedStateListeners]) {
+    try {
+      listener(hasUnsaved);
+    } catch {
+      // A reporter failure must never break persistence.
+    }
+  }
+}
+
 function markAutoSaveRegistryChanged(): void {
   autoSaveRegistryRevision++;
+  notifyAutoSaveUnsavedState();
 }
 
 function finalizeRetiringAutoSave(instance: AutoSave): void {
@@ -213,6 +243,21 @@ export function hasPendingOrFailedAutoSaveForDocument(
   );
 }
 
+/**
+ * True when any active or retiring AutoSave still owns queued, in-flight, or
+ * failed persistence work. Main asks this before it force-exits after a
+ * native shutdown failure, so unsaved text is never dropped silently.
+ */
+export function hasAnyPendingOrFailedAutoSave(): boolean {
+  const instances = new Set([
+    ...activeAutoSaves.keys(),
+    ...retiringAutoSaves.keys(),
+  ]);
+  return [...instances].some(
+    (autoSave) => autoSavePendingWorkChecks.get(autoSave)?.() ?? true,
+  );
+}
+
 /** Monotonic topology revision used by cross-registry scoped drains. */
 export function getAutoSaveRegistryRevision(): number {
   return autoSaveRegistryRevision;
@@ -275,6 +320,13 @@ export function createAutoSave(
   let pending = false;
   let lastFailed = false;
   let paused = false;
+  /**
+   * Latched when Core refuses a save because a C-query quarantine fences the
+   * workspace. The fence is held until restart, so every further attempt would
+   * fail the same way: stop timers and retries, keep the edit counted as
+   * unsaved, and let the author copy the text out.
+   */
+  let quarantineError: unknown = null;
   let preexistingDraftPermit = false;
   /**
    * AutoSave instance ごとの単一 drain。saveFn 自体はこの loop からしか呼ばず、
@@ -305,7 +357,21 @@ export function createAutoSave(
       // workspace 切替中の明示拒否 (Rust with_db の WORKSPACE_SWITCHING) は
       // 生メッセージではなく i18n 済みの短い文言で知らせる。dirty は維持され、
       // 次の入力/スケジュールでリトライされる。
-      if (e instanceof AlreadyNotifiedSaveError) {
+      if (isWorkspaceQuarantinedError(e)) {
+        // Unlike a switch, retrying cannot clear a quarantine. The edit stays
+        // pending (unsaved) but no timer or drain retry is armed again.
+        const firstTime = quarantineError === null;
+        quarantineError = e;
+        pending = true;
+        clearTimer();
+        // One sticky toast shared by every mounted AutoSave instance.
+        if (firstTime && !(e instanceof AlreadyNotifiedSaveError)) {
+          toast.error(i18next.t("autoSave.workspaceQuarantined"), {
+            id: "autosave-workspace-quarantined",
+            duration: Infinity,
+          });
+        }
+      } else if (e instanceof AlreadyNotifiedSaveError) {
         // 通知済み: toast なし (debugLog / lastFailed / 回復 announce は通常どおり)
       } else if (isWorkspaceSwitchingError(e)) {
         toast.error(i18next.t("autoSave.workspaceSwitching"));
@@ -326,6 +392,7 @@ export function createAutoSave(
       // scene saves do not use OCC, so running that follow-up would otherwise
       // overwrite the external change while the conflict banner is visible.
       if (paused) return;
+      if (quarantineError !== null) return;
       if (runs >= MAX_DRAIN_RUNS) {
         const error = new Error("AutoSave queue did not reach quiescence");
         lastFailed = true;
@@ -361,6 +428,7 @@ export function createAutoSave(
         // 失わない。flush 待機中なら flush 側がこの timer を消して即時 drain
         // し、background なら通常どおり debounce する。
         if (pending && !timerArmed) armTimer();
+        notifyAutoSaveUnsavedState();
       });
     inFlight = run;
     return run;
@@ -374,7 +442,7 @@ export function createAutoSave(
 
   function armTimer() {
     clearTimer();
-    if (paused) return;
+    if (paused || quarantineError !== null) return;
     timerArmed = true;
     scheduleEditorAnalysisTask({
       key: schedulerKey,
@@ -394,7 +462,9 @@ export function createAutoSave(
     clearTimer();
     pending = false;
     lastFailed = false;
+    quarantineError = null;
     preexistingDraftPermit = false;
+    notifyAutoSaveUnsavedState();
   }
 
   function pause() {
@@ -415,6 +485,7 @@ export function createAutoSave(
     // 実行中なら drain が pending を観測して直列 rerun する。別 timer を
     // 作らないため saveFn は決して並行しない。
     if (!inFlight && !paused) armTimer();
+    notifyAutoSaveUnsavedState();
     return true;
   }
 
@@ -451,6 +522,11 @@ export function createAutoSave(
           }
           clearTimer();
           continue;
+        }
+        if (quarantineError !== null && (pending || lastFailed)) {
+          // Do not hammer a fence that cannot clear; surface the original
+          // quarantine error so quiesce callers keep failing closed.
+          throw quarantineError;
         }
         if (paused && (pending || lastFailed)) {
           throw new AlreadyNotifiedSaveError(

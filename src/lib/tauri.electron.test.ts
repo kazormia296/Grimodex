@@ -132,6 +132,34 @@ describe("envelope 解封 = typed error + legacy wire compatibility", () => {
     expect(String(caught)).toContain("WORKSPACE_SWITCHING");
   });
 
+  it("WORKSPACE_QUARANTINED は WORKSPACE_SWITCHING に丸めず、再試行不可の code にする", async () => {
+    installBridge({
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error:
+          "WORKSPACE_QUARANTINED: workspace is quarantined; DB access is rejected until restart",
+      }),
+    });
+    const { invoke, IpcInvokeError } = await import("./tauri");
+    let caught: unknown = null;
+    try {
+      await invoke("db_execute", {
+        sql: "SELECT 1",
+        params: [],
+        method: "all",
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(IpcInvokeError);
+    expect(caught).toMatchObject({
+      code: "WORKSPACE_QUARANTINED",
+      retryable: false,
+      outcome: "failed",
+    });
+    expect(String(caught)).not.toContain("WORKSPACE_SWITCHING");
+  });
+
   it("RERANKER_BUSYをretryableなtyped errorへ正規化する", async () => {
     installBridge({
       invoke: vi.fn().mockResolvedValue({
