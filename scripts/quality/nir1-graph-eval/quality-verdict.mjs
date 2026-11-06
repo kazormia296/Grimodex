@@ -334,6 +334,15 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
           sceneIds: [],
           reason: "graph-shown-for-a-variant-expected-unavailable",
         });
+      // The parent's and the child's display must be the same list, in the
+      // same order, as the paired R+IR (prereg 3; outcome.mjs unavailableQuality).
+      if (!shown.every((list) => sameList(list, pair)))
+        violationsA.push({
+          repeat: sample.repeat,
+          sceneIds: [],
+          reason:
+            "display-differs-from-r-plus-ir-for-a-variant-expected-unavailable",
+        });
     } else {
       if (result.displayed) {
         displayedLists.push(lists(result.displayedSceneIds));

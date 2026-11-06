@@ -515,6 +515,55 @@ test("condition 5 (forbidden contribution): (a) a forbidden Scene the Graph adds
   );
 });
 
+test("an expected-unavailable variant fails when the display list differs from the paired R+IR (prereg 3)", () => {
+  const unavailableKey = "G-08/graph-index-unusable";
+  // An extra, otherwise harmless Scene in the parent's display.
+  const extra = run((key) =>
+    key === unavailableKey
+      ? {
+          mapGraphSample: (row) => ({
+            ...row,
+            finalSceneIds: [...row.finalSceneIds, "u-scene-query"],
+          }),
+        }
+      : {},
+  );
+  const extraParts = extra.conditions["forbidden-contribution"].components;
+  assert.equal(
+    extraParts["a-forbidden-scene-or-blocked-candidate"].status,
+    "fail",
+  );
+  assert.ok(
+    extraParts["a-forbidden-scene-or-blocked-candidate"].violatingSamples > 0,
+  );
+  // The same members in another order are a different list too.
+  const reordered = run((key) =>
+    key === unavailableKey
+      ? {
+          mapGraphSample: (row) => ({
+            ...row,
+            finalSceneIds: [...row.finalSceneIds].reverse(),
+          }),
+        }
+      : {},
+  );
+  const base = run();
+  const pairLength = keyOf(base, unavailableKey).lists.rPlusIr.length;
+  if (pairLength > 1)
+    assert.equal(
+      reordered.conditions["forbidden-contribution"].components[
+        "a-forbidden-scene-or-blocked-candidate"
+      ].status,
+      "fail",
+    );
+  assert.equal(
+    base.conditions["forbidden-contribution"].components[
+      "a-forbidden-scene-or-blocked-candidate"
+    ].status,
+    "pass",
+  );
+});
+
 test("a variant marked blocked in the ledger leaves macro and p95; a missing receipt without a record stops", () => {
   const { expectations } = loadExpectations({
     root: DEFAULT_ROOT,
@@ -682,7 +731,9 @@ test("bindings: a changed receipt, allow list, procedure or script is found by v
       goldDir: dir,
       allowListPath: path.join(dir, "allow.json"),
     });
-    assert.deepEqual(verifyBindings(output), []);
+    // The allow list is bound by file name, not by an absolute path.
+    assert.equal(output.bindings.allowList.path, "allow.json");
+    assert.deepEqual(verifyBindings(output, { allowListDir: dir }), []);
     for (const key of ["script", "manifests", "fixtures"])
       assert.ok(output.bindings[key].length > 0, key);
     assert.equal(output.bindings.procedure.sha256, PROCEDURE_SHA);
@@ -691,20 +742,19 @@ test("bindings: a changed receipt, allow list, procedure or script is found by v
     // Change one byte of a bound receipt and of the allow list.
     const receiptFile = output.bindings.receipts[0].path;
     writeFileSync(receiptFile, `${readFileSync(receiptFile, "utf8")} `);
-    writeFileSync(
-      output.bindings.allowList.path,
-      `${readFileSync(output.bindings.allowList.path, "utf8")} `,
-    );
+    const allowFile = path.join(dir, output.bindings.allowList.path);
+    writeFileSync(allowFile, `${readFileSync(allowFile, "utf8")} `);
     assert.deepEqual(
-      verifyBindings(output).sort(),
+      verifyBindings(output, { allowListDir: dir }).sort(),
       [receiptFile, output.bindings.allowList.path].sort(),
     );
     // A tampered recorded digest of the procedure or a script is found too.
     const forged = clone(output);
     forged.bindings.procedure.sha256 = "0".repeat(64);
     forged.bindings.script[0].sha256 = "1".repeat(64);
-    assert.ok(verifyBindings(forged).includes(PROCEDURE_FILE));
-    assert.ok(verifyBindings(forged).includes(forged.bindings.script[0].path));
+    const forgedMismatches = verifyBindings(forged, { allowListDir: dir });
+    assert.ok(forgedMismatches.includes(PROCEDURE_FILE));
+    assert.ok(forgedMismatches.includes(forged.bindings.script[0].path));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

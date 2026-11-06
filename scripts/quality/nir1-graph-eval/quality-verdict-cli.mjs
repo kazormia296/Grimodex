@@ -6,6 +6,7 @@
 //     --gold-dir <dir> --allow-list <json> [--parity-dir <dir>] [--ledger <json>] \
 //     --out <verdict.json> [--summary <summary.md>]
 //   node scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs --verify <verdict.json>
+//     (the allow list is read by file name from the verdict file's directory)
 //
 // Reads receipts, never rewrites them. Every file the verdict depends on is
 // bound by sha256 in the output; `--verify` recomputes them.
@@ -295,8 +296,10 @@ export function loadQualityInputs({
         path: file,
         sha256: digest,
       })),
+      // The file name only: the copy sits next to the verdict file, and a
+      // checkout-local absolute path would not survive a deleted worktree.
       allowList: {
-        path: path.resolve(allowListPath),
+        path: path.basename(allowListPath),
         sha256: sha256(allowBytes),
       },
       ledger: ledgerBinding,
@@ -316,7 +319,10 @@ export function buildQualityVerdict(options) {
 }
 
 /** Recomputes every bound file's sha256; returns the mismatches. */
-export function verifyBindings(output, { root = DEFAULT_ROOT } = {}) {
+export function verifyBindings(
+  output,
+  { root = DEFAULT_ROOT, allowListDir = null } = {},
+) {
   if (output?.schema !== QUALITY_VERDICT_SCHEMA)
     throw precheck("not a quality verdict file");
   const mismatches = [];
@@ -338,7 +344,6 @@ export function verifyBindings(output, { root = DEFAULT_ROOT } = {}) {
     ...(b.script ?? []),
     ...(b.receipts ?? []),
     ...(b.parityReceipts ?? []),
-    b.allowList,
     b.ledger,
     b.procedure,
     ...(b.manifests ?? []),
@@ -346,6 +351,8 @@ export function verifyBindings(output, { root = DEFAULT_ROOT } = {}) {
     b.k62,
   ])
     check(entry, root);
+  // The allow list is bound by file name: it is read next to the verdict file.
+  check(b.allowList, allowListDir ?? root);
   return mismatches;
 }
 
@@ -367,6 +374,10 @@ export function renderSummary(output) {
   const v = output.verdict;
   const lines = [];
   lines.push("# CP-4 品質の判定（手順外の補助の記録）");
+  lines.push("");
+  lines.push(
+    "> この記録は CP-4 の正式の判定（DR-CP4-S6-3 の HOLD）ではなく、それを置き換えない。",
+  );
   lines.push("");
   lines.push(
     `対象：S4 \`${output.allowList.s4Commit.slice(0, 8)}\`、候補 \`${output.allowList.candidate.slice(0, 8)}\`。受領書は書き換えていない。`,
@@ -444,7 +455,10 @@ function main() {
   });
   const root = values.root ?? DEFAULT_ROOT;
   if (values.verify) {
-    const mismatches = verifyBindings(readJson(values.verify), { root });
+    const mismatches = verifyBindings(readJson(values.verify), {
+      root,
+      allowListDir: path.dirname(path.resolve(values.verify)),
+    });
     if (mismatches.length > 0) {
       console.error(`[precheck] bound files changed: ${mismatches.join(", ")}`);
       process.exitCode = 1;
