@@ -1,0 +1,23 @@
+{
+  "schema": "nir1-pubg-16-e2e/1",
+  "run": "pubg16-na-1",
+  "mode": "not-activated",
+  "nodeSha256": "6dfbd5ea16e373290b043115db32754e85c50972d42e3b1ed46ade21a1b6690c",
+  "workerSha256": null,
+  "fixtureSha256": "ed3dd92c522a811de121c19da2d19c339eb74b6ee47266795a74b43968e09d6f",
+  "declaration": null,
+  "judgement": {
+    "stages": {
+      "begin": {
+        "status": "unavailable",
+        "reason": "not-activated",
+        "ir": "pending"
+      },
+      "continue": null,
+      "click": null
+    },
+    "notActivated": true
+  },
+  "quietAtStart": null,
+  "sessionProblems": []
+}

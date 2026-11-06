@@ -1,0 +1,113 @@
+{
+  "schema": "nir1-pubg-16-e2e/1",
+  "run": "pubg16-reach-6",
+  "mode": "reach",
+  "nodeSha256": "e43ca9bb01aa094fe2a5eb42e931a7cfcf97ceb814f7abc472bcdcb87d1e87dd",
+  "workerSha256": "6a3bae6ef6d35bfe4830ffdd0e683b427496077b98f5c0842e526ed324384ce5",
+  "fixtureSha256": "ed3dd92c522a811de121c19da2d19c339eb74b6ee47266795a74b43968e09d6f",
+  "declaration": {
+    "declared": true,
+    "effective": true,
+    "indexBefore": {
+      "b": {
+        "generation": 1,
+        "dirty": false
+      },
+      "chronicle": {
+        "generation": 3,
+        "dirty": false
+      }
+    },
+    "indexAfter": {
+      "b": {
+        "generation": 1,
+        "dirty": false
+      },
+      "chronicle": {
+        "generation": 3,
+        "dirty": false
+      }
+    },
+    "indexRebuilt": false
+  },
+  "judgement": {
+    "stages": {
+      "begin": {
+        "status": "pending",
+        "reason": null,
+        "ir": "pending",
+        "ms": 18.5
+      },
+      "continue": {
+        "status": "available",
+        "reason": null,
+        "graphOnly": true,
+        "pathAttachments": 1,
+        "ms": 24.799999952316284
+      },
+      "click": {
+        "status": "qualified",
+        "reason": null,
+        "ms": 10.299999952316284
+      },
+      "unusedSettle": {
+        "status": "settled"
+      },
+      "graphReady": {
+        "count": 1,
+        "afterSettleMs": 1.7000000476837158
+      },
+      "requery": {
+        "begin": "pending",
+        "beginMs": 17,
+        "continueStatus": "available",
+        "continueReason": null
+      },
+      "settles": [
+        {
+          "settle": "unused",
+          "status": "settled",
+          "reason": null,
+          "ok": true
+        },
+        {
+          "settle": "used",
+          "status": "settled",
+          "reason": null,
+          "ok": true
+        }
+      ],
+      "native": [
+        {
+          "begin": "pending",
+          "reason": null,
+          "outcome": "available",
+          "disposition": "unused"
+        },
+        {
+          "begin": "cached",
+          "reason": null,
+          "outcome": null,
+          "disposition": null
+        }
+      ],
+      "settledSlot": "empty",
+      "errors": 0
+    },
+    "reached": {
+      "begin-pending": true,
+      "continue-available-graph-only": true,
+      "click-keep-click": true,
+      "unused-settle": true,
+      "graph-ready": true,
+      "requery-cached": true,
+      "requery-continue-available": true,
+      "used-settle": true,
+      "slot-empty": true
+    },
+    "allReached": true,
+    "firstMissing": null
+  },
+  "quietAtStart": true,
+  "sessionProblems": []
+}
