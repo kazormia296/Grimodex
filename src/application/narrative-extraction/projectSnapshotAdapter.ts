@@ -579,6 +579,98 @@ function diagnostic(
   };
 }
 
+/**
+ * DR-IRB-2: the coarse cause of an exception thrown while the snapshot reads or
+ * re-verifies its source. Only `ipc-timeout` and `query-failed` prove that the
+ * read or its transport failed; everything else (a rejected pending mutation,
+ * an external-mount conflict, a lifecycle cancellation, an unknown error) may
+ * still mean the source is changing, so it keeps its fail-closed meaning.
+ */
+export type SnapshotReadFailureCause =
+  | "ipc-timeout"
+  | "query-failed"
+  | "lifecycle"
+  | "other";
+
+const IPC_TIMEOUT_MESSAGE = /^IPC timeout after \d+ms: /;
+const READ_ONLY_SQL = /^\s*(?:select|with)\b/i;
+const LIFECYCLE_IPC_CODES: ReadonlySet<string> = new Set([
+  "IPC_READ_CANCELLED",
+  "IPC_DERIVED_CANCELLED",
+  "IPC_MUTATION_CANCELLED",
+  "WORKSPACE_SWITCHING",
+  "NO_WORKSPACE_OPEN",
+]);
+const MAX_CAUSE_DEPTH = 8;
+
+function isSelectQueryFailure(error: object): boolean {
+  // Duck-typed: a lazy chunk may carry a DrizzleQueryError whose constructor is
+  // not this bundle's. Only a failed SELECT proves a failed read; the failed
+  // query of a rejected write must not be reported as a read failure.
+  const { query, params } = error as { query?: unknown; params?: unknown };
+  return (
+    typeof query === "string" &&
+    Array.isArray(params) &&
+    READ_ONLY_SQL.test(query)
+  );
+}
+
+/**
+ * Classifies by the exception's own type and its `cause` chain only. It never
+ * descends into `AggregateError.errors`: those are the failures of pending
+ * mutations or external-source tasks, which can mean the source really changed.
+ * The result never contains the exception's text, which can carry SQL, params
+ * or Scene content.
+ */
+export function classifySnapshotReadFailure(
+  error: unknown,
+): SnapshotReadFailureCause {
+  let sawLifecycle = false;
+  let sawSelectFailure = false;
+  const seen = new Set<object>();
+  let current: unknown = error;
+  for (
+    let depth = 0;
+    depth < MAX_CAUSE_DEPTH &&
+    current !== null &&
+    typeof current === "object" &&
+    !seen.has(current);
+    depth += 1
+  ) {
+    seen.add(current);
+    const { code, cause } = current as { code?: unknown; cause?: unknown };
+    if (code === "IPC_TIMEOUT") return "ipc-timeout";
+    if (current instanceof Error && IPC_TIMEOUT_MESSAGE.test(current.message)) {
+      return "ipc-timeout";
+    }
+    if (typeof code === "string" && LIFECYCLE_IPC_CODES.has(code)) {
+      sawLifecycle = true;
+    }
+    if (isSelectQueryFailure(current)) sawSelectFailure = true;
+    current = cause;
+  }
+  if (sawLifecycle) return "lifecycle";
+  return sawSelectFailure ? "query-failed" : "other";
+}
+
+function withFailureCause(message: string, error: unknown): string {
+  return `${message} (cause: ${classifySnapshotReadFailure(error)})`;
+}
+
+/**
+ * For the fences that otherwise report SNAPSHOT_SOURCE_CHANGED when they throw:
+ * a proven read/transport failure is a read failure; any other exception keeps
+ * the conservative SOURCE_CHANGED. Either way the snapshot fails closed.
+ */
+function sourceReadOrChangedCode(
+  error: unknown,
+): "SNAPSHOT_SOURCE_READ_FAILED" | "SNAPSHOT_SOURCE_CHANGED" {
+  const cause = classifySnapshotReadFailure(error);
+  return cause === "ipc-timeout" || cause === "query-failed"
+    ? "SNAPSHOT_SOURCE_READ_FAILED"
+    : "SNAPSHOT_SOURCE_CHANGED";
+}
+
 const NARRATIVE_SOURCE_ROW_FIELDS = [
   "nodeId",
   "parentId",
@@ -702,13 +794,16 @@ export async function buildProjectNarrativeSnapshot(
           request.folderId,
           request.sceneIds,
         );
-      } catch {
+      } catch (error) {
         return {
           ok: false,
           diagnostics: [
             diagnostic(
               "SNAPSHOT_SCOPE_VALIDATION_FAILED",
-              "The requested Project scope could not be validated",
+              withFailureCause(
+                "The requested Project scope could not be validated",
+                error,
+              ),
             ),
           ],
         };
@@ -824,14 +919,17 @@ export async function buildProjectNarrativeSnapshot(
     let rows: ProjectNarrativeSourceRow[];
     try {
       rows = await services.loadSourceRows(request.projectId, request.sceneIds);
-    } catch {
+    } catch (error) {
       return {
         ok: false,
         flush,
         diagnostics: [
           diagnostic(
             "SNAPSHOT_SOURCE_READ_FAILED",
-            "Persisted Scene sources could not be read",
+            withFailureCause(
+              "Persisted Scene sources could not be read",
+              error,
+            ),
           ),
         ],
       };
@@ -969,14 +1067,17 @@ export async function buildProjectNarrativeSnapshot(
           request.folderId,
           request.sceneIds,
         );
-      } catch {
+      } catch (error) {
         return {
           ok: false,
           flush,
           diagnostics: [
             diagnostic(
-              "SNAPSHOT_SOURCE_CHANGED",
-              "The persisted folder scope could not be verified after sealing",
+              sourceReadOrChangedCode(error),
+              withFailureCause(
+                "The persisted folder scope could not be verified after sealing",
+                error,
+              ),
             ),
           ],
         };
@@ -1019,14 +1120,17 @@ export async function buildProjectNarrativeSnapshot(
         request.projectId,
         request.sceneIds,
       );
-    } catch {
+    } catch (error) {
       return {
         ok: false,
         flush,
         diagnostics: [
           diagnostic(
             "SNAPSHOT_SOURCE_READ_FAILED",
-            "Persisted Scene sources could not be verified after sealing",
+            withFailureCause(
+              "Persisted Scene sources could not be verified after sealing",
+              error,
+            ),
           ),
         ],
       };
@@ -1079,14 +1183,17 @@ export async function buildProjectNarrativeSnapshot(
           request.folderId,
           verificationRows,
         );
-      } catch {
+      } catch (error) {
         return {
           ok: false,
           flush,
           diagnostics: [
             diagnostic(
-              "SNAPSHOT_SOURCE_CHANGED",
-              "An external Scene source changed while the corpus was being sealed",
+              sourceReadOrChangedCode(error),
+              withFailureCause(
+                "The external Scene source fence could not be completed after sealing",
+                error,
+              ),
             ),
           ],
         };
@@ -1125,14 +1232,17 @@ export async function buildProjectNarrativeSnapshot(
           request.folderId,
           request.sceneIds,
         );
-      } catch {
+      } catch (error) {
         return {
           ok: false,
           flush,
           diagnostics: [
             diagnostic(
-              "SNAPSHOT_SOURCE_CHANGED",
-              "The persisted folder scope could not be fenced before publication",
+              sourceReadOrChangedCode(error),
+              withFailureCause(
+                "The persisted folder scope could not be fenced before publication",
+                error,
+              ),
             ),
           ],
         };
@@ -1175,14 +1285,17 @@ export async function buildProjectNarrativeSnapshot(
         request.projectId,
         request.sceneIds,
       );
-    } catch {
+    } catch (error) {
       return {
         ok: false,
         flush,
         diagnostics: [
           diagnostic(
             "SNAPSHOT_SOURCE_READ_FAILED",
-            "Persisted Scene sources could not be fenced before publication",
+            withFailureCause(
+              "Persisted Scene sources could not be fenced before publication",
+              error,
+            ),
           ),
         ],
       };
