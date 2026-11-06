@@ -159,7 +159,7 @@ U3 の委任（継続計画 §3.1）の外に当たる要素は、CP-3b の範�
 PUB-G で `NIR1_GRAPH_UI_ENABLED` を true にする PR（`BODY_DECLARATION_UI_ENABLED` と Native の gate を同じ承認で変える。DR-CP3B-2）の前に、次を満たす。
 
 1. **必須（DR-CP3B-8、integrator 追記 P2-2）**：quarantine の下の未保存の編集への手当て。autosave の toast `autoSave.workspaceSwitching`（「自動で再保存されます」）が quarantine の下では誤りであることと、Main の `exit(1)` による終了で未保存の編集が失われうることを、D7 (B)（Native が quarantine で拒否した participant の error に marker を付け、toast を「再起動が必要」に変える）か同等のもので直す。Native と Core の変更を要するので CP-3b の範囲外。
-2. **必須（DR-CP3B-7、integrator 追記 P3-8、R-6）**：段階的に見える表示の手当て。定数が true のとき、lazy chunk の初回の取得の間は fallback の R/R+IR の行から Graph の行へ一度切り替わる。Section の mount で chunk を先に取る（定数が true のときだけ）などで、DSN §3.1「段階的な表示はしない」の趣旨を満たす。Graph の chunk の初回の取得と表示の体感を実機で確かめる。2026-11-06：PR #<番号> で先読みを実装（定数 true のときだけ mount で import）。
+2. **必須（DR-CP3B-7、integrator 追記 P3-8、R-6）**：段階的に見える表示の手当て。定数が true のとき、lazy chunk の初回の取得の間は fallback の R/R+IR の行から Graph の行へ一度切り替わる。Section の mount で chunk を先に取る（定数が true のときだけ）などで、DSN §3.1「段階的な表示はしない」の趣旨を満たす。Graph の chunk の初回の取得と表示の体感を実機で確かめる。2026-11-06：PR #811 で先読みを実装（定数 true のときだけ mount で import）。
 3. DR-CP3A-55 の lease 越しの end-to-end（実機の Native と renderer を通した Graph-only の click）。CP-3b の renderer の試験は Native を mock しており、その代わりにならない。
 4. seed の読取の待ち：hook の `run()` の中の 1 回の DB 読取（`LIMIT 1`）。D の窓は Raw-ready からなので P の値には入らないが、利用者の待ちは増える。CP-4 で測る。
 5. DA-2 への申し送り（integrator 追記 P3-11）：`profile-not-restricted` のときの T-1 の案内（K3/2 :242）は、Graph の lazy component（`Nir1GraphRelatedScenes.tsx`）の `restart-required` の文言と同じ位置（rows の前の `role="status"` の段落）に差し込む。`RelatedScenesSection.tsx` の `showsGraph` に `graph-unavailable:profile-not-restricted` を足す必要がある。CP-3b はこの理由を何も表示しない（U-3）。
