@@ -235,8 +235,8 @@ reader は background／async lifecycle に新しい handle を持ち込むの�
 | E3  | stop・epoch・shutdown による取消しの伝わり方                | 案あり（epoch の写像は製品の呼び手が無いので等価） |
 | E4  | open 中に stop が入る                                       | 案あり                                             |
 | E5  | 生きている handle の所有、実際の終了の証拠                  | 案あり（証拠の取り方を `close()` の成功へ変更）    |
-| E6  | cancellation の粒度                                         | 測定待ち（preflight に `control.check` が無い）    |
-| E7  | bounded wait（transition・shutdown が待つ時間）             | 測定待ち（上限は待つ側に置く。別セッションの指摘で向きを訂正。E7 の注記） |
+| E6  | cancellation の粒度                                         | **測定済み（2026-11-06）：1 候補の preflight の最大は約 40 ms → (a) を採る（コード変更なし）** |
+| E7  | bounded wait（transition・shutdown が待つ時間）             | 候補あり（待つ側に 2 s。停止遅延の見積り 100 ms 台の 10 倍以上、main の 30 s より十分短い。段 2 の試験 (p) で確定） |
 | E8  | cleanup 失敗・close 失敗                                    | **決定（2026-11-06 ユーザー）：(a) その authority の reader を二度と開かない（fail-closed）** |
 | E9  | panic                                                       | 確認済み（草稿の「guard の Drop に頼る」を訂正）   |
 | E10 | `build_once` の戻りの全経路                                 | 案あり（構造で保証する）                           |
@@ -326,7 +326,7 @@ owner の連鎖（読んで確かめた事実）：
 - **決め方。** 次のどちらか。(a) 1 候補の preflight の最大値を測り、その値を E7 の導く値として受け入れる（コード変更なし）。(b) `preflight_build_candidate` に `control` を渡し、候補内の replay の境界で確認する（grimodex-db の読取経路のシグネチャ変更。意味は変えない）。
   **推奨は (a)** で、最大値が大きければ (b)。
 - **試験案。** (p)：preflight の途中で stop を立て、reader の close までを測る（写し 2 つ。最大の 1 候補の preflight の ms も同時に測る）。dev 枝 `claude/irb-prepare-timing` の計測の仕掛けを使える。
-- **未決。** 測定の結果で (a)／(b)。
+- **測定済み（2026-11-06、第 6 版の run の後。計測用 worktree の `preflight.one` の `max_ms`〔1 候補の最大〕、REPS=2、release、写しの DB）。** 1 候補の preflight の最大は、g-ja-1 第 6 版（候補 884）28.4〜28.5 ms、m-ja-2 第 6 版（551）20.4〜27.6 ms、m-en-1 第 5 版（roster 509）35.0〜40.3 ms。`snapshot.input_guard` は 1 回 125〜172 ms だが、行ごと・8 KiB ごとに `control.check` がある。**(a) を採る**：取消しが効くまでの最長の区間は約 40 ms で、コードは変えない。最大値は E7 の停止遅延の見積りに使う。
 
 ##### E7 bounded wait
 
@@ -334,7 +334,7 @@ owner の連鎖（読んで確かめた事実）：
   `max(hook の間隔に相当する SQL の時間, 1 候補の preflight の最大, input_guard の 8 KiB 区間)` ＋ cleanup（`NMC:1093-1140` の progress 解除と rollback、`retire_connection_for_recovery` の close）。
 - reader は participant の内側で開閉する（E5）ので、上の遅延が過ぎれば participant が外れ、physical exclusive が通る。Windows の restore で file が掴まれたままにならないのは、この順序による。
 - **試験案。** (p) の測定値を記録する。**値の上限は測定の後に決める（今は書かない）。** main の 30 秒の観測枠（`LN:3787-3788`）よりずっと小さいことを確かめる。
-- **未決。** 上限の値（測定後）。
+- **候補（2026-11-06）。** 上限は待つ側（transition の physical exclusive の待ち、shutdown）に置く。reader の停止遅延の見積り＝max(1 候補の preflight の最大 約 40 ms〔E6〕, `input_guard` の 8 KiB 区間, hook の間隔分の単一 statement)＋cleanup ≒ 100 ms 台（推測。cleanup と最長の statement は未測定）。待つ側の上限の候補は **2 s**（見積りの 10 倍以上、main の 30 s の観測枠より十分短い）。超えたら待つ側が先に進む（強制）。値は段 2 の試験 (p)（stop から reader の close まで）で実測して確定する。
 - **別セッションの調査の指摘（2026-11-06、`design-notes/research-2026-11-06/perf/irb3-reader-prior-art.md`、未確認）。** 一般の慣行は、待つ側に上限を置き、外側の猶予（main の 30 秒の観測枠）より短くし、超えたら強制する（k8s 30 s、Docker 10 s、systemd 90 s）。上の「reader の停止遅延として導く」は向きが逆で、測定の後は待つ側の上限として置き直す。E6 については、SQLite の命令数の progress は時間の保証にならない（COUNT で 100 tick の確認まで 25 s の例）ので、Rust 側の候補 loop の最大値に、最長の単一 statement の時間を加える。
 
 ##### E8 cleanup 失敗・close 失敗
