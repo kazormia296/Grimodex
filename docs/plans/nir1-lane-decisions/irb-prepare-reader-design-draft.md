@@ -1,6 +1,7 @@
 # IRB-READER の設計草稿（関連場面の IR の index build の prepare を専用の読取接続へ）
 
 **草稿・未実装・計測の後に確定する。** この文書の判断（DR-IRB-3〜5）は仮の番号で、コードも計測も済んでいない。
+**2026-11-06 の追記。** §2.2 の判断待ちの 3 行（K・E8・E13）はユーザーが決めた（§2.1 の 6、E8、E13。AskUserQuestion、1 回で）。E6・E7 は測定待ちのまま。DR-IRB-3 が要ることの根拠は DR-IRB-6（#810）の計測の第 2 回：第 6 版の g-ja-1 の最終の DB（候補 884）では DR-IRB-6 の後でも prepare が 10.0〜10.3 s で、renderer の read の IPC の期限（10 s）に余裕が無い（`irb-decisions.md` §4）。別セッション（grimodex-4a）の read-only の調査（`design-notes/research-2026-11-06/perf/`、repo の外。未確認）からの指摘は E7・E14 に注記した。
 **番号の注意。** DR-IRB-2 は別の判断として既に存在する（snapshot の読込み失敗の付け替え。§2 の表と §9）。
 審査（`irb-b-design.json`）は DR-IRB-2 を「計測」、DR-IRB-3 を「prepare の専用 reader」、DR-IRB-4 を「仕事を減らす」と呼んだ。
 この草稿の番号：**prepare の専用 reader＝DR-IRB-3、仕事を減らす＝DR-IRB-4、publish の短縮＝DR-IRB-5**（2026-11-05 にユーザーへ示し、方向の承認を受けた番号）。計測は製品を変えない dev 用の作業なので DR の番号を持たない（審査の「DR-IRB-2＝計測」は、実装済みの DR-IRB-2 と衝突するので使わない）。
@@ -235,13 +236,13 @@ reader は background／async lifecycle に新しい handle を持ち込むの�
 | E4  | open 中に stop が入る                                       | 案あり                                             |
 | E5  | 生きている handle の所有、実際の終了の証拠                  | 案あり（証拠の取り方を `close()` の成功へ変更）    |
 | E6  | cancellation の粒度                                         | 測定待ち（preflight に `control.check` が無い）    |
-| E7  | bounded wait（transition・shutdown が待つ時間）             | 測定待ち（上限は導く値。待つ側に上限が無い）       |
-| E8  | cleanup 失敗・close 失敗                                    | 判断待ち（close の証拠が取れないときの扱い）       |
+| E7  | bounded wait（transition・shutdown が待つ時間）             | 測定待ち（上限は待つ側に置く。別セッションの指摘で向きを訂正。E7 の注記） |
+| E8  | cleanup 失敗・close 失敗                                    | **決定（2026-11-06 ユーザー）：(a) その authority の reader を二度と開かない（fail-closed）** |
 | E9  | panic                                                       | 確認済み（草稿の「guard の Drop に頼る」を訂正）   |
 | E10 | `build_once` の戻りの全経路                                 | 案あり（構造で保証する）                           |
 | E11 | error／timeout の所有と写像                                 | 判断待ち（K）                                      |
 | E12 | 永続する restart の状態                                     | 確認済み                                           |
-| E13 | reader の同時数（新設）                                     | 判断待ち（authority あたり 1 本の上限）            |
+| E13 | reader の同時数（新設）                                     | **決定（2026-11-06 ユーザー）：authority あたり 1 本の slot** |
 | E14 | authority の健全性・共有 lease との関係（新設）             | 案あり                                             |
 
 #### 2.2.2. 行ごとの案
@@ -314,7 +315,7 @@ owner の連鎖（読んで確かめた事実）：
 - **試験案。** (d)：戻り値別（`Ready`／`Stale`／`PendingChange`／`Idle`／`Stopped`／`Retry`／`Err`）に open 数 0。
   (r)：OS の証跡。Linux は `/proc/self/fd` で `grimodex.db` を指す fd の数が build 前と同じ（authority の分）に戻る。Windows は build 後に DB file の rename が通る（hosted の 3 OS で）。
   順序の証跡：participant 数を先に読み、0 のときに reader 数を読むと必ず 0（participant の admission は transition 中に閉じているので reader は増えない）。これを transition の試験の中で繰り返し検査する。
-- **未決。** E8（close の証拠が取れないとき）。
+- **決定（2026-11-06 ユーザー）。** E8 は (a)。permit は close の証拠の後にだけ戻す。
 
 ##### E6 cancellation の粒度
 
@@ -334,6 +335,7 @@ owner の連鎖（読んで確かめた事実）：
 - reader は participant の内側で開閉する（E5）ので、上の遅延が過ぎれば participant が外れ、physical exclusive が通る。Windows の restore で file が掴まれたままにならないのは、この順序による。
 - **試験案。** (p) の測定値を記録する。**値の上限は測定の後に決める（今は書かない）。** main の 30 秒の観測枠（`LN:3787-3788`）よりずっと小さいことを確かめる。
 - **未決。** 上限の値（測定後）。
+- **別セッションの調査の指摘（2026-11-06、`design-notes/research-2026-11-06/perf/irb3-reader-prior-art.md`、未確認）。** 一般の慣行は、待つ側に上限を置き、外側の猶予（main の 30 秒の観測枠）より短くし、超えたら強制する（k8s 30 s、Docker 10 s、systemd 90 s）。上の「reader の停止遅延として導く」は向きが逆で、測定の後は待つ側の上限として置き直す。E6 については、SQLite の命令数の progress は時間の保証にならない（COUNT で 100 tick の確認まで 25 s の例）ので、Rust 側の候補 loop の最大値に、最長の単一 statement の時間を加える。
 
 ##### E8 cleanup 失敗・close 失敗
 
@@ -345,7 +347,7 @@ owner の連鎖（読んで確かめた事実）：
   (b) 閉じるまで同じ reader を保持して再試行する。participant を持ち続けることになり、transition を止めるので採らない。
   **推奨は (a)。** C-query の process 寿命の fence（`WL:546-554` の `WorkspaceQuarantineFence`）と同じ考え方（cleanup を証明できなければ解放しない）。
 - **試験案。** (e) に「cleanup の failpoint（`MaintenanceCleanupFailpoint`、`NMC` の試験用）で reader が使えなくなり、authority は `connection_reusable()`＝true のまま」を足す。
-- **未決。** (a) の採否。
+- **決定（2026-11-06 ユーザー）。** (a) を採る（fail-closed。permit を戻さず `Retry`→K 回で `Stopped`、error を 1 回 log。workspace の再 open まで Chronicle の build は止まる）。
 
 ##### E9 panic
 
@@ -371,10 +373,10 @@ owner の連鎖（読んで確かめた事実）：
   それ以外の open 失敗・`SQLITE_BUSY`／`LOCKED`（busy_timeout 0）・cleanup 失敗→ `Retry`。§2.1 の 6 の表のとおり。
 - **transition 中に `Retry` で空回りしない理由。** 手順 1 の authority tx が `NMC:1488` の `check_participant` で先に `Err` になり、reader の分類に届かない。
 - **timeout。** reader には wall-clock の deadline を置かない（`ParticipantSqlControl::default()` は deadline 無し、`NMC:283-289`）。prepare は O(N) の仕事で、今の authority の prepare も deadline を持たない。新しい上限を足すと挙動が変わる（閾値の追加）ので足さない。
-- **K（連続して `Retry` が続く回数の上限）。** 値は未決。永続する open 失敗（権限・file の不在）を `Retry` で 250 ms ごとに繰り返さないための上限。超えたら `Stopped`（予約を解く。次の `begin` で再開）と error を 1 回 log。
+- **K（連続して `Retry` が続く回数の上限）。** **K＝40（2026-11-06 ユーザー）**：250 ms × 40 ≒ 10 秒で、renderer の read の IPC の期限と同じ長さ（永続する失敗を 10 秒以上繰り返さず、一時的な BUSY は 10 秒まで待つ）。永続する open 失敗（権限・file の不在）を `Retry` で 250 ms ごとに繰り返さないための上限。超えたら `Stopped`（予約を解く。次の `begin` で再開）と error を 1 回 log。
   **選択肢：** (a) K 回で `Stopped`、(b) 無期限に `Retry` するが §5 の対策 2 の backoff で間隔を延ばす。推奨は (a)。K は open の費用の測定（§7）の後に、ユーザーかレビューが決める。
 - **試験案。** (e)：BUSY と open 失敗が `Retry` になり予約が残る。K 回で `Stopped`。`ValidationTerminated` は `Err` のまま。
-- **未決。** K、(a)／(b)。
+- **決定（2026-11-06 ユーザー）。** (a)、K＝40。別セッションの調査の指摘（未確認）：OTP・systemd は回数と窓の両方で上限を置く。BUSY と永続する失敗を別に数える案は実装時に検討。
 
 ##### E12 永続する restart の状態
 
@@ -391,7 +393,7 @@ owner の連鎖（読んで確かめた事実）：
   permit は E5 の close の証拠の後にだけ戻す（証拠が取れなければ戻さない。E8 (a)）。今も prepare は authority の mutex で直列なので、直列化という意味は変わらない。
 - **判断が要る点。** 1 本という上限は新しい並行度の規則。複数 project の build が reader を待つ（今は mutex を待つ）。E2 の共存を許容する案を採るなら slot は要らない。
 - **試験案。** (q)：2 本目が `Retry`、1 本目が戻った後に取れる。panic・`Err`・close 失敗でも permit の扱いが E5／E8 のとおり。
-- **未決。** 採否（推奨は採る）。
+- **決定（2026-11-06 ユーザー）。** 採る（authority あたり 1 本。2 本目は DB を触らず `Retry`。permit は close の証拠の後にだけ戻す）。
 
 ##### E14 authority の健全性・共有 lease との関係（新設）
 
@@ -402,7 +404,8 @@ owner の連鎖（読んで確かめた事実）：
 - **file identity。** 手順 1 の identity と reader の identity が一致しなければ `Stopped`（§2.1 の 2）。比較は path 基準で、外部 process による差し替えは脅威モデルの外（workspace の共有 lease が置換を拒む）と明記する。
   `sqlite_database_file_identity`（`maintenance_lifecycle.rs:623`）は `pub(crate)` で使える。`sqlite_database_path_in_tx`（`:589`）は module 内の `fn` なので、使うなら可視性を `pub(crate)` に上げる（grimodex-db の内側の変更）。
 - **試験案。** (t)：authority を quarantine した状態で `build_once` が reader を開かず `Err`（`Stopped`）。(j)：identity の不一致。
-- **未決。** なし。
+- **別セッションの調査の指摘（2026-11-06、`design-notes/research-2026-11-06/perf/sqlite-connection-hold-structure.md`、未確認）。** runtime の epoch は接続ごとの TEMP の epoch に縛られている（`runtime.rs:149-153`）ので、今のまま 2 本目の接続で prepare すると `ConnectionChanged` で失敗する。reader の実装では epoch の読み方を authority の値に合わせる（§2.1 の手順の見直し）。また握るのは prepare だけでなく publish の書込み tx（roster・input_guard・Feed・edge の読み直し）と 250 ms 周期の再試行もある。reader の cache は接続ごとに私有なので `cache_size` を明示する。
+- **未決。** epoch の扱い（実装時に確かめる）。
 
 #### 2.2.3. 適用しない項目
 
