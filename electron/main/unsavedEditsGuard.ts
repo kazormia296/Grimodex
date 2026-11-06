@@ -27,6 +27,8 @@ export type FatalExitDecision = "exit" | "stay";
 export interface UnsavedEditsGuardDeps {
   /** True while the window's renderer can still be told something. */
   isOwnerAlive(ownerId: number): boolean;
+  /** Windows that can still be shown to the author. */
+  liveWindowCount(): number;
   /** The confirmation shown to the author. Must not throw on normal use. */
   confirm(): Promise<FatalExitDecision>;
   /** Tell one window to show its sticky "copy your text out" notice. */
@@ -43,7 +45,9 @@ export interface UnsavedEditsGuard {
   /**
    * Called by the quit finalizer right before a fatal `exit(1)`. Resolves
    * `exit` when nothing is unsaved (the previous behaviour) or the author
-   * chose to exit; `stay` when the author went back.
+   * chose to exit; `stay` when the author went back. The windows and owners
+   * are counted again after the answer: if no live window still holds unsaved
+   * edits there is nothing to go back to, so the answer is `exit`.
    */
   confirmBeforeFatalExit(): Promise<FatalExitDecision>;
 }
@@ -96,7 +100,12 @@ export function createUnsavedEditsGuard(
         return "exit";
       }
       if (decision === "stay") {
-        for (const ownerId of owners) {
+        // The dialog has no parent window, so windows may have closed or
+        // saved while it was open. Staying with no window would leave a
+        // process nobody can quit.
+        const remaining = deps.liveWindowCount() > 0 ? ownersWithUnsaved() : [];
+        if (remaining.length === 0) return "exit";
+        for (const ownerId of remaining) {
           // Only a live window is told; a failed send cannot undo the choice.
           try {
             if (deps.isOwnerAlive(ownerId)) {
@@ -115,36 +124,71 @@ export function createUnsavedEditsGuard(
 }
 
 /**
- * The confirmation. Both languages are shown because Main has no UI language
- * of its own. The safe choice (go back) is the default and the Escape result.
+ * Upper bound on how long the confirmation may stay open. The dialog has no
+ * parent window and no owner, so an unattended environment (CI, Xvfb, a
+ * remote session) would otherwise wait on it forever instead of ending the
+ * process that already could not shut down safely. A human who is present
+ * answers well within a minute; past it the previous fatal `exit(1)` applies
+ * (DR-PUBG-36-1).
  */
-export async function showUnsavedFatalExitDialog(dialog: {
-  showMessageBox(options: {
-    type: "warning";
-    title: string;
-    message: string;
-    detail: string;
-    buttons: string[];
-    defaultId: number;
-    cancelId: number;
-    noLink: boolean;
-  }): Promise<{ response: number }>;
-}): Promise<FatalExitDecision> {
-  const { response } = await dialog.showMessageBox({
-    type: "warning",
-    title: "Grimodex",
-    message: "未保存の編集があります / There are unsaved edits",
-    detail: [
-      "安全に終了できないため、このまま終了すると未保存の編集は失われます。戻って、編集中の文章をコピーして控えてください。",
-      "The app could not shut down safely. Exiting now will lose your unsaved edits. Go back and copy the text you are editing to keep it.",
-    ].join("\n\n"),
-    buttons: [
-      "戻って内容を控える / Go back and copy my text",
-      "このまま終了する(未保存の編集は失われる) / Exit anyway (unsaved edits are lost)",
-    ],
-    defaultId: 0,
-    cancelId: 0,
-    noLink: true,
-  });
-  return response === 1 ? "exit" : "stay";
+export const FATAL_EXIT_CONFIRM_TIMEOUT_MS = 60_000;
+
+/**
+ * The confirmation. Both languages are shown because Main has no UI language
+ * of its own. The safe choice (go back) is the default and the Escape result;
+ * only running out of time resolves `exit`, and it closes the dialog.
+ */
+export async function showUnsavedFatalExitDialog(
+  dialog: {
+    showMessageBox(options: {
+      type: "warning";
+      title: string;
+      message: string;
+      detail: string;
+      buttons: string[];
+      defaultId: number;
+      cancelId: number;
+      noLink: boolean;
+      signal?: AbortSignal;
+    }): Promise<{ response: number }>;
+  },
+  timeoutMs: number = FATAL_EXIT_CONFIRM_TIMEOUT_MS,
+): Promise<FatalExitDecision> {
+  const abort = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    abort.abort();
+  }, timeoutMs);
+  try {
+    // An aborted dialog resolves as if cancelled, so `timedOut` decides, not
+    // the response; a platform that ignores `signal` is still cut off below.
+    const shown = dialog.showMessageBox({
+      type: "warning",
+      title: "Grimodex",
+      message: "未保存の編集があります / There are unsaved edits",
+      detail: [
+        "安全に終了できないため、このまま終了すると未保存の編集は失われます。戻って、編集中の文章をコピーして控えてください。",
+        "The app could not shut down safely. Exiting now will lose your unsaved edits. Go back and copy the text you are editing to keep it.",
+      ].join("\n\n"),
+      buttons: [
+        "戻って内容を控える / Go back and copy my text",
+        "このまま終了する(未保存の編集は失われる) / Exit anyway (unsaved edits are lost)",
+      ],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      signal: abort.signal,
+    });
+    const expired = new Promise<"timeout">((resolve) => {
+      abort.signal.addEventListener("abort", () => resolve("timeout"), {
+        once: true,
+      });
+    });
+    const outcome = await Promise.race([shown, expired]);
+    if (outcome === "timeout" || timedOut) return "exit";
+    return outcome.response === 1 ? "exit" : "stay";
+  } finally {
+    clearTimeout(timer);
+  }
 }

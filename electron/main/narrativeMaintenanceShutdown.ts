@@ -21,6 +21,8 @@ export interface NarrativeMaintenanceQuitFinalizerOptions {
    * Asked once when shutdown could not be proven, right before the fatal
    * `exit(1)`. `stay` cancels the exit (the quit stays vetoed and a later quit
    * runs the whole finalizer again); `exit` or a throw keeps the fatal exit.
+   * A `will-quit` that re-enters while the confirmation is open also keeps the
+   * fatal exit: nothing else would ever issue the quit again (DR-PUBG-36-1).
    * Absent means the previous behaviour. It must not save or move any text
    * (DR-PUBG-36-1).
    */
@@ -64,6 +66,12 @@ export function createNarrativeMaintenanceQuitFinalizer(
   let finalizationStarted = false;
   let cleanupComplete = false;
   let fatalExitRequested = false;
+  // A will-quit that arrived while the confirmation was open. The dialog has
+  // no parent window, so the renderer stays usable meanwhile and its own close
+  // path can end in `window-all-closed` -> `app.quit()`. That quit is vetoed
+  // and consumed here; without this record a later "go back" would leave a
+  // windowless process holding the lease and the single-instance lock.
+  let quitRequestedDuringConfirm = false;
   const reportError = (error: unknown): void => {
     try {
       options.error?.(error);
@@ -75,8 +83,12 @@ export function createNarrativeMaintenanceQuitFinalizer(
   return async (event) => {
     if (cleanupComplete || fatalExitRequested) return;
     event.preventDefault();
-    if (finalizationStarted) return;
+    if (finalizationStarted) {
+      quitRequestedDuringConfirm = true;
+      return;
+    }
     finalizationStarted = true;
+    quitRequestedDuringConfirm = false;
 
     const nativeObservationStartedAt = performance.now();
     const observeNativeTermination = async (): Promise<boolean> => {
@@ -137,11 +149,18 @@ export function createNarrativeMaintenanceQuitFinalizer(
     );
     if (!maintenanceComplete || !independentCleanupComplete) {
       if (options.confirmFatalExit) {
+        // Only a quit that re-enters from here on counts.
+        quitRequestedDuringConfirm = false;
         let decision: "exit" | "stay" = "exit";
         try {
           decision = await options.confirmFatalExit();
         } catch (error) {
           reportError(error);
+        }
+        if (decision === "stay" && quitRequestedDuringConfirm) {
+          // The author went back, but a quit was requested meanwhile (for
+          // example the last window closed). No one will request it again.
+          decision = "exit";
         }
         if (decision === "stay") {
           // The quit was vetoed above. Allow the next quit to try again; the

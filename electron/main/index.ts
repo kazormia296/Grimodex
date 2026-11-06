@@ -10,7 +10,7 @@ import path from "node:path";
 import { realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
-import { app, dialog, safeStorage, webContents } from "electron";
+import { BrowserWindow, app, dialog, safeStorage, webContents } from "electron";
 
 import {
   getBackend,
@@ -648,6 +648,9 @@ if (!gotSingleInstanceLock) {
         const target = webContents.fromId(ownerId);
         return target !== undefined && !target.isDestroyed();
       },
+      liveWindowCount: () =>
+        BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed())
+          .length,
       confirm: () => showUnsavedFatalExitDialog(dialog),
       notifyRetained: (ownerId, channel, payload) =>
         sendMainEventToWindow(ownerId, channel, payload),

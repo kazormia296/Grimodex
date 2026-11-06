@@ -180,6 +180,67 @@ describe("narrative maintenance quit finalizer", () => {
       expect(exit).toHaveBeenCalledExactlyOnceWith(1);
     });
 
+    // The confirmation has no parent window: while it is open the renderer
+    // can still close itself, and window-all-closed asks the app to quit.
+    it("a will-quit re-entering during the confirmation turns stay into exit", async () => {
+      const exit = vi.fn();
+      const quit = vi.fn();
+      let release!: (value: "stay") => void;
+      const confirmFatalExit = vi.fn(
+        () => new Promise<"exit" | "stay">((resolve) => (release = resolve)),
+      );
+      const finalizer = createNarrativeMaintenanceQuitFinalizer({
+        dispose: failing(),
+        complete: vi.fn(),
+        quit,
+        exit,
+        confirmFatalExit,
+        maxAttempts: 1,
+      });
+
+      const first = event();
+      const pending = finalizer(first);
+      await vi.waitFor(() => expect(confirmFatalExit).toHaveBeenCalled());
+      const reentrant = event();
+      await finalizer(reentrant);
+      expect(reentrant.preventDefault).toHaveBeenCalledOnce();
+      expect(exit).not.toHaveBeenCalled();
+
+      release("stay");
+      await pending;
+
+      expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+      expect(quit).not.toHaveBeenCalled();
+    });
+
+    it("a quit that re-entered before the confirmation does not count", async () => {
+      const exit = vi.fn();
+      let release!: (value: "stay") => void;
+      let disposeCalls = 0;
+      const finalizer = createNarrativeMaintenanceQuitFinalizer({
+        dispose: () => {
+          disposeCalls += 1;
+          return Promise.reject(new Error("cleanup failed"));
+        },
+        complete: vi.fn(),
+        quit: vi.fn(),
+        exit,
+        confirmFatalExit: () =>
+          new Promise<"exit" | "stay">((resolve) => (release = resolve)),
+        maxAttempts: 1,
+      });
+
+      const pending = finalizer(event());
+      // Re-entered while dispose is still being observed.
+      await finalizer(event());
+      await vi.waitFor(() => expect(release).toBeDefined());
+      release("stay");
+      await pending;
+
+      expect(disposeCalls).toBe(1);
+      expect(exit).not.toHaveBeenCalled();
+    });
+
     it("a throwing confirmation keeps the fatal exit", async () => {
       const exit = vi.fn();
       const error = vi.fn();
