@@ -6,7 +6,7 @@
 ## 0. 観測の規律と、定義の前に見たもの
 
 - **定義の前に見たもの（開示）**：受領書の構造確認として、(1) `samples[]` のキーと G-01／G-04 の Graph arm の sample 1 件ずつの全文、(2) 13 variant の Graph arm の measured 30 件ごとの `graph.outcome`・`followUp.child` の `outcome／contributionBasis／expectedContribution／materialRevision の matched 件数と unresolvedEdges／publishCount／currentAtDisplay／lateGraphInDisplay` と parent の `lateGraphInDisplay／publishCount` の集計表を 1 回見た。この集計は §6 の edge の束縛と §7 の (b) の件数に関わる（定義を選ぶ前に、その件数の概形を見たことになる）。(3) fixture（事前指定の期待値。観測ではない）の `expectations.metrics`、`forbiddenSceneIds`、`blockedCandidates`、`pathAttachments`、`addedScene`。
-- **見ていないもの**：Graph arm／R+IR arm の Recall・nDCG の計算値、p95（`tReturn − tFetch` の分布）、macro の値。参考値の p95 は見えているが、定義はその値に合わせて選んでいない（§4 は P の定義 `evals/nir1-retrieval/manifest.json:130-140` の字義どおり）。
+- **見ていないもの**：Graph arm／R+IR arm の Recall・nDCG の計算値、p95（`tReturn − tFetch` の分布）、macro の値。参考値の p95 は見えているが、定義はその値に合わせて選んでいない（§4 は P の定義 `evals/nir1-retrieval/manifest.json:130-140` の字義どおり）。（→ 末尾の「訂正（2026-11-06、受入れレビューの後）」を見よ。ここの「見ていない」は誤りで、撤回している。）
 - 以降の定義は、実行の後に変えない。変える場合は新しい版の事前登録を作り、変更前の結果を残す。
 
 ## 1. 位置づけと入力
@@ -71,3 +71,14 @@
 - 24 件の Graph arm、Evidence の UTF-16 範囲・pin・Raw excerpt・追加 Scene の本文 anchor、node／path の DTO は受領書に無い。これらを揃えるには harness と受領書の schema を足す必要があり、S2 追補・S4 の再凍結・再測定を招く（設計 §3 (ii)）。この段では扱わない。
 - blocked の判定（`cb4-inputs` など）は台帳の `variants` の値に頼る。
 - G-case の母集団の p95 は、P の 24 query × 30 の p95 とは別の量。
+
+## 訂正（2026-11-06、受入れレビューの後）
+
+本文（確定版）は書き換えない。受入れレビュー（Opus）の指摘 P2-1・P3 を受けた訂正である。
+
+- **(a) 値は既知だった**：§0 の「見ていないもの」（Recall・nDCG の計算値、macro の値）は誤り。contracts `44e3aa44`（2026-11-03）が s5r6 の受領書から 13 variant×3 arm の Recall@8・nDCG@8 と macro（recall 0.0385→0.4615 ほか）を 2 つの独立な計算で出して記録済みだった。設計 `cec52711` の 25 行も G-01 の値と child の読みの分かれを引いている。
+- **(b) 「先に固定」は git で示せない**：この prereg の commit は結果と同じ `0f1962de`（2026-11-06 22:27:58）で、出力の生成（22:25）の後に入っている。「実行の前に固定した」「値を見る前に固定した」とは git の履歴から言えない。
+- **(c) 読みの選択は結果を変えない**：レビューは、child の読み（(a) 子の `finalSceneIds`／(b) 親の一覧）と macro の範囲（13 件／8 件）のどちらを選んでも結果が pass で変わらないことを確認済み。
+- **(d) 撤回**：定義が結果に合わせて選ばれた形跡は無い。ただし「定義は値を見る前に固定した」という主張は撤回する。この定義は、値が既知のうえで、設計と P の定義の字義から書いたものと読むこと。
+- **§4 の「厳しい側」は言い過ぎ**：Graph arm の p95 は親の `tReturn − tFetch` で、follow-up（子）の表示までの待ちを含まない。Graph を入れた利用者の待ちを全部見ているわけではないので、Graph arm の pass は「親の返却が上限に収まる」の意味に限る。
+- **再実行（P2-2・P2-3）**：受入れレビューの後、(1) 期待 `unavailable` の variant で「親・子の表示が対の R+IR と同じ一覧（順序を含む）」を `fail` の条件に足し（§3 の記述どおりの実装）、(2) 許可リストを `quality-verdict-s5r6-1/` に写して file 名で束縛し直した。同じ入力で 1 回だけ再実行し、`quality-verdict-s5r6-1/` の JSON・md・SHA256SUMS を置き直した。コードは実装 worktree の `b44c4717`（枝 `claude/cp4-quality-verdict`）。許可リストの写しは `allow-list-s5r6-s4-3734e501-candidate-cbf33077.json`（sha256 `6c95f736…4989`、元と同じ）。判定（`hold: unverified-required-items`、他の条件は pass）は変わらない。結果 JSON の bindings 以外は再実行の前後で同一。

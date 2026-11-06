@@ -2081,11 +2081,11 @@
     "script": [
       {
         "path": "scripts/quality/nir1-graph-eval/quality-verdict.mjs",
-        "sha256": "e83ec512e04e20d62be25c911eebad1dd59dc4c957b5923f0e9ab0f1a0bb66fc"
+        "sha256": "7745b664d380fb24f993b32938e422471f8f042d156e07781622aaae173f356a"
       },
       {
         "path": "scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs",
-        "sha256": "0027b27a3f60313313680155415005abaf2243858fcd249ee12899a8f942aa16"
+        "sha256": "097e0a3fb3a8761342e1f39dd6263f0aebc08f8878d1e8c87e2e02019f2ef5af"
       },
       {
         "path": "scripts/quality/nir1-graph-eval/followup.mjs",
@@ -2213,7 +2213,7 @@
       }
     ],
     "allowList": {
-      "path": "/home/grimodex/worktrees/Grimodex/claude-cp4-quality-verdict/.artifacts/cp4-quality-verdict/allow-list.json",
+      "path": "allow-list-s5r6-s4-3734e501-candidate-cbf33077.json",
       "sha256": "6c95f73662692761bf17a2e06405088f628300216b7df2c29e0c47c9ae924989"
     },
     "ledger": {
