@@ -4,7 +4,10 @@
 use std::{collections::BTreeMap, io::Read as _, path::PathBuf};
 
 use flate2::read::GzDecoder;
-use grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1;
+use grimodex_core::{
+    narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
+    narrative_scope_dependency_projection::ScopeDependencyIdentity,
+};
 use rusqlite::Connection;
 use serde_json::Value;
 
@@ -19,6 +22,7 @@ use crate::{
             BuildCandidatePreflight,
         },
         scene_scope::{preload_material_scene_scopes, MaterialSceneScopeCache},
+        scope_authority_runtime::load_sealed_snapshot_document_bindings_in_tx,
         source_revision::{
             resolve_source_revision_with_control_and_reads, validation_terminated,
             CandidateFreshnessReads, ValidationTerminationReason,
@@ -236,6 +240,9 @@ struct Plan<'a> {
     write_at: Option<usize>,
     /// What the write at `write_at` executes; empty is [`PROBE_WRITE`].
     write_sql: &'a str,
+    /// Schema statement applied after `tamper` (it changes no row, so it is
+    /// not required to).
+    tamper_ddl: &'a str,
 }
 
 /// The finalize loop in each way of sharing, in one transaction (rolled back):
@@ -254,6 +261,9 @@ fn runs(db: &Database, project: &str, plan: Plan<'_>) -> Vec<Run> {
         if !plan.tamper.is_empty() {
             let changed = tx.execute(plan.tamper, [])?;
             anyhow::ensure!(changed > 0, "tamper must change a row: {}", plan.tamper);
+        }
+        if !plan.tamper_ddl.is_empty() {
+            tx.execute_batch(plan.tamper_ddl)?;
         }
         let runs = ALL
             .iter()
@@ -810,4 +820,235 @@ fn reads_first_used_for_one_project_are_not_used_for_another() {
     // First project: read once and shared. Other project: its attempt reads
     // (and fails). First project again: the reads were discarded, so read again.
     assert_eq!(reads.get(&Read::AuthorityTree).copied(), Some(3));
+}
+
+/// Resolves a Scope-dependency Source as the finalize loop's edge evaluation
+/// does, with or without the loop's reads; `Err` is the error's full text.
+fn resolve_scope_dependency(
+    conn: &Connection,
+    project: &str,
+    run: &str,
+    key: &str,
+    reads: Option<&mut CandidateFreshnessReads>,
+) -> std::result::Result<String, String> {
+    let mut control = Observed {
+        log: Vec::new(),
+        stop_at: None,
+        write: None,
+    };
+    resolve_source_revision_with_control_and_reads(
+        conn,
+        project,
+        run,
+        "scope-dependency-projection-v1",
+        key,
+        &mut control,
+        reads,
+    )
+    .map(|current| format!("{current:?}"))
+    .map_err(|error| format!("{error:#}"))
+}
+
+/// The Scope-dependency Source key of a Run's candidate.
+const SCOPE_DEPENDENCY_KEY_OF_RUN: &str =
+    "SELECT source_object_identity FROM narrative_dependency_edges
+      WHERE consumer_kind='proposal-revision'
+        AND source_object_identity LIKE 'scope-dependency:v1:%'
+        AND owning_run_id = ?1
+      LIMIT 1";
+
+/// One candidate whose edges name two Scope dependencies of the same Run. The
+/// cold fixtures bind one per candidate, and a candidate's edge set is sealed in
+/// its declaration digest, so a second edge cannot be added to them; the two
+/// Sources are therefore resolved as the loop's edge evaluation resolves a
+/// candidate's edges, one after the other with the same reads. The second
+/// identity anchors on the Run's other sealed document. Both decide as the
+/// ordinary path does, with one Scope read and one read of the Run's sealed
+/// documents.
+#[test]
+fn two_scope_dependencies_of_one_run_in_one_candidate_read_the_run_once() {
+    let f = TwoRuns::new();
+    let project = f.project().to_owned();
+    let (run, first_key, documents) =
+        f.db.with_read_transaction(|tx| {
+            for index in 0..2 {
+                let run = f.run(index);
+                let documents = load_sealed_snapshot_document_bindings_in_tx(tx, &project, &run)?;
+                if documents.len() >= 2 {
+                    let key = tx.query_row(SCOPE_DEPENDENCY_KEY_OF_RUN, [&run], |row| {
+                        row.get::<_, String>(0)
+                    })?;
+                    return Ok((run, key, documents));
+                }
+            }
+            anyhow::bail!("no Run of the fixture sealed two documents")
+        })
+        .expect("the Run with two sealed documents");
+    let first = ScopeDependencyIdentity::from_source_key(&first_key).expect("identity");
+    let other = documents
+        .iter()
+        .find(|document| document.document_ref != first.reveal_document_ref)
+        .expect("the Run's other sealed document");
+    let second = ScopeDependencyIdentity {
+        reveal_document_ref: other.document_ref.clone(),
+        reveal_scene_ref: format!("scene:{}", other.node_id),
+        ..first.clone()
+    };
+    let second_key = second.source_key().expect("second key");
+    assert_ne!(second_key, first_key);
+    let (ordinary, shared, reads) =
+        f.db.with_read_transaction(|tx| {
+            let ordinary = [
+                resolve_scope_dependency(tx, &project, &run, &first_key, None),
+                resolve_scope_dependency(tx, &project, &run, &second_key, None),
+            ];
+            let mut loop_reads = CandidateFreshnessReads::default();
+            let (shared, reads) = project_read_probe::recording(|| {
+                [
+                    resolve_scope_dependency(tx, &project, &run, &first_key, Some(&mut loop_reads)),
+                    resolve_scope_dependency(
+                        tx,
+                        &project,
+                        &run,
+                        &second_key,
+                        Some(&mut loop_reads),
+                    ),
+                ]
+            });
+            Ok((ordinary, shared, reads))
+        })
+        .expect("resolutions");
+    assert!(ordinary[0].is_ok() && ordinary[1].is_ok(), "{ordinary:?}");
+    assert_ne!(ordinary[0], ordinary[1], "two Scope dependencies");
+    assert_eq!(shared, ordinary);
+    assert_eq!(reads.get(&Read::AuthorityTree).copied(), Some(1));
+    assert_eq!(reads.get(&Read::ScopeExtension).copied(), Some(1));
+    assert_eq!(reads.get(&Read::SealedDocuments).copied(), Some(1));
+}
+
+/// The prepare (`read_snapshot`, whose finalize loop shares its reads) admits
+/// exactly the candidates the loop without reads admits, with the same content.
+#[test]
+fn the_prepare_admits_what_the_loop_without_reads_admits() {
+    each_fixture(|name, db, project, _| {
+        let (admitted, lines) = db
+            .with_read_transaction(|tx| {
+                let snapshot = super::build::read_snapshot(tx, project)?
+                    .unwrap_or_else(|reason| panic!("{name}: prepare unavailable: {reason:?}"));
+                let admitted = snapshot
+                    .candidates
+                    .iter()
+                    .map(|candidate| format!("Ok({candidate:?})"))
+                    .collect::<Vec<_>>();
+                let prepared = prepare(tx, project);
+                let mut control = Observed {
+                    log: Vec::new(),
+                    stop_at: None,
+                    write: None,
+                };
+                let run = finalize_loop(tx, project, prepared, Sharing::Without, &mut control);
+                Ok((admitted, run.lines))
+            })
+            .expect("prepare and loop");
+        assert!(admitted.len() >= 2, "{name}: {admitted:?}");
+        let loop_admitted = lines
+            .iter()
+            .filter(|line| line.starts_with("Ok(BuildCandidate"))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(admitted, loop_admitted, "{name}");
+    });
+}
+
+/// Renames the table the Run's sealed documents are read from, under a
+/// savepoint, so the next read of them is a storage error; `UNHIDE` undoes it.
+const HIDE: &str = "SAVEPOINT hide; \
+    ALTER TABLE narrative_extraction_artifacts RENAME TO hidden_extraction_artifacts";
+const UNHIDE: &str = "ROLLBACK TO hide; RELEASE hide";
+
+/// A storage error inside the shared path (the Run's sealed documents cannot be
+/// read) is reported exactly as the ordinary path reports it, and is not kept:
+/// with the table back, the same reads resolve again. The Scope read, which
+/// succeeded before the error, is kept.
+#[test]
+fn a_storage_error_in_the_shared_path_is_the_ordinary_paths_error_and_is_not_kept() {
+    let f = Fixture::new();
+    let project = f.project().to_owned();
+    let run = f.manifest["runId"].as_str().expect("run").to_owned();
+    let key =
+        f.db.with_read_transaction(|tx| {
+            Ok(tx.query_row(SCOPE_DEPENDENCY_KEY_OF_RUN, [&run], |row| {
+                row.get::<_, String>(0)
+            })?)
+        })
+        .expect("a Scope-dependency edge");
+    let (ordinary, ordinary_hidden, shared, reads) =
+        f.db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let ordinary = resolve_scope_dependency(&tx, &project, &run, &key, None);
+            tx.execute_batch(HIDE)?;
+            let ordinary_hidden = resolve_scope_dependency(&tx, &project, &run, &key, None);
+            tx.execute_batch(UNHIDE)?;
+            let mut loop_reads = CandidateFreshnessReads::default();
+            let (shared, reads) = project_read_probe::recording(|| {
+                tx.execute_batch(HIDE).expect("hide");
+                let hidden =
+                    resolve_scope_dependency(&tx, &project, &run, &key, Some(&mut loop_reads));
+                tx.execute_batch(UNHIDE).expect("unhide");
+                let again =
+                    resolve_scope_dependency(&tx, &project, &run, &key, Some(&mut loop_reads));
+                [hidden, again]
+            });
+            tx.rollback()?;
+            Ok((ordinary, ordinary_hidden, shared, reads))
+        })
+        .expect("resolutions");
+    assert!(ordinary.is_ok(), "{ordinary:?}");
+    let hidden = ordinary_hidden.as_ref().expect_err("the table is gone");
+    assert!(hidden.contains("no such table"), "{hidden}");
+    assert_eq!(
+        shared[0], ordinary_hidden,
+        "the shared path reports the ordinary path's storage error"
+    );
+    assert_eq!(
+        shared[1], ordinary,
+        "a failed read is not kept: the next resolution reads again"
+    );
+    assert_eq!(
+        reads.get(&Read::SealedDocuments).copied(),
+        Some(2),
+        "read (and failed), then read again"
+    );
+    assert_eq!(
+        reads.get(&Read::AuthorityTree).copied(),
+        Some(1),
+        "the Scope read succeeded before the error and is kept"
+    );
+}
+
+/// A storage error met by the first candidate's Freshness ends the finalize
+/// loop at the same place with the same error, however the reads are shared.
+#[test]
+fn a_storage_error_ends_the_loop_the_same_way_however_the_reads_are_shared() {
+    each_fixture(|name, db, project, _| {
+        let plan = Plan {
+            tamper_ddl: "ALTER TABLE narrative_extraction_artifacts \
+                         RENAME TO hidden_extraction_artifacts",
+            ..Plan::default()
+        };
+        let runs = runs(db, project, plan);
+        assert_same_decisions(&runs, &format!("{name}, sealed documents unreadable"));
+        assert_eq!(runs[0].admitted(), 0, "{name}: {:?}", runs[0].lines);
+        assert_eq!(
+            runs[0].lines.len(),
+            1,
+            "{name}: the error ends the loop at the first candidate: {:?}",
+            runs[0].lines
+        );
+        let last = &runs[0].lines[0];
+        assert!(
+            last.starts_with("error: ") && last.contains("no such table"),
+            "{name}: {last}"
+        );
+    });
 }
