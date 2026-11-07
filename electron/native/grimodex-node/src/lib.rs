@@ -1505,8 +1505,31 @@ mod narrative_freshness_restore_lock_tests {
         drop(cleanup);
     }
 
+    fn race_run_reasons(authority: &PinnedWorkspaceDb) -> Vec<(String, Option<String>)> {
+        authority
+            .db()
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT status, terminal_reason_code
+                       FROM narrative_extraction_runs
+                      WHERE run_kind = 'freshness-evaluation'
+                      ORDER BY rowid",
+                )?;
+                let mut rows = Vec::new();
+                let mut cursor = statement.query([])?;
+                while let Some(row) = cursor.next()? {
+                    rows.push((row.get(0)?, row.get(1)?));
+                }
+                Ok(rows)
+            })
+            .expect("Freshness Runs")
+    }
+
+    /// DR-JF-9: the last attempt of a batch that loses the publication race
+    /// closes the Run and returns the reservation. The owner releases its
+    /// permit normally: no retire, no recovery, no `WORKSPACE_SWITCHING`.
     #[tokio::test]
-    async fn freshness_publish_race_after_retry_exhaustion_still_transfers_recovery() {
+    async fn freshness_publish_race_after_retry_exhaustion_closes_the_run_without_recovery() {
         let (cleanup, root, state, authority) =
             freshness_publish_race_workspace("publish-race-exhausted");
         let backend = Backend {
@@ -1527,6 +1550,120 @@ mod narrative_freshness_restore_lock_tests {
         let result = backend
             .run_narrative_freshness_cycle()
             .await
+            .expect("a contended close is not a scheduler failure")
+            .expect("a contended close reports its result");
+        let result: serde_json::Value = serde_json::from_str(&result).expect("JSON");
+        assert_eq!(result["contended"], true, "{result}");
+        assert_eq!(result["runClosed"], true, "{result}");
+        assert_eq!(
+            result["hasMore"], false,
+            "the contention waits for the next poll or a save's wake: {result}"
+        );
+        assert_eq!(result["projectId"], RACE_PROJECT_ID);
+        assert!(
+            result.get("reason").is_none() && result.get("status").is_none(),
+            "no recovery transfer: {result}"
+        );
+        assert!(
+            matches!(
+                state
+                    .workspace_lifecycle
+                    .lifecycle_snapshot()
+                    .expect("lifecycle")
+                    .state,
+                LifecycleState::Ready(_)
+            ),
+            "the workspace stays Ready"
+        );
+        let snapshot = active_workspace_snapshot(&state.ws)
+            .expect("ordinary DB access is never WORKSPACE_SWITCHING after a contended close");
+        assert_eq!(snapshot.authority.identity(), authority.identity());
+        drop(snapshot);
+        assert!(
+            authority.db().connection_reusable(),
+            "the connection is not retired"
+        );
+        assert_eq!(
+            race_cursor_and_attempt(&authority),
+            (
+                0,
+                Some("NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED".to_owned()),
+                Some("terminal".to_owned()),
+            ),
+            "the Run is closed durably and the range is returned, not acknowledged"
+        );
+        assert_eq!(
+            race_run_reasons(&authority),
+            vec![(
+                "failed".to_owned(),
+                Some("NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED".to_owned())
+            )]
+        );
+
+        let next = backend
+            .run_narrative_freshness_cycle()
+            .await
+            .expect("the next cycle")
+            .expect("the next cycle result");
+        let next: serde_json::Value = serde_json::from_str(&next).expect("next JSON");
+        assert_eq!(next["throughSequenceInclusive"], 1, "{next}");
+        assert_eq!(
+            race_cursor_and_attempt(&authority),
+            (1, None, None),
+            "a new Run publishes the returned range"
+        );
+        assert_eq!(race_run_reasons(&authority).len(), 2);
+
+        drop(authority);
+        let active = state.ws.inner.lock().expect("workspace state").take();
+        drop(active);
+        drop(backend);
+        drop(state);
+        drop(cleanup);
+        assert!(!root.exists(), "fixture must clean up");
+    }
+
+    /// A last-attempt failure that is not a publication guard race keeps the
+    /// recovery transfer (DR-JF-9 changes only the guard-race row).
+    #[tokio::test]
+    async fn freshness_non_race_failure_on_the_last_attempt_still_transfers_recovery() {
+        let (cleanup, root, state, authority) =
+            freshness_publish_race_workspace("publish-race-non-guard");
+        let backend = Backend {
+            state: Arc::clone(&state),
+        };
+        for attempt in 1..=2 {
+            let _race = arm_freshness_publish_race(&authority);
+            let result = backend
+                .run_narrative_freshness_cycle()
+                .await
+                .expect("retryable race")
+                .expect("requeue result");
+            let result: serde_json::Value = serde_json::from_str(&result).expect("JSON");
+            assert_eq!(result["requeued"], true, "attempt {attempt}: {result}");
+        }
+
+        // A publication failure that is not a guard race: the cursor
+        // acknowledgement is refused inside the publish transaction. The
+        // requeue only touches other cursor columns, so it still commits.
+        let _failpoint =
+            grimodex_db::narrative_extraction::incremental_freshness_publish_race_for_test::arm(
+                authority.db(),
+                |db| {
+                    db.with_conn(|conn| {
+                        conn.execute_batch(
+                            "CREATE TEMP TRIGGER freshness_non_guard_failpoint
+                         BEFORE UPDATE OF acknowledged_through_sequence ON narrative_change_cursors
+                         BEGIN SELECT RAISE(ABORT, 'test failpoint: not a guard race'); END;",
+                        )?;
+                        Ok(())
+                    })
+                    .expect("arm the non-guard failpoint");
+                },
+            );
+        let result = backend
+            .run_narrative_freshness_cycle()
+            .await
             .expect("recovery transfer is reported as a result")
             .expect("recovery result");
         let result: serde_json::Value = serde_json::from_str(&result).expect("JSON");
@@ -1541,12 +1678,14 @@ mod narrative_freshness_restore_lock_tests {
                     .state,
                 LifecycleState::RecoveryRequired { .. }
             ),
-            "a non-retryable failure keeps the recovery transfer"
+            "a non-guard failure keeps the recovery transfer"
         );
         assert!(matches!(
             active_workspace_snapshot(&state.ws),
             Err(AppError::WorkspaceSwitching)
         ));
+        // The retired connection refuses further reads; that the exhausted Run
+        // stays a dead-letter is pinned by the crate's own test.
 
         drop(authority);
         let active = state.ws.inner.lock().expect("workspace state").take();
@@ -6699,6 +6838,36 @@ fn run_narrative_freshness_cycle_body(
                         "projectId": requeued.project_id(),
                         "runId": requeued.run_id(),
                         "throughSequenceInclusive": requeued.through_sequence_inclusive(),
+                    })
+                    .to_string(),
+                ));
+            }
+            // The last Attempt of a batch lost the same race (DR-JF-9). The
+            // shared crate returns this type only after its transaction closed
+            // the Run as `NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED` and
+            // returned the cursor reservation unacknowledged, so nothing is
+            // dead-lettered and the authority is intact: release the permit
+            // normally (no retire, no recovery). `hasMore` is false because the
+            // contention is ongoing evidence of a busy foreground; the next
+            // cycle (the idle poll, or a save's wake) makes a new Run for the
+            // same range. Same revalidation asymmetry as the requeue above.
+            if let Some(contended) =
+                error.downcast_ref::<narrative_extraction::IncrementalFreshnessCycleContended>()
+            {
+                tracing::warn!(
+                    target: "narrative.maintenance",
+                    project_id = contended.project_id(),
+                    run_id = contended.run_id(),
+                    "freshness publication lost the race on its last attempt; run closed for a new run"
+                );
+                return Ok(Some(
+                    serde_json::json!({
+                        "hasMore": false,
+                        "contended": true,
+                        "runClosed": true,
+                        "projectId": contended.project_id(),
+                        "runId": contended.run_id(),
+                        "throughSequenceInclusive": contended.through_sequence_inclusive(),
                     })
                     .to_string(),
                 ));

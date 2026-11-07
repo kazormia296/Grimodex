@@ -231,7 +231,12 @@ Epoch, Task lease, cursor reservation, evaluated Source state, and Edge
 declaration checks guard publication. Only running work is resumable; a
 completed Run cannot acknowledge an unacknowledged range, and bounded
 Run/Task/Attempt recovery stops after three failed Attempts until a canonical
-Epoch rotation releases the held range for a new runtime-owned Run.
+Epoch rotation releases the held range for a new runtime-owned Run. The one
+exception is a publication guard race with a foreground writer on the last
+Attempt: that Run is closed as `NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED`
+and the cursor reservation is returned unacknowledged (the range is not
+skipped), so the next cycle evaluates it again under a new Run instead of
+holding a dead-letter (`retryPolicy.publishContention*`).
 
 The same `incremental-freshness` Run Kind also declares the machine-readable
 `idleCheckpoint` contract for a Feed that is already at its head. It is a
