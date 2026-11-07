@@ -97,6 +97,7 @@ import { useChronicleViewportController } from "./useChronicleViewportController
 import { announce } from "@/lib/a11y/announcer";
 import { trackPendingEditorWrite } from "@/lib/editorQuiescence";
 import { AlreadyNotifiedSaveError } from "@/hooks/useAutoSave";
+import { notifyIfWorkspaceQuarantined } from "@/features/concurrency/notifyWorkspaceQuarantined";
 import {
   externalDocumentStateKey,
   useExternalWriteStore,
@@ -559,12 +560,15 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
               : event,
           ),
         );
-        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+        if (!notifyIfWorkspaceQuarantined(error)) {
+          toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+        }
         if (options?.propagateFailure) {
           throw error instanceof AlreadyNotifiedSaveError
             ? error
             : new AlreadyNotifiedSaveError(
                 error instanceof Error ? error.message : String(error),
+                { cause: error },
               );
         }
       }
@@ -1811,12 +1815,15 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
               : undefined,
           );
         } catch (error) {
-          toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+          if (!notifyIfWorkspaceQuarantined(error)) {
+            toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+          }
           if (options?.propagateFailure) {
             throw error instanceof AlreadyNotifiedSaveError
               ? error
               : new AlreadyNotifiedSaveError(
                   error instanceof Error ? error.message : String(error),
+                  { cause: error },
                 );
           }
         }

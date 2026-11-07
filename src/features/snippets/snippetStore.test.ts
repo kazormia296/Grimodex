@@ -483,15 +483,55 @@ describe("snippetStore", () => {
       const original = fakeSnippet({ id: "snippet-1" });
       useSnippetStore.setState({ entries: [original] });
 
-      mockUpdateSnippet.mockRejectedValueOnce(new Error("boom"));
+      const boom = new Error("boom");
+      mockUpdateSnippet.mockRejectedValueOnce(boom);
       await expect(
         useSnippetStore.getState().update("snippet-1", { title: "x" }),
-      ).resolves.toEqual({ persisted: false });
+      ).resolves.toEqual({ persisted: false, cause: boom });
 
       mockUpdateSnippet.mockResolvedValueOnce(undefined);
       await expect(
         useSnippetStore.getState().update("snippet-1", { title: "x" }),
       ).resolves.toEqual({ persisted: false });
+    });
+
+    it("quarantine の拒否は cause で返し、汎用の失敗 toast の代わりに sticky の案内を 1 つ出す", async () => {
+      const original = fakeSnippet({ id: "snippet-1" });
+      useSnippetStore.setState({ entries: [original] });
+      const quarantined = Object.assign(
+        new Error("WORKSPACE_QUARANTINED: fenced"),
+        { code: "WORKSPACE_QUARANTINED" },
+      );
+      mockUpdateSnippet.mockRejectedValueOnce(quarantined);
+
+      const outcome = await useSnippetStore
+        .getState()
+        .update("snippet-1", { title: "x" });
+
+      expect(outcome).toEqual({ persisted: false, cause: quarantined });
+      expect(toastError).toHaveBeenCalledTimes(1);
+      expect(toastError).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          id: "autosave-workspace-quarantined",
+          duration: Infinity,
+        }),
+      );
+    });
+
+    it("OCC 衝突と行なしは cause を持たない", async () => {
+      const original = fakeSnippet({ id: "snippet-1" });
+      useSnippetStore.setState({ entries: [original] });
+      mockUpdateSnippet.mockRejectedValueOnce(
+        new SnippetVersionConflictError("snippet-1"),
+      );
+      await expect(
+        useSnippetStore.getState().update("snippet-1", { content: "x" }),
+      ).resolves.not.toHaveProperty("cause");
+      mockUpdateSnippet.mockResolvedValueOnce(undefined);
+      await expect(
+        useSnippetStore.getState().update("snippet-1", { content: "x" }),
+      ).resolves.not.toHaveProperty("cause");
     });
 
     it("行なし (削除済み/スコープmiss) の非保存でもトーストで通知する", async () => {

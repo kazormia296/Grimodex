@@ -17,9 +17,11 @@ import { getCurrentProjectId } from "@/application/project/currentProjectAuthori
 import { createInFlightTracker } from "@/lib/inFlightTracker";
 import {
   SAVE_NOT_PERSISTED,
+  notPersistedBecause,
   persistedVersion,
   type VersionedSaveOutcome,
 } from "@/lib/saveOutcome";
+import { notifyIfWorkspaceQuarantined } from "@/features/concurrency/notifyWorkspaceQuarantined";
 import { applyUndoJournal } from "@/features/agent-writes/undoJournal";
 import type { CanonicalWriteReceipt } from "@/features/native-writes/writeContext";
 import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
@@ -345,9 +347,11 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         snippetEditConflictHandler(id);
         return SAVE_NOT_PERSISTED;
       }
-      toast.error(i18next.t("snippets.store.updateFailed"));
+      if (!notifyIfWorkspaceQuarantined(e)) {
+        toast.error(i18next.t("snippets.store.updateFailed"));
+      }
       debugLog.error("SnippetStore", "update", errorDetail(e));
-      return SAVE_NOT_PERSISTED;
+      return notPersistedBecause(e);
     }
 
     // ここから先は保存成功 (undo 履歴の登録可否は成否と無関係)

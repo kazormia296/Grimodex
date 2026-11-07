@@ -46,9 +46,11 @@ import {
 } from "@/features/concurrency/mutationAuthority";
 import {
   SAVE_NOT_PERSISTED,
+  notPersistedBecause,
   persistedVersion,
   type VersionedSaveOutcome,
 } from "@/lib/saveOutcome";
+import { notifyIfWorkspaceQuarantined } from "@/features/concurrency/notifyWorkspaceQuarantined";
 import { hasExternalEditConflictForId } from "@/lib/externalEditConflictRegistry";
 import { isIpcLifecycleCancellation } from "@/lib/tauri";
 import {
@@ -575,9 +577,11 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         codexEditConflictHandler(id);
         return SAVE_NOT_PERSISTED;
       }
-      toast.error(i18next.t("codex.store.updateFailed"));
+      if (!notifyIfWorkspaceQuarantined(e)) {
+        toast.error(i18next.t("codex.store.updateFailed"));
+      }
       debugLog.error("CodexStore", "update failed", errorDetail(e));
-      return SAVE_NOT_PERSISTED;
+      return notPersistedBecause(e);
     }
 
     if (!before) return persistedVersion(updated.version);
@@ -944,9 +948,11 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         codexEditConflictHandler(id);
         return SAVE_NOT_PERSISTED;
       }
-      toast.error(i18next.t("codex.store.updateFailed"));
+      if (!notifyIfWorkspaceQuarantined(e)) {
+        toast.error(i18next.t("codex.store.updateFailed"));
+      }
       debugLog.error("CodexStore", "updateText failed", errorDetail(e));
-      return SAVE_NOT_PERSISTED;
+      return notPersistedBecause(e);
     }
 
     return persistedVersion(updated.version);
