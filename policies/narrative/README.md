@@ -233,7 +233,8 @@ completed Run cannot acknowledge an unacknowledged range, and bounded
 Run/Task/Attempt recovery stops after three failed Attempts until a canonical
 Epoch rotation releases the held range for a new runtime-owned Run. The one
 exception is a publication guard race with a foreground writer on the last
-Attempt: that Run is closed as `NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED`
+Attempt that also saw the Change Feed head advance (evidence of a foreground
+write; without it the failure keeps the dead-letter path): that Run is closed as `NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED`
 and the cursor reservation is returned unacknowledged (the range is not
 skipped), so the next cycle evaluates it again under a new Run instead of
 holding a dead-letter (`retryPolicy.publishContention*`).

@@ -392,6 +392,11 @@ struct ClaimedBatch {
     preparation_error: Option<String>,
     has_more: bool,
     idle_checkpoint: bool,
+    /// The project's Change Feed head when this Attempt was claimed, read in
+    /// the claiming transaction. Evaluation starts after the claim, so a head
+    /// that moved by the time the Attempt fails is evidence that a foreground
+    /// write landed during it (DR-JF-9).
+    feed_head_at_claim: i64,
 }
 
 #[derive(Debug)]
@@ -956,7 +961,8 @@ fn select_next_project(conn: &Connection) -> anyhow::Result<Option<String>> {
                WHERE epoch.project_id = event.project_id
             )
           GROUP BY event.project_id
-          ORDER BY MIN(event.canonical_sequence) ASC, event.project_id ASC
+          ORDER BY MIN(COALESCE(julianday(cursor.updated_at), 0)) ASC,
+                   MIN(event.canonical_sequence) ASC, event.project_id ASC
           LIMIT 1",
         [CURSOR_CONSUMER_ID],
         |row| row.get(0),
@@ -1020,7 +1026,8 @@ fn select_next_project_excluding(
                WHERE epoch.project_id = event.project_id
             )
           GROUP BY event.project_id
-          ORDER BY MIN(event.canonical_sequence) ASC, event.project_id ASC
+          ORDER BY MIN(COALESCE(julianday(cursor.updated_at), 0)) ASC,
+                   MIN(event.canonical_sequence) ASC, event.project_id ASC
           LIMIT 1",
         params![CURSOR_CONSUMER_ID, excluded_project_id],
         |row| row.get(0),
@@ -2185,6 +2192,7 @@ fn claim_reserved_batch_in_tx(
     };
     let idle_checkpoint = from_sequence_exclusive == through_sequence_inclusive
         || task_input_has_idle_checkpoint_tag(&claimed.input_json);
+    let feed_head_at_claim = current_feed_head(conn, project_id)?;
     if idle_checkpoint {
         let lifecycle_at = idle_checkpoint_lifecycle_timestamp_in_tx(conn, run_id)?;
         if claimed.attempt_number == 1 {
@@ -2237,6 +2245,7 @@ fn claim_reserved_batch_in_tx(
         preparation_error,
         has_more,
         idle_checkpoint,
+        feed_head_at_claim,
     })))
 }
 
@@ -3655,10 +3664,20 @@ fn requeue_after_failure(
             )?;
             let terminal = attempt_count >= MAX_ATTEMPTS_PER_BATCH;
             // Only an unwrapped publication guard race on the last Attempt of a
-            // non-idle batch closes the Run instead of dead-lettering it
-            // (DR-JF-9). The classification is the crate's private guard type,
-            // never message text.
-            let contended = terminal && !batch.idle_checkpoint && is_publish_guard_race(error);
+            // non-idle batch, with evidence of a foreground write during that
+            // Attempt, closes the Run instead of dead-lettering it (DR-JF-9).
+            // The classification is the crate's private guard type, never
+            // message text. The evidence is the Change Feed head having moved
+            // since this Attempt was claimed: a foreground write that changes
+            // a guarded Source commits its Feed event in the same transaction.
+            // Without it (a deterministic evaluation/publication mismatch, or
+            // a write the Feed does not record) the failure keeps the
+            // dead-letter and recovery path, so it stays visible and the number
+            // of closed Runs is bounded by the number of Feed events.
+            let contended = terminal
+                && !batch.idle_checkpoint
+                && is_publish_guard_race(error)
+                && current_feed_head(conn, &batch.project_id)? > batch.feed_head_at_claim;
             let failure_code = if contended {
                 PUBLISH_CONTENDED
             } else if terminal {
@@ -6863,6 +6882,77 @@ mod tests {
         assert_eq!(freshness_cursor(&db), (1, None), "the cursor advances");
     }
 
+    /// Append one more canonical Feed event on the fixture Scene, as a real
+    /// foreground save does in the same transaction as its Source write.
+    fn append_scene_feed_event(conn: &Connection, sequence: i64) -> anyhow::Result<()> {
+        conn.execute(
+            "INSERT INTO change_events
+                (event_uid, project_id, scene_id, domain, op_type, entity_type, entity_id,
+                 payload, session_id, sequence, timestamp, prev_hash, hash)
+             VALUES (?1, ?2, ?3, 'scene', 'scene.update', 'scene', ?3,
+                     '{}', 'c2-1-phase-cas', ?4, 1787078400000, 'fixture-prev', 'fixture-hash')",
+            params![format!("canonical-feed-{sequence}"), PROJECT_ID, SCENE_ID, sequence],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_change_transactions
+                (id, project_id, request_id, source_domain, source_change_event_uid,
+                 source_change_event_sequence, cause_kind, origin, application_ids_json,
+                 payload_digest, created_at)
+             VALUES (?1, ?2, ?3, 'scene.update', ?4, ?5, 'forward', 'human', '[]', ?6, ?7)",
+            params![
+                format!("transaction-feed-{sequence}"),
+                PROJECT_ID,
+                format!("request-feed-{sequence}"),
+                format!("canonical-feed-{sequence}"),
+                sequence,
+                format!("sha256:feed-{sequence}-payload"),
+                OCCURRED_AT,
+            ],
+        )?;
+        conn.execute(
+            r#"INSERT INTO narrative_change_events
+                (id, project_id, transaction_id, canonical_change_event_uid,
+                 canonical_sequence, event_ordinal, object_key_json, change_kind,
+                 mutation_kind, before_version, before_digest, after_version,
+                 after_digest, changed_paths_json, text_impact_json,
+                 structural_impact_json, occurred_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, 'content', 'update',
+                     1, 'sha256:before', 2, ?7, '["/content"]',
+                     '{"normalizerVersion":"gdx-canonical-text/1"}', NULL, ?8)"#,
+            params![
+                format!("event-feed-{sequence}"),
+                PROJECT_ID,
+                format!("transaction-feed-{sequence}"),
+                format!("canonical-feed-{sequence}"),
+                sequence,
+                format!(r#"{{"kind":"scene","sceneId":"{SCENE_ID}"}}"#),
+                format!("sha256:feed-{sequence}-after"),
+                OCCURRED_AT,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The foreground write that races the next cycle, recorded in the Change
+    /// Feed like a real save: bump the Scene's version and append a Feed event.
+    fn arm_scene_publish_race_with_feed_write(
+        db: &Database,
+    ) -> publish_race_for_test::ArmedPublishRace {
+        publish_race_for_test::arm(db, |db| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE tree_nodes SET version = version + 1
+                      WHERE id = ?1 AND project_id = ?2",
+                    params![SCENE_ID, PROJECT_ID],
+                )?;
+                let head = current_feed_head(conn, PROJECT_ID)?;
+                append_scene_feed_event(conn, head + 1)?;
+                Ok(())
+            })
+            .expect("foreground write with a Feed event between evaluation and publication");
+        })
+    }
+
     /// Lose the publication race on the first `attempts` Attempts of one
     /// batch; each is a typed, durable requeue of the same Run.
     fn lose_race_as_requeue(db: &Database, attempts: i64) {
@@ -6878,11 +6968,12 @@ mod tests {
         }
     }
 
-    /// The last Attempt of a batch loses the race: the Run is closed and the
-    /// typed contended result is returned.
+    /// The last Attempt of a batch loses the race to a foreground write that
+    /// advanced the Change Feed: the Run is closed and the typed contended
+    /// result is returned.
     fn lose_race_on_last_attempt(db: &Database) -> IncrementalFreshnessCycleContended {
         lose_race_as_requeue(db, MAX_ATTEMPTS_PER_BATCH - 1);
-        let _race = arm_scene_publish_race(db);
+        let _race = arm_scene_publish_race_with_feed_write(db);
         let error = run_incremental_freshness_cycle(db).expect_err("raced last attempt");
         assert!(
             error
@@ -7004,8 +7095,11 @@ mod tests {
         };
         assert_ne!(summary.run_id, contended.run_id(), "a new Run owns it");
         assert_eq!(summary.from_sequence_exclusive, 0);
-        assert_eq!(summary.through_sequence_inclusive, 1);
-        assert_eq!(freshness_cursor(&db), (1, None), "the cursor advances");
+        assert_eq!(
+            summary.through_sequence_inclusive, 2,
+            "the new Run also covers the foreground write's Feed event"
+        );
+        assert_eq!(freshness_cursor(&db), (2, None), "the cursor advances");
         let runs = freshness_runs(&db);
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].1.as_deref(), Some(CONTENDED_CODE));
@@ -7024,7 +7118,7 @@ mod tests {
             matches!(outcome, IncrementalFreshnessCycleOutcome::Processed(_)),
             "{outcome:?}"
         );
-        assert_eq!(freshness_cursor(&db), (1, None));
+        assert_eq!(freshness_cursor(&db), (3, None));
         let runs = freshness_runs(&db);
         assert_eq!(runs.len(), 3, "{runs:?}");
         assert!(
@@ -7040,11 +7134,35 @@ mod tests {
     }
 
     #[test]
-    fn a_contended_close_does_not_starve_another_project_or_itself() {
+    fn a_contended_close_defers_its_project_so_another_project_progresses() {
         let db = fixture_db();
         lose_race_on_last_attempt(&db);
+        // The other project's only pending event is later in the Feed than the
+        // contended project's range, so ordering by the oldest pending
+        // sequence alone would pick the contended project first every time.
         seed_held_project(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_change_events SET canonical_sequence = 10
+                  WHERE project_id = ?1",
+                [HELD_PROJECT_ID],
+            )?;
+            conn.execute(
+                "UPDATE narrative_change_transactions SET source_change_event_sequence = 10
+                  WHERE project_id = ?1",
+                [HELD_PROJECT_ID],
+            )?;
+            conn.execute(
+                "UPDATE change_events SET sequence = 10 WHERE project_id = ?1",
+                [HELD_PROJECT_ID],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("move the other project's event after the contended range");
+        // Contention keeps going: the next race is armed, yet the other
+        // project is served first and the contended one right after.
         let mut order = Vec::new();
+        let _race = arm_scene_publish_race_with_feed_write(&db);
         for _ in 0..2 {
             let IncrementalFreshnessCycleOutcome::Processed(summary) =
                 run_incremental_freshness_cycle(&db).expect("both projects stay runnable")
@@ -7053,17 +7171,82 @@ mod tests {
             };
             order.push(summary.project_id);
         }
-        order.sort();
         assert_eq!(
             order,
             vec![HELD_PROJECT_ID.to_owned(), PROJECT_ID.to_owned()],
-            "the other project and the contended one are both processed"
+            "the other project progresses before the project that just closed contended"
         );
-        assert_eq!(freshness_cursor(&db), (1, None));
         assert!(matches!(
             run_incremental_freshness_cycle(&db).expect("drained"),
             IncrementalFreshnessCycleOutcome::Idle
         ));
+    }
+
+    #[test]
+    fn a_last_attempt_guard_race_without_a_feed_advance_keeps_the_dead_letter_path() {
+        let db = fixture_db();
+        lose_race_as_requeue(&db, MAX_ATTEMPTS_PER_BATCH - 1);
+        // The Source changed but the Change Feed did not move: a deterministic
+        // evaluation/publication mismatch looks like this, so it must stay
+        // visible instead of becoming an unbounded stream of closed Runs.
+        let _race = arm_scene_publish_race(&db);
+        let error = run_incremental_freshness_cycle(&db).expect_err("raced last attempt");
+        assert!(
+            error
+                .downcast_ref::<IncrementalFreshnessCycleContended>()
+                .is_none()
+                && error
+                    .downcast_ref::<IncrementalFreshnessCycleRequeued>()
+                    .is_none(),
+            "no Feed advance, no contended close: {error:#}"
+        );
+        assert!(format!("{error:#}").contains("NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED"));
+        assert_eq!(
+            latest_attempt(&db),
+            (
+                "failed".to_owned(),
+                Some(EXHAUSTED_CODE.to_owned()),
+                Some("terminal".to_owned()),
+            )
+        );
+        assert_eq!(
+            freshness_runs(&db),
+            vec![("failed".to_owned(), Some(EXHAUSTED_CODE.to_owned()))]
+        );
+        let (_, active_run_id) = freshness_cursor(&db);
+        assert!(active_run_id.is_some(), "a dead-letter keeps its reservation");
+        assert!(matches!(
+            run_incremental_freshness_cycle(&db).expect("a dead-letter is idle"),
+            IncrementalFreshnessCycleOutcome::Idle
+        ));
+    }
+
+    #[test]
+    fn a_feed_write_before_the_last_attempt_is_not_evidence_for_that_attempt() {
+        let db = fixture_db();
+        // A Feed event lands between attempts 1 and 2, then the Source changes
+        // without a new Feed event on the last attempt: the head moved before
+        // that Attempt was claimed, so it does not count for it.
+        {
+            let _race = arm_scene_publish_race_with_feed_write(&db);
+            let error = run_incremental_freshness_cycle(&db).expect_err("attempt 1");
+            assert!(error
+                .downcast_ref::<IncrementalFreshnessCycleRequeued>()
+                .is_some());
+        }
+        lose_race_as_requeue(&db, MAX_ATTEMPTS_PER_BATCH - 2);
+        let _race = arm_scene_publish_race(&db);
+        let error = run_incremental_freshness_cycle(&db).expect_err("raced last attempt");
+        assert!(
+            error
+                .downcast_ref::<IncrementalFreshnessCycleContended>()
+                .is_none(),
+            "{error:#}"
+        );
+        assert_eq!(
+            freshness_runs(&db),
+            vec![("failed".to_owned(), Some(EXHAUSTED_CODE.to_owned()))]
+        );
     }
 
     #[test]
@@ -7137,6 +7320,8 @@ mod tests {
         let ReservationOutcome::Claimed(batch) = reservation else {
             panic!("the requeued range must be claimed again");
         };
+        db.with_conn(|conn| append_scene_feed_event(conn, 2))
+            .expect("a foreground write advances the Feed after the claim");
         let wrapped = publish_guard_conflict(
             "NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED: 'x' changed after evaluation".to_owned(),
         )
@@ -7163,6 +7348,8 @@ mod tests {
                       WHERE id = ?1 AND project_id = ?2",
                     params![SCENE_ID, PROJECT_ID],
                 )?;
+                let head = current_feed_head(conn, PROJECT_ID)?;
+                append_scene_feed_event(conn, head + 1)?;
                 conn.execute(
                     "UPDATE narrative_extraction_attempts SET status = 'failed'
                       WHERE status = 'running'",

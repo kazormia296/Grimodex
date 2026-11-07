@@ -196,8 +196,24 @@ idle-until-new-semantic-epoch`）のとおり、新しい Semantic Epoch まで�
   Native は `downcast_ref` で型だけを見て分類し、`Ok(Some({"hasMore": false, "contended": true, "runClosed": true,
 "projectId", "runId", "throughSequenceInclusive"}))` を返す。supervised の permit は通常どおり
   `mark_joined`→`release` で、retire も recovery もしない。
-- 条件は 3 つが揃ったときだけ：`attempt_count >= MAX_ATTEMPTS_PER_BATCH`、`is_publish_guard_race(error)`
-  （最外層の型だけ。P3-1 を保つ）、`!batch.idle_checkpoint`。
+- 条件は 4 つが揃ったときだけ：`attempt_count >= MAX_ATTEMPTS_PER_BATCH`、`is_publish_guard_race(error)`
+  （最外層の型だけ。P3-1 を保つ）、`!batch.idle_checkpoint`、**前景の書込みがあった証拠**（下記）。
+- 前景の書込みの証拠（2026-11-08 の独立レビューの major 指摘への対応）：評価の token と publish の token は別の関数なので、
+  両者が決定的に食い違う不具合があると、書込みが無くても約 1 s に 1 run が無限に閉じて増える（以前は 3 回で dead-letter
+  になって表に出ていた）。数の上限 K（新しい閾値）は置かず、「前景の書込みがあった証拠」を条件にした。
+  - 証拠は、その project の Change Feed の head（`MAX(canonical_sequence)`）が、**この attempt を claim した時点**より進んでいること。
+    claim の tx で head を読んで `ClaimedBatch.feed_head_at_claim` に持ち、`requeue_after_failure` の tx で今の head と比べる。
+    評価は claim の後に始まるので、head が進んでいれば、前景の保存がこの attempt の間に commit されている。
+    前景の保存が guard の source を変えるときは、同じ tx で Feed の event も commit するので、本物の競合なら必ず head が進む。
+  - 予約（run の作成）時の head でなく attempt ごとの claim 時の head にした理由：run の予約時の値は attempt をまたいで
+    持てず（各 attempt は別の cycle で、永続の置き場が要る）、持てたとしても、前の attempt の間の書込みを最後の attempt の
+    証拠に数えてしまう。attempt ごとの値は永続化が要らず、証拠がその attempt の窓に限られる。
+  - 証拠が無い（head が進んでいない）3 回目の競合は、従来の経路（`RETRY_EXHAUSTED`、retire→recovery、dead-letter）に進む。
+    決定的な食い違いは、今と同じく表に出る。
+  - **Change Feed を進めない書込み**（producer の edge の宣言のし直し、producer Epoch の変更など）が guard の source を変える
+    場合は、証拠が無いので従来の経路に落ちるだけで、DR-JF-9 の前より悪くはならない。
+  - 結果として、閉じる run の数は前景の Feed event の数で抑えられる（1 つの run を閉じるには、最後の attempt の間に新しい
+    Feed event が 1 つ要る。書込みが無ければ閉じない）。
 - `hasMore: false`：競合が続いている証拠なので、既存の idle poll（1 s）まで待つ。保存のたびの wake があれば 10 ms で走る。
   前景との Mutex の取り合いを減らす。正しさは `hasMore: true` でも同じで、違いは負荷だけ。
 - 変えないもの：`MAX_ATTEMPTS_PER_BATCH`（3）と scheduler の定数（DR-JF-3 を保つ）。競合以外の terminal
@@ -241,12 +257,19 @@ scheduler は single-flight。新しい tick は前の cycle が返った後に�
 
 ### liveness と行の増え方
 
-- 書込みが続く間：DB の操作は拒否されない。run は 3 回の競合ごとに 1 つ閉じて作り直される。cursor は進まない。遅れは
+- 書込みが続く間：DB の操作は拒否されない。run は、3 回目の attempt の間に Feed が進んだ競合ごとに 1 つ閉じて作り直される。cursor は進まない。遅れは
   読み手に見える（eligibility の pending は cursor と head の差を読む）。古い結果を新しいと偽らない。
 - 書込みが止んだ後：guard が食い違うのは、評価の読みから publish の tx までの間に source・edge・producer Epoch が変わった
   ときだけ。止んだ後に評価を始めた attempt は競合せず、publish して cursor を進める。競合以外の失敗が無ければ追いつく。
-- 行：1 run あたり run 1・task 1・attempt 3。1 run を閉じるには窓ごとに書込みが 1 回要るので、attempt の数は前景の書込みの
-  回数以下で、change event の増え方の定数倍。掃除は project の削除だけ（既存の性質）。
+- 行：1 run あたり run 1・task 1・attempt 3。閉じる run は Feed の head が進んだ競合に限られる（書込みが無ければ閉じず、
+  従来の dead-letter に進んで表に出る）ので、閉じた run の数は前景の Feed event の数以下で、change event の増え方の
+  定数倍。掃除は project の削除だけ（既存の性質）。
+- project の順序（独立レビューの minor 指摘への対応）：予約の選択（`select_next_project` と hold 付きの複製の 2 つ目の問合せ）は、
+  project ごとの最古の未処理の連番だけで順位を決めていたので、cursor が遅れている project が毎回先に選ばれ、競合が続く間
+  他の project が飢える（以前は dead-letter でその project が選択から外れていた）。順位の先頭に cursor の `updated_at`
+  （最後に処理した時刻。cursor が無い project は最優先）を足した。競合で閉じた project は予約の解除で `updated_at` が
+  新しくなるので後回しになり、他の project が先に進む。同順位は従来の連番・project id。順位の変更はこの 2 つの問合せだけで、
+  active な予約の選択（1 つ目の問合せ）は変えない。
 - liveness の capability は作らない（競合が長く続くと cutover の liveness は requeue の時と同じく古いまま。既存の性質）。
 - `revalidate_narrative_workspace_after_cycle` を通らない非対称は requeue と同じ（DR-JF-8 の P3-3）。コード中のコメントに書いた。
 
@@ -261,7 +284,10 @@ scheduler は single-flight。新しい tick は前の cycle が返った後に�
 
 すでに dead-letter になっている project（`terminal_reason_code = NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED`）について。
 
-- 動かし直すべきか：**動かし直すべきだが、この PR では実装しない**（未決。ユーザーの判断を待つ）。
+- 動かし直すべきか：**動かし直すべきだが、この PR では実装しない**。統合者の判断（レビューの推奨どおり）：**M1 を、この PR が
+  merge された後の別の PR で入れる。判別は substr の比較か ESCAPE 付きの LIKE で行う（`_` と `%` を含む接頭辞を LIKE の
+  ワイルドカードとして誤判定しない）。条件は、最後の attempt が terminal、cursor がその run を予約している、epoch が現行と
+  同じ。M2 は採らない。**
   - 理由：原因が前景の書込みとの一時的な競合で、書込みが止んでも追いつかない状態が新しい Epoch（復元・migration など）まで
     続く。release は ack しないので範囲は飛ばさず、新しい run が同じ範囲を計算し直すだけで、データは失われない。
   - 実装しない理由：閉じた run の再開は、`cursorAfterExhaustion`／`schedulerAfterExhaustion` の契約（dead-letter は
@@ -288,10 +314,13 @@ scheduler は single-flight。新しい tick は前の cycle が返った後に�
     NULL、`acknowledged` は不変）をする。閉じた run は `failed`／`RETRY_EXHAUSTED` のまま残す（履歴は変えない）。
     契約（`runtime が dead-letter を保持する`）は変えず、既存の DB の状態だけを直す。migration は 1 回だけ走り、
     決定的な失敗の project は新しい run が 1 回だけ再び dead-letter になる。
-  - 案 M2（予約時の自己修復）：`reserve_or_resume_batch_in_tx` の dead-letter の分岐で、判別に当たれば `_` の分岐と同じ解除を
+  - 案 M2（予約時の自己修復。**採らない**）：`reserve_or_resume_batch_in_tx` の dead-letter の分岐で、判別に当たれば `_` の分岐と同じ解除を
     して新しい run を作る。移行が要らず、後から現れた dead-letter も直るが、`select_next_project` の 2 つの SQL も
     同じ判別に揃える必要があり、契約の `schedulerAfterExhaustion` の文言を変える。新しい code が入った後は、
     競合の枯渇はもう dead-letter を作らないので、M2 は既存の行のためだけの恒久の分岐になる。M1 のほうが小さい。
   - 案 M3（何もしない）：新しい Epoch（復元・migration・Epoch の rotation）で回復する。freshness が古いまま残る期間が不定。
-  - 推奨は M1。実装の前に、利用者の DB の実数（`RETRY_EXHAUSTED` の freshness run の数と、その判別に当たる数）を
+  - 採用は M1（別の PR）。判別の条件は、(1) 最後の attempt が `terminal` で上の 4 つの接頭辞の `error_message`、(2) cursor が
+    その run を予約している（`active_run_id = run.id`、`reserved_through_sequence` が一致）、(3) 予約の `semantic_epoch_id` が
+    project の現行の Epoch と同じ（古い Epoch の予約は既存の経路が解除する）。接頭辞の比較は `substr(error_message, 1, length(prefix)) = prefix`
+    か `LIKE prefix || '%' ESCAPE '\\'`。実装の前に、利用者の DB の実数（`RETRY_EXHAUSTED` の freshness run の数と、その判別に当たる数）を
     確かめ、migration の番号と `schema-contract.json` の更新が要ることを見込む。
