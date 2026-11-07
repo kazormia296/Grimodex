@@ -5,7 +5,7 @@ Status: draft／未確認（改訂 2）。確認後はこの bytes の SHA-256 �
 ## あなたが決めること（3 行）
 
 - CP-4 の定常状態で、窓内に Graph を受けた親（first-render の候補）について、K6/2 の手順 3 の最終文の「開始時に READY でなかった sample は窓外」を、R1 の下で「R1 を満たし、その sample のための準備が 1 回だけ行われた」と読み替え（R-6）、鮮度の印の句を案 (ii′) で読む（`fresh` と、S0 が読めなかった `stamp0-missing` を数え、`unavailable` は数えず、`stale` は `[artifact]`。R-7）。どちらも合格基準の緩和で、follow-up の数え方は変えない。
-- **帰結**: 窓内に合流して Graph が表示に寄与した親（`graph.joined`、宣言 `used`、`edgeCount` 1 以上）が first-render の条件を 1 つでも欠くと、Scene の一覧が R+IR と同じでも、その variant の品質は FAIL（可用性の 1% の許容は効かない）。`unavailable` の親もこれに当たる。R-7 の「② を条件に」は、今の harness では合流した親を独立に落とせない（実効は `unavailable` を除くだけ）。
+- **帰結**: 窓内に合流して Graph が表示に寄与した親（`graph.joined`、宣言 `used`、`edgeCount` 1 以上）が first-render の条件を 1 つでも欠くと、Scene の一覧が R+IR と同じでも、その variant の品質は FAIL（可用性の 1% の許容は効かない）。鮮度の印が `unavailable`（S1 だけ読めなかった）の親もこれに当たる。R-7 の「② を条件に」は、今の harness では合流した親を独立に落とせない（実効は `unavailable` を除くだけ）。
 - それ以外の K6/5 の行（D 40 ms、Hybrid p95 の上限 94.2 ms〔B 54.2 ms〕、T_late 100 ms、W_f 100 ms、T_show 2 s、1%、失効の読み、F1〜F7・X1〜X13・R1〜R6・R8 の文面、R7 の既存の項目、手順のファイル v2、Gold・fixture・trace の file）は変えない。
 
 ## 冒頭の開示
@@ -26,7 +26,7 @@ K6/5 の行より弱い読みになるのは次の 2 つで、ほかの物差し
 | R-7 | 鮮度の印の句（案 (ii′)） | stamp が `fresh` のときだけ（/5 の harness と DR-CP4-S1C1-8）→ `fresh` と `stamp0-missing` を数える（`unavailable`・null は数えない） | 同上 | `e704f28f` の問 2 | 2 |
 
 - **品質への効き方**: /5 の harness の読みでは、窓内に合流した親は「表示されなかった sample」で、Graph が表示に寄与していれば品質は FAIL（「変える点」の 6）。R-6・R-7 で数える範囲が広がると、その親は FAIL ではなく表示された sample として品質を測られる（s6r1 の参考: 窓内の 163 件。うち Scene の一覧が R+IR と違うのは G-01 30、G-02 6、G-08/base-usable 30、G-08/graph-recovered 30 の 96 件、同じで path の添付だけを足すのは G-03 30、G-05 7、G-06 30 の 67 件）。
-- **R-7 の実効**: 「② を条件に」の ② のうち harness が見られる項目（ticket が `available`、宣言 `used`、`graph-ready`・`joined`、`revalidation: "passed"`、整数の `edgeCount`）は、窓内に合流した親なら必ず満たされる（`revalidation` は `graph-ready` と整数の `edgeCount` からの推論〔`run-sample.mjs:154-170`〕で、`joined` なのに passed でないものは `classifyJoin` が止める〔`join.mjs:76-79`〕。製品は unavailable の Graph を合流させない）。**したがって今の harness では ② は合流した `stamp0-missing` の親を落とさず、R-7 の実効は案 (ii)（`matched !== false`）から `unavailable` を除いたものと同じ**である。落とせるのは N-d の記録の誤りの検査だけ。② の判別力は (ii-b) の後に初めて生まれる。
+- **R-7 の実効**: 「② を条件に」の ② のうち harness が見られる項目（ticket が `available`、宣言 `used`、`graph-ready`・`joined`、`revalidation: "passed"`、整数の `edgeCount`）は、窓内に合流した親なら必ず満たされる（`revalidation` は `graph-ready` と整数の `edgeCount` からの推論〔`run-sample.mjs:154-170`〕で、`joined` なのに passed でないものは `classifyJoin` が止める〔`join.mjs:76-79`〕。製品は ticket が unavailable の Graph を合流させない）。**したがって今の harness では ② は合流した `stamp0-missing` の親を落とさず、R-7 の実効は案 (ii)（`matched !== false`）から `unavailable` を除いたものと同じ**である。落とせるのは N-d の記録の誤りの検査だけ。② の判別力は (ii-b) の後に初めて生まれる。
 - R-7 は K6/2:695 の字義（「一致しなかった sample」）には沿う（null は字義に書かれていない）。null を窓外にしたのは DR-CP4-S1C1-8 と /5 の harness の読みなので、それらに対する緩和として載せる。
 - 足す狭める項目（「変える点」の 3）: N-a first-render にも R1 を当てる（今の harness は first-render なら `followup.mjs:585` で返り、R1 の検査〔:587-595〕を当てない）。N-b first-render にも owner の counter と Native の begin の記録の整合を求める。N-c first-render にも「Graph を持つ」（material-revision の寄与の記録、`unresolvedEdges` 0）を求める。N-d 記録の誤りの検出（`stale` で合流、`driftAtQuery` か `prepareFailures` の差分が 0 でない記録は `[artifact]`）。
 
@@ -51,7 +51,7 @@ K6/5 の行より弱い読みになるのは次の 2 つで、ほかの物差し
 ### 決定と、検討して採らなかった案
 
 - **採用: 案 (ii′)**（`e704f28f` の問 2）。数える: `fresh`、`stamp0-missing`（② の項目つき。実効は上のとおり）。数えない: `unavailable`、stamp の記録が無い（null）親。`stale` で合流した記録は `[artifact]`。
-- **後続の lane（(ii-b)）**: ②-1 の drift の検査と ②-2 の再検証の結果（drop の理由を含む）と、S0 が無いときの S1 の結果を、評価 build の Native の記録として sample ごとに出す。Native（評価 feature）のコードの変更なので、この確認では行わない（批准 9）。入ったら、推論を観測に替える狭める変更を、新しい draftRef か K6/4 の変える点 16 の手続きで行う。
+- **後続の lane（(ii-b)）**: ②-1 の drift の検査と ②-2 の再検証の結果（drop の理由を含む）と、S0 が無いときの S1 の結果を、評価 build の Native の記録として sample ごとに出す。Native（評価 feature）のコードの変更なので、この確認では行わない（批准 9）。入ったら、推論を観測に替える狭める変更を、新しい draftRef でだけ行う（K6/4 の変える点 16 の対象は FR-1〜FR-8 と R-6・R-7 を含まない。threat model の dev の予行の 4）。
 
 | 案 | 中身 | 採らなかった理由 | s6r1 での参考値（予告。R-6 を当てた場合） |
 | -- | ---- | ---------------- | ---------------------------------------- |
@@ -68,7 +68,7 @@ K6/5 の行より弱い読みになるのは次の 2 つで、ほかの物差し
 
 1. 行の内容: /6 の行は、/5 の行に、この draft の「変える点」の 1〜8 を当てたものとする。表にない /5 の行の記述は変えない。
 2. 準備の句（「変える点」の 1、R-6）。first-render の候補だけに当て、follow-up の数え方（F1〜F7、X1〜X13）は変えない。
-3. 鮮度の印の句（「変える点」の 2、R-7。案 (ii′)）と、その実効（② は今の harness では合流した親を独立に落とさない）と、(ii-b) を後続の lane とすること。
+3. 鮮度の印の句（「変える点」の 2、R-7。案 (ii′)）と、その実効（② は今の harness では合流した親を独立に落とさない）と、(ii-b) を後続の lane として記録すること（この確認は (ii-b) の着手と Native の変更を許可しない。(ii-b) は別に起案する）。
 4. first-render の条件の明文と狭める項目（「変える点」の 3、FR-1〜FR-8、N-a〜N-d）と、K6/4-P2・K6/5 の変える点 5・K6/5-P1 の読み替え（「変える点」の 3・4）。
 5. 開示、品質（窓内に合流して Graph が表示に寄与したのに first-render の条件を欠く親は FAIL）、記録（「変える点」の 5〜7）。
 6. 緩和の一覧（R-6、R-7。品質への効き方を含む）と、これらが合格基準の緩和に当たること。
@@ -102,6 +102,7 @@ K6/5 の行より弱い読みになるのは次の 2 つで、ほかの物差し
 | 初版 | 2026-11-07 | 最初の起案（contracts `02af2760`）。鮮度の印の句は 4 案を並べたまま |
 | 改訂 1 | 2026-11-07 | ユーザーの選択（`e704f28f`）と Opus の独立レビュー（P1×5、P2×11、P3）を反映（contracts `f2e0fe0f`）。レビューの依頼には起案者の要約が含まれ、完全な盲検ではなかった |
 | 改訂 2 | 2026-11-07 | 改訂 1 への Sonnet の 4 観点のレビューと、各指摘の反証（確認された 30 件: P1 1、P2 12、P3 17。反証で落ちた 12 件は直していない）を反映。この方法も完全な盲検ではない（レビューの依頼は改訂 1 の bytes と起案の経緯を含む）。主な直し: (1) **P1**: 窓内に合流したが first-render に数えない親の品質の FAIL を、Scene の一覧の差ではなく「Graph が合流して表示に寄与した（`graph.joined`、宣言 `used`、`edgeCount` 1 以上）のに条件を欠いた」事実で定めた（path の添付だけを足す G-03・G-05・G-06 で FAIL にならない穴を閉じた）。(2) R-7 の実効（② は合流した親を独立に落とさない）と、S0 が None になる原因の全条件、`unavailable` を除くのはユーザーの選択であることを開示した。(3) (c) の「次の sample」を定義し、最後の sample の扱いを書いた。(4) `dPrimeCounters` の新しい key は定常状態だけで求め、trace は変えない。(5) `requeries[]` は定常状態の受領書に無いことを書いた。(6) 負例を下位条件ごとに分け、FR-1・FR-5・ticket の負例を足した。(7) dev の予行に最低件数と割合の止める条件を置き、確認の前の非判定の予行を手順に入れた。(8) FR-7 の記録の形と置き場、`head.k65` を扱う file の網羅、手順のファイルを v2 のままにする決定、台帳の行と手順を K6/5 にそろえた、ほか |
+| 改訂 3 | 2026-11-07 | Fable（Claude Fable 5.1）の最終 pass（read-only。対象は改訂 2 の bytes）の必ず直す 3 件を integrator が直した。(1) FR-7 の記録が取れないときの道を一意にした（/6 では判定せず /7 で再確認、/6 の中で FR-7 を外す・緩めない。fixture の直しで取り直すのは件数不足のときだけ。dev の予行の 2、確かめられなかったことの 3、確認の扱いの (8)）。(2) (ii-b) の後の狭める変更は新しい draftRef でだけ行う（K6/4 の変える点 16 の手続きで行うとした記述が dev の予行の 4 と矛盾していた）。(3) 批准 3 の (ii-b) を「後続の lane として記録する。着手と Native の変更は許可しない」とし、批准 9 との矛盾に読める書き方を直した。任意の直し：stamp の `unavailable` と ticket の unavailable の用語の衝突、N3c が空の検査である注記、確認までの手順 2 に改訂 3 と確認の前の非判定の予行の決定。最終 pass の結論は「ユーザーの選択と integrator の指示からの逸脱、隠れた緩和、判定が変わる穴は見つからない。問 2 の前提は実質的に変わった（原因の要約が狭く、② は合流した親を独立に落とさない）が、(ii′) は (ii) より狭い側なので独立の問い直しは不要で、確認の 1 問の本文に変化を書き、選択肢に『鮮度の印の扱いを見直してから』を置く」 |
 
 ## 引き継ぐもの
 
@@ -140,7 +141,7 @@ K6/5 の行より弱い読みになるのは次の 2 つで、ほかの物差し
 - Mandatory defenses（加える）: 「変える点」の 1〜3、5〜8。3 の条件は観測の前に、/6 の凍結と、harness の code の S4 の pin で固定し、独立 reviewer のレビューを受ける。分類器は、R1 の下の現実の形の合成の記録で受入れの K6/6-P・N を期待どおりに分けることを観測の前に示して記録する。**負例は下位条件ごとに 1 例（その条件だけを破る）とし、検出力の記録は下位条件ごとに落とした理由の code を並べる**。FR のどれかが全件で成立することは止める理由にしないが、その条件が空の検査でないことはこの負例で示す。
 - **dev の予行（Mandatory defense）**:
   1. 形: D=40 ms の候補で、R1 の下の dev fixture（G-case の構造をまねた非凍結の fixture。凍結の G-case の fixture とその材料の写しは使わない。`admission.mjs:816-837` の `admitDevPreview` と `dev-fixture.mjs` の E-7 の防御のまま）で、定常状態の予行（preview。判定に使わない）を行う。Gold の G-case は正式の受入れの経路（`admitGraphCaseRun`）でだけ見る。試した全回の記録（fixture の版、件数、結果）を残す。
-  2. 有効とする下限（凍結の前に固定する）: 窓内に合流した親が 30 件以上あり、FR-7 の記録が窓内に合流した親の全件にあること。満たさなければ予行は「未実施」で、fixture を直して取り直す（凍結に進まない）。
+  2. 有効とする下限（凍結の前に固定する）: 窓内に合流した親が 30 件以上あり、FR-7 の記録が窓内に合流した親の全件にあること。窓内に合流した親が 30 件に満たないときだけ、予行は「未実施」で、fixture を直して取り直す（凍結に進まない）。**窓内に合流した親に FR-7 の記録が無い、または `k64-record.mjs` の読取の追加でも取れないと分かった場合は、/6 では判定せず、FR-7 を直した新しい draftRef（/7）で再確認する。/6 の中で FR-7 を外す・緩めることはしない**（K6/4 の変える点 16 の対象外。この 4）。
   3. 止める条件: 窓内に合流した親のうち、1 の (a)〜(c) か FR-1〜FR-8 のどれか 1 つの下位条件で落ちた割合が 1/30 を超えたら、凍結に進まず integrator に返す。落ちた親には理由を付け、構造的か偶発かを予行の記録に書く。
   4. 時期: 確認の前に、確認なしにできる非判定の予行（今の harness に /6 の読みを足した試作で、`admitDevPreview` の範囲。DR-CP4-N-8 の前例）を 1 回行い、未確認の点（`stamp0-missing` の頻度、`preparesStarted`・`preparesReady` の差分、FR-7 の記録の取得、FR ごとの件数）を埋めることを推奨する（integrator が決める）。確認の後には、実装した harness で S4 の 7 回目の凍結の前に予行を行う。**確認の後の予行が落ちた場合に取れる道は、新しい draftRef（/7）と再確認だけ**（K6/4 の変える点 16〔K6/4:110〕が観測の後に許す狭める変更の対象は T_late、W_f、T_show、F1〜F7、X1〜X13、R1／R4 の待ちの上限で、FR-1〜FR-8 と R-6・R-7 を含まない）。予行の結果は予告で、/6 の判定に使わない。
 - Acceptance implications（読み替え）: K6/5 のとおり。定常状態の first-render は「変える点」の 3、品質の FAIL は 6 で読む。
@@ -172,7 +173,7 @@ Negative（数えない、または止まる。分母から除かない）:
 | K6/6-N2h | 次の同じ phase の Graph arm の sample の `preparesReady` との差が 2（間に hybrid arm を挟む） | 数えず、開示 |
 | K6/6-N3a | stamp が `unavailable` | 数えない（分母に残る） |
 | K6/6-N3b | stamp の記録が null | 数えない |
-| K6/6-N3c | stamp が `stamp0-missing` で親の ticket が `available` でない（記録の上で） | 数えない |
+| K6/6-N3c | stamp が `stamp0-missing` で親の ticket が `available` でない（記録の上で） | 数えない（合流した親では起きない空の検査。記録の誤りを見つけるために置く。「鮮度の印の句」の R-7 の実効） |
 | K6/6-N4 | 窓内に合流した親の stamp が `stale` | `[artifact]` |
 | K6/6-N5a | `counters.after` の `begins` が 2 | 数えない |
 | K6/6-N5b | `countersAfterRelease` の `lateCached` が 1 | 数えない |
@@ -240,7 +241,7 @@ S4 が pin する harness の変更は、S4 の枝でだけ merge する（2026-
 
 1. `stamp0-missing` がこの経路でほぼ全件になる原因（release の直後の admit で main connection を何が握っているか、commit の競合を含むか）。
 2. ② が実機の G-case で stamp の一致と同じ件を落とすか（コードの読みだけ）。s6r1 の pool では `driftAtQuery` の差分は全件 0、`stale` は 0 件。(ii-b) の後に確かめられる。
-3. FR-7: s6r1 の受領書には親の寄与の記録が無い（`followUp.parent` に `contributionBasis`・`materialRevision` が無い）。probe は親の `paths` をすでに出しているので、`k64-record.mjs` の読取の追加で取れる見込みだが、実装と予行で確かめる。**FR-7 を s6r1 に字義どおり当てると first-render は 0、欠落 163、品質 FAIL 163 件（7 variant）**。
+3. FR-7: s6r1 の受領書には親の寄与の記録が無い（`followUp.parent` に `contributionBasis`・`materialRevision` が無い）。probe は親の `paths` をすでに出しているので、`k64-record.mjs` の読取の追加で取れる見込みだが、実装と予行で確かめる。取れないと分かった場合は /6 では判定せず、FR-7 を直した /7 で再確認する（/6 の中で FR-7 を外す・緩めることはしない。threat model の dev の予行の 2）。**FR-7 を s6r1 に字義どおり当てると first-render は 0、欠落 163、品質 FAIL 163 件（7 variant）**。
 4. `preparesStarted`・`preparesReady` の差分は s6r1 の受領書に無い（今の `DPRIME_COUNTER_KEYS` に無い）。窓内に合流した 163 件では、同じ受領書・同じ phase の次の Graph arm の sample との `startSlot.preparesReady` の差が 158 件で 1、5 件は phase の最後で (c) を当てられない。
 5. D=40 ms の G-case で、R-6・R-7 の下の first-render の率（s6r1 の値は予告）。
 6. 改訂 2 のレビューはまだない。
@@ -248,14 +249,14 @@ S4 が pin する harness の変更は、S4 の枝でだけ merge する（2026-
 ## 確認の扱い
 
 - 確認は、台帳の Confirmation protocol に従い、`nir1-final-request-eval-proposal/6` と `graph-eval-procedure` を曖昧さなく特定するユーザーの明示の承認で行う。構造化質問なら、質問の文が draftRef、contractId、確認に出す版の SHA-256 を名指し、ちょうど 1 つの `draftRef#contractId` を示す。承認の効力は批准 7 の 2 段。
-- 確認の質問の文には次を書く。(1) 緩和の一覧（R-6、R-7）と、品質への効き方（数える親は FAIL から測定へ移る）。(2) **R-7 の実効: ② は今の harness では合流した `stamp0-missing` の親を独立に落とさず、実効は `unavailable` を除くだけ。`stamp0-missing` を数える根拠はコードの読み（実機未確認）で、S0 が None になる原因は混雑だけでなく transaction の中・commit の競合を含み、`stamp0-missing` には S1 も読めなかった sample が含まれうる。`unavailable` を除くのは安全上の差ではなく選択**。(3) **窓内に合流して Graph が表示に寄与した親が first-render の条件を 1 つでも欠くと、Scene の一覧が R+IR と同じでも variant の品質は FAIL（可用性の 1% の許容は効かない）。`unavailable` の親と (c) の不一致の親もこれに当たる**。(4) 狭める項目（FR-1〜FR-8、N-a〜N-d）。(5) D・p95 の上限・T_late ほかの値、手順のファイル、follow-up の数え方は変えないこと。(6) s6r1 は HOLD のままで、/6 の判定は /6 の凍結の後の run に限ること。s6r1 の参考値の「欠落 0」は FR-7 と準備の counter を仮定した値で、字義どおりなら欠落 163 であること。(7) この改訂は s6r1 の観測の後に起案したこと。(8) 確認の後の dev の予行が落ちれば /7 と再確認になること（確認の前の非判定の予行を行ったなら、その結果を添える）。
+- 確認の質問の文には次を書く。(1) 緩和の一覧（R-6、R-7）と、品質への効き方（数える親は FAIL から測定へ移る）。(2) **R-7 の実効: ② は今の harness では合流した `stamp0-missing` の親を独立に落とさず、実効は `unavailable` を除くだけ。`stamp0-missing` を数える根拠はコードの読み（実機未確認）で、S0 が None になる原因は混雑だけでなく transaction の中・commit の競合を含み、`stamp0-missing` には S1 も読めなかった sample が含まれうる。`unavailable` を除くのは安全上の差ではなく選択**。(3) **窓内に合流して Graph が表示に寄与した親が first-render の条件を 1 つでも欠くと、Scene の一覧が R+IR と同じでも variant の品質は FAIL（可用性の 1% の許容は効かない）。`unavailable` の親と (c) の不一致の親もこれに当たる**。(4) 狭める項目（FR-1〜FR-8、N-a〜N-d）。(5) D・p95 の上限・T_late ほかの値、手順のファイル、follow-up の数え方は変えないこと。(6) s6r1 は HOLD のままで、/6 の判定は /6 の凍結の後の run に限ること。s6r1 の参考値の「欠落 0」は FR-7 と準備の counter を仮定した値で、字義どおりなら欠落 163 であること。(7) この改訂は s6r1 の観測の後に起案したこと。(8) 確認の後の dev の予行が落ちれば /7 と再確認になること。FR-7 の記録が取れないと分かった場合も同じで、/6 の中で FR-7 を外す・緩めることはしない（確認の前の非判定の予行を行ったなら、その結果を添える）。
 - 2026-11-07 のユーザーの回答（`1e6ede44`、`e704f28f`）、計画への同意、merge の指示、包括的な返答は、確認として扱わない。
 - この draft は合格基準の緩和を含むので、続行計画 §12.1 の「重要な変更」にあたる。CP-4 は AGENTS.md の NIR-1 の残レーンに入っておらず、技術判断の事前委任も無い。
 
 ### 確認までの手順（K6/5 の順にそろえる）
 
 1. 初版、Opus の独立レビュー、ユーザーの選択（`e704f28f`）、改訂 1、Sonnet の 4 観点のレビューと反証、改訂 2（この file）。
-2. 改訂 2 のレビュー（または最終 pass）の要否は integrator が決める（行う場合は read-only で、起案者の結論は渡さない）。確認の前の非判定の dev 予行を行うかも integrator が決める（「dev の予行」の 4）。確認に出す版の SHA-256 を確定する。
+2. 改訂 2 のレビュー（または最終 pass）の要否は integrator が決める（行う場合は read-only で、起案者の結論は渡さない）。確認の前の非判定の dev 予行を行うかも integrator が決める（「dev の予行」の 4）。確認に出す版の SHA-256 を確定する（改訂 2 の後に Fable の最終 pass を行い、その必ず直す 3 件を直した版を改訂 3 とし、改訂 3 の SHA-256 を確認文に書く）。integrator は、確認の前に非判定の dev 予行を行い、FR-7 の取得と FR ごとの件数を実証してから確認に出すと決めた（2026-11-07）。
 3. ユーザーの確認（上の形）。
 4. 確認の記録: `claude/nir1-contracts` に `user-confirmation-2026-11-xx-k66-graph-eval-procedure.md`（質問と回答の逐語、日付、draftRef#contractId、SHA-256）を commit する。続行計画（`docs/plans/nir1-continuation-2026-10.md`）の §10 に節を足す。
 5. 台帳の更新（master への PR）: draft を確認された版から byte 同一で取り込み（`git show <commit>:<path>` の出力をそのまま置く）、`sha256sum` の一致を確かめ、補足・行・注を足す。
