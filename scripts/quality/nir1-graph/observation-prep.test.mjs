@@ -6853,3 +6853,70 @@ test("S4a の追補（S2 追補 #15、S3 の B1）: the author's declaration res
       .some((row) => row.reason.includes("確認の台帳の形の記録ではない")),
   );
 });
+
+test("S2 追補 #15: K6/5's freeze commit, the confirmation records and the S3 record are ancestors of HEAD holding the committed bytes (the contracts merge, S3's M1)", async (t) => {
+  const git = (...args) =>
+    execFileSync("git", args, {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  try {
+    git(
+      "cat-file",
+      "-e",
+      `${K65_CONFIRMATION_RECORDS.graphEvalProcedure.commit}^{commit}`,
+    );
+  } catch {
+    t.skip("shallow clone, or the contracts merge is not in this history");
+    return;
+  }
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const rows = k65FormalRows(prep);
+  assert.ok(rows.length >= 4);
+  for (const row of rows) {
+    // The commit holds the bytes and is a strict ancestor of HEAD.
+    const bytes = execFileSync("git", ["show", `${row.commit}:${row.path}`], {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.equal(sha256(bytes), row.sha256, `${row.path} at ${row.commit}`);
+    assert.doesNotThrow(
+      () => git("merge-base", "--is-ancestor", row.commit, "HEAD"),
+      `${row.commit} is an ancestor of HEAD`,
+    );
+  }
+  // The K6/5 draft in the worktree is the freeze commit's bytes.
+  assert.equal(
+    sha256(readFileSync(path.join(repoRoot, rows[0].path))),
+    rows[0].sha256,
+  );
+  // The S3 record the procedure file v2 and the declaration cite.
+  const v2 = await json(
+    "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v2.json",
+  );
+  const record =
+    /^(\S+?)（commit ([0-9a-f]{40}) の bytes。SHA-256 ([0-9a-f]{64})/u.exec(
+      v2.review.record,
+    );
+  assert.ok(
+    record,
+    "v2's review.record names the S3 record, its commit and SHA-256",
+  );
+  assert.equal(
+    sha256(
+      execFileSync("git", ["show", `${record[2]}:${record[1]}`], {
+        cwd: repoRoot,
+      }),
+    ),
+    record[3],
+  );
+  assert.equal(
+    sha256(readFileSync(path.join(repoRoot, record[1]))),
+    record[3],
+    "the S3 record in the worktree is the cited bytes",
+  );
+  assert.doesNotThrow(() =>
+    git("merge-base", "--is-ancestor", record[2], "HEAD"),
+  );
+});
