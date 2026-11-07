@@ -1117,6 +1117,8 @@ test("再レビュー P3: 正式の run は --variant と --dev-g01-fallback を
     "k",
     "--k64-commit",
     "k",
+    "--k65-commit",
+    "k",
     "--product-receipt",
     "pr.json",
     // S5-B (DR-CP4-O-16): a formal Graph-arm run names ④'s SP-P4 receipt.
@@ -1288,6 +1290,8 @@ test("S5-B 統合: Graph を要求する run の種類（gold、negative）は �
     "k",
     "--k64-commit",
     "k",
+    "--k65-commit",
+    "k",
     "--product-receipt",
     "pr.json",
   ];
@@ -1444,6 +1448,8 @@ function formalArgs(run, extra = []) {
     "6".repeat(40),
     "--k64-commit",
     "4".repeat(40),
+    "--k65-commit",
+    "4".repeat(40),
     "--product-receipt",
     path.join(inputs, "pr.json"),
     "--sp-p4-receipt",
@@ -1464,6 +1470,10 @@ function formalDeps(log, overrides = {}) {
     },
     readK64Head: () => {
       log.push("k64");
+      return {};
+    },
+    readK65Head: () => {
+      log.push("k65");
       return {};
     },
     admitFormal: () => {
@@ -1582,7 +1592,7 @@ test("レビュー P2-β (a): 13 variant の gold と negative は ④ の SP-P4
       },
     }),
   );
-  assert.deepEqual(refused, ["candidate", "k64", "admit", "gate"]);
+  assert.deepEqual(refused, ["candidate", "k64", "k65", "admit", "gate"]);
   assert.match(report.problems.join("\n"), /S5-B gate: SP-P4 is sp-n7/u);
   // parity は gate を呼ばない（S2 で除外）。
   const parity = [];

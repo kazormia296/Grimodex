@@ -1,7 +1,7 @@
 /* global window */
 // CP-4 H5 の実現可能性の診断（DR-CP4-S1C2-27）。製品の `useNir1RelatedScenes`
 // を harness の page に mount し、`graph-ready` の後の再 query（子）が自分の D の
-// 窓（子の Raw-ready ＋ 10.84 ms）に Graph を届けるかを測る。CP-4 の測定（S5）
+// 窓（子の Raw-ready ＋ D。K6/5 の下で 40 ms）に Graph を届けるかを測る。CP-4 の測定（S5）
 // ではなく、receipt は書かない。freeze の根拠にしない。
 //
 //   TMPDIR=<short scratch> node scripts/local-ci-xvfb.mjs node \
@@ -35,8 +35,10 @@ import { distribution } from "./run-sample.mjs";
 import { HARNESS_PAGE, sha256 } from "./session.mjs";
 import { readRowCounts } from "./workspace-db.mjs";
 
-// P3-11: D is read from constants.mjs only (the product compares with
-// 10.840000000596048; the 6e-7 ms difference is within BOUNDARY_TOLERANCE_MS).
+// P3-11: D is read from constants.mjs only (K6/5: the fixed 40 ms, which a
+// float represents exactly, so the product's comparison has no difference to
+// BOUNDARY_TOLERANCE_MS; under K6/4 the product compared with
+// 10.840000000596048, a 6e-7 ms difference).
 const D_MS = GRAPH_EVAL_D_MS;
 const GRAPH_CONTINUE = "related_scenes_graph_continue";
 

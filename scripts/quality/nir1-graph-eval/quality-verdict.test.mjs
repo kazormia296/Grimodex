@@ -363,7 +363,7 @@ test("condition 3 (p95): tReturn - tFetch, nearest-rank, both arms, limit from t
   assert.equal(statusOf(slow, "hybrid-p95"), "fail");
   assert.equal(slow.conditions["hybrid-p95"].graphArm.p95Ms, 100);
   assert.equal(slow.conditions["hybrid-p95"].hybridArm.status, "pass");
-  assert.equal(slow.conditions["hybrid-p95"].limitMs, 65.04);
+  assert.equal(slow.conditions["hybrid-p95"].limitMs, 94.2);
   // A failed call is kept, never dropped.
   const failed = run((key) =>
     key === "G-05/base"
@@ -375,10 +375,14 @@ test("condition 3 (p95): tReturn - tFetch, nearest-rank, both arms, limit from t
   );
   assert.equal(statusOf(failed, "hybrid-p95"), "fail");
   assert.equal(failed.conditions["hybrid-p95"].graphArm.failedCount, 1);
-  const policy = deriveLatencyPolicy(readJson(RETRIEVAL_MANIFEST));
+  // K6/5 変える点 4: B と上限は手順のファイル v2 の値（D から逆算しない）。
+  const policy = deriveLatencyPolicy(
+    readJson(RETRIEVAL_MANIFEST),
+    readJson(PROCEDURE_FILE),
+  );
   assert.deepEqual(
     [policy.percentile, policy.b, policy.d, policy.limit],
-    [0.95, 54.2, GRAPH_EVAL_D_MS, 65.04],
+    [0.95, 54.2, GRAPH_EVAL_D_MS, 94.2],
   );
 });
 
@@ -769,6 +773,8 @@ test("no threshold is written in the verdict code; the manifest and the K6/2 tex
       .join("\n");
     for (const literal of [
       /65\.04/u,
+      /94\.2/u,
+      /\b200\b/u,
       /10\.84/u,
       /54\.2/u,
       /1e-12/u,
@@ -778,14 +784,37 @@ test("no threshold is written in the verdict code; the manifest and the K6/2 tex
     ])
       assert.doesNotMatch(code, literal, `${file}: ${literal}`);
   }
-  // The limit and the tolerance move with their sources.
+  // The percentile moves with the manifest; B, D and the limit are the
+  // procedure file's and must equal the contract's (K6/5-N4: B is never
+  // computed from D, so D = 40 ms never yields B = 200 ms or limit 240 ms).
   const manifest = readJson(RETRIEVAL_MANIFEST);
+  const procedure = readJson(PROCEDURE_FILE);
   const changed = clone(manifest);
-  changed.performance.warm.D = "min(100ms, 0.10*B)";
-  assert.equal(deriveLatencyPolicy(changed).limit, 119.24);
+  changed.performance.warm.B = "Raw-only p90(t_return-t_fetch) ...";
+  assert.equal(deriveLatencyPolicy(changed, procedure).percentile, 0.9);
   const noLimit = clone(manifest);
   noLimit.performance.warm.hybridP95Limit = "B";
-  assert.throws(() => deriveLatencyPolicy(noLimit), /\[precheck\]/);
+  assert.throws(() => deriveLatencyPolicy(noLimit, procedure), /\[precheck\]/);
+  for (const [key, value] of [
+    ["bMs", 200],
+    ["hybridP95LimitMs", 240],
+    ["hybridP95LimitMs", 65.04],
+    ["dMs", 10.84],
+    ["bMs", undefined],
+  ])
+    assert.throws(
+      () =>
+        deriveLatencyPolicy(manifest, {
+          ...procedure,
+          values: { ...procedure.values, [key]: value },
+        }),
+      new RegExp(`\\[precheck\\].*values\\.${key}`, "u"),
+      `${key}=${value}`,
+    );
+  assert.throws(
+    () => deriveLatencyPolicy(manifest, null),
+    /\[precheck\].*values\.dMs/u,
+  );
   assert.equal(readMetricTolerance(DEFAULT_ROOT).tolerance, 1e-12);
   // The same receipts under a larger limit pass what a smaller one fails.
   const { expectations } = loadExpectations({
@@ -794,7 +823,7 @@ test("no threshold is written in the verdict code; the manifest and the K6/2 tex
   });
   const dir = writeDir(
     buildReceipts(expectations, () => ({
-      latency: () => ({ hybrid: 70, graph: 70 }),
+      latency: () => ({ hybrid: 100, graph: 100 }),
     })),
   );
   try {

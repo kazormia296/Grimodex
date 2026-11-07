@@ -2,15 +2,16 @@
 //
 // 安い検査から順に行い、どれかが違えば `[precheck]` で止める（receipt を書く前）:
 //   1. 候補が clean で、HEAD が固定の候補の commit。
-//   2. K6/4 の凍結の head（`readK64FreezeHead`。descriptor は既定の
-//      `K64_FREEZE`、試験だけが T14 の型の descriptor を注入する）。
+//   2. K6/4 と K6/5 の凍結の head（`readK64FreezeHead`・`readK65FreezeHead`。
+//      descriptor は既定の `K64_FREEZE`・`K65_FREEZE`、試験だけが T14 の型の
+//      descriptor を注入する）。
 //   3. S4 の commit から S2 の file（observation-prep と宣言の addendum 2 本）を
 //      git で読む（作業 tree は読まない）。候補の head の bytes も同じこと。
 //      どの file も S4 の freeze record が束縛した sha256 であること
 //      （`readAdmittedObservationPrep`／`readFreezeBoundFile`、DR-CP4-S4-1）。
 //   4. `setupReadings.source.pins` の照合（bytes の pin は候補の commit と作業
 //      tree の同じ path の sha256、ancestor の pin は候補の祖先）。
-//   5. 手順のファイル（`k64-procedure.v1.json`）を S4 の commit から formal で読む。
+//   5. 手順のファイル（`k64-procedure.v2.json`）を S4 の commit から formal で読む。
 //   6. `admitGraphCaseRun`（N-1、受領書、既定の addon、批准 5、K6/2・K6/4 の
 //      凍結、観測前の commit の facts。凍結の fixture 8 本）。
 // 標準と評価の build の受領書の head 照合（`checkRunnerBuildReceipts`、required）は
@@ -26,10 +27,12 @@ import {
   readAdmittedObservationPrep,
   readFreezeBoundFile,
   readK64FreezeHead,
+  readK65FreezeHead,
 } from "./admission.mjs";
 import {
   FROZEN_FIXTURE_SHA256,
   K64_FREEZE,
+  K65_FREEZE,
   rejectOverrides,
 } from "./constants.mjs";
 import { loadProcedureFile } from "./procedure-file.mjs";
@@ -43,7 +46,7 @@ export const S2_FILES = Object.freeze({
   // read (v2 referenced freeze.v2.json, DR-CP4-G4-7 B2b-1).
   g01Addendum: "evals/nir1-g01/setup-addendum.v3.json",
 });
-export const FORMAL_PROCEDURE_VERSION = "v1";
+export const FORMAL_PROCEDURE_VERSION = "v2";
 const HEX40 = /^[0-9a-f]{40}$/u;
 const HEX64 = /^[0-9a-f]{64}$/u;
 
@@ -226,15 +229,21 @@ export function admitFormalK64Run(input, deps = {}) {
     "prepCommit",
     "k62Commit",
     "k64Commit",
+    "k65Commit",
     "buildReceipt",
     "productReceipt",
     "defaultAddonSha256",
     "ratification5",
   ]);
-  const { freeze = K64_FREEZE, admitGraphCase = admitGraphCaseRun } = deps;
+  const {
+    freeze = K64_FREEZE,
+    freeze65 = K65_FREEZE,
+    admitGraphCase = admitGraphCaseRun,
+  } = deps;
   const { root } = input;
   const candidate = assertCandidateFixed({ root, candidate: input.candidate });
   const k64 = readK64FreezeHead({ root, commit: input.k64Commit }, freeze);
+  const k65 = readK65FreezeHead({ root, commit: input.k65Commit }, freeze65);
   if (!input.prepCommit)
     throw new Error("[precheck] S5 admission: the S4 commit is not given");
   const s2 = readS2AtCommit({
@@ -266,6 +275,7 @@ export function admitFormalK64Run(input, deps = {}) {
     defaultAddonSha256: input.defaultAddonSha256,
     k62Commit: input.k62Commit,
     k64Commit: input.k64Commit,
+    k65Commit: input.k65Commit,
     ...(input.ratification5 !== undefined
       ? { ratification5: input.ratification5 }
       : {}),
@@ -273,6 +283,7 @@ export function admitFormalK64Run(input, deps = {}) {
   return Object.freeze({
     candidate,
     k64,
+    k65,
     s2,
     pins,
     procedure,

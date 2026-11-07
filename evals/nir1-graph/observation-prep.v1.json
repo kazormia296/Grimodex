@@ -25,6 +25,15 @@
       "freezeNote": "K6/4 批准 7: integrator が claude/nir1-contracts に K6/4 の bytes を凍結した commit。stepOrder.phases の ②（R5 の照合の match の後、S4 の前）で作り、S4 はこの commit を埋める。② が済んでいない間は S4 に進まない。条件の判定に使う診断と (i) で判定する CP-4 の run は、この凍結の後に始めたものに限る。",
       "decidedIn": "k64-freeze-before-s4"
     },
+    "k65": {
+      "draftRef": "nir1-final-request-eval-proposal/5",
+      "contractId": "graph-eval-procedure",
+      "path": "docs/plans/nir1-final-request-eval-proposal-5-draft.md",
+      "sha256": "1ad1088498e43dc3cd0deb1b7d74f18396eb3c07d4bd3834a8787de30ecd24a7",
+      "confirmedCommit": "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+      "freezeCommit": "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+      "note": "K6/5（2026-11-07 確認）: 最初の表示の D を 40 ms（製品の固定値。DR-IRW-1・2、#802 a7e96946）、B を 54.2 ms、Hybrid p95 の上限を 94.2 ms にする。T_late は 100 ms のまま。凍結の記録は contracts の docs/plans/nir1-cp4-records/k65-freeze-record.md。トレースの file と K6/4 の束縛（contracts.k64）はそのまま。S2 追補 #14 の下書き: この項は K6/5 の harness の PR が足した。S3 のレビューと S4 の 6 回目の凍結で確定する。"
+    },
     "sp1": {
       "draftRef": "nir1-graph-case-seed-pin-proposal/1",
       "contractId": "graph-case-seed-pin-setup",
@@ -330,38 +339,42 @@
   },
   "k64Procedure": {
     "draft": {
-      "path": "scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-2.json",
-      "version": "draft-2"
+      "path": "scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-3.json",
+      "version": "draft-3"
     },
     "values": {
-      "dMs": 10.84,
+      "dMs": 40,
+      "bMs": 54.2,
+      "hybridP95LimitMs": 94.2,
       "wFMs": 100,
       "tLateMs": 100,
       "tShowMs": 2000,
       "r1r4WaitMs": 10000
     },
     "valueReasons": {
-      "dMs": "D = min(100 ms, 0.20 × B)、B = 54.2 ms。P の固定契約（l6-l9:349-361、post-B:214）で、K6/4 の「変えないもの」。作者は選んでいない。",
+      "dMs": "D = 40 ms: 製品の最初の表示の固定値（RELATED_SCENES_IR_EXTRA_WAIT_MS。DR-IRW-1・2、#802 a7e96946）を K6/5（nir1-final-request-eval-proposal/5、変える点 1）が契約に取り込んだ値。P の式 min(100 ms, 0.20 × B) から導かない。作者は選んでいない。",
+      "bMs": "B = 54.2 ms: P の確認済みの値。K6/5 の変える点 4。D から逆算しない（D = 40 ms からの逆算は B = 200 ms になる）。作者は選んでいない。",
+      "hybridP95LimitMs": "Hybrid p95 の上限 = 94.2 ms（B 54.2 ms ＋ D 40 ms）: K6/5 の変える点 4（ユーザーの選択 U-1）。D から導かず、B と上限を手順のファイルの v2 に固定する。作者は選んでいない。",
       "wFMs": "K6/4 判断 2 の推奨（子の t_raw_ready_c から t_graph_c まで 100 ms）。2026-10-26 の Session B5 で確認された（続行計画 §10.7）。作者は選んでいない。",
       "tLateMs": "K6/4 判断 3（t_notice − t_raw_ready ≤ 100 ms）。確認済み。作者は選んでいない。",
       "tShowMs": "K6/4 判断 4（t_follow − t_raw_ready ≤ 2 s）。確認済み。作者は選んでいない。",
       "r1r4WaitMs": "K6/4 技術点 2 は、R1 と R4 の待ちの上限を手順のファイルで観測の前に固定し、10 s（保留の期限 DEFERRED_RELEASE_LIMIT。electron/native/grimodex-node/src/nir1_graph_product.rs:78）を超えないとする。上限そのものの 10,000 ms を選ぶ。(1) R1 の (1)（slot が empty で保留が無い）は、製品が保留を release か expire で必ず解く期限（begin の受渡しから DEFERRED_RELEASE_LIMIT）でだけ上から押さえられる。受渡しは sample の終わりより前なので、sample の終わりから 10 s 待てば、製品の規則の範囲で保留は必ず解けている。これより短い値では、製品が自分の期限の内で正しく動いている sample を reachedQuiet:false（X10。follow-up の失敗）に数えうる。それは製品の挙動ではなく評価の待ちの短さによる欠落で、欠落率を作者の選んだ値で動かすことになる。(2) R1 の (3)（rebuild_min_interval 1 s。nir1_graph_product.rs:94）は 10 s の内に収まる。(3) 待ちを長くするほど、前の sample の ticket が R2 の後に同じ key で cache を埋める並び（K6/4-N3、Out-of-scope の 4）の余地が減り、F2 の推論が強まる。(4) 待つ時間は latency に含めず（R1）、q1〜q3、欠落率の分子と分母、P の timing を変えない。費用は run の時間だけで、静止に届かない sample でだけ生じる。値を小さくする根拠（観測）を S2 は持たず、観測から選ぶことは契約が禁じる（K6/4 の Mandatory defenses、変える点 16）。R4 の待ちは sample の終わりから、R1 の待ちは R4 の待ちの終わりから数え、それぞれこの値を上限とする。"
     },
     "formal": {
-      "version": "v1",
-      "path": "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json",
-      "commit": "ac7e1059a8c9c6bd295f9771087e70c3922d3e0e",
-      "sha256": "1c2428df322fa717d1a3ae5d4c99fb2dbafcbac2c8fb5b4126499dcc36cc0bea",
+      "version": "v2",
+      "path": "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v2.json",
+      "commit": "S4:k64-procedure-v2-commit",
+      "sha256": "S4:k64-procedure-v2-sha256",
       "review": {
-        "reviewer": "S3 の独立 reviewer（agent、Opus）",
-        "reviewedAt": "2026-10-30",
-        "record": "docs/plans/nir1-cp4-records/s3-review-7-observation-prep.md（commit a1fd9f64e7cab52b8aeb00ea372f54dd5f09e7d1〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕の bytes。SHA-256 d0b33ab58b1075c30ec7cf891f17f59c358af4de503dc9d8581233b2ad679cd7。S3 の 7 回目の独立レビュー〔対象は S2 追補 #4 の 968f6782 と bc2500da〕の報告の原文。判定は accept-with-conditions）。判定の要旨と条件の充足は docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-P-2〜P-4"
+        "reviewer": "S3 の独立レビュー待ち（placeholder。S4 の前に S3 の記録で置き換える）",
+        "reviewedAt": "2026-11-07",
+        "record": "S3 の独立レビューの記録待ち（placeholder。K6/5 の harness の PR の時点では未実施。S2 追補 #14 で S3 の記録に置き換える）"
       }
     },
     "promotion": [
-      "S3 の独立 reviewer が draft-2 の bytes（この file の valueReasons を含む）をレビューし、記録を書く。draft は review を null にしか持てず（統合 branch の procedure-file.mjs の procedureFileErrors）、正式の版 v<N> は review（reviewer、reviewedAt、record）なしでは loader が拒み、purpose formal は draft を拒む。",
-      "S4 は、draft-2 と schema、contract、values、conditions が同じで、version を v1、draft を false、review を S3 の記録にした k64-procedure.v1.json を観測前の commit に置き、formal の commit、sha256、review を埋める。draft-2 は消さずに残す。",
-      "values か conditions を変える必要が S3 で出たら、draft-3 を置いて同じ手順をやり直す（同じ版の書き直しはしない）。観測の後の変更は、狭める方向だけを新しい版とレビューで許す（K6/4 変える点 16）。"
+      "S3 の独立 reviewer が draft-3 の bytes（この file の valueReasons を含む）をレビューし、記録を書く。draft は review を null にしか持てず（procedure-file.mjs の procedureFileErrors）、正式の版 v<N> は review（reviewer、reviewedAt、record）なしでは loader が拒み、purpose formal は draft を拒む。",
+      "S4 は、draft-3 と schema、contract、values、conditions が同じで、version を v2、draft を false、review を S3 の記録にした k64-procedure.v2.json を観測前の commit に置き、formal の commit、sha256、review を埋める。draft-3 は消さずに残す。今の v2 の review は placeholder で、loader は拒む（S3 の記録の前に正式の run を始めさせない）。",
+      "values か conditions を変える必要が S3 で出たら、draft-4 を置いて同じ手順をやり直す（同じ版の書き直しはしない）。観測の後の変更は、狭める方向だけを新しい版とレビューで許す（K6/4 変える点 16）。"
     ]
   },
   "registeredForReview": [

@@ -12,7 +12,9 @@
 //   evals/nir1-graph/trace-editing.v1.json         K6/2 step 4 (b) traces
 //   evals/nir1-graph/trace-browsing.v1.json
 //   evals/nir1-graph/observation-prep-author-declaration.v1.json
-//   scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-2.json
+//   scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-3.json
+//                                                  (K6/5 schema /2; draft-2 and
+//                                                  v1 are the K6/4 history)
 //   evals/nir1-graph/seed-pin-addendum.v2.json     SP/1 seed pin addendum
 //                                                  (seed-pin-addendum.mjs)
 //
@@ -50,7 +52,7 @@ export const OBSERVATION_PREP_FILES = Object.freeze({
   authorDeclaration:
     "evals/nir1-graph/observation-prep-author-declaration.v1.json",
   procedureDraft:
-    "scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-2.json",
+    "scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-3.json",
   seedPinAddendum: SEED_PIN_ADDENDUM_PATH,
 });
 
@@ -60,7 +62,7 @@ const HEX40 = /^[0-9a-f]{40}$/u;
 const HEX64 = /^[0-9a-f]{64}$/u;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)?$/u;
 
-/** Contract bytes (K2/4 confirmed in Session B2; K6/2 frozen; K6/4 confirmed in B5). */
+/** Contract bytes (K2/4 confirmed in Session B2; K6/2 frozen; K6/4 confirmed in B5; K6/5 confirmed 2026-11-07). */
 export const CONTRACTS = Object.freeze({
   k24: Object.freeze({
     draftRef: "nir1-c-body-disclosure-proposal/4",
@@ -83,6 +85,17 @@ export const CONTRACTS = Object.freeze({
     path: "docs/plans/nir1-final-request-eval-proposal-4-draft.md",
     sha256: "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3",
     confirmedCommit: "18ebc7b8de2d4f2701c573b5d91561a6cc852024",
+  }),
+  // K6/5 (変える点 1・4): D = 40 ms, B = 54.2 ms, the Hybrid p95 limit
+  // 94.2 ms. The /5 row stands on the /4 bytes, so `k64` stays (the traces
+  // and S2 bind the K6/4 bytes; trace checks below read `k64` only).
+  k65: Object.freeze({
+    draftRef: "nir1-final-request-eval-proposal/5",
+    contractId: "graph-eval-procedure",
+    path: "docs/plans/nir1-final-request-eval-proposal-5-draft.md",
+    sha256: "1ad1088498e43dc3cd0deb1b7d74f18396eb3c07d4bd3834a8787de30ecd24a7",
+    confirmedCommit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+    freezeCommit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
   }),
 });
 
@@ -389,8 +402,8 @@ const STEP_ORDER = Object.freeze({
     "V-10 READY probe and the Graph arm",
   ]),
 });
-const PROCEDURE_V1 =
-  "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json";
+const PROCEDURE_V2 =
+  "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v2.json";
 const GRAPH_NEGATIVES = Object.freeze([
   ["K24-G02-N1", "G-02", "base"],
   ["K24-G04-N1", "G-04", "base"],
@@ -405,9 +418,16 @@ const ADDENDUM_STATUSES = Object.freeze([
 const PREP_DRAFT = "draft-awaiting-s3-review-and-s4-freeze";
 const PREP_FROZEN = "frozen-before-observation";
 
-/** K6/4 values (判断 2〜4; D from the P contract) and 技術点 2's ceiling. */
+/**
+ * K6/4 values (判断 2〜4) and 技術点 2's ceiling, with K6/5's D (40 ms, the
+ * product's fixed window, 変える点 1), B (54.2 ms) and Hybrid p95 limit
+ * (94.2 ms, 変える点 4; B is not derived from D). The procedure file's
+ * `values` carry exactly these keys plus `r1r4WaitMs`.
+ */
 export const K64_VALUES = Object.freeze({
-  dMs: 10.84,
+  dMs: 40,
+  bMs: 54.2,
+  hybridP95LimitMs: 94.2,
   wFMs: 100,
   tLateMs: 100,
   tShowMs: 2_000,
@@ -1545,8 +1565,8 @@ const S4_PLACEHOLDERS = Object.freeze(
     "trace-editing-sha256",
     "trace-browsing-commit",
     "trace-browsing-sha256",
-    "k64-procedure-v1-commit",
-    "k64-procedure-v1-sha256",
+    "k64-procedure-v2-commit",
+    "k64-procedure-v2-sha256",
     "setup-addendum-commit",
     "setup-addendum-sha256",
     "declaration-addendum-commit",
@@ -3006,18 +3026,18 @@ export function procedureDraftErrors(procedure) {
   if (!isObject(procedure)) return ["procedure must be an object"];
   if (!same(Object.keys(procedure).sort(), [...top].sort()))
     errors.push(`procedure keys must be exactly ${top.join(", ")}`);
-  if (procedure.schema !== "nir1-cp4-k64-procedure/1")
-    errors.push("schema must be nir1-cp4-k64-procedure/1");
-  if (procedure.version !== "draft-2" || procedure.draft !== true)
-    errors.push("this file is the draft-2 version (draft true)");
+  if (procedure.schema !== "nir1-cp4-k64-procedure/2")
+    errors.push("schema must be nir1-cp4-k64-procedure/2");
+  if (procedure.version !== "draft-3" || procedure.draft !== true)
+    errors.push("this file is the draft-3 version (draft true)");
   if (
     !same(procedure.contract, {
-      draftRef: CONTRACTS.k64.draftRef,
-      contractId: CONTRACTS.k64.contractId,
-      sha256: CONTRACTS.k64.sha256,
+      draftRef: CONTRACTS.k65.draftRef,
+      contractId: CONTRACTS.k65.contractId,
+      sha256: CONTRACTS.k65.sha256,
     })
   )
-    errors.push(`contract must be K6/4 (sha256 ${CONTRACTS.k64.sha256})`);
+    errors.push(`contract must be K6/5 (sha256 ${CONTRACTS.k65.sha256})`);
   const values = procedure.values ?? {};
   const keys = [...Object.keys(K64_VALUES), "r1r4WaitMs"];
   if (!same(Object.keys(values).sort(), [...keys].sort()))
@@ -3958,7 +3978,7 @@ export function observationPrepErrors(prep, ctx) {
   const frozen = prep.status === PREP_FROZEN;
   if (prep.graphRuntimeObservedBeforeAuthoring !== false)
     errors.push("graphRuntimeObservedBeforeAuthoring must be false");
-  const { k24, k62, k64 } = prep.contracts ?? {};
+  const { k24, k62, k64, k65 } = prep.contracts ?? {};
   if (k24?.sha256 !== CONTRACTS.k24.sha256 || k24?.path !== CONTRACTS.k24.path)
     errors.push("contracts.k24 must be the K2/4 bytes");
   if (
@@ -3972,6 +3992,16 @@ export function observationPrepErrors(prep, ctx) {
     k64?.confirmedCommit !== CONTRACTS.k64.confirmedCommit
   )
     errors.push("contracts.k64 must be the K6/4 bytes");
+  if (
+    k65?.sha256 !== CONTRACTS.k65.sha256 ||
+    k65?.draftRef !== CONTRACTS.k65.draftRef ||
+    k65?.contractId !== CONTRACTS.k65.contractId ||
+    k65?.confirmedCommit !== CONTRACTS.k65.confirmedCommit ||
+    k65?.freezeCommit !== CONTRACTS.k65.freezeCommit
+  )
+    errors.push(
+      "contracts.k65 must be the K6/5 bytes, confirmed commit and freeze commit",
+    );
   const sp1 = prep.contracts?.sp1;
   if (
     sp1?.draftRef !== SP1.draftRef ||
@@ -4364,8 +4394,8 @@ export function observationPrepErrors(prep, ctx) {
     )
       errors.push(`k64Procedure.valueReasons.${key} is required`);
   const formal = procedure.formal ?? {};
-  if (formal.version !== "v1" || formal.path !== PROCEDURE_V1)
-    errors.push("k64Procedure.formal must be the v1 file");
+  if (formal.version !== "v2" || formal.path !== PROCEDURE_V2)
+    errors.push("k64Procedure.formal must be the v2 file");
   referenceErrors(
     errors,
     "k64Procedure.formal.commit",
@@ -4382,9 +4412,9 @@ export function observationPrepErrors(prep, ctx) {
   );
   if (frozen) {
     if (ctx.fileSha256[formal.path] === undefined)
-      errors.push("k64Procedure.formal: the v1 file is not in the repository");
+      errors.push("k64Procedure.formal: the v2 file is not in the repository");
     else if (formal.sha256 !== ctx.fileSha256[formal.path])
-      errors.push("k64Procedure.formal.sha256 differs from the v1 file");
+      errors.push("k64Procedure.formal.sha256 differs from the v2 file");
     const review = formal.review;
     if (
       !isObject(review) ||
@@ -4392,23 +4422,23 @@ export function observationPrepErrors(prep, ctx) {
       typeof review.record !== "string" ||
       !ISO_DATE.test(review.reviewedAt ?? "")
     )
-      errors.push("k64Procedure.formal.review must be the v1 file's review");
-    const v1 = ctx.procedureFormal;
+      errors.push("k64Procedure.formal.review must be the v2 file's review");
+    const v2 = ctx.procedureFormal;
     const draft = ctx.procedureDraft ?? {};
     if (
-      !isObject(v1) ||
-      v1.version !== "v1" ||
-      v1.draft !== false ||
-      v1.schema !== draft.schema ||
-      !same(v1.contract, draft.contract) ||
-      !same(v1.values, draft.values) ||
-      !same(v1.conditions, draft.conditions)
+      !isObject(v2) ||
+      v2.version !== "v2" ||
+      v2.draft !== false ||
+      v2.schema !== draft.schema ||
+      !same(v2.contract, draft.contract) ||
+      !same(v2.values, draft.values) ||
+      !same(v2.conditions, draft.conditions)
     )
       errors.push(
-        "k64Procedure.formal: the v1 file must be the reviewed draft-2 (schema, contract, values, conditions) as version v1, draft false (S3-P2-3)",
+        "k64Procedure.formal: the v2 file must be the reviewed draft-3 (schema, contract, values, conditions) as version v2, draft false (S3-P2-3)",
       );
-    else if (!same(v1.review, review))
-      errors.push("k64Procedure.formal.review must equal the v1 file's review");
+    else if (!same(v2.review, review))
+      errors.push("k64Procedure.formal.review must equal the v2 file's review");
     if (review?.record !== prep.review?.record)
       errors.push(
         "k64Procedure.formal.review must cite the same independent review record as this record",
@@ -5004,14 +5034,14 @@ export async function loadObservationPrepContext({ repoRoot }) {
   // Review P3-5: and v1, which v2 supersedes.
   const supersededSetupAddendumV1 = await superseded(SETUP_ADDENDUM_V1.path);
   const supersededSeedPinAddendum = await superseded(SEED_PIN_ADDENDUM_V1.path);
-  const formal = PROCEDURE_V1;
+  const formal = PROCEDURE_V2;
   let procedureFormal = null;
   try {
     const bytes = await read(formal);
     fileSha256[formal] = sha256(bytes);
     procedureFormal = JSON.parse(bytes);
   } catch {
-    // The v1 procedure file is S4's; absent in a draft.
+    // The v2 procedure file is S4's; absent in a draft.
   }
   // SP/1 bytes, once placed on master (S3v2-P3-4); null while absent.
   let sp1Sha256;

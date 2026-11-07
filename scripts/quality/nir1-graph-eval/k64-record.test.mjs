@@ -203,7 +203,7 @@ test("R7: 子の合流の結果・IR の deadline・寄与・Chronicle の停止
   const slowIr = observation();
   slowIr.api.find(
     (row) => row.cmd === "related_scenes_continue" && row.calledAt === 125.2,
-  ).resolvedAt = 140;
+  ).resolvedAt = 170; // child Raw-ready 125 + D 40 = 165
   assert.deepEqual(
     classify(k64GraphSampleRow(input({ observation: slowIr }))).ratification12,
     ["child-ir-deadline-beyond-d"],
@@ -302,7 +302,18 @@ test("R7: 親の表示に D の後の Graph が混ざれば記録に残す（N1�
       }),
     },
   });
+  // K6/5-N1: 境界は Raw-ready ＋ D = 40 ms（K6/4 の 10.84 ms ではない）。
+  // Raw-ready（100）から 25 ms 後の到着は D の内で、混入にならない。
   mixed.api[2] = api("related_scenes_graph_continue", 100.5, 125, {
+    status: "available",
+  });
+  assert.equal(
+    buildFollowUpRecord({ ...input({ observation: mixed }) }).parent
+      .lateGraphInDisplay,
+    false,
+  );
+  // 100 + 40 を超えた到着が親の表示に混ざれば混入。
+  mixed.api[2] = api("related_scenes_graph_continue", 100.5, 145, {
     status: "available",
   });
   const record = buildFollowUpRecord({

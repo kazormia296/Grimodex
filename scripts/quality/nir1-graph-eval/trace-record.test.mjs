@@ -2289,6 +2289,14 @@ test("DR-CP4-V-4: 除いた再 query の 2 回の公開は N32、遅れた Graph
   };
   own.observation.commits.find((row) => row.fetchSeq === 16).display =
     graphDisplay("own");
+  // K6/5: 窓 D は 40 ms。再 query の Raw-ready（B + 75）の後 45 ms に届いた
+  // Graph は窓の後（K6/4 の 10.84 ms の下の 14 ms の遅れは窓の内になった）。
+  const ownGraph = own.observation.api.find(
+    (row) =>
+      row.cmd === "related_scenes_graph_continue" &&
+      row.calledAt === 31_000 + 75.2,
+  );
+  ownGraph.resolvedAt = 31_000 + 75 + 45;
   const ownRows = rowsOf(own, n, pollRuns(own.events, 9_000, 610_000, 1), {
     plan: longPlan,
     materialContribution: STUB_RESOLVER,

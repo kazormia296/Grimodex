@@ -6,8 +6,22 @@
 // post-B:214, CP-0 `evals/nir1-graph/`). No function in this harness accepts
 // them as options.
 
-/** D = min(100 ms, 0.20 * B), B = 54.2 ms. Confirmed; never recomputed. */
-export const GRAPH_EVAL_D_MS = 10.84;
+/**
+ * D = 40 ms: the product's fixed first-display window
+ * (`RELATED_SCENES_IR_EXTRA_WAIT_MS`; DR-IRW-1・2, #802 `a7e96946`), taken
+ * into the contract by K6/5 (`nir1-final-request-eval-proposal/5`, 変える点 1).
+ * A fixed value: it is not derived from any formula (not from P's
+ * `min(100 ms, 0.20 * B)`, and B is not recomputed from it).
+ */
+export const GRAPH_EVAL_D_MS = 40;
+/**
+ * K6/5 変える点 4: B = 54.2 ms (the confirmed P value) and the Hybrid p95
+ * limit 94.2 ms (B + D). Both are written here once, as contract values; the
+ * limit is never derived from D (D = 40 ms would give a B of 200 ms and a
+ * limit of 240 ms; K6/5 In-scope attack 20).
+ */
+export const GRAPH_EVAL_B_MS = 54.2;
+export const GRAPH_EVAL_HYBRID_P95_LIMIT_MS = 94.2;
 /**
  * Graph result lease (admission to result; separate from the P budget). No
  * evaluation rule reads it: it is named only so that an option carrying it is
@@ -65,6 +79,39 @@ export const K64_FREEZE = Object.freeze({
 });
 
 /**
+ * The K6/5 bytes (`nir1-final-request-eval-proposal/5`, contractId
+ * `graph-eval-procedure`; the user confirmed this SHA-256 on 2026-11-07).
+ * The integrator froze them on `claude/nir1-contracts` at `07fc80ec…` (the
+ * confirmation record's commit, the first push after the confirmation; the
+ * freeze record is `docs/plans/nir1-cp4-records/k65-freeze-record.md`).
+ * `K64_FREEZE` stays: the traces and S2 bind the K6/4 bytes, and the /5 row
+ * stands on them (K6/5 変える点 7: a formal receipt names both).
+ */
+export const K65_FREEZE = Object.freeze({
+  path: "docs/plans/nir1-final-request-eval-proposal-5-draft.md",
+  sha256: "1ad1088498e43dc3cd0deb1b7d74f18396eb3c07d4bd3834a8787de30ecd24a7",
+  draftRef: "nir1-final-request-eval-proposal/5",
+  contractId: "graph-eval-procedure",
+  /** The confirmation record's commit (the same commit as the freeze). */
+  confirmedCommit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+  /** The freeze commit on `claude/nir1-contracts` (K6/5 変える点 7), pinned. */
+  freezeCommit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+});
+
+/**
+ * K6/5 変える点 6 (a narrowing defense): the /5 row applies only to a
+ * candidate whose product first-display D is 40 ms: the candidate has
+ * `a7e96946` (#802) as an ancestor and its `relatedScenesConfig.ts` sets
+ * `RELATED_SCENES_IR_EXTRA_WAIT_MS` to 40. Checked by admission before a run.
+ */
+export const K65_CANDIDATE_REQUIREMENTS = Object.freeze({
+  dFortyCommit: "a7e969466a1d9a22a97142b06b1a9301f972f96e",
+  configPath: "src/features/related-scenes/relatedScenesConfig.ts",
+  waitConstant: "RELATED_SCENES_IR_EXTRA_WAIT_MS",
+  waitMs: 40,
+});
+
+/**
  * 批准 5: the K6/4 relaxation applies only to a candidate that has all of
  * (a) D′ (#715), (b) the hook that keeps the list on a `graph-ready` refresh
  * (DR-RSJ-6; evidence: the candidate passes the RS-JOIN keep test, or has the
@@ -92,8 +139,9 @@ export const WINDOW_SAMPLE_INTERVAL_MS = 20_000;
  * Window-boundary disagreement tolerance (10 µs). A result the product
  * joined although its renderer `performance.now()` arrival is after
  * `t_raw_ready + D` is classified conservatively as out of window when it is
- * within this width (the product compares `now < deadline` with
- * D = 10.840000000596048 ms, a 6e-7 ms difference from the confirmed 10.84);
+ * within this width (the product compares `now < deadline`; under K6/4 its D
+ * was 10.840000000596048 ms, a 6e-7 ms difference from the confirmed 10.84,
+ * and under K6/5 D = 40 ms is exact in a float, so the difference is 0);
  * beyond it the run stops with `[precheck]` as a suspected product N-7
  * violation. Not a threshold of the evaluation; registered for review in the
  * observation-prep record.
@@ -326,7 +374,7 @@ export function ratio(numerator, denominator) {
 }
 
 const THRESHOLD_OPTION =
-  /^(d|dms|d-ms|window|windowms|window-ms|deadline|deadlinems|deadline-ms|lease|leasems|lease-ms|yardstick|threshold|maxrate|max-rate|warmup|warmups|measured|minqueries|min-queries|tolerance|tolerancems|tolerance-ms|wf|w-f|wfms|wf-ms|w_f|tlate|t-late|tlatems|tlate-ms|t_late|tshow|t-show|tshowms|tshow-ms|t_show|wait|waitms|wait-ms|ceiling)$/iu;
+  /^(d|dms|d-ms|window|windowms|window-ms|deadline|deadlinems|deadline-ms|lease|leasems|lease-ms|b|bms|b-ms|hybridp95limit|hybridp95limitms|hybrid-p95-limit-ms|p95limit|p95limitms|yardstick|threshold|maxrate|max-rate|warmup|warmups|measured|minqueries|min-queries|tolerance|tolerancems|tolerance-ms|wf|w-f|wfms|wf-ms|w_f|tlate|t-late|tlatems|tlate-ms|t_late|tshow|t-show|tshowms|tshow-ms|t_show|wait|waitms|wait-ms|ceiling)$/iu;
 
 /**
  * Refuses option maps that try to carry D, the lease, the yardstick, the

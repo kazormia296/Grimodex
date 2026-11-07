@@ -774,19 +774,19 @@ const BASE_ARGS = [
   "k62",
 ];
 
-test("DR-CP4-V-2: parseArgs は手順の版と commit を既定しない（凍結は trace-frozen の v1 と --prep-commit の fallback が効く）。dev は従来どおり draft-1 と HEAD を既定にする", () => {
+test("DR-CP4-V-2: parseArgs は手順の版と commit を既定しない（凍結は trace-frozen の v2 と --prep-commit の fallback が効く）。dev は従来どおり draft-3 と HEAD を既定にする", () => {
   const frozen = parseArgs([...BASE_ARGS, "--prep-commit", "p".repeat(40)]);
   assert.equal(Object.hasOwn(frozen, "procedure-version"), false);
   assert.equal(Object.hasOwn(frozen, "procedure-commit"), false);
   assert.equal(frozen.given.has("procedure-version"), false);
   // trace-frozen.mjs の fallback（prepareFrozenTrace の loadProcedure の引数）。
-  assert.equal(frozen["procedure-version"] ?? "v1", "v1");
+  assert.equal(frozen["procedure-version"] ?? "v2", "v2");
   assert.equal(
     frozen["procedure-commit"] ?? frozen["prep-commit"],
     "p".repeat(40),
   );
   assert.deepEqual(devProcedureOptions(parseArgs(BASE_ARGS)), {
-    version: "draft-1",
+    version: "draft-3",
     commit: "HEAD",
   });
   const explicit = parseArgs([

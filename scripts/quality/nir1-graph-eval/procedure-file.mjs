@@ -1,9 +1,13 @@
-// CP-4 S1f: K6/4 の手順のファイル（版つき）の schema・loader・validator。
+// CP-4 S1f: K6/4・K6/5 の手順のファイル（版つき）の schema・loader・validator。
 //
 // K6/4（draftRef `nir1-final-request-eval-proposal/4`、contractId
 // `graph-eval-procedure`）の Mandatory defenses（:209）は、T_late、W_f、T_show、
 // F1〜F7、X1〜X13、R1 と R4 の待ちの上限を「観測の前に、この draft の凍結と手順
-// のファイルの版で固定し、独立 reviewer のレビューを受ける」とする。この module は
+// のファイルの版で固定し、独立 reviewer のレビューを受ける」とする。K6/5
+// （`nir1-final-request-eval-proposal/5`）の変える点 4 と Mandatory defenses は、
+// D（40 ms）、B（54.2 ms）、Hybrid p95 の上限（94.2 ms）も同じ file（schema /2、
+// 版 v2 以降）で固定するとする。v1 と draft-1／draft-2 は schema /1（K6/4、
+// D=10.84 ms）の履歴の file で、この loader は読まない。この module は
 // その file を読み、契約の値（constants.mjs）と一致することを確かめるだけで、値を
 // 決めない。値の最終決定と trace／sample の計画は S2 の作者と独立 reviewer が行う
 // （DR-CP4-F-1）。
@@ -26,21 +30,23 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
+  GRAPH_EVAL_B_MS,
   GRAPH_EVAL_D_MS,
-  K64_FREEZE,
+  GRAPH_EVAL_HYBRID_P95_LIMIT_MS,
   K64_R1_R4_WAIT_CEILING_MS,
   K64_T_LATE_MS,
   K64_T_SHOW_MS,
   K64_W_F_MS,
+  K65_FREEZE,
   rejectOverrides,
 } from "./constants.mjs";
 
-export const PROCEDURE_SCHEMA = "nir1-cp4-k64-procedure/1";
+export const PROCEDURE_SCHEMA = "nir1-cp4-k64-procedure/2";
 export const PROCEDURE_DIR = "scripts/quality/nir1-graph-eval/procedure";
 export const PROCEDURE_VERSION =
   /^(?:v[1-9][0-9]{0,3}|draft-[1-9][0-9]{0,3})$/u;
 /** The dev preview's provisional version (draft; never a formal run's). */
-export const DEV_DRAFT_PROCEDURE_VERSION = "draft-1";
+export const DEV_DRAFT_PROCEDURE_VERSION = "draft-3";
 export const PROCEDURE_PURPOSES = Object.freeze(["formal", "dev-preview"]);
 /** K6/4:137-145 and :147-161, in the contract's order. */
 export const K64_FOLLOW_CONDITIONS = Object.freeze(
@@ -62,6 +68,8 @@ const TOP_KEYS = Object.freeze([
 /** Each value and the contract's value it must equal (null: the wait bound). */
 const CONTRACT_VALUES = Object.freeze({
   dMs: GRAPH_EVAL_D_MS,
+  bMs: GRAPH_EVAL_B_MS,
+  hybridP95LimitMs: GRAPH_EVAL_HYBRID_P95_LIMIT_MS,
   wFMs: K64_W_F_MS,
   tLateMs: K64_T_LATE_MS,
   tShowMs: K64_T_SHOW_MS,
@@ -71,6 +79,12 @@ const CONTRACT_KEYS = Object.freeze(["draftRef", "contractId", "sha256"]);
 const REVIEW_KEYS = Object.freeze(["reviewer", "reviewedAt", "record"]);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)?$/u;
 const COMMIT = /^[0-9a-f]{40}$/u;
+/**
+ * A review field written before S3 reviewed the file (k64-procedure.v2.json
+ * carries one until S2 追補 #14). The loader refuses it, so a formal run
+ * cannot read a v<N> whose independent review has not happened (fail closed).
+ */
+const REVIEW_PLACEHOLDER = /placeholder/iu;
 
 const isObject = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -126,8 +140,8 @@ export function procedureFileErrors(value, { version }) {
     );
   if (keyErrors(errors, value.contract, CONTRACT_KEYS, "contract"))
     for (const key of CONTRACT_KEYS)
-      if (value.contract[key] !== K64_FREEZE[key])
-        errors.push(`contract.${key} must be K6/4's ${K64_FREEZE[key]}`);
+      if (value.contract[key] !== K65_FREEZE[key])
+        errors.push(`contract.${key} must be K6/5's ${K65_FREEZE[key]}`);
   if (keyErrors(errors, value.values, Object.keys(CONTRACT_VALUES), "values")) {
     for (const [key, expected] of Object.entries(CONTRACT_VALUES)) {
       if (!Object.hasOwn(value.values, key)) continue;
@@ -176,6 +190,14 @@ export function procedureFileErrors(value, { version }) {
       value.review.record.trim().length === 0
     )
       errors.push("review.record must name the review record");
+    for (const key of ["reviewer", "record"])
+      if (
+        typeof value.review?.[key] === "string" &&
+        REVIEW_PLACEHOLDER.test(value.review[key])
+      )
+        errors.push(
+          `review.${key} is still a placeholder; the independent review (S3) has not been recorded`,
+        );
   }
   return errors;
 }
@@ -283,13 +305,16 @@ export function loadProcedureFile(input) {
   return loaded;
 }
 
-/** The receipt's `settings.k64` from a loaded procedure (N17). */
+/** The receipt's `settings.k64` from a loaded procedure (N17; K6/5-N1・N4 record D, B and the p95 limit). */
 export function procedureSettings(loaded) {
   if (!isLoadedProcedure(loaded))
     throw new Error(
       "[precheck] settings.k64 comes from a procedure loadProcedureFile read",
     );
   return {
+    dMs: loaded.values.dMs,
+    bMs: loaded.values.bMs,
+    hybridP95LimitMs: loaded.values.hybridP95LimitMs,
     wFMs: loaded.values.wFMs,
     tLateMs: loaded.values.tLateMs,
     tShowMs: loaded.values.tShowMs,

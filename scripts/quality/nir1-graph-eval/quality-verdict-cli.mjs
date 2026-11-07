@@ -35,7 +35,7 @@ export const DEFAULT_ROOT = path.resolve(HERE, "../../..");
 export const GRAPH_MANIFEST = "evals/nir1-graph/manifest.v1.json";
 export const RETRIEVAL_MANIFEST = "evals/nir1-retrieval/manifest.json";
 export const PROCEDURE_FILE =
-  "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json";
+  "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v2.json";
 const CODE_FILES = Object.freeze([
   "scripts/quality/nir1-graph-eval/quality-verdict.mjs",
   "scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs",
@@ -239,7 +239,8 @@ export function loadQualityInputs({
 }) {
   const graphManifest = readJson(path.join(root, GRAPH_MANIFEST));
   const retrievalManifest = readJson(path.join(root, RETRIEVAL_MANIFEST));
-  const policy = deriveLatencyPolicy(retrievalManifest, GRAPH_EVAL_D_MS);
+  const procedure = readJson(path.join(root, PROCEDURE_FILE));
+  const policy = deriveLatencyPolicy(retrievalManifest, procedure);
   const { tolerance, source: toleranceSource } = readMetricTolerance(root);
   const { expectations, fixtureFiles } = loadExpectations({
     root,
@@ -249,7 +250,6 @@ export function loadQualityInputs({
   const allowList = JSON.parse(allowBytes);
   const gold = readReceiptDir(goldDir);
   const parity = parityDir ? readReceiptDir(parityDir) : [];
-  const procedure = readJson(path.join(root, PROCEDURE_FILE));
   if (procedure.values?.dMs !== GRAPH_EVAL_D_MS)
     throw precheck("the procedure file and the frozen D disagree");
   const procedureDigest = sha256(readBytes(path.join(root, PROCEDURE_FILE)));
@@ -435,7 +435,7 @@ export function renderSummary(output) {
     lines.push(`- ${item.condition} / ${item.component}：${item.reason ?? ""}`);
   lines.push("");
   lines.push(
-    `blocked の判定：${output.blockedDetermination}。p95 の上限は manifest の B+D（B=${output.policy.b}、D=${output.policy.d}）から ${output.policy.limit} ms、百分位 ${output.policy.percentile}、許容誤差 ${output.policy.metricTolerance}。`,
+    `blocked の判定：${output.blockedDetermination}。p95 の上限は手順のファイル v2 の B と上限（K6/5。B=${output.policy.b}、D=${output.policy.d}。B は D から逆算しない）の ${output.policy.limit} ms、百分位 ${output.policy.percentile}、許容誤差 ${output.policy.metricTolerance}。`,
   );
   return `${lines.join("\n")}\n`;
 }

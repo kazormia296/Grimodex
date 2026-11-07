@@ -29,6 +29,8 @@ import {
   readAdmittedFixture,
   readK62FreezeHead,
   readK64FreezeHead,
+  readK65FreezeHead,
+  assertDFortyAdmits,
   readAdmittedObservationPrep,
   readFreezeBoundFile,
   readNetNamespaces,
@@ -58,6 +60,8 @@ import {
   K62_FREEZE,
   K64_CANDIDATE_REQUIREMENTS,
   K64_FREEZE,
+  K65_CANDIDATE_REQUIREMENTS,
+  K65_FREEZE,
   OBSERVATION_PREP_RECORD_PATH,
   OBSERVATION_PREP_RECORD_SCHEMA,
 } from "./constants.mjs";
@@ -520,6 +524,7 @@ test("P2-7: admitGraphCaseRun は facts を自分で集め、N-1、既定の add
       defaultAddonSha256: product.artifacts[PRODUCT_NODE],
       k62Commit: K62_FREEZE.commit,
       k64Commit: H40("4"),
+      k65Commit: H40("5"),
     };
     // Everything the temp repo can show passes; the K6/2 freeze commit lives
     // only in the real repository, so the run stops there.
@@ -674,6 +679,118 @@ test("批准 7: K6/4 の先頭は固定した commit と bytes の両方が一�
     assert.throws(
       () => readK64FreezeHead({ root: repo, commit: K64_FREEZE.freezeCommit }),
       new RegExp(K64_FREEZE.freezeCommit),
+    );
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("K6/5 変える点 7: K6/5 の凍結の commit と bytes は固定され、先頭は commit と bytes の両方が一致するときだけ読む", async () => {
+  assert.equal(
+    K65_FREEZE.freezeCommit,
+    "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+  );
+  assert.equal(
+    K65_FREEZE.sha256,
+    "1ad1088498e43dc3cd0deb1b7d74f18396eb3c07d4bd3834a8787de30ecd24a7",
+  );
+  assert.equal(K65_FREEZE.draftRef, "nir1-final-request-eval-proposal/5");
+  assert.equal(K65_FREEZE.contractId, "graph-eval-procedure");
+  const repo = await mkdtemp(path.join(tmpdir(), "cp4-k65-freeze-"));
+  try {
+    git(repo, "init", "-q", "-b", "main");
+    const frozen = "# K6/5 (test bytes)\n";
+    await put(repo, K65_FREEZE.path, frozen);
+    const freezeCommit = commit(repo, "freeze");
+    await put(repo, K65_FREEZE.path, `${frozen}changed\n`);
+    const changed = commit(repo, "changed K6/5 bytes");
+    const freeze = Object.freeze({
+      ...K65_FREEZE,
+      sha256: sha256Of(frozen),
+      freezeCommit,
+    });
+    const read = (commitRef, descriptor = freeze) =>
+      readK65FreezeHead({ root: repo, commit: commitRef }, descriptor);
+    assert.deepEqual(read(freezeCommit), {
+      freezeCommit,
+      sha256: sha256Of(frozen),
+    });
+    assert.throws(() => read(changed), /K6\/5 freeze commit or bytes differ/);
+    assert.throws(() => read(undefined), /K6\/5 freeze commit is not given/);
+    assert.throws(
+      () => read(freezeCommit, { ...freeze, freezeCommit: null }),
+      /\[precheck\] the K6\/5 freeze commit is not pinned/,
+    );
+    // 製品の既定（K65_FREEZE）は一時 repo の凍結を受け付けない。
+    assert.throws(
+      () => readK65FreezeHead({ root: repo, commit: freezeCommit }),
+      /K6\/5 freeze commit or bytes differ/,
+    );
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("K6/5-N2（変える点 6）: 候補の製品の D が 40 ms でない（#802 が祖先に無い、定数が 40 でない・読めない）候補は run の前に [precheck]", async () => {
+  const need = K65_CANDIDATE_REQUIREMENTS;
+  assert.equal(need.dFortyCommit, "a7e969466a1d9a22a97142b06b1a9301f972f96e");
+  assert.equal(need.waitMs, 40);
+  const evidence = (overrides = {}) => ({
+    dForty: {
+      commit: need.dFortyCommit,
+      ancestor: true,
+      config: {
+        path: need.configPath,
+        constant: need.waitConstant,
+        waitMs: 40,
+      },
+      ...overrides,
+    },
+  });
+  assert.doesNotThrow(() => assertDFortyAdmits(evidence()));
+  for (const bad of [
+    evidence({ ancestor: false }),
+    evidence({ commit: H40("1") }),
+    evidence({ config: { ...evidence().dForty.config, waitMs: 10.84 } }),
+    evidence({ config: { ...evidence().dForty.config, waitMs: null } }),
+    evidence({ config: { ...evidence().dForty.config, path: "other.ts" } }),
+    {},
+    null,
+  ])
+    assert.throws(() => assertDFortyAdmits(bad), /\[precheck\].*not 40 ms/u);
+  // 封印した証拠は git から値を読む（一時 repo には #802 が無いので祖先は偽）。
+  const repo = await mkdtemp(path.join(tmpdir(), "cp4-d40-"));
+  try {
+    git(repo, "init", "-q", "-b", "main");
+    const read = async (text) => {
+      await put(repo, need.configPath, text);
+      const head = commit(repo, "config");
+      return collectRatification5Evidence({ root: repo, candidateHead: head })
+        .dForty;
+    };
+    const forty = await read(
+      `export const ${need.waitConstant} = 40;\nexport const OTHER = 1;\n`,
+    );
+    assert.equal(forty.config.waitMs, 40);
+    assert.equal(forty.ancestor, false);
+    assert.throws(
+      () => assertDFortyAdmits({ dForty: forty }),
+      /is not an ancestor/u,
+    );
+    assert.equal(
+      (await read(`export const ${need.waitConstant} = 10.84;\n`)).config
+        .waitMs,
+      10.84,
+    );
+    // 数の literal でない書き方は読めない（null）。
+    assert.equal(
+      (await read(`export const ${need.waitConstant} = FORTY;\n`)).config
+        .waitMs,
+      null,
+    );
+    assert.equal(
+      (await read(`const ${need.waitConstant} = 40;\n`)).config.waitMs,
+      null,
     );
   } finally {
     await rm(repo, { recursive: true, force: true });
@@ -1241,6 +1358,7 @@ test("DR-CP4-S4-1 予行: S4a→S4b の記録を、admission → S2 の検証つ
       kind: "sp-p4",
       k62: { freezeCommit: K62_FREEZE.commit, sha256: K62_FREEZE.sha256 },
       k64: { freezeCommit: r.k64Freeze.freezeCommit, sha256: H64("4") },
+      k65: { freezeCommit: r.k65Freeze.freezeCommit, sha256: H64("5") },
       observationPrep: {
         commit: facts.commit,
         freezeRecordSha256: facts.recordSha256AtCommit,
@@ -1276,12 +1394,14 @@ test("DR-CP4-S4-1 予行: S4a→S4b の記録を、admission → S2 の検証つ
         prepCommit: r.s4b,
         k62Commit: K62_FREEZE.commit,
         k64Commit: r.k64Freeze.freezeCommit,
+        k65Commit: r.k65Freeze.freezeCommit,
         buildReceipt: { kind: "eval" },
         productReceipt: { kind: "product" },
         defaultAddonSha256: H64("0"),
       },
       {
         freeze: r.k64Freeze,
+        freeze65: r.k65Freeze,
         admitGraphCase: (value) => {
           calls.push(value);
           return Object.freeze({ stub: true });

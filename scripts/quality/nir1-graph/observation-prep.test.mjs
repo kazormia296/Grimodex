@@ -102,8 +102,8 @@ const S4_TOKEN_FIELDS = Object.freeze([
       },
     ]),
   ),
-  ["k64-procedure-v1-commit", (p, t) => (p.k64Procedure.formal.commit = t)],
-  ["k64-procedure-v1-sha256", (p, t) => (p.k64Procedure.formal.sha256 = t)],
+  ["k64-procedure-v2-commit", (p, t) => (p.k64Procedure.formal.commit = t)],
+  ["k64-procedure-v2-sha256", (p, t) => (p.k64Procedure.formal.sha256 = t)],
   ...[
     ["setup-addendum", OBSERVATION_PREP_FILES.setupAddendum],
     ["declaration-addendum", OBSERVATION_PREP_FILES.declarationAddendum],
@@ -815,6 +815,11 @@ test("K6/4 procedure draft: contract values, wait bound, the F/X lists and no re
 
   for (const [key, value] of [
     ["dMs", 21.68],
+    // K6/5-N1・N4: K6/4 の D と P の上限、D から逆算した B と上限は契約の値でない。
+    ["dMs", 10.84],
+    ["bMs", 200],
+    ["hybridP95LimitMs", 65.04],
+    ["hybridP95LimitMs", 240],
     ["wFMs", 99],
     ["tLateMs", 2000],
     ["tShowMs", 1999],
@@ -836,7 +841,7 @@ test("K6/4 procedure draft: contract values, wait bound, the F/X lists and no re
   assert.ok(procedureDraftErrors(reviewed).some((e) => /review/u.test(e)));
 
   const formal = clone(procedure);
-  formal.version = "v1";
+  formal.version = "v2";
   formal.draft = false;
   assert.ok(procedureDraftErrors(formal).length > 0);
 
@@ -847,6 +852,60 @@ test("K6/4 procedure draft: contract values, wait bound, the F/X lists and no re
   const sha = clone(procedure);
   sha.contract.sha256 = flip(sha.contract.sha256);
   assert.ok(procedureDraftErrors(sha).some((e) => /sha256/u.test(e)));
+});
+
+test("K6/5（S2 追補 #14 の下書き）: S2 は K6/5 の契約と手順のファイルの draft-3・v2 を指し、D・B・上限の理由を持つ", async () => {
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  assert.equal(
+    OBSERVATION_PREP_FILES.procedureDraft,
+    "scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-3.json",
+  );
+  assert.deepEqual(
+    {
+      draftRef: prep.contracts.k65.draftRef,
+      contractId: prep.contracts.k65.contractId,
+      sha256: prep.contracts.k65.sha256,
+      confirmedCommit: prep.contracts.k65.confirmedCommit,
+      freezeCommit: prep.contracts.k65.freezeCommit,
+    },
+    {
+      draftRef: "nir1-final-request-eval-proposal/5",
+      contractId: "graph-eval-procedure",
+      sha256:
+        "1ad1088498e43dc3cd0deb1b7d74f18396eb3c07d4bd3834a8787de30ecd24a7",
+      confirmedCommit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+      freezeCommit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+    },
+  );
+  // K6/4 の束縛（トレースの file が引く bytes）はそのまま。
+  assert.equal(
+    prep.contracts.k64.sha256,
+    "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3",
+  );
+  assert.deepEqual(prep.k64Procedure.values, {
+    dMs: 40,
+    bMs: 54.2,
+    hybridP95LimitMs: 94.2,
+    wFMs: 100,
+    tLateMs: 100,
+    tShowMs: 2000,
+    r1r4WaitMs: 10000,
+  });
+  for (const key of ["dMs", "bMs", "hybridP95LimitMs"])
+    assert.ok(prep.k64Procedure.valueReasons[key].includes("K6/5"), key);
+  assert.equal(prep.k64Procedure.formal.version, "v2");
+  assert.equal(
+    prep.k64Procedure.formal.path,
+    "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v2.json",
+  );
+  const draft = await draftPrep();
+  const bad = clone(draft);
+  bad.contracts.k65.sha256 = flip(bad.contracts.k65.sha256);
+  assert.ok(
+    observationPrepErrors(bad, await context()).some((e) =>
+      /contracts\.k65/u.test(e),
+    ),
+  );
 });
 
 test("observation prep: D1, D10, sample plan, traces, procedure, diagnostics, placeholders", async () => {
@@ -938,9 +997,9 @@ async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
     reviewedAt: "2026-10-28",
     record: "scratchpad/s3/observation-prep-review.v1.json",
   };
-  const v1 = {
+  const v2 = {
     ...clone(ctx.procedureDraft),
-    version: "v1",
+    version: "v2",
     draft: false,
     review,
   };
@@ -971,7 +1030,7 @@ async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
       ...ctx.fileSha256,
       [filled.k64Procedure.formal.path]: "b".repeat(64),
     },
-    procedureFormal: v1,
+    procedureFormal: v2,
     sp1Sha256: SP1.sha256,
   };
   return { fixed: filled, frozenCtx };
@@ -1113,7 +1172,7 @@ test("S3-P2-2: boundFiles is exactly the five files, and traces agree with it", 
   );
 });
 
-test("S3-P2-3: the frozen v1 procedure must be the reviewed draft-2 values", async () => {
+test("S3-P2-3: the frozen v2 procedure must be the reviewed draft-3 values", async () => {
   const ctx = await context();
   const { fixed, frozenCtx } = await frozenRecord(ctx);
   const shorter = {
@@ -3640,7 +3699,7 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
       H4,
     ]),
   ).filter(
-    // S4a の手順の file（k64-procedure の draft-2 と v1）は S2 の boundFiles と
+    // S4a の手順の file（k64-procedure の draft-3 と v2。draft-2 と v1 は K6/4 の履歴）は S2 の boundFiles と
     // k64Procedure が束縛し、pin の対象でない。
     (file) => !file.startsWith(`${H4}procedure/`),
   );

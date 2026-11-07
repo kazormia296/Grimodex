@@ -29,6 +29,7 @@ import {
   K64_T_LATE_MS,
   K64_T_SHOW_MS,
   K64_W_F_MS,
+  K65_FREEZE,
   WINDOW_SAMPLE_INTERVAL_MS,
   devVariant,
   variantByKey,
@@ -403,12 +404,18 @@ export function assertElectronLaunch({ env, argv = [], xvfbDisplay, netns }) {
  * a descriptor whose freezeCommit is null refuses it (fail closed). `freeze`
  * defaults to K64_FREEZE; only the tests pass another descriptor
  * (DR-CP4-T14-1).
+ *
+ * K6/5 変える点 7 / K6/5-N3: the /5 row stands on the /4 bytes, so a formal
+ * Graph receipt's head also carries the K6/5 freeze commit and bytes
+ * (`head.k65`, the pinned K65_FREEZE). A receipt without it, or one started
+ * before the /5 freeze, is refused; `freeze65` is for the tests only.
  */
 export function receiptHeadErrors(
   head,
   runKind,
   fixtureKind,
   freeze = K64_FREEZE,
+  freeze65 = K65_FREEZE,
 ) {
   const errors = [];
   if (head?.k62?.freezeCommit !== K62_FREEZE.commit)
@@ -428,6 +435,21 @@ export function receiptHeadErrors(
       else if (head?.k64?.freezeCommit !== freeze.freezeCommit)
         errors.push(
           "head.k64.freezeCommit must be the pinned K6/4 freeze commit",
+        );
+    }
+  }
+  if (formalGraph || head?.k65 !== undefined) {
+    if (head?.k65?.sha256 !== freeze65.sha256)
+      errors.push("head.k65.sha256 must be the K6/5 bytes (K6/5-N3)");
+    commitErrors(errors, head?.k65?.freezeCommit, "head.k65.freezeCommit");
+    if (formalGraph) {
+      if (freeze65.freezeCommit === null)
+        errors.push(
+          "[precheck] the K6/5 freeze commit is not pinned (変える点 7); a formal Graph receipt is refused",
+        );
+      else if (head?.k65?.freezeCommit !== freeze65.freezeCommit)
+        errors.push(
+          "head.k65.freezeCommit must be the pinned K6/5 freeze commit (K6/5-N3)",
         );
     }
   }
