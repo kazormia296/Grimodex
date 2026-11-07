@@ -1,0 +1,698 @@
+{
+  "schema": "ir-chat-pilot-verification/1",
+  "evidenceScope": "not-cp4-evidence",
+  "instructionsGivenToVerifiers": {
+    "note": "指示書の全文から照合者の節（「照合者への指示」と「守ること」）だけを切り出した instructions.md。8 部で同一。",
+    "excerptSha256": [
+      "685e7833c33b91167cf65dba2ea110e667ba557be5e308c763e89ae1e4ee2fee"
+    ],
+    "fullInstructionsSha256FromFreezeManifest": "01fd31a0c283142add9e3f7bb064e01cf6effcc7ecfbd8ae2b552df9a726a210",
+    "parts": [
+      {
+        "part": "g-ja-1-p117-1",
+        "rows": 36
+      },
+      {
+        "part": "g-ja-1-p117-2",
+        "rows": 35
+      },
+      {
+        "part": "g-ja-1-p59-1",
+        "rows": 35
+      },
+      {
+        "part": "g-ja-1-p59-2",
+        "rows": 34
+      },
+      {
+        "part": "m-ja-2-p117-1",
+        "rows": 28
+      },
+      {
+        "part": "m-ja-2-p117-2",
+        "rows": 28
+      },
+      {
+        "part": "m-ja-2-p59-1",
+        "rows": 32
+      },
+      {
+        "part": "m-ja-2-p59-2",
+        "rows": 32
+      }
+    ]
+  },
+  "verifier": "Sonnet 5.5 の subagent（effort high、API ではない）。8 部に分けて 8 体。盲検の限界は README と事前登録の限界 18・19",
+  "selection": {
+    "seed": "ir-chat-pilot-2026-11-verify-v1",
+    "rate": 0.25,
+    "judgedAnswers": 474,
+    "skippedAuto": 2,
+    "selected": 260,
+    "byRule": {
+      "S1": 71,
+      "S2": 120,
+      "S3": 69
+    },
+    "byType": {
+      "E": 36,
+      "K": 15,
+      "M": 42,
+      "N": 71,
+      "R": 31,
+      "T": 47,
+      "U": 18
+    },
+    "materialsSha256": "7105cf38a0d5e6af97438d1c65fdb41b95215d2006be5cddc9e32b7d961f7118"
+  },
+  "definition": "(b) 主の値（下限）＝ judge の hedged ∪（S2 のうち照合者が contradiction か fabricated_claim を確定）。judge の hedged は照合で覆さない。",
+  "confirmation": {
+    "lowerBoundByArm": {
+      "0": {
+        "judgedAnswerable": 67,
+        "judgeHedged": 3,
+        "s2Candidates": 16,
+        "s2Confirmed": {
+          "n": 16,
+          "successes": 0,
+          "rate": 0,
+          "low": 0,
+          "high": 0.19361341827271994
+        },
+        "s2VerificationMissing": 0,
+        "lowerBound": {
+          "n": 67,
+          "successes": 3,
+          "rate": 0.04477611940298507,
+          "low": 0.015343696938151803,
+          "high": 0.12358032510539321
+        },
+        "notInS2": 51,
+        "pointEstimate": {
+          "rate": 0.0889,
+          "rateIfMissRateLow": 0.0621,
+          "rateIfMissRateHigh": 0.1512,
+          "formula": "(lowerBound + r × notInS2) / judgedAnswerable。r＝S3 の見逃し率（pooled）"
+        }
+      },
+      "A": {
+        "judgedAnswerable": 67,
+        "judgeHedged": 0,
+        "s2Candidates": 30,
+        "s2Confirmed": {
+          "n": 30,
+          "successes": 0,
+          "rate": 0,
+          "low": 0,
+          "high": 0.113517091390478
+        },
+        "s2VerificationMissing": 0,
+        "lowerBound": {
+          "n": 67,
+          "successes": 0,
+          "rate": 0,
+          "low": 0,
+          "high": 0.05422802421176257
+        },
+        "notInS2": 37,
+        "pointEstimate": {
+          "rate": 0.032,
+          "rateIfMissRateLow": 0.0126,
+          "rateIfMissRateHigh": 0.0772,
+          "formula": "(lowerBound + r × notInS2) / judgedAnswerable。r＝S3 の見逃し率（pooled）"
+        }
+      },
+      "B": {
+        "judgedAnswerable": 67,
+        "judgeHedged": 0,
+        "s2Candidates": 31,
+        "s2Confirmed": {
+          "n": 31,
+          "successes": 4,
+          "rate": 0.12903225806451613,
+          "low": 0.05134201164644764,
+          "high": 0.28852756954385356
+        },
+        "s2VerificationMissing": 0,
+        "lowerBound": {
+          "n": 67,
+          "successes": 4,
+          "rate": 0.05970149253731343,
+          "low": 0.023458971433043548,
+          "high": 0.1436970498877623
+        },
+        "notInS2": 36,
+        "pointEstimate": {
+          "rate": 0.0909,
+          "rateIfMissRateLow": 0.0719,
+          "rateIfMissRateHigh": 0.1348,
+          "formula": "(lowerBound + r × notInS2) / judgedAnswerable。r＝S3 の見逃し率（pooled）"
+        }
+      },
+      "O": {
+        "judgedAnswerable": 67,
+        "judgeHedged": 1,
+        "s2Candidates": 11,
+        "s2Confirmed": {
+          "n": 11,
+          "successes": 1,
+          "rate": 0.09090909090909091,
+          "low": 0.01623175226282597,
+          "high": 0.3773646254862038
+        },
+        "s2VerificationMissing": 0,
+        "lowerBound": {
+          "n": 67,
+          "successes": 2,
+          "rate": 0.029850746268656716,
+          "low": 0.008224522347453904,
+          "high": 0.10246750041883029
+        },
+        "notInS2": 56,
+        "pointEstimate": {
+          "rate": 0.0783,
+          "rateIfMissRateLow": 0.0489,
+          "rateIfMissRateHigh": 0.1467,
+          "formula": "(lowerBound + r × notInS2) / judgedAnswerable。r＝S3 の見逃し率（pooled）"
+        }
+      },
+      "C": {
+        "judgedAnswerable": 67,
+        "judgeHedged": 0,
+        "s2Candidates": 15,
+        "s2Confirmed": {
+          "n": 15,
+          "successes": 0,
+          "rate": 0,
+          "low": 0,
+          "high": 0.20388926630434784
+        },
+        "s2VerificationMissing": 0,
+        "lowerBound": {
+          "n": 67,
+          "successes": 0,
+          "rate": 0,
+          "low": 0,
+          "high": 0.05422802421176257
+        },
+        "notInS2": 52,
+        "pointEstimate": {
+          "rate": 0.045,
+          "rateIfMissRateLow": 0.0177,
+          "rateIfMissRateHigh": 0.1085,
+          "formula": "(lowerBound + r × notInS2) / judgedAnswerable。r＝S3 の見逃し率（pooled）"
+        }
+      },
+      "D": {
+        "judgedAnswerable": 67,
+        "judgeHedged": 0,
+        "s2Candidates": 17,
+        "s2Confirmed": {
+          "n": 17,
+          "successes": 0,
+          "rate": 0,
+          "low": 0,
+          "high": 0.18432366037156456
+        },
+        "s2VerificationMissing": 0,
+        "lowerBound": {
+          "n": 67,
+          "successes": 0,
+          "rate": 0,
+          "low": 0,
+          "high": 0.05422802421176257
+        },
+        "notInS2": 50,
+        "pointEstimate": {
+          "rate": 0.0433,
+          "rateIfMissRateLow": 0.017,
+          "rateIfMissRateHigh": 0.1043,
+          "formula": "(lowerBound + r × notInS2) / judgedAnswerable。r＝S3 の見逃し率（pooled）"
+        }
+      }
+    },
+    "s3MissRate": {
+      "n": 69,
+      "successes": 4,
+      "rate": 0.057971014492753624,
+      "low": 0.022772020303367495,
+      "high": 0.13979442524423166
+    },
+    "recomputedLowerBound": {
+      "0": {
+        "n": 67,
+        "successes": 3
+      },
+      "A": {
+        "n": 67,
+        "successes": 0
+      },
+      "B": {
+        "n": 67,
+        "successes": 4
+      },
+      "O": {
+        "n": 67,
+        "successes": 2
+      },
+      "C": {
+        "n": 67,
+        "successes": 0
+      },
+      "D": {
+        "n": 67,
+        "successes": 0
+      }
+    }
+  },
+  "judgeVsVerifier": {
+    "items": {
+      "agreement": {
+        "n": 490,
+        "successes": 466,
+        "rate": 0.9510204081632653,
+        "low": 0.9281557650602037,
+        "high": 0.9668680644430214
+      },
+      "positives": {
+        "judge": 223,
+        "verifier": 237,
+        "both": 218
+      },
+      "kappa": 0.9018
+    },
+    "contradictionOrHedgedVsContradiction": {
+      "agreement": {
+        "n": 189,
+        "successes": 118,
+        "rate": 0.6243386243386243,
+        "low": 0.5534627856603199,
+        "high": 0.6902605603397133
+      },
+      "positives": {
+        "judge": 71,
+        "verifier": 8,
+        "both": 4
+      },
+      "kappa": 0.0273
+    },
+    "unverifiedVsFabricatedClaim": {
+      "agreement": {
+        "n": 189,
+        "successes": 138,
+        "rate": 0.7301587301587301,
+        "low": 0.6627565498303744,
+        "high": 0.7883909204250062
+      },
+      "positives": {
+        "judge": 50,
+        "verifier": 1,
+        "both": 0
+      },
+      "kappa": -0.0105
+    }
+  },
+  "itemAudit": {
+    "note": "主指標は judge v3 の reproduced だけ。機械照合と照合者の items は一致の監査（不一致率）。",
+    "verifierVsJudgeItemDisagreementRate": 0.049,
+    "mechanicalVsJudge": {
+      "itemsChecked": 490,
+      "mechanicalTrueJudgeFalse": 0,
+      "mechanicalTrueJudgeFalseRate": 0,
+      "mechanicalFalseJudgeTrue": 220,
+      "mechanicalFalseJudgeTrueRate": 0.449
+    },
+    "mechanicalVsVerifier": {
+      "itemsChecked": 490,
+      "mechanicalTrueVerifierFalse": 0,
+      "mechanicalTrueVerifierFalseRate": 0,
+      "mechanicalFalseVerifierTrue": 234,
+      "mechanicalFalseVerifierTrueRate": 0.4776
+    }
+  },
+  "verifierFlagsByRuleAndArm": {
+    "S1": {
+      "0": {
+        "rows": 12,
+        "contradiction": 0,
+        "fabricatedClaim": 0,
+        "uncertain": 1
+      },
+      "A": {
+        "rows": 12,
+        "contradiction": 0,
+        "fabricatedClaim": 0,
+        "uncertain": 1
+      },
+      "D": {
+        "rows": 12,
+        "contradiction": 0,
+        "fabricatedClaim": 0,
+        "uncertain": 2
+      },
+      "B": {
+        "rows": 12,
+        "contradiction": 0,
+        "fabricatedClaim": 0,
+        "uncertain": 1
+      },
+      "O": {
+        "rows": 12,
+        "contradiction": 0,
+        "fabricatedClaim": 0,
+        "uncertain": 0
+      },
+      "C": {
+        "rows": 11,
+        "contradiction": 0,
+        "fabricatedClaim": 0,
+        "uncertain": 1
+      }
+    },
+    "S2": {
+      "0": {
+        "rows": 16,
+        "contradiction": 0,
+        "fabricatedClaim": 0,
+        "uncertain": 3
+      },
+      "A": {
+        "rows": 30,
+        "contradiction": 0,
+        "fabricatedClaim": 0,
+        "uncertain": 6
+      },
+      "C": {
+        "rows": 15,
+        "contradiction": 0,
+        "fabricatedClaim": 0,
+        "uncertain": 0
+      },
+      "B": {
+        "rows": 31,
+        "contradiction": 4,
+        "fabricatedClaim": 0,
+        "uncertain": 9
+      },
+      "O": {
+        "rows": 11,
+        "contradiction": 1,
+        "fabricatedClaim": 0,
+        "uncertain": 9
+      },
+      "D": {
+        "rows": 17,
+        "contradiction": 0,
+        "fabricatedClaim": 0,
+        "uncertain": 0
+      }
+    },
+    "S3": {
+      "0": {
+        "rows": 13,
+        "contradiction": 0,
+        "fabricatedClaim": 0,
+        "uncertain": 1
+      },
+      "D": {
+        "rows": 17,
+        "contradiction": 0,
+        "fabricatedClaim": 1,
+        "uncertain": 1
+      },
+      "B": {
+        "rows": 9,
+        "contradiction": 0,
+        "fabricatedClaim": 0,
+        "uncertain": 2
+      },
+      "O": {
+        "rows": 11,
+        "contradiction": 0,
+        "fabricatedClaim": 0,
+        "uncertain": 3
+      },
+      "C": {
+        "rows": 10,
+        "contradiction": 1,
+        "fabricatedClaim": 0,
+        "uncertain": 1
+      },
+      "A": {
+        "rows": 9,
+        "contradiction": 2,
+        "fabricatedClaim": 0,
+        "uncertain": 2
+      }
+    }
+  },
+  "verifierUncertain": {
+    "rows": 260,
+    "uncertainTrue": 43
+  },
+  "nType": {
+    "note": "N 型の正本は S1（照合者）。judge 側の数（棄権・作話）は summary-sonnet.json の byArm。",
+    "verifierByArm": {
+      "0": {
+        "verified": 12,
+        "abstained": 12,
+        "fabricated": 0,
+        "goldAnswerableInManuscript": 1,
+        "judgeAgreesAbstained": 12
+      },
+      "A": {
+        "verified": 12,
+        "abstained": 12,
+        "fabricated": 0,
+        "goldAnswerableInManuscript": 1,
+        "judgeAgreesAbstained": 12
+      },
+      "B": {
+        "verified": 12,
+        "abstained": 12,
+        "fabricated": 0,
+        "goldAnswerableInManuscript": 1,
+        "judgeAgreesAbstained": 10
+      },
+      "O": {
+        "verified": 12,
+        "abstained": 12,
+        "fabricated": 0,
+        "goldAnswerableInManuscript": 1,
+        "judgeAgreesAbstained": 12
+      },
+      "C": {
+        "verified": 11,
+        "abstained": 9,
+        "fabricated": 0,
+        "goldAnswerableInManuscript": 1,
+        "judgeAgreesAbstained": 9
+      },
+      "D": {
+        "verified": 12,
+        "abstained": 10,
+        "fabricated": 0,
+        "goldAnswerableInManuscript": 1,
+        "judgeAgreesAbstained": 10
+      }
+    },
+    "nAnswersByArm": {
+      "0": 12,
+      "A": 12,
+      "B": 12,
+      "O": 12,
+      "C": 12,
+      "D": 12
+    },
+    "emptyAnswersAbstainedWithoutJudge": {
+      "0": [],
+      "A": [],
+      "B": [],
+      "O": [],
+      "C": [
+        "g-ja-1-p59-N3",
+        "m-ja-2-p117-M2"
+      ],
+      "D": []
+    },
+    "questionsVerifierRecordedAnswerableInManuscript": [
+      "m-ja-2-p117-N3"
+    ],
+    "nonAbstainedByVerifier": {
+      "0": [],
+      "A": [],
+      "B": [],
+      "O": [],
+      "C": [
+        {
+          "qid": "g-ja-1-p117-N3",
+          "verifierFabricated": false,
+          "goldAnswerableInManuscript": false,
+          "judgeFabricated": true
+        },
+        {
+          "qid": "m-ja-2-p117-N3",
+          "verifierFabricated": false,
+          "goldAnswerableInManuscript": true,
+          "judgeFabricated": false
+        }
+      ],
+      "D": [
+        {
+          "qid": "m-ja-2-p117-N3",
+          "verifierFabricated": false,
+          "goldAnswerableInManuscript": true,
+          "judgeFabricated": false
+        },
+        {
+          "qid": "g-ja-1-p117-N3",
+          "verifierFabricated": false,
+          "goldAnswerableInManuscript": false,
+          "judgeFabricated": true
+        }
+      ]
+    },
+    "summaryNTypeByArm": {
+      "0": {
+        "verified": 12,
+        "abstained": 12,
+        "fabricated": 0,
+        "answerableInManuscript": 1,
+        "judgeAgreesAbstained": 12
+      },
+      "A": {
+        "verified": 12,
+        "abstained": 12,
+        "fabricated": 0,
+        "answerableInManuscript": 1,
+        "judgeAgreesAbstained": 12
+      },
+      "D": {
+        "verified": 12,
+        "abstained": 10,
+        "fabricated": 0,
+        "answerableInManuscript": 1,
+        "judgeAgreesAbstained": 10
+      },
+      "B": {
+        "verified": 12,
+        "abstained": 12,
+        "fabricated": 0,
+        "answerableInManuscript": 1,
+        "judgeAgreesAbstained": 10
+      },
+      "O": {
+        "verified": 12,
+        "abstained": 12,
+        "fabricated": 0,
+        "answerableInManuscript": 1,
+        "judgeAgreesAbstained": 12
+      },
+      "C": {
+        "verified": 11,
+        "abstained": 9,
+        "fabricated": 0,
+        "answerableInManuscript": 1,
+        "judgeAgreesAbstained": 9
+      }
+    },
+    "judgeBasedByArm": {
+      "0": {
+        "nAbstain": {
+          "n": 12,
+          "successes": 12,
+          "rate": 1,
+          "low": 0.7574992425007574,
+          "high": 1
+        },
+        "nFabricated": {
+          "n": 12,
+          "successes": 0,
+          "rate": 0,
+          "low": 0,
+          "high": 0.2425007574992425
+        }
+      },
+      "A": {
+        "nAbstain": {
+          "n": 12,
+          "successes": 12,
+          "rate": 1,
+          "low": 0.7574992425007574,
+          "high": 1
+        },
+        "nFabricated": {
+          "n": 12,
+          "successes": 0,
+          "rate": 0,
+          "low": 0,
+          "high": 0.2425007574992425
+        }
+      },
+      "B": {
+        "nAbstain": {
+          "n": 12,
+          "successes": 10,
+          "rate": 0.8333333333333334,
+          "low": 0.5519636426153274,
+          "high": 0.9530358523851776
+        },
+        "nFabricated": {
+          "n": 12,
+          "successes": 0,
+          "rate": 0,
+          "low": 0,
+          "high": 0.2425007574992425
+        }
+      },
+      "O": {
+        "nAbstain": {
+          "n": 12,
+          "successes": 12,
+          "rate": 1,
+          "low": 0.7574992425007574,
+          "high": 1
+        },
+        "nFabricated": {
+          "n": 12,
+          "successes": 0,
+          "rate": 0,
+          "low": 0,
+          "high": 0.2425007574992425
+        }
+      },
+      "C": {
+        "nAbstain": {
+          "n": 12,
+          "successes": 8,
+          "rate": 0.6666666666666666,
+          "low": 0.3906175873976139,
+          "high": 0.8618821601026385
+        },
+        "nFabricated": {
+          "n": 12,
+          "successes": 1,
+          "rate": 0.08333333333333333,
+          "low": 0.014864709450773478,
+          "high": 0.35388592179859524
+        }
+      },
+      "D": {
+        "nAbstain": {
+          "n": 12,
+          "successes": 8,
+          "rate": 0.6666666666666666,
+          "low": 0.3906175873976139,
+          "high": 0.8618821601026385
+        },
+        "nFabricated": {
+          "n": 12,
+          "successes": 1,
+          "rate": 0.08333333333333333,
+          "low": 0.014864709450773478,
+          "high": 0.35388592179859524
+        }
+      }
+    }
+  }
+}
