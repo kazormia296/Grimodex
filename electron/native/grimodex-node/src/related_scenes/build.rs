@@ -12,6 +12,50 @@ use grimodex_semantic::runtime::{
 /// decision of 2026-11-06.
 const MAX_CONSECUTIVE_READER_RETRIES: u32 = 40;
 const RETRY_DELAY: Duration = Duration::from_millis(250);
+/// DR-IRB-7: the wait after a publish-side `Stale` (`StaleRetry`). A save
+/// reserves Freshness between the prepare and the publish, so the publish
+/// check no longer matches (`Stale` is not only Freshness: an owner mismatch
+/// or a runtime epoch rotation also give it, and the next attempt then stops
+/// or proceeds with the new epoch, so the short retry does no harm); the renderer's hook begins the parent query
+/// 400 ms after the save, and a build task asleep for 250 ms at that moment
+/// leaves Chronicle unusable so IR/Graph never start. In the dev measurement
+/// `Stale` came 156-243 ms after the save and one build takes about 25 ms, so
+/// 50 ms still finishes the next build before 400 ms (243 + 50 + 25 = about 320 ms).
+/// It is not 0 ms: 0 ms would busy-loop while Freshness is still being
+/// evaluated, and in theory `prepare_on_reader` drops any `Unavailable` other
+/// than `PendingChange` (for example `ReservedBinding`) to `Stopped`, which
+/// would end the task and release the reservation (a theoretical path: the
+/// reason is decided inside one transaction, and between the Freshness
+/// reservation and the publish `PendingChange` is what is seen).
+/// `PendingChange` keeps `RETRY_DELAY`.
+const STALE_RETRY_DELAY: Duration = Duration::from_millis(50);
+/// DR-IRB-7: how many `StaleRetry` in a row wait `STALE_RETRY_DELAY`; the
+/// following ones go back to `RETRY_DELAY` until another outcome ends the run.
+/// Independent of the reader-retry streak (`K`).
+const MAX_CONSECUTIVE_STALE_RETRIES: u32 = 3;
+
+/// The waits and bounds of the build task's retry loop. Tests shorten them.
+#[derive(Clone, Copy)]
+struct RetryPolicy {
+    retry_delay: Duration,
+    stale_delay: Duration,
+    max_stale_retries: u32,
+    max_reader_retries: u32,
+}
+
+impl RetryPolicy {
+    const PRODUCTION: Self = Self {
+        retry_delay: RETRY_DELAY,
+        stale_delay: STALE_RETRY_DELAY,
+        max_stale_retries: MAX_CONSECUTIVE_STALE_RETRIES,
+        max_reader_retries: MAX_CONSECUTIVE_READER_RETRIES,
+    };
+}
+
+/// One build step of the task; production runs `build_once`, tests script it.
+type BuildStep = dyn Fn(&Arc<AppState>, &SemanticRequest, &WorkspaceParticipant, &str) -> Result<BuildOutcome>
+    + Send
+    + Sync;
 
 pub(super) fn schedule(
     state: Arc<AppState>,
@@ -24,8 +68,10 @@ pub(super) fn schedule(
         request,
         participant,
         project,
-        RETRY_DELAY,
-        MAX_CONSECUTIVE_READER_RETRIES,
+        RetryPolicy::PRODUCTION,
+        Arc::new(|state, request, participant, project| {
+            build_once(state, request, participant, project)
+        }),
     )
 }
 
@@ -34,8 +80,8 @@ fn schedule_with(
     request: SemanticRequest,
     participant: grimodex_db::workspace_lifecycle::WorkspaceParticipant,
     project: String,
-    retry_delay: Duration,
-    max_reader_retries: u32,
+    policy: RetryPolicy,
+    build: Arc<BuildStep>,
 ) -> Result<()> {
     if !current_request(&state, &request)? {
         return Ok(());
@@ -60,6 +106,8 @@ fn schedule_with(
         // (open failure, BUSY, slot taken, unproven close). Local to this
         // task, so a new generation's task counts for itself.
         let mut reader_retry_streak: u32 = 0;
+        // Consecutive `StaleRetry` (DR-IRB-7); also local to this task.
+        let mut stale_retry_streak: u32 = 0;
         loop {
             let Some(state) = weak_state.upgrade() else {
                 break;
@@ -68,8 +116,9 @@ fn schedule_with(
             let work_request = request.clone();
             let work_project = project.clone();
             let work_participant = participant.clone();
+            let work_build = Arc::clone(&build);
             let result = tokio::task::spawn_blocking(move || {
-                build_once(&work_state, &work_request, &work_participant, &work_project)
+                work_build(&work_state, &work_request, &work_participant, &work_project)
             })
             .await;
             let outcome = match result {
@@ -77,15 +126,17 @@ fn schedule_with(
                 _ => break,
             };
             let (next_streak, verdict) =
-                next_reader_retry_streak(reader_retry_streak, &outcome, max_reader_retries);
+                next_reader_retry_streak(reader_retry_streak, &outcome, policy.max_reader_retries);
             reader_retry_streak = next_streak;
+            let (next_stale_streak, wait) = next_retry_wait(stale_retry_streak, &outcome, &policy);
+            stale_retry_streak = next_stale_streak;
             tracing::debug!(target:"grimodex::nir1_index", outcome=outcome.label(),
-                reader_retry_streak,"NIR1 build outcome");
+                reader_retry_streak,stale_retry_streak,wait_ms=wait.as_millis(),"NIR1 build outcome");
             if let StreakVerdict::Stop(reason) = verdict {
                 // Logged once: the loop ends here and the reservation below
                 // is released (the next `begin` starts a fresh task).
                 tracing::warn!(target:"grimodex::nir1_index", identity=key.0, project=%project,
-                    ?reason, max_reader_retries,
+                    ?reason, max_reader_retries = policy.max_reader_retries,
                     "NIR1 reader retries exhausted; stopping the Related Scenes index build");
                 break;
             }
@@ -98,11 +149,14 @@ fn schedule_with(
                 // Pending Feed work can outlive the originating query. Keep
                 // its single workspace-bound rebuild alive until the actual
                 // canonical state settles or the pinned runtime is revoked.
-                BuildOutcome::Retry | BuildOutcome::ReaderRetry(_) | BuildOutcome::Idle => {}
+                BuildOutcome::Retry
+                | BuildOutcome::StaleRetry
+                | BuildOutcome::ReaderRetry(_)
+                | BuildOutcome::Idle => {}
                 BuildOutcome::Stopped => break,
             }
             drop(state);
-            tokio::time::sleep(retry_delay).await;
+            tokio::time::sleep(wait).await;
         }
         if let Some(state) = weak_state.upgrade() {
             if let Ok(mut builds) = lock(&state.related_scenes.builds) {
@@ -115,7 +169,13 @@ fn schedule_with(
 
 enum BuildOutcome {
     Ready,
+    /// The prepare side saw `PendingChange` (Feed work still settling).
+    /// Waits `RETRY_DELAY`.
     Retry,
+    /// The publish-side check was `Stale` (DR-IRB-7). Waits
+    /// `STALE_RETRY_DELAY` for the first `MAX_CONSECUTIVE_STALE_RETRIES` in a
+    /// row.
+    StaleRetry,
     /// A `Retry` caused by the dedicated reader (DR-IRB-3). Counted against
     /// `MAX_CONSECUTIVE_READER_RETRIES`.
     ReaderRetry(index::NirIndexUnavailableReason),
@@ -128,6 +188,7 @@ impl BuildOutcome {
         match self {
             Self::Ready => "ready",
             Self::Retry => "retry",
+            Self::StaleRetry => "stale-retry",
             Self::ReaderRetry(_) => "reader-retry",
             Self::Idle => "idle",
             Self::Stopped => "stopped",
@@ -141,9 +202,32 @@ enum StreakVerdict {
     Stop(index::NirIndexUnavailableReason),
 }
 
+/// How long the task sleeps after `outcome`, and the next `StaleRetry` streak
+/// (DR-IRB-7). The first `max_stale_retries` consecutive `StaleRetry` wait
+/// `stale_delay`; the ones after that, and every other outcome, wait
+/// `retry_delay`. Any outcome other than `StaleRetry` resets the streak.
+fn next_retry_wait(
+    stale_streak: u32,
+    outcome: &BuildOutcome,
+    policy: &RetryPolicy,
+) -> (u32, Duration) {
+    match outcome {
+        BuildOutcome::StaleRetry => {
+            let streak = stale_streak.saturating_add(1);
+            let wait = if streak <= policy.max_stale_retries {
+                policy.stale_delay
+            } else {
+                policy.retry_delay
+            };
+            (streak, wait)
+        }
+        _ => (0, policy.retry_delay),
+    }
+}
+
 /// The reader-retry counter: a reader-caused `Retry` adds one and `K` of them
 /// in a row stop the task; every other outcome (`Ready`, `Idle`, an ordinary
-/// `Retry`) resets it.
+/// `Retry`, `StaleRetry`) resets it.
 fn next_reader_retry_streak(
     streak: u32,
     outcome: &BuildOutcome,
@@ -469,12 +553,24 @@ fn build_once(
     tracing::debug!(target:"grimodex::nir1_index", prepare_ms=prepared_at.duration_since(started).as_millis(),
         embedding_ms=embedded_at.duration_since(prepared_at).as_millis(),
         publication_ms=embedded_at.elapsed().as_millis(),reused_count,"NIR1 build components");
+    publish_outcome(state, request, published)
+}
+
+/// The outcome of `build_once` for a publish result. `Stale` is not only
+/// Freshness: a mismatch of the owner or a rotation of the runtime epoch
+/// (pause/resume, an embedding runtime swap) also give it. Those are harmless:
+/// the next attempt stops or proceeds with the new epoch.
+fn publish_outcome(
+    state: &AppState,
+    request: &SemanticRequest,
+    published: index::NirIndexPublishRead,
+) -> Result<BuildOutcome> {
     match published {
         index::NirIndexPublishRead::Published {
             newly_usable_published: true,
             ..
         } if current_request(state, request)? => Ok(BuildOutcome::Ready),
-        index::NirIndexPublishRead::Stale => Ok(BuildOutcome::Retry),
+        index::NirIndexPublishRead::Stale => Ok(BuildOutcome::StaleRetry),
         _ => Ok(BuildOutcome::Stopped),
     }
 }

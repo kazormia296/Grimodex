@@ -261,7 +261,12 @@ fn k_consecutive_reader_retries_stop_and_other_outcomes_reset() {
     }
     let (_, verdict) = next_reader_retry_streak(streak, &reader, MAX_CONSECUTIVE_READER_RETRIES);
     assert_eq!(verdict, StreakVerdict::Stop(Reason::ReaderBusy));
-    for reset in [BuildOutcome::Ready, BuildOutcome::Idle, BuildOutcome::Retry] {
+    for reset in [
+        BuildOutcome::Ready,
+        BuildOutcome::Idle,
+        BuildOutcome::Retry,
+        BuildOutcome::StaleRetry,
+    ] {
         assert_eq!(
             next_reader_retry_streak(streak, &reset, MAX_CONSECUTIVE_READER_RETRIES),
             (0, StreakVerdict::Continue),
@@ -319,8 +324,14 @@ async fn the_task_keeps_its_reservation_while_retrying_then_stops_after_k() {
         request,
         participant,
         h.project.clone(),
-        Duration::from_millis(40),
-        4,
+        RetryPolicy {
+            retry_delay: Duration::from_millis(40),
+            max_reader_retries: 4,
+            ..RetryPolicy::PRODUCTION
+        },
+        Arc::new(|state, request, participant, project| {
+            build_once(state, request, participant, project)
+        }),
     )
     .expect("scheduled");
     assert!(
@@ -350,6 +361,158 @@ async fn the_task_keeps_its_reservation_while_retrying_then_stops_after_k() {
     assert_eq!(h.runtime().live_chronicle_readers(), 0);
 }
 
+fn test_policy() -> RetryPolicy {
+    RetryPolicy {
+        retry_delay: Duration::from_millis(300),
+        stale_delay: Duration::from_millis(30),
+        max_stale_retries: 2,
+        max_reader_retries: MAX_CONSECUTIVE_READER_RETRIES,
+    }
+}
+
+/// DR-IRB-7 (a)(b)(c)(d)(f): the wait after each outcome. The first
+/// `max_stale_retries` `StaleRetry` in a row are short, later ones and every
+/// other outcome use `RETRY_DELAY`, and any other outcome resets the run.
+#[test]
+fn stale_retry_waits_briefly_up_to_the_bound_then_returns_to_the_long_delay() {
+    let policy = test_policy();
+    // (a) short, (b) back to the long delay beyond the bound and stays there.
+    let mut streak = 0;
+    let mut waits = Vec::new();
+    for _ in 0..4 {
+        let (next, wait) = next_retry_wait(streak, &BuildOutcome::StaleRetry, &policy);
+        streak = next;
+        waits.push(wait);
+    }
+    assert_eq!(
+        waits,
+        [
+            policy.stale_delay,
+            policy.stale_delay,
+            policy.retry_delay,
+            policy.retry_delay
+        ]
+    );
+    // (c) the other outcomes keep the long delay and reset the run.
+    for other in [
+        BuildOutcome::Retry,
+        BuildOutcome::Idle,
+        BuildOutcome::Ready,
+        BuildOutcome::ReaderRetry(Reason::ReaderBusy),
+    ] {
+        assert_eq!(
+            next_retry_wait(streak, &other, &policy),
+            (0, policy.retry_delay),
+            "{}",
+            other.label()
+        );
+    }
+    assert_eq!(
+        next_retry_wait(0, &BuildOutcome::StaleRetry, &policy),
+        (1, policy.stale_delay),
+        "the run starts over after another outcome"
+    );
+    // (d) `StaleRetry` also clears the reader streak, like any other
+    // non-reader outcome.
+    assert_eq!(
+        next_reader_retry_streak(7, &BuildOutcome::StaleRetry, MAX_CONSECUTIVE_READER_RETRIES),
+        (0, StreakVerdict::Continue)
+    );
+    // (f) production values: the long delay is untouched (K's basis) and the
+    // short delay stays well below the renderer's 400 ms begin.
+    assert_eq!(
+        RetryPolicy::PRODUCTION.retry_delay,
+        Duration::from_millis(250)
+    );
+    assert_eq!(STALE_RETRY_DELAY, Duration::from_millis(50));
+    assert_eq!(MAX_CONSECUTIVE_STALE_RETRIES, 3);
+    assert!(STALE_RETRY_DELAY < Duration::from_millis(100));
+}
+
+/// DR-IRB-7 (a)(b)(c)(e): the task itself, with the build step scripted.
+/// The gaps between `build` calls are the short delay after `StaleRetry`
+/// (twice), then the long one (the third in a row, and after `Retry`), and
+/// the reservation is held throughout and released once the step is `Stopped`.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_task_waits_by_outcome_and_keeps_its_reservation() {
+    let h = Harness::new();
+    let request = h.request();
+    let participant = h.participant();
+    let key = (request.database().identity(), h.project.clone());
+    let generation = request.epoch().generation();
+    let script = Arc::new(Mutex::new(std::collections::VecDeque::from([
+        BuildOutcome::StaleRetry,
+        BuildOutcome::StaleRetry,
+        BuildOutcome::StaleRetry,
+        BuildOutcome::Retry,
+        BuildOutcome::Stopped,
+    ])));
+    let calls = Arc::new(Mutex::new(Vec::<Instant>::new()));
+    let (step_script, step_calls) = (Arc::clone(&script), Arc::clone(&calls));
+    let step_state = Arc::clone(&h.state);
+    let step_key = key.clone();
+    let reserved_in_step = Arc::new(Mutex::new(Vec::<bool>::new()));
+    let step_reserved = Arc::clone(&reserved_in_step);
+    schedule_with(
+        Arc::clone(&h.state),
+        request,
+        participant,
+        h.project.clone(),
+        test_policy(),
+        Arc::new(move |_, _, _, _| {
+            step_calls.lock().expect("calls").push(Instant::now());
+            // The reservation is still held while this step runs (a second
+            // `reserve` is refused), also on the second and later steps.
+            let reserved = lock(&step_state.related_scenes.builds)
+                .expect("builds")
+                .reserve(step_key.clone(), generation);
+            step_reserved.lock().expect("reserved").push(reserved);
+            Ok(step_script
+                .lock()
+                .expect("script")
+                .pop_front()
+                .unwrap_or(BuildOutcome::Stopped))
+        }),
+    )
+    .expect("scheduled");
+    assert!(
+        !lock(&h.state.related_scenes.builds)
+            .expect("builds")
+            .reserve(key.clone(), generation),
+        "a retrying build keeps its reservation"
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if script.lock().expect("script").is_empty() {
+            // The last step has been taken; the task ends right after it.
+            if lock(&h.state.related_scenes.builds)
+                .expect("builds")
+                .reserve(key.clone(), generation)
+            {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "the task must stop");
+    }
+    assert_eq!(
+        *reserved_in_step.lock().expect("reserved"),
+        [false; 5],
+        "every step runs with the reservation held"
+    );
+    let calls = calls.lock().expect("calls");
+    assert_eq!(calls.len(), 5);
+    let gaps: Vec<Duration> = calls.windows(2).map(|w| w[1] - w[0]).collect();
+    let short = test_policy().stale_delay;
+    let long = test_policy().retry_delay;
+    // Sleeps are lower bounds; the short ones must also stay clear of the
+    // long delay.
+    assert!(gaps[0] >= short && gaps[0] < long, "{gaps:?}");
+    assert!(gaps[1] >= short && gaps[1] < long, "{gaps:?}");
+    assert!(gaps[2] >= long, "the third StaleRetry waits long: {gaps:?}");
+    assert!(gaps[3] >= long, "Retry waits long: {gaps:?}");
+}
+
 /// (i) A rotation of the runtime epoch or a participant stop after the reader
 /// read the plan keeps the publish from writing anything or installing a proof.
 #[test]
@@ -375,6 +538,11 @@ fn an_epoch_rotation_or_a_stop_after_the_reader_prevents_publication() {
     )
     .expect("stale publish");
     assert!(matches!(published, index::NirIndexPublishRead::Stale));
+    // DR-IRB-7: `build_once` maps the publish `Stale` to `StaleRetry`.
+    assert!(matches!(
+        publish_outcome(&h.state, &request, published),
+        Ok(BuildOutcome::StaleRetry)
+    ));
     assert_eq!(h.metadata_rows(), 0, "nothing was bound");
     assert_eq!(h.runtime().live_chronicle_readers(), 0);
 
