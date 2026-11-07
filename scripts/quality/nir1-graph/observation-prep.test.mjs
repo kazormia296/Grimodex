@@ -6922,8 +6922,23 @@ test("S4a の追補（S2 追補 #15、S3 の B1）: the author's declaration res
       id,
     );
   }
-  const last = declaration.revisions.at(-1);
+  // The row before the last is S2 追補 #15's; the last is S4b's preparation (the
+  // pins, the retaken detection records).
+  const last = declaration.revisions.at(-2);
   assert.equal(last.at, "2026-11-07");
+  const prepRow = declaration.revisions.at(-1);
+  for (const word of [
+    "S4b の前の取り直し",
+    "166b0640",
+    "8159f083",
+    "1d58a1eb",
+    "3675c50e",
+    "21 件を検出",
+    "等価の変異",
+    "期待の行は変異の前に決めたものではなく",
+    "S3 は追補 #15 以後の bytes",
+  ])
+    assert.ok(prepRow.reason.includes(word), word);
   for (const word of [
     "S2 追補 #15",
     "S3 の 8 回目",
