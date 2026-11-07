@@ -262,3 +262,10 @@ AGENTS.md の委任の外：秘密・データの新しい送信先、**保存�
 - **問 3（C7）**：**入れる。LAPSE-2 の例外も了解**。外す条件は絞る（`querySupported===true` かつ IR の理由 `index-unavailable`、renderer の値 `graph-unavailable:cancelled`）。E＞0 なら読取の時計の範囲を必須にする。
 - **問 5（G-01 相当）**：**今回の凍結に同梱**。素材の受入れ規則（admission）の変更が要り、click（`keep_click`）が DB に書くかを先に確かめる（書くなら保存範囲の拡大としてユーザーの確認が要る）。
 - **問 4（候補）**は問わなかった。起案の既定（C1〔PR #824、ユーザーの決定で進める〕の merge を待ち、C1 入りの master を候補にする。凍結の前の C1 入りの dev run と大きい DB の計測は材料と開示だけに使い、判定に使わない）で進める。
+
+### 追記：click（`keep_click`）が DB に書くかの調査（2026-11-07、read-only。HEAD は `c09643f7`、`1822b192` はその祖先）
+
+- **DB には書かない。** renderer の `invoke("nir1_evidence_qualify")`（`nir1RelatedScenesApi.ts:67`）→ main は Native へ渡すだけ（`ipcContract.ts:9882-9895`）→ Native（`lib.rs:13093-13108` → `related_scenes.rs:399-412` → `graph_response.rs:483-523` の `click`）。DB への接触は 2 か所でどちらも read tx（`related_scenes.rs:181` の `with_participant_read_transaction`、`graph_response.rs:549` → `related_scenes_requalification.rs:419-428` の `with_participant_read_transaction_bounded`）。呼ばれる grimodex-db の関数に、試験以外の INSERT／UPDATE／DELETE／execute は無く、audit・ai_audit_events への書込みも無い。
+- 保持はメモリだけ：`GraphInner.click`（`graph.rs:63-67`。binding・path の識別子と token・scene_id。本文・抜粋・path の文字列は持たない。1 件で `keep_click` が上書き）。寿命は lease と同じ（TTL 300 s、`related_scenes.rs:36`）。ほかは process-local の counter と runtime の状態だけ。
+- harness は DB ではなく JSON に書く（`cp4-harness.ts:718-722` の `{status, reason, ms}` → report の JSON。receipt には書かない）。
+- **よって G-01 相当の同梱は保存範囲の拡大に当たらない。** 残る委任の外は admission の変更（新しい authority に当たりうる）で、S2 追補 #14 の確認に含める。
