@@ -1,0 +1,12 @@
+# CP-4 品質の判定（s6r1。S4b `63bc9b90`・候補 `a2309b95`・K6/5）
+
+手順外の補助の記録（正式の判定ではなく、それを置き換えない）。根拠は DR-CP4-QV-0・QV-1（`docs/plans/nir1-lane-decisions/cp4-decisions.md`）と事前登録（`../quality-verdict-prereg-2026-11-06.md`、設計 `../quality-verdict-design-2026-11-06.md`）で、前回（s5r6）の判定 `../quality-verdict-s5r6-1/` と同じ手順・同じ形（許可リスト、verdict の JSON と Markdown、SHA256SUMS）。S6 の集計は DR-CP4-S6-3 と同じ位置づけで `../s6-aggregation-s6r1/`。S2・S4 の bytes、閾値、Gold、fixture、受領書は変えていない。
+
+- 実行：`node scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs --root <候補の worktree cp4-formal-k65> --gold-dir ../gold-s6r1-1 --parity-dir ../parity-s6r1-1 --allow-list allow-list-s6r1-s4-63bc9b90-candidate-a2309b95.json --ledger ../attempts-final-s6r1/gold-s6r1-1.json --out quality-verdict-s6r1.json --summary quality-verdict-s6r1.md`（Node 22、候補 `a2309b95` の script。出力は contracts の本 dir）。`--verify` は `bindings match`。
+- 許可リスト：`(s4Commit, candidate) = (63bc9b903d5b7dbba3533ea32da9bdd7fe649861, a2309b953873063b97b58942d42fa34d1bfbfc95)`。
+- 前回との違い（script 側。K6/5 の harness #827 と e6abddd2 による）：D・B・p95 の上限は手順のファイル v2（`k64-procedure.v2.json`、SHA-256 `491f19f7…`）を正式の loader で読み、K6/5 の値（D＝40、B＝54.2、上限 94.2 ms。B は D から逆算しない）を契約と照合する。受領書は `head.k65` が K6/5 の凍結と一致することを要求する。
+- 全体：**hold（failed-required-items、held-required-items）**。前回は hold（unverified-required-items）。失敗は条件 5 の (a)、hold は条件 1・2・4。内訳は `quality-verdict-s6r1.md`。
+  - p95 は pass（R+IR arm 22.00 ms、Graph arm 60.20 ms、各 n＝390、上限 94.2 ms）。前回は 55.30／31.50 ms（上限 65.04）。**今回の Graph arm の p95 は 65.04 ms の内側でもある**。
+  - 条件 1（G-01 の事前指定改善）・条件 2（macro）・条件 4 の edge の束縛が hold なのは、S6 の集計の欠落 163 件と同じ原因：Graph が窓内に合流した親の sample は、定常状態では first-render に数えられず（`readyFresh`・stamp の条件）、表示に数えられないので、G-01/v1・G-03/base・G-06/base・G-08/base-usable・G-08/graph-recovered は表示 0／30（`no-displayed-sample`）、G-02/base と G-05/base は 24／30 と 23／30。表示のあった sample だけを品質に数える規則（事前登録 §3）のため、これらの variant の Recall・nDCG は計算されない。edge の束縛は検査 107、検査できず 163。
+  - **条件 5 の (a) が fail**：G-08/chronicle-index-unusable（期待 `unavailable`）の 30 sample すべてで、`index-ready` の再 query の子が `graph-ready`・`publishCount` 1・`edgeCount` 1 で出ており、事前登録 §3 の「期待 unavailable の variant で Graph が表示されたら違反」（`graph-shown-for-a-variant-expected-unavailable`）に当たる。表示された一覧は対の R+IR と同じ（Scene の寄与は 0、禁止 Scene・blocked 候補の違反は 0）。前回は子が出ず違反 0。この子が出た理由（Chronicle の index が測定中に usable になったこと、製品の変更との関係）は未確認。G-08/both-indexes-unusable は同じ形の子が `graph-unavailable` で違反 0。
+- この判定は S6 の可用性の集計とは別の補助で、S6 の規則（HOLD に当たるか）を置き換えない。

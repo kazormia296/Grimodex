@@ -1,0 +1,950 @@
+{
+ "allowList": {
+  "s4Commit": "63bc9b903d5b7dbba3533ea32da9bdd7fe649861",
+  "candidate": "a2309b953873063b97b58942d42fa34d1bfbfc95"
+ },
+ "runs": [
+  {
+   "run": "gold-s6r1-1",
+   "runKind": "gold",
+   "status": "completed",
+   "s4Commit": "63bc9b903d5b7dbba3533ea32da9bdd7fe649861",
+   "candidate": "a2309b953873063b97b58942d42fa34d1bfbfc95",
+   "startedAtUtc": "2026-11-07T11:39:03.399Z",
+   "finishedAtUtc": "2026-11-07T12:19:36.364Z",
+   "allowed": true
+  },
+  {
+   "run": "neg-n2-s6r1-1",
+   "runKind": "negative",
+   "status": "completed",
+   "s4Commit": "63bc9b903d5b7dbba3533ea32da9bdd7fe649861",
+   "candidate": "a2309b953873063b97b58942d42fa34d1bfbfc95",
+   "startedAtUtc": "2026-11-07T12:20:30.485Z",
+   "finishedAtUtc": "2026-11-07T12:22:50.725Z",
+   "allowed": true
+  },
+  {
+   "run": "neg-n3-s6r1-1",
+   "runKind": "negative",
+   "status": "completed",
+   "s4Commit": "63bc9b903d5b7dbba3533ea32da9bdd7fe649861",
+   "candidate": "a2309b953873063b97b58942d42fa34d1bfbfc95",
+   "startedAtUtc": "2026-11-07T12:23:14.510Z",
+   "finishedAtUtc": "2026-11-07T12:25:34.571Z",
+   "allowed": true
+  },
+  {
+   "run": "neg-n4-s6r1-1",
+   "runKind": "negative",
+   "status": "completed",
+   "s4Commit": "63bc9b903d5b7dbba3533ea32da9bdd7fe649861",
+   "candidate": "a2309b953873063b97b58942d42fa34d1bfbfc95",
+   "startedAtUtc": "2026-11-07T12:25:58.455Z",
+   "finishedAtUtc": "2026-11-07T12:28:23.620Z",
+   "allowed": true
+  },
+  {
+   "run": "parity-s6r1-1",
+   "runKind": "parity",
+   "status": "completed",
+   "s4Commit": "63bc9b903d5b7dbba3533ea32da9bdd7fe649861",
+   "candidate": "a2309b953873063b97b58942d42fa34d1bfbfc95",
+   "startedAtUtc": "2026-11-07T11:30:50.069Z",
+   "finishedAtUtc": "2026-11-07T11:38:09.401Z",
+   "allowed": true
+  },
+  {
+   "run": "sp-p4-s6r1-1",
+   "runKind": "sp-p4",
+   "status": "completed",
+   "s4Commit": "63bc9b903d5b7dbba3533ea32da9bdd7fe649861",
+   "candidate": "a2309b953873063b97b58942d42fa34d1bfbfc95",
+   "startedAtUtc": "2026-11-07T11:11:41.647Z",
+   "finishedAtUtc": "2026-11-07T11:13:40.078Z",
+   "allowed": true
+  },
+  {
+   "run": "trace-browsing-s6r1-1",
+   "runKind": "trace",
+   "status": "completed",
+   "s4Commit": "63bc9b903d5b7dbba3533ea32da9bdd7fe649861",
+   "candidate": "a2309b953873063b97b58942d42fa34d1bfbfc95",
+   "startedAtUtc": "2026-11-07T11:25:47.768Z",
+   "finishedAtUtc": "2026-11-07T11:29:36.032Z",
+   "allowed": true
+  },
+  {
+   "run": "trace-editing-s6r1-1",
+   "runKind": "trace",
+   "status": "completed",
+   "s4Commit": "63bc9b903d5b7dbba3533ea32da9bdd7fe649861",
+   "candidate": "a2309b953873063b97b58942d42fa34d1bfbfc95",
+   "startedAtUtc": "2026-11-07T11:14:32.172Z",
+   "finishedAtUtc": "2026-11-07T11:25:26.133Z",
+   "allowed": true
+  }
+ ],
+ "selectReceiptsForAggregation": {
+  "included": 28,
+  "includedKinds": {
+   "g-case-gold": 13,
+   "g-case-parity-unrestricted": 12,
+   "g-case-diagnostic-negative": 3
+  },
+  "excluded": [
+   {
+    "runId": "trace-editing-s6r1-1",
+    "reason": "runner-is-not-the-k64-hook-consumer"
+   },
+   {
+    "runId": "trace-browsing-s6r1-1",
+    "reason": "runner-is-not-the-k64-hook-consumer"
+   }
+  ],
+  "note": "trace の受領書は receipt 全体の runnerKind を持たず runner-is-not-the-k64-hook-consumer で除かれる（関数の既知の限界。trace の query は全件 followUp.issuedVia=product-hook で、R5 は要約の検査で見ている）。receipt.mjs は S2 に pin 済みなので変えない。"
+ },
+ "bindings": {
+  "receipts": 31,
+  "k65": {
+   "freezeCommit": "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+   "sha256": "1ad1088498e43dc3cd0deb1b7d74f18396eb3c07d4bd3834a8787de30ecd24a7"
+  },
+  "k64": {
+   "freezeCommit": "5dea38af158283c2a925d68ef0d8b0771c0ea209",
+   "sha256": "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3"
+  },
+  "observationPrepCommit": "63bc9b903d5b7dbba3533ea32da9bdd7fe649861",
+  "candidate": "a2309b953873063b97b58942d42fa34d1bfbfc95",
+  "previewFalse": true,
+  "allMatch": true
+ },
+ "ssc": {
+  "rows": [
+   {
+    "variantKey": "G-01/v1",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 0,
+     "displayed": 0,
+     "missed": 30,
+     "x": {
+      "F1": 30,
+      "X3": 30,
+      "X4": 30,
+      "X6": 30
+     },
+     "violations": 0
+    },
+    "qualityHold": true,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-02/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 24,
+     "displayed": 24,
+     "missed": 6,
+     "x": {
+      "F1": 6,
+      "X3": 6,
+      "X4": 6,
+      "X6": 6
+     },
+     "violations": 0
+    },
+    "qualityHold": true,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-03/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 0,
+     "displayed": 0,
+     "missed": 30,
+     "x": {
+      "F1": 30,
+      "X3": 30,
+      "X4": 30,
+      "X6": 30
+     },
+     "violations": 0
+    },
+    "qualityHold": true,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-03/frontier-exceeded",
+    "inPool": false,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": null,
+    "qualityHold": false,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-04/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 30,
+     "displayed": 30,
+     "missed": 0,
+     "x": {},
+     "violations": 0
+    },
+    "qualityHold": true,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-05/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 23,
+     "displayed": 23,
+     "missed": 7,
+     "x": {
+      "F1": 7,
+      "X3": 7,
+      "X4": 7,
+      "X6": 7
+     },
+     "violations": 0
+    },
+    "qualityHold": true,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-06/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 0,
+     "displayed": 0,
+     "missed": 30,
+     "x": {
+      "F1": 30,
+      "X3": 30,
+      "X4": 30,
+      "X6": 30
+     },
+     "violations": 0
+    },
+    "qualityHold": true,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-07/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 30,
+     "displayed": 30,
+     "missed": 0,
+     "x": {},
+     "violations": 0
+    },
+    "qualityHold": true,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-08/base-usable",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 0,
+     "displayed": 0,
+     "missed": 30,
+     "x": {
+      "F1": 30,
+      "X3": 30,
+      "X4": 30,
+      "X6": 30
+     },
+     "violations": 0
+    },
+    "qualityHold": true,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-08/both-indexes-unusable",
+    "inPool": false,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": null,
+    "qualityHold": false,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-08/chronicle-index-unusable",
+    "inPool": false,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": null,
+    "qualityHold": false,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-08/graph-index-unusable",
+    "inPool": false,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": null,
+    "qualityHold": false,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-08/graph-recovered",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 0,
+     "displayed": 0,
+     "missed": 30,
+     "x": {
+      "F1": 30,
+      "X3": 30,
+      "X4": 30,
+      "X6": 30
+     },
+     "violations": 0
+    },
+    "qualityHold": true,
+    "windowClean": true
+   }
+  ],
+  "goldValidations": {
+   "count": 13,
+   "allValid": true
+  },
+  "pool": {
+   "variants": 9,
+   "n": 270,
+   "displayed": 107,
+   "missed": 163,
+   "missRate": 0.6037037037037037,
+   "allowedMisses": 2,
+   "exceeds": true,
+   "firstRenderInWindow": 0,
+   "followUp": 107
+  },
+  "poolWithoutG04": {
+   "note": "開示用（判定には使わない。pool の選び直しは禁止）",
+   "n": 240,
+   "missed": 163
+  },
+  "firstRenderWindowMiss": {
+   "poolN": 270,
+   "outOfWindow": 270,
+   "note": "K6/2 の最初の表示の窓外率（D=40 ms）。K6/4 では記録と開示だけ"
+  },
+  "missedBreakdownDisclosure": {
+   "note": "開示用（判定には使わない）。受領書の欠落の各 sample に harness の分類器を当て直した内訳（件数は受領書の k64 と一致を script が確認）",
+   "reapplied": {
+    "displayed": 107,
+    "missed": 163
+   },
+   "byCondition": [
+    {
+     "outcome": "graph-ready",
+     "joined": true,
+     "joinedWithinD": true,
+     "source": "worker",
+     "readyFresh": false,
+     "stampResult": "stamp0-missing",
+     "stampMatched": null,
+     "failedStage": null,
+     "firstCode": "F1",
+     "n": 161
+    },
+    {
+     "outcome": "graph-ready",
+     "joined": true,
+     "joinedWithinD": true,
+     "source": "worker",
+     "readyFresh": false,
+     "stampResult": "fresh",
+     "stampMatched": true,
+     "failedStage": null,
+     "firstCode": "F1",
+     "n": 2
+    }
+   ]
+  }
+ },
+ "spP4": {
+  "status": "passed",
+  "problems": 0,
+  "variants": 8,
+  "allSame": true,
+  "differences": 0,
+  "irTimeoutExcluded": 0,
+  "irTimeoutLimit": 6
+ },
+ "parity": {
+  "variants": 12,
+  "validations": 12,
+  "allValid": true,
+  "windowClean": [
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true
+  ],
+  "allWindowClean": true,
+  "regimes": [
+   null
+  ]
+ },
+ "negatives": {
+  "neg-n2-s6r1-1": {
+   "status": "measured",
+   "valid": true,
+   "verdict": "recorded",
+   "samples": 70,
+   "runProblems": 0,
+   "assessment": {
+    "id": "K24-G01-N2",
+    "mutation": "resave-same-body",
+    "countsInCaseJudgement": false,
+    "outcome": "established",
+    "reasons": [],
+    "returnedIn": []
+   },
+   "control": "reached",
+   "returnedSceneIdsOverMeasured": [
+    "g01-question"
+   ],
+   "graphMiraReturned": false,
+   "frameReachedAll": true,
+   "step": {
+    "mutation": {
+     "before": {
+      "sha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491",
+      "version": 0
+     },
+     "after": {
+      "sha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491",
+      "version": 1
+     }
+    },
+    "feedAfterMutation": {
+     "consumerId": "narrative-incremental-freshness/v1",
+     "head": 19,
+     "cursor": true,
+     "acknowledged": 17,
+     "activeRun": false,
+     "reserved": false,
+     "pendingEvents": 2,
+     "pendingSequences": 2
+    },
+    "sealAttempts": [
+     {
+      "outcome": "sealed",
+      "waitedMs": 1040,
+      "sealBranch": "unchanged",
+      "bGeneration": 1,
+      "bDirty": false,
+      "settleCoversMutation": true
+     }
+    ]
+   },
+   "beforeDeclarationSealAttempts": null,
+   "validation": {
+    "valid": true,
+    "errors": []
+   },
+   "windowClean": true
+  },
+  "neg-n3-s6r1-1": {
+   "status": "measured",
+   "valid": true,
+   "verdict": "recorded",
+   "samples": 70,
+   "runProblems": 0,
+   "assessment": {
+    "id": "K24-G01-N3",
+    "mutation": "restore-same-bytes-body-version",
+    "countsInCaseJudgement": false,
+    "outcome": "established",
+    "reasons": [],
+    "returnedIn": []
+   },
+   "control": "reached",
+   "returnedSceneIdsOverMeasured": [
+    "g01-question"
+   ],
+   "graphMiraReturned": false,
+   "frameReachedAll": true,
+   "step": {
+    "mutation": {
+     "revisionId": "da4bb2db-0729-41a5-811b-e407b87803a7",
+     "version": 1,
+     "replayed": false,
+     "afterSha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491",
+     "restoredSha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491"
+    },
+    "feedAfterMutation": null,
+    "sealAttempts": [
+     {
+      "outcome": "sealed",
+      "waitedMs": 515,
+      "sealBranch": "new-generation",
+      "bGeneration": 2,
+      "bDirty": false,
+      "settleCoversMutation": null
+     }
+    ]
+   },
+   "beforeDeclarationSealAttempts": null,
+   "validation": {
+    "valid": true,
+    "errors": []
+   },
+   "windowClean": true
+  },
+  "neg-n4-s6r1-1": {
+   "status": "measured",
+   "valid": true,
+   "verdict": "recorded",
+   "samples": 70,
+   "runProblems": 0,
+   "assessment": {
+    "id": "K24-G01-N4",
+    "mutation": "restore-different-bytes-body-version",
+    "countsInCaseJudgement": false,
+    "outcome": "established",
+    "reasons": [],
+    "returnedIn": []
+   },
+   "control": "reached",
+   "returnedSceneIdsOverMeasured": [
+    "g01-question"
+   ],
+   "graphMiraReturned": false,
+   "frameReachedAll": true,
+   "step": {
+    "mutation": {
+     "revisionId": "c6447675-4681-45af-8916-758d9f64aaee",
+     "version": 3,
+     "replayed": false,
+     "afterSha256": "fdd2431a824348c0198c2024a539d85679089833cda60f42be38a0edef3cd923",
+     "restoredSha256": "fdd2431a824348c0198c2024a539d85679089833cda60f42be38a0edef3cd923"
+    },
+    "feedAfterMutation": null,
+    "sealAttempts": [
+     {
+      "outcome": "sealed",
+      "waitedMs": 510,
+      "sealBranch": "new-generation",
+      "bGeneration": 2,
+      "bDirty": false,
+      "settleCoversMutation": null
+     }
+    ]
+   },
+   "beforeDeclarationSealAttempts": [
+    {
+     "outcome": "sealed",
+     "waitedMs": 1038,
+     "sealBranch": "unchanged",
+     "bGeneration": 1,
+     "bDirty": false,
+     "settleCoversMutation": true
+    }
+   ],
+   "validation": {
+    "valid": true,
+    "errors": []
+   },
+   "windowClean": true
+  }
+ },
+ "g01Diagnostic": {
+  "run": "g01-e2e-s6r1-1",
+  "mode": "g01-frozen",
+  "purpose": "g01-e2e-diagnostic",
+  "countsInCaseJudgement": false,
+  "session": "separate-diagnostic",
+  "reachedEndToEnd": true,
+  "firstMissing": null,
+  "leaseEvidence": {
+   "continueAvailableGraphOnly": true,
+   "clickKeepClick": true,
+   "requeryCached": true,
+   "requeryContinueAvailable": true,
+   "usedSettle": true
+  },
+  "reportProblems": 0,
+  "reportMatchesResult": true
+ },
+ "traces": {
+  "editing": {
+   "receiptStatus": "valid",
+   "defects": 0,
+   "headBound": true,
+   "recordedInReceipt": {
+    "regime": "k62",
+    "status": "valid",
+    "Q": 201,
+    "U": 201,
+    "displayed": null,
+    "lapse": 1,
+    "lapseBreakdown": {
+     "total": 1,
+     "i-b-seal": 1,
+     "i-chronicle-stop": 0,
+     "ii-a3-ineligible-at-start": 0,
+     "iii-invalidated": 0,
+     "iv-empty-contribution": 0
+    },
+    "lapseRate": 0.004975124378109453,
+    "lapseExceeds": false,
+    "outOfWindow": 169,
+    "outOfWindowU": 169,
+    "outOfWindowRate": 0.8407960199004975,
+    "outOfWindowExceeds": true,
+    "mainReason": "other",
+    "categories": {
+     "lapse": 1,
+     "other": 163,
+     "freshness": 5
+    },
+    "reasons": {
+     "i-b-seal": 1,
+     "freshness-stamp-stamp0-missing:clear": 163,
+     "graph-late:stale-start": 5
+    },
+    "outcomes": {
+     "graph-unavailable": 1,
+     "graph-late": 168,
+     "graph-ready": 32
+    },
+    "violations": 0,
+    "notApplied": [
+     "b:rs-join-hook"
+    ],
+    "x": {},
+    "followUpLapse": null,
+    "q1": null,
+    "requeryCount": 0
+   },
+   "recomputedWithKeepTestEvidence": {
+    "regime": "k64",
+    "status": "valid",
+    "Q": 201,
+    "U": 201,
+    "displayed": 200,
+    "lapse": 1,
+    "lapseBreakdown": {
+     "total": 1,
+     "i-b-seal": 1,
+     "i-chronicle-stop": 0,
+     "ii-a3-ineligible-at-start": 0,
+     "iii-invalidated": 0,
+     "iv-empty-contribution": 0
+    },
+    "lapseRate": 0.004975124378109453,
+    "lapseExceeds": false,
+    "outOfWindow": 1,
+    "outOfWindowU": 1,
+    "outOfWindowRate": 0.004975124378109453,
+    "outOfWindowExceeds": false,
+    "mainReason": "lapse",
+    "categories": {
+     "lapse": 1,
+     "other": 0,
+     "freshness": 0
+    },
+    "reasons": {
+     "i-b-seal": 1
+    },
+    "outcomes": {
+     "graph-unavailable": 1,
+     "graph-late": 168,
+     "graph-ready": 32
+    },
+    "violations": 0,
+    "notApplied": null,
+    "x": {
+     "X3": 1,
+     "X4": 1,
+     "X6": 1,
+     "X12": 1
+    },
+    "followUpLapse": {},
+    "q1": {
+     "n": 168,
+     "p50": 45.59999990463257,
+     "p90": 47.39999997615814,
+     "p99": 49,
+     "min": 42.89999997615814,
+     "max": 56.89999997615814
+    },
+    "requeryCount": 0
+   },
+   "startSeal": {
+    "current": 201,
+    "dirty": 0,
+    "missing": 0,
+    "unknown": 0
+   },
+   "nativeAlignment": {
+    "aligned": true,
+    "seededBegins": 369,
+    "records": 369,
+    "excludedAfterWindow": null,
+    "excludedChronicleStopC7": null
+   },
+   "lapseI": {
+    "k64": {
+     "i-b-seal": 1,
+     "cancelledBeforeBegin": 0,
+     "other": 1,
+     "i-chronicle-stop": 0
+    },
+    "k62": {
+     "i-b-seal": 1,
+     "cancelledBeforeBegin": 0,
+     "other": 1,
+     "i-chronicle-stop": 0
+    }
+   },
+   "requeries": {
+    "graph-ready": 168,
+    "index-ready": 0,
+    "ir-retry": 0,
+    "unattributed": 0,
+    "outside-q": 0
+   },
+   "cancelledParents": {
+    "rule": "DR-CP4-V-3",
+    "count": 0,
+    "rows": []
+   },
+   "outsideQ": {
+    "outsideQ": 0,
+    "completed": 0,
+    "nonCompleted": 0
+   },
+   "graphUnavailableQueries": [
+    {
+     "queryId": "nir1-cp4-trace-editing/1#0",
+     "traceIndex": 0,
+     "graphOutcome": "graph-unavailable",
+     "graphReason": "registration-unavailable",
+     "irOutcome": "ir-ready",
+     "snapshotUsable": true,
+     "startSealState": "current"
+    }
+   ]
+  },
+  "browsing": {
+   "receiptStatus": "valid",
+   "defects": 0,
+   "headBound": true,
+   "recordedInReceipt": {
+    "regime": "k62",
+    "status": "valid",
+    "Q": 201,
+    "U": 201,
+    "displayed": null,
+    "lapse": 0,
+    "lapseBreakdown": {
+     "total": 0,
+     "i-b-seal": 0,
+     "i-chronicle-stop": 0,
+     "ii-a3-ineligible-at-start": 0,
+     "iii-invalidated": 0,
+     "iv-empty-contribution": 0
+    },
+    "lapseRate": 0,
+    "lapseExceeds": false,
+    "outOfWindow": 199,
+    "outOfWindowU": 199,
+    "outOfWindowRate": 0.9900497512437811,
+    "outOfWindowExceeds": true,
+    "mainReason": "freshness",
+    "categories": {
+     "lapse": 0,
+     "other": 25,
+     "freshness": 174
+    },
+    "reasons": {
+     "freshness-stamp-stamp0-missing:clear": 25,
+     "graph-late:stale-start": 174
+    },
+    "outcomes": {
+     "graph-late": 199,
+     "graph-ready": 2
+    },
+    "violations": 0,
+    "notApplied": [
+     "b:rs-join-hook"
+    ],
+    "x": {},
+    "followUpLapse": null,
+    "q1": null,
+    "requeryCount": 0
+   },
+   "recomputedWithKeepTestEvidence": {
+    "regime": "k64",
+    "status": "valid",
+    "Q": 201,
+    "U": 201,
+    "displayed": 201,
+    "lapse": 0,
+    "lapseBreakdown": {
+     "total": 0,
+     "i-b-seal": 0,
+     "i-chronicle-stop": 0,
+     "ii-a3-ineligible-at-start": 0,
+     "iii-invalidated": 0,
+     "iv-empty-contribution": 0
+    },
+    "lapseRate": 0,
+    "lapseExceeds": false,
+    "outOfWindow": 0,
+    "outOfWindowU": 0,
+    "outOfWindowRate": 0,
+    "outOfWindowExceeds": false,
+    "mainReason": null,
+    "categories": {
+     "lapse": 0,
+     "other": 0,
+     "freshness": 0
+    },
+    "reasons": {},
+    "outcomes": {
+     "graph-late": 199,
+     "graph-ready": 2
+    },
+    "violations": 0,
+    "notApplied": null,
+    "x": {},
+    "followUpLapse": {},
+    "q1": {
+     "n": 199,
+     "p50": 64.89999997615814,
+     "p90": 76.79999995231628,
+     "p99": 91.60000002384186,
+     "min": 42.60000002384186,
+     "max": 98.60000002384186
+    },
+    "requeryCount": 0
+   },
+   "startSeal": {
+    "current": 201,
+    "dirty": 0,
+    "missing": 0,
+    "unknown": 0
+   },
+   "nativeAlignment": {
+    "aligned": true,
+    "seededBegins": 400,
+    "records": 400,
+    "excludedAfterWindow": null,
+    "excludedChronicleStopC7": null
+   },
+   "lapseI": {
+    "k64": {
+     "i-b-seal": 0,
+     "cancelledBeforeBegin": 0,
+     "other": 0,
+     "i-chronicle-stop": 0
+    },
+    "k62": {
+     "i-b-seal": 0,
+     "cancelledBeforeBegin": 0,
+     "other": 0,
+     "i-chronicle-stop": 0
+    }
+   },
+   "requeries": {
+    "graph-ready": 199,
+    "index-ready": 0,
+    "ir-retry": 0,
+    "unattributed": 0,
+    "outside-q": 200
+   },
+   "cancelledParents": {
+    "rule": "DR-CP4-V-3",
+    "count": 0,
+    "rows": []
+   },
+   "outsideQ": {
+    "outsideQ": 200,
+    "completed": 200,
+    "nonCompleted": 0
+   },
+   "graphUnavailableQueries": []
+  }
+ }
+}
