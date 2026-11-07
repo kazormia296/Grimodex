@@ -35,6 +35,7 @@ import {
 import { claimFactsSealer, isCollectedFacts } from "./admission-facts.mjs";
 import { isLoadedDevFixture } from "./dev-fixture.mjs";
 import { runKeepTest } from "./keep-test.mjs";
+import { stripJsComments } from "./native-architecture.mjs";
 import { loadProcedureFile, procedureSettings } from "./procedure-file.mjs";
 import {
   G01_FIXTURE,
@@ -375,7 +376,8 @@ function sealRatification5(root, head, keepTest) {
 /**
  * K6/5 変える点 6: the candidate's product first-display D, read from git. The
  * `a7e96946` (#802) ancestor and the constant `RELATED_SCENES_IR_EXTRA_WAIT_MS`
- * in the candidate's `relatedScenesConfig.ts` (a number literal; anything
+ * in the candidate's `relatedScenesConfig.ts` (a number literal on an
+ * `export const` line, outside comments, declared exactly once; anything
  * else reads as null). `assertDFortyAdmits` applies it.
  */
 function readDFortyEvidence(root, head) {
@@ -383,11 +385,25 @@ function readDFortyEvidence(root, head) {
   const bytes = blob(root, head, need.configPath);
   let waitMs = null;
   if (bytes !== null) {
-    const found = new RegExp(
-      `export const ${need.waitConstant}\\s*=\\s*([0-9]+(?:\\.[0-9]+)?)\\s*;`,
-      "u",
-    ).exec(bytes.toString("utf8"));
-    if (found) waitMs = Number(found[1]);
+    // Comments do not count (a commented-out `export const …= 40;` is no
+    // definition), the definition starts its line, and there is exactly one
+    // declaration of the constant; anything else reads as null.
+    const code = stripJsComments(bytes.toString("utf8"));
+    const declarations = [
+      ...code.matchAll(
+        new RegExp(`\\b(?:const|let|var)\\s+${need.waitConstant}\\b`, "gu"),
+      ),
+    ];
+    const definitions = [
+      ...code.matchAll(
+        new RegExp(
+          `^export const ${need.waitConstant}\\s*=\\s*([0-9]+(?:\\.[0-9]+)?)\\s*;`,
+          "gmu",
+        ),
+      ),
+    ];
+    if (declarations.length === 1 && definitions.length === 1)
+      waitMs = Number(definitions[0][1]);
   }
   return {
     commit: need.dFortyCommit,
@@ -503,19 +519,19 @@ function assertSealedRatification5(evidence, head) {
  * K6/2 bytes read from that commit must have the frozen sha256; otherwise the
  * run ends before writing any receipt.
  */
-export function readK62FreezeHead({ root, commit }) {
+export function readK62FreezeHead({ root, commit }, freeze = K62_FREEZE) {
   if (!commit)
     throw new Error(
       "[precheck] the K6/2 freeze commit is not given; no receipt is written",
     );
   const resolved = resolveCommit(root, commit);
-  const bytes = blob(root, resolved, K62_FREEZE.path);
+  const bytes = blob(root, resolved, freeze.path);
   if (bytes === null)
     throw new Error(
       "[precheck] K6/2 cannot be read from the freeze commit; no receipt is written",
     );
   const digest = sha256(bytes);
-  if (resolved !== K62_FREEZE.commit || digest !== K62_FREEZE.sha256)
+  if (resolved !== freeze.commit || digest !== freeze.sha256)
     throw new Error(
       "[precheck] K6/2 freeze commit or bytes differ; no receipt is written",
     );
@@ -685,7 +701,7 @@ export function readNetNamespaces({
  * freeze heads. The returned
  * admission is the only one `readAdmittedFixture` accepts.
  */
-export function admitGraphCaseRun(input) {
+export function admitGraphCaseRun(input, deps = {}) {
   rejectOverrides(input, [
     "root",
     "candidateHead",
@@ -699,6 +715,14 @@ export function admitGraphCaseRun(input) {
     "k65Commit",
     "ratification5",
   ]);
+  // `deps` holds the three freeze descriptors, for the tests only (a
+  // throwaway repository's freezes, as readK64FreezeHead's `freeze`; a CI
+  // clone does not fetch `claude/nir1-contracts`). A formal entry passes none.
+  const {
+    freeze62 = K62_FREEZE,
+    freeze64 = K64_FREEZE,
+    freeze65 = K65_FREEZE,
+  } = deps;
   const { root } = input;
   const fixtures = Array.isArray(input.fixtures) ? input.fixtures : [];
   if (
@@ -741,9 +765,9 @@ export function admitGraphCaseRun(input) {
     input.ratification5 === undefined
       ? collectRatification5Evidence({ root, candidateHead: head })
       : assertSealedRatification5(input.ratification5, head);
-  const k62 = readK62FreezeHead({ root, commit: input.k62Commit });
-  const k64 = readK64FreezeHead({ root, commit: input.k64Commit });
-  const k65 = readK65FreezeHead({ root, commit: input.k65Commit });
+  const k62 = readK62FreezeHead({ root, commit: input.k62Commit }, freeze62);
+  const k64 = readK64FreezeHead({ root, commit: input.k64Commit }, freeze64);
+  const k65 = readK65FreezeHead({ root, commit: input.k65Commit }, freeze65);
   // K6/5 変える点 6: the candidate's product D must be 40 ms (before any run).
   assertDFortyAdmits(ratification5);
   const sealed = Object.freeze({
@@ -900,8 +924,14 @@ export function isFrozenDryRunAdmission(admission) {
  * commit; the K6/2 and K6/4 freeze heads must be read back from their
  * commits.
  */
-export function assertReceiptHeadBound(input) {
+export function assertReceiptHeadBound(input, deps = {}) {
   rejectOverrides(input, ["root", "receipt", "ratification5"]);
+  // `deps`: the freeze descriptors, for the tests only (see admitGraphCaseRun).
+  const {
+    freeze62 = K62_FREEZE,
+    freeze64 = K64_FREEZE,
+    freeze65 = K65_FREEZE,
+  } = deps;
   const { root, receipt } = input;
   const head = receipt?.head;
   const facts = collectObservationPrepFacts({
@@ -919,18 +949,33 @@ export function assertReceiptHeadBound(input) {
     receipt,
     input.ratification5,
   );
-  const k62 = readK62FreezeHead({ root, commit: head?.k62?.freezeCommit });
+  const k62 = readK62FreezeHead(
+    { root, commit: head?.k62?.freezeCommit },
+    freeze62,
+  );
   if (k62.sha256 !== head.k62.sha256)
     throw new Error("[precheck] head.k62 differs from the K6/2 freeze");
-  const k64 = readK64FreezeHead({ root, commit: head?.k64?.freezeCommit });
+  const k64 = readK64FreezeHead(
+    { root, commit: head?.k64?.freezeCommit },
+    freeze64,
+  );
   if (k64.sha256 !== head.k64.sha256)
     throw new Error("[precheck] head.k64 differs from the K6/4 freeze");
-  const k65 = readK65FreezeHead({ root, commit: head?.k65?.freezeCommit });
+  const k65 = readK65FreezeHead(
+    { root, commit: head?.k65?.freezeCommit },
+    freeze65,
+  );
   if (k65.sha256 !== head.k65.sha256)
     throw new Error("[precheck] head.k65 differs from the K6/5 freeze");
   // K6/5-N2: a receipt of a candidate whose product D is not 40 ms is not
-  // judged by the /5 row.
-  if (ratification5 !== null) assertDFortyAdmits(ratification5);
+  // judged by the /5 row. A receipt with head.k65 is a /5 receipt, so it must
+  // record the 批准 5 evidence (its D=40 ms evidence): without it the D check
+  // cannot run, which is a `[precheck]`, never a skipped check.
+  if (ratification5 === null)
+    throw new Error(
+      "[precheck] a receipt with head.k65 must record candidate.ratification5 (the D=40 ms evidence, K6/5-N2); the /5 row is not judged",
+    );
+  assertDFortyAdmits(ratification5);
   // S1f: the procedure file, read back from its commit (validateCp4Receipt
   // takes it as `bound.procedure`).
   const procedure = assertProcedureBound({ root, receipt });

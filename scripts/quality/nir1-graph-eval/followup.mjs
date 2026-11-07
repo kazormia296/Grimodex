@@ -497,11 +497,13 @@ export function classifyFollowUp(sample, options) {
   // per-sample check; K6/5-N2): under the /5 row a window other than D, or no
   // recorded window (null cannot be matched), is not a 批准 12 fallback to
   // K6/2 but a `[precheck]`: the /5 row is not judged (admission.mjs checks
-  // the candidate's product D before the run).
+  // the candidate's product D before the run). The match is exact (K6/5 変える点
+  // 6: 「D と一致」): D is a fixed 40, not a measured value, so no boundary
+  // tolerance applies to the window itself.
   if (
     parent.graphWindowMs === null ||
     !Number.isFinite(parent.graphWindowMs) ||
-    Math.abs(parent.graphWindowMs - GRAPH_EVAL_D_MS) > BOUNDARY_TOLERANCE_MS
+    parent.graphWindowMs !== GRAPH_EVAL_D_MS
   )
     throw new Error(
       `[precheck] K6/5 変える点 6: the parent's Graph window is ${String(parent.graphWindowMs)} ms, not D=${GRAPH_EVAL_D_MS} ms (a missing value cannot be matched); the /5 row is not judged`,

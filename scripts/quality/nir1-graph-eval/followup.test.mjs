@@ -538,7 +538,15 @@ test("K6/4-N30: 合流の窓の値が W_f と違う、子の IR の deadline が
   assert.equal(childWindow.followUp, false);
   // K6/5 変える点 6（K6/5-N2）: 親の窓が D でない sample と、窓の値が無い（null）
   // sample は、批准 12 の違反（K6/2 に戻す）ではなく [precheck]。
-  for (const graphWindowMs of [100, 10.84, null])
+  // D は固定値の 40 ms で、一致は厳密（境界の許容幅 0.01 ms の内でも [precheck]）。
+  for (const graphWindowMs of [
+    100,
+    10.84,
+    null,
+    GRAPH_EVAL_D_MS + 0.005,
+    GRAPH_EVAL_D_MS - 0.005,
+    GRAPH_EVAL_D_MS + 1e-9,
+  ])
     assert.throws(
       () => steady(k64Sample({}, { parent: { graphWindowMs } })),
       /\[precheck\] K6\/5 変える点 6/,

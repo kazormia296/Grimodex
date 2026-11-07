@@ -1104,7 +1104,7 @@ export function readSpP4Gate({
     sha256(Buffer.from(headBytes(receipt.head))) !== receipt.headSha256
   )
     fail("gate", "the SP-P4 receipt's head is not the head.json it wrote");
-  for (const key of ["k62", "k64"])
+  for (const key of ["k62", "k64", "k65"])
     if (stable(receipt.head?.[key]) !== stable(head?.[key]))
       fail("gate", `the SP-P4 receipt's ${key} head differs from this run's`);
   if (receipt.head?.observationPrep?.commit !== head?.observationPrep?.commit)

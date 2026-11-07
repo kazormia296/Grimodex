@@ -797,6 +797,348 @@ test("K6/5-N2（変える点 6）: 候補の製品の D が 40 ms でない（#8
   }
 });
 
+test("K6/5 変える点 6（readDFortyEvidence）: 定数は comment の外の行頭の export const で、ちょうど 1 つ宣言されているときだけ読む", async () => {
+  const need = K65_CANDIDATE_REQUIREMENTS;
+  const repo = await mkdtemp(path.join(tmpdir(), "cp4-d40-read-"));
+  try {
+    git(repo, "init", "-q", "-b", "main");
+    const waitMsOf = async (text) => {
+      await put(repo, need.configPath, text);
+      const head = commit(repo, "config");
+      return collectRatification5Evidence({ root: repo, candidateHead: head })
+        .dForty.config.waitMs;
+    };
+    const def = (value) => `export const ${need.waitConstant} = ${value};`;
+    assert.equal(await waitMsOf(`${def(40)}\n`), 40);
+    assert.equal(
+      await waitMsOf(`// head\n${def(40)}\nexport const X = 1;\n`),
+      40,
+    );
+    // comment の中の宣言は定義ではない（行頭でも、block comment の中でも）。
+    assert.equal(await waitMsOf(`// ${def(40)}\n${def(10.84)}\n`), 10.84);
+    assert.equal(await waitMsOf(`/*\n${def(40)}\n*/\n${def(10.84)}\n`), 10.84);
+    assert.equal(await waitMsOf(`/** ${def(40)} */\n${def(10.84)}\n`), 10.84);
+    // comment の中だけに 40 があり、本物の定義が無い・読めない場合は読めない。
+    assert.equal(await waitMsOf(`// ${def(40)}\n`), null);
+    assert.equal(
+      await waitMsOf(
+        `/* ${def(40)} */\nexport const ${need.waitConstant} = FORTY;\n`,
+      ),
+      null,
+    );
+    // 行頭でない（字下げ・式の途中）定義は読まない。
+    assert.equal(await waitMsOf(`  ${def(40)}\n`), null);
+    assert.equal(await waitMsOf(`const ok = 1; ${def(40)}\n`), null);
+    // 2 つの定義（同じ値でも、違う値でも）は曖昧なので読まない。
+    assert.equal(await waitMsOf(`${def(40)}\n${def(40)}\n`), null);
+    assert.equal(await waitMsOf(`${def(10.84)}\n${def(40)}\n`), null);
+    assert.equal(
+      await waitMsOf(
+        `${def(40)}\nconst ${need.waitConstant}Dup = 1;\nlet ${need.waitConstant} = 5;\n`,
+      ),
+      null,
+    );
+    // 読めない値は assertDFortyAdmits が [precheck] にする。
+    assert.throws(
+      () =>
+        assertDFortyAdmits({
+          dForty: {
+            commit: need.dFortyCommit,
+            ancestor: true,
+            config: {
+              path: need.configPath,
+              constant: need.waitConstant,
+              waitMs: null,
+            },
+          },
+        }),
+      /unreadable, not 40/u,
+    );
+    // この repository の候補（#802 の後）は 40 で、祖先でもある。
+    const real = collectRatification5Evidence({
+      root: ROOT,
+      candidateHead: "HEAD",
+    });
+    assert.equal(real.dForty.config.waitMs, 40);
+    assert.equal(real.dForty.ancestor, true);
+    assert.equal(assertDFortyAdmits(real), real);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A throwaway repository with the three freeze files committed on a side
+ * branch (`freeze62`/`freeze64`/`freeze65` are the descriptors the entries
+ * take for the tests), a candidate whose config sets D to `waitMs`, and the
+ * K6/5 inputs of admitGraphCaseRun.
+ */
+async function k65EnforcementRepository() {
+  const { repo, prep, head } = await preparedRepository();
+  git(repo, "checkout", "-q", "-b", "freezes", head);
+  await put(repo, K62_FREEZE.path, "K6/2 test bytes\n");
+  await put(repo, K64_FREEZE.path, "K6/4 test bytes\n");
+  await put(repo, K65_FREEZE.path, "K6/5 test bytes\n");
+  const freezeCommit = commit(repo, "freezes");
+  // The same bytes at another commit: the commit, not only the bytes, is pinned.
+  git(repo, "commit", "-q", "--no-gpg-sign", "--allow-empty", "-m", "later");
+  const laterCommit = git(repo, "rev-parse", "HEAD");
+  const freeze62 = {
+    ...K62_FREEZE,
+    commit: freezeCommit,
+    sha256: sha256Of("K6/2 test bytes\n"),
+  };
+  const freeze64 = {
+    ...K64_FREEZE,
+    freezeCommit,
+    sha256: sha256Of("K6/4 test bytes\n"),
+  };
+  const freeze65 = {
+    ...K65_FREEZE,
+    freezeCommit,
+    sha256: sha256Of("K6/5 test bytes\n"),
+  };
+  git(repo, "checkout", "-q", "-b", "ten", prep);
+  await put(
+    repo,
+    K65_CANDIDATE_REQUIREMENTS.configPath,
+    `export const ${K65_CANDIDATE_REQUIREMENTS.waitConstant} = 10.84;\n`,
+  );
+  const tenHead = commit(repo, "candidate with D=10.84");
+  const input = (candidateHead, extra = {}) => {
+    const product = productReceipt({
+      candidate: candidate(candidateHead, candidateHead),
+    });
+    return {
+      root: repo,
+      candidateHead,
+      prepCommit: prep,
+      buildReceipt: evalReceipt({
+        candidate: candidate(candidateHead, candidateHead),
+      }),
+      productReceipt: product,
+      fixtures: [{ path: FIXTURE, sha256: FROZEN_FIXTURE_SHA256[FIXTURE] }],
+      defaultAddonSha256: product.artifacts[PRODUCT_NODE],
+      k62Commit: freezeCommit,
+      k64Commit: freezeCommit,
+      k65Commit: freezeCommit,
+      ...extra,
+    };
+  };
+  return {
+    repo,
+    prep,
+    head,
+    tenHead,
+    freezeCommit,
+    laterCommit,
+    freezes: { freeze62, freeze64, freeze65 },
+    input,
+  };
+}
+
+test("K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（commit と bytes）と製品の D=40 ms を、封印の前に実際の関数で強制する", async () => {
+  const r = await k65EnforcementRepository();
+  try {
+    const need = K65_CANDIDATE_REQUIREMENTS;
+    const admit = (input, freezes = r.freezes) =>
+      admitGraphCaseRun(input, freezes);
+    // 凍結の head が全部通ると、次の D の検査で止まる（この repository は #802 を持たない）。
+    assert.throws(
+      () => admit(r.input(r.head)),
+      /\[precheck\] K6\/5 変える点 6: the candidate's product D is not 40 ms/u,
+    );
+    // /5 の凍結の head が無い（commit を渡さない）。
+    assert.throws(
+      () => admit(r.input(r.head, { k65Commit: undefined })),
+      /\[precheck\] the K6\/5 freeze commit is not given/u,
+    );
+    // /5 の凍結の commit が違う: bytes が同じでも別の commit は拒み、凍結の file が無い commit は読めない。
+    assert.throws(
+      () => admit(r.input(r.head, { k65Commit: r.laterCommit })),
+      /\[precheck\] K6\/5 freeze commit or bytes differ/u,
+    );
+    for (const other of [r.head, r.prep])
+      assert.throws(
+        () => admit(r.input(r.head, { k65Commit: other })),
+        /\[precheck\] K6\/5 cannot be read from the freeze commit/u,
+        other,
+      );
+    // /5 の凍結の bytes が違う（同じ commit でも bytes の SHA-256 が違う）。
+    assert.throws(
+      () =>
+        admit(r.input(r.head), {
+          ...r.freezes,
+          freeze65: { ...r.freezes.freeze65, sha256: H64("0") },
+        }),
+      /\[precheck\] K6\/5 freeze commit or bytes differ/u,
+    );
+    // 製品の既定（K65_FREEZE）は一時 repo の凍結を受け付けない。
+    assert.throws(
+      () =>
+        admit(r.input(r.head), {
+          freeze62: r.freezes.freeze62,
+          freeze64: r.freezes.freeze64,
+        }),
+      /\[precheck\] K6\/5 freeze commit or bytes differ/u,
+    );
+    // D が 40 でない候補（定数が 10.84）。#802 が祖先でないことも併せて示す。
+    assert.throws(
+      () => admit(r.input(r.tenHead)),
+      new RegExp(
+        `product D is not 40 ms \\(${need.dFortyCommit} \\(#802\\) is not an ancestor; ${need.waitConstant} in ${need.configPath} is 10\\.84, not 40\\)`,
+        "u",
+      ),
+    );
+    // sealed 済みの 批准 5 を渡す経路でも、D の検査は走る。
+    const sealed = collectRatification5Evidence({
+      root: r.repo,
+      candidateHead: r.tenHead,
+    });
+    assert.throws(
+      () => admit(r.input(r.tenHead, { ratification5: sealed })),
+      /product D is not 40 ms/u,
+    );
+    // K6/2 と K6/4 の head の検査は /5 より先（それぞれの凍結が違えば、ここで止まる）。
+    assert.throws(
+      () =>
+        admit(r.input(r.head), {
+          ...r.freezes,
+          freeze62: { ...r.freezes.freeze62, sha256: H64("0") },
+        }),
+      /K6\/2 freeze commit or bytes differ/u,
+    );
+  } finally {
+    await rm(r.repo, { recursive: true, force: true });
+  }
+});
+
+test("K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を凍結と照合し、ratification5 を必須にして D=40 ms を強制する", async () => {
+  const r = await k65EnforcementRepository();
+  try {
+    const facts = collectObservationPrepFacts({
+      root: r.repo,
+      commit: r.prep,
+      candidateHead: r.head,
+    });
+    const { freeze62, freeze64, freeze65 } = r.freezes;
+    const collected = (head) =>
+      JSON.parse(
+        JSON.stringify(
+          collectRatification5Evidence({ root: r.repo, candidateHead: head }),
+        ),
+      );
+    const receipt = ({ candidateHead = r.head, k65, ratification5 } = {}) => ({
+      head: {
+        k62: { freezeCommit: r.freezeCommit, sha256: freeze62.sha256 },
+        k64: { freezeCommit: r.freezeCommit, sha256: freeze64.sha256 },
+        ...(k65 === undefined
+          ? {
+              k65: { freezeCommit: r.freezeCommit, sha256: freeze65.sha256 },
+            }
+          : k65 === null
+            ? {}
+            : { k65 }),
+        observationPrep: {
+          commit: r.prep,
+          freezeRecordSha256: facts.recordSha256AtCommit,
+        },
+      },
+      candidate: {
+        commit: candidateHead,
+        ...(ratification5 === null
+          ? {}
+          : { ratification5: ratification5 ?? collected(candidateHead) }),
+      },
+    });
+    const bound = (value) =>
+      assertReceiptHeadBound({ root: r.repo, receipt: value }, r.freezes);
+    // 凍結の head が全部合い、ratification5 もある receipt は、D の検査で止まる。
+    assert.throws(() => bound(receipt()), /product D is not 40 ms/u);
+    // head.k65 が無い receipt（/5 の凍結の前の run）。
+    assert.throws(
+      () => bound(receipt({ k65: null })),
+      /\[precheck\] the K6\/5 freeze commit is not given/u,
+    );
+    // head.k65 の bytes が違う。
+    assert.throws(
+      () =>
+        bound(
+          receipt({
+            k65: { freezeCommit: r.freezeCommit, sha256: H64("0") },
+          }),
+        ),
+      /\[precheck\] head\.k65 differs from the K6\/5 freeze/u,
+    );
+    // head.k65 の commit が違う（bytes が同じ別の commit、凍結の file が無い commit）。
+    assert.throws(
+      () =>
+        bound(
+          receipt({
+            k65: { freezeCommit: r.laterCommit, sha256: freeze65.sha256 },
+          }),
+        ),
+      /\[precheck\] K6\/5 freeze commit or bytes differ/u,
+    );
+    assert.throws(
+      () =>
+        bound(
+          receipt({ k65: { freezeCommit: r.head, sha256: freeze65.sha256 } }),
+        ),
+      /\[precheck\] K6\/5 cannot be read from the freeze commit/u,
+    );
+    // 製品の既定の凍結（K65_FREEZE）と違う一時 repo の凍結は、既定では通らない。
+    assert.throws(
+      () =>
+        assertReceiptHeadBound(
+          { root: r.repo, receipt: receipt() },
+          { freeze62, freeze64 },
+        ),
+      /\[precheck\] K6\/5 freeze commit or bytes differ/u,
+    );
+    // head.k65 を持つ receipt が candidate.ratification5 を持たないと、D の検査を飛ばさず [precheck]。
+    assert.throws(
+      () => bound(receipt({ ratification5: null })),
+      /\[precheck\] a receipt with head\.k65 must record candidate\.ratification5/u,
+    );
+    // D が 40 でない候補の receipt（ratification5 は git の再収集と一致する）。
+    const tenFacts = collectObservationPrepFacts({
+      root: r.repo,
+      commit: r.prep,
+      candidateHead: r.tenHead,
+    });
+    const tenReceipt = receipt({ candidateHead: r.tenHead });
+    tenReceipt.head.observationPrep.freezeRecordSha256 =
+      tenFacts.recordSha256AtCommit;
+    assert.throws(
+      () => bound(tenReceipt),
+      new RegExp(
+        `product D is not 40 ms \\(.*${K65_CANDIDATE_REQUIREMENTS.waitConstant} in .* is 10\\.84, not 40\\)`,
+        "u",
+      ),
+    );
+    // D=40 の証拠を自己申告で書き換えても、git の再収集と違えば拒まれる。
+    const forged = receipt({ candidateHead: r.tenHead });
+    forged.head.observationPrep.freezeRecordSha256 =
+      tenFacts.recordSha256AtCommit;
+    forged.candidate.ratification5.dForty = {
+      commit: K65_CANDIDATE_REQUIREMENTS.dFortyCommit,
+      ancestor: true,
+      config: {
+        path: K65_CANDIDATE_REQUIREMENTS.configPath,
+        constant: K65_CANDIDATE_REQUIREMENTS.waitConstant,
+        waitMs: 40,
+      },
+    };
+    assert.throws(
+      () => bound(forged),
+      /candidate\.ratification5 differs from the 批准 5 evidence re-collected/u,
+    );
+  } finally {
+    await rm(r.repo, { recursive: true, force: true });
+  }
+});
+
 test("§15.8: 凍結した fixture の path の試走は製品の .node で、評価の .node を拒む", () => {
   const product = productReceipt();
   const evaluation = evalReceipt();
