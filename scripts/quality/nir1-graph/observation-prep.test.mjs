@@ -35,6 +35,7 @@ import {
   K24_SCOPE_EXTENSION,
   K24_TABLE,
   K64_FREEZE_SOURCE,
+  K65_FREEZE_SOURCE,
   OBSERVATION_PREP_FILES,
   PLACEHOLDER,
   S4_PROCEDURE_WORDS,
@@ -51,6 +52,7 @@ import {
   parseReadyProbeKinds,
   READY_PROBE_SOURCE,
   parseK64FreezeCommit,
+  parseK65Freeze,
   sourcePinGitErrors,
   formalReferenceErrors,
   formalReferenceRows,
@@ -873,7 +875,7 @@ test("K6/5（S2 追補 #14 の下書き）: S2 は K6/5 の契約と手順のフ
       contractId: "graph-eval-procedure",
       sha256:
         "1ad1088498e43dc3cd0deb1b7d74f18396eb3c07d4bd3834a8787de30ecd24a7",
-      confirmedCommit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+      confirmedCommit: "96c657cf68cdc509326254243a9d273615ed51c5",
       freezeCommit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
     },
   );
@@ -1026,6 +1028,15 @@ async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
   filled.placeholders = [];
   const frozenCtx = {
     ...ctx,
+    // K6/5 版の P3-3: the state after S4 re-pins constants.mjs (the pin's
+    // bytes then hold K65_FREEZE): the worktree's K65_FREEZE, with the
+    // constants.mjs source this context already read (held by the same pin).
+    harnessK65Freeze: {
+      ...parseK65Freeze(
+        readFileSync(path.join(repoRoot, K65_FREEZE_SOURCE.path), "utf8"),
+      ),
+      source: ctx.harnessK64Freeze.source,
+    },
     fileSha256: {
       ...ctx.fileSha256,
       [filled.k64Procedure.formal.path]: "b".repeat(64),
@@ -1092,6 +1103,124 @@ test("S4 の最終関門の P3-3: contracts.k64.freezeCommit is the pinned const
     ),
     [],
   );
+});
+
+test("K6/5 版の P3-3: contracts.k65 is the pinned constants.mjs K65_FREEZE (sha256, confirmedCommit, freezeCommit), as K64_FREEZE is for contracts.k64", async () => {
+  const ctx = await context();
+  const { fixed, frozenCtx } = await frozenRecord(ctx);
+  // The worktree's constants and the record's CONTRACTS.k65 are the same values.
+  const harness = frozenCtx.harnessK65Freeze;
+  assert.deepEqual(
+    {
+      sha256: fixed.contracts.k65.sha256,
+      confirmedCommit: fixed.contracts.k65.confirmedCommit,
+      freezeCommit: fixed.contracts.k65.freezeCommit,
+    },
+    {
+      sha256: harness.sha256,
+      confirmedCommit: harness.confirmedCommit,
+      freezeCommit: harness.freezeCommit,
+    },
+  );
+  assert.equal(
+    harness.confirmedCommit,
+    "96c657cf68cdc509326254243a9d273615ed51c5",
+  );
+  assert.equal(
+    harness.freezeCommit,
+    "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+  );
+  assert.deepEqual(observationPrepErrors(fixed, frozenCtx), []);
+  const check = (copy) => observationPrepErrors(copy, frozenCtx);
+  // Each field of the harness's K65_FREEZE is compared (the form alone does not pass).
+  detects(
+    fixed,
+    check,
+    (p) => (p.contracts.k65.freezeCommit = "a".repeat(40)),
+    /contracts\.k65\.freezeCommit must be the pinned harness's K65_FREEZE/u,
+  );
+  detects(
+    fixed,
+    check,
+    (p) =>
+      (p.contracts.k65.confirmedCommit =
+        "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f"),
+    /contracts\.k65\.confirmedCommit must be the pinned harness's K65_FREEZE/u,
+  );
+  // The harness side disagreeing with the record is refused too (constants.mjs edited alone).
+  for (const field of K65_FREEZE_SOURCE.fields)
+    assert.ok(
+      observationPrepErrors(fixed, {
+        ...frozenCtx,
+        harnessK65Freeze: {
+          ...harness,
+          [field]: field === "sha256" ? "e".repeat(64) : "e".repeat(40),
+        },
+      }).some((e) =>
+        e.includes(
+          `contracts.k65.${field} must be the pinned harness's K65_FREEZE`,
+        ),
+      ),
+      field,
+    );
+  // Unreadable pinned bytes close the check; the pin must hold the bytes it was read from.
+  assert.ok(
+    observationPrepErrors(fixed, {
+      ...frozenCtx,
+      harnessK65Freeze: null,
+    }).some((e) => /K65_FREEZE.*unreadable/u.test(e)),
+  );
+  assert.ok(
+    observationPrepErrors(fixed, {
+      ...frozenCtx,
+      harnessK65Freeze: {
+        ...harness,
+        source: { ...harness.source, sha256: "d".repeat(64) },
+      },
+    }).some((e) => /constants\.mjs must be the bytes/u.test(e)),
+  );
+  // A draft is not compared (S4 fills and pins).
+  const draft = await draftPrep();
+  assert.deepEqual(
+    observationPrepErrors(draft, { ...ctx, harnessK65Freeze: null }).filter(
+      (e) => /K65_FREEZE/u.test(e),
+    ),
+    [],
+  );
+});
+
+test("K6/5 版の P3-3: parseK65Freeze reads the three fields once each from the K65_FREEZE literal only", () => {
+  const rows = {
+    sha256: `  sha256: "${"1".repeat(64)}",`,
+    confirmedCommit: `  confirmedCommit: "${"2".repeat(40)}",`,
+    freezeCommit: `  freezeCommit: "${"3".repeat(40)}",`,
+  };
+  const text = [
+    "export const K65_FREEZE = Object.freeze({",
+    '  path: "docs/plans/x.md",',
+    rows.sha256,
+    "  /** a comment */",
+    rows.confirmedCommit,
+    rows.freezeCommit,
+    "});",
+  ].join("\n");
+  assert.deepEqual(parseK65Freeze(text), {
+    sha256: "1".repeat(64),
+    confirmedCommit: "2".repeat(40),
+    freezeCommit: "3".repeat(40),
+  });
+  for (const changed of [
+    text.replace("K65_FREEZE", "K64_FREEZE"),
+    text.replace("confirmedCommit", "confirmed"),
+    text.replace(
+      rows.freezeCommit,
+      `${rows.freezeCommit}\n${rows.freezeCommit}`,
+    ),
+    text.replace("2".repeat(40), "2".repeat(39)),
+    text.replace("1".repeat(64), "1".repeat(63)),
+    `export const K64_FREEZE = Object.freeze({\n${rows.sha256}\n${rows.confirmedCommit}\n${rows.freezeCommit}\n});\n${text.replace(`${rows.freezeCommit}\n`, "")}`,
+  ])
+    assert.equal(parseK65Freeze(changed), undefined, changed);
 });
 
 test("S4 の最終関門の P3-3: parseK64FreezeCommit reads the field once from the K64_FREEZE literal only", () => {

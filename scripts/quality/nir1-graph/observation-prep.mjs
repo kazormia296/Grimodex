@@ -94,7 +94,7 @@ export const CONTRACTS = Object.freeze({
     contractId: "graph-eval-procedure",
     path: "docs/plans/nir1-final-request-eval-proposal-5-draft.md",
     sha256: "1ad1088498e43dc3cd0deb1b7d74f18396eb3c07d4bd3834a8787de30ecd24a7",
-    confirmedCommit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+    confirmedCommit: "96c657cf68cdc509326254243a9d273615ed51c5",
     freezeCommit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
   }),
 });
@@ -3338,6 +3338,7 @@ function setupReadingErrors(errors, readings, ctx) {
   for (const source of [
     ...(ctx.harnessConstantSources ?? []),
     ...(ctx.harnessK64Freeze ? [ctx.harnessK64Freeze.source] : []),
+    ...(ctx.harnessK65Freeze ? [ctx.harnessK65Freeze.source] : []),
     ...(ctx.harnessReadyProbe ? [ctx.harnessReadyProbe.source] : []),
   ]) {
     const role = harnessPinOf(source.path)?.role;
@@ -4026,6 +4027,16 @@ export function observationPrepErrors(prep, ctx) {
     errors.push(
       `contracts.k64.freezeCommit must be the pinned harness's K64_FREEZE.freezeCommit (${String(ctx.harnessK64Freeze?.commit ?? "unreadable")}, ${K64_FREEZE_SOURCE.path} at its pin)`,
     );
+  // K6/5 版の P3-3 (the same form as K64_FREEZE's): a frozen record's
+  // contracts.k65 is the pinned harness's K65_FREEZE (constants.mjs read from
+  // its pin's bytes), field by field, never only CONTRACTS.k65. Unreadable
+  // pinned bytes (the pin predates K65_FREEZE) close the check; S4 re-pins.
+  if (frozen)
+    for (const field of K65_FREEZE_SOURCE.fields)
+      if (k65?.[field] !== ctx.harnessK65Freeze?.[field])
+        errors.push(
+          `contracts.k65.${field} must be the pinned harness's K65_FREEZE.${field} (${String(ctx.harnessK65Freeze?.[field] ?? "unreadable")}, ${K65_FREEZE_SOURCE.path} at its pin)`,
+        );
   if (
     prep.references?.g01Fixture?.sha256 !== ctx.g01.sha256 ||
     prep.references?.g01Fixture?.sha256 !== ctx.g01.frozenSha256
@@ -4816,6 +4827,66 @@ export function parseK64FreezeCommit(text) {
   return rows.length === 1 ? rows[0][1] : undefined;
 }
 
+/**
+ * K6/5 版の P3-3: the K6/5 freeze S2's contracts.k65 must equal, read from the
+ * pinned bytes of the harness's constants.mjs (never imported or run).
+ */
+export const K65_FREEZE_SOURCE = Object.freeze({
+  path: `${HARNESS_DIR}constants.mjs`,
+  name: "K65_FREEZE",
+  fields: Object.freeze(["sha256", "confirmedCommit", "freezeCommit"]),
+});
+
+/**
+ * K6/5 版の P3-3: K65_FREEZE's sha256 (64-hex), confirmedCommit and
+ * freezeCommit (40-hex) in the harness's constants.mjs text, each exactly
+ * once inside the object literal; undefined when the literal or a field is
+ * absent or repeated.
+ */
+export function parseK65Freeze(text) {
+  const block =
+    /^export const K65_FREEZE = Object\.freeze\(\{\n([\s\S]*?)\n\}\);$/mu.exec(
+      String(text),
+    );
+  if (!block) return undefined;
+  const out = {};
+  for (const [field, digits] of [
+    ["sha256", 64],
+    ["confirmedCommit", 40],
+    ["freezeCommit", 40],
+  ]) {
+    const rows = [
+      ...block[1].matchAll(
+        new RegExp(`^ {2}${field}: "([0-9a-f]{${digits}})",$`, "gmu"),
+      ),
+    ];
+    if (rows.length !== 1) return undefined;
+    out[field] = rows[0][1];
+  }
+  return out;
+}
+
+/** K6/5 版の P3-3: K65_FREEZE from the pinned bytes; null on a miss. */
+async function readHarnessK65Freeze({ repoRoot, read }) {
+  const pinned = await readPinnedHarnessFile({
+    repoRoot,
+    read,
+    file: K65_FREEZE_SOURCE.path,
+  });
+  if (!pinned) return null;
+  const values = parseK65Freeze(pinned.bytes.toString("utf8"));
+  if (values === undefined) return null;
+  return {
+    ...values,
+    source: {
+      path: K65_FREEZE_SOURCE.path,
+      commit: pinned.commit,
+      from: pinned.from,
+      sha256: pinned.sha256,
+    },
+  };
+}
+
 /** S4 の最終関門の P3-3: K64_FREEZE.freezeCommit from the pinned bytes; null on a miss. */
 async function readHarnessK64Freeze({ repoRoot, read }) {
   const pinned = await readPinnedHarnessFile({
@@ -5056,9 +5127,11 @@ export async function loadObservationPrepContext({ repoRoot }) {
   const blocked = await readHarnessBlockedTable({ repoRoot, read });
   const constants = await readHarnessConstants({ repoRoot, read });
   const k64Freeze = await readHarnessK64Freeze({ repoRoot, read });
+  const k65Freeze = await readHarnessK65Freeze({ repoRoot, read });
   const readyProbe = await readHarnessReadyProbe({ repoRoot, read });
   return {
     harnessK64Freeze: k64Freeze,
+    harnessK65Freeze: k65Freeze,
     harnessReadyProbe: readyProbe,
     harnessBlockedTable: blocked?.table ?? null,
     harnessBlockedTableSource: blocked?.source ?? null,

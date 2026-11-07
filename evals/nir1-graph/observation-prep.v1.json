@@ -30,7 +30,7 @@
       "contractId": "graph-eval-procedure",
       "path": "docs/plans/nir1-final-request-eval-proposal-5-draft.md",
       "sha256": "1ad1088498e43dc3cd0deb1b7d74f18396eb3c07d4bd3834a8787de30ecd24a7",
-      "confirmedCommit": "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+      "confirmedCommit": "96c657cf68cdc509326254243a9d273615ed51c5",
       "freezeCommit": "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
       "note": "K6/5（2026-11-07 確認）: 最初の表示の D を 40 ms（製品の固定値。DR-IRW-1・2、#802 a7e96946）、B を 54.2 ms、Hybrid p95 の上限を 94.2 ms にする。T_late は 100 ms のまま。凍結の記録は contracts の docs/plans/nir1-cp4-records/k65-freeze-record.md。トレースの file と K6/4 の束縛（contracts.k64）はそのまま。S2 追補 #14 の下書き: この項は K6/5 の harness の PR が足した。S3 のレビューと S4 の 6 回目の凍結で確定する。"
     },

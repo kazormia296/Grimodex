@@ -81,7 +81,8 @@ export const K64_FREEZE = Object.freeze({
 /**
  * The K6/5 bytes (`nir1-final-request-eval-proposal/5`, contractId
  * `graph-eval-procedure`; the user confirmed this SHA-256 on 2026-11-07).
- * The integrator froze them on `claude/nir1-contracts` at `07fc80ec…` (the
+ * The draft's bytes were last changed at `96c657cf…` (`confirmedCommit`); the
+ * integrator froze them on `claude/nir1-contracts` at `07fc80ec…` (the
  * confirmation record's commit, the first push after the confirmation; the
  * freeze record is `docs/plans/nir1-cp4-records/k65-freeze-record.md`).
  * `K64_FREEZE` stays: the traces and S2 bind the K6/4 bytes, and the /5 row
@@ -92,8 +93,11 @@ export const K65_FREEZE = Object.freeze({
   sha256: "1ad1088498e43dc3cd0deb1b7d74f18396eb3c07d4bd3834a8787de30ecd24a7",
   draftRef: "nir1-final-request-eval-proposal/5",
   contractId: "graph-eval-procedure",
-  /** The confirmation record's commit (the same commit as the freeze). */
-  confirmedCommit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+  /**
+   * The commit that last changed the draft's bytes (revision 5, the one the
+   * user confirmed); the same meaning as K64_FREEZE's. Not the freeze commit.
+   */
+  confirmedCommit: "96c657cf68cdc509326254243a9d273615ed51c5",
   /** The freeze commit on `claude/nir1-contracts` (K6/5 変える点 7), pinned. */
   freezeCommit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
 });
