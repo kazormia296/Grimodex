@@ -100,6 +100,52 @@ export const CONTRACTS = Object.freeze({
 });
 
 /**
+ * S2 追補 #15（S3 の B1、M1）: the user's confirmation records the S2 binds
+ * for K6/5 — the K6/5 confirmation itself (at the freeze commit) and the two
+ * records asked after S3's review (C7 / the G-01 route / the R5 reuse, and
+ * the R5 reuse alone). Their commit and file SHA-256 are the anchors the
+ * validator and the formal gate hold the record's copies to.
+ */
+export const K65_CONFIRMATION_RECORDS = Object.freeze({
+  graphEvalProcedure: Object.freeze({
+    path: "docs/plans/nir1-cp4-records/user-confirmation-2026-11-07-k65-graph-eval-procedure.md",
+    commit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+    sha256: "0c95059f36115781dbe4475d886c13ef5b57fd26fc61ae3b76bb42b5e1143a29",
+  }),
+  additional: Object.freeze([
+    Object.freeze({
+      record:
+        "docs/plans/nir1-cp4-records/user-confirmation-2026-11-07-k65-c7-g01-r5.md",
+      commit: "0600ec041259f66607907587ea237f23b97c57e7",
+      sha256:
+        "c9083e81613e56a4c0a9bb92cb687ee43ff5446d5278159f2dadc6df2d6f4674",
+    }),
+    Object.freeze({
+      record:
+        "docs/plans/nir1-cp4-records/user-confirmation-2026-11-07-k65-r5-reuse.md",
+      commit: "6b47c177fb9c424f6a4fcfe2caba0bfb5c213a6d",
+      sha256:
+        "a62d8a9b76de2b9e6a141cbdbfc614e7f85f47e9eaa41bc283713826258aebea",
+    }),
+  ]),
+});
+
+/**
+ * S2 追補 #15（S3 の M2）: a record's location the way S4b writes it,
+ * `<path>（commit <40 hex>…、file の SHA-256 <64 hex>）` (a bracketed note may
+ * follow the commit), parsed to {path, commit, sha256}; null when the text
+ * does not start so. The formal gate holds the parsed commit's bytes and its
+ * ancestry to it.
+ */
+export function parseRecordReference(text) {
+  const found =
+    /^([^\s（]+)（commit ([0-9a-f]{40})(?:〔[^〕]*〕)?、file の SHA-256 ([0-9a-f]{64})）/u.exec(
+      String(text ?? ""),
+    );
+  return found ? { path: found[1], commit: found[2], sha256: found[3] } : null;
+}
+
+/**
  * K2/4「setup の addendum」の表（宣言する Scene、reading、excerpt）。K2/4 :391
  * は 4 つの Scene を列挙する。G-04 base（fixture v2 の g04-lio-landing）は、
  * ユーザーの確認（K24_SCOPE_EXTENSION、contracts a7027915 の質問 3）で K2/4 の
@@ -1598,6 +1644,7 @@ const S4_PLACEHOLDERS = Object.freeze(
     "seed-pin-addendum-commit",
     "seed-pin-addendum-sha256",
     "sp-synthetic-detection-record",
+    "k65-detection-record",
     "sp1-bytes-commit",
     "r5-check-record",
   ].map((name) => `S4:${name}`),
@@ -1667,7 +1714,8 @@ const FORBIDDEN_READ = Object.freeze([
  * and the DR rows each copies.
  */
 const TRACE_RUNNER_READING_ITEMS = Object.freeze([
-  ["TP-1", ["DR-CP4-V-2 (1)", "DR-CP4-V-3 (B)"]],
+  // S2 追補 #15（S3 の M2、minor）: TP-1 also names C7 (DR-CP4-C7).
+  ["TP-1", ["DR-CP4-V-2 (1)", "DR-CP4-V-3 (B)", "DR-CP4-C7"]],
   ["TP-2", ["DR-CP4-V-2 (2)", "DR-CP4-V-3 (C)"]],
   ["TP-3", ["DR-CP4-V-2 (3)"]],
   ["TP-4", ["DR-CP4-V-3 (A)", "DR-CP4-V-4 (B1)"]],
@@ -3876,6 +3924,28 @@ export function sourcePinGitErrors(pins, head, git) {
 }
 
 /**
+ * S2 追補 #15: the words TP-1's reading carries for C7 (DR-CP4-C7, #826): the
+ * three conditions (querySupported, the IR reason, the renderer's value) with
+ * indexUsable, the count check against the fetches that meet the condition,
+ * the clock range when E is above 0, the lapse (i) reason and the mixing
+ * checks, and the disclosure.
+ */
+export const TP1_C7_WORDS = Object.freeze([
+  "C7（DR-CP4-C7",
+  "querySupported",
+  "indexUsable",
+  "index-unavailable",
+  "graph-unavailable:cancelled",
+  "fail closed",
+  "ちょうど 1 つの begin",
+  "読取の時計の範囲を必須",
+  "i-chronicle-stop",
+  "N1・N29・N32",
+  "chronicleStopChild",
+  "excludedChronicleStop",
+]);
+
+/**
  * S2 追補 #10（DR-CP4-P-6）: the trace runner's readings of the trace path fix
  * (DR-CP4-V-2〜V-4) — each item with its decision rows and reading, the rule
  * naming the four pins, and the limits (editing's lapse (i), the rules chosen
@@ -3903,6 +3973,13 @@ function traceRunnerReadingErrors(errors, readings) {
   )
     errors.push(
       `traceRunnerReadings.items must be ${TRACE_RUNNER_READING_ITEMS.map(([id, rows]) => `${id} (${rows.join(", ")})`).join(", ")}, each with its topic and reading`,
+    );
+  const c7Missing = TP1_C7_WORDS.filter(
+    (word) => !String(items[0]?.reading ?? "").includes(word),
+  );
+  if (c7Missing.length > 0)
+    errors.push(
+      `traceRunnerReadings.items TP-1's reading must state C7 with ${c7Missing.join(", ")} (S2 追補 #15)`,
     );
   const pinRoles = TRACE_PATH_PIN_ROLES.filter(
     (role) => !String(readings.rule ?? "").includes(role),
@@ -3975,6 +4052,32 @@ const K65_LIMIT_WORDS = Object.freeze([
   "a1492815",
   "179139b4",
   "8edd6496",
+  // S2 追補 #15（S3 の 8 回目、B1、M1、M2、minor）: the user's confirmation of
+  // C7 / the G-01 route / the R5 reuse, the R5 order read against /5's bytes,
+  // the product changes after R5's candidate, the closure's 43 files, the p95
+  // observation before R-4, the LAPSE-4 diagnostic, the pin gap of
+  // trace-record.mjs, and the retaken detection records.
+  "0600ec04",
+  "6b47c177",
+  "ac2e93d6",
+  "K6/5 の変える点 7",
+  "nir1GraphSeed.ts",
+  "#777",
+  "#782",
+  "#793",
+  "#797",
+  "#802",
+  "#811",
+  "#814",
+  "#817",
+  "#824",
+  "43 file",
+  "QV-1",
+  "LAPSE-4",
+  "55.30",
+  "quality-verdict",
+  "trace-record.mjs も pin から外れている",
+  "S4:k65-detection-record",
 ]);
 /** S2 追補 #14: what k65Readings.rule binds. */
 const K65_RULE_WORDS = Object.freeze([
@@ -4009,6 +4112,21 @@ function k65ReadingErrors(errors, readings) {
 }
 
 /**
+ * S2 追補 #15 (S3 minor): every name G01-E2E's notCountedAs carries — the two
+ * the first check left out (g-case-diagnostic-negative, sp-p4-seed-pin-parity)
+ * included.
+ */
+export const G01_E2E_NOT_COUNTED_AS = Object.freeze([
+  "g-case-gold",
+  "g-case-parity",
+  "g-case-diagnostic-negative",
+  "sp-p4-seed-pin-parity",
+  "trace",
+  "cp4-pass",
+  "cp4-hold",
+]);
+
+/**
  * S2 追補 #14（DR-PUBG-16-2）: the G-01 end-to-end diagnostic row — a
  * diagnostic run that counts for no judgement, on the frozen G-01 fixture
  * only, in a separate session, with reachedEndToEnd as its only criterion.
@@ -4029,9 +4147,7 @@ function g01E2eDiagnosticErrors(errors, prep, ctx) {
     }) ||
     !String(row.passCriterion ?? "").startsWith("reachedEndToEnd") ||
     !Array.isArray(row.notCountedAs) ||
-    !["g-case-gold", "g-case-parity", "trace", "cp4-pass", "cp4-hold"].every(
-      (name) => row.notCountedAs.includes(name),
-    ) ||
+    !G01_E2E_NOT_COUNTED_AS.every((name) => row.notCountedAs.includes(name)) ||
     !String(row.source ?? "").includes("pubg16-e2e-run.mjs") ||
     !String(row.source ?? "").includes("admitG01E2eDiagnostic")
   )
@@ -4460,6 +4576,32 @@ export function observationPrepErrors(prep, ctx) {
     errors.push(
       "r5Gate.r5CheckRecord must locate the R5 check run's record (filled when frozen) with its rule",
     );
+  // S2 追補 #15 (S3's M2): the K6/5 detection-power record is bound like the
+  // R5 record (a placeholder in a draft, a located record when frozen).
+  const k65DetectionRecord = prep.r5Gate?.k65DetectionRecord;
+  if (
+    typeof k65DetectionRecord !== "string" ||
+    k65DetectionRecord.trim() === "" ||
+    (k65DetectionRecord.startsWith("S4:") &&
+      (k65DetectionRecord !== "S4:k65-detection-record" || frozen)) ||
+    !nonBlank(prep.r5Gate?.k65DetectionRecordRule)
+  )
+    errors.push(
+      "r5Gate.k65DetectionRecord must locate the K6/4・K6/5 detection-power record (S4:k65-detection-record in a draft, filled when frozen) with its rule (S2 追補 #15)",
+    );
+  if (frozen)
+    for (const [label, text] of [
+      ["r5Gate.r5CheckRecord", prep.r5Gate?.r5CheckRecord],
+      [
+        "r5Gate.syntheticDetection.record",
+        prep.r5Gate?.syntheticDetection?.record,
+      ],
+      ["r5Gate.k65DetectionRecord", k65DetectionRecord],
+    ])
+      if (parseRecordReference(text) === null)
+        errors.push(
+          `${label} must start with <path>（commit <40 hex>、file の SHA-256 <64 hex>） so the formal gate can hold the commit's bytes and ancestry (S2 追補 #15)`,
+        );
 
   // Step order (SP/1 設計: the seed pin step first, the declaration later).
   if (!same(prep.stepOrder?.graphCases, STEP_ORDER.graphCases))
@@ -4558,6 +4700,33 @@ export function observationPrepErrors(prep, ctx) {
   )
     errors.push(
       "contracts.k65.confirmation must name the user's K6/5 confirmation record (its file, the freeze commit and SHA-256) and the S4b step that carries it into review.userConfirmations (S2 追補 #14)",
+    );
+  // S2 追補 #15 (S3's B1, M1): the K6/5 record's SHA-256 is the committed
+  // bytes' value, and the two later confirmations are bound by file, commit
+  // and SHA-256.
+  if (
+    /SHA-256 ([0-9a-f]{64})/u.exec(String(confirmation?.record ?? ""))?.[1] !==
+    K65_CONFIRMATION_RECORDS.graphEvalProcedure.sha256
+  )
+    errors.push(
+      `contracts.k65.confirmation.record must carry the K6/5 confirmation record's SHA-256 ${K65_CONFIRMATION_RECORDS.graphEvalProcedure.sha256} (S2 追補 #15)`,
+    );
+  if (
+    !same(
+      (confirmation?.additional ?? []).map(({ record, commit, sha256 }) => ({
+        record,
+        commit,
+        sha256,
+      })),
+      K65_CONFIRMATION_RECORDS.additional,
+    ) ||
+    (confirmation?.additional ?? []).some(
+      (row) => !nonBlank(row?.topic) || !nonBlank(row?.confirmedAt),
+    ) ||
+    !nonBlank(confirmation?.additionalNote)
+  )
+    errors.push(
+      "contracts.k65.confirmation.additional must be the C7／G-01／R5 confirmation (0600ec04) and the R5 reuse confirmation (6b47c177), each with its file, commit, SHA-256, topic and date (S2 追補 #15)",
     );
   const formal = procedure.formal ?? {};
   if (formal.version !== "v2" || formal.path !== PROCEDURE_V2)
@@ -4768,6 +4937,42 @@ export function observationPrepErrors(prep, ctx) {
       !HEX64.test(review.recordSha256 ?? "")
     )
       errors.push("review must name the independent review record when frozen");
+    // S2 追補 #15 (S3's B1): the K6/5 row and the two later confirmations
+    // are carried into review.userConfirmations, and the scope names them.
+    const rows = Array.isArray(review?.userConfirmations)
+      ? review.userConfirmations
+      : [];
+    const k65Row = rows.find((row) => row?.contract === "K6/5");
+    if (
+      !k65Row ||
+      k65Row.draftRef !== CONTRACTS.k65.draftRef ||
+      k65Row.contractId !== CONTRACTS.k65.contractId ||
+      k65Row.sha256 !== CONTRACTS.k65.sha256 ||
+      !String(k65Row.source ?? "").includes(
+        K65_CONFIRMATION_RECORDS.graphEvalProcedure.path,
+      ) ||
+      !nonBlank(k65Row.confirmedAt)
+    )
+      errors.push(
+        "review.userConfirmations must carry the K6/5 row (draftRef, contractId, the K6/5 SHA-256, date, and the confirmation record as source) when frozen (S2 追補 #15)",
+      );
+    for (const row of K65_CONFIRMATION_RECORDS.additional)
+      if (
+        !rows.some((entry) =>
+          String(entry?.source ?? "").includes(row.record),
+        ) ||
+        !String(review?.userConfirmationsScope ?? "").includes(
+          row.commit.slice(0, 8),
+        )
+      )
+        errors.push(
+          `review.userConfirmations must carry the confirmation ${row.commit.slice(0, 8)} (${row.record}) as a row, and userConfirmationsScope must name it (S2 追補 #15)`,
+        );
+    for (const word of ["K6/5", "R-1〜R-5"])
+      if (!String(review?.userConfirmationsScope ?? "").includes(word))
+        errors.push(
+          `review.userConfirmationsScope must state the K6/5 confirmation's scope (${word}) when frozen (S2 追補 #15)`,
+        );
   } else if (prep.review !== null)
     errors.push("review must be null until S3 reviews");
   return errors;
@@ -5450,14 +5655,54 @@ export function supersededReferences(parsed) {
 }
 
 /**
+ * S2 追補 #15: the rows for K6/5 — the draft at its freeze commit, the
+ * confirmation records, and the records S4b binds (R5, SP-N, K6/4・K6/5
+ * detection power; a record whose location does not parse is left to the
+ * validator, which refuses it when frozen).
+ */
+export function k65FormalRows(prep) {
+  const rows = [
+    // The K6/5 draft's bytes at its freeze commit, so the freeze commit
+    // (07fc80ec) is an ancestor of the head (S3 minor, M1).
+    {
+      path: CONTRACTS.k65.path,
+      commit: CONTRACTS.k65.freezeCommit,
+      sha256: CONTRACTS.k65.sha256,
+    },
+    {
+      path: K65_CONFIRMATION_RECORDS.graphEvalProcedure.path,
+      commit: K65_CONFIRMATION_RECORDS.graphEvalProcedure.commit,
+      sha256: K65_CONFIRMATION_RECORDS.graphEvalProcedure.sha256,
+    },
+    ...K65_CONFIRMATION_RECORDS.additional.map((row) => ({
+      path: row.record,
+      commit: row.commit,
+      sha256: row.sha256,
+    })),
+  ];
+  for (const text of [
+    prep.r5Gate?.r5CheckRecord,
+    prep.r5Gate?.syntheticDetection?.record,
+    prep.r5Gate?.k65DetectionRecord,
+  ]) {
+    const reference = parseRecordReference(text);
+    if (reference !== null) rows.push(reference);
+  }
+  return rows;
+}
+
+/**
  * The (path, commit, sha256) rows the formal gate checks against git: the
- * traces, S2's boundFiles, the superseded v1 addenda, the K6/4 procedure and
- * the SP/1 bytes.
+ * traces, S2's boundFiles, the superseded v1 addenda, the K6/4 procedure, the
+ * SP/1 bytes and K6/5's rows.
  */
 export function formalReferenceRows(prep, addenda) {
   return [
     ...prep.traces,
     ...prep.boundFiles,
+    // S2 追補 #15: the K6/5 freeze, the confirmation records and the
+    // records S4b binds (R5, SP-N, K6/4・K6/5 detection power).
+    ...k65FormalRows(prep),
     // The v1 bytes each new addendum version supersedes (B2b-1 review P3-2).
     ...supersededReferences(addenda),
     {
