@@ -821,6 +821,31 @@ X1 /3(… SHA-256 bf01f7bd…52f)を確認しますか?本文だけの保存で�
 - 台帳の更新箇所: 確認台帳の 2026-11-01補足（X1/3。経緯、X1/3-1 の表、「承認の範囲と効力」、「X1/3 が許さないもの」）、`scope-storage-authority` の /3 の行（X1/1 の2行の直後）、Session B1 の注の X1/1 の項の下の 2026-11-01 の注（:282、:825、:846 の読み方。文面より弱い読みであること）、Session B2 の注の (e) への 2026-11-01 の注記（4つ目の ref）、lane snapshot の 2026-11-01 の追記（X1-5 と CP-4 の取り直しの行と、TASK に写す内容）、残 HOLD 表の C-product の行の追記。Confirmation protocol は変えていない。
 - この記録で行わないこと: X1-5 の実装と decisions 文書の作成、新しい候補の宣言、CP-4 の取り直し、IR の edge を持つ Scene を編集する trace の事前登録、製品のコードの変更。
 
+### 10.10. K6/5（2026-11-07）
+
+| 項目         | 値 |
+| ------------ | -- |
+| 受信         | 2026-11-07（JST。確認の記録は日付だけを書き、時刻を書かない。正確な受信時刻は会話記録の timestamp）。構造化質問（AskUserQuestion、2 回）への 2 回目の回答 |
+| 記録         | `claude/nir1-contracts` の commit `07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f` の `docs/plans/nir1-cp4-records/user-confirmation-2026-11-07-k65-graph-eval-procedure.md`（この枝は master に merge しないので hash で引く）。質問と回答の原文はこの記録による |
+| 形式         | 1 回目の質問は識別子を名指しておらず、確認として扱わない（回答は「承認（T_late 100 ms）（推奨）」）。2 回目の質問の文が draftRef、contractId、draft の SHA-256 を名指し、ちょうど 1 つの `draftRef#contractId` を示した。回答の逐語は「確認する（推奨）」で、明示の確認 |
+| 示した ref   | `nir1-final-request-eval-proposal/5#graph-eval-procedure`（draftRef `nir1-final-request-eval-proposal/5`、contractId `graph-eval-procedure`） |
+| 確認された版 | branch `claude/nir1-contracts` の `docs/plans/nir1-final-request-eval-proposal-5-draft.md`（bytes は `96c657cf` で置かれ、`07fc80ec` までの間に変わっていない。改訂 5） |
+| 取り込み     | `git show 07fc80ec:<path>` の出力をそのまま置いて byte 同一で取り込み、`sha256sum` が下の値と一致することを確かめた。「Status: draft／未確認」の行を含めて本文は編集せず、確認状態は確認台帳で表す |
+
+| 略称 | ファイル | SHA-256 |
+| ---- | -------- | ------- |
+| K6/5 | [nir1-final-request-eval-proposal-5-draft.md](nir1-final-request-eval-proposal-5-draft.md) | `1ad1088498e43dc3cd0deb1b7d74f18396eb3c07d4bd3834a8787de30ecd24a7` |
+
+質問・選択肢・回答の逐語は、確認の記録（上の commit）のとおり。要旨:
+
+- 確認の範囲は draft 冒頭の「ユーザーが批准すること」の 1〜9（範囲の正本）。/5 の行の内容は、/4 の行に /5 の「変える点」の 1〜7 を当てたもの。最初の表示の D を 10.84 → 40 ms（DR-IRW-1・2）、Hybrid p95 の上限を 65.04 → 94.2 ms、T_late は 100 ms のまま、P の評価の値は変えない。
+- 合格基準の緩和 5 つ（窓内の D、親と子の IR の締切、Hybrid p95 の上限、「D の後の Graph」の違反の境界）は、質問の文で示した上での確認である。
+- 効力は 2 段（批准 7）: (i) は確認され、記録の時点から CP-4 の判定に使う（/4 の行に替わる。/4 の行と receipt は履歴）。(ii) は事前の確認で、条件の成立、診断と receipt の照合、改めての確認の後にだけ効く。
+- 起案の指示と選択（問 1、U-1、U-2 とその再確認、問 3、問 5）は確認ではない。最初の問 2 と最初の U-2 は誤った説明で示したので訂正して聞き直した（contracts の irw3 の追記、`f026d1f1`・`fdf1159d`）。
+- 台帳の更新箇所: 確認台帳の 2026-11-07補足（K6/5。K6/5-1 の表、「承認の範囲と効力」、「K6/5 が許さないもの」）、`graph-eval-procedure` の /5 の行（/4 の行の直下）、/4 の行の備考への追記、K6/4 の注の下の K6/5 の注、条件付き 2 行の注の下の注、P の固定値の段落の注、proposal/7 の行の備考の注、lane snapshot の CP-4 の行。Confirmation protocol は変えていない。
+- 凍結: 事前登録の凍結は済んでいる（凍結の commit は `07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f`、記録は `claude/nir1-contracts` の `docs/plans/nir1-cp4-records/k65-freeze-record.md`、commit `109eb523`）。
+- 残り（この記録では行わない）: harness の実装、S2 追補 #14、S3、S4 の 6 回目、正式 run。/5 の判定に使えるのは凍結の後に始めた run だけ。Graph の公開（PUB-G）と Session C-1 の承認は含まない。
+
 ## 11. 未解決事項
 
 - `[precheck]` DT-2 の再試行の上限（sweep の recover の再試行 0 回→最大2回、送信していない終端の書込みの再試行 1 回→最大3回。K1b の規則7の再確認の対象）の再確認は、Session B1 の9文のどれにも含まれず、未解決である。手段は DSN §9 のとおり（新しい draftRef を起案するか、1件1回への締め直し）。台帳の残 HOLD 表の D-transport の行（DT-1〜3）からここへ向ける。
