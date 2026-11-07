@@ -367,6 +367,11 @@ impl NirChronicleIndexRuntime {
 
     /// DR-IRB-3 (E13): take this authority's single reader slot, or `None`.
     pub fn try_acquire_reader_permit(&self) -> Option<ReaderPermit> {
+        // A blocked slot never comes back, even if its reader has since ended
+        // (a forced reader's late close is not evidence the waiter relied on).
+        if self.reader_slot_blocked.load(Ordering::SeqCst) {
+            return None;
+        }
         self.reader_slot
             .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
             .ok()
@@ -465,11 +470,45 @@ impl NirChronicleIndexRuntime {
             self.native_build_cancellation_epoch(),
             admission.runtime_epoch,
         );
+        // E7: the reader is registered with the participant's lifecycle core
+        // while it is open, so a waiting side whose bounded wait passed can
+        // force it out of the participant count and block this slot.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hold = participant.register_reader_hold(
+            self.owner,
+            Arc::clone(&stop),
+            Arc::clone(&self.reader_slot_blocked),
+        );
+        let forced_probe = Arc::clone(&stop);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            reader.with_participant_chronicle_reader(participant, cancellation, operation)
+            reader.with_participant_chronicle_reader_stoppable(
+                participant,
+                cancellation,
+                stop,
+                operation,
+            )
         }));
+        #[cfg(test)]
+        if let Some(hook) = AFTER_READER_SCOPE_HOOK.with(|slot| slot.borrow_mut().take()) {
+            hook();
+        }
+        // Drop the registration first, then read the flag: a force takes the
+        // lifecycle lock to set it, and the drop takes the same lock, so a
+        // force either already set the flag (seen below) or can no longer
+        // reach this reader. A force that landed after the scope's last
+        // check (during commit or close) has counted the participant out, so
+        // an `Ok` plan must not go on to embedding and publish.
+        drop(hold);
+        let forced = forced_probe.load(Ordering::Acquire);
         match outcome {
             Ok(result) => {
+                let result = match result {
+                    Ok(_) if forced => Err(crate::narrative_extraction::validation_terminated(
+                        crate::narrative_extraction::ValidationTerminationReason::Cancelled,
+                        "NIR1 chronicle reader was forced out by a bounded wait",
+                    )),
+                    other => other,
+                };
                 let unproven = matches!(
                     result
                         .as_ref()
@@ -479,6 +518,11 @@ impl NirChronicleIndexRuntime {
                 );
                 if unproven {
                     tracing::error!("NIR1 chronicle reader close unproven; reader slot kept");
+                    self.block_reader_slot(open_slot);
+                } else if self.reader_slot_blocked.load(Ordering::SeqCst) {
+                    // E7: the waiting side forced this reader out. The close
+                    // is proven now, but the slot stays blocked: the forced
+                    // state was published before this evidence existed.
                     self.block_reader_slot(open_slot);
                 } else {
                     self.release_with_close_evidence(open_slot);
@@ -490,6 +534,9 @@ impl NirChronicleIndexRuntime {
                 // Re-prove it (retiring twice is harmless) before the slot
                 // is given back.
                 match reader.prove_chronicle_reader_closed() {
+                    Ok(()) if self.reader_slot_blocked.load(Ordering::SeqCst) => {
+                        self.block_reader_slot(open_slot)
+                    }
                     Ok(()) => self.release_with_close_evidence(open_slot),
                     Err(error) => {
                         tracing::error!(%error, "NIR1 chronicle reader close unproven after panic; reader slot kept");
@@ -561,4 +608,12 @@ impl NirChronicleIndexRuntime {
         state.proofs.insert(proof.project.clone(), Arc::new(proof));
         Ok(true)
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test hook: runs after the reader scope returned and before its hold is
+    /// dropped (the window a forced stop can land in after the last check).
+    pub(super) static AFTER_READER_SCOPE_HOOK:
+        std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }

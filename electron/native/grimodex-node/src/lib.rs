@@ -61,7 +61,9 @@ use std::ops::{Deref, DerefMut};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, TryLockError};
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::ThreadSafeCallContext;
@@ -3870,16 +3872,13 @@ async fn finish_workspace_shutdown(state: Arc<AppState>) -> Result<()> {
     // Keep the existing main-owned 30-second observation budget. Native retains
     // the owner until actual retirement; it does not release fences on timeout.
     state.wait_workspace_operations().await;
-    loop {
-        let participants = state
-            .workspace_lifecycle
-            .workspace_participant_count()
-            .map_err(|error| Error::from_reason(error.to_string()))?;
-        if participants == 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    // DR-IRB-3 (E7): a dedicated reader that has not stopped within 2 s is
+    // forced out of the count; other participants are awaited as before.
+    state
+        .workspace_lifecycle
+        .wait_participants_gone_for_shutdown(state.workspace_lifecycle.reader_stop_wait())
+        .await
+        .map_err(|error| Error::from_reason(error.to_string()))?;
     run_blocking(move || grimodex_db::open::shutdown_workspace_storage(&state.ws)).await
 }
 

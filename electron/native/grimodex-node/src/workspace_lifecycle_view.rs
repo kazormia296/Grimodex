@@ -376,6 +376,20 @@ impl WorkspaceLifecycleViewAdapter {
     /// marker is released when the worker leaves the protected I/O boundary,
     /// before the supervisor publishes Join/activation.
     pub(crate) fn acquire_transition_physical_exclusive(&self) -> AppResult<WorkspaceExclusive> {
+        self.acquire_transition_physical_exclusive_with_reader_bound(
+            grimodex_db::ReaderStopBoundedWait::new(&self.core),
+        )
+    }
+
+    /// The same wait with an explicit reader-stop bound (DR-IRB-3, E7): tests
+    /// pass a shorter one. A dedicated reader that has not stopped by the
+    /// bound is forced out of the participant count (and its slot blocked)
+    /// before the next attempt, which still checks participants == 0 under
+    /// the lifecycle lock.
+    pub(crate) fn acquire_transition_physical_exclusive_with_reader_bound(
+        &self,
+        reader_wait: grimodex_db::ReaderStopBoundedWait,
+    ) -> AppResult<WorkspaceExclusive> {
         let ticket = self
             .lock_projection()?
             .transition_ticket
@@ -390,11 +404,35 @@ impl WorkspaceLifecycleViewAdapter {
             match self.core.physical_exclusive_for_ticket(&ticket) {
                 Ok(exclusive) => return Ok(exclusive),
                 Err(grimodex_db::LifecycleError::ActiveOperations) => {
-                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    if reader_wait.poll() == 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
                 }
                 Err(error) => return Err(error.into()),
             }
         }
+    }
+
+    /// Shutdown's wait for every participant to leave, bounded for dedicated
+    /// readers (DR-IRB-3, E7). `Ok(())` once the participant count is 0.
+    /// Other participants are still awaited without a bound, as before.
+    pub(crate) async fn wait_participants_gone_for_shutdown(
+        &self,
+        reader_wait: grimodex_db::ReaderStopBoundedWait,
+    ) -> AppResult<()> {
+        loop {
+            if self.workspace_participant_count()? == 0 {
+                return Ok(());
+            }
+            if reader_wait.poll() == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+    }
+
+    /// A bounded wait for readers that starts now, on this view's core.
+    pub(crate) fn reader_stop_wait(&self) -> grimodex_db::ReaderStopBoundedWait {
+        grimodex_db::ReaderStopBoundedWait::new(&self.core)
     }
 
     /// Retire a failed initial Open/Restore without creating a descriptor that
