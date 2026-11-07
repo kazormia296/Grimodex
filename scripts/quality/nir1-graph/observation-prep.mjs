@@ -464,6 +464,9 @@ const DIAGNOSTIC_IDS = Object.freeze([
   ...GRAPH_NEGATIVES.map(([id]) => id),
   "K62-iii",
   "SP-P4",
+  // S2 追補 #14（DR-CP4-P-9）: the G-01 end-to-end diagnostic (counts for no
+  // judgement; DR-PUBG-16-2).
+  "G01-E2E",
 ]);
 
 /**
@@ -870,6 +873,21 @@ export const S4_PROCEDURE_WORDS = Object.freeze({
     "test-support.mjs",
     "新しい S4 の結果だけ",
     "S6 の許可リストは新しい S4b'''' だけ",
+  ],
+  // S2 追補 #14（DR-CP4-S4-9、DR-CP4-P-9）: (i) the sixth re-freeze — S4b''''
+  // is revoked after K6/5 (D=40 ms, B=54.2 ms, the Hybrid p95 limit 94.2 ms),
+  // C7 and the G-01 diagnostic changed the harness files; the user's K6/5
+  // confirmation on record (not an individual confirmation of the re-freeze),
+  // only the new S4's results used, and what S4b needs before it (S3's
+  // review, the contracts merge, the pins, the retaken records).
+  i: [
+    "DR-CP4-S4-9",
+    "3734e501c456f3fef22ded01a0084be457a60c1a",
+    "user-confirmation-2026-11-07-k65-graph-eval-procedure.md",
+    "個別に確認した記録は repo に無く",
+    "新しい S4 の結果だけ",
+    "S6 の許可リストは新しい S4b だけ",
+    "bytes の pin の取り直し",
   ],
 });
 /**
@@ -3923,6 +3941,100 @@ function g04RevisionReadingErrors(errors, readings) {
     );
 }
 
+/**
+ * S2 追補 #14（DR-CP4-P-9）: the words k65Readings.limits carries — (a) the
+ * observation-after revision with R-1〜R-5 (a loosening, the user's K6/5
+ * confirmation), (b) the LAPSE-2 exception (the user's question 3), (c) C7,
+ * (d) the G-01 diagnostic, (e) the dev observations before the freeze (not
+ * judged, may have affected choices), (f) #826 merged alone and the pin
+ * check, (g) the records still to retake before S4b.
+ */
+const K65_LIMIT_WORDS = Object.freeze([
+  "R-1〜R-5",
+  "観測の後の改訂",
+  "07fc80ec",
+  "DR-CP4-LAPSE-2",
+  "問 3",
+  "DR-CP4-LAPSE-3",
+  "DR-CP4-C7",
+  "i-chronicle-stop",
+  "g01-e2e-diagnostic",
+  "countsInCaseJudgement",
+  "c9b1397c",
+  "92763b25",
+  "30/30",
+  "1/603",
+  "判定・集計・閾値の選択に使わない",
+  "排除できない",
+  "#826",
+  "a1492815",
+  "179139b4",
+  "8edd6496",
+]);
+/** S2 追補 #14: what k65Readings.rule binds. */
+const K65_RULE_WORDS = Object.freeze([
+  "k64-procedure.v2.json",
+  "K65_FREEZE",
+  "PENDING_S4_PINS",
+]);
+
+/**
+ * S2 追補 #14（DR-CP4-P-9）: K6/5's readings — the rule binding the v2
+ * procedure file and K65_FREEZE, and the limits (a)〜(g).
+ */
+function k65ReadingErrors(errors, readings) {
+  if (!isObject(readings)) {
+    errors.push("k65Readings is required (S2 追補 #14、DR-CP4-P-9)");
+    return;
+  }
+  const unnamed = K65_RULE_WORDS.filter(
+    (word) => !String(readings.rule ?? "").includes(word),
+  );
+  if (!nonBlank(readings.status) || unnamed.length > 0)
+    errors.push(
+      `k65Readings.rule must bind ${K65_RULE_WORDS.join(", ")} (S2 追補 #14)`,
+    );
+  const missing = K65_LIMIT_WORDS.filter(
+    (word) => !String(readings.limits ?? "").includes(word),
+  );
+  if (missing.length > 0)
+    errors.push(
+      `k65Readings.limits must disclose ${missing.join(", ")} (S2 追補 #14、DR-CP4-P-9)`,
+    );
+}
+
+/**
+ * S2 追補 #14（DR-PUBG-16-2）: the G-01 end-to-end diagnostic row — a
+ * diagnostic run that counts for no judgement, on the frozen G-01 fixture
+ * only, in a separate session, with reachedEndToEnd as its only criterion.
+ */
+function g01E2eDiagnosticErrors(errors, prep, ctx) {
+  const row = (prep.diagnosticRuns ?? []).find((run) => run?.id === "G01-E2E");
+  if (!row) return;
+  if (
+    row.purpose !== "g01-e2e-diagnostic" ||
+    row.runKind !== "g01-e2e-diagnostic" ||
+    row.countsInCaseJudgement !== false ||
+    row.session !== "separate-diagnostic" ||
+    row.variant !== "G-01/v1" ||
+    row.outsideGoldParity !== true ||
+    !same(row.fixture, {
+      path: "evals/nir1-g01/fixture.v1.json",
+      sha256: ctx.g01?.sha256,
+    }) ||
+    !String(row.passCriterion ?? "").startsWith("reachedEndToEnd") ||
+    !Array.isArray(row.notCountedAs) ||
+    !["g-case-gold", "g-case-parity", "trace", "cp4-pass", "cp4-hold"].every(
+      (name) => row.notCountedAs.includes(name),
+    ) ||
+    !String(row.source ?? "").includes("pubg16-e2e-run.mjs") ||
+    !String(row.source ?? "").includes("admitG01E2eDiagnostic")
+  )
+    errors.push(
+      "diagnosticRuns G01-E2E must be the g01-e2e-diagnostic run (countsInCaseJudgement false, separate-diagnostic session, the frozen G-01 fixture's path and sha256, reachedEndToEnd as the only criterion, outside Gold and parity; S2 追補 #14)",
+    );
+}
+
 /** S2 追補: the points S2 hands to S3 (undecided in a draft, decided when frozen). */
 function reviewerQuestionErrors(errors, questions, frozen) {
   const rows = Array.isArray(questions) ? questions : [];
@@ -4113,6 +4225,8 @@ export function observationPrepErrors(prep, ctx) {
   setupReadingErrors(errors, prep.setupReadings, ctx);
   traceRunnerReadingErrors(errors, prep.traceRunnerReadings);
   g04RevisionReadingErrors(errors, prep.g04RevisionReadings);
+  k65ReadingErrors(errors, prep.k65Readings);
+  g01E2eDiagnosticErrors(errors, prep, ctx);
   reviewerQuestionErrors(errors, prep.reviewerQuestions, frozen);
 
   // D10: modes and parity.
@@ -4408,6 +4522,38 @@ export function observationPrepErrors(prep, ctx) {
       procedure.valueReasons[key].trim() === ""
     )
       errors.push(`k64Procedure.valueReasons.${key} is required`);
+  // S2 追補 #14: D is K6/5's fixed value (DR-IRW-1・2), not derived from P's
+  // formula or from B; B and the p95 limit are not derived from D.
+  for (const [key, words] of [
+    ["dMs", ["K6/5", "DR-IRW-1・2", "式から導かない"]],
+    ["bMs", ["D から逆算しない"]],
+    ["hybridP95LimitMs", ["D から導かず"]],
+  ])
+    if (
+      words.some(
+        (word) => !String(procedure.valueReasons?.[key]).includes(word),
+      )
+    )
+      errors.push(
+        `k64Procedure.valueReasons.${key} must state ${words.join(", ")} (S2 追補 #14)`,
+      );
+  const confirmation = k65?.confirmation;
+  if (
+    !isObject(confirmation) ||
+    confirmation.contract !== "K6/5" ||
+    !String(confirmation.record ?? "").includes(
+      "user-confirmation-2026-11-07-k65-graph-eval-procedure.md",
+    ) ||
+    !String(confirmation.record ?? "").includes(CONTRACTS.k65.freezeCommit) ||
+    !HEX64.test(
+      /SHA-256 ([0-9a-f]{64})/u.exec(String(confirmation.record ?? ""))?.[1] ??
+        "",
+    ) ||
+    !String(confirmation.intoReview ?? "").includes("review.userConfirmations")
+  )
+    errors.push(
+      "contracts.k65.confirmation must name the user's K6/5 confirmation record (its file, the freeze commit and SHA-256) and the S4b step that carries it into review.userConfirmations (S2 追補 #14)",
+    );
   const formal = procedure.formal ?? {};
   if (formal.version !== "v2" || formal.path !== PROCEDURE_V2)
     errors.push("k64Procedure.formal must be the v2 file");

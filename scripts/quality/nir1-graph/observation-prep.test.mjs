@@ -5602,7 +5602,8 @@ test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge comm
   assert.deepEqual(observationPrepErrors(prep, ctx), []);
   // S2 追補 #9（DR-CP4-S4-5）: (e) the re-freeze. S2 追補 #10（DR-CP4-S4-6）:
   // (f) the third re-freeze. S2 追補 #11（DR-CP4-S4-7）: (g) the fourth.
-  // S2 追補 #12（DR-CP4-S4-8）: (h) the fifth.
+  // S2 追補 #12（DR-CP4-S4-8）: (h) the fifth. S2 追補 #14（DR-CP4-S4-9）: (i)
+  // the sixth.
   assert.deepEqual(Object.keys(S4_PROCEDURE_WORDS), [
     "a",
     "b",
@@ -5612,6 +5613,7 @@ test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge comm
     "f",
     "g",
     "h",
+    "i",
   ]);
   let mutated = 0;
   for (const [item, words] of Object.entries(S4_PROCEDURE_WORDS))
@@ -5625,7 +5627,7 @@ test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge comm
       );
       mutated += 1;
     }
-  assert.equal(mutated, 41);
+  assert.equal(mutated, 48);
   detects(
     prep,
     (copy) => observationPrepErrors(copy, ctx),
@@ -6266,4 +6268,179 @@ test("S2 追補 #9（DR-CP4-T-4 (a)）: V-10 READY applies to the steady state o
       ),
     ),
   );
+});
+
+test("S2 追補 #14（DR-CP4-P-9）: S2 binds K6/5 (contracts.k65 and its confirmation record, the reasons of the v2 values), TP-1 reads C7, G01-E2E counts for no judgement and k65Readings disclose (a)〜(g), and S2 is still a draft", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  assert.deepEqual(check(prep), []);
+  // S4a の後も S2 は draft で、旧 S4b'''' の freeze record は失効している。
+  assert.equal(prep.status, "draft-awaiting-s3-review-and-s4-freeze");
+  assert.deepEqual(prep.placeholders.length, 20);
+  assert.equal(prep.review, null);
+  assert.equal(
+    prep.placeholders.some((row) => row.token.includes("k64-procedure-v1")),
+    false,
+  );
+  assert.deepEqual(prep.k64Procedure.formal, {
+    version: "v2",
+    path: "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v2.json",
+    commit: "S4:k64-procedure-v2-commit",
+    sha256: "S4:k64-procedure-v2-sha256",
+    review: null,
+  });
+  // The confirmation record: K6/5's own file at the freeze commit.
+  const confirmation = prep.contracts.k65.confirmation;
+  assert.equal(confirmation.contract, "K6/5");
+  assert.ok(
+    confirmation.record.includes(
+      "0c95059f36115781dbe4475d886c13ef5b57fd26fc61ae3b76bb42b5e1143a29",
+    ),
+  );
+  for (const mutate of [
+    (p) => delete p.contracts.k65.confirmation,
+    (p) => (p.contracts.k65.confirmation.contract = "K6/4"),
+    (p) =>
+      (p.contracts.k65.confirmation.record =
+        p.contracts.k65.confirmation.record.replace("07fc80ec", "00000000")),
+    (p) =>
+      (p.contracts.k65.confirmation.record =
+        p.contracts.k65.confirmation.record.replace(
+          /SHA-256 [0-9a-f]{64}/u,
+          "SHA-256 x",
+        )),
+    (p) => (p.contracts.k65.confirmation.intoReview = ""),
+  ])
+    detects(prep, check, mutate, /contracts\.k65\.confirmation must name/u);
+  // D, B and the p95 limit are never derived from one another.
+  for (const [key, word] of [
+    ["dMs", "式から導かない"],
+    ["dMs", "DR-IRW-1・2"],
+    ["dMs", "K6/5"],
+    ["bMs", "D から逆算しない"],
+    ["hybridP95LimitMs", "D から導かず"],
+  ])
+    detects(
+      prep,
+      check,
+      (p) =>
+        (p.k64Procedure.valueReasons[key] = p.k64Procedure.valueReasons[
+          key
+        ].replaceAll(word, "")),
+      new RegExp(`k64Procedure\\.valueReasons\\.${key} must state`, "u"),
+    );
+  // The promotion rule names K6/5 as the exception to "only narrowing".
+  assert.ok(prep.k64Procedure.promotion[2].includes("K6/5 はこの規則の例外"));
+  // TP-1 reads C7: the condition, the count match, E > 0 needs the read clock,
+  // the contamination checks and the disclosure.
+  const tp1 = prep.traceRunnerReadings.items[0];
+  for (const word of [
+    "DR-CP4-C7",
+    "index-unavailable",
+    "graph-unavailable:cancelled",
+    "fail closed",
+    "ちょうど 1 つの begin",
+    "読取の時計の範囲を必須",
+    "i-chronicle-stop",
+    "N1・N29・N32",
+    "chronicleStopChild",
+    "excludedChronicleStop",
+  ])
+    assert.ok(tp1.reading.includes(word) || tp1.decision.includes(word), word);
+  assert.ok(tp1.decision.includes("DR-CP4-V-2 (1)"));
+  assert.ok(tp1.receipt.includes("native.alignment.excludedChronicleStop"));
+  // G01-E2E: a diagnostic that counts for no judgement, on the frozen fixture.
+  const ids = prep.diagnosticRuns.map((row) => row.id);
+  assert.equal(ids.at(-1), "G01-E2E");
+  const g01 = prep.diagnosticRuns.at(-1);
+  assert.equal(g01.countsInCaseJudgement, false);
+  assert.equal(g01.session, "separate-diagnostic");
+  assert.equal(g01.fixture.sha256, prep.references.g01Fixture.sha256);
+  for (const mutate of [
+    (p) => (p.diagnosticRuns.at(-1).countsInCaseJudgement = true),
+    (p) => (p.diagnosticRuns.at(-1).session = "gold"),
+    (p) => (p.diagnosticRuns.at(-1).purpose = "dprime-check"),
+    (p) => (p.diagnosticRuns.at(-1).outsideGoldParity = false),
+    (p) => (p.diagnosticRuns.at(-1).fixture.sha256 = flip(g01.fixture.sha256)),
+    (p) =>
+      (p.diagnosticRuns.at(-1).fixture.path =
+        "evals/nir1-g01/fixture.dev.json"),
+    (p) => (p.diagnosticRuns.at(-1).passCriterion = "latency 100 ms 以下"),
+    (p) => p.diagnosticRuns.at(-1).notCountedAs.pop(),
+    (p) => (p.diagnosticRuns.at(-1).source = "admission.mjs"),
+  ])
+    detects(prep, check, mutate, /diagnosticRuns G01-E2E must be/u);
+  detects(
+    prep,
+    check,
+    (p) => p.diagnosticRuns.pop(),
+    /diagnosticRuns must be/u,
+  );
+  // k65Readings: the rule and the limits (a)〜(g).
+  detects(prep, check, (p) => delete p.k65Readings, /k65Readings is required/u);
+  detects(
+    prep,
+    check,
+    (p) => (p.k65Readings.status = " "),
+    /k65Readings\.rule must bind/u,
+  );
+  for (const word of [
+    "k64-procedure.v2.json",
+    "K65_FREEZE",
+    "PENDING_S4_PINS",
+  ]) {
+    assert.ok(prep.k65Readings.rule.includes(word), word);
+    detects(
+      prep,
+      check,
+      (p) => (p.k65Readings.rule = p.k65Readings.rule.replaceAll(word, "")),
+      /k65Readings\.rule must bind/u,
+    );
+  }
+  let words = 0;
+  for (const word of [
+    "R-1〜R-5",
+    "観測の後の改訂",
+    "07fc80ec",
+    "DR-CP4-LAPSE-2",
+    "問 3",
+    "DR-CP4-LAPSE-3",
+    "DR-CP4-C7",
+    "i-chronicle-stop",
+    "g01-e2e-diagnostic",
+    "countsInCaseJudgement",
+    "c9b1397c",
+    "92763b25",
+    "30/30",
+    "1/603",
+    "判定・集計・閾値の選択に使わない",
+    "排除できない",
+    "#826",
+    "a1492815",
+    "179139b4",
+    "8edd6496",
+  ]) {
+    assert.ok(prep.k65Readings.limits.includes(word), word);
+    detects(
+      prep,
+      check,
+      (p) => (p.k65Readings.limits = p.k65Readings.limits.replaceAll(word, "")),
+      /k65Readings\.limits must disclose/u,
+    );
+    words += 1;
+  }
+  assert.equal(words, 20);
+  // The limits (g) name the five files of ①'s closure that changed since
+  // 179139b4 (a statement about the repository at S2 追補 #14, recorded in
+  // DR-CP4-S4-9; S4b recomputes the closure before it fills the record).
+  for (const file of [
+    "admission.mjs",
+    "constants.mjs",
+    "followup.mjs",
+    "procedure-file.mjs",
+    "receipt.mjs",
+  ])
+    assert.ok(prep.k65Readings.limits.includes(file), file);
+  assert.ok(prep.s4StagesRule.includes("(i) 6 回目の凍結のやり直し"));
 });

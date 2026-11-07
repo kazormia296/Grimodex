@@ -37,6 +37,6 @@
   "review": {
     "reviewer": "S3 の独立レビュー待ち（placeholder。S4 の前に S3 の記録で置き換える）",
     "reviewedAt": "2026-11-07",
-    "record": "S3 の独立レビューの記録待ち（placeholder。K6/5 の harness の PR の時点では未実施。S2 追補 #14 で S3 の記録に置き換える）"
+    "record": "S3 の独立レビューの記録待ち（placeholder。K6/5 の harness の PR の時点では未実施。S3 の独立レビューの後、S4b の前に S3 の記録で置き換える）"
   }
 }
