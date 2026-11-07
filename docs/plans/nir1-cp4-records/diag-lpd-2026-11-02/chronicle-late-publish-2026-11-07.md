@@ -179,3 +179,92 @@ run 3 の counted query の index 53・62・100・132（親の fetch は rendere
 
 - `.artifacts/cp4/analyze-chronicle-late.mjs`：`d28259544c86f536eee67bd78da2f83c24598f8082fe33029683d8439071011f`
 - `.artifacts/cp4/gap3/chronicle-late.json`：`a57057b7a413b936d417132c1519f580f4328bb55f4bd3d600fbd7e6eb817fb1`
+
+## 9. 追記：run 4〜6 の頻度（2026-11-07）
+
+dev 専用・integrator だけが見る。CP-4 の判定・集計・閾値には使わない。製品のコード・run・build・cargo は触っていない（追加の run 4〜6 の出力を読んだだけ）。
+§5 の案 A の実施結果。run 4〜6 は同じ build・setup、各 200 cycles（log：`.artifacts/cp4/lpd-diag-6.log`、2026-11-07 00:02〜00:52Z）。
+
+### 9.1 入力と `OFF`（native − renderer の時計の差）
+
+- 求め方（§0 の「harness の読みの幅と begin の組の交わり」の中身。前の記録に式は無かったので、run 1〜3 の値を再現して確かめた）：
+  (1) harness の `traceAlignment().clock.readClockMs`（Native の読みの前後の `clockNs` から出す幅）、
+  (2) native record と renderer の `related_scenes_begin` の api 行を、`graph-unavailable:cancelled` の fetch を除いて 1 対 1 に組み、
+  `hi = min(record.tBeginNs − calledAt)`、`lo = max(record.tReturnedNs − resolvedAt)`（`analyze-gap3.mjs` の `offsetRange`）。**OFF = (1) と (2) の交わり**。
+  run 1〜3 は前回の手入力の値と完全に一致した（run 1・2 は (1) が、run 3 は下限が (1)・上限が (2) が決める）。
+- 値（ms、半幅 2.6〜2.8）：
+
+| run | OFF 下限 | OFF 上限 | 組の数 | 組から外した cancelled |
+| --- | --- | --- | --- | --- |
+| 1 | 645.917 | 651.417 | 202 | 0 |
+| 2 | 662.060 | 667.571 | 201 | 0 |
+| 3 | 635.149 | 640.716 | 202 | 4 |
+| 4 | 673.667 | 679.080 | 202 | 6 |
+| 5 | 598.760 | 603.949 | 204 | 1 |
+| 6 | 627.322 | 632.681 | 201 | 1 |
+
+- script：`.artifacts/cp4/analyze-chronicle-late-1to6.mjs`（`analyze-chronicle-late.mjs` の複製。OFF の手入力を上の計算に置き換え、run 1〜6 を回す。sha256 `188b757e…3222`）→ `gap3/chronicle-late-1to6.json`（`09dd5bbe…effd`）。
+  数え上げは `gap3/post-1to6.mjs`（`9669fe5d…695e`）、OFF の確認は `gap3/off-probe.mjs`（`b3cfb4f1…3822`）。いずれも gitignore 対象。
+  run 4〜6 の `observation.json` の sha256：`724844b4…e903`／`ab317747…ffca`／`efca3c92…e037`（前 8 桁＋後 4 桁）。
+- run 1〜3 の再現：run 3 は 4 件（index 53・62・100・132、前回と同じ）、run 1・2 は 0 件。stale→publish の間隔も 273〜280 ms で一致。
+
+### 9.2 数え方
+
+- (a) = 保存と親の begin の間に、変更 0 の Chronicle の publish（Stale）がある cycle（Stale の終わりが親の呼出し〔native に写像〕より前）。
+  保存の約 5 s 後の定期の変更 0 の publish（親より後）は含めない。
+- (b) = (a) のうち、変更ありの publish が親の begin より後に終わった cycle（表示が欠落する形）。
+- (c) = 親の begin 時の Chronicle の状態：fetch の `initialSnapshot.indexUsable` と開始時の封印の before／after の Chronicle `dirty`。
+
+### 9.3 run ごとの結果
+
+| run | load（15 分平均、開始時） | 親 | (a) | (b) | 親で indexUsable=false | cancelled |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1.61 | 200 | 0 | 0 | 0 | 0 |
+| 2 | 1.02 | 200 | 0 | 0 | 0 | 0 |
+| 3 | 4.30 | 200 | 4 | 4 | 4 | 4 |
+| 4 | 0.16 | 200 | 6 | 6 | 6 | 6 |
+| 5 | 0.28 | 200 | 1 | 1 | 1 | 1 |
+| 6 | 1.73 | 200 | 1 | 1 | 1 | 1 |
+| 合計 | | 1,200 | 12 | 12 | 12 | 12 |
+
+- run 4〜6 の 8 件は、run 3 の 4 件と同じ形：保存 → Freshness の予約（保存の 130〜223 ms 後。run 4 index 88 だけ、cycle の中に Freshness の予約〔tc>0〕が見つからず、Stale が保存の 3.6 ms 後。run 3 index 100 と同じく保存の区間が長い cycle）→
+  変更 0 の publish → 271〜293 ms 後に変更ありの publish。その間に親の begin。tc0 の終わりから tc9 までの間隔は run 3〜6 の 12 件すべてで 271〜293 ms
+  （250 ms の `RETRY_DELAY` ＋ build）。
+- (c)：12 件すべてで、親は `indexUsable=false`、封印は before／after とも Chronicle `dirty`（B は clean）、結果は `graph-unavailable:cancelled`（§3.1 の「開始時に Chronicle の索引が使えない」）。
+  逆に `indexUsable=false` の親は、(a) 以外では 0 件。つまり OFF に依らない数え方（`indexUsable=false` の fetch の数）も 0／0／4／6／1／1 で同じ。
+- 1 件の注意：run 6 index 89 は、Stale の終わり（保存の 392.8 ms 後）が親の呼出し（392.9 ms 後）と OFF の幅（±2.7）の中で入れ替わりうる。
+  Freshness の publish に 215 ms かかった cycle（予約 172.8 → 388.3 ms）。親が `indexUsable=false` を見たことは OFF に依らない。
+  OFF の中点では Stale の方が 0.1 ms 先で (a) に入るが、厳密に順序を確かめられない。入れない数え方では (a)＝(b)＝11 件（11/1,200）。
+- (b) の変更ありの publish は、親の begin の 52.8 ms 以上後（最小は run 3）。
+
+### 9.4 頻度
+
+- 6 run 合計：(b)／親の総数 ＝ 12／1,200 ＝ **1.00%**、Wilson 95% 区間 0.57〜1.74%（run 6 の 1 件を除く 11／1,200 は 0.92%、0.51〜1.63%）。
+- run 4〜6 だけ：8／600 ＝ 1.33%（0.68〜2.61%）。run 3〜6：12／800 ＝ 1.50%。run 1・2：0／400（3/n の上限で約 0.75%、Wilson の上限 0.95%）。
+- run ごと：0、0、4、6、1、1（各 200）。
+
+### 9.5 負荷との関係
+
+- 開始時の 15 分平均の load と件数：1.61→0、1.02→0、4.30→4、0.16→6、0.28→1、1.73→1。**最も静かだった run 4（0.16。1 分平均 0.01）が最多の 6 件**。
+  Spearman の順位相関は −0.15（15 分平均）、−0.48（1 分平均）、−0.15（5 分平均）で、n＝6 のため有意ではないが、「高負荷で増える」向きではない。
+- 「負荷が高いときだけ起きる」は否定される（低負荷の run 4・5 で計 7 件）。run 3 の load が効いたという §4.2 の読みも、run 3 だけでは支えられない（run 6 は 5 分平均 2.36 でも 1 件）。
+- 一方で「負荷に関係なく一定の割合」とも言い切れない：run ごとの件数は一様でなく（各 run の期待 2 件に対し χ² ＝ 15.0、自由度 5、p ≈ 0.010）、run 1・2 が 0／400、run 3・4 が 10／400。
+  run 1・2 に出なかった理由は分からない（偶然なら、率 1% で 400 件に 0 件の確率は約 1.8％。12 件を 1,200 の親に無作為に散らして run 1・2 の 400 件に 0 件の確率は約 0.7％）。
+  負荷は開始時の 15 分平均しか記録していない（run 中の load・CPU・ディスク待ちは未記録。run 5・6 の開始時の値には直前の run 自身が含まれる）。
+
+### 9.6 補助：Stale の機会と実現
+
+- 機構（§2.2）では、Freshness の予約が保存の約 125〜225 ms 後に入る cycle で Stale になる。この範囲に予約が入った cycle は run ごとに 13〜21 件（6 run で 102 件）、
+  そのうち Stale が起きたのは run 1〜6 で 0／19、0／16、3／16、5／21、1／17、1／13（計 10／102）。run 1・2 は 0／35、run 3〜6 は 10／67（Fisher の片側 p ≈ 0.012）。
+  この範囲は 12 件の観測から事後に決めた目安で、範囲の外（run 4 index 88 など）にも 2 件あるため、確率の推定には使わず、「機会の数は run 間でほぼ同じ（Freshness の位相は一様）で、Stale になる割合が run 間で違った」ことの確認にとどめる。
+
+### 9.7 言えること・言えないこと
+
+- 言える：(1) 製品の今の build で、**負荷が低い状態でも**、親の begin が Chronicle の再 publish より先に来て `indexUsable=false`（graph-unavailable:cancelled）になる cycle が起きる（run 4：6／200）。
+  (2) 起きた 12 件はすべて §1 と同じ形（Stale → 約 250 ms の遅れ → 変更ありの publish）で、親の begin の時点で開始時の封印が Chronicle `dirty`。
+  (3) 合計の頻度は約 1%（95% 区間 0.6〜1.7%）で、前の記録の「0.67% 前後」（§4.2）と矛盾しない。この編集 trace では 1 run（200 親）に平均 2 件、0 件の run もある。
+  (4) §3.2 のとおり、この形が 1 件でも起きた run は正式の手順では無効になる（run 3〜6 の `traceAlignment` はすべて aligned=false。206／208／205／202 の begin に対し record 202／202／204／201）。
+  率 1% が一定なら、200 cycles の run のうち 1 件以上起きるのは約 87%（1−0.99^200）。実際は 6 run 中 4 run。
+- 言えない：(1) run 間のばらつき（run 1・2 の 0 件）の原因。load では説明できず、未記録の要因（run 中の資源、Stale の窓の長さ）は推論にとどまる。
+  (2) 窓の長さ・Stale の比較の内訳は計装していない（§7）。(3) 正式の trace（S4b''''）の拍子・master の候補での頻度（dev fixture・dev build の値。#815 以前の run では 1,005 件で 0 件だった点は §4.2 のとおり未解明）。
+  (4) 保存が増えたときの頻度の変化。
