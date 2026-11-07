@@ -18,7 +18,12 @@ import {
   awaitPendingEditorWrites,
   hasUnresolvedEditorChanges,
 } from "@/lib/editorQuiescence";
-import { flushAllAutoSaves } from "@/hooks/useAutoSave";
+import {
+  AlreadyNotifiedSaveError,
+  discardAllAutoSaves,
+  flushAllAutoSaves,
+} from "@/hooks/useAutoSave";
+import { isWorkspaceQuarantinedError } from "@/features/concurrency/workspaceQuarantined";
 import { CodexDetailContent } from "./CodexDetailContent";
 import { toast } from "sonner";
 
@@ -446,6 +451,38 @@ describe("CodexDetailContent draft integrity", () => {
       { type: "location" },
       { baseVersion: 10 },
     ]);
+  });
+
+  it("carries a store quarantine cause on the text save error and stops retrying", async () => {
+    const quarantined = Object.assign(
+      new Error("WORKSPACE_QUARANTINED: fenced"),
+      { code: "WORKSPACE_QUARANTINED" },
+    );
+    const updateText = vi
+      .fn()
+      .mockResolvedValue({ persisted: false, cause: quarantined });
+    useCodexStore.setState({ updateText });
+
+    render(<CodexDetailContent entry={INITIAL_ENTRY} onDelete={vi.fn()} />);
+    fireEvent.change(screen.getByTestId("draft-summary"), {
+      target: { value: "Local summary" },
+    });
+
+    let reason: unknown;
+    await act(async () => {
+      reason = await flushAllAutoSaves().catch((e: unknown) => e);
+    });
+    const first = reason instanceof AggregateError ? reason.errors[0] : reason;
+    expect(first).toBeInstanceOf(AlreadyNotifiedSaveError);
+    expect((first as AlreadyNotifiedSaveError).cause).toBe(quarantined);
+    expect(isWorkspaceQuarantinedError(first)).toBe(true);
+
+    const calls = updateText.mock.calls.length;
+    await act(async () => {
+      await flushAllAutoSaves().catch(() => undefined);
+    });
+    expect(updateText).toHaveBeenCalledTimes(calls);
+    discardAllAutoSaves();
   });
 
   it("discards a pending structural patch only after persisted reload succeeds", async () => {

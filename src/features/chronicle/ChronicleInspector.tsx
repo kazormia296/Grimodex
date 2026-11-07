@@ -198,6 +198,7 @@ export function DraftTextField({
           ? error
           : new AlreadyNotifiedSaveError(
               error instanceof Error ? error.message : String(error),
+              { cause: error },
             );
       }
 

@@ -9,7 +9,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import type { CodexEntryPhase } from "@/features/codex/phaseApi";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
-import type { VersionedSaveOutcome } from "@/lib/saveOutcome";
+import { saveOutcomeCause, type VersionedSaveOutcome } from "@/lib/saveOutcome";
 import type { AgentWriteResult } from "@/features/agent-writes/event";
 import { AlreadyNotifiedSaveError } from "./saveErrors";
 import type { LoadedEditorBinding } from "./types";
@@ -43,6 +43,7 @@ export interface EditorDocumentServices {
       baseVersion: number;
       timelapseDocument?: TimelapseDocumentRef;
       preexistingDraft?: boolean;
+      onFailure?: (cause: unknown) => void;
     },
   ) => Promise<CodexEntryPhase | null>;
   updateCodexText: (
@@ -144,6 +145,7 @@ export async function saveEditorDocument(
     case "codex": {
       const content = JSON.stringify(doc.toJSON());
       if (binding.phaseId) {
+        let phaseCause: unknown;
         const updated = await services.updateCodexPhase(
           binding.phaseId,
           { contentOverride: content },
@@ -152,11 +154,15 @@ export async function saveEditorDocument(
             ...(timelapseOptions.preexistingDraft
               ? { preexistingDraft: true }
               : {}),
+            onFailure: (cause) => {
+              phaseCause = cause;
+            },
           },
         );
         if (!updated) {
           throw new AlreadyNotifiedSaveError(
             `Codex phase save not persisted: ${binding.phaseId}`,
+            { cause: phaseCause },
           );
         }
         return {
@@ -179,6 +185,7 @@ export async function saveEditorDocument(
         if (!outcome.persisted) {
           throw new AlreadyNotifiedSaveError(
             `Codex save not persisted: ${binding.id}`,
+            { cause: saveOutcomeCause(outcome) },
           );
         }
         return {
@@ -204,6 +211,7 @@ export async function saveEditorDocument(
       if (!outcome.persisted) {
         throw new AlreadyNotifiedSaveError(
           `snippet save not persisted: ${binding.id}`,
+          { cause: saveOutcomeCause(outcome) },
         );
       }
       return {

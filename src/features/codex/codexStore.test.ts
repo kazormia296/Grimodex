@@ -595,6 +595,78 @@ describe("codexStore", () => {
       expect(conflictHandler).toHaveBeenCalledWith("codex-1");
     });
 
+    it("returns the original error as cause and shows one sticky quarantine toast", async () => {
+      const { toast } = await import("sonner");
+      const toastSpy = vi.spyOn(toast, "error").mockImplementation(() => 0);
+      try {
+        useCodexStore.setState({ entries: [{ ...mockEntry, version: 4 }] });
+        const quarantined = Object.assign(
+          new Error("WORKSPACE_QUARANTINED: fenced"),
+          { code: "WORKSPACE_QUARANTINED" },
+        );
+        mockUpdateCodexEntry.mockRejectedValueOnce(quarantined);
+
+        const outcome = await useCodexStore
+          .getState()
+          .update("codex-1", { name: "x" }, { baseVersion: 4 });
+        expect(outcome).toEqual({ persisted: false, cause: quarantined });
+        expect(toastSpy).toHaveBeenCalledTimes(1);
+        expect(toastSpy).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({ id: "autosave-workspace-quarantined" }),
+        );
+
+        // A non-quarantine failure keeps the generic toast and carries its cause.
+        toastSpy.mockClear();
+        const boom = new Error("boom");
+        mockUpdateCodexEntry.mockRejectedValueOnce(boom);
+        await expect(
+          useCodexStore
+            .getState()
+            .update("codex-1", { name: "y" }, { baseVersion: 4 }),
+        ).resolves.toEqual({ persisted: false, cause: boom });
+        expect(toastSpy).toHaveBeenCalledTimes(1);
+        expect(toastSpy).toHaveBeenCalledWith(expect.any(String));
+      } finally {
+        toastSpy.mockRestore();
+      }
+    });
+
+    it("updateText also returns the original error as cause (quarantine and others)", async () => {
+      const { toast } = await import("sonner");
+      const toastSpy = vi.spyOn(toast, "error").mockImplementation(() => 0);
+      try {
+        useCodexStore.setState({ entries: [{ ...mockEntry, version: 4 }] });
+        const quarantined = Object.assign(
+          new Error("WORKSPACE_QUARANTINED: fenced"),
+          { code: "WORKSPACE_QUARANTINED" },
+        );
+        mockUpdateCodexEntry.mockRejectedValueOnce(quarantined);
+        await expect(
+          useCodexStore
+            .getState()
+            .updateText("codex-1", { notes: "n" }, { baseVersion: 4 }),
+        ).resolves.toEqual({ persisted: false, cause: quarantined });
+        expect(toastSpy).toHaveBeenCalledTimes(1);
+        expect(toastSpy).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({ id: "autosave-workspace-quarantined" }),
+        );
+
+        toastSpy.mockClear();
+        const boom = new Error("boom");
+        mockUpdateCodexEntry.mockRejectedValueOnce(boom);
+        await expect(
+          useCodexStore
+            .getState()
+            .updateText("codex-1", { notes: "m" }, { baseVersion: 4 }),
+        ).resolves.toEqual({ persisted: false, cause: boom });
+        expect(toastSpy).toHaveBeenCalledWith(expect.any(String));
+      } finally {
+        toastSpy.mockRestore();
+      }
+    });
+
     it("keeps a filtered-out selected entry current after a structural edit", async () => {
       useCodexStore.setState({
         entries: [],

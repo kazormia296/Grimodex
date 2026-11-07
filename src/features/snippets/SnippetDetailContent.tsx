@@ -51,7 +51,7 @@ import type { CodexTag } from "@/features/codex/tagApi";
 import { useFitsInline } from "@/hooks/useFitsInline";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 import { formatInstant } from "@/lib/time";
-import type { VersionedSaveOutcome } from "@/lib/saveOutcome";
+import { saveOutcomeCause, type VersionedSaveOutcome } from "@/lib/saveOutcome";
 import { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
 import {
   createEditorInstanceId,
@@ -450,6 +450,7 @@ export function SnippetDetailContent({
       if (!outcome.persisted) {
         throw new AlreadyNotifiedSaveError(
           `snippet detail save not persisted: ${snippetId}`,
+          { cause: saveOutcomeCause(outcome) },
         );
       }
       loadedVersionRef.current = outcome.version;

@@ -11,6 +11,7 @@ import {
   type DocumentKey,
   type EditorInstanceId,
 } from "@/features/editor/document/documentKey";
+import { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
 import { rootCause } from "@/lib/debugLog";
 
 interface Props {
@@ -43,6 +44,14 @@ export function ExternalEditConflictBanner({
 
   if (!conflict) return null;
 
+  // store が通知済みの保存失敗（AlreadyNotifiedSaveError。quarantine なら sticky
+  // の案内が出ている）は toast を重ねない。`rootCause` は cause をたどるので、
+  // 重ねると包む側の固定文面が Core の error 文面に変わってしまう。
+  const notifyResolveFailure = (error: unknown) => {
+    if (error instanceof AlreadyNotifiedSaveError) return;
+    toast.error(t("autoSave.failed", { reason: rootCause(error) }));
+  };
+
   const handleReload = async () => {
     if (guardInlineAiPending()) return;
     setResolving(true);
@@ -53,7 +62,7 @@ export function ExternalEditConflictBanner({
       // doing so here would turn a failed/asynchronous reload into data loss.
       bumpReloadNonce(document);
     } catch (error) {
-      toast.error(t("autoSave.failed", { reason: rootCause(error) }));
+      notifyResolveFailure(error);
     } finally {
       setResolving(false);
     }
@@ -66,7 +75,7 @@ export function ExternalEditConflictBanner({
       await onKeepMine?.();
       shiftConflict(document);
     } catch (error) {
-      toast.error(t("autoSave.failed", { reason: rootCause(error) }));
+      notifyResolveFailure(error);
     } finally {
       setResolving(false);
     }

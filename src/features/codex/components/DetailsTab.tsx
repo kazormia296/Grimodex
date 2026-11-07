@@ -332,14 +332,19 @@ export function DetailsTab({
       const run = prior
         .catch(() => {})
         .then(async () => {
+          let failureCause: unknown;
           const updated = await updatePhase(phaseId, data, {
             baseVersion:
               phaseVersionsRef.current.get(phaseId) ?? initialVersion,
             ...(context?.preexistingDraft ? { preexistingDraft: true } : {}),
+            onFailure: (cause) => {
+              failureCause = cause;
+            },
           });
           if (!updated) {
             throw new AlreadyNotifiedSaveError(
               `phase save not persisted: ${phaseId}`,
+              { cause: failureCause },
             );
           }
           phaseVersionsRef.current.set(phaseId, updated.version ?? 0);

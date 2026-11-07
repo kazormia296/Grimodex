@@ -4,8 +4,12 @@
  * generic duplicate toast.
  */
 export class AlreadyNotifiedSaveError extends Error {
-  constructor(message: string) {
-    super(message);
+  /**
+   * `cause` は store が握りつぶした元の error。quarantine の印
+   * （WORKSPACE_QUARANTINED）を `useAutoSave` に届けるために渡す。
+   */
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = "AlreadyNotifiedSaveError";
   }
 }
