@@ -3,25 +3,39 @@
 // that the loader, the scorer and the fixture expectations agree. Receipts
 // are written to a fresh temp directory; nothing in the repository changes.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import process from "node:process";
 import { test } from "node:test";
 import { URL } from "node:url";
-import { GRAPH_EVAL_D_MS, GRAPH_EVAL_VARIANTS } from "./constants.mjs";
+import {
+  GRAPH_EVAL_B_MS,
+  GRAPH_EVAL_D_MS,
+  GRAPH_EVAL_HYBRID_P95_LIMIT_MS,
+  GRAPH_EVAL_VARIANTS,
+  K65_FREEZE,
+} from "./constants.mjs";
 import {
   DEFAULT_ROOT,
   GRAPH_MANIFEST,
   PROCEDURE_FILE,
   RETRIEVAL_MANIFEST,
-  buildQualityVerdict,
+  buildQualityVerdict as buildVerdict,
   loadExpectations,
-  loadQualityInputs,
+  loadQualityInputs as loadInputs,
   readMetricTolerance,
   readReceiptDir,
   renderSummary,
   sha256,
-  verifyBindings,
+  verifyBindings as verifyBindingsOf,
 } from "./quality-verdict-cli.mjs";
 import {
   deriveLatencyPolicy,
@@ -30,7 +44,53 @@ import {
 import { H40, k64Sample } from "./test-support.mjs";
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
-const S4 = H40("5");
+const git = (cwd, ...args) =>
+  execFileSync("git", ["-C", cwd, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+
+// The verdict reads the formal procedure file with `loadProcedureFile` at the
+// S4 commit. The repository's v2 still carries S3's placeholder review (S2
+// 追補 #14 fills it), which the formal loader refuses, so these tests read a
+// throwaway repository holding the same v2 with a recorded review, committed:
+// that commit is the S4 commit of the allow list. The real v2 file (the
+// placeholder) is checked to be refused in the last test.
+const PROC_REPO = mkdtempSync(path.join(tmpdir(), "qv-procedure-"));
+process.on("exit", () => rmSync(PROC_REPO, { recursive: true, force: true }));
+const REVIEWED_V2 = {
+  ...JSON.parse(readFileSync(path.join(DEFAULT_ROOT, PROCEDURE_FILE), "utf8")),
+  review: {
+    reviewer: "independent reviewer (test)",
+    reviewedAt: "2026-11-08",
+    record: "scratchpad/s3/test-review.json",
+  },
+};
+const PROCEDURE_BYTES = `${JSON.stringify(REVIEWED_V2, null, 2)}\n`;
+git(PROC_REPO, "init", "-q", "-b", "main");
+mkdirSync(path.join(PROC_REPO, path.dirname(PROCEDURE_FILE)), {
+  recursive: true,
+});
+writeFileSync(path.join(PROC_REPO, PROCEDURE_FILE), PROCEDURE_BYTES);
+git(PROC_REPO, "add", PROCEDURE_FILE);
+git(
+  PROC_REPO,
+  "-c",
+  "user.name=t",
+  "-c",
+  "user.email=t@example.invalid",
+  "commit",
+  "-q",
+  "-m",
+  "reviewed v2",
+);
+const S4 = git(PROC_REPO, "rev-parse", "HEAD");
+const buildQualityVerdict = (options) =>
+  buildVerdict({ procedureRoot: PROC_REPO, ...options });
+const loadQualityInputs = (options) =>
+  loadInputs({ procedureRoot: PROC_REPO, ...options });
+const verifyBindings = (output, options) =>
+  verifyBindingsOf(output, { procedureRoot: PROC_REPO, ...options });
 const CANDIDATE = H40("c");
 const RUN = { startedAtMs: 1_000, finishedAtMs: 61_000 };
 const WINDOW = [0, 20_000, 40_000, 62_000].map((atMs) => ({
@@ -44,9 +104,11 @@ const WINDOW = [0, 20_000, 40_000, 62_000].map((atMs) => ({
 }));
 const readJson = (relative) =>
   JSON.parse(readFileSync(path.join(DEFAULT_ROOT, relative), "utf8"));
-const PROCEDURE_SHA = sha256(
-  readFileSync(path.join(DEFAULT_ROOT, PROCEDURE_FILE)),
-);
+const PROCEDURE_SHA = sha256(PROCEDURE_BYTES);
+const K65_HEAD = {
+  freezeCommit: K65_FREEZE.freezeCommit,
+  sha256: K65_FREEZE.sha256,
+};
 
 /** The predeclared R+IR and R+IR+Graph lists of each catalog variant. */
 function fixtureLists(variant) {
@@ -91,7 +153,7 @@ function buildReceipts(expectations, edit = () => ({})) {
     const samples = [];
     for (let repeat = 0; repeat < 30; repeat += 1) {
       const latency = change.latency?.(repeat) ?? { hybrid: 30, graph: 30 };
-      samples.push({
+      const hybridRow = {
         variantKey: key,
         arm: "hybrid",
         phase: "measured",
@@ -101,7 +163,8 @@ function buildReceipts(expectations, edit = () => ({})) {
         tReturn: 100 + latency.hybrid,
         status: "completed",
         finalSceneIds: runtime(hybridLogical),
-      });
+      };
+      samples.push(change.mapHybridSample?.(hybridRow, repeat) ?? hybridRow);
       const material = {
         matched: contributions.map((row) => `${row.kind}:${row.sceneId}`),
         unresolvedEdges: 0,
@@ -162,7 +225,7 @@ function buildReceipts(expectations, edit = () => ({})) {
       runId: `gold-test/${key}`,
       preview: false,
       run: RUN,
-      head: { observationPrep: { commit: S4 } },
+      head: { observationPrep: { commit: S4 }, k65: K65_HEAD },
       candidate: { commit: CANDIDATE },
       environment: { windowSamples: WINDOW, ownPids: [] },
       settings: {
@@ -352,6 +415,60 @@ test("condition 2 (macro): the G-case mean fails when the Graph display loses wh
     offset.conditions["macro-non-regression"].components["g-case"].status,
     "pass",
   );
+});
+
+test("K6/5-N4（条件 3）: Hybrid p95 の判定の境界は 94.2 ms で、65.04 ms と 240 ms ではない。arm ごとに pool し、どちらかに failed があれば fail", () => {
+  assert.equal(GRAPH_EVAL_B_MS, 54.2);
+  assert.equal(GRAPH_EVAL_D_MS, 40);
+  assert.equal(GRAPH_EVAL_HYBRID_P95_LIMIT_MS, 94.2);
+  const withLatency = (latency) => run(() => ({ latency: () => latency }));
+  const p95 = (output) => output.conditions["hybrid-p95"];
+  // 65.04 ms（P の評価の上限）と 94.2 ms の間の値は pass（旧い上限なら fail）。
+  for (const ms of [65.05, 80, 94.1]) {
+    const output = withLatency({ hybrid: ms, graph: ms });
+    assert.equal(statusOf(output, "hybrid-p95"), "pass", String(ms));
+    assert.equal(p95(output).limitMs, 94.2);
+    assert.equal(p95(output).graphArm.status, "pass");
+    assert.equal(p95(output).hybridArm.status, "pass");
+  }
+  // 上限ちょうどは pass（以下）。94.2 を超えると fail（240 ms の上限でも通さない）。
+  assert.equal(
+    statusOf(withLatency({ hybrid: 94.2, graph: 94.2 }), "hybrid-p95"),
+    "pass",
+  );
+  for (const ms of [94.21, 120, 239.9]) {
+    const output = withLatency({ hybrid: ms, graph: ms });
+    assert.equal(statusOf(output, "hybrid-p95"), "fail", String(ms));
+    assert.equal(p95(output).hybridArm.status, "fail");
+    assert.equal(p95(output).graphArm.status, "fail");
+  }
+  // 両 arm が上限以下のときだけ pass（片方の arm だけでは判定しない）。
+  const hybridOnly = withLatency({ hybrid: 94.21, graph: 40 });
+  assert.equal(p95(hybridOnly).hybridArm.status, "fail");
+  assert.equal(p95(hybridOnly).graphArm.status, "pass");
+  assert.equal(statusOf(hybridOnly, "hybrid-p95"), "fail");
+  const graphOnly = withLatency({ hybrid: 40, graph: 94.21 });
+  assert.equal(p95(graphOnly).hybridArm.status, "pass");
+  assert.equal(p95(graphOnly).graphArm.status, "fail");
+  assert.equal(statusOf(graphOnly, "hybrid-p95"), "fail");
+  // 失敗した call は、遅さが上限以下でも、どちらの arm でも p95 を出さず fail。
+  for (const arm of ["hybridArm", "graphArm"]) {
+    const mapped = (row, repeat) =>
+      repeat === 3 ? { ...row, status: "failed" } : row;
+    const output = run((key) =>
+      key === "G-05/base"
+        ? {
+            latency: () => ({ hybrid: 40, graph: 40 }),
+            [arm === "hybridArm" ? "mapHybridSample" : "mapGraphSample"]:
+              mapped,
+          }
+        : {},
+    );
+    assert.equal(p95(output)[arm].failedCount, 1, arm);
+    assert.equal(p95(output)[arm].p95Ms, null, arm);
+    assert.equal(p95(output)[arm].status, "fail", arm);
+    assert.equal(statusOf(output, "hybrid-p95"), "fail", arm);
+  }
 });
 
 test("condition 3 (p95): tReturn - tFetch, nearest-rank, both arms, limit from the manifest", () => {
@@ -761,6 +878,140 @@ test("bindings: a changed receipt, allow list, procedure or script is found by v
     assert.ok(forgedMismatches.includes(forged.bindings.script[0].path));
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("K6/5 変える点 7: 手順のファイルは正式の loader で S4 の commit から読み、receipt の head.k65 は K65_FREEZE と一致しなければ [precheck]", () => {
+  const { expectations } = loadExpectations({
+    root: DEFAULT_ROOT,
+    graphManifest: readJson(GRAPH_MANIFEST),
+  });
+  const verdictOf = (receipts, options = {}) => {
+    const dir = writeDir(receipts);
+    try {
+      return buildQualityVerdict({
+        goldDir: dir,
+        allowListPath: path.join(dir, "allow.json"),
+        ...options,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const withK65 = (k65) =>
+    buildReceipts(expectations, (key) =>
+      key === "G-03/base"
+        ? {
+            receipt: {
+              head: { observationPrep: { commit: S4 }, ...k65 },
+            },
+          }
+        : {},
+    );
+  assert.equal(verdictOf(buildReceipts(expectations)).schema.length > 0, true);
+  for (const [name, head] of [
+    ["head.k65 が無い", {}],
+    ["別の凍結の commit", { k65: { ...K65_HEAD, freezeCommit: H40("1") } }],
+    ["別の bytes", { k65: { ...K65_HEAD, sha256: "0".repeat(64) } }],
+    [
+      "K6/4 の凍結",
+      {
+        k65: {
+          freezeCommit: "5dea38af158283c2a925d68ef0d8b0771c0ea209",
+          sha256: K65_HEAD.sha256,
+        },
+      },
+    ],
+  ])
+    assert.throws(
+      () => verdictOf(withK65(head)),
+      /\[precheck\].*head\.k65 is not the K6\/5 freeze/u,
+      name,
+    );
+  // 実リポジトリは S4 の commit（試験の repo の commit）を持たず、v2 の review も placeholder なので読めない。
+  assert.throws(
+    () =>
+      verdictOf(buildReceipts(expectations), {
+        procedureRoot: DEFAULT_ROOT,
+      }),
+    /\[precheck\]/u,
+  );
+  // S4 の commit に手順のファイルが無い（commit が違う）。
+  const dir = writeDir(buildReceipts(expectations));
+  try {
+    writeFileSync(
+      path.join(dir, "allow.json"),
+      JSON.stringify({ s4Commit: H40("e"), candidate: CANDIDATE }),
+    );
+    assert.throws(
+      () =>
+        buildQualityVerdict({
+          goldDir: dir,
+          allowListPath: path.join(dir, "allow.json"),
+        }),
+      /\[precheck\] the procedure file .* cannot be read from/u,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  // 契約と違う D・B・p95 の上限を書いた file は、素の JSON では読めてしまうが loader が拒む。
+  for (const [key, value] of [
+    ["dMs", 10.84],
+    ["bMs", 200],
+    ["hybridP95LimitMs", 65.04],
+    ["hybridP95LimitMs", 240],
+  ]) {
+    const repo = mkdtempSync(path.join(tmpdir(), "qv-procedure-bad-"));
+    try {
+      git(repo, "init", "-q", "-b", "main");
+      mkdirSync(path.join(repo, path.dirname(PROCEDURE_FILE)), {
+        recursive: true,
+      });
+      const bad = clone(REVIEWED_V2);
+      bad.values[key] = value;
+      writeFileSync(
+        path.join(repo, PROCEDURE_FILE),
+        `${JSON.stringify(bad, null, 2)}\n`,
+      );
+      git(repo, "add", PROCEDURE_FILE);
+      git(
+        repo,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.invalid",
+        "commit",
+        "-q",
+        "-m",
+        "bad v2",
+      );
+      const badCommit = git(repo, "rev-parse", "HEAD");
+      const receipts = buildReceipts(expectations);
+      const allow = writeDir(receipts);
+      try {
+        writeFileSync(
+          path.join(allow, "allow.json"),
+          JSON.stringify({ s4Commit: badCommit, candidate: CANDIDATE }),
+        );
+        assert.throws(
+          () =>
+            buildQualityVerdict({
+              goldDir: allow,
+              allowListPath: path.join(allow, "allow.json"),
+              procedureRoot: repo,
+            }),
+          new RegExp(
+            `\\[precheck\\].*values\\.${key} must be the contract`,
+            "u",
+          ),
+          `${key}=${value}`,
+        );
+      } finally {
+        rmSync(allow, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   }
 });
 

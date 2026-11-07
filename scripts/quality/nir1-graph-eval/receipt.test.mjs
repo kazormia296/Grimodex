@@ -521,6 +521,33 @@ test("K6/4-N17: W_f、T_late、T_show を広げた receipt、手順のファイ�
   );
 });
 
+test("K6/5-N1・N4: settings.k64 の D・B・Hybrid p95 の上限が契約（40・54.2・94.2 ms）と違う receipt は、receipt の層で拒む（手順のファイルの loader は契約と違う値の file を読まないので、記録の値そのものを契約と照合する）", () => {
+  assert.deepEqual(
+    [K64_SETTINGS.dMs, K64_SETTINGS.bMs, K64_SETTINGS.hybridP95LimitMs],
+    [40, 54.2, 94.2],
+  );
+  for (const [key, value] of [
+    ["dMs", 10.84],
+    ["dMs", 10.840000000596048],
+    ["dMs", 40.01],
+    ["dMs", undefined],
+    ["bMs", 200],
+    ["bMs", 54.21],
+    ["bMs", undefined],
+    ["hybridP95LimitMs", 65.04],
+    ["hybridP95LimitMs", 240],
+    ["hybridP95LimitMs", 94.21],
+    ["hybridP95LimitMs", undefined],
+  ]) {
+    const settings = { ...K64_SETTINGS, [key]: value };
+    assert.match(
+      errorsOf(receipt({ settings: { k64: settings } })),
+      new RegExp(`K6/5-N1/N4: settings\\.k64\\.${key} must be the contract`),
+      `${key}=${value}`,
+    );
+  }
+});
+
 test("S1f: settings.k64 は loadProcedureFile が commit から読んだ手順のファイルと一致し、draft と版の無い記録を拒む", () => {
   assert.deepEqual(otherErrors(receipt()), []);
   // 読み込んだ手順のファイルを渡さない検証は、記録を自己申告として拒む。

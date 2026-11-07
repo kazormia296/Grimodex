@@ -22,6 +22,9 @@ import {
   D2A_MODES,
   FROZEN_FIXTURE_SHA256,
   FROZEN_MATERIAL_SHA256,
+  GRAPH_EVAL_B_MS,
+  GRAPH_EVAL_D_MS,
+  GRAPH_EVAL_HYBRID_P95_LIMIT_MS,
   K62_FREEZE,
   K64_FREEZE,
   K64_HOOK_CONSUMER_RUNNER,
@@ -706,6 +709,17 @@ function k64SettingsErrors(errors, value, bound = {}) {
     errors.push(
       `N17: settings.k64 must carry W_f ${K64_W_F_MS} ms, T_late ${K64_T_LATE_MS} ms and T_show ${K64_T_SHOW_MS} ms as frozen (narrowing needs a new procedure-file version and review, widening a new draftRef; neither is supported here)`,
     );
+  // K6/5-N1・N4 (変える点 1・4): D, B and the Hybrid p95 limit are the
+  // contract's in the record itself, whatever the procedure file says.
+  for (const [key, expected] of [
+    ["dMs", GRAPH_EVAL_D_MS],
+    ["bMs", GRAPH_EVAL_B_MS],
+    ["hybridP95LimitMs", GRAPH_EVAL_HYBRID_P95_LIMIT_MS],
+  ])
+    if (value?.[key] !== expected)
+      errors.push(
+        `K6/5-N1/N4: settings.k64.${key} must be the contract's ${expected} (D=${GRAPH_EVAL_D_MS} ms, B=${GRAPH_EVAL_B_MS} ms, Hybrid p95 limit ${GRAPH_EVAL_HYBRID_P95_LIMIT_MS} ms; the /5 row is not judged with another value)`,
+      );
   if (
     !Number.isInteger(value?.r1r4WaitMs) ||
     value.r1r4WaitMs <= 0 ||
