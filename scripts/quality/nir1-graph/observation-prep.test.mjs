@@ -3077,6 +3077,14 @@ test("S2 追補 #2 P2-1: setupReadings pin master commits and copy L-24's closed
       "da1-route-isolation",
       "cq-lim-graph-limits",
       "dp-h-unknown-scope",
+      // S2 追補 #15（K6/5・C7・G-01 の診断。6 回目の凍結のやり直し、DR-CP4-S4-9）。
+      "k65-receipt-p95-head",
+      "k65-harness-d40",
+      "k65-n2-n3-enforcement",
+      "k65-freeze-source",
+      "k65-g01-e2e-admission",
+      "c7-chronicle-stop",
+      "k65-merge-followup",
     ],
   );
   assert.deepEqual(
@@ -3611,6 +3619,14 @@ const BRANCH_PIN_ROLES = new Set([
   // S2 追補 #12（DR-CP4-P-8）.
   "s4-5-g01-reseal-current",
   "s4-5-addendum-v3-paths",
+  // S2 追補 #15（DR-CP4-S4-9）: the K6/5 branch's commits (c7-chronicle-stop is
+  // #826's master commit).
+  "k65-receipt-p95-head",
+  "k65-harness-d40",
+  "k65-n2-n3-enforcement",
+  "k65-freeze-source",
+  "k65-g01-e2e-admission",
+  "k65-merge-followup",
 ]);
 const gitText = (args) =>
   execFileSync("git", args, { cwd: repoRoot, encoding: "utf8" }).trim();
@@ -3740,6 +3756,29 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
   );
   const newest = s45Pins.at(-1);
   const s45Paths = s45Pins.flatMap((pin) => pin.paths);
+  // S2 追補 #15（DR-CP4-S4-9）: the seven pins of the sixth re-freeze (K6/5,
+  // C7, the G-01 diagnostic). Each file is held at the commit that last
+  // changed it (the files moved from the earlier pins, which keep their roles
+  // and commits as ancestors or with the files they still hold); the last
+  // change of every pin's file is read at the record's HEAD now.
+  const k65Pins = SOURCE_PINS.filter(
+    (pin) => pin.role.startsWith("k65-") || pin.role === "c7-chronicle-stop",
+  );
+  assert.deepEqual(
+    k65Pins.map((pin) => [pin.role, pin.commit.slice(0, 8)]),
+    [
+      ["k65-receipt-p95-head", "e6abddd2"],
+      ["k65-harness-d40", "bf0b4f75"],
+      ["k65-n2-n3-enforcement", "26993142"],
+      ["k65-freeze-source", "f24dc704"],
+      ["k65-g01-e2e-admission", "94d3e133"],
+      ["c7-chronicle-stop", "a1492815"],
+      ["k65-merge-followup", "8489ae57"],
+    ],
+  );
+  const k65Paths = k65Pins.flatMap((pin) => pin.paths);
+  assert.equal(k65Paths.length, 14);
+  const headCommit = ctx.sourcePinGit.head;
   const master = gitText(["rev-parse", "refs/remotes/origin/master"]);
   // S2 追補 #9（DR-CP4-P-5）／#10（DR-CP4-P-6）: the two T-1〜T-5 pins and
   // the four V-2〜V-4 pins are branch commits that S4's PR brings to master
@@ -3799,6 +3838,8 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
     // S2 追補 #12: g01-negatives.mjs, g01-negative-preview.mjs,
     // g01-negative-run.mjs and frozen-k64-admission.mjs moved to the new pins.
     .concat(s45Paths.filter((file) => changed.includes(file)))
+    // S2 追補 #15: files the K6/5 pins hold now.
+    .concat(k65Paths.filter((file) => changed.includes(file)))
     .filter((file) => file.startsWith(H4))
     .sort();
   assert.deepEqual(held, changed);
@@ -3841,6 +3882,8 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
       // S2 追補 #11: moved to the G-04 v2 pins.
       `${H4}frozen-k64-admission.mjs`,
       `${H4}trace-frozen.mjs`,
+      // S2 追補 #15: moved to the k65-g01-e2e-admission pin.
+      `${H4}admission.mjs`,
     ].sort(),
   );
   // #759 が変えた試験と文書以外の file は 2 つで、すべて sp-p4-ir-pair-limit の pin にある。
@@ -3855,7 +3898,12 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
         "scripts",
       ]),
     ),
-    [...pairLimit.paths].sort(),
+    [
+      ...pairLimit.paths,
+      // S2 追補 #15: moved to the k65-harness-d40 and k65-n2-n3-enforcement pins.
+      `${H4}diagnostic-runner.mjs`,
+      `${H4}frozen-diagnostics.mjs`,
+    ].sort(),
   );
   // S2 追補 #9: T-1〜T-5（master 5ce12211 から枝の 354b1ba6 まで）が変えた試験以外の
   // scripts の file は 4 つで、すべて 2 つの新しい pin にある。
@@ -3873,7 +3921,12 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
         "scripts",
       ]),
     ),
-    [...settle.paths, ...t4.paths].sort(),
+    [
+      ...settle.paths,
+      ...t4.paths,
+      // S2 追補 #15: moved to the k65-harness-d40 pin.
+      `${H4}frozen-k64-run.mjs`,
+    ].sort(),
   );
   assert.ok(ctx.sourcePinGit.isAncestor(settle.commit, t4.commit));
   // S2 追補 #10: V-2〜V-4（master a02c9c98 から枝の 759a4679 まで）が変えた試験以外の
@@ -3898,7 +3951,14 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
         "scripts",
       ]),
     ),
-    tracePath.flatMap((pin) => pin.paths).sort(),
+    [
+      ...tracePath.flatMap((pin) => pin.paths),
+      // S2 追補 #15: moved to the c7-chronicle-stop, k65-merge-followup and
+      // k65-harness-d40 pins (the three V-4 pins keep their roles as ancestors).
+      `${H4}trace-record.mjs`,
+      `${H4}followup.mjs`,
+      `${H4}trace-runner.mjs`,
+    ].sort(),
   );
   assert.ok(
     ctx.sourcePinGit.isAncestor(
@@ -3908,7 +3968,12 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
   );
   for (const pin of tracePath) {
     assert.ok(ctx.sourcePinGit.isAncestor(t4.commit, pin.commit), pin.role);
-    assert.equal(pin.paths.length, 1, pin.role);
+    // S2 追補 #15: only the probe is still held by a V pin.
+    assert.equal(
+      pin.paths.length,
+      pin.role === "v2-trace-probe-paths" ? 1 : 0,
+      pin.role,
+    );
   }
   // S2 追補 #11: G-04 v2（master 8187fbfc から枝の c5b46714 まで）が変えた試験以外の
   // scripts の file は 8 つ。4 つは正式の入口の閉包にあり、それぞれを最後に変えた枝の
@@ -3929,7 +3994,11 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
     ),
     [
       ...g4Paths,
-      // S2 追補 #12: moved to s4-5-addendum-v3-paths.
+      // S2 追補 #12: moved to s4-5-addendum-v3-paths. S2 追補 #15: constants.mjs
+      // and trace-frozen.mjs moved to the k65-freeze-source and
+      // k65-harness-d40 pins.
+      `${H4}constants.mjs`,
+      `${H4}trace-frozen.mjs`,
       `${H4}frozen-k64-admission.mjs`,
       "scripts/quality/nir1-graph/observation-prep.mjs",
       "scripts/quality/nir1-graph/seed-pin-addendum.mjs",
@@ -3945,7 +4014,7 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
     // S2 追補 #12: g4-b2b1-addendum-v2-paths holds no file (ancestor).
     assert.equal(
       pin.paths.length,
-      pin.role === "g4-b2b1-addendum-v2-paths" ? 0 : 1,
+      pin.role === "g4-b1-post-observation-freeze" ? 1 : 0,
       pin.role,
     );
   }
@@ -3962,7 +4031,7 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
     nonTest(
       gitText(["diff", "--name-only", s45Base, newest.commit, "--", "scripts"]),
     ),
-    [...s45Paths].sort(),
+    [...s45Paths, `${H4}frozen-k64-admission.mjs`].sort(),
   );
   const moved = {
     "g01-negatives.mjs": ["s4-5-g01-reseal-current", "s5b-diagnostics-wiring"],
@@ -3971,8 +4040,9 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
       "s5b-diagnostics-wiring",
     ],
     "g01-negative-run.mjs": ["s4-5-g01-reseal-current", "sp-p4-ir-timeout"],
+    // S2 追補 #15: frozen-k64-admission.mjs moved on to the k65-harness-d40 pin.
     "frozen-k64-admission.mjs": [
-      "s4-5-addendum-v3-paths",
+      "k65-harness-d40",
       "g4-b2b1-addendum-v2-paths",
     ],
   };
@@ -4000,7 +4070,7 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
         "log",
         "-1",
         "--format=%H",
-        newest.commit,
+        headCommit,
         "--",
         file,
       ]);
@@ -4010,11 +4080,11 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
         `${file} is held by the commit that last changed it`,
       );
     }
-  // ancestor の pin は PR の squash の commit（#753、#755 ほか）。
+  // ancestor の pin は PR の squash の commit（#753、#755 ほか）。S2 追補 #15: 最後に変えた commit は記録の HEAD で読む。
   for (const pin of SOURCE_PINS)
     assert.ok(
-      ctx.sourcePinGit.isAncestor(pin.commit, newest.commit),
-      `${pin.role} precedes ${newest.commit}`,
+      ctx.sourcePinGit.isAncestor(pin.commit, headCommit),
+      `${pin.role} precedes ${headCommit}`,
     );
   // 変異: path を 2 つの pin に置く、pin から file を外す、check を変える。
   const prep = await json(OBSERVATION_PREP_FILES.prep);
@@ -4118,15 +4188,16 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
       // S2 追補 #12（DR-CP4-P-8）: the s4-5-g01-reseal-current pin (f31d99e0);
       // the four values are 950751d0's (checked below).
       ["g01-negatives.mjs", "f31d99e0"],
-      // S2 追補 #8: #759 の pin（値は SOURCE_PINS から読む）。
+      // S2 追補 #8: #759 の pin。S2 追補 #15: 26993142 の k65-n2-n3-enforcement の pin
+      // に移った（値は SOURCE_PINS から読む）。
       [
         "frozen-diagnostics.mjs",
         SOURCE_PINS.find(
-          (pin) => pin.role === "sp-p4-ir-pair-limit",
+          (pin) => pin.role === "k65-n2-n3-enforcement",
         ).commit.slice(0, 8),
       ],
-      // S2 追補 #9: T-4（354b1ba6）の pin。
-      ["frozen-k64-run.mjs", "354b1ba6"],
+      // S2 追補 #9: T-4（354b1ba6）の pin。S2 追補 #15: bf0b4f75 の k65-harness-d40 の pin に移った。
+      ["frozen-k64-run.mjs", "bf0b4f75"],
     ],
   );
   for (const source of ctx.harnessConstantSources)
@@ -4138,7 +4209,7 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
     );
   assert.equal(
     harnessPinOf(`${H4}frozen-diagnostics.mjs`).role,
-    "sp-p4-ir-pair-limit",
+    "k65-n2-n3-enforcement",
   );
   // S2 追補 #12: the g01-negatives.mjs constants read at the new pin are the
   // values of 950751d0 and of DR-CP4-S4-8's base (909b71b3); the change did
@@ -4196,7 +4267,7 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
   };
   assert.ok(
     observationPrepErrors(prep, misread).some((e) =>
-      /sp-p4-ir-pair-limit: .*frozen-diagnostics\.mjs must be the bytes the harness constants were read from/u.test(
+      /k65-n2-n3-enforcement: .*frozen-diagnostics\.mjs must be the bytes the harness constants were read from/u.test(
         e,
       ),
     ),
@@ -4717,15 +4788,11 @@ const unpinned = (closure, pins) => {
 };
 
 /**
- * DR-PUBG-16-2: G-01 の end-to-end の診断 runner は正式の入口（FORMAL_HARNESS_ENTRIES）に
- * 入ったが、bytes の pin は S4 で付ける。それまで閉包で pin の無い file はこの 1 本だけ
- * （下の試験が `unpinned(...)` の全体がこれと等しいことを確かめる）。S4 で pin を付けたら
- * この定数と該当の assert を外す。
+ * DR-PUBG-16-2: G-01 の end-to-end の診断 runner（pubg16-e2e-run.mjs）は正式の入口に
+ * 入っていたが pin が無かった。S4b の前の pin の取り直し（S2 追補 #15、DR-CP4-S4-9）で
+ * k65-g01-e2e-admission の pin に付けたので、閉包で pin の無い file は無い（PENDING_S4_PINS と
+ * それに依る assert は外した）。
  */
-const PENDING_S4_PINS = Object.freeze([`${H4}pubg16-e2e-run.mjs`]);
-/** pin の無い file のうち、S4 で pin を付ける予定の file を除いたもの（変異の検出用）。 */
-const unpinnedBeyondPending = (closure, pins) =>
-  unpinned(closure, pins).filter((file) => !PENDING_S4_PINS.includes(file));
 
 /** S2 追補 #5 で足した 36 file（28 は静的な import、8 は renderer と observer の entry）。 */
 const ADDENDUM5_FILES = Object.freeze({
@@ -4736,11 +4803,12 @@ const ADDENDUM5_FILES = Object.freeze({
   ],
   "trace-runner": ["build-receipt-check.mjs", "renderer/trace-cycle.ts"],
   // S2 追補 #10: cp4-trace-probe.tsx と followup.mjs は V-2〜V-4 の pin に移った。
+  // S2 追補 #15: followup.mjs、receipt.mjs、constants.mjs、procedure-file.mjs は K6/5 の pin に移った。
   "v2-trace-probe-paths": ["renderer/cp4-trace-probe.tsx"],
-  "v4-followup-cancelled-match": ["followup.mjs"],
-  // S2 追補 #11: constants.mjs は G-04 v2 の pin に移った。
-  "t14-k64-freeze": ["receipt.mjs"],
-  "g4-b1-freeze-v2-constants": ["constants.mjs"],
+  "k65-merge-followup": ["followup.mjs"],
+  "k65-receipt-p95-head": ["receipt.mjs"],
+  "k65-freeze-source": ["constants.mjs"],
+  "k65-harness-d40": ["procedure-file.mjs"],
   "pr1-native-eval-feature": ["native-architecture.mjs"],
   "p1-harness-core": [
     "admission-facts.mjs",
@@ -4748,7 +4816,6 @@ const ADDENDUM5_FILES = Object.freeze({
     "egress.mjs",
     "join.mjs",
     "native-sample.mjs",
-    "procedure-file.mjs",
     "q4.mjs",
     "run-sample.mjs",
     "stats.mjs",
@@ -4779,13 +4846,17 @@ const ADDENDUM5_FILES = Object.freeze({
 test("S2 追補 #5 (P2-2): the formal entries' harness closure is held by the bytes pins, and an unpinned closure file fails", async (t) => {
   const closure = harnessClosure(repoRoot, FORMAL_HARNESS_ENTRIES);
   // 静的な import の閉包は 49 file、path の参照をたどると renderer と observer の entry の 12 file が増える。
-  // DR-PUBG-16-2: G-01 の診断 runner（pubg16-e2e-run.mjs。pin は S4）が 1 file 増やす。
+  // DR-PUBG-16-2: G-01 の診断 runner（pubg16-e2e-run.mjs。pin は S2 追補 #15 で付けた）が 1 file 増やす。
   assert.equal(closure.length, 62);
-  assert.ok(closure.includes(PENDING_S4_PINS[0]));
+  assert.ok(closure.includes(`${H4}pubg16-e2e-run.mjs`));
+  assert.equal(
+    harnessPinOf(`${H4}pubg16-e2e-run.mjs`)?.role,
+    "k65-g01-e2e-admission",
+  );
   assert.ok(
     closure.every((file) => !/\.test\.mjs$|test-support\.mjs$/u.test(file)),
   );
-  assert.deepEqual(unpinned(closure, SOURCE_PINS), [...PENDING_S4_PINS]);
+  assert.deepEqual(unpinned(closure, SOURCE_PINS), []);
   const added = Object.values(ADDENDUM5_FILES).flat();
   assert.equal(added.length, 36);
   for (const file of added) assert.ok(closure.includes(H4 + file), file);
@@ -4797,13 +4868,29 @@ test("S2 追補 #5 (P2-2): the formal entries' harness closure is held by the by
           ? { ...pin, paths: pin.paths.filter((file) => file !== H4 + name) }
           : pin,
       );
-      assert.deepEqual(unpinnedBeyondPending(closure, pins), [H4 + name], name);
+      assert.deepEqual(unpinned(closure, pins), [H4 + name], name);
     }
-  // 変異: 閉包に新しい file が入る（harness が新しい file を import する）。
+  // S2 追補 #15: the G-01 diagnostic runner's pin is required too (it had none).
   assert.deepEqual(
-    unpinnedBeyondPending([...closure, `${H4}new-helper.mjs`], SOURCE_PINS),
-    [`${H4}new-helper.mjs`],
+    unpinned(
+      closure,
+      SOURCE_PINS.map((pin) =>
+        pin.role === "k65-g01-e2e-admission"
+          ? {
+              ...pin,
+              paths: pin.paths.filter(
+                (file) => file !== `${H4}pubg16-e2e-run.mjs`,
+              ),
+            }
+          : pin,
+      ),
+    ),
+    [`${H4}pubg16-e2e-run.mjs`],
   );
+  // 変異: 閉包に新しい file が入る（harness が新しい file を import する）。
+  assert.deepEqual(unpinned([...closure, `${H4}new-helper.mjs`], SOURCE_PINS), [
+    `${H4}new-helper.mjs`,
+  ]);
   // 記録の pin と SOURCE_PINS は同じ path の列で、記録から外しても validator が落ちる。
   const ctx = await context();
   const prep = await json(OBSERVATION_PREP_FILES.prep);
@@ -5063,8 +5150,9 @@ test("S2 追補 #6: the SP-P4 receipt reading and C1 are the pinned harness's (s
   // 作業 tree の harness は pin の bytes と同じ（import した関数が pin の挙動）。
   // S2 追補 #8: frozen-diagnostics.mjs と diagnostic-runner.mjs は #759 の pin にある。
   for (const [name, role] of [
-    ["frozen-diagnostics.mjs", "sp-p4-ir-pair-limit"],
-    ["diagnostic-runner.mjs", "sp-p4-ir-pair-limit"],
+    // S2 追補 #15: the K6/5 pins hold them now.
+    ["frozen-diagnostics.mjs", "k65-n2-n3-enforcement"],
+    ["diagnostic-runner.mjs", "k65-harness-d40"],
   ]) {
     const pin = harnessPinOf(H4 + name);
     assert.equal(pin.role, role);
@@ -5360,7 +5448,7 @@ test("S2 追補 #7: the formal entries' eval closure outside the harness directo
   assert.ok(
     files.every((file) => !/\.test\.mjs$|test-support\.mjs$/u.test(file)),
   );
-  assert.deepEqual(unpinned(files, SOURCE_PINS), [...PENDING_S4_PINS]);
+  assert.deepEqual(unpinned(files, SOURCE_PINS), []);
   // 除外は固定の一覧（validator の EVAL_CLOSURE_EXCLUSIONS と試験の写し）で、どれも pin しない。
   assert.deepEqual(boundaries, [...ADDENDUM7_EXCLUDED]);
   assert.deepEqual([...EVAL_CLOSURE_EXCLUSIONS], [...ADDENDUM7_EXCLUDED]);
@@ -5387,11 +5475,11 @@ test("S2 追補 #7: the formal entries' eval closure outside the harness directo
           ? { ...pin, paths: pin.paths.filter((file) => file !== name) }
           : pin,
       );
-      assert.deepEqual(unpinnedBeyondPending(files, pins), [name], name);
+      assert.deepEqual(unpinned(files, pins), [name], name);
     }
   // 変異: harness の外の新しい eval 専用 script が閉包に入る（pin に無い）。
   assert.deepEqual(
-    unpinnedBeyondPending(
+    unpinned(
       [...files, "scripts/quality/nir1-retrieval/new-helper.mjs"],
       SOURCE_PINS,
     ),
@@ -5514,10 +5602,14 @@ test("S2 追補 #7: each added eval script and each #758 file is pinned at the m
   const targets = {
     ...ADDENDUM7_OUTSIDE,
     "s4-rehearsal-admission": rehearsal.paths,
-    "g4-b2a-declaration-v2-path": [`${H4}trace-frozen.mjs`],
-    // S2 追補 #12（DR-CP4-P-8）: frozen-k64-admission.mjs moved on to the
-    // fifth re-freeze's pin, with the three g01 files.
-    "s4-5-addendum-v3-paths": [`${H4}frozen-k64-admission.mjs`],
+    // S2 追補 #15: admission.mjs, trace-frozen.mjs and frozen-k64-admission.mjs
+    // moved on to the K6/5 pins (the pins of S2 追補 #11 and #12 keep their
+    // roles and commits as ancestors).
+    "k65-g01-e2e-admission": [`${H4}admission.mjs`],
+    "k65-harness-d40": [
+      `${H4}trace-frozen.mjs`,
+      `${H4}frozen-k64-admission.mjs`,
+    ],
     "s4-5-g01-reseal-current": [
       `${H4}g01-negative-preview.mjs`,
       `${H4}g01-negative-run.mjs`,
@@ -5570,21 +5662,21 @@ test("S2 追補 #7: each added eval script and each #758 file is pinned at the m
     [
       "admission.mjs",
       "950751d040b29b6d78a067a003dc19b196cfb692",
-      "s4-rehearsal-admission",
+      "k65-g01-e2e-admission",
     ],
     // S2 追補 #11: G-04 v2 の pin に移った 3 file を元の pin の bytes と比べると落ちる。
     // S2 追補 #12: frozen-k64-admission.mjs はさらに s4-5-addendum-v3-paths に移った。
     [
       "frozen-k64-admission.mjs",
       "82d427465b16a12809c6f93adad74ac97859c85a",
-      "s4-5-addendum-v3-paths",
+      "k65-harness-d40",
     ],
     // S2 追補 #12（DR-CP4-P-8）: 移した 4 file を元の pin（c5b46714、950751d0、
     // 43e3f40b）の bytes と比べると落ちる。
     [
       "frozen-k64-admission.mjs",
       "c5b46714054c040cbe5c270ad657f6252b82eaeb",
-      "s4-5-addendum-v3-paths",
+      "k65-harness-d40",
     ],
     [
       "g01-negatives.mjs",
@@ -5604,22 +5696,22 @@ test("S2 追補 #7: each added eval script and each #758 file is pinned at the m
     [
       "trace-frozen.mjs",
       "82d427465b16a12809c6f93adad74ac97859c85a",
-      "g4-b2a-declaration-v2-path",
+      "k65-harness-d40",
     ],
     [
       "constants.mjs",
       "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f",
-      "g4-b1-freeze-v2-constants",
+      "k65-freeze-source",
     ],
     [
       "diagnostic-runner.mjs",
       "82d427465b16a12809c6f93adad74ac97859c85a",
-      "sp-p4-ir-pair-limit",
+      "k65-harness-d40",
     ],
     [
       "frozen-diagnostics.mjs",
       "43e3f40b5d653c62d5aca4ca795917b67310992c",
-      "sp-p4-ir-pair-limit",
+      "k65-n2-n3-enforcement",
     ],
   ]) {
     const copy = clone(pins);
@@ -6024,14 +6116,15 @@ test("S2 追補 #12（DR-CP4-P-8）: S2 binds the setup addendum v3, the two pin
       ],
     ],
   );
+  // S2 追補 #15: frozen-k64-admission.mjs moved on to the k65-harness-d40 pin;
+  // s4-5-addendum-v3-paths keeps its role and commit as an ancestor pin.
+  assert.deepEqual(pinOf("s4-5-addendum-v3-paths").files, []);
+  assert.equal(pinOf("s4-5-addendum-v3-paths").check, "ancestor");
   assert.deepEqual(
-    pinOf("s4-5-addendum-v3-paths").files.map((row) => [row.path, row.sha256]),
-    [
-      [
-        `${H4}frozen-k64-admission.mjs`,
-        "0723afc86b3cfab800abffea03296aca5387e2a414e469472fc9fb4ce34ffd28",
-      ],
-    ],
+    pinOf("k65-harness-d40")
+      .files.filter((row) => row.path === `${H4}frozen-k64-admission.mjs`)
+      .map((row) => row.path),
+    [`${H4}frozen-k64-admission.mjs`],
   );
   for (const role of ["sp-p4-ir-timeout", "g4-b2b1-addendum-v2-paths"]) {
     assert.equal(pinOf(role).check, "ancestor", role);
@@ -6426,7 +6519,8 @@ test("S2 追補 #14（DR-CP4-P-9）: S2 binds K6/5 (contracts.k65 and its confir
   for (const word of [
     "k64-procedure.v2.json",
     "K65_FREEZE",
-    "PENDING_S4_PINS",
+    "k65-harness-d40",
+    "k65-g01-e2e-admission",
   ]) {
     assert.ok(prep.k65Readings.rule.includes(word), word);
     detects(
@@ -6918,5 +7012,135 @@ test("S2 追補 #15: K6/5's freeze commit, the confirmation records and the S3 r
   );
   assert.doesNotThrow(() =>
     git("merge-base", "--is-ancestor", record[2], "HEAD"),
+  );
+});
+
+test("S2 追補 #15（DR-CP4-S4-9）: the 14 files K6/5, C7 and the G-01 diagnostic changed are each held by one K6/5 pin at the commit that last changed it, the earlier pins no longer hold them, and putting one back fails", async (t) => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  const moved = {
+    "receipt.mjs": ["k65-receipt-p95-head", "t14-k64-freeze"],
+    "k64-runner.mjs": ["k65-harness-d40", "s5a-graph-arm-runner"],
+    "admission.mjs": ["k65-g01-e2e-admission", "s4-rehearsal-admission"],
+    "diagnostic-runner.mjs": ["k65-harness-d40", "sp-p4-ir-pair-limit"],
+    "frozen-diagnostics.mjs": ["k65-n2-n3-enforcement", "sp-p4-ir-pair-limit"],
+    "frozen-k64-run.mjs": ["k65-harness-d40", "t1-t4-measurement-settle-ready"],
+    "trace-record.mjs": ["c7-chronicle-stop", "v4-trace-record-requery"],
+    "followup.mjs": ["k65-merge-followup", "v4-followup-cancelled-match"],
+    "trace-runner.mjs": ["k65-harness-d40", "v4-trace-runner-quote-guard"],
+    "constants.mjs": ["k65-freeze-source", "g4-b1-freeze-v2-constants"],
+    "trace-frozen.mjs": ["k65-harness-d40", "g4-b2a-declaration-v2-path"],
+    "frozen-k64-admission.mjs": ["k65-harness-d40", "s4-5-addendum-v3-paths"],
+    "procedure-file.mjs": ["k65-harness-d40", "p1-harness-core"],
+    // The G-01 diagnostic runner had no pin (PENDING_S4_PINS).
+    "pubg16-e2e-run.mjs": ["k65-g01-e2e-admission", null],
+  };
+  assert.equal(Object.keys(moved).length, 14);
+  const pinOf = (role) => SOURCE_PINS.find((pin) => pin.role === role);
+  const prepPin = (p, role) =>
+    p.setupReadings.source.pins.find((row) => row.role === role);
+  for (const [name, [role, from]] of Object.entries(moved)) {
+    const file = H4 + name;
+    assert.equal(harnessPinOf(file)?.role, role, name);
+    assert.equal(
+      SOURCE_PINS.filter((pin) => pin.paths.includes(file)).length,
+      1,
+      name,
+    );
+    const held = prepPin(prep, role).files.find((row) => row.path === file);
+    assert.equal(
+      held.sha256,
+      sha256(readFileSync(path.join(repoRoot, file))),
+      name,
+    );
+    if (from !== null) {
+      assert.ok(!pinOf(from).paths.includes(file), `${name} left ${from}`);
+      // Putting the file back into the earlier pin (the record only) fails.
+      detects(
+        prep,
+        check,
+        (p) => prepPin(p, from).files.push({ ...held }),
+        /setupReadings\.source\.pins must be/u,
+      );
+    }
+    // Dropping it from the K6/5 pin (the record only) fails.
+    detects(
+      prep,
+      check,
+      (p) => {
+        const pin = prepPin(p, role);
+        pin.files = pin.files.filter((row) => row.path !== file);
+      },
+      /setupReadings\.source\.pins must be/u,
+    );
+    // A changed sha256 fails the git check at the pinned commit.
+    if (ctx.sourcePinGit) {
+      const copy = clone(prep.setupReadings.source.pins);
+      const row = prepPin(
+        { setupReadings: { source: { pins: copy } } },
+        role,
+      ).files.find((entry) => entry.path === file);
+      row.sha256 = flip(row.sha256);
+      assert.ok(
+        sourcePinGitErrors(copy, ctx.sourcePinGit.head, ctx.sourcePinGit).some(
+          (e) =>
+            e.includes(
+              `${file} at ${pinOf(role).commit} is not the pinned bytes`,
+            ),
+        ),
+        name,
+      );
+    }
+  }
+  // The earlier pins that held one of these files and now hold nothing are
+  // ancestor pins that keep their role and commit.
+  for (const role of [
+    "t14-k64-freeze",
+    "sp-p4-ir-pair-limit",
+    "v4-trace-record-requery",
+    "v4-followup-cancelled-match",
+    "v4-trace-runner-quote-guard",
+    "g4-b1-freeze-v2-constants",
+    "g4-b2a-declaration-v2-path",
+    "s4-5-addendum-v3-paths",
+  ]) {
+    assert.equal(pinOf(role).check, "ancestor", role);
+    assert.deepEqual(prepPin(prep, role).files, [], role);
+    assert.ok(prepPin(prep, role).pr.includes("S2 追補 #15"), role);
+  }
+  for (const word of ["追補 #15", "k65-harness-d40", "14 file"])
+    assert.ok(prep.setupReadings.source.pinRule.includes(word), word);
+  if (!ctx.sourcePinGit) {
+    t.skip("shallow clone: the commits are checked by the formal gate");
+    return;
+  }
+  // Each K6/5 pin's commit is the last change of each of its files at HEAD,
+  // and is an ancestor of HEAD (c7-chronicle-stop of master).
+  for (const role of Object.values(moved).map(([role]) => role)) {
+    const pin = pinOf(role);
+    assert.ok(
+      ctx.sourcePinGit.isAncestor(pin.commit, ctx.sourcePinGit.head),
+      role,
+    );
+    for (const file of pin.paths)
+      assert.equal(
+        gitText([
+          "log",
+          "-1",
+          "--format=%H",
+          ctx.sourcePinGit.head,
+          "--",
+          file,
+        ]),
+        pin.commit,
+        file,
+      );
+  }
+  assert.ok(
+    ctx.sourcePinGit.isAncestor(
+      pinOf("c7-chronicle-stop").commit,
+      gitText(["rev-parse", "refs/remotes/origin/master"]),
+    ),
   );
 });

@@ -582,11 +582,9 @@ export const SOURCE_PINS = Object.freeze(
     ],
     ["b-route-seam-fix", "c06dc17ec86fa968c87176aece12b4a1d67e2105", []],
     // S2 追補 #11（DR-CP4-P-7）: constants.mjs moved to the G-04 v2 pin.
-    [
-      "t14-k64-freeze",
-      "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f",
-      ["receipt.mjs"],
-    ],
+    // S2 追補 #15（6 回目の S4、DR-CP4-S4-9）: receipt.mjs moved to the
+    // k65-receipt-p95-head pin (the pin keeps its role and commit, ancestor).
+    ["t14-k64-freeze", "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f", []],
     ["freshness-requeue-fix", "02837f02bb9df82da6dc65b3d237bf17840ad775", []],
     ["startup-gate-io-settle", "26764b433e6299db960f608bb99e4332949d39a3", []],
     // S2 追補 #9（DR-CP4-P-5）: frozen-k64-plan.mjs and workspace-db.mjs moved
@@ -594,12 +592,7 @@ export const SOURCE_PINS = Object.freeze(
     [
       "s5a-graph-arm-runner",
       "2c9316848ce028565c4d8e8af2d2779c3fd7e187",
-      [
-        "k64-record.mjs",
-        "k64-runner.mjs",
-        "material-revision.mjs",
-        "renderer/cp4-k64-probe.tsx",
-      ],
+      ["k64-record.mjs", "material-revision.mjs", "renderer/cp4-k64-probe.tsx"],
     ],
     [
       "maintenance-ownership-release",
@@ -634,15 +627,13 @@ export const SOURCE_PINS = Object.freeze(
     [
       "s4-rehearsal-admission",
       "82d427465b16a12809c6f93adad74ac97859c85a",
-      ["admission.mjs", "scripts/quality/nir1-retrieval/contract.mjs"],
+      ["scripts/quality/nir1-retrieval/contract.mjs"],
     ],
     // S2 追補 #8（DR-CP4-Q-2）: #759 last changes these two (the pair limit).
     // The commit is #759's squash on master (the same bytes as the PR head).
-    [
-      "sp-p4-ir-pair-limit",
-      "906da641befb8dfbb445e05ce5df814bf5b16c35",
-      ["diagnostic-runner.mjs", "frozen-diagnostics.mjs"],
-    ],
+    // S2 追補 #15: diagnostic-runner.mjs and frozen-diagnostics.mjs moved to the
+    // k65-harness-d40 and k65-n2-n3-enforcement pins (ancestor).
+    ["sp-p4-ir-pair-limit", "906da641befb8dfbb445e05ce5df814bf5b16c35", []],
     // S2 追補 #9（DR-CP4-P-5、DR-CP4-S4-5）: the harness fix of the re-freeze
     // (DR-CP4-T-1〜T-5, branch claude/cp4-freshness-settle). b0df31f0 (T-5)
     // last changes the setup's Freshness/maintenance wait and the read-only
@@ -658,7 +649,7 @@ export const SOURCE_PINS = Object.freeze(
     [
       "t1-t4-measurement-settle-ready",
       "354b1ba6a997bc464fb2ee9d7a2276c9f7d0bc78",
-      ["frozen-k64-plan.mjs", "frozen-k64-run.mjs"],
+      ["frozen-k64-plan.mjs"],
     ],
     // S2 追補 #10（DR-CP4-P-6、DR-CP4-S4-6）: the harness fix of the trace
     // path (DR-CP4-V-2〜V-4, branch claude/cp4-trace-path-fix). Each file is
@@ -672,20 +663,19 @@ export const SOURCE_PINS = Object.freeze(
       "262be7a9f53834a8d2b2f4d2751757519b94c9d1",
       ["renderer/cp4-trace-probe.tsx"],
     ],
-    [
-      "v4-trace-record-requery",
-      "527589b6ca374d8c4e3933f6ec0b35632ca7cd2d",
-      ["trace-record.mjs"],
-    ],
+    // S2 追補 #15: the three files moved to the c7-chronicle-stop,
+    // k65-merge-followup and k65-harness-d40 pins (ancestor; the roles and
+    // commits stay: traceRunnerReadings.rule names them).
+    ["v4-trace-record-requery", "527589b6ca374d8c4e3933f6ec0b35632ca7cd2d", []],
     [
       "v4-followup-cancelled-match",
       "2854aa31da9b172b3e6d5a847267fbc76b9accf6",
-      ["followup.mjs"],
+      [],
     ],
     [
       "v4-trace-runner-quote-guard",
       "759a4679a7b90d25c13bc9a8517f8a64df43adda",
-      ["trace-runner.mjs"],
+      [],
     ],
     // S2 追補 #11（DR-CP4-P-7、DR-CP4-S4-7）: the G-04 fixture v2 changes
     // (branch claude/g04-v2c-fixture, base master 8187fbfc). Each file is held
@@ -701,15 +691,17 @@ export const SOURCE_PINS = Object.freeze(
       "7bd785fe084d0d370fb3c23860f68b31688684ed",
       ["scripts/quality/nir1-graph/contract.mjs"],
     ],
+    // S2 追補 #15: constants.mjs and trace-frozen.mjs moved to the
+    // k65-freeze-source and k65-harness-d40 pins (ancestor).
     [
       "g4-b1-freeze-v2-constants",
       "d06f080e5966e81949317e673c47620d44d51d42",
-      ["constants.mjs"],
+      [],
     ],
     [
       "g4-b2a-declaration-v2-path",
       "2bf48fad6d29fc60af2255bacab292031ff15725",
-      ["trace-frozen.mjs"],
+      [],
     ],
     // S2 追補 #12（DR-CP4-P-8）: frozen-k64-admission.mjs moved to the
     // s4-5-addendum-v3-paths pin, so this pin only checks the ancestor.
@@ -731,11 +723,9 @@ export const SOURCE_PINS = Object.freeze(
       "f31d99e07a81acdebe949f22225e19ec5f39cc76",
       ["g01-negative-preview.mjs", "g01-negative-run.mjs", "g01-negatives.mjs"],
     ],
-    [
-      "s4-5-addendum-v3-paths",
-      "ee43c197bcdadc9c630c8d3a68a156b741a75f0d",
-      ["frozen-k64-admission.mjs"],
-    ],
+    // S2 追補 #15: frozen-k64-admission.mjs moved to the k65-harness-d40 pin
+    // (ancestor).
+    ["s4-5-addendum-v3-paths", "ee43c197bcdadc9c630c8d3a68a156b741a75f0d", []],
     [
       "pr1-native-eval-feature",
       "3739dbedb762ada8961f509c1b4d6885a11c3099",
@@ -751,7 +741,6 @@ export const SOURCE_PINS = Object.freeze(
         "egress.mjs",
         "join.mjs",
         "native-sample.mjs",
-        "procedure-file.mjs",
         "q4.mjs",
         "run-sample.mjs",
         "stats.mjs",
@@ -820,6 +809,62 @@ export const SOURCE_PINS = Object.freeze(
       "dp-h-unknown-scope",
       "e2d22b89c92b9de9585d273349e516e9df6ee5b7",
       ["scripts/quality/nir1-packing/final-request/architecture.mjs"],
+    ],
+    // S2 追補 #15（6 回目の S4、DR-CP4-S4-9。S3 の 8 回目、M1・M2）: the
+    // harness files K6/5 (D=40 ms, B, the Hybrid p95 limit; PR #827 on the
+    // branch claude/k65-harness), C7 (#826) and the G-01 diagnostic changed
+    // after the earlier pins, each held at the commit that last changed it:
+    // e6abddd2 (receipt.mjs), bf0b4f75 (the D=40 ms harness: k64-runner.mjs,
+    // diagnostic-runner.mjs, frozen-k64-run.mjs, trace-runner.mjs,
+    // trace-frozen.mjs, frozen-k64-admission.mjs, procedure-file.mjs),
+    // 26993142 (frozen-diagnostics.mjs), f24dc704 (constants.mjs, K65_FREEZE),
+    // 94d3e133 (admission.mjs, pubg16-e2e-run.mjs — the G-01 diagnostic runner,
+    // pinned for the first time), a1492815 (trace-record.mjs; #826 on master)
+    // and 8489ae57 (followup.mjs; the merge commit that joined #826 to the K6/5
+    // branch). Except a1492815 these are branch commits that S4's PR brings
+    // to master with its merge commit (gh pr merge --merge), never a squash.
+    [
+      "k65-receipt-p95-head",
+      "e6abddd2feb0ad4022153edef2243fce4767cb57",
+      ["receipt.mjs"],
+    ],
+    [
+      "k65-harness-d40",
+      "bf0b4f75b9eab40009b115cc27df53298a9cef2a",
+      [
+        "k64-runner.mjs",
+        "diagnostic-runner.mjs",
+        "frozen-k64-run.mjs",
+        "trace-runner.mjs",
+        "trace-frozen.mjs",
+        "frozen-k64-admission.mjs",
+        "procedure-file.mjs",
+      ],
+    ],
+    [
+      "k65-n2-n3-enforcement",
+      "2699314238504e12aa28ba74e1b319f6dff5821d",
+      ["frozen-diagnostics.mjs"],
+    ],
+    [
+      "k65-freeze-source",
+      "f24dc704cd3a424f94c5fc6ade42950fdcc938d3",
+      ["constants.mjs"],
+    ],
+    [
+      "k65-g01-e2e-admission",
+      "94d3e1333ec72a8ffd625d5c3d582ddabd60a4bb",
+      ["admission.mjs", "pubg16-e2e-run.mjs"],
+    ],
+    [
+      "c7-chronicle-stop",
+      "a1492815eaddb1dc8f66941e282799d3d37b244c",
+      ["trace-record.mjs"],
+    ],
+    [
+      "k65-merge-followup",
+      "8489ae57d147f029117b0e4a4c9f08b53565f453",
+      ["followup.mjs"],
     ],
   ].map(([role, commit, names]) =>
     Object.freeze({
@@ -4083,7 +4128,8 @@ const K65_LIMIT_WORDS = Object.freeze([
 const K65_RULE_WORDS = Object.freeze([
   "k64-procedure.v2.json",
   "K65_FREEZE",
-  "PENDING_S4_PINS",
+  "k65-harness-d40",
+  "k65-g01-e2e-admission",
 ]);
 
 /**
