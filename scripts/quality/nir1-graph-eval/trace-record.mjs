@@ -625,7 +625,7 @@ export function chronicleStopFetch(fetch) {
  * The role of a fetch in the trace for the C7 disclosure: a counted parent,
  * a counted child (the Scene's first later fetch called by its query's cycle
  * end), else not counted (a re-query, a mixed-window fetch, one after the
- * cycle end).
+ * cycle end); with the counted query's trace index for the first two.
  */
 function chronicleStopRoleOf({ fetches, log }) {
   const entries = (log ?? []).filter((row) => Number.isInteger(row.parentSeq));
@@ -636,15 +636,17 @@ function chronicleStopRoleOf({ fetches, log }) {
     }))
     .filter((row) => row.fetch);
   return (fetch) => {
-    if (parents.some((row) => row.fetch.seq === fetch.seq))
-      return "counted-parent";
+    const own = parents.find((row) => row.fetch.seq === fetch.seq);
+    if (own)
+      return { role: "counted-parent", queryIndex: own.entry.index ?? null };
+    const notCounted = { role: "not-counted", queryIndex: null };
     const owner = parents.findLast(
       (row) =>
         row.fetch.sceneId === fetch.sceneId &&
         row.fetch.calledAt <= fetch.calledAt,
     );
     const cycleEnd = owner?.entry.cycleEnd?.at;
-    if (!owner || !finite(cycleEnd)) return "not-counted";
+    if (!owner || !finite(cycleEnd)) return notCounted;
     const first = fetches.find(
       (row) =>
         row.sceneId === fetch.sceneId &&
@@ -656,8 +658,8 @@ function chronicleStopRoleOf({ fetches, log }) {
     );
     return first?.seq === fetch.seq &&
       !(nextParent && nextParent.fetch.calledAt <= fetch.calledAt)
-      ? "counted-child"
-      : "not-counted";
+      ? { role: "counted-child", queryIndex: owner.entry.index ?? null }
+      : notCounted;
   };
 }
 
@@ -700,6 +702,8 @@ export function alignSeededBegins({
     chronicleStopFetch(ownerOf(fetches, row)),
   );
   const stoppedFetches = fetches.filter(chronicleStopFetch);
+  const beginsOf = (fetch) =>
+    stopped.filter((row) => ownerOf(fetches, row) === fetch).length;
   const begins = seededBegins.filter((row) => !stopped.includes(row));
   const records = native?.records ?? [];
   const recordOf = new Map();
@@ -725,8 +729,11 @@ export function alignSeededBegins({
   };
   if (native?.lost === true)
     reason = `the Native log lost records (gaps ${JSON.stringify(native.gaps ?? [])}, front loss ${native.frontLoss === true})`;
-  else if (stopped.length !== stoppedFetches.length)
-    reason = `DR-CP4-C7: ${stopped.length} begins taken out for the Chronicle stop, ${stoppedFetches.length} fetches that meet the condition (each needs exactly one begin)`;
+  else if (
+    stopped.length !== stoppedFetches.length ||
+    stoppedFetches.some((fetch) => beginsOf(fetch) !== 1)
+  )
+    reason = `DR-CP4-C7: ${stopped.length} begins taken out for the Chronicle stop, ${stoppedFetches.length} fetches that meet the condition (each needs exactly one begin; fetch seq: begins ${JSON.stringify(stoppedFetches.map((fetch) => [fetch.seq, beginsOf(fetch)]))})`;
   else if (stopped.length > 0 && !reads)
     reason = `DR-CP4-C7: ${stopped.length} begins taken out for the Chronicle stop need the Native reads' clock range (${clock.readClockReason})`;
   else if (begins.length > records.length)
@@ -808,10 +815,27 @@ export function alignSeededBegins({
               fetchCalledAt: fetch.calledAt,
               graphOutcome: fetch.result.graphOutcome,
               irReason: fetch.result.irReason,
-              role: roleOf(fetch),
+              ...roleOf(fetch),
             };
           }),
         };
+  if (excludedChronicleStop)
+    excludedChronicleStop.byRole = Object.fromEntries(
+      ["counted-parent", "counted-child", "not-counted"].map((role) => {
+        const rows = excludedChronicleStop.begins.filter(
+          (row) => row.role === role,
+        );
+        return [
+          role,
+          {
+            count: rows.length,
+            beginIds: rows.map((row) => row.beginId),
+            fetchSeqs: rows.map((row) => row.fetchSeq),
+            queryIndexes: rows.map((row) => row.queryIndex),
+          },
+        ];
+      }),
+    );
   return {
     aligned: reason === null,
     reason,
@@ -1168,7 +1192,7 @@ function chronicleStopParentRow({
   index,
   parent,
   beginRow,
-  observation,
+  mixing,
   fetches,
   logEntry,
   a3,
@@ -1191,9 +1215,10 @@ function chronicleStopParentRow({
   if (!finite(parent.calledAt) || !finite(parent.resolvedAt)) return null;
   const seal = startSealOf(startSeal, parent.calledAt);
   const requery = fetches.find((row) => row.seq !== parent.seq) ?? null;
-  const publishCount = (observation.commits ?? []).filter(
-    (row) => row.fetchSeq === parent.seq && row.loading === false,
-  ).length;
+  // The mixing checks (N1, N29, N32) read the parent's generation and the
+  // window's other fetches (the product's re-query is the former child).
+  const own = mixing.find((row) => row.seq === parent.seq);
+  if (!own) return null;
   return {
     queryId,
     trigger: "user-operation",
@@ -1235,12 +1260,20 @@ function chronicleStopParentRow({
         seed: parent.seed,
         calledAt: parent.calledAt,
         resolvedAt: parent.resolvedAt,
-        publishCount,
+        publishCount: own.publishCount,
+        lateGraphInDisplay: own.lateGraphInDisplay,
         excludedChronicleStop: true,
       },
       nativeBegins: [],
       child: null,
       requerySeq: requery?.seq ?? null,
+      requeries: mixing
+        .filter((row) => row.seq !== parent.seq)
+        .map((row) => ({
+          seq: row.seq,
+          publishCount: row.publishCount,
+          lateGraphInDisplay: row.lateGraphInDisplay,
+        })),
     },
     chronicleStop: {
       rule: CHRONICLE_STOP_RULE,
@@ -1581,7 +1614,17 @@ export function traceQueryRow({
         index,
         parent,
         beginRow: parentBegin,
-        observation,
+        // DR-CP4-C7: the mixing of the parent's generation and of the
+        // window's other fetches (none after the cycle end: V-4 checks them).
+        mixing:
+          requeryAfterCycleEndOf({
+            late: fetches,
+            all,
+            fetches: windowFetches,
+            api: windowApi,
+            commits: windowCommits,
+            cycleEndAt: logEntry.cycleEnd?.at ?? null,
+          })?.rows ?? [],
         fetches: windowFetches,
         logEntry,
         a3,
@@ -1702,6 +1745,16 @@ export function traceQueryRow({
     cycleEnd: logEntry.cycleEnd ?? null,
     followUp,
     ...disclosed,
+    // DR-CP4-C7: the child's begin was taken out of the pairing (no record).
+    ...(childBegin && alignment.excludedBeginIds?.has(childBegin.id)
+      ? {
+          chronicleStopChild: {
+            rule: CHRONICLE_STOP_RULE,
+            fetchSeq: child.seq,
+            beginId: childBegin.id,
+          },
+        }
+      : {}),
   };
 }
 

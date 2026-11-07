@@ -201,6 +201,14 @@ function chronicleStopRecord(sample, context) {
     parent.calledAt <= parent.resolvedAt &&
     Number.isInteger(parent.publishCount) &&
     parent.publishCount >= 0 &&
+    typeof parent.lateGraphInDisplay === "boolean" &&
+    Array.isArray(record.requeries) &&
+    record.requeries.every(
+      (row) =>
+        Number.isInteger(row?.publishCount) &&
+        row.publishCount >= 0 &&
+        typeof row.lateGraphInDisplay === "boolean",
+    ) &&
     Array.isArray(record.nativeBegins) &&
     record.nativeBegins.length === 0 &&
     has(record, "child") &&
@@ -442,6 +450,16 @@ export function mixedIntoDisplay(record) {
     out.push("N29:late-graph-in-child-display");
   if (Number.isInteger(child?.publishCount) && child.publishCount > 1)
     out.push("N32:child-published-more-than-once");
+  // DR-CP4-C7: a parent without a Native record has no child record; its
+  // re-queries in the window are checked as the child is.
+  for (const requery of Array.isArray(record?.requeries)
+    ? record.requeries
+    : []) {
+    if (requery?.lateGraphInDisplay === true)
+      out.push("N29:late-graph-in-child-display");
+    if (Number.isInteger(requery?.publishCount) && requery.publishCount > 1)
+      out.push("N32:child-published-more-than-once");
+  }
   return out;
 }
 
@@ -532,6 +550,9 @@ export function classifyFollowUp(sample, options) {
   if (chronicleStopRecord(sample, context)) {
     add("parent", "X11", sample.irOutcome);
     add("parent", "X12", `graph-unavailable:${sample.graph.reason}`);
+    // The mixing checks still apply (a parent that published more than once
+    // or showed a late Graph, a re-query that did): E-5 like any other row.
+    violations.push(...mixedIntoDisplay(sample.followUp));
     return finish(false);
   }
   const record = sample.followUp;

@@ -2552,8 +2552,12 @@ function chronicleStop(
   );
   const requery = observation.fetches.find((row) => row.seq === c);
   requery.refreshTrigger = null;
+  // The re-query joined no Graph of its own (its window is D, the fixture's
+  // child Graph answers within W_f).
   requery.result = {
     ...requery.result,
+    graph: null,
+    graphOutcome: "graph-late",
     timing: { ...requery.result.timing, refreshTrigger: null },
   };
   const drop = new Set(keepRecord ? [] : [ns(B + 15)]);
@@ -2888,6 +2892,26 @@ test("DR-CP4-C7: 外した begin の数と外す条件を満たす fetch の数�
     childRows.filter((row) => row.rowError).map((row) => row.rowError),
     [],
   );
+  // 子の行の数と ID は開示に出る（窓外の category の定義は変えない）。
+  assert.deepEqual(
+    childAlignment.excludedChronicleStop.byRole["counted-child"],
+    {
+      count: 1,
+      beginIds: [childAlignment.excludedChronicleStop.begins[1].beginId],
+      fetchSeqs: [10],
+      queryIndexes: [4],
+    },
+  );
+  assert.equal(
+    childAlignment.excludedChronicleStop.byRole["counted-parent"].count,
+    1,
+  );
+  assert.equal(
+    childAlignment.excludedChronicleStop.byRole["not-counted"].count,
+    0,
+  );
+  assert.equal(childRows[4].chronicleStopChild.fetchSeq, 10);
+  assert.equal(childRows[3].chronicleStopChild, undefined);
   const childResult = classifyFollowUp(childRows[4], { context: "trace" });
   assert.equal(childResult.displayed, false);
   assert.equal(Object.hasOwn(childResult.x, "X10"), false);
@@ -3008,4 +3032,139 @@ test("DR-CP4-C7: 外した begin の record が実は在る（条件の読みが
     }).reason,
     /the Native log lost records/u,
   );
+});
+
+test("DR-CP4-C7: 外した親の行にも混入の検査（N1／N29／N32）を当てる。公開が 2 回以上、遅れた Graph の表示、窓の中の再 query の 2 回の公開は違反で、外すこと自体は止めない", () => {
+  const n = 200;
+  const trace = editingTrace(n);
+  chronicleStop(trace, 5);
+  chronicleStop(trace, 9);
+  const B5 = 10_000 + 5 * 3_000;
+  const B9 = 10_000 + 9 * 3_000;
+  // 親の世代: 公開が 2 つの表示、Graph は自分のものでないのに表示に出た。
+  trace.observation.commits.push(
+    { at: B5 + 200, fetchSeq: 11, loading: false, display: "parent-5b" },
+    {
+      at: B5 + 201,
+      fetchSeq: 11,
+      loading: false,
+      display: graphDisplay("parent-5c"),
+    },
+  );
+  // 窓の中の再 query（行の窓では子）の 2 回の公開。
+  trace.observation.commits.push({
+    at: B9 + 97,
+    fetchSeq: 20,
+    loading: false,
+    display: "child-9b",
+  });
+  const longPlan = plan("editing", n - 1);
+  const rows = chronicleStopRows(trace, n);
+  assert.deepEqual(
+    rows.filter((row) => row.rowError).map((row) => row.rowError),
+    [],
+  );
+  assert.equal(rows[5].followUp.parent.publishCount, 3);
+  assert.equal(rows[5].followUp.parent.lateGraphInDisplay, true);
+  assert.deepEqual(rows[5].followUp.requeries, [
+    { seq: 12, publishCount: 1, lateGraphInDisplay: false },
+  ]);
+  assert.equal(rows[9].followUp.parent.publishCount, 1);
+  assert.equal(rows[9].followUp.requeries[0].publishCount, 2);
+  assert.deepEqual(classifyFollowUp(rows[5], { context: "trace" }).violations, [
+    "N1:late-graph-in-parent-display",
+    "N1:parent-published-more-than-once",
+  ]);
+  assert.deepEqual(classifyFollowUp(rows[9], { context: "trace" }).violations, [
+    "N32:child-published-more-than-once",
+  ]);
+  const events = traceEvents({
+    plan: longPlan,
+    observation: trace.observation,
+    log: trace.log,
+    parentSeqs: rows.map((_, at) => 2 * at + 1),
+  });
+  const k64 = summarizeTraceRun({
+    plan: longPlan,
+    rows,
+    events,
+    fixedGraphMode: "restricted",
+    candidate: ratification5(),
+    candidateHead: "e".repeat(40),
+  });
+  assert.equal(k64.summary.status, "valid", JSON.stringify(k64.summary));
+  assert.deepEqual(
+    k64.summary.violations.map((row) => [row.queryId, row.code]),
+    [
+      [`${longPlan.traceId}#5`, "N1:late-graph-in-parent-display"],
+      [`${longPlan.traceId}#5`, "N1:parent-published-more-than-once"],
+      [`${longPlan.traceId}#9`, "N32:child-published-more-than-once"],
+    ],
+  );
+  // 外した行そのものは今までどおり (i) に数える。
+  assert.equal(k64.summary.lapse["i-chronicle-stop"], 2);
+  const k62 = summarizeTraceRun({
+    plan: longPlan,
+    rows,
+    events,
+    fixedGraphMode: "restricted",
+  });
+  assert.equal(k62.summary.violations.length, 3);
+});
+
+test("DR-CP4-C7: 総数が合っても内訳が違えば整列の失敗（begin が 0 の fetch と 2 の fetch）。A3 や timing が欠けた外した親は defect に戻る", () => {
+  const n = 12;
+  const trace = chronicleStop(chronicleStop(editingTrace(n), 3), 5);
+  const beginAt = (calledAt) =>
+    trace.observation.api.find(
+      (row) => row.cmd === "related_scenes_begin" && row.calledAt === calledAt,
+    );
+  const aligned = traceAlignment({
+    observation: trace.observation,
+    native: mergeNativeRecords(clockReads(trace)),
+    log: trace.log,
+  });
+  assert.equal(aligned.aligned, true, aligned.reason);
+  // 総数は 2 と 2 のまま、内訳が [seq 7: 0 件、seq 11: 2 件]。
+  const first = beginAt(19_010);
+  trace.observation.api = trace.observation.api.filter((row) => row !== first);
+  trace.observation.api.push({
+    ...beginAt(25_010),
+    id: 9_999,
+    calledAt: 25_020,
+    resolvedAt: 25_030,
+  });
+  const uneven = traceAlignment({
+    observation: trace.observation,
+    native: mergeNativeRecords(clockReads(trace)),
+    log: trace.log,
+  });
+  assert.equal(uneven.aligned, false);
+  assert.match(
+    uneven.reason,
+    /DR-CP4-C7: 2 begins taken out for the Chronicle stop, 2 fetches that meet the condition \(each needs exactly one begin; fetch seq: begins \[\[7,0\],\[11,2\]\]\)/u,
+  );
+  assert.equal(uneven.recordOf.size, 0);
+  // A3 が無い、または timing が欠けた外した親は defect（rowError）に戻る。
+  const noA3 = chronicleStop(editingTrace(n), 3);
+  const reads = noA3.a3Reads;
+  delete reads[7];
+  const noA3Rows = chronicleStopRows(noA3, n, { a3Reads: reads });
+  assert.match(
+    noA3Rows[3].rowError,
+    /the parent's begin has no Native record/u,
+  );
+  assert.equal(noA3Rows.filter((row) => row.rowError).length, 1);
+  for (const timing of [
+    { tRawReadyMs: null },
+    { tReturnMs: undefined },
+    { tFetchMs: 99_999_999 },
+  ]) {
+    const broken = chronicleStop(editingTrace(n), 3);
+    const parent = broken.observation.fetches.find((row) => row.seq === 7);
+    parent.result.timing = { ...parent.result.timing, ...timing };
+    const rows = chronicleStopRows(broken, n);
+    assert.match(rows[3].rowError, /no Native record/u, JSON.stringify(timing));
+    assert.equal(rows[3].chronicleStop, undefined);
+  }
 });
