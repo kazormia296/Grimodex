@@ -1,0 +1,3295 @@
+{
+  "tool": "spn-k65-synthetic-detection-mutation",
+  "startedAt": "2026-11-07T08:55:20.222Z",
+  "node": "v22.23.3",
+  "worktree": "/home/grimodex/worktrees/Grimodex/claude-k65-detect2",
+  "candidate": {
+    "commit": "1d58a1eb733e2b1ebb7b0d255dc8aaf7f7fcbd87",
+    "tree": "74967f87c45ec5f2db929d00d969ade3640c8006"
+  },
+  "statusBefore": "",
+  "ignoredBefore": "!! node_modules/",
+  "baselineTarget": {
+    "label": "baseline-target",
+    "command": "node --test --test-reporter=tap scripts/quality/nir1-graph-eval/receipt.test.mjs scripts/quality/nir1-graph-eval/trace-record.test.mjs scripts/quality/nir1-graph-eval/followup.test.mjs scripts/quality/nir1-graph-eval/procedure-file.test.mjs scripts/quality/nir1-graph-eval/admission.test.mjs scripts/quality/nir1-graph-eval/quality-verdict.test.mjs scripts/quality/nir1-graph-eval/k64-record.test.mjs",
+    "started": "2026-11-07T08:55:20.392Z",
+    "finished": "2026-11-07T08:55:34.847Z",
+    "exitCode": 0,
+    "signal": null,
+    "stderrTail": "",
+    "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/baseline-target.tap",
+    "tapSha256": "fc86011350c2b25a7fbacdc3941f72017d43ab1785b799a42eb2a2fc503096a1",
+    "tests": [
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "N-1 / P1-1 / P2-1: observation-prep facts gate a frozen fixture end to end",
+        "directive": null,
+        "line": "ok 1 - N-1 / P1-1 / P2-1: observation-prep facts gate a frozen fixture end to end",
+        "rawLine": "ok 1 - N-1 / P1-1 / P2-1: observation-prep facts gate a frozen fixture end to end",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P1-1: a record that does not bind the frozen digests is refused",
+        "directive": null,
+        "line": "ok 2 - P1-1: a record that does not bind the frozen digests is refused",
+        "rawLine": "ok 2 - P1-1: a record that does not bind the frozen digests is refused",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P1-1: the reviewer's reproduction (a commit without the record) is refused",
+        "directive": null,
+        "line": "ok 3 - P1-1: the reviewer's reproduction (a commit without the record) is refused",
+        "rawLine": "ok 3 - P1-1: the reviewer's reproduction (a commit without the record) is refused",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "N-4: the K6/2 freeze head is read from the freeze commit or no receipt is written",
+        "directive": null,
+        "line": "ok 4 - N-4: the K6/2 freeze head is read from the freeze commit or no receipt is written",
+        "rawLine": "ok 4 - N-4: the K6/2 freeze head is read from the freeze commit or no receipt is written",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-10: the default addon path must hold the product .node (positive check)",
+        "directive": null,
+        "line": "ok 5 - P2-10: the default addon path must hold the product .node (positive check)",
+        "rawLine": "ok 5 - P2-10: the default addon path must hold the product .node (positive check)",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-9: the network namespaces of the harness and its parent are readable on Linux",
+        "directive": null,
+        "line": "ok 6 - P2-9: the network namespaces of the harness and its parent are readable on Linux",
+        "rawLine": "ok 6 - P2-9: the network namespaces of the harness and its parent are readable on Linux",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "B-4: readNetNamespaces は host の interface と利用者の systemd --user の netns を読む（合成の /proc）",
+        "directive": null,
+        "line": "ok 7 - B-4: readNetNamespaces は host の interface と利用者の systemd --user の netns を読む（合成の /proc）",
+        "rawLine": "ok 7 - B-4: readNetNamespaces は host の interface と利用者の systemd --user の netns を読む（合成の /proc）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-7（変異 M19）: prep が origin/master にあっても候補の祖先でなければ拒む（実 git）",
+        "directive": null,
+        "line": "ok 8 - P2-7（変異 M19）: prep が origin/master にあっても候補の祖先でなければ拒む（実 git）",
+        "rawLine": "ok 8 - P2-7（変異 M19）: prep が origin/master にあっても候補の祖先でなければ拒む（実 git）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-7: 手で作った facts と書き換えた facts は N-1 の guard を通らない（出所の束縛）",
+        "directive": null,
+        "line": "ok 9 - P2-7: 手で作った facts と書き換えた facts は N-1 の guard を通らない（出所の束縛）",
+        "rawLine": "ok 9 - P2-7: 手で作った facts と書き換えた facts は N-1 の guard を通らない（出所の束縛）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-7: admitGraphCaseRun は facts を自分で集め、N-1、既定の addon、K6/2 と K6/4 の凍結を順に確かめる",
+        "directive": null,
+        "line": "ok 10 - P2-7: admitGraphCaseRun は facts を自分で集め、N-1、既定の addon、K6/2 と K6/4 の凍結を順に確かめる",
+        "rawLine": "ok 10 - P2-7: admitGraphCaseRun は facts を自分で集め、N-1、既定の addon、K6/2 と K6/4 の凍結を順に確かめる",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "批准 7（DR-CP4-T14-1）: K6/4 の凍結の commit は claude/nir1-contracts の 5dea38af に固定されている",
+        "directive": null,
+        "line": "ok 11 - 批准 7（DR-CP4-T14-1）: K6/4 の凍結の commit は claude/nir1-contracts の 5dea38af に固定されている",
+        "rawLine": "ok 11 - 批准 7（DR-CP4-T14-1）: K6/4 の凍結の commit は claude/nir1-contracts の 5dea38af に固定されている",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "批准 7: K6/4 の先頭は固定した commit と bytes の両方が一致するときだけ読み、null の descriptor では止まる",
+        "directive": null,
+        "line": "ok 12 - 批准 7: K6/4 の先頭は固定した commit と bytes の両方が一致するときだけ読み、null の descriptor では止まる",
+        "rawLine": "ok 12 - 批准 7: K6/4 の先頭は固定した commit と bytes の両方が一致するときだけ読み、null の descriptor では止まる",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5 変える点 7: K6/5 の凍結の commit と bytes は固定され、先頭は commit と bytes の両方が一致するときだけ読む",
+        "directive": null,
+        "line": "ok 13 - K6/5 変える点 7: K6/5 の凍結の commit と bytes は固定され、先頭は commit と bytes の両方が一致するときだけ読む",
+        "rawLine": "ok 13 - K6/5 変える点 7: K6/5 の凍結の commit と bytes は固定され、先頭は commit と bytes の両方が一致するときだけ読む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5-N2（変える点 6）: 候補の製品の D が 40 ms でない（#802 が祖先に無い、定数が 40 でない・読めない）候補は run の前に [precheck]",
+        "directive": null,
+        "line": "ok 14 - K6/5-N2（変える点 6）: 候補の製品の D が 40 ms でない（\\#802 が祖先に無い、定数が 40 でない・読めない）候補は run の前に [precheck]",
+        "rawLine": "ok 14 - K6/5-N2（変える点 6）: 候補の製品の D が 40 ms でない（\\#802 が祖先に無い、定数が 40 でない・読めない）候補は run の前に [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5 変える点 6（readDFortyEvidence）: 定数は comment の外の行頭の export const で、ちょうど 1 つ宣言されているときだけ読む",
+        "directive": null,
+        "line": "ok 15 - K6/5 変える点 6（readDFortyEvidence）: 定数は comment の外の行頭の export const で、ちょうど 1 つ宣言されているときだけ読む",
+        "rawLine": "ok 15 - K6/5 変える点 6（readDFortyEvidence）: 定数は comment の外の行頭の export const で、ちょうど 1 つ宣言されているときだけ読む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（commit と bytes）と製品の D=40 ms を、封印の前に実際の関数で強制する",
+        "directive": null,
+        "line": "ok 16 - K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（commit と bytes）と製品の D=40 ms を、封印の前に実際の関数で強制する",
+        "rawLine": "ok 16 - K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（commit と bytes）と製品の D=40 ms を、封印の前に実際の関数で強制する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を凍結と照合し、ratification5 を必須にして D=40 ms を強制する",
+        "directive": null,
+        "line": "ok 17 - K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を凍結と照合し、ratification5 を必須にして D=40 ms を強制する",
+        "rawLine": "ok 17 - K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を凍結と照合し、ratification5 を必須にして D=40 ms を強制する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "§15.8: 凍結した fixture の path の試走は製品の .node で、評価の .node を拒む",
+        "directive": null,
+        "line": "ok 18 - §15.8: 凍結した fixture の path の試走は製品の .node で、評価の .node を拒む",
+        "rawLine": "ok 18 - §15.8: 凍結した fixture の path の試走は製品の .node で、評価の .node を拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-7: receipt の先頭の observationPrep を git の facts と freeze record で照合する",
+        "directive": null,
+        "line": "ok 19 - P2-7: receipt の先頭の observationPrep を git の facts と freeze record で照合する",
+        "rawLine": "ok 19 - P2-7: receipt の先頭の observationPrep を git の facts と freeze record で照合する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D-1／E-1: 批准 5 は git から集めて封印し、(b) の候補の試験の経路は collector が試験を走らせるまで K6/2（fail closed）",
+        "directive": null,
+        "line": "ok 20 - D-1／E-1: 批准 5 は git から集めて封印し、(b) の候補の試験の経路は collector が試験を走らせるまで K6/2（fail closed）",
+        "rawLine": "ok 20 - D-1／E-1: 批准 5 は git から集めて封印し、(b) の候補の試験の経路は collector が試験を走らせるまで K6/2（fail closed）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "S1f: 集計の前に、receipt の手順のファイルを commit から読み直して settings.k64 と照合する",
+        "directive": null,
+        "line": "ok 21 - S1f: 集計の前に、receipt の手順のファイルを commit から読み直して settings.k64 と照合する",
+        "rawLine": "ok 21 - S1f: 集計の前に、receipt の手順のファイルを commit から読み直して settings.k64 と照合する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "S1f 批准 5 (b): collector が候補の clean な worktree で keep test を走らせ、pass を封印する。落ちれば hook の祖先だけ（K6/2）",
+        "directive": null,
+        "line": "ok 22 - S1f 批准 5 (b): collector が候補の clean な worktree で keep test を走らせ、pass を封印する。落ちれば hook の祖先だけ（K6/2）",
+        "rawLine": "ok 22 - S1f 批准 5 (b): collector が候補の clean な worktree で keep test を走らせ、pass を封印する。落ちれば hook の祖先だけ（K6/2）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "S1f 批准 5 (b): 集計の前の照合は、記録が candidate-test なら worktree で keep test を走らせ直す",
+        "directive": null,
+        "line": "ok 23 - S1f 批准 5 (b): 集計の前の照合は、記録が candidate-test なら worktree で keep test を走らせ直す",
+        "rawLine": "ok 23 - S1f 批准 5 (b): 集計の前の照合は、記録が candidate-test なら worktree で keep test を走らせ直す",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-2: 試験用の sealer は node の試験の process の外では取れない（本番の node から自作の批准 5 を封印できない）",
+        "directive": null,
+        "line": "ok 24 - P2-2: 試験用の sealer は node の試験の process の外では取れない（本番の node から自作の批准 5 を封印できない）",
+        "rawLine": "ok 24 - P2-2: 試験用の sealer は node の試験の process の外では取れない（本番の node から自作の批准 5 を封印できない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-2: 試験の run の中で封印した試験専用の証拠も、その外（試験の context が無い）では K6/2 のまま",
+        "directive": null,
+        "line": "ok 25 - P2-2: 試験の run の中で封印した試験専用の証拠も、その外（試験の context が無い）では K6/2 のまま",
+        "rawLine": "ok 25 - P2-2: 試験の run の中で封印した試験専用の証拠も、その外（試験の context が無い）では K6/2 のまま",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S4-1 予行: freeze record は S2 の plan ではない（修正前の入口はここで止まった）",
+        "directive": null,
+        "line": "ok 26 - DR-CP4-S4-1 予行: freeze record は S2 の plan ではない（修正前の入口はここで止まった）",
+        "rawLine": "ok 26 - DR-CP4-S4-1 予行: freeze record は S2 の plan ではない（修正前の入口はここで止まった）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S4-1 予行: S4a→S4b の記録を、admission → S2 の検証つき読取 → 診断の plan → trace の先頭と宣言 → A の S2 → 入口の関数の順に通る",
+        "directive": null,
+        "line": "ok 27 - DR-CP4-S4-1 予行: S4a→S4b の記録を、admission → S2 の検証つき読取 → 診断の plan → trace の先頭と宣言 → A の S2 → 入口の関数の順に通る",
+        "rawLine": "ok 27 - DR-CP4-S4-1 予行: S4a→S4b の記録を、admission → S2 の検証つき読取 → 診断の plan → trace の先頭と宣言 → A の S2 → 入口の関数の順に通る",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S4-1 予行: S2 の file が束縛と違う・束縛に無い・配列と object の取り違え・S2 と freeze record の食い違いは [precheck]",
+        "directive": null,
+        "line": "ok 28 - DR-CP4-S4-1 予行: S2 の file が束縛と違う・束縛に無い・配列と object の取り違え・S2 と freeze record の食い違いは [precheck]",
+        "rawLine": "ok 28 - DR-CP4-S4-1 予行: S2 の file が束縛と違う・束縛に無い・配列と object の取り違え・S2 と freeze record の食い違いは [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S4-1: 検証つき読取は admission.mjs が集めた facts だけを受け、freeze record の束縛の sha256 と blob を照合する",
+        "directive": null,
+        "line": "ok 29 - DR-CP4-S4-1: 検証つき読取は admission.mjs が集めた facts だけを受け、freeze record の束縛の sha256 と blob を照合する",
+        "rawLine": "ok 29 - DR-CP4-S4-1: 検証つき読取は admission.mjs が集めた facts だけを受け、freeze record の束縛の sha256 と blob を照合する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S4-1: 配列の boundFiles は添字を束縛にしない（集める側と契約の両方）",
+        "directive": null,
+        "line": "ok 30 - DR-CP4-S4-1: 配列の boundFiles は添字を束縛にしない（集める側と契約の両方）",
+        "rawLine": "ok 30 - DR-CP4-S4-1: 配列の boundFiles は添字を束縛にしない（集める側と契約の両方）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4 の定数は契約の値を 1 か所に持つ（判断 2〜4、技術点 2、批准 7）",
+        "directive": null,
+        "line": "ok 31 - K6/4 の定数は契約の値を 1 か所に持つ（判断 2〜4、技術点 2、批准 7）",
+        "rawLine": "ok 31 - K6/4 の定数は契約の値を 1 か所に持つ（判断 2〜4、技術点 2、批准 7）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-P1: F1〜F7 をすべて満たす query は follow-up の成功で、子の表示を測る",
+        "directive": null,
+        "line": "ok 32 - K6/4-P1: F1〜F7 をすべて満たす query は follow-up の成功で、子の表示を測る",
+        "rawLine": "ok 32 - K6/4-P1: F1〜F7 をすべて満たす query は follow-up の成功で、子の表示を測る",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-P2: 親が D の窓内に worker の結果を受けたら first-render の窓内で、子は出ない",
+        "directive": null,
+        "line": "ok 33 - K6/4-P2: 親が D の窓内に worker の結果を受けたら first-render の窓内で、子は出ない",
+        "rawLine": "ok 33 - K6/4-P2: 親が D の窓内に worker の結果を受けたら first-render の窓内で、子は出ない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5-P1: D=40 ms の窓内（Raw-ready の後 10.84 ms を超え 40 ms 以内）に親が Graph を受けた sample は first-render の窓内で、子は出ない",
+        "directive": null,
+        "line": "ok 34 - K6/5-P1: D=40 ms の窓内（Raw-ready の後 10.84 ms を超え 40 ms 以内）に親が Graph を受けた sample は first-render の窓内で、子は出ない",
+        "rawLine": "ok 34 - K6/5-P1: D=40 ms の窓内（Raw-ready の後 10.84 ms を超え 40 ms 以内）に親が Graph を受けた sample は first-render の窓内で、子は出ない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N1: 親の表示に D の後の Graph が混ざったら FAIL（遅れた結果を混ぜない）",
+        "directive": null,
+        "line": "ok 35 - K6/4-N1: 親の表示に D の後の Graph が混ざったら FAIL（遅れた結果を混ぜない）",
+        "rawLine": "ok 35 - K6/4-N1: 親の表示に D の後の Graph が混ざったら FAIL（遅れた結果を混ぜない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N2: harness が出した query の cache の hit は X7",
+        "directive": null,
+        "line": "ok 36 - K6/4-N2: harness が出した query の cache の hit は X7",
+        "rawLine": "ok 36 - K6/4-N2: harness が出した query の cache の hit は X7",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N3: 親の ticket が stale で、前の sample の ticket が cache を埋めた並びは X10 か F3 で検出する",
+        "directive": null,
+        "line": "ok 37 - K6/4-N3: 親の ticket が stale で、前の sample の ticket が cache を埋めた並びは X10 か F3 で検出する",
+        "rawLine": "ok 37 - K6/4-N3: 親の ticket が stale で、前の sample の ticket が cache を埋めた並びは X10 か F3 で検出する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N4: 子の合流が graph-late（W_f の後）は X13",
+        "directive": null,
+        "line": "ok 38 - K6/4-N4: 子の合流が graph-late（W_f の後）は X13",
+        "rawLine": "ok 38 - K6/4-N4: 子の合流が graph-late（W_f の後）は X13",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N5: 子の合流が graph-unavailable:invalidated（requalification、SeedChanged）は X5",
+        "directive": null,
+        "line": "ok 39 - K6/4-N5: 子の合流が graph-unavailable:invalidated（requalification、SeedChanged）は X5",
+        "rawLine": "ok 39 - K6/4-N5: 子の合流が graph-unavailable:invalidated（requalification、SeedChanged）は X5",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N6: 子の IR が timeout か unavailable は X5",
+        "directive": null,
+        "line": "ok 40 - K6/4-N6: 子の IR が timeout か unavailable は X5",
+        "rawLine": "ok 40 - K6/4-N6: 子の IR が timeout か unavailable は X5",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N7: 最初の通知が T_late を超えたら X3",
+        "directive": null,
+        "line": "ok 41 - K6/4-N7: 最初の通知が T_late を超えたら X3",
+        "rawLine": "ok 41 - K6/4-N7: 最初の通知が T_late を超えたら X3",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N8: 通知が来なければ X3",
+        "directive": null,
+        "line": "ok 42 - K6/4-N8: 通知が来なければ X3",
+        "rawLine": "ok 42 - K6/4-N8: 通知が来なければ X3",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N9: 子が Cached でなければ X4",
+        "directive": null,
+        "line": "ok 43 - K6/4-N9: 子が Cached でなければ X4",
+        "rawLine": "ok 43 - K6/4-N9: 子が Cached でなければ X4",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N10: TTL の切れ、edge の epoch、quarantine、別の begin（D-final を含む）の後の子は X2",
+        "directive": null,
+        "line": "ok 44 - K6/4-N10: TTL の切れ、edge の epoch、quarantine、別の begin（D-final を含む）の後の子は X2",
+        "rawLine": "ok 44 - K6/4-N10: TTL の切れ、edge の epoch、quarantine、別の begin（D-final を含む）の後の子は X2",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N11: index-ready、編集、場面の切替え、IR の再試行による子は X7",
+        "directive": null,
+        "line": "ok 45 - K6/4-N11: index-ready、編集、場面の切替え、IR の再試行による子は X7",
+        "rawLine": "ok 45 - K6/4-N11: index-ready、編集、場面の切替え、IR の再試行による子は X7",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N12: 子の R か IR が親と違えば X9",
+        "directive": null,
+        "line": "ok 46 - K6/4-N12: 子の R か IR が親と違えば X9",
+        "rawLine": "ok 46 - K6/4-N12: 子の R か IR が親と違えば X9",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N15: R7 の記録が欠けた query は X10",
+        "directive": null,
+        "line": "ok 47 - K6/4-N15: R7 の記録が欠けた query は X10",
+        "rawLine": "ok 47 - K6/4-N15: R7 の記録が欠けた query は X10",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N19: 親の ticket が stale で cache に入らなければ X1",
+        "directive": null,
+        "line": "ok 48 - K6/4-N19: 親の ticket が stale で cache に入らなければ X1",
+        "rawLine": "ok 48 - K6/4-N19: 親の ticket が stale で cache に入らなければ X1",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N20: 子が公開されず世代が変わったら X6",
+        "directive": null,
+        "line": "ok 49 - K6/4-N20: 子が公開されず世代が変わったら X6",
+        "rawLine": "ok 49 - K6/4-N20: 子が公開されず世代が変わったら X6",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N22: 親の合流が graph-unavailable:warming／stale／busy で refresh した子は X12",
+        "directive": null,
+        "line": "ok 50 - K6/4-N22: 親の合流が graph-unavailable:warming／stale／busy で refresh した子は X12",
+        "rawLine": "ok 50 - K6/4-N22: 親の合流が graph-unavailable:warming／stale／busy で refresh した子は X12",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N23: late_cached の差分が 2 以上、または begin の記録が 3 件以上は X4",
+        "directive": null,
+        "line": "ok 51 - K6/4-N23: late_cached の差分が 2 以上、または begin の記録が 3 件以上は X4",
+        "rawLine": "ok 51 - K6/4-N23: late_cached の差分が 2 以上、または begin の記録が 3 件以上は X4",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N24: reachedQuiet: false の sample は X10（分母から除かない）",
+        "directive": null,
+        "line": "ok 52 - K6/4-N24: reachedQuiet: false の sample は X10（分母から除かない）",
+        "rawLine": "ok 52 - K6/4-N24: reachedQuiet: false の sample は X10（分母から除かない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N25: IR の timeout の再試行による子は X7",
+        "directive": null,
+        "line": "ok 53 - K6/4-N25: IR の timeout の再試行による子は X7",
+        "rawLine": "ok 53 - K6/4-N25: IR の timeout の再試行による子は X7",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N26: 子の Graph の edge が 0 件か期待寄与が無ければ X5",
+        "directive": null,
+        "line": "ok 54 - K6/4-N26: 子の Graph の edge が 0 件か期待寄与が無ければ X5",
+        "rawLine": "ok 54 - K6/4-N26: 子の Graph の edge が 0 件か期待寄与が無ければ X5",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N27: (q3) が T_show を超えたら X8",
+        "directive": null,
+        "line": "ok 55 - K6/4-N27: (q3) が T_show を超えたら X8",
+        "rawLine": "ok 55 - K6/4-N27: (q3) が T_show を超えたら X8",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N28: 親の IR が timeout の sample は X11",
+        "directive": null,
+        "line": "ok 56 - K6/4-N28: 親の IR が timeout の sample は X11",
+        "rawLine": "ok 56 - K6/4-N28: 親の IR が timeout の sample は X11",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N29: W_f の後に届いた子の Graph が子の表示に混ざったら FAIL",
+        "directive": null,
+        "line": "ok 57 - K6/4-N29: W_f の後に届いた子の Graph が子の表示に混ざったら FAIL",
+        "rawLine": "ok 57 - K6/4-N29: W_f の後に届いた子の Graph が子の表示に混ざったら FAIL",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N30: 合流の窓の値が W_f と違う、子の IR の deadline が D より長い、W_f が親に当たった候補は批准 12 の違反",
+        "directive": null,
+        "line": "ok 58 - K6/4-N30: 合流の窓の値が W_f と違う、子の IR の deadline が D より長い、W_f が親に当たった候補は批准 12 の違反",
+        "rawLine": "ok 58 - K6/4-N30: 合流の窓の値が W_f と違う、子の IR の deadline が D より長い、W_f が親に当たった候補は批准 12 の違反",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N32: 子の合流が 2 回以上公開したら FAIL",
+        "directive": null,
+        "line": "ok 59 - K6/4-N32: 子の合流が 2 回以上公開したら FAIL",
+        "rawLine": "ok 59 - K6/4-N32: 子の合流が 2 回以上公開したら FAIL",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N35: t_pub_p より前の通知は F3 の通知に数えない（X3）",
+        "directive": null,
+        "line": "ok 60 - K6/4-N35: t_pub_p より前の通知は F3 の通知に数えない（X3）",
+        "rawLine": "ok 60 - K6/4-N35: t_pub_p より前の通知は F3 の通知に数えない（X3）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N36: 子の query の Scene か seed が親と違えば X7",
+        "directive": null,
+        "line": "ok 61 - K6/4-N36: 子の query の Scene か seed が親と違えば X7",
+        "rawLine": "ok 61 - K6/4-N36: 子の query の Scene か seed が親と違えば X7",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N37: 親の ticket が registration-unavailable で cache に入らなければ X1",
+        "directive": null,
+        "line": "ok 62 - K6/4-N37: 親の ticket が registration-unavailable で cache に入らなければ X1",
+        "rawLine": "ok 62 - K6/4-N37: 親の ticket が registration-unavailable で cache に入らなければ X1",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N38: 親の ticket が busy か warming で cache に入らなければ X1",
+        "directive": null,
+        "line": "ok 63 - K6/4-N38: 親の ticket が busy か warming で cache に入らなければ X1",
+        "rawLine": "ok 63 - K6/4-N38: 親の ticket が busy か warming で cache に入らなければ X1",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N39: 親が Cached で D の窓内に合流した sample は first-render の窓内に数えない",
+        "directive": null,
+        "line": "ok 64 - K6/4-N39: 親が Cached で D の窓内に合流した sample は first-render の窓内に数えない",
+        "rawLine": "ok 64 - K6/4-N39: 親が Cached で D の窓内に合流した sample は first-render の窓内に数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D-3: R1 は 4 つの項目から計算し直し、自己申告の reachedQuiet と食い違えば X10",
+        "directive": null,
+        "line": "ok 65 - D-3: R1 は 4 つの項目から計算し直し、自己申告の reachedQuiet と食い違えば X10",
+        "rawLine": "ok 65 - D-3: R1 は 4 つの項目から計算し直し、自己申告の reachedQuiet と食い違えば X10",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D-5: (b) でも親が Cached で D の窓内に合流した query は表示に数えない（K6/4:165）",
+        "directive": null,
+        "line": "ok 66 - D-5: (b) でも親が Cached で D の窓内に合流した query は表示に数えない（K6/4:165）",
+        "rawLine": "ok 66 - D-5: (b) でも親が Cached で D の窓内に合流した query は表示に数えない（K6/4:165）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D-4: 子の初回 snapshot の chronicleIndexUsable が false なら子の Chronicle の停止として失効率に数える",
+        "directive": null,
+        "line": "ok 67 - D-4: 子の初回 snapshot の chronicleIndexUsable が false なら子の Chronicle の停止として失効率に数える",
+        "rawLine": "ok 67 - D-4: 子の初回 snapshot の chronicleIndexUsable が false なら子の Chronicle の停止として失効率に数える",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D-7／D-9: t_pub_p と同時刻の通知は X3、定常状態の F2 は cache_hits 1、(b) の F2 は最初の begin が pending",
+        "directive": null,
+        "line": "ok 68 - D-7／D-9: t_pub_p と同時刻の通知は X3、定常状態の F2 は cache_hits 1、(b) の F2 は最初の begin が pending",
+        "rawLine": "ok 68 - D-7／D-9: t_pub_p と同時刻の通知は X3、定常状態の F2 は cache_hits 1、(b) の F2 は最初の begin が pending",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D-8: IR の timeoutRate は親の IR の outcome だけで求め、子の IR の timeout は入れない（K6/4:167）",
+        "directive": null,
+        "line": "ok 69 - D-8: IR の timeoutRate は親の IR の outcome だけで求め、子の IR の timeout は入れない（K6/4:167）",
+        "rawLine": "ok 69 - D-8: IR の timeoutRate は親の IR の outcome だけで求め、子の IR の timeout は入れない（K6/4:167）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D-11: 記録の欠けた（X10）sample でも遅れた結果の混入は違反として残す",
+        "directive": null,
+        "line": "ok 70 - D-11: 記録の欠けた（X10）sample でも遅れた結果の混入は違反として残す",
+        "rawLine": "ok 70 - D-11: 記録の欠けた（X10）sample でも遅れた結果の混入は違反として残す",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N40: 子の世代の契機の印が無いか graph-ready でなければ X7",
+        "directive": null,
+        "line": "ok 71 - K6/4-N40: 子の世代の契機の印が無いか graph-ready でなければ X7",
+        "rawLine": "ok 71 - K6/4-N40: 子の世代の契機の印が無いか graph-ready でなければ X7",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "F4: 子の begin は t_notice の後（通知より前に始まった子は X7）",
+        "directive": null,
+        "line": "ok 72 - F4: 子の begin は t_notice の後（通知より前に始まった子は X7）",
+        "rawLine": "ok 72 - F4: 子の begin は t_notice の後（通知より前に始まった子は X7）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "F1: graph-late でも宣言が unused でなければ follow-up にしない",
+        "directive": null,
+        "line": "ok 73 - F1: graph-late でも宣言が unused でなければ follow-up にしない",
+        "rawLine": "ok 73 - F1: graph-late でも宣言が unused でなければ follow-up にしない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-P3: pool の欠落率が 1% 以下でどの case にも表示があれば HOLD にせず、first-render の窓外率と内訳と q を開示する",
+        "directive": null,
+        "line": "ok 74 - K6/4-P3: pool の欠落率が 1% 以下でどの case にも表示があれば HOLD にせず、first-render の窓外率と内訳と q を開示する",
+        "rawLine": "ok 74 - K6/4-P3: pool の欠落率が 1% 以下でどの case にも表示があれば HOLD にせず、first-render の窓外率と内訳と q を開示する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N14: 表示された sample が 1 件もない case と pool が 0 件は HOLD",
+        "directive": null,
+        "line": "ok 75 - K6/4-N14: 表示された sample が 1 件もない case と pool が 0 件は HOLD",
+        "rawLine": "ok 75 - K6/4-N14: 表示された sample が 1 件もない case と pool が 0 件は HOLD",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N16: 低い層の API の continue だけで判定した記録は無効",
+        "directive": null,
+        "line": "ok 76 - K6/4-N16: 低い層の API の continue だけで判定した記録は無効",
+        "rawLine": "ok 76 - K6/4-N16: 低い層の API の continue だけで判定した記録は無効",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N1／N29／N32: 遅れた結果の混入は pool の判定と別に FAIL",
+        "directive": null,
+        "line": "ok 77 - K6/4-N1／N29／N32: 遅れた結果の混入は pool の判定と別に FAIL",
+        "rawLine": "ok 77 - K6/4-N1／N29／N32: 遅れた結果の混入は pool の判定と別に FAIL",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N31: 批准 5 の (a)〜(c) のどれかを欠く候補には緩和を当てず K6/2 の文のまま（D′ では HOLD）",
+        "directive": null,
+        "line": "ok 78 - K6/4-N31: 批准 5 の (a)〜(c) のどれかを欠く候補には緩和を当てず K6/2 の文のまま（D′ では HOLD）",
+        "rawLine": "ok 78 - K6/4-N31: 批准 5 の (a)〜(c) のどれかを欠く候補には緩和を当てず K6/2 の文のまま（D′ では HOLD）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N33: D′ の構造上の graph-late（開始時の slot が empty）を (b) の鮮度に数えない",
+        "directive": null,
+        "line": "ok 79 - K6/4-N33: D′ の構造上の graph-late（開始時の slot が empty）を (b) の鮮度に数えない",
+        "rawLine": "ok 79 - K6/4-N33: D′ の構造上の graph-late（開始時の slot が empty）を (b) の鮮度に数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N34: follow-up の失敗は失敗した段の理由で区分する（stale は鮮度、registration-unavailable は失効、ticket が available で T_late 超過はその他）",
+        "directive": null,
+        "line": "ok 80 - K6/4-N34: follow-up の失敗は失敗した段の理由で区分する（stale は鮮度、registration-unavailable は失効、ticket が available で T_late 超過はその他）",
+        "rawLine": "ok 80 - K6/4-N34: follow-up の失敗は失敗した段の理由で区分する（stale は鮮度、registration-unavailable は失効、ticket が available で T_late 超過はその他）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-K64-5 (A): (b) の follow-up が失効の段で落ちたものは親の query の失効として失効率に数える",
+        "directive": null,
+        "line": "ok 81 - DR-CP4-K64-5 (A): (b) の follow-up が失効の段で落ちたものは親の query の失効として失効率に数える",
+        "rawLine": "ok 81 - DR-CP4-K64-5 (A): (b) の follow-up が失効の段で落ちたものは親の query の失効として失効率に数える",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D-2: (b) の trace でも遅れた結果の混入（N32、N1）は follow-up の成否と別に FAIL（K6/4:163）",
+        "directive": null,
+        "line": "ok 82 - D-2: (b) の trace でも遅れた結果の混入（N32、N1）は follow-up の成否と別に FAIL（K6/4:163）",
+        "rawLine": "ok 82 - D-2: (b) の trace でも遅れた結果の混入（N32、N1）は follow-up の成否と別に FAIL（K6/4:163）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "(b) の K6/4 でも trace の不備（Q<200、queryId の重複、N16）は取り直し",
+        "directive": null,
+        "line": "ok 83 - (b) の K6/4 でも trace の不備（Q<200、queryId の重複、N16）は取り直し",
+        "rawLine": "ok 83 - (b) の K6/4 でも trace の不備（Q<200、queryId の重複、N16）は取り直し",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "E-3: 封印した批准 5 の証拠が測った候補のものでなければ K6/4 を当てない",
+        "directive": null,
+        "line": "ok 84 - E-3: 封印した批准 5 の証拠が測った候補のものでなければ K6/4 を当てない",
+        "rawLine": "ok 84 - E-3: 封印した批准 5 の証拠が測った候補のものでなければ K6/4 を当てない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "E-5: 入力の段で無効な trace と K6/2 の regime の trace でも遅れた結果の混入を集める",
+        "directive": null,
+        "line": "ok 85 - E-5: 入力の段で無効な trace と K6/2 の regime の trace でも遅れた結果の混入を集める",
+        "rawLine": "ok 85 - E-5: 入力の段で無効な trace と K6/2 の regime の trace でも遅れた結果の混入を集める",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "E-6: (b) で R7 の記録が欠けた query は trace の不備（取り直し）",
+        "directive": null,
+        "line": "ok 86 - E-6: (b) で R7 の記録が欠けた query は trace の不備（取り直し）",
+        "rawLine": "ok 86 - E-6: (b) で R7 の記録が欠けた query は trace の不備（取り直し）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-2（F6）: 凍結した variant と trace の要約は、Scene の単位で照合した F6 の記録を invalid にする（dev は予告として通る）",
+        "directive": null,
+        "line": "ok 87 - P2-2（F6）: 凍結した variant と trace の要約は、Scene の単位で照合した F6 の記録を invalid にする（dev は予告として通る）",
+        "rawLine": "ok 87 - P2-2（F6）: 凍結した variant と trace の要約は、Scene の単位で照合した F6 の記録を invalid にする（dev は予告として通る）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-3: (b) で begin の前に取り消された親は観測できる欄だけを求め X12（cancelled-before-begin）で終える（X10 にしない）。trace は Q に数え U に入れず、K6/4 で X12、K6/2 と K6/4 で失効 (i)",
+        "directive": null,
+        "line": "ok 88 - DR-CP4-V-3: (b) で begin の前に取り消された親は観測できる欄だけを求め X12（cancelled-before-begin）で終える（X10 にしない）。trace は Q に数え U に入れず、K6/4 で X12、K6/2 と K6/4 で失効 (i)",
+        "rawLine": "ok 88 - DR-CP4-V-3: (b) で begin の前に取り消された親は観測できる欄だけを求め X12（cancelled-before-begin）で終える（X10 にしない）。trace は Q に数え U に入れず、K6/4 で X12、K6/2 と K6/4 で失効 (i)",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-3: 印が無い・形が合わない・定常状態の文脈の記録は従来どおり（X10 か既存の分類）。Gold の既存の分類は変わらない",
+        "directive": null,
+        "line": "ok 89 - DR-CP4-V-3: 印が無い・形が合わない・定常状態の文脈の記録は従来どおり（X10 か既存の分類）。Gold の既存の分類は変わらない",
+        "rawLine": "ok 89 - DR-CP4-V-3: 印が無い・形が合わない・定常状態の文脈の記録は従来どおり（X10 か既存の分類）。Gold の既存の分類は変わらない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-4 (レビュー P3): 印 cancelledBeforeBegin は sample 側の値（cancelled／not-started／合流 cancelled／snapshot が usable でない）と合うときだけ効き、合わなければ印を外した記録と同じ分類（X10）になる",
+        "directive": null,
+        "line": "ok 90 - DR-CP4-V-4 (レビュー P3): 印 cancelledBeforeBegin は sample 側の値（cancelled／not-started／合流 cancelled／snapshot が usable でない）と合うときだけ効き、合わなければ印を外した記録と同じ分類（X10）になる",
+        "rawLine": "ok 90 - DR-CP4-V-4 (レビュー P3): 印 cancelledBeforeBegin は sample 側の値（cancelled／not-started／合流 cancelled／snapshot が usable でない）と合うときだけ効き、合わなければ印を外した記録と同じ分類（X10）になる",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-4 (レビュー P3): 印の無い入力の分類は sample 側の値が取消しの形でも変わらない（照合は印のある記録にだけ効く）",
+        "directive": null,
+        "line": "ok 91 - DR-CP4-V-4 (レビュー P3): 印の無い入力の分類は sample 側の値が取消しの形でも変わらない（照合は印のある記録にだけ効く）",
+        "rawLine": "ok 91 - DR-CP4-V-4 (レビュー P3): 印の無い入力の分類は sample 側の値が取消しの形でも変わらない（照合は印のある記録にだけ効く）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "R7: hook の消費者の観測から、分類器が F1〜F7 を判定できる記録を作る（成功の形）",
+        "directive": null,
+        "line": "ok 92 - R7: hook の消費者の観測から、分類器が F1〜F7 を判定できる記録を作る（成功の形）",
+        "rawLine": "ok 92 - R7: hook の消費者の観測から、分類器が F1〜F7 を判定できる記録を作る（成功の形）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "R7: 通知と子が無い、index-ready の子、Cached でない子、R1 の未達",
+        "directive": null,
+        "line": "ok 93 - R7: 通知と子が無い、index-ready の子、Cached でない子、R1 の未達",
+        "rawLine": "ok 93 - R7: 通知と子が無い、index-ready の子、Cached でない子、R1 の未達",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "R7: 一覧の読込み中への切替え（(b-3)）、子の二段の公開（N32）、公開されない子（X6）",
+        "directive": null,
+        "line": "ok 94 - R7: 一覧の読込み中への切替え（(b-3)）、子の二段の公開（N32）、公開されない子（X6）",
+        "rawLine": "ok 94 - R7: 一覧の読込み中への切替え（(b-3)）、子の二段の公開（N32）、公開されない子（X6）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "R7: 子の合流の結果・IR の deadline・寄与・Chronicle の停止・親の ticket・Native の記録の数・quarantine",
+        "directive": null,
+        "line": "ok 95 - R7: 子の合流の結果・IR の deadline・寄与・Chronicle の停止・親の ticket・Native の記録の数・quarantine",
+        "rawLine": "ok 95 - R7: 子の合流の結果・IR の deadline・寄与・Chronicle の停止・親の ticket・Native の記録の数・quarantine",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "R7: 親の表示に D の後の Graph が混ざれば記録に残す（N1）。seed の無い Graph の sample と親の無い観測は止める",
+        "directive": null,
+        "line": "ok 96 - R7: 親の表示に D の後の Graph が混ざれば記録に残す（N1）。seed の無い Graph の sample と親の無い観測は止める",
+        "rawLine": "ok 96 - R7: 親の表示に D の後の Graph が混ざれば記録に残す（N1）。seed の無い Graph の sample と親の無い観測は止める",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "R7 → case の要約: hook の消費者の 30 件から K6/4 の表示の可用性と q1〜q4 の分布を出す",
+        "directive": null,
+        "line": "ok 97 - R7 → case の要約: hook の消費者の 30 件から K6/4 の表示の可用性と q1〜q4 の分布を出す",
+        "rawLine": "ok 97 - R7 → case の要約: hook の消費者の 30 件から K6/4 の表示の可用性と q1〜q4 の分布を出す",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "R7（実機で見つけた誤り）: 親の IR が timeout でも、子の呼出しの前に graph-ready が来ていれば子は通知の取り直し（再試行の timer は消える）",
+        "directive": null,
+        "line": "ok 98 - R7（実機で見つけた誤り）: 親の IR が timeout でも、子の呼出しの前に graph-ready が来ていれば子は通知の取り直し（再試行の timer は消える）",
+        "rawLine": "ok 98 - R7（実機で見つけた誤り）: 親の IR が timeout でも、子の呼出しの前に graph-ready が来ていれば子は通知の取り直し（再試行の timer は消える）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-3: 終わりの後の観測の窓で、子の世代の二度目の公開（hook が作り直した結果）が N32 になり、case は FAIL の違反を持つ。latency と読込み中の切替えは終わりまでの commit のまま",
+        "directive": null,
+        "line": "ok 99 - P2-3: 終わりの後の観測の窓で、子の世代の二度目の公開（hook が作り直した結果）が N32 になり、case は FAIL の違反を持つ。latency と読込み中の切替えは終わりまでの commit のまま",
+        "rawLine": "ok 99 - P2-3: 終わりの後の観測の窓で、子の世代の二度目の公開（hook が作り直した結果）が N32 になり、case は FAIL の違反を持つ。latency と読込み中の切替えは終わりまでの commit のまま",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-3: W_f の後に届いた子の Graph が窓の中で子の表示に混ざれば N29（子の答えは graph-late で Graph を持たない）",
+        "directive": null,
+        "line": "ok 100 - P2-3: W_f の後に届いた子の Graph が窓の中で子の表示に混ざれば N29（子の答えは graph-late で Graph を持たない）",
+        "rawLine": "ok 100 - P2-3: W_f の後に届いた子の Graph が窓の中で子の表示に混ざれば N29（子の答えは graph-late で Graph を持たない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-3: 窓が harness の上限で切れた・窓の記録が無い子は公開の回数を観測しきれないので X10。子が返らなければ窓は要らない。窓の中の fetch は sample の数に入れない",
+        "directive": null,
+        "line": "ok 101 - P2-3: 窓が harness の上限で切れた・窓の記録が無い子は公開の回数を観測しきれないので X10。子が返らなければ窓は要らない。窓の中の fetch は sample の数に入れない",
+        "rawLine": "ok 101 - P2-3: 窓が harness の上限で切れた・窓の記録が無い子は公開の回数を観測しきれないので X10。子が返らなければ窓は要らない。窓の中の fetch は sample の数に入れない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "レビュー P3: F2 は R4 の release の待ちの後の counter でも同じ差分を求める（厳しい側）。記録が無ければ X10",
+        "directive": null,
+        "line": "ok 102 - レビュー P3: F2 は R4 の release の待ちの後の counter でも同じ差分を求める（厳しい側）。記録が無ければ X10",
+        "rawLine": "ok 102 - レビュー P3: F2 は R4 の release の待ちの後の counter でも同じ差分を求める（厳しい側）。記録が無ければ X10",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "レビュー P3: Native の begin の記録の数が renderer の begin と合わなければ、どれが子の記録か分からないので X4（beginRecordsAligned を判定に使う）",
+        "directive": null,
+        "line": "ok 103 - レビュー P3: Native の begin の記録の数が renderer の begin と合わなければ、どれが子の記録か分からないので X4（beginRecordsAligned を判定に使う）",
+        "rawLine": "ok 103 - レビュー P3: Native の begin の記録の数が renderer の begin と合わなければ、どれが子の記録か分からないので X4（beginRecordsAligned を判定に使う）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "手順のファイル: 正式の版は値が constants と一致し、レビューの記録を持てば通る",
+        "directive": null,
+        "line": "ok 104 - 手順のファイル: 正式の版は値が constants と一致し、レビューの記録を持てば通る",
+        "rawLine": "ok 104 - 手順のファイル: 正式の版は値が constants と一致し、レビューの記録を持てば通る",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "手順のファイル: 待ちの上限は 10 s 以下の正の整数（技術点 2）",
+        "directive": null,
+        "line": "ok 105 - 手順のファイル: 待ちの上限は 10 s 以下の正の整数（技術点 2）",
+        "rawLine": "ok 105 - 手順のファイル: 待ちの上限は 10 s 以下の正の整数（技術点 2）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "手順のファイル: 契約の値と違う値は、広げる・狭めるを問わず拒む（変える点 16 の狭める版は未実装）",
+        "directive": null,
+        "line": "ok 106 - 手順のファイル: 契約の値と違う値は、広げる・狭めるを問わず拒む（変える点 16 の狭める版は未実装）",
+        "rawLine": "ok 106 - 手順のファイル: 契約の値と違う値は、広げる・狭めるを問わず拒む（変える点 16 の狭める版は未実装）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "手順のファイル: 欠けた値と知らない値（別の閾値の持込み）を拒む",
+        "directive": null,
+        "line": "ok 107 - 手順のファイル: 欠けた値と知らない値（別の閾値の持込み）を拒む",
+        "rawLine": "ok 107 - 手順のファイル: 欠けた値と知らない値（別の閾値の持込み）を拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "手順のファイル: F1〜F7 と X1〜X13 は契約の一覧そのもの（足す・除く・並べ替えを拒む）",
+        "directive": null,
+        "line": "ok 108 - 手順のファイル: F1〜F7 と X1〜X13 は契約の一覧そのもの（足す・除く・並べ替えを拒む）",
+        "rawLine": "ok 108 - 手順のファイル: F1〜F7 と X1〜X13 は契約の一覧そのもの（足す・除く・並べ替えを拒む）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "手順のファイル: 版の食い違い、契約の bytes の違い、draft とレビューの組合せを拒む",
+        "directive": null,
+        "line": "ok 109 - 手順のファイル: 版の食い違い、契約の bytes の違い、draft とレビューの組合せを拒む",
+        "rawLine": "ok 109 - 手順のファイル: 版の食い違い、契約の bytes の違い、draft とレビューの組合せを拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "手順のファイル: dev の仮の版（draft）は repository にあり、dev の予告でだけ読める",
+        "directive": null,
+        "line": "ok 110 - 手順のファイル: dev の仮の版（draft）は repository にあり、dev の予告でだけ読める",
+        "rawLine": "ok 110 - 手順のファイル: dev の仮の版（draft）は repository にあり、dev の予告でだけ読める",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "手順のファイル: 正式の版は commit から読み、draft の版を拒み、bytes の sha256 を記録する",
+        "directive": null,
+        "line": "ok 111 - 手順のファイル: 正式の版は commit から読み、draft の版を拒み、bytes の sha256 を記録する",
+        "rawLine": "ok 111 - 手順のファイル: 正式の版は commit から読み、draft の版を拒み、bytes の sha256 を記録する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5: 手順のファイルは /5 の契約（draftRef・SHA-256）と schema /2 を要し、K6/4 の file（schema /1）は読まない",
+        "directive": null,
+        "line": "ok 112 - K6/5: 手順のファイルは /5 の契約（draftRef・SHA-256）と schema /2 を要し、K6/4 の file（schema /1）は読まない",
+        "rawLine": "ok 112 - K6/5: 手順のファイルは /5 の契約（draftRef・SHA-256）と schema /2 を要し、K6/4 の file（schema /1）は読まない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5: レビューが placeholder の v<N> は読まない（S3 の記録の前に正式の run を始めさせない）",
+        "directive": null,
+        "line": "ok 113 - K6/5: レビューが placeholder の v<N> は読まない（S3 の記録の前に正式の run を始めさせない）",
+        "rawLine": "ok 113 - K6/5: レビューが placeholder の v<N> は読まない（S3 の記録の前に正式の run を始めさせない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5: k64-procedure.v2.json は draft-3 と版・draft・review だけが違い、draft-3 は dev で読める",
+        "directive": null,
+        "line": "ok 114 - K6/5: k64-procedure.v2.json は draft-3 と版・draft・review だけが違い、draft-3 は dev で読める",
+        "rawLine": "ok 114 - K6/5: k64-procedure.v2.json は draft-3 と版・draft・review だけが違い、draft-3 は dev で読める",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "the baseline: five conditions on lists built from the fixtures' own predeclared expectations",
+        "directive": null,
+        "line": "ok 115 - the baseline: five conditions on lists built from the fixtures' own predeclared expectations",
+        "rawLine": "ok 115 - the baseline: five conditions on lists built from the fixtures' own predeclared expectations",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "condition 1 (G-01): fail when the late child does not change the list, hold when it improves differently",
+        "directive": null,
+        "line": "ok 116 - condition 1 (G-01): fail when the late child does not change the list, hold when it improves differently",
+        "rawLine": "ok 116 - condition 1 (G-01): fail when the late child does not change the list, hold when it improves differently",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "condition 2 (macro): the G-case mean fails when the Graph display loses what R+IR showed",
+        "directive": null,
+        "line": "ok 117 - condition 2 (macro): the G-case mean fails when the Graph display loses what R+IR showed",
+        "rawLine": "ok 117 - condition 2 (macro): the G-case mean fails when the Graph display loses what R+IR showed",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5-N4（条件 3）: Hybrid p95 の判定の境界は 94.2 ms で、65.04 ms と 240 ms ではない。arm ごとに pool し、どちらかに failed があれば fail",
+        "directive": null,
+        "line": "ok 118 - K6/5-N4（条件 3）: Hybrid p95 の判定の境界は 94.2 ms で、65.04 ms と 240 ms ではない。arm ごとに pool し、どちらかに failed があれば fail",
+        "rawLine": "ok 118 - K6/5-N4（条件 3）: Hybrid p95 の判定の境界は 94.2 ms で、65.04 ms と 240 ms ではない。arm ごとに pool し、どちらかに failed があれば fail",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "condition 3 (p95): tReturn - tFetch, nearest-rank, both arms, limit from the manifest",
+        "directive": null,
+        "line": "ok 119 - condition 3 (p95): tReturn - tFetch, nearest-rank, both arms, limit from the manifest",
+        "rawLine": "ok 119 - condition 3 (p95): tReturn - tFetch, nearest-rank, both arms, limit from the manifest",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "condition 4 (Evidence): the edge binding fails on an unresolved or unexpected edge, and the rest stays not-evaluable",
+        "directive": null,
+        "line": "ok 120 - condition 4 (Evidence): the edge binding fails on an unresolved or unexpected edge, and the rest stays not-evaluable",
+        "rawLine": "ok 120 - condition 4 (Evidence): the edge binding fails on an unresolved or unexpected edge, and the rest stays not-evaluable",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "condition 5 (forbidden contribution): (a) a forbidden Scene the Graph adds, (b) a late Graph in a display",
+        "directive": null,
+        "line": "ok 121 - condition 5 (forbidden contribution): (a) a forbidden Scene the Graph adds, (b) a late Graph in a display",
+        "rawLine": "ok 121 - condition 5 (forbidden contribution): (a) a forbidden Scene the Graph adds, (b) a late Graph in a display",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "an expected-unavailable variant fails when the display list differs from the paired R+IR (prereg 3)",
+        "directive": null,
+        "line": "ok 122 - an expected-unavailable variant fails when the display list differs from the paired R+IR (prereg 3)",
+        "rawLine": "ok 122 - an expected-unavailable variant fails when the display list differs from the paired R+IR (prereg 3)",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "a variant marked blocked in the ledger leaves macro and p95; a missing receipt without a record stops",
+        "directive": null,
+        "line": "ok 123 - a variant marked blocked in the ledger leaves macro and p95; a missing receipt without a record stops",
+        "rawLine": "ok 123 - a variant marked blocked in the ledger leaves macro and p95; a missing receipt without a record stops",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "stops with [precheck]: allow list, procedure, unmapped ID, missing expectation, tampered receipt",
+        "directive": null,
+        "line": "ok 124 - stops with [precheck]: allow list, procedure, unmapped ID, missing expectation, tampered receipt",
+        "rawLine": "ok 124 - stops with [precheck]: allow list, procedure, unmapped ID, missing expectation, tampered receipt",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "bindings: a changed receipt, allow list, procedure or script is found by verify",
+        "directive": null,
+        "line": "ok 125 - bindings: a changed receipt, allow list, procedure or script is found by verify",
+        "rawLine": "ok 125 - bindings: a changed receipt, allow list, procedure or script is found by verify",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5 変える点 7: 手順のファイルは正式の loader で S4 の commit から読み、receipt の head.k65 は K65_FREEZE と一致しなければ [precheck]",
+        "directive": null,
+        "line": "ok 126 - K6/5 変える点 7: 手順のファイルは正式の loader で S4 の commit から読み、receipt の head.k65 は K65_FREEZE と一致しなければ [precheck]",
+        "rawLine": "ok 126 - K6/5 変える点 7: 手順のファイルは正式の loader で S4 の commit から読み、receipt の head.k65 は K65_FREEZE と一致しなければ [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "no threshold is written in the verdict code; the manifest and the K6/2 text decide",
+        "directive": null,
+        "line": "ok 127 - no threshold is written in the verdict code; the manifest and the K6/2 text decide",
+        "rawLine": "ok 127 - no threshold is written in the verdict code; the manifest and the K6/2 text decide",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P-10: a complete receipt passes and its head carries the K6/2 freeze",
+        "directive": null,
+        "line": "ok 128 - P-10: a complete receipt passes and its head carries the K6/2 freeze",
+        "rawLine": "ok 128 - P-10: a complete receipt passes and its head carries the K6/2 freeze",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。固定した commit と bytes の先頭だけを受け付ける",
+        "directive": null,
+        "line": "ok 129 - 批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。固定した commit と bytes の先頭だけを受け付ける",
+        "rawLine": "ok 129 - 批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。固定した commit と bytes の先頭だけを受け付ける",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit と SHA-256）を持ち、無い・違う receipt は拒む",
+        "directive": null,
+        "line": "ok 130 - K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit と SHA-256）を持ち、無い・違う receipt は拒む",
+        "rawLine": "ok 130 - K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit と SHA-256）を持ち、無い・違う receipt は拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "批准 7（DR-CP4-T14-1）: receiptHeadErrors は注入した凍結の descriptor で照合し、null なら正式の Graph を拒む",
+        "directive": null,
+        "line": "ok 131 - 批准 7（DR-CP4-T14-1）: receiptHeadErrors は注入した凍結の descriptor で照合し、null なら正式の Graph を拒む",
+        "rawLine": "ok 131 - 批准 7（DR-CP4-T14-1）: receiptHeadErrors は注入した凍結の descriptor で照合し、null なら正式の Graph を拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N31: 正式の receipt は批准 5 の (a)〜(c) の記録と、その判定を持つ",
+        "directive": null,
+        "line": "ok 132 - K6/4-N31: 正式の receipt は批准 5 の (a)〜(c) の記録と、その判定を持つ",
+        "rawLine": "ok 132 - K6/4-N31: 正式の receipt は批准 5 の (a)〜(c) の記録と、その判定を持つ",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D-1: receipt の批准 5 は git から集め直した封印つきの証拠と一致するときだけ K6/4",
+        "directive": null,
+        "line": "ok 133 - D-1: receipt の批准 5 は git から集め直した封印つきの証拠と一致するときだけ K6/4",
+        "rawLine": "ok 133 - D-1: receipt の批准 5 は git から集め直した封印つきの証拠と一致するときだけ K6/4",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N17: W_f、T_late、T_show を広げた receipt、手順のファイルの版の無い receipt は受け付けない",
+        "directive": null,
+        "line": "ok 134 - K6/4-N17: W_f、T_late、T_show を広げた receipt、手順のファイルの版の無い receipt は受け付けない",
+        "rawLine": "ok 134 - K6/4-N17: W_f、T_late、T_show を広げた receipt、手順のファイルの版の無い receipt は受け付けない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5-N1・N4: settings.k64 の D・B・Hybrid p95 の上限が契約（40・54.2・94.2 ms）と違う receipt は、receipt の層で拒む（手順のファイルの loader は契約と違う値の file を読まないので、記録の値そのものを契約と照合する）",
+        "directive": null,
+        "line": "ok 135 - K6/5-N1・N4: settings.k64 の D・B・Hybrid p95 の上限が契約（40・54.2・94.2 ms）と違う receipt は、receipt の層で拒む（手順のファイルの loader は契約と違う値の file を読まないので、記録の値そのものを契約と照合する）",
+        "rawLine": "ok 135 - K6/5-N1・N4: settings.k64 の D・B・Hybrid p95 の上限が契約（40・54.2・94.2 ms）と違う receipt は、receipt の層で拒む（手順のファイルの loader は契約と違う値の file を読まないので、記録の値そのものを契約と照合する）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "S1f: settings.k64 は loadProcedureFile が commit から読んだ手順のファイルと一致し、draft と版の無い記録を拒む",
+        "directive": null,
+        "line": "ok 136 - S1f: settings.k64 は loadProcedureFile が commit から読んだ手順のファイルと一致し、draft と版の無い記録を拒む",
+        "rawLine": "ok 136 - S1f: settings.k64 は loadProcedureFile が commit から読んだ手順のファイルと一致し、draft と版の無い記録を拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N18: first-render の窓外率を書いていない receipt は集計の再計算と合わない",
+        "directive": null,
+        "line": "ok 137 - K6/4-N18: first-render の窓外率を書いていない receipt は集計の再計算と合わない",
+        "rawLine": "ok 137 - K6/4-N18: first-render の窓外率を書いていない receipt は集計の再計算と合わない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-6／K6/4-N21: verdict は計算し直して照合し、invalid を持つ receipt は有効にしない",
+        "directive": null,
+        "line": "ok 138 - P2-6／K6/4-N21: verdict は計算し直して照合し、invalid を持つ receipt は有効にしない",
+        "rawLine": "ok 138 - P2-6／K6/4-N21: verdict は計算し直して照合し、invalid を持つ receipt は有効にしない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P3-10: D3 の窓は /proc/locks が読めない標本、slot の file を見ていない標本、終わりが始まりより前の run を gap にする",
+        "directive": null,
+        "line": "ok 139 - P3-10: D3 の窓は /proc/locks が読めない標本、slot の file を見ていない標本、終わりが始まりより前の run を gap にする",
+        "rawLine": "ok 139 - P3-10: D3 の窓は /proc/locks が読めない標本、slot の file を見ていない標本、終わりが始まりより前の run を gap にする",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P1-5: a K2/4 diagnostic negative is a Graph run with the full Graph head",
+        "directive": null,
+        "line": "ok 140 - P1-5: a K2/4 diagnostic negative is a Graph run with the full Graph head",
+        "rawLine": "ok 140 - P1-5: a K2/4 diagnostic negative is a Graph run with the full Graph head",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P1-5: Graph-free run kinds refuse R+IR+Graph samples; the 24 allow only not-requested",
+        "directive": null,
+        "line": "ok 141 - P1-5: Graph-free run kinds refuse R+IR+Graph samples; the 24 allow only not-requested",
+        "rawLine": "ok 141 - P1-5: Graph-free run kinds refuse R+IR+Graph samples; the 24 allow only not-requested",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-7: the receipt's own claims are recomputed, never trusted",
+        "directive": null,
+        "line": "ok 142 - P2-7: the receipt's own claims are recomputed, never trusted",
+        "rawLine": "ok 142 - P2-7: the receipt's own claims are recomputed, never trusted",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-7: a declaration run is checked against the measurement workspace and the seam",
+        "directive": null,
+        "line": "ok 143 - P2-7: a declaration run is checked against the measurement workspace and the seam",
+        "rawLine": "ok 143 - P2-7: a declaration run is checked against the measurement workspace and the seam",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-12: the fixture block binds the variant, path, digest and kind",
+        "directive": null,
+        "line": "ok 144 - P2-12: the fixture block binds the variant, path, digest and kind",
+        "rawLine": "ok 144 - P2-12: the fixture block binds the variant, path, digest and kind",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P-3 / N-5 / N-6: only a current declaration with unchanged Index metadata proceeds",
+        "directive": null,
+        "line": "ok 145 - P-3 / N-5 / N-6: only a current declaration with unchanged Index metadata proceeds",
+        "rawLine": "ok 145 - P-3 / N-5 / N-6: only a current declaration with unchanged Index metadata proceeds",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D3 / N-14 / P2-8: window violations, gaps and missing fields exclude a run but keep it",
+        "directive": null,
+        "line": "ok 146 - D3 / N-14 / P2-8: window violations, gaps and missing fields exclude a run but keep it",
+        "rawLine": "ok 146 - D3 / N-14 / P2-8: window violations, gaps and missing fields exclude a run but keep it",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-F-6: Scene の単位で照合した F6 の判定（予告専用）は正式の receipt に入らない",
+        "directive": null,
+        "line": "ok 147 - DR-CP4-F-6: Scene の単位で照合した F6 の判定（予告専用）は正式の receipt に入らない",
+        "rawLine": "ok 147 - DR-CP4-F-6: Scene の単位で照合した F6 の判定（予告専用）は正式の receipt に入らない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの。direct-fetch の dev の runner は予告だけで集計に入らない",
+        "directive": null,
+        "line": "ok 148 - S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの。direct-fetch の dev の runner は予告だけで集計に入らない",
+        "rawLine": "ok 148 - S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの。direct-fetch の dev の runner は予告だけで集計に入らない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "N-11 / P2-9: Electron draws only on the run's Xvfb, without Wayland, D-Bus, ozone override or a netns",
+        "directive": null,
+        "line": "ok 149 - N-11 / P2-9: Electron draws only on the run's Xvfb, without Wayland, D-Bus, ozone override or a netns",
+        "rawLine": "ok 149 - N-11 / P2-9: Electron draws only on the run's Xvfb, without Wayland, D-Bus, ozone override or a netns",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "SHA256SUMS is sha256sum -c compatible and detects tampering",
+        "directive": null,
+        "line": "ok 150 - SHA256SUMS is sha256sum -c compatible and detects tampering",
+        "rawLine": "ok 150 - SHA256SUMS is sha256sum -c compatible and detects tampering",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S1C1-9: the receipt's feature set is exactly the evaluation feature",
+        "directive": null,
+        "line": "ok 151 - DR-CP4-S1C1-9: the receipt's feature set is exactly the evaluation feature",
+        "rawLine": "ok 151 - DR-CP4-S1C1-9: the receipt's feature set is exactly the evaluation feature",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S1C1-6: socket samples cover the run and an external socket is [precheck]",
+        "directive": null,
+        "line": "ok 152 - DR-CP4-S1C1-6: socket samples cover the run and an external socket is [precheck]",
+        "rawLine": "ok 152 - DR-CP4-S1C1-6: socket samples cover the run and an external socket is [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "B-2: 停止の後の副作用の証拠（残った process、close、X11、辞書、外部の server、切れた net log、observer、worker）は合否に入る",
+        "directive": null,
+        "line": "ok 153 - B-2: 停止の後の副作用の証拠（残った process、close、X11、辞書、外部の server、切れた net log、observer、worker）は合否に入る",
+        "rawLine": "ok 153 - B-2: 停止の後の副作用の証拠（残った process、close、X11、辞書、外部の server、切れた net log、observer、worker）は合否に入る",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "E-4: 別の候補の封印つきの証拠を bound に渡しても K6/4 にしない（W8）",
+        "directive": null,
+        "line": "ok 154 - E-4: 別の候補の封印つきの証拠を bound に渡しても K6/4 にしない（W8）",
+        "rawLine": "ok 154 - E-4: 別の候補の封印つきの証拠を bound に渡しても K6/4 にしない（W8）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "E-15: X11 の listing は前からある entry の変化・消失を副作用として不合格、他者の entry の出現は取り直し（集計から除く）",
+        "directive": null,
+        "line": "ok 155 - E-15: X11 の listing は前からある entry の変化・消失を副作用として不合格、他者の entry の出現は取り直し（集計から除く）",
+        "rawLine": "ok 155 - E-15: X11 の listing は前からある entry の変化・消失を副作用として不合格、他者の entry の出現は取り直し（集計から除く）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "E-16: launch の env の DBUS_SESSION_BUS_ADDRESS は run の dir の存在しない address だけ",
+        "directive": null,
+        "line": "ok 156 - E-16: launch の env の DBUS_SESSION_BUS_ADDRESS は run の dir の存在しない address だけ",
+        "rawLine": "ok 156 - E-16: launch の env の DBUS_SESSION_BUS_ADDRESS は run の dir の存在しない address だけ",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "TR-1: dev の trace の plan は S2 の file と同じ形で、検査を通る。承認、別の seed、editor でない編集、番号の欠け、Q の不一致は拒む",
+        "directive": null,
+        "line": "ok 157 - TR-1: dev の trace の plan は S2 の file と同じ形で、検査を通る。承認、別の seed、editor でない編集、番号の欠け、Q の不一致は拒む",
+        "rawLine": "ok 157 - TR-1: dev の trace の plan は S2 の file と同じ形で、検査を通る。承認、別の seed、editor でない編集、番号の欠け、Q の不一致は拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "TR-2: 境の counter は区間の端の読取で、同じ run を跨げば exact、跨がなければ bracketed、読取が無ければ null",
+        "directive": null,
+        "line": "ok 158 - TR-2: 境の counter は区間の端の読取で、同じ run を跨げば exact、跨がなければ bracketed、読取が無ければ null",
+        "rawLine": "ok 158 - TR-2: 境の counter は区間の端の読取で、同じ run を跨げば exact、跨がなければ bracketed、読取が無ければ null",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "TR-2: Main の poller の source は同じ tick で clock と diagnostics を読み、同じ値を 1 つの run にまとめ、drain と stop で取り出して止める",
+        "directive": null,
+        "line": "ok 159 - TR-2: Main の poller の source は同じ tick で clock と diagnostics を読み、同じ値を 1 つの run にまとめ、drain と stop で取り出して止める",
+        "rawLine": "ok 159 - TR-2: Main の poller の source は同じ tick で clock と diagnostics を読み、同じ値を 1 つの run にまとめ、drain と stop で取り出して止める",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "TR-3: Native の記録は seq で併合し（後の読取の ticket の状態を採る）、累積の dropped だけでは失わず、seq の欠けか最初の読取の dropped で失ったとする（レビュー P2-4）",
+        "directive": null,
+        "line": "ok 160 - TR-3: Native の記録は seq で併合し（後の読取の ticket の状態を採る）、累積の dropped だけでは失わず、seq の欠けか最初の読取の dropped で失ったとする（レビュー P2-4）",
+        "rawLine": "ok 160 - TR-3: Native の記録は seq で併合し（後の読取の ticket の状態を採る）、累積の dropped だけでは失わず、seq の欠けか最初の読取の dropped で失ったとする（レビュー P2-4）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "TR-3: seed つきの fetch の begin の呼出しと Native の記録を順に対応させ、seed の無い begin は除き、数が違えば整列の失敗にする",
+        "directive": null,
+        "line": "ok 161 - TR-3: seed つきの fetch の begin の呼出しと Native の記録を順に対応させ、seed の無い begin は除き、数が違えば整列の失敗にする",
+        "rawLine": "ok 161 - TR-3: seed つきの fetch の begin の呼出しと Native の記録を順に対応させ、seed の無い begin は除き、数が違えば整列の失敗にする",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "TR-3: counted query の行は分類器の trace の文脈で follow-up の成功になり、R7 の欄を欠かない",
+        "directive": null,
+        "line": "ok 162 - TR-3: counted query の行は分類器の trace の文脈で follow-up の成功になり、R7 の欄を欠かない",
+        "rawLine": "ok 162 - TR-3: counted query の行は分類器の trace の文脈で follow-up の成功になり、R7 の欄を欠かない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "TR-2/3: 境の差分が 2（区間の端に別の store）は X4、counter の読取が無ければ X10、renderer の呼出しの無い begin が混ざれば整列の失敗（行は R7 を欠く）",
+        "directive": null,
+        "line": "ok 163 - TR-2/3: 境の差分が 2（区間の端に別の store）は X4、counter の読取が無ければ X10、renderer の呼出しの無い begin が混ざれば整列の失敗（行は R7 を欠く）",
+        "rawLine": "ok 163 - TR-2/3: 境の差分が 2（区間の端に別の store）は X4、counter の読取が無ければ X10、renderer の呼出しの無い begin が混ざれば整列の失敗（行は R7 を欠く）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "TR-3: 混入の観測の窓は子の continue がすべて返り t_raw_ready_c + W_f と余裕が観測の内なら settled、外なら harness-limit（X10）",
+        "directive": null,
+        "line": "ok 164 - TR-3: 混入の観測の窓は子の continue がすべて返り t_raw_ready_c + W_f と余裕が観測の内なら settled、外なら harness-limit（X10）",
+        "rawLine": "ok 164 - TR-3: 混入の観測の窓は子の continue がすべて返り t_raw_ready_c + W_f と余裕が観測の内なら settled、外なら harness-limit（X10）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "TR-3: 子が無い query は X6（no-child）、取り直しは行にせず契機ごとに数え、seed の無い query は Q の外に数える",
+        "directive": null,
+        "line": "ok 165 - TR-3: 子が無い query は X6（no-child）、取り直しは行にせず契機ごとに数え、seed の無い query は Q の外に数える",
+        "rawLine": "ok 165 - TR-3: 子が無い query は X6（no-child）、取り直しは行にせず契機ごとに数え、seed の無い query は Q の外に数える",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "TR-1/3: events は validateTraceEvents の密度の規則を満たし、commit の後の harness の操作と editor でない編集を拒む",
+        "directive": null,
+        "line": "ok 166 - TR-1/3: events は validateTraceEvents の密度の規則を満たし、commit の後の harness の操作と editor でない編集を拒む",
+        "rawLine": "ok 166 - TR-1/3: events は validateTraceEvents の密度の規則を満たし、commit の後の harness の操作と editor でない編集を拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "TR-3: 閲覧中の trace は seed の無い場面の query を Q の外にし、編集と保存を含まない",
+        "directive": null,
+        "line": "ok 167 - TR-3: 閲覧中の trace は seed の無い場面の query を Q の外にし、編集と保存を含まない",
+        "rawLine": "ok 167 - TR-3: 閲覧中の trace は seed の無い場面の query を Q の外にし、編集と保存を含まない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "TR-3: Q=200 の合成の編集中の trace は K6/2 の読みで valid に集計され、K6/4 の読みは F6 の preview の単位で invalid（DR-CP4-F-6）",
+        "directive": null,
+        "line": "ok 168 - TR-3: Q=200 の合成の編集中の trace は K6/2 の読みで valid に集計され、K6/4 の読みは F6 の preview の単位で invalid（DR-CP4-F-6）",
+        "rawLine": "ok 168 - TR-3: Q=200 の合成の編集中の trace は K6/2 の読みで valid に集計され、K6/4 の読みは F6 の preview の単位で invalid（DR-CP4-F-6）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "TR-3: traceQueryRow は親の seed が無ければ [precheck]（R5）で止まる",
+        "directive": null,
+        "line": "ok 169 - TR-3: traceQueryRow は親の seed が無ければ [precheck]（R5）で止まる",
+        "rawLine": "ok 169 - TR-3: traceQueryRow は親の seed が無ければ [precheck]（R5）で止まる",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "TR-9: 開始時の封印の規則（先に固定）: 2 回とも current で generation が同じときだけ current。dirty／missing は前の読取、読めない・遅い・食い違い・読んでいないは unknown（レビュー P2-1）",
+        "directive": null,
+        "line": "ok 170 - TR-9: 開始時の封印の規則（先に固定）: 2 回とも current で generation が同じときだけ current。dirty／missing は前の読取、読めない・遅い・食い違い・読んでいないは unknown（レビュー P2-1）",
+        "rawLine": "ok 170 - TR-9: 開始時の封印の規則（先に固定）: 2 回とも current で generation が同じときだけ current。dirty／missing は前の読取、読めない・遅い・食い違い・読んでいないは unknown（レビュー P2-1）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "TR-9: 行の snapshot は開始時の封印で決め（current のときだけ U）、Native の begin からの snapshot は開示に残す。unknown は U に入れず別に数える",
+        "directive": null,
+        "line": "ok 171 - TR-9: 行の snapshot は開始時の封印で決め（current のときだけ U）、Native の begin からの snapshot は開示に残す。unknown は U に入れず別に数える",
+        "rawLine": "ok 171 - TR-9: 行の snapshot は開始時の封印で決め（current のときだけ U）、Native の begin からの snapshot は開示に残す。unknown は U に入れず別に数える",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "レビュー P1-1: 閲覧中、子の無い親の窓に seed の無い場面の fetch と commit が入っても子にせず（X6 のまま、X10 にしない）、窓は次の移動で終わる",
+        "directive": null,
+        "line": "ok 172 - レビュー P1-1: 閲覧中、子の無い親の窓に seed の無い場面の fetch と commit が入っても子にせず（X6 のまま、X10 にしない）、窓は次の移動で終わる",
+        "rawLine": "ok 172 - レビュー P1-1: 閲覧中、子の無い親の窓に seed の無い場面の fetch と commit が入っても子にせず（X6 のまま、X10 にしない）、窓は次の移動で終わる",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "レビュー P3 (a): query の場面でない seed つきの fetch も Q の外に数える",
+        "directive": null,
+        "line": "ok 173 - レビュー P3 (a): query の場面でない seed つきの fetch も Q の外に数える",
+        "rawLine": "ok 173 - レビュー P3 (a): query の場面でない seed つきの fetch も Q の外に数える",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "レビュー P2-1: 封印の読取は seal-read の event として流れに残り、密度の規則（commit と query の間に harness の操作を足さない）を破らない",
+        "directive": null,
+        "line": "ok 174 - レビュー P2-1: 封印の読取は seal-read の event として流れに残り、密度の規則（commit と query の間に harness の操作を足さない）を破らない",
+        "rawLine": "ok 174 - レビュー P2-1: 封印の読取は seal-read の event として流れに残り、密度の規則（commit と query の間に harness の操作を足さない）を破らない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "レビュー P2-2: stall か defects があれば、Q が 200 以上でも trace の status と summary は invalid（明示の欄）",
+        "directive": null,
+        "line": "ok 175 - レビュー P2-2: stall か defects があれば、Q が 200 以上でも trace の status と summary は invalid（明示の欄）",
+        "rawLine": "ok 175 - レビュー P2-2: stall か defects があれば、Q が 200 以上でも trace の status と summary は invalid（明示の欄）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "レビュー P3 (e): 親が結果を持たない query は throw せず、その query の defect として行に残す",
+        "directive": null,
+        "line": "ok 176 - レビュー P3 (e): 親が結果を持たない query は throw せず、その query の defect として行に残す",
+        "rawLine": "ok 176 - レビュー P3 (e): 親が結果を持たない query は throw せず、その query の defect として行に残す",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "レビュー P1-1: 移動の記録が無くても、窓の中の別の場面の fetch と commit は query の行に入らない（場面での絞込み）",
+        "directive": null,
+        "line": "ok 177 - レビュー P1-1: 移動の記録が無くても、窓の中の別の場面の fetch と commit は query の行に入らない（場面での絞込み）",
+        "rawLine": "ok 177 - レビュー P1-1: 移動の記録が無くても、窓の中の別の場面の fetch と commit は query の行に入らない（場面での絞込み）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "再レビュー P2: 移動の後に出た、この場面の世代の commit も混入の観測に入る（子の二度目の公開が N32 として検出される）",
+        "directive": null,
+        "line": "ok 178 - 再レビュー P2: 移動の後に出た、この場面の世代の commit も混入の観測に入る（子の二度目の公開が N32 として検出される）",
+        "rawLine": "ok 178 - 再レビュー P2: 移動の後に出た、この場面の世代の commit も混入の観測に入る（子の二度目の公開が N32 として検出される）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "再レビュー P3: 読取の件数が累積の dropped と最後の読取の件数に足りなければ取りこぼし。容量を超えても毎 cycle 読めば取りこぼしではない",
+        "directive": null,
+        "line": "ok 179 - 再レビュー P3: 読取の件数が累積の dropped と最後の読取の件数に足りなければ取りこぼし。容量を超えても毎 cycle 読めば取りこぼしではない",
+        "rawLine": "ok 179 - 再レビュー P3: 読取の件数が累積の dropped と最後の読取の件数に足りなければ取りこぼし。容量を超えても毎 cycle 読めば取りこぼしではない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-2: 観測の窓が閉じた後に始まった末尾の Native の記録だけを整列から除き、件数・seq・種別・時間を開示し、行は defect にならない",
+        "directive": null,
+        "line": "ok 180 - DR-CP4-V-2: 観測の窓が閉じた後に始まった末尾の Native の記録だけを整列から除き、件数・seq・種別・時間を開示し、行は defect にならない",
+        "rawLine": "ok 180 - DR-CP4-V-2: 観測の窓が閉じた後に始まった末尾の Native の記録だけを整列から除き、件数・seq・種別・時間を開示し、行は defect にならない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-2: 窓の内側の不一致は defect のまま（末尾の記録が窓の内、窓の内側の余分、順序のずれ、記録の不足、取りこぼし、observedUntil なし）",
+        "directive": null,
+        "line": "ok 181 - DR-CP4-V-2: 窓の内側の不一致は defect のまま（末尾の記録が窓の内、窓の内側の余分、順序のずれ、記録の不足、取りこぼし、observedUntil なし）",
+        "rawLine": "ok 181 - DR-CP4-V-2: 窓の内側の不一致は defect のまま（末尾の記録が窓の内、窓の内側の余分、順序のずれ、記録の不足、取りこぼし、observedUntil なし）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-2: resolver を渡すと子の F6 は材料の Revision の単位（material-revision）で、Q=200 の K6/4 の読みは F-6 で無効にならない。渡さなければ preview の単位のまま",
+        "directive": null,
+        "line": "ok 182 - DR-CP4-V-2: resolver を渡すと子の F6 は材料の Revision の単位（material-revision）で、Q=200 の K6/4 の読みは F-6 で無効にならない。渡さなければ preview の単位のまま",
+        "rawLine": "ok 182 - DR-CP4-V-2: resolver を渡すと子の F6 は材料の Revision の単位（material-revision）で、Q=200 の K6/4 の読みは F-6 で無効にならない。渡さなければ preview の単位のまま",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-2: resolver の期待する (Revision, edge) の組が trace の file の材料と同じでなければ [precheck]",
+        "directive": null,
+        "line": "ok 183 - DR-CP4-V-2: resolver の期待する (Revision, edge) の組が trace の file の材料と同じでなければ [precheck]",
+        "rawLine": "ok 183 - DR-CP4-V-2: resolver の期待する (Revision, edge) の組が trace の file の材料と同じでなければ [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-3: begin の前に取り消された親は defect にせず Q に数え、U に入れない。K6/2 で失効 (i)、K6/4 で X12、trace は valid。再 query は Q の外で index-ready に帰属し、受領書に開示する",
+        "directive": null,
+        "line": "ok 184 - DR-CP4-V-3: begin の前に取り消された親は defect にせず Q に数え、U に入れない。K6/2 で失効 (i)、K6/4 で X12、trace は valid。再 query は Q の外で index-ready に帰属し、受領書に開示する",
+        "rawLine": "ok 184 - DR-CP4-V-3: begin の前に取り消された親は defect にせず Q に数え、U に入れない。K6/2 で失効 (i)、K6/4 で X12、trace は valid。再 query は Q の外で index-ready に帰属し、受領書に開示する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-3: 他の形（begin の行があるのに記録が無い、completed、公開済み、A3 なし、rawStatus が not-started でない、整列の失敗）は従来どおり defect",
+        "directive": null,
+        "line": "ok 185 - DR-CP4-V-3: 他の形（begin の行があるのに記録が無い、completed、公開済み、A3 なし、rawStatus が not-started でない、整列の失敗）は従来どおり defect",
+        "rawLine": "ok 185 - DR-CP4-V-3: 他の形（begin の行があるのに記録が無い、completed、公開済み、A3 なし、rawStatus が not-started でない、整列の失敗）は従来どおり defect",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-3: 前方に余分な記録があって組が一様に 1 つずれた対応は、Native の読取の時計の範囲と交わらず整列の失敗（読取の範囲が無い M>N も失敗）",
+        "directive": null,
+        "line": "ok 186 - DR-CP4-V-3: 前方に余分な記録があって組が一様に 1 つずれた対応は、Native の読取の時計の範囲と交わらず整列の失敗（読取の範囲が無い M>N も失敗）",
+        "rawLine": "ok 186 - DR-CP4-V-3: 前方に余分な記録があって組が一様に 1 つずれた対応は、Native の読取の時計の範囲と交わらず整列の失敗（読取の範囲が無い M>N も失敗）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-3: Native の読取の時計の範囲は、読取の数が counted query の数＋1 でない、clockNs が無い、cycle end の時刻が無いときは求めない",
+        "directive": null,
+        "line": "ok 187 - DR-CP4-V-3: Native の読取の時計の範囲は、読取の数が counted query の数＋1 でない、clockNs が無い、cycle end の時刻が無いときは求めない",
+        "rawLine": "ok 187 - DR-CP4-V-3: Native の読取の時計の範囲は、読取の数が counted query の数＋1 でない、clockNs が無い、cycle end の時刻が無いときは求めない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-4: cycle end の後に呼ばれた再 query は子にせず（v3 の #178 の形）、親の段（X11／X12）の失敗で E-6 にならず trace は valid。再 query は行と受領書に開示する",
+        "directive": null,
+        "line": "ok 188 - DR-CP4-V-4: cycle end の後に呼ばれた再 query は子にせず（v3 の \\#178 の形）、親の段（X11／X12）の失敗で E-6 にならず trace は valid。再 query は行と受領書に開示する",
+        "rawLine": "ok 188 - DR-CP4-V-4: cycle end の後に呼ばれた再 query は子にせず（v3 の \\#178 の形）、親の段（X11／X12）の失敗で E-6 にならず trace は valid。再 query は行と受領書に開示する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-4: 残余（直さない）: 子が cycle end の前に呼ばれ commit が後の形は今のまま X10（child.publishedTimes）で、K6/4 の読みは E-6 で無効",
+        "directive": null,
+        "line": "ok 189 - DR-CP4-V-4: 残余（直さない）: 子が cycle end の前に呼ばれ commit が後の形は今のまま X10（child.publishedTimes）で、K6/4 の読みは E-6 で無効",
+        "rawLine": "ok 189 - DR-CP4-V-4: 残余（直さない）: 子が cycle end の前に呼ばれ commit が後の形は今のまま X10（child.publishedTimes）で、K6/4 の読みは E-6 で無効",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-4: cycle end の前の子は従来どおり。cycle end の後の 3 番目の fetch を足しても、その API 行と世代の commit（-1 を含む）を除いた行は足さない trace の行と同じ（開示の欄だけが増える）",
+        "directive": null,
+        "line": "ok 190 - DR-CP4-V-4: cycle end の前の子は従来どおり。cycle end の後の 3 番目の fetch を足しても、その API 行と世代の commit（-1 を含む）を除いた行は足さない trace の行と同じ（開示の欄だけが増える）",
+        "rawLine": "ok 190 - DR-CP4-V-4: cycle end の前の子は従来どおり。cycle end の後の 3 番目の fetch を足しても、その API 行と世代の commit（-1 を含む）を除いた行は足さない trace の行と同じ（開示の欄だけが増える）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-4: 除いた再 query の 2 回の公開は N32、遅れた Graph の表示は N29 の違反（K6/2・K6/4 の両方の要約）。-1 の commit は親の世代に帰属させない（N1 の偽陽性なし）",
+        "directive": null,
+        "line": "ok 191 - DR-CP4-V-4: 除いた再 query の 2 回の公開は N32、遅れた Graph の表示は N29 の違反（K6/2・K6/4 の両方の要約）。-1 の commit は親の世代に帰属させない（N1 の偽陽性なし）",
+        "rawLine": "ok 191 - DR-CP4-V-4: 除いた再 query の 2 回の公開は N32、遅れた Graph の表示は N29 の違反（K6/2・K6/4 の両方の要約）。-1 の commit は親の世代に帰属させない（N1 の偽陽性なし）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-4 × V-3: begin の前に取り消された親の再 query が cycle end の後なら、V-3 の開示はそのままで requeryAfterCycleEnd を足し、違反の検査を当てる（分類は X12 のまま）",
+        "directive": null,
+        "line": "ok 192 - DR-CP4-V-4 × V-3: begin の前に取り消された親の再 query が cycle end の後なら、V-3 の開示はそのままで requeryAfterCycleEnd を足し、違反の検査を当てる（分類は X12 のまま）",
+        "rawLine": "ok 192 - DR-CP4-V-4 × V-3: begin の前に取り消された親の再 query が cycle end の後なら、V-3 の開示はそのままで requeryAfterCycleEnd を足し、違反の検査を当てる（分類は X12 のまま）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-4 (レビュー P3): 取り消された親の前に begin に至った同じ場面の fetch が無いとき、再 query の帰属は古い index-ready の通知を拾わない（下限は場面の直前の fetch、無ければ親の呼出し）",
+        "directive": null,
+        "line": "ok 193 - DR-CP4-V-4 (レビュー P3): 取り消された親の前に begin に至った同じ場面の fetch が無いとき、再 query の帰属は古い index-ready の通知を拾わない（下限は場面の直前の fetch、無ければ親の呼出し）",
+        "rawLine": "ok 193 - DR-CP4-V-4 (レビュー P3): 取り消された親の前に begin に至った同じ場面の fetch が無いとき、再 query の帰属は古い index-ready の通知を拾わない（下限は場面の直前の fetch、無ければ親の呼出し）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-4 (レビュー P3): cycle end と同じ時刻に呼ばれた fetch は除かない（`>` の境界）。子のまま残り、再 query の開示は無い",
+        "directive": null,
+        "line": "ok 194 - DR-CP4-V-4 (レビュー P3): cycle end と同じ時刻に呼ばれた fetch は除かない（`>` の境界）。子のまま残り、再 query の開示は無い",
+        "rawLine": "ok 194 - DR-CP4-V-4 (レビュー P3): cycle end と同じ時刻に呼ばれた fetch は除かない（`>` の境界）。子のまま残り、再 query の開示は無い",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-4 (レビュー P3): cycle end の時刻が null／欠けなら、どの fetch も除かない（finite の guard）",
+        "directive": null,
+        "line": "ok 195 - DR-CP4-V-4 (レビュー P3): cycle end の時刻が null／欠けなら、どの fetch も除かない（finite の guard）",
+        "rawLine": "ok 195 - DR-CP4-V-4 (レビュー P3): cycle end の時刻が null／欠けなら、どの fetch も除かない（finite の guard）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-V-4 (レビュー P3): 親は cycle end より後に呼ばれても除外の対象にならない（除くのは親の後の fetch だけ）",
+        "directive": null,
+        "line": "ok 196 - DR-CP4-V-4 (レビュー P3): 親は cycle end より後に呼ばれても除外の対象にならない（除くのは親の後の fetch だけ）",
+        "rawLine": "ok 196 - DR-CP4-V-4 (レビュー P3): 親は cycle end より後に呼ばれても除外の対象にならない（除くのは親の後の fetch だけ）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-C7: 外す条件を満たす begin は対応から外し、親は defect にせず Q と U に数えて失効 (i) の i-chronicle-stop、K6/4 では X11／X12 の欠落（窓外）。残りは今の対応のまま、開示する",
+        "directive": null,
+        "line": "ok 197 - DR-CP4-C7: 外す条件を満たす begin は対応から外し、親は defect にせず Q と U に数えて失効 (i) の i-chronicle-stop、K6/4 では X11／X12 の欠落（窓外）。残りは今の対応のまま、開示する",
+        "rawLine": "ok 197 - DR-CP4-C7: 外す条件を満たす begin は対応から外し、親は defect にせず Q と U に数えて失効 (i) の i-chronicle-stop、K6/4 では X11／X12 の欠落（窓外）。残りは今の対応のまま、開示する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySupported が false、renderer の値が違う、indexUsable が違う）は外さず、record が無ければ従来どおり整列の失敗で trace は invalid",
+        "directive": null,
+        "line": "ok 198 - DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySupported が false、renderer の値が違う、indexUsable が違う）は外さず、record が無ければ従来どおり整列の失敗で trace は invalid",
+        "rawLine": "ok 198 - DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySupported が false、renderer の値が違う、indexUsable が違う）は外さず、record が無ければ従来どおり整列の失敗で trace は invalid",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-C7: 外した begin の数と外す条件を満たす fetch の数が違えば整列の失敗（begin の無い fetch、begin が 2 つの fetch）。数えない fetch の begin も同じ条件で外し、子は行の子の begin として外す",
+        "directive": null,
+        "line": "ok 199 - DR-CP4-C7: 外した begin の数と外す条件を満たす fetch の数が違えば整列の失敗（begin の無い fetch、begin が 2 つの fetch）。数えない fetch の begin も同じ条件で外し、子は行の子の begin として外す",
+        "rawLine": "ok 199 - DR-CP4-C7: 外した begin の数と外す条件を満たす fetch の数が違えば整列の失敗（begin の無い fetch、begin が 2 つの fetch）。数えない fetch の begin も同じ条件で外し、子は行の子の begin として外す",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-C7: 外した begin があるのに Native の読取の時計の範囲が求められなければ整列の失敗。外した begin が無ければ今までどおり",
+        "directive": null,
+        "line": "ok 200 - DR-CP4-C7: 外した begin があるのに Native の読取の時計の範囲が求められなければ整列の失敗。外した begin が無ければ今までどおり",
+        "rawLine": "ok 200 - DR-CP4-C7: 外した begin があるのに Native の読取の時計の範囲が求められなければ整列の失敗。外した begin が無ければ今までどおり",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-C7: 外した begin の record が実は在る（条件の読みが製品と違う）と、残りの組が 1 つずれて整列の失敗になる",
+        "directive": null,
+        "line": "ok 201 - DR-CP4-C7: 外した begin の record が実は在る（条件の読みが製品と違う）と、残りの組が 1 つずれて整列の失敗になる",
+        "rawLine": "ok 201 - DR-CP4-C7: 外した begin の record が実は在る（条件の読みが製品と違う）と、残りの組が 1 つずれて整列の失敗になる",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-C7: 外した親の行にも混入の検査（N1／N29／N32）を当てる。公開が 2 回以上、遅れた Graph の表示、窓の中の再 query の 2 回の公開は違反で、外すこと自体は止めない",
+        "directive": null,
+        "line": "ok 202 - DR-CP4-C7: 外した親の行にも混入の検査（N1／N29／N32）を当てる。公開が 2 回以上、遅れた Graph の表示、窓の中の再 query の 2 回の公開は違反で、外すこと自体は止めない",
+        "rawLine": "ok 202 - DR-CP4-C7: 外した親の行にも混入の検査（N1／N29／N32）を当てる。公開が 2 回以上、遅れた Graph の表示、窓の中の再 query の 2 回の公開は違反で、外すこと自体は止めない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-C7: 総数が合っても内訳が違えば整列の失敗（begin が 0 の fetch と 2 の fetch）。A3 や timing が欠けた外した親は defect に戻る",
+        "directive": null,
+        "line": "ok 203 - DR-CP4-C7: 総数が合っても内訳が違えば整列の失敗（begin が 0 の fetch と 2 の fetch）。A3 や timing が欠けた外した親は defect に戻る",
+        "rawLine": "ok 203 - DR-CP4-C7: 総数が合っても内訳が違えば整列の失敗（begin が 0 の fetch と 2 の fetch）。A3 や timing が欠けた外した親は defect に戻る",
+        "type": "test"
+      }
+    ],
+    "summary": {
+      "tests": 203,
+      "suites": 0,
+      "pass": 203,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "okLinesSha256": "08e996bdb84e457a90321b477ba7fbcdf9b98dede287eb73c7a36ca34f361c63",
+    "okLinesRawSha256": "08e996bdb84e457a90321b477ba7fbcdf9b98dede287eb73c7a36ca34f361c63",
+    "okLineCount": 203,
+    "failed": []
+  },
+  "positiveControls": [
+    {
+      "file": "receipt.test.mjs",
+      "line": 329,
+      "lineHasTitle": true,
+      "title": "K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit と SHA-256）を持ち、無い・違う receipt は拒む",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "receipt.test.mjs",
+      "line": 524,
+      "lineHasTitle": true,
+      "title": "K6/5-N1・N4: settings.k64 の D・B・Hybrid p95 の上限が契約（40・54.2・94.2 ms）と違う receipt は、receipt の層で拒む（手順のファイルの loader は契約と違う値の file を読まないので、記録の値そのものを契約と照合する）",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "trace-record.test.mjs",
+      "line": 2621,
+      "lineHasTitle": true,
+      "title": "DR-CP4-C7: 外す条件を満たす begin は対応から外し、親は defect にせず Q と U に数えて失効 (i) の i-chronicle-stop、K6/4 では X11／X12 の欠落（窓外）。残りは今の対応のまま、開示する",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "trace-record.test.mjs",
+      "line": 2770,
+      "lineHasTitle": true,
+      "title": "DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySupported が false、renderer の値が違う、indexUsable が違う）は外さず、record が無ければ従来どおり整列の失敗で trace は invalid",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "trace-record.test.mjs",
+      "line": 2830,
+      "lineHasTitle": true,
+      "title": "DR-CP4-C7: 外した begin の数と外す条件を満たす fetch の数が違えば整列の失敗（begin の無い fetch、begin が 2 つの fetch）。数えない fetch の begin も同じ条件で外し、子は行の子の begin として外す",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "trace-record.test.mjs",
+      "line": 2967,
+      "lineHasTitle": true,
+      "title": "DR-CP4-C7: 外した begin があるのに Native の読取の時計の範囲が求められなければ整列の失敗。外した begin が無ければ今までどおり",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "trace-record.test.mjs",
+      "line": 3010,
+      "lineHasTitle": true,
+      "title": "DR-CP4-C7: 外した begin の record が実は在る（条件の読みが製品と違う）と、残りの組が 1 つずれて整列の失敗になる",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "trace-record.test.mjs",
+      "line": 3049,
+      "lineHasTitle": true,
+      "title": "DR-CP4-C7: 外した親の行にも混入の検査（N1／N29／N32）を当てる。公開が 2 回以上、遅れた Graph の表示、窓の中の再 query の 2 回の公開は違反で、外すこと自体は止めない",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "trace-record.test.mjs",
+      "line": 3127,
+      "lineHasTitle": true,
+      "title": "DR-CP4-C7: 総数が合っても内訳が違えば整列の失敗（begin が 0 の fetch と 2 の fetch）。A3 や timing が欠けた外した親は defect に戻る",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "followup.test.mjs",
+      "line": 132,
+      "lineHasTitle": true,
+      "title": "K6/5-P1: D=40 ms の窓内（Raw-ready の後 10.84 ms を超え 40 ms 以内）に親が Graph を受けた sample は first-render の窓内で、子は出ない",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "admission.test.mjs",
+      "line": 734,
+      "lineHasTitle": true,
+      "title": "K6/5-N2（変える点 6）: 候補の製品の D が 40 ms でない（#802 が祖先に無い、定数が 40 でない・読めない）候補は run の前に [precheck]",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "admission.test.mjs",
+      "line": 940,
+      "lineHasTitle": true,
+      "title": "K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（commit と bytes）と製品の D=40 ms を、封印の前に実際の関数で強制する",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "admission.test.mjs",
+      "line": 1016,
+      "lineHasTitle": true,
+      "title": "K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を凍結と照合し、ratification5 を必須にして D=40 ms を強制する",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "quality-verdict.test.mjs",
+      "line": 420,
+      "lineHasTitle": true,
+      "title": "K6/5-N4（条件 3）: Hybrid p95 の判定の境界は 94.2 ms で、65.04 ms と 240 ms ではない。arm ごとに pool し、どちらかに failed があれば fail",
+      "matches": 1,
+      "status": "ok"
+    }
+  ],
+  "baselinePerFile": [
+    {
+      "file": "trace-record.test.mjs",
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 47,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "65d870c650276ab4e0f9a082b48e04b73a247926dcd168d206c4149c8ff5a50b"
+    },
+    {
+      "file": "receipt.test.mjs",
+      "summary": {
+        "tests": 29,
+        "suites": 0,
+        "pass": 29,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "62525df7dd300b4d27c499494db6d0b7a9c06a90caf532ea4162f5b82e34e6b4"
+    },
+    {
+      "file": "procedure-file.test.mjs",
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 11,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "554e41f9f8de64fdff99705e76aa03241d4e62bd6c4130cfadc1fb1cb61835ad"
+    },
+    {
+      "file": "k64-record.test.mjs",
+      "summary": {
+        "tests": 12,
+        "suites": 0,
+        "pass": 12,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "37e27f5a0f4edaa2670436df3629089265f5c8a7180a35bc3b08eb34f6ac2143"
+    },
+    {
+      "file": "admission.test.mjs",
+      "summary": {
+        "tests": 30,
+        "suites": 0,
+        "pass": 30,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "ebe7533e8f1484e7adbbb5658fbab0b422327375656fc85f22d94405bad459ea"
+    },
+    {
+      "file": "followup.test.mjs",
+      "summary": {
+        "tests": 61,
+        "suites": 0,
+        "pass": 61,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "74b9aa2c550c9a8e859ab0603e2bb24582be2a662d01ac1197126ac3b0416949"
+    },
+    {
+      "file": "quality-verdict.test.mjs",
+      "summary": {
+        "tests": 13,
+        "suites": 0,
+        "pass": 13,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "ecfb098acf9aaf207d1e99378c460095ff1c3e72d1138e52321b2afef6947c3e"
+    }
+  ],
+  "probe": [
+    {
+      "file": "trace-record.mjs",
+      "testFile": "trace-record.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 47,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "receipt.mjs",
+      "testFile": "receipt.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 29,
+        "suites": 0,
+        "pass": 29,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "procedure-file.mjs",
+      "testFile": "procedure-file.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 11,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "k64-record.mjs",
+      "testFile": "k64-record.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 12,
+        "suites": 0,
+        "pass": 12,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "admission.mjs",
+      "testFile": "admission.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 30,
+        "suites": 0,
+        "pass": 30,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "followup.mjs",
+      "testFile": "followup.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 61,
+        "suites": 0,
+        "pass": 61,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "quality-verdict.mjs",
+      "testFile": "quality-verdict.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 13,
+        "suites": 0,
+        "pass": 13,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "join.mjs",
+      "testFile": "followup.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 61,
+        "suites": 0,
+        "pass": 61,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    }
+  ],
+  "mutationsStartedAt": "2026-11-07T08:56:17.165Z",
+  "mutations": [
+    {
+      "id": "C7-indexUsable",
+      "spn": "C7",
+      "file": "trace-record.mjs",
+      "find": "snapshot.indexUsable === false &&",
+      "replace": "true &&",
+      "testFile": "trace-record.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+      "started": "2026-11-07T08:56:17.165Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySupported が false、renderer の値が違う、indexUsable が違う）は外さず、record が無ければ従来どおり整列の失敗で trace は invalid",
+          "file": "scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+          "line": 2770,
+          "depth": 0,
+          "type": "test",
+          "error": "indexUsable が true"
+        }
+      ],
+      "expected": [
+        "trace-record.test.mjs:2770"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-C7-indexUsable.tap"
+    },
+    {
+      "id": "C7-querySupported",
+      "spn": "C7",
+      "file": "trace-record.mjs",
+      "find": "snapshot.querySupported === true &&",
+      "replace": "true &&",
+      "testFile": "trace-record.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+      "started": "2026-11-07T08:56:22.904Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySupported が false、renderer の値が違う、indexUsable が違う）は外さず、record が無ければ従来どおり整列の失敗で trace は invalid",
+          "file": "scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+          "line": 2770,
+          "depth": 0,
+          "type": "test",
+          "error": "querySupported が false"
+        }
+      ],
+      "expected": [
+        "trace-record.test.mjs:2770"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-C7-querySupported.tap"
+    },
+    {
+      "id": "C7-irStatus",
+      "spn": "C7",
+      "file": "trace-record.mjs",
+      "find": "result.irStatus === \"unavailable\" &&",
+      "replace": "true &&",
+      "testFile": "trace-record.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+      "started": "2026-11-07T08:56:29.225Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySupported が false、renderer の値が違う、indexUsable が違う）は外さず、record が無ければ従来どおり整列の失敗で trace は invalid",
+          "file": "scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+          "line": 2770,
+          "depth": 0,
+          "type": "test",
+          "error": "irStatus だけが unavailable でない"
+        }
+      ],
+      "expected": [
+        "trace-record.test.mjs:2770"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-C7-irStatus.tap"
+    },
+    {
+      "id": "C7-irReason",
+      "spn": "C7",
+      "file": "trace-record.mjs",
+      "find": "result.irReason === CHRONICLE_STOP_IR_REASON &&",
+      "replace": "true &&",
+      "testFile": "trace-record.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+      "started": "2026-11-07T08:56:34.870Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySupported が false、renderer の値が違う、indexUsable が違う）は外さず、record が無ければ従来どおり整列の失敗で trace は invalid",
+          "file": "scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+          "line": 2770,
+          "depth": 0,
+          "type": "test",
+          "error": "IR の理由が timeout"
+        }
+      ],
+      "expected": [
+        "trace-record.test.mjs:2770"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-C7-irReason.tap"
+    },
+    {
+      "id": "C7-graphOutcome",
+      "spn": "C7",
+      "file": "trace-record.mjs",
+      "find": "result.graphOutcome === CHRONICLE_STOP_GRAPH_OUTCOME",
+      "replace": "true",
+      "testFile": "trace-record.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+      "started": "2026-11-07T08:56:40.402Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySupported が false、renderer の値が違う、indexUsable が違う）は外さず、record が無ければ従来どおり整列の失敗で trace は invalid",
+          "file": "scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+          "line": 2770,
+          "depth": 0,
+          "type": "test",
+          "error": "renderer の値が invalidated"
+        }
+      ],
+      "expected": [
+        "trace-record.test.mjs:2770"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-C7-graphOutcome.tap"
+    },
+    {
+      "id": "C7-total-count",
+      "spn": "C7",
+      "file": "trace-record.mjs",
+      "find": "stopped.length !== stoppedFetches.length ||",
+      "replace": "false ||",
+      "testFile": "trace-record.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+      "started": "2026-11-07T08:56:46.144Z",
+      "exitCode": 0,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 47,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [],
+      "expected": [],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": true,
+      "equivalentReason": "総数の照合 stopped.length !== stoppedFetches.length は、直後の「条件を満たす fetch ごとにちょうど 1 つの begin」の照合 stoppedFetches.some(beginsOf !== 1) に含まれる。外した begin は必ず条件を満たす fetch の begin で（stopped は chronicleStopFetch を満たす owner の begin だけ）、全 fetch で beginsOf が 1 なら総数は fetch の数と等しい。したがってこの照合を外しても判定は変わらない（等価の変異。生き残るのが期待）",
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-C7-total-count.tap"
+    },
+    {
+      "id": "C7-per-fetch-begin",
+      "spn": "C7",
+      "file": "trace-record.mjs",
+      "find": "stoppedFetches.some((fetch) => beginsOf(fetch) !== 1)",
+      "replace": "false",
+      "testFile": "trace-record.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+      "started": "2026-11-07T08:56:52.090Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "DR-CP4-C7: 総数が合っても内訳が違えば整列の失敗（begin が 0 の fetch と 2 の fetch）。A3 や timing が欠けた外した親は defect に戻る",
+          "file": "scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+          "line": 3127,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "trace-record.test.mjs:3127"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-C7-per-fetch-begin.tap"
+    },
+    {
+      "id": "C7-clock-range",
+      "spn": "C7",
+      "file": "trace-record.mjs",
+      "find": "else if (stopped.length > 0 && !reads)",
+      "replace": "else if (false)",
+      "testFile": "trace-record.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+      "started": "2026-11-07T08:56:57.842Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "DR-CP4-C7: 外した begin があるのに Native の読取の時計の範囲が求められなければ整列の失敗。外した begin が無ければ今までどおり",
+          "file": "scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+          "line": 2967,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "trace-record.test.mjs:2967"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-C7-clock-range.tap"
+    },
+    {
+      "id": "C7-lapse-count",
+      "spn": "C7",
+      "file": "trace-record.mjs",
+      "find": "countedAs: \"i-chronicle-stop\",",
+      "replace": "countedAs: \"i-other\",",
+      "testFile": "trace-record.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+      "started": "2026-11-07T08:57:03.783Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "DR-CP4-C7: 外す条件を満たす begin は対応から外し、親は defect にせず Q と U に数えて失効 (i) の i-chronicle-stop、K6/4 では X11／X12 の欠落（窓外）。残りは今の対応のまま、開示する",
+          "file": "scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+          "line": 2621,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "trace-record.test.mjs:2621"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-C7-lapse-count.tap"
+    },
+    {
+      "id": "K65-N1-receipt-values",
+      "spn": "K6/5-N1・N4",
+      "file": "receipt.mjs",
+      "find": "if (value?.[key] !== expected)",
+      "replace": "if (false)",
+      "testFile": "receipt.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/receipt.test.mjs",
+      "started": "2026-11-07T08:57:09.243Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 29,
+        "suites": 0,
+        "pass": 28,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/5-N1・N4: settings.k64 の D・B・Hybrid p95 の上限が契約（40・54.2・94.2 ms）と違う receipt は、receipt の層で拒む（手順のファイルの loader は契約と違う値の file を読まないので、記録の値そのものを契約と照合する）",
+          "file": "scripts/quality/nir1-graph-eval/receipt.test.mjs",
+          "line": 524,
+          "depth": 0,
+          "type": "test",
+          "error": "dMs=10.84"
+        }
+      ],
+      "expected": [
+        "receipt.test.mjs:524"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-K65-N1-receipt-values.tap"
+    },
+    {
+      "id": "K65-N1-loader-values",
+      "spn": "K6/5-N1・N4",
+      "file": "procedure-file.mjs",
+      "find": "} else if (actual !== expected)",
+      "replace": "} else if (false)",
+      "testFile": "procedure-file.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/procedure-file.test.mjs",
+      "started": "2026-11-07T08:57:09.568Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 10,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "手順のファイル: 契約の値と違う値は、広げる・狭めるを問わず拒む（変える点 16 の狭める版は未実装）",
+          "file": "scripts/quality/nir1-graph-eval/procedure-file.test.mjs",
+          "line": 130,
+          "depth": 0,
+          "type": "test",
+          "error": "wFMs=150"
+        }
+      ],
+      "expected": [
+        "procedure-file.test.mjs:130"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-K65-N1-loader-values.tap"
+    },
+    {
+      "id": "K65-N1-late-graph-boundary",
+      "spn": "K6/5-N1",
+      "file": "k64-record.mjs",
+      "find": "lateGraphShown(view, parent, GRAPH_EVAL_D_MS)",
+      "replace": "lateGraphShown(view, parent, 10.84)",
+      "testFile": "k64-record.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/k64-record.test.mjs",
+      "started": "2026-11-07T08:57:09.782Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 12,
+        "suites": 0,
+        "pass": 11,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "R7: 親の表示に D の後の Graph が混ざれば記録に残す（N1）。seed の無い Graph の sample と親の無い観測は止める",
+          "file": "scripts/quality/nir1-graph-eval/k64-record.test.mjs",
+          "line": 292,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "k64-record.test.mjs:292"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-K65-N1-late-graph-boundary.tap"
+    },
+    {
+      "id": "K65-N2-admission-wait",
+      "spn": "K6/5-N2",
+      "file": "admission.mjs",
+      "find": "evidence.dForty.config.waitMs !== need.waitMs",
+      "replace": "false",
+      "testFile": "admission.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/admission.test.mjs",
+      "started": "2026-11-07T08:57:09.964Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 30,
+        "suites": 0,
+        "pass": 26,
+        "fail": 4,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/5-N2（変える点 6）: 候補の製品の D が 40 ms でない（#802 が祖先に無い、定数が 40 でない・読めない）候補は run の前に [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/admission.test.mjs",
+          "line": 734,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        },
+        {
+          "title": "K6/5 変える点 6（readDFortyEvidence）: 定数は comment の外の行頭の export const で、ちょうど 1 つ宣言されているときだけ読む",
+          "file": "scripts/quality/nir1-graph-eval/admission.test.mjs",
+          "line": 800,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        },
+        {
+          "title": "K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（commit と bytes）と製品の D=40 ms を、封印の前に実際の関数で強制する",
+          "file": "scripts/quality/nir1-graph-eval/admission.test.mjs",
+          "line": 940,
+          "depth": 0,
+          "type": "test",
+          "error": "\"[precheck] K6/5 変える点 6: the candidate's product D is not 40 ms (a7e969466a1d9a22a97142b06b1a9301f972f96e (#802) is not an ancestor); the /5 row is not applied\""
+        },
+        {
+          "title": "K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を凍結と照合し、ratification5 を必須にして D=40 ms を強制する",
+          "file": "scripts/quality/nir1-graph-eval/admission.test.mjs",
+          "line": 1016,
+          "depth": 0,
+          "type": "test",
+          "error": "\"[precheck] K6/5 変える点 6: the candidate's product D is not 40 ms (a7e969466a1d9a22a97142b06b1a9301f972f96e (#802) is not an ancestor); the /5 row is not applied\""
+        }
+      ],
+      "expected": [
+        "admission.test.mjs:734",
+        "admission.test.mjs:800",
+        "admission.test.mjs:940",
+        "admission.test.mjs:1016"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-K65-N2-admission-wait.tap"
+    },
+    {
+      "id": "K65-N2-admission-ancestor",
+      "spn": "K6/5-N2",
+      "file": "admission.mjs",
+      "find": "evidence.dForty.ancestor !== true",
+      "replace": "false",
+      "testFile": "admission.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/admission.test.mjs",
+      "started": "2026-11-07T08:57:20.725Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 30,
+        "suites": 0,
+        "pass": 28,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/5-N2（変える点 6）: 候補の製品の D が 40 ms でない（#802 が祖先に無い、定数が 40 でない・読めない）候補は run の前に [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/admission.test.mjs",
+          "line": 734,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        },
+        {
+          "title": "K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（commit と bytes）と製品の D=40 ms を、封印の前に実際の関数で強制する",
+          "file": "scripts/quality/nir1-graph-eval/admission.test.mjs",
+          "line": 940,
+          "depth": 0,
+          "type": "test",
+          "error": "\"[precheck] K6/5 変える点 6: the candidate's product D is not 40 ms (RELATED_SCENES_IR_EXTRA_WAIT_MS in src/features/related-scenes/relatedScenesConfig.ts is 10.84, not 40); the /5 row is not applied\""
+        }
+      ],
+      "expected": [
+        "admission.test.mjs:734",
+        "admission.test.mjs:940"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-K65-N2-admission-ancestor.tap"
+    },
+    {
+      "id": "K65-N2-sample-window",
+      "spn": "K6/5-N2",
+      "file": "followup.mjs",
+      "find": "parent.graphWindowMs !== GRAPH_EVAL_D_MS",
+      "replace": "false",
+      "testFile": "followup.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.test.mjs",
+      "started": "2026-11-07T08:57:31.002Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 61,
+        "suites": 0,
+        "pass": 60,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/4-N30: 合流の窓の値が W_f と違う、子の IR の deadline が D より長い、W_f が親に当たった候補は批准 12 の違反",
+          "file": "scripts/quality/nir1-graph-eval/followup.test.mjs",
+          "line": 533,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception: 100"
+        }
+      ],
+      "expected": [
+        "followup.test.mjs:533"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-K65-N2-sample-window.tap"
+    },
+    {
+      "id": "K65-N2-sample-window-null",
+      "spn": "K6/5-N2",
+      "file": "followup.mjs",
+      "find": "parent.graphWindowMs === null ||",
+      "replace": "false ||",
+      "testFile": "followup.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.test.mjs",
+      "started": "2026-11-07T08:57:32.079Z",
+      "exitCode": 0,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 61,
+        "suites": 0,
+        "pass": 61,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [],
+      "expected": [],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": true,
+      "equivalentReason": "null の窓の検査 parent.graphWindowMs === null は、次の !Number.isFinite(parent.graphWindowMs) が null で true になるので、外しても判定は変わらない（等価の変異。生き残るのが期待）",
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-K65-N2-sample-window-null.tap"
+    },
+    {
+      "id": "K65-N3-head-sha",
+      "spn": "K6/5-N3",
+      "file": "receipt.mjs",
+      "find": "head?.k65?.sha256 !== freeze65.sha256",
+      "replace": "false",
+      "testFile": "receipt.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/receipt.test.mjs",
+      "started": "2026-11-07T08:57:33.172Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 29,
+        "suites": 0,
+        "pass": 28,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit と SHA-256）を持ち、無い・違う receipt は拒む",
+          "file": "scripts/quality/nir1-graph-eval/receipt.test.mjs",
+          "line": 329,
+          "depth": 0,
+          "type": "test",
+          "error": "The input did not match the regular expression /head\\.k65\\.sha256/. Input:"
+        }
+      ],
+      "expected": [
+        "receipt.test.mjs:329"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-K65-N3-head-sha.tap"
+    },
+    {
+      "id": "K65-N3-head-commit",
+      "spn": "K6/5-N3",
+      "file": "receipt.mjs",
+      "find": "head?.k65?.freezeCommit !== freeze65.freezeCommit",
+      "replace": "false",
+      "testFile": "receipt.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/receipt.test.mjs",
+      "started": "2026-11-07T08:57:33.551Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 29,
+        "suites": 0,
+        "pass": 28,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit と SHA-256）を持ち、無い・違う receipt は拒む",
+          "file": "scripts/quality/nir1-graph-eval/receipt.test.mjs",
+          "line": 329,
+          "depth": 0,
+          "type": "test",
+          "error": "The input did not match the regular expression /must be the pinned K6\\/5 freeze commit/. Input:"
+        }
+      ],
+      "expected": [
+        "receipt.test.mjs:329"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-K65-N3-head-commit.tap"
+    },
+    {
+      "id": "K65-N3-head-required",
+      "spn": "K6/5-N3",
+      "file": "receipt.mjs",
+      "find": "if (formalGraph || head?.k65 !== undefined) {",
+      "replace": "if (false) {",
+      "testFile": "receipt.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/receipt.test.mjs",
+      "started": "2026-11-07T08:57:33.912Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 29,
+        "suites": 0,
+        "pass": 28,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit と SHA-256）を持ち、無い・違う receipt は拒む",
+          "file": "scripts/quality/nir1-graph-eval/receipt.test.mjs",
+          "line": 329,
+          "depth": 0,
+          "type": "test",
+          "error": "The input did not match the regular expression /head\\.k65\\.sha256/. Input:"
+        }
+      ],
+      "expected": [
+        "receipt.test.mjs:329"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-K65-N3-head-required.tap"
+    },
+    {
+      "id": "K65-N4-verdict-values",
+      "spn": "K6/5-N4",
+      "file": "quality-verdict.mjs",
+      "find": "if (values?.[key] !== expected)",
+      "replace": "if (false)",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-07T08:57:34.307Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 13,
+        "suites": 0,
+        "pass": 12,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "no threshold is written in the verdict code; the manifest and the K6/2 text decide",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1018,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception: bMs=200"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1018"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-K65-N4-verdict-values.tap"
+    },
+    {
+      "id": "K65-N4-p95-limit",
+      "spn": "K6/5-N4",
+      "file": "quality-verdict.mjs",
+      "find": "limit: values.hybridP95LimitMs,",
+      "replace": "limit: 65.04,",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-07T08:57:36.299Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 13,
+        "suites": 0,
+        "pass": 11,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/5-N4（条件 3）: Hybrid p95 の判定の境界は 94.2 ms で、65.04 ms と 240 ms ではない。arm ごとに pool し、どちらかに failed があれば fail",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 420,
+          "depth": 0,
+          "type": "test",
+          "error": "65.05"
+        },
+        {
+          "title": "condition 3 (p95): tReturn - tFetch, nearest-rank, both arms, limit from the manifest",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 474,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:420",
+        "quality-verdict.test.mjs:474"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-K65-N4-p95-limit.tap"
+    },
+    {
+      "id": "K65-N4-b",
+      "spn": "K6/5-N4",
+      "file": "quality-verdict.mjs",
+      "find": "b: values.bMs,",
+      "replace": "b: 65,",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-07T08:57:37.924Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 13,
+        "suites": 0,
+        "pass": 12,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "condition 3 (p95): tReturn - tFetch, nearest-rank, both arms, limit from the manifest",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 474,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:474"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-K65-N4-b.tap"
+    },
+    {
+      "id": "K65-P1-window",
+      "spn": "K6/5-P1",
+      "file": "join.mjs",
+      "find": "const deadline = sample.tRawReady + GRAPH_EVAL_D_MS;",
+      "replace": "const deadline = sample.tRawReady + 10.84;",
+      "testFile": "followup.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k65-harness/docs/plans/nir1-cp4-records/k65-detection-2026-11-07/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.test.mjs",
+      "started": "2026-11-07T08:57:40.033Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 61,
+        "suites": 0,
+        "pass": 60,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/5-P1: D=40 ms の窓内（Raw-ready の後 10.84 ms を超え 40 ms 以内）に親が Graph を受けた sample は first-render の窓内で、子は出ない",
+          "file": "scripts/quality/nir1-graph-eval/followup.test.mjs",
+          "line": 132,
+          "depth": 0,
+          "type": "test",
+          "error": "[precheck] the product joined a Graph result later than t_raw_ready + D beyond the boundary tolerance (suspected N-7)"
+        }
+      ],
+      "expected": [
+        "followup.test.mjs:132"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/25ead1c8-ef1e-4d1e-a00d-fe136bc6b402/scratchpad/final/r2/tap-k65/mut-K65-P1-window.tap"
+    }
+  ],
+  "mutationsFinishedAt": "2026-11-07T08:57:41.127Z",
+  "statusAfter": "",
+  "ignoredAfter": "!! node_modules/",
+  "headAfter": "1d58a1eb733e2b1ebb7b0d255dc8aaf7f7fcbd87",
+  "verdict": {
+    "clean": true,
+    "ignoredUnchanged": true,
+    "baselineTargetPass": true,
+    "baselinePerFilePass": true,
+    "baselineAllPass": null,
+    "positiveControlsOk": true,
+    "probeOk": true,
+    "mutationCount": 23,
+    "allHitOnce": true,
+    "allAsExpected": true,
+    "exactCount": 23
+  },
+  "finishedAt": "2026-11-07T08:57:41.290Z"
+}
