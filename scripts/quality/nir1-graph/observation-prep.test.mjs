@@ -3430,6 +3430,9 @@ test("S2 追補 #2 P3-1 / P3-2: forbidden paths are found anywhere in the path; 
     "g01-retry-limit",
     "sp-p4-ir-timeout-limit",
     "seal-rule-after-blocked",
+    "k65-values-after-observation",
+    "c7-after-dev-observation",
+    "g01-e2e-diagnostic-decision",
   ]) {
     const without = clone(declaration);
     without.readingsChosenAfterDevObservation =

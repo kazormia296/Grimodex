@@ -1788,6 +1788,11 @@ const READINGS_AFTER_DEV = Object.freeze([
   // 規則（旧 S4b''' の下の正式の測定で N2／N4 が blocked になったのを見た後に決めた。
   // DR-CP4-S4-8）。
   "seal-rule-after-blocked",
+  // S4a（6 回目の凍結のやり直し、S2 追補 #14）: K6/5 の値（s5r6 の測定と
+  // DR-IRW-1〜3 の後）、C7（dev の Chronicle の停止の観測の後）、G-01 の診断 run。
+  "k65-values-after-observation",
+  "c7-after-dev-observation",
+  "g01-e2e-diagnostic-decision",
 ]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
