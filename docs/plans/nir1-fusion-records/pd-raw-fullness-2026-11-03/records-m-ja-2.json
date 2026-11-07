@@ -1,0 +1,1409 @@
+{
+  "schemaVersion": "fusion-slot-raw-fullness/1",
+  "evidenceScope": "not-cp4-evidence",
+  "status": "complete",
+  "runId": "main-m-ja-2",
+  "startedAt": "2026-11-03T13:26:50.296Z",
+  "role": "main",
+  "preregistration": {
+    "path": "/home/grimodex/fusion-eval-data/pd-2026-11/preregistration.md",
+    "sha256": "96c8d587f0bcd996eb03c8bfbc28594004bfcf51c09166ae6ce4ce52ef7afc36"
+  },
+  "opaqueWorkId": "dde0137a1184a51f",
+  "language": "ja",
+  "sceneCount": 117,
+  "scenesFileSha256": "e373a44318c4ea7b9f24cce359bdeb0eca408a4d8b8884928c4174a82976ec45",
+  "rulesSha256": "dcfc704d30cfd94b70cd9427df4c311008ef46b190b583dd0e8b6b596edc7bb5",
+  "design": {
+    "checkpoints": [
+      0.25,
+      0.5,
+      0.75,
+      1
+    ],
+    "checkpointSceneCount": "ceil(fraction × N)、2 以上",
+    "queriesPerCheckpoint": 10,
+    "queryRule": "地点の末尾から最大 10 件。位置 2 以上（前に Scene が 1 件以上）",
+    "fetch": "fetchRelatedPastScenes(sceneId)（Raw だけ、hybrid でない）を 2 回呼び、1 回目を記録",
+    "top30": "同じ query 文字列（buildSemanticRecallQuery）で semanticSearch(limit 30) を別に呼んで数える（再問合せ）"
+  },
+  "errors": [],
+  "checkpoints": [
+    {
+      "fraction": 0.25,
+      "sceneCount": 30,
+      "queries": [
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.25,
+          "position": 21,
+          "priorSceneCount": 20,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            10,
+            1,
+            9,
+            14,
+            16,
+            8,
+            4,
+            11
+          ],
+          "repeatStable": true,
+          "durationMs": 169.5,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 3,
+            "laterScene": 13,
+            "earlierChunks": 14,
+            "earlierDistinctScenes": 8,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.25,
+          "position": 22,
+          "priorSceneCount": 21,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            19,
+            10,
+            8,
+            20,
+            9,
+            21,
+            14,
+            18
+          ],
+          "repeatStable": true,
+          "durationMs": 173.60000002384186,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 5,
+            "laterScene": 5,
+            "earlierChunks": 20,
+            "earlierDistinctScenes": 9,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.25,
+          "position": 23,
+          "priorSceneCount": 22,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            17,
+            18,
+            2,
+            19,
+            9,
+            4,
+            8,
+            1
+          ],
+          "repeatStable": true,
+          "durationMs": 155.39999997615814,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 3,
+            "laterScene": 9,
+            "earlierChunks": 18,
+            "earlierDistinctScenes": 10,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.25,
+          "position": 24,
+          "priorSceneCount": 23,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            17,
+            19,
+            4,
+            16,
+            2,
+            8,
+            9,
+            23
+          ],
+          "repeatStable": true,
+          "durationMs": 164.5,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 4,
+            "laterScene": 7,
+            "earlierChunks": 19,
+            "earlierDistinctScenes": 10,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.25,
+          "position": 25,
+          "priorSceneCount": 24,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            6,
+            20,
+            15,
+            22,
+            9,
+            2,
+            8,
+            7
+          ],
+          "repeatStable": true,
+          "durationMs": 175.70000004768372,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 6,
+            "laterScene": 6,
+            "earlierChunks": 18,
+            "earlierDistinctScenes": 9,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.25,
+          "position": 26,
+          "priorSceneCount": 25,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            24,
+            16,
+            6,
+            25,
+            19,
+            17,
+            11,
+            2
+          ],
+          "repeatStable": true,
+          "durationMs": 175.80000001192093,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 5,
+            "laterScene": 5,
+            "earlierChunks": 20,
+            "earlierDistinctScenes": 9,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.25,
+          "position": 27,
+          "priorSceneCount": 26,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            15,
+            2,
+            12,
+            11,
+            13,
+            14,
+            23,
+            10
+          ],
+          "repeatStable": true,
+          "durationMs": 228,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 4,
+            "laterScene": 6,
+            "earlierChunks": 20,
+            "earlierDistinctScenes": 9,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.25,
+          "position": 28,
+          "priorSceneCount": 27,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            27,
+            15,
+            2,
+            12,
+            13,
+            11,
+            10,
+            14
+          ],
+          "repeatStable": true,
+          "durationMs": 144.9000000357628,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 3,
+            "laterScene": 3,
+            "earlierChunks": 24,
+            "earlierDistinctScenes": 11,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.25,
+          "position": 29,
+          "priorSceneCount": 28,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            25,
+            8,
+            5,
+            27,
+            2,
+            6,
+            7,
+            13
+          ],
+          "repeatStable": true,
+          "durationMs": 161,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 4,
+            "laterScene": 0,
+            "earlierChunks": 26,
+            "earlierDistinctScenes": 12,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.25,
+          "position": 30,
+          "priorSceneCount": 29,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            14,
+            13,
+            1,
+            23,
+            21,
+            28,
+            18,
+            29
+          ],
+          "repeatStable": true,
+          "durationMs": 158.60000002384186,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 6,
+            "laterScene": 0,
+            "earlierChunks": 24,
+            "earlierDistinctScenes": 12,
+            "unknownScene": 0
+          }
+        }
+      ],
+      "prepared": {
+        "sceneCount": 30
+      },
+      "index": {
+        "durationMs": 25247.5,
+        "indexedChunkCount": 159,
+        "indexedSceneCount": 30
+      }
+    },
+    {
+      "fraction": 0.5,
+      "sceneCount": 59,
+      "queries": [
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.5,
+          "position": 50,
+          "priorSceneCount": 49,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            32,
+            22,
+            49,
+            31,
+            41,
+            9,
+            28,
+            39
+          ],
+          "repeatStable": true,
+          "durationMs": 462.30000001192093,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 3,
+            "laterScene": 7,
+            "earlierChunks": 20,
+            "earlierDistinctScenes": 11,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.5,
+          "position": 51,
+          "priorSceneCount": 50,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            50,
+            44,
+            29,
+            4,
+            32,
+            40,
+            5,
+            20
+          ],
+          "repeatStable": true,
+          "durationMs": 160.5,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 5,
+            "laterScene": 4,
+            "earlierChunks": 21,
+            "earlierDistinctScenes": 15,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.5,
+          "position": 52,
+          "priorSceneCount": 51,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            36,
+            51,
+            32,
+            4,
+            18,
+            48,
+            28,
+            38
+          ],
+          "repeatStable": true,
+          "durationMs": 162.19999998807907,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 5,
+            "laterScene": 1,
+            "earlierChunks": 24,
+            "earlierDistinctScenes": 18,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.5,
+          "position": 53,
+          "priorSceneCount": 52,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            30,
+            9,
+            4,
+            41,
+            13,
+            31,
+            15,
+            3
+          ],
+          "repeatStable": true,
+          "durationMs": 158.5,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 4,
+            "laterScene": 11,
+            "earlierChunks": 15,
+            "earlierDistinctScenes": 13,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.5,
+          "position": 54,
+          "priorSceneCount": 53,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            31,
+            41,
+            32,
+            39,
+            33,
+            53,
+            8,
+            28
+          ],
+          "repeatStable": true,
+          "durationMs": 162.60000002384186,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 3,
+            "laterScene": 6,
+            "earlierChunks": 21,
+            "earlierDistinctScenes": 10,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.5,
+          "position": 55,
+          "priorSceneCount": 54,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            41,
+            54,
+            32,
+            50,
+            52,
+            31,
+            33,
+            18
+          ],
+          "repeatStable": true,
+          "durationMs": 145.9000000357628,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 2,
+            "laterScene": 2,
+            "earlierChunks": 26,
+            "earlierDistinctScenes": 17,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.5,
+          "position": 56,
+          "priorSceneCount": 55,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            21,
+            23,
+            38,
+            28,
+            44,
+            48,
+            17,
+            36
+          ],
+          "repeatStable": true,
+          "durationMs": 169.79999995231628,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 2,
+            "laterScene": 0,
+            "earlierChunks": 28,
+            "earlierDistinctScenes": 18,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.5,
+          "position": 57,
+          "priorSceneCount": 56,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            44,
+            23,
+            30,
+            52,
+            32,
+            50,
+            14,
+            1
+          ],
+          "repeatStable": true,
+          "durationMs": 165.30000001192093,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 4,
+            "laterScene": 2,
+            "earlierChunks": 24,
+            "earlierDistinctScenes": 13,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.5,
+          "position": 58,
+          "priorSceneCount": 57,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            9,
+            16,
+            4,
+            42,
+            43,
+            44,
+            2,
+            40
+          ],
+          "repeatStable": true,
+          "durationMs": 152.69999998807907,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 3,
+            "laterScene": 1,
+            "earlierChunks": 26,
+            "earlierDistinctScenes": 17,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.5,
+          "position": 59,
+          "priorSceneCount": 58,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            54,
+            55,
+            25,
+            58,
+            33,
+            31,
+            28,
+            29
+          ],
+          "repeatStable": true,
+          "durationMs": 146.80000001192093,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 6,
+            "laterScene": 0,
+            "earlierChunks": 24,
+            "earlierDistinctScenes": 13,
+            "unknownScene": 0
+          }
+        }
+      ],
+      "prepared": {
+        "sceneCount": 59
+      },
+      "index": {
+        "durationMs": 51004.39999997616,
+        "indexedChunkCount": 336,
+        "indexedSceneCount": 59
+      }
+    },
+    {
+      "fraction": 0.75,
+      "sceneCount": 88,
+      "queries": [
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.75,
+          "position": 79,
+          "priorSceneCount": 78,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            17,
+            67,
+            18,
+            56,
+            66,
+            63,
+            19,
+            21
+          ],
+          "repeatStable": true,
+          "durationMs": 169.19999998807907,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 3,
+            "laterScene": 0,
+            "earlierChunks": 27,
+            "earlierDistinctScenes": 19,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.75,
+          "position": 80,
+          "priorSceneCount": 79,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            79,
+            78,
+            17,
+            18,
+            19,
+            40,
+            47,
+            48
+          ],
+          "repeatStable": true,
+          "durationMs": 161.89999997615814,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 4,
+            "laterScene": 2,
+            "earlierChunks": 24,
+            "earlierDistinctScenes": 16,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.75,
+          "position": 81,
+          "priorSceneCount": 80,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            80,
+            79,
+            77,
+            4,
+            20,
+            8,
+            2,
+            23
+          ],
+          "repeatStable": true,
+          "durationMs": 276.69999998807907,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 3,
+            "laterScene": 0,
+            "earlierChunks": 27,
+            "earlierDistinctScenes": 21,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.75,
+          "position": 82,
+          "priorSceneCount": 81,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            55,
+            77,
+            57,
+            44,
+            10,
+            21,
+            50,
+            69
+          ],
+          "repeatStable": true,
+          "durationMs": 162.19999998807907,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 3,
+            "laterScene": 0,
+            "earlierChunks": 27,
+            "earlierDistinctScenes": 17,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.75,
+          "position": 83,
+          "priorSceneCount": 82,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            14,
+            30,
+            61,
+            15,
+            57,
+            25,
+            76,
+            7
+          ],
+          "repeatStable": true,
+          "durationMs": 151,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 4,
+            "laterScene": 4,
+            "earlierChunks": 22,
+            "earlierDistinctScenes": 19,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.75,
+          "position": 84,
+          "priorSceneCount": 83,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            30,
+            21,
+            77,
+            23,
+            70,
+            76,
+            69,
+            52
+          ],
+          "repeatStable": true,
+          "durationMs": 156.0999999642372,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 3,
+            "laterScene": 0,
+            "earlierChunks": 27,
+            "earlierDistinctScenes": 14,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.75,
+          "position": 85,
+          "priorSceneCount": 84,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            57,
+            82,
+            28,
+            69,
+            52,
+            77,
+            67,
+            44
+          ],
+          "repeatStable": true,
+          "durationMs": 179.39999997615814,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 2,
+            "laterScene": 0,
+            "earlierChunks": 28,
+            "earlierDistinctScenes": 17,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.75,
+          "position": 86,
+          "priorSceneCount": 85,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            64,
+            62,
+            29,
+            72,
+            65,
+            51,
+            63,
+            6
+          ],
+          "repeatStable": true,
+          "durationMs": 179.4000000357628,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 2,
+            "laterScene": 4,
+            "earlierChunks": 24,
+            "earlierDistinctScenes": 12,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.75,
+          "position": 87,
+          "priorSceneCount": 86,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            15,
+            8,
+            72,
+            73,
+            13,
+            2,
+            27,
+            60
+          ],
+          "repeatStable": true,
+          "durationMs": 159.80000001192093,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 6,
+            "laterScene": 3,
+            "earlierChunks": 21,
+            "earlierDistinctScenes": 13,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 0.75,
+          "position": 88,
+          "priorSceneCount": 87,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            73,
+            27,
+            15,
+            87,
+            72,
+            60,
+            2,
+            11
+          ],
+          "repeatStable": true,
+          "durationMs": 162.10000002384186,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 6,
+            "laterScene": 0,
+            "earlierChunks": 24,
+            "earlierDistinctScenes": 12,
+            "unknownScene": 0
+          }
+        }
+      ],
+      "prepared": {
+        "sceneCount": 88
+      },
+      "index": {
+        "durationMs": 74743,
+        "indexedChunkCount": 470,
+        "indexedSceneCount": 88
+      }
+    },
+    {
+      "fraction": 1,
+      "sceneCount": 117,
+      "queries": [
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 1,
+          "position": 108,
+          "priorSceneCount": 107,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            29,
+            87,
+            25,
+            6,
+            64,
+            104,
+            62,
+            107
+          ],
+          "repeatStable": true,
+          "durationMs": 173.20000004768372,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 4,
+            "laterScene": 0,
+            "earlierChunks": 26,
+            "earlierDistinctScenes": 13,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 1,
+          "position": 109,
+          "priorSceneCount": 108,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            76,
+            78,
+            21,
+            77,
+            79,
+            22,
+            23,
+            28
+          ],
+          "repeatStable": true,
+          "durationMs": 184.30000001192093,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 5,
+            "laterScene": 7,
+            "earlierChunks": 18,
+            "earlierDistinctScenes": 12,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 1,
+          "position": 110,
+          "priorSceneCount": 109,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            61,
+            25,
+            64,
+            47,
+            87,
+            88,
+            83,
+            65
+          ],
+          "repeatStable": true,
+          "durationMs": 153,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 5,
+            "laterScene": 3,
+            "earlierChunks": 22,
+            "earlierDistinctScenes": 16,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 1,
+          "position": 111,
+          "priorSceneCount": 110,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            110,
+            109,
+            14,
+            88,
+            91,
+            92,
+            87,
+            73
+          ],
+          "repeatStable": true,
+          "durationMs": 158.30000001192093,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 6,
+            "laterScene": 3,
+            "earlierChunks": 21,
+            "earlierDistinctScenes": 10,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 1,
+          "position": 112,
+          "priorSceneCount": 111,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            111,
+            88,
+            87,
+            15,
+            72,
+            109,
+            89,
+            73
+          ],
+          "repeatStable": true,
+          "durationMs": 502.5,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 4,
+            "laterScene": 2,
+            "earlierChunks": 24,
+            "earlierDistinctScenes": 15,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 1,
+          "position": 113,
+          "priorSceneCount": 112,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            109,
+            91,
+            110,
+            112,
+            111,
+            92,
+            77,
+            95
+          ],
+          "repeatStable": true,
+          "durationMs": 170.69999998807907,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 2,
+            "laterScene": 2,
+            "earlierChunks": 26,
+            "earlierDistinctScenes": 13,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 1,
+          "position": 114,
+          "priorSceneCount": 113,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            98,
+            77,
+            39,
+            51,
+            41,
+            49,
+            17,
+            32
+          ],
+          "repeatStable": true,
+          "durationMs": 215,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 2,
+            "laterScene": 0,
+            "earlierChunks": 28,
+            "earlierDistinctScenes": 19,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 1,
+          "position": 115,
+          "priorSceneCount": 114,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            111,
+            113,
+            109,
+            110,
+            112,
+            60,
+            92,
+            2
+          ],
+          "repeatStable": true,
+          "durationMs": 172.80000001192093,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 4,
+            "laterScene": 2,
+            "earlierChunks": 24,
+            "earlierDistinctScenes": 12,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 1,
+          "position": 116,
+          "priorSceneCount": 115,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            114,
+            73,
+            107,
+            112,
+            113,
+            109,
+            88,
+            29
+          ],
+          "repeatStable": true,
+          "durationMs": 184.89999997615814,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 2,
+            "laterScene": 2,
+            "earlierChunks": 26,
+            "earlierDistinctScenes": 16,
+            "unknownScene": 0
+          }
+        },
+        {
+          "evidenceScope": "not-cp4-evidence",
+          "opaqueWorkId": "dde0137a1184a51f",
+          "checkpoint": 1,
+          "position": 117,
+          "priorSceneCount": 116,
+          "status": "ok",
+          "failureTags": [],
+          "rawCount": 8,
+          "rawPositions": [
+            92,
+            116,
+            52,
+            23,
+            107,
+            86,
+            97,
+            51
+          ],
+          "repeatStable": true,
+          "durationMs": 175.5,
+          "top30": {
+            "method": "re-query",
+            "limit": 30,
+            "returned": 30,
+            "sameScene": 2,
+            "laterScene": 0,
+            "earlierChunks": 28,
+            "earlierDistinctScenes": 19,
+            "unknownScene": 0
+          }
+        }
+      ],
+      "prepared": {
+        "sceneCount": 117
+      },
+      "index": {
+        "durationMs": 95870.39999997616,
+        "indexedChunkCount": 617,
+        "indexedSceneCount": 117
+      }
+    }
+  ],
+  "candidate": {
+    "head": "0fb1487ebab144b490b9d5fe452087bf3e6f3711",
+    "statusClean": true
+  },
+  "build": {
+    "receipt": {
+      "path": "/home/grimodex/fusion-eval-data/pd-2026-11/build/standard-build-receipt.json",
+      "sha256": "7cc883b5a1697f396f06c71b7224fa89452ed0d53705d5b138d800b9061787a1",
+      "bytes": 3365
+    },
+    "builtHead": "21c25c73da1949786d7f61677d7f384ab62d09ea",
+    "artifacts": {
+      "dist-electron/main.cjs": "31023f585fcdd080afe530a1e3b19a26e6812c0aa2ec35f33bf2c886db528278",
+      "dist-electron/preload.cjs": "9c37d32af100699a97fbd8ce068fb273f5e9387d9155cc471173add03ca489a8",
+      "electron/native/grimodex-node/grimodex-node.node": "98a60a9542e3b4009a8148ed51f84db95b37abd245af4adbd4a07d1859ccea39"
+    }
+  },
+  "harness": {
+    "runner": "1910808b5242214e1bcccd69f9a235424e3a70d8a8c80227e96fb9218de6f43f",
+    "renderer": "f0e8f14e95e0af529220dfc9a21fd248e42b9461627771a0172367b5a827f375",
+    "rendererHtml": "5c8fe1f5ca510f76722dd3db6c440f8a0fe50644df9b13fc349a9802d02d3e75",
+    "observer": "eea3daac11d976baca8d9a5c50377681021838d800d88c0435b938499a2cfb7d"
+  },
+  "models": {
+    "ja": {
+      "modelId": "cl-nagoya/ruri-v3-30m@local/model_int8.onnx/prefix-v1",
+      "modelSha256": "946ae837c9cd3f78baf93af541e77facec62d31049921d7c00fbcb57b4610bcf",
+      "tokenizerSha256": "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062",
+      "gateScore": 0.85
+    },
+    "en": {
+      "modelId": "BAAI/bge-small-en-v1.5@local/model_int8.onnx/en-v1",
+      "modelSha256": "4f1831710bec8904589cf50c58ad4d9ed3e66386f4973173c13f1e9d3ae8e44b",
+      "tokenizerSha256": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+      "gateScore": 0.51
+    }
+  },
+  "electronVersion": "43.8.3",
+  "finishedAt": "2026-11-03T13:32:03.048Z",
+  "durationMs": 312752
+}

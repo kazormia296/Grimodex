@@ -1,0 +1,66 @@
+{
+ "note": "read-only。製品は prefix なし。測定に数えない",
+ "instruction": "Represent this sentence for searching relevant passages: ",
+ "rows": [
+  {
+   "id": "g04-rv-match",
+   "gold": 0,
+   "none": 0.49251680682449855,
+   "instr": 0.46011254016995345
+  },
+  {
+   "id": "g04-rv-alt",
+   "gold": 0,
+   "none": 0.3923244369682964,
+   "instr": 0.3579799467019643
+  },
+  {
+   "id": "g04-rv-unresolved",
+   "gold": 0,
+   "none": 0.4271246139168129,
+   "instr": 0.3966916072853835
+  },
+  {
+   "id": "g04-rv-unknown",
+   "gold": 0,
+   "none": 0.43897511051618027,
+   "instr": 0.41042479873346016
+  },
+  {
+   "id": "g04-rv-holder",
+   "gold": 0,
+   "none": 0.36968084667906037,
+   "instr": 0.3379654297109439
+  },
+  {
+   "id": "g04-control",
+   "gold": 0,
+   "none": 0.8082700214005755,
+   "instr": 0.7837172295583543
+  },
+  {
+   "id": "g04-lio-landing",
+   "gold": 3,
+   "none": 0.3597386943164853,
+   "instr": 0.33505873304117656
+  },
+  {
+   "id": "g04-lio-market",
+   "gold": 2,
+   "none": 0.42477310095273363,
+   "instr": 0.3964567672786936
+  },
+  {
+   "id": "IR:g04-control",
+   "gold": null,
+   "none": 0.6614226929073889,
+   "instr": 0.6267316677958122
+  },
+  {
+   "id": "IR:g04-lio-landing",
+   "gold": null,
+   "none": 0.5559180901730832,
+   "instr": 0.532629338918776
+  }
+ ]
+}

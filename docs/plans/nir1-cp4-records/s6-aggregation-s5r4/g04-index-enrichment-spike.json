@@ -1,0 +1,81 @@
+{
+ "note": "手書きの候補。LLM の出力ではない。feasibility の確認だけ。測定に数えない",
+ "rows": [
+  {
+   "name": "基準: lio-landing の IR 文（現状）",
+   "text": "{\"summary\":\"Bren ferried Lio across the river at dusk and left her on the far bank.\",\"actuality\":\"actual\",\"attribution\":",
+   "cos": {
+    "本文のみ": 0.5559180901730832,
+    "題+改行+本文": 0.5766900080689583
+   }
+  },
+  {
+   "name": "基準: control の IR 文（採用された）",
+   "text": "{\"summary\":\"A ferry post displayed an unanswered question about whom a ferryman had carried across.\",\"actuality\":\"actual",
+   "cos": {
+    "本文のみ": 0.6614226929073889,
+    "題+改行+本文": 0.685158803201252
+   }
+  },
+  {
+   "name": "想定質問 1",
+   "text": "Whom did the ferryman Bren carry across the river?",
+   "cos": {
+    "本文のみ": 0.7631010735624802,
+    "題+改行+本文": 0.7642347463341943
+   }
+  },
+  {
+   "name": "想定質問 2",
+   "text": "Which scene shows Bren the ferryman carrying someone across?",
+   "cos": {
+    "本文のみ": 0.8365226383021164,
+    "題+改行+本文": 0.8320267564379271
+   }
+  },
+  {
+   "name": "想定質問 3",
+   "text": "Who did Bren ferry across the river at dusk?",
+   "cos": {
+    "本文のみ": 0.6656745377273996,
+    "題+改行+本文": 0.675530288678808
+   }
+  },
+  {
+   "name": "関係文 1",
+   "text": "Bren the ferryman carried Lio across the river at dusk.",
+   "cos": {
+    "本文のみ": 0.6596354323863607,
+    "題+改行+本文": 0.6570408247989213
+   }
+  },
+  {
+   "name": "関係文 2",
+   "text": "Lio was carried across the river by the ferryman Bren.",
+   "cos": {
+    "本文のみ": 0.6839360973976181,
+    "題+改行+本文": 0.678039605116321
+   }
+  },
+  {
+   "name": "IR 文 + 想定質問 1（索引文書の拡張）",
+   "text": "{\"summary\":\"Bren ferried Lio across the river at dusk and left her on the far bank.\",\"actuality\":\"actual\",\"attribution\":",
+   "cos": {
+    "本文のみ": 0.732073359675419,
+    "題+改行+本文": 0.7548483390692554
+   }
+  },
+  {
+   "name": "pin 解決 query × 基準: lio-landing の IR 文（現状）",
+   "cos": {
+    "pinned": 0.6316969942492882
+   }
+  },
+  {
+   "name": "pin 解決 query × 基準: control の IR 文（採用された）",
+   "cos": {
+    "pinned": 0.581887307527666
+   }
+  }
+ ]
+}

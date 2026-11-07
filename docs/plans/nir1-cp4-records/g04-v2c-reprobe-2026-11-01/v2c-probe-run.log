@@ -1,0 +1,24 @@
+script sha256=cd1fd43271882a7c897699094f268d2ec94ff714c1d961fc397c7a174101ca87
+tool={"transformers":"4.3.2","onnxruntimeNode":"1.30.0","node":"v24.18.0","nodeModules":"/tmp/onnxprobe/node_modules"} model=4f1831710bec8904589cf50c58ad4d9ed3e66386f4973173c13f1e9d3ae8e44b tokenizer=d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66
+golden n=7 avg=0.99747 min=0.99688 ok=true
+fixture sha256=ec5455a991a423e57994c0968fb9ee75cf20acadf6452d5e829216d80a5dbde3
+== base ==
+median=0.4085 median+gap=0.4585 max=0.8083 hasWinner=true
+  Raw 0.8083 g04-control        role=control  gold=0 gate=true relRescue=true >=0.46=true
+  Raw 0.4293 g04-rv-unknown     role=review   gold=0 gate=false relRescue=false >=0.46=false
+  Raw 0.4271 g04-rv-unresolved  role=review   gold=0 gate=false relRescue=false >=0.46=false
+  Raw 0.4248 g04-lio-market     role=answer   gold=2 gate=false relRescue=false >=0.46=false
+  Raw 0.3923 g04-rv-alt         role=review   gold=0 gate=false relRescue=false >=0.46=false
+  Raw 0.3908 g04-rv-match       role=review   gold=0 gate=false relRescue=false >=0.46=false
+  Raw 0.3697 g04-rv-holder      role=review   gold=0 gate=false relRescue=false >=0.46=false
+  Raw 0.3597 g04-lio-landing    role=answer   gold=3 gate=false relRescue=false >=0.46=false
+  IR  0.6614 g04-control        role=control >=floor=true
+  [PASS] sceneBody:g04-rv-match       Raw cos <= 0.43    value=0.3908 margin=0.0392
+  [PASS] sceneBody:g04-rv-alt         Raw cos <= 0.43    value=0.3923 margin=0.0377
+  [PASS] sceneBody:g04-rv-unresolved  Raw cos <= 0.43    value=0.4271 margin=0.0029
+  [PASS] sceneBody:g04-rv-unknown     Raw cos <= 0.43    value=0.4293 margin=0.0007
+  [PASS] sceneBody:g04-rv-holder      Raw cos <= 0.43    value=0.3697 margin=0.0603
+  [PASS] controlRaw:g04-control       Raw cos >= 0.54    value=0.8083 margin=0.2683
+  [PASS] sceneBody:g04-lio-landing    Raw cos <= 0.43    value=0.3597 margin=0.0703
+  [PASS] sceneBody:g04-lio-market     Raw cos <= 0.43    value=0.4248 margin=0.0052
+allPass=true failing=[] outsideAllowed=[] stopRequired=false

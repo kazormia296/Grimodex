@@ -1,0 +1,383 @@
+[
+  {
+    "id": "N1-step",
+    "spn": "SP-N1",
+    "file": "seed-pin-setup.mjs",
+    "find": "else if (pins.length === 1 && pins[0].entryId !== seed)",
+    "replace": "else if (false)",
+    "testFile": "seed-pin-setup.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin-setup.test.mjs",
+        "line": 260,
+        "titlePrefix": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける"
+      }
+    ]
+  },
+  {
+    "id": "N1-r5",
+    "spn": "SP-N1",
+    "file": "seed-pin.mjs",
+    "find": "productSeed !== expectedSeed",
+    "replace": "false",
+    "testFile": "seed-pin.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 161,
+        "titlePrefix": "R5／SP-N1〜N3、N9、N11、N13、N14:"
+      },
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 69,
+        "titlePrefix": "R5: 一致・不一致・確かめられないを分ける"
+      },
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 255,
+        "titlePrefix": "P2-1: 封印した読取は"
+      }
+    ]
+  },
+  {
+    "id": "N2-step",
+    "spn": "SP-N2",
+    "file": "seed-pin-setup.mjs",
+    "find": "if (pins.length > 1) add(\"SP-N2\"",
+    "replace": "if (false) add(\"SP-N2\"",
+    "testFile": "seed-pin-setup.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin-setup.test.mjs",
+        "line": 260,
+        "titlePrefix": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける"
+      }
+    ]
+  },
+  {
+    "id": "N2-r5",
+    "spn": "SP-N2",
+    "file": "seed-pin.mjs",
+    "find": "? \"multiple-pins\"",
+    "replace": "? \"match\"",
+    "testFile": "seed-pin.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 161,
+        "titlePrefix": "R5／SP-N1〜N3、N9、N11、N13、N14:"
+      }
+    ]
+  },
+  {
+    "id": "N3-step",
+    "spn": "SP-N3",
+    "file": "seed-pin-setup.mjs",
+    "find": "add(\"SP-N3\", \"the first pin is another Entity\");",
+    "replace": "void 0;",
+    "testFile": "seed-pin-setup.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin-setup.test.mjs",
+        "line": 260,
+        "titlePrefix": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける"
+      }
+    ]
+  },
+  {
+    "id": "N4-writer",
+    "spn": "SP-N4",
+    "file": "seed-pin-setup.mjs",
+    "find": "if (record?.writer !== SEED_PIN_WRITER)",
+    "replace": "if (false)",
+    "testFile": "seed-pin-setup.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin-setup.test.mjs",
+        "line": 260,
+        "titlePrefix": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける"
+      }
+    ]
+  },
+  {
+    "id": "N4-createdAt",
+    "spn": "SP-N4",
+    "file": "seed-pin-setup.mjs",
+    "find": "typeof record?.createdAt !== \"string\" &&",
+    "replace": "false &&",
+    "testFile": "seed-pin-setup.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin-setup.test.mjs",
+        "line": 260,
+        "titlePrefix": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける"
+      }
+    ]
+  },
+  {
+    "id": "N5-before",
+    "spn": "SP-N5",
+    "file": "seed-pin-setup.mjs",
+    "find": "add(\"SP-N5\", \"the workspace pins before the step are not the fixture's\");",
+    "replace": "void 0;",
+    "testFile": "seed-pin-setup.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin-setup.test.mjs",
+        "line": 260,
+        "titlePrefix": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける"
+      }
+    ]
+  },
+  {
+    "id": "N5-outside",
+    "spn": "SP-N5",
+    "file": "seed-pin-setup.mjs",
+    "find": "add(\"SP-N5\", \"a pin outside the query Scene changed\");",
+    "replace": "void 0;",
+    "testFile": "seed-pin-setup.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin-setup.test.mjs",
+        "line": 260,
+        "titlePrefix": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける"
+      }
+    ]
+  },
+  {
+    "id": "N9-step",
+    "spn": "SP-N9",
+    "file": "seed-pin-setup.mjs",
+    "find": "if (pins.length === 1 && pins[0].entryId === seed && productSeed !== seed)",
+    "replace": "if (false)",
+    "testFile": "seed-pin-setup.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin-setup.test.mjs",
+        "line": 260,
+        "titlePrefix": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける"
+      }
+    ]
+  },
+  {
+    "id": "N9-sceneLive",
+    "spn": "SP-N9",
+    "file": "seed-pin.mjs",
+    "find": "if (!input.sceneLive) return null;",
+    "replace": "",
+    "testFile": "seed-pin.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 34,
+        "titlePrefix": "R5: seed は製品の規則"
+      },
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 161,
+        "titlePrefix": "R5／SP-N1〜N3、N9、N11、N13、N14:"
+      }
+    ],
+    "note": "削除。:161 は N9-archived"
+  },
+  {
+    "id": "N9-project",
+    "spn": "SP-N9",
+    "file": "seed-pin.mjs",
+    "find": ".filter((row) => row.entryInProject)",
+    "replace": ".filter(() => true)",
+    "testFile": "seed-pin.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 34,
+        "titlePrefix": "R5: seed は製品の規則"
+      },
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 161,
+        "titlePrefix": "R5／SP-N1〜N3、N9、N11、N13、N14:"
+      }
+    ],
+    "note": ":161 は N9-project"
+  },
+  {
+    "id": "N9-blank",
+    "spn": "SP-N9",
+    "file": "seed-pin.mjs",
+    "find": "entryId.trim().length === 0 ||",
+    "replace": "",
+    "testFile": "seed-pin.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 34,
+        "titlePrefix": "R5: seed は製品の規則"
+      }
+    ],
+    "note": "削除"
+  },
+  {
+    "id": "N9-long",
+    "spn": "SP-N9",
+    "file": "seed-pin.mjs",
+    "find": "entryId.length > SEED_UTF16_MAX",
+    "replace": "false",
+    "testFile": "seed-pin.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 34,
+        "titlePrefix": "R5: seed は製品の規則"
+      }
+    ]
+  },
+  {
+    "id": "N10-differ",
+    "spn": "SP-N10",
+    "file": "seed-pin-setup.mjs",
+    "find": "fail(\"SP-N10\", `the pins of",
+    "replace": "void (\"SP-N10\", `the pins of",
+    "testFile": "seed-pin-setup.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin-setup.test.mjs",
+        "line": 493,
+        "titlePrefix": "SP-N10: case の arm の間で pin の集合が同じ"
+      }
+    ],
+    "note": "fail(\"SP-N10\" は :478 と :485 の 2 か所。差の側（:485）"
+  },
+  {
+    "id": "N11-nopin",
+    "spn": "SP-N11",
+    "file": "seed-pin.mjs",
+    "find": "? \"no-pin\"",
+    "replace": "? \"match\"",
+    "testFile": "seed-pin.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 161,
+        "titlePrefix": "R5／SP-N1〜N3、N9、N11、N13、N14:"
+      }
+    ]
+  },
+  {
+    "id": "N11-missing",
+    "spn": "SP-N11",
+    "file": "seed-pin.mjs",
+    "find": "if (missing.length > 0) problems.push",
+    "replace": "if (false) problems.push",
+    "testFile": "seed-pin.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 161,
+        "titlePrefix": "R5／SP-N1〜N3、N9、N11、N13、N14:"
+      }
+    ]
+  },
+  {
+    "id": "N12-validate",
+    "spn": "SP-N12",
+    "file": "receipt.mjs",
+    "find": "if (receipt?.runnerKind !== HOOK_CONSUMER_RUNNER)",
+    "replace": "if (false)",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 997,
+        "titlePrefix": "S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの"
+      }
+    ]
+  },
+  {
+    "id": "N12-select",
+    "spn": "SP-N12",
+    "file": "receipt.mjs",
+    "find": "GRAPH_RUN_KINDS.has(receipt?.runKind) &&\n      receipt?.runnerKind !== HOOK_CONSUMER_RUNNER",
+    "replace": "false",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 997,
+        "titlePrefix": "S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの"
+      }
+    ]
+  },
+  {
+    "id": "N13-sealedRead",
+    "spn": "SP-N13",
+    "file": "seed-pin.mjs",
+    "find": "const sealedRead = isProductDbPinRead(read);",
+    "replace": "const sealedRead = read != null;",
+    "testFile": "seed-pin.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 161,
+        "titlePrefix": "R5／SP-N1〜N3、N9、N11、N13、N14:"
+      },
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 367,
+        "titlePrefix": "R5: dev の照合は dev の workspace だけ"
+      }
+    ]
+  },
+  {
+    "id": "N13-sealedSetup",
+    "spn": "SP-N13",
+    "file": "seed-pin.mjs",
+    "find": "const sealedSetup = isLoadedSetupReceipt(setup);",
+    "replace": "const sealedSetup = setup != null;",
+    "testFile": "seed-pin.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 161,
+        "titlePrefix": "R5／SP-N1〜N3、N9、N11、N13、N14:"
+      }
+    ]
+  },
+  {
+    "id": "N13-label-read",
+    "spn": "SP-N13",
+    "file": "seed-pin.mjs",
+    "find": "problems.push(\"self-reported (not read from the product DB)\");",
+    "replace": "void 0;",
+    "testFile": "seed-pin.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 161,
+        "titlePrefix": "R5／SP-N1〜N3、N9、N11、N13、N14:"
+      },
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 367,
+        "titlePrefix": "R5: dev の照合は dev の workspace だけ"
+      }
+    ],
+    "note": "ラベルだけを外す（記録では TypeError で落ちた）"
+  },
+  {
+    "id": "N13-label-setup",
+    "spn": "SP-N13",
+    "file": "seed-pin.mjs",
+    "find": "problems.push(\"setup-self-reported\");",
+    "replace": "void 0;",
+    "testFile": "seed-pin.test.mjs",
+    "expected": [
+      {
+        "file": "seed-pin.test.mjs",
+        "line": 161,
+        "titlePrefix": "R5／SP-N1〜N3、N9、N11、N13、N14:"
+      }
+    ],
+    "note": "ラベルだけを外す"
+  }
+]

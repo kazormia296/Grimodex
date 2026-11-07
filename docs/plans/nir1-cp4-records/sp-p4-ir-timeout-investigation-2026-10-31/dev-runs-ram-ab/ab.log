@@ -1,0 +1,51 @@
+mode=B run=inv-rb1 05:49:23
+quiet
+some avg10=83.02 avg60=84.85 avg300=76.50 total=86322991239
+ 14:49:23 up 2 days, 19:55,  1 user,  load average: 9.53, 6.02, 4.99
+tmpfs            tmpfs
+end inv-rb1 exit=1
+--- B 先は /tmp に変更（/dev/shm は製品が拒否）
+mode=A run=inv-ha1 05:50:13
+quiet
+some avg10=88.00 avg60=83.37 avg300=77.30 total=86364087877
+ 14:50:13 up 2 days, 19:55,  1 user,  load average: 8.74, 6.63, 5.27
+/dev/sda2        ext4
+inv-ha1 with-seed-pin-step db_fs=ext4
+inv-ha1 without-seed-pin-step db_fs=ext4
+end inv-ha1 exit=1
+mode=B run=inv-rb1 05:51:22
+quiet
+some avg10=70.76 avg60=76.38 avg300=76.52 total=86415063671
+ 14:51:22 up 2 days, 19:57,  1 user,  load average: 5.58, 6.08, 5.18
+tmpfs            tmpfs
+inv-rb1 without-seed-pin-step db_fs=tmpfs
+end inv-rb1 exit=1
+mode=A run=inv-ha2 05:52:10
+quiet
+some avg10=63.04 avg60=69.97 avg300=74.76 total=86446374269
+ 14:52:10 up 2 days, 19:57,  1 user,  load average: 4.92, 5.85, 5.14
+/dev/sda2        ext4
+inv-ha2 without-seed-pin-step db_fs=ext4
+end inv-ha2 exit=1
+mode=B run=inv-rb2 05:53:08
+quiet
+some avg10=72.52 avg60=73.59 avg300=75.02 total=86490823092
+ 14:53:08 up 2 days, 19:58,  1 user,  load average: 3.62, 5.30, 5.00
+tmpfs            tmpfs
+inv-rb2 without-seed-pin-step db_fs=tmpfs
+end inv-rb2 exit=1
+mode=A run=inv-ha3 05:53:59
+quiet
+some avg10=64.86 avg60=69.16 avg300=73.50 total=86524886314
+ 14:53:59 up 2 days, 19:59,  1 user,  load average: 3.58, 5.12, 4.96
+/dev/sda2        ext4
+inv-ha3 without-seed-pin-step db_fs=ext4
+end inv-ha3 exit=1
+mode=B run=inv-rb3 05:54:56
+quiet
+some avg10=73.92 avg60=72.87 avg300=73.80 total=86567898900
+ 14:54:56 up 2 days, 20:00,  1 user,  load average: 5.05, 5.20, 4.99
+tmpfs            tmpfs
+inv-rb3 without-seed-pin-step db_fs=tmpfs
+end inv-rb3 exit=1
+ALLDONE

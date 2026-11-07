@@ -1,0 +1,7715 @@
+{
+ "schemaVersion": "nir1-cp4-sp-p4/1",
+ "runKind": "seed-pin-parity",
+ "preview": true,
+ "previewNote": "SP-P4 dev preview: seen by the integrator only; never the SP-P4 record of ④",
+ "runId": "inv-ha1",
+ "head": {
+  "kind": "sp-p4-preview",
+  "devFixture": "scripts/quality/nir1-graph-eval/dev-fixtures/dev-shape-g06.v1.json",
+  "runStartedAtUtc": "2026-10-31T05:50:14.205Z"
+ },
+ "headSha256": "6b1128dc8857ce99b02451779696f503960ca99df545895c871e694b2b4a9728",
+ "candidate": {
+  "commit": "ed8e3fb96efede940995e03cfc135f8e2180e6c0",
+  "tree": "dc91b81cbcfba4f5c98e0465be2102ca9dfbfdf2",
+  "clean": false,
+  "setup": {
+   "commit": "ed8e3fb96efede940995e03cfc135f8e2180e6c0",
+   "tree": "dc91b81cbcfba4f5c98e0465be2102ca9dfbfdf2",
+   "clean": false
+  },
+  "nativeSha256": "3ea206df7d53b0478d13f76abf825c25f8a537a519421d45a07968e7f533a185"
+ },
+ "design": {
+  "variants": [
+   "DEV-SHAPE-G06/base"
+  ],
+  "sides": [
+   "without-seed-pin-step",
+   "with-seed-pin-step"
+  ],
+  "warmup": 5,
+  "measured": 30,
+  "attemptLimit": 2,
+  "d2aMode": "restricted",
+  "compareBy": "logical-id",
+  "rule": "ir-complete-pairs",
+  "irTimeoutLimit": 6,
+  "irTimeoutPairLimit": 6,
+  "branch": "single-pre-step-copy",
+  "sparse": "the product fetchSparseSceneIds on the same saved-body query, read after the fetch (DR-CP4-O-1 (4))"
+ },
+ "setups": {
+  "DEV-SHAPE-G06/base": {
+   "pre": {
+    "receipt": ".artifacts/cp4/inv-ha1/DEV-SHAPE-G06/base/pre-step/setup-receipt.json",
+    "preStepDbSha256": "7689cb68047fe7af365dd9cb58f74bc7902437d707ee2d20c6c25d0b2012a691"
+   },
+   "sides": {
+    "without-seed-pin-step": {
+     "receipt": ".artifacts/cp4/inv-ha1/DEV-SHAPE-G06/base/without-seed-pin-step/setup/setup-receipt.json",
+     "receiptSha256": "a623ef0d342abd952981d3017f994929b603b2fe80af63f7db5fa8e92a8bce06",
+     "coldDatabase": {
+      "path": ".artifacts/cp4/inv-ha1/DEV-SHAPE-G06/base/without-seed-pin-step/setup/cold-workspace/grimodex.db",
+      "sha256": "f47dc41429d58e199ce26d7a5963ff0cf88a59ffe55cc05afa7ae13611af8b0e"
+     },
+     "seedPin": {
+      "skipped": "without-seed-pin-step"
+     },
+     "seedPinBranch": {
+      "stage": "side",
+      "side": "without-seed-pin-step",
+      "preStepDb": {
+       "path": ".artifacts/cp4/inv-ha1/DEV-SHAPE-G06/base/pre-step/cold-workspace/grimodex.db",
+       "sha256": "7689cb68047fe7af365dd9cb58f74bc7902437d707ee2d20c6c25d0b2012a691"
+      },
+      "seedPinIndex": 9,
+      "resumedFrom": 10
+     }
+    },
+    "with-seed-pin-step": {
+     "receipt": ".artifacts/cp4/inv-ha1/DEV-SHAPE-G06/base/with-seed-pin-step/setup/setup-receipt.json",
+     "receiptSha256": "46cf19d13b8209d6ea7a3fea6824d45fe5d1d1e4f51e9831612f3f3a3ff5e1ec",
+     "coldDatabase": {
+      "path": ".artifacts/cp4/inv-ha1/DEV-SHAPE-G06/base/with-seed-pin-step/setup/cold-workspace/grimodex.db",
+      "sha256": "c11043615897263322fa2437ae50756ac8f3bc8ecf04c7a8f0f66bd9fedf1283"
+     },
+     "seedPin": {
+      "ok": true,
+      "contract": {
+       "draftRef": "nir1-graph-case-seed-pin-proposal/1",
+       "contractId": "graph-case-seed-pin-setup",
+       "sha256": "8ccdf5345a50ab710a61039e8abd09803086bef3f8337bb83667ea9274b4e547"
+      },
+      "caseId": "DEV-SHAPE-G06",
+      "variantId": "base",
+      "placementIndex": 9,
+      "placementCheckedOn": "recorded"
+     },
+     "seedPinBranch": {
+      "stage": "side",
+      "side": "with-seed-pin-step",
+      "preStepDb": {
+       "path": ".artifacts/cp4/inv-ha1/DEV-SHAPE-G06/base/pre-step/cold-workspace/grimodex.db",
+       "sha256": "7689cb68047fe7af365dd9cb58f74bc7902437d707ee2d20c6c25d0b2012a691"
+      },
+      "seedPinIndex": 9,
+      "resumedFrom": 9
+     }
+    }
+   }
+  }
+ },
+ "variants": [
+  {
+   "variantKey": "DEV-SHAPE-G06/base",
+   "sides": {
+    "without-seed-pin-step": {
+     "setup": {
+      "receipt": ".artifacts/cp4/inv-ha1/DEV-SHAPE-G06/base/without-seed-pin-step/setup/setup-receipt.json",
+      "receiptSha256": "a623ef0d342abd952981d3017f994929b603b2fe80af63f7db5fa8e92a8bce06",
+      "coldDatabase": {
+       "path": ".artifacts/cp4/inv-ha1/DEV-SHAPE-G06/base/without-seed-pin-step/setup/cold-workspace/grimodex.db",
+       "sha256": "f47dc41429d58e199ce26d7a5963ff0cf88a59ffe55cc05afa7ae13611af8b0e"
+      },
+      "seedPin": {
+       "skipped": "without-seed-pin-step"
+      },
+      "seedPinBranch": {
+       "stage": "side",
+       "side": "without-seed-pin-step",
+       "preStepDb": {
+        "path": ".artifacts/cp4/inv-ha1/DEV-SHAPE-G06/base/pre-step/cold-workspace/grimodex.db",
+        "sha256": "7689cb68047fe7af365dd9cb58f74bc7902437d707ee2d20c6c25d0b2012a691"
+       },
+       "seedPinIndex": 9,
+       "resumedFrom": 10
+      }
+     },
+     "attempts": [
+      {
+       "side": "without-seed-pin-step",
+       "attempt": 1,
+       "valid": true,
+       "outcome": "accepted",
+       "counts": {
+        "warmup": 5,
+        "measured": 30
+       },
+       "invalidSamples": [],
+       "ir": {
+        "warmup": {
+         "samples": 5,
+         "notReady": 0
+        },
+        "measured": {
+         "samples": 30,
+         "notReady": 4,
+         "timeoutExcluded": 4,
+         "timeoutExcludedRate": 0.13333333333333333,
+         "timeoutLimit": 6,
+         "timeoutPairLimit": 6
+        },
+        "notReadySamples": [
+         {
+          "phase": "measured",
+          "repeat": 2,
+          "outcome": "timeout",
+          "deadlineExceeded": true,
+          "resultKind": "raw"
+         },
+         {
+          "phase": "measured",
+          "repeat": 5,
+          "outcome": "timeout",
+          "deadlineExceeded": true,
+          "resultKind": "raw"
+         },
+         {
+          "phase": "measured",
+          "repeat": 17,
+          "outcome": "timeout",
+          "deadlineExceeded": true,
+          "resultKind": "raw"
+         },
+         {
+          "phase": "measured",
+          "repeat": 24,
+          "outcome": "timeout",
+          "deadlineExceeded": true,
+          "resultKind": "raw"
+         }
+        ]
+       },
+       "d2aMode": "restricted",
+       "logicalToRuntime": {
+        "scenes": {
+         "dvs6-2": "3b88f6d2-8e41-4645-86d0-56ad16aa9b00",
+         "dvs6-3": "7ffae515-446f-45ea-8c49-4de5c83e2bbc",
+         "dvs6-4": "b4b4875c-4864-451a-becb-68c8271e0bd3",
+         "dvs6-5": "d385dc96-a4f9-4958-b203-f6af42c7def1",
+         "dvs6-6": "2e216640-106a-4eba-9cbc-bb898a22b03a",
+         "dvs6-7": "c4a25e53-e6c0-4828-9cf0-77512efa354c",
+         "dvs6-8": "810d034c-19d9-4b3d-9f1a-e0ab12cb221e",
+         "dvs6-9": "5f8da596-0b4c-4da6-b3ae-41095ab27154",
+         "dvs6-10": "27b7ee22-5d99-4c54-b342-b4ac689059f8",
+         "dvs6-11": "2556ce2c-67ba-4590-83d5-ce9ccf8e30ff",
+         "dvs6-12": "a9e1099d-1c00-41e8-9285-692f09b3fa6d",
+         "dvs6-13": "02016ea7-9c1a-44a5-8e3c-aa217f992870",
+         "dvs6-1": "48364ecf-e08d-4f56-912a-0379d3637ea8"
+        },
+        "projectId": "66b1fa33-58cf-43c4-8f17-42782c092554"
+       },
+       "session": {
+        "index": {
+         "durationMs": 109,
+         "probes": 2
+        },
+        "problems": []
+       },
+       "samples": [
+        {
+         "phase": "warmup",
+         "repeat": 0,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 1562.7999999970198,
+           "tRawReadyMs": 1825.7999999970198,
+           "tReturnMs": 1836.2999999970198,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.4257139999999997,
+            "rawReadyElapsedMs": 260.461245
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 1564,
+            "resolvedAt": 1825.5,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 1825.5999999940395,
+            "resolvedAt": 1836.199999988079,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "warmup",
+         "repeat": 1,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 1846.5,
+           "tRawReadyMs": 1866.3999999910593,
+           "tReturnMs": 1877.199999988079,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.274397,
+            "rawReadyElapsedMs": 17.576971
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 1847.5999999940395,
+            "resolvedAt": 1866.199999988079,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 1866.199999988079,
+            "resolvedAt": 1877.199999988079,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "warmup",
+         "repeat": 2,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 1886.699999988079,
+           "tRawReadyMs": 1906.5,
+           "tReturnMs": 1917.2999999970198,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.201499,
+            "rawReadyElapsedMs": 17.386145
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 1888,
+            "resolvedAt": 1906.199999988079,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 1906.199999988079,
+            "resolvedAt": 1917.199999988079,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "warmup",
+         "repeat": 3,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 1926.5,
+           "tRawReadyMs": 1946.0999999940395,
+           "tReturnMs": 1956.5,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.266528,
+            "rawReadyElapsedMs": 17.16701
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 1927.5,
+            "resolvedAt": 1945.7999999970198,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 1945.7999999970198,
+            "resolvedAt": 1956.5,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "warmup",
+         "repeat": 4,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 1965.0999999940395,
+           "tRawReadyMs": 1984.699999988079,
+           "tReturnMs": 1995,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.501442,
+            "rawReadyElapsedMs": 17.230459
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 1966.0999999940395,
+            "resolvedAt": 1984.5,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 1984.5,
+            "resolvedAt": 1994.8999999910593,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 0,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2004.5999999940395,
+           "tRawReadyMs": 2024,
+           "tReturnMs": 2034.3999999910593,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.213969,
+            "rawReadyElapsedMs": 17.031883
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2005.699999988079,
+            "resolvedAt": 2023.699999988079,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2023.699999988079,
+            "resolvedAt": 2034.3999999910593,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 1,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2042.699999988079,
+           "tRawReadyMs": 2062.199999988079,
+           "tReturnMs": 2072.199999988079,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.4815229999999997,
+            "rawReadyElapsedMs": 16.945124999999997
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2043.7999999970198,
+            "resolvedAt": 2061.7999999970198,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2061.8999999910593,
+            "resolvedAt": 2072.199999988079,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 2,
+         "status": "completed",
+         "ir": {
+          "resultKind": "raw",
+          "outcome": "timeout",
+          "deadlineExceeded": true
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2080.8999999910593,
+           "tRawReadyMs": 2100.8999999910593,
+           "tReturnMs": 2112.199999988079,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.2384079999999997,
+            "rawReadyElapsedMs": 17.525032
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2082,
+            "resolvedAt": 2100.5999999940395,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2100.5999999940395,
+            "resolvedAt": 2111.7999999970198,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 3,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2121.0999999940395,
+           "tRawReadyMs": 2140.3999999910593,
+           "tReturnMs": 2151.0999999940395,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.2047489999999996,
+            "rawReadyElapsedMs": 17.081722
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2122.0999999940395,
+            "resolvedAt": 2140.0999999940395,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2140.0999999940395,
+            "resolvedAt": 2151.0999999940395,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 4,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2159.3999999910593,
+           "tRawReadyMs": 2178.7999999970198,
+           "tReturnMs": 2189.5,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.343556,
+            "rawReadyElapsedMs": 17.210329
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2160.3999999910593,
+            "resolvedAt": 2178.5,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2178.5999999940395,
+            "resolvedAt": 2189.5,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 5,
+         "status": "completed",
+         "ir": {
+          "resultKind": "raw",
+          "outcome": "timeout",
+          "deadlineExceeded": true
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2198.2999999970198,
+           "tRawReadyMs": 2216.699999988079,
+           "tReturnMs": 2227.7999999970198,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.272008,
+            "rawReadyElapsedMs": 16.079734
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2199.3999999910593,
+            "resolvedAt": 2216.3999999910593,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2216.3999999910593,
+            "resolvedAt": 2227.699999988079,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 6,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2236.2999999970198,
+           "tRawReadyMs": 2255.7999999970198,
+           "tReturnMs": 2265.8999999910593,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.59991,
+            "rawReadyElapsedMs": 17.100391
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2237.2999999970198,
+            "resolvedAt": 2255.5,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2255.5999999940395,
+            "resolvedAt": 2265.7999999970198,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 7,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2274.199999988079,
+           "tRawReadyMs": 2293.699999988079,
+           "tReturnMs": 2303.699999988079,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.498753,
+            "rawReadyElapsedMs": 17.113601
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2275.199999988079,
+            "resolvedAt": 2293.2999999970198,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2293.2999999970198,
+            "resolvedAt": 2303.699999988079,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 8,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2312,
+           "tRawReadyMs": 2331.3999999910593,
+           "tReturnMs": 2342.199999988079,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.20517,
+            "rawReadyElapsedMs": 17.140591
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2313,
+            "resolvedAt": 2331.0999999940395,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2331.0999999940395,
+            "resolvedAt": 2342.199999988079,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 9,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2351,
+           "tRawReadyMs": 2371.199999988079,
+           "tReturnMs": 2382,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.408744,
+            "rawReadyElapsedMs": 17.900883
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2352.0999999940395,
+            "resolvedAt": 2371,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2371,
+            "resolvedAt": 2382,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 10,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2390,
+           "tRawReadyMs": 2415.5999999940395,
+           "tReturnMs": 2418.199999988079,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.309497,
+            "rawReadyElapsedMs": 23.414692000000002
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2391,
+            "resolvedAt": 2415.2999999970198,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2415.2999999970198,
+            "resolvedAt": 2418.199999988079,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 11,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2426.699999988079,
+           "tRawReadyMs": 2446.199999988079,
+           "tReturnMs": 2456.3999999910593,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.488962,
+            "rawReadyElapsedMs": 17.174100000000003
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2427.5999999940395,
+            "resolvedAt": 2445.8999999910593,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2446,
+            "resolvedAt": 2456.2999999970198,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 12,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2465.5,
+           "tRawReadyMs": 2485.3999999910593,
+           "tReturnMs": 2496.199999988079,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.174739,
+            "rawReadyElapsedMs": 17.58928
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2466.5999999940395,
+            "resolvedAt": 2485,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2485.0999999940395,
+            "resolvedAt": 2496.0999999940395,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 13,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2505.199999988079,
+           "tRawReadyMs": 2523.5999999940395,
+           "tReturnMs": 2534.3999999910593,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 2.7354100000000003,
+            "rawReadyElapsedMs": 15.873069
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2506.3999999910593,
+            "resolvedAt": 2523.2999999970198,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2523.2999999970198,
+            "resolvedAt": 2534.2999999970198,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 14,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2543,
+           "tRawReadyMs": 2562.699999988079,
+           "tReturnMs": 2573.2999999970198,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.244568,
+            "rawReadyElapsedMs": 17.303587
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2544.0999999940395,
+            "resolvedAt": 2562.3999999910593,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2562.3999999910593,
+            "resolvedAt": 2573.2999999970198,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 15,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2582.199999988079,
+           "tRawReadyMs": 2601.699999988079,
+           "tReturnMs": 2612.0999999940395,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.239868,
+            "rawReadyElapsedMs": 17.292597
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2583.199999988079,
+            "resolvedAt": 2601.5,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2601.5,
+            "resolvedAt": 2612,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 16,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2620.3999999910593,
+           "tRawReadyMs": 2639.7999999970198,
+           "tReturnMs": 2650.2999999970198,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.467314,
+            "rawReadyElapsedMs": 16.971535
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2621.5,
+            "resolvedAt": 2639.3999999910593,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2639.5,
+            "resolvedAt": 2650.2999999970198,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 17,
+         "status": "completed",
+         "ir": {
+          "resultKind": "raw",
+          "outcome": "timeout",
+          "deadlineExceeded": true
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2658.699999988079,
+           "tRawReadyMs": 2676.3999999910593,
+           "tReturnMs": 2687.7999999970198,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.17124,
+            "rawReadyElapsedMs": 15.499337
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2659.7999999970198,
+            "resolvedAt": 2676.0999999940395,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2676.0999999940395,
+            "resolvedAt": 2687.8999999910593,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 18,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2697.0999999940395,
+           "tRawReadyMs": 2716.3999999910593,
+           "tReturnMs": 2727.199999988079,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.335336,
+            "rawReadyElapsedMs": 17.199779
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2698,
+            "resolvedAt": 2716.0999999940395,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2716.0999999940395,
+            "resolvedAt": 2727.0999999940395,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 19,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2735.3999999910593,
+           "tRawReadyMs": 2755.0999999940395,
+           "tReturnMs": 2765.8999999910593,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.294467,
+            "rawReadyElapsedMs": 17.432494
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2736.3999999910593,
+            "resolvedAt": 2754.7999999970198,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2754.7999999970198,
+            "resolvedAt": 2765.8999999910593,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 20,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2774.2999999970198,
+           "tRawReadyMs": 2794.3999999910593,
+           "tReturnMs": 2805.199999988079,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.237928,
+            "rawReadyElapsedMs": 17.629189
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2775.699999988079,
+            "resolvedAt": 2794.199999988079,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2794.199999988079,
+            "resolvedAt": 2805.199999988079,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 21,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2813.8999999910593,
+           "tRawReadyMs": 2833.199999988079,
+           "tReturnMs": 2840.2999999970198,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.401514,
+            "rawReadyElapsedMs": 16.939505
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2814.8999999910593,
+            "resolvedAt": 2832.8999999910593,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2832.8999999910593,
+            "resolvedAt": 2840.2999999970198,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 22,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2848.5,
+           "tRawReadyMs": 2863.5999999940395,
+           "tReturnMs": 2874.3999999910593,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 2.338949,
+            "rawReadyElapsedMs": 13.041752
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2849.5,
+            "resolvedAt": 2863.2999999970198,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2863.2999999970198,
+            "resolvedAt": 2874.2999999970198,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 23,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2882,
+           "tRawReadyMs": 2901.7999999970198,
+           "tReturnMs": 2912.5999999940395,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.4485840000000003,
+            "rawReadyElapsedMs": 17.536472
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2883,
+            "resolvedAt": 2901.5999999940395,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2901.5999999940395,
+            "resolvedAt": 2912.5999999940395,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 24,
+         "status": "completed",
+         "ir": {
+          "resultKind": "raw",
+          "outcome": "timeout",
+          "deadlineExceeded": true
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2921.2999999970198,
+           "tRawReadyMs": 3159.2999999970198,
+           "tReturnMs": 3170.5,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.2549979999999996,
+            "rawReadyElapsedMs": 235.719922
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2922.199999988079,
+            "resolvedAt": 3159,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3159,
+            "resolvedAt": 3170.3999999910593,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 25,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3178.5,
+           "tRawReadyMs": 3198,
+           "tReturnMs": 3208.3999999910593,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.270308,
+            "rawReadyElapsedMs": 17.293207000000002
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3179.5,
+            "resolvedAt": 3197.699999988079,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3197.699999988079,
+            "resolvedAt": 3208.2999999970198,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 26,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3216.5,
+           "tRawReadyMs": 3235.5999999940395,
+           "tReturnMs": 3245.7999999970198,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.486383,
+            "rawReadyElapsedMs": 16.7259
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3217.5,
+            "resolvedAt": 3235.199999988079,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3235.2999999970198,
+            "resolvedAt": 3245.7999999970198,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 27,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3254.699999988079,
+           "tRawReadyMs": 3275.0999999940395,
+           "tReturnMs": 3285.7999999970198,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.449243,
+            "rawReadyElapsedMs": 17.967822
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3255.7999999970198,
+            "resolvedAt": 3274.7999999970198,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3274.8999999910593,
+            "resolvedAt": 3285.7999999970198,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 28,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3293.8999999910593,
+           "tRawReadyMs": 3313.0999999940395,
+           "tReturnMs": 3323.5999999940395,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.285227,
+            "rawReadyElapsedMs": 16.998954
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3294.8999999910593,
+            "resolvedAt": 3312.8999999910593,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3312.8999999910593,
+            "resolvedAt": 3323.5999999940395,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 29,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3331.699999988079,
+           "tRawReadyMs": 3351,
+           "tReturnMs": 3361.5,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.371445,
+            "rawReadyElapsedMs": 17.056662
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3332.699999988079,
+            "resolvedAt": 3350.5999999940395,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3350.5999999940395,
+            "resolvedAt": 3361.5,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        }
+       ]
+      }
+     ],
+     "stability": {
+      "rule": "ir-complete-pairs",
+      "measured": 30,
+      "irReady": 26,
+      "irNotReady": 4,
+      "irCompared": 26,
+      "irTimeoutExcluded": 4,
+      "irTimeoutLimit": 6
+     }
+    },
+    "with-seed-pin-step": {
+     "setup": {
+      "receipt": ".artifacts/cp4/inv-ha1/DEV-SHAPE-G06/base/with-seed-pin-step/setup/setup-receipt.json",
+      "receiptSha256": "46cf19d13b8209d6ea7a3fea6824d45fe5d1d1e4f51e9831612f3f3a3ff5e1ec",
+      "coldDatabase": {
+       "path": ".artifacts/cp4/inv-ha1/DEV-SHAPE-G06/base/with-seed-pin-step/setup/cold-workspace/grimodex.db",
+       "sha256": "c11043615897263322fa2437ae50756ac8f3bc8ecf04c7a8f0f66bd9fedf1283"
+      },
+      "seedPin": {
+       "ok": true,
+       "contract": {
+        "draftRef": "nir1-graph-case-seed-pin-proposal/1",
+        "contractId": "graph-case-seed-pin-setup",
+        "sha256": "8ccdf5345a50ab710a61039e8abd09803086bef3f8337bb83667ea9274b4e547"
+       },
+       "caseId": "DEV-SHAPE-G06",
+       "variantId": "base",
+       "placementIndex": 9,
+       "placementCheckedOn": "recorded"
+      },
+      "seedPinBranch": {
+       "stage": "side",
+       "side": "with-seed-pin-step",
+       "preStepDb": {
+        "path": ".artifacts/cp4/inv-ha1/DEV-SHAPE-G06/base/pre-step/cold-workspace/grimodex.db",
+        "sha256": "7689cb68047fe7af365dd9cb58f74bc7902437d707ee2d20c6c25d0b2012a691"
+       },
+       "seedPinIndex": 9,
+       "resumedFrom": 9
+      }
+     },
+     "attempts": [
+      {
+       "side": "with-seed-pin-step",
+       "attempt": 1,
+       "valid": true,
+       "outcome": "accepted",
+       "counts": {
+        "warmup": 5,
+        "measured": 30
+       },
+       "invalidSamples": [],
+       "ir": {
+        "warmup": {
+         "samples": 5,
+         "notReady": 2
+        },
+        "measured": {
+         "samples": 30,
+         "notReady": 9,
+         "timeoutExcluded": 9,
+         "timeoutExcludedRate": 0.3,
+         "timeoutLimit": 6,
+         "timeoutPairLimit": 6
+        },
+        "notReadySamples": [
+         {
+          "phase": "warmup",
+          "repeat": 0,
+          "outcome": "timeout",
+          "deadlineExceeded": true,
+          "resultKind": "raw"
+         },
+         {
+          "phase": "warmup",
+          "repeat": 1,
+          "outcome": "timeout",
+          "deadlineExceeded": true,
+          "resultKind": "raw"
+         },
+         {
+          "phase": "measured",
+          "repeat": 2,
+          "outcome": "timeout",
+          "deadlineExceeded": true,
+          "resultKind": "raw"
+         },
+         {
+          "phase": "measured",
+          "repeat": 3,
+          "outcome": "timeout",
+          "deadlineExceeded": true,
+          "resultKind": "raw"
+         },
+         {
+          "phase": "measured",
+          "repeat": 5,
+          "outcome": "timeout",
+          "deadlineExceeded": true,
+          "resultKind": "raw"
+         },
+         {
+          "phase": "measured",
+          "repeat": 9,
+          "outcome": "timeout",
+          "deadlineExceeded": true,
+          "resultKind": "raw"
+         },
+         {
+          "phase": "measured",
+          "repeat": 13,
+          "outcome": "timeout",
+          "deadlineExceeded": true,
+          "resultKind": "raw"
+         },
+         {
+          "phase": "measured",
+          "repeat": 14,
+          "outcome": "timeout",
+          "deadlineExceeded": true,
+          "resultKind": "raw"
+         },
+         {
+          "phase": "measured",
+          "repeat": 15,
+          "outcome": "timeout",
+          "deadlineExceeded": true,
+          "resultKind": "raw"
+         },
+         {
+          "phase": "measured",
+          "repeat": 21,
+          "outcome": "timeout",
+          "deadlineExceeded": true,
+          "resultKind": "raw"
+         },
+         {
+          "phase": "measured",
+          "repeat": 22,
+          "outcome": "timeout",
+          "deadlineExceeded": true,
+          "resultKind": "raw"
+         }
+        ]
+       },
+       "d2aMode": "restricted",
+       "logicalToRuntime": {
+        "scenes": {
+         "dvs6-2": "3b88f6d2-8e41-4645-86d0-56ad16aa9b00",
+         "dvs6-3": "7ffae515-446f-45ea-8c49-4de5c83e2bbc",
+         "dvs6-4": "b4b4875c-4864-451a-becb-68c8271e0bd3",
+         "dvs6-5": "d385dc96-a4f9-4958-b203-f6af42c7def1",
+         "dvs6-6": "2e216640-106a-4eba-9cbc-bb898a22b03a",
+         "dvs6-7": "c4a25e53-e6c0-4828-9cf0-77512efa354c",
+         "dvs6-8": "810d034c-19d9-4b3d-9f1a-e0ab12cb221e",
+         "dvs6-9": "5f8da596-0b4c-4da6-b3ae-41095ab27154",
+         "dvs6-10": "27b7ee22-5d99-4c54-b342-b4ac689059f8",
+         "dvs6-11": "2556ce2c-67ba-4590-83d5-ce9ccf8e30ff",
+         "dvs6-12": "a9e1099d-1c00-41e8-9285-692f09b3fa6d",
+         "dvs6-13": "02016ea7-9c1a-44a5-8e3c-aa217f992870",
+         "dvs6-1": "48364ecf-e08d-4f56-912a-0379d3637ea8"
+        },
+        "projectId": "66b1fa33-58cf-43c4-8f17-42782c092554"
+       },
+       "session": {
+        "index": {
+         "durationMs": 104.1000000089407,
+         "probes": 2
+        },
+        "problems": []
+       },
+       "samples": [
+        {
+         "phase": "warmup",
+         "repeat": 0,
+         "status": "completed",
+         "ir": {
+          "resultKind": "raw",
+          "outcome": "timeout",
+          "deadlineExceeded": true
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 1595.7000000029802,
+           "tRawReadyMs": 1614.4000000059605,
+           "tReturnMs": 1625.7000000029802,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.322976,
+            "rawReadyElapsedMs": 16.249
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 1596.800000011921,
+            "resolvedAt": 1614,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 1614,
+            "resolvedAt": 1625.5,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "warmup",
+         "repeat": 1,
+         "status": "completed",
+         "ir": {
+          "resultKind": "raw",
+          "outcome": "timeout",
+          "deadlineExceeded": true
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 1634,
+           "tRawReadyMs": 2481.800000011921,
+           "tReturnMs": 2492.800000011921,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.332256,
+            "rawReadyElapsedMs": 845.453927
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 1635,
+            "resolvedAt": 2481.5,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2481.5,
+            "resolvedAt": 2492.6000000089407,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "warmup",
+         "repeat": 2,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2501.6000000089407,
+           "tRawReadyMs": 2561.2000000029802,
+           "tReturnMs": 2571.6000000089407,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.474634,
+            "rawReadyElapsedMs": 57.092395999999994
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2502.800000011921,
+            "resolvedAt": 2561,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2561,
+            "resolvedAt": 2571.6000000089407,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "warmup",
+         "repeat": 3,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2580,
+           "tRawReadyMs": 2600.2000000029802,
+           "tReturnMs": 2610.7000000029802,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.218809,
+            "rawReadyElapsedMs": 17.770135999999997
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2581,
+            "resolvedAt": 2599.800000011921,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2599.9000000059605,
+            "resolvedAt": 2610.7000000029802,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "warmup",
+         "repeat": 4,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2619,
+           "tRawReadyMs": 2638.9000000059605,
+           "tReturnMs": 2649.2000000029802,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.232609,
+            "rawReadyElapsedMs": 17.63409
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2620,
+            "resolvedAt": 2638.6000000089407,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2638.6000000089407,
+            "resolvedAt": 2649.2000000029802,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 0,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2658.2000000029802,
+           "tRawReadyMs": 2678,
+           "tReturnMs": 2688.7000000029802,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.394264,
+            "rawReadyElapsedMs": 17.636069
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2659.1000000089407,
+            "resolvedAt": 2677.7000000029802,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2677.800000011921,
+            "resolvedAt": 2688.7000000029802,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 1,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2696.800000011921,
+           "tRawReadyMs": 2719.1000000089407,
+           "tReturnMs": 2729.800000011921,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.429274,
+            "rawReadyElapsedMs": 20.085745
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2697.800000011921,
+            "resolvedAt": 2718.800000011921,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2718.9000000059605,
+            "resolvedAt": 2729.7000000029802,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 2,
+         "status": "completed",
+         "ir": {
+          "resultKind": "raw",
+          "outcome": "timeout",
+          "deadlineExceeded": true
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2738.7000000029802,
+           "tRawReadyMs": 2759,
+           "tReturnMs": 2770.300000011921,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.569771,
+            "rawReadyElapsedMs": 17.968542
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2739.6000000089407,
+            "resolvedAt": 2758.6000000089407,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2758.7000000029802,
+            "resolvedAt": 2770,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 3,
+         "status": "completed",
+         "ir": {
+          "resultKind": "raw",
+          "outcome": "timeout",
+          "deadlineExceeded": true
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2779.1000000089407,
+           "tRawReadyMs": 2797.2000000029802,
+           "tReturnMs": 2808.7000000029802,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.391555,
+            "rawReadyElapsedMs": 15.883947999999998
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2780.1000000089407,
+            "resolvedAt": 2796.9000000059605,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2797,
+            "resolvedAt": 2810.800000011921,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 4,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2820.300000011921,
+           "tRawReadyMs": 2841.1000000089407,
+           "tReturnMs": 2851.800000011921,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.451304,
+            "rawReadyElapsedMs": 17.920613
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2821.7000000029802,
+            "resolvedAt": 2840.800000011921,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2840.800000011921,
+            "resolvedAt": 2851.800000011921,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 5,
+         "status": "completed",
+         "ir": {
+          "resultKind": "raw",
+          "outcome": "timeout",
+          "deadlineExceeded": true
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2862.6000000089407,
+           "tRawReadyMs": 2883.300000011921,
+           "tReturnMs": 2895,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.356055,
+            "rawReadyElapsedMs": 17.919113
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2864.1000000089407,
+            "resolvedAt": 2883.1000000089407,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2883.1000000089407,
+            "resolvedAt": 2895.5,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 6,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2905.9000000059605,
+           "tRawReadyMs": 2925.800000011921,
+           "tReturnMs": 2936.4000000059605,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.378705,
+            "rawReadyElapsedMs": 17.706738
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2907,
+            "resolvedAt": 2925.5,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2925.6000000089407,
+            "resolvedAt": 2936.4000000059605,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 7,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2944.6000000089407,
+           "tRawReadyMs": 2963.800000011921,
+           "tReturnMs": 2973.800000011921,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.229549,
+            "rawReadyElapsedMs": 17.153789999999997
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2945.5,
+            "resolvedAt": 2963.6000000089407,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 2963.6000000089407,
+            "resolvedAt": 2973.7000000029802,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 8,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 2981.7000000029802,
+           "tRawReadyMs": 3001.6000000089407,
+           "tReturnMs": 3012.300000011921,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.287257,
+            "rawReadyElapsedMs": 17.654649000000003
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 2982.6000000089407,
+            "resolvedAt": 3001.2000000029802,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3001.300000011921,
+            "resolvedAt": 3012.300000011921,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 9,
+         "status": "completed",
+         "ir": {
+          "resultKind": "raw",
+          "outcome": "timeout",
+          "deadlineExceeded": true
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3021.300000011921,
+           "tRawReadyMs": 3041.5,
+           "tReturnMs": 3053.1000000089407,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.511812,
+            "rawReadyElapsedMs": 17.463563
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3022.6000000089407,
+            "resolvedAt": 3041.1000000089407,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3041.2000000029802,
+            "resolvedAt": 3053.2000000029802,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 10,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3063.7000000029802,
+           "tRawReadyMs": 3088.2000000029802,
+           "tReturnMs": 3096.4000000059605,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 4.97017,
+            "rawReadyElapsedMs": 21.629221
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3065.2000000029802,
+            "resolvedAt": 3087.9000000059605,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3088,
+            "resolvedAt": 3096.300000011921,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 11,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3105.1000000089407,
+           "tRawReadyMs": 3125.6000000089407,
+           "tReturnMs": 3135.9000000059605,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 4.080928999999999,
+            "rawReadyElapsedMs": 17.877194
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3106.300000011921,
+            "resolvedAt": 3125.300000011921,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3125.4000000059605,
+            "resolvedAt": 3135.9000000059605,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 12,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3145.800000011921,
+           "tRawReadyMs": 3167.1000000089407,
+           "tReturnMs": 3177.9000000059605,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.352036,
+            "rawReadyElapsedMs": 18.661286999999998
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3147,
+            "resolvedAt": 3166.7000000029802,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3166.7000000029802,
+            "resolvedAt": 3177.9000000059605,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 13,
+         "status": "completed",
+         "ir": {
+          "resultKind": "raw",
+          "outcome": "timeout",
+          "deadlineExceeded": true
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3186.7000000029802,
+           "tRawReadyMs": 3207.800000011921,
+           "tReturnMs": 3219.1000000089407,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.527392,
+            "rawReadyElapsedMs": 18.678607
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3187.6000000089407,
+            "resolvedAt": 3207.5,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3207.5,
+            "resolvedAt": 3218.9000000059605,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 14,
+         "status": "completed",
+         "ir": {
+          "resultKind": "raw",
+          "outcome": "timeout",
+          "deadlineExceeded": true
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3228.2000000029802,
+           "tRawReadyMs": 3247.9000000059605,
+           "tReturnMs": 3259,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.485312,
+            "rawReadyElapsedMs": 17.347775
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3229.300000011921,
+            "resolvedAt": 3247.5,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3247.6000000089407,
+            "resolvedAt": 3258.800000011921,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 15,
+         "status": "completed",
+         "ir": {
+          "resultKind": "raw",
+          "outcome": "timeout",
+          "deadlineExceeded": true
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3267.9000000059605,
+           "tRawReadyMs": 3287.9000000059605,
+           "tReturnMs": 3299.1000000089407,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.6956279999999997,
+            "rawReadyElapsedMs": 17.200829000000002
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3269.300000011921,
+            "resolvedAt": 3287.5,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3287.5,
+            "resolvedAt": 3299,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 16,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3306.5,
+           "tRawReadyMs": 3326.4000000059605,
+           "tReturnMs": 3332.7000000029802,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.271727,
+            "rawReadyElapsedMs": 17.395374
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3307.5,
+            "resolvedAt": 3325.9000000059605,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3326,
+            "resolvedAt": 3332.7000000029802,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 17,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3340.800000011921,
+           "tRawReadyMs": 3360.9000000059605,
+           "tReturnMs": 3371.5,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.268838,
+            "rawReadyElapsedMs": 17.892474
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3341.7000000029802,
+            "resolvedAt": 3360.6000000089407,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3360.6000000089407,
+            "resolvedAt": 3371.4000000059605,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 18,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3381.6000000089407,
+           "tRawReadyMs": 3398.300000011921,
+           "tReturnMs": 3405.2000000029802,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 2.926865,
+            "rawReadyElapsedMs": 12.218309
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3385.2000000029802,
+            "resolvedAt": 3398,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3398.1000000089407,
+            "resolvedAt": 3405.1000000089407,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 19,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3411.9000000059605,
+           "tRawReadyMs": 3429.2000000029802,
+           "tReturnMs": 3437.800000011921,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 2.549384,
+            "rawReadyElapsedMs": 15.313821
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3412.6000000089407,
+            "resolvedAt": 3428.800000011921,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3428.800000011921,
+            "resolvedAt": 3437.800000011921,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 20,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3446.7000000029802,
+           "tRawReadyMs": 3467.300000011921,
+           "tReturnMs": 3476,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.742737,
+            "rawReadyElapsedMs": 18.214657
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3447.9000000059605,
+            "resolvedAt": 3467,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3467,
+            "resolvedAt": 3475.9000000059605,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 21,
+         "status": "completed",
+         "ir": {
+          "resultKind": "raw",
+          "outcome": "timeout",
+          "deadlineExceeded": true
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3484.4000000059605,
+           "tRawReadyMs": 3505.7000000029802,
+           "tReturnMs": 3517.1000000089407,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.450004,
+            "rawReadyElapsedMs": 19.281433
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3485.2000000029802,
+            "resolvedAt": 3505.4000000059605,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3505.4000000059605,
+            "resolvedAt": 3517.2000000029802,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 22,
+         "status": "completed",
+         "ir": {
+          "resultKind": "raw",
+          "outcome": "timeout",
+          "deadlineExceeded": true
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3528.300000011921,
+           "tRawReadyMs": 3548.6000000089407,
+           "tReturnMs": 3560.1000000089407,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.360006,
+            "rawReadyElapsedMs": 18.116009
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3529.2000000029802,
+            "resolvedAt": 3548.300000011921,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3548.300000011921,
+            "resolvedAt": 3560.300000011921,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 23,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3571.4000000059605,
+           "tRawReadyMs": 3589.9000000059605,
+           "tReturnMs": 3597,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.029983,
+            "rawReadyElapsedMs": 16.235440999999998
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3572.4000000059605,
+            "resolvedAt": 3589.6000000089407,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3589.6000000089407,
+            "resolvedAt": 3597,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 24,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3605.5,
+           "tRawReadyMs": 3623.2000000029802,
+           "tReturnMs": 3632.2000000029802,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 2.866286,
+            "rawReadyElapsedMs": 15.534656
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3606.2000000029802,
+            "resolvedAt": 3622.800000011921,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3622.9000000059605,
+            "resolvedAt": 3632.1000000089407,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 25,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3639.4000000059605,
+           "tRawReadyMs": 3837.800000011921,
+           "tReturnMs": 3848,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.6113,
+            "rawReadyElapsedMs": 196.142496
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3640.300000011921,
+            "resolvedAt": 3837.4000000059605,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3837.4000000059605,
+            "resolvedAt": 3848,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 26,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3854.9000000059605,
+           "tRawReadyMs": 3917.6000000089407,
+           "tReturnMs": 3927.800000011921,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.1766989999999997,
+            "rawReadyElapsedMs": 60.49757
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3855.800000011921,
+            "resolvedAt": 3917.300000011921,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3917.300000011921,
+            "resolvedAt": 3927.800000011921,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 27,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3935.9000000059605,
+           "tRawReadyMs": 3956.1000000089407,
+           "tReturnMs": 3966.6000000089407,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.391195,
+            "rawReadyElapsedMs": 17.684307999999998
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3936.9000000059605,
+            "resolvedAt": 3955.800000011921,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3955.800000011921,
+            "resolvedAt": 3966.5,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 28,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 3974.7000000029802,
+           "tRawReadyMs": 3995.4000000059605,
+           "tReturnMs": 4005.7000000029802,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 3.2486580000000003,
+            "rawReadyElapsedMs": 18.293865
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 3975.800000011921,
+            "resolvedAt": 3995.1000000089407,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 3995.1000000089407,
+            "resolvedAt": 4005.7000000029802,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        },
+        {
+         "phase": "measured",
+         "repeat": 29,
+         "status": "completed",
+         "ir": {
+          "resultKind": "fused",
+          "outcome": "ir-ready",
+          "deadlineExceeded": false
+         },
+         "rSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "denseHitSceneIds": [
+          "dvs6-1",
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-11",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-12",
+          "dvs6-3",
+          "dvs6-13",
+          "dvs6-9",
+          "dvs6-7",
+          "dvs6-10"
+         ],
+         "sparseSceneIds": [
+          "dvs6-1",
+          "dvs6-5",
+          "dvs6-8",
+          "dvs6-12",
+          "dvs6-6",
+          "dvs6-2",
+          "dvs6-4",
+          "dvs6-11",
+          "dvs6-3",
+          "dvs6-7"
+         ],
+         "rIrSceneIds": [
+          "dvs6-8",
+          "dvs6-5",
+          "dvs6-6",
+          "dvs6-12",
+          "dvs6-2",
+          "dvs6-11",
+          "dvs6-4",
+          "dvs6-3"
+         ],
+         "irSupplementSceneId": null,
+         "counters": {
+          "before": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "after": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          },
+          "delta": {
+           "begins": 0,
+           "cacheHits": 0,
+           "lateCached": 0
+          }
+         },
+         "beginsDeltaZero": true,
+         "invTiming": {
+          "timing": {
+           "tFetchMs": 4024.5,
+           "tRawReadyMs": 4051.1000000089407,
+           "tReturnMs": 4060,
+           "native": {
+            "clock": "native-monotonic",
+            "firstSnapshotElapsedMs": 4.094149,
+            "rawReadyElapsedMs": 23.91614
+           }
+          },
+          "ipc": [
+           {
+            "cmd": "related_scenes_begin",
+            "calledAt": 4025.7000000029802,
+            "resolvedAt": 4050.7000000029802,
+            "status": "raw-ready",
+            "reason": null
+           },
+           {
+            "cmd": "related_scenes_continue",
+            "calledAt": 4050.7000000029802,
+            "resolvedAt": 4059.9000000059605,
+            "status": "available",
+            "reason": null
+           }
+          ]
+         }
+        }
+       ]
+      }
+     ],
+     "unstable": true,
+     "instability": {
+      "reference": {
+       "repeat": 0
+      },
+      "readyAgree": true,
+      "differing": 0,
+      "explained": 0,
+      "explainedByIrDeadline": false,
+      "rows": []
+     }
+    }
+   }
+  }
+ ],
+ "summary": {
+  "id": "SP-P4",
+  "status": "incomplete",
+  "problems": [
+   "G-01/v1: missing",
+   "G-02/base: missing",
+   "G-03/base: missing",
+   "G-04/base: missing",
+   "G-05/base: missing",
+   "G-06/base: missing",
+   "G-07/base: missing",
+   "G-08/base-usable: missing",
+   "not SP-P4 variants: DEV-SHAPE-G06/base"
+  ],
+  "variants": [
+   {
+    "variantKey": "DEV-SHAPE-G06/base",
+    "same": null,
+    "differences": null
+   }
+  ],
+  "notCountedAs": [
+   "g01-eval-revision-receipt",
+   "k3-parity-run",
+   "g-case-parity-unrestricted",
+   "case-judgement"
+  ]
+ },
+ "stop": "[precheck] S5-B stable: DEV-SHAPE-G06/base:with-seed-pin-step: 9 of 30 measured samples lost the IR to the deadline, more than 6 (DR-CP4-Q-1 C2); the comparison is not defined",
+ "problems": []
+}

@@ -1,0 +1,795 @@
+{
+  "schema": "nir1-cp4-frozen-k64-run/1",
+  "run": "parity-s5r4-1",
+  "mode": "formal",
+  "runKind": "parity",
+  "d2aMode": "unrestricted",
+  "problems": [],
+  "checks": {
+    "sourcePins": [
+      {
+        "role": "s1j2-blocked-map",
+        "check": "ancestor",
+        "commit": "b1a87b0b81fbdce7f3d280e0671bced51306be1d"
+      },
+      {
+        "role": "s1j2-complete-setup",
+        "check": "bytes",
+        "commit": "3a6e65e400cac5d72e761f58eb1ae8eaec514e18",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/electron-observer.entry.mjs",
+            "sha256": "39e6827940b0235859d6ec9f1bd9a8e3348acddfe43c0fd6c95d5784bd4bd120"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-setup-plan.mjs",
+            "sha256": "2ac6bb9d8c4fe238938b4bec959f12d86e47e9a687ad8c811139c9225549da71"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/launcher.mjs",
+            "sha256": "41653af87884ac89fa135c19d51eaee6b74dc677b21a5037f348056bc0c3b671"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/session.mjs",
+            "sha256": "9e69cb076b2e3101586d3ea2aa477bee027bc093fdc21b8b37dcac92454c6354"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/setup-main-build.mjs",
+            "sha256": "0b4fec10416404849f3e8aca9dcec36ee17ca5a954d30be62f85115d473925ef"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/setup-receipt.mjs",
+            "sha256": "dcc742371fe2328a2a88eaa048ff0a7ab428b4343fe7d25f65ecd32a4c8259d3"
+          }
+        ]
+      },
+      {
+        "role": "trace-runner",
+        "check": "bytes",
+        "commit": "35537447b4e38c31a2dc9463b2d6fe8ccb54e4ba",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/build-receipt-check.mjs",
+            "sha256": "29db8ed5a7d9e1ba2e2825c96f9465e5f4bb56b03d99ce9b304e228ed43f5520"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/trace-cycle.ts",
+            "sha256": "bef2fde68e64175ae42b30edb9e1ae4eec62051cfd534d6cee25f6bd5a89ed4c"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/trace-seal.mjs",
+            "sha256": "d4459c38654eac64a71b5af3339bcc45a0f36ef6965bc7fd4c1aa2a9c6294f79"
+          }
+        ]
+      },
+      {
+        "role": "b-route-seam-fix",
+        "check": "ancestor",
+        "commit": "c06dc17ec86fa968c87176aece12b4a1d67e2105"
+      },
+      {
+        "role": "t14-k64-freeze",
+        "check": "bytes",
+        "commit": "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/constants.mjs",
+            "sha256": "579959656ee9961931bf89d8d374e5c6e058e3de0ee195502c52ec873f2c0326"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/receipt.mjs",
+            "sha256": "77a181a9f6ee430a2fe3c647ccba206f2e1f34dae0e605081fe86ccbd53aebe8"
+          }
+        ]
+      },
+      {
+        "role": "freshness-requeue-fix",
+        "check": "ancestor",
+        "commit": "02837f02bb9df82da6dc65b3d237bf17840ad775"
+      },
+      {
+        "role": "startup-gate-io-settle",
+        "check": "ancestor",
+        "commit": "26764b433e6299db960f608bb99e4332949d39a3"
+      },
+      {
+        "role": "s5a-graph-arm-runner",
+        "check": "bytes",
+        "commit": "2c9316848ce028565c4d8e8af2d2779c3fd7e187",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/k64-record.mjs",
+            "sha256": "4818d1c1d91956f8412e8b4ca1c9f0891017204299ad0ea52eafd626d1675df9"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/k64-runner.mjs",
+            "sha256": "350227a9ffd02f1bcd67ab451f5aa30671c98be7931e4972e49ec05a970b3572"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/material-revision.mjs",
+            "sha256": "ac2f1f794dbc640d5ff910f7f74a3d5438ed8ce01402cc8895944aefd7c853a5"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-k64-probe.tsx",
+            "sha256": "d05bb4a1955994a67233d9dc2aa78d6203393731a8af731246fc0fb4240d0c6c"
+          }
+        ]
+      },
+      {
+        "role": "maintenance-ownership-release",
+        "check": "ancestor",
+        "commit": "3f3d9999225007417708ab471bea307331f7e8a2"
+      },
+      {
+        "role": "s5b-diagnostics-wiring",
+        "check": "bytes",
+        "commit": "950751d040b29b6d78a067a003dc19b196cfb692",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/g01-negative-preview.mjs",
+            "sha256": "9b0231928b05aa2ada09b4a43dddd5513490008bce725c84be9411c59aa3bf68"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/g01-negatives.mjs",
+            "sha256": "a5f7693bf92e730a7835be0467b8d274e1a0fae0e8c8ed7a1071e8cef13827f6"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-diagnostic-probe.ts",
+            "sha256": "422a241d645eb9fa5b695d37c4f1b7ab1f0bde92bdff44c267dd9bee44a6b878"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-harness.ts",
+            "sha256": "9f0229918e0f4839b9908d792bd93a1842d683bafdfa31ae057089e5af6e0be4"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/nir1RelatedScenesApi.timing.ts",
+            "sha256": "bf67fd28982c0560d8488250f769295569145292e82480325d7464046d3cb3fd"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/window.mjs",
+            "sha256": "2a378aa4d16ef80341f70bb3c71d4907c38df266003214d5e5d16ce5a54f121a"
+          }
+        ]
+      },
+      {
+        "role": "sp-p4-ir-timeout",
+        "check": "bytes",
+        "commit": "43e3f40b5d653c62d5aca4ca795917b67310992c",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/g01-negative-run.mjs",
+            "sha256": "dac896999acbc8f6654fa1b955f6da1625e35b02e311aa845aaa327714778b4b"
+          }
+        ]
+      },
+      {
+        "role": "s4-rehearsal-admission",
+        "check": "bytes",
+        "commit": "82d427465b16a12809c6f93adad74ac97859c85a",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/admission.mjs",
+            "sha256": "e0b3877f0d118936348db948546e7c125710b1de9c07732b55b1d3f0efba4e14"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs",
+            "sha256": "021bb096b34c901288bd748a4e06edf18f55df4da178fb9b9cd5c8af5a8974ca"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/trace-frozen.mjs",
+            "sha256": "b1ecee05b1a14a914b98b22110b5ad2932806fb921a5951b082abbb8851f42e2"
+          },
+          {
+            "path": "scripts/quality/nir1-retrieval/contract.mjs",
+            "sha256": "ec6a73277f3b26075c71bdfab945b2c2b83d9883067da4139d60d6cad090f963"
+          }
+        ]
+      },
+      {
+        "role": "sp-p4-ir-pair-limit",
+        "check": "bytes",
+        "commit": "906da641befb8dfbb445e05ce5df814bf5b16c35",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/diagnostic-runner.mjs",
+            "sha256": "febdce05aba8bb7f8cf891857157ee211a08f73a0882647dbb479c5fe4cbb388"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs",
+            "sha256": "c21340904c89f2c6877dc4135b4a8a1c744ba9ad12aea113b23dd641d83a16f2"
+          }
+        ]
+      },
+      {
+        "role": "t3-t5-setup-freshness-settle",
+        "check": "bytes",
+        "commit": "b0df31f076ea1e11fd187c5c6fdf179d0df337b5",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-setup-driver.mjs",
+            "sha256": "0ea96056614b7af6b8227d9fd2444f070ec1e75eaa84117098748b781e4b1dc3"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/workspace-db.mjs",
+            "sha256": "e61cb4fcbec2fd019fccab0c77f5e4f331bc01f3e19ee359681873b5d0638b41"
+          }
+        ]
+      },
+      {
+        "role": "t1-t4-measurement-settle-ready",
+        "check": "bytes",
+        "commit": "354b1ba6a997bc464fb2ee9d7a2276c9f7d0bc78",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-k64-plan.mjs",
+            "sha256": "faa7fd4d6541b5b6896568ac7e958f181fd6eb19094b5692ffeb37ba83b6e81d"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-k64-run.mjs",
+            "sha256": "a56ba1fee1aafa99414db952947a3866683ef3c5bbeb92de7d4051d623b79a77"
+          }
+        ]
+      },
+      {
+        "role": "v2-trace-probe-paths",
+        "check": "bytes",
+        "commit": "262be7a9f53834a8d2b2f4d2751757519b94c9d1",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-trace-probe.tsx",
+            "sha256": "6c66bf8ec02811cc77cceb093d70110c26a563d92366d3e006c89fb29d160faf"
+          }
+        ]
+      },
+      {
+        "role": "v4-trace-record-requery",
+        "check": "bytes",
+        "commit": "527589b6ca374d8c4e3933f6ec0b35632ca7cd2d",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/trace-record.mjs",
+            "sha256": "be84375eb35d7b0caafecf6c68dde4c7fa0ce153c23f47be0771d07b32151ce8"
+          }
+        ]
+      },
+      {
+        "role": "v4-followup-cancelled-match",
+        "check": "bytes",
+        "commit": "2854aa31da9b172b3e6d5a847267fbc76b9accf6",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/followup.mjs",
+            "sha256": "8e997ab8cfde1b5ad8d2012b1e58882a2677a9378c6f52e9f8ba247b3ed712a7"
+          }
+        ]
+      },
+      {
+        "role": "v4-trace-runner-quote-guard",
+        "check": "bytes",
+        "commit": "759a4679a7b90d25c13bc9a8517f8a64df43adda",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/trace-runner.mjs",
+            "sha256": "0b438cb88f0b473d4c0f526755bdab4205153b325dc167e919a52e58fb8435c8"
+          }
+        ]
+      },
+      {
+        "role": "pr1-native-eval-feature",
+        "check": "bytes",
+        "commit": "3739dbedb762ada8961f509c1b4d6885a11c3099",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/native-architecture.mjs",
+            "sha256": "0e18a7ddcbe4cd24beba5da0b46c8676676f33ccb821d8a82460cfe15824efb6"
+          }
+        ]
+      },
+      {
+        "role": "p1-harness-core",
+        "check": "bytes",
+        "commit": "865a3e2bad1ada5f6e5648e50c6902052b9b2a3c",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/admission-facts.mjs",
+            "sha256": "420cbdf4d9949cd1117c3f3eed6eb5a312b622f7a79fa629369cd9b5a0e7c468"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/availability.mjs",
+            "sha256": "04c17b33cd89a2dda3beb5a27e462fa7718b8eb2ced424f8639efa55cf2fe5f0"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/egress.mjs",
+            "sha256": "77c0aa177007d9bb8c0da5f0ad5a23c09b4dac02f2d5d5b718089edbb8dcac54"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/join.mjs",
+            "sha256": "7dd0d790de8f027caa4c23c757d76dc03ad00d8732b8484f4f992be37ed5481d"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/native-sample.mjs",
+            "sha256": "ec8d3cbaae613b6cba02eef2732b26550fb95ccf0f05f9b48e31e67896349fb9"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/procedure-file.mjs",
+            "sha256": "98efbb8d1cd41ea127b95c1a2ce4831d3af7c516a51889a580ec800dcf5a6574"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/q4.mjs",
+            "sha256": "862475877f49b8b202ef1cbf9c1702c4f13f50a37141241f25b5f43f4c1306ef"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/run-sample.mjs",
+            "sha256": "add07154efe3d0bc71feaf11bea4ffb56bdc0167e42b2fe00f870247c0f5a754"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/stats.mjs",
+            "sha256": "6790e2d12de8839ef431196f4b5d02dfa98c269b65b8c551341079162f735f5b"
+          },
+          {
+            "path": "scripts/quality/nir1-retrieval/standard-build-receipt.mjs",
+            "sha256": "24f49e86d09e2243f5ba4b0528ed6b3fffb9d88aeea6d5b38ef3689e207416e9"
+          }
+        ]
+      },
+      {
+        "role": "p2p3-harness-admission",
+        "check": "bytes",
+        "commit": "a4e65b66006dec7101f93340cdca70fcafabfc5d",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/dev-fixture.mjs",
+            "sha256": "e087f40275b203a30618a5fe4c2a5c14fc86dd545a49383da54116998b3eac89"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/dprime-check.mjs",
+            "sha256": "df1c40e3bdb17cd5b86bcebd16a4f84d3c823144d7a5685fc1bedbe19b3828d6"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/eval-native-build.mjs",
+            "sha256": "85fe0785ec6436f750d6872fcf244aee4a89975f477fe592fb6454fc19d89af3"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/keep-test.mjs",
+            "sha256": "fa103a56d1d992193e79cba3b82207deb25331540728774a274916687235f62c"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/observer-core.mjs",
+            "sha256": "3c4e9e470d5271d09d8d9c90f088103529461d0aa3f33eb161db203d3fa539c7"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/outcome.mjs",
+            "sha256": "8640f775c77f718bca1c85af004ad5210e80e1b0ee9e083ff3cbb42a314dfaf3"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer-build.mjs",
+            "sha256": "72340cde5709837a9f770ee6ea8ec0c29b2208820944437ab11ce9425436f13f"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-harness.html",
+            "sha256": "c2e5c77f00a1df6560b0bf8ac98a303090617e582aedc7a5aae44d1880581f30"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-hook-probe.tsx",
+            "sha256": "050e3db7476c2631cb07fa300d4f527825e0b78e3516eb7e8df2eec13fe2e7c1"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/fetchRelatedScenes.timing.ts",
+            "sha256": "ed89754939755608a5d13ca19c2757bfeefeeef1d52368860dfd484daec03c6c"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/nir1GraphAvailability.eval.ts",
+            "sha256": "01b009b3a5cc25899536703d81a400f8bdc09de4be70a9a04c2067c2f322c1cd"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/shell.timing.ts",
+            "sha256": "5b4c4f26fff22d0b5ac179b5aa4cc79561da1d7aed6e976a83d7680654b1d018"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/signal-cleanup.mjs",
+            "sha256": "bd67b721168c780c3111462f79aa3e4f157aeb38295b421ab0582786608dd69d"
+          },
+          {
+            "path": "scripts/quality/nir1-retrieval/standard-build.mjs",
+            "sha256": "fed1a24fead2b8fed522e681a648324f5e347a01aa271543bfe3cb907f0d1e35"
+          }
+        ]
+      },
+      {
+        "role": "p4-setup-driver-seed-pin",
+        "check": "bytes",
+        "commit": "7a2669ead5262cc1a1126a7ab52bf808afeb98ff",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/r5-check-runner.mjs",
+            "sha256": "ad327cb7ce418f6a2e628648320f02103c49271c6a0264c48e82f3fc36255648"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/seed-pin-setup.mjs",
+            "sha256": "b694ac8bfa735bc3169c3678275bc1f80b64d42b8470a623e295d360757646ab"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/seed-pin.mjs",
+            "sha256": "4ef057a3b1eb3c65195a28fbc08aef8184deffb8a1af295c8b23c8ce5289816b"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/setup-driver.mjs",
+            "sha256": "e3426fa0b799cf4a485248b2a38ada386a6b1acfff31d2f855c08047ec6d203c"
+          }
+        ]
+      },
+      {
+        "role": "nir1-retrieval-ir-base",
+        "check": "bytes",
+        "commit": "ffa3c0adc56e9af0b385c0379b63a69278242240",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-retrieval/acceptance-policy.mjs",
+            "sha256": "bc7c63310bde90f9b2f6de74ad64b17f699bdb0dc2410da1ad4c02f265aa3afe"
+          },
+          {
+            "path": "scripts/quality/nir1-retrieval/candidate-policy.mjs",
+            "sha256": "05cb3f5142e3297cb521870bf9cfc9fa177f3084948e5af13a773e29e1f8ce67"
+          }
+        ]
+      },
+      {
+        "role": "cp0-graph-eval-freeze",
+        "check": "bytes",
+        "commit": "6bdf61e99f80debd8c2c0c56f2c892e21534f924",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph/porter.mjs",
+            "sha256": "21c418de4ee17d6e337a7dd6fcc3791d4824394e70a13bf6802c43844ceb5026"
+          },
+          {
+            "path": "scripts/quality/nir1-retrieval/paired.mjs",
+            "sha256": "116c066e75a726449273ad3ecd9aeca5d23b9c9d88706de604d955346bb0aed6"
+          }
+        ]
+      },
+      {
+        "role": "da1-route-isolation",
+        "check": "bytes",
+        "commit": "2b68fd4df67599ca2f277fc94f94956de463381e",
+        "files": [
+          {
+            "path": "scripts/quality/run-nir1-retrieval.mjs",
+            "sha256": "7c9b0763c5d6f7c873f4c7658dff356505359ede8442255e3141d1f4bccdf7b2"
+          }
+        ]
+      },
+      {
+        "role": "cq-lim-graph-limits",
+        "check": "bytes",
+        "commit": "a789039a779eb4df0dec2b8b3be5e29d2bff5a5c",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph/contract.mjs",
+            "sha256": "56f15d8e15a491714ae54bcddae5b0543362e32dec5f049276ce6d6af8949356"
+          }
+        ]
+      },
+      {
+        "role": "dp-h-unknown-scope",
+        "check": "bytes",
+        "commit": "e2d22b89c92b9de9585d273349e516e9df6ee5b7",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-packing/final-request/architecture.mjs",
+            "sha256": "13621af323993eebd9345d83de5cc5f3f12b52691a64a6ac23f5488d71cecc64"
+          }
+        ]
+      }
+    ],
+    "s2": {
+      "observationPrep": {
+        "path": "evals/nir1-graph/observation-prep.v1.json",
+        "sha256": "8c710b53d10802688084961ef78c821b0b314d88337ddcfd240b0650435a4d4a",
+        "commit": "557e683ccd884955e220f21bd15119f115995d29"
+      },
+      "declarationAddendum": {
+        "path": "evals/nir1-graph/declaration-addendum.v1.json",
+        "sha256": "82b05bae92d05b3af2a73739bd14b73cf88dcdc3290e19860126c057c5552949",
+        "commit": "557e683ccd884955e220f21bd15119f115995d29"
+      },
+      "g01Addendum": {
+        "path": "evals/nir1-g01/setup-addendum.v1.json",
+        "sha256": "ade7c40256c159f2da1341cfa885401542f6d6621a99ca394bcdb255b7271f46",
+        "commit": "557e683ccd884955e220f21bd15119f115995d29"
+      }
+    },
+    "priorAttempts": {
+      "parity": [],
+      "thisAttempt": {
+        "runName": "parity-s5r4-1",
+        "fileSha256AtStart": "309ed0b107e69a3ad4b61d9d98c5c9aa73d4e7b63a1c338c5cd86c6d41de47a2"
+      }
+    },
+    "seedPinGate": {
+      "status": "match",
+      "plan": "frozen",
+      "rows": [
+        {
+          "caseId": "G-01",
+          "variantId": "v1",
+          "querySceneId": "6094a6d9-45f0-4aea-ad70-2522383f0cbe",
+          "productSeed": "4ed09af1-6d4b-4475-b426-adb5ebbc0f4d",
+          "expectedSeed": "4ed09af1-6d4b-4475-b426-adb5ebbc0f4d",
+          "expectedSeedLogical": "g01-orin",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "1a95c736851c84397a06141928e2e4d3e957e9b354fe0f09a229367a11844c84",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r4-g-01-v1/setup/G-01/v1/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-02",
+          "variantId": "base",
+          "querySceneId": "f7615a5a-b328-4233-87d3-5199f030d138",
+          "productSeed": "c9ac60bf-d748-42a7-80a4-46cf16ef78f7",
+          "expectedSeed": "c9ac60bf-d748-42a7-80a4-46cf16ef78f7",
+          "expectedSeedLogical": "g02-orla",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "20ff8e8907ed6b8816b739a9913d9b82eb857052553d0aa6ded844c8d47e5660",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r4-g-02-base/setup/G-02/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-03",
+          "variantId": "base",
+          "querySceneId": "077edbfd-b007-45be-9ecf-716abc2309c5",
+          "productSeed": "746d2dc2-e3ae-4f30-bfaf-f7965ac30e57",
+          "expectedSeed": "746d2dc2-e3ae-4f30-bfaf-f7965ac30e57",
+          "expectedSeedLogical": "g03-wren",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "2f8c5d30d7fbeea999a0fc44af850995dcb2a69231d3436a96f2609930122956",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r4-g-03-base/setup/G-03/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-03",
+          "variantId": "frontier-exceeded",
+          "querySceneId": "3fb980a0-ff71-48b1-b8fb-a7daba6daebe",
+          "productSeed": "2ee89a3b-d713-4f46-bdef-eb14c91a5db0",
+          "expectedSeed": "2ee89a3b-d713-4f46-bdef-eb14c91a5db0",
+          "expectedSeedLogical": "g03-wren",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "360371b9e220268f385d216290731514bd8b357b69d8d7af403ec7cb6e1f61d8",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r4-g-03-frontier-exceeded/setup/G-03/frontier-exceeded/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-04",
+          "variantId": "base",
+          "querySceneId": "875f7e7d-3718-4697-a157-7db881fc06b3",
+          "productSeed": "126ea0d5-a67c-48e6-9c82-a26a91b061f5",
+          "expectedSeed": "126ea0d5-a67c-48e6-9c82-a26a91b061f5",
+          "expectedSeedLogical": "g04-bren",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "80862c7b31e005bdd3b7cbcb0c55dbc12fa97bb98afb61f070d9490871f7bf21",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r4-g-04-base/setup/G-04/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-05",
+          "variantId": "base",
+          "querySceneId": "152992b3-a6f7-48b5-a764-b4f4d79fe5c9",
+          "productSeed": "42779b7c-5bb2-4fe6-a550-9b502fa0699a",
+          "expectedSeed": "42779b7c-5bb2-4fe6-a550-9b502fa0699a",
+          "expectedSeedLogical": "g05-hale",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "2172791e1dd31a9680276780c999bef199890071a5cb9eaf4a55ea954b3301e9",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r4-g-05-base/setup/G-05/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-06",
+          "variantId": "base",
+          "querySceneId": "a02f32a8-7cf5-4435-a235-968389510d2f",
+          "productSeed": "f1d545ba-3360-4422-a47e-537cbd0d7cce",
+          "expectedSeed": "f1d545ba-3360-4422-a47e-537cbd0d7cce",
+          "expectedSeedLogical": "g06-maro",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "505cd527947d657807ee98a4f65ef9c05a54ea7ec8e5bfd37ed2cb52c2a3135e",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r4-g-06-base/setup/G-06/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-07",
+          "variantId": "base",
+          "querySceneId": "ca773c9c-6f84-4a34-bdc8-7e49652d85d8",
+          "productSeed": "81751730-df31-463d-adb0-cc61e589e3b9",
+          "expectedSeed": "81751730-df31-463d-adb0-cc61e589e3b9",
+          "expectedSeedLogical": "g07-vesna",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "b71eda5a9bd98ab2c787cb0127c99bafcdeb70dc10797e991d7ce7319d0826ee",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r4-g-07-base/setup/G-07/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-08",
+          "variantId": "base-usable",
+          "querySceneId": "28b4e264-db63-43b3-a37e-4d1fb4a8fbf8",
+          "productSeed": "14fbcef7-d75f-40a2-ba8e-f44d05af7fe0",
+          "expectedSeed": "14fbcef7-d75f-40a2-ba8e-f44d05af7fe0",
+          "expectedSeedLogical": "g08-odile",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "4c5b511153fe6bb609b03989bff2028eb7288fe73695d55b84f00e9dfcad4dc6",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r4-g-08-base-usable/setup/G-08/base-usable/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-08",
+          "variantId": "graph-index-unusable",
+          "querySceneId": "533521e1-e0e0-4d5f-b0d0-0bb0b1846c12",
+          "productSeed": "ee014096-a711-4e93-afdb-4cae67edcd69",
+          "expectedSeed": "ee014096-a711-4e93-afdb-4cae67edcd69",
+          "expectedSeedLogical": "g08-odile",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "c0baf7251ce9f680738478c8398f8fd494c668b06cb7772c535d3fe29623a1ca",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r4-g-08-graph-index-unusable/setup/G-08/graph-index-unusable/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-08",
+          "variantId": "graph-recovered",
+          "querySceneId": "f35d8917-7248-4335-97d7-948ff2595a3d",
+          "productSeed": "4bfb6df4-9d5c-4fd6-8351-1552bd746655",
+          "expectedSeed": "4bfb6df4-9d5c-4fd6-8351-1552bd746655",
+          "expectedSeedLogical": "g08-odile",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "947c5d7e50a9bd30f39404727da01e05204c072e8382d693ddd7ce84ddd58c77",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r4-g-08-graph-recovered/setup/G-08/graph-recovered/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-08",
+          "variantId": "chronicle-index-unusable",
+          "querySceneId": "90e5ed7f-c2dd-4a3c-a1cd-af464af589ab",
+          "productSeed": "5a986794-4a57-493a-8cfd-3560c07b4edb",
+          "expectedSeed": "5a986794-4a57-493a-8cfd-3560c07b4edb",
+          "expectedSeedLogical": "g08-odile",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "c7e8a9097649ce2265fc9a747f14ff26c9ecf8005bce38848376f344d85104d1",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r4-g-08-chronicle-index-unusable/setup/G-08/chronicle-index-unusable/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-08",
+          "variantId": "both-indexes-unusable",
+          "querySceneId": "d941cd2a-026d-4330-8d1e-38f7ccacc9f4",
+          "productSeed": "4d24ccd8-a3c5-4332-b533-b1c9a894a115",
+          "expectedSeed": "4d24ccd8-a3c5-4332-b533-b1c9a894a115",
+          "expectedSeedLogical": "g08-odile",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "a8e55cbac465bdb9be94e51b5c415fb73d170a0e0955eaf155d14b81bfbd2c95",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r4-g-08-both-indexes-unusable/setup/G-08/both-indexes-unusable/cold-workspace/grimodex.db"
+        }
+      ]
+    },
+    "productBuild": {
+      "checked": true,
+      "productReceiptHead": "86427ee53a73e669e34631c5774fbd56960ac050",
+      "productReceiptTree": "5ed0204d363c52659dcd072d46ef5c693be0722c",
+      "evalReceiptHead": "86427ee53a73e669e34631c5774fbd56960ac050",
+      "evalReceiptTree": "5ed0204d363c52659dcd072d46ef5c693be0722c",
+      "artifacts": {
+        "dist/index.html": "7a6db87923eb77033141dfb828405446c7e572e63f8fc0ed77db436ccb3c15cf",
+        "dist-electron/main.cjs": "31023f585fcdd080afe530a1e3b19a26e6812c0aa2ec35f33bf2c886db528278",
+        "dist-electron/preload.cjs": "9c37d32af100699a97fbd8ce068fb273f5e9387d9155cc471173add03ca489a8",
+        "electron/native/grimodex-node/grimodex-node.node": "7df602780bfffd49887afb62d5a4bef0041317d65d2fe6ee0749e46591613e79"
+      }
+    }
+  },
+  "variants": {
+    "G-02/base": {
+      "status": "measured",
+      "samples": 35,
+      "valid": true,
+      "errors": [],
+      "verdict": {
+        "outcome": "recorded"
+      }
+    },
+    "G-03/base": {
+      "status": "measured",
+      "samples": 35,
+      "valid": true,
+      "errors": [],
+      "verdict": {
+        "outcome": "recorded"
+      }
+    },
+    "G-03/frontier-exceeded": {
+      "status": "measured",
+      "samples": 35,
+      "valid": true,
+      "errors": [],
+      "verdict": {
+        "outcome": "recorded"
+      }
+    },
+    "G-04/base": {
+      "status": "measured",
+      "samples": 35,
+      "valid": true,
+      "errors": [],
+      "verdict": {
+        "outcome": "recorded"
+      }
+    },
+    "G-05/base": {
+      "status": "measured",
+      "samples": 35,
+      "valid": true,
+      "errors": [],
+      "verdict": {
+        "outcome": "recorded"
+      }
+    },
+    "G-06/base": {
+      "status": "measured",
+      "samples": 35,
+      "valid": true,
+      "errors": [],
+      "verdict": {
+        "outcome": "recorded"
+      }
+    },
+    "G-07/base": {
+      "status": "measured",
+      "samples": 35,
+      "valid": true,
+      "errors": [],
+      "verdict": {
+        "outcome": "recorded"
+      }
+    },
+    "G-08/base-usable": {
+      "status": "measured",
+      "samples": 35,
+      "valid": true,
+      "errors": [],
+      "verdict": {
+        "outcome": "recorded"
+      }
+    },
+    "G-08/graph-index-unusable": {
+      "status": "measured",
+      "samples": 35,
+      "valid": true,
+      "errors": [],
+      "verdict": {
+        "outcome": "recorded"
+      }
+    },
+    "G-08/graph-recovered": {
+      "status": "measured",
+      "samples": 35,
+      "valid": true,
+      "errors": [],
+      "verdict": {
+        "outcome": "recorded"
+      }
+    },
+    "G-08/chronicle-index-unusable": {
+      "status": "measured",
+      "samples": 35,
+      "valid": true,
+      "errors": [],
+      "verdict": {
+        "outcome": "recorded"
+      }
+    },
+    "G-08/both-indexes-unusable": {
+      "status": "measured",
+      "samples": 35,
+      "valid": true,
+      "errors": [],
+      "verdict": {
+        "outcome": "recorded"
+      }
+    }
+  }
+}

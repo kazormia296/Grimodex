@@ -1,0 +1,671 @@
+{
+  "schemaVersion": "nir1-graph-case/1",
+  "status": "predeclared-design-fixture",
+  "caseId": "G-04",
+  "fixtureId": "nir1-g04-scope-exact-unknown/2",
+  "sourceDocument": "docs/plans/nir1-l6-l9-execution-plan.md",
+  "sourceSection": "G-01〜G-08 表（G-04）",
+  "designReferences": [
+    "docs/plans/nir1-l6-l9-execution-plan.md#L7: Entity/Relation入力とGraph",
+    "docs/plans/nir1-l6-l9-execution-plan.md#graph-limited-binding",
+    "docs/plans/nir1-c-scene-connection-candidate.md#6. 候補選択・融合の事前規則",
+    "docs/plans/nir1-c-scene-connection-candidate.md#7. G-01 fixture提案: 出力観察前の固定v1",
+    "docs/plans/nir1-post-b-execution-plan.md#7. C-productとP：Related Scenes統合",
+    "docs/plans/narrative-ir-nir1-implementation-plan.md#A6に含める後続の材料開示・Graph authority"
+  ],
+  "observationPolicy": "Do not change query, corpus, seed, Gold, ordering, or metrics after observing a runtime result.",
+  "language": "en",
+  "caseClass": {
+    "queryClass": "Scope exact／unknown",
+    "expectedJudgement": "不一致・unknown・unresolved材料を0件化",
+    "positive": "query／material Scope一致",
+    "negative": "Scope軸不一致・未対応制約"
+  },
+  "slotClass": "supplementable",
+  "goldDefinition": "Gold marks earlier Scenes in wl-main, readable by the reader at S2, in which a person the selected ferryman Bren carried across appears. Only Lio's crossing is disclosed to this query; Kit's crossing belongs to the alternate worldline, Ora's has an unresolved worldline, Tam's review Scene has no Scope, and Sel's is known only to Mott. Lio's crossing Scene is Gold 3 and Lio's market Scene Gold 2.",
+  "answerEntityIds": [
+    "g04-lio"
+  ],
+  "query": {
+    "sceneId": "g04-query",
+    "readingOrder": 100,
+    "title": "Open question",
+    "body": "Which earlier scene shows whom my chosen ferryman carried across?"
+  },
+  "scenes": [
+    {
+      "id": "g04-rv-match",
+      "readingOrder": 0,
+      "title": "Tally post",
+      "body": "Chalk tallies lined a weathered post beside a quiet dock.",
+      "gold": 0,
+      "role": "review"
+    },
+    {
+      "id": "g04-rv-alt",
+      "readingOrder": 2,
+      "title": "Violet sky",
+      "body": "Lanterns burned under a violet sky in a town of mirrors.",
+      "gold": 0,
+      "role": "review"
+    },
+    {
+      "id": "g04-rv-unresolved",
+      "readingOrder": 4,
+      "title": "Torn map",
+      "body": "Dust settled over a map with torn edges.",
+      "gold": 0,
+      "role": "review"
+    },
+    {
+      "id": "g04-rv-unknown",
+      "readingOrder": 6,
+      "title": "Empty inn",
+      "body": "Rain dripped from the eaves of a silent inn.",
+      "gold": 0,
+      "role": "review"
+    },
+    {
+      "id": "g04-rv-holder",
+      "readingOrder": 8,
+      "title": "Toll booth",
+      "body": "Mott counted coins alone in a locked booth.",
+      "gold": 0,
+      "role": "review"
+    },
+    {
+      "id": "g04-control",
+      "readingOrder": 10,
+      "title": "Ferry post",
+      "body": "A ferry post held a copied line: Which earlier scene shows whom my chosen ferryman carried across? No one answered it.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g04-lio-landing",
+      "readingOrder": 20,
+      "title": "Far stones",
+      "body": "Market bells rang late because of rain. Lio counted coins for lamp oil beside a stall of onions. At dusk Bren set her down on the far stones and pushed off again into the mist. A baker swept flour from his step.",
+      "gold": 3,
+      "role": "answer"
+    },
+    {
+      "id": "g04-lio-market",
+      "readingOrder": 30,
+      "title": "Oil jars",
+      "body": "Lio weighed lamp oil into small jars for a line of buyers.",
+      "gold": 2,
+      "role": "answer"
+    }
+  ],
+  "eligibleSceneIds": [
+    "g04-rv-match",
+    "g04-rv-alt",
+    "g04-rv-unresolved",
+    "g04-rv-unknown",
+    "g04-rv-holder",
+    "g04-control",
+    "g04-lio-landing",
+    "g04-lio-market"
+  ],
+  "scope": {
+    "registry": {
+      "timelineRefs": [
+        "tl-main"
+      ],
+      "worldlineRefs": [
+        "wl-main",
+        "wl-alt"
+      ],
+      "narrativeLayerRefs": [
+        "layer-story"
+      ]
+    },
+    "default": {
+      "marker": "explicit",
+      "queryIdentity": {
+        "timeline": {
+          "kind": "exact",
+          "ref": "tl-main"
+        },
+        "worldline": {
+          "kind": "exact",
+          "ref": "wl-main"
+        },
+        "narrativeLayer": {
+          "kind": "exact",
+          "ref": "layer-story"
+        }
+      },
+      "materialConstraint": {
+        "timeline": {
+          "kind": "exact",
+          "ref": "tl-main"
+        },
+        "worldline": {
+          "kind": "exact",
+          "ref": "wl-main"
+        },
+        "narrativeLayer": {
+          "kind": "exact",
+          "ref": "layer-story"
+        }
+      },
+      "knowledgeHolder": {
+        "kind": "reader"
+      },
+      "audience": {
+        "kind": "reader"
+      }
+    },
+    "overrides": {
+      "g04-rv-alt": {
+        "marker": "explicit",
+        "queryIdentity": {
+          "worldline": {
+            "kind": "exact",
+            "ref": "wl-alt"
+          }
+        },
+        "materialConstraint": {
+          "worldline": {
+            "kind": "exact",
+            "ref": "wl-alt"
+          }
+        }
+      },
+      "g04-rv-unresolved": {
+        "marker": "explicit",
+        "materialConstraint": {
+          "worldline": {
+            "kind": "unresolved",
+            "reason": "ambiguous"
+          }
+        }
+      },
+      "g04-rv-unknown": {
+        "marker": "unknown"
+      },
+      "g04-rv-holder": {
+        "marker": "explicit",
+        "knowledgeHolder": {
+          "kind": "character",
+          "ref": "g04-mott"
+        }
+      }
+    }
+  },
+  "entities": [
+    {
+      "id": "g04-bren",
+      "kind": "character",
+      "label": "Bren",
+      "summary": "Bren runs a flat ferry on a wide river."
+    },
+    {
+      "id": "g04-lio",
+      "kind": "character",
+      "label": "Lio",
+      "summary": "Lio sells lamp oil in a market town."
+    },
+    {
+      "id": "g04-kit",
+      "kind": "character",
+      "label": "Kit",
+      "summary": "Kit mends rope in a shipyard."
+    },
+    {
+      "id": "g04-ora",
+      "kind": "character",
+      "label": "Ora",
+      "summary": "Ora keeps goats above a valley."
+    },
+    {
+      "id": "g04-tam",
+      "kind": "character",
+      "label": "Tam",
+      "summary": "Tam bakes bread before sunrise."
+    },
+    {
+      "id": "g04-sel",
+      "kind": "character",
+      "label": "Sel",
+      "summary": "Sel paints signs for inns."
+    },
+    {
+      "id": "g04-mott",
+      "kind": "character",
+      "label": "Mott",
+      "summary": "Mott guards a toll gate."
+    }
+  ],
+  "relations": [
+    {
+      "id": "g04-ferried-lio",
+      "fromEntityId": "g04-bren",
+      "toEntityId": "g04-lio",
+      "type": "ferried",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g04-ferried-kit",
+      "fromEntityId": "g04-bren",
+      "toEntityId": "g04-kit",
+      "type": "ferried",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g04-ferried-ora",
+      "fromEntityId": "g04-bren",
+      "toEntityId": "g04-ora",
+      "type": "ferried",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g04-ferried-tam",
+      "fromEntityId": "g04-bren",
+      "toEntityId": "g04-tam",
+      "type": "ferried",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g04-ferried-sel",
+      "fromEntityId": "g04-bren",
+      "toEntityId": "g04-sel",
+      "type": "ferried",
+      "direction": "directed",
+      "authorDeclared": true
+    }
+  ],
+  "manualSeed": {
+    "entityId": "g04-bren",
+    "manualSeed": true
+  },
+  "pins": [
+    {
+      "sceneId": "g04-lio-landing",
+      "entryId": "g04-lio",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g04-control",
+      "entryId": "g04-kit",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g04-control",
+      "entryId": "g04-ora",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g04-control",
+      "entryId": "g04-tam",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g04-control",
+      "entryId": "g04-sel",
+      "source": "scene_codex_pins"
+    }
+  ],
+  "foreshadows": [],
+  "qualifiedIr": [
+    {
+      "sceneId": "g04-control",
+      "summary": "A ferry post displayed an unanswered question about whom a ferryman had carried across.",
+      "actuality": "actual",
+      "attribution": "narrator",
+      "narrativeFrame": "story-world"
+    }
+  ],
+  "revisions": [
+    {
+      "id": "g04-r-lio",
+      "reviewSceneId": "g04-rv-match",
+      "entityIds": [
+        "g04-bren",
+        "g04-lio"
+      ],
+      "relationIds": [
+        "g04-ferried-lio"
+      ],
+      "decision": "approved"
+    },
+    {
+      "id": "g04-r-kit",
+      "reviewSceneId": "g04-rv-alt",
+      "entityIds": [
+        "g04-bren",
+        "g04-kit"
+      ],
+      "relationIds": [
+        "g04-ferried-kit"
+      ],
+      "decision": "approved"
+    },
+    {
+      "id": "g04-r-ora",
+      "reviewSceneId": "g04-rv-unresolved",
+      "entityIds": [
+        "g04-bren",
+        "g04-ora"
+      ],
+      "relationIds": [
+        "g04-ferried-ora"
+      ],
+      "decision": "approved"
+    },
+    {
+      "id": "g04-r-tam",
+      "reviewSceneId": "g04-rv-unknown",
+      "entityIds": [
+        "g04-bren",
+        "g04-tam"
+      ],
+      "relationIds": [
+        "g04-ferried-tam"
+      ],
+      "decision": "approved"
+    },
+    {
+      "id": "g04-r-sel",
+      "reviewSceneId": "g04-rv-holder",
+      "entityIds": [
+        "g04-bren",
+        "g04-sel"
+      ],
+      "relationIds": [
+        "g04-ferried-sel"
+      ],
+      "decision": "approved"
+    }
+  ],
+  "mutations": [],
+  "setupTimeline": [
+    {
+      "kind": "revision",
+      "id": "g04-r-lio"
+    },
+    {
+      "kind": "revision",
+      "id": "g04-r-kit"
+    },
+    {
+      "kind": "revision",
+      "id": "g04-r-ora"
+    },
+    {
+      "kind": "revision",
+      "id": "g04-r-tam"
+    },
+    {
+      "kind": "revision",
+      "id": "g04-r-sel"
+    },
+    {
+      "kind": "qualified-ir",
+      "id": "g04-ir"
+    }
+  ],
+  "variants": [
+    {
+      "id": "base",
+      "description": "Steady state; IR has no ir-only Scene and leaves the shared slot unused, so Graph appends the one Scene pinned to the qualified Lio.",
+      "measurementPoint": "after-maintenance-current",
+      "indexState": {
+        "chronicle": "usable",
+        "graph": "usable"
+      },
+      "preconditions": [
+        {
+          "id": "b-sealed-binding",
+          "scope": "variant"
+        },
+        {
+          "id": "maintenance-enabled",
+          "scope": "variant"
+        },
+        {
+          "id": "raw-membership",
+          "scope": "variant"
+        },
+        {
+          "id": "cb4-inputs",
+          "scope": "added-scene",
+          "sceneId": "g04-lio-landing"
+        }
+      ],
+      "expectations": {
+        "arms": {
+          "raw": {
+            "sceneIds": [
+              "g04-control"
+            ],
+            "orderPredeclared": true
+          },
+          "rPlusIr": {
+            "sceneIds": [
+              "g04-control"
+            ],
+            "orderPredeclared": true,
+            "irSupplementSceneId": null,
+            "resultKind": "fused"
+          },
+          "rPlusIrPlusGraph": {
+            "baseline": "rPlusIr",
+            "sceneIds": [
+              "g04-control",
+              "g04-lio-landing"
+            ],
+            "appendedSceneId": "g04-lio-landing",
+            "orderPredeclared": true
+          }
+        },
+        "graph": {
+          "status": "available",
+          "reasonClass": null,
+          "nodes": [
+            {
+              "entityId": "g04-bren",
+              "hop": 0
+            },
+            {
+              "entityId": "g04-lio",
+              "hop": 1
+            }
+          ],
+          "edgeIds": [
+            "g04-ferried-lio"
+          ],
+          "qualifiedRevisionIds": [
+            "g04-r-lio"
+          ],
+          "excludedRevisions": [
+            {
+              "revisionId": "g04-r-kit",
+              "reasons": [
+                "scope-mismatch"
+              ]
+            },
+            {
+              "revisionId": "g04-r-ora",
+              "reasons": [
+                "scope-unresolved"
+              ]
+            },
+            {
+              "revisionId": "g04-r-tam",
+              "reasons": [
+                "scope-marker-unknown"
+              ]
+            },
+            {
+              "revisionId": "g04-r-sel",
+              "reasons": [
+                "holder-not-reader"
+              ]
+            }
+          ],
+          "excludedEdges": [
+            {
+              "edgeId": "g04-ferried-kit",
+              "reason": "revision-excluded"
+            },
+            {
+              "edgeId": "g04-ferried-ora",
+              "reason": "revision-excluded"
+            },
+            {
+              "edgeId": "g04-ferried-tam",
+              "reason": "revision-excluded"
+            },
+            {
+              "edgeId": "g04-ferried-sel",
+              "reason": "revision-excluded"
+            }
+          ],
+          "excludedEntities": [
+            {
+              "entityId": "g04-kit",
+              "reason": "revision-excluded"
+            },
+            {
+              "entityId": "g04-ora",
+              "reason": "revision-excluded"
+            },
+            {
+              "entityId": "g04-tam",
+              "reason": "revision-excluded"
+            },
+            {
+              "entityId": "g04-sel",
+              "reason": "revision-excluded"
+            },
+            {
+              "entityId": "g04-mott",
+              "reason": "no-revision"
+            }
+          ]
+        },
+        "pathAttachments": [],
+        "addedScene": {
+          "sceneId": "g04-lio-landing",
+          "path": {
+            "seedEntityId": "g04-bren",
+            "edgeIds": [
+              "g04-ferried-lio"
+            ],
+            "targetEntityId": "g04-lio",
+            "hop": 1
+          },
+          "sceneExcerpt": {
+            "sceneId": "g04-lio-landing",
+            "body": "Market bells rang late because of rain. Lio counted coins for lamp oil beside a stall of onions. At dusk Bren set her down on the far stones and pushed off again into the mist. A baker swept flour from his step.",
+            "canonicalUtf16Range": {
+              "start": 0,
+              "end": 211
+            }
+          }
+        },
+        "blockedCandidates": [],
+        "scenesWithoutPath": [
+          "g04-control"
+        ],
+        "forbiddenSceneIds": [],
+        "evidence": {
+          "pathEvidenceValidity": 1,
+          "requirements": [
+            "edge-relation-evidence",
+            "node-entity-evidence",
+            "revision-decision-binding",
+            "explicit-pin-association",
+            "added-scene-body-anchor"
+          ],
+          "assertions": []
+        },
+        "metrics": {
+          "raw": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          },
+          "rPlusIr": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          },
+          "rPlusIrPlusGraph": {
+            "recallAt8": 0.5,
+            "ndcgAt8": 0.4966392596877323
+          }
+        }
+      }
+    }
+  ],
+  "positive": [
+    {
+      "id": "G-04-P1",
+      "materials": [
+        "g04-r-lio",
+        "g04-ferried-lio",
+        "g04-lio-landing"
+      ],
+      "expectation": "Material bound to a review Scene whose exact timeline, worldline and layer equal the query identity, with reader holder and audience, qualifies; the one Scene pinned to Lio is appended in the shared slot that IR left unused.",
+      "rule": "l6-l9 L6 profile: exact は query identity と一致するときだけ許可; candidate §6: IRが共通追加枠を使っていなければGraph-only Sceneを1件追加."
+    }
+  ],
+  "negative": [
+    {
+      "id": "G-04-N1",
+      "materials": [
+        "g04-r-kit",
+        "g04-rv-alt",
+        "g04-kit"
+      ],
+      "expectation": "An exact wl-alt material constraint does not match the wl-main query identity; Kit contributes nothing.",
+      "rule": "l6-l9 L6 profile: exact mismatch is denied; ADR009 §6: different worldlines are never assumed equal."
+    },
+    {
+      "id": "G-04-N2",
+      "materials": [
+        "g04-r-ora",
+        "g04-rv-unresolved",
+        "g04-ora"
+      ],
+      "expectation": "An unresolved worldline material constraint fails closed; Ora contributes nothing.",
+      "rule": "l6-l9 L6 profile: unresolved は拒否; ADR009 §3: unresolved is not any."
+    },
+    {
+      "id": "G-04-N3",
+      "materials": [
+        "g04-r-tam",
+        "g04-rv-unknown",
+        "g04-tam"
+      ],
+      "expectation": "A review Scene created without Scope keeps the unknown marker; its material contributes nothing (or is refused at setup).",
+      "rule": "scope-storage-authority: unknown／unresolved fail closed; L6 Scene incarnation table."
+    },
+    {
+      "id": "G-04-N4",
+      "materials": [
+        "g04-r-sel",
+        "g04-rv-holder",
+        "g04-sel",
+        "g04-control"
+      ],
+      "expectation": "Material known only to the character Mott is not disclosed to the reader-holder query; no path reaches g04-control.",
+      "rule": "implementation plan A6: holder/audience are additional AND conditions; threat model: 異なる知識主体の情報混入."
+    }
+  ],
+  "measurementBoundary": {
+    "contractBaseline": "The isolated validator recomputes Graph traversal, Scene association, one-slot fusion and scorer arithmetic from these predeclared rows; it never runs Raw, IR or Graph.",
+    "runtimeSetup": "Requires normal Scene/Scope/registry/Entity/Relation/pin/foreshadow writers, normal Chronicle provider/Proposal/child/Decision setup for qualifiedIr, and the normal typed Entity/Relation prepare plus Human Decision route for every revision. Runtime IDs issued by writers are mapped to these logical IDs in a setup receipt; Gold never stores runtime IDs.",
+    "setupOrder": "Create the project and every Scene (including S2) in reading order; then Codex entities and relations; then the Scope registry and every explicit Scene Scope; then foreshadows, foreshadow Codex links and pins. Before the first setupTimeline step, enable maintenance through the real runtime-policy setting (the product default is maintenance_enabled=0; never through SQL or injected state; precondition maintenance-enabled). Then follow setupTimeline in order: each revision is prepared against its review Scene and receives its declared decision, each mutation uses its normal writer, and the qualified-ir step creates every qualifiedIr through the normal fixture provider/Proposal/child/Decision route with optional story inputs disabled only through real planner settings. Do not change tree order, registry or Scene Scope after the first typed revision is prepared. Then wait for the variant measurementPoint, record whether each declared precondition holds, and compare only the expectations that no unmet precondition blocks.",
+    "graphConnection": "The appended Graph-only Scene needs target-Scene body disclosure (C-body). While that authority is Hold, the predeclared appended Scene cannot be returned and this case stays Hold. The fixture sets no explicit POV or story position: if CB-4 requires either to judge the appended Scene, only the appended-Scene sub-expectation is blocked:cb4-inputs, and the Graph DTO and the unchanged R+IR prefix are still compared. Because control IR may stay below the IR floor, CP-3a must also append on a raw R+IR basis.",
+    "goldOrigin": "Predeclared for this case before any Graph runtime observation; not selected from observed output and not a human author measurement.",
+    "setupRefusal": "If a normal writer refuses to prepare or approve a negative material, record refused-at-setup; that negative still expects Graph contribution 0. A refused positive material makes the case Hold. A declared precondition that does not hold (such as a Raw membership or an ir-only IR admission that differs from the arms) records the affected variant as blocked:<precondition> instead; any other R or R+IR difference from the arms is Hold. Nothing is tuned and rerun.",
+    "rawPrediction": "R is predicted from the single control Scene that quotes S2 verbatim; every other Scene shares no Raw-visible token with S2 (validator check). This prediction is the precondition raw-membership: a different Raw membership records the variant as blocked:raw-membership, not Hold. This version was written after v1's runtime was observed: it declares no ir-only Scene and gives qualified IR only to the control, so IR cannot use the shared slot, and the two review bodies were chosen by a pre-freeze model-only probe. It measures Graph's Scope exclusion and one-slot append on that premise and is not evidence of IR recall quality. IR is not assumed to attach to the control Scene."
+  }
+}

@@ -1,0 +1,38 @@
+# ユーザーの回答の記録：PD の原稿での Raw の満杯率と、IR のクラウド LLM 抽出（2026-11-03 夜）
+
+前の記録は `user-confirmation-2026-11-03-measure-stage1-data.md`（`853c8e27`）。調査は `docs/plans/nir1-fusion-records/pd-ai-manuscript-feasibility-2026-11-03.md`（`3f835c53`）。
+
+## 提示した事実
+
+PD／AI 生成の原稿では、Raw の満杯率は LLM なし・費用 0 円で測れる。IR は人が書いた対応表（数字は表の設計を写す）か LLM の抽出（クラウドは費用と送信先の確認が要る、推測で数ドル規模）。Graph の候補の有無は、公開 gate と入口の欠如のため PD でも AI 生成でも測れない。PD の結果は「作品の性質ごとの範囲」で、枠を変えない判断の根拠にはなるが、変える判断の根拠にはならない。
+
+## 質問・選択肢・回答（原文）
+
+1. 「PD（パブリックドメイン）の原稿で、Raw が 8 件満杯になる割合を測りますか？（LLM なし・費用 0 円。保護期間の切れた作品を私が取得し、repo の外の使い捨てディレクトリだけに置き、記録は件数と ID だけ）」
+   - 選択肢：青空文庫＋Gutenberg で測る (推奨)／日本語の作品だけ／今は測らない
+   - **回答：「青空文庫＋Gutenberg で測る (推奨)」**
+2. 「IR（枞を使う割合）の測定はどうしますか？」（「枞」は「枠」の誤字。原文のまま）
+   - 選択肢：保留 (推奨)／ローカル LLM を試す／クラウド LLM で抽出
+   - **回答：「クラウド LLM で抽出」**（integrator の推奨と異なる選択）
+
+- 日時：2026-11-03（JST）。経路：AskUserQuestion。
+
+## 読みの根拠と範囲（integrator の読み）
+
+1. 青空文庫（日本語）と Project Gutenberg（英語）の保護期間の切れた作品を integrator が取得し、repo の外の使い捨てディレクトリに置き、Raw の満杯率を測る。記録には件数と ID だけを残し、本文は repo・contracts に置かない。測る前に、作品の選び方・Scene の分割規則・指標・判断規則（D0、D1、κ の下限。`853c8e27`）を事前登録する。CP-4 の証拠にしない（`not-cp4-evidence`）。
+2. IR はクラウド LLM（OpenRouter を想定）で PD の本文を Chronicle 抽出する方向。PD の本文はユーザーのデータでも秘密でもないが、課金の送信なので、**実行の前に model・費用の上限・API key の渡し方をユーザーに確認する**（この回答は方向の選択で、費用の上限と key はまだ決まっていない）。提案の承認は harness が代行し、「作者が承認する率」は測らない。
+3. 含まないもの：Graph の入口の新設、AI 生成の原稿、ユーザーのデータの送信、閾値・Gold・融合の枠の変更。
+
+## 追記：費用の上限と API key（同日、AskUserQuestion）
+
+- 質問「IR をクラウド LLM（OpenRouter）で抽出するときの費用の上限はどうしますか？（model は製品の Chronicle の評価と同じ openai/gpt-5.6-luna、reasoning medium を使います。上限に達したら止めて報告します）」→ **回答（自由記述）：「どうせ対したクレジット入ってないので気にしないで良いです」**
+- 質問「OpenRouter の API key をどう渡しますか？…」→ **回答：「ファイルで渡す (推奨)」**
+- 読み：費用の上限は OpenRouter の口座の残高で決まる（integrator は別の上限を置かないが、使った費用は記録して報告する）。key は `~/.config/grimodex-eval/openrouter.key`（repo の外）から抽出の command の中だけで読み、表示・記録しない。ファイルの権限が 644 だったので integrator が 600 に直した（中身は読んでいない）。
+
+## 追記 2：key の経路（同日、AskUserQuestion）
+
+- 提示した事実：製品は key を OS の keyring 経由の safeStorage でしか保存できず（`electron/main/keyStore.ts:193-194` が basic_text／unknown を拒む）、隔離した評価環境には keyring が無い。harness は launch のたびに偽 AI の env を立てる（`product-journey-harness.mjs:5240`）。reasoning medium は製品の抽出の経路から指定できない（既定のまま）。全提案を非 secret の child にして承認するので「IR が最大に出る条件」になる。計画は `ir-cloud-extraction-plan-2026-11-03.md`（`3aef986a`）。
+- 質問「評価用の Grimodex に OpenRouter の key をどう渡しますか？…」
+  - 選択肢：デスクトップの keyring を使う (推奨)／評価専用の口を製品に足す／手元の中継で渡す
+  - **回答：「デスクトップの keyring を使う (推奨)」**
+- 読み：製品の `save_api_key` をそのまま使い、評価の間だけ評価用の Electron をユーザーのデスクトップの D-Bus（keyring）につなぐ。コードは変えない。暗号化された key は評価用の profile にだけ残り、終わったら profile ごと消す（消す前に中身を確かめる）。key の値は表示・記録しない。表示は Xvfb のまま。旧 keyring からの取り込みを防ぐ印（`legacy-keyring-migration-v1.json`）を先に置く。

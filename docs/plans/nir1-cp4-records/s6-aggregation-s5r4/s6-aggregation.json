@@ -1,0 +1,436 @@
+{
+ "allowList": {
+  "s4Commit": "557e683ccd884955e220f21bd15119f115995d29"
+ },
+ "runs": [
+  {
+   "run": "gold-s5r4-1",
+   "runKind": "gold",
+   "status": "completed",
+   "s4Commit": "557e683ccd884955e220f21bd15119f115995d29",
+   "allowed": true
+  },
+  {
+   "run": "neg-n2-s5r4-1",
+   "runKind": "negative",
+   "status": "completed",
+   "s4Commit": "557e683ccd884955e220f21bd15119f115995d29",
+   "allowed": true
+  },
+  {
+   "run": "neg-n3-s5r4-1",
+   "runKind": "negative",
+   "status": "completed",
+   "s4Commit": "557e683ccd884955e220f21bd15119f115995d29",
+   "allowed": true
+  },
+  {
+   "run": "neg-n4-s5r4-1",
+   "runKind": "negative",
+   "status": "completed",
+   "s4Commit": "557e683ccd884955e220f21bd15119f115995d29",
+   "allowed": true
+  },
+  {
+   "run": "parity-s5r4-1",
+   "runKind": "parity",
+   "status": "completed",
+   "s4Commit": "557e683ccd884955e220f21bd15119f115995d29",
+   "allowed": true
+  },
+  {
+   "run": "sp-p4-s5r4-1",
+   "runKind": "sp-p4",
+   "status": "completed",
+   "s4Commit": "557e683ccd884955e220f21bd15119f115995d29",
+   "allowed": true
+  },
+  {
+   "run": "trace-browsing-s5r4-1",
+   "runKind": "trace",
+   "status": "completed",
+   "s4Commit": "557e683ccd884955e220f21bd15119f115995d29",
+   "allowed": true
+  },
+  {
+   "run": "trace-editing-s5r4-1",
+   "runKind": "trace",
+   "status": "completed",
+   "s4Commit": "557e683ccd884955e220f21bd15119f115995d29",
+   "allowed": true
+  }
+ ],
+ "selectReceiptsForAggregation": {
+  "included": 28,
+  "includedKinds": {
+   "g-case-gold": 13,
+   "g-case-parity-unrestricted": 12,
+   "g-case-diagnostic-negative": 3
+  },
+  "excluded": [
+   {
+    "runId": "trace-editing-s5r4-1",
+    "reason": "runner-is-not-the-k64-hook-consumer"
+   },
+   {
+    "runId": "trace-browsing-s5r4-1",
+    "reason": "runner-is-not-the-k64-hook-consumer"
+   }
+  ],
+  "note": "trace の受領書は receipt 全体の runnerKind を持たず runner-is-not-the-k64-hook-consumer で除かれる（関数の既知の限界。trace の query は全件 followUp.issuedVia=product-hook で、R5 は要約の検査で見ている）。receipt.mjs は S2 に pin 済みなので変えない。"
+ },
+ "ssc": {
+  "rows": [
+   {
+    "variantKey": "G-01/v1",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 30,
+     "displayed": 30,
+     "missed": 0,
+     "x": {},
+     "violations": 0
+    },
+    "qualityHold": true
+   },
+   {
+    "variantKey": "G-02/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 30,
+     "displayed": 30,
+     "missed": 0,
+     "x": {},
+     "violations": 0
+    },
+    "qualityHold": true
+   },
+   {
+    "variantKey": "G-03/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 30,
+     "displayed": 30,
+     "missed": 0,
+     "x": {},
+     "violations": 0
+    },
+    "qualityHold": true
+   },
+   {
+    "variantKey": "G-03/frontier-exceeded",
+    "inPool": false,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": null,
+    "qualityHold": false
+   },
+   {
+    "variantKey": "G-04/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 0,
+     "displayed": 0,
+     "missed": 30,
+     "x": {
+      "X5": 30
+     },
+     "violations": 0
+    },
+    "qualityHold": true
+   },
+   {
+    "variantKey": "G-05/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 30,
+     "displayed": 30,
+     "missed": 0,
+     "x": {},
+     "violations": 0
+    },
+    "qualityHold": true
+   },
+   {
+    "variantKey": "G-06/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 30,
+     "displayed": 30,
+     "missed": 0,
+     "x": {},
+     "violations": 0
+    },
+    "qualityHold": true
+   },
+   {
+    "variantKey": "G-07/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 30,
+     "displayed": 30,
+     "missed": 0,
+     "x": {},
+     "violations": 0
+    },
+    "qualityHold": true
+   },
+   {
+    "variantKey": "G-08/base-usable",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 30,
+     "displayed": 30,
+     "missed": 0,
+     "x": {},
+     "violations": 0
+    },
+    "qualityHold": true
+   },
+   {
+    "variantKey": "G-08/both-indexes-unusable",
+    "inPool": false,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": null,
+    "qualityHold": false
+   },
+   {
+    "variantKey": "G-08/chronicle-index-unusable",
+    "inPool": false,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": null,
+    "qualityHold": false
+   },
+   {
+    "variantKey": "G-08/graph-index-unusable",
+    "inPool": false,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": null,
+    "qualityHold": false
+   },
+   {
+    "variantKey": "G-08/graph-recovered",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "inWindow": 0,
+    "outOfWindow": 30,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 30,
+     "displayed": 30,
+     "missed": 0,
+     "x": {},
+     "violations": 0
+    },
+    "qualityHold": true
+   }
+  ],
+  "pool": {
+   "variants": 9,
+   "n": 270,
+   "displayed": 240,
+   "missed": 30,
+   "missRate": 0.1111111111111111,
+   "allowedMisses": 2,
+   "exceeds": true,
+   "firstRenderInWindow": 0,
+   "followUp": 240
+  },
+  "poolWithoutG04": {
+   "note": "開示用（判定には使わない。pool の選び直しは禁止）",
+   "n": 240,
+   "missed": 0
+  },
+  "firstRenderWindowMiss": {
+   "poolN": 270,
+   "outOfWindow": 270,
+   "note": "K6/2 の最初の表示の窓外率。K6/4 では記録と開示だけ"
+  }
+ },
+ "traces": {
+  "editing": {
+   "recordedInReceipt": {
+    "regime": "k62",
+    "status": "valid",
+    "Q": 201,
+    "U": 1,
+    "lapse": 200,
+    "lapseRate": 0.9950248756218906,
+    "lapseExceeds": true,
+    "outOfWindow": 201,
+    "outOfWindowU": 1,
+    "outOfWindowExceeds": true,
+    "mainReason": "lapse",
+    "categories": {
+     "lapse": 200,
+     "other": 1,
+     "freshness": 0
+    },
+    "outcomes": {
+     "graph-late": 7,
+     "graph-unavailable": 191,
+     "cancelled": 3
+    },
+    "violations": 0,
+    "notApplied": [
+     "b:rs-join-hook"
+    ],
+    "x": {},
+    "followUpLapse": null
+   },
+   "recomputedWithKeepTestEvidence": {
+    "regime": "k64",
+    "status": "valid",
+    "Q": 201,
+    "U": 1,
+    "displayed": 1,
+    "lapse": 200,
+    "lapseRate": 0.9950248756218906,
+    "lapseExceeds": true,
+    "outOfWindow": 200,
+    "outOfWindowU": 0,
+    "outOfWindowExceeds": false,
+    "mainReason": "lapse",
+    "categories": {
+     "lapse": 200,
+     "other": 0,
+     "freshness": 0
+    },
+    "outcomes": {
+     "graph-late": 7,
+     "graph-unavailable": 191,
+     "cancelled": 3
+    },
+    "violations": 0,
+    "notApplied": null,
+    "x": {
+     "X1": 5,
+     "X3": 196,
+     "X4": 196,
+     "X6": 196,
+     "X11": 1,
+     "X12": 194
+    },
+    "followUpLapse": {
+     "parent-ticket-registration-unavailable": 5
+    }
+   }
+  },
+  "browsing": {
+   "recordedInReceipt": {
+    "regime": "k62",
+    "status": "valid",
+    "Q": 201,
+    "U": 201,
+    "lapse": 0,
+    "lapseRate": 0,
+    "lapseExceeds": false,
+    "outOfWindow": 201,
+    "outOfWindowU": 201,
+    "outOfWindowExceeds": true,
+    "mainReason": "freshness",
+    "categories": {
+     "lapse": 0,
+     "other": 30,
+     "freshness": 171
+    },
+    "outcomes": {
+     "graph-late": 201
+    },
+    "violations": 0,
+    "notApplied": [
+     "b:rs-join-hook"
+    ],
+    "x": {},
+    "followUpLapse": null
+   },
+   "recomputedWithKeepTestEvidence": {
+    "regime": "k64",
+    "status": "valid",
+    "Q": 201,
+    "U": 201,
+    "displayed": 201,
+    "lapse": 0,
+    "lapseRate": 0,
+    "lapseExceeds": false,
+    "outOfWindow": 0,
+    "outOfWindowU": 0,
+    "outOfWindowExceeds": false,
+    "mainReason": null,
+    "categories": {
+     "lapse": 0,
+     "other": 0,
+     "freshness": 0
+    },
+    "outcomes": {
+     "graph-late": 201
+    },
+    "violations": 0,
+    "notApplied": null,
+    "x": {},
+    "followUpLapse": {}
+   }
+  }
+ }
+}

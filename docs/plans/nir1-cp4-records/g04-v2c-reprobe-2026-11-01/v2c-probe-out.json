@@ -1,0 +1,257 @@
+{
+ "probe": "nir1-g04-v2-admission-probe",
+ "note": "model-only の予測。測定に数えない。sparse（FTS5）と RRF の順位は再現しない。語彙の検査は pnpm eval:fixtures に任せる。",
+ "startedAt": "2026-11-01T11:08:43.397Z",
+ "script": {
+  "path": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04v2/probe-v2c.mjs",
+  "sha256": "cd1fd43271882a7c897699094f268d2ec94ff714c1d961fc397c7a174101ca87"
+ },
+ "tool": {
+  "transformers": "4.3.2",
+  "onnxruntimeNode": "1.30.0",
+  "node": "v24.18.0",
+  "nodeModules": "/tmp/onnxprobe/node_modules"
+ },
+ "model": {
+  "path": "/home/grimodex/.cache/gdx-nir1/grimodex-product-6x99bC/user-data/models/bge-small-en-v15/model_int8.onnx",
+  "sha256": "4f1831710bec8904589cf50c58ad4d9ed3e66386f4973173c13f1e9d3ae8e44b",
+  "tokenizerPath": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/src-tauri/resources/semantic/bge-small-en-v15/tokenizer.json",
+  "tokenizerSha256": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+  "sha256MatchesExpected": true,
+  "tokenizerSha256MatchesExpected": true
+ },
+ "rules": {
+  "floorEn": 0.66,
+  "gateEn": 0.51,
+  "rescueFloor": 0.46,
+  "relativeGap": 0.05,
+  "delta": 0.03,
+  "pass": {
+   "irOnlyIrMin": 0.69,
+   "controlRawMin": 0.54,
+   "otherRawMax": 0.43
+  },
+  "median": "selectRelatedScenes.ts:77-81（偶数長は中央 2 値の平均）。合否は中央値に依存させない（参考列だけ）",
+  "controlIr": "条件にしない（README:165）。値だけ出す"
+ },
+ "fixture": {
+  "path": "/home/grimodex/worktrees/Grimodex/claude-g04-v2c/evals/nir1-graph/g04-scope-exact-unknown.v2.json",
+  "sha256": "ec5455a991a423e57994c0968fb9ee75cf20acadf6452d5e829216d80a5dbde3"
+ },
+ "golden": {
+  "path": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/src-tauri/tests/fixtures/bge_small_en_v15_golden.json",
+  "sha256": "07503388555e5d41e25d9e93a04cbd14027c35044c0fcc6a4faa4d522a8f4eb2",
+  "n": 7,
+  "avg": 0.9974662238388845,
+  "min": 0.9968832084375118,
+  "requiredMin": 0.995,
+  "ok": true,
+  "queryPrefix": "",
+  "documentPrefix": ""
+ },
+ "base": {
+  "query": "Which earlier scene shows whom my chosen ferryman carried across?",
+  "querySha256": "1759f9bfd2db6d0ef5d5c009a3515ad2e1f7dd7db318ead1850d2d080fdbdbea",
+  "poolMedian": 0.408548768960515,
+  "poolMax": 0.8082700214005755,
+  "hasWinner": true,
+  "medianPlusGap": 0.458548768960515,
+  "pool": [
+   {
+    "id": "g04-rv-match",
+    "role": "review",
+    "gold": 0,
+    "cos": 0.39080226555185377,
+    "gate": false,
+    "atOrAboveRescueFloor": false,
+    "relativeRescue": false,
+    "predictedRawDense": false,
+    "bodySha256": "450107adb43444231b83830c4139ece4661f04908e16702e9b61befeff8e9686",
+    "body": "Chalk tallies lined a weathered post beside a quiet dock."
+   },
+   {
+    "id": "g04-rv-alt",
+    "role": "review",
+    "gold": 0,
+    "cos": 0.3923244369682964,
+    "gate": false,
+    "atOrAboveRescueFloor": false,
+    "relativeRescue": false,
+    "predictedRawDense": false,
+    "bodySha256": "1fbd0468fc046530d9a7e6f26f47d8c40b36bfa1b9a4fb190f342775f2370c0f",
+    "body": "Lanterns burned under a violet sky in a town of mirrors."
+   },
+   {
+    "id": "g04-rv-unresolved",
+    "role": "review",
+    "gold": 0,
+    "cos": 0.4271246139168129,
+    "gate": false,
+    "atOrAboveRescueFloor": false,
+    "relativeRescue": false,
+    "predictedRawDense": false,
+    "bodySha256": "0050d5e0015be732346346457e382b4982c07d23656ab0c489d12198ed2448af",
+    "body": "Dust settled over a map with torn edges."
+   },
+   {
+    "id": "g04-rv-unknown",
+    "role": "review",
+    "gold": 0,
+    "cos": 0.42929090649108914,
+    "gate": false,
+    "atOrAboveRescueFloor": false,
+    "relativeRescue": false,
+    "predictedRawDense": false,
+    "bodySha256": "3edf6ec72d3ed4b4fcb5bf66ce0cd9d4252441c677f940cbb16822dab1e183f5",
+    "body": "Rain dripped from the eaves of a silent inn."
+   },
+   {
+    "id": "g04-rv-holder",
+    "role": "review",
+    "gold": 0,
+    "cos": 0.36968084667906037,
+    "gate": false,
+    "atOrAboveRescueFloor": false,
+    "relativeRescue": false,
+    "predictedRawDense": false,
+    "bodySha256": "3a59268f4a2bfc6ced6a5758b1598263da023511ed3b00a8f4cb97344fd5478a",
+    "body": "Mott counted coins alone in a locked booth."
+   },
+   {
+    "id": "g04-control",
+    "role": "control",
+    "gold": 0,
+    "cos": 0.8082700214005755,
+    "gate": true,
+    "atOrAboveRescueFloor": true,
+    "relativeRescue": true,
+    "predictedRawDense": true,
+    "bodySha256": "816390da934b457cd53b9d198806c2ce22d176dd24483145bbb9351d3a708f68",
+    "body": "A ferry post held a copied line: Which earlier scene shows whom my chosen ferryman carried across? No one answered it."
+   },
+   {
+    "id": "g04-lio-landing",
+    "role": "answer",
+    "gold": 3,
+    "cos": 0.3597386943164853,
+    "gate": false,
+    "atOrAboveRescueFloor": false,
+    "relativeRescue": false,
+    "predictedRawDense": false,
+    "bodySha256": "4f804ede268918b6d90716f0c86e285d7cec00225d5462f24fd9ff4cb0ee04f0",
+    "body": "Market bells rang late because of rain. Lio counted coins for lamp oil beside a stall of onions. At dusk Bren set her down on the far stones and pushed off again into the mist. A baker swept flour from his step."
+   },
+   {
+    "id": "g04-lio-market",
+    "role": "answer",
+    "gold": 2,
+    "cos": 0.42477310095273363,
+    "gate": false,
+    "atOrAboveRescueFloor": false,
+    "relativeRescue": false,
+    "predictedRawDense": false,
+    "bodySha256": "730c0a93f03e7ac24d25c075f8ba493318252957a7864d578dd28ff1ff1958d2",
+    "body": "Lio weighed lamp oil into small jars for a line of buyers."
+   }
+  ],
+  "ir": [
+   {
+    "sceneId": "g04-control",
+    "role": "control",
+    "statement": "{\"summary\":\"A ferry post displayed an unanswered question about whom a ferryman had carried across.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+    "statementSha256": "1f0a9942f486203fce92f0e998fd8242513955427d961db3f2ca9314ccaab892",
+    "cos": 0.6614226929073889,
+    "atOrAboveFloor": true
+   }
+  ],
+  "items": [
+   {
+    "item": "sceneBody:g04-rv-match",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.39080226555185377,
+    "pass": true,
+    "margin": 0.039197734448146226
+   },
+   {
+    "item": "sceneBody:g04-rv-alt",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.3923244369682964,
+    "pass": true,
+    "margin": 0.03767556303170361
+   },
+   {
+    "item": "sceneBody:g04-rv-unresolved",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.4271246139168129,
+    "pass": true,
+    "margin": 0.0028753860831871036
+   },
+   {
+    "item": "sceneBody:g04-rv-unknown",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.42929090649108914,
+    "pass": true,
+    "margin": 0.0007090935089108519
+   },
+   {
+    "item": "sceneBody:g04-rv-holder",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.36968084667906037,
+    "pass": true,
+    "margin": 0.06031915332093962
+   },
+   {
+    "item": "controlRaw:g04-control",
+    "condition": "Raw cos >= 0.54",
+    "value": 0.8082700214005755,
+    "pass": true,
+    "margin": 0.26827002140057543
+   },
+   {
+    "item": "sceneBody:g04-lio-landing",
+    "role": "answer",
+    "gold": 3,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.3597386943164853,
+    "pass": true,
+    "margin": 0.07026130568351469
+   },
+   {
+    "item": "sceneBody:g04-lio-market",
+    "role": "answer",
+    "gold": 2,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.42477310095273363,
+    "pass": true,
+    "margin": 0.0052268990472663646
+   }
+  ],
+  "structural": {
+   "irOnlyIrRows": 0,
+   "controlScenes": 1,
+   "ok": true
+  },
+  "allPass": true,
+  "failingItems": [],
+  "failingOutsideAllowed": [],
+  "stopRequired": false,
+  "allowedItems": [
+   "sceneBody:g04-rv-match",
+   "sceneBody:g04-rv-alt",
+   "sceneBody:g04-rv-unresolved",
+   "sceneBody:g04-rv-unknown",
+   "sceneBody:g04-rv-holder"
+  ]
+ },
+ "finishedAt": "2026-11-01T11:08:43.822Z"
+}

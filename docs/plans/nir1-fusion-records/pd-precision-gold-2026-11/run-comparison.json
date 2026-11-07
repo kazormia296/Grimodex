@@ -1,0 +1,2682 @@
+{
+  "schemaVersion": "fusion-slot-pg-run-comparison/1",
+  "evidenceScope": "not-cp4-evidence",
+  "queries": 60,
+  "stratumMismatches": 0,
+  "pairs": {
+    "run1": 269,
+    "run2": 271,
+    "common": 194,
+    "rankOrOriginChangedInCommon": 39,
+    "newPairs": 77,
+    "newPairRate": 0.28413284132841327,
+    "lostPairs": 75,
+    "lostPairRate": 0.2788104089219331,
+    "newByOrigin": {
+      "ir": 77
+    },
+    "newByRank": {
+      "ir1": 20,
+      "ir3": 33,
+      "ir2": 24
+    },
+    "newByWork": {
+      "m-ja-2": 45,
+      "g-ja-1": 32
+    },
+    "newByStratum": {
+      "full-le30": 15,
+      "full-gt30": 32,
+      "short-le30": 8,
+      "short-gt30": 22
+    },
+    "queriesWithNewPair": 44,
+    "queriesWithoutNewPair": 16,
+    "rawPairsIdentical": true
+  },
+  "jaccard": {
+    "definition": "query ごとの候補集合（Scene の位置の集合。all＝IR の rank 1〜3＋Raw の rank 6〜8、ir＝IR だけ）の |∩|/|∪|。両方空の query は null で中央値から外す。Raw の候補は run 間で同一なので、all は ir より高く出る",
+    "overall": {
+      "queries": 60,
+      "jaccardAll": {
+        "n": 57,
+        "median": 0.5
+      },
+      "jaccardIr": {
+        "n": 55,
+        "median": 0.5
+      }
+    },
+    "byStratum": {
+      "full-le30": {
+        "queries": 15,
+        "jaccardAll": {
+          "n": 15,
+          "median": 0.7142857142857143
+        },
+        "jaccardIr": {
+          "n": 14,
+          "median": 0.5
+        }
+      },
+      "full-gt30": {
+        "queries": 15,
+        "jaccardAll": {
+          "n": 15,
+          "median": 0.5
+        },
+        "jaccardIr": {
+          "n": 15,
+          "median": 0.2
+        }
+      },
+      "short-le30": {
+        "queries": 15,
+        "jaccardAll": {
+          "n": 12,
+          "median": 0.8
+        },
+        "jaccardIr": {
+          "n": 11,
+          "median": 0.5
+        }
+      },
+      "short-gt30": {
+        "queries": 15,
+        "jaccardAll": {
+          "n": 15,
+          "median": 0.42857142857142855
+        },
+        "jaccardIr": {
+          "n": 15,
+          "median": 0.25
+        }
+      }
+    },
+    "byWork": {
+      "m-ja-2": {
+        "queries": 34,
+        "jaccardAll": {
+          "n": 33,
+          "median": 0.5
+        },
+        "jaccardIr": {
+          "n": 32,
+          "median": 0.375
+        }
+      },
+      "g-ja-1": {
+        "queries": 26,
+        "jaccardAll": {
+          "n": 24,
+          "median": 0.6666666666666666
+        },
+        "jaccardIr": {
+          "n": 23,
+          "median": 0.5
+        }
+      }
+    }
+  },
+  "perQuery": [
+    {
+      "work": "m-ja-2",
+      "queryPosition": 18,
+      "stratum": "full-le30",
+      "run1": {
+        "candidates": 5,
+        "ir": 2
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.8333333333333334,
+      "jaccardIr": 0.6666666666666666,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 22,
+      "stratum": "full-le30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.7142857142857143,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 23,
+      "stratum": "full-le30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 1,
+      "jaccardIr": 1,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 20,
+      "stratum": "full-le30",
+      "run1": {
+        "candidates": 3,
+        "ir": 0
+      },
+      "run2": {
+        "candidates": 3,
+        "ir": 0
+      },
+      "jaccardAll": 1,
+      "jaccardIr": null,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 21,
+      "stratum": "full-le30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 5,
+        "ir": 2
+      },
+      "jaccardAll": 0.8333333333333334,
+      "jaccardIr": 0.6666666666666666,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 27,
+      "stratum": "full-le30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 30,
+      "stratum": "full-le30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 29,
+      "stratum": "full-le30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.7142857142857143,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 23,
+      "stratum": "full-le30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.7142857142857143,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 25,
+      "stratum": "full-le30",
+      "run1": {
+        "candidates": 5,
+        "ir": 2
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.8333333333333334,
+      "jaccardIr": 0.6666666666666666,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 22,
+      "stratum": "full-le30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.7142857142857143,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 30,
+      "stratum": "full-le30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 15,
+      "stratum": "full-le30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 18,
+      "stratum": "full-le30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 1,
+      "jaccardIr": 1,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 24,
+      "stratum": "full-le30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 5,
+        "ir": 2
+      },
+      "jaccardAll": 0.5714285714285714,
+      "jaccardIr": 0.25,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 114,
+      "stratum": "full-gt30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 102,
+      "stratum": "full-gt30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.3333333333333333,
+      "jaccardIr": 0,
+      "rawIdentical": true,
+      "newPairs": 3
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 66,
+      "stratum": "full-gt30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.3333333333333333,
+      "jaccardIr": 0,
+      "rawIdentical": true,
+      "newPairs": 3
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 55,
+      "stratum": "full-gt30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.3333333333333333,
+      "jaccardIr": 0,
+      "rawIdentical": true,
+      "newPairs": 3
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 94,
+      "stratum": "full-gt30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 70,
+      "stratum": "full-gt30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 87,
+      "stratum": "full-gt30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 57,
+      "stratum": "full-gt30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 76,
+      "stratum": "full-gt30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 85,
+      "stratum": "full-gt30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.3333333333333333,
+      "jaccardIr": 0,
+      "rawIdentical": true,
+      "newPairs": 3
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 44,
+      "stratum": "full-gt30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.7142857142857143,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 68,
+      "stratum": "full-gt30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.3333333333333333,
+      "jaccardIr": 0,
+      "rawIdentical": true,
+      "newPairs": 3
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 56,
+      "stratum": "full-gt30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.3333333333333333,
+      "jaccardIr": 0,
+      "rawIdentical": true,
+      "newPairs": 3
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 32,
+      "stratum": "full-gt30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 1,
+      "jaccardIr": 1,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 82,
+      "stratum": "full-gt30",
+      "run1": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 6,
+        "ir": 3
+      },
+      "jaccardAll": 0.7142857142857143,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 6,
+      "stratum": "short-le30",
+      "run1": {
+        "candidates": 2,
+        "ir": 2
+      },
+      "run2": {
+        "candidates": 1,
+        "ir": 1
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 11,
+      "stratum": "short-le30",
+      "run1": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 4,
+      "stratum": "short-le30",
+      "run1": {
+        "candidates": 0,
+        "ir": 0
+      },
+      "run2": {
+        "candidates": 0,
+        "ir": 0
+      },
+      "jaccardAll": null,
+      "jaccardIr": null,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 16,
+      "stratum": "short-le30",
+      "run1": {
+        "candidates": 4,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 4,
+        "ir": 3
+      },
+      "jaccardAll": 0.6,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 9,
+      "stratum": "short-le30",
+      "run1": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "jaccardAll": 1,
+      "jaccardIr": 1,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 15,
+      "stratum": "short-le30",
+      "run1": {
+        "candidates": 4,
+        "ir": 2
+      },
+      "run2": {
+        "candidates": 5,
+        "ir": 3
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.25,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 2,
+      "stratum": "short-le30",
+      "run1": {
+        "candidates": 1,
+        "ir": 1
+      },
+      "run2": {
+        "candidates": 1,
+        "ir": 1
+      },
+      "jaccardAll": 1,
+      "jaccardIr": 1,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 12,
+      "stratum": "short-le30",
+      "run1": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 5,
+      "stratum": "short-le30",
+      "run1": {
+        "candidates": 0,
+        "ir": 0
+      },
+      "run2": {
+        "candidates": 0,
+        "ir": 0
+      },
+      "jaccardAll": null,
+      "jaccardIr": null,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 9,
+      "stratum": "short-le30",
+      "run1": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "jaccardAll": 1,
+      "jaccardIr": 1,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 31,
+      "stratum": "short-le30",
+      "run1": {
+        "candidates": 3,
+        "ir": 2
+      },
+      "run2": {
+        "candidates": 4,
+        "ir": 3
+      },
+      "jaccardAll": 0.16666666666666666,
+      "jaccardIr": 0,
+      "rawIdentical": true,
+      "newPairs": 3
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 8,
+      "stratum": "short-le30",
+      "run1": {
+        "candidates": 2,
+        "ir": 0
+      },
+      "run2": {
+        "candidates": 2,
+        "ir": 0
+      },
+      "jaccardAll": 1,
+      "jaccardIr": null,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 2,
+      "stratum": "short-le30",
+      "run1": {
+        "candidates": 0,
+        "ir": 0
+      },
+      "run2": {
+        "candidates": 0,
+        "ir": 0
+      },
+      "jaccardAll": null,
+      "jaccardIr": null,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 19,
+      "stratum": "short-le30",
+      "run1": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "jaccardAll": 1,
+      "jaccardIr": 1,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 4,
+      "stratum": "short-le30",
+      "run1": {
+        "candidates": 2,
+        "ir": 2
+      },
+      "run2": {
+        "candidates": 2,
+        "ir": 2
+      },
+      "jaccardAll": 1,
+      "jaccardIr": 1,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 61,
+      "stratum": "short-gt30",
+      "run1": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "jaccardAll": 0.2,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 41,
+      "stratum": "short-gt30",
+      "run1": {
+        "candidates": 5,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 5,
+        "ir": 3
+      },
+      "jaccardAll": 0.42857142857142855,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 32,
+      "stratum": "short-gt30",
+      "run1": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 64,
+      "stratum": "short-gt30",
+      "run1": {
+        "candidates": 4,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 4,
+        "ir": 3
+      },
+      "jaccardAll": 0.3333333333333333,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 33,
+      "stratum": "short-gt30",
+      "run1": {
+        "candidates": 3,
+        "ir": 2
+      },
+      "run2": {
+        "candidates": 4,
+        "ir": 3
+      },
+      "jaccardAll": 0.4,
+      "jaccardIr": 0.25,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 34,
+      "stratum": "short-gt30",
+      "run1": {
+        "candidates": 4,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 4,
+        "ir": 3
+      },
+      "jaccardAll": 1,
+      "jaccardIr": 1,
+      "rawIdentical": true,
+      "newPairs": 0
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 47,
+      "stratum": "short-gt30",
+      "run1": {
+        "candidates": 5,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 5,
+        "ir": 3
+      },
+      "jaccardAll": 0.6666666666666666,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 40,
+      "stratum": "short-gt30",
+      "run1": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "jaccardAll": 0.5,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 60,
+      "stratum": "short-gt30",
+      "run1": {
+        "candidates": 5,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 5,
+        "ir": 3
+      },
+      "jaccardAll": 0.6666666666666666,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 39,
+      "stratum": "short-gt30",
+      "run1": {
+        "candidates": 4,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 4,
+        "ir": 3
+      },
+      "jaccardAll": 0.3333333333333333,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 41,
+      "stratum": "short-gt30",
+      "run1": {
+        "candidates": 5,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 5,
+        "ir": 3
+      },
+      "jaccardAll": 0.6666666666666666,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 43,
+      "stratum": "short-gt30",
+      "run1": {
+        "candidates": 4,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 4,
+        "ir": 3
+      },
+      "jaccardAll": 0.3333333333333333,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 39,
+      "stratum": "short-gt30",
+      "run1": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 3,
+        "ir": 3
+      },
+      "jaccardAll": 0.2,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 60,
+      "stratum": "short-gt30",
+      "run1": {
+        "candidates": 5,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 5,
+        "ir": 3
+      },
+      "jaccardAll": 0.6666666666666666,
+      "jaccardIr": 0.5,
+      "rawIdentical": true,
+      "newPairs": 1
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 75,
+      "stratum": "short-gt30",
+      "run1": {
+        "candidates": 5,
+        "ir": 3
+      },
+      "run2": {
+        "candidates": 5,
+        "ir": 3
+      },
+      "jaccardAll": 0.42857142857142855,
+      "jaccardIr": 0.2,
+      "rawIdentical": true,
+      "newPairs": 2
+    }
+  ],
+  "newPairList": [
+    {
+      "work": "m-ja-2",
+      "queryPosition": 18,
+      "stratum": "full-le30",
+      "candidatePosition": 10,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|18|10"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 22,
+      "stratum": "full-le30",
+      "candidatePosition": 15,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|22|15"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 27,
+      "stratum": "full-le30",
+      "candidatePosition": 22,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|27|22"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 27,
+      "stratum": "full-le30",
+      "candidatePosition": 7,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|27|7"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 30,
+      "stratum": "full-le30",
+      "candidatePosition": 10,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|30|10"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 30,
+      "stratum": "full-le30",
+      "candidatePosition": 4,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|30|4"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 29,
+      "stratum": "full-le30",
+      "candidatePosition": 22,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|29|22"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 23,
+      "stratum": "full-le30",
+      "candidatePosition": 9,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|23|9"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 25,
+      "stratum": "full-le30",
+      "candidatePosition": 7,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|25|7"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 22,
+      "stratum": "full-le30",
+      "candidatePosition": 11,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|22|11"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 30,
+      "stratum": "full-le30",
+      "candidatePosition": 6,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|30|6"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 30,
+      "stratum": "full-le30",
+      "candidatePosition": 24,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|30|24"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 15,
+      "stratum": "full-le30",
+      "candidatePosition": 12,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|15|12"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 15,
+      "stratum": "full-le30",
+      "candidatePosition": 8,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|15|8"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 24,
+      "stratum": "full-le30",
+      "candidatePosition": 16,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|24|16"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 114,
+      "stratum": "full-gt30",
+      "candidatePosition": 100,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|114|100"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 114,
+      "stratum": "full-gt30",
+      "candidatePosition": 36,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|114|36"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 102,
+      "stratum": "full-gt30",
+      "candidatePosition": 34,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|102|34"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 102,
+      "stratum": "full-gt30",
+      "candidatePosition": 27,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|102|27"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 102,
+      "stratum": "full-gt30",
+      "candidatePosition": 68,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|102|68"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 66,
+      "stratum": "full-gt30",
+      "candidatePosition": 10,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|66|10"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 66,
+      "stratum": "full-gt30",
+      "candidatePosition": 15,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|66|15"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 66,
+      "stratum": "full-gt30",
+      "candidatePosition": 34,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|66|34"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 55,
+      "stratum": "full-gt30",
+      "candidatePosition": 4,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|55|4"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 55,
+      "stratum": "full-gt30",
+      "candidatePosition": 27,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|55|27"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 55,
+      "stratum": "full-gt30",
+      "candidatePosition": 51,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|55|51"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 94,
+      "stratum": "full-gt30",
+      "candidatePosition": 10,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|94|10"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 94,
+      "stratum": "full-gt30",
+      "candidatePosition": 68,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|94|68"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 70,
+      "stratum": "full-gt30",
+      "candidatePosition": 10,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|70|10"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 70,
+      "stratum": "full-gt30",
+      "candidatePosition": 34,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|70|34"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 87,
+      "stratum": "full-gt30",
+      "candidatePosition": 64,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|87|64"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 87,
+      "stratum": "full-gt30",
+      "candidatePosition": 68,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|87|68"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 57,
+      "stratum": "full-gt30",
+      "candidatePosition": 10,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|57|10"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 57,
+      "stratum": "full-gt30",
+      "candidatePosition": 34,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|57|34"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 76,
+      "stratum": "full-gt30",
+      "candidatePosition": 60,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|76|60"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 76,
+      "stratum": "full-gt30",
+      "candidatePosition": 1,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|76|1"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 85,
+      "stratum": "full-gt30",
+      "candidatePosition": 56,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "g-ja-1|85|56"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 85,
+      "stratum": "full-gt30",
+      "candidatePosition": 80,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|85|80"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 85,
+      "stratum": "full-gt30",
+      "candidatePosition": 60,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|85|60"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 44,
+      "stratum": "full-gt30",
+      "candidatePosition": 36,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|44|36"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 68,
+      "stratum": "full-gt30",
+      "candidatePosition": 60,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "g-ja-1|68|60"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 68,
+      "stratum": "full-gt30",
+      "candidatePosition": 45,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|68|45"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 68,
+      "stratum": "full-gt30",
+      "candidatePosition": 1,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|68|1"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 56,
+      "stratum": "full-gt30",
+      "candidatePosition": 1,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "g-ja-1|56|1"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 56,
+      "stratum": "full-gt30",
+      "candidatePosition": 16,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|56|16"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 56,
+      "stratum": "full-gt30",
+      "candidatePosition": 3,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|56|3"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 82,
+      "stratum": "full-gt30",
+      "candidatePosition": 16,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|82|16"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 11,
+      "stratum": "short-le30",
+      "candidatePosition": 7,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|11|7"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 16,
+      "stratum": "short-le30",
+      "candidatePosition": 7,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|16|7"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 15,
+      "stratum": "short-le30",
+      "candidatePosition": 10,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|15|10"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 15,
+      "stratum": "short-le30",
+      "candidatePosition": 7,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|15|7"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 12,
+      "stratum": "short-le30",
+      "candidatePosition": 10,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|12|10"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 31,
+      "stratum": "short-le30",
+      "candidatePosition": 7,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "g-ja-1|31|7"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 31,
+      "stratum": "short-le30",
+      "candidatePosition": 16,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|31|16"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 31,
+      "stratum": "short-le30",
+      "candidatePosition": 17,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|31|17"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 61,
+      "stratum": "short-gt30",
+      "candidatePosition": 15,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|61|15"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 61,
+      "stratum": "short-gt30",
+      "candidatePosition": 16,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|61|16"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 41,
+      "stratum": "short-gt30",
+      "candidatePosition": 24,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|41|24"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 41,
+      "stratum": "short-gt30",
+      "candidatePosition": 33,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|41|33"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 32,
+      "stratum": "short-gt30",
+      "candidatePosition": 10,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|32|10"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 64,
+      "stratum": "short-gt30",
+      "candidatePosition": 27,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|64|27"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 64,
+      "stratum": "short-gt30",
+      "candidatePosition": 2,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|64|2"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 33,
+      "stratum": "short-gt30",
+      "candidatePosition": 16,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|33|16"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 33,
+      "stratum": "short-gt30",
+      "candidatePosition": 10,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|33|10"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 47,
+      "stratum": "short-gt30",
+      "candidatePosition": 16,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|47|16"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 40,
+      "stratum": "short-gt30",
+      "candidatePosition": 27,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|40|27"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 60,
+      "stratum": "short-gt30",
+      "candidatePosition": 43,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|60|43"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 39,
+      "stratum": "short-gt30",
+      "candidatePosition": 36,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|39|36"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 39,
+      "stratum": "short-gt30",
+      "candidatePosition": 30,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|39|30"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 41,
+      "stratum": "short-gt30",
+      "candidatePosition": 36,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|41|36"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 43,
+      "stratum": "short-gt30",
+      "candidatePosition": 8,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "g-ja-1|43|8"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 43,
+      "stratum": "short-gt30",
+      "candidatePosition": 31,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|43|31"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 39,
+      "stratum": "short-gt30",
+      "candidatePosition": 3,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "g-ja-1|39|3"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 39,
+      "stratum": "short-gt30",
+      "candidatePosition": 26,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|39|26"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 60,
+      "stratum": "short-gt30",
+      "candidatePosition": 16,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|60|16"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 75,
+      "stratum": "short-gt30",
+      "candidatePosition": 1,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|75|1"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 75,
+      "stratum": "short-gt30",
+      "candidatePosition": 36,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|75|36"
+    }
+  ],
+  "lostPairList": [
+    {
+      "work": "m-ja-2",
+      "queryPosition": 22,
+      "stratum": "full-le30",
+      "candidatePosition": 12,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|22|12"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 21,
+      "stratum": "full-le30",
+      "candidatePosition": 3,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|21|3"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 27,
+      "stratum": "full-le30",
+      "candidatePosition": 26,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|27|26"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 27,
+      "stratum": "full-le30",
+      "candidatePosition": 20,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|27|20"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 30,
+      "stratum": "full-le30",
+      "candidatePosition": 3,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|30|3"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 30,
+      "stratum": "full-le30",
+      "candidatePosition": 12,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|30|12"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 29,
+      "stratum": "full-le30",
+      "candidatePosition": 16,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|29|16"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 23,
+      "stratum": "full-le30",
+      "candidatePosition": 17,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|23|17"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 22,
+      "stratum": "full-le30",
+      "candidatePosition": 9,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "g-ja-1|22|9"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 30,
+      "stratum": "full-le30",
+      "candidatePosition": 11,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "g-ja-1|30|11"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 30,
+      "stratum": "full-le30",
+      "candidatePosition": 21,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|30|21"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 15,
+      "stratum": "full-le30",
+      "candidatePosition": 11,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|15|11"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 15,
+      "stratum": "full-le30",
+      "candidatePosition": 5,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|15|5"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 24,
+      "stratum": "full-le30",
+      "candidatePosition": 21,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "g-ja-1|24|21"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 24,
+      "stratum": "full-le30",
+      "candidatePosition": 22,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|24|22"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 114,
+      "stratum": "full-gt30",
+      "candidatePosition": 34,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|114|34"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 114,
+      "stratum": "full-gt30",
+      "candidatePosition": 75,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|114|75"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 102,
+      "stratum": "full-gt30",
+      "candidatePosition": 73,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|102|73"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 102,
+      "stratum": "full-gt30",
+      "candidatePosition": 35,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|102|35"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 102,
+      "stratum": "full-gt30",
+      "candidatePosition": 42,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|102|42"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 66,
+      "stratum": "full-gt30",
+      "candidatePosition": 21,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|66|21"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 66,
+      "stratum": "full-gt30",
+      "candidatePosition": 64,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|66|64"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 66,
+      "stratum": "full-gt30",
+      "candidatePosition": 3,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|66|3"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 55,
+      "stratum": "full-gt30",
+      "candidatePosition": 3,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|55|3"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 55,
+      "stratum": "full-gt30",
+      "candidatePosition": 42,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|55|42"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 55,
+      "stratum": "full-gt30",
+      "candidatePosition": 46,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|55|46"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 94,
+      "stratum": "full-gt30",
+      "candidatePosition": 73,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|94|73"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 94,
+      "stratum": "full-gt30",
+      "candidatePosition": 3,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|94|3"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 70,
+      "stratum": "full-gt30",
+      "candidatePosition": 18,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|70|18"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 70,
+      "stratum": "full-gt30",
+      "candidatePosition": 16,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|70|16"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 87,
+      "stratum": "full-gt30",
+      "candidatePosition": 12,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|87|12"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 87,
+      "stratum": "full-gt30",
+      "candidatePosition": 28,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|87|28"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 57,
+      "stratum": "full-gt30",
+      "candidatePosition": 15,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|57|15"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 57,
+      "stratum": "full-gt30",
+      "candidatePosition": 46,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|57|46"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 76,
+      "stratum": "full-gt30",
+      "candidatePosition": 47,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|76|47"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 76,
+      "stratum": "full-gt30",
+      "candidatePosition": 21,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|76|21"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 85,
+      "stratum": "full-gt30",
+      "candidatePosition": 47,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "g-ja-1|85|47"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 85,
+      "stratum": "full-gt30",
+      "candidatePosition": 34,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|85|34"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 85,
+      "stratum": "full-gt30",
+      "candidatePosition": 21,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|85|21"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 44,
+      "stratum": "full-gt30",
+      "candidatePosition": 21,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|44|21"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 68,
+      "stratum": "full-gt30",
+      "candidatePosition": 21,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "g-ja-1|68|21"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 68,
+      "stratum": "full-gt30",
+      "candidatePosition": 47,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|68|47"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 68,
+      "stratum": "full-gt30",
+      "candidatePosition": 34,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|68|34"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 56,
+      "stratum": "full-gt30",
+      "candidatePosition": 44,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "g-ja-1|56|44"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 56,
+      "stratum": "full-gt30",
+      "candidatePosition": 5,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|56|5"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 56,
+      "stratum": "full-gt30",
+      "candidatePosition": 22,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|56|22"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 82,
+      "stratum": "full-gt30",
+      "candidatePosition": 70,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|82|70"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 6,
+      "stratum": "short-le30",
+      "candidatePosition": 3,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|6|3"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 11,
+      "stratum": "short-le30",
+      "candidatePosition": 6,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|11|6"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 16,
+      "stratum": "short-le30",
+      "candidatePosition": 12,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|16|12"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 15,
+      "stratum": "short-le30",
+      "candidatePosition": 6,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|15|6"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 12,
+      "stratum": "short-le30",
+      "candidatePosition": 3,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|12|3"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 31,
+      "stratum": "short-le30",
+      "candidatePosition": 9,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "g-ja-1|31|9"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 31,
+      "stratum": "short-le30",
+      "candidatePosition": 2,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|31|2"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 61,
+      "stratum": "short-gt30",
+      "candidatePosition": 20,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|61|20"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 61,
+      "stratum": "short-gt30",
+      "candidatePosition": 8,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|61|8"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 41,
+      "stratum": "short-gt30",
+      "candidatePosition": 18,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|41|18"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 41,
+      "stratum": "short-gt30",
+      "candidatePosition": 3,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|41|3"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 32,
+      "stratum": "short-gt30",
+      "candidatePosition": 19,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|32|19"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 64,
+      "stratum": "short-gt30",
+      "candidatePosition": 1,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|64|1"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 64,
+      "stratum": "short-gt30",
+      "candidatePosition": 42,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|64|42"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 33,
+      "stratum": "short-gt30",
+      "candidatePosition": 19,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "m-ja-2|33|19"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 47,
+      "stratum": "short-gt30",
+      "candidatePosition": 22,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|47|22"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 40,
+      "stratum": "short-gt30",
+      "candidatePosition": 4,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|40|4"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 60,
+      "stratum": "short-gt30",
+      "candidatePosition": 11,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|60|11"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 39,
+      "stratum": "short-gt30",
+      "candidatePosition": 4,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "m-ja-2|39|4"
+    },
+    {
+      "work": "m-ja-2",
+      "queryPosition": 39,
+      "stratum": "short-gt30",
+      "candidatePosition": 6,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "m-ja-2|39|6"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 41,
+      "stratum": "short-gt30",
+      "candidatePosition": 2,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|41|2"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 43,
+      "stratum": "short-gt30",
+      "candidatePosition": 11,
+      "origin": "ir",
+      "rank": 1,
+      "pairId": "g-ja-1|43|11"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 43,
+      "stratum": "short-gt30",
+      "candidatePosition": 17,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|43|17"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 39,
+      "stratum": "short-gt30",
+      "candidatePosition": 11,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|39|11"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 39,
+      "stratum": "short-gt30",
+      "candidatePosition": 24,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|39|24"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 60,
+      "stratum": "short-gt30",
+      "candidatePosition": 47,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|60|47"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 75,
+      "stratum": "short-gt30",
+      "candidatePosition": 5,
+      "origin": "ir",
+      "rank": 2,
+      "pairId": "g-ja-1|75|5"
+    },
+    {
+      "work": "g-ja-1",
+      "queryPosition": 75,
+      "stratum": "short-gt30",
+      "candidatePosition": 27,
+      "origin": "ir",
+      "rank": 3,
+      "pairId": "g-ja-1|75|27"
+    }
+  ],
+  "inputs": {
+    "selection1": {
+      "file": "selection-run1.json",
+      "sha256": "6c4a8e31a71a715a8bc05dc5a8e733ecf67e442e8ba59189d43dd9b1066da6b9"
+    },
+    "selection2": {
+      "file": "selection-run2.json",
+      "sha256": "362c770ec8d63bec17d7fab0490abf2b87d1d4a5e1ff4eb940aa3ad3be25ee6b"
+    }
+  },
+  "failureImpact": {
+    "m-ja-2": {
+      "run1": {
+        "extraction": {
+          "failed": 0,
+          "positions": []
+        },
+        "probeUnavailable": {
+          "allQueries": 0,
+          "selected": 0
+        },
+        "irTimeout": {
+          "allQueries": 0,
+          "allSamples": 0,
+          "selectedQueries": 0
+        },
+        "irEmpty": {
+          "allQueries": 0,
+          "allSamples": 0,
+          "selectedQueries": 0
+        },
+        "positions": {
+          "selectedQueryMax": 114,
+          "irTimeoutMin": null,
+          "extractionFailedMin": null
+        },
+        "failedSceneInAdmittedPositions": 0,
+        "selectedQueriesAfterAFailedScene": 0,
+        "selectedQueriesOwnSceneFailed": 0,
+        "selectedQueriesWithoutIrCandidate": 2,
+        "selectedFailedScenesAsRawCandidate": 0
+      },
+      "run2": {
+        "extraction": {
+          "failed": 0,
+          "positions": []
+        },
+        "probeUnavailable": {
+          "allQueries": 0,
+          "selected": 0
+        },
+        "irTimeout": {
+          "allQueries": 0,
+          "allSamples": 0,
+          "selectedQueries": 0
+        },
+        "irEmpty": {
+          "allQueries": 1,
+          "allSamples": 3,
+          "selectedQueries": 0
+        },
+        "positions": {
+          "selectedQueryMax": 114,
+          "irTimeoutMin": null,
+          "extractionFailedMin": null
+        },
+        "failedSceneInAdmittedPositions": 0,
+        "selectedQueriesAfterAFailedScene": 0,
+        "selectedQueriesOwnSceneFailed": 0,
+        "selectedQueriesWithoutIrCandidate": 2,
+        "selectedFailedScenesAsRawCandidate": 0
+      },
+      "newIrPairs": 45,
+      "newIrPairsOnSceneFailedInRun1": 0,
+      "run1IrPairs": 90,
+      "run1IrPairsOnSceneFailedInRun2": 0
+    },
+    "g-ja-1": {
+      "run1": {
+        "extraction": {
+          "failed": 10,
+          "positions": [
+            65,
+            72,
+            74,
+            78,
+            84,
+            94,
+            96,
+            100,
+            102,
+            109
+          ]
+        },
+        "probeUnavailable": {
+          "allQueries": 0,
+          "selected": 0
+        },
+        "irTimeout": {
+          "allQueries": 21,
+          "allSamples": 33,
+          "selectedQueries": 0
+        },
+        "irEmpty": {
+          "allQueries": 0,
+          "allSamples": 0,
+          "selectedQueries": 0
+        },
+        "positions": {
+          "selectedQueryMax": 85,
+          "irTimeoutMin": 90,
+          "extractionFailedMin": 65
+        },
+        "failedSceneInAdmittedPositions": 0,
+        "selectedQueriesAfterAFailedScene": 5,
+        "selectedQueriesOwnSceneFailed": 0,
+        "selectedQueriesWithoutIrCandidate": 3,
+        "selectedFailedScenesAsRawCandidate": 1
+      },
+      "run2": {
+        "extraction": {
+          "failed": 11,
+          "positions": [
+            64,
+            67,
+            70,
+            76,
+            83,
+            91,
+            93,
+            95,
+            98,
+            111,
+            114
+          ]
+        },
+        "probeUnavailable": {
+          "allQueries": 0,
+          "selected": 0
+        },
+        "irTimeout": {
+          "allQueries": 16,
+          "allSamples": 27,
+          "selectedQueries": 0
+        },
+        "irEmpty": {
+          "allQueries": 0,
+          "allSamples": 0,
+          "selectedQueries": 0
+        },
+        "positions": {
+          "selectedQueryMax": 85,
+          "irTimeoutMin": 92,
+          "extractionFailedMin": 64
+        },
+        "failedSceneInAdmittedPositions": 0,
+        "selectedQueriesAfterAFailedScene": 5,
+        "selectedQueriesOwnSceneFailed": 1,
+        "selectedQueriesWithoutIrCandidate": 3,
+        "selectedFailedScenesAsRawCandidate": 1
+      },
+      "newIrPairs": 32,
+      "newIrPairsOnSceneFailedInRun1": 0,
+      "run1IrPairs": 66,
+      "run1IrPairsOnSceneFailedInRun2": 1
+    }
+  }
+}

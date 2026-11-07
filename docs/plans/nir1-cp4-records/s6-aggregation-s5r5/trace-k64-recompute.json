@@ -1,0 +1,257 @@
+{
+ "evidence": {
+  "kind": "ratification5",
+  "candidateHead": "22b74a25ff8dadfa45247e5bc866afe3afd48fb7",
+  "dPrime": {
+   "commit": "4d38d0d164e02a76a0e172214b259a11e0b2c5ff",
+   "ancestor": true
+  },
+  "rsJoinHook": {
+   "evidence": "candidate-test",
+   "testFile": "src/features/related-scenes/useNir1RelatedScenes.graphReadyKeep.test.tsx",
+   "head": "22b74a25ff8dadfa45247e5bc866afe3afd48fb7",
+   "testFileSha256": "2a6422166d79d616c6bfb7516bedb6d10058820da26bd3c8b8aabd4bd6222ed3",
+   "passed": true,
+   "tests": 8,
+   "runDigest": "7adf240fd68198babe9728ed3daf5ef649d207f0db53586fafbba75014f45b4c",
+   "dependencies": {
+    "lockfileSha256": "ea07b2ae3954559ef69b5717cc20a5058903af14bcded8306f732e935817533a",
+    "installedLockSha256": "ea07b2ae3954559ef69b5717cc20a5058903af14bcded8306f732e935817533a",
+    "vitestVersion": "4.1.12",
+    "lockedVitestVersion": "4.1.12"
+   }
+  },
+  "wfWindow": {
+   "commit": "c4333bbd081fb297cf2dddc598155791b9678be8",
+   "ancestor": true
+  }
+ },
+ "summaries": {
+  "editing": {
+   "kind": "editing",
+   "status": "valid",
+   "invalid": [],
+   "precheck": [],
+   "violations": [],
+   "followUpLapse": {
+    "parent-ticket-registration-unavailable": 3,
+    "child-join-invalidated": 4
+   },
+   "regime": "k64",
+   "candidate": {
+    "regime": "k64",
+    "notApplied": []
+   },
+   "Q": 201,
+   "U": 193,
+   "displayed": 181,
+   "firstRenderInWindow": 0,
+   "followUpDisplayed": 181,
+   "outOfWindow": 20,
+   "outOfWindowU": 12,
+   "outOfWindowRate": 0.06217616580310881,
+   "outOfWindowExceeds": true,
+   "lapse": {
+    "total": 15,
+    "i-b-seal": 11,
+    "i-chronicle-stop": 0,
+    "ii-a3-ineligible-at-start": 0,
+    "iii-invalidated": 4,
+    "iv-empty-contribution": 0
+   },
+   "lapseRate": 0.07462686567164178,
+   "lapseExceeds": true,
+   "categories": {
+    "lapse": 11,
+    "other": 9,
+    "freshness": 0
+   },
+   "reasons": {
+    "freshness-stamp-stamp0-missing:overlap-record-missing": 8,
+    "follow-up:parent:X1:registration-unavailable": 3,
+    "i-b-seal": 8,
+    "follow-up:parent:X11:cancelled": 1
+   },
+   "x": {
+    "F1": 0,
+    "F6": 0,
+    "X1": 7,
+    "X2": 0,
+    "X3": 8,
+    "X4": 8,
+    "X5": 4,
+    "X6": 8,
+    "X7": 0,
+    "X8": 0,
+    "X9": 0,
+    "X10": 0,
+    "X11": 1,
+    "X12": 9,
+    "X13": 0
+   },
+   "q": {
+    "q1": {
+     "n": 186,
+     "p50": 32.099999994039536,
+     "p90": 34.60000002384186,
+     "p99": 58,
+     "min": 29.80000001192093,
+     "max": 1033
+    },
+    "q2": {
+     "n": 181,
+     "p50": 17.100000023841858,
+     "p90": 20.5,
+     "p99": 22,
+     "min": 8.700000017881393,
+     "max": 22.599999994039536
+    },
+    "q3": {
+     "n": 185,
+     "p50": 72.5,
+     "p90": 81.30000001192093,
+     "p99": 421.59999999403954,
+     "min": 60.69999998807907,
+     "max": 474.2999999821186
+    }
+   },
+   "boundaryDisagreement": {
+    "not-joined-in-time": 0,
+    "joined-late-within-tolerance": 0
+   },
+   "stampWithoutComparison": {
+    "unavailable": {
+     "clear": 0,
+     "overlapped": 0,
+     "overlap-record-missing": 0
+    },
+    "stamp0-missing": {
+     "clear": 0,
+     "overlapped": 0,
+     "overlap-record-missing": 8
+    }
+   },
+   "busy": {
+    "causes": {}
+   },
+   "sources": {},
+   "outcomes": {
+    "graph-late": 192,
+    "cancelled": 8,
+    "graph-unavailable": 1
+   },
+   "a3IneligibleAtStart": 0,
+   "emptyContribution": 0,
+   "mainReason": "lapse",
+   "requeryCount": 0
+  },
+  "browsing": {
+   "kind": "browsing",
+   "status": "valid",
+   "invalid": [],
+   "precheck": [],
+   "violations": [],
+   "followUpLapse": {},
+   "regime": "k64",
+   "candidate": {
+    "regime": "k64",
+    "notApplied": []
+   },
+   "Q": 201,
+   "U": 201,
+   "displayed": 201,
+   "firstRenderInWindow": 0,
+   "followUpDisplayed": 201,
+   "outOfWindow": 0,
+   "outOfWindowU": 0,
+   "outOfWindowRate": 0,
+   "outOfWindowExceeds": false,
+   "lapse": {
+    "total": 0,
+    "i-b-seal": 0,
+    "i-chronicle-stop": 0,
+    "ii-a3-ineligible-at-start": 0,
+    "iii-invalidated": 0,
+    "iv-empty-contribution": 0
+   },
+   "lapseRate": 0,
+   "lapseExceeds": false,
+   "categories": {
+    "lapse": 0,
+    "other": 0,
+    "freshness": 0
+   },
+   "reasons": {},
+   "x": {
+    "F1": 0,
+    "F6": 0,
+    "X1": 0,
+    "X2": 0,
+    "X3": 0,
+    "X4": 0,
+    "X5": 0,
+    "X6": 0,
+    "X7": 0,
+    "X8": 0,
+    "X9": 0,
+    "X10": 0,
+    "X11": 0,
+    "X12": 0,
+    "X13": 0
+   },
+   "q": {
+    "q1": {
+     "n": 201,
+     "p50": 57.599999994039536,
+     "p90": 67.60000002384186,
+     "p99": 75,
+     "min": 30.69999998807907,
+     "max": 80.09999999403954
+    },
+    "q2": {
+     "n": 201,
+     "p50": 18.900000005960464,
+     "p90": 20.099999994039536,
+     "p99": 21,
+     "min": 10.5,
+     "max": 21.5
+    },
+    "q3": {
+     "n": 201,
+     "p50": 98,
+     "p90": 114.59999999403954,
+     "p99": 390.30000001192093,
+     "min": 66.19999998807907,
+     "max": 611.6999999880791
+    }
+   },
+   "boundaryDisagreement": {
+    "not-joined-in-time": 0,
+    "joined-late-within-tolerance": 0
+   },
+   "stampWithoutComparison": {
+    "unavailable": {
+     "clear": 0,
+     "overlapped": 0,
+     "overlap-record-missing": 0
+    },
+    "stamp0-missing": {
+     "clear": 0,
+     "overlapped": 0,
+     "overlap-record-missing": 0
+    }
+   },
+   "busy": {
+    "causes": {}
+   },
+   "sources": {},
+   "outcomes": {
+    "graph-late": 201
+   },
+   "a3IneligibleAtStart": 0,
+   "emptyContribution": 0,
+   "mainReason": null,
+   "requeryCount": 0
+  }
+ }
+}

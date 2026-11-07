@@ -1,0 +1,25 @@
+=== still_current Q1
+QUERY PLAN
+|--SCAN p
+|--SEARCH ps USING INDEX sqlite_autoindex_narrative_proposal_sets_1 (id=?)
+|--SEARCH r USING INDEX sqlite_autoindex_narrative_proposal_revisions_1 (id=?) LEFT-JOIN
+|--SEARCH d USING COVERING INDEX sqlite_autoindex_narrative_proposal_decisions_1 (id=?) LEFT-JOIN
+|--CORRELATED SCALAR SUBQUERY 1
+|  `--SEARCH latest USING COVERING INDEX idx_narrative_decisions_proposal_created_id (proposal_id=?)
+|--SEARCH f USING INDEX sqlite_autoindex_narrative_consumer_freshness_1 (project_id=? AND consumer_kind=? AND consumer_key=?) LEFT-JOIN
+|--SEARCH h USING INDEX sqlite_autoindex_narrative_dependency_declaration_heads_1 (project_id=? AND consumer_kind=? AND consumer_key=?) LEFT-JOIN
+`--SEARCH s USING INDEX sqlite_autoindex_narrative_dependency_declaration_sets_1 (id=?) LEFT-JOIN
+=== still_current Q2
+QUERY PLAN
+|--SCAN p
+|--SEARCH ps USING INDEX sqlite_autoindex_narrative_proposal_sets_1 (id=?)
+|--SEARCH e USING INDEX idx_narrative_dependency_edges_consumer (project_id=? AND consumer_kind=? AND consumer_key=?)
+`--SEARCH s USING INDEX sqlite_autoindex_narrative_dependency_edge_states_1 (edge_id=?) LEFT-JOIN
+=== roster
+QUERY PLAN
+|--SCAN p USING INDEX sqlite_autoindex_narrative_proposals_1
+|--SEARCH s USING INDEX sqlite_autoindex_narrative_proposal_sets_1 (id=?)
+|--SEARCH r USING INDEX sqlite_autoindex_narrative_proposal_revisions_1 (id=?) LEFT-JOIN
+|--SEARCH d USING COVERING INDEX sqlite_autoindex_narrative_proposal_decisions_1 (id=?) LEFT-JOIN
+`--CORRELATED SCALAR SUBQUERY 1
+   `--SEARCH latest USING COVERING INDEX idx_narrative_decisions_proposal_created_id (proposal_id=?)
