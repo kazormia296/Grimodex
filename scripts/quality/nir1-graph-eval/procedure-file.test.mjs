@@ -425,9 +425,9 @@ test("K6/5: k64-procedure.v2.json は draft-3 と版・draft・review だけが�
   });
   assert.equal(DEV_DRAFT_PROCEDURE_VERSION, "draft-3");
   assert.deepEqual(procedureFileErrors(draft, { version: "draft-3" }), []);
-  // v2 の review は S3 の記録まで placeholder で、loader が拒む。
-  assert.match(
-    procedureFileErrors(v2, { version: "v2" }).join(" | "),
-    /still a placeholder/,
-  );
+  // v2 の review は S3 の 8 回目の記録（S2 追補 #15 の後）で、loader が読める。
+  assert.deepEqual(procedureFileErrors(v2, { version: "v2" }), []);
+  assert.match(v2.review.record, /s3-review-8-k65-observation-prep\.md/u);
+  assert.match(v2.review.record, /SHA-256 [0-9a-f]{64}/u);
+  assert.doesNotMatch(JSON.stringify(v2.review), /placeholder/iu);
 });

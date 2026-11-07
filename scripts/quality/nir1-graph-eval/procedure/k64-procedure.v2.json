@@ -35,8 +35,8 @@
     ]
   },
   "review": {
-    "reviewer": "S3 の独立レビュー待ち（placeholder。S4 の前に S3 の記録で置き換える）",
+    "reviewer": "S3 の独立 reviewer（agent、Opus）",
     "reviewedAt": "2026-11-07",
-    "record": "S3 の独立レビューの記録待ち（placeholder。K6/5 の harness の PR の時点では未実施。S3 の独立レビューの後、S4b の前に S3 の記録で置き換える）"
+    "record": "docs/plans/nir1-cp4-records/s3-review-8-k65-observation-prep.md（commit f186d10b1417d6e21a8f98a333075a0f429650a1 の bytes。SHA-256 e01b08e903eb8f74e6868f3daa58af117d87bb538e1ebed7f6f963d4053bceb8。S3 の 8 回目の独立レビュー〔対象は S2 追補 #14 の 6aad102d と S4a の b852debd。head 280ff921〕の指摘の写し。判定は changes-required。指摘は blocker 1、major 2、minor ほかで、この v2 の bytes〔schema、contract、values、conditions〕の変更を求めるものは無く、S2 追補 #15 が S2・宣言・validator に反映した。S3 は反映後の bytes を見ていない。写しは指示書からで、原文は repo に無い）"
   }
 }
