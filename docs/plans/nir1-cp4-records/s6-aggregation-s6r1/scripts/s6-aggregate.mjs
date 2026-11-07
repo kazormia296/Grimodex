@@ -81,7 +81,7 @@ for (const j of gold) {
     if (c.displayed) { recomputedDisplayed += 1; continue; }
     recomputedMissed += 1; missedHere += 1;
     const join = classifyJoin(s);
-    const key = JSON.stringify({ outcome: s.graph.outcome, joined: s.graph.joined, joinedWithinD: join.inWindow, source: s.graph.source, readyFresh: s.startSlot?.readyFresh ?? null, stampResult: s.freshnessStamp?.result ?? null, stampMatched: s.freshnessStamp?.matched ?? null, failedStage: c.failure?.stage ?? null, firstCode: Object.keys(c.x ?? {})[0] ?? null });
+    const key = JSON.stringify({ outcome: s.graph.outcome, joined: s.graph.joined, joinedWithinD: join.inWindow, source: s.graph.source, readyFresh: s.startSlot?.readyFresh ?? null, stampResult: s.freshnessStamp?.result ?? null, stampMatched: s.freshnessStamp?.matched ?? null, failedStage: c.failedStage ?? null, firstCode: Object.keys(c.x ?? {})[0] ?? null });
     breakdown[key] = (breakdown[key] ?? 0) + 1;
   }
   if (missedHere !== a.k64.missed) throw new Error(`[precheck] ${a.variantKey}: re-applied classifyFollowUp missed ${missedHere}, the receipt says ${a.k64.missed}`);

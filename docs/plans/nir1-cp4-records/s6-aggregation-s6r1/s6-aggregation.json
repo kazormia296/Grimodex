@@ -412,7 +412,16 @@
      "readyFresh": false,
      "stampResult": "stamp0-missing",
      "stampMatched": null,
-     "failedStage": null,
+     "failedStage": {
+      "stage": "parent",
+      "codes": [
+       {
+        "stage": "parent",
+        "code": "F1",
+        "detail": "parent-joined"
+       }
+      ]
+     },
      "firstCode": "F1",
      "n": 161
     },
@@ -424,7 +433,16 @@
      "readyFresh": false,
      "stampResult": "fresh",
      "stampMatched": true,
-     "failedStage": null,
+     "failedStage": {
+      "stage": "parent",
+      "codes": [
+       {
+        "stage": "parent",
+        "code": "F1",
+        "detail": "parent-joined"
+       }
+      ]
+     },
      "firstCode": "F1",
      "n": 2
     }
