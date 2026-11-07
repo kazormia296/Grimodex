@@ -171,6 +171,52 @@ function cancelledBeforeBeginRecord(sample, context) {
 }
 
 /**
+ * DR-CP4-C7: a (b) trace's counted parent whose begin the Chronicle Index's
+ * stop kept from creating a Native record (no Native record, no child; the
+ * trace records it with `parent.excludedChronicleStop`). Only the observable
+ * items are recorded, and the mark holds only with the sample's own values of
+ * that case: the IR outcome `index-unavailable`, the join
+ * `graph-unavailable` / `cancelled`, no Native begin. Any other shape is not
+ * this case (the usual R7 check applies, X10).
+ */
+function chronicleStopRecord(sample, context) {
+  const record = sample?.followUp;
+  const parent = record?.parent;
+  return (
+    context === "trace" &&
+    sample?.irOutcome === "index-unavailable" &&
+    sample?.graph?.outcome === "graph-unavailable" &&
+    sample?.graph?.reason === "cancelled" &&
+    sample?.nativeBegin === null &&
+    record !== null &&
+    typeof record === "object" &&
+    parent !== null &&
+    typeof parent === "object" &&
+    parent.excludedChronicleStop === true &&
+    Number.isInteger(parent.generation) &&
+    typeof parent.sceneId === "string" &&
+    typeof parent.seed === "string" &&
+    finite(parent.calledAt) &&
+    finite(parent.resolvedAt) &&
+    parent.calledAt <= parent.resolvedAt &&
+    Number.isInteger(parent.publishCount) &&
+    parent.publishCount >= 0 &&
+    typeof parent.lateGraphInDisplay === "boolean" &&
+    Array.isArray(record.requeries) &&
+    record.requeries.every(
+      (row) =>
+        Number.isInteger(row?.publishCount) &&
+        row.publishCount >= 0 &&
+        typeof row.lateGraphInDisplay === "boolean",
+    ) &&
+    Array.isArray(record.nativeBegins) &&
+    record.nativeBegins.length === 0 &&
+    has(record, "child") &&
+    record.child === null
+  );
+}
+
+/**
  * The R7 items a query lacks (K6/4:198; X10 :158). `null` means "did not
  * happen" and is allowed where the event is optional; an absent key or a
  * wrong type is missing. R1 / R2 are required in the steady state only
@@ -181,6 +227,7 @@ export function missingR7(sample, context) {
   const record = sample?.followUp;
   if (!record || typeof record !== "object") return ["followUp"];
   if (cancelledBeforeBeginRecord(sample, context)) return [];
+  if (chronicleStopRecord(sample, context)) return [];
   const missing = [];
   const need = (ok, name) => {
     if (!ok) missing.push(name);
@@ -403,6 +450,16 @@ export function mixedIntoDisplay(record) {
     out.push("N29:late-graph-in-child-display");
   if (Number.isInteger(child?.publishCount) && child.publishCount > 1)
     out.push("N32:child-published-more-than-once");
+  // DR-CP4-C7: a parent without a Native record has no child record; its
+  // re-queries in the window are checked as the child is.
+  for (const requery of Array.isArray(record?.requeries)
+    ? record.requeries
+    : []) {
+    if (requery?.lateGraphInDisplay === true)
+      out.push("N29:late-graph-in-child-display");
+    if (Number.isInteger(requery?.publishCount) && requery.publishCount > 1)
+      out.push("N32:child-published-more-than-once");
+  }
   return out;
 }
 
@@ -485,6 +542,17 @@ export function classifyFollowUp(sample, options) {
   // failure kept in the denominator. Nothing after the parent was recorded.
   if (cancelledBeforeBeginRecord(sample, context)) {
     add("parent", "X12", "cancelled-before-begin");
+    return finish(false);
+  }
+  // DR-CP4-C7: the parent's begin met the Chronicle Index's stop (no IR
+  // operation, no Graph): X11 (the IR outcome) and X12 (the join), as the
+  // usual reading gives for these values; nothing after the parent exists.
+  if (chronicleStopRecord(sample, context)) {
+    add("parent", "X11", sample.irOutcome);
+    add("parent", "X12", `graph-unavailable:${sample.graph.reason}`);
+    // The mixing checks still apply (a parent that published more than once
+    // or showed a late Graph, a re-query that did): E-5 like any other row.
+    violations.push(...mixedIntoDisplay(sample.followUp));
     return finish(false);
   }
   const record = sample.followUp;
