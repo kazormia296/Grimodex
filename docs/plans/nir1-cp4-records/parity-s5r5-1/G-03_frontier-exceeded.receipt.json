@@ -1,0 +1,2617 @@
+{
+  "schemaVersion": "nir1-cp4-run-receipt/1",
+  "runKind": "g-case-parity-unrestricted",
+  "priorAttempts": {
+    "parity": [],
+    "thisAttempt": {
+      "runName": "parity-s5r5-1",
+      "fileSha256AtStart": "3cdcd0518af6c9b70af4813acb118b76864037d994247e66859d6b43221c5cea"
+    }
+  },
+  "runnerKind": "k64-hook-consumer",
+  "runId": "parity-s5r5-1/G-03/frontier-exceeded",
+  "preview": false,
+  "fixture": {
+    "path": "evals/nir1-graph/g03-bounded-two-hop.v1.json",
+    "sha256": "39aec43a66f3ede60249cc74f5524fbe8201ca20ff629c98d54fc05cc360f76d",
+    "kind": "frozen"
+  },
+  "head": {
+    "k62": {
+      "freezeCommit": "af643a93eeae7f937c9cd5a9dd87a6308c96fab6",
+      "sha256": "4ccca08314c022fd969308fa969e6fcb3e2c439fe12757bfec0e901b905676f8"
+    },
+    "k64": {
+      "freezeCommit": "5dea38af158283c2a925d68ef0d8b0771c0ea209",
+      "sha256": "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3"
+    },
+    "observationPrep": {
+      "commit": "60bf9dc44a5f751551a9ce0195abb87f5c97543d",
+      "freezeRecordSha256": "f203071ab1c2e628f80de41403b85dcfcabb7cd0a475d143c9bce1e30d3ba3c9"
+    },
+    "runStartedAtUtc": "2026-11-01T22:16:44.441Z"
+  },
+  "candidate": {
+    "commit": "22b74a25ff8dadfa45247e5bc866afe3afd48fb7",
+    "tree": "62329f963a474f9fe39fa855bc4586725b45a529",
+    "clean": true,
+    "productReceiptSha256": "f94775674a2abf4e28953fa1a0c27e5c7c4749094cd256ad8866242bad7fabe6",
+    "evalReceiptSha256": "10b1cd1c0183c9ec4a88c20881dbbe991a1983d05dfa3dbcd890ac6cf65438a2",
+    "evalReceiptHead": "22b74a25ff8dadfa45247e5bc866afe3afd48fb7",
+    "nativeSha256": "4f549c0e9a428d24a8d4b1d259533061be37b72d6c77d9c4a53954131c691753",
+    "workerSha256": "47edf5ae57a39471c964ee592b646303a87938df921add57c95a54bf3fd31ab0",
+    "features": [
+      "nir1-graph-eval"
+    ],
+    "models": {
+      "ja": {
+        "modelSha256": "946ae837c9cd3f78baf93af541e77facec62d31049921d7c00fbcb57b4610bcf",
+        "tokenizerSha256": "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062"
+      },
+      "en": {
+        "modelSha256": "4f1831710bec8904589cf50c58ad4d9ed3e66386f4973173c13f1e9d3ae8e44b",
+        "tokenizerSha256": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66"
+      }
+    },
+    "electronVersion": "43.8.3",
+    "harnessFiles": {
+      "scripts/quality/nir1-graph-eval/k64-runner.mjs": "350227a9ffd02f1bcd67ab451f5aa30671c98be7931e4972e49ec05a970b3572",
+      "scripts/quality/nir1-graph-eval/k64-record.mjs": "4818d1c1d91956f8412e8b4ca1c9f0891017204299ad0ea52eafd626d1675df9",
+      "scripts/quality/nir1-graph-eval/q4.mjs": "862475877f49b8b202ef1cbf9c1702c4f13f50a37141241f25b5f43f4c1306ef",
+      "scripts/quality/nir1-graph-eval/procedure-file.mjs": "98efbb8d1cd41ea127b95c1a2ce4831d3af7c516a51889a580ec800dcf5a6574",
+      "scripts/quality/nir1-graph-eval/seed-pin.mjs": "4ef057a3b1eb3c65195a28fbc08aef8184deffb8a1af295c8b23c8ce5289816b",
+      "scripts/quality/nir1-graph-eval/keep-test.mjs": "fa103a56d1d992193e79cba3b82207deb25331540728774a274916687235f62c",
+      "scripts/quality/nir1-graph-eval/followup.mjs": "8e997ab8cfde1b5ad8d2012b1e58882a2677a9378c6f52e9f8ba247b3ed712a7",
+      "scripts/quality/nir1-graph-eval/availability.mjs": "04c17b33cd89a2dda3beb5a27e462fa7718b8eb2ced424f8639efa55cf2fe5f0",
+      "scripts/quality/nir1-graph-eval/outcome.mjs": "8640f775c77f718bca1c85af004ad5210e80e1b0ee9e083ff3cbb42a314dfaf3",
+      "scripts/quality/nir1-graph-eval/receipt.mjs": "77a181a9f6ee430a2fe3c647ccba206f2e1f34dae0e605081fe86ccbd53aebe8",
+      "scripts/quality/nir1-graph-eval/admission.mjs": "e0b3877f0d118936348db948546e7c125710b1de9c07732b55b1d3f0efba4e14",
+      "scripts/quality/nir1-graph-eval/run-sample.mjs": "add07154efe3d0bc71feaf11bea4ffb56bdc0167e42b2fe00f870247c0f5a754",
+      "scripts/quality/nir1-graph-eval/native-sample.mjs": "ec8d3cbaae613b6cba02eef2732b26550fb95ccf0f05f9b48e31e67896349fb9",
+      "scripts/quality/nir1-graph-eval/session.mjs": "9e69cb076b2e3101586d3ea2aa477bee027bc093fdc21b8b37dcac92454c6354",
+      "scripts/quality/nir1-graph-eval/launcher.mjs": "41653af87884ac89fa135c19d51eaee6b74dc677b21a5037f348056bc0c3b671",
+      "scripts/quality/nir1-graph-eval/egress.mjs": "77c0aa177007d9bb8c0da5f0ad5a23c09b4dac02f2d5d5b718089edbb8dcac54",
+      "scripts/quality/nir1-graph-eval/window.mjs": "2a378aa4d16ef80341f70bb3c71d4907c38df266003214d5e5d16ce5a54f121a",
+      "scripts/quality/nir1-graph-eval/workspace-db.mjs": "e61cb4fcbec2fd019fccab0c77f5e4f331bc01f3e19ee359681873b5d0638b41",
+      "scripts/quality/nir1-graph-eval/dev-fixture.mjs": "e087f40275b203a30618a5fe4c2a5c14fc86dd545a49383da54116998b3eac89",
+      "scripts/quality/nir1-graph-eval/dprime-check.mjs": "df1c40e3bdb17cd5b86bcebd16a4f84d3c823144d7a5685fc1bedbe19b3828d6",
+      "scripts/quality/nir1-graph-eval/renderer/cp4-harness.ts": "9f0229918e0f4839b9908d792bd93a1842d683bafdfa31ae057089e5af6e0be4",
+      "scripts/quality/nir1-graph-eval/renderer/cp4-k64-probe.tsx": "d05bb4a1955994a67233d9dc2aa78d6203393731a8af731246fc0fb4240d0c6c",
+      "scripts/quality/nir1-graph-eval/renderer/fetchRelatedScenes.timing.ts": "ed89754939755608a5d13ca19c2757bfeefeeef1d52368860dfd484daec03c6c",
+      "scripts/quality/nir1-graph-eval/renderer/nir1RelatedScenesApi.timing.ts": "bf67fd28982c0560d8488250f769295569145292e82480325d7464046d3cb3fd",
+      "scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs": "32fa43c28b307a1ea765242c475fdc674506a5d99f9e224d8af7ed0c44a6960f",
+      "scripts/quality/nir1-graph-eval/frozen-k64-plan.mjs": "faa7fd4d6541b5b6896568ac7e958f181fd6eb19094b5692ffeb37ba83b6e81d",
+      "scripts/quality/nir1-graph-eval/frozen-k64-run.mjs": "a56ba1fee1aafa99414db952947a3866683ef3c5bbeb92de7d4051d623b79a77",
+      "scripts/quality/nir1-graph-eval/material-revision.mjs": "ac2f1f794dbc640d5ff910f7f74a3d5438ed8ce01402cc8895944aefd7c853a5",
+      "scripts/quality/nir1-graph-eval/frozen-setup-plan.mjs": "2ac6bb9d8c4fe238938b4bec959f12d86e47e9a687ad8c811139c9225549da71",
+      "scripts/quality/nir1-graph-eval/frozen-setup-driver.mjs": "0ea96056614b7af6b8227d9fd2444f070ec1e75eaa84117098748b781e4b1dc3",
+      "scripts/quality/nir1-graph-eval/setup-receipt.mjs": "dcc742371fe2328a2a88eaa048ff0a7ab428b4343fe7d25f65ecd32a4c8259d3",
+      "scripts/quality/nir1-graph-eval/build-receipt-check.mjs": "29db8ed5a7d9e1ba2e2825c96f9465e5f4bb56b03d99ce9b304e228ed43f5520",
+      "scripts/quality/nir1-graph-eval/renderer/cp4-hook-probe.tsx": "050e3db7476c2631cb07fa300d4f527825e0b78e3516eb7e8df2eec13fe2e7c1",
+      "dist-electron/main.cjs": "31023f585fcdd080afe530a1e3b19a26e6812c0aa2ec35f33bf2c886db528278",
+      "renderer-bundle": "a30e4a1bbd67e588fda97d00bc71e01e05d37d9ffa43ce9e7f08d2d44bef0077",
+      "observer.cjs": "99f750c5886936b56c626ef861524d29a73b3e72dbf481964194df6684560533"
+    },
+    "ratification5": {
+      "kind": "ratification5",
+      "candidateHead": "22b74a25ff8dadfa45247e5bc866afe3afd48fb7",
+      "dPrime": {
+        "commit": "4d38d0d164e02a76a0e172214b259a11e0b2c5ff",
+        "ancestor": true
+      },
+      "rsJoinHook": {
+        "evidence": "candidate-test",
+        "testFile": "src/features/related-scenes/useNir1RelatedScenes.graphReadyKeep.test.tsx",
+        "head": "22b74a25ff8dadfa45247e5bc866afe3afd48fb7",
+        "testFileSha256": "2a6422166d79d616c6bfb7516bedb6d10058820da26bd3c8b8aabd4bd6222ed3",
+        "passed": true,
+        "tests": 8,
+        "runDigest": "7adf240fd68198babe9728ed3daf5ef649d207f0db53586fafbba75014f45b4c",
+        "dependencies": {
+          "lockfileSha256": "ea07b2ae3954559ef69b5717cc20a5058903af14bcded8306f732e935817533a",
+          "installedLockSha256": "ea07b2ae3954559ef69b5717cc20a5058903af14bcded8306f732e935817533a",
+          "vitestVersion": "4.1.12",
+          "lockedVitestVersion": "4.1.12"
+        }
+      },
+      "wfWindow": {
+        "commit": "c4333bbd081fb297cf2dddc598155791b9678be8",
+        "ancestor": true
+      }
+    }
+  },
+  "environment": {
+    "hostSnapshot": {
+      "timestamp": "2026-11-01T22:17:12.940Z",
+      "os": "Linux",
+      "kernel": "7.2.11-arch1-1",
+      "arch": "x64",
+      "cpuModel": "AMD Ryzen 5 3600 6-Core Processor",
+      "logicalCpus": 12,
+      "totalMemory": 84272189440,
+      "freeMemory": 66197880832,
+      "loadAverage": [
+        0.77,
+        0.76,
+        0.75
+      ],
+      "node": "v24.18.0",
+      "cpuPressure": "some avg10=0.38 avg60=0.15 avg300=0.03 total=1846701427\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+      "ioPressure": "some avg10=81.50 avg60=88.93 avg300=90.23 total=218226835893\nfull avg10=71.35 avg60=83.27 avg300=86.24 total=206309354440\n",
+      "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=22518864\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=20970357\n"
+    },
+    "windowSamples": [
+      {
+        "atMs": 1793571430441,
+        "locksReadable": true,
+        "heavySlotFiles": 2,
+        "heavySlotsInUse": 0,
+        "buildProcesses": [],
+        "otherMeasurements": [],
+        "sameWorktreeBuild": false,
+        "loadAverage": [
+          0.77,
+          0.76,
+          0.75
+        ],
+        "cpuPressure": "some avg10=0.24 avg60=0.12 avg300=0.02 total=1846672876\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+      },
+      {
+        "atMs": 1793571431749,
+        "locksReadable": true,
+        "heavySlotFiles": 2,
+        "heavySlotsInUse": 0,
+        "buildProcesses": [],
+        "otherMeasurements": [],
+        "sameWorktreeBuild": false,
+        "loadAverage": [
+          0.77,
+          0.76,
+          0.75
+        ],
+        "cpuPressure": "some avg10=0.38 avg60=0.15 avg300=0.03 total=1846698829\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+      }
+    ],
+    "windowAssessment": {
+      "clean": true,
+      "violations": [],
+      "gaps": []
+    },
+    "ownPids": [
+      3340814,
+      3340799,
+      3340794,
+      3325119,
+      2246,
+      3341581,
+      3341583,
+      3341584,
+      3341614,
+      3341611,
+      3341646
+    ],
+    "xvfbDisplay": ":2",
+    "removedEnv": [
+      "DESKTOP_SESSION",
+      "GDMSESSION",
+      "XDG_CURRENT_DESKTOP",
+      "XDG_SESSION_DESKTOP"
+    ],
+    "launchEnvChecked": [
+      "WAYLAND_DISPLAY",
+      "WAYLAND_SOCKET",
+      "DBUS_SESSION_BUS_ADDRESS"
+    ],
+    "netns": {
+      "self": "net:[4026531833]",
+      "parent": "net:[4026531833]",
+      "hostInterfaces": [
+        "lo",
+        "enp5s0"
+      ],
+      "userManager": null
+    },
+    "netLog": {
+      "path": ".artifacts/cp4/parity-s5r5-1/G-03_frontier-exceeded/measure/session/netlog.json",
+      "sha256": "dcbfdbfcc8d4364bf591581cd1c13f2a921b6cd0ad2555b73447aeeaec96f381",
+      "truncated": false,
+      "eventCount": 5957,
+      "nonLoopbackAttempts": 0,
+      "attempts": [],
+      "ipv6ReachabilityProbe": 3,
+      "ipv6ReachabilityChecks": 127,
+      "loopbackConnects": {
+        "blackhole": 2,
+        "other": 12
+      },
+      "resolverRequests": {
+        "total": 127,
+        "rejected": 3,
+        "hosts": [
+          "127.0.0.1"
+        ]
+      },
+      "dictionaryRequests": [
+        {
+          "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+          "proxy": "SOCKS5 127.0.0.1:45293",
+          "netError": -120
+        }
+      ]
+    },
+    "socketSamples": [
+      {
+        "schema": "nir1-cp4-socket-sample/1",
+        "atMs": 1793571425031,
+        "rootPid": 3341581,
+        "pids": [
+          3341581,
+          3341583,
+          3341584,
+          3341614,
+          3341611
+        ],
+        "unreadable": [],
+        "sockets": {
+          "tcp": 7,
+          "udp": 0,
+          "loopback": 7,
+          "unconnected": 0
+        },
+        "external": [],
+        "externalListeners": [],
+        "unix": {
+          "read": true
+        },
+        "userSessionPeers": [],
+        "systemBusPeers": 1,
+        "dns": [],
+        "processes": [
+          {
+            "pid": 3341581,
+            "ppid": 3340814,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-g04-cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "browser"
+          },
+          {
+            "pid": 3341583,
+            "ppid": 3341581,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-g04-cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "zygote"
+          },
+          {
+            "pid": 3341584,
+            "ppid": 3341581,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-g04-cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "zygote"
+          },
+          {
+            "pid": 3341614,
+            "ppid": 3341581,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-g04-cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "utility"
+          },
+          {
+            "pid": 3341611,
+            "ppid": 3341583,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-g04-cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "gpu-process"
+          }
+        ]
+      },
+      {
+        "schema": "nir1-cp4-socket-sample/1",
+        "atMs": 1793571431770,
+        "rootPid": 3341581,
+        "pids": [
+          3341581,
+          3341583,
+          3341584,
+          3341614,
+          3341611,
+          3341646
+        ],
+        "unreadable": [],
+        "sockets": {
+          "tcp": 11,
+          "udp": 0,
+          "loopback": 11,
+          "unconnected": 0
+        },
+        "external": [],
+        "externalListeners": [],
+        "unix": {
+          "read": true
+        },
+        "userSessionPeers": [],
+        "systemBusPeers": 1,
+        "dns": [],
+        "processes": [
+          {
+            "pid": 3341581,
+            "ppid": 3340814,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-g04-cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "browser"
+          },
+          {
+            "pid": 3341583,
+            "ppid": 3341581,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-g04-cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "zygote"
+          },
+          {
+            "pid": 3341584,
+            "ppid": 3341581,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-g04-cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "zygote"
+          },
+          {
+            "pid": 3341614,
+            "ppid": 3341581,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-g04-cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "utility"
+          },
+          {
+            "pid": 3341611,
+            "ppid": 3341583,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-g04-cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "gpu-process"
+          },
+          {
+            "pid": 3341646,
+            "ppid": 3341584,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-g04-cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "renderer"
+          }
+        ]
+      }
+    ],
+    "x11": {
+      "before": [
+        {
+          "name": "X0",
+          "ino": 99,
+          "mtimeMs": 1793181327487.0674
+        },
+        {
+          "name": "X1",
+          "ino": 101,
+          "mtimeMs": 1793181327487.6296
+        },
+        {
+          "name": "X2",
+          "ino": 3918876,
+          "mtimeMs": 1793571401108.0037
+        }
+      ],
+      "after": [
+        {
+          "name": "X0",
+          "ino": 99,
+          "mtimeMs": 1793181327487.0674
+        },
+        {
+          "name": "X1",
+          "ino": 101,
+          "mtimeMs": 1793181327487.6296
+        },
+        {
+          "name": "X2",
+          "ino": 3918876,
+          "mtimeMs": 1793571401108.0037
+        }
+      ]
+    },
+    "profileEgress": {
+      "dictionaries": [],
+      "networkPersistentServers": []
+    },
+    "observer": {
+      "ok": true,
+      "problems": [],
+      "failureCodes": []
+    },
+    "stop": {
+      "closed": true,
+      "closeMs": 991,
+      "signalled": [],
+      "remaining": []
+    },
+    "mainWorker": {
+      "ok": true,
+      "path": "/home/grimodex/worktrees/Grimodex/claude-g04-cand/src-tauri/target/release/nir1-c-query-worker",
+      "expectedSha256": "47edf5ae57a39471c964ee592b646303a87938df921add57c95a54bf3fd31ab0",
+      "atStart": "47edf5ae57a39471c964ee592b646303a87938df921add57c95a54bf3fd31ab0",
+      "atEnd": "47edf5ae57a39471c964ee592b646303a87938df921add57c95a54bf3fd31ab0",
+      "exes": [],
+      "statStart": {
+        "ino": 24387337,
+        "mtimeMs": 1793550525110.5676
+      },
+      "statEnd": {
+        "ino": 24387337,
+        "mtimeMs": 1793550525110.5676
+      },
+      "problems": []
+    }
+  },
+  "run": {
+    "startedAtMs": 1793571430451,
+    "finishedAtMs": 1793571431741
+  },
+  "settings": {
+    "maintenance": "product",
+    "d2aModes": {
+      "hybrid": "unrestricted"
+    },
+    "reauthorization": {
+      "mode": "unrestricted",
+      "placedStateFile": true,
+      "note": "the D2a profile state placed before each launch; no activation UI"
+    },
+    "setupReceipt": {
+      "path": ".artifacts/cp4/s5r5-g-03-frontier-exceeded/setup/G-03/frontier-exceeded/setup-receipt.json",
+      "sha256": "51339786ff0b01543f7887d5364049bf34ea46b3d5fe2cb4d71975c380700718",
+      "logicalToRuntime": {
+        "projectId": "8d521ea0-dd3c-4648-9128-c67b46f58072",
+        "querySceneId": "g03-query",
+        "scenes": {
+          "g03-review": "5c81da65-00a5-481d-b902-cd08fe9127b0",
+          "g03-c1": "10899433-7704-4768-bae7-734fbe0b9ac0",
+          "g03-c2": "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+          "g03-c3": "62455f70-2768-4e45-8f2a-9a266f2c6000",
+          "g03-c4": "45f77dc3-bd9d-4122-8408-e41483ace706",
+          "g03-c5": "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+          "g03-c6": "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+          "g03-c7": "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+          "g03-c8": "d762f882-4661-4b82-bd39-6288bc35a744",
+          "g03-hollis-ward": "ed13a0bc-7721-4157-b49c-3f0a9c2222dc",
+          "g03-corin-shed": "cddc4668-0bbd-41a8-b78f-09ec18f395a9",
+          "g03-gull": "13a519f7-0c24-4a6d-bb18-d356e4452dbe",
+          "g03-query": "caa12b67-d8ba-4a54-b84e-11ac1426213c"
+        },
+        "folders": {
+          "nir1-folder-g03-c5": "0db3310c-fafc-4e92-addf-943e327ce339"
+        },
+        "entities": {
+          "g03-wren": "8d475c03-0417-4723-a515-4e31f3844349",
+          "g03-ivy": "dc7e1eef-55ea-411f-ba74-1d24334c75fe",
+          "g03-hollis": "aeafa5fe-a037-4ff7-ac87-8582977c6aff",
+          "g03-corin": "92c03ebc-750a-4fad-8aa4-d9d9f49dce71",
+          "g03-n01": "474ddf67-ba14-41f4-a354-1aec159d7494",
+          "g03-n02": "4b365406-2b91-4873-8649-d3c9cf326735",
+          "g03-n03": "c2ef673c-e895-490c-8f98-aa28d42c6e3e",
+          "g03-n04": "5873c3e3-175a-40f0-9dd3-88242f53facc",
+          "g03-n05": "66ff547b-f37c-46f3-81be-8a09227a6b54",
+          "g03-n06": "e55530c1-a76c-43af-9f23-69447309e665",
+          "g03-n07": "f9ab1cb7-8ea9-42d1-8806-cb1d06757de5",
+          "g03-n08": "01974347-e916-4e70-aa41-ac40e0514f02",
+          "g03-n09": "4816a8c8-83f9-46e3-ba16-69ee0d82defa",
+          "g03-n10": "7cc809ee-4a85-4370-bfb3-abe35afec3cd",
+          "g03-n11": "6af18570-9fa0-46e9-b62c-e144efa81f77",
+          "g03-n12": "e752f4e0-afeb-4b8d-add5-5154822fbd34",
+          "g03-n13": "810d0209-e366-48e1-ad7f-3f1c0142cd5e",
+          "g03-n14": "143e628c-d050-4afc-ab4a-4cf589558989",
+          "g03-n15": "800229e8-c4ae-4a98-a388-eed509cb801b",
+          "g03-n16": "d3d527ae-317d-4d6c-93c2-c08071fecfc2",
+          "g03-n17": "620b3db3-1a45-469d-85e5-8b7e7b0fdd64",
+          "g03-n18": "6343ba02-8eab-4a56-80f0-14e350aaa0e8",
+          "g03-n19": "b1cc7e34-4d2f-48a1-97c0-6105857496ab",
+          "g03-n20": "ed8e2f54-7197-41bf-bc70-6c4cfdcf9234",
+          "g03-n21": "84347451-1cd8-4f27-8a39-6ab02c2ddda6",
+          "g03-n22": "941208bc-73c2-497f-b604-719ad431b957",
+          "g03-n23": "343d2df7-fc01-4fd4-b4dc-aea35ea7d83a",
+          "g03-n24": "f24f5c9e-098c-498c-bdbd-098dc183b606",
+          "g03-n25": "6c644121-17d8-4ca2-8894-39d955e6bb66",
+          "g03-n26": "9394305f-c625-4993-a31c-3d7cc3a8a21c",
+          "g03-n27": "b69e0677-f993-433c-a406-1919760eb42f",
+          "g03-n28": "89ef0d97-6108-464a-afb0-5ac82cf5ae8f",
+          "g03-n29": "f0931c04-713a-44a0-a155-d7a21c850d67",
+          "g03-n30": "100ac15b-f612-4f4e-9320-a3f7a764ff26",
+          "g03-n31": "18115965-8c30-4ebf-b0c1-1d574e7218ba",
+          "g03-n32": "47905df4-dfd7-4b0d-878d-9180e3b32355",
+          "g03-n33": "d497c366-e39f-4aa4-887c-11859421dfdc",
+          "g03-n34": "fcbfc07c-5479-4001-b7f3-1d457408e56f",
+          "g03-n35": "ce6e1b00-c4f0-4e64-a827-e3049fec673c",
+          "g03-n36": "e9d81ab2-2874-4bc2-82e7-0f6b1924976f",
+          "g03-n37": "5a28b330-87af-4847-8dcb-6339155ae08c",
+          "g03-n38": "a3ca555c-b649-4447-a579-a8881e71fdc7",
+          "g03-n39": "8e795b29-d7d9-448c-89c9-e7ff0916b827",
+          "g03-n40": "beda8230-05b3-4626-9f45-15d345ef1828",
+          "g03-n41": "71a3a5ea-6a4f-419b-a18f-09e31237f09c",
+          "g03-n42": "c6d0af26-f9e6-4083-a3a8-1be1c7b827b7",
+          "g03-n43": "b8a3fa48-08f1-4605-8f55-140e950d5635",
+          "g03-n44": "88594fc9-8be9-468a-9e9b-4dbe11622c49",
+          "g03-n45": "c65a041d-cff7-46ea-8eef-29f4077900ba",
+          "g03-n46": "f3aae52b-ce35-47e7-b9cb-f00e68a1697f",
+          "g03-n47": "dda8101f-f680-4f35-8fad-4915590445d9",
+          "g03-n48": "10e4897b-ffd6-4828-b37a-52b3bdeb7491",
+          "g03-n49": "b92d3b06-940e-4dda-af4d-ec3177ef630c",
+          "g03-n50": "d2ae4df1-9d15-43a5-872b-c581572626f1",
+          "g03-n51": "3e9c9e33-8946-46cb-9ef7-5666de3f9801",
+          "g03-n52": "55f71610-1d10-404b-a480-5313c84484b7"
+        },
+        "relations": {
+          "g03-has-sister": "7def617a-27c7-4fa5-a298-844e553fea7f",
+          "g03-treated-by": "30d2c0d6-9eac-416b-b066-48e4434ff38c",
+          "g03-taught": "a03c43b3-1528-465e-8914-6be68a637b2b",
+          "g03-knows-01": "755ebe7a-ea90-46ad-8859-c64d541a9cfa",
+          "g03-knows-02": "6133f3f5-8bbc-4fac-a8d7-767d14c5cfe8",
+          "g03-knows-03": "f4be50ae-c513-4e1b-aa25-cf0e847ecf07",
+          "g03-knows-04": "9e134717-e016-4893-8538-d352b74cfef2",
+          "g03-knows-05": "acf8df48-1761-446c-b90e-683b8295c92a",
+          "g03-knows-06": "4a22f4f4-3627-4e41-8051-6ac9458895f1",
+          "g03-knows-07": "fd537390-0c40-423c-a688-96de4da8bfed",
+          "g03-knows-08": "bab5a39e-ce1d-4588-9c47-4009ef100dbd",
+          "g03-knows-09": "0d0d1d85-6e37-4671-b769-1d59be4988be",
+          "g03-knows-10": "084eb666-c2d2-4f93-99fa-973c1d0e7f59",
+          "g03-knows-11": "df84802f-7c0a-4b72-9e4c-12a6699c43b4",
+          "g03-knows-12": "fa84b06c-cc25-487b-a866-2ad1c7f6f759",
+          "g03-knows-13": "6ebfe332-fcc0-4ad5-aa85-311e14a42af7",
+          "g03-knows-14": "cef9f4b6-7662-42c2-812b-c8ea513c932d",
+          "g03-knows-15": "b6a03470-6515-45bc-be4d-9adab9793499",
+          "g03-knows-16": "cc4172ac-5f29-468c-afe6-7e02e524bf86",
+          "g03-knows-17": "7f2e0b02-b912-4080-9007-07bd8301d444",
+          "g03-knows-18": "6d4a6a27-1195-4023-afae-f97e4645dbaa",
+          "g03-knows-19": "a3aea0d5-16f2-4b97-a24b-4edf404a6397",
+          "g03-knows-20": "bfaa6bf8-50b7-4fe0-aef4-4cc3cbc2d715",
+          "g03-knows-21": "e2dc90a5-d482-4c45-99a8-afd1d0414022",
+          "g03-knows-22": "8e05090b-6a70-44ae-b61b-fdde246d1b14",
+          "g03-knows-23": "43b492c5-90b7-481c-bbfe-f14674944579",
+          "g03-knows-24": "2c213552-3a73-41dd-b812-b6837374c69e",
+          "g03-knows-25": "a0945148-293c-44f2-a52d-06567858b4b9",
+          "g03-knows-26": "2b30ccce-7b9f-4ad6-847d-d22ca7af9d59",
+          "g03-knows-27": "b6713ef9-fb74-4be0-88b1-4d49dea41da3",
+          "g03-knows-28": "3dac998e-13e7-46d3-bfd7-ed274f0034b1",
+          "g03-knows-29": "071208d7-483a-4a1e-b577-d51b01a357bc",
+          "g03-knows-30": "8546c752-731c-4049-a6da-32148496151a",
+          "g03-knows-31": "1b40cdf0-2f03-4bfa-b5d4-a43491924c60",
+          "g03-knows-32": "84e3cea2-11d8-4409-9e6b-5c1de89d7734",
+          "g03-knows-33": "41da9e8a-3853-45ea-930c-3a2e48044c8c",
+          "g03-knows-34": "8ea12d6b-0842-42c2-9ad1-01490a11fd82",
+          "g03-knows-35": "c0a1cbbf-eb05-4b31-a55f-5c74a62f0a19",
+          "g03-knows-36": "210f35d7-492d-4442-9fef-7a09c6fb3375",
+          "g03-knows-37": "c9d34044-28e0-4ecb-a2f0-b902c8573fb0",
+          "g03-knows-38": "44c45fba-7e76-430b-a959-8d5d79578ff3",
+          "g03-knows-39": "56cf4cfc-3ec4-4403-afbe-c7bf1504a0c4",
+          "g03-knows-40": "4187b8e2-af5b-4fd4-8a1f-9fa899351c3d",
+          "g03-knows-41": "3e99285b-99af-4672-a23e-9a3a5f775d0c",
+          "g03-knows-42": "3cb77819-201e-4a5d-8d79-2fd3f7d79c88",
+          "g03-knows-43": "1bd9ca44-cdbe-493e-81b4-80a79b05975e",
+          "g03-knows-44": "65dee105-70b4-4cef-b3e9-54990985c676",
+          "g03-knows-45": "3e28278f-9722-4d82-b799-63e96d630ce3",
+          "g03-knows-46": "eb44d0af-0d8c-487a-a25b-dddf49bd4438",
+          "g03-knows-47": "3d7fc703-0dff-4d43-bfcd-c469acd6f505",
+          "g03-knows-48": "0aa8eacc-6419-4964-b38e-597ccd4a43c2",
+          "g03-knows-49": "27f2136a-42be-4fc0-89fc-b64cdde3feaf",
+          "g03-knows-50": "1e4a67d3-0d94-4d33-8198-539bb50a892e",
+          "g03-knows-51": "6608ee0f-95a8-4e92-8e94-ea521352b982",
+          "g03-knows-52": "1f927e51-33ac-4dfe-9e1b-6d430143cbe5"
+        },
+        "foreshadows": {},
+        "pins": [
+          {
+            "sceneId": "10899433-7704-4768-bae7-734fbe0b9ac0",
+            "entryId": "dc7e1eef-55ea-411f-ba74-1d24334c75fe"
+          },
+          {
+            "sceneId": "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+            "entryId": "aeafa5fe-a037-4ff7-ac87-8582977c6aff"
+          },
+          {
+            "sceneId": "62455f70-2768-4e45-8f2a-9a266f2c6000",
+            "entryId": "92c03ebc-750a-4fad-8aa4-d9d9f49dce71"
+          },
+          {
+            "sceneId": "ed13a0bc-7721-4157-b49c-3f0a9c2222dc",
+            "entryId": "aeafa5fe-a037-4ff7-ac87-8582977c6aff"
+          },
+          {
+            "sceneId": "cddc4668-0bbd-41a8-b78f-09ec18f395a9",
+            "entryId": "92c03ebc-750a-4fad-8aa4-d9d9f49dce71"
+          }
+        ],
+        "typedRevisions": {
+          "g03-r-path": {
+            "id": "g03-r-path",
+            "reviewSceneId": "g03-review",
+            "relationIds": [
+              "g03-has-sister",
+              "g03-treated-by"
+            ],
+            "decision": "approved",
+            "prepareWaitMs": 16,
+            "prepareRefusals": 0,
+            "runId": "5f1c07c6-9dea-4469-82a7-e7d71d5b9741",
+            "proposalId": "60d558bd-2a53-474a-94b1-fce410ed0b52",
+            "revisionId": "714e40f7-bccd-4de9-a629-776636024aeb",
+            "statusAfter": "available"
+          },
+          "g03-r-third": {
+            "id": "g03-r-third",
+            "reviewSceneId": "g03-review",
+            "relationIds": [
+              "g03-taught"
+            ],
+            "decision": "approved",
+            "prepareWaitMs": 15,
+            "prepareRefusals": 0,
+            "runId": "5eb3ed27-4f4b-41be-91b4-7a31a19a7533",
+            "proposalId": "da78a7a9-f5d4-47f3-95f6-e2077a710e42",
+            "revisionId": "9b2add58-39de-4a1d-b693-dbd88235b759",
+            "statusAfter": "available"
+          },
+          "g03-r-frontier": {
+            "id": "g03-r-frontier",
+            "reviewSceneId": "g03-review",
+            "relationIds": [
+              "g03-knows-01",
+              "g03-knows-02",
+              "g03-knows-03",
+              "g03-knows-04",
+              "g03-knows-05",
+              "g03-knows-06",
+              "g03-knows-07",
+              "g03-knows-08",
+              "g03-knows-09",
+              "g03-knows-10",
+              "g03-knows-11",
+              "g03-knows-12",
+              "g03-knows-13",
+              "g03-knows-14",
+              "g03-knows-15",
+              "g03-knows-16",
+              "g03-knows-17",
+              "g03-knows-18",
+              "g03-knows-19",
+              "g03-knows-20",
+              "g03-knows-21",
+              "g03-knows-22",
+              "g03-knows-23",
+              "g03-knows-24",
+              "g03-knows-25",
+              "g03-knows-26",
+              "g03-knows-27",
+              "g03-knows-28",
+              "g03-knows-29",
+              "g03-knows-30",
+              "g03-knows-31",
+              "g03-knows-32",
+              "g03-knows-33",
+              "g03-knows-34",
+              "g03-knows-35",
+              "g03-knows-36",
+              "g03-knows-37",
+              "g03-knows-38",
+              "g03-knows-39",
+              "g03-knows-40",
+              "g03-knows-41",
+              "g03-knows-42",
+              "g03-knows-43",
+              "g03-knows-44",
+              "g03-knows-45",
+              "g03-knows-46",
+              "g03-knows-47",
+              "g03-knows-48",
+              "g03-knows-49",
+              "g03-knows-50",
+              "g03-knows-51",
+              "g03-knows-52"
+            ],
+            "decision": "approved",
+            "prepareWaitMs": 84,
+            "prepareRefusals": 0,
+            "runId": "488a4efd-c30e-48fb-b4b5-7c7dbee3241e",
+            "proposalId": "24333fa8-a1ce-459c-9c73-6b8ecbcf8864",
+            "revisionId": "fd1b8f8b-b018-44e4-b4bb-256c6f10438d",
+            "statusAfter": "available"
+          }
+        },
+        "chronicle": {
+          "g03-c5": {
+            "sceneId": "g03-c5",
+            "folderId": "0db3310c-fafc-4e92-addf-943e327ce339",
+            "runId": "1d245991-72a2-43a8-81d4-021d977099fa",
+            "proposalId": "d7dd0c8e-952e-493a-87ac-03655deccbc5",
+            "rootRevisionId": "a53a25b7-9b97-4bc5-9548-f870d2e6450e",
+            "childRevisionId": "c42150d6-4c1c-4033-b61f-c490dd80f6ea",
+            "decision": "approved",
+            "decisionId": "ac1b29a4-a179-429e-87d6-89a19e43787b"
+          }
+        }
+      }
+    },
+    "measurement": {
+      "kind": "steady-state",
+      "measurementPoint": "after-maintenance-current",
+      "indexState": {
+        "chronicle": "usable",
+        "graph": "usable"
+      }
+    },
+    "seed": {
+      "logical": "g03-wren",
+      "runtime": "8d475c03-0417-4723-a515-4e31f3844349",
+      "via": "product-hook-from-the-query-scene-pin"
+    },
+    "f6": {
+      "basis": "material-revision",
+      "expected": []
+    },
+    "k64Disclosure": {
+      "x2": "X2 の TTL の切れと edge の epoch の進みは owner の counter に無く観測できない。起きた子は Cached で受けない（F5）か F2 の counter の差分が合わず X4 として失敗に数える（成功にも分母の外にもしない）。quarantine だけは counter で X2（DR-CP4-N-5）",
+      "q4": "q4 の決着から通知までは通知に Native の時刻が無く測らない（R6、2 つの時計を混ぜない）。renderer の時計の親の公開から最初の通知までを開示する（DR-CP4-F-7、N-5）"
+    },
+    "variantKey": "G-03/frontier-exceeded",
+    "k64": {
+      "wFMs": 100,
+      "tLateMs": 100,
+      "tShowMs": 2000,
+      "r1r4WaitMs": 10000,
+      "procedureFile": {
+        "path": "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json",
+        "commit": "60bf9dc44a5f751551a9ce0195abb87f5c97543d",
+        "sha256": "1c2428df322fa717d1a3ae5d4c99fb2dbafcbac2c8fb5b4126499dcc36cc0bea",
+        "version": "v1",
+        "draft": false
+      }
+    }
+  },
+  "declaration": null,
+  "measurementWorkspace": null,
+  "samples": [
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "warmup",
+      "repeat": 0,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5386.199999988079,
+      "tRawReady": 5401.5999999940395,
+      "tReturn": 5406.5,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "warmup",
+      "repeat": 1,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5411.0999999940395,
+      "tRawReady": 5429.5999999940395,
+      "tReturn": 5437.9000000059605,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "warmup",
+      "repeat": 2,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5443.300000011921,
+      "tRawReady": 5458.9000000059605,
+      "tReturn": 5462.699999988079,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "warmup",
+      "repeat": 3,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5466.199999988079,
+      "tRawReady": 5481.800000011921,
+      "tReturn": 5488.800000011921,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "warmup",
+      "repeat": 4,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5492.699999988079,
+      "tRawReady": 5510.300000011921,
+      "tReturn": 5515.0999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 0,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5519.199999988079,
+      "tRawReady": 5535.9000000059605,
+      "tReturn": 5543.300000011921,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 1,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5547.199999988079,
+      "tRawReady": 5564.9000000059605,
+      "tReturn": 5571.9000000059605,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 2,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5575.5999999940395,
+      "tRawReady": 5592.9000000059605,
+      "tReturn": 5599.699999988079,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 3,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5603.4000000059605,
+      "tRawReady": 5620.9000000059605,
+      "tReturn": 5628.199999988079,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 4,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5631.800000011921,
+      "tRawReady": 5649.300000011921,
+      "tReturn": 5656.199999988079,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 5,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5659.199999988079,
+      "tRawReady": 5676,
+      "tReturn": 5683.800000011921,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 6,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5687.699999988079,
+      "tRawReady": 5704.5999999940395,
+      "tReturn": 5712,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 7,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5715.5999999940395,
+      "tRawReady": 5732.9000000059605,
+      "tReturn": 5740,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 8,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5743.4000000059605,
+      "tRawReady": 5759.199999988079,
+      "tReturn": 5764.4000000059605,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 9,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5767.9000000059605,
+      "tRawReady": 5784.800000011921,
+      "tReturn": 5791.9000000059605,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 10,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5795.4000000059605,
+      "tRawReady": 5812.5999999940395,
+      "tReturn": 5819.5999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 11,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5822.9000000059605,
+      "tRawReady": 5839.9000000059605,
+      "tReturn": 5846.5999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 12,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5850,
+      "tRawReady": 5866.9000000059605,
+      "tReturn": 5874,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 13,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5877.4000000059605,
+      "tRawReady": 5894.199999988079,
+      "tReturn": 5902.199999988079,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 14,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 5905.699999988079,
+      "tRawReady": 6208.0999999940395,
+      "tReturn": 6215,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 15,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 6218.5999999940395,
+      "tRawReady": 6274.199999988079,
+      "tReturn": 6281,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 16,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 6284.4000000059605,
+      "tRawReady": 6300.9000000059605,
+      "tReturn": 6307.699999988079,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 17,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 6311.0999999940395,
+      "tRawReady": 6326.699999988079,
+      "tReturn": 6333.5999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 18,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 6337.199999988079,
+      "tRawReady": 6354.4000000059605,
+      "tReturn": 6361.300000011921,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 19,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 6364.800000011921,
+      "tRawReady": 6382.4000000059605,
+      "tReturn": 6389.199999988079,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 20,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 6392.800000011921,
+      "tRawReady": 6410.199999988079,
+      "tReturn": 6417.0999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 21,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 6421,
+      "tRawReady": 6438.4000000059605,
+      "tReturn": 6445.300000011921,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 22,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 6448.699999988079,
+      "tRawReady": 6465.699999988079,
+      "tReturn": 6472.5999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 23,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 6476.300000011921,
+      "tRawReady": 6493.800000011921,
+      "tReturn": 6500.800000011921,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 24,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 6504.5,
+      "tRawReady": 6522.0999999940395,
+      "tReturn": 6528.800000011921,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 25,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 6532.5999999940395,
+      "tRawReady": 6551.4000000059605,
+      "tReturn": 6558.199999988079,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 26,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 6561.5999999940395,
+      "tRawReady": 6578.800000011921,
+      "tReturn": 6585.5999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 27,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 6589.199999988079,
+      "tRawReady": 6605.9000000059605,
+      "tReturn": 6612.5999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 28,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 6616.199999988079,
+      "tRawReady": 6634.4000000059605,
+      "tReturn": 6641.5,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 29,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 6645.199999988079,
+      "tRawReady": 6662.699999988079,
+      "tReturn": 6669.9000000059605,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ],
+      "finalSceneIds": [
+        "45f77dc3-bd9d-4122-8408-e41483ace706",
+        "62455f70-2768-4e45-8f2a-9a266f2c6000",
+        "4fedddba-8634-4f2d-9f55-0a1ebb9e32dd",
+        "10899433-7704-4768-bae7-734fbe0b9ac0",
+        "b6481db5-2356-4c95-8b3f-eb64a143f0ab",
+        "88d7f4e0-a728-4a2e-b757-67222c8a51e1",
+        "ecc67557-2f57-41c0-a199-ee0ee6ed2207",
+        "d762f882-4661-4b82-bd39-6288bc35a744"
+      ]
+    }
+  ],
+  "requeries": [],
+  "checks": {
+    "status": "measured",
+    "d2Probes": [
+      {
+        "at": "before-measurement",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": {
+          "b": {
+            "generation": 1,
+            "dirty": false,
+            "sourceDigest": "sha256:2868f002d6dc2294bb081729cc33be334c7d232587b1274ccc168f69cca413ac",
+            "dependencySetDigest": "sha256:f00b09873346e4463c506de2398cf5c22a67ddedf31225ab6cbbf4afe2ba8dcf",
+            "producerId": "nir1-reviewed-entity-relation-v1",
+            "producerVersion": "nir1-reviewed-entity-relation/v1"
+          },
+          "chronicle": {
+            "generation": 2,
+            "dirty": false,
+            "sourceDigest": "sha256:95f357698fcc157e19a5f1630055eb2131b0aed1ad5c279629c2d407a3657587",
+            "dependencySetDigest": "sha256:f6144cc248a22cd3bd30cb994d6080f1938e23b472b4ee46eb9986082557125c",
+            "producerId": "nir1-reviewed-chronicle-v1",
+            "producerVersion": "nir1-reviewed-chronicle/v1"
+          }
+        },
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "freshnessFeed": {
+          "settle": {
+            "settled": true,
+            "waitedMs": 5.9469759999992675,
+            "polls": 1,
+            "limitMs": 15000,
+            "intervalMs": 100,
+            "initial": {
+              "consumerId": "narrative-incremental-freshness/v1",
+              "head": 141,
+              "cursor": true,
+              "acknowledged": 141,
+              "activeRun": false,
+              "reserved": false,
+              "pendingEvents": 0,
+              "pendingSequences": 0
+            },
+            "final": {
+              "consumerId": "narrative-incremental-freshness/v1",
+              "head": 141,
+              "cursor": true,
+              "acknowledged": 141,
+              "activeRun": false,
+              "reserved": false,
+              "pendingEvents": 0,
+              "pendingSequences": 0
+            }
+          },
+          "beforeMeasurement": {
+            "consumerId": "narrative-incremental-freshness/v1",
+            "head": 141,
+            "cursor": true,
+            "acknowledged": 141,
+            "activeRun": false,
+            "reserved": false,
+            "pendingEvents": 0,
+            "pendingSequences": 0
+          }
+        }
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "warmup",
+        "repeat": 0,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "warmup",
+        "repeat": 1,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "warmup",
+        "repeat": 2,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "warmup",
+        "repeat": 3,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "warmup",
+        "repeat": 4,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 0,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 1,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 2,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 3,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 4,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 5,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 6,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 7,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 8,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 9,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 10,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 11,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 12,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 13,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 14,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 15,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 16,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 17,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 18,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 19,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 20,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 21,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 22,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 23,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 24,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 25,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 26,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 27,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 28,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 29,
+        "arm": "hybrid"
+      }
+    ],
+    "process": {
+      "status": {
+        "schema": "nir1-graph-eval-status/1",
+        "feature": "nir1-graph-eval",
+        "registered": true,
+        "registrations": 1,
+        "registeredAtNs": 0,
+        "alive": true,
+        "worker": {
+          "state": "configured",
+          "path": "/home/grimodex/worktrees/Grimodex/claude-g04-cand/src-tauri/target/release/nir1-c-query-worker",
+          "reason": null
+        },
+        "gateOpened": true,
+        "owner": {
+          "publicationOpen": true,
+          "workerConfigured": true,
+          "slot": "empty",
+          "cacheOccupied": false,
+          "closed": false,
+          "profile": {
+            "restricted": false,
+            "inFlightStopped": true
+          }
+        },
+        "workerFileName": "nir1-c-query-worker",
+        "clockNs": 1180150333
+      },
+      "metadataAtOpen": {
+        "b": {
+          "generation": 1,
+          "dirty": false,
+          "sourceDigest": "sha256:2868f002d6dc2294bb081729cc33be334c7d232587b1274ccc168f69cca413ac",
+          "dependencySetDigest": "sha256:f00b09873346e4463c506de2398cf5c22a67ddedf31225ab6cbbf4afe2ba8dcf",
+          "producerId": "nir1-reviewed-entity-relation-v1",
+          "producerVersion": "nir1-reviewed-entity-relation/v1"
+        },
+        "chronicle": {
+          "generation": 1,
+          "dirty": false,
+          "sourceDigest": "sha256:95f357698fcc157e19a5f1630055eb2131b0aed1ad5c279629c2d407a3657587",
+          "dependencySetDigest": "sha256:f6144cc248a22cd3bd30cb994d6080f1938e23b472b4ee46eb9986082557125c",
+          "producerId": "nir1-reviewed-chronicle-v1",
+          "producerVersion": "nir1-reviewed-chronicle/v1"
+        }
+      },
+      "freshnessSettle": {
+        "settle": {
+          "settled": true,
+          "waitedMs": 5.9469759999992675,
+          "polls": 1,
+          "limitMs": 15000,
+          "intervalMs": 100,
+          "initial": {
+            "consumerId": "narrative-incremental-freshness/v1",
+            "head": 141,
+            "cursor": true,
+            "acknowledged": 141,
+            "activeRun": false,
+            "reserved": false,
+            "pendingEvents": 0,
+            "pendingSequences": 0
+          },
+          "final": {
+            "consumerId": "narrative-incremental-freshness/v1",
+            "head": 141,
+            "cursor": true,
+            "acknowledged": 141,
+            "activeRun": false,
+            "reserved": false,
+            "pendingEvents": 0,
+            "pendingSequences": 0
+          }
+        },
+        "beforeMeasurement": {
+          "consumerId": "narrative-incremental-freshness/v1",
+          "head": 141,
+          "cursor": true,
+          "acknowledged": 141,
+          "activeRun": false,
+          "reserved": false,
+          "pendingEvents": 0,
+          "pendingSequences": 0
+        }
+      },
+      "raw": {
+        "ok": true,
+        "before": {
+          "indexedChunkCount": 0,
+          "staleChunkCount": 0,
+          "indexedSceneCount": 0,
+          "nonemptySceneCount": 13,
+          "currentModelId": "BAAI/bge-small-en-v1.5@local/model_int8.onnx/en-v1",
+          "currentEmbeddingDim": 384,
+          "currentChunkerVersion": "semantic-prose-chunker-en-v1"
+        },
+        "status": {
+          "indexedChunkCount": 13,
+          "staleChunkCount": 0,
+          "indexedSceneCount": 13,
+          "nonemptySceneCount": 13,
+          "currentModelId": "BAAI/bge-small-en-v1.5@local/model_int8.onnx/en-v1",
+          "currentEmbeddingDim": 384,
+          "currentChunkerVersion": "semantic-prose-chunker-en-v1"
+        },
+        "indexed": 13,
+        "unsearchable": [],
+        "modelWarmupMs": 324.5,
+        "buildMs": 3616.0999999940395
+      },
+      "chronicleIndex": {
+        "ok": true,
+        "durationMs": 101.5,
+        "probes": 2,
+        "lastIndexUsable": true
+      },
+      "seedPin": {
+        "caseId": "G-03",
+        "variantId": "frontier-exceeded",
+        "querySceneId": "caa12b67-d8ba-4a54-b84e-11ac1426213c",
+        "productSeed": "8d475c03-0417-4723-a515-4e31f3844349",
+        "expectedSeed": "8d475c03-0417-4723-a515-4e31f3844349",
+        "expectedSeedLogical": null,
+        "pinCount": 1,
+        "status": "match"
+      },
+      "releases": []
+    },
+    "processes": null,
+    "problems": []
+  },
+  "aggregates": {
+    "sampleCount": 35,
+    "graphSampleCount": 0,
+    "requeryCount": 0
+  },
+  "verdict": {
+    "outcome": "recorded"
+  }
+}

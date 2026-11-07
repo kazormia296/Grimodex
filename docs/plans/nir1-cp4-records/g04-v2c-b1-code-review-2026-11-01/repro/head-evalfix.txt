@@ -1,0 +1,492 @@
+{
+  "version": 1,
+  "generatedAt": "2026-11-01T11:58:40.523Z",
+  "validation": {
+    "errors": [],
+    "coveredRequirementIds": [
+      "GDX-AI-AUDIT-001",
+      "GDX-AI-CONSENT-001",
+      "GDX-ARTIFACT-001",
+      "GDX-GROUND-001",
+      "GDX-ISOLATION-001",
+      "GDX-NARR-COVERAGE-001",
+      "GDX-NARR-DETAIL-001",
+      "GDX-NARR-EVAL-001",
+      "GDX-NARR-EVIDENCE-001",
+      "GDX-NARR-SEMANTIC-001",
+      "GDX-NARR-SEMANTIC-CONTRACT-001",
+      "GDX-NARR-TEMPORAL-001",
+      "GDX-POLICY-001",
+      "GDX-PRECHECK-001",
+      "GDX-ROUTE-001",
+      "GDX-TOOL-001",
+      "GDX-TRACE-001"
+    ],
+    "failureClasses": [
+      "routing",
+      "precheck",
+      "tool",
+      "policy",
+      "quality",
+      "artifact"
+    ]
+  },
+  "fixtureContracts": {
+    "passed": 32,
+    "failed": 0,
+    "results": [
+      {
+        "id": "eval-ground-search-events",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-ground-get-scene",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-ground-foreshadow",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-artifact-create-event",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-artifact-update-codex",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-narrative-replay-provenance",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-narrative-exact-evidence",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-narrative-semantic-frame",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-narrative-partial-coverage",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-narrative-detail-contract",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-narrative-temporal-contract",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-narrative-runtime-authority-fail-closed",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-nir1-capacity-diagnostics",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-nir1-entity-relation-review",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-precheck-knowledge-policy",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-precheck-body-confirmation",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-precheck-delete-confirmation",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-ai-data-consent-precheck",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-policy-create-snippet",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-policy-apply-tree",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-prompt-post-effect-json",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-route-search-codex",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-route-search-scenes",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-route-list-chapters",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-route-character-timeline",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-tool-unknown",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-ai-audit-pre-dispatch",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-tool-research",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-tool-hermes-write",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-policy-propose-body",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-policy-delete-relation",
+        "status": "passed",
+        "findings": []
+      },
+      {
+        "id": "eval-isolation-ask-user",
+        "status": "passed",
+        "findings": []
+      }
+    ],
+    "scope": "Metadata, traceability, isolation declarations, and canonical tool-policy contracts only; this does not execute model behavior or teardown."
+  },
+  "lightSuites": {
+    "status": "not-run",
+    "suiteIds": [
+      "quality-workflow",
+      "ai-routing",
+      "tool-policy",
+      "prompt-contract",
+      "retrieval-grounding",
+      "narrative-runtime",
+      "narrative-extraction",
+      "narrative-semantic-contract",
+      "nir1-entity-relation-review",
+      "nir1-capacity-diagnostics"
+    ],
+    "command": "pnpm eval:impact -- --run"
+  },
+  "heavy": [
+    {
+      "id": "heavy-nir1-raw-retrieval-baseline",
+      "suiteId": "retrieval-grounding",
+      "command": "node scripts/quality/run-nir1-retrieval.mjs",
+      "reason": "Actual Electron Raw baseline only; requires independently frozen NIR-1 expectations, the pinned local ja/en ONNX artifacts in NIR1_JA_MODEL/NIR1_EN_MODEL, standard build receipt in NIR1_BUILD_RECEIPT, and a display. Missing prerequisites are blocked; this does not accept IR, Graph, Packing or author value.",
+      "status": "deferred"
+    },
+    {
+      "id": "heavy-nir1-entity-relation-product-journey",
+      "suiteId": "nir1-entity-relation-review",
+      "command": "GRIMODEX_PRODUCT_JOURNEY_SET=nir1-entity-relation-review pnpm electron:product-journeys",
+      "reason": "Runs the real Electron Entity/Relation review, explicit approval, and target-bound cold-reopen journey. It is a Heavy product evaluation separate from Light contract tests; missing build, display, or native prerequisites remain deferred or blocked and do not activate Graph, Packing, or AI dispatch.",
+      "status": "deferred"
+    },
+    {
+      "id": "heavy-c2-5b-narrative-maintenance-product-journeys",
+      "suiteId": "narrative-runtime",
+      "command": "GRIMODEX_PRODUCT_JOURNEY_SET=c2-5b pnpm electron:product-journeys",
+      "reason": "Runs the eleven durable C2-5B maintenance journeys in a built Electron/native environment; missing trigger owners or production adapters remain an intentional red acceptance result until the corresponding implementation lanes land.",
+      "status": "deferred"
+    },
+    {
+      "id": "heavy-agent-tool-loop",
+      "suiteId": "tool-policy",
+      "command": "pnpm test:node --run src/features/chat/agent/agentToolCall.live.test.ts",
+      "reason": "Maintainer-local live model qualification for the desktop agent loop; requires billed OpenRouter access and an isolated workspace, and is not a managed Web Editor route.",
+      "status": "deferred"
+    },
+    {
+      "id": "heavy-single-shot-surfaces",
+      "suiteId": "ai-routing",
+      "command": "pnpm test:node --run src/features/ai-verification/singleShot.live.test.ts",
+      "reason": "Maintainer-local live model qualification for desktop single-shot surfaces; missing credentials produce INCOMPLETE, never QUALIFIED.",
+      "status": "deferred"
+    },
+    {
+      "id": "heavy-related-scenes",
+      "suiteId": "retrieval-grounding",
+      "command": "node scripts/quality/run-related-scenes-heavy.mjs",
+      "reason": "Requires local ONNX runtime dependencies and model resources; the runner generates verified embeddings, executes the eval, and restores prior artifacts.",
+      "status": "deferred"
+    },
+    {
+      "id": "heavy-semantic-reranker-fixed-fixture",
+      "suiteId": "retrieval-grounding",
+      "command": "cd experiments/lfm25-encoder-phase0 && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run --frozen --no-dev python -m grimodex_lfm_eval.reranker_gate2_runner --config configs/phase0b-rerankers.yaml --candidates data/public/gate2/candidates-ja.jsonl --chunk-qrels data/public/gate2/chunk-qrels.json --model ja_xsmall --threads 4 --batch-size 4 --output /tmp/grimodex-gate2-ja-xsmall.json && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run --frozen --no-dev python -m grimodex_lfm_eval.reranker_gate2_runner --config configs/phase0b-rerankers.yaml --candidates data/public/gate2/candidates-en.jsonl --chunk-qrels data/public/gate2/chunk-qrels.json --model en_minilm_l4 --threads 4 --batch-size 4 --output /tmp/grimodex-gate2-en-minilm-l4.json",
+      "reason": "Product opt-in depends on the pinned Gate 2 quality, admission-safety, and top-30 CPU latency gates; requires verified local model snapshots and a comparable CPU host.",
+      "status": "deferred"
+    },
+    {
+      "id": "heavy-impact-gate31",
+      "suiteId": "retrieval-grounding",
+      "command": "make -C experiments/lfm25-encoder-phase0 impact-gate31 IMPACT_GATE31_MODEL=ja_xsmall IMPACT_GATE31_FINAL_BATCH_SIZE=4 IMPACT_GATE31_FINAL_THREAD_COUNT=8 IMPACT_GATE31_FINAL_BUCKET_MODE=bucketed && make -C experiments/lfm25-encoder-phase0 impact-gate31 IMPACT_GATE31_MODEL=modernbert_ja_30m IMPACT_GATE31_FINAL_BATCH_SIZE=4 IMPACT_GATE31_FINAL_THREAD_COUNT=physical IMPACT_GATE31_FINAL_BUCKET_MODE=bucketed",
+      "reason": "Requires both pinned local FP32 model snapshots and several minutes of isolated CPU time to measure every window from 30 complete scenes plus the saturated 30-window stress.",
+      "status": "deferred"
+    },
+    {
+      "id": "heavy-rust-post-effect-live",
+      "suiteId": "prompt-contract",
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features post_effect_live -- --nocapture",
+      "reason": "Maintainer-local live model qualification for the desktop Rust route; requires a billed OpenRouter model and isolated credentials.",
+      "status": "deferred"
+    },
+    {
+      "id": "heavy-codex-prompt-surfaces",
+      "suiteId": "prompt-contract",
+      "command": "pnpm test:node --run src/features/codex/candidateJudgment.live.test.ts src/features/codex/codexYomi.live.test.ts",
+      "reason": "Maintainer-local live model qualification for desktop prompt surfaces; requires a billed OpenRouter model, while wording checks remain Light evidence.",
+      "status": "deferred"
+    },
+    {
+      "id": "heavy-narrative-chronicle-production",
+      "suiteId": "narrative-extraction",
+      "command": "OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:chronicle:production:live",
+      "reason": "Maintainer-local Production Chronicle full seam (observation→evidence→cluster→synthesis→match→proposal). Missing credentials are INCOMPLETE and semantic threshold misses are HOLD.",
+      "status": "deferred"
+    },
+    {
+      "id": "heavy-narrative-chronicle-motif-boundary-diagnostic",
+      "suiteId": "narrative-extraction",
+      "command": "pnpm eval:narrative:chronicle:motif:diagnostic:live",
+      "reason": "Maintainer-local diagnostic-only Production Chronicle run for the five chronicle-motif-boundary-v1 cases. It is not part of Live Model Qualification defaultProfile or formal certification and can never produce certification eligibility.",
+      "status": "deferred"
+    },
+    {
+      "id": "heavy-narrative-chronicle-legacy-baseline",
+      "suiteId": "narrative-extraction",
+      "command": "OPENROUTER_MODEL=openai/gpt-5.6-luna OPENROUTER_REASONING_EFFORT=medium pnpm eval:narrative:live",
+      "reason": "Measures the current production Chronicle Prompt and Parser against Human Gold with billed OpenRouter access; the legacy schema lacks exact Evidence and semantic dimensions, so completion is explicitly not certification.",
+      "status": "deferred"
+    },
+    {
+      "id": "heavy-web-ai-consent-live",
+      "suiteId": "tool-policy",
+      "command": "pnpm eval:web-ai-consent:live",
+      "reason": "Proves consent dialog, refusal-before-provider (0 HTTP), approve (>0 HTTP), destination-change re-consent, and teardown against a loopback OpenAI-compatible Local LLM. Model quality is out of scope.",
+      "status": "deferred"
+    },
+    {
+      "id": "heavy-web-ai-consent-browser-live",
+      "suiteId": "tool-policy",
+      "command": "pnpm eval:web-ai-consent:browser",
+      "reason": "Proves the Web AI consent journey in real Chromium with zero provider HTTP before refusal, positive provider HTTP after approval, destination-bound re-consent, IndexedDB/localStorage cleanup, and loopback server teardown.",
+      "status": "deferred"
+    }
+  ],
+  "blocked": [
+    {
+      "id": "blocked-impact-gate4-fresh-holdout",
+      "suiteId": "retrieval-grounding",
+      "reason": "The current synthetic test fingerprint is consumed and Gate 3.1 full-scene latency is Hold, so changing the run output cannot authorize another locked-test evaluation.",
+      "requiredAction": "First pass the same Gate 3.1 full-scene workload, then freeze a new work-isolated holdout and intentionally update the selection protocol identity before registering a new runnable Heavy command.",
+      "status": "blocked"
+    }
+  ],
+  "nir1Graph": {
+    "status": "passed",
+    "scope": "Predeclared fixture shape, l6-l9 class rows, Raw-prediction lexical guard and rule-derived Graph expectations only; no Raw, IR or Graph runtime result.",
+    "cases": [
+      {
+        "caseId": "G-01",
+        "fixtureId": "nir1-g01-explicit-pin-design/1",
+        "path": "evals/nir1-g01/fixture.v1.json",
+        "sha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79",
+        "slotClass": "supplementable",
+        "variants": 1
+      },
+      {
+        "caseId": "G-02",
+        "fixtureId": "nir1-g02-directed-relation/1",
+        "path": "evals/nir1-graph/g02-directed-relation.v1.json",
+        "sha256": "c9e9ea0c41e6818d19722d6e2c4255cac96b54cd55f0808f88357ad74416946c",
+        "slotClass": "supplementable",
+        "variants": 1
+      },
+      {
+        "caseId": "G-03",
+        "fixtureId": "nir1-g03-bounded-two-hop/1",
+        "path": "evals/nir1-graph/g03-bounded-two-hop.v1.json",
+        "sha256": "39aec43a66f3ede60249cc74f5524fbe8201ca20ff629c98d54fc05cc360f76d",
+        "slotClass": "raw-full",
+        "variants": 2
+      },
+      {
+        "caseId": "G-04",
+        "fixtureId": "nir1-g04-scope-exact-unknown/2",
+        "path": "evals/nir1-graph/g04-scope-exact-unknown.v2.json",
+        "sha256": "96d44ec362f30352d6cb971c208f2ab71aed944d008cab9eb65ca2ab57c218e1",
+        "slotClass": "supplementable",
+        "variants": 1
+      },
+      {
+        "caseId": "G-05",
+        "fixtureId": "nir1-g05-current-revision-freshness/1",
+        "path": "evals/nir1-graph/g05-current-revision-freshness.v1.json",
+        "sha256": "52c5ac72bf5886bcc6fc1c901575bc91e36a17c7d236191a610d5dcb31093c28",
+        "slotClass": "ir-supplemented",
+        "variants": 1
+      },
+      {
+        "caseId": "G-06",
+        "fixtureId": "nir1-g06-evidence-anchor-path/1",
+        "path": "evals/nir1-graph/g06-evidence-anchor-path.v1.json",
+        "sha256": "acb55cbd352949ced010dbbc2e3b06fed4dad9144488172cbe76cd6105d7b40a",
+        "slotClass": "raw-full",
+        "variants": 1
+      },
+      {
+        "caseId": "G-07",
+        "fixtureId": "nir1-g07-reading-before-reveal/1",
+        "path": "evals/nir1-graph/g07-reading-before-reveal.v1.json",
+        "sha256": "385eaa732f48c10417a775430615ee4b0e245818e87b525ce7c1509ea83d12d0",
+        "slotClass": "supplementable",
+        "variants": 1
+      },
+      {
+        "caseId": "G-08",
+        "fixtureId": "nir1-g08-graph-index-fallback/1",
+        "path": "evals/nir1-graph/g08-graph-index-fallback.v1.json",
+        "sha256": "0415561e3834eff5c1f04d1a66e49177209b6755c79015d3b7944f374600a4c9",
+        "slotClass": "supplementable",
+        "variants": 5
+      }
+    ],
+    "freeze": {
+      "status": "frozen",
+      "path": "evals/nir1-graph/freeze.v2.json",
+      "reviewVerdict": "approve",
+      "reviewReceipt": "evals/nir1-graph/independent-expectation-review.v1.json",
+      "frozenAt": "2026-11-01T11:36:52Z"
+    },
+    "errors": []
+  },
+  "nir1FinalRequest": {
+    "status": "passed",
+    "state": "frozen",
+    "fixtureVersion": 2,
+    "scope": "Fixture shape, freeze-record and independent-review bindings only, for every fixture version (the state is the evidence version's); no Native packer, renderer, D-final or model result is read, and a missing fixture is reported as not-placed.",
+    "cases": [
+      {
+        "caseId": "P-01",
+        "variants": 1
+      },
+      {
+        "caseId": "P-02",
+        "variants": 4
+      },
+      {
+        "caseId": "P-04",
+        "variants": 1
+      },
+      {
+        "caseId": "P-05",
+        "variants": 2
+      },
+      {
+        "caseId": "P-06",
+        "variants": 3
+      },
+      {
+        "caseId": "P-07",
+        "variants": 1
+      },
+      {
+        "caseId": "P-08",
+        "variants": 3
+      },
+      {
+        "caseId": "P-10",
+        "variants": 6
+      },
+      {
+        "caseId": "P-11",
+        "variants": 2
+      }
+    ],
+    "freeze": {
+      "status": "frozen",
+      "path": "evals/nir1-packing/final-request.freeze.v2.json",
+      "frozenAt": "2026-10-25T07:35:18Z",
+      "reviewVerdict": "approve"
+    },
+    "versions": [
+      {
+        "fixtureVersion": 1,
+        "supersededBy": 2,
+        "state": "pending-review",
+        "freeze": {
+          "status": "pending-review",
+          "path": "evals/nir1-packing/final-request.freeze.v1.json",
+          "frozenAt": "2026-10-17T22:55:04Z",
+          "reviewVerdict": "pending"
+        }
+      },
+      {
+        "fixtureVersion": 2,
+        "state": "frozen",
+        "freeze": {
+          "status": "frozen",
+          "path": "evals/nir1-packing/final-request.freeze.v2.json",
+          "frozenAt": "2026-10-25T07:35:18Z",
+          "reviewVerdict": "approve"
+        }
+      }
+    ],
+    "errors": []
+  },
+  "nir1ObservationPrep": {
+    "status": "passed",
+    "formalReady": true,
+    "placeholders": [],
+    "scope": "Pre-observation documents only (contract copies, frozen-fixture digests, trace density and length, procedure values); no Raw, IR or Graph runtime result.",
+    "errors": []
+  }
+}

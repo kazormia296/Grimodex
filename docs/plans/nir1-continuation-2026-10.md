@@ -155,6 +155,7 @@ Session B のパケットで一覧として通知する委任判断（未記録�
 - PUB-G の前提 #39（2026-11-07）: 宣言の UI の再読取で確認が消える問題（DR-PUBG-39-1）と初期描画（DR-PUBG-39-2）を、gate・IPC・保存範囲を変えずに renderer で直した。記録先は [cb3-decisions.md](nir1-lane-decisions/cb3-decisions.md)（「PUB-G 前提 #39 の修正の記録」）。
 - DR-IRB-3（2026-11-06）: ユーザーが K＝40・E8 (a)・E13 1 本を決定し、E6 (a) は測定で決め、E7 は候補 2 s（段 2 の試験で確定）。実装は枝 `claude/irb-prepare-reader`（PR は後）。記録先は [irb-decisions.md](nir1-lane-decisions/irb-decisions.md)。 E7（2026-11-07）：ユーザーが決定し、transition の physical exclusive の待ちと shutdown に上限 2 s を置き、超えたら待つ側が先に進む（止まらない reader だけを participant の count から外し、slot は塞ぐ。E8 の fail-closed は保つ）。実装は枝 `claude/irb-e7-bounded-wait`、詳細は irb-decisions.md の DR-IRB-3 の行の末尾。
 - #798（2026-11-06）: cache の効きは第 6 版の run で確認済みで、merge まで進める（ユーザーの決定）。Heavy の確認の手段は診断 harness（別 PR）。
+- CP-4／S2 追補 #14 と S4 の 6 回目の凍結のやり直し（2026-11-07）: DR-CP4-P-9（S2 追補 #14）と DR-CP4-S4-9（S4a まで。S4b は S3 の独立レビューの後）。記録先は [cp4-decisions.md](nir1-lane-decisions/cp4-decisions.md) の節「S2 追補 #14 と S4a」。K6/5（D=40 ms、B=54.2 ms、Hybrid p95 の上限 94.2 ms）のユーザーの確認は contracts `07fc80ec`、C7（LAPSE-2 の例外を含む）・G-01 の診断 run の admission の経路・R5 の記録の再利用は S3 の後のユーザーの確認 contracts `0600ec04`・`6b47c177`（問 3・問 5 は起案の指示で確認ではない）。枝 `claude/k65-harness`（PR #827）。失効 `8ac459d4`、S2 追補 #14 `6aad102d`、S4a `b852debd`。S3 の 8 回目（B1、M1、M2。S2 追補 #15 で反映）、contracts の取り込み（`166b0640`）、bytes の pin の取り直し（`8159f083`）、SP-N と K6/4・K6/5・C7 の検出力の記録の取り直し（`3675c50e`）の後に、S4b（6 回目）を `63bc9b90` で行った（freeze record を導入。記録先は cp4-decisions.md の「DR-CP4-S4-9 の S4b の結果」）。merge は `gh pr merge --merge` だけ。
 
 
 ### 3.3. レーンの判断記録の置き場所

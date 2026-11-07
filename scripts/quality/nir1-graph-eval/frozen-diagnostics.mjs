@@ -906,7 +906,7 @@ function freezeHead(value, label, problems) {
 
 /**
  * K6/2 事前登録の凍結 2: the receipt head written before any measurement —
- * the K6/2 and K6/4 freeze commits and SHA-256, the pre-observation commit
+ * the K6/2, K6/4 and K6/5 freeze commits and SHA-256, the pre-observation commit
  * and its record's SHA-256, the start time (UTC) and, for a diagnostic or a
  * trace, the trace files' commit and SHA-256 (S2 `tracesRule`). A missing,
  * unreadable or placeholder value is `[precheck]`: the measurement does not
@@ -918,6 +918,8 @@ export function buildRunHead(input, { now = () => new Date() } = {}) {
   if (!kind) problems.push("kind");
   freezeHead(input?.k62, "k62", problems);
   freezeHead(input?.k64, "k64", problems);
+  // K6/5 変える点 7: the /5 row's freeze head goes in the head with the /4's.
+  freezeHead(input?.k65, "k65", problems);
   if (!COMMIT.test(input?.observationPrep?.commit ?? ""))
     problems.push("observationPrep.commit");
   if (!SHA256.test(input?.observationPrep?.freezeRecordSha256 ?? ""))
@@ -958,6 +960,7 @@ export function buildRunHead(input, { now = () => new Date() } = {}) {
     kind: input.kind,
     k62: { freezeCommit: input.k62.freezeCommit, sha256: input.k62.sha256 },
     k64: { freezeCommit: input.k64.freezeCommit, sha256: input.k64.sha256 },
+    k65: { freezeCommit: input.k65.freezeCommit, sha256: input.k65.sha256 },
     observationPrep: {
       commit: input.observationPrep.commit,
       freezeRecordSha256: input.observationPrep.freezeRecordSha256,
@@ -1101,7 +1104,7 @@ export function readSpP4Gate({
     sha256(Buffer.from(headBytes(receipt.head))) !== receipt.headSha256
   )
     fail("gate", "the SP-P4 receipt's head is not the head.json it wrote");
-  for (const key of ["k62", "k64"])
+  for (const key of ["k62", "k64", "k65"])
     if (stable(receipt.head?.[key]) !== stable(head?.[key]))
       fail("gate", `the SP-P4 receipt's ${key} head differs from this run's`);
   if (receipt.head?.observationPrep?.commit !== head?.observationPrep?.commit)

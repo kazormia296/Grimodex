@@ -1,0 +1,48 @@
+{
+ "schema": "nir1-cp4-trace-start-seal-extract/1",
+ "note": "trace-editing-s5r3-1（旧 S4b' の下の正式の editing trace。受領書は invalid）の観測から、開始時の封印の B と Chronicle の状態を数えた抜粋。観測の実物（9 MB）は repo に無い（ローカルの .artifacts にある）。integrator が 2026-11-01 に数えた。解釈はしない。",
+ "source": {
+  "observationJson": {
+   "path": ".artifacts/cp4/trace-editing-s5r3-1/observation.json（ローカル。contracts には写していない）",
+   "sha256": "c192bca3a88f64b52696a722a042b61a7cbb324b38e981912a26e2c5a6447a62"
+  },
+  "prepMainStderrEditing": {
+   "path": ".artifacts/cp4/trace-editing-s5r3-1/prep-main-stderr.log",
+   "sha256": "c0535bd17efb580b89f4154ce5ee6a24185ccf1ebfa4ca41ce37dcc35537776a"
+  },
+  "measureMainStderrEditing": {
+   "path": ".artifacts/cp4/trace-editing-s5r3-1/measure-main-stderr.log",
+   "sha256": "0cbaaf1fbb0782dd65ede1b7dcebe992e281f2b0e91dc28540396d8b8b893dec"
+  },
+  "prepMainStderrBrowsing": {
+   "path": ".artifacts/cp4/trace-browsing-s5r3-1/prep-main-stderr.log",
+   "sha256": "6e587eb41cb139b9cece5796376cada49ff024b350908180db2315be99f9eddf"
+  }
+ },
+ "editingStartSeals": {
+  "queries": 201,
+  "bBefore": {
+   "generation=1 dirty=false": 1,
+   "generation=1 dirty=true": 200
+  },
+  "bAfter": {
+   "generation=1 dirty=false": 1,
+   "generation=1 dirty=true": 200
+  },
+  "chronicleBefore": {
+   "generationMin": 3,
+   "generationMax": 202,
+   "dirtyTrue": 200,
+   "dirtyFalse": 1,
+   "reads": 201
+  }
+ },
+ "prepMainStderr": {
+  "editing": 3,
+  "browsing": 3,
+  "message": "[narrative-maintenance] discovery failed: [Error: NEX_VALIDATION_TERMINATED:context-unavailable: Chronicle eligibility requires a caller-owned validation context]"
+ },
+ "measureMainStderr": {
+  "editingLinesContainingDiscoveryFailed": 0
+ }
+}

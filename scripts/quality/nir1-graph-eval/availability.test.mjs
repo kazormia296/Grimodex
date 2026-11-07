@@ -30,7 +30,7 @@ import { late, sample, scheduleRows } from "./test-support.mjs";
 const FROZEN = { kind: "frozen" };
 
 test("frozen constants are referenced, not chosen", () => {
-  assert.equal(GRAPH_EVAL_D_MS, 10.84);
+  assert.equal(GRAPH_EVAL_D_MS, 40);
   assert.equal(GRAPH_RESULT_LEASE_MS, 100);
   assert.equal(BOUNDARY_TOLERANCE_MS, 0.01);
   assert.deepEqual(AVAILABILITY_YARDSTICK, { numerator: 1, denominator: 100 });
@@ -42,18 +42,26 @@ test("frozen constants are referenced, not chosen", () => {
 
 test("P-4: in window = joined and arrived by t_raw_ready + D inclusive", () => {
   assert.equal(
-    joinedWithinWindow(sample({ graph: { arrivedAt: 110.84 } })),
+    joinedWithinWindow(sample({ graph: { arrivedAt: 100 + GRAPH_EVAL_D_MS } })),
     true,
   );
   assert.equal(joinedWithinWindow(sample({ graph: { arrivedAt: 100 } })), true);
-  // D = 11 or a strict comparison would change these vectors.
-  assert.deepEqual(classifyJoin(sample({ graph: { arrivedAt: 110.845 } })), {
-    joined: true,
-    inWindow: false,
-    disagreement: "joined-late-within-tolerance",
-  });
+  // D = 41 or a strict comparison would change these vectors.
+  assert.deepEqual(
+    classifyJoin(
+      sample({ graph: { arrivedAt: 100 + GRAPH_EVAL_D_MS + 0.005 } }),
+    ),
+    {
+      joined: true,
+      inWindow: false,
+      disagreement: "joined-late-within-tolerance",
+    },
+  );
   assert.throws(
-    () => classifyJoin(sample({ graph: { arrivedAt: 110.9 } })),
+    () =>
+      classifyJoin(
+        sample({ graph: { arrivedAt: 100 + GRAPH_EVAL_D_MS + 0.1 } }),
+      ),
     /\[precheck\].*suspected N-7/,
   );
   assert.deepEqual(
@@ -65,7 +73,9 @@ test("P-4: in window = joined and arrived by t_raw_ready + D inclusive", () => {
     },
   );
   assert.equal(
-    classifyJoin(sample(late("graph-late", { arrivedAt: 111 }))).disagreement,
+    classifyJoin(
+      sample(late("graph-late", { arrivedAt: 100 + GRAPH_EVAL_D_MS + 1 })),
+    ).disagreement,
     null,
   );
   assert.throws(
@@ -320,7 +330,7 @@ test("(a) refuses a run in another D2a mode", () => {
 test("boundary disagreements are counted in (a) and never stop a run within tolerance", () => {
   const rows = steadyRun((variant, repeat) =>
     variant.key === "G-02/base" && repeat === 0
-      ? { graph: { arrivedAt: 110.845 } }
+      ? { graph: { arrivedAt: 100 + GRAPH_EVAL_D_MS + 0.005 } }
       : variant.key === "G-04/base" && repeat === 0
         ? late("graph-late", { arrivedAt: 105 })
         : {},
@@ -333,7 +343,7 @@ test("boundary disagreements are counted in (a) and never stop a run within tole
   assert.equal(summary.pool.outOfWindow, 2);
   const beyond = steadyRun((variant, repeat) =>
     variant.key === "G-02/base" && repeat === 0
-      ? { graph: { arrivedAt: 111 } }
+      ? { graph: { arrivedAt: 100 + GRAPH_EVAL_D_MS + 0.1 } }
       : {},
   );
   assert.throws(() => summarize(beyond), /suspected N-7/);
@@ -689,7 +699,7 @@ test("boundary disagreements in (b): joined-late within tolerance is other, neve
   const result = traceOf(
     trace("browsing", 200, (at, t0) =>
       at === 1
-        ? { graph: { arrivedAt: t0 + 20.845 } }
+        ? { graph: { arrivedAt: t0 + 10 + GRAPH_EVAL_D_MS + 0.005 } }
         : at === 2
           ? late("graph-late", { arrivedAt: 2015 })
           : {},

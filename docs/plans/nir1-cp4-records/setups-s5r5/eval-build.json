@@ -1,0 +1,116 @@
+{
+  "schemaVersion": "nir1-graph-eval-build/1",
+  "status": "passed",
+  "standardBuild": false,
+  "evaluationBuild": true,
+  "sourceUnchanged": true,
+  "root": "/home/grimodex/worktrees/Grimodex/claude-g04-cand",
+  "candidate": {
+    "requestedBase": "refs/remotes/origin/master",
+    "requestedHead": "HEAD",
+    "resolvedBaseSha": "22b74a25ff8dadfa45247e5bc866afe3afd48fb7",
+    "resolvedHeadSha": "22b74a25ff8dadfa45247e5bc866afe3afd48fb7",
+    "resolvedHeadTreeSha": "62329f963a474f9fe39fa855bc4586725b45a529",
+    "currentHeadSha": "22b74a25ff8dadfa45247e5bc866afe3afd48fb7",
+    "worktreeClean": true
+  },
+  "features": [
+    "nir1-graph-eval"
+  ],
+  "capabilities": {
+    "licensing": false,
+    "legacyKeyringMigration": false,
+    "nir1FinalRequestEval": false,
+    "nir1GraphEval": true
+  },
+  "exports": [
+    "nir1GraphEvalClearNextQueryCache",
+    "nir1GraphEvalClearSamples",
+    "nir1GraphEvalClockNs",
+    "nir1GraphEvalDiagnostics",
+    "nir1GraphEvalReadA3",
+    "nir1GraphEvalSamples",
+    "nir1GraphEvalStatus"
+  ],
+  "artifacts": {
+    ".artifacts/cp4/eval-build/grimodex-node.node": "4f549c0e9a428d24a8d4b1d259533061be37b72d6c77d9c4a53954131c691753",
+    ".artifacts/cp4/eval-build/nir1-c-query-worker": "47edf5ae57a39471c964ee592b646303a87938df921add57c95a54bf3fd31ab0"
+  },
+  "worker": {
+    "path": ".artifacts/cp4/eval-build/nir1-c-query-worker",
+    "sha256": "47edf5ae57a39471c964ee592b646303a87938df921add57c95a54bf3fd31ab0"
+  },
+  "mainWorker": {
+    "path": "src-tauri/target/release/nir1-c-query-worker",
+    "sha256": "47edf5ae57a39471c964ee592b646303a87938df921add57c95a54bf3fd31ab0"
+  },
+  "previousMainWorker": {
+    "path": "src-tauri/target/release/nir1-c-query-worker",
+    "ledger": ".artifacts/cp4/eval-build/previous-main-worker/ledger.json",
+    "backup": null,
+    "sha256": null,
+    "restore": "nothing to restore: no worker was at Main's path",
+    "manualRestore": null
+  },
+  "declarations": {
+    "path": ".artifacts/cp4/eval-build/index.d.ts",
+    "sha256": "2378374e668e8afbcbbb374690092ccd5ddc458cdfdac19b16a9acc8ca00b8fb"
+  },
+  "commands": [
+    {
+      "id": "eval-native",
+      "argv": [
+        "pnpm",
+        "--dir",
+        "electron/native/grimodex-node",
+        "exec",
+        "napi",
+        "build",
+        "--release",
+        "--features",
+        "nir1-graph-eval",
+        "--js",
+        "false",
+        "../../../.artifacts/cp4/eval-build"
+      ],
+      "status": "passed",
+      "exitCode": 0,
+      "signal": null,
+      "closeObserved": true,
+      "termination": "close-and-group-exit-observed",
+      "cleanup": {
+        "complete": true
+      }
+    },
+    {
+      "id": "c-query-worker",
+      "argv": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--bin",
+        "nir1-c-query-worker"
+      ],
+      "status": "passed",
+      "exitCode": 0,
+      "signal": null,
+      "closeObserved": true,
+      "termination": "close-and-group-exit-observed",
+      "cleanup": {
+        "complete": true
+      }
+    }
+  ],
+  "defaultNodeUnchanged": {
+    "path": "electron/native/grimodex-node/grimodex-node.node",
+    "sha256": "10d620c179411059b42c3ff0be9b61bc658bdd29788e49d24210b491c209f232"
+  },
+  "distributed": false,
+  "startedAt": "2026-11-01T16:23:38.208Z",
+  "finishedAt": "2026-11-01T16:28:47.386Z"
+}

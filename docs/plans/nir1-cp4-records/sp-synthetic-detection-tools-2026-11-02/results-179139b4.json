@@ -1,0 +1,1691 @@
+{
+  "tool": "spn-synthetic-detection-mutation",
+  "startedAt": "2026-11-01T15:23:12.056Z",
+  "node": "v24.18.0",
+  "worktree": "/home/grimodex/worktrees/Grimodex/claude-g04-cand",
+  "candidate": {
+    "commit": "179139b4926a6ef249da78b56e581c2fd7c083de",
+    "tree": "2dadf4f6d3001636fc388f12bd5db2751c1fb25e"
+  },
+  "statusBefore": "",
+  "ignoredBefore": "!! .artifacts/cp4/\n!! .artifacts/nir1-standard-build/\n!! dist-electron/\n!! dist/\n!! electron/native/grimodex-node/grimodex-node.node\n!! electron/native/grimodex-node/target/\n!! node_modules/\n!! packages/scan-contract/dist/\n!! packages/scan-contract/node_modules/\n!! packages/scan-core/dist/\n!! packages/scan-core/node_modules/",
+  "baselineTarget": {
+    "label": "baseline-target",
+    "command": "node --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs scripts/quality/nir1-graph-eval/seed-pin.test.mjs scripts/quality/nir1-graph-eval/receipt.test.mjs",
+    "started": "2026-11-01T15:23:12.215Z",
+    "finished": "2026-11-01T15:23:12.638Z",
+    "exitCode": 0,
+    "signal": null,
+    "stderrTail": "",
+    "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/baseline-target.tap",
+    "tapSha256": "12671a19fd8cc73fd122d14ac3e46e02bde06442e6508979d2b2766d9020cfde",
+    "tests": [
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P-10: a complete receipt passes and its head carries the K6/2 freeze",
+        "directive": null,
+        "line": "ok 1 - P-10: a complete receipt passes and its head carries the K6/2 freeze",
+        "rawLine": "ok 1 - P-10: a complete receipt passes and its head carries the K6/2 freeze",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。固定した commit と bytes の先頭だけを受け付ける",
+        "directive": null,
+        "line": "ok 2 - 批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。固定した commit と bytes の先頭だけを受け付ける",
+        "rawLine": "ok 2 - 批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。固定した commit と bytes の先頭だけを受け付ける",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "批准 7（DR-CP4-T14-1）: receiptHeadErrors は注入した凍結の descriptor で照合し、null なら正式の Graph を拒む",
+        "directive": null,
+        "line": "ok 3 - 批准 7（DR-CP4-T14-1）: receiptHeadErrors は注入した凍結の descriptor で照合し、null なら正式の Graph を拒む",
+        "rawLine": "ok 3 - 批准 7（DR-CP4-T14-1）: receiptHeadErrors は注入した凍結の descriptor で照合し、null なら正式の Graph を拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N31: 正式の receipt は批准 5 の (a)〜(c) の記録と、その判定を持つ",
+        "directive": null,
+        "line": "ok 4 - K6/4-N31: 正式の receipt は批准 5 の (a)〜(c) の記録と、その判定を持つ",
+        "rawLine": "ok 4 - K6/4-N31: 正式の receipt は批准 5 の (a)〜(c) の記録と、その判定を持つ",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D-1: receipt の批准 5 は git から集め直した封印つきの証拠と一致するときだけ K6/4",
+        "directive": null,
+        "line": "ok 5 - D-1: receipt の批准 5 は git から集め直した封印つきの証拠と一致するときだけ K6/4",
+        "rawLine": "ok 5 - D-1: receipt の批准 5 は git から集め直した封印つきの証拠と一致するときだけ K6/4",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N17: W_f、T_late、T_show を広げた receipt、手順のファイルの版の無い receipt は受け付けない",
+        "directive": null,
+        "line": "ok 6 - K6/4-N17: W_f、T_late、T_show を広げた receipt、手順のファイルの版の無い receipt は受け付けない",
+        "rawLine": "ok 6 - K6/4-N17: W_f、T_late、T_show を広げた receipt、手順のファイルの版の無い receipt は受け付けない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "S1f: settings.k64 は loadProcedureFile が commit から読んだ手順のファイルと一致し、draft と版の無い記録を拒む",
+        "directive": null,
+        "line": "ok 7 - S1f: settings.k64 は loadProcedureFile が commit から読んだ手順のファイルと一致し、draft と版の無い記録を拒む",
+        "rawLine": "ok 7 - S1f: settings.k64 は loadProcedureFile が commit から読んだ手順のファイルと一致し、draft と版の無い記録を拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N18: first-render の窓外率を書いていない receipt は集計の再計算と合わない",
+        "directive": null,
+        "line": "ok 8 - K6/4-N18: first-render の窓外率を書いていない receipt は集計の再計算と合わない",
+        "rawLine": "ok 8 - K6/4-N18: first-render の窓外率を書いていない receipt は集計の再計算と合わない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-6／K6/4-N21: verdict は計算し直して照合し、invalid を持つ receipt は有効にしない",
+        "directive": null,
+        "line": "ok 9 - P2-6／K6/4-N21: verdict は計算し直して照合し、invalid を持つ receipt は有効にしない",
+        "rawLine": "ok 9 - P2-6／K6/4-N21: verdict は計算し直して照合し、invalid を持つ receipt は有効にしない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P3-10: D3 の窓は /proc/locks が読めない標本、slot の file を見ていない標本、終わりが始まりより前の run を gap にする",
+        "directive": null,
+        "line": "ok 10 - P3-10: D3 の窓は /proc/locks が読めない標本、slot の file を見ていない標本、終わりが始まりより前の run を gap にする",
+        "rawLine": "ok 10 - P3-10: D3 の窓は /proc/locks が読めない標本、slot の file を見ていない標本、終わりが始まりより前の run を gap にする",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P1-5: a K2/4 diagnostic negative is a Graph run with the full Graph head",
+        "directive": null,
+        "line": "ok 11 - P1-5: a K2/4 diagnostic negative is a Graph run with the full Graph head",
+        "rawLine": "ok 11 - P1-5: a K2/4 diagnostic negative is a Graph run with the full Graph head",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P1-5: Graph-free run kinds refuse R+IR+Graph samples; the 24 allow only not-requested",
+        "directive": null,
+        "line": "ok 12 - P1-5: Graph-free run kinds refuse R+IR+Graph samples; the 24 allow only not-requested",
+        "rawLine": "ok 12 - P1-5: Graph-free run kinds refuse R+IR+Graph samples; the 24 allow only not-requested",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-7: the receipt's own claims are recomputed, never trusted",
+        "directive": null,
+        "line": "ok 13 - P2-7: the receipt's own claims are recomputed, never trusted",
+        "rawLine": "ok 13 - P2-7: the receipt's own claims are recomputed, never trusted",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-7: a declaration run is checked against the measurement workspace and the seam",
+        "directive": null,
+        "line": "ok 14 - P2-7: a declaration run is checked against the measurement workspace and the seam",
+        "rawLine": "ok 14 - P2-7: a declaration run is checked against the measurement workspace and the seam",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-12: the fixture block binds the variant, path, digest and kind",
+        "directive": null,
+        "line": "ok 15 - P2-12: the fixture block binds the variant, path, digest and kind",
+        "rawLine": "ok 15 - P2-12: the fixture block binds the variant, path, digest and kind",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P-3 / N-5 / N-6: only a current declaration with unchanged Index metadata proceeds",
+        "directive": null,
+        "line": "ok 16 - P-3 / N-5 / N-6: only a current declaration with unchanged Index metadata proceeds",
+        "rawLine": "ok 16 - P-3 / N-5 / N-6: only a current declaration with unchanged Index metadata proceeds",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D3 / N-14 / P2-8: window violations, gaps and missing fields exclude a run but keep it",
+        "directive": null,
+        "line": "ok 17 - D3 / N-14 / P2-8: window violations, gaps and missing fields exclude a run but keep it",
+        "rawLine": "ok 17 - D3 / N-14 / P2-8: window violations, gaps and missing fields exclude a run but keep it",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-F-6: Scene の単位で照合した F6 の判定（予告専用）は正式の receipt に入らない",
+        "directive": null,
+        "line": "ok 18 - DR-CP4-F-6: Scene の単位で照合した F6 の判定（予告専用）は正式の receipt に入らない",
+        "rawLine": "ok 18 - DR-CP4-F-6: Scene の単位で照合した F6 の判定（予告専用）は正式の receipt に入らない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの。direct-fetch の dev の runner は予告だけで集計に入らない",
+        "directive": null,
+        "line": "ok 19 - S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの。direct-fetch の dev の runner は予告だけで集計に入らない",
+        "rawLine": "ok 19 - S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの。direct-fetch の dev の runner は予告だけで集計に入らない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "N-11 / P2-9: Electron draws only on the run's Xvfb, without Wayland, D-Bus, ozone override or a netns",
+        "directive": null,
+        "line": "ok 20 - N-11 / P2-9: Electron draws only on the run's Xvfb, without Wayland, D-Bus, ozone override or a netns",
+        "rawLine": "ok 20 - N-11 / P2-9: Electron draws only on the run's Xvfb, without Wayland, D-Bus, ozone override or a netns",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "SHA256SUMS is sha256sum -c compatible and detects tampering",
+        "directive": null,
+        "line": "ok 21 - SHA256SUMS is sha256sum -c compatible and detects tampering",
+        "rawLine": "ok 21 - SHA256SUMS is sha256sum -c compatible and detects tampering",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S1C1-9: the receipt's feature set is exactly the evaluation feature",
+        "directive": null,
+        "line": "ok 22 - DR-CP4-S1C1-9: the receipt's feature set is exactly the evaluation feature",
+        "rawLine": "ok 22 - DR-CP4-S1C1-9: the receipt's feature set is exactly the evaluation feature",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S1C1-6: socket samples cover the run and an external socket is [precheck]",
+        "directive": null,
+        "line": "ok 23 - DR-CP4-S1C1-6: socket samples cover the run and an external socket is [precheck]",
+        "rawLine": "ok 23 - DR-CP4-S1C1-6: socket samples cover the run and an external socket is [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "B-2: 停止の後の副作用の証拠（残った process、close、X11、辞書、外部の server、切れた net log、observer、worker）は合否に入る",
+        "directive": null,
+        "line": "ok 24 - B-2: 停止の後の副作用の証拠（残った process、close、X11、辞書、外部の server、切れた net log、observer、worker）は合否に入る",
+        "rawLine": "ok 24 - B-2: 停止の後の副作用の証拠（残った process、close、X11、辞書、外部の server、切れた net log、observer、worker）は合否に入る",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "E-4: 別の候補の封印つきの証拠を bound に渡しても K6/4 にしない（W8）",
+        "directive": null,
+        "line": "ok 25 - E-4: 別の候補の封印つきの証拠を bound に渡しても K6/4 にしない（W8）",
+        "rawLine": "ok 25 - E-4: 別の候補の封印つきの証拠を bound に渡しても K6/4 にしない（W8）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "E-15: X11 の listing は前からある entry の変化・消失を副作用として不合格、他者の entry の出現は取り直し（集計から除く）",
+        "directive": null,
+        "line": "ok 26 - E-15: X11 の listing は前からある entry の変化・消失を副作用として不合格、他者の entry の出現は取り直し（集計から除く）",
+        "rawLine": "ok 26 - E-15: X11 の listing は前からある entry の変化・消失を副作用として不合格、他者の entry の出現は取り直し（集計から除く）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "E-16: launch の env の DBUS_SESSION_BUS_ADDRESS は run の dir の存在しない address だけ",
+        "directive": null,
+        "line": "ok 27 - E-16: launch の env の DBUS_SESSION_BUS_ADDRESS は run の dir の存在しない address だけ",
+        "rawLine": "ok 27 - E-16: launch の env の DBUS_SESSION_BUS_ADDRESS は run の dir の存在しない address だけ",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "SP/1 plan: 予定の seed と問いの Scene は fixture の値をそのまま写す（G-01 は entitySeed、v1）",
+        "directive": null,
+        "line": "ok 28 - SP/1 plan: 予定の seed と問いの Scene は fixture の値をそのまま写す（G-01 は entitySeed、v1）",
+        "rawLine": "ok 28 - SP/1 plan: 予定の seed と問いの Scene は fixture の値をそのまま写す（G-01 は entitySeed、v1）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "SP/1 plan: 凍結した 13 の variant の plan は SP/1 の事実 (e) の表と一致する（digest を照合して宣言だけを読む）",
+        "directive": null,
+        "line": "ok 29 - SP/1 plan: 凍結した 13 の variant の plan は SP/1 の事実 (e) の表と一致する（digest を照合して宣言だけを読む）",
+        "rawLine": "ok 29 - SP/1 plan: 凍結した 13 の variant の plan は SP/1 の事実 (e) の表と一致する（digest を照合して宣言だけを読む）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "SP-N8: 凍結の bytes（freeze と 8 つの fixture）が freeze の値と同じことを確かめ、違えば [precheck]",
+        "directive": null,
+        "line": "ok 30 - SP-N8: 凍結の bytes（freeze と 8 つの fixture）が freeze の値と同じことを確かめ、違えば [precheck]",
+        "rawLine": "ok 30 - SP-N8: 凍結の bytes（freeze と 8 つの fixture）が freeze の値と同じことを確かめ、違えば [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "SP/1 の段: upsertScenePin を 1 回だけ、問いの Scene から予定の seed の runtime ID へ呼び、前後の状態を記録する",
+        "directive": null,
+        "line": "ok 31 - SP/1 の段: upsertScenePin を 1 回だけ、問いの Scene から予定の seed の runtime ID へ呼び、前後の状態を記録する",
+        "rawLine": "ok 31 - SP/1 の段: upsertScenePin を 1 回だけ、問いの Scene から予定の seed の runtime ID へ呼び、前後の状態を記録する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける",
+        "directive": null,
+        "line": "ok 32 - SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける",
+        "rawLine": "ok 32 - SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "SP-N6／SP-N14: 段の置き場（G-02〜G-08 は pin の段の直後で maintenance と setupTimeline の前、G-01 は唯一の pin の後で typed Revision と B の seal の前）",
+        "directive": null,
+        "line": "ok 33 - SP-N6／SP-N14: 段の置き場（G-02〜G-08 は pin の段の直後で maintenance と setupTimeline の前、G-01 は唯一の pin の後で typed Revision と B の seal の前）",
+        "rawLine": "ok 33 - SP-N6／SP-N14: 段の置き場（G-02〜G-08 は pin の段の直後で maintenance と setupTimeline の前、G-01 は唯一の pin の後で typed Revision と B の seal の前）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "SP-N7／SP-P4: pin のある写しと無い写しの R と R+IR の membership・順位の比較（判定に使わない診断の道具）",
+        "directive": null,
+        "line": "ok 34 - SP-N7／SP-P4: pin のある写しと無い写しの R と R+IR の membership・順位の比較（判定に使わない診断の道具）",
+        "rawLine": "ok 34 - SP-N7／SP-P4: pin のある写しと無い写しの R と R+IR の membership・順位の比較（判定に使わない診断の道具）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "SP-N10: case の arm の間で pin の集合が同じ（Graph の arm の workspace にだけ pin があれば [precheck]）",
+        "directive": null,
+        "line": "ok 35 - SP-N10: case の arm の間で pin の集合が同じ（Graph の arm の workspace にだけ pin があれば [precheck]）",
+        "rawLine": "ok 35 - SP-N10: case の arm の間で pin の集合が同じ（Graph の arm の workspace にだけ pin があれば [precheck]）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "SP-P5: Graph の arm の親の begin に予定の seed が載り、requalification の落ち（SeedChanged は invalidated に出る）が無い",
+        "directive": null,
+        "line": "ok 36 - SP-P5: Graph の arm の親の begin に予定の seed が載り、requalification の落ち（SeedChanged は invalidated に出る）が無い",
+        "rawLine": "ok 36 - SP-P5: Graph の arm の親の begin に予定の seed が載り、requalification の落ち（SeedChanged は invalidated に出る）が無い",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "setup-driver の段: renderer の API の upsertScenePin を 1 回だけ呼び、前後は SELECT の読み戻しで記録する（SQL の書込みなし）",
+        "directive": null,
+        "line": "ok 37 - setup-driver の段: renderer の API の upsertScenePin を 1 回だけ呼び、前後は SELECT の読み戻しで記録する（SQL の書込みなし）",
+        "rawLine": "ok 37 - setup-driver の段: renderer の API の upsertScenePin を 1 回だけ呼び、前後は SELECT の読み戻しで記録する（SQL の書込みなし）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "SP-P3: 凍結した fixture から写した plan が、そのまま R5 の照合の seedPlan になる（variant ごとの workspace、封印した受領書と DB の読取）",
+        "directive": null,
+        "line": "ok 38 - SP-P3: 凍結した fixture から写した plan が、そのまま R5 の照合の seedPlan になる（variant ごとの workspace、封印した受領書と DB の読取）",
+        "rawLine": "ok 38 - SP-P3: 凍結した fixture から写した plan が、そのまま R5 の照合の seedPlan になる（variant ごとの workspace、封印した受領書と DB の読取）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "R5: seed は製品の規則（created_at、entry_id の順で最初の pin だけ）で決まる",
+        "directive": null,
+        "line": "ok 39 - R5: seed は製品の規則（created_at、entry_id の順で最初の pin だけ）で決まる",
+        "rawLine": "ok 39 - R5: seed は製品の規則（created_at、entry_id の順で最初の pin だけ）で決まる",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "R5: 一致・不一致・確かめられないを分ける",
+        "directive": null,
+        "line": "ok 40 - R5: 一致・不一致・確かめられないを分ける",
+        "rawLine": "ok 40 - R5: 一致・不一致・確かめられないを分ける",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "R5／SP-P3: 凍結の plan は 13 の variant の workspace を 1 行ずつ、製品の DB から読んで照合し、すべて match のときだけ通る",
+        "directive": null,
+        "line": "ok 41 - R5／SP-P3: 凍結の plan は 13 の variant の workspace を 1 行ずつ、製品の DB から読んで照合し、すべて match のときだけ通る",
+        "rawLine": "ok 41 - R5／SP-P3: 凍結の plan は 13 の variant の workspace を 1 行ずつ、製品の DB から読んで照合し、すべて match のときだけ通る",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・自己申告・variant や G-01 の欠けは [precheck]",
+        "directive": null,
+        "line": "ok 42 - R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・自己申告・variant や G-01 の欠けは [precheck]",
+        "rawLine": "ok 42 - R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・自己申告・variant や G-01 の欠けは [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-1: 封印した読取は DB・project・Scene に束縛され、使い回し・別の Scene・別の workspace・呼出し側の対応表は通らない",
+        "directive": null,
+        "line": "ok 43 - P2-1: 封印した読取は DB・project・Scene に束縛され、使い回し・別の Scene・別の workspace・呼出し側の対応表は通らない",
+        "rawLine": "ok 43 - P2-1: 封印した読取は DB・project・Scene に束縛され、使い回し・別の Scene・別の workspace・呼出し側の対応表は通らない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "R5: dev の照合は dev の workspace だけ（1 件以上、受領書と DB の読取）",
+        "directive": null,
+        "line": "ok 44 - R5: dev の照合は dev の workspace だけ（1 件以上、受領書と DB の読取）",
+        "rawLine": "ok 44 - R5: dev の照合は dev の workspace だけ（1 件以上、受領書と DB の読取）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "S1j P2-4: 凍結の plan の照合は段（① の r5-check か ⑤ の evaluation）を要り、⑤ は ① の受領書を受けず、① は 2 つの run の受領書を混ぜない",
+        "directive": null,
+        "line": "ok 45 - S1j P2-4: 凍結の plan の照合は段（① の r5-check か ⑤ の evaluation）を要り、⑤ は ① の受領書を受けず、① は 2 つの run の受領書を混ぜない",
+        "rawLine": "ok 45 - S1j P2-4: 凍結の plan の照合は段（① の r5-check か ⑤ の evaluation）を要り、⑤ は ① の受領書を受けず、① は 2 つの run の受領書を混ぜない",
+        "type": "test"
+      }
+    ],
+    "summary": {
+      "tests": 45,
+      "suites": 0,
+      "pass": 45,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "okLinesSha256": "1a25fa69e104389c4308571c34d13b2ff2b446df70c90f237e818121e656fc2c",
+    "okLinesRawSha256": "1a25fa69e104389c4308571c34d13b2ff2b446df70c90f237e818121e656fc2c",
+    "okLineCount": 45,
+    "failed": []
+  },
+  "positiveControls": [
+    {
+      "file": "seed-pin-setup.test.mjs",
+      "line": 229,
+      "lineHasTitle": true,
+      "title": "SP/1 の段: upsertScenePin を 1 回だけ、問いの Scene から予定の seed の runtime ID へ呼び、前後の状態を記録する",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "seed-pin-setup.test.mjs",
+      "line": 260,
+      "lineHasTitle": true,
+      "title": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "seed-pin-setup.test.mjs",
+      "line": 493,
+      "lineHasTitle": true,
+      "title": "SP-N10: case の arm の間で pin の集合が同じ（Graph の arm の workspace にだけ pin があれば [precheck]）",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "seed-pin-setup.test.mjs",
+      "line": 623,
+      "lineHasTitle": true,
+      "title": "setup-driver の段: renderer の API の upsertScenePin を 1 回だけ呼び、前後は SELECT の読み戻しで記録する（SQL の書込みなし）",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "seed-pin.test.mjs",
+      "line": 34,
+      "lineHasTitle": true,
+      "title": "R5: seed は製品の規則（created_at、entry_id の順で最初の pin だけ）で決まる",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "seed-pin.test.mjs",
+      "line": 151,
+      "lineHasTitle": true,
+      "title": "R5／SP-P3: 凍結の plan は 13 の variant の workspace を 1 行ずつ、製品の DB から読んで照合し、すべて match のときだけ通る",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "seed-pin.test.mjs",
+      "line": 161,
+      "lineHasTitle": true,
+      "title": "R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・自己申告・variant や G-01 の欠けは [precheck]",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "receipt.test.mjs",
+      "line": 997,
+      "lineHasTitle": true,
+      "title": "S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの。direct-fetch の dev の runner は予告だけで集計に入らない",
+      "matches": 1,
+      "status": "ok"
+    }
+  ],
+  "baselinePerFile": [
+    {
+      "file": "seed-pin-setup.test.mjs",
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 11,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "a94c64af30c2015fe4ca1d377838c15c68922ff4063a2ac09d2a89949a8362cc"
+    },
+    {
+      "file": "seed-pin.test.mjs",
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 7,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "ec6eb09cc2a73566208bf4ce8c7493a1e569d65f4f0fc507037ff023ba8afe6d"
+    },
+    {
+      "file": "receipt.test.mjs",
+      "summary": {
+        "tests": 27,
+        "suites": 0,
+        "pass": 27,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "596de297dc2f8aefe1c3ef4e4bb751577ffb14a52ac2292e01e654213d8fc72b"
+    }
+  ],
+  "probe": [
+    {
+      "file": "seed-pin-setup.mjs",
+      "testFile": "seed-pin-setup.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 11,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "seed-pin.mjs",
+      "testFile": "seed-pin.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 7,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "receipt.mjs",
+      "testFile": "receipt.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 27,
+        "suites": 0,
+        "pass": 27,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    }
+  ],
+  "baselineAll": {
+    "command": "node --test --test-reporter=tap scripts/quality/nir1-graph-eval/admission.test.mjs scripts/quality/nir1-graph-eval/availability.test.mjs scripts/quality/nir1-graph-eval/build-receipt-check.test.mjs scripts/quality/nir1-graph-eval/dev-fixture.test.mjs scripts/quality/nir1-graph-eval/dev-shape-fixture.test.mjs scripts/quality/nir1-graph-eval/diagnostic-runner.test.mjs scripts/quality/nir1-graph-eval/egress.test.mjs scripts/quality/nir1-graph-eval/eval-native-build.test.mjs scripts/quality/nir1-graph-eval/followup.test.mjs scripts/quality/nir1-graph-eval/frozen-diagnostics.test.mjs scripts/quality/nir1-graph-eval/frozen-k64-admission.test.mjs scripts/quality/nir1-graph-eval/frozen-k64-plan.test.mjs scripts/quality/nir1-graph-eval/frozen-k64-run.test.mjs scripts/quality/nir1-graph-eval/frozen-setup-complete.test.mjs scripts/quality/nir1-graph-eval/frozen-setup-driver.test.mjs scripts/quality/nir1-graph-eval/frozen-setup-plan.test.mjs scripts/quality/nir1-graph-eval/g01-negative-run.test.mjs scripts/quality/nir1-graph-eval/g01-negatives.test.mjs scripts/quality/nir1-graph-eval/k64-record.test.mjs scripts/quality/nir1-graph-eval/k64-runner.test.mjs scripts/quality/nir1-graph-eval/keep-test.test.mjs scripts/quality/nir1-graph-eval/launcher.test.mjs scripts/quality/nir1-graph-eval/native-architecture.test.mjs scripts/quality/nir1-graph-eval/native-sample.test.mjs scripts/quality/nir1-graph-eval/observer-core.test.mjs scripts/quality/nir1-graph-eval/outcome.test.mjs scripts/quality/nir1-graph-eval/procedure-file.test.mjs scripts/quality/nir1-graph-eval/r5-check-runner.test.mjs scripts/quality/nir1-graph-eval/receipt.test.mjs scripts/quality/nir1-graph-eval/renderer-build.test.mjs scripts/quality/nir1-graph-eval/run-sample.test.mjs scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs scripts/quality/nir1-graph-eval/seed-pin.test.mjs scripts/quality/nir1-graph-eval/session.test.mjs scripts/quality/nir1-graph-eval/setup-main-build.test.mjs scripts/quality/nir1-graph-eval/sp-p4-branch.test.mjs scripts/quality/nir1-graph-eval/trace-cycle.test.mjs scripts/quality/nir1-graph-eval/trace-frozen.test.mjs scripts/quality/nir1-graph-eval/trace-record.test.mjs scripts/quality/nir1-graph-eval/trace-runner.test.mjs scripts/quality/nir1-graph-eval/trace-seal.test.mjs scripts/quality/nir1-graph-eval/window.test.mjs",
+    "started": "2026-11-01T15:23:14.769Z",
+    "finished": "2026-11-01T15:23:28.684Z",
+    "exitCode": 0,
+    "summary": {
+      "tests": 602,
+      "suites": 0,
+      "pass": 602,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "tapSha256": "267ca4dd89968f556dea3af2ab034fb2e076bb879b1bc0f2e7565cf48e8bae10",
+    "okLinesSha256": "d6c801371495db71f5f06e9b3498e610dbafc738bcb72036305cff79ef63d806",
+    "okLineCount": 602,
+    "failed": [],
+    "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/baseline-all.tap",
+    "files": 42
+  },
+  "mutationsStartedAt": "2026-11-01T15:23:28.684Z",
+  "mutations": [
+    {
+      "id": "N1-step",
+      "spn": "SP-N1",
+      "file": "seed-pin-setup.mjs",
+      "find": "else if (pins.length === 1 && pins[0].entryId !== seed)",
+      "replace": "else if (false)",
+      "testFile": "seed-pin-setup.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+      "started": "2026-11-01T15:23:28.684Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 10,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+          "line": 260,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "expected": [
+        "seed-pin-setup.test.mjs:260"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N1-step.tap"
+    },
+    {
+      "id": "N1-r5",
+      "spn": "SP-N1",
+      "file": "seed-pin.mjs",
+      "find": "productSeed !== expectedSeed",
+      "replace": "false",
+      "testFile": "seed-pin.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+      "started": "2026-11-01T15:23:29.187Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 4,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "R5: 一致・不一致・確かめられないを分ける",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 69,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・自己申告・variant や G-01 の欠けは [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 161,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception: N1"
+        },
+        {
+          "title": "P2-1: 封印した読取は DB・project・Scene に束縛され、使い回し・別の Scene・別の workspace・呼出し側の対応表は通らない",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 255,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        }
+      ],
+      "expected": [
+        "seed-pin.test.mjs:161",
+        "seed-pin.test.mjs:69",
+        "seed-pin.test.mjs:255"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N1-r5.tap"
+    },
+    {
+      "id": "N2-step",
+      "spn": "SP-N2",
+      "file": "seed-pin-setup.mjs",
+      "find": "if (pins.length > 1) add(\"SP-N2\"",
+      "replace": "if (false) add(\"SP-N2\"",
+      "testFile": "seed-pin-setup.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+      "started": "2026-11-01T15:23:29.543Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 10,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+          "line": 260,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "expected": [
+        "seed-pin-setup.test.mjs:260"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N2-step.tap"
+    },
+    {
+      "id": "N2-r5",
+      "spn": "SP-N2",
+      "file": "seed-pin.mjs",
+      "find": "? \"multiple-pins\"",
+      "replace": "? \"match\"",
+      "testFile": "seed-pin.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+      "started": "2026-11-01T15:23:30.119Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 6,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・自己申告・variant や G-01 の欠けは [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 161,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception: N2"
+        }
+      ],
+      "expected": [
+        "seed-pin.test.mjs:161"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N2-r5.tap"
+    },
+    {
+      "id": "N3-step",
+      "spn": "SP-N3",
+      "file": "seed-pin-setup.mjs",
+      "find": "add(\"SP-N3\", \"the first pin is another Entity\");",
+      "replace": "void 0;",
+      "testFile": "seed-pin-setup.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+      "started": "2026-11-01T15:23:30.480Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 10,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+          "line": 260,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "expected": [
+        "seed-pin-setup.test.mjs:260"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N3-step.tap"
+    },
+    {
+      "id": "N4-writer",
+      "spn": "SP-N4",
+      "file": "seed-pin-setup.mjs",
+      "find": "if (record?.writer !== SEED_PIN_WRITER)",
+      "replace": "if (false)",
+      "testFile": "seed-pin-setup.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+      "started": "2026-11-01T15:23:31.015Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 10,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+          "line": 260,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"writer\":\"sql\"}"
+        }
+      ],
+      "expected": [
+        "seed-pin-setup.test.mjs:260"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N4-writer.tap"
+    },
+    {
+      "id": "N4-createdAt",
+      "spn": "SP-N4",
+      "file": "seed-pin-setup.mjs",
+      "find": "typeof record?.createdAt !== \"string\" &&",
+      "replace": "false &&",
+      "testFile": "seed-pin-setup.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+      "started": "2026-11-01T15:23:31.569Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 10,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+          "line": 260,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"createdAt\":null}"
+        }
+      ],
+      "expected": [
+        "seed-pin-setup.test.mjs:260"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N4-createdAt.tap"
+    },
+    {
+      "id": "N5-before",
+      "spn": "SP-N5",
+      "file": "seed-pin-setup.mjs",
+      "find": "add(\"SP-N5\", \"the workspace pins before the step are not the fixture's\");",
+      "replace": "void 0;",
+      "testFile": "seed-pin-setup.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+      "started": "2026-11-01T15:23:32.126Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 10,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+          "line": 260,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "expected": [
+        "seed-pin-setup.test.mjs:260"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N5-before.tap"
+    },
+    {
+      "id": "N5-outside",
+      "spn": "SP-N5",
+      "file": "seed-pin-setup.mjs",
+      "find": "add(\"SP-N5\", \"a pin outside the query Scene changed\");",
+      "replace": "void 0;",
+      "testFile": "seed-pin-setup.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+      "started": "2026-11-01T15:23:32.636Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 10,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+          "line": 260,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "expected": [
+        "seed-pin-setup.test.mjs:260"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N5-outside.tap"
+    },
+    {
+      "id": "N9-step",
+      "spn": "SP-N9",
+      "file": "seed-pin-setup.mjs",
+      "find": "if (pins.length === 1 && pins[0].entryId === seed && productSeed !== seed)",
+      "replace": "if (false)",
+      "testFile": "seed-pin-setup.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+      "started": "2026-11-01T15:23:33.107Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 10,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "SP-N1〜N5、N8、N9 と SP-P2: 合成の記録で段の違反を分ける",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+          "line": 260,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "expected": [
+        "seed-pin-setup.test.mjs:260"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N9-step.tap"
+    },
+    {
+      "id": "N9-sceneLive",
+      "spn": "SP-N9",
+      "file": "seed-pin.mjs",
+      "find": "if (!input.sceneLive) return null;",
+      "replace": "",
+      "testFile": "seed-pin.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+      "started": "2026-11-01T15:23:33.591Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 5,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "R5: seed は製品の規則（created_at、entry_id の順で最初の pin だけ）で決まる",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 34,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・自己申告・variant や G-01 の欠けは [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 161,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception: N9-archived"
+        }
+      ],
+      "expected": [
+        "seed-pin.test.mjs:34",
+        "seed-pin.test.mjs:161"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N9-sceneLive.tap"
+    },
+    {
+      "id": "N9-project",
+      "spn": "SP-N9",
+      "file": "seed-pin.mjs",
+      "find": ".filter((row) => row.entryInProject)",
+      "replace": ".filter(() => true)",
+      "testFile": "seed-pin.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+      "started": "2026-11-01T15:23:33.938Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 5,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "R5: seed は製品の規則（created_at、entry_id の順で最初の pin だけ）で決まる",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 34,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・自己申告・variant や G-01 の欠けは [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 161,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception: N9-project"
+        }
+      ],
+      "expected": [
+        "seed-pin.test.mjs:34",
+        "seed-pin.test.mjs:161"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N9-project.tap"
+    },
+    {
+      "id": "N9-blank",
+      "spn": "SP-N9",
+      "file": "seed-pin.mjs",
+      "find": "entryId.trim().length === 0 ||",
+      "replace": "",
+      "testFile": "seed-pin.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+      "started": "2026-11-01T15:23:34.244Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 6,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "R5: seed は製品の規則（created_at、entry_id の順で最初の pin だけ）で決まる",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 34,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "seed-pin.test.mjs:34"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N9-blank.tap"
+    },
+    {
+      "id": "N9-long",
+      "spn": "SP-N9",
+      "file": "seed-pin.mjs",
+      "find": "entryId.length > SEED_UTF16_MAX",
+      "replace": "false",
+      "testFile": "seed-pin.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+      "started": "2026-11-01T15:23:34.614Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 6,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "R5: seed は製品の規則（created_at、entry_id の順で最初の pin だけ）で決まる",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 34,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "seed-pin.test.mjs:34"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N9-long.tap"
+    },
+    {
+      "id": "N10-differ",
+      "spn": "SP-N10",
+      "file": "seed-pin-setup.mjs",
+      "find": "fail(\"SP-N10\", `the pins of",
+      "replace": "void (\"SP-N10\", `the pins of",
+      "testFile": "seed-pin-setup.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+      "started": "2026-11-01T15:23:34.990Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 10,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "SP-N10: case の arm の間で pin の集合が同じ（Graph の arm の workspace にだけ pin があれば [precheck]）",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs",
+          "line": 493,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        }
+      ],
+      "expected": [
+        "seed-pin-setup.test.mjs:493"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N10-differ.tap"
+    },
+    {
+      "id": "N11-nopin",
+      "spn": "SP-N11",
+      "file": "seed-pin.mjs",
+      "find": "? \"no-pin\"",
+      "replace": "? \"match\"",
+      "testFile": "seed-pin.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+      "started": "2026-11-01T15:23:35.502Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 6,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・自己申告・variant や G-01 の欠けは [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 161,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception: N11"
+        }
+      ],
+      "expected": [
+        "seed-pin.test.mjs:161"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N11-nopin.tap"
+    },
+    {
+      "id": "N11-missing",
+      "spn": "SP-N11",
+      "file": "seed-pin.mjs",
+      "find": "if (missing.length > 0) problems.push",
+      "replace": "if (false) problems.push",
+      "testFile": "seed-pin.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+      "started": "2026-11-01T15:23:35.836Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 6,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・自己申告・variant や G-01 の欠けは [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 161,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        }
+      ],
+      "expected": [
+        "seed-pin.test.mjs:161"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N11-missing.tap"
+    },
+    {
+      "id": "N12-validate",
+      "spn": "SP-N12",
+      "file": "receipt.mjs",
+      "find": "if (receipt?.runnerKind !== HOOK_CONSUMER_RUNNER)",
+      "replace": "if (false)",
+      "testFile": "receipt.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/receipt.test.mjs",
+      "started": "2026-11-01T15:23:36.198Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 27,
+        "suites": 0,
+        "pass": 26,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの。direct-fetch の dev の runner は予告だけで集計に入らない",
+          "file": "scripts/quality/nir1-graph-eval/receipt.test.mjs",
+          "line": 997,
+          "depth": 0,
+          "type": "test",
+          "error": "The input did not match the regular expression /runnerKind/. Input:"
+        }
+      ],
+      "expected": [
+        "receipt.test.mjs:997"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N12-validate.tap"
+    },
+    {
+      "id": "N12-select",
+      "spn": "SP-N12",
+      "file": "receipt.mjs",
+      "find": "GRAPH_RUN_KINDS.has(receipt?.runKind) &&\n      receipt?.runnerKind !== HOOK_CONSUMER_RUNNER",
+      "replace": "false",
+      "testFile": "receipt.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/receipt.test.mjs",
+      "started": "2026-11-01T15:23:36.512Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 27,
+        "suites": 0,
+        "pass": 26,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの。direct-fetch の dev の runner は予告だけで集計に入らない",
+          "file": "scripts/quality/nir1-graph-eval/receipt.test.mjs",
+          "line": 997,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "expected": [
+        "receipt.test.mjs:997"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N12-select.tap"
+    },
+    {
+      "id": "N13-sealedRead",
+      "spn": "SP-N13",
+      "file": "seed-pin.mjs",
+      "find": "const sealedRead = isProductDbPinRead(read);",
+      "replace": "const sealedRead = read != null;",
+      "testFile": "seed-pin.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+      "started": "2026-11-01T15:23:36.849Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 5,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・自己申告・variant や G-01 の欠けは [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 161,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        },
+        {
+          "title": "R5: dev の照合は dev の workspace だけ（1 件以上、受領書と DB の読取）",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 367,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        }
+      ],
+      "expected": [
+        "seed-pin.test.mjs:161",
+        "seed-pin.test.mjs:367"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N13-sealedRead.tap"
+    },
+    {
+      "id": "N13-sealedSetup",
+      "spn": "SP-N13",
+      "file": "seed-pin.mjs",
+      "find": "const sealedSetup = isLoadedSetupReceipt(setup);",
+      "replace": "const sealedSetup = setup != null;",
+      "testFile": "seed-pin.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+      "started": "2026-11-01T15:23:37.176Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 6,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・自己申告・variant や G-01 の欠けは [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 161,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        }
+      ],
+      "expected": [
+        "seed-pin.test.mjs:161"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N13-sealedSetup.tap"
+    },
+    {
+      "id": "N13-label-read",
+      "spn": "SP-N13",
+      "file": "seed-pin.mjs",
+      "find": "problems.push(\"self-reported (not read from the product DB)\");",
+      "replace": "void 0;",
+      "testFile": "seed-pin.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+      "started": "2026-11-01T15:23:37.545Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 5,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・自己申告・variant や G-01 の欠けは [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 161,
+          "depth": 0,
+          "type": "test",
+          "error": "\"Cannot read properties of null (reading 'source')\""
+        },
+        {
+          "title": "R5: dev の照合は dev の workspace だけ（1 件以上、受領書と DB の読取）",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 367,
+          "depth": 0,
+          "type": "test",
+          "error": "\"Cannot read properties of null (reading 'source')\""
+        }
+      ],
+      "expected": [
+        "seed-pin.test.mjs:161",
+        "seed-pin.test.mjs:367"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N13-label-read.tap"
+    },
+    {
+      "id": "N13-label-setup",
+      "spn": "SP-N13",
+      "file": "seed-pin.mjs",
+      "find": "problems.push(\"setup-self-reported\");",
+      "replace": "void 0;",
+      "testFile": "seed-pin.test.mjs",
+      "command": "node --import /tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+      "started": "2026-11-01T15:23:37.879Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 6,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・自己申告・variant や G-01 の欠けは [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+          "line": 161,
+          "depth": 0,
+          "type": "test",
+          "error": "\"[precheck] R5: the query Scene's first pin is not confirmed to be the expected seed (G-01/v1: unconfirmed; G-02/base: unconfirmed; G-03/base: unconfirmed; G-03/frontier-exceeded: unconfirmed; G-04/base: unconfirmed; G-05/base: unconfirmed; G-06/base: unconfirmed; G-07/base: unconfirmed; G-08/base-usable: unconfirmed; G-08/graph-index-unusable: unconfirmed; G-08/graph-recovered: unconfirmed; G-08/chronicle-index-unusable: unconfirmed; G-08/both-indexes-unusable: unconfirmed); the K6/4 judgement does not start (CP-0 / SP/1 handles it)\""
+        }
+      ],
+      "expected": [
+        "seed-pin.test.mjs:161"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04c/spn/tap-179139b4/mut-N13-label-setup.tap"
+    }
+  ],
+  "mutationsFinishedAt": "2026-11-01T15:23:38.238Z",
+  "statusAfter": "",
+  "ignoredAfter": "!! .artifacts/cp4/\n!! .artifacts/nir1-standard-build/\n!! dist-electron/\n!! dist/\n!! electron/native/grimodex-node/grimodex-node.node\n!! electron/native/grimodex-node/target/\n!! node_modules/\n!! packages/scan-contract/dist/\n!! packages/scan-contract/node_modules/\n!! packages/scan-core/dist/\n!! packages/scan-core/node_modules/",
+  "headAfter": "179139b4926a6ef249da78b56e581c2fd7c083de",
+  "verdict": {
+    "clean": true,
+    "ignoredUnchanged": true,
+    "baselineTargetPass": true,
+    "baselinePerFilePass": true,
+    "baselineAllPass": true,
+    "positiveControlsOk": true,
+    "probeOk": true,
+    "mutationCount": 23,
+    "allHitOnce": true,
+    "allAsExpected": true,
+    "exactCount": 23
+  },
+  "finishedAt": "2026-11-01T15:23:38.392Z"
+}

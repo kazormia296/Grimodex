@@ -1,0 +1,2946 @@
+{
+  "schema": "nir1-cp4-frozen-k64-run/1",
+  "run": "neg-n3-s5r3-1",
+  "mode": "formal",
+  "runKind": "negative",
+  "d2aMode": "restricted",
+  "problems": [],
+  "checks": {
+    "spP4": {
+      "summary": {
+        "id": "SP-P4",
+        "status": "passed",
+        "problems": [],
+        "variants": [
+          {
+            "variantKey": "G-01/v1",
+            "same": true,
+            "differences": 0
+          },
+          {
+            "variantKey": "G-02/base",
+            "same": true,
+            "differences": 0
+          },
+          {
+            "variantKey": "G-03/base",
+            "same": true,
+            "differences": 0
+          },
+          {
+            "variantKey": "G-04/base",
+            "same": true,
+            "differences": 0
+          },
+          {
+            "variantKey": "G-05/base",
+            "same": true,
+            "differences": 0
+          },
+          {
+            "variantKey": "G-06/base",
+            "same": true,
+            "differences": 0
+          },
+          {
+            "variantKey": "G-07/base",
+            "same": true,
+            "differences": 0
+          },
+          {
+            "variantKey": "G-08/base-usable",
+            "same": true,
+            "differences": 0
+          }
+        ],
+        "notCountedAs": [
+          "g01-eval-revision-receipt",
+          "k3-parity-run",
+          "g-case-parity-unrestricted",
+          "case-judgement"
+        ]
+      },
+      "receiptSha256": "b0a0e3d2c6e31e85ce9371a0bf7ab6941f278fabcede0771a3186a3cda75b1a4"
+    },
+    "sourcePins": [
+      {
+        "role": "s1j2-blocked-map",
+        "check": "ancestor",
+        "commit": "b1a87b0b81fbdce7f3d280e0671bced51306be1d"
+      },
+      {
+        "role": "s1j2-complete-setup",
+        "check": "bytes",
+        "commit": "3a6e65e400cac5d72e761f58eb1ae8eaec514e18",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/electron-observer.entry.mjs",
+            "sha256": "39e6827940b0235859d6ec9f1bd9a8e3348acddfe43c0fd6c95d5784bd4bd120"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-setup-plan.mjs",
+            "sha256": "2ac6bb9d8c4fe238938b4bec959f12d86e47e9a687ad8c811139c9225549da71"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/launcher.mjs",
+            "sha256": "41653af87884ac89fa135c19d51eaee6b74dc677b21a5037f348056bc0c3b671"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/session.mjs",
+            "sha256": "9e69cb076b2e3101586d3ea2aa477bee027bc093fdc21b8b37dcac92454c6354"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/setup-main-build.mjs",
+            "sha256": "0b4fec10416404849f3e8aca9dcec36ee17ca5a954d30be62f85115d473925ef"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/setup-receipt.mjs",
+            "sha256": "dcc742371fe2328a2a88eaa048ff0a7ab428b4343fe7d25f65ecd32a4c8259d3"
+          }
+        ]
+      },
+      {
+        "role": "trace-runner",
+        "check": "bytes",
+        "commit": "35537447b4e38c31a2dc9463b2d6fe8ccb54e4ba",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/build-receipt-check.mjs",
+            "sha256": "29db8ed5a7d9e1ba2e2825c96f9465e5f4bb56b03d99ce9b304e228ed43f5520"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-trace-probe.tsx",
+            "sha256": "0a89661aacbc81a903acf1e2043375fc9049f73acf2f1a1c89e33b72028e6b5d"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/trace-cycle.ts",
+            "sha256": "bef2fde68e64175ae42b30edb9e1ae4eec62051cfd534d6cee25f6bd5a89ed4c"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/trace-record.mjs",
+            "sha256": "5fbadf15b980cbfac26d17b6ae6c5cd66fcd72a5ca1eaf8995dfd0b703663ab8"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/trace-seal.mjs",
+            "sha256": "d4459c38654eac64a71b5af3339bcc45a0f36ef6965bc7fd4c1aa2a9c6294f79"
+          }
+        ]
+      },
+      {
+        "role": "b-route-seam-fix",
+        "check": "ancestor",
+        "commit": "c06dc17ec86fa968c87176aece12b4a1d67e2105"
+      },
+      {
+        "role": "t14-k64-freeze",
+        "check": "bytes",
+        "commit": "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/constants.mjs",
+            "sha256": "579959656ee9961931bf89d8d374e5c6e058e3de0ee195502c52ec873f2c0326"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/receipt.mjs",
+            "sha256": "77a181a9f6ee430a2fe3c647ccba206f2e1f34dae0e605081fe86ccbd53aebe8"
+          }
+        ]
+      },
+      {
+        "role": "freshness-requeue-fix",
+        "check": "ancestor",
+        "commit": "02837f02bb9df82da6dc65b3d237bf17840ad775"
+      },
+      {
+        "role": "startup-gate-io-settle",
+        "check": "ancestor",
+        "commit": "26764b433e6299db960f608bb99e4332949d39a3"
+      },
+      {
+        "role": "s5a-graph-arm-runner",
+        "check": "bytes",
+        "commit": "2c9316848ce028565c4d8e8af2d2779c3fd7e187",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/k64-record.mjs",
+            "sha256": "4818d1c1d91956f8412e8b4ca1c9f0891017204299ad0ea52eafd626d1675df9"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/k64-runner.mjs",
+            "sha256": "350227a9ffd02f1bcd67ab451f5aa30671c98be7931e4972e49ec05a970b3572"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/material-revision.mjs",
+            "sha256": "ac2f1f794dbc640d5ff910f7f74a3d5438ed8ce01402cc8895944aefd7c853a5"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-k64-probe.tsx",
+            "sha256": "d05bb4a1955994a67233d9dc2aa78d6203393731a8af731246fc0fb4240d0c6c"
+          }
+        ]
+      },
+      {
+        "role": "maintenance-ownership-release",
+        "check": "ancestor",
+        "commit": "3f3d9999225007417708ab471bea307331f7e8a2"
+      },
+      {
+        "role": "s5b-diagnostics-wiring",
+        "check": "bytes",
+        "commit": "950751d040b29b6d78a067a003dc19b196cfb692",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/g01-negative-preview.mjs",
+            "sha256": "9b0231928b05aa2ada09b4a43dddd5513490008bce725c84be9411c59aa3bf68"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/g01-negatives.mjs",
+            "sha256": "a5f7693bf92e730a7835be0467b8d274e1a0fae0e8c8ed7a1071e8cef13827f6"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-diagnostic-probe.ts",
+            "sha256": "422a241d645eb9fa5b695d37c4f1b7ab1f0bde92bdff44c267dd9bee44a6b878"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-harness.ts",
+            "sha256": "9f0229918e0f4839b9908d792bd93a1842d683bafdfa31ae057089e5af6e0be4"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/nir1RelatedScenesApi.timing.ts",
+            "sha256": "bf67fd28982c0560d8488250f769295569145292e82480325d7464046d3cb3fd"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/trace-runner.mjs",
+            "sha256": "998ac3c7ffdc71e720e05046b3f6637e91e7ee534734678ff3ddcc854cf77d37"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/window.mjs",
+            "sha256": "2a378aa4d16ef80341f70bb3c71d4907c38df266003214d5e5d16ce5a54f121a"
+          }
+        ]
+      },
+      {
+        "role": "sp-p4-ir-timeout",
+        "check": "bytes",
+        "commit": "43e3f40b5d653c62d5aca4ca795917b67310992c",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/g01-negative-run.mjs",
+            "sha256": "dac896999acbc8f6654fa1b955f6da1625e35b02e311aa845aaa327714778b4b"
+          }
+        ]
+      },
+      {
+        "role": "s4-rehearsal-admission",
+        "check": "bytes",
+        "commit": "82d427465b16a12809c6f93adad74ac97859c85a",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/admission.mjs",
+            "sha256": "e0b3877f0d118936348db948546e7c125710b1de9c07732b55b1d3f0efba4e14"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs",
+            "sha256": "021bb096b34c901288bd748a4e06edf18f55df4da178fb9b9cd5c8af5a8974ca"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/trace-frozen.mjs",
+            "sha256": "b1ecee05b1a14a914b98b22110b5ad2932806fb921a5951b082abbb8851f42e2"
+          },
+          {
+            "path": "scripts/quality/nir1-retrieval/contract.mjs",
+            "sha256": "ec6a73277f3b26075c71bdfab945b2c2b83d9883067da4139d60d6cad090f963"
+          }
+        ]
+      },
+      {
+        "role": "sp-p4-ir-pair-limit",
+        "check": "bytes",
+        "commit": "906da641befb8dfbb445e05ce5df814bf5b16c35",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/diagnostic-runner.mjs",
+            "sha256": "febdce05aba8bb7f8cf891857157ee211a08f73a0882647dbb479c5fe4cbb388"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs",
+            "sha256": "c21340904c89f2c6877dc4135b4a8a1c744ba9ad12aea113b23dd641d83a16f2"
+          }
+        ]
+      },
+      {
+        "role": "t3-t5-setup-freshness-settle",
+        "check": "bytes",
+        "commit": "b0df31f076ea1e11fd187c5c6fdf179d0df337b5",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-setup-driver.mjs",
+            "sha256": "0ea96056614b7af6b8227d9fd2444f070ec1e75eaa84117098748b781e4b1dc3"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/workspace-db.mjs",
+            "sha256": "e61cb4fcbec2fd019fccab0c77f5e4f331bc01f3e19ee359681873b5d0638b41"
+          }
+        ]
+      },
+      {
+        "role": "t1-t4-measurement-settle-ready",
+        "check": "bytes",
+        "commit": "354b1ba6a997bc464fb2ee9d7a2276c9f7d0bc78",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-k64-plan.mjs",
+            "sha256": "faa7fd4d6541b5b6896568ac7e958f181fd6eb19094b5692ffeb37ba83b6e81d"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-k64-run.mjs",
+            "sha256": "a56ba1fee1aafa99414db952947a3866683ef3c5bbeb92de7d4051d623b79a77"
+          }
+        ]
+      },
+      {
+        "role": "pr1-native-eval-feature",
+        "check": "bytes",
+        "commit": "3739dbedb762ada8961f509c1b4d6885a11c3099",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/native-architecture.mjs",
+            "sha256": "0e18a7ddcbe4cd24beba5da0b46c8676676f33ccb821d8a82460cfe15824efb6"
+          }
+        ]
+      },
+      {
+        "role": "p1-harness-core",
+        "check": "bytes",
+        "commit": "865a3e2bad1ada5f6e5648e50c6902052b9b2a3c",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/admission-facts.mjs",
+            "sha256": "420cbdf4d9949cd1117c3f3eed6eb5a312b622f7a79fa629369cd9b5a0e7c468"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/availability.mjs",
+            "sha256": "04c17b33cd89a2dda3beb5a27e462fa7718b8eb2ced424f8639efa55cf2fe5f0"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/egress.mjs",
+            "sha256": "77c0aa177007d9bb8c0da5f0ad5a23c09b4dac02f2d5d5b718089edbb8dcac54"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/followup.mjs",
+            "sha256": "40c7cb1f2c8293c21272f5bfc234880ea00ea8c1d25bc0c7930638b13246795a"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/join.mjs",
+            "sha256": "7dd0d790de8f027caa4c23c757d76dc03ad00d8732b8484f4f992be37ed5481d"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/native-sample.mjs",
+            "sha256": "ec8d3cbaae613b6cba02eef2732b26550fb95ccf0f05f9b48e31e67896349fb9"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/procedure-file.mjs",
+            "sha256": "98efbb8d1cd41ea127b95c1a2ce4831d3af7c516a51889a580ec800dcf5a6574"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/q4.mjs",
+            "sha256": "862475877f49b8b202ef1cbf9c1702c4f13f50a37141241f25b5f43f4c1306ef"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/run-sample.mjs",
+            "sha256": "add07154efe3d0bc71feaf11bea4ffb56bdc0167e42b2fe00f870247c0f5a754"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/stats.mjs",
+            "sha256": "6790e2d12de8839ef431196f4b5d02dfa98c269b65b8c551341079162f735f5b"
+          },
+          {
+            "path": "scripts/quality/nir1-retrieval/standard-build-receipt.mjs",
+            "sha256": "24f49e86d09e2243f5ba4b0528ed6b3fffb9d88aeea6d5b38ef3689e207416e9"
+          }
+        ]
+      },
+      {
+        "role": "p2p3-harness-admission",
+        "check": "bytes",
+        "commit": "a4e65b66006dec7101f93340cdca70fcafabfc5d",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/dev-fixture.mjs",
+            "sha256": "e087f40275b203a30618a5fe4c2a5c14fc86dd545a49383da54116998b3eac89"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/dprime-check.mjs",
+            "sha256": "df1c40e3bdb17cd5b86bcebd16a4f84d3c823144d7a5685fc1bedbe19b3828d6"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/eval-native-build.mjs",
+            "sha256": "85fe0785ec6436f750d6872fcf244aee4a89975f477fe592fb6454fc19d89af3"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/keep-test.mjs",
+            "sha256": "fa103a56d1d992193e79cba3b82207deb25331540728774a274916687235f62c"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/observer-core.mjs",
+            "sha256": "3c4e9e470d5271d09d8d9c90f088103529461d0aa3f33eb161db203d3fa539c7"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/outcome.mjs",
+            "sha256": "8640f775c77f718bca1c85af004ad5210e80e1b0ee9e083ff3cbb42a314dfaf3"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer-build.mjs",
+            "sha256": "72340cde5709837a9f770ee6ea8ec0c29b2208820944437ab11ce9425436f13f"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-harness.html",
+            "sha256": "c2e5c77f00a1df6560b0bf8ac98a303090617e582aedc7a5aae44d1880581f30"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-hook-probe.tsx",
+            "sha256": "050e3db7476c2631cb07fa300d4f527825e0b78e3516eb7e8df2eec13fe2e7c1"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/fetchRelatedScenes.timing.ts",
+            "sha256": "ed89754939755608a5d13ca19c2757bfeefeeef1d52368860dfd484daec03c6c"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/nir1GraphAvailability.eval.ts",
+            "sha256": "01b009b3a5cc25899536703d81a400f8bdc09de4be70a9a04c2067c2f322c1cd"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/shell.timing.ts",
+            "sha256": "5b4c4f26fff22d0b5ac179b5aa4cc79561da1d7aed6e976a83d7680654b1d018"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/signal-cleanup.mjs",
+            "sha256": "bd67b721168c780c3111462f79aa3e4f157aeb38295b421ab0582786608dd69d"
+          },
+          {
+            "path": "scripts/quality/nir1-retrieval/standard-build.mjs",
+            "sha256": "fed1a24fead2b8fed522e681a648324f5e347a01aa271543bfe3cb907f0d1e35"
+          }
+        ]
+      },
+      {
+        "role": "p4-setup-driver-seed-pin",
+        "check": "bytes",
+        "commit": "7a2669ead5262cc1a1126a7ab52bf808afeb98ff",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/r5-check-runner.mjs",
+            "sha256": "ad327cb7ce418f6a2e628648320f02103c49271c6a0264c48e82f3fc36255648"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/seed-pin-setup.mjs",
+            "sha256": "b694ac8bfa735bc3169c3678275bc1f80b64d42b8470a623e295d360757646ab"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/seed-pin.mjs",
+            "sha256": "4ef057a3b1eb3c65195a28fbc08aef8184deffb8a1af295c8b23c8ce5289816b"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/setup-driver.mjs",
+            "sha256": "e3426fa0b799cf4a485248b2a38ada386a6b1acfff31d2f855c08047ec6d203c"
+          }
+        ]
+      },
+      {
+        "role": "nir1-retrieval-ir-base",
+        "check": "bytes",
+        "commit": "ffa3c0adc56e9af0b385c0379b63a69278242240",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-retrieval/acceptance-policy.mjs",
+            "sha256": "bc7c63310bde90f9b2f6de74ad64b17f699bdb0dc2410da1ad4c02f265aa3afe"
+          },
+          {
+            "path": "scripts/quality/nir1-retrieval/candidate-policy.mjs",
+            "sha256": "05cb3f5142e3297cb521870bf9cfc9fa177f3084948e5af13a773e29e1f8ce67"
+          }
+        ]
+      },
+      {
+        "role": "cp0-graph-eval-freeze",
+        "check": "bytes",
+        "commit": "6bdf61e99f80debd8c2c0c56f2c892e21534f924",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph/porter.mjs",
+            "sha256": "21c418de4ee17d6e337a7dd6fcc3791d4824394e70a13bf6802c43844ceb5026"
+          },
+          {
+            "path": "scripts/quality/nir1-retrieval/paired.mjs",
+            "sha256": "116c066e75a726449273ad3ecd9aeca5d23b9c9d88706de604d955346bb0aed6"
+          }
+        ]
+      },
+      {
+        "role": "da1-route-isolation",
+        "check": "bytes",
+        "commit": "2b68fd4df67599ca2f277fc94f94956de463381e",
+        "files": [
+          {
+            "path": "scripts/quality/run-nir1-retrieval.mjs",
+            "sha256": "7c9b0763c5d6f7c873f4c7658dff356505359ede8442255e3141d1f4bccdf7b2"
+          }
+        ]
+      },
+      {
+        "role": "cq-lim-graph-limits",
+        "check": "bytes",
+        "commit": "a789039a779eb4df0dec2b8b3be5e29d2bff5a5c",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph/contract.mjs",
+            "sha256": "56f15d8e15a491714ae54bcddae5b0543362e32dec5f049276ce6d6af8949356"
+          }
+        ]
+      },
+      {
+        "role": "dp-h-unknown-scope",
+        "check": "bytes",
+        "commit": "e2d22b89c92b9de9585d273349e516e9df6ee5b7",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-packing/final-request/architecture.mjs",
+            "sha256": "13621af323993eebd9345d83de5cc5f3f12b52691a64a6ac23f5488d71cecc64"
+          }
+        ]
+      }
+    ],
+    "s2": {
+      "observationPrep": {
+        "path": "evals/nir1-graph/observation-prep.v1.json",
+        "sha256": "334d3116cf45c711ea90552168173c77d2abc5aac2aa57677d73daf549b533d5",
+        "commit": "9f52e7da37b84603424d0b7e6ecee8e019d1c7c9"
+      },
+      "declarationAddendum": {
+        "path": "evals/nir1-graph/declaration-addendum.v1.json",
+        "sha256": "82b05bae92d05b3af2a73739bd14b73cf88dcdc3290e19860126c057c5552949",
+        "commit": "9f52e7da37b84603424d0b7e6ecee8e019d1c7c9"
+      },
+      "g01Addendum": {
+        "path": "evals/nir1-g01/setup-addendum.v1.json",
+        "sha256": "ade7c40256c159f2da1341cfa885401542f6d6621a99ca394bcdb255b7271f46",
+        "commit": "9f52e7da37b84603424d0b7e6ecee8e019d1c7c9"
+      }
+    },
+    "priorAttempts": {
+      "negative": [
+        {
+          "runName": "neg-n2-s5r3-1",
+          "runKind": "negative",
+          "status": "completed",
+          "startedAtUtc": "2026-10-31T12:08:05.597Z",
+          "finishedAtUtc": "2026-10-31T12:09:21.472Z",
+          "fileSha256": "1f134ffc1148aaf84a633668c175f9d99dd0f219ed303d552b99260d5acb5ae5"
+        }
+      ],
+      "thisAttempt": {
+        "runName": "neg-n3-s5r3-1",
+        "fileSha256AtStart": "d765bfae07cf3aa3a7401794d719de9aafb31ac0843482403b24f756b8e35235"
+      }
+    },
+    "seedPinGate": {
+      "status": "match",
+      "plan": "frozen",
+      "rows": [
+        {
+          "caseId": "G-01",
+          "variantId": "v1",
+          "querySceneId": "43bf174d-4313-47e3-84d3-0b67e3870155",
+          "productSeed": "a787b541-f567-466b-b60f-ef84bed61281",
+          "expectedSeed": "a787b541-f567-466b-b60f-ef84bed61281",
+          "expectedSeedLogical": "g01-orin",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "e69a7a2c8c39bb0889f4f99aa290f638e71a4e9463a86d173f09e7b1a4ad7845",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r3-g-01-v1/setup/G-01/v1/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-02",
+          "variantId": "base",
+          "querySceneId": "0d5bdbcc-2665-40c4-ab68-66aec9b122e0",
+          "productSeed": "92a7206e-84b5-40e7-bf3b-547365b79311",
+          "expectedSeed": "92a7206e-84b5-40e7-bf3b-547365b79311",
+          "expectedSeedLogical": "g02-orla",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "4ffa4275e6f30e25cf48d793841e8afa97be00e9c1384e222d5f29e3feecd2f4",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r3-g-02-base/setup/G-02/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-03",
+          "variantId": "base",
+          "querySceneId": "2f97c7ea-d4e0-4f3f-95eb-52d95851b4c4",
+          "productSeed": "c5b842cb-b9ef-45e4-9565-d3d6b3a0adc9",
+          "expectedSeed": "c5b842cb-b9ef-45e4-9565-d3d6b3a0adc9",
+          "expectedSeedLogical": "g03-wren",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "9dc5b5e2f938dd8892b43ab447acbba8b3fbd94da8b038a70fdebce37b56beaa",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r3-g-03-base/setup/G-03/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-03",
+          "variantId": "frontier-exceeded",
+          "querySceneId": "05ded502-8d50-4fc4-b439-39dab0a3bc4a",
+          "productSeed": "ea95d7e2-688a-4c3a-ace2-5f29be15a3ca",
+          "expectedSeed": "ea95d7e2-688a-4c3a-ace2-5f29be15a3ca",
+          "expectedSeedLogical": "g03-wren",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "6176019de766038f831976c2bfc0b3bbc7d6fa0b6ca2d547ae26a8f42803ae10",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r3-g-03-frontier-exceeded/setup/G-03/frontier-exceeded/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-04",
+          "variantId": "base",
+          "querySceneId": "660f6ca1-7710-4102-a287-5aedfccaec0b",
+          "productSeed": "af2102f9-f708-4824-b8b3-d5ba6446ce9a",
+          "expectedSeed": "af2102f9-f708-4824-b8b3-d5ba6446ce9a",
+          "expectedSeedLogical": "g04-bren",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "70f479e2b5ba8ded783c5509f6525e79ea4b4921cefe745504b0f057d1a04d53",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r3-g-04-base/setup/G-04/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-05",
+          "variantId": "base",
+          "querySceneId": "341c9297-89ff-4176-a25e-1ec49e260fe4",
+          "productSeed": "9beae7f7-2da8-40e1-945e-d9788cc5fa2f",
+          "expectedSeed": "9beae7f7-2da8-40e1-945e-d9788cc5fa2f",
+          "expectedSeedLogical": "g05-hale",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "349786a9f7eac5ee44283bde1337e7dac7e50314008f9f9b653c28c62c8f6dd7",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r3-g-05-base/setup/G-05/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-06",
+          "variantId": "base",
+          "querySceneId": "7ae7d78a-7ac5-438f-b2c7-240ed4a35ad8",
+          "productSeed": "f98af0ee-e365-48f9-9d18-56b4609cceac",
+          "expectedSeed": "f98af0ee-e365-48f9-9d18-56b4609cceac",
+          "expectedSeedLogical": "g06-maro",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "9c0166f74aa197ec25baa398c9b55ca9f937a513b0e109483c7842f0acb20087",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r3-g-06-base/setup/G-06/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-07",
+          "variantId": "base",
+          "querySceneId": "6dbaf45e-1c95-4e60-b70d-8ac93864e02e",
+          "productSeed": "1589a23f-b4a7-4b36-8820-d514b301b97d",
+          "expectedSeed": "1589a23f-b4a7-4b36-8820-d514b301b97d",
+          "expectedSeedLogical": "g07-vesna",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "0b4bba88d6bf2210d74de98368f5c8e0e7024c925c39225ba41b704005b226b1",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r3-g-07-base/setup/G-07/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-08",
+          "variantId": "base-usable",
+          "querySceneId": "c935de7c-faeb-4183-9a2d-f768311afedc",
+          "productSeed": "912ba9d5-4912-49fb-839d-2c0b31871191",
+          "expectedSeed": "912ba9d5-4912-49fb-839d-2c0b31871191",
+          "expectedSeedLogical": "g08-odile",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "f720041df1213506dcf51ac356e69529511dda13287f7c309ef9719e841e8b05",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r3-g-08-base-usable/setup/G-08/base-usable/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-08",
+          "variantId": "graph-index-unusable",
+          "querySceneId": "c0af2c1b-56ef-45f8-ae79-325c8e5551f8",
+          "productSeed": "41809a31-dffb-41ac-bdf3-509d1a072481",
+          "expectedSeed": "41809a31-dffb-41ac-bdf3-509d1a072481",
+          "expectedSeedLogical": "g08-odile",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "685bb800cd1719d3085505a218fce15365cbf16ecd1091542a56e7c328246cd3",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r3-g-08-graph-index-unusable/setup/G-08/graph-index-unusable/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-08",
+          "variantId": "graph-recovered",
+          "querySceneId": "d3aae956-394f-4c81-9430-722cf34fbc81",
+          "productSeed": "daf3b690-8dcb-4d3c-9825-61b371e8fd3d",
+          "expectedSeed": "daf3b690-8dcb-4d3c-9825-61b371e8fd3d",
+          "expectedSeedLogical": "g08-odile",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "7c6902722bdd5802e27c4012c546e88e7c7c0565b9e5ed5f7acdaf6307e059eb",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r3-g-08-graph-recovered/setup/G-08/graph-recovered/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-08",
+          "variantId": "chronicle-index-unusable",
+          "querySceneId": "cb54b8e1-41a7-493f-9e37-aa58c518eca9",
+          "productSeed": "b7dcbedd-0e77-4cb8-8d8c-592f4d582baa",
+          "expectedSeed": "b7dcbedd-0e77-4cb8-8d8c-592f4d582baa",
+          "expectedSeedLogical": "g08-odile",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "af4881bc3da2476b525037854c61b1521c54233ac338fe5f44844eeb3e9d4f5c",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r3-g-08-chronicle-index-unusable/setup/G-08/chronicle-index-unusable/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-08",
+          "variantId": "both-indexes-unusable",
+          "querySceneId": "3cca5c10-2358-4e78-a365-5ab50ac52085",
+          "productSeed": "defda6b1-80ac-49f8-8a4e-416cad8c4f90",
+          "expectedSeed": "defda6b1-80ac-49f8-8a4e-416cad8c4f90",
+          "expectedSeedLogical": "g08-odile",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "1be7988029709e8190046478673b9146ad2a67e78b28127cab62f13561154018",
+          "db": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/.artifacts/cp4/s5r3-g-08-both-indexes-unusable/setup/G-08/both-indexes-unusable/cold-workspace/grimodex.db"
+        }
+      ]
+    },
+    "productBuild": {
+      "checked": true,
+      "productReceiptHead": "0b1984dd68ec132aea394664e2ba61759e1e2830",
+      "productReceiptTree": "900ba98bd43b38fb668df1f557276b789d3ed13b",
+      "evalReceiptHead": "0b1984dd68ec132aea394664e2ba61759e1e2830",
+      "evalReceiptTree": "900ba98bd43b38fb668df1f557276b789d3ed13b",
+      "artifacts": {
+        "dist/index.html": "e1b86692085de53cf2edb0a8f7391cbb9f63c2993aec4dbc1897344e53eefc84",
+        "dist-electron/main.cjs": "31023f585fcdd080afe530a1e3b19a26e6812c0aa2ec35f33bf2c886db528278",
+        "dist-electron/preload.cjs": "9c37d32af100699a97fbd8ce068fb273f5e9387d9155cc471173add03ca489a8",
+        "electron/native/grimodex-node/grimodex-node.node": "7df602780bfffd49887afb62d5a4bef0041317d65d2fe6ee0749e46591613e79"
+      }
+    }
+  },
+  "variants": {
+    "G-01/v1": {
+      "status": "measured",
+      "samples": 70,
+      "valid": true,
+      "errors": [],
+      "verdict": {
+        "outcome": "recorded"
+      },
+      "negative": {
+        "samples": [
+          {
+            "phase": "measured",
+            "repeat": 0,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 1,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 2,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 3,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 4,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 5,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 6,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 7,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 8,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 9,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 10,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 11,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 12,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 13,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 14,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 15,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 16,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 17,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 18,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 19,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 20,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 21,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 22,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 23,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 24,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 25,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 26,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 27,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 28,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 29,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          }
+        ],
+        "assessment": {
+          "id": "K24-G01-N3",
+          "mutation": "restore-same-bytes-body-version",
+          "countsInCaseJudgement": false,
+          "outcome": "established",
+          "reasons": [],
+          "returnedIn": []
+        },
+        "control": {
+          "status": "reached",
+          "decided": true,
+          "decidedAt": 16,
+          "answer": {
+            "status": "completed",
+            "graphOutcome": "graph-ready",
+            "graphOnly": {
+              "sceneId": "92f64237-281f-4f94-b4b0-ff3daa529722",
+              "pinEntityId": "07aeb8df-af60-43c0-b8ad-a9e25b7d777f",
+              "hop": 1,
+              "edges": [
+                {
+                  "from": "a787b541-f567-466b-b60f-ef84bed61281",
+                  "to": "07aeb8df-af60-43c0-b8ad-a9e25b7d777f",
+                  "relationType": "delivered-key-to"
+                }
+              ]
+            },
+            "pathAttachments": [],
+            "finalSceneIds": [
+              "4cbff5a6-3936-48db-b345-f3b41c04173d",
+              "92f64237-281f-4f94-b4b0-ff3daa529722"
+            ],
+            "timing": {
+              "tFetchMs": 17640.79999999702,
+              "tRawReadyMs": 17660.69999998808,
+              "tReturnMs": 17668.5
+            },
+            "completion": {
+              "outcome": "ir-ready",
+              "deadlineExceeded": false
+            }
+          },
+          "tries": [
+            {
+              "at": 0,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 75,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 1597.199999988079,
+                  "tRawReadyMs": 1615.8999999910593,
+                  "tReturnMs": 1627.7999999970198
+                },
+                "child": {
+                  "tFetchMs": 1638.199999988079,
+                  "tRawReadyMs": 1657.7999999970198,
+                  "tReturnMs": 1669.199999988079
+                },
+                "readyMarkAfterMs": 37.30000001192093
+              },
+              "error": null
+            },
+            {
+              "at": 1,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 741,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 1925,
+                  "tRawReadyMs": 1948.199999988079,
+                  "tReturnMs": 1959.699999988079
+                },
+                "child": {
+                  "tFetchMs": 2634.5999999940395,
+                  "tRawReadyMs": 2652.5999999940395,
+                  "tReturnMs": 2663.8999999910593
+                },
+                "readyMarkAfterMs": 708.0999999940395
+              },
+              "error": null
+            },
+            {
+              "at": 2,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 750,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 2919.7999999970198,
+                  "tRawReadyMs": 2939.699999988079,
+                  "tReturnMs": 2951.199999988079
+                },
+                "child": {
+                  "tFetchMs": 3638.699999988079,
+                  "tRawReadyMs": 3656,
+                  "tReturnMs": 3667.5
+                },
+                "readyMarkAfterMs": 715.2000000029802
+              },
+              "error": null
+            },
+            {
+              "at": 3,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 747,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 3922.7999999970198,
+                  "tRawReadyMs": 3943.199999988079,
+                  "tReturnMs": 3954.699999988079
+                },
+                "child": {
+                  "tFetchMs": 4637.79999999702,
+                  "tRawReadyMs": 4656.199999988079,
+                  "tReturnMs": 4667.5999999940395
+                },
+                "readyMarkAfterMs": 711.5
+              },
+              "error": null
+            },
+            {
+              "at": 4,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 750,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 4922.199999988079,
+                  "tRawReadyMs": 4941.199999988079,
+                  "tReturnMs": 4953
+                },
+                "child": {
+                  "tFetchMs": 5638.5999999940395,
+                  "tRawReadyMs": 5658,
+                  "tReturnMs": 5669.5
+                },
+                "readyMarkAfterMs": 712.1000000089407
+              },
+              "error": null
+            },
+            {
+              "at": 5,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 746,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 5924.199999988079,
+                  "tRawReadyMs": 5944.399999991059,
+                  "tReturnMs": 5955.899999991059
+                },
+                "child": {
+                  "tFetchMs": 6637.79999999702,
+                  "tRawReadyMs": 6656.5999999940395,
+                  "tReturnMs": 6668
+                },
+                "readyMarkAfterMs": 710.8000000119209
+              },
+              "error": null
+            },
+            {
+              "at": 6,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 747,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 6923.5999999940395,
+                  "tRawReadyMs": 6944.0999999940395,
+                  "tReturnMs": 6955.699999988079
+                },
+                "child": {
+                  "tFetchMs": 7638,
+                  "tRawReadyMs": 7656.899999991059,
+                  "tReturnMs": 7668.199999988079
+                },
+                "readyMarkAfterMs": 711.4000000059605
+              },
+              "error": null
+            },
+            {
+              "at": 7,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 951,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 7924.0999999940395,
+                  "tRawReadyMs": 7944.5999999940395,
+                  "tReturnMs": 7956.0999999940395
+                },
+                "child": {
+                  "tFetchMs": 8638.09999999404,
+                  "tRawReadyMs": 8861.29999999702,
+                  "tReturnMs": 8872.59999999404
+                },
+                "readyMarkAfterMs": 711.2999999970198
+              },
+              "error": null
+            },
+            {
+              "at": 8,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 542,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 9128.699999988079,
+                  "tRawReadyMs": 9184.79999999702,
+                  "tReturnMs": 9196.199999988079
+                },
+                "child": {
+                  "tFetchMs": 9638.699999988079,
+                  "tRawReadyMs": 9657.09999999404,
+                  "tReturnMs": 9668.39999999106
+                },
+                "readyMarkAfterMs": 507.1000000089407
+              },
+              "error": null
+            },
+            {
+              "at": 9,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 749,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 9924.29999999702,
+                  "tRawReadyMs": 9944.29999999702,
+                  "tReturnMs": 9955.79999999702
+                },
+                "child": {
+                  "tFetchMs": 10639.89999999106,
+                  "tRawReadyMs": 10659.29999999702,
+                  "tReturnMs": 10670.59999999404
+                },
+                "readyMarkAfterMs": 712
+              },
+              "error": null
+            },
+            {
+              "at": 10,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 745,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 10925.79999999702,
+                  "tRawReadyMs": 10946,
+                  "tReturnMs": 10957.39999999106
+                },
+                "child": {
+                  "tFetchMs": 11637.59999999404,
+                  "tRawReadyMs": 11656.89999999106,
+                  "tReturnMs": 11668.39999999106
+                },
+                "readyMarkAfterMs": 711
+              },
+              "error": null
+            },
+            {
+              "at": 11,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 748,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 11923.89999999106,
+                  "tRawReadyMs": 11944,
+                  "tReturnMs": 11955.39999999106
+                },
+                "child": {
+                  "tFetchMs": 12640,
+                  "tRawReadyMs": 12658.89999999106,
+                  "tReturnMs": 12670.199999988079
+                },
+                "readyMarkAfterMs": 713.5
+              },
+              "error": null
+            },
+            {
+              "at": 12,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 744,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 12925.89999999106,
+                  "tRawReadyMs": 12944.199999988079,
+                  "tReturnMs": 12955.79999999702
+                },
+                "child": {
+                  "tFetchMs": 13638.09999999404,
+                  "tRawReadyMs": 13656.5,
+                  "tReturnMs": 13667.89999999106
+                },
+                "readyMarkAfterMs": 710.2999999970198
+              },
+              "error": null
+            },
+            {
+              "at": 13,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 750,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 13923.5,
+                  "tRawReadyMs": 13943.39999999106,
+                  "tReturnMs": 13954.79999999702
+                },
+                "child": {
+                  "tFetchMs": 14640.09999999404,
+                  "tRawReadyMs": 14659,
+                  "tReturnMs": 14670.699999988079
+                },
+                "readyMarkAfterMs": 715.2999999970198
+              },
+              "error": null
+            },
+            {
+              "at": 14,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 746,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 14926.09999999404,
+                  "tRawReadyMs": 14946.29999999702,
+                  "tReturnMs": 14957.79999999702
+                },
+                "child": {
+                  "tFetchMs": 15638.5,
+                  "tRawReadyMs": 15657.89999999106,
+                  "tReturnMs": 15669.5
+                },
+                "readyMarkAfterMs": 712.2000000029802
+              },
+              "error": null
+            },
+            {
+              "at": 15,
+              "kind": "neutral",
+              "outcome": "graph-late",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-late",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 747,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 15923.699999988079,
+                  "tRawReadyMs": 15944.29999999702,
+                  "tReturnMs": 15955.699999988079
+                },
+                "child": {
+                  "tFetchMs": 16638.29999999702,
+                  "tRawReadyMs": 16657.69999998808,
+                  "tReturnMs": 16669.19999998808
+                },
+                "readyMarkAfterMs": 714.5
+              },
+              "error": null
+            },
+            {
+              "at": 16,
+              "kind": "ready",
+              "outcome": "graph-ready",
+              "parentOutcome": "graph-late",
+              "childOutcome": "graph-ready",
+              "cached": true,
+              "counters": {
+                "begins": 2,
+                "cacheHits": 1,
+                "lateCached": 1
+              },
+              "durationMs": 746,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 16925.09999999404,
+                  "tRawReadyMs": 16945.29999999702,
+                  "tReturnMs": 16956.79999999702
+                },
+                "child": {
+                  "tFetchMs": 17640.79999999702,
+                  "tRawReadyMs": 17660.69999998808,
+                  "tReturnMs": 17668.5
+                },
+                "readyMarkAfterMs": 713.5999999940395
+              },
+              "error": null
+            }
+          ],
+          "retry": {
+            "limit": 60,
+            "gapMs": 250
+          },
+          "graphInputs": "496db0d823ad1934deaed98151a6304691d143a6083e47201f58029dc73f11e7",
+          "bIndex": {
+            "generation": 1,
+            "dirty": false,
+            "sourceDigest": "sha256:3e99508ded5e3f6d405874071a9e14c2a7ff9f87acf33efec0a52d5cd523ea11",
+            "dependencySetDigest": "sha256:bbb26e322b1e3def60e0b35d0db9790fffe1988054f660b07684e5c006431366",
+            "producerId": "nir1-reviewed-entity-relation-v1",
+            "producerVersion": "nir1-reviewed-entity-relation/v1"
+          },
+          "limit": "the control and the measurement share the Graph's relational input (Codex entries, Relations, pins); the B index digest is disclosed, not compared"
+        },
+        "step": {
+          "id": "K24-G01-N3",
+          "mutation": {
+            "revisionId": "bf73cc16-2a44-42f1-99c1-3b9d127b3cb9",
+            "version": 1,
+            "replayed": false,
+            "afterSha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491",
+            "restoredSha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491"
+          },
+          "indexBefore": {
+            "b": {
+              "generation": 1,
+              "dirty": false,
+              "sourceDigest": "sha256:3e99508ded5e3f6d405874071a9e14c2a7ff9f87acf33efec0a52d5cd523ea11",
+              "dependencySetDigest": "sha256:bbb26e322b1e3def60e0b35d0db9790fffe1988054f660b07684e5c006431366",
+              "producerId": "nir1-reviewed-entity-relation-v1",
+              "producerVersion": "nir1-reviewed-entity-relation/v1"
+            },
+            "chronicle": {
+              "generation": 2,
+              "dirty": false,
+              "sourceDigest": "sha256:c9611049fc167dd284e75323566ed6d546f4131c5187c67e4604b54c9fea7d7b",
+              "dependencySetDigest": "sha256:94950fb43d73a12f9b7a6a34829a18bf7a2f988a7df0d55fa36dbe93f35fb354",
+              "producerId": "nir1-reviewed-chronicle-v1",
+              "producerVersion": "nir1-reviewed-chronicle/v1"
+            }
+          },
+          "sealAttempts": [
+            {
+              "session": "measure",
+              "attempt": 0,
+              "dirLabel": "measure-reopen-0",
+              "outcome": "sealed",
+              "published": true,
+              "waitedMs": 512,
+              "metadata": {
+                "b": {
+                  "generation": 2,
+                  "dirty": false,
+                  "sourceDigest": "sha256:3e99508ded5e3f6d405874071a9e14c2a7ff9f87acf33efec0a52d5cd523ea11",
+                  "dependencySetDigest": "sha256:bbb26e322b1e3def60e0b35d0db9790fffe1988054f660b07684e5c006431366",
+                  "producerId": "nir1-reviewed-entity-relation-v1",
+                  "producerVersion": "nir1-reviewed-entity-relation/v1"
+                },
+                "chronicle": {
+                  "generation": 2,
+                  "dirty": true,
+                  "sourceDigest": "sha256:c9611049fc167dd284e75323566ed6d546f4131c5187c67e4604b54c9fea7d7b",
+                  "dependencySetDigest": "sha256:94950fb43d73a12f9b7a6a34829a18bf7a2f988a7df0d55fa36dbe93f35fb354",
+                  "producerId": "nir1-reviewed-chronicle-v1",
+                  "producerVersion": "nir1-reviewed-chronicle/v1"
+                }
+              },
+              "chronicle": {
+                "build": {
+                  "ok": true
+                },
+                "metadata": {
+                  "b": {
+                    "generation": 2,
+                    "dirty": false,
+                    "sourceDigest": "sha256:3e99508ded5e3f6d405874071a9e14c2a7ff9f87acf33efec0a52d5cd523ea11",
+                    "dependencySetDigest": "sha256:bbb26e322b1e3def60e0b35d0db9790fffe1988054f660b07684e5c006431366",
+                    "producerId": "nir1-reviewed-entity-relation-v1",
+                    "producerVersion": "nir1-reviewed-entity-relation/v1"
+                  },
+                  "chronicle": {
+                    "generation": 3,
+                    "dirty": false,
+                    "sourceDigest": "sha256:c9611049fc167dd284e75323566ed6d546f4131c5187c67e4604b54c9fea7d7b",
+                    "dependencySetDigest": "sha256:94950fb43d73a12f9b7a6a34829a18bf7a2f988a7df0d55fa36dbe93f35fb354",
+                    "producerId": "nir1-reviewed-chronicle-v1",
+                    "producerVersion": "nir1-reviewed-chronicle/v1"
+                  }
+                },
+                "usable": true
+              }
+            }
+          ],
+          "spP1Recheck": {
+            "status": "match",
+            "productSeed": "a787b541-f567-466b-b60f-ef84bed61281",
+            "pinCount": 1
+          },
+          "graphInputs": "496db0d823ad1934deaed98151a6304691d143a6083e47201f58029dc73f11e7",
+          "blocked": null
+        },
+        "beforeDeclaration": {
+          "prepared": {
+            "kind": "same-bytes-version",
+            "revisionId": "bf73cc16-2a44-42f1-99c1-3b9d127b3cb9",
+            "created": true,
+            "sha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491"
+          },
+          "blocked": null
+        },
+        "beforeDeclarationSealAttempts": null,
+        "graphTries": [
+          {
+            "phase": "warmup",
+            "repeat": 0,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1562,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "warmup",
+            "repeat": 1,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1602,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "warmup",
+            "repeat": 2,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1539,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "warmup",
+            "repeat": 3,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1597,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "warmup",
+            "repeat": 4,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1546,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 0,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1569,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 1,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1602,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 2,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1254,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 3,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1603,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 4,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1547,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 5,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1603,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 6,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1541,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 7,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1600,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 8,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1543,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 9,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1604,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 10,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1499,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 11,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1602,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 12,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1273,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 13,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1604,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 14,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1539,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 15,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1598,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 16,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1552,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 17,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1594,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 18,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1543,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 19,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1611,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 20,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1549,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 21,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1820,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 22,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1548,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 23,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1603,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 24,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1547,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 25,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1602,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 26,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1549,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 27,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1600,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 28,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1547,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 29,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-late",
+                "childOutcome": "graph-ready",
+                "cached": true,
+                "counters": {
+                  "begins": 2,
+                  "cacheHits": 1,
+                  "lateCached": 1
+                },
+                "durationMs": 1601,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          }
+        ]
+      }
+    }
+  }
+}

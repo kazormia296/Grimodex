@@ -7,7 +7,7 @@
 //     scripts/quality/nir1-graph-eval/k64-runner.mjs --run <name> \
 //     --setup .artifacts/cp4/<setup-run>/setup/setup-receipt.json \
 //     --ja-model <pinned> --en-model <pinned> --k62-commit <K6/2 freeze> \
-//     [--procedure-version draft-1] [--keep-test-worktree <clean worktree>]
+//     [--procedure-version draft-3] [--keep-test-worktree <clean worktree>]
 //
 // 流れ: admission（凍結した fixture の正式の run は `--setups` で
 // frozen-k64-run.mjs に渡す〔S5-A、DR-CP4-N-1〕。dev fixture は予告の admission）
@@ -200,6 +200,7 @@ export function admitK64Run(input) {
       defaultAddonSha256: input.defaultAddonSha256,
       k62Commit: input.k62Commit,
       k64Commit: input.k64Commit,
+      k65Commit: input.k65Commit,
       // P2-4: the keep test ran before (async) and its evidence is sealed.
       ...(input.ratification5 !== undefined
         ? { ratification5: input.ratification5 }

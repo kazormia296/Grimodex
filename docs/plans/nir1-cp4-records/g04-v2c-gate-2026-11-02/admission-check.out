@@ -1,0 +1,58 @@
+M = c1828047c085c15198802d88542fb19305a74e90  origin/master = c1828047c085c15198802d88542fb19305a74e90
+parents(M) = c1828047c085c15198802d88542fb19305a74e90 8187fbfc9685356225956dfce83431aec9845473 0b28c7ba37190ddf416f9a845bc58a829abfd081
+
+=== (i) S4b''' を commit、M を head ===
+head=c1828047 recordIntroducedByCommit=true onRemoteRef=true ancestorOfCandidateHead=true
+  recordSha256AtCommit=f203071ab1c2e628f80de41403b85dcfcabb7cd0a475d143c9bce1e30d3ba3c9
+  recordSha256AtHead  =f203071ab1c2e628f80de41403b85dcfcabb7cd0a475d143c9bce1e30d3ba3c9
+OK   assertObservationPrepAdmits(head=c1828047)
+OK   readAdmittedObservationPrep(head=c1828047): S2 status=frozen-before-observation sha256=9cc881ba966c908494385117b21c0eaa0cbca105fbbafe0216bba79bde1bc562 placeholders=[] boundFiles=6 traces=2
+head=0b28c7ba recordIntroducedByCommit=true onRemoteRef=true ancestorOfCandidateHead=true
+  recordSha256AtCommit=f203071ab1c2e628f80de41403b85dcfcabb7cd0a475d143c9bce1e30d3ba3c9
+  recordSha256AtHead  =f203071ab1c2e628f80de41403b85dcfcabb7cd0a475d143c9bce1e30d3ba3c9
+OK   assertObservationPrepAdmits(head=0b28c7ba)
+OK   readAdmittedObservationPrep(head=0b28c7ba): S2 status=frozen-before-observation sha256=9cc881ba966c908494385117b21c0eaa0cbca105fbbafe0216bba79bde1bc562 placeholders=[] boundFiles=6 traces=2
+
+=== (ii) 旧 S4b / S4b' / S4b'' と使わない前の版 ===
+STOP 旧 S4b (b7d74950): [precheck] the observation-prep freeze record differs from the pre-observation commit
+STOP 旧 S4b' (9f52e7da): [precheck] the observation-prep freeze record differs from the pre-observation commit
+STOP 旧 S4b'' (557e683c): [precheck] the observation-prep freeze record differs from the pre-observation commit
+STOP 前の版 c6839a6f (c6839a6f): [precheck] the pre-observation commit is not an ancestor of the candidate head
+STOP 前の版 2c3a8473 (2c3a8473): [precheck] the pre-observation commit is not an ancestor of the candidate head
+
+=== (iii) S4b''' 以外の commit を commit に指定 ===
+STOP 失効 d50b0a48: [precheck] the pre-observation commit did not introduce the freeze record
+STOP S4a''' 02ede6bb: [precheck] the pre-observation commit did not introduce the freeze record
+STOP S2 追補 daadd9f3: [precheck] the pre-observation commit did not introduce the freeze record
+STOP S2 訂正 5e0c5f05: [precheck] the pre-observation commit did not introduce the freeze record
+STOP addendum 凍結 c65e352d: [precheck] the pre-observation commit did not introduce the freeze record
+STOP 候補 179139b4: [precheck] the pre-observation commit did not introduce the freeze record
+STOP manifest b02a8f14: [precheck] the pre-observation commit did not introduce the freeze record
+STOP DR 0b28c7ba: [precheck] the pre-observation commit did not introduce the freeze record
+STOP M: [precheck] the pre-observation commit did not introduce the freeze record
+STOP S4b''' を commit、旧 master 8187fbfc を head: [precheck] the pre-observation commit is not an ancestor of the candidate head
+
+=== 順序: 失効・S4a'''・候補は S4b''' の祖先か、S4b''' の後に record を変える commit は無いか ===
+  d50b0a48 ancestor of S4b''': true
+  c65e352d ancestor of S4b''': true
+  daadd9f3 ancestor of S4b''': true
+  5e0c5f05 ancestor of S4b''': true
+  13f04b26 ancestor of S4b''': true
+  8020b22b ancestor of S4b''': true
+  02ede6bb ancestor of S4b''': true
+  fdb1fc9b ancestor of S4b''': true
+  179139b4 ancestor of S4b''': true
+  557e683c ancestor of S4b''': true
+  record を変えた commit (S4b'''..M): (none)
+  S4b''' の親: 179139b4926a6ef249da78b56e581c2fd7c083de
+
+=== (iv) pin の全件照合（S2 at M） ===
+  pins=32 files=72 SOURCE_PINS=32 mismatches=0
+
+=== (v) assertObservationPrepFormal / validateNir1ObservationPrep（作業ツリー = M） ===
+  validate: errors=0 formalReady=true placeholders=0 status=passed
+OK   formal(head=c1828047): {"proceed":true}
+OK   formal(head=60bf9dc4): {"proceed":true}
+OK   formal(head=b02a8f14): {"proceed":true}
+OK   formal(head=0b28c7ba): {"proceed":true}
+STOP formal(head=S4a''' 02ede6bb): [precheck] evals/nir1-graph/trace-editing.v1.json is referenced at the record's own commit 02ede6bb609b20fa54e1a729032cc38065d2ce58; it must be a strict ancesto

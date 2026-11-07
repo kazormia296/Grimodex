@@ -1,0 +1,21 @@
+{
+ "method": "renderer の related_scenes_begin の呼出しの間隔と Native の記録の tBeginNs の間隔を比べ、1 件を除いたときの平均ずれが最小の位置を探した",
+ "rendererBegins": 201,
+ "nativeRecords": 202,
+ "extra": {
+  "index": 201,
+  "seq": 202,
+  "begin": "unavailable",
+  "startSlot": {
+   "kind": "suspended",
+   "readyFresh": false,
+   "preparesReady": 1,
+   "readyGeneration": 8
+  },
+  "tAfterPreviousRecordMs": 5209.5
+ },
+ "meanAbsGapDiffMs": {
+  "dropLast": 1.44,
+  "nextBest": 27.45
+ }
+}

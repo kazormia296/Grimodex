@@ -1,0 +1,662 @@
+✔ the fixed G-01..G-08 population validates and is frozen without any Graph runtime result for the bytes it froze (160.955654ms)
+✔ G-01 stays the unchanged predeclared fixture (0.824971ms)
+✔ case classes are copied exactly from the l6-l9 G-01..G-08 table (90.926223ms)
+✔ a reverse directed edge cannot be declared as a traversed path (120.275176ms)
+✔ two same-hop new Scenes are rejected because the appended Scene would depend on runtime IDs (53.09908ms)
+✔ more than eight pins of reached Entities are rejected because N_F=8 truncation would decide the result (4.613026ms)
+✔ Raw-full and IR-supplemented cases never append a Graph-only Scene (52.468575ms)
+✔ frontier overflow refuses the whole Graph instead of truncating it (50.068008ms)
+✔ the rebuilt G-03 frontier exceeds the 50-Entity limit under either counting convention (48.009235ms)
+✔ an exceeded G-03 variant that stays within the 50-Entity limit is refused (46.870999ms)
+✔ the G-03 frontier limit keeps the seed-in and seed-out counts in agreement (1.83304ms)
+✔ the schema pins the G-03 frontier limit to 50 (176.71365ms)
+✔ documented qualification rules exclude stale, unapproved, out-of-scope and unrevealed material (66.912051ms)
+✔ the reveal rule follows read_a3_reveal_state on every branch (142.915558ms)
+✔ Graph unusable falls back to R+IR and Chronicle unusable to exact R with no mixed set (44.532023ms)
+✔ G-04 version 2 is supplementable: Graph appends the one Scene pinned to Lio, and a second Lio pin or IR on an answer Scene is refused (130.563875ms)
+✔ R+IR result kind is a recorded-only prediction except where an IR supplement is admitted (126.206442ms)
+✔ every variant declares exactly its observation-time preconditions (217.083747ms)
+✔ an unmet precondition blocks instead of Hold, and only a declared one can (1.911247ms)
+✔ runtime comparison classes cover exactly the schema expectation fields (139.862896ms)
+✔ a Graph Source edit after IR creation must stay independent of IR material (86.929972ms)
+✔ non-control Scenes cannot share Raw-visible vocabulary with S2 (84.284261ms)
+✔ Porter stems follow the FTS5 porter tokenizer for the predicted vocabulary (0.218605ms)
+✔ the existing 24 retrieval queries keep no Graph seed and their manifest stays not Graph (0.826571ms)
+✔ the freeze binds the manifest, every fixture, the schema, the README and the review receipt (440.746566ms)
+✔ the freeze record and the manifest status agree in both directions (244.959871ms)
+✔ the freeze follows an approving review by a read-only reviewer other than the fixture author (800.562233ms)
+✔ after the approving review only the declared manifest pointers, README sections and schema pattern may change (437.267082ms)
+✔ a freeze written after a runtime observation declares every rebuilt case and keeps every other case's version-1 bytes (1284.113456ms)
+✖ the committed observation-prep files validate (frozen again by S4b'') (621.212112ms)
+✖ the draft copy of the committed S2 validates as a draft (S4 tokens, not formal) (3.505191ms)
+✖ a draft with placeholders is never usable for a formal run (2.625201ms)
+✖ S4b'': the committed frozen record passes the formal gate at HEAD (git) (600.668072ms)
+✖ setup addendum: the K2/4 table row for G-01 and the fixture digests (45.007381ms)
+✔ declaration addendum: G-02/G-07/G-08 rows, declaration step outside setupOrder (50.497759ms)
+✔ DR-CP4-G4-7: K24_TABLE has the six rows, G-04 base the widened fifth Scene derived from fixture v2 (44.298467ms)
+✔ DR-CP4-G4-7: the declaration addendum v2 references G-04 v2 and freeze.v2, and copies v1's other rows (51.040637ms)
+✔ veto: a secret foreshadow that refers to the declared Scene is refused (45.804704ms)
+✔ trace editing: Q, density, materials and product triggers (59.81125ms)
+✔ trace browsing: Q, density, materials and product triggers (59.030608ms)
+✔ editing trace: every query after the first follows an edit and its autosave commit, nothing between commit and query (54.03528ms)
+✔ browsing trace: no edit, no save (49.831704ms)
+✔ K6/4 procedure draft: contract values, wait bound, the F/X lists and no review (0.955639ms)
+✖ observation prep: D1, D10, sample plan, traces, procedure, diagnostics, placeholders (55.566355ms)
+✖ S4 の最終関門の P3-3: contracts.k64.freezeCommit is the pinned constants.mjs K64_FREEZE.freezeCommit (58.671146ms)
+✔ S4 の最終関門の P3-3: parseK64FreezeCommit reads the field once from the K64_FREEZE literal only (0.512779ms)
+✖ observation prep frozen: every placeholder filled, commits 40-hex, digests match the files (56.919045ms)
+✖ S3-P2-2: boundFiles is exactly the five files, and traces agree with it (590.109409ms)
+✖ S3-P2-3: the frozen v1 procedure must be the reviewed draft-2 values (46.383781ms)
+✖ S3-P2-4: the G-01 R and R+IR mode follows the DA-1 record (47.160993ms)
+✔ S3-P1-1: R5 gates every Graph arm run and the K6/4 freeze (605.498913ms)
+✔ S3-P3-1: diagnostic runs match their addendum rows including the mutation (600.24296ms)
+✔ S3-P3-2: G-01 negatives include a different-bytes restore and their procedure (59.601344ms)
+✔ S3-P2-1 / P3-3: the browsing stay ends on a product event; stall attempts are bounded (76.026756ms)
+✔ S3-P3-4 / P3-5: tolerance usages registered; R comes from the hybrid arm's Raw (625.337338ms)
+✔ author declaration: no Graph output observed, read files with digests (2.910155ms)
+✔ the placeholder form is S4:<name> and nothing else (0.220865ms)
+✔ the frozen files the record must not change keep their freeze digests (2.068343ms)
+✔ SP/1: the record binds the seed pin addendum, gates R5 on it and plans SP-P4 (656.527779ms)
+✔ SP/1: addenda and traces point at the seed pin step (83.066159ms)
+✔ S3v2-P2-1: synthetic detection runs before the first gated run (714.072089ms)
+✔ S3v2-P3-2: SP-P4 fixes its mode, branches from one copy, compares logical IDs and records zero Graph begins (723.968997ms)
+✔ S3v2-P3-3: G-01 restore negatives use the Scene body version restore and re-check the seed pin (61.348765ms)
+✖ integrator: the CP-4 candidate is decided in the S5 ledger, never an S4 placeholder (757.252681ms)
+✖ S3v3-P3-1: a frozen record needs the SP/1 bytes in the repository and their commit (77.856576ms)
+✔ S3v3-P3-2: SP-P4 retakes after a Graph begin are disclosed and capped at 2 (737.916614ms)
+✖ integrator: the R5 check run is a narrow exception and the phases run R5 -> K6/4 freeze -> S4 -> Graph (780.855362ms)
+✔ S3v4: synthetic detection before S4, a bounded R5 check run, discarded R5 workspaces, two-stage S4 (758.941672ms)
+✔ S3v4-P3-3: referenced bytes sit in a strict ancestor of the frozen record's commit (S4a before S4b) (0.585827ms)
+✖ S2 追補 L-11: setupReadings fix the sessions, the variant sessions, the probe, the blocked names, the specs and the seal reopen (774.601691ms)
+✔ S2 追補 L-11 (P-3): d2 is read as the index-state probe only for the three unusable G-08 variants (801.579506ms)
+✖ S2 追補: reviewerQuestions carry P-4 and the open readings for S3, undecided in a draft and decided when frozen (797.995675ms)
+✔ S2 追補 TR-8〜TR-10: the editing trace's runner readings (commit, A3, caret, start seal, maintenance launch) and proposals (95.543128ms)
+✔ S2 追補 TR-8〜TR-10: the browsing trace's runner readings (commit, A3, caret, start seal, maintenance launch) and proposals (79.647065ms)
+✔ S2 追補: the author may list the permitted DR rows of cp4-decisions.md only, and a ref prefix does not hide a forbidden path (2.735879ms)
+✖ S2 追補 #2 P2-1: setupReadings pin master commits and copy L-24's closed set of reopen triggers, limits, blocked names and receipt fields (743.259042ms)
+✔ S2 追補 #2 P2-3 / P3-4: blockedCaseJudgement is S3's table (harness names kept, never mapped to the maintenance-enabled precondition) (769.154041ms)
+✔ S2 追補 #2 P2-2: P-4 (b) is wired only for the two one-shot G-08 variants, the others keep warm-up 5 and 30 in the steady state (780.637534ms)
+✔ S2 追補 #2: S3's decisions are recorded, and P-S2-5 (the harness's blocked mapping against S3's table) stays open (778.147639ms)
+✖ S2 追補 #2 P3-3: a draft keeps exactly the S4 placeholder tokens (66.46987ms)
+✔ S2 追補 #2 P2-3 / P-S2-3 / P-S2-4: the editing trace keeps its project, records seal reads and outside-Q returns (84.164844ms)
+✔ S2 追補 #2 P2-3 / P-S2-3 / P-S2-4: the browsing trace keeps its project, records seal reads and outside-Q returns (85.954014ms)
+✔ S2 追補 #2 P3-1 / P3-2: forbidden paths are found anywhere in the path; the blindness scope and the readings chosen after dev runs are disclosed (4.381521ms)
+✖ S2 追補 #3: blockedCaseJudgement equals the pinned harness's BLOCKED_CONTRACT_TABLE row by row (757.853943ms)
+✔ S2 追補 #4 (A): each pin is a master commit and each bytes pin holds that commit's bytes (git) (913.060744ms)
+✔ S2 追補 #4／#6／#7／#9／#10 (A): the bytes pins hold every non-test harness file #754, #756, #757, #758, #759, T-1〜T-5 and V-2〜V-4 changed, each at the commit that last changed it (2253.82712ms)
+✔ S2 追補 #4／#6 (A): the blocked table and the harness constants are read from the bytes of the pin that holds each file (781.191099ms)
+✖ S2 追補 #4 (B): K24-G01-N2〜N4 read reached by the control and the sample, with the re-ask rule fixed to the harness constants (66.527769ms)
+✔ S2 追補 #4／#6 (C): SP-P4 re-reads sparse, R+IR − R, graph-recovered's reason, measurement-only retake, and puts ir-complete-pairs (C1〜C3) in force (890.794581ms)
+✔ S2 追補 #4 (D): the Gold run uses the one completed parity before its start; the parity fallback is not wired (772.6153ms)
+✔ S2 追補 #4 (E): the trace takes only the candidate's G-02 base complete setup, SP-P1's one-row R5 and a named blocked as setupFailure (88.76397ms)
+✔ S2 追補 #5: the S3 7th review's decisions are recorded (P-S2-6 conditional e, P-S2-7 a, P-S2-8 a, P-S2-9 b) (764.004313ms)
+✔ S2 追補 #5 (P2-2): the formal entries' harness closure is held by the bytes pins, and an unpinned closure file fails (1503.036224ms)
+✔ S2 追補 #5 (P2-2): a changed sha256 of each added file fails the git check (778.450218ms)
+✖ S2 追補 #5 (P3-1): K24-G01-N4 makes its draft version as the harness does (saveSceneContent, then createRevision) (64.321069ms)
+✖ S2 追補 #8（DR-CP4-Q-2）: ir-complete-pairs carries the pinned pair limit SP_P4_IR_TIMEOUT_PAIR_LIMIT (S3's 24-pair minimum) and its receipt fields (762.379778ms)
+✔ S2 追補 #6: the SP-P4 receipt reading and C1 are the pinned harness's (spP4ReceiptDesign, spP4IrDisclosure, assertSpP4WorkspaceStable, compareSpP4Variant, spP4IrTimeoutExcluded) (257.974266ms)
+✖ S2 追補 #6 (P3-2): retry.rule and graphTries are the harness's re-ask disclosure (every try's counters and cached, the discarded takes' Scenes), never judged (91.86406ms)
+✔ S2 追補 #7: the formal entries' eval closure outside the harness directory is pinned, and only the fixed shared CI and product files are excluded (20.190767ms)
+✔ S2 追補 #7: the eval closure stops at a shared CI or product file and a new one changes the fixed exclusions (synthetic repository) (1.539535ms)
+✖ S2 追補 #7: the record's closureExclusions are the fixed shared CI and product files with reasons, none of them pinned (814.260444ms)
+✔ S2 追補 #7: each added eval script and each #758 file is pinned at the master commit that last changed it with that commit's bytes; a changed sha256 fails (1288.312665ms)
+✖ S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge commit of claude/nir1-contracts, merge-commit PR, the integrator's formal gate on S4b, the entries' read against the freeze record) (854.822643ms)
+✖ S2 追補 #10（DR-CP4-P-6）: traceRunnerReadings copy DR-CP4-V-2〜V-4 (TP-1〜TP-7), bind the trace runner to the four V-2〜V-4 pins and disclose editing's lapse (i), the rules chosen after the first trace and the observation before this freeze (860.439037ms)
+✖ S2 追補 #9（DR-CP4-T-1、T-3、T-5）: freshnessSettle copies the pinned harness's waits (setup 60 s／250 ms with maintenance stillness, measurement 15 s／100 ms) and maps the measurement's exhaustion to the existing blocked rows (871.128597ms)
+✔ S2 追補 #9（DR-CP4-T-1）: the measurement process's constants are unexported module constants read once from the pinned bytes; the old bytes have none (23.053853ms)
+✔ S2 追補 #9（DR-CP4-T-4 (a)）: V-10 READY applies to the steady state only, as the pinned plan's readyProbeOf; graph-held-unusable discloses ownerReady.skipped (937.178376ms)
+✖ the committed seed pin addendum validates (59.146415ms)
+✔ rows copy the fixture's query Scene and planned seed (SP-N1, G-01 entitySeed) (52.478184ms)
+✔ every variant of G-01..G-08 once, unavailable variants included (SP-N11, SP-N14, SP-N2) (55.066536ms)
+✔ one pin on the query Scene, nothing else changes, writer is upsertScenePin (SP-N2〜N5) (47.856728ms)
+✔ placement: after the foreshadow/pin step, before maintenance and setupTimeline; G-01 before prepare and the B seal (SP-N6) (55.390929ms)
+✔ digests of freeze.v1.json and every fixture (SP-N8) (48.218379ms)
+✔ same workspace for every arm, no direct seed, R5 from the DB (SP-N10, N12, N13) (48.059823ms)
+✔ SP-P1〜P5 and SP-N1〜N14 each have a check and a stage (50.033009ms)
+✔ contract, status, review and the seed id shape (SP-N9) (48.159651ms)
+✔ S3v2-P2-1 / P3-1: synthetic detection for SP-N1〜N5, N9〜N13; runtime stage for SP-N11; honest static claims (50.505608ms)
+✖ S3v2-P3-4: the SP/1 digest is recomputed when its bytes are in the repository (48.371337ms)
+✖ S3v3-P3-1: a frozen seed pin addendum needs the SP/1 bytes in the repository (49.019552ms)
+ℹ tests 119
+ℹ suites 0
+ℹ pass 89
+ℹ fail 30
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 32283.346905
+
+✖ failing tests:
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:159:1
+✖ the committed observation-prep files validate (frozen again by S4b'') (621.212112ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'evals/nir1-g01/setup-addendum.v1.json: references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d',
+  +   'evals/nir1-graph/observation-prep.v1.json: references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d',
+  +   'evals/nir1-graph/observation-prep.v1.json: d1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)',
+  +   'evals/nir1-graph/observation-prep.v1.json: diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4',
+  +   'evals/nir1-graph/observation-prep.v1.json: diagnosticRuns K24-G04-N1 must match its addendum row',
+  +   'evals/nir1-graph/observation-prep.v1.json: boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json',
+  +   'evals/nir1-graph/observation-prep.v1.json: boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file',
+  +   'evals/nir1-graph/seed-pin-addendum.v1.json: references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d (SP-N8)',
+  +   'evals/nir1-graph/seed-pin-addendum.v1.json: references.fixtures.G-04 must be evals/nir1-graph/g04-scope-exact-unknown.v2.json with its frozen sha256 (SP-N8)'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:161:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'evals/nir1-g01/setup-addendum.v1.json: references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d', 'evals/nir1-graph/observation-prep.v1.json: references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d', 'evals/nir1-graph/observation-prep.v1.json: d1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)', 'evals/nir1-graph/observation-prep.v1.json: diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4', 'evals/nir1-graph/observation-prep.v1.json: diagnosticRuns K24-G04-N1 must match its addendum row', 'evals/nir1-graph/observation-prep.v1.json: boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json', 'evals/nir1-graph/observation-prep.v1.json: boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file', 'evals/nir1-graph/seed-pin-addendum.v1.json: references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d (SP-N8)', 'evals/nir1-graph/seed-pin-addendum.v1.json: references.fixtures.G-04 must be evals/nir1-graph/g04-scope-exact-unknown.v2.json with its frozen sha256 (SP-N8)' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:200:1
+✖ the draft copy of the committed S2 validates as a draft (S4 tokens, not formal) (3.505191ms)
+  TypeError: Cannot set properties of undefined (setting 'commit')
+      at file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:103:41
+      at draftOf (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:116:46)
+      at draftPrep (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:129:10)
+      at async TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:202:29)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:214:1
+✖ a draft with placeholders is never usable for a formal run (2.625201ms)
+  TypeError: Cannot set properties of undefined (setting 'commit')
+      at file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:103:41
+      at draftOf (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:116:46)
+      at draftPrep (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:129:10)
+      at async TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:217:29)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:228:1
+✖ S4b'': the committed frozen record passes the formal gate at HEAD (git) (600.668072ms)
+  Error: [precheck] the observation-prep documents are invalid: evals/nir1-g01/setup-addendum.v1.json: references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d; evals/nir1-graph/observation-prep.v1.json: references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d; evals/nir1-graph/observation-prep.v1.json: d1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered); evals/nir1-graph/observation-prep.v1.json: diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4; evals/nir1-graph/observation-prep.v1.json: diagnosticRuns K24-G04-N1 must match its addendum row; evals/nir1-graph/observation-prep.v1.json: boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json; evals/nir1-graph/observation-prep.v1.json: boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file; evals/nir1-graph/seed-pin-addendum.v1.json: references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d (SP-N8); evals/nir1-graph/seed-pin-addendum.v1.json: references.fixtures.G-04 must be evals/nir1-graph/g04-scope-exact-unknown.v2.json with its frozen sha256 (SP-N8)
+      at assertObservationPrepFormal (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.mjs:4611:11)
+      at async TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:234:20)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:239:1
+✖ setup addendum: the K2/4 table row for G-01 and the fixture digests (45.007381ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:242:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:746:1
+✖ observation prep: D1, D10, sample plan, traces, procedure, diagnostics, placeholders (55.566355ms)
+  TypeError: Cannot set properties of undefined (setting 'commit')
+      at file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:103:41
+      at draftOf (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:116:46)
+      at draftPrep (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:129:10)
+      at async TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:748:16)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:874:1
+✖ S4 の最終関門の P3-3: contracts.k64.freezeCommit is the pinned constants.mjs K64_FREEZE.freezeCommit (58.671146ms)
+  TypeError: Cannot set properties of undefined (setting 'commit')
+      at file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:103:41
+      at draftOf (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:116:46)
+      at draftPrep (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:129:10)
+      at async frozenRecord (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:818:16)
+      at async TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:882:32)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:954:1
+✖ observation prep frozen: every placeholder filled, commits 40-hex, digests match the files (56.919045ms)
+  TypeError: Cannot set properties of undefined (setting 'commit')
+      at file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:103:41
+      at draftOf (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:116:46)
+      at draftPrep (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:129:10)
+      at async frozenRecord (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:818:16)
+      at async TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:956:32)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:986:1
+✖ S3-P2-2: boundFiles is exactly the five files, and traces agree with it (590.109409ms)
+  TypeError: Cannot set properties of undefined (setting 'commit')
+      at file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:103:41
+      at draftOf (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:116:46)
+      at draftPrep (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:129:10)
+      at async frozenRecord (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:818:16)
+      at async TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:1002:32)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:1010:1
+✖ S3-P2-3: the frozen v1 procedure must be the reviewed draft-2 values (46.383781ms)
+  TypeError: Cannot set properties of undefined (setting 'commit')
+      at file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:103:41
+      at draftOf (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:116:46)
+      at draftPrep (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:129:10)
+      at async frozenRecord (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:818:16)
+      at async TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:1012:32)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:1042:1
+✖ S3-P2-4: the G-01 R and R+IR mode follows the DA-1 record (47.160993ms)
+  TypeError: Cannot set properties of undefined (setting 'commit')
+      at file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:103:41
+      at draftOf (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:116:46)
+      at draftPrep (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:129:10)
+      at async TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:1044:16)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:1386:1
+✖ integrator: the CP-4 candidate is decided in the S5 ledger, never an S4 placeholder (757.252681ms)
+  TypeError: Cannot set properties of undefined (setting 'commit')
+      at file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:103:41
+      at draftOf (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:116:46)
+      at draftPrep (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:129:10)
+      at async frozenRecord (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:818:16)
+      at async TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:1413:32)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:1418:1
+✖ S3v3-P3-1: a frozen record needs the SP/1 bytes in the repository and their commit (77.856576ms)
+  TypeError: Cannot set properties of undefined (setting 'commit')
+      at file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:103:41
+      at draftOf (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:116:46)
+      at draftPrep (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:129:10)
+      at async frozenRecord (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:818:16)
+      at async TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:1420:32)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:1451:1
+✖ integrator: the R5 check run is a narrow exception and the phases run R5 -> K6/4 freeze -> S4 -> Graph (780.855362ms)
+  TypeError: Cannot set properties of undefined (setting 'commit')
+      at file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:103:41
+      at draftOf (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:116:46)
+      at draftPrep (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:129:10)
+      at async frozenRecord (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:818:16)
+      at async TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:1491:32)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:1611:1
+✖ S2 追補 L-11: setupReadings fix the sessions, the variant sessions, the probe, the blocked names, the specs and the seal reopen (774.601691ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d',
+  +   'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)',
+  +   'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4',
+  +   'diagnosticRuns K24-G04-N1 must match its addendum row',
+  +   'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json',
+  +   'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:1614:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d', 'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)', 'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4', 'diagnosticRuns K24-G04-N1 must match its addendum row', 'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json', 'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:1923:1
+✖ S2 追補: reviewerQuestions carry P-4 and the open readings for S3, undecided in a draft and decided when frozen (797.995675ms)
+  TypeError: Cannot set properties of undefined (setting 'commit')
+      at file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:103:41
+      at draftOf (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:116:46)
+      at draftPrep (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:129:10)
+      at async frozenRecord (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:818:16)
+      at async TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:1960:32)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:2179:1
+✖ S2 追補 #2 P2-1: setupReadings pin master commits and copy L-24's closed set of reopen triggers, limits, blocked names and receipt fields (743.259042ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d',
+  +   'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)',
+  +   'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4',
+  +   'diagnosticRuns K24-G04-N1 must match its addendum row',
+  +   'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json',
+  +   'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:2182:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d', 'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)', 'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4', 'diagnosticRuns K24-G04-N1 must match its addendum row', 'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json', 'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:2483:1
+✖ S2 追補 #2 P3-3: a draft keeps exactly the S4 placeholder tokens (66.46987ms)
+  TypeError: Cannot set properties of undefined (setting 'commit')
+      at file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:103:41
+      at draftOf (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:116:46)
+      at draftPrep (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:129:10)
+      at async TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:2485:16)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:2631:1
+✖ S2 追補 #3: blockedCaseJudgement equals the pinned harness's BLOCKED_CONTRACT_TABLE row by row (757.853943ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d',
+  +   'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)',
+  +   'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4',
+  +   'diagnosticRuns K24-G04-N1 must match its addendum row',
+  +   'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json',
+  +   'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:2634:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d', 'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)', 'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4', 'diagnosticRuns K24-G04-N1 must match its addendum row', 'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json', 'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:3210:1
+✖ S2 追補 #4 (B): K24-G01-N2〜N4 read reached by the control and the sample, with the re-ask rule fixed to the harness constants (66.527769ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:3213:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:3850:1
+✖ S2 追補 #5 (P3-1): K24-G01-N4 makes its draft version as the harness does (saveSceneContent, then createRevision) (64.321069ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:3853:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:3889:1
+✖ S2 追補 #8（DR-CP4-Q-2）: ir-complete-pairs carries the pinned pair limit SP_P4_IR_TIMEOUT_PAIR_LIMIT (S3's 24-pair minimum) and its receipt fields (762.379778ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d',
+  +   'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)',
+  +   'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4',
+  +   'diagnosticRuns K24-G04-N1 must match its addendum row',
+  +   'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json',
+  +   'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:3892:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d', 'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)', 'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4', 'diagnosticRuns K24-G04-N1 must match its addendum row', 'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json', 'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:4139:1
+✖ S2 追補 #6 (P3-2): retry.rule and graphTries are the harness's re-ask disclosure (every try's counters and cached, the discarded takes' Scenes), never judged (91.86406ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:4142:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:4405:1
+✖ S2 追補 #7: the record's closureExclusions are the fixed shared CI and product files with reasons, none of them pinned (814.260444ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d',
+  +   'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)',
+  +   'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4',
+  +   'diagnosticRuns K24-G04-N1 must match its addendum row',
+  +   'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json',
+  +   'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:4408:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d', 'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)', 'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4', 'diagnosticRuns K24-G04-N1 must match its addendum row', 'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json', 'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:4549:1
+✖ S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge commit of claude/nir1-contracts, merge-commit PR, the integrator's formal gate on S4b, the entries' read against the freeze record) (854.822643ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d',
+  +   'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)',
+  +   'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4',
+  +   'diagnosticRuns K24-G04-N1 must match its addendum row',
+  +   'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json',
+  +   'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:4552:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d', 'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)', 'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4', 'diagnosticRuns K24-G04-N1 must match its addendum row', 'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json', 'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:4584:1
+✖ S2 追補 #10（DR-CP4-P-6）: traceRunnerReadings copy DR-CP4-V-2〜V-4 (TP-1〜TP-7), bind the trace runner to the four V-2〜V-4 pins and disclose editing's lapse (i), the rules chosen after the first trace and the observation before this freeze (860.439037ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d',
+  +   'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)',
+  +   'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4',
+  +   'diagnosticRuns K24-G04-N1 must match its addendum row',
+  +   'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json',
+  +   'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:4588:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d', 'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)', 'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4', 'diagnosticRuns K24-G04-N1 must match its addendum row', 'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json', 'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/quality/nir1-graph/observation-prep.test.mjs:4679:1
+✖ S2 追補 #9（DR-CP4-T-1、T-3、T-5）: freshnessSettle copies the pinned harness's waits (setup 60 s／250 ms with maintenance stillness, measurement 15 s／100 ms) and maps the measurement's exhaustion to the existing blocked rows (871.128597ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d',
+  +   'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)',
+  +   'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4',
+  +   'diagnosticRuns K24-G04-N1 must match its addendum row',
+  +   'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json',
+  +   'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/observation-prep.test.mjs:4683:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d', 'd1.runs must be the 6 K2/4 declaration runs (G-01/v1, G-02/base, G-04/base, G-07/base, G-08/base-usable, G-08/graph-recovered)', 'diagnosticRuns must be K24-G01-N1, K24-G01-N2, K24-G01-N3, K24-G01-N4, K24-G02-N1, K24-G04-N1, K24-G07-N1, K24-G08-N1, K62-iii, SP-P4', 'diagnosticRuns K24-G04-N1 must match its addendum row', 'boundFiles must be exactly evals/nir1-g01/setup-addendum.v1.json, evals/nir1-graph/declaration-addendum.v2.json, evals/nir1-graph/trace-editing.v1.json, evals/nir1-graph/trace-browsing.v1.json, evals/nir1-graph/observation-prep-author-declaration.v1.json, evals/nir1-graph/seed-pin-addendum.v1.json', 'boundFiles[1].path evals/nir1-graph/declaration-addendum.v1.json is not an observation-prep file' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/quality/nir1-graph/seed-pin-addendum.test.mjs:34:1
+✖ the committed seed pin addendum validates (59.146415ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d (SP-N8)',
+  +   'references.fixtures.G-04 must be evals/nir1-graph/g04-scope-exact-unknown.v2.json with its frozen sha256 (SP-N8)'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/seed-pin-addendum.test.mjs:36:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d (SP-N8)', 'references.fixtures.G-04 must be evals/nir1-graph/g04-scope-exact-unknown.v2.json with its frozen sha256 (SP-N8)' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/quality/nir1-graph/seed-pin-addendum.test.mjs:237:1
+✖ S3v2-P3-4: the SP/1 digest is recomputed when its bytes are in the repository (48.371337ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d (SP-N8)',
+  +   'references.fixtures.G-04 must be evals/nir1-graph/g04-scope-exact-unknown.v2.json with its frozen sha256 (SP-N8)'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/seed-pin-addendum.test.mjs:244:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d (SP-N8)', 'references.fixtures.G-04 must be evals/nir1-graph/g04-scope-exact-unknown.v2.json with its frozen sha256 (SP-N8)' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/quality/nir1-graph/seed-pin-addendum.test.mjs:260:1
+✖ S3v3-P3-1: a frozen seed pin addendum needs the SP/1 bytes in the repository (49.019552ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + [
+  +   'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d (SP-N8)',
+  +   'references.fixtures.G-04 must be evals/nir1-graph/g04-scope-exact-unknown.v2.json with its frozen sha256 (SP-N8)'
+  + ]
+  - []
+  
+      at TestContext.<anonymous> (file:///home/grimodex/worktrees/Grimodex/claude-g04-v2c/scripts/quality/nir1-graph/seed-pin-addendum.test.mjs:270:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d (SP-N8)', 'references.fixtures.G-04 must be evals/nir1-graph/g04-scope-exact-unknown.v2.json with its frozen sha256 (SP-N8)' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

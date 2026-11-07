@@ -57,7 +57,7 @@ test("K6/4 の定数は契約の値を 1 か所に持つ（判断 2〜4、技術
   assert.equal(K64_T_LATE_MS, 100);
   assert.equal(K64_T_SHOW_MS, 2_000);
   assert.equal(K64_R1_R4_WAIT_CEILING_MS, 10_000);
-  assert.equal(GRAPH_EVAL_D_MS, 10.84);
+  assert.equal(GRAPH_EVAL_D_MS, 40);
   assert.equal(
     K64_FREEZE.sha256,
     "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3",
@@ -127,6 +127,23 @@ test("K6/4-P2: 親が D の窓内に worker の結果を受けたら first-rende
   assert.equal(result.displayed, true);
   assert.equal(result.display, "first-render");
   assert.deepEqual(result.displayedSceneIds, ["dev-a", "dev-b", "dev-added"]);
+});
+
+test("K6/5-P1: D=40 ms の窓内（Raw-ready の後 10.84 ms を超え 40 ms 以内）に親が Graph を受けた sample は first-render の窓内で、子は出ない", () => {
+  for (const arrivedAt of [100 + 11, 100 + 25, 100 + GRAPH_EVAL_D_MS]) {
+    const result = steady({
+      ...sample({ graph: { arrivedAt }, followUp: undefined }),
+      followUp: {
+        ...k64Sample().followUp,
+        child: null,
+        notices: [],
+        parent: { ...k64Sample().followUp.parent, declaration: "used" },
+      },
+    });
+    assert.equal(result.firstRender, true, String(arrivedAt));
+    assert.equal(result.display, "first-render");
+    assert.deepEqual(result.violations, []);
+  }
 });
 
 // ---- Negative（どれも成功に数えず、分母から除かない） -------------------------
@@ -515,12 +532,31 @@ test("K6/4-N29: W_f の後に届いた子の Graph が子の表示に混ざっ�
 
 test("K6/4-N30: 合流の窓の値が W_f と違う、子の IR の deadline が D より長い、W_f が親に当たった候補は批准 12 の違反", () => {
   const childWindow = steady(
-    k64Sample({}, { child: { graphWindowMs: 10.840000000596048 } }),
+    k64Sample({}, { child: { graphWindowMs: GRAPH_EVAL_D_MS } }),
   );
   assert.ok(childWindow.ratification12.includes("child-window-not-w-f"));
   assert.equal(childWindow.followUp, false);
-  const parentWf = steady(k64Sample({}, { parent: { graphWindowMs: 100 } }));
-  assert.ok(parentWf.ratification12.includes("parent-window-not-d"));
+  // K6/5 変える点 6（K6/5-N2）: 親の窓が D でない sample と、窓の値が無い（null）
+  // sample は、批准 12 の違反（K6/2 に戻す）ではなく [precheck]。
+  // D は固定値の 40 ms で、一致は厳密（境界の許容幅 0.01 ms の内でも [precheck]）。
+  for (const graphWindowMs of [
+    100,
+    10.84,
+    null,
+    GRAPH_EVAL_D_MS + 0.005,
+    GRAPH_EVAL_D_MS - 0.005,
+    GRAPH_EVAL_D_MS + 1e-9,
+  ])
+    assert.throws(
+      () => steady(k64Sample({}, { parent: { graphWindowMs } })),
+      /\[precheck\] K6\/5 変える点 6/,
+      String(graphWindowMs),
+    );
+  assert.deepEqual(
+    steady(k64Sample({}, { parent: { graphWindowMs: GRAPH_EVAL_D_MS } }))
+      .ratification12,
+    [],
+  );
   const irDeadline = steady(
     k64Sample({}, { child: { irArrivedAt: 125 + GRAPH_EVAL_D_MS + 1 } }),
   );
@@ -1057,7 +1093,7 @@ test("K6/4-N31: 批准 5 の (a)〜(c) のどれかを欠く候補には緩和�
   const window = summarizeK64(
     k64Run((variant, repeat) =>
       variant.key === "G-06/base" && repeat === 2
-        ? [{}, { child: { graphWindowMs: 10.840000000596048 } }]
+        ? [{}, { child: { graphWindowMs: GRAPH_EVAL_D_MS } }]
         : [{}, {}],
     ),
   );

@@ -36,10 +36,13 @@ import {
 import {
   G01_FIXTURE,
   GRAPH_CASE_FREEZE,
+  GRAPH_EVAL_D_MS,
   GRAPH_EVAL_VARIANTS,
   K62_FREEZE,
   K64_CANDIDATE_REQUIREMENTS,
   K64_FREEZE,
+  K65_CANDIDATE_REQUIREMENTS,
+  K65_FREEZE,
   OBSERVATION_PREP_RECORD_PATH,
   OBSERVATION_PREP_RECORD_SCHEMA,
 } from "./constants.mjs";
@@ -163,7 +166,7 @@ export function followUpRecord({ parent = {}, child = {}, ...rest } = {}) {
       tPub: 110.84,
       declaration: "unused",
       graphContinueAnswer: "cancelled",
-      graphWindowMs: 10.840000000596048,
+      graphWindowMs: GRAPH_EVAL_D_MS,
       refreshTrigger: null,
       publishCount: 1,
       lateGraphInDisplay: false,
@@ -420,7 +423,7 @@ export function formalProcedure() {
       stdio: ["ignore", "pipe", "pipe"],
     });
   run("init", "-q", "-b", "main");
-  const file = procedureFilePath("v1");
+  const file = procedureFilePath("v2");
   mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
   const draft = JSON.parse(
     readFileSync(
@@ -433,7 +436,7 @@ export function formalProcedure() {
     `${JSON.stringify(
       {
         ...draft,
-        version: "v1",
+        version: "v2",
         draft: false,
         values: { ...draft.values, r1r4WaitMs: 3_000 },
         review: {
@@ -450,7 +453,7 @@ export function formalProcedure() {
   run("commit", "-q", "--no-gpg-sign", "-m", "procedure v1");
   formalProcedureLoaded = loadProcedureFile({
     root: repo,
-    version: "v1",
+    version: "v2",
     commit: "HEAD",
     purpose: "formal",
   });
@@ -485,6 +488,15 @@ export function ratification5(overrides = null) {
     wfWindow: {
       commit: K64_CANDIDATE_REQUIREMENTS.wfWindowCommit,
       ancestor: true,
+    },
+    dForty: {
+      commit: K65_CANDIDATE_REQUIREMENTS.dFortyCommit,
+      ancestor: true,
+      config: {
+        path: K65_CANDIDATE_REQUIREMENTS.configPath,
+        constant: K65_CANDIDATE_REQUIREMENTS.waitConstant,
+        waitMs: K65_CANDIDATE_REQUIREMENTS.waitMs,
+      },
     },
   });
   if (overrides === null) return sealedForTests;
@@ -639,7 +651,7 @@ export function k64FetchResult(overrides = {}) {
       tRawReadyMs: 100,
       tReturnMs: 110.9,
       refreshTrigger: null,
-      graphWindowMs: 10.840000000596048,
+      graphWindowMs: GRAPH_EVAL_D_MS,
       native: { rawReadyElapsedMs: 40, firstSnapshotElapsedMs: 5 },
       ...timing,
     },
@@ -1932,6 +1944,7 @@ export const S4_REHEARSAL_FILES = Object.freeze({
 /** The declared Scene of G-02 base in the rehearsal's declaration addendum. */
 export const S4_REHEARSAL_G02_DECLARED = "g02-tamsin-first";
 const S4_REHEARSAL_K64_TEXT = "K6/4 frozen text (rehearsal)\n";
+const S4_REHEARSAL_K65_TEXT = "K6/5 frozen text (rehearsal)\n";
 
 function rehearsalProcedureText() {
   const base = JSON.parse(
@@ -1943,7 +1956,7 @@ function rehearsalProcedureText() {
   return `${JSON.stringify(
     {
       ...base,
-      version: "v1",
+      version: "v2",
       draft: false,
       values: { ...base.values, r1r4WaitMs: 3_000 },
       review: {
@@ -1995,6 +2008,7 @@ export function s4RehearsalRepository({
   for (const file of [GRAPH_CASE_FREEZE.path, G01_FIXTURE.path])
     put(file, readFileSync(path.join(REPO_ROOT, file)));
   put(K64_FREEZE.path, S4_REHEARSAL_K64_TEXT);
+  put(K65_FREEZE.path, S4_REHEARSAL_K65_TEXT);
   const base = commit("① frozen material");
   const F = S4_REHEARSAL_FILES;
   const frozenBytes = {
@@ -2015,7 +2029,7 @@ export function s4RehearsalRepository({
     [F.seedPinAddendum]: `${JSON.stringify({ rehearsal: "seed-pin" })}\n`,
   };
   for (const [file, bytes] of Object.entries(frozenBytes)) put(file, bytes);
-  put(procedureFilePath("v1"), rehearsalProcedureText());
+  put(procedureFilePath("v2"), rehearsalProcedureText());
   const s4a = commit("S4a: the frozen bytes");
   const digests = Object.fromEntries(
     Object.entries(frozenBytes).map(([file, bytes]) => [file, sha(bytes)]),
@@ -2089,6 +2103,11 @@ export function s4RehearsalRepository({
     k64Freeze: {
       ...K64_FREEZE,
       sha256: sha(S4_REHEARSAL_K64_TEXT),
+      freezeCommit: base,
+    },
+    k65Freeze: {
+      ...K65_FREEZE,
+      sha256: sha(S4_REHEARSAL_K65_TEXT),
       freezeCommit: base,
     },
     cleanup: () => rmSync(repo, { recursive: true, force: true }),

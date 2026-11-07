@@ -5,8 +5,11 @@ import path from "node:path";
 import { test } from "node:test";
 import { loadDevFixture } from "./dev-fixture.mjs";
 import {
+  G01_RESULT_SCHEMA,
+  G01_VARIANT_KEY,
   MODES,
   STAGES,
+  g01DiagnosticRecord,
   judgeNotActivated,
   judgeReach,
   parseArgs,
@@ -209,4 +212,104 @@ test("used settle is reached only when its answer is settled", () => {
   // slot empty は used settle の根拠にならない。
   assert.equal(judge([]).reached["slot-empty"], true);
   assert.equal(judge(REACHED_SETTLES).allReached, true);
+});
+
+const g01Base = [
+  "--run",
+  "x1",
+  "--mode",
+  "g01-frozen",
+  "--setups",
+  "s.json",
+  "--ja-model",
+  "ja",
+  "--en-model",
+  "en",
+];
+
+test("g01-frozen takes the frozen setups, never a dev setup, and never the product .node", () => {
+  assert.ok(MODES.includes("g01-frozen"));
+  assert.equal(G01_VARIANT_KEY, "G-01/v1");
+  assert.equal(parseArgs(g01Base).setups, "s.json");
+  assert.throws(
+    () => parseArgs(g01Base.filter((_, at) => at !== 4 && at !== 5)),
+    /--setups is required/u,
+  );
+  assert.throws(
+    () => parseArgs([...g01Base, "--setup", "s.json"]),
+    /g01-frozen takes --setups/u,
+  );
+  assert.throws(
+    () => parseArgs([...g01Base, "--product-native", "/p/x.node"]),
+    /--product-native is for --mode not-activated/u,
+  );
+  // The dev modes keep their own setup receipt and refuse the frozen one.
+  assert.throws(
+    () => parseArgs([...base, "--setups", "s.json"]),
+    /--setups is for --mode g01-frozen only/u,
+  );
+});
+
+const ADMISSION = Object.freeze({
+  purpose: "g01-e2e-diagnostic",
+  fixturePath: "evals/nir1-g01/fixture.v1.json",
+  fixtureSha256: "a".repeat(64),
+  countsInCaseJudgement: false,
+  session: "separate-diagnostic",
+});
+
+test("the G-01 record counts for no judgement, whatever the reach, and shows the lease path", () => {
+  const reached = judgeReach({
+    page: REACHED_PAGE,
+    native: REACHED_NATIVE,
+    settledSlot: "empty",
+    settles: REACHED_SETTLES,
+  });
+  const yes = g01DiagnosticRecord({ judgement: reached, admission: ADMISSION });
+  assert.equal(yes.countsInCaseJudgement, false);
+  assert.equal(yes.reachedEndToEnd, true);
+  assert.equal(yes.firstMissing, null);
+  assert.deepEqual(yes.leaseEvidence, {
+    continueAvailableGraphOnly: true,
+    clickKeepClick: true,
+    requeryCached: true,
+    requeryContinueAvailable: true,
+    usedSettle: true,
+  });
+  assert.equal(yes.purpose, "g01-e2e-diagnostic");
+  assert.equal(yes.session, "separate-diagnostic");
+  // The G-01 receipt's shape: Graph-only row exists but continue is cancelled.
+  const cancelled = g01DiagnosticRecord({
+    judgement: judgeReach({
+      page: {
+        ...REACHED_PAGE,
+        graph: { status: "unavailable", reason: "cancelled" },
+        click: undefined,
+        settle: undefined,
+        graphReady: undefined,
+        requery: undefined,
+      },
+      native: [REACHED_NATIVE[0]],
+      settledSlot: "empty",
+      settles: [],
+    }),
+    admission: ADMISSION,
+  });
+  assert.equal(cancelled.countsInCaseJudgement, false);
+  assert.equal(cancelled.reachedEndToEnd, false);
+  assert.equal(cancelled.firstMissing, "continue-available-graph-only");
+  assert.equal(cancelled.leaseEvidence.clickKeepClick, false);
+  assert.equal(cancelled.leaseEvidence.usedSettle, false);
+  // No judgement at all (the run stopped early) is not a reach either.
+  const none = g01DiagnosticRecord({ admission: ADMISSION });
+  assert.equal(none.reachedEndToEnd, false);
+  assert.equal(none.firstMissing, "no-judgement");
+  assert.equal(none.countsInCaseJudgement, false);
+  assert.equal(g01DiagnosticRecord({}).countsInCaseJudgement, false);
+  // Numbers, flags and digests only: no row text or identifier.
+  assert.doesNotMatch(
+    JSON.stringify(yes),
+    /g01-(review|weather|mira|question|orin)|sceneId|entityId|"body"/u,
+  );
+  assert.match(G01_RESULT_SCHEMA, /^nir1-pubg-16-g01-e2e\/1$/u);
 });

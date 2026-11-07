@@ -3,14 +3,18 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { test } from "node:test";
 import {
+  GRAPH_EVAL_B_MS,
   GRAPH_EVAL_D_MS,
+  GRAPH_EVAL_HYBRID_P95_LIMIT_MS,
   K64_FREEZE,
+  K65_FREEZE,
   K64_R1_R4_WAIT_CEILING_MS,
   K64_T_LATE_MS,
   K64_T_SHOW_MS,
@@ -45,19 +49,21 @@ function git(cwd, ...args) {
   }).trim();
 }
 
-/** A reviewed (non-draft) procedure file of version `v1`. */
+/** A reviewed (non-draft) procedure file of version `v2`. */
 function formal(overrides = {}) {
   return {
     schema: PROCEDURE_SCHEMA,
-    version: "v1",
+    version: "v2",
     draft: false,
     contract: {
-      draftRef: K64_FREEZE.draftRef,
-      contractId: K64_FREEZE.contractId,
-      sha256: K64_FREEZE.sha256,
+      draftRef: K65_FREEZE.draftRef,
+      contractId: K65_FREEZE.contractId,
+      sha256: K65_FREEZE.sha256,
     },
     values: {
       dMs: GRAPH_EVAL_D_MS,
+      bMs: GRAPH_EVAL_B_MS,
+      hybridP95LimitMs: GRAPH_EVAL_HYBRID_P95_LIMIT_MS,
       wFMs: K64_W_F_MS,
       tLateMs: K64_T_LATE_MS,
       tShowMs: K64_T_SHOW_MS,
@@ -95,10 +101,10 @@ async function repositoryWith(files) {
 }
 
 test("手順のファイル: 正式の版は値が constants と一致し、レビューの記録を持てば通る", () => {
-  assert.deepEqual(procedureFileErrors(formal(), { version: "v1" }), []);
+  assert.deepEqual(procedureFileErrors(formal(), { version: "v2" }), []);
   assert.equal(
-    procedureFilePath("v1"),
-    "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json",
+    procedureFilePath("v2"),
+    "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v2.json",
   );
   for (const bad of ["", "v0", "1", "draft", "v1/../x", "V1", "draft-0"])
     assert.throws(() => procedureFilePath(bad), /\[precheck\]/, bad);
@@ -128,6 +134,14 @@ test("手順のファイル: 契約の値と違う値は、広げる・狭める
     ["tLateMs", 120],
     ["tShowMs", 2_500],
     ["dMs", 11],
+    // K6/5-N1: K6/4 の D（10.84 ms）の手順のファイルは /5 の判定に使えない。
+    ["dMs", 10.84],
+    // K6/5-N4: B と Hybrid p95 の上限は契約の値だけ（P の 65.04 ms、D から
+    // 逆算した 200 ms／240 ms を拒む）。
+    ["bMs", 200],
+    ["bMs", 10.84 / 0.2],
+    ["hybridP95LimitMs", 65.04],
+    ["hybridP95LimitMs", 240],
   ])
     assert.match(
       errorsOf(formal({ values: { ...formal().values, [key]: value } })),
@@ -176,8 +190,8 @@ test("手順のファイル: F1〜F7 と X1〜X13 は契約の一覧そのもの
 });
 
 test("手順のファイル: 版の食い違い、契約の bytes の違い、draft とレビューの組合せを拒む", () => {
-  assert.match(errorsOf(formal(), "v2"), /version/);
-  assert.match(errorsOf(formal({ version: "v2" }), "v1"), /version/);
+  assert.match(errorsOf(formal(), "v3"), /version/);
+  assert.match(errorsOf(formal({ version: "v3" }), "v2"), /version/);
   assert.match(errorsOf(formal({ schema: "x/1" })), /schema/);
   assert.match(
     errorsOf(
@@ -257,25 +271,25 @@ test("手順のファイル: 正式の版は commit から読み、draft の版�
     ...formal({ version: "draft-2", draft: true, review: null }),
   };
   const { repo, head } = await repositoryWith({
-    [procedureFilePath("v1")]: value,
+    [procedureFilePath("v2")]: value,
     [procedureFilePath("draft-2")]: draft,
-    [procedureFilePath("v3")]: formal({ version: "v1" }),
+    [procedureFilePath("v4")]: formal({ version: "v2" }),
   });
   try {
     assert.throws(
-      () => loadProcedureFile({ root: repo, version: "v1", purpose: "formal" }),
+      () => loadProcedureFile({ root: repo, version: "v2", purpose: "formal" }),
       /commit/,
     );
     const loaded = loadProcedureFile({
       root: repo,
-      version: "v1",
+      version: "v2",
       commit: "HEAD",
       purpose: "formal",
     });
     assert.equal(loaded.commit, head);
     const bytes = execFileSync(
       "git",
-      ["show", `${head}:${procedureFilePath("v1")}`],
+      ["show", `${head}:${procedureFilePath("v2")}`],
       {
         cwd: repo,
       },
@@ -285,15 +299,18 @@ test("手順のファイル: 正式の版は commit から読み、draft の版�
       createHash("sha256").update(bytes).digest("hex"),
     );
     assert.deepEqual(procedureSettings(loaded), {
+      dMs: GRAPH_EVAL_D_MS,
+      bMs: GRAPH_EVAL_B_MS,
+      hybridP95LimitMs: GRAPH_EVAL_HYBRID_P95_LIMIT_MS,
       wFMs: K64_W_F_MS,
       tLateMs: K64_T_LATE_MS,
       tShowMs: K64_T_SHOW_MS,
       r1r4WaitMs: 5_000,
       procedureFile: {
-        path: procedureFilePath("v1"),
+        path: procedureFilePath("v2"),
         commit: head,
         sha256: loaded.sha256,
-        version: "v1",
+        version: "v2",
         draft: false,
       },
     });
@@ -312,7 +329,7 @@ test("手順のファイル: 正式の版は commit から読み、draft の版�
       () =>
         loadProcedureFile({
           root: repo,
-          version: "v3",
+          version: "v4",
           commit: head,
           purpose: "formal",
         }),
@@ -332,4 +349,85 @@ test("手順のファイル: 正式の版は commit から読み、draft の版�
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
+});
+
+test("K6/5: 手順のファイルは /5 の契約（draftRef・SHA-256）と schema /2 を要し、K6/4 の file（schema /1）は読まない", () => {
+  assert.equal(K65_FREEZE.draftRef, "nir1-final-request-eval-proposal/5");
+  assert.equal(GRAPH_EVAL_D_MS, 40);
+  assert.equal(GRAPH_EVAL_B_MS, 54.2);
+  assert.equal(GRAPH_EVAL_HYBRID_P95_LIMIT_MS, 94.2);
+  assert.equal(K64_T_LATE_MS, 100);
+  // K6/5-N1: K6/4 の契約を名乗る file は拒む。
+  assert.match(
+    errorsOf(
+      formal({
+        contract: {
+          draftRef: "nir1-final-request-eval-proposal/4",
+          contractId: "graph-eval-procedure",
+          sha256: K64_FREEZE.sha256,
+        },
+      }),
+    ),
+    /contract\.draftRef must be K6\/5's/,
+  );
+  assert.match(
+    errorsOf(formal({ schema: "nir1-cp4-k64-procedure/1" })),
+    /schema must be nir1-cp4-k64-procedure\/2/,
+  );
+  // v1・draft-1・draft-2 は schema /1 の履歴の file で、loader は読まない。
+  for (const version of ["v1", "draft-1", "draft-2"])
+    assert.throws(
+      () =>
+        loadProcedureFile({
+          root: REPO_ROOT,
+          version,
+          purpose: "dev-preview",
+        }),
+      /schema must be nir1-cp4-k64-procedure\/2/,
+      version,
+    );
+});
+
+test("K6/5: レビューが placeholder の v<N> は読まない（S3 の記録の前に正式の run を始めさせない）", () => {
+  for (const key of ["reviewer", "record"])
+    assert.match(
+      errorsOf(
+        formal({
+          review: { ...formal().review, [key]: "S3 待ち（placeholder）" },
+        }),
+      ),
+      /still a placeholder/,
+      key,
+    );
+});
+
+test("K6/5: k64-procedure.v2.json は draft-3 と版・draft・review だけが違い、draft-3 は dev で読める", () => {
+  const read = (version) =>
+    JSON.parse(
+      readFileSync(path.join(REPO_ROOT, procedureFilePath(version)), "utf8"),
+    );
+  const draft = read("draft-3");
+  const v2 = read("v2");
+  assert.deepEqual(
+    { ...v2, version: draft.version, draft: draft.draft, review: draft.review },
+    draft,
+  );
+  assert.equal(draft.draft, true);
+  assert.equal(v2.draft, false);
+  assert.deepEqual(draft.values, {
+    dMs: 40,
+    bMs: 54.2,
+    hybridP95LimitMs: 94.2,
+    wFMs: 100,
+    tLateMs: 100,
+    tShowMs: 2000,
+    r1r4WaitMs: 10000,
+  });
+  assert.equal(DEV_DRAFT_PROCEDURE_VERSION, "draft-3");
+  assert.deepEqual(procedureFileErrors(draft, { version: "draft-3" }), []);
+  // v2 の review は S3 の 8 回目の記録（S2 追補 #15 の後）で、loader が読める。
+  assert.deepEqual(procedureFileErrors(v2, { version: "v2" }), []);
+  assert.match(v2.review.record, /s3-review-8-k65-observation-prep\.md/u);
+  assert.match(v2.review.record, /SHA-256 [0-9a-f]{64}/u);
+  assert.doesNotMatch(JSON.stringify(v2.review), /placeholder/iu);
 });

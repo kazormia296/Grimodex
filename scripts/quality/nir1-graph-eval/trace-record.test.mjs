@@ -2289,6 +2289,14 @@ test("DR-CP4-V-4: 除いた再 query の 2 回の公開は N32、遅れた Graph
   };
   own.observation.commits.find((row) => row.fetchSeq === 16).display =
     graphDisplay("own");
+  // K6/5: 窓 D は 40 ms。再 query の Raw-ready（B + 75）の後 45 ms に届いた
+  // Graph は窓の後（K6/4 の 10.84 ms の下の 14 ms の遅れは窓の内になった）。
+  const ownGraph = own.observation.api.find(
+    (row) =>
+      row.cmd === "related_scenes_graph_continue" &&
+      row.calledAt === 31_000 + 75.2,
+  );
+  ownGraph.resolvedAt = 31_000 + 75 + 45;
   const ownRows = rowsOf(own, n, pollRuns(own.events, 9_000, 610_000, 1), {
     plan: longPlan,
     materialContribution: STUB_RESOLVER,
@@ -2766,6 +2774,10 @@ test("DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違
     "IR の理由が unsupported-query": { irReason: "unsupported-query" },
     "IR の理由が capacity": { irReason: "capacity" },
     "IR が unavailable でない": { irStatus: "available", irReason: null },
+    // S2 追補 #15（S3 の M2）: irStatus だけが違う（理由は index-unavailable のまま）。
+    // irStatus の条件だけを外した変異がこの行で落ちる（検出力の記録）。
+    "irStatus だけが unavailable でない": { irStatus: "available" },
+    "irStatus が無い": { irStatus: undefined },
     "querySupported が false": {
       initialSnapshot: { indexUsable: false, querySupported: false },
     },

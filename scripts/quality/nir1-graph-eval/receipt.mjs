@@ -22,6 +22,9 @@ import {
   D2A_MODES,
   FROZEN_FIXTURE_SHA256,
   FROZEN_MATERIAL_SHA256,
+  GRAPH_EVAL_B_MS,
+  GRAPH_EVAL_D_MS,
+  GRAPH_EVAL_HYBRID_P95_LIMIT_MS,
   K62_FREEZE,
   K64_FREEZE,
   K64_HOOK_CONSUMER_RUNNER,
@@ -29,6 +32,7 @@ import {
   K64_T_LATE_MS,
   K64_T_SHOW_MS,
   K64_W_F_MS,
+  K65_FREEZE,
   WINDOW_SAMPLE_INTERVAL_MS,
   devVariant,
   variantByKey,
@@ -403,12 +407,18 @@ export function assertElectronLaunch({ env, argv = [], xvfbDisplay, netns }) {
  * a descriptor whose freezeCommit is null refuses it (fail closed). `freeze`
  * defaults to K64_FREEZE; only the tests pass another descriptor
  * (DR-CP4-T14-1).
+ *
+ * K6/5 変える点 7 / K6/5-N3: the /5 row stands on the /4 bytes, so a formal
+ * Graph receipt's head also carries the K6/5 freeze commit and bytes
+ * (`head.k65`, the pinned K65_FREEZE). A receipt without it, or one started
+ * before the /5 freeze, is refused; `freeze65` is for the tests only.
  */
 export function receiptHeadErrors(
   head,
   runKind,
   fixtureKind,
   freeze = K64_FREEZE,
+  freeze65 = K65_FREEZE,
 ) {
   const errors = [];
   if (head?.k62?.freezeCommit !== K62_FREEZE.commit)
@@ -428,6 +438,21 @@ export function receiptHeadErrors(
       else if (head?.k64?.freezeCommit !== freeze.freezeCommit)
         errors.push(
           "head.k64.freezeCommit must be the pinned K6/4 freeze commit",
+        );
+    }
+  }
+  if (formalGraph || head?.k65 !== undefined) {
+    if (head?.k65?.sha256 !== freeze65.sha256)
+      errors.push("head.k65.sha256 must be the K6/5 bytes (K6/5-N3)");
+    commitErrors(errors, head?.k65?.freezeCommit, "head.k65.freezeCommit");
+    if (formalGraph) {
+      if (freeze65.freezeCommit === null)
+        errors.push(
+          "[precheck] the K6/5 freeze commit is not pinned (変える点 7); a formal Graph receipt is refused",
+        );
+      else if (head?.k65?.freezeCommit !== freeze65.freezeCommit)
+        errors.push(
+          "head.k65.freezeCommit must be the pinned K6/5 freeze commit (K6/5-N3)",
         );
     }
   }
@@ -684,6 +709,17 @@ function k64SettingsErrors(errors, value, bound = {}) {
     errors.push(
       `N17: settings.k64 must carry W_f ${K64_W_F_MS} ms, T_late ${K64_T_LATE_MS} ms and T_show ${K64_T_SHOW_MS} ms as frozen (narrowing needs a new procedure-file version and review, widening a new draftRef; neither is supported here)`,
     );
+  // K6/5-N1・N4 (変える点 1・4): D, B and the Hybrid p95 limit are the
+  // contract's in the record itself, whatever the procedure file says.
+  for (const [key, expected] of [
+    ["dMs", GRAPH_EVAL_D_MS],
+    ["bMs", GRAPH_EVAL_B_MS],
+    ["hybridP95LimitMs", GRAPH_EVAL_HYBRID_P95_LIMIT_MS],
+  ])
+    if (value?.[key] !== expected)
+      errors.push(
+        `K6/5-N1/N4: settings.k64.${key} must be the contract's ${expected} (D=${GRAPH_EVAL_D_MS} ms, B=${GRAPH_EVAL_B_MS} ms, Hybrid p95 limit ${GRAPH_EVAL_HYBRID_P95_LIMIT_MS} ms; the /5 row is not judged with another value)`,
+      );
   if (
     !Number.isInteger(value?.r1r4WaitMs) ||
     value.r1r4WaitMs <= 0 ||

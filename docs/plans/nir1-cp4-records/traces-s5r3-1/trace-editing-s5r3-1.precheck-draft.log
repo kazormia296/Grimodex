@@ -1,0 +1,14 @@
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: server already running
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: server already running
+The XKEYBOARD keymap compiler (xkbcomp) reports:
+> Warning:          Multiple symbols for level 1/group 1 on key <FK23>
+>                   Using F23, ignoring XF86TouchpadOff
+> Warning:          Symbol map for key <FK23> redefined
+>                   Using last definition for conflicting fields
+> Warning:          Symbol map for key <FK24> redefined
+>                   Using last definition for conflicting fields
+Errors from xkbcomp are not fatal to the X server
+{"run":"trace-editing-s5r3-1","stopped":true,"problems":["Error: [precheck] scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-1.json is a draft; a formal run needs a reviewed v<N> version |     at loadProcedureFile (file:///home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/scripts/quality/nir1-graph-eval/procedure-file.mjs:265:11) |     at prepareFrozenTrace (file:///home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/scripts/quality/nir1-graph-eval/trace-frozen.mjs:521:21)"]}
+exit=1

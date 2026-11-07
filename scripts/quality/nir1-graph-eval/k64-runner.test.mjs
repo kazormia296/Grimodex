@@ -353,7 +353,7 @@ test("receipt: dev の予告は hook の消費者の runner の receipt で、�
   assert.equal(receipt.runnerKind, "k64-hook-consumer");
   assert.equal(receipt.preview, true);
   assert.equal(receipt.verdict.outcome, "preview-only");
-  assert.equal(receipt.settings.k64.procedureFile.version, "draft-1");
+  assert.equal(receipt.settings.k64.procedureFile.version, "draft-3");
   assert.equal(receipt.aggregates.steadyStateCase.k64.followUp, 30);
   assert.equal(receipt.k64Preview.steadyState.regime, "k64");
   assert.equal(receipt.k64Preview.steadyState.k64.display.followUp, 30);

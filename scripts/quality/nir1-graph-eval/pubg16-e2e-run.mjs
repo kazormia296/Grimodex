@@ -13,6 +13,15 @@
 //   --mode reach（既定）：評価 build の実 Native（gate が開く）で到達を見る。
 //   --mode not-activated：評価 feature の無い製品の Native（gate は閉じたまま）で、
 //     seed つきの begin が `not-activated` になることを見る（DR-CP3A-58）。
+//   --mode g01-frozen：G-01 の凍結素材（`evals/nir1-g01/fixture.v1.json`）の
+//     end-to-end（DR-PUBG-16-2、決定 (C) の後続）。CP-4 の次の正式の run に組み込む
+//     「診断の run」で、判定に数えない（`countsInCaseJudgement: false`）。合格基準は
+//     「lease 越しの end-to-end に到達したか」だけ。admission は
+//     `admitG01E2eDiagnostic`（G-01 の凍結素材だけ、`readAdmittedFixture` と正式の
+//     reader は受けない）。Gold・parity・negative の session に混ぜない：自分の Main と
+//     封印した cold DB の新しい写しで走る。workspace は写しなので、click
+//     （`keep_click`）が書くのはメモリだけ（DB に書かない）で、封印した setup にも
+//     正式の run の workspace にも行は残らない。
 //
 //   TMPDIR=<short scratch> node scripts/local-ci-xvfb.mjs node \
 //     scripts/quality/nir1-graph-eval/pubg16-e2e-run.mjs --run <name> \
@@ -21,15 +30,26 @@
 //     [--mode reach|not-activated] [--eval-build .artifacts/cp4/eval-build] \
 //     [--product-native <grimodex-node.node>]
 //
+//   g01-frozen は `--setup` の代わりに `--setups <variantKey → setup-complete の
+//   receipt の JSON>`（`frozen-k64-run.mjs` の `--setups` と同じ形。G-01/v1 だけを読む）:
+//   TMPDIR=<short scratch> node scripts/local-ci-xvfb.mjs node \
+//     scripts/quality/nir1-graph-eval/pubg16-e2e-run.mjs --run <name> \
+//     --mode g01-frozen --setups <setups.json> --ja-model <pinned> --en-model <pinned>
+//
 // 結果は `.artifacts/pubg-16/<run>.json`（status・reason・ms・到達の有無だけ。本文・
 // 識別子・query を含まない）。詳しい report は `.artifacts/cp4/<run>/` に残る。
 
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
-import { admitDevPreview } from "./admission.mjs";
+import {
+  admitDevPreview,
+  admitG01E2eDiagnostic,
+  readG01E2eDiagnosticFixture,
+} from "./admission.mjs";
 import {
   buildIndex,
   json,
@@ -39,15 +59,25 @@ import {
   waitQuiet,
 } from "./dprime-check.mjs";
 import { loadDevFixture } from "./dev-fixture.mjs";
+import { readSetups } from "./frozen-k64-run.mjs";
+import { loadFrozenSetupPlans } from "./frozen-setup-plan.mjs";
 import { ROOT, bundleObserver } from "./launcher.mjs";
 import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
 import { measurementSeamEnv } from "./run-sample.mjs";
 import { HARNESS_PAGE, sha256, startSession } from "./session.mjs";
-import { readIndexMetadata } from "./workspace-db.mjs";
+import {
+  readFreshnessFeed,
+  readIndexMetadata,
+  readQuerySceneSeedPins,
+  waitFreshnessSettled,
+} from "./workspace-db.mjs";
 
 export const RESULT_SCHEMA = "nir1-pubg-16-e2e/1";
+/** The G-01 diagnostic's result schema (DR-PUBG-16-2). */
+export const G01_RESULT_SCHEMA = "nir1-pubg-16-g01-e2e/1";
 export const RESULT_DIR = ".artifacts/pubg-16";
-export const MODES = Object.freeze(["reach", "not-activated"]);
+export const MODES = Object.freeze(["reach", "not-activated", "g01-frozen"]);
+export const G01_VARIANT_KEY = "G-01/v1";
 export const STAGES = Object.freeze([
   "begin-pending",
   "continue-available-graph-only",
@@ -60,6 +90,9 @@ export const STAGES = Object.freeze([
   "slot-empty",
 ]);
 const READY_WAIT_MS = 3_000;
+/** Hang guards of the harness (as frozen-k64-run.mjs; not K6/4 values). */
+const FRESHNESS_SETTLE_LIMIT_MS = 15_000;
+const FRESHNESS_SETTLE_INTERVAL_MS = 100;
 
 export function parseArgs(argv) {
   const options = {
@@ -73,13 +106,64 @@ export function parseArgs(argv) {
   }
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(options.run ?? ""))
     throw new Error("--run <name> is required");
-  for (const name of ["setup", "ja-model", "en-model"])
-    if (!options[name]) throw new Error(`--${name} is required`);
   if (!MODES.includes(options.mode))
     throw new Error(`--mode is one of ${MODES.join(", ")}`);
+  const frozen = options.mode === "g01-frozen";
+  // The G-01 diagnostic reads the frozen setup receipts (`--setups`), the dev
+  // modes one dev setup receipt (`--setup`); neither takes the other's.
+  for (const name of [frozen ? "setups" : "setup", "ja-model", "en-model"])
+    if (!options[name]) throw new Error(`--${name} is required`);
+  if (frozen && options.setup !== undefined)
+    throw new Error("--setup is a dev option; g01-frozen takes --setups");
+  if (!frozen && options.setups !== undefined)
+    throw new Error("--setups is for --mode g01-frozen only");
   if (options.mode === "not-activated" && !options["product-native"])
     throw new Error("--product-native <grimodex-node.node> is required");
+  if (frozen && options["product-native"] !== undefined)
+    throw new Error(
+      "--product-native is for --mode not-activated; the G-01 diagnostic launches the evaluation build",
+    );
   return options;
+}
+
+/**
+ * The G-01 diagnostic's record (DR-PUBG-16-2): the end-to-end reach and the
+ * lease path's evidence, never a case judgement. Pure (tested). The
+ * evidence is the stages the lease path runs through — continue (the lease
+ * answer with a Graph-only row), click (`keep_click`), the `used` settle
+ * after the cached re-begin — read from `judgeReach`'s `reached`.
+ */
+export function g01DiagnosticRecord({ judgement, admission }) {
+  const reached = judgement?.reached ?? {};
+  return {
+    diagnostic: "g01-e2e",
+    purpose: admission?.purpose ?? null,
+    fixturePath: admission?.fixturePath ?? null,
+    fixtureSha256: admission?.fixtureSha256 ?? null,
+    // The diagnostic never enters Gold, parity, a negative or any judgement.
+    countsInCaseJudgement: false,
+    session: admission?.session ?? null,
+    reachedEndToEnd: judgement?.allReached === true,
+    firstMissing: judgement ? judgement.firstMissing : "no-judgement",
+    leaseEvidence: {
+      continueAvailableGraphOnly:
+        reached["continue-available-graph-only"] === true,
+      clickKeepClick: reached["click-keep-click"] === true,
+      requeryCached: reached["requery-cached"] === true,
+      requeryContinueAvailable: reached["requery-continue-available"] === true,
+      usedSettle: reached["used-settle"] === true,
+    },
+  };
+}
+
+/** The candidate's commit and whether its worktree is clean (recorded only). */
+function candidateOf(root) {
+  const git = (args) =>
+    execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+  return {
+    commit: git(["rev-parse", "HEAD"]),
+    clean: git(["status", "--porcelain", "--untracked-files=all"]) === "",
+  };
 }
 
 /**
@@ -282,23 +366,78 @@ async function main() {
   const runDir = path.join(ROOT, ".artifacts/cp4", options.run);
   await mkdir(runDir, { recursive: false });
   await mkdir(path.join(ROOT, RESULT_DIR), { recursive: true });
-  const setup = JSON.parse(await readFile(path.resolve(options.setup)));
-  const loaded = loadDevFixture({
-    root: ROOT,
-    fixturePath: setup.fixture.path,
-  });
-  if (loaded.sha256 !== setup.fixture.sha256)
-    throw new Error("[precheck] the dev fixture changed since its setup");
-  const declaration = loaded.fixture.declarations?.[0] ?? null;
-  if (!declaration)
-    throw new Error("[precheck] the dev fixture declares no Scene");
-  const admission = admitDevPreview({
-    purpose: "dprime-check",
-    fixture: loaded,
-  });
-  const ids = setup.logicalToRuntime;
-  const seed = ids.entities[loaded.fixture.graphSeedEntityId];
-  const declaredSceneId = ids.scenes[declaration.sceneId];
+  const frozen = options.mode === "g01-frozen";
+  let admission;
+  let ids;
+  let seed;
+  let declaredSceneId;
+  let queryBody;
+  let fixtureSha256;
+  let coldDatabase;
+  let setupReceiptSha256 = null;
+  if (frozen) {
+    // DR-PUBG-16-2: G-01's frozen material, through the limited admission.
+    const fixtureRead = readG01E2eDiagnosticFixture({ root: ROOT });
+    admission = admitG01E2eDiagnostic({ fixture: fixtureRead });
+    const plan = loadFrozenSetupPlans({
+      root: ROOT,
+      stopsAt: "complete",
+    }).find((row) => row.variantKey === G01_VARIANT_KEY);
+    if (!plan || plan.fixtureSha256 !== fixtureRead.sha256)
+      throw new Error(
+        "[precheck] the G-01 plan is not the frozen G-01 fixture",
+      );
+    const setups = await readSetups({
+      file: options.setups,
+      plans: [plan],
+      dev: false,
+    });
+    const setup = setups.get(G01_VARIANT_KEY);
+    if (!setup || setup.blocked)
+      throw new Error(
+        `[precheck] no setup-complete receipt for ${G01_VARIANT_KEY}`,
+      );
+    const mapped = setup.value.logicalToRuntime;
+    ids = {
+      ...mapped,
+      querySceneId: mapped.scenes?.[mapped.querySceneId] ?? null,
+    };
+    if (ids.querySceneId === null)
+      throw new Error(
+        "[precheck] the setup receipt maps no runtime query Scene",
+      );
+    seed = ids.entities?.[plan.seedPin?.seedEntityId];
+    declaredSceneId = ids.scenes?.[plan.declaration?.sceneId];
+    if (!seed || !declaredSceneId)
+      throw new Error(
+        "[precheck] the setup receipt maps no seed entity or declaration Scene",
+      );
+    queryBody = fixtureRead.fixture.query.body;
+    fixtureSha256 = fixtureRead.sha256;
+    coldDatabase = setup.value.coldDatabase;
+    setupReceiptSha256 = setup.sha256;
+  } else {
+    const setup = JSON.parse(await readFile(path.resolve(options.setup)));
+    const loaded = loadDevFixture({
+      root: ROOT,
+      fixturePath: setup.fixture.path,
+    });
+    if (loaded.sha256 !== setup.fixture.sha256)
+      throw new Error("[precheck] the dev fixture changed since its setup");
+    const declaration = loaded.fixture.declarations?.[0] ?? null;
+    if (!declaration)
+      throw new Error("[precheck] the dev fixture declares no Scene");
+    admission = admitDevPreview({
+      purpose: "dprime-check",
+      fixture: loaded,
+    });
+    ids = setup.logicalToRuntime;
+    seed = ids.entities[loaded.fixture.graphSeedEntityId];
+    declaredSceneId = ids.scenes[declaration.sceneId];
+    queryBody = loaded.fixture.query.body;
+    fixtureSha256 = loaded.sha256;
+    coldDatabase = setup.coldDatabase;
+  }
   const evalDir = path.resolve(options["eval-build"]);
   const nativePath = productMode
     ? path.resolve(options["product-native"])
@@ -306,9 +445,15 @@ async function main() {
   const workspacePath = path.join(runDir, "workspace");
   await mkdir(workspacePath);
   const dbPath = path.join(workspacePath, "grimodex.db");
-  await copyFile(path.join(ROOT, setup.coldDatabase.path), dbPath);
+  const coldPath = path.resolve(ROOT, coldDatabase.path);
+  if (frozen) {
+    // The sealed cold DB is read, never written; the run works on a copy.
+    if (sha256(await readFile(coldPath)) !== coldDatabase.sha256)
+      throw new Error("[precheck] the sealed setup DB changed");
+  }
+  await copyFile(coldPath, dbPath);
   const report = {
-    schema: RESULT_SCHEMA,
+    schema: frozen ? G01_RESULT_SCHEMA : RESULT_SCHEMA,
     diagnosticOnly: true,
     run: options.run,
     mode: options.mode,
@@ -316,7 +461,9 @@ async function main() {
     workerSha256: productMode
       ? null
       : sha256(await readFile(path.join(evalDir, "nir1-c-query-worker"))),
-    fixtureSha256: loaded.sha256,
+    fixtureSha256,
+    setupReceiptSha256,
+    candidate: frozen ? candidateOf(ROOT) : null,
     problems: [],
     sessions: {},
   };
@@ -392,28 +539,49 @@ async function main() {
     page.evaluate((input) => window.cp4Harness.buildRaw(input), {
       projectId: ids.projectId,
       label: `pubg16-${options.run}`,
-      sceneIds: Object.keys(ids.scenes),
-      queryBody: loaded.fixture.query.body,
+      sceneIds: frozen ? Object.values(ids.scenes) : Object.keys(ids.scenes),
+      queryBody,
     });
   let session = null;
   try {
-    // 1 回目：Raw の vector と Chronicle の Index（seed の pin は製品の API で
-    // 測定用の写しにだけ足す。DR-CP4-S1C2-26）。
-    session = await start("prep");
-    await openWorkspace(session.page, workspacePath, ids);
-    report.pinQuerySeed = await pinSeed(session.page);
-    const raw = await buildRaw(session.page);
-    if (!raw.ok || !raw.value.ok) throw new Error("Raw index build failed");
-    report.prepIndex = await buildIndex(session.page, ids);
-    await stopSession("prep", session);
-    session = null;
-
-    // 2 回目：同じ workspace で、Index → body の宣言 → heldSample。
-    session = await start("check");
-    const page = session.page;
-    await openWorkspace(page, workspacePath, ids);
-    report.checkIndex = await buildIndex(page, ids);
-    if (!productMode) {
+    if (frozen) {
+      // DR-PUBG-16-2: one process on a fresh copy of the sealed cold DB, in the
+      // formal measurement process's order (openProcess in frozen-k64-run.mjs):
+      // open, the product's Freshness settles, the body declaration, Raw, the
+      // Chronicle Index, then the end-to-end. The seed pin is the one SP-P1
+      // sealed in the cold DB (nothing is pinned here).
+      session = await start("check");
+      const page = session.page;
+      await openWorkspace(page, workspacePath, ids);
+      const settle = await waitFreshnessSettled({
+        read: () => readFreshnessFeed(dbPath, ids.projectId),
+        limitMs: FRESHNESS_SETTLE_LIMIT_MS,
+        intervalMs: FRESHNESS_SETTLE_INTERVAL_MS,
+      });
+      report.freshnessSettle = {
+        settled: settle.settled,
+        waitedMs: settle.waitedMs,
+        polls: settle.polls,
+      };
+      if (!settle.settled)
+        throw new Error(
+          "[artifact] the product's Freshness did not settle on the cold DB's feed",
+        );
+      const pins = readQuerySceneSeedPins(
+        dbPath,
+        ids.projectId,
+        ids.querySceneId,
+      );
+      report.seedPin = {
+        sceneLive: pins.sceneLive,
+        seedPinned: pins.pins.some(
+          (row) => row.entryId === seed && row.entryInProject,
+        ),
+      };
+      if (!report.seedPin.sceneLive || !report.seedPin.seedPinned)
+        throw new Error(
+          "[precheck] the measurement copy does not pin the seed on the query Scene (SP-P1)",
+        );
       report.declaration = await declareBody({
         page,
         workspacePath,
@@ -421,32 +589,80 @@ async function main() {
         sceneId: declaredSceneId,
         dbPath,
       });
-      // 宣言が Chronicle の Index を dirty にしたら作り直す（記録する）。
-      if (report.declaration.indexAfter.chronicle.dirty)
-        report.indexRebuiltAfterDeclaration = await buildIndex(page, ids);
-    }
-    const input = {
-      workspacePath,
-      projectId: ids.projectId,
-      sceneId: ids.querySceneId,
-      seed,
-      readyWaitMs: READY_WAIT_MS,
-    };
-    if (productMode) {
-      // 製品の Native には評価の entry が無い。heldSample だけを回す。
-      const result = await page.evaluate(
-        (value) => window.cp4Harness.dprime.heldSample(value),
-        input,
-      );
-      report.sample = {
-        page: result.ok ? result.value : { error: result.error },
-      };
-      report.judgement = judgeNotActivated({ page: report.sample.page });
-    } else {
-      report.sample = await oneHeldSample({ session, page, input });
+      const raw = await buildRaw(page);
+      if (!raw.ok || !raw.value.ok)
+        throw new Error("[artifact] the Raw index did not publish every Scene");
+      report.checkIndex = await buildIndex(page, ids);
+      report.sample = await oneHeldSample({
+        session,
+        page,
+        input: {
+          workspacePath,
+          projectId: ids.projectId,
+          sceneId: ids.querySceneId,
+          seed,
+          readyWaitMs: READY_WAIT_MS,
+        },
+      });
       report.judgement = judgeReach(report.sample);
+      report.diagnostic = g01DiagnosticRecord({
+        judgement: report.judgement,
+        admission,
+      });
+      if (!report.diagnostic.reachedEndToEnd) process.exitCode = 1;
+      await sleep(500);
+    } else {
+      // 1 回目：Raw の vector と Chronicle の Index（seed の pin は製品の API で
+      // 測定用の写しにだけ足す。DR-CP4-S1C2-26）。
+      session = await start("prep");
+      await openWorkspace(session.page, workspacePath, ids);
+      report.pinQuerySeed = await pinSeed(session.page);
+      const raw = await buildRaw(session.page);
+      if (!raw.ok || !raw.value.ok) throw new Error("Raw index build failed");
+      report.prepIndex = await buildIndex(session.page, ids);
+      await stopSession("prep", session);
+      session = null;
+
+      // 2 回目：同じ workspace で、Index → body の宣言 → heldSample。
+      session = await start("check");
+      const page = session.page;
+      await openWorkspace(page, workspacePath, ids);
+      report.checkIndex = await buildIndex(page, ids);
+      if (!productMode) {
+        report.declaration = await declareBody({
+          page,
+          workspacePath,
+          projectId: ids.projectId,
+          sceneId: declaredSceneId,
+          dbPath,
+        });
+        // 宣言が Chronicle の Index を dirty にしたら作り直す（記録する）。
+        if (report.declaration.indexAfter.chronicle.dirty)
+          report.indexRebuiltAfterDeclaration = await buildIndex(page, ids);
+      }
+      const input = {
+        workspacePath,
+        projectId: ids.projectId,
+        sceneId: ids.querySceneId,
+        seed,
+        readyWaitMs: READY_WAIT_MS,
+      };
+      if (productMode) {
+        // 製品の Native には評価の entry が無い。heldSample だけを回す。
+        const result = await page.evaluate(
+          (value) => window.cp4Harness.dprime.heldSample(value),
+          input,
+        );
+        report.sample = {
+          page: result.ok ? result.value : { error: result.error },
+        };
+        report.judgement = judgeNotActivated({ page: report.sample.page });
+      } else {
+        report.sample = await oneHeldSample({ session, page, input });
+        report.judgement = judgeReach(report.sample);
+      }
+      await sleep(500);
     }
-    await sleep(500);
   } catch (error) {
     report.problems.push(error?.stack ?? String(error));
     process.exitCode = 1;
@@ -468,9 +684,20 @@ async function main() {
   );
   // 識別子・本文を含まない結果だけを `.artifacts/pubg-16/` に出す。
   const result = {
-    schema: RESULT_SCHEMA,
+    schema: report.schema,
     run: options.run,
     mode: options.mode,
+    ...(frozen
+      ? {
+          // DR-PUBG-16-2: a diagnostic only; the admission names it and the
+          // record says it counts for no judgement, whatever the reach.
+          diagnostic: report.diagnostic ?? g01DiagnosticRecord({ admission }),
+          candidate: report.candidate,
+          setupReceiptSha256: report.setupReceiptSha256,
+          freshnessSettle: report.freshnessSettle ?? null,
+          seedPin: report.seedPin ?? null,
+        }
+      : {}),
     nodeSha256: report.nodeSha256,
     workerSha256: report.workerSha256,
     fixtureSha256: report.fixtureSha256,

@@ -5,7 +5,9 @@
 //
 // Contract: draftRef `nir1-final-request-eval-proposal/4`, contractId
 // `graph-eval-procedure`, SHA-256 d205b35f…23c3 (K64_FREEZE), confirmed
-// 2026-10-26 (Session B5). Line numbers below are that file's:
+// 2026-10-26 (Session B5), read with K6/5 (`…/5`, SHA-256 1ad10884…24a7,
+// K65_FREEZE): D is 40 ms and the parent window check is a `[precheck]`
+// (K6/5 変える点 6). Line numbers below are the /4 file's:
 //   F1〜F7 :137-145, X1〜X13 :147-161, FAIL :163, 表示の可用性 :165-167,
 //   品質 :169-171, R1〜R7 :190-198, 変える点 15 :109, 批准 5 :32, 批准 12 :39.
 //
@@ -559,12 +561,21 @@ export function classifyFollowUp(sample, options) {
   const parent = record.parent;
   const child = record.child;
 
-  // 批准 12 / N30: the parent's window is D, never W_f.
+  // 批准 12 / N30: the parent's window is D, never W_f. K6/5 変える点 6 (the
+  // per-sample check; K6/5-N2): under the /5 row a window other than D, or no
+  // recorded window (null cannot be matched), is not a 批准 12 fallback to
+  // K6/2 but a `[precheck]`: the /5 row is not judged (admission.mjs checks
+  // the candidate's product D before the run). The match is exact (K6/5 変える点
+  // 6: 「D と一致」): D is a fixed 40, not a measured value, so no boundary
+  // tolerance applies to the window itself.
   if (
-    parent.graphWindowMs !== null &&
-    Math.abs(parent.graphWindowMs - GRAPH_EVAL_D_MS) > BOUNDARY_TOLERANCE_MS
+    parent.graphWindowMs === null ||
+    !Number.isFinite(parent.graphWindowMs) ||
+    parent.graphWindowMs !== GRAPH_EVAL_D_MS
   )
-    ratification12.push("parent-window-not-d");
+    throw new Error(
+      `[precheck] K6/5 変える点 6: the parent's Graph window is ${String(parent.graphWindowMs)} ms, not D=${GRAPH_EVAL_D_MS} ms (a missing value cannot be matched); the /5 row is not judged`,
+    );
   // :163 / N1: the parent's display never carries a late Graph, and the
   // parent's join publishes once.
   if (parent.lateGraphInDisplay)

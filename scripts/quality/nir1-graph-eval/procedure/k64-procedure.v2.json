@@ -1,0 +1,42 @@
+{
+  "schema": "nir1-cp4-k64-procedure/2",
+  "version": "v2",
+  "draft": false,
+  "contract": {
+    "draftRef": "nir1-final-request-eval-proposal/5",
+    "contractId": "graph-eval-procedure",
+    "sha256": "1ad1088498e43dc3cd0deb1b7d74f18396eb3c07d4bd3834a8787de30ecd24a7"
+  },
+  "values": {
+    "dMs": 40,
+    "bMs": 54.2,
+    "hybridP95LimitMs": 94.2,
+    "wFMs": 100,
+    "tLateMs": 100,
+    "tShowMs": 2000,
+    "r1r4WaitMs": 10000
+  },
+  "conditions": {
+    "follow": ["F1", "F2", "F3", "F4", "F5", "F6", "F7"],
+    "exclusions": [
+      "X1",
+      "X2",
+      "X3",
+      "X4",
+      "X5",
+      "X6",
+      "X7",
+      "X8",
+      "X9",
+      "X10",
+      "X11",
+      "X12",
+      "X13"
+    ]
+  },
+  "review": {
+    "reviewer": "S3 の独立 reviewer（agent、Opus）",
+    "reviewedAt": "2026-11-07",
+    "record": "docs/plans/nir1-cp4-records/s3-review-8-k65-observation-prep.md（commit f186d10b1417d6e21a8f98a333075a0f429650a1 の bytes。SHA-256 e01b08e903eb8f74e6868f3daa58af117d87bb538e1ebed7f6f963d4053bceb8。S3 の 8 回目の独立レビュー〔対象は S2 追補 #14 の 6aad102d と S4a の b852debd。head 280ff921〕の指摘の写し。判定は changes-required。指摘は blocker 1、major 2、minor ほかで、この v2 の bytes〔schema、contract、values、conditions〕の変更を求めるものは無く、S2 追補 #15 が S2・宣言・validator に反映した。S3 は反映後の bytes を見ていない。写しは指示書からで、原文は repo に無い）"
+  }
+}

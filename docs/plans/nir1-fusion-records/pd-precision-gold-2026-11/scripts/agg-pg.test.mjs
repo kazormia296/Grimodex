@@ -1,0 +1,597 @@
+// agg-pg.mjs の試験：第 6 版の records で現行の枠 1 が `kind:"ir"` の行を再現すること、層の大きさ（事前登録 §2 の表）、
+// 選択の決定性、統計の既知の値、arm・集計の小さな fixture。
+// 実行：node --test agg-pg.test.mjs
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import {
+  aggregate,
+  armAdds,
+  buildSelection,
+  candidatesOf,
+  cohenKappa,
+  compareRuns,
+  failureImpact,
+  fileSha256,
+  irOutsideStats,
+  jaccard,
+  kappaTable,
+  makeRng,
+  median,
+  pairedDifference,
+  queryFacts,
+  queryHash,
+  reproduceIrRows,
+  runPrecisionDelta,
+  selectQueries,
+  stratumOf,
+  unionLabelMaps,
+  wilson,
+  zeroUpper95,
+  SEED,
+} from "./agg-pg.mjs";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const V6 = path.resolve(HERE, "../../pd-ir-slot-2026-11-06");
+const readRecords = (work) =>
+  JSON.parse(fs.readFileSync(path.join(V6, `records-${work}-v6.json`), "utf8"));
+const recordsByWork = { "m-ja-2": readRecords("m-ja-2"), "g-ja-1": readRecords("g-ja-1") };
+const near = (actual, expected, eps = 5e-4) =>
+  assert.ok(Math.abs(actual - expected) < eps, `${actual} ≠ ${expected}`);
+
+test("入力の records が第 6 版の SHA256SUMS と一致する", () => {
+  const sums = fs.readFileSync(path.join(V6, "SHA256SUMS"), "utf8");
+  for (const work of ["m-ja-2", "g-ja-1"]) {
+    const name = `records-${work}-v6.json`;
+    const line = sums.split("\n").find((l) => l.endsWith(`  ${name}`));
+    assert.equal(line.split("  ")[0], fileSha256(path.join(V6, name)));
+  }
+});
+
+test("median：偶数個は中央 2 つの平均、空は null", () => {
+  assert.equal(median([]), null);
+  assert.equal(median([3, 1, 2]), 2);
+  assert.equal(median([4, 1, 3, 2]), 2.5);
+});
+
+test("Wilson 95％・0/n の上限", () => {
+  const [lo, hi] = wilson(7, 10);
+  near(lo, 0.3968);
+  near(hi, 0.8922);
+  const [zlo, zhi] = wilson(0, 30);
+  assert.equal(zlo, 0);
+  near(zhi, 0.1135);
+  assert.equal(wilson(0, 0), null);
+  assert.equal(zeroUpper95(30), 0.1);
+  assert.equal(zeroUpper95(60), 0.05);
+  // 事前登録 §7：n=60 で下端が 0.5 に届く最小は 38/60。
+  assert.ok(wilson(38, 60)[0] >= 0.5);
+  assert.ok(wilson(37, 60)[0] < 0.5);
+  // n=30 で点推定 0.70（21/30）が要る。
+  assert.ok(wilson(21, 30)[0] >= 0.5);
+  assert.ok(wilson(20, 30)[0] < 0.5);
+});
+
+test("Cohen の κ：既知の値", () => {
+  near(cohenKappa({ a: 20, b: 5, c: 10, d: 15 }), 0.4, 1e-12); // po=0.7、pe=0.5
+  assert.equal(cohenKappa({ a: 10, b: 0, c: 0, d: 10 }), 1);
+  assert.equal(cohenKappa({ a: 0, b: 0, c: 0, d: 10 }), null); // pe=1 は未定義
+  assert.equal(cohenKappa({ a: 0, b: 0, c: 0, d: 0 }), null);
+  // strict／partial の段ごと：none=0、partial=partial のみ、strict=strict
+  const A = new Map([["x", "strict"], ["y", "partial"], ["z", "none"], ["w", "none"]]);
+  const B = new Map([["x", "strict"], ["y", "none"], ["z", "none"], ["w", "partial"]]);
+  const k = kappaTable(A, B);
+  assert.deepEqual(k.strict.table, { a: 1, b: 0, c: 0, d: 3 });
+  assert.equal(k.strict.kappa, 1);
+  assert.deepEqual(k.partial.table, { a: 1, b: 1, c: 1, d: 1 });
+  assert.equal(k.partial.kappa, 0);
+  assert.equal(k.partial.disagree, 2);
+});
+
+test("bootstrap は seed 固定で再現し、区間が点推定を含む", () => {
+  const rows = [
+    { irK: 1, irN: 1, rawK: 0, rawN: 1 },
+    { irK: 1, irN: 1, rawK: 1, rawN: 1 },
+    { irK: 0, irN: 1, rawK: 1, rawN: 2 },
+    { irK: 1, irN: 2, rawK: 0, rawN: 1 },
+  ];
+  const a = pairedDifference(rows, "s", 500);
+  const b = pairedDifference(rows, "s", 500);
+  assert.deepEqual(a, b);
+  assert.ok(a.ci95[0] <= a.delta && a.delta <= a.ci95[1]);
+  const rng = makeRng("x");
+  assert.equal(rng(), makeRng("x")());
+});
+
+test("現行の枠 1（S1）が records の kind:ir の行を再現する（事前登録 §6：138 sample、不一致 0）", () => {
+  let samples = 0;
+  let withIr = 0;
+  let mismatches = 0;
+  for (const [work, records] of Object.entries(recordsByWork)) {
+    const r = reproduceIrRows(records, work);
+    samples += r.samples;
+    withIr += r.withIr;
+    mismatches += r.mismatches;
+  }
+  assert.equal(samples, 696);
+  assert.equal(withIr, 138);
+  assert.equal(mismatches, 0);
+  // g-ja-1 の 33 sample は IR が unavailable（Raw のみ）で、ir の行が無い。
+  assert.equal(reproduceIrRows(recordsByWork["g-ja-1"], "g-ja-1").unavailableSamples, 33);
+});
+
+test("層の大きさが事前登録 §2 の表と一致する", () => {
+  const expected = {
+    "m-ja-2": { "full-le30": 13, "full-gt30": 73, "short-le30": 17, "short-gt30": 13 },
+    "g-ja-1": { "full-le30": 12, "full-gt30": 81, "short-le30": 18, "short-gt30": 5 },
+  };
+  for (const [work, records] of Object.entries(recordsByWork)) {
+    const sizes = {};
+    for (const f of queryFacts(records, work))
+      sizes[stratumOf(f)] = (sizes[stratumOf(f)] ?? 0) + 1;
+    assert.deepEqual(sizes, expected[work]);
+  }
+});
+
+test("IR が Raw 外に 2 件以上持つ query の数（§2：109/116、112/116、3 件以上は 99、107）", () => {
+  const stats = Object.fromEntries(
+    Object.entries(recordsByWork).map(([w, r]) => [w, irOutsideStats(queryFacts(r, w))]),
+  );
+  assert.deepEqual(
+    [stats["m-ja-2"].ge2, stats["g-ja-1"].ge2, stats["m-ja-2"].ge3, stats["g-ja-1"].ge3],
+    [109, 112, 99, 107],
+  );
+});
+
+test("選択：決定的で、層ごとに 15（m-ja-2 8・g-ja-1 7、足りない層は他方で埋める）", () => {
+  const factsByWork = Object.fromEntries(
+    Object.entries(recordsByWork).map(([w, r]) => [w, queryFacts(r, w)]),
+  );
+  const a = selectQueries(factsByWork, { seed: SEED });
+  const b = selectQueries(factsByWork, { seed: SEED });
+  assert.deepEqual(a, b);
+  assert.deepEqual(a.shortfall, {});
+  const count = (work, stratum) =>
+    a.selected.filter((s) => s.facts.work === work && s.stratum === stratum).length;
+  for (const stratum of ["full-le30", "full-gt30", "short-le30"]) {
+    assert.equal(count("m-ja-2", stratum), 8);
+    assert.equal(count("g-ja-1", stratum), 7);
+  }
+  assert.equal(count("g-ja-1", "short-gt30"), 5); // 全件
+  assert.equal(count("m-ja-2", "short-gt30"), 10); // 8＋不足の 2
+  assert.equal(a.selected.length, 60);
+  // 各作品・各層で、選ばれたものは sha256(種|作品|位置) の昇順の先頭から。
+  for (const work of Object.keys(factsByWork))
+    for (const stratum of ["full-le30", "full-gt30", "short-le30", "short-gt30"]) {
+      const chosen = new Set(
+        a.selected.filter((s) => s.facts.work === work && s.stratum === stratum).map((s) => s.facts.position),
+      );
+      const ordered = factsByWork[work]
+        .filter((f) => stratumOf(f) === stratum)
+        .map((f) => ({ p: f.position, h: queryHash(SEED, work, f.position) }))
+        .sort((x, y) => (x.h < y.h ? -1 : 1));
+      assert.deepEqual([...chosen].sort((x, y) => x - y), ordered.slice(0, chosen.size).map((o) => o.p).sort((x, y) => x - y));
+    }
+  // 種が違えば別の選択になる。
+  const c = selectQueries(factsByWork, { seed: `${SEED}-other` });
+  assert.notDeepEqual(
+    c.selected.map((s) => s.facts.position),
+    a.selected.map((s) => s.facts.position),
+  );
+});
+
+test("選択の fallback：不足は他方が続きの順で埋める（合成）", () => {
+  const mk = (work, n, rawCount, priorScenes) =>
+    Array.from({ length: n }, (_, i) => ({
+      work, position: 100 + i, priorScenes, rawPositions: Array.from({ length: rawCount }, (_, j) => j + 1),
+      rawCount, probeStatus: "available", irOutsideRaw: [],
+    }));
+  const factsByWork = {
+    "m-ja-2": [...mk("m-ja-2", 20, 8, 50)],
+    "g-ja-1": [...mk("g-ja-1", 3, 8, 50)],
+  };
+  const r = selectQueries(factsByWork, { seed: "t" });
+  const full = r.selected.filter((s) => s.stratum === "full-gt30");
+  assert.equal(full.filter((s) => s.facts.work === "g-ja-1").length, 3);
+  assert.equal(full.filter((s) => s.facts.work === "m-ja-2").length, 12);
+  assert.equal(r.shortfall["full-le30"], 15); // 層が空
+});
+
+test("候補：IR の Raw 外の rank 1〜3 と Raw の rank 6〜8（本文を含まない）", () => {
+  const facts = {
+    work: "w", position: 20, priorScenes: 19, rawPositions: [5, 6, 7, 8, 9, 10, 11, 12], rawCount: 8,
+    probeStatus: "available", irOutsideRaw: [3, 4, 15, 16],
+  };
+  assert.deepEqual(
+    candidatesOf(facts).map((c) => `${c.origin}${c.rank}:${c.position}`),
+    ["ir1:3", "ir2:4", "ir3:15", "raw6:10", "raw7:11", "raw8:12"],
+  );
+  const short = { ...facts, rawPositions: [5, 6, 7], rawCount: 3, irOutsideRaw: [3] };
+  assert.deepEqual(candidatesOf(short).map((c) => `${c.origin}${c.rank}`), ["ir1"]);
+});
+
+test("selection-run1.json が現在の records・種から再生成した値と一致する", () => {
+  const file = path.resolve(HERE, "../selection-run1.json");
+  if (!fs.existsSync(file)) return;
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  const fresh = buildSelection({
+    recordsByWork,
+    recordsMeta: saved.sources,
+    seed: SEED,
+    preregSha256: saved.preregistration.sha256,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(fresh)), saved);
+  assert.equal(JSON.stringify(saved).includes('"text"'), false);
+});
+
+test("arm：S は 8−r 件まで、O は上限を外す", () => {
+  const ir = [{ p: 1 }, { p: 2 }, { p: 3 }];
+  const n = (r, arm) => armAdds(r, ir, arm).length;
+  assert.deepEqual([n(0, "S1"), n(0, "S2"), n(0, "S3")], [1, 2, 3]);
+  assert.deepEqual([n(7, "S1"), n(7, "S2"), n(7, "S3")], [1, 1, 1]);
+  assert.deepEqual([n(8, "S1"), n(8, "S2"), n(8, "S3")], [0, 0, 0]);
+  assert.deepEqual([n(8, "O1"), n(8, "O2"), n(7, "O2")], [1, 2, 2]);
+  assert.equal(armAdds(5, [{ p: 1 }], "S3").length, 1); // 候補が足りなければ足せるだけ
+  assert.equal(armAdds(0, [], "O1").length, 0);
+});
+
+// ---- 集計の fixture -------------------------------------------------------------------
+const cand = (w, q, p, origin, rank) => ({ position: p, rank, origin, pairId: `${w}|${q}|${p}` });
+const fixtureSelection = () => ({
+  seed: "fx",
+  queries: [
+    {
+      work: "m-ja-2", queryPosition: 10, priorScenes: 9, rawCount: 8, stratum: "full-le30", probeStatus: "available",
+      candidates: [cand("m-ja-2", 10, 1, "ir", 1), cand("m-ja-2", 10, 2, "ir", 2), cand("m-ja-2", 10, 6, "raw", 6), cand("m-ja-2", 10, 7, "raw", 7)],
+    },
+    {
+      work: "m-ja-2", queryPosition: 20, priorScenes: 19, rawCount: 3, stratum: "short-le30", probeStatus: "available",
+      candidates: [cand("m-ja-2", 20, 1, "ir", 1), cand("m-ja-2", 20, 2, "ir", 2), cand("m-ja-2", 20, 3, "ir", 3)],
+    },
+  ],
+});
+const annot = (annotator, entries) => ({
+  schemaVersion: "fusion-slot-pg-annotations/1",
+  annotator,
+  labels: entries.map(([work, q, c, label]) => ({ work, queryPosition: q, candidatePosition: c, label })),
+});
+
+test("aggregate：precision・arm・判断不能の小さな fixture", () => {
+  const selection = fixtureSelection();
+  const user = annot("user", [
+    ["m-ja-2", 10, 1, "strict"], ["m-ja-2", 10, 2, "partial"], ["m-ja-2", 10, 6, "none"], ["m-ja-2", 10, 7, "strict"],
+    ["m-ja-2", 20, 1, "strict"], ["m-ja-2", 20, 2, "none"], ["m-ja-2", 20, 3, "none"],
+  ]);
+  const ai = annot("ai", [
+    ["m-ja-2", 10, 1, "strict"], ["m-ja-2", 10, 2, "strict"], ["m-ja-2", 10, 6, "none"], ["m-ja-2", 10, 7, "none"],
+    ["m-ja-2", 20, 1, "partial"], ["m-ja-2", 20, 2, "none"], ["m-ja-2", 20, 3, "none"],
+  ]);
+  const out = aggregate({ selection, selectionSha256: "x", annotations: { user, ai } });
+  const p = out.precision;
+  assert.deepEqual([p.user.strict.ir1.k, p.user.strict.ir1.n], [2, 2]);
+  assert.deepEqual([p.user.strict.ir2.k, p.user.strict.ir2.n], [0, 2]);
+  assert.equal(p.user.strict.ir2.zeroUpper95, 1.5);
+  assert.deepEqual([p.user.partial.ir2.k, p.user.partial.ir2.n], [1, 2]);
+  assert.deepEqual([p.user.strict.raw7.k, p.user.strict.raw7.n], [1, 1]);
+  assert.deepEqual([p.user.strict.rawAll.k, p.user.strict.rawAll.n], [1, 2]);
+  // both／either は両者が付けた組が分母
+  assert.deepEqual([p.both.strict.ir1.k, p.both.strict.ir1.n], [1, 2]); // q20: user strict／ai partial
+  assert.deepEqual([p.either.strict.ir1.k, p.either.strict.ir1.n], [2, 2]);
+  // arm：q10 は r=8、q20 は r=3
+  assert.equal(out.arms.S1.addedRows, 1); // q20 の rank 1 だけ
+  assert.equal(out.arms.O1.addedRows, 2);
+  assert.equal(out.arms.S2.addedRows, 2); // q20 の rank 1〜2
+  assert.equal(out.arms.O2.addedRows, 4);
+  assert.equal(out.arms.O1.queriesOverEight, 1);
+  assert.equal(out.arms.S3.addedRows, 3);
+  assert.equal(out.arms.S1.rawRowsUnchanged, true);
+  const o2 = out.arms.O2.byVariant.user.strict; // 追加: q10 の 1(strict),2(partial)、q20 の 1(strict),2(none)
+  assert.deepEqual([o2.precision.k, o2.precision.n], [2, 4]);
+  assert.equal(o2.wrongAdds, 2);
+  assert.equal(o2.wrongAddsPerQuery, 1);
+  assert.equal(out.arms.S1.byVariant.user.strict.wrongAdds, 0);
+  assert.equal(o2.wrongAddsPerQuery - out.arms.S1.byVariant.user.strict.wrongAddsPerQuery, o2.wrongAddsPerQuery);
+  // 有効 query が 40 未満なので判断不能
+  assert.equal(out.judgement.indeterminate, true);
+  assert.ok(out.judgement.indeterminateReasons.some((r) => r.includes("有効 query")));
+  assert.equal(out.judgement.byVariant.user.k, null);
+  assert.equal(out.kappa.userVsAi.strict.n, 7);
+});
+
+test("aggregate：注釈の検証（selection に無い組・重複・label の不正は拒否）", () => {
+  const selection = fixtureSelection();
+  const run = (labels) =>
+    aggregate({ selection, selectionSha256: "x", annotations: { user: annot("user", labels) } });
+  assert.throws(() => run([["m-ja-2", 10, 99, "strict"]]), /selection に無い組/);
+  assert.throws(() => run([["m-ja-2", 10, 1, "strict"], ["m-ja-2", 10, 1, "none"]]), /重複/);
+  assert.throws(() => run([["m-ja-2", 10, 1, "yes"]]), /label が不正/);
+  assert.throws(
+    () => aggregate({ selection, selectionSha256: "x", annotations: { user: { ...annot("user", []), selectionSha256: "y" } } }),
+    /selectionSha256/,
+  );
+});
+
+test("判断規則 §7：十分な数なら rank 1 から連続して通る最大の k（合成）", () => {
+  // 60 query、各 query に IR rank 1〜3 と Raw rank 6〜8。IR1 は全 strict、IR2 は 0.7、IR3 は 0.4、Raw は 0.3 と置く。
+  const queries = [];
+  const user = [];
+  const ai = [];
+  for (let i = 0; i < 60; i += 1) {
+    const q = 100 + i;
+    const cs = [
+      cand("w", q, 1, "ir", 1), cand("w", q, 2, "ir", 2), cand("w", q, 3, "ir", 3),
+      cand("w", q, 4, "raw", 6), cand("w", q, 5, "raw", 7), cand("w", q, 6, "raw", 8),
+    ];
+    queries.push({ work: "w", queryPosition: q, priorScenes: q - 1, rawCount: 8, stratum: "full-gt30", probeStatus: "available", candidates: cs });
+    const strict = [true, i % 10 < 7, i % 10 < 4, i % 10 < 3, i % 10 < 3, i % 10 < 3];
+    cs.forEach((c, j) => {
+      const label = strict[j] ? "strict" : "none";
+      user.push(["w", q, c.position, label]);
+      ai.push(["w", q, c.position, label]);
+    });
+  }
+  const out = aggregate({
+    selection: { seed: "fx", queries },
+    selectionSha256: "x",
+    annotations: { user: annot("user", user), ai: annot("ai", ai) },
+  });
+  assert.equal(out.judgement.indeterminate, false);
+  const ranks = out.judgement.byVariant.user.ranks;
+  assert.deepEqual(ranks.map((r) => r.pass), [true, true, false]);
+  assert.equal(out.judgement.byVariant.user.k, 2);
+  assert.equal(ranks[0].floor.wilson95[0] > 0.9, true);
+  assert.equal(ranks[2].relative.pass, true); // 0.4 ≥ 0.3 だが下限（Wilson 下端 0.5）を満たさない
+  assert.equal(ranks[2].floor.pass, false);
+  assert.equal(out.kappa.userVsAi.strict.kappa, 1);
+});
+
+test("有効 query：候補が 0 件の query は有効に数えず、判断不能の閾値（40）にも効く", () => {
+  const mk = (q, withCandidates) => ({
+    work: "w", queryPosition: q, priorScenes: q - 1, rawCount: 8, stratum: "full-gt30", probeStatus: "available",
+    candidates: withCandidates ? [cand("w", q, 1, "ir", 1), cand("w", q, 2, "raw", 6)] : [],
+  });
+  const queries = [...Array.from({ length: 40 }, (_, i) => mk(100 + i, true)), ...Array.from({ length: 3 }, (_, i) => mk(200 + i, false))];
+  const labels = queries.flatMap((q) => q.candidates.map((c) => ["w", q.queryPosition, c.position, "strict"]));
+  const run = (qs, ls) =>
+    aggregate({ selection: { seed: "fx", queries: qs }, selectionSha256: "x", annotations: { user: annot("user", ls), ai: annot("ai", ls) } });
+  const out = run(queries, labels);
+  assert.equal(out.judgement.validQueries, 40); // 候補 0 件の 3 query は数えない（every が空で真になる誤りを避ける）
+  assert.equal(out.judgement.queriesWithoutCandidates, 3);
+  assert.ok(!out.judgement.indeterminateReasons.some((r) => /有効 query/u.test(r)));
+  // 候補ありが 39 なら、候補 0 件の query を足しても 40 未満で判断不能になる
+  const fewer = queries.filter((q) => q.queryPosition !== 100);
+  const out39 = run(fewer, labels.filter((l) => l[1] !== 100));
+  assert.equal(out39.judgement.validQueries, 39);
+  assert.ok(out39.judgement.indeterminateReasons.some((r) => /有効 query が 40 未満（39）/u.test(r)));
+});
+
+test("bootstrap の seed：判断規則の strict の rank r は paired の strict.ir{r} と同じ区間", () => {
+  const queries = Array.from({ length: 50 }, (_, i) => {
+    const q = 100 + i;
+    return {
+      work: "w", queryPosition: q, priorScenes: q - 1, rawCount: 8, stratum: "full-gt30", probeStatus: "available",
+      candidates: [cand("w", q, 1, "ir", 1), cand("w", q, 2, "raw", 6), cand("w", q, 3, "raw", 7)],
+    };
+  });
+  const labels = queries.flatMap((q, i) =>
+    q.candidates.map((c, j) => ["w", q.queryPosition, c.position, (i + j) % 3 === 0 ? "none" : "strict"]),
+  );
+  const out = aggregate({
+    selection: { seed: "fx", queries }, selectionSha256: "x",
+    annotations: { user: annot("user", labels), ai: annot("ai", labels) },
+  });
+  assert.deepEqual(out.judgement.byVariant.user.ranks[0].relative.ci95, out.paired.user.strict.ir1.ci95);
+  assert.deepEqual(out.judgement.byVariant.ai.ranks[0].relative.ci95, out.paired.ai.strict.ir1.ci95);
+});
+
+test("AI 注釈に欠けた組があっても aggregate は欠けを分母から外して読め、有効 query が減る", () => {
+  const queries = Array.from({ length: 45 }, (_, i) => {
+    const q = 100 + i;
+    return {
+      work: "w", queryPosition: q, priorScenes: q - 1, rawCount: 8, stratum: "full-gt30", probeStatus: "available",
+      candidates: [cand("w", q, 1, "ir", 1), cand("w", q, 2, "raw", 6)],
+    };
+  });
+  const all = queries.flatMap((q) => q.candidates.map((c) => ["w", q.queryPosition, c.position, "strict"]));
+  const missingTail = all.slice(0, all.length - 8); // AI は末尾 8 組が欠け（= 4 query が欠け）
+  const out = aggregate({
+    selection: { seed: "fx", queries }, selectionSha256: "x",
+    annotations: {
+      user: annot("user", all),
+      ai: { ...annot("ai", missingTail), meta: { missing: 8, complete: false } },
+    },
+  });
+  assert.equal(out.coverage.ai.labeled, all.length - 8);
+  assert.equal(out.judgement.validQueries, 41);
+  assert.equal(out.annotators.ai.complete, false);
+  assert.equal(out.kappa.userVsAi.strict.n, all.length - 8);
+});
+
+// ---- run 2（事前登録 §5） --------------------------------------------------------------------
+const PG = path.resolve(HERE, "..");
+const readPg = (name) => JSON.parse(fs.readFileSync(path.join(PG, name), "utf8"));
+const run2Records = {
+  "m-ja-2": readPg("records-m-ja-2-run2.json"),
+  "g-ja-1": readPg("records-g-ja-1-run2.json"),
+};
+const sel1 = readPg("selection-run1.json");
+const buildRun2 = () =>
+  JSON.parse(
+    JSON.stringify(
+      buildSelection({
+        recordsByWork: run2Records,
+        recordsMeta: readPg("selection-run2.json").sources,
+        fixedFrom: sel1,
+        prior: sel1,
+        preregSha256: readPg("selection-run2.json").preregistration.sha256,
+        fixedFromSha256: fileSha256(path.join(PG, "selection-run1.json")),
+        priorSha256: fileSha256(path.join(PG, "selection-run1.json")),
+      }),
+    ),
+  );
+
+test("run 2 の records が SHA256SUMS と一致し、事前登録の path・sha256 を持つ（status は complete／complete-with-failures）", () => {
+  const sums = fs.readFileSync(path.join(PG, "SHA256SUMS"), "utf8");
+  for (const work of ["m-ja-2", "g-ja-1"]) {
+    const name = `records-${work}-run2.json`;
+    const line = sums.split("\n").find((l) => l.endsWith(`  ${name}`));
+    assert.equal(line.split("  ")[0], fileSha256(path.join(PG, name)));
+  }
+  assert.equal(run2Records["m-ja-2"].status, "complete");
+  assert.equal(run2Records["g-ja-1"].status, "complete-with-failures");
+  const prereg = fileSha256(path.resolve(HERE, "../preregistration-v1.md"));
+  for (const r of Object.values(run2Records)) assert.equal(r.preregistration.sha256, prereg);
+  // 本文を含まない：日本語の文字列は design／ai の説明だけ
+  const cjk = /[぀-ヿ㐀-鿿]/u;
+  for (const r of Object.values(run2Records)) {
+    const hits = [];
+    (function walk(v, p) {
+      if (typeof v === "string") { if (cjk.test(v)) hits.push(p); }
+      else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${p}[${i}]`));
+      else if (v && typeof v === "object") for (const k of Object.keys(v)) walk(v[k], `${p}.${k}`);
+    })(r, "$");
+    assert.ok(hits.every((h) => /^\$\.(ai|design|costEstimateUsd)\./u.test(h)), hits.join(","));
+  }
+});
+
+test("jaccard：既知の値（両方空は null、片方空は 0、重複は無視）", () => {
+  assert.equal(jaccard([1, 2, 3], [2, 3, 4]), 0.5);
+  assert.equal(jaccard([1, 2], [1, 2]), 1);
+  assert.equal(jaccard([1, 2], [3, 4]), 0);
+  assert.equal(jaccard([], [1]), 0);
+  assert.equal(jaccard([], []), null);
+  assert.equal(jaccard([1, 1, 2], [2, 2, 3]), 1 / 3);
+});
+
+const mkQ = (work, pos, stratum, cands) => ({
+  work, queryPosition: pos, stratum, queryHash: `h${work}${pos}`, probeStatus: "available",
+  candidates: cands.map(([origin, rank, position, extra = {}]) => ({ position, rank, origin, pairId: `${work}|${pos}|${position}`, ...extra })),
+});
+
+test("compareRuns：Jaccard・新しい組・失った組・層ごとの中央値（合成の既知値）", () => {
+  const a = [
+    mkQ("w", 10, "s1", [["ir", 1, 1], ["ir", 2, 2], ["raw", 6, 6]]),
+    mkQ("w", 11, "s1", [["ir", 1, 3], ["raw", 6, 6]]),
+    mkQ("w", 12, "s2", [["ir", 1, 4]]),
+    mkQ("w", 13, "s2", []),
+  ];
+  const b = [
+    mkQ("w", 10, "s1", [["ir", 1, 2], ["ir", 2, 5], ["raw", 6, 6]]), // 共通 {2,6}、和 {1,2,5,6}＝2/4
+    mkQ("w", 11, "s1", [["ir", 1, 3], ["raw", 6, 6]]), // 同一＝1
+    mkQ("w", 12, "s2", [["ir", 1, 7]]), // 0
+    mkQ("w", 13, "s2", []), // 両方空＝null
+  ];
+  const sel2 = { queries: b.map((q) => ({ ...q, candidates: q.candidates })) };
+  const out = compareRuns({ queries: a }, sel2);
+  assert.deepEqual(out.perQuery.map((r) => r.jaccardAll), [0.5, 1, 0, null]);
+  assert.deepEqual(out.perQuery.map((r) => r.jaccardIr), [1 / 3, 1, 0, null]);
+  assert.deepEqual(out.jaccard.byStratum.s1.jaccardAll, { n: 2, median: 0.75 });
+  assert.deepEqual(out.jaccard.byStratum.s2.jaccardAll, { n: 1, median: 0 });
+  assert.deepEqual(out.jaccard.overall.jaccardAll, { n: 3, median: 0.5 });
+  assert.equal(out.pairs.run1, 6);
+  assert.equal(out.pairs.run2, 6);
+  assert.equal(out.pairs.common, 4); // (10,2)・(10,6)・(11,3)・(11,6)
+  assert.equal(out.pairs.rankOrOriginChangedInCommon, 1); // (10,2) は ir2→ir1
+  assert.deepEqual(out.newPairList.map((p) => p.pairId), ["w|10|5", "w|12|7"]);
+  assert.deepEqual(out.lostPairList.map((p) => p.pairId), ["w|10|1", "w|12|4"]);
+  assert.equal(out.pairs.newPairRate, 2 / 6);
+  assert.equal(out.pairs.lostPairs, 2);
+  assert.equal(out.pairs.rawPairsIdentical, true);
+  assert.equal(out.pairs.queriesWithNewPair, 2);
+  // query の集合が違えば止める
+  assert.throws(() => compareRuns({ queries: a }, { queries: b.slice(1) }), /一致しない/u);
+  assert.throws(() => compareRuns({ queries: a }, { queries: b.map((q) => ({ ...q, queryHash: "x" })) }), /hash/u);
+});
+
+test("runPrecisionDelta：rank ごとの run 間の差（合成の既知値。新しい組だけの precision・未注釈の数）", () => {
+  const s1 = { queries: [mkQ("w", 10, "s1", [["ir", 1, 1], ["ir", 2, 2], ["raw", 6, 6]])] };
+  const s2 = {
+    queries: [mkQ("w", 10, "s1", [["ir", 1, 1, { newPair: false }], ["ir", 2, 5, { newPair: true }], ["raw", 6, 6, { newPair: false }]])],
+  };
+  const labelMap = new Map([["w|10|1", "strict"], ["w|10|2", "none"], ["w|10|5", "partial"], ["w|10|6", "none"]]);
+  const strict = runPrecisionDelta({ sel1: s1, sel2: s2, labelMap, level: "strict" });
+  assert.equal(strict.groups.ir1.diff, 0); // 同じ組・同じ label
+  assert.equal(strict.groups.ir2.run1.p, 0);
+  assert.equal(strict.groups.ir2.run2.p, 0); // partial は strict に数えない
+  assert.equal(strict.groups.ir2.newOnly.n, 1);
+  const partial = runPrecisionDelta({ sel1: s1, sel2: s2, labelMap, level: "partial" });
+  assert.equal(partial.groups.ir2.diff, 1); // 0/1 → 1/1
+  assert.equal(partial.groups.irAll.run1.p, 0.5);
+  assert.equal(partial.groups.irAll.run2.p, 1);
+  assert.equal(partial.groups.irAll.diff, 0.5);
+  assert.equal(partial.groups.raw8.diff, null); // 組が無い rank
+  // 新しい組が未注釈なら分母から外れ、数える
+  const lack = runPrecisionDelta({ sel1: s1, sel2: s2, labelMap: new Map([["w|10|1", "strict"], ["w|10|2", "none"], ["w|10|6", "none"]]) });
+  assert.equal(lack.groups.ir2.run2.n, 0);
+  assert.equal(lack.groups.ir2.run2.unlabeled, 1);
+  assert.equal(lack.groups.ir2.diff, null);
+});
+
+test("unionLabelMaps：同じ組の label が食い違えば止める", () => {
+  const u = unionLabelMaps(new Map([["a", "none"]]), new Map([["a", "none"], ["b", "strict"]]));
+  assert.equal(u.size, 2);
+  assert.throws(() => unionLabelMaps(new Map([["a", "none"]]), new Map([["a", "strict"]])), /食い違|違う label/u);
+});
+
+test("selection-run2.json：決定的で、現在の run 2 の records・run 1 の selection から再生成した値と一致する", () => {
+  const saved = readPg("selection-run2.json");
+  assert.deepEqual(buildRun2(), saved);
+  assert.deepEqual(buildRun2(), buildRun2());
+  assert.equal(saved.run, 2);
+  assert.equal(saved.seed, sel1.seed);
+  assert.equal(JSON.stringify(saved).includes('"text"'), false);
+  // 候補は位置・rank・由来・pairId・newPair だけ（本文のキーを持たない）
+  for (const q of saved.queries)
+    for (const c of q.candidates) assert.deepEqual(Object.keys(c).sort(), ["newPair", "origin", "pairId", "position", "rank"]);
+});
+
+test("run 1 と run 2 の query 集合が一致し（作品・位置・層・hash）、newPair の印は「run 1 に無い組」と一致する", () => {
+  const sel2 = readPg("selection-run2.json");
+  assert.deepEqual(
+    sel2.queries.map((q) => [q.work, q.queryPosition, q.stratum, q.queryHash]),
+    sel1.queries.map((q) => [q.work, q.queryPosition, q.stratum, q.queryHash]),
+  );
+  const run1Pairs = new Set(sel1.queries.flatMap((q) => q.candidates.map((c) => c.pairId)));
+  const cands = sel2.queries.flatMap((q) => q.candidates);
+  for (const c of cands) assert.equal(c.newPair, !run1Pairs.has(c.pairId), c.pairId);
+  // Raw の組は run 間で変わらない（新しい組は IR だけ）
+  assert.equal(cands.filter((c) => c.origin === "raw" && c.newPair).length, 0);
+  assert.equal(sel2.candidateCounts.newPairs, cands.filter((c) => c.newPair).length);
+  assert.equal(sel2.selectedCounts.total, 60);
+  assert.equal(sel2.probeUnavailableSelected, 0);
+});
+
+test("run-comparison.json が現在の selection から再生成した値と一致する（Jaccard の中央値・新しい組の数）", () => {
+  const saved = readPg("run-comparison.json");
+  const fresh = JSON.parse(JSON.stringify(compareRuns(sel1, readPg("selection-run2.json"))));
+  const { inputs: _i, failureImpact: _f, ...rest } = saved;
+  assert.deepEqual(fresh, rest);
+  assert.equal(fresh.stratumMismatches, 0);
+  assert.equal(fresh.pairs.newPairs, saved.newPairList.length);
+  assert.equal(fresh.pairs.run1, 269);
+  assert.equal(fresh.pairs.run2, 271);
+  assert.equal(
+    saved.inputs.selection2.sha256,
+    fileSha256(path.join(PG, "selection-run2.json")),
+  );
+});
+
+test("failureImpact：g-ja-1 の抽出の失敗（run 1＝10、run 2＝11）と IR の時間切れ（33／27）は選んだ query の候補に届かない", () => {
+  const sel2 = readPg("selection-run2.json");
+  const out = failureImpact({ records1: recordsByWork, records2: run2Records, sel1, sel2 });
+  assert.equal(out["g-ja-1"].run1.extraction.failed, 10);
+  assert.equal(out["g-ja-1"].run2.extraction.failed, 11);
+  assert.equal(out["g-ja-1"].run1.irTimeout.allSamples, 33);
+  assert.equal(out["g-ja-1"].run2.irTimeout.allSamples, 27);
+  for (const w of ["m-ja-2", "g-ja-1"])
+    for (const run of ["run1", "run2"]) {
+      assert.equal(out[w][run].probeUnavailable.allQueries, 0); // probe は全 query で available
+      assert.equal(out[w][run].failedSceneInAdmittedPositions, 0); // 失敗した Scene は IR の候補に出ない
+      assert.equal(out[w][run].irTimeout.selectedQueries, 0); // 時間切れは選んだ query の標本に無い
+    }
+  assert.equal(out["m-ja-2"].run1.extraction.failed, 0);
+  assert.equal(out["m-ja-2"].run2.extraction.failed, 0);
+  assert.ok(out["g-ja-1"].run2.positions.selectedQueryMax < out["g-ja-1"].run2.positions.irTimeoutMin);
+});

@@ -11,7 +11,7 @@
 //     --ja-model <pinned> --en-model <pinned> --k62-commit <K6/2 freeze> \
 //     [--product-receipt <standard-build.json>] [--attempt 1]
 //   frozen: --setup <G-02 base complete setup receipt> --prep-commit <S4> \
-//     --k64-commit <K6/4 freeze> --product-receipt <standard-build.json> \
+//     --k64-commit <K6/4 freeze> --k65-commit <K6/5 freeze> --product-receipt <standard-build.json> \
 //     --sp-p4-receipt <④'s sp-p4-receipt.json> \
 //     [--attempt 2 --previous-attempts <attempt-1 receipt.json>]
 //
@@ -940,6 +940,7 @@ function devContext({ options, setupPath, setup }) {
   for (const name of [
     "prep-commit",
     "k64-commit",
+    "k65-commit",
     "previous-attempts",
     "sp-p4-receipt",
   ])

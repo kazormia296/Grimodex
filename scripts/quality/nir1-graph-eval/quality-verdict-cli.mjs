@@ -23,7 +23,9 @@ import {
   GRAPH_EVAL_D_MS,
   GRAPH_EVAL_VARIANTS,
   K62_FREEZE,
+  K65_FREEZE,
 } from "./constants.mjs";
+import { loadProcedureFile } from "./procedure-file.mjs";
 import {
   QUALITY_VERDICT_SCHEMA,
   deriveLatencyPolicy,
@@ -35,7 +37,9 @@ export const DEFAULT_ROOT = path.resolve(HERE, "../../..");
 export const GRAPH_MANIFEST = "evals/nir1-graph/manifest.v1.json";
 export const RETRIEVAL_MANIFEST = "evals/nir1-retrieval/manifest.json";
 export const PROCEDURE_FILE =
-  "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json";
+  "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v2.json";
+/** The formal procedure version `PROCEDURE_FILE` is (read by the formal loader). */
+const PROCEDURE_VERSION = "v2";
 const CODE_FILES = Object.freeze([
   "scripts/quality/nir1-graph-eval/quality-verdict.mjs",
   "scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs",
@@ -236,28 +240,50 @@ export function loadQualityInputs({
   parityDir = null,
   allowListPath,
   ledgerPath = null,
+  // The repository the procedure file is read from, at the S4 commit (the
+  // tests' throwaway repository; the default is `root`).
+  procedureRoot = root,
 }) {
   const graphManifest = readJson(path.join(root, GRAPH_MANIFEST));
   const retrievalManifest = readJson(path.join(root, RETRIEVAL_MANIFEST));
-  const policy = deriveLatencyPolicy(retrievalManifest, GRAPH_EVAL_D_MS);
+  const allowBytes = readBytes(allowListPath);
+  const allowList = JSON.parse(allowBytes);
+  // The formal loader (K6/5: D, B and the p95 limit are the frozen file's,
+  // read from the S4 commit; a draft, a placeholder review or a value other
+  // than the contract's is a `[precheck]`), never a plain JSON read.
+  const procedure = loadProcedureFile({
+    root: procedureRoot,
+    version: PROCEDURE_VERSION,
+    commit: allowList.s4Commit,
+    purpose: "formal",
+  });
+  if (procedure.path !== PROCEDURE_FILE)
+    throw precheck(`the procedure file is not ${PROCEDURE_FILE}`);
+  const policy = deriveLatencyPolicy(retrievalManifest, procedure);
   const { tolerance, source: toleranceSource } = readMetricTolerance(root);
   const { expectations, fixtureFiles } = loadExpectations({
     root,
     graphManifest,
   });
-  const allowBytes = readBytes(allowListPath);
-  const allowList = JSON.parse(allowBytes);
   const gold = readReceiptDir(goldDir);
   const parity = parityDir ? readReceiptDir(parityDir) : [];
-  const procedure = readJson(path.join(root, PROCEDURE_FILE));
   if (procedure.values?.dMs !== GRAPH_EVAL_D_MS)
     throw precheck("the procedure file and the frozen D disagree");
-  const procedureDigest = sha256(readBytes(path.join(root, PROCEDURE_FILE)));
-  for (const { receipt } of [...gold, ...parity])
+  const procedureDigest = procedure.sha256;
+  for (const { receipt } of [...gold, ...parity]) {
     if (receipt.settings?.k64?.procedureFile?.sha256 !== procedureDigest)
       throw precheck(
         `${receipt.runId}: the receipt's procedure differs from ${PROCEDURE_FILE}`,
       );
+    // K6/5 変える点 7: the receipt names the K6/5 freeze (K65_FREEZE).
+    if (
+      receipt.head?.k65?.freezeCommit !== K65_FREEZE.freezeCommit ||
+      receipt.head?.k65?.sha256 !== K65_FREEZE.sha256
+    )
+      throw precheck(
+        `${receipt.runId}: the receipt's head.k65 is not the K6/5 freeze (${K65_FREEZE.freezeCommit})`,
+      );
+  }
   let blocked = null;
   let ledgerBinding = null;
   if (ledgerPath) {
@@ -321,7 +347,7 @@ export function buildQualityVerdict(options) {
 /** Recomputes every bound file's sha256; returns the mismatches. */
 export function verifyBindings(
   output,
-  { root = DEFAULT_ROOT, allowListDir = null } = {},
+  { root = DEFAULT_ROOT, allowListDir = null, procedureRoot = root } = {},
 ) {
   if (output?.schema !== QUALITY_VERDICT_SCHEMA)
     throw precheck("not a quality verdict file");
@@ -345,12 +371,12 @@ export function verifyBindings(
     ...(b.receipts ?? []),
     ...(b.parityReceipts ?? []),
     b.ledger,
-    b.procedure,
     ...(b.manifests ?? []),
     ...(b.fixtures ?? []),
     b.k62,
   ])
     check(entry, root);
+  check(b.procedure, procedureRoot);
   // The allow list is bound by file name: it is read next to the verdict file.
   check(b.allowList, allowListDir ?? root);
   return mismatches;
@@ -435,7 +461,7 @@ export function renderSummary(output) {
     lines.push(`- ${item.condition} / ${item.component}：${item.reason ?? ""}`);
   lines.push("");
   lines.push(
-    `blocked の判定：${output.blockedDetermination}。p95 の上限は manifest の B+D（B=${output.policy.b}、D=${output.policy.d}）から ${output.policy.limit} ms、百分位 ${output.policy.percentile}、許容誤差 ${output.policy.metricTolerance}。`,
+    `blocked の判定：${output.blockedDetermination}。p95 の上限は手順のファイル v2 の B と上限（K6/5。B=${output.policy.b}、D=${output.policy.d}。B は D から逆算しない）の ${output.policy.limit} ms、百分位 ${output.policy.percentile}、許容誤差 ${output.policy.metricTolerance}。`,
   );
   return `${lines.join("\n")}\n`;
 }

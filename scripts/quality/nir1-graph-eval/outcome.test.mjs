@@ -11,6 +11,7 @@ import { resolveVariantOutcome } from "../nir1-graph/contract.mjs";
 import {
   FROZEN_FIXTURE_SHA256,
   GRAPH_CASE_FREEZE,
+  GRAPH_EVAL_D_MS,
   GRAPH_EVAL_VARIANTS,
   devVariant,
   variantByKey,
@@ -674,7 +675,7 @@ test("a joined-but-late sample within tolerance makes the variant HOLD boundary-
             joined: true,
             source: "worker",
             revalidation: "passed",
-            arrivedAt: 20.845,
+            arrivedAt: 10 + GRAPH_EVAL_D_MS + 0.005,
           },
         }
       : {},

@@ -1,0 +1,172 @@
+{
+ "golden": {
+  "avg": 0.9974662238388845,
+  "min": 0.9968832084375118
+ },
+ "queries": {
+  "本文のみ": {
+   "scenes": [
+    {
+     "id": "g04-control",
+     "role": "control",
+     "gold": 0,
+     "ro": 10,
+     "cos": 0.8082700214005755
+    },
+    {
+     "id": "g04-rv-match",
+     "role": "review",
+     "gold": 0,
+     "ro": 0,
+     "cos": 0.49251680682449855
+    },
+    {
+     "id": "g04-rv-unknown",
+     "role": "review",
+     "gold": 0,
+     "ro": 6,
+     "cos": 0.43897511051618027
+    },
+    {
+     "id": "g04-rv-unresolved",
+     "role": "review",
+     "gold": 0,
+     "ro": 4,
+     "cos": 0.4271246139168129
+    },
+    {
+     "id": "g04-lio-market",
+     "role": "answer",
+     "gold": 2,
+     "ro": 30,
+     "cos": 0.42477310095273363
+    },
+    {
+     "id": "g04-rv-alt",
+     "role": "review",
+     "gold": 0,
+     "ro": 2,
+     "cos": 0.3923244369682964
+    },
+    {
+     "id": "g04-rv-holder",
+     "role": "review",
+     "gold": 0,
+     "ro": 8,
+     "cos": 0.36968084667906037
+    },
+    {
+     "id": "g04-lio-landing",
+     "role": "ir-only",
+     "gold": 3,
+     "ro": 20,
+     "cos": 0.3597386943164853
+    }
+   ],
+   "ir": [
+    {
+     "id": "g04-control",
+     "cos": 0.6614226929073889
+    },
+    {
+     "id": "g04-lio-landing",
+     "cos": 0.5559180901730832
+    }
+   ],
+   "median": 0.4271246139168129
+  },
+  "題+改行+本文": {
+   "scenes": [
+    {
+     "id": "g04-control",
+     "role": "control",
+     "gold": 0,
+     "ro": 10,
+     "cos": 0.8283308734784698
+    },
+    {
+     "id": "g04-rv-match",
+     "role": "review",
+     "gold": 0,
+     "ro": 0,
+     "cos": 0.49469836404754636
+    },
+    {
+     "id": "g04-rv-unknown",
+     "role": "review",
+     "gold": 0,
+     "ro": 6,
+     "cos": 0.4569356161749982
+    },
+    {
+     "id": "g04-rv-unresolved",
+     "role": "review",
+     "gold": 0,
+     "ro": 4,
+     "cos": 0.4436288950211568
+    },
+    {
+     "id": "g04-lio-market",
+     "role": "answer",
+     "gold": 2,
+     "ro": 30,
+     "cos": 0.4281966176586344
+    },
+    {
+     "id": "g04-rv-alt",
+     "role": "review",
+     "gold": 0,
+     "ro": 2,
+     "cos": 0.403086090926668
+    },
+    {
+     "id": "g04-rv-holder",
+     "role": "review",
+     "gold": 0,
+     "ro": 8,
+     "cos": 0.3883564919736601
+    },
+    {
+     "id": "g04-lio-landing",
+     "role": "ir-only",
+     "gold": 3,
+     "ro": 20,
+     "cos": 0.3803662060679673
+    }
+   ],
+   "ir": [
+    {
+     "id": "g04-control",
+     "cos": 0.685158803201252
+    },
+    {
+     "id": "g04-lio-landing",
+     "cos": 0.5766900080689583
+    }
+   ],
+   "median": 0.4436288950211568
+  }
+ },
+ "dbIrMatch": [
+  {
+   "rev": "b3c10e35-fe85-43d8-a6db-0feb724fa0fe",
+   "ir": "g04-control",
+   "cos": 0.9983277147961872
+  },
+  {
+   "rev": "b3c10e35-fe85-43d8-a6db-0feb724fa0fe",
+   "ir": "g04-lio-landing",
+   "cos": 0.7583993513252
+  },
+  {
+   "rev": "afd4d4b0-e724-46d4-9f4e-049d9b59d4c5",
+   "ir": "g04-control",
+   "cos": 0.7634699465688897
+  },
+  {
+   "rev": "afd4d4b0-e724-46d4-9f4e-049d9b59d4c5",
+   "ir": "g04-lio-landing",
+   "cos": 0.9978458326898254
+  }
+ ]
+}

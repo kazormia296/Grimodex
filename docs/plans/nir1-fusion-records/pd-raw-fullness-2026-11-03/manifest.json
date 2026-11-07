@@ -1,0 +1,281 @@
+{
+  "schemaVersion": "fusion-slot-pd-manifest/1",
+  "evidenceScope": "not-cp4-evidence",
+  "userAgent": "grimodex-eval",
+  "requestIntervalMs": 8000,
+  "works": {
+    "t-ja-1": {
+      "key": "t-ja-1",
+      "role": "trial",
+      "language": "ja",
+      "source": "aozora",
+      "metaUrl": "https://www.aozora.gr.jp/cards/000879/card69.html",
+      "metaFetchedAt": "2026-11-03T13:09:27.151Z",
+      "metaSha256": "7e1e8b3655269cb9ea6004192530a9d223fadaf90aa2111a957c529ad26dbdf3",
+      "textUrl": "https://www.aozora.gr.jp/cards/000879/files/69_ruby_1321.zip",
+      "textFinalUrl": "https://www.aozora.gr.jp/cards/000879/files/69_ruby_1321.zip",
+      "fetchedAt": "2026-11-03T13:09:35.125Z",
+      "bytes": 35302,
+      "sha256": "8daf7b994cebd17dff5a5447fd18d0408a153855ea821b9bec138ee3e68a49e9",
+      "rawFile": "raw/t-ja-1.zip",
+      "publicDomainBasis": {
+        "rule": "著者の没年が 1967 年以前（旧規定の没後 50 年）",
+        "authorDeathYears": [
+          1927
+        ],
+        "cardShowsCopyrightProtected": false
+      }
+    },
+    "m-ja-1": {
+      "key": "m-ja-1",
+      "role": "main",
+      "language": "ja",
+      "source": "aozora",
+      "metaUrl": "https://www.aozora.gr.jp/cards/000148/card773.html",
+      "metaFetchedAt": "2026-11-03T13:09:45.599Z",
+      "metaSha256": "e530f5b56e038572db52cf428fd882e5df3085442cbec8f808284923b85b78fe",
+      "textUrl": "https://www.aozora.gr.jp/cards/000148/files/773_ruby_5968.zip",
+      "textFinalUrl": "https://www.aozora.gr.jp/cards/000148/files/773_ruby_5968.zip",
+      "fetchedAt": "2026-11-03T13:09:53.617Z",
+      "bytes": 153688,
+      "sha256": "c55d7bf6c7cc5bd960ce291949f38cae9ba6a672a6142c3b9e1a9f5a159fa4c4",
+      "rawFile": "raw/m-ja-1.zip",
+      "publicDomainBasis": {
+        "rule": "著者の没年が 1967 年以前（旧規定の没後 50 年）",
+        "authorDeathYears": [
+          1916
+        ],
+        "cardShowsCopyrightProtected": false
+      }
+    },
+    "m-ja-2": {
+      "key": "m-ja-2",
+      "role": "main",
+      "language": "ja",
+      "source": "aozora",
+      "metaUrl": "https://www.aozora.gr.jp/cards/000158/card1502.html",
+      "metaFetchedAt": "2026-11-03T13:10:01.582Z",
+      "metaSha256": "89127aec43a2dcca8713178d8e13ff369962ce87207bc386e94b99451c4dee09",
+      "textUrl": "https://www.aozora.gr.jp/cards/000158/files/1502_ruby_24534.zip",
+      "textFinalUrl": "https://www.aozora.gr.jp/cards/000158/files/1502_ruby_24534.zip",
+      "fetchedAt": "2026-11-03T13:10:09.641Z",
+      "bytes": 216880,
+      "sha256": "9ea1f5f5cf9189e76ae6e16724568d113723239a1737d942e01efb042a7d1a37",
+      "rawFile": "raw/m-ja-2.zip",
+      "publicDomainBasis": {
+        "rule": "著者の没年が 1967 年以前（旧規定の没後 50 年）",
+        "authorDeathYears": [
+          1943
+        ],
+        "cardShowsCopyrightProtected": false
+      }
+    },
+    "m-ja-3": {
+      "key": "m-ja-3",
+      "role": "main",
+      "language": "ja",
+      "source": "aozora",
+      "metaUrl": "https://www.aozora.gr.jp/cards/000129/card2522.html",
+      "metaFetchedAt": "2026-11-03T13:10:17.581Z",
+      "metaSha256": "b0c0e6b70dded86a104998d3f56b7ce58a444ee5c1b69c3196f79c0996896d0e",
+      "textUrl": "https://www.aozora.gr.jp/cards/000129/files/2522_ruby_5001.zip",
+      "textFinalUrl": "https://www.aozora.gr.jp/cards/000129/files/2522_ruby_5001.zip",
+      "fetchedAt": "2026-11-03T13:10:25.632Z",
+      "bytes": 131117,
+      "sha256": "771abb8b1a5da7a4236d0aab18153071741c21ff9f176dc36942a91f9fe4d250",
+      "rawFile": "raw/m-ja-3.zip",
+      "publicDomainBasis": {
+        "rule": "著者の没年が 1967 年以前（旧規定の没後 50 年）",
+        "authorDeathYears": [
+          1922
+        ],
+        "cardShowsCopyrightProtected": false
+      }
+    },
+    "m-en-1": {
+      "key": "m-en-1",
+      "role": "main",
+      "language": "en",
+      "source": "gutenberg",
+      "metaUrl": "https://www.gutenberg.org/ebooks/1342",
+      "metaFetchedAt": "2026-11-03T13:10:34.972Z",
+      "metaSha256": "3f9bdafe30da7bbff020fb7f9635f386f690d32fefff01977e29e21008f66fb5",
+      "textUrl": "https://www.gutenberg.org/cache/epub/1342/pg1342.txt",
+      "textFinalUrl": "https://www.gutenberg.org/cache/epub/1342/pg1342.txt",
+      "fetchedAt": "2026-11-03T13:10:42.886Z",
+      "bytes": 772386,
+      "sha256": "3f6bb9d6f78e0293b56acd4714dd68cb7d6d1d293402031ce9d5a216bcaf9d75",
+      "rawFile": "raw/m-en-1.txt",
+      "publicDomainBasis": {
+        "rule": "Gutenberg の書誌の page に \"Public domain in the USA\" の表示がある",
+        "shown": true
+      }
+    },
+    "m-en-2": {
+      "key": "m-en-2",
+      "role": "main",
+      "language": "en",
+      "source": "gutenberg",
+      "metaUrl": "https://www.gutenberg.org/ebooks/345",
+      "metaFetchedAt": "2026-11-03T13:10:50.350Z",
+      "metaSha256": "def13ecd6ff01896655944dd95af960f7d3076939429231c05a80ee114889af8",
+      "textUrl": "https://www.gutenberg.org/cache/epub/345/pg345.txt",
+      "textFinalUrl": "https://www.gutenberg.org/cache/epub/345/pg345.txt",
+      "fetchedAt": "2026-11-03T13:10:59.057Z",
+      "bytes": 890348,
+      "sha256": "96cd16eacdbfebae8fdda5591f66e0cc8ee76be18e0cd1aca02bc00615782d28",
+      "rawFile": "raw/m-en-2.txt",
+      "publicDomainBasis": {
+        "rule": "Gutenberg の書誌の page に \"Public domain in the USA\" の表示がある",
+        "shown": true
+      }
+    },
+    "m-en-3": {
+      "key": "m-en-3",
+      "role": "main",
+      "language": "en",
+      "source": "gutenberg",
+      "metaUrl": "https://www.gutenberg.org/ebooks/98",
+      "metaFetchedAt": "2026-11-03T13:11:06.178Z",
+      "metaSha256": "43e5258118e9a30db2890811d248ca7d9026ec041b866143114ae46d9075ddef",
+      "textUrl": "https://www.gutenberg.org/cache/epub/98/pg98.txt",
+      "textFinalUrl": "https://www.gutenberg.org/cache/epub/98/pg98.txt",
+      "fetchedAt": "2026-11-03T13:11:14.880Z",
+      "bytes": 807197,
+      "sha256": "d54c2b80d40a40b982cd88852c6180bb944d95acdb028af3d0e01a1750681784",
+      "rawFile": "raw/m-en-3.txt",
+      "publicDomainBasis": {
+        "rule": "Gutenberg の書誌の page に \"Public domain in the USA\" の表示がある",
+        "shown": true
+      }
+    }
+  },
+  "prepared": {
+    "t-ja-1": {
+      "key": "t-ja-1",
+      "file": "scenes/t-ja-1.json",
+      "sha256": "c239b18c047bb97a84caf637f7dc4750aaefecc653f20ac7eb472d9ae8df4f3a",
+      "stats": {
+        "sections": 18,
+        "scenes": 18,
+        "unit": "chars",
+        "minSize": 553,
+        "maxSize": 4172,
+        "meanSize": 2059,
+        "overMax": 0,
+        "underMin": 0
+      },
+      "rulesSha256": "dcfc704d30cfd94b70cd9427df4c311008ef46b190b583dd0e8b6b596edc7bb5",
+      "scriptSha256": "c67941de68d0d01a4a57d25349316a002babad1a383290bbc169b4fdf839f7bc",
+      "preparedAt": "2026-11-03T13:13:11.223Z"
+    },
+    "m-ja-1": {
+      "key": "m-ja-1",
+      "file": "scenes/m-ja-1.json",
+      "sha256": "5734f50d642034c8b0c918ad65324ca0a7e094057cd0963b34e2d9c7dcb20760",
+      "stats": {
+        "sections": 113,
+        "scenes": 110,
+        "unit": "chars",
+        "minSize": 1228,
+        "maxSize": 1765,
+        "meanSize": 1454,
+        "overMax": 0,
+        "underMin": 0
+      },
+      "rulesSha256": "dcfc704d30cfd94b70cd9427df4c311008ef46b190b583dd0e8b6b596edc7bb5",
+      "scriptSha256": "c67941de68d0d01a4a57d25349316a002babad1a383290bbc169b4fdf839f7bc",
+      "preparedAt": "2026-11-03T13:13:11.245Z"
+    },
+    "m-ja-2": {
+      "key": "m-ja-2",
+      "file": "scenes/m-ja-2.json",
+      "sha256": "e373a44318c4ea7b9f24cce359bdeb0eca408a4d8b8884928c4174a82976ec45",
+      "stats": {
+        "sections": 140,
+        "scenes": 117,
+        "unit": "chars",
+        "minSize": 711,
+        "maxSize": 3245,
+        "meanSize": 1716,
+        "overMax": 0,
+        "underMin": 0
+      },
+      "rulesSha256": "dcfc704d30cfd94b70cd9427df4c311008ef46b190b583dd0e8b6b596edc7bb5",
+      "scriptSha256": "c67941de68d0d01a4a57d25349316a002babad1a383290bbc169b4fdf839f7bc",
+      "preparedAt": "2026-11-03T13:13:11.280Z"
+    },
+    "m-ja-3": {
+      "key": "m-ja-3",
+      "file": "scenes/m-ja-3.json",
+      "sha256": "8d2721a9644abe3522b497589b47d87edec5ad160909c641d08b6d4973aa1500",
+      "stats": {
+        "sections": 24,
+        "scenes": 34,
+        "unit": "chars",
+        "minSize": 1920,
+        "maxSize": 5900,
+        "meanSize": 3604,
+        "overMax": 0,
+        "underMin": 0
+      },
+      "rulesSha256": "dcfc704d30cfd94b70cd9427df4c311008ef46b190b583dd0e8b6b596edc7bb5",
+      "scriptSha256": "c67941de68d0d01a4a57d25349316a002babad1a383290bbc169b4fdf839f7bc",
+      "preparedAt": "2026-11-03T13:13:11.297Z"
+    },
+    "m-en-1": {
+      "key": "m-en-1",
+      "file": "scenes/m-en-1.json",
+      "sha256": "bd4d3b4061d1a6dba48ac65758b503e2d62d623746ba68a6f734d1abe6848057",
+      "stats": {
+        "sections": 61,
+        "scenes": 71,
+        "unit": "words",
+        "minSize": 511,
+        "maxSize": 2489,
+        "meanSize": 1712,
+        "overMax": 0,
+        "underMin": 0
+      },
+      "rulesSha256": "dcfc704d30cfd94b70cd9427df4c311008ef46b190b583dd0e8b6b596edc7bb5",
+      "scriptSha256": "c67941de68d0d01a4a57d25349316a002babad1a383290bbc169b4fdf839f7bc",
+      "preparedAt": "2026-11-03T13:13:11.360Z"
+    },
+    "m-en-2": {
+      "key": "m-en-2",
+      "file": "scenes/m-en-2.json",
+      "sha256": "0168724b1b8bfe1789f43c79d8ff45ff55f8016c0c7571403472cca87ec6d74a",
+      "stats": {
+        "sections": 27,
+        "scenes": 82,
+        "unit": "words",
+        "minSize": 1234,
+        "maxSize": 2445,
+        "meanSize": 1960,
+        "overMax": 0,
+        "underMin": 0
+      },
+      "rulesSha256": "dcfc704d30cfd94b70cd9427df4c311008ef46b190b583dd0e8b6b596edc7bb5",
+      "scriptSha256": "c67941de68d0d01a4a57d25349316a002babad1a383290bbc169b4fdf839f7bc",
+      "preparedAt": "2026-11-03T13:13:11.454Z"
+    },
+    "m-en-3": {
+      "key": "m-en-3",
+      "file": "scenes/m-en-3.json",
+      "sha256": "412b5ef2a99c97799aa00d3e144dd432df078c82ce57e44fa953d31f971bcca7",
+      "stats": {
+        "sections": 45,
+        "scenes": 69,
+        "unit": "words",
+        "minSize": 1001,
+        "maxSize": 2491,
+        "meanSize": 1963,
+        "overMax": 0,
+        "underMin": 0
+      },
+      "rulesSha256": "dcfc704d30cfd94b70cd9427df4c311008ef46b190b583dd0e8b6b596edc7bb5",
+      "scriptSha256": "c67941de68d0d01a4a57d25349316a002babad1a383290bbc169b4fdf839f7bc",
+      "preparedAt": "2026-11-03T13:13:11.521Z"
+    }
+  }
+}

@@ -3,8 +3,9 @@
 //
 // Pure module: no file or process access. It never runs Graph, IR, Raw, a
 // model, Electron or Native, never edits a receipt, and carries no threshold
-// of its own: D is `GRAPH_EVAL_D_MS`, the percentile, the limit formula and
-// the metric tolerance are read from the frozen manifests and the K6/2 text by
+// of its own: D is `GRAPH_EVAL_D_MS`, B and the p95 limit are the procedure
+// file v2's (checked against constants.mjs), the percentile and the metric
+// tolerance are read from the frozen manifests and the K6/2 text by
 // the loader (quality-verdict-cli.mjs) and handed in as `policy` and
 // `tolerance`. The definitions are fixed in
 // docs/plans/nir1-cp4-records/quality-verdict-prereg-2026-11-06.md
@@ -13,7 +14,12 @@
 // Existing pinned modules are imported only (followup.mjs, receipt.mjs,
 // constants.mjs, nir1-retrieval/contract.mjs); none of them is changed.
 
-import { GRAPH_EVAL_D_MS, GRAPH_EVAL_VARIANTS } from "./constants.mjs";
+import {
+  GRAPH_EVAL_B_MS,
+  GRAPH_EVAL_D_MS,
+  GRAPH_EVAL_HYBRID_P95_LIMIT_MS,
+  GRAPH_EVAL_VARIANTS,
+} from "./constants.mjs";
 import { MEASURED_RUNS_PER_ARM } from "./constants.mjs";
 import { classifyFollowUp } from "./followup.mjs";
 import { selectReceiptsForAggregation } from "./receipt.mjs";
@@ -62,34 +68,44 @@ function unique(values) {
 }
 
 /**
- * Percentile, B and the Hybrid p95 limit from the retrieval manifest's own
- * statements (`performance.warm`), with D from the frozen constant.
+ * The percentile from the retrieval manifest's own statement
+ * (`performance.warm`); B, D and the Hybrid p95 limit from the procedure
+ * file's `values` (K6/5 変える点 4 and Mandatory defenses: v2 fixes them
+ * before observation). B is never computed from D (D = 40 ms would give a B
+ * of 200 ms and a limit of 240 ms; K6/5 In-scope attack 20): the procedure
+ * file's values must equal the contract's constants (constants.mjs) or the
+ * verdict is a `[precheck]`.
  */
-export function deriveLatencyPolicy(retrievalManifest, dMs = GRAPH_EVAL_D_MS) {
+export function deriveLatencyPolicy(retrievalManifest, procedure) {
   const warm = retrievalManifest?.performance?.warm;
   const percentile = /^Raw-only p(\d+)\(t_return-t_fetch\)/u.exec(
     warm?.B ?? "",
   );
-  const rule = /^min\((\d+)ms, ([0-9.]+)\*B\)$/u.exec(warm?.D ?? "");
-  if (!percentile || !rule || warm?.hybridP95Limit !== "B+D")
+  if (!percentile || warm?.hybridP95Limit !== "B+D")
     throw precheck(
-      "retrieval manifest performance.warm does not state B, D and hybridP95Limit in the expected form",
+      "retrieval manifest performance.warm does not state the percentile and hybridP95Limit in the expected form",
     );
-  const cap = Number(rule[1]);
-  const coefficient = Number(rule[2]);
-  if (!(Number.isFinite(coefficient) && coefficient > 0) || !(dMs < cap))
-    throw precheck("B is not derivable from D (D is at or above its cap)");
-  const b = dMs / coefficient;
+  const values = procedure?.values;
+  for (const [key, expected] of [
+    ["dMs", GRAPH_EVAL_D_MS],
+    ["bMs", GRAPH_EVAL_B_MS],
+    ["hybridP95LimitMs", GRAPH_EVAL_HYBRID_P95_LIMIT_MS],
+  ])
+    if (values?.[key] !== expected)
+      throw precheck(
+        `the procedure file's values.${key} (${String(values?.[key])}) differs from the contract's ${expected} (K6/5)`,
+      );
   return Object.freeze({
     percentile: Number(`0.${percentile[1]}`),
-    b: Number(b.toPrecision(12)),
-    d: dMs,
-    limit: Number((b + dMs).toPrecision(12)),
+    b: values.bMs,
+    d: values.dMs,
+    limit: values.hybridP95LimitMs,
     source: {
       B: warm.B,
       D: warm.D,
       hybridP95Limit: warm.hybridP95Limit,
       percentileRule: warm.percentile,
+      procedureFile: "values.bMs, values.hybridP95LimitMs, values.dMs",
     },
   });
 }

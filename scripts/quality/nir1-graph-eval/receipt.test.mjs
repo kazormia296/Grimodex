@@ -9,6 +9,7 @@ import {
   FROZEN_FIXTURE_SHA256,
   K62_FREEZE,
   K64_FREEZE,
+  K65_FREEZE,
   variantByKey,
 } from "./constants.mjs";
 import {
@@ -130,6 +131,11 @@ const K64_HEAD = {
   freezeCommit: K64_FREEZE.freezeCommit,
   sha256: K64_FREEZE.sha256,
 };
+/** The K6/5 freeze of a receipt head (変える点 7), at the pinned commit. */
+const K65_HEAD = {
+  freezeCommit: K65_FREEZE.freezeCommit,
+  sha256: K65_FREEZE.sha256,
+};
 /** E-1: the error the test-only 批准 5 evidence always gives. */
 const TEST_ONLY_EVIDENCE = /test-only evidence \(test-support\.mjs\)/;
 /**
@@ -168,6 +174,7 @@ function receipt(overrides = {}, { recompute = true } = {}) {
     head: {
       k62: { freezeCommit: K62_FREEZE.commit, sha256: K62_FREEZE.sha256 },
       k64: K64_HEAD,
+      k65: K65_HEAD,
       runStartedAtUtc: "2026-10-25T01:02:03.456Z",
       observationPrep: { commit: H40("a"), freezeRecordSha256: H64("b") },
       traceFile: null,
@@ -319,6 +326,62 @@ test("批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。固定
   // dev の予告は K6/4 の先頭を要しない（書くなら bytes は K6/4 のもの）。
 });
 
+test("K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit と SHA-256）を持ち、無い・違う receipt は拒む", () => {
+  assert.equal(
+    K65_FREEZE.freezeCommit,
+    "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+  );
+  const head = receipt().head;
+  const { k65, ...noK65 } = head;
+  assert.deepEqual(k65, K65_HEAD);
+  // /5 の凍結の前に始めた run（K6/4 の先頭だけ）の receipt。
+  assert.match(errorsOf(receipt({ head: noK65 })), /head\.k65\.sha256/);
+  assert.match(
+    errorsOf(receipt({ head: { ...head, k65: { ...k65, sha256: H64("0") } } })),
+    /K6\/5 bytes/,
+  );
+  for (const other of [H40("4"), K64_FREEZE.freezeCommit])
+    assert.match(
+      errorsOf(
+        receipt({ head: { ...head, k65: { ...k65, freezeCommit: other } } }),
+      ),
+      /must be the pinned K6\/5 freeze commit/,
+    );
+  // 注入した descriptor（試験専用）と null の descriptor（fail closed）。
+  const injected = { ...K65_FREEZE, sha256: H64("7"), freezeCommit: H40("7") };
+  const k65Errors = (value, freeze65) =>
+    receiptHeadErrors(
+      value,
+      "g-case-gold",
+      "frozen",
+      K64_FREEZE,
+      freeze65,
+    ).filter((error) => /k65|K6\/5/u.test(error));
+  assert.deepEqual(k65Errors(head), []);
+  assert.deepEqual(
+    k65Errors(
+      { ...head, k65: { freezeCommit: H40("7"), sha256: H64("7") } },
+      injected,
+    ),
+    [],
+  );
+  assert.match(
+    k65Errors(head, injected).join(" | "),
+    /K6\/5 bytes.*pinned K6\/5 freeze commit/u,
+  );
+  assert.match(
+    k65Errors(head, { ...K65_FREEZE, freezeCommit: null }).join(" | "),
+    /\[precheck\] the K6\/5 freeze commit is not pinned/,
+  );
+  // 予告（dev）は /5 の先頭を要しない。
+  assert.deepEqual(
+    receiptHeadErrors(noK65, "g-case-gold", "dev").filter((error) =>
+      /k65|K6\/5/u.test(error),
+    ),
+    [],
+  );
+});
+
 test("批准 7（DR-CP4-T14-1）: receiptHeadErrors は注入した凍結の descriptor で照合し、null なら正式の Graph を拒む", () => {
   const head = receipt().head;
   const k64Errors = (value, runKind, fixtureKind, freeze) =>
@@ -458,6 +521,33 @@ test("K6/4-N17: W_f、T_late、T_show を広げた receipt、手順のファイ�
   );
 });
 
+test("K6/5-N1・N4: settings.k64 の D・B・Hybrid p95 の上限が契約（40・54.2・94.2 ms）と違う receipt は、receipt の層で拒む（手順のファイルの loader は契約と違う値の file を読まないので、記録の値そのものを契約と照合する）", () => {
+  assert.deepEqual(
+    [K64_SETTINGS.dMs, K64_SETTINGS.bMs, K64_SETTINGS.hybridP95LimitMs],
+    [40, 54.2, 94.2],
+  );
+  for (const [key, value] of [
+    ["dMs", 10.84],
+    ["dMs", 10.840000000596048],
+    ["dMs", 40.01],
+    ["dMs", undefined],
+    ["bMs", 200],
+    ["bMs", 54.21],
+    ["bMs", undefined],
+    ["hybridP95LimitMs", 65.04],
+    ["hybridP95LimitMs", 240],
+    ["hybridP95LimitMs", 94.21],
+    ["hybridP95LimitMs", undefined],
+  ]) {
+    const settings = { ...K64_SETTINGS, [key]: value };
+    assert.match(
+      errorsOf(receipt({ settings: { k64: settings } })),
+      new RegExp(`K6/5-N1/N4: settings\\.k64\\.${key} must be the contract`),
+      `${key}=${value}`,
+    );
+  }
+});
+
 test("S1f: settings.k64 は loadProcedureFile が commit から読んだ手順のファイルと一致し、draft と版の無い記録を拒む", () => {
   assert.deepEqual(otherErrors(receipt()), []);
   // 読み込んだ手順のファイルを渡さない検証は、記録を自己申告として拒む。
@@ -476,7 +566,7 @@ test("S1f: settings.k64 は loadProcedureFile が commit から読んだ手順�
   const file = K64_SETTINGS.procedureFile;
   for (const [change, pattern] of [
     [{ procedureFile: { ...file, version: undefined } }, /version/],
-    [{ procedureFile: { ...file, version: "v2" } }, /版の食い違い/],
+    [{ procedureFile: { ...file, version: "v3" } }, /版の食い違い/],
     [{ procedureFile: { ...file, sha256: H64("5") } }, /版の食い違い/],
     [{ procedureFile: { ...file, draft: true } }, /draft procedure file/],
     [{ r1r4WaitMs: 2_000 }, /版の食い違い/],

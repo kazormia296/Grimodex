@@ -1,0 +1,1909 @@
+[
+ {
+  "variant": "G-01/v1",
+  "file": "G-01_v1.receipt.json",
+  "nSamples": {
+   "R": 30,
+   "R+IR": 30,
+   "R+IR+Graph": 30
+  },
+  "graphDisplayKinds": {
+   "child": 30
+  },
+  "unmapped": [],
+  "arms": {
+   "R": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g01-question"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g01-question"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": true,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g01-question"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g01-question"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": true,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR+Graph": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g01-question",
+       "g01-mira"
+      ],
+      "count": 30,
+      "recall": 1.0,
+      "ndcg": 0.6309297535714575,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 1.0,
+    "meanNdcg": 0.6309297535714575,
+    "modalRecall": 1.0,
+    "modalNdcg": 0.6309297535714575,
+    "expectedRecall": 1,
+    "expectedNdcg": 0.6309297535714574,
+    "expectedList": [
+     "g01-question",
+     "g01-mira"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": true,
+    "fixtureListRecomputed": [
+     1.0,
+     0.6309297535714575
+    ]
+   }
+  },
+  "childOutcome": {
+   "graph-ready": 30
+  },
+  "graphArmParentRawSets": [
+   [
+    "g01-question"
+   ]
+  ],
+  "graphArmParentFinalLists": {
+   "['g01-question']": 30
+  },
+  "pre": null,
+  "k64": {
+   "displayed": 30,
+   "missed": 0,
+   "followUp": 30,
+   "firstRender": 0
+  }
+ },
+ {
+  "variant": "G-02/base",
+  "file": "G-02_base.receipt.json",
+  "nSamples": {
+   "R": 30,
+   "R+IR": 30,
+   "R+IR+Graph": 30
+  },
+  "graphDisplayKinds": {
+   "child": 30
+  },
+  "unmapped": [],
+  "arms": {
+   "R": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g02-attach",
+       "g02-probe"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g02-probe",
+     "g02-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": false,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g02-attach",
+       "g02-probe"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g02-probe",
+     "g02-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": false,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR+Graph": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g02-attach",
+       "g02-probe",
+       "g02-tamsin-first"
+      ],
+      "count": 30,
+      "recall": 1.0,
+      "ndcg": 0.5,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 1.0,
+    "meanNdcg": 0.5,
+    "modalRecall": 1.0,
+    "modalNdcg": 0.5,
+    "expectedRecall": 1,
+    "expectedNdcg": 0.5,
+    "expectedList": [
+     "g02-probe",
+     "g02-attach",
+     "g02-tamsin-first"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": false,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     1.0,
+     0.5
+    ]
+   }
+  },
+  "childOutcome": {
+   "graph-ready": 30
+  },
+  "graphArmParentRawSets": [
+   [
+    "g02-attach",
+    "g02-probe"
+   ]
+  ],
+  "graphArmParentFinalLists": {
+   "['g02-attach', 'g02-probe']": 30
+  },
+  "pre": [
+   "b-sealed-binding",
+   "maintenance-enabled",
+   "raw-membership",
+   "cb4-inputs"
+  ],
+  "k64": {
+   "displayed": 30,
+   "missed": 0,
+   "followUp": 30,
+   "firstRender": 0
+  }
+ },
+ {
+  "variant": "G-03/base",
+  "file": "G-03_base.receipt.json",
+  "nSamples": {
+   "R": 30,
+   "R+IR": 30,
+   "R+IR+Graph": 30
+  },
+  "graphDisplayKinds": {
+   "child": 30
+  },
+  "unmapped": [],
+  "arms": {
+   "R": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g03-c4",
+       "g03-c3",
+       "g03-c2",
+       "g03-c1",
+       "g03-c7",
+       "g03-c6",
+       "g03-c5",
+       "g03-c8"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g03-c1",
+     "g03-c2",
+     "g03-c3",
+     "g03-c4",
+     "g03-c5",
+     "g03-c6",
+     "g03-c7",
+     "g03-c8"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": false,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g03-c4",
+       "g03-c3",
+       "g03-c2",
+       "g03-c1",
+       "g03-c7",
+       "g03-c6",
+       "g03-c5",
+       "g03-c8"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g03-c1",
+     "g03-c2",
+     "g03-c3",
+     "g03-c4",
+     "g03-c5",
+     "g03-c6",
+     "g03-c7",
+     "g03-c8"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": false,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR+Graph": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g03-c4",
+       "g03-c3",
+       "g03-c2",
+       "g03-c1",
+       "g03-c7",
+       "g03-c6",
+       "g03-c5",
+       "g03-c8"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g03-c1",
+     "g03-c2",
+     "g03-c3",
+     "g03-c4",
+     "g03-c5",
+     "g03-c6",
+     "g03-c7",
+     "g03-c8"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": false,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   }
+  },
+  "childOutcome": {
+   "graph-ready": 30
+  },
+  "graphArmParentRawSets": [
+   [
+    "g03-c4",
+    "g03-c3",
+    "g03-c2",
+    "g03-c1",
+    "g03-c7",
+    "g03-c6",
+    "g03-c5",
+    "g03-c8"
+   ]
+  ],
+  "graphArmParentFinalLists": {
+   "['g03-c4', 'g03-c3', 'g03-c2', 'g03-c1', 'g03-c7', 'g03-c6', 'g03-c5', 'g03-c8']": 30
+  },
+  "pre": [
+   "b-sealed-binding",
+   "maintenance-enabled",
+   "raw-membership"
+  ],
+  "k64": {
+   "displayed": 30,
+   "missed": 0,
+   "followUp": 30,
+   "firstRender": 0
+  }
+ },
+ {
+  "variant": "G-03/frontier-exceeded",
+  "file": "G-03_frontier-exceeded.receipt.json",
+  "nSamples": {
+   "R": 30,
+   "R+IR": 30,
+   "R+IR+Graph": 30
+  },
+  "graphDisplayKinds": {
+   "parent": 30
+  },
+  "unmapped": [],
+  "arms": {
+   "R": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g03-c4",
+       "g03-c3",
+       "g03-c2",
+       "g03-c1",
+       "g03-c7",
+       "g03-c6",
+       "g03-c5",
+       "g03-c8"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g03-c1",
+     "g03-c2",
+     "g03-c3",
+     "g03-c4",
+     "g03-c5",
+     "g03-c6",
+     "g03-c7",
+     "g03-c8"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": false,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g03-c4",
+       "g03-c3",
+       "g03-c2",
+       "g03-c1",
+       "g03-c7",
+       "g03-c6",
+       "g03-c5",
+       "g03-c8"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g03-c1",
+     "g03-c2",
+     "g03-c3",
+     "g03-c4",
+     "g03-c5",
+     "g03-c6",
+     "g03-c7",
+     "g03-c8"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": false,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR+Graph": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g03-c4",
+       "g03-c3",
+       "g03-c2",
+       "g03-c1",
+       "g03-c7",
+       "g03-c6",
+       "g03-c5",
+       "g03-c8"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g03-c1",
+     "g03-c2",
+     "g03-c3",
+     "g03-c4",
+     "g03-c5",
+     "g03-c6",
+     "g03-c7",
+     "g03-c8"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": false,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   }
+  },
+  "childOutcome": {
+   "None": 30
+  },
+  "graphArmParentRawSets": [
+   [
+    "g03-c4",
+    "g03-c3",
+    "g03-c2",
+    "g03-c1",
+    "g03-c7",
+    "g03-c6",
+    "g03-c5",
+    "g03-c8"
+   ]
+  ],
+  "graphArmParentFinalLists": {
+   "['g03-c4', 'g03-c3', 'g03-c2', 'g03-c1', 'g03-c7', 'g03-c6', 'g03-c5', 'g03-c8']": 30
+  },
+  "pre": [
+   "b-sealed-binding",
+   "maintenance-enabled",
+   "raw-membership"
+  ],
+  "k64": {
+   "displayed": null,
+   "missed": null,
+   "followUp": null,
+   "firstRender": null
+  }
+ },
+ {
+  "variant": "G-04/base",
+  "file": "G-04_base.receipt.json",
+  "nSamples": {
+   "R": 30,
+   "R+IR": 30,
+   "R+IR+Graph": 30
+  },
+  "graphDisplayKinds": {
+   "child": 30
+  },
+  "unmapped": [],
+  "arms": {
+   "R": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g04-control"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g04-control"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": true,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g04-control"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g04-control"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": true,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR+Graph": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g04-control",
+       "g04-lio-landing"
+      ],
+      "count": 30,
+      "recall": 0.5,
+      "ndcg": 0.4966392596877323,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.5,
+    "meanNdcg": 0.4966392596877323,
+    "modalRecall": 0.5,
+    "modalNdcg": 0.4966392596877323,
+    "expectedRecall": 0.5,
+    "expectedNdcg": 0.4966392596877323,
+    "expectedList": [
+     "g04-control",
+     "g04-lio-landing"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": true,
+    "fixtureListRecomputed": [
+     0.5,
+     0.4966392596877323
+    ]
+   }
+  },
+  "childOutcome": {
+   "graph-ready": 30
+  },
+  "graphArmParentRawSets": [
+   [
+    "g04-control"
+   ]
+  ],
+  "graphArmParentFinalLists": {
+   "['g04-control']": 30
+  },
+  "pre": [
+   "b-sealed-binding",
+   "maintenance-enabled",
+   "raw-membership",
+   "cb4-inputs"
+  ],
+  "k64": {
+   "displayed": 30,
+   "missed": 0,
+   "followUp": 30,
+   "firstRender": 0
+  }
+ },
+ {
+  "variant": "G-05/base",
+  "file": "G-05_base.receipt.json",
+  "nSamples": {
+   "R": 30,
+   "R+IR": 30,
+   "R+IR+Graph": 30
+  },
+  "graphDisplayKinds": {
+   "child": 30
+  },
+  "unmapped": [],
+  "arms": {
+   "R": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g05-control"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g05-control"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": true,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g05-control",
+       "g05-xan-watch"
+      ],
+      "count": 30,
+      "recall": 0.5,
+      "ndcg": 0.4966392596877323,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.5,
+    "meanNdcg": 0.4966392596877323,
+    "modalRecall": 0.5,
+    "modalNdcg": 0.4966392596877323,
+    "expectedRecall": 0.5,
+    "expectedNdcg": 0.4966392596877323,
+    "expectedList": [
+     "g05-control",
+     "g05-xan-watch"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": true,
+    "fixtureListRecomputed": [
+     0.5,
+     0.4966392596877323
+    ]
+   },
+   "R+IR+Graph": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g05-control",
+       "g05-xan-watch"
+      ],
+      "count": 30,
+      "recall": 0.5,
+      "ndcg": 0.4966392596877323,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.5,
+    "meanNdcg": 0.4966392596877323,
+    "modalRecall": 0.5,
+    "modalNdcg": 0.4966392596877323,
+    "expectedRecall": 0.5,
+    "expectedNdcg": 0.4966392596877323,
+    "expectedList": [
+     "g05-control",
+     "g05-xan-watch"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": true,
+    "fixtureListRecomputed": [
+     0.5,
+     0.4966392596877323
+    ]
+   }
+  },
+  "childOutcome": {
+   "graph-ready": 30
+  },
+  "graphArmParentRawSets": [
+   [
+    "g05-control"
+   ]
+  ],
+  "graphArmParentFinalLists": {
+   "['g05-control', 'g05-xan-watch']": 30
+  },
+  "pre": [
+   "b-sealed-binding",
+   "maintenance-enabled",
+   "raw-membership",
+   "ir-supplement-admission"
+  ],
+  "k64": {
+   "displayed": 30,
+   "missed": 0,
+   "followUp": 30,
+   "firstRender": 0
+  }
+ },
+ {
+  "variant": "G-06/base",
+  "file": "G-06_base.receipt.json",
+  "nSamples": {
+   "R": 30,
+   "R+IR": 30,
+   "R+IR+Graph": 30
+  },
+  "graphDisplayKinds": {
+   "child": 30
+  },
+  "unmapped": [],
+  "arms": {
+   "R": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g06-c1",
+       "g06-c7",
+       "g06-c2",
+       "g06-c5",
+       "g06-c6",
+       "g06-c4",
+       "g06-c8",
+       "g06-c3"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g06-c1",
+     "g06-c2",
+     "g06-c3",
+     "g06-c4",
+     "g06-c5",
+     "g06-c6",
+     "g06-c7",
+     "g06-c8"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": false,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g06-c1",
+       "g06-c7",
+       "g06-c2",
+       "g06-c5",
+       "g06-c6",
+       "g06-c4",
+       "g06-c8",
+       "g06-c3"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g06-c1",
+     "g06-c2",
+     "g06-c3",
+     "g06-c4",
+     "g06-c5",
+     "g06-c6",
+     "g06-c7",
+     "g06-c8"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": false,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR+Graph": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g06-c1",
+       "g06-c7",
+       "g06-c2",
+       "g06-c5",
+       "g06-c6",
+       "g06-c4",
+       "g06-c8",
+       "g06-c3"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g06-c1",
+     "g06-c2",
+     "g06-c3",
+     "g06-c4",
+     "g06-c5",
+     "g06-c6",
+     "g06-c7",
+     "g06-c8"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": false,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   }
+  },
+  "childOutcome": {
+   "graph-ready": 30
+  },
+  "graphArmParentRawSets": [
+   [
+    "g06-c1",
+    "g06-c7",
+    "g06-c2",
+    "g06-c5",
+    "g06-c6",
+    "g06-c4",
+    "g06-c8",
+    "g06-c3"
+   ]
+  ],
+  "graphArmParentFinalLists": {
+   "['g06-c1', 'g06-c7', 'g06-c2', 'g06-c5', 'g06-c6', 'g06-c4', 'g06-c8', 'g06-c3']": 30
+  },
+  "pre": [
+   "b-sealed-binding",
+   "maintenance-enabled",
+   "raw-membership"
+  ],
+  "k64": {
+   "displayed": 30,
+   "missed": 0,
+   "followUp": 30,
+   "firstRender": 0
+  }
+ },
+ {
+  "variant": "G-07/base",
+  "file": "G-07_base.receipt.json",
+  "nSamples": {
+   "R": 30,
+   "R+IR": 30,
+   "R+IR+Graph": 30
+  },
+  "graphDisplayKinds": {
+   "child": 30
+  },
+  "unmapped": [],
+  "arms": {
+   "R": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g07-attach",
+       "g07-probe"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g07-probe",
+     "g07-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": false,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g07-attach",
+       "g07-probe"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g07-probe",
+     "g07-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": false,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR+Graph": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g07-attach",
+       "g07-probe",
+       "g07-pell-dock"
+      ],
+      "count": 30,
+      "recall": 1.0,
+      "ndcg": 0.5,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 1.0,
+    "meanNdcg": 0.5,
+    "modalRecall": 1.0,
+    "modalNdcg": 0.5,
+    "expectedRecall": 1,
+    "expectedNdcg": 0.5,
+    "expectedList": [
+     "g07-probe",
+     "g07-attach",
+     "g07-pell-dock"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": false,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     1.0,
+     0.5
+    ]
+   }
+  },
+  "childOutcome": {
+   "graph-ready": 30
+  },
+  "graphArmParentRawSets": [
+   [
+    "g07-attach",
+    "g07-probe"
+   ]
+  ],
+  "graphArmParentFinalLists": {
+   "['g07-attach', 'g07-probe']": 30
+  },
+  "pre": [
+   "b-sealed-binding",
+   "maintenance-enabled",
+   "raw-membership",
+   "cb4-inputs"
+  ],
+  "k64": {
+   "displayed": 30,
+   "missed": 0,
+   "followUp": 30,
+   "firstRender": 0
+  }
+ },
+ {
+  "variant": "G-08/base-usable",
+  "file": "G-08_base-usable.receipt.json",
+  "nSamples": {
+   "R": 30,
+   "R+IR": 30,
+   "R+IR+Graph": 30
+  },
+  "graphDisplayKinds": {
+   "child": 30
+  },
+  "unmapped": [],
+  "arms": {
+   "R": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g08-control",
+       "g08-attach"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g08-control",
+     "g08-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g08-control",
+       "g08-attach"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g08-control",
+     "g08-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR+Graph": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g08-control",
+       "g08-attach",
+       "g08-cass-attic"
+      ],
+      "count": 30,
+      "recall": 1.0,
+      "ndcg": 0.5,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 1.0,
+    "meanNdcg": 0.5,
+    "modalRecall": 1.0,
+    "modalNdcg": 0.5,
+    "expectedRecall": 1,
+    "expectedNdcg": 0.5,
+    "expectedList": [
+     "g08-control",
+     "g08-attach",
+     "g08-cass-attic"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     1.0,
+     0.5
+    ]
+   }
+  },
+  "childOutcome": {
+   "graph-ready": 30
+  },
+  "graphArmParentRawSets": [
+   [
+    "g08-control",
+    "g08-attach"
+   ]
+  ],
+  "graphArmParentFinalLists": {
+   "['g08-control', 'g08-attach']": 30
+  },
+  "pre": [
+   "b-sealed-binding",
+   "maintenance-enabled",
+   "raw-membership",
+   "cb4-inputs"
+  ],
+  "k64": {
+   "displayed": 30,
+   "missed": 0,
+   "followUp": 30,
+   "firstRender": 0
+  }
+ },
+ {
+  "variant": "G-08/both-indexes-unusable",
+  "file": "G-08_both-indexes-unusable.receipt.json",
+  "nSamples": {
+   "R": 30,
+   "R+IR": 30,
+   "R+IR+Graph": 30
+  },
+  "graphDisplayKinds": {
+   "child": 30
+  },
+  "unmapped": [],
+  "arms": {
+   "R": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g08-control",
+       "g08-attach"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g08-control",
+     "g08-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g08-control",
+       "g08-attach"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g08-control",
+     "g08-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR+Graph": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g08-control",
+       "g08-attach"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g08-control",
+     "g08-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   }
+  },
+  "childOutcome": {
+   "graph-late": 30
+  },
+  "graphArmParentRawSets": [
+   [
+    "g08-control",
+    "g08-attach"
+   ]
+  ],
+  "graphArmParentFinalLists": {
+   "['g08-control', 'g08-attach']": 30
+  },
+  "pre": [
+   "b-sealed-binding",
+   "maintenance-enabled",
+   "raw-membership",
+   "index-state-holding"
+  ],
+  "k64": {
+   "displayed": null,
+   "missed": null,
+   "followUp": null,
+   "firstRender": null
+  }
+ },
+ {
+  "variant": "G-08/chronicle-index-unusable",
+  "file": "G-08_chronicle-index-unusable.receipt.json",
+  "nSamples": {
+   "R": 30,
+   "R+IR": 30,
+   "R+IR+Graph": 30
+  },
+  "graphDisplayKinds": {
+   "child": 30
+  },
+  "unmapped": [],
+  "arms": {
+   "R": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g08-control",
+       "g08-attach"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g08-control",
+     "g08-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g08-control",
+       "g08-attach"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g08-control",
+     "g08-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR+Graph": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g08-control",
+       "g08-attach"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g08-control",
+     "g08-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   }
+  },
+  "childOutcome": {
+   "graph-late": 30
+  },
+  "graphArmParentRawSets": [
+   [
+    "g08-control",
+    "g08-attach"
+   ]
+  ],
+  "graphArmParentFinalLists": {
+   "['g08-control', 'g08-attach']": 30
+  },
+  "pre": [
+   "b-sealed-binding",
+   "maintenance-enabled",
+   "raw-membership",
+   "index-state-holding"
+  ],
+  "k64": {
+   "displayed": null,
+   "missed": null,
+   "followUp": null,
+   "firstRender": null
+  }
+ },
+ {
+  "variant": "G-08/graph-index-unusable",
+  "file": "G-08_graph-index-unusable.receipt.json",
+  "nSamples": {
+   "R": 30,
+   "R+IR": 30,
+   "R+IR+Graph": 30
+  },
+  "graphDisplayKinds": {
+   "parent": 30
+  },
+  "unmapped": [],
+  "arms": {
+   "R": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g08-control",
+       "g08-attach"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g08-control",
+     "g08-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g08-control",
+       "g08-attach"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g08-control",
+     "g08-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR+Graph": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g08-control",
+       "g08-attach"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g08-control",
+     "g08-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   }
+  },
+  "childOutcome": {
+   "None": 30
+  },
+  "graphArmParentRawSets": [
+   [
+    "g08-control",
+    "g08-attach"
+   ]
+  ],
+  "graphArmParentFinalLists": {
+   "['g08-control', 'g08-attach']": 30
+  },
+  "pre": [
+   "b-sealed-binding",
+   "maintenance-enabled",
+   "raw-membership",
+   "index-state-holding"
+  ],
+  "k64": {
+   "displayed": null,
+   "missed": null,
+   "followUp": null,
+   "firstRender": null
+  }
+ },
+ {
+  "variant": "G-08/graph-recovered",
+  "file": "G-08_graph-recovered.receipt.json",
+  "nSamples": {
+   "R": 30,
+   "R+IR": 30,
+   "R+IR+Graph": 30
+  },
+  "graphDisplayKinds": {
+   "child": 30
+  },
+  "unmapped": [],
+  "arms": {
+   "R": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g08-control",
+       "g08-attach"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g08-control",
+     "g08-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g08-control",
+       "g08-attach"
+      ],
+      "count": 30,
+      "recall": 0.0,
+      "ndcg": 0.0,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 0.0,
+    "meanNdcg": 0.0,
+    "modalRecall": 0.0,
+    "modalNdcg": 0.0,
+    "expectedRecall": 0,
+    "expectedNdcg": 0,
+    "expectedList": [
+     "g08-control",
+     "g08-attach"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     0.0,
+     0.0
+    ]
+   },
+   "R+IR+Graph": {
+    "distinctLists": 1,
+    "lists": [
+     {
+      "list": [
+       "g08-control",
+       "g08-attach",
+       "g08-cass-attic"
+      ],
+      "count": 30,
+      "recall": 1.0,
+      "ndcg": 0.5,
+      "ineligible": []
+     }
+    ],
+    "meanRecall": 1.0,
+    "meanNdcg": 0.5,
+    "modalRecall": 1.0,
+    "modalNdcg": 0.5,
+    "expectedRecall": 1,
+    "expectedNdcg": 0.5,
+    "expectedList": [
+     "g08-control",
+     "g08-attach",
+     "g08-cass-attic"
+    ],
+    "metricMatch": true,
+    "membershipMatchAll": true,
+    "orderMatchAll": true,
+    "orderPredeclared": false,
+    "fixtureListRecomputed": [
+     1.0,
+     0.5
+    ]
+   }
+  },
+  "childOutcome": {
+   "graph-ready": 30
+  },
+  "graphArmParentRawSets": [
+   [
+    "g08-control",
+    "g08-attach"
+   ]
+  ],
+  "graphArmParentFinalLists": {
+   "['g08-control', 'g08-attach']": 30
+  },
+  "pre": [
+   "b-sealed-binding",
+   "maintenance-enabled",
+   "raw-membership",
+   "cb4-inputs"
+  ],
+  "k64": {
+   "displayed": 30,
+   "missed": 0,
+   "followUp": 30,
+   "firstRender": 0
+  }
+ }
+]

@@ -1,0 +1,22 @@
+diff --git a/scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs b/scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs
+index c2203f0d..437b2228 100644
+--- a/scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs
++++ b/scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs
+@@ -288,6 +288,17 @@ export function spP4SampleRecord({
+     irSupplementSceneId: extra[0] ?? null,
+     counters: { before: countersBefore, after: countersAfter, delta },
+     beginsDeltaZero: delta.begins === 0,
++    // INV（調査用の計装。commit しない）: IR の待ちの時刻。
++    invTiming: {
++      timing: measure?.timing ?? null,
++      ipc: (measure?.ipc ?? []).map((row) => ({
++        cmd: row.cmd,
++        calledAt: row.calledAt,
++        resolvedAt: row.resolvedAt,
++        status: row.status,
++        reason: row.reason,
++      })),
++    },
+   });
+ }
+ 

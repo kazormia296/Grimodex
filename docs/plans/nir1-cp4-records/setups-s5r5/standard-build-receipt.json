@@ -1,0 +1,91 @@
+{
+  "schemaVersion": "nir1-standard-build/1",
+  "attemptId": "c84d5d81-d7ed-4dbb-b263-0bfc531e40ee",
+  "root": "/home/grimodex/worktrees/Grimodex/claude-g04-cand",
+  "candidate": {
+    "requestedBase": "refs/remotes/origin/master",
+    "requestedHead": "HEAD",
+    "resolvedBaseSha": "22b74a25ff8dadfa45247e5bc866afe3afd48fb7",
+    "resolvedHeadSha": "22b74a25ff8dadfa45247e5bc866afe3afd48fb7",
+    "resolvedHeadTreeSha": "62329f963a474f9fe39fa855bc4586725b45a529",
+    "currentHeadSha": "22b74a25ff8dadfa45247e5bc866afe3afd48fb7",
+    "worktreeClean": true
+  },
+  "status": "passed",
+  "standardBuild": true,
+  "sourceUnchanged": true,
+  "commands": [
+    {
+      "argv": [
+        "pnpm",
+        "napi:build"
+      ],
+      "status": "passed",
+      "exitCode": 0,
+      "signal": null,
+      "closeObserved": true,
+      "processGroupId": 3296121,
+      "termination": "close-and-group-exit-observed",
+      "cleanup": {
+        "complete": true,
+        "groupAlive": false,
+        "killSent": false,
+        "termSent": false,
+        "closeObserved": true
+      },
+      "logs": {
+        "stderr": {
+          "path": ".artifacts/nir1-standard-build/runs/c84d5d81-d7ed-4dbb-b263-0bfc531e40ee/napi-build.stderr.log",
+          "sha256": "sha256:a70da5408e7a6da7efe97b23011504833b16a7875bda14543f2504b5b8c7d97a",
+          "size": 62
+        },
+        "stdout": {
+          "path": ".artifacts/nir1-standard-build/runs/c84d5d81-d7ed-4dbb-b263-0bfc531e40ee/napi-build.stdout.log",
+          "sha256": "sha256:c49a7913511d21193e5519903ddc4a09c734b880b9d9bf082d5279683d989587",
+          "size": 263
+        }
+      }
+    },
+    {
+      "argv": [
+        "pnpm",
+        "electron:build"
+      ],
+      "status": "passed",
+      "exitCode": 0,
+      "signal": null,
+      "closeObserved": true,
+      "processGroupId": 3296200,
+      "termination": "close-and-group-exit-observed",
+      "cleanup": {
+        "complete": true,
+        "groupAlive": false,
+        "killSent": false,
+        "termSent": false,
+        "closeObserved": true
+      },
+      "logs": {
+        "stderr": {
+          "path": ".artifacts/nir1-standard-build/runs/c84d5d81-d7ed-4dbb-b263-0bfc531e40ee/electron-build.stderr.log",
+          "sha256": "sha256:60645fff42af66b93b5a74eaae331f08c959cda136f00e3e91ff9196fa12510a",
+          "size": 2218
+        },
+        "stdout": {
+          "path": ".artifacts/nir1-standard-build/runs/c84d5d81-d7ed-4dbb-b263-0bfc531e40ee/electron-build.stdout.log",
+          "sha256": "sha256:eb3e059ba3684e0c2795c6e40754e6958ee82d3dbd2c39fee2a59e6457ed2559",
+          "size": 64565
+        }
+      }
+    }
+  ],
+  "sourceManifest": "/home/grimodex/worktrees/Grimodex/claude-g04-cand/.artifacts/cp4/s5r5-receipts/standard-build-receipt.json.sources.json",
+  "sourceManifestSha256": "48c45fe139b868a66c18ef48f770e85443b4bdf6d07dc017ee29b69ed1db997f",
+  "artifacts": {
+    "dist/index.html": "330535d2d9f7485e714f11f7df381421604ad0e77c9838eda41afa79aa435e78",
+    "dist-electron/main.cjs": "31023f585fcdd080afe530a1e3b19a26e6812c0aa2ec35f33bf2c886db528278",
+    "dist-electron/preload.cjs": "9c37d32af100699a97fbd8ce068fb273f5e9387d9155cc471173add03ca489a8",
+    "electron/native/grimodex-node/grimodex-node.node": "10d620c179411059b42c3ff0be9b61bc658bdd29788e49d24210b491c209f232"
+  },
+  "startedAt": "2026-11-01T16:22:30.874Z",
+  "finishedAt": "2026-11-01T16:23:38.061Z"
+}

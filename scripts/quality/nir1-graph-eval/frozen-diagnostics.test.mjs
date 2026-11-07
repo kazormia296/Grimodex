@@ -590,6 +590,7 @@ const goodHead = () => ({
   kind: "sp-p4",
   k62: { freezeCommit: C("6"), sha256: H("6") },
   k64: { freezeCommit: C("4"), sha256: H("4") },
+  k65: { freezeCommit: C("8"), sha256: H("8") },
   observationPrep: { commit: C("5"), freezeRecordSha256: H("5") },
   traces: s2Record().traces,
 });
@@ -612,6 +613,9 @@ test("S5-B: receipt の先頭は測定の前に書き、欠け・placeholder・�
   );
   for (const mutate of [
     (h) => delete h.k64,
+    // K6/5 変える点 7: /5 の凍結の head が無い run は始めない。
+    (h) => delete h.k65,
+    (h) => (h.k65.sha256 = "S4:k65"),
     (h) => (h.k62.sha256 = "x"),
     (h) => (h.observationPrep.commit = null),
     (h) => (h.traces[0].commit = "S4:trace-editing-commit"),
@@ -695,6 +699,7 @@ test("S5-B: Graph arm を含む実行は ④ の SP-P4 の receipt を読み直�
     kind: "sp-p4",
     k62: { freezeCommit: C("6"), sha256: H("6") },
     k64: { freezeCommit: C("4"), sha256: H("4") },
+    k65: { freezeCommit: C("8"), sha256: H("8") },
     observationPrep: { commit: C("5"), freezeRecordSha256: H("5") },
   };
   const headSha256 = createHash("sha256")
@@ -844,6 +849,22 @@ test("S5-B: Graph arm を含む実行は ④ の SP-P4 の receipt を読み直�
       }),
     /k64 head/u,
   );
+  // K6/5 変える点 7: and the K6/5 head (a receipt of the /4 row, with no k65, or
+  // of another /5 freeze, is not this run's gate).
+  for (const other of [
+    { ...head, k65: { freezeCommit: C("7"), sha256: H("8") } },
+    { ...head, k65: { freezeCommit: C("8"), sha256: H("7") } },
+    { ...head, k65: undefined },
+  ])
+    assert.throws(
+      () =>
+        readSpP4Gate({
+          file: write(receipt(), "k65.json"),
+          head: other,
+          candidateCommit: C("b"),
+        }),
+      /k65 head/u,
+    );
 });
 
 test("O-7: 同じ workspace の不一致が IR の期限切れだけで説明できるかを判定とは別に開示する", () => {
