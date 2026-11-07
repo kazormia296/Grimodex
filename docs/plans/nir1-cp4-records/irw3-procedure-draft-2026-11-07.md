@@ -269,3 +269,9 @@ AGENTS.md の委任の外：秘密・データの新しい送信先、**保存�
 - 保持はメモリだけ：`GraphInner.click`（`graph.rs:63-67`。binding・path の識別子と token・scene_id。本文・抜粋・path の文字列は持たない。1 件で `keep_click` が上書き）。寿命は lease と同じ（TTL 300 s、`related_scenes.rs:36`）。ほかは process-local の counter と runtime の状態だけ。
 - harness は DB ではなく JSON に書く（`cp4-harness.ts:718-722` の `{status, reason, ms}` → report の JSON。receipt には書かない）。
 - **よって G-01 相当の同梱は保存範囲の拡大に当たらない。** 残る委任の外は admission の変更（新しい authority に当たりうる）で、S2 追補 #14 の確認に含める。
+
+### 追記：U-1・U-2 の質問と回答（2026-11-07、AskUserQuestion で 1 回。逐語の要旨）
+
+- **U-1（問 2 の訂正と再確認）**：問い「前回『p95 は正式の合否に入らず補助記録だけが使う』とお伝えしましたが誤りでした。Hybrid p95 の上限は CP-4 の合格条件の一つで（K6/2:620、2026-10-26 に /4 として確認済み）、正式の手順のコードが判定していないため品質の判定 QV-1 が受領書に後から当てているだけです。母集団は G-case の CP-4 run（両 arm）です。D=40 ms の下での最悪の見積り（s5r6 に最大 29.16 ms を足す、推測）は R+IR arm 84.46 ms、Graph arm 60.66 ms です。上限をどうしますか？」→ 回答「**94.2 ms（緩和）**」。
+- **U-2（T_late）**：問い「D を 40 ms にすると、Graph が遅れて届いた親（graph-late）は Raw-ready＋D で公開されるので、公開の後に Graph の通知が間に合う余裕（T_late の Graph 側）が 89.16 ms から 60 ms に縮みます（ここは厳しくなる）。後から広げるには新しい契約が要るので今決めます。」→ 回答「**129.16 ms に広げる**」。
+- **U-2 の説明の誤り（2026-11-07、K6/5 改訂 3 の再レビューで判明）**：q1 は Raw-ready から測り（`followup.mjs:560-561`）、cache への格納は親の公開の後に限られる（K6/4:119）ので、graph-late の親の q1 はおおよそ max(Graph の完了, 公開)＋通知の遅れになる。D=40 で graph-late になるのは Graph の完了が 40 ms より後の親なので、q1 は Graph の到着で決まり D の影響を受けない（仕組みからの推論、未測定）。**よって 100 ms のままでも Graph の遅れの許容は締まらず、129.16 ms は D からの帰結ではなく、Graph の遅れの許容を 29 ms 広げる独立の緩和になる。** U-2 は訂正した説明で聞き直す。
