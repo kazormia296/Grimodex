@@ -14,16 +14,20 @@ const MAX_CONSECUTIVE_READER_RETRIES: u32 = 40;
 const RETRY_DELAY: Duration = Duration::from_millis(250);
 /// DR-IRB-7: the wait after a publish-side `Stale` (`StaleRetry`). A save
 /// reserves Freshness between the prepare and the publish, so the publish
-/// check no longer matches; the renderer's hook begins the parent query
+/// check no longer matches (`Stale` is not only Freshness: an owner mismatch
+/// or a runtime epoch rotation also give it, and the next attempt then stops
+/// or proceeds with the new epoch, so the short retry does no harm); the renderer's hook begins the parent query
 /// 400 ms after the save, and a build task asleep for 250 ms at that moment
 /// leaves Chronicle unusable so IR/Graph never start. In the dev measurement
 /// `Stale` came 156-243 ms after the save and one build takes about 25 ms, so
 /// 50 ms still finishes the next build before 400 ms (243 + 50 + 25 = about 320 ms).
-/// It is not 0 ms: right after `Stale` Freshness can still be in an
-/// intermediate state, and `prepare_on_reader` drops any `Unavailable` other
+/// It is not 0 ms: 0 ms would busy-loop while Freshness is still being
+/// evaluated, and in theory `prepare_on_reader` drops any `Unavailable` other
 /// than `PendingChange` (for example `ReservedBinding`) to `Stopped`, which
-/// ends the task and releases the reservation. `PendingChange` keeps
-/// `RETRY_DELAY` (0 ms would busy-loop).
+/// would end the task and release the reservation (a theoretical path: the
+/// reason is decided inside one transaction, and between the Freshness
+/// reservation and the publish `PendingChange` is what is seen).
+/// `PendingChange` keeps `RETRY_DELAY`.
 const STALE_RETRY_DELAY: Duration = Duration::from_millis(50);
 /// DR-IRB-7: how many `StaleRetry` in a row wait `STALE_RETRY_DELAY`; the
 /// following ones go back to `RETRY_DELAY` until another outcome ends the run.
@@ -549,6 +553,18 @@ fn build_once(
     tracing::debug!(target:"grimodex::nir1_index", prepare_ms=prepared_at.duration_since(started).as_millis(),
         embedding_ms=embedded_at.duration_since(prepared_at).as_millis(),
         publication_ms=embedded_at.elapsed().as_millis(),reused_count,"NIR1 build components");
+    publish_outcome(state, request, published)
+}
+
+/// The outcome of `build_once` for a publish result. `Stale` is not only
+/// Freshness: a mismatch of the owner or a rotation of the runtime epoch
+/// (pause/resume, an embedding runtime swap) also give it. Those are harmless:
+/// the next attempt stops or proceeds with the new epoch.
+fn publish_outcome(
+    state: &AppState,
+    request: &SemanticRequest,
+    published: index::NirIndexPublishRead,
+) -> Result<BuildOutcome> {
     match published {
         index::NirIndexPublishRead::Published {
             newly_usable_published: true,

@@ -449,6 +449,10 @@ async fn the_task_waits_by_outcome_and_keeps_its_reservation() {
     ])));
     let calls = Arc::new(Mutex::new(Vec::<Instant>::new()));
     let (step_script, step_calls) = (Arc::clone(&script), Arc::clone(&calls));
+    let step_state = Arc::clone(&h.state);
+    let step_key = key.clone();
+    let reserved_in_step = Arc::new(Mutex::new(Vec::<bool>::new()));
+    let step_reserved = Arc::clone(&reserved_in_step);
     schedule_with(
         Arc::clone(&h.state),
         request,
@@ -457,6 +461,12 @@ async fn the_task_waits_by_outcome_and_keeps_its_reservation() {
         test_policy(),
         Arc::new(move |_, _, _, _| {
             step_calls.lock().expect("calls").push(Instant::now());
+            // The reservation is still held while this step runs (a second
+            // `reserve` is refused), also on the second and later steps.
+            let reserved = lock(&step_state.related_scenes.builds)
+                .expect("builds")
+                .reserve(step_key.clone(), generation);
+            step_reserved.lock().expect("reserved").push(reserved);
             Ok(step_script
                 .lock()
                 .expect("script")
@@ -485,6 +495,11 @@ async fn the_task_waits_by_outcome_and_keeps_its_reservation() {
         }
         assert!(Instant::now() < deadline, "the task must stop");
     }
+    assert_eq!(
+        *reserved_in_step.lock().expect("reserved"),
+        [false; 5],
+        "every step runs with the reservation held"
+    );
     let calls = calls.lock().expect("calls");
     assert_eq!(calls.len(), 5);
     let gaps: Vec<Duration> = calls.windows(2).map(|w| w[1] - w[0]).collect();
@@ -523,6 +538,11 @@ fn an_epoch_rotation_or_a_stop_after_the_reader_prevents_publication() {
     )
     .expect("stale publish");
     assert!(matches!(published, index::NirIndexPublishRead::Stale));
+    // DR-IRB-7: `build_once` maps the publish `Stale` to `StaleRetry`.
+    assert!(matches!(
+        publish_outcome(&h.state, &request, published),
+        Ok(BuildOutcome::StaleRetry)
+    ));
     assert_eq!(h.metadata_rows(), 0, "nothing was bound");
     assert_eq!(h.runtime().live_chronicle_readers(), 0);
 
