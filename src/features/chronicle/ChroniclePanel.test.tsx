@@ -348,6 +348,7 @@ vi.mock("./ChronicleExtractDialog", () => ({
 }));
 
 import { ChroniclePanel } from "./ChroniclePanel";
+import { AlreadyNotifiedSaveError } from "@/hooks/useAutoSave";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useChronicleStore } from "./chronicleStore";
@@ -1451,6 +1452,90 @@ describe("ChroniclePanel scene link", () => {
     });
     await waitFor(() => {
       expect(toastMocks.error).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("quarantine の拒否（PUB-G #36 の引継ぎ）", () => {
+    const quarantined = () =>
+      Object.assign(new Error("WORKSPACE_QUARANTINED: fenced"), {
+        code: "WORKSPACE_QUARANTINED",
+      });
+
+    it("出来事の patch: 汎用の失敗 toast の代わりに sticky の案内を出し、cause を AlreadyNotifiedSaveError に載せる", async () => {
+      const cause = quarantined();
+      apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
+      eventMocks.uiUpdateEvent.mockRejectedValueOnce(cause);
+      useProjectStore.setState({ currentProjectId: "p1" });
+      render(<ChroniclePanel />);
+      await screen.findByTestId("viewport");
+      act(() => {
+        useChronicleStore.getState().setSelectedEventId("ea");
+      });
+
+      fireEvent.click(screen.getByTestId("draft-patch-btn"));
+      await waitFor(() => {
+        expect(inspectorMocks.draftRejected).toHaveBeenCalledTimes(1);
+      });
+      const rejected = inspectorMocks.draftRejected.mock.calls[0]?.[0];
+      expect(rejected).toBeInstanceOf(AlreadyNotifiedSaveError);
+      expect((rejected as AlreadyNotifiedSaveError).cause).toBe(cause);
+      expect(toastMocks.error).toHaveBeenCalledTimes(1);
+      expect(toastMocks.error).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          id: "autosave-workspace-quarantined",
+          duration: Infinity,
+        }),
+      );
+    });
+
+    it("scene-event の patch でも同じ（案内に置き換え、cause を載せる）", async () => {
+      const cause = quarantined();
+      apiMocks.listEvents.mockResolvedValue([]);
+      useTreeStore.setState({
+        nodes: [makeScene({ id: "sc1" })],
+        updateNodeTitle: vi.fn().mockRejectedValue(cause),
+      });
+      useProjectStore.setState({ currentProjectId: "p1" });
+      render(<ChroniclePanel />);
+      await screen.findByTestId("viewport");
+      act(() => {
+        useChronicleStore.setState({ selectedEventId: "scene:sc1" });
+      });
+
+      fireEvent.click(screen.getByTestId("draft-patch-btn"));
+      await waitFor(() => {
+        expect(inspectorMocks.draftRejected).toHaveBeenCalledTimes(1);
+      });
+      const rejected = inspectorMocks.draftRejected.mock.calls[0]?.[0];
+      expect(rejected).toBeInstanceOf(AlreadyNotifiedSaveError);
+      expect((rejected as AlreadyNotifiedSaveError).cause).toBe(cause);
+      expect(toastMocks.error).toHaveBeenCalledTimes(1);
+      expect(toastMocks.error).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ id: "autosave-workspace-quarantined" }),
+      );
+    });
+
+    it("quarantine 以外は従来の toast（案内の id なし）で、cause に元の error が乗る", async () => {
+      const cause = new Error("draft failed");
+      apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
+      eventMocks.uiUpdateEvent.mockRejectedValueOnce(cause);
+      useProjectStore.setState({ currentProjectId: "p1" });
+      render(<ChroniclePanel />);
+      await screen.findByTestId("viewport");
+      act(() => {
+        useChronicleStore.getState().setSelectedEventId("ea");
+      });
+
+      fireEvent.click(screen.getByTestId("draft-patch-btn"));
+      await waitFor(() => {
+        expect(inspectorMocks.draftRejected).toHaveBeenCalledTimes(1);
+      });
+      const rejected = inspectorMocks.draftRejected.mock.calls[0]?.[0];
+      expect((rejected as AlreadyNotifiedSaveError).cause).toBe(cause);
+      expect(toastMocks.error).toHaveBeenCalledTimes(1);
+      expect(toastMocks.error).toHaveBeenCalledWith(expect.any(String));
     });
   });
 });

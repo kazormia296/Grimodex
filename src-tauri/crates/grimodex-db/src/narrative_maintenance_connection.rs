@@ -1691,6 +1691,7 @@ impl Database {
     /// CloseUnproven` and the caller must not give its reader slot back.
     /// Crate-private: `self` must be a reader, never an authority (the close
     /// retires the connection).
+    #[cfg(test)]
     pub(crate) fn with_participant_chronicle_reader<T, F>(
         &self,
         participant: &WorkspaceParticipant,
@@ -1700,7 +1701,27 @@ impl Database {
     where
         F: FnOnce(&Connection) -> Result<T>,
     {
-        let stop = Arc::new(AtomicBool::new(false));
+        self.with_participant_chronicle_reader_stoppable(
+            participant,
+            cancellation,
+            Arc::new(AtomicBool::new(false)),
+            operation,
+        )
+    }
+
+    /// Same, with the reader scope's stop flag supplied by the caller: the
+    /// lifecycle core sets it when a waiting side's bounded wait forces this
+    /// reader out of the participant count (DR-IRB-3, E7).
+    pub(crate) fn with_participant_chronicle_reader_stoppable<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        cancellation: (Arc<AtomicU64>, u64),
+        stop: Arc<AtomicBool>,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
         let operation_stop = Arc::clone(&stop);
         let generation = cancellation.clone();
         let config = NarrativeMaintenanceGraphControlConfig {

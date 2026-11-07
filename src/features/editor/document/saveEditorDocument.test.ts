@@ -175,7 +175,7 @@ describe("saveEditorDocument", () => {
       {
         contentOverride: '{"type":"doc","content":[]}',
       },
-      { baseVersion: 4 },
+      { baseVersion: 4, onFailure: expect.any(Function) },
     );
     expect(services.updateCodexPhase.mock.calls[0]?.[2]).not.toHaveProperty(
       "preexistingDraft",
@@ -202,7 +202,11 @@ describe("saveEditorDocument", () => {
       {
         contentOverride: '{"type":"doc","content":[]}',
       },
-      { baseVersion: 4, preexistingDraft: true },
+      {
+        baseVersion: 4,
+        preexistingDraft: true,
+        onFailure: expect.any(Function),
+      },
     );
   });
 
@@ -338,4 +342,68 @@ describe("saveEditorDocument", () => {
       ).rejects.toBeInstanceOf(AlreadyNotifiedSaveError);
     },
   );
+  describe("store が握りつぶした失敗の cause を AlreadyNotifiedSaveError に載せる", () => {
+    const quarantined = Object.assign(
+      new Error("WORKSPACE_QUARANTINED: fenced"),
+      { code: "WORKSPACE_QUARANTINED" },
+    );
+
+    it("Codex base: outcome.cause", async () => {
+      const services = makeServices();
+      services.updateCodexText.mockResolvedValue({
+        persisted: false,
+        cause: quarantined,
+      });
+      const error = await saveEditorDocument(
+        { kind: "codex", id: "codex-1", phaseId: null, loadedVersion: 3 },
+        doc,
+        services,
+      ).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(AlreadyNotifiedSaveError);
+      expect((error as AlreadyNotifiedSaveError).cause).toBe(quarantined);
+    });
+
+    it("snippet: outcome.cause", async () => {
+      const services = makeServices({ persisted: false, cause: quarantined });
+      const error = await saveEditorDocument(
+        { kind: "snippet", id: "snippet-1", loadedVersion: 5 },
+        doc,
+        services,
+      ).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(AlreadyNotifiedSaveError);
+      expect((error as AlreadyNotifiedSaveError).cause).toBe(quarantined);
+    });
+
+    it("Codex phase: onFailure で受けた error", async () => {
+      const services = makeServices();
+      services.updateCodexPhase.mockImplementation(
+        async (
+          _id: string,
+          _data: unknown,
+          options: { onFailure?: (cause: unknown) => void },
+        ) => {
+          options.onFailure?.(quarantined);
+          return null;
+        },
+      );
+      const error = await saveEditorDocument(
+        { kind: "codex", id: "codex-1", phaseId: "phase-1", loadedVersion: 3 },
+        doc,
+        services,
+      ).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(AlreadyNotifiedSaveError);
+      expect((error as AlreadyNotifiedSaveError).cause).toBe(quarantined);
+    });
+
+    it("cause が無い失敗（衝突・行なし）は cause 無しのまま", async () => {
+      const services = makeServices({ persisted: false });
+      const error = await saveEditorDocument(
+        { kind: "snippet", id: "snippet-1", loadedVersion: 5 },
+        doc,
+        services,
+      ).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(AlreadyNotifiedSaveError);
+      expect((error as AlreadyNotifiedSaveError).cause).toBeUndefined();
+    });
+  });
 });

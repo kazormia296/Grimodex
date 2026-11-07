@@ -5,6 +5,7 @@ import { announce } from "@/lib/a11y/announcer";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { isWorkspaceSwitchingError } from "@/features/concurrency/workspaceSwitching";
 import { isWorkspaceQuarantinedError } from "@/features/concurrency/workspaceQuarantined";
+import { notifyWorkspaceQuarantined } from "@/features/concurrency/notifyWorkspaceQuarantined";
 import { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
 import {
   createQuiescenceProviderId,
@@ -364,13 +365,13 @@ export function createAutoSave(
         quarantineError = e;
         pending = true;
         clearTimer();
-        // One sticky toast shared by every mounted AutoSave instance.
-        if (firstTime && !(e instanceof AlreadyNotifiedSaveError)) {
-          toast.error(i18next.t("autoSave.workspaceQuarantined"), {
-            id: "autosave-workspace-quarantined",
-            duration: Infinity,
-          });
-        }
+        // One sticky toast shared by every mounted AutoSave instance. A
+        // store-owned failure (AlreadyNotifiedSaveError carrying the cause)
+        // is not "already notified" of the quarantine guidance: the store
+        // only emits the same sticky toast (same id, so no duplicate) or a
+        // generic failure toast, never the restart guidance this instance
+        // owns. Hence no AlreadyNotifiedSaveError exemption here.
+        if (firstTime) notifyWorkspaceQuarantined();
       } else if (e instanceof AlreadyNotifiedSaveError) {
         // 通知済み: toast なし (debugLog / lastFailed / 回復 announce は通常どおり)
       } else if (isWorkspaceSwitchingError(e)) {

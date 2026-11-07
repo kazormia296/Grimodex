@@ -10,7 +10,11 @@ import {
 import type { CodexEntry } from "../api";
 import { buildSceneTimeIndex } from "../context/sceneTimeIndex";
 import { DetailsTab } from "./DetailsTab";
-import { flushAllAutoSaves } from "@/hooks/useAutoSave";
+import {
+  AlreadyNotifiedSaveError,
+  discardAllAutoSaves,
+  flushAllAutoSaves,
+} from "@/hooks/useAutoSave";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 import { announcePersistedBinding } from "@/features/editor/editorSaveRegistry";
@@ -208,6 +212,44 @@ describe("DetailsTab Phase preview", () => {
     );
   });
 
+  it("carries the store's onFailure cause on the Phase save error", async () => {
+    codexState.previewPhaseByEntry = {};
+    const cause = Object.assign(new Error("WORKSPACE_QUARANTINED: fenced"), {
+      code: "WORKSPACE_QUARANTINED",
+    });
+    phaseState.updatePhase.mockImplementationOnce(
+      async (
+        _id: string,
+        _data: unknown,
+        options: { onFailure?: (cause: unknown) => void },
+      ) => {
+        options.onFailure?.(cause);
+        return null;
+      },
+    );
+    render(
+      <DetailsTab
+        entry={entry}
+        summary={entry.summary ?? ""}
+        onSummaryChange={vi.fn()}
+        onContentChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByDisplayValue("Preview summary"), {
+      target: { value: "phase summary changed" },
+    });
+    let reason: unknown;
+    await act(async () => {
+      reason = await flushAllAutoSaves().catch((e: unknown) =>
+        e instanceof AggregateError ? e.errors[0] : e,
+      );
+    });
+    expect(reason).toBeInstanceOf(AlreadyNotifiedSaveError);
+    expect((reason as AlreadyNotifiedSaveError).cause).toBe(cause);
+    discardAllAutoSaves();
+  });
+
   it("serializes Phase summary/content with the loaded and returned versions", async () => {
     codexState.previewPhaseByEntry = {};
     phaseState.updatePhase
@@ -237,13 +279,13 @@ describe("DetailsTab Phase preview", () => {
       1,
       "phase-1",
       { summaryOverride: "phase summary changed" },
-      { baseVersion: 3 },
+      { baseVersion: 3, onFailure: expect.any(Function) },
     );
     expect(phaseState.updatePhase).toHaveBeenNthCalledWith(
       2,
       "phase-1",
       { contentOverride: "phase content changed" },
-      { baseVersion: 4 },
+      { baseVersion: 4, onFailure: expect.any(Function) },
     );
   });
 
@@ -328,7 +370,7 @@ describe("DetailsTab Phase preview", () => {
     expect(phaseState.updatePhase).toHaveBeenCalledWith(
       phase.id,
       { summaryOverride: "summary after peer body" },
-      { baseVersion: 4 },
+      { baseVersion: 4, onFailure: expect.any(Function) },
     );
   });
 
@@ -485,7 +527,7 @@ describe("DetailsTab Phase preview", () => {
     expect(phaseState.updatePhase).toHaveBeenCalledWith(
       phase.id,
       { summaryOverride: "local winner" },
-      { baseVersion: 8 },
+      { baseVersion: 8, onFailure: expect.any(Function) },
     );
     expect(
       useEditorSessionStore.getState().isDocumentDirty(phaseDocumentKey),

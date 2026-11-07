@@ -554,7 +554,111 @@ impl Drop for WorkspaceQuarantineFence {
     }
 }
 
+/// DR-IRB-3 (E7): how long a waiting side (a transition's physical-exclusive
+/// wait, and shutdown) waits for a dedicated reader to stop before it goes on
+/// without it. The reader's stop latency is estimated at the low hundreds of
+/// milliseconds (at most 28.5 ms for one candidate's preflight, plus cleanup),
+/// so 2 s is more than ten times that, and far below the 30 s observation
+/// budget main keeps around these waits.
+pub const READER_STOP_BOUNDED_WAIT_MS: u64 = 2_000;
+
+/// One open dedicated reader, registered while its connection is open. The
+/// lease is weak: a hold never keeps a participant alive.
+#[derive(Debug)]
+struct ReaderHold {
+    id: u64,
+    lease: std::sync::Weak<WorkspaceParticipantLease>,
+    /// The reader scope's own stop flag: setting it interrupts a running
+    /// statement through the SQL progress hook and ends the read typed.
+    stop: Arc<AtomicBool>,
+    /// The reader slot's blocked flag (E8 (a)): a forced reader has no close
+    /// evidence, so its slot is never given back.
+    slot_blocked: Arc<AtomicBool>,
+    owner: u64,
+    forced: bool,
+}
+
+/// Removes the registration when the reader scope ends (closed or not).
+#[must_use]
+pub(crate) struct ReaderHoldGuard {
+    core: WorkspaceLifecycleCore,
+    id: u64,
+}
+
+impl Drop for ReaderHoldGuard {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.core.inner.state.lock() {
+            state.reader_holds.retain(|hold| hold.id != self.id);
+        }
+    }
+}
+
+/// The waiting side's bounded wait for readers to stop (DR-IRB-3, E7).
+///
+/// A waiter polls this each time its own condition is still not met. Before
+/// the bound it does nothing. From the bound on it forces every registered
+/// reader that is still open out of the participant count (once, with one
+/// `tracing::warn`), so the waiter's own condition (participants == 0) can be
+/// met; its physical-exclusive acquire still re-checks that under the
+/// lifecycle lock. Participants that are not readers are never forced.
+pub struct ReaderStopBoundedWait {
+    core: WorkspaceLifecycleCore,
+    started: std::time::Instant,
+    bound: std::time::Duration,
+}
+
+impl ReaderStopBoundedWait {
+    pub fn new(core: &WorkspaceLifecycleCore) -> Self {
+        Self::with_bound(
+            core,
+            std::time::Duration::from_millis(READER_STOP_BOUNDED_WAIT_MS),
+        )
+    }
+
+    /// A shorter (or longer) bound, for deterministic tests.
+    pub fn with_bound(core: &WorkspaceLifecycleCore, bound: std::time::Duration) -> Self {
+        Self {
+            core: core.clone(),
+            started: std::time::Instant::now(),
+            bound,
+        }
+    }
+
+    /// Returns how many readers this call forced.
+    pub fn poll(&self) -> usize {
+        let waited = self.started.elapsed();
+        if waited < self.bound {
+            return 0;
+        }
+        self.core.force_stuck_readers(waited)
+    }
+}
+
 impl WorkspaceParticipant {
+    /// DR-IRB-3 (E7): register the dedicated reader that runs under this
+    /// participant, so a waiting side whose bound passed can force it.
+    pub(crate) fn register_reader_hold(
+        &self,
+        owner: u64,
+        stop: Arc<AtomicBool>,
+        slot_blocked: Arc<AtomicBool>,
+    ) -> Option<ReaderHoldGuard> {
+        let core = self.lease.core.clone();
+        let mut state = core.lock_state().ok()?;
+        let id = state.next_reader_hold;
+        state.next_reader_hold = id.saturating_add(1);
+        state.reader_holds.push(ReaderHold {
+            id,
+            lease: Arc::downgrade(&self.lease),
+            stop,
+            slot_blocked,
+            owner,
+            forced: false,
+        });
+        drop(state);
+        Some(ReaderHoldGuard { core, id })
+    }
+
     /// Atomically replace this unique participant with a process-local C-query
     /// quarantine fence. The caller transfers child/storage ownership together.
     pub(crate) fn detach_c_query_quarantine(
@@ -1439,6 +1543,12 @@ struct CoreState {
     work_executions: BTreeMap<WorkExecutionId, WorkExecutionMembership>,
     physical_exclusive_operations: BTreeSet<OperationId>,
     workspace_participants: usize,
+    /// DR-IRB-3 (E7): dedicated Chronicle readers that are open right now,
+    /// each tied to the participant it runs under. Only the waiting side's
+    /// bounded wait (`ReaderStopBoundedWait`) reads this, to force a reader
+    /// that did not stop out of the participant count.
+    reader_holds: Vec<ReaderHold>,
+    next_reader_hold: u64,
     /// Single process-local fence: matching locator or workspace ID cannot be
     /// admitted or activated while a detached C-query remains unproved.
     c_query_quarantine: Option<Arc<LiveBinding>>,
@@ -1468,6 +1578,8 @@ impl Default for CoreState {
             work_executions: BTreeMap::new(),
             physical_exclusive_operations: BTreeSet::new(),
             workspace_participants: 0,
+            reader_holds: Vec::new(),
+            next_reader_hold: 1,
             c_query_quarantine: None,
             open_transition_conflict: None,
             vetoed_transition: None,
@@ -1762,6 +1874,48 @@ impl WorkspaceLifecycleCore {
     /// publishing a terminal state.
     pub fn workspace_participant_count(&self) -> Result<usize, LifecycleError> {
         Ok(self.lock_state()?.workspace_participants)
+    }
+
+    /// DR-IRB-3 (E7): force every registered dedicated reader that is still
+    /// open out of the participant count. Called only by a waiting side whose
+    /// bounded wait passed (`ReaderStopBoundedWait`). Per reader, in one
+    /// lifecycle-lock critical section: its participant lease is marked
+    /// released and counted out (so a later drop of the participant does not
+    /// count twice), its scope is told to stop, and its reader slot is marked
+    /// blocked (there is no close evidence, E8 (a)). The physical-exclusive
+    /// acquire that follows still checks `workspace_participants == 0` under
+    /// the same lock, so the order "participant out, then exclusive" holds.
+    /// The reader's own thread may still be running; it can no longer publish
+    /// (its stop flag is set) and its late close does not give the slot back.
+    fn force_stuck_readers(&self, waited: std::time::Duration) -> usize {
+        let Ok(mut guard) = self.lock_state() else {
+            return 0;
+        };
+        let state = &mut *guard;
+        let mut forced = Vec::new();
+        for hold in state.reader_holds.iter_mut().filter(|hold| !hold.forced) {
+            hold.forced = true;
+            hold.slot_blocked.store(true, Ordering::SeqCst);
+            hold.stop.store(true, Ordering::Release);
+            let counted_out = hold
+                .lease
+                .upgrade()
+                .is_some_and(|lease| !lease.released.swap(true, Ordering::AcqRel));
+            if counted_out {
+                state.workspace_participants = state.workspace_participants.saturating_sub(1);
+            }
+            forced.push((hold.id, hold.owner, counted_out));
+        }
+        if !forced.is_empty() {
+            state.revision = state.revision.saturating_add(1);
+        }
+        drop(guard);
+        for (hold, owner, counted_out) in &forced {
+            tracing::warn!(target:"grimodex::nir1_index", reader_hold=hold, runtime_owner=owner,
+                participant_counted_out=counted_out, waited_ms=waited.as_millis() as u64,
+                "NIR1 chronicle reader did not stop within the bounded wait; the waiting side goes on and the reader slot is blocked");
+        }
+        forced.len()
     }
 
     /// The binding behind the process-lifetime C-query fence, if one is held.
