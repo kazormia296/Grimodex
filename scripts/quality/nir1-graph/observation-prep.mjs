@@ -882,6 +882,10 @@ export const FORMAL_HARNESS_ENTRIES = Object.freeze([
   "frozen-k64-run.mjs",
   "frozen-setup-driver.mjs",
   "r5-check-runner.mjs",
+  // DR-PUBG-16-2: the G-01 end-to-end diagnostic runner (a diagnostic run that
+  // counts for no judgement). Its bytes pin is added at S4 (the closure test
+  // names it as the one file still unpinned until then).
+  "pubg16-e2e-run.mjs",
 ]);
 /**
  * S2 追補 #6: the bytes pin that holds a harness path (each path is held by

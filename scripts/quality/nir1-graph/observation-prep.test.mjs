@@ -4769,6 +4769,17 @@ const unpinned = (closure, pins) => {
   return closure.filter((file) => !held.has(file));
 };
 
+/**
+ * DR-PUBG-16-2: G-01 の end-to-end の診断 runner は正式の入口（FORMAL_HARNESS_ENTRIES）に
+ * 入ったが、bytes の pin は S4 で付ける。それまで閉包で pin の無い file はこの 1 本だけ
+ * （下の試験が `unpinned(...)` の全体がこれと等しいことを確かめる）。S4 で pin を付けたら
+ * この定数と該当の assert を外す。
+ */
+const PENDING_S4_PINS = Object.freeze([`${H4}pubg16-e2e-run.mjs`]);
+/** pin の無い file のうち、S4 で pin を付ける予定の file を除いたもの（変異の検出用）。 */
+const unpinnedBeyondPending = (closure, pins) =>
+  unpinned(closure, pins).filter((file) => !PENDING_S4_PINS.includes(file));
+
 /** S2 追補 #5 で足した 36 file（28 は静的な import、8 は renderer と observer の entry）。 */
 const ADDENDUM5_FILES = Object.freeze({
   "s1j2-complete-setup": [
@@ -4821,11 +4832,13 @@ const ADDENDUM5_FILES = Object.freeze({
 test("S2 追補 #5 (P2-2): the formal entries' harness closure is held by the bytes pins, and an unpinned closure file fails", async (t) => {
   const closure = harnessClosure(repoRoot, FORMAL_HARNESS_ENTRIES);
   // 静的な import の閉包は 49 file、path の参照をたどると renderer と observer の entry の 12 file が増える。
-  assert.equal(closure.length, 61);
+  // DR-PUBG-16-2: G-01 の診断 runner（pubg16-e2e-run.mjs。pin は S4）が 1 file 増やす。
+  assert.equal(closure.length, 62);
+  assert.ok(closure.includes(PENDING_S4_PINS[0]));
   assert.ok(
     closure.every((file) => !/\.test\.mjs$|test-support\.mjs$/u.test(file)),
   );
-  assert.deepEqual(unpinned(closure, SOURCE_PINS), []);
+  assert.deepEqual(unpinned(closure, SOURCE_PINS), [...PENDING_S4_PINS]);
   const added = Object.values(ADDENDUM5_FILES).flat();
   assert.equal(added.length, 36);
   for (const file of added) assert.ok(closure.includes(H4 + file), file);
@@ -4837,12 +4850,13 @@ test("S2 追補 #5 (P2-2): the formal entries' harness closure is held by the by
           ? { ...pin, paths: pin.paths.filter((file) => file !== H4 + name) }
           : pin,
       );
-      assert.deepEqual(unpinned(closure, pins), [H4 + name], name);
+      assert.deepEqual(unpinnedBeyondPending(closure, pins), [H4 + name], name);
     }
   // 変異: 閉包に新しい file が入る（harness が新しい file を import する）。
-  assert.deepEqual(unpinned([...closure, `${H4}new-helper.mjs`], SOURCE_PINS), [
-    `${H4}new-helper.mjs`,
-  ]);
+  assert.deepEqual(
+    unpinnedBeyondPending([...closure, `${H4}new-helper.mjs`], SOURCE_PINS),
+    [`${H4}new-helper.mjs`],
+  );
   // 記録の pin と SOURCE_PINS は同じ path の列で、記録から外しても validator が落ちる。
   const ctx = await context();
   const prep = await json(OBSERVATION_PREP_FILES.prep);
@@ -5399,7 +5413,7 @@ test("S2 追補 #7: the formal entries' eval closure outside the harness directo
   assert.ok(
     files.every((file) => !/\.test\.mjs$|test-support\.mjs$/u.test(file)),
   );
-  assert.deepEqual(unpinned(files, SOURCE_PINS), []);
+  assert.deepEqual(unpinned(files, SOURCE_PINS), [...PENDING_S4_PINS]);
   // 除外は固定の一覧（validator の EVAL_CLOSURE_EXCLUSIONS と試験の写し）で、どれも pin しない。
   assert.deepEqual(boundaries, [...ADDENDUM7_EXCLUDED]);
   assert.deepEqual([...EVAL_CLOSURE_EXCLUSIONS], [...ADDENDUM7_EXCLUDED]);
@@ -5426,11 +5440,11 @@ test("S2 追補 #7: the formal entries' eval closure outside the harness directo
           ? { ...pin, paths: pin.paths.filter((file) => file !== name) }
           : pin,
       );
-      assert.deepEqual(unpinned(files, pins), [name], name);
+      assert.deepEqual(unpinnedBeyondPending(files, pins), [name], name);
     }
   // 変異: harness の外の新しい eval 専用 script が閉包に入る（pin に無い）。
   assert.deepEqual(
-    unpinned(
+    unpinnedBeyondPending(
       [...files, "scripts/quality/nir1-retrieval/new-helper.mjs"],
       SOURCE_PINS,
     ),

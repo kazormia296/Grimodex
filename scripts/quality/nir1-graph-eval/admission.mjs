@@ -18,7 +18,13 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, readlinkSync } from "node:fs";
+import {
+  lstatSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+} from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import {
@@ -839,12 +845,92 @@ export function admitDevPreview(input) {
   return admission;
 }
 
+/**
+ * DR-PUBG-16-2 (PUB-G 前提 #16 の後続、決定 (C)): the one limited path that
+ * launches the evaluation `.node` on a frozen fixture outside a formal G-case
+ * run — the G-01 end-to-end diagnostic (lease -> click -> settle). It is a new
+ * authority, so it is as narrow as it can be:
+ *   - the purpose is this one name and is NOT in DEV_PREVIEW_PURPOSES, so
+ *     admitDevPreview still refuses it and every other purpose still refuses
+ *     a frozen fixture;
+ *   - the only material is G-01's frozen fixture (G01_FIXTURE's path and
+ *     digest), read by `readG01E2eDiagnosticFixture` and bound by identity
+ *     (a path string or a hand-made object is refused);
+ *   - the admission is never in ADMITTED, so `readAdmittedFixture` and every
+ *     formal reader refuse it; it carries `countsInCaseJudgement: false` and
+ *     `session: "separate-diagnostic"` (a Gold/parity/negative session never
+ *     reuses it: the runner opens its own Main and a fresh copy of the
+ *     sealed cold DB);
+ *   - it takes no override (purpose, flags, receipts, thresholds).
+ */
+export const G01_E2E_DIAGNOSTIC_PURPOSE = "g01-e2e-diagnostic";
+const G01_E2E_FIXTURES = new WeakSet();
+const G01_E2E_ADMISSIONS = new WeakSet();
+
+/** Reads G-01's frozen fixture for the diagnostic (path fixed, digest checked). */
+export function readG01E2eDiagnosticFixture(input) {
+  rejectOverrides(input, ["root"]);
+  const realRoot = realpathSync(input.root);
+  const full = path.join(realRoot, G01_FIXTURE.path);
+  const metadata = lstatSync(full);
+  if (metadata.isSymbolicLink() || !metadata.isFile())
+    throw new Error(
+      `[precheck] ${G01_FIXTURE.path} must be a regular file, not a symlink`,
+    );
+  if (realpathSync(full) !== full)
+    throw new Error(`[precheck] ${G01_FIXTURE.path} is behind a symlink`);
+  const bytes = readFileSync(full);
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  if (digest !== G01_FIXTURE.sha256)
+    throw new Error(
+      `[precheck] ${G01_FIXTURE.path} bytes differ from the frozen G-01 digest`,
+    );
+  const fixture = JSON.parse(bytes);
+  if (fixture.fixtureId !== G01_FIXTURE.fixtureId)
+    throw new Error(
+      "[precheck] the G-01 fixture id differs from the frozen id",
+    );
+  const loaded = Object.freeze({
+    path: G01_FIXTURE.path,
+    sha256: digest,
+    fixture,
+  });
+  G01_E2E_FIXTURES.add(loaded);
+  return loaded;
+}
+
+/** The admission of the G-01 end-to-end diagnostic (never a CP-4 result). */
+export function admitG01E2eDiagnostic(input) {
+  rejectOverrides(input, ["fixture"]);
+  const fixture = input.fixture;
+  if (
+    fixture === null ||
+    typeof fixture !== "object" ||
+    !G01_E2E_FIXTURES.has(fixture)
+  )
+    throw new Error(
+      "[precheck] the G-01 end-to-end diagnostic binds the fixture readG01E2eDiagnosticFixture returned",
+    );
+  const admission = Object.freeze({
+    kind: G01_E2E_DIAGNOSTIC_PURPOSE,
+    purpose: G01_E2E_DIAGNOSTIC_PURPOSE,
+    fixturePath: fixture.path,
+    fixtureSha256: fixture.sha256,
+    countsInCaseJudgement: false,
+    session: "separate-diagnostic",
+  });
+  G01_E2E_ADMISSIONS.add(admission);
+  return admission;
+}
+
 /** D-6: an admission that may launch the evaluation `.node`. */
 export function isLaunchAdmission(admission) {
   return (
     admission !== null &&
     typeof admission === "object" &&
-    (ADMITTED.has(admission) || DEV_PREVIEWS.has(admission))
+    (ADMITTED.has(admission) ||
+      DEV_PREVIEWS.has(admission) ||
+      G01_E2E_ADMISSIONS.has(admission))
   );
 }
 
