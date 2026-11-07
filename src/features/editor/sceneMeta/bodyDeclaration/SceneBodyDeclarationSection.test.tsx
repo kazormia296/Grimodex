@@ -473,9 +473,16 @@ describe("the three states (U-2 to U-6)", () => {
   });
 
   it("never shows effective while loading, failing or unknown", async () => {
-    const gate = deferred<unknown>();
-    installNative({ state: () => gate.promise });
+    // The first read is not drawn at all (DR-PUBG-39-2); a re-read shows the
+    // loading state, with nothing effective in it.
+    native.state = () => declaredWire(true);
     renderSection();
+    await ready("effective");
+    const gate = deferred<unknown>();
+    native.state = () => gate.promise;
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
     expect(stateOf()).toBe("loading");
     expect(
       screen.getByTestId("scene-body-declaration").textContent,
@@ -509,6 +516,270 @@ describe("the three states (U-2 to U-6)", () => {
     );
     expect(declareButton()).toBeNull();
     expect(revokeButton()).toBeEnabled();
+  });
+});
+
+describe("the first read and a re-read (DR-PUBG-39-1, DR-PUBG-39-2)", () => {
+  const rereadWith = (value: unknown) => {
+    const gate = deferred<unknown>();
+    native.state = () => gate.promise;
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    return { gate, value };
+  };
+  const tick = (axes: readonly string[]) => {
+    for (const axis of axes) fireEvent.click(axisBox(axis));
+  };
+
+  it("draws nothing (not even the title) until the first read is answered", async () => {
+    const gate = deferred<unknown>();
+    installNative({ state: () => gate.promise });
+    const { container } = renderSection();
+    await waitFor(() => expect(calls(STATE)).toHaveLength(1));
+    expect(container.firstChild).toBeNull();
+    expect(root()).toBeNull();
+    await act(async () => gate.resolve(noneWire()));
+    await ready("draft");
+  });
+
+  it("never draws a closed gate, before or after the answer", async () => {
+    const gate = deferred<unknown>();
+    installNative({ state: () => gate.promise });
+    const seen: boolean[] = [];
+    // Observe from before the mount, so a section drawn together with it is seen.
+    const observer = new MutationObserver(() => seen.push(root() !== null));
+    observer.observe(document.body, { childList: true, subtree: true });
+    const { container } = renderSection();
+    await waitFor(() => expect(calls(STATE)).toHaveLength(1));
+    await act(async () => gate.reject(refusal("gate-closed")));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    observer.disconnect();
+    expect(container.firstChild).toBeNull();
+    expect(seen).not.toContain(true);
+  });
+
+  it("first draws the answered state after a Scene switch, in the host's order of refresh keys", async () => {
+    const { update } = renderSection(makeNode(), "1:1");
+    await ready("draft");
+    const gate = deferred<unknown>();
+    native.state = () => gate.promise;
+    const states: (string | null)[] = [];
+    const observer = new MutationObserver(() => states.push(stateOf()));
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+    });
+    // The new Scene arrives with the old key, which the host clears at once
+    // and then replaces with the new Scene's own.
+    update(makeNode({ id: "scene-2" }), "1:1");
+    update(makeNode({ id: "scene-2" }), "");
+    update(makeNode({ id: "scene-2" }), "2:2");
+    expect(root()).toBeNull();
+    await act(async () => gate.resolve(noneWire()));
+    await ready("draft");
+    await act(async () => {
+      await Promise.resolve();
+    });
+    observer.disconnect();
+    expect(calls(STATE)).toHaveLength(2);
+    expect(states.filter((state) => state !== null)[0]).toBe("draft");
+    expect(states).not.toContain("loading");
+  });
+
+  it.each([
+    ["a failed read", () => refusal("store-failure"), "unknown"],
+    ["a restart notice", () => refusal("restart-required"), "restart-required"],
+  ])("draws %s once it is answered", async (_label, wire, state) => {
+    installNative({ state: wire });
+    renderSection();
+    await ready(state);
+  });
+
+  it("does not draw the previous Scene's form while another Scene's first read is pending", async () => {
+    const { update } = renderSection();
+    await ready("draft");
+    tick(["story"]);
+    const gate = deferred<unknown>();
+    native.state = () => gate.promise;
+    update(makeNode({ id: "scene-2" }));
+    expect(root()).toBeNull();
+    expect(screen.queryByTestId("body-declaration-form")).toBeNull();
+    await act(async () => gate.resolve(noneWire()));
+    await ready("draft");
+    expect(axisBox("story").checked).toBe(false);
+  });
+
+  it("keeps the form and the ticked confirmations through a re-read, disabled meanwhile", async () => {
+    renderSection();
+    await ready("draft");
+    tick(["story", "phase", "pov"]);
+    const formBefore = screen.getByTestId("body-declaration-form");
+    const { gate } = rereadWith(null);
+    expect(stateOf()).toBe("loading");
+    expect(screen.getByTestId("body-declaration-form")).toBe(formBefore);
+    for (const axis of BODY_DECLARATION_AXES) {
+      expect(axisBox(axis).disabled).toBe(true);
+    }
+    expect(axisBox("story").checked).toBe(true);
+    expect(axisBox("auto").checked).toBe(false);
+    expect(declareButton()).toBeDisabled();
+    // Nothing is shown as effective, and there is nothing to revoke yet.
+    expect(
+      screen.getByTestId("scene-body-declaration").textContent,
+    ).not.toContain("現在有効");
+    expect(revokeButton()).toBeNull();
+    // A click during the re-read changes nothing.
+    fireEvent.click(axisBox("auto"));
+    expect(axisBox("auto").checked).toBe(false);
+    await act(async () => gate.resolve(noneWire()));
+    await ready("draft");
+    expect(screen.getByTestId("body-declaration-form")).toBe(formBefore);
+    expect(axisBox("story").checked).toBe(true);
+    expect(axisBox("phase").checked).toBe(true);
+    expect(axisBox("pov").checked).toBe(true);
+    expect(axisBox("auto").checked).toBe(false);
+    expect(axisBox("story").disabled).toBe(false);
+    expect(declareButton()).toBeDisabled();
+    tick(["auto", "reveal"]);
+    expect(declareButton()).toBeEnabled();
+  });
+
+  it("keeps the confirmations through an autosave of the Scene (version change)", async () => {
+    const { update } = renderSection();
+    await ready("draft");
+    tick(["story", "reveal"]);
+    const gate = deferred<unknown>();
+    native.state = () => gate.promise;
+    update(makeNode({ version: 2, updatedAt: "2026-10-24T00:00:00Z" }));
+    expect(stateOf()).toBe("loading");
+    expect(axisBox("story").checked).toBe(true);
+    await act(async () => gate.resolve(noneWire()));
+    await ready("draft");
+    expect(axisBox("story").checked).toBe(true);
+    expect(axisBox("reveal").checked).toBe(true);
+  });
+
+  it("keeps an expired declaration's re-declare form through a re-read", async () => {
+    installNative({ state: () => declaredWire(false, ["content"]) });
+    renderSection();
+    await ready("expired");
+    tick(["story"]);
+    const { gate } = rereadWith(null);
+    expect(stateOf()).toBe("loading");
+    expect(declareButton()).toHaveTextContent("改めて宣言する");
+    expect(axisBox("story").checked).toBe(true);
+    await act(async () => gate.resolve(declaredWire(false, ["content"])));
+    await ready("expired");
+    expect(axisBox("story").checked).toBe(true);
+  });
+
+  it("holds the pending-confirmation line in place while it re-reads", async () => {
+    renderSection();
+    await ready("draft");
+    expect(screen.getByTestId("body-declaration-form")).toHaveTextContent(
+      "5 項目をすべて確認すると宣言できます",
+    );
+    const { gate } = rereadWith(null);
+    expect(screen.getByTestId("body-declaration-form")).toHaveTextContent(
+      "5 項目をすべて確認すると宣言できます",
+    );
+    await act(async () => gate.resolve(noneWire()));
+    await ready("draft");
+  });
+
+  it("does not keep a form the re-read says is gone: an effective declaration shows none", async () => {
+    renderSection();
+    await ready("draft");
+    tick(["story"]);
+    const { gate } = rereadWith(null);
+    expect(screen.getByTestId("body-declaration-form")).toBeTruthy();
+    await act(async () => gate.resolve(declaredWire(true)));
+    await ready("effective");
+    expect(screen.queryByTestId("body-declaration-form")).toBeNull();
+    expect(revokeButton()).toBeEnabled();
+  });
+
+  it("removes the section when the re-read is refused by a closed gate", async () => {
+    const { container } = renderSection();
+    await ready("draft");
+    const { gate } = rereadWith(null);
+    expect(screen.getByTestId("body-declaration-form")).toBeTruthy();
+    await act(async () => gate.reject(refusal("gate-closed")));
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("drops no form of a failed re-read into view: unknown shows no form", async () => {
+    renderSection();
+    await ready("draft");
+    tick(["story"]);
+    const { gate } = rereadWith(null);
+    await act(async () => gate.reject(refusal("store-failure")));
+    await ready("unknown");
+    expect(screen.queryByTestId("body-declaration-form")).toBeNull();
+  });
+
+  it("starts the confirmations again when the Scope changes, or is shown for the first time", async () => {
+    const { update } = renderSection(makeNode(), "");
+    await ready("draft");
+    tick(["story", "auto"]);
+    // The Scope is shown (the first value after ""): confirm again, now that
+    // the author can see it.
+    update(makeNode(), "5:1");
+    for (const axis of BODY_DECLARATION_AXES) {
+      expect(axisBox(axis).checked).toBe(false);
+    }
+    await ready("draft");
+    tick(["story", "auto"]);
+    // A saved A1 is a new thing to confirm.
+    const gate = deferred<unknown>();
+    native.state = () => gate.promise;
+    update(makeNode(), "6:1");
+    expect(stateOf()).toBe("loading");
+    for (const axis of BODY_DECLARATION_AXES) {
+      expect(axisBox(axis).checked).toBe(false);
+    }
+    await act(async () => gate.resolve(noneWire()));
+    await ready("draft");
+    for (const axis of BODY_DECLARATION_AXES) {
+      expect(axisBox(axis).checked).toBe(false);
+    }
+  });
+
+  it("drops the confirmations when the re-read ends with another kind of form", async () => {
+    renderSection();
+    await ready("draft");
+    tick(["story", "pov"]);
+    const { gate } = rereadWith(null);
+    expect(axisBox("story").checked).toBe(true);
+    // The draft became an expired declaration meanwhile (a declaration made in
+    // another window, then expired): what was ticked was for a draft.
+    await act(async () => gate.resolve(declaredWire(false, ["content"])));
+    await ready("expired");
+    expect(declareButton()).toHaveTextContent("改めて宣言する");
+    for (const axis of BODY_DECLARATION_AXES) {
+      expect(axisBox(axis).checked).toBe(false);
+    }
+  });
+
+  it("still asks for all five again after an attempt, and writes nothing to storage", async () => {
+    const setLocal = vi.spyOn(Storage.prototype, "setItem");
+    let wire: unknown = noneWire();
+    installNative({ state: () => wire });
+    renderSection();
+    await ready("draft");
+    confirmAll();
+    wire = noneWire();
+    fireEvent.click(declareButton() as HTMLButtonElement);
+    await waitFor(() => expect(calls(DECLARE)).toHaveLength(1));
+    await ready("draft");
+    for (const axis of BODY_DECLARATION_AXES) {
+      expect(axisBox(axis).checked).toBe(false);
+    }
+    expect(setLocal).not.toHaveBeenCalled();
   });
 });
 
@@ -862,9 +1133,14 @@ describe("what the live region announces (P3)", () => {
   });
 
   it("keeps the loading banner out of the live region, so an autosave is not read out", async () => {
-    const gate = deferred<unknown>();
-    installNative({ state: () => gate.promise });
+    native.state = () => declaredWire(true);
     renderSection();
+    await ready("effective");
+    const gate = deferred<unknown>();
+    native.state = () => gate.promise;
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
     expect(stateOf()).toBe("loading");
     const banner = screen.getByTestId("body-declaration-banner");
     expect(banner).toHaveTextContent("読み込んでいます");

@@ -151,6 +151,7 @@ Session B のパケットで一覧として通知する委任判断（未記録�
 - CP-4 の品質の判定（2026-11-06）: DR-CP4-QV-0（同じ節。決定の記録で、実装は別 PR の DR-CP4-QV-1）。ユーザーの決定: 受領書に入力が揃う条件だけ判定して残りは not-evaluable で開示し、手順外の補助の記録を使い、s5r6 の受領書に当てる。設計文書は contracts `quality-verdict-design-2026-11-06.md`。
 - 融合の枠（2026-11-06）: 記録先は contracts `fusion-slot-review-2026-11-06.md` と `pd-precision-gold-2026-11/preregistration-draft.md`。ユーザーの決定で、閾値・Gold の新設に関わるので委任ではない。枠の数は見直しの議論から決める。precision を測る小さな Gold の測定 lane を起こし、arm に 8 超を含める。注釈者はユーザーと OpenRouter 経由の gpt-6-luna、閾値は (a) 相対＋strict L＝0.5、60 query、run 1 は第 6 版の既存 run。
 - PUB-G の必須 2 件（2026-11-06）: #37（先読み。PR #811、DR-PUBG-37-1）、#36（(B+)。実装中で、DR-PUBG-36-1 は実装 PR で記録）。ユーザーの決定（案の選択）。
+- PUB-G の前提 #39（2026-11-07）: 宣言の UI の再読取で確認が消える問題（DR-PUBG-39-1）と初期描画（DR-PUBG-39-2）を、gate・IPC・保存範囲を変えずに renderer で直した。記録先は [cb3-decisions.md](nir1-lane-decisions/cb3-decisions.md)（「PUB-G 前提 #39 の修正の記録」）。
 - DR-IRB-3（2026-11-06）: ユーザーが K＝40・E8 (a)・E13 1 本を決定し、E6 (a) は測定で決め、E7 は候補 2 s（段 2 の試験で確定）。実装は枝 `claude/irb-prepare-reader`（PR は後）。記録先は [irb-decisions.md](nir1-lane-decisions/irb-decisions.md)。 E7（2026-11-07）：ユーザーが決定し、transition の physical exclusive の待ちと shutdown に上限 2 s を置き、超えたら待つ側が先に進む（止まらない reader だけを participant の count から外し、slot は塞ぐ。E8 の fail-closed は保つ）。実装は枝 `claude/irb-e7-bounded-wait`、詳細は irb-decisions.md の DR-IRB-3 の行の末尾。
 - #798（2026-11-06）: cache の効きは第 6 版の run で確認済みで、merge まで進める（ユーザーの決定）。Heavy の確認の手段は診断 harness（別 PR）。
 
