@@ -45,7 +45,13 @@ import {
 import { PRODUCT_HOOK } from "./followup.mjs";
 import { finite } from "./join.mjs";
 import { k64GraphSampleRow } from "./k64-record.mjs";
-import { BEGIN, GRAPH_CONTINUE, a3AtStartOf } from "./run-sample.mjs";
+import {
+  BEGIN,
+  GRAPH_CONTINUE,
+  a3AtStartOf,
+  graphRecord,
+  irOutcomeOf,
+} from "./run-sample.mjs";
 
 export const TRACE_FILE_SCHEMA = "nir1-cp4-trace/1";
 export const TRACE_RUN_SCHEMA = "nir1-cp4-trace-run/1";
@@ -586,6 +592,75 @@ export function nativeReadClockRange({ log, observation, native }) {
   return { range: { lower, upper }, reason: null, reads: clocks.length };
 }
 
+export const CHRONICLE_STOP_RULE = "DR-CP4-C7";
+export const CHRONICLE_STOP_GRAPH_OUTCOME = "graph-unavailable:cancelled";
+export const CHRONICLE_STOP_IR_REASON = "index-unavailable";
+
+/**
+ * DR-CP4-C7: a seeded fetch whose begin the Chronicle Index's stop kept from
+ * creating an IR operation (and so a Native eval record): the product's first
+ * snapshot said the index was not usable (`indexUsable === false`) for a
+ * supported profile (`querySupported === true`, which keeps
+ * `unsupported-query` out), the IR was unavailable for `index-unavailable`
+ * and the join's value is `graph-unavailable:cancelled`. Strict: any value
+ * missing, null or different is not this case (fail closed; the begin then
+ * stays in the pairing and an absent record is an alignment failure).
+ */
+export function chronicleStopFetch(fetch) {
+  const result = fetch?.result;
+  const snapshot = result?.initialSnapshot;
+  return (
+    typeof fetch?.seed === "string" &&
+    snapshot !== null &&
+    typeof snapshot === "object" &&
+    snapshot.indexUsable === false &&
+    snapshot.querySupported === true &&
+    result.irStatus === "unavailable" &&
+    result.irReason === CHRONICLE_STOP_IR_REASON &&
+    result.graphOutcome === CHRONICLE_STOP_GRAPH_OUTCOME
+  );
+}
+
+/**
+ * The role of a fetch in the trace for the C7 disclosure: a counted parent,
+ * a counted child (the Scene's first later fetch called by its query's cycle
+ * end), else not counted (a re-query, a mixed-window fetch, one after the
+ * cycle end).
+ */
+function chronicleStopRoleOf({ fetches, log }) {
+  const entries = (log ?? []).filter((row) => Number.isInteger(row.parentSeq));
+  const parents = entries
+    .map((entry) => ({
+      entry,
+      fetch: fetches.find((row) => row.seq === entry.parentSeq),
+    }))
+    .filter((row) => row.fetch);
+  return (fetch) => {
+    if (parents.some((row) => row.fetch.seq === fetch.seq))
+      return "counted-parent";
+    const owner = parents.findLast(
+      (row) =>
+        row.fetch.sceneId === fetch.sceneId &&
+        row.fetch.calledAt <= fetch.calledAt,
+    );
+    const cycleEnd = owner?.entry.cycleEnd?.at;
+    if (!owner || !finite(cycleEnd)) return "not-counted";
+    const first = fetches.find(
+      (row) =>
+        row.sceneId === fetch.sceneId &&
+        row.calledAt > owner.fetch.calledAt &&
+        row.calledAt <= cycleEnd,
+    );
+    const nextParent = parents.find(
+      (row) => row.fetch.calledAt > owner.fetch.calledAt,
+    );
+    return first?.seq === fetch.seq &&
+      !(nextParent && nextParent.fetch.calledAt <= fetch.calledAt)
+      ? "counted-child"
+      : "not-counted";
+  };
+}
+
 /**
  * The seeded fetches' begin calls, in call order, paired with the Native
  * records in seq order. Unaligned (no pairing at all) when the log lost
@@ -596,18 +671,36 @@ export function nativeReadClockRange({ log, observation, native }) {
  * give a consistent clock range and each such record's Native begin started
  * after the observation window closed (`observation.observedUntil`) even at
  * the range's upper end; otherwise the trace stays unaligned. The paired
- * records keep the one-to-one match. DR-CP4-V-3 (レビュー P2-2): a pairing
+ * records keep the one-to-one match. DR-CP4-C7: a begin of a fetch the
+ * Chronicle Index's stop kept from creating a Native record
+ * (`chronicleStopFetch`) is taken out of the pairing before these rules, and
+ * disclosed (`excludedChronicleStop`); the number taken out must equal the
+ * number of fetches that meet the condition (a fetch without exactly one
+ * begin leaves the trace unaligned), and with any taken out the Native reads'
+ * clock range (`readClock`) is required (no range is unaligned). DR-CP4-V-3 (レビュー P2-2): a pairing
  * shifted by one gives a consistent range of its own, so the pairs' range
  * must meet the Native reads' (`readClock`, nativeReadClockRange): when
  * M > N always (no read range is unaligned), when M = N whenever the read
  * range is known; the exclusion reads the intersection's upper end.
  */
-export function alignSeededBegins({ observation, native, readClock = null }) {
+export function alignSeededBegins({
+  observation,
+  native,
+  readClock = null,
+  log = null,
+}) {
   const fetches = [...(observation?.fetches ?? [])].sort(byCall);
-  const begins = [...(observation?.api ?? [])]
+  const seededBegins = [...(observation?.api ?? [])]
     .filter((row) => row.cmd === BEGIN)
     .sort(byCall)
     .filter((row) => typeof ownerOf(fetches, row)?.seed === "string");
+  // DR-CP4-C7: the begins of the fetches the Chronicle Index's stop kept from
+  // a Native record leave the pairing.
+  const stopped = seededBegins.filter((row) =>
+    chronicleStopFetch(ownerOf(fetches, row)),
+  );
+  const stoppedFetches = fetches.filter(chronicleStopFetch);
+  const begins = seededBegins.filter((row) => !stopped.includes(row));
   const records = native?.records ?? [];
   const recordOf = new Map();
   const indexOf = new Map();
@@ -632,6 +725,10 @@ export function alignSeededBegins({ observation, native, readClock = null }) {
   };
   if (native?.lost === true)
     reason = `the Native log lost records (gaps ${JSON.stringify(native.gaps ?? [])}, front loss ${native.frontLoss === true})`;
+  else if (stopped.length !== stoppedFetches.length)
+    reason = `DR-CP4-C7: ${stopped.length} begins taken out for the Chronicle stop, ${stoppedFetches.length} fetches that meet the condition (each needs exactly one begin)`;
+  else if (stopped.length > 0 && !reads)
+    reason = `DR-CP4-C7: ${stopped.length} begins taken out for the Chronicle stop need the Native reads' clock range (${clock.readClockReason})`;
   else if (begins.length > records.length)
     reason = `${begins.length} seeded begins, ${records.length} records`;
   else if (begins.length === records.length) {
@@ -691,12 +788,40 @@ export function alignSeededBegins({ observation, native, readClock = null }) {
       recordOf.set(row.id, records[at]);
       indexOf.set(row.id, at);
     });
+  const roleOf = chronicleStopRoleOf({ fetches, log });
+  const excludedChronicleStop =
+    stopped.length === 0 && stoppedFetches.length === 0
+      ? null
+      : {
+          rule: CHRONICLE_STOP_RULE,
+          count: stopped.length,
+          conditionFetches: stoppedFetches.length,
+          // The reasons the stop is not told apart (epoch, Freshness, binding,
+          // roster, a late publish) all count as `i-chronicle-stop`.
+          countedAs: "i-chronicle-stop",
+          begins: stopped.map((row) => {
+            const fetch = ownerOf(fetches, row);
+            return {
+              beginId: row.id,
+              fetchSeq: fetch.seq,
+              calledAt: row.calledAt,
+              fetchCalledAt: fetch.calledAt,
+              graphOutcome: fetch.result.graphOutcome,
+              irReason: fetch.result.irReason,
+              role: roleOf(fetch),
+            };
+          }),
+        };
   return {
     aligned: reason === null,
     reason,
     seededBegins: begins.length,
     records: records.length,
     excludedAfterWindow,
+    excludedChronicleStop,
+    excludedBeginIds: new Set(
+      reason === null ? stopped.map((row) => row.id) : [],
+    ),
     clock,
     recordOf,
     indexOf,
@@ -708,6 +833,7 @@ export function traceAlignment({ observation, native, log }) {
   return alignSeededBegins({
     observation,
     native,
+    log,
     readClock: nativeReadClockRange({ log, observation, native }),
   });
 }
@@ -720,6 +846,7 @@ export function alignmentDisclosure(alignment) {
     seededBegins: alignment.seededBegins,
     records: alignment.records,
     excludedAfterWindow: alignment.excludedAfterWindow,
+    excludedChronicleStop: alignment.excludedChronicleStop ?? null,
     clock: alignment.clock ?? null,
   };
 }
@@ -1022,6 +1149,117 @@ function cancelledParentRow({
   };
 }
 
+/**
+ * DR-CP4-C7: the row of a counted parent whose begin the Chronicle Index's
+ * stop kept from creating a Native record, or null when the parent is not
+ * that case (the caller keeps the defect row): the fetch meets
+ * `chronicleStopFetch`, its begin was taken out of the pairing, its Native
+ * record is therefore absent by rule, its timing is finite and in order and
+ * its start-time A3 read exists. The parent is in Q (K6/2 rule 1) and, when
+ * the start seal is current, in U; `irOutcome` is `index-unavailable`, so
+ * `lapseKind` counts it in (i) `i-chronicle-stop` (a seal that is not
+ * current is `i-b-seal` first, join.mjs). It was not displayed with a Graph
+ * (the join is `graph-unavailable:cancelled`), so it is also an out-of-window
+ * lapse in the K6/4 reading. The re-query the product issues after the
+ * index-ready notice stays outside Q.
+ */
+function chronicleStopParentRow({
+  queryId,
+  index,
+  parent,
+  beginRow,
+  observation,
+  fetches,
+  logEntry,
+  a3,
+  startSeal,
+  d2aMode,
+  materials,
+}) {
+  if (!chronicleStopFetch(parent)) return null;
+  const result = parent.result;
+  if (!a3 || !Array.isArray(a3.revisions)) return null;
+  const timing = result.timing ?? {};
+  const { tFetchMs, tRawReadyMs, tReturnMs } = timing;
+  if (
+    !finite(tFetchMs) ||
+    !finite(tRawReadyMs) ||
+    !finite(tReturnMs) ||
+    !(tFetchMs <= tRawReadyMs && tRawReadyMs <= tReturnMs)
+  )
+    return null;
+  if (!finite(parent.calledAt) || !finite(parent.resolvedAt)) return null;
+  const seal = startSealOf(startSeal, parent.calledAt);
+  const requery = fetches.find((row) => row.seq !== parent.seq) ?? null;
+  const publishCount = (observation.commits ?? []).filter(
+    (row) => row.fetchSeq === parent.seq && row.loading === false,
+  ).length;
+  return {
+    queryId,
+    trigger: "user-operation",
+    seeded: true,
+    graphEnabled: true,
+    d2aMode,
+    expectedMaterials: materials,
+    traceIndex: index,
+    tFetch: tFetchMs,
+    tRawReady: tRawReadyMs,
+    tReturn: tReturnMs,
+    status: result.status,
+    irOutcome: irOutcomeOf(result),
+    irCompletion: result.completion?.outcome ?? null,
+    rawSceneIds: result.rawSceneIds ?? [],
+    finalSceneIds: result.finalSceneIds ?? [],
+    snapshot: {
+      usable: seal.state === "current",
+      reason: seal.state === "current" ? null : `start-seal:${seal.state}`,
+      chronicleIndexUsable: false,
+      source: "start-seal",
+    },
+    snapshotNative: null,
+    a3AtStart: a3AtStartOf(a3),
+    startSeal: { ...seal, reads: startSealReads(startSeal) },
+    graph: graphRecord({
+      measure: { graphOutcome: result.graphOutcome },
+      arrival: null,
+      native: null,
+    }),
+    nativeBegin: null,
+    cycleEnd: logEntry.cycleEnd ?? null,
+    followUp: {
+      issuedVia: PRODUCT_HOOK,
+      parent: {
+        generation: 1,
+        queryGeneration: parent.queryGeneration ?? null,
+        sceneId: parent.sceneId,
+        seed: parent.seed,
+        calledAt: parent.calledAt,
+        resolvedAt: parent.resolvedAt,
+        publishCount,
+        excludedChronicleStop: true,
+      },
+      nativeBegins: [],
+      child: null,
+      requerySeq: requery?.seq ?? null,
+    },
+    chronicleStop: {
+      rule: CHRONICLE_STOP_RULE,
+      parentSeq: parent.seq,
+      beginId: beginRow.id,
+      beginCalledAt: beginRow.calledAt,
+      calledAt: parent.calledAt,
+      resolvedAt: parent.resolvedAt,
+      graphOutcome: result.graphOutcome,
+      irReason: result.irReason,
+      querySupported: result.initialSnapshot.querySupported,
+      startSeal: seal.state,
+      requery: requery
+        ? { seq: requery.seq, calledAt: requery.calledAt }
+        : null,
+    },
+  };
+}
+
 /** A row that cannot carry its R7 record (summarizeTrace makes the trace invalid). */
 function defectRow({ queryId, d2aMode, materials, parent, error }) {
   return {
@@ -1314,7 +1552,13 @@ export function traceQueryRow({
   const windowBegins = [...api].filter((row) => row.cmd === BEGIN).sort(byCall);
   const nativeRecords = windowBegins.map(
     (row) =>
-      alignment.recordOf.get(row.id) ?? { seq: null, begin: "no-record" },
+      alignment.recordOf.get(row.id) ?? {
+        seq: null,
+        // DR-CP4-C7: a begin taken out of the pairing has no record by rule.
+        begin: alignment.excludedBeginIds?.has(row.id)
+          ? "excluded-chronicle-stop"
+          : "no-record",
+      },
   );
   const beginOf = (fetch) =>
     fetch
@@ -1329,6 +1573,24 @@ export function traceQueryRow({
     ? alignment.recordOf.get(childBegin.id)
     : undefined;
   if (!parentRecord) {
+    // DR-CP4-C7: a parent whose begin the Chronicle Index's stop kept from a
+    // Native record (its begin was taken out of the pairing).
+    if (parentBegin && alignment.excludedBeginIds?.has(parentBegin.id)) {
+      const stopped = chronicleStopParentRow({
+        queryId,
+        index,
+        parent,
+        beginRow: parentBegin,
+        observation,
+        fetches: windowFetches,
+        logEntry,
+        a3,
+        startSeal,
+        d2aMode,
+        materials,
+      });
+      if (stopped) return { ...stopped, ...disclosed };
+    }
     // DR-CP4-V-3: a parent cancelled before its begin has no begin call and
     // no Native record; every other parent without a record is a defect.
     const cancelled = parentBegin
