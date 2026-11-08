@@ -324,7 +324,11 @@ function applyProjection(
       pendingExplicitWorkspaceHydration = null;
       set({
         ...base,
-        view: "launcher",
+        // During startup the Open that owns this Ready is still running (its
+        // result can trail the notification). Keep the loading screen rather
+        // than flashing the launcher; the Open, or startup's settled-failure
+        // fallback, chooses the next view.
+        view: current.view === "loading" ? "loading" : "launcher",
         workspaceSwitchInProgress: false,
         workspaceHydrated: false,
         activeWorkspacePath: null,
@@ -414,7 +418,10 @@ function applyProjection(
     workspaceHydrated: false,
     ...(view.status === "closed"
       ? {
-          view: "launcher" as const,
+          // The page-load snapshot is Closed before startup reopens the last
+          // Workspace. Showing the launcher there flashes it for a moment, so
+          // leave the loading screen to startup's own outcome.
+          ...(current.view === "loading" ? {} : { view: "launcher" as const }),
           activeWorkspacePath: null,
           activeWorkspaceId: null,
         }

@@ -674,3 +674,81 @@ describe("workspace lifecycle projection explicit Open ordering", () => {
     ).toHaveBeenCalledOnce();
   });
 });
+
+describe("workspace lifecycle projection during startup loading", () => {
+  let state: TestState;
+  const get = () => state;
+  const set = (patch: Partial<WorkspaceState>) => {
+    state = { ...state, ...patch };
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetWorkspaceLifecycleProjectionForTest();
+    state = makeState({
+      view: "loading",
+      activeWorkspacePath: null,
+      activeWorkspaceId: null,
+      activeWorkspaceName: null,
+      workspaceOpenRevision: 0,
+      workspaceHydrated: false,
+      workspaceLifecycleRevision: 0,
+      workspaceLifecycleStatus: "closed",
+      workspaceLifecycleActivation: "none",
+      workspaceLifecycleBindingToken: null,
+    });
+  });
+
+  it("keeps the loading screen when the page-load snapshot is Closed", () => {
+    applyWorkspaceLifecycleProjectionForTest(get, set, {
+      schemaVersion: 1,
+      revision: 0,
+      status: "closed",
+      bindingToken: null,
+      activation: "none",
+    });
+    expect(state).toMatchObject({
+      view: "loading",
+      workspaceLifecycleStatus: "closed",
+      workspaceHydrated: false,
+      activeWorkspacePath: null,
+    });
+  });
+
+  it("keeps the loading screen when the startup Open's Ready precedes its result", () => {
+    applyWorkspaceLifecycleProjectionForTest(
+      get,
+      set,
+      lifecycle(1, "transition", "new-token"),
+    );
+    applyWorkspaceLifecycleProjectionForTest(
+      get,
+      set,
+      lifecycle(2, "ready", "new-token"),
+    );
+    expect(state).toMatchObject({
+      view: "loading",
+      workspaceHydrated: false,
+      workspaceLifecycleStatus: "ready",
+      workspaceLifecycleBindingToken: "new-token",
+    });
+    // The replacement is still fail-closed: old-scope loads are invalidated.
+    expect(invalidateWorkspaceProjectLoads).toHaveBeenCalled();
+  });
+
+  it("still shows the launcher when an open editor's Workspace closes", () => {
+    state = makeState();
+    applyWorkspaceLifecycleProjectionForTest(get, set, {
+      schemaVersion: 1,
+      revision: 2,
+      status: "closed",
+      bindingToken: null,
+      activation: "none",
+    });
+    expect(state).toMatchObject({
+      view: "launcher",
+      activeWorkspacePath: null,
+      workspaceHydrated: false,
+    });
+  });
+});
