@@ -584,6 +584,7 @@ rules:
       - electron/native/grimodex-node/src/typed_writers_tests.rs
       - electron/main/d2bTypedWriters.test.ts
       - electron/main/d2bRendererWriters.pipeline.spec.ts
+      - electron/main/pubgRendererWriters.pipeline.spec.ts
       - src/application/chat/chatOllamaPreflight.test.ts
       - src/application/chat/chatOllamaPreflight.ts
       - src/application/chat/chatPersistenceStoreActions.test.ts
