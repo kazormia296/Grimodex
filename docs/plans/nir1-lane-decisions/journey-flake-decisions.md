@@ -324,3 +324,77 @@ scheduler は single-flight。新しい tick は前の cycle が返った後に�
     project の現行の Epoch と同じ（古い Epoch の予約は既存の経路が解除する）。接頭辞の比較は `substr(error_message, 1, length(prefix)) = prefix`
     か `LIKE prefix || '%' ESCAPE '\\'`。実装の前に、利用者の DB の実数（`RETRY_EXHAUSTED` の freshness run の数と、その判別に当たる数）を
     確かめ、migration の番号と `schema-contract.json` の更新が要ることを見込む。
+
+### M1 の実装（2026-11-08。DR-JF-9 の追補。判断の ID は DR-JF-9 のまま。NIR-1 の freshness／lifecycle の委任の範囲）
+
+上の「追加で調べたこと」で採用した M1 を、#828 の merge（master `5344067d`）の後の別の PR で実装した。#828 は新しい
+dead-letter を作らなくしたが、すでに `NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED` で止まった利用者の project は
+新しい Semantic Epoch まで止まったままだった。M2（予約時の自己修復）は採らない（上のとおり）。
+
+**判断**
+
+- 置き場：`grimodex-db` の migration（`migrate.rs` の `release_contended_freshness_exhaustions_v45`）。
+  **SCHEMA 44→45**。DDL は無く、物理の checkpoint の形は 44 と同じ（`has_current_schema_checkpoint_invariants` の版の固定だけを 45 にした）。
+  版を上げる理由：現在の版の open は read-only の fast path で書き込まず、migration は版が上がるときにだけ 1 回走る。
+  `schema_data_migrations` の marker は使わない（条件に当たる行が無くなれば 2 回目は何も当たらない冪等な更新で、marker の
+  namespace と import の検査を広げないため）。
+- 走らせる場所は 2 つで、どちらも `user_version` の stamp と同じ transaction／savepoint の中：
+  (1) 直前の版（44）の marker だけを進める finalize（`try_finalize_previous_schema_without_wait`。`BEGIN IMMEDIATE` の中）、
+  (2) 完全な migration（`migrate_impl`。C2-ZB の savepoint の中、checkpoint の検査と stamp の前）。**`current < 45` のときだけ**走らせる
+  （`migrate_for_restore_preflight`〔force_full〕や、supervisor の「現在版だが invariant が欠けた」経路は 45 の DB でも完全な pass を通り、
+  その copy がそのまま live になる。版で絞らないと、45 の build が作った dead-letter まで解く。2026-11-08 のレビューの major 指摘）。
+  現在の版（45）の open は、fast path も完全な pass も走らない。45 の build が作る dead-letter（Feed の証拠が無い guard の競合、決定的な食い違い）は表に出たまま残す。
+  finalize が他の writer と競合して Busy のときは、`user_version` は 44 のまま、次の open が同じ手順をやり直す（stamp と release は一緒に commit か rollback）。
+- 判別の条件（すべて満たすときだけ。レビュー〔Opus〕の注意点どおり）：
+  1. cursor が Freshness consumer のもので、run を予約していて（`active_run_id`、`reserved_through_sequence`、`semantic_epoch_id` が非 NULL）、lease が無い。
+  2. 予約の Epoch が project の現行の Epoch（`epoch_number` 最大）と同じ。古い Epoch の予約は、既存の予約の経路が解除して再生する。
+  3. その run が同じ project・同じ Epoch の `freshness-evaluation` で、`failed`／`terminal_reason_code = RETRY_EXHAUSTED`。
+  4. その run の failed task の**最後の attempt**（`attempt_number` 最大）が `failed`／`retry_disposition = 'terminal'`／
+     `failure_code = RETRY_EXHAUSTED`、かつ `error_message` が 4 つの guard の文言（`EDGE_CHANGED: `、`SOURCE_CHANGED: `、
+     `TYPED_SOURCE_CHANGED: `、`NEX_SEMANTIC_EPOCH_CHANGED: Edge producer Epoch changed before publication`）のどれかで**始まる**。
+  比較は `substr(error_message, 1, length(prefix)) = prefix`（`LIKE` は使わない。`_` がワイルドカードで、`LIKE` は ASCII の大文字小文字も区別しない）。
+  接頭辞は `incremental_freshness.rs` の定数 `PUBLISH_GUARD_MESSAGE_PREFIXES` で、4 つの guard はその定数から文言を作る
+  （migration と guard の文言が食い違わない。文言を変えたら定数が変わり、試験が guard の出力との一致を見る）。
+  context で包まれた guard（`NEX_DB_TRANSACTION_CLEANUP_UNPROVEN: …`）、interrupted の枯渇、評価の失敗などの競合以外の dead-letter は接頭辞が違うので残る。
+- 更新：条件に当たる cursor の `semantic_epoch_id`・`reserved_through_sequence`・`active_run_id`・`lease_owner`・`lease_expires_at` を NULL にし、
+  `updated_at` を今にする（`release_cursor_reservation_in_tx` と同じ。`acknowledged_through_sequence` は動かさないので範囲は飛ばさない。
+  `last_error` も残す。DR-JF-9 本体の競合の close と同じ形）。次の tick が新しい run を作り、同じ範囲を計算し直す
+  （`updated_at` が新しいので、他の project の後に回る）。**run・task・attempt の行は変えず、terminal のまま残す**。
+
+**変える行の範囲と、戻せないことの影響（利用者の DB の行を書き換える移行）**
+
+- 書くのは `narrative_change_cursors` の、条件に当たる Freshness consumer の行の予約の列（上の 6 列）だけ。
+  `narrative_extraction_runs`／`tasks`／`attempts`、Change Feed、dependency edge、本文・Codex・設定など、利用者の著作と
+  canonical な状態には一切触れない。cursor の予約は rebuildable な Freshness の作業状態で、解いても失うのは「予約している」という
+  事実だけ（run の id と通し番号の範囲は残った run・attempt の行から分かる）。
+- migration は解く前の値を別に保存しないので、**この更新を元に戻すことはできない**。戻す必要は無い：解いた状態は
+  「その範囲を ack していない、予約の無い cursor」で、通常の運用の状態と同じ。解いた後に決定的な失敗が続く project は、新しい run が
+  3 回の attempt の後に再び dead-letter になるだけ（有界で、1 回）。
+- 版は 45 に上がるので、45 を stamp した DB を 44 以前の build で開くことはできない（既存の migration と同じ downgrade 非対応）。
+  版が 45 未満の backup を restore した DB は、restore の preflight の完全な migration（その copy が live になる）で、もう一度この更新が当たる。
+  45 の DB の restore preflight や invariant 修復の完全な pass は解かない（`current < 45` の条件。試験で固定）。
+- 限界（上の「見分けられるか」と同じ）：DR-JF-9 の本体が使う「attempt の間に Feed が進んだ」証拠は、過去の行からは再構成できない。
+  そのため、guard の文言で終わった dead-letter は、決定的な食い違いのものも解く。再開しても、決定的な失敗なら新しい run が
+  3 回で再び dead-letter になる（有界。1 project につき 1 回）。**費用がある**：その再 dead-letter は DR-JF-4 の matrix の
+  競合以外の上限の行と同じ retire→recovery で、約 1 s の `WORKSPACE_SWITCHING` による DB 操作の拒否が 1 回起きる。
+  前の 2 回が評価の失敗で最後だけ競合だった run も同様。この費用は、解かないまま止まり続けることと比べて許容する（1 回で終わる）。
+- 利用者の DB の実数（`RETRY_EXHAUSTED` の freshness run の数と判別に当たる数）は、利用者の DB を読まない方針なので確かめていない。
+  代わりに、migration は解いた件数を `tracing`（`narrative.migrate`）に出す。
+
+**信頼境界（脅威モデルの改訂は無い）**
+
+- 新しい actor・入口・送信先・権限・保存範囲は無い。renderer の入力、IPC、preload、Main、N-API の契約は変えない。
+  migration は Native が開く自分の workspace の DB だけを読み書きする。秘密・データの送信は無い。
+- 動作契約（`narrative-run-kind-policy` の `cursorAfterExhaustion: reserved-lease-free`／`schedulerAfterExhaustion:
+  idle-until-new-semantic-epoch`、`narrative-failure-policy`）は変えない。契約が dead-letter を保持する規則は新しい run には
+  そのまま適用され、解くのは「契約の前の挙動で作られた、競合が原因の dead-letter」の既存の行だけ。閾値・Gold・gate・製品公開・製品認可・新しい契約の authority は変えない。
+- owner／lifecycle：新しい非同期・subprocess・背景の経路は無い。migration は workspace の open の中で同期的に走り、
+  transaction（`BEGIN IMMEDIATE` か完全な migration の savepoint）が commit か rollback で閉じる（DR-JF-9 の matrix の「競合以外の terminal」の行と、他の経路は変わらない）。
+
+**試験**（`incremental_freshness.rs` の `contention_release`）：競合が原因の枯渇は解かれ、run・task・attempt が不変で、次の cycle が同じ範囲を追いつく／
+4 つの接頭辞のすべて／競合以外（評価の失敗、interrupted、context で包まれた guard、`_` と大文字小文字のワイルドカードの誤一致、
+先頭の空白、文中の guard 文言、空・NULL の message）は残る／最後でない attempt の guard 文言は数えない／Epoch が違う・lease あり・
+最後の attempt が terminal でない・別の code・別の理由で終わった run・retryable な run・予約を返し済みの run は触らない／
+実際の guard（source・edge・producer Epoch）が cycle に保存させた文言が解かれる／
+44→45 の marker だけの step と完全な migration の両方で解いて stamp する／stamp が失敗したら release も rollback され、次の open がやり直す／
+現在の版の open と、45 の DB の restore preflight の完全な pass は解かない／45 未満の restore preflight は解く。
