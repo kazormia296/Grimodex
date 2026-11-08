@@ -1040,6 +1040,9 @@ describe.each(KNOB_CASES)(
 describe("profile egress status display vs LayoutShell controls (real Chromium)", () => {
   const OPERABLE =
     "[data-bottom-corner-toggle], [data-stripe-icon], [data-splitter-handle], [data-stripe-region] button";
+  // Not measured: the phone workspace (width < 720) swaps the stripes for a
+  // bottom nav, which this real `LayoutShell` never shows, so 360x640 is not a
+  // layout the product reaches (DR-DA2-63, left for C-1／PUB-G).
   const VIEWPORTS = [
     { width: 1200, height: 800 },
     { width: 768, height: 600 },

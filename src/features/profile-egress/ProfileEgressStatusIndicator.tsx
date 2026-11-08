@@ -7,6 +7,8 @@ import { useWritesRetryAfterActivation } from "./profileActivationWriteRetry";
 import { closeProfileEgressEntrances } from "@/features/chat/closeProfileEgressEntrances";
 import { NIR1_LOCAL_GENERATION_UI_ENABLED } from "@/features/chat/nir1/nir1LocalGenerationAvailability";
 import { PROFILE_EGRESS_STATUS_POSITION } from "./profileEgressStatusPlacement";
+import { ProfileEgressStatusBoundary } from "./ProfileEgressStatusBoundary";
+import type { ProfileEgressStatusSnapshot } from "./useProfileEgressStatus";
 
 ensureProfileEgressTranslations();
 
@@ -39,7 +41,6 @@ const Nir1LocalDisclosure = /* @__PURE__ */ lazy(() =>
  * closure is never reopened.
  */
 export default function ProfileEgressStatusIndicator() {
-  const { t } = useTranslation();
   const snapshot = useProfileEgressStatus();
   useWritesRetryAfterActivation(snapshot);
   const entrancesClosed =
@@ -47,6 +48,23 @@ export default function ProfileEgressStatusIndicator() {
   useEffect(() => {
     if (entrancesClosed) closeProfileEgressEntrances();
   }, [entrancesClosed]);
+  // The rendering is a child under its own boundary (DR-DA2-64): an exception
+  // of `t()` or the markup cannot stop this component's effects above, which
+  // hold the closure and the write retry. This component renders nothing but
+  // that boundary.
+  return (
+    <ProfileEgressStatusBoundary>
+      <ProfileEgressStatusView snapshot={snapshot} />
+    </ProfileEgressStatusBoundary>
+  );
+}
+
+function ProfileEgressStatusView({
+  snapshot,
+}: {
+  snapshot: ProfileEgressStatusSnapshot;
+}) {
+  const { t } = useTranslation();
   if (snapshot.kind !== "known") return null;
   const { view } = snapshot;
   if (view.state === "unrestricted") return null;

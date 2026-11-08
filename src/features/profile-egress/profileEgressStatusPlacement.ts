@@ -8,6 +8,10 @@
  * `pointer-events-none`: a splitter handle under it keeps its hit area.
  * `layoutInvariants.browser.test.tsx` measures both.
  *
+ * Not covered: below 720 px the app shows the phone workspace, whose bottom nav
+ * (`phone-workspace-chrome__nav`) this placement does not clear (DR-DA2-63,
+ * left for C-1／PUB-G).
+ *
  * The numbers repeat `OUTER_PAD_PX + STRIPE_SIZE + STRIPE_GAP_PX` and
  * `OUTER_PAD_PX + HORIZONTAL_STRIPE_SIZE + STRIPE_GAP_PX` of
  * `features/layout/layoutConstants` instead of importing them: a lazy chunk
