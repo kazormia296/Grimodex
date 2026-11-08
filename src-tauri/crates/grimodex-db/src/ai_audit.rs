@@ -1898,6 +1898,16 @@ pub fn verify_ai_audit_chain_for_scope(
     project_id: Option<&str>,
     high_water_sequence: Option<i64>,
 ) -> anyhow::Result<AiAuditVerifyResult> {
+    verify_ai_audit_chain_with_plan(conn, project_id, high_water_sequence, None)
+}
+
+/// `plan` が None なら行数から決める。試験は plan を固定して、逐次と並列を比べる。
+fn verify_ai_audit_chain_with_plan(
+    conn: &Connection,
+    project_id: Option<&str>,
+    high_water_sequence: Option<i64>,
+    plan: Option<VerifyPlan>,
+) -> anyhow::Result<AiAuditVerifyResult> {
     let scope_id = ai_audit_scope_id(project_id)?;
     let (tail_sequence, tail_hash) = current_tail(conn, &scope_id)?;
     let high_water_sequence = high_water_sequence.unwrap_or(tail_sequence);
@@ -1918,8 +1928,454 @@ pub fn verify_ai_audit_chain_for_scope(
         .optional()?
         .context("high-water event is missing")?
     };
-    let mut expected_sequence = 1i64;
-    let mut prev_hash = GENESIS_HASH_HEX.to_string();
+    verify_stored_chain(
+        conn,
+        &scope_id,
+        high_water_sequence,
+        high_water_hash,
+        plan.unwrap_or_else(|| VerifyPlan::for_row_count(high_water_sequence)),
+    )
+}
+
+/// 検証の並列度の計画。結果（ok・verified_through_sequence・broken_at_sequence・reason）は
+/// 計画によらず、常に逐次の検証と同じになる。
+#[derive(Debug, Clone, Copy)]
+struct VerifyPlan {
+    /// 行ごとの計算に使う thread の数（1 なら呼び出し側の thread で逐次に行う）。
+    workers: usize,
+    /// 1 回に読み出して検証する行数の上限。
+    batch_rows: usize,
+    /// 1 回に読み出して検証する payload の合計 bytes の上限（超えた行で batch を閉じる）。
+    batch_bytes: usize,
+}
+
+/// 並列にする下限の行数。1 batch（1,024 行、約 15 ms の計算）以下では、読みと計算を重ねる
+/// 利益も thread の起動の費用を上回らないので、逐次にする。
+const VERIFY_PARALLEL_MIN_ROWS: i64 = 1_024;
+const VERIFY_BATCH_ROWS: usize = 1_024;
+/// batch の payload の合計の上限。payload の大きさに上限は無い（観測した最大は約 51 KB）ので、
+/// 行数だけで切ると 1,024 行で 50 MB を超えうる。通常の payload（約 2 KB）では 1,024 行
+/// （約 2 MB）が先に当たり、この上限は大きい payload が続くときだけ効く。memory の最悪は
+/// batch 2 つ分（今の batch と先読みの batch）で、各 batch は上限に最後の 1 行を足した大きさ。
+const VERIFY_BATCH_BYTES: usize = 4 * 1024 * 1024;
+/// 行ごとの payload 以外の列の概算（batch の大きさの勘定に足す）。
+const VERIFY_ROW_OVERHEAD_BYTES: usize = 512;
+/// 前景の操作と CPU を取り合わないための上限。計測では 4 thread で wall が 1/3.5 になり、
+/// 8 thread 以上は得が小さいのに CPU 時間だけ増える。読み出しを行う呼び出し側の thread を
+/// 含めると、同時に動くのは最大 5 本。
+const VERIFY_MAX_WORKERS: usize = 4;
+
+impl VerifyPlan {
+    fn for_row_count(rows: i64) -> Self {
+        let workers = if rows > VERIFY_PARALLEL_MIN_ROWS {
+            // 論理 CPU の半分まで（最低 1、最大 VERIFY_MAX_WORKERS）。
+            std::thread::available_parallelism()
+                .map(|n| n.get() / 2)
+                .unwrap_or(1)
+                .clamp(1, VERIFY_MAX_WORKERS)
+        } else {
+            1
+        };
+        Self {
+            workers,
+            batch_rows: VERIFY_BATCH_ROWS,
+            batch_bytes: VERIFY_BATCH_BYTES,
+        }
+    }
+}
+
+/// 保存された行（payload は parse 前の text のまま）。
+struct StoredAuditRow {
+    sequence: i64,
+    event_id: String,
+    scope_id: String,
+    project_id: Option<String>,
+    execution_id: String,
+    operation_id: String,
+    parent_execution_id: Option<String>,
+    path_id: String,
+    event_type: String,
+    timestamp: i64,
+    recorded_at: i64,
+    payload: String,
+    payload_sha256: String,
+    prev_hash: String,
+    hash: String,
+    /// payload 以外の列を読めなかった時の error（その時、他の列は空の値）。
+    /// 逐次の検証と同じく、payload の parse の error が先に返る。
+    column_error: Option<rusqlite::Error>,
+}
+
+/// 逐次の検証と同じ順（payload を先に読み、他の列はその後）で列を読む。
+/// payload の text を読めなければ行ごと Err（parse まで進まない）。他の列を読めなければ、
+/// payload を持った行に error を添えて返す。
+fn stored_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredAuditRow> {
+    let payload: String = row.get(11)?;
+    let columns = || -> rusqlite::Result<StoredAuditRow> {
+        Ok(StoredAuditRow {
+            sequence: row.get(0)?,
+            event_id: row.get(1)?,
+            scope_id: row.get(2)?,
+            project_id: row.get(3)?,
+            execution_id: row.get(4)?,
+            operation_id: row.get(5)?,
+            parent_execution_id: row.get(6)?,
+            path_id: row.get(7)?,
+            event_type: row.get(8)?,
+            timestamp: row.get(9)?,
+            recorded_at: row.get(10)?,
+            payload_sha256: row.get(12)?,
+            prev_hash: row.get(13)?,
+            hash: row.get(14)?,
+            payload: String::new(),
+            column_error: None,
+        })
+    };
+    Ok(match columns() {
+        Ok(mut stored) => {
+            stored.payload = payload;
+            stored
+        }
+        Err(error) => StoredAuditRow {
+            sequence: 0,
+            event_id: String::new(),
+            scope_id: String::new(),
+            project_id: None,
+            execution_id: String::new(),
+            operation_id: String::new(),
+            parent_execution_id: None,
+            path_id: String::new(),
+            event_type: String::new(),
+            timestamp: 0,
+            recorded_at: 0,
+            payload,
+            payload_sha256: String::new(),
+            prev_hash: String::new(),
+            hash: String::new(),
+            column_error: Some(error),
+        },
+    })
+}
+
+/// 行ごとの検証の結果。連番と `prev_hash` の連結の判定は、行の順に別に行う。
+enum RowCheck {
+    Passed,
+    /// この行で chain が壊れている（reason は逐次の検証と同じ文面）。
+    Broken(String),
+    /// payload が JSON として読めない。逐次の検証では行を読む時の error で、
+    /// 同じ行の連番・`prev_hash` の判定より先に返る。
+    PayloadUnreadable(rusqlite::Error),
+    /// payload 以外の列を読めなかった（error は行の `column_error`）。これも行を読む時の error。
+    ColumnUnreadable,
+    /// hash 本体の直列化に失敗した（逐次の検証では連結の判定の後の error）。
+    Failed(anyhow::Error),
+}
+
+/// `canonical_stored_payload` の sha256 を、同じ値のまま安く求める。
+/// 全 object の key が昇順なら、`canonical_json_value` は Value を変えない（clone も整列も
+/// 要らない）ので、そのまま直列化した bytes が正規形の bytes と一致する。
+/// 昇順でなければ従来の経路。
+fn canonical_stored_payload_sha256(payload: &Value) -> anyhow::Result<String> {
+    if payload.is_object() && json_keys_sorted(payload) {
+        let bytes = serde_json::to_vec(payload).context("serialize AI audit payload")?;
+        return Ok(sha256_hex(bytes));
+    }
+    Ok(sha256_hex(canonical_stored_payload(payload)?.as_bytes()))
+}
+
+fn json_keys_sorted(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().all(json_keys_sorted),
+        Value::Object(map) => {
+            let mut previous: Option<&str> = None;
+            for (key, value) in map {
+                if previous.is_some_and(|previous| previous >= key.as_str()) {
+                    return false;
+                }
+                previous = Some(key);
+                if !json_keys_sorted(value) {
+                    return false;
+                }
+            }
+            true
+        }
+        _ => true,
+    }
+}
+
+/// 行 1 つ分の計算（他の行に依存しない。副作用も無い）。判定の順は逐次の検証と同じ。
+fn check_stored_row(row: &StoredAuditRow) -> RowCheck {
+    let payload = match serde_json::from_str::<Value>(&row.payload) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return RowCheck::PayloadUnreadable(rusqlite::Error::FromSqlConversionFailure(
+                11,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            ))
+        }
+    };
+    if row.column_error.is_some() {
+        return RowCheck::ColumnUnreadable;
+    }
+    if let Err(error) = validate_stored_capture_contract(&payload) {
+        return RowCheck::Broken(format!("stored payload contract mismatch: {error}"));
+    }
+    let payload_sha256 = match canonical_stored_payload_sha256(&payload) {
+        Ok(payload_sha256) => payload_sha256,
+        Err(error) => return RowCheck::Broken(format!("stored payload is invalid: {error}")),
+    };
+    if row.payload_sha256 != payload_sha256 {
+        return RowCheck::Broken("payloadSha256 mismatch".to_string());
+    }
+    match compute_hash(HashInput {
+        scope_id: &row.scope_id,
+        project_id: row.project_id.as_deref(),
+        sequence: row.sequence,
+        event_id: &row.event_id,
+        execution_id: &row.execution_id,
+        operation_id: &row.operation_id,
+        parent_execution_id: row.parent_execution_id.as_deref(),
+        path_id: &row.path_id,
+        event_type: &row.event_type,
+        timestamp: row.timestamp,
+        recorded_at: row.recorded_at,
+        payload_sha256: &row.payload_sha256,
+        prev_hash: &row.prev_hash,
+    }) {
+        Ok(hash) if row.hash == hash => RowCheck::Passed,
+        Ok(_) => RowCheck::Broken("hash mismatch".to_string()),
+        Err(error) => RowCheck::Failed(error),
+    }
+}
+
+/// 1 batch を読む。`rows.next()` が失敗したら、そこまでの行と error を返す。
+/// payload 以外の列を読めない行は（error を添えた行として）batch に入れ、そこで読みを止める。
+struct StoredBatch {
+    rows: Vec<StoredAuditRow>,
+    read_error: Option<rusqlite::Error>,
+    exhausted: bool,
+}
+
+fn read_stored_batch(
+    rows: &mut rusqlite::Rows<'_>,
+    batch_rows: usize,
+    batch_bytes: usize,
+) -> StoredBatch {
+    let mut batch = StoredBatch {
+        rows: Vec::with_capacity(batch_rows.min(VERIFY_BATCH_ROWS)),
+        read_error: None,
+        exhausted: false,
+    };
+    let mut bytes = 0usize;
+    while batch.rows.len() < batch_rows && bytes < batch_bytes {
+        match rows.next() {
+            Ok(Some(row)) => match stored_row_from_row(row) {
+                Ok(row) => {
+                    bytes += row.payload.len() + VERIFY_ROW_OVERHEAD_BYTES;
+                    let unreadable = row.column_error.is_some();
+                    batch.rows.push(row);
+                    if unreadable {
+                        batch.exhausted = true;
+                        return batch;
+                    }
+                }
+                Err(error) => {
+                    batch.read_error = Some(error);
+                    return batch;
+                }
+            },
+            Ok(None) => {
+                batch.exhausted = true;
+                return batch;
+            }
+            Err(error) => {
+                batch.read_error = Some(error);
+                return batch;
+            }
+        }
+    }
+    batch
+}
+
+fn check_chunk(chunk: &[StoredAuditRow]) -> Vec<RowCheck> {
+    chunk.iter().map(check_stored_row).collect()
+}
+
+/// thread を作れなかった chunk は、呼び出し側の thread で逐次に計算する
+/// （OS が thread を作れないことで、`with_conn` の Mutex を握ったまま panic しない）。
+enum PendingChunk<'scope, 'env> {
+    Spawned(std::thread::ScopedJoinHandle<'scope, Vec<RowCheck>>),
+    Inline(&'env [StoredAuditRow]),
+}
+
+fn spawn_chunk<'scope, 'env>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    chunk: &'env [StoredAuditRow],
+) -> PendingChunk<'scope, 'env> {
+    #[cfg(test)]
+    if verify_spawn_test_hook::should_fail() {
+        return PendingChunk::Inline(chunk);
+    }
+    match std::thread::Builder::new()
+        .name("grimodex-audit-verify".to_string())
+        .spawn_scoped(scope, move || check_chunk(chunk))
+    {
+        Ok(handle) => PendingChunk::Spawned(handle),
+        Err(_) => PendingChunk::Inline(chunk),
+    }
+}
+
+fn spawn_chunks<'scope, 'env>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    rows: &'env [StoredAuditRow],
+    workers: usize,
+) -> Vec<PendingChunk<'scope, 'env>> {
+    let chunk_len = rows.len().div_ceil(workers.max(1)).max(1);
+    rows.chunks(chunk_len)
+        .map(|chunk| spawn_chunk(scope, chunk))
+        .collect()
+}
+
+fn join_chunks(pending: Vec<PendingChunk<'_, '_>>) -> Vec<RowCheck> {
+    pending
+        .into_iter()
+        .flat_map(|chunk| match chunk {
+            PendingChunk::Spawned(handle) => match handle.join() {
+                Ok(checks) => checks,
+                Err(panic) => std::panic::resume_unwind(panic),
+            },
+            PendingChunk::Inline(chunk) => check_chunk(chunk),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod verify_spawn_test_hook {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// 試験：次の n 回の thread の作成を失敗させる（usize::MAX なら全部）。
+        static FAIL_SPAWNS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn fail_next(count: usize) {
+        FAIL_SPAWNS.with(|cell| cell.set(count));
+    }
+
+    pub(super) fn should_fail() -> bool {
+        FAIL_SPAWNS.with(|cell| {
+            let remaining = cell.get();
+            if remaining == 0 {
+                return false;
+            }
+            if remaining != usize::MAX {
+                cell.set(remaining - 1);
+            }
+            true
+        })
+    }
+}
+
+fn check_stored_rows(rows: &[StoredAuditRow], workers: usize) -> Vec<RowCheck> {
+    if workers <= 1 || rows.len() < workers * 2 {
+        return check_chunk(rows);
+    }
+    std::thread::scope(|scope| join_chunks(spawn_chunks(scope, rows, workers)))
+}
+
+/// 連番と `prev_hash` の連結を、行の順に判定する。
+struct ChainCursor {
+    expected_sequence: i64,
+    prev_hash: String,
+    high_water_sequence: i64,
+    high_water_hash: String,
+}
+
+impl ChainCursor {
+    fn broken(&self, reason: String) -> AiAuditVerifyResult {
+        AiAuditVerifyResult {
+            ok: false,
+            verified_through_sequence: self.expected_sequence - 1,
+            broken_at_sequence: Some(self.expected_sequence),
+            reason: Some(reason),
+            tail_hash: self.high_water_hash.clone(),
+        }
+    }
+
+    /// 終了するなら Some（壊れた位置の報告か error）。続けるなら None。
+    fn consume(
+        &mut self,
+        rows: Vec<StoredAuditRow>,
+        checks: Vec<RowCheck>,
+    ) -> Option<anyhow::Result<AiAuditVerifyResult>> {
+        for (mut row, check) in rows.into_iter().zip(checks) {
+            // 行を読む時の error は、この行の連番・`prev_hash` の判定より先に返る。
+            let check = match check {
+                RowCheck::PayloadUnreadable(error) => return Some(Err(error.into())),
+                RowCheck::ColumnUnreadable => {
+                    let error = row.column_error.take().expect("column error");
+                    return Some(Err(error.into()));
+                }
+                other => other,
+            };
+            if row.sequence != self.expected_sequence {
+                return Some(Ok(self.broken(format!(
+                    "sequence gap: expected {}, found {}",
+                    self.expected_sequence, row.sequence
+                ))));
+            }
+            if row.prev_hash != self.prev_hash {
+                return Some(Ok(self.broken("prevHash mismatch".to_string())));
+            }
+            match check {
+                RowCheck::Broken(reason) => return Some(Ok(self.broken(reason))),
+                RowCheck::Failed(error) => return Some(Err(error)),
+                RowCheck::Passed | RowCheck::PayloadUnreadable(_) | RowCheck::ColumnUnreadable => {}
+            }
+            self.prev_hash = row.hash;
+            self.expected_sequence += 1;
+        }
+        None
+    }
+
+    fn finish(self) -> AiAuditVerifyResult {
+        if self.expected_sequence - 1 != self.high_water_sequence {
+            return AiAuditVerifyResult {
+                ok: false,
+                verified_through_sequence: self.expected_sequence - 1,
+                broken_at_sequence: Some(self.expected_sequence),
+                reason: Some("sequence gap before pinned high-water mark".to_string()),
+                tail_hash: self.high_water_hash,
+            };
+        }
+        AiAuditVerifyResult {
+            ok: true,
+            verified_through_sequence: self.high_water_sequence,
+            broken_at_sequence: None,
+            reason: None,
+            tail_hash: self.high_water_hash,
+        }
+    }
+}
+
+/// 行を batch ごとに読み、行ごとの計算を `plan.workers` thread で並列に行う。
+/// 次の batch の読み出し（呼び出し側の thread。`Connection` はここから出ない）は、
+/// 今の batch の計算と重ねる。最初に壊れた行（行の順で）を報告するので、並列でも結果は
+/// 逐次の検証と同じで、壊れた行より後の batch は読まない（先読みの 1 batch を除く）。
+fn verify_stored_chain(
+    conn: &Connection,
+    scope_id: &str,
+    high_water_sequence: i64,
+    high_water_hash: String,
+    plan: VerifyPlan,
+) -> anyhow::Result<AiAuditVerifyResult> {
+    let mut cursor = ChainCursor {
+        expected_sequence: 1,
+        prev_hash: GENESIS_HASH_HEX.to_string(),
+        high_water_sequence,
+        high_water_hash,
+    };
     let mut statement = conn.prepare(
         "SELECT sequence, event_id, scope_id, project_id, execution_id, operation_id,
                 parent_execution_id, path_id, event_type, timestamp, recorded_at,
@@ -1928,78 +2384,37 @@ pub fn verify_ai_audit_chain_for_scope(
          WHERE scope_id = ? AND sequence <= ?
          ORDER BY sequence ASC",
     )?;
-    let rows = statement.query_map(params![scope_id, high_water_sequence], event_from_row)?;
-
-    for row in rows {
-        let event = row?;
-        let broken = |reason: String| AiAuditVerifyResult {
-            ok: false,
-            verified_through_sequence: expected_sequence - 1,
-            broken_at_sequence: Some(expected_sequence),
-            reason: Some(reason),
-            tail_hash: high_water_hash.clone(),
+    let mut rows = statement.query(params![scope_id, high_water_sequence])?;
+    let batch_rows = plan.batch_rows.max(1);
+    let batch_bytes = plan.batch_bytes.max(1);
+    let mut current = read_stored_batch(&mut rows, batch_rows, batch_bytes);
+    loop {
+        let StoredBatch {
+            rows: batch,
+            read_error,
+            exhausted,
+        } = current;
+        let overlap = plan.workers > 1 && read_error.is_none() && !exhausted;
+        let (checks, next) = if overlap && batch.len() >= plan.workers * 2 {
+            std::thread::scope(|scope| {
+                let pending = spawn_chunks(scope, &batch, plan.workers);
+                let next = read_stored_batch(&mut rows, batch_rows, batch_bytes);
+                (join_chunks(pending), Some(next))
+            })
+        } else {
+            (check_stored_rows(&batch, plan.workers), None)
         };
-        if event.sequence != expected_sequence {
-            return Ok(broken(format!(
-                "sequence gap: expected {expected_sequence}, found {}",
-                event.sequence
-            )));
+        if let Some(result) = cursor.consume(batch, checks) {
+            return result;
         }
-        if event.prev_hash != prev_hash {
-            return Ok(broken("prevHash mismatch".to_string()));
+        if let Some(error) = read_error {
+            return Err(error.into());
         }
-        if let Err(error) = validate_stored_capture_contract(&event.payload) {
-            return Ok(broken(format!("stored payload contract mismatch: {error}")));
+        if exhausted {
+            return Ok(cursor.finish());
         }
-        let payload = match canonical_stored_payload(&event.payload) {
-            Ok(payload) => payload,
-            Err(error) => {
-                return Ok(broken(format!("stored payload is invalid: {error}")));
-            }
-        };
-        let payload_sha256 = sha256_hex(payload.as_bytes());
-        if event.payload_sha256 != payload_sha256 {
-            return Ok(broken("payloadSha256 mismatch".to_string()));
-        }
-        let hash = compute_hash(HashInput {
-            scope_id: &event.scope_id,
-            project_id: event.project_id.as_deref(),
-            sequence: event.sequence,
-            event_id: &event.event_id,
-            execution_id: &event.execution_id,
-            operation_id: &event.operation_id,
-            parent_execution_id: event.parent_execution_id.as_deref(),
-            path_id: &event.path_id,
-            event_type: &event.event_type,
-            timestamp: event.timestamp,
-            recorded_at: event.recorded_at,
-            payload_sha256: &event.payload_sha256,
-            prev_hash: &event.prev_hash,
-        })?;
-        if event.hash != hash {
-            return Ok(broken("hash mismatch".to_string()));
-        }
-        prev_hash = event.hash;
-        expected_sequence += 1;
+        current = next.unwrap_or_else(|| read_stored_batch(&mut rows, batch_rows, batch_bytes));
     }
-
-    if expected_sequence - 1 != high_water_sequence {
-        return Ok(AiAuditVerifyResult {
-            ok: false,
-            verified_through_sequence: expected_sequence - 1,
-            broken_at_sequence: Some(expected_sequence),
-            reason: Some("sequence gap before pinned high-water mark".to_string()),
-            tail_hash: high_water_hash,
-        });
-    }
-
-    Ok(AiAuditVerifyResult {
-        ok: true,
-        verified_through_sequence: high_water_sequence,
-        broken_at_sequence: None,
-        reason: None,
-        tail_hash: high_water_hash,
-    })
 }
 
 impl Database {
@@ -2153,3 +2568,6 @@ impl Database {
 
 #[cfg(test)]
 mod durability_tests;
+
+#[cfg(test)]
+mod verify_tests;
