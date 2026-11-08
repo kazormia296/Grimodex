@@ -151,6 +151,13 @@ const INCREMENTAL_FRESHNESS_RETRY_POLICY = {
   schedulerAfterExhaustion: "idle-until-new-semantic-epoch",
   newEpochReservationRecovery: "release-and-reprocess-under-new-run",
   exhaustedRunAfterNewEpoch: "remains-terminal-failed",
+  // DR-JF-9: a publication guard race on the last Attempt closes the Run and
+  // returns the cursor reservation unacknowledged; it is not a dead-letter.
+  publishContentionExhaustedFailureCode:
+    "NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED",
+  cursorAfterPublishContentionExhaustion: "released-unacknowledged",
+  schedulerAfterPublishContentionExhaustion: "reprocess-under-new-run",
+  publishContentionRunAfterExhaustion: "closed-terminal-failed",
 };
 
 const INCREMENTAL_FRESHNESS_RESUME_SEMANTICS = [

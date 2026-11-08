@@ -132,6 +132,14 @@
       "policyVersion": "v1"
     },
     {
+      "failureCode": "NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED",
+      "retryDisposition": "terminal",
+      "maxAttempts": 3,
+      "backoffPolicy": "none",
+      "nextAttemptPolicy": "none",
+      "policyVersion": "v1"
+    },
+    {
       "failureCode": "NEX_MAINTENANCE_TRANSIENT",
       "retryDisposition": "retryable",
       "maxAttempts": 3,

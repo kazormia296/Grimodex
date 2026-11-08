@@ -353,7 +353,8 @@ pub use incremental_freshness::{
     run_incremental_freshness_cycle_with_liveness_capability_and_hold,
     run_incremental_freshness_cycle_with_liveness_capability_and_hold_and_lifecycle_control,
     IncrementalFreshnessBatchSummary, IncrementalFreshnessCycleOutcome,
-    IncrementalFreshnessCycleRequeued, IncrementalFreshnessHeldSummary,
+    IncrementalFreshnessCycleContended, IncrementalFreshnessCycleRequeued,
+    IncrementalFreshnessHeldSummary,
     IncrementalFreshnessShadowConsumerSummary, IncrementalFreshnessShadowSummary,
     SuccessfulIncrementalFreshnessCycle, NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME,
 };

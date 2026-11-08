@@ -667,6 +667,43 @@ describe("validate-run-kind-policy", () => {
     }
   });
 
+  it("pins the publish-contention close as released-unacknowledged, not a dead-letter", () => {
+    const policy = bundledPolicy();
+    const retryPolicy = runKind(policy, "incremental-freshness").retryPolicy;
+    assert.equal(
+      retryPolicy.publishContentionExhaustedFailureCode,
+      "NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED",
+    );
+    assert.equal(
+      retryPolicy.cursorAfterPublishContentionExhaustion,
+      "released-unacknowledged",
+    );
+    // The retry-exhaustion dead-letter contract is unchanged.
+    assert.equal(retryPolicy.cursorAfterExhaustion, "reserved-lease-free");
+    assert.equal(
+      retryPolicy.schedulerAfterExhaustion,
+      "idle-until-new-semantic-epoch",
+    );
+    assert.deepEqual(validateFixture(policy).errors, []);
+
+    for (const [field, value] of [
+      ["publishContentionExhaustedFailureCode", "NEX_OTHER"],
+      ["cursorAfterPublishContentionExhaustion", "reserved-lease-free"],
+      ["schedulerAfterPublishContentionExhaustion", "idle-until-new-semantic-epoch"],
+      ["publishContentionRunAfterExhaustion", "remains-terminal-failed"],
+    ]) {
+      const mutated = bundledPolicy();
+      runKind(mutated, "incremental-freshness").retryPolicy[field] = value;
+      const result = validateFixture(mutated);
+      assert.ok(
+        result.errors.some((error) =>
+          error.includes(`incremental-freshness.retryPolicy.${field}`),
+        ),
+        `expected retryPolicy.${field} mutation to fail: ${JSON.stringify(result.errors)}`,
+      );
+    }
+  });
+
   it("requires an exact idle checkpoint object on incremental freshness", () => {
     const missing = bundledPolicy();
     delete runKind(missing, "incremental-freshness").idleCheckpoint;

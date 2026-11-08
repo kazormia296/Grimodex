@@ -453,7 +453,11 @@
             "cursorAfterExhaustion",
             "schedulerAfterExhaustion",
             "newEpochReservationRecovery",
-            "exhaustedRunAfterNewEpoch"
+            "exhaustedRunAfterNewEpoch",
+            "publishContentionExhaustedFailureCode",
+            "cursorAfterPublishContentionExhaustion",
+            "schedulerAfterPublishContentionExhaustion",
+            "publishContentionRunAfterExhaustion"
           ],
           "properties": {
             "maxAttemptsPerTask": { "type": "integer", "minimum": 1 },
@@ -479,6 +483,22 @@
               "minLength": 1
             },
             "exhaustedRunAfterNewEpoch": {
+              "type": "string",
+              "minLength": 1
+            },
+            "publishContentionExhaustedFailureCode": {
+              "type": "string",
+              "pattern": "^NEX_[A-Z0-9_]+$"
+            },
+            "cursorAfterPublishContentionExhaustion": {
+              "type": "string",
+              "minLength": 1
+            },
+            "schedulerAfterPublishContentionExhaustion": {
+              "type": "string",
+              "minLength": 1
+            },
+            "publishContentionRunAfterExhaustion": {
               "type": "string",
               "minLength": 1
             }
@@ -971,7 +991,11 @@
                   "cursorAfterExhaustion": "reserved-lease-free",
                   "schedulerAfterExhaustion": "idle-until-new-semantic-epoch",
                   "newEpochReservationRecovery": "release-and-reprocess-under-new-run",
-                  "exhaustedRunAfterNewEpoch": "remains-terminal-failed"
+                  "exhaustedRunAfterNewEpoch": "remains-terminal-failed",
+                  "publishContentionExhaustedFailureCode": "NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED",
+                  "cursorAfterPublishContentionExhaustion": "released-unacknowledged",
+                  "schedulerAfterPublishContentionExhaustion": "reprocess-under-new-run",
+                  "publishContentionRunAfterExhaustion": "closed-terminal-failed"
                 }
               },
               "resumeSemantics": {
