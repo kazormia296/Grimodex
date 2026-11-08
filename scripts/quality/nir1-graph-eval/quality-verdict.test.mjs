@@ -1876,6 +1876,8 @@ test("品質 v2 D3 の開示: Graph を出した子の数と edge の件数、�
   assert.equal(a2(eligible).outsideExpectationAdded, 30);
   assert.equal(a2(eligible).keptAsChildren, 0);
   assert.deepEqual(a2(eligible).keptAsChildrenMissing, []);
+  // D3 の対象の子は「子」に数えない: R+IR に期待の外の Scene を足しても、期待 unavailable の variant の表示（子の一覧）の違いにも、条件 5 (a) の違反にもならない。
+  assert.deepEqual(keyOf(eligible, KEY).forbidden.a.violations, []);
   const row = keyOf(eligible, KEY).conditions["forbidden-contribution"]
     .components["a2-index-ready-requery-forbidden"];
   assert.equal(row.graphEdgeCount, 90);

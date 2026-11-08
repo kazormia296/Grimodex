@@ -284,6 +284,8 @@ test("v2 §0: the command line refuses a verdict without the first-run inputs", 
     execFileSync(
       process.execPath,
       [
+        // The mutation hook (--import) of a detection run reaches this child too.
+        ...process.execArgv,
         cli,
         "--gold-dir",
         ROOT,
