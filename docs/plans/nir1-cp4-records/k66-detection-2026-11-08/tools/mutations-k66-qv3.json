@@ -1,0 +1,613 @@
+[
+  {
+    "id": "QV3-P1-notdisplayed-first",
+    "spn": "P1-1 / C8",
+    "file": "quality-verdict.mjs",
+    "find": "  if (notDisplayedRows.length > 0) {\n    gcase = {",
+    "replace": "  if (false && notDisplayedRows.length > 0) {\n    gcase = {",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1266,
+        "titlePrefix": "品質 v2 D8（K6/6-N13a・N13b）: 窓内に合流して Graph が表示に寄与したのに first-ren"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1976,
+        "titlePrefix": "P1-1（品質 v2 C8）: 表示が 0 件の variant（Graph が寄与したのに first-render "
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2069,
+        "titlePrefix": "P2-2（v2 C6）: 定常状態の followUp.requeries の行は first-render にせず（F"
+      }
+    ]
+  },
+  {
+    "id": "QV3-P21-empty-observed",
+    "spn": "P2-1 / C4",
+    "file": "quality-verdict.mjs",
+    "find": "if (mayHaveShownGraph && observedEntries.length === 0)",
+    "replace": "if (false)",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1717,
+        "titlePrefix": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount "
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2012,
+        "titlePrefix": "P2-1（v2 C4）: Graph を出したかもしれない子の空の記録（probe が paths を出さない形）は D"
+      }
+    ]
+  },
+  {
+    "id": "QV3-P32a-scene-null",
+    "spn": "P3-2 / C4",
+    "file": "quality-verdict.mjs",
+    "find": "if (observedEntries.some((entry) => typeof entry?.sceneId !== \"string\"))",
+    "replace": "if (false)",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1717,
+        "titlePrefix": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount "
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2043,
+        "titlePrefix": "P3-2（v2 C4）: Scene が論理 ID に無い path（sceneId null）は捨てずに hold"
+      }
+    ]
+  },
+  {
+    "id": "QV3-C3-record-missing-only-graph",
+    "spn": "§3 字義",
+    "file": "quality-verdict.mjs",
+    "find": "  if (!hasRecord)\n    out.push({ kind: \"hold\", code: \"b-material-revision-record-missing\" });",
+    "replace": "  if (!hasRecord && mayHaveShownGraph)\n    out.push({ kind: \"hold\", code: \"b-material-revision-record-missing\" });",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1717,
+        "titlePrefix": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount "
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2012,
+        "titlePrefix": "P2-1（v2 C4）: Graph を出したかもしれない子の空の記録（probe が paths を出さない形）は D"
+      }
+    ]
+  },
+  {
+    "id": "QV3-P22-requeries-N29-N32",
+    "spn": "P2-2 / C6",
+    "file": "quality-verdict.mjs",
+    "find": "      ...(Array.isArray(sample.followUp?.requeries)\n        ? sample.followUp.requeries\n        : []),\n    ])\n      if (",
+    "replace": "    ])\n      if (",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2069,
+        "titlePrefix": "P2-2（v2 C6）: 定常状態の followUp.requeries の行は first-render にせず（F"
+      }
+    ]
+  },
+  {
+    "id": "QV3-P22-requeries-a",
+    "spn": "P2-2 / C6 (ii)",
+    "file": "quality-verdict.mjs",
+    "find": "if (!Array.isArray(requery?.finalSceneIds)) continue;",
+    "replace": "continue;",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2069,
+        "titlePrefix": "P2-2（v2 C6）: 定常状態の followUp.requeries の行は first-render にせず（F"
+      }
+    ]
+  },
+  {
+    "id": "QV3-P22-FR6-rows",
+    "spn": "P2-2 / C6 (i)",
+    "file": "followup.mjs",
+    "find": "else if (record.requeries.length > 0)",
+    "replace": "else if (false)",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 374,
+        "titlePrefix": "K6/6-N6d: followUp.requeries の行が 1 つでもある親（定常状態の key。v2 C6）は数"
+      }
+    ]
+  },
+  {
+    "id": "QV3-P22-FR6-not-list",
+    "spn": "P2-2 / C6 (i)",
+    "file": "followup.mjs",
+    "find": "if (!Array.isArray(record.requeries)) no(\"FR6\", \"requeries-not-a-list\");",
+    "replace": "if (false) no(\"FR6\", \"requeries-not-a-list\");",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 374,
+        "titlePrefix": "K6/6-N6d: followUp.requeries の行が 1 つでもある親（定常状態の key。v2 C6）は数"
+      }
+    ]
+  },
+  {
+    "id": "QV3-C5-no-variantkey",
+    "spn": "P3-2 / C5",
+    "file": "quality-verdict.mjs",
+    "find": "row.requeryRowsWithoutVariantKey += 1;",
+    "replace": "row.requeryRowsWithoutVariantKey += 0;",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2121,
+        "titlePrefix": "P3-2（v2 C5）: variantKey の無い再 query の行は黙って捨てず、すべての variant の条"
+      }
+    ]
+  },
+  {
+    "id": "QV3-C5-hybrid-row",
+    "spn": "P3-2 / C5",
+    "file": "quality-verdict.mjs",
+    "find": "      requery.arm === \"hybrid\" ||\n",
+    "replace": "      false ||\n",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1640,
+        "titlePrefix": "品質 v2 D4: 受領書の最上位の requeries（user-operation でない行）が Scene の一覧"
+      }
+    ]
+  },
+  {
+    "id": "QV3-C1-key-order",
+    "spn": "P3-3 / C1",
+    "file": "quality-verdict.mjs",
+    "find": "for (const id of Array.isArray(order) ? order : []) {",
+    "replace": "for (const id of Object.keys(typedRevisions ?? {})) {",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1369,
+        "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1607,
+        "titlePrefix": "品質 v2 D3 (d): 最新の typed Revision は凍結の fixture の配列の順の最後の行。pre"
+      }
+    ]
+  },
+  {
+    "id": "QV3-C1-refused-any",
+    "spn": "P3-3 / C1 (iii)",
+    "file": "quality-verdict.mjs",
+    "find": "row.refusedAtSetup === \"prepare\"",
+    "replace": "row.refusedAtSetup",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1369,
+        "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1607,
+        "titlePrefix": "品質 v2 D3 (d): 最新の typed Revision は凍結の fixture の配列の順の最後の行。pre"
+      }
+    ]
+  },
+  {
+    "id": "QV3-C1-order-not-in-fixture",
+    "spn": "P3-3 / C1",
+    "file": "quality-verdict.mjs",
+    "find": "    Object.keys(typedRevisions).some((id) => !ordered.has(id))",
+    "replace": "    false",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1369,
+        "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
+      }
+    ]
+  },
+  {
+    "id": "QV3-C1-order-empty",
+    "spn": "P3-3 / C1",
+    "file": "quality-verdict.mjs",
+    "find": "    ordered.size === 0 ||\n",
+    "replace": "",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [],
+    "equivalent": true,
+    "equivalentReason": "order が空なら ordered は空集合で、setup の記録に 1 つでも Revision（直前の hasSetup の検査で 1 つ以上ある）があれば `some((id) => !ordered.has(id))` が真になり同じ hold（d-revision-order-unavailable）になる。`ordered.size === 0` は単独では判定を変えない（読みによる）。"
+  },
+  {
+    "id": "QV3-C1-loader-order",
+    "spn": "P3-3 / C1",
+    "file": "quality-verdict-cli.mjs",
+    "find": "typedRevisionOrder: (Array.isArray(fixture.revisions)",
+    "replace": "typedRevisionOrder: (false",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1369,
+        "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2012,
+        "titlePrefix": "P2-1（v2 C4）: Graph を出したかもしれない子の空の記録（probe が paths を出さない形）は D"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2043,
+        "titlePrefix": "P3-2（v2 C4）: Scene が論理 ID に無い path（sceneId null）は捨てずに hold"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2239,
+        "titlePrefix": "P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR に足す）は fail、既に "
+      }
+    ]
+  },
+  {
+    "id": "QV3-D3-3-refreshTrigger",
+    "spn": "P3-1 D3 (3)",
+    "file": "quality-verdict.mjs",
+    "find": "if (child.refreshTrigger === \"graph-ready\") missing.push(3);",
+    "replace": "",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1812,
+        "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2163,
+        "titlePrefix": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば "
+      }
+    ]
+  },
+  {
+    "id": "QV3-D3-4-chronicle-usable",
+    "spn": "P3-1 D3 (4)",
+    "file": "quality-verdict.mjs",
+    "find": "sample.snapshot?.chronicleIndexUsable !== false ||\n",
+    "replace": "false ||\n",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2163,
+        "titlePrefix": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば "
+      }
+    ]
+  },
+  {
+    "id": "QV3-D3-4-ir-outcome",
+    "spn": "P3-1 D3 (4)",
+    "file": "quality-verdict.mjs",
+    "find": "sample.irOutcome !== \"index-unavailable\"\n  )\n    missing.push(4);",
+    "replace": "false\n  )\n    missing.push(4);",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1812,
+        "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2163,
+        "titlePrefix": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば "
+      }
+    ]
+  },
+  {
+    "id": "QV3-D3-5-graph-usable",
+    "spn": "P3-1 D3 (5)",
+    "file": "quality-verdict.mjs",
+    "find": "if (sample.snapshot?.usable !== true) missing.push(5);",
+    "replace": "",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1812,
+        "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2163,
+        "titlePrefix": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば "
+      }
+    ]
+  },
+  {
+    "id": "QV3-D3-2-origin",
+    "spn": "P3-1 D3 (2)",
+    "file": "quality-verdict.mjs",
+    "find": "if (child.origin !== \"index-ready\") missing.push(2);",
+    "replace": "",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1369,
+        "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
+      }
+    ]
+  },
+  {
+    "id": "QV3-D3-6-child-chronicle",
+    "spn": "P3-1 D3 (6)",
+    "file": "quality-verdict.mjs",
+    "find": "if (child.chronicleIndexUsable !== true) missing.push(6);",
+    "replace": "",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1369,
+        "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1812,
+        "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
+      }
+    ]
+  },
+  {
+    "id": "QV3-D3-1-variant",
+    "spn": "P3-1 D3 (1) / D2",
+    "file": "quality-verdict.mjs",
+    "find": "    const d3 =\n      variant.key === \"G-08/chronicle-index-unusable\" &&\n      d3Eligible(sample, child);",
+    "replace": "    const d3 = d3Eligible(sample, child);",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2163,
+        "titlePrefix": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば "
+      }
+    ]
+  },
+  {
+    "id": "QV3-D2-eligible-stays-child",
+    "spn": "D2",
+    "file": "quality-verdict.mjs",
+    "find": "if (child && child.publishCount > 0 && !d3)",
+    "replace": "if (child && child.publishCount > 0)",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1812,
+        "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
+      }
+    ]
+  },
+  {
+    "id": "QV3-D2-unavailable-not-d3",
+    "spn": "D2",
+    "file": "quality-verdict.mjs",
+    "find": "          !d3 &&\n",
+    "replace": "",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1369,
+        "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1812,
+        "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
+      }
+    ]
+  },
+  {
+    "id": "QV3-D3a-added-list",
+    "spn": "P3-1 D3 (a)",
+    "file": "quality-verdict.mjs",
+    "find": "const hit = added.filter(bad);",
+    "replace": "const hit = [];",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2239,
+        "titlePrefix": "P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR に足す）は fail、既に "
+      }
+    ]
+  },
+  {
+    "id": "QV3-D3a-blocked",
+    "spn": "P3-1 D3 (a)",
+    "file": "quality-verdict.mjs",
+    "find": "const bad = (id) => forbidden.has(id) || blocked.has(id);",
+    "replace": "const bad = (id) => forbidden.has(id);",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2239,
+        "titlePrefix": "P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR に足す）は fail、既に "
+      }
+    ]
+  },
+  {
+    "id": "QV3-D3b-forbidden-path",
+    "spn": "D3 (b)",
+    "file": "quality-verdict.mjs",
+    "find": "const hit = sceneIds.filter(bad);",
+    "replace": "const hit = [];",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1369,
+        "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1717,
+        "titlePrefix": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount "
+      }
+    ]
+  },
+  {
+    "id": "QV3-D8b-not-displayed-differs",
+    "spn": "P3-1 D8 (b)",
+    "file": "quality-verdict.mjs",
+    "find": "else if (!sameList(lists(sample.finalSceneIds), pair))",
+    "replace": "else if (false)",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1317,
+        "titlePrefix": "品質 v2 D8: 表示されなかった sample の Scene の一覧が R+IR と違うのは hold でなく f"
+      }
+    ]
+  },
+  {
+    "id": "QV3-D7-not-before-equal",
+    "spn": "D7",
+    "file": "quality-verdict-cli.mjs",
+    "find": "if (!(record.atMs < firstRun.atMs))",
+    "replace": "if (!(record.atMs <= firstRun.atMs))",
+    "testFile": "quality-verdict-first-run.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 147,
+        "titlePrefix": "v2 §0: both commits must be on the remote strictly before th"
+      }
+    ]
+  },
+  {
+    "id": "QV3-D7-earliest-run",
+    "spn": "D7",
+    "file": "quality-verdict-cli.mjs",
+    "find": "if (first === null || at < first.at)",
+    "replace": "if (first === null || at > first.at)",
+    "testFile": "quality-verdict-first-run.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 95,
+        "titlePrefix": "v2 §0: the first formal run is the earliest head.runStartedA"
+      },
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 147,
+        "titlePrefix": "v2 §0: both commits must be on the remote strictly before th"
+      },
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 205,
+        "titlePrefix": "v2 §0: loadFirstRunInputs reads the six directories, the rec"
+      }
+    ]
+  },
+  {
+    "id": "QV3-D7-kind-empty",
+    "spn": "D7",
+    "file": "quality-verdict-cli.mjs",
+    "find": "    if (rows.length === 0)\n      throw precheck(\n        `v2 §0: no ${kind}",
+    "replace": "    if (false)\n      throw precheck(\n        `v2 §0: no ${kind}",
+    "testFile": "quality-verdict-first-run.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 95,
+        "titlePrefix": "v2 §0: the first formal run is the earliest head.runStartedA"
+      }
+    ]
+  },
+  {
+    "id": "QV3-D7-remote-earliest",
+    "spn": "D7",
+    "file": "quality-verdict-cli.mjs",
+    "find": "if (best === null || at < best.at)",
+    "replace": "if (best === null || at > best.at)",
+    "testFile": "quality-verdict-first-run.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 147,
+        "titlePrefix": "v2 §0: both commits must be on the remote strictly before th"
+      }
+    ]
+  },
+  {
+    "id": "QV3-D7-source",
+    "spn": "D7",
+    "file": "quality-verdict-cli.mjs",
+    "find": "if (!REMOTE_TIME_SOURCES.has(row.source))",
+    "replace": "if (false)",
+    "testFile": "quality-verdict-first-run.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 147,
+        "titlePrefix": "v2 §0: both commits must be on the remote strictly before th"
+      }
+    ]
+  },
+  {
+    "id": "QV3-D7-v2-bytes",
+    "spn": "D7",
+    "file": "quality-verdict-cli.mjs",
+    "find": "if (gitBlobSha256(v2File, v2Commit) !== v2Sha256)",
+    "replace": "if (false)",
+    "testFile": "quality-verdict-first-run.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 205,
+        "titlePrefix": "v2 §0: loadFirstRunInputs reads the six directories, the rec"
+      }
+    ]
+  },
+  {
+    "id": "QV3-D7-cli-required",
+    "spn": "D7",
+    "file": "quality-verdict-cli.mjs",
+    "find": "if (!values[name] || values[name].length === 0)",
+    "replace": "if (false)",
+    "testFile": "quality-verdict-first-run.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 277,
+        "titlePrefix": "v2 §0: the command line refuses a verdict without the first-"
+      }
+    ]
+  }
+]

@@ -258,3 +258,10 @@ K6/6-N1〜N13 とK6/6-P1〜P5 のすべてに 1 件以上の試験がある。FR
 - **品質判定 v2 の D3・D4 の変異**（`K66-D4-*`、`K66-D3b-*`、`K66-D3-*`）は、この追補で足した試験（`quality-verdict.test.mjs` の D4 の requeries、D3 (b)(d) の記録、D3 の開示）が落とす。v2 の確定・独立のコードレビューは未了（次の段）のまま。
 - 上の 54 件の表の『理由 code』は、変異を当てて得た結果ではなく、変異が外した検査の code を表にしたもの（`firstRenderFails` の code は、変異した側では出ないので、結果の `failed[].error` には出ない）。『試験が assert する』の突き合わせで、code と落ちた試験を結びつけた。K6/4・K6/5 の検出力の記録を取り直すかは integrator の判断のまま。
 
+
+## 追補 2：品質判定 v2 のコードレビュー指摘への対応（DR-CP4-QV-3。候補 `57c13dc5`）
+
+- 実行：2026-11-08T10:19:55.764Z から 2026-11-08T10:22:31.151Z（UTC）。候補 `57c13dc5685a060612ae3c0e72737fa5f5d3b85c`（tree `f4c372d615ef6b7d7d4ce49b21ff8de2851f808a`。枝 `claude/k66-harness`。コード `bf5ec217`、試験の補強 `57c13dc5`）。Node v22.23.3、detach の worktree。
+- 変異 35 件（`tools/mutations-k66-qv3.json`）：条件 2 の D8 の fail を先に返す（P1-1）、D3 の空の記録・論理 ID の無い path・記録の無い子（P2-1、P3-2、§3）、`followUp.requeries`（P2-2。FR-6、N29・N32、条件 5 (a)）、D4 の hybrid の行・variantKey の無い行（C5）、D3 (d) の順序・`refusedAtSetup` の読み・fixture の順の読込み（C1）、D3 の (1)〜(6) と D2 の「子から外す」、D3 (a)(b)、D8 (b)、§0 の CLI の各検査（D7）。すべて 1 回だけ当たり（`allHitOnce`）、**34 件はその条件の試験が落ち、等価 1 件（`QV3-C1-order-empty`）は落ちない**（理由は `equivalentReason`）。陽性の対照 11 件は baseline で ok、nir1-graph-eval の全体 731 件 pass。
+- 最初の run で生き残った変異が 3 件あり（試験の穴）、`57c13dc5` で埋めた：`QV3-D2-eligible-stays-child`（D3 の対象の子を子に数えても判定が変わらなかった。D3 の開示の試験に「条件 5 (a) の違反が無い」assert を足した）、`QV3-D7-cli-required`（CLI の必須引数の試験が変異の hook を子 process に渡していなかった。`process.execArgv` を渡す）、`QV3-P22-FR6-not-list`（変異の置換が構文を壊していた。置換を直した）。
+- 結果 `results-k66-qv3-57c13dc5.json`（sha256 `f919e7cc87cd3f10d3fd473c1fbc0c24267977c3eee2a58fab7ff1c93898314f`）。期待（`expected`）は最初の run の結果から写した（変異の前に決めていない）。K6/6 の bytes・手順のファイル・trace の file は変えていない。

@@ -24,3 +24,8 @@ node count-n.mjs <baseline-all.tap> <候補の worktree> --out counts.json
 
 - `mutations-k66-addendum.json`：N2c〜N2f（値ごと）、N5（block × key）、N8、N12c、(c) の区切り、品質判定 v2 の D3・D4 の変異 28 件（`run.mjs` の引数は `--mutations mutations-k66-addendum.json --targets followup.k66.test.mjs,quality-verdict.test.mjs`）。`expected` は最初の run（候補 `6342a02d`）の結果から写した（変異の前に決めていない）。等価の 1 件は `equivalentReason` に理由。
 - `reasons-k66.json`：上の 54 件の変異が外した検査の理由 code。記録の「上の 54 件の変異の理由 code」の表の元。
+
+## 追補 2（品質判定 v2 のコードレビュー指摘への対応。候補 `57c13dc5`）
+
+- `mutations-k66-qv3.json`：品質判定 v2 の確定版の C1・C4〜C8、D2・D3（(1)〜(6)、(a)(b)）、D8 (b)、§0 の CLI（D7）の変異 35 件（`run.mjs` の引数は `--mutations mutations-k66-qv3.json --targets followup.k66.test.mjs,quality-verdict.test.mjs,quality-verdict-first-run.test.mjs --positive positive-k66-qv3.json`）。`expected` は結果から写した（変異の前に決めていない）。等価の 1 件は `equivalentReason`。
+- `positive-k66-qv3.json`：追補 2 の陽性の対照（試験の行は候補 `57c13dc5` のもの）。
