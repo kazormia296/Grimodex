@@ -52,5 +52,6 @@
   "K66-D3d-not-latest": ["d-revision-is-not-the-latest"],
   "K66-D3d-no-edge-hold": ["d-edge-has-no-typed-revision-in-setup"],
   "K66-D3d-no-setup-hold": ["d-revision-resolution-unavailable"],
-  "K66-D3d-refused-skipped": ["d-revision-is-not-the-latest"]
+  "K66-D3d-refused-skipped": ["d-revision-is-not-the-latest"],
+  "K66-D3d-prepare-skip-removed": ["d-revision-is-not-the-latest"]
 }

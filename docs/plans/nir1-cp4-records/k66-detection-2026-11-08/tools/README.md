@@ -33,3 +33,9 @@ node count-n.mjs <baseline-all.tap> <候補の worktree> --out counts.json
 ## 追補 3（再レビュー指摘への対応。候補 `99699dda`）
 
 `mutations-k66-qv3.json` を 48 件にした（追補 2 の 35 件 + 再レビューの 13 件）。`--targets` に `pubg16-e2e-run.test.mjs` を足す（`followup.k66.test.mjs,quality-verdict.test.mjs,quality-verdict-first-run.test.mjs,pubg16-e2e-run.test.mjs`）。`positive-k66-qv3.json` は候補 `99699dda` の行に更新した。
+
+## 7 回目の取り直し（候補 `f7e1fec1`。S3 の 9 回目の B1-3）
+
+- 本体・追補・追補 2・3 の 3 組を同じ候補で取り直した（`results-k66-f7e1fec1.json`、`results-k66-addendum-f7e1fec1.json`、`results-k66-qv3-f7e1fec1.json`）。`run.mjs` の引数は上のとおり（追補は `--positive positive-k66-addendum.json` を渡した）。
+- `mutations-k66.json` は 55 件：`K66-D3d-refused-skipped` の `find` を今の code に当て直し（prepare 以外の拒否も飛ばす変異）、旧意図（prepare の拒否の skip の除去）を `K66-D3d-prepare-skip-removed` として足した。`mutations-k66-addendum.json` は `K66-D3b-record-only-when-edges` の `find` を当て直した。`reasons-k66.json` に `K66-D3d-prepare-skip-removed` を足した。
+- `expected` の書き換えは、行番号のずれ・後で足された試験が追加で落とす分・上の 2 件の `find` の当て直しの結果の写しだけで、題（`titlePrefix`）は変えていない。`positive-k66.json` の行は題で引いて直し、`positive-k66-addendum.json`（8 件）を足した。詳細は `../k66-synthetic-detection-record.md` の「7 回目の取り直しで変えたこと」。

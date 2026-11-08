@@ -34,7 +34,7 @@
       },
       {
         "file": "followup.k66.test.mjs",
-        "line": 522,
+        "line": 536,
         "titlePrefix": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）"
       }
     ]
@@ -199,7 +199,7 @@
     "expected": [
       {
         "file": "followup.k66.test.mjs",
-        "line": 477,
+        "line": 491,
         "titlePrefix": "K6/6-N12c: FR-5 親の窓が 40 ms でなければ [precheck]"
       }
     ]
@@ -219,17 +219,17 @@
       },
       {
         "file": "followup.k66.test.mjs",
-        "line": 490,
+        "line": 504,
         "titlePrefix": "K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-ren"
       },
       {
         "file": "followup.k66.test.mjs",
-        "line": 522,
+        "line": 536,
         "titlePrefix": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）"
       },
       {
         "file": "followup.k66.test.mjs",
-        "line": 586,
+        "line": 600,
         "titlePrefix": "K6/6 R-6 (c) の開示: 背景の再準備が次の sample の前に走った親は数えられず、欠落になる（残余 (3"
       }
     ]
@@ -244,7 +244,7 @@
     "expected": [
       {
         "file": "followup.k66.test.mjs",
-        "line": 625,
+        "line": 639,
         "titlePrefix": "K6/6 (c): nextGraphArmOf は user-operation でない行（再 query）を"
       }
     ]
@@ -279,17 +279,17 @@
       },
       {
         "file": "followup.k66.test.mjs",
-        "line": 490,
+        "line": 504,
         "titlePrefix": "K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-ren"
       },
       {
         "file": "followup.k66.test.mjs",
-        "line": 522,
+        "line": 536,
         "titlePrefix": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）"
       },
       {
         "file": "followup.k66.test.mjs",
-        "line": 586,
+        "line": 600,
         "titlePrefix": "K6/6 R-6 (c) の開示: 背景の再準備が次の sample の前に走った親は数えられず、欠落になる（残余 (3"
       }
     ]
@@ -304,7 +304,7 @@
     "expected": [
       {
         "file": "followup.k66.test.mjs",
-        "line": 573,
+        "line": 587,
         "titlePrefix": "K6/6-N8: 窓内に合流した stamp0-missing の親だけを分母から外した samples は拒否する（("
       }
     ]
@@ -319,7 +319,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1581,
+        "line": 1670,
         "titlePrefix": "品質 v2 D4: 受領書の最上位の requeries（user-operation でない行）が Scene の一覧"
       }
     ]
@@ -334,7 +334,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1581,
+        "line": 1670,
         "titlePrefix": "品質 v2 D4: 受領書の最上位の requeries（user-operation でない行）が Scene の一覧"
       }
     ]
@@ -349,7 +349,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1581,
+        "line": 1670,
         "titlePrefix": "品質 v2 D4: 受領書の最上位の requeries（user-operation でない行）が Scene の一覧"
       }
     ]
@@ -358,16 +358,17 @@
     "id": "K66-D3b-record-only-when-edges",
     "spn": "D3 (b)(d)",
     "file": "quality-verdict.mjs",
-    "find": "if (hasRecord || mayHaveShownGraph) {",
-    "replace": "if (child.outcome === \"graph-ready\" && (child.edgeCount ?? 0) > 0) {",
+    "find": "  else {\n    const observedEntries = Array.isArray(material.observed)",
+    "replace": "  else if (mayHaveShownGraph) {\n    const observedEntries = Array.isArray(material.observed)",
     "testFile": "quality-verdict.test.mjs",
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1658,
+        "line": 1747,
         "titlePrefix": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount "
       }
-    ]
+    ],
+    "note": "候補 f7e1fec1 の取り直しで find を今の code に直した（旧 find の code は bf5ec217 などで置き換わった）。expected はこの run の結果から写した。"
   },
   {
     "id": "K66-D3b-null-edgecount-no-hold",
@@ -379,7 +380,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1658,
+        "line": 1747,
         "titlePrefix": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount "
       }
     ]
@@ -394,10 +395,16 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1658,
+        "line": 1747,
         "titlePrefix": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount "
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2286,
+        "titlePrefix": "P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR に足す）は fail、既に "
       }
-    ]
+    ],
+    "note": "追補 2 以後に足した試験（P3-1 の試験）もこの変異を落とすので、expected に足した（検出が増えただけ。取り直しの run の結果から写した）。"
   },
   {
     "id": "K66-D3-disclose-edge-count",
@@ -409,7 +416,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1726,
+        "line": 1842,
         "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
       }
     ]
@@ -435,10 +442,16 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1726,
+        "line": 1842,
         "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2210,
+        "titlePrefix": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば "
       }
-    ]
+    ],
+    "note": "追補 2 以後に足した試験（P3-1 の試験）もこの変異を落とすので、expected に足した（検出が増えただけ。取り直しの run の結果から写した）。"
   },
   {
     "id": "K66-D3-missing-6",
@@ -450,12 +463,12 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1365,
+        "line": 1379,
         "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1726,
+        "line": 1842,
         "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
       }
     ]
