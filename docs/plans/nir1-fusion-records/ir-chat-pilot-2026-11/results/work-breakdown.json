@@ -1,0 +1,76 @@
+{
+  "schema": "ir-chat-pilot-work-breakdown/1",
+  "note": "Sonnet、judge v3 の reproduced。arm 0 は記憶の確認。",
+  "byWork": {
+    "g-ja-1": {
+      "0": {
+        "questions": 33,
+        "itemRecall": {
+          "n": 87,
+          "successes": 1,
+          "rate": 0.0115,
+          "low": 0.002,
+          "high": 0.0623
+        },
+        "questionScoreMean": 0.0101
+      },
+      "A": {
+        "questions": 33,
+        "itemRecall": {
+          "n": 87,
+          "successes": 19,
+          "rate": 0.2184,
+          "low": 0.1445,
+          "high": 0.3161
+        },
+        "questionScoreMean": 0.2323
+      },
+      "B": {
+        "questions": 33,
+        "itemRecall": {
+          "n": 87,
+          "successes": 22,
+          "rate": 0.2529,
+          "low": 0.1733,
+          "high": 0.3533
+        },
+        "questionScoreMean": 0.2727
+      }
+    },
+    "m-ja-2": {
+      "0": {
+        "questions": 34,
+        "itemRecall": {
+          "n": 86,
+          "successes": 1,
+          "rate": 0.0116,
+          "low": 0.0021,
+          "high": 0.063
+        },
+        "questionScoreMean": 0.0098
+      },
+      "A": {
+        "questions": 34,
+        "itemRecall": {
+          "n": 86,
+          "successes": 10,
+          "rate": 0.1163,
+          "low": 0.0644,
+          "high": 0.201
+        },
+        "questionScoreMean": 0.1225
+      },
+      "B": {
+        "questions": 34,
+        "itemRecall": {
+          "n": 86,
+          "successes": 29,
+          "rate": 0.3372,
+          "low": 0.2462,
+          "high": 0.4422
+        },
+        "questionScoreMean": 0.3505
+      }
+    }
+  }
+}

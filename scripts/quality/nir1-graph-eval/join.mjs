@@ -106,11 +106,16 @@ export function joinedWithinWindow(sample) {
 }
 
 /**
- * (a) / first-render: only a worker result of this query's ticket, started on
- * a new READY with a matching freshness stamp, counts as in-window (K6/2 step
- * 3; K6/4 keeps it for the first render, 「設計」表示の可用性 and 変える点 5).
+ * K6/2's literal reading of "in the window" for a steady-state first render
+ * (K6/2 step 3): only a worker result of this query's ticket, started on a new
+ * READY with a matching freshness stamp. Under K6/4's R1 this is structurally
+ * false (D′ never publishes READY; S0 is almost never read), so K6/6 (変える点
+ * 3、H1) no longer uses it to decide a first render: followup.mjs
+ * `firstRenderOf` is the /6 function. This one stays for the disclosure of
+ * the K6/2 reading (変える点 5: `notReadyAtStart`、`stampMismatch`、…) and for
+ * the K6/2-era (candidate-less) summaries.
  */
-export function steadyStateInWindow(sample) {
+export function k62SteadyStateInWindow(sample) {
   return (
     classifyJoin(sample).inWindow &&
     sample.graph.source === "worker" &&

@@ -13,7 +13,7 @@
 
 import {
   classifyJoin,
-  steadyStateInWindow,
+  k62SteadyStateInWindow,
   summarizeSteadyState,
 } from "./availability.mjs";
 import {
@@ -29,6 +29,7 @@ import {
   recordReadFromA3,
   sampleFieldsFromNativeRecord,
 } from "./native-sample.mjs";
+import { classifyFollowUp, nextGraphArmOf } from "./followup.mjs";
 import { CP4_RECEIPT_SCHEMA, computeRunAggregates } from "./receipt.mjs";
 import { distribution } from "./stats.mjs";
 
@@ -352,18 +353,44 @@ export function disclosureOf({ measure, native, arrival, begin }) {
 export { distribution, nearestRank } from "./stats.mjs";
 
 /**
+ * K6/6 (変える点 5): the /6 reading of one steady-state sample that carries
+ * the R7 record (a K6/4-era row): first render or not, with the sub-conditions
+ * that dropped it (R-6 (a)〜(c), FR-1〜FR-7). `next` is
+ * `nextGraphArmOf(samples).get(sample)`. A row without the R7 record (the S1b
+ * runner's, K6/2 era) has no /6 reading: `null`.
+ */
+function k66Reading(sample, next) {
+  if (sample.followUp === null || typeof sample.followUp !== "object")
+    return null;
+  return classifyFollowUp(sample, { context: "steady", next });
+}
+
+/**
  * The single attributed cause of one measured R+IR+Graph sample that is not
  * in the (a) window, in a fixed order: cache origin, Busy (by cause), other
- * unavailable reasons, not a new READY at the start, stamp mismatch, stamp
- * without comparison, worker late (fresh start, matched stamp, late), the
- * boundary disagreement, other.
+ * unavailable reasons, then — for a row with the R7 record (K6/6) — the
+ * first-render sub-condition that dropped it (`first-render:<a|b|c|FR1〜FR7>:…`,
+ * R-6 (a)〜(c), 変える点 1 and 3) or, for a row without it (the S1b runner,
+ * K6/2 reading), not a new READY at the start, stamp mismatch, stamp without
+ * comparison; then worker late (matched stamp, late), the boundary
+ * disagreement, other. `next` is the next Graph arm sample of the phase
+ * (`nextGraphArmOf`), needed for a row with the R7 record.
  */
-export function windowOutCause(sample) {
+export function windowOutCause(sample, next) {
   const graph = sample.graph;
   if (graph.source === "cache") return "cache-origin";
   if (graph.reason === "busy") return `busy:${graph.busyCause ?? "unrecorded"}`;
   if (graph.outcome === "graph-unavailable")
     return `unavailable:${graph.reason}`;
+  const reading = k66Reading(sample, next);
+  if (reading !== null) {
+    if (reading.firstRender) return "other";
+    if (reading.firstRenderFails.length > 0)
+      return `first-render:${reading.firstRenderFails[0]}`;
+    if (graph.outcome === "graph-late") return "worker-late";
+    if (classifyJoin(sample).disagreement) return "boundary-disagreement";
+    return "other";
+  }
   if (sample.startSlot?.readyFresh !== true) return "not-ready-at-start";
   if (sample.freshnessStamp?.matched === false) return "stamp-mismatch";
   if (sample.freshnessStamp?.matched !== true)
@@ -399,7 +426,14 @@ export function previewSummary({ samples, variant }) {
   const measured = samples.filter(
     (row) => row.arm === "graph" && row.phase === "measured",
   );
-  const out = measured.filter((row) => !steadyStateInWindow(row));
+  // K6/6: a row with the R7 record is read by the /6 first-render rule, a row
+  // without it (the S1b runner's) by K6/2's literal reading.
+  const nexts = nextGraphArmOf(samples);
+  const inWindowRow = (row) =>
+    row.followUp !== null && typeof row.followUp === "object"
+      ? k66Reading(row, nexts.get(row)).firstRender
+      : k62SteadyStateInWindow(row);
+  const out = measured.filter((row) => !inWindowRow(row));
   const flags = {
     cacheOrigin: measured.filter((row) => row.graph.source === "cache").length,
     notReadyAtStart: measured.filter(
@@ -424,6 +458,11 @@ export function previewSummary({ samples, variant }) {
         row.startSlot?.readyFresh === true &&
         row.freshnessStamp?.matched === true,
     ).length,
+    // K6/6 変える点 5: rows read by the /6 rule and rows left on K6/2's literal
+    // reading (no R7 record).
+    k66Rows: measured.filter(
+      (row) => row.followUp !== null && typeof row.followUp === "object",
+    ).length,
   };
   const inWindow = measured.length - out.length;
   return {
@@ -444,7 +483,7 @@ export function previewSummary({ samples, variant }) {
         ? `graph-unavailable:${row.graph.reason}`
         : row.graph.outcome,
     ),
-    windowOutCauses: countBy(out, windowOutCause),
+    windowOutCauses: countBy(out, (row) => windowOutCause(row, nexts.get(row))),
     flags,
     distributions: {
       graphAnswerAfterRawReadyMs: distribution(

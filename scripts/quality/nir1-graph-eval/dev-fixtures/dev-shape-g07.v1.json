@@ -404,7 +404,34 @@
           "scope": "added-scene",
           "sceneId": "dvs7-6"
         }
-      ]
+      ],
+      "expectations": {
+        "graph": {
+          "status": "available",
+          "qualifiedRevisionIds": [
+            "dvs7-25",
+            "dvs7-26"
+          ]
+        },
+        "addedScene": {
+          "sceneId": "dvs7-6",
+          "path": {
+            "edgeIds": [
+              "dvs7-16"
+            ]
+          }
+        },
+        "pathAttachments": [
+          {
+            "sceneId": "dvs7-4",
+            "path": {
+              "edgeIds": [
+                "dvs7-17"
+              ]
+            }
+          }
+        ]
+      }
     }
   ]
 }

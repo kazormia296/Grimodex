@@ -538,6 +538,9 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-graph-eval/availability.test.mjs",
         // CP-4 S1d: the K6/4 follow-up classifier (K6/4-N1〜N40).
         "scripts/quality/nir1-graph-eval/followup.test.mjs",
+        // K6/6 (a dev prototype, unconfirmed): K6/6-P1〜P5, K6/6-N, the rehearsal.
+        "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+        "scripts/quality/nir1-graph-eval/k66-rehearsal.test.mjs",
         "scripts/quality/nir1-graph-eval/receipt.test.mjs",
         "scripts/quality/nir1-graph-eval/outcome.test.mjs",
         "scripts/quality/nir1-graph-eval/admission.test.mjs",
@@ -963,7 +966,12 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
   "nir1-capacity-diagnostics": {
     failureClasses: ["quality", "artifact"],
     commands: [
-      ["node", "--test", "scripts/nir1-material-capacity-probe.test.mjs", "scripts/nir1-material-capacity-probe.review-fixes.test.mjs"],
+      [
+        "node",
+        "--test",
+        "scripts/nir1-material-capacity-probe.test.mjs",
+        "scripts/nir1-material-capacity-probe.review-fixes.test.mjs",
+      ],
       [
         "cargo",
         "test",
@@ -976,7 +984,18 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "--lib",
         "narrative_extraction::nir1_capacity",
       ],
-      ["cargo", "test", "--manifest-path", "src-tauri/Cargo.toml", "-p", "grimodex-db", "--features", "nir1-material-diagnostics", "--lib", "capacity_boundaries"],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--features",
+        "nir1-material-diagnostics",
+        "--lib",
+        "capacity_boundaries",
+      ],
       [
         "cargo",
         "test",

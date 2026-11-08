@@ -23,6 +23,7 @@ import {
   K62_FREEZE,
   K64_FREEZE,
   K65_FREEZE,
+  K66_FREEZE,
   OBSERVATION_PREP_RECORD_PATH,
   OBSERVATION_PREP_RECORD_SCHEMA,
 } from "./constants.mjs";
@@ -99,12 +100,14 @@ function repository({
   testGit(repo, "init", "-q", "-b", "main");
   write(repo, K64_FREEZE.path, "K6/4 frozen text\n");
   write(repo, K65_FREEZE.path, "K6/5 frozen text\n");
+  write(repo, K66_FREEZE.path, "K6/6 frozen text\n");
   write(repo, HARNESS, "export const pinned = 1;\n");
   for (const file of [GRAPH_CASE_FREEZE.path, G01_FIXTURE.path])
     write(repo, file, readFileSync(path.join(REPO_ROOT, file)));
   const freezeCommit = commit(repo, "freeze", [
     K64_FREEZE.path,
     K65_FREEZE.path,
+    K66_FREEZE.path,
     HARNESS,
     GRAPH_CASE_FREEZE.path,
     G01_FIXTURE.path,
@@ -172,7 +175,13 @@ function repository({
     sha256: sha256("K6/5 frozen text\n"),
     freezeCommit,
   };
-  return { repo, freezeCommit, prep, freeze, freeze65 };
+  // K6/6: a throwaway repository's freeze (a CI clone does not fetch `claude/nir1-contracts`).
+  const freeze66 = {
+    ...K66_FREEZE,
+    sha256: sha256("K6/6 frozen text\n"),
+    freezeCommit,
+  };
+  return { repo, freezeCommit, prep, freeze, freeze65, freeze66 };
 }
 
 function input(fixture, extra = {}) {
@@ -183,6 +192,7 @@ function input(fixture, extra = {}) {
     k62Commit: "k62",
     k64Commit: fixture.freezeCommit,
     k65Commit: fixture.freezeCommit,
+    k66Commit: fixture.freezeCommit,
     buildReceipt: { kind: "eval" },
     productReceipt: { kind: "product" },
     defaultAddonSha256: "0".repeat(64),
@@ -208,6 +218,7 @@ test("DR-CP4-N-1 (1): 正式の admission は候補・K6/4（注入の descripto
     const admitted = admitFormalK64Run(input(fixture), {
       freeze: fixture.freeze,
       freeze65: fixture.freeze65,
+      freeze66: fixture.freeze66,
       admitGraphCase,
     });
     assert.equal(admitted.candidate.commit, fixture.prep);
@@ -249,6 +260,7 @@ test("DR-CP4-N-1 (1): 正式の admission は候補・K6/4（注入の descripto
         admitFormalK64Run(input(fixture), {
           freeze: fixture.freeze,
           freeze65: fixture.freeze65,
+          freeze66: fixture.freeze66,
         }),
       /\[precheck\]/u,
     );
@@ -264,6 +276,7 @@ test("DR-CP4-N-1 (1): 候補が clean でない・HEAD が候補でない・K6/4
     const deps = {
       freeze: fixture.freeze,
       freeze65: fixture.freeze65,
+      freeze66: fixture.freeze66,
       admitGraphCase,
     };
     assert.throws(
@@ -328,6 +341,24 @@ test("DR-CP4-N-1 (1): 候補が clean でない・HEAD が候補でない・K6/4
       () => admitFormalK64Run(input(fixture, { k65Commit: undefined }), deps),
       /K6\/5 freeze commit is not given/u,
     );
+    // K6/6 変える点 8: and the /6 freeze head, read after the /5's, before S2.
+    assert.throws(
+      () =>
+        admitFormalK64Run(input(fixture), {
+          ...deps,
+          freeze66: { ...fixture.freeze66, freezeCommit: null },
+        }),
+      /K6\/6 freeze commit is not pinned/u,
+    );
+    assert.throws(
+      () =>
+        admitFormalK64Run(input(fixture, { k66Commit: fixture.prep }), deps),
+      /K6\/6 freeze commit or bytes differ|K6\/6 cannot be read/u,
+    );
+    assert.throws(
+      () => admitFormalK64Run(input(fixture, { k66Commit: undefined }), deps),
+      /K6\/6 freeze commit is not given/u,
+    );
     assert.throws(
       () =>
         admitFormalK64Run(
@@ -358,6 +389,7 @@ test("S2 追補 #2／#3: bytes の pin の file が違う、ancestor の pin が
         admitFormalK64Run(input(fixture, extra), {
           freeze: fixture.freeze,
           freeze65: fixture.freeze65,
+          freeze66: fixture.freeze66,
           admitGraphCase,
         });
     };
@@ -411,6 +443,7 @@ test("DR-CP4-S4-1: A の S2 の file は S4 の freeze record が束縛した by
           admitFormalK64Run(input(fixture), {
             freeze: fixture.freeze,
             freeze65: fixture.freeze65,
+            freeze66: fixture.freeze66,
             admitGraphCase,
           }),
         new RegExp(

@@ -591,6 +591,7 @@ const goodHead = () => ({
   k62: { freezeCommit: C("6"), sha256: H("6") },
   k64: { freezeCommit: C("4"), sha256: H("4") },
   k65: { freezeCommit: C("8"), sha256: H("8") },
+  k66: { freezeCommit: C("9"), sha256: H("9") },
   observationPrep: { commit: C("5"), freezeRecordSha256: H("5") },
   traces: s2Record().traces,
 });
@@ -616,6 +617,9 @@ test("S5-B: receipt の先頭は測定の前に書き、欠け・placeholder・�
     // K6/5 変える点 7: /5 の凍結の head が無い run は始めない。
     (h) => delete h.k65,
     (h) => (h.k65.sha256 = "S4:k65"),
+    // K6/6 変える点 8: /6 の凍結の head が無い run（/6 の凍結の前に始めた run）は始めない。
+    (h) => delete h.k66,
+    (h) => (h.k66.sha256 = "S4:k66"),
     (h) => (h.k62.sha256 = "x"),
     (h) => (h.observationPrep.commit = null),
     (h) => (h.traces[0].commit = "S4:trace-editing-commit"),
@@ -700,6 +704,7 @@ test("S5-B: Graph arm を含む実行は ④ の SP-P4 の receipt を読み直�
     k62: { freezeCommit: C("6"), sha256: H("6") },
     k64: { freezeCommit: C("4"), sha256: H("4") },
     k65: { freezeCommit: C("8"), sha256: H("8") },
+    k66: { freezeCommit: C("9"), sha256: H("9") },
     observationPrep: { commit: C("5"), freezeRecordSha256: H("5") },
   };
   const headSha256 = createHash("sha256")
@@ -864,6 +869,22 @@ test("S5-B: Graph arm を含む実行は ④ の SP-P4 の receipt を読み直�
           candidateCommit: C("b"),
         }),
       /k65 head/u,
+    );
+  // K6/6 変える点 8: and the K6/6 head (a receipt with no k66, or of another
+  // /6 freeze, is not this run's gate: a run that started before the /6 freeze).
+  for (const other of [
+    { ...head, k66: { freezeCommit: C("7"), sha256: H("9") } },
+    { ...head, k66: { freezeCommit: C("9"), sha256: H("7") } },
+    { ...head, k66: undefined },
+  ])
+    assert.throws(
+      () =>
+        readSpP4Gate({
+          file: write(receipt(), "k66.json"),
+          head: other,
+          candidateCommit: C("b"),
+        }),
+      /k66 head/u,
     );
 });
 

@@ -1,0 +1,543 @@
+{
+  "tapSha256": "ace9ccce45e4d912792e63f10c89610af82a719011b65abba7437bf0c666bf0b",
+  "summary": {
+    "tests": 735,
+    "pass": 735,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0
+  },
+  "rows": [
+    {
+      "id": "K6/4-N1",
+      "count": 3,
+      "files": [
+        "followup.k66.test.mjs",
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N12b: FR-5 publishCount が 2 なら数えず、K6/4-N1 の FAIL",
+        "K6/4-N1: 親の表示に D の後の Graph が混ざったら FAIL（遅れた結果を混ぜない）",
+        "K6/4-N1／N29／N32: 遅れた結果の混入は pool の判定と別に FAIL"
+      ]
+    },
+    {
+      "id": "K6/4-N2",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N2: harness が出した query の cache の hit は X7"
+      ]
+    },
+    {
+      "id": "K6/4-N3",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N3: 親の ticket が stale で、前の sample の ticket が cache を埋めた並びは X10 か F3 で検出する"
+      ]
+    },
+    {
+      "id": "K6/4-N4",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N4: 子の合流が graph-late（W_f の後）は X13"
+      ]
+    },
+    {
+      "id": "K6/4-N5",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N5: 子の合流が graph-unavailable:invalidated（requalification、SeedChanged）は X5"
+      ]
+    },
+    {
+      "id": "K6/4-N6",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N6: 子の IR が timeout か unavailable は X5"
+      ]
+    },
+    {
+      "id": "K6/4-N7",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N7: 最初の通知が T_late を超えたら X3"
+      ]
+    },
+    {
+      "id": "K6/4-N8",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N8: 通知が来なければ X3"
+      ]
+    },
+    {
+      "id": "K6/4-N9",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N9: 子が Cached でなければ X4"
+      ]
+    },
+    {
+      "id": "K6/4-N10",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N10: TTL の切れ、edge の epoch、quarantine、別の begin（D-final を含む）の後の子は X2"
+      ]
+    },
+    {
+      "id": "K6/4-N11",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N11: index-ready、編集、場面の切替え、IR の再試行による子は X7"
+      ]
+    },
+    {
+      "id": "K6/4-N12",
+      "count": 2,
+      "files": [
+        "followup.test.mjs",
+        "outcome.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N12: 子の R か IR が親と違えば X9",
+        "K6/4-N12: 子の R か IR が親と違えば品質は FAIL"
+      ]
+    },
+    {
+      "id": "K6/4-N13",
+      "count": 1,
+      "files": [
+        "outcome.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N13: 同じ case の表示の結果が sample の間で違えば FAIL"
+      ]
+    },
+    {
+      "id": "K6/4-N14",
+      "count": 2,
+      "files": [
+        "followup.test.mjs",
+        "outcome.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N14: 表示された sample が 1 件もない case と pool が 0 件は HOLD",
+        "K6/4-N14: 表示された sample が無い case は HOLD"
+      ]
+    },
+    {
+      "id": "K6/4-N15",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N15: R7 の記録が欠けた query は X10"
+      ]
+    },
+    {
+      "id": "K6/4-N16",
+      "count": 2,
+      "files": [
+        "followup.test.mjs",
+        "receipt.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N16: 低い層の API の continue だけで判定した記録は無効",
+        "S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの。direct-fetch の dev の runner は予告だけで集計に入らない"
+      ]
+    },
+    {
+      "id": "K6/4-N17",
+      "count": 1,
+      "files": [
+        "receipt.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N17: W_f、T_late、T_show を広げた receipt、手順のファイルの版の無い receipt は受け付けない"
+      ]
+    },
+    {
+      "id": "K6/4-N18",
+      "count": 1,
+      "files": [
+        "receipt.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N18: first-render の窓外率を書いていない receipt は集計の再計算と合わない"
+      ]
+    },
+    {
+      "id": "K6/4-N19",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N19: 親の ticket が stale で cache に入らなければ X1"
+      ]
+    },
+    {
+      "id": "K6/4-N20",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N20: 子が公開されず世代が変わったら X6"
+      ]
+    },
+    {
+      "id": "K6/4-N21",
+      "count": 1,
+      "files": [
+        "receipt.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "P2-6／K6/4-N21: verdict は計算し直して照合し、invalid を持つ receipt は有効にしない"
+      ]
+    },
+    {
+      "id": "K6/4-N22",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N22: 親の合流が graph-unavailable:warming／stale／busy で refresh した子は X12"
+      ]
+    },
+    {
+      "id": "K6/4-N23",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N23: late_cached の差分が 2 以上、または begin の記録が 3 件以上は X4"
+      ]
+    },
+    {
+      "id": "K6/4-N24",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N24: reachedQuiet: false の sample は X10（分母から除かない）"
+      ]
+    },
+    {
+      "id": "K6/4-N25",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N25: IR の timeout の再試行による子は X7"
+      ]
+    },
+    {
+      "id": "K6/4-N26",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N26: 子の Graph の edge が 0 件か期待寄与が無ければ X5"
+      ]
+    },
+    {
+      "id": "K6/4-N27",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N27: (q3) が T_show を超えたら X8"
+      ]
+    },
+    {
+      "id": "K6/4-N28",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N28: 親の IR が timeout の sample は X11"
+      ]
+    },
+    {
+      "id": "K6/4-N29",
+      "count": 2,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N29: W_f の後に届いた子の Graph が子の表示に混ざったら FAIL",
+        "K6/4-N1／N29／N32: 遅れた結果の混入は pool の判定と別に FAIL"
+      ]
+    },
+    {
+      "id": "K6/4-N30",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N30: 合流の窓の値が W_f と違う、子の IR の deadline が D より長い、W_f が親に当たった候補は批准 12 の違反"
+      ]
+    },
+    {
+      "id": "K6/4-N31",
+      "count": 2,
+      "files": [
+        "followup.test.mjs",
+        "receipt.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N31: 批准 5 の (a)〜(c) のどれかを欠く候補には緩和を当てず K6/2 の文のまま（D′ では HOLD）",
+        "K6/4-N31: 正式の receipt は批准 5 の (a)〜(c) の記録と、その判定を持つ"
+      ]
+    },
+    {
+      "id": "K6/4-N32",
+      "count": 2,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N32: 子の合流が 2 回以上公開したら FAIL",
+        "K6/4-N1／N29／N32: 遅れた結果の混入は pool の判定と別に FAIL"
+      ]
+    },
+    {
+      "id": "K6/4-N33",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N33: D′ の構造上の graph-late（開始時の slot が empty）を (b) の鮮度に数えない"
+      ]
+    },
+    {
+      "id": "K6/4-N34",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N34: follow-up の失敗は失敗した段の理由で区分する（stale は鮮度、registration-unavailable は失効、ticket が available で T_late 超過はその他）"
+      ]
+    },
+    {
+      "id": "K6/4-N35",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N35: t_pub_p より前の通知は F3 の通知に数えない（X3）"
+      ]
+    },
+    {
+      "id": "K6/4-N36",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N36: 子の query の Scene か seed が親と違えば X7"
+      ]
+    },
+    {
+      "id": "K6/4-N37",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N37: 親の ticket が registration-unavailable で cache に入らなければ X1"
+      ]
+    },
+    {
+      "id": "K6/4-N38",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N38: 親の ticket が busy か warming で cache に入らなければ X1"
+      ]
+    },
+    {
+      "id": "K6/4-N39",
+      "count": 2,
+      "files": [
+        "followup.k66.test.mjs",
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N11a: FR-1 出所が Cached の窓内の親は数えない（K6/4-N39）",
+        "K6/4-N39: 親が Cached で D の窓内に合流した sample は first-render の窓内に数えない（R1 の形の fixture で FR-1 だけを欠く）"
+      ]
+    },
+    {
+      "id": "K6/4-N40",
+      "count": 1,
+      "files": [
+        "followup.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/4-N40: 子の世代の契機の印が無いか graph-ready でなければ X7"
+      ]
+    },
+    {
+      "id": "K6/5-N1",
+      "count": 1,
+      "files": [
+        "receipt.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/5-N1・N4: settings.k64 の D・B・Hybrid p95 の上限が契約（40・54.2・94.2 ms）と違う receipt は、receipt の層で拒む（手順のファイルの loader は契約と違う値の file を読まないので、記録の値そのものを契約と照合する）"
+      ]
+    },
+    {
+      "id": "K6/5-N2",
+      "count": 3,
+      "files": [
+        "admission.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/5-N2（変える点 6）: 候補の製品の D が 40 ms でない（#802 が祖先に無い、定数が 40 でない・読めない）候補は run の前に [precheck]",
+        "K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（commit と bytes）と製品の D=40 ms を、封印の前に実際の関数で強制する",
+        "K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を凍結と照合し、ratification5 を必須にして D=40 ms を強制する"
+      ]
+    },
+    {
+      "id": "K6/5-N3",
+      "count": 3,
+      "files": [
+        "admission.test.mjs",
+        "receipt.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（commit と bytes）と製品の D=40 ms を、封印の前に実際の関数で強制する",
+        "K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を凍結と照合し、ratification5 を必須にして D=40 ms を強制する",
+        "K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit と SHA-256）を持ち、無い・違う receipt は拒む"
+      ]
+    },
+    {
+      "id": "K6/5-N4",
+      "count": 2,
+      "files": [
+        "quality-verdict.test.mjs",
+        "receipt.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/5-N4（条件 3）: Hybrid p95 の判定の境界は 94.2 ms で、65.04 ms と 240 ms ではない。arm ごとに pool し、どちらかに failed があれば fail",
+        "K6/5-N1・N4: settings.k64 の D・B・Hybrid p95 の上限が契約（40・54.2・94.2 ms）と違う receipt は、receipt の層で拒む（手順のファイルの loader は契約と違う値の file を読まないので、記録の値そのものを契約と照合する）"
+      ]
+    },
+    {
+      "id": "K6/5-P1",
+      "count": 0,
+      "files": [],
+      "allPass": false,
+      "titles": []
+    },
+    {
+      "id": "DR-CP4-C7",
+      "count": 7,
+      "files": [
+        "trace-record.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "DR-CP4-C7: 外す条件を満たす begin は対応から外し、親は defect にせず Q と U に数えて失効 (i) の i-chronicle-stop、K6/4 では X11／X12 の欠落（窓外）。残りは今の対応のまま、開示する",
+        "DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySupported が false、renderer の値が違う、indexUsable が違う）は外さず、record が無ければ従来どおり整列の失敗で trace は invalid",
+        "DR-CP4-C7: 外した begin の数と外す条件を満たす fetch の数が違えば整列の失敗（begin の無い fetch、begin が 2 つの fetch）。数えない fetch の begin も同じ条件で外し、子は行の子の begin として外す",
+        "DR-CP4-C7: 外した begin があるのに Native の読取の時計の範囲が求められなければ整列の失敗。外した begin が無ければ今までどおり",
+        "DR-CP4-C7: 外した begin の record が実は在る（条件の読みが製品と違う）と、残りの組が 1 つずれて整列の失敗になる",
+        "DR-CP4-C7: 外した親の行にも混入の検査（N1／N29／N32）を当てる。公開が 2 回以上、遅れた Graph の表示、窓の中の再 query の 2 回の公開は違反で、外すこと自体は止めない",
+        "DR-CP4-C7: 総数が合っても内訳が違えば整列の失敗（begin が 0 の fetch と 2 の fetch）。A3 や timing が欠けた外した親は defect に戻る"
+      ]
+    }
+  ]
+}

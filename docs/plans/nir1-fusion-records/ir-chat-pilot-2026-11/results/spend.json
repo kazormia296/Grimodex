@@ -1,0 +1,132 @@
+{
+  "schema": "ir-chat-pilot-spend/1",
+  "source": "spend-ledger.jsonl（全 request の usage から計算した台帳）",
+  "capUsd": 60,
+  "capSource": "事前登録 0.1 の決定 6。段の上限は 6.2.1。",
+  "totalUsd": 32.874,
+  "remainingUsd": 27.126,
+  "ledgerLines": 5894,
+  "stages": [
+    {
+      "stage": "gold",
+      "lines": 283,
+      "usd": 15.8268,
+      "inputTokens": 889536,
+      "cacheCreationTokens": 2228004,
+      "cacheReadTokens": 13291586,
+      "outputTokens": 581890,
+      "firstTs": "2026-11-07T00:00:00.000Z",
+      "lastTs": "2026-11-07T09:15:24.934Z",
+      "cumulativeUsd": 15.8268,
+      "capUsd": 16,
+      "withinCap": true
+    },
+    {
+      "stage": "context",
+      "lines": 747,
+      "usd": 0,
+      "inputTokens": 0,
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 0,
+      "outputTokens": 0,
+      "firstTs": "2026-11-07T08:04:45.804Z",
+      "lastTs": "2026-11-07T12:50:37.338Z",
+      "cumulativeUsd": 15.8268,
+      "capUsd": 1,
+      "withinCap": true
+    },
+    {
+      "stage": "answer-haiku",
+      "lines": 1442,
+      "usd": 2.9449,
+      "inputTokens": 2858634,
+      "cacheCreationTokens": 953390,
+      "cacheReadTokens": 31707332,
+      "outputTokens": 1057612,
+      "firstTs": "2026-11-07T11:08:39.021Z",
+      "lastTs": "2026-11-07T15:44:30.102Z",
+      "cumulativeUsd": 18.7717,
+      "capUsd": 4,
+      "withinCap": true
+    },
+    {
+      "stage": "judge-misaccept-gen",
+      "lines": 20,
+      "usd": 0.097,
+      "inputTokens": 14940,
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 0,
+      "outputTokens": 6716,
+      "firstTs": "2026-11-07T11:25:51.442Z",
+      "lastTs": "2026-11-07T11:38:41.611Z",
+      "cumulativeUsd": 18.8688,
+      "capUsd": 0.1,
+      "withinCap": true
+    },
+    {
+      "stage": "judge-haiku",
+      "lines": 2783,
+      "usd": 0.9954,
+      "inputTokens": 5414404,
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 0,
+      "outputTokens": 907982,
+      "firstTs": "2026-11-07T11:29:46.427Z",
+      "lastTs": "2026-11-07T16:18:51.093Z",
+      "cumulativeUsd": 19.8642,
+      "capUsd": 4,
+      "withinCap": true
+    },
+    {
+      "stage": "answer-sonnet-pass",
+      "lines": 72,
+      "usd": 1.4243,
+      "inputTokens": 136416,
+      "cacheCreationTokens": 121539,
+      "cacheReadTokens": 1365441,
+      "outputTokens": 71107,
+      "firstTs": "2026-11-07T13:14:09.058Z",
+      "lastTs": "2026-11-07T13:19:35.290Z",
+      "cumulativeUsd": 21.2885,
+      "capUsd": 3,
+      "withinCap": true
+    },
+    {
+      "stage": "judge-sonnet-pass",
+      "lines": 73,
+      "usd": 0.0297,
+      "inputTokens": 155825,
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 0,
+      "outputTokens": 28147,
+      "firstTs": "2026-11-07T13:20:01.371Z",
+      "lastTs": "2026-11-07T13:21:36.443Z",
+      "cumulativeUsd": 21.3182,
+      "capUsd": 0.5,
+      "withinCap": true
+    },
+    {
+      "stage": "answer-sonnet",
+      "lines": 474,
+      "usd": 11.5559,
+      "inputTokens": 935504,
+      "cacheCreationTokens": 690848,
+      "cacheReadTokens": 26999786,
+      "outputTokens": 525779,
+      "firstTs": "2026-11-07T14:22:12.741Z",
+      "lastTs": "2026-11-07T15:03:19.410Z",
+      "cumulativeUsd": 32.874,
+      "capUsd": 30,
+      "withinCap": true
+    }
+  ],
+  "notes": [
+    "gold 段は旧台帳が Sonnet の cache 読みを 0.1 倍で計上していたため、価格表どおり 0.05 倍で計算した実費より約 $1.33 多く載っている（事前登録 6.2.1。履歴なので書き換えていない）。",
+    "judge-haiku 段は通し・誤受理・本測定（Sonnet・Haiku の回答）の judge の合計。answer-haiku 段は通しと本測定の反復と Scene p だけの label。"
+  ],
+  "preMainRunUsdAtFreezeFromPreregistration": 18,
+  "estimateFromPreregistrationUsd": {
+    "central": 35.4,
+    "worst": 50.1
+  }
+}

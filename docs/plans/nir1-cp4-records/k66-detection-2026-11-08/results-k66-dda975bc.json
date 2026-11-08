@@ -1,0 +1,4112 @@
+{
+  "tool": "spn-k65-synthetic-detection-mutation",
+  "startedAt": "2026-11-08T08:57:55.994Z",
+  "node": "v22.23.3",
+  "worktree": "/home/grimodex/worktrees/Grimodex/claude-k66-detect",
+  "candidate": {
+    "commit": "dda975bc1afbad47cc9a680a71e9deb5a7c90282",
+    "tree": "f982df6335c6eae43e5e9f378adeb8d496ac898f"
+  },
+  "statusBefore": "",
+  "ignoredBefore": "!! node_modules",
+  "baselineTarget": {
+    "label": "baseline-target",
+    "command": "node --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs scripts/quality/nir1-graph-eval/outcome.test.mjs scripts/quality/nir1-graph-eval/receipt.test.mjs scripts/quality/nir1-graph-eval/admission.test.mjs scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+    "started": "2026-11-08T08:57:56.075Z",
+    "finished": "2026-11-08T08:58:17.298Z",
+    "exitCode": 0,
+    "signal": null,
+    "stderrTail": "",
+    "tapFile": "/home/grimodex/k66-det/tap3/baseline-target.tap",
+    "tapSha256": "5b774b1f36f8b64da8ae27509e4bde55300845c7d06add185b24e8f23af8e949",
+    "tests": [
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "N-1 / P1-1 / P2-1: observation-prep facts gate a frozen fixture end to end",
+        "directive": null,
+        "line": "ok 1 - N-1 / P1-1 / P2-1: observation-prep facts gate a frozen fixture end to end",
+        "rawLine": "ok 1 - N-1 / P1-1 / P2-1: observation-prep facts gate a frozen fixture end to end",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P1-1: a record that does not bind the frozen digests is refused",
+        "directive": null,
+        "line": "ok 2 - P1-1: a record that does not bind the frozen digests is refused",
+        "rawLine": "ok 2 - P1-1: a record that does not bind the frozen digests is refused",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P1-1: the reviewer's reproduction (a commit without the record) is refused",
+        "directive": null,
+        "line": "ok 3 - P1-1: the reviewer's reproduction (a commit without the record) is refused",
+        "rawLine": "ok 3 - P1-1: the reviewer's reproduction (a commit without the record) is refused",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "N-4: the K6/2 freeze head is read from the freeze commit or no receipt is written",
+        "directive": null,
+        "line": "ok 4 - N-4: the K6/2 freeze head is read from the freeze commit or no receipt is written",
+        "rawLine": "ok 4 - N-4: the K6/2 freeze head is read from the freeze commit or no receipt is written",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-10: the default addon path must hold the product .node (positive check)",
+        "directive": null,
+        "line": "ok 5 - P2-10: the default addon path must hold the product .node (positive check)",
+        "rawLine": "ok 5 - P2-10: the default addon path must hold the product .node (positive check)",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-9: the network namespaces of the harness and its parent are readable on Linux",
+        "directive": null,
+        "line": "ok 6 - P2-9: the network namespaces of the harness and its parent are readable on Linux",
+        "rawLine": "ok 6 - P2-9: the network namespaces of the harness and its parent are readable on Linux",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "B-4: readNetNamespaces は host の interface と利用者の systemd --user の netns を読む（合成の /proc）",
+        "directive": null,
+        "line": "ok 7 - B-4: readNetNamespaces は host の interface と利用者の systemd --user の netns を読む（合成の /proc）",
+        "rawLine": "ok 7 - B-4: readNetNamespaces は host の interface と利用者の systemd --user の netns を読む（合成の /proc）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-7（変異 M19）: prep が origin/master にあっても候補の祖先でなければ拒む（実 git）",
+        "directive": null,
+        "line": "ok 8 - P2-7（変異 M19）: prep が origin/master にあっても候補の祖先でなければ拒む（実 git）",
+        "rawLine": "ok 8 - P2-7（変異 M19）: prep が origin/master にあっても候補の祖先でなければ拒む（実 git）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-7: 手で作った facts と書き換えた facts は N-1 の guard を通らない（出所の束縛）",
+        "directive": null,
+        "line": "ok 9 - P2-7: 手で作った facts と書き換えた facts は N-1 の guard を通らない（出所の束縛）",
+        "rawLine": "ok 9 - P2-7: 手で作った facts と書き換えた facts は N-1 の guard を通らない（出所の束縛）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-7: admitGraphCaseRun は facts を自分で集め、N-1、既定の addon、K6/2 と K6/4 の凍結を順に確かめる",
+        "directive": null,
+        "line": "ok 10 - P2-7: admitGraphCaseRun は facts を自分で集め、N-1、既定の addon、K6/2 と K6/4 の凍結を順に確かめる",
+        "rawLine": "ok 10 - P2-7: admitGraphCaseRun は facts を自分で集め、N-1、既定の addon、K6/2 と K6/4 の凍結を順に確かめる",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "批准 7（DR-CP4-T14-1）: K6/4 の凍結の commit は claude/nir1-contracts の 5dea38af に固定されている",
+        "directive": null,
+        "line": "ok 11 - 批准 7（DR-CP4-T14-1）: K6/4 の凍結の commit は claude/nir1-contracts の 5dea38af に固定されている",
+        "rawLine": "ok 11 - 批准 7（DR-CP4-T14-1）: K6/4 の凍結の commit は claude/nir1-contracts の 5dea38af に固定されている",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "批准 7: K6/4 の先頭は固定した commit と bytes の両方が一致するときだけ読み、null の descriptor では止まる",
+        "directive": null,
+        "line": "ok 12 - 批准 7: K6/4 の先頭は固定した commit と bytes の両方が一致するときだけ読み、null の descriptor では止まる",
+        "rawLine": "ok 12 - 批准 7: K6/4 の先頭は固定した commit と bytes の両方が一致するときだけ読み、null の descriptor では止まる",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5 変える点 7: K6/5 の凍結の commit と bytes は固定され、先頭は commit と bytes の両方が一致するときだけ読む",
+        "directive": null,
+        "line": "ok 13 - K6/5 変える点 7: K6/5 の凍結の commit と bytes は固定され、先頭は commit と bytes の両方が一致するときだけ読む",
+        "rawLine": "ok 13 - K6/5 変える点 7: K6/5 の凍結の commit と bytes は固定され、先頭は commit と bytes の両方が一致するときだけ読む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5-N2（変える点 6）: 候補の製品の D が 40 ms でない（#802 が祖先に無い、定数が 40 でない・読めない）候補は run の前に [precheck]",
+        "directive": null,
+        "line": "ok 14 - K6/5-N2（変える点 6）: 候補の製品の D が 40 ms でない（\\#802 が祖先に無い、定数が 40 でない・読めない）候補は run の前に [precheck]",
+        "rawLine": "ok 14 - K6/5-N2（変える点 6）: 候補の製品の D が 40 ms でない（\\#802 が祖先に無い、定数が 40 でない・読めない）候補は run の前に [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5 変える点 6（readDFortyEvidence）: 定数は comment の外の行頭の export const で、ちょうど 1 つ宣言されているときだけ読む",
+        "directive": null,
+        "line": "ok 15 - K6/5 変える点 6（readDFortyEvidence）: 定数は comment の外の行頭の export const で、ちょうど 1 つ宣言されているときだけ読む",
+        "rawLine": "ok 15 - K6/5 変える点 6（readDFortyEvidence）: 定数は comment の外の行頭の export const で、ちょうど 1 つ宣言されているときだけ読む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（commit と bytes）と製品の D=40 ms を、封印の前に実際の関数で強制する",
+        "directive": null,
+        "line": "ok 16 - K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（commit と bytes）と製品の D=40 ms を、封印の前に実際の関数で強制する",
+        "rawLine": "ok 16 - K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（commit と bytes）と製品の D=40 ms を、封印の前に実際の関数で強制する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6 変える点 8・K6/6-N9: admitGraphCaseRun と assertReceiptHeadBound は /6 の凍結の head（commit と bytes）を /4・/5 に加えて照合する。既定は固定した /6 の凍結で、null の descriptor は正式の admission を拒む",
+        "directive": null,
+        "line": "ok 17 - K6/6 変える点 8・K6/6-N9: admitGraphCaseRun と assertReceiptHeadBound は /6 の凍結の head（commit と bytes）を /4・/5 に加えて照合する。既定は固定した /6 の凍結で、null の descriptor は正式の admission を拒む",
+        "rawLine": "ok 17 - K6/6 変える点 8・K6/6-N9: admitGraphCaseRun と assertReceiptHeadBound は /6 の凍結の head（commit と bytes）を /4・/5 に加えて照合する。既定は固定した /6 の凍結で、null の descriptor は正式の admission を拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を凍結と照合し、ratification5 を必須にして D=40 ms を強制する",
+        "directive": null,
+        "line": "ok 18 - K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を凍結と照合し、ratification5 を必須にして D=40 ms を強制する",
+        "rawLine": "ok 18 - K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を凍結と照合し、ratification5 を必須にして D=40 ms を強制する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "§15.8: 凍結した fixture の path の試走は製品の .node で、評価の .node を拒む",
+        "directive": null,
+        "line": "ok 19 - §15.8: 凍結した fixture の path の試走は製品の .node で、評価の .node を拒む",
+        "rawLine": "ok 19 - §15.8: 凍結した fixture の path の試走は製品の .node で、評価の .node を拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-7: receipt の先頭の observationPrep を git の facts と freeze record で照合する",
+        "directive": null,
+        "line": "ok 20 - P2-7: receipt の先頭の observationPrep を git の facts と freeze record で照合する",
+        "rawLine": "ok 20 - P2-7: receipt の先頭の observationPrep を git の facts と freeze record で照合する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D-1／E-1: 批准 5 は git から集めて封印し、(b) の候補の試験の経路は collector が試験を走らせるまで K6/2（fail closed）",
+        "directive": null,
+        "line": "ok 21 - D-1／E-1: 批准 5 は git から集めて封印し、(b) の候補の試験の経路は collector が試験を走らせるまで K6/2（fail closed）",
+        "rawLine": "ok 21 - D-1／E-1: 批准 5 は git から集めて封印し、(b) の候補の試験の経路は collector が試験を走らせるまで K6/2（fail closed）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "S1f: 集計の前に、receipt の手順のファイルを commit から読み直して settings.k64 と照合する",
+        "directive": null,
+        "line": "ok 22 - S1f: 集計の前に、receipt の手順のファイルを commit から読み直して settings.k64 と照合する",
+        "rawLine": "ok 22 - S1f: 集計の前に、receipt の手順のファイルを commit から読み直して settings.k64 と照合する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "S1f 批准 5 (b): collector が候補の clean な worktree で keep test を走らせ、pass を封印する。落ちれば hook の祖先だけ（K6/2）",
+        "directive": null,
+        "line": "ok 23 - S1f 批准 5 (b): collector が候補の clean な worktree で keep test を走らせ、pass を封印する。落ちれば hook の祖先だけ（K6/2）",
+        "rawLine": "ok 23 - S1f 批准 5 (b): collector が候補の clean な worktree で keep test を走らせ、pass を封印する。落ちれば hook の祖先だけ（K6/2）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "S1f 批准 5 (b): 集計の前の照合は、記録が candidate-test なら worktree で keep test を走らせ直す",
+        "directive": null,
+        "line": "ok 24 - S1f 批准 5 (b): 集計の前の照合は、記録が candidate-test なら worktree で keep test を走らせ直す",
+        "rawLine": "ok 24 - S1f 批准 5 (b): 集計の前の照合は、記録が candidate-test なら worktree で keep test を走らせ直す",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-2: 試験用の sealer は node の試験の process の外では取れない（本番の node から自作の批准 5 を封印できない）",
+        "directive": null,
+        "line": "ok 25 - P2-2: 試験用の sealer は node の試験の process の外では取れない（本番の node から自作の批准 5 を封印できない）",
+        "rawLine": "ok 25 - P2-2: 試験用の sealer は node の試験の process の外では取れない（本番の node から自作の批准 5 を封印できない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-2: 試験の run の中で封印した試験専用の証拠も、その外（試験の context が無い）では K6/2 のまま",
+        "directive": null,
+        "line": "ok 26 - P2-2: 試験の run の中で封印した試験専用の証拠も、その外（試験の context が無い）では K6/2 のまま",
+        "rawLine": "ok 26 - P2-2: 試験の run の中で封印した試験専用の証拠も、その外（試験の context が無い）では K6/2 のまま",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S4-1 予行: freeze record は S2 の plan ではない（修正前の入口はここで止まった）",
+        "directive": null,
+        "line": "ok 27 - DR-CP4-S4-1 予行: freeze record は S2 の plan ではない（修正前の入口はここで止まった）",
+        "rawLine": "ok 27 - DR-CP4-S4-1 予行: freeze record は S2 の plan ではない（修正前の入口はここで止まった）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S4-1 予行: S4a→S4b の記録を、admission → S2 の検証つき読取 → 診断の plan → trace の先頭と宣言 → A の S2 → 入口の関数の順に通る",
+        "directive": null,
+        "line": "ok 28 - DR-CP4-S4-1 予行: S4a→S4b の記録を、admission → S2 の検証つき読取 → 診断の plan → trace の先頭と宣言 → A の S2 → 入口の関数の順に通る",
+        "rawLine": "ok 28 - DR-CP4-S4-1 予行: S4a→S4b の記録を、admission → S2 の検証つき読取 → 診断の plan → trace の先頭と宣言 → A の S2 → 入口の関数の順に通る",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S4-1 予行: S2 の file が束縛と違う・束縛に無い・配列と object の取り違え・S2 と freeze record の食い違いは [precheck]",
+        "directive": null,
+        "line": "ok 29 - DR-CP4-S4-1 予行: S2 の file が束縛と違う・束縛に無い・配列と object の取り違え・S2 と freeze record の食い違いは [precheck]",
+        "rawLine": "ok 29 - DR-CP4-S4-1 予行: S2 の file が束縛と違う・束縛に無い・配列と object の取り違え・S2 と freeze record の食い違いは [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S4-1: 検証つき読取は admission.mjs が集めた facts だけを受け、freeze record の束縛の sha256 と blob を照合する",
+        "directive": null,
+        "line": "ok 30 - DR-CP4-S4-1: 検証つき読取は admission.mjs が集めた facts だけを受け、freeze record の束縛の sha256 と blob を照合する",
+        "rawLine": "ok 30 - DR-CP4-S4-1: 検証つき読取は admission.mjs が集めた facts だけを受け、freeze record の束縛の sha256 と blob を照合する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S4-1: 配列の boundFiles は添字を束縛にしない（集める側と契約の両方）",
+        "directive": null,
+        "line": "ok 31 - DR-CP4-S4-1: 配列の boundFiles は添字を束縛にしない（集める側と契約の両方）",
+        "rawLine": "ok 31 - DR-CP4-S4-1: 配列の boundFiles は添字を束縛にしない（集める側と契約の両方）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-P1: R1 の下の現実の形（slot empty、readyFresh false、begin [pending]、counter の差分 1、通知・子・IR の再試行なし）の親は、stamp が fresh でも stamp0-missing でも first-render の窓内で、子は出ない",
+        "directive": null,
+        "line": "ok 32 - K6/6-P1: R1 の下の現実の形（slot empty、readyFresh false、begin [pending]、counter の差分 1、通知・子・IR の再試行なし）の親は、stamp が fresh でも stamp0-missing でも first-render の窓内で、子は出ない",
+        "rawLine": "ok 32 - K6/6-P1: R1 の下の現実の形（slot empty、readyFresh false、begin [pending]、counter の差分 1、通知・子・IR の再試行なし）の親は、stamp が fresh でも stamp0-missing でも first-render の窓内で、子は出ない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-P1: 間に hybrid arm の sample を挟んでも、同じ phase の次の Graph arm の sample との差が 1 なら数える",
+        "directive": null,
+        "line": "ok 33 - K6/6-P1: 間に hybrid arm の sample を挟んでも、同じ phase の次の Graph arm の sample との差が 1 なら数える",
+        "rawLine": "ok 33 - K6/6-P1: 間に hybrid arm の sample を挟んでも、同じ phase の次の Graph arm の sample との差が 1 なら数える",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "nextGraphArmOf は variant と phase ごとに次の Graph arm の sample を引き、warm-up と measured、別の variant を混ぜない",
+        "directive": null,
+        "line": "ok 34 - nextGraphArmOf は variant と phase ごとに次の Graph arm の sample を引き、warm-up と measured、別の variant を混ぜない",
+        "rawLine": "ok 34 - nextGraphArmOf は variant と phase ごとに次の Graph arm の sample を引き、warm-up と measured、別の variant を混ぜない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-P3: follow-up の sample（begin [pending, cached]、F1〜F7 を満たす）は R-6 の (b) を当てずに follow-up の成功に数える",
+        "directive": null,
+        "line": "ok 35 - K6/6-P3: follow-up の sample（begin [pending, cached]、F1〜F7 を満たす）は R-6 の (b) を当てずに follow-up の成功に数える",
+        "rawLine": "ok 35 - K6/6-P3: follow-up の sample（begin [pending, cached]、F1〜F7 を満たす）は R-6 の (b) を当てずに follow-up の成功に数える",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-P4: phase の最後の Graph arm の sample は (c) を当てられず、(b) の counter の差分で判定する（他の条件を満たせば数える）",
+        "directive": null,
+        "line": "ok 36 - K6/6-P4: phase の最後の Graph arm の sample は (c) を当てられず、(b) の counter の差分で判定する（他の条件を満たせば数える）",
+        "rawLine": "ok 36 - K6/6-P4: phase の最後の Graph arm の sample は (c) を当てられず、(b) の counter の差分で判定する（他の条件を満たせば数える）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-P5: trace の record（dPrimeCounters が従来の 7 key で preparesStarted・preparesReady を持たない）は X10 の記録の欠けにならない。定常状態では欠けになる",
+        "directive": null,
+        "line": "ok 37 - K6/6-P5: trace の record（dPrimeCounters が従来の 7 key で preparesStarted・preparesReady を持たない）は X10 の記録の欠けにならない。定常状態では欠けになる",
+        "rawLine": "ok 37 - K6/6-P5: trace の record（dPrimeCounters が従来の 7 key で preparesStarted・preparesReady を持たない）は X10 の記録の欠けにならない。定常状態では欠けになる",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N1a: R1 の reachedQuiet が false なら first-render に数えず、X10",
+        "directive": null,
+        "line": "ok 38 - K6/6-N1a: R1 の reachedQuiet が false なら first-render に数えず、X10",
+        "rawLine": "ok 38 - K6/6-N1a: R1 の reachedQuiet が false なら first-render に数えず、X10",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N1b: R1 の 4 項目の計算し直しが自己申告と合わなければ数えず、X10",
+        "directive": null,
+        "line": "ok 39 - K6/6-N1b: R1 の 4 項目の計算し直しが自己申告と合わなければ数えず、X10",
+        "rawLine": "ok 39 - K6/6-N1b: R1 の 4 項目の計算し直しが自己申告と合わなければ数えず、X10",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N2a: 親の begin の記録が [pending] でなければ数えない",
+        "directive": null,
+        "line": "ok 40 - K6/6-N2a: 親の begin の記録が [pending] でなければ数えない",
+        "rawLine": "ok 40 - K6/6-N2a: 親の begin の記録が [pending] でなければ数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N2b: startSlot.kind が empty でなければ数えない",
+        "directive": null,
+        "line": "ok 41 - K6/6-N2b: startSlot.kind が empty でなければ数えない",
+        "rawLine": "ok 41 - K6/6-N2b: startSlot.kind が empty でなければ数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない",
+        "directive": null,
+        "line": "ok 42 - K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない",
+        "rawLine": "ok 42 - K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady の差が 2（間に hybrid arm を挟む）なら数えず、理由を開示する。差が 0 でも、次が記録なしでも数えない",
+        "directive": null,
+        "line": "ok 43 - K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady の差が 2（間に hybrid arm を挟む）なら数えず、理由を開示する。差が 0 でも、次が記録なしでも数えない",
+        "rawLine": "ok 43 - K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady の差が 2（間に hybrid arm を挟む）なら数えず、理由を開示する。差が 0 でも、次が記録なしでも数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N3a: stamp が unavailable の親は数えない（分母に残る）",
+        "directive": null,
+        "line": "ok 44 - K6/6-N3a: stamp が unavailable の親は数えない（分母に残る）",
+        "rawLine": "ok 44 - K6/6-N3a: stamp が unavailable の親は数えない（分母に残る）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N3b: stamp の記録が null の親は数えない",
+        "directive": null,
+        "line": "ok 45 - K6/6-N3b: stamp の記録が null の親は数えない",
+        "rawLine": "ok 45 - K6/6-N3b: stamp の記録が null の親は数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N3c: stamp0-missing で親の ticket が available でない記録は数えない（合流した親では起きない空の検査。記録の誤りを見つけるために置く）",
+        "directive": null,
+        "line": "ok 46 - K6/6-N3c: stamp0-missing で親の ticket が available でない記録は数えない（合流した親では起きない空の検査。記録の誤りを見つけるために置く）",
+        "rawLine": "ok 46 - K6/6-N3c: stamp0-missing で親の ticket が available でない記録は数えない（合流した親では起きない空の検査。記録の誤りを見つけるために置く）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N3d: stamp0-missing で窓内に合流しても Graph の outcome が graph-ready でない記録（joined なのに graph-late）は数えない（② の合流の項目。first-render の下位条件としては FR-3 だけを欠く）",
+        "directive": null,
+        "line": "ok 47 - K6/6-N3d: stamp0-missing で窓内に合流しても Graph の outcome が graph-ready でない記録（joined なのに graph-late）は数えない（② の合流の項目。first-render の下位条件としては FR-3 だけを欠く）",
+        "rawLine": "ok 47 - K6/6-N3d: stamp0-missing で窓内に合流しても Graph の outcome が graph-ready でない記録（joined なのに graph-late）は数えない（② の合流の項目。first-render の下位条件としては FR-3 だけを欠く）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N3e: stamp0-missing で edgeCount が整数でない親は数えない（② の項目。FR-7 の no-edge も同時に落ちるので理由は 2 つ）",
+        "directive": null,
+        "line": "ok 48 - K6/6-N3e: stamp0-missing で edgeCount が整数でない親は数えない（② の項目。FR-7 の no-edge も同時に落ちるので理由は 2 つ）",
+        "rawLine": "ok 48 - K6/6-N3e: stamp0-missing で edgeCount が整数でない親は数えない（② の項目。FR-7 の no-edge も同時に落ちるので理由は 2 つ）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N4: 窓内に合流した親の stamp が stale なら [artifact]（製品は stale で query を投げず、合流させない）",
+        "directive": null,
+        "line": "ok 49 - K6/6-N4: 窓内に合流した親の stamp が stale なら [artifact]（製品は stale で query を投げず、合流させない）",
+        "rawLine": "ok 49 - K6/6-N4: 窓内に合流した親の stamp が stale なら [artifact]（製品は stale で query を投げず、合流させない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない",
+        "directive": null,
+        "line": "ok 50 - K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない",
+        "rawLine": "ok 50 - K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N6a: 窓内に合流した親の後に graph-ready の通知があれば数えず、開示する",
+        "directive": null,
+        "line": "ok 51 - K6/6-N6a: 窓内に合流した親の後に graph-ready の通知があれば数えず、開示する",
+        "rawLine": "ok 51 - K6/6-N6a: 窓内に合流した親の後に graph-ready の通知があれば数えず、開示する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N6b: 子（origin が index-ready の例）があれば数えず、開示する",
+        "directive": null,
+        "line": "ok 52 - K6/6-N6b: 子（origin が index-ready の例）があれば数えず、開示する",
+        "rawLine": "ok 52 - K6/6-N6b: 子（origin が index-ready の例）があれば数えず、開示する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N6c: 親の IR の再試行の timer が動いていれば数えず、開示する",
+        "directive": null,
+        "line": "ok 53 - K6/6-N6c: 親の IR の再試行の timer が動いていれば数えず、開示する",
+        "rawLine": "ok 53 - K6/6-N6c: 親の IR の再試行の timer が動いていれば数えず、開示する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない",
+        "directive": null,
+        "line": "ok 54 - K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない",
+        "rawLine": "ok 54 - K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N10a・N10b: 窓内に合流した親で driftAtQuery か prepareFailures の差分が 1 なら [artifact]",
+        "directive": null,
+        "line": "ok 55 - K6/6-N10a・N10b: 窓内に合流した親で driftAtQuery か prepareFailures の差分が 1 なら [artifact]",
+        "rawLine": "ok 55 - K6/6-N10a・N10b: 窓内に合流した親で driftAtQuery か prepareFailures の差分が 1 なら [artifact]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N11a: FR-1 出所が Cached の窓内の親は数えない（K6/4-N39）",
+        "directive": null,
+        "line": "ok 56 - K6/6-N11a: FR-1 出所が Cached の窓内の親は数えない（K6/4-N39）",
+        "rawLine": "ok 56 - K6/6-N11a: FR-1 出所が Cached の窓内の親は数えない（K6/4-N39）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N11b: FR-1 joined なのに revalidation が null なら classifyJoin が止める（[artifact]）",
+        "directive": null,
+        "line": "ok 57 - K6/6-N11b: FR-1 joined なのに revalidation が null なら classifyJoin が止める（[artifact]）",
+        "rawLine": "ok 57 - K6/6-N11b: FR-1 joined なのに revalidation が null なら classifyJoin が止める（[artifact]）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N12a: FR-5 宣言が used でなければ数えない（stamp が fresh なら FR-5 だけを欠く。stamp0-missing では FR-3 ② の宣言の検査も同時に落ちる）",
+        "directive": null,
+        "line": "ok 58 - K6/6-N12a: FR-5 宣言が used でなければ数えない（stamp が fresh なら FR-5 だけを欠く。stamp0-missing では FR-3 ② の宣言の検査も同時に落ちる）",
+        "rawLine": "ok 58 - K6/6-N12a: FR-5 宣言が used でなければ数えない（stamp が fresh なら FR-5 だけを欠く。stamp0-missing では FR-3 ② の宣言の検査も同時に落ちる）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N12b: FR-5 publishCount が 2 なら数えず、K6/4-N1 の FAIL",
+        "directive": null,
+        "line": "ok 59 - K6/6-N12b: FR-5 publishCount が 2 なら数えず、K6/4-N1 の FAIL",
+        "rawLine": "ok 59 - K6/6-N12b: FR-5 publishCount が 2 なら数えず、K6/4-N1 の FAIL",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N12c: FR-5 親の窓が 40 ms でなければ [precheck]",
+        "directive": null,
+        "line": "ok 60 - K6/6-N12c: FR-5 親の窓が 40 ms でなければ [precheck]",
+        "rawLine": "ok 60 - K6/6-N12c: FR-5 親の窓が 40 ms でなければ [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-render）は欠落 0 で、開示に K6/2 の字義の件数と stamp の内訳を載せる",
+        "directive": null,
+        "line": "ok 61 - K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-render）は欠落 0 で、開示に K6/2 の字義の件数と stamp の内訳を載せる",
+        "rawLine": "ok 61 - K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-render）は欠落 0 で、開示に K6/2 の字義の件数と stamp の内訳を載せる",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）",
+        "directive": null,
+        "line": "ok 62 - K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）",
+        "rawLine": "ok 62 - K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N8: 窓内に合流した stamp0-missing の親だけを分母から外した samples は拒否する（(iii′)）",
+        "directive": null,
+        "line": "ok 63 - K6/6-N8: 窓内に合流した stamp0-missing の親だけを分母から外した samples は拒否する（(iii′)）",
+        "rawLine": "ok 63 - K6/6-N8: 窓内に合流した stamp0-missing の親だけを分母から外した samples は拒否する（(iii′)）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6 R-6 (c) の開示: 背景の再準備が次の sample の前に走った親は数えられず、欠落になる（残余 (3)）",
+        "directive": null,
+        "line": "ok 64 - K6/6 R-6 (c) の開示: 背景の再準備が次の sample の前に走った親は数えられず、欠落になる（残余 (3)）",
+        "rawLine": "ok 64 - K6/6 R-6 (c) の開示: 背景の再準備が次の sample の前に走った親は数えられず、欠落になる（残余 (3)）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "summarizeSteadyState は K6/6 の R1 の下の記録でも、K6/2 の時代（candidate なし）の要約を変えない",
+        "directive": null,
+        "line": "ok 65 - summarizeSteadyState は K6/6 の R1 の下の記録でも、K6/2 の時代（candidate なし）の要約を変えない",
+        "rawLine": "ok 65 - summarizeSteadyState は K6/6 の R1 の下の記録でも、K6/2 の時代（candidate なし）の要約を変えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "the catalog is the 13 frozen variants with their frozen digests and Graph status",
+        "directive": null,
+        "line": "ok 66 - the catalog is the 13 frozen variants with their frozen digests and Graph status",
+        "rawLine": "ok 66 - the catalog is the 13 frozen variants with their frozen digests and Graph status",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "only declared preconditions are judged, and missing evidence is unmet",
+        "directive": null,
+        "line": "ok 67 - only declared preconditions are judged, and missing evidence is unmet",
+        "rawLine": "ok 67 - only declared preconditions are judged, and missing evidence is unmet",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-6 (i): R membership is a set unless its order is predeclared",
+        "directive": null,
+        "line": "ok 68 - P2-6 (i): R membership is a set unless its order is predeclared",
+        "rawLine": "ok 68 - P2-6 (i): R membership is a set unless its order is predeclared",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-6 (ii): an unusable variant reaches the sealed generation before its mutation commits",
+        "directive": null,
+        "line": "ok 69 - P2-6 (ii): an unusable variant reaches the sealed generation before its mutation commits",
+        "rawLine": "ok 69 - P2-6 (ii): an unusable variant reaches the sealed generation before its mutation commits",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-6 (iii): IR admission requires R+IR to place the Scene after R",
+        "directive": null,
+        "line": "ok 70 - P2-6 (iii): IR admission requires R+IR to place the Scene after R",
+        "rawLine": "ok 70 - P2-6 (iii): IR admission requires R+IR to place the Scene after R",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/2 step 8: in-window samples agree, unjoined samples equal R+IR, none in window is HOLD",
+        "directive": null,
+        "line": "ok 71 - K6/2 step 8: in-window samples agree, unjoined samples equal R+IR, none in window is HOLD",
+        "rawLine": "ok 71 - K6/2 step 8: in-window samples agree, unjoined samples equal R+IR, none in window is HOLD",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P1-3: 期待が unavailable の variant に Graph が join したら、cache 由来でも READY でなくても FAIL",
+        "directive": null,
+        "line": "ok 72 - P1-3: 期待が unavailable の variant に Graph が join したら、cache 由来でも READY でなくても FAIL",
+        "rawLine": "ok 72 - P1-3: 期待が unavailable の variant に Graph が join したら、cache 由来でも READY でなくても FAIL",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P1-3: 測った件数が 30 でなければ invalid（0 件でも fallback-measured にしない）",
+        "directive": null,
+        "line": "ok 73 - P1-3: 測った件数が 30 でなければ invalid（0 件でも fallback-measured にしない）",
+        "rawLine": "ok 73 - P1-3: 測った件数が 30 でなければ invalid（0 件でも fallback-measured にしない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D-12: 測った対の repeat が重複していれば invalid",
+        "directive": null,
+        "line": "ok 74 - D-12: 測った対の repeat が重複していれば invalid",
+        "rawLine": "ok 74 - D-12: 測った対の repeat が重複していれば invalid",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D-1: 品質の regime は封印した定常状態の要約から読み、呼び出し側が選べない",
+        "directive": null,
+        "line": "ok 75 - D-1: 品質の regime は封印した定常状態の要約から読み、呼び出し側が選べない",
+        "rawLine": "ok 75 - D-1: 品質の regime は封印した定常状態の要約から読み、呼び出し側が選べない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "E-3（S1f）: 品質は定常状態の要約と同じ samples で測り、別の samples の要約は受け付けない",
+        "directive": null,
+        "line": "ok 76 - E-3（S1f）: 品質は定常状態の要約と同じ samples で測り、別の samples の要約は受け付けない",
+        "rawLine": "ok 76 - E-3（S1f）: 品質は定常状態の要約と同じ samples で測り、別の samples の要約は受け付けない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4 品質（批准 3、K6/4-P1）: 表示された sample の表示の結果で測り、表示の種類を書く",
+        "directive": null,
+        "line": "ok 77 - K6/4 品質（批准 3、K6/4-P1）: 表示された sample の表示の結果で測り、表示の種類を書く",
+        "rawLine": "ok 77 - K6/4 品質（批准 3、K6/4-P1）: 表示された sample の表示の結果で測り、表示の種類を書く",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N12: 子の R か IR が親と違えば品質は FAIL",
+        "directive": null,
+        "line": "ok 78 - K6/4-N12: 子の R か IR が親と違えば品質は FAIL",
+        "rawLine": "ok 78 - K6/4-N12: 子の R か IR が親と違えば品質は FAIL",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N13: 同じ case の表示の結果が sample の間で違えば FAIL",
+        "directive": null,
+        "line": "ok 79 - K6/4-N13: 同じ case の表示の結果が sample の間で違えば FAIL",
+        "rawLine": "ok 79 - K6/4-N13: 同じ case の表示の結果が sample の間で違えば FAIL",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N14: 表示された sample が無い case は HOLD",
+        "directive": null,
+        "line": "ok 80 - K6/4-N14: 表示された sample が無い case は HOLD",
+        "rawLine": "ok 80 - K6/4-N14: 表示された sample が無い case は HOLD",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4: 表示されなかった sample の親の表示が R+IR と違う、遅れた結果が混ざった、期待が unavailable なのに子が Graph を出した、はどれも FAIL",
+        "directive": null,
+        "line": "ok 81 - K6/4: 表示されなかった sample の親の表示が R+IR と違う、遅れた結果が混ざった、期待が unavailable なのに子が Graph を出した、はどれも FAIL",
+        "rawLine": "ok 81 - K6/4: 表示されなかった sample の親の表示が R+IR と違う、遅れた結果が混ざった、期待が unavailable なのに子が Graph を出した、はどれも FAIL",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-P2: 同じ case に first-render と follow-up の sample があり、表示の結果が同じなら、品質を両方の表示の結果で測る",
+        "directive": null,
+        "line": "ok 82 - K6/6-P2: 同じ case に first-render と follow-up の sample があり、表示の結果が同じなら、品質を両方の表示の結果で測る",
+        "rawLine": "ok 82 - K6/6-P2: 同じ case に first-render と follow-up の sample があり、表示の結果が同じなら、品質を両方の表示の結果で測る",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N13a: 窓内に合流して Graph が表示に寄与した（edgeCount 1 以上）のに条件を欠いた親で、Scene の一覧が R+IR と違えば品質 FAIL（1% の許容は効かない）",
+        "directive": null,
+        "line": "ok 83 - K6/6-N13a: 窓内に合流して Graph が表示に寄与した（edgeCount 1 以上）のに条件を欠いた親で、Scene の一覧が R+IR と違えば品質 FAIL（1% の許容は効かない）",
+        "rawLine": "ok 83 - K6/6-N13a: 窓内に合流して Graph が表示に寄与した（edgeCount 1 以上）のに条件を欠いた親で、Scene の一覧が R+IR と違えば品質 FAIL（1% の許容は効かない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N13b: 同上で、Scene の一覧が R+IR と同じ（path の添付だけを足す。G-06 の形）でも品質 FAIL",
+        "directive": null,
+        "line": "ok 84 - K6/6-N13b: 同上で、Scene の一覧が R+IR と同じ（path の添付だけを足す。G-06 の形）でも品質 FAIL",
+        "rawLine": "ok 84 - K6/6-N13b: 同上で、Scene の一覧が R+IR と同じ（path の添付だけを足す。G-06 の形）でも品質 FAIL",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6 変える点 6: Graph が合流したが edgeCount 0 の親、または宣言が used でない親は『寄与した』に当たらず、この FAIL にしない",
+        "directive": null,
+        "line": "ok 85 - K6/6 変える点 6: Graph が合流したが edgeCount 0 の親、または宣言が used でない親は『寄与した』に当たらず、この FAIL にしない",
+        "rawLine": "ok 85 - K6/6 変える点 6: Graph が合流したが edgeCount 0 の親、または宣言が used でない親は『寄与した』に当たらず、この FAIL にしない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "a joined-but-late sample within tolerance makes the variant HOLD boundary-disagreement",
+        "directive": null,
+        "line": "ok 86 - a joined-but-late sample within tolerance makes the variant HOLD boundary-disagreement",
+        "rawLine": "ok 86 - a joined-but-late sample within tolerance makes the variant HOLD boundary-disagreement",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P-6 / P2-5: outcomes come from resolveVariantOutcome on a loaded fixture variant",
+        "directive": null,
+        "line": "ok 87 - P-6 / P2-5: outcomes come from resolveVariantOutcome on a loaded fixture variant",
+        "rawLine": "ok 87 - P-6 / P2-5: outcomes come from resolveVariantOutcome on a loaded fixture variant",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-5: a frozen variant is loaded by digest and case ID",
+        "directive": null,
+        "line": "ok 88 - P2-5: a frozen variant is loaded by digest and case ID",
+        "rawLine": "ok 88 - P2-5: a frozen variant is loaded by digest and case ID",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P1-3: a dev fixture that copies frozen material is refused",
+        "directive": null,
+        "line": "ok 89 - P1-3: a dev fixture that copies frozen material is refused",
+        "rawLine": "ok 89 - P1-3: a dev fixture that copies frozen material is refused",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "G-01 declares no precondition: an unreached B seal is a v1 expectation Hold",
+        "directive": null,
+        "line": "ok 90 - G-01 declares no precondition: an unreached B seal is a v1 expectation Hold",
+        "rawLine": "ok 90 - G-01 declares no precondition: an unreached B seal is a v1 expectation Hold",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P-2 / N-15 / P2-11: the existing queries' Graph arm equals R+IR in every compared field",
+        "directive": null,
+        "line": "ok 91 - P-2 / N-15 / P2-11: the existing queries' Graph arm equals R+IR in every compared field",
+        "rawLine": "ok 91 - P-2 / N-15 / P2-11: the existing queries' Graph arm equals R+IR in every compared field",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "the baseline: five conditions on lists built from the fixtures' own predeclared expectations",
+        "directive": null,
+        "line": "ok 92 - the baseline: five conditions on lists built from the fixtures' own predeclared expectations",
+        "rawLine": "ok 92 - the baseline: five conditions on lists built from the fixtures' own predeclared expectations",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "condition 1 (G-01): fail when the late child does not change the list, hold when it improves differently",
+        "directive": null,
+        "line": "ok 93 - condition 1 (G-01): fail when the late child does not change the list, hold when it improves differently",
+        "rawLine": "ok 93 - condition 1 (G-01): fail when the late child does not change the list, hold when it improves differently",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "condition 2 (macro): the G-case mean fails when the Graph display loses what R+IR showed",
+        "directive": null,
+        "line": "ok 94 - condition 2 (macro): the G-case mean fails when the Graph display loses what R+IR showed",
+        "rawLine": "ok 94 - condition 2 (macro): the G-case mean fails when the Graph display loses what R+IR showed",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5-N4（条件 3）: Hybrid p95 の判定の境界は 94.2 ms で、65.04 ms と 240 ms ではない。arm ごとに pool し、どちらかに failed があれば fail",
+        "directive": null,
+        "line": "ok 95 - K6/5-N4（条件 3）: Hybrid p95 の判定の境界は 94.2 ms で、65.04 ms と 240 ms ではない。arm ごとに pool し、どちらかに failed があれば fail",
+        "rawLine": "ok 95 - K6/5-N4（条件 3）: Hybrid p95 の判定の境界は 94.2 ms で、65.04 ms と 240 ms ではない。arm ごとに pool し、どちらかに failed があれば fail",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "condition 3 (p95): tReturn - tFetch, nearest-rank, both arms, limit from the manifest",
+        "directive": null,
+        "line": "ok 96 - condition 3 (p95): tReturn - tFetch, nearest-rank, both arms, limit from the manifest",
+        "rawLine": "ok 96 - condition 3 (p95): tReturn - tFetch, nearest-rank, both arms, limit from the manifest",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "condition 4 (Evidence): the edge binding fails on an unresolved or unexpected edge, and the rest stays not-evaluable",
+        "directive": null,
+        "line": "ok 97 - condition 4 (Evidence): the edge binding fails on an unresolved or unexpected edge, and the rest stays not-evaluable",
+        "rawLine": "ok 97 - condition 4 (Evidence): the edge binding fails on an unresolved or unexpected edge, and the rest stays not-evaluable",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "condition 5 (forbidden contribution): (a) a forbidden Scene the Graph adds, (b) a late Graph in a display",
+        "directive": null,
+        "line": "ok 98 - condition 5 (forbidden contribution): (a) a forbidden Scene the Graph adds, (b) a late Graph in a display",
+        "rawLine": "ok 98 - condition 5 (forbidden contribution): (a) a forbidden Scene the Graph adds, (b) a late Graph in a display",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "an expected-unavailable variant fails when the display list differs from the paired R+IR (prereg 3)",
+        "directive": null,
+        "line": "ok 99 - an expected-unavailable variant fails when the display list differs from the paired R+IR (prereg 3)",
+        "rawLine": "ok 99 - an expected-unavailable variant fails when the display list differs from the paired R+IR (prereg 3)",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "a variant marked blocked in the ledger leaves macro and p95; a missing receipt without a record stops",
+        "directive": null,
+        "line": "ok 100 - a variant marked blocked in the ledger leaves macro and p95; a missing receipt without a record stops",
+        "rawLine": "ok 100 - a variant marked blocked in the ledger leaves macro and p95; a missing receipt without a record stops",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "stops with [precheck]: allow list, procedure, unmapped ID, missing expectation, tampered receipt",
+        "directive": null,
+        "line": "ok 101 - stops with [precheck]: allow list, procedure, unmapped ID, missing expectation, tampered receipt",
+        "rawLine": "ok 101 - stops with [precheck]: allow list, procedure, unmapped ID, missing expectation, tampered receipt",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "bindings: a changed receipt, allow list, procedure or script is found by verify",
+        "directive": null,
+        "line": "ok 102 - bindings: a changed receipt, allow list, procedure or script is found by verify",
+        "rawLine": "ok 102 - bindings: a changed receipt, allow list, procedure or script is found by verify",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5 変える点 7: 手順のファイルは正式の loader で S4 の commit から読み、receipt の head.k65 は K65_FREEZE と一致しなければ [precheck]",
+        "directive": null,
+        "line": "ok 103 - K6/5 変える点 7: 手順のファイルは正式の loader で S4 の commit から読み、receipt の head.k65 は K65_FREEZE と一致しなければ [precheck]",
+        "rawLine": "ok 103 - K6/5 変える点 7: 手順のファイルは正式の loader で S4 の commit から読み、receipt の head.k65 は K65_FREEZE と一致しなければ [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "no threshold is written in the verdict code; the manifest and the K6/2 text decide",
+        "directive": null,
+        "line": "ok 104 - no threshold is written in the verdict code; the manifest and the K6/2 text decide",
+        "rawLine": "ok 104 - no threshold is written in the verdict code; the manifest and the K6/2 text decide",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v2 D6: first-render で表示された sample の edge の束縛は親の寄与の記録（FR-7）で検査する",
+        "directive": null,
+        "line": "ok 105 - 品質 v2 D6: first-render で表示された sample の edge の束縛は親の寄与の記録（FR-7）で検査する",
+        "rawLine": "ok 105 - 品質 v2 D6: first-render で表示された sample の edge の束縛は親の寄与の記録（FR-7）で検査する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v2 D8（K6/6-N13a・N13b）: 窓内に合流して Graph が表示に寄与したのに first-render の条件を欠いた親は、Scene の一覧が R+IR と違っても同じでも fail（hold に留めない）",
+        "directive": null,
+        "line": "ok 106 - 品質 v2 D8（K6/6-N13a・N13b）: 窓内に合流して Graph が表示に寄与したのに first-render の条件を欠いた親は、Scene の一覧が R+IR と違っても同じでも fail（hold に留めない）",
+        "rawLine": "ok 106 - 品質 v2 D8（K6/6-N13a・N13b）: 窓内に合流して Graph が表示に寄与したのに first-render の条件を欠いた親は、Scene の一覧が R+IR と違っても同じでも fail（hold に留めない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v2 D8: 表示されなかった sample の Scene の一覧が R+IR と違うのは hold でなく fail（v1 の実装は K6/4:171 より弱かった）",
+        "directive": null,
+        "line": "ok 107 - 品質 v2 D8: 表示されなかった sample の Scene の一覧が R+IR と違うのは hold でなく fail（v1 の実装は K6/4:171 より弱かった）",
+        "rawLine": "ok 107 - 品質 v2 D8: 表示されなかった sample の Scene の一覧が R+IR と違うのは hold でなく fail（v1 の実装は K6/4:171 より弱かった）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v2 D8: Graph が合流したが edgeCount 0 の親は『寄与した』に当たらず fail にしない",
+        "directive": null,
+        "line": "ok 108 - 品質 v2 D8: Graph が合流したが edgeCount 0 の親は『寄与した』に当たらず fail にしない",
+        "rawLine": "ok 108 - 品質 v2 D8: Graph が合流したが edgeCount 0 の親は『寄与した』に当たらず fail にしない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+        "directive": null,
+        "line": "ok 109 - 品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+        "rawLine": "ok 109 - 品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v2 D3 (d): 最新の typed Revision は setup の記録の準備順の最後の、refusedAtSetup でない行",
+        "directive": null,
+        "line": "ok 110 - 品質 v2 D3 (d): 最新の typed Revision は setup の記録の準備順の最後の、refusedAtSetup でない行",
+        "rawLine": "ok 110 - 品質 v2 D3 (d): 最新の typed Revision は setup の記録の準備順の最後の、refusedAtSetup でない行",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P-10: a complete receipt passes and its head carries the K6/2 freeze",
+        "directive": null,
+        "line": "ok 111 - P-10: a complete receipt passes and its head carries the K6/2 freeze",
+        "rawLine": "ok 111 - P-10: a complete receipt passes and its head carries the K6/2 freeze",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。固定した commit と bytes の先頭だけを受け付ける",
+        "directive": null,
+        "line": "ok 112 - 批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。固定した commit と bytes の先頭だけを受け付ける",
+        "rawLine": "ok 112 - 批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。固定した commit と bytes の先頭だけを受け付ける",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit と SHA-256）を持ち、無い・違う receipt は拒む",
+        "directive": null,
+        "line": "ok 113 - K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit と SHA-256）を持ち、無い・違う receipt は拒む",
+        "rawLine": "ok 113 - K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit と SHA-256）を持ち、無い・違う receipt は拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66）を持ち、無い・違う・/6 の凍結の前に始めた run（s6r1 を含む）の receipt は拒む。既定は固定した /6 の凍結で、null の descriptor はどの正式の receipt も拒む",
+        "directive": null,
+        "line": "ok 114 - K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66）を持ち、無い・違う・/6 の凍結の前に始めた run（s6r1 を含む）の receipt は拒む。既定は固定した /6 の凍結で、null の descriptor はどの正式の receipt も拒む",
+        "rawLine": "ok 114 - K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66）を持ち、無い・違う・/6 の凍結の前に始めた run（s6r1 を含む）の receipt は拒む。既定は固定した /6 の凍結で、null の descriptor はどの正式の receipt も拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6 FR-7: 正式の receipt は親の寄与の記録（followUp.parent.contribution）が材料の Revision の単位でなければ拒む（Scene の単位は予告専用）",
+        "directive": null,
+        "line": "ok 115 - K6/6 FR-7: 正式の receipt は親の寄与の記録（followUp.parent.contribution）が材料の Revision の単位でなければ拒む（Scene の単位は予告専用）",
+        "rawLine": "ok 115 - K6/6 FR-7: 正式の receipt は親の寄与の記録（followUp.parent.contribution）が材料の Revision の単位でなければ拒む（Scene の単位は予告専用）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "批准 7（DR-CP4-T14-1）: receiptHeadErrors は注入した凍結の descriptor で照合し、null なら正式の Graph を拒む",
+        "directive": null,
+        "line": "ok 116 - 批准 7（DR-CP4-T14-1）: receiptHeadErrors は注入した凍結の descriptor で照合し、null なら正式の Graph を拒む",
+        "rawLine": "ok 116 - 批准 7（DR-CP4-T14-1）: receiptHeadErrors は注入した凍結の descriptor で照合し、null なら正式の Graph を拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N31: 正式の receipt は批准 5 の (a)〜(c) の記録と、その判定を持つ",
+        "directive": null,
+        "line": "ok 117 - K6/4-N31: 正式の receipt は批准 5 の (a)〜(c) の記録と、その判定を持つ",
+        "rawLine": "ok 117 - K6/4-N31: 正式の receipt は批准 5 の (a)〜(c) の記録と、その判定を持つ",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D-1: receipt の批准 5 は git から集め直した封印つきの証拠と一致するときだけ K6/4",
+        "directive": null,
+        "line": "ok 118 - D-1: receipt の批准 5 は git から集め直した封印つきの証拠と一致するときだけ K6/4",
+        "rawLine": "ok 118 - D-1: receipt の批准 5 は git から集め直した封印つきの証拠と一致するときだけ K6/4",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N17: W_f、T_late、T_show を広げた receipt、手順のファイルの版の無い receipt は受け付けない",
+        "directive": null,
+        "line": "ok 119 - K6/4-N17: W_f、T_late、T_show を広げた receipt、手順のファイルの版の無い receipt は受け付けない",
+        "rawLine": "ok 119 - K6/4-N17: W_f、T_late、T_show を広げた receipt、手順のファイルの版の無い receipt は受け付けない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5-N1・N4: settings.k64 の D・B・Hybrid p95 の上限が契約（40・54.2・94.2 ms）と違う receipt は、receipt の層で拒む（手順のファイルの loader は契約と違う値の file を読まないので、記録の値そのものを契約と照合する）",
+        "directive": null,
+        "line": "ok 120 - K6/5-N1・N4: settings.k64 の D・B・Hybrid p95 の上限が契約（40・54.2・94.2 ms）と違う receipt は、receipt の層で拒む（手順のファイルの loader は契約と違う値の file を読まないので、記録の値そのものを契約と照合する）",
+        "rawLine": "ok 120 - K6/5-N1・N4: settings.k64 の D・B・Hybrid p95 の上限が契約（40・54.2・94.2 ms）と違う receipt は、receipt の層で拒む（手順のファイルの loader は契約と違う値の file を読まないので、記録の値そのものを契約と照合する）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "S1f: settings.k64 は loadProcedureFile が commit から読んだ手順のファイルと一致し、draft と版の無い記録を拒む",
+        "directive": null,
+        "line": "ok 121 - S1f: settings.k64 は loadProcedureFile が commit から読んだ手順のファイルと一致し、draft と版の無い記録を拒む",
+        "rawLine": "ok 121 - S1f: settings.k64 は loadProcedureFile が commit から読んだ手順のファイルと一致し、draft と版の無い記録を拒む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/4-N18: first-render の窓外率を書いていない receipt は集計の再計算と合わない",
+        "directive": null,
+        "line": "ok 122 - K6/4-N18: first-render の窓外率を書いていない receipt は集計の再計算と合わない",
+        "rawLine": "ok 122 - K6/4-N18: first-render の窓外率を書いていない receipt は集計の再計算と合わない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-6／K6/4-N21: verdict は計算し直して照合し、invalid を持つ receipt は有効にしない",
+        "directive": null,
+        "line": "ok 123 - P2-6／K6/4-N21: verdict は計算し直して照合し、invalid を持つ receipt は有効にしない",
+        "rawLine": "ok 123 - P2-6／K6/4-N21: verdict は計算し直して照合し、invalid を持つ receipt は有効にしない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P3-10: D3 の窓は /proc/locks が読めない標本、slot の file を見ていない標本、終わりが始まりより前の run を gap にする",
+        "directive": null,
+        "line": "ok 124 - P3-10: D3 の窓は /proc/locks が読めない標本、slot の file を見ていない標本、終わりが始まりより前の run を gap にする",
+        "rawLine": "ok 124 - P3-10: D3 の窓は /proc/locks が読めない標本、slot の file を見ていない標本、終わりが始まりより前の run を gap にする",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P1-5: a K2/4 diagnostic negative is a Graph run with the full Graph head",
+        "directive": null,
+        "line": "ok 125 - P1-5: a K2/4 diagnostic negative is a Graph run with the full Graph head",
+        "rawLine": "ok 125 - P1-5: a K2/4 diagnostic negative is a Graph run with the full Graph head",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P1-5: Graph-free run kinds refuse R+IR+Graph samples; the 24 allow only not-requested",
+        "directive": null,
+        "line": "ok 126 - P1-5: Graph-free run kinds refuse R+IR+Graph samples; the 24 allow only not-requested",
+        "rawLine": "ok 126 - P1-5: Graph-free run kinds refuse R+IR+Graph samples; the 24 allow only not-requested",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-7: the receipt's own claims are recomputed, never trusted",
+        "directive": null,
+        "line": "ok 127 - P2-7: the receipt's own claims are recomputed, never trusted",
+        "rawLine": "ok 127 - P2-7: the receipt's own claims are recomputed, never trusted",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-7: a declaration run is checked against the measurement workspace and the seam",
+        "directive": null,
+        "line": "ok 128 - P2-7: a declaration run is checked against the measurement workspace and the seam",
+        "rawLine": "ok 128 - P2-7: a declaration run is checked against the measurement workspace and the seam",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-12: the fixture block binds the variant, path, digest and kind",
+        "directive": null,
+        "line": "ok 129 - P2-12: the fixture block binds the variant, path, digest and kind",
+        "rawLine": "ok 129 - P2-12: the fixture block binds the variant, path, digest and kind",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P-3 / N-5 / N-6: only a current declaration with unchanged Index metadata proceeds",
+        "directive": null,
+        "line": "ok 130 - P-3 / N-5 / N-6: only a current declaration with unchanged Index metadata proceeds",
+        "rawLine": "ok 130 - P-3 / N-5 / N-6: only a current declaration with unchanged Index metadata proceeds",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "D3 / N-14 / P2-8: window violations, gaps and missing fields exclude a run but keep it",
+        "directive": null,
+        "line": "ok 131 - D3 / N-14 / P2-8: window violations, gaps and missing fields exclude a run but keep it",
+        "rawLine": "ok 131 - D3 / N-14 / P2-8: window violations, gaps and missing fields exclude a run but keep it",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-F-6: Scene の単位で照合した F6 の判定（予告専用）は正式の receipt に入らない",
+        "directive": null,
+        "line": "ok 132 - DR-CP4-F-6: Scene の単位で照合した F6 の判定（予告専用）は正式の receipt に入らない",
+        "rawLine": "ok 132 - DR-CP4-F-6: Scene の単位で照合した F6 の判定（予告専用）は正式の receipt に入らない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの。direct-fetch の dev の runner は予告だけで集計に入らない",
+        "directive": null,
+        "line": "ok 133 - S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの。direct-fetch の dev の runner は予告だけで集計に入らない",
+        "rawLine": "ok 133 - S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの。direct-fetch の dev の runner は予告だけで集計に入らない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "N-11 / P2-9: Electron draws only on the run's Xvfb, without Wayland, D-Bus, ozone override or a netns",
+        "directive": null,
+        "line": "ok 134 - N-11 / P2-9: Electron draws only on the run's Xvfb, without Wayland, D-Bus, ozone override or a netns",
+        "rawLine": "ok 134 - N-11 / P2-9: Electron draws only on the run's Xvfb, without Wayland, D-Bus, ozone override or a netns",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "SHA256SUMS is sha256sum -c compatible and detects tampering",
+        "directive": null,
+        "line": "ok 135 - SHA256SUMS is sha256sum -c compatible and detects tampering",
+        "rawLine": "ok 135 - SHA256SUMS is sha256sum -c compatible and detects tampering",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S1C1-9: the receipt's feature set is exactly the evaluation feature",
+        "directive": null,
+        "line": "ok 136 - DR-CP4-S1C1-9: the receipt's feature set is exactly the evaluation feature",
+        "rawLine": "ok 136 - DR-CP4-S1C1-9: the receipt's feature set is exactly the evaluation feature",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "DR-CP4-S1C1-6: socket samples cover the run and an external socket is [precheck]",
+        "directive": null,
+        "line": "ok 137 - DR-CP4-S1C1-6: socket samples cover the run and an external socket is [precheck]",
+        "rawLine": "ok 137 - DR-CP4-S1C1-6: socket samples cover the run and an external socket is [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "B-2: 停止の後の副作用の証拠（残った process、close、X11、辞書、外部の server、切れた net log、observer、worker）は合否に入る",
+        "directive": null,
+        "line": "ok 138 - B-2: 停止の後の副作用の証拠（残った process、close、X11、辞書、外部の server、切れた net log、observer、worker）は合否に入る",
+        "rawLine": "ok 138 - B-2: 停止の後の副作用の証拠（残った process、close、X11、辞書、外部の server、切れた net log、observer、worker）は合否に入る",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "E-4: 別の候補の封印つきの証拠を bound に渡しても K6/4 にしない（W8）",
+        "directive": null,
+        "line": "ok 139 - E-4: 別の候補の封印つきの証拠を bound に渡しても K6/4 にしない（W8）",
+        "rawLine": "ok 139 - E-4: 別の候補の封印つきの証拠を bound に渡しても K6/4 にしない（W8）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "E-15: X11 の listing は前からある entry の変化・消失を副作用として不合格、他者の entry の出現は取り直し（集計から除く）",
+        "directive": null,
+        "line": "ok 140 - E-15: X11 の listing は前からある entry の変化・消失を副作用として不合格、他者の entry の出現は取り直し（集計から除く）",
+        "rawLine": "ok 140 - E-15: X11 の listing は前からある entry の変化・消失を副作用として不合格、他者の entry の出現は取り直し（集計から除く）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "E-16: launch の env の DBUS_SESSION_BUS_ADDRESS は run の dir の存在しない address だけ",
+        "directive": null,
+        "line": "ok 141 - E-16: launch の env の DBUS_SESSION_BUS_ADDRESS は run の dir の存在しない address だけ",
+        "rawLine": "ok 141 - E-16: launch の env の DBUS_SESSION_BUS_ADDRESS は run の dir の存在しない address だけ",
+        "type": "test"
+      }
+    ],
+    "summary": {
+      "tests": 141,
+      "suites": 0,
+      "pass": 141,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "okLinesSha256": "2ae2e5bb679a4c72f753e9be986018311c338e22b6a3f5b36b590f1335f4e2ca",
+    "okLinesRawSha256": "2ae2e5bb679a4c72f753e9be986018311c338e22b6a3f5b36b590f1335f4e2ca",
+    "okLineCount": 141,
+    "failed": []
+  },
+  "positiveControls": [
+    {
+      "file": "followup.k66.test.mjs",
+      "line": 67,
+      "lineHasTitle": true,
+      "title": "K6/6-P1: R1 の下の現実の形（slot empty、readyFresh false、begin [pending]、counter の差分 1、通知・子・IR の再試行なし）の親は、stamp が fresh でも stamp0-missing でも first-render の窓内で、子は出ない",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "followup.k66.test.mjs",
+      "line": 87,
+      "lineHasTitle": true,
+      "title": "K6/6-P1: 間に hybrid arm の sample を挟んでも、同じ phase の次の Graph arm の sample との差が 1 なら数える",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "followup.k66.test.mjs",
+      "line": 133,
+      "lineHasTitle": true,
+      "title": "K6/6-P3: follow-up の sample（begin [pending, cached]、F1〜F7 を満たす）は R-6 の (b) を当てずに follow-up の成功に数える",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "followup.k66.test.mjs",
+      "line": 158,
+      "lineHasTitle": true,
+      "title": "K6/6-P4: phase の最後の Graph arm の sample は (c) を当てられず、(b) の counter の差分で判定する（他の条件を満たせば数える）",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "followup.k66.test.mjs",
+      "line": 168,
+      "lineHasTitle": true,
+      "title": "K6/6-P5: trace の record（dPrimeCounters が従来の 7 key で preparesStarted・preparesReady を持たない）は X10 の記録の欠けにならない。定常状態では欠けになる",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "followup.k66.test.mjs",
+      "line": 490,
+      "lineHasTitle": true,
+      "title": "K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-render）は欠落 0 で、開示に K6/2 の字義の件数と stamp の内訳を載せる",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "outcome.test.mjs",
+      "line": 720,
+      "lineHasTitle": true,
+      "title": "K6/6-P2: 同じ case に first-render と follow-up の sample があり、表示の結果が同じなら、品質を両方の表示の結果で測る",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "quality-verdict.test.mjs",
+      "line": 1363,
+      "lineHasTitle": true,
+      "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "quality-verdict.test.mjs",
+      "line": 1561,
+      "lineHasTitle": true,
+      "title": "品質 v2 D3 (d): 最新の typed Revision は setup の記録の準備順の最後の、refusedAtSetup でない行",
+      "matches": 1,
+      "status": "ok"
+    }
+  ],
+  "baselinePerFile": [
+    {
+      "file": "followup.k66.test.mjs",
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 34,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "72dc0ead262c9ee6a7db769ec4d949c7509c1f82f0c2c6152ca70caf7bac52de"
+    },
+    {
+      "file": "outcome.test.mjs",
+      "summary": {
+        "tests": 26,
+        "suites": 0,
+        "pass": 26,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "5bf81c6ef995b166e91af3e2a1e1eaa418deccd3f173f5c74c9a64f8f7809bba"
+    },
+    {
+      "file": "receipt.test.mjs",
+      "summary": {
+        "tests": 31,
+        "suites": 0,
+        "pass": 31,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "766d866bffd1de1e10148d09b6461ad51c396350ae8b4e4a604ce7267d6c13bd"
+    },
+    {
+      "file": "admission.test.mjs",
+      "summary": {
+        "tests": 31,
+        "suites": 0,
+        "pass": 31,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "62463ee2f705f26edf0fa1d348d3906f83847a6bb6525a97909d1227360f0154"
+    },
+    {
+      "file": "quality-verdict.test.mjs",
+      "summary": {
+        "tests": 19,
+        "suites": 0,
+        "pass": 19,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "b63540dba4a64d87a9f73846f094b776ea5fd46c1add94e45463d3b50ca2e417"
+    }
+  ],
+  "probe": [
+    {
+      "file": "followup.mjs",
+      "testFile": "followup.k66.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 34,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "followup.mjs",
+      "testFile": "outcome.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 26,
+        "suites": 0,
+        "pass": 26,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "outcome.mjs",
+      "testFile": "outcome.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 26,
+        "suites": 0,
+        "pass": 26,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "availability.mjs",
+      "testFile": "followup.k66.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 34,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "receipt.mjs",
+      "testFile": "receipt.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 31,
+        "suites": 0,
+        "pass": 31,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "admission.mjs",
+      "testFile": "admission.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 31,
+        "suites": 0,
+        "pass": 31,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "quality-verdict.mjs",
+      "testFile": "quality-verdict.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 19,
+        "suites": 0,
+        "pass": 19,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    }
+  ],
+  "baselineAll": {
+    "command": "node --test --test-reporter=tap scripts/quality/nir1-graph-eval/admission.test.mjs scripts/quality/nir1-graph-eval/availability.test.mjs scripts/quality/nir1-graph-eval/build-receipt-check.test.mjs scripts/quality/nir1-graph-eval/dev-fixture.test.mjs scripts/quality/nir1-graph-eval/dev-shape-fixture.test.mjs scripts/quality/nir1-graph-eval/diagnostic-runner.test.mjs scripts/quality/nir1-graph-eval/egress.test.mjs scripts/quality/nir1-graph-eval/eval-native-build.test.mjs scripts/quality/nir1-graph-eval/followup.k66.test.mjs scripts/quality/nir1-graph-eval/followup.test.mjs scripts/quality/nir1-graph-eval/frozen-diagnostics.test.mjs scripts/quality/nir1-graph-eval/frozen-k64-admission.test.mjs scripts/quality/nir1-graph-eval/frozen-k64-plan.test.mjs scripts/quality/nir1-graph-eval/frozen-k64-run.test.mjs scripts/quality/nir1-graph-eval/frozen-setup-complete.test.mjs scripts/quality/nir1-graph-eval/frozen-setup-driver.test.mjs scripts/quality/nir1-graph-eval/frozen-setup-plan.test.mjs scripts/quality/nir1-graph-eval/g01-e2e-admission.test.mjs scripts/quality/nir1-graph-eval/g01-negative-run.test.mjs scripts/quality/nir1-graph-eval/g01-negatives.test.mjs scripts/quality/nir1-graph-eval/k64-record.test.mjs scripts/quality/nir1-graph-eval/k64-runner.test.mjs scripts/quality/nir1-graph-eval/k66-rehearsal.test.mjs scripts/quality/nir1-graph-eval/keep-test.test.mjs scripts/quality/nir1-graph-eval/launcher.test.mjs scripts/quality/nir1-graph-eval/native-architecture.test.mjs scripts/quality/nir1-graph-eval/native-sample.test.mjs scripts/quality/nir1-graph-eval/observer-core.test.mjs scripts/quality/nir1-graph-eval/outcome.test.mjs scripts/quality/nir1-graph-eval/procedure-file.test.mjs scripts/quality/nir1-graph-eval/pubg16-e2e-run.test.mjs scripts/quality/nir1-graph-eval/quality-verdict.test.mjs scripts/quality/nir1-graph-eval/r5-check-runner.test.mjs scripts/quality/nir1-graph-eval/receipt.test.mjs scripts/quality/nir1-graph-eval/renderer-build.test.mjs scripts/quality/nir1-graph-eval/run-sample.test.mjs scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs scripts/quality/nir1-graph-eval/seed-pin.test.mjs scripts/quality/nir1-graph-eval/session.test.mjs scripts/quality/nir1-graph-eval/setup-main-build.test.mjs scripts/quality/nir1-graph-eval/sp-p4-branch.test.mjs scripts/quality/nir1-graph-eval/trace-cycle.test.mjs scripts/quality/nir1-graph-eval/trace-frozen.test.mjs scripts/quality/nir1-graph-eval/trace-record.test.mjs scripts/quality/nir1-graph-eval/trace-runner.test.mjs scripts/quality/nir1-graph-eval/trace-seal.test.mjs scripts/quality/nir1-graph-eval/window.test.mjs",
+    "started": "2026-11-08T08:59:35.871Z",
+    "finished": "2026-11-08T08:59:59.069Z",
+    "exitCode": 0,
+    "summary": {
+      "tests": 714,
+      "suites": 0,
+      "pass": 714,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "tapSha256": "d5f3369d9e10db8ce6c03011de09a7d6dae267376517363ab3561fdc2158ae14",
+    "okLinesSha256": "e06495b5361bc709e6610f49748ac53a4b7072865f125e9044108dae90907739",
+    "okLineCount": 714,
+    "failed": [],
+    "tapFile": "/home/grimodex/k66-det/tap3/baseline-all.tap",
+    "files": 47
+  },
+  "mutationsStartedAt": "2026-11-08T08:59:59.070Z",
+  "mutations": [
+    {
+      "id": "K66-N-d-stale",
+      "spn": "N-d",
+      "file": "followup.mjs",
+      "find": "sample.freshnessStamp?.result === \"stale\"",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T08:59:59.070Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N4: 窓内に合流した親の stamp が stale なら [artifact]（製品は stale で query を投げず、合流させない）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 301,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:301"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-N-d-stale.tap"
+    },
+    {
+      "id": "K66-N-d-driftAtQuery",
+      "spn": "N-d",
+      "file": "followup.mjs",
+      "find": "counters.driftAtQuery !== 0 ||",
+      "replace": "false ||",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T08:59:59.557Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N10a・N10b: 窓内に合流した親で driftAtQuery か prepareFailures の差分が 1 なら [artifact]",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 427,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception: driftAtQuery"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:427"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-N-d-driftAtQuery.tap"
+    },
+    {
+      "id": "K66-N-d-prepareFailures",
+      "spn": "N-d",
+      "file": "followup.mjs",
+      "find": "counters.prepareFailures !== 0)",
+      "replace": "false)",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:00.005Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N10a・N10b: 窓内に合流した親で driftAtQuery か prepareFailures の差分が 1 なら [artifact]",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 427,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception: prepareFailures"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:427"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-N-d-prepareFailures.tap"
+    },
+    {
+      "id": "K66-FR1-source",
+      "spn": "FR-1",
+      "file": "followup.mjs",
+      "find": "graph.source !== \"worker\"",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:00.446Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N11a: FR-1 出所が Cached の窓内の親は数えない（K6/4-N39）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 436,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:436"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR1-source.tap"
+    },
+    {
+      "id": "K66-a-reachedQuiet",
+      "spn": "N1a",
+      "file": "followup.mjs",
+      "find": "record.r1.reachedQuiet !== true) no(\"a\"",
+      "replace": "false) no(\"a\"",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:00.900Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N1a: R1 の reachedQuiet が false なら first-render に数えず、X10",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 188,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:188"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-a-reachedQuiet.tap"
+    },
+    {
+      "id": "K66-a-r1-self-report",
+      "spn": "N1b",
+      "file": "followup.mjs",
+      "find": "unmet.length > 0)\n      no(\"a\"",
+      "replace": "false)\n      no(\"a\"",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:01.372Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N1b: R1 の 4 項目の計算し直しが自己申告と合わなければ数えず、X10",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 196,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:196"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-a-r1-self-report.tap"
+    },
+    {
+      "id": "K66-b-begin-records",
+      "spn": "N2a",
+      "file": "followup.mjs",
+      "find": "!sameList(record.nativeBegins, [\"pending\"])",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:01.797Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N2a: 親の begin の記録が [pending] でなければ数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 204,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:204"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-b-begin-records.tap"
+    },
+    {
+      "id": "K66-b-start-slot",
+      "spn": "N2b",
+      "file": "followup.mjs",
+      "find": "sample.startSlot?.kind !== \"empty\"",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:02.167Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N2b: startSlot.kind が empty でなければ数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 212,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:212"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-b-start-slot.tap"
+    },
+    {
+      "id": "K66-b-preparesStarted",
+      "spn": "N2c",
+      "file": "followup.mjs",
+      "find": "!sameCounter(record, \"preparesStarted\", 1)",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:02.577Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 31,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-P4: phase の最後の Graph arm の sample は (c) を当てられず、(b) の counter の差分で判定する（他の条件を満たせば数える）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 158,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        },
+        {
+          "title": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 221,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        },
+        {
+          "title": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 522,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:158",
+        "followup.k66.test.mjs:221",
+        "followup.k66.test.mjs:522"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-b-preparesStarted.tap"
+    },
+    {
+      "id": "K66-b-preparesReady",
+      "spn": "N2d",
+      "file": "followup.mjs",
+      "find": "!sameCounter(record, \"preparesReady\", 1)",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:03.025Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 221,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:221"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-b-preparesReady.tap"
+    },
+    {
+      "id": "K66-b-deferredReleased",
+      "spn": "N2e",
+      "file": "followup.mjs",
+      "find": "!sameCounter(record, \"deferredReleased\", 1)",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:03.465Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 221,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:221"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-b-deferredReleased.tap"
+    },
+    {
+      "id": "K66-b-staleReadyRetired",
+      "spn": "N2g",
+      "file": "followup.mjs",
+      "find": "!sameCounter(record, \"staleReadyRetired\", 0)",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:03.892Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 221,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:221"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-b-staleReadyRetired.tap"
+    },
+    {
+      "id": "K66-c-unrecorded",
+      "spn": "N2h",
+      "file": "followup.mjs",
+      "find": "!(finite(here) && finite(there))",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:04.357Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady の差が 2（間に hybrid arm を挟む）なら数えず、理由を開示する。差が 0 でも、次が記録なしでも数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 234,
+          "depth": 0,
+          "type": "test",
+          "error": "c:prepares-ready-unrecorded in [\"c:next-prepares-ready-diff-NaN\"]"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:234"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-c-unrecorded.tap"
+    },
+    {
+      "id": "K66-c-diff",
+      "spn": "N2h",
+      "file": "followup.mjs",
+      "find": "there - here !== 1",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:05.243Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 32,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady の差が 2（間に hybrid arm を挟む）なら数えず、理由を開示する。差が 0 でも、次が記録なしでも数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 234,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        },
+        {
+          "title": "K6/6 R-6 (c) の開示: 背景の再準備が次の sample の前に走った親は数えられず、欠落になる（残余 (3)）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 586,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:234",
+        "followup.k66.test.mjs:586"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-c-diff.tap"
+    },
+    {
+      "id": "K66-c-next-undefined",
+      "spn": "(c)",
+      "file": "followup.mjs",
+      "find": "if (next === undefined)\n    throw new Error(\n      \"[precheck] K6/6 (c)",
+      "replace": "if (false)\n    throw new Error(\n      \"[precheck] K6/6 (c)",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:05.888Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady の差が 2（間に hybrid arm を挟む）なら数えず、理由を開示する。差が 0 でも、次が記録なしでも数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 234,
+          "depth": 0,
+          "type": "test",
+          "error": "\"Cannot read properties of undefined (reading 'preparesReady')\""
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:234"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-c-next-undefined.tap"
+    },
+    {
+      "id": "K66-FR3-ticket",
+      "spn": "N3c",
+      "file": "followup.mjs",
+      "find": "parent.ticket?.outcome !== \"available\"",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:06.475Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N3c: stamp0-missing で親の ticket が available でない記録は数えない（合流した親では起きない空の検査。記録の誤りを見つけるために置く）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 268,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:268"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR3-ticket.tap"
+    },
+    {
+      "id": "K66-FR3-declaration",
+      "spn": "N12a",
+      "file": "followup.mjs",
+      "find": "if (parent.declaration !== \"used\") no(\"FR3\", \"declaration-not-used\");",
+      "replace": "",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:06.986Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 32,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N12a: FR-5 宣言が used でなければ数えない（stamp が fresh なら FR-5 だけを欠く。stamp0-missing では FR-3 ② の宣言の検査も同時に落ちる）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 447,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 522,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:447",
+        "followup.k66.test.mjs:522"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR3-declaration.tap"
+    },
+    {
+      "id": "K66-FR3-not-joined",
+      "spn": "N3",
+      "file": "followup.mjs",
+      "find": "!(graph.outcome === \"graph-ready\" && graph.joined === true)",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:07.484Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N3d: stamp0-missing で窓内に合流しても Graph の outcome が graph-ready でない記録（joined なのに graph-late）は数えない（② の合流の項目。first-render の下位条件としては FR-3 だけを欠く）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 288,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:288"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR3-not-joined.tap"
+    },
+    {
+      "id": "K66-FR3-revalidation",
+      "spn": "N11b",
+      "file": "followup.mjs",
+      "find": "if (graph.revalidation !== \"passed\") no(\"FR3\", \"revalidation-not-passed\");",
+      "replace": "",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:08.053Z",
+      "exitCode": 0,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 34,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [],
+      "expected": [],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": true,
+      "equivalentReason": "classifyJoin は joined の sample に revalidation passed を要求し（passed でなければ [artifact] で止まる）、first-render の候補（join.inWindow）はそこを通った後にだけ来る。FR-3 の revalidation の検査は、記録の誤りを見つけるための空の検査（合流した親では起きない）。置換しても判定が変わらない。",
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR3-revalidation.tap"
+    },
+    {
+      "id": "K66-FR3-edge-count",
+      "spn": "N3",
+      "file": "followup.mjs",
+      "find": "if (!Number.isInteger(graph.edgeCount)) no(\"FR3\", \"edge-count-not-integer\");",
+      "replace": "",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:08.746Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N3e: stamp0-missing で edgeCount が整数でない親は数えない（② の項目。FR-7 の no-edge も同時に落ちるので理由は 2 つ）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 294,
+          "depth": 0,
+          "type": "test",
+          "error": "The expression evaluated to a falsy value:"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:294"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR3-edge-count.tap"
+    },
+    {
+      "id": "K66-FR3-stamp-other",
+      "spn": "N3a",
+      "file": "followup.mjs",
+      "find": "} else no(\"FR3\", `stamp-${stamp === null ? \"missing\" : stamp}`);",
+      "replace": "}",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:09.736Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 31,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N3a: stamp が unavailable の親は数えない（分母に残る）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 251,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        },
+        {
+          "title": "K6/6-N3b: stamp の記録が null の親は数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 264,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        },
+        {
+          "title": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 522,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:251",
+        "followup.k66.test.mjs:264",
+        "followup.k66.test.mjs:522"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR3-stamp-other.tap"
+    },
+    {
+      "id": "K66-FR4-begins",
+      "spn": "N5a",
+      "file": "followup.mjs",
+      "find": "d.begins === 1 &&",
+      "replace": "true &&",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:10.425Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 317,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:317"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR4-begins.tap"
+    },
+    {
+      "id": "K66-FR4-lateCached",
+      "spn": "N5b",
+      "file": "followup.mjs",
+      "find": "d.lateCached === 0 &&",
+      "replace": "true &&",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:11.066Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 317,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:317"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR4-lateCached.tap"
+    },
+    {
+      "id": "K66-FR4-cacheHits",
+      "spn": "N5c",
+      "file": "followup.mjs",
+      "find": "d.cacheHits === 0)",
+      "replace": "true)",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:11.952Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 317,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:317"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR4-cacheHits.tap"
+    },
+    {
+      "id": "K66-FR4-cache-left",
+      "spn": "N5d",
+      "file": "followup.mjs",
+      "find": "record.r2.cacheEmptyAtEnd !== true) no(\"FR4\"",
+      "replace": "false) no(\"FR4\"",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:12.823Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 317,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:317"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR4-cache-left.tap"
+    },
+    {
+      "id": "K66-FR4-after-block",
+      "spn": "N5a",
+      "file": "followup.mjs",
+      "find": "    [\"after\", record.counters.after],\n",
+      "replace": "",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:13.735Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 317,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:317"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR4-after-block.tap"
+    },
+    {
+      "id": "K66-FR4-after-release-block",
+      "spn": "N5a",
+      "file": "followup.mjs",
+      "find": "    [\"after-release\", record.countersAfterRelease],\n",
+      "replace": "",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:14.623Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 317,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:317"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR4-after-release-block.tap"
+    },
+    {
+      "id": "K66-FR5-declaration",
+      "spn": "N12a",
+      "file": "followup.mjs",
+      "find": "if (parent.declaration !== \"used\")\n    no(\"FR5\", `declaration-${parent.declaration}`);",
+      "replace": "",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:15.524Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 32,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N12a: FR-5 宣言が used でなければ数えない（stamp が fresh なら FR-5 だけを欠く。stamp0-missing では FR-3 ② の宣言の検査も同時に落ちる）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 447,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":false,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        },
+        {
+          "title": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 522,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:447",
+        "followup.k66.test.mjs:522"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR5-declaration.tap"
+    },
+    {
+      "id": "K66-FR5-publishCount",
+      "spn": "N12b",
+      "file": "followup.mjs",
+      "find": "if (parent.publishCount !== 1)\n    no(\"FR5\", `publish-count-${parent.publishCount}`);",
+      "replace": "",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:16.750Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N12b: FR-5 publishCount が 2 なら数えず、K6/4-N1 の FAIL",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 469,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[\"N1:parent-published-more-than-once\"],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:469"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR5-publishCount.tap"
+    },
+    {
+      "id": "K66-FR6-notice",
+      "spn": "N6a",
+      "file": "followup.mjs",
+      "find": "record.notices.some((row) => row.kind === \"graph-ready\")",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:17.984Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N6a: 窓内に合流した親の後に graph-ready の通知があれば数えず、開示する",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 353,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:353"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR6-notice.tap"
+    },
+    {
+      "id": "K66-FR6-child",
+      "spn": "N6b",
+      "file": "followup.mjs",
+      "find": "record.child !== null && record.child !== undefined",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:19.201Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N6b: 子（origin が index-ready の例）があれば数えず、開示する",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 360,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:360"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR6-child.tap"
+    },
+    {
+      "id": "K66-FR6-ir-retry",
+      "spn": "N6c",
+      "file": "followup.mjs",
+      "find": "parent.irRetryTimer === true",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:20.297Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N6c: 親の IR の再試行の timer が動いていれば数えず、開示する",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 367,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:367"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR6-ir-retry.tap"
+    },
+    {
+      "id": "K66-FR7-no-record",
+      "spn": "N7a",
+      "file": "followup.mjs",
+      "find": "no(\"FR7\", \"no-contribution-record\")",
+      "replace": "void 0",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:21.178Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 374,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:374"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR7-no-record.tap"
+    },
+    {
+      "id": "K66-FR7-basis",
+      "spn": "N7b",
+      "file": "followup.mjs",
+      "find": "contribution.contributionBasis !== F6_FORMAL_BASIS",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:22.305Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 374,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:374"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR7-basis.tap"
+    },
+    {
+      "id": "K66-FR7-unresolved",
+      "spn": "N7c",
+      "file": "followup.mjs",
+      "find": "contribution.materialRevision?.unresolvedEdges !== 0",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:23.699Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 374,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:374"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR7-unresolved.tap"
+    },
+    {
+      "id": "K66-FR7-no-edge",
+      "spn": "N7d",
+      "file": "followup.mjs",
+      "find": "!(Number.isInteger(graph.edgeCount) && graph.edgeCount >= 1)",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:24.718Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 32,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N3e: stamp0-missing で edgeCount が整数でない親は数えない（② の項目。FR-7 の no-edge も同時に落ちるので理由は 2 つ）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 294,
+          "depth": 0,
+          "type": "test",
+          "error": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 374,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":false,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:294",
+        "followup.k66.test.mjs:374"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR7-no-edge.tap"
+    },
+    {
+      "id": "K66-FR7-expected",
+      "spn": "N7e",
+      "file": "followup.mjs",
+      "find": "contribution.expectedContribution !== true",
+      "replace": "false",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:25.637Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 33,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 374,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:374"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-FR7-expected.tap"
+    },
+    {
+      "id": "K66-6-contributed-outcome",
+      "spn": "N13",
+      "file": "followup.mjs",
+      "find": "sample.graph?.outcome === \"graph-ready\" &&\n    sample.graph.joined === true",
+      "replace": "true &&\n    sample.graph.joined === true",
+      "testFile": "outcome.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/outcome.test.mjs",
+      "started": "2026-11-08T09:00:26.389Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 26,
+        "suites": 0,
+        "pass": 25,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6 変える点 6: Graph が合流したが edgeCount 0 の親、または宣言が used でない親は『寄与した』に当たらず、この FAIL にしない",
+          "file": "scripts/quality/nir1-graph-eval/outcome.test.mjs",
+          "line": 783,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected \"actual\" to be strictly unequal to:"
+        }
+      ],
+      "expected": [
+        "outcome.test.mjs:783"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-6-contributed-outcome.tap"
+    },
+    {
+      "id": "K66-6-contributed-joined",
+      "spn": "N13",
+      "file": "followup.mjs",
+      "find": "sample.graph.joined === true &&\n    sample.followUp?.parent?.declaration",
+      "replace": "true &&\n    sample.followUp?.parent?.declaration",
+      "testFile": "outcome.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/outcome.test.mjs",
+      "started": "2026-11-08T09:00:30.824Z",
+      "exitCode": 0,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 26,
+        "suites": 0,
+        "pass": 26,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [],
+      "expected": [],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": true,
+      "equivalentReason": "parentContributed は join.inWindow を先に要求し、classifyJoin は inWindow を joined===true のときだけ返す。graph.joined === true の検査は inWindow に含まれ、置換しても判定が変わらない。",
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-6-contributed-joined.tap"
+    },
+    {
+      "id": "K66-6-contributed-used",
+      "spn": "N13",
+      "file": "followup.mjs",
+      "find": "sample.followUp?.parent?.declaration === \"used\" &&\n    Number.isInteger",
+      "replace": "true &&\n    Number.isInteger",
+      "testFile": "outcome.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/outcome.test.mjs",
+      "started": "2026-11-08T09:00:35.456Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 26,
+        "suites": 0,
+        "pass": 25,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6 変える点 6: Graph が合流したが edgeCount 0 の親、または宣言が used でない親は『寄与した』に当たらず、この FAIL にしない",
+          "file": "scripts/quality/nir1-graph-eval/outcome.test.mjs",
+          "line": 783,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected \"actual\" to be strictly unequal to:"
+        }
+      ],
+      "expected": [
+        "outcome.test.mjs:783"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-6-contributed-used.tap"
+    },
+    {
+      "id": "K66-6-contributed-edgeCount",
+      "spn": "N13",
+      "file": "followup.mjs",
+      "find": "sample.graph.edgeCount >= 1\n  );\n}",
+      "replace": "true\n  );\n}",
+      "testFile": "outcome.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/outcome.test.mjs",
+      "started": "2026-11-08T09:00:37.858Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 26,
+        "suites": 0,
+        "pass": 25,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6 変える点 6: Graph が合流したが edgeCount 0 の親、または宣言が used でない親は『寄与した』に当たらず、この FAIL にしない",
+          "file": "scripts/quality/nir1-graph-eval/outcome.test.mjs",
+          "line": 783,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected \"actual\" to be strictly unequal to:"
+        }
+      ],
+      "expected": [
+        "outcome.test.mjs:783"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-6-contributed-edgeCount.tap"
+    },
+    {
+      "id": "K66-6-outcome-fail",
+      "spn": "N13",
+      "file": "outcome.mjs",
+      "find": "result.parentContributed && !result.firstRender",
+      "replace": "false",
+      "testFile": "outcome.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/outcome.test.mjs",
+      "started": "2026-11-08T09:00:39.754Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 26,
+        "suites": 0,
+        "pass": 24,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N13a: 窓内に合流して Graph が表示に寄与した（edgeCount 1 以上）のに条件を欠いた親で、Scene の一覧が R+IR と違えば品質 FAIL（1% の許容は効かない）",
+          "file": "scripts/quality/nir1-graph-eval/outcome.test.mjs",
+          "line": 745,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "K6/6-N13b: 同上で、Scene の一覧が R+IR と同じ（path の添付だけを足す。G-06 の形）でも品質 FAIL",
+          "file": "scripts/quality/nir1-graph-eval/outcome.test.mjs",
+          "line": 761,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "outcome.test.mjs:745",
+        "outcome.test.mjs:761"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-6-outcome-fail.tap"
+    },
+    {
+      "id": "K66-5-heading-rate-entry",
+      "spn": "5",
+      "file": "availability.mjs",
+      "find": "firstRenderOutOfWindowRate: ratio(block.n - block.firstRender, block.n),",
+      "replace": "firstRenderOutOfWindowRate: ratio(block.outOfWindow, block.n),",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-08T09:00:42.205Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 34,
+        "suites": 0,
+        "pass": 32,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-render）は欠落 0 で、開示に K6/2 の字義の件数と stamp の内訳を載せる",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 490,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 522,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:490",
+        "followup.k66.test.mjs:522"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-5-heading-rate-entry.tap"
+    },
+    {
+      "id": "K66-N9-receipt-sha",
+      "spn": "N9",
+      "file": "receipt.mjs",
+      "find": "head?.k66?.sha256 !== freeze66.sha256",
+      "replace": "false",
+      "testFile": "receipt.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/receipt.test.mjs",
+      "started": "2026-11-08T09:00:42.904Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 31,
+        "suites": 0,
+        "pass": 30,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66）を持ち、無い・違う・/6 の凍結の前に始めた run（s6r1 を含む）の receipt は拒む。既定は固定した /6 の凍結で、null の descriptor はどの正式の receipt も拒む",
+          "file": "scripts/quality/nir1-graph-eval/receipt.test.mjs",
+          "line": 402,
+          "depth": 0,
+          "type": "test",
+          "error": "The input did not match the regular expression /head\\.k66\\.sha256/. Input:"
+        }
+      ],
+      "expected": [
+        "receipt.test.mjs:402"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-N9-receipt-sha.tap"
+    },
+    {
+      "id": "K66-N9-receipt-commit",
+      "spn": "N9",
+      "file": "receipt.mjs",
+      "find": "head?.k66?.freezeCommit !== freeze66.freezeCommit",
+      "replace": "false",
+      "testFile": "receipt.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/receipt.test.mjs",
+      "started": "2026-11-08T09:00:43.630Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 31,
+        "suites": 0,
+        "pass": 30,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66）を持ち、無い・違う・/6 の凍結の前に始めた run（s6r1 を含む）の receipt は拒む。既定は固定した /6 の凍結で、null の descriptor はどの正式の receipt も拒む",
+          "file": "scripts/quality/nir1-graph-eval/receipt.test.mjs",
+          "line": 402,
+          "depth": 0,
+          "type": "test",
+          "error": "The input did not match the regular expression /must be the pinned K6\\/6 freeze commit/. Input:"
+        }
+      ],
+      "expected": [
+        "receipt.test.mjs:402"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-N9-receipt-commit.tap"
+    },
+    {
+      "id": "K66-N9-receipt-null-descriptor",
+      "spn": "N9",
+      "file": "receipt.mjs",
+      "find": "freeze66.freezeCommit === null",
+      "replace": "false",
+      "testFile": "receipt.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/receipt.test.mjs",
+      "started": "2026-11-08T09:00:44.591Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 31,
+        "suites": 0,
+        "pass": 30,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66）を持ち、無い・違う・/6 の凍結の前に始めた run（s6r1 を含む）の receipt は拒む。既定は固定した /6 の凍結で、null の descriptor はどの正式の receipt も拒む",
+          "file": "scripts/quality/nir1-graph-eval/receipt.test.mjs",
+          "line": 402,
+          "depth": 0,
+          "type": "test",
+          "error": "The input did not match the regular expression /\\[precheck\\] the K6\\/6 freeze commit is not pinned/. Input:"
+        }
+      ],
+      "expected": [
+        "receipt.test.mjs:402"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-N9-receipt-null-descriptor.tap"
+    },
+    {
+      "id": "K66-N9-receipt-required-when-formal",
+      "spn": "N9",
+      "file": "receipt.mjs",
+      "find": "formalGraph || head?.k66 !== undefined",
+      "replace": "head?.k66 !== undefined",
+      "testFile": "receipt.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/receipt.test.mjs",
+      "started": "2026-11-08T09:00:45.227Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 31,
+        "suites": 0,
+        "pass": 30,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66）を持ち、無い・違う・/6 の凍結の前に始めた run（s6r1 を含む）の receipt は拒む。既定は固定した /6 の凍結で、null の descriptor はどの正式の receipt も拒む",
+          "file": "scripts/quality/nir1-graph-eval/receipt.test.mjs",
+          "line": 402,
+          "depth": 0,
+          "type": "test",
+          "error": "The input did not match the regular expression /head\\.k66\\.sha256/. Input:"
+        }
+      ],
+      "expected": [
+        "receipt.test.mjs:402"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-N9-receipt-required-when-formal.tap"
+    },
+    {
+      "id": "K66-N9-admission-commit",
+      "spn": "N9",
+      "file": "admission.mjs",
+      "find": "if (resolved !== freeze.freezeCommit || digest !== freeze.sha256)\n    throw new Error(\n      \"[precheck] K6/6 freeze commit or bytes differ",
+      "replace": "if (digest !== freeze.sha256)\n    throw new Error(\n      \"[precheck] K6/6 freeze commit or bytes differ",
+      "testFile": "admission.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/admission.test.mjs",
+      "started": "2026-11-08T09:00:45.923Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 31,
+        "suites": 0,
+        "pass": 30,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6 変える点 8・K6/6-N9: admitGraphCaseRun と assertReceiptHeadBound は /6 の凍結の head（commit と bytes）を /4・/5 に加えて照合する。既定は固定した /6 の凍結で、null の descriptor は正式の admission を拒む",
+          "file": "scripts/quality/nir1-graph-eval/admission.test.mjs",
+          "line": 1025,
+          "depth": 0,
+          "type": "test",
+          "error": "\"[precheck] K6/5 変える点 6: the candidate's product D is not 40 ms (a7e969466a1d9a22a97142b06b1a9301f972f96e (#802) is not an ancestor; RELATED_SCENES_IR_EXTRA_WAIT_MS in src/features/related-scenes/relatedScenesConfig.ts is unreadable, not 40); the /5 row is not applied\""
+        }
+      ],
+      "expected": [
+        "admission.test.mjs:1025"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-N9-admission-commit.tap"
+    },
+    {
+      "id": "K66-N9-admission-sha",
+      "spn": "N9",
+      "file": "admission.mjs",
+      "find": "if (resolved !== freeze.freezeCommit || digest !== freeze.sha256)\n    throw new Error(\n      \"[precheck] K6/6 freeze commit or bytes differ",
+      "replace": "if (resolved !== freeze.freezeCommit)\n    throw new Error(\n      \"[precheck] K6/6 freeze commit or bytes differ",
+      "testFile": "admission.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/admission.test.mjs",
+      "started": "2026-11-08T09:01:14.432Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 31,
+        "suites": 0,
+        "pass": 30,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6 変える点 8・K6/6-N9: admitGraphCaseRun と assertReceiptHeadBound は /6 の凍結の head（commit と bytes）を /4・/5 に加えて照合する。既定は固定した /6 の凍結で、null の descriptor は正式の admission を拒む",
+          "file": "scripts/quality/nir1-graph-eval/admission.test.mjs",
+          "line": 1025,
+          "depth": 0,
+          "type": "test",
+          "error": "\"[precheck] K6/5 変える点 6: the candidate's product D is not 40 ms (a7e969466a1d9a22a97142b06b1a9301f972f96e (#802) is not an ancestor; RELATED_SCENES_IR_EXTRA_WAIT_MS in src/features/related-scenes/relatedScenesConfig.ts is unreadable, not 40); the /5 row is not applied\""
+        }
+      ],
+      "expected": [
+        "admission.test.mjs:1025"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-N9-admission-sha.tap"
+    },
+    {
+      "id": "K66-N9-admission-null",
+      "spn": "N9",
+      "file": "admission.mjs",
+      "find": "if (freeze.freezeCommit === null)\n    throw new Error(\n      \"[precheck] the K6/6 freeze commit is not pinned",
+      "replace": "if (false)\n    throw new Error(\n      \"[precheck] the K6/6 freeze commit is not pinned",
+      "testFile": "admission.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/admission.test.mjs",
+      "started": "2026-11-08T09:01:31.463Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 31,
+        "suites": 0,
+        "pass": 30,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6 変える点 8・K6/6-N9: admitGraphCaseRun と assertReceiptHeadBound は /6 の凍結の head（commit と bytes）を /4・/5 に加えて照合する。既定は固定した /6 の凍結で、null の descriptor は正式の admission を拒む",
+          "file": "scripts/quality/nir1-graph-eval/admission.test.mjs",
+          "line": 1025,
+          "depth": 0,
+          "type": "test",
+          "error": "[precheck] K6/6 freeze commit or bytes differ; no receipt is written"
+        }
+      ],
+      "expected": [
+        "admission.test.mjs:1025"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-N9-admission-null.tap"
+    },
+    {
+      "id": "K66-D3d-not-latest",
+      "spn": "D3(d)",
+      "file": "quality-verdict.mjs",
+      "find": "else if (latest !== revision)",
+      "replace": "else if (false)",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-08T09:01:57.453Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 19,
+        "suites": 0,
+        "pass": 18,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1363,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1363"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-D3d-not-latest.tap"
+    },
+    {
+      "id": "K66-D3d-no-edge-hold",
+      "spn": "D3(d)",
+      "file": "quality-verdict.mjs",
+      "find": "if (latest === null)\n        out.push",
+      "replace": "if (false)\n        out.push",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-08T09:02:03.170Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 19,
+        "suites": 0,
+        "pass": 18,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1363,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1363"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-D3d-no-edge-hold.tap"
+    },
+    {
+      "id": "K66-D3d-no-setup-hold",
+      "spn": "D3(d)",
+      "file": "quality-verdict.mjs",
+      "find": "if (!hasSetup)",
+      "replace": "if (false)",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-08T09:02:09.794Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 19,
+        "suites": 0,
+        "pass": 18,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1363,
+          "depth": 0,
+          "type": "test",
+          "error": "The expression evaluated to a falsy value:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1363"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-D3d-no-setup-hold.tap"
+    },
+    {
+      "id": "K66-D3d-refused-skipped",
+      "spn": "D3(d)",
+      "file": "quality-verdict.mjs",
+      "find": "if (row?.refusedAtSetup) continue;",
+      "replace": "",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/worktrees/Grimodex/claude-k66-harness/docs/plans/nir1-cp4-records/k66-detection-2026-11-08/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-08T09:02:17.820Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 19,
+        "suites": 0,
+        "pass": 18,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D3 (d): 最新の typed Revision は setup の記録の準備順の最後の、refusedAtSetup でない行",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1561,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1561"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/k66-det/tap3/mut-K66-D3d-refused-skipped.tap"
+    }
+  ],
+  "mutationsFinishedAt": "2026-11-08T09:02:28.554Z",
+  "statusAfter": "",
+  "ignoredAfter": "!! node_modules",
+  "headAfter": "dda975bc1afbad47cc9a680a71e9deb5a7c90282",
+  "verdict": {
+    "clean": true,
+    "ignoredUnchanged": true,
+    "baselineTargetPass": true,
+    "baselinePerFilePass": true,
+    "baselineAllPass": true,
+    "positiveControlsOk": true,
+    "probeOk": true,
+    "mutationCount": 54,
+    "allHitOnce": true,
+    "allAsExpected": true,
+    "exactCount": 54
+  },
+  "finishedAt": "2026-11-08T09:02:28.736Z"
+}

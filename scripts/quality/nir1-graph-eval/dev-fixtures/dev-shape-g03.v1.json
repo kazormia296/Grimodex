@@ -1087,7 +1087,35 @@
           "id": "raw-membership",
           "scope": "variant"
         }
-      ]
+      ],
+      "expectations": {
+        "graph": {
+          "status": "available",
+          "qualifiedRevisionIds": [
+            "dvs3-125",
+            "dvs3-126"
+          ]
+        },
+        "pathAttachments": [
+          {
+            "sceneId": "dvs3-3",
+            "path": {
+              "edgeIds": [
+                "dvs3-70"
+              ]
+            }
+          },
+          {
+            "sceneId": "dvs3-4",
+            "path": {
+              "edgeIds": [
+                "dvs3-70",
+                "dvs3-71"
+              ]
+            }
+          }
+        ]
+      }
     },
     {
       "id": "frontier-exceeded",
@@ -1109,7 +1137,13 @@
           "id": "raw-membership",
           "scope": "variant"
         }
-      ]
+      ],
+      "expectations": {
+        "graph": {
+          "status": "unavailable"
+        },
+        "pathAttachments": []
+      }
     }
   ]
 }

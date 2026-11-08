@@ -1,0 +1,27 @@
+{
+  "schema": "nir1-cp4-attempt/1",
+  "runName": "parity-s6r1-1",
+  "status": "started",
+  "candidate": {
+    "commit": "a2309b953873063b97b58942d42fa34d1bfbfc95",
+    "tree": "f744618200470e14406f6d4449ae235520a749c5"
+  },
+  "s4Commit": "63bc9b903d5b7dbba3533ea32da9bdd7fe649861",
+  "runKind": "parity",
+  "startedAtUtc": "2026-11-07T11:30:50.069Z",
+  "setups": {
+    "G-01/v1": "5f1503338bcc519c870f5d12a3cb7ffed269d5c63630fcf46d25b80a611d8ca5",
+    "G-02/base": "79b3a2aebca30bd274c86fac1a3766c8af61949ba23cef22632024cb2e538040",
+    "G-03/base": "939ec8197365c0493e06a10e222565865468b81d83bba4137df7550035fac035",
+    "G-03/frontier-exceeded": "8df0efd9df729fd7773b89c38b4c137e188b207dfd4251f8a879bb8ac1e785bf",
+    "G-04/base": "93e4505227289ea656bd809414fba79f39d3613d8640e8ae9a88883b69ded408",
+    "G-05/base": "041ac365c2b5308d94aeff6eaf2a523cd0aefcb5f258c647e7ecbade77763971",
+    "G-06/base": "1e2c877d679de61cc79f7be4cfb44cd6c269001e33099a4a6f2166ee234add76",
+    "G-07/base": "4cd1188391843ac67f57ba86b6c5c8dbfdb5ec7eb11a0755e8d4549ad04c3d73",
+    "G-08/base-usable": "8b94dc18ee5853838bcf54b3c4307a1521726c16b717010743a37a9f3ef824a6",
+    "G-08/graph-index-unusable": "5fba298766fe78f458b419313c142e32570f4119dea62c876333b7b4c337ac27",
+    "G-08/graph-recovered": "91a79d3d82871f2fed35e665ebc69122a388dbf7ebe7cbb75cdbf09698e6c4ad",
+    "G-08/chronicle-index-unusable": "46f9d53da2376209ac47a67bb92f9511a1bd3c053ea9f42f91ff9bfab0ed1a1f",
+    "G-08/both-indexes-unusable": "52bf6f8f86cdfced3a2c56aba8244839a92c9ec7dd7ce2cc95c7fb5d6a2428d1"
+  }
+}

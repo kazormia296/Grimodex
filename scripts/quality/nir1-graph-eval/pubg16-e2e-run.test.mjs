@@ -5,10 +5,12 @@ import path from "node:path";
 import { test } from "node:test";
 import { loadDevFixture } from "./dev-fixture.mjs";
 import {
+  G01_HEAD_OPTIONS,
   G01_RESULT_SCHEMA,
   G01_VARIANT_KEY,
   MODES,
   STAGES,
+  g01DiagnosticHeadOf,
   g01DiagnosticRecord,
   judgeNotActivated,
   judgeReach,
@@ -225,6 +227,10 @@ const g01Base = [
   "ja",
   "--en-model",
   "en",
+  ...["s4", "k62", "k64", "k65", "k66"].flatMap((name) => [
+    name === "s4" ? "--s4-commit" : `--${name}-commit`,
+    "a".repeat(40),
+  ]),
 ];
 
 test("g01-frozen takes the frozen setups, never a dev setup, and never the product .node", () => {
@@ -243,6 +249,19 @@ test("g01-frozen takes the frozen setups, never a dev setup, and never the produ
     () => parseArgs([...g01Base, "--product-native", "/p/x.node"]),
     /--product-native is for --mode not-activated/u,
   );
+  // The head's commits are required for g01-frozen (one at a time) and refused
+  // by the dev modes.
+  for (const name of G01_HEAD_OPTIONS) {
+    const at = g01Base.indexOf(`--${name}`);
+    assert.throws(
+      () => parseArgs(g01Base.filter((_, i) => i !== at && i !== at + 1)),
+      new RegExp(`--${name} is required`, "u"),
+    );
+    assert.throws(
+      () => parseArgs([...base, `--${name}`, "a".repeat(40)]),
+      new RegExp(`--${name} is for --mode g01-frozen only`, "u"),
+    );
+  }
   // The dev modes keep their own setup receipt and refuse the frozen one.
   assert.throws(
     () => parseArgs([...base, "--setups", "s.json"]),
@@ -312,4 +331,40 @@ test("the G-01 record counts for no judgement, whatever the reach, and shows the
     /g01-(review|weather|mira|question|orin)|sceneId|entityId|"body"/u,
   );
   assert.match(G01_RESULT_SCHEMA, /^nir1-pubg-16-g01-e2e\/1$/u);
+});
+
+test("the G-01 diagnostic's head is the other receipts' head: freeze heads, the S4 commit with its record's SHA-256 and the start time; a missing part stops the run", () => {
+  const parts = {
+    k62: { freezeCommit: "1".repeat(40), sha256: "2".repeat(64) },
+    k64: { freezeCommit: "3".repeat(40), sha256: "4".repeat(64) },
+    k65: { freezeCommit: "5".repeat(40), sha256: "6".repeat(64) },
+    k66: { freezeCommit: "7".repeat(40), sha256: "8".repeat(64) },
+    observationPrep: {
+      commit: "9".repeat(40),
+      freezeRecordSha256: "a".repeat(64),
+    },
+  };
+  const now = () => new Date("2026-11-09T01:02:03.000Z");
+  const head = g01DiagnosticHeadOf(parts, { now });
+  assert.equal(head.kind, "g01-diagnostic");
+  assert.equal(head.observationPrep.commit, "9".repeat(40));
+  assert.equal(head.observationPrep.freezeRecordSha256, "a".repeat(64));
+  assert.equal(head.runStartedAtUtc, "2026-11-09T01:02:03.000Z");
+  for (const name of ["k62", "k64", "k65", "k66"])
+    assert.deepEqual(head[name], parts[name]);
+  assert.equal(head.traces, undefined);
+  for (const name of Object.keys(parts))
+    assert.throws(
+      () => g01DiagnosticHeadOf({ ...parts, [name]: undefined }),
+      /\[precheck\]|receipt head is not complete/u,
+      name,
+    );
+  assert.throws(
+    () =>
+      g01DiagnosticHeadOf({
+        ...parts,
+        observationPrep: { ...parts.observationPrep, commit: "main" },
+      }),
+    /observationPrep\.commit/u,
+  );
 });

@@ -97,6 +97,21 @@ export const CONTRACTS = Object.freeze({
     confirmedCommit: "96c657cf68cdc509326254243a9d273615ed51c5",
     freezeCommit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
   }),
+  // K6/6 (変える点 8): the first-render reading under R1 (R-6, R-7, FR-1〜FR-8).
+  // The user confirmed /6 (revision 3) on 2026-11-08 and the integrator froze
+  // it: `confirmedCommit` is the commit that last changed the bytes, and
+  // `freezeCommit` is the freeze on `claude/nir1-contracts`. Both equal
+  // constants.mjs's K66_FREEZE (a test holds the two together). The S2 追補's
+  // `contracts.k66`, `userConfirmations` and `k66Readings` bind them; no
+  // validator reads this key yet. `k64` and `k65` stay: the /6 row stands on them.
+  k66: Object.freeze({
+    draftRef: "nir1-final-request-eval-proposal/6",
+    contractId: "graph-eval-procedure",
+    path: "docs/plans/nir1-final-request-eval-proposal-6-draft.md",
+    sha256: "58c634fa9b3d76803e486516c0e67444b74d4f5987cd851cd0857a25cc8945e7",
+    confirmedCommit: "324c804f360b4bb7c87cb8f1fb94d24f134b6d78",
+    freezeCommit: "56fb4fad2eb1eb2e021dfd121ea073f9d263cb4d",
+  }),
 });
 
 /**
@@ -128,6 +143,84 @@ export const K65_CONFIRMATION_RECORDS = Object.freeze({
         "a62d8a9b76de2b9e6a141cbdbfc614e7f85f47e9eaa41bc283713826258aebea",
     }),
   ]),
+});
+
+/**
+ * S2 追補 #16（DR-CP4-P-10）: the records the S2 binds for K6/6 — the user's
+ * K6/6 confirmation and the integrator's freeze record (contracts
+ * `claude/nir1-contracts`), the CP-4 quality verdict v2's fixed definition and
+ * its fixing record, and the dev rehearsals' record (rehearsals 1〜6; they
+ * are notices and judge nothing). Each is held to its commit's bytes and
+ * to the head's ancestry by the formal gate (k66FormalRows).
+ */
+export const K66_CONFIRMATION_RECORDS = Object.freeze({
+  graphEvalProcedure: Object.freeze({
+    path: "docs/plans/nir1-cp4-records/user-confirmation-2026-11-08-k66-graph-eval-procedure.md",
+    commit: "56fb4fad2eb1eb2e021dfd121ea073f9d263cb4d",
+    sha256: "3ec98ad45e856c8d071c3fd26d713a3bf4d0df982d371380fb008d9c3b0995c8",
+  }),
+  freezeRecord: Object.freeze({
+    path: "docs/plans/nir1-cp4-records/k66-freeze-record.md",
+    commit: "d69c000bdb75cf6005a5be36a81ebcb0a87f6307",
+    sha256: "fbeca01b95489c20ec4826d19db89553bc2a64e6756a266f7f71a913f5c148bb",
+  }),
+  // S2 追補 #17（S3 の 9 回目の B1-1）: the user's confirmation, asked after
+  // S2 追補 #16, that K6/6's runs may use the previous R5 record (the closure's
+  // 7 files shown; the product changes #828〜#831 were not). Bound like K6/5's
+  // `additional` rows.
+  additional: Object.freeze([
+    Object.freeze({
+      record:
+        "docs/plans/nir1-cp4-records/user-confirmation-2026-11-08-k66-r5-reuse.md",
+      commit: "821190128064bf882bb7e086d6ee82b07e6abf28",
+      sha256:
+        "482d4812975ff9264d70bc10633ec547204045189173abe08acbdafa364c5103",
+    }),
+  ]),
+});
+/**
+ * S2 追補 #17: the S3 (9th, K6/6) independent review's record (an agent's
+ * report, not a user confirmation). S2's review.record cites it; the formal
+ * gate holds its commit's bytes and ancestry.
+ */
+export const K66_S3_REVIEW = Object.freeze({
+  path: "docs/plans/nir1-cp4-records/s3-review-k66-2026-11-08.md",
+  commit: "2ee32ac1b4f88638319673535e657244200c1ef4",
+  sha256: "24f0f791f2aee0bbdcc0b4e2706d0068fdeb4ac1cab649d485d7b02b19402543",
+});
+export const K66_QUALITY_VERDICT_V2 = Object.freeze({
+  v2: Object.freeze({
+    path: "docs/plans/nir1-cp4-records/quality-verdict-prereg-v2.md",
+    commit: "8b2a5dafc22bd344f7572b4adbfb3018f7363245",
+    sha256: "2bb071968281523e4f79d076f7e3e06e1f3404238dfbe93885690f030bc8024a",
+  }),
+  freezeRecord: Object.freeze({
+    path: "docs/plans/nir1-cp4-records/quality-verdict-v2-freeze-record.md",
+    commit: "5dc4ca39333efa0745038002f87a1b09f2a7545d",
+    sha256: "761ce8d56218f9574aee6e0815d8b4d21681e14bff5297e6feae3147527b7ca6",
+  }),
+  // The implementation (quality-verdict.mjs and quality-verdict-cli.mjs) is
+  // outside the bytes pins; its commit is fixed here and §0 of v2 binds the
+  // running bytes to it.
+  implementationCommit: "7652a86e2252eec55a22143921c33f81a481e48c",
+});
+export const K66_DEV_REHEARSALS = Object.freeze({
+  commit: "8eb23fa67fea1cec8c9bf9930f473abcfe238e89",
+  directory: "docs/plans/nir1-cp4-records/k66-dev-rehearsals-2026-11-08/",
+  files: Object.freeze({
+    "README.md":
+      "15eb977c0aa7b20f32ecf772169b2e29b148528547e9eef83d501ce1b568091c",
+    SHA256SUMS:
+      "d3bcd2c44d3194f23ce9f383dd4b83442257d8f301bd716783dba8d71e8b3684",
+    "k66-dev-rehearsal-1.md":
+      "e52b403f776d034ba9bcb032c9b77f4ac3bb57263a9fa2467079aeeb566c1977",
+    "k66-dev-rehearsal-2.md":
+      "9103d123f13d9a288ae9ee9c145b3ce5c6a821e47332d97ba3b0eab791663ac0",
+    "k66-dev-rehearsal-3.md":
+      "573843574448b1fb32dde1106f0f388c6032f151201790dc426f7d59dfbc3c93",
+    "k66-harness-proto-notes.md":
+      "005cda729ff155db8829747554156cd9324fb60da676fecd1d25acb80bfd2f45",
+  }),
 });
 
 /**
@@ -592,7 +685,7 @@ export const SOURCE_PINS = Object.freeze(
     [
       "s5a-graph-arm-runner",
       "2c9316848ce028565c4d8e8af2d2779c3fd7e187",
-      ["k64-record.mjs", "material-revision.mjs", "renderer/cp4-k64-probe.tsx"],
+      ["material-revision.mjs", "renderer/cp4-k64-probe.tsx"],
     ],
     [
       "maintenance-ownership-release",
@@ -737,12 +830,9 @@ export const SOURCE_PINS = Object.freeze(
       "865a3e2bad1ada5f6e5648e50c6902052b9b2a3c",
       [
         "admission-facts.mjs",
-        "availability.mjs",
         "egress.mjs",
-        "join.mjs",
         "native-sample.mjs",
         "q4.mjs",
-        "run-sample.mjs",
         "stats.mjs",
         "scripts/quality/nir1-retrieval/standard-build-receipt.mjs",
       ],
@@ -756,7 +846,6 @@ export const SOURCE_PINS = Object.freeze(
         "eval-native-build.mjs",
         "keep-test.mjs",
         "observer-core.mjs",
-        "outcome.mjs",
         "renderer-build.mjs",
         "renderer/cp4-harness.html",
         "renderer/cp4-hook-probe.tsx",
@@ -823,47 +912,60 @@ export const SOURCE_PINS = Object.freeze(
     // and 8489ae57 (followup.mjs; the merge commit that joined #826 to the K6/5
     // branch). Except a1492815 these are branch commits that S4's PR brings
     // to master with its merge commit (gh pr merge --merge), never a squash.
-    [
-      "k65-receipt-p95-head",
-      "e6abddd2feb0ad4022153edef2243fce4767cb57",
-      ["receipt.mjs"],
-    ],
+    ["k65-receipt-p95-head", "e6abddd2feb0ad4022153edef2243fce4767cb57", []],
     [
       "k65-harness-d40",
       "bf0b4f75b9eab40009b115cc27df53298a9cef2a",
+      ["procedure-file.mjs"],
+    ],
+    ["k65-n2-n3-enforcement", "2699314238504e12aa28ba74e1b319f6dff5821d", []],
+    ["k65-freeze-source", "f24dc704cd3a424f94c5fc6ade42950fdcc938d3", []],
+    ["k65-g01-e2e-admission", "94d3e1333ec72a8ffd625d5c3d582ddabd60a4bb", []],
+    [
+      "c7-chronicle-stop",
+      "a1492815eaddb1dc8f66941e282799d3d37b244c",
+      ["trace-record.mjs"],
+    ],
+    ["k65-merge-followup", "8489ae57d147f029117b0e4a4c9f08b53565f453", []],
+
+    // 7 回目の S4（DR-CP4-S4-10 (4)）: the harness files K6/6 (PR #840, branch
+    // claude/k66-harness) changed after the earlier pins, each held at the commit that
+    // last changed it: 00f9c999 (the import of the K6/6 harness: 10 files), 1fdeed6f
+    // (K66_FREEZE, the quality verdict v2 D3 (d): availability.mjs, receipt.mjs,
+    // constants.mjs, admission.mjs), 99699dda (the G-01 diagnostic head:
+    // frozen-diagnostics.mjs, pubg16-e2e-run.mjs) and bf5ec217 (followup.mjs). They are
+    // branch commits that S4's PR brings to master with its merge commit
+    // (gh pr merge --merge), never a squash. The earlier pins keep their roles and
+    // commits (ancestor).
+    [
+      "k66-harness-import",
+      "00f9c99981c0bf67a3f98b00b5a1dfb5462547a1",
       [
+        "k64-record.mjs",
+        "join.mjs",
+        "run-sample.mjs",
+        "outcome.mjs",
         "k64-runner.mjs",
         "diagnostic-runner.mjs",
         "frozen-k64-run.mjs",
         "trace-runner.mjs",
         "trace-frozen.mjs",
         "frozen-k64-admission.mjs",
-        "procedure-file.mjs",
       ],
     ],
     [
-      "k65-n2-n3-enforcement",
-      "2699314238504e12aa28ba74e1b319f6dff5821d",
-      ["frozen-diagnostics.mjs"],
+      "k66-freeze-and-d3d",
+      "1fdeed6f9b6fb3e069fb6aa894b1d1de36d342f8",
+      ["availability.mjs", "receipt.mjs", "constants.mjs", "admission.mjs"],
     ],
     [
-      "k65-freeze-source",
-      "f24dc704cd3a424f94c5fc6ade42950fdcc938d3",
-      ["constants.mjs"],
+      "k66-g01-diagnostic-head",
+      "99699dda79a882d029b1fce9c87fe7c45eff60b1",
+      ["frozen-diagnostics.mjs", "pubg16-e2e-run.mjs"],
     ],
     [
-      "k65-g01-e2e-admission",
-      "94d3e1333ec72a8ffd625d5c3d582ddabd60a4bb",
-      ["admission.mjs", "pubg16-e2e-run.mjs"],
-    ],
-    [
-      "c7-chronicle-stop",
-      "a1492815eaddb1dc8f66941e282799d3d37b244c",
-      ["trace-record.mjs"],
-    ],
-    [
-      "k65-merge-followup",
-      "8489ae57d147f029117b0e4a4c9f08b53565f453",
+      "k66-followup-requeries",
+      "bf5ec2170edf763ede1027ed8408ce1cb1c9f35d",
       ["followup.mjs"],
     ],
   ].map(([role, commit, names]) =>
@@ -979,6 +1081,29 @@ export const S4_PROCEDURE_WORDS = Object.freeze({
     "新しい S4 の結果だけ",
     "S6 の許可リストは新しい S4b だけ",
     "bytes の pin の取り直し",
+  ],
+  // S2 追補 #16（DR-CP4-S4-10、DR-CP4-P-10）: (j) the seventh re-freeze — the
+  // old S4b (6th, 63bc9b90) is revoked after K6/6 (the first-render reading
+  // under R1; R-6 and R-7 loosen) changed the harness files and the contracts
+  // moved; the user's K6/6 confirmation on record (not an individual
+  // confirmation of the re-freeze), only the new S4's results used, and what
+  // S4b needs before it (S3's review, the contracts merge, the pins, the
+  // retaken records, the user's re-approval of the R5 record's reuse).
+  j: [
+    "DR-CP4-S4-10",
+    "63bc9b903d5b7dbba3533ea32da9bdd7fe649861",
+    "user-confirmation-2026-11-08-k66-graph-eval-procedure.md",
+    "個別に確認した記録は repo に無く",
+    "新しい S4 の結果だけ",
+    "S6 の許可リストは新しい S4b だけ",
+    "bytes の pin の取り直し",
+    "再承認",
+    // S2 追補 #17（S3 の 9 回目）: the R5 reuse confirmation, the S3 record,
+    // the K6/6 detection record's binding and the master merge's order.
+    "82119012",
+    "2ee32ac1",
+    "S4:k66-detection-record",
+    "k64Procedure.formal.review は v2 の file の review のままでよい",
   ],
 });
 /**
@@ -1690,6 +1815,7 @@ const S4_PLACEHOLDERS = Object.freeze(
     "seed-pin-addendum-sha256",
     "sp-synthetic-detection-record",
     "k65-detection-record",
+    "k66-detection-record",
     "sp1-bytes-commit",
     "r5-check-record",
   ].map((name) => `S4:${name}`),
@@ -1886,6 +2012,12 @@ const READINGS_AFTER_DEV = Object.freeze([
   "k65-values-after-observation",
   "c7-after-dev-observation",
   "g01-e2e-diagnostic-decision",
+  // S4a（7 回目の凍結のやり直し、S2 追補 #16）: K6/6 の読み（R-6・R-7、FR-1〜FR-8、
+  // 品質の FAIL の条件。s6r1 の HOLD の後に起案）、品質判定 v2 の確定（観測の後）、
+  // 予行 1〜6 の後に選んだ harness の fixture と止める条件。
+  "k66-readings-after-s6r1",
+  "k66-quality-verdict-v2-after-s6r1",
+  "k66-harness-and-rehearsal-choices",
 ]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -3459,6 +3591,7 @@ function setupReadingErrors(errors, readings, ctx) {
     ...(ctx.harnessConstantSources ?? []),
     ...(ctx.harnessK64Freeze ? [ctx.harnessK64Freeze.source] : []),
     ...(ctx.harnessK65Freeze ? [ctx.harnessK65Freeze.source] : []),
+    ...(ctx.harnessK66Freeze ? [ctx.harnessK66Freeze.source] : []),
     ...(ctx.harnessReadyProbe ? [ctx.harnessReadyProbe.source] : []),
   ]) {
     const role = harnessPinOf(source.path)?.role;
@@ -4158,6 +4291,133 @@ function k65ReadingErrors(errors, readings) {
 }
 
 /**
+ * S2 追補 #16（DR-CP4-P-10）: the words k66Readings.limits carries — (a) the
+ * observation-after revision with R-6 and R-7 (a loosening, the user's K6/6
+ * confirmation), (b) R-7's effect and what the choice rests on, (c) the
+ * quality FAIL condition, (d) the narrowing items, (e) s6r1 stays HOLD and
+ * the old S4b's runs are not counted, (f) the reviews that were not blind,
+ * (g) the dev rehearsals' every round, (h) the quality verdict v2 outside the
+ * pins, (i) the harness of PR #840, (j) what remains before S4b.
+ */
+export const K66_LIMIT_WORDS = Object.freeze([
+  "R-6",
+  "R-7",
+  "観測の後の改訂",
+  "s6r1",
+  "163/270",
+  "1e6ede44",
+  "e704f28f",
+  "56fb4fad",
+  "324c804f",
+  "d69c000b",
+  "stamp0-missing",
+  "② は今の harness では合流した",
+  "unavailable を除くのは安全上の差ではなく選択",
+  "コードの読み",
+  "品質は FAIL",
+  "1% の許容は効かない",
+  "parentContributed",
+  "FR-1〜FR-8",
+  "N-a〜N-d",
+  "完全な盲検ではなかった",
+  "ユーザーの選択を経ていない",
+  "予行 1〜6",
+  "8eb23fa6",
+  "125/125",
+  "130/130",
+  "判定に使わない",
+  "排除できない",
+  "品質判定 v2",
+  "8b2a5daf",
+  "5dc4ca39",
+  "7652a86e",
+  "pin の外",
+  "DR-CP4-QV-3",
+  "00f9c999",
+  "1fdeed6f",
+  "k66-detection-2026-11-08",
+  "17 file",
+  "availability.mjs",
+  "join.mjs",
+  "6b47c177",
+  "新しい S4 の結果だけ",
+  "S6 の許可リストは新しい S4b だけ",
+  // S2 追補 #17（S3 の 9 回目、B1〜B3）: the disclosures the review asked for —
+  // the confirmation 82119012 (R5 reuse) and what its question left out, the
+  // product changes after 63bc9b90 (#828〜#831) and their bearing on R-7, the
+  // K6/6 detection record's retake and placeholder, the quality verdict v2's
+  // loosening (D2・D3), the literal exclusion (C5) and C3 left out, the
+  // rehearsal 3 stop condition the confirmation question did not show, the
+  // procedure file v2's review left as is, the FR summaries and the G-01
+  // diagnostic's head.
+  "(k)",
+  "82119012",
+  "2ee32ac1",
+  "482d4812975ff9264d70bc10633ec547204045189173abe08acbdafa364c5103",
+  "#828",
+  "#829",
+  "#830",
+  "#831",
+  "質問は #828〜#831 の製品の変更を示していなかった",
+  "63bc9b90 からの製品の変更",
+  "S0 が None になる原因",
+  "変更の後の頻度は測っていない",
+  "#832",
+  "#839",
+  "8caecc7f",
+  "S4:k66-detection-record",
+  "今の bytes に対して取られていない",
+  "S4b の pin の候補",
+  "D2・D3 は s6r1 の条件 5 の (a) の fail を消す方向に働く緩和",
+  "草稿 D4 の字義からの除外",
+  "C3",
+  "forbiddenSceneIds",
+  "予行 5 の G-08/chronicle-index-unusable の予告の FAIL を見た後",
+  "30/130",
+  "予行 3 が止める条件",
+  "K6/6 draft :141 の",
+  "procedure/k64-procedure.v2.json",
+  "k64Procedure.formal.review は v2 の file が持つ review のままでよい",
+  "FR-1 親の合流が D（40 ms）の窓内",
+  "FR-4（N-b）owner の counter",
+  "FR-6 sample の終わり",
+  "FR-8（N-d）stale",
+  "反映の後に S3 の再確認を置く",
+]);
+/** S2 追補 #16: what k66Readings.rule binds. */
+export const K66_RULE_WORDS = Object.freeze([
+  "k64-procedure.v2.json",
+  "K66_FREEZE",
+  "head.k66",
+  "K64_VALUES",
+]);
+
+/**
+ * S2 追補 #16（DR-CP4-P-10）: K6/6's readings — the rule binding the v2
+ * procedure file's values and K66_FREEZE, and the limits (a)〜(j).
+ */
+function k66ReadingErrors(errors, readings) {
+  if (!isObject(readings)) {
+    errors.push("k66Readings is required (S2 追補 #16、DR-CP4-P-10)");
+    return;
+  }
+  const unnamed = K66_RULE_WORDS.filter(
+    (word) => !String(readings.rule ?? "").includes(word),
+  );
+  if (!nonBlank(readings.status) || unnamed.length > 0)
+    errors.push(
+      `k66Readings.rule must bind ${K66_RULE_WORDS.join(", ")} (S2 追補 #16)`,
+    );
+  const missing = K66_LIMIT_WORDS.filter(
+    (word) => !String(readings.limits ?? "").includes(word),
+  );
+  if (missing.length > 0)
+    errors.push(
+      `k66Readings.limits must disclose ${missing.join(", ")} (S2 追補 #16、DR-CP4-P-10)`,
+    );
+}
+
+/**
  * S2 追補 #15 (S3 minor): every name G01-E2E's notCountedAs carries — the two
  * the first check left out (g-case-diagnostic-negative, sp-p4-seed-pin-parity)
  * included.
@@ -4262,7 +4522,7 @@ export function observationPrepErrors(prep, ctx) {
   const frozen = prep.status === PREP_FROZEN;
   if (prep.graphRuntimeObservedBeforeAuthoring !== false)
     errors.push("graphRuntimeObservedBeforeAuthoring must be false");
-  const { k24, k62, k64, k65 } = prep.contracts ?? {};
+  const { k24, k62, k64, k65, k66 } = prep.contracts ?? {};
   if (k24?.sha256 !== CONTRACTS.k24.sha256 || k24?.path !== CONTRACTS.k24.path)
     errors.push("contracts.k24 must be the K2/4 bytes");
   if (
@@ -4286,6 +4546,28 @@ export function observationPrepErrors(prep, ctx) {
     errors.push(
       "contracts.k65 must be the K6/5 bytes, confirmed commit and freeze commit",
     );
+  // S2 追補 #16: the /6 row stands on the /4 and /5 bytes (both stay), and
+  // adds K6/6's bytes, the commit that last changed them and the freeze.
+  if (
+    k66?.sha256 !== CONTRACTS.k66.sha256 ||
+    k66?.draftRef !== CONTRACTS.k66.draftRef ||
+    k66?.contractId !== CONTRACTS.k66.contractId ||
+    k66?.path !== CONTRACTS.k66.path ||
+    k66?.confirmedCommit !== CONTRACTS.k66.confirmedCommit ||
+    k66?.freezeCommit !== CONTRACTS.k66.freezeCommit
+  )
+    errors.push(
+      "contracts.k66 must be the K6/6 bytes, confirmed commit and freeze commit (S2 追補 #16)",
+    );
+  // S2 追補 #16 (K6/5 版の P3-3 と同じ形): a frozen record's contracts.k66 is
+  // the pinned harness's K66_FREEZE, field by field. Unreadable pinned bytes
+  // (the pin predates K66_FREEZE) close the check; S4b re-pins.
+  if (frozen)
+    for (const field of K66_FREEZE_SOURCE.fields)
+      if (k66?.[field] !== ctx.harnessK66Freeze?.[field])
+        errors.push(
+          `contracts.k66.${field} must be the pinned harness's K66_FREEZE.${field} (${String(ctx.harnessK66Freeze?.[field] ?? "unreadable")}, ${K66_FREEZE_SOURCE.path} at its pin)`,
+        );
   const sp1 = prep.contracts?.sp1;
   if (
     sp1?.draftRef !== SP1.draftRef ||
@@ -4393,6 +4675,7 @@ export function observationPrepErrors(prep, ctx) {
   traceRunnerReadingErrors(errors, prep.traceRunnerReadings);
   g04RevisionReadingErrors(errors, prep.g04RevisionReadings);
   k65ReadingErrors(errors, prep.k65Readings);
+  k66ReadingErrors(errors, prep.k66Readings);
   g01E2eDiagnosticErrors(errors, prep, ctx);
   reviewerQuestionErrors(errors, prep.reviewerQuestions, frozen);
 
@@ -4635,6 +4918,19 @@ export function observationPrepErrors(prep, ctx) {
     errors.push(
       "r5Gate.k65DetectionRecord must locate the K6/4・K6/5 detection-power record (S4:k65-detection-record in a draft, filled when frozen) with its rule (S2 追補 #15)",
     );
+  // S2 追補 #17 (S3's B1-3): the K6/6 detection-power record is bound the same
+  // way (S4:k66-detection-record in a draft, a located record when frozen).
+  const k66DetectionRecord = prep.r5Gate?.k66DetectionRecord;
+  if (
+    typeof k66DetectionRecord !== "string" ||
+    k66DetectionRecord.trim() === "" ||
+    (k66DetectionRecord.startsWith("S4:") &&
+      (k66DetectionRecord !== "S4:k66-detection-record" || frozen)) ||
+    !nonBlank(prep.r5Gate?.k66DetectionRecordRule)
+  )
+    errors.push(
+      "r5Gate.k66DetectionRecord must locate the K6/6 detection-power record (S4:k66-detection-record in a draft, filled when frozen) with its rule (S2 追補 #17)",
+    );
   if (frozen)
     for (const [label, text] of [
       ["r5Gate.r5CheckRecord", prep.r5Gate?.r5CheckRecord],
@@ -4643,6 +4939,7 @@ export function observationPrepErrors(prep, ctx) {
         prep.r5Gate?.syntheticDetection?.record,
       ],
       ["r5Gate.k65DetectionRecord", k65DetectionRecord],
+      ["r5Gate.k66DetectionRecord", k66DetectionRecord],
     ])
       if (parseRecordReference(text) === null)
         errors.push(
@@ -4774,6 +5071,57 @@ export function observationPrepErrors(prep, ctx) {
     errors.push(
       "contracts.k65.confirmation.additional must be the C7／G-01／R5 confirmation (0600ec04) and the R5 reuse confirmation (6b47c177), each with its file, commit, SHA-256, topic and date (S2 追補 #15)",
     );
+  // S2 追補 #16 (K6/6): the user's K6/6 confirmation and the freeze record are
+  // bound by file, commit and SHA-256, and S4b carries the row into review.
+  const k66Confirmation = k66?.confirmation;
+  if (
+    !isObject(k66Confirmation) ||
+    k66Confirmation.contract !== "K6/6" ||
+    !nonBlank(k66Confirmation.confirmedAt) ||
+    !String(k66Confirmation.record ?? "").includes(
+      K66_CONFIRMATION_RECORDS.graphEvalProcedure.path,
+    ) ||
+    !String(k66Confirmation.record ?? "").includes(
+      K66_CONFIRMATION_RECORDS.graphEvalProcedure.commit,
+    ) ||
+    !String(k66Confirmation.record ?? "").includes(
+      `SHA-256 ${K66_CONFIRMATION_RECORDS.graphEvalProcedure.sha256}`,
+    ) ||
+    !String(k66Confirmation.freezeRecord ?? "").includes(
+      K66_CONFIRMATION_RECORDS.freezeRecord.path,
+    ) ||
+    !String(k66Confirmation.freezeRecord ?? "").includes(
+      K66_CONFIRMATION_RECORDS.freezeRecord.commit,
+    ) ||
+    !String(k66Confirmation.freezeRecord ?? "").includes(
+      CONTRACTS.k66.freezeCommit,
+    ) ||
+    !String(k66Confirmation.intoReview ?? "").includes(
+      "review.userConfirmations",
+    )
+  )
+    errors.push(
+      "contracts.k66.confirmation must name the user's K6/6 confirmation record (its file, commit and SHA-256, and the date), the freeze record (its file, commit and the freeze commit) and the S4b step that carries it into review.userConfirmations (S2 追補 #16)",
+    );
+  // S2 追補 #17 (S3's B1-1): the R5 reuse confirmation (82119012), asked after
+  // S2 追補 #16, is bound by file, commit and SHA-256 like K6/5's additional.
+  if (
+    !same(
+      (k66Confirmation?.additional ?? []).map(({ record, commit, sha256 }) => ({
+        record,
+        commit,
+        sha256,
+      })),
+      K66_CONFIRMATION_RECORDS.additional,
+    ) ||
+    (k66Confirmation?.additional ?? []).some(
+      (row) => !nonBlank(row?.topic) || !nonBlank(row?.confirmedAt),
+    ) ||
+    !nonBlank(k66Confirmation?.additionalNote)
+  )
+    errors.push(
+      "contracts.k66.confirmation.additional must be the R5 reuse confirmation (82119012), with its file, commit, SHA-256, topic and date (S2 追補 #17)",
+    );
   const formal = procedure.formal ?? {};
   if (formal.version !== "v2" || formal.path !== PROCEDURE_V2)
     errors.push("k64Procedure.formal must be the v2 file");
@@ -4820,10 +5168,9 @@ export function observationPrepErrors(prep, ctx) {
       );
     else if (!same(v2.review, review))
       errors.push("k64Procedure.formal.review must equal the v2 file's review");
-    if (review?.record !== prep.review?.record)
-      errors.push(
-        "k64Procedure.formal.review must cite the same independent review record as this record",
-      );
+    // S2 追補 #17 (S3's B2-1): K6/6 keeps the procedure file v2 ("変えない"),
+    // so its review stays the 6th S3 record's. S2's review.record is the 9th S3
+    // record (K6/6) and need not equal it; the two are no longer held equal.
   } else if (formal.review !== null)
     errors.push("k64Procedure.formal.review must be null until S3 reviews");
 
@@ -5019,6 +5366,46 @@ export function observationPrepErrors(prep, ctx) {
         errors.push(
           `review.userConfirmationsScope must state the K6/5 confirmation's scope (${word}) when frozen (S2 追補 #15)`,
         );
+    // S2 追補 #16: the K6/6 row, and its scope (the loosenings R-6 and R-7,
+    // what the confirmation does not cover).
+    const k66Row = rows.find((row) => row?.contract === "K6/6");
+    if (
+      !k66Row ||
+      k66Row.draftRef !== CONTRACTS.k66.draftRef ||
+      k66Row.contractId !== CONTRACTS.k66.contractId ||
+      k66Row.sha256 !== CONTRACTS.k66.sha256 ||
+      !String(k66Row.source ?? "").includes(
+        K66_CONFIRMATION_RECORDS.graphEvalProcedure.path,
+      ) ||
+      !nonBlank(k66Row.confirmedAt)
+    )
+      errors.push(
+        "review.userConfirmations must carry the K6/6 row (draftRef, contractId, the K6/6 SHA-256, date, and the confirmation record as source) when frozen (S2 追補 #16)",
+      );
+    for (const word of ["K6/6", "R-6", "R-7"])
+      if (!String(review?.userConfirmationsScope ?? "").includes(word))
+        errors.push(
+          `review.userConfirmationsScope must state the K6/6 confirmation's scope (${word}) when frozen (S2 追補 #16)`,
+        );
+    // S2 追補 #17 (S3's B1-1): the R5 reuse confirmation (82119012) is a row
+    // and the scope names it.
+    for (const row of K66_CONFIRMATION_RECORDS.additional)
+      if (
+        !rows.some((entry) =>
+          String(entry?.source ?? "").includes(row.record),
+        ) ||
+        !String(review?.userConfirmationsScope ?? "").includes(
+          row.commit.slice(0, 8),
+        )
+      )
+        errors.push(
+          `review.userConfirmations must carry the confirmation ${row.commit.slice(0, 8)} (${row.record}) as a row, and userConfirmationsScope must name it (S2 追補 #17)`,
+        );
+    // S2 追補 #17 (S3's B2-1): K6/6's review is the 9th S3 record.
+    if (!String(review?.record ?? "").includes(K66_S3_REVIEW.path))
+      errors.push(
+        `review.record must cite the S3 (9th, K6/6) review record ${K66_S3_REVIEW.path} (S2 追補 #17)`,
+      );
   } else if (prep.review !== null)
     errors.push("review must be null until S3 reviews");
   return errors;
@@ -5293,6 +5680,67 @@ async function readHarnessK65Freeze({ repoRoot, read }) {
   };
 }
 
+/**
+ * S2 追補 #16: the K6/6 freeze S2's contracts.k66 must equal, read from the
+ * pinned bytes of the harness's constants.mjs (never imported or run), as
+ * K65_FREEZE is. The pin predates K66_FREEZE until S4b re-pins constants.mjs
+ * (the check closes as unreadable until then; a draft is not compared).
+ */
+export const K66_FREEZE_SOURCE = Object.freeze({
+  path: `${HARNESS_DIR}constants.mjs`,
+  name: "K66_FREEZE",
+  fields: Object.freeze(["sha256", "confirmedCommit", "freezeCommit"]),
+});
+
+/**
+ * S2 追補 #16: K66_FREEZE's sha256 (64-hex), confirmedCommit and freezeCommit
+ * (40-hex) in the harness's constants.mjs text, each exactly once inside the
+ * object literal; undefined when the literal or a field is absent or repeated.
+ */
+export function parseK66Freeze(text) {
+  const block =
+    /^export const K66_FREEZE = Object\.freeze\(\{\n([\s\S]*?)\n\}\);$/mu.exec(
+      String(text),
+    );
+  if (!block) return undefined;
+  const out = {};
+  for (const [field, digits] of [
+    ["sha256", 64],
+    ["confirmedCommit", 40],
+    ["freezeCommit", 40],
+  ]) {
+    const rows = [
+      ...block[1].matchAll(
+        new RegExp(`^ {2}${field}: "([0-9a-f]{${digits}})",$`, "gmu"),
+      ),
+    ];
+    if (rows.length !== 1) return undefined;
+    out[field] = rows[0][1];
+  }
+  return out;
+}
+
+/** S2 追補 #16: K66_FREEZE from the pinned bytes; null on a miss. */
+async function readHarnessK66Freeze({ repoRoot, read }) {
+  const pinned = await readPinnedHarnessFile({
+    repoRoot,
+    read,
+    file: K66_FREEZE_SOURCE.path,
+  });
+  if (!pinned) return null;
+  const values = parseK66Freeze(pinned.bytes.toString("utf8"));
+  if (values === undefined) return null;
+  return {
+    ...values,
+    source: {
+      path: K66_FREEZE_SOURCE.path,
+      commit: pinned.commit,
+      from: pinned.from,
+      sha256: pinned.sha256,
+    },
+  };
+}
+
 /** S4 の最終関門の P3-3: K64_FREEZE.freezeCommit from the pinned bytes; null on a miss. */
 async function readHarnessK64Freeze({ repoRoot, read }) {
   const pinned = await readPinnedHarnessFile({
@@ -5534,10 +5982,12 @@ export async function loadObservationPrepContext({ repoRoot }) {
   const constants = await readHarnessConstants({ repoRoot, read });
   const k64Freeze = await readHarnessK64Freeze({ repoRoot, read });
   const k65Freeze = await readHarnessK65Freeze({ repoRoot, read });
+  const k66Freeze = await readHarnessK66Freeze({ repoRoot, read });
   const readyProbe = await readHarnessReadyProbe({ repoRoot, read });
   return {
     harnessK64Freeze: k64Freeze,
     harnessK65Freeze: k65Freeze,
+    harnessK66Freeze: k66Freeze,
     harnessReadyProbe: readyProbe,
     harnessBlockedTable: blocked?.table ?? null,
     harnessBlockedTableSource: blocked?.source ?? null,
@@ -5738,9 +6188,53 @@ export function k65FormalRows(prep) {
 }
 
 /**
+ * S2 追補 #16: the rows for K6/6 — the draft at its freeze commit, the user's
+ * confirmation record, the freeze record, the quality verdict v2 and its
+ * fixing record, and the dev rehearsals' record, so that the contracts
+ * commits are strict ancestors of the head (S4's branch merges contracts).
+ * S2 追補 #17: plus the R5 reuse confirmation (82119012), the S3 (9th) review
+ * record, and the K6/6 detection-power record S4b locates (`prep`).
+ */
+export function k66FormalRows(prep) {
+  const located = [prep?.r5Gate?.k66DetectionRecord]
+    .map((text) => parseRecordReference(text))
+    .filter((reference) => reference !== null);
+  return [
+    {
+      path: CONTRACTS.k66.path,
+      commit: CONTRACTS.k66.freezeCommit,
+      sha256: CONTRACTS.k66.sha256,
+    },
+    K66_CONFIRMATION_RECORDS.graphEvalProcedure,
+    K66_CONFIRMATION_RECORDS.freezeRecord,
+    K66_QUALITY_VERDICT_V2.v2,
+    K66_QUALITY_VERDICT_V2.freezeRecord,
+    // S2 追補 #17 (S3's B1-1): the R5 reuse confirmation and the S3 (9th)
+    // review record, so their contracts commits are strict ancestors too.
+    ...K66_CONFIRMATION_RECORDS.additional.map((row) => ({
+      path: row.record,
+      commit: row.commit,
+      sha256: row.sha256,
+    })),
+    K66_S3_REVIEW,
+    ...Object.entries(K66_DEV_REHEARSALS.files).map(([name, sha]) => ({
+      path: `${K66_DEV_REHEARSALS.directory}${name}`,
+      commit: K66_DEV_REHEARSALS.commit,
+      sha256: sha,
+    })),
+    // S2 追補 #17 (S3's B1-3): the K6/6 detection-power record S4b locates.
+    ...located,
+  ].map(({ path: file, commit, sha256: digest }) => ({
+    path: file,
+    commit,
+    sha256: digest,
+  }));
+}
+
+/**
  * The (path, commit, sha256) rows the formal gate checks against git: the
  * traces, S2's boundFiles, the superseded v1 addenda, the K6/4 procedure, the
- * SP/1 bytes and K6/5's rows.
+ * SP/1 bytes, K6/5's rows and K6/6's rows.
  */
 export function formalReferenceRows(prep, addenda) {
   return [
@@ -5749,6 +6243,9 @@ export function formalReferenceRows(prep, addenda) {
     // S2 追補 #15: the K6/5 freeze, the confirmation records and the
     // records S4b binds (R5, SP-N, K6/4・K6/5 detection power).
     ...k65FormalRows(prep),
+    // S2 追補 #16: K6/6's draft, confirmation, freeze record, the quality
+    // verdict v2 and the dev rehearsals' record.
+    ...k66FormalRows(prep),
     // The v1 bytes each new addendum version supersedes (B2b-1 review P3-2).
     ...supersededReferences(addenda),
     {

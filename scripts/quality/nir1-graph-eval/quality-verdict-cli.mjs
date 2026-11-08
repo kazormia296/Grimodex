@@ -4,7 +4,13 @@
 // Usage:
 //   node scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs \
 //     --gold-dir <dir> --allow-list <json> [--parity-dir <dir>] [--ledger <json>] \
-//     --out <verdict.json> [--summary <summary.md>]
+//     --out <verdict.json> [--summary <summary.md>] \
+//     --v2-file <path> --v2-commit <sha> --impl-commit <sha> \
+//     --remote-time-record <json> --sp-p4-dir <dir> --trace-dir <dir> \
+//     --negative-dir <dir> --g01-diagnostic-dir <dir>
+//     (v2 §0: the first formal run must start after both commits were on the
+//     remote; the command line refuses ([precheck]) without these inputs.
+//     --gold-dir and --parity-dir are the Gold and parity kinds of that check.)
 //   node scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs --verify <verdict.json>
 //     (the allow list is read by file name from the verdict file's directory)
 //
@@ -13,6 +19,7 @@
 
 import console from "node:console";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -24,6 +31,7 @@ import {
   GRAPH_EVAL_VARIANTS,
   K62_FREEZE,
   K65_FREEZE,
+  K66_FREEZE,
 } from "./constants.mjs";
 import { loadProcedureFile } from "./procedure-file.mjs";
 import {
@@ -130,6 +138,15 @@ export function loadExpectations({ root, graphManifest }) {
       grades: gradesOf(fixture),
       eligibleSceneIds: fixture.eligibleSceneIds,
       predeclaredImprovement: variant.caseId === "G-01",
+      // The setup prepares the typed Revisions in the fixture's `revisions`
+      // array order (its `setupTimeline` revision steps); D3 (d) reads the
+      // latest Revision of a Relation by that order (v2 C1). G-01 has none.
+      typedRevisionOrder: (Array.isArray(fixture.revisions)
+        ? fixture.revisions
+        : []
+      )
+        .map((row) => row?.id)
+        .filter((id) => typeof id === "string"),
     };
     if (!Array.isArray(base.eligibleSceneIds))
       throw precheck(`${variant.key}: the fixture has no eligibleSceneIds`);
@@ -243,6 +260,9 @@ export function loadQualityInputs({
   // The repository the procedure file is read from, at the S4 commit (the
   // tests' throwaway repository; the default is `root`).
   procedureRoot = root,
+  // The K6/6 freeze the receipts' head.k66 is held to (the tests' descriptor;
+  // the default is the pinned K66_FREEZE).
+  freeze66 = K66_FREEZE,
 }) {
   const graphManifest = readJson(path.join(root, GRAPH_MANIFEST));
   const retrievalManifest = readJson(path.join(root, RETRIEVAL_MANIFEST));
@@ -282,6 +302,17 @@ export function loadQualityInputs({
     )
       throw precheck(
         `${receipt.runId}: the receipt's head.k65 is not the K6/5 freeze (${K65_FREEZE.freezeCommit})`,
+      );
+    // K6/6 変える点 8 / K6/6-N9: and the K6/6 freeze (K66_FREEZE). The /6 row
+    // judges only a run that started after the /6 freeze (s6r1 is /5 only); a
+    // `null` freezeCommit matches nothing (fail closed).
+    if (
+      freeze66.freezeCommit === null ||
+      receipt.head?.k66?.freezeCommit !== freeze66.freezeCommit ||
+      receipt.head?.k66?.sha256 !== freeze66.sha256
+    )
+      throw precheck(
+        `${receipt.runId}: the receipt's head.k66 is not the K6/6 freeze (${String(freeze66.freezeCommit)}); a run that started before the /6 freeze is not judged by the /6 row`,
       );
   }
   let blocked = null;
@@ -337,11 +368,362 @@ export function loadQualityInputs({
   };
 }
 
+/** The six receipt kinds of v2 §0's "first formal run", by CLI input name. */
+export const FIRST_RUN_RECEIPT_KINDS = Object.freeze([
+  "sp-p4",
+  "trace",
+  "parity",
+  "gold",
+  "negative",
+  "g01-diagnostic",
+]);
+const REMOTE_TIME_SOURCES = new Set(["repository-activity", "PushEvent"]);
+const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
+/** The v2 final text's path (fixed) and the branches the remote record names. */
+export const V2_FILE_PATH =
+  "docs/plans/nir1-cp4-records/quality-verdict-prereg-v2.md";
+export const V2_BRANCH = "claude/nir1-contracts";
+export const IMPLEMENTATION_BRANCH = "claude/k66-harness";
+/** The running verdict code `--impl-commit` is bound to (bytes at that commit). */
+export const IMPLEMENTATION_FILES = Object.freeze([
+  "scripts/quality/nir1-graph-eval/quality-verdict.mjs",
+  "scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs",
+]);
+
+function instantOf(text) {
+  return typeof text === "string" && /^\d{4}-\d\d-\d\dT/u.test(text)
+    ? Date.parse(text)
+    : Number.NaN;
+}
+
+/**
+ * v2 §0 (D7): the earliest `head.runStartedAtUtc` over every receipt of the
+ * six kinds under the judged `(s4Commit, candidate.commit)` pair. A kind with
+ * no receipt under the pair, or a receipt without a readable start time, is a
+ * `[precheck]`. `receiptsByKind` maps a kind to `[{ path, receipt }]`.
+ */
+export function firstFormalRunOf(receiptsByKind, allowList) {
+  let first = null;
+  const counts = {};
+  for (const kind of FIRST_RUN_RECEIPT_KINDS) {
+    const rows = receiptsByKind?.[kind] ?? [];
+    // A receipt of the kind's directory that lacks the pair's keys or names
+    // another pair is never dropped silently: `[precheck]`.
+    for (const { path: file, receipt } of rows)
+      if (
+        receipt?.head?.observationPrep?.commit !== allowList?.s4Commit ||
+        receipt?.candidate?.commit !== allowList?.candidate
+      )
+        throw precheck(
+          `v2 §0: the ${kind} receipt ${file} is not of the pair (${String(allowList?.s4Commit)}, ${String(allowList?.candidate)}) (head.observationPrep.commit and candidate.commit are required)`,
+        );
+    counts[kind] = rows.length;
+    if (rows.length === 0)
+      throw precheck(
+        `v2 §0: no ${kind} receipt of the pair (${String(allowList?.s4Commit)}, ${String(allowList?.candidate)})`,
+      );
+    for (const { path: file, receipt } of rows) {
+      const at = instantOf(receipt.head?.runStartedAtUtc);
+      if (!Number.isFinite(at))
+        throw precheck(
+          `v2 §0: the ${kind} receipt ${file} has no readable head.runStartedAtUtc`,
+        );
+      if (first === null || at < first.at)
+        first = {
+          at,
+          atUtc: receipt.head.runStartedAtUtc,
+          kind,
+          runId: receipt.runId ?? null,
+          receipt: file,
+        };
+    }
+  }
+  const { at, ...rest } = first;
+  return { ...rest, receiptCounts: counts, atMs: at };
+}
+
+/**
+ * The earliest remote-side record of one commit on the expected branch. When
+ * the record file holds several entries for the commit (several sources, a
+ * later re-push), the earliest counts: that the commit was on the remote
+ * before the first formal run needs only the earliest entry, and a later
+ * re-push cannot move it. Entries on another branch do not count.
+ */
+function remoteRecordOf(records, commit, label, branch) {
+  const all = records.filter((row) => row?.commit === commit);
+  if (all.length === 0)
+    throw precheck(
+      `v2 §0: the remote time record has no entry for the ${label} commit ${commit}`,
+    );
+  const rows = all.filter((row) => row.branch === branch);
+  if (rows.length === 0)
+    throw precheck(
+      `v2 §0: the remote time record of the ${label} commit ${commit} names no entry on the branch ${branch}`,
+    );
+  let best = null;
+  for (const row of rows) {
+    const at = instantOf(row.remoteTimeUtc);
+    if (!Number.isFinite(at))
+      throw precheck(
+        `v2 §0: the remote time record of ${commit} has no readable remoteTimeUtc`,
+      );
+    if (!REMOTE_TIME_SOURCES.has(row.source))
+      throw precheck(
+        `v2 §0: the remote time record of ${commit} has source ${String(row.source)} (repository-activity or PushEvent)`,
+      );
+    if (best === null || at < best.at)
+      best = {
+        at,
+        commit,
+        branch: row.branch ?? null,
+        remoteTimeUtc: row.remoteTimeUtc,
+        source: row.source,
+      };
+  }
+  const { at, ...rest } = best;
+  return { ...rest, atMs: at };
+}
+
+/**
+ * v2 §0 (D7): both commits (the v2 final text and the implementation) were on
+ * the remote strictly before the first formal run started. Pure: the record
+ * and the receipts are already read. Returns what the verdict writes out.
+ */
+export function checkFirstRunPrecheck({
+  v2Commit,
+  v2Sha256,
+  implCommit,
+  remoteRecords,
+  firstRun,
+}) {
+  for (const [label, commit] of [
+    ["v2", v2Commit],
+    ["implementation", implCommit],
+  ])
+    if (!COMMIT_PATTERN.test(String(commit)))
+      throw precheck(`v2 §0: the ${label} commit is not a full commit ID`);
+  if (!Array.isArray(remoteRecords))
+    throw precheck("v2 §0: the remote time record is not a list");
+  const v2 = remoteRecordOf(remoteRecords, v2Commit, "v2", V2_BRANCH);
+  const implementation = remoteRecordOf(
+    remoteRecords,
+    implCommit,
+    "implementation",
+    IMPLEMENTATION_BRANCH,
+  );
+  for (const [label, record] of [
+    ["v2", v2],
+    ["implementation", implementation],
+  ])
+    if (!(record.atMs < firstRun.atMs))
+      throw precheck(
+        `v2 §0: the ${label} commit ${record.commit} was on the remote at ${record.remoteTimeUtc}, not before the first formal run (${firstRun.atUtc})`,
+      );
+  const strip = ({ atMs: _atMs, ...rest }) => rest;
+  return {
+    v2: { ...strip(v2), sha256: v2Sha256 },
+    implementation: strip(implementation),
+    firstFormalRun: strip(firstRun),
+  };
+}
+
+function gitIn(dir, args) {
+  return execFileSync("git", ["-C", dir, ...args], {
+    encoding: "buffer",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+/** The v2 file's repository path, and the sha256 of its bytes at `commit`. */
+function gitBlobOf(file, commit) {
+  const dir = path.dirname(path.resolve(file));
+  try {
+    const top = gitIn(dir, ["rev-parse", "--show-toplevel"])
+      .toString("utf8")
+      .trim();
+    const relative = path.relative(top, path.resolve(file));
+    return {
+      relative,
+      sha256: sha256(gitIn(dir, ["show", `${commit}:${relative}`])),
+    };
+  } catch (error) {
+    throw precheck(
+      `v2 §0: cannot read ${file} at ${commit} (${String(error.message).split("\n")[0]})`,
+    );
+  }
+}
+
+/** Reads a blob at a commit of the repository at `root` (git). */
+export function gitBlobReader(root) {
+  return (commit, file) => {
+    try {
+      return gitIn(root, ["show", `${commit}:${file}`]);
+    } catch (error) {
+      throw precheck(
+        `v2 §0: cannot read ${file} at the implementation commit ${commit} (${String(error.message).split("\n")[0]})`,
+      );
+    }
+  };
+}
+
+/**
+ * v2 §0: `--impl-commit` names the code that is running. The bytes of the
+ * running `quality-verdict.mjs` and `quality-verdict-cli.mjs` must equal their
+ * blobs at that commit, or `[precheck]`. `running` maps a repository path to
+ * the bytes on disk; `readBlob(commit, path)` reads the commit's blob.
+ */
+export function assertImplementationBound({ implCommit, running, readBlob }) {
+  const bound = [];
+  for (const file of IMPLEMENTATION_FILES) {
+    const onDisk = running?.[file];
+    if (!onDisk) throw precheck(`v2 §0: the running ${file} could not be read`);
+    const atCommit = readBlob(implCommit, file);
+    if (sha256(onDisk) !== sha256(atCommit))
+      throw precheck(
+        `v2 §0: the running ${file} differs from its bytes at the implementation commit ${implCommit}`,
+      );
+    bound.push({ path: file, sha256: sha256(onDisk) });
+  }
+  return bound;
+}
+
+/** The running verdict code's bytes, by repository path. */
+function runningImplementation() {
+  return Object.fromEntries(
+    IMPLEMENTATION_FILES.map((file) => [
+      file,
+      readFileSync(path.join(HERE, path.basename(file))),
+    ]),
+  );
+}
+
+/**
+ * The receipts of a first-run kind's directory: the `*.receipt.json` files
+ * (checked against `files.sha256`), or, when the directory holds none (the
+ * G-01 diagnostic writes `<run>.json`), its `*.json` result files.
+ */
+function readFirstRunDir(dir) {
+  if (
+    existsSync(dir) &&
+    readdirSync(dir).some((name) => name.endsWith(".receipt.json"))
+  )
+    return readReceiptDir(dir);
+  if (!existsSync(dir))
+    throw precheck(`receipt directory ${dir} does not exist`);
+  const names = readdirSync(dir)
+    .filter(
+      (name) =>
+        name.endsWith(".json") &&
+        !/(\.validation|\.run-report)\.json$|^head\.json$/u.test(name),
+    )
+    .sort();
+  if (names.length === 0) throw precheck(`${dir} holds no receipt`);
+  return names.map((name) => {
+    const file = path.join(dir, name);
+    const bytes = readBytes(file);
+    return {
+      path: path.resolve(file),
+      sha256: sha256(bytes),
+      receipt: JSON.parse(bytes),
+    };
+  });
+}
+
+/**
+ * Reads the §0 inputs: the v2 file (its bytes must equal the v2 commit's blob
+ * of the same path), the remote time record, and the receipts of the six
+ * kinds. `dirs` maps a kind to one directory or a list of them.
+ */
+export function loadFirstRunInputs({
+  v2File,
+  v2Commit,
+  implCommit,
+  remoteTimeRecordPath,
+  dirs,
+  allowList,
+  // The running verdict code and the reader of a commit's blobs (the tests
+  // hand their own; the defaults are this checkout's files and git).
+  running = runningImplementation(),
+  readBlob = gitBlobReader(DEFAULT_ROOT),
+}) {
+  for (const [name, value] of [
+    ["v2 file", v2File],
+    ["v2 commit", v2Commit],
+    ["implementation commit", implCommit],
+    ["remote time record", remoteTimeRecordPath],
+  ])
+    if (!value) throw precheck(`v2 §0: the ${name} input is missing`);
+  const v2Bytes = readBytes(v2File);
+  const v2Sha256 = sha256(v2Bytes);
+  const v2Blob = gitBlobOf(v2File, v2Commit);
+  if (v2Blob.relative !== V2_FILE_PATH)
+    throw precheck(
+      `v2 §0: the v2 file is ${v2Blob.relative}, not ${V2_FILE_PATH}`,
+    );
+  if (v2Blob.sha256 !== v2Sha256)
+    throw precheck(
+      `v2 §0: ${v2File} differs from the bytes of that path at the v2 commit ${v2Commit}`,
+    );
+  const implementationFiles = assertImplementationBound({
+    implCommit,
+    running,
+    readBlob,
+  });
+  const recordBytes = readBytes(remoteTimeRecordPath);
+  let remoteRecords;
+  try {
+    const parsed = JSON.parse(recordBytes);
+    remoteRecords = Array.isArray(parsed) ? parsed : parsed?.records;
+  } catch {
+    throw precheck("v2 §0: the remote time record is not JSON");
+  }
+  const receiptsByKind = {};
+  for (const kind of FIRST_RUN_RECEIPT_KINDS) {
+    const given = dirs?.[kind];
+    const list = Array.isArray(given) ? given : given ? [given] : [];
+    if (list.length === 0)
+      throw precheck(`v2 §0: the ${kind} receipt directory is missing`);
+    receiptsByKind[kind] = list.flatMap((dir) => readFirstRunDir(dir));
+  }
+  const firstRun = firstFormalRunOf(receiptsByKind, allowList);
+  const result = checkFirstRunPrecheck({
+    v2Commit,
+    v2Sha256,
+    implCommit,
+    remoteRecords,
+    firstRun,
+  });
+  return {
+    result: {
+      ...result,
+      implementation: { ...result.implementation, files: implementationFiles },
+    },
+    bindings: {
+      v2File: { path: path.resolve(v2File), sha256: v2Sha256 },
+      remoteTimeRecord: {
+        path: path.resolve(remoteTimeRecordPath),
+        sha256: sha256(recordBytes),
+      },
+    },
+  };
+}
+
 export function buildQualityVerdict(options) {
-  const inputs = loadQualityInputs(options);
+  const { firstRun = null, ...loadOptions } = options;
+  const inputs = loadQualityInputs(loadOptions);
   const { bindings, ...rest } = inputs;
+  // v2 §0 (D7): checked before anything is computed. The command line always
+  // passes it; a caller that does not (the unit tests of the pure checks)
+  // gets no `firstRunPrecheck` in the output.
+  const first = firstRun
+    ? loadFirstRunInputs({ ...firstRun, allowList: rest.allowList })
+    : null;
   const verdict = evaluateQualityVerdict(rest);
-  return { ...verdict, bindings };
+  return {
+    ...verdict,
+    ...(first ? { firstRunPrecheck: first.result } : {}),
+    bindings: first ? { ...bindings, ...first.bindings } : bindings,
+  };
 }
 
 /** Recomputes every bound file's sha256; returns the mismatches. */
@@ -371,6 +753,8 @@ export function verifyBindings(
     ...(b.receipts ?? []),
     ...(b.parityReceipts ?? []),
     b.ledger,
+    b.v2File,
+    b.remoteTimeRecord,
     ...(b.manifests ?? []),
     ...(b.fixtures ?? []),
     b.k62,
@@ -429,11 +813,16 @@ export function renderSummary(output) {
   );
   const e = c["evidence-validity"].components["edge-binding"];
   lines.push(
-    `| Evidence 100％ | ${SYMBOL[c["evidence-validity"].status]} | edge の束縛だけ：${SYMBOL[e.status]}（${e.variants} variant、検査 ${e.checked} sample、検査できず ${e.skipped}）。残りは not-evaluable |`,
+    `| Evidence 100％ | ${SYMBOL[c["evidence-validity"].status]} | edge の束縛だけ：${SYMBOL[e.status]}（${e.variants} variant、検査 ${e.checked} sample、検査できず ${e.skipped}）、D8 親の合流の寄与：${SYMBOL[c["evidence-validity"].components["graph-contributed-parent-counted"]?.status ?? "hold"]}。残りは not-evaluable |`,
   );
   const fa = c["forbidden-contribution"].components;
   lines.push(
-    `| 禁止寄与 0 | ${SYMBOL[c["forbidden-contribution"].status]} | (a) 禁止 Scene・blocked 候補：${SYMBOL[fa["a-forbidden-scene-or-blocked-candidate"].status]}（違反 ${fa["a-forbidden-scene-or-blocked-candidate"].violatingSamples} sample）、(b) 遅れた Graph：${SYMBOL[fa["b-late-graph-in-display"].status]}（違反 ${fa["b-late-graph-in-display"].violatingSamples} sample）。(c) は not-evaluable |`,
+    `| 禁止寄与 0 | ${SYMBOL[c["forbidden-contribution"].status]} | (a) 禁止 Scene・blocked 候補：${SYMBOL[fa["a-forbidden-scene-or-blocked-candidate"].status]}（違反 ${fa["a-forbidden-scene-or-blocked-candidate"].violatingSamples} sample）、(b) 遅れた Graph：${SYMBOL[fa["b-late-graph-in-display"].status]}（違反 ${fa["b-late-graph-in-display"].violatingSamples} sample）、D3 の index-ready の取り直し：${SYMBOL[fa["a2-index-ready-requery-forbidden"].status]}。(c) は not-evaluable |`,
+  );
+  const a2 = fa["a2-index-ready-requery-forbidden"];
+  lines.push("");
+  lines.push(
+    `D3 の開示（条件に数えない）：対象の子 ${a2.eligibleChildren}、Graph を出した子 ${a2.graphShownChildren}（edge ${a2.graphEdgeCount} 件）、期待の外の追加 ${a2.outsideExpectationAdded} 件、D2 に残った index-ready の子 ${a2.keptAsChildren}（欠けた条件：${a2.keptAsChildrenMissing.map((entry) => `${entry.variantKey}#${entry.repeat}=(${entry.missingConditions.join(",")})`).join("、") || "なし"}）。`,
   );
   lines.push("");
   lines.push("## variant ごと");
@@ -477,6 +866,14 @@ function main() {
       summary: { type: "string" },
       verify: { type: "string" },
       root: { type: "string" },
+      "v2-file": { type: "string" },
+      "v2-commit": { type: "string" },
+      "impl-commit": { type: "string" },
+      "remote-time-record": { type: "string" },
+      "sp-p4-dir": { type: "string", multiple: true },
+      "trace-dir": { type: "string", multiple: true },
+      "negative-dir": { type: "string", multiple: true },
+      "g01-diagnostic-dir": { type: "string", multiple: true },
     },
   });
   const root = values.root ?? DEFAULT_ROOT;
@@ -495,12 +892,41 @@ function main() {
   }
   if (!values["gold-dir"] || !values["allow-list"] || !values.out)
     throw precheck("--gold-dir, --allow-list and --out are required");
+  // v2 §0: no verdict without the first-run inputs (every one is required;
+  // checked before anything is read).
+  for (const name of [
+    "v2-file",
+    "v2-commit",
+    "impl-commit",
+    "remote-time-record",
+    "sp-p4-dir",
+    "trace-dir",
+    "parity-dir",
+    "negative-dir",
+    "g01-diagnostic-dir",
+  ])
+    if (!values[name] || values[name].length === 0)
+      throw precheck(`v2 §0: --${name} is required`);
   const output = buildQualityVerdict({
     root,
     goldDir: values["gold-dir"],
     parityDir: values["parity-dir"] ?? null,
     allowListPath: values["allow-list"],
     ledgerPath: values.ledger ?? null,
+    firstRun: {
+      v2File: values["v2-file"],
+      v2Commit: values["v2-commit"],
+      implCommit: values["impl-commit"],
+      remoteTimeRecordPath: values["remote-time-record"],
+      dirs: {
+        "sp-p4": values["sp-p4-dir"],
+        trace: values["trace-dir"],
+        parity: values["parity-dir"],
+        gold: values["gold-dir"],
+        negative: values["negative-dir"],
+        "g01-diagnostic": values["g01-diagnostic-dir"],
+      },
+    },
   });
   writeFileSync(values.out, `${JSON.stringify(output, null, 2)}\n`);
   if (values.summary) writeFileSync(values.summary, renderSummary(output));

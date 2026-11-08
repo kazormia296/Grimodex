@@ -64,7 +64,13 @@ const DPRIME_COUNTER_KEYS = Object.freeze([
   "prepareFailures",
   "driftAtQuery",
   "stamp0Missing",
+  // K6/6 変える点 7: R-6 (b) reads these two. The evaluation Native already
+  // reports them (`nir1_graph_eval/mod.rs`); a record whose counters carry no
+  // such key (a (b) trace, `trace-record.mjs`) keeps the seven keys above.
+  "preparesStarted",
+  "preparesReady",
 ]);
+const STEADY_ONLY_COUNTER_KEYS = new Set(["preparesStarted", "preparesReady"]);
 
 /**
  * R1 (K6/4:192) observed by the harness just before the query: (1) the slot
@@ -377,12 +383,19 @@ export function buildFollowUpRecord({
   r2,
   expectedContribution,
   materialContribution = null,
+  // K6/6 FR-7 (the dev rehearsal): a dev preview keeps F6 on Scenes for the
+  // child (DR-CP4-F-6, review P3 (f)) but FR-7 can only be rehearsed on the
+  // Revision unit, so it hands a resolver for the parent's contribution
+  // alone. A formal run passes `materialContribution` and no such resolver.
+  parentMaterialContribution = null,
 }) {
   const view = viewOf(observation);
   view.expectedContribution = expectedContribution ?? null;
   // DR-CP4-N-4: the formal run matches F6 on the materials' Revisions
   // (material-revision.mjs); the dev preview keeps the Scene-level match.
   view.materialContribution = materialContribution;
+  view.parentMaterialContribution =
+    parentMaterialContribution ?? materialContribution;
   view.mixWindow = mixWindowOf(observation);
   const { parent, child } = view;
   if (!parent?.result)
@@ -440,6 +453,22 @@ export function buildFollowUpRecord({
       irSceneIds: parentResult.irSceneIds,
       ticket: ticketOf(parentRecord),
       irRetryTimer: irRetryTimerOf(parentResult),
+      // K6/6 FR-7: the parent's own contribution, the same unit as F6's
+      // (`contributionOf`), matched on the parent fetch's Graph paths. The
+      // steady state only (R1 is recorded): a (b) trace record keeps its
+      // shape (`trace-record.mjs` is not changed; K6/6 変える点 7).
+      ...(r1 !== null && r1 !== undefined
+        ? {
+            contribution: contributionOf(
+              {
+                ...view,
+                materialContribution: view.parentMaterialContribution,
+              },
+              parent,
+              parentResult,
+            ),
+          }
+        : {}),
     },
     notices: view.notices.map(({ kind, at }) => ({ kind, at })),
     counters: {
@@ -455,7 +484,10 @@ export function buildFollowUpRecord({
     // observable (the owner's counters carry no key; DR-CP4-K64-16 (2)).
     cacheLoss: delta("quarantines") > 0 ? ["quarantine"] : [],
     dPrimeCounters: Object.fromEntries(
-      DPRIME_COUNTER_KEYS.map((key) => [key, delta(key)]),
+      DPRIME_COUNTER_KEYS.map((key) => [key, delta(key)]).filter(
+        ([key, value]) =>
+          value !== undefined || !STEADY_ONLY_COUNTER_KEYS.has(key),
+      ),
     ),
     loading: loadingCommit
       ? {

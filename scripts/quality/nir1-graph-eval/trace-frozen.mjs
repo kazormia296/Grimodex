@@ -28,6 +28,7 @@ import {
   readAdmittedObservationPrep,
   readK64FreezeHead,
   readK65FreezeHead,
+  readK66FreezeHead,
 } from "./admission.mjs";
 import {
   buildRunHead,
@@ -375,6 +376,7 @@ export async function prepareFrozenTrace({
   const {
     readK64Head = readK64FreezeHead,
     readK65Head = readK65FreezeHead,
+    readK66Head = readK66FreezeHead,
     admit = admitGraphCaseRun,
     readPrep = readAdmittedObservationPrep,
     readTraceHeads = readTraceFileHeads,
@@ -394,6 +396,7 @@ export async function prepareFrozenTrace({
   // The K6/4 freeze head first (cheap), before any other read.
   readK64Head({ root, commit: options["k64-commit"] });
   readK65Head({ root, commit: options["k65-commit"] });
+  readK66Head({ root, commit: options["k66-commit"] });
   const kind = options["trace-kind"];
   if (!TRACE_KINDS.includes(kind))
     fail("kind", "--trace-kind is editing or browsing");
@@ -411,6 +414,7 @@ export async function prepareFrozenTrace({
     k62Commit: options["k62-commit"],
     k64Commit: options["k64-commit"],
     k65Commit: options["k65-commit"],
+    k66Commit: options["k66-commit"],
     ...(inputs.ratification5 !== undefined
       ? { ratification5: inputs.ratification5 }
       : {}),
@@ -448,6 +452,7 @@ export async function prepareFrozenTrace({
       k62: admission.head.k62,
       k64: admission.head.k64,
       k65: admission.head.k65,
+      k66: admission.head.k66,
       observationPrep: admission.head.observationPrep,
       traces,
     },

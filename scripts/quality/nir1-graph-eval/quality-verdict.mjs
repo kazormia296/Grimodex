@@ -21,7 +21,7 @@ import {
   GRAPH_EVAL_VARIANTS,
 } from "./constants.mjs";
 import { MEASURED_RUNS_PER_ARM } from "./constants.mjs";
-import { classifyFollowUp } from "./followup.mjs";
+import { classifyFollowUp, nextGraphArmOf } from "./followup.mjs";
 import { selectReceiptsForAggregation } from "./receipt.mjs";
 import { nearestRank, scoreQuery } from "../nir1-retrieval/contract.mjs";
 
@@ -215,9 +215,19 @@ function observedPairs(entry) {
   ).sort();
 }
 
-/** The edge binding of one sample's child against the fixture's expectation. */
-function edgeBindingProblems(sample, expected) {
-  const child = sample.followUp?.child;
+/**
+ * The edge binding of one sample's displayed Graph against the fixture's
+ * expectation. Prereg v2 D6: a first-render sample is read through the
+ * parent's own contribution record (K6/6 FR-7), a follow-up sample through
+ * its child's.
+ */
+function edgeBindingProblems(sample, expected, firstRender = false) {
+  const parentContribution = sample.followUp?.parent?.contribution;
+  const child = firstRender
+    ? parentContribution
+      ? { ...parentContribution, outcome: sample.graph?.outcome }
+      : null
+    : sample.followUp?.child;
   if (!child || child.outcome !== "graph-ready") return null;
   const problems = [];
   if (child.contributionBasis !== "material-revision")
@@ -251,6 +261,219 @@ function edgeBindingProblems(sample, expected) {
   return problems;
 }
 
+/**
+ * Prereg v2 D3 (1)〜(6) for one sample's child (the variant is checked by the
+ * caller): an `index-ready` child that is not a `graph-ready` refresh, started
+ * when the parent's Chronicle Index was not usable (IR `index-unavailable`) and
+ * its Graph Index was, and whose own start found the Chronicle Index usable.
+ */
+export function d3Missing(sample, child) {
+  if (child === null || child === undefined) return [2];
+  const missing = [];
+  if (child.origin !== "index-ready") missing.push(2);
+  if (child.refreshTrigger === "graph-ready") missing.push(3);
+  if (
+    sample.snapshot?.chronicleIndexUsable !== false ||
+    sample.irOutcome !== "index-unavailable"
+  )
+    missing.push(4);
+  if (sample.snapshot?.usable !== true) missing.push(5);
+  if (child.chronicleIndexUsable !== true) missing.push(6);
+  return missing;
+}
+
+export function d3Eligible(sample, child) {
+  return d3Missing(sample, child).length === 0;
+}
+
+/**
+ * The latest typed Revision of one Relation in the setup record. The order is
+ * the frozen fixture's own `revisions` array (the setup prepared them in that
+ * order: the fixture's `setupTimeline` revision steps), handed in as `order`
+ * (a list of Revision IDs); the JSON object's key order is never read. The
+ * last Revision in `order` that the setup record carries for the Relation
+ * wins — a later Revision supersedes an earlier one whatever its decision
+ * (DR-CP4-QV-2 (iv), G-05's reading), a Revision refused at the `decision`
+ * stage included (it was prepared). Only a Revision refused at `prepare`
+ * (it was never made) is not counted. `null` when none binds the Relation.
+ * A setup record row that `order` does not name is not ordered: the caller
+ * (`revisionResolutionProblems`) holds.
+ */
+export function latestTypedRevisionOf(typedRevisions, relationId, order) {
+  let latest = null;
+  for (const id of Array.isArray(order) ? order : []) {
+    const row = typedRevisions?.[id];
+    // (A `prepare` refusal is not written into `typedRevisions` by the setup
+    // driver — it is `setupReceipt.refusedAtSetup`; this row form is kept.)
+    if (!row || row.refusedAtSetup === "prepare") continue;
+    if (
+      !Array.isArray(row.relationIds) ||
+      !row.relationIds.includes(relationId)
+    )
+      continue;
+    latest = typeof row.id === "string" ? row.id : id;
+  }
+  return latest;
+}
+
+/**
+ * Prereg v2 D3 (d), second half: every observed `revision|edge` pair names the
+ * latest typed Revision of that edge's Relation in the setup record. A
+ * different (older) Revision is a fail; a setup record that carries no typed
+ * Revisions, or none for the edge, cannot answer and is a hold (prereg §3).
+ */
+function revisionResolutionProblems(
+  material,
+  typedRevisions,
+  order,
+  refusedAtSetup,
+) {
+  const hasSetup =
+    typedRevisions &&
+    typeof typedRevisions === "object" &&
+    Object.keys(typedRevisions).length > 0;
+  if (!hasSetup)
+    return [{ kind: "hold", code: "d-revision-resolution-unavailable" }];
+  // The order is the frozen fixture's; a setup record that carries a Revision
+  // the fixture does not name (or no fixture order at all) cannot be ordered.
+  const ordered = Array.isArray(order) ? new Set(order) : new Set();
+  if (
+    ordered.size === 0 ||
+    Object.keys(typedRevisions).some((id) => !ordered.has(id))
+  )
+    return [{ kind: "hold", code: "d-revision-order-unavailable" }];
+  // The other direction (v2 C1): a fixture Revision the setup record does not
+  // carry is skipped only when the setup receipt's `refusedAtSetup` records it
+  // refused at the `prepare` stage (the setup driver writes such a Revision
+  // there, never into `typedRevisions`); otherwise it may be the latest one
+  // and the answer cannot be known: hold.
+  const refusedAtPrepare = new Set(
+    (Array.isArray(refusedAtSetup) ? refusedAtSetup : [])
+      .filter((row) => row?.stage === "prepare")
+      .map((row) => row.revisionId),
+  );
+  const unaccounted = [...ordered].filter(
+    (id) => !Object.hasOwn(typedRevisions, id) && !refusedAtPrepare.has(id),
+  );
+  if (unaccounted.length > 0)
+    return [
+      {
+        kind: "hold",
+        code: "d-fixture-revision-not-in-setup",
+        revisions: unaccounted,
+      },
+    ];
+  const out = [];
+  for (const entry of material.observed ?? [])
+    for (const pair of entry.pairs ?? []) {
+      const [revision, edge] = String(pair).split("|");
+      const latest = latestTypedRevisionOf(typedRevisions, edge, order);
+      if (latest === null)
+        out.push({
+          kind: "hold",
+          code: "d-edge-has-no-typed-revision-in-setup",
+          edge,
+        });
+      else if (latest !== revision)
+        out.push({
+          kind: "fail",
+          code: "d-revision-is-not-the-latest",
+          edge,
+          observed: revision,
+          latest,
+        });
+    }
+  return out;
+}
+
+/**
+ * Prereg v2 D3 (a)〜(d): the contribution of an eligible child. (a) what its
+ * list adds to the paired R+IR is no forbidden Scene or blocked candidate;
+ * (b) its Graph's path contributions (`materialRevision.observed[].sceneId`
+ * as logical Scenes, R+IR's own Scenes included) are none either; (c) it
+ * shows no late Graph and publishes at most once; (d) every edge is resolved
+ * (`unresolvedEdges` 0) and each observed Revision is the latest typed
+ * Revision of its edge in the setup record (`typedRevisions`). A missing
+ * `materialRevision` record is a hold.
+ */
+export function d3Problems({
+  child,
+  pair,
+  lists,
+  forbidden,
+  blocked,
+  typedRevisions,
+  typedRevisionOrder,
+  refusedAtSetup,
+}) {
+  const out = [];
+  const bad = (id) => forbidden.has(id) || blocked.has(id);
+  if (child.publishCount > 0) {
+    const added = lists(child.finalSceneIds).filter((id) => !pair.includes(id));
+    const hit = added.filter(bad);
+    if (hit.length > 0)
+      out.push({
+        kind: "fail",
+        code: "a-forbidden-contribution",
+        sceneIds: hit,
+      });
+  }
+  const material = child.materialRevision;
+  const hasRecord = material !== null && typeof material === "object";
+  // The record itself is inspected whenever it exists (whatever the child's
+  // outcome or edgeCount says: fail closed). A child without a record cannot
+  // be checked by (b)(d) and holds, whatever its outcome or edgeCount (prereg
+  // §3 as written; DR-CP4-QV-3). `mayHaveShownGraph` (`graph-ready` with an
+  // edgeCount that is not a proven 0) only decides below whether an empty
+  // record is acceptable.
+  const mayHaveShownGraph =
+    child.outcome === "graph-ready" && child.edgeCount !== 0;
+  if (!hasRecord)
+    out.push({ kind: "hold", code: "b-material-revision-record-missing" });
+  else {
+    const observedEntries = Array.isArray(material.observed)
+      ? material.observed
+      : [];
+    // A child that may have shown a Graph but whose record observed no path
+    // (the probe handed no paths: `resolver(null)` is `observed: []` with
+    // `unresolvedEdges` 0) cannot be checked by (b)(d): hold (prereg §2, §3).
+    if (mayHaveShownGraph && observedEntries.length === 0)
+      out.push({ kind: "hold", code: "b-observed-path-record-empty" });
+    // A path whose Scene has no logical ID in the setup record (`sceneId`
+    // null) cannot be matched against the forbidden and blocked Scenes:
+    // hold, never dropped.
+    if (observedEntries.some((entry) => typeof entry?.sceneId !== "string"))
+      out.push({ kind: "hold", code: "b-observed-scene-has-no-logical-id" });
+    const sceneIds = observedEntries
+      .map((entry) => entry?.sceneId)
+      .filter((id) => typeof id === "string");
+    const hit = sceneIds.filter(bad);
+    if (hit.length > 0)
+      out.push({ kind: "fail", code: "b-forbidden-path", sceneIds: hit });
+    if (material.unresolvedEdges !== 0)
+      out.push({ kind: "fail", code: "d-unresolved-edges" });
+    // A record that observed no path (a child that showed no Graph) has no
+    // Revision to resolve, so the setup's typed Revisions are not needed.
+    const observedPairs = (material.observed ?? []).some(
+      (entry) => (entry.pairs ?? []).length > 0,
+    );
+    if (observedPairs || mayHaveShownGraph)
+      out.push(
+        ...revisionResolutionProblems(
+          material,
+          typedRevisions,
+          typedRevisionOrder,
+          refusedAtSetup,
+        ),
+      );
+  }
+  if (child.lateGraphInDisplay === true)
+    out.push({ kind: "fail", code: "c-late-graph-in-display" });
+  if (child.publishCount > 1)
+    out.push({ kind: "fail", code: "c-published-more-than-once" });
+  return out;
+}
+
 function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
   const key = variant.key;
   const runId = receipt.runId;
@@ -263,6 +486,8 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
     blocked: null,
     pairs: { graph: graph.length, hybrid: hybrid.length, ok },
     holdReasons: [],
+    requeryRowsWithoutVariantKey: 0,
+    requeryRowsUnknownVariantKey: 0,
   };
   if (!ok) {
     row.holdReasons.push(
@@ -296,15 +521,45 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
     expectation.expectedContributions.map((entry) => entry.sceneId),
   );
   const lastShown = [];
+  // Prereg v2 D8: a parent that brought a Graph into the display but was not
+  // counted as a first render (or a not-displayed sample whose list differs
+  // from R+IR) fails conditions 1, 2 and 4; it is no longer a hold.
+  const notDisplayedFailures = [];
+  // Prereg v2 D3: the G-08/chronicle-index-unusable `index-ready` re-query.
+  // The disclosure (not a condition): the eligible children, those that showed
+  // a Graph and their edges, the Scenes they added to R+IR outside the
+  // expectation, and the `index-ready` children D2 keeps with the (3)〜(6) each
+  // lacks.
+  const indexReady = {
+    eligible: 0,
+    graphShown: 0,
+    graphEdgeCount: 0,
+    outsideExpectationAdded: 0,
+    outOfD3: 0,
+    outOfD3Rows: [],
+    problems: [],
+  };
+  const nexts = nextGraphArmOf(graph);
   for (const sample of graph) {
     const pair = pairList.get(sample.repeat);
-    const result = classifyFollowUp(sample, { context: "steady" });
+    const result = classifyFollowUp(sample, {
+      context: "steady",
+      next: nexts.get(sample),
+    });
     if (result.violations.length > 0)
       violationsB.push({
         repeat: sample.repeat,
         violations: result.violations,
       });
-    for (const record of [sample.followUp?.parent, sample.followUp?.child])
+    // Prereg v2 D2·D4: the follow-up record's own `requeries[]` rows are read
+    // as N29·N32 like the child (a late Graph in the display, two publishes).
+    for (const record of [
+      sample.followUp?.parent,
+      sample.followUp?.child,
+      ...(Array.isArray(sample.followUp?.requeries)
+        ? sample.followUp.requeries
+        : []),
+    ])
       if (
         record &&
         (record.lateGraphInDisplay === true || record.publishCount > 1)
@@ -318,8 +573,15 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
           ],
         });
     const child = sample.followUp?.child;
+    // D2/D3: only a child that meets D3's six conditions is set apart from
+    // the "child" of K6/4:52 and checked by D3; every other child (including
+    // an `index-ready` one missing a condition) stays a child (fail closed).
+    const d3 =
+      variant.key === "G-08/chronicle-index-unusable" &&
+      d3Eligible(sample, child);
     const shown = [lists(sample.finalSceneIds)];
-    if (child && child.publishCount > 0) shown.push(lists(child.finalSceneIds));
+    if (child && child.publishCount > 0 && !d3)
+      shown.push(lists(child.finalSceneIds));
     lastShown.push(shown.at(-1));
     const contribution = unique(
       shown.flatMap((list) => list.filter((id) => !pair.includes(id))),
@@ -329,6 +591,25 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
     );
     if (bad.length > 0)
       violationsA.push({ repeat: sample.repeat, sceneIds: bad });
+    // v2 C6 (ii): a `followUp.requeries` row that carries a Scene list adds to
+    // the paired R+IR like a child does; a forbidden Scene or blocked
+    // candidate is condition 5 (a) (a row without a list is N29·N32's).
+    for (const requery of Array.isArray(sample.followUp?.requeries)
+      ? sample.followUp.requeries
+      : []) {
+      if (!Array.isArray(requery?.finalSceneIds)) continue;
+      const hit = unique(
+        lists(requery.finalSceneIds).filter(
+          (id) => !pair.includes(id) && (forbidden.has(id) || blocked.has(id)),
+        ),
+      );
+      if (hit.length > 0)
+        violationsA.push({
+          repeat: sample.repeat,
+          sceneIds: hit,
+          reason: "followup-requery-row-forbidden-or-blocked-contribution",
+        });
+    }
     const baseline = unique(shown.flat()).filter(
       (id) => forbidden.has(id) && pair.includes(id),
     );
@@ -341,6 +622,7 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
       const shownGraph =
         sample.graph?.joined === true ||
         (child &&
+          !d3 &&
           child.outcome === "graph-ready" &&
           child.publishCount > 0 &&
           (child.edgeCount ?? 0) > 0);
@@ -367,14 +649,60 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
         ] += 1;
       } else {
         counts.notDisplayed += 1;
-        if (!sameList(lists(sample.finalSceneIds), pair))
-          row.holdReasons.push("not-displayed-sample-differs-from-r-plus-ir");
+        if (result.parentContributed)
+          notDisplayedFailures.push({
+            repeat: sample.repeat,
+            reason: "graph-contributed-parent-not-counted-as-first-render",
+            firstRenderFails: result.firstRenderFails,
+          });
+        else if (!sameList(lists(sample.finalSceneIds), pair))
+          notDisplayedFailures.push({
+            repeat: sample.repeat,
+            reason: "not-displayed-sample-differs-from-r-plus-ir",
+          });
       }
+    }
+    if (d3) {
+      indexReady.eligible += 1;
+      const problems = d3Problems({
+        sample,
+        child,
+        pair,
+        lists,
+        forbidden,
+        blocked,
+        typedRevisions:
+          receipt?.settings?.setupReceipt?.logicalToRuntime?.typedRevisions,
+        typedRevisionOrder: expectation.typedRevisionOrder,
+        refusedAtSetup: receipt?.settings?.setupReceipt?.refusedAtSetup,
+      });
+      if (child.outcome === "graph-ready" && (child.edgeCount ?? 0) > 0) {
+        indexReady.graphShown += 1;
+        indexReady.graphEdgeCount += child.edgeCount;
+      }
+      if (child.publishCount > 0)
+        indexReady.outsideExpectationAdded += unique(
+          lists(child.finalSceneIds).filter(
+            (id) => !pair.includes(id) && !expectedScenes.has(id),
+          ),
+        ).length;
+      for (const problem of problems)
+        indexReady.problems.push({ repeat: sample.repeat, ...problem });
+    } else if (
+      variant.key === "G-08/chronicle-index-unusable" &&
+      child?.origin === "index-ready"
+    ) {
+      indexReady.outOfD3 += 1;
+      indexReady.outOfD3Rows.push({
+        repeat: sample.repeat,
+        missingConditions: d3Missing(sample, child),
+      });
     }
     if (expectation.expectedContributions.length > 0) {
       const problems = edgeBindingProblems(
         sample,
         expectation.expectedContributions,
+        result.firstRender,
       );
       if (problems === null) edgeSkipped += 1;
       else {
@@ -383,6 +711,54 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
           edgeProblems.push({ repeat: sample.repeat, problems });
       }
     }
+  }
+
+  // Prereg v2 D4: the receipt's top-level `requeries` rows (trigger other than
+  // `user-operation`) that carry a Scene list contribute like a child: what
+  // they add to the paired R+IR must be no forbidden Scene or blocked
+  // candidate. A row whose pair cannot be found (no `repeat` of a measured pair)
+  // is matched against the forbidden and blocked Scenes alone. A row without a
+  // Scene list is N29/N32's (classifyFollowUp). An R+IR arm row is the baseline.
+  for (const requery of Array.isArray(receipt.requeries)
+    ? receipt.requeries
+    : []) {
+    // A row that names no variant, or one the catalog does not know (a
+    // misspelling), cannot be attributed to any variant and is never dropped:
+    // condition 5 holds for every Graph arm variant (v2 C5, DR-CP4-QV-3; see
+    // `a3-requery-row-unattributable`). A row of the R+IR arm
+    // (`arm: "hybrid"`) is the baseline the others are read against, so it is
+    // outside D4 (a deviation from the draft's letter, recorded in the DR).
+    if (
+      requery !== null &&
+      typeof requery === "object" &&
+      requery.trigger !== "user-operation"
+    ) {
+      if (typeof requery.variantKey !== "string")
+        row.requeryRowsWithoutVariantKey += 1;
+      else if (!GRAPH_EVAL_VARIANTS.some((v) => v.key === requery.variantKey))
+        row.requeryRowsUnknownVariantKey += 1;
+    }
+    if (
+      requery?.variantKey !== key ||
+      requery.trigger === "user-operation" ||
+      requery.arm === "hybrid" ||
+      !Array.isArray(requery.finalSceneIds)
+    )
+      continue;
+    const paired = pairList.get(requery.repeat) ?? [];
+    const added = lists(requery.finalSceneIds).filter(
+      (id) => !paired.includes(id),
+    );
+    const hit = unique(
+      added.filter((id) => forbidden.has(id) || blocked.has(id)),
+    );
+    if (hit.length > 0)
+      violationsA.push({
+        repeat: requery.repeat ?? null,
+        sceneIds: hit,
+        reason: "requery-row-forbidden-or-blocked-contribution",
+        trigger: requery.trigger ?? null,
+      });
   }
 
   let graphList;
@@ -398,6 +774,8 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
       row.holdReasons.push("displayed-lists-differ");
   }
   row.displayed = counts;
+  row.notDisplayedFailures = notDisplayedFailures;
+  row.indexReadyRequery = indexReady;
   row.lists = { rPlusIr: hybridList, graph: graphList ?? null };
 
   // Metrics. A list the scorer refuses (ineligible, duplicate) holds.
@@ -458,6 +836,8 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
 
 function finishHeldRow(row, expectation) {
   row.displayed = null;
+  row.notDisplayedFailures = [];
+  row.indexReadyRequery = null;
   row.lists = null;
   row.metrics = null;
   row.expectedMetrics = expectation.metrics;
@@ -477,10 +857,12 @@ function finishHeldRow(row, expectation) {
   return row;
 }
 
-function evidenceComponents(edgeStatus) {
+function evidenceComponents(edgeStatus, contributionStatus = "n/a") {
   const missing = (reason) => ({ status: "not-evaluable", reason });
   return {
     "edge-binding": { status: edgeStatus },
+    // Prereg v2 D8: a Graph that reached a display without being counted.
+    "graph-contributed-parent-counted": { status: contributionStatus },
     "utf16-range": missing("not-in-the-receipt"),
     "explicit-pin-association": missing("not-in-the-receipt"),
     "raw-excerpt-unchanged": missing("not-in-the-receipt"),
@@ -490,11 +872,19 @@ function evidenceComponents(edgeStatus) {
 
 function finishRow(row, expectation, tolerance) {
   const held = row.holdReasons.length > 0;
+  // Prereg v2 D8 (K6/4:171, K6/6 変える点 6): conditions 1 and 2, and 4 for a
+  // variant with an expectation, fail.
+  const notDisplayedFail = row.notDisplayedFailures.length > 0;
   const g = row.metrics?.graph;
   const h = row.metrics?.rPlusIr;
   const comparable = !held && g && h;
   const g01 = (() => {
     if (!expectation.predeclaredImprovement) return { status: "n/a" };
+    if (notDisplayedFail)
+      return {
+        status: "fail",
+        reasons: row.notDisplayedFailures.map((entry) => entry.reason),
+      };
     if (!comparable) return { status: "hold", reasons: row.holdReasons };
     const improved =
       g.ndcgAt8 > h.ndcgAt8 + tolerance &&
@@ -512,18 +902,39 @@ function finishRow(row, expectation, tolerance) {
       },
     };
   })();
-  const macro = !comparable
-    ? { status: "hold", reasons: row.holdReasons }
-    : {
-        status:
-          g.recallAt8 + tolerance >= h.recallAt8 &&
-          g.ndcgAt8 + tolerance >= h.ndcgAt8
-            ? "pass"
-            : "fail",
-        deltaRecallAt8: g.recallAt8 - h.recallAt8,
-        deltaNdcgAt8: g.ndcgAt8 - h.ndcgAt8,
-      };
-  const evidenceParts = evidenceComponents(row.edgeBinding.status);
+  const macro = notDisplayedFail
+    ? {
+        status: "fail",
+        reasons: row.notDisplayedFailures.map((entry) => entry.reason),
+      }
+    : !comparable
+      ? { status: "hold", reasons: row.holdReasons }
+      : {
+          status:
+            g.recallAt8 + tolerance >= h.recallAt8 &&
+            g.ndcgAt8 + tolerance >= h.ndcgAt8
+              ? "pass"
+              : "fail",
+          deltaRecallAt8: g.recallAt8 - h.recallAt8,
+          deltaNdcgAt8: g.ndcgAt8 - h.ndcgAt8,
+        };
+  const evidenceParts = evidenceComponents(
+    row.edgeBinding.status,
+    expectation.expectedContributions.length === 0
+      ? "n/a"
+      : notDisplayedFail
+        ? "fail"
+        : "pass",
+  );
+  const indexReady = row.indexReadyRequery;
+  const indexReadyStatus =
+    indexReady === null || indexReady.eligible === 0
+      ? "n/a"
+      : indexReady.problems.some((entry) => entry.kind === "fail")
+        ? "fail"
+        : indexReady.problems.some((entry) => entry.kind === "hold")
+          ? "hold"
+          : "pass";
   const forbiddenParts = {
     "a-forbidden-scene-or-blocked-candidate": {
       status: row.forbidden.a.violations.length > 0 ? "fail" : "pass",
@@ -532,6 +943,16 @@ function finishRow(row, expectation, tolerance) {
     "b-late-graph-in-display": {
       status: row.forbidden.b.violations.length > 0 ? "fail" : "pass",
       violations: row.forbidden.b.violations.length,
+    },
+    "a2-index-ready-requery-forbidden": {
+      status: indexReadyStatus,
+      eligible: indexReady?.eligible ?? 0,
+      graphShown: indexReady?.graphShown ?? 0,
+      graphEdgeCount: indexReady?.graphEdgeCount ?? 0,
+      outsideExpectationAdded: indexReady?.outsideExpectationAdded ?? 0,
+      outOfD3: indexReady?.outOfD3 ?? 0,
+      outOfD3Rows: indexReady?.outOfD3Rows ?? [],
+      problems: indexReady?.problems ?? [],
     },
     "c-existing-24-graph-appearance-and-dto": {
       status: "not-evaluable",
@@ -667,10 +1088,30 @@ export function evaluateQualityVerdict({
         };
 
   // 2. macro non-regression (G-case scope only).
+  // Prereg v2 D8 first: a variant that brought a Graph into the display
+  // without being counted (or whose not-displayed sample differs from R+IR)
+  // is a FAIL of condition 2 whatever the other variants hold, and it may have
+  // no Graph list at all (`metrics.graph` null: nothing was displayed), so the
+  // mean is never taken over it (the row's own macro is that fail already).
   const mean = (rows, arm, metric) =>
     rows.reduce((sum, row) => sum + row.metrics[arm][metric], 0) / rows.length;
+  const notDisplayedRows = live.filter(
+    (row) => row.notDisplayedFailures.length > 0,
+  );
   let gcase;
-  if (
+  if (notDisplayedRows.length > 0) {
+    gcase = {
+      status: "fail",
+      variants: live.length,
+      notDisplayedFailures: notDisplayedRows.map((row) => ({
+        variantKey: row.variantKey,
+        repeats: row.notDisplayedFailures.map((entry) => entry.repeat),
+        reasons: [
+          ...new Set(row.notDisplayedFailures.map((entry) => entry.reason)),
+        ],
+      })),
+    };
+  } else if (
     live.length === 0 ||
     live.some((row) => row.conditions["macro-non-regression"].status === "hold")
   ) {
@@ -748,7 +1189,17 @@ export function evaluateQualityVerdict({
     edgeRows.length === 0
       ? "hold"
       : worstStatus(edgeRows.map((row) => row.edgeBinding.status));
-  const evidenceParts = evidenceComponents(edgeStatus);
+  const evidenceParts = evidenceComponents(
+    edgeStatus,
+    worstStatus(
+      live.map(
+        (row) =>
+          row.conditions["evidence-validity"].components?.[
+            "graph-contributed-parent-counted"
+          ]?.status ?? "n/a",
+      ),
+    ),
+  );
   evidenceParts["edge-binding"].variants = edgeRows.length;
   evidenceParts["edge-binding"].checked = edgeRows.reduce(
     (sum, row) => sum + row.edgeBinding.checked,
@@ -796,6 +1247,69 @@ export function evaluateQualityVerdict({
         ),
       ),
       violatingSamples: countOf((row) => row.forbidden.b?.violations ?? []),
+    },
+    // Prereg v2 D3 (G-08/chronicle-index-unusable's `index-ready` re-query).
+    "a2-index-ready-requery-forbidden": {
+      status: worstStatus(
+        live.map(
+          (row) =>
+            row.conditions["forbidden-contribution"].components?.[
+              "a2-index-ready-requery-forbidden"
+            ]?.status ?? "n/a",
+        ),
+      ),
+      eligibleChildren: live.reduce(
+        (sum, row) => sum + (row.indexReadyRequery?.eligible ?? 0),
+        0,
+      ),
+      graphShownChildren: live.reduce(
+        (sum, row) => sum + (row.indexReadyRequery?.graphShown ?? 0),
+        0,
+      ),
+      graphEdgeCount: live.reduce(
+        (sum, row) => sum + (row.indexReadyRequery?.graphEdgeCount ?? 0),
+        0,
+      ),
+      outsideExpectationAdded: live.reduce(
+        (sum, row) =>
+          sum + (row.indexReadyRequery?.outsideExpectationAdded ?? 0),
+        0,
+      ),
+      keptAsChildren: live.reduce(
+        (sum, row) => sum + (row.indexReadyRequery?.outOfD3 ?? 0),
+        0,
+      ),
+      keptAsChildrenMissing: live.flatMap((row) =>
+        (row.indexReadyRequery?.outOfD3Rows ?? []).map((entry) => ({
+          variantKey: row.variantKey,
+          ...entry,
+        })),
+      ),
+      problems: live.flatMap((row) =>
+        (row.indexReadyRequery?.problems ?? []).map((entry) => ({
+          variantKey: row.variantKey,
+          ...entry,
+        })),
+      ),
+    },
+    // v2 C5: a top-level re-query row with no `variantKey` cannot be
+    // attributed to a variant, so condition 5 holds for all of them.
+    "a3-requery-row-unattributable": {
+      status: live.some(
+        (row) =>
+          row.requeryRowsWithoutVariantKey + row.requeryRowsUnknownVariantKey >
+          0,
+      )
+        ? "hold"
+        : "n/a",
+      rowsWithoutVariantKey: live.reduce(
+        (sum, row) => sum + row.requeryRowsWithoutVariantKey,
+        0,
+      ),
+      rowsWithUnknownVariantKey: live.reduce(
+        (sum, row) => sum + row.requeryRowsUnknownVariantKey,
+        0,
+      ),
     },
     "c-existing-24-graph-appearance-and-dto": {
       status: "not-evaluable",

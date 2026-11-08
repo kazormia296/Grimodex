@@ -1,0 +1,365 @@
+[
+  {
+    "id": "C7-indexUsable",
+    "spn": "C7",
+    "file": "trace-record.mjs",
+    "find": "snapshot.indexUsable === false &&",
+    "replace": "true &&",
+    "testFile": "trace-record.test.mjs",
+    "expected": [
+      {
+        "file": "trace-record.test.mjs",
+        "line": 2770,
+        "titlePrefix": "DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySup"
+      }
+    ]
+  },
+  {
+    "id": "C7-querySupported",
+    "spn": "C7",
+    "file": "trace-record.mjs",
+    "find": "snapshot.querySupported === true &&",
+    "replace": "true &&",
+    "testFile": "trace-record.test.mjs",
+    "expected": [
+      {
+        "file": "trace-record.test.mjs",
+        "line": 2770,
+        "titlePrefix": "DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySup"
+      }
+    ]
+  },
+  {
+    "id": "C7-irStatus",
+    "spn": "C7",
+    "file": "trace-record.mjs",
+    "find": "result.irStatus === \"unavailable\" &&",
+    "replace": "true &&",
+    "testFile": "trace-record.test.mjs",
+    "expected": [
+      {
+        "file": "trace-record.test.mjs",
+        "line": 2770,
+        "titlePrefix": "DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySup"
+      }
+    ]
+  },
+  {
+    "id": "C7-irReason",
+    "spn": "C7",
+    "file": "trace-record.mjs",
+    "find": "result.irReason === CHRONICLE_STOP_IR_REASON &&",
+    "replace": "true &&",
+    "testFile": "trace-record.test.mjs",
+    "expected": [
+      {
+        "file": "trace-record.test.mjs",
+        "line": 2770,
+        "titlePrefix": "DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySup"
+      }
+    ]
+  },
+  {
+    "id": "C7-graphOutcome",
+    "spn": "C7",
+    "file": "trace-record.mjs",
+    "find": "result.graphOutcome === CHRONICLE_STOP_GRAPH_OUTCOME",
+    "replace": "true",
+    "testFile": "trace-record.test.mjs",
+    "expected": [
+      {
+        "file": "trace-record.test.mjs",
+        "line": 2770,
+        "titlePrefix": "DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySup"
+      }
+    ]
+  },
+  {
+    "id": "C7-total-count",
+    "spn": "C7",
+    "file": "trace-record.mjs",
+    "find": "stopped.length !== stoppedFetches.length ||",
+    "replace": "false ||",
+    "testFile": "trace-record.test.mjs",
+    "expected": [],
+    "equivalent": true,
+    "equivalentReason": "総数の照合 stopped.length !== stoppedFetches.length は、直後の「条件を満たす fetch ごとにちょうど 1 つの begin」の照合 stoppedFetches.some(beginsOf !== 1) に含まれる。外した begin は必ず条件を満たす fetch の begin で（stopped は chronicleStopFetch を満たす owner の begin だけ）、全 fetch で beginsOf が 1 なら総数は fetch の数と等しい。したがってこの照合を外しても判定は変わらない（等価の変異。生き残るのが期待）"
+  },
+  {
+    "id": "C7-per-fetch-begin",
+    "spn": "C7",
+    "file": "trace-record.mjs",
+    "find": "stoppedFetches.some((fetch) => beginsOf(fetch) !== 1)",
+    "replace": "false",
+    "testFile": "trace-record.test.mjs",
+    "expected": [
+      {
+        "file": "trace-record.test.mjs",
+        "line": 3127,
+        "titlePrefix": "DR-CP4-C7: 総数が合っても内訳が違えば整列の失敗（begin が 0 の fetch "
+      }
+    ]
+  },
+  {
+    "id": "C7-clock-range",
+    "spn": "C7",
+    "file": "trace-record.mjs",
+    "find": "else if (stopped.length > 0 && !reads)",
+    "replace": "else if (false)",
+    "testFile": "trace-record.test.mjs",
+    "expected": [
+      {
+        "file": "trace-record.test.mjs",
+        "line": 2967,
+        "titlePrefix": "DR-CP4-C7: 外した begin があるのに Native の読取の時計の範囲が求められ"
+      }
+    ]
+  },
+  {
+    "id": "C7-lapse-count",
+    "spn": "C7",
+    "file": "trace-record.mjs",
+    "find": "countedAs: \"i-chronicle-stop\",",
+    "replace": "countedAs: \"i-other\",",
+    "testFile": "trace-record.test.mjs",
+    "expected": [
+      {
+        "file": "trace-record.test.mjs",
+        "line": 2621,
+        "titlePrefix": "DR-CP4-C7: 外す条件を満たす begin は対応から外し、親は defect にせず "
+      }
+    ]
+  },
+  {
+    "id": "K65-N1-receipt-values",
+    "spn": "K6/5-N1・N4",
+    "file": "receipt.mjs",
+    "find": "if (value?.[key] !== expected)",
+    "replace": "if (false)",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 634,
+        "titlePrefix": "K6/5-N1・N4: settings.k64 の D・B・Hybrid p95 の上限が契約"
+      }
+    ]
+  },
+  {
+    "id": "K65-N1-loader-values",
+    "spn": "K6/5-N1・N4",
+    "file": "procedure-file.mjs",
+    "find": "} else if (actual !== expected)",
+    "replace": "} else if (false)",
+    "testFile": "procedure-file.test.mjs",
+    "expected": [
+      {
+        "file": "procedure-file.test.mjs",
+        "line": 130,
+        "titlePrefix": "手順のファイル: 契約の値と違う値は、広げる・狭めるを問わず拒む（変える点 16 の狭める版は未"
+      }
+    ]
+  },
+  {
+    "id": "K65-N1-late-graph-boundary",
+    "spn": "K6/5-N1",
+    "file": "k64-record.mjs",
+    "find": "lateGraphShown(view, parent, GRAPH_EVAL_D_MS)",
+    "replace": "lateGraphShown(view, parent, 10.84)",
+    "testFile": "k64-record.test.mjs",
+    "expected": [
+      {
+        "file": "k64-record.test.mjs",
+        "line": 292,
+        "titlePrefix": "R7: 親の表示に D の後の Graph が混ざれば記録に残す（N1）。seed の無い Gr"
+      }
+    ]
+  },
+  {
+    "id": "K65-N2-admission-wait",
+    "spn": "K6/5-N2",
+    "file": "admission.mjs",
+    "find": "evidence.dForty.config.waitMs !== need.waitMs",
+    "replace": "false",
+    "testFile": "admission.test.mjs",
+    "expected": [
+      {
+        "file": "admission.test.mjs",
+        "line": 736,
+        "titlePrefix": "K6/5-N2（変える点 6）: 候補の製品の D が 40 ms でない（#802 が祖先に無"
+      },
+      {
+        "file": "admission.test.mjs",
+        "line": 802,
+        "titlePrefix": "K6/5 変える点 6（readDFortyEvidence）: 定数は comment の外の"
+      },
+      {
+        "file": "admission.test.mjs",
+        "line": 949,
+        "titlePrefix": "K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（com"
+      },
+      {
+        "file": "admission.test.mjs",
+        "line": 1153,
+        "titlePrefix": "K6/5-N2・N3: assertReceiptHeadBound は head.k65（co"
+      }
+    ]
+  },
+  {
+    "id": "K65-N2-admission-ancestor",
+    "spn": "K6/5-N2",
+    "file": "admission.mjs",
+    "find": "evidence.dForty.ancestor !== true",
+    "replace": "false",
+    "testFile": "admission.test.mjs",
+    "expected": [
+      {
+        "file": "admission.test.mjs",
+        "line": 736,
+        "titlePrefix": "K6/5-N2（変える点 6）: 候補の製品の D が 40 ms でない（#802 が祖先に無"
+      },
+      {
+        "file": "admission.test.mjs",
+        "line": 949,
+        "titlePrefix": "K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（com"
+      }
+    ]
+  },
+  {
+    "id": "K65-N2-sample-window",
+    "spn": "K6/5-N2",
+    "file": "followup.mjs",
+    "find": "parent.graphWindowMs !== GRAPH_EVAL_D_MS",
+    "replace": "false",
+    "testFile": "followup.test.mjs",
+    "expected": [
+      {
+        "file": "followup.test.mjs",
+        "line": 517,
+        "titlePrefix": "K6/4-N30: 合流の窓の値が W_f と違う、子の IR の deadline が D よ"
+      }
+    ]
+  },
+  {
+    "id": "K65-N2-sample-window-null",
+    "spn": "K6/5-N2",
+    "file": "followup.mjs",
+    "find": "parent.graphWindowMs === null ||",
+    "replace": "false ||",
+    "testFile": "followup.test.mjs",
+    "expected": [],
+    "equivalent": true,
+    "equivalentReason": "null の窓の検査 parent.graphWindowMs === null は、次の !Number.isFinite(parent.graphWindowMs) が null で true になるので、外しても判定は変わらない（等価の変異。生き残るのが期待）"
+  },
+  {
+    "id": "K65-N3-head-sha",
+    "spn": "K6/5-N3",
+    "file": "receipt.mjs",
+    "find": "head?.k65?.sha256 !== freeze65.sha256",
+    "replace": "false",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 346,
+        "titlePrefix": "K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit "
+      }
+    ]
+  },
+  {
+    "id": "K65-N3-head-commit",
+    "spn": "K6/5-N3",
+    "file": "receipt.mjs",
+    "find": "head?.k65?.freezeCommit !== freeze65.freezeCommit",
+    "replace": "false",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 346,
+        "titlePrefix": "K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit "
+      }
+    ]
+  },
+  {
+    "id": "K65-N3-head-required",
+    "spn": "K6/5-N3",
+    "file": "receipt.mjs",
+    "find": "if (formalGraph || head?.k65 !== undefined) {",
+    "replace": "if (false) {",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 346,
+        "titlePrefix": "K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit "
+      }
+    ]
+  },
+  {
+    "id": "K65-N4-verdict-values",
+    "spn": "K6/5-N4",
+    "file": "quality-verdict.mjs",
+    "find": "if (values?.[key] !== expected)",
+    "replace": "if (false)",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1112,
+        "titlePrefix": "no threshold is written in the verdict code; the"
+      }
+    ]
+  },
+  {
+    "id": "K65-N4-p95-limit",
+    "spn": "K6/5-N4",
+    "file": "quality-verdict.mjs",
+    "find": "limit: values.hybridP95LimitMs,",
+    "replace": "limit: 65.04,",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 472,
+        "titlePrefix": "K6/5-N4（条件 3）: Hybrid p95 の判定の境界は 94.2 ms で、65.0"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 526,
+        "titlePrefix": "condition 3 (p95): tReturn - tFetch, nearest-ran"
+      }
+    ]
+  },
+  {
+    "id": "K65-N4-b",
+    "spn": "K6/5-N4",
+    "file": "quality-verdict.mjs",
+    "find": "b: values.bMs,",
+    "replace": "b: 65,",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 526,
+        "titlePrefix": "condition 3 (p95): tReturn - tFetch, nearest-ran"
+      }
+    ]
+  },
+  {
+    "id": "K65-P1-window",
+    "spn": "K6/5-P1",
+    "file": "join.mjs",
+    "find": "const deadline = sample.tRawReady + GRAPH_EVAL_D_MS;",
+    "replace": "const deadline = sample.tRawReady + 10.84;",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 67,
+        "titlePrefix": "K6/6-P1: R1 の下の現実の形"
+      }
+    ],
+    "note": "K6/5-P1 の試験（followup.test.mjs）は K6/6 の変える点 4 で K6/6-P1 に置き換えられたので、この変異の対象の試験を followup.k66.test.mjs の K6/6-P1 に移した（7 回目の取り直し）。"
+  }
+]

@@ -1,0 +1,144 @@
+{
+  "schema": "nir1-pubg-16-g01-e2e/1",
+  "run": "g01-e2e-s6r1-1",
+  "mode": "g01-frozen",
+  "diagnostic": {
+    "diagnostic": "g01-e2e",
+    "purpose": "g01-e2e-diagnostic",
+    "fixturePath": "evals/nir1-g01/fixture.v1.json",
+    "fixtureSha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79",
+    "countsInCaseJudgement": false,
+    "session": "separate-diagnostic",
+    "reachedEndToEnd": true,
+    "firstMissing": null,
+    "leaseEvidence": {
+      "continueAvailableGraphOnly": true,
+      "clickKeepClick": true,
+      "requeryCached": true,
+      "requeryContinueAvailable": true,
+      "usedSettle": true
+    }
+  },
+  "candidate": {
+    "commit": "a2309b953873063b97b58942d42fa34d1bfbfc95",
+    "clean": true
+  },
+  "setupReceiptSha256": "5f1503338bcc519c870f5d12a3cb7ffed269d5c63630fcf46d25b80a611d8ca5",
+  "freshnessSettle": {
+    "settled": true,
+    "waitedMs": 4.380130999998073,
+    "polls": 1
+  },
+  "seedPin": {
+    "sceneLive": true,
+    "seedPinned": true
+  },
+  "nodeSha256": "bf6ed4aa840d6ea1a616e4ad95d198962dad9f57fbee6a6d86804111a9d5171b",
+  "workerSha256": "55106a0b721d2e2199c6d5982eb5a5a15ace20656e278bdd29af5384702a84e7",
+  "fixtureSha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79",
+  "declaration": {
+    "declared": true,
+    "effective": true,
+    "indexBefore": {
+      "b": {
+        "generation": 1,
+        "dirty": false
+      },
+      "chronicle": {
+        "generation": 1,
+        "dirty": false
+      }
+    },
+    "indexAfter": {
+      "b": {
+        "generation": 1,
+        "dirty": false
+      },
+      "chronicle": {
+        "generation": 1,
+        "dirty": false
+      }
+    },
+    "indexRebuilt": false
+  },
+  "judgement": {
+    "stages": {
+      "begin": {
+        "status": "pending",
+        "reason": null,
+        "ir": "pending",
+        "ms": 14.899999976158142
+      },
+      "continue": {
+        "status": "available",
+        "reason": null,
+        "graphOnly": true,
+        "pathAttachments": 0,
+        "ms": 17.799999952316284
+      },
+      "click": {
+        "status": "qualified",
+        "reason": null,
+        "ms": 6.700000047683716
+      },
+      "unusedSettle": {
+        "status": "settled"
+      },
+      "graphReady": {
+        "count": 1,
+        "afterSettleMs": 0.3999999761581421
+      },
+      "requery": {
+        "begin": "pending",
+        "beginMs": 13.899999976158142,
+        "continueStatus": "available",
+        "continueReason": null
+      },
+      "settles": [
+        {
+          "settle": "unused",
+          "status": "settled",
+          "reason": null,
+          "ok": true
+        },
+        {
+          "settle": "used",
+          "status": "settled",
+          "reason": null,
+          "ok": true
+        }
+      ],
+      "native": [
+        {
+          "begin": "pending",
+          "reason": null,
+          "outcome": "available",
+          "disposition": "unused"
+        },
+        {
+          "begin": "cached",
+          "reason": null,
+          "outcome": null,
+          "disposition": null
+        }
+      ],
+      "settledSlot": "empty",
+      "errors": 0
+    },
+    "reached": {
+      "begin-pending": true,
+      "continue-available-graph-only": true,
+      "click-keep-click": true,
+      "unused-settle": true,
+      "graph-ready": true,
+      "requery-cached": true,
+      "requery-continue-available": true,
+      "used-settle": true,
+      "slot-empty": true
+    },
+    "allReached": true,
+    "firstMissing": null
+  },
+  "quietAtStart": true,
+  "sessionProblems": []
+}
