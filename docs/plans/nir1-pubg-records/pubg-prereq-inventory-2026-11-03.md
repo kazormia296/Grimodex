@@ -15,7 +15,7 @@
 
 ## 1. 前提の表
 
-状態の数: **済み 14 ／ 残り 25 ／ 不明 7**（計 46 行）。
+状態の数: **済み 18 ／ 残り 21 ／ 不明 7**（計 46 行。2026-11-09 に #23・#24・#31・#34 を済みへ更新：PR #833・#837・#839 の merge による。#32 は試験を追加したが置き場所が未解決のため残りのまま）。
 
 ### 1.1 ゲートと公開条件の大枠
 
@@ -53,8 +53,8 @@
 | 20 | G-pub の記録（CP-2b 時点） | PR #730（MERGED、`dedd0ecd`）、`LD/cp2b-g-pub/README.md` | 済み（CP-2b 時点） | run 40256736959、候補 `10f7db66`、3 OS とも (34) pass（Linux 118/0、macOS 118/0、Windows 120/0） | — |
 | 21 | G-pub を PUB-G の最終候補で採り直すこと（B 案＝署名・公証済みの配布物） | `LD/cp2b-g-pub/README.md` 冒頭「PUB-G の最終候補では採り直す」、LD/cp2b-decisions.md:227 | 残り | 記録は head `10f7db66` に束縛（GDX-TRACE-001）。最終候補の head が違えば証跡にならない | integrator が最終候補で `packaged-smoke.yml` を dispatch（測定）。B 案の配布物の作成手順は TASK §2.3（読んでいない） |
 | 22 | audit 例外の解消（CP-2b を単独で進める条件） | 続行計画:175（2026-10-26 追記）、:10（#760） | 済み | pnpm の GHSA-ch52 は #708、cargo の zip は #719、ProduceSkia の CI 例外は #760 で削除 | — |
-| 23 | worker の path の TOCTOU（spawn の直前の再検証） | LD/cp2b-decisions.md:110（P3-2） | 残り（判断） | 「spawn の直前に path を再検証するか…を PUB-G で決める」 | integrator の技術判断と、必要なら実装 |
-| 24 | owner の Suspended の復帰の配線 | `nir1_graph_product.rs:14`、続行計画:797 | 残り（実装） | コード上のコメント「Still unused: the process worker's start (gated until PUB-G), the Suspended resume hook (PUB-G/CP-4)」 | 実装（integrator の監督） |
+| 23 | worker の path の TOCTOU（spawn の直前の再検証） | LD/cp2b-decisions.md:110（P3-2）、DR-CP2B-TOCTOU-1／-2（PR #839、MERGED 2026-11-08、`1aa40216`） | 済み（実装。2026-11-09 に master の記録で更新） | spawn の直前（唯一の `Command::new` の前）に、constructor と同じ強さの `metadata().is_file()` だけを再検証する（symlink の拒否・実行権限・hash は採らない）。失敗は `NIR1_GRAPH_WORKER_PATH`→`WorkerStartup`→`worker-unavailable`、既存の spawn 失敗と同じ Count（連続 5 回で Suspended）で、quarantine にも `restart-required` にもしない。**security の境界ではなく、失敗の分類の精度と無駄な spawn の回避**と明記。**受け入れた残り**：再検証と exec の間の差し替え（閉じるには fd 固定の exec か実行体の hash の照合が要り、新しい authority／契約で委任外）。read-only advisor は呼べず、#839 の独立レビューを advisor 相当として cp2b-decisions.md に記録 | — |
+| 24 | owner の Suspended の復帰の配線 | `nir1_graph_product.rs:14`、続行計画:797、CP2a-D47〜D49（PR #839、MERGED 2026-11-08、`1aa40216`） | 済み（実装。到達の確認は残り。2026-11-09 に更新） | maintenance cycle の `work_completed` closure から `note_maintenance_work_completed(item)` を呼び、run kind が `Nir1GraphIndexBuild` のときだけ既存の `resume_after_graph_index_change()` を呼ぶ（attempt の記録より前。D47）。D48：hook が slot の lock の中で `graph_index_change` を進め、prepare の最中の publish を `SessionGuard::drop` が同じ lock の中で比べて取りこぼしを無くす。D49：復帰の後の ledger は 0 でなく `failures_before_suspend - 1`（復帰の後は 1 回だけ試す。CP2a-D8 の意味は「最初は 5 回、復帰の後は 1 回」）。hook は project を見ない（どの project の publish でも解ける。今は受け入れ）。D48 の「取りこぼし無し」は Suspended に入る失敗の prepare の最中だけ（失敗が 1〜4 回のときの publish は ledger を戻さない。記録のみ）。process worker の start は gated のまま（`PRODUCT_GRAPH_PUBLISHED = false`） | PUB-G の前の journey で、B の publish の後に Suspended が解けること、複数 project の publish が Suspended を繰り返し解かないことを見る（#839 の未決） |
 
 ### 1.4 DA-2a／DA-2b（D2a の UI）
 
@@ -66,10 +66,10 @@
 | 28 | DA-2b 必須 5：route が capture の外なら場面の会話でも閉じる | 同:17、PR #733（MERGED、`58023306`） | 済み | `gh pr view 733`: MERGED。ユーザーの決定は案 (a)（2026-10-26 12:56 JST） | — |
 | 29 | K3/2 の文面（`:28`、`:177`「編集して再送は場面の会話でだけ使える」）の改め | `LD/da2b-renderer-decisions.md:17` | 残り | 「K3/2 の文面の改めは Session C-1 の束で確かめる（PR-C は draft を編集しない）」 | Session C-1 での確認（ユーザーの承認） |
 | 30 | 定数 true のときの起動時 JS の予算 | `LD/da2b-renderer-decisions.md:164`（DR-DA2B-R25）、続行計画:797、`scripts/check-performance-budgets.mjs:17-31` | 不明 | R25 時点は定数 true で上限を超えていた（§4 の食い違い参照）。現行の script の `absoluteMax.rawBytes` は 4,261,300 に上がっているが、その間に overlay で約 +12,715 増えた（同:26-28）。定数 true の build は `cbf33077` で測っていない（LD/da2-decisions.md:308 も「PUB-G の PR で測る」） | 定数 true の `pnpm build` での再測定（測定）。超えるなら緩和の判断（memory の方針では lazy 化が先、残りは最小限の緩和を独立 commit で） |
-| 31 | 状態の表示の error boundary（R3-7） | LD/da2-decisions.md:116、:367 | 残り（実装） | `src/features/profile-egress/ProfileEgressStatusSlot.tsx` は `import(...).catch` で chunk の読込失敗だけを拾い、`Suspense` の外に error boundary は無い | 実装 |
-| 32 | 左下の表示と LayoutShell の操作要素の重なりの browser invariant（R3-8） | LD/da2-decisions.md:116、:367 | 残り（試験） | `src/features/layout/layoutInvariants.browser.test.tsx` に ProfileEgress を指す行は無い（`egress` の grep は `regression` の部分一致の 1 行だけ）。`ProfileEgressStatusIndicator.browser.test.tsx` は viewport の内に収まることだけを試す（da2:106） | 実 Chromium の試験の追加 |
+| 31 | 状態の表示の error boundary（R3-7） | LD/da2-decisions.md:116、:367、DR-DA2-62／-64（PR #837、MERGED 2026-11-08、`8b40480d`） | 済み（実装。2026-11-09 に更新） | `ProfileEgressStatusSlot.tsx` に class の `ProfileEgressStatusBoundary` を `Suspense` の外側（lazy chunk の外）に置き、例外と chunk の読込失敗（旧 `import().catch` は廃止）は何も描かず `debugLog.error` に残す。閉鎖は boundary から呼ばない（表示は UI 側だけ。防御は Main の gate と Native）。DR-DA2-64（レビュー指摘）：表示の render の例外で閉鎖の effect が commit されない欠落を、Indicator を hooks だけにして描画を内側の boundary の下の `ProfileEgressStatusView` に分け、閉鎖の effect を他の effect より先に宣言して直した。chunk の読込・評価の失敗では閉鎖が立たないのは変更前と同じ（退行ではない）。定数 `PROFILE_ACTIVATION_UI_ENABLED` は false のまま | — |
+| 32 | 左下の表示と LayoutShell の操作要素の重なりの browser invariant（R3-8） | LD/da2-decisions.md:116、:367、DR-DA2-63（PR #837、MERGED 2026-11-08、`8b40480d`） | 残り（試験は追加済み。置き場所と phone 幅が未解決。2026-11-09 に更新） | `layoutInvariants.browser.test.tsx` に、実 `LayoutShell` と実 `ProfileEgressStatusIndicator` を同じ画面に置き、3 layout × 3 viewport（1200x800、768x600、360x640）で操作要素との重なり・ヒットを測る invariant を追加。元の位置では 9 件が全部落ち、位置を stripe と gap の外（左 62 px、下 61 px）へ移して直した。**開示・未解決**：(1) 実 `EditorPaneStatusBar` を置く probe で、1200x800 の既定の layout でも restricted の pill が editor の scene の状態の button を覆うことを実測で確認（`it.fails` で記録。位置は直していない。左下の panel の中身も覆う見込み＝幾何の推定）。(2) phone 幅（720 未満）の `phone-workspace-chrome__nav` との交わりは**未測定**（360x640 の case は製品で到達しない layout。幾何からの推定）。置き場所の最終判断は C-1／PUB-G（DR-DA2-31）で、定数を on にする前に扱う | C-1／PUB-G での置き場所の決定（scene の状態の button と左下の panel の中身を覆わない位置）、phone workspace の nav との交わりの測定（実装と試験） |
 | 33 | 読めない状態ファイルのとき `dialog.showErrorBox` が Native の文をそのまま出す | 続行計画:796 の (5)、`electron/main/backend.ts:253-256` | 残り（実装） | `dialog.showErrorBox("Grimodex バックエンドの読み込みに失敗しました", \`${message}\n\n…\`)` で Native の message をそのまま表示。続行計画は「PUB-G の前に扱う」 | 実装 |
-| 34 | renderer の呼出しを実 router に通した試験が無い typed writer（CW4、baseline の CAS、snapshot、chat を含む import） | 続行計画:796 の (6) | 残り（試験） | 「CW4、baseline の CAS、snapshot、import は、renderer の呼び出しを実 router に通した試験が無い」 | 試験の追加（または未検証として C-1 で開示） |
+| 34 | renderer の呼出しを実 router に通した試験が無い typed writer（CW4、baseline の CAS、snapshot、chat を含む import） | 続行計画:796 の (6)、DR-PUBG-34-1（PR #833、MERGED 2026-11-08、`3631ffa4`） | 済み（試験。未検証の開示が残る。2026-11-09 に更新） | `electron/main/pubgRendererWriters.pipeline.spec.ts`（製品のコードと seam は変えない）。renderer の呼出しを Main の `grim:invoke` の handler に繋ぎ、実 router・実 gate・実 Native に unrestricted（対照）→ restricted の順で通す。CW 4（`deleteMessage`／`deleteMessages`）、baseline の CAS（read と write の間の競合で `updated:false`→再読取→再試行、両方の更新が残る）、snapshot の作成・削除、chat を含む import（chapters は通り、chat は `D2A_EGRESS_DENIED` で `notImported: 3`・行 0）。変異 4 件で該当の試験が落ちる | 未検証として Session C-1 で開示：`saveBaseline` の generic な INSERT／UPDATE の restricted での拒否（製品が baseline を書くのは unrestricted の間だけという前提は UI 層の `useAiGate` の閉鎖に依る。`runImpactReview` 自体は restricted を見ない）、実 Electron の UI、restricted の `importTree` の他の入口、snapshot の restore |
 | 35 | phone の幅での段 2 の合成の終端の toast（生の marker） | LD/da2-decisions.md:112 | 残り（判断） | 「直すなら PUB-G の前に置き場所を決める」（lazy chunk にするか、起動時の graph に置くか） | integrator の判断（予算に影響） |
 
 ### 1.5 CP-3b／CB-3（Graph と宣言の UI）
@@ -93,7 +93,7 @@
 | 45 | pin の自動化の段階 1（#744）が Graph の gate の内側にあること | 続行計画:10 | 不明 | 「pin 自動化の段階 1（#744）は Graph の gate の内側に置いた」。PUB-G で gate を開けると同時に有効になるか（承認の範囲に入るか）は読んだ範囲に記述が無い | integrator が C-1 の承認の範囲に含めるかを明示（判断） |
 | 46 | Session C-1 の承認そのもの | 続行計画:426（§9 停止点 4）、:177 | 残り | 「Session C-1: PUB-G と D2a の UI の承認」。続行計画:10（2026-10-31）時点で「未承認で閉じたまま」。以後の承認の記録は見つからない | ユーザーの承認（§2） |
 
-（数え方: 済み＝#1〜4、8、17〜20、22、25〜28 の 14 行。不明＝#6、7、11、15、16、30、45 の 7 行（#7 は CR-REC／CR-2 は済みだが G-2 が未解決のため不明）。残り＝それ以外の 25 行。）
+（数え方: 済み＝#1〜4、8、17〜20、22〜28、31、34 の 18 行（#23・#24・#31・#34 は 2026-11-09 の更新）。不明＝#6、7、11、15、16、30、45 の 7 行（#7 は CR-REC／CR-2 は済みだが G-2 が未解決のため不明）。残り＝それ以外の 21 行。）
 
 ## 2. 公開そのものに要る承認（Session C-1 で承認するもの）
 
