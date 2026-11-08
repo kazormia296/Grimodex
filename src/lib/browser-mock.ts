@@ -2,7 +2,7 @@
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — sql.js/dist/sql-asm.js has no dedicated type declarations
 import initSqlJs from "sql.js/dist/sql-asm.js";
-import type { Database, SqlValue } from "sql.js";
+import type { Database, SqlJsStatic, SqlValue } from "sql.js";
 import { sha256Hex } from "@grimodex/scan-contract";
 import schemaContract from "@/db/generated/schema-contract.json";
 import protectedWriterPolicy from "../../policies/narrative/protected-writers.json";
@@ -2373,20 +2373,11 @@ async function browserPayloadFingerprint(
     .join("");
 }
 
-export async function createBrowserMock(
-  options: BrowserMockOptions = {},
-): Promise<PersistentBrowserMock> {
-  const SQL = await initSqlJs();
-  const isNewDatabase = options.databaseBytes === undefined;
-  const db: Database = new SQL.Database(options.databaseBytes);
-  db.run("PRAGMA foreign_keys = ON;");
-  if (isNewDatabase) {
-    // The ASM.js build has a fixed shared heap. A compact page size keeps
-    // repeated in-memory BrowserMock instances within that heap even with the
-    // complete renderer schema.
-    db.run("PRAGMA page_size = 1024;");
-    db.run(SCHEMA_DDL);
-  }
+// Brings an opened browser database up to the current renderer schema:
+// idempotent, content-free migrations that mirror native migrate.rs. A new
+// database replays them on top of the canonical DDL; a persisted one runs
+// only the steps it is missing. `markDirty` fires once per applied step.
+function ensureBrowserSchema(db: Database, markDirty: () => void): void {
   const ledgerTableExists =
     db.exec(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'idempotency_requests'",
@@ -2399,7 +2390,7 @@ export async function createBrowserMock(
     // Persisted Browser workspaces predate the durable create ledger. Keep
     // this migration content-free and idempotent, mirroring native migrate.rs.
     db.run(IDEMPOTENCY_LEDGER_MIGRATION_DDL);
-    options.onDatabaseDirty?.();
+    markDirty();
   }
   const semanticBindingsTableExists =
     db.exec(
@@ -2449,16 +2440,95 @@ export async function createBrowserMock(
     if (!browserSemanticBindingsSchemaIsValid(db)) {
       throw new Error("Detail semantic binding browser migration failed");
     }
-    options.onDatabaseDirty?.();
+    markDirty();
   }
   if (migrateBrowserProjectCalendarVersion(db)) {
-    options.onDatabaseDirty?.();
+    markDirty();
   }
   if (migrateBrowserAiAuditLedger(db)) {
-    options.onDatabaseDirty?.();
+    markDirty();
   }
   if (migrateBrowserDomainSchema(db)) {
-    options.onDatabaseDirty?.();
+    markDirty();
+  }
+}
+
+// Creating a new database costs ~300-600 ms (canonical DDL plus the ensure
+// migrations above), which dominated every BrowserMock test and every lazy
+// mock. The result is deterministic and content-free, so build it once per
+// process in a scratch database and clone the exported bytes for each new
+// database. The template is derived in-process from SCHEMA_DDL (generated
+// from the grimodex-db schema contract) and ensureBrowserSchema themselves,
+// so it cannot go stale across a schema change; nothing is persisted or
+// shipped. If the build ever leaves rows behind (a future migration that
+// seeds data), the template is not used and each new database replays it.
+interface BrowserSchemaTemplate {
+  bytes: Uint8Array;
+  dirtyEvents: number;
+}
+let browserSchemaTemplate: BrowserSchemaTemplate | "unusable" | null = null;
+
+function browserSchemaTemplateFor(
+  SQL: SqlJsStatic,
+): BrowserSchemaTemplate | null {
+  if (browserSchemaTemplate === "unusable") return null;
+  if (browserSchemaTemplate) return browserSchemaTemplate;
+  const scratch = new SQL.Database();
+  try {
+    scratch.run("PRAGMA foreign_keys = ON;");
+    // The ASM.js build has a fixed shared heap. A compact page size keeps
+    // repeated in-memory BrowserMock instances within that heap even with the
+    // complete renderer schema. The page size lives in the file header, so
+    // every clone keeps it.
+    scratch.run("PRAGMA page_size = 1024;");
+    scratch.run(SCHEMA_DDL);
+    let dirtyEvents = 0;
+    ensureBrowserSchema(scratch, () => {
+      dirtyEvents += 1;
+    });
+    const tableNames = scratch
+      .exec(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+      )
+      .flatMap((result) => result.values.map((row) => String(row[0])));
+    const hasRows = tableNames.some(
+      (name) =>
+        scratch.exec(`SELECT 1 FROM "${name.replace(/"/g, '""')}" LIMIT 1`)
+          .length > 0,
+    );
+    if (hasRows) {
+      browserSchemaTemplate = "unusable";
+      return null;
+    }
+    // export() reopens the database and resets pragmas, so the scratch
+    // database is never used after it; each clone sets its own pragmas.
+    browserSchemaTemplate = { bytes: scratch.export(), dirtyEvents };
+    return browserSchemaTemplate;
+  } finally {
+    scratch.close();
+  }
+}
+
+export async function createBrowserMock(
+  options: BrowserMockOptions = {},
+): Promise<PersistentBrowserMock> {
+  const SQL = await initSqlJs();
+  const isNewDatabase = options.databaseBytes === undefined;
+  const template = isNewDatabase ? browserSchemaTemplateFor(SQL) : null;
+  const db: Database = new SQL.Database(
+    options.databaseBytes ?? template?.bytes,
+  );
+  db.run("PRAGMA foreign_keys = ON;");
+  if (template) {
+    for (let i = 0; i < template.dirtyEvents; i += 1) {
+      options.onDatabaseDirty?.();
+    }
+  } else {
+    if (isNewDatabase) {
+      db.run("PRAGMA page_size = 1024;");
+      db.run(SCHEMA_DDL);
+    }
+    ensureBrowserSchema(db, () => options.onDatabaseDirty?.());
   }
   db.run(`CREATE TEMP TABLE grimodex_connection_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
