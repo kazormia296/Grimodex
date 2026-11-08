@@ -1,0 +1,530 @@
+{
+  "schema": "ir-chat-pilot-build-checks/1",
+  "allOk": true,
+  "checks": [
+    {
+      "name": "summary-sonnet: 本文らしい文字列なし",
+      "ok": true,
+      "detail": "[]"
+    },
+    {
+      "name": "summary-haiku: 本文らしい文字列なし",
+      "ok": true,
+      "detail": "[]"
+    },
+    {
+      "name": "照合の前後で primary が同じ",
+      "ok": true
+    },
+    {
+      "name": "照合の前後で comparisons が同じ",
+      "ok": true
+    },
+    {
+      "name": "照合の前後で subsetComparisons が同じ",
+      "ok": true
+    },
+    {
+      "name": "照合の前後で armScores が同じ",
+      "ok": true
+    },
+    {
+      "name": "照合の前後で byArm が同じ",
+      "ok": true
+    },
+    {
+      "name": "照合の前後で byType が同じ",
+      "ok": true
+    },
+    {
+      "name": "照合の前後で completeness が同じ",
+      "ok": true
+    },
+    {
+      "name": "照合: 260 件",
+      "ok": true
+    },
+    {
+      "name": "照合: 規則別の件数が selection と一致",
+      "ok": true
+    },
+    {
+      "name": "(b) 下限の再計算 arm 0",
+      "ok": true,
+      "detail": "3/67 vs 3/67"
+    },
+    {
+      "name": "(b) 下限の再計算 arm A",
+      "ok": true,
+      "detail": "0/67 vs 0/67"
+    },
+    {
+      "name": "(b) 下限の再計算 arm B",
+      "ok": true,
+      "detail": "4/67 vs 4/67"
+    },
+    {
+      "name": "(b) 下限の再計算 arm O",
+      "ok": true,
+      "detail": "2/67 vs 2/67"
+    },
+    {
+      "name": "(b) 下限の再計算 arm C",
+      "ok": true,
+      "detail": "0/67 vs 0/67"
+    },
+    {
+      "name": "(b) 下限の再計算 arm D",
+      "ok": true,
+      "detail": "0/67 vs 0/67"
+    },
+    {
+      "name": "S3 の見逃し 4/69",
+      "ok": true
+    },
+    {
+      "name": "N 型 arm 0 が summary と一致",
+      "ok": true
+    },
+    {
+      "name": "N 型 arm A が summary と一致",
+      "ok": true
+    },
+    {
+      "name": "N 型 arm B が summary と一致",
+      "ok": true
+    },
+    {
+      "name": "N 型 arm O が summary と一致",
+      "ok": true
+    },
+    {
+      "name": "N 型 arm C が summary と一致",
+      "ok": true
+    },
+    {
+      "name": "N 型 arm D が summary と一致",
+      "ok": true
+    },
+    {
+      "name": "較正: 42 件",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-01: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-02: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-03: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-04: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-05: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-06: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-07: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-08: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-09: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-10: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-11: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-12: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-13: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-14: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-15: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-16: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-17: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-18: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-19: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-20: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-21: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-22: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-23: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-24: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-25: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-26: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-27: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-28: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-29: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-30: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-31: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-32: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-33: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-34: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-35: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-36: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-37: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-38: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-39: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-40: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-41: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正 cal-42: judge の reproduced が judge.v3 と一致",
+      "ok": true
+    },
+    {
+      "name": "較正: 23/18/1",
+      "ok": true,
+      "detail": "{\"no\":18,\"yes\":23,\"unsure\":1}"
+    },
+    {
+      "name": "較正: 一致 38/41",
+      "ok": true
+    },
+    {
+      "name": "較正: 層別の件数が selection と一致",
+      "ok": true
+    },
+    {
+      "name": "費用: answer-sonnet の台帳と summary の arm 合計が一致",
+      "ok": true,
+      "detail": "11.5558966 vs 11.555896999999998"
+    },
+    {
+      "name": "費用: 上限 $60 以内",
+      "ok": true
+    },
+    {
+      "name": "費用: 台帳の行数 answer-sonnet が request 数以上",
+      "ok": true
+    },
+    {
+      "name": "sizing: B−A の平均が summary と一致",
+      "ok": true
+    },
+    {
+      "name": "補足: 答えのある質問 67・IR あり 47・なし 20",
+      "ok": true
+    },
+    {
+      "name": "補足 sonnet B-A: 丸める前の差を 4 桁にすると summary と一致",
+      "ok": true,
+      "detail": "0.1355721393034826 vs 0.1356"
+    },
+    {
+      "name": "補足 sonnet D-C: 丸める前の差を 4 桁にすると summary と一致",
+      "ok": true,
+      "detail": "0.011194029850746266 vs 0.0112"
+    },
+    {
+      "name": "補足 sonnet C-A: 丸める前の差を 4 桁にすると summary と一致",
+      "ok": true,
+      "detail": "0.7935323383084577 vs 0.7935"
+    },
+    {
+      "name": "補足 sonnet O-0: 丸める前の差を 4 桁にすると summary と一致",
+      "ok": true,
+      "detail": "0.6878109452736318 vs 0.6878"
+    },
+    {
+      "name": "補足 sonnet O-A: 丸める前の差を 4 桁にすると summary と一致",
+      "ok": true,
+      "detail": "0.5211442786069652 vs 0.5211"
+    },
+    {
+      "name": "補足 sonnet B-0: 丸める前の差を 4 桁にすると summary と一致",
+      "ok": true,
+      "detail": "0.3022388059701493 vs 0.3022"
+    },
+    {
+      "name": "補足 sonnet confirmed30 B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.11666666666666667 vs 0.1167"
+    },
+    {
+      "name": "補足 sonnet irInEvidence B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.17553191489361702 vs 0.1755"
+    },
+    {
+      "name": "補足 sonnet irNotInEvidence B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.041666666666666664 vs 0.0417"
+    },
+    {
+      "name": "補足 sonnet excludingGuessable B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.1346153846153846 vs 0.1346"
+    },
+    {
+      "name": "補足 sonnet type:E B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.1875 vs 0.1875"
+    },
+    {
+      "name": "補足 sonnet type:K B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "-0.04166666666666668 vs -0.0417"
+    },
+    {
+      "name": "補足 sonnet type:M B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.061111111111111116 vs 0.0611"
+    },
+    {
+      "name": "補足 sonnet type:R B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.2708333333333333 vs 0.2708"
+    },
+    {
+      "name": "補足 sonnet type:T B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.09722222222222221 vs 0.0972"
+    },
+    {
+      "name": "補足 sonnet type:U B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.2708333333333333 vs 0.2708"
+    },
+    {
+      "name": "補足 sonnet work:g-ja-1 B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.040404040404040394 vs 0.0404"
+    },
+    {
+      "name": "補足 sonnet work:m-ja-2 B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.22794117647058823 vs 0.2279"
+    },
+    {
+      "name": "補足 sonnet p:59 B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.16666666666666663 vs 0.1667"
+    },
+    {
+      "name": "補足 sonnet p:117 B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.1053921568627451 vs 0.1054"
+    },
+    {
+      "name": "補足 haiku B-A: 丸める前の差を 4 桁にすると summary と一致",
+      "ok": true,
+      "detail": "0.1148424543946932 vs 0.1148"
+    },
+    {
+      "name": "補足 haiku D-C: 丸める前の差を 4 桁にすると summary と一致",
+      "ok": true,
+      "detail": "-0.03156565656565657 vs -0.0316"
+    },
+    {
+      "name": "補足 haiku C-A: 丸める前の差を 4 桁にすると summary と一致",
+      "ok": true,
+      "detail": "0.7537878787878787 vs 0.7538"
+    },
+    {
+      "name": "補足 haiku O-0: 丸める前の差を 4 桁にすると summary と一致",
+      "ok": true,
+      "detail": "0.5771144278606964 vs 0.5771"
+    },
+    {
+      "name": "補足 haiku O-A: 丸める前の差を 4 桁にすると summary と一致",
+      "ok": true,
+      "detail": "0.443200663349917 vs 0.4432"
+    },
+    {
+      "name": "補足 haiku B-0: 丸める前の差を 4 桁にすると summary と一致",
+      "ok": true,
+      "detail": "0.24875621890547261 vs 0.2488"
+    },
+    {
+      "name": "補足 haiku confirmed30 B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.09259259259259259 vs 0.0926"
+    },
+    {
+      "name": "補足 haiku irInEvidence B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.16607565011820336 vs 0.1661"
+    },
+    {
+      "name": "補足 haiku irNotInEvidence B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "-0.005555555555555554 vs -0.0056"
+    },
+    {
+      "name": "補足 haiku excludingGuessable B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.1217948717948718 vs 0.1218"
+    },
+    {
+      "name": "補足 haiku type:E B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.17708333333333331 vs 0.1771"
+    },
+    {
+      "name": "補足 haiku type:K B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.034722222222222224 vs 0.0347"
+    },
+    {
+      "name": "補足 haiku type:M B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.053703703703703705 vs 0.0537"
+    },
+    {
+      "name": "補足 haiku type:R B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.2361111111111111 vs 0.2361"
+    },
+    {
+      "name": "補足 haiku type:T B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.10185185185185186 vs 0.1019"
+    },
+    {
+      "name": "補足 haiku type:U B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.08333333333333333 vs 0.0833"
+    },
+    {
+      "name": "補足 haiku work:g-ja-1 B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.09090909090909093 vs 0.0909"
+    },
+    {
+      "name": "補足 haiku work:m-ja-2 B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.1380718954248366 vs 0.1381"
+    },
+    {
+      "name": "補足 haiku p:59 B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.19528619528619529 vs 0.1953"
+    },
+    {
+      "name": "補足 haiku p:117 B−A: 4 桁で summary と一致",
+      "ok": true,
+      "detail": "0.03676470588235294 vs 0.0368"
+    },
+    {
+      "name": "補足: 2×2 の件数が summary と一致（189・judge 71・照合者 8・両方 4）",
+      "ok": true,
+      "detail": "{\"judgePositive\":71,\"verifierContradiction\":8,\"both\":4,\"judgePositiveOnly\":67,\"verifierOnly\":4,\"verifierOnlyByRule\":{\"S2\":1,\"S3\":3},\"judgePositiveByFlag\":{\"contradictionOnly\":67,\"hedgedOnly\":3,\"both\":1},\"hedgedAndVerifierContradiction\":0,\"verifierFabricatedClaim\":1,\"judgePositiveInS3\":0}"
+    },
+    {
+      "name": "補足: S3 の確定の arm 別合計が 4/69",
+      "ok": true
+    },
+    {
+      "name": "補足: Haiku judge の失敗の内訳が summary と一致（呼び出し 21・再送成功 13 answer・欠測 2 answer）",
+      "ok": true,
+      "detail": "{\"failedCalls\":21,\"retriedOkAnswers\":13,\"failedCallsInRetriedOkAnswers\":15,\"retriedOkAtAttempt\":{\"2\":11,\"3\":2},\"droppedAnswers\":2,\"failedCallsInDroppedAnswers\":6,\"droppedAnswerAttempts\":[3,3],\"droppedAnswerIds\":[\"m-ja-2-p59-M2|B|r2\",\"m-ja-2-p59-M2|C|r1\"]}"
+    }
+  ]
+}

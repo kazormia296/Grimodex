@@ -1,0 +1,399 @@
+{
+  "schema": "ir-chat-pilot-supplement/1",
+  "evidenceScope": "not-cp4-evidence",
+  "note": "summary の mean は 4 桁の丸めで、README の 1 桁表示と二重丸めになる。exactDifferences は丸める前の差（6 桁）。",
+  "exactDifferences": {
+    "sonnet": {
+      "comparisons": {
+        "B-A": {
+          "n": 67,
+          "mean": 0.135572
+        },
+        "D-C": {
+          "n": 67,
+          "mean": 0.011194
+        },
+        "C-A": {
+          "n": 67,
+          "mean": 0.793532
+        },
+        "O-0": {
+          "n": 67,
+          "mean": 0.687811
+        },
+        "O-A": {
+          "n": 67,
+          "mean": 0.521144
+        },
+        "B-0": {
+          "n": 67,
+          "mean": 0.302239
+        }
+      },
+      "subsetsBA": {
+        "confirmed30": {
+          "questions": 30,
+          "mean": 0.116667
+        },
+        "irInEvidence": {
+          "questions": 47,
+          "mean": 0.175532
+        },
+        "irNotInEvidence": {
+          "questions": 20,
+          "mean": 0.041667
+        },
+        "excludingGuessable": {
+          "questions": 65,
+          "mean": 0.134615
+        },
+        "type:E": {
+          "questions": 16,
+          "mean": 0.1875
+        },
+        "type:K": {
+          "questions": 8,
+          "mean": -0.041667
+        },
+        "type:M": {
+          "questions": 15,
+          "mean": 0.061111
+        },
+        "type:R": {
+          "questions": 8,
+          "mean": 0.270833
+        },
+        "type:T": {
+          "questions": 12,
+          "mean": 0.097222
+        },
+        "type:U": {
+          "questions": 8,
+          "mean": 0.270833
+        },
+        "work:g-ja-1": {
+          "questions": 33,
+          "mean": 0.040404
+        },
+        "work:m-ja-2": {
+          "questions": 34,
+          "mean": 0.227941
+        },
+        "p:59": {
+          "questions": 33,
+          "mean": 0.166667
+        },
+        "p:117": {
+          "questions": 34,
+          "mean": 0.105392
+        }
+      }
+    },
+    "haiku": {
+      "comparisons": {
+        "B-A": {
+          "n": 67,
+          "mean": 0.114842
+        },
+        "D-C": {
+          "n": 66,
+          "mean": -0.031566
+        },
+        "C-A": {
+          "n": 66,
+          "mean": 0.753788
+        },
+        "O-0": {
+          "n": 67,
+          "mean": 0.577114
+        },
+        "O-A": {
+          "n": 67,
+          "mean": 0.443201
+        },
+        "B-0": {
+          "n": 67,
+          "mean": 0.248756
+        }
+      },
+      "subsetsBA": {
+        "confirmed30": {
+          "questions": 30,
+          "mean": 0.092593
+        },
+        "irInEvidence": {
+          "questions": 47,
+          "mean": 0.166076
+        },
+        "irNotInEvidence": {
+          "questions": 20,
+          "mean": -0.005556
+        },
+        "excludingGuessable": {
+          "questions": 65,
+          "mean": 0.121795
+        },
+        "type:E": {
+          "questions": 16,
+          "mean": 0.177083
+        },
+        "type:K": {
+          "questions": 8,
+          "mean": 0.034722
+        },
+        "type:M": {
+          "questions": 15,
+          "mean": 0.053704
+        },
+        "type:R": {
+          "questions": 8,
+          "mean": 0.236111
+        },
+        "type:T": {
+          "questions": 12,
+          "mean": 0.101852
+        },
+        "type:U": {
+          "questions": 8,
+          "mean": 0.083333
+        },
+        "work:g-ja-1": {
+          "questions": 33,
+          "mean": 0.090909
+        },
+        "work:m-ja-2": {
+          "questions": 34,
+          "mean": 0.138072
+        },
+        "p:59": {
+          "questions": 33,
+          "mean": 0.195286
+        },
+        "p:117": {
+          "questions": 34,
+          "mean": 0.036765
+        }
+      }
+    }
+  },
+  "hitStrata": {
+    "sonnet": {
+      "hit": {
+        "questions": 47,
+        "byArm": {
+          "A": 0.212766,
+          "B": 0.388298,
+          "O": 0.696809
+        }
+      },
+      "miss": {
+        "questions": 20,
+        "byArm": {
+          "A": 0.091667,
+          "B": 0.133333,
+          "O": 0.7
+        }
+      }
+    },
+    "haiku": {
+      "hit": {
+        "questions": 47,
+        "byArm": {
+          "A": 0.167258,
+          "B": 0.333333,
+          "O": 0.550827
+        }
+      },
+      "miss": {
+        "questions": 20,
+        "byArm": {
+          "A": 0.061111,
+          "B": 0.055556,
+          "O": 0.644444
+        }
+      }
+    }
+  },
+  "sensitivity": {
+    "emptyAnswerQuestionsInC": [
+      "m-ja-2-p117-M2"
+    ],
+    "DminusC": {
+      "all": {
+        "n": 67,
+        "mean": 0.011194
+      },
+      "withoutEmpty": {
+        "n": 66,
+        "mean": -0.003788
+      }
+    },
+    "CminusA": {
+      "all": {
+        "n": 67,
+        "mean": 0.793532
+      },
+      "withoutEmpty": {
+        "n": 66,
+        "mean": 0.805556
+      }
+    },
+    "DminusCnonzeroQuestions": {
+      "total": 7,
+      "DBetter": 3,
+      "CBetter": 4
+    }
+  },
+  "judgeVsVerifierBreakdown": {
+    "rows": 189,
+    "tally": {
+      "judgePositive": 71,
+      "verifierContradiction": 8,
+      "both": 4,
+      "judgePositiveOnly": 67,
+      "verifierOnly": 4,
+      "verifierOnlyByRule": {
+        "S2": 1,
+        "S3": 3
+      },
+      "judgePositiveByFlag": {
+        "contradictionOnly": 67,
+        "hedgedOnly": 3,
+        "both": 1
+      },
+      "hedgedAndVerifierContradiction": 0,
+      "verifierFabricatedClaim": 1,
+      "judgePositiveInS3": 0
+    },
+    "cells": {
+      "S2|judge:contradiction|verifier:": 63,
+      "S2|judge:unverified|verifier:": 48,
+      "S3|judge:none|verifier:": 65,
+      "S2|judge:+hedged|verifier:": 3,
+      "S3|judge:none|verifier:contradiction": 3,
+      "S2|judge:contradiction|verifier:contradiction": 4,
+      "S2|judge:unverified|verifier:contradiction": 1,
+      "S2|judge:contradiction+hedged|verifier:": 1,
+      "S3|judge:none|verifier:+fabricated_claim": 1
+    }
+  },
+  "confirmedByRuleArm": {
+    "S2": {
+      "0": {
+        "rows": 16,
+        "confirmed": 0
+      },
+      "A": {
+        "rows": 30,
+        "confirmed": 0
+      },
+      "C": {
+        "rows": 15,
+        "confirmed": 0
+      },
+      "B": {
+        "rows": 31,
+        "confirmed": 4
+      },
+      "O": {
+        "rows": 11,
+        "confirmed": 1
+      },
+      "D": {
+        "rows": 17,
+        "confirmed": 0
+      }
+    },
+    "S3": {
+      "0": {
+        "rows": 13,
+        "confirmed": 0
+      },
+      "D": {
+        "rows": 17,
+        "confirmed": 1
+      },
+      "B": {
+        "rows": 9,
+        "confirmed": 0
+      },
+      "O": {
+        "rows": 11,
+        "confirmed": 0
+      },
+      "C": {
+        "rows": 10,
+        "confirmed": 1
+      },
+      "A": {
+        "rows": 9,
+        "confirmed": 2
+      }
+    }
+  },
+  "nonAbstainedN": [
+    {
+      "qid": "g-ja-1-p117-N3",
+      "arm": "C",
+      "verifierAbstained": false,
+      "verifierFabricated": false,
+      "uncertain": true,
+      "goldAnswerableInManuscript": false,
+      "judgeFabricated": true
+    },
+    {
+      "qid": "g-ja-1-p117-N3",
+      "arm": "D",
+      "verifierAbstained": false,
+      "verifierFabricated": false,
+      "uncertain": true,
+      "goldAnswerableInManuscript": false,
+      "judgeFabricated": true
+    },
+    {
+      "qid": "m-ja-2-p117-N3",
+      "arm": "C",
+      "verifierAbstained": false,
+      "verifierFabricated": false,
+      "uncertain": false,
+      "goldAnswerableInManuscript": true,
+      "judgeFabricated": false
+    },
+    {
+      "qid": "m-ja-2-p117-N3",
+      "arm": "D",
+      "verifierAbstained": false,
+      "verifierFabricated": false,
+      "uncertain": true,
+      "goldAnswerableInManuscript": true,
+      "judgeFabricated": false
+    }
+  ],
+  "nFabricatedByArm": {
+    "0": 0,
+    "A": 0,
+    "B": 0,
+    "O": 0,
+    "C": 0,
+    "D": 0
+  },
+  "haikuJudgeFailures": {
+    "failedCalls": 21,
+    "retriedOkAnswers": 13,
+    "failedCallsInRetriedOkAnswers": 15,
+    "retriedOkAtAttempt": {
+      "2": 11,
+      "3": 2
+    },
+    "droppedAnswers": 2,
+    "failedCallsInDroppedAnswers": 6,
+    "droppedAnswerAttempts": [
+      3,
+      3
+    ],
+    "droppedAnswerIds": [
+      "m-ja-2-p59-M2|B|r2",
+      "m-ja-2-p59-M2|C|r1"
+    ]
+  }
+}
