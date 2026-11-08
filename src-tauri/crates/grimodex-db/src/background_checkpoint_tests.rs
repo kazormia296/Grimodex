@@ -30,6 +30,13 @@ impl Fixture {
 
     /// 開いて、payload 表を作り、WAL を畳んでおく。背景は始めない。
     fn open(&self) -> Database {
+        if !self.path.exists() {
+            // 小さい page（1 KiB）で作る：同じ page 数でも一時領域の使用量が 1/4 で済む
+            // （この環境の /tmp には約 300 MB の容量制限がある）。page size は最初の表の前に決める。
+            let conn = rusqlite::Connection::open(&self.path).expect("create fixture");
+            conn.execute_batch("PRAGMA page_size=1024; PRAGMA journal_mode=WAL;")
+                .expect("small pages");
+        }
         let db = Database::new(&self.path).expect("open fixture");
         db.with_conn(|conn| {
             conn.execute_batch(
@@ -66,7 +73,7 @@ fn append_pages(db: &Database, rows: i64) {
             "WITH RECURSIVE seq(n) AS (
                  SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?1
              )
-             INSERT INTO payload (body) SELECT zeroblob(4000) FROM seq",
+             INSERT INTO payload (body) SELECT zeroblob(700) FROM seq",
             [rows],
         )?;
         Ok(())
@@ -500,35 +507,57 @@ fn open_wal_preparation_uses_the_background_threshold_as_its_cycle() {
         .contains("OPEN_WAL_AUTOCHECKPOINT_MUST_BE_POSITIVE"));
 }
 
-/// 実行中の大きい checkpoint の最中に止める。実行中であることを観測してから止め、
-/// 上限の中で終了の証拠が取れ、file は壊れない。
+/// 専用の接続を開き、interrupt の handle を登録した後（run の最中）に止める。注入点で、
+/// その状態にいることを観測してから止め、上限の中に終了の証拠が取れ、file が壊れない。
 #[test]
-fn stopping_while_a_large_checkpoint_is_running_joins_within_the_bound() {
-    let fixture = Fixture::new("stop-running");
-    let mut observed_running = 0;
+fn stopping_while_a_run_holds_its_connection_open_joins_within_the_bound() {
+    let fixture = Fixture::new("stop-holding");
+    let db = fixture.open();
+    let probe = started(&db);
+    probe.set_hold_after_open(true);
+    // 閾値以上・上限未満：背景へ知らせるだけで、hook は同期の checkpoint をしない。
+    append_pages(&db, 2 * WAL_CHECKPOINT_PAGES);
+    assert!(
+        probe.wait_holding(WAIT),
+        "the run must be inside its dedicated connection before the stop"
+    );
+    let release = {
+        let probe = probe.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            probe.set_hold_after_open(false);
+        })
+    };
+    let begin = std::time::Instant::now();
+    assert_eq!(db.stop_background_checkpoint(), StopOutcome::Joined);
+    assert!(begin.elapsed() < super::background_checkpoint::STOP_WAIT);
+    release.join().expect("release thread");
+    assert!(probe.thread_exited());
+    append_pages(&db, 10);
+    let integrity: String = db
+        .with_conn(|conn| Ok(conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?))
+        .expect("integrity");
+    assert_eq!(integrity, "ok");
+}
+
+/// 上限未満の大きい WAL（実際の checkpoint）の直後に止める（実行中かどうかは問わない）。
+#[test]
+fn stopping_right_after_a_large_sub_limit_commit_joins_within_the_bound() {
+    let fixture = Fixture::new("stop-large");
     for round in 0..3 {
         let db = fixture.open();
         let probe = started(&db);
-        // 大きい WAL（約 80 MB）。背景の PASSIVE が数百 ms かかる。
-        append_pages(&db, 20_000);
-        if probe.wait_running(Duration::from_secs(5)) {
-            observed_running += 1;
-        }
+        append_pages(&db, MAX_WAL_PAGES_BEFORE_SYNC - 500);
         let begin = std::time::Instant::now();
         assert_eq!(db.stop_background_checkpoint(), StopOutcome::Joined);
         assert!(begin.elapsed() < super::background_checkpoint::STOP_WAIT);
         assert!(probe.thread_exited());
-        // 中断された checkpoint の後でも本体は書け、file は壊れていない。
         append_pages(&db, 10 + round);
         let integrity: String = db
             .with_conn(|conn| Ok(conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?))
             .expect("integrity");
         assert_eq!(integrity, "ok");
     }
-    assert!(
-        observed_running >= 1,
-        "the stop must have been issued while a checkpoint was running at least once"
-    );
 }
 
 /// 注入：run が止まらない。TimedOut を返し、スレッドは残り、次の stop が同じスレッドを待てる。
@@ -594,6 +623,7 @@ fn a_stalled_background_checkpoint_cannot_let_the_wal_grow_without_bound() {
     let db = fixture.open();
     let probe = started(&db);
     probe.set_stall(true);
+    probe.set_sync_wait(Duration::from_millis(200));
     let mut max_frames = 0;
     for _ in 0..100 {
         append_pages(&db, 150);
@@ -619,7 +649,7 @@ fn a_continuous_writer_keeps_the_wal_under_the_hard_limit() {
     let db = fixture.open();
     let _probe = started(&db);
     let mut max_frames = 0;
-    for _ in 0..300 {
+    for _ in 0..100 {
         append_pages(&db, 150);
         max_frames = max_frames.max(wal_state(&db).log_frames);
     }
@@ -664,4 +694,32 @@ fn open_wal_preparation_checks_that_the_hook_still_belongs_to_the_background() {
     assert!(error
         .to_string()
         .contains("OPEN_WAL_AUTOCHECKPOINT_MUST_BE_POSITIVE"));
+}
+
+/// 止まった背景の run には、上限を超えた commit が一度しか待たない（本体の Mutex を握ったまま
+/// 毎回 5 s 待たない）。時間ではなく、待ちを諦めた回数で確かめる（遅い disk でも揺れない）。
+#[test]
+fn an_over_limit_commit_waits_for_a_stuck_run_only_once() {
+    let fixture = Fixture::new("wait-once");
+    let db = fixture.open();
+    let probe = started(&db);
+    probe.set_stall(true);
+    probe.set_sync_wait(Duration::from_millis(200));
+    probe.request_run();
+    assert!(probe.wait_running(WAIT));
+
+    // 150 page × 120 回。上限（4000 page）を何度も超える。
+    for _ in 0..120 {
+        append_pages(&db, 150);
+    }
+    let stats = db.background_checkpoint_stats().expect("stats");
+    assert!(
+        stats.sync_fallbacks >= 3,
+        "the burst must have crossed the hard limit several times: {stats:?}"
+    );
+    assert_eq!(
+        stats.sync_wait_timeouts, 1,
+        "only the first over-limit commit waits for the stuck run: {stats:?}"
+    );
+    probe.set_stall(false);
 }

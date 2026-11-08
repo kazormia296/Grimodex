@@ -91,6 +91,11 @@ struct Control {
     running: bool,
     /// 上限を超えた hook が同期の checkpoint を行っている間。背景は新しい run を始めない。
     sync_active: bool,
+    /// 何本目の run か（`begin_run` が進める）。
+    run_gen: u64,
+    /// 同期の checkpoint が待ちを諦めた run の世代。その run が続く間は、上限を超えた commit が
+    /// 二度と待たない（止まった背景に毎回 `SYNC_WAIT` を払わない）。
+    abandoned_gen: Option<u64>,
     stop: bool,
     /// スレッドが終わった。
     exited: bool,
@@ -110,11 +115,19 @@ struct Shared {
     sync_fallbacks: AtomicU64,
     /// 同期の checkpoint が WAL を最後まで書き戻せなかった回数（busy・読み手）。
     sync_incomplete: AtomicU64,
+    /// 同期の checkpoint が背景の run の終了を待ち切れず諦めた回数。
+    sync_wait_timeouts: AtomicU64,
     last_log_frames: AtomicI64,
     stop_wait_ms: AtomicU64,
+    sync_wait_ms: AtomicU64,
     /// 試験用の注入点：true の間、run は停止の要求を無視して専用の接続を開く前で止まる。
     #[cfg(test)]
     stall: std::sync::atomic::AtomicBool,
+    /// 試験用の注入点：true の間、run は専用の接続を開いて interrupt の handle を登録した後で止まる。
+    #[cfg(test)]
+    hold_after_open: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    holding: std::sync::atomic::AtomicBool,
 }
 
 impl Shared {
@@ -130,11 +143,21 @@ impl Shared {
             failures: AtomicU64::new(0),
             sync_fallbacks: AtomicU64::new(0),
             sync_incomplete: AtomicU64::new(0),
+            sync_wait_timeouts: AtomicU64::new(0),
             last_log_frames: AtomicI64::new(-1),
             stop_wait_ms: AtomicU64::new(u64::try_from(STOP_WAIT.as_millis()).unwrap_or(u64::MAX)),
+            sync_wait_ms: AtomicU64::new(u64::try_from(SYNC_WAIT.as_millis()).unwrap_or(u64::MAX)),
             #[cfg(test)]
             stall: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            hold_after_open: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            holding: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    fn sync_wait(&self) -> Duration {
+        Duration::from_millis(self.sync_wait_ms.load(Ordering::SeqCst))
     }
 
     fn stop_wait(&self) -> Duration {
@@ -166,8 +189,14 @@ impl Shared {
         let deadline = Instant::now() + wait;
         let mut control = lock(&self.control);
         while control.running {
+            // 一度待ちを諦めた run には、もう待たない（その run が終わるまで）。
+            if control.abandoned_gen == Some(control.run_gen) {
+                return false;
+            }
             let now = Instant::now();
             if now >= deadline {
+                control.abandoned_gen = Some(control.run_gen);
+                self.sync_wait_timeouts.fetch_add(1, Ordering::SeqCst);
                 return false;
             }
             control = self
@@ -208,12 +237,12 @@ unsafe extern "C" fn wal_hook(
         // 背景が追いつかず WAL が上限を超えた：背景の run が終わるのを待ってから、同期の PASSIVE
         // checkpoint を行う（`enter_sync`）。書き手が止まらない限り、背景の 1 回の run が追いつく
         // 前に WAL が伸びる（PASSIVE は開始時点の末尾までしか書き戻さず、WAL の先頭へ戻すのは
-        // 「書き手が始まる時に全部書き戻し済み」のときだけ）ので、この待ち（最大 `SYNC_WAIT`）が、
+        // 「書き手が始まる時に全部書き戻し済み」のときだけ）ので、この待ち（最大 `SYNC_WAIT`。止まった run には一度だけ）が、
         // 前景への唯一の back-pressure になる。
         let requested = shared.request();
         let over_limit = i64::from(pages) >= MAX_WAL_PAGES_BEFORE_SYNC;
         if !requested || over_limit {
-            let entered = over_limit && shared.enter_sync(SYNC_WAIT);
+            let entered = over_limit && shared.enter_sync(shared.sync_wait());
             // SAFETY: `db` と `db_name` は SQLite がこの呼び出しの間だけ有効として渡す。
             let rc = unsafe { ffi::sqlite3_wal_checkpoint(db, db_name) };
             if entered {
@@ -270,6 +299,7 @@ fn begin_run(shared: &Shared) -> bool {
         return false;
     }
     control.running = true;
+    control.run_gen += 1;
     true
 }
 
@@ -285,6 +315,14 @@ fn run_once(shared: &Shared, db_path: &PathBuf) -> anyhow::Result<WalCheckpointS
         let mut slot = lock(&shared.interrupt);
         anyhow::ensure!(!shared.stop_requested(), "BACKGROUND_CHECKPOINT_STOPPED");
         *slot = Some(conn.get_interrupt_handle());
+    }
+    #[cfg(test)]
+    if shared.hold_after_open.load(Ordering::SeqCst) {
+        shared.holding.store(true, Ordering::SeqCst);
+        while shared.hold_after_open.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        shared.holding.store(false, Ordering::SeqCst);
     }
     let result = sqlite_wal_checkpoint(&conn, OpenWalCheckpointMode::Passive);
     lock(&shared.interrupt).take();
@@ -459,6 +497,7 @@ pub(crate) struct BackgroundCheckpointStats {
     pub(crate) failures: u64,
     pub(crate) sync_fallbacks: u64,
     pub(crate) sync_incomplete: u64,
+    pub(crate) sync_wait_timeouts: u64,
     pub(crate) last_log_frames: i64,
 }
 
@@ -492,6 +531,7 @@ impl BackgroundCheckpointer {
             failures: self.shared.failures.load(Ordering::SeqCst),
             sync_fallbacks: self.shared.sync_fallbacks.load(Ordering::SeqCst),
             sync_incomplete: self.shared.sync_incomplete.load(Ordering::SeqCst),
+            sync_wait_timeouts: self.shared.sync_wait_timeouts.load(Ordering::SeqCst),
             last_log_frames: self.shared.last_log_frames.load(Ordering::SeqCst),
         }
     }
@@ -611,6 +651,28 @@ impl BackgroundCheckpointProbe {
 
     pub(crate) fn set_stall(&self, stall: bool) {
         self.shared.stall.store(stall, Ordering::SeqCst);
+    }
+
+    pub(crate) fn set_hold_after_open(&self, hold: bool) {
+        self.shared.hold_after_open.store(hold, Ordering::SeqCst);
+    }
+
+    pub(crate) fn wait_holding(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if self.shared.holding.load(Ordering::SeqCst) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        false
+    }
+
+    pub(crate) fn set_sync_wait(&self, wait: Duration) {
+        self.shared.sync_wait_ms.store(
+            u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+            Ordering::SeqCst,
+        );
     }
 
     pub(crate) fn set_stop_wait(&self, wait: Duration) {
