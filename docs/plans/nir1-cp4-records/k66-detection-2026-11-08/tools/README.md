@@ -1,0 +1,21 @@
+# K6/6 の合成の検出の道具（K6/6 の harness の実装。2026-11-08）
+
+`hook.mjs`、`register.mjs`、`run.mjs` は `../../k65-detection-2026-11-07/tools/` と同じ bytes（`hook.mjs` `e5732d01…`、`register.mjs` `5f651fff…`、`run.mjs`）。変異の当て方は同じで、変異の一覧・対象の試験・陽性の対照を引数にする。
+
+- `mutations-k66.json`：K6/6 の first-render の下位条件ごとの変異 54 件。`followup.mjs` の `firstRenderOf` の検査を 1 か所ずつ外す（FR-1、R-6 の (a)(b)(c)、FR-3〜FR-7、N-d の `[artifact]`）、品質の FAIL の条件（変える点 6）の 4 条件と FAIL の分岐、見出しの窓外率（変える点 5）、`head.k66` の照合（receipt、admission。K6/6-N9）、品質判定 v2 D3 (d) の Revision の解決。`equivalent: true` の 2 件（`K66-FR3-revalidation`、`K66-6-contributed-joined`）は、置換しても判定が変わらない等価の変異で、試験が落ちないことが期待（理由は各行の `equivalentReason`）。
+- `positive-k66.json`：陽性の対照（K6/6-P1〜P5、品質 v2 D2・D3 の pass、D3 (d)、K6/6 の集計。baseline で ok であること）。
+- `count-n.mjs`：全体の TAP から K6/6-P1〜P5、K6/6-N1〜N13 の試験を、下位条件の記号（N2c、N5a …）ごとに数える。
+
+使い方：
+
+```
+node run.mjs <候補の worktree> --mutations mutations-k66.json --targets followup.k66.test.mjs,outcome.test.mjs,receipt.test.mjs,admission.test.mjs,quality-verdict.test.mjs --positive positive-k66.json
+node count-n.mjs <baseline-all.tap> <候補の worktree> --out counts.json
+```
+
+候補の file は書き換えない。変異は hook が読込み時に 1 か所だけ置換し（当たった数が 1 でなければ読込みを失敗させる）、その変異の試験 file だけを走らせる。
+
+**期待の決め方（開示）**：`mutations-k66.json` の `expected`（落ちるべき試験の file・行・題の先頭）は、変異を当てる前に決めたものではない。K6/5 の前例と同じく、最初の run（`expected` が空）で落ちた試験を見て、各変異と落ちた試験の題が対応する（例：`K66-FR4-cacheHits` は「K6/6-N5a〜N5d」）ことを確かめた上で `expected` に写した。最初の run（候補 `1fdeed6f`）で、試験が落ちない変異が 6 件あった。対応は次のとおりで、取り直した run（候補 `dda975bc`）が記録の本体：
+- `K66-FR3-not-joined`、`K66-FR3-edge-count`：FR-3 の合流・edgeCount の項目を単独で当てる試験（K6/6-N3d、N3e）を足した。
+- `K66-6-contributed-outcome`、`K66-6-contributed-used`、`K66-6-contributed-edgeCount`：変異の試験 file の指定が `followup.k66.test.mjs` だったのを、品質の FAIL を見る `outcome.test.mjs` に直した。そのうえで「宣言が used でない」「outcome が graph-ready でない」を単独で破る試験を `outcome.test.mjs` に足した（edgeCount は既存の試験で落ちる）。
+- `K66-FR3-revalidation`、`K66-6-contributed-joined`：試験を足さず等価の変異とした（`classifyJoin` が先に止める、`inWindow` が joined を含むため）。等価性は読みによる。

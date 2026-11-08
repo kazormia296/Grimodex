@@ -1,0 +1,854 @@
+[
+  {
+    "id": "K66-N-d-stale",
+    "spn": "N-d",
+    "file": "followup.mjs",
+    "find": "sample.freshnessStamp?.result === \"stale\"",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 301,
+        "titlePrefix": "K6/6-N4: 窓内に合流した親の stamp が stale なら [artifact]（製品は stale で q"
+      }
+    ]
+  },
+  {
+    "id": "K66-N-d-driftAtQuery",
+    "spn": "N-d",
+    "file": "followup.mjs",
+    "find": "counters.driftAtQuery !== 0 ||",
+    "replace": "false ||",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 427,
+        "titlePrefix": "K6/6-N10a・N10b: 窓内に合流した親で driftAtQuery か prepareFailures の差分"
+      }
+    ]
+  },
+  {
+    "id": "K66-N-d-prepareFailures",
+    "spn": "N-d",
+    "file": "followup.mjs",
+    "find": "counters.prepareFailures !== 0)",
+    "replace": "false)",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 427,
+        "titlePrefix": "K6/6-N10a・N10b: 窓内に合流した親で driftAtQuery か prepareFailures の差分"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR1-source",
+    "spn": "FR-1",
+    "file": "followup.mjs",
+    "find": "graph.source !== \"worker\"",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 436,
+        "titlePrefix": "K6/6-N11a: FR-1 出所が Cached の窓内の親は数えない（K6/4-N39）"
+      }
+    ]
+  },
+  {
+    "id": "K66-a-reachedQuiet",
+    "spn": "N1a",
+    "file": "followup.mjs",
+    "find": "record.r1.reachedQuiet !== true) no(\"a\"",
+    "replace": "false) no(\"a\"",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 188,
+        "titlePrefix": "K6/6-N1a: R1 の reachedQuiet が false なら first-render に数えず、X10"
+      }
+    ]
+  },
+  {
+    "id": "K66-a-r1-self-report",
+    "spn": "N1b",
+    "file": "followup.mjs",
+    "find": "unmet.length > 0)\n      no(\"a\"",
+    "replace": "false)\n      no(\"a\"",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 196,
+        "titlePrefix": "K6/6-N1b: R1 の 4 項目の計算し直しが自己申告と合わなければ数えず、X10"
+      }
+    ]
+  },
+  {
+    "id": "K66-b-begin-records",
+    "spn": "N2a",
+    "file": "followup.mjs",
+    "find": "!sameList(record.nativeBegins, [\"pending\"])",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 204,
+        "titlePrefix": "K6/6-N2a: 親の begin の記録が [pending] でなければ数えない"
+      }
+    ]
+  },
+  {
+    "id": "K66-b-start-slot",
+    "spn": "N2b",
+    "file": "followup.mjs",
+    "find": "sample.startSlot?.kind !== \"empty\"",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 212,
+        "titlePrefix": "K6/6-N2b: startSlot.kind が empty でなければ数えない"
+      }
+    ]
+  },
+  {
+    "id": "K66-b-preparesStarted",
+    "spn": "N2c",
+    "file": "followup.mjs",
+    "find": "!sameCounter(record, \"preparesStarted\", 1)",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 158,
+        "titlePrefix": "K6/6-P4: phase の最後の Graph arm の sample は (c) を当てられず、(b) の co"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 221,
+        "titlePrefix": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 522,
+        "titlePrefix": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）"
+      }
+    ]
+  },
+  {
+    "id": "K66-b-preparesReady",
+    "spn": "N2d",
+    "file": "followup.mjs",
+    "find": "!sameCounter(record, \"preparesReady\", 1)",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 221,
+        "titlePrefix": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased"
+      }
+    ]
+  },
+  {
+    "id": "K66-b-deferredReleased",
+    "spn": "N2e",
+    "file": "followup.mjs",
+    "find": "!sameCounter(record, \"deferredReleased\", 1)",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 221,
+        "titlePrefix": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased"
+      }
+    ]
+  },
+  {
+    "id": "K66-b-staleReadyRetired",
+    "spn": "N2g",
+    "file": "followup.mjs",
+    "find": "!sameCounter(record, \"staleReadyRetired\", 0)",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 221,
+        "titlePrefix": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased"
+      }
+    ]
+  },
+  {
+    "id": "K66-c-unrecorded",
+    "spn": "N2h",
+    "file": "followup.mjs",
+    "find": "!(finite(here) && finite(there))",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 234,
+        "titlePrefix": "K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady の"
+      }
+    ]
+  },
+  {
+    "id": "K66-c-diff",
+    "spn": "N2h",
+    "file": "followup.mjs",
+    "find": "there - here !== 1",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 234,
+        "titlePrefix": "K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady の"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 586,
+        "titlePrefix": "K6/6 R-6 (c) の開示: 背景の再準備が次の sample の前に走った親は数えられず、欠落になる（残余 (3"
+      }
+    ]
+  },
+  {
+    "id": "K66-c-next-undefined",
+    "spn": "(c)",
+    "file": "followup.mjs",
+    "find": "if (next === undefined)\n    throw new Error(\n      \"[precheck] K6/6 (c)",
+    "replace": "if (false)\n    throw new Error(\n      \"[precheck] K6/6 (c)",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 234,
+        "titlePrefix": "K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady の"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR3-ticket",
+    "spn": "N3c",
+    "file": "followup.mjs",
+    "find": "parent.ticket?.outcome !== \"available\"",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 268,
+        "titlePrefix": "K6/6-N3c: stamp0-missing で親の ticket が available でない記録は数えない（合"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR3-declaration",
+    "spn": "N12a",
+    "file": "followup.mjs",
+    "find": "if (parent.declaration !== \"used\") no(\"FR3\", \"declaration-not-used\");",
+    "replace": "",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 447,
+        "titlePrefix": "K6/6-N12a: FR-5 宣言が used でなければ数えない（stamp が fresh なら FR-5 だけを"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 522,
+        "titlePrefix": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR3-not-joined",
+    "spn": "N3",
+    "file": "followup.mjs",
+    "find": "!(graph.outcome === \"graph-ready\" && graph.joined === true)",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 288,
+        "titlePrefix": "K6/6-N3d: stamp0-missing で窓内に合流しても Graph の outcome が graph-r"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR3-revalidation",
+    "spn": "N11b",
+    "file": "followup.mjs",
+    "find": "if (graph.revalidation !== \"passed\") no(\"FR3\", \"revalidation-not-passed\");",
+    "replace": "",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [],
+    "equivalent": true,
+    "equivalentReason": "classifyJoin は joined の sample に revalidation passed を要求し（passed でなければ [artifact] で止まる）、first-render の候補（join.inWindow）はそこを通った後にだけ来る。FR-3 の revalidation の検査は、記録の誤りを見つけるための空の検査（合流した親では起きない）。置換しても判定が変わらない。"
+  },
+  {
+    "id": "K66-FR3-edge-count",
+    "spn": "N3",
+    "file": "followup.mjs",
+    "find": "if (!Number.isInteger(graph.edgeCount)) no(\"FR3\", \"edge-count-not-integer\");",
+    "replace": "",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 294,
+        "titlePrefix": "K6/6-N3e: stamp0-missing で edgeCount が整数でない親は数えない（② の項目。FR-7"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR3-stamp-other",
+    "spn": "N3a",
+    "file": "followup.mjs",
+    "find": "} else no(\"FR3\", `stamp-${stamp === null ? \"missing\" : stamp}`);",
+    "replace": "}",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 251,
+        "titlePrefix": "K6/6-N3a: stamp が unavailable の親は数えない（分母に残る）"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 264,
+        "titlePrefix": "K6/6-N3b: stamp の記録が null の親は数えない"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 522,
+        "titlePrefix": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR4-begins",
+    "spn": "N5a",
+    "file": "followup.mjs",
+    "find": "d.begins === 1 &&",
+    "replace": "true &&",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 317,
+        "titlePrefix": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で "
+      }
+    ]
+  },
+  {
+    "id": "K66-FR4-lateCached",
+    "spn": "N5b",
+    "file": "followup.mjs",
+    "find": "d.lateCached === 0 &&",
+    "replace": "true &&",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 317,
+        "titlePrefix": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で "
+      }
+    ]
+  },
+  {
+    "id": "K66-FR4-cacheHits",
+    "spn": "N5c",
+    "file": "followup.mjs",
+    "find": "d.cacheHits === 0)",
+    "replace": "true)",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 317,
+        "titlePrefix": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で "
+      }
+    ]
+  },
+  {
+    "id": "K66-FR4-cache-left",
+    "spn": "N5d",
+    "file": "followup.mjs",
+    "find": "record.r2.cacheEmptyAtEnd !== true) no(\"FR4\"",
+    "replace": "false) no(\"FR4\"",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 317,
+        "titlePrefix": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で "
+      }
+    ]
+  },
+  {
+    "id": "K66-FR4-after-block",
+    "spn": "N5a",
+    "file": "followup.mjs",
+    "find": "    [\"after\", record.counters.after],\n",
+    "replace": "",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 317,
+        "titlePrefix": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で "
+      }
+    ]
+  },
+  {
+    "id": "K66-FR4-after-release-block",
+    "spn": "N5a",
+    "file": "followup.mjs",
+    "find": "    [\"after-release\", record.countersAfterRelease],\n",
+    "replace": "",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 317,
+        "titlePrefix": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で "
+      }
+    ]
+  },
+  {
+    "id": "K66-FR5-declaration",
+    "spn": "N12a",
+    "file": "followup.mjs",
+    "find": "if (parent.declaration !== \"used\")\n    no(\"FR5\", `declaration-${parent.declaration}`);",
+    "replace": "",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 447,
+        "titlePrefix": "K6/6-N12a: FR-5 宣言が used でなければ数えない（stamp が fresh なら FR-5 だけを"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 522,
+        "titlePrefix": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR5-publishCount",
+    "spn": "N12b",
+    "file": "followup.mjs",
+    "find": "if (parent.publishCount !== 1)\n    no(\"FR5\", `publish-count-${parent.publishCount}`);",
+    "replace": "",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 469,
+        "titlePrefix": "K6/6-N12b: FR-5 publishCount が 2 なら数えず、K6/4-N1 の FAIL"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR6-notice",
+    "spn": "N6a",
+    "file": "followup.mjs",
+    "find": "record.notices.some((row) => row.kind === \"graph-ready\")",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 353,
+        "titlePrefix": "K6/6-N6a: 窓内に合流した親の後に graph-ready の通知があれば数えず、開示する"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR6-child",
+    "spn": "N6b",
+    "file": "followup.mjs",
+    "find": "record.child !== null && record.child !== undefined",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 360,
+        "titlePrefix": "K6/6-N6b: 子（origin が index-ready の例）があれば数えず、開示する"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR6-ir-retry",
+    "spn": "N6c",
+    "file": "followup.mjs",
+    "find": "parent.irRetryTimer === true",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 367,
+        "titlePrefix": "K6/6-N6c: 親の IR の再試行の timer が動いていれば数えず、開示する"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR7-no-record",
+    "spn": "N7a",
+    "file": "followup.mjs",
+    "find": "no(\"FR7\", \"no-contribution-record\")",
+    "replace": "void 0",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 374,
+        "titlePrefix": "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unres"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR7-basis",
+    "spn": "N7b",
+    "file": "followup.mjs",
+    "find": "contribution.contributionBasis !== F6_FORMAL_BASIS",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 374,
+        "titlePrefix": "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unres"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR7-unresolved",
+    "spn": "N7c",
+    "file": "followup.mjs",
+    "find": "contribution.materialRevision?.unresolvedEdges !== 0",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 374,
+        "titlePrefix": "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unres"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR7-no-edge",
+    "spn": "N7d",
+    "file": "followup.mjs",
+    "find": "!(Number.isInteger(graph.edgeCount) && graph.edgeCount >= 1)",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 294,
+        "titlePrefix": "K6/6-N3e: stamp0-missing で edgeCount が整数でない親は数えない（② の項目。FR-7"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 374,
+        "titlePrefix": "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unres"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR7-expected",
+    "spn": "N7e",
+    "file": "followup.mjs",
+    "find": "contribution.expectedContribution !== true",
+    "replace": "false",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 374,
+        "titlePrefix": "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unres"
+      }
+    ]
+  },
+  {
+    "id": "K66-6-contributed-outcome",
+    "spn": "N13",
+    "file": "followup.mjs",
+    "find": "sample.graph?.outcome === \"graph-ready\" &&\n    sample.graph.joined === true",
+    "replace": "true &&\n    sample.graph.joined === true",
+    "testFile": "outcome.test.mjs",
+    "expected": [
+      {
+        "file": "outcome.test.mjs",
+        "line": 783,
+        "titlePrefix": "K6/6 変える点 6: Graph が合流したが edgeCount 0 の親、または宣言が used でない親は『寄"
+      }
+    ]
+  },
+  {
+    "id": "K66-6-contributed-joined",
+    "spn": "N13",
+    "file": "followup.mjs",
+    "find": "sample.graph.joined === true &&\n    sample.followUp?.parent?.declaration",
+    "replace": "true &&\n    sample.followUp?.parent?.declaration",
+    "testFile": "outcome.test.mjs",
+    "expected": [],
+    "equivalent": true,
+    "equivalentReason": "parentContributed は join.inWindow を先に要求し、classifyJoin は inWindow を joined===true のときだけ返す。graph.joined === true の検査は inWindow に含まれ、置換しても判定が変わらない。"
+  },
+  {
+    "id": "K66-6-contributed-used",
+    "spn": "N13",
+    "file": "followup.mjs",
+    "find": "sample.followUp?.parent?.declaration === \"used\" &&\n    Number.isInteger",
+    "replace": "true &&\n    Number.isInteger",
+    "testFile": "outcome.test.mjs",
+    "expected": [
+      {
+        "file": "outcome.test.mjs",
+        "line": 783,
+        "titlePrefix": "K6/6 変える点 6: Graph が合流したが edgeCount 0 の親、または宣言が used でない親は『寄"
+      }
+    ]
+  },
+  {
+    "id": "K66-6-contributed-edgeCount",
+    "spn": "N13",
+    "file": "followup.mjs",
+    "find": "sample.graph.edgeCount >= 1\n  );\n}",
+    "replace": "true\n  );\n}",
+    "testFile": "outcome.test.mjs",
+    "expected": [
+      {
+        "file": "outcome.test.mjs",
+        "line": 783,
+        "titlePrefix": "K6/6 変える点 6: Graph が合流したが edgeCount 0 の親、または宣言が used でない親は『寄"
+      }
+    ]
+  },
+  {
+    "id": "K66-6-outcome-fail",
+    "spn": "N13",
+    "file": "outcome.mjs",
+    "find": "result.parentContributed && !result.firstRender",
+    "replace": "false",
+    "testFile": "outcome.test.mjs",
+    "expected": [
+      {
+        "file": "outcome.test.mjs",
+        "line": 745,
+        "titlePrefix": "K6/6-N13a: 窓内に合流して Graph が表示に寄与した（edgeCount 1 以上）のに条件を欠いた親で、"
+      },
+      {
+        "file": "outcome.test.mjs",
+        "line": 761,
+        "titlePrefix": "K6/6-N13b: 同上で、Scene の一覧が R+IR と同じ（path の添付だけを足す。G-06 の形）でも品"
+      }
+    ]
+  },
+  {
+    "id": "K66-5-heading-rate-entry",
+    "spn": "5",
+    "file": "availability.mjs",
+    "find": "firstRenderOutOfWindowRate: ratio(block.n - block.firstRender, block.n),",
+    "replace": "firstRenderOutOfWindowRate: ratio(block.outOfWindow, block.n),",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 490,
+        "titlePrefix": "K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-ren"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 522,
+        "titlePrefix": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）"
+      }
+    ]
+  },
+  {
+    "id": "K66-N9-receipt-sha",
+    "spn": "N9",
+    "file": "receipt.mjs",
+    "find": "head?.k66?.sha256 !== freeze66.sha256",
+    "replace": "false",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 402,
+        "titlePrefix": "K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66）を持ち、無い・違う・"
+      }
+    ]
+  },
+  {
+    "id": "K66-N9-receipt-commit",
+    "spn": "N9",
+    "file": "receipt.mjs",
+    "find": "head?.k66?.freezeCommit !== freeze66.freezeCommit",
+    "replace": "false",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 402,
+        "titlePrefix": "K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66）を持ち、無い・違う・"
+      }
+    ]
+  },
+  {
+    "id": "K66-N9-receipt-null-descriptor",
+    "spn": "N9",
+    "file": "receipt.mjs",
+    "find": "freeze66.freezeCommit === null",
+    "replace": "false",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 402,
+        "titlePrefix": "K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66）を持ち、無い・違う・"
+      }
+    ]
+  },
+  {
+    "id": "K66-N9-receipt-required-when-formal",
+    "spn": "N9",
+    "file": "receipt.mjs",
+    "find": "formalGraph || head?.k66 !== undefined",
+    "replace": "head?.k66 !== undefined",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 402,
+        "titlePrefix": "K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66）を持ち、無い・違う・"
+      }
+    ]
+  },
+  {
+    "id": "K66-N9-admission-commit",
+    "spn": "N9",
+    "file": "admission.mjs",
+    "find": "if (resolved !== freeze.freezeCommit || digest !== freeze.sha256)\n    throw new Error(\n      \"[precheck] K6/6 freeze commit or bytes differ",
+    "replace": "if (digest !== freeze.sha256)\n    throw new Error(\n      \"[precheck] K6/6 freeze commit or bytes differ",
+    "testFile": "admission.test.mjs",
+    "expected": [
+      {
+        "file": "admission.test.mjs",
+        "line": 1025,
+        "titlePrefix": "K6/6 変える点 8・K6/6-N9: admitGraphCaseRun と assertReceiptHeadBo"
+      }
+    ]
+  },
+  {
+    "id": "K66-N9-admission-sha",
+    "spn": "N9",
+    "file": "admission.mjs",
+    "find": "if (resolved !== freeze.freezeCommit || digest !== freeze.sha256)\n    throw new Error(\n      \"[precheck] K6/6 freeze commit or bytes differ",
+    "replace": "if (resolved !== freeze.freezeCommit)\n    throw new Error(\n      \"[precheck] K6/6 freeze commit or bytes differ",
+    "testFile": "admission.test.mjs",
+    "expected": [
+      {
+        "file": "admission.test.mjs",
+        "line": 1025,
+        "titlePrefix": "K6/6 変える点 8・K6/6-N9: admitGraphCaseRun と assertReceiptHeadBo"
+      }
+    ]
+  },
+  {
+    "id": "K66-N9-admission-null",
+    "spn": "N9",
+    "file": "admission.mjs",
+    "find": "if (freeze.freezeCommit === null)\n    throw new Error(\n      \"[precheck] the K6/6 freeze commit is not pinned",
+    "replace": "if (false)\n    throw new Error(\n      \"[precheck] the K6/6 freeze commit is not pinned",
+    "testFile": "admission.test.mjs",
+    "expected": [
+      {
+        "file": "admission.test.mjs",
+        "line": 1025,
+        "titlePrefix": "K6/6 変える点 8・K6/6-N9: admitGraphCaseRun と assertReceiptHeadBo"
+      }
+    ]
+  },
+  {
+    "id": "K66-D3d-not-latest",
+    "spn": "D3(d)",
+    "file": "quality-verdict.mjs",
+    "find": "else if (latest !== revision)",
+    "replace": "else if (false)",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1363,
+        "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
+      }
+    ]
+  },
+  {
+    "id": "K66-D3d-no-edge-hold",
+    "spn": "D3(d)",
+    "file": "quality-verdict.mjs",
+    "find": "if (latest === null)\n        out.push",
+    "replace": "if (false)\n        out.push",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1363,
+        "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
+      }
+    ]
+  },
+  {
+    "id": "K66-D3d-no-setup-hold",
+    "spn": "D3(d)",
+    "file": "quality-verdict.mjs",
+    "find": "if (!hasSetup)",
+    "replace": "if (false)",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1363,
+        "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
+      }
+    ]
+  },
+  {
+    "id": "K66-D3d-refused-skipped",
+    "spn": "D3(d)",
+    "file": "quality-verdict.mjs",
+    "find": "if (row?.refusedAtSetup) continue;",
+    "replace": "",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1561,
+        "titlePrefix": "品質 v2 D3 (d): 最新の typed Revision は setup の記録の準備順の最後の、refused"
+      }
+    ]
+  }
+]
