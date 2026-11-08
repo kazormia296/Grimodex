@@ -621,3 +621,20 @@ test("summarizeSteadyState は K6/6 の R1 の下の記録でも、K6/2 の時�
     "K6/2's literal reading never counts under R1",
   );
 });
+
+test("K6/6 (c): nextGraphArmOf は user-operation でない行（再 query）を『次の Graph arm の sample』に数えない", () => {
+  const user = (preparesReady, repeat) =>
+    k66Sample({
+      repeat,
+      startSlot: { kind: "empty", readyFresh: false, preparesReady },
+    });
+  const requery = {
+    ...user(99, 0),
+    trigger: "graph-ready-requery",
+  };
+  const rows = [user(10, 0), requery, user(11, 1)];
+  const nexts = nextGraphArmOf(rows);
+  assert.deepEqual(nexts.get(rows[0]), { preparesReady: 11 });
+  assert.equal(nexts.has(requery), false, "a re-query row has no entry");
+  assert.equal(nexts.get(rows[2]), null);
+});
