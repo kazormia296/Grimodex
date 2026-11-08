@@ -3517,6 +3517,11 @@ test("S2 追補 #2 P3-1 / P3-2: forbidden paths are found anywhere in the path; 
     "k65-values-after-observation",
     "c7-after-dev-observation",
     "g01-e2e-diagnostic-decision",
+    // S4a（7 回目、S2 追補 #16）: the K6/6 readings chosen after s6r1 and the
+    // dev rehearsals.
+    "k66-readings-after-s6r1",
+    "k66-quality-verdict-v2-after-s6r1",
+    "k66-harness-and-rehearsal-choices",
   ]) {
     const without = clone(declaration);
     without.readingsChosenAfterDevObservation =
@@ -6966,9 +6971,13 @@ test("S4a の追補（S2 追補 #15、S3 の B1）: the author's declaration res
   }
   // The row before the last is S2 追補 #15's; the last is S4b's preparation (the
   // pins, the retaken detection records).
-  const last = declaration.revisions.at(-2);
+  // S4a（7 回目）adds two rows dated 2026-11-08 after these.
+  const rows1107 = declaration.revisions.filter(
+    (row) => row.at === "2026-11-07",
+  );
+  const last = rows1107.at(-2);
   assert.equal(last.at, "2026-11-07");
-  const prepRow = declaration.revisions.at(-1);
+  const prepRow = rows1107.at(-1);
   for (const word of [
     "S4b の前の取り直し",
     "166b0640",
@@ -7618,4 +7627,117 @@ test("S2 追補 #16: parseK66Freeze reads the three fields once each from the K6
     confirmedCommit: CONTRACTS.k66.confirmedCommit,
     freezeCommit: CONTRACTS.k66.freezeCommit,
   });
+});
+
+test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6's readings chosen after s6r1 and the dev rehearsals, the failure and the limits, and the earlier rows stay", async () => {
+  const declaration = await json(OBSERVATION_PREP_FILES.authorDeclaration);
+  assert.deepEqual(authorDeclarationErrors(declaration), []);
+  const rows = Object.fromEntries(
+    declaration.readingsChosenAfterDevObservation.map((row) => [row.id, row]),
+  );
+  const expected = {
+    "k66-readings-after-s6r1": [
+      "56fb4fad",
+      "1e6ede44",
+      "e704f28f",
+      "ユーザーの選択を経ていない",
+    ],
+    "k66-quality-verdict-v2-after-s6r1": [
+      "8b2a5daf",
+      "integrator",
+      "ユーザーの確認の対象ではない",
+      "起案者が置いた読み",
+    ],
+    "k66-harness-and-rehearsal-choices": [
+      "K66_FREEZE",
+      "予行 3→4→5",
+      "予行 6",
+      "integrator の判断",
+    ],
+  };
+  for (const [id, words] of Object.entries(expected)) {
+    const text = `${rows[id].reading} ${rows[id].chosenBy} ${rows[id].basis}`;
+    for (const word of words) assert.ok(text.includes(word), `${id} ${word}`);
+    assert.ok(rows[id].basis.includes("見た後"), id);
+    for (const field of ["chosenBy", "basis"]) {
+      const mutated = clone(declaration);
+      mutated.readingsChosenAfterDevObservation.find((row) => row.id === id)[
+        field
+      ] = " ";
+      assert.ok(
+        authorDeclarationErrors(mutated).some((e) =>
+          /readingsChosenAfterDevObservation must list/u.test(e),
+        ),
+        `${id} ${field}`,
+      );
+    }
+  }
+  // The two rows dated 2026-11-08: the failure, S2 追補 #16 and what was read,
+  // and the limits.
+  const rows1108 = declaration.revisions.filter(
+    (row) => row.at === "2026-11-08",
+  );
+  assert.equal(rows1108.length, 2);
+  assert.equal(declaration.revisions.at(-1), rows1108[1]);
+  for (const word of [
+    "S2 追補 #16",
+    "DR-CP4-S4-10",
+    "1e0200b7a419e0e713ca15d6e52b2bbe14ffe523",
+    "63bc9b903d5b7dbba3533ea32da9bdd7fe649861",
+    "fb9973e4",
+    "7652a86e2252eec55a22143921c33f81a481e48c",
+    "追補の作者の申告ではない",
+    "bytes を変えていないもの",
+    "読んでいないもの",
+    "S3 は K6/6 の追補",
+  ])
+    assert.ok(rows1108[0].reason.includes(word), word);
+  for (const word of [
+    "R-6",
+    "R-7",
+    "163/270",
+    "56fb4fad",
+    "1e6ede44",
+    "e704f28f",
+    "parentContributed",
+    "完全な盲検ではなかった",
+    "予行 1〜6",
+    "8eb23fa6",
+    "排除できない",
+    "pin の外",
+    "PushEvent",
+    "新しい S4 の結果だけ",
+    "再承認が要る見込み",
+    "6b47c177",
+    "availability.mjs",
+    "join.mjs",
+    "17 file",
+    "(9)",
+  ])
+    assert.ok(rows1108[1].reason.includes(word), word);
+  // The scope names the seventh re-freeze's observations.
+  for (const word of [
+    "DR-CP4-S4-10",
+    "163/270",
+    "k66-*",
+    "graphRuntimeObservedBeforeFreeze: false",
+  ])
+    assert.ok(declaration.graphRuntimeOutputObservedScope.includes(word), word);
+  // Earlier rows stay as written (the new rows add, never edit).
+  assert.ok(
+    declaration.revisions
+      .slice(0, -2)
+      .some((row) => row.reason.includes("確認の台帳の形の記録ではない")),
+  );
+  assert.ok(
+    declaration.revisions
+      .slice(0, -2)
+      .some((row) => row.reason.includes("S4a（6 回目）で開示する限界")),
+  );
+  // S2's bound author declaration is the file this test reads.
+  assert.equal(
+    declaration.graphRuntimeOutputObserved,
+    false,
+    "the declaration is the S2 author's, not the builder's",
+  );
 });

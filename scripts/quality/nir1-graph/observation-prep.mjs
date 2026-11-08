@@ -1973,6 +1973,12 @@ const READINGS_AFTER_DEV = Object.freeze([
   "k65-values-after-observation",
   "c7-after-dev-observation",
   "g01-e2e-diagnostic-decision",
+  // S4a（7 回目の凍結のやり直し、S2 追補 #16）: K6/6 の読み（R-6・R-7、FR-1〜FR-8、
+  // 品質の FAIL の条件。s6r1 の HOLD の後に起案）、品質判定 v2 の確定（観測の後）、
+  // 予行 1〜6 の後に選んだ harness の fixture と止める条件。
+  "k66-readings-after-s6r1",
+  "k66-quality-verdict-v2-after-s6r1",
+  "k66-harness-and-rehearsal-choices",
 ]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
