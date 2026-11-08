@@ -181,6 +181,11 @@ jobs:
     if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      # Impact-selected suites compile many test binaries. Skip DWARF like the
+      # rust / electron-native jobs; panic messages and symbol names remain.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -217,7 +222,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
-          workspaces: src-tauri
+          # The impact-selected suites also build and test the N-API crate
+          # (own Cargo.lock / target), which was recompiled from scratch.
+          workspaces: |
+            src-tauri
+            electron/native/grimodex-node
           key: quality-grimodex-ai
 
       - run: pnpm install --frozen-lockfile
