@@ -346,6 +346,7 @@ pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
 #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub use incremental_freshness::publish_race_for_test as incremental_freshness_publish_race_for_test;
 pub use incremental_freshness::FreshnessLifecycleControl;
+pub(crate) use incremental_freshness::PUBLISH_GUARD_MESSAGE_PREFIXES;
 pub use incremental_freshness::{
     run_incremental_freshness_cycle, run_incremental_freshness_cycle_with_hold,
     run_incremental_freshness_cycle_with_lifecycle_control,
