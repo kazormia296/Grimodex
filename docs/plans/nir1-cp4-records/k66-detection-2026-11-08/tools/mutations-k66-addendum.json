@@ -1,0 +1,463 @@
+[
+  {
+    "id": "K66-b-preparesStarted-tolerate-0",
+    "spn": "N2c (0)",
+    "file": "followup.mjs",
+    "find": "!sameCounter(record, \"preparesStarted\", 1)",
+    "replace": "!(sameCounter(record, \"preparesStarted\", 1) || sameCounter(record, \"preparesStarted\", 0))",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 221,
+        "titlePrefix": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased"
+      }
+    ]
+  },
+  {
+    "id": "K66-b-preparesStarted-tolerate-2",
+    "spn": "N2c (2)",
+    "file": "followup.mjs",
+    "find": "!sameCounter(record, \"preparesStarted\", 1)",
+    "replace": "!(sameCounter(record, \"preparesStarted\", 1) || sameCounter(record, \"preparesStarted\", 2))",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 158,
+        "titlePrefix": "K6/6-P4: phase の最後の Graph arm の sample は (c) を当てられず、(b) の co"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 221,
+        "titlePrefix": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 522,
+        "titlePrefix": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）"
+      }
+    ]
+  },
+  {
+    "id": "K66-b-preparesReady-tolerate-0",
+    "spn": "N2d (0)",
+    "file": "followup.mjs",
+    "find": "!sameCounter(record, \"preparesReady\", 1)",
+    "replace": "!(sameCounter(record, \"preparesReady\", 1) || sameCounter(record, \"preparesReady\", 0))",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 221,
+        "titlePrefix": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased"
+      }
+    ]
+  },
+  {
+    "id": "K66-b-preparesReady-tolerate-2",
+    "spn": "N2d (2)",
+    "file": "followup.mjs",
+    "find": "!sameCounter(record, \"preparesReady\", 1)",
+    "replace": "!(sameCounter(record, \"preparesReady\", 1) || sameCounter(record, \"preparesReady\", 2))",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 221,
+        "titlePrefix": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased"
+      }
+    ]
+  },
+  {
+    "id": "K66-b-deferredReleased-tolerate-0",
+    "spn": "N2e/N2f (0)",
+    "file": "followup.mjs",
+    "find": "!sameCounter(record, \"deferredReleased\", 1)",
+    "replace": "!(sameCounter(record, \"deferredReleased\", 1) || sameCounter(record, \"deferredReleased\", 0))",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 221,
+        "titlePrefix": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased"
+      }
+    ]
+  },
+  {
+    "id": "K66-b-deferredReleased-tolerate-2",
+    "spn": "N2e/N2f (2)",
+    "file": "followup.mjs",
+    "find": "!sameCounter(record, \"deferredReleased\", 1)",
+    "replace": "!(sameCounter(record, \"deferredReleased\", 1) || sameCounter(record, \"deferredReleased\", 2))",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 221,
+        "titlePrefix": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased"
+      }
+    ]
+  },
+  {
+    "id": "K66-FR4-begins-skip-after",
+    "spn": "N5 (after, begins)",
+    "file": "followup.mjs",
+    "find": "!(d.begins === 1 && d.lateCached === 0 && d.cacheHits === 0)",
+    "replace": "!((name === \"after\" || d.begins === 1) && d.lateCached === 0 && d.cacheHits === 0)",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 317,
+        "titlePrefix": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で "
+      }
+    ]
+  },
+  {
+    "id": "K66-FR4-lateCached-skip-after",
+    "spn": "N5 (after, lateCached)",
+    "file": "followup.mjs",
+    "find": "!(d.begins === 1 && d.lateCached === 0 && d.cacheHits === 0)",
+    "replace": "!(d.begins === 1 && (name === \"after\" || d.lateCached === 0) && d.cacheHits === 0)",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 317,
+        "titlePrefix": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で "
+      }
+    ]
+  },
+  {
+    "id": "K66-FR4-cacheHits-skip-after",
+    "spn": "N5 (after, cacheHits)",
+    "file": "followup.mjs",
+    "find": "!(d.begins === 1 && d.lateCached === 0 && d.cacheHits === 0)",
+    "replace": "!(d.begins === 1 && d.lateCached === 0 && (name === \"after\" || d.cacheHits === 0))",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 317,
+        "titlePrefix": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で "
+      }
+    ]
+  },
+  {
+    "id": "K66-FR4-begins-skip-after-release",
+    "spn": "N5 (after-release, begins)",
+    "file": "followup.mjs",
+    "find": "!(d.begins === 1 && d.lateCached === 0 && d.cacheHits === 0)",
+    "replace": "!((name === \"after-release\" || d.begins === 1) && d.lateCached === 0 && d.cacheHits === 0)",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 317,
+        "titlePrefix": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で "
+      }
+    ]
+  },
+  {
+    "id": "K66-FR4-lateCached-skip-after-release",
+    "spn": "N5 (after-release, lateCached)",
+    "file": "followup.mjs",
+    "find": "!(d.begins === 1 && d.lateCached === 0 && d.cacheHits === 0)",
+    "replace": "!(d.begins === 1 && (name === \"after-release\" || d.lateCached === 0) && d.cacheHits === 0)",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 317,
+        "titlePrefix": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で "
+      }
+    ]
+  },
+  {
+    "id": "K66-FR4-cacheHits-skip-after-release",
+    "spn": "N5 (after-release, cacheHits)",
+    "file": "followup.mjs",
+    "find": "!(d.begins === 1 && d.lateCached === 0 && d.cacheHits === 0)",
+    "replace": "!(d.begins === 1 && d.lateCached === 0 && (name === \"after-release\" || d.cacheHits === 0))",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 317,
+        "titlePrefix": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で "
+      }
+    ]
+  },
+  {
+    "id": "K66-FR5-window-not-D",
+    "spn": "N12c",
+    "file": "followup.mjs",
+    "find": "    parent.graphWindowMs !== GRAPH_EVAL_D_MS\n",
+    "replace": "    false\n",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 477,
+        "titlePrefix": "K6/6-N12c: FR-5 親の窓が 40 ms でなければ [precheck]"
+      }
+    ]
+  },
+  {
+    "id": "K66-c-next-includes-hybrid",
+    "spn": "(c) hybrid を飛ばす",
+    "file": "followup.mjs",
+    "find": "if (row?.arm !== \"graph\" || row.trigger !== USER_OPERATION) continue;",
+    "replace": "if (row.trigger !== USER_OPERATION) continue;",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 87,
+        "titlePrefix": "K6/6-P1: 間に hybrid arm の sample を挟んでも、同じ phase の次の Graph arm"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 490,
+        "titlePrefix": "K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-ren"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 522,
+        "titlePrefix": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 586,
+        "titlePrefix": "K6/6 R-6 (c) の開示: 背景の再準備が次の sample の前に走った親は数えられず、欠落になる（残余 (3"
+      }
+    ]
+  },
+  {
+    "id": "K66-c-next-includes-requery",
+    "spn": "(c) 再 query 行を飛ばす",
+    "file": "followup.mjs",
+    "find": "if (row?.arm !== \"graph\" || row.trigger !== USER_OPERATION) continue;",
+    "replace": "if (row?.arm !== \"graph\") continue;",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 625,
+        "titlePrefix": "K6/6 (c): nextGraphArmOf は user-operation でない行（再 query）を"
+      }
+    ]
+  },
+  {
+    "id": "K66-c-next-across-phase",
+    "spn": "(c) phase の区切り",
+    "file": "followup.mjs",
+    "find": "const group = `${row.variantKey}\\u0000${row.phase}`;",
+    "replace": "const group = `${row.variantKey}`;",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 110,
+        "titlePrefix": "nextGraphArmOf は variant と phase ごとに次の Graph arm の sample を引"
+      }
+    ]
+  },
+  {
+    "id": "K66-c-next-across-variant",
+    "spn": "(c) variant の区切り",
+    "file": "followup.mjs",
+    "find": "const group = `${row.variantKey}\\u0000${row.phase}`;",
+    "replace": "const group = `${row.phase}`;",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 110,
+        "titlePrefix": "nextGraphArmOf は variant と phase ごとに次の Graph arm の sample を引"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 490,
+        "titlePrefix": "K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-ren"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 522,
+        "titlePrefix": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 586,
+        "titlePrefix": "K6/6 R-6 (c) の開示: 背景の再準備が次の sample の前に走った親は数えられず、欠落になる（残余 (3"
+      }
+    ]
+  },
+  {
+    "id": "K66-N8-schedule-check",
+    "spn": "N8",
+    "file": "availability.mjs",
+    "find": "if (JSON.stringify(actual) !== JSON.stringify(expected))",
+    "replace": "if (false)",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 573,
+        "titlePrefix": "K6/6-N8: 窓内に合流した stamp0-missing の親だけを分母から外した samples は拒否する（("
+      }
+    ]
+  },
+  {
+    "id": "K66-D4-requery-rows-ignored",
+    "spn": "D4 requeries",
+    "file": "quality-verdict.mjs",
+    "find": "!Array.isArray(requery.finalSceneIds)",
+    "replace": "true",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1581,
+        "titlePrefix": "品質 v2 D4: 受領書の最上位の requeries（user-operation でない行）が Scene の一覧"
+      }
+    ]
+  },
+  {
+    "id": "K66-D4-requery-user-operation-counted",
+    "spn": "D4 requeries",
+    "file": "quality-verdict.mjs",
+    "find": "      requery.trigger === \"user-operation\" ||\n",
+    "replace": "",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1581,
+        "titlePrefix": "品質 v2 D4: 受領書の最上位の requeries（user-operation でない行）が Scene の一覧"
+      }
+    ]
+  },
+  {
+    "id": "K66-D4-requery-hybrid-counted",
+    "spn": "D4 requeries",
+    "file": "quality-verdict.mjs",
+    "find": "      requery.arm === \"hybrid\" ||\n",
+    "replace": "",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1581,
+        "titlePrefix": "品質 v2 D4: 受領書の最上位の requeries（user-operation でない行）が Scene の一覧"
+      }
+    ]
+  },
+  {
+    "id": "K66-D3b-record-only-when-edges",
+    "spn": "D3 (b)(d)",
+    "file": "quality-verdict.mjs",
+    "find": "if (hasRecord || mayHaveShownGraph) {",
+    "replace": "if (child.outcome === \"graph-ready\" && (child.edgeCount ?? 0) > 0) {",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1658,
+        "titlePrefix": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount "
+      }
+    ]
+  },
+  {
+    "id": "K66-D3b-null-edgecount-no-hold",
+    "spn": "D3 (b)(d)",
+    "file": "quality-verdict.mjs",
+    "find": "child.outcome === \"graph-ready\" && child.edgeCount !== 0;",
+    "replace": "child.outcome === \"graph-ready\" && (child.edgeCount ?? 0) > 0;",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1658,
+        "titlePrefix": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount "
+      }
+    ]
+  },
+  {
+    "id": "K66-D3b-revision-resolution-always",
+    "spn": "D3 (d)",
+    "file": "quality-verdict.mjs",
+    "find": "if (observedPairs || mayHaveShownGraph)",
+    "replace": "if (true)",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1658,
+        "titlePrefix": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount "
+      }
+    ]
+  },
+  {
+    "id": "K66-D3-disclose-edge-count",
+    "spn": "D3 開示",
+    "file": "quality-verdict.mjs",
+    "find": "indexReady.graphEdgeCount += child.edgeCount;",
+    "replace": "indexReady.graphEdgeCount += 0;",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1726,
+        "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
+      }
+    ]
+  },
+  {
+    "id": "K66-D3-disclose-outside-expectation",
+    "spn": "D3 開示",
+    "file": "quality-verdict.mjs",
+    "find": "(id) => !pair.includes(id) && !expectedScenes.has(id),",
+    "replace": "(id) => !pair.includes(id),",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [],
+    "equivalent": true,
+    "equivalentReason": "D3 の対象は G-08/chronicle-index-unusable だけで、その期待は unavailable（expectedContributions 0 件）なので expectedScenes は空。`!expectedScenes.has(id)` は常に真で、外す変異は判定も開示も変えない（読みによる）"
+  },
+  {
+    "id": "K66-D3-disclose-missing-conditions",
+    "spn": "D3 開示",
+    "file": "quality-verdict.mjs",
+    "find": "missingConditions: d3Missing(sample, child),",
+    "replace": "missingConditions: [],",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1726,
+        "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
+      }
+    ]
+  },
+  {
+    "id": "K66-D3-missing-6",
+    "spn": "D3 開示",
+    "file": "quality-verdict.mjs",
+    "find": "if (child.chronicleIndexUsable !== true) missing.push(6);",
+    "replace": "if (false) missing.push(6);",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1365,
+        "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
+      },
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1726,
+        "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
+      }
+    ]
+  }
+]

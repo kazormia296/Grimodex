@@ -1420,3 +1420,19 @@ K6/6（`nir1-final-request-eval-proposal/6`、contractId `graph-eval-procedure`�
 - **試験**: `fnm exec --using=22 node --test --test-concurrency=4 scripts/quality/nir1-graph-eval/*.test.mjs scripts/quality/nir1-graph/*.test.mjs scripts/quality/impact-map.test.mjs scripts/quality/validate-run-kind-policy.test.mjs` の結果（Node 22.23.3、候補 `dda975bc` の work tree）は **925 件、pass 920、fail 5**。nir1-graph-eval だけの 714 件は全部 pass（検出力の記録の baseline）。**S2 の bytes の pin の試験は S2 追補・S4 の 7 回目まで想定どおり赤**: `S2 追補 #15（DR-CP4-S4-9）: the 14 files …`、`S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold every non-test harness file …`、`S2 追補 #6: the SP-P4 receipt reading and C1 are the pinned harness's …`、`a draft with placeholders is never usable for a formal run`、`the draft copy of the committed S2 validates as a draft (S4 tokens, not formal)` の 5 件。validator が最初に報告する pin は `k65-freeze-source`（`constants.mjs`）、`k65-harness-d40`（`frozen-k64-run.mjs`）、`k65-n2-n3-enforcement`（`frozen-diagnostics.mjs`）。pin の取り直しは S2 追補（確認の後）と S4 の 7 回目の仕事で、この枝は触れていない。
 - **読んでいないこと**: s6r1 の受領書、Gold・凍結の fixture の本文、`.artifacts`。実機（Electron）の予行は行っていない（次の段）。
 - **残る穴**: (a) 品質判定 v2 は草稿の D3 (d) の読み（DR-CP4-QV-2）を足しただけで、v2 の確定・独立のコードレビュー・remote 側の時刻つきの push（v2 の §0）は未了。(b) 検出力の記録の期待の行は変異の前に決めていない。K6/4・K6/5 の検出力の記録（`followup.mjs` などが変わったので取り直しが要るか）は integrator の判断。(c) FR-7（親の寄与の記録）は合成の観測と dev の preview の確認にとどまり、実機で取れるかは dev の予行（次の段）で確かめる。
+
+### DR-CP4-K66-1 のレビュー指摘への対応（2026-11-08。`claude/k66-harness`）
+
+独立レビューの指摘 6 件を確かめた。直したもの：
+
+- **`CONTRACTS.k66`**（`observation-prep.mjs`）に `confirmedCommit` `324c804f…` と `freezeCommit` `56fb4fad…` を入れ、「未確認の draft」のコメントを直した。`observation-prep.test.mjs` に `K66_FREEZE` と一致する試験を足した（k65 と同じ形ではなく、validator が `contracts.k66` をまだ読まないので値の一致だけを見る。S2 追補が束縛するときに validator の照合を足す）。
+- **品質判定 v2 D4**（`quality-verdict.mjs`）: 受領書の最上位の `requeries`（`trigger` が `user-operation` でない行）のうち Scene の一覧（`finalSceneIds`）を持つ行を、親・子と同じ「R+IR に足した寄与が禁止 Scene・blocked 候補に入らない」の検査（条件 5 (a)）に足した。対の R+IR は行の `repeat` で引く。引けなければ禁止・blocked への一致だけを見る。R+IR arm の行は baseline として見ない。一覧が無い行は N29・N32（`classifyFollowUp`）の側。現行の runner は `requeries` を `[]` に固定しているので今の run には影響しない。
+- **品質判定 v2 D3 (b)(d)**: `materialRevision` の記録が在れば、`outcome`・`edgeCount` によらず観測した path と `unresolvedEdges` を検査する（fail open を閉じた）。Graph を出したかもしれない子（`outcome` が `graph-ready` で `edgeCount` が 0 と確定していない）に記録が無ければ `hold`。`edgeCount` が 0 の `graph-ready` の子は Graph を出していない（D8 も数えない）ので記録が無くても `hold` にしない（指摘は「`edgeCount` によらず `hold`」だったが、この点は採らず、`null` と `1` 以上だけ `hold`）。何も観測しない記録は setup の typed Revision が無くても `hold` にしない。
+- **品質判定 v2 D3 の開示**: Graph を出した子の数と edge の件数（`graphShownChildren`、`graphEdgeCount`）、R+IR に足した Scene の期待の外の件数（`outsideExpectationAdded`）、D2 に残った `index-ready` の子の欠けた条件（`keptAsChildrenMissing`、(3)〜(6) の番号）を component と集計に出し、`renderSummary` に D3 の開示の行と D8・D3 の component を足した。`d3Missing` を足し `d3Eligible` はその空判定にした。
+- **検出力の記録**（`k66-detection-2026-11-08/`）に追補を足した：54 件の変異の理由 code の表、N2c〜N2f（値ごと）・N5（block × key）・N8・N12c・(c) の区切り（hybrid・再 query・phase・variant）・品質判定 v2 の D3・D4 の変異 28 件（候補 `720509a7`、`exact` 28。等価 1 件）。最初の run で生き残った 1 件に試験を足した（`720509a7`）。
+
+直さなかったもの（理由）：
+
+- **D7 / §0 の出力項目**（v2 の file の sha256、実装の commit、最初の正式 run と v2 確定版・実装の commit の remote 側の時刻の前後の検査）は実装していない。v2 は草稿（改訂 2）で、確定する file・commit がまだ無く、検査の入力が存在しない。**残る穴 (d)**: v2 の確定の後に、CLI の引数で v2 の file の sha256 と commit を受け、§0 の前提の検査を `[precheck]` にして足す。この枝では足さない。
+
+残る穴は上の (a)〜(c) に加えて (d)。試験: `fnm exec --using=22 node --test --test-concurrency=4 scripts/quality/nir1-graph-eval/*.test.mjs scripts/quality/nir1-graph/*.test.mjs scripts/quality/impact-map.test.mjs scripts/quality/validate-run-kind-policy.test.mjs` の結果は PR #840 の本文に書く（S2 の bytes の pin の試験の赤 5 件は想定どおり、`observation-prep.test.mjs` に足した試験は pass）。

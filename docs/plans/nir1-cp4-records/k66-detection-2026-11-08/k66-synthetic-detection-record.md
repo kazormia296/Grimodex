@@ -137,7 +137,124 @@ K6/6-N1〜N13 とK6/6-P1〜P5 のすべてに 1 件以上の試験がある。FR
 
 - 等価の変異 2 件の等価性は読みによる。`K66-FR3-revalidation`：`classifyJoin` が joined の sample に revalidation passed を要求し、first-render の候補はそこを通った後にだけ来る（FR-3 の revalidation の検査は、記録の誤りを見つける空の検査）。`K66-6-contributed-joined`：`parentContributed` は `join.inWindow` を先に要求し、`classifyJoin` は inWindow を joined のときだけ返す。
 - 変異の期待の行は、変異の前に決めていない（最初の run から写した）。K6/4-N1〜N40、K6/5-N1〜N4、SP-N の変異は今回当てていない（変えていない file の記録は `../k65-detection-2026-11-07/` のまま。`followup.mjs`・`outcome.mjs`・`receipt.mjs`・`admission.mjs`・`constants.mjs` は K6/6 で変わったので、K6/4・K6/5 の検出力の記録は S4 の 7 回目の前に取り直すかを integrator が決める）。
-- 検出力の記録は独立レビューを受けていない。
+- 検出力の記録は独立レビューを受けていない（この記録への指摘は下の追補で扱った。追補の記録は再レビュー未了）。
 - `K66-N9-*` は `receipt.test.mjs`・`admission.test.mjs` の 1 件の試験が落ちる。1 件の試験が複数の検査（sha、commit、null の descriptor）を含むので、変異ごとの落ち方は同じ試験の中の別の assert（変異 id と assert の対応は目視）。
 - 品質判定 v2 の D3 (d) の変異は `quality-verdict.test.mjs` の D2・D3 の試験と D3 (d) の試験で落ちる。v2 の確定・独立のコードレビューは未了（次の段）。
+
+
+## 追補：レビュー指摘への対応（下位条件ごとの理由 code、N2e／N2f・N5・N8・N12c・(c) の区切り、品質判定 v2 の D3・D4）
+
+独立のレビューが次を指摘した：(1) 記録の表は『変異 → 落ちた試験』だけで、`firstRenderFails` の理由 code が無い。(2) N8、N12c、(c) の hybrid を飛ばす経路・phase の区切りに変異が無く、N2e／N2f、N5 の block ごと、N10a／N10b は 1 つの試験を共有する。ここでその両方に答える。上の 54 件の表と結果は `dda975bc` のままで書き換えない。
+
+- 実行：2026-11-08T09:46:38.776Z から 2026-11-08T09:47:56.353Z（UTC）。候補 `720509a7d58fc0070931ce931df3eee8ac3a053b`（tree `4de669c385de8bdaad52a3afe9d6a7bdeaabed7d`。`dda975bc` の後、レビューの指摘を直した `6342a02d` と、この追補で生き残った変異に足した試験 `720509a7`）。detach の worktree で node v22.23.3、work tree は clean。
+- baseline：変異の対象の試験（`followup.k66.test.mjs`・`quality-verdict.test.mjs`）57 件 pass、全体（`scripts/quality/nir1-graph-eval/*.test.mjs`）**718 件、pass 718、fail 0**。陽性の対照（`--positive`）はこの追補では渡していない（baseline の全 pass で足りる。結果の `positiveControlsOk: false` は『渡していない』の意味）。
+- **変異 28 件**：すべて 1 回だけ当たり（`allHitOnce`）、表どおり（`exact` 28 件）。等価の変異は 1 件（下）、残り 27 件はその下位条件の試験が落ちる。変異は `tools/mutations-k66-addendum.json`、理由 code は `tools/reasons-k66.json`。結果 `results-k66-addendum-720509a7.json`（sha256 `5f9f0e87b2cf847a2d4368a14d05ef3441acdb847cf2c5f16cc55fb8d0a8123a`）。
+- **期待の決め方（開示）**：`expected` は最初の run（候補 `6342a02d`。期待は空）の結果を写した。最初の run で試験が落ちない変異が 2 件あった：`K66-c-next-includes-requery`（再 query の行を `nextGraphArmOf` が数える変異。試験が無かったので `720509a7` で足し、取り直した run で落ちる）と `K66-D3-disclose-outside-expectation`（等価、下）。
+
+### 追補の変異と、落ちた試験・理由 code
+
+`理由 code` は、その変異が外した検査が出す code（`followup.mjs` の `firstRenderOf` の `fails`、`quality-verdict.mjs` の problem の code）。N2c〜N2f は 1 つの試験の中で code ごとに assert する（`notCounted` が落ちた理由をちょうど 1 つに限り、期待の code を要求する）。変異は『その値だけを許す』ので、落ちるのはその code の assert（0 を許す変異は `-0` の、2 を許す変異は `-2` の assert）。N5 は block と key を 1 つずつ外す。
+
+| 変異 | 対応 | 変える file | 落ちた試験 | 理由 code |
+|---|---|---|---|---|
+| K66-b-preparesStarted-tolerate-0 | N2c (0) | followup.mjs | followup.k66.test.mjs:221 | `b:prepares-started-0` |
+| K66-b-preparesStarted-tolerate-2 | N2c (2) | followup.mjs | followup.k66.test.mjs:158, followup.k66.test.mjs:221, followup.k66.test.mjs:522 | `b:prepares-started-2` |
+| K66-b-preparesReady-tolerate-0 | N2d (0) | followup.mjs | followup.k66.test.mjs:221 | `b:prepares-ready-0` |
+| K66-b-preparesReady-tolerate-2 | N2d (2) | followup.mjs | followup.k66.test.mjs:221 | `b:prepares-ready-2` |
+| K66-b-deferredReleased-tolerate-0 | N2e (0) | followup.mjs | followup.k66.test.mjs:221 | `b:deferred-released-0` |
+| K66-b-deferredReleased-tolerate-2 | N2f (2) | followup.mjs | followup.k66.test.mjs:221 | `b:deferred-released-2` |
+| K66-FR4-begins-skip-after | N5 (after, begins) | followup.mjs | followup.k66.test.mjs:317 | `FR4:counters-after-begins=…,lateCached=…,cacheHits=…（begins の差分）` |
+| K66-FR4-lateCached-skip-after | N5 (after, lateCached) | followup.mjs | followup.k66.test.mjs:317 | `FR4:counters-after-begins=…,lateCached=…,cacheHits=…（lateCached の差分）` |
+| K66-FR4-cacheHits-skip-after | N5 (after, cacheHits) | followup.mjs | followup.k66.test.mjs:317 | `FR4:counters-after-begins=…,lateCached=…,cacheHits=…（cacheHits の差分）` |
+| K66-FR4-begins-skip-after-release | N5 (after-release, begins) | followup.mjs | followup.k66.test.mjs:317 | `FR4:counters-after-release-begins=…,lateCached=…,cacheHits=…（begins の差分）` |
+| K66-FR4-lateCached-skip-after-release | N5 (after-release, lateCached) | followup.mjs | followup.k66.test.mjs:317 | `FR4:counters-after-release-begins=…,lateCached=…,cacheHits=…（lateCached の差分）` |
+| K66-FR4-cacheHits-skip-after-release | N5 (after-release, cacheHits) | followup.mjs | followup.k66.test.mjs:317 | `FR4:counters-after-release-begins=…,lateCached=…,cacheHits=…（cacheHits の差分）` |
+| K66-FR5-window-not-D | N12c | followup.mjs | followup.k66.test.mjs:477 | `[precheck] K6/5 変える点 6（親の窓が D でない）` |
+| K66-c-next-includes-hybrid | (c) hybrid を飛ばす | followup.mjs | followup.k66.test.mjs:87, followup.k66.test.mjs:490, followup.k66.test.mjs:522, followup.k66.test.mjs:586 | `c:next-prepares-ready-diff-` |
+| K66-c-next-includes-requery | (c) 再 query 行を飛ばす | followup.mjs | followup.k66.test.mjs:625 | `c:next-prepares-ready-diff-（再 query の行を next に数えない）` |
+| K66-c-next-across-phase | (c) phase の区切り | followup.mjs | followup.k66.test.mjs:110 | （nextGraphArmOf の group。code でなく引いた next の値） |
+| K66-c-next-across-variant | (c) variant の区切り | followup.mjs | followup.k66.test.mjs:110, followup.k66.test.mjs:490, followup.k66.test.mjs:522, followup.k66.test.mjs:586 | （nextGraphArmOf の group。code でなく引いた next の値） |
+| K66-N8-schedule-check | N8 | availability.mjs | followup.k66.test.mjs:573 | `[artifact] variant/phase/repeat/arm order differs from the predeclared AB/BA schedule` |
+| K66-D4-requery-rows-ignored | D4 requeries | quality-verdict.mjs | quality-verdict.test.mjs:1581 | `requery-row-forbidden-or-blocked-contribution` |
+| K66-D4-requery-user-operation-counted | D4 requeries | quality-verdict.mjs | quality-verdict.test.mjs:1581 | （user-operation の行は requeries の対象外） |
+| K66-D4-requery-hybrid-counted | D4 requeries | quality-verdict.mjs | quality-verdict.test.mjs:1581 | （R+IR arm の行は baseline） |
+| K66-D3b-record-only-when-edges | D3 (b)(d) | quality-verdict.mjs | quality-verdict.test.mjs:1658 | `b-forbidden-path`、`d-unresolved-edges` |
+| K66-D3b-null-edgecount-no-hold | D3 (b)(d) | quality-verdict.mjs | quality-verdict.test.mjs:1658 | `b-material-revision-record-missing` |
+| K66-D3b-revision-resolution-always | D3 (d) | quality-verdict.mjs | quality-verdict.test.mjs:1658 | （観測が空の記録に d-revision-resolution-unavailable を出さない） |
+| K66-D3-disclose-edge-count | D3 開示 | quality-verdict.mjs | quality-verdict.test.mjs:1726 | （開示 graphEdgeCount） |
+| K66-D3-disclose-outside-expectation | D3 開示 | quality-verdict.mjs | （等価）試験は落ちない | （等価） |
+| K66-D3-disclose-missing-conditions | D3 開示 | quality-verdict.mjs | quality-verdict.test.mjs:1726 | （開示 missingConditions） |
+| K66-D3-missing-6 | D3 開示 | quality-verdict.mjs | quality-verdict.test.mjs:1365, quality-verdict.test.mjs:1726 | （開示 missingConditions [6]、D2・D3 の試験で子のまま） |
+
+### 上の 54 件の変異の理由 code
+
+各変異が外した検査の理由 code（`tools/reasons-k66.json`）。『試験が assert する』の列は、その code の文字列が、落ちた試験の本体（`dda975bc` の試験の file の該当行から次の `test(` まで）に書いてあるか（記録の作成時の突き合わせ）。例外（`[artifact]`・`[precheck]`）や値（`parentContributed`）を assert する試験は『例外・値』と書く。
+
+| 変異 | 理由 code | 試験が assert する |
+|---|---|---|
+| K66-N-d-stale | `[artifact] K6/6 FR-8 (stale stamp)` | 例外・値 |
+| K66-N-d-driftAtQuery | `[artifact] K6/6 FR-8 (driftAtQuery)` | 例外・値 |
+| K66-N-d-prepareFailures | `[artifact] K6/6 FR-8 (prepareFailures)` | 例外・値 |
+| K66-FR1-source | `FR1:source-` | はい |
+| K66-a-reachedQuiet | `a:reached-quiet-false` | はい |
+| K66-a-r1-self-report | `a:r1-self-report-disagrees` | はい |
+| K66-b-begin-records | `b:begin-records-` | はい |
+| K66-b-start-slot | `b:start-slot-ready` | はい |
+| K66-b-preparesStarted | `b:prepares-started-2`、`b:prepares-started-0` | はい |
+| K66-b-preparesReady | `b:prepares-ready-2`、`b:prepares-ready-0` | はい |
+| K66-b-deferredReleased | `b:deferred-released-0`、`b:deferred-released-2` | はい |
+| K66-b-staleReadyRetired | `b:stale-ready-retired-1` | はい |
+| K66-c-unrecorded | `c:prepares-ready-unrecorded` | はい |
+| K66-c-diff | `c:next-prepares-ready-diff-2`、`c:next-prepares-ready-diff-0` | はい |
+| K66-c-next-undefined | `[precheck] K6/6 (c)` | 例外・値 |
+| K66-FR3-ticket | `FR3:ticket-not-available` | はい |
+| K66-FR3-declaration | `FR3:declaration-not-used` | はい |
+| K66-FR3-not-joined | `FR3:not-joined` | はい |
+| K66-FR3-revalidation | `FR3:revalidation-not-passed` | （等価） |
+| K66-FR3-edge-count | `FR3:edge-count-not-integer` | はい |
+| K66-FR3-stamp-other | `FR3:stamp-unavailable`、`FR3:stamp-missing` | はい |
+| K66-FR4-begins | `FR4:counters-after-`、`FR4:counters-after-release-` | はい |
+| K66-FR4-lateCached | `FR4:counters-after-`、`FR4:counters-after-release-` | はい |
+| K66-FR4-cacheHits | `FR4:counters-after-`、`FR4:counters-after-release-` | はい |
+| K66-FR4-cache-left | `FR4:cache-left-at-end` | はい |
+| K66-FR4-after-block | `FR4:counters-after-` | はい |
+| K66-FR4-after-release-block | `FR4:counters-after-release-` | はい |
+| K66-FR5-declaration | `FR5:declaration-` | はい |
+| K66-FR5-publishCount | `FR5:publish-count-2` | はい |
+| K66-FR6-notice | `FR6:graph-ready-notice` | はい |
+| K66-FR6-child | `FR6:child-` | はい |
+| K66-FR6-ir-retry | `FR6:ir-retry-timer` | はい |
+| K66-FR7-no-record | `FR7:no-contribution-record` | はい |
+| K66-FR7-basis | `FR7:basis-` | はい |
+| K66-FR7-unresolved | `FR7:unresolved-edges-` | はい |
+| K66-FR7-no-edge | `FR7:no-edge` | はい |
+| K66-FR7-expected | `FR7:no-expected-contribution` | はい |
+| K66-6-contributed-outcome | `parentContributed (品質の FAIL の入口)` | 例外・値 |
+| K66-6-contributed-joined | `parentContributed (等価)` | （等価） |
+| K66-6-contributed-used | `parentContributed (品質の FAIL の入口)` | 例外・値 |
+| K66-6-contributed-edgeCount | `parentContributed (品質の FAIL の入口)` | 例外・値 |
+| K66-6-outcome-fail | `graph-contributed-parent-not-counted-as-first-render` | はい |
+| K66-5-heading-rate-entry | `firstRenderOutOfWindowRate` | はい |
+| K66-N9-receipt-sha | `head.k66 sha256` | 例外・値 |
+| K66-N9-receipt-commit | `head.k66 freezeCommit` | 例外・値 |
+| K66-N9-receipt-null-descriptor | `head.k66 freezeCommit null` | 例外・値 |
+| K66-N9-receipt-required-when-formal | `head.k66 required` | 例外・値 |
+| K66-N9-admission-commit | `[precheck] K6/6 freeze (commit)` | 例外・値 |
+| K66-N9-admission-sha | `[precheck] K6/6 freeze (sha256)` | 例外・値 |
+| K66-N9-admission-null | `[precheck] K6/6 freeze (null)` | 例外・値 |
+| K66-D3d-not-latest | `d-revision-is-not-the-latest` | はい |
+| K66-D3d-no-edge-hold | `d-edge-has-no-typed-revision-in-setup` | はい |
+| K66-D3d-no-setup-hold | `d-revision-resolution-unavailable` | はい |
+| K66-D3d-refused-skipped | `d-revision-is-not-the-latest` | 例外・値 |
+
+### 追補で分かったこと・残る穴
+
+- **N10a／N10b**：変異は上の 54 件でもすでに分かれていた（`K66-N-d-driftAtQuery`、`K66-N-d-prepareFailures`）。落ちる試験は 1 件（`followup.k66.test.mjs:427`）だが、その中は key ごとの `assert.throws` で、落ちた assert は変異ごとに違う（失敗の message が `Missing expected exception: driftAtQuery` と `…: prepareFailures`。結果の `failed[].error`）。
+- **N12c**：親の窓が D でない場合を外す変異 `K66-FR5-window-not-D` が `followup.k66.test.mjs:477` で落ちる。`graphWindowMs === null` と `!Number.isFinite` の 2 つの guard は、`!== GRAPH_EVAL_D_MS` が同じ値（null・NaN）を拒むので、単独で外しても判定が変わらない（等価。読みによる）。変異に入れていない。
+- **(c) の区切り**：hybrid arm を飛ばさない（`K66-c-next-includes-hybrid`）、phase・variant をまたぐ（`K66-c-next-across-phase`・`-variant`）、user-operation でない行を数える（`K66-c-next-includes-requery`）が、それぞれ落ちる。`nextGraphArmOf` の phase と variant の区切りは code でなく引いた `next` の値を assert する試験（`:110`）で見ている。
+- **N8**：`K66-N8-schedule-check` が `followup.k66.test.mjs:573`（stamp0-missing の親だけを分母から外した samples の拒否）で落ちる。変異は `validateGraphCaseSchedule` の一致の検査そのもの（K6/4 の予定の検査を共有する）なので、N8 だけを狙う細かい変異ではない。
+- **N2c〜N2f・N5**：変異は code（値）と block × key ごとに分けた。ただし試験は 1 つの `test()` の中の loop で、落ちる試験の file:行 は同じになる。落ちた code は、変異が許した値から決まる（表の『理由 code』）。
+- **等価の変異**：`K66-D3-disclose-outside-expectation`（上の表）。D3 の対象は `G-08/chronicle-index-unusable` だけで、その期待は `unavailable`（`expectedContributions` 0 件）なので `expectedScenes` が空で、`!expectedScenes.has(id)` は常に真。外しても判定も開示も変わらない（読みによる）。コードは一般の形のまま残した。
+- **品質判定 v2 の D3・D4 の変異**（`K66-D4-*`、`K66-D3b-*`、`K66-D3-*`）は、この追補で足した試験（`quality-verdict.test.mjs` の D4 の requeries、D3 (b)(d) の記録、D3 の開示）が落とす。v2 の確定・独立のコードレビューは未了（次の段）のまま。
+- 上の 54 件の表の『理由 code』は、変異を当てて得た結果ではなく、変異が外した検査の code を表にしたもの（`firstRenderFails` の code は、変異した側では出ないので、結果の `failed[].error` には出ない）。『試験が assert する』の突き合わせで、code と落ちた試験を結びつけた。K6/4・K6/5 の検出力の記録を取り直すかは integrator の判断のまま。
 

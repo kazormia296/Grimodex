@@ -19,3 +19,8 @@ node count-n.mjs <baseline-all.tap> <候補の worktree> --out counts.json
 - `K66-FR3-not-joined`、`K66-FR3-edge-count`：FR-3 の合流・edgeCount の項目を単独で当てる試験（K6/6-N3d、N3e）を足した。
 - `K66-6-contributed-outcome`、`K66-6-contributed-used`、`K66-6-contributed-edgeCount`：変異の試験 file の指定が `followup.k66.test.mjs` だったのを、品質の FAIL を見る `outcome.test.mjs` に直した。そのうえで「宣言が used でない」「outcome が graph-ready でない」を単独で破る試験を `outcome.test.mjs` に足した（edgeCount は既存の試験で落ちる）。
 - `K66-FR3-revalidation`、`K66-6-contributed-joined`：試験を足さず等価の変異とした（`classifyJoin` が先に止める、`inWindow` が joined を含むため）。等価性は読みによる。
+
+## 追補（レビュー指摘への対応。候補 `720509a7`）
+
+- `mutations-k66-addendum.json`：N2c〜N2f（値ごと）、N5（block × key）、N8、N12c、(c) の区切り、品質判定 v2 の D3・D4 の変異 28 件（`run.mjs` の引数は `--mutations mutations-k66-addendum.json --targets followup.k66.test.mjs,quality-verdict.test.mjs`）。`expected` は最初の run（候補 `6342a02d`）の結果から写した（変異の前に決めていない）。等価の 1 件は `equivalentReason` に理由。
+- `reasons-k66.json`：上の 54 件の変異が外した検査の理由 code。記録の「上の 54 件の変異の理由 code」の表の元。
