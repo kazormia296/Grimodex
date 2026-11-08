@@ -2,6 +2,7 @@
 // and the implementation were on the remote. Synthetic receipts, a throwaway
 // git repository for the v2 file, and a made-up remote time record.
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,6 +12,11 @@ import { test } from "node:test";
 import { URL } from "node:url";
 import {
   FIRST_RUN_RECEIPT_KINDS,
+  IMPLEMENTATION_BRANCH,
+  IMPLEMENTATION_FILES,
+  V2_BRANCH,
+  V2_FILE_PATH,
+  assertImplementationBound,
   checkFirstRunPrecheck,
   firstFormalRunOf,
   loadFirstRunInputs,
@@ -33,10 +39,10 @@ const V2_BYTES = "# v2 final\n";
 
 // A throwaway repository: the v2 file at one commit.
 const REPO = path.join(ROOT, "contracts");
-mkdirSync(path.join(REPO, "docs"), { recursive: true });
+mkdirSync(path.join(REPO, path.dirname(V2_FILE_PATH)), { recursive: true });
 git(REPO, "init", "-q", "-b", "main");
-writeFileSync(path.join(REPO, "docs/v2.md"), V2_BYTES);
-git(REPO, "add", "docs/v2.md");
+writeFileSync(path.join(REPO, V2_FILE_PATH), V2_BYTES);
+git(REPO, "add", V2_FILE_PATH);
 git(
   REPO,
   "-c",
@@ -81,9 +87,14 @@ const STARTS = {
   negative: "2026-11-09T07:00:00.000Z",
   "g01-diagnostic": "2026-11-09T08:00:00.000Z",
 };
-const remote = (commit, remoteTimeUtc, source = "PushEvent") => ({
+const remote = (
   commit,
-  branch: "claude/x",
+  remoteTimeUtc,
+  source = "PushEvent",
+  branch = commit === V2_COMMIT ? V2_BRANCH : IMPLEMENTATION_BRANCH,
+) => ({
+  commit,
+  branch,
   remoteTimeUtc,
   source,
 });
@@ -207,16 +218,25 @@ test("v2 §0: loadFirstRunInputs reads the six directories, the record and the v
   for (const kind of FIRST_RUN_RECEIPT_KINDS) {
     const dir = path.join(ROOT, `receipts-${kind}`);
     mkdirSync(dir, { recursive: true });
+    // The G-01 diagnostic writes `<run>.json` (no `.receipt.json` suffix).
     writeFileSync(
-      path.join(dir, `${kind}.receipt.json`),
+      path.join(
+        dir,
+        kind === "g01-diagnostic" ? "g01-e2e-run.json" : `${kind}.receipt.json`,
+      ),
       JSON.stringify(receipt(kind, STARTS[kind])),
     );
     dirs[kind] = dir;
   }
   const recordPath = path.join(ROOT, "remote-record.json");
   writeFileSync(recordPath, JSON.stringify(RECORDS));
+  const RUNNING = Object.fromEntries(
+    IMPLEMENTATION_FILES.map((file) => [file, Buffer.from(`code of ${file}`)]),
+  );
   const base = {
-    v2File: path.join(REPO, "docs/v2.md"),
+    running: RUNNING,
+    readBlob: (_commit, file) => Buffer.from(RUNNING[file]),
+    v2File: path.join(REPO, V2_FILE_PATH),
     v2Commit: V2_COMMIT,
     implCommit: IMPL_COMMIT,
     remoteTimeRecordPath: recordPath,
@@ -248,21 +268,67 @@ test("v2 §0: loadFirstRunInputs reads the six directories, the record and the v
       kind,
     );
   // The v2 file's bytes differ from the commit's.
-  const changed = path.join(REPO, "docs/v2-copy.md");
+  const changed = path.join(REPO, path.dirname(V2_FILE_PATH), "v2-copy.md");
   writeFileSync(changed, "# edited\n");
   assert.throws(
     () => loadFirstRunInputs({ ...base, v2File: changed }),
     /\[precheck\]/u,
   );
+  // The v2 file's path is fixed: the same bytes committed under another path.
+  const other = path.join(REPO, "other-v2.md");
+  writeFileSync(other, V2_BYTES);
+  git(REPO, "add", "other-v2.md");
+  git(
+    REPO,
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@example.invalid",
+    "commit",
+    "-q",
+    "-m",
+    "other path",
+  );
+  assert.throws(
+    () =>
+      loadFirstRunInputs({
+        ...base,
+        v2File: other,
+        v2Commit: git(REPO, "rev-parse", "HEAD"),
+      }),
+    /not docs\/plans\/nir1-cp4-records\/quality-verdict-prereg-v2\.md/u,
+  );
+  // --impl-commit is bound to the running verdict code (bytes at that commit).
+  assert.throws(
+    () =>
+      loadFirstRunInputs({
+        ...base,
+        readBlob: (_commit, file) =>
+          Buffer.from(
+            file.endsWith("quality-verdict-cli.mjs")
+              ? "other bytes"
+              : RUNNING[file],
+          ),
+      }),
+    /differs from its bytes at the implementation commit/u,
+  );
+  assert.throws(
+    () => loadFirstRunInputs({ ...base, running: {} }),
+    /could not be read/u,
+  );
+  assert.deepEqual(
+    loaded.result.implementation.files.map((row) => row.path),
+    [...IMPLEMENTATION_FILES],
+  );
   writeFileSync(
-    path.join(REPO, "docs/v2.md"),
+    path.join(REPO, V2_FILE_PATH),
     "# v2 edited after the commit\n",
   );
   assert.throws(
     () => loadFirstRunInputs(base),
     /differs from the bytes of that path at the v2 commit/u,
   );
-  writeFileSync(path.join(REPO, "docs/v2.md"), V2_BYTES);
+  writeFileSync(path.join(REPO, V2_FILE_PATH), V2_BYTES);
   // A late commit stops the run through the same path.
   writeFileSync(
     recordPath,
@@ -302,4 +368,96 @@ test("v2 §0: the command line refuses a verdict without the first-run inputs", 
   assert.ok(failure, "the command must fail");
   assert.equal(failure.status, 1);
   assert.match(failure.stderr, /\[precheck\] v2 §0: --v2-file is required/u);
+});
+
+test("v2 §0: a receipt of a kind's directory that lacks the pair's keys or names another pair is [precheck], never dropped", () => {
+  for (const kind of FIRST_RUN_RECEIPT_KINDS) {
+    const missingKey = byKind(STARTS);
+    delete missingKey[kind][0].receipt.head.observationPrep;
+    assert.throws(
+      () => firstFormalRunOf(missingKey, ALLOW),
+      /not of the pair/u,
+      kind,
+    );
+    const noCandidate = byKind(STARTS);
+    delete noCandidate[kind][0].receipt.candidate;
+    assert.throws(
+      () => firstFormalRunOf(noCandidate, ALLOW),
+      /not of the pair/u,
+      kind,
+    );
+    // One good receipt beside a mismatched one still stops (no silent drop).
+    const mixed = byKind(STARTS);
+    mixed[kind].push({
+      path: "stale.receipt.json",
+      receipt: receipt(kind, "2026-11-09T00:00:00.000Z", {
+        s4Commit: H40("e"),
+        candidate: CANDIDATE,
+      }),
+    });
+    assert.throws(
+      () => firstFormalRunOf(mixed, ALLOW),
+      /stale\.receipt\.json is not of the pair/u,
+      kind,
+    );
+  }
+});
+
+test("v2 §0: the remote time record must name each commit on its branch (v2 on claude/nir1-contracts, the implementation on claude/k66-harness)", () => {
+  const firstRun = firstFormalRunOf(byKind(STARTS), ALLOW);
+  const check = (records) =>
+    checkFirstRunPrecheck({
+      v2Commit: V2_COMMIT,
+      v2Sha256: V2_SHA,
+      implCommit: IMPL_COMMIT,
+      remoteRecords: records,
+      firstRun,
+    });
+  assert.equal(check(RECORDS).v2.branch, V2_BRANCH);
+  assert.equal(check(RECORDS).implementation.branch, IMPLEMENTATION_BRANCH);
+  for (const commit of [V2_COMMIT, IMPL_COMMIT])
+    assert.throws(
+      () =>
+        check(
+          RECORDS.map((row) =>
+            row.commit === commit ? { ...row, branch: "claude/other" } : row,
+          ),
+        ),
+      /names no entry on the branch/u,
+    );
+  // An entry on another branch (even an earlier one) does not count.
+  assert.equal(
+    check([
+      ...RECORDS,
+      remote(V2_COMMIT, "2026-11-08T00:00:00Z", "PushEvent", "master"),
+    ]).v2.remoteTimeUtc,
+    "2026-11-09T01:00:00Z",
+  );
+});
+
+test("v2 §0: assertImplementationBound compares the running bytes with the implementation commit's blobs", () => {
+  const running = Object.fromEntries(
+    IMPLEMENTATION_FILES.map((file) => [file, Buffer.from(file)]),
+  );
+  const same = (_commit, file) => Buffer.from(file);
+  assert.equal(
+    assertImplementationBound({
+      implCommit: IMPL_COMMIT,
+      running,
+      readBlob: same,
+    }).length,
+    IMPLEMENTATION_FILES.length,
+  );
+  for (const file of IMPLEMENTATION_FILES)
+    assert.throws(
+      () =>
+        assertImplementationBound({
+          implCommit: IMPL_COMMIT,
+          running,
+          readBlob: (commit, name) =>
+            name === file ? Buffer.from("changed") : same(commit, name),
+        }),
+      /differs from its bytes/u,
+      file,
+    );
 });

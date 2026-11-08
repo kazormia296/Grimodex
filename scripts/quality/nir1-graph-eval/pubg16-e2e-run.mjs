@@ -34,7 +34,10 @@
 //   receipt の JSON>`（`frozen-k64-run.mjs` の `--setups` と同じ形。G-01/v1 だけを読む）:
 //   TMPDIR=<short scratch> node scripts/local-ci-xvfb.mjs node \
 //     scripts/quality/nir1-graph-eval/pubg16-e2e-run.mjs --run <name> \
-//     --mode g01-frozen --setups <setups.json> --ja-model <pinned> --en-model <pinned>
+//     --mode g01-frozen --setups <setups.json> --ja-model <pinned> --en-model <pinned> \
+//     --s4-commit <sha> --k62-commit <sha> --k64-commit <sha> --k65-commit <sha> --k66-commit <sha>
+//   結果の `head` は他の受領書と同じ形（freeze の head、`observationPrep.commit` と
+//   その記録の SHA-256、`runStartedAtUtc`）で、測定の前に書く（`head.json` にも一度だけ）。
 //
 // 結果は `.artifacts/pubg-16/<run>.json`（status・reason・ms・到達の有無だけ。本文・
 // 識別子・query を含まない）。詳しい report は `.artifacts/cp4/<run>/` に残る。
@@ -48,7 +51,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   admitDevPreview,
   admitG01E2eDiagnostic,
+  collectObservationPrepFacts,
   readG01E2eDiagnosticFixture,
+  readK62FreezeHead,
+  readK64FreezeHead,
+  readK65FreezeHead,
+  readK66FreezeHead,
 } from "./admission.mjs";
 import {
   buildIndex,
@@ -59,6 +67,7 @@ import {
   waitQuiet,
 } from "./dprime-check.mjs";
 import { loadDevFixture } from "./dev-fixture.mjs";
+import { buildRunHead, writeRunHead } from "./frozen-diagnostics.mjs";
 import { readSetups } from "./frozen-k64-run.mjs";
 import { loadFrozenSetupPlans } from "./frozen-setup-plan.mjs";
 import { ROOT, bundleObserver } from "./launcher.mjs";
@@ -94,6 +103,48 @@ const READY_WAIT_MS = 3_000;
 const FRESHNESS_SETTLE_LIMIT_MS = 15_000;
 const FRESHNESS_SETTLE_INTERVAL_MS = 100;
 
+/** The commits the G-01 diagnostic's head names (as the other runners'). */
+export const G01_HEAD_OPTIONS = Object.freeze([
+  "s4-commit",
+  "k62-commit",
+  "k64-commit",
+  "k65-commit",
+  "k66-commit",
+]);
+
+/**
+ * The G-01 diagnostic's receipt head, the same shape as the other receipts'
+ * (`buildRunHead`): the freeze heads, the S4 (pre-observation) commit with
+ * its record's SHA-256, and the start time (UTC). Pure over the already read
+ * parts (tested); `readG01DiagnosticHead` reads them from git.
+ */
+export function g01DiagnosticHeadOf(input, deps = {}) {
+  return buildRunHead({ ...input, kind: "g01-diagnostic" }, deps);
+}
+
+/** Reads the head's parts from git at the candidate; `[precheck]` on any miss. */
+export function readG01DiagnosticHead({ root, options }, deps = {}) {
+  const candidate = candidateOf(root);
+  const prep = collectObservationPrepFacts({
+    root,
+    commit: options["s4-commit"],
+    candidateHead: candidate.commit,
+  });
+  return g01DiagnosticHeadOf(
+    {
+      k62: readK62FreezeHead({ root, commit: options["k62-commit"] }),
+      k64: readK64FreezeHead({ root, commit: options["k64-commit"] }),
+      k65: readK65FreezeHead({ root, commit: options["k65-commit"] }),
+      k66: readK66FreezeHead({ root, commit: options["k66-commit"] }),
+      observationPrep: {
+        commit: prep.commit,
+        freezeRecordSha256: prep.recordSha256AtCommit,
+      },
+    },
+    deps,
+  );
+}
+
 export function parseArgs(argv) {
   const options = {
     mode: "reach",
@@ -113,6 +164,16 @@ export function parseArgs(argv) {
   // modes one dev setup receipt (`--setup`); neither takes the other's.
   for (const name of [frozen ? "setups" : "setup", "ja-model", "en-model"])
     if (!options[name]) throw new Error(`--${name} is required`);
+  // The G-01 diagnostic's receipt carries the same head as the other
+  // receipts (S4 commit and the four freeze commits), written before the
+  // measurement; the dev modes carry none.
+  if (frozen)
+    for (const name of G01_HEAD_OPTIONS)
+      if (!options[name]) throw new Error(`--${name} is required`);
+  if (!frozen)
+    for (const name of G01_HEAD_OPTIONS)
+      if (options[name] !== undefined)
+        throw new Error(`--${name} is for --mode g01-frozen only`);
   if (frozen && options.setup !== undefined)
     throw new Error("--setup is a dev option; g01-frozen takes --setups");
   if (!frozen && options.setups !== undefined)
@@ -367,6 +428,10 @@ async function main() {
   await mkdir(runDir, { recursive: false });
   await mkdir(path.join(ROOT, RESULT_DIR), { recursive: true });
   const frozen = options.mode === "g01-frozen";
+  // The head is built (and any miss stops the run) before any measurement,
+  // and written once next to the report (`head.json`).
+  const head = frozen ? readG01DiagnosticHead({ root: ROOT, options }) : null;
+  if (head) await writeRunHead({ runDir, head });
   let admission;
   let ids;
   let seed;
@@ -692,6 +757,7 @@ async function main() {
           // DR-PUBG-16-2: a diagnostic only; the admission names it and the
           // record says it counts for no judgement, whatever the reach.
           diagnostic: report.diagnostic ?? g01DiagnosticRecord({ admission }),
+          head,
           candidate: report.candidate,
           setupReceiptSha256: report.setupReceiptSha256,
           freshnessSettle: report.freshnessSettle ?? null,

@@ -584,7 +584,7 @@
     "id": "QV3-D7-v2-bytes",
     "spn": "D7",
     "file": "quality-verdict-cli.mjs",
-    "find": "if (gitBlobSha256(v2File, v2Commit) !== v2Sha256)",
+    "find": "if (v2Blob.sha256 !== v2Sha256)",
     "replace": "if (false)",
     "testFile": "quality-verdict-first-run.test.mjs",
     "expected": [
@@ -609,5 +609,122 @@
         "titlePrefix": "v2 §0: the command line refuses a verdict without the first-"
       }
     ]
+  },
+  {
+    "id": "QV3b-P21-unaccounted",
+    "spn": "再レビュー P2-1 / C1",
+    "file": "quality-verdict.mjs",
+    "find": "if (unaccounted.length > 0)",
+    "replace": "if (false)",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": []
+  },
+  {
+    "id": "QV3b-P21-refused-any-stage",
+    "spn": "再レビュー P2-1 / C1",
+    "file": "quality-verdict.mjs",
+    "find": ".filter((row) => row?.stage === \"prepare\")",
+    "replace": ".filter((row) => row?.stage !== undefined)",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": []
+  },
+  {
+    "id": "QV3b-P33-unknown-variant",
+    "spn": "再レビュー P3-3 / C5",
+    "file": "quality-verdict.mjs",
+    "find": "else if (!GRAPH_EVAL_VARIANTS.some((v) => v.key === requery.variantKey))",
+    "replace": "else if (false)",
+    "testFile": "quality-verdict.test.mjs",
+    "expected": []
+  },
+  {
+    "id": "QV3b-P31-pair-observationPrep",
+    "spn": "再レビュー P3-1",
+    "file": "quality-verdict-cli.mjs",
+    "find": "receipt?.head?.observationPrep?.commit !== allowList?.s4Commit ||",
+    "replace": "false ||",
+    "testFile": "quality-verdict-first-run.test.mjs",
+    "expected": []
+  },
+  {
+    "id": "QV3b-P31-pair-candidate",
+    "spn": "再レビュー P3-1",
+    "file": "quality-verdict-cli.mjs",
+    "find": "        receipt?.candidate?.commit !== allowList?.candidate\n      )\n        throw precheck(\n          `v2 §0: the ${kind} receipt ${file}",
+    "replace": "        false\n      )\n        throw precheck(\n          `v2 §0: the ${kind} receipt ${file}",
+    "testFile": "quality-verdict-first-run.test.mjs",
+    "expected": []
+  },
+  {
+    "id": "QV3b-P32-branch",
+    "spn": "再レビュー P3-2",
+    "file": "quality-verdict-cli.mjs",
+    "find": "const rows = all.filter((row) => row.branch === branch);",
+    "replace": "const rows = all;",
+    "testFile": "quality-verdict-first-run.test.mjs",
+    "expected": []
+  },
+  {
+    "id": "QV3b-P32-impl-bound",
+    "spn": "再レビュー P3-2",
+    "file": "quality-verdict-cli.mjs",
+    "find": "if (sha256(onDisk) !== sha256(atCommit))",
+    "replace": "if (false)",
+    "testFile": "quality-verdict-first-run.test.mjs",
+    "expected": []
+  },
+  {
+    "id": "QV3b-P32-v2-path",
+    "spn": "再レビュー P3-2",
+    "file": "quality-verdict-cli.mjs",
+    "find": "if (v2Blob.relative !== V2_FILE_PATH)",
+    "replace": "if (false)",
+    "testFile": "quality-verdict-first-run.test.mjs",
+    "expected": []
+  },
+  {
+    "id": "QV3b-P32-g01-json-dir",
+    "spn": "再レビュー P3-1 / P1-1",
+    "file": "quality-verdict-cli.mjs",
+    "find": "list.flatMap((dir) => readFirstRunDir(dir))",
+    "replace": "list.flatMap((dir) => readReceiptDir(dir))",
+    "testFile": "quality-verdict-first-run.test.mjs",
+    "expected": []
+  },
+  {
+    "id": "QV3b-P11-g01-head-kind",
+    "spn": "再レビュー P1-1",
+    "file": "pubg16-e2e-run.mjs",
+    "find": "buildRunHead({ ...input, kind: \"g01-diagnostic\" }, deps)",
+    "replace": "buildRunHead({ ...input, kind: \"trace\" }, deps)",
+    "testFile": "pubg16-e2e-run.test.mjs",
+    "expected": []
+  },
+  {
+    "id": "QV3b-P11-head-kind-traces",
+    "spn": "再レビュー P1-1",
+    "file": "frozen-diagnostics.mjs",
+    "find": "\"g01-diagnostic\": { traces: false },",
+    "replace": "\"g01-diagnostic\": { traces: true },",
+    "testFile": "pubg16-e2e-run.test.mjs",
+    "expected": []
+  },
+  {
+    "id": "QV3b-P11-frozen-requires-head",
+    "spn": "再レビュー P1-1",
+    "file": "pubg16-e2e-run.mjs",
+    "find": "  if (frozen)\n    for (const name of G01_HEAD_OPTIONS)\n      if (!options[name]) throw new Error(`--${name} is required`);",
+    "replace": "  if (false)\n    for (const name of G01_HEAD_OPTIONS)\n      if (!options[name]) throw new Error(`--${name} is required`);",
+    "testFile": "pubg16-e2e-run.test.mjs",
+    "expected": []
+  },
+  {
+    "id": "QV3b-P11-dev-refuses-head",
+    "spn": "再レビュー P1-1",
+    "file": "pubg16-e2e-run.mjs",
+    "find": "  if (!frozen)\n    for (const name of G01_HEAD_OPTIONS)\n      if (options[name] !== undefined)",
+    "replace": "  if (false)\n    for (const name of G01_HEAD_OPTIONS)\n      if (options[name] !== undefined)",
+    "testFile": "pubg16-e2e-run.test.mjs",
+    "expected": []
   }
 ]

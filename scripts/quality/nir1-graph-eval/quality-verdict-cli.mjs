@@ -379,6 +379,16 @@ export const FIRST_RUN_RECEIPT_KINDS = Object.freeze([
 ]);
 const REMOTE_TIME_SOURCES = new Set(["repository-activity", "PushEvent"]);
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
+/** The v2 final text's path (fixed) and the branches the remote record names. */
+export const V2_FILE_PATH =
+  "docs/plans/nir1-cp4-records/quality-verdict-prereg-v2.md";
+export const V2_BRANCH = "claude/nir1-contracts";
+export const IMPLEMENTATION_BRANCH = "claude/k66-harness";
+/** The running verdict code `--impl-commit` is bound to (bytes at that commit). */
+export const IMPLEMENTATION_FILES = Object.freeze([
+  "scripts/quality/nir1-graph-eval/quality-verdict.mjs",
+  "scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs",
+]);
 
 function instantOf(text) {
   return typeof text === "string" && /^\d{4}-\d\d-\d\dT/u.test(text)
@@ -396,11 +406,17 @@ export function firstFormalRunOf(receiptsByKind, allowList) {
   let first = null;
   const counts = {};
   for (const kind of FIRST_RUN_RECEIPT_KINDS) {
-    const rows = (receiptsByKind?.[kind] ?? []).filter(
-      ({ receipt }) =>
-        receipt?.head?.observationPrep?.commit === allowList?.s4Commit &&
-        receipt?.candidate?.commit === allowList?.candidate,
-    );
+    const rows = receiptsByKind?.[kind] ?? [];
+    // A receipt of the kind's directory that lacks the pair's keys or names
+    // another pair is never dropped silently: `[precheck]`.
+    for (const { path: file, receipt } of rows)
+      if (
+        receipt?.head?.observationPrep?.commit !== allowList?.s4Commit ||
+        receipt?.candidate?.commit !== allowList?.candidate
+      )
+        throw precheck(
+          `v2 §0: the ${kind} receipt ${file} is not of the pair (${String(allowList?.s4Commit)}, ${String(allowList?.candidate)}) (head.observationPrep.commit and candidate.commit are required)`,
+        );
     counts[kind] = rows.length;
     if (rows.length === 0)
       throw precheck(
@@ -426,12 +442,23 @@ export function firstFormalRunOf(receiptsByKind, allowList) {
   return { ...rest, receiptCounts: counts, atMs: at };
 }
 
-/** The earliest remote-side record of one commit in the record file. */
-function remoteRecordOf(records, commit, label) {
-  const rows = records.filter((row) => row?.commit === commit);
-  if (rows.length === 0)
+/**
+ * The earliest remote-side record of one commit on the expected branch. When
+ * the record file holds several entries for the commit (several sources, a
+ * later re-push), the earliest counts: that the commit was on the remote
+ * before the first formal run needs only the earliest entry, and a later
+ * re-push cannot move it. Entries on another branch do not count.
+ */
+function remoteRecordOf(records, commit, label, branch) {
+  const all = records.filter((row) => row?.commit === commit);
+  if (all.length === 0)
     throw precheck(
       `v2 §0: the remote time record has no entry for the ${label} commit ${commit}`,
+    );
+  const rows = all.filter((row) => row.branch === branch);
+  if (rows.length === 0)
+    throw precheck(
+      `v2 §0: the remote time record of the ${label} commit ${commit} names no entry on the branch ${branch}`,
     );
   let best = null;
   for (const row of rows) {
@@ -477,11 +504,12 @@ export function checkFirstRunPrecheck({
       throw precheck(`v2 §0: the ${label} commit is not a full commit ID`);
   if (!Array.isArray(remoteRecords))
     throw precheck("v2 §0: the remote time record is not a list");
-  const v2 = remoteRecordOf(remoteRecords, v2Commit, "v2");
+  const v2 = remoteRecordOf(remoteRecords, v2Commit, "v2", V2_BRANCH);
   const implementation = remoteRecordOf(
     remoteRecords,
     implCommit,
     "implementation",
+    IMPLEMENTATION_BRANCH,
   );
   for (const [label, record] of [
     ["v2", v2],
@@ -499,22 +527,106 @@ export function checkFirstRunPrecheck({
   };
 }
 
-function gitBlobSha256(file, commit) {
+function gitIn(dir, args) {
+  return execFileSync("git", ["-C", dir, ...args], {
+    encoding: "buffer",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+/** The v2 file's repository path, and the sha256 of its bytes at `commit`. */
+function gitBlobOf(file, commit) {
   const dir = path.dirname(path.resolve(file));
-  const run = (...args) =>
-    execFileSync("git", ["-C", dir, ...args], {
-      encoding: "buffer",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
   try {
-    const top = run("rev-parse", "--show-toplevel").toString("utf8").trim();
+    const top = gitIn(dir, ["rev-parse", "--show-toplevel"])
+      .toString("utf8")
+      .trim();
     const relative = path.relative(top, path.resolve(file));
-    return sha256(run("show", `${commit}:${relative}`));
+    return {
+      relative,
+      sha256: sha256(gitIn(dir, ["show", `${commit}:${relative}`])),
+    };
   } catch (error) {
     throw precheck(
       `v2 §0: cannot read ${file} at ${commit} (${String(error.message).split("\n")[0]})`,
     );
   }
+}
+
+/** Reads a blob at a commit of the repository at `root` (git). */
+export function gitBlobReader(root) {
+  return (commit, file) => {
+    try {
+      return gitIn(root, ["show", `${commit}:${file}`]);
+    } catch (error) {
+      throw precheck(
+        `v2 §0: cannot read ${file} at the implementation commit ${commit} (${String(error.message).split("\n")[0]})`,
+      );
+    }
+  };
+}
+
+/**
+ * v2 §0: `--impl-commit` names the code that is running. The bytes of the
+ * running `quality-verdict.mjs` and `quality-verdict-cli.mjs` must equal their
+ * blobs at that commit, or `[precheck]`. `running` maps a repository path to
+ * the bytes on disk; `readBlob(commit, path)` reads the commit's blob.
+ */
+export function assertImplementationBound({ implCommit, running, readBlob }) {
+  const bound = [];
+  for (const file of IMPLEMENTATION_FILES) {
+    const onDisk = running?.[file];
+    if (!onDisk) throw precheck(`v2 §0: the running ${file} could not be read`);
+    const atCommit = readBlob(implCommit, file);
+    if (sha256(onDisk) !== sha256(atCommit))
+      throw precheck(
+        `v2 §0: the running ${file} differs from its bytes at the implementation commit ${implCommit}`,
+      );
+    bound.push({ path: file, sha256: sha256(onDisk) });
+  }
+  return bound;
+}
+
+/** The running verdict code's bytes, by repository path. */
+function runningImplementation() {
+  return Object.fromEntries(
+    IMPLEMENTATION_FILES.map((file) => [
+      file,
+      readFileSync(path.join(HERE, path.basename(file))),
+    ]),
+  );
+}
+
+/**
+ * The receipts of a first-run kind's directory: the `*.receipt.json` files
+ * (checked against `files.sha256`), or, when the directory holds none (the
+ * G-01 diagnostic writes `<run>.json`), its `*.json` result files.
+ */
+function readFirstRunDir(dir) {
+  if (
+    existsSync(dir) &&
+    readdirSync(dir).some((name) => name.endsWith(".receipt.json"))
+  )
+    return readReceiptDir(dir);
+  if (!existsSync(dir))
+    throw precheck(`receipt directory ${dir} does not exist`);
+  const names = readdirSync(dir)
+    .filter(
+      (name) =>
+        name.endsWith(".json") &&
+        !/(\.validation|\.run-report)\.json$|^head\.json$/u.test(name),
+    )
+    .sort();
+  if (names.length === 0) throw precheck(`${dir} holds no receipt`);
+  return names.map((name) => {
+    const file = path.join(dir, name);
+    const bytes = readBytes(file);
+    return {
+      path: path.resolve(file),
+      sha256: sha256(bytes),
+      receipt: JSON.parse(bytes),
+    };
+  });
 }
 
 /**
@@ -529,6 +641,10 @@ export function loadFirstRunInputs({
   remoteTimeRecordPath,
   dirs,
   allowList,
+  // The running verdict code and the reader of a commit's blobs (the tests
+  // hand their own; the defaults are this checkout's files and git).
+  running = runningImplementation(),
+  readBlob = gitBlobReader(DEFAULT_ROOT),
 }) {
   for (const [name, value] of [
     ["v2 file", v2File],
@@ -539,10 +655,20 @@ export function loadFirstRunInputs({
     if (!value) throw precheck(`v2 §0: the ${name} input is missing`);
   const v2Bytes = readBytes(v2File);
   const v2Sha256 = sha256(v2Bytes);
-  if (gitBlobSha256(v2File, v2Commit) !== v2Sha256)
+  const v2Blob = gitBlobOf(v2File, v2Commit);
+  if (v2Blob.relative !== V2_FILE_PATH)
+    throw precheck(
+      `v2 §0: the v2 file is ${v2Blob.relative}, not ${V2_FILE_PATH}`,
+    );
+  if (v2Blob.sha256 !== v2Sha256)
     throw precheck(
       `v2 §0: ${v2File} differs from the bytes of that path at the v2 commit ${v2Commit}`,
     );
+  const implementationFiles = assertImplementationBound({
+    implCommit,
+    running,
+    readBlob,
+  });
   const recordBytes = readBytes(remoteTimeRecordPath);
   let remoteRecords;
   try {
@@ -557,7 +683,7 @@ export function loadFirstRunInputs({
     const list = Array.isArray(given) ? given : given ? [given] : [];
     if (list.length === 0)
       throw precheck(`v2 §0: the ${kind} receipt directory is missing`);
-    receiptsByKind[kind] = list.flatMap((dir) => readReceiptDir(dir));
+    receiptsByKind[kind] = list.flatMap((dir) => readFirstRunDir(dir));
   }
   const firstRun = firstFormalRunOf(receiptsByKind, allowList);
   const result = checkFirstRunPrecheck({
@@ -568,7 +694,10 @@ export function loadFirstRunInputs({
     firstRun,
   });
   return {
-    result,
+    result: {
+      ...result,
+      implementation: { ...result.implementation, files: implementationFiles },
+    },
     bindings: {
       v2File: { path: path.resolve(v2File), sha256: v2Sha256 },
       remoteTimeRecord: {

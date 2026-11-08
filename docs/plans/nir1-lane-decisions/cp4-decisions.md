@@ -1434,9 +1434,9 @@ K6/6（`nir1-final-request-eval-proposal/6`、contractId `graph-eval-procedure`�
 
 直さなかったもの（理由）：
 
-- **D7 / §0 の出力項目（DR-CP4-QV-3 (7) で実装した）**（v2 の file の sha256、実装の commit、最初の正式 run と v2 確定版・実装の commit の remote 側の時刻の前後の検査）は実装していない。v2 は草稿（改訂 2）で、確定する file・commit がまだ無く、検査の入力が存在しない。**残る穴 (d)**: v2 の確定の後に、CLI の引数で v2 の file の sha256 と commit を受け、§0 の前提の検査を `[precheck]` にして足す。この枝では足さない。
+- **D7 / §0 の出力項目**（v2 の file の sha256、実装の commit、最初の正式 run と v2 確定版・実装の commit の remote 側の時刻の前後の検査）は、**この対応（`6342a02d`）の時点では実装しなかった**。v2 は草稿（改訂 2）で、確定する file・commit がまだ無く、検査の入力が存在しなかった。その後の確定版草稿の C7 を受けて **DR-CP4-QV-3 (7) で実装した**（以降、残る穴 (d) は閉じている）。この対応の時点の判断としては「(d) 残る穴: v2 の確定の後に、CLI の引数で v2 の file の sha256 と commit を受け、§0 の前提の検査を `[precheck]` にして足す」と書いた。
 
-残る穴は上の (a)〜(c) に加えて (d)。試験: `fnm exec --using=22 node --test --test-concurrency=4 scripts/quality/nir1-graph-eval/*.test.mjs scripts/quality/nir1-graph/*.test.mjs scripts/quality/impact-map.test.mjs scripts/quality/validate-run-kind-policy.test.mjs` の結果は PR #840 の本文に書く（S2 の bytes の pin の試験の赤 5 件は想定どおり、`observation-prep.test.mjs` に足した試験は pass）。
+残る穴は上の (a)〜(c)（(d) は DR-CP4-QV-3 (7) で閉じた）。試験: `fnm exec --using=22 node --test --test-concurrency=4 scripts/quality/nir1-graph-eval/*.test.mjs scripts/quality/nir1-graph/*.test.mjs scripts/quality/impact-map.test.mjs scripts/quality/validate-run-kind-policy.test.mjs` の結果は PR #840 の本文に書く（S2 の bytes の pin の試験の赤 5 件は想定どおり、`observation-prep.test.mjs` に足した試験は pass）。
 
 ### DR-CP4-QV-3 の結果（2026-11-08。`claude/k66-harness`）
 
@@ -1445,4 +1445,14 @@ K6/6（`nir1-final-request-eval-proposal/6`、contractId `graph-eval-procedure`�
 - **検出力**: 変異 35 件（`k66-detection-2026-11-08/` の追補 2）。34 件が落ち、等価 1 件（`QV3-C1-order-empty`）。最初の run で生き残った 3 件は試験の穴・道具の誤りで、`57c13dc5` で直した。
 - **変えていないもの**: trace の file、`trace-record.mjs`、手順のファイル、`K64_VALUES`、`CONTRACTS.k64`、Gold、凍結の fixture、製品のコード。`k64-record.mjs` は変えず、空の記録は判定側（D3）で `hold` にした（probe が paths を出さない形を `observed` の空で見る）。
 - **残る穴**: (a) v2 の確定版との突き合わせ（CLI の引数の名前・remote 側の時刻の記録の形は確定版 C7 に合わせたが、確定版が変われば引数を合わせる）、独立のコードレビュー、remote 側の時刻つきの push は integrator。(b) §0 の検査は、G-01 の診断の受領書などが `head.observationPrep.commit`・`candidate.commit`・`head.runStartedAtUtc` を持つことを前提にする（持たなければ `[precheck]`。実物の受領書で確かめていない）。(c) v2 の file と commit の突き合わせは `git show <commit>:<path>` を呼ぶので、file が commit を持つ checkout の中に在る必要がある。
+
+### DR-CP4-QV-3 の再レビューへの対応（2026-11-08。`claude/k66-harness`。統合者の判断）
+
+- **P1-1 G-01 の診断の受領書に head が無い**: s6r1 の `g01-e2e-s6r1-1.json`（`pubg16-e2e-run.mjs` の出力）は `candidate.commit` しか持たず、§0 の検査が必ず `[precheck]` で止まる。**統合者の判断 (i)**: runner に書かせる。`--mode g01-frozen` は `--s4-commit`・`--k62-commit`・`--k64-commit`・`--k65-commit`・`--k66-commit` を必須にし（dev の mode は受けない）、測定の前に他の受領書と同じ `buildRunHead` の形の head（freeze の head、`observationPrep.commit` とその記録の SHA-256〔`collectObservationPrepFacts`〕、`runStartedAtUtc`）を作って `head.json` に一度だけ書き、結果の JSON の `head` に載せる。`frozen-diagnostics.mjs` の `RUN_HEAD_KINDS` に `g01-diagnostic`（trace の file なし）を足した。pin の対象の file だが、この枝は S4 の 7 回目で取り込むので変えた。git から head の部品を読む部分（`readG01DiagnosticHead`）は実リポジトリの state が要るので、試験は pure な `g01DiagnosticHeadOf`・引数の検査・`buildRunHead` の失敗の経路まで。§0 の CLI は、`*.receipt.json` が無い置き場では `*.json`（G-01 の診断は `<run>.json`）も読む。
+- **P2-1 D3 (d) の「最新」**: fixture の行が setup の記録の `typedRevisions` に無いとき、以前は黙って飛ばしていた（前の Revision が最新になり pass しうる）。setup driver は prepare で拒まれた Revision を `typedRevisions` に書かず `setupReceipt.refusedAtSetup`（`{revisionId, stage, error}` の配列）に書くので、`row.refusedAtSetup === "prepare"` の行は実物には無い（その行の形は残した）。**直した**: fixture の行が `typedRevisions` に無く、`setupReceipt.refusedAtSetup` に stage が `prepare` の記録も無ければ `hold`（`d-fixture-revision-not-in-setup`）。stage が `decision` の記録は飛ばさない（Revision は作られている）。
+- **P3-1**: §0 の 6 種の置き場で、組（`head.observationPrep.commit`・`candidate.commit`）の key を欠く受領書や、組が一致しない受領書は、黙って落とさず `[precheck]`（置き場に別の組の古い受領書が混ざっていても止まる）。
+- **P3-2**: (a) remote 側の時刻の記録の枝を検査する（v2 は `claude/nir1-contracts`、実装は `claude/k66-harness`。別の枝の記録は数えない）。(b) 同じ commit の記録が複数あれば、**その枝の最も早いものを採る**（「最初の正式 run より前に remote に在った」の証明は最も早い記録で足り、後の再 push で動かない。出所が複数ある場合も同じ）。(c) `--impl-commit` を、実際に動いている `quality-verdict.mjs` と `quality-verdict-cli.mjs` の bytes に束縛する（`git show <impl-commit>:<path>` の bytes と照合し、違えば `[precheck]`。出力に両 file の sha256）。(d) `--v2-file` の repository 内の path を `docs/plans/nir1-cp4-records/quality-verdict-prereg-v2.md` に固定する（違えば `[precheck]`）。
+- **P3-3**: `variantKey` が catalog の既知の variant に無い再 query の行（誤記など）は、`variantKey` の無い行と同じく全 variant の条件 5 を `hold`（component `a3-requery-row-unattributable`。`rowsWithoutVariantKey`・`rowsWithUnknownVariantKey`）。**R+IR arm（`arm: "hybrid"`）の行の除外はそのまま**（違反の読みから外す）。**草稿 D4 の字義からの除外**であり、理由は「R+IR の arm の行は Graph の寄与を含まない。今の runner は `requeries` を `[]` に固定しているので、実害は無い」。v2 の確定版にも C5 として載っている。
+- **P3-4**: DR-CP4-K66-1 の追記の「D7 / §0 は実装していない」と「実装した」が同じ文に並んで矛盾して読めたので、「この対応の時点では実装しなかった。DR-CP4-QV-3 (7) で実装した」に書き直した。
+- **試験と検出力**: 結果は下の追記。
 

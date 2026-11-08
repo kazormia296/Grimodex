@@ -895,6 +895,9 @@ export const RUN_HEAD_KINDS = deepFreeze({
   "sp-p4": { traces: true },
   "g01-negative": { traces: true },
   trace: { traces: true },
+  // PUB-G #16's G-01 end-to-end diagnostic (`pubg16-e2e-run.mjs`): the same
+  // head as the other receipts, no trace files.
+  "g01-diagnostic": { traces: false },
 });
 export const RUN_HEAD_FILE = "head.json";
 const TRACE_KINDS = ["editing", "browsing"];

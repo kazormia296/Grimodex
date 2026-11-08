@@ -303,6 +303,8 @@ export function latestTypedRevisionOf(typedRevisions, relationId, order) {
   let latest = null;
   for (const id of Array.isArray(order) ? order : []) {
     const row = typedRevisions?.[id];
+    // (A `prepare` refusal is not written into `typedRevisions` by the setup
+    // driver — it is `setupReceipt.refusedAtSetup`; this row form is kept.)
     if (!row || row.refusedAtSetup === "prepare") continue;
     if (
       !Array.isArray(row.relationIds) ||
@@ -320,7 +322,12 @@ export function latestTypedRevisionOf(typedRevisions, relationId, order) {
  * different (older) Revision is a fail; a setup record that carries no typed
  * Revisions, or none for the edge, cannot answer and is a hold (prereg §3).
  */
-function revisionResolutionProblems(material, typedRevisions, order) {
+function revisionResolutionProblems(
+  material,
+  typedRevisions,
+  order,
+  refusedAtSetup,
+) {
   const hasSetup =
     typedRevisions &&
     typeof typedRevisions === "object" &&
@@ -335,6 +342,27 @@ function revisionResolutionProblems(material, typedRevisions, order) {
     Object.keys(typedRevisions).some((id) => !ordered.has(id))
   )
     return [{ kind: "hold", code: "d-revision-order-unavailable" }];
+  // The other direction (v2 C1): a fixture Revision the setup record does not
+  // carry is skipped only when the setup receipt's `refusedAtSetup` records it
+  // refused at the `prepare` stage (the setup driver writes such a Revision
+  // there, never into `typedRevisions`); otherwise it may be the latest one
+  // and the answer cannot be known: hold.
+  const refusedAtPrepare = new Set(
+    (Array.isArray(refusedAtSetup) ? refusedAtSetup : [])
+      .filter((row) => row?.stage === "prepare")
+      .map((row) => row.revisionId),
+  );
+  const unaccounted = [...ordered].filter(
+    (id) => !Object.hasOwn(typedRevisions, id) && !refusedAtPrepare.has(id),
+  );
+  if (unaccounted.length > 0)
+    return [
+      {
+        kind: "hold",
+        code: "d-fixture-revision-not-in-setup",
+        revisions: unaccounted,
+      },
+    ];
   const out = [];
   for (const entry of material.observed ?? [])
     for (const pair of entry.pairs ?? []) {
@@ -376,6 +404,7 @@ export function d3Problems({
   blocked,
   typedRevisions,
   typedRevisionOrder,
+  refusedAtSetup,
 }) {
   const out = [];
   const bad = (id) => forbidden.has(id) || blocked.has(id);
@@ -434,6 +463,7 @@ export function d3Problems({
           material,
           typedRevisions,
           typedRevisionOrder,
+          refusedAtSetup,
         ),
       );
   }
@@ -457,6 +487,7 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
     pairs: { graph: graph.length, hybrid: hybrid.length, ok },
     holdReasons: [],
     requeryRowsWithoutVariantKey: 0,
+    requeryRowsUnknownVariantKey: 0,
   };
   if (!ok) {
     row.holdReasons.push(
@@ -643,6 +674,7 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
         typedRevisions:
           receipt?.settings?.setupReceipt?.logicalToRuntime?.typedRevisions,
         typedRevisionOrder: expectation.typedRevisionOrder,
+        refusedAtSetup: receipt?.settings?.setupReceipt?.refusedAtSetup,
       });
       if (child.outcome === "graph-ready" && (child.edgeCount ?? 0) > 0) {
         indexReady.graphShown += 1;
@@ -690,18 +722,22 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
   for (const requery of Array.isArray(receipt.requeries)
     ? receipt.requeries
     : []) {
-    // A row that names no variant cannot be attributed to any variant and is
-    // never dropped: condition 5 holds for every Graph arm variant (v2 C5,
-    // DR-CP4-QV-3; see `a3-requery-row-without-variant-key`). A row of the
-    // R+IR arm (`arm: "hybrid"`) is the baseline the others are read
-    // against, so it is outside D4.
+    // A row that names no variant, or one the catalog does not know (a
+    // misspelling), cannot be attributed to any variant and is never dropped:
+    // condition 5 holds for every Graph arm variant (v2 C5, DR-CP4-QV-3; see
+    // `a3-requery-row-unattributable`). A row of the R+IR arm
+    // (`arm: "hybrid"`) is the baseline the others are read against, so it is
+    // outside D4 (a deviation from the draft's letter, recorded in the DR).
     if (
       requery !== null &&
       typeof requery === "object" &&
-      requery.trigger !== "user-operation" &&
-      typeof requery.variantKey !== "string"
-    )
-      row.requeryRowsWithoutVariantKey += 1;
+      requery.trigger !== "user-operation"
+    ) {
+      if (typeof requery.variantKey !== "string")
+        row.requeryRowsWithoutVariantKey += 1;
+      else if (!GRAPH_EVAL_VARIANTS.some((v) => v.key === requery.variantKey))
+        row.requeryRowsUnknownVariantKey += 1;
+    }
     if (
       requery?.variantKey !== key ||
       requery.trigger === "user-operation" ||
@@ -1258,12 +1294,20 @@ export function evaluateQualityVerdict({
     },
     // v2 C5: a top-level re-query row with no `variantKey` cannot be
     // attributed to a variant, so condition 5 holds for all of them.
-    "a3-requery-row-without-variant-key": {
-      status: live.some((row) => row.requeryRowsWithoutVariantKey > 0)
+    "a3-requery-row-unattributable": {
+      status: live.some(
+        (row) =>
+          row.requeryRowsWithoutVariantKey + row.requeryRowsUnknownVariantKey >
+          0,
+      )
         ? "hold"
         : "n/a",
-      rows: live.reduce(
+      rowsWithoutVariantKey: live.reduce(
         (sum, row) => sum + row.requeryRowsWithoutVariantKey,
+        0,
+      ),
+      rowsWithUnknownVariantKey: live.reduce(
+        (sum, row) => sum + row.requeryRowsUnknownVariantKey,
         0,
       ),
     },

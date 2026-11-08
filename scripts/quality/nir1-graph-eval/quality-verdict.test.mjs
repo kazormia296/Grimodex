@@ -265,9 +265,19 @@ function buildReceipts(expectations, edit = () => ({})) {
                       decision: "approved",
                       revisionId: "runtime-g08-r-cass",
                     },
+                    "g08-r-juno": {
+                      id: "g08-r-juno",
+                      relationIds: ["g08-rents-to-juno"],
+                      decision: "approved",
+                      revisionId: "runtime-g08-r-juno",
+                    },
                   },
                 }),
           },
+          // The setup driver records a Revision refused at a stage here.
+          ...(change.refusedAtSetup
+            ? { refusedAtSetup: change.refusedAtSetup }
+            : {}),
         },
         k64: { procedureFile: { sha256: PROCEDURE_SHA } },
       },
@@ -1477,6 +1487,14 @@ test("品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は
       ...extra,
     },
   ];
+  // The setup record carries every fixture Revision (cass, juno): the rows
+  // given replace the default rows of the same id.
+  const full = (...rows) =>
+    Object.fromEntries([
+      prepared("g08-r-cass", ["g08-rents-to-cass-unbound"]),
+      prepared("g08-r-juno", ["g08-rents-to-juno"]),
+      ...rows,
+    ]);
   const latestIsJuno = (output) =>
     a2(output).problems.every(
       (entry) =>
@@ -1514,19 +1532,38 @@ test("品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は
   );
   assert.equal(a2(decisionRefused).status, "fail");
   assert.ok(latestIsJuno(decisionRefused));
-  // prepare の段で拒まれた行（Revision が作られていない）は最新に数えない（pass）。
+  // prepare の段で拒まれた Revision は、setup driver が typedRevisions に書かず setupReceipt.refusedAtSetup に書く。
+  // その記録があれば fixture の行が setup の記録に無くても飛ばす（pass）。無ければ最新かもしれないので hold。
+  const missingJuno = Object.fromEntries([prepared("g08-r-cass", [REL])]);
   const refusedLater = run(
-    edit(
-      {},
-      {},
-      false,
-      Object.fromEntries([
-        prepared("g08-r-cass", [REL]),
-        ["g08-r-juno", { id: "g08-r-juno", refusedAtSetup: "prepare" }],
-      ]),
-    ),
+    indexReadyEdit(CHRONICLE, {
+      typedRevisions: missingJuno,
+      refusedAtSetup: [
+        { revisionId: "g08-r-juno", stage: "prepare", error: "x" },
+      ],
+    }),
   );
-  assert.equal(a2(refusedLater).status, "pass");
+  assert.equal(a2Of(refusedLater).status, "pass");
+  for (const refused of [
+    undefined,
+    [{ revisionId: "g08-r-juno", stage: "decision", error: "x" }],
+    [{ revisionId: "g08-r-cass", stage: "prepare", error: "x" }],
+  ]) {
+    const unaccounted = run(
+      indexReadyEdit(CHRONICLE, {
+        typedRevisions: missingJuno,
+        refusedAtSetup: refused,
+      }),
+    );
+    assert.equal(a2Of(unaccounted).status, "hold");
+    assert.ok(
+      a2Of(unaccounted).problems.every(
+        (entry) =>
+          entry.code === "d-fixture-revision-not-in-setup" &&
+          entry.revisions.join() === "g08-r-juno",
+      ),
+    );
+  }
   // 別の Relation の Revision が後にあっても関係しない（pass）。
   const otherRelation = run(
     edit(
@@ -1566,14 +1603,7 @@ test("品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は
       (entry) => entry.code === "d-revision-resolution-unavailable",
     ),
   );
-  const noEdge = run(
-    edit(
-      {},
-      {},
-      false,
-      Object.fromEntries([prepared("g08-r-juno", ["g08-rents-to-juno"])]),
-    ),
-  );
+  const noEdge = run(edit({}, {}, false, full()));
   assert.equal(a2(noEdge).status, "hold");
   assert.ok(
     a2(noEdge).problems.every(
@@ -1911,7 +1941,12 @@ test("品質 v2 D3 の開示: Graph を出した子の数と edge の件数、�
 /** One `index-ready` child on a variant's every Graph arm sample. */
 function indexReadyEdit(
   targetKey,
-  { child = {}, sample = {}, typedRevisions = undefined } = {},
+  {
+    child = {},
+    sample = {},
+    typedRevisions = undefined,
+    refusedAtSetup = undefined,
+  } = {},
 ) {
   return (key, ctx) => {
     if (key !== targetKey) return {};
@@ -1919,6 +1954,7 @@ function indexReadyEdit(
     const pair = runtime(fixtureLists(ctx.variant).hybrid);
     return {
       typedRevisions,
+      refusedAtSetup,
       mapGraphSample: (_merged, repeat) => ({
         ...k64Sample(
           {
@@ -2134,11 +2170,22 @@ test("P3-2（v2 C5）: variantKey の無い再 query の行は黙って捨てず
   const noKey = withRequery({ finalSceneIds: [] });
   const part =
     noKey.conditions["forbidden-contribution"].components[
-      "a3-requery-row-without-variant-key"
+      "a3-requery-row-unattributable"
     ];
   assert.equal(part.status, "hold");
-  assert.equal(part.rows, 1);
+  assert.equal(part.rowsWithoutVariantKey, 1);
+  assert.equal(part.rowsWithUnknownVariantKey, 0);
   assert.equal(statusOf(noKey, "forbidden-contribution"), "hold");
+  // catalog に無い variantKey（誤記）の行も、どの variant の行か決められないので hold。
+  const unknown = withRequery({ variantKey: "G-02/bse", finalSceneIds: [] });
+  const unknownPart =
+    unknown.conditions["forbidden-contribution"].components[
+      "a3-requery-row-unattributable"
+    ];
+  assert.equal(unknownPart.status, "hold");
+  assert.equal(unknownPart.rowsWithUnknownVariantKey, 1);
+  assert.equal(unknownPart.rowsWithoutVariantKey, 0);
+  assert.equal(statusOf(unknown, "forbidden-contribution"), "hold");
   // R+IR arm の行は D4 の対象外（baseline）。variantKey が在れば hold にしない。
   const hybrid = withRequery({
     variantKey: "G-02/base",
@@ -2147,7 +2194,7 @@ test("P3-2（v2 C5）: variantKey の無い再 query の行は黙って捨てず
   });
   assert.equal(
     hybrid.conditions["forbidden-contribution"].components[
-      "a3-requery-row-without-variant-key"
+      "a3-requery-row-unattributable"
     ].status,
     "n/a",
   );
@@ -2155,7 +2202,7 @@ test("P3-2（v2 C5）: variantKey の無い再 query の行は黙って捨てず
   assert.equal(
     withRequery({ trigger: "user-operation" }).conditions[
       "forbidden-contribution"
-    ].components["a3-requery-row-without-variant-key"].status,
+    ].components["a3-requery-row-unattributable"].status,
     "n/a",
   );
 });
