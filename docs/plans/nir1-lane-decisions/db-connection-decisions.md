@@ -34,7 +34,7 @@ SHA-NI は使われている（約 1.9〜2.0 GB/s）。sha256 は合計でも約
 
 | ID | 日付 | 判断 | 信頼境界 | 代替案 | 状態 |
 |---|---|---|---|---|---|
-| DR-DBC-2 | 2026-11-08 | **監査の hash chain の検証を、結果を変えずに速くする。(1) S1：payload を `Value` に parse した後、全 object の key が昇順なら `canonical_json_value` の clone と整列を省き、そのまま直列化した bytes の sha256 を取る（昇順でなければ従来の経路）。(2) 上限つきの並列：行ごとの計算（parse・契約の検証・payload の sha256・`compute_hash`）を、最大 4 thread（`min(4, 論理 CPU 数 / 2)`、最低 1）の `std::thread::scope` で並列に行い、連番と `prev_hash` の連結の判定は行の順に呼び出し側の thread で行う。行は 1,024 行ずつ読み、次の batch の読み出しを今の batch の計算と重ねる（memory は batch の大きさに比例し、行数には比例しない）。行数が 1,024 行以下なら逐次。** 実装は `grimodex-db/src/ai_audit.rs`（`verify_stored_chain` ほか）、試験は `ai_audit/verify_tests.rs` | 信頼する：Electron main の native が持つ本体の接続（読むのは今と同じ行・同じ列）。信頼しない：保存された監査の行（DB を書き換えられる攻撃者が作りうる。今と同じく全行を検証する）。thread は `thread::scope` の中だけで、戻る前に必ず join する（常駐・detach・新しい受信先・送信先は無い）。`Connection` は呼び出し側の thread から出ない（worker は読み出し済みの文字列だけを見る） | (a) 検証を publish の tx の外へ（窓ができ、同一性の証明が要る。却下。ユーザーの選択）(b) 生 bytes の sha256 が一致すれば正規化を省く（正規形でない生 bytes に合わせて `payload_sha256` と chain を計算し直した改ざんを通す。強さが変わる。却下）(c) 生 bytes の sha256 一致かつ生 bytes が正規形のときだけ通す（同値だが、S1 より約 4% 速いだけで論証と試験が増える。採らない）(d) 契約の 4 項目だけ読む parse（範囲外の数値で error の有無が変わる。却下）(e) rayon（製品の依存を増やさない）(f) Merkle・差分の検証（Q4 で決める） | 実装済み（Draft PR） |
+| DR-DBC-2 | 2026-11-08 | **監査の hash chain の検証を、結果を変えずに速くする。(1) S1：payload を `Value` に parse した後、全 object の key が昇順なら `canonical_json_value` の clone と整列を省き、そのまま直列化した bytes の sha256 を取る（昇順でなければ従来の経路）。(2) 上限つきの並列：行ごとの計算（parse・契約の検証・payload の sha256・`compute_hash`）を、最大 4 thread（`min(4, 論理 CPU 数 / 2)`、最低 1）の `std::thread::scope` で並列に行い、連番と `prev_hash` の連結の判定は行の順に呼び出し側の thread で行う。行は「1,024 行、または payload の合計 4 MiB」の先に当たる方で batch に切って読み、次の batch の読み出しを今の batch の計算と重ねる（memory は batch の大きさに比例し、行数にも payload の大きさの偏りにも比例しない）。行数が 1,024 行以下なら逐次。thread を作れないとき（OS の資源の枯渇）は panic せず、その chunk を呼び出し側の thread で逐次に計算する。payload 以外の列を読む順は従来と同じ（payload を先に読んで parse し、他の列の error はその後）。** 実装は `grimodex-db/src/ai_audit.rs`（`verify_stored_chain` ほか）、試験は `ai_audit/verify_tests.rs` | 信頼する：Electron main の native が持つ本体の接続（読むのは今と同じ行・同じ列）。信頼しない：保存された監査の行（DB を書き換えられる攻撃者が作りうる。今と同じく全行を検証する）。thread は `thread::scope` の中だけで、戻る前に必ず join する（常駐・detach・新しい受信先・送信先は無い）。`Connection` は呼び出し側の thread から出ない（worker は読み出し済みの文字列だけを見る） | (a) 検証を publish の tx の外へ（窓ができ、同一性の証明が要る。却下。ユーザーの選択）(b) 生 bytes の sha256 が一致すれば正規化を省く（正規形でない生 bytes に合わせて `payload_sha256` と chain を計算し直した改ざんを通す。強さが変わる。却下）(c) 生 bytes の sha256 一致かつ生 bytes が正規形のときだけ通す（同値だが、S1 より約 4% 速いだけで論証と試験が増える。採らない）(d) 契約の 4 項目だけ読む parse（範囲外の数値で error の有無が変わる。却下）(e) rayon（製品の依存を増やさない）(f) Merkle・差分の検証（Q4 で決める） | 実装済み（Draft PR） |
 
 ## 3. 強さが同じであることの論証
 
@@ -54,7 +54,8 @@ SHA-NI は使われている（約 1.9〜2.0 GB/s）。sha256 は合計でも約
 - 複数の改ざん：最初の行を報告。同じ行の複数の違反は判定の順
 - 重複 key（最後が勝つ。今と同じ結果）
 - 正規形でない payload（key の逆順。top-level だけ・入れ子も）：`payload_sha256` が正規形の sha256 のままなら通る。`payload_sha256` を生の text の sha256 にして以降の chain を計算し直した自己整合の改ざんは、今と同じく payloadSha256 mismatch で止まる
-- 補助：整列済みの直接直列化の sha256 が、正規形の sha256 と一致すること、計画（1,024 行以下は逐次、上限 4 thread、batch は固定）
+- 境界：非先頭の batch の先頭行での連結の判定、batch の末尾の行の hash、batch の途中で payload 以外の列が読めない場合（payload の parse の error との重なり、blob の payload、先の行の壊れ、同じ行の連番の欠けとの重なりを含め、error の文面まで oracle と同じ）、thread を作れない場合（1 回、2 回、全部失敗。結果は oracle と同じ）、行数が閾値を超えて既定の計画が並列の経路を通る場合（公開の関数が oracle と同じ）、batch の bytes の上限による batch の分割
+- 補助：整列済みの直接直列化の sha256 が、正規形の sha256 と一致すること、計画（1,024 行以下は逐次、上限 4 thread、batch は 1,024 行・4 MiB で固定）
 
 ## 5. 並列の上限と CPU の取り合い
 
@@ -69,9 +70,9 @@ SHA-NI は使われている（約 1.9〜2.0 GB/s）。sha256 は合計でも約
 | S1 ＋ 12 thread | 144 ms | 約 670 ms |
 
 - 上限は 4 thread：8 thread 以上は wall が 190 → 150 → 141 ms で頭打ち（読み出しの 80 ms が逐次のまま残る）なのに、総 CPU が +17%（8）・+40%（12）増える。4 thread なら総 CPU は今（665 ms）より小さい（約 470 ms）まま wall が約 1/3.5 になる。
-- 前景の操作と取り合うのは、約 0.2 秒の間に平均 約 2.5 コア（最大 4）だけ。論理 CPU が少ない機では `min(4, 論理 CPU 数 / 2)`（最低 1）にして、前景の分を残す（2 コアなら逐次）。
+- 前景の操作と取り合うのは、約 0.2 秒の間に平均 約 2.5 コア（最大 4 thread。読み出しを行う呼び出し側の thread を含めると同時に最大 5 本）だけ。論理 CPU が少ない機では `min(4, 論理 CPU 数 / 2)`（最低 1）にして、前景の分を残す（2 コアなら逐次）。
 - 下限：1,024 行（1 batch。約 15 ms の計算）以下は逐次。読みと計算を重ねる利益が無く、thread の起動（数十〜百 µs）の費用の比が大きいので。
-- memory：全行を持たず、1,024 行（約 2〜3 MB の文字列）ずつ読む。今の関数は行を 1 つずつ処理して捨てるので、memory は今も行数に比例しない。process の peak RSS（VmHWM）の増加は、前の実装が +20 MB（SQLite の page cache 16 MB を含む）、後が +29 MB（batch 2 つ分の文字列と、worker の DOM・stack で +9 MB）。31,092 行で測った値で、batch の大きさが固定なので行数が増えても増えない。
+- memory：全行を持たず、batch ごとに読む。batch は「1,024 行、または payload の合計（と行ごとの概算 512 bytes）が 4 MiB」の先に当たる方で閉じる。通常の payload（約 2 KB）では 1,024 行（約 2 MB）が先に当たる。payload の大きさに上限は無く（観測した最大は約 51 KB）、行数だけで切ると 1,024 行で 50 MB を超えうるので、bytes の上限を足した（4〜8 MB を候補にし、4 MiB にした。通常の batch の大きさ約 2 MB の 2 倍で、大きい payload が続いても 1 batch が 4 MiB と最後の 1 行〔観測では約 51 KB〕を超えない）。最悪の memory は、今の batch と先読みの batch の 2 つ分（約 8 MiB と最後の行）に、worker の DOM（1 行ずつ作って捨てる）を足した程度で、行数に比例しない。今の関数は行を 1 つずつ処理して捨てるので、memory は今も行数に比例しない。process の peak RSS（VmHWM）の増加は、前の実装が +20 MB（SQLite の page cache 16 MB を含む）、後が +29 MB（batch 2 つ分の文字列と、worker の DOM・stack で +9 MB）。31,092 行（通常の payload）で測った値で、batch の大きさが上限で固定されるので行数が増えても増えない。
 
 ## 6. 前後の時間（製品の関数、写しの DB、release、warm）
 
@@ -91,10 +92,10 @@ SHA-NI は使われている（約 1.9〜2.0 GB/s）。sha256 は合計でも約
 | 区分 | 条件 |
 |---|---|
 | owner | 呼び出し側（`with_conn` の中の native の thread）。worker の thread は関数のローカル（scope）で、Database・接続・authority・channel を持たない |
-| entry | `verify_ai_audit_chain_for_scope` の呼び出しのたびに、行数が 1,024 行を超えるときだけ batch ごとに最大 4 thread を起動する |
+| entry | `verify_ai_audit_chain_for_scope` の呼び出しのたびに、行数が 1,024 行を超えるときだけ batch ごとに最大 4 thread を起動する（読み出しを行う呼び出し側を含め同時に最大 5 本） |
 | retry／reentrant | 無し（関数は副作用が無く、同じ接続を再入しない） |
 | cancellation／termination evidence | scope の join が終了の証拠。worker は読み出し済みの文字列だけを見るので、キャンセルの経路は不要（壊れた行が見つかったら、次の batch を読まずに戻る） |
-| error／timeout／panic | worker の panic は join で呼び出し側に伝わる（`resume_unwind`）。逐次の panic と同じ扱い。timeout は無い（CPU のみ） |
+| error／timeout／panic | **thread を作れなければ panic せず**（`Builder::spawn_scoped` の Err）、その chunk を呼び出し側の thread で逐次に計算する（`with_conn` の Mutex と publish の tx の中で動くので、panic で Mutex を poison しない）。worker の panic は join で呼び出し側に伝わる（`resume_unwind`）。逐次の panic と同じ扱い。timeout は無い（CPU のみ） |
 | persisted state | 無し（読み取りだけ） |
 | 前景との干渉 | publish の tx の中の検証が約 0.67 s から約 0.2 s になり、tx の保持が短くなる。CPU は平均 約 2.5 コアを約 0.2 秒 |
 

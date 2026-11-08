@@ -161,9 +161,13 @@ fn event(index: i64) -> AppendAiAuditEvent {
 }
 
 fn fixture() -> Database {
+    fixture_with_rows(ROWS)
+}
+
+fn fixture_with_rows(rows: i64) -> Database {
     let db = database();
-    for start in (0..ROWS).step_by(100) {
-        let events: Vec<_> = (start..(start + 100).min(ROWS)).map(event).collect();
+    for start in (0..rows).step_by(100) {
+        let events: Vec<_> = (start..(start + 100).min(rows)).map(event).collect();
         db.append_ai_audit_events(PROJECT, &events).expect("append");
     }
     db
@@ -174,6 +178,14 @@ fn plans() -> Vec<(&'static str, Option<VerifyPlan>)> {
         Some(VerifyPlan {
             workers,
             batch_rows,
+            batch_bytes: usize::MAX,
+        })
+    };
+    let by_bytes = |workers, batch_bytes| {
+        Some(VerifyPlan {
+            workers,
+            batch_rows: 1_024,
+            batch_bytes,
         })
     };
     vec![
@@ -185,6 +197,8 @@ fn plans() -> Vec<(&'static str, Option<VerifyPlan>)> {
         ("w4 b1024 (single batch)", plan(4, 1_024)),
         ("w8 b1 (degenerate)", plan(8, 1)),
         ("w4 b399 (tail batch of 1)", plan(4, 399)),
+        ("w4 bytes 3000 (a few rows per batch)", by_bytes(4, 3_000)),
+        ("w2 bytes 1 (one row per batch)", by_bytes(2, 1)),
     ]
 }
 
@@ -394,6 +408,19 @@ fn field_tampering_is_reported_at_the_same_row_with_the_same_reason() {
             "hash mismatch",
         );
         case("prev_hash tampered", FLIP_PREV, MID, "prevHash mismatch");
+        // b50 の 5 つ目の batch の先頭行（非先頭の batch の先頭での連結の判定）。
+        case(
+            "prev_hash tampered at a batch start",
+            FLIP_PREV,
+            201,
+            "prevHash mismatch",
+        );
+        case(
+            "hash tampered at the last row of a batch",
+            FLIP_HASH,
+            200,
+            "hash mismatch",
+        );
         case(
             "prev_hash tampered at first row",
             FLIP_PREV,
@@ -596,6 +623,7 @@ fn plan_is_sequential_for_small_chains_and_capped_for_large_ones() {
     let large = VerifyPlan::for_row_count(VERIFY_PARALLEL_MIN_ROWS + 1);
     assert!((1..=VERIFY_MAX_WORKERS).contains(&large.workers));
     assert_eq!(large.batch_rows, VERIFY_BATCH_ROWS);
+    assert_eq!(large.batch_bytes, VERIFY_BATCH_BYTES);
     assert_eq!(
         VerifyPlan::for_row_count(1_000_000).batch_rows,
         VERIFY_BATCH_ROWS
@@ -646,4 +674,136 @@ fn real_db_copy_timing() {
         rest[rest.len() - 1],
         hwm()
     );
+}
+
+const SET_TIMESTAMP_TEXT: &str =
+    "UPDATE ai_audit_events SET timestamp = 'x' WHERE scope_id = ? AND sequence = ?";
+
+#[test]
+fn unreadable_columns_error_in_the_same_order_and_text_as_the_reference() {
+    with_fixture(|conn| {
+        // batch の途中（b50 の 3 つ目の batch の中）で、payload 以外の列が読めない。
+        let result = assert_all_plans_match(conn, None, "unreadable column", |c| {
+            execute(c, SET_TIMESTAMP_TEXT, 120)
+        });
+        assert!(result.is_err());
+        // payload が読めない行と重なったら、payload の parse の error が先（文面も同じ）。
+        let result = assert_all_plans_match(conn, None, "unreadable column and payload", |c| {
+            execute(c, SET_TIMESTAMP_TEXT, 120);
+            execute(c, SET_PAYLOAD_INVALID, 120);
+        });
+        assert!(format!("{:#}", result.unwrap_err()).contains("EOF while parsing"));
+        // payload の列が text でない（blob。TEXT affinity は blob を変換しない）。
+        let result = assert_all_plans_match(conn, None, "payload is not text", |c| {
+            execute(
+                c,
+                "UPDATE ai_audit_events SET payload = CAST('{}' AS BLOB) WHERE scope_id = ? AND sequence = ?",
+                120,
+            )
+        });
+        assert!(result.is_err());
+        // 先の行の壊れが先に報告される。
+        let earlier =
+            assert_all_plans_match(conn, None, "hash at 100, unreadable column at 300", |c| {
+                execute(c, FLIP_HASH, 100);
+                execute(c, SET_TIMESTAMP_TEXT, 300);
+            });
+        expect_broken(earlier, 100, "hash mismatch");
+        // 読めない列が先なら error。
+        let later =
+            assert_all_plans_match(conn, None, "unreadable column at 100, hash at 300", |c| {
+                execute(c, SET_TIMESTAMP_TEXT, 100);
+                execute(c, FLIP_HASH, 300);
+            });
+        assert!(later.is_err());
+        // 同じ行の連番の欠けより先に error。
+        let same_row = assert_all_plans_match(conn, None, "unreadable column after a gap", |c| {
+            execute(
+                c,
+                "DELETE FROM ai_audit_events WHERE scope_id = ? AND sequence = ?",
+                MID - 1,
+            );
+            execute(c, SET_TIMESTAMP_TEXT, MID);
+        });
+        assert!(same_row.is_err());
+    });
+}
+
+#[test]
+fn a_thread_that_cannot_be_created_falls_back_to_the_calling_thread() {
+    with_fixture(|conn| {
+        for failures in [1, 2, usize::MAX] {
+            for (name, tamper) in [
+                ("intact", None),
+                ("hash tampered", Some((FLIP_HASH, 301))),
+                ("payload tampered", Some((APPEND_KEY, 7))),
+            ] {
+                conn.execute_batch("BEGIN").unwrap();
+                if let Some((sql, sequence)) = tamper {
+                    execute(conn, sql, sequence);
+                }
+                let expected = verify_reference(conn, Some(PROJECT), None);
+                for plan in [
+                    VerifyPlan {
+                        workers: 4,
+                        batch_rows: 50,
+                        batch_bytes: usize::MAX,
+                    },
+                    VerifyPlan {
+                        workers: 3,
+                        batch_rows: 1_024,
+                        batch_bytes: 3_000,
+                    },
+                ] {
+                    verify_spawn_test_hook::fail_next(failures);
+                    let actual =
+                        verify_ai_audit_chain_with_plan(conn, Some(PROJECT), None, Some(plan));
+                    verify_spawn_test_hook::fail_next(0);
+                    assert_eq!(
+                        show(&expected),
+                        show(&actual),
+                        "{name}, failures={failures}, plan={plan:?}"
+                    );
+                }
+                conn.execute_batch("ROLLBACK").unwrap();
+            }
+        }
+    });
+}
+
+#[test]
+fn the_default_plan_takes_the_parallel_path_for_large_chains() {
+    let rows = VERIFY_PARALLEL_MIN_ROWS + 76;
+    let db = fixture_with_rows(rows);
+    db.with_conn(|conn| {
+        let plan = VerifyPlan::for_row_count(rows);
+        let expected_workers = std::thread::available_parallelism()
+            .map(|n| n.get() / 2)
+            .unwrap_or(1)
+            .clamp(1, VERIFY_MAX_WORKERS);
+        assert_eq!(plan.workers, expected_workers);
+        // 公開の関数（計画は行数から決まる）が、今の検証と同じ結果を返す。
+        let intact = verify_ai_audit_chain_for_scope(conn, Some(PROJECT), None).unwrap();
+        assert!(intact.ok);
+        assert_eq!(intact.verified_through_sequence, rows);
+        assert_eq!(
+            show(&verify_reference(conn, Some(PROJECT), None)),
+            show(&Ok(intact))
+        );
+        for (sql, sequence, reason) in [
+            (FLIP_HASH, 1_050, "hash mismatch"),
+            (APPEND_KEY, 3, "payloadSha256 mismatch"),
+            (FLIP_PREV, 1_025, "prevHash mismatch"),
+        ] {
+            conn.execute_batch("BEGIN").unwrap();
+            execute(conn, sql, sequence);
+            let expected = verify_reference(conn, Some(PROJECT), None);
+            let actual = verify_ai_audit_chain_for_scope(conn, Some(PROJECT), None);
+            conn.execute_batch("ROLLBACK").unwrap();
+            assert_eq!(show(&expected), show(&actual));
+            expect_broken(actual, sequence, reason);
+        }
+        Ok(())
+    })
+    .unwrap();
 }

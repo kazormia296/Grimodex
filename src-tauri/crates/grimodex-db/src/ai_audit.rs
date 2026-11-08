@@ -1943,16 +1943,26 @@ fn verify_ai_audit_chain_with_plan(
 struct VerifyPlan {
     /// 行ごとの計算に使う thread の数（1 なら呼び出し側の thread で逐次に行う）。
     workers: usize,
-    /// 1 回に読み出して検証する行数。memory はこの値に比例し、行数には比例しない。
+    /// 1 回に読み出して検証する行数の上限。
     batch_rows: usize,
+    /// 1 回に読み出して検証する payload の合計 bytes の上限（超えた行で batch を閉じる）。
+    batch_bytes: usize,
 }
 
 /// 並列にする下限の行数。1 batch（1,024 行、約 15 ms の計算）以下では、読みと計算を重ねる
 /// 利益も thread の起動の費用を上回らないので、逐次にする。
 const VERIFY_PARALLEL_MIN_ROWS: i64 = 1_024;
 const VERIFY_BATCH_ROWS: usize = 1_024;
+/// batch の payload の合計の上限。payload の大きさに上限は無い（観測した最大は約 51 KB）ので、
+/// 行数だけで切ると 1,024 行で 50 MB を超えうる。通常の payload（約 2 KB）では 1,024 行
+/// （約 2 MB）が先に当たり、この上限は大きい payload が続くときだけ効く。memory の最悪は
+/// batch 2 つ分（今の batch と先読みの batch）で、各 batch は上限に最後の 1 行を足した大きさ。
+const VERIFY_BATCH_BYTES: usize = 4 * 1024 * 1024;
+/// 行ごとの payload 以外の列の概算（batch の大きさの勘定に足す）。
+const VERIFY_ROW_OVERHEAD_BYTES: usize = 512;
 /// 前景の操作と CPU を取り合わないための上限。計測では 4 thread で wall が 1/3.5 になり、
-/// 8 thread 以上は得が小さいのに CPU 時間だけ増える。
+/// 8 thread 以上は得が小さいのに CPU 時間だけ増える。読み出しを行う呼び出し側の thread を
+/// 含めると、同時に動くのは最大 5 本。
 const VERIFY_MAX_WORKERS: usize = 4;
 
 impl VerifyPlan {
@@ -1969,6 +1979,7 @@ impl VerifyPlan {
         Self {
             workers,
             batch_rows: VERIFY_BATCH_ROWS,
+            batch_bytes: VERIFY_BATCH_BYTES,
         }
     }
 }
@@ -1990,25 +2001,59 @@ struct StoredAuditRow {
     payload_sha256: String,
     prev_hash: String,
     hash: String,
+    /// payload 以外の列を読めなかった時の error（その時、他の列は空の値）。
+    /// 逐次の検証と同じく、payload の parse の error が先に返る。
+    column_error: Option<rusqlite::Error>,
 }
 
+/// 逐次の検証と同じ順（payload を先に読み、他の列はその後）で列を読む。
+/// payload の text を読めなければ行ごと Err（parse まで進まない）。他の列を読めなければ、
+/// payload を持った行に error を添えて返す。
 fn stored_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredAuditRow> {
-    Ok(StoredAuditRow {
-        sequence: row.get(0)?,
-        event_id: row.get(1)?,
-        scope_id: row.get(2)?,
-        project_id: row.get(3)?,
-        execution_id: row.get(4)?,
-        operation_id: row.get(5)?,
-        parent_execution_id: row.get(6)?,
-        path_id: row.get(7)?,
-        event_type: row.get(8)?,
-        timestamp: row.get(9)?,
-        recorded_at: row.get(10)?,
-        payload: row.get(11)?,
-        payload_sha256: row.get(12)?,
-        prev_hash: row.get(13)?,
-        hash: row.get(14)?,
+    let payload: String = row.get(11)?;
+    let columns = || -> rusqlite::Result<StoredAuditRow> {
+        Ok(StoredAuditRow {
+            sequence: row.get(0)?,
+            event_id: row.get(1)?,
+            scope_id: row.get(2)?,
+            project_id: row.get(3)?,
+            execution_id: row.get(4)?,
+            operation_id: row.get(5)?,
+            parent_execution_id: row.get(6)?,
+            path_id: row.get(7)?,
+            event_type: row.get(8)?,
+            timestamp: row.get(9)?,
+            recorded_at: row.get(10)?,
+            payload_sha256: row.get(12)?,
+            prev_hash: row.get(13)?,
+            hash: row.get(14)?,
+            payload: String::new(),
+            column_error: None,
+        })
+    };
+    Ok(match columns() {
+        Ok(mut stored) => {
+            stored.payload = payload;
+            stored
+        }
+        Err(error) => StoredAuditRow {
+            sequence: 0,
+            event_id: String::new(),
+            scope_id: String::new(),
+            project_id: None,
+            execution_id: String::new(),
+            operation_id: String::new(),
+            parent_execution_id: None,
+            path_id: String::new(),
+            event_type: String::new(),
+            timestamp: 0,
+            recorded_at: 0,
+            payload,
+            payload_sha256: String::new(),
+            prev_hash: String::new(),
+            hash: String::new(),
+            column_error: Some(error),
+        },
     })
 }
 
@@ -2020,6 +2065,8 @@ enum RowCheck {
     /// payload が JSON として読めない。逐次の検証では行を読む時の error で、
     /// 同じ行の連番・`prev_hash` の判定より先に返る。
     PayloadUnreadable(rusqlite::Error),
+    /// payload 以外の列を読めなかった（error は行の `column_error`）。これも行を読む時の error。
+    ColumnUnreadable,
     /// hash 本体の直列化に失敗した（逐次の検証では連結の判定の後の error）。
     Failed(anyhow::Error),
 }
@@ -2068,6 +2115,9 @@ fn check_stored_row(row: &StoredAuditRow) -> RowCheck {
             ))
         }
     };
+    if row.column_error.is_some() {
+        return RowCheck::ColumnUnreadable;
+    }
     if let Err(error) = validate_stored_capture_contract(&payload) {
         return RowCheck::Broken(format!("stored payload contract mismatch: {error}"));
     }
@@ -2099,23 +2149,37 @@ fn check_stored_row(row: &StoredAuditRow) -> RowCheck {
     }
 }
 
-/// 1 batch を読む。途中で SQLite の error が出たら、そこまでの行と error を返す。
+/// 1 batch を読む。`rows.next()` が失敗したら、そこまでの行と error を返す。
+/// payload 以外の列を読めない行は（error を添えた行として）batch に入れ、そこで読みを止める。
 struct StoredBatch {
     rows: Vec<StoredAuditRow>,
     read_error: Option<rusqlite::Error>,
     exhausted: bool,
 }
 
-fn read_stored_batch(rows: &mut rusqlite::Rows<'_>, batch_rows: usize) -> StoredBatch {
+fn read_stored_batch(
+    rows: &mut rusqlite::Rows<'_>,
+    batch_rows: usize,
+    batch_bytes: usize,
+) -> StoredBatch {
     let mut batch = StoredBatch {
-        rows: Vec::with_capacity(batch_rows),
+        rows: Vec::with_capacity(batch_rows.min(VERIFY_BATCH_ROWS)),
         read_error: None,
         exhausted: false,
     };
-    while batch.rows.len() < batch_rows {
+    let mut bytes = 0usize;
+    while batch.rows.len() < batch_rows && bytes < batch_bytes {
         match rows.next() {
             Ok(Some(row)) => match stored_row_from_row(row) {
-                Ok(row) => batch.rows.push(row),
+                Ok(row) => {
+                    bytes += row.payload.len() + VERIFY_ROW_OVERHEAD_BYTES;
+                    let unreadable = row.column_error.is_some();
+                    batch.rows.push(row);
+                    if unreadable {
+                        batch.exhausted = true;
+                        return batch;
+                    }
+                }
                 Err(error) => {
                     batch.read_error = Some(error);
                     return batch;
@@ -2134,32 +2198,90 @@ fn read_stored_batch(rows: &mut rusqlite::Rows<'_>, batch_rows: usize) -> Stored
     batch
 }
 
-fn check_stored_rows(rows: &[StoredAuditRow], workers: usize) -> Vec<RowCheck> {
-    if workers <= 1 || rows.len() < workers * 2 {
-        return rows.iter().map(check_stored_row).collect();
-    }
-    let chunk_len = rows.len().div_ceil(workers);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = rows
-            .chunks(chunk_len)
-            .map(|chunk| {
-                scope.spawn(move || chunk.iter().map(check_stored_row).collect::<Vec<_>>())
-            })
-            .collect();
-        join_row_checks(handles)
-    })
+fn check_chunk(chunk: &[StoredAuditRow]) -> Vec<RowCheck> {
+    chunk.iter().map(check_stored_row).collect()
 }
 
-fn join_row_checks(
-    handles: Vec<std::thread::ScopedJoinHandle<'_, Vec<RowCheck>>>,
-) -> Vec<RowCheck> {
-    handles
+/// thread を作れなかった chunk は、呼び出し側の thread で逐次に計算する
+/// （OS が thread を作れないことで、`with_conn` の Mutex を握ったまま panic しない）。
+enum PendingChunk<'scope, 'env> {
+    Spawned(std::thread::ScopedJoinHandle<'scope, Vec<RowCheck>>),
+    Inline(&'env [StoredAuditRow]),
+}
+
+fn spawn_chunk<'scope, 'env>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    chunk: &'env [StoredAuditRow],
+) -> PendingChunk<'scope, 'env> {
+    #[cfg(test)]
+    if verify_spawn_test_hook::should_fail() {
+        return PendingChunk::Inline(chunk);
+    }
+    match std::thread::Builder::new()
+        .name("grimodex-audit-verify".to_string())
+        .spawn_scoped(scope, move || check_chunk(chunk))
+    {
+        Ok(handle) => PendingChunk::Spawned(handle),
+        Err(_) => PendingChunk::Inline(chunk),
+    }
+}
+
+fn spawn_chunks<'scope, 'env>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    rows: &'env [StoredAuditRow],
+    workers: usize,
+) -> Vec<PendingChunk<'scope, 'env>> {
+    let chunk_len = rows.len().div_ceil(workers.max(1)).max(1);
+    rows.chunks(chunk_len)
+        .map(|chunk| spawn_chunk(scope, chunk))
+        .collect()
+}
+
+fn join_chunks(pending: Vec<PendingChunk<'_, '_>>) -> Vec<RowCheck> {
+    pending
         .into_iter()
-        .flat_map(|handle| match handle.join() {
-            Ok(checks) => checks,
-            Err(panic) => std::panic::resume_unwind(panic),
+        .flat_map(|chunk| match chunk {
+            PendingChunk::Spawned(handle) => match handle.join() {
+                Ok(checks) => checks,
+                Err(panic) => std::panic::resume_unwind(panic),
+            },
+            PendingChunk::Inline(chunk) => check_chunk(chunk),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod verify_spawn_test_hook {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// 試験：次の n 回の thread の作成を失敗させる（usize::MAX なら全部）。
+        static FAIL_SPAWNS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn fail_next(count: usize) {
+        FAIL_SPAWNS.with(|cell| cell.set(count));
+    }
+
+    pub(super) fn should_fail() -> bool {
+        FAIL_SPAWNS.with(|cell| {
+            let remaining = cell.get();
+            if remaining == 0 {
+                return false;
+            }
+            if remaining != usize::MAX {
+                cell.set(remaining - 1);
+            }
+            true
+        })
+    }
+}
+
+fn check_stored_rows(rows: &[StoredAuditRow], workers: usize) -> Vec<RowCheck> {
+    if workers <= 1 || rows.len() < workers * 2 {
+        return check_chunk(rows);
+    }
+    std::thread::scope(|scope| join_chunks(spawn_chunks(scope, rows, workers)))
 }
 
 /// 連番と `prev_hash` の連結を、行の順に判定する。
@@ -2187,10 +2309,16 @@ impl ChainCursor {
         rows: Vec<StoredAuditRow>,
         checks: Vec<RowCheck>,
     ) -> Option<anyhow::Result<AiAuditVerifyResult>> {
-        for (row, check) in rows.into_iter().zip(checks) {
-            if let RowCheck::PayloadUnreadable(error) = check {
-                return Some(Err(error.into()));
-            }
+        for (mut row, check) in rows.into_iter().zip(checks) {
+            // 行を読む時の error は、この行の連番・`prev_hash` の判定より先に返る。
+            let check = match check {
+                RowCheck::PayloadUnreadable(error) => return Some(Err(error.into())),
+                RowCheck::ColumnUnreadable => {
+                    let error = row.column_error.take().expect("column error");
+                    return Some(Err(error.into()));
+                }
+                other => other,
+            };
             if row.sequence != self.expected_sequence {
                 return Some(Ok(self.broken(format!(
                     "sequence gap: expected {}, found {}",
@@ -2203,7 +2331,7 @@ impl ChainCursor {
             match check {
                 RowCheck::Broken(reason) => return Some(Ok(self.broken(reason))),
                 RowCheck::Failed(error) => return Some(Err(error)),
-                RowCheck::Passed | RowCheck::PayloadUnreadable(_) => {}
+                RowCheck::Passed | RowCheck::PayloadUnreadable(_) | RowCheck::ColumnUnreadable => {}
             }
             self.prev_hash = row.hash;
             self.expected_sequence += 1;
@@ -2234,7 +2362,7 @@ impl ChainCursor {
 /// 行を batch ごとに読み、行ごとの計算を `plan.workers` thread で並列に行う。
 /// 次の batch の読み出し（呼び出し側の thread。`Connection` はここから出ない）は、
 /// 今の batch の計算と重ねる。最初に壊れた行（行の順で）を報告するので、並列でも結果は
-/// 逐次の検証と同じで、壊れた行より後の batch は読まない。
+/// 逐次の検証と同じで、壊れた行より後の batch は読まない（先読みの 1 batch を除く）。
 fn verify_stored_chain(
     conn: &Connection,
     scope_id: &str,
@@ -2258,7 +2386,8 @@ fn verify_stored_chain(
     )?;
     let mut rows = statement.query(params![scope_id, high_water_sequence])?;
     let batch_rows = plan.batch_rows.max(1);
-    let mut current = read_stored_batch(&mut rows, batch_rows);
+    let batch_bytes = plan.batch_bytes.max(1);
+    let mut current = read_stored_batch(&mut rows, batch_rows, batch_bytes);
     loop {
         let StoredBatch {
             rows: batch,
@@ -2267,16 +2396,10 @@ fn verify_stored_chain(
         } = current;
         let overlap = plan.workers > 1 && read_error.is_none() && !exhausted;
         let (checks, next) = if overlap && batch.len() >= plan.workers * 2 {
-            let chunk_len = batch.len().div_ceil(plan.workers);
             std::thread::scope(|scope| {
-                let handles: Vec<_> = batch
-                    .chunks(chunk_len)
-                    .map(|chunk| {
-                        scope.spawn(move || chunk.iter().map(check_stored_row).collect::<Vec<_>>())
-                    })
-                    .collect();
-                let next = read_stored_batch(&mut rows, batch_rows);
-                (join_row_checks(handles), Some(next))
+                let pending = spawn_chunks(scope, &batch, plan.workers);
+                let next = read_stored_batch(&mut rows, batch_rows, batch_bytes);
+                (join_chunks(pending), Some(next))
             })
         } else {
             (check_stored_rows(&batch, plan.workers), None)
@@ -2290,7 +2413,7 @@ fn verify_stored_chain(
         if exhausted {
             return Ok(cursor.finish());
         }
-        current = next.unwrap_or_else(|| read_stored_batch(&mut rows, batch_rows));
+        current = next.unwrap_or_else(|| read_stored_batch(&mut rows, batch_rows, batch_bytes));
     }
 }
 
