@@ -849,6 +849,31 @@ X1 /3(… SHA-256 bf01f7bd…52f)を確認しますか?本文だけの保存で�
 - 凍結: 事前登録の凍結は済んでいる（凍結の commit は `07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f`、記録は `claude/nir1-contracts` の `docs/plans/nir1-cp4-records/k65-freeze-record.md`、commit `109eb523`）。
 - 残り（この記録では行わない）: harness の実装、S2 追補 #14、S3、S4 の 6 回目、正式 run。/5 の判定に使えるのは凍結の後に始めた run だけ。Graph の公開（PUB-G）と Session C-1 の承認は含まない。
 
+### 10.11. K6/6（2026-11-08）
+
+| 項目         | 値 |
+| ------------ | -- |
+| 受信         | 2026-11-08（JST。確認の記録は日付だけを書き、時刻を書かない。正確な受信時刻は会話記録の timestamp）。構造化質問（AskUserQuestion、1 回）への回答 |
+| 記録         | `claude/nir1-contracts` の commit `56fb4fad2eb1eb2e021dfd121ea073f9d263cb4d` の `docs/plans/nir1-cp4-records/user-confirmation-2026-11-08-k66-graph-eval-procedure.md`（この枝は master に merge しないので hash で引く）。質問と回答の原文はこの記録による |
+| 形式         | 質問の文が draftRef、contractId、draft の SHA-256（改訂 3）を名指し、ちょうど 1 つの `draftRef#contractId` を示した。選択肢は「確認する（推奨）」「鮮度の印の扱いを見直してから（再起案）」「もう少し詳しく」。回答の逐語は「確認する（推奨）」で、明示の確認 |
+| 示した ref   | `nir1-final-request-eval-proposal/6#graph-eval-procedure`（draftRef `nir1-final-request-eval-proposal/6`、contractId `graph-eval-procedure`） |
+| 確認された版 | branch `claude/nir1-contracts` の `docs/plans/nir1-final-request-eval-proposal-6-draft.md`（bytes は `324c804f360b4bb7c87cb8f1fb94d24f134b6d78` で置かれ、`56fb4fad` までの間に変わっていない。改訂 3） |
+| 取り込み     | `git show 56fb4fad:<path>` の出力をそのまま置いて byte 同一で取り込み、`sha256sum` が下の値と一致することを確かめた。「Status: draft／未確認」の行を含めて本文は編集せず、確認状態は確認台帳で表す |
+
+| 略称 | ファイル | SHA-256 |
+| ---- | -------- | ------- |
+| K6/6 | [nir1-final-request-eval-proposal-6-draft.md](nir1-final-request-eval-proposal-6-draft.md) | `58c634fa9b3d76803e486516c0e67444b74d4f5987cd851cd0857a25cc8945e7` |
+
+質問・選択肢・回答の逐語は、確認の記録（上の commit）のとおり。要旨:
+
+- 確認の範囲は draft 冒頭の「ユーザーが批准すること」の 1〜9（範囲の正本）。/6 の行の内容は、/5 の行に /6 の「変える点」の 1〜8 を当てたもの。定常状態の first-render の数え方を R1 の下で明文にする（K6/5 の行の改訂）。
+- 合格基準の緩和 2 つ（R-6: 準備の句の読み、R-7: 鮮度の印の句の (ii′)）は、質問の文で示した上での確認である。R-7 の実効（② は合流した親を独立に落とさず、`unavailable` を除くだけ）、窓内に合流して Graph が表示に寄与した親が条件を欠くと品質 FAIL（1% の許容は効かない）、s6r1 は HOLD のまま（字義どおりなら欠落 163）、改訂が s6r1 の結果を見た後の起案であること、確認の後の予行が落ちたら /7 と再確認になることも質問の文で示した。
+- 効力は 2 段（批准 7）: (i) は確認され、記録の時点から CP-4 の判定に使う（/5 の行に替わる。/5 の行と s6r1 の receipt は履歴）。(ii) は事前の確認で、条件の成立、診断と receipt の照合、改めての確認の後にだけ効く。
+- 起案の指示と選択（`1e6ede44`、`e704f28f`）は確認ではない。確認の前の非判定の dev の予行（予行 1・3・4・5）は /6 の判定に使わない。品質判定の事前登録 v2 の草稿は integrator が決めるもので、この確認の対象ではない。
+- 台帳の更新箇所: 確認台帳の 2026-11-08補足（K6/6。経緯、K6/6-1 の表、「承認の範囲と効力」、「K6/6 が許さないもの」）、`graph-eval-procedure` の /6 の行（/5 の行の直下）、/5 の行の備考への追記、K6/4 の注の下の K6/6 の注、条件付き 2 行の注の下の注、lane snapshot の CP-4 の行。Confirmation protocol は変えていない。
+- 凍結: 事前登録の凍結は済んでいる（凍結の commit は `56fb4fad2eb1eb2e021dfd121ea073f9d263cb4d`、記録は `claude/nir1-contracts` の `docs/plans/nir1-cp4-records/k66-freeze-record.md`、commit `d69c000b`）。
+- 残り（この記録では行わない）: harness の実装、試験と検出力の記録、品質判定 v2 の確定・実装・独立のコードレビュー、R1 の下の dev fixture での予行、S2 追補、S3 の独立レビュー、S4 の 7 回目の凍結、取り直しの正式 run。/6 の判定に使えるのは凍結の後に始めた run だけ。(ii-b) の着手、Graph の公開（PUB-G）、Session C-1 の承認は含まない。
+
 ## 11. 未解決事項
 
 - `[precheck]` DT-2 の再試行の上限（sweep の recover の再試行 0 回→最大2回、送信していない終端の書込みの再試行 1 回→最大3回。K1b の規則7の再確認の対象）の再確認は、Session B1 の9文のどれにも含まれず、未解決である。手段は DSN §9 のとおり（新しい draftRef を起案するか、1件1回への締め直し）。台帳の残 HOLD 表の D-transport の行（DT-1〜3）からここへ向ける。
