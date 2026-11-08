@@ -1,0 +1,42 @@
+{
+  "schema": "nir1-cp4-attempt/1",
+  "runName": "parity-s7r1-1",
+  "status": "completed",
+  "candidate": {
+    "commit": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+    "tree": "24da8524888b764bdf6cb71bb9b5d1c5bc5c96fb"
+  },
+  "s4Commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+  "runKind": "parity",
+  "startedAtUtc": "2026-11-08T18:03:52.061Z",
+  "setups": {
+    "G-01/v1": "9b40f3b8a836e37c726f098193945966f5d6936cc04936ec3b5246eb4832485d",
+    "G-02/base": "0361d84b203dd20e00361fcd096e3b24f52093c76e542f09bec4a66b19c5f046",
+    "G-03/base": "0e379d4de4a5f01a060a6051432ca415f31f54c9ed76d935045cf44b19898c05",
+    "G-03/frontier-exceeded": "abcc049a959fedd103132259b85f4405177e26c6269f7d595ecd3de613d82967",
+    "G-04/base": "a47fcf1f0e4c3ad6ceb9976fa57d0209f6d6f88a6509c0c308f4a3f37cfe5370",
+    "G-05/base": "79bf442b90d811a8e4217419306fc4e6ba9c45263a2409d6c653e0b592670478",
+    "G-06/base": "e7b6bbb03e6679d490b001ac7904239a6110d4557d8553a844df18f1ca51d179",
+    "G-07/base": "474ac1b0c75866818c0c14cfceb26cd01d26847a452e66ee9d62e345f4519ae1",
+    "G-08/base-usable": "066d516893273a8c3e59f0f8bec26a2beb4493399841e27f944d1b3ed21d2350",
+    "G-08/graph-index-unusable": "79cc521cf613537d2b27022e80525c0540354f9d3bf6b3226ec6546b8bc64dfd",
+    "G-08/graph-recovered": "b017717b83b9cc049a81e7627b8aa88eb07ee223241ad55ebba8c9d168056179",
+    "G-08/chronicle-index-unusable": "881df7a4d62e17e7b2591e324520d6a065ce3d697c4262feb7309914a2c56efb",
+    "G-08/both-indexes-unusable": "d5efec506c0de6bbe66e8224161bc6c3a41acd7a166d6f9acb68184568a814da"
+  },
+  "finishedAtUtc": "2026-11-08T18:11:03.907Z",
+  "variants": {
+    "G-02/base": "measured",
+    "G-03/base": "measured",
+    "G-03/frontier-exceeded": "measured",
+    "G-04/base": "measured",
+    "G-05/base": "measured",
+    "G-06/base": "measured",
+    "G-07/base": "measured",
+    "G-08/base-usable": "measured",
+    "G-08/graph-index-unusable": "measured",
+    "G-08/graph-recovered": "measured",
+    "G-08/chronicle-index-unusable": "measured",
+    "G-08/both-indexes-unusable": "measured"
+  }
+}
