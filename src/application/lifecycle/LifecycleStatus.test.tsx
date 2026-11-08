@@ -6,14 +6,17 @@ import {
   acquireQuiescenceLease,
 } from "./quiescenceLease";
 import { LifecycleStatus } from "./LifecycleStatus";
+import { useWorkspaceStore } from "@/features/workspace/store";
 
 describe("LifecycleStatus", () => {
   beforeEach(() => {
     _resetQuiescenceLeasesForTests();
+    useWorkspaceStore.setState({ view: "editor" });
   });
 
   afterEach(() => {
     _resetQuiescenceLeasesForTests();
+    useWorkspaceStore.setState({ view: "loading" });
   });
 
   it("remains visible and exposed to assistive technology outside an inert shell", async () => {
@@ -41,5 +44,23 @@ describe("LifecycleStatus", () => {
     act(() => lease.release());
     await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
     expect(container.firstElementChild).toBe(shell);
+  });
+
+  it("stays hidden on the startup loading screen, which has nothing to save", () => {
+    useWorkspaceStore.setState({ view: "loading" });
+    render(<LifecycleStatus />);
+
+    let lease!: ReturnType<typeof acquireQuiescenceLease>;
+    act(() => {
+      lease = acquireQuiescenceLease("workspace-open");
+    });
+    expect(screen.queryByTestId("lifecycle-status")).toBeNull();
+
+    // Once the editor is shown, a later lifecycle lock is announced again.
+    act(() => useWorkspaceStore.setState({ view: "editor" }));
+    expect(screen.getByTestId("lifecycle-status")).toHaveTextContent(
+      /保存|Saving/,
+    );
+    act(() => lease.release());
   });
 });

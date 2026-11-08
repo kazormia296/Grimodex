@@ -32,7 +32,13 @@ export function WorkspaceViewHost() {
     <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background text-foreground">
       <TitleBar />
       <GrimodexLogo height={40} className="text-foreground" />
-      <p className="text-sm text-muted-foreground">{t("app.loading")}</p>
+      <p
+        role="status"
+        aria-live="polite"
+        className="text-sm text-muted-foreground"
+      >
+        {t("app.loading")}
+      </p>
     </div>
   );
 

@@ -1,5 +1,6 @@
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { useWorkspaceStore } from "@/features/workspace/store";
 import { useQuiescenceLeaseActive } from "./useQuiescenceLeaseActive";
 
 /**
@@ -12,8 +13,12 @@ import { useQuiescenceLeaseActive } from "./useQuiescenceLeaseActive";
 export function LifecycleStatus() {
   const { t } = useTranslation();
   const lifecycleLocked = useQuiescenceLeaseActive();
+  // The startup loading screen has no editor whose changes are being saved and
+  // already shows its own progress, so the save/switch notice would mislead.
+  const startupLoading = useWorkspaceStore((s) => s.view === "loading");
 
-  if (!lifecycleLocked || typeof document === "undefined") return null;
+  if (!lifecycleLocked || startupLoading || typeof document === "undefined")
+    return null;
 
   return createPortal(
     <div
