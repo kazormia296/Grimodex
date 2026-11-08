@@ -1831,6 +1831,17 @@ impl Database {
         let replacement = Connection::open_in_memory().map_err(|error| {
             anyhow!("NEX_MAINTENANCE_CONNECTION_RETIREMENT_REPLACEMENT_OPEN_FAILED: {error}")
         })?;
+        // DR-DBC-1: the recovery descriptor hands this file to a replacement
+        // authority, which must not find our checkpoint-only connection open.
+        // Stopping never touches the connection mutex, so it cannot wait on a
+        // foreground owner, and it is bounded.
+        // 終了の証拠が取れなければ、まだ何も変えずに失敗を返す（fail-closed）。
+        if self.stop_background_checkpoint() == crate::background_checkpoint::StopOutcome::TimedOut
+        {
+            return Err(anyhow!(
+                "NEX_MAINTENANCE_CONNECTION_RETIREMENT_BACKGROUND_CHECKPOINT_STOP_TIMEOUT: the background WAL checkpoint did not stop in time"
+            ));
+        }
         let mut conn = self
             .conn
             .lock()

@@ -2155,9 +2155,15 @@ mod tests {
 
         with_db_state(&ws_state, |database| {
             database.with_conn(|conn| {
+                // DR-DBC-1: the published authority checkpoints in the
+                // background; its own connection no longer autocheckpoints.
                 let auto_checkpoint: i64 =
                     conn.pragma_query_value(None, "wal_autocheckpoint", |row| row.get(0))?;
-                assert_eq!(auto_checkpoint, 1_000);
+                assert_eq!(auto_checkpoint, 0);
+                assert_eq!(
+                    database.background_checkpoint_threshold(),
+                    Some(crate::background_checkpoint::WAL_CHECKPOINT_PAGES)
+                );
                 conn.execute(
                     "INSERT INTO open_wal_fixture (body) VALUES (zeroblob(128))",
                     [],
@@ -2289,7 +2295,11 @@ mod tests {
                     crate::open_wal::OpenWalCheckpointMode::Noop,
                 )?;
                 assert_eq!(timeout_ms, 5_000);
-                assert_eq!(auto_checkpoint, 1_000);
+                assert_eq!(auto_checkpoint, 0);
+                assert_eq!(
+                    database.background_checkpoint_threshold(),
+                    Some(crate::background_checkpoint::WAL_CHECKPOINT_PAGES)
+                );
                 assert_eq!(after, before, "oversized open must not run RESTART");
                 Ok(())
             })

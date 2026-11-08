@@ -647,6 +647,23 @@ pub fn install_staged_workspace_db(
             return Err(error);
         }
 
+        // DR-DBC-1: the background WAL checkpointer holds its own SQLite
+        // connection to the live file. Close it explicitly before the safety
+        // copy, the live seal and the atomic replace; dropping `old` below
+        // would also stop it, but restore must not depend on drop order.
+        // 終了の証拠（スレッドの終了）が取れないまま先へ進まない：TimedOut なら、専用の
+        // 接続が live file に生きたまま安全複製・seal・置換を行うことになるので、中止して
+        // 元の authority を戻す。
+        if old.authority.db().stop_background_checkpoint()
+            == crate::background_checkpoint::StopOutcome::TimedOut
+        {
+            let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+            *inner = Some(old);
+            return Err(AppError::Anyhow(anyhow::anyhow!(
+                "RESTORE_BACKGROUND_CHECKPOINT_STOP_TIMEOUT: the background WAL checkpoint did not stop in time; restore aborted before touching the live database"
+            )));
+        }
+
         // Best-effort user-visible gzip remains optional; mandatory WAL-preserving
         // safety is created below under exclusive lease before sidecar removal.
         if let Err(error) = std::fs::create_dir_all(&backups_dir) {
@@ -2233,6 +2250,91 @@ mod tests {
         assert!(!dir.join("grimodex.db.restore-tmp").exists());
         assert_no_internal_restore_files(&dir);
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// DR-DBC-1: the background WAL checkpointer owns a second SQLite
+    /// connection to the live file. Restore must have closed it before the live
+    /// seal and the atomic replace, and the restored authority gets its own.
+    #[test]
+    fn restore_closes_the_background_checkpointer_before_replacing_the_live_file() {
+        let (dir, state) = fixture("bg-checkpoint-restore");
+        set_marker(&state, "v1");
+        let backup_name = "grimodex-20200101-000000.db";
+        backup_active(&state, &dir.join("backups").join(backup_name));
+        set_marker(&state, "v2");
+
+        let old_probe = with_db_state(&state, |db| Ok(db.background_checkpoint_probe()))
+            .expect("probe")
+            .expect("published authority runs a background checkpointer");
+        assert!(!old_probe.thread_exited());
+
+        // A rejected restore (no such backup) must leave the authority, and its
+        // checkpointer, untouched.
+        restore_backup_core(&state, "grimodex-19990101-000000.db", || {})
+            .expect_err("missing backup must be rejected before detaching");
+        assert!(!old_probe.thread_exited());
+
+        restore_backup_core(&state, backup_name, || {}).expect("restore plain backup");
+        assert!(
+            old_probe.thread_exited(),
+            "the previous checkpointer must be closed by the time restore returns"
+        );
+        assert_eq!(marker(&state), "v1");
+        let new_threshold = with_db_state(&state, |db| Ok(db.background_checkpoint_threshold()))
+            .expect("threshold");
+        assert_eq!(
+            new_threshold,
+            Some(crate::background_checkpoint::WAL_CHECKPOINT_PAGES)
+        );
+        let new_probe = with_db_state(&state, |db| Ok(db.background_checkpoint_probe()))
+            .expect("probe")
+            .expect("restored authority runs its own background checkpointer");
+        assert!(!new_probe.thread_exited());
+
+        drop(state);
+        assert!(new_probe.thread_exited());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// DR-DBC-1: restore must not go on without evidence that the background
+    /// checkpointer's connection is gone. When it does not stop in time, restore
+    /// aborts before touching the live database and puts the authority back.
+    #[test]
+    fn restore_aborts_and_keeps_the_authority_when_the_background_checkpointer_does_not_stop() {
+        let (dir, state) = fixture("bg-checkpoint-restore-timeout");
+        set_marker(&state, "v1");
+        let backup_name = "grimodex-20200101-000000.db";
+        backup_active(&state, &dir.join("backups").join(backup_name));
+        set_marker(&state, "v2");
+
+        let probe = with_db_state(&state, |db| Ok(db.background_checkpoint_probe()))
+            .expect("probe")
+            .expect("background checkpointer");
+        probe.set_stall(true);
+        probe.set_stop_wait(std::time::Duration::from_millis(150));
+        probe.request_run();
+        assert!(probe.wait_running(std::time::Duration::from_secs(20)));
+
+        let error = restore_backup_core(&state, backup_name, || {})
+            .expect_err("restore must abort without termination evidence");
+        assert!(error
+            .to_string()
+            .contains("RESTORE_BACKGROUND_CHECKPOINT_STOP_TIMEOUT"));
+        assert!(!probe.thread_exited());
+        assert!(!state.switching.load(Ordering::SeqCst));
+        // live は未変更で、元の authority がそのまま使える。
+        assert_eq!(marker(&state), "v2");
+        assert_no_internal_restore_files(&dir);
+
+        // 背景が止まれば、同じ restore が通る。
+        probe.set_stall(false);
+        probe.set_stop_wait(std::time::Duration::from_secs(10));
+        restore_backup_core(&state, backup_name, || {}).expect("restore after the thread ended");
+        assert!(probe.thread_exited());
+        assert_eq!(marker(&state), "v1");
+
+        drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }
 
