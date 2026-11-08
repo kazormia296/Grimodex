@@ -285,6 +285,19 @@ test("K6/6-N3c: stamp0-missing で親の ticket が available でない記録は
   );
 });
 
+test("K6/6-N3d: stamp0-missing で窓内に合流しても Graph の outcome が graph-ready でない記録（joined なのに graph-late）は数えない（② の合流の項目。first-render の下位条件としては FR-3 だけを欠く）", () => {
+  const result = run(k66Sample({ graph: { outcome: "graph-late" } }));
+  assert.equal(result.firstRender, false);
+  assert.deepEqual(result.firstRenderFails, ["FR3:not-joined"]);
+});
+
+test("K6/6-N3e: stamp0-missing で edgeCount が整数でない親は数えない（② の項目。FR-7 の no-edge も同時に落ちるので理由は 2 つ）", () => {
+  const result = run(k66Sample({ graph: { edgeCount: null } }));
+  assert.equal(result.firstRender, false);
+  assert.ok(result.firstRenderFails.includes("FR3:edge-count-not-integer"));
+  assert.ok(result.firstRenderFails.includes("FR7:no-edge"));
+});
+
 test("K6/6-N4: 窓内に合流した親の stamp が stale なら [artifact]（製品は stale で query を投げず、合流させない）", () => {
   assert.throws(
     () =>

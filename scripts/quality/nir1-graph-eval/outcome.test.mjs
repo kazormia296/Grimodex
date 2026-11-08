@@ -797,6 +797,27 @@ test("K6/6 変える点 6: Graph が合流したが edgeCount 0 の親、また�
     empty.reason,
     "graph-contributed-parent-not-counted-as-first-render",
   );
+  // 宣言が used でない（null）親: 製品が Graph を使ったと宣言していないので寄与に当たらない。
+  // first-render にも数えられない（FR-3、FR-5）が、この FAIL にはならない（X10 の記録の欠けの扱い）。
+  const undeclared = k66Quality("G-02/base", (repeat) =>
+    repeat === 7
+      ? ["first-render", {}, { parent: { declaration: null } }]
+      : ["first-render"],
+  );
+  assert.notEqual(
+    undeclared.reason,
+    "graph-contributed-parent-not-counted-as-first-render",
+  );
+  // joined でも Graph の outcome が graph-ready でない記録は『Graph を受けて表示に寄与した』に当たらない。
+  const notReady = k66Quality("G-02/base", (repeat) =>
+    repeat === 7
+      ? ["first-render", { graph: { outcome: "graph-late" } }]
+      : ["first-render"],
+  );
+  assert.notEqual(
+    notReady.reason,
+    "graph-contributed-parent-not-counted-as-first-render",
+  );
 });
 
 test("a joined-but-late sample within tolerance makes the variant HOLD boundary-disagreement", () => {
