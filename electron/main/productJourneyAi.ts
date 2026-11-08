@@ -1,3 +1,6 @@
+import { access } from "node:fs/promises";
+import path from "node:path";
+
 import type { NapiBackendLike } from "../shared/ipcContract.js";
 import { productJourneyChronicleResponse } from "./productJourneyChronicleAi.js";
 
@@ -15,6 +18,17 @@ export const PRODUCT_JOURNEY_AGENT_WORKSPACE_SWITCH_OUTPUT =
   "AGENT-WORKSPACE-SWITCH-OUTPUT";
 
 const STREAM_BOUNDARY_DELAY_MS = 4_000;
+
+// 明示の合図まで stream を pending に保つ gate。時間（STREAM_BOUNDARY_DELAY_MS）に
+// 頼ると、遅い runner で journey の確認が終わる前に stream が完了して flake になる。
+// harness が GATE_DIR を渡し、gate 対象の prompt の stream は `<GATE_DIR>/<name>` が
+// 現れるまで待つ。上限を過ぎたら通常の完了へ進み、stream が残り続けない。
+export const PRODUCT_JOURNEY_STREAM_GATE_DIR_ENV =
+  "GRIMODEX_PRODUCT_JOURNEY_STREAM_GATE_DIR";
+export const PRODUCT_JOURNEY_CODEX_SWITCH_GATE = "release-codex-chat-switch";
+export const PRODUCT_JOURNEY_CODEX_SWITCH_PROMPT_PREFIX = "CODEX-CHAT-SWITCH-";
+const STREAM_GATE_POLL_MS = 50;
+const STREAM_GATE_MAX_WAIT_MS = 120_000;
 
 type BackendEventSink = (...args: unknown[]) => unknown;
 
@@ -48,6 +62,26 @@ function streamIdFromArgs(args: unknown): string {
 
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function fileExists(file: string): Promise<boolean> {
+  try {
+    await access(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForStreamGate(
+  gateFile: string,
+  isAborted: () => boolean,
+): Promise<void> {
+  const deadline = Date.now() + STREAM_GATE_MAX_WAIT_MS;
+  while (Date.now() < deadline && !isAborted()) {
+    if (await fileExists(gateFile)) return;
+    await wait(STREAM_GATE_POLL_MS);
+  }
 }
 
 function messageText(args: unknown): string {
@@ -95,6 +129,7 @@ export function wrapBackendForProductJourneyAi(
 ): NapiBackendLike | null {
   if (!backend || !enabled) return backend;
 
+  const gateDir = process.env[PRODUCT_JOURNEY_STREAM_GATE_DIR_ENV];
   let eventSink: BackendEventSink | null = null;
   let activeStream: ProductJourneyStream | null = null;
   const pendingAborts = new Set<string>();
@@ -182,7 +217,18 @@ export function wrapBackendForProductJourneyAi(
           delta: early,
           block_type: "text",
         });
-        await wait(STREAM_BOUNDARY_DELAY_MS);
+        if (
+          gateDir &&
+          path.isAbsolute(gateDir) &&
+          input.includes(PRODUCT_JOURNEY_CODEX_SWITCH_PROMPT_PREFIX)
+        ) {
+          await waitForStreamGate(
+            path.join(gateDir, PRODUCT_JOURNEY_CODEX_SWITCH_GATE),
+            () => stream.aborted,
+          );
+        } else {
+          await wait(STREAM_BOUNDARY_DELAY_MS);
+        }
 
         // Deliberately publish one already-in-flight chunk after abort. The
         // renderer keeps it in the correlated audit while suppressing UI.

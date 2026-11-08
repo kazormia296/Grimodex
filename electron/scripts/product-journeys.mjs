@@ -2376,6 +2376,17 @@ async function runSnippetStreamSwitchJourney(harness, laneContext) {
   return { anchorScopeDiagnostics };
 }
 
+// productJourneyAi の gate ファイル名（electron/main/productJourneyAi.ts）と揃える。
+const CODEX_SWITCH_STREAM_GATE_FILE = "release-codex-chat-switch";
+
+async function releaseCodexSwitchStreamGate(harness) {
+  await mkdir(harness.streamGateDir, { recursive: true });
+  await writeFile(
+    path.join(harness.streamGateDir, CODEX_SWITCH_STREAM_GATE_FILE),
+    "release\n",
+  );
+}
+
 async function runCodexStreamSwitchJourney(harness, laneContext) {
   const journeyId = "chat-stream-codex-switch";
   const workspace = harness.workspacePath(journeyId);
@@ -2464,6 +2475,8 @@ async function runCodexStreamSwitchJourney(harness, laneContext) {
     });
 
     await selectChatCodex(harness, chat.page, codexB);
+    // A の stream は harness の gate が開くまで完了しない（時間依存にしない）。
+    // 判定は 2 つを別のエラーにして、どちらで落ちたか分かるようにする。
     const staleUiBeforeCompletion =
       (await chat.page
         .getByText(CODEX_CHAT_SWITCH_PROMPT, { exact: false })
@@ -2471,6 +2484,11 @@ async function runCodexStreamSwitchJourney(harness, laneContext) {
       (await chat.page
         .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
         .count()) > 0;
+    if (staleUiBeforeCompletion) {
+      throw new Error(
+        "Codex B UI showed Codex A prompt or early chunk while Codex A was pending",
+      );
+    }
     const completionAfterSwitch = await queryRows(
       harness,
       chat.page,
@@ -2480,11 +2498,12 @@ async function runCodexStreamSwitchJourney(harness, laneContext) {
          AND execution_id = ? AND event_type = 'response.completed'`,
       [project.id, preparedAudit.executionId],
     );
-    if (staleUiBeforeCompletion || completionAfterSwitch.length !== 0) {
+    if (completionAfterSwitch.length !== 0) {
       throw new Error(
-        "Codex B did not remain isolated while Codex A was pending",
+        "Codex A response.completed was already audited before the Codex B switch was confirmed (stream gate not honored)",
       );
     }
+    await releaseCodexSwitchStreamGate(harness);
     harness.recordTimeline("codex-chat-scope-switched", {
       workspace,
       projectId: project.id,

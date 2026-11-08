@@ -53,6 +53,8 @@ async function insideNativeBRoot() {
 
 const require = createRequire(import.meta.url);
 const PRODUCT_JOURNEY_AI_ENV = "GRIMODEX_PRODUCT_JOURNEY_FAKE_AI";
+const PRODUCT_JOURNEY_STREAM_GATE_DIR_ENV =
+  "GRIMODEX_PRODUCT_JOURNEY_STREAM_GATE_DIR";
 const PRODUCT_JOURNEY_AI_VERSION = "deterministic-v1";
 const PRODUCT_JOURNEY_FIXTURE_DML_OWNER = "ci-product-journey-harness-v1";
 export const PRODUCT_JOURNEY_FIXTURE_OPERATION_KINDS = Object.freeze([
@@ -3480,6 +3482,7 @@ export function createProductJourneyHarness({
 
   const tmpRoot = mkdtempSync(path.join(os.tmpdir(), "grimodex-product-"));
   const userDataDir = path.join(tmpRoot, "user-data");
+  const streamGateDir = path.join(tmpRoot, "stream-gates");
   const receiptRoot = narrativeMaintenanceReceiptRoot(userDataDir);
   const retainedRendererPath = path.join(tmpRoot, "last-renderer.png");
   const operationJournalPath =
@@ -5238,6 +5241,7 @@ export function createProductJourneyHarness({
     delete env.ELECTRON_RENDERER_URL;
     env.GRIMODEX_USER_DATA_DIR = userDataDir;
     env[PRODUCT_JOURNEY_AI_ENV] = PRODUCT_JOURNEY_AI_VERSION;
+    env[PRODUCT_JOURNEY_STREAM_GATE_DIR_ENV] = streamGateDir;
     // Xvfb has no hardware GPU. Use Chromium's software GL implementation so
     // WebGL remains testable without relying on expired GPU-noise allowances.
     const softwareGraphicsArgs =
@@ -6228,6 +6232,7 @@ export function createProductJourneyHarness({
 
   return {
     tmpRoot,
+    streamGateDir,
     userDataDir,
     receiptRoot,
     journalPath: operationJournalPath,
