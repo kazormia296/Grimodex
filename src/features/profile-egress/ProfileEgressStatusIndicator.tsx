@@ -42,12 +42,16 @@ const Nir1LocalDisclosure = /* @__PURE__ */ lazy(() =>
  */
 export default function ProfileEgressStatusIndicator() {
   const snapshot = useProfileEgressStatus();
-  useWritesRetryAfterActivation(snapshot);
   const entrancesClosed =
     snapshot.kind === "known" && snapshot.view.state !== "unrestricted";
+  // The closure effect comes before every other effect of this component
+  // (DR-DA2-64): React runs a component's effects in one loop under one try, so
+  // an effect that throws synchronously skips the ones declared after it. Keep
+  // this the first effect; add new effects below it.
   useEffect(() => {
     if (entrancesClosed) closeProfileEgressEntrances();
   }, [entrancesClosed]);
+  useWritesRetryAfterActivation(snapshot);
   // The rendering is a child under its own boundary (DR-DA2-64): an exception
   // of `t()` or the markup cannot stop this component's effects above, which
   // hold the closure and the write retry. This component renders nothing but
