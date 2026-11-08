@@ -685,7 +685,7 @@ export const SOURCE_PINS = Object.freeze(
     [
       "s5a-graph-arm-runner",
       "2c9316848ce028565c4d8e8af2d2779c3fd7e187",
-      ["k64-record.mjs", "material-revision.mjs", "renderer/cp4-k64-probe.tsx"],
+      ["material-revision.mjs", "renderer/cp4-k64-probe.tsx"],
     ],
     [
       "maintenance-ownership-release",
@@ -830,12 +830,9 @@ export const SOURCE_PINS = Object.freeze(
       "865a3e2bad1ada5f6e5648e50c6902052b9b2a3c",
       [
         "admission-facts.mjs",
-        "availability.mjs",
         "egress.mjs",
-        "join.mjs",
         "native-sample.mjs",
         "q4.mjs",
-        "run-sample.mjs",
         "stats.mjs",
         "scripts/quality/nir1-retrieval/standard-build-receipt.mjs",
       ],
@@ -849,7 +846,6 @@ export const SOURCE_PINS = Object.freeze(
         "eval-native-build.mjs",
         "keep-test.mjs",
         "observer-core.mjs",
-        "outcome.mjs",
         "renderer-build.mjs",
         "renderer/cp4-harness.html",
         "renderer/cp4-hook-probe.tsx",
@@ -916,47 +912,60 @@ export const SOURCE_PINS = Object.freeze(
     // and 8489ae57 (followup.mjs; the merge commit that joined #826 to the K6/5
     // branch). Except a1492815 these are branch commits that S4's PR brings
     // to master with its merge commit (gh pr merge --merge), never a squash.
-    [
-      "k65-receipt-p95-head",
-      "e6abddd2feb0ad4022153edef2243fce4767cb57",
-      ["receipt.mjs"],
-    ],
+    ["k65-receipt-p95-head", "e6abddd2feb0ad4022153edef2243fce4767cb57", []],
     [
       "k65-harness-d40",
       "bf0b4f75b9eab40009b115cc27df53298a9cef2a",
+      ["procedure-file.mjs"],
+    ],
+    ["k65-n2-n3-enforcement", "2699314238504e12aa28ba74e1b319f6dff5821d", []],
+    ["k65-freeze-source", "f24dc704cd3a424f94c5fc6ade42950fdcc938d3", []],
+    ["k65-g01-e2e-admission", "94d3e1333ec72a8ffd625d5c3d582ddabd60a4bb", []],
+    [
+      "c7-chronicle-stop",
+      "a1492815eaddb1dc8f66941e282799d3d37b244c",
+      ["trace-record.mjs"],
+    ],
+    ["k65-merge-followup", "8489ae57d147f029117b0e4a4c9f08b53565f453", []],
+
+    // 7 回目の S4（DR-CP4-S4-10 (4)）: the harness files K6/6 (PR #840, branch
+    // claude/k66-harness) changed after the earlier pins, each held at the commit that
+    // last changed it: 00f9c999 (the import of the K6/6 harness: 10 files), 1fdeed6f
+    // (K66_FREEZE, the quality verdict v2 D3 (d): availability.mjs, receipt.mjs,
+    // constants.mjs, admission.mjs), 99699dda (the G-01 diagnostic head:
+    // frozen-diagnostics.mjs, pubg16-e2e-run.mjs) and bf5ec217 (followup.mjs). They are
+    // branch commits that S4's PR brings to master with its merge commit
+    // (gh pr merge --merge), never a squash. The earlier pins keep their roles and
+    // commits (ancestor).
+    [
+      "k66-harness-import",
+      "00f9c99981c0bf67a3f98b00b5a1dfb5462547a1",
       [
+        "k64-record.mjs",
+        "join.mjs",
+        "run-sample.mjs",
+        "outcome.mjs",
         "k64-runner.mjs",
         "diagnostic-runner.mjs",
         "frozen-k64-run.mjs",
         "trace-runner.mjs",
         "trace-frozen.mjs",
         "frozen-k64-admission.mjs",
-        "procedure-file.mjs",
       ],
     ],
     [
-      "k65-n2-n3-enforcement",
-      "2699314238504e12aa28ba74e1b319f6dff5821d",
-      ["frozen-diagnostics.mjs"],
+      "k66-freeze-and-d3d",
+      "1fdeed6f9b6fb3e069fb6aa894b1d1de36d342f8",
+      ["availability.mjs", "receipt.mjs", "constants.mjs", "admission.mjs"],
     ],
     [
-      "k65-freeze-source",
-      "f24dc704cd3a424f94c5fc6ade42950fdcc938d3",
-      ["constants.mjs"],
+      "k66-g01-diagnostic-head",
+      "99699dda79a882d029b1fce9c87fe7c45eff60b1",
+      ["frozen-diagnostics.mjs", "pubg16-e2e-run.mjs"],
     ],
     [
-      "k65-g01-e2e-admission",
-      "94d3e1333ec72a8ffd625d5c3d582ddabd60a4bb",
-      ["admission.mjs", "pubg16-e2e-run.mjs"],
-    ],
-    [
-      "c7-chronicle-stop",
-      "a1492815eaddb1dc8f66941e282799d3d37b244c",
-      ["trace-record.mjs"],
-    ],
-    [
-      "k65-merge-followup",
-      "8489ae57d147f029117b0e4a4c9f08b53565f453",
+      "k66-followup-requeries",
+      "bf5ec2170edf763ede1027ed8408ce1cb1c9f35d",
       ["followup.mjs"],
     ],
   ].map(([role, commit, names]) =>

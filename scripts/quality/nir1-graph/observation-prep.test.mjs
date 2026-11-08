@@ -3138,6 +3138,11 @@ test("S2 追補 #2 P2-1: setupReadings pin master commits and copy L-24's closed
       "k65-g01-e2e-admission",
       "c7-chronicle-stop",
       "k65-merge-followup",
+      // S2 の bytes の pin の取り直し（7 回目の凍結のやり直し、DR-CP4-S4-10 (4)）。
+      "k66-harness-import",
+      "k66-freeze-and-d3d",
+      "k66-g01-diagnostic-head",
+      "k66-followup-requeries",
     ],
   );
   assert.deepEqual(
@@ -3685,6 +3690,11 @@ const BRANCH_PIN_ROLES = new Set([
   "k65-freeze-source",
   "k65-g01-e2e-admission",
   "k65-merge-followup",
+  // 7 回目の S4（DR-CP4-S4-10 (4)）: the K6/6 branch's four pins.
+  "k66-harness-import",
+  "k66-freeze-and-d3d",
+  "k66-g01-diagnostic-head",
+  "k66-followup-requeries",
 ]);
 const gitText = (args) =>
   execFileSync("git", args, { cwd: repoRoot, encoding: "utf8" }).trim();
@@ -3835,7 +3845,21 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
     ],
   );
   const k65Paths = k65Pins.flatMap((pin) => pin.paths);
-  assert.equal(k65Paths.length, 14);
+  // 7 回目の S4（DR-CP4-S4-10 (4)）: the K6/5 pins keep only procedure-file.mjs
+  // and trace-record.mjs; the other 12 moved to the four K6/6 pins below.
+  assert.equal(k65Paths.length, 2);
+  const k66Pins = SOURCE_PINS.filter((pin) => pin.role.startsWith("k66-"));
+  assert.deepEqual(
+    k66Pins.map((pin) => [pin.role, pin.commit.slice(0, 8), pin.paths.length]),
+    [
+      ["k66-harness-import", "00f9c999", 10],
+      ["k66-freeze-and-d3d", "1fdeed6f", 4],
+      ["k66-g01-diagnostic-head", "99699dda", 2],
+      ["k66-followup-requeries", "bf5ec217", 1],
+    ],
+  );
+  const k66Paths = k66Pins.flatMap((pin) => pin.paths);
+  assert.equal(k66Paths.length, 17);
   const headCommit = ctx.sourcePinGit.head;
   const master = gitText(["rev-parse", "refs/remotes/origin/master"]);
   // S2 追補 #9（DR-CP4-P-5）／#10（DR-CP4-P-6）: the two T-1〜T-5 pins and
@@ -3898,6 +3922,8 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
     .concat(s45Paths.filter((file) => changed.includes(file)))
     // S2 追補 #15: files the K6/5 pins hold now.
     .concat(k65Paths.filter((file) => changed.includes(file)))
+    // 7 回目の S4: files the K6/6 pins hold now.
+    .concat(k66Paths.filter((file) => changed.includes(file)))
     .filter((file) => file.startsWith(H4))
     .sort();
   assert.deepEqual(held, changed);
@@ -4098,9 +4124,10 @@ test("S2 追補 #4／#6／#7／#9／#10／#11／#12 (A): the bytes pins hold eve
       "s5b-diagnostics-wiring",
     ],
     "g01-negative-run.mjs": ["s4-5-g01-reseal-current", "sp-p4-ir-timeout"],
-    // S2 追補 #15: frozen-k64-admission.mjs moved on to the k65-harness-d40 pin.
+    // S2 追補 #15: frozen-k64-admission.mjs moved on to the k65-harness-d40 pin;
+    // 7 回目の S4（DR-CP4-S4-10 (4)）: and from there to the k66-harness-import pin.
     "frozen-k64-admission.mjs": [
-      "k65-harness-d40",
+      "k66-harness-import",
       "g4-b2b1-addendum-v2-paths",
     ],
   };
@@ -4251,11 +4278,12 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
       [
         "frozen-diagnostics.mjs",
         SOURCE_PINS.find(
-          (pin) => pin.role === "k65-n2-n3-enforcement",
+          (pin) => pin.role === "k66-g01-diagnostic-head",
         ).commit.slice(0, 8),
       ],
       // S2 追補 #9: T-4（354b1ba6）の pin。S2 追補 #15: bf0b4f75 の k65-harness-d40 の pin に移った。
-      ["frozen-k64-run.mjs", "bf0b4f75"],
+      // 7 回目の S4: 00f9c999 の k66-harness-import の pin に移った。
+      ["frozen-k64-run.mjs", "00f9c999"],
     ],
   );
   for (const source of ctx.harnessConstantSources)
@@ -4267,7 +4295,7 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
     );
   assert.equal(
     harnessPinOf(`${H4}frozen-diagnostics.mjs`).role,
-    "k65-n2-n3-enforcement",
+    "k66-g01-diagnostic-head",
   );
   // S2 追補 #12: the g01-negatives.mjs constants read at the new pin are the
   // values of 950751d0 and of DR-CP4-S4-8's base (909b71b3); the change did
@@ -4325,7 +4353,7 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
   };
   assert.ok(
     observationPrepErrors(prep, misread).some((e) =>
-      /k65-n2-n3-enforcement: .*frozen-diagnostics\.mjs must be the bytes the harness constants were read from/u.test(
+      /k66-g01-diagnostic-head: .*frozen-diagnostics\.mjs must be the bytes the harness constants were read from/u.test(
         e,
       ),
     ),
@@ -4862,20 +4890,19 @@ const ADDENDUM5_FILES = Object.freeze({
   "trace-runner": ["build-receipt-check.mjs", "renderer/trace-cycle.ts"],
   // S2 追補 #10: cp4-trace-probe.tsx と followup.mjs は V-2〜V-4 の pin に移った。
   // S2 追補 #15: followup.mjs、receipt.mjs、constants.mjs、procedure-file.mjs は K6/5 の pin に移った。
+  // 7 回目の S4（DR-CP4-S4-10 (4)）: followup.mjs、receipt.mjs、constants.mjs、availability.mjs、join.mjs、
+  // run-sample.mjs、outcome.mjs は K6/6 の pin に移った（procedure-file.mjs は K6/5 の pin に残る）。
   "v2-trace-probe-paths": ["renderer/cp4-trace-probe.tsx"],
-  "k65-merge-followup": ["followup.mjs"],
-  "k65-receipt-p95-head": ["receipt.mjs"],
-  "k65-freeze-source": ["constants.mjs"],
+  "k66-followup-requeries": ["followup.mjs"],
+  "k66-freeze-and-d3d": ["receipt.mjs", "constants.mjs", "availability.mjs"],
+  "k66-harness-import": ["join.mjs", "run-sample.mjs", "outcome.mjs"],
   "k65-harness-d40": ["procedure-file.mjs"],
   "pr1-native-eval-feature": ["native-architecture.mjs"],
   "p1-harness-core": [
     "admission-facts.mjs",
-    "availability.mjs",
     "egress.mjs",
-    "join.mjs",
     "native-sample.mjs",
     "q4.mjs",
-    "run-sample.mjs",
     "stats.mjs",
   ],
   "p2p3-harness-admission": [
@@ -4884,7 +4911,6 @@ const ADDENDUM5_FILES = Object.freeze({
     "eval-native-build.mjs",
     "keep-test.mjs",
     "observer-core.mjs",
-    "outcome.mjs",
     "renderer-build.mjs",
     "renderer/cp4-harness.html",
     "renderer/cp4-hook-probe.tsx",
@@ -4909,7 +4935,7 @@ test("S2 追補 #5 (P2-2): the formal entries' harness closure is held by the by
   assert.ok(closure.includes(`${H4}pubg16-e2e-run.mjs`));
   assert.equal(
     harnessPinOf(`${H4}pubg16-e2e-run.mjs`)?.role,
-    "k65-g01-e2e-admission",
+    "k66-g01-diagnostic-head",
   );
   assert.ok(
     closure.every((file) => !/\.test\.mjs$|test-support\.mjs$/u.test(file)),
@@ -4933,7 +4959,7 @@ test("S2 追補 #5 (P2-2): the formal entries' harness closure is held by the by
     unpinned(
       closure,
       SOURCE_PINS.map((pin) =>
-        pin.role === "k65-g01-e2e-admission"
+        pin.role === "k66-g01-diagnostic-head"
           ? {
               ...pin,
               paths: pin.paths.filter(
@@ -5209,8 +5235,9 @@ test("S2 追補 #6: the SP-P4 receipt reading and C1 are the pinned harness's (s
   // S2 追補 #8: frozen-diagnostics.mjs と diagnostic-runner.mjs は #759 の pin にある。
   for (const [name, role] of [
     // S2 追補 #15: the K6/5 pins hold them now.
-    ["frozen-diagnostics.mjs", "k65-n2-n3-enforcement"],
-    ["diagnostic-runner.mjs", "k65-harness-d40"],
+    // 7 回目の S4: the K6/6 pins hold them now.
+    ["frozen-diagnostics.mjs", "k66-g01-diagnostic-head"],
+    ["diagnostic-runner.mjs", "k66-harness-import"],
   ]) {
     const pin = harnessPinOf(H4 + name);
     assert.equal(pin.role, role);
@@ -5663,8 +5690,9 @@ test("S2 追補 #7: each added eval script and each #758 file is pinned at the m
     // S2 追補 #15: admission.mjs, trace-frozen.mjs and frozen-k64-admission.mjs
     // moved on to the K6/5 pins (the pins of S2 追補 #11 and #12 keep their
     // roles and commits as ancestors).
-    "k65-g01-e2e-admission": [`${H4}admission.mjs`],
-    "k65-harness-d40": [
+    // 7 回目の S4（DR-CP4-S4-10 (4)）: and on to the K6/6 pins.
+    "k66-freeze-and-d3d": [`${H4}admission.mjs`],
+    "k66-harness-import": [
       `${H4}trace-frozen.mjs`,
       `${H4}frozen-k64-admission.mjs`,
     ],
@@ -5720,21 +5748,21 @@ test("S2 追補 #7: each added eval script and each #758 file is pinned at the m
     [
       "admission.mjs",
       "950751d040b29b6d78a067a003dc19b196cfb692",
-      "k65-g01-e2e-admission",
+      "k66-freeze-and-d3d",
     ],
     // S2 追補 #11: G-04 v2 の pin に移った 3 file を元の pin の bytes と比べると落ちる。
     // S2 追補 #12: frozen-k64-admission.mjs はさらに s4-5-addendum-v3-paths に移った。
     [
       "frozen-k64-admission.mjs",
       "82d427465b16a12809c6f93adad74ac97859c85a",
-      "k65-harness-d40",
+      "k66-harness-import",
     ],
     // S2 追補 #12（DR-CP4-P-8）: 移した 4 file を元の pin（c5b46714、950751d0、
     // 43e3f40b）の bytes と比べると落ちる。
     [
       "frozen-k64-admission.mjs",
       "c5b46714054c040cbe5c270ad657f6252b82eaeb",
-      "k65-harness-d40",
+      "k66-harness-import",
     ],
     [
       "g01-negatives.mjs",
@@ -5754,22 +5782,22 @@ test("S2 追補 #7: each added eval script and each #758 file is pinned at the m
     [
       "trace-frozen.mjs",
       "82d427465b16a12809c6f93adad74ac97859c85a",
-      "k65-harness-d40",
+      "k66-harness-import",
     ],
     [
       "constants.mjs",
       "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f",
-      "k65-freeze-source",
+      "k66-freeze-and-d3d",
     ],
     [
       "diagnostic-runner.mjs",
       "82d427465b16a12809c6f93adad74ac97859c85a",
-      "k65-harness-d40",
+      "k66-harness-import",
     ],
     [
       "frozen-diagnostics.mjs",
       "43e3f40b5d653c62d5aca4ca795917b67310992c",
-      "k65-n2-n3-enforcement",
+      "k66-g01-diagnostic-head",
     ],
   ]) {
     const copy = clone(pins);
@@ -6179,8 +6207,9 @@ test("S2 追補 #12（DR-CP4-P-8）: S2 binds the setup addendum v3, the two pin
   // s4-5-addendum-v3-paths keeps its role and commit as an ancestor pin.
   assert.deepEqual(pinOf("s4-5-addendum-v3-paths").files, []);
   assert.equal(pinOf("s4-5-addendum-v3-paths").check, "ancestor");
+  // 7 回目の S4（DR-CP4-S4-10 (4)）: and on to the k66-harness-import pin.
   assert.deepEqual(
-    pinOf("k65-harness-d40")
+    pinOf("k66-harness-import")
       .files.filter((row) => row.path === `${H4}frozen-k64-admission.mjs`)
       .map((row) => row.path),
     [`${H4}frozen-k64-admission.mjs`],
@@ -7093,26 +7122,32 @@ test("S2 追補 #15: K6/5's freeze commit, the confirmation records and the S3 r
   );
 });
 
-test("S2 追補 #15（DR-CP4-S4-9）: the 14 files K6/5, C7 and the G-01 diagnostic changed are each held by one K6/5 pin at the commit that last changed it, the earlier pins no longer hold them, and putting one back fails", async (t) => {
+test("S2 追補 #15（DR-CP4-S4-9）と 7 回目の S4（DR-CP4-S4-10 (4)）: the 14 files K6/5, C7 and the G-01 diagnostic changed are each held by one pin (12 by the K6/6 pins, trace-record.mjs and procedure-file.mjs by the K6/5 pins) at the commit that last changed it, the earlier pins no longer hold them, and putting one back fails", async (t) => {
   const ctx = await context();
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   const check = (copy) => observationPrepErrors(copy, ctx);
+  // 7 回目の S4（DR-CP4-S4-10 (4)）: 12 of the 14 files moved on to the four K6/6
+  // pins (`from` is the K6/5 pin they left); trace-record.mjs (C7, #826 on master)
+  // and procedure-file.mjs stay at the K6/5 pins.
   const moved = {
-    "receipt.mjs": ["k65-receipt-p95-head", "t14-k64-freeze"],
-    "k64-runner.mjs": ["k65-harness-d40", "s5a-graph-arm-runner"],
-    "admission.mjs": ["k65-g01-e2e-admission", "s4-rehearsal-admission"],
-    "diagnostic-runner.mjs": ["k65-harness-d40", "sp-p4-ir-pair-limit"],
-    "frozen-diagnostics.mjs": ["k65-n2-n3-enforcement", "sp-p4-ir-pair-limit"],
-    "frozen-k64-run.mjs": ["k65-harness-d40", "t1-t4-measurement-settle-ready"],
+    "receipt.mjs": ["k66-freeze-and-d3d", "k65-receipt-p95-head"],
+    "k64-runner.mjs": ["k66-harness-import", "k65-harness-d40"],
+    "admission.mjs": ["k66-freeze-and-d3d", "k65-g01-e2e-admission"],
+    "diagnostic-runner.mjs": ["k66-harness-import", "k65-harness-d40"],
+    "frozen-diagnostics.mjs": [
+      "k66-g01-diagnostic-head",
+      "k65-n2-n3-enforcement",
+    ],
+    "frozen-k64-run.mjs": ["k66-harness-import", "k65-harness-d40"],
     "trace-record.mjs": ["c7-chronicle-stop", "v4-trace-record-requery"],
-    "followup.mjs": ["k65-merge-followup", "v4-followup-cancelled-match"],
-    "trace-runner.mjs": ["k65-harness-d40", "v4-trace-runner-quote-guard"],
-    "constants.mjs": ["k65-freeze-source", "g4-b1-freeze-v2-constants"],
-    "trace-frozen.mjs": ["k65-harness-d40", "g4-b2a-declaration-v2-path"],
-    "frozen-k64-admission.mjs": ["k65-harness-d40", "s4-5-addendum-v3-paths"],
+    "followup.mjs": ["k66-followup-requeries", "k65-merge-followup"],
+    "trace-runner.mjs": ["k66-harness-import", "k65-harness-d40"],
+    "constants.mjs": ["k66-freeze-and-d3d", "k65-freeze-source"],
+    "trace-frozen.mjs": ["k66-harness-import", "k65-harness-d40"],
+    "frozen-k64-admission.mjs": ["k66-harness-import", "k65-harness-d40"],
     "procedure-file.mjs": ["k65-harness-d40", "p1-harness-core"],
-    // The G-01 diagnostic runner had no pin (PENDING_S4_PINS).
-    "pubg16-e2e-run.mjs": ["k65-g01-e2e-admission", null],
+    // The G-01 diagnostic runner had no pin (PENDING_S4_PINS) until the sixth S4.
+    "pubg16-e2e-run.mjs": ["k66-g01-diagnostic-head", "k65-g01-e2e-admission"],
   };
   assert.equal(Object.keys(moved).length, 14);
   const pinOf = (role) => SOURCE_PINS.find((pin) => pin.role === role);
@@ -7187,6 +7222,21 @@ test("S2 追補 #15（DR-CP4-S4-9）: the 14 files K6/5, C7 and the G-01 diagnos
     assert.deepEqual(prepPin(prep, role).files, [], role);
     assert.ok(prepPin(prep, role).pr.includes("S2 追補 #15"), role);
   }
+  // 7 回目の S4: the K6/5 pins that hold nothing now are ancestor pins that keep
+  // their role and commit (the record's `pr` says where the file went).
+  for (const role of [
+    "k65-receipt-p95-head",
+    "k65-n2-n3-enforcement",
+    "k65-freeze-source",
+    "k65-g01-e2e-admission",
+    "k65-merge-followup",
+  ]) {
+    assert.equal(pinOf(role).check, "ancestor", role);
+    assert.deepEqual(prepPin(prep, role).files, [], role);
+    assert.ok(prepPin(prep, role).pr.includes("7 回目の S4"), role);
+  }
+  assert.deepEqual(pinOf("k65-harness-d40").paths, [`${H4}procedure-file.mjs`]);
+  assert.deepEqual(pinOf("c7-chronicle-stop").paths, [`${H4}trace-record.mjs`]);
   for (const word of ["追補 #15", "k65-harness-d40", "14 file"])
     assert.ok(prep.setupReadings.source.pinRule.includes(word), word);
   if (!ctx.sourcePinGit) {
@@ -7221,6 +7271,135 @@ test("S2 追補 #15（DR-CP4-S4-9）: the 14 files K6/5, C7 and the G-01 diagnos
       gitText(["rev-parse", "refs/remotes/origin/master"]),
     ),
   );
+});
+
+test("7 回目の S4（DR-CP4-S4-10 (4)）: the 17 files K6/6 changed are each held by one of the four K6/6 pins at the commit that last changed it, the earlier pins no longer hold them, and putting one back, dropping one or changing a sha256 fails", async (t) => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  const pinOf = (role) => SOURCE_PINS.find((pin) => pin.role === role);
+  const prepPin = (p, role) =>
+    p.setupReadings.source.pins.find((row) => row.role === role);
+  // [file, K6/6 pin, the pin the file was held by before the 7th S4]
+  const moved = [
+    ["k64-record.mjs", "k66-harness-import", "s5a-graph-arm-runner"],
+    ["join.mjs", "k66-harness-import", "p1-harness-core"],
+    ["run-sample.mjs", "k66-harness-import", "p1-harness-core"],
+    ["outcome.mjs", "k66-harness-import", "p2p3-harness-admission"],
+    ["k64-runner.mjs", "k66-harness-import", "k65-harness-d40"],
+    ["diagnostic-runner.mjs", "k66-harness-import", "k65-harness-d40"],
+    ["frozen-k64-run.mjs", "k66-harness-import", "k65-harness-d40"],
+    ["trace-runner.mjs", "k66-harness-import", "k65-harness-d40"],
+    ["trace-frozen.mjs", "k66-harness-import", "k65-harness-d40"],
+    ["frozen-k64-admission.mjs", "k66-harness-import", "k65-harness-d40"],
+    ["availability.mjs", "k66-freeze-and-d3d", "p1-harness-core"],
+    ["receipt.mjs", "k66-freeze-and-d3d", "k65-receipt-p95-head"],
+    ["constants.mjs", "k66-freeze-and-d3d", "k65-freeze-source"],
+    ["admission.mjs", "k66-freeze-and-d3d", "k65-g01-e2e-admission"],
+    [
+      "frozen-diagnostics.mjs",
+      "k66-g01-diagnostic-head",
+      "k65-n2-n3-enforcement",
+    ],
+    ["pubg16-e2e-run.mjs", "k66-g01-diagnostic-head", "k65-g01-e2e-admission"],
+    ["followup.mjs", "k66-followup-requeries", "k65-merge-followup"],
+  ];
+  assert.equal(moved.length, 17);
+  assert.deepEqual(
+    [
+      "k66-harness-import",
+      "k66-freeze-and-d3d",
+      "k66-g01-diagnostic-head",
+      "k66-followup-requeries",
+    ].map((role) => pinOf(role).commit.slice(0, 8)),
+    ["00f9c999", "1fdeed6f", "99699dda", "bf5ec217"],
+  );
+  for (const [name, role, from] of moved) {
+    const file = H4 + name;
+    assert.equal(harnessPinOf(file)?.role, role, name);
+    assert.equal(
+      SOURCE_PINS.filter((pin) => pin.paths.includes(file)).length,
+      1,
+      name,
+    );
+    assert.ok(!pinOf(from).paths.includes(file), `${name} left ${from}`);
+    const held = prepPin(prep, role).files.find((row) => row.path === file);
+    assert.equal(
+      held.sha256,
+      sha256(readFileSync(path.join(repoRoot, file))),
+      name,
+    );
+    // Putting it back into the earlier pin, or dropping it from the K6/6 pin
+    // (the record only), fails.
+    detects(
+      prep,
+      check,
+      (p) => prepPin(p, from).files.push({ ...held }),
+      /setupReadings\.source\.pins must be/u,
+    );
+    detects(
+      prep,
+      check,
+      (p) => {
+        const pin = prepPin(p, role);
+        pin.files = pin.files.filter((row) => row.path !== file);
+      },
+      /setupReadings\.source\.pins must be/u,
+    );
+    if (ctx.sourcePinGit) {
+      const copy = clone(prep.setupReadings.source.pins);
+      const row = prepPin(
+        { setupReadings: { source: { pins: copy } } },
+        role,
+      ).files.find((entry) => entry.path === file);
+      row.sha256 = flip(row.sha256);
+      assert.ok(
+        sourcePinGitErrors(copy, ctx.sourcePinGit.head, ctx.sourcePinGit).some(
+          (e) =>
+            e.includes(
+              `${file} at ${pinOf(role).commit} is not the pinned bytes`,
+            ),
+        ),
+        name,
+      );
+      // The pinned commit is the last change of the file at HEAD.
+      assert.equal(
+        gitText([
+          "log",
+          "-1",
+          "--format=%H",
+          ctx.sourcePinGit.head,
+          "--",
+          file,
+        ]),
+        pinOf(role).commit,
+        name,
+      );
+    }
+  }
+  if (!ctx.sourcePinGit) {
+    t.skip("shallow clone: the commits are checked by the formal gate");
+    return;
+  }
+  for (const role of [
+    "k66-harness-import",
+    "k66-freeze-and-d3d",
+    "k66-g01-diagnostic-head",
+    "k66-followup-requeries",
+  ])
+    assert.ok(
+      ctx.sourcePinGit.isAncestor(pinOf(role).commit, ctx.sourcePinGit.head),
+      role,
+    );
+  // The master merge (918d3def) changed no harness file: no pin's file differs
+  // between the record's HEAD and its pinned commit.
+  for (const pin of SOURCE_PINS)
+    for (const file of pin.paths)
+      assert.equal(
+        gitText(["rev-parse", `${pin.commit}:${file}`]),
+        gitText(["rev-parse", `HEAD:${file}`]),
+        `${pin.role} ${file}`,
+      );
 });
 
 test("S2 追補 #16（DR-CP4-P-10）: S2 binds K6/6 (contracts.k66 and its confirmation, the freeze record), k66Readings disclose (a)〜(j), s4StagesRule carries (j), the values stay K6/5's, and S2 is still a draft", async () => {

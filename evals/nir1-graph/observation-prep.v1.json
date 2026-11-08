@@ -1106,13 +1106,9 @@
         {
           "role": "s5a-graph-arm-runner",
           "commit": "2c9316848ce028565c4d8e8af2d2779c3fd7e187",
-          "pr": "#754（S5-A。凍結した G-case の正式の Graph arm の runner）。この pin は #754 で最後に変わった harness の file（#756 でも変わった file は s5b-diagnostics-wiring の pin が持つ）。S2 追補 #9 で、DR-CP4-T-1〜T-5 で変わった frozen-k64-plan.mjs と workspace-db.mjs をそれぞれ t1-t4-measurement-settle-ready と t3-t5-setup-freshness-settle の pin へ移した。6 回目の S4（S2 追補 #15、DR-CP4-S4-9）: k64-runner.mjs は k65-harness-d40 の pin に移した",
+          "pr": "#754（S5-A。凍結した G-case の正式の Graph arm の runner）。この pin は #754 で最後に変わった harness の file（#756 でも変わった file は s5b-diagnostics-wiring の pin が持つ）。S2 追補 #9 で、DR-CP4-T-1〜T-5 で変わった frozen-k64-plan.mjs と workspace-db.mjs をそれぞれ t1-t4-measurement-settle-ready と t3-t5-setup-freshness-settle の pin へ移した。6 回目の S4（S2 追補 #15、DR-CP4-S4-9）: k64-runner.mjs は k65-harness-d40 の pin に移した。7 回目の S4（DR-CP4-S4-10 (4)）: k64-record.mjs は k66-harness-import の pin に移した（この pin は role と commit を残し、ancestor の確認だけをする）",
           "check": "bytes",
           "files": [
-            {
-              "path": "scripts/quality/nir1-graph-eval/k64-record.mjs",
-              "sha256": "4818d1c1d91956f8412e8b4ca1c9f0891017204299ad0ea52eafd626d1675df9"
-            },
             {
               "path": "scripts/quality/nir1-graph-eval/material-revision.mjs",
               "sha256": "ac2f1f794dbc640d5ff910f7f74a3d5438ed8ce01402cc8895944aefd7c853a5"
@@ -1316,7 +1312,7 @@
         {
           "role": "p1-harness-core",
           "commit": "865a3e2bad1ada5f6e5648e50c6902052b9b2a3c",
-          "pr": "#741（CP-4 道具 P1/3。harness の核〔計算と記録〕）。この pin は正式の入口の閉包のうち、この PR で最後に変わった harness の file を持つ（S2 追補 #5、P-S2-9 (b)）。harness の外の eval 専用の script で、この PR で最後に変わった scripts/quality/nir1-retrieval/standard-build-receipt.mjs もこの pin が持つ（S2 追補 #7、DR-CP4-P-4）。S2 追補 #10 で、DR-CP4-V-3〜V-4 で変わった followup.mjs を v4-followup-cancelled-match の pin へ移した。6 回目の S4（S2 追補 #15、DR-CP4-S4-9）: procedure-file.mjs は k65-harness-d40 の pin に移した",
+          "pr": "#741（CP-4 道具 P1/3。harness の核〔計算と記録〕）。この pin は正式の入口の閉包のうち、この PR で最後に変わった harness の file を持つ（S2 追補 #5、P-S2-9 (b)）。harness の外の eval 専用の script で、この PR で最後に変わった scripts/quality/nir1-retrieval/standard-build-receipt.mjs もこの pin が持つ（S2 追補 #7、DR-CP4-P-4）。S2 追補 #10 で、DR-CP4-V-3〜V-4 で変わった followup.mjs を v4-followup-cancelled-match の pin へ移した。6 回目の S4（S2 追補 #15、DR-CP4-S4-9）: procedure-file.mjs は k65-harness-d40 の pin に移した。7 回目の S4（DR-CP4-S4-10 (4)）: availability.mjs は k66-freeze-and-d3d、join.mjs は k66-harness-import、run-sample.mjs は k66-harness-import の pin に移した（この pin は role と commit を残し、ancestor の確認だけをする）",
           "check": "bytes",
           "files": [
             {
@@ -1324,16 +1320,8 @@
               "sha256": "420cbdf4d9949cd1117c3f3eed6eb5a312b622f7a79fa629369cd9b5a0e7c468"
             },
             {
-              "path": "scripts/quality/nir1-graph-eval/availability.mjs",
-              "sha256": "04c17b33cd89a2dda3beb5a27e462fa7718b8eb2ced424f8639efa55cf2fe5f0"
-            },
-            {
               "path": "scripts/quality/nir1-graph-eval/egress.mjs",
               "sha256": "77c0aa177007d9bb8c0da5f0ad5a23c09b4dac02f2d5d5b718089edbb8dcac54"
-            },
-            {
-              "path": "scripts/quality/nir1-graph-eval/join.mjs",
-              "sha256": "7dd0d790de8f027caa4c23c757d76dc03ad00d8732b8484f4f992be37ed5481d"
             },
             {
               "path": "scripts/quality/nir1-graph-eval/native-sample.mjs",
@@ -1342,10 +1330,6 @@
             {
               "path": "scripts/quality/nir1-graph-eval/q4.mjs",
               "sha256": "862475877f49b8b202ef1cbf9c1702c4f13f50a37141241f25b5f43f4c1306ef"
-            },
-            {
-              "path": "scripts/quality/nir1-graph-eval/run-sample.mjs",
-              "sha256": "add07154efe3d0bc71feaf11bea4ffb56bdc0167e42b2fe00f870247c0f5a754"
             },
             {
               "path": "scripts/quality/nir1-graph-eval/stats.mjs",
@@ -1360,7 +1344,7 @@
         {
           "role": "p2p3-harness-admission",
           "commit": "a4e65b66006dec7101f93340cdca70fcafabfc5d",
-          "pr": "#743（CP-4 道具 P2＋P3。判定・admission、実 Electron の起動）。この pin は正式の入口の閉包のうち、この PR で最後に変わった harness の file を持つ（S2 追補 #5、P-S2-9 (b)）。harness の外の eval 専用の script で、この PR で最後に変わった scripts/quality/nir1-retrieval/standard-build.mjs もこの pin が持つ（S2 追補 #7、DR-CP4-P-4）",
+          "pr": "#743（CP-4 道具 P2＋P3。判定・admission、実 Electron の起動）。この pin は正式の入口の閉包のうち、この PR で最後に変わった harness の file を持つ（S2 追補 #5、P-S2-9 (b)）。harness の外の eval 専用の script で、この PR で最後に変わった scripts/quality/nir1-retrieval/standard-build.mjs もこの pin が持つ（S2 追補 #7、DR-CP4-P-4）。7 回目の S4（DR-CP4-S4-10 (4)）: outcome.mjs は k66-harness-import の pin に移した（この pin は role と commit を残し、ancestor の確認だけをする）",
           "check": "bytes",
           "files": [
             {
@@ -1382,10 +1366,6 @@
             {
               "path": "scripts/quality/nir1-graph-eval/observer-core.mjs",
               "sha256": "3c4e9e470d5271d09d8d9c90f088103529461d0aa3f33eb161db203d3fa539c7"
-            },
-            {
-              "path": "scripts/quality/nir1-graph-eval/outcome.mjs",
-              "sha256": "8640f775c77f718bca1c85af004ad5210e80e1b0ee9e083ff3cbb42a314dfaf3"
             },
             {
               "path": "scripts/quality/nir1-graph-eval/renderer-build.mjs",
@@ -1511,45 +1491,16 @@
         {
           "role": "k65-receipt-p95-head",
           "commit": "e6abddd2feb0ad4022153edef2243fce4767cb57",
-          "pr": "6 回目の凍結のやり直し（DR-CP4-S4-9。枝 claude/k65-harness、PR #827）。K6/5（D=40 ms、B=54.2 ms、Hybrid p95 の上限 94.2 ms）の receipt の照合（head.k65、settings.k64 の D・B・上限。K6/5-N1・N3・N4）を入れた receipt.mjs の最後の変更 e6abddd2（S2 追補 #15 で t14-k64-freeze の pin から移した）。commit は枝の commit で、S4 の PR を merge commit で入れると master の祖先になる",
-          "check": "bytes",
-          "files": [
-            {
-              "path": "scripts/quality/nir1-graph-eval/receipt.mjs",
-              "sha256": "a5b29cb274ae442310346a22bad3213189edbd50f7983fc35a7e3fd3162d2acc"
-            }
-          ]
+          "pr": "6 回目の凍結のやり直し（DR-CP4-S4-9。枝 claude/k65-harness、PR #827）。K6/5（D=40 ms、B=54.2 ms、Hybrid p95 の上限 94.2 ms）の receipt の照合（head.k65、settings.k64 の D・B・上限。K6/5-N1・N3・N4）を入れた receipt.mjs の最後の変更 e6abddd2（S2 追補 #15 で t14-k64-freeze の pin から移した）。commit は枝の commit で、S4 の PR を merge commit で入れると master の祖先になる。7 回目の S4（DR-CP4-S4-10 (4)）: receipt.mjs は k66-freeze-and-d3d の pin に移した（この pin は role と commit を残し、ancestor の確認だけをする）",
+          "files": [],
+          "check": "ancestor"
         },
         {
           "role": "k65-harness-d40",
           "commit": "bf0b4f75b9eab40009b115cc27df53298a9cef2a",
-          "pr": "6 回目の凍結のやり直し（DR-CP4-S4-9）。K6/5 に合わせた harness の変更 bf0b4f75（D=40 ms、B、Hybrid p95 の上限、手順のファイル v2 の loader、head.k65、手順のファイルと契約の値の照合）が最後に変えた 7 file（k64-runner.mjs〔s5a-graph-arm-runner から〕、diagnostic-runner.mjs〔sp-p4-ir-pair-limit から〕、frozen-k64-run.mjs〔t1-t4-measurement-settle-ready から〕、trace-runner.mjs〔v4-trace-runner-quote-guard から〕、trace-frozen.mjs〔g4-b2a-declaration-v2-path から〕、frozen-k64-admission.mjs〔s4-5-addendum-v3-paths から〕、procedure-file.mjs〔p1-harness-core から〕）。S2 追補 #15 で移した。commit は枝の commit で、S4 の PR を merge commit で入れると master の祖先になる",
+          "pr": "6 回目の凍結のやり直し（DR-CP4-S4-9）。K6/5 に合わせた harness の変更 bf0b4f75（D=40 ms、B、Hybrid p95 の上限、手順のファイル v2 の loader、head.k65、手順のファイルと契約の値の照合）が最後に変えた 7 file（k64-runner.mjs〔s5a-graph-arm-runner から〕、diagnostic-runner.mjs〔sp-p4-ir-pair-limit から〕、frozen-k64-run.mjs〔t1-t4-measurement-settle-ready から〕、trace-runner.mjs〔v4-trace-runner-quote-guard から〕、trace-frozen.mjs〔g4-b2a-declaration-v2-path から〕、frozen-k64-admission.mjs〔s4-5-addendum-v3-paths から〕、procedure-file.mjs〔p1-harness-core から〕）。S2 追補 #15 で移した。commit は枝の commit で、S4 の PR を merge commit で入れると master の祖先になる。7 回目の S4（DR-CP4-S4-10 (4)）: k64-runner.mjs は k66-harness-import、diagnostic-runner.mjs は k66-harness-import、frozen-k64-run.mjs は k66-harness-import、trace-runner.mjs は k66-harness-import、trace-frozen.mjs は k66-harness-import、frozen-k64-admission.mjs は k66-harness-import の pin に移した（この pin は role と commit を残し、ancestor の確認だけをする）",
           "check": "bytes",
           "files": [
-            {
-              "path": "scripts/quality/nir1-graph-eval/k64-runner.mjs",
-              "sha256": "b17d3551512f17818196cee03664b5c92b05aa0339ffa2bd70c38e6fff39bd5a"
-            },
-            {
-              "path": "scripts/quality/nir1-graph-eval/diagnostic-runner.mjs",
-              "sha256": "4eb7c138fccde767fec9338ce1c4b6e5a4c7f554bc798095ab80ea1a8ec6844e"
-            },
-            {
-              "path": "scripts/quality/nir1-graph-eval/frozen-k64-run.mjs",
-              "sha256": "f48741c11c56a4fd4d35a77da2cc6ee71358e8753b06b9a45963e3b93666663e"
-            },
-            {
-              "path": "scripts/quality/nir1-graph-eval/trace-runner.mjs",
-              "sha256": "d7de6d4d95e3a33dfa5e2a3fedb5c2d491c7c03e363c87dbbf14e9f9c5917ed2"
-            },
-            {
-              "path": "scripts/quality/nir1-graph-eval/trace-frozen.mjs",
-              "sha256": "0bdc2a106c827d88769fa0bb65df7a1e541c9cecee4378b8ed3c9e0993a5ddab"
-            },
-            {
-              "path": "scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs",
-              "sha256": "b046e81c65b50d41dedd4b77b4b42483f6e4edf9f6f706954a0e4cf2e904e0b7"
-            },
             {
               "path": "scripts/quality/nir1-graph-eval/procedure-file.mjs",
               "sha256": "31a71cc2b22ce824db770cd87694080f211bdbd1a92a4386fad14cf183103fd4"
@@ -1559,42 +1510,23 @@
         {
           "role": "k65-n2-n3-enforcement",
           "commit": "2699314238504e12aa28ba74e1b319f6dff5821d",
-          "pr": "6 回目の凍結のやり直し（DR-CP4-S4-9）。K6/5-N2・N3 の強制点を試験で押さえ、D=40 ms の読みと照合を厳密にした 26993142 が最後に変えた frozen-diagnostics.mjs（sp-p4-ir-pair-limit から移した。SP-P4 の C3 が名指す role と commit は ancestor として残る）。commit は枝の commit",
-          "check": "bytes",
-          "files": [
-            {
-              "path": "scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs",
-              "sha256": "a1ce6c3c8c0e1b5dab5419fb696a1cd204bbbde1b1d98841c8a4458dd2170320"
-            }
-          ]
+          "pr": "6 回目の凍結のやり直し（DR-CP4-S4-9）。K6/5-N2・N3 の強制点を試験で押さえ、D=40 ms の読みと照合を厳密にした 26993142 が最後に変えた frozen-diagnostics.mjs（sp-p4-ir-pair-limit から移した。SP-P4 の C3 が名指す role と commit は ancestor として残る）。commit は枝の commit。7 回目の S4（DR-CP4-S4-10 (4)）: frozen-diagnostics.mjs は k66-g01-diagnostic-head の pin に移した（この pin は role と commit を残し、ancestor の確認だけをする）",
+          "files": [],
+          "check": "ancestor"
         },
         {
           "role": "k65-freeze-source",
           "commit": "f24dc704cd3a424f94c5fc6ade42950fdcc938d3",
-          "pr": "6 回目の凍結のやり直し（DR-CP4-S4-9）。K65_FREEZE.confirmedCommit を draft の bytes を最後に変えた commit にし、S2 の contracts.k65 が読めるようにした f24dc704 が最後に変えた constants.mjs（K65_FREEZE、K65_CANDIDATE_REQUIREMENTS、GRAPH_EVAL_D_MS／B／p95 の上限。g4-b1-freeze-v2-constants から移した）。この pin の bytes から contracts.k65.* を読む（K65_FREEZE_SOURCE）ので、S4b の前の pin の取り直しで contracts.k65 の読めない状態が消える。commit は枝の commit",
-          "check": "bytes",
-          "files": [
-            {
-              "path": "scripts/quality/nir1-graph-eval/constants.mjs",
-              "sha256": "7cd693bbb9697fcd28f3c8ea08880b6eba06b603adf93d4b5dbcd5eb3bc8f8c0"
-            }
-          ]
+          "pr": "6 回目の凍結のやり直し（DR-CP4-S4-9）。K65_FREEZE.confirmedCommit を draft の bytes を最後に変えた commit にし、S2 の contracts.k65 が読めるようにした f24dc704 が最後に変えた constants.mjs（K65_FREEZE、K65_CANDIDATE_REQUIREMENTS、GRAPH_EVAL_D_MS／B／p95 の上限。g4-b1-freeze-v2-constants から移した）。この pin の bytes から contracts.k65.* を読む（K65_FREEZE_SOURCE）ので、S4b の前の pin の取り直しで contracts.k65 の読めない状態が消える。commit は枝の commit。7 回目の S4（DR-CP4-S4-10 (4)）: constants.mjs は k66-freeze-and-d3d の pin に移した（この pin は role と commit を残し、ancestor の確認だけをする）",
+          "files": [],
+          "check": "ancestor"
         },
         {
           "role": "k65-g01-e2e-admission",
           "commit": "94d3e1333ec72a8ffd625d5c3d582ddabd60a4bb",
-          "pr": "6 回目の凍結のやり直し（DR-CP4-S4-9。DR-PUBG-16-2 の案）。G-01 の凍結素材の end-to-end を診断の run として組み込んだ 94d3e133 が最後に変えた admission.mjs（admitG01E2eDiagnostic、readG01E2eDiagnosticFixture。s4-rehearsal-admission から移した）と pubg16-e2e-run.mjs（診断 runner。FORMAL_HARNESS_ENTRIES に入ったまま pin が無く、S4b で初めて pin した）。この診断 run の admission の経路はユーザーが S3 の後に確認した（contracts 0600ec04 の質問 2）。commit は枝の commit",
-          "check": "bytes",
-          "files": [
-            {
-              "path": "scripts/quality/nir1-graph-eval/admission.mjs",
-              "sha256": "54574777248b3d3b386436898ce3e5f24801db865b3dd8c22b3a16be70161109"
-            },
-            {
-              "path": "scripts/quality/nir1-graph-eval/pubg16-e2e-run.mjs",
-              "sha256": "f4fa3a18477cff3bf28f005ff09b45b27ada8d126cec7c3abb3c94968c0cf057"
-            }
-          ]
+          "pr": "6 回目の凍結のやり直し（DR-CP4-S4-9。DR-PUBG-16-2 の案）。G-01 の凍結素材の end-to-end を診断の run として組み込んだ 94d3e133 が最後に変えた admission.mjs（admitG01E2eDiagnostic、readG01E2eDiagnosticFixture。s4-rehearsal-admission から移した）と pubg16-e2e-run.mjs（診断 runner。FORMAL_HARNESS_ENTRIES に入ったまま pin が無く、S4b で初めて pin した）。この診断 run の admission の経路はユーザーが S3 の後に確認した（contracts 0600ec04 の質問 2）。commit は枝の commit。7 回目の S4（DR-CP4-S4-10 (4)）: admission.mjs は k66-freeze-and-d3d、pubg16-e2e-run.mjs は k66-g01-diagnostic-head の pin に移した（この pin は role と commit を残し、ancestor の確認だけをする）",
+          "files": [],
+          "check": "ancestor"
         },
         {
           "role": "c7-chronicle-stop",
@@ -1611,17 +1543,112 @@
         {
           "role": "k65-merge-followup",
           "commit": "8489ae57d147f029117b0e4a4c9f08b53565f453",
-          "pr": "6 回目の凍結のやり直し（DR-CP4-S4-9）。#826（C7）を K6/5 の枝に取り込んだ merge commit 8489ae57（K6/5 の親の窓の照合と C7 の followup.mjs の変更の衝突を解いた）が最後に変えた followup.mjs（v4-followup-cancelled-match から移した）。この bytes を持つ commit は merge commit だけ。commit は枝の commit で、S4 の PR を merge commit で入れると master の祖先になる",
+          "pr": "6 回目の凍結のやり直し（DR-CP4-S4-9）。#826（C7）を K6/5 の枝に取り込んだ merge commit 8489ae57（K6/5 の親の窓の照合と C7 の followup.mjs の変更の衝突を解いた）が最後に変えた followup.mjs（v4-followup-cancelled-match から移した）。この bytes を持つ commit は merge commit だけ。commit は枝の commit で、S4 の PR を merge commit で入れると master の祖先になる。7 回目の S4（DR-CP4-S4-10 (4)）: followup.mjs は k66-followup-requeries の pin に移した（この pin は role と commit を残し、ancestor の確認だけをする）",
+          "files": [],
+          "check": "ancestor"
+        },
+        {
+          "role": "k66-harness-import",
+          "commit": "00f9c99981c0bf67a3f98b00b5a1dfb5462547a1",
+          "pr": "7 回目の凍結のやり直し（DR-CP4-S4-10 (4)）。K6/6 の harness を試作から取り込んだ 00f9c999（dev 枝 claude/k66-harness-proto d12b78e5 の harness・試験。first-render の数え方、head.k66 の受け渡し）が最後に変えた 10 file（k64-record.mjs〔s5a-graph-arm-runner から〕、join.mjs・run-sample.mjs〔p1-harness-core から〕、outcome.mjs〔p2p3-harness-admission から〕、k64-runner.mjs・diagnostic-runner.mjs・frozen-k64-run.mjs・trace-runner.mjs・trace-frozen.mjs・frozen-k64-admission.mjs〔k65-harness-d40 から〕）。commit は枝の commit で、S4 の PR を merge commit で入れると master の祖先になる",
+          "check": "bytes",
+          "files": [
+            {
+              "path": "scripts/quality/nir1-graph-eval/k64-record.mjs",
+              "sha256": "04031c469c590e978d674352b63745190e2365aef8518713f621d44de660d6b3"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/join.mjs",
+              "sha256": "42d9df22571bc4a6b677fd32a5919d419c321ede67a1e0d75f5ef0c829fc3bfc"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/run-sample.mjs",
+              "sha256": "b59698ce7713313df249b50d4adb972d9f0c227f89ccc57616655cb5cbfcde19"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/outcome.mjs",
+              "sha256": "f568f17bf7f2c1307d229c94e9c4aefde876e0bd59b5941d9bd4356012dc87bc"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/k64-runner.mjs",
+              "sha256": "d8be4eead38ef845b760d7bb275440cf34b2f2ab5623eeb3a399f528150b2517"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/diagnostic-runner.mjs",
+              "sha256": "a605b66c73e75040e6767c6511d425cea4540c4d78ade627456d0ad1fd1c34a3"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/frozen-k64-run.mjs",
+              "sha256": "6b610a293f84164dfc54f4b04d79bafffb4dad263adda8c7780a200af1911e5e"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/trace-runner.mjs",
+              "sha256": "0c56205682a7e8015b0dab3bcf0f61f89e1139e81a50d95044405d374ac0532f"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/trace-frozen.mjs",
+              "sha256": "97e75a635a10966ddd948c9831b498a9952b40bc4f04e6b2fe3eb69ca6fba653"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs",
+              "sha256": "eabef5fb620e495cbd0a3e30e52010dd402f4209a3a99ee70eb822c805538a09"
+            }
+          ]
+        },
+        {
+          "role": "k66-freeze-and-d3d",
+          "commit": "1fdeed6f9b6fb3e069fb6aa894b1d1de36d342f8",
+          "pr": "7 回目の凍結のやり直し（DR-CP4-S4-10 (4)）。K66_FREEZE の固定と品質判定 v2 の D3 (d)・予行の予告の実装 1fdeed6f が最後に変えた 4 file（availability.mjs〔p1-harness-core から〕、receipt.mjs〔k65-receipt-p95-head から〕、constants.mjs〔k65-freeze-source から。contracts.k66.* が K66_FREEZE を読める〕、admission.mjs〔k65-g01-e2e-admission から〕）。commit は枝の commit で、S4 の PR を merge commit で入れると master の祖先になる",
+          "check": "bytes",
+          "files": [
+            {
+              "path": "scripts/quality/nir1-graph-eval/availability.mjs",
+              "sha256": "afaa32bca6113713d961c484ad51af42f4d8819c6942ae3cc5e9afa3ab6394e2"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/receipt.mjs",
+              "sha256": "6ea0e13f2bb71b07e1aa819a14a2ab715b8f5de1702caf2389353a42c19bc265"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/constants.mjs",
+              "sha256": "97ff7860bb23ffc145ac50297d85395a64f0aa21f0702b1f845c2f27b3946eb1"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/admission.mjs",
+              "sha256": "e8202431139debf146c49e5a91fe371fc2ae2c08cbfb616a6a10228d4448c046"
+            }
+          ]
+        },
+        {
+          "role": "k66-g01-diagnostic-head",
+          "commit": "99699dda79a882d029b1fce9c87fe7c45eff60b1",
+          "pr": "7 回目の凍結のやり直し（DR-CP4-S4-10 (4)）。G-01 の診断の受領書に head を書く 99699dda（再レビュー指摘）が最後に変えた 2 file（frozen-diagnostics.mjs〔k65-n2-n3-enforcement から〕、pubg16-e2e-run.mjs〔k65-g01-e2e-admission から〕）。commit は枝の commit で、S4 の PR を merge commit で入れると master の祖先になる",
+          "check": "bytes",
+          "files": [
+            {
+              "path": "scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs",
+              "sha256": "0e9227a31bd6dd554bad16ab656d9b1474db0515c6a2d9c360522bf2743368af"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/pubg16-e2e-run.mjs",
+              "sha256": "dcbbfaa54869303220e2fac818b63023fca193d7b6cf65a211374c070d0d063e"
+            }
+          ]
+        },
+        {
+          "role": "k66-followup-requeries",
+          "commit": "bf5ec2170edf763ede1027ed8408ce1cb1c9f35d",
+          "pr": "7 回目の凍結のやり直し（DR-CP4-S4-10 (4)）。品質判定のレビュー指摘（followUp.requeries の検査を firstRenderOf に足す）bf5ec217 が最後に変えた followup.mjs（k65-merge-followup から）。commit は枝の commit で、S4 の PR を merge commit で入れると master の祖先になる",
           "check": "bytes",
           "files": [
             {
               "path": "scripts/quality/nir1-graph-eval/followup.mjs",
-              "sha256": "cca983b306c0062758609873f16bf510fe1308f452abdcf6f5858c407d9d3b13"
+              "sha256": "10ffcfa1c369d9525dd049ff785b503ed571f19d58496dde587e67b99e7ad3f3"
             }
           ]
         }
       ],
-      "pinRule": "pin は master に入った commit だけにする（rebase で到達できない commit は使わない。S3v6-P2-1）。check が bytes の pin は、files の sha256 が pin した commit の bytes で、S5 は候補の harness の同じ path の file がこの bytes と同じであることを確かめる。check が ancestor の pin（製品の修正、T14、CI の改善、bytes を後の pin に移した PR）は、S5 の候補がその commit を祖先に持つことを確かめる。どちらも違えば [precheck]（runnerHandoff）。bytes の pin の file は、master でその file を最後に変えた commit（squash の後の hash）の pin が持ち、同じ path を 2 つの pin に置かない。追補 #4 では、追補 #3 の pin（b1a87b0b）の後に #754 と #756 が変えた harness の file のうち、試験の file（*.test.mjs と s5b-test-support.mjs）を除く全部を bytes の pin に足した（厳しい側。DR-CP4-P-1）。起動時間の gate の改善（#753）と maintenance の所有の解放（#755）は ancestor の pin に追記した。validator は blockedCaseJudgement を、BLOCKED_TABLE_SOURCE（s5b-diagnostics-wiring の pin の frozen-setup-driver.mjs）の bytes（その commit から読むか、同じ sha256 の作業 tree の file）の BLOCKED_CONTRACT_TABLE から導き直して照合し、bytes の pin の sha256 を pin した commit の bytes と、各 pin の commit が記録の HEAD の祖先であることを git で確かめる（shallow な clone では確かめず、正式の gate では必ず確かめる）。 追補 #5（S3 の 7 回目の P2-2、P-S2-9 の決定 b。DR-CP4-P-2）では、正式の入口（diagnostic-runner.mjs、trace-runner.mjs、frozen-k64-run.mjs、frozen-setup-driver.mjs、r5-check-runner.mjs）の閉包（静的な import と、harness の path の文字列で参照される file〔renderer の入口、cp4-harness.html の script、launcher が起動する electron-observer.entry.mjs〕をたどる。試験の file と文書は含めない）の harness の file のうち pin に無かった 36 file（静的な import の閉包の 28 file と、renderer の 7 file と electron-observer.entry.mjs）を、master でその file を最後に変えた commit の bytes の pin に足した（その commit の role が無ければ足した）。閉包の file がどの pin にも無ければ試験が落ちる。harness の directory の外の import は追補 #5 では pin しなかった（追補 #7 で改めた）。 追補 #6（DR-CP4-P-3）では、#757（43e3f40b）が変えた harness の file（試験の file を除く diagnostic-runner.mjs、frozen-diagnostics.mjs、g01-negative-run.mjs）を s5b-diagnostics-wiring の pin から新しい role の sp-p4-ir-timeout の pin に移した（同じ path を 2 つの pin に置かない）。ほかの pin の file は 950751d0..43e3f40b で変わっていない。validator は harness の定数（HARNESS_CONSTANTS）を、その file を持つ pin の commit の bytes から読む（frozen-diagnostics.mjs の SP_P4_COMPARISON_RULE と SP_P4_IR_TIMEOUT_LIMIT は sp-p4-ir-timeout、frozen-setup-driver.mjs と g01-negatives.mjs の定数と BLOCKED_CONTRACT_TABLE は s5b-diagnostics-wiring）。 追補 #7（DR-CP4-S4-1、DR-CP4-P-4）では、#758（82d42746）で最後に変わった admission.mjs、diagnostic-runner.mjs、frozen-k64-admission.mjs、trace-frozen.mjs を s5b-diagnostics-wiring と sp-p4-ir-timeout の pin から新しい role の s4-rehearsal-admission の pin に移した（試験専用の test-support.mjs は pin しない）。ほかの pin の file は 43e3f40b..82d42746 で変わっていない。さらに、正式の入口の静的な import の閉包を harness の directory の外までたどり、外の eval 専用の script（scripts/quality/nir1-retrieval の contract.mjs、acceptance-policy.mjs、candidate-policy.mjs、paired.mjs、standard-build-receipt.mjs、standard-build.mjs、scripts/quality/nir1-graph の contract.mjs と porter.mjs、scripts/quality/run-nir1-retrieval.mjs、scripts/quality/nir1-packing/final-request/architecture.mjs の 10 file）を、master でその file を最後に変えた commit の bytes の pin に足した（P-S2-9 の決定 b〔harness の directory の閉包〕を厳しい側へ拡張した。S5 の admission は pin に挙がった file しか照合しないため、外の eval 専用の script が S4 の後に変わっても止まらない穴を閉じる）。閉包は closureExclusions の file（共有の CI 基盤と製品。製品は製品の build の受領書が束縛する）で止め、そこから先はたどらない。閉包の外の eval 専用の file がどの pin にも無い、または closureExclusions に無い共有基盤・製品の file が閉包に入ると試験が落ちる。 追補 #9（DR-CP4-P-5、S4 の凍結のやり直し。DR-CP4-S4-5）では、DR-CP4-T-1〜T-5 の harness の修正で最後に変わった 4 file（試験の file と試験専用の test-support.mjs を除く frozen-setup-driver.mjs、workspace-db.mjs、frozen-k64-plan.mjs、frozen-k64-run.mjs）を s5a-graph-arm-runner と s5b-diagnostics-wiring の pin から、新しい role の t3-t5-setup-freshness-settle（b0df31f0）と t1-t4-measurement-settle-ready（354b1ba6）の pin に移した（同じ path を 2 つの pin に置かない）。ほかの pin の file は 906da641..354b1ba6 で変わっていない（S4 の #761 が変えた手順の file と S2 の validator は pin の対象でない）。この 2 つの commit は S4 の branch の祖先の branch の commit で、S4 の PR を merge commit（gh pr merge --merge）で入れると hash のまま master の祖先になる。squash や rebase で入れると hash が master の祖先に残らず、formal gate と S5 の admission が止まる（閉じる側）。この 2 つに限り、S4 の PR の merge の前は試験が pin の commit を記録の HEAD の祖先として確かめ、merge の後は master の祖先として確かめる（ほかの pin は従来どおり master の祖先）。validator は frozen-setup-driver.mjs の FRESHNESS_SETTLE_WAIT_MS と FRESHNESS_SETTLE_INTERVAL_MS（export const）、frozen-k64-run.mjs の FRESHNESS_SETTLE_LIMIT_MS と FRESHNESS_SETTLE_INTERVAL_MS（export しない module の定数。名前が setup と同じなので RUN_ の別名で読む）、frozen-k64-plan.mjs の readyProbeOf を、その file を持つ pin の commit の bytes から読み、setupReadings.freshnessSettle と readyProbe と照合する。 追補 #10（DR-CP4-P-6、3 回目の凍結のやり直し。DR-CP4-S4-6）では、DR-CP4-V-2〜V-4 の harness の trace の経路の修正（枝 claude/cp4-trace-path-fix、基点 master a02c9c98）で最後に変わった 4 file（試験の file を除く。`git diff --name-only a02c9c98 759a4679 -- scripts` の非試験の全部）を、trace-runner（35537447。renderer/cp4-trace-probe.tsx と trace-record.mjs）、s5b-diagnostics-wiring（950751d0。trace-runner.mjs）、p1-harness-core（865a3e2b。followup.mjs）の pin から、新しい role の v2-trace-probe-paths（262be7a9f53834a8d2b2f4d2751757519b94c9d1、renderer/cp4-trace-probe.tsx）、v4-trace-record-requery（527589b6ca374d8c4e3933f6ec0b35632ca7cd2d、trace-record.mjs）、v4-followup-cancelled-match（2854aa31da9b172b3e6d5a847267fbc76b9accf6、followup.mjs）、v4-trace-runner-quote-guard（759a4679a7b90d25c13bc9a8517f8a64df43adda、trace-runner.mjs） の pin に移した（どれもその file を最後に変えた commit。`git log -1 759a4679 -- <file>`。同じ path を 2 つの pin に置かない）。ほかの pin の file は 354b1ba6..759a4679 で変わっていない。この 4 つの commit は S4 の branch の祖先の branch の commit で、追補 #9 の 2 つの pin と同じく、S4 の PR を merge commit（gh pr merge --merge）で入れると hash のまま master の祖先になる（squash や rebase では formal gate と S5 の admission が止まる。閉じる側）。この 6 つに限り、S4 の PR の merge の前は試験が pin の commit を記録の HEAD の祖先として確かめ、merge の後は master の祖先として確かめる。harness の定数（HARNESS_CONSTANTS、HARNESS_MODULE_CONSTANTS）と readyProbeOf を読む file は変わっていない（読み元の pin も同じ）。 追補 #11（DR-CP4-P-7、4 回目の凍結のやり直し。DR-CP4-S4-7）では、G-04 fixture v2（案 C。枝 claude/g04-v2c-fixture、基点 master 8187fbfc）で最後に変わった 4 file（`SOURCE_PINS` の各 path の pin の commit の bytes と cedbd867 の bytes の比較で違ったもの）を、cq-lim-graph-limits（a789039a。scripts/quality/nir1-graph/contract.mjs）、t14-k64-freeze（9e1a564e。constants.mjs）、s4-rehearsal-admission（82d42746。trace-frozen.mjs と frozen-k64-admission.mjs）の pin から、新しい role の g4-b1-post-observation-freeze（7bd785fe084d0d370fb3c23860f68b31688684ed、scripts/quality/nir1-graph/contract.mjs）、g4-b1-freeze-v2-constants（d06f080e5966e81949317e673c47620d44d51d42、constants.mjs）、g4-b2a-declaration-v2-path（2bf48fad6d29fc60af2255bacab292031ff15725、trace-frozen.mjs）、g4-b2b1-addendum-v2-paths（c5b46714054c040cbe5c270ad657f6252b82eaeb、frozen-k64-admission.mjs）の pin に移した（どれもその file を最後に変えた commit。`git log -1 cedbd867 -- <file>`。同じ path を 2 つの pin に置かない）。cq-lim-graph-limits は file が無くなったので ancestor の pin にした（#751 の s1j2-blocked-map と同じ）。ほかの pin の file は 8187fbfc..cedbd867 で変わっていない。この 4 つの commit は S4 の branch の commit で、追補 #9、#10 の 6 つの pin と同じく、S4 の PR を merge commit（gh pr merge --merge）で入れると hash のまま master の祖先になる。この 10 に限り、S4 の PR の merge の前は試験が pin の commit を記録の HEAD の祖先として確かめ、merge の後は master の祖先として確かめる。harness の定数と K64_FREEZE は constants.mjs を持つ新しい pin の bytes から読む（K64_FREEZE.freezeCommit は 5dea38af のまま）。S2 validator（observation-prep.mjs、seed-pin-addendum.mjs）、fixture、manifest、README、schema は pin でなく、references.graphCaseFreeze と freeze の sha256、boundFiles が束縛する。 追補 #12（DR-CP4-P-8、5 回目の凍結のやり直し。DR-CP4-S4-8）では、N2／N4 の封印待ちの修正（枝 claude/cp4-s4-5th、基点 master a1cd6675）で最後に変わった 4 file（`git diff --name-only a1cd6675 bfc5a609 -- scripts` の試験以外の file のうち、試験専用の test-support.mjs を除く全部）を、s5b-diagnostics-wiring（950751d0。g01-negatives.mjs と g01-negative-preview.mjs）、sp-p4-ir-timeout（43e3f40b。g01-negative-run.mjs）、g4-b2b1-addendum-v2-paths（c5b46714。frozen-k64-admission.mjs）の pin から、新しい role の s4-5-g01-reseal-current（f31d99e07a81acdebe949f22225e19ec5f39cc76、3 file）と s4-5-addendum-v3-paths（ee43c197bcdadc9c630c8d3a68a156b741a75f0d、frozen-k64-admission.mjs）の pin に移した（どれもその file を最後に変えた commit。`git log -1 bfc5a609 -- <file>`。同じ path を 2 つの pin に置かない）。sp-p4-ir-timeout と g4-b2b1-addendum-v2-paths は file が無くなったので ancestor の pin にした（sp-p4-ir-timeout の role と commit は SP-P4 の C3 の文が名指すので残す）。ほかの pin の file は a1cd6675..bfc5a609 で変わっていない。この 2 つの commit は S4 の branch の commit で、追補 #9〜#11 の 10 の pin と同じく、S4 の PR を merge commit（gh pr merge --merge）で入れると hash のまま master の祖先になる。この 12 に限り、S4 の PR の merge の前は試験が pin の commit を記録の HEAD の祖先として確かめ、merge の後は master の祖先として確かめる。harness の定数のうち g01-negatives.mjs の 4 つは s4-5-g01-reseal-current の bytes から読む（値は 950751d0 と同じ）。G-01 の setup addendum v3 は pin でなく boundFiles が束縛する。 追補 #15（6 回目の S4、DR-CP4-S4-9。S3 の 8 回目の M1・M2）では、K6/5・C7・G-01 の診断 run が変えた harness の file（receipt.mjs、k64-runner.mjs、diagnostic-runner.mjs、frozen-k64-run.mjs、trace-runner.mjs、trace-frozen.mjs、frozen-k64-admission.mjs、procedure-file.mjs〔bf0b4f75 ほか〕、frozen-diagnostics.mjs、constants.mjs、admission.mjs、trace-record.mjs、followup.mjs の 13 file と、pin が無かった pubg16-e2e-run.mjs の 14 file）を、それぞれを最後に変えた commit の 7 つの新しい pin（k65-receipt-p95-head、k65-harness-d40、k65-n2-n3-enforcement、k65-freeze-source、k65-g01-e2e-admission、c7-chronicle-stop、k65-merge-followup）に移した（同じ path を 2 つの pin に置かない）。元の pin は role と commit を残し、bytes を持たなくなったものは ancestor の pin にした。c7-chronicle-stop（a1492815）は master の commit で、ほかの 6 つは枝の commit（S4 の PR を merge commit で入れると master の祖先になる）。この 14 file で、FORMAL_HARNESS_ENTRIES の閉包の file はすべて pin にある（pin が無い file は無い）。",
+      "pinRule": "pin は master に入った commit だけにする（rebase で到達できない commit は使わない。S3v6-P2-1）。check が bytes の pin は、files の sha256 が pin した commit の bytes で、S5 は候補の harness の同じ path の file がこの bytes と同じであることを確かめる。check が ancestor の pin（製品の修正、T14、CI の改善、bytes を後の pin に移した PR）は、S5 の候補がその commit を祖先に持つことを確かめる。どちらも違えば [precheck]（runnerHandoff）。bytes の pin の file は、master でその file を最後に変えた commit（squash の後の hash）の pin が持ち、同じ path を 2 つの pin に置かない。追補 #4 では、追補 #3 の pin（b1a87b0b）の後に #754 と #756 が変えた harness の file のうち、試験の file（*.test.mjs と s5b-test-support.mjs）を除く全部を bytes の pin に足した（厳しい側。DR-CP4-P-1）。起動時間の gate の改善（#753）と maintenance の所有の解放（#755）は ancestor の pin に追記した。validator は blockedCaseJudgement を、BLOCKED_TABLE_SOURCE（s5b-diagnostics-wiring の pin の frozen-setup-driver.mjs）の bytes（その commit から読むか、同じ sha256 の作業 tree の file）の BLOCKED_CONTRACT_TABLE から導き直して照合し、bytes の pin の sha256 を pin した commit の bytes と、各 pin の commit が記録の HEAD の祖先であることを git で確かめる（shallow な clone では確かめず、正式の gate では必ず確かめる）。 追補 #5（S3 の 7 回目の P2-2、P-S2-9 の決定 b。DR-CP4-P-2）では、正式の入口（diagnostic-runner.mjs、trace-runner.mjs、frozen-k64-run.mjs、frozen-setup-driver.mjs、r5-check-runner.mjs）の閉包（静的な import と、harness の path の文字列で参照される file〔renderer の入口、cp4-harness.html の script、launcher が起動する electron-observer.entry.mjs〕をたどる。試験の file と文書は含めない）の harness の file のうち pin に無かった 36 file（静的な import の閉包の 28 file と、renderer の 7 file と electron-observer.entry.mjs）を、master でその file を最後に変えた commit の bytes の pin に足した（その commit の role が無ければ足した）。閉包の file がどの pin にも無ければ試験が落ちる。harness の directory の外の import は追補 #5 では pin しなかった（追補 #7 で改めた）。 追補 #6（DR-CP4-P-3）では、#757（43e3f40b）が変えた harness の file（試験の file を除く diagnostic-runner.mjs、frozen-diagnostics.mjs、g01-negative-run.mjs）を s5b-diagnostics-wiring の pin から新しい role の sp-p4-ir-timeout の pin に移した（同じ path を 2 つの pin に置かない）。ほかの pin の file は 950751d0..43e3f40b で変わっていない。validator は harness の定数（HARNESS_CONSTANTS）を、その file を持つ pin の commit の bytes から読む（frozen-diagnostics.mjs の SP_P4_COMPARISON_RULE と SP_P4_IR_TIMEOUT_LIMIT は sp-p4-ir-timeout、frozen-setup-driver.mjs と g01-negatives.mjs の定数と BLOCKED_CONTRACT_TABLE は s5b-diagnostics-wiring）。 追補 #7（DR-CP4-S4-1、DR-CP4-P-4）では、#758（82d42746）で最後に変わった admission.mjs、diagnostic-runner.mjs、frozen-k64-admission.mjs、trace-frozen.mjs を s5b-diagnostics-wiring と sp-p4-ir-timeout の pin から新しい role の s4-rehearsal-admission の pin に移した（試験専用の test-support.mjs は pin しない）。ほかの pin の file は 43e3f40b..82d42746 で変わっていない。さらに、正式の入口の静的な import の閉包を harness の directory の外までたどり、外の eval 専用の script（scripts/quality/nir1-retrieval の contract.mjs、acceptance-policy.mjs、candidate-policy.mjs、paired.mjs、standard-build-receipt.mjs、standard-build.mjs、scripts/quality/nir1-graph の contract.mjs と porter.mjs、scripts/quality/run-nir1-retrieval.mjs、scripts/quality/nir1-packing/final-request/architecture.mjs の 10 file）を、master でその file を最後に変えた commit の bytes の pin に足した（P-S2-9 の決定 b〔harness の directory の閉包〕を厳しい側へ拡張した。S5 の admission は pin に挙がった file しか照合しないため、外の eval 専用の script が S4 の後に変わっても止まらない穴を閉じる）。閉包は closureExclusions の file（共有の CI 基盤と製品。製品は製品の build の受領書が束縛する）で止め、そこから先はたどらない。閉包の外の eval 専用の file がどの pin にも無い、または closureExclusions に無い共有基盤・製品の file が閉包に入ると試験が落ちる。 追補 #9（DR-CP4-P-5、S4 の凍結のやり直し。DR-CP4-S4-5）では、DR-CP4-T-1〜T-5 の harness の修正で最後に変わった 4 file（試験の file と試験専用の test-support.mjs を除く frozen-setup-driver.mjs、workspace-db.mjs、frozen-k64-plan.mjs、frozen-k64-run.mjs）を s5a-graph-arm-runner と s5b-diagnostics-wiring の pin から、新しい role の t3-t5-setup-freshness-settle（b0df31f0）と t1-t4-measurement-settle-ready（354b1ba6）の pin に移した（同じ path を 2 つの pin に置かない）。ほかの pin の file は 906da641..354b1ba6 で変わっていない（S4 の #761 が変えた手順の file と S2 の validator は pin の対象でない）。この 2 つの commit は S4 の branch の祖先の branch の commit で、S4 の PR を merge commit（gh pr merge --merge）で入れると hash のまま master の祖先になる。squash や rebase で入れると hash が master の祖先に残らず、formal gate と S5 の admission が止まる（閉じる側）。この 2 つに限り、S4 の PR の merge の前は試験が pin の commit を記録の HEAD の祖先として確かめ、merge の後は master の祖先として確かめる（ほかの pin は従来どおり master の祖先）。validator は frozen-setup-driver.mjs の FRESHNESS_SETTLE_WAIT_MS と FRESHNESS_SETTLE_INTERVAL_MS（export const）、frozen-k64-run.mjs の FRESHNESS_SETTLE_LIMIT_MS と FRESHNESS_SETTLE_INTERVAL_MS（export しない module の定数。名前が setup と同じなので RUN_ の別名で読む）、frozen-k64-plan.mjs の readyProbeOf を、その file を持つ pin の commit の bytes から読み、setupReadings.freshnessSettle と readyProbe と照合する。 追補 #10（DR-CP4-P-6、3 回目の凍結のやり直し。DR-CP4-S4-6）では、DR-CP4-V-2〜V-4 の harness の trace の経路の修正（枝 claude/cp4-trace-path-fix、基点 master a02c9c98）で最後に変わった 4 file（試験の file を除く。`git diff --name-only a02c9c98 759a4679 -- scripts` の非試験の全部）を、trace-runner（35537447。renderer/cp4-trace-probe.tsx と trace-record.mjs）、s5b-diagnostics-wiring（950751d0。trace-runner.mjs）、p1-harness-core（865a3e2b。followup.mjs）の pin から、新しい role の v2-trace-probe-paths（262be7a9f53834a8d2b2f4d2751757519b94c9d1、renderer/cp4-trace-probe.tsx）、v4-trace-record-requery（527589b6ca374d8c4e3933f6ec0b35632ca7cd2d、trace-record.mjs）、v4-followup-cancelled-match（2854aa31da9b172b3e6d5a847267fbc76b9accf6、followup.mjs）、v4-trace-runner-quote-guard（759a4679a7b90d25c13bc9a8517f8a64df43adda、trace-runner.mjs） の pin に移した（どれもその file を最後に変えた commit。`git log -1 759a4679 -- <file>`。同じ path を 2 つの pin に置かない）。ほかの pin の file は 354b1ba6..759a4679 で変わっていない。この 4 つの commit は S4 の branch の祖先の branch の commit で、追補 #9 の 2 つの pin と同じく、S4 の PR を merge commit（gh pr merge --merge）で入れると hash のまま master の祖先になる（squash や rebase では formal gate と S5 の admission が止まる。閉じる側）。この 6 つに限り、S4 の PR の merge の前は試験が pin の commit を記録の HEAD の祖先として確かめ、merge の後は master の祖先として確かめる。harness の定数（HARNESS_CONSTANTS、HARNESS_MODULE_CONSTANTS）と readyProbeOf を読む file は変わっていない（読み元の pin も同じ）。 追補 #11（DR-CP4-P-7、4 回目の凍結のやり直し。DR-CP4-S4-7）では、G-04 fixture v2（案 C。枝 claude/g04-v2c-fixture、基点 master 8187fbfc）で最後に変わった 4 file（`SOURCE_PINS` の各 path の pin の commit の bytes と cedbd867 の bytes の比較で違ったもの）を、cq-lim-graph-limits（a789039a。scripts/quality/nir1-graph/contract.mjs）、t14-k64-freeze（9e1a564e。constants.mjs）、s4-rehearsal-admission（82d42746。trace-frozen.mjs と frozen-k64-admission.mjs）の pin から、新しい role の g4-b1-post-observation-freeze（7bd785fe084d0d370fb3c23860f68b31688684ed、scripts/quality/nir1-graph/contract.mjs）、g4-b1-freeze-v2-constants（d06f080e5966e81949317e673c47620d44d51d42、constants.mjs）、g4-b2a-declaration-v2-path（2bf48fad6d29fc60af2255bacab292031ff15725、trace-frozen.mjs）、g4-b2b1-addendum-v2-paths（c5b46714054c040cbe5c270ad657f6252b82eaeb、frozen-k64-admission.mjs）の pin に移した（どれもその file を最後に変えた commit。`git log -1 cedbd867 -- <file>`。同じ path を 2 つの pin に置かない）。cq-lim-graph-limits は file が無くなったので ancestor の pin にした（#751 の s1j2-blocked-map と同じ）。ほかの pin の file は 8187fbfc..cedbd867 で変わっていない。この 4 つの commit は S4 の branch の commit で、追補 #9、#10 の 6 つの pin と同じく、S4 の PR を merge commit（gh pr merge --merge）で入れると hash のまま master の祖先になる。この 10 に限り、S4 の PR の merge の前は試験が pin の commit を記録の HEAD の祖先として確かめ、merge の後は master の祖先として確かめる。harness の定数と K64_FREEZE は constants.mjs を持つ新しい pin の bytes から読む（K64_FREEZE.freezeCommit は 5dea38af のまま）。S2 validator（observation-prep.mjs、seed-pin-addendum.mjs）、fixture、manifest、README、schema は pin でなく、references.graphCaseFreeze と freeze の sha256、boundFiles が束縛する。 追補 #12（DR-CP4-P-8、5 回目の凍結のやり直し。DR-CP4-S4-8）では、N2／N4 の封印待ちの修正（枝 claude/cp4-s4-5th、基点 master a1cd6675）で最後に変わった 4 file（`git diff --name-only a1cd6675 bfc5a609 -- scripts` の試験以外の file のうち、試験専用の test-support.mjs を除く全部）を、s5b-diagnostics-wiring（950751d0。g01-negatives.mjs と g01-negative-preview.mjs）、sp-p4-ir-timeout（43e3f40b。g01-negative-run.mjs）、g4-b2b1-addendum-v2-paths（c5b46714。frozen-k64-admission.mjs）の pin から、新しい role の s4-5-g01-reseal-current（f31d99e07a81acdebe949f22225e19ec5f39cc76、3 file）と s4-5-addendum-v3-paths（ee43c197bcdadc9c630c8d3a68a156b741a75f0d、frozen-k64-admission.mjs）の pin に移した（どれもその file を最後に変えた commit。`git log -1 bfc5a609 -- <file>`。同じ path を 2 つの pin に置かない）。sp-p4-ir-timeout と g4-b2b1-addendum-v2-paths は file が無くなったので ancestor の pin にした（sp-p4-ir-timeout の role と commit は SP-P4 の C3 の文が名指すので残す）。ほかの pin の file は a1cd6675..bfc5a609 で変わっていない。この 2 つの commit は S4 の branch の commit で、追補 #9〜#11 の 10 の pin と同じく、S4 の PR を merge commit（gh pr merge --merge）で入れると hash のまま master の祖先になる。この 12 に限り、S4 の PR の merge の前は試験が pin の commit を記録の HEAD の祖先として確かめ、merge の後は master の祖先として確かめる。harness の定数のうち g01-negatives.mjs の 4 つは s4-5-g01-reseal-current の bytes から読む（値は 950751d0 と同じ）。G-01 の setup addendum v3 は pin でなく boundFiles が束縛する。 追補 #15（6 回目の S4、DR-CP4-S4-9。S3 の 8 回目の M1・M2）では、K6/5・C7・G-01 の診断 run が変えた harness の file（receipt.mjs、k64-runner.mjs、diagnostic-runner.mjs、frozen-k64-run.mjs、trace-runner.mjs、trace-frozen.mjs、frozen-k64-admission.mjs、procedure-file.mjs〔bf0b4f75 ほか〕、frozen-diagnostics.mjs、constants.mjs、admission.mjs、trace-record.mjs、followup.mjs の 13 file と、pin が無かった pubg16-e2e-run.mjs の 14 file）を、それぞれを最後に変えた commit の 7 つの新しい pin（k65-receipt-p95-head、k65-harness-d40、k65-n2-n3-enforcement、k65-freeze-source、k65-g01-e2e-admission、c7-chronicle-stop、k65-merge-followup）に移した（同じ path を 2 つの pin に置かない）。元の pin は role と commit を残し、bytes を持たなくなったものは ancestor の pin にした。c7-chronicle-stop（a1492815）は master の commit で、ほかの 6 つは枝の commit（S4 の PR を merge commit で入れると master の祖先になる）。この 14 file で、FORMAL_HARNESS_ENTRIES の閉包の file はすべて pin にある（pin が無い file は無い）。 7 回目の S4（DR-CP4-S4-10 (4)。S3 の 9 回目の B1-3 の後の取り直し）では、K6/6 の harness（PR #840）が変えた 17 file（k64-record.mjs、join.mjs、run-sample.mjs、outcome.mjs、k64-runner.mjs、diagnostic-runner.mjs、frozen-k64-run.mjs、trace-runner.mjs、trace-frozen.mjs、frozen-k64-admission.mjs〔00f9c999〕、availability.mjs、receipt.mjs、constants.mjs、admission.mjs〔1fdeed6f〕、frozen-diagnostics.mjs、pubg16-e2e-run.mjs〔99699dda〕、followup.mjs〔bf5ec217〕）を、それぞれを最後に変えた commit の 4 つの新しい pin（k66-harness-import、k66-freeze-and-d3d、k66-g01-diagnostic-head、k66-followup-requeries）に移した（同じ path を 2 つの pin に置かない）。元の pin は role と commit を残し、bytes を持たなくなったものは ancestor の pin にした。4 つとも枝の commit（S4 の PR を merge commit で入れると master の祖先になる）。master の取り込み（918d3def）は harness の file を変えていない（どの pin の file も、pin の commit と記録の HEAD で bytes が同じ）。constants.mjs の pin が k66-freeze-and-d3d になったので、contracts.k65.* と contracts.k66.* は 1fdeed6f の bytes から読む（K65_FREEZE と K66_FREEZE が同じ file にある）。",
       "closureExclusions": [
         {
           "path": "electron/main/rendererContainment.ts",
