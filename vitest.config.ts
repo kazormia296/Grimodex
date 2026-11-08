@@ -32,6 +32,12 @@ export default defineConfig({
       optimizer: {
         ssr: {
           enabled: true,
+          // Experimental. The only measured benefit is about -10% CPU time on
+          // drizzle-heavy suites; wall time was not distinguishable. Keep this
+          // list equal to the drizzle-orm specifiers actually imported: a
+          // subpath missing here (e.g. drizzle-orm/sql) is externalized, so the
+          // same drizzle can be loaded twice (bundled and Node). Add it here
+          // when you start importing a new drizzle-orm subpath.
           include: [
             "drizzle-orm",
             "drizzle-orm/sqlite-proxy",
