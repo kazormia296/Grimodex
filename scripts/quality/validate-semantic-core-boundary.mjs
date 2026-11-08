@@ -57,7 +57,11 @@ const REPO_ROOT = path.resolve(
 // (narrative_scope_project_defaults, SDEF/1). Its typed Native writer is not a
 // semantic interpreter and generic writes are blocked by the protected-writer
 // registry, so the concern matrix is unchanged.
-export const EXPECTED_SCHEMA_VERSION = 44;
+// SCHEMA_VERSION 45 adds no table, column or index: it releases the cursor
+// reservation of a Freshness Run dead-lettered by a publication guard race
+// (DR-JF-9 M1), a data repair of rebuildable Freshness state only, so the
+// concern matrix is unchanged.
+export const EXPECTED_SCHEMA_VERSION = 45;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

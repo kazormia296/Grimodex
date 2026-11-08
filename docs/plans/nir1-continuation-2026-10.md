@@ -849,6 +849,31 @@ X1 /3(… SHA-256 bf01f7bd…52f)を確認しますか?本文だけの保存で�
 - 凍結: 事前登録の凍結は済んでいる（凍結の commit は `07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f`、記録は `claude/nir1-contracts` の `docs/plans/nir1-cp4-records/k65-freeze-record.md`、commit `109eb523`）。
 - 残り（この記録では行わない）: harness の実装、S2 追補 #14、S3、S4 の 6 回目、正式 run。/5 の判定に使えるのは凍結の後に始めた run だけ。Graph の公開（PUB-G）と Session C-1 の承認は含まない。
 
+### 10.11. K6/6（2026-11-08）
+
+| 項目         | 値 |
+| ------------ | -- |
+| 受信         | 2026-11-08（JST。確認の記録は日付だけを書き、時刻を書かない。正確な受信時刻は会話記録の timestamp）。構造化質問（AskUserQuestion、1 回）への回答 |
+| 記録         | `claude/nir1-contracts` の commit `56fb4fad2eb1eb2e021dfd121ea073f9d263cb4d` の `docs/plans/nir1-cp4-records/user-confirmation-2026-11-08-k66-graph-eval-procedure.md`（この枝は master に merge しないので hash で引く）。質問と回答の原文はこの記録による |
+| 形式         | 質問の文が draftRef、contractId、draft の SHA-256（改訂 3）を名指し、ちょうど 1 つの `draftRef#contractId` を示した。選択肢は「確認する（推奨）」「鮮度の印の扱いを見直してから（再起案）」「もう少し詳しく」。回答の逐語は「確認する（推奨）」で、明示の確認 |
+| 示した ref   | `nir1-final-request-eval-proposal/6#graph-eval-procedure`（draftRef `nir1-final-request-eval-proposal/6`、contractId `graph-eval-procedure`） |
+| 確認された版 | branch `claude/nir1-contracts` の `docs/plans/nir1-final-request-eval-proposal-6-draft.md`（bytes は `324c804f360b4bb7c87cb8f1fb94d24f134b6d78` で置かれ、`56fb4fad` までの間に変わっていない。改訂 3） |
+| 取り込み     | `git show 56fb4fad:<path>` の出力をそのまま置いて byte 同一で取り込み、`sha256sum` が下の値と一致することを確かめた。「Status: draft／未確認」の行を含めて本文は編集せず、確認状態は確認台帳で表す |
+
+| 略称 | ファイル | SHA-256 |
+| ---- | -------- | ------- |
+| K6/6 | [nir1-final-request-eval-proposal-6-draft.md](nir1-final-request-eval-proposal-6-draft.md) | `58c634fa9b3d76803e486516c0e67444b74d4f5987cd851cd0857a25cc8945e7` |
+
+質問・選択肢・回答の逐語は、確認の記録（上の commit）のとおり。要旨:
+
+- 確認の範囲は draft 冒頭の「ユーザーが批准すること」の 1〜9（範囲の正本）。/6 の行の内容は、/5 の行に /6 の「変える点」の 1〜8 を当てたもの。定常状態の first-render の数え方を R1 の下で明文にする（K6/5 の行の改訂）。
+- 合格基準の緩和 2 つ（R-6: 準備の句の読み、R-7: 鮮度の印の句の (ii′)）は、質問の文で示した上での確認である。R-7 の実効（② は合流した親を独立に落とさず、`unavailable` を除くだけ）、窓内に合流して Graph が表示に寄与した親が条件を欠くと品質 FAIL（1% の許容は効かない）、s6r1 は HOLD のまま（字義どおりなら欠落 163）、改訂が s6r1 の結果を見た後の起案であること、確認の後の予行が落ちたら /7 と再確認になることも質問の文で示した。
+- 効力は 2 段（批准 7）: (i) は確認され、記録の時点から CP-4 の判定に使う（/5 の行に替わる。/5 の行と s6r1 の receipt は履歴）。(ii) は事前の確認で、条件の成立、診断と receipt の照合、改めての確認の後にだけ効く。
+- 起案の指示と選択（`1e6ede44`、`e704f28f`）は確認ではない。確認の前の非判定の dev の予行（予行 1・3・4・5）は /6 の判定に使わない。品質判定の事前登録 v2 の草稿は integrator が決めるもので、この確認の対象ではない。
+- 台帳の更新箇所: 確認台帳の 2026-11-08補足（K6/6。経緯、K6/6-1 の表、「承認の範囲と効力」、「K6/6 が許さないもの」）、`graph-eval-procedure` の /6 の行（/5 の行の直下）、/5 の行の備考への追記、K6/4 の注の下の K6/6 の注、条件付き 2 行の注の下の注、lane snapshot の CP-4 の行。Confirmation protocol は変えていない。
+- 凍結: 事前登録の凍結は済んでいる（凍結の commit は `56fb4fad2eb1eb2e021dfd121ea073f9d263cb4d`、記録は `claude/nir1-contracts` の `docs/plans/nir1-cp4-records/k66-freeze-record.md`、commit `d69c000b`）。
+- 残り（この記録では行わない）: harness の実装、試験と検出力の記録、品質判定 v2 の確定・実装・独立のコードレビュー、R1 の下の dev fixture での予行、S2 追補、S3 の独立レビュー、S4 の 7 回目の凍結、取り直しの正式 run。/6 の判定に使えるのは凍結の後に始めた run だけ。(ii-b) の着手、Graph の公開（PUB-G）、Session C-1 の承認は含まない。
+
 ## 11. 未解決事項
 
 - `[precheck]` DT-2 の再試行の上限（sweep の recover の再試行 0 回→最大2回、送信していない終端の書込みの再試行 1 回→最大3回。K1b の規則7の再確認の対象）の再確認は、Session B1 の9文のどれにも含まれず、未解決である。手段は DSN §9 のとおり（新しい draftRef を起案するか、1件1回への締め直し）。台帳の残 HOLD 表の D-transport の行（DT-1〜3）からここへ向ける。
@@ -884,6 +909,7 @@ X1 /3(… SHA-256 bf01f7bd…52f)を確認しますか?本文だけの保存で�
 - 2026-11-07 追記（PUB-G の前提 #33。`dialog.showErrorBox` が Native の文を出す）: fail-soft の dialog を固定の日英併記の文面にし、Native の message（path・OS の error・内部の code）は dialog に出さず `console.error` の log にだけ残した（**DR-PUBG-33-1**。記録先 [cp3b-decisions.md](nir1-lane-decisions/cp3b-decisions.md)）。IPC の契約、fail-fast、gate は変えていない。実機の dialog の見え方は未確認。
 - 2026-11-07 追記（PUB-G の前提 #16。lease 越しの end-to-end）: ユーザーの決定（案 (C) の第一段＝(A)、到達の有無だけ、Linux の評価 build だけ）で、評価 build の実 Native と実 renderer が begin → continue（Graph-only あり）→ click（`qualified`）→ unused settle → graph-ready → 再 begin（`cached`）→ used settle に取り直しの 3 回とも到達した（used settle は応答の status が `settled` であることを timing shim の行で確かめた。最初の 3 回は判定が不十分で根拠にしない）。Graph-only が出なかった原因は fixture でなく body の宣言の欠落で、pin の外の runner で宣言を足した。製品の Native の seed つき begin は `not-activated`（**DR-PUBG-16-1**。記録先 [cp3a-decisions.md](nir1-lane-decisions/cp3a-decisions.md)）。pin・契約・gate は変えていない。
 - 2026-11-08 追記（freshness の publish の guard の競合による上限。**DR-JF-9**。記録先 [journey-flake-decisions.md](nir1-lane-decisions/journey-flake-decisions.md)）: 保存を約 100 ms より短い間隔で続けると、同じ batch の guard の競合が 3 回目（`MAX_ATTEMPTS_PER_BATCH`）に達して `RETRY_EXHAUSTED` になり、接続の retire と約 1 s の拒否、その project の freshness の dead-letter（新しい Semantic Epoch まで停止）が起きる。NIR-1 の lifecycle の技術判断（ユーザーが事前に委任した範囲。脅威モデルの改訂・閾値の変更・新しい契約の authority は無い）として、3 回目の guard の競合では run を新しい code `NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED` で閉じ、cursor の予約を ack せずに返し、型付きの結果で Native が permit を通常どおり release する（retire も recovery もしない）。DR-JF-3 の定数と競合以外の terminal の扱いは変えない。DR-JF-4 の matrix の上限の行を 2 行に分け、DR-JF-8 の P3-2 を閉じた。閉じる条件には「attempt の間に Change Feed の head が進んだ」証拠を足し（閉じる run の数の上限を新しい閾値なしで抑える）、競合で閉じた project は予約の選択で後回しにする（独立レビューの指摘への対応）。すでに dead-letter の project の動かし直しは、M1（migration で予約だけ解除）を、この PR の merge の後の別の PR で入れる（M2 は採らない。この PR では実装していない）。
+- 2026-11-08 追記（DR-JF-9 の M1。すでに dead-letter の project の動かし直し。判断の ID は **DR-JF-9**。記録先 [journey-flake-decisions.md](nir1-lane-decisions/journey-flake-decisions.md) の「M1 の実装」）: #828（master `5344067d`）の「別の PR で入れる」に従い、**SCHEMA 45**（DDL なし）の migration で、競合が原因の `RETRY_EXHAUSTED` の freshness run の cursor の予約だけを解く（NIR-1 の freshness／lifecycle の技術判断。委任の範囲内で、脅威モデルの改訂・閾値の変更・新しい契約の authority は無い）。条件は、cursor がその run を lease なしで予約・予約の Epoch が現行・run が同じ Epoch で `failed`／`RETRY_EXHAUSTED`・最後の attempt が terminal で 4 つの guard の文言の接頭辞（`substr` の比較。`LIKE` は使わない）。競合以外の dead-letter は残す。更新は cursor の予約の列だけ（ack しない）で、run・task・attempt は terminal のまま。marker だけの finalize と完全な migration の両方で、stamp と同じ transaction で走り、現在の版の open では走らない。変える行の範囲と、戻せないことの影響は decisions 文書に書いた。M2 は採らない。
 
 ## 12. 運用メモ（2026-10-25）
 

@@ -397,12 +397,13 @@ fn fresh_schema_22_contains_the_canonical_writer_origin_contract() {
     let db = fresh_migrated_db();
     db.with_conn(|conn| {
         let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        // SCHEMA 22 introduced this contract; SCHEMA 23-44 (Gate C2/D1/C2A/NIR-1,
+        // SCHEMA 22 introduced this contract; SCHEMA 23-45 (Gate C2/D1/C2A/NIR-1,
         // current Human capture/retirement, parent-delete lifecycle, Decision
-        // lookup indexes, Scene body declaration columns and the project Scene
-        // Scope default table) migrate further on top.
+        // lookup indexes, Scene body declaration columns, the project Scene
+        // Scope default table and the data-only Freshness contention release)
+        // migrate further on top.
         // This guard exists so the next schema bump revisits this test too.
-        assert_eq!(SCHEMA_VERSION, 44);
+        assert_eq!(SCHEMA_VERSION, 45);
         assert_eq!(version, SCHEMA_VERSION);
 
         for table in [

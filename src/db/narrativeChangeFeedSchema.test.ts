@@ -46,10 +46,11 @@ describe("narrative maintenance Change Feed schema (SCHEMA 22)", () => {
     // removes stale project epoch-marker heads without changing the
     // narrative_change_* table/index definitions, SCHEMA 42 only indexes
     // narrative_proposal_decisions, and SCHEMA 43 only adds two nullable
-    // narrative_scene_scope_bindings declaration columns, and SCHEMA 44 only
-    // adds the narrative_scope_project_defaults table. Keep this exact
+    // narrative_scene_scope_bindings declaration columns, SCHEMA 44 only
+    // adds the narrative_scope_project_defaults table, and SCHEMA 45 has no DDL
+    // (a Freshness dead-letter reservation release). Keep this exact
     // guard so each schema bump revisits the contract assertions below.
-    expect(contractJson.schemaVersion).toBe(44);
+    expect(contractJson.schemaVersion).toBe(45);
     expect(
       contractJson.tables.narrative_change_transactions.columns
         .source_change_event_uid,
