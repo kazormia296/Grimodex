@@ -267,7 +267,7 @@ function edgeBindingProblems(sample, expected, firstRender = false) {
  * when the parent's Chronicle Index was not usable (IR `index-unavailable`) and
  * its Graph Index was, and whose own start found the Chronicle Index usable.
  */
-function d3Eligible(sample, child) {
+export function d3Eligible(sample, child) {
   return (
     child !== null &&
     child !== undefined &&
@@ -281,17 +281,81 @@ function d3Eligible(sample, child) {
 }
 
 /**
+ * The latest typed Revision of one Relation in the setup record: the
+ * `logicalToRuntime.typedRevisions` entries are written in the order the
+ * setup prepared them (the setup driver's `ids.typedRevisions`, a JSON object
+ * whose keys are never integer-like), so the last entry that binds the Relation
+ * and was not refused at setup is the latest — a later Revision supersedes an
+ * earlier one whatever its decision (G-05's reading). `null` when none binds it.
+ */
+export function latestTypedRevisionOf(typedRevisions, relationId) {
+  let latest = null;
+  for (const [key, row] of Object.entries(typedRevisions ?? {})) {
+    if (row?.refusedAtSetup) continue;
+    if (
+      !Array.isArray(row?.relationIds) ||
+      !row.relationIds.includes(relationId)
+    )
+      continue;
+    latest = typeof row.id === "string" ? row.id : key;
+  }
+  return latest;
+}
+
+/**
+ * Prereg v2 D3 (d), second half: every observed `revision|edge` pair names the
+ * latest typed Revision of that edge's Relation in the setup record. A
+ * different (older) Revision is a fail; a setup record that carries no typed
+ * Revisions, or none for the edge, cannot answer and is a hold (prereg §3).
+ */
+function revisionResolutionProblems(material, typedRevisions) {
+  const hasSetup =
+    typedRevisions &&
+    typeof typedRevisions === "object" &&
+    Object.keys(typedRevisions).length > 0;
+  if (!hasSetup)
+    return [{ kind: "hold", code: "d-revision-resolution-unavailable" }];
+  const out = [];
+  for (const entry of material.observed ?? [])
+    for (const pair of entry.pairs ?? []) {
+      const [revision, edge] = String(pair).split("|");
+      const latest = latestTypedRevisionOf(typedRevisions, edge);
+      if (latest === null)
+        out.push({
+          kind: "hold",
+          code: "d-edge-has-no-typed-revision-in-setup",
+          edge,
+        });
+      else if (latest !== revision)
+        out.push({
+          kind: "fail",
+          code: "d-revision-is-not-the-latest",
+          edge,
+          observed: revision,
+          latest,
+        });
+    }
+  return out;
+}
+
+/**
  * Prereg v2 D3 (a)〜(d): the contribution of an eligible child. (a) what its
  * list adds to the paired R+IR is no forbidden Scene or blocked candidate;
  * (b) its Graph's path contributions (`materialRevision.observed[].sceneId`
  * as logical Scenes, R+IR's own Scenes included) are none either; (c) it
  * shows no late Graph and publishes at most once; (d) every edge is resolved
- * (`unresolvedEdges` 0). A missing `materialRevision` record is a hold. The
- * Revision resolution against the setup record (the second half of (d)) is
- * **not implemented in this prototype**: it is reported as the hold
- * `d-revision-resolution-not-implemented` for a child that shows a Graph.
+ * (`unresolvedEdges` 0) and each observed Revision is the latest typed
+ * Revision of its edge in the setup record (`typedRevisions`). A missing
+ * `materialRevision` record is a hold.
  */
-function d3Problems({ child, pair, lists, forbidden, blocked }) {
+export function d3Problems({
+  child,
+  pair,
+  lists,
+  forbidden,
+  blocked,
+  typedRevisions,
+}) {
   const out = [];
   const bad = (id) => forbidden.has(id) || blocked.has(id);
   if (child.publishCount > 0) {
@@ -319,7 +383,7 @@ function d3Problems({ child, pair, lists, forbidden, blocked }) {
         out.push({ kind: "fail", code: "b-forbidden-path", sceneIds: hit });
       if (material.unresolvedEdges !== 0)
         out.push({ kind: "fail", code: "d-unresolved-edges" });
-      out.push({ kind: "hold", code: "d-revision-resolution-not-implemented" });
+      out.push(...revisionResolutionProblems(material, typedRevisions));
     }
   }
   if (child.lateGraphInDisplay === true)
@@ -485,6 +549,8 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
         lists,
         forbidden,
         blocked,
+        typedRevisions:
+          receipt?.settings?.setupReceipt?.logicalToRuntime?.typedRevisions,
       });
       if (child.outcome === "graph-ready" && (child.edgeCount ?? 0) > 0)
         indexReady.graphShown += 1;

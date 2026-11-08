@@ -2242,8 +2242,7 @@ export function s4RehearsalRepository({
       sha256: sha(S4_REHEARSAL_K65_TEXT),
       freezeCommit: base,
     },
-    // K6/6 (a dev prototype): the same shape; the real K66_FREEZE has no
-    // freeze commit while /6 is an unconfirmed draft.
+    // K6/6: the same shape (a throwaway repository's freeze).
     k66Freeze: {
       ...K66_FREEZE,
       sha256: sha(S4_REHEARSAL_K66_TEXT),

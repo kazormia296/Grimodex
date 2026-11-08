@@ -138,10 +138,10 @@ const K65_HEAD = {
   sha256: K65_FREEZE.sha256,
 };
 /**
- * The K6/6 freeze of a receipt head (変える点 8). /6 is an unconfirmed draft
- * (`K66_FREEZE.freezeCommit` is null), so these tests hold a receipt to a
- * descriptor of their own: the same bytes at a synthetic freeze commit. The
- * default refuses every formal Graph receipt (K6/6-N9, below).
+ * The K6/6 freeze of a receipt head (変える点 8). These tests hold a receipt
+ * to a descriptor of their own: the same bytes at a synthetic freeze commit
+ * (a CI clone does not fetch `claude/nir1-contracts`). The pinned default
+ * refuses a receipt with this synthetic head (K6/6-N9, below).
  */
 const TEST_K66 = { ...K66_FREEZE, freezeCommit: H40("6") };
 const K66_HEAD = {
@@ -399,11 +399,15 @@ test("K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit �
   );
 });
 
-test("K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66）を持ち、無い・違う・/6 の凍結の前に始めた run（s6r1 を含む）の receipt は拒む。/6 が未確認の間は既定の descriptor（freezeCommit null）がどの正式の receipt も拒む", () => {
+test("K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66）を持ち、無い・違う・/6 の凍結の前に始めた run（s6r1 を含む）の receipt は拒む。既定は固定した /6 の凍結で、null の descriptor はどの正式の receipt も拒む", () => {
   const head = receipt().head;
   const { k66, ...noK66 } = head;
   assert.deepEqual(k66, K66_HEAD);
-  assert.equal(K66_FREEZE.freezeCommit, null, "/6 is not confirmed or frozen");
+  assert.equal(
+    K66_FREEZE.freezeCommit,
+    "56fb4fad2eb1eb2e021dfd121ea073f9d263cb4d",
+    "/6 is confirmed and frozen",
+  );
   // /5 の凍結までの先頭（s6r1 の receipt の形）。
   assert.match(errorsOf(receipt({ head: noK66 })), /head\.k66\.sha256/);
   assert.match(
@@ -426,9 +430,25 @@ test("K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66�
       K65_FREEZE,
       freeze66,
     ).filter((error) => /k66|K6\/6/u.test(error));
-  // 既定（null の descriptor）: fail closed。
+  // 既定（固定した /6 の凍結）: 試験の合成の commit の head は拒む。
   assert.match(
     k66Errors(head).join(" | "),
+    /head\.k66\.freezeCommit must be the pinned K6\/6 freeze commit/,
+  );
+  // 固定した凍結そのものを書いた head は通る。
+  assert.deepEqual(
+    k66Errors({
+      ...head,
+      k66: {
+        freezeCommit: K66_FREEZE.freezeCommit,
+        sha256: K66_FREEZE.sha256,
+      },
+    }),
+    [],
+  );
+  // descriptor の freezeCommit が null なら fail closed。
+  assert.match(
+    k66Errors(head, { ...K66_FREEZE, freezeCommit: null }).join(" | "),
     /\[precheck\] the K6\/6 freeze commit is not pinned/,
   );
   assert.deepEqual(k66Errors(head, TEST_K66), []);

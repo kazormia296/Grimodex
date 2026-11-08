@@ -8,7 +8,7 @@ import {
   assessK66Rehearsal,
   assessK66RehearsalQuality,
 } from "./k66-rehearsal.mjs";
-import { k66Sample } from "./test-support.mjs";
+import { followUpRecord, k64Sample, k66Sample } from "./test-support.mjs";
 
 /** `count` measured Graph arm rows of one variant, preparesReady 10, 11, … */
 function rows(
@@ -169,4 +169,132 @@ test("予行の品質の予告: /6 の regime で、Graph が寄与したのに 
     { variant, samples: pairs(graph(() => [{}, {}])).slice(1) },
   ]);
   assert.equal(invalid.other, 1);
+});
+
+test("予行の品質の予告: G-08/chronicle-index-unusable は品質判定 v2 の D2・D3 に揃える（index-ready の子は子から外して D3 で見る）", () => {
+  const variant = {
+    key: "dev:dev-shape-g08.v1/chronicle-index-unusable",
+    expectedGraph: "unavailable",
+  };
+  const pair = ["dev-a", "dev-b"];
+  const run = (childOverrides = {}, extra = {}) => {
+    const graph = Array.from({ length: 30 }, (_, repeat) => ({
+      ...k64Sample(
+        {
+          variantKey: variant.key,
+          arm: "graph",
+          phase: "measured",
+          repeat,
+          finalSceneIds: pair,
+          snapshot: { usable: true, reason: null, chronicleIndexUsable: false },
+          irOutcome: "index-unavailable",
+          graph: { outcome: "graph-unavailable", reason: "index-state" },
+        },
+        {
+          child: {
+            ...followUpRecord().child,
+            origin: "index-ready",
+            refreshTrigger: null,
+            chronicleIndexUsable: true,
+            outcome: "graph-ready",
+            edgeCount: 1,
+            publishCount: 1,
+            finalSceneIds: pair,
+            materialRevision: {
+              unresolvedEdges: 0,
+              observed: [
+                {
+                  kind: "path-attachment",
+                  sceneId: "dev-c",
+                  pairs: ["rev|edge"],
+                },
+              ],
+            },
+            ...childOverrides,
+          },
+        },
+      ),
+    }));
+    const hybrid = graph.map((row) => ({
+      ...row,
+      arm: "hybrid",
+      finalSceneIds: pair,
+    }));
+    return assessK66RehearsalQuality([
+      { variant, samples: [...graph, ...hybrid], ...extra },
+    ]);
+  };
+  const typedRevisions = {
+    rev: { id: "rev", relationIds: ["edge"], decision: "approved" },
+  };
+  // v1 の読みでは「子が Graph を出した」で FAIL だった形が、D3 の対象になり、setup の記録があれば pass（fallback-measured）。
+  const ok = run({}, { typedRevisions });
+  assert.equal(ok.variants[0].status, "fallback-measured");
+  assert.deepEqual(ok.variants[0].d3.problems, []);
+  assert.equal(ok.variants[0].d3.eligible, 30);
+  assert.equal(ok.variants[0].d3.graphShown, 30);
+  // setup の記録が無ければ (d) は引けず hold（予行は FAIL にしない）。
+  assert.equal(run().variants[0].status, "hold");
+  // 禁止 Scene への path の寄与は fail。
+  const forbidden = run({}, { typedRevisions, forbiddenSceneIds: ["dev-c"] });
+  assert.equal(forbidden.variants[0].status, "fail");
+  assert.equal(
+    forbidden.variants[0].reason,
+    "a2-index-ready-requery-forbidden",
+  );
+  // 観測した Revision が最新でなければ fail。
+  const old = run(
+    {},
+    {
+      typedRevisions: {
+        ...typedRevisions,
+        later: { id: "later", relationIds: ["edge"], decision: "none" },
+      },
+    },
+  );
+  assert.equal(old.variants[0].status, "fail");
+  // 6 条件の 1 つを欠く index-ready の子は子のまま（fail closed）: FAIL。
+  const kept = run({ chronicleIndexUsable: false }, { typedRevisions });
+  assert.equal(kept.variants[0].status, "fail");
+  assert.equal(
+    kept.variants[0].reason,
+    "graph-shown-for-a-variant-expected-unavailable",
+  );
+  // 他の variant（G-08/chronicle-index-unusable 以外）は D3 を当てない。
+  const other = assessK66RehearsalQuality([
+    {
+      variant: {
+        ...variant,
+        key: "dev:dev-shape-g08.v1/both-indexes-unusable",
+      },
+      samples: [
+        ...Array.from({ length: 30 }, (_, repeat) =>
+          k64Sample(
+            {
+              variantKey: "dev:dev-shape-g08.v1/both-indexes-unusable",
+              arm: "graph",
+              phase: "measured",
+              repeat,
+              finalSceneIds: pair,
+              graph: { outcome: "graph-unavailable", reason: "index-state" },
+            },
+            { child: null },
+          ),
+        ),
+        ...Array.from({ length: 30 }, (_, repeat) => ({
+          ...k64Sample(
+            {
+              variantKey: "dev:dev-shape-g08.v1/both-indexes-unusable",
+              arm: "hybrid",
+              phase: "measured",
+              repeat,
+              finalSceneIds: pair,
+            },
+            { child: null },
+          ),
+        })),
+      ],
+    },
+  ]);
+  assert.equal(other.variants[0].d3, undefined);
 });

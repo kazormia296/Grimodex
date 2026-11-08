@@ -245,8 +245,7 @@ export function loadQualityInputs({
   // tests' throwaway repository; the default is `root`).
   procedureRoot = root,
   // The K6/6 freeze the receipts' head.k66 is held to (the tests' descriptor;
-  // the default is K66_FREEZE, whose `freezeCommit` is null while /6 is an
-  // unconfirmed draft, so no real receipt is judged).
+  // the default is the pinned K66_FREEZE).
   freeze66 = K66_FREEZE,
 }) {
   const graphManifest = readJson(path.join(root, GRAPH_MANIFEST));
@@ -290,7 +289,7 @@ export function loadQualityInputs({
       );
     // K6/6 変える点 8 / K6/6-N9: and the K6/6 freeze (K66_FREEZE). The /6 row
     // judges only a run that started after the /6 freeze (s6r1 is /5 only); a
-    // `null` freezeCommit (the draft is unconfirmed) matches nothing.
+    // `null` freezeCommit matches nothing (fail closed).
     if (
       freeze66.freezeCommit === null ||
       receipt.head?.k66?.freezeCommit !== freeze66.freezeCommit ||

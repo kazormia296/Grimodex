@@ -11,8 +11,8 @@
 //   F1〜F7 :137-145, X1〜X13 :147-161, FAIL :163, 表示の可用性 :165-167,
 //   品質 :169-171, R1〜R7 :190-198, 変える点 15 :109, 批准 5 :32, 批准 12 :39.
 //
-// K6/6 (a dev prototype; draftRef `nir1-final-request-eval-proposal/6`, revision
-// 3, UNCONFIRMED): the steady state's first render is decided by `firstRenderOf`
+// K6/6 (draftRef `nir1-final-request-eval-proposal/6`, revision 3, confirmed
+// 2026-11-08 and frozen at `56fb4fad…`): the steady state's first render is decided by `firstRenderOf`
 // (R-6 (a)〜(c), R-7, FR-1〜FR-8) instead of K6/2's literal reading, which is
 // structurally false under R1 (join.mjs `k62SteadyStateInWindow`). The (b)
 // trace's first render is unchanged. Not judged, not frozen.

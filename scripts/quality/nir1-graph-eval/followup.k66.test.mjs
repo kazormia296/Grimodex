@@ -1,6 +1,6 @@
-// K6/6 受入れ（K6/6-P1〜P5、K6/6-N1〜N13）の合成記録の試験（非判定の dev の試作）。
+// K6/6 受入れ（K6/6-P1〜P5、K6/6-N1〜N13）の合成記録の試験。
 //
-// draftRef nir1-final-request-eval-proposal/6（改訂 3。未確認）の「受入れ」は、
+// draftRef nir1-final-request-eval-proposal/6（改訂 3。確認・凍結済み）の「受入れ」は、
 // CP-4 の分類器が first-render の R-6（準備の句）・R-7（鮮度の印の句）と
 // FR-1〜FR-8 の下位条件を、R1 の下の現実の形の記録で期待どおりに分けることを
 // 求める。記録はすべて作り物で、凍結した G-case の材料は読まない。基の形は
@@ -313,7 +313,8 @@ test("K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の�
   const delta = { begins: 1, cacheHits: 0, lateCached: 0 };
   for (const block of ["after", "afterRelease"])
     for (const key of ["begins", "lateCached", "cacheHits"]) {
-      const record = block === "after" ? base.counters.after : base.countersAfterRelease;
+      const record =
+        block === "after" ? base.counters.after : base.countersAfterRelease;
       const broken = { ...record, [key]: breaks[key] };
       const overrides =
         block === "after"
@@ -549,7 +550,10 @@ test("K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条
   );
   assert.ok(outside >= 2 && outside < summary.pool.n);
   assert.equal(summary.k64.display.firstRenderOutOfWindow, outside);
-  assert.equal(summary.k64.firstRenderOutOfWindowRate, outside / summary.pool.n);
+  assert.equal(
+    summary.k64.firstRenderOutOfWindowRate,
+    outside / summary.pool.n,
+  );
   assert.equal(summary.k64.k62OutOfWindowRate, 1);
 });
 

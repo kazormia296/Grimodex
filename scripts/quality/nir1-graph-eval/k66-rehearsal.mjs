@@ -1,6 +1,6 @@
-// K6/6 (a dev prototype) の dev の予行の評価（非判定）。
+// K6/6 の dev の予行の評価（非判定）。
 //
-// draftRef nir1-final-request-eval-proposal/6（改訂 3。未確認）の threat model の
+// draftRef nir1-final-request-eval-proposal/6（改訂 3。確認・凍結済み）の threat model の
 // 「dev の予行」の 2 と 3 を、予行の samples に当てる純粋な関数。
 //   2. 有効とする下限: 窓内に合流した親が 30 件以上あり、FR-7 の記録が窓内に合流
 //      した親の全件にあること。30 件に満たなければ予行は「未実施」（fixture を直して
@@ -18,6 +18,7 @@
 import { classifyFollowUp, nextGraphArmOf } from "./followup.mjs";
 import { USER_OPERATION, classifyJoin } from "./join.mjs";
 import { rehearsalK64Quality } from "./outcome.mjs";
+import { d3Eligible, d3Problems } from "./quality-verdict.mjs";
 
 export const K66_REHEARSAL_MIN_JOINED = 30;
 /** 止める条件: 落ちた割合が 1/30 を超えたら（落ちた件数 × 30 > 窓内に合流した件数）。 */
@@ -26,7 +27,7 @@ export const K66_REHEARSAL_MAX_DROP = Object.freeze({
   denominator: 30,
 });
 export const K66_REHEARSAL_NOT_JUDGED =
-  "dev preview of the K6/6 first-render reading (draft revision 3, unconfirmed); never a CP-4 result, a freeze or a receipt";
+  "dev preview of the K6/6 first-render reading (revision 3, confirmed and frozen; the dev preview is not a receipt); never a CP-4 result, a freeze or a receipt";
 
 /**
  * @param {object[]} samples the steady-state rows of one dev preview run (all
@@ -127,23 +128,113 @@ export function assessK66Rehearsal(samples, about = {}) {
   });
 }
 
+/** Prereg v2 D2・D3 apply to G-08/chronicle-index-unusable only (D3 (1)). */
+const D3_VARIANT = /(^|\/)chronicle-index-unusable$/u;
+
+/**
+ * Prereg v2 D2・D3 on one dev variant (a forecast; the formal reading is
+ * `quality-verdict.mjs`). A Graph-arm child that meets D3's conditions (2)〜(6)
+ * (`d3Eligible`: `index-ready`, not a `graph-ready` refresh, the parent's
+ * Chronicle Index unusable and its Graph Index usable, the child's Chronicle
+ * Index usable) is not a "child" of K6/4:52 any more (D2) and is checked by
+ * D3 (a)〜(d) instead; every other child stays (fail closed). The dev fixture
+ * carries no forbidden Scene set or setup record unless the caller passes
+ * `forbiddenSceneIds`, `blockedSceneIds` and `typedRevisions`; D3 (a)(b)(d) then
+ * read an empty set and (d) holds (`d-revision-resolution-unavailable`).
+ */
+function applyD2D3(run) {
+  if (!D3_VARIANT.test(run.variant.key))
+    return { samples: run.samples, d3: null };
+  const forbidden = new Set(run.forbiddenSceneIds ?? []);
+  const blocked = new Set(run.blockedSceneIds ?? []);
+  const pairOf = new Map(
+    run.samples
+      .filter(
+        (row) =>
+          row.arm === "hybrid" &&
+          row.phase === "measured" &&
+          row.trigger === USER_OPERATION,
+      )
+      .map((row) => [row.repeat, row.finalSceneIds]),
+  );
+  const d3 = { eligible: 0, graphShown: 0, outOfD3: 0, problems: [] };
+  const samples = run.samples.map((row) => {
+    const child = row.followUp?.child;
+    if (row.arm !== "graph" || row.phase !== "measured" || !child) return row;
+    if (!d3Eligible(row, child)) {
+      if (child.origin === "index-ready") d3.outOfD3 += 1;
+      return row;
+    }
+    d3.eligible += 1;
+    if (child.outcome === "graph-ready" && (child.edgeCount ?? 0) > 0)
+      d3.graphShown += 1;
+    for (const problem of d3Problems({
+      child,
+      pair: pairOf.get(row.repeat) ?? [],
+      lists: (ids) => ids,
+      forbidden,
+      blocked,
+      typedRevisions: run.typedRevisions,
+    }))
+      d3.problems.push({ repeat: row.repeat, ...problem });
+    return { ...row, followUp: { ...row.followUp, child: null } };
+  });
+  return { samples, d3 };
+}
+
 /**
  * K6/6 の dev の予行の品質の予告（非判定）: 予行の receipt の `quality` は regime が
  * k62 のため /6 の品質 FAIL の規則が走らない。各 variant の samples に /6 の regime
  * （K6/4 の品質の読み。変える点 6 の `graph-contributed-parent-not-counted-as-first-render`
- * を含む）を当て、variant ごとの判定と件数を返す。判定には使わない予告の値。
+ * を含む）を当て、variant ごとの判定と件数を返す。G-08/chronicle-index-unusable は
+ * 品質判定 v2 の D2・D3 に揃える（`applyD2D3`）。判定には使わない予告の値。
  *
- * @param {{variant: {key: string, expectedGraph: string}, samples: object[]}[]} runs
+ * @param {{variant: {key: string, expectedGraph: string}, samples: object[],
+ *   forbiddenSceneIds?: string[], blockedSceneIds?: string[],
+ *   typedRevisions?: object}[]} runs
  *   one entry per variant of the rehearsal (the receipt's `settings.devVariant`
- *   and `samples`)
+ *   and `samples`; the optional fields are D3's forbidden Scenes and the setup
+ *   record's `logicalToRuntime.typedRevisions`)
  */
 export function assessK66RehearsalQuality(runs) {
-  const variants = runs.map(({ variant, samples }) => {
+  const variants = runs.map((run) => {
     try {
-      return rehearsalK64Quality({ variant, samples });
+      const { samples, d3 } = applyD2D3(run);
+      const base = rehearsalK64Quality({ variant: run.variant, samples });
+      if (d3 === null || d3.eligible === 0) return base;
+      const d3Status = d3.problems.some((entry) => entry.kind === "fail")
+        ? "fail"
+        : d3.problems.some((entry) => entry.kind === "hold")
+          ? "hold"
+          : "pass";
+      const disclosure = {
+        eligible: d3.eligible,
+        graphShown: d3.graphShown,
+        outOfD3: d3.outOfD3,
+        status: d3Status,
+        problems: d3.problems,
+      };
+      // A D2 result that already failed or held stays; otherwise D3 decides.
+      if (base.status === "fail" || base.status === "hold")
+        return { ...base, d3: disclosure };
+      if (d3Status === "fail")
+        return {
+          variantKey: run.variant.key,
+          status: "fail",
+          reason: "a2-index-ready-requery-forbidden",
+          d3: disclosure,
+        };
+      if (d3Status === "hold")
+        return {
+          variantKey: run.variant.key,
+          status: "hold",
+          reason: "a2-index-ready-requery-hold",
+          d3: disclosure,
+        };
+      return { ...base, d3: disclosure };
     } catch (error) {
       return {
-        variantKey: variant.key,
+        variantKey: run.variant.key,
         status: "error",
         reason: String(error.message).split("\n")[0],
       };

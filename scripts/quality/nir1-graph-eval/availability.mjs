@@ -345,10 +345,7 @@ export function summarizeSteadyStateCase(input) {
       // K6/6 変える点 5: the first-render window-out rate in the /6 reading
       // (FR-1〜FR-8). `entry.outOfWindow(Rate)` stay K6/2's literal reading.
       firstRenderOutOfWindow: block.n - block.firstRender,
-      firstRenderOutOfWindowRate: ratio(
-        block.n - block.firstRender,
-        block.n,
-      ),
+      firstRenderOutOfWindowRate: ratio(block.n - block.firstRender, block.n),
     };
   }
   return { entry, invalid };

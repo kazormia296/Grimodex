@@ -175,7 +175,7 @@ function repository({
     sha256: sha256("K6/5 frozen text\n"),
     freezeCommit,
   };
-  // K6/6 (a dev prototype): the real K66_FREEZE has no freeze commit.
+  // K6/6: a throwaway repository's freeze (a CI clone does not fetch `claude/nir1-contracts`).
   const freeze66 = {
     ...K66_FREEZE,
     sha256: sha256("K6/6 frozen text\n"),

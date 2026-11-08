@@ -461,8 +461,8 @@ export function receiptHeadErrors(
   // K6/6 変える点 8 / K6/6-N9: the /6 row stands on the /4 and /5 bytes, so a
   // formal Graph receipt's head also carries the K6/6 freeze commit and bytes
   // (`head.k66`, the pinned K66_FREEZE). A receipt without it, or one started
-  // before the /6 freeze (s6r1 included), is refused. While /6 is an
-  // unconfirmed draft (`freezeCommit: null`) every formal receipt is refused.
+  // before the /6 freeze (s6r1 included), is refused. A descriptor whose
+  // `freezeCommit` is `null` refuses every formal receipt (fail closed).
   if (formalGraph || head?.k66 !== undefined) {
     if (head?.k66?.sha256 !== freeze66.sha256)
       errors.push("head.k66.sha256 must be the K6/6 bytes (K6/6-N9)");
@@ -783,8 +783,7 @@ function k64SettingsErrors(errors, value, bound = {}) {
  */
 export function validateCp4Receipt(receipt, bound = {}, deps = {}) {
   // `deps.freeze66` is the K6/6 freeze descriptor, for the tests only (the
-  // default K66_FREEZE has a null freeze commit while /6 is an unconfirmed
-  // draft, so a formal Graph receipt is refused).
+  // default is the pinned K66_FREEZE).
   const { freeze66 = K66_FREEZE } = deps;
   const errors = [];
   if (receipt?.schemaVersion !== CP4_RECEIPT_SCHEMA)

@@ -609,9 +609,9 @@ export function readK65FreezeHead({ root, commit }, freeze = K65_FREEZE) {
  * K6/6 変える点 8: the K6/6 freeze head, read from the freeze commit pinned in
  * K66_FREEZE (the same shape as readK65FreezeHead). A /6 receipt writes the
  * /4, /5 and /6 heads (「/5 と /4 の凍結も併せて書く」). `freeze` defaults to
- * K66_FREEZE, whose `freezeCommit` is `null` while /6 is an unconfirmed draft:
- * no formal receipt is written (fail closed). Only the tests pass another
- * descriptor.
+ * K66_FREEZE (the user confirmed /6 on 2026-11-08; the integrator froze it at
+ * `56fb4fad…`). A descriptor whose `freezeCommit` is `null` writes no formal
+ * receipt (fail closed). Only the tests pass another descriptor.
  */
 export function readK66FreezeHead({ root, commit }, freeze = K66_FREEZE) {
   if (freeze.freezeCommit === null)

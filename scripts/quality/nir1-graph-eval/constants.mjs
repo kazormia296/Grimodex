@@ -103,23 +103,26 @@ export const K65_FREEZE = Object.freeze({
 });
 
 /**
- * The K6/6 descriptor (`nir1-final-request-eval-proposal/6`, contractId
- * `graph-eval-procedure`; K6/6 変える点 8). **A dev prototype: the draft is not
- * confirmed.** `sha256` is the SHA-256 of the draft's revision 3 bytes
- * (contracts `324c804f`), recorded only so that the harness can be exercised;
- * `confirmedCommit` and `freezeCommit` are `null` until the user confirms /6
- * and the integrator freezes it. A `null` `freezeCommit` refuses every formal
- * receipt (fail closed), so this prototype cannot produce a judged receipt.
+ * The K6/6 bytes (`nir1-final-request-eval-proposal/6`, contractId
+ * `graph-eval-procedure`; the user confirmed this SHA-256 on 2026-11-08).
+ * The draft's bytes were last changed at `324c804f…` (revision 3, the one the
+ * user confirmed; `confirmedCommit`); the integrator froze them on
+ * `claude/nir1-contracts` at `56fb4fad…` (the confirmation record's commit, the
+ * first push after the confirmation, pushed 2026-11-08T08:30:45Z; the freeze
+ * record is `docs/plans/nir1-cp4-records/k66-freeze-record.md`).
  * `K65_FREEZE` and `K64_FREEZE` stay: a /6 receipt names all three (K6/6
- * 変える点 8: 「/5 と /4 の凍結も併せて書く」).
+ * 変える点 8: 「/5 と /4 の凍結も併せて書く」). A receipt of a run that started
+ * before this freeze (no `head.k66`, s6r1 included) is refused (K6/6-N9).
  */
 export const K66_FREEZE = Object.freeze({
   path: "docs/plans/nir1-final-request-eval-proposal-6-draft.md",
   sha256: "58c634fa9b3d76803e486516c0e67444b74d4f5987cd851cd0857a25cc8945e7",
   draftRef: "nir1-final-request-eval-proposal/6",
   contractId: "graph-eval-procedure",
-  confirmedCommit: null,
-  freezeCommit: null,
+  /** The commit that last changed the draft's bytes (revision 3). Not the freeze commit. */
+  confirmedCommit: "324c804f360b4bb7c87cb8f1fb94d24f134b6d78",
+  /** The freeze commit on `claude/nir1-contracts` (K6/6 変える点 8), pinned. */
+  freezeCommit: "56fb4fad2eb1eb2e021dfd121ea073f9d263cb4d",
 });
 
 /**

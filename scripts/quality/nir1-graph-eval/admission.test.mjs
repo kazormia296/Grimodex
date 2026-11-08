@@ -1022,7 +1022,7 @@ test("K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（commit と byte
   }
 });
 
-test("K6/6 変える点 8・K6/6-N9: admitGraphCaseRun と assertReceiptHeadBound は /6 の凍結の head（commit と bytes）を /4・/5 に加えて照合する。/6 が未確認の間は既定（freezeCommit null）が正式の admission を拒む", async () => {
+test("K6/6 変える点 8・K6/6-N9: admitGraphCaseRun と assertReceiptHeadBound は /6 の凍結の head（commit と bytes）を /4・/5 に加えて照合する。既定は固定した /6 の凍結で、null の descriptor は正式の admission を拒む", async () => {
   const r = await k65EnforcementRepository();
   try {
     const admit = (input, freezes = r.freezes) =>
@@ -1050,8 +1050,20 @@ test("K6/6 変える点 8・K6/6-N9: admitGraphCaseRun と assertReceiptHeadBoun
         }),
       /\[precheck\] K6\/6 freeze commit or bytes differ/u,
     );
-    // 既定の K66_FREEZE は freezeCommit が null（/6 は未確認の draft）: 正式の admission を拒む。
-    assert.equal(K66_FREEZE.freezeCommit, null);
+    // 既定の K66_FREEZE は確認・凍結された /6（2026-11-08）に固定されている。
+    assert.deepEqual(
+      { ...K66_FREEZE },
+      {
+        path: "docs/plans/nir1-final-request-eval-proposal-6-draft.md",
+        sha256:
+          "58c634fa9b3d76803e486516c0e67444b74d4f5987cd851cd0857a25cc8945e7",
+        draftRef: "nir1-final-request-eval-proposal/6",
+        contractId: "graph-eval-procedure",
+        confirmedCommit: "324c804f360b4bb7c87cb8f1fb94d24f134b6d78",
+        freezeCommit: "56fb4fad2eb1eb2e021dfd121ea073f9d263cb4d",
+      },
+    );
+    // 既定の descriptor は試験の repo の commit を /6 の凍結として読まない（固定した commit と bytes だけ）。
     assert.throws(
       () =>
         admit(r.input(r.head), {
@@ -1059,10 +1071,19 @@ test("K6/6 変える点 8・K6/6-N9: admitGraphCaseRun と assertReceiptHeadBoun
           freeze64: r.freezes.freeze64,
           freeze65: r.freezes.freeze65,
         }),
-      /\[precheck\] the K6\/6 freeze commit is not pinned/u,
+      /\[precheck\] K6\/6 (freeze commit or bytes differ|cannot be read)/u,
     );
     assert.throws(
       () => readK66FreezeHead({ root: r.repo, commit: r.freezeCommit }),
+      /\[precheck\] K6\/6 (freeze commit or bytes differ|cannot be read)/u,
+    );
+    // descriptor の freezeCommit が null なら、どの正式の receipt も書かない（fail closed）。
+    assert.throws(
+      () =>
+        readK66FreezeHead(
+          { root: r.repo, commit: r.freezeCommit },
+          { ...r.freezes.freeze66, freezeCommit: null },
+        ),
       /\[precheck\] the K6\/6 freeze commit is not pinned/u,
     );
     assert.deepEqual(

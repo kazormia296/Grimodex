@@ -41,6 +41,7 @@ import {
 import {
   deriveLatencyPolicy,
   evaluateQualityVerdict,
+  latestTypedRevisionOf,
 } from "./quality-verdict.mjs";
 import { H40, followUpRecord, k64Sample, k66Sample } from "./test-support.mjs";
 
@@ -86,9 +87,9 @@ git(
   "reviewed v2",
 );
 const S4 = git(PROC_REPO, "rev-parse", "HEAD");
-// K6/6 変える点 8: the K6/6 freeze is a draft (`freezeCommit: null`), so the
-// tests hold the receipts to a descriptor of their own (the same bytes, a
-// synthetic freeze commit). The default refuses every receipt (last test).
+// K6/6 変える点 8: the tests hold the receipts to a descriptor of their own
+// (the same bytes, a synthetic freeze commit). The pinned default refuses a
+// receipt with that synthetic head (last test).
 const TEST_K66 = { ...K66_FREEZE, freezeCommit: "6".repeat(40) };
 const buildQualityVerdict = (options) =>
   buildVerdict({ procedureRoot: PROC_REPO, freeze66: TEST_K66, ...options });
@@ -247,7 +248,25 @@ function buildReceipts(expectations, edit = () => ({})) {
       environment: { windowSamples: WINDOW, ownPids: [] },
       settings: {
         variantKey: key,
-        setupReceipt: { logicalToRuntime: { scenes } },
+        setupReceipt: {
+          logicalToRuntime: {
+            scenes,
+            // The setup record's typed Revisions in prepare order (D3 (d)).
+            // `change.typedRevisions` replaces them; `null` leaves them out.
+            ...(change.typedRevisions === null
+              ? {}
+              : {
+                  typedRevisions: change.typedRevisions ?? {
+                    rev: {
+                      id: "rev",
+                      relationIds: ["edge"],
+                      decision: "approved",
+                      revisionId: "runtime-rev",
+                    },
+                  },
+                }),
+          },
+        },
         k64: { procedureFile: { sha256: PROCEDURE_SHA } },
       },
       samples,
@@ -971,9 +990,20 @@ test("K6/5 変える点 7: 手順のファイルは正式の loader で S4 の c
       /\[precheck\].*head\.k66 is not the K6\/6 freeze/u,
       name,
     );
-  // 既定の K66_FREEZE は freezeCommit が null（/6 は未確認の draft）で、どの receipt も判定しない。
+  // 既定の K66_FREEZE は固定した /6 の凍結で、試験の合成の head.k66 の receipt は判定しない。
   assert.throws(
     () => verdictOf(buildReceipts(expectations), { freeze66: K66_FREEZE }),
+    new RegExp(
+      `\\[precheck\\].*head\\.k66 is not the K6/6 freeze \\(${K66_FREEZE.freezeCommit}\\)`,
+      "u",
+    ),
+  );
+  // descriptor の freezeCommit が null なら、どの receipt も判定しない（fail closed）。
+  assert.throws(
+    () =>
+      verdictOf(buildReceipts(expectations), {
+        freeze66: { ...K66_FREEZE, freezeCommit: null },
+      }),
     /\[precheck\].*head\.k66 is not the K6\/6 freeze \(null\)/u,
   );
   // 実リポジトリは S4 の commit（試験の repo の commit）を持たず、v2 の review も placeholder なので読めない。
@@ -1333,13 +1363,19 @@ test("品質 v2 D8: Graph が合流したが edgeCount 0 の親は『寄与し�
 test("品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）", () => {
   const KEY = "G-08/chronicle-index-unusable";
   const edit =
-    (childOverrides, sampleOverrides = {}, forbidden = false) =>
+    (
+      childOverrides,
+      sampleOverrides = {},
+      forbidden = false,
+      typedRevisions = undefined,
+    ) =>
     (key, ctx) => {
       if (key !== KEY) return {};
       const runtime = (list) => list.map((id) => `u-${id}`);
       const pair = runtime(fixtureLists(ctx.variant).hybrid);
       const forbiddenScene = ctx.expectation.forbiddenSceneIds[0];
       return {
+        typedRevisions,
         mapGraphSample: (merged, repeat) => ({
           ...k64Sample(
             {
@@ -1391,15 +1427,11 @@ test("品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は
     output.conditions["forbidden-contribution"].components[
       "a2-index-ready-requery-forbidden"
     ];
-  // 6 条件を満たし、禁止の寄与が無い: 子としての違反にはならず、D3 の対象（Revision の解決は未実装なので hold）。
+  // 6 条件を満たし、禁止の寄与が無く、観測した Revision が setup の記録の最新: 子としての違反にはならず、D3 の対象で pass。
   const ok = run(edit({}));
   assert.equal(a2(ok).eligibleChildren, 30);
-  assert.equal(a2(ok).status, "hold");
-  assert.ok(
-    a2(ok).problems.every(
-      (entry) => entry.code === "d-revision-resolution-not-implemented",
-    ),
-  );
+  assert.equal(a2(ok).status, "pass");
+  assert.deepEqual(a2(ok).problems, []);
   assert.equal(
     keyOf(ok, KEY).forbidden.a.violations.length,
     0,
@@ -1427,4 +1459,119 @@ test("品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は
   assert.equal(a2(run(edit({ lateGraphInDisplay: true }))).status, "fail");
   assert.equal(a2(run(edit({ publishCount: 2 }))).status, "fail");
   // 他の variant の index-ready の子は D3 の対象にしない（G-08/chronicle-index-unusable だけ）。
+  // D3 (d) の後半: 観測した Revision は、setup の記録のその edge の最新の typed Revision でなければ fail。
+  const prepared = (id, relationIds, extra = {}) => [
+    id,
+    {
+      id,
+      relationIds,
+      decision: "approved",
+      revisionId: `runtime-${id}`,
+      ...extra,
+    },
+  ];
+  const superseded = run(
+    edit(
+      {},
+      {},
+      false,
+      Object.fromEntries([
+        prepared("rev", ["edge"]),
+        prepared("rev-later", ["edge"], { decision: "none" }),
+      ]),
+    ),
+  );
+  assert.equal(a2(superseded).status, "fail");
+  assert.ok(
+    a2(superseded).problems.every(
+      (entry) =>
+        entry.code === "d-revision-is-not-the-latest" &&
+        entry.observed === "rev" &&
+        entry.latest === "rev-later" &&
+        entry.edge === "edge",
+    ),
+  );
+  // 最新の後に refusedAtSetup の行があっても、最新に数えない（pass）。
+  const refusedLater = run(
+    edit(
+      {},
+      {},
+      false,
+      Object.fromEntries([
+        prepared("rev", ["edge"]),
+        ["rev-refused", { id: "rev-refused", refusedAtSetup: "prepare" }],
+      ]),
+    ),
+  );
+  assert.equal(a2(refusedLater).status, "pass");
+  // 別の Relation の Revision が後にあっても関係しない（pass）。
+  const otherRelation = run(
+    edit(
+      {},
+      {},
+      false,
+      Object.fromEntries([
+        prepared("rev", ["edge"]),
+        prepared("rev-b", ["other"]),
+      ]),
+    ),
+  );
+  assert.equal(a2(otherRelation).status, "pass");
+  // setup の記録に typed Revision が無い（引けない）は hold。edge を持つ Revision が無いのも hold。
+  const noRecord = run(edit({}, {}, false, null));
+  assert.equal(a2(noRecord).status, "hold");
+  assert.ok(
+    a2(noRecord).problems.every(
+      (entry) => entry.code === "d-revision-resolution-unavailable",
+    ),
+  );
+  const noEdge = run(
+    edit({}, {}, false, Object.fromEntries([prepared("rev-b", ["other"])])),
+  );
+  assert.equal(a2(noEdge).status, "hold");
+  assert.ok(
+    a2(noEdge).problems.every(
+      (entry) => entry.code === "d-edge-has-no-typed-revision-in-setup",
+    ),
+  );
+  // unresolvedEdges が 0 でない（pairs が null）は従来どおり fail。
+  const unresolved = run(
+    edit({
+      materialRevision: {
+        unresolvedEdges: 1,
+        observed: [
+          {
+            kind: "path-attachment",
+            sceneId: "g08-attach",
+            pairs: null,
+            unresolved: 1,
+          },
+        ],
+      },
+    }),
+  );
+  assert.equal(a2(unresolved).status, "fail");
+  assert.ok(
+    a2(unresolved).problems.some(
+      (entry) => entry.code === "d-unresolved-edges",
+    ),
+  );
+});
+
+test("品質 v2 D3 (d): 最新の typed Revision は setup の記録の準備順の最後の、refusedAtSetup でない行", () => {
+  const rows = {
+    a: { id: "a", relationIds: ["r1", "r2"] },
+    b: { id: "b", relationIds: ["r1"] },
+    c: { id: "c", relationIds: ["r1"], refusedAtSetup: "decision" },
+    d: { id: "d", relationIds: ["r3"] },
+  };
+  assert.equal(latestTypedRevisionOf(rows, "r1"), "b");
+  assert.equal(latestTypedRevisionOf(rows, "r2"), "a");
+  assert.equal(latestTypedRevisionOf(rows, "r3"), "d");
+  assert.equal(latestTypedRevisionOf(rows, "nope"), null);
+  assert.equal(latestTypedRevisionOf(undefined, "r1"), null);
+  assert.equal(
+    latestTypedRevisionOf({ x: { refusedAtSetup: "prepare" } }, "r1"),
+    null,
+  );
 });
