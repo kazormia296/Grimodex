@@ -7,7 +7,6 @@ const OPEN_WAL_BUSY_TIMEOUT: Duration = Duration::from_millis(250);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OpenWalCheckpointMode {
     Noop,
-    #[cfg(test)]
     Passive,
     Restart,
 }
@@ -16,7 +15,6 @@ impl OpenWalCheckpointMode {
     fn sql(self) -> &'static str {
         match self {
             Self::Noop => "PRAGMA main.wal_checkpoint(NOOP)",
-            #[cfg(test)]
             Self::Passive => "PRAGMA main.wal_checkpoint(PASSIVE)",
             Self::Restart => "PRAGMA main.wal_checkpoint(RESTART)",
         }
@@ -131,6 +129,30 @@ fn validate_checkpoint_state(state: WalCheckpointState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The WAL page count that one checkpoint cycle covers. Open-time preparation
+/// uses it as the unit of its work limit (`DeferredWorkLimit`) and of its
+/// "worth resetting" threshold, so it must be a positive bound that something
+/// actually enforces:
+///
+/// - the connection's own `wal_autocheckpoint` (positive), or
+/// - when that is `0` because the WAL hook was replaced, the background
+///   checkpointer's threshold (DR-DBC-1), which enforces the same bound.
+///
+/// Anything else (autocheckpoint disabled with no background checkpointer) is
+/// still rejected: nothing would bound the WAL.
+fn wal_cycle_pages(
+    pragma_auto_checkpoint: i64,
+    background_pages: Option<i64>,
+) -> anyhow::Result<i64> {
+    if pragma_auto_checkpoint > 0 {
+        return Ok(pragma_auto_checkpoint);
+    }
+    match background_pages {
+        Some(pages) if pages > 0 => Ok(pages),
+        _ => Err(anyhow::anyhow!("OPEN_WAL_AUTOCHECKPOINT_MUST_BE_POSITIVE")),
+    }
+}
+
 fn verify_connection_settings(
     conn: &Connection,
     original_timeout_ms: i64,
@@ -152,6 +174,7 @@ fn verify_connection_settings(
 
 fn prepare_wal_for_open_on_connection_with<C, S>(
     conn: &Connection,
+    background_pages: Option<i64>,
     checkpoint: &mut C,
     set_busy_timeout: &mut S,
 ) -> anyhow::Result<OpenWalPreparationOutcome>
@@ -160,11 +183,10 @@ where
     S: FnMut(&Connection, Duration) -> Result<(), SqliteError>,
 {
     anyhow::ensure!(conn.is_autocommit(), "OPEN_WAL_ACTIVE_TRANSACTION");
-    let auto_checkpoint = query_i64_pragma(conn, "wal_autocheckpoint")?;
-    anyhow::ensure!(
-        auto_checkpoint > 0,
-        "OPEN_WAL_AUTOCHECKPOINT_MUST_BE_POSITIVE"
-    );
+    // The pragma value itself must survive preparation unchanged; the cycle
+    // unit may come from the background checkpointer when the pragma is 0.
+    let pragma_auto_checkpoint = query_i64_pragma(conn, "wal_autocheckpoint")?;
+    let auto_checkpoint = wal_cycle_pages(pragma_auto_checkpoint, background_pages)?;
 
     let before = match checkpoint(conn, OpenWalCheckpointMode::Noop) {
         Ok(state) => state,
@@ -240,7 +262,7 @@ where
     if restore_result.is_err() {
         return Err(anyhow::anyhow!("OPEN_WAL_TIMEOUT_RESTORE_FAILED"));
     }
-    verify_connection_settings(conn, original_timeout_ms, auto_checkpoint)?;
+    verify_connection_settings(conn, original_timeout_ms, pragma_auto_checkpoint)?;
 
     let restarted = match checkpoint_result {
         Ok(state) => state,
@@ -277,10 +299,16 @@ where
 pub(crate) fn prepare_wal_for_open(
     database: &Database,
 ) -> anyhow::Result<OpenWalPreparationOutcome> {
+    let background_pages = database.background_checkpoint_threshold();
     database.with_conn(|conn| {
         let mut checkpoint = sqlite_wal_checkpoint;
         let mut set_busy_timeout = sqlite_set_busy_timeout;
-        prepare_wal_for_open_on_connection_with(conn, &mut checkpoint, &mut set_busy_timeout)
+        prepare_wal_for_open_on_connection_with(
+            conn,
+            background_pages,
+            &mut checkpoint,
+            &mut set_busy_timeout,
+        )
     })
 }
 
@@ -433,6 +461,7 @@ mod tests {
 
                 let outcome = prepare_wal_for_open_on_connection_with(
                     conn,
+                    None,
                     &mut checkpoint,
                     &mut set_timeout,
                 )?;
@@ -483,6 +512,7 @@ mod tests {
 
                 let outcome = prepare_wal_for_open_on_connection_with(
                     conn,
+                    None,
                     &mut checkpoint,
                     &mut set_timeout,
                 )?;
@@ -587,6 +617,7 @@ mod tests {
                 let mut set_timeout = sqlite_set_busy_timeout;
                 let outcome = prepare_wal_for_open_on_connection_with(
                     conn,
+                    None,
                     &mut checkpoint,
                     &mut set_timeout,
                 )?;
@@ -622,7 +653,12 @@ mod tests {
                     }
                     sqlite_set_busy_timeout(conn, timeout)
                 };
-                prepare_wal_for_open_on_connection_with(conn, &mut checkpoint, &mut set_timeout)
+                prepare_wal_for_open_on_connection_with(
+                    conn,
+                    None,
+                    &mut checkpoint,
+                    &mut set_timeout,
+                )
             })
             .expect_err("timeout restoration must fail closed");
         assert!(error
@@ -651,6 +687,7 @@ mod tests {
                 let mut set_timeout = sqlite_set_busy_timeout;
                 let outcome = prepare_wal_for_open_on_connection_with(
                     conn,
+                    None,
                     &mut checkpoint,
                     &mut set_timeout,
                 )?;
@@ -680,6 +717,7 @@ mod tests {
                 let mut set_timeout = sqlite_set_busy_timeout;
                 let error = prepare_wal_for_open_on_connection_with(
                     conn,
+                    None,
                     &mut checkpoint,
                     &mut set_timeout,
                 )

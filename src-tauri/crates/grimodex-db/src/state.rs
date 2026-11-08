@@ -44,6 +44,17 @@ static NEXT_WORKSPACE_AUTHORITY_ID: AtomicU64 = AtomicU64::new(1);
 
 impl WorkspaceAuthority {
     pub fn new(db: Database, path: PathBuf, lease: WorkspaceLease) -> Self {
+        // DR-DBC-1: the published authority's connection hands its WAL
+        // checkpoints to a background connection instead of running them
+        // inside a foreground commit. Best effort: when it cannot start, the
+        // connection keeps SQLite's own autocheckpoint (the WAL stays bounded
+        // either way) and the open must not fail.
+        match db.start_background_checkpoint() {
+            Ok(outcome) => tracing::debug!(?outcome, "workspace WAL background checkpoint"),
+            Err(error) => {
+                tracing::warn!("workspace WAL background checkpoint not started: {error}");
+            }
+        }
         let identity = NEXT_WORKSPACE_AUTHORITY_ID.fetch_add(1, Ordering::Relaxed);
         let nir_chronicle_index =
             crate::narrative_extraction::nir1_chronicle_index::NirChronicleIndexRuntime::new(

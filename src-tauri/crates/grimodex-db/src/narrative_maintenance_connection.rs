@@ -1831,6 +1831,11 @@ impl Database {
         let replacement = Connection::open_in_memory().map_err(|error| {
             anyhow!("NEX_MAINTENANCE_CONNECTION_RETIREMENT_REPLACEMENT_OPEN_FAILED: {error}")
         })?;
+        // DR-DBC-1: the recovery descriptor hands this file to a replacement
+        // authority, which must not find our checkpoint-only connection open.
+        // Stopping never touches the connection mutex, so it cannot wait on a
+        // foreground owner, and it is bounded.
+        self.stop_background_checkpoint();
         let mut conn = self
             .conn
             .lock()
