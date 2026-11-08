@@ -164,7 +164,7 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
       expect(lazyCalls).toEqual(["/* @__PURE__ */ lazy("]);
       expect(source).toMatch(
         new RegExp(
-          `/\\* @__PURE__ \\*/ lazy\\(\\(\\) =>\\s*import\\("${escape(lazyModule)}"\\)`,
+          `/\\* @__PURE__ \\*/ lazy\\(\\s*\\(\\) =>\\s*import\\("${escape(lazyModule)}"\\)`,
         ),
       );
     },
@@ -178,7 +178,8 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
     "$file mounts $component only under the constant",
     ({ file, component, guardVariable }) => {
       const body = code(read(file));
-      const mount = `<Suspense[^>]*>\\s*<${component}\\b`;
+      // The status display's error boundary (DR-DA2-62) may wrap the Suspense.
+      const mount = `(?:<ProfileEgressStatusBoundary>\\s*)?<Suspense[^>]*>\\s*<${component}\\b`;
       if (guardVariable === undefined) {
         expect(body).toMatch(
           new RegExp(`${CONSTANT}\\s*(?:&&|\\?)\\s*\\(\\s*${mount}`),

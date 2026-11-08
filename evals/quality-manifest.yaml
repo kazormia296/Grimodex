@@ -564,6 +564,7 @@ requirements:
       - src-tauri/crates/grimodex-db/tests/d2a_m_t_typed_writers.rs
       - src-tauri/crates/grimodex-db/tests/d2a_restricted_generic_sql_shapes.rs
       - electron/main/d2bRendererWriters.pipeline.spec.ts
+      - electron/main/pubgRendererWriters.pipeline.spec.ts
       - src/application/chat/chatOllamaPreflight.test.ts
       - src/application/chat/chatPersistenceStoreActions.test.ts
       - src/application/chat/chatStoreSupport.turnErrorText.test.ts

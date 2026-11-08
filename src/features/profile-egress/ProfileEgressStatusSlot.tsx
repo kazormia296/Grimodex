@@ -1,13 +1,12 @@
 import { Suspense, lazy } from "react";
 import { PROFILE_ACTIVATION_UI_ENABLED } from "./profileActivationAvailability";
+import { ProfileEgressStatusBoundary } from "./ProfileEgressStatusBoundary";
 
 // The status display is a lazy chunk requested only while the constant is on
-// (DR-DA2-30). A chunk that fails to load draws nothing instead of reaching
-// the app root.
-const ProfileEgressStatusIndicator = /* @__PURE__ */ lazy(() =>
-  import("./ProfileEgressStatusIndicator").catch(() => ({
-    default: () => null,
-  })),
+// (DR-DA2-30). A chunk that fails to load rejects the lazy component and is
+// caught by the boundary below, like a render or effect error of the display.
+const ProfileEgressStatusIndicator = /* @__PURE__ */ lazy(
+  () => import("./ProfileEgressStatusIndicator"),
 );
 
 /**
@@ -18,8 +17,10 @@ const ProfileEgressStatusIndicator = /* @__PURE__ */ lazy(() =>
  */
 export function ProfileEgressStatusSlot() {
   return PROFILE_ACTIVATION_UI_ENABLED ? (
-    <Suspense fallback={null}>
-      <ProfileEgressStatusIndicator />
-    </Suspense>
+    <ProfileEgressStatusBoundary>
+      <Suspense fallback={null}>
+        <ProfileEgressStatusIndicator />
+      </Suspense>
+    </ProfileEgressStatusBoundary>
   ) : null;
 }

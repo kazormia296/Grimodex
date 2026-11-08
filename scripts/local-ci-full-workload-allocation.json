@@ -101,7 +101,7 @@
     },
     {
       "path": "electron/scripts/product-journey-harness.mjs",
-      "sha256": "572bcc4374ff72fa1701b1112d16e43090918faecd471b4fb284b617c0a6e92f"
+      "sha256": "44621ea715bfe165e514b655ed7fd42c9480dc67c1be649bfae7347340d217d9"
     },
     {
       "path": "electron/scripts/product-journey-catalog.mjs",
@@ -117,7 +117,7 @@
     },
     {
       "path": "src/db/generated/schema-contract.json",
-      "sha256": "7f02139af6cc9c8781ebca2b53d6130a27a3233fafbaf7f6cc1c3255830438a3"
+      "sha256": "76b48c41b7e6bc5ab34c7bdd16780cb4bad65d15f4145fffaeab4f2020710496"
     },
     {
       "path": "docs/pr610-full-workload-risk.md",
