@@ -17,6 +17,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
+pub(crate) mod background_checkpoint;
 pub(crate) mod narrative_maintenance_connection;
 pub(crate) mod nir1_pinned_snapshot;
 pub use narrative_maintenance_connection::ParticipantSqlOperationBudget;
@@ -135,6 +136,10 @@ pub struct Database {
     foreground_connection_waiters: std::sync::Arc<AtomicUsize>,
     maintenance_finalization_reserved: std::sync::Arc<AtomicBool>,
     connection_health: ConnectionHealth,
+    /// 本体の接続の WAL checkpoint を背景へ移す所有者（DR-DBC-1）。この field は
+    /// 必ず最後に置く：`Database::drop` が背景を止め、接続の close の後に解放する
+    /// （wal hook が指す `Shared` を、接続より長く生かすため）。
+    background_checkpoint: Mutex<Option<background_checkpoint::BackgroundCheckpointer>>,
 }
 
 /// Process-local finalization reservation held for one exact terminal
@@ -289,6 +294,7 @@ impl Database {
             foreground_connection_waiters: std::sync::Arc::new(AtomicUsize::new(0)),
             maintenance_finalization_reserved: std::sync::Arc::new(AtomicBool::new(false)),
             connection_health: ConnectionHealth::new(),
+            background_checkpoint: Mutex::new(None),
         }
     }
 
@@ -371,6 +377,7 @@ impl Database {
             foreground_connection_waiters: std::sync::Arc::new(AtomicUsize::new(0)),
             maintenance_finalization_reserved: std::sync::Arc::new(AtomicBool::new(false)),
             connection_health: ConnectionHealth::new(),
+            background_checkpoint: Mutex::new(None),
         })
     }
 
@@ -944,6 +951,8 @@ pub use state::{
     WorkspaceState,
 };
 
+#[cfg(test)]
+mod background_checkpoint_tests;
 #[cfg(test)]
 mod seed_schema_parity;
 #[cfg(test)]
