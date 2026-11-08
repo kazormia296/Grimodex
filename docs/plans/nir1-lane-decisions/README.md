@@ -60,6 +60,7 @@
 | [maint-precutover-stall-decisions.md](maint-precutover-stall-decisions.md) | MPS（DR-MPS-1〜7。6・7 は実装後の追記と独立レビューの反映。新しい workspace で書き込みが続くと保守が cutover の前で止まり自力で再開しない不具合の原因〔再発見の上限が黙って尽き、Freshness の NOT_READY も捨てられる〕、backoff 付きの再点火、停止の定義、lifecycle の matrix、begin の理由を入れない判断） | 調査の記録と、修正の前の判断・実装後の追記 |
 | [irw-decisions.md](irw-decisions.md) | IRW（DR-IRW-1〜3。関連場面の IR の窓 D を 10.84 ms から 40 ms に広げる。PD 評価の診断で日本語の IR の到着が p99 24.8 ms・最大 25.5 ms。Graph の最初の表示の窓も同じ定数。上書きする確認済みの記述と、CP-4 の手順は 10.84 ms のまま） | ユーザーの承認〔2026-11-05〕に基づく閾値の変更の記録 |
 | [irq-decisions.md](irq-decisions.md) | IRQ（DR-IRQ-1〜4。関連場面の IR の query が承認済み提案の件数 N に線形に遅くなる件：control の Source key の decode と mappings の検索を 1 回に、`projection_revision` の pass 内 memo、`QueryBinding` の共有。窓 D・閾値・契約は不変） | integrator の作業領域の写し（mutation の前の記録と測定の表） |
+| [db-connection-decisions.md](db-connection-decisions.md) | DB 接続の改善 B′（DR-DBC-2。監査の hash chain の検証を、検証の強さ・結果を変えずに速くする：key が整列済みなら clone せず直接直列化、行ごとの計算を上限 4 thread・std の `thread::scope` で並列に。同じ文書に A の DR-DBC-1〜1a がある〔PR #829。merge の順で揃える〕。DB 接続の lane で NIR-1 の事前委任の外。2026-11-08 のユーザーの決定「B は (b) 計算そのものを速くする。強さは同じ」） | mutation の前の記録（試作の計測 `audit-verify-bench.md` の要点と、同値性の試験の一覧） |
 
 復元した7本は、2026-10-14 の worktree の片付けで、gitignore の対象（`.ralph/`）の置き場所ごと消えたものである。PROVENANCE.md に、ファイルごとの最終版の根拠、確からしさ、PR 本文との差を書いた。PR 本文との差は、decisions 文書が最後に書かれた後の修正か、PR の側の書き足しによるもので、復元の誤りではない。
 
