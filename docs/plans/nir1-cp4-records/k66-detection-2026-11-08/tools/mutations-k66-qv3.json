@@ -9,17 +9,17 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1266,
+        "line": 1276,
         "titlePrefix": "品質 v2 D8（K6/6-N13a・N13b）: 窓内に合流して Graph が表示に寄与したのに first-ren"
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1976,
+        "line": 2012,
         "titlePrefix": "P1-1（品質 v2 C8）: 表示が 0 件の variant（Graph が寄与したのに first-render "
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2069,
+        "line": 2105,
         "titlePrefix": "P2-2（v2 C6）: 定常状態の followUp.requeries の行は first-render にせず（F"
       }
     ]
@@ -34,12 +34,12 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1717,
+        "line": 1747,
         "titlePrefix": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount "
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2012,
+        "line": 2048,
         "titlePrefix": "P2-1（v2 C4）: Graph を出したかもしれない子の空の記録（probe が paths を出さない形）は D"
       }
     ]
@@ -54,12 +54,12 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1717,
+        "line": 1747,
         "titlePrefix": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount "
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2043,
+        "line": 2079,
         "titlePrefix": "P3-2（v2 C4）: Scene が論理 ID に無い path（sceneId null）は捨てずに hold"
       }
     ]
@@ -74,12 +74,12 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1717,
+        "line": 1747,
         "titlePrefix": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount "
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2012,
+        "line": 2048,
         "titlePrefix": "P2-1（v2 C4）: Graph を出したかもしれない子の空の記録（probe が paths を出さない形）は D"
       }
     ]
@@ -94,7 +94,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2069,
+        "line": 2105,
         "titlePrefix": "P2-2（v2 C6）: 定常状態の followUp.requeries の行は first-render にせず（F"
       }
     ]
@@ -109,7 +109,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2069,
+        "line": 2105,
         "titlePrefix": "P2-2（v2 C6）: 定常状態の followUp.requeries の行は first-render にせず（F"
       }
     ]
@@ -154,7 +154,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2121,
+        "line": 2157,
         "titlePrefix": "P3-2（v2 C5）: variantKey の無い再 query の行は黙って捨てず、すべての variant の条"
       }
     ]
@@ -169,7 +169,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1640,
+        "line": 1670,
         "titlePrefix": "品質 v2 D4: 受領書の最上位の requeries（user-operation でない行）が Scene の一覧"
       }
     ]
@@ -184,12 +184,12 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1369,
+        "line": 1379,
         "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1607,
+        "line": 1637,
         "titlePrefix": "品質 v2 D3 (d): 最新の typed Revision は凍結の fixture の配列の順の最後の行。pre"
       }
     ]
@@ -204,12 +204,12 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1369,
+        "line": 1379,
         "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1607,
+        "line": 1637,
         "titlePrefix": "品質 v2 D3 (d): 最新の typed Revision は凍結の fixture の配列の順の最後の行。pre"
       }
     ]
@@ -224,7 +224,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1369,
+        "line": 1379,
         "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
       }
     ]
@@ -250,22 +250,22 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1369,
+        "line": 1379,
         "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2012,
+        "line": 2048,
         "titlePrefix": "P2-1（v2 C4）: Graph を出したかもしれない子の空の記録（probe が paths を出さない形）は D"
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2043,
+        "line": 2079,
         "titlePrefix": "P3-2（v2 C4）: Scene が論理 ID に無い path（sceneId null）は捨てずに hold"
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2239,
+        "line": 2286,
         "titlePrefix": "P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR に足す）は fail、既に "
       }
     ]
@@ -280,12 +280,12 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1812,
+        "line": 1842,
         "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2163,
+        "line": 2210,
         "titlePrefix": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば "
       }
     ]
@@ -300,7 +300,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2163,
+        "line": 2210,
         "titlePrefix": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば "
       }
     ]
@@ -315,12 +315,12 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1812,
+        "line": 1842,
         "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2163,
+        "line": 2210,
         "titlePrefix": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば "
       }
     ]
@@ -335,12 +335,12 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1812,
+        "line": 1842,
         "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2163,
+        "line": 2210,
         "titlePrefix": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば "
       }
     ]
@@ -355,7 +355,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1369,
+        "line": 1379,
         "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
       }
     ]
@@ -370,12 +370,12 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1369,
+        "line": 1379,
         "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1812,
+        "line": 1842,
         "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
       }
     ]
@@ -390,7 +390,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2163,
+        "line": 2210,
         "titlePrefix": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば "
       }
     ]
@@ -405,7 +405,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1812,
+        "line": 1842,
         "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
       }
     ]
@@ -420,12 +420,12 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1369,
+        "line": 1379,
         "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1812,
+        "line": 1842,
         "titlePrefix": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-"
       }
     ]
@@ -440,7 +440,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2239,
+        "line": 2286,
         "titlePrefix": "P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR に足す）は fail、既に "
       }
     ]
@@ -455,7 +455,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 2239,
+        "line": 2286,
         "titlePrefix": "P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR に足す）は fail、既に "
       }
     ]
@@ -470,12 +470,12 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1369,
+        "line": 1379,
         "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
       },
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1717,
+        "line": 1747,
         "titlePrefix": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount "
       }
     ]
@@ -490,7 +490,7 @@
     "expected": [
       {
         "file": "quality-verdict.test.mjs",
-        "line": 1317,
+        "line": 1327,
         "titlePrefix": "品質 v2 D8: 表示されなかった sample の Scene の一覧が R+IR と違うのは hold でなく f"
       }
     ]
@@ -505,7 +505,7 @@
     "expected": [
       {
         "file": "quality-verdict-first-run.test.mjs",
-        "line": 147,
+        "line": 158,
         "titlePrefix": "v2 §0: both commits must be on the remote strictly before th"
       }
     ]
@@ -520,17 +520,17 @@
     "expected": [
       {
         "file": "quality-verdict-first-run.test.mjs",
-        "line": 95,
+        "line": 106,
         "titlePrefix": "v2 §0: the first formal run is the earliest head.runStartedA"
       },
       {
         "file": "quality-verdict-first-run.test.mjs",
-        "line": 147,
+        "line": 158,
         "titlePrefix": "v2 §0: both commits must be on the remote strictly before th"
       },
       {
         "file": "quality-verdict-first-run.test.mjs",
-        "line": 205,
+        "line": 216,
         "titlePrefix": "v2 §0: loadFirstRunInputs reads the six directories, the rec"
       }
     ]
@@ -545,7 +545,7 @@
     "expected": [
       {
         "file": "quality-verdict-first-run.test.mjs",
-        "line": 95,
+        "line": 106,
         "titlePrefix": "v2 §0: the first formal run is the earliest head.runStartedA"
       }
     ]
@@ -560,7 +560,7 @@
     "expected": [
       {
         "file": "quality-verdict-first-run.test.mjs",
-        "line": 147,
+        "line": 158,
         "titlePrefix": "v2 §0: both commits must be on the remote strictly before th"
       }
     ]
@@ -575,7 +575,7 @@
     "expected": [
       {
         "file": "quality-verdict-first-run.test.mjs",
-        "line": 147,
+        "line": 158,
         "titlePrefix": "v2 §0: both commits must be on the remote strictly before th"
       }
     ]
@@ -590,7 +590,7 @@
     "expected": [
       {
         "file": "quality-verdict-first-run.test.mjs",
-        "line": 205,
+        "line": 216,
         "titlePrefix": "v2 §0: loadFirstRunInputs reads the six directories, the rec"
       }
     ]
@@ -605,7 +605,7 @@
     "expected": [
       {
         "file": "quality-verdict-first-run.test.mjs",
-        "line": 277,
+        "line": 343,
         "titlePrefix": "v2 §0: the command line refuses a verdict without the first-"
       }
     ]
@@ -617,7 +617,13 @@
     "find": "if (unaccounted.length > 0)",
     "replace": "if (false)",
     "testFile": "quality-verdict.test.mjs",
-    "expected": []
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1379,
+        "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
+      }
+    ]
   },
   {
     "id": "QV3b-P21-refused-any-stage",
@@ -626,7 +632,13 @@
     "find": ".filter((row) => row?.stage === \"prepare\")",
     "replace": ".filter((row) => row?.stage !== undefined)",
     "testFile": "quality-verdict.test.mjs",
-    "expected": []
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 1379,
+        "titlePrefix": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は"
+      }
+    ]
   },
   {
     "id": "QV3b-P33-unknown-variant",
@@ -635,7 +647,13 @@
     "find": "else if (!GRAPH_EVAL_VARIANTS.some((v) => v.key === requery.variantKey))",
     "replace": "else if (false)",
     "testFile": "quality-verdict.test.mjs",
-    "expected": []
+    "expected": [
+      {
+        "file": "quality-verdict.test.mjs",
+        "line": 2157,
+        "titlePrefix": "P3-2（v2 C5）: variantKey の無い再 query の行は黙って捨てず、すべての variant の条"
+      }
+    ]
   },
   {
     "id": "QV3b-P31-pair-observationPrep",
@@ -644,7 +662,13 @@
     "find": "receipt?.head?.observationPrep?.commit !== allowList?.s4Commit ||",
     "replace": "false ||",
     "testFile": "quality-verdict-first-run.test.mjs",
-    "expected": []
+    "expected": [
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 373,
+        "titlePrefix": "v2 §0: a receipt of a kind's directory that lacks the pair's"
+      }
+    ]
   },
   {
     "id": "QV3b-P31-pair-candidate",
@@ -653,7 +677,18 @@
     "find": "        receipt?.candidate?.commit !== allowList?.candidate\n      )\n        throw precheck(\n          `v2 §0: the ${kind} receipt ${file}",
     "replace": "        false\n      )\n        throw precheck(\n          `v2 §0: the ${kind} receipt ${file}",
     "testFile": "quality-verdict-first-run.test.mjs",
-    "expected": []
+    "expected": [
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 106,
+        "titlePrefix": "v2 §0: the first formal run is the earliest head.runStartedA"
+      },
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 373,
+        "titlePrefix": "v2 §0: a receipt of a kind's directory that lacks the pair's"
+      }
+    ]
   },
   {
     "id": "QV3b-P32-branch",
@@ -662,7 +697,13 @@
     "find": "const rows = all.filter((row) => row.branch === branch);",
     "replace": "const rows = all;",
     "testFile": "quality-verdict-first-run.test.mjs",
-    "expected": []
+    "expected": [
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 406,
+        "titlePrefix": "v2 §0: the remote time record must name each commit on its b"
+      }
+    ]
   },
   {
     "id": "QV3b-P32-impl-bound",
@@ -671,7 +712,18 @@
     "find": "if (sha256(onDisk) !== sha256(atCommit))",
     "replace": "if (false)",
     "testFile": "quality-verdict-first-run.test.mjs",
-    "expected": []
+    "expected": [
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 216,
+        "titlePrefix": "v2 §0: loadFirstRunInputs reads the six directories, the rec"
+      },
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 438,
+        "titlePrefix": "v2 §0: assertImplementationBound compares the running bytes "
+      }
+    ]
   },
   {
     "id": "QV3b-P32-v2-path",
@@ -680,7 +732,13 @@
     "find": "if (v2Blob.relative !== V2_FILE_PATH)",
     "replace": "if (false)",
     "testFile": "quality-verdict-first-run.test.mjs",
-    "expected": []
+    "expected": [
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 216,
+        "titlePrefix": "v2 §0: loadFirstRunInputs reads the six directories, the rec"
+      }
+    ]
   },
   {
     "id": "QV3b-P32-g01-json-dir",
@@ -689,7 +747,13 @@
     "find": "list.flatMap((dir) => readFirstRunDir(dir))",
     "replace": "list.flatMap((dir) => readReceiptDir(dir))",
     "testFile": "quality-verdict-first-run.test.mjs",
-    "expected": []
+    "expected": [
+      {
+        "file": "quality-verdict-first-run.test.mjs",
+        "line": 216,
+        "titlePrefix": "v2 §0: loadFirstRunInputs reads the six directories, the rec"
+      }
+    ]
   },
   {
     "id": "QV3b-P11-g01-head-kind",
@@ -698,7 +762,13 @@
     "find": "buildRunHead({ ...input, kind: \"g01-diagnostic\" }, deps)",
     "replace": "buildRunHead({ ...input, kind: \"trace\" }, deps)",
     "testFile": "pubg16-e2e-run.test.mjs",
-    "expected": []
+    "expected": [
+      {
+        "file": "pubg16-e2e-run.test.mjs",
+        "line": 336,
+        "titlePrefix": "the G-01 diagnostic's head is the other receipts' head: free"
+      }
+    ]
   },
   {
     "id": "QV3b-P11-head-kind-traces",
@@ -707,7 +777,13 @@
     "find": "\"g01-diagnostic\": { traces: false },",
     "replace": "\"g01-diagnostic\": { traces: true },",
     "testFile": "pubg16-e2e-run.test.mjs",
-    "expected": []
+    "expected": [
+      {
+        "file": "pubg16-e2e-run.test.mjs",
+        "line": 336,
+        "titlePrefix": "the G-01 diagnostic's head is the other receipts' head: free"
+      }
+    ]
   },
   {
     "id": "QV3b-P11-frozen-requires-head",
@@ -716,7 +792,13 @@
     "find": "  if (frozen)\n    for (const name of G01_HEAD_OPTIONS)\n      if (!options[name]) throw new Error(`--${name} is required`);",
     "replace": "  if (false)\n    for (const name of G01_HEAD_OPTIONS)\n      if (!options[name]) throw new Error(`--${name} is required`);",
     "testFile": "pubg16-e2e-run.test.mjs",
-    "expected": []
+    "expected": [
+      {
+        "file": "pubg16-e2e-run.test.mjs",
+        "line": 236,
+        "titlePrefix": "g01-frozen takes the frozen setups, never a dev setup, and n"
+      }
+    ]
   },
   {
     "id": "QV3b-P11-dev-refuses-head",
@@ -725,6 +807,12 @@
     "find": "  if (!frozen)\n    for (const name of G01_HEAD_OPTIONS)\n      if (options[name] !== undefined)",
     "replace": "  if (false)\n    for (const name of G01_HEAD_OPTIONS)\n      if (options[name] !== undefined)",
     "testFile": "pubg16-e2e-run.test.mjs",
-    "expected": []
+    "expected": [
+      {
+        "file": "pubg16-e2e-run.test.mjs",
+        "line": 236,
+        "titlePrefix": "g01-frozen takes the frozen setups, never a dev setup, and n"
+      }
+    ]
   }
 ]

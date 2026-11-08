@@ -29,3 +29,7 @@ node count-n.mjs <baseline-all.tap> <候補の worktree> --out counts.json
 
 - `mutations-k66-qv3.json`：品質判定 v2 の確定版の C1・C4〜C8、D2・D3（(1)〜(6)、(a)(b)）、D8 (b)、§0 の CLI（D7）の変異 35 件（`run.mjs` の引数は `--mutations mutations-k66-qv3.json --targets followup.k66.test.mjs,quality-verdict.test.mjs,quality-verdict-first-run.test.mjs --positive positive-k66-qv3.json`）。`expected` は結果から写した（変異の前に決めていない）。等価の 1 件は `equivalentReason`。
 - `positive-k66-qv3.json`：追補 2 の陽性の対照（試験の行は候補 `57c13dc5` のもの）。
+
+## 追補 3（再レビュー指摘への対応。候補 `99699dda`）
+
+`mutations-k66-qv3.json` を 48 件にした（追補 2 の 35 件 + 再レビューの 13 件）。`--targets` に `pubg16-e2e-run.test.mjs` を足す（`followup.k66.test.mjs,quality-verdict.test.mjs,quality-verdict-first-run.test.mjs,pubg16-e2e-run.test.mjs`）。`positive-k66-qv3.json` は候補 `99699dda` の行に更新した。

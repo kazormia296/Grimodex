@@ -265,3 +265,9 @@ K6/6-N1〜N13 とK6/6-P1〜P5 のすべてに 1 件以上の試験がある。FR
 - 変異 35 件（`tools/mutations-k66-qv3.json`）：条件 2 の D8 の fail を先に返す（P1-1）、D3 の空の記録・論理 ID の無い path・記録の無い子（P2-1、P3-2、§3）、`followUp.requeries`（P2-2。FR-6、N29・N32、条件 5 (a)）、D4 の hybrid の行・variantKey の無い行（C5）、D3 (d) の順序・`refusedAtSetup` の読み・fixture の順の読込み（C1）、D3 の (1)〜(6) と D2 の「子から外す」、D3 (a)(b)、D8 (b)、§0 の CLI の各検査（D7）。すべて 1 回だけ当たり（`allHitOnce`）、**34 件はその条件の試験が落ち、等価 1 件（`QV3-C1-order-empty`）は落ちない**（理由は `equivalentReason`）。陽性の対照 11 件は baseline で ok、nir1-graph-eval の全体 731 件 pass。
 - 最初の run で生き残った変異が 3 件あり（試験の穴）、`57c13dc5` で埋めた：`QV3-D2-eligible-stays-child`（D3 の対象の子を子に数えても判定が変わらなかった。D3 の開示の試験に「条件 5 (a) の違反が無い」assert を足した）、`QV3-D7-cli-required`（CLI の必須引数の試験が変異の hook を子 process に渡していなかった。`process.execArgv` を渡す）、`QV3-P22-FR6-not-list`（変異の置換が構文を壊していた。置換を直した）。
 - 結果 `results-k66-qv3-57c13dc5.json`（sha256 `f919e7cc87cd3f10d3fd473c1fbc0c24267977c3eee2a58fab7ff1c93898314f`）。期待（`expected`）は最初の run の結果から写した（変異の前に決めていない）。K6/6 の bytes・手順のファイル・trace の file は変えていない。
+
+## 追補 3：品質判定 v2 の再レビュー指摘への対応（DR-CP4-QV-3 の再レビューの節。候補 `99699dda`）
+
+- 実行：2026-11-08T10:41:52.302Z から 2026-11-08T10:44:53.777Z（UTC）。候補 `99699dda79a882d029b1fce9c87fe7c45eff60b1`（tree `c3132bec8d9830a81d27677d8f1e3a1177c68c07`）。Node v22.23.3、detach の worktree。
+- 変異 48 件（`tools/mutations-k66-qv3.json`。追補 2 の 35 件に、再レビューの 13 件〔`QV3b-*`：D3 (d) の fixture の行の欠落と `refusedAtSetup` の stage、未知の `variantKey`、§0 の置き場の組・枝・`--impl-commit` の束縛・v2 の path・G-01 の診断の置き場、G-01 の診断の head の kind・必須の引数〕を足し、追補 2 の 1 件の find を直した）。すべて 1 回だけ当たり（`allHitOnce`）、**47 件はその条件の試験が落ち、等価 1 件（`QV3-C1-order-empty`）は落ちない**。陽性の対照 12 件は baseline で ok、nir1-graph-eval の全体 735 件 pass。
+- 結果 `results-k66-qv3-99699dda.json`（sha256 `eb63fdc19aaacc0cd40dfe8d8585ee41d169a8daa458bb24ae4e45309b5d812b`）。追補 2 の結果 `results-k66-qv3-57c13dc5.json` は、候補 `57c13dc5` の 35 件の記録として残す。期待（`expected`）は結果から写した（変異の前に決めていない）。
