@@ -7334,7 +7334,7 @@ test("S2 追補 #16（DR-CP4-P-10）: S2 binds K6/6 (contracts.k66 and its confi
       /k66Readings\.rule must bind/u,
     );
   }
-  assert.equal(K66_LIMIT_WORDS.length, 72);
+  assert.equal(K66_LIMIT_WORDS.length, 75);
   for (const word of K66_LIMIT_WORDS) {
     assert.ok(prep.k66Readings.limits.includes(word), word);
     detects(
@@ -7877,8 +7877,8 @@ test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6
   const rows1108 = declaration.revisions.filter(
     (row) => row.at === "2026-11-08",
   );
-  assert.equal(rows1108.length, 3);
-  assert.equal(declaration.revisions.at(-1), rows1108[2]);
+  assert.equal(rows1108.length, 4);
+  assert.equal(declaration.revisions.at(-1), rows1108[3]);
   for (const word of [
     "S2 追補 #16",
     "DR-CP4-S4-10",
@@ -7895,8 +7895,9 @@ test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6
     "製品のコードはこの列に含めない",
     "#828",
     "#831",
-    "18 file",
-    "git diff e3721221 HEAD -- src electron src-tauri は空",
+    "51 file",
+    "#839",
+    "git log --first-parent --no-merges e3721221..HEAD",
   ])
     assert.ok(rows1108[0].reason.includes(word), word);
   assert.ok(!rows1108[0].reason.includes("CONTRACTS.k64、製品のコード。"));
@@ -7949,6 +7950,18 @@ test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6
     "追補の作者の申告ではない",
   ])
     assert.ok(rows1108[2].reason.includes(word), word);
+  // The fourth row: the master and contracts merges (追記 4).
+  for (const word of [
+    "8caecc7f",
+    "0f050d74",
+    "918d3def",
+    "1c821c4b",
+    "#832",
+    "#839",
+    "取り込んだ bytes は S3 が見ていない",
+    "追補の作者の申告ではない",
+  ])
+    assert.ok(rows1108[3].reason.includes(word), word);
   // The scope names the seventh re-freeze's observations.
   for (const word of [
     "DR-CP4-S4-10",
@@ -7960,12 +7973,12 @@ test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6
   // Earlier rows stay as written (the new rows add, never edit).
   assert.ok(
     declaration.revisions
-      .slice(0, -3)
+      .slice(0, -4)
       .some((row) => row.reason.includes("確認の台帳の形の記録ではない")),
   );
   assert.ok(
     declaration.revisions
-      .slice(0, -3)
+      .slice(0, -4)
       .some((row) => row.reason.includes("S4a（6 回目）で開示する限界")),
   );
   // S2's bound author declaration is the file this test reads.
