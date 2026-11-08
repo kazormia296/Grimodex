@@ -303,7 +303,11 @@
         "cursorAfterExhaustion": "reserved-lease-free",
         "schedulerAfterExhaustion": "idle-until-new-semantic-epoch",
         "newEpochReservationRecovery": "release-and-reprocess-under-new-run",
-        "exhaustedRunAfterNewEpoch": "remains-terminal-failed"
+        "exhaustedRunAfterNewEpoch": "remains-terminal-failed",
+        "publishContentionExhaustedFailureCode": "NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED",
+        "cursorAfterPublishContentionExhaustion": "released-unacknowledged",
+        "schedulerAfterPublishContentionExhaustion": "reprocess-under-new-run",
+        "publishContentionRunAfterExhaustion": "closed-terminal-failed"
       },
       "periodic": false,
       "manualRetry": false,

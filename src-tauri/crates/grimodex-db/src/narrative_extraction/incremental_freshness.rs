@@ -71,6 +71,11 @@ const MAX_CANONICAL_SEQUENCES_PER_BATCH: i64 = 32;
 const TASK_LEASE_DURATION_SECS: i64 = 300;
 const FAILURE_POLICY_VERSION: &str = "v1";
 pub(crate) const MAX_ATTEMPTS_PER_BATCH: i64 = 3;
+/// Failure code of a Run closed because publication lost its guard race to a
+/// foreground writer on the last Attempt (DR-JF-9). Unlike retry exhaustion it
+/// is not a dead-letter: the cursor reservation is returned unacknowledged and
+/// the next cycle evaluates the range again under a new Run.
+const PUBLISH_CONTENDED: &str = "NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED";
 const LEASE_HEARTBEAT_EDGE_INTERVAL: usize = 64;
 pub const NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME: &str = "NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME";
 
@@ -152,6 +157,49 @@ impl std::fmt::Display for IncrementalFreshnessCycleRequeued {
 
 impl std::error::Error for IncrementalFreshnessCycleRequeued {}
 
+/// The last Attempt of a batch lost a publication race to a foreground writer
+/// and its Run was durably closed in the same authority (Attempt, Task and Run
+/// failed with `NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED`, cursor reservation
+/// returned without acknowledging the range). The next cycle reserves the same
+/// range again under a new Run with a fresh Attempt budget.
+///
+/// It is still an `Err` and a different type from
+/// [`IncrementalFreshnessCycleRequeued`]: that one means the same Run resumes
+/// the same range, this one means the Run is closed. Only the shared crate
+/// constructs it, after the closing transaction committed; any other failure
+/// (retry exhaustion without a guard race, lost lease, evaluation or lifecycle
+/// failure, failed requeue) never takes this form. Its message is the guard's
+/// original message.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct IncrementalFreshnessCycleContended {
+    project_id: String,
+    run_id: String,
+    through_sequence_inclusive: i64,
+    message: String,
+}
+
+impl IncrementalFreshnessCycleContended {
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    pub fn through_sequence_inclusive(&self) -> i64 {
+        self.through_sequence_inclusive
+    }
+}
+
+impl std::fmt::Display for IncrementalFreshnessCycleContended {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for IncrementalFreshnessCycleContended {}
+
 /// What `requeue_after_failure` durably recorded for the failed Attempt.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum RequeueOutcome {
@@ -159,6 +207,10 @@ enum RequeueOutcome {
     NotApplied,
     Retryable,
     Terminal,
+    /// A publication guard race on the last Attempt: the Run was closed as
+    /// `NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED` and the cursor
+    /// reservation was returned unacknowledged (not a dead-letter).
+    ContendedRunClosed,
 }
 
 /// Test-only interposition between a successful evaluation and its
@@ -340,6 +392,11 @@ struct ClaimedBatch {
     preparation_error: Option<String>,
     has_more: bool,
     idle_checkpoint: bool,
+    /// The project's Change Feed head when this Attempt was claimed, read in
+    /// the claiming transaction. Evaluation starts after the claim, so a head
+    /// that moved by the time the Attempt fails is evidence that a foreground
+    /// write landed during it (DR-JF-9).
+    feed_head_at_claim: i64,
 }
 
 #[derive(Debug)]
@@ -668,6 +725,17 @@ fn run_serialized_cycle_with_control(
                     message: format!("{error:#}"),
                 }));
             }
+            // The last Attempt lost the guard race: the Run is closed and the
+            // reservation returned (DR-JF-9). The owner releases its permit
+            // normally; the next cycle makes a new Run for the same range.
+            if requeue == RequeueOutcome::ContendedRunClosed && is_publish_guard_race(&error) {
+                return Err(anyhow::Error::new(IncrementalFreshnessCycleContended {
+                    project_id: batch.project_id.clone(),
+                    run_id: batch.run_id.clone(),
+                    through_sequence_inclusive: batch.through_sequence_inclusive,
+                    message: format!("{error:#}"),
+                }));
+            }
             return Err(error);
         }
     };
@@ -893,7 +961,8 @@ fn select_next_project(conn: &Connection) -> anyhow::Result<Option<String>> {
                WHERE epoch.project_id = event.project_id
             )
           GROUP BY event.project_id
-          ORDER BY MIN(event.canonical_sequence) ASC, event.project_id ASC
+          ORDER BY MIN(COALESCE(julianday(cursor.updated_at), 0)) ASC,
+                   MIN(event.canonical_sequence) ASC, event.project_id ASC
           LIMIT 1",
         [CURSOR_CONSUMER_ID],
         |row| row.get(0),
@@ -957,7 +1026,8 @@ fn select_next_project_excluding(
                WHERE epoch.project_id = event.project_id
             )
           GROUP BY event.project_id
-          ORDER BY MIN(event.canonical_sequence) ASC, event.project_id ASC
+          ORDER BY MIN(COALESCE(julianday(cursor.updated_at), 0)) ASC,
+                   MIN(event.canonical_sequence) ASC, event.project_id ASC
           LIMIT 1",
         params![CURSOR_CONSUMER_ID, excluded_project_id],
         |row| row.get(0),
@@ -2122,6 +2192,7 @@ fn claim_reserved_batch_in_tx(
     };
     let idle_checkpoint = from_sequence_exclusive == through_sequence_inclusive
         || task_input_has_idle_checkpoint_tag(&claimed.input_json);
+    let feed_head_at_claim = current_feed_head(conn, project_id)?;
     if idle_checkpoint {
         let lifecycle_at = idle_checkpoint_lifecycle_timestamp_in_tx(conn, run_id)?;
         if claimed.attempt_number == 1 {
@@ -2174,6 +2245,7 @@ fn claim_reserved_batch_in_tx(
         preparation_error,
         has_more,
         idle_checkpoint,
+        feed_head_at_claim,
     })))
 }
 
@@ -3591,7 +3663,24 @@ fn requeue_after_failure(
                 |row| row.get(0),
             )?;
             let terminal = attempt_count >= MAX_ATTEMPTS_PER_BATCH;
-            let failure_code = if terminal {
+            // Only an unwrapped publication guard race on the last Attempt of a
+            // non-idle batch, with evidence of a foreground write during that
+            // Attempt, closes the Run instead of dead-lettering it (DR-JF-9).
+            // The classification is the crate's private guard type, never
+            // message text. The evidence is the Change Feed head having moved
+            // since this Attempt was claimed: a foreground write that changes
+            // a guarded Source commits its Feed event in the same transaction.
+            // Without it (a deterministic evaluation/publication mismatch, or
+            // a write the Feed does not record) the failure keeps the
+            // dead-letter and recovery path, so it stays visible and the number
+            // of closed Runs is bounded by the number of Feed events.
+            let contended = terminal
+                && !batch.idle_checkpoint
+                && is_publish_guard_race(error)
+                && current_feed_head(conn, &batch.project_id)? > batch.feed_head_at_claim;
+            let failure_code = if contended {
+                PUBLISH_CONTENDED
+            } else if terminal {
                 "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED"
             } else {
                 "NEX_INCREMENTAL_FRESHNESS_RETRYABLE"
@@ -3712,6 +3801,21 @@ fn requeue_after_failure(
                 cursor_updated == 1,
                 "NEX_INCREMENTAL_FRESHNESS_LEASE_LOST: failed Attempt lost its cursor reservation"
             );
+            if contended {
+                // Return the sealed range without acknowledging it, in the same
+                // transaction that closed the Run, so a crash cannot leave a
+                // failed Run holding a reservation that nothing releases. The
+                // reservation identity is the same one the UPDATE above matched.
+                release_cursor_reservation_in_tx(
+                    conn,
+                    &batch.project_id,
+                    CURSOR_CONSUMER_ID,
+                    &batch.run_id,
+                    &batch.semantic_epoch_id,
+                    batch.through_sequence_inclusive,
+                )?;
+                return Ok(RequeueOutcome::ContendedRunClosed);
+            }
             Ok(if terminal {
                 RequeueOutcome::Terminal
             } else {
@@ -4772,6 +4876,11 @@ mod tests {
 
     fn held_project_fixture_db() -> Database {
         let db = fixture_db();
+        seed_held_project(&db);
+        db
+    }
+
+    fn seed_held_project(db: &Database) {
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title) VALUES (?1, 'Held project')",
@@ -4838,7 +4947,6 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })
         .expect("seed held-project fixture");
-        db
     }
 
     fn empty_held_project_fixture_db() -> Database {
@@ -6774,12 +6882,83 @@ mod tests {
         assert_eq!(freshness_cursor(&db), (1, None), "the cursor advances");
     }
 
-    #[test]
-    fn publish_race_on_the_last_attempt_is_not_a_requeue() {
-        let db = fixture_db();
-        for attempt in 1..MAX_ATTEMPTS_PER_BATCH {
-            let _race = arm_scene_publish_race(&db);
-            let error = run_incremental_freshness_cycle(&db).expect_err("raced publication");
+    /// Append one more canonical Feed event on the fixture Scene, as a real
+    /// foreground save does in the same transaction as its Source write.
+    fn append_scene_feed_event(conn: &Connection, sequence: i64) -> anyhow::Result<()> {
+        conn.execute(
+            "INSERT INTO change_events
+                (event_uid, project_id, scene_id, domain, op_type, entity_type, entity_id,
+                 payload, session_id, sequence, timestamp, prev_hash, hash)
+             VALUES (?1, ?2, ?3, 'scene', 'scene.update', 'scene', ?3,
+                     '{}', 'c2-1-phase-cas', ?4, 1787078400000, 'fixture-prev', 'fixture-hash')",
+            params![format!("canonical-feed-{sequence}"), PROJECT_ID, SCENE_ID, sequence],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_change_transactions
+                (id, project_id, request_id, source_domain, source_change_event_uid,
+                 source_change_event_sequence, cause_kind, origin, application_ids_json,
+                 payload_digest, created_at)
+             VALUES (?1, ?2, ?3, 'scene.update', ?4, ?5, 'forward', 'human', '[]', ?6, ?7)",
+            params![
+                format!("transaction-feed-{sequence}"),
+                PROJECT_ID,
+                format!("request-feed-{sequence}"),
+                format!("canonical-feed-{sequence}"),
+                sequence,
+                format!("sha256:feed-{sequence}-payload"),
+                OCCURRED_AT,
+            ],
+        )?;
+        conn.execute(
+            r#"INSERT INTO narrative_change_events
+                (id, project_id, transaction_id, canonical_change_event_uid,
+                 canonical_sequence, event_ordinal, object_key_json, change_kind,
+                 mutation_kind, before_version, before_digest, after_version,
+                 after_digest, changed_paths_json, text_impact_json,
+                 structural_impact_json, occurred_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, 'content', 'update',
+                     1, 'sha256:before', 2, ?7, '["/content"]',
+                     '{"normalizerVersion":"gdx-canonical-text/1"}', NULL, ?8)"#,
+            params![
+                format!("event-feed-{sequence}"),
+                PROJECT_ID,
+                format!("transaction-feed-{sequence}"),
+                format!("canonical-feed-{sequence}"),
+                sequence,
+                format!(r#"{{"kind":"scene","sceneId":"{SCENE_ID}"}}"#),
+                format!("sha256:feed-{sequence}-after"),
+                OCCURRED_AT,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The foreground write that races the next cycle, recorded in the Change
+    /// Feed like a real save: bump the Scene's version and append a Feed event.
+    fn arm_scene_publish_race_with_feed_write(
+        db: &Database,
+    ) -> publish_race_for_test::ArmedPublishRace {
+        publish_race_for_test::arm(db, |db| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE tree_nodes SET version = version + 1
+                      WHERE id = ?1 AND project_id = ?2",
+                    params![SCENE_ID, PROJECT_ID],
+                )?;
+                let head = current_feed_head(conn, PROJECT_ID)?;
+                append_scene_feed_event(conn, head + 1)?;
+                Ok(())
+            })
+            .expect("foreground write with a Feed event between evaluation and publication");
+        })
+    }
+
+    /// Lose the publication race on the first `attempts` Attempts of one
+    /// batch; each is a typed, durable requeue of the same Run.
+    fn lose_race_as_requeue(db: &Database, attempts: i64) {
+        for attempt in 1..=attempts {
+            let _race = arm_scene_publish_race(db);
+            let error = run_incremental_freshness_cycle(db).expect_err("raced publication");
             assert!(
                 error
                     .downcast_ref::<IncrementalFreshnessCycleRequeued>()
@@ -6787,22 +6966,414 @@ mod tests {
                 "attempt {attempt} is still retryable: {error:#}"
             );
         }
-        let _race = arm_scene_publish_race(&db);
-        let error = run_incremental_freshness_cycle(&db).expect_err("raced last attempt");
+    }
+
+    /// The last Attempt of a batch loses the race to a foreground write that
+    /// advanced the Change Feed: the Run is closed and the typed contended
+    /// result is returned.
+    fn lose_race_on_last_attempt(db: &Database) -> IncrementalFreshnessCycleContended {
+        lose_race_as_requeue(db, MAX_ATTEMPTS_PER_BATCH - 1);
+        let _race = arm_scene_publish_race_with_feed_write(db);
+        let error = run_incremental_freshness_cycle(db).expect_err("raced last attempt");
         assert!(
             error
                 .downcast_ref::<IncrementalFreshnessCycleRequeued>()
                 .is_none(),
-            "retry exhaustion is a real failure, never a requeue: {error:#}"
+            "the closed Run is never reported as a requeue: {error:#}"
+        );
+        error
+            .downcast_ref::<IncrementalFreshnessCycleContended>()
+            .unwrap_or_else(|| panic!("a raced last attempt must be the typed result: {error:#}"))
+            .clone()
+    }
+
+    /// Freshness Runs in creation order: (status, terminal reason code).
+    fn freshness_runs(db: &Database) -> Vec<(String, Option<String>)> {
+        db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT status, terminal_reason_code
+                   FROM narrative_extraction_runs
+                  WHERE consumer_id = ?1
+                  ORDER BY rowid",
+            )?;
+            let rows = statement
+                .query_map([CURSOR_CONSUMER_ID], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .expect("Freshness Runs")
+    }
+
+    fn freshness_attempt_count(db: &Database) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_extraction_attempts attempt
+                   JOIN narrative_extraction_tasks task ON task.id = attempt.task_id
+                   JOIN narrative_extraction_runs run ON run.id = task.run_id
+                  WHERE run.consumer_id = ?1",
+                [CURSOR_CONSUMER_ID],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("Freshness Attempt count")
+    }
+
+    const CONTENDED_CODE: &str = "NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED";
+    const EXHAUSTED_CODE: &str = "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED";
+
+    #[test]
+    fn publish_race_on_the_last_attempt_closes_the_run_and_returns_the_reservation() {
+        let db = fixture_db();
+        let contended = lose_race_on_last_attempt(&db);
+        assert!(
+            contended
+                .to_string()
+                .contains("NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED"),
+            "the guard's message is kept: {contended}"
+        );
+        assert_eq!(contended.project_id(), PROJECT_ID);
+        assert_eq!(contended.through_sequence_inclusive(), 1);
+        assert_eq!(
+            latest_attempt(&db),
+            (
+                "failed".to_owned(),
+                Some(CONTENDED_CODE.to_owned()),
+                Some("terminal".to_owned()),
+            )
+        );
+        db.with_conn(|conn| {
+            let (task_status, next_attempt_at): (String, Option<String>) = conn.query_row(
+                "SELECT task.status, attempt.next_attempt_at
+                   FROM narrative_extraction_tasks task
+                   JOIN narrative_extraction_attempts attempt ON attempt.task_id = task.id
+                  WHERE task.run_id = ?1
+                  ORDER BY attempt.attempt_number DESC LIMIT 1",
+                [contended.run_id()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(task_status, "failed");
+            assert_eq!(next_attempt_at, None, "a terminal Attempt has no next time");
+            let (reserved, lease_owner, last_error): (Option<i64>, Option<String>, Option<String>) =
+                conn.query_row(
+                    "SELECT reserved_through_sequence, lease_owner, last_error
+                       FROM narrative_change_cursors
+                      WHERE project_id = ?1 AND consumer_id = ?2",
+                    params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+            assert_eq!(reserved, None);
+            assert_eq!(lease_owner, None);
+            assert!(
+                last_error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("SOURCE_CHANGED")),
+                "the cursor keeps the last error: {last_error:?}"
+            );
+            Ok(())
+        })
+        .expect("inspect the closed Run");
+        assert_eq!(
+            freshness_runs(&db),
+            vec![("failed".to_owned(), Some(CONTENDED_CODE.to_owned()))],
+            "the Run is failed with the contended reason, not a dead-letter"
+        );
+        assert_eq!(
+            freshness_cursor(&db),
+            (0, None),
+            "the range is returned, not acknowledged and not skipped"
+        );
+    }
+
+    #[test]
+    fn a_contended_run_is_replaced_and_the_next_cycle_publishes_the_range() {
+        let db = fixture_db();
+        let contended = lose_race_on_last_attempt(&db);
+        let outcome = run_incremental_freshness_cycle(&db)
+            .expect("once the writes stop the next cycle catches up");
+        let IncrementalFreshnessCycleOutcome::Processed(summary) = outcome else {
+            panic!("the next cycle must publish the returned range: {outcome:?}");
+        };
+        assert_ne!(summary.run_id, contended.run_id(), "a new Run owns it");
+        assert_eq!(summary.from_sequence_exclusive, 0);
+        assert_eq!(
+            summary.through_sequence_inclusive, 2,
+            "the new Run also covers the foreground write's Feed event"
+        );
+        assert_eq!(freshness_cursor(&db), (2, None), "the cursor advances");
+        let runs = freshness_runs(&db);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].1.as_deref(), Some(CONTENDED_CODE));
+        assert_eq!(runs[1].0, "completed");
+    }
+
+    #[test]
+    fn repeated_contention_keeps_replacing_runs_and_catches_up_when_the_writes_stop() {
+        let db = fixture_db();
+        let first = lose_race_on_last_attempt(&db);
+        let second = lose_race_on_last_attempt(&db);
+        assert_ne!(first.run_id(), second.run_id());
+        assert_eq!(freshness_cursor(&db), (0, None));
+        let outcome = run_incremental_freshness_cycle(&db).expect("writes have stopped");
+        assert!(
+            matches!(outcome, IncrementalFreshnessCycleOutcome::Processed(_)),
+            "{outcome:?}"
+        );
+        assert_eq!(freshness_cursor(&db), (3, None));
+        let runs = freshness_runs(&db);
+        assert_eq!(runs.len(), 3, "{runs:?}");
+        assert!(
+            runs.iter()
+                .all(|(_, reason)| reason.as_deref() != Some(EXHAUSTED_CODE)),
+            "contention never dead-letters: {runs:?}"
+        );
+        assert_eq!(
+            freshness_attempt_count(&db),
+            2 * MAX_ATTEMPTS_PER_BATCH + 1,
+            "three Attempts per contended Run, then one that publishes"
+        );
+    }
+
+    #[test]
+    fn a_contended_close_defers_its_project_so_another_project_progresses() {
+        let db = fixture_db();
+        lose_race_on_last_attempt(&db);
+        // The other project's only pending event is later in the Feed than the
+        // contended project's range, so ordering by the oldest pending
+        // sequence alone would pick the contended project first every time.
+        seed_held_project(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_change_events SET canonical_sequence = 10
+                  WHERE project_id = ?1",
+                [HELD_PROJECT_ID],
+            )?;
+            conn.execute(
+                "UPDATE narrative_change_transactions SET source_change_event_sequence = 10
+                  WHERE project_id = ?1",
+                [HELD_PROJECT_ID],
+            )?;
+            conn.execute(
+                "UPDATE change_events SET sequence = 10 WHERE project_id = ?1",
+                [HELD_PROJECT_ID],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("move the other project's event after the contended range");
+        // Contention keeps going: the next race is armed, yet the other
+        // project is served first and the contended one right after.
+        let mut order = Vec::new();
+        let _race = arm_scene_publish_race_with_feed_write(&db);
+        for _ in 0..2 {
+            let IncrementalFreshnessCycleOutcome::Processed(summary) =
+                run_incremental_freshness_cycle(&db).expect("both projects stay runnable")
+            else {
+                panic!("a pending project must be processed");
+            };
+            order.push(summary.project_id);
+        }
+        assert_eq!(
+            order,
+            vec![HELD_PROJECT_ID.to_owned(), PROJECT_ID.to_owned()],
+            "the other project progresses before the project that just closed contended"
+        );
+        assert!(matches!(
+            run_incremental_freshness_cycle(&db).expect("drained"),
+            IncrementalFreshnessCycleOutcome::Idle
+        ));
+    }
+
+    #[test]
+    fn a_last_attempt_guard_race_without_a_feed_advance_keeps_the_dead_letter_path() {
+        let db = fixture_db();
+        lose_race_as_requeue(&db, MAX_ATTEMPTS_PER_BATCH - 1);
+        // The Source changed but the Change Feed did not move: a deterministic
+        // evaluation/publication mismatch looks like this, so it must stay
+        // visible instead of becoming an unbounded stream of closed Runs.
+        let _race = arm_scene_publish_race(&db);
+        let error = run_incremental_freshness_cycle(&db).expect_err("raced last attempt");
+        assert!(
+            error
+                .downcast_ref::<IncrementalFreshnessCycleContended>()
+                .is_none()
+                && error
+                    .downcast_ref::<IncrementalFreshnessCycleRequeued>()
+                    .is_none(),
+            "no Feed advance, no contended close: {error:#}"
         );
         assert!(format!("{error:#}").contains("NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED"));
         assert_eq!(
             latest_attempt(&db),
             (
                 "failed".to_owned(),
-                Some("NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED".to_owned()),
+                Some(EXHAUSTED_CODE.to_owned()),
                 Some("terminal".to_owned()),
             )
+        );
+        assert_eq!(
+            freshness_runs(&db),
+            vec![("failed".to_owned(), Some(EXHAUSTED_CODE.to_owned()))]
+        );
+        let (_, active_run_id) = freshness_cursor(&db);
+        assert!(active_run_id.is_some(), "a dead-letter keeps its reservation");
+        assert!(matches!(
+            run_incremental_freshness_cycle(&db).expect("a dead-letter is idle"),
+            IncrementalFreshnessCycleOutcome::Idle
+        ));
+    }
+
+    #[test]
+    fn a_feed_write_before_the_last_attempt_is_not_evidence_for_that_attempt() {
+        let db = fixture_db();
+        // A Feed event lands between attempts 1 and 2, then the Source changes
+        // without a new Feed event on the last attempt: the head moved before
+        // that Attempt was claimed, so it does not count for it.
+        {
+            let _race = arm_scene_publish_race_with_feed_write(&db);
+            let error = run_incremental_freshness_cycle(&db).expect_err("attempt 1");
+            assert!(error
+                .downcast_ref::<IncrementalFreshnessCycleRequeued>()
+                .is_some());
+        }
+        lose_race_as_requeue(&db, MAX_ATTEMPTS_PER_BATCH - 2);
+        let _race = arm_scene_publish_race(&db);
+        let error = run_incremental_freshness_cycle(&db).expect_err("raced last attempt");
+        assert!(
+            error
+                .downcast_ref::<IncrementalFreshnessCycleContended>()
+                .is_none(),
+            "{error:#}"
+        );
+        assert_eq!(
+            freshness_runs(&db),
+            vec![("failed".to_owned(), Some(EXHAUSTED_CODE.to_owned()))]
+        );
+    }
+
+    #[test]
+    fn a_last_attempt_failure_that_is_not_a_guard_race_stays_a_dead_letter() {
+        struct StopAtPublish;
+        impl GraphWorkControl for StopAtPublish {
+            fn check(&mut self, stage: GraphWorkStage) -> anyhow::Result<()> {
+                anyhow::ensure!(
+                    stage != GraphWorkStage::Publish,
+                    "NEX_VALIDATION_TERMINATED:workspace-transition-in-progress"
+                );
+                Ok(())
+            }
+        }
+        let db = fixture_db();
+        lose_race_as_requeue(&db, MAX_ATTEMPTS_PER_BATCH - 1);
+        let mut control = StopAtPublish;
+        let error = db
+            .with_background_connection_priority(|| {
+                run_serialized_cycle_with_control(&db, None, Some(&mut control))
+            })
+            .expect_err("a lifecycle stop on the last attempt fails the cycle");
+        assert!(format!("{error:#}").contains("NEX_VALIDATION_TERMINATED"));
+        assert!(
+            error
+                .downcast_ref::<IncrementalFreshnessCycleContended>()
+                .is_none()
+                && error
+                    .downcast_ref::<IncrementalFreshnessCycleRequeued>()
+                    .is_none(),
+            "only a guard race is typed: {error:#}"
+        );
+        assert_eq!(
+            latest_attempt(&db),
+            (
+                "failed".to_owned(),
+                Some(EXHAUSTED_CODE.to_owned()),
+                Some("terminal".to_owned()),
+            )
+        );
+        assert_eq!(
+            freshness_runs(&db),
+            vec![("failed".to_owned(), Some(EXHAUSTED_CODE.to_owned()))]
+        );
+        let run_id = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT active_run_id FROM narrative_change_cursors
+                      WHERE project_id = ?1 AND consumer_id = ?2",
+                    params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                    |row| row.get::<_, Option<String>>(0),
+                )?)
+            })
+            .expect("cursor reservation");
+        assert!(run_id.is_some(), "a dead-letter keeps its reservation");
+        assert!(matches!(
+            run_incremental_freshness_cycle(&db).expect("a dead-letter is idle"),
+            IncrementalFreshnessCycleOutcome::Idle
+        ));
+    }
+
+    #[test]
+    fn a_wrapped_guard_error_on_the_last_attempt_is_not_a_contended_close() {
+        let db = fixture_db();
+        lose_race_as_requeue(&db, MAX_ATTEMPTS_PER_BATCH - 1);
+        let reservation = db
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| reserve_or_resume_batch_in_tx(conn, None))
+            })
+            .expect("resume the requeued range");
+        let ReservationOutcome::Claimed(batch) = reservation else {
+            panic!("the requeued range must be claimed again");
+        };
+        db.with_conn(|conn| append_scene_feed_event(conn, 2))
+            .expect("a foreground write advances the Feed after the claim");
+        let wrapped = publish_guard_conflict(
+            "NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED: 'x' changed after evaluation".to_owned(),
+        )
+        .context("NEX_DB_TRANSACTION_CLEANUP_UNPROVEN: rollback did not restore autocommit");
+        assert_eq!(
+            requeue_after_failure(&db, &batch, &wrapped).expect("requeue"),
+            RequeueOutcome::Terminal,
+            "a guard error that a failed cleanup wrapped stays on the recovery path"
+        );
+        assert_eq!(
+            freshness_runs(&db),
+            vec![("failed".to_owned(), Some(EXHAUSTED_CODE.to_owned()))]
+        );
+    }
+
+    #[test]
+    fn a_last_attempt_guard_race_that_another_owner_ended_is_not_a_contended_close() {
+        let db = fixture_db();
+        lose_race_as_requeue(&db, MAX_ATTEMPTS_PER_BATCH - 1);
+        let _race = publish_race_for_test::arm(&db, |db| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE tree_nodes SET version = version + 1
+                      WHERE id = ?1 AND project_id = ?2",
+                    params![SCENE_ID, PROJECT_ID],
+                )?;
+                let head = current_feed_head(conn, PROJECT_ID)?;
+                append_scene_feed_event(conn, head + 1)?;
+                conn.execute(
+                    "UPDATE narrative_extraction_attempts SET status = 'failed'
+                      WHERE status = 'running'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("race the guard and end the Attempt elsewhere");
+        });
+        let error = run_incremental_freshness_cycle(&db).expect_err("raced publication");
+        assert!(format!("{error:#}").contains("NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED"));
+        assert!(
+            error
+                .downcast_ref::<IncrementalFreshnessCycleContended>()
+                .is_none()
+                && error
+                    .downcast_ref::<IncrementalFreshnessCycleRequeued>()
+                    .is_none(),
+            "an unapplied requeue is never typed: {error:#}"
+        );
+        assert_eq!(
+            freshness_runs(&db),
+            vec![("running".to_owned(), None)],
+            "nothing was closed"
         );
     }
 
