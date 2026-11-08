@@ -729,9 +729,12 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// ([`SCENE_BODY_DECLARATION_COLUMNS`]) to `narrative_scene_scope_bindings`; it
 /// never promotes or backfills an existing row. Version 44 adds the project
 /// Scene Scope default table (`narrative_scope_project_defaults`, SDEF/1); no
-/// existing project gets a row.
+/// existing project gets a row. Version 45 has no DDL: it releases the cursor
+/// reservation of a Freshness Run that a publication guard race dead-lettered
+/// (DR-JF-9 M1), a data repair carried by the marker-only step and the full
+/// migration, so the checkpoint here is the same physical shape as version 44.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 44
+    Ok(SCHEMA_VERSION == 45
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
