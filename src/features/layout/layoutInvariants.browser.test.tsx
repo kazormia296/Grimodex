@@ -12,7 +12,8 @@
  * CI で永続的にガードする。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import { page } from "vitest/browser";
 import { LayoutShell } from "./LayoutShell";
 import { BOTTOM_CORNER_TOGGLE_CLEARANCE_PX } from "./BottomCornerToggle";
 import {
@@ -28,6 +29,18 @@ import { buildDefaultLayoutState } from "./layoutStateUtils";
 import type { OverlayId, ToolWindowPanelId } from "./layoutTypes";
 import type { PanelId } from "./panelIds";
 import { LayoutStoryPanelStub } from "./stories/LayoutStoryPanelStub";
+import type { ProfileEgressStatusView } from "@/lib/profileEgressStatus";
+import { PROFILE_EGRESS_UNAVAILABLE_REASONS } from "@/../electron/shared/profileEgressStatusWire";
+import ProfileEgressStatusIndicator from "@/features/profile-egress/ProfileEgressStatusIndicator";
+
+const { egressView } = vi.hoisted(() => ({
+  egressView: { current: { state: "restricted" } as ProfileEgressStatusView },
+}));
+vi.mock("@/lib/profileEgressStatus", () => ({
+  getProfileEgressStatus: async () => egressView.current,
+  onProfileEgressStatus: () => () => undefined,
+  requestProfileActivation: async () => ({ status: "not-activated" }),
+}));
 
 vi.mock("./panelComponents", () => ({
   PANEL_COMPONENT_MAP: new Proxy(
@@ -1013,3 +1026,140 @@ describe.each(KNOB_CASES)(
     });
   },
 );
+
+/**
+ * 外部送信の制限の状態の表示（`ProfileEgressStatusIndicator`、NIR-1 DA-2 ST3）は
+ * `fixed` で LayoutShell の左下に重ねて描く。表示は restricted の間ずっと出る
+ * （R3-8、da2-decisions の DR-DA2-63）ので、表示が操作要素（stripe の icon、
+ * corner toggle、splitter、stripe 内の button）を覆って押せなくしないことを、
+ * 実 Chromium の矩形とヒットテストで守る。重なる所では、その点の最前面の要素が
+ * 操作要素自身（またはその中）であること。
+ * 元の位置（`bottom-8 left-3`）では、全 panel を畳んだ既定の layout でも表示が左下の
+ * corner toggle と bottom stripe の icon を覆った（この試験を足した時点で 9 件が落ちた）。
+ */
+describe("profile egress status display vs LayoutShell controls (real Chromium)", () => {
+  const OPERABLE =
+    "[data-bottom-corner-toggle], [data-stripe-icon], [data-splitter-handle], [data-stripe-region] button";
+  const VIEWPORTS = [
+    { width: 1200, height: 800 },
+    { width: 768, height: 600 },
+    { width: 360, height: 640 },
+  ] as const;
+  const VIEWS: ProfileEgressStatusView[] = [
+    { state: "restricted" },
+    { state: "activating" },
+    ...PROFILE_EGRESS_UNAVAILABLE_REASONS.map(
+      (reason): ProfileEgressStatusView => ({ state: "unavailable", reason }),
+    ),
+  ];
+  const LAYOUTS: Array<{ name: string; apply: () => void }> = [
+    {
+      name: "every panel collapsed into the stripes",
+      apply: () =>
+        useLayoutStore.setState({
+          layout: buildDefaultLayoutState({ allInactive: true }),
+        }),
+    },
+    {
+      name: "left and bottom open, the bottom region owns the left corner",
+      apply: () =>
+        setLeftAndBottom({
+          leftSlots: [{ id: "l0", panels: ["scenes"], activePanel: "scenes" }],
+          bottomSlots: [
+            { id: "b0", panels: ["timeline"], activePanel: "timeline" },
+            { id: "b1", panels: ["chat"], activePanel: null },
+          ],
+          bottomCornersLeft: true,
+        }),
+    },
+    {
+      name: "left and bottom open, the side stripe owns the left corner",
+      apply: () =>
+        setLeftAndBottom({
+          leftSlots: [
+            { id: "l0", panels: ["scenes"], activePanel: "scenes" },
+            { id: "l1", panels: ["codex"], activePanel: null },
+          ],
+          bottomSlots: [
+            { id: "b0", panels: ["timeline"], activePanel: "timeline" },
+          ],
+          bottomCornersLeft: false,
+        }),
+    },
+  ];
+
+  beforeEach(() => {
+    useLayoutStore.setState({
+      layout: buildDefaultLayoutState({ allInactive: true }),
+      layoutLocked: false,
+      draggingPanel: null,
+      dragOverTarget: null,
+      hiddenStripePanels: new Set(),
+      initialized: true,
+    });
+  });
+
+  for (const viewport of VIEWPORTS) {
+    for (const layoutCase of LAYOUTS) {
+      it(`never covers a control at ${viewport.width}x${viewport.height}: ${layoutCase.name}`, async () => {
+        await page.viewport(viewport.width, viewport.height);
+        layoutCase.apply();
+        const { container } = render(
+          <div
+            className="app-shell"
+            data-shell-host
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              width: viewport.width,
+              height: viewport.height,
+            }}
+          >
+            <LayoutShell />
+          </div>,
+        );
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+        const controls = [
+          ...container.querySelectorAll<HTMLElement>(OPERABLE),
+        ].filter((el) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        });
+        // The query would pass vacuously on an empty shell.
+        expect(controls.length).toBeGreaterThan(0);
+
+        for (const next of VIEWS) {
+          egressView.current = next;
+          const { unmount } = render(<ProfileEgressStatusIndicator />);
+          await act(async () => {});
+          const display = await screen.findByTestId("profile-egress-status");
+          const displayRect = display.getBoundingClientRect();
+          expect(displayRect.width).toBeGreaterThan(0);
+          for (const control of controls) {
+            const controlRect = control.getBoundingClientRect();
+            const left = Math.max(displayRect.left, controlRect.left);
+            const right = Math.min(displayRect.right, controlRect.right);
+            const top = Math.max(displayRect.top, controlRect.top);
+            const bottom = Math.min(displayRect.bottom, controlRect.bottom);
+            if (right - left <= 0.5 || bottom - top <= 0.5) continue;
+            const hit = document.elementFromPoint(
+              (left + right) / 2,
+              (top + bottom) / 2,
+            );
+            const label = `${JSON.stringify(next)} over ${
+              control.getAttribute("data-bottom-corner-toggle") ??
+              control.getAttribute("data-stripe-icon") ??
+              control.tagName
+            }`;
+            expect(
+              hit !== null && (control === hit || control.contains(hit)),
+              `${label}: the status display covers the control`,
+            ).toBe(true);
+          }
+          unmount();
+        }
+      });
+    }
+  }
+});
