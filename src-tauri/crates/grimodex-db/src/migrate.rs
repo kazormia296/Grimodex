@@ -4604,8 +4604,15 @@ impl Database {
             // edge/history/derived-state changes, marker, and schema version
             // together so the next open can retry the complete migration.
             // SCHEMA 45 / DR-JF-9 M1: a data-only step, after every table and
-            // data migration above, in the same savepoint as the stamp.
-            Self::release_contended_freshness_exhaustions_v45(&conn)?;
+            // data migration above, in the same savepoint as the stamp. Only a
+            // workspace that has not reached 45 yet: a full pass over a 45
+            // workspace (the restore preflight and the supervisor's
+            // invariant-repair path both install the migrated copy as live)
+            // must leave the dead-letters a 45 build created, which are the
+            // visible ones (no Feed evidence, deterministic mismatch).
+            if current < 45 {
+                Self::release_contended_freshness_exhaustions_v45(&conn)?;
+            }
             anyhow::ensure!(
                 grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(&conn)?,
                 "workspace schema did not satisfy current schema invariants after migration"
@@ -8487,10 +8494,6 @@ impl Database {
         Ok(())
     }
 
-    /// Recover runs left active by a terminated process without turning every
-    /// healthy workspace open into a SQLite write. The read probe is also what
-    /// lets a current-schema open proceed while another connection owns a
-    /// `BEGIN IMMEDIATE` reservation.
     /// SCHEMA 45 / DR-JF-9 M1: give back the cursor reservation of a
     /// Freshness Run that a publication guard race dead-lettered before the
     /// DR-JF-9 fix, so the next tick evaluates the same range again under a new
@@ -8593,6 +8596,10 @@ impl Database {
         Ok(released)
     }
 
+    /// Recover runs left active by a terminated process without turning every
+    /// healthy workspace open into a SQLite write. The read probe is also what
+    /// lets a current-schema open proceed while another connection owns a
+    /// `BEGIN IMMEDIATE` reservation.
     fn recover_interrupted_post_effect_runs(conn: &Connection) -> anyhow::Result<()> {
         if !Self::has_interrupted_post_effect_runs(conn)? {
             return Ok(());

@@ -340,8 +340,10 @@ dead-letter を作らなくしたが、すでに `NEX_INCREMENTAL_FRESHNESS_RETR
   namespace と import の検査を広げないため）。
 - 走らせる場所は 2 つで、どちらも `user_version` の stamp と同じ transaction／savepoint の中：
   (1) 直前の版（44）の marker だけを進める finalize（`try_finalize_previous_schema_without_wait`。`BEGIN IMMEDIATE` の中）、
-  (2) 完全な migration（`migrate_impl`。C2-ZB の savepoint の中、checkpoint の検査と stamp の前）。
-  現在の版（45）の open では走らない。45 の build が作る dead-letter（Feed の証拠が無い guard の競合、決定的な食い違い）は表に出たまま残す。
+  (2) 完全な migration（`migrate_impl`。C2-ZB の savepoint の中、checkpoint の検査と stamp の前）。**`current < 45` のときだけ**走らせる
+  （`migrate_for_restore_preflight`〔force_full〕や、supervisor の「現在版だが invariant が欠けた」経路は 45 の DB でも完全な pass を通り、
+  その copy がそのまま live になる。版で絞らないと、45 の build が作った dead-letter まで解く。2026-11-08 のレビューの major 指摘）。
+  現在の版（45）の open は、fast path も完全な pass も走らない。45 の build が作る dead-letter（Feed の証拠が無い guard の競合、決定的な食い違い）は表に出たまま残す。
   finalize が他の writer と競合して Busy のときは、`user_version` は 44 のまま、次の open が同じ手順をやり直す（stamp と release は一緒に commit か rollback）。
 - 判別の条件（すべて満たすときだけ。レビュー〔Opus〕の注意点どおり）：
   1. cursor が Freshness consumer のもので、run を予約していて（`active_run_id`、`reserved_through_sequence`、`semantic_epoch_id` が非 NULL）、lease が無い。
@@ -369,11 +371,13 @@ dead-letter を作らなくしたが、すでに `NEX_INCREMENTAL_FRESHNESS_RETR
   「その範囲を ack していない、予約の無い cursor」で、通常の運用の状態と同じ。解いた後に決定的な失敗が続く project は、新しい run が
   3 回の attempt の後に再び dead-letter になるだけ（有界で、1 回）。
 - 版は 45 に上がるので、45 を stamp した DB を 44 以前の build で開くことはできない（既存の migration と同じ downgrade 非対応）。
-  古い backup を restore した DB は、restore の後の migration でもう一度この更新が当たる（restore preflight の完全な migration は
-  使い捨ての copy に対して走り、冪等）。
+  版が 45 未満の backup を restore した DB は、restore の preflight の完全な migration（その copy が live になる）で、もう一度この更新が当たる。
+  45 の DB の restore preflight や invariant 修復の完全な pass は解かない（`current < 45` の条件。試験で固定）。
 - 限界（上の「見分けられるか」と同じ）：DR-JF-9 の本体が使う「attempt の間に Feed が進んだ」証拠は、過去の行からは再構成できない。
   そのため、guard の文言で終わった dead-letter は、決定的な食い違いのものも解く。再開しても、決定的な失敗なら新しい run が
-  3 回で再び dead-letter になるだけで（有界）、害は無い。前の 2 回が評価の失敗で最後だけ競合だった run も同様。
+  3 回で再び dead-letter になる（有界。1 project につき 1 回）。**費用がある**：その再 dead-letter は DR-JF-4 の matrix の
+  競合以外の上限の行と同じ retire→recovery で、約 1 s の `WORKSPACE_SWITCHING` による DB 操作の拒否が 1 回起きる。
+  前の 2 回が評価の失敗で最後だけ競合だった run も同様。この費用は、解かないまま止まり続けることと比べて許容する（1 回で終わる）。
 - 利用者の DB の実数（`RETRY_EXHAUSTED` の freshness run の数と判別に当たる数）は、利用者の DB を読まない方針なので確かめていない。
   代わりに、migration は解いた件数を `tracing`（`narrative.migrate`）に出す。
 
@@ -391,4 +395,6 @@ dead-letter を作らなくしたが、すでに `NEX_INCREMENTAL_FRESHNESS_RETR
 4 つの接頭辞のすべて／競合以外（評価の失敗、interrupted、context で包まれた guard、`_` と大文字小文字のワイルドカードの誤一致、
 先頭の空白、文中の guard 文言、空・NULL の message）は残る／最後でない attempt の guard 文言は数えない／Epoch が違う・lease あり・
 最後の attempt が terminal でない・別の code・別の理由で終わった run・retryable な run・予約を返し済みの run は触らない／
-44→45 の marker だけの step と完全な migration の両方で解いて stamp する／現在の版の open は解かない／restore preflight の完全な migration は冪等。
+実際の guard（source・edge・producer Epoch）が cycle に保存させた文言が解かれる／
+44→45 の marker だけの step と完全な migration の両方で解いて stamp する／stamp が失敗したら release も rollback され、次の open がやり直す／
+現在の版の open と、45 の DB の restore preflight の完全な pass は解かない／45 未満の restore preflight は解く。

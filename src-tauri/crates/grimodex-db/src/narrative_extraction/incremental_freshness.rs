@@ -8365,7 +8365,7 @@ mod tests {
                 assert_eq!(release(&db), 1, "{prefix}");
                 assert_eq!(reservation(&db).0, None, "{prefix}");
             }
-            // The four stored prefixes are exactly what the guards produce.
+            // The constants are the guards' own prefixes (the guards format them).
             let guard_messages = [
                 format!("{GUARD_EDGE_CHANGED_PREFIX}'e' changed after evaluation"),
                 format!("{GUARD_SOURCE_CHANGED_PREFIX}'s' changed after evaluation"),
@@ -8375,6 +8375,101 @@ mod tests {
             for (message, prefix) in guard_messages.iter().zip(PUBLISH_GUARD_MESSAGE_PREFIXES) {
                 assert!(message.starts_with(prefix), "{message}");
             }
+        }
+
+        /// Exhaust the retry budget with a race that a real guard catches on
+        /// every Attempt (no Feed advance, so it dead-letters), then check that
+        /// what the cycle itself stored is what the migration releases.
+        fn exhaust_with_real_guard(
+            code: &str,
+            race: impl Fn(&Database, usize) -> publish_race_for_test::ArmedPublishRace,
+        ) {
+            let db = fixture_db();
+            for attempt in 1..=MAX_ATTEMPTS_PER_BATCH as usize {
+                let armed = race(&db, attempt);
+                let error = run_incremental_freshness_cycle(&db).expect_err("raced attempt");
+                drop(armed);
+                assert!(format!("{error:#}").contains(code), "{code}: {error:#}");
+            }
+            assert_eq!(
+                latest_attempt(&db),
+                (
+                    "failed".to_owned(),
+                    Some(EXHAUSTED.to_owned()),
+                    Some("terminal".to_owned()),
+                ),
+                "{code}"
+            );
+            let stored: String = db
+                .with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT error_message FROM narrative_extraction_attempts
+                          WHERE rowid = (SELECT MAX(rowid) FROM narrative_extraction_attempts)",
+                        [],
+                        |row| row.get(0),
+                    )?)
+                })
+                .expect("stored message");
+            assert!(
+                PUBLISH_GUARD_MESSAGE_PREFIXES
+                    .iter()
+                    .any(|prefix| stored.starts_with(prefix)),
+                "{code}: the stored message {stored:?} begins with a guard prefix"
+            );
+            assert_eq!(release(&db), 1, "{code}: a real guard exhaustion is released");
+            assert_eq!(reservation(&db).0, None);
+        }
+
+        #[test]
+        fn what_the_source_guard_stores_is_released() {
+            exhaust_with_real_guard("NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED", |db, _| {
+                arm_scene_publish_race(db)
+            });
+        }
+
+        #[test]
+        fn what_the_edge_guard_stores_is_released() {
+            exhaust_with_real_guard("NEX_INCREMENTAL_FRESHNESS_EDGE_CHANGED", |db, attempt| {
+                publish_race_for_test::arm(db, move |db| {
+                    db.with_conn(|conn| {
+                        let replacement = format!("consumer-run-c2-1-phase-cas-raced-{attempt}");
+                        seed_completed_consumer_run(conn, &replacement)?;
+                        conn.execute(
+                            "UPDATE narrative_dependency_edges
+                                SET read_set_json = ?1, owning_run_id = ?2
+                              WHERE id = ?3 AND project_id = ?4",
+                            params![
+                                format!(r#"["v{}@2026-08-19T00:00:03.000Z"]"#, 90 + attempt),
+                                replacement,
+                                EDGE_ID,
+                                PROJECT_ID
+                            ],
+                        )?;
+                        Ok(())
+                    })
+                    .expect("redeclare the Edge between evaluation and publication");
+                })
+            });
+        }
+
+        #[test]
+        fn what_the_producer_epoch_guard_stores_is_released() {
+            exhaust_with_real_guard("NEX_SEMANTIC_EPOCH_CHANGED", |db, attempt| {
+                publish_race_for_test::arm(db, move |db| {
+                    // Flip the producer Epoch every Attempt so the evaluation's
+                    // answer and the publication's answer always differ.
+                    let epoch = (attempt % 2 == 0).then_some(EPOCH_ID);
+                    db.with_conn(|conn| {
+                        conn.execute(
+                            "UPDATE narrative_extraction_runs SET semantic_epoch_id = ?1
+                              WHERE id = ?2 AND project_id = ?3",
+                            params![epoch, CONSUMER_RUN_ID, PROJECT_ID],
+                        )?;
+                        Ok(())
+                    })
+                    .expect("move the producer Epoch between evaluation and publication");
+                })
+            });
         }
 
         #[test]
@@ -8595,15 +8690,91 @@ mod tests {
         }
 
         #[test]
-        fn the_restore_preflight_migration_is_idempotent() {
+        fn the_restore_preflight_of_a_current_workspace_leaves_its_dead_letters() {
+            // The restore preflight migrates a copy that is then installed as
+            // live, so a full pass over a 45 workspace must not release what a
+            // 45 build left visible (a guard race without Feed evidence, a
+            // deterministic mismatch). The supervisor's current-version
+            // invariant-repair path is the same full pass.
             let db = dead_lettered_by_contention();
+            assert_eq!(user_version(&db), grimodex_core::SCHEMA_VERSION);
             let before = terminal_records(&db);
+            let reserved = reservation(&db);
             db.migrate_for_restore_preflight().expect("first full pass");
-            let released = reservation(&db);
             db.migrate_for_restore_preflight().expect("second full pass");
-            assert_eq!(reservation(&db), released);
             assert_eq!(terminal_records(&db), before);
-            assert_eq!(released.0, None);
+            assert_eq!(reservation(&db), reserved);
+            assert!(reserved.0.is_some());
+        }
+
+        #[test]
+        fn the_restore_preflight_of_an_older_workspace_releases() {
+            for from in [
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 5,
+            ] {
+                let db = dead_lettered_by_contention();
+                let before = terminal_records(&db);
+                set_user_version(&db, from);
+                db.migrate_for_restore_preflight().expect("full pass");
+                assert_released_and_caught_up(&db, &before);
+            }
+        }
+
+        /// Fail every write of `user_version`, as an interrupted stamp would.
+        fn deny_user_version_stamp(db: &Database) {
+            db.with_conn(|conn| {
+                conn.authorizer(Some(
+                    |context: rusqlite::hooks::AuthContext<'_>| match context.action {
+                        rusqlite::hooks::AuthAction::Pragma {
+                            pragma_name: "user_version",
+                            pragma_value: Some(_),
+                        } => rusqlite::hooks::Authorization::Deny,
+                        _ => rusqlite::hooks::Authorization::Allow,
+                    },
+                ))?;
+                Ok(())
+            })
+            .expect("install the stamp failure hook");
+        }
+
+        fn allow_everything(db: &Database) {
+            db.with_conn(|conn| {
+                conn.authorizer(None::<
+                    fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization,
+                >)?;
+                Ok(())
+            })
+            .expect("remove the stamp failure hook");
+        }
+
+        #[test]
+        fn a_failure_after_the_release_rolls_it_back_and_a_later_open_retries() {
+            for from in [
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 1,
+            ] {
+                let db = dead_lettered_by_contention();
+                let before = terminal_records(&db);
+                let reserved = reservation(&db);
+                set_user_version(&db, from);
+                deny_user_version_stamp(&db);
+                let error = db
+                    .migrate()
+                    .expect_err("the stamp after the release fails the migration");
+                assert!(format!("{error:#}").contains("not authorized"), "{error:#}");
+                allow_everything(&db);
+                assert_eq!(user_version(&db), from, "the marker does not advance");
+                assert_eq!(
+                    reservation(&db),
+                    reserved,
+                    "from {from}: the release rolled back with the stamp"
+                );
+                assert_eq!(terminal_records(&db), before);
+
+                db.migrate().expect("a later open retries");
+                assert_released_and_caught_up(&db, &before);
+            }
         }
     }
 }
