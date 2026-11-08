@@ -29,7 +29,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
 
@@ -354,8 +354,23 @@ const importedSessions = (prefix: string) =>
   }));
 
 describe("PUB-G 34: renderer typed writers through the real router, gate and Native", () => {
-  // The controls come first and run unrestricted: the same renderer calls, so a
-  // restricted failure below is the gate's and not the call shape's.
+  // The restricted specs' fixtures (a conversation and the baseline row) are
+  // seeded here, before any spec and before `restrict()` closes the generic SQL
+  // for good, so that each spec also passes when it runs alone (`-t`, a retry).
+  beforeAll(async () => {
+    const w = await workspace();
+    expect(w.rig.gate.restricted).toBe(false);
+    const { saveBaseline } = await renderer(
+      "@/features/impact-review/baseline",
+    );
+    await seedChatSession(w, "cw4-closed");
+    await saveBaseline(w.projectId, w.codexId, snapshotFixture);
+  });
+
+  // The control runs unrestricted: the same renderer calls, so a restricted
+  // failure below is the gate's and not the call shape's. `restrict()` is
+  // one-way, so the control is the first spec of the file (declaration order);
+  // the restricted specs do not depend on it.
   it("control (unrestricted): the same renderer calls succeed on the open generic SQL", async () => {
     const w = await workspace();
     expect(w.rig.gate.restricted).toBe(false);
@@ -382,8 +397,9 @@ describe("PUB-G 34: renderer typed writers through the real router, gate and Nat
       "cw4-open-m4",
     ]);
 
-    // Baseline: the renderer's own `saveBaseline` writes the row that the
-    // restricted tests then update only through the typed writer.
+    // Baseline: the renderer's own `saveBaseline` writes the row (the
+    // restricted tests' `beforeAll` seeds the same one) that the restricted
+    // tests then update only through the typed writer.
     await saveBaseline(w.projectId, w.codexId, snapshotFixture);
     await markImpactBaselinePhasesRestricted(w.codexId);
     expect(await getBaseline(w.codexId)).toMatchObject({
@@ -415,9 +431,6 @@ describe("PUB-G 34: renderer typed writers through the real router, gate and Nat
         "SELECT count(*) AS n FROM chat_messages WHERE session_id LIKE 'imp-open-%'",
       ),
     ).toEqual([{ n: 6 }]);
-
-    // Seed what the restricted tests need (the generic SQL is open now).
-    await seedChatSession(w, "cw4-closed");
   });
 
   it("CW 4 restricted: deleteMessage / deleteMessages reach chat_messages_delete", async () => {
