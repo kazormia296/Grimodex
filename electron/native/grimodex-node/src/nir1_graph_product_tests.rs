@@ -842,18 +842,61 @@ fn suspended_owner_resumes_when_the_graph_index_build_completes() {
         .nir1_graph
         .note_maintenance_work_completed(&work_item(AutomaticRunKind::Nir1GraphIndexBuild));
     assert_eq!(fixture.kind(), GraphSlotKind::Empty);
+    // CP2a-D49: one retry is left, not five.
+    assert_eq!(
+        lock(&fixture.state.nir1_graph.shared.slot)
+            .rebuild
+            .consecutive_failures,
+        4
+    );
+    // The retry waits out the backoff of the kept ledger, then starts.
+    wait_until("the retry starts", || {
+        matches!(
+            fixture.begin("entity"),
+            GraphBegin::Unavailable(GraphUnavailable::Warming)
+        )
+    });
+    wait_until("resumed READY", || fixture.kind() == GraphSlotKind::Ready);
+    assert_eq!(fixture.plan.creates.load(Ordering::SeqCst), creates + 1);
+    // CP2a-D49: a success after the resume returns the ledger to 0.
     assert_eq!(
         lock(&fixture.state.nir1_graph.shared.slot)
             .rebuild
             .consecutive_failures,
         0
     );
-    assert!(matches!(
-        fixture.begin("entity"),
-        GraphBegin::Unavailable(GraphUnavailable::Warming)
-    ));
-    wait_until("resumed READY", || fixture.kind() == GraphSlotKind::Ready);
-    assert_eq!(fixture.plan.creates.load(Ordering::SeqCst), creates + 1);
+}
+
+/// CP2a-D49: after a resume, a single failed prepare suspends the slot again
+/// (the threshold is 5 for the first run, 1 after a resume).
+#[test]
+fn one_failure_after_a_resume_suspends_the_slot_again() {
+    use grimodex_db::narrative_extraction::AutomaticRunKind;
+    let fixture = ProductFixture::new();
+    *lock(&fixture.plan.prepare_mode) =
+        PrepareMode::Fail("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY: fake");
+    wait_until("suspended after five failures", || {
+        let _ = fixture.begin("entity");
+        fixture.kind() == GraphSlotKind::Suspended
+    });
+    let prepares = fixture.plan.prepares.load(Ordering::SeqCst);
+    assert_eq!(prepares, 5);
+    fixture
+        .state
+        .nir1_graph
+        .note_maintenance_work_completed(&work_item(AutomaticRunKind::Nir1GraphIndexBuild));
+    assert_eq!(fixture.kind(), GraphSlotKind::Empty);
+    wait_until("the retry runs and fails", || {
+        let _ = fixture.begin("entity");
+        fixture.kind() == GraphSlotKind::Suspended
+    });
+    assert_eq!(fixture.plan.prepares.load(Ordering::SeqCst), prepares + 1);
+    assert_eq!(
+        lock(&fixture.state.nir1_graph.shared.slot)
+            .rebuild
+            .consecutive_failures,
+        5
+    );
 }
 
 /// CP2a-D47: the hook does not move a slot that is not Suspended, and cannot
@@ -928,6 +971,50 @@ fn a_publish_during_the_failing_prepare_does_not_suspend_the_slot() {
     }
 }
 
+/// CP2a-D49: the D48 path (a publish during the failing prepare) leaves the
+/// same one-retry ledger as the hook, and the retry's failure suspends again.
+#[test]
+fn a_publish_during_the_failing_prepare_leaves_one_retry() {
+    let fixture = ProductFixture::new();
+    fixture.state.nir1_graph.set_config_for_test(GraphOwnerConfig {
+        failures_before_suspend: 3,
+        ..fast_config()
+    });
+    let ledger = || {
+        lock(&fixture.state.nir1_graph.shared.slot)
+            .rebuild
+            .consecutive_failures
+    };
+    *lock(&fixture.plan.prepare_mode) =
+        PrepareMode::Fail("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY: fake");
+    wait_until("two failures", || {
+        let _ = fixture.begin("entity");
+        ledger() == 2 && fixture.kind() == GraphSlotKind::Empty
+    });
+    *lock(&fixture.plan.prepare_mode) =
+        PrepareMode::HoldThenFail("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY: fake");
+    wait_until("third prepare is held", || {
+        let _ = fixture.begin("entity");
+        fixture.plan.prepares.load(Ordering::SeqCst) == 3
+    });
+    fixture.state.nir1_graph.resume_after_graph_index_change();
+    fixture.plan.release.store(true, Ordering::SeqCst);
+    wait_until("session ended", || {
+        !matches!(
+            fixture.kind(),
+            GraphSlotKind::Preparing | GraphSlotKind::Deferred
+        )
+    });
+    assert_eq!(fixture.kind(), GraphSlotKind::Empty);
+    assert_eq!(ledger(), 2);
+    // The retry fails once: the third failure suspends.
+    wait_until("the retry runs and fails", || {
+        let _ = fixture.begin("entity");
+        fixture.kind() == GraphSlotKind::Suspended
+    });
+    assert_eq!(ledger(), 3);
+}
+
 /// CP2a-D47: the cycle's completion hook is called from one place.
 #[test]
 fn the_maintenance_cycle_calls_the_resume_hook_once() {
@@ -994,7 +1081,8 @@ fn configure_and_resume_are_explicit_and_bounded() {
     }
     owner.resume_after_graph_index_change();
     assert_eq!(owner.slot_kind_for_test(), GraphSlotKind::Empty);
-    assert_eq!(lock(&owner.shared.slot).rebuild.consecutive_failures, 0);
+    // CP2a-D49: `failures_before_suspend - 1` (default 5).
+    assert_eq!(lock(&owner.shared.slot).rebuild.consecutive_failures, 4);
 
     let directory =
         std::env::temp_dir().join(format!("nir1-graph-configure-{}", uuid::Uuid::new_v4()));

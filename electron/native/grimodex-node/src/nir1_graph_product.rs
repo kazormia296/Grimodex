@@ -1376,13 +1376,15 @@ impl Nir1GraphProductOwner {
 
     /// Called after B's publish (B-ROUTE/CP-3a, CP2a-D47) to leave Suspended.
     pub(crate) fn resume_after_graph_index_change(&self) {
+        let resumed_failures = resumed_failure_count(&self.shared.config());
         let mut slot = lock(&self.shared.slot);
         // CP2a-D48: under the slot lock, so `SessionGuard::drop` orders itself
         // before or after this publish.
         self.shared.graph_index_change.fetch_add(1, Ordering::SeqCst);
         if matches!(slot.phase, Phase::Suspended { .. }) {
             slot.phase = Phase::Empty;
-            slot.rebuild.consecutive_failures = 0;
+            // CP2a-D49: one retry against the new index, not five.
+            slot.rebuild.consecutive_failures = resumed_failures;
             slot.rebuild.last_failure = None;
         }
     }
@@ -2127,6 +2129,8 @@ impl Drop for SessionGuard {
                 self.quarantined = true;
             }
         }
+        // The config mutex is read before the slot lock (it is a leaf either way).
+        let resumed_failures = resumed_failure_count(&self.shared.config());
         let mut slot = lock(&self.shared.slot);
         let mut left_held = None;
         if slot
@@ -2186,7 +2190,8 @@ impl Drop for SessionGuard {
                         seen != self.shared.graph_index_change.load(Ordering::SeqCst)
                     }) =>
                 {
-                    slot.rebuild.consecutive_failures = 0;
+                    // CP2a-D49: the same one-retry ledger as the hook.
+                    slot.rebuild.consecutive_failures = resumed_failures;
                     slot.rebuild.last_failure = None;
                     Phase::Empty
                 }
@@ -2994,6 +2999,13 @@ pub(crate) fn rebuild_not_before(
         }
     }
     not_before
+}
+
+/// CP2a-D49: the ledger a resume leaves behind, `failures_before_suspend - 1`.
+/// The next prepare failure reaches the threshold and suspends again; a success
+/// resets the ledger to 0 as before. The backoff step follows the ledger.
+pub(crate) fn resumed_failure_count(config: &GraphOwnerConfig) -> u32 {
+    config.failures_before_suspend.saturating_sub(1)
 }
 
 /// Pure: 0 for no failures, otherwise initial × 2^(n−1) capped at the maximum.
