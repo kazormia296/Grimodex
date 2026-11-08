@@ -22,11 +22,11 @@ import {
   variantByKey,
 } from "./constants.mjs";
 import { isSteadyStateSummary, samplesDigest } from "./availability.mjs";
-import { classifyFollowUp } from "./followup.mjs";
+import { classifyFollowUp, nextGraphArmOf } from "./followup.mjs";
 import {
   BOUNDARY_DISAGREEMENTS,
   classifyJoin,
-  steadyStateInWindow,
+  k62SteadyStateInWindow,
 } from "./join.mjs";
 
 const PRODUCT_B_ROUTE = "b-route-maintenance";
@@ -320,7 +320,7 @@ function k62AvailableQuality(variant, graph, hybrid) {
     const join = classifyJoin(row);
     if (join.disagreement === BOUNDARY_DISAGREEMENTS.joinedLateWithinTolerance)
       boundary.push(row.repeat);
-    else if (steadyStateInWindow(row)) inWindow.push(row);
+    else if (k62SteadyStateInWindow(row)) inWindow.push(row);
     else if (
       !join.joined &&
       !sameList(row.finalSceneIds, hybrid.get(row.repeat)?.finalSceneIds)
@@ -372,8 +372,12 @@ function k64AvailableQuality(variant, graph, hybrid) {
   const displayed = [];
   const counts = { firstRender: 0, followUp: 0 };
   const boundary = [];
+  const nexts = nextGraphArmOf(graph);
   for (const row of graph) {
-    const result = classifyFollowUp(row, { context: "steady" });
+    const result = classifyFollowUp(row, {
+      context: "steady",
+      next: nexts.get(row),
+    });
     if (result.violations.length > 0)
       return {
         variantKey: key,
@@ -388,6 +392,21 @@ function k64AvailableQuality(variant, graph, hybrid) {
         status: "fail",
         reason: "follow-up-r-or-ir-differs",
         repeats: [row.repeat],
+      };
+    // K6/6 変える点 6 (K6/6-N13): a parent whose join brought a Graph into the
+    // display inside the D window (`graph-ready`, joined, declared `used`,
+    // at least one edge) but did not meet every first-render condition is a
+    // sample the user was shown a Graph in without the record to measure it:
+    // the variant FAILS, whether or not the Scene list equals R+IR's (a
+    // path attachment alone leaves the list unchanged). The 1% availability
+    // allowance does not apply.
+    if (result.parentContributed && !result.firstRender)
+      return {
+        variantKey: key,
+        status: "fail",
+        reason: "graph-contributed-parent-not-counted-as-first-render",
+        repeats: [row.repeat],
+        firstRenderFails: result.firstRenderFails,
       };
     if (result.boundary === BOUNDARY_DISAGREEMENTS.joinedLateWithinTolerance) {
       boundary.push(row.repeat);
@@ -462,6 +481,24 @@ export function summarizeVariantQuality(input) {
   return regime === "k64"
     ? k64AvailableQuality(variant, graph, hybrid)
     : k62AvailableQuality(variant, graph, hybrid);
+}
+
+/**
+ * K6/6 の dev の予行（非判定）: a dev preview run's regime is sealed to K6/2
+ * (there is no K6/4 freeze to select K6/4), so its receipt's `quality` never
+ * runs the /6 FAIL rules. This applies the K6/4 regime's quality reading (late
+ * mix, X9, a Graph-contributed parent that is not a first-render, …) to the
+ * same samples as a forecast. It is for the rehearsal's record only: it reads
+ * no steady-state summary, so it is never a receipt's quality and never feeds a
+ * verdict (the D-1 seal on `summarizeVariantQuality` is unchanged).
+ */
+export function rehearsalK64Quality({ variant, samples }) {
+  const pairs = measuredPairs(variant, samples);
+  if (pairs.invalid) return pairs.invalid;
+  const { graph, hybrid } = pairs;
+  return variant.expectedGraph === "unavailable"
+    ? unavailableQuality(variant, graph, hybrid, "k64")
+    : k64AvailableQuality(variant, graph, hybrid);
 }
 
 /**

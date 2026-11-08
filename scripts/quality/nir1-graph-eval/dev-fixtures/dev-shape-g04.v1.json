@@ -385,7 +385,24 @@
           "scope": "added-scene",
           "sceneId": "dvs4-8"
         }
-      ]
+      ],
+      "expectations": {
+        "graph": {
+          "status": "available",
+          "qualifiedRevisionIds": [
+            "dvs4-22"
+          ]
+        },
+        "addedScene": {
+          "sceneId": "dvs4-8",
+          "path": {
+            "edgeIds": [
+              "dvs4-17"
+            ]
+          }
+        },
+        "pathAttachments": []
+      }
     }
   ]
 }

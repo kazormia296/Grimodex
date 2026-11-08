@@ -97,6 +97,20 @@ export const CONTRACTS = Object.freeze({
     confirmedCommit: "96c657cf68cdc509326254243a9d273615ed51c5",
     freezeCommit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
   }),
+  // K6/6 (変える点 8): the first-render reading under R1 (R-6, R-7, FR-1〜FR-8).
+  // **A dev prototype: /6 is an unconfirmed draft (revision 3).** `sha256` is
+  // the draft's revision 3 bytes and the two commits are `null` until the user
+  // confirms and the integrator freezes /6 (the S2 追補's `contracts.k66`,
+  // `userConfirmations` and `k66Readings` then bind them; no validator reads
+  // this key yet). `k64` and `k65` stay: the /6 row stands on them.
+  k66: Object.freeze({
+    draftRef: "nir1-final-request-eval-proposal/6",
+    contractId: "graph-eval-procedure",
+    path: "docs/plans/nir1-final-request-eval-proposal-6-draft.md",
+    sha256: "58c634fa9b3d76803e486516c0e67444b74d4f5987cd851cd0857a25cc8945e7",
+    confirmedCommit: null,
+    freezeCommit: null,
+  }),
 });
 
 /**

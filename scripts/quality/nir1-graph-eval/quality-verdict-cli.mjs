@@ -24,6 +24,7 @@ import {
   GRAPH_EVAL_VARIANTS,
   K62_FREEZE,
   K65_FREEZE,
+  K66_FREEZE,
 } from "./constants.mjs";
 import { loadProcedureFile } from "./procedure-file.mjs";
 import {
@@ -243,6 +244,10 @@ export function loadQualityInputs({
   // The repository the procedure file is read from, at the S4 commit (the
   // tests' throwaway repository; the default is `root`).
   procedureRoot = root,
+  // The K6/6 freeze the receipts' head.k66 is held to (the tests' descriptor;
+  // the default is K66_FREEZE, whose `freezeCommit` is null while /6 is an
+  // unconfirmed draft, so no real receipt is judged).
+  freeze66 = K66_FREEZE,
 }) {
   const graphManifest = readJson(path.join(root, GRAPH_MANIFEST));
   const retrievalManifest = readJson(path.join(root, RETRIEVAL_MANIFEST));
@@ -282,6 +287,17 @@ export function loadQualityInputs({
     )
       throw precheck(
         `${receipt.runId}: the receipt's head.k65 is not the K6/5 freeze (${K65_FREEZE.freezeCommit})`,
+      );
+    // K6/6 変える点 8 / K6/6-N9: and the K6/6 freeze (K66_FREEZE). The /6 row
+    // judges only a run that started after the /6 freeze (s6r1 is /5 only); a
+    // `null` freezeCommit (the draft is unconfirmed) matches nothing.
+    if (
+      freeze66.freezeCommit === null ||
+      receipt.head?.k66?.freezeCommit !== freeze66.freezeCommit ||
+      receipt.head?.k66?.sha256 !== freeze66.sha256
+    )
+      throw precheck(
+        `${receipt.runId}: the receipt's head.k66 is not the K6/6 freeze (${String(freeze66.freezeCommit)}); a run that started before the /6 freeze is not judged by the /6 row`,
       );
   }
   let blocked = null;

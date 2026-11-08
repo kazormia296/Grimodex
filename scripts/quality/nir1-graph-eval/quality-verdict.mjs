@@ -21,7 +21,7 @@ import {
   GRAPH_EVAL_VARIANTS,
 } from "./constants.mjs";
 import { MEASURED_RUNS_PER_ARM } from "./constants.mjs";
-import { classifyFollowUp } from "./followup.mjs";
+import { classifyFollowUp, nextGraphArmOf } from "./followup.mjs";
 import { selectReceiptsForAggregation } from "./receipt.mjs";
 import { nearestRank, scoreQuery } from "../nir1-retrieval/contract.mjs";
 
@@ -215,9 +215,19 @@ function observedPairs(entry) {
   ).sort();
 }
 
-/** The edge binding of one sample's child against the fixture's expectation. */
-function edgeBindingProblems(sample, expected) {
-  const child = sample.followUp?.child;
+/**
+ * The edge binding of one sample's displayed Graph against the fixture's
+ * expectation. Prereg v2 D6: a first-render sample is read through the
+ * parent's own contribution record (K6/6 FR-7), a follow-up sample through
+ * its child's.
+ */
+function edgeBindingProblems(sample, expected, firstRender = false) {
+  const parentContribution = sample.followUp?.parent?.contribution;
+  const child = firstRender
+    ? parentContribution
+      ? { ...parentContribution, outcome: sample.graph?.outcome }
+      : null
+    : sample.followUp?.child;
   if (!child || child.outcome !== "graph-ready") return null;
   const problems = [];
   if (child.contributionBasis !== "material-revision")
@@ -249,6 +259,74 @@ function edgeBindingProblems(sample, expected) {
   for (const key of observed.keys())
     if (!wanted.has(key)) problems.push(`unexpected:${key}`);
   return problems;
+}
+
+/**
+ * Prereg v2 D3 (1)〜(6) for one sample's child (the variant is checked by the
+ * caller): an `index-ready` child that is not a `graph-ready` refresh, started
+ * when the parent's Chronicle Index was not usable (IR `index-unavailable`) and
+ * its Graph Index was, and whose own start found the Chronicle Index usable.
+ */
+function d3Eligible(sample, child) {
+  return (
+    child !== null &&
+    child !== undefined &&
+    child.origin === "index-ready" &&
+    child.refreshTrigger !== "graph-ready" &&
+    sample.snapshot?.chronicleIndexUsable === false &&
+    sample.irOutcome === "index-unavailable" &&
+    sample.snapshot?.usable === true &&
+    child.chronicleIndexUsable === true
+  );
+}
+
+/**
+ * Prereg v2 D3 (a)〜(d): the contribution of an eligible child. (a) what its
+ * list adds to the paired R+IR is no forbidden Scene or blocked candidate;
+ * (b) its Graph's path contributions (`materialRevision.observed[].sceneId`
+ * as logical Scenes, R+IR's own Scenes included) are none either; (c) it
+ * shows no late Graph and publishes at most once; (d) every edge is resolved
+ * (`unresolvedEdges` 0). A missing `materialRevision` record is a hold. The
+ * Revision resolution against the setup record (the second half of (d)) is
+ * **not implemented in this prototype**: it is reported as the hold
+ * `d-revision-resolution-not-implemented` for a child that shows a Graph.
+ */
+function d3Problems({ child, pair, lists, forbidden, blocked }) {
+  const out = [];
+  const bad = (id) => forbidden.has(id) || blocked.has(id);
+  if (child.publishCount > 0) {
+    const added = lists(child.finalSceneIds).filter((id) => !pair.includes(id));
+    const hit = added.filter(bad);
+    if (hit.length > 0)
+      out.push({
+        kind: "fail",
+        code: "a-forbidden-contribution",
+        sceneIds: hit,
+      });
+  }
+  const material = child.materialRevision;
+  const shownGraph =
+    child.outcome === "graph-ready" && (child.edgeCount ?? 0) > 0;
+  if (shownGraph) {
+    if (!material || typeof material !== "object")
+      out.push({ kind: "hold", code: "b-material-revision-record-missing" });
+    else {
+      const sceneIds = (material.observed ?? [])
+        .map((entry) => entry.sceneId)
+        .filter((id) => typeof id === "string");
+      const hit = sceneIds.filter(bad);
+      if (hit.length > 0)
+        out.push({ kind: "fail", code: "b-forbidden-path", sceneIds: hit });
+      if (material.unresolvedEdges !== 0)
+        out.push({ kind: "fail", code: "d-unresolved-edges" });
+      out.push({ kind: "hold", code: "d-revision-resolution-not-implemented" });
+    }
+  }
+  if (child.lateGraphInDisplay === true)
+    out.push({ kind: "fail", code: "c-late-graph-in-display" });
+  if (child.publishCount > 1)
+    out.push({ kind: "fail", code: "c-published-more-than-once" });
+  return out;
 }
 
 function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
@@ -296,9 +374,19 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
     expectation.expectedContributions.map((entry) => entry.sceneId),
   );
   const lastShown = [];
+  // Prereg v2 D8: a parent that brought a Graph into the display but was not
+  // counted as a first render (or a not-displayed sample whose list differs
+  // from R+IR) fails conditions 1, 2 and 4; it is no longer a hold.
+  const notDisplayedFailures = [];
+  // Prereg v2 D3: the G-08/chronicle-index-unusable `index-ready` re-query.
+  const indexReady = { eligible: 0, graphShown: 0, outOfD3: 0, problems: [] };
+  const nexts = nextGraphArmOf(graph);
   for (const sample of graph) {
     const pair = pairList.get(sample.repeat);
-    const result = classifyFollowUp(sample, { context: "steady" });
+    const result = classifyFollowUp(sample, {
+      context: "steady",
+      next: nexts.get(sample),
+    });
     if (result.violations.length > 0)
       violationsB.push({
         repeat: sample.repeat,
@@ -318,8 +406,15 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
           ],
         });
     const child = sample.followUp?.child;
+    // D2/D3: only a child that meets D3's six conditions is set apart from
+    // the "child" of K6/4:52 and checked by D3; every other child (including
+    // an `index-ready` one missing a condition) stays a child (fail closed).
+    const d3 =
+      variant.key === "G-08/chronicle-index-unusable" &&
+      d3Eligible(sample, child);
     const shown = [lists(sample.finalSceneIds)];
-    if (child && child.publishCount > 0) shown.push(lists(child.finalSceneIds));
+    if (child && child.publishCount > 0 && !d3)
+      shown.push(lists(child.finalSceneIds));
     lastShown.push(shown.at(-1));
     const contribution = unique(
       shown.flatMap((list) => list.filter((id) => !pair.includes(id))),
@@ -341,6 +436,7 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
       const shownGraph =
         sample.graph?.joined === true ||
         (child &&
+          !d3 &&
           child.outcome === "graph-ready" &&
           child.publishCount > 0 &&
           (child.edgeCount ?? 0) > 0);
@@ -367,14 +463,43 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
         ] += 1;
       } else {
         counts.notDisplayed += 1;
-        if (!sameList(lists(sample.finalSceneIds), pair))
-          row.holdReasons.push("not-displayed-sample-differs-from-r-plus-ir");
+        if (result.parentContributed)
+          notDisplayedFailures.push({
+            repeat: sample.repeat,
+            reason: "graph-contributed-parent-not-counted-as-first-render",
+            firstRenderFails: result.firstRenderFails,
+          });
+        else if (!sameList(lists(sample.finalSceneIds), pair))
+          notDisplayedFailures.push({
+            repeat: sample.repeat,
+            reason: "not-displayed-sample-differs-from-r-plus-ir",
+          });
       }
     }
+    if (d3) {
+      indexReady.eligible += 1;
+      const problems = d3Problems({
+        sample,
+        child,
+        pair,
+        lists,
+        forbidden,
+        blocked,
+      });
+      if (child.outcome === "graph-ready" && (child.edgeCount ?? 0) > 0)
+        indexReady.graphShown += 1;
+      for (const problem of problems)
+        indexReady.problems.push({ repeat: sample.repeat, ...problem });
+    } else if (
+      variant.key === "G-08/chronicle-index-unusable" &&
+      child?.origin === "index-ready"
+    )
+      indexReady.outOfD3 += 1;
     if (expectation.expectedContributions.length > 0) {
       const problems = edgeBindingProblems(
         sample,
         expectation.expectedContributions,
+        result.firstRender,
       );
       if (problems === null) edgeSkipped += 1;
       else {
@@ -398,6 +523,8 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
       row.holdReasons.push("displayed-lists-differ");
   }
   row.displayed = counts;
+  row.notDisplayedFailures = notDisplayedFailures;
+  row.indexReadyRequery = indexReady;
   row.lists = { rPlusIr: hybridList, graph: graphList ?? null };
 
   // Metrics. A list the scorer refuses (ineligible, duplicate) holds.
@@ -458,6 +585,8 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
 
 function finishHeldRow(row, expectation) {
   row.displayed = null;
+  row.notDisplayedFailures = [];
+  row.indexReadyRequery = null;
   row.lists = null;
   row.metrics = null;
   row.expectedMetrics = expectation.metrics;
@@ -477,10 +606,12 @@ function finishHeldRow(row, expectation) {
   return row;
 }
 
-function evidenceComponents(edgeStatus) {
+function evidenceComponents(edgeStatus, contributionStatus = "n/a") {
   const missing = (reason) => ({ status: "not-evaluable", reason });
   return {
     "edge-binding": { status: edgeStatus },
+    // Prereg v2 D8: a Graph that reached a display without being counted.
+    "graph-contributed-parent-counted": { status: contributionStatus },
     "utf16-range": missing("not-in-the-receipt"),
     "explicit-pin-association": missing("not-in-the-receipt"),
     "raw-excerpt-unchanged": missing("not-in-the-receipt"),
@@ -490,11 +621,19 @@ function evidenceComponents(edgeStatus) {
 
 function finishRow(row, expectation, tolerance) {
   const held = row.holdReasons.length > 0;
+  // Prereg v2 D8 (K6/4:171, K6/6 変える点 6): conditions 1 and 2, and 4 for a
+  // variant with an expectation, fail.
+  const notDisplayedFail = row.notDisplayedFailures.length > 0;
   const g = row.metrics?.graph;
   const h = row.metrics?.rPlusIr;
   const comparable = !held && g && h;
   const g01 = (() => {
     if (!expectation.predeclaredImprovement) return { status: "n/a" };
+    if (notDisplayedFail)
+      return {
+        status: "fail",
+        reasons: row.notDisplayedFailures.map((entry) => entry.reason),
+      };
     if (!comparable) return { status: "hold", reasons: row.holdReasons };
     const improved =
       g.ndcgAt8 > h.ndcgAt8 + tolerance &&
@@ -512,18 +651,39 @@ function finishRow(row, expectation, tolerance) {
       },
     };
   })();
-  const macro = !comparable
-    ? { status: "hold", reasons: row.holdReasons }
-    : {
-        status:
-          g.recallAt8 + tolerance >= h.recallAt8 &&
-          g.ndcgAt8 + tolerance >= h.ndcgAt8
-            ? "pass"
-            : "fail",
-        deltaRecallAt8: g.recallAt8 - h.recallAt8,
-        deltaNdcgAt8: g.ndcgAt8 - h.ndcgAt8,
-      };
-  const evidenceParts = evidenceComponents(row.edgeBinding.status);
+  const macro = notDisplayedFail
+    ? {
+        status: "fail",
+        reasons: row.notDisplayedFailures.map((entry) => entry.reason),
+      }
+    : !comparable
+      ? { status: "hold", reasons: row.holdReasons }
+      : {
+          status:
+            g.recallAt8 + tolerance >= h.recallAt8 &&
+            g.ndcgAt8 + tolerance >= h.ndcgAt8
+              ? "pass"
+              : "fail",
+          deltaRecallAt8: g.recallAt8 - h.recallAt8,
+          deltaNdcgAt8: g.ndcgAt8 - h.ndcgAt8,
+        };
+  const evidenceParts = evidenceComponents(
+    row.edgeBinding.status,
+    expectation.expectedContributions.length === 0
+      ? "n/a"
+      : notDisplayedFail
+        ? "fail"
+        : "pass",
+  );
+  const indexReady = row.indexReadyRequery;
+  const indexReadyStatus =
+    indexReady === null || indexReady.eligible === 0
+      ? "n/a"
+      : indexReady.problems.some((entry) => entry.kind === "fail")
+        ? "fail"
+        : indexReady.problems.some((entry) => entry.kind === "hold")
+          ? "hold"
+          : "pass";
   const forbiddenParts = {
     "a-forbidden-scene-or-blocked-candidate": {
       status: row.forbidden.a.violations.length > 0 ? "fail" : "pass",
@@ -532,6 +692,12 @@ function finishRow(row, expectation, tolerance) {
     "b-late-graph-in-display": {
       status: row.forbidden.b.violations.length > 0 ? "fail" : "pass",
       violations: row.forbidden.b.violations.length,
+    },
+    "a2-index-ready-requery-forbidden": {
+      status: indexReadyStatus,
+      eligible: indexReady?.eligible ?? 0,
+      outOfD3: indexReady?.outOfD3 ?? 0,
+      problems: indexReady?.problems ?? [],
     },
     "c-existing-24-graph-appearance-and-dto": {
       status: "not-evaluable",
@@ -695,6 +861,23 @@ export function evaluateQualityVerdict({
       ndcgAt8: ndcg,
     };
   }
+  // Prereg v2 D8: a Graph that reached a display without being counted (or a
+  // not-displayed sample unlike R+IR) is a FAIL of condition 2 as well.
+  const notDisplayedRows = live.filter(
+    (row) => row.notDisplayedFailures.length > 0,
+  );
+  if (notDisplayedRows.length > 0)
+    gcase = {
+      status: "fail",
+      variants: live.length,
+      notDisplayedFailures: notDisplayedRows.map((row) => ({
+        variantKey: row.variantKey,
+        repeats: row.notDisplayedFailures.map((entry) => entry.repeat),
+        reasons: [
+          ...new Set(row.notDisplayedFailures.map((entry) => entry.reason)),
+        ],
+      })),
+    };
   const macroComponents = {
     "g-case": gcase,
     "existing-24-graph-arm": {
@@ -748,7 +931,17 @@ export function evaluateQualityVerdict({
     edgeRows.length === 0
       ? "hold"
       : worstStatus(edgeRows.map((row) => row.edgeBinding.status));
-  const evidenceParts = evidenceComponents(edgeStatus);
+  const evidenceParts = evidenceComponents(
+    edgeStatus,
+    worstStatus(
+      live.map(
+        (row) =>
+          row.conditions["evidence-validity"].components?.[
+            "graph-contributed-parent-counted"
+          ]?.status ?? "n/a",
+      ),
+    ),
+  );
   evidenceParts["edge-binding"].variants = edgeRows.length;
   evidenceParts["edge-binding"].checked = edgeRows.reduce(
     (sum, row) => sum + row.edgeBinding.checked,
@@ -796,6 +989,31 @@ export function evaluateQualityVerdict({
         ),
       ),
       violatingSamples: countOf((row) => row.forbidden.b?.violations ?? []),
+    },
+    // Prereg v2 D3 (G-08/chronicle-index-unusable's `index-ready` re-query).
+    "a2-index-ready-requery-forbidden": {
+      status: worstStatus(
+        live.map(
+          (row) =>
+            row.conditions["forbidden-contribution"].components?.[
+              "a2-index-ready-requery-forbidden"
+            ]?.status ?? "n/a",
+        ),
+      ),
+      eligibleChildren: live.reduce(
+        (sum, row) => sum + (row.indexReadyRequery?.eligible ?? 0),
+        0,
+      ),
+      keptAsChildren: live.reduce(
+        (sum, row) => sum + (row.indexReadyRequery?.outOfD3 ?? 0),
+        0,
+      ),
+      problems: live.flatMap((row) =>
+        (row.indexReadyRequery?.problems ?? []).map((entry) => ({
+          variantKey: row.variantKey,
+          ...entry,
+        })),
+      ),
     },
     "c-existing-24-graph-appearance-and-dto": {
       status: "not-evaluable",

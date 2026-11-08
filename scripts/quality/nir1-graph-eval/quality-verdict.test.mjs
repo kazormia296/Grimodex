@@ -22,6 +22,7 @@ import {
   GRAPH_EVAL_HYBRID_P95_LIMIT_MS,
   GRAPH_EVAL_VARIANTS,
   K65_FREEZE,
+  K66_FREEZE,
 } from "./constants.mjs";
 import {
   DEFAULT_ROOT,
@@ -41,7 +42,7 @@ import {
   deriveLatencyPolicy,
   evaluateQualityVerdict,
 } from "./quality-verdict.mjs";
-import { H40, k64Sample } from "./test-support.mjs";
+import { H40, followUpRecord, k64Sample, k66Sample } from "./test-support.mjs";
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const git = (cwd, ...args) =>
@@ -85,12 +86,20 @@ git(
   "reviewed v2",
 );
 const S4 = git(PROC_REPO, "rev-parse", "HEAD");
+// K6/6 変える点 8: the K6/6 freeze is a draft (`freezeCommit: null`), so the
+// tests hold the receipts to a descriptor of their own (the same bytes, a
+// synthetic freeze commit). The default refuses every receipt (last test).
+const TEST_K66 = { ...K66_FREEZE, freezeCommit: "6".repeat(40) };
 const buildQualityVerdict = (options) =>
-  buildVerdict({ procedureRoot: PROC_REPO, ...options });
+  buildVerdict({ procedureRoot: PROC_REPO, freeze66: TEST_K66, ...options });
 const loadQualityInputs = (options) =>
-  loadInputs({ procedureRoot: PROC_REPO, ...options });
+  loadInputs({ procedureRoot: PROC_REPO, freeze66: TEST_K66, ...options });
 const verifyBindings = (output, options) =>
-  verifyBindingsOf(output, { procedureRoot: PROC_REPO, ...options });
+  verifyBindingsOf(output, {
+    procedureRoot: PROC_REPO,
+    freeze66: TEST_K66,
+    ...options,
+  });
 const CANDIDATE = H40("c");
 const RUN = { startedAtMs: 1_000, finishedAtMs: 61_000 };
 const WINDOW = [0, 20_000, 40_000, 62_000].map((atMs) => ({
@@ -108,6 +117,10 @@ const PROCEDURE_SHA = sha256(PROCEDURE_BYTES);
 const K65_HEAD = {
   freezeCommit: K65_FREEZE.freezeCommit,
   sha256: K65_FREEZE.sha256,
+};
+const K66_HEAD = {
+  freezeCommit: TEST_K66.freezeCommit,
+  sha256: TEST_K66.sha256,
 };
 
 /** The predeclared R+IR and R+IR+Graph lists of each catalog variant. */
@@ -225,7 +238,11 @@ function buildReceipts(expectations, edit = () => ({})) {
       runId: `gold-test/${key}`,
       preview: false,
       run: RUN,
-      head: { observationPrep: { commit: S4 }, k65: K65_HEAD },
+      head: {
+        observationPrep: { commit: S4 },
+        k65: K65_HEAD,
+        k66: K66_HEAD,
+      },
       candidate: { commit: CANDIDATE },
       environment: { windowSamples: WINDOW, ownPids: [] },
       settings: {
@@ -928,6 +945,37 @@ test("K6/5 変える点 7: 手順のファイルは正式の loader で S4 の c
       /\[precheck\].*head\.k65 is not the K6\/5 freeze/u,
       name,
     );
+  // K6/6-N9: head.k66 が無い、別の commit、別の bytes、K6/5 の凍結は /6 の行で判定しない。
+  const withK66 = (k66) =>
+    buildReceipts(expectations, (key) =>
+      key === "G-03/base"
+        ? {
+            receipt: {
+              head: {
+                observationPrep: { commit: S4 },
+                k65: K65_HEAD,
+                ...k66,
+              },
+            },
+          }
+        : {},
+    );
+  for (const [name, head] of [
+    ["head.k66 が無い（/6 の凍結の前に始めた run。s6r1 を含む）", {}],
+    ["別の凍結の commit", { k66: { ...K66_HEAD, freezeCommit: H40("1") } }],
+    ["別の bytes", { k66: { ...K66_HEAD, sha256: "0".repeat(64) } }],
+    ["K6/5 の凍結", { k66: K65_HEAD }],
+  ])
+    assert.throws(
+      () => verdictOf(withK66(head)),
+      /\[precheck\].*head\.k66 is not the K6\/6 freeze/u,
+      name,
+    );
+  // 既定の K66_FREEZE は freezeCommit が null（/6 は未確認の draft）で、どの receipt も判定しない。
+  assert.throws(
+    () => verdictOf(buildReceipts(expectations), { freeze66: K66_FREEZE }),
+    /\[precheck\].*head\.k66 is not the K6\/6 freeze \(null\)/u,
+  );
   // 実リポジトリは S4 の commit（試験の repo の commit）を持たず、v2 の review も placeholder なので読めない。
   assert.throws(
     () =>
@@ -1095,4 +1143,288 @@ test("no threshold is written in the verdict code; the manifest and the K6/2 tex
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---- 品質判定の事前登録 v2（草稿。K6/6 に連動）: D3・D6・D8 --------------------
+
+/**
+ * A first-render row (K6/6) in place of the follow-up row of a variant: the
+ * parent joined the Graph in the D window and shows the Graph's list, with the
+ * parent's own contribution record (FR-7). `startSlot.preparesReady` counts
+ * 10 + repeat, as R1 records it, so (c) holds for every row.
+ */
+function firstRenderRows(variant, expectation, mutate = () => ({})) {
+  const runtime = (list) => list.map((id) => `u-${id}`);
+  const contributions = expectation.expectedContributions;
+  const material = {
+    matched: contributions.map((row) => `${row.kind}:${row.sceneId}`),
+    unresolvedEdges: 0,
+    observed: contributions.map((row) => ({
+      kind: row.kind,
+      sceneId: row.sceneId,
+      pairs: row.edgeIds.map((edge) => `rev-of-${edge}|${edge}`),
+      unresolved: 0,
+    })),
+  };
+  const graphList = runtime(fixtureLists(variant).graph);
+  return {
+    mapGraphSample: (_merged, repeat) => {
+      const { overrides = {}, followUp = {} } =
+        mutate(repeat, { runtime }) ?? {};
+      return {
+        ...k66Sample(
+          {
+            variantKey: variant.key,
+            phase: "measured",
+            repeat,
+            finalSceneIds: graphList,
+            startSlot: {
+              kind: "empty",
+              readyFresh: false,
+              preparesReady: 10 + repeat,
+            },
+            graph: { edgeCount: Math.max(1, contributions.length) },
+            ...overrides,
+          },
+          {
+            parent: {
+              rSceneIds: runtime(fixtureLists(variant).hybrid),
+              irSceneIds: [],
+              contribution: {
+                expectedContribution: true,
+                contributionBasis: "material-revision",
+                materialRevision: material,
+              },
+              ...followUp.parent,
+            },
+            ...followUp,
+          },
+        ),
+        status: "completed",
+      };
+    },
+  };
+}
+
+const G02 = (output) => keyOf(output, "G-02/base");
+
+test("品質 v2 D6: first-render で表示された sample の edge の束縛は親の寄与の記録（FR-7）で検査する", () => {
+  const output = run((key, ctx) =>
+    key === "G-02/base" ? firstRenderRows(ctx.variant, ctx.expectation) : {},
+  );
+  assert.deepEqual(G02(output).displayed, {
+    firstRender: 30,
+    followUp: 0,
+    notDisplayed: 0,
+  });
+  assert.equal(G02(output).edgeBinding.status, "pass");
+  assert.equal(G02(output).edgeBinding.checked, 30);
+  assert.deepEqual(G02(output).notDisplayedFailures, []);
+  assert.equal(statusOf(output, "macro-non-regression"), "not-evaluable");
+  assert.equal(
+    output.conditions["macro-non-regression"].components["g-case"].status,
+    "pass",
+  );
+});
+
+test("品質 v2 D8（K6/6-N13a・N13b）: 窓内に合流して Graph が表示に寄与したのに first-render の条件を欠いた親は、Scene の一覧が R+IR と違っても同じでも fail（hold に留めない）", () => {
+  for (const [name, overrides] of [
+    // 同じ（path の添付だけ。G-06 の形）: R+IR の一覧のまま。
+    ["R+IR と同じ", (runtime, hybrid) => ({ finalSceneIds: runtime(hybrid) })],
+    // 違う: 一覧に Scene が足される。
+    ["R+IR と違う", () => ({})],
+  ]) {
+    const output = run((key, ctx) =>
+      key === "G-02/base"
+        ? firstRenderRows(
+            ctx.variant,
+            ctx.expectation,
+            (repeat, { runtime }) =>
+              repeat === 4
+                ? {
+                    overrides: overrides(
+                      runtime,
+                      fixtureLists(ctx.variant).hybrid,
+                    ),
+                    followUp: { parent: { contribution: null } },
+                  }
+                : {},
+          )
+        : {},
+    );
+    const row = G02(output);
+    assert.equal(row.conditions["macro-non-regression"].status, "fail", name);
+    assert.deepEqual(
+      row.notDisplayedFailures.map((entry) => [entry.repeat, entry.reason]),
+      [[4, "graph-contributed-parent-not-counted-as-first-render"]],
+      name,
+    );
+    assert.deepEqual(row.notDisplayedFailures[0].firstRenderFails, [
+      "FR7:no-contribution-record",
+    ]);
+    assert.equal(
+      row.conditions["evidence-validity"].components[
+        "graph-contributed-parent-counted"
+      ].status,
+      "fail",
+    );
+    assert.equal(statusOf(output, "macro-non-regression"), "fail", name);
+    assert.equal(
+      statusOf(output, "evidence-validity"),
+      "fail",
+      "condition 4 for a variant with an expectation",
+    );
+    assert.ok(output.verdict.failed.includes("macro-non-regression"));
+  }
+});
+
+test("品質 v2 D8: 表示されなかった sample の Scene の一覧が R+IR と違うのは hold でなく fail（v1 の実装は K6/4:171 より弱かった）", () => {
+  const output = run((key, ctx) =>
+    key === "G-02/base"
+      ? {
+          mapGraphSample: (merged, repeat) =>
+            repeat === 2
+              ? {
+                  ...k64Sample(
+                    {
+                      variantKey: key,
+                      repeat,
+                      // R+IR の一覧から 1 件落とした一覧（R+IR と違う）。
+                      finalSceneIds: fixtureLists(ctx.variant)
+                        .hybrid.slice(1)
+                        .map((id) => `u-${id}`),
+                    },
+                    { child: null, notices: [] },
+                  ),
+                  tFetch: 100,
+                  tReturn: 130,
+                  status: "completed",
+                }
+              : merged,
+        }
+      : {},
+  );
+  assert.deepEqual(
+    G02(output).notDisplayedFailures.map((entry) => entry.reason),
+    ["not-displayed-sample-differs-from-r-plus-ir"],
+  );
+  assert.equal(G02(output).conditions["macro-non-regression"].status, "fail");
+});
+
+test("品質 v2 D8: Graph が合流したが edgeCount 0 の親は『寄与した』に当たらず fail にしない", () => {
+  const output = run((key, ctx) =>
+    key === "G-02/base"
+      ? firstRenderRows(ctx.variant, ctx.expectation, (repeat, { runtime }) =>
+          repeat === 4
+            ? {
+                overrides: {
+                  graph: { edgeCount: 0 },
+                  finalSceneIds: runtime(fixtureLists(ctx.variant).hybrid),
+                },
+                followUp: { parent: { contribution: null } },
+              }
+            : {},
+        )
+      : {},
+  );
+  assert.deepEqual(G02(output).notDisplayedFailures, []);
+});
+
+test("品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）", () => {
+  const KEY = "G-08/chronicle-index-unusable";
+  const edit =
+    (childOverrides, sampleOverrides = {}, forbidden = false) =>
+    (key, ctx) => {
+      if (key !== KEY) return {};
+      const runtime = (list) => list.map((id) => `u-${id}`);
+      const pair = runtime(fixtureLists(ctx.variant).hybrid);
+      const forbiddenScene = ctx.expectation.forbiddenSceneIds[0];
+      return {
+        mapGraphSample: (merged, repeat) => ({
+          ...k64Sample(
+            {
+              variantKey: key,
+              repeat,
+              finalSceneIds: pair,
+              snapshot: {
+                usable: true,
+                reason: null,
+                chronicleIndexUsable: false,
+              },
+              irOutcome: "index-unavailable",
+              graph: { outcome: "graph-unavailable", reason: "index-state" },
+              ...sampleOverrides,
+            },
+            {
+              child: {
+                ...followUpRecord().child,
+                origin: "index-ready",
+                refreshTrigger: null,
+                chronicleIndexUsable: true,
+                outcome: "graph-ready",
+                edgeCount: 1,
+                rSceneIds: pair,
+                irSceneIds: [],
+                finalSceneIds: pair,
+                materialRevision: {
+                  unresolvedEdges: 0,
+                  observed: [
+                    {
+                      kind: "path-attachment",
+                      sceneId: forbidden ? forbiddenScene : "g08-attach",
+                      pairs: ["rev|edge"],
+                      unresolved: 0,
+                    },
+                  ],
+                },
+                ...childOverrides,
+              },
+            },
+          ),
+          tFetch: 100,
+          tReturn: 130,
+          status: "completed",
+        }),
+      };
+    };
+  const a2 = (output) =>
+    output.conditions["forbidden-contribution"].components[
+      "a2-index-ready-requery-forbidden"
+    ];
+  // 6 条件を満たし、禁止の寄与が無い: 子としての違反にはならず、D3 の対象（Revision の解決は未実装なので hold）。
+  const ok = run(edit({}));
+  assert.equal(a2(ok).eligibleChildren, 30);
+  assert.equal(a2(ok).status, "hold");
+  assert.ok(
+    a2(ok).problems.every(
+      (entry) => entry.code === "d-revision-resolution-not-implemented",
+    ),
+  );
+  assert.equal(
+    keyOf(ok, KEY).forbidden.a.violations.length,
+    0,
+    "an eligible index-ready child is not 'a child that showed a Graph'",
+  );
+  // 子の開始時に Chronicle の Index が使えなかった（(6) を欠く）: 子のまま。Graph を出した子は fail。
+  const kept = run(edit({ chronicleIndexUsable: false }));
+  assert.equal(a2(kept).eligibleChildren, 0);
+  assert.equal(a2(kept).keptAsChildren, 30);
+  assert.equal(
+    keyOf(kept, KEY).forbidden.a.violations[0].reason,
+    "graph-shown-for-a-variant-expected-unavailable",
+  );
+  // origin が graph-ready の子（K6/4:52 の「子」）は D3 の対象にしない。
+  const graphReady = run(edit({ origin: "graph-ready" }));
+  assert.equal(a2(graphReady).eligibleChildren, 0);
+  assert.equal(statusOf(graphReady, "forbidden-contribution"), "fail");
+  // 禁止された Scene への path の寄与（R+IR の一覧に同じ Scene があっても数える）は fail。
+  const forbidden = run(edit({}, {}, true));
+  assert.equal(a2(forbidden).status, "fail");
+  assert.ok(
+    a2(forbidden).problems.some((entry) => entry.code === "b-forbidden-path"),
+  );
+  // 遅れた Graph の表示、2 回の公開は fail。
+  assert.equal(a2(run(edit({ lateGraphInDisplay: true }))).status, "fail");
+  assert.equal(a2(run(edit({ publishCount: 2 }))).status, "fail");
+  // 他の variant の index-ready の子は D3 の対象にしない（G-08/chronicle-index-unusable だけ）。
 });

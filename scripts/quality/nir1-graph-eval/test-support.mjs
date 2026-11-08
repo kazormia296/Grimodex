@@ -43,6 +43,7 @@ import {
   K64_FREEZE,
   K65_CANDIDATE_REQUIREMENTS,
   K65_FREEZE,
+  K66_FREEZE,
   OBSERVATION_PREP_RECORD_PATH,
   OBSERVATION_PREP_RECORD_SCHEMA,
 } from "./constants.mjs";
@@ -205,6 +206,9 @@ export function followUpRecord({ parent = {}, child = {}, ...rest } = {}) {
       prepareFailures: 0,
       driftAtQuery: 0,
       stamp0Missing: 0,
+      // K6/6 変える点 7: the steady state's two (a (b) trace has the seven).
+      preparesStarted: 1,
+      preparesReady: 1,
     },
     loading: { switched: false, ms: null },
     child:
@@ -271,6 +275,97 @@ export function k64Sample(overrides = {}, followUp = {}) {
       ...graph,
     },
   });
+}
+
+/**
+ * K6/6: a steady-state R+IR+Graph sample **as R1 and the D′ owner record it**:
+ * the parent joined its worker's Graph inside the D window (arrival 5 ms after
+ * Raw-ready), the slot was `empty` at the start (never a new READY:
+ * `readyFresh: false`), the stamp is `stamp0-missing` (S0 is read at admit and
+ * almost never available), the begin record is exactly `["pending"]`, one
+ * prepare started and became ready for this sample, and nothing follows the
+ * parent (no notice, no child, no IR retry timer). `startSlot.preparesReady`
+ * is 10 so that the next Graph arm sample of the phase (11) differs by 1.
+ * `followUp` merges into the blocks (`parent`, `counters`, `dPrimeCounters`,
+ * `r1`, `r2` one level deep); the rest replaces a key. This is the shape the
+ * K6/5-P1 fixture (`readyFresh: true`, `fresh`) never had under R1.
+ */
+export function k66Sample(overrides = {}, followUp = {}) {
+  const { graph = {}, ...rest } = overrides;
+  const {
+    parent = {},
+    counters = {},
+    dPrimeCounters = {},
+    r1 = {},
+    r2 = {},
+    ...other
+  } = followUp;
+  const base = followUpRecord({ child: null });
+  const blocks = {
+    counters: {
+      before: base.counters.before,
+      after: { begins: 11, cacheHits: 3, lateCached: 3 },
+      ...counters,
+    },
+    countersAfterRelease: { begins: 11, cacheHits: 3, lateCached: 3 },
+    dPrimeCounters: { ...base.dPrimeCounters, ...dPrimeCounters },
+    r1: { ...base.r1, ...r1 },
+    r2: { ...base.r2, ...r2 },
+  };
+  return sample({
+    startSlot: { kind: "empty", readyFresh: false, preparesReady: 10 },
+    freshnessStamp: {
+      result: "stamp0-missing",
+      matched: null,
+      attemptedAtNs: 95_000,
+    },
+    finalSceneIds: ["dev-a", "dev-b", "dev-added"],
+    followUp: {
+      ...base,
+      parent: {
+        ...base.parent,
+        tPub: 120,
+        declaration: "used",
+        graphContinueAnswer: "available",
+        ticket: {
+          settled: true,
+          outcome: "available",
+          reason: null,
+          disposition: "used",
+          busyCause: null,
+        },
+        // FR-7: matched on the materials' Revisions, every edge resolved.
+        contribution: {
+          expectedContribution: true,
+          contributionBasis: "material-revision",
+          materialRevision: {
+            matched: ["graph-only:scene-added"],
+            unresolvedEdges: 0,
+            observed: [],
+          },
+        },
+        ...parent,
+      },
+      notices: [],
+      nativeBegins: ["pending"],
+      ...blocks,
+      ...other,
+    },
+    ...rest,
+    graph: { ...graph },
+  });
+}
+
+/** The Graph arm rows of one phase with `preparesReady` 10, 11, 12, … (step 1). */
+export function k66PhaseRows(count, make = () => ({}), phase = "measured") {
+  return Array.from({ length: count }, (_, at) =>
+    k66Sample({
+      phase,
+      repeat: at,
+      ...make(at),
+      startSlot: { kind: "empty", readyFresh: false, preparesReady: 10 + at },
+    }),
+  );
 }
 
 export const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
@@ -593,6 +688,38 @@ export function k64Run(mutate = () => [{}, {}]) {
   });
 }
 
+/**
+ * K6/6: the full frozen schedule with every Graph-arm sample of an available
+ * variant as a first-render parent under R1 (`k66Sample`). `startSlot.
+ * preparesReady` counts 10, 11, 12, … along each variant's Graph arm samples
+ * (warm-up included), so the next-sample difference (R-6 (c)) is 1 and the
+ * variant's last measured sample is the last of its phase. `mutate(variant,
+ * repeat)` returns [S1b overrides, followUp overrides] for a measured row.
+ */
+export function k66Run(mutate = () => [{}, {}]) {
+  const seen = new Map();
+  return scheduleRows(GRAPH_EVAL_VARIANTS).map((row) => {
+    if (row.arm !== "graph") return row;
+    const variant = GRAPH_EVAL_VARIANTS.find((v) => v.key === row.variantKey);
+    if (variant.expectedGraph === "unavailable")
+      return { ...row, followUp: unavailableRecord() };
+    const at = seen.get(row.variantKey) ?? 0;
+    seen.set(row.variantKey, at + 1);
+    const [overrides = {}, followUp = {}] =
+      row.phase === "measured" ? mutate(variant, row.repeat) : [{}, {}];
+    return k66Sample(
+      {
+        variantKey: row.variantKey,
+        phase: row.phase,
+        repeat: row.repeat,
+        startSlot: { kind: "empty", readyFresh: false, preparesReady: 10 + at },
+        ...overrides,
+      },
+      followUp,
+    );
+  });
+}
+
 export function summarizeK64(
   samples,
   candidate = ratification5(),
@@ -825,6 +952,9 @@ export const k64Diagnostics = (begins, cacheHits, lateCached, extra = {}) => ({
   prepareFailures: 0,
   driftAtQuery: 0,
   stamp0Missing: 0,
+  // K6/6 変える点 7: the evaluation Native reports these two as well.
+  preparesStarted: 0,
+  preparesReady: 0,
   ...extra,
 });
 
@@ -1945,6 +2075,7 @@ export const S4_REHEARSAL_FILES = Object.freeze({
 export const S4_REHEARSAL_G02_DECLARED = "g02-tamsin-first";
 const S4_REHEARSAL_K64_TEXT = "K6/4 frozen text (rehearsal)\n";
 const S4_REHEARSAL_K65_TEXT = "K6/5 frozen text (rehearsal)\n";
+const S4_REHEARSAL_K66_TEXT = "K6/6 frozen text (rehearsal)\n";
 
 function rehearsalProcedureText() {
   const base = JSON.parse(
@@ -2009,6 +2140,7 @@ export function s4RehearsalRepository({
     put(file, readFileSync(path.join(REPO_ROOT, file)));
   put(K64_FREEZE.path, S4_REHEARSAL_K64_TEXT);
   put(K65_FREEZE.path, S4_REHEARSAL_K65_TEXT);
+  put(K66_FREEZE.path, S4_REHEARSAL_K66_TEXT);
   const base = commit("① frozen material");
   const F = S4_REHEARSAL_FILES;
   const frozenBytes = {
@@ -2108,6 +2240,13 @@ export function s4RehearsalRepository({
     k65Freeze: {
       ...K65_FREEZE,
       sha256: sha(S4_REHEARSAL_K65_TEXT),
+      freezeCommit: base,
+    },
+    // K6/6 (a dev prototype): the same shape; the real K66_FREEZE has no
+    // freeze commit while /6 is an unconfirmed draft.
+    k66Freeze: {
+      ...K66_FREEZE,
+      sha256: sha(S4_REHEARSAL_K66_TEXT),
       freezeCommit: base,
     },
     cleanup: () => rmSync(repo, { recursive: true, force: true }),

@@ -11,6 +11,12 @@
 //   F1〜F7 :137-145, X1〜X13 :147-161, FAIL :163, 表示の可用性 :165-167,
 //   品質 :169-171, R1〜R7 :190-198, 変える点 15 :109, 批准 5 :32, 批准 12 :39.
 //
+// K6/6 (a dev prototype; draftRef `nir1-final-request-eval-proposal/6`, revision
+// 3, UNCONFIRMED): the steady state's first render is decided by `firstRenderOf`
+// (R-6 (a)〜(c), R-7, FR-1〜FR-8) instead of K6/2's literal reading, which is
+// structurally false under R1 (join.mjs `k62SteadyStateInWindow`). The (b)
+// trace's first render is unchanged. Not judged, not frozen.
+//
 // Pure module: it classifies a query that a harness already recorded through
 // the product hook consumer (R5) and never observes a runtime. W_f, T_late,
 // T_show, D and the boundary tolerance come from constants.mjs only.
@@ -47,7 +53,7 @@ import {
   classifyJoin,
   finite,
   lapseKind,
-  steadyStateInWindow,
+  USER_OPERATION,
 } from "./join.mjs";
 
 export const FOLLOW_UP_CONTEXTS = Object.freeze(["steady", "trace"]);
@@ -73,6 +79,19 @@ const DPRIME_COUNTER_KEYS = Object.freeze([
   "prepareFailures",
   "driftAtQuery",
   "stamp0Missing",
+]);
+/**
+ * K6/6 変える点 7: the two counters the first-render condition (R-6 (b)) reads.
+ * Required in the steady state only; a (b) trace record keeps the seven keys
+ * above (K6/6-P5; `trace-record.mjs` is not changed).
+ */
+const DPRIME_STEADY_ONLY_KEYS = Object.freeze([
+  "preparesStarted",
+  "preparesReady",
+]);
+const DPRIME_STEADY_KEYS = Object.freeze([
+  ...DPRIME_COUNTER_KEYS,
+  ...DPRIME_STEADY_ONLY_KEYS,
 ]);
 /**
  * The order of the follow-up's stages (K6/4:109 「失敗した段の理由」). The
@@ -295,8 +314,8 @@ export function missingR7(sample, context) {
   need(
     record.dPrimeCounters !== null &&
       typeof record.dPrimeCounters === "object" &&
-      DPRIME_COUNTER_KEYS.every((key) =>
-        Number.isInteger(record.dPrimeCounters[key]),
+      (context === "steady" ? DPRIME_STEADY_KEYS : DPRIME_COUNTER_KEYS).every(
+        (key) => Number.isInteger(record.dPrimeCounters[key]),
       ),
     "dPrimeCounters",
   );
@@ -465,6 +484,200 @@ export function mixedIntoDisplay(record) {
   return out;
 }
 
+const sameCounter = (record, key, want) =>
+  record.dPrimeCounters?.[key] === want;
+
+/**
+ * K6/6 (変える点 1〜3): for each Graph-arm sample of a receipt, the next Graph
+ * arm sample of the same phase in the receipt's order (hybrid-arm samples are
+ * skipped by construction), as `{ preparesReady }`, or `null` for the last one
+ * of its phase. R-6 (c) reads `next.preparesReady − this.preparesReady`.
+ * A Map keyed by the row object; non-Graph-arm rows have no entry.
+ *
+ * A Gold receipt holds one variant (the 13 receipts of s6r1), so "the phase"
+ * is read per variant: the sequence is grouped by `variantKey` and `phase`, which
+ * is the same thing for one receipt and keeps a concatenated pool from
+ * pairing the last sample of one variant with the first of the next (a setup
+ * in between). Only the scheduled user-operation rows count (re-query rows are
+ * never scheduled; `availability.mjs` `separateRequeries`).
+ */
+export function nextGraphArmOf(samples) {
+  const out = new Map();
+  const nextByGroup = new Map();
+  for (let at = samples.length - 1; at >= 0; at -= 1) {
+    const row = samples[at];
+    if (row?.arm !== "graph" || row.trigger !== USER_OPERATION) continue;
+    const group = `${row.variantKey}\u0000${row.phase}`;
+    out.set(row, nextByGroup.get(group) ?? null);
+    nextByGroup.set(group, { preparesReady: row.startSlot?.preparesReady });
+  }
+  return out;
+}
+
+/**
+ * K6/6 変える点 3 (FR-1〜FR-8) with 1 (R-6) and 2 (R-7): does a steady-state
+ * parent count as a first render? Only a parent whose join is in the D window
+ * is a candidate; the others are decided by the join alone (no `fails`).
+ * `fails` lists every sub-condition the candidate misses (codes begin with the
+ * condition: `R1`, `a`/`b`/`c` of R-6, `FR1`〜`FR7`), so that the disclosure
+ * (変える点 5) and the F1 detail name which one dropped it. A record error
+ * N-d (FR-8) stops with `[artifact]`.
+ *
+ * `next` is `nextGraphArmOf(samples).get(sample)`: `null` for the last Graph
+ * arm sample of its phase (then (c) is not applied, K6/6-P4); `undefined`
+ * (not given) is a `[precheck]` for a candidate.
+ */
+export function firstRenderOf(sample, join, next) {
+  const fails = [];
+  const no = (code, detail = null) =>
+    fails.push(detail === null ? code : `${code}:${detail}`);
+  if (!join.inWindow) return { candidate: false, counted: false, fails };
+  const graph = sample.graph;
+  const record = sample.followUp;
+  const parent = record.parent;
+  const counters = record.dPrimeCounters;
+
+  // FR-8 / N-d: records the product's own rules rule out.
+  if (sample.freshnessStamp?.result === "stale")
+    throw new Error(
+      "[artifact] K6/6 FR-8: a parent that joined its Graph in the window has a `stale` freshness stamp (the product never queries on Stale)",
+    );
+  if (counters.driftAtQuery !== 0 || counters.prepareFailures !== 0)
+    throw new Error(
+      `[artifact] K6/6 FR-8: a parent that joined its Graph in the window recorded driftAtQuery=${counters.driftAtQuery}, prepareFailures=${counters.prepareFailures}`,
+    );
+
+  // FR-1: a worker result that passed the return-time revalidation
+  // (classifyJoin: in window and `revalidation: "passed"`); a `Cached` origin
+  // is not counted (K6/4-N39).
+  if (graph.source !== "worker") no("FR1", `source-${graph.source}`);
+
+  // R1 (a): R-6 (a) and K6/6-N1.
+  if (record.r1.reachedQuiet !== true) no("a", "reached-quiet-false");
+  else {
+    const unmet = unmetR1(record.r1);
+    if (unmet.length > 0)
+      no("a", `r1-self-report-disagrees-${unmet.join("+")}`);
+  }
+
+  // R-6 (b): the one prepare of this sample, and the worker that answered.
+  if (!sameList(record.nativeBegins, ["pending"]))
+    no("b", `begin-records-${(record.nativeBegins ?? []).join(">")}`);
+  if (sample.startSlot?.kind !== "empty")
+    no("b", `start-slot-${String(sample.startSlot?.kind)}`);
+  if (!sameCounter(record, "preparesStarted", 1))
+    no("b", `prepares-started-${counters.preparesStarted}`);
+  if (!sameCounter(record, "preparesReady", 1))
+    no("b", `prepares-ready-${counters.preparesReady}`);
+  if (!sameCounter(record, "deferredReleased", 1))
+    no("b", `deferred-released-${counters.deferredReleased}`);
+  if (!sameCounter(record, "staleReadyRetired", 0))
+    no("b", `stale-ready-retired-${counters.staleReadyRetired}`);
+
+  // R-6 (c): the next Graph arm sample of the phase starts one READY later.
+  if (next === undefined)
+    throw new Error(
+      "[precheck] K6/6 (c): the next Graph arm sample of the phase was not given (nextGraphArmOf); a first-render candidate cannot be judged",
+    );
+  if (next !== null) {
+    const here = sample.startSlot?.preparesReady;
+    const there = next.preparesReady;
+    if (!(finite(here) && finite(there))) no("c", "prepares-ready-unrecorded");
+    else if (there - here !== 1)
+      no("c", `next-prepares-ready-diff-${there - here}`);
+  }
+
+  // R-7 (ii′), FR-3.
+  const stamp = sample.freshnessStamp?.result ?? null;
+  if (stamp === "fresh") {
+    // counted
+  } else if (stamp === "stamp0-missing") {
+    // The ② items a record can show (a joined parent has them all).
+    if (parent.ticket?.outcome !== "available")
+      no("FR3", "ticket-not-available");
+    if (parent.declaration !== "used") no("FR3", "declaration-not-used");
+    if (!(graph.outcome === "graph-ready" && graph.joined === true))
+      no("FR3", "not-joined");
+    if (graph.revalidation !== "passed") no("FR3", "revalidation-not-passed");
+    if (!Number.isInteger(graph.edgeCount)) no("FR3", "edge-count-not-integer");
+  } else no("FR3", `stamp-${stamp === null ? "missing" : stamp}`);
+
+  // FR-4: owner counters, over the whole sample and after the release wait.
+  const delta = (block) =>
+    counterBlock(block)
+      ? Object.fromEntries(
+          COUNTER_KEYS.map((key) => [
+            key,
+            block[key] - record.counters.before[key],
+          ]),
+        )
+      : null;
+  for (const [name, block] of [
+    ["after", record.counters.after],
+    ["after-release", record.countersAfterRelease],
+  ]) {
+    const d = delta(block);
+    if (d === null) no("FR4", `counters-${name}-missing`);
+    else if (!(d.begins === 1 && d.lateCached === 0 && d.cacheHits === 0))
+      no(
+        "FR4",
+        `counters-${name}-begins=${d.begins},lateCached=${d.lateCached},cacheHits=${d.cacheHits}`,
+      );
+  }
+  if (record.r2.cacheEmptyAtEnd !== true) no("FR4", "cache-left-at-end");
+
+  // FR-5: declaration, one publish. (The window D itself is a `[precheck]`
+  // before this function is reached.)
+  if (parent.declaration !== "used")
+    no("FR5", `declaration-${parent.declaration}`);
+  if (parent.publishCount !== 1)
+    no("FR5", `publish-count-${parent.publishCount}`);
+
+  // FR-6: nothing after the parent (K6/4-P2: 「子は出ない」 observed).
+  if (record.notices.some((row) => row.kind === "graph-ready"))
+    no("FR6", "graph-ready-notice");
+  if (record.child !== null && record.child !== undefined)
+    no("FR6", `child-${record.child.origin}`);
+  if (parent.irRetryTimer === true) no("FR6", "ir-retry-timer");
+
+  // FR-7: the parent's contribution record, matched on the materials'
+  // Revisions with every edge resolved (the same unit as F6).
+  const contribution = parent.contribution;
+  if (contribution === null || typeof contribution !== "object")
+    no("FR7", "no-contribution-record");
+  else {
+    if (contribution.contributionBasis !== F6_FORMAL_BASIS)
+      no("FR7", `basis-${String(contribution.contributionBasis)}`);
+    if (contribution.materialRevision?.unresolvedEdges !== 0)
+      no(
+        "FR7",
+        `unresolved-edges-${String(contribution.materialRevision?.unresolvedEdges)}`,
+      );
+    if (!(Number.isInteger(graph.edgeCount) && graph.edgeCount >= 1))
+      no("FR7", "no-edge");
+    if (contribution.expectedContribution !== true)
+      no("FR7", "no-expected-contribution");
+  }
+  return { candidate: true, counted: fails.length === 0, fails };
+}
+
+/**
+ * K6/6 変える点 6: the parent's join brought a Graph into the display
+ * (`graph-ready`, joined, declared `used`, at least one edge) within the D
+ * window. A parent like this that is not counted as a first render fails the
+ * variant's quality whatever its Scene list.
+ */
+function parentContributed(sample, join) {
+  return (
+    join.inWindow &&
+    sample.graph?.outcome === "graph-ready" &&
+    sample.graph.joined === true &&
+    sample.followUp?.parent?.declaration === "used" &&
+    Number.isInteger(sample.graph.edgeCount) &&
+    sample.graph.edgeCount >= 1
+  );
+}
+
 /**
  * One query → its K6/4 classification. `context` is "steady" (定常状態: the
  * first render counts worker results only, K6/2 step 3; R1, R2 and the F2
@@ -472,7 +685,7 @@ export function mixedIntoDisplay(record) {
  * R1/R2 do not apply, F2 is read between the parent's and the child's begin).
  */
 export function classifyFollowUp(sample, options) {
-  rejectOverrides(options ?? {}, ["context"]);
+  rejectOverrides(options ?? {}, ["context", "next"]);
   const context = options?.context;
   if (!FOLLOW_UP_CONTEXTS.includes(context))
     throw new Error(
@@ -481,13 +694,16 @@ export function classifyFollowUp(sample, options) {
   assertNoRetiredBusy(sample);
   const join = classifyJoin(sample);
   // (b): K6/2 rule 2 read through K6/4:165 — a parent that joined as
-  // `Cached` within D is not displayed (D-5, the strict reading).
-  const firstRender =
+  // `Cached` within D is not displayed (D-5, the strict reading). The steady
+  // state is decided below by `firstRenderOf` (K6/6 変える点 3), after the
+  // records and the parent's window are checked.
+  let firstRender =
     context === "steady"
-      ? steadyStateInWindow(sample)
+      ? false
       : join.inWindow &&
         sample.graph?.source === "worker" &&
         sample.snapshot?.usable === true;
+  let firstRenderFails = [];
   const stages = [];
   const x = {};
   const violations = [];
@@ -504,6 +720,8 @@ export function classifyFollowUp(sample, options) {
     return Object.freeze({
       context,
       firstRender,
+      firstRenderFails,
+      parentContributed: parentContributed(sample, join),
       followUp,
       displayed: firstRender || followUp,
       display: firstRender ? "first-render" : followUp ? "follow-up" : null,
@@ -582,6 +800,11 @@ export function classifyFollowUp(sample, options) {
     violations.push("N1:late-graph-in-parent-display");
   if (parent.publishCount > 1)
     violations.push("N1:parent-published-more-than-once");
+  if (context === "steady") {
+    const verdict = firstRenderOf(sample, join, options.next);
+    firstRender = verdict.counted;
+    firstRenderFails = verdict.fails;
+  }
   if (firstRender) return finish(false);
 
   // records: R1 (4) / R4 (X10 :158). (b) では R1 と R2 を当てない (:109).
@@ -604,7 +827,11 @@ export function classifyFollowUp(sample, options) {
     add(
       "parent",
       "F1",
-      outcome === "graph-ready" ? "parent-joined" : `outcome:${outcome}`,
+      outcome === "graph-ready"
+        ? firstRenderFails.length > 0
+          ? `parent-joined:${firstRenderFails.join(",")}`
+          : "parent-joined"
+        : `outcome:${outcome}`,
     );
   else {
     if (parent.declaration !== "unused")

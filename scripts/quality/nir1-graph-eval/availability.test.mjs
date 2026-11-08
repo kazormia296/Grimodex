@@ -8,7 +8,7 @@ import {
   graphCaseScheduleKeys,
   joinedWithinWindow,
   mainReason,
-  steadyStateInWindow,
+  k62SteadyStateInWindow,
   summarizeSteadyState,
   summarizeTrace,
   validateGraphCaseSchedule,
@@ -90,25 +90,25 @@ test("P-4: in window = joined and arrived by t_raw_ready + D inclusive", () => {
 });
 
 test("P1-4 / N-7: (a) counts only worker results that started on a fresh READY with a matching stamp", () => {
-  assert.equal(steadyStateInWindow(sample()), true);
+  assert.equal(k62SteadyStateInWindow(sample()), true);
   assert.equal(
-    steadyStateInWindow(sample({ graph: { source: "cache" } })),
+    k62SteadyStateInWindow(sample({ graph: { source: "cache" } })),
     false,
   );
   // Joined in time, but the slot was not a new READY / the stamp differed.
   assert.equal(
-    steadyStateInWindow(sample({ startSlot: { readyFresh: false } })),
+    k62SteadyStateInWindow(sample({ startSlot: { readyFresh: false } })),
     false,
   );
   assert.equal(
-    steadyStateInWindow(
+    k62SteadyStateInWindow(
       sample({
         freshnessStamp: { result: "stale", matched: false, attemptedAtNs: 95 },
       }),
     ),
     false,
   );
-  assert.equal(steadyStateInWindow(sample({ startSlot: null })), false);
+  assert.equal(k62SteadyStateInWindow(sample({ startSlot: null })), false);
 });
 
 test("the 1% yardstick is an exact integer comparison", () => {

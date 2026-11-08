@@ -28,6 +28,7 @@ import {
 } from "./followup.mjs";
 import {
   k64Sample,
+  k66Sample,
   late,
   ratification5,
   sample,
@@ -39,6 +40,9 @@ import {
 } from "./test-support.mjs";
 
 const steady = (row) => classifyFollowUp(row, { context: "steady" });
+/** A first-render candidate needs the next Graph arm sample (K6/6 R-6 (c)). */
+const steadyWith = (row, next) =>
+  classifyFollowUp(row, { context: "steady", next });
 const inTrace = (row) => classifyFollowUp(row, { context: "trace" });
 
 /** Not displayed, and the X code (with its detail when given) is recorded. */
@@ -112,39 +116,20 @@ test("K6/4-P1: F1〜F7 をすべて満たす query は follow-up の成功で、
   assert.equal(edge.followUp, true, JSON.stringify(edge.x));
 });
 
-test("K6/4-P2: 親が D の窓内に worker の結果を受けたら first-render の窓内で、子は出ない", () => {
-  const firstRender = sample({ followUp: undefined });
-  const result = steady({
-    ...firstRender,
-    followUp: {
-      ...k64Sample().followUp,
-      child: null,
-      notices: [],
-      parent: { ...k64Sample().followUp.parent, declaration: "used" },
-    },
-  });
-  assert.equal(result.firstRender, true);
+test("K6/4-P2: 親が D の窓内に worker の結果を受けたら first-render の窓内で、子は出ない（K6/6 変える点 3 の条件で読む。R1 の下の現実の形の記録）", () => {
+  const result = steadyWith(k66Sample(), { preparesReady: 11 });
+  assert.equal(
+    result.firstRender,
+    true,
+    JSON.stringify(result.firstRenderFails),
+  );
   assert.equal(result.displayed, true);
   assert.equal(result.display, "first-render");
   assert.deepEqual(result.displayedSceneIds, ["dev-a", "dev-b", "dev-added"]);
 });
 
-test("K6/5-P1: D=40 ms の窓内（Raw-ready の後 10.84 ms を超え 40 ms 以内）に親が Graph を受けた sample は first-render の窓内で、子は出ない", () => {
-  for (const arrivedAt of [100 + 11, 100 + 25, 100 + GRAPH_EVAL_D_MS]) {
-    const result = steady({
-      ...sample({ graph: { arrivedAt }, followUp: undefined }),
-      followUp: {
-        ...k64Sample().followUp,
-        child: null,
-        notices: [],
-        parent: { ...k64Sample().followUp.parent, declaration: "used" },
-      },
-    });
-    assert.equal(result.firstRender, true, String(arrivedAt));
-    assert.equal(result.display, "first-render");
-    assert.deepEqual(result.violations, []);
-  }
-});
+// K6/5-P1（readyFresh: true、stamp が fresh の、R1 の下では起きない fixture）は
+// K6/6-P1（followup.k66.test.mjs。R1 の下の現実の形）に置き換えた（K6/6 変える点 4）。
 
 // ---- Negative（どれも成功に数えず、分母から除かない） -------------------------
 
@@ -678,15 +663,12 @@ test("K6/4-N38: 親の ticket が busy か warming で cache に入らなけれ�
     );
 });
 
-test("K6/4-N39: 親が Cached で D の窓内に合流した sample は first-render の窓内に数えない", () => {
-  const cached = sample({
-    startSlot: { kind: "empty", readyFresh: false },
-    graph: { source: "cache" },
-    followUp: { ...k64Sample().followUp, child: null, notices: [] },
-  });
-  const result = steady(cached);
+test("K6/4-N39: 親が Cached で D の窓内に合流した sample は first-render の窓内に数えない（R1 の形の fixture で FR-1 だけを欠く）", () => {
+  const cached = k66Sample({ graph: { source: "cache" } });
+  const result = steadyWith(cached, null);
   assert.equal(result.firstRender, false);
   assert.equal(result.displayed, false);
+  assert.deepEqual(result.firstRenderFails, ["FR1:source-cache"]);
   assert.ok(Object.hasOwn(result.x, "F1"));
 });
 
@@ -938,9 +920,14 @@ test("K6/4-P3: pool の欠落率が 1% 以下でどの case にも表示があ�
   );
   assert.equal(summary.k64.display.followUp, 268);
   assert.equal(summary.k64.display.firstRender, 0);
-  // N18: first-render の窓外率は K6/2 の規則のまま書く（D′ では全件が窓外）。
+  // N18（K6/6 変える点 5 で読み替え）: first-render の窓外率は /6 の first-render
+  // の件数から書く（D′ では first-render が 0 件なので 1）。K6/2 の字義の率は
+  // 別名で残す。
+  assert.equal(summary.k64.display.firstRenderOutOfWindow, 270);
+  assert.equal(summary.k64.display.firstRenderOutOfWindowRate, 1);
   assert.equal(summary.pool.outOfWindowRate, 1);
   assert.equal(summary.k64.firstRenderOutOfWindowRate, 1);
+  assert.equal(summary.k64.k62OutOfWindowRate, 1);
   assert.equal(summary.k64.x.X3, 2);
   assert.equal(summary.k64.q.q1.n, 268);
   assert.deepEqual(summary.k64.holdCases, []);

@@ -26,6 +26,15 @@ export const DEV_SHAPES = Object.freeze({
     source: "evals/nir1-g01/fixture.v1.json",
     file: `${DEV_SHAPE_ROOT}/dev-shape-g01.v1.json`,
   },
+  // K6/6 (the dev prototype): the two shapes s6r1's joined-in-window parents
+  // came from that had no dev shape yet. G-02 (the directed relation) and
+  // G-08 (the Graph Index fallback, five variants) join G-01, G-03 and G-06,
+  // so that a non-frozen rehearsal of the /6 first-render reading under R1 can
+  // run on the structure of every case whose parents joined (K6/6 の dev の予行).
+  "G-02": {
+    source: "evals/nir1-graph/g02-directed-relation.v1.json",
+    file: `${DEV_SHAPE_ROOT}/dev-shape-g02.v1.json`,
+  },
   "G-03": {
     source: "evals/nir1-graph/g03-bounded-two-hop.v1.json",
     file: `${DEV_SHAPE_ROOT}/dev-shape-g03.v1.json`,
@@ -42,6 +51,21 @@ export const DEV_SHAPES = Object.freeze({
   "G-07": {
     source: "evals/nir1-graph/g07-reading-before-reveal.v1.json",
     file: `${DEV_SHAPE_ROOT}/dev-shape-g07.v1.json`,
+  },
+  "G-08": {
+    source: "evals/nir1-graph/g08-graph-index-fallback.v1.json",
+    file: `${DEV_SHAPE_ROOT}/dev-shape-g08.v1.json`,
+    // K6/6 rehearsal 4: the frozen G-08 predicts Raw as the control Scenes
+    // that quote the query verbatim, every other Scene sharing no Raw-visible
+    // token with it (rawPrediction), so the answer Scene is a Graph-only
+    // Scene. The generic synthetic text ("Dev G-08 text N: the ... line")
+    // is as close to the query (cosine 0.75-0.88) as the controls, so Raw
+    // covered all five Scenes and the
+    // Graph could not add a Scene (FR7:no-expected-contribution on
+    // graph-recovered). With rawLexicalShape the Scenes that quote the query
+    // in the frozen fixture quote the dev query, and the others are plain
+    // synthetic sentences whose cosine to the query is under the Raw floor.
+    rawLexicalShape: true,
   },
 });
 
@@ -84,7 +108,7 @@ function word(seed, at) {
 }
 
 /** The synthetic copy of one frozen G-case fixture (IDs and texts replaced). */
-export function shapeFixture({ caseId, fixture }) {
+export function shapeFixture({ caseId, fixture, rawLexicalShape = false }) {
   const tag = caseId.replace(/^G-0?/u, "").toLowerCase();
   const prefix = `dvs${tag}-`;
   const ids = new Map();
@@ -116,12 +140,58 @@ export function shapeFixture({ caseId, fixture }) {
     return texts.get(key);
   };
   const g01 = caseId === "G-01";
-  const scene = (row) => ({
-    id: id(row.id),
-    readingOrder: row.readingOrder,
-    title: text(row.title, "title"),
-    body: text(row.body, "body"),
-  });
+  // Only for rawLexicalShape (so the text numbering of the other shapes does
+  // not move): the query's title and body are numbered first, as in `query`.
+  // Raw (dense + sparse over scenes) admits a Scene by its cosine to the
+  // query: the Scenes that quote the query are Raw, every other Scene must
+  // stay below the floor.
+  if (rawLexicalShape && fixture.query.title)
+    text(fixture.query.title, "title");
+  const devQueryBody = rawLexicalShape ? text(fixture.query.body, "body") : "";
+  // The dense arm (bge-small) gives a bare word list a cosine of 0.58–0.63
+  // against another word list, above the Raw floor (0.51), so a list-of-words
+  // Scene is Raw-visible. A Scene unrelated to the query needs a plain
+  // sentence (measured 0.42–0.45; the floor is 0.51, the sparse rescue floor
+  // 0.46) that also holds no substring of a query word of three letters or
+  // more (the sparse arm is an FTS5 trigram index). These generic synthetic sentences are used for the Scenes that do
+  // not quote the query (K6/6 rehearsal 4; none comes from a frozen fixture).
+  const UNRELATED = [
+    [
+      "Quiet pond",
+      "A fox crossed a frozen pond and vanished among pines at dusk.",
+    ],
+    ["Mended net", "Two sailors mended a torn net on a sunlit pier."],
+    ["Night rain", "Rain tapped softly against an old window all night."],
+  ];
+  const PLACES = ["mill", "bridge", "gate", "quay"];
+  let unrelatedAt = 0;
+  let placeAt = 0;
+  const rawShapeScene = (row) => {
+    const quotes =
+      typeof row.body === "string" &&
+      typeof fixture.query.body === "string" &&
+      row.body.includes(fixture.query.body);
+    if (quotes) {
+      const place = PLACES[placeAt++ % PLACES.length];
+      return {
+        id: id(row.id),
+        readingOrder: row.readingOrder,
+        title: `${place[0].toUpperCase()}${place.slice(1)} post`,
+        body: `On a ${place} post hung a copied line: ${devQueryBody} Nobody answered.`,
+      };
+    }
+    const [title, body] = UNRELATED[unrelatedAt++ % UNRELATED.length];
+    return { id: id(row.id), readingOrder: row.readingOrder, title, body };
+  };
+  const scene = (row) =>
+    rawLexicalShape
+      ? rawShapeScene(row)
+      : {
+          id: id(row.id),
+          readingOrder: row.readingOrder,
+          title: text(row.title, "title"),
+          body: text(row.body, "body"),
+        };
   const entity = (row) => ({
     id: id(row.id),
     kind: row.kind,
@@ -155,6 +225,40 @@ export function shapeFixture({ caseId, fixture }) {
       : {}),
     ...(row.audience ? { audience: principal(row.audience) } : {}),
   });
+  const expectationsShape = (row) => {
+    const e = row.expectations;
+    const path = (value) => ({
+      path: { edgeIds: (value.path?.edgeIds ?? []).map(id) },
+    });
+    return {
+      ...(e.graph?.status
+        ? {
+            graph: {
+              status: e.graph.status,
+              ...(Array.isArray(e.graph.qualifiedRevisionIds)
+                ? { qualifiedRevisionIds: e.graph.qualifiedRevisionIds.map(id) }
+                : {}),
+            },
+          }
+        : {}),
+      ...(e.addedScene?.sceneId
+        ? {
+            addedScene: {
+              sceneId: id(e.addedScene.sceneId),
+              ...path(e.addedScene),
+            },
+          }
+        : {}),
+      ...(Array.isArray(e.pathAttachments)
+        ? {
+            pathAttachments: e.pathAttachments.map((value) => ({
+              sceneId: id(value.sceneId),
+              ...path(value),
+            })),
+          }
+        : {}),
+    };
+  };
   const header = {
     schemaVersion: DEV_GRAPH_CASE_SCHEMA,
     kind: "dev",
@@ -266,6 +370,11 @@ export function shapeFixture({ caseId, fixture }) {
         ...entry,
         ...(entry.sceneId ? { sceneId: id(entry.sceneId) } : {}),
       })),
+      // K6/6 rehearsal 1: the expected Graph contribution (the material
+      // resolver's input: material-revision.mjs expectedMaterialPaths) with
+      // every ID replaced. Without it FR-7 can never find an expected
+      // contribution on a dev shape (FR7:no-expected-contribution).
+      ...(row.expectations ? { expectations: expectationsShape(row) } : {}),
     })),
   };
 }
@@ -351,14 +460,23 @@ function main() {
   const at = process.argv.indexOf("--case");
   const caseId = process.argv[at + 1];
   const shape = DEV_SHAPES[caseId];
-  if (at < 0 || !shape) throw new Error("--case G-01|G-03|G-04|G-06|G-07");
+  if (at < 0 || !shape)
+    throw new Error("--case G-01|G-02|G-03|G-04|G-06|G-07|G-08");
   const root = path.resolve(import.meta.dirname, "../../..");
   const fixture = JSON.parse(
     readFileSync(path.join(root, shape.source), "utf8"),
   );
   writeFileSync(
     path.join(root, shape.file),
-    `${JSON.stringify(shapeFixture({ caseId, fixture }), null, 2)}\n`,
+    `${JSON.stringify(
+      shapeFixture({
+        caseId,
+        fixture,
+        rawLexicalShape: shape.rawLexicalShape === true,
+      }),
+      null,
+      2,
+    )}\n`,
   );
   process.stdout.write(`${shape.file}\n`);
 }

@@ -29,6 +29,7 @@ import { summarizeSteadyState } from "./availability.mjs";
 import {
   k64Run,
   k64Sample,
+  k66Sample,
   scheduleRows,
   steadySummary,
   summarizeK64,
@@ -664,6 +665,137 @@ test("K6/4: 表示されなかった sample の親の表示が R+IR と違う、
   assert.equal(
     unavailable(() => [{}, { notices: [], child: null }]).status,
     "fallback-measured",
+  );
+});
+
+// ---- K6/6（変える点 6）: first-render の品質と、数えられなかった親の FAIL --------
+
+/**
+ * A variant's 30 pairs under K6/6: the Graph arm sample is a first-render
+ * parent as R1 records it (`k66Sample`, `startSlot.preparesReady` 10, 11, …)
+ * unless `graphRow(repeat)` makes it a follow-up (`k64Sample`) or breaks a
+ * first-render condition. `graphRow` returns [kind, overrides, followUp].
+ */
+function k66QualitySamples(variantKey, graphRow, hybridList) {
+  const shown = ["dev-a", "dev-b", "dev-c", "dev-added"];
+  const rows = [];
+  for (let repeat = 0; repeat < 30; repeat++) {
+    rows.push({
+      variantKey,
+      arm: "hybrid",
+      phase: "measured",
+      repeat,
+      trigger: "user-operation",
+      finalSceneIds: hybridList ?? ["dev-a", "dev-b", "dev-c"],
+    });
+    const [kind = "first-render", overrides = {}, followUp = {}] =
+      graphRow(repeat);
+    const make = kind === "follow-up" ? k64Sample : k66Sample;
+    rows.push(
+      make(
+        {
+          variantKey,
+          phase: "measured",
+          repeat,
+          // A follow-up sample also prepared once (R1 の下では、どの sample の
+          // 開始時も slot は empty で、READY の数は 1 つずつ進む)。
+          startSlot: {
+            kind: "empty",
+            readyFresh: false,
+            preparesReady: 10 + repeat,
+          },
+          ...(kind === "first-render" ? { finalSceneIds: shown } : {}),
+          ...overrides,
+        },
+        followUp,
+      ),
+    );
+  }
+  return rows;
+}
+
+const k66Quality = (key, graphRow, hybridList) =>
+  boundQuality(key, k66QualitySamples(key, graphRow, hybridList), "k64");
+
+test("K6/6-P2: 同じ case に first-render と follow-up の sample があり、表示の結果が同じなら、品質を両方の表示の結果で測る", () => {
+  const result = k66Quality("G-02/base", (repeat) =>
+    repeat % 2 === 0 ? ["first-render"] : ["follow-up"],
+  );
+  assert.equal(result.status, "measurable", JSON.stringify(result));
+  assert.deepEqual(result.displays, { firstRender: 15, followUp: 15 });
+  assert.deepEqual(result.finalSceneIds, [
+    "dev-a",
+    "dev-b",
+    "dev-c",
+    "dev-added",
+  ]);
+  // 表示の結果が first-render と follow-up で違えば FAIL（K6/4-N13 と同じ）。
+  assert.equal(
+    k66Quality("G-02/base", (repeat) =>
+      repeat === 2
+        ? ["first-render", { finalSceneIds: ["dev-a", "dev-b", "dev-added"] }]
+        : repeat % 2 === 0
+          ? ["first-render"]
+          : ["follow-up"],
+    ).reason,
+    "displayed-samples-differ",
+  );
+});
+
+test("K6/6-N13a: 窓内に合流して Graph が表示に寄与した（edgeCount 1 以上）のに条件を欠いた親で、Scene の一覧が R+IR と違えば品質 FAIL（1% の許容は効かない）", () => {
+  // 30 件中 1 件だけ（1% の許容 0 件の外でなく、許容があっても FAIL になる形）。
+  const result = k66Quality("G-02/base", (repeat) =>
+    repeat === 7
+      ? ["first-render", {}, { parent: { contribution: null } }]
+      : ["first-render"],
+  );
+  assert.equal(result.status, "fail");
+  assert.equal(
+    result.reason,
+    "graph-contributed-parent-not-counted-as-first-render",
+  );
+  assert.deepEqual(result.repeats, [7]);
+  assert.deepEqual(result.firstRenderFails, ["FR7:no-contribution-record"]);
+});
+
+test("K6/6-N13b: 同上で、Scene の一覧が R+IR と同じ（path の添付だけを足す。G-06 の形）でも品質 FAIL", () => {
+  const hybridList = ["dev-a", "dev-b", "dev-c"];
+  const result = k66Quality(
+    "G-02/base",
+    (repeat) =>
+      repeat === 3
+        ? [
+            "first-render",
+            { finalSceneIds: hybridList },
+            { parent: { contribution: null } },
+          ]
+        : ["first-render"],
+    hybridList,
+  );
+  assert.equal(result.status, "fail");
+  assert.equal(
+    result.reason,
+    "graph-contributed-parent-not-counted-as-first-render",
+  );
+  assert.deepEqual(result.repeats, [3]);
+});
+
+test("K6/6 変える点 6: Graph が合流したが edgeCount 0 の親、または宣言が used でない親は『寄与した』に当たらず、この FAIL にしない", () => {
+  // edgeCount 0: 寄与なし（FR-7 の no-edge で数えないが、表示に Graph は混ざらない）。
+  const empty = k66Quality("G-02/base", (repeat) =>
+    repeat === 7
+      ? [
+          "first-render",
+          {
+            graph: { edgeCount: 0 },
+            finalSceneIds: ["dev-a", "dev-b", "dev-c"],
+          },
+        ]
+      : ["first-render"],
+  );
+  assert.notEqual(
+    empty.reason,
+    "graph-contributed-parent-not-counted-as-first-render",
   );
 });
 

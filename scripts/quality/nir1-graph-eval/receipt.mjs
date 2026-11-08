@@ -33,6 +33,7 @@ import {
   K64_T_SHOW_MS,
   K64_W_F_MS,
   K65_FREEZE,
+  K66_FREEZE,
   WINDOW_SAMPLE_INTERVAL_MS,
   devVariant,
   variantByKey,
@@ -419,6 +420,7 @@ export function receiptHeadErrors(
   fixtureKind,
   freeze = K64_FREEZE,
   freeze65 = K65_FREEZE,
+  freeze66 = K66_FREEZE,
 ) {
   const errors = [];
   if (head?.k62?.freezeCommit !== K62_FREEZE.commit)
@@ -453,6 +455,26 @@ export function receiptHeadErrors(
       else if (head?.k65?.freezeCommit !== freeze65.freezeCommit)
         errors.push(
           "head.k65.freezeCommit must be the pinned K6/5 freeze commit (K6/5-N3)",
+        );
+    }
+  }
+  // K6/6 変える点 8 / K6/6-N9: the /6 row stands on the /4 and /5 bytes, so a
+  // formal Graph receipt's head also carries the K6/6 freeze commit and bytes
+  // (`head.k66`, the pinned K66_FREEZE). A receipt without it, or one started
+  // before the /6 freeze (s6r1 included), is refused. While /6 is an
+  // unconfirmed draft (`freezeCommit: null`) every formal receipt is refused.
+  if (formalGraph || head?.k66 !== undefined) {
+    if (head?.k66?.sha256 !== freeze66.sha256)
+      errors.push("head.k66.sha256 must be the K6/6 bytes (K6/6-N9)");
+    commitErrors(errors, head?.k66?.freezeCommit, "head.k66.freezeCommit");
+    if (formalGraph) {
+      if (freeze66.freezeCommit === null)
+        errors.push(
+          "[precheck] the K6/6 freeze commit is not pinned (変える点 8); a formal Graph receipt is refused",
+        );
+      else if (head?.k66?.freezeCommit !== freeze66.freezeCommit)
+        errors.push(
+          "head.k66.freezeCommit must be the pinned K6/6 freeze commit (K6/6-N9)",
         );
     }
   }
@@ -759,7 +781,11 @@ function k64SettingsErrors(errors, value, bound = {}) {
  * Validates the §7.2 minimum set of one run receipt. Returns error strings;
  * `assertCp4Receipt` throws them as `[precheck]`.
  */
-export function validateCp4Receipt(receipt, bound = {}) {
+export function validateCp4Receipt(receipt, bound = {}, deps = {}) {
+  // `deps.freeze66` is the K6/6 freeze descriptor, for the tests only (the
+  // default K66_FREEZE has a null freeze commit while /6 is an unconfirmed
+  // draft, so a formal Graph receipt is refused).
+  const { freeze66 = K66_FREEZE } = deps;
   const errors = [];
   if (receipt?.schemaVersion !== CP4_RECEIPT_SCHEMA)
     errors.push(`schemaVersion must be ${CP4_RECEIPT_SCHEMA}`);
@@ -795,7 +821,14 @@ export function validateCp4Receipt(receipt, bound = {}) {
   } else if (receipt?.fixture !== undefined && receipt.fixture !== null)
     errors.push("the existing 24 queries carry no G-case fixture");
   errors.push(
-    ...receiptHeadErrors(receipt?.head, receipt?.runKind, variant?.kind),
+    ...receiptHeadErrors(
+      receipt?.head,
+      receipt?.runKind,
+      variant?.kind,
+      K64_FREEZE,
+      K65_FREEZE,
+      freeze66,
+    ),
   );
 
   const candidate = receipt?.candidate;
@@ -850,8 +883,12 @@ export function validateCp4Receipt(receipt, bound = {}) {
         ...(Array.isArray(receipt?.requeries) ? receipt.requeries : []),
       ].filter(
         (row) =>
-          row?.followUp?.child &&
-          row.followUp.child.contributionBasis !== F6_FORMAL_BASIS,
+          (row?.followUp?.child &&
+            row.followUp.child.contributionBasis !== F6_FORMAL_BASIS) ||
+          // K6/6 FR-7: the parent's own contribution is the same unit.
+          (row?.followUp?.parent?.contribution &&
+            row.followUp.parent.contribution.contributionBasis !==
+              F6_FORMAL_BASIS),
       ).length;
       if (sceneLevel > 0)
         errors.push(
@@ -1045,8 +1082,8 @@ export function validateCp4Receipt(receipt, bound = {}) {
   return errors;
 }
 
-export function assertCp4Receipt(receipt, bound = {}) {
-  const errors = validateCp4Receipt(receipt, bound);
+export function assertCp4Receipt(receipt, bound = {}, deps = {}) {
+  const errors = validateCp4Receipt(receipt, bound, deps);
   if (errors.length > 0)
     throw new Error(`[precheck] CP-4 receipt invalid: ${errors.join("; ")}`);
   return receipt;

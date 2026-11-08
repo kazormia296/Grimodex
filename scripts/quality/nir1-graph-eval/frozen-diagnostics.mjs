@@ -920,6 +920,8 @@ export function buildRunHead(input, { now = () => new Date() } = {}) {
   freezeHead(input?.k64, "k64", problems);
   // K6/5 変える点 7: the /5 row's freeze head goes in the head with the /4's.
   freezeHead(input?.k65, "k65", problems);
+  // K6/6 変える点 8: and the /6 row's.
+  freezeHead(input?.k66, "k66", problems);
   if (!COMMIT.test(input?.observationPrep?.commit ?? ""))
     problems.push("observationPrep.commit");
   if (!SHA256.test(input?.observationPrep?.freezeRecordSha256 ?? ""))
@@ -961,6 +963,7 @@ export function buildRunHead(input, { now = () => new Date() } = {}) {
     k62: { freezeCommit: input.k62.freezeCommit, sha256: input.k62.sha256 },
     k64: { freezeCommit: input.k64.freezeCommit, sha256: input.k64.sha256 },
     k65: { freezeCommit: input.k65.freezeCommit, sha256: input.k65.sha256 },
+    k66: { freezeCommit: input.k66.freezeCommit, sha256: input.k66.sha256 },
     observationPrep: {
       commit: input.observationPrep.commit,
       freezeRecordSha256: input.observationPrep.freezeRecordSha256,
@@ -1104,7 +1107,7 @@ export function readSpP4Gate({
     sha256(Buffer.from(headBytes(receipt.head))) !== receipt.headSha256
   )
     fail("gate", "the SP-P4 receipt's head is not the head.json it wrote");
-  for (const key of ["k62", "k64", "k65"])
+  for (const key of ["k62", "k64", "k65", "k66"])
     if (stable(receipt.head?.[key]) !== stable(head?.[key]))
       fail("gate", `the SP-P4 receipt's ${key} head differs from this run's`);
   if (receipt.head?.observationPrep?.commit !== head?.observationPrep?.commit)

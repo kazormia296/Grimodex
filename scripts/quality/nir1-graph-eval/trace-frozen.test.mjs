@@ -402,6 +402,10 @@ function fakeDeps(overrides = {}) {
       calls.push(["k65", input.commit]);
       return { freezeCommit: C("8"), sha256: H("8") };
     },
+    readK66Head: (input) => {
+      calls.push(["k66", input.commit]);
+      return { freezeCommit: C("9"), sha256: H("9") };
+    },
     admit: (input) => {
       calls.push(["admit", input.prepCommit, input.fixtures]);
       return {
@@ -412,6 +416,7 @@ function fakeDeps(overrides = {}) {
           k62: { freezeCommit: C("6"), sha256: H("6") },
           k64: { freezeCommit: C("4"), sha256: H("4") },
           k65: { freezeCommit: C("8"), sha256: H("8") },
+          k66: { freezeCommit: C("9"), sha256: H("9") },
           observationPrep: { commit: C("5"), freezeRecordSha256: H("5") },
         },
       };
@@ -486,6 +491,7 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
     "k62-commit": C("6"),
     "k64-commit": C("4"),
     "k65-commit": C("4"),
+    "k66-commit": C("4"),
     "procedure-version": "v2",
     "sp-p4-receipt": "sp-p4-receipt.json",
     attempt: "1",
@@ -504,6 +510,7 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
     [
       "k64",
       "k65",
+      "k66",
       "admit",
       "tree",
       "prep",
@@ -518,7 +525,7 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
     ],
   );
   // admission は setup の fixture（G-02 base の凍結の path と sha256）で。
-  assert.deepEqual(calls[2][2], [{ path: G02.fixturePath, sha256: H("c") }]);
+  assert.deepEqual(calls[3][2], [{ path: G02.fixturePath, sha256: H("c") }]);
   // 手順の file は S4 の commit から正式の版で読む。
   assert.deepEqual(calls.at(-3), ["procedure", "v2", C("5"), "formal"]);
   const head = JSON.parse(readFileSync(path.join(dir, "head.json"), "utf8"));
@@ -529,7 +536,7 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
   assert.equal(prepared.identity.sha256, H("1"));
   assert.equal(prepared.runtime.ids.querySceneId, "q-rt");
   assert.equal(prepared.declaration.sceneId, "g02-query");
-  assert.deepEqual(calls[6], ["sp-p4", C("b")]);
+  assert.deepEqual(calls[7], ["sp-p4", C("b")]);
   // レビュー P2-c: 台帳の key は run 名でなく trace の file と候補の identity。
   assert.deepEqual(calls.at(-1), [
     "claim",
@@ -647,6 +654,7 @@ test("O-1 (6): G-02 base が setup-complete に届かなければ、先頭を書
       "k62-commit": C("6"),
       "k64-commit": C("4"),
       "k65-commit": C("4"),
+      "k66-commit": C("4"),
       attempt: "1",
     },
     inputs,
@@ -736,6 +744,7 @@ test("レビュー P2-2: trace の setup は SP-P4 の分岐・R5 の照合の�
     "k62-commit": C("6"),
     "k64-commit": C("4"),
     "k65-commit": C("4"),
+    "k66-commit": C("4"),
     "sp-p4-receipt": "x.json",
     attempt: "1",
   };
@@ -793,6 +802,7 @@ test("DR-CP4-O-16: 凍結の trace は A の台帳に試行を書き、同じ id
     "k62-commit": C("6"),
     "k64-commit": C("4"),
     "k65-commit": C("4"),
+    "k66-commit": C("4"),
     "sp-p4-receipt": "x.json",
   };
   const runWith = async (runName, attempt) => {
@@ -860,6 +870,7 @@ test("レビュー P3: 試行の上限は trace の file の stall.attemptLimit�
         "k62-commit": C("6"),
         "k64-commit": C("4"),
         "k65-commit": C("4"),
+        "k66-commit": C("4"),
         "sp-p4-receipt": "x.json",
         attempt: "3",
       },
@@ -878,6 +889,7 @@ test("レビュー P2-α: 起動の前の [precheck]（gate の拒否、plan の
     "k62-commit": C("6"),
     "k64-commit": C("4"),
     "k65-commit": C("4"),
+    "k66-commit": C("4"),
     "sp-p4-receipt": "x.json",
   };
   const runWith = async (runName, attempt, overrides = {}) => {
@@ -958,6 +970,7 @@ test("DR-CP4-S4-1 予行: 凍結の trace の準備は、S4a→S4b の合成の 
     const deps = {
       readK64Head: () => ({ freezeCommit: r.base, sha256: H("4") }),
       readK65Head: () => ({ freezeCommit: r.base, sha256: H("8") }),
+      readK66Head: () => ({ freezeCommit: r.base, sha256: H("9") }),
       admit: (input) => {
         calls.push(["admit", input.prepCommit]);
         return {
@@ -968,6 +981,7 @@ test("DR-CP4-S4-1 予行: 凍結の trace の準備は、S4a→S4b の合成の 
             k62: { freezeCommit: C("6"), sha256: H("6") },
             k64: { freezeCommit: r.base, sha256: H("4") },
             k65: { freezeCommit: r.base, sha256: H("8") },
+            k66: { freezeCommit: r.base, sha256: H("9") },
             observationPrep: { commit: r.s4b, freezeRecordSha256: H("5") },
           },
         };
@@ -995,6 +1009,7 @@ test("DR-CP4-S4-1 予行: 凍結の trace の準備は、S4a→S4b の合成の 
         "k62-commit": C("6"),
         "k64-commit": r.base,
         "k65-commit": r.base,
+        "k66-commit": r.base,
         "procedure-version": "v2",
         "sp-p4-receipt": "sp-p4-receipt.json",
         attempt: "1",
@@ -1030,6 +1045,7 @@ test("DR-CP4-S4-1 予行: 凍結の trace の準備は、S4a→S4b の合成の 
           "k62-commit": C("6"),
           "k64-commit": r.base,
           "k65-commit": r.base,
+          "k66-commit": r.base,
           "sp-p4-receipt": "sp-p4-receipt.json",
           attempt: "1",
         },
