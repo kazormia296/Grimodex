@@ -18,6 +18,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { NIR1_GRAPH_FREEZE_PATH } from "./contract.mjs";
+import { K66_FREEZE } from "../nir1-graph-eval/constants.mjs";
 import {
   SEED_PIN_ADDENDUM_PATH,
   SEED_PIN_ADDENDUM_V1,
@@ -27,6 +28,7 @@ import {
 import { execFileSync } from "node:child_process";
 import {
   BLOCKED_TABLE_SOURCE,
+  CONTRACTS,
   DECLARATION_ADDENDUM_V1,
   EVAL_CLOSURE_EXCLUSIONS,
   FORMAL_HARNESS_ENTRIES,
@@ -1178,6 +1180,22 @@ test("S4 の最終関門の P3-3: contracts.k64.freezeCommit is the pinned const
     ),
     [],
   );
+});
+
+test("K6/6: CONTRACTS.k66 は constants.mjs の K66_FREEZE と同じ値（確認・凍結の commit を含む）", () => {
+  assert.deepEqual(
+    { ...CONTRACTS.k66 },
+    {
+      draftRef: K66_FREEZE.draftRef,
+      contractId: K66_FREEZE.contractId,
+      path: K66_FREEZE.path,
+      sha256: K66_FREEZE.sha256,
+      confirmedCommit: K66_FREEZE.confirmedCommit,
+      freezeCommit: K66_FREEZE.freezeCommit,
+    },
+  );
+  assert.match(CONTRACTS.k66.confirmedCommit, /^[0-9a-f]{40}$/u);
+  assert.match(CONTRACTS.k66.freezeCommit, /^[0-9a-f]{40}$/u);
 });
 
 test("K6/5 版の P3-3: contracts.k65 is the pinned constants.mjs K65_FREEZE (sha256, confirmedCommit, freezeCommit), as K64_FREEZE is for contracts.k64", async () => {

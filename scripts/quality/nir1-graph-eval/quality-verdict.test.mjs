@@ -39,6 +39,8 @@ import {
   verifyBindings as verifyBindingsOf,
 } from "./quality-verdict-cli.mjs";
 import {
+  d3Missing,
+  d3Problems,
   deriveLatencyPolicy,
   evaluateQualityVerdict,
   latestTypedRevisionOf,
@@ -1574,4 +1576,244 @@ test("品質 v2 D3 (d): 最新の typed Revision は setup の記録の準備順
     latestTypedRevisionOf({ x: { refusedAtSetup: "prepare" } }, "r1"),
     null,
   );
+});
+
+test("品質 v2 D4: 受領書の最上位の requeries（user-operation でない行）が Scene の一覧を持てば、R+IR に足した禁止 Scene・blocked 候補は条件 5 (a) の fail。一覧の無い行は関係しない", () => {
+  const forbiddenOf = (expectation) => expectation.forbiddenSceneIds[0];
+  const withRequery = (row) =>
+    run((key, { expectation }) =>
+      key === "G-02/base"
+        ? {
+            receipt: {
+              requeries: [
+                {
+                  variantKey: key,
+                  arm: "graph",
+                  phase: "measured",
+                  repeat: 0,
+                  trigger: "index-ready-requery",
+                  ...row(expectation),
+                },
+              ],
+            },
+          }
+        : {},
+    );
+  const a = (output) =>
+    output.conditions["forbidden-contribution"].components[
+      "a-forbidden-scene-or-blocked-candidate"
+    ];
+  // 禁止 Scene を出す行（対の R+IR にその Scene が無い）: fail。
+  const hit = withRequery((expectation) => ({
+    finalSceneIds: [`u-${forbiddenOf(expectation)}`],
+  }));
+  assert.equal(a(hit).status, "fail");
+  assert.equal(a(hit).violatingSamples, 1);
+  const violation = keyOf(hit, "G-02/base").forbidden.a.violations[0];
+  assert.equal(
+    violation.reason,
+    "requery-row-forbidden-or-blocked-contribution",
+  );
+  assert.deepEqual(violation.sceneIds, [forbiddenOf(expectationsOf())]);
+  // 対の `repeat` が引けない行は、禁止・blocked への一致だけを見る（fail）。
+  const unpaired = withRequery((expectation) => ({
+    repeat: 99,
+    finalSceneIds: [`u-${forbiddenOf(expectation)}`],
+  }));
+  assert.equal(a(unpaired).status, "fail");
+  // Scene の一覧が無い行（N29・N32 の側）、R+IR arm の行、禁止に入らない一覧は pass。
+  assert.equal(a(withRequery(() => ({ publishCount: 1 }))).status, "pass");
+  assert.equal(
+    a(
+      withRequery((expectation) => ({
+        arm: "hybrid",
+        finalSceneIds: [`u-${forbiddenOf(expectation)}`],
+      })),
+    ).status,
+    "pass",
+  );
+  assert.equal(
+    a(withRequery(() => ({ finalSceneIds: ["u-scene-query"] }))).status,
+    "pass",
+  );
+  // user-operation の行は samples の側で、requeries には置かない。
+  assert.equal(
+    a(
+      withRequery((expectation) => ({
+        trigger: "user-operation",
+        finalSceneIds: [`u-${forbiddenOf(expectation)}`],
+      })),
+    ).status,
+    "pass",
+  );
+});
+
+function expectationsOf() {
+  return loadExpectations({
+    root: DEFAULT_ROOT,
+    graphManifest: readJson(GRAPH_MANIFEST),
+  }).expectations["G-02/base"];
+}
+
+test("品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount によらず観測した path と unresolvedEdges を検査する。Graph を出したかもしれない子に記録が無ければ hold", () => {
+  const lists = (ids) => ids;
+  const base = {
+    pair: [],
+    lists,
+    forbidden: new Set(["f"]),
+    blocked: new Set(),
+    typedRevisions: {
+      rev: { id: "rev", relationIds: ["edge"] },
+    },
+  };
+  const record = {
+    unresolvedEdges: 2,
+    observed: [{ sceneId: "f", pairs: ["rev|edge"] }],
+  };
+  const codes = (child) =>
+    d3Problems({ ...base, child }).map(
+      (entry) => `${entry.kind}:${entry.code}`,
+    );
+  const failing = ["fail:b-forbidden-path", "fail:d-unresolved-edges"];
+  // edgeCount が null、0、outcome が graph-ready でない子でも、記録が示せば fail。
+  for (const child of [
+    { outcome: "graph-ready", edgeCount: null, materialRevision: record },
+    { outcome: "graph-ready", edgeCount: 0, materialRevision: record },
+    { outcome: "graph-late", edgeCount: 1, materialRevision: record },
+    { outcome: "graph-unavailable", materialRevision: record },
+  ])
+    assert.deepEqual(
+      codes({ publishCount: 1, finalSceneIds: [], ...child }),
+      failing,
+    );
+  // Graph を出したかもしれない（graph-ready で edgeCount が 0 と確定していない）子に記録が無ければ hold。
+  for (const edgeCount of [null, undefined, 1])
+    assert.deepEqual(
+      codes({
+        publishCount: 1,
+        finalSceneIds: [],
+        outcome: "graph-ready",
+        edgeCount,
+      }),
+      ["hold:b-material-revision-record-missing"],
+    );
+  // edgeCount 0 は Graph を出していない（D8 も数えない）ので記録が無くても hold にしない。
+  assert.deepEqual(
+    codes({
+      publishCount: 1,
+      finalSceneIds: [],
+      outcome: "graph-ready",
+      edgeCount: 0,
+    }),
+    [],
+  );
+  // 何も観測せず unresolvedEdges 0 の記録は、setup の typed Revision が無くても hold にならない。
+  assert.deepEqual(
+    d3Problems({
+      ...base,
+      typedRevisions: null,
+      child: {
+        publishCount: 0,
+        finalSceneIds: [],
+        outcome: "graph-unavailable",
+        materialRevision: { unresolvedEdges: 0, observed: [] },
+      },
+    }),
+    [],
+  );
+});
+
+test("品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-ready の子と欠けた条件を出力に残す", () => {
+  const KEY = "G-08/chronicle-index-unusable";
+  const edit =
+    (childOverrides, sampleOverrides = {}) =>
+    (key, ctx) => {
+      if (key !== KEY) return {};
+      const runtime = (list) => list.map((id) => `u-${id}`);
+      const pair = runtime(fixtureLists(ctx.variant).hybrid);
+      return {
+        mapGraphSample: (merged, repeat) => ({
+          ...k64Sample(
+            {
+              variantKey: key,
+              repeat,
+              finalSceneIds: pair,
+              snapshot: {
+                usable: true,
+                reason: null,
+                chronicleIndexUsable: false,
+              },
+              irOutcome: "index-unavailable",
+              graph: { outcome: "graph-unavailable", reason: "index-state" },
+              ...sampleOverrides,
+            },
+            {
+              child: {
+                ...followUpRecord().child,
+                origin: "index-ready",
+                refreshTrigger: null,
+                chronicleIndexUsable: true,
+                outcome: "graph-ready",
+                edgeCount: 3,
+                rSceneIds: pair,
+                irSceneIds: [],
+                finalSceneIds: [...pair, "u-scene-query"],
+                materialRevision: {
+                  unresolvedEdges: 0,
+                  observed: [
+                    {
+                      kind: "path-attachment",
+                      sceneId: "g08-attach",
+                      pairs: ["rev|edge"],
+                      unresolved: 0,
+                    },
+                  ],
+                },
+                ...childOverrides,
+              },
+            },
+          ),
+          tFetch: 100,
+          tReturn: 130,
+          status: "completed",
+        }),
+      };
+    };
+  const a2 = (output) =>
+    output.conditions["forbidden-contribution"].components[
+      "a2-index-ready-requery-forbidden"
+    ];
+  const eligible = run(edit({}));
+  assert.equal(a2(eligible).eligibleChildren, 30);
+  assert.equal(a2(eligible).graphShownChildren, 30);
+  assert.equal(a2(eligible).graphEdgeCount, 90);
+  assert.equal(a2(eligible).outsideExpectationAdded, 30);
+  assert.equal(a2(eligible).keptAsChildren, 0);
+  assert.deepEqual(a2(eligible).keptAsChildrenMissing, []);
+  const row = keyOf(eligible, KEY).conditions["forbidden-contribution"]
+    .components["a2-index-ready-requery-forbidden"];
+  assert.equal(row.graphEdgeCount, 90);
+  // 子の開始時に Chronicle の Index が使えなかった（6）を欠く子は、欠けた条件を行ごとに残す。
+  const kept = run(edit({ chronicleIndexUsable: false }));
+  assert.equal(a2(kept).keptAsChildren, 30);
+  assert.equal(a2(kept).keptAsChildrenMissing.length, 30);
+  assert.deepEqual(a2(kept).keptAsChildrenMissing[0], {
+    variantKey: KEY,
+    repeat: 0,
+    missingConditions: [6],
+  });
+  // 述語そのもの。
+  const sample = {
+    snapshot: { chronicleIndexUsable: false, usable: false },
+    irOutcome: "index-ready",
+  };
+  assert.deepEqual(
+    d3Missing(sample, {
+      origin: "index-ready",
+      refreshTrigger: "graph-ready",
+      chronicleIndexUsable: false,
+    }),
+    [3, 4, 5, 6],
+  );
+  assert.deepEqual(d3Missing(sample, null), [2]);
 });

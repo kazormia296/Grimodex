@@ -444,11 +444,16 @@ export function renderSummary(output) {
   );
   const e = c["evidence-validity"].components["edge-binding"];
   lines.push(
-    `| Evidence 100％ | ${SYMBOL[c["evidence-validity"].status]} | edge の束縛だけ：${SYMBOL[e.status]}（${e.variants} variant、検査 ${e.checked} sample、検査できず ${e.skipped}）。残りは not-evaluable |`,
+    `| Evidence 100％ | ${SYMBOL[c["evidence-validity"].status]} | edge の束縛だけ：${SYMBOL[e.status]}（${e.variants} variant、検査 ${e.checked} sample、検査できず ${e.skipped}）、D8 親の合流の寄与：${SYMBOL[c["evidence-validity"].components["graph-contributed-parent-counted"]?.status ?? "hold"]}。残りは not-evaluable |`,
   );
   const fa = c["forbidden-contribution"].components;
   lines.push(
-    `| 禁止寄与 0 | ${SYMBOL[c["forbidden-contribution"].status]} | (a) 禁止 Scene・blocked 候補：${SYMBOL[fa["a-forbidden-scene-or-blocked-candidate"].status]}（違反 ${fa["a-forbidden-scene-or-blocked-candidate"].violatingSamples} sample）、(b) 遅れた Graph：${SYMBOL[fa["b-late-graph-in-display"].status]}（違反 ${fa["b-late-graph-in-display"].violatingSamples} sample）。(c) は not-evaluable |`,
+    `| 禁止寄与 0 | ${SYMBOL[c["forbidden-contribution"].status]} | (a) 禁止 Scene・blocked 候補：${SYMBOL[fa["a-forbidden-scene-or-blocked-candidate"].status]}（違反 ${fa["a-forbidden-scene-or-blocked-candidate"].violatingSamples} sample）、(b) 遅れた Graph：${SYMBOL[fa["b-late-graph-in-display"].status]}（違反 ${fa["b-late-graph-in-display"].violatingSamples} sample）、D3 の index-ready の取り直し：${SYMBOL[fa["a2-index-ready-requery-forbidden"].status]}。(c) は not-evaluable |`,
+  );
+  const a2 = fa["a2-index-ready-requery-forbidden"];
+  lines.push("");
+  lines.push(
+    `D3 の開示（条件に数えない）：対象の子 ${a2.eligibleChildren}、Graph を出した子 ${a2.graphShownChildren}（edge ${a2.graphEdgeCount} 件）、期待の外の追加 ${a2.outsideExpectationAdded} 件、D2 に残った index-ready の子 ${a2.keptAsChildren}（欠けた条件：${a2.keptAsChildrenMissing.map((entry) => `${entry.variantKey}#${entry.repeat}=(${entry.missingConditions.join(",")})`).join("、") || "なし"}）。`,
   );
   lines.push("");
   lines.push("## variant ごと");

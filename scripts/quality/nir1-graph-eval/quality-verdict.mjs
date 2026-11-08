@@ -267,17 +267,23 @@ function edgeBindingProblems(sample, expected, firstRender = false) {
  * when the parent's Chronicle Index was not usable (IR `index-unavailable`) and
  * its Graph Index was, and whose own start found the Chronicle Index usable.
  */
+export function d3Missing(sample, child) {
+  if (child === null || child === undefined) return [2];
+  const missing = [];
+  if (child.origin !== "index-ready") missing.push(2);
+  if (child.refreshTrigger === "graph-ready") missing.push(3);
+  if (
+    sample.snapshot?.chronicleIndexUsable !== false ||
+    sample.irOutcome !== "index-unavailable"
+  )
+    missing.push(4);
+  if (sample.snapshot?.usable !== true) missing.push(5);
+  if (child.chronicleIndexUsable !== true) missing.push(6);
+  return missing;
+}
+
 export function d3Eligible(sample, child) {
-  return (
-    child !== null &&
-    child !== undefined &&
-    child.origin === "index-ready" &&
-    child.refreshTrigger !== "graph-ready" &&
-    sample.snapshot?.chronicleIndexUsable === false &&
-    sample.irOutcome === "index-unavailable" &&
-    sample.snapshot?.usable === true &&
-    child.chronicleIndexUsable === true
-  );
+  return d3Missing(sample, child).length === 0;
 }
 
 /**
@@ -369,10 +375,16 @@ export function d3Problems({
       });
   }
   const material = child.materialRevision;
-  const shownGraph =
-    child.outcome === "graph-ready" && (child.edgeCount ?? 0) > 0;
-  if (shownGraph) {
-    if (!material || typeof material !== "object")
+  const hasRecord = material !== null && typeof material === "object";
+  // The record itself is inspected whenever it exists (whatever the child's
+  // outcome or edgeCount says: fail closed). Without a record, a child that
+  // may have shown a Graph (`graph-ready` with an edgeCount that is not a
+  // proven 0) cannot be checked by (b)(d) and holds. A `graph-ready` child with
+  // `edgeCount` 0 shows no Graph (D8 does not count it either), so it needs none.
+  const mayHaveShownGraph =
+    child.outcome === "graph-ready" && child.edgeCount !== 0;
+  if (hasRecord || mayHaveShownGraph) {
+    if (!hasRecord)
       out.push({ kind: "hold", code: "b-material-revision-record-missing" });
     else {
       const sceneIds = (material.observed ?? [])
@@ -383,7 +395,13 @@ export function d3Problems({
         out.push({ kind: "fail", code: "b-forbidden-path", sceneIds: hit });
       if (material.unresolvedEdges !== 0)
         out.push({ kind: "fail", code: "d-unresolved-edges" });
-      out.push(...revisionResolutionProblems(material, typedRevisions));
+      // A record that observed no path (a child that showed no Graph) has no
+      // Revision to resolve, so the setup's typed Revisions are not needed.
+      const observedPairs = (material.observed ?? []).some(
+        (entry) => (entry.pairs ?? []).length > 0,
+      );
+      if (observedPairs || mayHaveShownGraph)
+        out.push(...revisionResolutionProblems(material, typedRevisions));
     }
   }
   if (child.lateGraphInDisplay === true)
@@ -443,7 +461,19 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
   // from R+IR) fails conditions 1, 2 and 4; it is no longer a hold.
   const notDisplayedFailures = [];
   // Prereg v2 D3: the G-08/chronicle-index-unusable `index-ready` re-query.
-  const indexReady = { eligible: 0, graphShown: 0, outOfD3: 0, problems: [] };
+  // The disclosure (not a condition): the eligible children, those that showed
+  // a Graph and their edges, the Scenes they added to R+IR outside the
+  // expectation, and the `index-ready` children D2 keeps with the (3)〜(6) each
+  // lacks.
+  const indexReady = {
+    eligible: 0,
+    graphShown: 0,
+    graphEdgeCount: 0,
+    outsideExpectationAdded: 0,
+    outOfD3: 0,
+    outOfD3Rows: [],
+    problems: [],
+  };
   const nexts = nextGraphArmOf(graph);
   for (const sample of graph) {
     const pair = pairList.get(sample.repeat);
@@ -552,15 +582,28 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
         typedRevisions:
           receipt?.settings?.setupReceipt?.logicalToRuntime?.typedRevisions,
       });
-      if (child.outcome === "graph-ready" && (child.edgeCount ?? 0) > 0)
+      if (child.outcome === "graph-ready" && (child.edgeCount ?? 0) > 0) {
         indexReady.graphShown += 1;
+        indexReady.graphEdgeCount += child.edgeCount;
+      }
+      if (child.publishCount > 0)
+        indexReady.outsideExpectationAdded += unique(
+          lists(child.finalSceneIds).filter(
+            (id) => !pair.includes(id) && !expectedScenes.has(id),
+          ),
+        ).length;
       for (const problem of problems)
         indexReady.problems.push({ repeat: sample.repeat, ...problem });
     } else if (
       variant.key === "G-08/chronicle-index-unusable" &&
       child?.origin === "index-ready"
-    )
+    ) {
       indexReady.outOfD3 += 1;
+      indexReady.outOfD3Rows.push({
+        repeat: sample.repeat,
+        missingConditions: d3Missing(sample, child),
+      });
+    }
     if (expectation.expectedContributions.length > 0) {
       const problems = edgeBindingProblems(
         sample,
@@ -574,6 +617,38 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
           edgeProblems.push({ repeat: sample.repeat, problems });
       }
     }
+  }
+
+  // Prereg v2 D4: the receipt's top-level `requeries` rows (trigger other than
+  // `user-operation`) that carry a Scene list contribute like a child: what
+  // they add to the paired R+IR must be no forbidden Scene or blocked
+  // candidate. A row whose pair cannot be found (no `repeat` of a measured pair)
+  // is matched against the forbidden and blocked Scenes alone. A row without a
+  // Scene list is N29/N32's (classifyFollowUp). An R+IR arm row is the baseline.
+  for (const requery of Array.isArray(receipt.requeries)
+    ? receipt.requeries
+    : []) {
+    if (
+      requery?.variantKey !== key ||
+      requery.trigger === "user-operation" ||
+      requery.arm === "hybrid" ||
+      !Array.isArray(requery.finalSceneIds)
+    )
+      continue;
+    const paired = pairList.get(requery.repeat) ?? [];
+    const added = lists(requery.finalSceneIds).filter(
+      (id) => !paired.includes(id),
+    );
+    const hit = unique(
+      added.filter((id) => forbidden.has(id) || blocked.has(id)),
+    );
+    if (hit.length > 0)
+      violationsA.push({
+        repeat: requery.repeat ?? null,
+        sceneIds: hit,
+        reason: "requery-row-forbidden-or-blocked-contribution",
+        trigger: requery.trigger ?? null,
+      });
   }
 
   let graphList;
@@ -762,7 +837,11 @@ function finishRow(row, expectation, tolerance) {
     "a2-index-ready-requery-forbidden": {
       status: indexReadyStatus,
       eligible: indexReady?.eligible ?? 0,
+      graphShown: indexReady?.graphShown ?? 0,
+      graphEdgeCount: indexReady?.graphEdgeCount ?? 0,
+      outsideExpectationAdded: indexReady?.outsideExpectationAdded ?? 0,
       outOfD3: indexReady?.outOfD3 ?? 0,
+      outOfD3Rows: indexReady?.outOfD3Rows ?? [],
       problems: indexReady?.problems ?? [],
     },
     "c-existing-24-graph-appearance-and-dto": {
@@ -1070,9 +1149,28 @@ export function evaluateQualityVerdict({
         (sum, row) => sum + (row.indexReadyRequery?.eligible ?? 0),
         0,
       ),
+      graphShownChildren: live.reduce(
+        (sum, row) => sum + (row.indexReadyRequery?.graphShown ?? 0),
+        0,
+      ),
+      graphEdgeCount: live.reduce(
+        (sum, row) => sum + (row.indexReadyRequery?.graphEdgeCount ?? 0),
+        0,
+      ),
+      outsideExpectationAdded: live.reduce(
+        (sum, row) =>
+          sum + (row.indexReadyRequery?.outsideExpectationAdded ?? 0),
+        0,
+      ),
       keptAsChildren: live.reduce(
         (sum, row) => sum + (row.indexReadyRequery?.outOfD3 ?? 0),
         0,
+      ),
+      keptAsChildrenMissing: live.flatMap((row) =>
+        (row.indexReadyRequery?.outOfD3Rows ?? []).map((entry) => ({
+          variantKey: row.variantKey,
+          ...entry,
+        })),
       ),
       problems: live.flatMap((row) =>
         (row.indexReadyRequery?.problems ?? []).map((entry) => ({

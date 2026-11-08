@@ -98,18 +98,19 @@ export const CONTRACTS = Object.freeze({
     freezeCommit: "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
   }),
   // K6/6 (変える点 8): the first-render reading under R1 (R-6, R-7, FR-1〜FR-8).
-  // **A dev prototype: /6 is an unconfirmed draft (revision 3).** `sha256` is
-  // the draft's revision 3 bytes and the two commits are `null` until the user
-  // confirms and the integrator freezes /6 (the S2 追補's `contracts.k66`,
-  // `userConfirmations` and `k66Readings` then bind them; no validator reads
-  // this key yet). `k64` and `k65` stay: the /6 row stands on them.
+  // The user confirmed /6 (revision 3) on 2026-11-08 and the integrator froze
+  // it: `confirmedCommit` is the commit that last changed the bytes, and
+  // `freezeCommit` is the freeze on `claude/nir1-contracts`. Both equal
+  // constants.mjs's K66_FREEZE (a test holds the two together). The S2 追補's
+  // `contracts.k66`, `userConfirmations` and `k66Readings` bind them; no
+  // validator reads this key yet. `k64` and `k65` stay: the /6 row stands on them.
   k66: Object.freeze({
     draftRef: "nir1-final-request-eval-proposal/6",
     contractId: "graph-eval-procedure",
     path: "docs/plans/nir1-final-request-eval-proposal-6-draft.md",
     sha256: "58c634fa9b3d76803e486516c0e67444b74d4f5987cd851cd0857a25cc8945e7",
-    confirmedCommit: null,
-    freezeCommit: null,
+    confirmedCommit: "324c804f360b4bb7c87cb8f1fb94d24f134b6d78",
+    freezeCommit: "56fb4fad2eb1eb2e021dfd121ea073f9d263cb4d",
   }),
 });
 
