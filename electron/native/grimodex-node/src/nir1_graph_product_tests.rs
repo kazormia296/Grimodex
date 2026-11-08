@@ -938,6 +938,24 @@ fn the_maintenance_cycle_calls_the_resume_hook_once() {
             .count(),
         1
     );
+    // CP2a-D47: the hook is the first statement of the `work_completed`
+    // closure, before the attempt record (`mark_work_succeeded`, which can
+    // fail with `?`). Pin the order, not just the count.
+    let closure = source
+        .split("let work_completed =")
+        .nth(1)
+        .expect("the work_completed closure");
+    let hook = closure
+        .find("nir1_graph.note_maintenance_work_completed(")
+        .expect("the resume hook in the closure");
+    let record = closure
+        .find(".mark_work_succeeded(")
+        .expect("the attempt record in the closure");
+    assert!(hook < record, "the resume hook must precede the attempt record");
+    assert!(
+        !closure[..hook].contains("mark_work_") && !closure[..hook].contains('?'),
+        "nothing fallible may precede the resume hook"
+    );
 }
 
 #[test]
