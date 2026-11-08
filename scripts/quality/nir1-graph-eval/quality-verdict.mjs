@@ -287,23 +287,29 @@ export function d3Eligible(sample, child) {
 }
 
 /**
- * The latest typed Revision of one Relation in the setup record: the
- * `logicalToRuntime.typedRevisions` entries are written in the order the
- * setup prepared them (the setup driver's `ids.typedRevisions`, a JSON object
- * whose keys are never integer-like), so the last entry that binds the Relation
- * and was not refused at setup is the latest — a later Revision supersedes an
- * earlier one whatever its decision (G-05's reading). `null` when none binds it.
+ * The latest typed Revision of one Relation in the setup record. The order is
+ * the frozen fixture's own `revisions` array (the setup prepared them in that
+ * order: the fixture's `setupTimeline` revision steps), handed in as `order`
+ * (a list of Revision IDs); the JSON object's key order is never read. The
+ * last Revision in `order` that the setup record carries for the Relation
+ * wins — a later Revision supersedes an earlier one whatever its decision
+ * (DR-CP4-QV-2 (iv), G-05's reading), a Revision refused at the `decision`
+ * stage included (it was prepared). Only a Revision refused at `prepare`
+ * (it was never made) is not counted. `null` when none binds the Relation.
+ * A setup record row that `order` does not name is not ordered: the caller
+ * (`revisionResolutionProblems`) holds.
  */
-export function latestTypedRevisionOf(typedRevisions, relationId) {
+export function latestTypedRevisionOf(typedRevisions, relationId, order) {
   let latest = null;
-  for (const [key, row] of Object.entries(typedRevisions ?? {})) {
-    if (row?.refusedAtSetup) continue;
+  for (const id of Array.isArray(order) ? order : []) {
+    const row = typedRevisions?.[id];
+    if (!row || row.refusedAtSetup === "prepare") continue;
     if (
-      !Array.isArray(row?.relationIds) ||
+      !Array.isArray(row.relationIds) ||
       !row.relationIds.includes(relationId)
     )
       continue;
-    latest = typeof row.id === "string" ? row.id : key;
+    latest = typeof row.id === "string" ? row.id : id;
   }
   return latest;
 }
@@ -314,18 +320,26 @@ export function latestTypedRevisionOf(typedRevisions, relationId) {
  * different (older) Revision is a fail; a setup record that carries no typed
  * Revisions, or none for the edge, cannot answer and is a hold (prereg §3).
  */
-function revisionResolutionProblems(material, typedRevisions) {
+function revisionResolutionProblems(material, typedRevisions, order) {
   const hasSetup =
     typedRevisions &&
     typeof typedRevisions === "object" &&
     Object.keys(typedRevisions).length > 0;
   if (!hasSetup)
     return [{ kind: "hold", code: "d-revision-resolution-unavailable" }];
+  // The order is the frozen fixture's; a setup record that carries a Revision
+  // the fixture does not name (or no fixture order at all) cannot be ordered.
+  const ordered = Array.isArray(order) ? new Set(order) : new Set();
+  if (
+    ordered.size === 0 ||
+    Object.keys(typedRevisions).some((id) => !ordered.has(id))
+  )
+    return [{ kind: "hold", code: "d-revision-order-unavailable" }];
   const out = [];
   for (const entry of material.observed ?? [])
     for (const pair of entry.pairs ?? []) {
       const [revision, edge] = String(pair).split("|");
-      const latest = latestTypedRevisionOf(typedRevisions, edge);
+      const latest = latestTypedRevisionOf(typedRevisions, edge, order);
       if (latest === null)
         out.push({
           kind: "hold",
@@ -361,6 +375,7 @@ export function d3Problems({
   forbidden,
   blocked,
   typedRevisions,
+  typedRevisionOrder,
 }) {
   const out = [];
   const bad = (id) => forbidden.has(id) || blocked.has(id);
@@ -377,32 +392,50 @@ export function d3Problems({
   const material = child.materialRevision;
   const hasRecord = material !== null && typeof material === "object";
   // The record itself is inspected whenever it exists (whatever the child's
-  // outcome or edgeCount says: fail closed). Without a record, a child that
-  // may have shown a Graph (`graph-ready` with an edgeCount that is not a
-  // proven 0) cannot be checked by (b)(d) and holds. A `graph-ready` child with
-  // `edgeCount` 0 shows no Graph (D8 does not count it either), so it needs none.
+  // outcome or edgeCount says: fail closed). A child without a record cannot
+  // be checked by (b)(d) and holds, whatever its outcome or edgeCount (prereg
+  // §3 as written; DR-CP4-QV-3). `mayHaveShownGraph` (`graph-ready` with an
+  // edgeCount that is not a proven 0) only decides below whether an empty
+  // record is acceptable.
   const mayHaveShownGraph =
     child.outcome === "graph-ready" && child.edgeCount !== 0;
-  if (hasRecord || mayHaveShownGraph) {
-    if (!hasRecord)
-      out.push({ kind: "hold", code: "b-material-revision-record-missing" });
-    else {
-      const sceneIds = (material.observed ?? [])
-        .map((entry) => entry.sceneId)
-        .filter((id) => typeof id === "string");
-      const hit = sceneIds.filter(bad);
-      if (hit.length > 0)
-        out.push({ kind: "fail", code: "b-forbidden-path", sceneIds: hit });
-      if (material.unresolvedEdges !== 0)
-        out.push({ kind: "fail", code: "d-unresolved-edges" });
-      // A record that observed no path (a child that showed no Graph) has no
-      // Revision to resolve, so the setup's typed Revisions are not needed.
-      const observedPairs = (material.observed ?? []).some(
-        (entry) => (entry.pairs ?? []).length > 0,
+  if (!hasRecord)
+    out.push({ kind: "hold", code: "b-material-revision-record-missing" });
+  else {
+    const observedEntries = Array.isArray(material.observed)
+      ? material.observed
+      : [];
+    // A child that may have shown a Graph but whose record observed no path
+    // (the probe handed no paths: `resolver(null)` is `observed: []` with
+    // `unresolvedEdges` 0) cannot be checked by (b)(d): hold (prereg §2, §3).
+    if (mayHaveShownGraph && observedEntries.length === 0)
+      out.push({ kind: "hold", code: "b-observed-path-record-empty" });
+    // A path whose Scene has no logical ID in the setup record (`sceneId`
+    // null) cannot be matched against the forbidden and blocked Scenes:
+    // hold, never dropped.
+    if (observedEntries.some((entry) => typeof entry?.sceneId !== "string"))
+      out.push({ kind: "hold", code: "b-observed-scene-has-no-logical-id" });
+    const sceneIds = observedEntries
+      .map((entry) => entry?.sceneId)
+      .filter((id) => typeof id === "string");
+    const hit = sceneIds.filter(bad);
+    if (hit.length > 0)
+      out.push({ kind: "fail", code: "b-forbidden-path", sceneIds: hit });
+    if (material.unresolvedEdges !== 0)
+      out.push({ kind: "fail", code: "d-unresolved-edges" });
+    // A record that observed no path (a child that showed no Graph) has no
+    // Revision to resolve, so the setup's typed Revisions are not needed.
+    const observedPairs = (material.observed ?? []).some(
+      (entry) => (entry.pairs ?? []).length > 0,
+    );
+    if (observedPairs || mayHaveShownGraph)
+      out.push(
+        ...revisionResolutionProblems(
+          material,
+          typedRevisions,
+          typedRevisionOrder,
+        ),
       );
-      if (observedPairs || mayHaveShownGraph)
-        out.push(...revisionResolutionProblems(material, typedRevisions));
-    }
   }
   if (child.lateGraphInDisplay === true)
     out.push({ kind: "fail", code: "c-late-graph-in-display" });
@@ -423,6 +456,7 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
     blocked: null,
     pairs: { graph: graph.length, hybrid: hybrid.length, ok },
     holdReasons: [],
+    requeryRowsWithoutVariantKey: 0,
   };
   if (!ok) {
     row.holdReasons.push(
@@ -486,7 +520,15 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
         repeat: sample.repeat,
         violations: result.violations,
       });
-    for (const record of [sample.followUp?.parent, sample.followUp?.child])
+    // Prereg v2 D2·D4: the follow-up record's own `requeries[]` rows are read
+    // as N29·N32 like the child (a late Graph in the display, two publishes).
+    for (const record of [
+      sample.followUp?.parent,
+      sample.followUp?.child,
+      ...(Array.isArray(sample.followUp?.requeries)
+        ? sample.followUp.requeries
+        : []),
+    ])
       if (
         record &&
         (record.lateGraphInDisplay === true || record.publishCount > 1)
@@ -518,6 +560,25 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
     );
     if (bad.length > 0)
       violationsA.push({ repeat: sample.repeat, sceneIds: bad });
+    // v2 C6 (ii): a `followUp.requeries` row that carries a Scene list adds to
+    // the paired R+IR like a child does; a forbidden Scene or blocked
+    // candidate is condition 5 (a) (a row without a list is N29·N32's).
+    for (const requery of Array.isArray(sample.followUp?.requeries)
+      ? sample.followUp.requeries
+      : []) {
+      if (!Array.isArray(requery?.finalSceneIds)) continue;
+      const hit = unique(
+        lists(requery.finalSceneIds).filter(
+          (id) => !pair.includes(id) && (forbidden.has(id) || blocked.has(id)),
+        ),
+      );
+      if (hit.length > 0)
+        violationsA.push({
+          repeat: sample.repeat,
+          sceneIds: hit,
+          reason: "followup-requery-row-forbidden-or-blocked-contribution",
+        });
+    }
     const baseline = unique(shown.flat()).filter(
       (id) => forbidden.has(id) && pair.includes(id),
     );
@@ -581,6 +642,7 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
         blocked,
         typedRevisions:
           receipt?.settings?.setupReceipt?.logicalToRuntime?.typedRevisions,
+        typedRevisionOrder: expectation.typedRevisionOrder,
       });
       if (child.outcome === "graph-ready" && (child.edgeCount ?? 0) > 0) {
         indexReady.graphShown += 1;
@@ -628,6 +690,18 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
   for (const requery of Array.isArray(receipt.requeries)
     ? receipt.requeries
     : []) {
+    // A row that names no variant cannot be attributed to any variant and is
+    // never dropped: condition 5 holds for every Graph arm variant (v2 C5,
+    // DR-CP4-QV-3; see `a3-requery-row-without-variant-key`). A row of the
+    // R+IR arm (`arm: "hybrid"`) is the baseline the others are read
+    // against, so it is outside D4.
+    if (
+      requery !== null &&
+      typeof requery === "object" &&
+      requery.trigger !== "user-operation" &&
+      typeof requery.variantKey !== "string"
+    )
+      row.requeryRowsWithoutVariantKey += 1;
     if (
       requery?.variantKey !== key ||
       requery.trigger === "user-operation" ||
@@ -978,10 +1052,30 @@ export function evaluateQualityVerdict({
         };
 
   // 2. macro non-regression (G-case scope only).
+  // Prereg v2 D8 first: a variant that brought a Graph into the display
+  // without being counted (or whose not-displayed sample differs from R+IR)
+  // is a FAIL of condition 2 whatever the other variants hold, and it may have
+  // no Graph list at all (`metrics.graph` null: nothing was displayed), so the
+  // mean is never taken over it (the row's own macro is that fail already).
   const mean = (rows, arm, metric) =>
     rows.reduce((sum, row) => sum + row.metrics[arm][metric], 0) / rows.length;
+  const notDisplayedRows = live.filter(
+    (row) => row.notDisplayedFailures.length > 0,
+  );
   let gcase;
-  if (
+  if (notDisplayedRows.length > 0) {
+    gcase = {
+      status: "fail",
+      variants: live.length,
+      notDisplayedFailures: notDisplayedRows.map((row) => ({
+        variantKey: row.variantKey,
+        repeats: row.notDisplayedFailures.map((entry) => entry.repeat),
+        reasons: [
+          ...new Set(row.notDisplayedFailures.map((entry) => entry.reason)),
+        ],
+      })),
+    };
+  } else if (
     live.length === 0 ||
     live.some((row) => row.conditions["macro-non-regression"].status === "hold")
   ) {
@@ -1006,23 +1100,6 @@ export function evaluateQualityVerdict({
       ndcgAt8: ndcg,
     };
   }
-  // Prereg v2 D8: a Graph that reached a display without being counted (or a
-  // not-displayed sample unlike R+IR) is a FAIL of condition 2 as well.
-  const notDisplayedRows = live.filter(
-    (row) => row.notDisplayedFailures.length > 0,
-  );
-  if (notDisplayedRows.length > 0)
-    gcase = {
-      status: "fail",
-      variants: live.length,
-      notDisplayedFailures: notDisplayedRows.map((row) => ({
-        variantKey: row.variantKey,
-        repeats: row.notDisplayedFailures.map((entry) => entry.repeat),
-        reasons: [
-          ...new Set(row.notDisplayedFailures.map((entry) => entry.reason)),
-        ],
-      })),
-    };
   const macroComponents = {
     "g-case": gcase,
     "existing-24-graph-arm": {
@@ -1177,6 +1254,17 @@ export function evaluateQualityVerdict({
           variantKey: row.variantKey,
           ...entry,
         })),
+      ),
+    },
+    // v2 C5: a top-level re-query row with no `variantKey` cannot be
+    // attributed to a variant, so condition 5 holds for all of them.
+    "a3-requery-row-without-variant-key": {
+      status: live.some((row) => row.requeryRowsWithoutVariantKey > 0)
+        ? "hold"
+        : "n/a",
+      rows: live.reduce(
+        (sum, row) => sum + row.requeryRowsWithoutVariantKey,
+        0,
       ),
     },
     "c-existing-24-graph-appearance-and-dto": {

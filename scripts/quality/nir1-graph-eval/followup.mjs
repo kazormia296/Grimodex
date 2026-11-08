@@ -639,6 +639,14 @@ export function firstRenderOf(sample, join, next) {
   if (record.child !== null && record.child !== undefined)
     no("FR6", `child-${record.child.origin}`);
   if (parent.irRetryTimer === true) no("FR6", "ir-retry-timer");
+  // Prereg v2 D2·D4: a re-query row the record carries (`requeries[]`: a fetch
+  // after the parent's) is something after the parent too; the key's presence
+  // with any row (or a value that is not a list) is not "nothing after".
+  if (Object.hasOwn(record, "requeries")) {
+    if (!Array.isArray(record.requeries)) no("FR6", "requeries-not-a-list");
+    else if (record.requeries.length > 0)
+      no("FR6", `requeries-${record.requeries.length}`);
+  }
 
   // FR-7: the parent's contribution record, matched on the materials'
   // Revisions with every edge resolved (the same unit as F6).

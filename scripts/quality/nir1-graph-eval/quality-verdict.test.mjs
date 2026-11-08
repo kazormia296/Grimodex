@@ -259,11 +259,11 @@ function buildReceipts(expectations, edit = () => ({})) {
               ? {}
               : {
                   typedRevisions: change.typedRevisions ?? {
-                    rev: {
-                      id: "rev",
-                      relationIds: ["edge"],
+                    "g08-r-cass": {
+                      id: "g08-r-cass",
+                      relationIds: ["g08-rents-to-cass"],
                       decision: "approved",
-                      revisionId: "runtime-rev",
+                      revisionId: "runtime-g08-r-cass",
                     },
                   },
                 }),
@@ -317,6 +317,10 @@ function run(edit, options = {}) {
   }
 }
 
+// G-08's frozen fixture: its `revisions` array order is cass, juno; the observed
+// path of an `index-ready` child resolves the Relation of the first.
+const REL = "g08-rents-to-cass";
+const OBSERVED_PAIR = `g08-r-cass|${REL}`;
 const statusOf = (output, id) => output.conditions[id].status;
 const keyOf = (output, key) =>
   output.variants.find((row) => row.variantKey === key);
@@ -1410,7 +1414,7 @@ test("品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は
                     {
                       kind: "path-attachment",
                       sceneId: forbidden ? forbiddenScene : "g08-attach",
-                      pairs: ["rev|edge"],
+                      pairs: [OBSERVED_PAIR],
                       unresolved: 0,
                     },
                   ],
@@ -1462,6 +1466,7 @@ test("品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は
   assert.equal(a2(run(edit({ publishCount: 2 }))).status, "fail");
   // 他の variant の index-ready の子は D3 の対象にしない（G-08/chronicle-index-unusable だけ）。
   // D3 (d) の後半: 観測した Revision は、setup の記録のその edge の最新の typed Revision でなければ fail。
+  // 最新は凍結の fixture の `revisions` の配列の順（cass、juno）で、setup の記録の JSON の key の順ではない。
   const prepared = (id, relationIds, extra = {}) => [
     id,
     {
@@ -1472,36 +1477,52 @@ test("品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は
       ...extra,
     },
   ];
-  const superseded = run(
+  const latestIsJuno = (output) =>
+    a2(output).problems.every(
+      (entry) =>
+        entry.code === "d-revision-is-not-the-latest" &&
+        entry.observed === "g08-r-cass" &&
+        entry.latest === "g08-r-juno" &&
+        entry.edge === REL,
+    );
+  for (const rows of [
+    // cass が先の key の順（準備順）と、juno が先の key の順（key の順に頼らない）。
+    [
+      prepared("g08-r-cass", [REL]),
+      prepared("g08-r-juno", [REL], { decision: "none" }),
+    ],
+    [
+      prepared("g08-r-juno", [REL], { decision: "none" }),
+      prepared("g08-r-cass", [REL]),
+    ],
+  ]) {
+    const superseded = run(edit({}, {}, false, Object.fromEntries(rows)));
+    assert.equal(a2(superseded).status, "fail");
+    assert.ok(a2(superseded).problems.length > 0 && latestIsJuno(superseded));
+  }
+  // decision の段で拒まれた行も Revision は作られているので数え、前の Revision を置き換える（fail）。
+  const decisionRefused = run(
     edit(
       {},
       {},
       false,
       Object.fromEntries([
-        prepared("rev", ["edge"]),
-        prepared("rev-later", ["edge"], { decision: "none" }),
+        prepared("g08-r-cass", [REL]),
+        prepared("g08-r-juno", [REL], { refusedAtSetup: "decision" }),
       ]),
     ),
   );
-  assert.equal(a2(superseded).status, "fail");
-  assert.ok(
-    a2(superseded).problems.every(
-      (entry) =>
-        entry.code === "d-revision-is-not-the-latest" &&
-        entry.observed === "rev" &&
-        entry.latest === "rev-later" &&
-        entry.edge === "edge",
-    ),
-  );
-  // 最新の後に refusedAtSetup の行があっても、最新に数えない（pass）。
+  assert.equal(a2(decisionRefused).status, "fail");
+  assert.ok(latestIsJuno(decisionRefused));
+  // prepare の段で拒まれた行（Revision が作られていない）は最新に数えない（pass）。
   const refusedLater = run(
     edit(
       {},
       {},
       false,
       Object.fromEntries([
-        prepared("rev", ["edge"]),
-        ["rev-refused", { id: "rev-refused", refusedAtSetup: "prepare" }],
+        prepared("g08-r-cass", [REL]),
+        ["g08-r-juno", { id: "g08-r-juno", refusedAtSetup: "prepare" }],
       ]),
     ),
   );
@@ -1513,12 +1534,30 @@ test("品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は
       {},
       false,
       Object.fromEntries([
-        prepared("rev", ["edge"]),
-        prepared("rev-b", ["other"]),
+        prepared("g08-r-cass", [REL]),
+        prepared("g08-r-juno", ["g08-rents-to-juno"]),
       ]),
     ),
   );
   assert.equal(a2(otherRelation).status, "pass");
+  // setup の記録に fixture の配列に無い Revision がある（順を決められない）は hold。
+  const unordered = run(
+    edit(
+      {},
+      {},
+      false,
+      Object.fromEntries([
+        prepared("g08-r-cass", [REL]),
+        prepared("not-in-the-fixture", [REL]),
+      ]),
+    ),
+  );
+  assert.equal(a2(unordered).status, "hold");
+  assert.ok(
+    a2(unordered).problems.every(
+      (entry) => entry.code === "d-revision-order-unavailable",
+    ),
+  );
   // setup の記録に typed Revision が無い（引けない）は hold。edge を持つ Revision が無いのも hold。
   const noRecord = run(edit({}, {}, false, null));
   assert.equal(a2(noRecord).status, "hold");
@@ -1528,7 +1567,12 @@ test("品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は
     ),
   );
   const noEdge = run(
-    edit({}, {}, false, Object.fromEntries([prepared("rev-b", ["other"])])),
+    edit(
+      {},
+      {},
+      false,
+      Object.fromEntries([prepared("g08-r-juno", ["g08-rents-to-juno"])]),
+    ),
   );
   assert.equal(a2(noEdge).status, "hold");
   assert.ok(
@@ -1560,21 +1604,36 @@ test("品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は
   );
 });
 
-test("品質 v2 D3 (d): 最新の typed Revision は setup の記録の準備順の最後の、refusedAtSetup でない行", () => {
+test("品質 v2 D3 (d): 最新の typed Revision は凍結の fixture の配列の順の最後の行。prepare で拒まれた行だけ数えず、decision で拒まれた行は数える", () => {
   const rows = {
-    a: { id: "a", relationIds: ["r1", "r2"] },
-    b: { id: "b", relationIds: ["r1"] },
-    c: { id: "c", relationIds: ["r1"], refusedAtSetup: "decision" },
     d: { id: "d", relationIds: ["r3"] },
+    c: { id: "c", relationIds: ["r1"], refusedAtSetup: "decision" },
+    b: { id: "b", relationIds: ["r1"] },
+    a: { id: "a", relationIds: ["r1", "r2"] },
   };
-  assert.equal(latestTypedRevisionOf(rows, "r1"), "b");
-  assert.equal(latestTypedRevisionOf(rows, "r2"), "a");
-  assert.equal(latestTypedRevisionOf(rows, "r3"), "d");
-  assert.equal(latestTypedRevisionOf(rows, "nope"), null);
-  assert.equal(latestTypedRevisionOf(undefined, "r1"), null);
+  const order = ["a", "b", "c", "d"];
+  // JSON の key の順（d、c、b、a）ではなく、order の順で決める。
+  assert.equal(latestTypedRevisionOf(rows, "r1", order), "c");
+  assert.equal(latestTypedRevisionOf(rows, "r2", order), "a");
+  assert.equal(latestTypedRevisionOf(rows, "r3", order), "d");
+  assert.equal(latestTypedRevisionOf(rows, "nope", order), null);
+  assert.equal(latestTypedRevisionOf(undefined, "r1", order), null);
+  assert.equal(latestTypedRevisionOf(rows, "r1", undefined), null);
   assert.equal(
-    latestTypedRevisionOf({ x: { refusedAtSetup: "prepare" } }, "r1"),
+    latestTypedRevisionOf(
+      { x: { id: "x", refusedAtSetup: "prepare", relationIds: ["r1"] } },
+      "r1",
+      ["x"],
+    ),
     null,
+  );
+  assert.equal(
+    latestTypedRevisionOf(
+      { ...rows, c: { ...rows.c, refusedAtSetup: "prepare" } },
+      "r1",
+      order,
+    ),
+    "b",
   );
 });
 
@@ -1665,6 +1724,7 @@ test("品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edge
     typedRevisions: {
       rev: { id: "rev", relationIds: ["edge"] },
     },
+    typedRevisionOrder: ["rev"],
   };
   const record = {
     unresolvedEdges: 2,
@@ -1697,16 +1757,42 @@ test("品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edge
       }),
       ["hold:b-material-revision-record-missing"],
     );
-  // edgeCount 0 は Graph を出していない（D8 も数えない）ので記録が無くても hold にしない。
+  // 記録の無い子は outcome・edgeCount によらずすべて hold（v2 §3 の字義。edgeCount 0 も graph-ready でない子も pass にしない）。
+  for (const child of [
+    { outcome: "graph-ready", edgeCount: 0 },
+    { outcome: "graph-unavailable" },
+    { outcome: "graph-late", edgeCount: 1 },
+  ])
+    assert.deepEqual(codes({ publishCount: 1, finalSceneIds: [], ...child }), [
+      "hold:b-material-revision-record-missing",
+    ]);
+  // Graph を出したかもしれない子の空の記録（probe が paths を出さない形。unresolvedEdges 0・observed []）は hold。
+  for (const edgeCount of [null, 1])
+    assert.deepEqual(
+      codes({
+        publishCount: 1,
+        finalSceneIds: [],
+        outcome: "graph-ready",
+        edgeCount,
+        materialRevision: { unresolvedEdges: 0, observed: [] },
+      }),
+      ["hold:b-observed-path-record-empty"],
+    );
+  // Scene が論理 ID に無い path（sceneId が null）は捨てずに hold。
   assert.deepEqual(
     codes({
       publishCount: 1,
       finalSceneIds: [],
       outcome: "graph-ready",
-      edgeCount: 0,
+      edgeCount: 1,
+      materialRevision: {
+        unresolvedEdges: 0,
+        observed: [{ sceneId: null, pairs: ["rev|edge"] }],
+      },
     }),
-    [],
+    ["hold:b-observed-scene-has-no-logical-id"],
   );
+  // 観測した path が無い edgeCount 0 の記録は、Graph を出していないので hold にしない。
   // 何も観測せず unresolvedEdges 0 の記録は、setup の typed Revision が無くても hold にならない。
   assert.deepEqual(
     d3Problems({
@@ -1764,7 +1850,7 @@ test("品質 v2 D3 の開示: Graph を出した子の数と edge の件数、�
                     {
                       kind: "path-attachment",
                       sceneId: "g08-attach",
-                      pairs: ["rev|edge"],
+                      pairs: [OBSERVED_PAIR],
                       unresolved: 0,
                     },
                   ],
@@ -1816,4 +1902,380 @@ test("品質 v2 D3 の開示: Graph を出した子の数と edge の件数、�
     [3, 4, 5, 6],
   );
   assert.deepEqual(d3Missing(sample, null), [2]);
+});
+
+// ---- レビュー指摘（PR #840）への対応: DR-CP4-QV-3 ------------------------------
+
+/** One `index-ready` child on a variant's every Graph arm sample. */
+function indexReadyEdit(
+  targetKey,
+  { child = {}, sample = {}, typedRevisions = undefined } = {},
+) {
+  return (key, ctx) => {
+    if (key !== targetKey) return {};
+    const runtime = (list) => list.map((id) => `u-${id}`);
+    const pair = runtime(fixtureLists(ctx.variant).hybrid);
+    return {
+      typedRevisions,
+      mapGraphSample: (_merged, repeat) => ({
+        ...k64Sample(
+          {
+            variantKey: key,
+            repeat,
+            finalSceneIds: pair,
+            snapshot: {
+              usable: true,
+              reason: null,
+              chronicleIndexUsable: false,
+            },
+            irOutcome: "index-unavailable",
+            graph: { outcome: "graph-unavailable", reason: "index-state" },
+            ...sample,
+          },
+          {
+            child: {
+              ...followUpRecord().child,
+              origin: "index-ready",
+              refreshTrigger: null,
+              chronicleIndexUsable: true,
+              outcome: "graph-ready",
+              edgeCount: 1,
+              rSceneIds: pair,
+              irSceneIds: [],
+              finalSceneIds: pair,
+              materialRevision: {
+                unresolvedEdges: 0,
+                observed: [
+                  {
+                    kind: "path-attachment",
+                    sceneId: "g08-attach",
+                    pairs: [OBSERVED_PAIR],
+                    unresolved: 0,
+                  },
+                ],
+              },
+              ...(typeof child === "function" ? child(pair, ctx) : child),
+            },
+          },
+        ),
+        tFetch: 100,
+        tReturn: 130,
+        status: "completed",
+      }),
+    };
+  };
+}
+const CHRONICLE = "G-08/chronicle-index-unusable";
+const a2Of = (output) =>
+  output.conditions["forbidden-contribution"].components[
+    "a2-index-ready-requery-forbidden"
+  ];
+
+test("P1-1（品質 v2 C8）: 表示が 0 件の variant（Graph が寄与したのに first-render に数えない 30 件）があっても条件 2 は TypeError にならず fail を返す", () => {
+  const output = run((key, ctx) =>
+    key === "G-02/base"
+      ? firstRenderRows(ctx.variant, ctx.expectation, () => ({
+          followUp: { parent: { contribution: null } },
+        }))
+      : {},
+  );
+  const row = G02(output);
+  assert.deepEqual(row.displayed, {
+    firstRender: 0,
+    followUp: 0,
+    notDisplayed: 30,
+  });
+  assert.equal(row.metrics.graph, null);
+  assert.equal(row.notDisplayedFailures.length, 30);
+  const gcase = output.conditions["macro-non-regression"].components["g-case"];
+  assert.equal(gcase.status, "fail");
+  assert.equal(gcase.notDisplayedFailures[0].variantKey, "G-02/base");
+  assert.equal(statusOf(output, "macro-non-regression"), "fail");
+  // D8 の fail は、他の variant が hold でも先に返す（hold の判断に入れない）。
+  const withHold = run((key, ctx) =>
+    key === "G-02/base"
+      ? firstRenderRows(ctx.variant, ctx.expectation, () => ({
+          followUp: { parent: { contribution: null } },
+        }))
+      : key === "G-03/base"
+        ? { hybrid: ["g03-no-such-scene"] }
+        : {},
+  );
+  assert.equal(
+    withHold.conditions["macro-non-regression"].components["g-case"].status,
+    "fail",
+  );
+});
+
+test("P2-1（v2 C4）: Graph を出したかもしれない子の空の記録（probe が paths を出さない形）は D3 (b)(d) を素通りせず hold", () => {
+  const output = run(
+    indexReadyEdit(CHRONICLE, {
+      child: { materialRevision: { unresolvedEdges: 0, observed: [] } },
+    }),
+  );
+  assert.equal(a2Of(output).status, "hold");
+  assert.ok(
+    a2Of(output).problems.every(
+      (entry) => entry.code === "b-observed-path-record-empty",
+    ),
+  );
+  // 記録の無い子は outcome・edgeCount によらず hold（v2 §3 の字義）。
+  for (const child of [
+    { outcome: "graph-unavailable", edgeCount: null },
+    { edgeCount: 0 },
+  ]) {
+    const none = run(
+      indexReadyEdit(CHRONICLE, {
+        child: { ...child, materialRevision: undefined },
+      }),
+    );
+    assert.equal(a2Of(none).status, "hold", JSON.stringify(child));
+    assert.ok(
+      a2Of(none).problems.every(
+        (entry) => entry.code === "b-material-revision-record-missing",
+      ),
+    );
+  }
+});
+
+test("P3-2（v2 C4）: Scene が論理 ID に無い path（sceneId null）は捨てずに hold", () => {
+  const output = run(
+    indexReadyEdit(CHRONICLE, {
+      child: {
+        materialRevision: {
+          unresolvedEdges: 0,
+          observed: [
+            {
+              kind: "path-attachment",
+              sceneId: null,
+              pairs: [OBSERVED_PAIR],
+              unresolved: 0,
+            },
+          ],
+        },
+      },
+    }),
+  );
+  assert.equal(a2Of(output).status, "hold");
+  assert.ok(
+    a2Of(output).problems.every(
+      (entry) => entry.code === "b-observed-scene-has-no-logical-id",
+    ),
+  );
+});
+
+test("P2-2（v2 C6）: 定常状態の followUp.requeries の行は first-render にせず（FR-6）、N29・N32 と条件 5 の (a) で見る", () => {
+  const withRows = (requeries, extra = {}) =>
+    run((key, ctx) =>
+      key === "G-02/base"
+        ? firstRenderRows(ctx.variant, ctx.expectation, (repeat) =>
+            repeat === 4 ? { followUp: { requeries, ...extra } } : {},
+          )
+        : {},
+    );
+  // 行が 1 つあれば first-render として数えない（FR6）。親は Graph を寄与したので D8 の fail。
+  const row = withRows([{ publishCount: 1, lateGraphInDisplay: false }]);
+  assert.deepEqual(
+    G02(row).notDisplayedFailures.map((entry) => [
+      entry.repeat,
+      entry.firstRenderFails,
+    ]),
+    [[4, ["FR6:requeries-1"]]],
+  );
+  assert.equal(statusOf(row, "macro-non-regression"), "fail");
+  // key があっても空の配列なら何も無い（通常の first-render）。
+  assert.deepEqual(G02(withRows([])).notDisplayedFailures, []);
+  // list でない値は FR6。
+  assert.deepEqual(
+    G02(withRows("rows")).notDisplayedFailures[0].firstRenderFails,
+    ["FR6:requeries-not-a-list"],
+  );
+  // 遅れた Graph の表示・2 回の公開は条件 5 (b) の fail（N29・N32）。
+  for (const requery of [
+    { lateGraphInDisplay: true, publishCount: 1 },
+    { lateGraphInDisplay: false, publishCount: 2 },
+  ]) {
+    const output = withRows([requery]);
+    assert.equal(
+      output.conditions["forbidden-contribution"].components[
+        "b-late-graph-in-display"
+      ].status,
+      "fail",
+      JSON.stringify(requery),
+    );
+  }
+  // Scene の一覧を持つ行が禁止 Scene を R+IR に足せば条件 5 の (a) の fail。
+  const forbiddenScene = expectationsOf().forbiddenSceneIds[0];
+  const listed = withRows([
+    { publishCount: 1, finalSceneIds: [`u-${forbiddenScene}`] },
+  ]);
+  const violation = G02(listed).forbidden.a.violations.find(
+    (entry) =>
+      entry.reason === "followup-requery-row-forbidden-or-blocked-contribution",
+  );
+  assert.deepEqual(violation.sceneIds, [forbiddenScene]);
+});
+
+test("P3-2（v2 C5）: variantKey の無い再 query の行は黙って捨てず、すべての variant の条件 5 を hold にする。R+IR arm の行は対象外", () => {
+  const withRequery = (row) =>
+    run((key) =>
+      key === "G-02/base"
+        ? {
+            receipt: {
+              requeries: [
+                { arm: "graph", trigger: "index-ready-requery", ...row },
+              ],
+            },
+          }
+        : {},
+    );
+  const noKey = withRequery({ finalSceneIds: [] });
+  const part =
+    noKey.conditions["forbidden-contribution"].components[
+      "a3-requery-row-without-variant-key"
+    ];
+  assert.equal(part.status, "hold");
+  assert.equal(part.rows, 1);
+  assert.equal(statusOf(noKey, "forbidden-contribution"), "hold");
+  // R+IR arm の行は D4 の対象外（baseline）。variantKey が在れば hold にしない。
+  const hybrid = withRequery({
+    variantKey: "G-02/base",
+    arm: "hybrid",
+    finalSceneIds: [],
+  });
+  assert.equal(
+    hybrid.conditions["forbidden-contribution"].components[
+      "a3-requery-row-without-variant-key"
+    ].status,
+    "n/a",
+  );
+  // user-operation の行は samples の側（requeries には置かない）。
+  assert.equal(
+    withRequery({ trigger: "user-operation" }).conditions[
+      "forbidden-contribution"
+    ].components["a3-requery-row-without-variant-key"].status,
+    "n/a",
+  );
+});
+
+test("P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば fail）。他の variant の index-ready の子は D3 の対象にしない", () => {
+  const keptOnly = (name, options, missing) => {
+    const output = run(indexReadyEdit(CHRONICLE, options));
+    assert.equal(a2Of(output).eligibleChildren, 0, name);
+    assert.equal(a2Of(output).keptAsChildren, 30, name);
+    assert.deepEqual(
+      a2Of(output).keptAsChildrenMissing[0].missingConditions,
+      [missing],
+      name,
+    );
+    assert.equal(
+      keyOf(output, CHRONICLE).forbidden.a.violations[0].reason,
+      "graph-shown-for-a-variant-expected-unavailable",
+      name,
+    );
+  };
+  keptOnly(
+    "(3) refreshTrigger",
+    { child: { refreshTrigger: "graph-ready" } },
+    3,
+  );
+  keptOnly(
+    "(4) 親の Chronicle Index が使えた",
+    {
+      sample: {
+        snapshot: { usable: true, reason: null, chronicleIndexUsable: true },
+      },
+    },
+    4,
+  );
+  keptOnly(
+    "(4) 親の IR が index-unavailable でない",
+    { sample: { irOutcome: "index-ready" } },
+    4,
+  );
+  keptOnly(
+    "(5) 親の Graph Index が使えなかった",
+    {
+      sample: {
+        snapshot: { usable: false, reason: "x", chronicleIndexUsable: false },
+      },
+    },
+    5,
+  );
+  // 他の variant（G-02/base）の index-ready の子は、6 条件を満たしても D3 の対象にしない。
+  const other = run(
+    indexReadyEdit("G-02/base", {
+      child: (pair) => ({
+        finalSceneIds: [...pair, `u-${expectationsOf().forbiddenSceneIds[0]}`],
+      }),
+    }),
+  );
+  assert.equal(a2Of(other).eligibleChildren, 0);
+  assert.equal(a2Of(other).keptAsChildren, 0);
+  assert.ok(G02(other).forbidden.a.violations.length > 0);
+  assert.equal(statusOf(other, "forbidden-contribution"), "fail");
+});
+
+test("P3-1: G-08/both-indexes-unusable の子が Graph を出せば fail（D3 の対象は chronicle-index-unusable だけ）", () => {
+  const KEY = "G-08/both-indexes-unusable";
+  const output = run(
+    indexReadyEdit(KEY, {
+      sample: {
+        snapshot: { usable: false, reason: "x", chronicleIndexUsable: false },
+      },
+    }),
+  );
+  const row = keyOf(output, KEY);
+  assert.equal(a2Of(output).eligibleChildren, 0);
+  assert.equal(
+    row.forbidden.a.violations[0].reason,
+    "graph-shown-for-a-variant-expected-unavailable",
+  );
+  assert.equal(statusOf(output, "forbidden-contribution"), "fail");
+});
+
+test("P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR に足す）は fail、既に R+IR に在る Scene は足したことにならない", () => {
+  const output = run(
+    indexReadyEdit(CHRONICLE, {
+      child: (pair, ctx) => ({
+        finalSceneIds: [...pair, `u-${ctx.expectation.forbiddenSceneIds[0]}`],
+      }),
+    }),
+  );
+  assert.equal(a2Of(output).status, "fail");
+  assert.ok(
+    a2Of(output).problems.every(
+      (entry) => entry.code === "a-forbidden-contribution",
+    ),
+  );
+  // 純粋な側: blocked 候補でも fail、R+IR の一覧に既に在る禁止 Scene は fail にしない。
+  const base = {
+    pair: ["p"],
+    lists: (ids) => ids,
+    forbidden: new Set(["f"]),
+    blocked: new Set(["b"]),
+    typedRevisions: null,
+    typedRevisionOrder: [],
+    child: {
+      publishCount: 1,
+      outcome: "graph-unavailable",
+      materialRevision: { unresolvedEdges: 0, observed: [] },
+    },
+  };
+  const codes = (finalSceneIds) =>
+    d3Problems({
+      ...base,
+      child: { ...base.child, finalSceneIds },
+    }).map((entry) => entry.code);
+  assert.deepEqual(codes(["p", "b"]), ["a-forbidden-contribution"]);
+  assert.deepEqual(codes(["p", "f"]), ["a-forbidden-contribution"]);
+  assert.deepEqual(codes(["p", "ok"]), []);
+  assert.deepEqual(
+    d3Problems({
+      ...base,
+      pair: ["p", "f"],
+      child: { ...base.child, finalSceneIds: ["p", "f"] },
+    }),
+    [],
+  );
 });

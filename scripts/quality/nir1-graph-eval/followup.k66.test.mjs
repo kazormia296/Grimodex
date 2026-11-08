@@ -371,6 +371,20 @@ test("K6/6-N6c: 親の IR の再試行の timer が動いていれば数えず�
   );
 });
 
+test("K6/6-N6d: followUp.requeries の行が 1 つでもある親（定常状態の key。v2 C6）は数えず、list でない値も数えない。空の list は何も無い", () => {
+  notCounted(
+    k66Sample({}, { requeries: [{ publishCount: 1 }] }),
+    "FR6:requeries-1",
+  );
+  notCounted(k66Sample({}, { requeries: [{}, {}] }), "FR6:requeries-2");
+  notCounted(k66Sample({}, { requeries: "rows" }), "FR6:requeries-not-a-list");
+  const counted = classifyFollowUp(k66Sample({}, { requeries: [] }), {
+    context: "steady",
+    next: null,
+  });
+  assert.equal(counted.firstRender, true);
+});
+
 test("K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない", () => {
   notCounted(
     k66Sample({}, { parent: { contribution: null } }),

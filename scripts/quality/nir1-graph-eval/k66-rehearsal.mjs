@@ -175,6 +175,13 @@ function applyD2D3(run) {
       forbidden,
       blocked,
       typedRevisions: run.typedRevisions,
+      // The formal verdict orders by the frozen fixture's `revisions` array.
+      // A dev fixture's order is not handed in (the dev receipt carries the
+      // setup record only), so the dev preview reads the setup record's key
+      // order, which is the order the setup driver wrote it in (dev only;
+      // a caller may hand `typedRevisionOrder`).
+      typedRevisionOrder:
+        run.typedRevisionOrder ?? Object.keys(run.typedRevisions ?? {}),
     }))
       d3.problems.push({ repeat: row.repeat, ...problem });
     return { ...row, followUp: { ...row.followUp, child: null } };
@@ -193,8 +200,8 @@ function applyD2D3(run) {
  *   forbiddenSceneIds?: string[], blockedSceneIds?: string[],
  *   typedRevisions?: object}[]} runs
  *   one entry per variant of the rehearsal (the receipt's `settings.devVariant`
- *   and `samples`; the optional fields are D3's forbidden Scenes and the setup
- *   record's `logicalToRuntime.typedRevisions`)
+ *   and `samples`; the optional fields are D3's forbidden Scenes, the setup
+ *   record's `logicalToRuntime.typedRevisions` and their `typedRevisionOrder`)
  */
 export function assessK66RehearsalQuality(runs) {
   const variants = runs.map((run) => {
