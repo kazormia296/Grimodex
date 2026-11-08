@@ -62,6 +62,8 @@ enum PrepareMode {
     Ok,
     Fail(&'static str),
     Hold,
+    /// Holds like `Hold`, then fails (a prepare that outlives a B publish).
+    HoldThenFail(&'static str),
 }
 
 #[derive(Clone, Copy, Default)]
@@ -167,6 +169,10 @@ impl GraphWorker for FakeWorker {
             PrepareMode::Ok => Ok(()),
             PrepareMode::Fail(text) => Err(anyhow!(text)),
             PrepareMode::Hold => self.hold(),
+            PrepareMode::HoldThenFail(text) => {
+                self.hold()?;
+                Err(anyhow!(text))
+            }
         }
     }
 
@@ -787,6 +793,151 @@ fn startup_failures_back_off_then_suspend_until_ready_edge() {
     ));
     wait_until("resumed READY", || fixture.kind() == GraphSlotKind::Ready);
     assert_eq!(fixture.plan.creates.load(Ordering::SeqCst), creates + 1);
+}
+
+fn work_item(run_kind: grimodex_db::narrative_extraction::AutomaticRunKind)
+    -> grimodex_db::narrative_extraction::DesiredWork
+{
+    grimodex_db::narrative_extraction::DesiredWork {
+        project_id: PROJECT.into(),
+        run_kind,
+        work_key: "work".into(),
+        semantic_epoch_id: None,
+        reasons: vec!["test".into()],
+    }
+}
+
+/// CP2a-D47: only a completed Graph Index build lets a Suspended owner retry.
+#[test]
+fn suspended_owner_resumes_when_the_graph_index_build_completes() {
+    use grimodex_db::narrative_extraction::AutomaticRunKind;
+    let fixture = ProductFixture::new();
+    *lock(&fixture.plan.prepare_mode) =
+        PrepareMode::Fail("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY: fake");
+    let _ = fixture.begin("entity");
+    wait_until("suspended after five failures", || {
+        let _ = fixture.begin("entity");
+        fixture.kind() == GraphSlotKind::Suspended
+    });
+    let creates = fixture.plan.creates.load(Ordering::SeqCst);
+    *lock(&fixture.plan.prepare_mode) = PrepareMode::Ok;
+    for other in [
+        AutomaticRunKind::Backfill,
+        AutomaticRunKind::Verify,
+        AutomaticRunKind::RebuildDerived,
+    ] {
+        fixture
+            .state
+            .nir1_graph
+            .note_maintenance_work_completed(&work_item(other));
+        assert_eq!(fixture.kind(), GraphSlotKind::Suspended);
+    }
+    assert!(matches!(
+        fixture.begin("entity"),
+        GraphBegin::Unavailable(GraphUnavailable::WorkerUnavailable)
+    ));
+    assert_eq!(fixture.plan.creates.load(Ordering::SeqCst), creates);
+    fixture
+        .state
+        .nir1_graph
+        .note_maintenance_work_completed(&work_item(AutomaticRunKind::Nir1GraphIndexBuild));
+    assert_eq!(fixture.kind(), GraphSlotKind::Empty);
+    assert_eq!(
+        lock(&fixture.state.nir1_graph.shared.slot)
+            .rebuild
+            .consecutive_failures,
+        0
+    );
+    assert!(matches!(
+        fixture.begin("entity"),
+        GraphBegin::Unavailable(GraphUnavailable::Warming)
+    ));
+    wait_until("resumed READY", || fixture.kind() == GraphSlotKind::Ready);
+    assert_eq!(fixture.plan.creates.load(Ordering::SeqCst), creates + 1);
+}
+
+/// CP2a-D47: the hook does not move a slot that is not Suspended, and cannot
+/// open a Quarantined or Closed one.
+#[test]
+fn resume_hook_leaves_every_other_phase_alone() {
+    for phase in [
+        Phase::Empty,
+        Phase::Ready,
+        Phase::InUse,
+        Phase::Closed,
+        Phase::Quarantined {
+            binding: LiveBinding::new("/workspace", "workspace-id", 1, 0),
+        },
+    ] {
+        let owner = Nir1GraphProductOwner {
+            shared: Arc::new(Shared::new()),
+        };
+        let kind = {
+            let mut slot = lock(&owner.shared.slot);
+            slot.phase = phase;
+            slot.rebuild.consecutive_failures = 3;
+            drop(slot);
+            owner.slot_kind_for_test()
+        };
+        owner.resume_after_graph_index_change();
+        assert_eq!(owner.slot_kind_for_test(), kind);
+        assert_eq!(lock(&owner.shared.slot).rebuild.consecutive_failures, 3);
+    }
+}
+
+/// CP2a-D48: B publishes while a prepare runs and that prepare then fails as
+/// the fifth. Without the publish the slot suspends (control); with it the
+/// slot does not wait for another publish.
+#[test]
+fn a_publish_during_the_failing_prepare_does_not_suspend_the_slot() {
+    for publish_during_prepare in [false, true] {
+        let fixture = ProductFixture::new();
+        fixture.state.nir1_graph.set_config_for_test(GraphOwnerConfig {
+            failures_before_suspend: 1,
+            ..fast_config()
+        });
+        *lock(&fixture.plan.prepare_mode) =
+            PrepareMode::HoldThenFail("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY: fake");
+        assert!(matches!(
+            fixture.begin("entity"),
+            GraphBegin::Unavailable(GraphUnavailable::Warming)
+        ));
+        wait_until("prepare is held", || {
+            fixture.plan.prepares.load(Ordering::SeqCst) == 1
+        });
+        if publish_during_prepare {
+            fixture.state.nir1_graph.resume_after_graph_index_change();
+        }
+        fixture.plan.release.store(true, Ordering::SeqCst);
+        wait_until("session ended", || {
+            !matches!(
+                fixture.kind(),
+                GraphSlotKind::Preparing | GraphSlotKind::Deferred
+            )
+        });
+        let ledger = lock(&fixture.state.nir1_graph.shared.slot)
+            .rebuild
+            .consecutive_failures;
+        if publish_during_prepare {
+            assert_eq!(fixture.kind(), GraphSlotKind::Empty);
+            assert_eq!(ledger, 0);
+        } else {
+            assert_eq!(fixture.kind(), GraphSlotKind::Suspended);
+            assert_eq!(ledger, 1);
+        }
+    }
+}
+
+/// CP2a-D47: the cycle's completion hook is called from one place.
+#[test]
+fn the_maintenance_cycle_calls_the_resume_hook_once() {
+    let source = include_str!("lib.rs");
+    assert_eq!(
+        source
+            .matches("nir1_graph.note_maintenance_work_completed(")
+            .count(),
+        1
+    );
 }
 
 #[test]

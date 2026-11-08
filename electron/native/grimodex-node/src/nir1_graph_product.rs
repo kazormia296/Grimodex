@@ -11,7 +11,7 @@
 //! queried meanwhile always drifts. `begin_deferred` therefore holds that query
 //! in the slot until the begin releases it, after its own commits; only then
 //! does the owner thread prepare a worker and answer the held query at once.
-#![cfg_attr(not(test), allow(dead_code))] // Still unused: the process worker's start (gated until PUB-G), the Suspended resume hook (PUB-G/CP-4) and test-only inspection. CP-2b configures the worker path from the Backend constructor; CP-3a's callers are in related_scenes/graph.rs.
+#![cfg_attr(not(test), allow(dead_code))] // Still unused: the process worker's start (gated until PUB-G) and test-only inspection. The Suspended resume hook is wired to B's publish (CP2a-D47). CP-2b configures the worker path from the Backend constructor; CP-3a's callers are in related_scenes/graph.rs.
 
 use std::{
     cell::RefCell,
@@ -485,6 +485,10 @@ struct Shared {
     slot: Mutex<SlotState>,
     edge_epoch: AtomicU64,
     ready_generation: AtomicU64,
+    /// CP2a-D48: grows (under the slot lock) each time B's publish asks the
+    /// owner to leave Suspended. A prepare that fails after a publish started
+    /// does not suspend the slot; it is compared under the same lock.
+    graph_index_change: AtomicU64,
     /// D-final's wait for a READY (DSN §1.3 E7, DR-DI1A-5). A generation that
     /// grows when a session reaches READY, when it ends (retired, failed,
     /// quarantined, closed), on a lifecycle edge and on close, so a waiter
@@ -540,6 +544,7 @@ impl Shared {
             }),
             edge_epoch: AtomicU64::new(0),
             ready_generation: AtomicU64::new(0),
+            graph_index_change: AtomicU64::new(0),
             ready_signal: Mutex::new(0),
             ready_signal_changed: Condvar::new(),
             closed: AtomicBool::new(false),
@@ -1356,9 +1361,25 @@ impl Nir1GraphProductOwner {
         true
     }
 
-    /// Called after B's publish (B-ROUTE/CP-3a) to leave Suspended.
+    /// CP2a-D47: the maintenance cycle calls this after each work it completed
+    /// (after the work's final transaction committed). Only the Graph Index
+    /// build leaves Suspended; the process worker stays gated until PUB-G.
+    pub(crate) fn note_maintenance_work_completed(
+        &self,
+        item: &grimodex_db::narrative_extraction::DesiredWork,
+    ) {
+        if item.run_kind == grimodex_db::narrative_extraction::AutomaticRunKind::Nir1GraphIndexBuild
+        {
+            self.resume_after_graph_index_change();
+        }
+    }
+
+    /// Called after B's publish (B-ROUTE/CP-3a, CP2a-D47) to leave Suspended.
     pub(crate) fn resume_after_graph_index_change(&self) {
         let mut slot = lock(&self.shared.slot);
+        // CP2a-D48: under the slot lock, so `SessionGuard::drop` orders itself
+        // before or after this publish.
+        self.shared.graph_index_change.fetch_add(1, Ordering::SeqCst);
         if matches!(slot.phase, Phase::Suspended { .. }) {
             slot.phase = Phase::Empty;
             slot.rebuild.consecutive_failures = 0;
@@ -2086,6 +2107,8 @@ struct SessionGuard {
     in_flight: Option<Arc<TicketShared>>,
     exit: Option<Phase>,
     quarantined: bool,
+    /// CP2a-D48: `graph_index_change` when the current prepare began.
+    index_change_at_prepare: Option<u64>,
     /// CQ-DEFER: filled by the Drop with the held session's waiting projects;
     /// `session_main` announces them once the slot shows the session's end.
     announce_after: Rc<RefCell<Vec<String>>>,
@@ -2154,7 +2177,21 @@ impl Drop for SessionGuard {
         } else if self.shared.closed.load(Ordering::SeqCst) {
             slot.phase = Phase::Closed;
         } else {
-            slot.phase = self.exit.take().unwrap_or(Phase::Empty);
+            let exit = self.exit.take().unwrap_or(Phase::Empty);
+            slot.phase = match exit {
+                // CP2a-D48: B published while this prepare ran, so its failures
+                // judged an index that is gone. Do not wait for another publish.
+                Phase::Suspended { .. }
+                    if self.index_change_at_prepare.is_some_and(|seen| {
+                        seen != self.shared.graph_index_change.load(Ordering::SeqCst)
+                    }) =>
+                {
+                    slot.rebuild.consecutive_failures = 0;
+                    slot.rebuild.last_failure = None;
+                    Phase::Empty
+                }
+                other => other,
+            };
         }
     }
 }
@@ -2171,6 +2208,7 @@ fn session_main(context: SessionContext) {
             in_flight: None,
             exit: None,
             quarantined: false,
+            index_change_at_prepare: None,
             announce_after: Rc::clone(&announce_after),
         };
         let outcome = catch_unwind(AssertUnwindSafe(|| run_session(&mut guard, &context)));
@@ -2313,6 +2351,7 @@ fn build_worker(
     }));
     let prepare_started = Instant::now();
     bump(&shared.diagnostics.prepares_started);
+    guard.index_change_at_prepare = Some(shared.graph_index_change.load(Ordering::SeqCst));
     {
         let mut slot = lock(&shared.slot);
         slot.rebuild.last_prepare_started = Some(prepare_started);

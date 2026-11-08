@@ -9490,6 +9490,9 @@ impl Backend {
                     };
                     let work_completed =
                 |item: &grimodex_db::narrative_extraction::DesiredWork| -> anyhow::Result<()> {
+                    // CP2a-D47: B's publish has committed; let a Suspended Graph
+                    // owner retry. Before the attempt bookkeeping, which can fail.
+                    state_for_control.nir1_graph.note_maintenance_work_completed(item);
                     if let Some(attempt_id) = attempt_id_for_control.as_deref() {
                         let work_key = item.canonical_key();
                         state_for_control

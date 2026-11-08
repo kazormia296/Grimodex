@@ -373,3 +373,44 @@ branch `claude/cp2b-p3-update-route-watch`（基点 `8e93bb31`）。commit: `54a
 - 判定の弱い変異 2 件: 判定の試験に、余分な case を持つ product の記録と、対照の server 到達が 1 回だけの記録を足した。case の集合の検査を外す変異と、`< 2` を `< 1` にする変異で赤になった。
 - 取り込まなかったもの: 5xx・通信の失敗の即失敗は安全側の設計として維持した。`error.cause.code` は log に出していない（host 名と status 以外を出さない原則を優先した）。
 - 再確認: `node --test scripts/release-workflows.test.mjs` 28 passed、`node --test electron/scripts/update-route-name-probe.test.mjs` 6 passed、実 Electron の harness `H1(b) PASS`、検知の script を公開 asset に 1 回（`github.com` → `release-assets.githubusercontent.com`、exit 0）。
+
+## P3-2 の決定: spawn の直前の worker の path の再検証（PUB-G 前提 #23。2026-11-08）。mutation の前の記録
+
+出所: §7 の P3-2（「検証は constructor の時点の 1 回だけで、spawn は PUB-G の後の需要の時点になる。その間に file が差し替えられても再検証しない（TOCTOU）。spawn の直前に path を再検証するか…を PUB-G で決める」）。PUB-G 前提の棚卸し #23。branch `claude/pubg-worker-owner`、基点 master `e3721221`。GDX-PRECHECK-001 の委任（worker の技術判断。actor・防御・受信先・受入れは変えない）の範囲で、integrator が決める。read-only advisor は呼べなかったので integrator の判断として置き、PR のレビューで確かめる。
+
+### 事実（origin/master e3721221）
+
+- 検証は `ProcessGraphWorkerFactory::from_path`（constructor の 1 回）：絶対 path、`metadata().is_file()`、file 名が `nir1-c-query-worker`（Windows は `.exe`）、親が絶対 path。
+- spawn は 1 箇所だけ（`c_query_worker.rs` の `prepare_claimed` の `Command::new(&worker)`）。直前に `configure_worker_process` が絶対 path と親 directory を再確認する（文字列の性質だけ）。
+- spawn の失敗（`std::io::Error`、`NIR1_GRAPH_WORKER_PATH`）は `classify_c_query_failure` が `WorkerStartup` に写し、owner は `worker-unavailable`（失敗として数える。連続 5 回で Suspended）にする。つまり存在しない・実行できない path はすでに型付きの失敗になる。
+- 文字列として不変なのは絶対性と file 名で、時間で変わりうるのは「その path に何があるか」だけ。
+
+### 決定
+
+| ID | 判断 | 信頼境界 | 代替案と不採用の理由 | 結論 |
+|---|---|---|---|---|
+| DR-CP2B-TOCTOU-1 | **spawn の直前に path を再検証する。ただし検証は constructor と同じ強さの `is_file`（symlink を辿る `metadata`）だけで、強くしない**。spawn の 1 箇所（`prepare_claimed`、`Command::new` の直前）で行い、失敗は `NIR1_GRAPH_WORKER_PATH`（既存の marker）→ `WorkerStartup` → `worker-unavailable`（既存の写像）。file 名と絶対性は再検証しない（文字列で変わらない）。これは **security の境界ではなく、運用上の失敗の分類の精度と無駄な spawn の回避**であると明記する | 信頼する actor：resources（packaged の worker の置き場）を書き換えられる者は、app 本体（`app.asar`、Electron の実行体）も書き換えられる。したがって path の差し替えは新しい権限を与えず、脅威の大きさは §7 の P3-1／P3-2 の見立てのとおり小さい（推定は変えない）。範囲外の攻撃：check と exec の間の差し替え（`stat` と `execve` の間の競合は path の再検証では閉じない。閉じるには fd 固定の exec か実行体の hash 照合が要り、後者は新しい authority／契約になる）。必須の防御：env の clear、絶対 path、cwd、argv だけの入力（CP2a-D13。変えない）。動く範囲：非 regular file（directory、消えた、Windows の更新中の置換）の path を spawn する前に、OS ごとに違う spawn のエラーでなく一定の marker で `worker-unavailable` にする | (a) 再検証しない（spawn の失敗の写像だけ）：安全面は同じだが、directory 等への spawn の試みと OS 依存のエラーに任せる。(b) file 名・絶対性も再検証：文字列は変わらないので無駄。(c) symlink を拒否する（`symlink_metadata`）・実行権限を確認する：P3-1／DR-CP2B-P1-6 が「検証の強さは変えない」と決めた。強くするなら packaged の symlink の有無を 3 OS で確かめる必要がある。(d) 実行体の hash の照合・fd 固定の exec：新しい authority／契約で委任外。残る競合の窓は記録して受け入れる | 採用。(c)(d) は採らず、残る窓を受け入れる |
+| DR-CP2B-TOCTOU-2 | 再検証の失敗は **quarantine にも `restart-required` にもしない**。既存の spawn 失敗と同じ `Count`（連続 5 回で Suspended。D47 の hook か `ReadyPublished` で戻る）。再検証は spawn の前なので、child も reader thread も process slot の claim も作られない（termination の証拠は不要）。storage の予約（`reserve_storage`）の後に失敗するが、これは spawn の io エラーと同じ経路で、同じ cleanup を通る | 失敗は process 内の分類だけ。公開 gate・送信先・保存・契約・閾値は変えない。診断の counter は既存の `prepare_failures` に載り、新しい field は無い | 再検証を `reserve_storage` の前に置く：失敗経路が spawn の io エラーと違う形になり、cleanup の試験が 2 本になる。storage の予約は spawn の失敗でも同じなので、同じ経路に置く | 採用 |
+
+### finite owner／lifecycle matrix（spawn の再検証）
+
+| 観点 | 結果 |
+|---|---|
+| entry／start／retry／reentrant | spawn の入口は `prepare_claimed` の 1 箇所（既存の静的試験が `Command::new` の数を固定していないので、再検証の呼出しが spawn の直前にあることを新しい試験で固定する）。retry は owner の backoff の経路のまま。再入は slot の phase（Preparing）が拒む |
+| 受付の閉鎖 | PUB-G まで demand が届かず、この経路は到達しない（`PRODUCT_GRAPH_PUBLISHED` は変えない） |
+| pending-start | 再検証の失敗は child を作る前。待つものが無い |
+| 保持している handle | 再検証の時点で child／reader／pipe は無い。storage の予約だけで、失敗経路が既存どおり解放する |
+| cancellation／bounded wait | 再検証は 1 回の `metadata` だけ（O(1)、blocking は OS の stat だけ）。cancel は既存の spawn の前後の確認のまま |
+| termination の証拠 | 不要（spawn しない）。成功時は既存の `retire()` の証拠（変えない） |
+| error／timeout | marker `NIR1_GRAPH_WORKER_PATH` → `WorkerStartup` → `worker-unavailable`（Count） |
+| 永続状態 | 無い |
+
+### 試験と変異（実装後に足す）
+
+(1) 構築した後に file を directory に差し替える、または消すと、`prepare` は marker `NIR1_GRAPH_WORKER_PATH` のエラー（OS の `io::Error` ではない）で失敗し、`classify_c_query_failure` は `WorkerStartup`、child が作られず、retirement は Retired。(2) 差し替えなければ（regular file のまま）従来どおり spawn に進む。(3) 再検証の呼出しが `Command::new` の前にある（静的）。変異: 再検証を消すと (1) の「marker のエラーである」が赤（spawn の io エラーになるため。分類と child の不在は再検証が無くても同じ。これが本判断の価値の範囲）。
+
+### 結果（実装後。2026-11-08）
+
+- 実装: `c_query_worker.rs` の `ensure_worker_is_file`（constructor と同じ強さの `metadata().is_file()`）を、唯一の spawn（`prepare_claimed` の `Command::new`）の直前に 1 回呼ぶ。失敗は marker `NIR1_GRAPH_WORKER_PATH`（既存の写像で `WorkerStartup` → `worker-unavailable`）。製品の他の場所は変えていない。
+- 試験: 新規 2 本（`prepare_rechecks_the_worker_file_before_it_spawns`〔構築の後に消す／directory にすると、`io::Error` でなく marker で失敗し、`WorkerStartup`、retire で Retired、capacity が解放される〕、`worker_file_recheck_precedes_the_spawn`〔静的〕）。変異（再検証を消す）で 2 本とも赤。`grimodex-db` の `nir1_graph::` の試験 172 passed、49 ignored（既存。real-worker の手動・隔離の試験）、`c_query_worker` 16 passed、clippy（lib、tests、`-D warnings`）は clean。
+- 残る窓（受け入れ済み）: 再検証と exec の間の差し替え。閉じるには fd 固定の exec か実行体の hash の照合が要り、新しい authority／契約になるので委任外。脅威の大きさの見立て（resources を書き換えられる者は app 本体も書き換えられる）は変えない。

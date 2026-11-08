@@ -231,6 +231,18 @@ fn configure_worker_process(command: &mut Command, worker: &Path) -> Result<()> 
     Ok(())
 }
 
+/// DR-CP2B-TOCTOU-1: the constructor's check (a regular file) once more, right
+/// before the only spawn. Same strength, no new authority: it does not close the
+/// gap between this check and the exec (that needs an fd-pinned exec or a hash).
+/// A path that stopped being a file fails with the marker, not an OS spawn error.
+fn ensure_worker_is_file(worker: &Path) -> Result<()> {
+    ensure!(
+        std::fs::metadata(worker).is_ok_and(|metadata| metadata.is_file()),
+        "NIR1_GRAPH_WORKER_PATH"
+    );
+    Ok(())
+}
+
 /// Per-query owner state; fixed request/result buffers do not cap other process memory.
 struct RegionControl {
     storage: Option<NativeRegionReservation>,
@@ -1576,6 +1588,7 @@ impl CQueryWorkerOwner {
             authority.path().is_absolute(),
             "NIR1_GRAPH_WORKER_WORKSPACE_PATH"
         );
+        ensure_worker_is_file(&worker)?;
         let mut command = Command::new(&worker);
         configure_worker_process(&mut command, &worker)?;
         command
@@ -3961,6 +3974,85 @@ mod tests {
         assert!(configure_worker_process(&mut Command::new("/"), Path::new("/")).is_err());
         std::fs::remove_dir_all(&directory)?;
         Ok(())
+    }
+
+    /// DR-CP2B-TOCTOU-1: the path is a regular file when the owner is made and
+    /// something else when it prepares. The failure is the marker (no spawn was
+    /// tried, so no OS error), classified as a startup failure; nothing is left
+    /// holding the process slot.
+    #[test]
+    fn prepare_rechecks_the_worker_file_before_it_spawns() -> Result<()> {
+        let _slot = native_slot_test_guard();
+        use crate::state::{ActiveWorkspace, WorkspaceState};
+        use crate::workspace_lifecycle::{LiveBinding, WorkspaceLifecycleCompatibilityView};
+
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-c-query-recheck-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let worker = root.join("nir1-c-query-worker");
+        std::fs::write(&worker, b"")?;
+        assert!(ensure_worker_is_file(&worker).is_ok());
+        assert!(ensure_worker_is_file(&root).is_err());
+        assert!(ensure_worker_is_file(&root.join("missing")).is_err());
+
+        let workspace = root.join("workspace");
+        let db = crate::Database::new(std::path::Path::new(":memory:"))?;
+        let authority = WorkspaceAuthority::from_database_for_test(db, workspace)?;
+        let binding = LiveBinding::new(
+            authority.path().to_string_lossy().into_owned(),
+            format!("test-workspace:{}", authority.identity()),
+            authority.identity(),
+            0,
+        );
+        let state = WorkspaceState {
+            inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(std::sync::Arc::clone(
+                &authority,
+            )))),
+            safe_mode: crate::recovery::SafeModeState::default(),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
+            open_lock: std::sync::Mutex::new(Default::default()),
+        };
+        state.lifecycle_core().set_ready(binding)?;
+        for swapped in ["removed", "directory"] {
+            let snapshot = crate::state::active_workspace_snapshot(&state)?;
+            let mut owner = CQueryWorkerOwner::new(snapshot, worker.clone());
+            // The constructor-time check passed; now the path changes.
+            std::fs::remove_file(&worker).ok();
+            std::fs::remove_dir_all(&worker).ok();
+            if swapped == "directory" {
+                std::fs::create_dir(&worker)?;
+            }
+            let error = owner.prepare("project").expect_err(swapped);
+            let text = format!("{error:#}");
+            assert!(text.contains("NIR1_GRAPH_WORKER_PATH"), "{swapped}: {text}");
+            assert!(
+                error
+                    .chain()
+                    .all(|cause| cause.downcast_ref::<std::io::Error>().is_none()),
+                "{swapped}: no spawn was tried: {text}"
+            );
+            assert_eq!(classify_c_query_failure(&error), CQueryFailure::WorkerStartup);
+            assert_eq!(owner.retire(), CQueryRetirement::Retired);
+            assert!(!C_QUERY_CAPACITY_IN_USE.load(Ordering::Acquire));
+            std::fs::remove_dir_all(&worker).ok();
+            std::fs::remove_file(&worker).ok();
+            std::fs::write(&worker, b"")?;
+        }
+        drop(state.inner.lock().expect("workspace lock").take());
+        drop(authority);
+        let _ = std::fs::remove_dir_all(root);
+        Ok(())
+    }
+
+    /// The re-check is the statement right before the one spawn.
+    #[test]
+    fn worker_file_recheck_precedes_the_spawn() {
+        let source = include_str!("c_query_worker.rs");
+        let spawn = source.find("Command::new(&worker)").expect("the spawn");
+        let check = source.find("ensure_worker_is_file(&worker)?;").expect("the re-check");
+        assert!(check < spawn && spawn - check < 100);
     }
 
     #[test]

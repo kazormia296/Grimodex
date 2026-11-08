@@ -209,3 +209,49 @@ CI の Electron native の job で `nir1_graph_product::tests::quarantine_fence_
 - 一時的な変更は元に戻し、`git diff` に残っていないことを確かめた。
 - 対象の試験を 25 回繰り返して 25/25 pass。`nir1_graph_product` の試験全体は 107 passed、1 ignored。
 - `cargo clippy --lib --features licensing,legacy-keyring-migration -- -D warnings` は OK。`--all-targets` は `nir1_local_entry_tests.rs` の既存の `nonminimal_bool` 1 件（この変更の外）で止まる。
+
+## owner の Suspended の復帰の配線（PUB-G 前の前提 #24。2026-11-08）。mutation の前の記録
+
+出所: PUB-G 前提の棚卸し #24（`nir1_graph_product.rs` の `allow(dead_code)` の comment「the Suspended resume hook (PUB-G/CP-4)」）。CP2a-D8 が `resume_after_graph_index_change()` を置いたが、製品の呼出し元が無い。branch `claude/pubg-worker-owner`、基点 master `e3721221`。GDX-PRECHECK-001 の委任（worker／owner／lifecycle の技術判断。actor・防御・受信先・受入れは変えない）の範囲で、integrator が決める。read-only advisor は、この subagent の環境では呼べなかったので、判断は本表のとおり integrator の判断として置く（advisor の確認は PR のレビューに回す）。
+
+**gated のままにするもの（変えない）**: process worker の start。`PRODUCT_GRAPH_PUBLISHED`（false、`const _: () = assert!(!…)`）と、どの製品の入口も `begin` に届かないことは変えない。PUB-G まで owner は誰からも demand を受けず、slot は Suspended にならないので、今回の配線は製品では何も動かさない（呼ばれても slot が Suspended でなければ何もしない）。
+
+**今つなげるもの**: B（Graph Index）の build が publish を commit した後に、owner の hook を呼ぶ。
+
+### 現状の確認（origin/master e3721221）
+
+- Suspended に入るのは、prepare の失敗が連続 5 回（`failures_before_suspend`）に達したとき。出るのは (1) `ReadyPublished` の edge（`ready_generation` が進み、次の demand が Empty に戻す。CP2a-D7）、(2) hook（CP2a-D8）。(2) の呼出し元は試験だけだった。
+- B の publish は grimodex-db の maintenance cycle の中（`dispatch_graph_index_build` → `publish_owned_snapshot`）。publish の transaction を commit した後に `MaintenanceDispatchOutcome::Completed` を返し、cycle は `control.work_completed(item)` を呼ぶ（`maintenance_runtime.rs` の `mark_completed`。エラーの経路でも commit 済みなら呼ぶ）。検証だけ・拒否・何もしない結果は `CompletedWithoutFinalization` で `work_noop_completed` に行き、`work_completed` は呼ばれない。つまり「`work_completed` が `run_kind == Nir1GraphIndexBuild` で呼ばれた」は「B が新しい generation を commit した」と同値。
+- Graph の build の gate（`Nir1GraphIndexBuildGate`）は journey seam だけで開く。製品の launch は seam を渡さないので、製品では B の build が走らず、`work_completed` が Graph build の item で呼ばれることもない（PUB-G の前は配線が到達しない）。
+
+### 決定
+
+| ID | 判断 | 信頼境界 | 代替案と不採用の理由 | 結論 |
+|---|---|---|---|---|
+| CP2a-D47 | `lib.rs` の maintenance cycle の `work_completed` closure から、`state.nir1_graph.note_maintenance_work_completed(item)` を呼ぶ。この method は `item.run_kind == AutomaticRunKind::Nir1GraphIndexBuild` のときだけ `resume_after_graph_index_change()` を呼び、それ以外の run kind では何もしない。呼ぶ順は attempt の記録（`mark_work_succeeded`）より前（記録の失敗〔`?`〕で hook を飛ばさない。publish は既に commit 済み） | process 内の呼出しだけ。renderer・env・IPC から hook は呼べない（`pub(crate)`）。hook は slot の phase を Empty に戻し失敗の ledger を 0 にするだけで、worker を起動せず、thread を作らず、DB・Core・子 process に触れない。復帰の後も backoff（`rebuild_min_interval`）と 5 回の上限は同じ（`last_failure_at` は消さない）。公開 gate・送信先・保存・契約・閾値は変えない | (a) B の publish の中（grimodex-db）から owner を呼ぶ：db crate が node の owner に依存する逆向きの辺になる。(b) `ReadyPublished` の edge だけで解く（DSN）：B の build 待ちで 5 回失敗した後、build が終わっても workspace を開き直すまで Graph が戻らない（CP2a-D8 の理由）。(c) 周期の polling で Suspended を解く：新しい背景の仕事になり、lifecycle の lane が増える。(d) `CompletedWithoutFinalization` の validation 成功でも解く：index が変わっていないので意味が無い | 採用 |
+| CP2a-D48 | hook が slot の lock の中で `graph_index_change`（単調な u64）を進める。prepare を始める session（`build_worker`）はその値を guard に控え、prepare の失敗で Suspended に入ろうとする `SessionGuard::drop` が、slot の lock の中で値を比べる。違えば（prepare の間に B の publish があった）Suspended にせず Empty にして、失敗の ledger を 0 に戻す | hook と drop の判定が同じ slot の lock の下で線形化される：hook が先なら drop が値の差を見て Empty、drop が先なら phase は Suspended でその後の hook が解く。取りこぼし（publish が prepare の最中に起き、その prepare の失敗の 5 回目で Suspended になり、次の publish まで戻らない）が無い。新しい lock の辺は無い（atomic と既存の slot の lock だけ。lock の順序 Core → slot → cache は変えない） | (a) 値を比べず hook を Suspended の間だけ効かせる：上記の取りこぼしが残る。(b) hook が Preparing の session を cancel する：進行中の worker の寿命に介入し、termination の証拠の経路を増やす。prepare の失敗はもう確定しているので無駄 | 採用 |
+
+### finite owner／lifecycle matrix（GDX-PRECHECK-001。hook の経路）
+
+| 観点 | hook の呼出し時の slot の phase と結果 |
+|---|---|
+| entry | 呼出し元は `work_completed` closure の 1 箇所（静的試験で件数を固定）。Graph build の item のみ |
+| 受付の閉鎖 | `PRODUCT_GRAPH_PUBLISHED` が false の間は demand が届かない。hook は phase を Empty にするだけで、worker／thread を作らない |
+| Empty／Closed／Quarantined | 何もしない（Closed と Quarantined は復帰しない。process 寿命の fence を hook が外さない） |
+| Deferred／Preparing | phase は変えない。`graph_index_change` だけ進む。その prepare が 5 回目の失敗で終われば、drop が Empty にする（D48） |
+| Ready／InUse／Retiring | phase は変えない。次 query の stamp の比較（S0／S1）が古さを判定する既存の経路のまま |
+| Suspended | Empty に戻し、ledger を 0 に。次の demand が backoff の後に新しい session を作る（既存の経路） |
+| 保持している handle | hook は session・worker・ticket・cache のどれも持たず、触れない。取消・待ち・termination の証拠は不要（起動も終了も hook の責任ではない） |
+| bounded wait | 待たない。slot の lock は O(1) の区間だけで、その中で Core・DB・join・sleep・blocking な channel 操作をしない |
+| error／timeout／onClosed | hook は失敗しない（lock の poison は `lock()` が既存の方針で処理）。`work_completed` の attempt の記録の失敗とは独立 |
+| 永続状態 | 無い。process-local。再起動後の slot は Empty |
+
+### 試験と変異（実装後に §結果へ足す）
+
+試験: (1) 実際の失敗 5 回で Suspended にした slot に hook を送ると、Empty に戻り、次の demand が新しい worker を作り READY になる。(2) Graph build 以外の run kind の `note_maintenance_work_completed` は Suspended のまま。(3) prepare の最中に hook が来て、その prepare が失敗を 5 回目に数えても Suspended にならず Empty。(4) lib.rs の呼出しは 1 箇所だけ（静的）。変異: D48 の比較を外すと (3) が赤、run kind の条件を外すと (2) が赤、呼出しを消すと (4) が赤。
+
+### 結果（実装後。2026-11-08）
+
+- 実装: `Nir1GraphProductOwner::note_maintenance_work_completed`（`resume_after_graph_index_change` を run kind が `Nir1GraphIndexBuild` のときだけ呼ぶ）、`Shared::graph_index_change`、`SessionGuard::index_change_at_prepare`（prepare の直前に控え、`drop` が slot の lock の中で Suspended を Empty に直す）、`lib.rs` の `work_completed` closure から 1 箇所の呼出し。`allow(dead_code)` の comment から「Suspended resume hook」を外した。
+- 試験: 新規 4 本（`suspended_owner_resumes_when_the_graph_index_build_completes`、`resume_hook_leaves_every_other_phase_alone`、`a_publish_during_the_failing_prepare_does_not_suspend_the_slot`〔対照の「publish なし」で Suspended になることも同じ試験の中で確かめる〕、`the_maintenance_cycle_calls_the_resume_hook_once`）。electron/native の `nir1_graph` の試験 160 passed、5 ignored（既存）。変異 3 種（D48 の比較を外す、run kind の条件を外す、`lib.rs` の呼出しを消す）で対応する 4 本中 3 本が赤になった。
+- 申し送り: PUB-G の前は Graph build の gate が閉じているので、この配線は製品で到達しない。到達の確認（journey seam で B が publish した後に Suspended が解ける）は PUB-G の前の journey で見る。
