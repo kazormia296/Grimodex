@@ -299,8 +299,9 @@ where
 pub(crate) fn prepare_wal_for_open(
     database: &Database,
 ) -> anyhow::Result<OpenWalPreparationOutcome> {
-    let background_pages = database.background_checkpoint_threshold();
     database.with_conn(|conn| {
+        // 背景が上限を守っていると言えるのは、wal hook が実際に背景のものである間だけ。
+        let background_pages = database.background_checkpoint_bound(conn);
         let mut checkpoint = sqlite_wal_checkpoint;
         let mut set_busy_timeout = sqlite_set_busy_timeout;
         prepare_wal_for_open_on_connection_with(

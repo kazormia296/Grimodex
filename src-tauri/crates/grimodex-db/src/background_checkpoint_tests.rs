@@ -2,7 +2,7 @@
 
 use super::background_checkpoint::{
     BackgroundCheckpointMode, BackgroundCheckpointProbe, BackgroundCheckpointStart, StopOutcome,
-    WAL_CHECKPOINT_PAGES,
+    MAX_WAL_PAGES_BEFORE_SYNC, WAL_CHECKPOINT_PAGES,
 };
 use super::narrative_extraction::nir1_chronicle_index::read_identity::ReadIdentity;
 use super::open_wal::{sqlite_wal_checkpoint, OpenWalCheckpointMode, OpenWalPreparationOutcome};
@@ -495,6 +495,172 @@ fn open_wal_preparation_uses_the_background_threshold_as_its_cycle() {
     db.stop_background_checkpoint();
     let error = super::open_wal::prepare_wal_for_open(&db)
         .expect_err("no bound at all must still fail the open invariant");
+    assert!(error
+        .to_string()
+        .contains("OPEN_WAL_AUTOCHECKPOINT_MUST_BE_POSITIVE"));
+}
+
+/// 実行中の大きい checkpoint の最中に止める。実行中であることを観測してから止め、
+/// 上限の中で終了の証拠が取れ、file は壊れない。
+#[test]
+fn stopping_while_a_large_checkpoint_is_running_joins_within_the_bound() {
+    let fixture = Fixture::new("stop-running");
+    let mut observed_running = 0;
+    for round in 0..3 {
+        let db = fixture.open();
+        let probe = started(&db);
+        // 大きい WAL（約 80 MB）。背景の PASSIVE が数百 ms かかる。
+        append_pages(&db, 20_000);
+        if probe.wait_running(Duration::from_secs(5)) {
+            observed_running += 1;
+        }
+        let begin = std::time::Instant::now();
+        assert_eq!(db.stop_background_checkpoint(), StopOutcome::Joined);
+        assert!(begin.elapsed() < super::background_checkpoint::STOP_WAIT);
+        assert!(probe.thread_exited());
+        // 中断された checkpoint の後でも本体は書け、file は壊れていない。
+        append_pages(&db, 10 + round);
+        let integrity: String = db
+            .with_conn(|conn| Ok(conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?))
+            .expect("integrity");
+        assert_eq!(integrity, "ok");
+    }
+    assert!(
+        observed_running >= 1,
+        "the stop must have been issued while a checkpoint was running at least once"
+    );
+}
+
+/// 注入：run が止まらない。TimedOut を返し、スレッドは残り、次の stop が同じスレッドを待てる。
+#[test]
+fn a_stop_that_times_out_keeps_the_thread_and_a_later_stop_waits_for_it_again() {
+    let fixture = Fixture::new("timed-out");
+    let db = fixture.open();
+    let probe = started(&db);
+    probe.set_stall(true);
+    probe.set_stop_wait(Duration::from_millis(150));
+    probe.request_run();
+    assert!(probe.wait_running(WAIT));
+
+    assert_eq!(db.stop_background_checkpoint(), StopOutcome::TimedOut);
+    assert!(!probe.thread_exited(), "no termination evidence yet");
+    // もう一度止めても AlreadyStopped にならない（終了の証拠が無いので）。
+    assert_eq!(db.stop_background_checkpoint(), StopOutcome::TimedOut);
+
+    probe.set_stall(false);
+    probe.set_stop_wait(Duration::from_secs(10));
+    assert_eq!(db.stop_background_checkpoint(), StopOutcome::Joined);
+    assert!(probe.thread_exited());
+    assert_eq!(db.stop_background_checkpoint(), StopOutcome::AlreadyStopped);
+    assert_eq!(
+        db.background_checkpoint_stats().expect("stats").failures,
+        0,
+        "a stopped run is not a failure"
+    );
+}
+
+/// recovery の retire は、背景が止まらないなら何も変えずに失敗する（fail-closed）。
+#[test]
+fn retire_fails_closed_while_the_background_checkpoint_does_not_stop() {
+    let fixture = Fixture::new("retire-timeout");
+    let db = fixture.open();
+    let probe = started(&db);
+    probe.set_stall(true);
+    probe.set_stop_wait(Duration::from_millis(150));
+    probe.request_run();
+    assert!(probe.wait_running(WAIT));
+
+    let error = db
+        .retire_connection_for_recovery()
+        .expect_err("retire must fail while the checkpoint thread is alive");
+    assert!(error
+        .to_string()
+        .contains("RETIREMENT_BACKGROUND_CHECKPOINT_STOP_TIMEOUT"));
+    assert!(db.connection_reusable(), "nothing was retired");
+    assert!(!db.retirement_close_pending());
+    append_pages(&db, 10);
+
+    probe.set_stall(false);
+    probe.set_stop_wait(Duration::from_secs(10));
+    db.retire_connection_for_recovery()
+        .expect("retire succeeds once the thread has ended");
+    assert!(probe.thread_exited());
+}
+
+/// 背景が追いつかない（止まっている）間も、書き手が連続しても WAL は上限で止まる。
+#[test]
+fn a_stalled_background_checkpoint_cannot_let_the_wal_grow_without_bound() {
+    let fixture = Fixture::new("stalled-burst");
+    let db = fixture.open();
+    let probe = started(&db);
+    probe.set_stall(true);
+    let mut max_frames = 0;
+    for _ in 0..100 {
+        append_pages(&db, 150);
+        max_frames = max_frames.max(wal_state(&db).log_frames);
+    }
+    probe.set_stall(false);
+    // 150 page × 100 回 ＝ 15000 page。同期の checkpoint が上限（4000）で畳む。
+    assert!(
+        max_frames <= MAX_WAL_PAGES_BEFORE_SYNC + 2 * 150,
+        "WAL must stop at the hard limit, saw {max_frames} frames"
+    );
+    assert!(
+        max_frames >= WAL_CHECKPOINT_PAGES,
+        "the burst did exceed the soft threshold"
+    );
+    assert_eq!(MAX_WAL_PAGES_BEFORE_SYNC, 4 * WAL_CHECKPOINT_PAGES);
+}
+
+/// wait_idle を挟まない連続の書き手（実際の背景が動く）。
+#[test]
+fn a_continuous_writer_keeps_the_wal_under_the_hard_limit() {
+    let fixture = Fixture::new("continuous");
+    let db = fixture.open();
+    let _probe = started(&db);
+    let mut max_frames = 0;
+    for _ in 0..300 {
+        append_pages(&db, 150);
+        max_frames = max_frames.max(wal_state(&db).log_frames);
+    }
+    let stats = db.background_checkpoint_stats().expect("stats");
+    assert!(
+        max_frames <= MAX_WAL_PAGES_BEFORE_SYNC + 2 * 150,
+        "WAL must stay under the hard limit, saw {max_frames} frames; stats {stats:?}"
+    );
+}
+
+/// open の WAL 準備は、wal hook が背景のものであると確かめられたときだけ背景の閾値を単位にする。
+#[test]
+fn open_wal_preparation_checks_that_the_hook_still_belongs_to_the_background() {
+    let fixture = Fixture::new("hook-check");
+    let db = fixture.open();
+    let _probe = started(&db);
+    assert_eq!(
+        db.with_conn(|conn| Ok(db.background_checkpoint_bound(conn)))
+            .expect("bound"),
+        Some(WAL_CHECKPOINT_PAGES)
+    );
+
+    // hook が外される（pragma 0 は hook を消す）と、背景の上限は効いていない。
+    db.with_conn(|conn| {
+        conn.pragma_update(None, "wal_autocheckpoint", 0)?;
+        Ok(())
+    })
+    .expect("clear hook");
+    assert_eq!(
+        db.with_conn(|conn| Ok(db.background_checkpoint_bound(conn)))
+            .expect("bound after replace"),
+        None
+    );
+    // 入れ直しの後は pragma が 0 で背景も確かめられないので、今までどおり拒否する。
+    db.with_conn(|conn| {
+        conn.pragma_update(None, "wal_autocheckpoint", 0)?;
+        Ok(())
+    })
+    .expect("clear hook again");
+    let error = super::open_wal::prepare_wal_for_open(&db)
+        .expect_err("a replaced hook must not be accepted as a bound");
     assert!(error
         .to_string()
         .contains("OPEN_WAL_AUTOCHECKPOINT_MUST_BE_POSITIVE"));
