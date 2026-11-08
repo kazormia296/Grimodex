@@ -1,9 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { NapiBackendLike } from "../shared/ipcContract.js";
 import {
   PRODUCT_JOURNEY_AI_ENV,
   PRODUCT_JOURNEY_AI_VERSION,
+  PRODUCT_JOURNEY_CODEX_SWITCH_GATE,
+  PRODUCT_JOURNEY_STREAM_GATE_DIR_ENV,
   PRODUCT_JOURNEY_AGENT_PROJECT_SWITCH_OUTPUT,
   PRODUCT_JOURNEY_AGENT_WORKSPACE_SWITCH_OUTPUT,
   PRODUCT_JOURNEY_AUTHORITY_EARLY,
@@ -295,5 +301,69 @@ describe("product journey AI backend", () => {
         },
       },
     ]);
+  });
+  describe("codex switch stream gate", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    async function gatedStream() {
+      const gateDir = await mkdtemp(path.join(os.tmpdir(), "stream-gate-"));
+      vi.stubEnv(PRODUCT_JOURNEY_STREAM_GATE_DIR_ENV, gateDir);
+      const { backend } = backendStub();
+      const wrapped = wrapBackendForProductJourneyAi(backend, true)!;
+      const received: string[] = [];
+      wrapped.onEvent((channel) => {
+        received.push(String(channel));
+      });
+      let settled = false;
+      const stream = wrapped
+        .sendChatMessageStream(
+          {
+            messages: [{ role: "user", content: "CODEX-CHAT-SWITCH-1" }],
+            streamId: "gated-1",
+            auditContext: { executionId: "gated-1" },
+          },
+          {},
+          "",
+        )
+        .then(() => {
+          settled = true;
+        });
+      return { gateDir, wrapped, received, stream, isSettled: () => settled };
+    }
+
+    it("keeps the stream pending past the boundary delay until the gate file appears", async () => {
+      const { gateDir, received, stream, isSettled } = await gatedStream();
+      try {
+        // 4 秒の既定 delay を十分に越えても完了しない。
+        await new Promise((resolve) => setTimeout(resolve, 4_500));
+        expect(isSettled()).toBe(false);
+        expect(received).toEqual(["chat:stream-chunk"]);
+        await writeFile(
+          path.join(gateDir, PRODUCT_JOURNEY_CODEX_SWITCH_GATE),
+          "release\n",
+        );
+        await stream;
+        expect(received).toEqual([
+          "chat:stream-chunk",
+          "chat:stream-chunk",
+          "chat:stream-done",
+        ]);
+      } finally {
+        await rm(gateDir, { recursive: true, force: true });
+      }
+    }, 15_000);
+
+    it("ends a gated stream immediately when it is aborted", async () => {
+      const { gateDir, wrapped, stream } = await gatedStream();
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        await expect(wrapped.abortChatStream("gated-1")).resolves.toBe(true);
+        await stream;
+      } finally {
+        await rm(gateDir, { recursive: true, force: true });
+      }
+    });
   });
 });
