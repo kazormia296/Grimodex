@@ -4603,6 +4603,16 @@ impl Database {
             // connection, or any other post-rekey failure must roll back the
             // edge/history/derived-state changes, marker, and schema version
             // together so the next open can retry the complete migration.
+            // SCHEMA 45 / DR-JF-9 M1: a data-only step, after every table and
+            // data migration above, in the same savepoint as the stamp. Only a
+            // workspace that has not reached 45 yet: a full pass over a 45
+            // workspace (the restore preflight and the supervisor's
+            // invariant-repair path both install the migrated copy as live)
+            // must leave the dead-letters a 45 build created, which are the
+            // visible ones (no Feed evidence, deterministic mismatch).
+            if current < 45 {
+                Self::release_contended_freshness_exhaustions_v45(&conn)?;
+            }
             anyhow::ensure!(
                 grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(&conn)?,
                 "workspace schema did not satisfy current schema invariants after migration"
@@ -8484,6 +8494,108 @@ impl Database {
         Ok(())
     }
 
+    /// SCHEMA 45 / DR-JF-9 M1: give back the cursor reservation of a
+    /// Freshness Run that a publication guard race dead-lettered before the
+    /// DR-JF-9 fix, so the next tick evaluates the same range again under a new
+    /// Run instead of waiting for a new Semantic Epoch.
+    ///
+    /// Only a contention-caused exhaustion qualifies. Every condition below must
+    /// hold; anything else (a deterministic evaluation mismatch, an interrupted
+    /// worker, a guard error wrapped by a cleanup failure) stays a dead-letter:
+    /// - the cursor is the Freshness consumer's and reserves a Run, lease-free,
+    ///   under the project's current Semantic Epoch (an older Epoch is already
+    ///   released and replayed by the reservation path itself);
+    /// - that Run is a `freshness-evaluation` Run of the same Epoch, failed with
+    ///   `NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED`;
+    /// - the last Attempt of its failed Task is a terminal
+    ///   `NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED` failure whose stored
+    ///   `error_message` begins with one of the four publication guard messages
+    ///   (the cycle stores `{error:#}` of an unwrapped guard error, so a wrapped
+    ///   one does not begin with it). The match is `substr(..) = prefix`, never
+    ///   `LIKE`: the prefixes contain `_`, which `LIKE` treats as a wildcard.
+    ///
+    /// The only rows written are the cursor's reservation columns (the same
+    /// release `release_cursor_reservation_in_tx` performs: Epoch, reserved
+    /// sequence, active Run and lease cleared, `acknowledged_through_sequence`
+    /// untouched, so no range is skipped). The Run, Task and Attempt rows stay
+    /// as the terminal records they are. The write is idempotent: a released
+    /// cursor no longer reserves a Run, so a second pass matches nothing.
+    ///
+    /// Callers own the transaction (the full migration's savepoint or the
+    /// previous-marker finalize's `BEGIN IMMEDIATE`) so the release and the
+    /// `user_version` stamp commit or roll back together.
+    pub(crate) fn release_contended_freshness_exhaustions_v45(
+        conn: &Connection,
+    ) -> anyhow::Result<usize> {
+        let prefixes = crate::narrative_extraction::PUBLISH_GUARD_MESSAGE_PREFIXES;
+        let released = conn.execute(
+            "UPDATE narrative_change_cursors
+                SET semantic_epoch_id = NULL,
+                    reserved_through_sequence = NULL,
+                    active_run_id = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = ?7
+              WHERE consumer_id = ?1
+                AND active_run_id IS NOT NULL
+                AND reserved_through_sequence IS NOT NULL
+                AND semantic_epoch_id IS NOT NULL
+                AND lease_owner IS NULL
+                AND semantic_epoch_id = (
+                      SELECT epoch.id FROM narrative_semantic_epochs epoch
+                       WHERE epoch.project_id = narrative_change_cursors.project_id
+                       ORDER BY epoch.epoch_number DESC LIMIT 1
+                    )
+                AND EXISTS (
+                      SELECT 1
+                        FROM narrative_extraction_runs run
+                        JOIN narrative_extraction_tasks task ON task.run_id = run.id
+                        JOIN narrative_extraction_attempts attempt ON attempt.task_id = task.id
+                       WHERE run.id = narrative_change_cursors.active_run_id
+                         AND run.project_id = narrative_change_cursors.project_id
+                         AND run.run_kind = 'freshness-evaluation'
+                         AND run.consumer_id = narrative_change_cursors.consumer_id
+                         AND run.semantic_epoch_id = narrative_change_cursors.semantic_epoch_id
+                         AND run.status = 'failed'
+                         AND run.terminal_reason_code = ?6
+                         AND task.status = 'failed'
+                         AND attempt.attempt_number = (
+                               SELECT MAX(last.attempt_number)
+                                 FROM narrative_extraction_attempts last
+                                WHERE last.task_id = task.id
+                             )
+                         AND attempt.status = 'failed'
+                         AND attempt.retry_disposition = 'terminal'
+                         AND attempt.failure_code = ?6
+                         AND (
+                              substr(attempt.error_message, 1, length(?2)) = ?2
+                           OR substr(attempt.error_message, 1, length(?3)) = ?3
+                           OR substr(attempt.error_message, 1, length(?4)) = ?4
+                           OR substr(attempt.error_message, 1, length(?5)) = ?5
+                         )
+                    )",
+            params![
+                crate::narrative_extraction::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID,
+                prefixes[0],
+                prefixes[1],
+                prefixes[2],
+                prefixes[3],
+                "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED",
+                chrono::Utc::now()
+                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                    .to_string(),
+            ],
+        )?;
+        if released > 0 {
+            tracing::info!(
+                target: "narrative.migrate",
+                released,
+                "released contention-caused Freshness dead-letter reservations (DR-JF-9 M1)"
+            );
+        }
+        Ok(released)
+    }
+
     /// Recover runs left active by a terminated process without turning every
     /// healthy workspace open into a SQLite write. The read probe is also what
     /// lets a current-schema open proceed while another connection owns a
@@ -8539,6 +8651,9 @@ impl Database {
                         return Ok(ConvergedPreviousFinalize::NeedsFullMigration);
                     }
                     Self::recover_interrupted_post_effect_runs(conn)?;
+                    // SCHEMA 45 has no DDL: the marker-only step carries the
+                    // data repair, inside the same write reservation as the stamp.
+                    Self::release_contended_freshness_exhaustions_v45(conn)?;
                     conn.pragma_update(None, "user_version", schema_version)?;
                     grimodex_core::commit_or_rollback(conn)?;
                     Ok(ConvergedPreviousFinalize::Finalized)

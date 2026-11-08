@@ -76,6 +76,26 @@ pub(crate) const MAX_ATTEMPTS_PER_BATCH: i64 = 3;
 /// is not a dead-letter: the cursor reservation is returned unacknowledged and
 /// the next cycle evaluates the range again under a new Run.
 const PUBLISH_CONTENDED: &str = "NEX_INCREMENTAL_FRESHNESS_PUBLISH_CONTENDED";
+/// Message prefixes of the four publication guards below. They are the only
+/// messages a guard race stores in `narrative_extraction_attempts.error_message`
+/// (the cycle stores `{error:#}` of an unwrapped guard error), so the
+/// Freshness contention release migration (DR-JF-9 M1) recognizes a
+/// contention-caused retry exhaustion by them. Keep the guards below built from
+/// these constants; a changed prefix would silently stop the migration from
+/// matching.
+pub(crate) const GUARD_EDGE_CHANGED_PREFIX: &str = "NEX_INCREMENTAL_FRESHNESS_EDGE_CHANGED: ";
+pub(crate) const GUARD_SOURCE_CHANGED_PREFIX: &str = "NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED: ";
+pub(crate) const GUARD_TYPED_SOURCE_CHANGED_PREFIX: &str =
+    "NEX_INCREMENTAL_FRESHNESS_TYPED_SOURCE_CHANGED: ";
+pub(crate) const GUARD_PRODUCER_EPOCH_CHANGED_MESSAGE: &str =
+    "NEX_SEMANTIC_EPOCH_CHANGED: Edge producer Epoch changed before publication";
+/// The four guard messages' stored prefixes, in the order above.
+pub(crate) const PUBLISH_GUARD_MESSAGE_PREFIXES: [&str; 4] = [
+    GUARD_EDGE_CHANGED_PREFIX,
+    GUARD_SOURCE_CHANGED_PREFIX,
+    GUARD_TYPED_SOURCE_CHANGED_PREFIX,
+    GUARD_PRODUCER_EPOCH_CHANGED_MESSAGE,
+];
 const LEASE_HEARTBEAT_EDGE_INTERVAL: usize = 64;
 pub const NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME: &str = "NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME";
 
@@ -3302,7 +3322,7 @@ fn publish_batch_in_tx_with_control(
         let current_edge = load_edge_by_id(conn, &edge.project_id, &edge.id)?;
         if current_edge.as_ref() != Some(edge) {
             return Err(publish_guard_conflict(format!(
-                "NEX_INCREMENTAL_FRESHNESS_EDGE_CHANGED: '{}' changed after evaluation",
+                "{GUARD_EDGE_CHANGED_PREFIX}'{}' changed after evaluation",
                 edge.id
             )));
         }
@@ -3326,7 +3346,7 @@ fn publish_batch_in_tx_with_control(
         };
         if current != guard.state {
             return Err(publish_guard_conflict(format!(
-                "NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED: '{}' changed after evaluation",
+                "{GUARD_SOURCE_CHANGED_PREFIX}'{}' changed after evaluation",
                 guard.edge.source_object_identity
             )));
         }
@@ -3343,7 +3363,7 @@ fn publish_batch_in_tx_with_control(
         )?;
         if current != guard.revision_token {
             return Err(publish_guard_conflict(format!(
-                "NEX_INCREMENTAL_FRESHNESS_TYPED_SOURCE_CHANGED: '{}' changed after evaluation",
+                "{GUARD_TYPED_SOURCE_CHANGED_PREFIX}'{}' changed after evaluation",
                 guard.source_object_identity
             )));
         }
@@ -3353,8 +3373,7 @@ fn publish_batch_in_tx_with_control(
         let current = edge_producer_epoch_matches(conn, &guard.edge, &batch.semantic_epoch_id)?;
         if current != guard.matched {
             return Err(publish_guard_conflict(
-                "NEX_SEMANTIC_EPOCH_CHANGED: Edge producer Epoch changed before publication"
-                    .to_owned(),
+                GUARD_PRODUCER_EPOCH_CHANGED_MESSAGE.to_owned(),
             ));
         }
     }
@@ -8171,5 +8190,591 @@ mod tests {
         run_incremental_freshness_cycle_with_lifecycle_control(&db, None, &mut allowed)
             .expect("valid lifecycle context should allow a bounded cycle");
         assert!(allowed.checks >= 2, "cycle did not use lifecycle checkpoints");
+    }
+
+    /// DR-JF-9 M1 (SCHEMA 45): the migration gives back the reservation of a
+    /// Run that a publication guard race dead-lettered before the DR-JF-9 fix,
+    /// and nothing else.
+    mod contention_release {
+        use super::*;
+
+        const EXHAUSTED: &str = "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED";
+
+        /// A project left in the state a build before DR-JF-9 produced: the
+        /// last Attempt lost a publication guard race, so the Run is failed with
+        /// `RETRY_EXHAUSTED` and the cursor keeps its reservation, lease-free.
+        /// (A guard race without a Feed advance still takes this path today.)
+        fn dead_lettered_by_contention() -> Database {
+            let db = fixture_db();
+            lose_race_as_requeue(&db, MAX_ATTEMPTS_PER_BATCH - 1);
+            let race = arm_scene_publish_race(&db);
+            let error = run_incremental_freshness_cycle(&db).expect_err("raced last attempt");
+            drop(race);
+            assert!(
+                error
+                    .downcast_ref::<IncrementalFreshnessCycleContended>()
+                    .is_none(),
+                "{error:#}"
+            );
+            assert_eq!(
+                latest_attempt(&db),
+                (
+                    "failed".to_owned(),
+                    Some(EXHAUSTED.to_owned()),
+                    Some("terminal".to_owned()),
+                )
+            );
+            assert!(matches!(
+                run_incremental_freshness_cycle(&db).expect("a dead-letter is idle"),
+                IncrementalFreshnessCycleOutcome::Idle
+            ));
+            db
+        }
+
+        fn release(db: &Database) -> usize {
+            db.with_conn(Database::release_contended_freshness_exhaustions_v45)
+                .expect("release contention-caused dead-letters")
+        }
+
+        /// Every Run, Task, Attempt and cursor column the release must not
+        /// disturb, rendered to comparable strings.
+        fn terminal_records(db: &Database) -> Vec<String> {
+            db.with_conn(|conn| {
+                let mut rows = Vec::new();
+                for sql in [
+                    "SELECT id || '|' || status || '|' || COALESCE(terminal_reason_code, '-')
+                       FROM narrative_extraction_runs WHERE consumer_id = ?1 ORDER BY rowid",
+                    "SELECT task.id || '|' || task.status || '|' || task.attempt_count
+                       FROM narrative_extraction_tasks task
+                       JOIN narrative_extraction_runs run ON run.id = task.run_id
+                      WHERE run.consumer_id = ?1 ORDER BY task.rowid",
+                    "SELECT attempt.id || '|' || attempt.attempt_number || '|' || attempt.status
+                            || '|' || COALESCE(attempt.failure_code, '-')
+                            || '|' || COALESCE(attempt.retry_disposition, '-')
+                            || '|' || COALESCE(attempt.error_message, '-')
+                       FROM narrative_extraction_attempts attempt
+                       JOIN narrative_extraction_tasks task ON task.id = attempt.task_id
+                       JOIN narrative_extraction_runs run ON run.id = task.run_id
+                      WHERE run.consumer_id = ?1 ORDER BY attempt.rowid",
+                ] {
+                    let mut statement = conn.prepare(sql)?;
+                    let part = statement
+                        .query_map([CURSOR_CONSUMER_ID], |row| row.get::<_, String>(0))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    rows.extend(part);
+                }
+                Ok(rows)
+            })
+            .expect("terminal records")
+        }
+
+        /// (active run, reserved through, reservation Epoch, acknowledged,
+        /// last error).
+        #[allow(clippy::type_complexity)]
+        fn reservation(
+            db: &Database,
+        ) -> (Option<String>, Option<i64>, Option<String>, i64, Option<String>) {
+            db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT active_run_id, reserved_through_sequence, semantic_epoch_id,
+                            acknowledged_through_sequence, last_error
+                       FROM narrative_change_cursors
+                      WHERE project_id = ?1 AND consumer_id = ?2",
+                    params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                    |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                    },
+                )?)
+            })
+            .expect("Freshness cursor reservation")
+        }
+
+        fn set_last_attempt_message(db: &Database, message: Option<&str>) {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_attempts SET error_message = ?1
+                      WHERE rowid = (SELECT MAX(rowid) FROM narrative_extraction_attempts)",
+                    params![message],
+                )?;
+                Ok(())
+            })
+            .expect("rewrite the last Attempt message");
+        }
+
+        fn assert_still_dead_lettered(db: &Database, context: &str) {
+            let before = terminal_records(db);
+            let reserved = reservation(db);
+            assert_eq!(release(db), 0, "{context}");
+            assert_eq!(terminal_records(db), before, "{context}");
+            assert_eq!(reservation(db), reserved, "{context}");
+            assert!(reserved.0.is_some() && reserved.1.is_some(), "{context}");
+        }
+
+        #[test]
+        fn a_contention_dead_letter_is_released_and_the_next_cycle_catches_up() {
+            let db = dead_lettered_by_contention();
+            let before = terminal_records(&db);
+            let (run_id, reserved, epoch, acknowledged, last_error) = reservation(&db);
+            let run_id = run_id.expect("the dead-letter keeps its reservation");
+            assert_eq!(reserved, Some(1));
+            assert_eq!(epoch.as_deref(), Some(EPOCH_ID));
+            assert_eq!(acknowledged, 0);
+
+            assert_eq!(release(&db), 1);
+
+            let after = reservation(&db);
+            assert_eq!(
+                after,
+                (None, None, None, 0, last_error),
+                "only the reservation goes back; nothing is acknowledged or skipped"
+            );
+            assert_eq!(
+                terminal_records(&db),
+                before,
+                "the Run, Task and Attempt records stay terminal"
+            );
+            assert_eq!(release(&db), 0, "a second pass matches nothing");
+            assert_eq!(reservation(&db), after);
+
+            let outcome = run_incremental_freshness_cycle(&db).expect("catches up");
+            let IncrementalFreshnessCycleOutcome::Processed(summary) = outcome else {
+                panic!("the released range must be evaluated again: {outcome:?}");
+            };
+            assert_ne!(summary.run_id, run_id, "a new Run owns the range");
+            assert_eq!(summary.from_sequence_exclusive, 0);
+            assert_eq!(summary.through_sequence_inclusive, 1);
+            assert_eq!(freshness_cursor(&db), (1, None));
+            let runs = freshness_runs(&db);
+            assert_eq!(runs.len(), 2, "{runs:?}");
+            assert_eq!(
+                runs[0],
+                ("failed".to_owned(), Some(EXHAUSTED.to_owned())),
+                "the old Run is not rewritten"
+            );
+            assert_eq!(runs[1].0, "completed");
+        }
+
+        #[test]
+        fn every_guard_message_prefix_qualifies() {
+            for prefix in PUBLISH_GUARD_MESSAGE_PREFIXES {
+                let db = dead_lettered_by_contention();
+                set_last_attempt_message(
+                    &db,
+                    Some(&format!("{prefix}'x' changed after evaluation")),
+                );
+                assert_eq!(release(&db), 1, "{prefix}");
+                assert_eq!(reservation(&db).0, None, "{prefix}");
+            }
+            // The constants are the guards' own prefixes (the guards format them).
+            let guard_messages = [
+                format!("{GUARD_EDGE_CHANGED_PREFIX}'e' changed after evaluation"),
+                format!("{GUARD_SOURCE_CHANGED_PREFIX}'s' changed after evaluation"),
+                format!("{GUARD_TYPED_SOURCE_CHANGED_PREFIX}'t' changed after evaluation"),
+                GUARD_PRODUCER_EPOCH_CHANGED_MESSAGE.to_owned(),
+            ];
+            for (message, prefix) in guard_messages.iter().zip(PUBLISH_GUARD_MESSAGE_PREFIXES) {
+                assert!(message.starts_with(prefix), "{message}");
+            }
+        }
+
+        /// Exhaust the retry budget with a race that a real guard catches on
+        /// every Attempt (no Feed advance, so it dead-letters), then check that
+        /// what the cycle itself stored is what the migration releases.
+        fn exhaust_with_real_guard(
+            code: &str,
+            race: impl Fn(&Database, usize) -> publish_race_for_test::ArmedPublishRace,
+        ) {
+            let db = fixture_db();
+            for attempt in 1..=MAX_ATTEMPTS_PER_BATCH as usize {
+                let armed = race(&db, attempt);
+                let error = run_incremental_freshness_cycle(&db).expect_err("raced attempt");
+                drop(armed);
+                assert!(format!("{error:#}").contains(code), "{code}: {error:#}");
+            }
+            assert_eq!(
+                latest_attempt(&db),
+                (
+                    "failed".to_owned(),
+                    Some(EXHAUSTED.to_owned()),
+                    Some("terminal".to_owned()),
+                ),
+                "{code}"
+            );
+            let stored: String = db
+                .with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT error_message FROM narrative_extraction_attempts
+                          WHERE rowid = (SELECT MAX(rowid) FROM narrative_extraction_attempts)",
+                        [],
+                        |row| row.get(0),
+                    )?)
+                })
+                .expect("stored message");
+            assert!(
+                PUBLISH_GUARD_MESSAGE_PREFIXES
+                    .iter()
+                    .any(|prefix| stored.starts_with(prefix)),
+                "{code}: the stored message {stored:?} begins with a guard prefix"
+            );
+            assert_eq!(release(&db), 1, "{code}: a real guard exhaustion is released");
+            assert_eq!(reservation(&db).0, None);
+        }
+
+        #[test]
+        fn what_the_source_guard_stores_is_released() {
+            exhaust_with_real_guard("NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED", |db, _| {
+                arm_scene_publish_race(db)
+            });
+        }
+
+        #[test]
+        fn what_the_edge_guard_stores_is_released() {
+            exhaust_with_real_guard("NEX_INCREMENTAL_FRESHNESS_EDGE_CHANGED", |db, attempt| {
+                publish_race_for_test::arm(db, move |db| {
+                    db.with_conn(|conn| {
+                        let replacement = format!("consumer-run-c2-1-phase-cas-raced-{attempt}");
+                        seed_completed_consumer_run(conn, &replacement)?;
+                        conn.execute(
+                            "UPDATE narrative_dependency_edges
+                                SET read_set_json = ?1, owning_run_id = ?2
+                              WHERE id = ?3 AND project_id = ?4",
+                            params![
+                                format!(r#"["v{}@2026-08-19T00:00:03.000Z"]"#, 90 + attempt),
+                                replacement,
+                                EDGE_ID,
+                                PROJECT_ID
+                            ],
+                        )?;
+                        Ok(())
+                    })
+                    .expect("redeclare the Edge between evaluation and publication");
+                })
+            });
+        }
+
+        #[test]
+        fn what_the_producer_epoch_guard_stores_is_released() {
+            exhaust_with_real_guard("NEX_SEMANTIC_EPOCH_CHANGED", |db, attempt| {
+                publish_race_for_test::arm(db, move |db| {
+                    // Flip the producer Epoch every Attempt so the evaluation's
+                    // answer and the publication's answer always differ.
+                    let epoch = (attempt % 2 == 0).then_some(EPOCH_ID);
+                    db.with_conn(|conn| {
+                        conn.execute(
+                            "UPDATE narrative_extraction_runs SET semantic_epoch_id = ?1
+                              WHERE id = ?2 AND project_id = ?3",
+                            params![epoch, CONSUMER_RUN_ID, PROJECT_ID],
+                        )?;
+                        Ok(())
+                    })
+                    .expect("move the producer Epoch between evaluation and publication");
+                })
+            });
+        }
+
+        #[test]
+        fn a_non_contention_exhaustion_stays_dead_lettered() {
+            let source = GUARD_SOURCE_CHANGED_PREFIX;
+            let wrapped = format!(
+                "NEX_DB_TRANSACTION_CLEANUP_UNPROVEN: rollback was not proven: \
+                 {source}'x' changed after evaluation"
+            );
+            let underscores_as_dashes = source.replace('_', "-");
+            let first_underscore_wildcard = source.replacen('_', "X", 1);
+            let all_underscores_wildcard = source.replace('_', "X");
+            let lowercase = source.to_ascii_lowercase();
+            let embedded = format!("evaluation failed after {source}'x' changed");
+            let leading_space = format!(" {source}'x' changed after evaluation");
+            for (context, message) in [
+                (
+                    "a deterministic evaluation failure",
+                    Some("NEX_INCREMENTAL_FRESHNESS_EVALUATION_FAILED: nope".to_owned()),
+                ),
+                (
+                    "an interrupted worker's exhaustion",
+                    Some(
+                        "incremental Freshness worker was interrupted and exhausted its retry budget"
+                            .to_owned(),
+                    ),
+                ),
+                ("a guard error wrapped by a cleanup failure", Some(wrapped)),
+                ("`_` matched as a LIKE wildcard (dashes)", Some(underscores_as_dashes)),
+                ("`_` matched as a LIKE wildcard (first)", Some(first_underscore_wildcard)),
+                ("`_` matched as a LIKE wildcard (all)", Some(all_underscores_wildcard)),
+                ("a case-insensitive LIKE match", Some(lowercase)),
+                ("the guard text only inside the message", Some(embedded)),
+                ("a leading space before the guard text", Some(leading_space)),
+                ("an empty message", Some(String::new())),
+                ("no message", None),
+            ] {
+                let db = dead_lettered_by_contention();
+                set_last_attempt_message(&db, message.as_deref());
+                assert_still_dead_lettered(&db, context);
+            }
+        }
+
+        #[test]
+        fn an_earlier_guard_attempt_does_not_qualify_a_different_last_attempt() {
+            // Attempts 1 and 2 are retryable guard races; only the last
+            // Attempt's message decides.
+            let db = dead_lettered_by_contention();
+            set_last_attempt_message(&db, Some("NEX_INCREMENTAL_FRESHNESS_EVALUATION_FAILED: x"));
+            let guard_attempts: i64 = db
+                .with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT COUNT(*) FROM narrative_extraction_attempts
+                          WHERE error_message LIKE 'NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED%'",
+                        [],
+                        |row| row.get(0),
+                    )?)
+                })
+                .expect("count guard attempts");
+            assert_eq!(guard_attempts, MAX_ATTEMPTS_PER_BATCH - 1);
+            assert_still_dead_lettered(&db, "earlier guard attempts only");
+        }
+
+        #[test]
+        fn a_reservation_under_another_epoch_is_left_to_the_epoch_path() {
+            let db = dead_lettered_by_contention();
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO narrative_semantic_epochs
+                        (id, project_id, epoch_number, reason, created_at)
+                     VALUES ('epoch-m1-next', ?1, 1, 'manual-rebuild', ?2)",
+                    params![PROJECT_ID, OCCURRED_AT],
+                )?;
+                Ok(())
+            })
+            .expect("rotate the Semantic Epoch");
+            assert_still_dead_lettered(&db, "the reservation belongs to a previous Epoch");
+        }
+
+        #[test]
+        fn only_a_lease_free_failed_exhausted_run_with_a_terminal_last_attempt_qualifies() {
+            // A lease still held.
+            let db = dead_lettered_by_contention();
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_change_cursors
+                        SET lease_owner = 'worker', lease_expires_at = '2999-01-01T00:00:00.000Z'
+                      WHERE consumer_id = ?1",
+                    [CURSOR_CONSUMER_ID],
+                )?;
+                Ok(())
+            })
+            .expect("hold a lease");
+            assert_still_dead_lettered(&db, "a held lease");
+
+            // The last Attempt is not terminal.
+            let db = dead_lettered_by_contention();
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_attempts
+                        SET retry_disposition = 'retryable',
+                            next_attempt_at = '2026-08-19T00:00:00.000Z'
+                      WHERE rowid = (SELECT MAX(rowid) FROM narrative_extraction_attempts)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("make the last Attempt retryable");
+            assert_still_dead_lettered(&db, "a retryable last Attempt");
+
+            // The last Attempt carries another failure code.
+            let db = dead_lettered_by_contention();
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_attempts
+                        SET failure_code = 'NEX_INCREMENTAL_FRESHNESS_INTERRUPTED'
+                      WHERE rowid = (SELECT MAX(rowid) FROM narrative_extraction_attempts)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("recode the last Attempt");
+            assert_still_dead_lettered(&db, "another failure code");
+
+            // The Run ended for another reason.
+            let db = dead_lettered_by_contention();
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET terminal_reason_code = 'NEX_INCREMENTAL_FRESHNESS_INTERRUPTED'
+                      WHERE consumer_id = ?1",
+                    [CURSOR_CONSUMER_ID],
+                )?;
+                Ok(())
+            })
+            .expect("recode the Run");
+            assert_still_dead_lettered(&db, "another terminal reason");
+        }
+
+        #[test]
+        fn a_run_that_is_not_exhausted_or_has_no_reservation_is_untouched() {
+            // Retryable: the Run is still running and keeps its reservation.
+            let db = fixture_db();
+            lose_race_as_requeue(&db, 1);
+            let before = terminal_records(&db);
+            let reserved = reservation(&db);
+            assert_eq!(release(&db), 0);
+            assert_eq!(terminal_records(&db), before);
+            assert_eq!(reservation(&db), reserved);
+            assert!(reserved.0.is_some());
+
+            // A contended close already returned its reservation.
+            let db = fixture_db();
+            lose_race_on_last_attempt(&db);
+            let before = terminal_records(&db);
+            let reserved = reservation(&db);
+            assert_eq!(reserved.0, None);
+            assert_eq!(release(&db), 0);
+            assert_eq!(terminal_records(&db), before);
+            assert_eq!(reservation(&db), reserved);
+        }
+
+        fn set_user_version(db: &Database, version: i32) {
+            db.with_conn(|conn| {
+                conn.pragma_update(None, "user_version", version)?;
+                Ok(())
+            })
+            .expect("set user_version");
+        }
+
+        fn user_version(db: &Database) -> i32 {
+            db.with_conn(|conn| Ok(conn.pragma_query_value(None, "user_version", |r| r.get(0))?))
+                .expect("user_version")
+        }
+
+        fn assert_released_and_caught_up(db: &Database, before: &[String]) {
+            assert_eq!(user_version(db), grimodex_core::SCHEMA_VERSION);
+            let reserved = reservation(db);
+            assert_eq!((reserved.0, reserved.1, reserved.2), (None, None, None));
+            assert_eq!(terminal_records(db), before, "terminal records are kept");
+            let outcome = run_incremental_freshness_cycle(db).expect("catches up");
+            assert!(
+                matches!(outcome, IncrementalFreshnessCycleOutcome::Processed(_)),
+                "{outcome:?}"
+            );
+            assert_eq!(freshness_cursor(db), (1, None));
+        }
+
+        #[test]
+        fn the_marker_only_step_from_schema_44_releases_and_stamps_together() {
+            let db = dead_lettered_by_contention();
+            let before = terminal_records(&db);
+            set_user_version(&db, grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION);
+            db.migrate().expect("finalize the previous marker");
+            assert_released_and_caught_up(&db, &before);
+        }
+
+        #[test]
+        fn the_full_migration_from_an_older_schema_releases_before_the_stamp() {
+            let db = dead_lettered_by_contention();
+            let before = terminal_records(&db);
+            set_user_version(&db, grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 1);
+            db.migrate().expect("full migration");
+            assert_released_and_caught_up(&db, &before);
+        }
+
+        #[test]
+        fn a_current_schema_open_never_releases_a_dead_letter() {
+            // A dead-letter born at SCHEMA 45 (a guard race without Feed
+            // evidence, a deterministic mismatch) must stay visible.
+            let db = dead_lettered_by_contention();
+            let before = terminal_records(&db);
+            let reserved = reservation(&db);
+            assert_eq!(user_version(&db), grimodex_core::SCHEMA_VERSION);
+            db.migrate().expect("current-schema open");
+            assert_eq!(terminal_records(&db), before);
+            assert_eq!(reservation(&db), reserved);
+        }
+
+        #[test]
+        fn the_restore_preflight_of_a_current_workspace_leaves_its_dead_letters() {
+            // The restore preflight migrates a copy that is then installed as
+            // live, so a full pass over a 45 workspace must not release what a
+            // 45 build left visible (a guard race without Feed evidence, a
+            // deterministic mismatch). The supervisor's current-version
+            // invariant-repair path is the same full pass.
+            let db = dead_lettered_by_contention();
+            assert_eq!(user_version(&db), grimodex_core::SCHEMA_VERSION);
+            let before = terminal_records(&db);
+            let reserved = reservation(&db);
+            db.migrate_for_restore_preflight().expect("first full pass");
+            db.migrate_for_restore_preflight().expect("second full pass");
+            assert_eq!(terminal_records(&db), before);
+            assert_eq!(reservation(&db), reserved);
+            assert!(reserved.0.is_some());
+        }
+
+        #[test]
+        fn the_restore_preflight_of_an_older_workspace_releases() {
+            for from in [
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 5,
+            ] {
+                let db = dead_lettered_by_contention();
+                let before = terminal_records(&db);
+                set_user_version(&db, from);
+                db.migrate_for_restore_preflight().expect("full pass");
+                assert_released_and_caught_up(&db, &before);
+            }
+        }
+
+        /// Fail every write of `user_version`, as an interrupted stamp would.
+        fn deny_user_version_stamp(db: &Database) {
+            db.with_conn(|conn| {
+                conn.authorizer(Some(
+                    |context: rusqlite::hooks::AuthContext<'_>| match context.action {
+                        rusqlite::hooks::AuthAction::Pragma {
+                            pragma_name: "user_version",
+                            pragma_value: Some(_),
+                        } => rusqlite::hooks::Authorization::Deny,
+                        _ => rusqlite::hooks::Authorization::Allow,
+                    },
+                ))?;
+                Ok(())
+            })
+            .expect("install the stamp failure hook");
+        }
+
+        fn allow_everything(db: &Database) {
+            db.with_conn(|conn| {
+                conn.authorizer(None::<
+                    fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization,
+                >)?;
+                Ok(())
+            })
+            .expect("remove the stamp failure hook");
+        }
+
+        #[test]
+        fn a_failure_after_the_release_rolls_it_back_and_a_later_open_retries() {
+            for from in [
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 1,
+            ] {
+                let db = dead_lettered_by_contention();
+                let before = terminal_records(&db);
+                let reserved = reservation(&db);
+                set_user_version(&db, from);
+                deny_user_version_stamp(&db);
+                let error = db
+                    .migrate()
+                    .expect_err("the stamp after the release fails the migration");
+                assert!(format!("{error:#}").contains("not authorized"), "{error:#}");
+                allow_everything(&db);
+                assert_eq!(user_version(&db), from, "the marker does not advance");
+                assert_eq!(
+                    reservation(&db),
+                    reserved,
+                    "from {from}: the release rolled back with the stamp"
+                );
+                assert_eq!(terminal_records(&db), before);
+
+                db.migrate().expect("a later open retries");
+                assert_released_and_caught_up(&db, &before);
+            }
+        }
     }
 }
