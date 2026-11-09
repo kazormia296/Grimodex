@@ -367,6 +367,8 @@ fn test_policy() -> RetryPolicy {
         stale_delay: Duration::from_millis(30),
         max_stale_retries: 2,
         max_reader_retries: MAX_CONSECUTIVE_READER_RETRIES,
+        skip_delay: Duration::from_millis(30),
+        yield_window: Duration::from_secs(60),
     }
 }
 
@@ -926,17 +928,25 @@ impl Drop for HeldConnection {
 }
 
 /// Which ticks may yield: never the first, never after `StaleRetry` or a reader
-/// retry, after the others until `max_skips` skips in a row.
+/// retry, after the others until `yield_window` has passed since the first skip.
 #[test]
 fn only_a_periodic_tick_after_a_quiet_outcome_may_yield() {
+    let window = Duration::from_secs(10);
     let reader = BuildOutcome::ReaderRetry(Reason::ReaderBusy);
-    let mode = |previous: Option<&BuildOutcome>, skips| next_tick_mode(previous, skips, 40);
-    assert_eq!(mode(None, 0), TickMode::Foreground, "the first tick");
+    let mode = |previous: Option<&BuildOutcome>, skipping_for: Duration| {
+        next_tick_mode(previous, skipping_for, window)
+    };
+    let zero = Duration::ZERO;
+    assert_eq!(mode(None, zero), TickMode::Foreground, "the first tick");
     assert_eq!(
-        mode(Some(&BuildOutcome::StaleRetry), 0),
+        mode(Some(&BuildOutcome::StaleRetry), zero),
         TickMode::Foreground
     );
-    assert_eq!(mode(Some(&reader), 0), TickMode::Foreground);
+    assert_eq!(mode(Some(&reader), zero), TickMode::Foreground);
+    assert_eq!(
+        mode(Some(&BuildOutcome::Stopped), zero),
+        TickMode::Foreground
+    );
     for quiet in [
         BuildOutcome::Idle,
         BuildOutcome::Ready,
@@ -944,42 +954,83 @@ fn only_a_periodic_tick_after_a_quiet_outcome_may_yield() {
         BuildOutcome::Skipped,
     ] {
         assert_eq!(
-            mode(Some(&quiet), 0),
+            mode(Some(&quiet), zero),
             TickMode::Yielding,
             "{}",
             quiet.label()
         );
         assert_eq!(
-            mode(Some(&quiet), 39),
+            mode(Some(&quiet), window - Duration::from_millis(1)),
             TickMode::Yielding,
             "{}",
             quiet.label()
         );
         assert_eq!(
-            mode(Some(&quiet), 40),
+            mode(Some(&quiet), window),
             TickMode::Foreground,
-            "{} after the bound",
+            "{} at the window",
+            quiet.label()
+        );
+        assert_eq!(
+            mode(Some(&quiet), window * 2),
+            TickMode::Foreground,
+            "{} after the window",
             quiet.label()
         );
     }
-    assert_eq!(MAX_CONSECUTIVE_SKIPS, 40);
-    // The count: a yielding skip adds one, anything else (including the forced
-    // foreground tick) starts over.
+    // Production values: 10 s window, 50 ms retry.
     assert_eq!(
-        next_skip_count(3, TickMode::Yielding, &BuildOutcome::Skipped),
-        4
+        RetryPolicy::PRODUCTION.yield_window,
+        Duration::from_secs(10)
     );
+    assert_eq!(
+        RetryPolicy::PRODUCTION.skip_delay,
+        Duration::from_millis(50)
+    );
+}
+
+/// The start of a run of skips: a yielding skip keeps the earlier start (or
+/// starts now); any other outcome, and the forced foreground tick, clear it.
+#[test]
+fn a_non_skip_outcome_resets_the_skip_window() {
+    let t0 = Instant::now();
+    let t1 = t0 + Duration::from_secs(3);
+    assert_eq!(
+        next_skipping_since(None, TickMode::Yielding, &BuildOutcome::Skipped, t1),
+        Some(t1)
+    );
+    assert_eq!(
+        next_skipping_since(Some(t0), TickMode::Yielding, &BuildOutcome::Skipped, t1),
+        Some(t0)
+    );
+    for outcome in [
+        BuildOutcome::Idle,
+        BuildOutcome::Ready,
+        BuildOutcome::Retry,
+        BuildOutcome::StaleRetry,
+        BuildOutcome::ReaderRetry(Reason::ReaderBusy),
+        BuildOutcome::Stopped,
+    ] {
+        assert_eq!(
+            next_skipping_since(Some(t0), TickMode::Yielding, &outcome, t1),
+            None,
+            "{}",
+            outcome.label()
+        );
+    }
+    // The forced foreground tick, whatever it returns, starts over.
     for outcome in [
         BuildOutcome::Idle,
         BuildOutcome::Skipped,
         BuildOutcome::Retry,
     ] {
-        assert_eq!(next_skip_count(40, TickMode::Foreground, &outcome), 0);
+        assert_eq!(
+            next_skipping_since(Some(t0), TickMode::Foreground, &outcome, t1),
+            None,
+            "{}",
+            outcome.label()
+        );
     }
-    assert_eq!(
-        next_skip_count(3, TickMode::Yielding, &BuildOutcome::Idle),
-        0
-    );
 }
 
 /// A skip is not a build outcome: it adds to and resets neither the reader
@@ -1031,6 +1082,7 @@ fn fast_policy() -> RetryPolicy {
     RetryPolicy {
         retry_delay: Duration::from_millis(1),
         stale_delay: Duration::from_millis(1),
+        skip_delay: Duration::from_millis(1),
         ..test_policy()
     }
 }
@@ -1085,26 +1137,89 @@ async fn run_task(
     (modes, released)
 }
 
-/// The loop: the first tick is foreground, a tick after `Idle` or `Skipped`
-/// yields, the 41st in a row (after 40 skips) is foreground again, and the
-/// count starts over after it.
+/// The loop: the first tick is foreground, ticks after `Idle` or `Skipped`
+/// yield, the first tick after `yield_window` since the first skip is
+/// foreground, and it yields again after that. Each skip sleeps at least
+/// 1 ms, so 300 scripted ticks always outlast the 100 ms window.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_loop_yields_after_quiet_ticks_and_not_after_forty_skips() {
+async fn the_loop_yields_until_the_window_passes_then_yields_again() {
     let h = Harness::new();
-    // tick 1: Idle (foreground). Ticks 2..=41 skip while yielding. Tick 42 is
-    // forced foreground (Idle), ticks 43-44 skip again, then `Stopped`.
     let mut script = vec![Some(BuildOutcome::Idle)];
-    script.extend((0..40).map(|_| None));
-    script.push(None);
-    script.extend([None, None]);
-    let (modes, released) = run_task(&h, fast_policy(), script).await;
+    script.extend((0..300).map(|_| None));
+    let policy = RetryPolicy {
+        yield_window: Duration::from_millis(100),
+        ..fast_policy()
+    };
+    let (modes, released) = run_task(&h, policy, script).await;
     assert!(released, "the task ends and releases its reservation");
-    let mut expected = vec![TickMode::Foreground];
-    expected.extend([TickMode::Yielding; 40]);
-    expected.push(TickMode::Foreground);
-    expected.extend([TickMode::Yielding; 2]);
-    expected.push(TickMode::Yielding); // the call that returns `Stopped`
-    assert_eq!(modes, expected);
+    assert_eq!(modes[0], TickMode::Foreground, "the first tick");
+    assert_eq!(modes[1], TickMode::Yielding, "after Idle");
+    let forced: Vec<usize> = (1..modes.len())
+        .filter(|&i| modes[i] == TickMode::Foreground)
+        .collect();
+    assert!(
+        !forced.is_empty(),
+        "the window forces a foreground tick: {modes:?}"
+    );
+    for &i in &forced {
+        assert_eq!(modes[i - 1], TickMode::Yielding, "forced after skipping");
+        if i + 1 < modes.len() {
+            assert_eq!(modes[i + 1], TickMode::Yielding, "yields again after it");
+        }
+    }
+    assert!(forced[0] >= 2, "at least one skip before the forced tick");
+}
+
+/// DR-MPS-16: the tick after a `Skipped` comes `skip_delay` later, not
+/// `retry_delay` (the wait the task carries over stays long).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_tick_after_a_skip_comes_after_the_short_skip_delay() {
+    let h = Harness::new();
+    let request = h.request();
+    let participant = h.participant();
+    let key = (request.database().identity(), h.project.clone());
+    let generation = request.epoch().generation();
+    let policy = RetryPolicy {
+        retry_delay: Duration::from_millis(1500),
+        skip_delay: Duration::from_millis(20),
+        ..test_policy()
+    };
+    let times = Arc::new(Mutex::new(Vec::<(TickMode, Instant)>::new()));
+    let step_times = Arc::clone(&times);
+    schedule_with_mode(
+        Arc::clone(&h.state),
+        request,
+        participant,
+        h.project.clone(),
+        policy,
+        Arc::new(move |_, _, _, _, mode| {
+            let mut times = step_times.lock().expect("times");
+            times.push((mode, Instant::now()));
+            Ok(match times.len() {
+                1 => BuildOutcome::Idle,
+                2..=4 => BuildOutcome::Skipped,
+                _ => BuildOutcome::Stopped,
+            })
+        }),
+    )
+    .expect("scheduled");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !lock(&h.state.related_scenes.builds)
+        .expect("builds")
+        .reserve(key.clone(), generation)
+    {
+        assert!(Instant::now() < deadline, "the task ends");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let times = times.lock().expect("times").clone();
+    assert_eq!(times.len(), 5, "{times:?}");
+    // Idle waits `retry_delay`; the gaps that follow a skip are short.
+    assert!(times[1].1 - times[0].1 >= Duration::from_millis(1400));
+    for pair in times[1..].windows(2) {
+        let gap = pair[1].1 - pair[0].1;
+        assert!(gap >= Duration::from_millis(20), "{gap:?}");
+        assert!(gap < Duration::from_millis(700), "{gap:?}");
+    }
 }
 
 /// After `StaleRetry` and after a reader retry the next tick is foreground
@@ -1302,7 +1417,10 @@ fn a_stale_request_stops_instead_of_skipping() {
 fn a_skip_only_follows_outcomes_that_zero_both_streaks() {
     let policy = test_policy();
     for quiet in [BuildOutcome::Idle, BuildOutcome::Ready, BuildOutcome::Retry] {
-        assert_eq!(next_tick_mode(Some(&quiet), 0, 40), TickMode::Yielding);
+        assert_eq!(
+            next_tick_mode(Some(&quiet), Duration::ZERO, Duration::from_secs(10)),
+            TickMode::Yielding
+        );
         assert_eq!(
             next_reader_retry_streak(5, &quiet, MAX_CONSECUTIVE_READER_RETRIES).0,
             0,
@@ -1321,7 +1439,7 @@ fn a_skip_only_follows_outcomes_that_zero_both_streaks() {
         BuildOutcome::ReaderRetry(Reason::ReaderBusy),
     ] {
         assert_eq!(
-            next_tick_mode(Some(&counted), 0, 40),
+            next_tick_mode(Some(&counted), Duration::ZERO, Duration::from_secs(10)),
             TickMode::Foreground,
             "{}",
             counted.label()
@@ -1341,6 +1459,7 @@ async fn a_second_schedule_makes_the_next_tick_foreground_once() {
     let generation = request.epoch().generation();
     let policy = RetryPolicy {
         retry_delay: Duration::from_millis(300),
+        skip_delay: Duration::from_millis(300),
         ..test_policy()
     };
     let script = Arc::new(Mutex::new(std::collections::VecDeque::from([

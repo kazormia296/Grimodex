@@ -33,15 +33,19 @@ const STALE_RETRY_DELAY: Duration = Duration::from_millis(50);
 /// following ones go back to `RETRY_DELAY` until another outcome ends the run.
 /// Independent of the reader-retry streak (`K`).
 const MAX_CONSECUTIVE_STALE_RETRIES: u32 = 3;
-/// DR-MPS-15: how many periodic ticks in a row may yield the database
-/// connection (`BuildOutcome::Skipped`) before the next one takes it like any
-/// foreground caller. 250 ms × 40 ≒ 10 s, the same length as `K` and the
-/// renderer's read IPC deadline: longer than a maintenance Verify needs (about
-/// 3-4 s measured), and it bounds how late a stale index or a withdrawn
-/// operation can be noticed while maintenance keeps the connection.
-/// The one bound of both periodic paths: `reconcile` rounds use it too
-/// (`MAX_CONSECUTIVE_SKIPPED_ROUNDS` in the parent module refers to it).
-pub(super) const MAX_CONSECUTIVE_SKIPS: u32 = 40;
+/// DR-MPS-15/16: how long periodic ticks may keep yielding the database
+/// connection (`BuildOutcome::Skipped`), counted from the first skip, before
+/// the next tick takes it like any foreground caller. 10 s is the same length
+/// as `K` and the renderer's read IPC deadline: longer than a maintenance
+/// Verify needs (about 3-4 s measured), and it bounds how late a stale index
+/// or a withdrawn operation can be noticed while maintenance keeps the
+/// connection. Separate from `MAX_CONSECUTIVE_SKIPPED_ROUNDS` in the parent
+/// module (reconcile rounds), which has the same intended length.
+const YIELD_WINDOW: Duration = Duration::from_secs(10);
+/// DR-MPS-16: how long the task waits after a `Skipped` tick (capped by the
+/// wait it carries over). One waiter-free try per 50 ms keeps the retry cheap
+/// and lets a rebuild after a save catch a short occupation.
+const SKIP_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 /// The waits and bounds of the build task's retry loop. Tests shorten them.
 #[derive(Clone, Copy)]
@@ -50,6 +54,10 @@ struct RetryPolicy {
     stale_delay: Duration,
     max_stale_retries: u32,
     max_reader_retries: u32,
+    /// DR-MPS-16: the longest sleep after a `Skipped` tick.
+    skip_delay: Duration,
+    /// DR-MPS-16: how long from the first skip the task keeps yielding.
+    yield_window: Duration,
 }
 
 impl RetryPolicy {
@@ -58,6 +66,8 @@ impl RetryPolicy {
         stale_delay: STALE_RETRY_DELAY,
         max_stale_retries: MAX_CONSECUTIVE_STALE_RETRIES,
         max_reader_retries: MAX_CONSECUTIVE_READER_RETRIES,
+        skip_delay: SKIP_RETRY_DELAY,
+        yield_window: YIELD_WINDOW,
     };
 }
 
@@ -78,11 +88,12 @@ enum TickMode {
 /// the retry that follows a publish-side `StaleRetry` or a reader retry (both
 /// are about work the user is waiting on or about the reader's own bound).
 /// After `Idle`, `Ready`, `Retry` or `Skipped` the tick yields, except that
-/// `max_skips` skips in a row make the next one a normal foreground tick.
+/// skipping for `yield_window` (since the first skip) makes the next one a
+/// normal foreground tick.
 fn next_tick_mode(
     previous: Option<&BuildOutcome>,
-    consecutive_skips: u32,
-    max_skips: u32,
+    skipping_for: Duration,
+    yield_window: Duration,
 ) -> TickMode {
     match previous {
         None | Some(BuildOutcome::StaleRetry) | Some(BuildOutcome::ReaderRetry(_)) => {
@@ -94,7 +105,7 @@ fn next_tick_mode(
         | Some(BuildOutcome::Ready)
         | Some(BuildOutcome::Retry)
         | Some(BuildOutcome::Skipped) => {
-            if consecutive_skips >= max_skips {
+            if skipping_for >= yield_window {
                 TickMode::Foreground
             } else {
                 TickMode::Yielding
@@ -103,13 +114,18 @@ fn next_tick_mode(
     }
 }
 
-/// The consecutive-skip count after a tick that ran in `mode`: a skip adds
-/// one; anything else, including the forced foreground tick that follows
-/// `max_skips` skips, starts the count over.
-fn next_skip_count(consecutive_skips: u32, mode: TickMode, outcome: &BuildOutcome) -> u32 {
+/// When the current run of skips began, after a tick that ran in `mode`: a
+/// skip keeps the earlier start (or starts at `now`); anything else, including
+/// the forced foreground tick after the window, starts over.
+fn next_skipping_since(
+    skipping_since: Option<Instant>,
+    mode: TickMode,
+    outcome: &BuildOutcome,
+    now: Instant,
+) -> Option<Instant> {
     match (mode, outcome) {
-        (TickMode::Yielding, BuildOutcome::Skipped) => consecutive_skips.saturating_add(1),
-        _ => 0,
+        (TickMode::Yielding, BuildOutcome::Skipped) => Some(skipping_since.unwrap_or(now)),
+        _ => None,
     }
 }
 
@@ -211,9 +227,9 @@ fn schedule_with_mode(
         // Consecutive `StaleRetry` (DR-IRB-7); also local to this task.
         let mut stale_retry_streak: u32 = 0;
         // DR-MPS-15: what the previous tick returned (`None` before the first),
-        // how many ticks in a row yielded, and the wait a skip carries over.
+        // since when ticks have been yielding, and the wait a skip carries over.
         let mut previous: Option<BuildOutcome> = None;
-        let mut consecutive_skips: u32 = 0;
+        let mut skipping_since: Option<Instant> = None;
         let mut last_wait = policy.retry_delay;
         loop {
             let Some(state) = weak_state.upgrade() else {
@@ -232,7 +248,11 @@ fn schedule_with_mode(
             let mode = if requested {
                 TickMode::Foreground
             } else {
-                next_tick_mode(previous.as_ref(), consecutive_skips, MAX_CONSECUTIVE_SKIPS)
+                next_tick_mode(
+                    previous.as_ref(),
+                    skipping_since.map_or(Duration::ZERO, |since| since.elapsed()),
+                    policy.yield_window,
+                )
             };
             let result = tokio::task::spawn_blocking(move || {
                 work_build(
@@ -255,9 +275,9 @@ fn schedule_with_mode(
                 next_wait(last_wait, stale_retry_streak, &outcome, &policy);
             stale_retry_streak = next_stale_streak;
             last_wait = wait;
-            consecutive_skips = next_skip_count(consecutive_skips, mode, &outcome);
+            skipping_since = next_skipping_since(skipping_since, mode, &outcome, Instant::now());
             tracing::debug!(target:"grimodex::nir1_index", outcome=outcome.label(),
-                reader_retry_streak,stale_retry_streak,consecutive_skips,wait_ms=wait.as_millis(),"NIR1 build outcome");
+                reader_retry_streak,stale_retry_streak,skipping=skipping_since.is_some(),wait_ms=wait.as_millis(),"NIR1 build outcome");
             if let StreakVerdict::Stop(reason) = verdict {
                 // Logged once: the loop ends here and the reservation below
                 // is released (the next `begin` starts a fresh task).
@@ -282,9 +302,16 @@ fn schedule_with_mode(
                 | BuildOutcome::Skipped => {}
                 BuildOutcome::Stopped => break,
             }
+            // DR-MPS-16: a skip retries after `skip_delay` at most; `last_wait`
+            // itself stays as it was.
+            let sleep_for = if matches!(outcome, BuildOutcome::Skipped) {
+                wait.min(policy.skip_delay)
+            } else {
+                wait
+            };
             previous = Some(outcome);
             drop(state);
-            tokio::time::sleep(wait).await;
+            tokio::time::sleep(sleep_for).await;
         }
         if let Some(state) = weak_state.upgrade() {
             if let Ok(mut builds) = lock(&state.related_scenes.builds) {
