@@ -6,6 +6,7 @@ use rusqlite::{
 };
 use serde_json::Value;
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -313,6 +314,58 @@ fn renderer_typed_payload_read_rejection(ctx: &AuthContext<'_>) -> Option<String
     } else {
         None
     }
+}
+
+/// write clock・lineage・`sqlite_sequence` の DML の判定（DB 段 1 の PR-1、DR-DBC-3 の判断 7）。
+///
+/// - `grimodex_write_clock` への DML は、SQLite が文を出した最内の trigger の名前
+///   （authorizer の 4 番目の引数 = `ctx.accessor`）が `allowed_clock_accessors`
+///   （`expected_clock_triggers(clock_target_tables(conn))` の名前）に完全一致するときだけ通す。
+///   top-level の SQL（accessor が無い）と期待外の trigger は拒否する。
+/// - `grimodex_db_lineage` と `sqlite_sequence` への DML は accessor に関わらず常に拒否する。
+///   AUTOINCREMENT の INSERT が内部で行う `sqlite_sequence` の更新は authorizer を
+///   通らない（試験で固定）ので、これで壊れない。
+/// - 読み（`Read`）は判定しない（clock の読みは PR-2 で使う）。
+fn clock_surface_rejection(
+    ctx: &AuthContext<'_>,
+    allowed_clock_accessors: &HashSet<String>,
+) -> Option<String> {
+    let table_name = match &ctx.action {
+        AuthAction::Delete { table_name }
+        | AuthAction::Insert { table_name }
+        | AuthAction::Update { table_name, .. } => table_name,
+        _ => return None,
+    };
+    let table = d2a_table_name(table_name);
+    if table.eq_ignore_ascii_case(grimodex_core::write_clock::WRITE_CLOCK_TABLE) {
+        let exact = ctx
+            .accessor
+            .is_some_and(|accessor| allowed_clock_accessors.contains(accessor));
+        if exact {
+            None
+        } else {
+            Some(format!("mutation of {table}"))
+        }
+    } else if table.eq_ignore_ascii_case(grimodex_core::write_clock::DB_LINEAGE_TABLE)
+        || table.eq_ignore_ascii_case("sqlite_sequence")
+    {
+        Some(format!("mutation of {table}"))
+    } else {
+        None
+    }
+}
+
+/// renderer の書込みで発火してよい clock の trigger 名（実表から作る）。
+/// 作れない（schema が読めない、表名が規則外）ときは空集合にして fail-closed に倒す。
+fn allowed_clock_accessor_names(conn: &Connection) -> HashSet<String> {
+    grimodex_core::write_clock::clock_target_tables(conn)
+        .map(|tables| {
+            grimodex_core::write_clock::expected_clock_triggers(&tables)
+                .into_iter()
+                .map(|(name, _sql)| name)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
@@ -706,9 +759,19 @@ where
         conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_CREATE, false)?;
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_WRITE, false)?;
+        // 書込みになり得る文（読み専用の先頭 keyword 以外）だけ、clock の trigger 名の集合を作る。
+        let allowed_clock_accessors = if reserved_project_setting_guard_requested {
+            allowed_clock_accessor_names(conn)
+        } else {
+            HashSet::new()
+        };
         conn.authorizer(Some(move |ctx: AuthContext<'_>| {
             let profile_reason = renderer_profile_egress_sql_rejection(&ctx);
-            if let Some(reason) = profile_reason.or_else(|| renderer_sql_rejection(ctx)) {
+            let clock_reason = || clock_surface_rejection(&ctx, &allowed_clock_accessors);
+            if let Some(reason) = profile_reason
+                .or_else(clock_reason)
+                .or_else(|| renderer_sql_rejection(ctx))
+            {
                 if let Ok(mut denied) = denied_for_hook.lock() {
                     // A direct mutation of a protected parent may also trigger
                     // an indirect legacy `ai_audit_events` cascade.  Preserve
@@ -4450,6 +4513,8 @@ mod tests {
         "events",
         "fts_meta",
         "generic_extraction_schemas",
+        "grimodex_db_lineage",
+        "grimodex_write_clock",
         "import_capture_blobs",
         "import_capture_entries",
         "import_captures",
@@ -5094,5 +5159,338 @@ mod tests {
             .execute("SELECT count(*) AS n FROM d2a_probe_log", &[], "all")
             .expect("trusted read");
         assert_eq!(rows[0]["n"], Value::from(1));
+    }
+
+    // ---- write clock の authorizer（DB 段 1 の PR-1、DR-DBC-3 の判断 7） ----
+
+    fn clock_seq(db: &Database, key: &str) -> Option<i64> {
+        db.execute(
+            "SELECT seq FROM grimodex_write_clock WHERE name = ?1",
+            &[Value::from(key)],
+            "all",
+        )
+        .expect("trusted clock read")
+        .first()
+        .and_then(|row| row["seq"].as_i64())
+    }
+
+    fn clock_denied(error: &anyhow::Error) -> bool {
+        let message = error.to_string();
+        message.contains(RENDERER_SQL_SECURITY_ERROR) && message.contains("mutation of ")
+    }
+
+    #[test]
+    fn renderer_cannot_write_clock_directly() {
+        let db = d2a_seeded_db();
+        let before = (clock_seq(&db, "*"), clock_seq(&db, "app_settings"));
+        for sql in [
+            "INSERT INTO grimodex_write_clock(name, seq) VALUES ('renderer-forged', 1)",
+            "INSERT INTO grimodex_write_clock(name, seq) VALUES ('*', 1)
+             ON CONFLICT(name) DO UPDATE SET seq = excluded.seq",
+            "UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'",
+            "UPDATE grimodex_write_clock SET seq = 0",
+            "DELETE FROM grimodex_write_clock WHERE name = 'app_settings'",
+            "DELETE FROM grimodex_write_clock WHERE name = '*'",
+            "WITH s AS (SELECT 1 AS n) UPDATE grimodex_write_clock SET seq = (SELECT n FROM s)",
+        ] {
+            let error = db
+                .execute_renderer(sql, &[], "run")
+                .expect_err("direct clock DML must be rejected");
+            assert!(clock_denied(&error), "{sql}: {error}");
+            let error = db
+                .execute_renderer_profile_egress(sql, &[], "run")
+                .expect_err("direct clock DML must be rejected under D2a");
+            assert!(clock_denied(&error), "{sql}: {error}");
+        }
+        // A batch with a direct clock write anywhere rolls back as a whole.
+        let error = db
+            .execute_batch_tx_renderer_with_result(&[
+                BatchStatement {
+                    sql: "INSERT INTO app_settings(key,value) VALUES ('clock-batch','v')".into(),
+                    params: vec![],
+                    method: "run".into(),
+                },
+                BatchStatement {
+                    sql: "UPDATE grimodex_write_clock SET seq = 0".into(),
+                    params: vec![],
+                    method: "run".into(),
+                },
+            ])
+            .expect_err("batch with a direct clock write must be rejected");
+        assert!(clock_denied(&error), "{error}");
+        assert_eq!(
+            before,
+            (clock_seq(&db, "*"), clock_seq(&db, "app_settings"))
+        );
+        // The clock stays readable (PR-2 reads it).
+        let rows = db
+            .execute_renderer(
+                "SELECT seq FROM grimodex_write_clock WHERE name = '*'",
+                &[],
+                "all",
+            )
+            .expect("clock reads stay available");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn renderer_writes_advance_clock_via_exact_accessors() {
+        let db = d2a_seeded_db();
+        let start = clock_seq(&db, "*").expect("global key");
+        let table_start = clock_seq(&db, "app_settings").unwrap_or(0);
+
+        db.execute_renderer(
+            "INSERT INTO app_settings(key,value) VALUES ('clock-a','1')",
+            &[],
+            "run",
+        )
+        .expect("renderer insert");
+        let after_insert = clock_seq(&db, "*").expect("global key");
+        assert_eq!(after_insert, start + 1);
+        assert_eq!(clock_seq(&db, "app_settings"), Some(after_insert));
+        assert!(after_insert > table_start);
+
+        db.execute_renderer(
+            "UPDATE app_settings SET value = '2' WHERE key = 'clock-a'",
+            &[],
+            "run",
+        )
+        .expect("renderer update");
+        db.execute_renderer("DELETE FROM app_settings WHERE key = 'clock-a'", &[], "run")
+            .expect("renderer delete");
+        assert_eq!(clock_seq(&db, "*"), Some(start + 3));
+        assert_eq!(clock_seq(&db, "app_settings"), Some(start + 3));
+
+        // D2a closed and open, and a batch, take the same route.
+        for open in [false, true] {
+            with_read_open(open, || {
+                db.execute_renderer_profile_egress(
+                    "INSERT INTO app_settings(key,value) VALUES (?1,'1')",
+                    &[Value::from(format!("clock-b-{open}"))],
+                    "run",
+                )
+                .expect("D2a insert into an unlisted table");
+            });
+        }
+        assert_eq!(clock_seq(&db, "*"), Some(start + 5));
+        db.execute_batch_tx_renderer_with_result(&[
+            BatchStatement {
+                sql: "UPDATE app_settings SET value = '3' WHERE key LIKE 'clock-b-%'".into(),
+                params: vec![],
+                method: "run".into(),
+            },
+            BatchStatement {
+                sql: "DELETE FROM app_settings WHERE key LIKE 'clock-b-%'".into(),
+                params: vec![],
+                method: "run".into(),
+            },
+        ])
+        .expect("renderer batch");
+        assert_eq!(clock_seq(&db, "*"), Some(start + 9));
+
+        // A rejected statement does not move the clock.
+        let _ = db
+            .execute_renderer(
+                "INSERT INTO ai_audit_events(id) VALUES ('clock-denied')",
+                &[],
+                "run",
+            )
+            .expect_err("audit insert stays rejected");
+        assert_eq!(clock_seq(&db, "*"), Some(start + 9));
+
+        // Trusted Native writes still advance it too.
+        db.execute(
+            "INSERT INTO app_settings(key,value) VALUES ('clock-native','1')",
+            &[],
+            "run",
+        )
+        .expect("native insert");
+        assert_eq!(clock_seq(&db, "*"), Some(start + 10));
+    }
+
+    #[test]
+    fn renderer_cannot_mutate_lineage_or_sqlite_sequence() {
+        let db = d2a_seeded_db();
+        // Make sure `sqlite_sequence` has a row to aim at.
+        db.execute(
+            "INSERT INTO lint_action_log(rule_id, action, occurred_at) VALUES ('seed','x',0)",
+            &[],
+            "run",
+        )
+        .expect("native autoincrement insert");
+        let lineage_before = db
+            .execute("SELECT id FROM grimodex_db_lineage", &[], "all")
+            .expect("lineage read");
+        let sequence_before = db
+            .execute(
+                "SELECT name, seq FROM sqlite_sequence ORDER BY name",
+                &[],
+                "all",
+            )
+            .expect("sequence read");
+        assert_eq!(lineage_before.len(), 1);
+        assert!(!sequence_before.is_empty());
+        let clock_before = clock_seq(&db, "*");
+
+        for sql in [
+            "INSERT INTO grimodex_db_lineage(singleton, id) VALUES (1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+             ON CONFLICT(singleton) DO UPDATE SET id = excluded.id",
+            "UPDATE grimodex_db_lineage SET id = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+            "DELETE FROM grimodex_db_lineage",
+            "INSERT INTO sqlite_sequence(name, seq) VALUES ('forged', 1)",
+            "UPDATE sqlite_sequence SET seq = 0",
+            "DELETE FROM sqlite_sequence",
+            "WITH s AS (SELECT 1 AS n) DELETE FROM sqlite_sequence WHERE (SELECT n FROM s)",
+        ] {
+            let error = db
+                .execute_renderer(sql, &[], "run")
+                .expect_err("lineage / sqlite_sequence DML must be rejected");
+            assert!(clock_denied(&error), "{sql}: {error}");
+            let error = db
+                .execute_renderer_profile_egress(sql, &[], "run")
+                .expect_err("lineage / sqlite_sequence DML must be rejected under D2a");
+            assert!(clock_denied(&error), "{sql}: {error}");
+        }
+        assert_eq!(
+            lineage_before,
+            db.execute("SELECT id FROM grimodex_db_lineage", &[], "all")
+                .expect("lineage read")
+        );
+        assert_eq!(
+            sequence_before,
+            db.execute(
+                "SELECT name, seq FROM sqlite_sequence ORDER BY name",
+                &[],
+                "all"
+            )
+            .expect("sequence read")
+        );
+        assert_eq!(clock_before, clock_seq(&db, "*"));
+
+        // Reads pass.
+        let rows = db
+            .execute_renderer("SELECT id FROM grimodex_db_lineage", &[], "all")
+            .expect("lineage reads stay available");
+        assert_eq!(rows, lineage_before);
+        db.execute_renderer(
+            "SELECT name, seq FROM sqlite_sequence ORDER BY name",
+            &[],
+            "all",
+        )
+        .expect("sqlite_sequence reads stay available");
+    }
+
+    #[test]
+    fn autoincrement_insert_still_passes() {
+        let db = d2a_seeded_db();
+        db.execute_renderer(
+            "INSERT INTO lint_action_log(rule_id, action, occurred_at) VALUES ('r','a',1)",
+            &[],
+            "run",
+        )
+        .expect("AUTOINCREMENT insert updates sqlite_sequence internally");
+        let rows = db
+            .execute(
+                "SELECT seq FROM sqlite_sequence WHERE name = 'lint_action_log'",
+                &[],
+                "all",
+            )
+            .expect("sequence read");
+        assert_eq!(rows.len(), 1);
+        let first = rows[0]["seq"].as_i64().expect("seq");
+        db.execute_renderer(
+            "INSERT INTO lint_action_log(rule_id, action, occurred_at) VALUES ('r','b',2)",
+            &[],
+            "run",
+        )
+        .expect("second AUTOINCREMENT insert");
+        let rows = db
+            .execute(
+                "SELECT seq FROM sqlite_sequence WHERE name = 'lint_action_log'",
+                &[],
+                "all",
+            )
+            .expect("sequence read");
+        assert_eq!(rows[0]["seq"].as_i64(), Some(first + 1));
+        assert!(clock_seq(&db, "lint_action_log").is_some());
+    }
+
+    #[test]
+    fn native_trigger_into_closed_table_still_passes_with_clock() {
+        // The clock triggers read and write only `grimodex_write_clock`
+        // (never NEW / OLD), so a renderer write into an unlisted table is not
+        // stopped by the closed-table read rejection, even while the read-open
+        // class is closed and an existing Native trigger touches that table.
+        let db = d2a_seeded_db();
+        db.execute("CREATE TABLE d2a_probe_log (note TEXT)", &[], "run")
+            .expect("trusted unlisted table");
+        db.execute(
+            "CREATE TRIGGER d2a_probe_native_trigger AFTER INSERT ON app_settings
+             BEGIN INSERT INTO d2a_probe_log(note) VALUES ('native'); END",
+            &[],
+            "run",
+        )
+        .expect("trusted trigger setup");
+        let start = clock_seq(&db, "*").expect("global key");
+        with_read_open(false, || {
+            db.execute_renderer_profile_egress(
+                "INSERT INTO app_settings(key,value) VALUES ('clock-closed','1')",
+                &[],
+                "run",
+            )
+            .expect("clock triggers pass while the read-open class is closed");
+        });
+        assert_eq!(clock_seq(&db, "*"), Some(start + 1));
+        // Writes into a closed table are still rejected, and do not move the clock.
+        let error = with_read_open(false, || {
+            db.execute_renderer_profile_egress(
+                "INSERT INTO messages(content) VALUES ('x')",
+                &[],
+                "run",
+            )
+        })
+        .expect_err("closed-table DML stays rejected");
+        assert!(d2a_denied(&error), "{error}");
+        assert_eq!(clock_seq(&db, "*"), Some(start + 1));
+    }
+
+    #[test]
+    fn forged_clock_trigger_names_cannot_write_the_clock() {
+        let db = d2a_seeded_db();
+        db.execute("CREATE TABLE clock_forge_a (id TEXT)", &[], "run")
+            .expect("probe table a");
+        db.execute("CREATE TABLE clock_forge_b (id TEXT)", &[], "run")
+            .expect("probe table b");
+        // Prefix matches, but the name is not one of the accessors built from
+        // the real tables; the other is an unrelated name.
+        db.execute(
+            "CREATE TRIGGER grimodex_clock_forged_ai AFTER INSERT ON clock_forge_a
+             BEGIN UPDATE grimodex_write_clock SET seq = seq + 100 WHERE name = '*'; END",
+            &[],
+            "run",
+        )
+        .expect("native forged trigger a");
+        db.execute(
+            "CREATE TRIGGER clock_forge_bump AFTER INSERT ON clock_forge_b
+             BEGIN UPDATE grimodex_write_clock SET seq = seq + 100 WHERE name = '*'; END",
+            &[],
+            "run",
+        )
+        .expect("native forged trigger b");
+        let start = clock_seq(&db, "*").expect("global key");
+        for sql in [
+            "INSERT INTO clock_forge_a(id) VALUES ('a')",
+            "INSERT INTO clock_forge_b(id) VALUES ('b')",
+        ] {
+            let error = db
+                .execute_renderer(sql, &[], "run")
+                .expect_err("a forged accessor must not write the clock");
+            assert!(clock_denied(&error), "{sql}: {error}");
+        }
+        assert_eq!(clock_seq(&db, "*"), Some(start));
+        let rows = db
+            .execute("SELECT count(*) AS n FROM clock_forge_a", &[], "all")
+            .expect("trusted read");
+        assert_eq!(rows[0]["n"], Value::from(0));
     }
 }
