@@ -303,6 +303,8 @@ slot が Suspended）は DB 接続の根本改善・段 1 に吸収されない�
 1. **周期処理の 2 種だけを維持に譲らせる**。(a) build task の loop の 2 回目以降の tick のうち、直前の outcome が `Idle`・`Ready`・`Retry`・`Skipped` のもの、
    (b) reconciler の timer 由来の tick の `current_operation` の DB 読み。譲り方は、waiter を公表しない 1 回の try 取得で、取れなければその tick を飛ばす（待たない）。
    読み・書きの意味、drift の検査、READY の条件、帳簿は変えない。
+   try 取得は、接続の mutex が使用中のほか、maintenance の finalization が予約済みのとき、foreground の waiter がすでに並んでいるとき（追い越さない）も busy として `None` を返す。
+   maintenance の no-wait／background priority の worker は、もともと waiter を公表しないので従来の取得規則のまま。
 2. **build の skip は新しい outcome `Skipped`** とし、reader-retry の連続回数（K＝40。DR-IRB-3／E11、2026-11-06 のユーザー決定）と stale の連続回数・待ち（DR-IRB-7 の 50 ms／250 ms）を
    増やさず戻さない。待ちは直前の値を引き継ぐ。（独立レビューの指摘：skip を `Retry` で返すと両方が黙って変わる。）
 3. **skip の連続に上限を置く**：40 tick 連続（約 10 s）で skip したら、次の 1 tick は従来どおり foreground で取る。reconcile も同じ（skip した round が 40 回続いたとき）。
@@ -315,7 +317,7 @@ slot が Suspended）は DB 接続の根本改善・段 1 に吸収されない�
 
 ### 信頼境界と変えないもの
 
-- 新しい送信先・保存範囲・契約・authority は無い。renderer 向けの IPC 契約（`ipcContract.ts`）は変えない。変えるのは native の N-API の省略可能な引数 1 つ、Main の reconciler の呼び出し、db の try 取得の API、build の loop。
+- 新しい送信先・保存範囲・契約・authority は無い。renderer の command map と channel（`ipcContract.ts`）は変えない。`ipcContract.ts` で変わるのは Main 専用の backend の型 `NapiBackendLike.relatedScenesReconcile?(periodic?: boolean)`（「renderer の command ではない」と注記された 1 行）だけ。ほかに変えるのは native の N-API の省略可能な引数 1 つ、Main の reconciler の呼び出し、db の try 取得の API、build の loop。
 - 閾値：K＝40 と DR-IRB-7 の値は変えない。新しい定数は skip の上限 40 だけで、周期処理の有界化（緩和ではない）。Gold・評価の規則・S4 の pin（`scripts/quality/nir1-graph-eval/` と evals）には触れない。
 
 ### owner／lifecycle matrix
