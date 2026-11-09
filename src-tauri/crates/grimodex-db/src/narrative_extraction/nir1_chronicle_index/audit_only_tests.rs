@@ -96,6 +96,19 @@ pub(super) fn audit_event() -> AppendAiAuditEvent {
     }
 }
 
+/// The write clock and the lineage are the commit's own bookkeeping, not the
+/// domain tables an audit append writes: the clock's AFTER INSERT trigger on
+/// `ai_audit_events` advances `grimodex_write_clock` in the same commit (DR-DBC-3).
+/// The premise "an append writes only audit rows" is about domain tables, so the
+/// bookkeeping is removed from the comparison (the clock's own behaviour is fixed by
+/// `clock_audit_append_advances_only_the_global_and_append_keys`). PR-2 moves this
+/// premise onto the clock sequence.
+fn without_clock_bookkeeping(mut written: BTreeSet<String>) -> BTreeSet<String> {
+    written.remove("grimodex_write_clock");
+    written.remove("grimodex_db_lineage");
+    written
+}
+
 fn recording_tables<T>(
     conn: &Connection,
     reads: bool,
@@ -149,7 +162,7 @@ fn nir1_premise_generic_audit_append_writes_only_audit_rows() {
     // to `sqlite_sequence`; that table is covered by the read-side premise
     // tests (the complete check, the status read and qualify never read it).
     assert_eq!(
-        written,
+        without_clock_bookkeeping(written),
         BTreeSet::from(["ai_audit_events".to_owned()]),
         "the append writes no other table"
     );
@@ -567,7 +580,11 @@ fn nir1_premise_every_audit_append_shape_writes_only_audit_rows() {
     let only_audit = BTreeSet::from(["ai_audit_events".to_owned()]);
     // The Fixture's five-event embedding audit through the Database API.
     let (_, written) = recording_writes(&f.db, || f.outcome(doc.clone(), false));
-    assert_eq!(written, only_audit, "Fixture outcome()");
+    assert_eq!(
+        without_clock_bookkeeping(written),
+        only_audit,
+        "Fixture outcome()"
+    );
     for skip in [false, true] {
         // The generic append (connection default durability).
         let (events, ..) = f.outcome_audit(&doc, skip);
@@ -575,7 +592,11 @@ fn nir1_premise_every_audit_append_shape_writes_only_audit_rows() {
             f.db.append_ai_audit_events_for_scope(Some(f.project()), &events)
         });
         assert_eq!(result.expect("generic").inserted_count, events.len());
-        assert_eq!(written, only_audit, "generic append, skip {skip}");
+        assert_eq!(
+            without_clock_bookkeeping(written),
+            only_audit,
+            "generic append, skip {skip}"
+        );
         // The external dispatch append: with request.dispatched it commits
         // power-loss durable (PRAGMA synchronous around the transaction).
         let (events, ..) = f.outcome_audit(&doc, skip);
@@ -587,7 +608,11 @@ fn nir1_premise_every_audit_append_shape_writes_only_audit_rows() {
             f.db.append_external_ai_audit_events_for_scope(Some(f.project()), &events)
         });
         assert_eq!(result.expect("external").inserted_count, events.len());
-        assert_eq!(written, only_audit, "external append, skip {skip}");
+        assert_eq!(
+            without_clock_bookkeeping(written),
+            only_audit,
+            "external append, skip {skip}"
+        );
     }
 }
 

@@ -15,8 +15,9 @@
 //! `prepare_cached` を使わず、文のたびに TRIGGER の本体を compile するので、本体の文数が
 //! そのまま上乗せになる（gate G1 の実測。DR-DBC-3 の判断 3）。表ごとの鍵は 1b／1c まで
 //! 見送り、足すときは TRIGGER の本体を差し替える migration で足す。例外は
-//! `ai_audit_events` の AFTER UPDATE／DELETE で、監査の差分検証のために
-//! [`CLOCK_KEY_AUDIT_MUTATE`] の行も `'*'` の値に揃える（2 文目）。
+//! `ai_audit_events` で、監査の追記（INSERT）と変更（UPDATE／DELETE）を別々に残すため、
+//! INSERT は [`CLOCK_KEY_AUDIT_APPEND`]、UPDATE／DELETE は [`CLOCK_KEY_AUDIT_MUTATE`] の
+//! 行も `'*'` の値に揃える（2 文目。保存の経路は監査表を書かないので G1 に影響しない）。
 //!
 //! `'*'` の行が欠けると 1 文の UPDATE は何もしない（連番が止まる）。これは guard の
 //! TRIGGER（`'*'` の DELETE を拒否）と、install／[`has_v46_write_clock`]（`'*'` の行を要求）
@@ -44,6 +45,10 @@ pub const CLOCK_TRIGGER_PREFIX: &str = "grimodex_clock_";
 /// 全体の連番の鍵。対象表（`clock_target_tables`。virtual・shadow を除く main の表）の
 /// 行が変わると +1 される。FTS だけを書く処理や `PRAGMA optimize` では進まない。
 pub const CLOCK_KEY_ALL: &str = "*";
+/// 監査表の INSERT だけが、`'*'` の増分の後に同じ値で書く鍵（監査の「追記だけだった」の
+/// 判定用。rev1 C3-b：PR-2 で `AUDIT_ONLY_STATES` を連番の上に移植する）。
+/// 通常の表には表ごとの鍵は無い。
+pub const CLOCK_KEY_AUDIT_APPEND: &str = "ai_audit_events";
 /// 監査表の UPDATE／DELETE だけが、`'*'` の増分の後に同じ値で書く鍵（監査の差分検証用）。
 /// 通常の表には表ごとの鍵は無い。
 pub const CLOCK_KEY_AUDIT_MUTATE: &str = "ai_audit_events!mutate";
@@ -104,11 +109,11 @@ fn clock_trigger_name(table: &str, suffix: &str) -> String {
     format!("{CLOCK_TRIGGER_PREFIX}{table}_{suffix}")
 }
 
-/// `(suffix, SQL の event, 監査表なら鍵を足すか)`。
-const CLOCK_EVENTS: [(&str, &str, bool); 3] = [
-    ("ai", "INSERT", false),
-    ("au", "UPDATE", true),
-    ("ad", "DELETE", true),
+/// `(suffix, SQL の event, 監査表なら 2 文目で揃える鍵)`。
+const CLOCK_EVENTS: [(&str, &str, &str); 3] = [
+    ("ai", "INSERT", CLOCK_KEY_AUDIT_APPEND),
+    ("au", "UPDATE", CLOCK_KEY_AUDIT_MUTATE),
+    ("ad", "DELETE", CLOCK_KEY_AUDIT_MUTATE),
 ];
 
 fn sorted_tables(tables: &[String]) -> Vec<&String> {
@@ -136,22 +141,23 @@ pub fn expected_clock_trigger_names(tables: &[String]) -> Vec<String> {
 ///
 /// 表ごとに AFTER INSERT／UPDATE／DELETE の 3 本（`_ai`／`_au`／`_ad`）と、
 /// clock 表に `'*'` の削除を拒否する guard を 1 本。名前の昇順で、guard は最後。
-/// 本体は `'*'` の UPDATE の 1 文だけ。`ai_audit_events` の UPDATE／DELETE だけ、
-/// 続けて [`CLOCK_KEY_AUDIT_MUTATE`] の行を `'*'` の値に揃える 2 文目を持つ。
+/// 本体は `'*'` の UPDATE の 1 文だけ。`ai_audit_events` だけ、続けて INSERT は
+/// [`CLOCK_KEY_AUDIT_APPEND`]、UPDATE／DELETE は [`CLOCK_KEY_AUDIT_MUTATE`] の行を
+/// `'*'` の値に揃える 2 文目を持つ。
 /// TRIGGER 名と表名は常に引用する。SQL に末尾の `;` は付けない
 /// （`sqlite_master.sql` と同じ形）。
 pub fn expected_clock_triggers(tables: &[String]) -> Vec<(String, String)> {
     let mut triggers = Vec::with_capacity(tables.len() * 3 + 1);
     for table in sorted_tables(tables) {
-        for (suffix, event, mutate) in CLOCK_EVENTS {
+        for (suffix, event, audit_key) in CLOCK_EVENTS {
             let name = clock_trigger_name(table, suffix);
             let mut body = format!(
                 "UPDATE {WRITE_CLOCK_TABLE} SET seq = seq + 1 WHERE name = '{CLOCK_KEY_ALL}'; "
             );
-            if mutate && table == AUDIT_TABLE {
+            if table == AUDIT_TABLE {
                 body.push_str(&format!(
                     "INSERT INTO {WRITE_CLOCK_TABLE}(name, seq) \
-                     SELECT '{CLOCK_KEY_AUDIT_MUTATE}', seq FROM {WRITE_CLOCK_TABLE} \
+                     SELECT '{audit_key}', seq FROM {WRITE_CLOCK_TABLE} \
                      WHERE name = '{CLOCK_KEY_ALL}' \
                      ON CONFLICT(name) DO UPDATE SET seq = excluded.seq; "
                 ));
@@ -464,22 +470,32 @@ mod tests {
             "grimodex_clock_kids_au",
             "grimodex_clock_kids_ad",
             "grimodex_clock_parents_au",
-            "grimodex_clock_ai_audit_events_ai",
         ] {
             let sql = sql_of(name);
             assert!(sql.contains(one_statement), "{name}: {sql}");
             assert_eq!(sql.matches(';').count(), 1, "{name} has one statement");
             assert!(!sql.contains("INSERT INTO"), "{name}");
         }
-        // 監査表の UPDATE／DELETE だけ、mutate の鍵を持つ 2 文目がある。
-        for name in [
-            "grimodex_clock_ai_audit_events_au",
-            "grimodex_clock_ai_audit_events_ad",
+        // 監査表だけ、`'*'` の後に鍵を揃える 2 文目がある。INSERT は append の鍵、
+        // UPDATE／DELETE は mutate の鍵（PR-2 で追記だけだった判定を連番の上に移植する）。
+        for (name, key) in [
+            ("grimodex_clock_ai_audit_events_ai", "ai_audit_events"),
+            (
+                "grimodex_clock_ai_audit_events_au",
+                "ai_audit_events!mutate",
+            ),
+            (
+                "grimodex_clock_ai_audit_events_ad",
+                "ai_audit_events!mutate",
+            ),
         ] {
             let sql = sql_of(name);
+            assert!(sql.contains(&format!("SELECT '{key}', seq")), "{name}");
             assert!(
-                sql.contains("SELECT 'ai_audit_events!mutate', seq"),
-                "{name}"
+                sql.contains(
+                    "UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; INSERT INTO"
+                ),
+                "{name}: the global key is advanced first"
             );
             assert_eq!(sql.matches(';').count(), 2, "{name} has two statements");
         }
@@ -547,6 +563,16 @@ mod tests {
         conn.execute_batch(&sql.replace("ON \"kids\"", "ON \"parents\""))
             .expect("recreate attached to parents");
         assert!(!has_v46_write_clock(&conn).expect("wrong table"));
+
+        // audit の append の鍵が無い（通常の本体にすり替えた）。
+        let conn = installed();
+        conn.execute_batch(
+            "DROP TRIGGER grimodex_clock_ai_audit_events_ai;
+             CREATE TRIGGER \"grimodex_clock_ai_audit_events_ai\" AFTER INSERT ON \"ai_audit_events\" BEGIN \
+             UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
+        )
+        .expect("plain body on the audit insert trigger");
+        assert!(!has_v46_write_clock(&conn).expect("audit trigger without the append key"));
 
         // audit の mutate の鍵が無い（通常の本体にすり替えた）。
         let conn = installed();
@@ -722,28 +748,37 @@ mod tests {
         // 親 1 + 子 3（CASCADE）+ orphan 1（SET NULL）。
         assert_eq!(all(&conn), d0 + 5);
 
-        // 監査表：INSERT は '*' だけ。UPDATE／DELETE は '*' の増分の後に mutate の鍵を揃える。
+        // 監査表：INSERT は '*' の増分の後に append の鍵を揃える（mutate の鍵は動かない）。
+        // UPDATE／DELETE は '*' の増分の後に mutate の鍵を揃える（append の鍵は動かない）。
         conn.execute("INSERT INTO ai_audit_events(note) VALUES ('x')", [])
             .expect("audit insert");
         assert_eq!(seq(&conn, CLOCK_KEY_AUDIT_MUTATE), None);
+        assert_eq!(seq(&conn, CLOCK_KEY_AUDIT_APPEND), Some(all(&conn)));
         let after_insert = all(&conn);
         conn.execute("UPDATE ai_audit_events SET note = 'y'", [])
             .expect("audit update");
         assert_eq!(all(&conn), after_insert + 1);
         assert_eq!(seq(&conn, CLOCK_KEY_AUDIT_MUTATE), Some(all(&conn)));
+        assert_eq!(
+            seq(&conn, CLOCK_KEY_AUDIT_APPEND),
+            Some(after_insert),
+            "an update does not move the append key"
+        );
         let after_update = all(&conn);
         conn.execute("DELETE FROM ai_audit_events", [])
             .expect("audit delete");
         assert_eq!(all(&conn), after_update + 1);
         assert_eq!(seq(&conn, CLOCK_KEY_AUDIT_MUTATE), Some(all(&conn)));
 
-        // 通常の表の書込みでは mutate の鍵は動かない。
+        // 通常の表の書込みでは監査の鍵（append・mutate）は動かない。
         let mutate = seq(&conn, CLOCK_KEY_AUDIT_MUTATE);
+        let append = seq(&conn, CLOCK_KEY_AUDIT_APPEND);
         conn.execute("INSERT INTO parents(id) VALUES ('p4')", [])
             .expect("insert");
         assert_eq!(seq(&conn, CLOCK_KEY_AUDIT_MUTATE), mutate);
+        assert_eq!(seq(&conn, CLOCK_KEY_AUDIT_APPEND), append);
 
-        // 表ごとの鍵は '*' と mutate 以外に作られない。
+        // 鍵は '*' と監査の 2 つ（append・mutate）以外に作られない。
         let keys: Vec<String> = conn
             .prepare("SELECT name FROM grimodex_write_clock ORDER BY name")
             .expect("prepare")
@@ -751,7 +786,7 @@ mod tests {
             .expect("query")
             .collect::<Result<_, _>>()
             .expect("rows");
-        assert_eq!(keys, ["*", CLOCK_KEY_AUDIT_MUTATE]);
+        assert_eq!(keys, ["*", CLOCK_KEY_AUDIT_APPEND, CLOCK_KEY_AUDIT_MUTATE]);
     }
 
     /// 1 文の UPDATE は `'*'` の行が無いと何もしない。guard が削除を拒否し、

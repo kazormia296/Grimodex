@@ -247,6 +247,87 @@ mod tests {
         .expect("verify");
     }
 
+    /// 監査の追記（`ai_audit_events` の INSERT）は `'*'` と追記の鍵だけを進め、変更の鍵
+    /// （`!mutate`）とほかの鍵は進めない。rev1 C3-b：PR-2 で「追記だけだった」の判定を
+    /// 連番の上に移すため、追記と変更の鍵を別々に残す。
+    #[test]
+    fn clock_audit_append_advances_only_the_global_and_append_keys() {
+        use grimodex_core::write_clock::{CLOCK_KEY_AUDIT_APPEND, CLOCK_KEY_AUDIT_MUTATE};
+        let (_path, db) = migrated("audit-append");
+        let all_keys = |conn: &Connection| -> Vec<(String, i64)> {
+            conn.prepare(&format!(
+                "SELECT name, seq FROM {WRITE_CLOCK_TABLE} ORDER BY name"
+            ))
+            .expect("prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows")
+        };
+        let event = || crate::ai_audit::AppendAiAuditEvent {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            execution_id: uuid::Uuid::new_v4().to_string(),
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            parent_execution_id: None,
+            path_id: "semantic_search".into(),
+            event_type: "execution.started".into(),
+            timestamp: 1,
+            payload: serde_json::json!({
+                "captureState": "complete",
+                "modelDispatched": false,
+                "executionMode": "local-native",
+            }),
+        };
+        // 通常の表の書込みで mutate の鍵を作り、それが追記で動かないことも見る。
+        db.with_conn(|conn| {
+            conn.execute(
+                &format!("INSERT INTO {WRITE_CLOCK_TABLE}(name, seq) VALUES (?1, 3)"),
+                [CLOCK_KEY_AUDIT_MUTATE],
+            )?;
+            Ok(())
+        })
+        .expect("seed the mutate key");
+        let before = db.with_conn(|conn| Ok(all_keys(conn))).expect("before");
+        let global_before = before
+            .iter()
+            .find(|(name, _)| name == CLOCK_KEY_ALL)
+            .expect("global")
+            .1;
+        let result = db
+            .append_ai_audit_events_for_scope(None, &[event()])
+            .expect("append");
+        assert_eq!(result.inserted_count, 1);
+        let after = db.with_conn(|conn| Ok(all_keys(conn))).expect("after");
+
+        let seq_of = |rows: &[(String, i64)], key: &str| {
+            rows.iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, seq)| *seq)
+        };
+        let global_after = seq_of(&after, CLOCK_KEY_ALL).expect("global");
+        assert!(global_after > global_before, "the append advances '*'");
+        assert_eq!(
+            seq_of(&after, CLOCK_KEY_AUDIT_APPEND),
+            Some(global_after),
+            "the append key follows '*'"
+        );
+        assert_eq!(
+            seq_of(&after, CLOCK_KEY_AUDIT_MUTATE),
+            seq_of(&before, CLOCK_KEY_AUDIT_MUTATE),
+            "the mutate key does not move"
+        );
+        let names: Vec<&str> = after.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                CLOCK_KEY_ALL,
+                CLOCK_KEY_AUDIT_APPEND,
+                CLOCK_KEY_AUDIT_MUTATE
+            ],
+            "no other key is created"
+        );
+    }
+
     fn ddl_counter(conn: &Connection) -> Arc<AtomicUsize> {
         let counter = Arc::new(AtomicUsize::new(0));
         let seen = counter.clone();
