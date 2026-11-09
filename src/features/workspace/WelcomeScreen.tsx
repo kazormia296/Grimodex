@@ -7,6 +7,7 @@ import { GrimodexLogo } from "@/components/GrimodexLogo";
 import { PreflightCard } from "@/features/onboarding/PreflightCard";
 import { requestWebEditorHandoffImport } from "@/features/import/webEditorHandoffRequest";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
+import { workspaceOpenErrorText } from "./workspaceOpenErrorText";
 
 const LANGUAGE_OPTIONS = [
   { value: "ja", label: "日本語" },
@@ -117,7 +118,11 @@ function ReturningUserScreen() {
           </p>
         )}
 
-        {error && <p className="text-xs text-destructive">{error}</p>}
+        {error && (
+          <p className="text-xs text-destructive">
+            {workspaceOpenErrorText(error, t)}
+          </p>
+        )}
 
         <button
           type="button"
