@@ -1,0 +1,1619 @@
+{
+ "allowList": {
+  "s4Commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+  "candidate": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+  "goldRun": "gold-s7r1-2",
+  "goldPriorRunNotCounted": "gold-s7r1-1"
+ },
+ "runs": [
+  {
+   "run": "gold-s7r1-1",
+   "runKind": "gold",
+   "status": "stopped",
+   "attempt": null,
+   "s4Commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+   "candidate": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+   "startedAtUtc": "2026-11-08T18:11:58.188Z",
+   "finishedAtUtc": "2026-11-08T18:19:27.600Z",
+   "pairMatches": true,
+   "ledgerFileSha256": "e97ec4f7c8438ecc1161b2402a3883956b973cfc7adeee1bfe07e53bc924077e",
+   "sameBytesAsArtifacts": true,
+   "counted": false
+  },
+  {
+   "run": "gold-s7r1-2",
+   "runKind": "gold",
+   "status": "completed",
+   "attempt": null,
+   "s4Commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+   "candidate": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+   "startedAtUtc": "2026-11-08T23:02:45.365Z",
+   "finishedAtUtc": "2026-11-08T23:49:40.449Z",
+   "pairMatches": true,
+   "ledgerFileSha256": "f9de3221032d56a8cbbbbe9710c6553b72f203c27144768a1e81677040fd7073",
+   "sameBytesAsArtifacts": true,
+   "counted": true
+  },
+  {
+   "run": "neg-n2-s7r1-1",
+   "runKind": "negative",
+   "status": "completed",
+   "attempt": null,
+   "s4Commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+   "candidate": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+   "startedAtUtc": "2026-11-08T23:50:34.574Z",
+   "finishedAtUtc": "2026-11-08T23:52:54.397Z",
+   "pairMatches": true,
+   "ledgerFileSha256": "b8b2076f318898343320ed0193b05edabd8841e2391f730d6d25aa944c2d64fd",
+   "sameBytesAsArtifacts": true,
+   "counted": true
+  },
+  {
+   "run": "neg-n3-s7r1-1",
+   "runKind": "negative",
+   "status": "completed",
+   "attempt": null,
+   "s4Commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+   "candidate": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+   "startedAtUtc": "2026-11-08T23:53:48.448Z",
+   "finishedAtUtc": "2026-11-08T23:56:07.714Z",
+   "pairMatches": true,
+   "ledgerFileSha256": "fd352e4d3c4518f32c1a8a9f64ff682bc721e6d39e0ca771f358895278cf9954",
+   "sameBytesAsArtifacts": true,
+   "counted": true
+  },
+  {
+   "run": "neg-n4-s7r1-1",
+   "runKind": "negative",
+   "status": "completed",
+   "attempt": null,
+   "s4Commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+   "candidate": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+   "startedAtUtc": "2026-11-08T23:57:01.830Z",
+   "finishedAtUtc": "2026-11-08T23:59:27.044Z",
+   "pairMatches": true,
+   "ledgerFileSha256": "ba1b60755994d8c809571992e97e4bd0faf41435415e523208b91e9758d64c2b",
+   "sameBytesAsArtifacts": true,
+   "counted": true
+  },
+  {
+   "run": "parity-s7r1-1",
+   "runKind": "parity",
+   "status": "completed",
+   "attempt": null,
+   "s4Commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+   "candidate": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+   "startedAtUtc": "2026-11-08T18:03:52.061Z",
+   "finishedAtUtc": "2026-11-08T18:11:03.907Z",
+   "pairMatches": true,
+   "ledgerFileSha256": "24c31ba78ba6e3df6fb6372aad368bc6b03b7919a4ccdc60a15a1aeaaad769fe",
+   "sameBytesAsArtifacts": true,
+   "counted": true
+  },
+  {
+   "run": "sp-p4-s7r1-1",
+   "runKind": "sp-p4",
+   "status": "completed",
+   "attempt": 1,
+   "s4Commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+   "candidate": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+   "startedAtUtc": "2026-11-08T17:45:09.272Z",
+   "finishedAtUtc": "2026-11-08T17:46:56.943Z",
+   "pairMatches": true,
+   "ledgerFileSha256": "bb4f8080a44a5b924398f1ffb9b6ba66ac0d799c3270e2c15b5721055d7f42e2",
+   "sameBytesAsArtifacts": true,
+   "counted": true
+  },
+  {
+   "run": "trace-browsing-s7r1-1",
+   "runKind": "trace",
+   "status": "completed",
+   "attempt": 1,
+   "s4Commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+   "candidate": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+   "startedAtUtc": "2026-11-08T17:59:13.331Z",
+   "finishedAtUtc": "2026-11-08T18:02:57.810Z",
+   "pairMatches": true,
+   "ledgerFileSha256": "349ff1287482481d11168417a6606c7641c8f57acb99a5a87e3b2dfeab0160f9",
+   "sameBytesAsArtifacts": true,
+   "counted": true
+  },
+  {
+   "run": "trace-editing-s7r1-1",
+   "runKind": "trace",
+   "status": "completed",
+   "attempt": 1,
+   "s4Commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+   "candidate": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+   "startedAtUtc": "2026-11-08T17:47:49.066Z",
+   "finishedAtUtc": "2026-11-08T17:58:21.345Z",
+   "pairMatches": true,
+   "ledgerFileSha256": "41accf15e392417ccd6f6b1de10de29465fde9912095abd2cb3c3e0c92a4409e",
+   "sameBytesAsArtifacts": true,
+   "counted": true
+  }
+ ],
+ "selectReceiptsForAggregation": {
+  "included": 28,
+  "includedKinds": {
+   "g-case-gold": 13,
+   "g-case-parity-unrestricted": 12,
+   "g-case-diagnostic-negative": 3
+  },
+  "excluded": [
+   {
+    "runId": "trace-editing-s7r1-1",
+    "reason": "runner-is-not-the-k64-hook-consumer"
+   },
+   {
+    "runId": "trace-browsing-s7r1-1",
+    "reason": "runner-is-not-the-k64-hook-consumer"
+   }
+  ],
+  "note": "trace の受領書は receipt 全体の runnerKind を持たず runner-is-not-the-k64-hook-consumer で除かれる（関数の既知の限界。trace の query は全件 followUp.issuedVia=product-hook で、R5 は要約の検査で見ている）。receipt.mjs は S2 に pin 済みなので変えない。"
+ },
+ "bindings": {
+  "constantsMatchCandidateConstantsMjs": true,
+  "receipts": 31,
+  "k62": {
+   "freezeCommit": "af643a93eeae7f937c9cd5a9dd87a6308c96fab6",
+   "sha256": "4ccca08314c022fd969308fa969e6fcb3e2c439fe12757bfec0e901b905676f8"
+  },
+  "k64": {
+   "freezeCommit": "5dea38af158283c2a925d68ef0d8b0771c0ea209",
+   "sha256": "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3"
+  },
+  "k65": {
+   "freezeCommit": "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+   "sha256": "1ad1088498e43dc3cd0deb1b7d74f18396eb3c07d4bd3834a8787de30ecd24a7"
+  },
+  "k66": {
+   "freezeCommit": "56fb4fad2eb1eb2e021dfd121ea073f9d263cb4d",
+   "sha256": "58c634fa9b3d76803e486516c0e67444b74d4f5987cd851cd0857a25cc8945e7"
+  },
+  "observationPrepCommit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+  "candidate": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+  "previewFalse": true,
+  "runNameMatches": true,
+  "allMatch": true,
+  "sourcePins": {
+   "s2PinsEqualObservationPrepCodeSOURCE_PINS": true,
+   "s2PinCount": 45,
+   "codePinCount": 45,
+   "runs": {
+    "gold-s7r1-2": {
+     "pins": 45,
+     "problems": [],
+     "seedPinGate": "match",
+     "productBuildChecked": true,
+     "productReceiptHead": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+     "evalReceiptHead": "3f333a83554d4dba6c54417d500d3af6f0e985c5"
+    },
+    "gold-s7r1-1": {
+     "pins": 45,
+     "problems": [],
+     "seedPinGate": "match",
+     "productBuildChecked": true,
+     "productReceiptHead": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+     "evalReceiptHead": "3f333a83554d4dba6c54417d500d3af6f0e985c5"
+    },
+    "parity-s7r1-1": {
+     "pins": 45,
+     "problems": [],
+     "seedPinGate": "match",
+     "productBuildChecked": true,
+     "productReceiptHead": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+     "evalReceiptHead": "3f333a83554d4dba6c54417d500d3af6f0e985c5"
+    },
+    "neg-n2-s7r1-1": {
+     "pins": 45,
+     "problems": [],
+     "seedPinGate": "match",
+     "productBuildChecked": true,
+     "productReceiptHead": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+     "evalReceiptHead": "3f333a83554d4dba6c54417d500d3af6f0e985c5"
+    },
+    "neg-n3-s7r1-1": {
+     "pins": 45,
+     "problems": [],
+     "seedPinGate": "match",
+     "productBuildChecked": true,
+     "productReceiptHead": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+     "evalReceiptHead": "3f333a83554d4dba6c54417d500d3af6f0e985c5"
+    },
+    "neg-n4-s7r1-1": {
+     "pins": 45,
+     "problems": [],
+     "seedPinGate": "match",
+     "productBuildChecked": true,
+     "productReceiptHead": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+     "evalReceiptHead": "3f333a83554d4dba6c54417d500d3af6f0e985c5"
+    }
+   }
+  }
+ },
+ "ssc": {
+  "goldRun": "gold-s7r1-2",
+  "rows": [
+   {
+    "variantKey": "G-01/v1",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "k62Literal": {
+     "inWindow": 0,
+     "outOfWindow": 30,
+     "outOfWindowRate": 1,
+     "notReadyAtStart": 30,
+     "stampMismatch": 30,
+     "stampWithoutComparison": 30,
+     "stampResults": {
+      "stamp0-missing": 30
+     },
+     "boundaryDisagreement": {
+      "not-joined-in-time": 0,
+      "joined-late-within-tolerance": 0
+     },
+     "cacheOrigin": 0
+    },
+    "receiptQualityHoldFlag": true,
+    "k64": {
+     "n": 30,
+     "firstRender": 30,
+     "followUp": 0,
+     "displayed": 30,
+     "missed": 0,
+     "firstRenderCandidates": 30,
+     "firstRenderNotCounted": 0,
+     "firstRenderNotCountedBy": {},
+     "firstRenderNotCountedReasons": {},
+     "contributedNotCounted": 0,
+     "firstRenderOutOfWindow": 0,
+     "firstRenderOutOfWindowRate": 0,
+     "x": {},
+     "violations": 0,
+     "notApplied": [],
+     "q1Max": null,
+     "q1N": 0
+    },
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-02/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "k62Literal": {
+     "inWindow": 0,
+     "outOfWindow": 30,
+     "outOfWindowRate": 1,
+     "notReadyAtStart": 30,
+     "stampMismatch": 30,
+     "stampWithoutComparison": 30,
+     "stampResults": {
+      "stamp0-missing": 30
+     },
+     "boundaryDisagreement": {
+      "not-joined-in-time": 0,
+      "joined-late-within-tolerance": 0
+     },
+     "cacheOrigin": 0
+    },
+    "receiptQualityHoldFlag": true,
+    "k64": {
+     "n": 30,
+     "firstRender": 3,
+     "followUp": 27,
+     "displayed": 30,
+     "missed": 0,
+     "firstRenderCandidates": 3,
+     "firstRenderNotCounted": 0,
+     "firstRenderNotCountedBy": {},
+     "firstRenderNotCountedReasons": {},
+     "contributedNotCounted": 0,
+     "firstRenderOutOfWindow": 27,
+     "firstRenderOutOfWindowRate": 0.9,
+     "x": {},
+     "violations": 0,
+     "notApplied": [],
+     "q1Max": 43.799999952316284,
+     "q1N": 27
+    },
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-03/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "k62Literal": {
+     "inWindow": 0,
+     "outOfWindow": 30,
+     "outOfWindowRate": 1,
+     "notReadyAtStart": 30,
+     "stampMismatch": 30,
+     "stampWithoutComparison": 30,
+     "stampResults": {
+      "stamp0-missing": 30
+     },
+     "boundaryDisagreement": {
+      "not-joined-in-time": 0,
+      "joined-late-within-tolerance": 0
+     },
+     "cacheOrigin": 0
+    },
+    "receiptQualityHoldFlag": true,
+    "k64": {
+     "n": 30,
+     "firstRender": 30,
+     "followUp": 0,
+     "displayed": 30,
+     "missed": 0,
+     "firstRenderCandidates": 30,
+     "firstRenderNotCounted": 0,
+     "firstRenderNotCountedBy": {},
+     "firstRenderNotCountedReasons": {},
+     "contributedNotCounted": 0,
+     "firstRenderOutOfWindow": 0,
+     "firstRenderOutOfWindowRate": 0,
+     "x": {},
+     "violations": 0,
+     "notApplied": [],
+     "q1Max": null,
+     "q1N": 0
+    },
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-03/frontier-exceeded",
+    "inPool": false,
+    "regime": "k64",
+    "n": 30,
+    "k62Literal": {
+     "inWindow": 0,
+     "outOfWindow": 30,
+     "outOfWindowRate": 1,
+     "notReadyAtStart": 30,
+     "stampMismatch": 30,
+     "stampWithoutComparison": 0,
+     "stampResults": {
+      "none": 30
+     },
+     "boundaryDisagreement": {
+      "not-joined-in-time": 0,
+      "joined-late-within-tolerance": 0
+     },
+     "cacheOrigin": 0
+    },
+    "receiptQualityHoldFlag": false,
+    "k64": null,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-04/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "k62Literal": {
+     "inWindow": 0,
+     "outOfWindow": 30,
+     "outOfWindowRate": 1,
+     "notReadyAtStart": 30,
+     "stampMismatch": 30,
+     "stampWithoutComparison": 30,
+     "stampResults": {
+      "stamp0-missing": 30
+     },
+     "boundaryDisagreement": {
+      "not-joined-in-time": 0,
+      "joined-late-within-tolerance": 0
+     },
+     "cacheOrigin": 0
+    },
+    "receiptQualityHoldFlag": true,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 30,
+     "displayed": 30,
+     "missed": 0,
+     "firstRenderCandidates": 0,
+     "firstRenderNotCounted": 0,
+     "firstRenderNotCountedBy": {},
+     "firstRenderNotCountedReasons": {},
+     "contributedNotCounted": 0,
+     "firstRenderOutOfWindow": 30,
+     "firstRenderOutOfWindowRate": 1,
+     "x": {},
+     "violations": 0,
+     "notApplied": [],
+     "q1Max": 43.700000047683716,
+     "q1N": 30
+    },
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-05/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "k62Literal": {
+     "inWindow": 0,
+     "outOfWindow": 30,
+     "outOfWindowRate": 1,
+     "notReadyAtStart": 30,
+     "stampMismatch": 30,
+     "stampWithoutComparison": 30,
+     "stampResults": {
+      "stamp0-missing": 30
+     },
+     "boundaryDisagreement": {
+      "not-joined-in-time": 0,
+      "joined-late-within-tolerance": 0
+     },
+     "cacheOrigin": 0
+    },
+    "receiptQualityHoldFlag": true,
+    "k64": {
+     "n": 30,
+     "firstRender": 4,
+     "followUp": 26,
+     "displayed": 30,
+     "missed": 0,
+     "firstRenderCandidates": 4,
+     "firstRenderNotCounted": 0,
+     "firstRenderNotCountedBy": {},
+     "firstRenderNotCountedReasons": {},
+     "contributedNotCounted": 0,
+     "firstRenderOutOfWindow": 26,
+     "firstRenderOutOfWindowRate": 0.8666666666666667,
+     "x": {},
+     "violations": 0,
+     "notApplied": [],
+     "q1Max": 44.5,
+     "q1N": 26
+    },
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-06/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "k62Literal": {
+     "inWindow": 0,
+     "outOfWindow": 30,
+     "outOfWindowRate": 1,
+     "notReadyAtStart": 30,
+     "stampMismatch": 30,
+     "stampWithoutComparison": 30,
+     "stampResults": {
+      "stamp0-missing": 30
+     },
+     "boundaryDisagreement": {
+      "not-joined-in-time": 0,
+      "joined-late-within-tolerance": 0
+     },
+     "cacheOrigin": 0
+    },
+    "receiptQualityHoldFlag": true,
+    "k64": {
+     "n": 30,
+     "firstRender": 30,
+     "followUp": 0,
+     "displayed": 30,
+     "missed": 0,
+     "firstRenderCandidates": 30,
+     "firstRenderNotCounted": 0,
+     "firstRenderNotCountedBy": {},
+     "firstRenderNotCountedReasons": {},
+     "contributedNotCounted": 0,
+     "firstRenderOutOfWindow": 0,
+     "firstRenderOutOfWindowRate": 0,
+     "x": {},
+     "violations": 0,
+     "notApplied": [],
+     "q1Max": null,
+     "q1N": 0
+    },
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-07/base",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "k62Literal": {
+     "inWindow": 0,
+     "outOfWindow": 30,
+     "outOfWindowRate": 1,
+     "notReadyAtStart": 30,
+     "stampMismatch": 30,
+     "stampWithoutComparison": 30,
+     "stampResults": {
+      "stamp0-missing": 30
+     },
+     "boundaryDisagreement": {
+      "not-joined-in-time": 0,
+      "joined-late-within-tolerance": 0
+     },
+     "cacheOrigin": 0
+    },
+    "receiptQualityHoldFlag": true,
+    "k64": {
+     "n": 30,
+     "firstRender": 0,
+     "followUp": 30,
+     "displayed": 30,
+     "missed": 0,
+     "firstRenderCandidates": 0,
+     "firstRenderNotCounted": 0,
+     "firstRenderNotCountedBy": {},
+     "firstRenderNotCountedReasons": {},
+     "contributedNotCounted": 0,
+     "firstRenderOutOfWindow": 30,
+     "firstRenderOutOfWindowRate": 1,
+     "x": {},
+     "violations": 0,
+     "notApplied": [],
+     "q1Max": 53.200000047683716,
+     "q1N": 30
+    },
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-08/base-usable",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "k62Literal": {
+     "inWindow": 0,
+     "outOfWindow": 30,
+     "outOfWindowRate": 1,
+     "notReadyAtStart": 30,
+     "stampMismatch": 30,
+     "stampWithoutComparison": 30,
+     "stampResults": {
+      "stamp0-missing": 30
+     },
+     "boundaryDisagreement": {
+      "not-joined-in-time": 0,
+      "joined-late-within-tolerance": 0
+     },
+     "cacheOrigin": 0
+    },
+    "receiptQualityHoldFlag": true,
+    "k64": {
+     "n": 30,
+     "firstRender": 29,
+     "followUp": 1,
+     "displayed": 30,
+     "missed": 0,
+     "firstRenderCandidates": 29,
+     "firstRenderNotCounted": 0,
+     "firstRenderNotCountedBy": {},
+     "firstRenderNotCountedReasons": {},
+     "contributedNotCounted": 0,
+     "firstRenderOutOfWindow": 1,
+     "firstRenderOutOfWindowRate": 0.03333333333333333,
+     "x": {},
+     "violations": 0,
+     "notApplied": [],
+     "q1Max": 42.5,
+     "q1N": 1
+    },
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-08/both-indexes-unusable",
+    "inPool": false,
+    "regime": "k64",
+    "n": 30,
+    "k62Literal": {
+     "inWindow": 0,
+     "outOfWindow": 30,
+     "outOfWindowRate": 1,
+     "notReadyAtStart": 30,
+     "stampMismatch": 30,
+     "stampWithoutComparison": 0,
+     "stampResults": {
+      "none": 30
+     },
+     "boundaryDisagreement": {
+      "not-joined-in-time": 0,
+      "joined-late-within-tolerance": 0
+     },
+     "cacheOrigin": 0
+    },
+    "receiptQualityHoldFlag": false,
+    "k64": null,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-08/chronicle-index-unusable",
+    "inPool": false,
+    "regime": "k64",
+    "n": 30,
+    "k62Literal": {
+     "inWindow": 0,
+     "outOfWindow": 30,
+     "outOfWindowRate": 1,
+     "notReadyAtStart": 30,
+     "stampMismatch": 30,
+     "stampWithoutComparison": 30,
+     "stampResults": {
+      "stamp0-missing": 30
+     },
+     "boundaryDisagreement": {
+      "not-joined-in-time": 0,
+      "joined-late-within-tolerance": 0
+     },
+     "cacheOrigin": 0
+    },
+    "receiptQualityHoldFlag": false,
+    "k64": null,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-08/graph-index-unusable",
+    "inPool": false,
+    "regime": "k64",
+    "n": 30,
+    "k62Literal": {
+     "inWindow": 0,
+     "outOfWindow": 30,
+     "outOfWindowRate": 1,
+     "notReadyAtStart": 30,
+     "stampMismatch": 30,
+     "stampWithoutComparison": 0,
+     "stampResults": {
+      "none": 30
+     },
+     "boundaryDisagreement": {
+      "not-joined-in-time": 0,
+      "joined-late-within-tolerance": 0
+     },
+     "cacheOrigin": 0
+    },
+    "receiptQualityHoldFlag": false,
+    "k64": null,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-08/graph-recovered",
+    "inPool": true,
+    "regime": "k64",
+    "n": 30,
+    "k62Literal": {
+     "inWindow": 0,
+     "outOfWindow": 30,
+     "outOfWindowRate": 1,
+     "notReadyAtStart": 30,
+     "stampMismatch": 29,
+     "stampWithoutComparison": 29,
+     "stampResults": {
+      "stamp0-missing": 29,
+      "fresh": 1
+     },
+     "boundaryDisagreement": {
+      "not-joined-in-time": 0,
+      "joined-late-within-tolerance": 0
+     },
+     "cacheOrigin": 0
+    },
+    "receiptQualityHoldFlag": true,
+    "k64": {
+     "n": 30,
+     "firstRender": 30,
+     "followUp": 0,
+     "displayed": 30,
+     "missed": 0,
+     "firstRenderCandidates": 30,
+     "firstRenderNotCounted": 0,
+     "firstRenderNotCountedBy": {},
+     "firstRenderNotCountedReasons": {},
+     "contributedNotCounted": 0,
+     "firstRenderOutOfWindow": 0,
+     "firstRenderOutOfWindowRate": 0,
+     "x": {},
+     "violations": 0,
+     "notApplied": [],
+     "q1Max": null,
+     "q1N": 0
+    },
+    "windowClean": true
+   }
+  ],
+  "goldValidations": {
+   "count": 13,
+   "allValid": true
+  },
+  "pool": {
+   "variants": 9,
+   "poolVariants": [
+    "G-01/v1",
+    "G-02/base",
+    "G-03/base",
+    "G-04/base",
+    "G-05/base",
+    "G-06/base",
+    "G-07/base",
+    "G-08/base-usable",
+    "G-08/graph-recovered"
+   ],
+   "n": 270,
+   "displayed": 270,
+   "missed": 0,
+   "missRate": 0,
+   "allowedMisses": 2,
+   "exceeds": false,
+   "firstRenderInWindow": 156,
+   "followUp": 114,
+   "holdCases": [],
+   "anyVariantWithZeroDisplayed": false,
+   "contributedNotCounted": 0,
+   "firstRenderCandidates": 156,
+   "firstRenderNotCounted": 0,
+   "firstRenderOutOfWindow": 114,
+   "firstRenderOutOfWindowRate": 0.4222222222222222,
+   "firstRenderOutOfWindowNote": "K6/6 の条件（FR-1〜FR-8）で数えた first-render の窓外率（= 窓外の sample は follow-up で表示された）。K6/4 の変える点 1・2、K6/6 の変える点 5：記録と開示だけで、物差しには使わない。",
+   "k62OutOfWindowRate": {
+    "poolN": 270,
+    "outOfWindow": 270,
+    "note": "K6/2 の字義（readyFresh・stamp の条件つき）の窓外率。受領書の steadyStateCase.outOfWindow。K6/6 では記録と開示だけ"
+   },
+   "reasonsNotCounted": {
+    "by": {},
+    "reasons": {}
+   }
+  },
+  "poolWithoutG04": {
+   "note": "開示用（判定には使わない。pool の選び直しは禁止）",
+   "n": 240,
+   "missed": 0
+  },
+  "nonPoolVariants": [
+   {
+    "variantKey": "G-03/frontier-exceeded",
+    "n": 30,
+    "hasK64": false,
+    "receiptQualityHoldFlag": false,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-08/both-indexes-unusable",
+    "n": 30,
+    "hasK64": false,
+    "receiptQualityHoldFlag": false,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-08/chronicle-index-unusable",
+    "n": 30,
+    "hasK64": false,
+    "receiptQualityHoldFlag": false,
+    "windowClean": true
+   },
+   {
+    "variantKey": "G-08/graph-index-unusable",
+    "n": 30,
+    "hasK64": false,
+    "receiptQualityHoldFlag": false,
+    "windowClean": true
+   }
+  ],
+  "notCountedReasonsDisclosure": {
+   "note": "開示用（判定には使わない）。受領書の firstRenderNotCountedBy／Reasons。first-render の候補が first-render に数えられなかった理由の件数",
+   "byVariant": [
+    {
+     "variantKey": "G-01/v1",
+     "firstRenderCandidates": 30,
+     "firstRenderNotCounted": 0,
+     "by": {},
+     "reasons": {}
+    },
+    {
+     "variantKey": "G-02/base",
+     "firstRenderCandidates": 3,
+     "firstRenderNotCounted": 0,
+     "by": {},
+     "reasons": {}
+    },
+    {
+     "variantKey": "G-03/base",
+     "firstRenderCandidates": 30,
+     "firstRenderNotCounted": 0,
+     "by": {},
+     "reasons": {}
+    },
+    {
+     "variantKey": "G-04/base",
+     "firstRenderCandidates": 0,
+     "firstRenderNotCounted": 0,
+     "by": {},
+     "reasons": {}
+    },
+    {
+     "variantKey": "G-05/base",
+     "firstRenderCandidates": 4,
+     "firstRenderNotCounted": 0,
+     "by": {},
+     "reasons": {}
+    },
+    {
+     "variantKey": "G-06/base",
+     "firstRenderCandidates": 30,
+     "firstRenderNotCounted": 0,
+     "by": {},
+     "reasons": {}
+    },
+    {
+     "variantKey": "G-07/base",
+     "firstRenderCandidates": 0,
+     "firstRenderNotCounted": 0,
+     "by": {},
+     "reasons": {}
+    },
+    {
+     "variantKey": "G-08/base-usable",
+     "firstRenderCandidates": 29,
+     "firstRenderNotCounted": 0,
+     "by": {},
+     "reasons": {}
+    },
+    {
+     "variantKey": "G-08/graph-recovered",
+     "firstRenderCandidates": 30,
+     "firstRenderNotCounted": 0,
+     "by": {},
+     "reasons": {}
+    }
+   ],
+   "total": {
+    "by": {},
+    "reasons": {}
+   },
+   "fr7": [],
+   "stampOrR1": []
+  }
+ },
+ "spP4": {
+  "status": "passed",
+  "problems": 0,
+  "variants": 8,
+  "allSame": true,
+  "differences": 0,
+  "irTimeoutExcluded": 0,
+  "irTimeoutLimit": 6
+ },
+ "parity": {
+  "variants": 12,
+  "validations": 12,
+  "allValid": true,
+  "windowClean": [
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true
+  ],
+  "allWindowClean": true,
+  "regimes": [
+   null
+  ],
+  "note": "parity は Graph arm を測らない。parity が READY だったことは Gold の worker が READY になる証拠ではない（gold-s7r1-1 の V-10）。"
+ },
+ "negatives": {
+  "neg-n2-s7r1-1": {
+   "status": "measured",
+   "valid": true,
+   "verdict": "recorded",
+   "samples": 70,
+   "runProblems": 0,
+   "assessment": {
+    "id": "K24-G01-N2",
+    "mutation": "resave-same-body",
+    "countsInCaseJudgement": false,
+    "outcome": "established",
+    "reasons": [],
+    "returnedIn": []
+   },
+   "control": "reached",
+   "returnedSceneIdsOverMeasured": [
+    "g01-question"
+   ],
+   "graphMiraReturned": false,
+   "frameReachedAll": true,
+   "step": {
+    "mutation": {
+     "before": {
+      "sha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491",
+      "version": 0
+     },
+     "after": {
+      "sha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491",
+      "version": 1
+     }
+    },
+    "feedAfterMutation": {
+     "consumerId": "narrative-incremental-freshness/v1",
+     "head": 19,
+     "cursor": true,
+     "acknowledged": 17,
+     "activeRun": false,
+     "reserved": false,
+     "pendingEvents": 2,
+     "pendingSequences": 2
+    },
+    "sealAttempts": [
+     {
+      "outcome": "sealed",
+      "waitedMs": 1041,
+      "sealBranch": "unchanged",
+      "bGeneration": 1,
+      "bDirty": false,
+      "settleCoversMutation": true
+     }
+    ]
+   },
+   "beforeDeclarationSealAttempts": null,
+   "validation": {
+    "valid": true,
+    "errors": []
+   },
+   "windowClean": true
+  },
+  "neg-n3-s7r1-1": {
+   "status": "measured",
+   "valid": true,
+   "verdict": "recorded",
+   "samples": 70,
+   "runProblems": 0,
+   "assessment": {
+    "id": "K24-G01-N3",
+    "mutation": "restore-same-bytes-body-version",
+    "countsInCaseJudgement": false,
+    "outcome": "established",
+    "reasons": [],
+    "returnedIn": []
+   },
+   "control": "reached",
+   "returnedSceneIdsOverMeasured": [
+    "g01-question"
+   ],
+   "graphMiraReturned": false,
+   "frameReachedAll": true,
+   "step": {
+    "mutation": {
+     "revisionId": "6791d832-868e-4121-a72a-3d79031da14b",
+     "version": 1,
+     "replayed": false,
+     "afterSha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491",
+     "restoredSha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491"
+    },
+    "feedAfterMutation": null,
+    "sealAttempts": [
+     {
+      "outcome": "sealed",
+      "waitedMs": 515,
+      "sealBranch": "new-generation",
+      "bGeneration": 2,
+      "bDirty": false,
+      "settleCoversMutation": null
+     }
+    ]
+   },
+   "beforeDeclarationSealAttempts": null,
+   "validation": {
+    "valid": true,
+    "errors": []
+   },
+   "windowClean": true
+  },
+  "neg-n4-s7r1-1": {
+   "status": "measured",
+   "valid": true,
+   "verdict": "recorded",
+   "samples": 70,
+   "runProblems": 0,
+   "assessment": {
+    "id": "K24-G01-N4",
+    "mutation": "restore-different-bytes-body-version",
+    "countsInCaseJudgement": false,
+    "outcome": "established",
+    "reasons": [],
+    "returnedIn": []
+   },
+   "control": "reached",
+   "returnedSceneIdsOverMeasured": [
+    "g01-question"
+   ],
+   "graphMiraReturned": false,
+   "frameReachedAll": true,
+   "step": {
+    "mutation": {
+     "revisionId": "c4ed4b3d-ca10-40b9-a366-5199bfa77131",
+     "version": 3,
+     "replayed": false,
+     "afterSha256": "fdd2431a824348c0198c2024a539d85679089833cda60f42be38a0edef3cd923",
+     "restoredSha256": "fdd2431a824348c0198c2024a539d85679089833cda60f42be38a0edef3cd923"
+    },
+    "feedAfterMutation": null,
+    "sealAttempts": [
+     {
+      "outcome": "sealed",
+      "waitedMs": 513,
+      "sealBranch": "new-generation",
+      "bGeneration": 2,
+      "bDirty": false,
+      "settleCoversMutation": null
+     }
+    ]
+   },
+   "beforeDeclarationSealAttempts": [
+    {
+     "outcome": "sealed",
+     "waitedMs": 1038,
+     "sealBranch": "unchanged",
+     "bGeneration": 1,
+     "bDirty": false,
+     "settleCoversMutation": true
+    }
+   ],
+   "validation": {
+    "valid": true,
+    "errors": []
+   },
+   "windowClean": true
+  }
+ },
+ "g01Diagnostic": {
+  "run": "g01-e2e-s7r1-1",
+  "mode": "g01-frozen",
+  "purpose": "g01-e2e-diagnostic",
+  "countsInCaseJudgement": false,
+  "session": "separate-diagnostic",
+  "reachedEndToEnd": true,
+  "firstMissing": null,
+  "leaseEvidence": {
+   "continueAvailableGraphOnly": true,
+   "clickKeepClick": true,
+   "requeryCached": true,
+   "requeryContinueAvailable": true,
+   "usedSettle": true
+  },
+  "candidateClean": true,
+  "headMatchesHeadJson": true,
+  "bindingMatches": true,
+  "runStartedAtUtc": "2026-11-09T00:00:18.145Z",
+  "reportProblems": 0,
+  "reportMatchesResult": true,
+  "sessionProblems": []
+ },
+ "traces": {
+  "editing": {
+   "receiptStatus": "valid",
+   "defects": 0,
+   "headBound": true,
+   "attempt": 1,
+   "stalled": null,
+   "recordedInReceipt": {
+    "regime": "k62",
+    "status": "valid",
+    "Q": 201,
+    "U": 201,
+    "displayed": null,
+    "firstRenderInWindow": 23,
+    "followUpDisplayed": null,
+    "lapse": 1,
+    "lapseBreakdown": {
+     "total": 1,
+     "i-b-seal": 0,
+     "i-chronicle-stop": 1,
+     "ii-a3-ineligible-at-start": 0,
+     "iii-invalidated": 0,
+     "iv-empty-contribution": 0
+    },
+    "lapseRate": 0.004975124378109453,
+    "lapseExceeds": false,
+    "outOfWindow": 178,
+    "outOfWindowU": 178,
+    "outOfWindowRate": 0.8855721393034826,
+    "outOfWindowExceeds": true,
+    "mainReason": "other",
+    "categories": {
+     "lapse": 1,
+     "other": 173,
+     "freshness": 4
+    },
+    "reasons": {
+     "freshness-stamp-stamp0-missing:overlap-record-missing": 173,
+     "i-chronicle-stop": 1,
+     "graph-late:stale-start": 4
+    },
+    "outcomes": {
+     "graph-late": 177,
+     "graph-unavailable": 1,
+     "graph-ready": 23
+    },
+    "boundaryDisagreement": {
+     "not-joined-in-time": 2,
+     "joined-late-within-tolerance": 0
+    },
+    "violations": 0,
+    "notApplied": [
+     "b:rs-join-hook"
+    ],
+    "x": {},
+    "followUpLapse": null,
+    "q1": null,
+    "requeryCount": 0
+   },
+   "recomputedWithKeepTestEvidence": {
+    "regime": "k64",
+    "status": "valid",
+    "Q": 201,
+    "U": 201,
+    "displayed": 200,
+    "firstRenderInWindow": 23,
+    "followUpDisplayed": 177,
+    "lapse": 1,
+    "lapseBreakdown": {
+     "total": 1,
+     "i-b-seal": 0,
+     "i-chronicle-stop": 1,
+     "ii-a3-ineligible-at-start": 0,
+     "iii-invalidated": 0,
+     "iv-empty-contribution": 0
+    },
+    "lapseRate": 0.004975124378109453,
+    "lapseExceeds": false,
+    "outOfWindow": 1,
+    "outOfWindowU": 1,
+    "outOfWindowRate": 0.004975124378109453,
+    "outOfWindowExceeds": false,
+    "mainReason": "lapse",
+    "categories": {
+     "lapse": 1,
+     "other": 0,
+     "freshness": 0
+    },
+    "reasons": {
+     "i-chronicle-stop": 1
+    },
+    "outcomes": {
+     "graph-late": 177,
+     "graph-unavailable": 1,
+     "graph-ready": 23
+    },
+    "boundaryDisagreement": {
+     "not-joined-in-time": 2,
+     "joined-late-within-tolerance": 0
+    },
+    "violations": 0,
+    "notApplied": null,
+    "x": {
+     "X11": 1,
+     "X12": 1
+    },
+    "followUpLapse": {},
+    "q1": {
+     "n": 177,
+     "p50": 45.40000009536743,
+     "p90": 47.300000071525574,
+     "p99": 50.5,
+     "min": 42.700000047683716,
+     "max": 50.700000047683716
+    },
+    "requeryCount": 0
+   },
+   "startSeal": {
+    "current": 201,
+    "dirty": 0,
+    "missing": 0,
+    "unknown": 0
+   },
+   "nativeAlignment": {
+    "aligned": true,
+    "seededBegins": 378,
+    "records": 378,
+    "excludedAfterWindow": null
+   },
+   "c7ExcludedChronicleStop": {
+    "rule": "DR-CP4-C7",
+    "count": 1,
+    "conditionFetches": 1,
+    "countedAs": "i-chronicle-stop",
+    "byRole": {
+     "counted-parent": {
+      "count": 1,
+      "queryIndexes": [
+       1
+      ]
+     },
+     "counted-child": {
+      "count": 0,
+      "queryIndexes": []
+     },
+     "not-counted": {
+      "count": 0,
+      "queryIndexes": []
+     }
+    },
+    "begins": [
+     {
+      "beginId": 8,
+      "fetchSeq": 21,
+      "graphOutcome": "graph-unavailable:cancelled",
+      "irReason": "index-unavailable",
+      "role": "counted-parent",
+      "queryIndex": 1
+     }
+    ],
+    "countEqualsConditionFetches": true,
+    "readClockRange": {
+     "lower": 642.787894000001,
+     "upper": 646.5490080715244
+    },
+    "readClockReason": null
+   },
+   "lapseI": {
+    "k64": {
+     "i-b-seal": 0,
+     "cancelledBeforeBegin": 0,
+     "other": 0,
+     "i-chronicle-stop": 1
+    },
+    "k62": {
+     "i-b-seal": 0,
+     "cancelledBeforeBegin": 0,
+     "other": 0,
+     "i-chronicle-stop": 1
+    }
+   },
+   "requeries": {
+    "graph-ready": 177,
+    "index-ready": 1,
+    "ir-retry": 0,
+    "unattributed": 0,
+    "outside-q": 0
+   },
+   "cancelledParents": {
+    "rule": "DR-CP4-V-3",
+    "count": 0,
+    "rows": []
+   },
+   "outsideQ": {
+    "outsideQ": 0,
+    "completed": 0,
+    "nonCompleted": 0
+   },
+   "graphUnavailableQueries": [
+    {
+     "queryId": "nir1-cp4-trace-editing/1#1",
+     "traceIndex": 1,
+     "graphOutcome": "graph-unavailable",
+     "graphReason": "cancelled",
+     "irOutcome": "index-unavailable",
+     "snapshotUsable": true,
+     "startSealState": "current"
+    }
+   ]
+  },
+  "browsing": {
+   "receiptStatus": "valid",
+   "defects": 0,
+   "headBound": true,
+   "attempt": 1,
+   "stalled": null,
+   "recordedInReceipt": {
+    "regime": "k62",
+    "status": "valid",
+    "Q": 201,
+    "U": 201,
+    "displayed": null,
+    "firstRenderInWindow": 3,
+    "followUpDisplayed": null,
+    "lapse": 0,
+    "lapseBreakdown": {
+     "total": 0,
+     "i-b-seal": 0,
+     "i-chronicle-stop": 0,
+     "ii-a3-ineligible-at-start": 0,
+     "iii-invalidated": 0,
+     "iv-empty-contribution": 0
+    },
+    "lapseRate": 0,
+    "lapseExceeds": false,
+    "outOfWindow": 198,
+    "outOfWindowU": 198,
+    "outOfWindowRate": 0.9850746268656716,
+    "outOfWindowExceeds": true,
+    "mainReason": "freshness",
+    "categories": {
+     "lapse": 0,
+     "other": 23,
+     "freshness": 175
+    },
+    "reasons": {
+     "freshness-stamp-stamp0-missing:clear": 23,
+     "graph-late:stale-start": 175
+    },
+    "outcomes": {
+     "graph-late": 198,
+     "graph-ready": 3
+    },
+    "boundaryDisagreement": {
+     "not-joined-in-time": 0,
+     "joined-late-within-tolerance": 0
+    },
+    "violations": 0,
+    "notApplied": [
+     "b:rs-join-hook"
+    ],
+    "x": {},
+    "followUpLapse": null,
+    "q1": null,
+    "requeryCount": 0
+   },
+   "recomputedWithKeepTestEvidence": {
+    "regime": "k64",
+    "status": "valid",
+    "Q": 201,
+    "U": 201,
+    "displayed": 201,
+    "firstRenderInWindow": 3,
+    "followUpDisplayed": 198,
+    "lapse": 0,
+    "lapseBreakdown": {
+     "total": 0,
+     "i-b-seal": 0,
+     "i-chronicle-stop": 0,
+     "ii-a3-ineligible-at-start": 0,
+     "iii-invalidated": 0,
+     "iv-empty-contribution": 0
+    },
+    "lapseRate": 0,
+    "lapseExceeds": false,
+    "outOfWindow": 0,
+    "outOfWindowU": 0,
+    "outOfWindowRate": 0,
+    "outOfWindowExceeds": false,
+    "mainReason": null,
+    "categories": {
+     "lapse": 0,
+     "other": 0,
+     "freshness": 0
+    },
+    "reasons": {},
+    "outcomes": {
+     "graph-late": 198,
+     "graph-ready": 3
+    },
+    "boundaryDisagreement": {
+     "not-joined-in-time": 0,
+     "joined-late-within-tolerance": 0
+    },
+    "violations": 0,
+    "notApplied": null,
+    "x": {},
+    "followUpLapse": {},
+    "q1": {
+     "n": 198,
+     "p50": 61.800000071525574,
+     "p90": 73.59999990463257,
+     "p99": 81.20000004768372,
+     "min": 42.699999928474426,
+     "max": 83.10000002384186
+    },
+    "requeryCount": 0
+   },
+   "startSeal": {
+    "current": 201,
+    "dirty": 0,
+    "missing": 0,
+    "unknown": 0
+   },
+   "nativeAlignment": {
+    "aligned": true,
+    "seededBegins": 399,
+    "records": 399,
+    "excludedAfterWindow": null
+   },
+   "c7ExcludedChronicleStop": null,
+   "lapseI": {
+    "k64": {
+     "i-b-seal": 0,
+     "cancelledBeforeBegin": 0,
+     "other": 0,
+     "i-chronicle-stop": 0
+    },
+    "k62": {
+     "i-b-seal": 0,
+     "cancelledBeforeBegin": 0,
+     "other": 0,
+     "i-chronicle-stop": 0
+    }
+   },
+   "requeries": {
+    "graph-ready": 198,
+    "index-ready": 0,
+    "ir-retry": 0,
+    "unattributed": 0,
+    "outside-q": 200
+   },
+   "cancelledParents": {
+    "rule": "DR-CP4-V-3",
+    "count": 0,
+    "rows": []
+   },
+   "outsideQ": {
+    "outsideQ": 200,
+    "completed": 200,
+    "nonCompleted": 0
+   },
+   "graphUnavailableQueries": []
+  }
+ },
+ "gold1Disclosure": {
+  "note": "開示用。gold-s7r1-1 は集計の対象に数えない（status stopped の試行）。判定にも使わない。",
+  "ledger": {
+   "status": "stopped",
+   "startedAtUtc": "2026-11-08T18:11:58.188Z",
+   "finishedAtUtc": "2026-11-08T18:19:27.600Z",
+   "variants": {
+    "G-01/v1": "measured",
+    "G-02/base": "measured",
+    "G-03/base": "measured",
+    "G-03/frontier-exceeded": "stopped"
+   }
+  },
+  "stoppedVariant": [
+   {
+    "variant": "G-03/frontier-exceeded",
+    "error": "[precheck] V-10: the worker never reached READY"
+   }
+  ],
+  "runReportProblems": [
+   "G-03/frontier-exceeded: Error: [precheck] V-10: the worker never reached READY"
+  ],
+  "measuredVariantsWithReceipt": [
+   "G-01/v1",
+   "G-02/base",
+   "G-03/base"
+  ],
+  "secondRunDisclosesFirst": {
+   "goldReceiptPriorAttemptsGold": {
+    "runName": "gold-s7r1-1",
+    "runKind": "gold",
+    "status": "stopped",
+    "startedAtUtc": "2026-11-08T18:11:58.188Z",
+    "finishedAtUtc": "2026-11-08T18:19:27.600Z",
+    "fileSha256": "e97ec4f7c8438ecc1161b2402a3883956b973cfc7adeee1bfe07e53bc924077e"
+   },
+   "sameAsFinalLedgerSha256": true,
+   "appliesTo": "gold-s7r1-2 の 13 receipt すべての priorAttempts.gold（frozen-k64-run.mjs:1681-1703 が前の Gold 試行を開示する）",
+   "allThirteenDisclose": true
+  },
+  "sameCandidateAndSetup": {
+   "candidate": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+   "setupsOfBothRunsEqual": true
+  },
+  "bindingOfItsReceipts": {
+   "checked": 3,
+   "allMatch": true,
+   "detail": [
+    {
+     "run": "gold-s7r1-1/G-01/v1",
+     "errors": []
+    },
+    {
+     "run": "gold-s7r1-1/G-02/base",
+     "errors": []
+    },
+    {
+     "run": "gold-s7r1-1/G-03/base",
+     "errors": []
+    }
+   ]
+  },
+  "sideBySide": [
+   {
+    "variantKey": "G-01/v1",
+    "valid": true,
+    "windowClean": true,
+    "goldS7r1_1_notCounted": {
+     "n": 30,
+     "firstRender": 30,
+     "followUp": 0,
+     "displayed": 30,
+     "missed": 0,
+     "contributedNotCounted": 0,
+     "firstRenderOutOfWindow": 0
+    },
+    "goldS7r1_2_counted": {
+     "n": 30,
+     "firstRender": 30,
+     "followUp": 0,
+     "displayed": 30,
+     "missed": 0,
+     "contributedNotCounted": 0,
+     "firstRenderOutOfWindow": 0
+    }
+   },
+   {
+    "variantKey": "G-02/base",
+    "valid": true,
+    "windowClean": true,
+    "goldS7r1_1_notCounted": {
+     "n": 30,
+     "firstRender": 9,
+     "followUp": 21,
+     "displayed": 30,
+     "missed": 0,
+     "contributedNotCounted": 0,
+     "firstRenderOutOfWindow": 21
+    },
+    "goldS7r1_2_counted": {
+     "n": 30,
+     "firstRender": 3,
+     "followUp": 27,
+     "displayed": 30,
+     "missed": 0,
+     "contributedNotCounted": 0,
+     "firstRenderOutOfWindow": 27
+    }
+   },
+   {
+    "variantKey": "G-03/base",
+    "valid": true,
+    "windowClean": true,
+    "goldS7r1_1_notCounted": {
+     "n": 30,
+     "firstRender": 30,
+     "followUp": 0,
+     "displayed": 30,
+     "missed": 0,
+     "contributedNotCounted": 0,
+     "firstRenderOutOfWindow": 0
+    },
+    "goldS7r1_2_counted": {
+     "n": 30,
+     "firstRender": 30,
+     "followUp": 0,
+     "displayed": 30,
+     "missed": 0,
+     "contributedNotCounted": 0,
+     "firstRenderOutOfWindow": 0
+    }
+   }
+  ]
+ },
+ "ledger": {
+  "entries": 9,
+  "counted": 8,
+  "countedRuns": [
+   "gold-s7r1-2",
+   "neg-n2-s7r1-1",
+   "neg-n3-s7r1-1",
+   "neg-n4-s7r1-1",
+   "parity-s7r1-1",
+   "sp-p4-s7r1-1",
+   "trace-browsing-s7r1-1",
+   "trace-editing-s7r1-1"
+  ],
+  "notCounted": [
+   {
+    "run": "gold-s7r1-1",
+    "status": "stopped"
+   }
+  ]
+ }
+}
