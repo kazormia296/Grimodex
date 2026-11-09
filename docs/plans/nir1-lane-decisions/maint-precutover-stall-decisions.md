@@ -424,3 +424,15 @@ capacity probe（`nir1-material-capacity --mode coverage`、release build、各 
 ### 検証の計画（実装の後に追記する）
 
 基点は `4594820d`（rusqlite を上げた master に載せると同梱 SQLite の版が変わり、比較が混ざる）。評価 build は計装なし。同じ setup（`m-L1`〜`m-L5`）の写しで、編集 trace（100 サイクル）を修正後 5 本と、既存の pre／post と対にして比べる。a2 型の Gold を 3 回（連鎖が戻っていないか）。0／505 になっても根拠は同じ程度に弱い（run 単位 p≈0.024）ので、1 件でも出れば「直った」とせず本数を足す。A/B は dev で判定に数えない。
+
+### 実装後の追記（2026-11-10。A/B の結果と、取り消した懸念）
+
+実装は `build.rs`（`YIELD_WINDOW`＝10 s、`SKIP_RETRY_DELAY`＝50 ms、`RetryPolicy` の 2 field、`next_tick_mode` と `next_skipping_since` を時間で判定、`Skipped` の後の sleep は `min(引き継いだ wait, 50 ms)`）と `related_scenes.rs`（reconcile の上限を 40 round の独立した定数に）。DR と食い違う点は無い。試験は `related_scenes` が 120 件、新しい timing の試験（`the_tick_after_a_skip_comes_after_the_short_skip_delay`、`the_loop_yields_until_the_window_passes_then_yields_again`、`a_non_skip_outcome_resets_the_skip_window`）は 2 回続けて通った。
+
+A/B（基点 `4594820d`、評価 build は計装なし、同じ setup の写し。dev・判定に数えない。生データ `handoff/s7r1-chain-instr/`）：
+- **編集 trace（dev-lantern の `base`、100 サイクル＝101 query、各 arm 5 本）**：query の開始時に Chronicle index が使えない件は **pre 0／505、post（#843）4／505、fix 0／505**。pre と post は時間を交互に走らせ、fix は後の（I/O の負荷が高い）時間帯で、fix に不利な条件でも 0 だった。`graph-late` は pre 1／post 2／fix 2。fix の 1 本に `registration-unavailable` が 1 件（1／505。pre・post は 0／505。偶然と区別できない。観察として記録）。1 件でも出れば本数を足す、の基準は fix の `index-unavailable` が 0 なので満たしている（run 単位 0／5 対 post 4／5、片側 p≈0.024）。
+- **a2 型の Gold（連鎖が戻っていないか）**：fix 3／3 が measured、Graph の結果は 35／35 `limit`・slot empty、Verify は最初の tick から約 4 s で完了（post と同じ）。a1 型も fix 3／3、計装版（静かな時間帯）の post／fix 各 3 回も同じ。
+- **一度出した懸念（Graph の raw 取得が約 50 秒周期で 0.2〜2 s 遅れる）は取り消す**：g27／g55 付近（約 47〜50 s と約 96〜100 s）の周期的な軽い遅れ（55〜71 ms、通常 20 ms）は **pre にもある**（a1 型 3 回すべて）。大きな遅れ（200 ms〜2 s）は I/O pressure の高い時間帯の run にだけ出た（watcher の `pressure.io` の平均が 77〜80 の run。静かな時間帯の run は 61〜69 で、pre・post・fix とも 46〜77 ms）。arm 間の差ではなく、時間帯（環境）の差と読む。周期の事象そのものの正体（WAL の背景 checkpoint などの推測）は未確認で、この PR の範囲外。
+- 計装（接続の保持・foreground の待ち・build の tick の dev 専用の JSON 行。merge しない）の記録でも、静かな時間帯の 6 回では 100 ms を超える foreground の待ちは 0 件で、`tick` の skip が 44〜50 s と 99〜102 s に出る（接続が使用中の瞬間）。
+
+残る：dev-lantern は小さい fixture で、正式の G-02/base とは別物。評価の物差し（失効 1% を超える）は正式の測定でしか判定できない。大きい DB の Verify（別 lane）、周期的な軽い遅れの正体は未確認。
