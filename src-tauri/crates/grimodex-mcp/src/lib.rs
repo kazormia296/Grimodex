@@ -270,4 +270,165 @@ mod schema_compatibility_tests {
             })
             .expect("verify missing runtime policy forces read-only");
     }
+
+    /// DB 段 1 PR-1（DR-DBC-3）：user_version が現行でも、clock の TRIGGER が 1 本欠けた
+    /// DB は MCP が書込み不可（readonly）にする。
+    #[test]
+    fn current_marker_missing_clock_trigger_forces_mcp_readonly_mode() {
+        let database =
+            Database::new(std::path::Path::new(":memory:")).expect("open compatibility fixture");
+        database.migrate().expect("create current schema");
+        database
+            .with_conn(|conn| {
+                let user_version: i32 =
+                    conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                assert_eq!(user_version, grimodex_core::SCHEMA_VERSION);
+                assert!(schema_allows_writes(conn, user_version)?);
+                conn.execute_batch("DROP TRIGGER grimodex_clock_projects_au")?;
+                let user_version: i32 =
+                    conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                assert_eq!(user_version, grimodex_core::SCHEMA_VERSION);
+                assert!(!schema_allows_writes(conn, user_version)?);
+                Ok(())
+            })
+            .expect("verify missing clock trigger forces read-only");
+    }
+
+    /// guard の TRIGGER と clock 表の欠けも同じく書込み不可。
+    #[test]
+    fn current_marker_missing_clock_guard_or_table_forces_mcp_readonly_mode() {
+        for statement in [
+            "DROP TRIGGER grimodex_clock_guard_star",
+            "DROP TABLE grimodex_db_lineage",
+            "DELETE FROM grimodex_db_lineage",
+        ] {
+            let database = Database::new(std::path::Path::new(":memory:"))
+                .expect("open compatibility fixture");
+            database.migrate().expect("create current schema");
+            database
+                .with_conn(|conn| {
+                    conn.execute_batch(statement)?;
+                    let user_version: i32 =
+                        conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                    assert_eq!(user_version, grimodex_core::SCHEMA_VERSION);
+                    assert!(
+                        !schema_allows_writes(conn, user_version)?,
+                        "{statement} must force read-only"
+                    );
+                    Ok(())
+                })
+                .expect("verify broken clock forces read-only");
+        }
+    }
+
+    /// v45（user_version 45・clock なし）は書込み不可のまま。
+    #[test]
+    fn v45_database_without_clock_stays_mcp_readonly() {
+        let database =
+            Database::new(std::path::Path::new(":memory:")).expect("open compatibility fixture");
+        database.migrate().expect("create current schema");
+        database
+            .with_conn(|conn| {
+                let triggers: Vec<String> = conn
+                    .prepare(
+                        "SELECT name FROM sqlite_master
+                          WHERE type = 'trigger' AND name GLOB 'grimodex_clock_*'",
+                    )?
+                    .query_map([], |row| row.get(0))?
+                    .collect::<Result<_, _>>()?;
+                assert!(!triggers.is_empty());
+                for name in triggers {
+                    conn.execute_batch(&format!("DROP TRIGGER \"{name}\""))?;
+                }
+                conn.execute_batch(
+                    "DROP TABLE grimodex_write_clock; DROP TABLE grimodex_db_lineage;",
+                )?;
+                conn.pragma_update(None, "user_version", 45)?;
+                assert!(!schema_allows_writes(conn, 45)?);
+                // user_version だけ現行に戻しても、clock が無ければ書込み不可。
+                assert!(!schema_allows_writes(conn, grimodex_core::SCHEMA_VERSION)?);
+                Ok(())
+            })
+            .expect("verify v45 stays read-only");
+    }
+
+    /// clock が揃った file DB は MCP が書込み可で開き、MCP の書込み（実際の
+    /// `chronicle_create_event`）で別 connection から見た clock が進む。
+    #[test]
+    fn complete_clock_allows_mcp_writes_and_clock_advances() {
+        let dir = std::env::temp_dir().join(format!("grimodex-mcp-clock-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create test directory");
+        let path = dir.join("grimodex.db");
+        {
+            let database = Database::new(&path).expect("open fixture");
+            database.migrate().expect("create current schema");
+            database
+                .with_conn(|conn| {
+                    conn.execute(
+                        "INSERT INTO projects (id, title) VALUES ('p1', 'Novel')",
+                        [],
+                    )?;
+                    Ok(())
+                })
+                .expect("seed project");
+        }
+
+        let conn = db::open_db(&path).expect("open as MCP");
+        let user_version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user_version");
+        assert!(schema_allows_writes(&conn, user_version).expect("probe"));
+
+        let global = |conn: &rusqlite::Connection| -> i64 {
+            conn.query_row(
+                "SELECT seq FROM grimodex_write_clock WHERE name = '*'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read global clock")
+        };
+        let before = global(&conn);
+        db::chronicle_create_event(
+            &conn,
+            db::ChronicleCreateInput {
+                project_id: "p1",
+                session_id: "sess",
+                title: Some("clock"),
+                note: None,
+                ordinal: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                precision: None,
+                kind: None,
+                secret: None,
+                reveal_scene_id: None,
+                participant_codex_ids: &[],
+                scene_ids: &[],
+            },
+        )
+        .expect("MCP write");
+        let after = global(&conn);
+        assert!(after > before, "{after} must advance from {before}");
+        let events_key: i64 = conn
+            .query_row(
+                "SELECT seq FROM grimodex_write_clock WHERE name = 'events'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("events row");
+        assert!(events_key > before && events_key <= after);
+
+        // 別 connection からも同じ値が見える（DB の中の連番）。
+        let other = rusqlite::Connection::open(&path).expect("second connection");
+        assert_eq!(global(&other), after);
+        drop(other);
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

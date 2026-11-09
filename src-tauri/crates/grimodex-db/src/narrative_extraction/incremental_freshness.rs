@@ -8720,7 +8720,7 @@ mod tests {
             db.migrate().expect("full pass from 45");
             assert_eq!(user_version(&db), grimodex_core::SCHEMA_VERSION);
             assert!(db
-                .with_conn(|conn| Ok(grimodex_core::write_clock::has_v46_write_clock(conn)?))
+                .with_conn(grimodex_core::write_clock::has_v46_write_clock)
                 .expect("clock"));
             assert_eq!(terminal_records(&db), before);
             assert_eq!(reservation(&db), reserved);
