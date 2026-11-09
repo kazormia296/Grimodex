@@ -7,6 +7,29 @@
 //!
 //! 連番は失効の合図であって authority ではない。TRIGGER の本体は `NEW`／`OLD` を
 //! 参照しない（D2a で closed の表の Read 拒否に当たり、renderer の書込みが止まるため）。
+//!
+//! # TRIGGER の本体は 1 文（`'*'` の UPDATE だけ）
+//!
+//! 通常の表の AFTER INSERT／UPDATE／DELETE の本体は
+//! `UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'` の 1 文。保存の経路は
+//! `prepare_cached` を使わず、文のたびに TRIGGER の本体を compile するので、本体の文数が
+//! そのまま上乗せになる（gate G1 の実測。DR-DBC-3 の判断 3）。表ごとの鍵は 1b／1c まで
+//! 見送り、足すときは TRIGGER の本体を差し替える migration で足す。例外は
+//! `ai_audit_events` の AFTER UPDATE／DELETE で、監査の差分検証のために
+//! [`CLOCK_KEY_AUDIT_MUTATE`] の行も `'*'` の値に揃える（2 文目）。
+//!
+//! `'*'` の行が欠けると 1 文の UPDATE は何もしない（連番が止まる）。これは guard の
+//! TRIGGER（`'*'` の DELETE を拒否）と、install／[`has_v46_write_clock`]（`'*'` の行を要求）
+//! が守る。
+//!
+//! # 既知の限界
+//!
+//! - 外側の文の `OR IGNORE` は TRIGGER の本体にも及ぶ。`'*'` が `i64::MAX` のとき
+//!   `seq + 1` が REAL になって `CHECK` に落ちるが、`INSERT OR IGNORE` の中ではその
+//!   書込みだけが無視され、clock だけが止まる（利用者の書込みは成功する）。seq は 0 から
+//!   始まり到達不能で、信頼しない DB の取り込み（Web Editor）は seq を 0 に戻す。
+//! - 名前の比較用の正規化（[`has_v46_write_clock`] の SQL 比較）は引用符の中の空白と
+//!   大文字小文字も潰す。`weird name` と `weirdname` の TRIGGER は区別できない。
 
 use std::collections::BTreeMap;
 
@@ -18,9 +41,11 @@ pub const WRITE_CLOCK_TABLE: &str = "grimodex_write_clock";
 pub const DB_LINEAGE_TABLE: &str = "grimodex_db_lineage";
 /// clock の TRIGGER 名の接頭辞（`LIKE` ではなく GLOB で探す。`_` が wildcard になるため）。
 pub const CLOCK_TRIGGER_PREFIX: &str = "grimodex_clock_";
-/// 全体の連番の鍵。どの行が変わっても +1 される。
+/// 全体の連番の鍵。対象表（`clock_target_tables`。virtual・shadow を除く main の表）の
+/// 行が変わると +1 される。FTS だけを書く処理や `PRAGMA optimize` では進まない。
 pub const CLOCK_KEY_ALL: &str = "*";
-/// 監査表の UPDATE／DELETE の鍵（INSERT は表名そのまま）。
+/// 監査表の UPDATE／DELETE だけが、`'*'` の増分の後に同じ値で書く鍵（監査の差分検証用）。
+/// 通常の表には表ごとの鍵は無い。
 pub const CLOCK_KEY_AUDIT_MUTATE: &str = "ai_audit_events!mutate";
 /// `'*'` の削除を拒否する TRIGGER の名前。
 pub const CLOCK_GUARD_TRIGGER: &str = "grimodex_clock_guard_star";
@@ -48,8 +73,9 @@ fn compact_ddl(sql: &str) -> String {
 
 /// clock の TRIGGER を付ける表の一覧（main schema の実表だけ。ソート済み）。
 ///
-/// 除くもの：`sqlite_%`、clock の 2 表、virtual、shadow、view。名前は SQL に
-/// 埋め込むので `[a-z0-9_]+` に限り、外れる名前があればエラーにする。
+/// 除くもの：`sqlite_%`、clock の 2 表、virtual、shadow、view。名前は生のまま返す
+/// （authorizer は引用符なしの名前で比べる）。SQL に入れるときは [`quote_identifier`] で
+/// 引用する（大文字・空白・`"`・`'`・日本語の名前でも install が通る）。
 pub fn clock_target_tables(conn: &Connection) -> anyhow::Result<Vec<String>> {
     let mut statement = conn.prepare(
         "SELECT name FROM pragma_table_list
@@ -63,46 +89,77 @@ pub fn clock_target_tables(conn: &Connection) -> anyhow::Result<Vec<String>> {
             row.get::<_, String>(0)
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    for name in &names {
-        if name.is_empty()
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-        {
-            anyhow::bail!("write clock: table name {name:?} is outside [a-z0-9_]+");
+    Ok(names)
+}
+
+/// SQL の識別子として `"` で囲む（内部の `"` は `""`）。
+pub fn quote_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// 表と event の組の TRIGGER 名（生の名前。authorizer が見る `sqlite_master.name` と同じ）。
+/// 名前の規則はここだけが持ち、[`expected_clock_triggers`] と
+/// [`expected_clock_trigger_names`] が共有する。
+fn clock_trigger_name(table: &str, suffix: &str) -> String {
+    format!("{CLOCK_TRIGGER_PREFIX}{table}_{suffix}")
+}
+
+/// `(suffix, SQL の event, 監査表なら鍵を足すか)`。
+const CLOCK_EVENTS: [(&str, &str, bool); 3] = [
+    ("ai", "INSERT", false),
+    ("au", "UPDATE", true),
+    ("ad", "DELETE", true),
+];
+
+fn sorted_tables(tables: &[String]) -> Vec<&String> {
+    let mut sorted: Vec<&String> = tables.iter().collect();
+    sorted.sort();
+    sorted
+}
+
+/// 期待する clock の TRIGGER の名前だけ（SQL を作らない）。生の名前。
+///
+/// [`expected_clock_triggers`] と同じ名前・同じ順序（表の昇順、各表は `_ai`／`_au`／`_ad`、
+/// 最後に guard）。renderer の authorizer が接続ごとに集合を作る費用を下げるための関数。
+pub fn expected_clock_trigger_names(tables: &[String]) -> Vec<String> {
+    let mut names = Vec::with_capacity(tables.len() * 3 + 1);
+    for table in sorted_tables(tables) {
+        for (suffix, _, _) in CLOCK_EVENTS {
+            names.push(clock_trigger_name(table, suffix));
         }
     }
-    Ok(names)
+    names.push(CLOCK_GUARD_TRIGGER.to_string());
+    names
 }
 
 /// 期待する clock の TRIGGER（名前と SQL）。純関数。
 ///
 /// 表ごとに AFTER INSERT／UPDATE／DELETE の 3 本（`_ai`／`_au`／`_ad`）と、
 /// clock 表に `'*'` の削除を拒否する guard を 1 本。名前の昇順で、guard は最後。
-/// SQL に末尾の `;` は付けない（`sqlite_master.sql` と同じ形）。
+/// 本体は `'*'` の UPDATE の 1 文だけ。`ai_audit_events` の UPDATE／DELETE だけ、
+/// 続けて [`CLOCK_KEY_AUDIT_MUTATE`] の行を `'*'` の値に揃える 2 文目を持つ。
+/// TRIGGER 名と表名は常に引用する。SQL に末尾の `;` は付けない
+/// （`sqlite_master.sql` と同じ形）。
 pub fn expected_clock_triggers(tables: &[String]) -> Vec<(String, String)> {
-    let mut sorted: Vec<&String> = tables.iter().collect();
-    sorted.sort();
-    let mut triggers = Vec::with_capacity(sorted.len() * 3 + 1);
-    for table in sorted {
-        for (suffix, event, mutate) in [
-            ("ai", "INSERT", false),
-            ("au", "UPDATE", true),
-            ("ad", "DELETE", true),
-        ] {
-            let key = if mutate && table == AUDIT_TABLE {
-                CLOCK_KEY_AUDIT_MUTATE
-            } else {
-                table.as_str()
-            };
-            let name = format!("{CLOCK_TRIGGER_PREFIX}{table}_{suffix}");
+    let mut triggers = Vec::with_capacity(tables.len() * 3 + 1);
+    for table in sorted_tables(tables) {
+        for (suffix, event, mutate) in CLOCK_EVENTS {
+            let name = clock_trigger_name(table, suffix);
+            let mut body = format!(
+                "UPDATE {WRITE_CLOCK_TABLE} SET seq = seq + 1 WHERE name = '{CLOCK_KEY_ALL}'; "
+            );
+            if mutate && table == AUDIT_TABLE {
+                body.push_str(&format!(
+                    "INSERT INTO {WRITE_CLOCK_TABLE}(name, seq) \
+                     SELECT '{CLOCK_KEY_AUDIT_MUTATE}', seq FROM {WRITE_CLOCK_TABLE} \
+                     WHERE name = '{CLOCK_KEY_ALL}' \
+                     ON CONFLICT(name) DO UPDATE SET seq = excluded.seq; "
+                ));
+            }
             let sql = format!(
-                "CREATE TRIGGER {name} AFTER {event} ON \"{table}\" BEGIN \
-                 UPDATE {WRITE_CLOCK_TABLE} SET seq = seq + 1 WHERE name = '{CLOCK_KEY_ALL}'; \
-                 INSERT INTO {WRITE_CLOCK_TABLE}(name, seq) \
-                 SELECT '{key}', seq FROM {WRITE_CLOCK_TABLE} WHERE name = '{CLOCK_KEY_ALL}' \
-                 ON CONFLICT(name) DO UPDATE SET seq = excluded.seq; \
-                 END"
+                "CREATE TRIGGER {} AFTER {event} ON {} BEGIN {body}END",
+                quote_identifier(&name),
+                quote_identifier(table)
             );
             triggers.push((name, sql));
         }
@@ -289,12 +346,87 @@ mod tests {
         );
     }
 
+    /// 規則外の名前（大文字・空白・`"`・`'`・日本語）の表でも対象に含まれ、生の名前で返る。
     #[test]
-    fn write_clock_targets_reject_unsafe_table_names() {
+    fn write_clock_targets_keep_unusual_table_names_raw() {
         let conn = Connection::open_in_memory().expect("open");
-        conn.execute_batch("CREATE TABLE \"Bad-Name\" (id TEXT)")
+        for name in ["Notes", "weird name", "a\"b", "o'clock", "日本語の表"] {
+            conn.execute_batch(&format!(
+                "CREATE TABLE {} (id TEXT)",
+                quote_identifier(name)
+            ))
             .expect("create");
-        assert!(clock_target_tables(&conn).is_err());
+        }
+        let mut expected = ["Notes", "a\"b", "o'clock", "weird name", "日本語の表"];
+        expected.sort();
+        assert_eq!(clock_target_tables(&conn).expect("targets"), expected);
+    }
+
+    /// 規則外の名前の表でも install が通り、書込みで `'*'` が進み、不変条件が成り立つ。
+    #[test]
+    fn write_clock_unusual_table_names_install_advance_and_pass_the_invariant() {
+        let conn = fixture();
+        let unusual = ["Notes", "weird name", "a\"b", "o'clock", "日本語の表"];
+        for name in unusual {
+            conn.execute_batch(&format!(
+                "CREATE TABLE {} (id TEXT PRIMARY KEY, v INTEGER)",
+                quote_identifier(name)
+            ))
+            .expect("create");
+        }
+        install(&conn);
+        assert!(has_v46_write_clock(&conn).expect("invariant"));
+        for name in unusual {
+            let before = seq(&conn, "*").expect("global");
+            let quoted = quote_identifier(name);
+            conn.execute(&format!("INSERT INTO {quoted}(id, v) VALUES ('x', 1)"), [])
+                .expect("insert");
+            assert_eq!(seq(&conn, "*"), Some(before + 1), "insert into {name}");
+            conn.execute(&format!("UPDATE {quoted} SET v = 2"), [])
+                .expect("update");
+            assert_eq!(seq(&conn, "*"), Some(before + 2), "update {name}");
+            conn.execute(&format!("DELETE FROM {quoted}"), [])
+                .expect("delete");
+            assert_eq!(seq(&conn, "*"), Some(before + 3), "delete from {name}");
+        }
+        // 名前の集合は SQL を作らずに、生の名前で同じになる。
+        let tables = clock_target_tables(&conn).expect("targets");
+        let from_sql: Vec<String> = expected_clock_triggers(&tables)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(expected_clock_trigger_names(&tables), from_sql);
+        let mut stored: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name GLOB 'grimodex_clock_*'")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+        let mut expected_sorted = from_sql.clone();
+        stored.sort();
+        expected_sorted.sort();
+        assert_eq!(stored, expected_sorted, "stored names are the raw names");
+    }
+
+    #[test]
+    fn write_clock_trigger_names_match_the_sql_generator_in_the_same_order() {
+        let tables: Vec<String> = ["zeta", "ai_audit_events", "Alpha", "kids"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let from_sql: Vec<String> = expected_clock_triggers(&tables)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(expected_clock_trigger_names(&tables), from_sql);
+        assert_eq!(
+            from_sql.last().map(String::as_str),
+            Some(CLOCK_GUARD_TRIGGER)
+        );
+        let mut reversed = tables.clone();
+        reversed.reverse();
+        assert_eq!(expected_clock_trigger_names(&reversed), from_sql);
     }
 
     #[test]
@@ -324,14 +456,36 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing {name}"))
                 .1
         };
-        assert!(
-            sql_of("grimodex_clock_ai_audit_events_ai").contains("SELECT 'ai_audit_events', seq")
-        );
-        assert!(sql_of("grimodex_clock_ai_audit_events_au")
-            .contains("SELECT 'ai_audit_events!mutate', seq"));
-        assert!(sql_of("grimodex_clock_ai_audit_events_ad")
-            .contains("SELECT 'ai_audit_events!mutate', seq"));
-        assert!(sql_of("grimodex_clock_kids_au").contains("SELECT 'kids', seq"));
+        // 通常の表の本体は '*' の UPDATE の 1 文だけ（表ごとの鍵は無い）。
+        let one_statement =
+            "BEGIN UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END";
+        for name in [
+            "grimodex_clock_kids_ai",
+            "grimodex_clock_kids_au",
+            "grimodex_clock_kids_ad",
+            "grimodex_clock_parents_au",
+            "grimodex_clock_ai_audit_events_ai",
+        ] {
+            let sql = sql_of(name);
+            assert!(sql.contains(one_statement), "{name}: {sql}");
+            assert_eq!(sql.matches(';').count(), 1, "{name} has one statement");
+            assert!(!sql.contains("INSERT INTO"), "{name}");
+        }
+        // 監査表の UPDATE／DELETE だけ、mutate の鍵を持つ 2 文目がある。
+        for name in [
+            "grimodex_clock_ai_audit_events_au",
+            "grimodex_clock_ai_audit_events_ad",
+        ] {
+            let sql = sql_of(name);
+            assert!(
+                sql.contains("SELECT 'ai_audit_events!mutate', seq"),
+                "{name}"
+            );
+            assert_eq!(sql.matches(';').count(), 2, "{name} has two statements");
+        }
+        // 表名と TRIGGER 名は常に引用する。
+        assert!(sql_of("grimodex_clock_kids_au")
+            .starts_with("CREATE TRIGGER \"grimodex_clock_kids_au\" AFTER UPDATE ON \"kids\""));
         assert_eq!(triggers.last().expect("guard").0, CLOCK_GUARD_TRIGGER);
         // 入力の順序に依らない（決定的）。
         let mut reversed = tables.clone();
@@ -382,19 +536,36 @@ mod tests {
         .expect("stale");
         assert!(!has_v46_write_clock(&conn).expect("stale trigger"));
 
-        // 別の表に付け替える
+        // 別の表に付け替える（名前は kids のまま、ON が parents）。
         let conn = installed();
-        let (_, sql) = expected_clock_triggers(&["parents".to_string()])
+        let (_, sql) = expected_clock_triggers(&["kids".to_string()])
             .into_iter()
-            .find(|(n, _)| n == "grimodex_clock_parents_ai")
-            .expect("parents_ai");
+            .find(|(n, _)| n == "grimodex_clock_kids_ai")
+            .expect("kids_ai");
         conn.execute_batch("DROP TRIGGER grimodex_clock_kids_ai")
             .expect("drop");
+        conn.execute_batch(&sql.replace("ON \"kids\"", "ON \"parents\""))
+            .expect("recreate attached to parents");
+        assert!(!has_v46_write_clock(&conn).expect("wrong table"));
+
+        // audit の mutate の鍵が無い（通常の本体にすり替えた）。
+        let conn = installed();
         conn.execute_batch(
-            &sql.replace("grimodex_clock_parents_ai", "grimodex_clock_kids_ai")
-                .replace("\"parents\"", "\"kids\""),
+            "DROP TRIGGER grimodex_clock_ai_audit_events_au;
+             CREATE TRIGGER \"grimodex_clock_ai_audit_events_au\" AFTER UPDATE ON \"ai_audit_events\" BEGIN \
+             UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*'; END",
         )
-        .expect("recreate with parents' key");
+        .expect("plain body on the audit trigger");
+        assert!(!has_v46_write_clock(&conn).expect("audit trigger without the mutate key"));
+
+        // 本体の '*' が別の鍵になっている。
+        let conn = installed();
+        conn.execute_batch(
+            "DROP TRIGGER grimodex_clock_kids_ai;
+             CREATE TRIGGER \"grimodex_clock_kids_ai\" AFTER INSERT ON \"kids\" BEGIN \
+             UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = 'kids'; END",
+        )
+        .expect("wrong key");
         assert!(!has_v46_write_clock(&conn).expect("wrong key"));
     }
 
@@ -478,7 +649,8 @@ mod tests {
         conn.execute("INSERT INTO parents(id) VALUES ('p1')", [])
             .expect("insert");
         assert_eq!(all(&conn), before + 1);
-        assert_eq!(seq(&conn, "parents"), Some(before + 1));
+        // 通常の表には表ごとの鍵が無い（'*' だけ）。
+        assert_eq!(seq(&conn, "parents"), None);
 
         conn.execute("UPDATE parents SET v = 1 WHERE id = 'p1'", [])
             .expect("update");
@@ -494,7 +666,6 @@ mod tests {
         )
         .expect("insert select");
         assert_eq!(all(&conn), s0 + 3);
-        assert_eq!(seq(&conn, "kids"), Some(s0 + 3));
 
         // UPDATE CASCADE（親の id の変更が子の UPDATE を起こす）。
         conn.execute("INSERT INTO orphans(id, parent_id) VALUES ('o1', 'p1')", [])
@@ -515,7 +686,6 @@ mod tests {
         conn.execute("INSERT OR REPLACE INTO source_rows(id) VALUES ('a')", [])
             .expect("replace");
         assert!(all(&conn) > r0);
-        assert!(seq(&conn, "source_rows").expect("table key") > r0);
 
         // UPSERT：衝突の側。
         let c0 = all(&conn);
@@ -538,8 +708,6 @@ mod tests {
 
         // ON DELETE SET NULL と ON DELETE CASCADE。
         let d0 = all(&conn);
-        let kids0 = seq(&conn, "kids").expect("kids key");
-        let orphans0 = seq(&conn, "orphans").expect("orphans key");
         conn.execute("DELETE FROM parents WHERE id = 'p2'", [])
             .expect("delete parent");
         assert_eq!(
@@ -553,36 +721,56 @@ mod tests {
         assert!(orphan_is_null);
         // 親 1 + 子 3（CASCADE）+ orphan 1（SET NULL）。
         assert_eq!(all(&conn), d0 + 5);
-        assert!(seq(&conn, "kids").expect("kids key") > kids0);
-        assert!(seq(&conn, "orphans").expect("orphans key") > orphans0);
-        // 表の鍵は、その表が最後に変わったときの '*' の値（親の AFTER DELETE は
-        // FK の連鎖動作の後に走るので、親の鍵が最後）。
-        assert_eq!(seq(&conn, "parents"), Some(d0 + 5));
 
-        // 監査表：INSERT と UPDATE／DELETE で鍵が分かれる。
+        // 監査表：INSERT は '*' だけ。UPDATE／DELETE は '*' の増分の後に mutate の鍵を揃える。
         conn.execute("INSERT INTO ai_audit_events(note) VALUES ('x')", [])
             .expect("audit insert");
-        assert!(seq(&conn, "ai_audit_events").is_some());
         assert_eq!(seq(&conn, CLOCK_KEY_AUDIT_MUTATE), None);
+        let after_insert = all(&conn);
         conn.execute("UPDATE ai_audit_events SET note = 'y'", [])
             .expect("audit update");
-        let after_update = seq(&conn, CLOCK_KEY_AUDIT_MUTATE).expect("mutate key");
-        assert_eq!(after_update, all(&conn));
+        assert_eq!(all(&conn), after_insert + 1);
+        assert_eq!(seq(&conn, CLOCK_KEY_AUDIT_MUTATE), Some(all(&conn)));
+        let after_update = all(&conn);
         conn.execute("DELETE FROM ai_audit_events", [])
             .expect("audit delete");
+        assert_eq!(all(&conn), after_update + 1);
         assert_eq!(seq(&conn, CLOCK_KEY_AUDIT_MUTATE), Some(all(&conn)));
-        assert!(all(&conn) > after_update);
-        assert_eq!(seq(&conn, "ai_audit_events"), Some(after_update - 1));
 
-        // 行が欠けた表の鍵は、次の書込みで作り直される（自己修復）。
-        conn.execute(
-            "DELETE FROM grimodex_write_clock WHERE name = 'parents'",
-            [],
-        )
-        .expect("delete table key");
+        // 通常の表の書込みでは mutate の鍵は動かない。
+        let mutate = seq(&conn, CLOCK_KEY_AUDIT_MUTATE);
         conn.execute("INSERT INTO parents(id) VALUES ('p4')", [])
             .expect("insert");
-        assert_eq!(seq(&conn, "parents"), Some(all(&conn)));
+        assert_eq!(seq(&conn, CLOCK_KEY_AUDIT_MUTATE), mutate);
+
+        // 表ごとの鍵は '*' と mutate 以外に作られない。
+        let keys: Vec<String> = conn
+            .prepare("SELECT name FROM grimodex_write_clock ORDER BY name")
+            .expect("prepare")
+            .query_map([], |r| r.get(0))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+        assert_eq!(keys, ["*", CLOCK_KEY_AUDIT_MUTATE]);
+    }
+
+    /// 1 文の UPDATE は `'*'` の行が無いと何もしない。guard が削除を拒否し、
+    /// install／不変条件が行の欠けを検出する（ここでは guard を外して欠けを作る）。
+    #[test]
+    fn clock_stops_silently_when_the_global_row_is_missing_but_the_invariant_catches_it() {
+        let conn = installed();
+        conn.execute_batch(&format!("DROP TRIGGER {CLOCK_GUARD_TRIGGER}"))
+            .expect("drop guard");
+        conn.execute("DELETE FROM grimodex_write_clock WHERE name = '*'", [])
+            .expect("delete global");
+        conn.execute("INSERT INTO parents(id) VALUES ('p')", [])
+            .expect("the user's write succeeds");
+        assert_eq!(
+            seq(&conn, "*"),
+            None,
+            "the one-statement UPDATE does nothing"
+        );
+        assert!(!has_v46_write_clock(&conn).expect("invariant detects the missing row"));
     }
 
     #[test]
@@ -597,7 +785,6 @@ mod tests {
         )
         .expect("rolled back");
         assert_eq!(seq(&conn, "*"), Some(before));
-        assert_eq!(seq(&conn, "parents"), None);
 
         conn.execute_batch(
             "BEGIN;
@@ -630,14 +817,18 @@ mod tests {
             .expect_err("unqualified delete must abort too");
         assert!(error.to_string().contains("global key"), "{error}");
         assert!(seq(&conn, "*").is_some());
-        // 表の鍵の削除は許す（自己修復できる）。
-        conn.execute("INSERT INTO parents(id) VALUES ('p')", [])
+        // '*' 以外の鍵（audit の mutate）の削除は許す。
+        conn.execute("UPDATE ai_audit_events SET note = 'x'", [])
+            .expect("no rows, no trigger");
+        conn.execute("INSERT INTO ai_audit_events(note) VALUES ('x')", [])
             .expect("insert");
+        conn.execute("UPDATE ai_audit_events SET note = 'y'", [])
+            .expect("update creates the mutate key");
         conn.execute(
-            "DELETE FROM grimodex_write_clock WHERE name = 'parents'",
+            "DELETE FROM grimodex_write_clock WHERE name = 'ai_audit_events!mutate'",
             [],
         )
-        .expect("table key delete is allowed");
+        .expect("a non-global key delete is allowed");
     }
 
     #[test]
@@ -659,5 +850,25 @@ mod tests {
             "the user's write is rolled back with the clock"
         );
         assert_eq!(seq(&conn, "*"), Some(i64::MAX));
+    }
+
+    /// 既知の限界（モジュール doc）：外側の `OR IGNORE` は TRIGGER の本体にも及ぶので、
+    /// `'*'` が `i64::MAX` のとき clock の更新だけが無視される（利用者の書込みは成功する）。
+    #[test]
+    fn clock_overflow_under_or_ignore_stops_the_clock_but_not_the_write() {
+        let conn = installed();
+        conn.execute(
+            "UPDATE grimodex_write_clock SET seq = ?1 WHERE name = '*'",
+            [i64::MAX],
+        )
+        .expect("seed max");
+        conn.execute("INSERT OR IGNORE INTO parents(id) VALUES ('ignored')", [])
+            .expect("the write itself succeeds");
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM parents", [], |r| r.get::<_, i64>(0))
+                .expect("count"),
+            1
+        );
+        assert_eq!(seq(&conn, "*"), Some(i64::MAX), "the clock did not move");
     }
 }

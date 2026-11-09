@@ -136,6 +136,8 @@ pub struct Database {
     foreground_connection_waiters: std::sync::Arc<AtomicUsize>,
     maintenance_finalization_reserved: std::sync::Arc<AtomicBool>,
     connection_health: ConnectionHealth,
+    /// renderer の SQL で発火してよい clock の trigger 名の集合（接続ごとの cache）。
+    clock_accessor_cache: execute::ClockAccessorCache,
     /// 本体の接続の WAL checkpoint を背景へ移す所有者（DR-DBC-1）。この field は
     /// 必ず最後に置く：`Database::drop` が背景を止め、接続の close の後に解放する
     /// （wal hook が指す `Shared` を、接続より長く生かすため）。
@@ -294,6 +296,7 @@ impl Database {
             foreground_connection_waiters: std::sync::Arc::new(AtomicUsize::new(0)),
             maintenance_finalization_reserved: std::sync::Arc::new(AtomicBool::new(false)),
             connection_health: ConnectionHealth::new(),
+            clock_accessor_cache: execute::ClockAccessorCache::default(),
             background_checkpoint: Mutex::new(None),
         }
     }
@@ -377,6 +380,7 @@ impl Database {
             foreground_connection_waiters: std::sync::Arc::new(AtomicUsize::new(0)),
             maintenance_finalization_reserved: std::sync::Arc::new(AtomicBool::new(false)),
             connection_health: ConnectionHealth::new(),
+            clock_accessor_cache: execute::ClockAccessorCache::default(),
             background_checkpoint: Mutex::new(None),
         })
     }

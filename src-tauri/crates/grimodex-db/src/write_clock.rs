@@ -54,6 +54,19 @@ pub fn rotate_db_lineage(conn: &Connection) -> anyhow::Result<String> {
     Ok(id)
 }
 
+/// 信頼しない画像（Web Editor の取り込み）が持つ連番を持ち込ませない：全ての行を 0 に戻す。
+///
+/// `rotate_db_lineage` の後に呼ぶ（lineage を作り直しているので、0 に戻しても過去の値との
+/// ABA は起きない）。`i64::MAX` の seq を持ち込まれると、`INSERT OR IGNORE` の中で
+/// clock だけが止まる（`grimodex_core::write_clock` の既知の限界）。restore は利用者
+/// 自身の backup なので、この関数は呼ばず seq を保つ。clock 表への UPDATE は
+/// clock の TRIGGER を発火しない（guard は DELETE だけ）。
+pub fn reset_write_clock_seq(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute(&format!("UPDATE {WRITE_CLOCK_TABLE} SET seq = 0"), [])
+        .context("resetting the imported write clock")?;
+    Ok(())
+}
+
 /// v46 の write clock を現在の DB に揃える（冪等）。呼び出し側が tx／savepoint を持つ。
 ///
 /// 1. 2 表が無ければ作る。
@@ -351,6 +364,11 @@ mod tests {
             .with_conn(|conn| {
                 insert_project(conn, "p1");
                 let old = lineage(conn);
+                // 表ごとの鍵は無いので、'*' 以外の行（audit の mutate の鍵）で MAX(seq) を作る。
+                conn.execute(
+                    &format!("INSERT INTO {WRITE_CLOCK_TABLE}(name, seq) VALUES (?1, 7)"),
+                    [grimodex_core::write_clock::CLOCK_KEY_AUDIT_MUTATE],
+                )?;
                 conn.execute_batch(&format!("DROP TRIGGER {CLOCK_GUARD_TRIGGER}"))?;
                 conn.execute(
                     &format!("DELETE FROM {WRITE_CLOCK_TABLE} WHERE name = ?1"),
@@ -426,8 +444,8 @@ mod tests {
             // projects の INSERT は既定の codex_types なども TRIGGER で作るので、2 以上。
             let global = clock_seq(conn, CLOCK_KEY_ALL).expect("global");
             assert!(global >= before + 2, "{global} must advance from {before}");
-            let projects = clock_seq(conn, "projects").expect("projects row");
-            assert!(projects > before && projects <= global);
+            // 通常の表には表ごとの鍵が無い（'*' だけ）。
+            assert_eq!(clock_seq(conn, "projects"), None);
             Ok(())
         })
         .expect("verify");

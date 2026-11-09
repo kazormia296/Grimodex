@@ -316,24 +316,28 @@ fn renderer_typed_payload_read_rejection(ctx: &AuthContext<'_>) -> Option<String
     }
 }
 
-/// write clock・lineage・`sqlite_sequence` の DML の判定（DB 段 1 の PR-1、DR-DBC-3 の判断 7）。
+/// write clock・lineage・`sqlite_sequence` の判定（DB 段 1 の PR-1、DR-DBC-3 の判断 7）。
 ///
-/// - `grimodex_write_clock` への DML は、SQLite が文を出した最内の trigger の名前
+/// - `grimodex_write_clock` への DML と **Read** は、SQLite が文を出した最内の trigger の名前
 ///   （authorizer の 4 番目の引数 = `ctx.accessor`）が `allowed_clock_accessors`
-///   （`expected_clock_triggers(clock_target_tables(conn))` の名前）に完全一致するときだけ通す。
-///   top-level の SQL（accessor が無い）と期待外の trigger は拒否する。
-/// - `grimodex_db_lineage` と `sqlite_sequence` への DML は accessor に関わらず常に拒否する。
-///   AUTOINCREMENT の INSERT が内部で行う `sqlite_sequence` の更新は authorizer を
-///   通らない（試験で固定）ので、これで壊れない。
-/// - 読み（`Read`）は判定しない（clock の読みは PR-2 で使う）。
+///   （`expected_clock_trigger_names(clock_target_tables(conn))`）に完全一致するときだけ通す。
+///   top-level の SQL（accessor が無い）と期待外の trigger は、読みも拒否する（D2a で closed の
+///   表の書込みの時刻と回数が renderer に見えないように）。trigger の本体は `seq` を読むので、
+///   集合に一致する trigger の Read は通す。
+/// - `grimodex_db_lineage` への DML と Read は accessor に関わらず常に拒否する。PR-1 には
+///   読む側が無く、PR-2 で型つきの accessor で開ける。
+/// - `sqlite_sequence` への DML は常に拒否する。AUTOINCREMENT の INSERT が内部で行う
+///   `sqlite_sequence` の更新は authorizer を通らない（試験で固定）ので、これで壊れない。
+///   `sqlite_sequence` の読みは判定しない。
 fn clock_surface_rejection(
     ctx: &AuthContext<'_>,
     allowed_clock_accessors: &HashSet<String>,
 ) -> Option<String> {
-    let table_name = match &ctx.action {
+    let (table_name, verb, is_read) = match &ctx.action {
         AuthAction::Delete { table_name }
         | AuthAction::Insert { table_name }
-        | AuthAction::Update { table_name, .. } => table_name,
+        | AuthAction::Update { table_name, .. } => (table_name, "mutation", false),
+        AuthAction::Read { table_name, .. } => (table_name, "read", true),
         _ => return None,
     };
     let table = d2a_table_name(table_name);
@@ -344,28 +348,77 @@ fn clock_surface_rejection(
         if exact {
             None
         } else {
-            Some(format!("mutation of {table}"))
+            Some(format!("{verb} of {table}"))
         }
     } else if table.eq_ignore_ascii_case(grimodex_core::write_clock::DB_LINEAGE_TABLE)
-        || table.eq_ignore_ascii_case("sqlite_sequence")
+        || (!is_read && table.eq_ignore_ascii_case("sqlite_sequence"))
     {
-        Some(format!("mutation of {table}"))
+        Some(format!("{verb} of {table}"))
     } else {
         None
     }
 }
 
-/// renderer の書込みで発火してよい clock の trigger 名（実表から作る）。
-/// 作れない（schema が読めない、表名が規則外）ときは空集合にして fail-closed に倒す。
-fn allowed_clock_accessor_names(conn: &Connection) -> HashSet<String> {
-    grimodex_core::write_clock::clock_target_tables(conn)
-        .map(|tables| {
-            grimodex_core::write_clock::expected_clock_triggers(&tables)
-                .into_iter()
-                .map(|(name, _sql)| name)
-                .collect()
-        })
-        .unwrap_or_default()
+/// renderer の SQL で発火してよい clock の trigger 名の集合の、接続ごとの cache。
+///
+/// `Database` が接続を 1 本だけ持ち、その一生で入れ替えない（close で返った接続は
+/// `retired_connections` に隔離され、通常の経路には戻らない）ので、`Database` の field が
+/// 接続ごとの cache になる。鍵は `PRAGMA main.schema_version`（DDL のたびに変わる。TEMP の
+/// guard trigger は temp schema だけを変えるので、main の値は動かない）。
+/// 作れなかった結果（空集合）は cache しない（一時的な失敗が次の DDL まで続かないように）。
+#[derive(Default)]
+pub(crate) struct ClockAccessorCache {
+    slot: Mutex<Option<(i64, Arc<HashSet<String>>)>>,
+    /// 集合を作り直した回数（試験が「schema が変わらなければ再構築しない」を確かめる）。
+    rebuilds: std::sync::atomic::AtomicUsize,
+}
+
+impl ClockAccessorCache {
+    #[cfg(test)]
+    pub(crate) fn rebuild_count(&self) -> usize {
+        self.rebuilds.load(Ordering::Relaxed)
+    }
+
+    /// 集合を返す。作れないときは空集合（fail-closed）。
+    /// authorizer を付ける**前**に呼ぶ（schema の読みが authorizer を通らないように）。
+    pub(crate) fn names(&self, conn: &Connection) -> Arc<HashSet<String>> {
+        let Ok(version) = conn
+            .prepare_cached("PRAGMA main.schema_version")
+            .and_then(|mut statement| statement.query_row([], |row| row.get::<_, i64>(0)))
+        else {
+            return Arc::new(HashSet::new());
+        };
+        let Ok(mut slot) = self.slot.lock() else {
+            return Arc::new(HashSet::new());
+        };
+        if let Some((cached_version, names)) = slot.as_ref() {
+            if *cached_version == version {
+                return Arc::clone(names);
+            }
+        }
+        match build_clock_accessor_names(conn) {
+            Some(names) => {
+                self.rebuilds.fetch_add(1, Ordering::Relaxed);
+                let names = Arc::new(names);
+                *slot = Some((version, Arc::clone(&names)));
+                names
+            }
+            None => {
+                *slot = None;
+                Arc::new(HashSet::new())
+            }
+        }
+    }
+}
+
+/// 実表から clock の trigger 名の集合を作る（SQL は作らない）。作れなければ `None`。
+fn build_clock_accessor_names(conn: &Connection) -> Option<HashSet<String>> {
+    let tables = grimodex_core::write_clock::clock_target_tables(conn).ok()?;
+    Some(
+        grimodex_core::write_clock::expected_clock_trigger_names(&tables)
+            .into_iter()
+            .collect(),
+    )
 }
 
 fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
@@ -732,6 +785,7 @@ fn untrusted_sql_needs_reserved_project_setting_guard(sql: &str) -> bool {
 
 fn with_untrusted_sql_policy<T, F>(
     conn: &Connection,
+    clock_accessor_cache: &ClockAccessorCache,
     reserved_project_setting_guard_requested: bool,
     operation: F,
 ) -> anyhow::Result<T>
@@ -759,15 +813,13 @@ where
         conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_CREATE, false)?;
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_WRITE, false)?;
-        // 書込みになり得る文（読み専用の先頭 keyword 以外）だけ、clock の trigger 名の集合を作る。
-        let allowed_clock_accessors = if reserved_project_setting_guard_requested {
-            allowed_clock_accessor_names(conn)
-        } else {
-            HashSet::new()
-        };
+        // 文の種類に依らず常に集合を渡す（`EXPLAIN` の DML や読み専用と判定された文でも、
+        // trigger の本体の Read が空集合で拒否されないように）。cache が効けば schema_version
+        // の読みだけ。
+        let allowed_clock_accessors = clock_accessor_cache.names(conn);
         conn.authorizer(Some(move |ctx: AuthContext<'_>| {
             let profile_reason = renderer_profile_egress_sql_rejection(&ctx);
-            let clock_reason = || clock_surface_rejection(&ctx, &allowed_clock_accessors);
+            let clock_reason = || clock_surface_rejection(&ctx, allowed_clock_accessors.as_ref());
             if let Some(reason) = profile_reason
                 .or_else(clock_reason)
                 .or_else(|| renderer_sql_rejection(ctx))
@@ -1010,6 +1062,7 @@ impl Database {
                         });
                     let result = with_untrusted_sql_policy(
                         &conn,
+                        &self.clock_accessor_cache,
                         reserved_project_setting_guard_requested,
                         |conn| Self::execute_batch_tx_with_conn(conn, statements),
                     );
@@ -1357,6 +1410,7 @@ impl Database {
                         untrusted_sql_needs_reserved_project_setting_guard(sql);
                     let result = with_untrusted_sql_policy(
                         &conn,
+                        &self.clock_accessor_cache,
                         reserved_project_setting_guard_requested,
                         |conn| Self::execute_with_conn_result(conn, sql, params, method),
                     );
@@ -5176,13 +5230,14 @@ mod tests {
 
     fn clock_denied(error: &anyhow::Error) -> bool {
         let message = error.to_string();
-        message.contains(RENDERER_SQL_SECURITY_ERROR) && message.contains("mutation of ")
+        message.contains(RENDERER_SQL_SECURITY_ERROR)
+            && (message.contains("mutation of ") || message.contains("read of "))
     }
 
     #[test]
     fn renderer_cannot_write_clock_directly() {
         let db = d2a_seeded_db();
-        let before = (clock_seq(&db, "*"), clock_seq(&db, "app_settings"));
+        let before = clock_seq(&db, "*");
         for sql in [
             "INSERT INTO grimodex_write_clock(name, seq) VALUES ('renderer-forged', 1)",
             "INSERT INTO grimodex_write_clock(name, seq) VALUES ('*', 1)
@@ -5218,26 +5273,88 @@ mod tests {
             ])
             .expect_err("batch with a direct clock write must be rejected");
         assert!(clock_denied(&error), "{error}");
-        assert_eq!(
-            before,
-            (clock_seq(&db, "*"), clock_seq(&db, "app_settings"))
-        );
-        // The clock stays readable (PR-2 reads it).
-        let rows = db
-            .execute_renderer(
-                "SELECT seq FROM grimodex_write_clock WHERE name = '*'",
-                &[],
-                "all",
-            )
-            .expect("clock reads stay available");
-        assert_eq!(rows.len(), 1);
+        assert_eq!(before, clock_seq(&db, "*"));
+    }
+
+    /// 書込みの時刻と回数が renderer に見えないよう、clock と lineage の top-level の
+    /// Read も拒否する（rev1 §1.2 の「常に拒否」）。読む側は PR-2 で型つきの accessor で開ける。
+    #[test]
+    fn renderer_cannot_read_clock_or_lineage_at_top_level() {
+        let db = d2a_seeded_db();
+        for sql in [
+            "SELECT seq FROM grimodex_write_clock WHERE name = '*'",
+            "SELECT count(*) FROM grimodex_write_clock",
+            "SELECT * FROM grimodex_write_clock",
+            "SELECT id FROM grimodex_db_lineage",
+            "SELECT count(*) FROM grimodex_db_lineage",
+            "WITH c AS (SELECT seq FROM grimodex_write_clock) SELECT * FROM c",
+            "SELECT 1 WHERE EXISTS (SELECT 1 FROM grimodex_write_clock)",
+            "SELECT (SELECT seq FROM grimodex_write_clock WHERE name = '*')",
+            "UPDATE app_settings SET value = (SELECT seq FROM grimodex_write_clock WHERE name = '*')",
+            "INSERT INTO app_settings(key,value) SELECT 'leak', seq FROM grimodex_write_clock",
+        ] {
+            let error = db
+                .execute_renderer(sql, &[], "all")
+                .expect_err("clock/lineage reads must be rejected");
+            assert!(clock_denied(&error), "{sql}: {error}");
+            let error = db
+                .execute_renderer_profile_egress(sql, &[], "all")
+                .expect_err("clock/lineage reads must be rejected under D2a");
+            assert!(clock_denied(&error), "{sql}: {error}");
+        }
+        // A batch with a read anywhere rolls back as a whole.
+        let before = clock_seq(&db, "*");
+        let error = db
+            .execute_batch_tx_renderer_with_result(&[
+                BatchStatement {
+                    sql: "INSERT INTO app_settings(key,value) VALUES ('clock-read-batch','v')"
+                        .into(),
+                    params: vec![],
+                    method: "run".into(),
+                },
+                BatchStatement {
+                    sql: "SELECT seq FROM grimodex_write_clock".into(),
+                    params: vec![],
+                    method: "all".into(),
+                },
+            ])
+            .expect_err("batch with a clock read must be rejected");
+        assert!(clock_denied(&error), "{error}");
+        assert_eq!(before, clock_seq(&db, "*"));
+        // Schema introspection (PRAGMA) and sqlite_master are not reads of the table.
+        db.execute_renderer("PRAGMA table_info('grimodex_write_clock')", &[], "all")
+            .expect("table_info is not a clock read");
+        // The trigger body reads `seq`; the exact accessor is allowed to.
+        db.execute_renderer(
+            "INSERT INTO app_settings(key,value) VALUES ('clock-read-ok','1')",
+            &[],
+            "run",
+        )
+        .expect("a clock trigger's own read passes");
+        assert_eq!(clock_seq(&db, "*"), before.map(|seq| seq + 1));
+    }
+
+    /// 先頭が `EXPLAIN` の DML でも、集合が空にならず trigger の本体の Read が通る。
+    #[test]
+    fn explain_of_dml_sees_the_clock_accessor_set() {
+        let db = d2a_seeded_db();
+        let before = clock_seq(&db, "*");
+        for sql in [
+            "EXPLAIN QUERY PLAN UPDATE app_settings SET value = 'x' WHERE key = 'k'",
+            "EXPLAIN QUERY PLAN INSERT INTO app_settings(key,value) VALUES ('e','1')",
+            "EXPLAIN QUERY PLAN DELETE FROM app_settings WHERE key = 'k'",
+            "EXPLAIN UPDATE app_settings SET value = 'x'",
+        ] {
+            db.execute_renderer(sql, &[], "all")
+                .unwrap_or_else(|error| panic!("{sql}: {error}"));
+        }
+        assert_eq!(clock_seq(&db, "*"), before, "EXPLAIN does not execute");
     }
 
     #[test]
     fn renderer_writes_advance_clock_via_exact_accessors() {
         let db = d2a_seeded_db();
         let start = clock_seq(&db, "*").expect("global key");
-        let table_start = clock_seq(&db, "app_settings").unwrap_or(0);
 
         db.execute_renderer(
             "INSERT INTO app_settings(key,value) VALUES ('clock-a','1')",
@@ -5247,8 +5364,6 @@ mod tests {
         .expect("renderer insert");
         let after_insert = clock_seq(&db, "*").expect("global key");
         assert_eq!(after_insert, start + 1);
-        assert_eq!(clock_seq(&db, "app_settings"), Some(after_insert));
-        assert!(after_insert > table_start);
 
         db.execute_renderer(
             "UPDATE app_settings SET value = '2' WHERE key = 'clock-a'",
@@ -5259,7 +5374,6 @@ mod tests {
         db.execute_renderer("DELETE FROM app_settings WHERE key = 'clock-a'", &[], "run")
             .expect("renderer delete");
         assert_eq!(clock_seq(&db, "*"), Some(start + 3));
-        assert_eq!(clock_seq(&db, "app_settings"), Some(start + 3));
 
         // D2a closed and open, and a batch, take the same route.
         for open in [false, true] {
@@ -5367,11 +5481,11 @@ mod tests {
         );
         assert_eq!(clock_before, clock_seq(&db, "*"));
 
-        // Reads pass.
-        let rows = db
+        // The lineage is rejected at top level even for reads; `sqlite_sequence` reads pass.
+        let error = db
             .execute_renderer("SELECT id FROM grimodex_db_lineage", &[], "all")
-            .expect("lineage reads stay available");
-        assert_eq!(rows, lineage_before);
+            .expect_err("lineage reads are rejected");
+        assert!(clock_denied(&error), "{error}");
         db.execute_renderer(
             "SELECT name, seq FROM sqlite_sequence ORDER BY name",
             &[],
@@ -5412,7 +5526,7 @@ mod tests {
             )
             .expect("sequence read");
         assert_eq!(rows[0]["seq"].as_i64(), Some(first + 1));
-        assert!(clock_seq(&db, "lint_action_log").is_some());
+        assert!(clock_seq(&db, "*").is_some());
     }
 
     #[test]
@@ -5492,5 +5606,222 @@ mod tests {
             .execute("SELECT count(*) AS n FROM clock_forge_a", &[], "all")
             .expect("trusted read");
         assert_eq!(rows[0]["n"], Value::from(0));
+    }
+
+    /// 通常の表の trigger 経由でも、D2a の UPDATE と DELETE の経路でも `'*'` が進む。
+    #[test]
+    fn d2a_update_and_delete_paths_advance_the_clock() {
+        let db = d2a_seeded_db();
+        db.execute(
+            "INSERT INTO app_settings(key,value) VALUES ('d2a-clock','1')",
+            &[],
+            "run",
+        )
+        .expect("seed");
+        for open in [false, true] {
+            with_read_open(open, || {
+                let start = clock_seq(&db, "*").expect("global key");
+                db.execute_renderer_profile_egress(
+                    "UPDATE app_settings SET value = ?1 WHERE key = 'd2a-clock'",
+                    &[Value::from(format!("v-{open}"))],
+                    "run",
+                )
+                .expect("D2a update");
+                assert_eq!(clock_seq(&db, "*"), Some(start + 1), "update, open={open}");
+                db.execute_renderer_profile_egress(
+                    "DELETE FROM app_settings WHERE key = 'd2a-clock'",
+                    &[],
+                    "run",
+                )
+                .expect("D2a delete");
+                assert_eq!(clock_seq(&db, "*"), Some(start + 2), "delete, open={open}");
+                db.execute(
+                    "INSERT INTO app_settings(key,value) VALUES ('d2a-clock','1')",
+                    &[],
+                    "run",
+                )
+                .expect("reseed");
+            });
+        }
+    }
+
+    /// renderer の DELETE が `ON DELETE CASCADE` の子の削除を起こすとき、子の trigger（最内の
+    /// accessor）も authorizer の集合に一致して通り、行ごとに `'*'` が進む。
+    #[test]
+    fn renderer_delete_with_cascade_advances_the_clock_per_row() {
+        let db = d2a_seeded_db();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TABLE casc_parent (id TEXT PRIMARY KEY);
+                 CREATE TABLE casc_child (
+                    id TEXT PRIMARY KEY,
+                    parent_id TEXT NOT NULL REFERENCES casc_parent(id) ON DELETE CASCADE);
+                 INSERT INTO casc_parent VALUES ('p');
+                 INSERT INTO casc_child VALUES ('c1', 'p'), ('c2', 'p'), ('c3', 'p');",
+            )?;
+            crate::write_clock::install_write_clock_in_tx(conn)
+        })
+        .expect("create the tables and install their triggers");
+        let start = clock_seq(&db, "*").expect("global key");
+        db.execute_renderer("DELETE FROM casc_parent WHERE id = 'p'", &[], "run")
+            .expect("renderer delete with cascade");
+        // 親 1 + 子 3。
+        assert_eq!(clock_seq(&db, "*"), Some(start + 4));
+        let rows = db
+            .execute("SELECT count(*) AS n FROM casc_child", &[], "all")
+            .expect("trusted read");
+        assert_eq!(rows[0]["n"], Value::from(0));
+    }
+
+    /// 規則外の表名（大文字・空白・`"`・`'`・日本語）でも renderer の書込みが authorizer を通り、
+    /// `'*'` が進む。
+    #[test]
+    fn renderer_writes_to_unusually_named_tables_advance_the_clock() {
+        let db = d2a_seeded_db();
+        let names = ["Notes", "weird name", "a\"b", "o'clock", "日本語の表"];
+        db.with_conn(|conn| {
+            for name in names {
+                conn.execute_batch(&format!(
+                    "CREATE TABLE {} (id TEXT PRIMARY KEY, v INTEGER)",
+                    grimodex_core::write_clock::quote_identifier(name)
+                ))?;
+            }
+            crate::write_clock::install_write_clock_in_tx(conn)?;
+            assert!(grimodex_core::write_clock::has_v46_write_clock(conn)?);
+            Ok(())
+        })
+        .expect("create the tables and install their triggers");
+        for name in names {
+            let quoted = grimodex_core::write_clock::quote_identifier(name);
+            let start = clock_seq(&db, "*").expect("global key");
+            db.execute_renderer(
+                &format!("INSERT INTO {quoted}(id, v) VALUES ('x', 1)"),
+                &[],
+                "run",
+            )
+            .unwrap_or_else(|error| panic!("insert into {name}: {error}"));
+            db.execute_renderer(&format!("UPDATE {quoted} SET v = 2"), &[], "run")
+                .unwrap_or_else(|error| panic!("update {name}: {error}"));
+            db.execute_renderer_profile_egress(&format!("DELETE FROM {quoted}"), &[], "run")
+                .unwrap_or_else(|error| panic!("delete from {name}: {error}"));
+            assert_eq!(clock_seq(&db, "*"), Some(start + 3), "{name}");
+        }
+    }
+
+    /// 集合は schema_version が変わらない限り再構築しない（TEMP の guard trigger を毎回
+    /// 作る書込みでも）。DDL の後は作り直され、新しい表の trigger が通る。
+    #[test]
+    fn clock_accessor_set_is_cached_until_the_schema_changes() {
+        let db = d2a_seeded_db();
+        let cache = &db.clock_accessor_cache;
+        let write = |key: &str| {
+            db.execute_renderer(
+                "INSERT INTO app_settings(key,value) VALUES (?1,'1')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                &[Value::from(key)],
+                "run",
+            )
+            .expect("renderer write")
+        };
+        write("cache-a");
+        let after_first = cache.rebuild_count();
+        assert!(after_first >= 1);
+        for index in 0..5 {
+            write(&format!("cache-{index}"));
+            // 書込みでない文（読み専用と判定される文）でも集合は同じ cache から出る。
+            db.execute_renderer("SELECT 1", &[], "all").expect("read");
+        }
+        db.execute_batch_tx_renderer_with_result(&[BatchStatement {
+            sql: "UPDATE app_settings SET value = '2' WHERE key = 'cache-a'".into(),
+            params: vec![],
+            method: "run".into(),
+        }])
+        .expect("batch");
+        assert_eq!(
+            cache.rebuild_count(),
+            after_first,
+            "no rebuild while the main schema is unchanged"
+        );
+
+        // DDL（main の schema_version が変わる）。
+        db.with_conn(|conn| {
+            conn.execute_batch("CREATE TABLE cache_probe (id TEXT PRIMARY KEY, v INTEGER)")?;
+            crate::write_clock::install_write_clock_in_tx(conn)
+        })
+        .expect("DDL and install");
+        let start = clock_seq(&db, "*").expect("global key");
+        db.execute_renderer("INSERT INTO cache_probe(id, v) VALUES ('x', 1)", &[], "run")
+            .expect("the new table's trigger is accepted after the rebuild");
+        assert_eq!(cache.rebuild_count(), after_first + 1);
+        assert_eq!(clock_seq(&db, "*"), Some(start + 1));
+        db.execute_renderer("INSERT INTO cache_probe(id, v) VALUES ('y', 1)", &[], "run")
+            .expect("second write");
+        assert_eq!(cache.rebuild_count(), after_first + 1);
+    }
+
+    /// 別の接続の DDL（schema_version の変化）も、次の書込みで拾う。
+    #[test]
+    fn clock_accessor_set_follows_ddl_from_another_connection() {
+        let path =
+            std::env::temp_dir().join(format!("grimodex-clock-cache-{}.db", uuid::Uuid::new_v4()));
+        let db = Database::new(&path).expect("open");
+        db.migrate().expect("migrate");
+        db.execute_renderer(
+            "INSERT INTO app_settings(key,value) VALUES ('a','1')",
+            &[],
+            "run",
+        )
+        .expect("renderer write");
+        let first = db.clock_accessor_cache.rebuild_count();
+        {
+            let other = Connection::open(&path).expect("other connection");
+            other
+                .execute_batch("CREATE TABLE other_conn_table (id TEXT PRIMARY KEY)")
+                .expect("ddl");
+            for (_, sql) in grimodex_core::write_clock::expected_clock_triggers(&[
+                "other_conn_table".to_string(),
+            ])
+            .into_iter()
+            .filter(|(name, _)| name.contains("other_conn_table"))
+            {
+                other.execute_batch(&sql).expect("trigger");
+            }
+        }
+        db.execute_renderer("INSERT INTO other_conn_table(id) VALUES ('x')", &[], "run")
+            .expect("the other connection's table is accepted");
+        assert_eq!(db.clock_accessor_cache.rebuild_count(), first + 1);
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// cache hit の費用（`schema_version` の読みだけ）と、再構築の費用の目安。
+    /// `cargo test --release -p grimodex-db --lib clock_accessor_cache_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore = "micro benchmark; run in release"]
+    fn clock_accessor_cache_cost() {
+        let db = d2a_seeded_db();
+        let cache = ClockAccessorCache::default();
+        let iterations = 2000u32;
+        db.with_conn(|conn| {
+            let first = cache.names(conn);
+            assert!(first.len() > 400);
+            let started = Instant::now();
+            for _ in 0..iterations {
+                assert!(!cache.names(conn).is_empty());
+            }
+            let hit = started.elapsed() / iterations;
+            let started = Instant::now();
+            for _ in 0..200 {
+                build_clock_accessor_names(conn).expect("build");
+            }
+            let build = started.elapsed() / 200;
+            eprintln!("clock accessor set: cache hit {hit:?}, rebuild {build:?}");
+            assert!(
+                hit.as_micros() < 50,
+                "a cache hit must be microseconds: {hit:?}"
+            );
+            Ok(())
+        })
+        .expect("measure");
     }
 }

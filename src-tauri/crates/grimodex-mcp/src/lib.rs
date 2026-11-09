@@ -415,15 +415,6 @@ mod schema_compatibility_tests {
         .expect("MCP write");
         let after = global(&conn);
         assert!(after > before, "{after} must advance from {before}");
-        let events_key: i64 = conn
-            .query_row(
-                "SELECT seq FROM grimodex_write_clock WHERE name = 'events'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("events row");
-        assert!(events_key > before && events_key <= after);
-
         // 別 connection からも同じ値が見える（DB の中の連番）。
         let other = rusqlite::Connection::open(&path).expect("second connection");
         assert_eq!(global(&other), after);

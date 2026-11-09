@@ -2319,6 +2319,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    fn live_clock_seq(state: &WorkspaceState) -> i64 {
+        with_db_state(state, |db| {
+            db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT seq FROM grimodex_write_clock WHERE name = '*'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+        })
+        .expect("read live clock")
+    }
+
+    /// DR-DBC-3: a restore reads the user's own backup, so the clock sequence is
+    /// kept (only the lineage is rotated); the Web Editor import, which reads an
+    /// untrusted image, resets it instead.
+    #[test]
+    fn restore_keeps_the_backup_clock_sequence() {
+        let (dir, state) = fixture("restore-clock-seq");
+        set_marker(&state, "v1");
+        let backup_name = "grimodex-20200101-000000.db";
+        backup_active(&state, &dir.join("backups").join(backup_name));
+        let backup_seq = live_clock_seq(&state);
+        assert!(backup_seq > 0, "the fixture must have advanced the clock");
+        set_marker(&state, "v2");
+        set_marker(&state, "v3");
+        assert!(live_clock_seq(&state) > backup_seq);
+
+        restore_backup_core(&state, backup_name, || {}).expect("restore");
+        let restored = live_clock_seq(&state);
+        assert!(
+            restored >= backup_seq,
+            "restored seq {restored} must keep the backup's {backup_seq}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// DR-DBC-1: the background WAL checkpointer owns a second SQLite
     /// connection to the live file. Restore must have closed it before the live
     /// seal and the atomic replace, and the restored authority gets its own.

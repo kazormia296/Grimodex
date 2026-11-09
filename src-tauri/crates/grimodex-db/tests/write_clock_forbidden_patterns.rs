@@ -7,10 +7,17 @@
 //! - (a) `SQLITE_DBCONFIG_ENABLE_TRIGGER`（TRIGGER 自体を接続ごとに無効にできる）
 //! - (b) SQLite の blob incremental I/O（`blob_open`、`sqlite3_blob_*`。行を書き換えるが
 //!   TRIGGER が走らない）。rusqlite の `blob` feature も同じ理由で製品の Cargo.toml に置かない
-//! - (c) `rusqlite::backup::Backup::new`（ページ単位の複製で、書込み先の clock・lineage を
-//!   そのまま持ち込む。製品の backup は `VACUUM INTO`。`test-support`／`#[cfg(test)]` 以外は不可）
-//! - (d) `writable_schema` を有効にする設定、`recursive_triggers` を無効にする設定
-//!   （`sqlite_master` の直接編集で TRIGGER を消せる／連鎖した TRIGGER が効かなくなる）
+//! - (c) `rusqlite::backup::Backup::new` と、`Connection::backup`／`Connection::restore`
+//!   （`nir1-material-diagnostics` が `rusqlite/backup` を有効にする）。ページ単位の複製で、
+//!   書込み先の clock・lineage をそのまま持ち込む。製品の backup は `VACUUM INTO`。
+//!   `#[cfg(test)]` と test 専用の feature（[`TEST_ONLY_FEATURES`]）以外は不可。
+//!   `Connection::backup`／`restore` は名前が一般的なので、先頭の引数が文字列リテラルか
+//!   `DatabaseName` の呼び出しだけを検出する（自前の `restore()` の誤検知を避ける）
+//! - (d) `writable_schema` を有効にする設定（`sqlite_master` の直接編集で TRIGGER を消せる）、
+//!   `ignore_check_constraints` を有効にする設定（clock 表の `CHECK(typeof(seq)='integer')`
+//!   を無視させ、桁あふれの fail-closed を外せる）。
+//!   `recursive_triggers` は規則にしない：OFF は SQLite の既定値で、入れ子の TRIGGER
+//!   （他の表の TRIGGER が起こした書込みで発火する clock の TRIGGER）はその設定でも発火する
 //!
 //! # 走査の範囲と除外の仕組み
 //!
@@ -19,7 +26,10 @@
 //! 単純な文字列検索だが、次を取り除いてから探す（誤検知で許可リストが膨らまないように）。
 //!
 //! 1. コメント（`//`、`/* */`）。説明文に禁止語を書いてよい。
-//! 2. `#[cfg(test)]`（`any(test, ..)` を含む。`not(test)` は除く）が付いた item。
+//! 2. `#[cfg(test)]`（`any(test, feature = "X")` を含む。ただし X は [`TEST_ONLY_FEATURES`] の
+//!    test 専用 feature だけ。それ以外の feature は製品の build で有効になり得るので、
+//!    製品として走査する。`all(test, ..)` は `test` が必須なので test 専用。`not(test)` は製品）
+//!    が付いた item。
 //!    `mod x { .. }` や `fn` は括弧の対応で、`mod x;` は宣言した file
 //!    （`x.rs`、`x/mod.rs`、`x/**`）ごと除く。
 //! 3. `tests/`、`test_support/`、`test-support/` の directory。
@@ -36,8 +46,9 @@ enum Rule {
     EnableTrigger,
     BlobIo,
     BackupNew,
+    BackupRestoreCall,
     WritableSchemaOn,
-    RecursiveTriggersOff,
+    IgnoreCheckConstraintsOn,
 }
 
 impl Rule {
@@ -46,8 +57,9 @@ impl Rule {
             Rule::EnableTrigger => "(a) ENABLE_TRIGGER",
             Rule::BlobIo => "(b) blob incremental API",
             Rule::BackupNew => "(c) Backup::new outside test code",
+            Rule::BackupRestoreCall => "(c) Connection::backup/restore outside test code",
             Rule::WritableSchemaOn => "(d) writable_schema enabled",
-            Rule::RecursiveTriggersOff => "(d) recursive_triggers disabled",
+            Rule::IgnoreCheckConstraintsOn => "(d) ignore_check_constraints enabled",
         }
     }
 }
@@ -210,21 +222,68 @@ fn find_sub(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
         .map(|p| from + p)
 }
 
-/// `#[cfg(..)]` の中身が「test のときだけ」を意味するか（`any(test, ..)` を含む）。
+/// `#[cfg(any(test, feature = "X"))]` の X として許す、test 専用の feature の名前。
+/// 製品の build（napi・MCP・lib の既定）で有効にならない feature だけを置く。
+/// `nir1-material-diagnostics`／`nir1-graph-eval` のような診断・評価用の feature は
+/// 製品の artifact に入り得るのでここに置かず、製品として走査する。
+const TEST_ONLY_FEATURES: &[&str] = &[
+    "test-support",
+    "workspace-maintenance-test-support",
+    "ai-audit-commit-test-probe",
+];
+
+/// `a, b(c, d), e` を括弧の外のコンマで分ける。
+fn split_top_level(text: &str) -> Vec<&str> {
+    let mut terms = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (at, byte) in text.bytes().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b',' if depth == 0 => {
+                terms.push(&text[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    terms.push(&text[start..]);
+    terms.retain(|term| !term.is_empty());
+    terms
+}
+
+/// `#[cfg(..)]` の中身が「test のときだけ」を意味するか。
+/// - `test`
+/// - `all(test, ..)`（`test` が必須なので、他の条件に依らず test のときだけ）
+/// - `any(test, feature = "X", ..)` で、X が全て [`TEST_ONLY_FEATURES`] のとき
 fn cfg_is_test_only(attribute_body: &str) -> bool {
     let compact: String = attribute_body
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect();
-    if compact.contains("not(test") {
-        return false;
-    }
     let inner = compact
         .strip_prefix("cfg(")
         .and_then(|s| s.strip_suffix(')'))
         .unwrap_or("");
-    inner == "test"
-        || (inner.starts_with("any(") && inner.split([',', '(', ')']).any(|t| t == "test"))
+    if inner == "test" {
+        return true;
+    }
+    if let Some(terms) = inner.strip_prefix("all(").and_then(|s| s.strip_suffix(')')) {
+        return split_top_level(terms).contains(&"test");
+    }
+    let Some(terms) = inner.strip_prefix("any(").and_then(|s| s.strip_suffix(')')) else {
+        return false;
+    };
+    let terms = split_top_level(terms);
+    terms.contains(&"test")
+        && terms.iter().all(|term| {
+            *term == "test"
+                || term
+                    .strip_prefix("feature=\"")
+                    .and_then(|rest| rest.strip_suffix('"'))
+                    .is_some_and(|name| TEST_ONLY_FEATURES.contains(&name))
+        })
 }
 
 /// `#[cfg(test)]` の付いた item を `code` から空白にして取り除く。
@@ -440,13 +499,28 @@ fn find_hits(code: &[u8]) -> Vec<Hit> {
             push(Rule::WritableSchemaOn, at);
         }
     }
-    for at in occurrences(&lower, "recursive_triggers") {
-        let after = at + "recursive_triggers".len();
+    for at in occurrences(&lower, "ignore_check_constraints") {
+        let after = at + "ignore_check_constraints".len();
         if value_tokens(&lower, after)
             .iter()
-            .any(|t| matches!(t.as_str(), "false" | "off" | "0" | "no"))
+            .any(|t| matches!(t.as_str(), "true" | "on" | "1" | "yes"))
         {
-            push(Rule::RecursiveTriggersOff, at);
+            push(Rule::IgnoreCheckConstraintsOn, at);
+        }
+    }
+    // UFCS の形は、名前が一般的でないのでそのまま検出する。
+    for needle in ["connection::backup(", "connection::restore("] {
+        for at in occurrences(&lower, needle) {
+            push(Rule::BackupRestoreCall, at);
+        }
+    }
+    // method の形は、先頭の引数が文字列リテラルか `DatabaseName` のときだけ。
+    for needle in [".backup(", ".restore("] {
+        for at in occurrences(&lower, needle) {
+            let first_argument = lower[at + needle.len()..].trim_start();
+            if first_argument.starts_with('"') || first_argument.starts_with("databasename") {
+                push(Rule::BackupRestoreCall, at);
+            }
         }
     }
     hits
@@ -728,12 +802,24 @@ fn scanner_detects_each_forbidden_pattern() {
         vec![(Rule::WritableSchemaOn, 1)]
     );
     assert_eq!(
-        hits_in("conn.pragma_update(None, \"recursive_triggers\", false)?;"),
-        vec![(Rule::RecursiveTriggersOff, 1)]
+        hits_in("conn.pragma_update(None, \"ignore_check_constraints\", true)?;"),
+        vec![(Rule::IgnoreCheckConstraintsOn, 1)]
     );
     assert_eq!(
-        hits_in("conn.execute_batch(\"PRAGMA recursive_triggers=OFF;\")?;"),
-        vec![(Rule::RecursiveTriggersOff, 1)]
+        hits_in("conn.execute_batch(\"PRAGMA ignore_check_constraints = ON;\")?;"),
+        vec![(Rule::IgnoreCheckConstraintsOn, 1)]
+    );
+    assert_eq!(
+        hits_in("conn.backup(\"main\", &path, None)?;"),
+        vec![(Rule::BackupRestoreCall, 1)]
+    );
+    assert_eq!(
+        hits_in("conn.restore(DatabaseName::Main, &path, None::<fn(Progress)>)?;"),
+        vec![(Rule::BackupRestoreCall, 1)]
+    );
+    assert_eq!(
+        hits_in("rusqlite::Connection::backup(&conn, \"main\", p, None)?;"),
+        vec![(Rule::BackupRestoreCall, 1)]
     );
 }
 
@@ -744,7 +830,12 @@ fn scanner_accepts_safe_settings_comments_and_test_code() {
     assert!(
         hits_in("c.set_db_config(DbConfig::SQLITE_DBCONFIG_WRITABLE_SCHEMA,\n false)?;").is_empty()
     );
-    assert!(hits_in("conn.pragma_update(None, \"recursive_triggers\", true)?;").is_empty());
+    assert!(hits_in("conn.pragma_update(None, \"ignore_check_constraints\", false)?;").is_empty());
+    assert!(hits_in("conn.execute_batch(\"PRAGMA ignore_check_constraints=OFF\")?;").is_empty());
+    // `recursive_triggers` は規則ではない（OFF は既定値で、入れ子の TRIGGER は発火する）。
+    assert!(hits_in("conn.pragma_update(None, \"recursive_triggers\", false)?;").is_empty());
+    // 自前の `restore()`／`backup()` の誤検知はしない。
+    assert!(hits_in("guard.restore(conn)?; self.restore()?; state.backup(path)?;").is_empty());
     // コメントと doc comment。
     assert!(hits_in("// ENABLE_TRIGGER and Backup::new are forbidden\n/// blob_open\n/* sqlite3_blob_open */ fn f() {}").is_empty());
     // `#[cfg(test)]` の module／fn と、`any(test, ..)`。
@@ -760,6 +851,28 @@ fn scanner_accepts_safe_settings_comments_and_test_code() {
         "#[cfg(any(test, feature = \"test-support\"))]\nfn f() { Backup::new(a, b); }"
     )
     .is_empty());
+    assert!(hits_in(
+        "#[cfg(any(test, feature = \"workspace-maintenance-test-support\"))]\nfn f() { Backup::new(a, b); }"
+    )
+    .is_empty());
+    // test 専用ではない feature は、製品の build で有効になり得るので走査する。
+    assert_eq!(
+        hits_in("#[cfg(any(test, feature = \"nir1-material-diagnostics\"))]\nfn f() { Backup::new(a, b); }"),
+        vec![(Rule::BackupNew, 2)]
+    );
+    assert_eq!(
+        hits_in("#[cfg(any(test, feature = \"test-support\", feature = \"other\"))]\nfn f() { Backup::new(a, b); }"),
+        vec![(Rule::BackupNew, 2)]
+    );
+    assert!(
+        hits_in("#[cfg(all(test, feature = \"nir1-material-diagnostics\"))]\nfn f() { Backup::new(a, b); }")
+            .is_empty(),
+        "all(test, ..) needs `test`, so it is test-only"
+    );
+    assert_eq!(
+        hits_in("#[cfg(all(feature = \"test-support\", unix))]\nfn f() { Backup::new(a, b); }"),
+        vec![(Rule::BackupNew, 2)]
+    );
     // `not(test)` は製品コード。
     assert_eq!(
         hits_in("#[cfg(not(test))]\nfn f() { Backup::new(a, b); }"),

@@ -4668,7 +4668,7 @@
   "workspace": {
     "invalidPath": "Workspace \"{{path}}\" does not exist or is invalid. Removed from the list.",
     "openInProgress": "A workspace is already being opened. Please wait for it to finish",
-    "leaseTimeoutHint": "Another app is using this workspace, so the database update could not start. Quit any client that uses the Grimodex MCP (such as Claude Desktop), then open the workspace again.",
+    "leaseTimeoutHint": "Another app is using this workspace, so the operation could not start. Quit any client that uses the Grimodex MCP (such as Claude Desktop), then open the workspace again.",
     "trustTitle": "Do You Trust This Workspace?",
     "trustMessage": "This workspace was not created by you. It may contain content that could run malicious code.",
     "trustPath": "Path: {{path}}",
