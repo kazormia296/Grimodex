@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolRequestParams, CallToolResult, ServerCapabilities, ServerInfo};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, CallToolResult, ServerCapabilities, ServerInfo,
+};
 use rmcp::service::RequestContext;
 use rmcp::{tool, tool_handler, tool_router, ErrorData};
 use rusqlite::Connection;
@@ -626,8 +628,8 @@ impl rmcp::ServerHandler for GrimodexServer {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<rmcp::RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
-        deny_tool_call(request)
+    ) -> Result<CallToolResponse, ErrorData> {
+        deny_tool_call(request).map(CallToolResponse::from)
     }
 
     fn get_info(&self) -> ServerInfo {
