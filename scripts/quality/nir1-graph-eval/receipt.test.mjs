@@ -10,11 +10,12 @@ import {
   K62_FREEZE,
   K64_FREEZE,
   K65_FREEZE,
+  K66_FREEZE,
   variantByKey,
 } from "./constants.mjs";
 import {
   CP4_RECEIPT_SCHEMA,
-  assertCp4Receipt,
+  assertCp4Receipt as assertReceipt,
   assertDeclarationCurrent,
   assertElectronLaunch,
   assessMeasurementWindow,
@@ -24,7 +25,7 @@ import {
   receiptHeadErrors,
   assessX11Listing,
   selectReceiptsForAggregation,
-  validateCp4Receipt,
+  validateCp4Receipt as validateReceipt,
   verifySha256Sums,
   writeSha256Sums,
 } from "./receipt.mjs";
@@ -136,6 +137,21 @@ const K65_HEAD = {
   freezeCommit: K65_FREEZE.freezeCommit,
   sha256: K65_FREEZE.sha256,
 };
+/**
+ * The K6/6 freeze of a receipt head (変える点 8). These tests hold a receipt
+ * to a descriptor of their own: the same bytes at a synthetic freeze commit
+ * (a CI clone does not fetch `claude/nir1-contracts`). The pinned default
+ * refuses a receipt with this synthetic head (K6/6-N9, below).
+ */
+const TEST_K66 = { ...K66_FREEZE, freezeCommit: H40("6") };
+const K66_HEAD = {
+  freezeCommit: TEST_K66.freezeCommit,
+  sha256: TEST_K66.sha256,
+};
+const validateCp4Receipt = (value, bound) =>
+  validateReceipt(value, bound, { freeze66: TEST_K66 });
+const assertCp4Receipt = (value, bound) =>
+  assertReceipt(value, bound, { freeze66: TEST_K66 });
 /** E-1: the error the test-only 批准 5 evidence always gives. */
 const TEST_ONLY_EVIDENCE = /test-only evidence \(test-support\.mjs\)/;
 /**
@@ -175,6 +191,7 @@ function receipt(overrides = {}, { recompute = true } = {}) {
       k62: { freezeCommit: K62_FREEZE.commit, sha256: K62_FREEZE.sha256 },
       k64: K64_HEAD,
       k65: K65_HEAD,
+      k66: K66_HEAD,
       runStartedAtUtc: "2026-10-25T01:02:03.456Z",
       observationPrep: { commit: H40("a"), freezeRecordSha256: H64("b") },
       traceFile: null,
@@ -380,6 +397,99 @@ test("K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit �
     ),
     [],
   );
+});
+
+test("K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66）を持ち、無い・違う・/6 の凍結の前に始めた run（s6r1 を含む）の receipt は拒む。既定は固定した /6 の凍結で、null の descriptor はどの正式の receipt も拒む", () => {
+  const head = receipt().head;
+  const { k66, ...noK66 } = head;
+  assert.deepEqual(k66, K66_HEAD);
+  assert.equal(
+    K66_FREEZE.freezeCommit,
+    "56fb4fad2eb1eb2e021dfd121ea073f9d263cb4d",
+    "/6 is confirmed and frozen",
+  );
+  // /5 の凍結までの先頭（s6r1 の receipt の形）。
+  assert.match(errorsOf(receipt({ head: noK66 })), /head\.k66\.sha256/);
+  assert.match(
+    errorsOf(receipt({ head: { ...head, k66: { ...k66, sha256: H64("0") } } })),
+    /K6\/6 bytes/,
+  );
+  for (const other of [H40("4"), K65_FREEZE.freezeCommit])
+    assert.match(
+      errorsOf(
+        receipt({ head: { ...head, k66: { ...k66, freezeCommit: other } } }),
+      ),
+      /must be the pinned K6\/6 freeze commit/,
+    );
+  const k66Errors = (value, freeze66) =>
+    receiptHeadErrors(
+      value,
+      "g-case-gold",
+      "frozen",
+      K64_FREEZE,
+      K65_FREEZE,
+      freeze66,
+    ).filter((error) => /k66|K6\/6/u.test(error));
+  // 既定（固定した /6 の凍結）: 試験の合成の commit の head は拒む。
+  assert.match(
+    k66Errors(head).join(" | "),
+    /head\.k66\.freezeCommit must be the pinned K6\/6 freeze commit/,
+  );
+  // 固定した凍結そのものを書いた head は通る。
+  assert.deepEqual(
+    k66Errors({
+      ...head,
+      k66: {
+        freezeCommit: K66_FREEZE.freezeCommit,
+        sha256: K66_FREEZE.sha256,
+      },
+    }),
+    [],
+  );
+  // descriptor の freezeCommit が null なら fail closed。
+  assert.match(
+    k66Errors(head, { ...K66_FREEZE, freezeCommit: null }).join(" | "),
+    /\[precheck\] the K6\/6 freeze commit is not pinned/,
+  );
+  assert.deepEqual(k66Errors(head, TEST_K66), []);
+  // 予告（dev）は /6 の先頭を要しない。
+  assert.deepEqual(
+    receiptHeadErrors(noK66, "g-case-gold", "dev").filter((error) =>
+      /k66|K6\/6/u.test(error),
+    ),
+    [],
+  );
+});
+
+test("K6/6 FR-7: 正式の receipt は親の寄与の記録（followUp.parent.contribution）が材料の Revision の単位でなければ拒む（Scene の単位は予告専用）", () => {
+  const variant = variantByKey("G-03/base");
+  const withParentBasis = (basis) =>
+    receipt({
+      samples: k64Rows(variant).map((row, at) =>
+        row.followUp && at === 1
+          ? {
+              ...row,
+              followUp: {
+                ...row.followUp,
+                parent: {
+                  ...row.followUp.parent,
+                  contribution: {
+                    expectedContribution: true,
+                    contributionBasis: basis,
+                  },
+                },
+              },
+            }
+          : row,
+      ),
+    });
+  assert.deepEqual(otherErrors(withParentBasis("material-revision")), []);
+  for (const basis of ["scene-level-preview", undefined, "other"])
+    assert.match(
+      otherErrors(withParentBasis(basis)).join(" | "),
+      /\[precheck\] DR-CP4-F-6/u,
+      String(basis),
+    );
 });
 
 test("批准 7（DR-CP4-T14-1）: receiptHeadErrors は注入した凍結の descriptor で照合し、null なら正式の Graph を拒む", () => {

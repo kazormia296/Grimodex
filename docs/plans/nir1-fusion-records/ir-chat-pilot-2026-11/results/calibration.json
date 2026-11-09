@@ -1,0 +1,640 @@
+{
+  "schema": "ir-chat-pilot-calibration/1",
+  "evidenceScope": "not-cp4-evidence",
+  "protocol": "事前登録 11.3（任意）。ユーザーが 2026-11-08 に判定。回答が項目を再現しているかを yes／no／unsure で判定。判定者 1 人・各項目 1 回。",
+  "seed": "ir-chat-pilot-2026-11-calibration-v1",
+  "seedNote": "事前登録には種が無く、判定の前に統合者が固定した。",
+  "total": 42,
+  "distinctQuestions": 32,
+  "maxPerQuestion": 2,
+  "layerThresholdsTextLength": {
+    "0": {
+      "median": 717.5,
+      "eligibleShort": 2,
+      "eligibleLong": 2,
+      "short": 4,
+      "long": 3
+    },
+    "A": {
+      "median": 691,
+      "eligibleShort": 17,
+      "eligibleLong": 17,
+      "short": 3,
+      "long": 4
+    },
+    "B": {
+      "median": 675,
+      "eligibleShort": 20,
+      "eligibleLong": 21,
+      "short": 4,
+      "long": 3
+    },
+    "O": {
+      "median": 631.5,
+      "eligibleShort": 28,
+      "eligibleLong": 28,
+      "short": 3,
+      "long": 4
+    },
+    "C": {
+      "median": 671,
+      "eligibleShort": 33,
+      "eligibleLong": 33,
+      "short": 4,
+      "long": 3
+    },
+    "D": {
+      "median": 674,
+      "eligibleShort": 33,
+      "eligibleLong": 34,
+      "short": 3,
+      "long": 4
+    }
+  },
+  "countsByArmAndStratum": {
+    "0": {
+      "short": 4,
+      "long": 3
+    },
+    "O": {
+      "short": 3,
+      "long": 4
+    },
+    "D": {
+      "short": 3,
+      "long": 4
+    },
+    "C": {
+      "short": 4,
+      "long": 3
+    },
+    "B": {
+      "short": 4,
+      "long": 3
+    },
+    "A": {
+      "short": 3,
+      "long": 4
+    }
+  },
+  "selectionRules": [
+    "unit=(answer,item); one item per answer first, a second item of the same answer only when the stratum has too few answers (arm 0 has only 4 eligible answers)",
+    "eligible: Sonnet answers, type!=N, judge v3 ok and abstained=false, reproduced length = item count; latest ok judge entry per answer",
+    "layers: arm x length (rank-split by textLength within arm's eligible answers; odd middle goes to long); per arm short/long = 4/3 for even arm index else 3/4, order 0,A,B,O,C,D",
+    "within stratum: candidates (answer,item) sorted by sha256(seed|arm|stratum|answerId|itemIndex); pass 1: first with answer unused and question count<2 (global); pass 2 (shortfall): reuse an answer with a different item",
+    "display order: sha256(seed|shuf|answerId|itemIndex) ascending; cid assigned in that order"
+  ],
+  "keySha256": "97893ad6eacab17b9139e2e3b9b6389775a61dd8d88960184c7b2625173934fe",
+  "deviations": [
+    "arm 0 は棄権でない回答が 4 件しかない（短・長の各層の候補は 2 回答）ため、arm 0 だけ同じ回答から別の項目を最大 2 件取った（calibration-selection.json の rules）。",
+    "棄権した回答（judge の abstained）は抽出の対象から外した。",
+    "抽出の種は事前登録に無く、判定の前に統合者が固定した。"
+  ],
+  "arm0ItemsPerAnswer": [
+    2,
+    2,
+    2,
+    1
+  ],
+  "verdictCounts": {
+    "no": 18,
+    "yes": 23,
+    "unsure": 1
+  },
+  "unsure": [
+    {
+      "cid": "cal-17",
+      "arm": "A",
+      "stratum": "short",
+      "qid": "m-ja-2-p59-U1"
+    }
+  ],
+  "overall": {
+    "n": 41,
+    "agree": 38,
+    "agreement": {
+      "n": 41,
+      "successes": 38,
+      "rate": 0.9268,
+      "low": 0.8057,
+      "high": 0.9748
+    },
+    "kappa": 0.8523,
+    "judgeLenient": 1,
+    "judgeStrict": 2,
+    "humanYes": 23,
+    "judgeTrue": 22
+  },
+  "byArm": {
+    "0": {
+      "n": 7,
+      "agree": 7,
+      "agreement": {
+        "n": 7,
+        "successes": 7,
+        "rate": 1,
+        "low": 0.6457,
+        "high": 1
+      },
+      "kappa": null,
+      "judgeLenient": 0,
+      "judgeStrict": 0,
+      "humanYes": 0,
+      "judgeTrue": 0
+    },
+    "A": {
+      "n": 6,
+      "agree": 6,
+      "agreement": {
+        "n": 6,
+        "successes": 6,
+        "rate": 1,
+        "low": 0.6097,
+        "high": 1
+      },
+      "kappa": 1,
+      "judgeLenient": 0,
+      "judgeStrict": 0,
+      "humanYes": 2,
+      "judgeTrue": 2
+    },
+    "B": {
+      "n": 7,
+      "agree": 6,
+      "agreement": {
+        "n": 7,
+        "successes": 6,
+        "rate": 0.8571,
+        "low": 0.4869,
+        "high": 0.9743
+      },
+      "kappa": 0.6957,
+      "judgeLenient": 0,
+      "judgeStrict": 1,
+      "humanYes": 3,
+      "judgeTrue": 2
+    },
+    "O": {
+      "n": 7,
+      "agree": 5,
+      "agreement": {
+        "n": 7,
+        "successes": 5,
+        "rate": 0.7143,
+        "low": 0.3589,
+        "high": 0.9178
+      },
+      "kappa": 0.3,
+      "judgeLenient": 1,
+      "judgeStrict": 1,
+      "humanYes": 5,
+      "judgeTrue": 5
+    },
+    "C": {
+      "n": 7,
+      "agree": 7,
+      "agreement": {
+        "n": 7,
+        "successes": 7,
+        "rate": 1,
+        "low": 0.6457,
+        "high": 1
+      },
+      "kappa": null,
+      "judgeLenient": 0,
+      "judgeStrict": 0,
+      "humanYes": 7,
+      "judgeTrue": 7
+    },
+    "D": {
+      "n": 7,
+      "agree": 7,
+      "agreement": {
+        "n": 7,
+        "successes": 7,
+        "rate": 1,
+        "low": 0.6457,
+        "high": 1
+      },
+      "kappa": 1,
+      "judgeLenient": 0,
+      "judgeStrict": 0,
+      "humanYes": 6,
+      "judgeTrue": 6
+    }
+  },
+  "byStratum": {
+    "short": {
+      "n": 20,
+      "agree": 19,
+      "agreement": {
+        "n": 20,
+        "successes": 19,
+        "rate": 0.95,
+        "low": 0.7639,
+        "high": 0.9911
+      },
+      "kappa": 0.9,
+      "judgeLenient": 1,
+      "judgeStrict": 0,
+      "humanYes": 10,
+      "judgeTrue": 11
+    },
+    "long": {
+      "n": 21,
+      "agree": 19,
+      "agreement": {
+        "n": 21,
+        "successes": 19,
+        "rate": 0.9048,
+        "low": 0.7109,
+        "high": 0.9735
+      },
+      "kappa": 0.8073,
+      "judgeLenient": 0,
+      "judgeStrict": 2,
+      "humanYes": 13,
+      "judgeTrue": 11
+    }
+  },
+  "items": [
+    {
+      "cid": "cal-01",
+      "arm": "O",
+      "stratum": "long",
+      "qid": "m-ja-2-p59-M4",
+      "itemIndex": 0,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-02",
+      "arm": "D",
+      "stratum": "short",
+      "qid": "g-ja-1-p59-T2",
+      "itemIndex": 1,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-03",
+      "arm": "C",
+      "stratum": "long",
+      "qid": "g-ja-1-p59-M3",
+      "itemIndex": 2,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-04",
+      "arm": "B",
+      "stratum": "short",
+      "qid": "m-ja-2-p117-M4",
+      "itemIndex": 2,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-05",
+      "arm": "B",
+      "stratum": "short",
+      "qid": "m-ja-2-p117-M2",
+      "itemIndex": 2,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-06",
+      "arm": "D",
+      "stratum": "long",
+      "qid": "m-ja-2-p117-K1",
+      "itemIndex": 0,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-07",
+      "arm": "B",
+      "stratum": "long",
+      "qid": "m-ja-2-p59-M4",
+      "itemIndex": 0,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-08",
+      "arm": "C",
+      "stratum": "short",
+      "qid": "g-ja-1-p117-E2",
+      "itemIndex": 0,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-09",
+      "arm": "C",
+      "stratum": "short",
+      "qid": "g-ja-1-p117-T1",
+      "itemIndex": 1,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-10",
+      "arm": "O",
+      "stratum": "long",
+      "qid": "g-ja-1-p117-M1",
+      "itemIndex": 1,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-11",
+      "arm": "O",
+      "stratum": "short",
+      "qid": "m-ja-2-p117-M4",
+      "itemIndex": 2,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-12",
+      "arm": "D",
+      "stratum": "short",
+      "qid": "m-ja-2-p117-M2",
+      "itemIndex": 2,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-13",
+      "arm": "0",
+      "stratum": "long",
+      "qid": "m-ja-2-p117-M3",
+      "itemIndex": 0,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-14",
+      "arm": "B",
+      "stratum": "short",
+      "qid": "g-ja-1-p59-E4",
+      "itemIndex": 0,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-15",
+      "arm": "B",
+      "stratum": "long",
+      "qid": "g-ja-1-p59-M4",
+      "itemIndex": 2,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-16",
+      "arm": "O",
+      "stratum": "short",
+      "qid": "m-ja-2-p59-E4",
+      "itemIndex": 1,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-17",
+      "arm": "A",
+      "stratum": "short",
+      "qid": "m-ja-2-p59-U1",
+      "itemIndex": 0,
+      "humanVerdict": "unsure",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-18",
+      "arm": "0",
+      "stratum": "long",
+      "qid": "m-ja-2-p59-M2",
+      "itemIndex": 0,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-19",
+      "arm": "B",
+      "stratum": "long",
+      "qid": "g-ja-1-p59-K1",
+      "itemIndex": 0,
+      "humanVerdict": "yes",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-20",
+      "arm": "0",
+      "stratum": "short",
+      "qid": "g-ja-1-p117-T3",
+      "itemIndex": 0,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-21",
+      "arm": "C",
+      "stratum": "long",
+      "qid": "g-ja-1-p59-U1",
+      "itemIndex": 1,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-22",
+      "arm": "C",
+      "stratum": "short",
+      "qid": "g-ja-1-p117-E3",
+      "itemIndex": 0,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-23",
+      "arm": "D",
+      "stratum": "long",
+      "qid": "m-ja-2-p59-U2",
+      "itemIndex": 1,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-24",
+      "arm": "O",
+      "stratum": "short",
+      "qid": "g-ja-1-p117-K1",
+      "itemIndex": 0,
+      "humanVerdict": "no",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-25",
+      "arm": "A",
+      "stratum": "long",
+      "qid": "m-ja-2-p59-R2",
+      "itemIndex": 2,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-26",
+      "arm": "A",
+      "stratum": "short",
+      "qid": "m-ja-2-p117-R1",
+      "itemIndex": 1,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-27",
+      "arm": "B",
+      "stratum": "short",
+      "qid": "g-ja-1-p59-R2",
+      "itemIndex": 1,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-28",
+      "arm": "C",
+      "stratum": "short",
+      "qid": "m-ja-2-p59-E2",
+      "itemIndex": 2,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-29",
+      "arm": "0",
+      "stratum": "long",
+      "qid": "m-ja-2-p59-M2",
+      "itemIndex": 1,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-30",
+      "arm": "C",
+      "stratum": "long",
+      "qid": "g-ja-1-p117-K2",
+      "itemIndex": 2,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-31",
+      "arm": "D",
+      "stratum": "short",
+      "qid": "m-ja-2-p117-E4",
+      "itemIndex": 1,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-32",
+      "arm": "0",
+      "stratum": "short",
+      "qid": "g-ja-1-p117-T3",
+      "itemIndex": 1,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-33",
+      "arm": "0",
+      "stratum": "short",
+      "qid": "m-ja-2-p59-T3",
+      "itemIndex": 2,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-34",
+      "arm": "A",
+      "stratum": "long",
+      "qid": "m-ja-2-p117-M3",
+      "itemIndex": 2,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-35",
+      "arm": "A",
+      "stratum": "long",
+      "qid": "g-ja-1-p117-M3",
+      "itemIndex": 1,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-36",
+      "arm": "A",
+      "stratum": "short",
+      "qid": "g-ja-1-p117-T2",
+      "itemIndex": 1,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-37",
+      "arm": "D",
+      "stratum": "long",
+      "qid": "m-ja-2-p117-U2",
+      "itemIndex": 2,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-38",
+      "arm": "O",
+      "stratum": "long",
+      "qid": "g-ja-1-p59-U2",
+      "itemIndex": 0,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-39",
+      "arm": "O",
+      "stratum": "long",
+      "qid": "g-ja-1-p59-M4",
+      "itemIndex": 1,
+      "humanVerdict": "yes",
+      "judgeReproduced": false
+    },
+    {
+      "cid": "cal-40",
+      "arm": "A",
+      "stratum": "long",
+      "qid": "g-ja-1-p117-K2",
+      "itemIndex": 0,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-41",
+      "arm": "D",
+      "stratum": "long",
+      "qid": "g-ja-1-p117-K1",
+      "itemIndex": 0,
+      "humanVerdict": "yes",
+      "judgeReproduced": true
+    },
+    {
+      "cid": "cal-42",
+      "arm": "0",
+      "stratum": "short",
+      "qid": "m-ja-2-p59-T3",
+      "itemIndex": 0,
+      "humanVerdict": "no",
+      "judgeReproduced": false
+    }
+  ]
+}

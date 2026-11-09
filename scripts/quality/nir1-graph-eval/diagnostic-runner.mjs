@@ -5,7 +5,7 @@
 //   frozen (④、S4 の後):
 //   TMPDIR=<short scratch> node scripts/local-ci-xvfb.mjs node \
 //     scripts/quality/nir1-graph-eval/diagnostic-runner.mjs --run <name> \
-//     --prep-commit <S4> --k62-commit <K6/2> --k64-commit <K6/4> --k65-commit <K6/5> \
+//     --prep-commit <S4> --k62-commit <K6/2> --k64-commit <K6/4> --k65-commit <K6/5> --k66-commit <K6/6> \
 //     --product-receipt <standard-build.json> \
 //     --ja-model <pinned> --en-model <pinned>
 //   dev preview (the integrator only; never a CP-4 record):
@@ -35,6 +35,7 @@ import {
   readAdmittedObservationPrep,
   readK64FreezeHead,
   readK65FreezeHead,
+  readK66FreezeHead,
 } from "./admission.mjs";
 import { FROZEN_FIXTURE_SHA256, GRAPH_EVAL_VARIANTS } from "./constants.mjs";
 import { buildIndex, launch, openWorkspace } from "./dprime-check.mjs";
@@ -334,6 +335,7 @@ async function main() {
       // The K6/4 freeze head first (cheap).
       readK64FreezeHead({ root: ROOT, commit: options["k64-commit"] });
       readK65FreezeHead({ root: ROOT, commit: options["k65-commit"] });
+      readK66FreezeHead({ root: ROOT, commit: options["k66-commit"] });
       plans = loadFrozenSetupPlans({
         root: ROOT,
         stopsAt: SETUP_STOPS.complete,
@@ -376,6 +378,7 @@ async function main() {
         k62Commit: options["k62-commit"],
         k64Commit: options["k64-commit"],
         k65Commit: options["k65-commit"],
+        k66Commit: options["k66-commit"],
       });
       assertPrepForAdmission({ prep, admission });
       // Review P3 (e): one ledger claim per frozen attempt (A's ledger),
@@ -404,6 +407,7 @@ async function main() {
         k62: admission.head.k62,
         k64: admission.head.k64,
         k65: admission.head.k65,
+        k66: admission.head.k66,
         observationPrep: admission.head.observationPrep,
         traces: readTraceFileHeads({ root: ROOT, traces: prep.value.traces }),
       });

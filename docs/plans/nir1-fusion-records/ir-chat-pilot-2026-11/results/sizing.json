@@ -1,0 +1,485 @@
+{
+  "schema": "ir-chat-pilot-sizing/1",
+  "evidenceScope": "not-cp4-evidence",
+  "label": "【推測】pilot の観測値を入力にした計算。正式な試験の設計が pilot と同じであることを仮定する。区間は cell 4 件・作品 2 件からの見積りで極めて広い。",
+  "method": {
+    "outcome": "Sonnet 5.5 の B−A（質問ごとの項目の再現率の差）、答えのある 67 問、judge v3 の reproduced",
+    "test": "両側 α=0.05、検出力 0.8。t 分位点（自由度 = cluster 数 − 1）。cluster を無視する行だけ正規分布",
+    "models": {
+      "noCluster": "n = ((z_{α/2}+z_β)·SD_d/δ)²。cell・作品の相関を無視した下限。",
+      "mcnemar": "項目単位の対応のある二値。ψ=不一致率、δ=A と B の再現率の差。n_items = ((z_{α/2}√ψ + z_β√(ψ−δ²))/δ)²。項目間の相関と cluster を無視した下限。質問数への換算は 1 質問あたりの項目数で割る。",
+      "cellCluster": "cell（作品×地点）を cluster とする一元配置の変量効果。Var(平均 d) = σc²/C + σe²/(C·m)。作品数 = C/2（各作品 2 地点で、地点どうしが独立という楽観的な前提）。",
+      "workNested": "作品 > 地点 > 質問の入れ子。Var = σw²/W + σp²/(W·P) + σe²/(W·P·m)、P=2。σw² は作品 2 件の差からの 1 自由度の見積りで、信頼できない。"
+    },
+    "assumptions": [
+      "正式な試験の質問の型の配分・Gold の作り方・IR の選び方（質問つきの seed）・judge が pilot と同じ。",
+      "質問ごとの差 d の分散は、B−A の大きさに依らず pilot の値のまま（δ を小さくしても SD_d を変えない）。",
+      "σc²・σw²・σp² は 4 cell・2 作品からの積率法の推定で、負なら 0 に切る。真値の不確かさは大きく、この表は桁の目安にとどめる。",
+      "pilot の B−A は評価側が質問つきの seed で IR を選んだ上限寄りの見積り（限界 16）。製品の経路の差はこれより小さい可能性が高く、その場合の必要数は増える。",
+      "主指標の judge は Haiku 5.5 の judge v3 で、較正の範囲は限られる（calibration.json）。"
+    ]
+  },
+  "inputs": {
+    "questions": 67,
+    "items": 173,
+    "itemsPerQuestion": 2.582,
+    "meanDiff": 0.1356,
+    "sdDiff": 0.3364,
+    "itemTable": {
+      "bothReproduced": 25,
+      "aOnly": 4,
+      "bOnly": 26,
+      "neither": 118
+    },
+    "discordanceRate": 0.1734,
+    "itemRecallDiff": 0.1272,
+    "cellStats": {
+      "g-ja-1-p117": {
+        "n": 17,
+        "mean": 0.0588,
+        "sd": 0.22
+      },
+      "g-ja-1-p59": {
+        "n": 16,
+        "mean": 0.0208,
+        "sd": 0.3594
+      },
+      "m-ja-2-p117": {
+        "n": 17,
+        "mean": 0.152,
+        "sd": 0.283
+      },
+      "m-ja-2-p59": {
+        "n": 17,
+        "mean": 0.3039,
+        "sd": 0.4092
+      }
+    },
+    "cellTInterval": {
+      "meanOfCellMeans": 0.1339,
+      "se": 0.063,
+      "df": 3,
+      "low": -0.0667,
+      "high": 0.3344
+    },
+    "varianceComponents": {
+      "sigmaE2": 0.10592,
+      "sigmaC2": 0.00954,
+      "sigmaC2Unclipped": 0.00954,
+      "icc": 0.0826,
+      "cells": 4,
+      "n0": 16.746,
+      "nested": {
+        "sigmaW2": 0.01453,
+        "sigmaW2Unclipped": 0.01453,
+        "sigmaP2": 0,
+        "workMeansOfCellMeans": {
+          "g-ja-1": 0.0398,
+          "m-ja-2": 0.2279
+        }
+      }
+    }
+  },
+  "results": {
+    "noCluster": [
+      {
+        "delta": 0.03,
+        "questions": 988
+      },
+      {
+        "delta": 0.05,
+        "questions": 356
+      },
+      {
+        "delta": 0.1,
+        "questions": 89
+      },
+      {
+        "delta": 0.1356,
+        "questions": 49
+      }
+    ],
+    "mcnemar": [
+      {
+        "delta": 0.03,
+        "items": 1510,
+        "questionsEquivalent": 585
+      },
+      {
+        "delta": 0.05,
+        "items": 543,
+        "questionsEquivalent": 210
+      },
+      {
+        "delta": 0.1,
+        "items": 134,
+        "questionsEquivalent": 52
+      },
+      {
+        "delta": 0.1272,
+        "items": 82,
+        "questionsEquivalent": 32
+      }
+    ],
+    "cellCluster": {
+      "requiredCellsAtPointEstimate": [
+        {
+          "delta": 0.03,
+          "questionsPerCell": 20,
+          "cells": 132,
+          "works": 66,
+          "totalQuestions": 2640
+        },
+        {
+          "delta": 0.03,
+          "questionsPerCell": 40,
+          "cells": 109,
+          "works": 55,
+          "totalQuestions": 4360
+        },
+        {
+          "delta": 0.03,
+          "questionsPerCell": 80,
+          "cells": 97,
+          "works": 49,
+          "totalQuestions": 7760
+        },
+        {
+          "delta": 0.05,
+          "questionsPerCell": 20,
+          "cells": 49,
+          "works": 25,
+          "totalQuestions": 980
+        },
+        {
+          "delta": 0.05,
+          "questionsPerCell": 40,
+          "cells": 41,
+          "works": 21,
+          "totalQuestions": 1640
+        },
+        {
+          "delta": 0.05,
+          "questionsPerCell": 80,
+          "cells": 37,
+          "works": 19,
+          "totalQuestions": 2960
+        },
+        {
+          "delta": 0.1,
+          "questionsPerCell": 20,
+          "cells": 14,
+          "works": 7,
+          "totalQuestions": 280
+        },
+        {
+          "delta": 0.1,
+          "questionsPerCell": 40,
+          "cells": 12,
+          "works": 6,
+          "totalQuestions": 480
+        },
+        {
+          "delta": 0.1,
+          "questionsPerCell": 80,
+          "cells": 11,
+          "works": 6,
+          "totalQuestions": 880
+        }
+      ],
+      "requiredCellsIfCellVarianceDoubled": [
+        {
+          "delta": 0.03,
+          "questionsPerCell": 20,
+          "cells": 215,
+          "works": 108,
+          "totalQuestions": 4300
+        },
+        {
+          "delta": 0.03,
+          "questionsPerCell": 40,
+          "cells": 192,
+          "works": 96,
+          "totalQuestions": 7680
+        },
+        {
+          "delta": 0.03,
+          "questionsPerCell": 80,
+          "cells": 180,
+          "works": 90,
+          "totalQuestions": 14400
+        },
+        {
+          "delta": 0.05,
+          "questionsPerCell": 20,
+          "cells": 79,
+          "works": 40,
+          "totalQuestions": 1580
+        },
+        {
+          "delta": 0.05,
+          "questionsPerCell": 40,
+          "cells": 71,
+          "works": 36,
+          "totalQuestions": 2840
+        },
+        {
+          "delta": 0.05,
+          "questionsPerCell": 80,
+          "cells": 67,
+          "works": 34,
+          "totalQuestions": 5360
+        },
+        {
+          "delta": 0.1,
+          "questionsPerCell": 20,
+          "cells": 22,
+          "works": 11,
+          "totalQuestions": 440
+        },
+        {
+          "delta": 0.1,
+          "questionsPerCell": 40,
+          "cells": 20,
+          "works": 10,
+          "totalQuestions": 800
+        },
+        {
+          "delta": 0.1,
+          "questionsPerCell": 80,
+          "cells": 19,
+          "works": 10,
+          "totalQuestions": 1520
+        }
+      ],
+      "requiredCellsIfCellVarianceZero": [
+        {
+          "delta": 0.03,
+          "questionsPerCell": 20,
+          "cells": 49,
+          "works": 25,
+          "totalQuestions": 980
+        },
+        {
+          "delta": 0.03,
+          "questionsPerCell": 40,
+          "cells": 26,
+          "works": 13,
+          "totalQuestions": 1040
+        },
+        {
+          "delta": 0.03,
+          "questionsPerCell": 80,
+          "cells": 14,
+          "works": 7,
+          "totalQuestions": 1120
+        },
+        {
+          "delta": 0.05,
+          "questionsPerCell": 20,
+          "cells": 19,
+          "works": 10,
+          "totalQuestions": 380
+        },
+        {
+          "delta": 0.05,
+          "questionsPerCell": 40,
+          "cells": 11,
+          "works": 6,
+          "totalQuestions": 440
+        },
+        {
+          "delta": 0.05,
+          "questionsPerCell": 80,
+          "cells": 7,
+          "works": 4,
+          "totalQuestions": 560
+        },
+        {
+          "delta": 0.1,
+          "questionsPerCell": 20,
+          "cells": 7,
+          "works": 4,
+          "totalQuestions": 140
+        },
+        {
+          "delta": 0.1,
+          "questionsPerCell": 40,
+          "cells": 5,
+          "works": 3,
+          "totalQuestions": 200
+        },
+        {
+          "delta": 0.1,
+          "questionsPerCell": 80,
+          "cells": 4,
+          "works": 2,
+          "totalQuestions": 320
+        }
+      ],
+      "mdeAtPointEstimate": [
+        {
+          "questionsPerCell": 20,
+          "cells": 4,
+          "works": 2,
+          "mde": 0.2534
+        },
+        {
+          "questionsPerCell": 20,
+          "cells": 8,
+          "works": 4,
+          "mde": 0.1404
+        },
+        {
+          "questionsPerCell": 20,
+          "cells": 16,
+          "works": 8,
+          "mde": 0.0913
+        },
+        {
+          "questionsPerCell": 20,
+          "cells": 32,
+          "works": 16,
+          "mde": 0.0623
+        },
+        {
+          "questionsPerCell": 40,
+          "cells": 4,
+          "works": 2,
+          "mde": 0.2297
+        },
+        {
+          "questionsPerCell": 40,
+          "cells": 8,
+          "works": 4,
+          "mde": 0.1273
+        },
+        {
+          "questionsPerCell": 40,
+          "cells": 16,
+          "works": 8,
+          "mde": 0.0827
+        },
+        {
+          "questionsPerCell": 40,
+          "cells": 32,
+          "works": 16,
+          "mde": 0.0565
+        },
+        {
+          "questionsPerCell": 80,
+          "cells": 4,
+          "works": 2,
+          "mde": 0.2169
+        },
+        {
+          "questionsPerCell": 80,
+          "cells": 8,
+          "works": 4,
+          "mde": 0.1202
+        },
+        {
+          "questionsPerCell": 80,
+          "cells": 16,
+          "works": 8,
+          "mde": 0.0781
+        },
+        {
+          "questionsPerCell": 80,
+          "cells": 32,
+          "works": 16,
+          "mde": 0.0533
+        }
+      ],
+      "mdeFloorWithUnlimitedQuestions": [
+        {
+          "cells": 4,
+          "works": 2,
+          "mde": 0.2032
+        },
+        {
+          "cells": 8,
+          "works": 4,
+          "mde": 0.1126
+        },
+        {
+          "cells": 16,
+          "works": 8,
+          "mde": 0.0732
+        },
+        {
+          "cells": 32,
+          "works": 16,
+          "mde": 0.05
+        }
+      ]
+    },
+    "workNested": {
+      "requiredWorks": [
+        {
+          "delta": 0.03,
+          "questionsPerCell": 20,
+          "positionsPerWork": 2,
+          "works": 152,
+          "totalQuestions": 6080
+        },
+        {
+          "delta": 0.03,
+          "questionsPerCell": 40,
+          "positionsPerWork": 2,
+          "works": 141,
+          "totalQuestions": 11280
+        },
+        {
+          "delta": 0.03,
+          "questionsPerCell": 80,
+          "positionsPerWork": 2,
+          "works": 135,
+          "totalQuestions": 21600
+        },
+        {
+          "delta": 0.05,
+          "questionsPerCell": 20,
+          "positionsPerWork": 2,
+          "works": 56,
+          "totalQuestions": 2240
+        },
+        {
+          "delta": 0.05,
+          "questionsPerCell": 40,
+          "positionsPerWork": 2,
+          "works": 52,
+          "totalQuestions": 4160
+        },
+        {
+          "delta": 0.05,
+          "questionsPerCell": 80,
+          "positionsPerWork": 2,
+          "works": 50,
+          "totalQuestions": 8000
+        },
+        {
+          "delta": 0.1,
+          "questionsPerCell": 20,
+          "positionsPerWork": 2,
+          "works": 16,
+          "totalQuestions": 640
+        },
+        {
+          "delta": 0.1,
+          "questionsPerCell": 40,
+          "positionsPerWork": 2,
+          "works": 15,
+          "totalQuestions": 1200
+        },
+        {
+          "delta": 0.1,
+          "questionsPerCell": 80,
+          "positionsPerWork": 2,
+          "works": 14,
+          "totalQuestions": 2240
+        }
+      ]
+    }
+  }
+}

@@ -4,7 +4,7 @@
 //   TMPDIR=<short scratch> node scripts/local-ci-xvfb.mjs node \
 //     scripts/quality/nir1-graph-eval/frozen-k64-run.mjs --run <name> \
 //     --candidate <sha> --prep-commit <S4 commit> --k62-commit <K6/2 freeze> \
-//     --k64-commit <K6/4 freeze> --k65-commit <K6/5 freeze> --product-receipt <standard build receipt> \
+//     --k64-commit <K6/4 freeze> --k65-commit <K6/5 freeze> --k66-commit <K6/6 freeze> --product-receipt <standard build receipt> \
 //     --setups <variantKey → complete setup receipt の JSON> \
 //     --ja-model <pinned> --en-model <pinned> [--variant <key>] \
 //     [--d2a-mode unrestricted]  (d10 の parity の run: R+IR だけ)
@@ -34,6 +34,7 @@ import {
   readK62FreezeHead,
   readK64FreezeHead,
   readK65FreezeHead,
+  readK66FreezeHead,
 } from "./admission.mjs";
 import { checkRunnerBuildReceipts } from "./build-receipt-check.mjs";
 import { K64_W_F_MS, devVariant, variantByKey } from "./constants.mjs";
@@ -197,6 +198,7 @@ export function parseArgs(argv) {
         "k62-commit",
         "k64-commit",
         "k65-commit",
+        "k66-commit",
         "product-receipt",
       ];
   for (const name of required)
@@ -623,6 +625,11 @@ async function graphSample({ ctx, slot }) {
     expectedContribution: ctx.expectedContribution,
     ...(ctx.materialContribution
       ? { materialContribution: ctx.materialContribution }
+      : {}),
+    // K6/6 FR-7: the dev preview rehearses the parent's contribution on the
+    // Revision unit (the child stays on Scenes, below).
+    ...(ctx.materialPreview
+      ? { parentMaterialContribution: ctx.materialPreview }
       : {}),
   });
   // Review P3 (f): the dev preview judges F6 on Scenes (DR-CP4-F-6) and
@@ -1512,6 +1519,7 @@ export async function runFrozenK64(argv, deps = {}) {
     assertCandidate = assertCandidateFixed,
     readK64Head = readK64FreezeHead,
     readK65Head = readK65FreezeHead,
+    readK66Head = readK66FreezeHead,
     admitFormal = admitFormalK64Run,
     readGate = readSpP4Gate,
     planRun = formalRunPlan,
@@ -1554,6 +1562,7 @@ export async function runFrozenK64(argv, deps = {}) {
       assertCandidate({ root: ROOT, candidate: options.candidate });
       readK64Head({ root: ROOT, commit: options["k64-commit"] });
       readK65Head({ root: ROOT, commit: options["k65-commit"] });
+      readK66Head({ root: ROOT, commit: options["k66-commit"] });
       const readJson = (file) => JSON.parse(readFileSync(file, "utf8"));
       const ratification5 = options["keep-test-worktree"]
         ? await collectRatification5EvidenceWithKeepTest({
@@ -1570,6 +1579,7 @@ export async function runFrozenK64(argv, deps = {}) {
         k62Commit: options["k62-commit"],
         k64Commit: options["k64-commit"],
         k65Commit: options["k65-commit"],
+        k66Commit: options["k66-commit"],
         buildReceipt: readJson(path.join(evalDir, "eval-build.json")),
         productReceipt: readJson(path.resolve(options["product-receipt"])),
         defaultAddonSha256: defaultAddonSha256Of(),

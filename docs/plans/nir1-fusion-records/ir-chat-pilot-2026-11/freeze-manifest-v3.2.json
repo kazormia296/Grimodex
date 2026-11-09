@@ -1,0 +1,185 @@
+{
+  "schema": "ir-chat-pilot-freeze-manifest/1",
+  "evidenceScope": "not-cp4-evidence",
+  "note": "本文・質問・回答は含まない。code の commit と file の sha256、固定した定数、data の sha256 だけ。",
+  "code": {
+    "repoBranch": "claude/ir-chat-pilot-context",
+    "commit": "127c500f2354968a7c0d2b5df02396fe416652af",
+    "cleanAtBuild": true,
+    "files": {
+      "haiku-pass-lib.mjs": "c5df92040f7dfceb6735711dc86ba54df6a8443fbdef23fa49625c263a2525b2",
+      "request-body.mjs": "343777df147cdb36d6ac131010133f78cd06b646e936aec5ec22e767df6355fc",
+      "verify-materials.mjs": "ccab9ab4e70f3733a3eb6f284c75f7426bdf5bfecdf8b228aa27aaf40ce42b61",
+      "runner.mjs": "144a037380fab4332dc44e87f080c46d667f6663585b532b7d3a15613a1acce8",
+      "ledger.mjs": "dfdbc765583590b77ad661d29b65bbd09992389fae78c0cc1e211a840c096fb8",
+      "overlap-guard.mjs": "c14e04a21d5f643a0ebe27dca3e7f41b5cba4c95c10c77bd1dc75b6a7abd3a6e",
+      "analysis-lib.mjs": "20dfac2d8894d966942142351690cb9aa6fb8a5337317e55f1e19c2302716612",
+      "main-run-lib.mjs": "b69e018dac0299c4855d133b15186b7c5c77b88e192ee4e1ce1f0a9b272b465d",
+      "main-run.mjs": "27267ab0b71052d891f1e162b828052579b2cbcd49d34c62d49c9332dc97a75e",
+      "freeze-manifest.mjs": "f4f1f306a3be06a4a3a64702a60cf52e9e267fe2c2d72dab70e5593b4aef396d",
+      "oracle.mjs": "9db64691a0dfc5851f51476717d8107bf56ac709cf184f0649e4d8ecfc26dd93",
+      "lib.mjs": "84cf5c4141a4c73b6d6f2bbb4555551d0d30160739b117b11d6396ea241bed3b",
+      "key-source.mjs": "3d77a70ccf991dc2a5292384ff990a5b221032bf655c48cdddedf23111096891"
+    }
+  },
+  "design": {
+    "sha256": "69a8a8587cba2e9790aa0fedf24b4a3fadc059e1a04beb74b5413951f0599c55"
+  },
+  "answer": {
+    "models": {
+      "sonnet": {
+        "model": "claude-sonnet-5-5",
+        "effort": "high"
+      },
+      "haiku": {
+        "model": "claude-haiku-5-5",
+        "effort": "low"
+      }
+    },
+    "maxTokens": 4096,
+    "thinking": {
+      "type": "adaptive",
+      "display": "summarized"
+    },
+    "samplingArgs": "none",
+    "anthropicBeta": "prompt-caching-2024-07-31（cache_control があるとき。1 時間 cache は使わない）",
+    "suffixSha256": "80461ed1ad8484bd09517df6bf3a260f63d3d6c0f9c8c598200bdc83051319b8",
+    "passes": {
+      "sonnet": {
+        "model": "claude-sonnet-5-5",
+        "effort": "high",
+        "stage": "answer-sonnet",
+        "reps": {
+          "0": 1,
+          "A": 1,
+          "B": 1,
+          "O": 1,
+          "C": 1,
+          "D": 1
+        },
+        "dir": "main-sonnet"
+      },
+      "haiku": {
+        "model": "claude-haiku-5-5",
+        "effort": "low",
+        "stage": "answer-haiku",
+        "reps": {
+          "0": 3,
+          "A": 3,
+          "B": 3,
+          "O": 3,
+          "C": 1,
+          "D": 1
+        },
+        "dir": "main-haiku"
+      }
+    },
+    "cells": [
+      "g-ja-1-p59",
+      "m-ja-2-p59",
+      "g-ja-1-p117",
+      "m-ja-2-p117"
+    ],
+    "stopRules": {
+      "cumulativeExtrapolationFloorUsd": 48,
+      "cumulativeHardStopUsd": 60,
+      "cacheReadMinRatio": 0.9,
+      "truncationMaxRate": 0.02,
+      "truncationMinRequests": 20,
+      "maxConcurrency": 2,
+      "answerMaxResends": 3,
+      "maxConsecutiveMissing": 5
+    },
+    "ledger": {
+      "totalCapUsd": 60,
+      "stageCapsUsd": {
+        "gold": 16,
+        "context": 1,
+        "answer-sonnet-pass": 3,
+        "judge-sonnet-pass": 0.5,
+        "answer-haiku": 4,
+        "judge-haiku": 4,
+        "judge-misaccept-gen": 0.1,
+        "answer-sonnet": 30
+      }
+    }
+  },
+  "judge": {
+    "model": "claude-haiku-5-5",
+    "effort": "low",
+    "maxTokens": 4000,
+    "thinking": {
+      "type": "adaptive",
+      "display": "summarized"
+    },
+    "systemBlocks": 1,
+    "systemCacheControl": false,
+    "promptVersion": "v3",
+    "promptSha256": "80eaa8fb156f7c287f3c5d768a0123a60fdea28189b48b8046ad6ab7e5c57be2",
+    "userMessageTypeSha256": "23249c7c1bc24a63d0ee18b28b6638dbeb8e87e96683511634dd2840b8ac410f",
+    "systemSha256": "80eaa8fb156f7c287f3c5d768a0123a60fdea28189b48b8046ad6ab7e5c57be2",
+    "promptHashes": {
+      "v2": "3fa3ecd35541c6ce2ab19c1739051f327f0d0cd2e8b51e68d62d7ef6b30c67af",
+      "v3": "80eaa8fb156f7c287f3c5d768a0123a60fdea28189b48b8046ad6ab7e5c57be2"
+    },
+    "maxAttempts": 3
+  },
+  "analysis": {
+    "bootstrap": {
+      "seed": "ir-chat-pilot-2026-11-bootstrap-v1",
+      "iterations": 10000,
+      "ci": {
+        "low": 0.025,
+        "high": 0.975
+      },
+      "stratifiedBy": "cell（作品×地点）",
+      "unit": "質問（対応のある差）"
+    },
+    "comparisons": [
+      "B-A",
+      "D-C",
+      "C-A",
+      "O-0",
+      "O-A",
+      "B-0"
+    ],
+    "primary": "Sonnet 5.5 の B−A（答えのある 67 問。N を除く）",
+    "verification": {
+      "seed": "ir-chat-pilot-2026-11-verify-v1",
+      "rate": 0.25,
+      "sets": "S1＝N の全件／S2＝(b) の候補の全件／S3＝残りの無作為 25％"
+    }
+  },
+  "data": {
+    "questions": {
+      "g-ja-1-p59": "1c27a2efe451acc3bc769593972c53c77bcfb8a571759554a5595be5c3fc05f5",
+      "g-ja-1-p117": "1902b0d7d0cbe51708e9e1b357e53292ec144369a6032a01e6e73a99fa18e551",
+      "m-ja-2-p59": "b582298cacd621f96a08675a825ca94b0d2e819dd6626eac5560653c8e91722a",
+      "m-ja-2-p117": "85e862a2a601f690cc65ce6d27878f98aecb41a96d81fc3e51f9cf214e1f9aae"
+    },
+    "requestSets": {
+      "g-ja-1-p59": {
+        "files": 96,
+        "sha256": "7e6702c7673c88d6d015cd97ae068959dc1a5a5f06ef5a6d98a11214b832630d"
+      },
+      "g-ja-1-p117": {
+        "files": 101,
+        "sha256": "213c863049378bc8ac488df3b498fe5278d642095dcb65805187b284d7f470c5"
+      },
+      "m-ja-2-p59": {
+        "files": 101,
+        "sha256": "fba9e50910c86d42e08a3f1f37203a8519fba005f67490450c3150f6d0438f61"
+      },
+      "m-ja-2-p117": {
+        "files": 101,
+        "sha256": "ea9c4427624ba7087c16207d3d429602f7df0e0632b303daa74fe2350f26dfa5"
+      }
+    },
+    "countArms": "16245062a148d11075deb77b123fa87d383f0441f7352c9057bf57590448fec2",
+    "sceneLabels": "80319c49487cc5218c65463d1bcfe9b72a711a590ce1cc87a76233b4a005b525",
+    "reviewSelection": "7cbfce3e00dd2f898c5c9c17832481d078bfeac8d105165d9145e7c06fc8fdbc",
+    "reviewResult": "77b8f27e701e382fdd4e2c3af3da88810ca5d120ab70ae9616945a518782521c",
+    "misacceptMain": "b5c83f9cf9f8e7f7e0805377f9b0a67e063f2ba9367dc047a887802504899137",
+    "verifyInstructions": "01fd31a0c283142add9e3f7bb064e01cf6effcc7ecfbd8ae2b552df9a726a210"
+  }
+}

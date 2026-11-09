@@ -602,3 +602,190 @@ test("レビュー P3: Native の begin の記録の数が renderer の begin �
     true,
   );
 });
+
+// ---- K6/6 FR-7: 親の寄与の記録 ------------------------------------------------
+
+/**
+ * One steady-state sample as R1 and D′ record it when the parent joins its
+ * worker's Graph inside D: the parent fetch carries the Graph (`graph-ready`,
+ * two edges) and its hashed `paths`, the settle is `used`, no notice and no
+ * child; one prepare started and became ready; the begin record is `pending`.
+ */
+function firstRenderInput(overrides = {}) {
+  const graph = {
+    edgeCount: 2,
+    graphOnlySceneId: "dev-added",
+    pathAttachmentSceneIds: ["dev-b"],
+  };
+  return input({
+    observation: observation({
+      child: null,
+      parent: {
+        result: result({
+          graphOutcome: "graph-ready",
+          graph,
+          finalSceneIds: ["dev-a", "dev-b", "dev-c", "dev-added"],
+        }),
+        paths: {
+          graphOnly: { sceneId: "dev-added", edges: [] },
+          pathAttachments: [],
+        },
+      },
+      api: [
+        api("related_scenes_begin", 60, 80),
+        api("related_scenes_continue", 100.5, 103),
+        api("related_scenes_graph_continue", 100.5, 120, {
+          status: "available",
+        }),
+        api("related_scenes_graph_continue", 110.85, 112, { settle: "used" }),
+      ],
+      commits: [{ at: 111.5, fetchSeq: 1, loading: false, display: "parent" }],
+      endedAt: 150,
+    }),
+    nativeRecords: [
+      nativeRecord({
+        ticket: {
+          ...nativeRecord().ticket,
+          disposition: "used",
+          freshnessStamp: {
+            attemptedAtNs: 15_000_000,
+            result: "stamp0-missing",
+            matched: null,
+          },
+        },
+      }),
+    ],
+    counters: {
+      before: diagnostics(10, 3, 3, { preparesStarted: 5, preparesReady: 5 }),
+      atEnd: diagnostics(11, 3, 3, { preparesStarted: 6, preparesReady: 6 }),
+      afterRelease: diagnostics(11, 3, 3, {
+        deferredReleased: 1,
+        preparesStarted: 6,
+        preparesReady: 6,
+      }),
+    },
+    ...overrides,
+  });
+}
+
+test("K6/6 FR-7: 親の寄与の記録（followUp.parent.contribution）は子と同じ contributionOf を親の fetch の paths に当てて作る", () => {
+  const seen = [];
+  const row = k64GraphSampleRow(
+    firstRenderInput({
+      materialContribution: (paths) => {
+        seen.push(paths);
+        return {
+          basis: "material-revision",
+          contribution: true,
+          matched: ["graph-only:dev-added"],
+          unresolvedEdges: 0,
+          observed: [],
+        };
+      },
+    }),
+  );
+  // 解決器は親の fetch の paths（hash 済みの観測）を受ける。
+  assert.deepEqual(seen, [
+    { graphOnly: { sceneId: "dev-added", edges: [] }, pathAttachments: [] },
+  ]);
+  assert.deepEqual(row.followUp.parent.contribution, {
+    expectedContribution: true,
+    contributionBasis: "material-revision",
+    materialRevision: {
+      matched: ["graph-only:dev-added"],
+      unresolvedEdges: 0,
+      observed: [],
+    },
+  });
+  assert.deepEqual(row.followUp.dPrimeCounters.preparesStarted, 1);
+  assert.deepEqual(row.followUp.dPrimeCounters.preparesReady, 1);
+  assert.deepEqual(missingR7(row, "steady"), []);
+  const verdict = classifyFollowUp(row, { context: "steady", next: null });
+  assert.equal(
+    verdict.firstRender,
+    true,
+    JSON.stringify(verdict.firstRenderFails),
+  );
+  assert.equal(verdict.followUp, false);
+});
+
+test("K6/6 FR-7: 解決器を渡さない dev の予告は Scene の単位（scene-level-preview）で記録し、first-render には数えない（基準が違う）", () => {
+  const row = k64GraphSampleRow(firstRenderInput());
+  assert.equal(
+    row.followUp.parent.contribution.contributionBasis,
+    "scene-level-preview",
+  );
+  const verdict = classifyFollowUp(row, { context: "steady", next: null });
+  assert.equal(verdict.firstRender, false);
+  assert.ok(
+    verdict.firstRenderFails.includes("FR7:basis-scene-level-preview"),
+    JSON.stringify(verdict.firstRenderFails),
+  );
+});
+
+test("K6/6 FR-7: 親の fetch が Graph を持たない sample（graph-late）の親の寄与は edge なしで false。(b) の trace の記録（r1 なし）は親の寄与の欄を作らない", () => {
+  const late = k64GraphSampleRow(input());
+  assert.equal(late.followUp.parent.contribution.expectedContribution, false);
+  const trace = k64GraphSampleRow(input({ r1: null }));
+  assert.equal(Object.hasOwn(trace.followUp.parent, "contribution"), false);
+  // trace の counter は 7 key で、新しい 2 key は dPrimeCounters に出さない。
+  const sevenOnly = k64GraphSampleRow(
+    input({
+      r1: null,
+      counters: {
+        before: {
+          begins: 10,
+          cacheHits: 3,
+          lateCached: 3,
+          deferredReleased: 0,
+        },
+        atEnd: { begins: 12, cacheHits: 4, lateCached: 4, deferredReleased: 1 },
+      },
+    }),
+  );
+  assert.equal(
+    Object.hasOwn(sevenOnly.followUp.dPrimeCounters, "preparesStarted"),
+    false,
+  );
+  assert.equal(
+    Object.hasOwn(sevenOnly.followUp.dPrimeCounters, "preparesReady"),
+    false,
+  );
+});
+
+test("K6/6 FR-7（dev の予行）: dev の preview は parentMaterialContribution だけを渡し、子は Scene の単位のまま、親の寄与だけを Revision の単位で記録する", () => {
+  const row = k64GraphSampleRow(
+    firstRenderInput({
+      parentMaterialContribution: () => ({
+        basis: "material-revision",
+        contribution: true,
+        matched: ["graph-only:dev-added"],
+        unresolvedEdges: 0,
+        observed: [],
+      }),
+    }),
+  );
+  assert.equal(
+    row.followUp.parent.contribution.contributionBasis,
+    "material-revision",
+  );
+  const verdict = classifyFollowUp(row, { context: "steady", next: null });
+  assert.equal(
+    verdict.firstRender,
+    true,
+    JSON.stringify(verdict.firstRenderFails),
+  );
+  // 正式の run は materialContribution だけを渡す（親にも同じ解決器が当たる）。
+  const formal = k64GraphSampleRow(
+    firstRenderInput({
+      materialContribution: () => ({
+        basis: "material-revision",
+        contribution: false,
+        matched: [],
+        unresolvedEdges: 0,
+        observed: [],
+      }),
+    }),
+  );
+  assert.equal(formal.followUp.parent.contribution.expectedContribution, false);
+});

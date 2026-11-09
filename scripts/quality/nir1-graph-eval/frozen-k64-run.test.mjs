@@ -514,9 +514,11 @@ test("D1 (ii)／DR-CP4-N-1: 宣言の run は workspace を開いた後・seed �
     const graph = result.samples.find((row) => row.arm === "graph");
     assert.equal(graph.followUp.child.contributionBasis, "material-revision");
     assert.equal(JSON.stringify(result).includes("plain quote"), false);
-    // The resolver sees the child's paths with the quotes already hashed.
-    assert.ok(ctx.seenPaths.length > 0);
-    for (const paths of ctx.seenPaths) {
+    // The resolver sees the child's paths with the quotes already hashed. It
+    // is also asked for the parent's (K6/6 FR-7), which has none when the
+    // parent's Graph was late (`null`).
+    assert.ok(ctx.seenPaths.some((paths) => paths !== null));
+    for (const paths of ctx.seenPaths.filter((row) => row !== null)) {
       const evidence = paths.graphOnly.edges[0].evidence[0];
       assert.equal(evidence.quote, undefined);
       assert.equal(evidence.quoteSha256, sha256(Buffer.from("plain quote")));
@@ -1119,6 +1121,8 @@ test("再レビュー P3: 正式の run は --variant と --dev-g01-fallback を
     "k",
     "--k65-commit",
     "k",
+    "--k66-commit",
+    "k",
     "--product-receipt",
     "pr.json",
     // S5-B (DR-CP4-O-16): a formal Graph-arm run names ④'s SP-P4 receipt.
@@ -1292,6 +1296,8 @@ test("S5-B 統合: Graph を要求する run の種類（gold、negative）は �
     "k",
     "--k65-commit",
     "k",
+    "--k66-commit",
+    "k",
     "--product-receipt",
     "pr.json",
   ];
@@ -1450,6 +1456,8 @@ function formalArgs(run, extra = []) {
     "4".repeat(40),
     "--k65-commit",
     "4".repeat(40),
+    "--k66-commit",
+    "4".repeat(40),
     "--product-receipt",
     path.join(inputs, "pr.json"),
     "--sp-p4-receipt",
@@ -1474,6 +1482,10 @@ function formalDeps(log, overrides = {}) {
     },
     readK65Head: () => {
       log.push("k65");
+      return {};
+    },
+    readK66Head: () => {
+      log.push("k66");
       return {};
     },
     admitFormal: () => {
@@ -1592,7 +1604,14 @@ test("レビュー P2-β (a): 13 variant の gold と negative は ④ の SP-P4
       },
     }),
   );
-  assert.deepEqual(refused, ["candidate", "k64", "k65", "admit", "gate"]);
+  assert.deepEqual(refused, [
+    "candidate",
+    "k64",
+    "k65",
+    "k66",
+    "admit",
+    "gate",
+  ]);
   assert.match(report.problems.join("\n"), /S5-B gate: SP-P4 is sp-n7/u);
   // parity は gate を呼ばない（S2 で除外）。
   const parity = [];

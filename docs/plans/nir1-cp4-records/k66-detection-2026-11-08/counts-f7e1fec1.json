@@ -1,0 +1,642 @@
+{
+  "tapSha256": "ace9ccce45e4d912792e63f10c89610af82a719011b65abba7437bf0c666bf0b",
+  "summary": {
+    "tests": 735,
+    "pass": 735,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0
+  },
+  "rows": [
+    {
+      "id": "K6/6-P1",
+      "count": 2,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-P1: R1 の下の現実の形（slot empty、readyFresh false、begin [pending]、counter の差分 1、通知・子・IR の再試行なし）の親は、stamp が fresh でも stamp0-missing でも first-render の窓内で、子は出ない",
+        "K6/6-P1: 間に hybrid arm の sample を挟んでも、同じ phase の次の Graph arm の sample との差が 1 なら数える"
+      ]
+    },
+    {
+      "id": "K6/6-P2",
+      "count": 1,
+      "files": [
+        "outcome.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-P2: 同じ case に first-render と follow-up の sample があり、表示の結果が同じなら、品質を両方の表示の結果で測る"
+      ]
+    },
+    {
+      "id": "K6/6-P3",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-P3: follow-up の sample（begin [pending, cached]、F1〜F7 を満たす）は R-6 の (b) を当てずに follow-up の成功に数える"
+      ]
+    },
+    {
+      "id": "K6/6-P4",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-P4: phase の最後の Graph arm の sample は (c) を当てられず、(b) の counter の差分で判定する（他の条件を満たせば数える）"
+      ]
+    },
+    {
+      "id": "K6/6-P5",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-P5: trace の record（dPrimeCounters が従来の 7 key で preparesStarted・preparesReady を持たない）は X10 の記録の欠けにならない。定常状態では欠けになる"
+      ]
+    },
+    {
+      "id": "K6/6-N1",
+      "count": 2,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N1a: R1 の reachedQuiet が false なら first-render に数えず、X10",
+        "K6/6-N1b: R1 の 4 項目の計算し直しが自己申告と合わなければ数えず、X10"
+      ]
+    },
+    {
+      "id": "K6/6-N1a",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N1a: R1 の reachedQuiet が false なら first-render に数えず、X10"
+      ]
+    },
+    {
+      "id": "K6/6-N1b",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N1b: R1 の 4 項目の計算し直しが自己申告と合わなければ数えず、X10"
+      ]
+    },
+    {
+      "id": "K6/6-N2",
+      "count": 4,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N2a: 親の begin の記録が [pending] でなければ数えない",
+        "K6/6-N2b: startSlot.kind が empty でなければ数えない",
+        "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない",
+        "K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady の差が 2（間に hybrid arm を挟む）なら数えず、理由を開示する。差が 0 でも、次が記録なしでも数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N2a",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N2a: 親の begin の記録が [pending] でなければ数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N2b",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N2b: startSlot.kind が empty でなければ数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N2c",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N2d",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N2e",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N2f",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N2g",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N2h",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady の差が 2（間に hybrid arm を挟む）なら数えず、理由を開示する。差が 0 でも、次が記録なしでも数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N3",
+      "count": 5,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N3a: stamp が unavailable の親は数えない（分母に残る）",
+        "K6/6-N3b: stamp の記録が null の親は数えない",
+        "K6/6-N3c: stamp0-missing で親の ticket が available でない記録は数えない（合流した親では起きない空の検査。記録の誤りを見つけるために置く）",
+        "K6/6-N3d: stamp0-missing で窓内に合流しても Graph の outcome が graph-ready でない記録（joined なのに graph-late）は数えない（② の合流の項目。first-render の下位条件としては FR-3 だけを欠く）",
+        "K6/6-N3e: stamp0-missing で edgeCount が整数でない親は数えない（② の項目。FR-7 の no-edge も同時に落ちるので理由は 2 つ）"
+      ]
+    },
+    {
+      "id": "K6/6-N3a",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N3a: stamp が unavailable の親は数えない（分母に残る）"
+      ]
+    },
+    {
+      "id": "K6/6-N3b",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N3b: stamp の記録が null の親は数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N3c",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N3c: stamp0-missing で親の ticket が available でない記録は数えない（合流した親では起きない空の検査。記録の誤りを見つけるために置く）"
+      ]
+    },
+    {
+      "id": "K6/6-N3d",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N3d: stamp0-missing で窓内に合流しても Graph の outcome が graph-ready でない記録（joined なのに graph-late）は数えない（② の合流の項目。first-render の下位条件としては FR-3 だけを欠く）"
+      ]
+    },
+    {
+      "id": "K6/6-N3e",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N3e: stamp0-missing で edgeCount が整数でない親は数えない（② の項目。FR-7 の no-edge も同時に落ちるので理由は 2 つ）"
+      ]
+    },
+    {
+      "id": "K6/6-N4",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N4: 窓内に合流した親の stamp が stale なら [artifact]（製品は stale で query を投げず、合流させない）"
+      ]
+    },
+    {
+      "id": "K6/6-N5",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N5a",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N5b",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N5c",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N5d",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N6",
+      "count": 4,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N6a: 窓内に合流した親の後に graph-ready の通知があれば数えず、開示する",
+        "K6/6-N6b: 子（origin が index-ready の例）があれば数えず、開示する",
+        "K6/6-N6c: 親の IR の再試行の timer が動いていれば数えず、開示する",
+        "K6/6-N6d: followUp.requeries の行が 1 つでもある親（定常状態の key。v2 C6）は数えず、list でない値も数えない。空の list は何も無い"
+      ]
+    },
+    {
+      "id": "K6/6-N6a",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N6a: 窓内に合流した親の後に graph-ready の通知があれば数えず、開示する"
+      ]
+    },
+    {
+      "id": "K6/6-N6b",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N6b: 子（origin が index-ready の例）があれば数えず、開示する"
+      ]
+    },
+    {
+      "id": "K6/6-N6c",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N6c: 親の IR の再試行の timer が動いていれば数えず、開示する"
+      ]
+    },
+    {
+      "id": "K6/6-N6d",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N6d: followUp.requeries の行が 1 つでもある親（定常状態の key。v2 C6）は数えず、list でない値も数えない。空の list は何も無い"
+      ]
+    },
+    {
+      "id": "K6/6-N7",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N7a",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N7b",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N7c",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N7d",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N7e",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない"
+      ]
+    },
+    {
+      "id": "K6/6-N8",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N8: 窓内に合流した stamp0-missing の親だけを分母から外した samples は拒否する（(iii′)）"
+      ]
+    },
+    {
+      "id": "K6/6-N9",
+      "count": 2,
+      "files": [
+        "admission.test.mjs",
+        "receipt.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6 変える点 8・K6/6-N9: admitGraphCaseRun と assertReceiptHeadBound は /6 の凍結の head（commit と bytes）を /4・/5 に加えて照合する。既定は固定した /6 の凍結で、null の descriptor は正式の admission を拒む",
+        "K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66）を持ち、無い・違う・/6 の凍結の前に始めた run（s6r1 を含む）の receipt は拒む。既定は固定した /6 の凍結で、null の descriptor はどの正式の receipt も拒む"
+      ]
+    },
+    {
+      "id": "K6/6-N10",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N10a・N10b: 窓内に合流した親で driftAtQuery か prepareFailures の差分が 1 なら [artifact]"
+      ]
+    },
+    {
+      "id": "K6/6-N10a",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N10a・N10b: 窓内に合流した親で driftAtQuery か prepareFailures の差分が 1 なら [artifact]"
+      ]
+    },
+    {
+      "id": "K6/6-N10b",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N10a・N10b: 窓内に合流した親で driftAtQuery か prepareFailures の差分が 1 なら [artifact]"
+      ]
+    },
+    {
+      "id": "K6/6-N11",
+      "count": 2,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N11a: FR-1 出所が Cached の窓内の親は数えない（K6/4-N39）",
+        "K6/6-N11b: FR-1 joined なのに revalidation が null なら classifyJoin が止める（[artifact]）"
+      ]
+    },
+    {
+      "id": "K6/6-N11a",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N11a: FR-1 出所が Cached の窓内の親は数えない（K6/4-N39）"
+      ]
+    },
+    {
+      "id": "K6/6-N11b",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N11b: FR-1 joined なのに revalidation が null なら classifyJoin が止める（[artifact]）"
+      ]
+    },
+    {
+      "id": "K6/6-N12",
+      "count": 3,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N12a: FR-5 宣言が used でなければ数えない（stamp が fresh なら FR-5 だけを欠く。stamp0-missing では FR-3 ② の宣言の検査も同時に落ちる）",
+        "K6/6-N12b: FR-5 publishCount が 2 なら数えず、K6/4-N1 の FAIL",
+        "K6/6-N12c: FR-5 親の窓が 40 ms でなければ [precheck]"
+      ]
+    },
+    {
+      "id": "K6/6-N12a",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N12a: FR-5 宣言が used でなければ数えない（stamp が fresh なら FR-5 だけを欠く。stamp0-missing では FR-3 ② の宣言の検査も同時に落ちる）"
+      ]
+    },
+    {
+      "id": "K6/6-N12b",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N12b: FR-5 publishCount が 2 なら数えず、K6/4-N1 の FAIL"
+      ]
+    },
+    {
+      "id": "K6/6-N12c",
+      "count": 1,
+      "files": [
+        "followup.k66.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N12c: FR-5 親の窓が 40 ms でなければ [precheck]"
+      ]
+    },
+    {
+      "id": "K6/6-N13",
+      "count": 3,
+      "files": [
+        "outcome.test.mjs",
+        "quality-verdict.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N13a: 窓内に合流して Graph が表示に寄与した（edgeCount 1 以上）のに条件を欠いた親で、Scene の一覧が R+IR と違えば品質 FAIL（1% の許容は効かない）",
+        "品質 v2 D8（K6/6-N13a・N13b）: 窓内に合流して Graph が表示に寄与したのに first-render の条件を欠いた親は、Scene の一覧が R+IR と違っても同じでも fail（hold に留めない）",
+        "K6/6-N13b: 同上で、Scene の一覧が R+IR と同じ（path の添付だけを足す。G-06 の形）でも品質 FAIL"
+      ]
+    },
+    {
+      "id": "K6/6-N13a",
+      "count": 2,
+      "files": [
+        "outcome.test.mjs",
+        "quality-verdict.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N13a: 窓内に合流して Graph が表示に寄与した（edgeCount 1 以上）のに条件を欠いた親で、Scene の一覧が R+IR と違えば品質 FAIL（1% の許容は効かない）",
+        "品質 v2 D8（K6/6-N13a・N13b）: 窓内に合流して Graph が表示に寄与したのに first-render の条件を欠いた親は、Scene の一覧が R+IR と違っても同じでも fail（hold に留めない）"
+      ]
+    },
+    {
+      "id": "K6/6-N13b",
+      "count": 2,
+      "files": [
+        "outcome.test.mjs",
+        "quality-verdict.test.mjs"
+      ],
+      "allPass": true,
+      "titles": [
+        "K6/6-N13b: 同上で、Scene の一覧が R+IR と同じ（path の添付だけを足す。G-06 の形）でも品質 FAIL",
+        "品質 v2 D8（K6/6-N13a・N13b）: 窓内に合流して Graph が表示に寄与したのに first-render の条件を欠いた親は、Scene の一覧が R+IR と違っても同じでも fail（hold に留めない）"
+      ]
+    }
+  ]
+}

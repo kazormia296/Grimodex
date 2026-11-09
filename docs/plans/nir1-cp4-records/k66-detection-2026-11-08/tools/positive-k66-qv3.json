@@ -1,0 +1,62 @@
+[
+ [
+  "followup.k66.test.mjs",
+  67,
+  "K6/6-P1: R1 の下の現実の形"
+ ],
+ [
+  "followup.k66.test.mjs",
+  87,
+  "K6/6-P1: 間に hybrid arm の sample を挟んでも"
+ ],
+ [
+  "followup.k66.test.mjs",
+  133,
+  "K6/6-P3:"
+ ],
+ [
+  "followup.k66.test.mjs",
+  158,
+  "K6/6-P4:"
+ ],
+ [
+  "followup.k66.test.mjs",
+  168,
+  "K6/6-P5:"
+ ],
+ [
+  "followup.k66.test.mjs",
+  504,
+  "K6/6 の集計:"
+ ],
+ [
+  "quality-verdict.test.mjs",
+  1379,
+  "品質 v2 D2・D3:"
+ ],
+ [
+  "quality-verdict.test.mjs",
+  1637,
+  "品質 v2 D3 (d):"
+ ],
+ [
+  "quality-verdict.test.mjs",
+  2286,
+  "P3-1: D3 (a)"
+ ],
+ [
+  "quality-verdict-first-run.test.mjs",
+  106,
+  "v2 §0: the first formal run is the earliest"
+ ],
+ [
+  "quality-verdict-first-run.test.mjs",
+  158,
+  "v2 §0: both commits must be on the remote"
+ ],
+ [
+  "pubg16-e2e-run.test.mjs",
+  336,
+  "the G-01 diagnostic's head is the other receipts' head"
+ ]
+]

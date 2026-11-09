@@ -1,0 +1,42 @@
+[
+  [
+    "seed-pin-setup.test.mjs",
+    229,
+    "SP/1 の段: upsertScenePin を 1 回だけ"
+  ],
+  [
+    "seed-pin-setup.test.mjs",
+    260,
+    "SP-N1〜N5、N8、N9 と SP-P2:"
+  ],
+  [
+    "seed-pin-setup.test.mjs",
+    493,
+    "SP-N10: case の arm の間で"
+  ],
+  [
+    "seed-pin-setup.test.mjs",
+    623,
+    "setup-driver の段: renderer の API の upsertScenePin"
+  ],
+  [
+    "seed-pin.test.mjs",
+    34,
+    "R5: seed は製品の規則"
+  ],
+  [
+    "seed-pin.test.mjs",
+    151,
+    "R5／SP-P3: 凍結の plan は 13 の variant"
+  ],
+  [
+    "seed-pin.test.mjs",
+    161,
+    "R5／SP-N1〜N3、N9、N11、N13、N14:"
+  ],
+  [
+    "receipt.test.mjs",
+    1197,
+    "S1f（R5、K6/4-N16）:"
+  ]
+]

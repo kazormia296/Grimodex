@@ -398,3 +398,43 @@ dead-letter を作らなくしたが、すでに `NEX_INCREMENTAL_FRESHNESS_RETR
 実際の guard（source・edge・producer Epoch）が cycle に保存させた文言が解かれる／
 44→45 の marker だけの step と完全な migration の両方で解いて stamp する／stamp が失敗したら release も rollback され、次の open がやり直す／
 現在の版の open と、45 の DB の restore preflight の完全な pass は解かない／45 未満の restore preflight は解く。
+
+## DR-JF-10 `chat-stream-codex-switch` の flake は stream の時間依存（試験側で明示の合図に直す。2026-11-08）
+
+### 症状と原因（確認済みの事実）
+
+- master の Full 42448787760（head `4f230e8c`）の shard 3 で `chat-stream-codex-switch` が 1 回落ち、同じ候補の Full
+  42451622598 は成功した。エラーは「Codex B did not remain isolated while Codex A was pending」。
+- 判定は 2 つの OR（(a) B に切り替えた後に A の prompt／`CHAT_AUTHORITY_EARLY` が見える、(b) A の `response.completed` の
+  監査行が B への切替えの確認より前にある）で、文面が同じため、どちらで落ちたか区別できなかった。
+- A の stream を pending に保つのは `electron/main/productJourneyAi.ts` の `wait(STREAM_BOUNDARY_DELAY_MS = 4_000)` だけだった。
+  early chunk を出してから 4 s の壁時計が走り、その間に journey は DB の監査行 3 回の問い合わせと B への切替え
+  （picker の click・tab の Enter・entry の click・label の待ち）を終える必要がある。遅い runner（Full の shard 3）では
+  この合計が 4 s を越え、切替えの確認の前に A の完了が監査に入る。**(b) が時間依存で起きうる唯一の経路**である。
+  (a) は切替えの後の同期の描画の検査で、B の scope に切り替えた画面が A の内容を持つ製品の欠陥のときだけ落ちる。
+  失敗が 1 回だけで、同じ候補の再実行が成功したことと、(a) が時間に依存しないことから、(b) が原因と判断する。
+  （製品の不具合〔B への漏れ〕を示す証拠は無い。B の監査・transcript は別の検査で毎回見ている。）
+
+### 判断
+
+- 試験の側で直す。判定は弱めない。製品のコードには触れない（`productJourneyAi.ts` は `!isPackaged` と
+  `GRIMODEX_PRODUCT_JOURNEY_FAKE_AI=deterministic-v1` の両方がある場合だけ有効な試験専用の wrapper）。
+- Codex 切替えの journey の A の stream（prompt に `CODEX-CHAT-SWITCH-` を含むもの）だけ、harness が渡す
+  `GRIMODEX_PRODUCT_JOURNEY_STREAM_GATE_DIR`（絶対 path）の下に `release-codex-chat-switch` が現れるまで完了しない。
+  journey は B の isolation の 2 判定を終えてから gate を開ける。gate が無い／別の prompt の stream は従来の 4 s のままで、
+  他の journey の挙動は変えない。
+- 安全弁：gate の待ちは 120 s の上限があり、abort されたら即座に抜ける（journey が先に失敗して gate を開けなくても
+  stream が残り続けない）。上限を過ぎれば通常の完了に進むだけで、journey は「切替え前に完了した」の検査で落ちる。
+- 判定の分離：(a) は「Codex B UI showed Codex A prompt or early chunk while Codex A was pending」、(b) は
+  「Codex A response.completed was already audited before the Codex B switch was confirmed (stream gate not honored)」
+  と別の文面にした。
+
+### 信頼境界
+
+- 秘密・データの新しい送信先、保存範囲、閾値、契約、IPC、preload、Main の契約は変えない。gate は temp dir の中の
+  空ファイルの存在を Main が読むだけで、内容は読まない。env は product-journey の harness だけが設定する。
+
+### 未対応（同じ形の他の journey）
+
+- `chat-stream-folder-switch`／`project-switch`／`workspace-switch` と agent 系の journey は同じ 4 s の時間依存を持つ。
+  この flake の報告は Codex 切替えだけなので、gate は広げていない。同じ失敗が出たら同じ gate を使える。

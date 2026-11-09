@@ -1,0 +1,72 @@
+[
+  [
+    "receipt.test.mjs",
+    346,
+    "K6/5-N3: 正式の Graph の receipt の先頭は /5 の凍結（commit と SHA-256）を持ち、無い・違う receipt は拒む"
+  ],
+  [
+    "receipt.test.mjs",
+    634,
+    "K6/5-N1・N4: settings.k64 の D・B・Hybrid p95 の上限が契約（40・54.2・94.2 ms）と違う receipt は、receipt の層で拒む（手順のファイルの loader は契約と違う値の file を読まないので、記録の値そのものを契約と照合する）"
+  ],
+  [
+    "trace-record.test.mjs",
+    2621,
+    "DR-CP4-C7: 外す条件を満たす begin は対応から外し、親は defect にせず Q と U に数えて失効 (i) の i-chronicle-stop、K6/4 では X11／X12 の欠落（窓外）。残りは今の対応のまま、開示する"
+  ],
+  [
+    "trace-record.test.mjs",
+    2770,
+    "DR-CP4-C7: 外す条件を 1 つでも満たさない begin（理由が違う、querySupported が false、renderer の値が違う、indexUsable が違う）は外さず、record が無ければ従来どおり整列の失敗で trace は invalid"
+  ],
+  [
+    "trace-record.test.mjs",
+    2830,
+    "DR-CP4-C7: 外した begin の数と外す条件を満たす fetch の数が違えば整列の失敗（begin の無い fetch、begin が 2 つの fetch）。数えない fetch の begin も同じ条件で外し、子は行の子の begin として外す"
+  ],
+  [
+    "trace-record.test.mjs",
+    2967,
+    "DR-CP4-C7: 外した begin があるのに Native の読取の時計の範囲が求められなければ整列の失敗。外した begin が無ければ今までどおり"
+  ],
+  [
+    "trace-record.test.mjs",
+    3010,
+    "DR-CP4-C7: 外した begin の record が実は在る（条件の読みが製品と違う）と、残りの組が 1 つずれて整列の失敗になる"
+  ],
+  [
+    "trace-record.test.mjs",
+    3049,
+    "DR-CP4-C7: 外した親の行にも混入の検査（N1／N29／N32）を当てる。公開が 2 回以上、遅れた Graph の表示、窓の中の再 query の 2 回の公開は違反で、外すこと自体は止めない"
+  ],
+  [
+    "trace-record.test.mjs",
+    3127,
+    "DR-CP4-C7: 総数が合っても内訳が違えば整列の失敗（begin が 0 の fetch と 2 の fetch）。A3 や timing が欠けた外した親は defect に戻る"
+  ],
+  [
+    "followup.k66.test.mjs",
+    67,
+    "K6/6-P1: R1 の下の現実の形"
+  ],
+  [
+    "admission.test.mjs",
+    736,
+    "K6/5-N2（変える点 6）: 候補の製品の D が 40 ms でない（#802 が祖先に無い、定数が 40 でない・読めない）候補は run の前に [precheck]"
+  ],
+  [
+    "admission.test.mjs",
+    949,
+    "K6/5-N2・N3: admitGraphCaseRun は /5 の凍結の head（commit と bytes）と製品の D=40 ms を、封印の前に実際の関数で強制する"
+  ],
+  [
+    "admission.test.mjs",
+    1153,
+    "K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を凍結と照合し、ratification5 を必須にして D=40 ms を強制する"
+  ],
+  [
+    "quality-verdict.test.mjs",
+    472,
+    "K6/5-N4（条件 3）: Hybrid p95 の判定の境界は 94.2 ms で、65.04 ms と 240 ms ではない。arm ごとに pool し、どちらかに failed があれば fail"
+  ]
+]

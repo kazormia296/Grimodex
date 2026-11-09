@@ -57,6 +57,7 @@ import {
   followUpFailureCategory,
   followUpLapses,
   mixedIntoDisplay,
+  nextGraphArmOf,
   recordRegime,
 } from "./followup.mjs";
 import {
@@ -67,8 +68,8 @@ import {
   USER_OPERATION,
   assertNoRetiredBusy,
   classifyJoin,
+  k62SteadyStateInWindow,
   lapseKind,
-  steadyStateInWindow,
 } from "./join.mjs";
 import { summarizeQ4 } from "./q4.mjs";
 import { distribution } from "./stats.mjs";
@@ -77,8 +78,8 @@ export {
   BOUNDARY_DISAGREEMENTS,
   classifyJoin,
   joinedWithinWindow,
+  k62SteadyStateInWindow,
   lapseKind,
-  steadyStateInWindow,
 } from "./join.mjs";
 
 /** The predeclared AB/BA order for one variant (K6/2 step 2, P schedule). */
@@ -176,7 +177,7 @@ function emptyX() {
  * The X counts are a breakdown in which one sample may appear under several
  * codes (DR-CP4-K64-4); `missed` counts each sample once.
  */
-function k64CaseBlock(measured) {
+function k64CaseBlock(measured, nexts) {
   const block = {
     n: measured.length,
     firstRender: 0,
@@ -189,11 +190,39 @@ function k64CaseBlock(measured) {
     q1: [],
     q2: [],
     q3: [],
+    // K6/6 変える点 5 (disclosure only): the parents whose join was in the D
+    // window, how many of them were not counted as a first render and under
+    // which R-6 / FR sub-condition (`a`, `b`, `c`, `FR1`〜`FR7`; one parent
+    // may appear under several), and the parents that brought a Graph into the
+    // display but were not counted (quality FAIL, 変える点 6).
+    firstRenderCandidates: 0,
+    firstRenderNotCounted: 0,
+    firstRenderNotCountedBy: {},
+    firstRenderNotCountedReasons: {},
+    contributedNotCounted: 0,
   };
   for (const row of measured) {
-    const result = classifyFollowUp(row, { context: "steady" });
+    const result = classifyFollowUp(row, {
+      context: "steady",
+      next: nexts.get(row),
+    });
     if (result.firstRender) block.firstRender += 1;
     else if (result.followUp) block.followUp += 1;
+    if (result.firstRender || result.firstRenderFails.length > 0)
+      block.firstRenderCandidates += 1;
+    if (result.firstRenderFails.length > 0) {
+      block.firstRenderNotCounted += 1;
+      for (const condition of new Set(
+        result.firstRenderFails.map((code) => code.split(":")[0]),
+      ))
+        block.firstRenderNotCountedBy[condition] =
+          (block.firstRenderNotCountedBy[condition] ?? 0) + 1;
+      for (const reason of result.firstRenderFails)
+        block.firstRenderNotCountedReasons[reason] =
+          (block.firstRenderNotCountedReasons[reason] ?? 0) + 1;
+    }
+    if (result.parentContributed && !result.firstRender)
+      block.contributedNotCounted += 1;
     if (result.displayed) block.displayed += 1;
     else {
       block.missed += 1;
@@ -246,6 +275,8 @@ export function summarizeSteadyStateCase(input) {
     notReadyAtStart: 0,
     stampMismatch: 0,
     stampWithoutComparison: 0,
+    // K6/6 変える点 5: the stamp results of the measured samples (disclosure).
+    stampResults: {},
     boundaryDisagreement: emptyDisagreement(),
     qualityHold: false,
   };
@@ -271,8 +302,11 @@ export function summarizeSteadyStateCase(input) {
     if (
       k64Era &&
       variant.kind !== "dev" &&
-      row.followUp?.child &&
-      row.followUp.child.contributionBasis !== F6_FORMAL_BASIS
+      ((row.followUp?.child &&
+        row.followUp.child.contributionBasis !== F6_FORMAL_BASIS) ||
+        (row.followUp?.parent?.contribution &&
+          row.followUp.parent.contribution.contributionBasis !==
+            F6_FORMAL_BASIS))
     )
       invalid.push(
         `DR-CP4-F-6: ${row.variantKey}#${row.repeat} matched F6 on another unit than the materials' Revisions`,
@@ -280,7 +314,11 @@ export function summarizeSteadyStateCase(input) {
     assertNoRetiredBusy(row);
     const join = classifyJoin(row);
     if (join.disagreement) entry.boundaryDisagreement[join.disagreement] += 1;
-    if (steadyStateInWindow(row)) entry.inWindow += 1;
+    // K6/2's literal reading (disclosure under K6/6 変える点 5; it decides
+    // the K6/2-era summary, not the /6 first render — followup.mjs).
+    if (k62SteadyStateInWindow(row)) entry.inWindow += 1;
+    const stampKey = row.freshnessStamp?.result ?? "none";
+    entry.stampResults[stampKey] = (entry.stampResults[stampKey] ?? 0) + 1;
     if (row.graph.source === "cache") entry.cacheOrigin += 1;
     if (row.startSlot?.readyFresh !== true) entry.notReadyAtStart += 1;
     if (row.freshnessStamp?.matched !== true) entry.stampMismatch += 1;
@@ -295,7 +333,7 @@ export function summarizeSteadyStateCase(input) {
   entry.outOfWindowRate = ratio(entry.outOfWindow, entry.n);
   entry.qualityHold = entry.inPool && entry.inWindow === 0;
   if (k64Era && entry.inPool && invalid.length === 0) {
-    const block = k64CaseBlock(measured);
+    const block = k64CaseBlock(measured, nextGraphArmOf(rows));
     entry.k64 = {
       ...block,
       q1: distribution(block.q1),
@@ -304,6 +342,10 @@ export function summarizeSteadyStateCase(input) {
       // S1f: q4 (K6/4:133), disclosure only.
       q4: summarizeQ4(measured),
       missRate: ratio(block.missed, block.n),
+      // K6/6 変える点 5: the first-render window-out rate in the /6 reading
+      // (FR-1〜FR-8). `entry.outOfWindow(Rate)` stay K6/2's literal reading.
+      firstRenderOutOfWindow: block.n - block.firstRender,
+      firstRenderOutOfWindowRate: ratio(block.n - block.firstRender, block.n),
     };
   }
   return { entry, invalid };
@@ -450,8 +492,12 @@ function summarizeSteadyStateUnsealed(input) {
       pooled.some((entry) => entry.variantKey === row.variantKey),
   );
   const q = { q1: [], q2: [], q3: [] };
+  const pooledNexts = nextGraphArmOf(samples);
   for (const row of pooledSamples) {
-    const result = classifyFollowUp(row, { context: "steady" });
+    const result = classifyFollowUp(row, {
+      context: "steady",
+      next: pooledNexts.get(row),
+    });
     for (const name of ["q1", "q2", "q3"])
       if (result.q[name] !== null) q[name].push(result.q[name]);
   }
@@ -464,6 +510,11 @@ function summarizeSteadyStateUnsealed(input) {
       display: {
         n,
         firstRender: sum((row) => row.k64.firstRender),
+        firstRenderOutOfWindow: n - sum((row) => row.k64.firstRender),
+        firstRenderOutOfWindowRate: ratio(
+          n - sum((row) => row.k64.firstRender),
+          n,
+        ),
         followUp: sum((row) => row.k64.followUp),
         displayed,
         missed,
@@ -495,7 +546,13 @@ function summarizeSteadyStateUnsealed(input) {
         q3: distribution(q.q3),
       },
       q4: summarizeQ4(pooledSamples),
-      firstRenderOutOfWindowRate: base.pool.outOfWindowRate,
+      // K6/6 変える点 5: counted by the /6 first render (FR-1〜FR-8); the
+      // K6/2 literal reading stays disclosed as `k62OutOfWindowRate`.
+      firstRenderOutOfWindowRate: ratio(
+        n - sum((row) => row.k64.firstRender),
+        n,
+      ),
+      k62OutOfWindowRate: base.pool.outOfWindowRate,
     },
   };
 }
@@ -1064,7 +1121,17 @@ export function decideCp4Availability(input) {
     regime: steadyState?.regime ?? null,
     steadyState: steadyState?.pool ?? null,
     display: steadyState?.k64?.display ?? null,
-    firstRenderOutOfWindowRate: steadyState?.pool?.outOfWindowRate ?? null,
+    // K6/6 変える点 5: the /6 reading when the steady state is K6/4-regime
+    // (it carries the first-render count); K6/2's literal rate is disclosed
+    // separately and still decides the K6/2-era summary.
+    firstRenderOutOfWindowRate:
+      steadyState?.k64?.firstRenderOutOfWindowRate ??
+      steadyState?.pool?.outOfWindowRate ??
+      null,
+    k62OutOfWindowRate:
+      steadyState?.k64?.k62OutOfWindowRate ??
+      steadyState?.pool?.outOfWindowRate ??
+      null,
     boundaryDisagreement: steadyState?.boundaryDisagreement ?? null,
     k64NotApplied: steadyState?.k64NotApplied ?? null,
     traces: (traces ?? []).map((trace) => ({

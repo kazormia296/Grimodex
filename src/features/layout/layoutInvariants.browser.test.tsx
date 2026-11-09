@@ -12,7 +12,8 @@
  * CI で永続的にガードする。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import { page } from "vitest/browser";
 import { LayoutShell } from "./LayoutShell";
 import { BOTTOM_CORNER_TOGGLE_CLEARANCE_PX } from "./BottomCornerToggle";
 import {
@@ -28,6 +29,40 @@ import { buildDefaultLayoutState } from "./layoutStateUtils";
 import type { OverlayId, ToolWindowPanelId } from "./layoutTypes";
 import type { PanelId } from "./panelIds";
 import { LayoutStoryPanelStub } from "./stories/LayoutStoryPanelStub";
+import type { ProfileEgressStatusView } from "@/lib/profileEgressStatus";
+import { PROFILE_EGRESS_UNAVAILABLE_REASONS } from "@/../electron/shared/profileEgressStatusWire";
+import ProfileEgressStatusIndicator from "@/features/profile-egress/ProfileEgressStatusIndicator";
+import { EditorPaneStatusBar } from "@/features/editor/EditorPaneStatusBar";
+
+const { egressView, editorStatusBar } = vi.hoisted(() => ({
+  egressView: { current: { state: "restricted" } as ProfileEgressStatusView },
+  // The EditorArea stub below draws the real EditorPaneStatusBar only while
+  // this is on (the profile egress status probe, DR-DA2-63).
+  editorStatusBar: { current: false },
+}));
+vi.mock("@/features/editor/EditorStatsFooter", () => ({
+  EditorStatsFooter: () => <span>0</span>,
+}));
+vi.mock("@/features/attribution/AttributionLegend", () => ({
+  AttributionLegend: () => null,
+}));
+vi.mock("@/features/editor/reorder/ReorderModeHint", () => ({
+  ReorderModeHint: () => null,
+}));
+vi.mock("@/features/ai-policy/AiPolicyBadge", () => ({
+  AiPolicyBadge: () => null,
+}));
+vi.mock("@/features/license/LicenseBadge", () => ({
+  LicenseBadge: () => null,
+}));
+vi.mock("@/features/lint/StatusBarIndicator", () => ({
+  StatusBarIndicator: () => null,
+}));
+vi.mock("@/lib/profileEgressStatus", () => ({
+  getProfileEgressStatus: async () => egressView.current,
+  onProfileEgressStatus: () => () => undefined,
+  requestProfileActivation: async () => ({ status: "not-activated" }),
+}));
 
 vi.mock("./panelComponents", () => ({
   PANEL_COMPONENT_MAP: new Proxy(
@@ -41,14 +76,33 @@ vi.mock("./panelComponents", () => ({
 }));
 
 vi.mock("./EditorArea", () => ({
-  EditorArea: () => (
-    <div
-      data-editor-area
-      className="flex h-full w-full items-center justify-center bg-muted/10 text-sm"
-    >
-      editor
-    </div>
-  ),
+  EditorArea: () =>
+    editorStatusBar.current ? (
+      <div data-editor-area className="flex h-full w-full flex-col text-sm">
+        <div className="min-h-0 flex-1 bg-muted/10">editor</div>
+        <EditorPaneStatusBar
+          activeStatus="draft"
+          editor={null}
+          getStatsSceneId={() => "scene-1"}
+          isEntryMode={false}
+          isSceneContentLoading={false}
+          showAttribution={false}
+          aiRatio={0}
+          isSaving={false}
+          isDirty={false}
+          onStatusChange={() => {}}
+          onOpenAttribution={() => {}}
+          onOpenRevisionHistory={() => {}}
+        />
+      </div>
+    ) : (
+      <div
+        data-editor-area
+        className="flex h-full w-full items-center justify-center bg-muted/10 text-sm"
+      >
+        editor
+      </div>
+    ),
 }));
 
 const SHELL_SIZE = { width: 1200, height: 800 };
@@ -1013,3 +1067,217 @@ describe.each(KNOB_CASES)(
     });
   },
 );
+
+/**
+ * 外部送信の制限の状態の表示（`ProfileEgressStatusIndicator`、NIR-1 DA-2 ST3）は
+ * `fixed` で LayoutShell の左下に重ねて描く。表示は restricted の間ずっと出る
+ * （R3-8、da2-decisions の DR-DA2-63）ので、表示が操作要素（stripe の icon、
+ * corner toggle、splitter、stripe 内の button）を覆って押せなくしないことを、
+ * 実 Chromium の矩形とヒットテストで守る。重なる所では、その点の最前面の要素が
+ * 操作要素自身（またはその中）であること。
+ * 元の位置（`bottom-8 left-3`）では、全 panel を畳んだ既定の layout でも表示が左下の
+ * corner toggle と bottom stripe の icon を覆った（この試験を足した時点で 9 件が落ちた）。
+ */
+describe("profile egress status display vs LayoutShell controls (real Chromium)", () => {
+  const OPERABLE =
+    "[data-bottom-corner-toggle], [data-stripe-icon], [data-splitter-handle], [data-stripe-region] button";
+  // Not measured: the phone workspace (width < 720) swaps the stripes for a
+  // bottom nav, which this real `LayoutShell` never shows, so 360x640 is not a
+  // layout the product reaches (DR-DA2-63, left for C-1／PUB-G).
+  const VIEWPORTS = [
+    { width: 1200, height: 800 },
+    { width: 768, height: 600 },
+    { width: 360, height: 640 },
+  ] as const;
+  const VIEWS: ProfileEgressStatusView[] = [
+    { state: "restricted" },
+    { state: "activating" },
+    ...PROFILE_EGRESS_UNAVAILABLE_REASONS.map(
+      (reason): ProfileEgressStatusView => ({ state: "unavailable", reason }),
+    ),
+  ];
+  const LAYOUTS: Array<{ name: string; apply: () => void }> = [
+    {
+      name: "every panel collapsed into the stripes",
+      apply: () =>
+        useLayoutStore.setState({
+          layout: buildDefaultLayoutState({ allInactive: true }),
+        }),
+    },
+    {
+      name: "left and bottom open, the bottom region owns the left corner",
+      apply: () =>
+        setLeftAndBottom({
+          leftSlots: [{ id: "l0", panels: ["scenes"], activePanel: "scenes" }],
+          bottomSlots: [
+            { id: "b0", panels: ["timeline"], activePanel: "timeline" },
+            { id: "b1", panels: ["chat"], activePanel: null },
+          ],
+          bottomCornersLeft: true,
+        }),
+    },
+    {
+      name: "left and bottom open, the side stripe owns the left corner",
+      apply: () =>
+        setLeftAndBottom({
+          leftSlots: [
+            { id: "l0", panels: ["scenes"], activePanel: "scenes" },
+            { id: "l1", panels: ["codex"], activePanel: null },
+          ],
+          bottomSlots: [
+            { id: "b0", panels: ["timeline"], activePanel: "timeline" },
+          ],
+          bottomCornersLeft: false,
+        }),
+    },
+  ];
+
+  beforeEach(() => {
+    useLayoutStore.setState({
+      layout: buildDefaultLayoutState({ allInactive: true }),
+      layoutLocked: false,
+      draggingPanel: null,
+      dragOverTarget: null,
+      hiddenStripePanels: new Set(),
+      initialized: true,
+    });
+  });
+
+  for (const viewport of VIEWPORTS) {
+    for (const layoutCase of LAYOUTS) {
+      it(`never covers a control at ${viewport.width}x${viewport.height}: ${layoutCase.name}`, async () => {
+        await page.viewport(viewport.width, viewport.height);
+        layoutCase.apply();
+        const { container } = render(
+          <div
+            className="app-shell"
+            data-shell-host
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              width: viewport.width,
+              height: viewport.height,
+            }}
+          >
+            <LayoutShell />
+          </div>,
+        );
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+        const controls = [
+          ...container.querySelectorAll<HTMLElement>(OPERABLE),
+        ].filter((el) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        });
+        // The query would pass vacuously on an empty shell.
+        expect(controls.length).toBeGreaterThan(0);
+
+        for (const next of VIEWS) {
+          egressView.current = next;
+          const { unmount } = render(<ProfileEgressStatusIndicator />);
+          await act(async () => {});
+          const display = await screen.findByTestId("profile-egress-status");
+          const displayRect = display.getBoundingClientRect();
+          expect(displayRect.width).toBeGreaterThan(0);
+          for (const control of controls) {
+            const controlRect = control.getBoundingClientRect();
+            const left = Math.max(displayRect.left, controlRect.left);
+            const right = Math.min(displayRect.right, controlRect.right);
+            const top = Math.max(displayRect.top, controlRect.top);
+            const bottom = Math.min(displayRect.bottom, controlRect.bottom);
+            if (right - left <= 0.5 || bottom - top <= 0.5) {
+              continue;
+            }
+            const label = `${JSON.stringify(next)} over ${
+              control.getAttribute("data-bottom-corner-toggle") ??
+              control.getAttribute("data-stripe-icon") ??
+              control.tagName
+            }`;
+            if (getComputedStyle(display).pointerEvents === "none") {
+              // elementFromPoint skips a pointer-events-none element, so the
+              // hit test below is true by construction for it. Assert the
+              // geometry instead: the card never overlaps a stripe icon or a
+              // corner toggle. The splitter overlap is an accepted one: the
+              // card takes no clicks, so the handle keeps its hit area.
+              expect(
+                control.hasAttribute("data-splitter-handle"),
+                `${label}: the pointer-events-none card overlaps a control`,
+              ).toBe(true);
+              continue;
+            }
+            const hit = document.elementFromPoint(
+              (left + right) / 2,
+              (top + bottom) / 2,
+            );
+            expect(
+              hit !== null && (control === hit || control.contains(hit)),
+              `${label}: the status display covers the control`,
+            ).toBe(true);
+          }
+          unmount();
+        }
+      });
+    }
+  }
+
+  // KNOWN GAP (DR-DA2-63, left for C-1／PUB-G): the restricted pill is placed at
+  // the center's lower-left corner, which is where the real EditorPaneStatusBar
+  // draws the scene status button, so in the default layout the pill covers it.
+  // The sibling tests above stub the editor, so they cannot see this. `fails`
+  // keeps the suite green while the gap exists and turns red when a placement
+  // change closes it: then delete `.fails`. The state constant is false, so no
+  // user sees the pill meanwhile.
+  it.fails(
+    "does not cover the real editor status bar's scene status button at 1200x800",
+    async () => {
+      await page.viewport(1200, 800);
+      editorStatusBar.current = true;
+      try {
+        useLayoutStore.setState({
+          layout: buildDefaultLayoutState({ allInactive: true }),
+        });
+        const { container } = render(
+          <div
+            className="app-shell"
+            data-shell-host
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              width: 1200,
+              height: 800,
+            }}
+          >
+            <LayoutShell />
+          </div>,
+        );
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+        const statusButton = container.querySelector<HTMLElement>(
+          "[data-editor-tool-surface] button",
+        );
+        expect(statusButton).not.toBeNull();
+        egressView.current = { state: "restricted" };
+        render(<ProfileEgressStatusIndicator />);
+        await act(async () => {});
+        const display = await screen.findByTestId("profile-egress-status");
+        const d = display.getBoundingClientRect();
+        const b = statusButton!.getBoundingClientRect();
+        const left = Math.max(d.left, b.left);
+        const right = Math.min(d.right, b.right);
+        const top = Math.max(d.top, b.top);
+        const bottom = Math.min(d.bottom, b.bottom);
+        // The geometry only matters when the two rectangles meet.
+        if (right - left > 0.5 && bottom - top > 0.5) {
+          const hit = document.elementFromPoint(
+            (left + right) / 2,
+            (top + bottom) / 2,
+          );
+          expect(hit !== null && statusButton!.contains(hit)).toBe(true);
+        }
+      } finally {
+        editorStatusBar.current = false;
+      }
+    },
+  );
+});

@@ -24,7 +24,15 @@ test("dev の形の fixture: 生成のとおりの bytes、variant ごとの pla
     const text = read(shape.file);
     assert.equal(
       text,
-      `${JSON.stringify(shapeFixture({ caseId, fixture: source }), null, 2)}\n`,
+      `${JSON.stringify(
+        shapeFixture({
+          caseId,
+          fixture: source,
+          rawLexicalShape: shape.rawLexicalShape === true,
+        }),
+        null,
+        2,
+      )}\n`,
       caseId,
     );
     const plans = loadDevGraphCasePlans({
@@ -78,3 +86,26 @@ test("dev の形の plan の構造が違えば一致しない（planShape は Re
 function structuredCloneish(value) {
   return JSON.parse(JSON.stringify(value));
 }
+
+test("G-08 の dev の形: query を引用する Scene だけが query と語を共有し、答えの Scene は Raw に入らない（K6/6 の予行 4。凍結の rawPrediction の形）", () => {
+  const dev = JSON.parse(read(DEV_SHAPES["G-08"].file));
+  const tokens = (value) =>
+    new Set(
+      value
+        .toLowerCase()
+        .split(/[^a-z0-9]+/u)
+        .filter(Boolean),
+    );
+  const query = tokens(`${dev.query.title} ${dev.query.body}`);
+  const sharing = dev.scenes
+    .filter((row) =>
+      [...tokens(`${row.title} ${row.body}`)].some((word) => query.has(word)),
+    )
+    .map((row) => row.id);
+  // The two controls (the Scenes the frozen fixture has quote the query).
+  assert.deepEqual(sharing, ["dvs8-3", "dvs8-4"]);
+  // The expected added Scene (the answer) is not one of them.
+  const added = dev.variants.find((row) => row.id === "graph-recovered")
+    .expectations.addedScene.sceneId;
+  assert.ok(!sharing.includes(added));
+});

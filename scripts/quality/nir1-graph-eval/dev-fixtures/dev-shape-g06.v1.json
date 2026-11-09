@@ -314,7 +314,36 @@
           "id": "raw-membership",
           "scope": "variant"
         }
-      ]
+      ],
+      "expectations": {
+        "graph": {
+          "status": "available",
+          "qualifiedRevisionIds": [
+            "dvs6-23",
+            "dvs6-24",
+            "dvs6-22"
+          ]
+        },
+        "pathAttachments": [
+          {
+            "sceneId": "dvs6-3",
+            "path": {
+              "edgeIds": [
+                "dvs6-19"
+              ]
+            }
+          },
+          {
+            "sceneId": "dvs6-4",
+            "path": {
+              "edgeIds": [
+                "dvs6-19",
+                "dvs6-20"
+              ]
+            }
+          }
+        ]
+      }
     }
   ]
 }
