@@ -702,6 +702,11 @@ export declare class Backend {
   relatedScenesGraphContinue(ownerKey: string, request: any, callerIdentity?: string | undefined | null): Promise<string>
   relatedScenesRelease(ownerKey: string, operationTicket: string): Promise<string>
   relatedScenesReleaseOwner(ownerKey: string): Promise<string>
+  /**
+   * `periodic` is true only for Main's timer-driven rounds: such a round does
+   * not wait for a busy database connection, so it cannot make a running
+   * maintenance Verify hand the connection over (DR-MPS-15). Omitted is false.
+   */
   relatedScenesReconcile(periodic?: boolean | undefined | null): Promise<string>
   nir1EvidenceQualify(ownerKey: string, navigationIdentity: string, callerIdentity?: string | undefined | null): Promise<string>
   /**

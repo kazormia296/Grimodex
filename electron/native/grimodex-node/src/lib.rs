@@ -13366,6 +13366,9 @@ impl Backend {
             .map_err(|_| Error::from_reason("RELATED_SCENES_UNAVAILABLE"))
     }
 
+    /// `periodic` is true only for Main's timer-driven rounds: such a round does
+    /// not wait for a busy database connection, so it cannot make a running
+    /// maintenance Verify hand the connection over (DR-MPS-15). Omitted is false.
     #[napi]
     pub async fn related_scenes_reconcile(&self, periodic: Option<bool>) -> Result<String> {
         let state = Arc::clone(&self.state);

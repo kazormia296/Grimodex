@@ -1140,10 +1140,18 @@ async fn a_stale_or_reader_retry_makes_the_next_tick_foreground() {
     );
 }
 
-/// `K` reader retries in a row still stop the task when a skip lies between
-/// them: the skip neither adds nor resets the streak.
+/// Wiring check with an artificial sequence. In production a `Skipped` can only
+/// follow `Idle`, `Ready`, `Retry` or `Skipped` (`next_tick_mode` makes every
+/// tick after a reader retry or `StaleRetry` a foreground one, which never
+/// skips), and those outcomes already reset both the reader streak and the
+/// stale streak to 0 (see `a_skip_only_follows_outcomes_that_zero_both_streaks`).
+/// So the streaks are always 0 at a real skip, and their invariance is a
+/// property of the unit functions (`a_skip_keeps_...`). Here a scripted
+/// foreground tick returns `Skipped` between reader retries only to show that
+/// the loop itself does not reset the streak: `K` reader retries around a
+/// skip still stop the task.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_skip_between_reader_retries_does_not_reset_the_streak() {
+async fn the_loop_does_not_reset_the_reader_streak_on_a_scripted_skip() {
     let h = Harness::new();
     let reader = || Some(BuildOutcome::ReaderRetry(Reason::ReaderBusy));
     let (modes, released) = run_task(
@@ -1285,4 +1293,114 @@ fn a_stale_request_stops_instead_of_skipping() {
     assert!(matches!(result, BuildOutcome::Stopped));
     assert_eq!(db.foreground_connection_waiter_count(), 0);
     held.release();
+}
+
+/// The structural fact behind "a skip never changes a streak": the outcomes
+/// after which a tick may yield all reset both streaks already, and the ones
+/// after which a streak is non-zero never yield.
+#[test]
+fn a_skip_only_follows_outcomes_that_zero_both_streaks() {
+    let policy = test_policy();
+    for quiet in [BuildOutcome::Idle, BuildOutcome::Ready, BuildOutcome::Retry] {
+        assert_eq!(next_tick_mode(Some(&quiet), 0, 40), TickMode::Yielding);
+        assert_eq!(
+            next_reader_retry_streak(5, &quiet, MAX_CONSECUTIVE_READER_RETRIES).0,
+            0,
+            "{}",
+            quiet.label()
+        );
+        assert_eq!(
+            next_retry_wait(5, &quiet, &policy).0,
+            0,
+            "{}",
+            quiet.label()
+        );
+    }
+    for counted in [
+        BuildOutcome::StaleRetry,
+        BuildOutcome::ReaderRetry(Reason::ReaderBusy),
+    ] {
+        assert_eq!(
+            next_tick_mode(Some(&counted), 0, 40),
+            TickMode::Foreground,
+            "{}",
+            counted.label()
+        );
+    }
+}
+
+/// B-1: a `schedule` that finds the task already running (a second `begin`, a
+/// stale operation's rebuild) makes the running task's next tick a foreground
+/// one, once, even when it would have yielded; plain polling stays yielding.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_schedule_makes_the_next_tick_foreground_once() {
+    let h = Harness::new();
+    let request = h.request();
+    let participant = h.participant();
+    let key = (request.database().identity(), h.project.clone());
+    let generation = request.epoch().generation();
+    let policy = RetryPolicy {
+        retry_delay: Duration::from_millis(300),
+        ..test_policy()
+    };
+    let script = Arc::new(Mutex::new(std::collections::VecDeque::from([
+        Some(BuildOutcome::Idle), // tick 1 (foreground)
+        None,                     // tick 2 (yielding) -> Skipped
+        None,                     // tick 3 -> Idle if foreground, Skipped if yielding
+    ])));
+    let modes = Arc::new(Mutex::new(Vec::<TickMode>::new()));
+    let step_script = Arc::clone(&script);
+    let step_modes = Arc::clone(&modes);
+    let step: Arc<ModeStep> = Arc::new(move |_, _, _, _, mode| {
+        step_modes.lock().expect("modes").push(mode);
+        Ok(match step_script.lock().expect("script").pop_front() {
+            Some(Some(outcome)) => outcome,
+            Some(None) if mode == TickMode::Yielding => BuildOutcome::Skipped,
+            Some(None) => BuildOutcome::Idle,
+            None => BuildOutcome::Stopped,
+        })
+    });
+    schedule_with_mode(
+        Arc::clone(&h.state),
+        request.clone(),
+        participant.clone(),
+        h.project.clone(),
+        policy,
+        Arc::clone(&step),
+    )
+    .expect("scheduled");
+    // Wait for ticks 1 and 2; the task then sleeps `retry_delay`.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while modes.lock().expect("modes").len() < 2 {
+        assert!(Instant::now() < deadline, "ticks 1 and 2 run");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // The second schedule: the reservation is taken, nothing new runs, and the
+    // running task is asked for a foreground tick.
+    schedule_with_mode(
+        Arc::clone(&h.state),
+        request,
+        participant,
+        h.project.clone(),
+        policy,
+        Arc::clone(&step),
+    )
+    .expect("second schedule");
+    assert_eq!(modes.lock().expect("modes").len(), 2, "no second task ran");
+    while !lock(&h.state.related_scenes.builds)
+        .expect("builds")
+        .reserve(key.clone(), generation)
+    {
+        assert!(Instant::now() < deadline, "the task ends");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        *modes.lock().expect("modes"),
+        [
+            TickMode::Foreground, // first tick
+            TickMode::Yielding,   // polling after Idle
+            TickMode::Foreground, // asked by the second schedule, after a Skipped
+            TickMode::Yielding,   // consumed: back to polling (returns Stopped)
+        ]
+    );
 }

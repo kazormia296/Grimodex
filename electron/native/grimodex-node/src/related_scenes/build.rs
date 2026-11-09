@@ -39,7 +39,9 @@ const MAX_CONSECUTIVE_STALE_RETRIES: u32 = 3;
 /// renderer's read IPC deadline: longer than a maintenance Verify needs (about
 /// 3-4 s measured), and it bounds how late a stale index or a withdrawn
 /// operation can be noticed while maintenance keeps the connection.
-const MAX_CONSECUTIVE_SKIPS: u32 = 40;
+/// The one bound of both periodic paths: `reconcile` rounds use it too
+/// (`MAX_CONSECUTIVE_SKIPPED_ROUNDS` in the parent module refers to it).
+pub(super) const MAX_CONSECUTIVE_SKIPS: u32 = 40;
 
 /// The waits and bounds of the build task's retry loop. Tests shorten them.
 #[derive(Clone, Copy)]
@@ -185,6 +187,12 @@ fn schedule_with_mode(
     {
         let mut builds = lock(&state.related_scenes.builds)?;
         if !builds.reserve(key.clone(), generation) {
+            // A task of this workspace and generation already runs (a second
+            // `begin`, or a stale operation's rebuild). The caller wants a
+            // rebuild now: the running task must not yield on its next tick.
+            // Polling itself never reaches this point (the loop does not call
+            // `schedule`), so the request is always a begin or a stale rebuild.
+            builds.request_foreground(&key, generation);
             return Ok(());
         }
     }
@@ -216,7 +224,16 @@ fn schedule_with_mode(
             let work_project = project.clone();
             let work_participant = participant.clone();
             let work_build = Arc::clone(&build);
-            let mode = next_tick_mode(previous.as_ref(), consecutive_skips, MAX_CONSECUTIVE_SKIPS);
+            // A `schedule` that found this task already running asks for a
+            // foreground tick (once). Read it before the mode is decided.
+            let requested = lock(&state.related_scenes.builds)
+                .map(|mut builds| builds.take_foreground(&key, generation))
+                .unwrap_or(false);
+            let mode = if requested {
+                TickMode::Foreground
+            } else {
+                next_tick_mode(previous.as_ref(), consecutive_skips, MAX_CONSECUTIVE_SKIPS)
+            };
             let result = tokio::task::spawn_blocking(move || {
                 work_build(
                     &work_state,

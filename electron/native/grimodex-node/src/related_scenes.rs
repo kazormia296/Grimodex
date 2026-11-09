@@ -39,10 +39,11 @@ const CAPACITY: usize = 128;
 const TTL: Duration = Duration::from_secs(300);
 const RAW_LIMIT: usize = 30;
 /// DR-MPS-15: how many periodic `reconcile` rounds in a row may skip a busy
-/// connection before the next one takes it like a foreground caller (250 ms ×
-/// 40 ≒ 10 s, the same bound as the build task's skips). It bounds how late a
-/// stale operation is noticed while maintenance keeps the connection.
-const MAX_CONSECUTIVE_SKIPPED_ROUNDS: u32 = 40;
+/// connection before the next one takes it like a foreground caller. It is
+/// deliberately the build task's bound (`build::MAX_CONSECUTIVE_SKIPS`, 250 ms
+/// × 40 ≒ 10 s) so the two periodic paths cannot drift apart; it bounds how
+/// late a stale operation is noticed while maintenance keeps the connection.
+const MAX_CONSECUTIVE_SKIPPED_ROUNDS: u32 = build::MAX_CONSECUTIVE_SKIPS;
 
 type Lease = Arc<RelatedScenesLease<Operation>>;
 type LeaseOf<T> = Arc<RelatedScenesLease<T>>;

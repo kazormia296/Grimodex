@@ -7,6 +7,10 @@ type BuildKey = (u64, String);
 pub(crate) struct RelatedScenesBuildRegistry {
     generation: Option<u64>,
     keys: HashSet<BuildKey>,
+    /// Reserved keys whose running task was asked (by a later `schedule` that
+    /// found the reservation taken) to make its next tick a foreground one.
+    /// Always a subset of `keys` of the current generation.
+    foreground: HashSet<BuildKey>,
     capacity: usize,
 }
 
@@ -15,6 +19,7 @@ impl RelatedScenesBuildRegistry {
         Self {
             generation: None,
             keys: HashSet::new(),
+            foreground: HashSet::new(),
             capacity,
         }
     }
@@ -27,6 +32,7 @@ impl RelatedScenesBuildRegistry {
                 // All previous SemanticRequests are revoked by this rotation.
                 // They must not consume the new generation's capacity.
                 self.keys.clear();
+                self.foreground.clear();
                 self.generation = Some(generation);
             }
         }
@@ -39,7 +45,22 @@ impl RelatedScenesBuildRegistry {
     pub(crate) fn release(&mut self, key: &BuildKey, generation: u64) {
         if self.generation == Some(generation) {
             self.keys.remove(key);
+            self.foreground.remove(key);
         }
+    }
+
+    /// Ask the running task of `key` to take its next tick as a foreground
+    /// one. Ignored unless `key` is reserved in this very generation.
+    pub(crate) fn request_foreground(&mut self, key: &BuildKey, generation: u64) {
+        if self.generation == Some(generation) && self.keys.contains(key) {
+            self.foreground.insert(key.clone());
+        }
+    }
+
+    /// Consume the request of `request_foreground` (once). A request of
+    /// another generation was cleared with its reservation and is never seen.
+    pub(crate) fn take_foreground(&mut self, key: &BuildKey, generation: u64) -> bool {
+        self.generation == Some(generation) && self.foreground.remove(key)
     }
 }
 

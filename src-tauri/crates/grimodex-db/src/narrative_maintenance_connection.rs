@@ -2273,6 +2273,164 @@ mod tests {
         assert_eq!(db.foreground_connection_waiter_count(), 0);
     }
 
+    /// Holds `db`'s connection mutex on a thread until released.
+    struct Holder {
+        release: mpsc::Sender<()>,
+        thread: Option<thread::JoinHandle<()>>,
+    }
+
+    impl Holder {
+        fn new(db: &Arc<Database>) -> Self {
+            let (held_tx, held_rx) = mpsc::channel();
+            let (release, release_rx) = mpsc::channel::<()>();
+            let holder_db = Arc::clone(db);
+            let thread = thread::spawn(move || {
+                let _conn = holder_db.conn.lock().expect("hold connection");
+                held_tx.send(()).expect("announce held");
+                let _ = release_rx.recv();
+            });
+            held_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("holder owns the connection");
+            Self {
+                release,
+                thread: Some(thread),
+            }
+        }
+
+        fn release(&mut self) {
+            let _ = self.release.send(());
+            if let Some(thread) = self.thread.take() {
+                thread.join().expect("holder joined");
+            }
+        }
+    }
+
+    impl Drop for Holder {
+        fn drop(&mut self) {
+            let _ = self.release.send(());
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    /// The try call never publishes a waiter at any instant (an observer
+    /// thread samples the count continuously, not only after the call), and a
+    /// maintenance worker in no-wait mode that holds the connection during the
+    /// calls is not preempted at its next acquisition (that preemption is
+    /// exactly what a published waiter would cause).
+    #[test]
+    fn try_participant_read_never_publishes_a_waiter_and_does_not_preempt_maintenance() {
+        let db = Arc::new(test_db());
+        let (_core, participant) = test_participant();
+        let stop = Arc::new(AtomicBool::new(false));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let observer = {
+            let (db, stop, max_seen) = (Arc::clone(&db), Arc::clone(&stop), Arc::clone(&max_seen));
+            thread::spawn(move || {
+                while !stop.load(Ordering::Acquire) {
+                    max_seen.fetch_max(db.foreground_connection_waiter_count(), Ordering::SeqCst);
+                    thread::yield_now();
+                }
+            })
+        };
+        // The maintenance worker: no-wait mode, holds the connection through
+        // the whole loop, then acquires again.
+        let (held_tx, held_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let maintenance_db = Arc::clone(&db);
+        let maintenance = thread::spawn(move || {
+            let _no_wait = maintenance_db.enter_maintenance_connection_no_wait();
+            maintenance_db
+                .with_conn(|_| {
+                    held_tx.send(()).expect("announce held");
+                    let _ = release_rx.recv();
+                    Ok(())
+                })
+                .expect("first no-wait acquisition");
+            maintenance_db.with_conn(|_| Ok(()))
+        });
+        held_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("maintenance owns the connection");
+        for _ in 0..300 {
+            assert_eq!(
+                db.try_with_participant_read_transaction(&participant, |_| Ok(()))
+                    .expect("busy is not an error"),
+                None
+            );
+        }
+        release_tx.send(()).expect("release");
+        let second = maintenance.join().expect("maintenance joined");
+        stop.store(true, Ordering::Release);
+        observer.join().expect("observer joined");
+        assert_eq!(
+            max_seen.load(Ordering::SeqCst),
+            0,
+            "no waiter was ever seen"
+        );
+        second.expect("the next no-wait acquisition is not PREEMPTED");
+    }
+
+    /// A quarantined connection is an error (before and without the busy
+    /// answer), and the two modes that never announce a waiter keep their own
+    /// acquisition rules: background priority waits (never `None`) and
+    /// maintenance no-wait fails as PREEMPTED when the connection is busy.
+    #[test]
+    fn try_participant_read_errors_on_quarantine_and_delegates_in_the_worker_modes() {
+        let db = Arc::new(test_db());
+        let (_core, participant) = test_participant();
+        db.quarantine_connection("test quarantine");
+        let free = db
+            .try_with_participant_read_transaction(&participant, |_| Ok(()))
+            .expect_err("a quarantined connection is an error");
+        assert!(free.to_string().contains("UNUSABLE"), "{free}");
+        let mut holder = Holder::new(&db);
+        let busy = db
+            .try_with_participant_read_transaction(&participant, |_| Ok(()))
+            .expect_err("quarantine is reported before the busy answer");
+        assert!(busy.to_string().contains("UNUSABLE"), "{busy}");
+        holder.release();
+
+        let db = Arc::new(test_db());
+        let (_core, participant) = test_participant();
+        // Background priority: the normal acquisition applies, so a held
+        // connection is waited for and the call runs once it is released.
+        let mut holder = Holder::new(&db);
+        let releaser = {
+            let release = holder.release.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                let _ = release.send(());
+            })
+        };
+        let value = db
+            .with_background_connection_priority(|| {
+                db.try_with_participant_read_transaction(&participant, |_| Ok(5))
+            })
+            .expect("background priority waits");
+        assert_eq!(value, Some(5));
+        releaser.join().expect("releaser joined");
+        holder.release();
+
+        // Maintenance no-wait: the existing PREEMPTED error, not `None`.
+        let mut holder = Holder::new(&db);
+        let error = {
+            let _no_wait = db.enter_maintenance_connection_no_wait();
+            db.try_with_participant_read_transaction(&participant, |_| Ok(()))
+                .expect_err("no-wait keeps its own rule")
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_MAINTENANCE_CONNECTION_PREEMPTED"),
+            "{error}"
+        );
+        holder.release();
+        assert_eq!(db.foreground_connection_waiter_count(), 0);
+    }
+
     #[test]
     fn participant_sql_scope_cancels_while_queued_for_connection() {
         let db = Arc::new(test_db());
