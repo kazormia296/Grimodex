@@ -1,0 +1,24 @@
+{
+  "kind": "g01-diagnostic",
+  "k62": {
+    "freezeCommit": "af643a93eeae7f937c9cd5a9dd87a6308c96fab6",
+    "sha256": "4ccca08314c022fd969308fa969e6fcb3e2c439fe12757bfec0e901b905676f8"
+  },
+  "k64": {
+    "freezeCommit": "5dea38af158283c2a925d68ef0d8b0771c0ea209",
+    "sha256": "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3"
+  },
+  "k65": {
+    "freezeCommit": "07fc80ec150f4fcab62fc6fce8d9e0d71d33c70f",
+    "sha256": "1ad1088498e43dc3cd0deb1b7d74f18396eb3c07d4bd3834a8787de30ecd24a7"
+  },
+  "k66": {
+    "freezeCommit": "56fb4fad2eb1eb2e021dfd121ea073f9d263cb4d",
+    "sha256": "58c634fa9b3d76803e486516c0e67444b74d4f5987cd851cd0857a25cc8945e7"
+  },
+  "observationPrep": {
+    "commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+    "freezeRecordSha256": "5816c315d34130b6089a5a8d388ea3a84a376a577fb512aabf6f3a8628230548"
+  },
+  "runStartedAtUtc": "2026-11-09T00:00:18.145Z"
+}
