@@ -8659,12 +8659,50 @@ mod tests {
         }
 
         #[test]
-        fn the_marker_only_step_from_schema_44_releases_and_stamps_together() {
+        fn schema_46_finalize_does_not_release_v45_dead_letters() {
+            // The marker-only 45 -> 46 step (the clock is already installed) and
+            // the full pass over a 45 workspace without a clock both leave the
+            // dead-letters a 45 build created: the release is the 45 migration's.
             let db = dead_lettered_by_contention();
             let before = terminal_records(&db);
+            let reserved = reservation(&db);
             set_user_version(&db, grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION);
             db.migrate().expect("finalize the previous marker");
-            assert_released_and_caught_up(&db, &before);
+            assert_eq!(user_version(&db), grimodex_core::SCHEMA_VERSION);
+            assert_eq!(terminal_records(&db), before);
+            assert_eq!(reservation(&db), reserved);
+            assert!(reserved.0.is_some());
+
+            // 45 without the clock: the full migration installs it and stamps 46.
+            let db = dead_lettered_by_contention();
+            let before = terminal_records(&db);
+            let reserved = reservation(&db);
+            db.with_conn(|conn| {
+                let triggers: Vec<String> = conn
+                    .prepare(
+                        "SELECT name FROM sqlite_master
+                          WHERE type = 'trigger' AND name GLOB 'grimodex_clock_*'",
+                    )?
+                    .query_map([], |row| row.get(0))?
+                    .collect::<Result<_, _>>()?;
+                for name in triggers {
+                    conn.execute_batch(&format!("DROP TRIGGER \"{name}\""))?;
+                }
+                conn.execute_batch(&format!(
+                    "DROP TABLE grimodex_write_clock; DROP TABLE grimodex_db_lineage;
+                     PRAGMA user_version = {};",
+                    grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION
+                ))?;
+                Ok(())
+            })
+            .expect("make the workspace a 45 without the clock");
+            db.migrate().expect("full pass from 45");
+            assert_eq!(user_version(&db), grimodex_core::SCHEMA_VERSION);
+            assert!(db
+                .with_conn(grimodex_core::write_clock::has_v46_write_clock)
+                .expect("clock"));
+            assert_eq!(terminal_records(&db), before);
+            assert_eq!(reservation(&db), reserved);
         }
 
         #[test]
@@ -8710,7 +8748,7 @@ mod tests {
         #[test]
         fn the_restore_preflight_of_an_older_workspace_releases() {
             for from in [
-                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 1,
                 grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 5,
             ] {
                 let db = dead_lettered_by_contention();
@@ -8751,8 +8789,8 @@ mod tests {
         #[test]
         fn a_failure_after_the_release_rolls_it_back_and_a_later_open_retries() {
             for from in [
-                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
                 grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 1,
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 2,
             ] {
                 let db = dead_lettered_by_contention();
                 let before = terminal_records(&db);

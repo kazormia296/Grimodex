@@ -600,6 +600,15 @@ pub fn install_staged_workspace_db(
         .map_err(|error| anyhow::anyhow!("RESTORE_DECLARATION_CLEAR_FAILED: {error}"))?;
         ensure_restore_epochs_for_workspace(&staged_database, &restore_identity)
             .map_err(|error| anyhow::anyhow!("RESTORE_EPOCH_MINT_FAILED: {error}"))?;
+        // The staged image becomes a different database file for every reader of
+        // the commit sequence, and the sequence can return to a value it held
+        // before. Rotate the lineage here — after `preflight_candidate` migrated
+        // the staged copy (so the clock and lineage tables exist even for an old
+        // backup) and before the live image is replaced — so restoring the same
+        // backup twice still yields a distinct lineage each time (DR-DBC-3).
+        staged_database
+            .with_conn(|conn| crate::write_clock::rotate_db_lineage(conn).map(drop))
+            .map_err(|error| anyhow::anyhow!("RESTORE_LINEAGE_ROTATE_FAILED: {error}"))?;
         if let Err(error) = staged_database.rebuild_fts_if_stale() {
             tracing::warn!("restore: staged FTS rebuild after Epoch mint failed: {error}");
         }
@@ -2250,6 +2259,100 @@ mod tests {
         assert!(!dir.join("grimodex.db.restore-tmp").exists());
         assert_no_internal_restore_files(&dir);
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn live_lineage(state: &WorkspaceState) -> String {
+        with_db_state(state, |db| {
+            db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT id FROM grimodex_db_lineage WHERE singleton = 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )?)
+            })
+        })
+        .expect("read live lineage")
+    }
+
+    /// DR-DBC-3: a restored image is a different database file, and the commit
+    /// sequence can come back to a value it held before, so the lineage must
+    /// change on every restore — including a second restore of the same backup.
+    #[test]
+    fn restore_rotates_lineage_even_for_the_same_backup_twice() {
+        let (dir, state) = fixture("restore-lineage");
+        let backup_name = "grimodex-20200101-000000.db";
+        let backup_path = dir.join("backups").join(backup_name);
+        backup_active(&state, &backup_path);
+        let backup_lineage = live_lineage(&state);
+
+        restore_backup_core(&state, backup_name, || {}).expect("first restore");
+        let first = live_lineage(&state);
+        restore_backup_core(&state, backup_name, || {}).expect("second restore");
+        let second = live_lineage(&state);
+
+        for id in [&first, &second] {
+            assert_eq!(id.len(), 32);
+            assert!(id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        }
+        assert_ne!(
+            first, backup_lineage,
+            "restore must not keep the backup lineage"
+        );
+        assert_ne!(second, backup_lineage);
+        assert_ne!(first, second, "the same backup restored twice must differ");
+
+        // The backup file itself is not rewritten.
+        let on_disk: String = rusqlite::Connection::open_with_flags(
+            &backup_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("open backup")
+        .query_row(
+            "SELECT id FROM grimodex_db_lineage WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("backup lineage");
+        assert_eq!(on_disk, backup_lineage);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn live_clock_seq(state: &WorkspaceState) -> i64 {
+        with_db_state(state, |db| {
+            db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT seq FROM grimodex_write_clock WHERE name = '*'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+        })
+        .expect("read live clock")
+    }
+
+    /// DR-DBC-3: a restore reads the user's own backup, so the clock sequence is
+    /// kept (only the lineage is rotated); the Web Editor import, which reads an
+    /// untrusted image, resets it instead.
+    #[test]
+    fn restore_keeps_the_backup_clock_sequence() {
+        let (dir, state) = fixture("restore-clock-seq");
+        set_marker(&state, "v1");
+        let backup_name = "grimodex-20200101-000000.db";
+        backup_active(&state, &dir.join("backups").join(backup_name));
+        let backup_seq = live_clock_seq(&state);
+        assert!(backup_seq > 0, "the fixture must have advanced the clock");
+        set_marker(&state, "v2");
+        set_marker(&state, "v3");
+        assert!(live_clock_seq(&state) > backup_seq);
+
+        restore_backup_core(&state, backup_name, || {}).expect("restore");
+        let restored = live_clock_seq(&state);
+        assert!(
+            restored >= backup_seq,
+            "restored seq {restored} must keep the backup's {backup_seq}"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

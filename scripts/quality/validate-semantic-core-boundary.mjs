@@ -61,7 +61,13 @@ const REPO_ROOT = path.resolve(
 // reservation of a Freshness Run dead-lettered by a publication guard race
 // (DR-JF-9 M1), a data repair of rebuildable Freshness state only, so the
 // concern matrix is unchanged.
-export const EXPECTED_SCHEMA_VERSION = 45;
+// SCHEMA_VERSION 46 only adds the Native-owned commit sequence and lineage
+// tables (grimodex_write_clock, grimodex_db_lineage, DR-DBC-3) and the
+// grimodex_clock_* AFTER triggers that advance the sequence. They store no
+// semantic interpretation, never write the rows they observe, and the
+// renderer authorizer rejects direct writes, so the concern matrix is
+// unchanged.
+export const EXPECTED_SCHEMA_VERSION = 46;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

@@ -10,6 +10,7 @@ import { requestWebEditorHandoffImport } from "@/features/import/webEditorHandof
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { recordActiveWorkspaceLauncherPaint } from "./workspaceOpenTrace";
+import { workspaceOpenErrorText } from "./workspaceOpenErrorText";
 
 export function LauncherScreen() {
   const { t } = useTranslation();
@@ -109,7 +110,11 @@ export function LauncherScreen() {
           )}
         </div>
 
-        {error && <p className="text-xs text-destructive">{error}</p>}
+        {error && (
+          <p className="text-xs text-destructive">
+            {workspaceOpenErrorText(error, t)}
+          </p>
+        )}
 
         <div className="flex gap-3">
           <button

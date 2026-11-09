@@ -121,9 +121,9 @@ fn same_schema_opens_without_migration_snapshot() {
 #[test]
 fn schema_20_shadow_migrates_through_21_to_22_and_preserves_existing_rows() {
     assert_eq!(
-        SCHEMA_VERSION, 45,
-        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-45 \
-         (Gate C2/D1/C2A/NIR-1/current Human capture retirement/Decision lookup indexes/Scene body declaration columns/Scene Scope default table) \
+        SCHEMA_VERSION, 46,
+        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-46 \
+         (Gate C2/D1/C2A/NIR-1/current Human capture retirement/Decision lookup indexes/Scene body declaration columns/Scene Scope default table/write clock and lineage) \
          migrate further on top but do not touch this step's own fixtures or assertions"
     );
     let ws = temp_workspace("schema-20-through-22");
@@ -199,9 +199,9 @@ fn schema_20_shadow_migrates_through_21_to_22_and_preserves_existing_rows() {
 #[test]
 fn schema_21_shadow_migrates_to_22_and_backfills_transaction_origins() {
     assert_eq!(
-        SCHEMA_VERSION, 45,
-        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-45 \
-         (Gate C2/D1/C2A/NIR-1/current Human capture retirement/Decision lookup indexes/Scene body declaration columns/Scene Scope default table) \
+        SCHEMA_VERSION, 46,
+        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-46 \
+         (Gate C2/D1/C2A/NIR-1/current Human capture retirement/Decision lookup indexes/Scene body declaration columns/Scene Scope default table/write clock and lineage) \
          migrate further on top but do not touch this step's own fixtures or assertions"
     );
     let ws = temp_workspace("schema-21-to-22");
@@ -731,7 +731,11 @@ fn schema_42_workspace_without_scene_body_declaration_columns_shadow_migrates_to
                 ))
             },
         )?;
-        assert_eq!((row.0, row.1, row.2, row.3), v1_before, "v1 columns are preserved");
+        assert_eq!(
+            (row.0, row.1, row.2, row.3),
+            v1_before,
+            "v1 columns are preserved"
+        );
         assert_eq!((row.4, row.5), (None, None), "no declaration is promoted");
         Ok(())
     })
@@ -963,6 +967,23 @@ mod failpoint_tests {
             snapshot_still_present(&ws),
             "migration snapshot must survive post-replace rollback"
         );
+    }
+
+    #[test]
+    fn failpoint_after_replace_rollback_keeps_snapshot_lineage() {
+        let ws = temp_workspace("fp-replace-lineage");
+        let before = seed_current_db_needing_shadow_repair(&ws.join("grimodex.db"));
+
+        match migration_supervisor::open_or_migrate_workspace_db_with_failpoint(
+            &ws,
+            Some(Failpoint::AfterReplace),
+        )
+        .expect("recovery outcome")
+        {
+            WorkspaceOpenDbOutcome::RecoveryRequired { .. } => {}
+            other => panic!("expected RecoveryRequired, got {other:?}"),
+        }
+        assert_eq!(live_lineage(&ws), before);
     }
 
     fn snapshot_still_present(ws: &Path) -> bool {
@@ -1200,6 +1221,107 @@ fn rollback_cas_refuses_when_live_image_changed() {
         })
         .expect("count");
     assert_eq!(count, 1);
+}
+
+fn live_lineage(ws: &Path) -> String {
+    let conn = rusqlite::Connection::open_with_flags(
+        ws.join("grimodex.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("open live read-only");
+    conn.query_row(
+        "SELECT id FROM grimodex_db_lineage WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )
+    .expect("read lineage")
+}
+
+/// A fully migrated live DB at the current version with one clock trigger
+/// removed: the invariant check fails, so the open takes the shadow path.
+fn seed_current_db_needing_shadow_repair(db_path: &Path) -> String {
+    {
+        let db = Database::new(db_path).expect("new");
+        db.migrate().expect("migrate");
+        db.with_conn(|conn| {
+            let name: String = conn.query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name GLOB 'grimodex_clock_*' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )?;
+            conn.execute_batch(&format!("DROP TRIGGER \"{name}\""))?;
+            Ok(())
+        })
+        .expect("drop one clock trigger");
+    }
+    live_lineage(db_path.parent().expect("workspace"))
+}
+
+/// DR-DBC-3: the shadow copy that replaces the live file is a different
+/// database, so its lineage differs from the live one even when migrate does
+/// not mint a new lineage (the copied one is valid).
+#[test]
+fn shadow_migration_rotates_lineage() {
+    let ws = temp_workspace("shadow-lineage");
+    let before = seed_current_db_needing_shadow_repair(&ws.join("grimodex.db"));
+
+    match migration_supervisor::open_or_migrate_workspace_db(&ws).expect("migrate") {
+        WorkspaceOpenDbOutcome::Migrated { opened, .. } => drop(opened),
+        other => panic!("expected Migrated via shadow path, got {other:?}"),
+    }
+    let after = live_lineage(&ws);
+    assert_eq!(after.len(), 32);
+    assert_ne!(after, before, "shadow migration must rotate the lineage");
+
+    // A legacy DB without a lineage table also ends with a valid lineage.
+    let legacy = temp_workspace("shadow-lineage-legacy");
+    seed_legacy_db(&legacy.join("grimodex.db"), 0);
+    match migration_supervisor::open_or_migrate_workspace_db(&legacy).expect("migrate legacy") {
+        WorkspaceOpenDbOutcome::Migrated { opened, .. } => drop(opened),
+        other => panic!("expected Migrated, got {other:?}"),
+    }
+    assert_eq!(live_lineage(&legacy).len(), 32);
+}
+
+/// DR-DBC-3: putting a snapshot back keeps the snapshot's lineage (same
+/// content, same generation); it is not rotated.
+#[test]
+fn snapshot_rollback_keeps_snapshot_lineage() {
+    let ws = temp_workspace("rollback-lineage");
+    let db_path = ws.join("grimodex.db");
+    {
+        let db = Database::new(&db_path).expect("new");
+        db.migrate().expect("migrate");
+    }
+    let installed = migration_supervisor::capture_installed_image(&db_path, SCHEMA_VERSION, None)
+        .expect("capture");
+
+    let rollback = ws.join("rollback.db");
+    {
+        let db = Database::new(&rollback).expect("rollback db");
+        db.migrate().expect("migrate rollback");
+    }
+    migration_supervisor::seal_sqlite_image(&rollback).expect("seal rollback");
+    let snapshot_lineage: String = rusqlite::Connection::open(&rollback)
+        .expect("open rollback")
+        .query_row(
+            "SELECT id FROM grimodex_db_lineage WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("snapshot lineage");
+    assert_ne!(snapshot_lineage, live_lineage(&ws), "fixtures start apart");
+
+    let exclusive = migration_supervisor::rollback_if_installed_image_unchanged(
+        &ws,
+        &db_path,
+        &rollback,
+        &installed,
+        "RESTORE_HANDOFF_CONFLICT",
+    )
+    .expect("cas rollback");
+    drop(exclusive);
+    assert_eq!(live_lineage(&ws), snapshot_lineage);
 }
 
 #[test]

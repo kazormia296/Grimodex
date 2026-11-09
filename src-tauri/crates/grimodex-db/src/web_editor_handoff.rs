@@ -494,6 +494,15 @@ fn import_web_editor_workspace_inner(
     let database = Database::new(&database_path)?;
     database.with_conn(harden_untrusted_connection)?;
     database.migrate()?;
+    // The handoff database is untrusted input: a lineage or write-clock sequence
+    // it carries must not become this workspace's identity (DR-DBC-3). Migrate
+    // only mints a lineage when it is missing or malformed. With the lineage
+    // rotated, resetting the sequence cannot recreate an old (lineage, seq) pair,
+    // and an `i64::MAX` sequence can no longer stall the clock under OR IGNORE.
+    database.with_conn(|conn| {
+        crate::write_clock::rotate_db_lineage(conn)?;
+        crate::write_clock::reset_write_clock_seq(conn)
+    })?;
     let expected_schema = expected_schema_contract()?;
     validate_c2zc_native_table_contracts(&database, &expected_schema)?;
     rebuild_trusted_schema_objects(&database, &expected_schema)?;

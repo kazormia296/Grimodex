@@ -198,3 +198,142 @@ SHA-NI は使われている（約 1.9〜2.0 GB/s）。sha256 は合計でも約
 - 監査の検証は「保存された監査の行が改ざんされていないか」を全行について確かめる防御で、DB を書き換えられる攻撃者を想定している。この PR は、検証の判定（どの入力でどの結果か）を変えない：判定の式は S1 で同じ値を安く求めるだけ、並列は行ごとの純粋な計算の順序を変えるだけで、報告の順序は逐次と同じ（§9、§10 の試験）。
 - 検出する不整合の集合・最初の位置・reason・tail_hash・error の種類は同じ。強さを変える候補（生 bytes の sha256 だけで通す案、契約の 4 項目だけ読む parse）は、反例を実験で確認して却下した。
 - 新しい actor・信頼境界・受信先・送信先・保存範囲・閾値・契約・authority は無い。renderer・IPC・N-API の契約は変えない。
+
+## DR-DBC-3 段 1 の PR-1：commit の連番（clock）と lineage を DB の中に置く（物差しは変えない。2026-11-10）
+
+経緯：DB 接続の根本改善の段 1（設計 rev1 `design-notes/db-connection-2026-11-07/stage1-design-rev1.md` と改訂注記）。PR-1 は「連番の表・TRIGGER・lineage を作り、物差しは変えない」段で、**連番を読む側は作らない**（読む側は PR-2）。
+ユーザーの承認：2026-11-08 に C1（版 46・TRIGGER 約 440 本・rollback なし）、C2（連番と lineage を DB と backup に残してよい）、C3-b、C6 (a)。2026-11-09 に C4（脅威モデル。MCP は「常駐する MCP 全般」として読む）、C8（gate を 2 段に分け、未達は止まって再相談。書込みの上乗せは PR-1 の必須）、C5 は (a)（PR-2 の前提）。2026-11-10 に PR-1 の着手（「朝の『正式 run』は s7r1 を指す。PR-1 から着手」）。
+この lane は NIR-1 の委任の外にあり、個別の承認に基づく。順序：PR-1・PR-2 を先に入れ、PR-3（stamp の削除）は S4 の再凍結と束ねる（C7 は PR-3 の前に改めて伺う）。
+
+### 判断
+
+1. 版は `grimodex-core/src/lib.rs` の `SCHEMA_VERSION`・`PREVIOUS_COMPATIBLE_SCHEMA_VERSION`・`PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION` を 45／44／45 から 46／45／46 に上げる。
+2. 表を 2 つ足す：`grimodex_write_clock`（`name` TEXT PRIMARY KEY、`seq` INTEGER、桁あふれは `CHECK(typeof(seq)='integer')` で書込みを止める。rev1 §1.4）と `grimodex_db_lineage`（`id` の `CHECK(length(id)=32)`）。形は rev1 §1.1。
+3. 対象表（`pragma_table_list` の schema＝main、type＝table）それぞれに、AFTER INSERT／UPDATE／DELETE の TRIGGER を 1 本ずつ足す（表 147 本×3＝441 本の見込み）。除くもの：`sqlite_%`、clock の 2 表、virtual、shadow、view。**TRIGGER の本体は NEW／OLD を参照しない**（D2a で closed の表の Read 拒否に当たり、renderer の書込みが止まるため）。**【追記 2 で改訂】本体は `UPDATE grimodex_write_clock SET seq = seq + 1 WHERE name = '*';` の 1 文だけ。表ごとの行（rev1 §1.1 の `INSERT … ON CONFLICT`）は廃止し、表ごとの鍵は 1b／1c まで見送る（後で TRIGGER の本体を差し替える migration で足せる）。理由は gate G1 の実測：保存 p50 が Rust 水準で +15%（約 +1.0 ms／保存。1 回の保存で clock の TRIGGER が約 15 回発火、約 67 µs／発火）。保存の経路は `prepare_cached` を使わず文のたびに TRIGGER の本体を compile するので、本体の文数がそのまま上乗せになる。例外は `ai_audit_events` の AFTER UPDATE／DELETE だけで、監査の差分検証（PR-2 以降）のため `'*'` の UPDATE の後に `ai_audit_events!mutate` の行を `'*'` の値に揃える 2 文目を残す（この 2 本だけ 2 文）。TRIGGER 名と表名は常に引用符で囲む（追記 2 の I-2）。**
+4. 生成関数と不変条件は **grimodex-core** に置く（不変条件 `has_current_schema_checkpoint_invariants` が core の `workspace_schema.rs` にあり、MCP の `schema_allows_writes` が core を使うため）。install（冪等。差分がある時だけ DROP＋CREATE し、余分な `grimodex_clock_%` を消す）と lineage の作り直しは grimodex-db。
+5. **`'*'` の行の自己修復**（rev1 の TRIGGER の形では `'*'` が消えると UPDATE が 0 行で直らない）：clock 表に `BEFORE DELETE WHEN OLD.name='*' RAISE(ABORT)` を置く（書込みの hot path には乗らない）。migration の修復で `'*'` が欠けていたら、`MAX(seq)+1`（他の行が無ければ 0）で作り直し、同時に lineage も作り直す（ABA の防止）。**rev1 にない防御の追加**（強める方向）。**【追記 2 で補足】TRIGGER の本体が 1 文の UPDATE になったので、`'*'` が欠けると UPDATE は何もせず、連番が止まる（書込みは失敗しない）。これを守るのは guard の TRIGGER（`'*'` の DELETE を拒否）と、install／`has_v46_write_clock`（`'*'` の行を要求し、欠ければ MCP は readonly、migration は作り直す）の 2 つ。**
+6. lineage は uuid v4（32 hex）。作り直す場所：restore の staged（`backup_restore.rs`）、shadow migration の staged（`migration_supervisor.rs`）、新規作成（migrate の install が無ければ作る）、**Web Editor の handoff の取り込み**（`web_editor_handoff.rs`。取り込む DB は信頼しないので持ち越させない。rev1 にない場所。Web Editor は廃止済みだが、コードに残る経路なので閉じる）。snapshot へ戻す rollback は snapshot の値のまま残す。**【追記 2 で補足】取り込みでは lineage の作り直しの後に clock の全ての行の seq を 0 に戻す（信頼しない画像の seq を持ち込ませない。lineage が新しいので ABA は起きない）。restore は利用者自身の backup なので seq を保つ。**
+7. renderer の authorizer（`execute.rs` の `renderer_sql_rejection`。registry の判定より前）：clock 表への DML は、accessor が生成した trigger 名の集合に**完全一致**するときだけ通す。lineage 表への DML は常に拒否する。`sqlite_sequence` への renderer の直接の DML も拒否する（製品に使用箇所が無く、clock を進めない書込みの穴を閉じる。rev1 にない防御の追加）。**【追記 2 で改訂】起案は「読みは通す」（rev1 の「常に拒否」を DML の拒否と読んだ）としたが、レビューの指摘で rev1 §1.2 の文面どおりに戻す：clock と lineage の top-level の Read も拒否する（D2a で closed の表の書込みの時刻と回数が renderer に見えないように）。clock の trigger が行う Read（trigger 名が集合に完全一致する accessor。本体が `seq` を読む）は通す。lineage は accessor に関わらず読みも拒否する。PR-1 には読む側が無く、PR-2 で型つきの accessor で開ける。`sqlite_sequence` の読みは判定しない。**
+8. D2a の台帳：2 表を `execute.rs` の `D2A_UNLISTED_SCHEMA_TABLES` に足す（unlisted に固定）。
+9. **物差しは変えない**：ReadIdentity、TEMP epoch、stamp、data_version、publish の CAS、LP-GATE、IPC、preload、N-API、MCP のコード、閾値は PR-1 では変えない。連番を読む側は作らない。BrowserMock は clock の TRIGGER を作らない（RUST_ONLY の除外を揃える）。「mock が clock を返す」は読む側が無いので PR-2。
+
+### 信頼境界と変えないもの
+
+- C4 で承認された rev1 §6 の範囲内。actor・権限・送信先は増えない。MCP は「常駐する MCP 全般」として読み（承認済み）、v46 の MCP の書込みも TRIGGER で進む。v45 の MCP は user_version が合わず readonly になる。TRIGGER が欠けた DB も readonly。
+- 判断 5（`'*'` の保護）、判断 6 の handoff、判断 7 の `sqlite_sequence` は §6 の文面にない防御の追加（いずれも強める方向）。判断 7 の clock・lineage の Read 拒否は rev1 §1.2 の文面どおりに戻したもの（追記 2）。
+- **scope-storage-authority との整合**（C2 で「実装の前に確かめる」とされた点）：clock は失効の合図で authority ではない。AFTER TRIGGER は行の列（`updated_at` など）を書き換えない。restore と import で lineage を作り直す。
+- 閾値：変えない（G3 の project 削除の線は実測の後に決める。新しい閾値なので、決めるときにユーザーに伺う）。
+
+### owner／lifecycle matrix（新しい thread・subprocess・背景の処理はない）
+
+| 場面 | owner と扱い |
+|---|---|
+| 既存の物差し | 変わらない。ただし `total_changes` は TRIGGER の行も数える。`read_identity.rs` と `source_revision.rs` は等値で比べるだけなので判定は同じ【推測。試験で固定する】 |
+| clock の行 | 同じ tx の中の main schema の TRIGGER が書く（通常は `'*'` の 1 行だけ。audit の UPDATE／DELETE は mutate の鍵も）。rollback で消える。Native が直接書くのは install・修復・Web Editor の取り込みでの seq の 0 戻しだけ |
+| lineage | Native（migration、restore、supervisor、handoff）が持つ |
+| migration の失敗 | install は c2zb の savepoint の中（stamp の直前）で走るので、失敗すれば stamp と一緒に戻る。shadow 経路は `safe_mode_after_snapshot` へ進み、live は置き換えない |
+| MCP の別 process | v46 の MCP の書込みも TRIGGER で進む。常駐する MCP の shared lease は `acquire_exclusive_for_migration` の 10 s で open を失敗させる（どの版上げでも shadow 経路を通るので、v46 で新しく生まれる問題ではない）。利用者向けの文言を足す |
+| backup | VACUUM INTO で clock・lineage・TRIGGER も複製される |
+| restore | staged の段階で lineage を作り直す |
+| project 削除 | CASCADE の行ごとに TRIGGER が走る（追記 2 で 1 文に。gate G3 は 2 文版で +17.5%、1 文版は未測定） |
+| 試験の template | Backup API で複製するので、試験 DB どうしで lineage が同じになる。PR-1 では読まないので害はない（PR-2 の判断 C） |
+| Tauri の legacy shell | 同じ crate なので同じ migration になる |
+
+### 代替案
+
+update_hook／commit_hook（接続ごとに要り MCP を覆えない）、TEMP 表（C1 で覆した）、protected-writers.json への登録（narrative の writer の validator を巻き込む）、3 文の TRIGGER で `'*'` が欠けたら RAISE（書込みのたびに 1 文増える）、restore の seed から決まる lineage（同じ backup を 2 回戻すと同じ値）は採らない。
+
+### 起案時の rev1 とコードの食い違い（コードの事実を優先）
+
+不変条件の関数は core の `workspace_schema.rs`（rev1 は crate を書かず行がずれる）。finalize が v45 の dead-letter の release を呼んでいる件は rev1 に記述がなく、**PR-1 で外す**（`migrate.rs` の finalize）。台帳の変更先は `execute.rs`（rev1 の `profile_egress_policy.rs` は変更不要）。ensure 系の行番号は core の試験 module の fixture。execute.rs の行番号は補正（例外の前例、DDL の拒否、VM step の予算）。
+
+### 検証の計画（静かな machine で、評価の run と同時に走らせない）
+
+- **G1 保存 IPC の p50（+5% 以内）**：dev 枝 `claude/db-conn-measure` の driver（`scripts/dev/db-trace-{run.mjs,renderer.ts,renderer.html,launch.sh}`）を base と PR-1 の head の両方に載せ、W0（`--trace off --saves 100 --pause-ms 600`）を各 arm 5 run 交互に回す。DB は run ごとに写しを作る（`ir-timing/base/ir/grimodex.db` と `ir-chat-pilot-2026-11/db/g-ja-1.full.db`）。最初の 1 run を除き `save_scene_body_bundle` の ms の p50 を結合して比べる。
+- **G2 publish の tx の上乗せ（1% 以内）**：行数×Δµs/行÷tx 全体。行数は publish の前後の `'*'` の差。Δµs/行は DR-DBC-2 §12 と同じ形（g-ja-1 の写しの IR の表に、TRIGGER の有無を release の ignored 試験で比べ、3 process×warm 7 回の中央値）。分母の publish_tx の p50 は #829 の後に測り直す。
+- **G3 project 削除**：`domain_writes.rs` の経路で、g-ja-1 の写し 5 個ずつ、base と PR-1 で比べる（ms と倍率。WHERE の無い DELETE が約 14 倍だった件の線は実測の後に案を出し、ユーザーに伺う）。
+- **記録だけ**：45→46 の shadow migration の時間、open の増分、試験 DB の作成の増分、BrowserMock の起動、大きい batch の VM step。hold の p90 と WITH の件数は PR-2 の基準値として記録する。
+
+### 未確認
+
+lease の timeout の案内文を出す画面の場所、SQLite が TRIGGER 本体の表を作成時に解決しないこと（mock が落ちる理由の確認）、AUTOINCREMENT の内部の更新が authorizer を通らないこと、rusqlite での実際の費用、G2 の分母を取るための `lock_trace.rs` の載せ直しの衝突、Tauri の legacy shell が今も配布されているか。いずれも build・試験・起動をしていないため（起案は read-only）。
+
+### 実装中の追記 1（2026-11-10。起案の記述の訂正と、実測・実装で分かったこと）
+
+- **backup の設計と `Backup::new`**：起案は「backup は VACUUM INTO の設計で、`Backup::new` は test-support の外に無い」としていたが、製品側に 1 件ある（`grimodex-db/src/bin/support/private_fixture.rs` の fixture bin の補助。required-features 付きで lib・napi には入らない。READ_ONLY の複製元を新しい file へ写すだけで既存 DB には書かない）。grep 試験（`tests/write_clock_forbidden_patterns.rs`）の許可リストに理由と件数つきで入れた。
+- **`writable_schema`**：起案は「OFF」としていたが、過去の版の CHECK widening migration 4 本（`migrate.rs`。`verify_post_effect_category_migration` を呼ぶもの）が `pragma_update(None,"writable_schema",true)` で `post_effect_runs`／`post_effect_annotations` の `sqlite_master.sql` の CHECK 文字列だけを書き換え、すぐ false に戻す。trigger には触らず、clock の install は stamp の直前に表の実態から作り直すので、clock を迂回しない。許可リストに件数一致で固定した。
+- **trigger の本数**：生成した contract で表 157→159、trigger 63→505（clock の 441 本＋guard 1 本＝442 本の増加。clock 以外の増減なし）。起案の 441 本＋guard の見込みと一致。
+- **Web Editor の取り込みは SQLite の画像（base64）を受け取って開く**（起案は JSON だけの可能性を残していた）。lineage を持ち込める経路なので `database.migrate()` の直後に作り直す。取り込みの `rebuild_trusted_schema_objects` は全 trigger を DROP して contract の trigger だけ作り直すので、contract に clock の trigger を入れる再生成が必須（再生成済み）。
+- **authorizer の集合**：clock 表への DML は、authorizer の trigger 名の引数が「実表から `expected_clock_triggers` と同じ規則で作った名前の集合」に完全一致するときだけ通す（名前の規則だけだと、取り込んだ DB に紛れた `grimodex_clock_evil_ai` が通るため）。集合は書込みになり得る文のときだけ authorizer を付ける前に作り、作れなければ空（fail-closed）。**1 回あたりの費用は未測定→gate G1 に含める。重ければ接続ごとの cache にする**。限界：`grimodex_clock_<実表>_ai` と同じ名前で本体を差し替えた trigger は authorizer では見分けられず、`has_v46_write_clock` の SQL 完全一致の領分。
+- **finalize**：`try_finalize_previous_schema_without_wait` が v45 の release を無条件で呼んでいた（PREVIOUS=45 になって 45→46 のたびに走る状態）。外した。≤44→46 の full migration では `current<45` で一度は走る。45→46 は clock が無い限り full migration（shadow 経路）になる。
+- **版の ratify**：`validate-semantic-core-boundary.mjs` の `EXPECTED_SCHEMA_VERSION` を 46 にしたのは「concern matrix は変わらない」の ratify（42〜45 と同じ扱い。clock と lineage は意味解釈を持たず、renderer の authorizer が書込みを拒否する）。
+- **利用者向けの文言**：lease の timeout（常駐する MCP が migration を妨げる）の案内は出ていなかったので、`workspaceOpenErrorText` が `WORKSPACE_EXCLUSIVE_LEASE_TIMEOUT` を含むエラーに「MCP を使う client を終了してから開き直す」案内を足す（ja／en の 1 文字列。新しい画面は作らない）。実機で届くかは未確認。
+- **Tauri の legacy shell**：`cargo check -p grimodex` は 24 件で落ちるが、foreshadow・plot_threads・grimodex-ai の API 変更による既存の壊れで、この PR の差分に `src-tauri/src` は無い。`README` は「frozen legacy」、`ci.yml` は `--workspace --exclude grimodex`、`release.yml` に shell の build は無い。build も配布もされていない。
+
+### 実装中の追記 2（2026-11-10。gate の実測と独立レビューの指摘への対処）
+
+**gate の実測**（候補 `8165b60f`＝TRIGGER が 2 文の版。生データ・集計 script は `~/.claude/projects/-home-grimodex-Grimodex/handoff/db-stage1-pr1-gates/` の `results.md` と `raw-*.jsonl`。repo には置かない）。測定は dev の worktree で、同一の test binary・同一の v46 の DB の写しを on（TRIGGER あり）と off（442 本を DROP）で ABBA に交互に回した。判定は書かない。
+
+- **G1 保存**（Rust 水準。`save_scene_body_bundle` を直接。IPC・authorizer は通らない）：p50 は DB A（18 scene）+14.8%、DB C（g-ja-1 の写し、117 scene）+15.1%。約 +1.0〜1.1 ms／保存で、1 回の保存で clock が 15 回進む（約 67〜70 µs／発火）。IPC 水準の粗い換算は約 +10%（未測定）。gate は +5% 以内。p95 は WAL の checkpoint のスパイクで比較に使えない。
+- **G2 publish**（g-ja-1 の写し、884 revision、clock が 3367 回進む）：publish 全体の p50 は on 3487 ms／off 3507 ms で**検出できない**（−0.6%。run 間のばらつき 3406〜3996 ms）。micro の Δµs/行は INSERT +1.5、UPDATE −1.6（noise）、DELETE（WHERE 付き）+3.3、DELETE（WHERE なし）+5.6。ただし毎回 prepare する単文は on で 1 文あたり +225〜454 µs。
+- **G3 project 削除**（clock が 63,640 回進む）：p50 が on 2978 ms／off 2534 ms で +17.5%（約 +444 ms、約 7 µs／発火。平均では +11.4%）。「WHERE の無い DELETE が約 14 倍」は project 削除の経路では現れず倍率は 1.1〜1.2 倍。**この線の扱いは別途案を出してユーザーに伺う**（新しい閾値は決めない）。
+- **authorizer の集合の構築**：1 回 442 µs（`pragma_table_list` の走査 258 µs、名前と SQL の生成 156 µs）。renderer の書込み 1 回（約 0.65 ms）の約 68%。on−off の差（発火＋名前の照合）は単文 +37 µs。
+- 記録だけ：45→46 の migration は 202〜511 ms、DB file の増分は約 0.2 MB、open の増分は +2.8 ms。
+
+**cache の費用（release の micro `clock_accessor_cache_cost`、`#[ignore]`）**：hit は約 0.35 µs（`PRAGMA main.schema_version` の読みだけ）、再構築（名前だけ）は約 337 µs（旧 442 µs のうち SQL の生成 156 µs が消え、`pragma_table_list` の走査が残る）。renderer の書込み 1 回の約 68% を占めていた集合の構築は、schema が変わらない限り µs 未満になる。
+
+**設計の変更（上の測定が理由）**：判断 3 の TRIGGER の本体を 1 文にした（表ごとの行を廃止）。**1 文化の効果は測り直していない**（次の gate の項目）。上乗せの主因は「文のたびに TRIGGER の本体を compile する」側と見ており、1 文化で減るのはその一部だけと見込まれる。
+
+**レビューの指摘と対処**
+
+| ID | 指摘 | 対処 |
+|---|---|---|
+| I-1 | authorizer の集合を書込みのたびに作る（442 µs）。`EXPLAIN QUERY PLAN UPDATE` が空集合のため clock の拒否で失敗する | (a) core に `expected_clock_trigger_names`（SQL を作らず名前だけ。名前の規則を `expected_clock_triggers` と共有し、同じ名前・順序を試験で固定）。(b) `Database` の field に接続ごとの cache（鍵は `PRAGMA main.schema_version`。`Database` は接続を 1 本だけ持ち一生入れ替えない。TEMP の guard trigger は temp schema だけを変えるので hit し続ける）。(c) 文の種類に依らず常に集合を渡す（`EXPLAIN` の DML も通る）。(d) 作れなければ空集合（fail-closed。cache しない） |
+| I-2 | 表名が `[a-z0-9_]+` から外れると `clock_target_tables` が bail し、open が失敗する | bail を廃止。TRIGGER 名と表名を常に `"` で囲む（内部の `"` は `""`）。新しい本体は表名を文字列リテラルに入れないので `'` のエスケープは不要。名前は生のまま集合に入れる（authorizer も `sqlite_master.name` も生の名前）。`Notes`・`weird name`・`a"b`・`o'clock`・日本語名の表で、install・書込み・不変条件・authorizer の通過を試験で固定 |
+| m-a | 読みの拒否が DML だけに読み替えられていた | 判断 7 のとおり、clock・lineage の top-level の Read も拒否（clock の trigger の Read は通す） |
+| m-b | Web Editor の取り込みが信頼しない画像の seq を持ち込める（`i64::MAX` で `INSERT OR IGNORE` の clock を止める筋） | 判断 6 のとおり、lineage の作り直しの後に全ての seq を 0 に戻す。restore は seq を保つ（試験で固定） |
+| m-c | 外側の `OR IGNORE` が TRIGGER の本体にも及び、`'*'` が `i64::MAX` だと clock だけが止まる | **直さない。既知の限界**として core の `write_clock.rs` の doc に書き、現象を試験で固定。seq は 0 から始まり到達不能で、取り込みは m-b で 0 に戻す |
+| m-d | 禁止パターンの grep 試験 | `recursive_triggers` の規則を削除（OFF は既定値で、入れ子の TRIGGER は発火する。理由が誤り）。`ignore_check_constraints` の ON と、`Connection::backup`／`restore`（`nir1-material-diagnostics` が `rusqlite/backup` を有効にする）を禁止に追加（既存の使用は 0 件）。`any(test, feature = X)` を test 専用とみなすのは X が `TEST_ONLY_FEATURES`（`test-support`・`workspace-maintenance-test-support`・`ai-audit-commit-test-probe`）のときだけにし、`nir1-material-diagnostics`・`nir1-graph-eval` などは製品として走査（新たな hit は 0 件）。`all(test, ..)` は `test` が必須なので test 専用 |
+| m-e | 試験の穴 | (i) authorizer と `ON DELETE CASCADE`（renderer の DELETE で行ごとに進む）、(ii) D2a の UPDATE／DELETE の経路、(iii) TRIGGER の有無で `ReadIdentity` の判定が変わらないこと、を試験で固定 |
+| m-f | lease の案内文が restore や新規作成の場面に合わない | 場面に依らない文言に変更（「…処理を始められませんでした」／"…the operation could not start"） |
+
+**P-1：clock が進む範囲（rev1 §1.1 の記述の訂正）**：`'*'` は「どの行が変わっても」ではなく、「対象表（`clock_target_tables`＝main の実表。virtual・shadow・`sqlite_%`・clock の 2 表を除く）の行が変わると」進む。**FTS だけを書く処理（`fts.rs` の optimize／rebuild／`_en` の作り直し、restore の `rebuild_fts_if_stale`）と preflight の `PRAGMA optimize` では `'*'` が進まない**（virtual 表と shadow 表には TRIGGER が無く、`PRAGMA optimize` は `sqlite_stat1` のような `sqlite_%` の表を書くだけ）。したがって PR-2 で検索結果の cache を `'*'` で失効させる設計には、FTS の再構築を別の合図（別の鍵や、FTS の epoch）で扱う判断が要る。
+
+**既知の限界（追記 2 の時点）**
+
+- `'*'` が `i64::MAX` のとき `INSERT OR IGNORE` の中で clock だけが止まる（m-c）。
+- `has_v46_write_clock` の SQL 比較は `compact_sql` が引用符の中の空白と大文字小文字も潰すので、`weird name` と `weirdname` の TRIGGER は区別できない。
+- `grimodex_clock_<実表>_ai` と同じ名前で本体を差し替えた TRIGGER は authorizer では見分けられず、`has_v46_write_clock` の SQL 完全一致の領分（追記 1 のとおり）。
+- 製品の Cargo に `rusqlite/backup` の feature が入る crate（`grimodex-semantic`・`grimodex-post-effect`・`nir1-material-diagnostics`）の manifest は、grep 試験の source の規則とは別で、今回は規則にしていない。
+- 保存の経路（`scene_body.rs` など）の `prepare_cached` 化は PR-1 では行わない。文ごとの TRIGGER の compile は残るので、1 文化の後の G1 の測り直しの結果で次の判断をする。
+
+### 実装中の追記 3（2026-11-10。U7 の後の再測定と、gate の現状）
+
+候補：U7 の HEAD `c8c6ebe4`（TRIGGER の本体が 1 文、集合を cache）。生データ・集計は `~/.claude/projects/-home-grimodex-Grimodex/handoff/db-stage1-pr1-gates/` の `results-u7.md`（Rust 水準）と `results-u7-ipc.md`（IPC 水準）、`raw-u7-*.jsonl`、`raw-u7-ipc-runs/`。repo には置かない。DB は版 43（ir-timing）と 44（ir-admission-perf の g-ja-1）で、45 ではない。
+
+| 項目 | U7 の前（追記 2） | **U7 の後** |
+|---|---|---|
+| G1 保存の p50（Rust 水準。製品の関数を直接。on／off、100 回×3 process） | +14.8%／+15.1%（約 +1.0 ms） | **+6.1%（ir）／+5.3%（g-ja-1）**（約 +0.4 ms） |
+| **G1 保存の IPC の p50（W0、base `bc0b06c1` 対 head `d7af3a71`、各 DB 5 run 交互、先頭を捨てる）** | 未測定 | **+9.1%（ir：9.9→10.8 ms）／+7.8%（g-ja-1：10.2→11.0 ms）**（約 +0.8〜0.9 ms）。run ごとの p50 は ir で重なり、g-ja-1 では重ならない |
+| G2 publish（実 publish 6 回、884 revision、3,367 発火） | −0.6%（検出できない） | −1.0%（検出できない）。行数×Δµs/行で 0.05〜0.8% |
+| G3 project 削除（63,640 発火） | +17.5% | p50 −1.0%（平均 +2.6%。off が前回より約 0.9 s 遅く、絶対値は前回と比べられない） |
+| authorizer の集合（renderer の書込み 1 文に占める割合） | 約 68%（442 µs） | cache hit 2.3 µs で約 1.6%、miss（DDL 直後）356 µs |
+| 記録だけ | 移行 202〜511 ms、open +2.8 ms、DB +0.21 MB、trigger の SQL 152 KB | 移行 181〜447 ms、open +1.3 ms、DB +0.13 MB、trigger の SQL 76 KB |
+
+**gate の現状**：**G1 は IPC 水準で +5% を超える**（+7.8〜9.1%、絶対で約 +0.8〜0.9 ms／保存、10 ms 台前半の保存が 1 ms 弱延びる）。G2 は 1% 以内。G3 の線は未決。C8 の取り決め（gate を 2 段に分け、**未達は止まって再相談。線の緩和は必ずユーザーに確認**）に従い、**この PR は Draft のまま、G1 の扱いをユーザーに伺う**。
+
+**前の所見の訂正**：U7 の前の測定で「主因は文のたびに TRIGGER の本体を compile する費用」としたが、根拠が足りなかった。同じ文を 100 回流す micro では on−off が +6〜12 µs／文、1000 回では約 +220〜280 µs／文になり、prepare と `prepare_cached` で同じ値になる。compile の費用ではなく、**commit ごとに clock のページが 1 つ余計に書かれ、WAL の autocheckpoint が早まる**側の可能性があるが、特定していない。`prepare_cached` 化で減るのは 1 文あたり約 3〜6 µs（15 文で 0.6〜2%）と見積もれ、それだけでは足りない。IPC の上乗せが Rust 水準（+0.4 ms）より大きい理由（+0.8〜0.9 ms）も未調査。保存 1 回の書込み文 24 のうち clock が発火する文は 15（`narrative_field_authority` の INSERT が 7、`tree_nodes` の UPDATE、`change_events`、`narrative_change_transactions`／`events`／`object_heads`、`narrative_semantic_index_metadata`、`state_snapshots`、`idempotency_requests`）。
+
+**上乗せを下げる選択肢（いずれも設計の判断）**：(1) 保存の経路の `prepare_cached` 化（効果は 1〜2%。製品の保存コードに触れる）。(2) 保存と必ず一緒に書かれる派生・帳簿の表（例：`narrative_field_authority`、`idempotency_requests`）を trigger の対象から外す（発火が減る。**1c の「除外の表」で、脅威モデルの改訂と C6 (b) が前提**）。(3) gate の線を実測に合わせて決め直す（ユーザーの確認が要る）。(4) PR-1 を止めて別の機構を検討する。
+
+### 実装中の追記 4（2026-11-10。ユーザーの決定、CI の失敗 3 件の原因と対処、no-op の書込みの意味）
+
+**ユーザーの決定（2026-11-10、AskUserQuestion の回答）**：(a) **G1 の線を「保存 IPC の p50 が +12% 以内、かつ +1.5 ms 以内」に決め直した**（追記 3 の実測は +7.8〜9.1%、約 +0.8〜0.9 ms。当初の +5% は IPC 水準では満たせない）。**G3 の線を「project 削除の p50 が +10% 以内」**とした（実測 −1.0%〜+2.6%）。(b) **表ごとの鍵を 1b／1c まで見送る設計の変更（判断 3）を了承した**。ただし**監査の鍵（INSERT 用の `ai_audit_events` と UPDATE／DELETE 用の `ai_audit_events!mutate`）は残す**（rev1 C3-b：PR-2 で `AUDIT_ONLY_STATES`＝「追記だけだった」の判定を連番の上に移植するため）。
+
+**監査の鍵の復元**：追記 1〜3 の時点では、`ai_audit_events` の AFTER INSERT は `'*'` の 1 文だけで、鍵は UPDATE／DELETE 用の `!mutate` だけだった。これでは追記と変更を連番から区別できない。AFTER INSERT も 2 文にし、`'*'` の UPDATE の後に `ai_audit_events` の行を `'*'` の値に揃える（`ON CONFLICT(name) DO UPDATE`）。AFTER UPDATE／DELETE は従来どおり `ai_audit_events!mutate`。保存の経路は `ai_audit_events` を書かないので、G1 の測定には影響しない。core の定数 `CLOCK_KEY_AUDIT_APPEND` を足し、contract を再生成した。
+
+**PR #847 の CI の失敗 3 件（grimodex-db の lib 試験。他は通っていた）の原因と対処**：
+1. `audit_only_tests` の 2 件（`nir1_premise_every_audit_append_shape_writes_only_audit_rows`、`nir1_premise_generic_audit_append_writes_only_audit_rows`）：監査の追記が INSERT trigger で `grimodex_write_clock` を書くので、「追記は `ai_audit_events` だけを書く」という authorizer の集合の比較が落ちた。**比較から `grimodex_write_clock` と `grimodex_db_lineage` を除いた**（clock は commit 自身の帳簿で、追記が書くドメインの表ではない）。ほかの assert は変えない。「追記で動くのは `'*'` と `ai_audit_events` の鍵だけ」は `clock_audit_append_advances_only_the_global_and_append_keys` で確かめる。PR-2 でこの前提（追記だけの commit の判定）を連番の上に移す。
+2. `open::tests::cold_open_defers_oversized_residual_wal_without_synchronous_checkpoint`：当初は「open の経路の値が変わらない UPDATE／UPSERT が、trigger で clock の行を変えて WAL にフレームを足す」と仮説したが、**否定された**。実測は before が `log_frames=1361, checkpointed=0`、after が `log_frames=0`（**増えず、reset された**）。原因は試験の fixture：`oversized_open_wal_fixture` を migration の外で作り、clock の trigger を付けていなかったので、次の open の検査（`has_current_schema_checkpoint_invariants` が `has_v46_write_clock` を含む）が「新しい表に trigger が無い」で不一致と判断し、repair の経路（open の trace に `migrate` の span が 2 つ。`migrations/` の snapshot は作られず、seal の TRUNCATE ではない）に入って、open の中で WAL が reset された（`log_frames` が 0 になる）。reset の機構（新しい接続の `wal_autocheckpoint=1000` による commit 時の checkpoint か）までは特定していない。**収束した image の cold open は WAL に 1 フレームも足さない**（fixture に `install_write_clock_in_tx` を足すと before と after が完全に一致〔`log_frames=1366`〕し、assert は元のまま通る）。製品の挙動は正しく（trigger の欠けは repair する設計）、試験の assert は変えず、fixture が image を収束させるようにした。**open の経路に不要な書込みは見つからなかった**。
+
+**no-op の書込みの意味（PR-2 の前提）**：SQLite は同一内容の書込みをページに書かない。基点では、値が変わらない UPDATE／UPSERT は WAL に何も足さず、`data_version` も動かさない。一方、clock の trigger は行が一致する限り発火するので、**値が変わらない UPDATE でも `'*'` が進み、commit が実際に書かれる**。PR-2 で clock を鮮度の物差しにすると、基点の `data_version`／`total_changes` より「変わった」と判定する場面が増えうる（周期的な no-op の書込みがあれば失効が増える）。**この PR の範囲では、open の経路にそのような書込みは見つからなかった**（上の 2 の実測。収束した open は WAL を変えない）。ほかの経路（背景の処理、heartbeat、周期の更新など）の洗い出しは行っていない。PR-2 の設計で、周期的な no-op の書込みの洗い出しと対処（書込み側で no-op を避ける、など）を扱う。

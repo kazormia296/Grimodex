@@ -438,6 +438,12 @@ fn shadow_migrate(
     let migrate_result = (|| -> Result<InstalledImageToken, MigrationSupervisorError> {
         let db = Database::new(&staged)?;
         db.migrate_for_restore_preflight()?;
+        // The staged copy replaces the live file, so it is a different database
+        // for every reader of the commit sequence. Rotate unconditionally after
+        // migrate: a copy of an already-v46 live DB carries the live lineage, and
+        // install only mints one when it is missing (DR-DBC-3).
+        db.with_conn(|conn| crate::write_clock::rotate_db_lineage(conn).map(drop))
+            .map_err(MigrationSupervisorError::from)?;
         verify_migrated_db(&staged)?;
         // Seal staged before publish so live replace never carries WAL/SHM.
         drop(db);
