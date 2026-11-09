@@ -2160,10 +2160,10 @@ export function registerIpcRouter(
     profileEgress,
   });
   const relatedScenesReconciler = createRelatedScenesReconciler({
-    reconcile: async () => {
+    reconcile: async (periodic) => {
       if (!backend?.relatedScenesReconcile)
         throw new Error("RELATED_SCENES_RECONCILIATION_UNAVAILABLE");
-      return JSON.parse(await backend.relatedScenesReconcile()) as {
+      return JSON.parse(await backend.relatedScenesReconcile(periodic)) as {
         activeOperations: number;
       };
     },

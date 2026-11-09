@@ -92,4 +92,60 @@ describe("related-scenes bounded generation reconciliation", () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(reconcile).toHaveBeenCalledTimes(1);
   });
+
+  it("passes periodic=true only for timer-driven rounds and false for wake-driven ones", async () => {
+    vi.useFakeTimers();
+    const first = deferred<{ activeOperations: number }>();
+    const reconcile = vi.fn()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue({ activeOperations: 1 });
+    const scheduler = createRelatedScenesReconciler({ reconcile });
+    scheduler.track("owner", "ticket");
+    // The first round is armed by `track`: a timer.
+    await vi.advanceTimersByTimeAsync(250);
+    expect(reconcile).toHaveBeenNthCalledWith(1, true);
+    // A wake during that round queues the next one: not periodic.
+    scheduler.wake();
+    first.resolve({ activeOperations: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(reconcile).toHaveBeenNthCalledWith(2, false);
+    // With nothing queued, the next round is the timer again.
+    await vi.advanceTimersByTimeAsync(250);
+    expect(reconcile).toHaveBeenCalledTimes(3);
+    expect(reconcile).toHaveBeenNthCalledWith(3, true);
+    scheduler.dispose();
+  });
+
+  it("a wake while idle replaces the pending timer with a non-periodic round, then timers resume", async () => {
+    vi.useFakeTimers();
+    const reconcile = vi.fn().mockResolvedValue({ activeOperations: 1 });
+    const scheduler = createRelatedScenesReconciler({ reconcile });
+    scheduler.track("owner", "ticket");
+    await vi.advanceTimersByTimeAsync(100);
+    scheduler.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenNthCalledWith(1, false);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(reconcile).toHaveBeenNthCalledWith(2, true);
+    scheduler.dispose();
+  });
+
+  it("a periodic flag is not carried over to a later wake-driven round", async () => {
+    vi.useFakeTimers();
+    const reconcile = vi.fn().mockResolvedValue({ activeOperations: 1 });
+    const scheduler = createRelatedScenesReconciler({ reconcile });
+    scheduler.track("owner", "ticket");
+    await vi.advanceTimersByTimeAsync(250);
+    expect(reconcile).toHaveBeenNthCalledWith(1, true);
+    scheduler.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reconcile).toHaveBeenNthCalledWith(2, false);
+    scheduler.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reconcile).toHaveBeenNthCalledWith(3, false);
+    scheduler.dispose();
+  });
 });

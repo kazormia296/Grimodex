@@ -1016,8 +1016,9 @@ export interface NapiBackendLike {
   profileActivationAbortInFlight?(): boolean;
   /** Main lifecycle only; deliberately absent from the renderer command map. */
   relatedScenesReleaseOwner?(ownerKey: string): Promise<string>;
-  /** Main observer only; never a renderer command. */
-  relatedScenesReconcile?(): Promise<string>;
+  /** Main observer only; never a renderer command. `periodic`: timer-driven
+   * round that must not wait for a busy connection (DR-MPS-15); omitted = false. */
+  relatedScenesReconcile?(periodic?: boolean): Promise<string>;
   semanticRerankerShadowScore?(request: unknown): Promise<string>;
   codexIndexEntry?(
     expectedWorkspacePath: string,

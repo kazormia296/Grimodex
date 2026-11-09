@@ -554,6 +554,56 @@ impl Database {
         }
     }
 
+    /// One waiter-free attempt at the connection mutex (DR-MPS-15), for
+    /// periodic work that can try again later. It never publishes a
+    /// foreground waiter, so a maintenance run holding the connection is not
+    /// asked to hand it over (the blocking path cancels it).
+    ///
+    /// `Ok(None)` means the connection is busy: the mutex is held, a
+    /// maintenance finalization is reserved, or a foreground caller is already
+    /// queued. The queued-caller and reservation checks are made before the
+    /// `try_lock` and not repeated after it succeeds, so "does not overtake"
+    /// holds only up to that moment: a waiter that arrives, or a reservation
+    /// that is made, between those checks and the lock is not seen (it gets
+    /// the next hand-off after this short read, as with any caller that holds
+    /// the mutex). A reservation is made by the maintenance owner only while it
+    /// holds the connection (an inference from the reservation protocol, not
+    /// separately verified), in which case the `try_lock` itself reports busy.
+    /// Acquisition and the busy answer are one `try_lock`, never a separate
+    /// probe. A quarantined or poisoned connection and a failing `check` are
+    /// errors, as in `lock_conn_with_check`. A worker already in maintenance
+    /// no-wait or background-priority mode never announces a waiter either, so
+    /// it keeps its own acquisition rules (never `None`).
+    pub(crate) fn try_lock_conn_with_check(
+        &self,
+        mut check: Option<&mut dyn FnMut() -> anyhow::Result<()>>,
+    ) -> anyhow::Result<Option<MutexGuard<'_, Connection>>> {
+        self.ensure_connection_reusable()?;
+        if let Some(check) = check.as_deref_mut() {
+            check()?;
+        }
+        if Self::maintenance_no_wait_active() || Self::background_connection_priority_active() {
+            return self.lock_conn_with_check(check).map(Some);
+        }
+        if self
+            .maintenance_finalization_reserved
+            .load(Ordering::SeqCst)
+            || self.foreground_connection_waiters.load(Ordering::SeqCst) > 0
+        {
+            return Ok(None);
+        }
+        let conn = match self.conn.try_lock() {
+            Ok(conn) => conn,
+            Err(TryLockError::WouldBlock) => return Ok(None),
+            Err(TryLockError::Poisoned(error)) => return Err(anyhow::anyhow!("{error}")),
+        };
+        self.ensure_connection_reusable()?;
+        if let Some(check) = check {
+            check()?;
+        }
+        Ok(Some(conn))
+    }
+
     pub(crate) fn try_reserve_maintenance_finalization(
         &self,
     ) -> Option<MaintenanceFinalizationReservation<'_>> {

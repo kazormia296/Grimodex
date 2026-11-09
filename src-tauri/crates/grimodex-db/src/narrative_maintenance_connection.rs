@@ -1245,6 +1245,30 @@ impl Database {
         )
     }
 
+    /// `with_participant_read_transaction` with one waiter-free attempt at the
+    /// connection mutex (DR-MPS-15). `Ok(None)` means the connection was in
+    /// use (or a foreground caller is already queued for it) and nothing ran;
+    /// no foreground waiter was announced, so a maintenance run holding the
+    /// connection is not cancelled by this call. Only periodic work that can
+    /// simply try again later may use it; every other error (a stopped
+    /// participant, a quarantined or poisoned connection) is returned as the
+    /// blocking version returns it.
+    pub fn try_with_participant_read_transaction<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        operation: F,
+    ) -> Result<Option<T>>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        self.participant_read_transaction_control_mode(
+            participant,
+            ParticipantSqlControl::default(),
+            true,
+            operation,
+        )
+    }
+
     /// Read one SQLite snapshot with caller-owned cancellation and deadline
     /// signals.  This remains the single outer participant scope; callers must
     /// not invoke it from a callback that already owns this Database mutex.
@@ -1257,6 +1281,20 @@ impl Database {
     where
         F: FnOnce(&Connection) -> Result<T>,
     {
+        self.participant_read_transaction_control_mode(participant, control, false, operation)?
+            .ok_or_else(|| anyhow!("participant read was skipped without a try acquisition"))
+    }
+
+    fn participant_read_transaction_control_mode<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        control: ParticipantSqlControl,
+        try_only: bool,
+        operation: F,
+    ) -> Result<Option<T>>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
         let stop = control.stop;
         let deadline = control.deadline;
         let operation_stop = Arc::clone(&stop);
@@ -1264,26 +1302,35 @@ impl Database {
             deadline: control.deadline,
             ..Default::default()
         };
-        self.with_participant_sql_scope_config_with_stop(participant, config, stop, move |conn| {
-            check_participant_sql_control(participant, &operation_stop, deadline)?;
-            let tx = conn.unchecked_transaction()?;
-            let value = match operation(&tx) {
-                Ok(value) => {
-                    check_participant_sql_control(participant, &operation_stop, deadline)?;
-                    value
-                }
-                Err(error) => {
-                    // An interrupted read can surface the operation error
-                    // before the outer progress hook gets a chance to map
-                    // the participant stop. Prefer that typed reason while
-                    // preserving the original error when no stop is active.
-                    check_participant_sql_control(participant, &operation_stop, deadline)?;
-                    return Err(error);
-                }
-            };
-            tx.commit()?;
-            Ok(value)
-        })
+        self.with_participant_sql_scope_fenced_mode(
+            participant,
+            &ParticipantSqlFence::Admission { probe: None },
+            config,
+            stop,
+            None,
+            None,
+            try_only,
+            move |conn| {
+                check_participant_sql_control(participant, &operation_stop, deadline)?;
+                let tx = conn.unchecked_transaction()?;
+                let value = match operation(&tx) {
+                    Ok(value) => {
+                        check_participant_sql_control(participant, &operation_stop, deadline)?;
+                        value
+                    }
+                    Err(error) => {
+                        // An interrupted read can surface the operation error
+                        // before the outer progress hook gets a chance to map
+                        // the participant stop. Prefer that typed reason while
+                        // preserving the original error when no stop is active.
+                        check_participant_sql_control(participant, &operation_stop, deadline)?;
+                        return Err(error);
+                    }
+                };
+                tx.commit()?;
+                Ok(value)
+            },
+        )
     }
 
     /// Read one participant-owned snapshot with a finite mutex/SQL deadline
@@ -1478,12 +1525,46 @@ impl Database {
         &self,
         participant: &WorkspaceParticipant,
         fence: &ParticipantSqlFence,
-        mut config: NarrativeMaintenanceGraphControlConfig,
+        config: NarrativeMaintenanceGraphControlConfig,
         stop: Arc<AtomicBool>,
         requested_busy_timeout: Option<Duration>,
         lock_deadline: Option<Instant>,
         operation: F,
     ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        self.with_participant_sql_scope_fenced_mode(
+            participant,
+            fence,
+            config,
+            stop,
+            requested_busy_timeout,
+            lock_deadline,
+            false,
+            operation,
+        )?
+        .ok_or_else(|| anyhow!("participant SQL scope was skipped without a try acquisition"))
+    }
+
+    /// `try_only` makes the one connection-mutex acquisition a single
+    /// waiter-free attempt (`Database::try_lock_conn_with_check`): a busy
+    /// connection is `Ok(None)` and nothing ran. Every other error (a stopped
+    /// participant, a quarantined or poisoned connection, an expired lock
+    /// deadline) is returned exactly as the blocking acquisition returns it.
+    /// `Ok(None)` is impossible when `try_only` is false.
+    #[allow(clippy::too_many_arguments)]
+    fn with_participant_sql_scope_fenced_mode<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        fence: &ParticipantSqlFence,
+        mut config: NarrativeMaintenanceGraphControlConfig,
+        stop: Arc<AtomicBool>,
+        requested_busy_timeout: Option<Duration>,
+        lock_deadline: Option<Instant>,
+        try_only: bool,
+        operation: F,
+    ) -> Result<Option<T>>
     where
         F: FnOnce(&Connection) -> Result<T>,
     {
@@ -1516,7 +1597,14 @@ impl Database {
             }
             Ok(())
         };
-        let conn = self.lock_conn_with_check(Some(&mut check_acquisition))?;
+        let conn = if try_only {
+            match self.try_lock_conn_with_check(Some(&mut check_acquisition))? {
+                Some(conn) => conn,
+                None => return Ok(None),
+            }
+        } else {
+            self.lock_conn_with_check(Some(&mut check_acquisition))?
+        };
         let busy_timeout = requested_busy_timeout.map(|requested| {
             requested.min(
                 deadline
@@ -1575,7 +1663,7 @@ impl Database {
                 });
             }
         }
-        result
+        result.map(Some)
     }
 
     /// DR-IRB-3: open the dedicated Chronicle reader on exactly the main
@@ -2057,6 +2145,290 @@ mod tests {
         .expect("ready workspace");
         let participant = core.begin_workspace_participant().expect("participant");
         (core, participant)
+    }
+
+    /// DR-MPS-15: a held connection is a plain `None` for the try version: the
+    /// body never runs and no foreground waiter is announced (the blocking
+    /// version would announce one and cancel a maintenance run). Once the
+    /// holder lets go the same call runs.
+    #[test]
+    fn try_participant_read_is_none_without_a_waiter_while_held_and_runs_when_free() {
+        let db = Arc::new(test_db());
+        let (_core, participant) = test_participant();
+        let (held_tx, held_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let holder_db = Arc::clone(&db);
+        let holder = thread::spawn(move || {
+            let _conn = holder_db.conn.lock().expect("hold connection");
+            held_tx.send(()).expect("announce held");
+            let _ = release_rx.recv();
+        });
+        held_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("holder owns the connection");
+        let body_ran = Arc::new(AtomicBool::new(false));
+        let ran = Arc::clone(&body_ran);
+        let skipped = db
+            .try_with_participant_read_transaction(&participant, |_| {
+                ran.store(true, Ordering::Release);
+                Ok(1)
+            })
+            .expect("a busy connection is not an error");
+        assert_eq!(skipped, None);
+        assert!(!body_ran.load(Ordering::Acquire));
+        assert_eq!(db.foreground_connection_waiter_count(), 0);
+        assert!(db.connection_reusable());
+
+        release_tx.send(()).expect("release connection");
+        holder.join().expect("holder joined");
+        let ran = Arc::clone(&body_ran);
+        let value = db
+            .try_with_participant_read_transaction(&participant, |conn| {
+                ran.store(true, Ordering::Release);
+                Ok(conn.query_row("SELECT 7", [], |row| row.get::<_, i64>(0))?)
+            })
+            .expect("a free connection runs");
+        assert_eq!(value, Some(7));
+        assert!(body_ran.load(Ordering::Acquire));
+        assert_eq!(db.foreground_connection_waiter_count(), 0);
+    }
+
+    /// A foreground caller that is already queued is not overtaken, and a
+    /// reserved maintenance finalization window is busy too; neither is an
+    /// error and neither adds a waiter.
+    #[test]
+    fn try_participant_read_does_not_overtake_a_queued_foreground_or_a_finalization() {
+        let db = test_db();
+        let (_core, participant) = test_participant();
+        {
+            let _queued = ForegroundConnectionWaiter::new(&db.foreground_connection_waiters);
+            assert_eq!(
+                db.try_with_participant_read_transaction(&participant, |_| Ok(()))
+                    .expect("queued foreground is not an error"),
+                None
+            );
+            assert_eq!(db.foreground_connection_waiter_count(), 1);
+        }
+        assert_eq!(db.foreground_connection_waiter_count(), 0);
+        db.maintenance_finalization_reserved
+            .store(true, Ordering::SeqCst);
+        assert_eq!(
+            db.try_with_participant_read_transaction(&participant, |_| Ok(()))
+                .expect("a reserved finalization is not an error"),
+            None
+        );
+        assert_eq!(db.foreground_connection_waiter_count(), 0);
+        db.maintenance_finalization_reserved
+            .store(false, Ordering::SeqCst);
+        assert_eq!(
+            db.try_with_participant_read_transaction(&participant, |_| Ok(3))
+                .expect("free again"),
+            Some(3)
+        );
+    }
+
+    /// A poisoned mutex is an error, never a quiet `None` (the caller would
+    /// otherwise skip forever), and a stopped participant is a typed stop even
+    /// while the connection is busy.
+    #[test]
+    fn try_participant_read_reports_poison_and_stop_as_errors() {
+        let db = Arc::new(test_db());
+        let (core, participant) = test_participant();
+        let (held_tx, held_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let holder_db = Arc::clone(&db);
+        let holder = thread::spawn(move || {
+            let _conn = holder_db.conn.lock().expect("hold connection");
+            held_tx.send(()).expect("announce held");
+            let _ = release_rx.recv();
+        });
+        held_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("holder owns the connection");
+        core.request_shutdown().expect("shutdown requested");
+        let error = db
+            .try_with_participant_read_transaction(&participant, |_| Ok(()))
+            .expect_err("a stopped participant is an error even when busy");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        release_tx.send(()).expect("release connection");
+        holder.join().expect("holder joined");
+
+        let db = Arc::new(test_db());
+        let (_core, participant) = test_participant();
+        let poisoner = Arc::clone(&db);
+        let panicked = thread::spawn(move || {
+            let _conn = poisoner.conn.lock().expect("lock before panic");
+            panic!("poison the connection mutex");
+        })
+        .join();
+        assert!(panicked.is_err());
+        assert!(db.conn.is_poisoned());
+        let error = db
+            .try_with_participant_read_transaction(&participant, |_| Ok(()))
+            .expect_err("a poisoned mutex is an error, not None");
+        assert!(error.to_string().contains("poison"), "{error}");
+        assert_eq!(db.foreground_connection_waiter_count(), 0);
+    }
+
+    /// Holds `db`'s connection mutex on a thread until released.
+    struct Holder {
+        release: mpsc::Sender<()>,
+        thread: Option<thread::JoinHandle<()>>,
+    }
+
+    impl Holder {
+        fn new(db: &Arc<Database>) -> Self {
+            let (held_tx, held_rx) = mpsc::channel();
+            let (release, release_rx) = mpsc::channel::<()>();
+            let holder_db = Arc::clone(db);
+            let thread = thread::spawn(move || {
+                let _conn = holder_db.conn.lock().expect("hold connection");
+                held_tx.send(()).expect("announce held");
+                let _ = release_rx.recv();
+            });
+            held_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("holder owns the connection");
+            Self {
+                release,
+                thread: Some(thread),
+            }
+        }
+
+        fn release(&mut self) {
+            let _ = self.release.send(());
+            if let Some(thread) = self.thread.take() {
+                thread.join().expect("holder joined");
+            }
+        }
+    }
+
+    impl Drop for Holder {
+        fn drop(&mut self) {
+            let _ = self.release.send(());
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    /// The try call never publishes a waiter at any instant (an observer
+    /// thread samples the count continuously, not only after the call), and a
+    /// maintenance worker in no-wait mode that holds the connection during the
+    /// calls is not preempted at its next acquisition (that preemption is
+    /// exactly what a published waiter would cause).
+    #[test]
+    fn try_participant_read_never_publishes_a_waiter_and_does_not_preempt_maintenance() {
+        let db = Arc::new(test_db());
+        let (_core, participant) = test_participant();
+        let stop = Arc::new(AtomicBool::new(false));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let observer = {
+            let (db, stop, max_seen) = (Arc::clone(&db), Arc::clone(&stop), Arc::clone(&max_seen));
+            thread::spawn(move || {
+                while !stop.load(Ordering::Acquire) {
+                    max_seen.fetch_max(db.foreground_connection_waiter_count(), Ordering::SeqCst);
+                    thread::yield_now();
+                }
+            })
+        };
+        // The maintenance worker: no-wait mode, holds the connection through
+        // the whole loop, then acquires again.
+        let (held_tx, held_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let maintenance_db = Arc::clone(&db);
+        let maintenance = thread::spawn(move || {
+            let _no_wait = maintenance_db.enter_maintenance_connection_no_wait();
+            maintenance_db
+                .with_conn(|_| {
+                    held_tx.send(()).expect("announce held");
+                    let _ = release_rx.recv();
+                    Ok(())
+                })
+                .expect("first no-wait acquisition");
+            maintenance_db.with_conn(|_| Ok(()))
+        });
+        held_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("maintenance owns the connection");
+        for _ in 0..300 {
+            assert_eq!(
+                db.try_with_participant_read_transaction(&participant, |_| Ok(()))
+                    .expect("busy is not an error"),
+                None
+            );
+        }
+        release_tx.send(()).expect("release");
+        let second = maintenance.join().expect("maintenance joined");
+        stop.store(true, Ordering::Release);
+        observer.join().expect("observer joined");
+        assert_eq!(
+            max_seen.load(Ordering::SeqCst),
+            0,
+            "no waiter was ever seen"
+        );
+        second.expect("the next no-wait acquisition is not PREEMPTED");
+    }
+
+    /// A quarantined connection is an error (before and without the busy
+    /// answer), and the two modes that never announce a waiter keep their own
+    /// acquisition rules: background priority waits (never `None`) and
+    /// maintenance no-wait fails as PREEMPTED when the connection is busy.
+    #[test]
+    fn try_participant_read_errors_on_quarantine_and_delegates_in_the_worker_modes() {
+        let db = Arc::new(test_db());
+        let (_core, participant) = test_participant();
+        db.quarantine_connection("test quarantine");
+        let free = db
+            .try_with_participant_read_transaction(&participant, |_| Ok(()))
+            .expect_err("a quarantined connection is an error");
+        assert!(free.to_string().contains("UNUSABLE"), "{free}");
+        let mut holder = Holder::new(&db);
+        let busy = db
+            .try_with_participant_read_transaction(&participant, |_| Ok(()))
+            .expect_err("quarantine is reported before the busy answer");
+        assert!(busy.to_string().contains("UNUSABLE"), "{busy}");
+        holder.release();
+
+        let db = Arc::new(test_db());
+        let (_core, participant) = test_participant();
+        // Background priority: the normal acquisition applies, so a held
+        // connection is waited for and the call runs once it is released.
+        let mut holder = Holder::new(&db);
+        let releaser = {
+            let release = holder.release.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                let _ = release.send(());
+            })
+        };
+        let value = db
+            .with_background_connection_priority(|| {
+                db.try_with_participant_read_transaction(&participant, |_| Ok(5))
+            })
+            .expect("background priority waits");
+        assert_eq!(value, Some(5));
+        releaser.join().expect("releaser joined");
+        holder.release();
+
+        // Maintenance no-wait: the existing PREEMPTED error, not `None`.
+        let mut holder = Holder::new(&db);
+        let error = {
+            let _no_wait = db.enter_maintenance_connection_no_wait();
+            db.try_with_participant_read_transaction(&participant, |_| Ok(()))
+                .expect_err("no-wait keeps its own rule")
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_MAINTENANCE_CONNECTION_PREEMPTED"),
+            "{error}"
+        );
+        holder.release();
+        assert_eq!(db.foreground_connection_waiter_count(), 0);
     }
 
     #[test]

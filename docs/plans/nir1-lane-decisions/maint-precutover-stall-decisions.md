@@ -274,3 +274,94 @@ DR-MPS-10 の 1 件目は、停止の時刻を突き合わせると成り立た�
   Freshness の入口は待たない）。この待ちが長引く場合の観測は、
   必要になった時点で別に判断する。
 - 信頼境界・変えないもの: 試験だけ。製品のコードは変えない。新しい送信先・保存・契約・閾値は無い。委任の根拠は U3。
+
+## DR-MPS-15 Related Scenes の周期処理が、維持の Verify を取り消し続ける（原因の実測と修正。2026-11-09）
+
+経緯：CP-4 の正式測定 s7r1（候補 `3f333a83`）の Gold で、判定外の variant `G-03/frontier-exceeded` が `[precheck] V-10`（worker が 90 s で
+READY にならない）で 1 回止まり、取り直した 2 回目は通ったが同じ variant の sample で slot が Suspended になっていた（DR-CP4-S6-4）。
+製品の連鎖（cold DB に `running` の dependency-verify が残る→維持が取り消され続け完了しない→registration が drift で refused→prepare が 5 回失敗→
+slot が Suspended）は DB 接続の根本改善・段 1 に吸収されない、と S6-4 で判断し、別の lane（この記録）で扱う。委任の根拠は DR-MPS と同じ読み
+（integrator の読み。AGENTS.md の NIR-1 の残レーンの worker／owner／lifecycle の技術判断）で、重要な変更（公開・送信先・保存・閾値・不可逆）のどれにも当たらない。
+
+### 事実（実測。dev・凍結外の fixture `DEV-SHAPE-G03/frontier-exceeded`。dev の結果は判定に数えない）
+
+記録は contracts 枝 `claude/nir1-contracts` の `docs/plans/nir1-cp4-records/s7r1-chain-dev-2026-11-09/`（`results.md`、計装と実験の patch、設計の起案）。
+計装（`GDX_DEV_TRACE_DIR` へ JSON Lines。dev 専用で merge しない）を入れて、同じ cold DB（running の行あり＝a2、なし＝a1）に Gold を当てた。
+
+- 基準（a2、3 回）：V-10 が 2 回、残る 1 回は通ったが Graph arm の 35 sample のうち registration-unavailable 30・slot suspended 23（正式の gold-2 と同じ型）。
+  維持の preempt は 440〜2,704 回（約 4.4〜5.3 回/秒を持続）。registration の refused は 19 回すべて `postflight-drift`（incomplete・input-limit は 0）で、
+  窓（BEGIN〜postflight）は約 46 ms。Verify は completed が増えず、cancelled だけが増えた。a1（2 回）は連鎖なしで `limit` が 35／35、registration は 36／36 成功、preempt は 4〜7 回。
+- 奪い手（a2-1 の 440 回の内訳）：`related-scenes-build` が 306（70%）、`related-scenes-reconcile` が 101（23%）、その他は 8%。
+  どちらも周期処理で、build は task の loop が `Ready`・`Idle`・`Retry` のどれでも `RETRY_DELAY`（250 ms）待ってまた `build_once` を呼ぶ（約 4 回/秒）。
+  reconcile は live な ticket がある間 250 ms ごとに `current_operation` を読む（約 4 回/秒）。どちらも foreground の waiter として接続を取る。
+  維持が静かな a1 でも同じ頻度で取得しているが、取り消す相手が居ないので preempt は 0。a2 では Verify が走るたびに取り消される。
+- 実験 (f2)（周期処理が、接続が使用中なら waiter を立てずに tick を飛ばす）：a2 の 3 回すべてが a1 と同じ結果（`limit` 35／35・slot empty、registration は 37 回中 36 回成功）。
+  維持の preempt は 22〜31 回（開始から約 15 秒の間だけ）。Verify は約 3〜4 秒で completed になり、以後 commit は約 1 回/秒。
+
+### 判断
+
+1. **周期処理の 2 種だけを維持に譲らせる**。(a) build task の loop の 2 回目以降の tick のうち、直前の outcome が `Idle`・`Ready`・`Retry`・`Skipped` のもの、
+   (b) reconciler の timer 由来の tick の `current_operation` の DB 読み。譲り方は、waiter を公表しない 1 回の try 取得で、取れなければその tick を飛ばす（待たない）。
+   読み・書きの意味、drift の検査、READY の条件、帳簿は変えない。
+   try 取得は、接続の mutex が使用中のほか、maintenance の finalization が予約済みのとき、foreground の waiter がすでに並んでいるとき（追い越さない）も busy として `None` を返す。
+   maintenance の no-wait／background priority の worker は、もともと waiter を公表しないので従来の取得規則のまま。
+2. **build の skip は新しい outcome `Skipped`** とし、reader-retry の連続回数（K＝40。DR-IRB-3／E11、2026-11-06 のユーザー決定）と stale の連続回数・待ち（DR-IRB-7 の 50 ms／250 ms）を
+   増やさず戻さない。待ちは直前の値を引き継ぐ。（独立レビューの指摘：skip を `Retry` で返すと両方が黙って変わる。）
+3. **skip の連続に上限を置く**：40 tick 連続（約 10 s）で skip したら、次の 1 tick は従来どおり foreground で取る。reconcile も同じ（skip した round が 40 回続いたとき）。
+   Related Scenes の無効化・再 build の発見の遅れを有界にするため。値は実測の Verify の完了時間（約 3〜4 s）より長く、K と IPC の 10 s に揃える。
+4. **譲らない経路**：`begin`（task の最初の tick。2 回目以降の `begin` と、reconcile の stale 処理の再 build の要求は、既存の task に「次の 1 tick は譲らない」と伝える。独立レビューの指摘 B-1）、return／click／`continue_query`／`qualify_evidence`、書き込みの wake 由来の reconcile
+   （native の `relatedScenesReconcile` に省略可能な `periodic` を足し、Main は timer 由来のときだけ true。省略は false＝従来）、
+   `StaleRetry`・`ReaderRetry` の tick、admission の後の rebuild 本体。ユーザーの操作と、その直後の無効化は従来と同じ速さで進む。
+5. **対象外**：維持側の連続 preempt の backoff（(c)。奪い手が来続ける限り効かないと実測から読んだ）、LP-GATE の拡大（(g)）、
+   ほかの周期的な取得（`ai_audit.rs`・`execute.rs`・`repository.rs` で奪い手の 8%。一般化は別 lane）。build の task が `Idle` でも workspace が生きている限り 4 Hz で回り続ける件は別 lane（この PR は症状の根を消さず、維持を取り消さないようにするだけ）。
+
+### 信頼境界と変えないもの
+
+- 新しい送信先・保存範囲・契約・authority は無い。renderer の command map と channel（`ipcContract.ts`）は変えない。`ipcContract.ts` で変わるのは Main 専用の backend の型 `NapiBackendLike.relatedScenesReconcile?(periodic?: boolean)`（「renderer の command ではない」と注記された 1 行）だけ。ほかに変えるのは native の N-API の省略可能な引数 1 つ、Main の reconciler の呼び出し、db の try 取得の API、build の loop。
+- 閾値：K＝40 と DR-IRB-7 の値は変えない。新しい定数は skip の上限 40 だけ（build の task と reconcile が 1 つの定数を共有する）で、周期処理の有界化（緩和ではない）。Gold・評価の規則・S4 の pin（`scripts/quality/nir1-graph-eval/` と evals）には触れない。
+
+### owner／lifecycle matrix
+
+| 状態 | 修正前 | 修正後 |
+|---|---|---|
+| 維持が接続を持っていない | 周期処理は取る | 同じ |
+| 維持が接続を持っている：timer 由来の reconcile | waiter を立てて維持を取り消す | skip（ticket は active のまま。invalidate・build の schedule・event なし） |
+| 維持が接続を持っている：build の `Idle`／`Ready`／`Retry`／`Skipped` 後の tick | waiter を立てて取り消す | `Skipped`（250 ms 後、または直前の待ち。streak は不変） |
+| 既存の build task があるときの `begin`・stale 処理の再 build の要求（`builds.reserve` が false） | task は次の tick で foreground で取る（要求は反映される） | 要求が既存の task に「次の 1 tick は譲らない」と伝える（1 回で消費。世代が違えば無視） |
+| skip が 40 回連続 | － | 次の 1 tick は従来どおり foreground で取る（有界） |
+| 書き込みの wake 由来の reconcile | foreground | 従来どおり |
+| task の最初の build tick・`continue_query`・`qualify_evidence`・click・return | foreground | 従来どおり |
+| `StaleRetry`・`ReaderRetry` の tick | 従来 | 従来 |
+| workspace の失効・世代交代（`current_request` が false）・lease の期限切れ | task 停止・invalidate | 同じ（skip より前に判定する） |
+| mutex が poisoned・接続が quarantine | エラー | try 取得がそのままエラーを返す（結果は従来と同じ。task はエラーで終わる） |
+
+### 代替案
+
+(c) 維持側の連続 preempt の backoff：奪い手が 4＋4 回/秒で来続ける限り、維持が次にいつ動いても 60〜125 ms で取り消される。単独では採らない。
+(g) LP-GATE を維持の cycle にも広げる：範囲の拡大でユーザーの確認が要るが、(f2) で不要になった。
+維持が周期処理の waiter には譲らない（priority class）：waiter 側の class を足す案。機構が大きく、周期処理の取得を数える既存の試験を広く変える。今回は取得する側が譲る形（try 取得）で足りる。
+`connection_busy_probe`（見るだけ）：dev の実験で使ったが、空きの確認と取得の間の race が残り（preempt が 22〜31 回残った）、probe 自身の一瞬の取得が維持の no-wait を空振りさせうる。単一の try 取得に置き換える。
+`BuildOutcome::Retry` で skip を返す：K と DR-IRB-7 を黙って変えるので採らない。
+
+### advisor
+
+独立した read-only の助言者（Opus、effort high）に、実験の patch と測定の結果を渡して設計のレビューを受け、実装の後に別の助言者（Opus、effort high、実行なし）にコードのレビューを受けた（後者の指摘と反映は「実装後の追記」）。設計のレビューの指摘と反映：skip を `Retry` で返すと K と stale の待ちが黙って変わる（blocking。判断 2 で `Skipped`）、ユーザー操作の経路の但し書き（begin の最初の tick と書き込みの wake。判断 4）、probe は race を残す（try 取得）、skip の上限（判断 3）、試験で skip に到達できない（`schedule_with` に注入できる位置へ）、dev_trace は origin/master に無いので PR から外す、build の retry loop は GDX-PRECHECK-001 の matrix が要る（この節）。
+
+### 除外6項目への該当と残るリスク
+
+閾値の緩和・Gold の変更・製品公開・保存範囲の拡大・新しい送信先・製品認可の削除・新しい契約や authority は無い。
+
+- 製品の挙動の変更は Related Scenes の無効化の発見が、維持が接続を持っている間だけ最大約 10 s 遅れうること（誤った結果は返さない。return／click／`continue_query`／`qualify_evidence` の検証は従来どおり）。
+- **未測定**：編集 trace（保存→400 ms→begin）の失効率・窓外率への影響、a1 型での index-ready と IR の開始までの遅延、別の cold DB での再現、大きな DB での Verify の所要時間（実測の 3〜4 s は 1 つの cold DB のもの）、製品形での取り消しの内訳（`no-wait` による取り消しが残るか。製品形の A/B は計装を入れていない）。
+- **上限の位相**：build（project ごと）と reconcile の 2 つの連続 skip の数は独立で、どちらも上限に達した tick で従来どおり取って維持を取り消す。2 つの位相がずれると取り消しの間隔は 10 s より短くなりうる（最悪で約 5 s）。大きな workspace で Verify が連続して必要な時間より短いと、livelock が再現しうる（推測）。
+- 製品の挙動が変わるので、CP-4 の候補・受領書は旧候補に束縛されたまま（K6/2:624、PUB-G 前提 #15）。新しい候補での正式の取り直しはユーザーの判断（前例 DR-CP4-V-1）。
+
+### 実装後の追記
+
+（2026-11-09。実装 `bc73dfae`・`1ee8e90c`、修正 2 の後に追記）
+
+- 独立コードレビュー（Opus、read-only、実行なし）の指摘：B-1（blocking。2 回目以降の `begin`・stale の再 build が既存 task の Yielding の tick に乗る）→判断 4 と matrix を直し、実装は既存 task への「次の 1 tick は譲らない」の通知（修正 2）。B-2（製品の try 版の A/B）→下の測定。I-1（上限の位相）→「残るリスク」に追記。M-1（`index.d.ts` の JSDoc を Rust の `///` へ）、M-2・M-3（matrix の誤記）、M-4（定数を 1 つに）、M-5（try 取得の docstring）→修正 2 と本文の訂正。試験の不足（waiter の連続観測・quarantine・実物の `current_operation_mode`）→修正 2。
+- 製品形（計装なし。dev 枝を経由しない `claude/nir1-related-scenes-poll-yield`）の A/B（凍結外の `DEV-SHAPE-G03/frontier-exceeded`、同じ cold DB の写し。dev の結果は判定に数えない）：**a2 型 3 回・a1 型 1 回とも `limit` 35／35・slot empty**（基準は a2 で V-10 が 2／3 ＋ Suspended の連鎖）。watcher の Verify は a2 の 2 回が約 4 秒で completed（cancelled 322→330）、1 回が約 46 秒（cancelled 322→336。譲る tick のあいだの接続の取り合いが長引いた型）。a1 は変化なし。この A/B は修正 2 の前の実装（B-1 未対応）のもの。
+- **最終の候補（`3689bc21`。修正 2 の後。標準 build・評価 build を作り直して同じ A/B を取り直した。dev の結果は判定に数えない）**：a2 型 3 回・a1 型 1 回とも `limit` 35／35・slot empty。watcher の Verify は a2 の 3 回とも約 4 秒で completed（cancelled 322→326〜331）。a1 は変化なし。worktree は A/B の後も clean。
+- 試験：db の `narrative_maintenance_connection` が 44 本、node の `related_scenes` が 118 本（既存 99＋新規 19）、Main の vitest 8 本、clippy（自分の差分の warning なし）、`native-architecture.mjs` ok、electron の `tsc --noEmit`。**実物の `current_operation_mode(…, true)` の試験は作れていない**（lease の fixture に `NirQuerySnapshot`〔db の index proof〕が要る）。DB を使わない検査が DB 読みより前に `Some(false)` を返すことは構造の読みで確認した。B-1 の試験は retry 300 ms・deadline 10 s の timing に依存する（2 回の通しで安定。CI の負荷での flaky さは未確認）。
+- 残る：編集 trace（保存→400 ms→begin）の失効率・窓外率、a1 型の index-ready と IR の開始までの遅延、別の cold DB、大きな DB での Verify の所要時間、製品形での取り消しの内訳は未測定（「残るリスク」のとおり）。新しい候補での正式の取り直しと、PUB-G の前提 #15（候補の差の扱い）はユーザーの判断。
