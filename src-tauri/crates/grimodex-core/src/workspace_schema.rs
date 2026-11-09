@@ -733,8 +733,11 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// reservation of a Freshness Run that a publication guard race dead-lettered
 /// (DR-JF-9 M1), a data repair carried by the marker-only step and the full
 /// migration, so the checkpoint here is the same physical shape as version 44.
+/// Version 46 adds the write clock (`grimodex_write_clock`), the database
+/// lineage row, and one AFTER INSERT/UPDATE/DELETE trigger per real table
+/// ([`crate::write_clock`]); it never touches an existing table or row.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 45
+    Ok(SCHEMA_VERSION == 46
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -789,7 +792,12 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         // as an in-version repair of SCHEMA 34: their absence forces a full
         // idempotent DDL replay rather than a version bump.
         && table_exists(conn, "narrative_maintenance_wake_outbox")?
-        && has_timelapse_creation_baseline_triggers(conn)?)
+        && has_timelapse_creation_baseline_triggers(conn)?
+        // Version 46 (DR-DBC-3): the write clock, its lineage row, and one exact
+        // AFTER INSERT/UPDATE/DELETE trigger set per real table. Required at the
+        // previous marker too, so a marker-only 45 -> 46 step cannot skip the
+        // install and an MCP process stays read-only on a DB missing a trigger.
+        && crate::write_clock::has_v46_write_clock(conn)?)
 }
 
 fn has_v37_generation_storage(conn: &Connection) -> anyhow::Result<bool> {
@@ -2830,7 +2838,7 @@ fn foreign_key_rows(
     Ok(foreign_keys)
 }
 
-fn compact_sql(sql: &str) -> String {
+pub(crate) fn compact_sql(sql: &str) -> String {
     sql.chars()
         .filter(|character| !character.is_whitespace())
         .flat_map(char::to_lowercase)
