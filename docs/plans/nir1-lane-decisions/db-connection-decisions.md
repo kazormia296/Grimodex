@@ -198,3 +198,62 @@ SHA-NI は使われている（約 1.9〜2.0 GB/s）。sha256 は合計でも約
 - 監査の検証は「保存された監査の行が改ざんされていないか」を全行について確かめる防御で、DB を書き換えられる攻撃者を想定している。この PR は、検証の判定（どの入力でどの結果か）を変えない：判定の式は S1 で同じ値を安く求めるだけ、並列は行ごとの純粋な計算の順序を変えるだけで、報告の順序は逐次と同じ（§9、§10 の試験）。
 - 検出する不整合の集合・最初の位置・reason・tail_hash・error の種類は同じ。強さを変える候補（生 bytes の sha256 だけで通す案、契約の 4 項目だけ読む parse）は、反例を実験で確認して却下した。
 - 新しい actor・信頼境界・受信先・送信先・保存範囲・閾値・契約・authority は無い。renderer・IPC・N-API の契約は変えない。
+
+## DR-DBC-3 段 1 の PR-1：commit の連番（clock）と lineage を DB の中に置く（物差しは変えない。2026-11-10）
+
+経緯：DB 接続の根本改善の段 1（設計 rev1 `design-notes/db-connection-2026-11-07/stage1-design-rev1.md` と改訂注記）。PR-1 は「連番の表・TRIGGER・lineage を作り、物差しは変えない」段で、**連番を読む側は作らない**（読む側は PR-2）。
+ユーザーの承認：2026-11-08 に C1（版 46・TRIGGER 約 440 本・rollback なし）、C2（連番と lineage を DB と backup に残してよい）、C3-b、C6 (a)。2026-11-09 に C4（脅威モデル。MCP は「常駐する MCP 全般」として読む）、C8（gate を 2 段に分け、未達は止まって再相談。書込みの上乗せは PR-1 の必須）、C5 は (a)（PR-2 の前提）。2026-11-10 に PR-1 の着手（「朝の『正式 run』は s7r1 を指す。PR-1 から着手」）。
+この lane は NIR-1 の委任の外にあり、個別の承認に基づく。順序：PR-1・PR-2 を先に入れ、PR-3（stamp の削除）は S4 の再凍結と束ねる（C7 は PR-3 の前に改めて伺う）。
+
+### 判断
+
+1. 版は `grimodex-core/src/lib.rs` の `SCHEMA_VERSION`・`PREVIOUS_COMPATIBLE_SCHEMA_VERSION`・`PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION` を 45／44／45 から 46／45／46 に上げる。
+2. 表を 2 つ足す：`grimodex_write_clock`（`name` TEXT PRIMARY KEY、`seq` INTEGER、桁あふれは `CHECK(typeof(seq)='integer')` で書込みを止める。rev1 §1.4）と `grimodex_db_lineage`（`id` の `CHECK(length(id)=32)`）。形は rev1 §1.1。
+3. 対象表（`pragma_table_list` の schema＝main、type＝table）それぞれに、AFTER INSERT／UPDATE／DELETE の TRIGGER を 1 本ずつ足す（表 147 本×3＝441 本の見込み）。除くもの：`sqlite_%`、clock の 2 表、virtual、shadow、view。**TRIGGER の本体は NEW／OLD を参照しない**（D2a で closed の表の Read 拒否に当たり、renderer の書込みが止まるため）。`ai_audit_events` の UPDATE／DELETE は鍵を `ai_audit_events!mutate` にする（rev1 §1.1）。
+4. 生成関数と不変条件は **grimodex-core** に置く（不変条件 `has_current_schema_checkpoint_invariants` が core の `workspace_schema.rs` にあり、MCP の `schema_allows_writes` が core を使うため）。install（冪等。差分がある時だけ DROP＋CREATE し、余分な `grimodex_clock_%` を消す）と lineage の作り直しは grimodex-db。
+5. **`'*'` の行の自己修復**（rev1 の TRIGGER の形では `'*'` が消えると UPDATE が 0 行で直らない）：clock 表に `BEFORE DELETE WHEN OLD.name='*' RAISE(ABORT)` を置く（書込みの hot path には乗らない）。migration の修復で `'*'` が欠けていたら、`MAX(seq)+1` で作り直し、同時に lineage も作り直す（ABA の防止）。**rev1 にない防御の追加**（強める方向）。
+6. lineage は uuid v4（32 hex）。作り直す場所：restore の staged（`backup_restore.rs`）、shadow migration の staged（`migration_supervisor.rs`）、新規作成（migrate の install が無ければ作る）、**Web Editor の handoff の取り込み**（`web_editor_handoff.rs`。取り込む DB は信頼しないので持ち越させない。rev1 にない場所。Web Editor は廃止済みだが、コードに残る経路なので閉じる）。snapshot へ戻す rollback は snapshot の値のまま残す。
+7. renderer の authorizer（`execute.rs` の `renderer_sql_rejection`。registry の判定より前）：clock 表への DML は、accessor が生成した trigger 名の集合に**完全一致**するときだけ通す。lineage 表への DML は常に拒否する（読みは通す。rev1 の「常に拒否」を DML の拒否と読んだ）。`sqlite_sequence` への renderer の直接の DML も拒否する（製品に使用箇所が無く、clock を進めない書込みの穴を閉じる。rev1 にない防御の追加）。
+8. D2a の台帳：2 表を `execute.rs` の `D2A_UNLISTED_SCHEMA_TABLES` に足す（unlisted に固定）。
+9. **物差しは変えない**：ReadIdentity、TEMP epoch、stamp、data_version、publish の CAS、LP-GATE、IPC、preload、N-API、MCP のコード、閾値は PR-1 では変えない。連番を読む側は作らない。BrowserMock は clock の TRIGGER を作らない（RUST_ONLY の除外を揃える）。「mock が clock を返す」は読む側が無いので PR-2。
+
+### 信頼境界と変えないもの
+
+- C4 で承認された rev1 §6 の範囲内。actor・権限・送信先は増えない。MCP は「常駐する MCP 全般」として読み（承認済み）、v46 の MCP の書込みも TRIGGER で進む。v45 の MCP は user_version が合わず readonly になる。TRIGGER が欠けた DB も readonly。
+- 判断 5（`'*'` の保護）、判断 6 の handoff、判断 7 の `sqlite_sequence` は §6 の文面にない防御の追加（いずれも強める方向）。
+- **scope-storage-authority との整合**（C2 で「実装の前に確かめる」とされた点）：clock は失効の合図で authority ではない。AFTER TRIGGER は行の列（`updated_at` など）を書き換えない。restore と import で lineage を作り直す。
+- 閾値：変えない（G3 の project 削除の線は実測の後に決める。新しい閾値なので、決めるときにユーザーに伺う）。
+
+### owner／lifecycle matrix（新しい thread・subprocess・背景の処理はない）
+
+| 場面 | owner と扱い |
+|---|---|
+| 既存の物差し | 変わらない。ただし `total_changes` は TRIGGER の行も数える。`read_identity.rs` と `source_revision.rs` は等値で比べるだけなので判定は同じ【推測。試験で固定する】 |
+| clock の行 | 同じ tx の中の main schema の TRIGGER が書く。rollback で消える。Native が直接書くのは install と修復だけ |
+| lineage | Native（migration、restore、supervisor、handoff）が持つ |
+| migration の失敗 | install は c2zb の savepoint の中（stamp の直前）で走るので、失敗すれば stamp と一緒に戻る。shadow 経路は `safe_mode_after_snapshot` へ進み、live は置き換えない |
+| MCP の別 process | v46 の MCP の書込みも TRIGGER で進む。常駐する MCP の shared lease は `acquire_exclusive_for_migration` の 10 s で open を失敗させる（どの版上げでも shadow 経路を通るので、v46 で新しく生まれる問題ではない）。利用者向けの文言を足す |
+| backup | VACUUM INTO で clock・lineage・TRIGGER も複製される |
+| restore | staged の段階で lineage を作り直す |
+| project 削除 | CASCADE の行ごとに TRIGGER が 2 文走る（gate G3） |
+| 試験の template | Backup API で複製するので、試験 DB どうしで lineage が同じになる。PR-1 では読まないので害はない（PR-2 の判断 C） |
+| Tauri の legacy shell | 同じ crate なので同じ migration になる |
+
+### 代替案
+
+update_hook／commit_hook（接続ごとに要り MCP を覆えない）、TEMP 表（C1 で覆した）、protected-writers.json への登録（narrative の writer の validator を巻き込む）、3 文の TRIGGER で `'*'` が欠けたら RAISE（書込みのたびに 1 文増える）、restore の seed から決まる lineage（同じ backup を 2 回戻すと同じ値）は採らない。
+
+### 起案時の rev1 とコードの食い違い（コードの事実を優先）
+
+不変条件の関数は core の `workspace_schema.rs`（rev1 は crate を書かず行がずれる）。finalize が v45 の dead-letter の release を呼んでいる件は rev1 に記述がなく、**PR-1 で外す**（`migrate.rs` の finalize）。台帳の変更先は `execute.rs`（rev1 の `profile_egress_policy.rs` は変更不要）。ensure 系の行番号は core の試験 module の fixture。execute.rs の行番号は補正（例外の前例、DDL の拒否、VM step の予算）。
+
+### 検証の計画（静かな machine で、評価の run と同時に走らせない）
+
+- **G1 保存 IPC の p50（+5% 以内）**：dev 枝 `claude/db-conn-measure` の driver（`scripts/dev/db-trace-{run.mjs,renderer.ts,renderer.html,launch.sh}`）を base と PR-1 の head の両方に載せ、W0（`--trace off --saves 100 --pause-ms 600`）を各 arm 5 run 交互に回す。DB は run ごとに写しを作る（`ir-timing/base/ir/grimodex.db` と `ir-chat-pilot-2026-11/db/g-ja-1.full.db`）。最初の 1 run を除き `save_scene_body_bundle` の ms の p50 を結合して比べる。
+- **G2 publish の tx の上乗せ（1% 以内）**：行数×Δµs/行÷tx 全体。行数は publish の前後の `'*'` の差。Δµs/行は DR-DBC-2 §12 と同じ形（g-ja-1 の写しの IR の表に、TRIGGER の有無を release の ignored 試験で比べ、3 process×warm 7 回の中央値）。分母の publish_tx の p50 は #829 の後に測り直す。
+- **G3 project 削除**：`domain_writes.rs` の経路で、g-ja-1 の写し 5 個ずつ、base と PR-1 で比べる（ms と倍率。WHERE の無い DELETE が約 14 倍だった件の線は実測の後に案を出し、ユーザーに伺う）。
+- **記録だけ**：45→46 の shadow migration の時間、open の増分、試験 DB の作成の増分、BrowserMock の起動、大きい batch の VM step。hold の p90 と WITH の件数は PR-2 の基準値として記録する。
+
+### 未確認
+
+lease の timeout の案内文を出す画面の場所、SQLite が TRIGGER 本体の表を作成時に解決しないこと（mock が落ちる理由の確認）、AUTOINCREMENT の内部の更新が authorizer を通らないこと、rusqlite での実際の費用、G2 の分母を取るための `lock_trace.rs` の載せ直しの衝突、Tauri の legacy shell が今も配布されているか。いずれも build・試験・起動をしていないため（起案は read-only）。
