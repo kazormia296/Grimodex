@@ -150,3 +150,15 @@
 4. **CP-4 の状態が文書で違う**：l6-l9:43 と続行計画:176 は 2026-11-01 の「候補 `86427ee5` で HOLD（DR-CP4-S6-1）」までで、S6-2（#775）と s5r6（HOLD に当たらない）を反映していない。memory の「CP-4 の Graph arm は HOLD」も s5r6 の前の記述。
 5. **PUB-G の前提の書き方の層**：続行計画:551（Session B2）は「CQ-LIM-1〜4 の実装（見込み）」、:592（Session B3）は「CQ-LIM-1〜4 は #678 で master」と G-pub を追加。l6-l9:577／:595／:605 も同じ層の重なり（後の追記が正と書かれている）。食い違いではなく時点差だが、どれが現行かを一覧で示す文書が無い。
 6. **CP-4 の範囲の書き方**：続行計画:176 と l6-l9:43 は CP-4 に「G-01〜G-08、24 件、P の計測と A3 consumer activation の証跡」を含めるが、S6／S7 は可用性（Gold の pool、trace、SP-P4、parity、負例）だけを報告する（§3 の 1・2）。
+
+## 5. 追記（2026-11-09。正式 run s7r1 の結果と、その独立レビュー・助言を受けて）
+
+s7r1（S4b `f2f99b13`・候補 `3f333a83`・K6/6）の結果（`docs/plans/nir1-cp4-records/s7-report-s7r1/README.md`、contracts `3a69b557`）で分かったこと。**表の「済み 18／残り 21／不明 7」に、残りを 2 行足す（残り 23）。**
+
+- **#24（owner の Suspended の復帰。「到達の確認は残り」）**：#839（復帰の配線。復帰は 1 回だけ）を含む候補 `3f333a83` の 2 回目の Gold で、判定外の `G-03/frontier-exceeded` が Graph arm 35 sample のうち 30 が `registration-unavailable`、23 が `startSlot: suspended` になった（前回 s6r1 は 35／35 が `graph-late`・slot empty）。復帰が働いたか、働かない条件は何かは**未確認**。dev の凍結外 fixture でも同じ連鎖が再現した（`handoff` の `s7r1-dev-ready/results.md`）。
+- **#5（B の製品経路・wake 源・再構築の頻度）との関係**：(a′)（refused を drift と incomplete に分け、drift では Suspended にしない）の価値「B の build なしで戻れる」は #5 の B の頻度しだい。(a′) は DB 接続の段 1 の PR-2（同じ関数 `nir1_graph.rs:604-688`）に同梱する方針。
+- **新しい行 A（残り）：維持の dependency-verify の取消しの連打 → registration の refused → Graph の slot の Suspended（DR-CP4-L-27 の続き）**。S6-4 の判断：段 1 に吸収されない（段 1 の失効の定義は「どの commit でも」）。別の lane で (c) 維持の連続 preempt の backoff と (f) Related Scenes の reconciler の no-wait 化を、奪い手の特定の計装→設計→dev の A/B まで進める。(g) LP-GATE を維持の cycle にも広げる、は LP-GATE 案 2 の範囲の拡大でユーザーの確認が要る。新しい候補での正式の取り直しはユーザー（前例 DR-CP4-V-1）。
+- **新しい行 B（残り）：frontier の上限超過の Graph を製品経路で全体拒否することの端から端の検査**。`G-03/frontier-exceeded` は s5r5・s5r6・s6r1・s7r1 のどの正式 Gold でも期待の理由（製品の reason 語彙では `limit`）が観測されていない（前 3 回は 35／35 が `graph-late`）。機構は Rust の unit test（`nir1_graph/tests.rs` の `graph_entities_at_50_is_available`、`graph_entities_at_51_refuses_the_whole_graph`、`two_hop_limit_stops_before_a_third_hop`）で検査済み。凍結外の dev fixture か integration で端から端を検査する。
+- **#11（CP-4 の品質の条件）の充足の形（不明のまま。ユーザーの選択待ち）**：品質判定 v2（補助）の not-evaluable は、既存 24 件の Graph arm の受領書が無い、evidence の 4 項目（utf16-range、explicit-pin-association、raw-excerpt-unchanged、added-scene-body-anchor）が受領書に無い、禁止寄与の (c)。(i) 8 回目の S4 で受領書の形を広げて測る（受領書を作る `k64-record.mjs`・`receipt.mjs`・`availability.mjs`・`frozen-k64-run.mjs` は S4 の pin。DB 段 1 の PR-3 の S4 再凍結と束ねて S4 を 1 回で済ませる。推奨）、(ii) 開示して受け入れる。K6/2:620 は「Evidence 100%、禁止寄与 0」を Positive の条件に含むので、not-evaluable のまま PUB-G に進むのは合格基準の黙示の変更に近い。
+- **#15（CP-4 の候補と PUB-G の最終候補の差の扱い）**：どの製品修正も候補を変えるので CP-4 の receipt は旧候補に束縛される（K6/2:624「候補…が変わったら失効」、K6/4 変える点 12）。DB 接続の段 1（4,000〜6,000 行）でも必ず起きる。持ち越しの規則は読んだ範囲に無い（不明のまま）。これが PUB-G の本当の前提で、製品の連鎖の lane が新しく作る問題ではない。
+

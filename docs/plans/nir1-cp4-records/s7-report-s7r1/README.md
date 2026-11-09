@@ -4,7 +4,7 @@
 
 ## 1. 結論
 
-**事前登録の規則を当てた結果、HOLD にも `[precheck]` にも当たらない（Gold の定常状態の pool：欠落 0／270、許容 2 件）。ただし「CP-4 の Graph arm の可用性を満たした」と言い切る前に、下の 3 の条件を読むこと。** s6r1 の HOLD（欠落 163／270）は、K6/4 の R1 の下で first-render が構造的に数えられない契約の食い違いによるもので、K6/6 が first-render の数え方（R-6：準備の句、R-7：鮮度の印の句）を直した。この run はその K6/6 の下の 1 回目の正式の測定。
+**事前登録の規則を当てた結果、HOLD にも `[precheck]` にも当たらない（Gold の定常状態の pool：欠落 0／270、許容 2 件）。ただし「CP-4 の Graph arm の可用性を満たした」と言い切る前に、下の 3 の条件を読むこと。** 受入れは 2 つに分ける：(1) 規則の当てはめ結果の記録（integrator の技術判断。前例 DR-CP4-S6-2・S6-3。**記録済み**）、(2) K6/2 の 621 行の「受入れへの影響」（Lane unlocked、編集中の可用性を合否から外す緩和の発効）と「可用性を満たした」の確定（K6/6 の批准 7 (ii)・9 により事前の確認にとどまる。**ユーザー本人の 1 行確認に残す**。5 参照）。 s6r1 の HOLD（欠落 163／270）は、K6/4 の R1 の下で first-render が構造的に数えられない契約の食い違いによるもので、K6/6 が first-render の数え方（R-6：準備の句、R-7：鮮度の印の句）を直した。この run はその K6/6 の下の 1 回目の正式の測定。
 
 | 指標（K6/4 の読み） | 前回（s6r1・K6/5） | 今回（s7r1・K6/6） | 物差し |
 |---|---|---|---|
@@ -41,7 +41,7 @@ SP-P4（1.8 分）、trace editing（10.5 分）・browsing（3.7 分）、parit
 - **この「欠落 0」は K6/6 の数え方に依存する。** 鮮度の印（stamp）は pool 270 のうち 269 が `stamp0-missing` で、K6/6 の R-7 はこれを数える。**K6/2 の字義のまま読むと、窓外は 270／270 で今回も HOLD に当たる**（受領書の `steadyStateCase.outOfWindow`。K6/4 批准 2 以降は窓外率が物差しではない）。`stamp0-missing` が 269 になる原因は、K6/6 の「確かめられなかったこと 1」のまま未解明。K6/6 の窓外率（114／270＝42.2%）は開示だけで物差しではない。この読みの変更（R-6・R-7）が緩和に当たる点は K6/6 の確認で開示済み（ユーザーの確認 `1e6ede44`・`e704f28f` と K6/6 の批准）。
 - **Gold を 2 回走らせた**。1 回目は precheck 停止で判定ではない。2 回目は同じ候補・同じ setup で通った。結果を選んだのではないが、同じ候補で 1 回目は停止・2 回目は完了だった事実は変わらない。V-10 は確率的で、製品の連鎖が残っている（下の 6）。**同じ候補での再現性は、2 回目の Gold を 1 回測っただけ**。
 - Graph arm の p95 は 92.70 ms で、上限 94.2 ms との余裕は 1.5 ms。前回の 60.20 ms から上がった。variant 別の p95（開示）は G-04/base 116.5、G-02/base 108.3、G-07/base 100.8、G-05/base 100.3 ms が 94.2 ms を超える（判定は G-case 全体の p95）。Graph の結果が窓内に届く sample が増えたことと合う読みだが、機構は確かめていない。
-- **`G-03/frontier-exceeded` が期待の理由（`graph-limit-exceeded`）で unavailable になったかは言えない。** 受領書は validation valid だが、Suspended の連鎖で unavailable になっており、frontier の上限の機構が測れたとは言えない。この variant は pool に入らず、欠落 0 の結論には効かないが、Gold の 13 variant 全体を「期待どおり測った」とは書けない。
+- **`G-03/frontier-exceeded` が期待の理由（`graph-limit-exceeded`）で unavailable になったかは言えない。** 受領書は validation valid だが、Suspended の連鎖で unavailable になっており、frontier の上限の機構が測れたとは言えない。**ただしこれは今回固有ではない**：この variant は s5r5・s5r6・s6r1 の正式 Gold でも Graph arm 35／35 が `graph-late`（slot empty）で、期待の理由（製品の reason 語彙では `limit`）は一度も観測されていない（今回の 2 回目も 13 variant で `limit` は 0）。この variant の設計上の限界（D＝40 ms の窓内に探索が終わらず、`limit` を返す前に窓外になる）と読める。fixture の `reasonClass: "graph-limit-exceeded"` は製品・harness の語彙と対応づけが無く、品質判定は `expectedGraph === "unavailable"` だけを見る（`quality-verdict.mjs:519`）。機構そのものは Rust の unit test（`nir1_graph/tests.rs` の `graph_entities_at_50_is_available`、`graph_entities_at_51_refuses_the_whole_graph`、`two_hop_limit_stops_before_a_third_hop`）で検査済み。製品経路で上限超過の Graph を全体拒否する端から端の検査は Gold に無く、PUB-G の前提に載せる。この variant は pool に入らず（`inPool: false`）、欠落 0 の結論には効かない。
 - 品質の判定（補助）は hold（unverified-required-items）。既存 24 件の Graph arm の受領書が無い、evidence の 4 項目と禁止寄与の (c) が受領書に無い、で not-evaluable。品質の「Recall・nDCG の改善」を 24 件の P についても言うことはできない。
 - 製品の退行が無いこと。受領書の範囲の形跡で、証明ではない。
 - 欠落 0 になった機構（なぜ数え方の変更で 0 になったかの因果）。K6/6 の条件（FR-1〜FR-8）は S6 では受領書の値を読んだだけだが、**独立レビュー（Fable）が sample の原記録から FR-1〜FR-8 を当て直し、合流 156 件すべて通過・receipt の `firstRender` と全 variant 一致した**。ただし、K6/6 の変える点 7（R7：sample ごとに FR-1〜FR-8 のどれを満たしたかの記録）に対し、受領書には variant 集計の `firstRenderNotCountedBy／Reasons` だけで **sample 単位の内訳が無い**（`availability.mjs:200-219`）。判定には効かないが、契約の記録の要求との食い違いとして 6 に開示する。
@@ -62,14 +62,21 @@ SP-P4（1.8 分）、trace editing（10.5 分）・browsing（3.7 分）、parit
 
 前回と違い、Graph が窓内に合流した親の sample は定常状態で first-render に数えられ、欠落が 0 になった。**これは契約の数え方を変えた結果で、pool の窓内の合流数（163→156）に限れば製品の挙動はほぼ同じ**。ただし判定外の `G-03/frontier-exceeded` では、前回は無かった Suspended の連鎖が 2 回目に起きている（結論の直後の段落）。
 
-## 5. ユーザーに決めてほしいこと
+## 5. 決めたことと、ユーザーに残すこと
 
-1. **この結果の受入れ**：「規則は HOLD を指さない」を CP-4 の Graph arm の結果として記録し、次の工程（失効 lane の扱い、PUB-G の前提）へ進めてよいか。受入れの含意（`Lane unlocked` など。K6/2 の 621 行の受入れへの影響）は、ユーザーの判断で、この草稿は何も決めない。
-2. **Gold の 2 回目を有効な結果として使うこと**：1 回目は `[precheck] V-10` で停止（判定ではない）、2 回目は同じ候補・同じ setup で完了。ユーザーが取り直しを決めた（2026-11-09 08:00:12 JST）。開示のうえで 2 回目を使ってよいか。
-2b. **`G-03/frontier-exceeded` の扱い**：Gold の取り直しは S2 の `attemptRule`（1 回だけ、setup は取り直さない、2 回目も無効なら precheck）で 1 回使い切っている。この variant は判定外（pool に入らない）で、validation は valid だが、期待の理由で unavailable になったかは言えない。(a) 開示のうえ、そのまま受け入れる。(b) この variant だけをさらに取り直す（規則の外＝あなたの判断が要る。同じ連鎖でまた外れる見込みがある）。(c) 連鎖を直した新しい候補で Gold を取り直す（3 の修正の後）。
-3. **製品の連鎖（V-10 の根）の扱い**（integrator の引き継ぎ file `s7r1-fix-design/design.md` と独立レビュー）：維持の Verify の取消しの連打 → registration の refused → Graph の slot の Suspended は dev で再現し、**2 回目の Gold の判定外 variant（`G-03/frontier-exceeded`）でも起きた**。pool に波及しなかった限りで、CP-4 の前提ではなくなった。PUB-G の前提に入れるかを決める。設計の推奨 (c)（維持の連続 preempt の backoff）は、レビューで「単独では pool の許容に届く見込みが薄く、Verify を遅らせうる」と指摘された。(f) reconciler の no-wait 化、(g) LP-GATE を維持の cycle にも広げる（LP-GATE の範囲の拡大＝確認が要る）、(a′) refused の分類、も候補。S4 の再凍結（8 回目）は不要（SOURCE_PINS・bound files に製品 file が無い）。新しい候補で取り直す場合は新しい試行（前例 DR-CP4-V-1）。**これを修正する lane をいつ・どの順で始めるか。**(c) や (a′) を「委任の範囲内の技術判断」と読むことには注意が要る：委任の対象レーン（continuation §3.1）に「維持の coordinator」は列挙されておらず、DR-MPS は integrator の読み（ユーザー確認なし）。(a′)（refused の分類。Graph owner の状態機械）は K6/4 批准 9 の「D′ の状態機械」に近く、(g) は LP-GATE 案 2 の範囲の拡大。いずれも着手前にあなたの確認を取る前提で書いている。**
-4. **#838（Quality の rust-cache）**：Gold の測定が済んだので進めてよいか（承認済みで、決着まで待っていた）。
-5. 品質判定の「not-evaluable」の項目（既存 24 件の Graph arm の受領書、evidence の 4 項目、禁止寄与の (c)）を、PUB-G の前に測る必要があるか。
+ユーザーは 2026-11-09T00:50:59Z（09:50:59 JST。session の記録の timestamp）に「Fable に相談して決めてください」と、次の判断を integrator に委任した。独立した 2 人の助言者（Fable、read-only）に相談して、次のように決めた（助言者の確度と根拠は 6 の 15）。
+
+**決めた（integrator。判断記録は DR-CP4-S6-4 に追記する docs PR）**
+
+1. **規則の当てはめ結果「HOLD にも `[precheck]` にも当たらない」を記録する**（技術判断。前例 S6-2・S6-3）。受入れの効力（下の 6 の (1)）は含まない。
+2. **Gold の 2 回目（`gold-s7r1-2`）を集計に使い、1 回目を開示に回す**。訂正：**S2 の `attemptRule`（`observation-prep.v1.json` の `diagnosticRuns[9]`）は SP-P4 の取り直しの規則で、Gold の回数上限ではない**（本文の草稿は「attemptRule で使い切り」と書いたが誤り）。Gold の事前登録上の規則は「同じ候補・S4 の Gold の試行を全件 `priorAttempts.gold` に開示する」（S2、DR-CP4-N-14 (2)、`frozen-k64-run.mjs:1681-1703`）で、上限は無い。runbook §7 は取り直しをユーザーの判断事項とし、ユーザーが 1 回だけと決めた（運用上の上限。前例 U-1 と同型）。1 回目は precheck 停止で完了結果が無く、「結果を見て選び分ける」（K6/2 の In-scope attack）の対象が無い。13 receipt すべてが前の試行を開示している。
+3. **`G-03/frontier-exceeded` は判定外として、開示して受け入れる**。この variant だけの取り直し（3 回目の Gold）は、完了結果がある状態での再試行で K6/2 の攻撃面に入るので採らない。連鎖を直した新しい候補での取り直しは、CP-4 の結論に効かず `limit` が出る保証も無いので今は採らない。frontier の上限の端から端の検査を PUB-G の前提に 1 項目として載せる（凍結外の dev fixture か integration で）。
+4. **製品の連鎖（L-27 の続き）は DB 接続の根本改善の段 1 に吸収されない**（段 1 の失効の定義は「どの commit でも」を保ち、Verify の取消しの commit で同じ refused になる）。別の lane で、(c) 維持の連続 preempt の backoff と (f) Related Scenes の reconciler の no-wait 化を、**まず奪い手の特定の計装→設計→dev の A/B（基準／(c)／(c)+(f)。主指標は Verify の完了時刻と sample ごとの registration-unavailable／driftAtQuery）まで**進める。(a′)（refused を drift と incomplete に分け drift では Suspended にしない）は段 1 の PR-2（同じ関数 `nir1_graph.rs:604-688`）に同梱する。この lane を「U3 の委任の範囲内」とは断じない（委任の対象レーンに維持の coordinator は無く、DR-MPS は integrator の読み。記録は「DR-MPS と同じ読み＋重要な変更のどれにも当たらない」）。
+5. **#838**（Quality の rust-cache。承認済み）は Gold の測定が済んだので、今進める。
+
+**ユーザー本人に残す（1 回に束ねる）**
+
+6. (1) **K6/2 の 621 行の受入れへの影響の発効（Lane unlocked、編集中の可用性を合否から外す緩和）と、「CP-4 の Graph arm は可用性を満たした」の確定**を、この結果（規則は HOLD に当たらない。ただし K6/6 の数え方に依存し、K6/2 の字義では HOLD）で行ってよいか。契約が「事前の確認にとどまる」と明記した部分で、委任はこれを上書きしない。(2) **品質判定の not-evaluable（既存 24 件の Graph arm の受領書、evidence の 4 項目、禁止寄与の (c)）を PUB-G の前に測るか**（PUB-G の合格基準＝前提一覧 #11 に触れる）：(i) 8 回目の S4 で受領書の形を広げて測る（DB 段 1 の PR-3 の S4 再凍結と束ねて S4 を 1 回で済ませる。推奨）、(ii) 開示して受け入れる。(3) **(g)**（LP-GATE を維持の cycle にも広げる。LP-GATE 案 2 の範囲の拡大）：dev で (c)+(f) が足りないと分かったときだけ、1 行確認の後に着手する。(4) **製品の連鎖を直した新しい候補での正式の取り直し**（やるなら。前例 DR-CP4-V-1 では、製品変更の候補の SP-P4 を新しい試行 1 と読んだ）。
 
 ## 6. 開示（必須）
 
@@ -87,10 +94,13 @@ SP-P4（1.8 分）、trace editing（10.5 分）・browsing（3.7 分）、parit
 12. 窓：Gold（`gold-s7r1-2`）・parity・negative は全 variant で窓 true（chain の check で確認。sampler の違反・隙間の個別の数は S6 の `runs` を参照）。SP-P4 と trace は sampler の記録を持たない（設計）。
 13. dev の診断 run（a1・a2）・dev の予告・dev の確認は CP-4 の結果に数えていない。
 14. この報告は製品の公開（Graph の published 化）を何も決めない。`PRODUCT_GRAPH_PUBLISHED` は false のまま。
+15. **委任と助言者**：ユーザーの委任の原文は「Fable に相談して決めてください」（2026-11-09T00:50:59Z）。独立した 2 人の助言者（Fable、read-only。1 人目：受入れ・Gold の 2 回目・`G-03/frontier-exceeded`、2 人目：製品の連鎖の lane・#838・not-evaluable）が、それぞれ契約・receipt・コードを自分で読んで助言した（確度は 1 人目：D1 中〜高、D2 高、D3 中〜高。2 人目：D4 の「吸収されない」が高、lane の選択が中、#838 が高、not-evaluable が中）。助言者は互いに相談していない。決めたことの責任は integrator にある。
+16. **Gold の 2 回目の使用の根拠の訂正**：草稿の初版は「S2 の attemptRule で 1 回使い切っている」と書いたが、attemptRule は SP-P4 の規則（5 の 2）。本文を直した。ユーザーの決定の時刻（08:00:12 JST）は session の記録の timestamp に依る（助言者の 1 人はこの記録を読んでいない）。
 
 ## 7. 次
 
-1. ユーザーの受入れ（5 の 1・2）。
-2. 製品の連鎖の修正 lane（5 の 3）：設計 → GDX-PRECHECK-001 の記録 → dev の A/B → 新しい候補での取り直し（やるなら）。
-3. PUB-G の前提（残り 21 項目。品質判定の not-evaluable の項目を含めるか）。
-4. DB 接続の段 1、chat の IR（承認済みの順。実装は PUB-G の後）。
+1. ユーザーの 1 行確認（5 の 6 の (1)〜(4)）。
+2. DR-CP4-S6-4（判断記録）の docs PR と #838 の merge（integrator が進行中）。
+3. 製品の連鎖の lane（5 の 4）：奪い手の特定の計装→設計→dev A/B。記録先は DR-CP4-S6-4 と decisions 文書（GDX-PRECHECK-001 の判断・信頼境界・owner／lifecycle matrix を、mutation の前に残す）。
+4. PUB-G の前提一覧（前提 #5・#24 に、維持の Verify の連打→refused→Suspended を足す。#11 の充足の形。frontier の端から端の検査）。
+5. DB 接続の段 1、chat の IR（承認済みの順。実装は PUB-G の後）。
