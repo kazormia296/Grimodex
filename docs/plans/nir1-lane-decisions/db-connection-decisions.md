@@ -257,3 +257,15 @@ update_hook／commit_hook（接続ごとに要り MCP を覆えない）、TEMP 
 ### 未確認
 
 lease の timeout の案内文を出す画面の場所、SQLite が TRIGGER 本体の表を作成時に解決しないこと（mock が落ちる理由の確認）、AUTOINCREMENT の内部の更新が authorizer を通らないこと、rusqlite での実際の費用、G2 の分母を取るための `lock_trace.rs` の載せ直しの衝突、Tauri の legacy shell が今も配布されているか。いずれも build・試験・起動をしていないため（起案は read-only）。
+
+### 実装中の追記 1（2026-11-10。起案の記述の訂正と、実測・実装で分かったこと）
+
+- **backup の設計と `Backup::new`**：起案は「backup は VACUUM INTO の設計で、`Backup::new` は test-support の外に無い」としていたが、製品側に 1 件ある（`grimodex-db/src/bin/support/private_fixture.rs` の fixture bin の補助。required-features 付きで lib・napi には入らない。READ_ONLY の複製元を新しい file へ写すだけで既存 DB には書かない）。grep 試験（`tests/write_clock_forbidden_patterns.rs`）の許可リストに理由と件数つきで入れた。
+- **`writable_schema`**：起案は「OFF」としていたが、過去の版の CHECK widening migration 4 本（`migrate.rs`。`verify_post_effect_category_migration` を呼ぶもの）が `pragma_update(None,"writable_schema",true)` で `post_effect_runs`／`post_effect_annotations` の `sqlite_master.sql` の CHECK 文字列だけを書き換え、すぐ false に戻す。trigger には触らず、clock の install は stamp の直前に表の実態から作り直すので、clock を迂回しない。許可リストに件数一致で固定した。
+- **trigger の本数**：生成した contract で表 157→159、trigger 63→505（clock の 441 本＋guard 1 本＝442 本の増加。clock 以外の増減なし）。起案の 441 本＋guard の見込みと一致。
+- **Web Editor の取り込みは SQLite の画像（base64）を受け取って開く**（起案は JSON だけの可能性を残していた）。lineage を持ち込める経路なので `database.migrate()` の直後に作り直す。取り込みの `rebuild_trusted_schema_objects` は全 trigger を DROP して contract の trigger だけ作り直すので、contract に clock の trigger を入れる再生成が必須（再生成済み）。
+- **authorizer の集合**：clock 表への DML は、authorizer の trigger 名の引数が「実表から `expected_clock_triggers` と同じ規則で作った名前の集合」に完全一致するときだけ通す（名前の規則だけだと、取り込んだ DB に紛れた `grimodex_clock_evil_ai` が通るため）。集合は書込みになり得る文のときだけ authorizer を付ける前に作り、作れなければ空（fail-closed）。**1 回あたりの費用は未測定→gate G1 に含める。重ければ接続ごとの cache にする**。限界：`grimodex_clock_<実表>_ai` と同じ名前で本体を差し替えた trigger は authorizer では見分けられず、`has_v46_write_clock` の SQL 完全一致の領分。
+- **finalize**：`try_finalize_previous_schema_without_wait` が v45 の release を無条件で呼んでいた（PREVIOUS=45 になって 45→46 のたびに走る状態）。外した。≤44→46 の full migration では `current<45` で一度は走る。45→46 は clock が無い限り full migration（shadow 経路）になる。
+- **版の ratify**：`validate-semantic-core-boundary.mjs` の `EXPECTED_SCHEMA_VERSION` を 46 にしたのは「concern matrix は変わらない」の ratify（42〜45 と同じ扱い。clock と lineage は意味解釈を持たず、renderer の authorizer が書込みを拒否する）。
+- **利用者向けの文言**：lease の timeout（常駐する MCP が migration を妨げる）の案内は出ていなかったので、`workspaceOpenErrorText` が `WORKSPACE_EXCLUSIVE_LEASE_TIMEOUT` を含むエラーに「MCP を使う client を終了してから開き直す」案内を足す（ja／en の 1 文字列。新しい画面は作らない）。実機で届くかは未確認。
+- **Tauri の legacy shell**：`cargo check -p grimodex` は 24 件で落ちるが、foreshadow・plot_threads・grimodex-ai の API 変更による既存の壊れで、この PR の差分に `src-tauri/src` は無い。`README` は「frozen legacy」、`ci.yml` は `--workspace --exclude grimodex`、`release.yml` に shell の build は無い。build も配布もされていない。
