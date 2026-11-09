@@ -75,7 +75,7 @@
 
 - SP-P4（`sp-p4-s7r1-1`）：**passed**。8 variant で差異 0、problems 0、IR の期限切れ（除外）0（上限 6）。
 - parity（`parity-s7r1-1`）：completed。12 variant すべて valid、窓の評価は 12 件とも clean。**parity は Graph arm を測らないので、parity が通ったことは Gold の worker が READY になる証拠ではない**（5 の 1）。
-- negative（診断。`countsInCaseJudgement: false`。判定に数えない）：**N2、N3、N4 すべて measured・valid・`established`**（`g01-mira` が返らなかった。70 sample のうち返った scene は `g01-question` のみ、frame 到達、control `reached`）。窓の評価は 3 件とも clean、run の problems 0。受領書の `assessment.outcome` は 3 件とも `established`、`g01-mira` は返っていない（前回の README と同じ言い方）。
+- negative（診断。`countsInCaseJudgement: false`。判定に数えない）：**N2、N3、N4 すべて measured・valid・`established`**（`g01-mira` が返らなかった。70 sample のうち返った scene は `g01-question` のみ、frame 到達、control `reached`）。窓の評価は 3 件とも clean、run の problems 0。run-report の `variants.G-01/v1.negative.assessment.outcome`（受領書ではなく run-report に載る） は 3 件とも `established`、`g01-mira` は返っていない（前回の README と同じ言い方）。
   - N2（`resave-same-body`）：封印は世代不変（`unchanged`）、待ち 1041 ms、`settleCoversMutation: true`（feed head 19、acknowledged 17）。B は generation 1・dirty でない。
   - N3（`restore-same-bytes-body-version`）：新しい世代（`new-generation`）、515 ms、B generation 2。
   - N4（`restore-different-bytes-body-version`）：宣言前の保存は世代不変（1038 ms、`settleCoversMutation: true`）、restore は新しい世代（513 ms、B generation 2）。
@@ -155,3 +155,13 @@
 
 - 前回との差のうち、(a) の欠落の差（163 → 0）は、5 の 2 のとおり**数え方の改訂**によるところが大きい。q1 の max（browsing）は、前回は 100 ms まで 1.4 ms の余裕しか無かったが、今回は 83.1 ms で余裕が増えた。この変化が製品の変更によるのか run のばらつきなのかは、この 1 回の run からは言えない。
 - 品質判定 v2 の p95（R+IR arm・Graph arm）は、この集計の対象外（`../quality-verdict-s7r1-1/` を参照）。
+
+## 7. 追記（独立レビューの後。2026-11-09）
+
+この集計の本文は、独立レビュー（Fable、read-only）の前の記述。レビューで次が分かった。数値の再計算（Gold の pool、trace、p95、台帳、束縛）は一致した。
+
+1. **判定外の `G-03/frontier-exceeded` で、Suspended の連鎖が起きていた**（本文は触れていない）。Graph arm 35 sample のうち 30 が `graph-unavailable: registration-unavailable`、23 が `startSlot.kind: suspended`。READY の probe は 1 回で通った。前回 s6r1 の同じ variant は 35 sample すべて `graph-late`・slot empty。期待は `unavailable: graph-limit-exceeded` で、表示 0 は期待どおりだが理由の種類が違う（品質判定は `expectedGraph === "unavailable"` だけを見る）。pool の 9 variant の slot は全件 empty で、欠落 0 には波及していない。S7 報告の 2・6 に開示。
+2. **FR-1〜FR-8 の独立な当て直し**：本文は「再計算していない」とした。独立レビューが sample の原記録から当て直し、合流 156 件すべて通過、receipt の `firstRender` と全 variant 一致。ただし K6/6 の変える点 7（R7）が求める sample ごとの内訳は受領書に無い（variant 集計の `firstRenderNotCountedBy／Reasons` のみ。`availability.mjs:200-219`）。判定には効かないが、契約の記録の要求との食い違い。
+3. **#839 は s7r1 の候補にあり、s6r1 の候補にない**（owner の Suspended の復帰の配線。CP2a-D47〜D49）。2 回目の Gold の Suspended との関係は未確認。
+4. 品質判定の p95 は nearest-rank。線形補間なら Graph arm 89.2 ms。上位 20 件が 92.7〜116.5 ms に密集。
+

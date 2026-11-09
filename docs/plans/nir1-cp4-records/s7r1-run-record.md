@@ -36,7 +36,8 @@
 2. 記録 `ee468c48`（Gold の 3 variant、parity、trace、SP-P4、setups）を contracts に写した。**その commit message の「同じ variant は parity では通った」は READY の証拠にならない**（parity は Graph arm を測らない。`frozen-k64-run.mjs:1949`。`readyProbe` は :961-980 で Graph arm のときだけ）。その読みは取り消す。
 3. 原因の調査（read-only）と、凍結外の dev fixture（`DEV-SHAPE-G03/frontier-exceeded`。凍結の材料の写しは K6/6 批准 9 により使わない）での再現を行った。dev では 2 回中 1 回、同じ停止（cold DB に `running` の dependency-verify が残る回：Verify の取消しが約 4.7 回/秒・完了 0、Graph の prepare が 5 回失敗して slot が `suspended`）が再現した。dev の結果は判定に数えない。記録は integrator の引き継ぎ file（`s7r1-dev-ready/`、`s7r1-fix-design/`。contracts の外）。
 4. ユーザーが 2026-11-09 08:00:12 JST（= 11-08 23:00:12Z。session の記録の timestamp）に「同じ候補で Gold を 1 回だけ取り直し、並行して修正案を設計」を選んだ。chain を 08:02:11 JST に起動し、`gold-s7r1-2` は 23:02:45Z に開始した。**同じ候補・同じ setup（setup の sha256 は同じ）で、製品・harness・閾値・fixture は変えていない**。結果を見て選んだのではなく、1 回目は precheck 停止（測定の判定ではない）。2 回目は 13/13 completed。
-5. V-10 は決定的でなく確率的だった（同じ候補・同じ cold DB で 1 回目は停止、2 回目は通った）。製品の連鎖（維持の Verify の連打 → registration の refused → Graph の slot の Suspended）は dev で再現しており、製品側に残っている。
+5. **2 回目の Gold の判定外 variant `G-03/frontier-exceeded` で、同じ連鎖が起きていた**（Graph arm 35 sample のうち 30 が `registration-unavailable`、23 が `startSlot: suspended`。READY の probe は 1 回。前回 s6r1 は 35 sample すべて `graph-late`・slot empty）。期待は `unavailable: graph-limit-exceeded` で、表示 0 は期待どおりだが理由の種類が違う。pool の 9 variant の slot は全件 empty。S7 報告の 2・6 を参照。
+6. V-10 は決定的でなく確率的だった（同じ候補・同じ cold DB で 1 回目は停止、2 回目は通った）。製品の連鎖（維持の Verify の連打 → registration の refused → Graph の slot の Suspended）は dev で再現しており、製品側に残っている。
 
 ## 準備（測定の窓の外）
 

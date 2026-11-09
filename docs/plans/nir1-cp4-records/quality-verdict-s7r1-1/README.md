@@ -8,4 +8,6 @@
 - 全体：**hold（unverified-required-items）**。前回（s6r1）は hold（failed-required-items、held-required-items）。今回は fail・hold の条件が無く、残るのは受領書に無い項目の not-evaluable だけ：既存 24 件の Graph arm の受領書が無い、evidence の utf16-range・explicit-pin-association・raw-excerpt-unchanged・added-scene-body-anchor、禁止寄与の (c)。内訳は `quality-verdict-s7r1.md`。
   - G-01 の事前指定改善 pass、macro 非回帰（G-case 13 variant）pass、Hybrid p95 pass（R+IR arm 22.60 ms、Graph arm **92.70 ms**、各 n＝390、上限 94.2 ms。**余裕は 1.5 ms**）。edge の束縛 pass（9 variant、検査 270、検査できず 0）、禁止寄与の (a)・(b) pass（違反 0）。
   - Graph arm の p95 は前回の 60.20 ms から上がった（Graph の結果が窓内に届く sample が増えたため。機構は未確認）。variant 別の p95（開示）は G-04/base 116.5、G-02/base 108.3、G-07/base 100.8、G-05/base 100.3 ms が 94.2 ms を超える。判定は G-case の母集団全体の p95 で、variant 別では判定しない。
+- **`G-03/frontier-exceeded` の「表示 0／0／0」は期待（unavailable）と合うが、理由の種類は期待（`graph-limit-exceeded`）と違う**：Suspended の連鎖（`registration-unavailable`、`startSlot: suspended`）で unavailable になっている。この判定は `expectedGraph === "unavailable"` だけを見て reasonClass を見ない（`quality-verdict.mjs:519`）。
+- p95 は nearest-rank（ceil(0.95n)）で、線形補間なら Graph arm 89.2 ms。上位 20 件が 92.7〜116.5 ms に密集している。JSON の `firstFormalRun.atUtc`（17:38:52Z）は SP-P4 receipt の `head.runStartedAtUtc`（admission の後）で、実施記録の 17:45:09Z（台帳）とは別の時刻。
 - この判定は S6 の可用性の集計とは別の補助で、S6 の規則を置き換えない。
