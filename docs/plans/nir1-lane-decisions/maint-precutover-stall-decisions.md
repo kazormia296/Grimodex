@@ -369,3 +369,74 @@ slot が Suspended）は DB 接続の根本改善・段 1 に吸収されない�
   - 実物の `current_operation_mode(…, true)` を本物の lease で呼ぶ試験を足した（`build_tests.rs` の 3 本：`the_real_periodic_check_skips_a_busy_connection_without_a_waiter`〔維持が接続を保持中は `None`、waiter は 0 のまま、待たない〕、`..._over_a_free_connection_gives_the_verdict`〔周期・前景とも `Some(true)`〕、`..._stops_before_it_can_skip`〔期限切れの lease と古い request は busy でも先に `Some(false)`〕）。lease は `begin` と同じ組み方（`read_chronicle_query_status_with_control` の本物の snapshot から `Operation` を作る）。これで「試験 4 は作れていない」は解消した。
   - そのため grimodex-db に、既存の test 用 feature `workspace-maintenance-test-support`（default は空。node の dev-dependency でだけ有効で、製品・標準 build・評価 build には入らない）の下に `synthetic_embedded_outcomes_for_test` を足した（`nir1_chronicle_index/outcome_audit.rs`）。audit 5 event の構築は `test_support.rs`（`#[cfg(test)]`）から移して共有しただけで、複製はしていない。feature を付けない `cargo check`（db・node）と `--features nir1-graph-eval` の check は、変更前と同じく通る。製品の挙動と default／eval の公開面は変えていない。
   - **大きな DB の Verify の読み（コードの事実、読み手の調査）**：取り消された Verify は**最初からやり直し**で、取り消しの粒度は run 全体（走査は 1 phase・1 つの immediate tx。`restore_rebuild.rs:4592〜`・`:5608`。取り消されると outcome が無く何も引き継がない。`maintenance_lifecycle.rs:1796-1850`）。したがって**中断なしで約 10 秒（skip 40 連続の窓）を超える Verify は終わらない恐れ**がある（推測。測定は別）。走査だけを単独で測る道具は `nir1-material-capacity`（feature `nir1-material-diagnostics`、`--mode coverage` の `coverage_ms`）。
+
+## DR-MPS-16 譲った tick の再試行を速くする（#843 の編集 trace への影響。2026-11-09）
+
+経緯：DR-MPS-15（#843、master `4594820d`）の「未測定」だった編集 trace の失効への影響を、凍結外の dev 環境で測った（dev の結果は判定に数えない）。
+pre＝master に #843 の revert を載せたもの（#843 より前と同じコード）、post＝`4594820d`。評価 build は計装なし、cold DB は同じ setup の写し、arm は交互、
+fixture は `dev-lantern.v1.json` の `base`（`setup-driver.mjs`）、trace は `trace-runner.mjs --trace-kind editing --cycles 100`（1 本＝101 query）、各 arm 5 本。
+委任の根拠は DR-MPS-15 と同じ読み（integrator の読み。AGENTS.md の NIR-1 の残レーンの worker／owner／lifecycle の技術判断）で、重要な変更（公開・送信先・保存・閾値・不可逆）のどれにも当たらない。
+
+### 事実（実測。dev・判定に数えない）
+
+- **post だけに、query の開始時に Chronicle index が使えない（`snapshot.chronicleIndexUsable:false`、`irOutcome:index-unavailable`、製品の再 query〔`requeries.index-ready`〕）が出た：pre 0／505、post 4／505（0.8%）**。post の 5 本中 4 本に 1 件ずつ（別の位置：33、50 件目など）。run 単位の Fisher 片側 p≈0.024（4／5 対 0／5）。本数が少ない。`graph-late` は pre 1／post 2。snapshot・a3・slot・経過時間（p50 約 48 ms）は同じ。生データは `handoff/s7r1-chain-instr/m-phaseC-all-raw.jsonl`、解析は `m-trace-analyze.mjs`。
+- 同じ構成の a1 型の Gold（`DEV-SHAPE-G03/frontier-exceeded`、setup 3 つ、各 arm 3 回）は 6／6 とも通り、Verify の完了・sample の経過時間・起動から最初の sample までに差は見えない。a2 型は pre が V-10 で停止、post が通る（DR-MPS-15 のとおり）。
+- 評価の物差し `AVAILABILITY_YARDSTICK`＝1%（`constants.mjs:156`、`exceedsYardstick` は「1% を**超える**」。`numerator*100 > denominator`）。正式の編集 trace は Q≥200（前回は Q＝201、失効 1／201）で、許容は 2 件まで（3 件で超える）。post の 0.8% は 201 件あたり約 1.6 件で、**物差しを超える危険がある**（dev-lantern は小さい fixture で、正式の G-02/base とは別物。超えるとは言えない）。
+- 失効に数える形：初回 snapshot の `chronicleIndexUsable:false` は失効 (i) の Chronicle の停止（DR-CP4-H-5）。
+
+### 原因の見立て（推測。計装は未）
+
+保存（autosave の commit）の後、Related Scenes の index が古くなる。それを見つけて作り直すのは build task の周期 tick（250 ms ごと。#843 の前は waiter を立てて維持を取り消し、すぐ作り直した）。#843 の後は、保守（freshness 評価など）がその瞬間に接続を持っていると tick は `Skipped` になり、次の tick は 250 ms 後。保存の 400 ms 後の `begin` までに index が戻らないことがある。
+DR-MPS-15 の「残るリスク」（Related Scenes の無効化の発見が遅れる）が実測で出た形。native の `tracing` は subscriber が無く、`NIR1 build outcome` の debug 行は取れない（確認済み）ので、原因は A/B の結果で裏づける。
+
+### 判断
+
+1. **譲った tick の次の tick は 50 ms 後にする**（`Skipped` の後の待ち。従来は 250 ms）。1 回の try 取得は waiter を公表せず、取れなければまた飛ばすだけなので、維持を取り消さない。短い占有（維持の slice の間）ならすぐ取れ、保存の 400 ms 後に間に合う。費用は task あたり最大 20 回／秒の try 取得（workspace に task は 1 つ）。
+2. **skip の上限は回数でなく経過時間にする**：最初の skip から 10 s（従来の 250 ms × 40 と同じ長さ）を超えたら、次の 1 tick は従来どおり foreground で取る。再試行の間隔と上限を切り離すため。reconcile の上限（`MAX_CONSECUTIVE_SKIPPED_ROUNDS`）は build の定数と切り離し、40 round（約 10 s、round は 250 ms 間隔のまま）に固定する（従来と同じ。DR-MPS-15 が 2 つで 1 つの定数を共有していたのを分ける）。
+3. **変えないもの**：譲る経路の範囲（周期 tick と timer 由来の reconcile だけ）、`Skipped` が K＝40（DR-IRB-3）と stale の連続・待ち（DR-IRB-7）に中立なこと、`begin` の最初の tick・「次の 1 tick は譲らない」の通知、reconcile の挙動、N-API・IPC・Main の契約。
+4. **この PR に入れない**：大きい DB の Verify（下の「別 lane」）、書き込みの信号による build task の即時の foreground 化（下の代替案）、build task の Idle の 4 Hz の polling の整理。
+
+### 信頼境界と変えないもの
+
+- 新しい送信先・保存範囲・契約・authority は無い。変えるのは native の build の loop の待ちと上限の持ち方だけ（`electron/native/grimodex-node/src/related_scenes/build.rs`、`related_scenes.rs` の定数の切り離し）。renderer・IPC・Main・db の公開面は変えない。
+- 閾値：K＝40、DR-IRB-7 の値、評価の物差し（1%）、Gold・S4 の pin には触れない。skip の上限は時間で表すが長さは同じ 10 s（緩和でも強化でもない）。
+
+### owner／lifecycle matrix
+
+| 状態 | 修正前（#843） | 修正後 |
+|---|---|---|
+| 維持が接続を持っていない | 周期処理は取る | 同じ |
+| 維持が接続を持っている：build の周期 tick | `Skipped`（250 ms 後または直前の待ち） | `Skipped`（**50 ms 後**）。waiter は公表しない |
+| skip が続く：最初の skip から 10 s 未満 | 譲り続ける（40 回まで） | 譲り続ける（10 s まで） |
+| skip が続く：10 s 以上 | 次の 1 tick は foreground | 同じ（回数でなく時間で判定） |
+| timer 由来の reconcile が busy | skip（40 round まで） | 同じ（上限は reconcile 専用の定数 40） |
+| 書き込みの wake・`begin` の最初の tick・「次の 1 tick は譲らない」の通知・`StaleRetry`・`ReaderRetry` | 譲らない | 同じ |
+| workspace の失効・世代交代・lease の期限切れ・mutex の poisoned・quarantine | 従来 | 同じ |
+| task の停止（`Stopped`・reader の連続 K 回・weak state の消滅） | 停止して reservation を解放 | 同じ（50 ms の待ちの間の停止も同じ経路） |
+
+### 別 lane：大きい DB の Verify は #843 の後も 10 s の窓に収まらない（この PR に入れない）
+
+capacity probe（`nir1-material-capacity --mode coverage`、release build、各 5 回、`handoff/s7r1-chain-instr/m-capacity/`）：Verify の走査（`verify_dependency_graph_snapshot_with_control`）は、`Q8176/R16`（材料 8,176 件）で約 6.9 s、`D2064/report-heavy`（候補 2,064 件・edge 4,128 本）で約 16.4 s（中断なし）。
+走査は run 全体の取り消しの単位で、取り消された Verify は最初からやり直す（`restore_rebuild.rs:4592〜`・`:5608`、`maintenance_lifecycle.rs:1796-1850`。読み手の調査）。したがって約 10 s を超える Verify は、skip の上限や維持を取り消す他の経路（`begin`・`continue_query`・click など）で取り消され続けて終わらない恐れがある。#843 の前は 250 ms ごとに取り消されていたので #843 の回帰ではない。周期処理の上限をどう変えても直らず、根は Verify が再開できないこと。設計は別 lane（実在する project の大きさの確認を含む）。
+
+### 代替案
+
+- 書き込み（IPC の変更系 command）の後に build task へ「次の tick は譲らない」と伝える：保存の 400 ms 後の begin までに確実に戻せる。ただし N-API・Main の契約を広げる（新しい呼び出し）。50 ms の再試行で足りるかを先に確かめ、足りないとき（A/B で 1 件でも出る、または占有が 400 ms を超えると分かる）にだけ採る。
+- try 取得の中で数十 ms だけ待つ（waiter は公表しない）：同じ効果だが、blocking thread を最大で待ち時間の分だけ占める。再試行を縮める方が単純。
+- #843 の revert：連鎖（V-10→Suspended）が戻る。採らない。
+
+### 検証の計画（実装の後に追記する）
+
+基点は `4594820d`（rusqlite を上げた master に載せると同梱 SQLite の版が変わり、比較が混ざる）。評価 build は計装なし。同じ setup（`m-L1`〜`m-L5`）の写しで、編集 trace（100 サイクル）を修正後 5 本と、既存の pre／post と対にして比べる。a2 型の Gold を 3 回（連鎖が戻っていないか）。0／505 になっても根拠は同じ程度に弱い（run 単位 p≈0.024）ので、1 件でも出れば「直った」とせず本数を足す。A/B は dev で判定に数えない。
+
+### 実装後の追記（2026-11-10。A/B の結果と、取り消した懸念）
+
+実装は `build.rs`（`YIELD_WINDOW`＝10 s、`SKIP_RETRY_DELAY`＝50 ms、`RetryPolicy` の 2 field、`next_tick_mode` と `next_skipping_since` を時間で判定、`Skipped` の後の sleep は `min(引き継いだ wait, 50 ms)`）と `related_scenes.rs`（reconcile の上限を 40 round の独立した定数に）。DR と食い違う点は無い。試験は `related_scenes` が 120 件、新しい timing の試験（`the_tick_after_a_skip_comes_after_the_short_skip_delay`、`the_loop_yields_until_the_window_passes_then_yields_again`、`a_non_skip_outcome_resets_the_skip_window`）は 2 回続けて通った。
+
+A/B（基点 `4594820d`、評価 build は計装なし、同じ setup の写し。dev・判定に数えない。生データ `handoff/s7r1-chain-instr/`）：
+- **編集 trace（dev-lantern の `base`、100 サイクル＝101 query、各 arm 5 本）**：query の開始時に Chronicle index が使えない件は **pre 0／505、post（#843）4／505、fix 0／505**。pre と post は時間を交互に走らせ、fix は後の（I/O の負荷が高い）時間帯で、fix に不利な条件でも 0 だった。`graph-late` は pre 1／post 2／fix 2。fix の 1 本に `registration-unavailable` が 1 件（1／505。pre・post は 0／505。偶然と区別できない。観察として記録）。1 件でも出れば本数を足す、の基準は fix の `index-unavailable` が 0 なので満たしている（run 単位 0／5 対 post 4／5、片側 p≈0.024）。
+- **a2 型の Gold（連鎖が戻っていないか）**：fix 3／3 が measured、Graph の結果は 35／35 `limit`・slot empty、Verify は最初の tick から約 4 s で完了（post と同じ）。a1 型も fix 3／3、計装版（静かな時間帯）の post／fix 各 3 回も同じ。
+- **一度出した懸念（Graph の raw 取得が約 50 秒周期で 0.2〜2 s 遅れる）は取り消す**：g27／g55 付近（約 47〜50 s と約 96〜100 s）の周期的な軽い遅れ（55〜71 ms、通常 20 ms）は **pre にもある**（a1 型 3 回すべて）。大きな遅れ（200 ms〜2 s）は I/O pressure の高い時間帯の run にだけ出た（watcher の `pressure.io` の平均が 77〜80 の run。静かな時間帯の run は 61〜69 で、pre・post・fix とも 46〜77 ms）。arm 間の差ではなく、時間帯（環境）の差と読む。周期の事象そのものの正体（WAL の背景 checkpoint などの推測）は未確認で、この PR の範囲外。
+- 計装（接続の保持・foreground の待ち・build の tick の dev 専用の JSON 行。merge しない）の記録でも、静かな時間帯の 6 回では 100 ms を超える foreground の待ちは 0 件で、`tick` の skip が 44〜50 s と 99〜102 s に出る（接続が使用中の瞬間）。
+
+残る：dev-lantern は小さい fixture で、正式の G-02/base とは別物。評価の物差し（失効 1% を超える）は正式の測定でしか判定できない。大きい DB の Verify（別 lane）、周期的な軽い遅れの正体は未確認。
