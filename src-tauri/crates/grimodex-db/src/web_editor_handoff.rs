@@ -494,6 +494,10 @@ fn import_web_editor_workspace_inner(
     let database = Database::new(&database_path)?;
     database.with_conn(harden_untrusted_connection)?;
     database.migrate()?;
+    // The handoff database is untrusted input: a lineage it carries must not
+    // become this workspace's identity (DR-DBC-3). Migrate only mints one when
+    // it is missing or malformed.
+    database.with_conn(|conn| crate::write_clock::rotate_db_lineage(conn).map(drop))?;
     let expected_schema = expected_schema_contract()?;
     validate_c2zc_native_table_contracts(&database, &expected_schema)?;
     rebuild_trusted_schema_objects(&database, &expected_schema)?;
