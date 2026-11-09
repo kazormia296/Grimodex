@@ -49,6 +49,7 @@ use super::execution_state::{
     transition_run_status_in_tx, NarrativeRunStatus,
 };
 use super::models::ClaimTaskPayload;
+use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
 use super::publish_runtime::{
     publish_freshness_evaluation_edges_only_in_tx, seed_consumer_freshness_unknown_in_tx,
     verify_publish_reservation_in_tx,
@@ -58,7 +59,6 @@ use super::restore_rebuild::{
     build_edge_comparison_input_from_source_state, resolve_edge_source_state,
     resolve_edge_source_state_with_control, ResolvedEdgeSourceState,
 };
-use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
 use super::semantic_epoch::get_current_epoch;
 use super::task_leases::{claim_next_task, verify_task_lease, with_immediate_transaction};
 use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
@@ -561,11 +561,7 @@ where
         owner: lifecycle_control,
     };
     db.with_background_connection_priority(|| {
-        run_serialized_cycle_with_control(
-            db,
-            freshness_hold_project_id,
-            Some(&mut graph_control),
-        )
+        run_serialized_cycle_with_control(db, freshness_hold_project_id, Some(&mut graph_control))
     })
 }
 
@@ -6620,9 +6616,11 @@ mod tests {
             None,
         );
         assert_eq!(routed(&scope), Some(projection("s1")));
-        assert!(affected_source_identities(PROJECT_ID, std::slice::from_ref(&scope))
-            .unwrap()
-            .contains(&projection("s1")));
+        assert!(
+            affected_source_identities(PROJECT_ID, std::slice::from_ref(&scope))
+                .unwrap()
+                .contains(&projection("s1"))
+        );
         assert!(
             event_signals_by_source(PROJECT_ID, std::slice::from_ref(&scope))
                 .unwrap()
@@ -6910,7 +6908,12 @@ mod tests {
                  payload, session_id, sequence, timestamp, prev_hash, hash)
              VALUES (?1, ?2, ?3, 'scene', 'scene.update', 'scene', ?3,
                      '{}', 'c2-1-phase-cas', ?4, 1787078400000, 'fixture-prev', 'fixture-hash')",
-            params![format!("canonical-feed-{sequence}"), PROJECT_ID, SCENE_ID, sequence],
+            params![
+                format!("canonical-feed-{sequence}"),
+                PROJECT_ID,
+                SCENE_ID,
+                sequence
+            ],
         )?;
         conn.execute(
             "INSERT INTO narrative_change_transactions
@@ -7233,7 +7236,10 @@ mod tests {
             vec![("failed".to_owned(), Some(EXHAUSTED_CODE.to_owned()))]
         );
         let (_, active_run_id) = freshness_cursor(&db);
-        assert!(active_run_id.is_some(), "a dead-letter keeps its reservation");
+        assert!(
+            active_run_id.is_some(),
+            "a dead-letter keeps its reservation"
+        );
         assert!(matches!(
             run_incremental_freshness_cycle(&db).expect("a dead-letter is idle"),
             IncrementalFreshnessCycleOutcome::Idle
@@ -8168,12 +8174,8 @@ mod tests {
             })
             .expect("count fixture runs");
         let mut stopped = StopBeforeFreshness;
-        let error = run_incremental_freshness_cycle_with_lifecycle_control(
-            &db,
-            None,
-            &mut stopped,
-        )
-        .expect_err("stopped Freshness must not reserve a run");
+        let error = run_incremental_freshness_cycle_with_lifecycle_control(&db, None, &mut stopped)
+            .expect_err("stopped Freshness must not reserve a run");
         assert!(error.to_string().contains("NEX_VALIDATION_TERMINATED"));
         let after_runs = db
             .with_conn(|conn| {
@@ -8189,7 +8191,10 @@ mod tests {
         let mut allowed = CountingFreshnessControl { checks: 0 };
         run_incremental_freshness_cycle_with_lifecycle_control(&db, None, &mut allowed)
             .expect("valid lifecycle context should allow a bounded cycle");
-        assert!(allowed.checks >= 2, "cycle did not use lifecycle checkpoints");
+        assert!(
+            allowed.checks >= 2,
+            "cycle did not use lifecycle checkpoints"
+        );
     }
 
     /// DR-JF-9 M1 (SCHEMA 45): the migration gives back the reservation of a
@@ -8273,7 +8278,13 @@ mod tests {
         #[allow(clippy::type_complexity)]
         fn reservation(
             db: &Database,
-        ) -> (Option<String>, Option<i64>, Option<String>, i64, Option<String>) {
+        ) -> (
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            i64,
+            Option<String>,
+        ) {
             db.with_conn(|conn| {
                 Ok(conn.query_row(
                     "SELECT active_run_id, reserved_through_sequence, semantic_epoch_id,
@@ -8282,7 +8293,13 @@ mod tests {
                       WHERE project_id = ?1 AND consumer_id = ?2",
                     params![PROJECT_ID, CURSOR_CONSUMER_ID],
                     |row| {
-                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
                     },
                 )?)
             })
@@ -8416,7 +8433,11 @@ mod tests {
                     .any(|prefix| stored.starts_with(prefix)),
                 "{code}: the stored message {stored:?} begins with a guard prefix"
             );
-            assert_eq!(release(&db), 1, "{code}: a real guard exhaustion is released");
+            assert_eq!(
+                release(&db),
+                1,
+                "{code}: a real guard exhaustion is released"
+            );
             assert_eq!(reservation(&db).0, None);
         }
 
@@ -8659,12 +8680,50 @@ mod tests {
         }
 
         #[test]
-        fn the_marker_only_step_from_schema_44_releases_and_stamps_together() {
+        fn schema_46_finalize_does_not_release_v45_dead_letters() {
+            // The marker-only 45 -> 46 step (the clock is already installed) and
+            // the full pass over a 45 workspace without a clock both leave the
+            // dead-letters a 45 build created: the release is the 45 migration's.
             let db = dead_lettered_by_contention();
             let before = terminal_records(&db);
+            let reserved = reservation(&db);
             set_user_version(&db, grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION);
             db.migrate().expect("finalize the previous marker");
-            assert_released_and_caught_up(&db, &before);
+            assert_eq!(user_version(&db), grimodex_core::SCHEMA_VERSION);
+            assert_eq!(terminal_records(&db), before);
+            assert_eq!(reservation(&db), reserved);
+            assert!(reserved.0.is_some());
+
+            // 45 without the clock: the full migration installs it and stamps 46.
+            let db = dead_lettered_by_contention();
+            let before = terminal_records(&db);
+            let reserved = reservation(&db);
+            db.with_conn(|conn| {
+                let triggers: Vec<String> = conn
+                    .prepare(
+                        "SELECT name FROM sqlite_master
+                          WHERE type = 'trigger' AND name GLOB 'grimodex_clock_*'",
+                    )?
+                    .query_map([], |row| row.get(0))?
+                    .collect::<Result<_, _>>()?;
+                for name in triggers {
+                    conn.execute_batch(&format!("DROP TRIGGER \"{name}\""))?;
+                }
+                conn.execute_batch(&format!(
+                    "DROP TABLE grimodex_write_clock; DROP TABLE grimodex_db_lineage;
+                     PRAGMA user_version = {};",
+                    grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION
+                ))?;
+                Ok(())
+            })
+            .expect("make the workspace a 45 without the clock");
+            db.migrate().expect("full pass from 45");
+            assert_eq!(user_version(&db), grimodex_core::SCHEMA_VERSION);
+            assert!(db
+                .with_conn(|conn| Ok(grimodex_core::write_clock::has_v46_write_clock(conn)?))
+                .expect("clock"));
+            assert_eq!(terminal_records(&db), before);
+            assert_eq!(reservation(&db), reserved);
         }
 
         #[test]
@@ -8701,7 +8760,8 @@ mod tests {
             let before = terminal_records(&db);
             let reserved = reservation(&db);
             db.migrate_for_restore_preflight().expect("first full pass");
-            db.migrate_for_restore_preflight().expect("second full pass");
+            db.migrate_for_restore_preflight()
+                .expect("second full pass");
             assert_eq!(terminal_records(&db), before);
             assert_eq!(reservation(&db), reserved);
             assert!(reserved.0.is_some());
@@ -8710,7 +8770,7 @@ mod tests {
         #[test]
         fn the_restore_preflight_of_an_older_workspace_releases() {
             for from in [
-                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 1,
                 grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 5,
             ] {
                 let db = dead_lettered_by_contention();
@@ -8740,9 +8800,9 @@ mod tests {
 
         fn allow_everything(db: &Database) {
             db.with_conn(|conn| {
-                conn.authorizer(None::<
-                    fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization,
-                >)?;
+                conn.authorizer(
+                    None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>,
+                )?;
                 Ok(())
             })
             .expect("remove the stamp failure hook");
@@ -8751,8 +8811,8 @@ mod tests {
         #[test]
         fn a_failure_after_the_release_rolls_it_back_and_a_later_open_retries() {
             for from in [
-                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
                 grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 1,
+                grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION - 2,
             ] {
                 let db = dead_lettered_by_contention();
                 let before = terminal_records(&db);

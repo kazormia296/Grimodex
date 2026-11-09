@@ -4613,6 +4613,12 @@ impl Database {
             if current < 45 {
                 Self::release_contended_freshness_exhaustions_v45(&conn)?;
             }
+            // SCHEMA 46 / DR-DBC-3: the write clock, its lineage row and the
+            // per-table triggers. Idempotent and last, so every table the
+            // passes above created is covered; inside the same savepoint as
+            // the invariant check and the stamp, so a failure unwinds them
+            // together. A converged database executes no DDL here.
+            crate::write_clock::install_write_clock_in_tx(&conn)?;
             anyhow::ensure!(
                 grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(&conn)?,
                 "workspace schema did not satisfy current schema invariants after migration"
@@ -8521,9 +8527,10 @@ impl Database {
     /// as the terminal records they are. The write is idempotent: a released
     /// cursor no longer reserves a Run, so a second pass matches nothing.
     ///
-    /// Callers own the transaction (the full migration's savepoint or the
-    /// previous-marker finalize's `BEGIN IMMEDIATE`) so the release and the
-    /// `user_version` stamp commit or roll back together.
+    /// Caller owns the transaction (the full migration's savepoint, only for a
+    /// workspace older than 45) so the release and the `user_version` stamp
+    /// commit or roll back together. The previous-marker finalize does not
+    /// call this: a 45 workspace's dead-letters stay visible.
     pub(crate) fn release_contended_freshness_exhaustions_v45(
         conn: &Connection,
     ) -> anyhow::Result<usize> {
@@ -8651,9 +8658,10 @@ impl Database {
                         return Ok(ConvergedPreviousFinalize::NeedsFullMigration);
                     }
                     Self::recover_interrupted_post_effect_runs(conn)?;
-                    // SCHEMA 45 has no DDL: the marker-only step carries the
-                    // data repair, inside the same write reservation as the stamp.
-                    Self::release_contended_freshness_exhaustions_v45(conn)?;
+                    // The marker-only step carries no repair of its own. The
+                    // SCHEMA 45 dead-letter release belongs to the full migration
+                    // of a workspace older than 45 (`current < 45`): a 45
+                    // workspace's dead-letters are the visible ones and stay.
                     conn.pragma_update(None, "user_version", schema_version)?;
                     grimodex_core::commit_or_rollback(conn)?;
                     Ok(ConvergedPreviousFinalize::Finalized)

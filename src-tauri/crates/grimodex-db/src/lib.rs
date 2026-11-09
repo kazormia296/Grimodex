@@ -948,6 +948,7 @@ pub(crate) mod open_wal;
 pub mod recovery;
 pub mod state;
 pub mod web_editor_handoff;
+pub mod write_clock;
 pub mod workspace;
 pub mod workspace_lease;
 pub mod workspace_lifecycle;
