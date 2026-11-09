@@ -306,3 +306,22 @@ lease の timeout の案内文を出す画面の場所、SQLite が TRIGGER 本�
 - `grimodex_clock_<実表>_ai` と同じ名前で本体を差し替えた TRIGGER は authorizer では見分けられず、`has_v46_write_clock` の SQL 完全一致の領分（追記 1 のとおり）。
 - 製品の Cargo に `rusqlite/backup` の feature が入る crate（`grimodex-semantic`・`grimodex-post-effect`・`nir1-material-diagnostics`）の manifest は、grep 試験の source の規則とは別で、今回は規則にしていない。
 - 保存の経路（`scene_body.rs` など）の `prepare_cached` 化は PR-1 では行わない。文ごとの TRIGGER の compile は残るので、1 文化の後の G1 の測り直しの結果で次の判断をする。
+
+### 実装中の追記 3（2026-11-10。U7 の後の再測定と、gate の現状）
+
+候補：U7 の HEAD `c8c6ebe4`（TRIGGER の本体が 1 文、集合を cache）。生データ・集計は `~/.claude/projects/-home-grimodex-Grimodex/handoff/db-stage1-pr1-gates/` の `results-u7.md`（Rust 水準）と `results-u7-ipc.md`（IPC 水準）、`raw-u7-*.jsonl`、`raw-u7-ipc-runs/`。repo には置かない。DB は版 43（ir-timing）と 44（ir-admission-perf の g-ja-1）で、45 ではない。
+
+| 項目 | U7 の前（追記 2） | **U7 の後** |
+|---|---|---|
+| G1 保存の p50（Rust 水準。製品の関数を直接。on／off、100 回×3 process） | +14.8%／+15.1%（約 +1.0 ms） | **+6.1%（ir）／+5.3%（g-ja-1）**（約 +0.4 ms） |
+| **G1 保存の IPC の p50（W0、base `bc0b06c1` 対 head `d7af3a71`、各 DB 5 run 交互、先頭を捨てる）** | 未測定 | **+9.1%（ir：9.9→10.8 ms）／+7.8%（g-ja-1：10.2→11.0 ms）**（約 +0.8〜0.9 ms）。run ごとの p50 は ir で重なり、g-ja-1 では重ならない |
+| G2 publish（実 publish 6 回、884 revision、3,367 発火） | −0.6%（検出できない） | −1.0%（検出できない）。行数×Δµs/行で 0.05〜0.8% |
+| G3 project 削除（63,640 発火） | +17.5% | p50 −1.0%（平均 +2.6%。off が前回より約 0.9 s 遅く、絶対値は前回と比べられない） |
+| authorizer の集合（renderer の書込み 1 文に占める割合） | 約 68%（442 µs） | cache hit 2.3 µs で約 1.6%、miss（DDL 直後）356 µs |
+| 記録だけ | 移行 202〜511 ms、open +2.8 ms、DB +0.21 MB、trigger の SQL 152 KB | 移行 181〜447 ms、open +1.3 ms、DB +0.13 MB、trigger の SQL 76 KB |
+
+**gate の現状**：**G1 は IPC 水準で +5% を超える**（+7.8〜9.1%、絶対で約 +0.8〜0.9 ms／保存、10 ms 台前半の保存が 1 ms 弱延びる）。G2 は 1% 以内。G3 の線は未決。C8 の取り決め（gate を 2 段に分け、**未達は止まって再相談。線の緩和は必ずユーザーに確認**）に従い、**この PR は Draft のまま、G1 の扱いをユーザーに伺う**。
+
+**前の所見の訂正**：U7 の前の測定で「主因は文のたびに TRIGGER の本体を compile する費用」としたが、根拠が足りなかった。同じ文を 100 回流す micro では on−off が +6〜12 µs／文、1000 回では約 +220〜280 µs／文になり、prepare と `prepare_cached` で同じ値になる。compile の費用ではなく、**commit ごとに clock のページが 1 つ余計に書かれ、WAL の autocheckpoint が早まる**側の可能性があるが、特定していない。`prepare_cached` 化で減るのは 1 文あたり約 3〜6 µs（15 文で 0.6〜2%）と見積もれ、それだけでは足りない。IPC の上乗せが Rust 水準（+0.4 ms）より大きい理由（+0.8〜0.9 ms）も未調査。保存 1 回の書込み文 24 のうち clock が発火する文は 15（`narrative_field_authority` の INSERT が 7、`tree_nodes` の UPDATE、`change_events`、`narrative_change_transactions`／`events`／`object_heads`、`narrative_semantic_index_metadata`、`state_snapshots`、`idempotency_requests`）。
+
+**上乗せを下げる選択肢（いずれも設計の判断）**：(1) 保存の経路の `prepare_cached` 化（効果は 1〜2%。製品の保存コードに触れる）。(2) 保存と必ず一緒に書かれる派生・帳簿の表（例：`narrative_field_authority`、`idempotency_requests`）を trigger の対象から外す（発火が減る。**1c の「除外の表」で、脅威モデルの改訂と C6 (b) が前提**）。(3) gate の線を実測に合わせて決め直す（ユーザーの確認が要る）。(4) PR-1 を止めて別の機構を検討する。
