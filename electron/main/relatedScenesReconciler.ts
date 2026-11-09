@@ -1,7 +1,10 @@
 const RECONCILIATION_INTERVAL_MS = 250;
 
 interface ReconcilerOptions {
-  readonly reconcile: () => Promise<{ readonly activeOperations: number }>;
+  /** `periodic` is true only for a timer-driven round, which must not wait for
+   * a busy database connection (DR-MPS-15). A round that follows a commit
+   * (`wake`) passes false and waits as before. */
+  readonly reconcile: (periodic: boolean) => Promise<{ readonly activeOperations: number }>;
   readonly reportFailure?: (error: unknown) => void;
 }
 
@@ -20,20 +23,23 @@ export function createRelatedScenesReconciler(options: ReconcilerOptions) {
     timer = null;
   }
 
-  function schedule(delay: number) {
+  // `periodic` is captured per timer, never shared: only a timer armed by
+  // `track` or by the end of a run is periodic; `wake` (and the run queued
+  // behind a running one) is not.
+  function schedule(delay: number, periodic: boolean) {
     if (disposed || running || tickets.size === 0) return;
     stopTimer();
-    timer = setTimeout(() => { timer = null; void run(); }, delay);
+    timer = setTimeout(() => { timer = null; void run(periodic); }, delay);
     // Keep this observer from extending process lifetime during app shutdown.
     timer.unref?.();
   }
 
-  async function run() {
+  async function run(periodic: boolean) {
     if (disposed || running || tickets.size === 0) return;
     running = true;
     const capturedMutation = mutation;
     try {
-      const result = await options.reconcile();
+      const result = await options.reconcile(periodic);
       if (!Number.isSafeInteger(result.activeOperations) || result.activeOperations < 0) {
         throw new Error("RELATED_SCENES_INVALID_RECONCILIATION");
       }
@@ -42,9 +48,9 @@ export function createRelatedScenesReconciler(options: ReconcilerOptions) {
       options.reportFailure?.(error);
     } finally {
       running = false;
-      const delay = wakeQueued ? 0 : RECONCILIATION_INTERVAL_MS;
+      const woken = wakeQueued;
       wakeQueued = false;
-      schedule(delay);
+      schedule(woken ? 0 : RECONCILIATION_INTERVAL_MS, !woken);
     }
   }
 
@@ -56,7 +62,7 @@ export function createRelatedScenesReconciler(options: ReconcilerOptions) {
       owned.add(ticket);
       tickets.set(ownerKey, owned);
       mutation += 1;
-      if (timer === null) schedule(RECONCILIATION_INTERVAL_MS);
+      if (timer === null) schedule(RECONCILIATION_INTERVAL_MS, true);
     },
     release(ownerKey: string, ticket: string) {
       const owned = tickets.get(ownerKey);
@@ -72,7 +78,7 @@ export function createRelatedScenesReconciler(options: ReconcilerOptions) {
     wake() {
       if (disposed || tickets.size === 0) return;
       if (running) { wakeQueued = true; return; }
-      schedule(0);
+      schedule(0, false);
     },
     dispose() {
       disposed = true;

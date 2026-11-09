@@ -13367,10 +13367,12 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn related_scenes_reconcile(&self) -> Result<String> {
+    pub async fn related_scenes_reconcile(&self, periodic: Option<bool>) -> Result<String> {
         let state = Arc::clone(&self.state);
+        // Omitted means false: the caller waits for the connection as before.
+        let periodic = periodic.unwrap_or(false);
         napi::tokio::task::spawn_blocking(move || {
-            related_scenes::reconcile(&state).map(|value| value.to_string())
+            related_scenes::reconcile(&state, periodic).map(|value| value.to_string())
         })
         .await
         .map_err(join_err_to_napi)?

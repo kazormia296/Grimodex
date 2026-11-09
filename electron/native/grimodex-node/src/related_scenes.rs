@@ -20,7 +20,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::Notify;
@@ -35,6 +38,11 @@ mod scoring;
 const CAPACITY: usize = 128;
 const TTL: Duration = Duration::from_secs(300);
 const RAW_LIMIT: usize = 30;
+/// DR-MPS-15: how many periodic `reconcile` rounds in a row may skip a busy
+/// connection before the next one takes it like a foreground caller (250 ms ×
+/// 40 ≒ 10 s, the same bound as the build task's skips). It bounds how late a
+/// stale operation is noticed while maintenance keeps the connection.
+const MAX_CONSECUTIVE_SKIPPED_ROUNDS: u32 = 40;
 
 type Lease = Arc<RelatedScenesLease<Operation>>;
 type LeaseOf<T> = Arc<RelatedScenesLease<T>>;
@@ -42,6 +50,9 @@ type LeaseOf<T> = Arc<RelatedScenesLease<T>>;
 pub(crate) struct RelatedScenesService {
     registry: Mutex<RelatedScenesRegistry<Operation>>,
     builds: Mutex<RelatedScenesBuildRegistry>,
+    /// Periodic `reconcile` rounds in a row that skipped at least one check
+    /// because the connection was busy (DR-MPS-15).
+    skipped_rounds: AtomicU32,
 }
 
 impl Default for RelatedScenesService {
@@ -49,6 +60,7 @@ impl Default for RelatedScenesService {
         Self {
             registry: Mutex::new(RelatedScenesRegistry::new(CAPACITY, TTL)),
             builds: Mutex::new(RelatedScenesBuildRegistry::new(CAPACITY)),
+            skipped_rounds: AtomicU32::new(0),
         }
     }
 }
@@ -156,13 +168,25 @@ fn current_request(state: &AppState, request: &SemanticRequest) -> Result<bool> 
     Ok(generation == request.epoch().generation())
 }
 
+/// The check every user-driven path makes (return, click, Graph). It waits
+/// for the connection and announces itself as a foreground waiter.
 fn current_operation(state: &AppState, lease: &Lease) -> Result<bool> {
+    Ok(current_operation_mode(state, lease, false)?.unwrap_or(false))
+}
+
+/// `Ok(None)` only when `try_only` is set and the connection is in use: the
+/// canonical read was not made and no foreground waiter was announced, so the
+/// caller must treat it as "not checked", never as stale. The checks that need
+/// no database (lease expiry, snapshot, workspace and query validity) run
+/// first and give `Some(false)` as before, so a stale operation never
+/// survives by skipping.
+fn current_operation_mode(state: &AppState, lease: &Lease, try_only: bool) -> Result<Option<bool>> {
     if !lease.snapshot.original_snapshot_usable
         || !lease.snapshot.supported_profile
         || !lease.is_live(Instant::now())
         || !current_request(state, &lease.data.request)?
     {
-        return Ok(false);
+        return Ok(Some(false));
     }
     let op = &lease.data;
     let (batch, query) = {
@@ -175,11 +199,11 @@ fn current_operation(state: &AppState, lease: &Lease) -> Result<bool> {
             .validate_audited_query_current(query)
             .is_err()
     }) {
-        return Ok(false);
+        return Ok(Some(false));
     }
     let db = op.request.database();
     let mut control = build::RelatedScenesBuildControl::new(state, &op.request, &op.participant);
-    db.with_participant_read_transaction(&op.participant, |conn| {
+    let read_current = |conn: &_| -> Result<bool> {
         let RetrievalSceneSourceRead::Available(source) =
             read_retrieval_scene_source(conn, op.source.project_id(), op.source.scene_id())?
         else {
@@ -203,7 +227,13 @@ fn current_operation(state: &AppState, lease: &Lease) -> Result<bool> {
                 &mut control,
             ),
         }
-    })
+    };
+    if try_only {
+        db.try_with_participant_read_transaction(&op.participant, read_current)
+    } else {
+        db.with_participant_read_transaction(&op.participant, read_current)
+            .map(Some)
+    }
 }
 
 fn invalidate(state: &AppState, ticket: &str, lease: &Lease) -> Result<()> {
@@ -375,25 +405,80 @@ fn release_owner_from<T: LeaseEnd>(
     Ok(released)
 }
 
-pub(crate) fn reconcile(state: &Arc<AppState>) -> Result<Value> {
+/// `periodic` is true only for Main's timer-driven rounds (DR-MPS-15). Such a
+/// round does not wait for a busy connection: it must not announce itself as a
+/// foreground waiter, because that makes a running maintenance Verify hand the
+/// connection over every 250 ms and never finish. A check that could not be
+/// made leaves the ticket active (not invalidated, no rebuild, no event) and
+/// the next round looks again; `MAX_CONSECUTIVE_SKIPPED_ROUNDS` such rounds in
+/// a row make the next one wait like before. A round after a commit
+/// (`periodic = false`) always waits.
+pub(crate) fn reconcile(state: &Arc<AppState>, periodic: bool) -> Result<Value> {
     let entries = lock(&state.related_scenes.registry)?.entries();
-    let mut active = 0;
-    for (ticket, lease) in entries {
-        if current_operation(state, &lease).unwrap_or(false) {
-            active += 1;
-            continue;
-        }
-        invalidate(state, &ticket, &lease)?;
-        if current_request(state, &lease.data.request)? {
-            build::schedule(
-                state.clone(),
-                lease.data.request.clone(),
-                lease.data.participant.clone(),
-                lease.data.source.project_id().into(),
-            )?;
-        }
-    }
+    let active = reconcile_round(
+        &state.related_scenes.skipped_rounds,
+        periodic,
+        entries,
+        |lease, try_only| current_operation_mode(state, lease, try_only),
+        |ticket, lease| {
+            invalidate(state, ticket, lease)?;
+            if current_request(state, &lease.data.request)? {
+                build::schedule(
+                    state.clone(),
+                    lease.data.request.clone(),
+                    lease.data.participant.clone(),
+                    lease.data.source.project_id().into(),
+                )?;
+            }
+            Ok(())
+        },
+    )?;
     Ok(json!({"activeOperations":active}))
+}
+
+/// One `reconcile` round with the per-ticket check and the stale handling
+/// injected. `check(lease, try_only)` is `Ok(None)` when the check was not made
+/// (busy), `Ok(Some(current))` otherwise; an error counts as stale, as before.
+/// Returns the number of active operations. The skipped-round counter is
+/// updated even when `stale` fails.
+fn reconcile_round<L>(
+    skipped_rounds: &AtomicU32,
+    periodic: bool,
+    entries: Vec<(String, L)>,
+    mut check: impl FnMut(&L, bool) -> Result<Option<bool>>,
+    mut stale: impl FnMut(&str, &L) -> Result<()>,
+) -> Result<usize> {
+    let try_only =
+        periodic && skipped_rounds.load(Ordering::SeqCst) < MAX_CONSECUTIVE_SKIPPED_ROUNDS;
+    let mut skipped = false;
+    let mut active = 0;
+    let mut round = || -> Result<()> {
+        for (ticket, lease) in &entries {
+            match check(lease, try_only) {
+                Ok(None) => {
+                    skipped = true;
+                    active += 1;
+                    continue;
+                }
+                Ok(Some(true)) => {
+                    active += 1;
+                    continue;
+                }
+                Ok(Some(false)) | Err(_) => {}
+            }
+            stale(ticket, lease)?;
+        }
+        Ok(())
+    };
+    let result = round();
+    // Only a round that actually yielded counts; a waiting round (forced by
+    // the bound, or not periodic) or one that skipped nothing starts over.
+    if try_only && skipped {
+        skipped_rounds.fetch_add(1, Ordering::SeqCst);
+    } else {
+        skipped_rounds.store(0, Ordering::SeqCst);
+    }
+    result.map(|()| active)
 }
 
 pub(crate) fn qualify_evidence(state: &AppState, owner: &str, identity: &str) -> Result<Value> {
@@ -447,3 +532,7 @@ pub(crate) fn qualify_evidence(state: &AppState, owner: &str, identity: &str) ->
     }
     Ok(unavailable("cancelled"))
 }
+
+#[cfg(test)]
+#[path = "related_scenes/reconcile_tests.rs"]
+mod reconcile_tests;

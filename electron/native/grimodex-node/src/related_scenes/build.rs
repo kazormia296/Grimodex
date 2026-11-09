@@ -33,6 +33,13 @@ const STALE_RETRY_DELAY: Duration = Duration::from_millis(50);
 /// following ones go back to `RETRY_DELAY` until another outcome ends the run.
 /// Independent of the reader-retry streak (`K`).
 const MAX_CONSECUTIVE_STALE_RETRIES: u32 = 3;
+/// DR-MPS-15: how many periodic ticks in a row may yield the database
+/// connection (`BuildOutcome::Skipped`) before the next one takes it like any
+/// foreground caller. 250 ms × 40 ≒ 10 s, the same length as `K` and the
+/// renderer's read IPC deadline: longer than a maintenance Verify needs (about
+/// 3-4 s measured), and it bounds how late a stale index or a withdrawn
+/// operation can be noticed while maintenance keeps the connection.
+const MAX_CONSECUTIVE_SKIPS: u32 = 40;
 
 /// The waits and bounds of the build task's retry loop. Tests shorten them.
 #[derive(Clone, Copy)]
@@ -52,8 +59,74 @@ impl RetryPolicy {
     };
 }
 
-/// One build step of the task; production runs `build_once`, tests script it.
+/// How one tick of the task takes the database connection (DR-MPS-15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TickMode {
+    /// Like any foreground caller: waits, and announces itself as a waiter
+    /// (which makes a running maintenance Verify hand the connection over).
+    Foreground,
+    /// A periodic tick that may give way: the first connection acquisition is
+    /// one waiter-free try, and a busy connection ends the tick as
+    /// `BuildOutcome::Skipped` without having announced anything.
+    Yielding,
+}
+
+/// The mode of the next tick. Only a periodic tick yields: the task's first
+/// tick (`previous` is `None`, started by `begin`) never does, and neither does
+/// the retry that follows a publish-side `StaleRetry` or a reader retry (both
+/// are about work the user is waiting on or about the reader's own bound).
+/// After `Idle`, `Ready`, `Retry` or `Skipped` the tick yields, except that
+/// `max_skips` skips in a row make the next one a normal foreground tick.
+fn next_tick_mode(
+    previous: Option<&BuildOutcome>,
+    consecutive_skips: u32,
+    max_skips: u32,
+) -> TickMode {
+    match previous {
+        None | Some(BuildOutcome::StaleRetry) | Some(BuildOutcome::ReaderRetry(_)) => {
+            TickMode::Foreground
+        }
+        // `Stopped` ends the task, so no tick follows it.
+        Some(BuildOutcome::Stopped) => TickMode::Foreground,
+        Some(BuildOutcome::Idle)
+        | Some(BuildOutcome::Ready)
+        | Some(BuildOutcome::Retry)
+        | Some(BuildOutcome::Skipped) => {
+            if consecutive_skips >= max_skips {
+                TickMode::Foreground
+            } else {
+                TickMode::Yielding
+            }
+        }
+    }
+}
+
+/// The consecutive-skip count after a tick that ran in `mode`: a skip adds
+/// one; anything else, including the forced foreground tick that follows
+/// `max_skips` skips, starts the count over.
+fn next_skip_count(consecutive_skips: u32, mode: TickMode, outcome: &BuildOutcome) -> u32 {
+    match (mode, outcome) {
+        (TickMode::Yielding, BuildOutcome::Skipped) => consecutive_skips.saturating_add(1),
+        _ => 0,
+    }
+}
+
+/// One build step of the task, as the older tests script it (`schedule_with`
+/// adapts it to a `ModeStep`).
+#[cfg(test)]
 type BuildStep = dyn Fn(&Arc<AppState>, &SemanticRequest, &WorkspaceParticipant, &str) -> Result<BuildOutcome>
+    + Send
+    + Sync;
+
+/// A build step that is told how its tick may take the connection
+/// (`schedule_with` adapts a `BuildStep`, which ignores the mode).
+type ModeStep = dyn Fn(
+        &Arc<AppState>,
+        &SemanticRequest,
+        &WorkspaceParticipant,
+        &str,
+        TickMode,
+    ) -> Result<BuildOutcome>
     + Send
     + Sync;
 
@@ -63,18 +136,19 @@ pub(super) fn schedule(
     participant: grimodex_db::workspace_lifecycle::WorkspaceParticipant,
     project: String,
 ) -> Result<()> {
-    schedule_with(
+    schedule_with_mode(
         state,
         request,
         participant,
         project,
         RetryPolicy::PRODUCTION,
-        Arc::new(|state, request, participant, project| {
-            build_once(state, request, participant, project)
+        Arc::new(|state, request, participant, project, mode| {
+            build_once_with_mode(state, request, participant, project, mode)
         }),
     )
 }
 
+#[cfg(test)]
 fn schedule_with(
     state: Arc<AppState>,
     request: SemanticRequest,
@@ -82,6 +156,26 @@ fn schedule_with(
     project: String,
     policy: RetryPolicy,
     build: Arc<BuildStep>,
+) -> Result<()> {
+    schedule_with_mode(
+        state,
+        request,
+        participant,
+        project,
+        policy,
+        Arc::new(move |state, request, participant, project, _mode| {
+            build(state, request, participant, project)
+        }),
+    )
+}
+
+fn schedule_with_mode(
+    state: Arc<AppState>,
+    request: SemanticRequest,
+    participant: grimodex_db::workspace_lifecycle::WorkspaceParticipant,
+    project: String,
+    policy: RetryPolicy,
+    build: Arc<ModeStep>,
 ) -> Result<()> {
     if !current_request(&state, &request)? {
         return Ok(());
@@ -108,6 +202,11 @@ fn schedule_with(
         let mut reader_retry_streak: u32 = 0;
         // Consecutive `StaleRetry` (DR-IRB-7); also local to this task.
         let mut stale_retry_streak: u32 = 0;
+        // DR-MPS-15: what the previous tick returned (`None` before the first),
+        // how many ticks in a row yielded, and the wait a skip carries over.
+        let mut previous: Option<BuildOutcome> = None;
+        let mut consecutive_skips: u32 = 0;
+        let mut last_wait = policy.retry_delay;
         loop {
             let Some(state) = weak_state.upgrade() else {
                 break;
@@ -117,8 +216,15 @@ fn schedule_with(
             let work_project = project.clone();
             let work_participant = participant.clone();
             let work_build = Arc::clone(&build);
+            let mode = next_tick_mode(previous.as_ref(), consecutive_skips, MAX_CONSECUTIVE_SKIPS);
             let result = tokio::task::spawn_blocking(move || {
-                work_build(&work_state, &work_request, &work_participant, &work_project)
+                work_build(
+                    &work_state,
+                    &work_request,
+                    &work_participant,
+                    &work_project,
+                    mode,
+                )
             })
             .await;
             let outcome = match result {
@@ -128,10 +234,13 @@ fn schedule_with(
             let (next_streak, verdict) =
                 next_reader_retry_streak(reader_retry_streak, &outcome, policy.max_reader_retries);
             reader_retry_streak = next_streak;
-            let (next_stale_streak, wait) = next_retry_wait(stale_retry_streak, &outcome, &policy);
+            let (next_stale_streak, wait) =
+                next_wait(last_wait, stale_retry_streak, &outcome, &policy);
             stale_retry_streak = next_stale_streak;
+            last_wait = wait;
+            consecutive_skips = next_skip_count(consecutive_skips, mode, &outcome);
             tracing::debug!(target:"grimodex::nir1_index", outcome=outcome.label(),
-                reader_retry_streak,stale_retry_streak,wait_ms=wait.as_millis(),"NIR1 build outcome");
+                reader_retry_streak,stale_retry_streak,consecutive_skips,wait_ms=wait.as_millis(),"NIR1 build outcome");
             if let StreakVerdict::Stop(reason) = verdict {
                 // Logged once: the loop ends here and the reservation below
                 // is released (the next `begin` starts a fresh task).
@@ -152,9 +261,11 @@ fn schedule_with(
                 BuildOutcome::Retry
                 | BuildOutcome::StaleRetry
                 | BuildOutcome::ReaderRetry(_)
-                | BuildOutcome::Idle => {}
+                | BuildOutcome::Idle
+                | BuildOutcome::Skipped => {}
                 BuildOutcome::Stopped => break,
             }
+            previous = Some(outcome);
             drop(state);
             tokio::time::sleep(wait).await;
         }
@@ -180,6 +291,10 @@ enum BuildOutcome {
     /// `MAX_CONSECUTIVE_READER_RETRIES`.
     ReaderRetry(index::NirIndexUnavailableReason),
     Idle,
+    /// DR-MPS-15: a `Yielding` tick found the connection in use and did
+    /// nothing (no waiter was announced). It changes neither the reader-retry
+    /// streak nor the stale streak, and the task waits the same as before it.
+    Skipped,
     Stopped,
 }
 
@@ -191,6 +306,7 @@ impl BuildOutcome {
             Self::StaleRetry => "stale-retry",
             Self::ReaderRetry(_) => "reader-retry",
             Self::Idle => "idle",
+            Self::Skipped => "skipped",
             Self::Stopped => "stopped",
         }
     }
@@ -221,13 +337,32 @@ fn next_retry_wait(
             };
             (streak, wait)
         }
+        // Not used by the loop (see `next_wait`, which carries the previous
+        // wait over a skip); kept so the match stays total.
+        BuildOutcome::Skipped => (stale_streak, policy.retry_delay),
         _ => (0, policy.retry_delay),
+    }
+}
+
+/// `next_retry_wait`, except that a `Skipped` tick keeps both the stale streak
+/// and the wait that preceded it (DR-MPS-15): a skip is not an outcome of the
+/// build, so it must not restart or advance the DR-IRB-7 waits.
+fn next_wait(
+    previous_wait: Duration,
+    stale_streak: u32,
+    outcome: &BuildOutcome,
+    policy: &RetryPolicy,
+) -> (u32, Duration) {
+    match outcome {
+        BuildOutcome::Skipped => (stale_streak, previous_wait),
+        _ => next_retry_wait(stale_streak, outcome, policy),
     }
 }
 
 /// The reader-retry counter: a reader-caused `Retry` adds one and `K` of them
 /// in a row stop the task; every other outcome (`Ready`, `Idle`, an ordinary
-/// `Retry`, `StaleRetry`) resets it.
+/// `Retry`, `StaleRetry`) resets it, except `Skipped`, which neither adds nor
+/// resets (DR-MPS-15: a yielded tick says nothing about the reader).
 fn next_reader_retry_streak(
     streak: u32,
     outcome: &BuildOutcome,
@@ -242,6 +377,7 @@ fn next_reader_retry_streak(
                 (streak, StreakVerdict::Continue)
             }
         }
+        BuildOutcome::Skipped => (streak, StreakVerdict::Continue),
         _ => (0, StreakVerdict::Continue),
     }
 }
@@ -348,11 +484,26 @@ enum Prepared {
 /// (DR-IRB-3). The reader slot permit is taken first and is always either
 /// consumed by `with_chronicle_reader` or given back here: no early return
 /// leaves it taken unless the reader's close was not proven (E8 (a)).
+#[cfg(test)]
 fn prepare_on_reader(
     request: &SemanticRequest,
     participant: &WorkspaceParticipant,
     project: &str,
     control: &mut dyn GraphWorkControl,
+) -> Result<Prepared> {
+    prepare_on_reader_with_mode(request, participant, project, control, TickMode::Foreground)
+}
+
+/// `mode` only changes how the first database acquisition, the authority
+/// admission, is taken: `Yielding` tries once without announcing a waiter and
+/// a busy connection is `Skipped` (the reader permit is given back first).
+/// The reader's own work and everything after the admission are unchanged.
+fn prepare_on_reader_with_mode(
+    request: &SemanticRequest,
+    participant: &WorkspaceParticipant,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+    mode: TickMode,
 ) -> Result<Prepared> {
     let db = request.database();
     let runtime = db.nir_chronicle_index_runtime();
@@ -370,15 +521,27 @@ fn prepare_on_reader(
             index::NirIndexUnavailableReason::ReaderSlotBusy,
         )));
     };
-    let admission = match db.with_participant_read_transaction(participant, |conn| {
-        runtime.chronicle_reader_admission(conn, project, &mut *control)
-    }) {
-        Ok(index::ChronicleReaderAdmissionRead::Admitted(admission)) => admission,
-        Ok(index::ChronicleReaderAdmissionRead::Idle) => {
+    let read_admission =
+        |conn: &_| runtime.chronicle_reader_admission(conn, project, &mut *control);
+    let admission_read = match mode {
+        TickMode::Foreground => db
+            .with_participant_read_transaction(participant, read_admission)
+            .map(Some),
+        TickMode::Yielding => db.try_with_participant_read_transaction(participant, read_admission),
+    };
+    let admission = match admission_read {
+        // The connection is in use: nothing was read and no waiter was
+        // announced. Give the permit back like every other early return.
+        Ok(None) => {
+            permit.release_unused();
+            return Ok(Prepared::Finished(BuildOutcome::Skipped));
+        }
+        Ok(Some(index::ChronicleReaderAdmissionRead::Admitted(admission))) => admission,
+        Ok(Some(index::ChronicleReaderAdmissionRead::Idle)) => {
             permit.release_unused();
             return Ok(Prepared::Finished(BuildOutcome::Idle));
         }
-        Ok(index::ChronicleReaderAdmissionRead::Stopped) => {
+        Ok(Some(index::ChronicleReaderAdmissionRead::Stopped)) => {
             permit.release_unused();
             return Ok(Prepared::Finished(BuildOutcome::Stopped));
         }
@@ -431,11 +594,22 @@ fn prepare_on_reader(
     })
 }
 
+#[cfg(test)]
 fn build_once(
     state: &AppState,
     request: &SemanticRequest,
     participant: &WorkspaceParticipant,
     project: &str,
+) -> Result<BuildOutcome> {
+    build_once_with_mode(state, request, participant, project, TickMode::Foreground)
+}
+
+fn build_once_with_mode(
+    state: &AppState,
+    request: &SemanticRequest,
+    participant: &WorkspaceParticipant,
+    project: &str,
+    mode: TickMode,
 ) -> Result<BuildOutcome> {
     let started = Instant::now();
     if !current_request(state, request)? {
@@ -443,10 +617,11 @@ fn build_once(
     }
     let db = request.database();
     let mut control = RelatedScenesBuildControl::new(state, request, participant);
-    let (plan, documents) = match prepare_on_reader(request, participant, project, &mut control)? {
-        Prepared::Ready { plan, documents } => (plan, documents),
-        Prepared::Finished(outcome) => return Ok(outcome),
-    };
+    let (plan, documents) =
+        match prepare_on_reader_with_mode(request, participant, project, &mut control, mode)? {
+            Prepared::Ready { plan, documents } => (plan, documents),
+            Prepared::Finished(outcome) => return Ok(outcome),
+        };
     let prepared_at = Instant::now();
     let model = identity(
         state
