@@ -79,5 +79,9 @@ mod reader_tests;
 mod run_proof_memo_tests;
 #[cfg(test)]
 mod source_tests;
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+mod outcome_audit;
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+pub use outcome_audit::synthetic_embedded_outcomes_for_test;
 #[cfg(test)]
 mod test_support;
