@@ -1,0 +1,765 @@
+diff --git a/electron/native/grimodex-node/src/lib.rs b/electron/native/grimodex-node/src/lib.rs
+index 9de7b9e6..062daaf3 100644
+--- a/electron/native/grimodex-node/src/lib.rs
++++ b/electron/native/grimodex-node/src/lib.rs
+@@ -6867,6 +6867,7 @@ fn run_narrative_freshness_cycle_body(
+     state: &AppState,
+     after_cycle: impl FnOnce(),
+ ) -> std::result::Result<Option<String>, AppError> {
++    let _trace = grimodex_db::dev_trace::label("freshness-cycle-body");
+     let ci_config = state.narrative_maintenance_ci_seam.config();
+     let authority = match active_database(&state.ws) {
+         Ok(authority) => authority,
+@@ -7164,6 +7165,7 @@ fn run_narrative_freshness_cycle_inner(
+     state: &AppState,
+     after_cycle: impl FnOnce(),
+ ) -> std::result::Result<Option<String>, AppError> {
++    let _trace = grimodex_db::dev_trace::label("freshness-cycle-inner");
+     // Freshness is also a recovery pump.  A descriptor created by an earlier
+     // Freshness failure must be reconciled even when ordinary maintenance has
+     // no pending delivery to trigger its preflight.
+@@ -8848,6 +8850,7 @@ impl Backend {
+         &self,
+         payload: serde_json::Value,
+     ) -> Result<String> {
++        let _cycle_trace = grimodex_db::dev_trace::CycleGuard::begin();
+         let state = Arc::clone(&self.state);
+         // Recovery is delivery-independent. Resolve an exact descriptor
+         // before reserving a new execution so RecoveryRequired cannot reject
+diff --git a/electron/native/grimodex-node/src/nir1_graph_eval/mod.rs b/electron/native/grimodex-node/src/nir1_graph_eval/mod.rs
+index d6df5890..c6ebd1bb 100644
+--- a/electron/native/grimodex-node/src/nir1_graph_eval/mod.rs
++++ b/electron/native/grimodex-node/src/nir1_graph_eval/mod.rs
+@@ -711,6 +711,16 @@ pub(crate) fn diagnostics_json(state: &AppState) -> Value {
+         "deferredExpired": d.deferred_expired,
+         "deferredDropped": d.deferred_dropped,
+         "staleReadyRetired": d.stale_ready_retired,
++        "gate": {
++            "deferred": d.gate.deferred,
++            "waitedAdmit": d.gate.waited_admit,
++            "overridden": d.gate.overridden,
++            "stopped": d.gate.stopped,
++            "leaseExpired": d.gate.lease_expired,
++            "windowsOpened": d.gate.windows_opened,
++            "graphWaited": d.gate.graph_waited,
++            "graphWaitExpired": d.gate.graph_wait_expired,
++        },
+         "slot": slot_name(state.nir1_graph.slot_kind_for_eval()),
+         "cacheOccupied": state.nir1_graph.cache_occupied_for_eval(),
+         "clockNs": clock_ns(Instant::now()),
+diff --git a/electron/native/grimodex-node/src/related_scenes.rs b/electron/native/grimodex-node/src/related_scenes.rs
+index 49ed8385..d7468a16 100644
+--- a/electron/native/grimodex-node/src/related_scenes.rs
++++ b/electron/native/grimodex-node/src/related_scenes.rs
+@@ -322,6 +322,7 @@ pub(crate) async fn continue_query(
+             let current_state = state.clone();
+             let current_lease = lease.clone();
+             let current = tokio::task::spawn_blocking(move || {
++                let _trace = grimodex_db::dev_trace::label("related-scenes-continue/current-operation");
+                 current_operation(&current_state, &current_lease)
+             })
+             .await??;
+@@ -376,6 +377,7 @@ fn release_owner_from<T: LeaseEnd>(
+ }
+ 
+ pub(crate) fn reconcile(state: &Arc<AppState>) -> Result<Value> {
++    let _trace = grimodex_db::dev_trace::label("related-scenes-reconcile");
+     let entries = lock(&state.related_scenes.registry)?.entries();
+     let mut active = 0;
+     for (ticket, lease) in entries {
+diff --git a/electron/native/grimodex-node/src/related_scenes/build.rs b/electron/native/grimodex-node/src/related_scenes/build.rs
+index 74022752..75a0a429 100644
+--- a/electron/native/grimodex-node/src/related_scenes/build.rs
++++ b/electron/native/grimodex-node/src/related_scenes/build.rs
+@@ -118,6 +118,7 @@ fn schedule_with(
+             let work_participant = participant.clone();
+             let work_build = Arc::clone(&build);
+             let result = tokio::task::spawn_blocking(move || {
++                let _trace = grimodex_db::dev_trace::label("related-scenes-build");
+                 work_build(&work_state, &work_request, &work_participant, &work_project)
+             })
+             .await;
+diff --git a/src-tauri/crates/grimodex-db/src/background_checkpoint.rs b/src-tauri/crates/grimodex-db/src/background_checkpoint.rs
+index be4d35dc..aa7b557c 100644
+--- a/src-tauri/crates/grimodex-db/src/background_checkpoint.rs
++++ b/src-tauri/crates/grimodex-db/src/background_checkpoint.rs
+@@ -226,6 +226,7 @@ unsafe extern "C" fn wal_hook(
+     db_name: *const c_char,
+     pages: c_int,
+ ) -> c_int {
++    crate::dev_trace::note_commit();
+     let _ = catch_unwind(AssertUnwindSafe(|| {
+         // SAFETY: `client_data` は `Database` が持つ `Shared` の `Arc::as_ptr`。`Database` の
+         // drop が先に背景を止め、`Shared` は接続の close より後に解放される（field の順）。
+diff --git a/src-tauri/crates/grimodex-db/src/bin/nir1-c-query-worker.rs b/src-tauri/crates/grimodex-db/src/bin/nir1-c-query-worker.rs
+index 0a5b47e8..327d018c 100644
+--- a/src-tauri/crates/grimodex-db/src/bin/nir1-c-query-worker.rs
++++ b/src-tauri/crates/grimodex-db/src/bin/nir1-c-query-worker.rs
+@@ -191,6 +191,9 @@ fn run(startup_stage: &mut StartupStage) -> Result<()> {
+         c_query_fixed_allocator::install_sqlite(),
+         "worker SQLite allocator must precede init"
+     );
++    // DEV-ONLY: open the trace file before any registration scratch scope so the
++    // persistent handle is never a live scratch allocation. Inert without env.
++    grimodex_db::dev_trace::init();
+     let mut args = std::env::args_os().skip(1);
+     let root = PathBuf::from(
+         args.next()
+diff --git a/src-tauri/crates/grimodex-db/src/lib.rs b/src-tauri/crates/grimodex-db/src/lib.rs
+index fa21f026..e7273a3e 100644
+--- a/src-tauri/crates/grimodex-db/src/lib.rs
++++ b/src-tauri/crates/grimodex-db/src/lib.rs
+@@ -101,22 +101,30 @@ impl Drop for MaintenanceConnectionNoWaitGuard {
+ 
+ struct ForegroundConnectionWaiter<'a> {
+     count: &'a AtomicUsize,
++    trace_id: Option<u64>,
+ }
+ 
+ impl<'a> ForegroundConnectionWaiter<'a> {
++    #[track_caller]
+     fn new(count: &'a AtomicUsize) -> Self {
++        // DEV-ONLY: trace bookkeeping first, so it never runs while the waiter
++        // is already published.
++        let trace_id = dev_trace::waiter_enter(std::panic::Location::caller());
+         // Waiter admission and the finalization reservation are separate
+         // atomics.  Use one sequentially consistent order for both so the
+         // pre/post checks around the reservation CAS cannot observe a
+         // foreground arrival on the wrong side of the handoff.
+         count.fetch_add(1, Ordering::SeqCst);
+-        Self { count }
++        Self { count, trace_id }
+     }
+ }
+ 
+ impl Drop for ForegroundConnectionWaiter<'_> {
+     fn drop(&mut self) {
+         self.count.fetch_sub(1, Ordering::SeqCst);
++        if let Some(id) = self.trace_id {
++            dev_trace::waiter_exit(id);
++        }
+     }
+ }
+ 
+@@ -421,6 +429,7 @@ impl Database {
+         MAINTENANCE_NO_WAIT_DEPTH.with(|depth| depth.get() > 0)
+     }
+ 
++    #[track_caller]
+     pub(crate) fn lock_conn(&self) -> anyhow::Result<MutexGuard<'_, Connection>> {
+         self.lock_conn_with_check(None)
+     }
+@@ -428,6 +437,7 @@ impl Database {
+     /// Keep the existing priority/handoff rules while an admitted lifecycle
+     /// owner can stop before it acquires the SQLite mutex. Ordinary callers
+     /// keep their blocking acquisition rather than entering a polling loop.
++    #[track_caller]
+     pub(crate) fn lock_conn_with_check(
+         &self,
+         mut check: Option<&mut dyn FnMut() -> anyhow::Result<()>>,
+@@ -438,6 +448,7 @@ impl Database {
+         }
+         if Self::maintenance_no_wait_active() {
+             if self.foreground_connection_waiters.load(Ordering::SeqCst) > 0 {
++                dev_trace::note_preempt("no-wait/waiter-owns-handoff");
+                 anyhow::bail!(
+                     "NEX_MAINTENANCE_CONNECTION_PREEMPTED: foreground waiter owns the next maintenance handoff"
+                 );
+@@ -445,6 +456,7 @@ impl Database {
+             let conn = match self.conn.try_lock() {
+                 Ok(conn) => conn,
+                 Err(TryLockError::WouldBlock) => {
++                    dev_trace::note_preempt("no-wait/connection-busy");
+                     anyhow::bail!(
+                         "NEX_MAINTENANCE_CONNECTION_PREEMPTED: maintenance connection is busy"
+                     );
+@@ -459,6 +471,7 @@ impl Database {
+             }
+             if self.foreground_connection_waiters.load(Ordering::SeqCst) > 0 {
+                 drop(conn);
++                dev_trace::note_preempt("no-wait/waiter-arrived");
+                 anyhow::bail!(
+                     "NEX_MAINTENANCE_CONNECTION_PREEMPTED: foreground waiter arrived before maintenance acquisition"
+                 );
+@@ -814,6 +827,7 @@ impl Database {
+     /// Execute a closure with direct access to the underlying `rusqlite::Connection`.
+     /// Use this only when `execute` / `execute_batch_tx` are insufficient
+     /// (e.g. `prepare` / `query_map` / `query_row` with native params).
++    #[track_caller]
+     pub fn with_conn<T, F>(&self, f: F) -> anyhow::Result<T>
+     where
+         F: FnOnce(&Connection) -> anyhow::Result<T>,
+@@ -829,6 +843,7 @@ impl Database {
+     /// Read several Native observations from one SQLite snapshot. The shell
+     /// need not depend directly on rusqlite to compose canonical readers.
+     /// Errors drop/roll back the transaction before releasing the DB lock.
++    #[track_caller]
+     pub fn with_read_transaction<T, F>(&self, f: F) -> anyhow::Result<T>
+     where
+         F: FnOnce(&Connection) -> anyhow::Result<T>,
+@@ -842,6 +857,7 @@ impl Database {
+     }
+ }
+ 
++pub mod dev_trace;
+ pub mod agent_writes;
+ pub mod ai_audit;
+ pub mod backup_restore;
+diff --git a/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs b/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs
+index d25a1154..2501413f 100644
+--- a/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs
++++ b/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs
+@@ -244,6 +244,7 @@ fn set_registration_stage(
+     observer: &mut Option<&mut Nir1GraphRegistrationStage>,
+     stage: Nir1GraphRegistrationStage,
+ ) {
++    crate::dev_trace::emit("reg_stage", serde_json::json!({"stage": format!("{stage:?}")}));
+     if let Some(observer) = observer.as_deref_mut() {
+         *observer = stage;
+     }
+@@ -601,8 +602,13 @@ impl Nir1GraphReader {
+         );
+         self.check()?;
+         set_registration_stage(&mut observer, Nir1GraphRegistrationStage::PreflightIdentity);
+-        let before = ReadIdentity::read_unpinned(conn)?
+-            .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_REGISTRATION_DRIFT"))?;
++        let before = ReadIdentity::read_unpinned(conn)?.ok_or_else(|| {
++            crate::dev_trace::emit(
++                "reg_refused",
++                serde_json::json!({"reason": "preflight-drift-err"}),
++            );
++            anyhow::anyhow!("NIR1_GRAPH_REGISTRATION_DRIFT")
++        })?;
+         let mut lifecycle = self.control(None);
+         // The maintenance owner is borrowed and cannot be retained directly
+         // by SQLite's `'static` progress callback.  Compose its first typed
+@@ -636,36 +642,69 @@ impl Nir1GraphReader {
+             set_registration_stage(&mut observer, Nir1GraphRegistrationStage::BeginSnapshot);
+             conn.execute_batch("BEGIN DEFERRED")?;
+             set_registration_stage(&mut observer, Nir1GraphRegistrationStage::PinnedIdentity);
+-            ensure!(
+-                ReadIdentity::read(conn)?.as_ref() == Some(&before),
+-                "NIR1_GRAPH_REGISTRATION_DRIFT"
+-            );
++            {
++                let pinned = ReadIdentity::read(conn)?;
++                if pinned.as_ref() != Some(&before) {
++                    crate::dev_trace::emit(
++                        "reg_refused",
++                        serde_json::json!({
++                            "reason": "pinned-drift-err",
++                            "before": format!("{before:?}"),
++                            "pinned": format!("{pinned:?}"),
++                        }),
++                    );
++                }
++                ensure!(
++                    pinned.as_ref() == Some(&before),
++                    "NIR1_GRAPH_REGISTRATION_DRIFT"
++                );
++            }
+             lifecycle.check(GraphWorkStage::CompleteRegistration)?;
+             // rowid is only a cursor, not a material identity. Producer writes
+             // auto-allocate positive rowids; reject malformed imported cursors.
+             set_registration_stage(&mut observer, Nir1GraphRegistrationStage::SemanticIndex);
+             let nonpositive: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM narrative_dependency_edges WHERE project_id=?1 AND rowid<=0)", [project], |r| r.get(0))?;
+-            if nonpositive
+-                || !is_complete_registered_with_scratch(
+-                    conn,
+-                    project,
+-                    INDEX_KEY,
+-                    &mut registration_owner,
+-                    scratch_scope,
+-                    Some(input::REVISION_A2_BYTES),
+-                )?
+-            {
++            if nonpositive {
++                crate::dev_trace::emit(
++                    "reg_refused",
++                    serde_json::json!({"reason": "nonpositive-rowid"}),
++                );
++                return Ok(None);
++            }
++            if !is_complete_registered_with_scratch(
++                conn,
++                project,
++                INDEX_KEY,
++                &mut registration_owner,
++                scratch_scope,
++                Some(input::REVISION_A2_BYTES),
++            )? {
++                crate::dev_trace::emit(
++                    "reg_refused",
++                    serde_json::json!({"reason": "semantic-index-incomplete"}),
++                );
+                 return Ok(None);
+             }
+             set_registration_stage(&mut observer, Nir1GraphRegistrationStage::SourceIndex);
+             if !candidates::verify_complete_source_index(conn, project, &mut registration_owner)? {
++                crate::dev_trace::emit(
++                    "reg_refused",
++                    serde_json::json!({"reason": "source-index-incomplete"}),
++                );
+                 return Ok(None);
+             }
+             lifecycle.check(GraphWorkStage::CompleteRegistration)?;
+             set_registration_stage(&mut observer, Nir1GraphRegistrationStage::Seal);
+             let seal = read_seal(conn, project)?;
++            if seal.is_none() {
++                crate::dev_trace::emit("reg_refused", serde_json::json!({"reason": "seal-none"}));
++            }
+             Ok(seal)
+         })();
++        if let Err(error) = &result {
++            let text: String = format!("{error:#}").chars().take(400).collect();
++            crate::dev_trace::emit("reg_err", serde_json::json!({"error": text}));
++        }
+         let result = self.finish_read(conn, result, owner_scope)?;
+         let result = match result {
+             Err(error) => match registration_owner.check(GraphWorkStage::CompleteRegistration) {
+@@ -684,8 +723,20 @@ impl Nir1GraphReader {
+         self.check()?;
+         registration_owner.check(GraphWorkStage::CompleteRegistration)?;
+         if current.as_ref() != Some(&before) {
++            crate::dev_trace::emit(
++                "reg_refused",
++                serde_json::json!({
++                    "reason": "postflight-drift",
++                    "before": format!("{before:?}"),
++                    "current": format!("{current:?}"),
++                }),
++            );
+             return Ok(false);
+         }
++        crate::dev_trace::emit(
++            "reg_postflight_ok",
++            serde_json::json!({"sealPresent": result.is_some()}),
++        );
+         if let Some(seal) = result {
+             // Deep-copy the verified authority into ordinary Q-owned reader state.
+             // Worker query code cannot use it until the outer maintenance scope and
+diff --git a/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/c_query_worker.rs b/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/c_query_worker.rs
+index b80b2d74..0671d88a 100644
+--- a/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/c_query_worker.rs
++++ b/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/c_query_worker.rs
+@@ -216,6 +216,10 @@ fn configure_worker_process(command: &mut Command, worker: &Path) -> Result<()>
+         .filter(|directory| directory.is_absolute())
+         .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_PATH"))?;
+     command.env_clear();
++    // DEV-ONLY: forward the trace directory (if any) so the worker can append.
++    if let Some(dir) = std::env::var_os("GDX_DEV_TRACE_DIR") {
++        command.env("GDX_DEV_TRACE_DIR", dir);
++    }
+     #[cfg(windows)]
+     {
+         use std::os::windows::process::CommandExt;
+diff --git a/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph_index_maintenance.rs b/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph_index_maintenance.rs
+index f55ef087..8f3e6e74 100644
+--- a/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph_index_maintenance.rs
++++ b/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph_index_maintenance.rs
+@@ -565,6 +565,7 @@ pub(crate) fn judge_graph_index_build(
+         },
+     )?;
+     let Some(result) = result else {
++        crate::dev_trace::note_preempt("graph-build-judgement-no-wait");
+         bail!(
+             "{MAINTENANCE_CONNECTION_PREEMPTED_CODE}: Graph build judgement could not acquire the maintenance connection without waiting"
+         );
+@@ -944,6 +945,7 @@ fn publish_owned_snapshot(
+                 Some(conn),
+             )?;
+             reservation = Some(db.try_reserve_maintenance_finalization().ok_or_else(|| {
++                crate::dev_trace::note_preempt("graph-finalization-reservation");
+                 anyhow!(
+                     "{MAINTENANCE_CONNECTION_PREEMPTED_CODE}: foreground waiter arrived before the Graph finalization reservation"
+                 )
+diff --git a/src-tauri/crates/grimodex-db/src/narrative_maintenance_connection.rs b/src-tauri/crates/grimodex-db/src/narrative_maintenance_connection.rs
+index b7dbabc9..638e3f45 100644
+--- a/src-tauri/crates/grimodex-db/src/narrative_maintenance_connection.rs
++++ b/src-tauri/crates/grimodex-db/src/narrative_maintenance_connection.rs
+@@ -607,6 +607,7 @@ impl GraphWorkControl for NarrativeMaintenanceGraphControl<'_> {
+             return Err(Self::terminal(ValidationTerminationReason::TimedOut, stage));
+         }
+         if self.db.foreground_connection_waiting() {
++            crate::dev_trace::note_preempt("participant-check/foreground-waiting");
+             self.config
+                 .termination_latch
+                 .set(ValidationTerminationReason::ForegroundPreempted);
+@@ -1054,6 +1055,7 @@ where
+                         .as_ref()
+                         .is_some_and(|waiters| waiters.load(Ordering::SeqCst) > 0)
+                     {
++                        crate::dev_trace::note_preempt("sql-progress-hook/foreground-waiting");
+                         latch_for_hook.set(ValidationTerminationReason::ForegroundPreempted);
+                         return true;
+                     }
+@@ -1213,6 +1215,7 @@ impl Database {
+     /// Observe an existing workspace participant while SQLite is executing,
+     /// including work before its first row. Ordinary mutex/busy-timeout
+     /// behavior is preserved; only the outer scope owns the progress hook.
++    #[track_caller]
+     pub fn with_participant_sql_scope<T, F>(
+         &self,
+         participant: &WorkspaceParticipant,
+@@ -1230,6 +1233,7 @@ impl Database {
+ 
+     /// Read one SQLite snapshot under the participant's SQL cancellation
+     /// scope. The transaction cannot outlive the installed owner hook.
++    #[track_caller]
+     pub fn with_participant_read_transaction<T, F>(
+         &self,
+         participant: &WorkspaceParticipant,
+@@ -1248,6 +1252,7 @@ impl Database {
+     /// Read one SQLite snapshot with caller-owned cancellation and deadline
+     /// signals.  This remains the single outer participant scope; callers must
+     /// not invoke it from a callback that already owns this Database mutex.
++    #[track_caller]
+     pub(crate) fn with_participant_read_transaction_control<T, F>(
+         &self,
+         participant: &WorkspaceParticipant,
+@@ -1289,6 +1294,7 @@ impl Database {
+     /// Read one participant-owned snapshot with a finite mutex/SQL deadline
+     /// and an explicit SQLite busy-wait bound. The busy timeout is clipped to
+     /// the remaining deadline after process-local mutex acquisition.
++    #[track_caller]
+     pub(crate) fn with_participant_read_transaction_bounded<T, F>(
+         &self,
+         participant: &WorkspaceParticipant,
+@@ -1309,6 +1315,7 @@ impl Database {
+     /// Bounded read transaction under an explicit fence. `Pinned` keeps the
+     /// participant counted but observes only the deadline, busy and mutex
+     /// bounds, so an owner can reread its exact rows after admission closed.
++    #[track_caller]
+     pub(crate) fn with_participant_read_transaction_bounded_in<T, F>(
+         &self,
+         participant: &WorkspaceParticipant,
+@@ -1432,6 +1439,7 @@ impl Database {
+         )
+     }
+ 
++    #[track_caller]
+     fn with_participant_sql_scope_config<T, F>(
+         &self,
+         participant: &WorkspaceParticipant,
+@@ -1474,6 +1482,7 @@ impl Database {
+     /// acquisition loop, the operation boundaries and the SQLite progress hook
+     /// observe; `lock_deadline` bounds the connection mutex wait on its own.
+     #[allow(clippy::too_many_arguments)]
++    #[track_caller]
+     fn with_participant_sql_scope_fenced<T, F>(
+         &self,
+         participant: &WorkspaceParticipant,
+diff --git a/src-tauri/crates/grimodex-db/src/dev_trace.rs b/src-tauri/crates/grimodex-db/src/dev_trace.rs
+new file mode 100644
+index 00000000..7175c447
+--- /dev/null
++++ b/src-tauri/crates/grimodex-db/src/dev_trace.rs
+@@ -0,0 +1,308 @@
++//! DEV-ONLY observation (s7r1 chain instrumentation). Never merged.
++//!
++//! Inert unless the environment variable `GDX_DEV_TRACE_DIR` names a directory.
++//! When set, events are appended as JSON Lines to `<dir>/trace-<pid>.jsonl`
++//! (one small `write` per line, no fsync) and cumulative aggregates are written
++//! once per second by a background thread. It observes only: no product
++//! decision reads anything from here.
++//!
++//! Every line has `kind`, `pid`, `t_ms` (monotonic ms since this process first
++//! used the trace) and `wall` (UTC ISO-8601, ms).
++
++use std::cell::Cell;
++use std::panic::Location;
++use std::collections::HashMap;
++use std::fs::{File, OpenOptions};
++use std::io::Write;
++use std::path::PathBuf;
++use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
++use std::sync::{Mutex, OnceLock};
++use std::time::{Duration, Instant};
++
++use serde_json::{json, Value};
++
++const ENV: &str = "GDX_DEV_TRACE_DIR";
++const CYCLE_HIST: usize = 9; // 0..=7 commits, 8 = 8 or more
++
++static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
++static START: OnceLock<Instant> = OnceLock::new();
++static FILE: OnceLock<Mutex<Option<File>>> = OnceLock::new();
++static FLUSHER: OnceLock<()> = OnceLock::new();
++/// Set by `init()` (called only by the worker process): that process emits
++/// lines only; it never starts the flusher, keeps maps, or counts waiters.
++static EMIT_ONLY: AtomicBool = AtomicBool::new(false);
++static NEXT_ID: AtomicU64 = AtomicU64::new(1);
++
++/// Commits that reached the WAL through the main connection's `wal_hook`.
++static COMMITS: AtomicU64 = AtomicU64::new(0);
++static PREEMPTS: AtomicU64 = AtomicU64::new(0);
++
++#[derive(Default)]
++struct LabelStat {
++    arrivals: u64,
++    wait_ns_total: u128,
++    wait_ns_max: u128,
++}
++
++#[derive(Default)]
++struct Inner {
++    labels: HashMap<String, LabelStat>,
++    active: HashMap<u64, (String, Instant)>,
++    last_acquirer: String,
++    preempt_kind: HashMap<String, u64>,
++    /// "<kind>|<label of a waiter that was present>" -> count
++    preempt_by: HashMap<String, u64>,
++    /// "<kind>|last-fg-acquirer:<label>" -> count (for `busy` with no waiter)
++    preempt_last_acquirer: HashMap<String, u64>,
++    cycles: u64,
++    cycles_with_preempt: u64,
++    cycle_commit_sum: u64,
++    cycle_commit_max: u64,
++    cycle_hist: [u64; CYCLE_HIST],
++    cycle_ns_max: u128,
++}
++
++static INNER: OnceLock<Mutex<Inner>> = OnceLock::new();
++
++fn inner() -> &'static Mutex<Inner> {
++    INNER.get_or_init(|| Mutex::new(Inner::default()))
++}
++
++fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
++    m.lock().unwrap_or_else(|p| p.into_inner())
++}
++
++fn dir() -> Option<&'static PathBuf> {
++    DIR.get_or_init(|| {
++        std::env::var_os(ENV)
++            .filter(|v| !v.is_empty())
++            .map(PathBuf::from)
++    })
++    .as_ref()
++}
++
++/// Open the file now (and start the clock). Call before any allocation-fenced
++/// scope in a process that emits from inside one.
++pub fn init() {
++    if enabled() {
++        EMIT_ONLY.store(true, Ordering::Relaxed);
++        emit("init", json!({}));
++    }
++}
++
++pub fn enabled() -> bool {
++    dir().is_some()
++}
++
++fn mono_ms() -> f64 {
++    START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
++}
++
++/// Append one JSON line. No-op when the trace directory is not configured.
++pub fn emit(kind: &str, fields: Value) {
++    let Some(dir) = dir() else { return };
++    let mut line = json!({
++        "kind": kind,
++        "pid": std::process::id(),
++        "t_ms": mono_ms(),
++        "wall": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
++    });
++    if let (Some(obj), Value::Object(extra)) = (line.as_object_mut(), fields) {
++        for (k, v) in extra {
++            obj.insert(k, v);
++        }
++    }
++    let mut text = line.to_string();
++    text.push('\n');
++    let slot = FILE.get_or_init(|| Mutex::new(None));
++    let mut guard = lock(slot);
++    if guard.is_none() {
++        let _ = std::fs::create_dir_all(dir);
++        *guard = OpenOptions::new()
++            .create(true)
++            .append(true)
++            .open(dir.join(format!("trace-{}.jsonl", std::process::id())))
++            .ok();
++    }
++    if let Some(file) = guard.as_mut() {
++        let _ = file.write_all(text.as_bytes());
++    }
++}
++
++// ---- labels for foreground waiters ------------------------------------------
++
++thread_local! {
++    static LABEL: Cell<&'static str> = const { Cell::new("") };
++}
++
++pub struct LabelScope(&'static str);
++
++impl Drop for LabelScope {
++    fn drop(&mut self) {
++        LABEL.with(|l| l.set(self.0));
++    }
++}
++
++/// Name the foreground work of the current thread until the scope drops.
++pub fn label(name: &'static str) -> LabelScope {
++    LabelScope(LABEL.with(|l| l.replace(name)))
++}
++
++fn active() -> bool {
++    enabled() && !EMIT_ONLY.load(Ordering::Relaxed)
++}
++
++fn ensure_flusher() {
++    FLUSHER.get_or_init(|| {
++        let _ = std::thread::Builder::new()
++            .name("gdx-dev-trace".into())
++            .spawn(|| loop {
++                std::thread::sleep(Duration::from_secs(1));
++                emit("agg", aggregate());
++            });
++    });
++}
++
++fn aggregate() -> Value {
++    let g = lock(inner());
++    let labels: serde_json::Map<String, Value> = g
++        .labels
++        .iter()
++        .map(|(k, s)| {
++            (
++                k.clone(),
++                json!({
++                    "arrivals": s.arrivals,
++                    "waitMsTotal": s.wait_ns_total as f64 / 1e6,
++                    "waitMsMax": s.wait_ns_max as f64 / 1e6,
++                }),
++            )
++        })
++        .collect();
++    json!({
++        "commits": COMMITS.load(Ordering::Relaxed),
++        "preemptsTotal": PREEMPTS.load(Ordering::Relaxed),
++        "waiterLabels": labels,
++        "activeWaiters": g.active.len(),
++        "preemptKind": g.preempt_kind,
++        "preemptBy": g.preempt_by,
++        "preemptLastAcquirer": g.preempt_last_acquirer,
++        "cycles": g.cycles,
++        "cyclesWithPreempt": g.cycles_with_preempt,
++        "cycleCommitSum": g.cycle_commit_sum,
++        "cycleCommitMax": g.cycle_commit_max,
++        "cycleCommitHist": g.cycle_hist.to_vec(),
++        "cycleMsMax": g.cycle_ns_max as f64 / 1e6,
++    })
++}
++
++// ---- foreground waiter registry ----------------------------------------------
++
++/// Called when a foreground waiter is about to be announced. `site` is the
++/// outermost `#[track_caller]` call site (file:line). Returns an id for `waiter_exit`.
++pub fn waiter_enter(site: &'static Location<'static>) -> Option<u64> {
++    if !active() {
++        return None;
++    }
++    ensure_flusher();
++    let explicit = LABEL.with(|l| l.get());
++    let key = if explicit.is_empty() {
++        format!("caller:{}:{}", site.file(), site.line())
++    } else {
++        explicit.to_owned()
++    };
++    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
++    let mut g = lock(inner());
++    g.labels.entry(key.clone()).or_default().arrivals += 1;
++    g.active.insert(id, (key, Instant::now()));
++    Some(id)
++}
++
++pub fn waiter_exit(id: u64) {
++    let mut g = lock(inner());
++    if let Some((key, since)) = g.active.remove(&id) {
++        let ns = since.elapsed().as_nanos();
++        if let Some(stat) = g.labels.get_mut(&key) {
++            stat.wait_ns_total += ns;
++            stat.wait_ns_max = stat.wait_ns_max.max(ns);
++        }
++        g.last_acquirer = key;
++    }
++}
++
++/// A maintenance run was (or is about to be) preempted. `kind` says where.
++pub fn note_preempt(kind: &'static str) {
++    if !active() {
++        return;
++    }
++    ensure_flusher();
++    PREEMPTS.fetch_add(1, Ordering::Relaxed);
++    let mut g = lock(inner());
++    *g.preempt_kind.entry(kind.to_owned()).or_default() += 1;
++    let present: Vec<String> = g.active.values().map(|(k, _)| k.clone()).collect();
++    if present.is_empty() {
++        let last = g.last_acquirer.clone();
++        *g.preempt_last_acquirer
++            .entry(format!("{kind}|{last}"))
++            .or_default() += 1;
++    }
++    for key in present {
++        *g.preempt_by.entry(format!("{kind}|{key}")).or_default() += 1;
++    }
++}
++
++// ---- commit counting -----------------------------------------------------------
++
++/// Called from the WAL hook (every commit that wrote to the WAL). One atomic add.
++pub fn note_commit() {
++    COMMITS.fetch_add(1, Ordering::Relaxed);
++}
++
++pub struct CycleGuard {
++    start: Option<(u64, u64, Instant)>,
++}
++
++impl CycleGuard {
++    pub fn begin() -> Self {
++        if !active() {
++            return Self { start: None };
++        }
++        ensure_flusher();
++        Self {
++            start: Some((
++                COMMITS.load(Ordering::Relaxed),
++                PREEMPTS.load(Ordering::Relaxed),
++                Instant::now(),
++            )),
++        }
++    }
++}
++
++impl Drop for CycleGuard {
++    fn drop(&mut self) {
++        let Some((commits, preempts, since)) = self.start else {
++            return;
++        };
++        let delta = COMMITS.load(Ordering::Relaxed).saturating_sub(commits);
++        let preempted = PREEMPTS.load(Ordering::Relaxed) > preempts;
++        let ns = since.elapsed().as_nanos();
++        emit(
++            "cycle",
++            json!({
++                "ms": ns as f64 / 1e6,
++                "commits": delta,
++                "preempted": preempted,
++                "startedWallApprox": (chrono::Utc::now()
++                    - chrono::Duration::nanoseconds(ns.min(i64::MAX as u128) as i64))
++                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
++            }),
++        );
++        let mut g = lock(inner());
++        g.cycles += 1;
++        g.cycles_with_preempt += u64::from(preempted);
++        g.cycle_commit_sum += delta;
++        g.cycle_commit_max = g.cycle_commit_max.max(delta);
++        g.cycle_hist[(delta as usize).min(CYCLE_HIST - 1)] += 1;
++        g.cycle_ns_max = g.cycle_ns_max.max(ns);
++    }
++}

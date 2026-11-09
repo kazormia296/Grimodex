@@ -1,0 +1,162 @@
+diff --git a/electron/native/grimodex-node/src/related_scenes.rs b/electron/native/grimodex-node/src/related_scenes.rs
+index d7468a16..9c82b146 100644
+--- a/electron/native/grimodex-node/src/related_scenes.rs
++++ b/electron/native/grimodex-node/src/related_scenes.rs
+@@ -157,12 +157,24 @@ fn current_request(state: &AppState, request: &SemanticRequest) -> Result<bool>
+ }
+ 
+ fn current_operation(state: &AppState, lease: &Lease) -> Result<bool> {
++    // `skip_if_busy` is false: a user-driven check always queues (foreground priority).
++    Ok(current_operation_with(state, lease, false)?.unwrap_or(false))
++}
++
++/// `Ok(None)` only when `skip_if_busy` is set and the connection is in use:
++/// the check was not made (no waiter was announced), so the caller must not
++/// treat it as stale.
++fn current_operation_with(
++    state: &AppState,
++    lease: &Lease,
++    skip_if_busy: bool,
++) -> Result<Option<bool>> {
+     if !lease.snapshot.original_snapshot_usable
+         || !lease.snapshot.supported_profile
+         || !lease.is_live(Instant::now())
+         || !current_request(state, &lease.data.request)?
+     {
+-        return Ok(false);
++        return Ok(Some(false));
+     }
+     let op = &lease.data;
+     let (batch, query) = {
+@@ -175,11 +187,15 @@ fn current_operation(state: &AppState, lease: &Lease) -> Result<bool> {
+             .validate_audited_query_current(query)
+             .is_err()
+     }) {
+-        return Ok(false);
++        return Ok(Some(false));
+     }
+     let db = op.request.database();
++    if skip_if_busy && db.connection_busy_probe() {
++        grimodex_db::dev_trace::note_periodic_skip();
++        return Ok(None);
++    }
+     let mut control = build::RelatedScenesBuildControl::new(state, &op.request, &op.participant);
+-    db.with_participant_read_transaction(&op.participant, |conn| {
++    let current = db.with_participant_read_transaction(&op.participant, |conn| {
+         let RetrievalSceneSourceRead::Available(source) =
+             read_retrieval_scene_source(conn, op.source.project_id(), op.source.scene_id())?
+         else {
+@@ -203,7 +219,8 @@ fn current_operation(state: &AppState, lease: &Lease) -> Result<bool> {
+                 &mut control,
+             ),
+         }
+-    })
++    })?;
++    Ok(Some(current))
+ }
+ 
+ fn invalidate(state: &AppState, ticket: &str, lease: &Lease) -> Result<()> {
+@@ -381,9 +398,19 @@ pub(crate) fn reconcile(state: &Arc<AppState>) -> Result<Value> {
+     let entries = lock(&state.related_scenes.registry)?.entries();
+     let mut active = 0;
+     for (ticket, lease) in entries {
+-        if current_operation(state, &lease).unwrap_or(false) {
+-            active += 1;
+-            continue;
++        // DEV (f2): a busy connection skips the check without announcing a
++        // waiter; the ticket still counts as active and is neither
++        // invalidated nor rebuilt. Any other result keeps the old handling.
++        match current_operation_with(state, &lease, true) {
++            Ok(None) => {
++                active += 1;
++                continue;
++            }
++            Ok(Some(true)) => {
++                active += 1;
++                continue;
++            }
++            Ok(Some(false)) | Err(_) => {}
+         }
+         invalidate(state, &ticket, &lease)?;
+         if current_request(state, &lease.data.request)? {
+diff --git a/electron/native/grimodex-node/src/related_scenes/build.rs b/electron/native/grimodex-node/src/related_scenes/build.rs
+index 75a0a429..8cea98d6 100644
+--- a/electron/native/grimodex-node/src/related_scenes/build.rs
++++ b/electron/native/grimodex-node/src/related_scenes/build.rs
+@@ -70,6 +70,17 @@ pub(super) fn schedule(
+         project,
+         RetryPolicy::PRODUCTION,
+         Arc::new(|state, request, participant, project| {
++            // DEV (f2): this periodic task must not cancel a running
++            // maintenance Verify. If the connection is in use, skip the tick
++            // without queueing as a foreground waiter and come back after
++            // `RETRY_DELAY`. A stale request still reaches `build_once`
++            // (which stops), so the task is never kept alive by the skip.
++            if current_request(state, request)?
++                && request.database().connection_busy_probe()
++            {
++                grimodex_db::dev_trace::note_periodic_skip();
++                return Ok(BuildOutcome::Retry);
++            }
+             build_once(state, request, participant, project)
+         }),
+     )
+diff --git a/src-tauri/crates/grimodex-db/src/dev_trace.rs b/src-tauri/crates/grimodex-db/src/dev_trace.rs
+index 7175c447..04af3a7b 100644
+--- a/src-tauri/crates/grimodex-db/src/dev_trace.rs
++++ b/src-tauri/crates/grimodex-db/src/dev_trace.rs
+@@ -36,6 +36,8 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+ /// Commits that reached the WAL through the main connection's `wal_hook`.
+ static COMMITS: AtomicU64 = AtomicU64::new(0);
+ static PREEMPTS: AtomicU64 = AtomicU64::new(0);
++/// DEV (f2): periodic Related Scenes ticks skipped because the connection was busy.
++static PERIODIC_SKIPS: AtomicU64 = AtomicU64::new(0);
+ 
+ #[derive(Default)]
+ struct LabelStat {
+@@ -182,6 +184,7 @@ fn aggregate() -> Value {
+     json!({
+         "commits": COMMITS.load(Ordering::Relaxed),
+         "preemptsTotal": PREEMPTS.load(Ordering::Relaxed),
++        "periodicSkips": PERIODIC_SKIPS.load(Ordering::Relaxed),
+         "waiterLabels": labels,
+         "activeWaiters": g.active.len(),
+         "preemptKind": g.preempt_kind,
+@@ -251,6 +254,15 @@ pub fn note_preempt(kind: &'static str) {
+     }
+ }
+ 
++/// A periodic tick was skipped because the connection was busy (f2).
++pub fn note_periodic_skip() {
++    if !active() {
++        return;
++    }
++    ensure_flusher();
++    PERIODIC_SKIPS.fetch_add(1, Ordering::Relaxed);
++}
++
+ // ---- commit counting -----------------------------------------------------------
+ 
+ /// Called from the WAL hook (every commit that wrote to the WAL). One atomic add.
+diff --git a/src-tauri/crates/grimodex-db/src/lib.rs b/src-tauri/crates/grimodex-db/src/lib.rs
+index e7273a3e..40e76193 100644
+--- a/src-tauri/crates/grimodex-db/src/lib.rs
++++ b/src-tauri/crates/grimodex-db/src/lib.rs
+@@ -618,6 +618,17 @@ impl Database {
+         operation()
+     }
+ 
++    /// DEV experiment (f2): a waiter-free probe of the connection mutex for
++    /// periodic Related Scenes work. It never announces a foreground waiter, so
++    /// it cannot make a maintenance run cancel itself. `true` means someone
++    /// (typically the maintenance owner) holds the mutex right now; the caller
++    /// skips its tick instead of queueing. A poisoned mutex reports `false` so
++    /// the normal acquisition surfaces the error. Racy by design: a free
++    /// answer may be stale by the time the caller locks.
++    pub fn connection_busy_probe(&self) -> bool {
++        matches!(self.conn.try_lock(), Err(TryLockError::WouldBlock))
++    }
++
+     /// Enter the Native maintenance no-wait mode for this worker.
+     ///
+     /// This narrow entry point is public so the Electron N-API crate can wrap
