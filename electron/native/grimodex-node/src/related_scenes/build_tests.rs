@@ -1523,3 +1523,183 @@ async fn a_second_schedule_makes_the_next_tick_foreground_once() {
         ]
     );
 }
+
+// ---------------------------------------------------------------------------
+// DR-MPS-15: the real `current_operation_mode(.., true)` over a real lease.
+// ---------------------------------------------------------------------------
+
+const REAL_SCENE: &str = "00e7da7b-62a9-48ec-a960-dd6827e639d4";
+
+/// Publish the index for real (synthetic embedding outcomes with a real audit
+/// chain), once per harness. `begin` runs `current_request` first, which binds
+/// the runtime to the epoch's generation; so does this.
+fn publish_real_index(h: &Harness, request: &SemanticRequest) {
+    assert!(current_request(&h.state, request).expect("current_request"));
+    let participant = h.participant();
+    let Prepared::Ready { plan, documents } = h.prepare(request, &participant).expect("prepare")
+    else {
+        panic!("plan");
+    };
+    let outcomes =
+        index::synthetic_embedded_outcomes_for_test(h.authority.db(), &h.project, documents)
+            .expect("synthetic outcomes");
+    let mut control = RelatedScenesBuildControl::new(&h.state, request, &participant);
+    let published = index::publish_chronicle_index_build_with_participant(
+        h.authority.db(),
+        h.runtime(),
+        plan,
+        outcomes,
+        &mut control,
+        &participant,
+    )
+    .expect("publish");
+    assert!(matches!(
+        published,
+        index::NirIndexPublishRead::Published { .. }
+    ));
+}
+
+/// A lease built the way `begin` builds it, from a real
+/// `read_chronicle_query_status_with_control` snapshot of the published index.
+///
+/// Dropping the registry cancels its leases, so it is returned with the lease.
+fn real_lease(
+    h: &Harness,
+    request: &SemanticRequest,
+    ttl: Duration,
+) -> (RelatedScenesRegistry<Operation>, Lease) {
+    let participant = h.participant();
+    let mut control = RelatedScenesBuildControl::new(&h.state, request, &participant);
+    let db = request.database();
+    let (source, original) = db
+        .with_participant_read_transaction(&participant, |conn| {
+            let RetrievalSceneSourceRead::Available(source) =
+                read_retrieval_scene_source(conn, &h.project, REAL_SCENE)?
+            else {
+                return Err(anyhow!("scene source"));
+            };
+            let query =
+                crate::related_scenes_query::saved_related_scene_query(&source.saved_content_json);
+            let source = RelatedScenesSourceContext::capture(source, &query)?;
+            let status = index::read_chronicle_query_status_with_control(
+                conn,
+                db.nir_chronicle_index_runtime(),
+                &h.project,
+                REAL_SCENE,
+                &mut control,
+            )?;
+            match status {
+                index::NirQueryStatusRead::Available {
+                    snapshot: Some(snapshot),
+                    ..
+                } => Ok((source, snapshot)),
+                _ => Err(anyhow!("a published index is available")),
+            }
+        })
+        .expect("real snapshot");
+    let operation = Operation {
+        request: request.clone(),
+        participant,
+        source: Arc::new(source),
+        query_binding: "related-scenes-query:test".into(),
+        original,
+        result: Mutex::new(OperationResult::default()),
+        completed: Notify::new(),
+        graph: graph::GraphState::default(),
+        join: graph::IrJoin::default(),
+    };
+    let mut registry = RelatedScenesRegistry::new(4, ttl);
+    let now = Instant::now();
+    let ticket = registry
+        .insert(
+            "owner",
+            SnapshotEligibility {
+                original_snapshot_usable: true,
+                supported_profile: true,
+            },
+            operation,
+            now,
+        )
+        .expect("ticket");
+    let lease = registry.get(&ticket, "owner", now).expect("lease");
+    (registry, lease)
+}
+
+/// A periodic check over a connection the maintenance holds is "not checked"
+/// (`None`), announces no waiter, and does not wait.
+#[test]
+fn the_real_periodic_check_skips_a_busy_connection_without_a_waiter() {
+    let h = Harness::new();
+    let request = h.request();
+    publish_real_index(&h, &request);
+    let (_registry, lease) = real_lease(&h, &request, Duration::from_secs(600));
+    let db = request.database();
+    let held = HeldConnection::new(Arc::clone(&db));
+    let started = Instant::now();
+    let busy = current_operation_mode(&h.state, &lease, true).expect("busy is not an error");
+    assert_eq!(busy, None, "a busy connection is skipped, not stale");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "it did not wait"
+    );
+    assert_eq!(db.foreground_connection_waiter_count(), 0);
+    held.release();
+    assert_eq!(db.foreground_connection_waiter_count(), 0);
+}
+
+/// A free connection gives the real verdict, for the periodic and the
+/// foreground form alike, and neither announces a waiter that stays.
+#[test]
+fn the_real_periodic_check_over_a_free_connection_gives_the_verdict() {
+    let h = Harness::new();
+    let request = h.request();
+    publish_real_index(&h, &request);
+    let (_registry, lease) = real_lease(&h, &request, Duration::from_secs(600));
+    let db = request.database();
+    assert_eq!(
+        current_operation_mode(&h.state, &lease, true).expect("periodic"),
+        Some(true)
+    );
+    assert_eq!(db.foreground_connection_waiter_count(), 0);
+    assert_eq!(
+        current_operation_mode(&h.state, &lease, false).expect("foreground"),
+        Some(true)
+    );
+    assert_eq!(db.foreground_connection_waiter_count(), 0);
+}
+
+/// The checks that need no database stop the operation even when the
+/// connection is busy: expired lease, stale request.
+#[test]
+fn the_real_periodic_check_stops_before_it_can_skip() {
+    let h = Harness::new();
+    let request = h.request();
+    let db = request.database();
+    publish_real_index(&h, &request);
+    let (_expired_registry, expired) = real_lease(&h, &request, Duration::from_secs(1));
+    let (_registry, lease) = real_lease(&h, &request, Duration::from_secs(600));
+    let held = HeldConnection::new(Arc::clone(&db));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while expired.is_live(Instant::now()) {
+        assert!(Instant::now() < deadline, "the 1 s lease expires");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        current_operation_mode(&h.state, &expired, true).expect("expired"),
+        Some(false),
+        "an expired lease stops instead of skipping"
+    );
+    assert_eq!(
+        current_operation_mode(&h.state, &lease, true).expect("live, busy"),
+        None
+    );
+    // Rotating the semantic epoch makes the pinned request no longer current.
+    h.state.semantic.semantic_cancel_background();
+    assert_eq!(
+        current_operation_mode(&h.state, &lease, true).expect("stale"),
+        Some(false),
+        "a stale request stops instead of skipping"
+    );
+    assert_eq!(db.foreground_connection_waiter_count(), 0);
+    held.release();
+}
