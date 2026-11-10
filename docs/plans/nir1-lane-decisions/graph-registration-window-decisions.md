@@ -6,7 +6,7 @@
 同 dev worktree の `nir1_graph/tests/drift_window.rs`）。基点は `origin/master` の `880d55f0`、
 branch は `claude/graph-source-index-linear`。
 
-この lane は窓を縮める実装の変更を 1 件ずつ進める。1 件目は SourceIndex の UNEXPECTED の 1 文だけ。
+この lane は窓を縮める実装の変更を 1 件ずつ進める。1 件目（DR-GRW-1）は SourceIndex の UNEXPECTED の 1 文だけ、2 件目（DR-GRW-2）は registration の表の存在確認を pinned snapshot で答えること。
 結果・述語・admission の上限・エラーの種類・停止の粒度・schema・閾値・契約・authority は変えない
 （AGENTS.md の「委任に含まれないもの」のどれにも当たらない）。
 
@@ -112,3 +112,217 @@ UNEXPECTED には届かない。旧が error になる入力は、新も同じ e
    R1022 は二乗の部分が無く対象外で、−1% にとどまる。前後の負荷の差による影響は 1% 程度とみる（対照）。
    D2064 は p50 −135 ms・p95 −212 ms（−4%）。最後に走る case で後の run は負荷が下がっていたので、UNEXPECTED の分か負荷の差かは切り分けていない。
    R1022 と D2064 の W の主は Semantic 段（B1／B2 の対象）。byte-heavy は前後とも admission の上限で止まる（同じ）。
+
+## DR-GRW-2 registration の表の存在確認を pinned snapshot の schema cache で答える（B1）
+
+### 決定
+
+Graph worker の registration（`Nir1GraphReader::register_with_control_observed`）の read transaction の中で、
+CQ-OPT（#657）が C-query に使っている `with_pinned_snapshot`（`nir1_pinned_snapshot.rs`）と
+`table_exists` の近道（`sqlite3_table_column_metadata`。VM steps 0）を使う。
+
+- scope は、nonpositive の query（`narrative_dependency_edges` の rowid の検査）の**後**から、
+  `read_seal` の**後**までを包む。`finish_read` の ROLLBACK の前で閉じる。
+- scope は scratch scope（割当器の scope）の外側（pinned が外、scratch が内）に置く。
+- nonpositive の query は scope の外に置く。近道が答えてよいのは、この transaction で表を読む普通の文が
+  走った後だけである。header PRAGMA（`ReadIdentity::read` の schema_version などの読み）は snapshot を
+  固定するが、schema の cache と snapshot の cookie を比べない。表を読む普通の文が走ってはじめて SQLite は
+  cookie を比べ、違えば cache を読み直す。nonpositive の query がその文で、scope の中の最初の存在確認より前に走る。
+  この条件を、コードのコメントに書いた。
+- 早期 return（nonpositive、Semantic 段の false、SourceIndex 段の false）と `?` は closure の内側で扱い、
+  結果の値、stage の更新順、owner の check、エラーの型は変えない。
+- 近道が答える表の存在確認は、Revision ごとの scene scope、declaration set（2 か所）、c2zc の marker など。
+  健全な試験 fixture の registration 1 回で 12 回（SQL の下では `sqlite_master` の列の読みで 24 回。内訳は「呼び出しの内訳」）。
+
+### 理由
+
+registration は BEGIN DEFERRED の後で、nonpositive の query、Semantic 段、SourceIndex 段、`read_seal`、ROLLBACK の
+順に進む。この間に別の接続が commit すると drift（`NIR1_GRAPH_REGISTRATION_DRIFT`、または postflight の不一致）で
+失敗する。目的は、この窓を縮めること。
+
+Semantic 段は Revision ごとに、`sqlite_master` を全件歩く表の存在確認を何度も走らせる。
+`sqlite_master` には引ける index が無く、migrate 済みの workspace では 1 回が数千 steps になる
+（CQ-OPT の実測で 1 回 2,224 steps、672 行）。これは Revision の中身を何も検証していない。
+この費用を VM steps 0 にすれば、窓のうち Semantic 段の待ちが減る。
+
+### CQ-OPT の範囲の反転と、その反証
+
+CQ-OPT は「C-query だけ。registration は SQL のまま」と範囲を決めた
+（`nir1_pinned_snapshot.rs` の旧 module doc、`docs/plans/nir1-c-query-acceptance-2026-10.md`）。
+理由は、steps で停止を観測する経路は、存在確認が消費する steps が変わると停止の時期が変わるから、
+全体に近道を置かないことだった（Chronicle の index publication は 1,000 steps の progress callback で止まる）。
+この決定は registration について反転する。範囲は「registration と C-query の 2 つだけ」とする。
+
+#### registration も steps で停止を観測する（反転の前提の訂正）
+
+registration は、Chronicle と同じく steps で停止を観測する。`install_owner_with_stop` が 1,000 VM steps ごとの
+owner の progress callback を入れており、その callback は stop の flag、期限、close、workspace generation、
+foreground の待ちを見る（`narrative_maintenance_connection.rs:632-645`）。Rust 側の `check_active_work` や
+JSON の読みも同じ callback を呼ぶ（`nir1_capacity.rs:179-196`）ので、callback の回数は「steps / 1,000」ではない。
+
+違いは次の 2 点である。
+
+1. **registration の停止は状態で決まり、後の Rust 側の check が同じ条件を見る。**
+   callback が見る条件は、どれも owner の `check()` が同じく読む状態である
+   （`narrative_maintenance_connection.rs:560-616`。closed、stop、participant、generation、期限、foreground）。
+   callback で SQLite が中断されても、中断されなくても、registration の終わりの
+   `registration_owner.check(CompleteRegistration)` が同じ typed の停止を返す。変わるのは、停止を**見る時期**
+   （callback の何回目か）と、そのときの stage だけである。callback の回数は近道で減るので、停止は後の点で見つかる。
+   停止が、近道の下の registration が終わった後にしか来ない場合は、registration が完了する
+   （試験 `registration_state_stops_end_in_the_same_typed_stop_and_never_leak_the_scope`）。
+2. **Chronicle の publication は、停止点が試験で固定されている。** publication が 1,000 steps の callback で
+   止まることを `nir1_participant_sql_publication_installs_only_after_clean_success` が固定している
+   （固定しているのは「publication が steps の callback で止まること」で、近道を入れないことではない）。
+   Chronicle の publication は registration と呼び出しの経路を共有しないので、registration に scope を置いても
+   到達しない。Chronicle を SQL のままにする根拠は、呼び出しの経路が別であることと、停止点が試験で固定されていることである。
+
+#### 反転の根拠（read-only の調査で確かめ、反証にもかけた）
+
+- 製品で registration を呼ぶのは worker（`bin/nir1-c-query-worker.rs:229`）だけで、1 thread・同じ接続で動く。
+  feature 付きの diagnostics（`nir1_graph_memory_diagnostics.rs:455` の `register_with_control`）と試験も
+  registration を呼ぶので、近道に入り、その計測値（steps、callback の回数、`sqlite_master` の読み）は動く。
+  Chronicle の publication など、steps で停止を観測する他の経路は、registration から到達しない。
+- 近道に届くのは Semantic 段だけ。SourceIndex 段と `read_seal` は `sqlite_master` を読まない。
+- scope の中の文は、読みと SAVEPOINT／RELEASE だけで、transaction を終えない
+  （試験 `registration_scope_statements_never_end_the_transaction` が authorizer で、transaction 文は registration 自身の
+  BEGIN と ROLLBACK だけであることを確かめる）。registration から到達する SQL の SAVEPOINT は
+  試験 fixture では `narrative_project_scope_authority_snapshot`（`project_scope_authority.rs:300`）の
+SAVEPOINT／RELEASE だけが観測された。他の SQL の SAVEPOINT（`source_revision.rs:908`、`scope_dependency_projection.rs:179`、
+`scope_authority_runtime.rs:1159`）は、この fixture の registration では実行されず、到達するかどうかは入力の形による。
+どれも SAVEPOINT／RELEASE か ROLLBACK TO＋RELEASE の形で、外側の transaction を終える文ではない。scratch scope は割当器の scope で、SAVEPOINT ではない。
+  仮に transaction が終わっても、scope は接続と data version を記録しており、読み snapshot を持たない・
+  data version が変わったときは SQL に戻る（`nir1_pinned_snapshot.rs` の既存の仕様と試験）。
+- 近道と SQL の値が分かれうるのは、`sqlite_master.name` が定数と大文字小文字だけ違う DB のときだけ。
+  C-query で既に受け入れている条件と同じである。
+
+### 変わる点
+
+1. **Semantic 段の VM steps と、SQLite 経由の owner callback の回数が減る。** 表の存在確認が 0 steps になる。
+   callback は SQLite が 1,000 steps ごとに呼ぶほか、Rust 側の check も呼ぶので、減りは steps の減りに
+   完全には比例しない（健全な fixture で 103 → 76 回）。CapacityBudget の 600M steps・180 s の値は
+   変えないが、課金される作業が減る。見積りは R1022 で約 2,000 万 steps（上限の約 3%）。実測は「steps の実測」。
+2. **steps の上限の境目では、Err から成功へ、通る方向にだけ動く。** Semantic 段は
+   `CapacityBudget::supported()`（600M steps・180 s。`nir1_capacity.rs:11-12`）の下で動く
+   （`is_complete_registered_with_scratch` の `with_capacity_scope`）。近道は課金される steps を減らすので、
+   SQL 版なら `CapacityExceeded` になる境目の入力が、成功に変わりうる。逆に、SQL 版が通った入力が近道で
+   上限に当たることは無い。CQ-OPT が C-query の steps の上限（100,000 steps）について同じ形を受け入れた先例がある
+   （`docs/plans/nir1-c-query-acceptance-2026-10.md:329-334`。「値を変えずに steps を減らす最適化」で、
+   `nir1_graph/tests/cq_opt.rs` の `before_cq_opt` は、最適化前には上限を超えていた入力が通ることを前提に、
+   steps の上限を外して比較している）。registration の上限（600M steps）と実入力との距離は「steps の実測」に書く。
+3. **停止を見つける時期が動きうる。** 「CQ-OPT の範囲の反転と、その反証」の 1。状態で決まる停止は、
+   終わりの `check()` が同じ typed の停止として返す。変わるのは時期と stage だけである。
+4. **worker の `registration_error_stage`（`bin/nir1-c-query-worker.rs:92-117`）で、raw の SQLite エラーと
+   typed のエラーの割合が動きうる。** 近道は stage の更新順とエラーの型を変えない。ただし、表の存在確認の SQL が
+   走らなくなるので、その statement 内で当たっていた SQLite の失敗（NOMEM や progress による中断など）は
+   起きなくなり、残る失敗は残りの statement で当たる。このため、起動失敗の分類
+   （`CanonicalRegistrationSqliteNoMem`、`CanonicalRegistrationSqliteError`、typed）の割合が変わりうる。
+   これは worker の起動失敗の分類にだけ効く到達しない経路（製品の契約・復旧・利用者向けの文言に出ない）として扱う。
+   registration の成否（true／false／Err）の判定は変えない。
+5. **親の START_TIMEOUT（`c_query_worker.rs:32`、30 s）に対しては、通る方向にだけ動く。** registration が使う時間が
+   減るだけで、増える経路は無い。
+6. **大文字小文字の差。** 近道は SQLite の名前解決（大文字小文字を区別しない）に従い、SQL 版は `name = ?` の
+   比較（BINARY）に従う。`sqlite_master.name` が定数と大文字小文字だけ違う DB では値が分かれうるが、
+   これは C-query で既に受け入れている条件で、registration に新しい種類の差を足さない。
+
+### 変わらない点
+
+上限・期限・停止に当たらない限り、次は変わらない（当たる場合は「変わる点」の 2・3）。
+
+- registration の結果（true／false／Err）、seal、失敗の種類、エラー文、stage の更新順、owner の `check()` の位置と回数。
+- `set_registration_stage` の呼び出しの順序。
+- scratch scope の中身と、registration の外側（identity の前後の読み、publish）。
+- Chronicle の publication など、範囲の外の読み手は SQL のまま。
+- 閾値の値（CapacityBudget の 600M steps・180 s、START_TIMEOUT 30 s、A2 の admission bytes など）。
+
+### 信頼境界
+
+- 呼び出し元は worker の 1 thread・同じ接続だけ（と、feature 付きの diagnostics と試験）で、renderer・main・MCP からは変わらない。
+- scope は thread-local で、動的な extent（closure の実行中）に限られる。closure が終われば（unwind でも）
+  元の値に戻る。接続の identity と pager の data version が scope の記録と違えば SQL に戻る。
+- 近道は schema の cache が snapshot の schema と同じときだけ答える（最初の表を読む文が cookie を比べた後）。
+  snapshot が固定されるのは `ReadIdentity::read` の最初の PRAGMA の時で、`BEGIN DEFERRED` だけでは固定されない。
+  別接続の DDL は、identity の読みの後の commit は snapshot に見えず（snapshot の schema で答える）、
+  BEGIN と identity の読みの間の commit は DRIFT になる。BEGIN の前の commit は、nonpositive の query が
+  cache を snapshot に揃える。postflight の identity が、registration の間に DB が動いたことを従来どおり検出する。
+- 新しい送信先、保存範囲、契約、authority、schema、依存、閾値の値の変更は無い。秘密・データの流れは変わらない。
+
+### 呼び出しの内訳（健全な試験 fixture）
+
+試験 `registration_answers_alike_and_reads_no_schema_table_under_the_shortcut` が、`nir1_pinned_snapshot` の
+`table_exists` の呼び出しを表の名前ごとに数えた（試験専用の記録）。健全な fixture の registration 1 回で 12 回：
+
+| 表 | 回数 |
+| --- | --- |
+| `narrative_dependency_declaration_sets` | 3 |
+| `narrative_dependency_declaration_entries` | 3 |
+| `narrative_dependency_declaration_heads` | 3 |
+| `narrative_scope_registries` | 1 |
+| `narrative_scene_scope_bindings` | 1 |
+| `schema_data_migrations`（c2zc の marker） | 1 |
+
+SQL の下では、この 12 回が `sqlite_master` の列の読み（`type` と `name`）で 24 回に数えられる
+（authorizer は列ごとに 1 回呼ばれる）。「24 回」は存在確認 12 回の列の読みであり、存在確認が 24 回あったのではない。
+当初の見積り（1 Revision あたり scene scope 2、declaration 3 × 2 か所、c2zc 1 = 9 回）と違い、declaration の 3 表は
+3 回ずつ読まれた。1 Revision あたりの回数と、Revision の数への比例は、この fixture では分けて確かめていない（推定）。
+`scene_scope_default.rs` の `narrative_scope_project_defaults` の確認は、この registration からは呼ばれなかった
+（呼び出しの記録に無い）。comment は他の 3 か所と揃えた。
+
+### steps の実測
+
+dev 枝 `claude/dev-drift-window-prb1`（commit `e9b6b7b9`、local のみ。試験 `drift_window::semantic_steps::semantic_stage_steps`、
+release、`nir1-material-diagnostics`）で、registration の Semantic 段 1 回（`is_complete_registered_with_scratch`）で
+`CapacityBudget`（`SQL_PROGRESS_LIMIT` = 600,000,000）に課金された VM steps を測った。registration と同じ形
+（BEGIN、dependency-edge の表の読み 1 回、`with_pinned_snapshot` の中で Semantic 段）で、SQL 版は `with_sql_checks` の下。
+各 size 3 回で、steps は SQL 版・近道版ともに 3 回とも一致した（決定的）。全件で結果は `Ok(true)`。
+
+| size | SQL 版の steps | 近道版の steps | 差 | 減少 | 上限（600M）に対する割合 SQL → 近道 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Q513/R3/D0 | 307,549 | 242,659 | 64,890 | 21.1% | 0.051% → 0.040% |
+| Q2044/R4 | 1,465,381 | 1,381,026 | 84,355 | 5.8% | 0.244% → 0.230% |
+| Q2044/R1022 | 22,695,326 | 2,795,601 | 19,899,725 | 87.7% | 3.78% → 0.47% |
+| Q8176/R16 | 5,839,705 | 5,521,770 | 317,935 | 5.4% | 0.97% → 0.92% |
+| D2064/report-heavy | 16,744,472 | 3,374,757 | 13,369,715 | 79.8% | 2.79% → 0.56% |
+
+- R1022 の差は約 1,990 万 steps で、DR の見積り（約 2,000 万 steps、上限の約 3%）と合う。
+- どの size でも、SQL 版は上限の 4% 未満で、600M steps の上限から 25 倍以上離れている。したがって
+  「変わる点」の 2（境目で Err から成功へ動く）は、この 5 つの size には当たらない。境目の入力は、
+  Revision 数や Candidate が上限の size を大きく超える形でしか現れない。
+- 差は、Revision 数（R）が多い size（R1022、report-heavy）で大きい。R が少ない size（R3、R4、R16）は 5〜21% で、
+  Semantic 段の steps の大半は存在確認の外にある。
+- 経過時間（cadence-one の progress handler つき、参考値）：R1022 は約 2.6 s → 2.0 s、report-heavy は約 2.8 s → 2.4 s、
+  他は同程度。窓 W（registration 全体）への効果は gate の最後の項。
+
+### gate
+
+- 試験：`nir1_graph/tests/registration_pinned.rs` の 8 件。
+  - 結果・seal・失敗の種類・エラー文・stage が、`with_sql_checks` の下と近道の下で同じ（健全、Semantic 段の
+    失敗 5 種。このうち近道が答える経路は 4 種で、declaration set の表の欠落は表を直接読む文が先に落ちるのでエラー文の確認だけ）。
+  - owner の `check()` で止まる場合（349 点。健全な registration の `check()` の回数）が、SQL 版と同じ結果になる。
+  - 状態の停止（progress callback の k 回目に stop を立てる）が、SQL 版と近道版の両方で同じ typed の停止で終わり、
+    scope が漏れない（stage は違いうる）。callback の回数の差の間では、近道版が完了すること。
+  - 近道の下では registration が `sqlite_master` を読まず（`sqlite_master` の列の読みが SQL の下 24 回（存在確認 12 回）→ 0 回）、owner callback が減る。
+    worker の経路（authority の接続）でも同じ。
+  - scope が registration の外へ漏れない（接続が自分の読み snapshot の中で `table_exists` に `None` を返すことで確かめる。
+    probe が失敗しうることの対照つき）。
+  - schema cache が古い状態から始まる場合（前提として cache が古いことを断言）と、identity の読みの後に別接続が DDL を
+    commit した場合で、近道が SQL と同じ値を返す。
+  - scope の中の文は transaction を終えない（authorizer）。
+  - 既存の `table_presence_is_answered_from_the_schema_cache_only_inside_the_pinned_scopes`
+    （旧名 `…only_inside_the_c_query`）が、範囲の外の読みが SQL のままであることを引き続き固定する。
+- 検証：`cargo clippy -p grimodex-db --all-targets -- -D warnings`、`cargo test -p grimodex-db --lib`
+  の `nir1_graph::`、`nir1_pinned_snapshot`、`nir1_entity_relation_index`、`nir1_graph_index_maintenance`、
+  実 worker の `native_worker_registration_*`（ignored。`NIR1_C_QUERY_WORKER_BIN`）。結果は PR 本文に書く。
+- 窓 W の対の測定（2026-11-10、dev、release、各 30 回、writer なし。前は DR-GRW-1 を載せた `88397983`〔負荷 3.37→1.41〕、
+  後はそれに B1 の `nir1_graph.rs` を載せた `724452b1`〔負荷 2.11→1.09〕。2 つの枝の差は `nir1_graph.rs` だけ。
+  記録は `drift-measure/drift-a2-pra2-summary.txt` と `drift-a2-prb1-summary.txt`。前の値は DR-GRW-1 の gate 4 の「後」〔2,704 ms〕を再現した）：
+
+  | case | W p50 前 → 後 | W p95 前 → 後 |
+  |---|---|---|
+  | Q513／R3 | 75.6 → 72.3 ms（−4%） | 76.5 → 73.1 ms |
+  | Q2044／R4 | 298.8 → 292.5 ms（−2%） | 301.4 → 297.5 ms |
+  | Q2044／R1022 | 2,704.6 → 2,063.4 ms（−24%） | 2,719.0 → 2,073.1 ms |
+  | Q8176／R16 | 1,205.7 → 1,182.4 ms（−2%） | 1,212.9 → 1,190.1 ms |
+  | D2064／report-heavy | 3,008.1 → 2,587.6 ms（−14%） | 3,016.9 → 2,603.6 ms |
+
+  縮むのは Revision の多い形（R1022、D2064）で、上の steps の減り（87.7%、79.8%）と向きが合う。R の少ない形は数 % で、
+  W の主は存在確認の外（SourceIndex 段、Revision の中身の読み・検査）にある。
