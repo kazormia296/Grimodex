@@ -1,4 +1,12 @@
-import { lazy, memo, Suspense, useEffect, useMemo, useRef } from "react";
+import {
+  lazy,
+  memo,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { motion } from "motion/react";
 import type { PanelId } from "./panelIds";
 import {
@@ -36,7 +44,6 @@ import { useZoomReveal } from "./useZoomReveal";
 import { useCornerReveal } from "./useCornerReveal";
 import { ZoomRestoreBar } from "./ZoomRestoreBar";
 import { useRegionSegments } from "./useRegionSegments";
-import { LayoutPanelDragGhost } from "./LayoutPanelDragGhost";
 import { OverlayLayer } from "./OverlayLayer";
 import { OverlayKnob } from "./OverlayKnob";
 import { StripeInsertIndicator } from "./StripeInsertIndicator";
@@ -52,6 +59,14 @@ import { useZenGlassConfig } from "@/features/editor/zen/useZenBackgroundAppeara
 const LayoutDnDHighlightOverlay = lazy(() =>
   import("./LayoutDnDHighlightOverlay").then((m) => ({
     default: m.LayoutDnDHighlightOverlay,
+  })),
+);
+
+// ドラッグのゴーストも、最初の pointer ドラッグで読む（起動時の graph に入れない）。
+// 着地の動きはドラッグの後に走るので、一度読んだら mount したままにする。
+const LayoutPanelDragGhost = lazy(() =>
+  import("./LayoutPanelDragGhost").then((m) => ({
+    default: m.LayoutPanelDragGhost,
   })),
 );
 
@@ -104,6 +119,8 @@ export const LayoutShell = memo(function LayoutShell({
   const layout = useLayoutStore((s) => s.layout);
   const initialized = useLayoutStore((s) => s.initialized);
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
+  const [dragGhostLoaded, setDragGhostLoaded] = useState(false);
+  if (draggingPanel && !dragGhostLoaded) setDragGhostLoaded(true);
   const shellRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const morphLayerRef = useRef<HTMLDivElement>(null);
@@ -333,7 +350,11 @@ export const LayoutShell = memo(function LayoutShell({
         </Suspense>
       )}
       {!zenMode && !editorOnly && <StripeInsertIndicator />}
-      {!zenMode && !editorOnly && <LayoutPanelDragGhost />}
+      {!zenMode && !editorOnly && dragGhostLoaded && (
+        <Suspense fallback={null}>
+          <LayoutPanelDragGhost />
+        </Suspense>
+      )}
       {/* key={crossfadeKey} による remount 方式は禁止 — 配下の全エディタ/パネルが
           破棄・再生成されフリーズする。一括の差し替えは外形のモーフと controls の
           opacity で見せる（useLayoutPresetCrossfade 参照）。 */}

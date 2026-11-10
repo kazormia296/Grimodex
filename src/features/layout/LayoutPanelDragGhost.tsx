@@ -115,7 +115,7 @@ export function LayoutPanelDragGhost() {
     const icon = document.querySelector<HTMLElement>(
       `[data-stripe-icon="${landing.panel}"]`,
     );
-    const to = icon?.getBoundingClientRect();
+    const to = icon ? settledRect(icon) : null;
     const keyframes: Keyframe[] =
       to && to.width > 0
         ? [
@@ -173,4 +173,24 @@ export function LayoutPanelDragGhost() {
     </div>,
     document.body,
   );
+}
+
+/**
+ * アイコンの行き先の矩形。着いたアイコンには stripe の FLIP（滑り・弾み）が
+ * 同じ commit で掛かっているので、その transform を除いたレイアウト上の位置と
+ * 大きさで測る。
+ */
+function settledRect(icon: HTMLElement): DOMRect {
+  const r = icon.getBoundingClientRect();
+  let cx = r.left + r.width / 2;
+  let cy = r.top + r.height / 2;
+  const t = getComputedStyle(icon).transform;
+  if (t && t !== "none") {
+    const m = new DOMMatrixReadOnly(t);
+    cx -= m.m41;
+    cy -= m.m42;
+  }
+  const w = icon.offsetWidth;
+  const h = icon.offsetHeight;
+  return new DOMRect(cx - w / 2, cy - h / 2, w, h);
 }

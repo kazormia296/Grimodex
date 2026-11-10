@@ -40,9 +40,15 @@ function renderLayering(
             data-slot-panel="chat"
             className="gx-panel"
           >
+            {/* AnimatedSlotPanel の層と、その中の 2 つの wrapper（切替の寄せ、
+                読み終えた中身のフェード）。 */}
             <div data-animated-slot-panel>
-              <div data-tool-panel-root className="bg-background">
-                <span data-tool-panel-text>Tool panel text</span>
+              <div data-slot-panel-shift>
+                <div data-slot-panel-content>
+                  <div data-tool-panel-root className="bg-background">
+                    <span data-tool-panel-text>Tool panel text</span>
+                  </div>
+                </div>
               </div>
             </div>
           </aside>

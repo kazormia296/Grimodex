@@ -41,6 +41,7 @@ vi.mock("./EditorArea", () => ({
 }));
 
 import { LayoutShell } from "./LayoutShell";
+import { preloadLayoutMorph } from "./useLayoutPresetCrossfade";
 import { useLayoutStore } from "./layoutStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import {
@@ -497,6 +498,11 @@ describe("layout motion in the shell (real Chromium)", () => {
         .getState()
         .setDraggingPanel("chat", "pointer", { x: 14, y: 14 });
     });
+    // ゴーストは最初の pointer ドラッグで読む lazy chunk。
+    await act(async () => {
+      await import("./LayoutPanelDragGhost");
+    });
+    await settleFrames();
     act(() => {
       document.dispatchEvent(
         new PointerEvent("pointermove", { clientX: 400, clientY: 300 }),
@@ -533,6 +539,7 @@ describe("layout motion in the shell (real Chromium)", () => {
       .closest("[data-drop-slot]")!
       .getBoundingClientRect();
 
+    await preloadLayoutMorph();
     act(() => {
       useLayoutStore.getState().clearMaximize();
     });
@@ -560,5 +567,69 @@ describe("layout motion in the shell (real Chromium)", () => {
     )!;
     expect(cell.style.clipPath).toContain("inset(");
     await waitFor(() => expect(cell.style.clipPath).toBe(""));
+  });
+
+  it("does not slide stripe icons when only sizes change (splitter, window)", async () => {
+    setLayout((layout) => {
+      activate(layout, "scenes");
+      activate(layout, "codex");
+    });
+    const { container } = renderShell();
+    await settleFrames();
+    const slot = useLayoutStore
+      .getState()
+      .layout.regions.left.slots.find((s) => s.activePanel === "scenes")!;
+    const other = useLayoutStore
+      .getState()
+      .layout.regions.left.slots.find((s) => s.activePanel === "codex")!;
+    act(() => {
+      useLayoutStore
+        .getState()
+        .nudgeAdjacentSlotSizes("left", slot.id, other.id, 60, 700);
+    });
+    const flipping = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-stripe-icon]"),
+    ).filter((el) =>
+      el.getAnimations().some((a) => a.id === "stripe-icon-flip"),
+    );
+    expect(flipping).toHaveLength(0);
+  });
+
+  it("lands the drag ghost on the icon's settled place even while the icon slides", async () => {
+    setLayout((layout) => activate(layout, "scenes"));
+    renderShell();
+    await settleFrames();
+    act(() => {
+      useLayoutStore
+        .getState()
+        .setDraggingPanel("chat", "pointer", { x: 14, y: 14 });
+    });
+    await act(async () => {
+      await import("./LayoutPanelDragGhost");
+    });
+    await settleFrames();
+    act(() => {
+      document.dispatchEvent(
+        new PointerEvent("pointermove", { clientX: 400, clientY: 300 }),
+      );
+    });
+    // 左の stripe へ移してからドロップする（アイコンは着いて弾む）。
+    act(() => {
+      useLayoutStore.getState().movePanelToRegion("chat", "left");
+      useLayoutStore.getState().setDraggingPanel(null);
+    });
+    const ghost = document.querySelector<HTMLElement>(
+      '[data-panel-drag-ghost][data-landing="true"]',
+    )!;
+    expect(ghost).not.toBeNull();
+    const icon = document.querySelector<HTMLElement>(
+      '[data-stripe-icon="chat"]',
+    )!;
+    const effect = ghost.getAnimations()[0].effect as KeyframeEffect;
+    const end = effect.getKeyframes().at(-1)!.transform as string;
+    const m = new DOMMatrixReadOnly(end);
+    const from = ghost.getBoundingClientRect();
+    // 終点の大きさはアイコンのレイアウト上の大きさ（弾みの 0.6 倍ではない）。
+    expect(from.width * m.a).toBeCloseTo(icon.offsetWidth, 0);
   });
 });

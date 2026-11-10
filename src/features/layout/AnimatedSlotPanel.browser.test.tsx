@@ -36,7 +36,13 @@ vi.mock("./panelComponents", async () => {
           prop === "chronicle"
             ? LazyStubPanel
             : function StubPanel() {
-                return <div data-stub-panel={String(prop)} />;
+                // 実際のパネルの root と同じく bg-background を持つ。
+                return (
+                  <div
+                    data-stub-panel={String(prop)}
+                    className="bg-background"
+                  />
+                );
               },
       },
     ),
@@ -159,5 +165,25 @@ describe("AnimatedSlotPanel switching motion", () => {
     rerender(view("codex"));
     expect(getComputedStyle(layer(container, "codex")).opacity).toBe("1");
     expect(shiftOf(container, "codex")).toEqual({ x: 0, y: 0 });
+  });
+
+  it("still drops the panel root's own fill so the host card (or Glass) shows", () => {
+    const { container } = render(
+      <div className="app-shell">
+        <div
+          data-ambient-glass-surface="panel"
+          className="gx-panel"
+          style={{ position: "relative", width: 300, height: 200 }}
+        >
+          <AnimatedSlotPanel panelId="chat" slotPanels={SLOT} shiftAxis="y" />
+        </div>
+      </div>,
+    );
+    const root = container.querySelector<HTMLElement>(
+      '[data-stub-panel="chat"]',
+    )!;
+    // index.css の「panel の root の塗りを外す」規則が、層の中の 2 つの
+    // wrapper を通っても当たる。
+    expect(getComputedStyle(root).backgroundColor).toBe("rgba(0, 0, 0, 0)");
   });
 });

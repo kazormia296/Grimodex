@@ -75,7 +75,8 @@ export function LayoutDnDHighlightOverlay() {
 
   useGSAP(
     () => {
-      if (!highlightRef.current || isReducedMotion()) return;
+      // 退場中（フェードアウト中）の要素では pulse を始め直さない。
+      if (!rect || !highlightRef.current || isReducedMotion()) return;
       gsap.fromTo(
         highlightRef.current,
         { opacity: 1 },

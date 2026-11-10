@@ -24,12 +24,18 @@ export function useStripeIconFlip(rootRef: RefObject<HTMLElement | null>) {
   const maximized = useLayoutStore((s) => s.maximizedPanelId);
   const skipToken = `${layoutReplaceSeq}|${maximized ?? ""}`;
   const prevRef = useRef<Map<string, { x: number; y: number }> | null>(null);
+  const prevSignatureRef = useRef("");
   const prevSkipRef = useRef(skipToken);
+  const prevSwappingRef = useRef(swapping);
 
   useLayoutEffect(() => {
     const root = rootRef.current;
     const skipChanged = prevSkipRef.current !== skipToken;
     prevSkipRef.current = skipToken;
+    // 並べ替えのドロップ: プレビューで既に行き先に見えているので FLIP しない
+    // （掛けると元の位置へ巻き戻ってから滑る）。
+    const swapDropped = prevSwappingRef.current && !swapping;
+    prevSwappingRef.current = swapping;
     if (!root) {
       prevRef.current = null;
       return;
@@ -40,19 +46,29 @@ export function useStripeIconFlip(rootRef: RefObject<HTMLElement | null>) {
       { x: number; y: number; tx: number; ty: number }
     >();
     const elements = new Map<string, HTMLElement>();
+    const signature: string[] = [];
     for (const el of root.querySelectorAll<HTMLElement>("[data-stripe-icon]")) {
       const id = el.dataset.stripeIcon;
       if (!id || el.offsetParent === null) continue;
       next.set(id, settledCenter(el, base));
       elements.set(id, el);
+      signature.push(structureKey(el, id));
     }
     const prev = prevRef.current;
     prevRef.current = next;
+    // 並び（どの band・折りたたみに居るか）が変わった commit だけ動かす。
+    // splitter のドラッグ・ウィンドウの寸法・Zen の出入りで位置だけが変わった
+    // ときは、控えるだけにする（アイコンが境界から遅れてついてこない）。
+    const joined = signature.join(",");
+    const structureChanged = prevSignatureRef.current !== joined;
+    prevSignatureRef.current = joined;
     if (
       !prev ||
       prev.size === 0 ||
+      !structureChanged ||
       skipChanged ||
       swapping ||
+      swapDropped ||
       reduced ||
       !motionReady() ||
       typeof root.animate !== "function"
@@ -94,6 +110,14 @@ export function useStripeIconFlip(rootRef: RefObject<HTMLElement | null>) {
       );
     }
   });
+}
+
+/** アイコンの並びの鍵（どの band の、折りたたみの中か外か）。 */
+function structureKey(el: HTMLElement, id: string): string {
+  const band = el.closest<HTMLElement>("[data-drop-slot-id]")?.dataset
+    .dropSlotId;
+  const collapsed = el.closest("[data-stripe-collapsed-cluster]") ? "c" : "o";
+  return `${id}@${band ?? ""}:${collapsed}`;
 }
 
 /**

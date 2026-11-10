@@ -9,8 +9,13 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { animate, motion } from "motion/react";
-import { EASINGS, LAYOUT_MOTION, useReducedMotion } from "@/lib/animation";
+import { motion } from "motion/react";
+import {
+  CSS_EASINGS,
+  EASINGS,
+  LAYOUT_MOTION,
+  useReducedMotion,
+} from "@/lib/animation";
 import type { ToolWindowPanelId } from "./layoutTypes";
 import { chromeEnterTransition, chromeExitTransition } from "./layoutAnimation";
 import { PANEL_COMPONENT_MAP } from "./panelComponents";
@@ -172,18 +177,29 @@ function ShiftOnActivate({
     const el = ref.current;
     if (!sign || reduced || !el) return;
     const from = sign * LAYOUT_MOTION.panelShiftPx;
-    const controls = animate(
-      el,
-      axis === "x" ? { x: [from, 0] } : { y: [from, 0] },
-      { duration: LAYOUT_MOTION.groupEnter, ease: EASINGS.easeOut },
+    if (typeof el.animate !== "function") return;
+    // WAAPI で動かす（終われば inline の transform は残らない）。
+    const animation = el.animate(
+      [
+        {
+          transform:
+            axis === "x" ? `translateX(${from}px)` : `translateY(${from}px)`,
+        },
+        { transform: "none" },
+      ],
+      {
+        duration: LAYOUT_MOTION.groupEnter * 1000,
+        easing: CSS_EASINGS.easeOut,
+      },
     );
-    return () => {
-      controls.stop();
-      el.style.transform = "";
-    };
+    return () => animation.cancel();
   }, [isActive, id, axis, reduced, shiftSignRef]);
   return (
-    <div ref={ref} className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <div
+      ref={ref}
+      data-slot-panel-shift
+      className="flex min-h-0 min-w-0 flex-1 flex-col"
+    >
       <LayerMountedContext.Provider value={mountedRef}>
         {children}
       </LayerMountedContext.Provider>
@@ -207,6 +223,8 @@ function FadeInAfterSuspend({
   const [fade] = useState(() => !!layerMountedRef?.current && !reduced);
   return (
     <motion.div
+      // index.css の「panel の root の塗りを外す」規則がこの直下の子を狙う。
+      data-slot-panel-content
       className="flex min-h-0 min-w-0 flex-1 flex-col"
       initial={fade ? { opacity: 0 } : false}
       animate={{ opacity: 1 }}

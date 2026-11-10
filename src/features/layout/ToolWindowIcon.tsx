@@ -59,6 +59,7 @@ export function ToolWindowIcon({
 }: ToolWindowIconProps) {
   const { t } = useTranslation();
   const reduced = useReducedMotion();
+  const layoutReplaceSeq = useLayoutStore((s) => s.layoutReplaceSeq);
   const Icon = PANEL_ICON_MAP[panelId];
   const movePanelToRegion = useLayoutStore((s) => s.movePanelToRegion);
   const movePanelToOverlay = useLayoutStore((s) => s.movePanelToOverlay);
@@ -146,7 +147,10 @@ export function ToolWindowIcon({
               aria-hidden
               data-stripe-active-pill
               // 同じ slot の中で active が移ると、前のアイコンの位置から滑る。
-              layoutId={`stripe-active:${region}:${slotId}`}
+              // プリセットなどの一括の差し替えをまたいでは滑らせない（slot id は
+              // プリセット間で使い回される）。測るのは active が変わった時だけ。
+              layoutId={`stripe-active:${layoutReplaceSeq}:${region}:${slotId}`}
+              layoutDependency={panelId}
               className="pointer-events-none absolute inset-0 -z-10 rounded-full bg-accent"
               transition={reduced ? { duration: 0 } : EASINGS.spring}
             />

@@ -21,10 +21,18 @@ interface Rect {
 
 type CollapseToward = "start" | "end" | "center";
 
+/** 外形に引き継ぐ面の見た目（カードの class と Glass の属性）。 */
+interface Surface {
+  className: string;
+  glassSurface?: string;
+  editorGlass?: string;
+}
+
 interface Ghost {
   key: string;
   rect: Rect;
   toward: CollapseToward;
+  surface: Surface;
 }
 
 interface GroupMotionOptions {
@@ -76,13 +84,17 @@ export function useGroupMotion({
 }: GroupMotionOptions): ReactNode {
   const reduced = useReducedMotion();
   const motionReady = useLayoutMotionReady();
-  const prevRef = useRef<{ order: string[]; rects: Map<string, Rect> } | null>(
-    null,
-  );
+  const prevRef = useRef<{
+    order: string[];
+    rects: Map<string, Rect>;
+    surfaces: Map<string, Surface>;
+  } | null>(null);
   const prevSkipRef = useRef(skipToken);
   const cancelsRef = useRef(new Map<string, () => void>());
   const ghostSeqRef = useRef(0);
   const [ghosts, setGhosts] = useState<Ghost[]>([]);
+  const ghostCountRef = useRef(0);
+  ghostCountRef.current = ghosts.length;
 
   // 依存配列を持たない: 毎 commit 後に矩形を控えて比べる。setGhosts は単位が
   // 消えた commit だけで呼ぶので、次の commit では差が無く連鎖しない。
@@ -99,6 +111,7 @@ export function useGroupMotion({
     const elements = new Map<string, HTMLElement>();
     const order: string[] = [];
     const rects = new Map<string, Rect>();
+    const surfaces = new Map<string, Surface>();
     for (const el of container.querySelectorAll<HTMLElement>(itemSelector)) {
       if (el.parentElement !== container) continue;
       const id = el.dataset[idAttribute];
@@ -106,9 +119,10 @@ export function useGroupMotion({
       elements.set(id, el);
       order.push(id);
       rects.set(id, relativeRect(el, base));
+      surfaces.set(id, surfaceOf(el));
     }
     const prev = prevRef.current;
-    prevRef.current = { order, rects };
+    prevRef.current = { order, rects, surfaces };
 
     const animate =
       enabled &&
@@ -118,7 +132,16 @@ export function useGroupMotion({
       prev !== null &&
       prev.order.length > 0 &&
       order.length > 0;
-    if (!animate) return;
+    if (!animate) {
+      // 比べない commit（最大化・Zen・一括の差し替え・動きを減らす）では、
+      // 進行中の reveal と外形も止める（新しいレイアウトに古い clip を残さない）。
+      if (skipChanged || !enabled || reduced) {
+        for (const cancel of cancelsRef.current.values()) cancel();
+        cancelsRef.current.clear();
+        if (ghostCountRef.current > 0) setGhosts([]);
+      }
+      return;
+    }
 
     const added = order.filter((id) => !prev.rects.has(id));
     const removed = prev.order.filter((id) => !rects.has(id));
@@ -198,6 +221,7 @@ export function useGroupMotion({
         key: `${id}:${ghostSeqRef.current}`,
         rect: prev.rects.get(id)!,
         toward,
+        surface: prev.surfaces.get(id) ?? { className: "gx-panel" },
       };
     });
     if (nextGhosts.length > 0)
@@ -273,7 +297,9 @@ function CollapsingGhost({
       ref={ref}
       aria-hidden
       data-group-ghost
-      className="gx-panel pointer-events-none absolute"
+      data-ambient-glass-surface={ghost.surface.glassSurface}
+      data-editor-fluid-glass={ghost.surface.editorGlass}
+      className={`${ghost.surface.className} pointer-events-none absolute`}
       style={{
         left: ghost.rect.left,
         top: ghost.rect.top,
@@ -283,6 +309,24 @@ function CollapsingGhost({
       }}
     />
   );
+}
+
+/**
+ * 閉じた単位のカードの面。slot はその要素自身が gx-panel、エディタは中の
+ * EditorArea（gx-panel gx-panel--flat）がカード。Glass の属性も引き継ぐ。
+ */
+function surfaceOf(el: HTMLElement): Surface {
+  const card = el.classList.contains("gx-panel")
+    ? el
+    : el.querySelector<HTMLElement>(".gx-panel");
+  if (!card) return { className: "gx-panel" };
+  return {
+    className: Array.from(card.classList)
+      .filter((name) => name.startsWith("gx-panel"))
+      .join(" "),
+    glassSurface: card.dataset.ambientGlassSurface,
+    editorGlass: card.dataset.editorFluidGlass,
+  };
 }
 
 function collapsedInset(

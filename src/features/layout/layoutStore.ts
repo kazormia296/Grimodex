@@ -1675,6 +1675,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
             vp,
           ),
           hiddenStripePanels: new Set(getBuiltinPresetHiddenPanels(presetId)),
+          layoutReplaceSeq: get().layoutReplaceSeq + 1,
         });
         scheduleSave(get);
       }

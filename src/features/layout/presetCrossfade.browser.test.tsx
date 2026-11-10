@@ -40,6 +40,7 @@ vi.mock("./EditorArea", () => ({
 }));
 
 import { LayoutShell } from "./LayoutShell";
+import { preloadLayoutMorph } from "./useLayoutPresetCrossfade";
 import { useLayoutStore } from "./layoutStore";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -103,6 +104,8 @@ describe("preset crossfade (real browser)", () => {
     await new Promise((r) =>
       requestAnimationFrame(() => requestAnimationFrame(() => r(null))),
     );
+    // 外形のモーフの本体は起動の後の idle で読む lazy chunk。
+    await preloadLayoutMorph();
     const editorBefore = container
       .querySelector('[data-center-segment-kind="editor"]')!
       .getBoundingClientRect();
@@ -116,10 +119,35 @@ describe("preset crossfade (real browser)", () => {
       '[data-layout-morph-outline="editor"]',
     );
     expect(editorOutline).not.toBeNull();
+    // center stripe の外形はカード全体（[data-center-stripe]）。
+    const centerStripe = container
+      .querySelector("[data-center-stripe]")!
+      .getBoundingClientRect();
+    const stripeOutline = layer
+      .querySelector('[data-layout-morph-outline="stripe:center"]')!
+      .getBoundingClientRect();
+    expect(Math.abs(stripeOutline.width - centerStripe.width)).toBeLessThan(2);
     // 外形は旧矩形から動き始める。
     const start = editorOutline!.getBoundingClientRect();
     expect(Math.abs(start.left - editorBefore.left)).toBeLessThan(2);
     expect(Math.abs(start.width - editorBefore.width)).toBeLessThan(2);
+
+    // 外形が動いている間は中身を隠す。
+    const shellEl = container.querySelector<HTMLElement>(
+      "[data-layout-shell]",
+    )!;
+    await waitFor(() => {
+      expect(parseFloat(getComputedStyle(shellEl).opacity)).toBeLessThan(0.05);
+    });
+    // 外形は新しい矩形に着く。
+    const editorAfter = container
+      .querySelector('[data-center-segment-kind="editor"]')!
+      .getBoundingClientRect();
+    await waitFor(() => {
+      const r = editorOutline!.getBoundingClientRect();
+      expect(Math.abs(r.left - editorAfter.left)).toBeLessThan(2);
+      expect(Math.abs(r.width - editorAfter.width)).toBeLessThan(2);
+    });
 
     await waitFor(
       () => {

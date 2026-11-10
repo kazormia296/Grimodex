@@ -696,7 +696,9 @@ button[role="switch"][aria-checked="true"] {
 
 /* Reveal the stable panel host: a tool panel's own root fill is dropped so
    the host's solid dome or live Glass shows. Direct-child scope only — nested
-   cards and inputs keep their fills. */
+   cards and inputs keep their fills. AnimatedSlotPanel wraps the panel root in
+   two motion wrappers (the switch shift and the post-suspend fade), so its
+   chain names them explicitly. */
 .app-shell
   [data-ambient-glass-surface="panel"]
   > .bg-background:not(.tiptap):not(.ProseMirror),
@@ -704,10 +706,14 @@ button[role="switch"][aria-checked="true"] {
 .app-shell
   [data-ambient-glass-surface="panel"]
   > [data-animated-slot-panel]
+  > [data-slot-panel-shift]
+  > [data-slot-panel-content]
   > .bg-background:not(.tiptap):not(.ProseMirror),
 .app-shell
   [data-ambient-glass-surface="panel"]
   > [data-animated-slot-panel]
+  > [data-slot-panel-shift]
+  > [data-slot-panel-content]
   > .bg-card {
   background-color: transparent;
 }

@@ -1,11 +1,6 @@
-import { useLayoutEffect, useRef, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import { useAnimationControls } from "motion/react";
-import {
-  CSS_EASINGS,
-  EASINGS,
-  LAYOUT_MOTION,
-  useReducedMotion,
-} from "@/lib/animation";
+import { EASINGS, LAYOUT_MOTION, useReducedMotion } from "@/lib/animation";
 import { useLayoutStore } from "./layoutStore";
 
 interface MorphRefs {
@@ -26,8 +21,26 @@ interface Rect {
   height: number;
 }
 
-/** 新しく現れる・消えるカードの外形の大きさ。 */
-const APPEAR_SCALE = 0.96;
+type LayoutMorphModule = typeof import("./layoutMorph");
+let morphModule: LayoutMorphModule | null = null;
+let morphLoading: Promise<void> | null = null;
+
+/**
+ * 外形のモーフの本体を読む（起動時の graph に入れない）。LayoutShell の
+ * useLayoutPresetCrossfade が起動の後の idle で呼ぶ。読み終える前の差し替えは、
+ * 中身のフェードだけにする。
+ */
+export function preloadLayoutMorph(): Promise<void> {
+  morphLoading ??= import("./layoutMorph").then(
+    (mod) => {
+      morphModule = mod;
+    },
+    () => {
+      morphLoading = null;
+    },
+  );
+  return morphLoading;
+}
 
 /**
  * 外形を控える対象。key はレイアウトをまたいで同じものを指す（panel id、
@@ -49,8 +62,12 @@ const MORPH_TARGETS: ReadonlyArray<{
     card: (el) => el,
   },
   {
+    // center の bands の root はカードではない（カードは [data-center-stripe]）。
     selector: "[data-stripe-root]",
-    key: (el) => el.dataset.stripeRegion && `stripe:${el.dataset.stripeRegion}`,
+    key: (el) =>
+      el.dataset.stripeRegion && el.dataset.stripeRegion !== "center"
+        ? `stripe:${el.dataset.stripeRegion}`
+        : undefined,
     card: (el) => el,
   },
   {
@@ -59,6 +76,17 @@ const MORPH_TARGETS: ReadonlyArray<{
     card: (el) => el,
   },
 ];
+
+/** 引き出し（AnimatedRegionChrome）のカードに掛かっている滑りの量。 */
+function drawerSlide(el: Element): { x: number; y: number } {
+  const drawer = el.closest("[data-animated-region]");
+  const card = drawer?.firstElementChild;
+  if (!card) return { x: 0, y: 0 };
+  const t = getComputedStyle(card).transform;
+  if (!t || t === "none") return { x: 0, y: 0 };
+  const m = new DOMMatrixReadOnly(t);
+  return { x: m.m41, y: m.m42 };
+}
 
 function measureCards(shell: HTMLElement, base: DOMRect): Map<string, Rect> {
   const rects = new Map<string, Rect>();
@@ -70,24 +98,17 @@ function measureCards(shell: HTMLElement, base: DOMRect): Map<string, Rect> {
       if (!key || !card || rects.has(key)) continue;
       const r = card.getBoundingClientRect();
       if (r.width < 1 || r.height < 1) continue;
+      // 引き出しの途中のカードは、滑りの分を除いた位置で控える。
+      const slide = drawerSlide(card);
       rects.set(key, {
-        left: r.left - base.left,
-        top: r.top - base.top,
+        left: r.left - base.left - slide.x,
+        top: r.top - base.top - slide.y,
         width: r.width,
         height: r.height,
       });
     }
   }
   return rects;
-}
-
-function box(r: Rect): Keyframe {
-  return {
-    left: `${r.left}px`,
-    top: `${r.top}px`,
-    width: `${r.width}px`,
-    height: `${r.height}px`,
-  };
 }
 
 /**
@@ -152,7 +173,19 @@ export function useLayoutPresetCrossfade(refs?: MorphRefs) {
     if (!presetChanged && !zenExit && (!zoomChanged || zoomEntering)) return;
     if (reduced || layoutLocked) return;
 
-    const morphed = refs ? startMorph(refs, restRectsRef.current) : false;
+    const host = refs?.hostRef.current;
+    const shell = refs?.shellRef.current;
+    const layer = refs?.layerRef.current;
+    let morphed = false;
+    if (host && shell && layer && morphModule) {
+      const base = host.getBoundingClientRect();
+      morphed = morphModule.startMorph(
+        layer,
+        base,
+        restRectsRef.current,
+        measureCards(shell, base),
+      );
+    }
     controls.set({ opacity: 0 });
     void controls.start({
       opacity: 1,
@@ -184,109 +217,48 @@ export function useLayoutPresetCrossfade(refs?: MorphRefs) {
     restRectsRef.current = measureCards(shell, host.getBoundingClientRect());
   });
 
-  useLayoutEffect(() => {
-    const layer = refs?.layerRef;
-    return () => clearOutlines(layer?.current ?? null);
+  // ウィンドウの寸法が変わったとき（commit が無い）も控え直す。
+  useEffect(() => {
+    const host = refs?.hostRef.current;
+    const shell = refs?.shellRef.current;
+    if (!host || !shell || typeof ResizeObserver === "undefined") return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        restRectsRef.current = measureCards(
+          shell,
+          host.getBoundingClientRect(),
+        );
+      });
+    });
+    observer.observe(host);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useLayoutEffect(() => {
+    const layer = refs?.layerRef;
+    return () => morphModule?.clearOutlines(layer?.current ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 起動の後の idle で外形のモーフの本体を読んでおく。
+  useEffect(() => {
+    if (!refs || !initialized) return;
+    if (typeof window.requestIdleCallback === "function") {
+      const handle = window.requestIdleCallback(
+        () => void preloadLayoutMorph(),
+      );
+      return () => window.cancelIdleCallback(handle);
+    }
+    const timer = window.setTimeout(() => void preloadLayoutMorph(), 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialized]);
+
   return { crossfadeControls: controls };
-}
-
-/** 外形のモーフを始める。外形を 1 つも出さなかったら false。 */
-function startMorph(refs: MorphRefs, rest: Map<string, Rect> | null): boolean {
-  const host = refs.hostRef.current;
-  const shell = refs.shellRef.current;
-  const layer = refs.layerRef.current;
-  if (!host || !shell || !layer || typeof layer.animate !== "function") {
-    return false;
-  }
-  const base = host.getBoundingClientRect();
-  // 連打: 進行中の外形の今の位置を始点にする。
-  const first = new Map(rest ?? []);
-  for (const outline of Array.from(layer.children) as HTMLElement[]) {
-    const key = outline.dataset.layoutMorphOutline;
-    if (!key) continue;
-    const r = outline.getBoundingClientRect();
-    if (r.width >= 1 && r.height >= 1) {
-      first.set(key, {
-        left: r.left - base.left,
-        top: r.top - base.top,
-        width: r.width,
-        height: r.height,
-      });
-    }
-  }
-  clearOutlines(layer);
-  if (first.size === 0) return false;
-
-  const last = measureCards(shell, base);
-  const total = LAYOUT_MOTION.morph + LAYOUT_MOTION.contentIn;
-  const arrive = LAYOUT_MOTION.morph / total;
-  const timing: KeyframeAnimationOptions = {
-    duration: total * 1000,
-    easing: "linear",
-    fill: "forwards",
-  };
-  const keys = new Set([...first.keys(), ...last.keys()]);
-  for (const key of keys) {
-    const from = first.get(key);
-    const to = last.get(key);
-    const outline = document.createElement("div");
-    outline.dataset.layoutMorphOutline = key;
-    outline.className = "gx-panel";
-    outline.style.position = "absolute";
-    outline.style.transformOrigin = "center";
-    layer.appendChild(outline);
-    let keyframes: Keyframe[];
-    if (from && to) {
-      keyframes = [
-        { ...box(from), opacity: 1, offset: 0, easing: CSS_EASINGS.easeOut },
-        { ...box(to), opacity: 1, offset: arrive },
-        { ...box(to), opacity: 0, offset: 1 },
-      ];
-    } else if (to) {
-      keyframes = [
-        {
-          ...box(to),
-          opacity: 0,
-          transform: `scale(${APPEAR_SCALE})`,
-          offset: 0,
-          easing: CSS_EASINGS.easeOut,
-        },
-        { ...box(to), opacity: 1, transform: "none", offset: arrive },
-        { ...box(to), opacity: 0, transform: "none", offset: 1 },
-      ];
-    } else {
-      keyframes = [
-        { ...box(from!), opacity: 1, offset: 0, easing: CSS_EASINGS.easeOut },
-        {
-          ...box(from!),
-          opacity: 0,
-          transform: `scale(${APPEAR_SCALE})`,
-          offset: arrive,
-        },
-        {
-          ...box(from!),
-          opacity: 0,
-          transform: `scale(${APPEAR_SCALE})`,
-          offset: 1,
-        },
-      ];
-    }
-    const animation = outline.animate(keyframes, timing);
-    animation.onfinish = () => outline.remove();
-  }
-  return true;
-}
-
-function clearOutlines(layer: HTMLElement | null) {
-  if (!layer) return;
-  for (const outline of Array.from(layer.children)) {
-    for (const animation of outline.getAnimations?.() ?? []) {
-      animation.onfinish = null;
-      animation.cancel();
-    }
-    outline.remove();
-  }
 }
