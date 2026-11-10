@@ -61,10 +61,12 @@ export const EASINGS = {
  * - spring: タブの開閉。共有の EASINGS.spring より速く軽い（タブは小さく、
  *   頻繁に開け閉めする）。
  * - indicator: アクティブの下線が隣のタブへ滑る。
+ * - reorderS: 並べ替えの後、動いたタブが旧位置から滑る長さ（秒）。
  */
 export const TAB_MOTION = {
   spring: { type: "spring" as const, damping: 22, stiffness: 380, mass: 0.7 },
   indicator: { duration: DURATIONS.normal, ease: EASINGS.easeOut },
+  reorderS: DURATIONS.normal,
 } as const;
 
 /** 位置を知らせるハイライトの点滅の半周期（GSAP の yoyo、秒）。 */
