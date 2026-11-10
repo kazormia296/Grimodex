@@ -196,6 +196,101 @@ fn imports_a_browser_database_as_a_new_migrated_workspace() {
     std::fs::remove_dir_all(root).ok();
 }
 
+/// DR-DBC-3: the handoff database is untrusted input, so a lineage it carries
+/// must not become the imported workspace's identity.
+#[test]
+fn web_editor_import_rotates_supplied_lineage() {
+    let root = temp_dir("lineage");
+    let source = browser_database(&root.join("source"), "web-project", "White Lighthouse");
+    let lineage_sql = "SELECT id FROM grimodex_db_lineage WHERE singleton = 1";
+    let supplied: String = Connection::open(root.join("source").join("browser.db"))
+        .expect("open source")
+        .query_row(lineage_sql, [], |row| row.get(0))
+        .expect("source lineage");
+
+    let result = import_web_editor_workspace(
+        &settings_path(&root),
+        &handoff_json(&source, "web-project", "White Lighthouse"),
+    )
+    .expect("valid handoff");
+
+    let imported: String = Connection::open(PathBuf::from(&result.path).join("grimodex.db"))
+        .expect("open imported")
+        .query_row(lineage_sql, [], |row| row.get(0))
+        .expect("imported lineage");
+    assert_eq!(imported.len(), 32);
+    assert_ne!(
+        imported, supplied,
+        "the supplied lineage must not be carried over"
+    );
+
+    std::fs::remove_dir_all(root).ok();
+}
+
+/// DR-DBC-3: a write-clock sequence carried by the untrusted image (e.g. `i64::MAX`,
+/// which would stall the clock under `INSERT OR IGNORE`) is reset to 0.
+#[test]
+fn web_editor_import_resets_supplied_clock_sequence() {
+    let root = temp_dir("clock-seq");
+    let source = mutate_browser_database(
+        &root.join("source"),
+        "web-project",
+        "White Lighthouse",
+        |conn| {
+            conn.execute(
+                "UPDATE grimodex_write_clock SET seq = ?1 WHERE name = '*'",
+                [i64::MAX],
+            )?;
+            conn.execute(
+                "INSERT INTO grimodex_write_clock(name, seq) VALUES ('ai_audit_events!mutate', ?1)",
+                [i64::MAX - 1],
+            )?;
+            Ok(())
+        },
+    );
+    let result = import_web_editor_workspace(
+        &settings_path(&root),
+        &handoff_json(&source, "web-project", "White Lighthouse"),
+    )
+    .expect("valid handoff");
+
+    let conn =
+        Connection::open(PathBuf::from(&result.path).join("grimodex.db")).expect("open imported");
+    let max_seq: i64 = conn
+        .query_row("SELECT MAX(seq) FROM grimodex_write_clock", [], |row| {
+            row.get(0)
+        })
+        .expect("imported clock");
+    assert!(
+        max_seq < 100_000,
+        "the supplied sequence must not be carried over: {max_seq}"
+    );
+    // The clock moves again, including under OR IGNORE.
+    let before: i64 = conn
+        .query_row(
+            "SELECT seq FROM grimodex_write_clock WHERE name = '*'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("global");
+    conn.execute(
+        "INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at)
+         VALUES ('another', 'x', 'ja', '2026-07-19T00:00:00Z', '2026-07-19T00:00:00Z')",
+        [],
+    )
+    .expect("write");
+    let after: i64 = conn
+        .query_row(
+            "SELECT seq FROM grimodex_write_clock WHERE name = '*'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("global");
+    assert!(after > before, "{after} must advance from {before}");
+
+    std::fs::remove_dir_all(root).ok();
+}
+
 #[test]
 fn imports_non_empty_timelapse_tables_and_preserves_rows() {
     let root = temp_dir("timelapse-preservation");

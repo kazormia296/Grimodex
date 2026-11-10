@@ -2233,6 +2233,12 @@ mod tests {
                      INSERT INTO oversized_open_wal_fixture (body)
                      SELECT zeroblob(4096) FROM seq;",
                 )?;
+                // A table created outside a migration has no clock triggers; the next
+                // open would repair that (DDL under a migration, with a WAL seal).
+                // Keep the image converged so the open does no such work.
+                conn.execute_batch("SAVEPOINT fixture_clock")?;
+                crate::write_clock::install_write_clock_in_tx(conn)?;
+                conn.execute_batch("RELEASE fixture_clock")?;
                 Ok(())
             })
         })

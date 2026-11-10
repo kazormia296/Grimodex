@@ -172,3 +172,53 @@ fn temp_schema_changes_and_runtime_revocation_are_not_hidden_by_an_identical_mai
         .expect("resume without borrowing the old proof");
     assert!(!valid(&f, &batch));
 }
+
+/// DR-DBC-3: clock triggers add rows to `total_changes` but the identity is only compared
+/// for equality, so the judgement is the same with and without them: no write means two
+/// reads are equal, a write means they differ.
+#[test]
+fn read_identity_judgement_is_unchanged_by_clock_triggers() {
+    let mut verdicts = Vec::new();
+    for drop_clock_triggers in [false, true] {
+        let f = Fixture::new();
+        f.db.with_conn(|conn| {
+            let names: Vec<String> = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master
+                      WHERE type = 'trigger' AND name GLOB 'grimodex_clock_*'",
+                )?
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            assert!(
+                !names.is_empty(),
+                "the fixture is a current-schema database with clock triggers"
+            );
+            if drop_clock_triggers {
+                for name in names {
+                    conn.execute_batch(&format!("DROP TRIGGER \"{name}\""))?;
+                }
+            }
+            Ok(())
+        })
+        .expect("arrange triggers");
+        let read = || {
+            f.db.with_read_transaction(super::read_identity::ReadIdentity::read)
+                .expect("read identity")
+        };
+        let first = read();
+        let second = read();
+        assert!(first.is_some());
+        let unchanged = first == second;
+        f.db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO app_settings(key, value) VALUES ('identity-probe', '1')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("write");
+        let after_write = read();
+        verdicts.push((unchanged, first != after_write));
+    }
+    assert_eq!(verdicts, [(true, true), (true, true)]);
+}

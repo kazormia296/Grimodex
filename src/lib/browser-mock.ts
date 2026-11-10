@@ -160,7 +160,22 @@ const RUST_ONLY_BROWSER_TABLES = new Set([
   "nir1_chat_input_submission_keys",
   // SDEF/1 MD5: the project Scene Scope default is Native-owned (typed commands only).
   "narrative_scope_project_defaults",
+  // DB stage 1 (DR-DBC-3): the commit sequence and lineage are Native-owned.
+  // Every grimodex_clock_* trigger writes grimodex_write_clock, so excluding the
+  // table also excludes those triggers below. BrowserMock does not serve a clock
+  // before PR-2.
+  "grimodex_write_clock",
+  "grimodex_db_lineage",
 ]);
+
+function referencesRustOnlyBrowserTable(createSql: string): boolean {
+  return [...RUST_ONLY_BROWSER_TABLES].some((tableName) =>
+    new RegExp(
+      `\\b${tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+      "u",
+    ).test(createSql),
+  );
+}
 
 function executableCreateSql(createSql: string, columnNames: string[]): string {
   // sqlite_master preserves line comments, while the generated contract
@@ -197,13 +212,7 @@ function buildBrowserSchemaDdl(contract: BrowserSchemaContract): string {
     .filter((index) => !RUST_ONLY_BROWSER_TABLES.has(index.table))
     .map((index) => index.createSql);
   const triggerStatements = Object.values(contract.triggers).filter(
-    (createSql) =>
-      ![...RUST_ONLY_BROWSER_TABLES].some((tableName) =>
-        new RegExp(
-          `\\b${tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
-          "u",
-        ).test(createSql),
-      ),
+    (createSql) => !referencesRustOnlyBrowserTable(createSql),
   );
   return `${[...tableStatements, ...indexStatements, ...triggerStatements].join(
     ";\n",
@@ -223,8 +232,12 @@ function buildBrowserTableDdlStatements(
     ...Object.values(contract.indexes)
       .filter((index) => index.table === tableName)
       .map((index) => index.createSql),
-    ...Object.values(contract.triggers).filter((createSql) =>
-      new RegExp(`\\b${tableName}\\b`, "u").test(createSql),
+    // The Native-only clock triggers also mention this table, but they write
+    // grimodex_write_clock, which BrowserMock does not create.
+    ...Object.values(contract.triggers).filter(
+      (createSql) =>
+        new RegExp(`\\b${tableName}\\b`, "u").test(createSql) &&
+        !referencesRustOnlyBrowserTable(createSql),
     ),
   ];
 }

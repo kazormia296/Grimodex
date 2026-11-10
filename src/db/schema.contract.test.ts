@@ -66,6 +66,11 @@ const RUST_ONLY_TABLES = new Set([
   // SDEF/1 MD5: the project Scene Scope default is Native-owned; the renderer
   // reads and writes it only through typed commands, never through Drizzle.
   "narrative_scope_project_defaults",
+  // DB stage 1 (DR-DBC-3): Native-owned commit sequence and lineage. The
+  // grimodex_clock_* triggers write the clock table, so they are excluded from
+  // the browser trigger comparison through the same table-name match.
+  "grimodex_write_clock",
+  "grimodex_db_lineage",
 ]);
 
 // FTS and Native-owned authority tables remain Rust-only physical storage.
