@@ -659,3 +659,183 @@ DR-GRW-2 の表の「statement の保持は無い」は、この決定で「関�
 - 文字どおりの P（worker の allocator のモデルを変える、本体の接続の cache 容量を変える）。
 - b-2（DR-CQL-13 を戻す）、b-3（admission が動きうる）、a-2（registration 専用の共有読み。DR-GRW-4）、b-1。
 - `revision_is_approved` の文の再利用（例外経路だけ）。
+
+## DR-GRW-4 registration の project 単位の読み 3 群を、1 回の読みの間だけ lazy に覚える（a-2）
+
+2026-11-11 の 4 件目。基点は `origin/master` の `8a7f4ceb`（DR-GRW-1〜3 を含む）、branch は
+`claude/graph-registration-shared-reads`。設計の正本は
+`fusion-eval-data/design-notes/db-connection-2026-11-07/window-shortening-a2-2026-11-11.md`（read-only で起案。事実と推測を分けて書いたもの）。
+冒頭の約束（結果・エラーの種類・停止の粒度などを変えない）のうち、この決定で動くのは次の 4 つ。
+steps と progress callback の回数が減る点（「変わる点」の 1。通る方向）、
+**今は起動上限（START_TIMEOUT 30 s、capacity の 180 s）を超える形が通るようになる点（2・3）**、
+S の peak が最大で memo 1 個分上がりうる点（4。通らない方向）、停止を見つける時期（5）。
+閾値の値・schema・契約・authority・admission は変えない。
+
+### 決定
+
+`nir1_entity_relation_index.rs` の `read_eligibility_source_counted` の revision ごとの loop の 3 つ目の `in_scratch`
+（A2 の typed reader `read_nir1_entity_relation_revision_current_for_graph_index`）が、revision ごとに読み直している
+**revision・scene・proposal を bind しない project 単位の読み**を、その関数のローカルの memo で 1 回に減らす。
+範囲は **Graph reader の registration だけ**。鍵は `SourceCapacity::registration_a2_limit.is_some()`
+（worker の registration と、in-process の `Nir1GraphReader::register_with_control` の両方が `nir1_graph.rs` の 1 か所から渡す）。
+
+共有する 3 群は、互いに独立した lazy な cell（`OnceCell`）に置く。
+
+| 群 | 文 | 今の呼び出し位置（revision あたり） |
+| --- | --- | --- |
+| scope authority | SAVEPOINT／projects の存在／tree_nodes 全件／registry（2 文）／scene bindings／RELEASE の 7 文（`load_live_project_scope_authority_with_scene_bindings`。bind は project_id と定数の名前だけ） | `validate_live_sources` の None 枝。1 回 |
+| epoch | 最新の Semantic Epoch（`read_current_epoch`。bind は project_id だけ） | `typed_run_matches_current_epoch` が 2 回、`read_typed_canonical_freshness` が 1 回。計 3 回 |
+| c2zc の marker | `read_c2zc_cutover_marker`（`schema_data_migrations` の 1 行。bind は定数だけ） | `read_typed_canonical_freshness`。1 回 |
+
+- **読みは今と同じ呼び出し位置で、最初に使う時にする。先読みはしない。** 手前で unavailable になる revision
+  （revision-not-current など）では、今も memo でも何も読まない。最初のエラーの順と位置は動かない。
+- **覚えるのは Ok だけ。Err は覚えず、次の revision でも今と同じく読み直す。** scope authority の Err は、停止以外は
+  `source-revision-changed` に丸められてその revision だけが skip される（次の revision は進む）ので、Err を覚えると
+  一過性の失敗（SQLITE_INTERRUPT、Q の NOMEM）の 1 回が後続の全 revision の skip に化ける。Ok(None)（epoch が無い）は値として覚える
+  （結果は `revision-restore-invalidated` で決定的）。停止（`is_validation_terminated`）は覚えずにそのまま返す。
+- memo は `read_eligibility_source_counted` のローカル（`RegistrationProjectReads`。3 つの `OnceCell` と project の `&str`）。
+  中身は scratch scope の中（3 つ目の `in_scratch`）で作り、**作った後は伸ばさない**（`OnceCell::set` は move だけ。S の buffer は
+  scope の外では realloc できない）。`LiveScope` は memo に持たず、revision ごとに `Cow::Borrowed` で作る（C-query の Some 枝と同じ。
+  `anchor_tokens` は今と同じく revision ごとに scope の中で作られて消える）。
+- memo は loop の後の `drop(statements)` と同じ位置で drop する。SourceIndex の組み立て・postflight・ROLLBACK・scratch の seal の前で、
+  return と unwind でも関数を抜けるときに drop される（scope の外での dealloc は可。`scratch_live` は減る）。
+- typed reader の内部は、`shared: Option<&Nir1ProjectReads>` を 3 値の enum `ProjectReadSource`
+  （`Unshared`／`Query(&Nir1ProjectReads)`／`Registration(&RegistrationProjectReads)`）に替える。`From<Option<&Nir1ProjectReads>>` で
+  None→`Unshared`、Some→`Query` に写し、`Query` の枝は今の Some のコードのまま。そのため C-query、D-final、Apply、Freshness、
+  Verify、Restore、B の build、diagnostics など他の caller は、型の上で今と同じ枝を通る。`Registration` を作れるのは新しい入口
+  （`read_nir1_entity_relation_revision_current_for_graph_index` に足す引数）だけで、試験の caller は None を渡す。
+- 試験専用の seam `with_unshared_project_reads`（`#[cfg(test)]`、thread-local。DR-GRW-3 の `with_fresh_statements` と同じ型）で、memo を作らず
+  typed reader に `Unshared` を渡す形に戻せる。`Unshared` の枝は他の caller のために製品に残る変更前の経路そのもの
+  （revision ごとに scope を 1 回、epoch を 3 回、marker を 1 回読む）なので、oracle が変更前の形と一致することはコードの同一性で保証される。
+
+### 理由
+
+registration の窓 W は、場面の多い project では revision ごとの project 単位の読みが支配する。消える作業は「場面数 × revision 数」に
+比例し、registration の経路には場面数を縛る admission が無い。**測定の事実**（2026-11-11、dev、release、
+`drift-measure/a2-scenes-2026-11-11/summary.txt`）：今のコード（`8a7f4ceb`）では、実時間が約 34 µs × 場面数 × revision 数で、
+R1022＋1,000 場面の worker は READY まで 38.5 s かかり START_TIMEOUT（30 s）を超える。R1022＋2,000 場面では index の build が
+180 s の capacity deadline で落ちる。R4 では 20,000 場面でも W は約 3.1 s。この形の fixture での縮みの上限は R1022 で約 0.26 s、
+D2064 で約 0.21 s（場面が少ない形の見込み。場面の多い project ではこれより大きく効く）。
+
+### 変わる点
+
+1. **registration の VM steps と progress callback の回数が減る。** 共有する 3 群（revision あたり scope の 7 文＋3＋1 文と、それぞれの
+   prepare）の分が、2 回目以降の revision で消える。**Rust の owner check（`check_graph_work`、`check_active_work`）は回数も位置も変わらない**
+   （共有する読みの中に `check_active_work` は無い。`project_scope_authority.rs`、`scene_scope.rs`、`semantic_epoch.rs`、`migrate.rs` の marker の読みで確認）。
+   観測点の無い区間のうち、scope の load の中の Rust の処理（derive、検証、digest）も消える。revision 1 の区間は今と同じで、
+   観測の無い最長の区間は延びない。
+2. **steps・180 s・START_TIMEOUT 30 s の境目は、通る方向にだけ動く。** 課金される作業が減るだけで、増える経路は無い。
+3. **今は起動上限を超える形が通るようになる。** 場面数 × revision 数がおよそ 80 万〜170 万の帯（R1022＋1,000 場面の 102 万、
+   R1022＋2,000 場面の 204 万の手前から）は、今は worker の起動が START_TIMEOUT を超える、または index の build が 180 s で落ちるが、
+   a-2 では通る。**閾値の値（600M steps、180 s、30 s、A2 bytes、Q 16 MiB、85%）は変えない。** この扱い（通る範囲が広がること）は
+   2026-11-11 にユーザーが確認した（「進める」）。
+4. **S の peak が、最大で memo 1 個分上がりうる（通らない方向）。** 今は authority が revision の bundle・material と同時に生き、load の瞬間に
+   一時領域（tree の Vec、binding の生の行、digest 用の `Vec<Value>`、bindings の clone）が重なる。memo は一時領域を持たないが、
+   authority が envelope の parse の段（今は authority が生きていない段）とも重なる。新しい peak − 今の peak ≤ memo の大きさ。
+   envelope の段が今の peak を決めている形だけで上がる（見込み。値は gate で測る）。S には承認済みの合格条件が無い（Q の 85% に当たる線が無い）ので、
+   測った値は今と並べて報告し、線は置かない。
+5. **停止を見つける時期が動きうる。** owner の `check()` は同じ位置・同じ回数で走る（試験で全 stop point の結果が一致）。SQLite の
+   progress callback の k 回目の位置は、steps が減るので変わる。終わりは同じ typed の停止で、seal は無く、handle は残らない。
+   memo で消えるのは、2 回目以降の読みでだけ起こりうる非決定的な失敗（SQLITE_INTERRUPT、Q の NOMEM）で、停止は直後の観測点で捕まる。
+
+### 変わらない点
+
+次は変えない（試験で固定）。
+
+- registration の source read の結果（`Ok(roster, digest)`／Err）、seal、失敗の種類、エラー文、stage の更新順、owner の `check()` の位置と回数。
+- **他の入口（Apply・Freshness・Verify・Restore・B の build／publish・diagnostics、C-query などの typed reader の他の caller）の挙動**
+  （steps、callback の回数、読みの回数、エラー、`nir1_capacity_diagnostics.rs` の記録済みの測定）。広げるなら別の DR で、
+  それぞれの試験と測定を見たうえで決める。
+- 共有しない読み：run の `semantic_epoch_id`（2 回／revision。run_id を bind する）、publisher Run の検証、revision row、Decision、
+  payload／envelope、codex entry／relation、POV、freshness row・edges・declaration・digest（すべて revision／entity／edge に固有）。
+  `pending::read` の cursor と head は project 単位だが、5 か所の他の caller（Chronicle は steps で停止を観測する）に及ぶので外す（a-2b として別の決定）。
+- 3 群の SQL、bind の値と順序、返す値と判定。`LiveScope` の作り方（revision ごと）。admission の上限・順序・課金の順・`ensure_current` の位置。
+- SAVEPOINT／RELEASE の目的（autocommit の caller に 1 つの snapshot を与える）は、最初の読みが今と同じ関数を呼ぶので変わらない
+  （typed reader は autocommit を拒否するので、registration では入れ子になるだけで意味を持たない）。
+- 閾値の値、schema、契約、authority、依存。
+
+### 信頼境界
+
+- 呼び出し元は registration（worker と in-process の `register_with_control`）と試験だけで、renderer・main・MCP からの経路は変わらない。
+  どちらも `!is_autocommit()` の transaction（`BEGIN DEFERRED`、`with_pinned_snapshot` の中）で、同じ接続・同じ thread。
+- **snapshot の中で不変**：memo の寿命は `read_eligibility_source_counted` の 1 回の呼び出しに閉じる。その間に同じ接続に書く経路は無い
+  （typed reader の経路は SAVEPOINT／RELEASE 以外は読みだけ。owner と progress の callback は SQL を実行しない。B の
+  `GraphReadAdmission::ensure_current` は接続の source revision を読むだけ）。他の接続の書込みは、最初の読みで固定された WAL snapshot には見えない。
+  worker の接続は `query_only=ON`。
+- 保持するのは 1 回の読みの間の memory だけで、保存しない。新しい送信先、保存範囲、契約、authority、schema、依存、閾値の値の変更は無い。
+  秘密・データの流れは変わらない。
+
+### owner／lifecycle の表（GDX-PRECHECK-001）
+
+| 項目 | 前後 |
+| --- | --- |
+| 入口・開始 | worker の起動時の registration と、in-process の `register_with_control`。他の入口は変えない（`registration_a2_limit` が None の入口は `Unshared`） |
+| 再試行・Suspended | 変えない |
+| 再入 | memo は呼び出しごとのローカルで、入れ子の読みは別の memo を持つ（共有しない） |
+| admission の閉鎖 | 上限・順序・課金の順・`ensure_current` の位置は変えない。memo は何も拒まない |
+| 開始待ちの作業 | 足さない |
+| 有効な handle の所有 | 足さない。memo は SQLite の handle を持たず、Rust の値（authority、bindings、epoch、bool）だけを持つ。作るのは最初の使用時（scratch scope の中）、終わりは loop の後の drop・`?`・unwind（seal の前） |
+| 取消 | owner の `check()` と progress callback は、これまでの typed の停止で終わる。停止を見つける時期だけが動く（「変わる点」の 5）。停止の Err は覚えない |
+| 有限の待ち | 親の START_TIMEOUT 30 s、DEFERRED_RELEASE_LIMIT 10 s は変えない（通る範囲が広がる。「変わる点」の 3） |
+| 終了の証拠 | 変えない（worker の終了、ROLLBACK、zero-live の seal。memo は ROLLBACK と seal の前に drop 済み） |
+| error／timeout／onClosed の所有 | 新しい失敗の経路は足さない。Err は覚えず、今と同じ経路で伝わる |
+| 保存される再開の状態 | 無い（memo は保存されない） |
+
+### 試験（`nir1_graph/tests/registration_shared_reads.rs`、既存の関連試験）
+
+oracle は `with_unshared_project_reads`。型は `registration_statements.rs` の `register`／`alike`／`Outcome` を流用する。
+
+1. 同値性：memo と oracle で、結果・seal・失敗の種類・エラー文・stage が一致する（健全な形、不適格の混在、最初の revision が epoch の読みの手前で
+   unavailable になる形、Semantic 段の失敗 5 種、`RegistrationRevisionInputLimit`、6 MiB 超の component）。
+2. 読みの回数（`project_read_probe`）：eligible な N revision の registration で、memo は AuthorityTree・ScopeExtension・RegistryFull・
+   RegistryRow・C2zcMarker が各 1、CurrentEpoch が 1。oracle は N と 3N。registration でない入口（`read_eligibility_source_with_control`、B の build の経路）は
+   memo の形でも N のまま（範囲の固定）。
+3. Err を memo しない：決定的な Err（registry の行や tree を壊す）は両形で一致し、AuthorityTree が両形とも N。一過性の Err（authorizer で最初の
+   tree_nodes の読みを 1 回だけ拒む）は revision 1 が skip、revision 2 が読めて成功する形で、両形で一致。epoch の Err は両形で同じ Err・同じ stage。
+4. 停止の掃引：owner の `check()` の k 回目は両形の結果が一致。progress callback の k 回目は全 k で typed の停止で終わり seal されない（k は揃えない）。
+   状態による停止（最初の scope の load の文の中を含む）。
+5. scope の閉じ：memo を埋める読みが scratch の closure の中で起きる（authorizer と scope の flag）。
+6. 場面数の多い fixture（場面と scope binding の両方を足す。revision は 4 以上、anchor を散らす）で 1〜3 を通す。既定の試験では場面数を小さくして時間を抑える。
+7. 他の caller の回帰：`cq_avail`、`cq_opt`、`oracle_tests`、`registration_pinned`、`registration_statements`、`nir1_graph_index_maintenance_tests`、
+   `nir1_entity_relation` の typed reader の試験、`project_read_probe` を使う既存の試験。
+
+### 試験の限界
+
+- progress callback の k 回目は、memo と oracle で回数が違うので揃えて比べられない（結果の種類だけを比べる）。
+- 小さい fixture では callback の回数の差が出ない可能性がある（DR-GRW-3 と同じ）。回数の差の大きさは dev の gate で見る。
+- S の高水位は、試験（in-process、`ordinary` の heap）では測れない。worker の実 process の測定（dev）が要る。
+- `heavy.sh` の下の既定の試験は場面数を小さくしてあり、START_TIMEOUT・180 s の境目の移動そのものは試験では見ない（dev の測定）。
+
+### memory
+
+- memo の大きさは live の場面数で決まる（場面ごとの mapping、binding、registry）。epoch は String 3 つ、c2zc は bool。
+  1 場面あたり 1〜3 KB は**推測**（未測定）。測定の事実は、今のコードで場面あたり約 10 KB の S を使うこと（`summary.txt`。revision 数にほぼ依存しない）。
+- **既知の制限（この DR の範囲外）：今のコードでも、約 4,800 場面で worker が S の枯渇で abort する。** revision が 1 個でも起き、計測なしの製品 worker
+  （`8a7f4ceb`）で S5000 で再現した。原因は、場面あたり約 10 KB の S を使うこと。これは a-2 の後に別 lane で扱う（2026-11-11、ユーザー決定）。
+  測定の材料は `drift-measure/a2-scenes-2026-11-11/summary.txt`。
+- S の peak は最大で memo 1 個分上がりうる（「変わる点」の 4）。値は gate の測定で得て、この節に追記する（**この commit の時点では未測定**）。
+- Q の使用量は増えない（memo は S に作られ、Q には載らない。Q の高水位は場面数に依存しないと測定済み）。
+
+### W の対の測定
+
+**この commit の時点では未実施。** dev の A2 の harness（`a2-scenes-harness.patch`）で、前（`8a7f4ceb`）と後（この commit の製品 2 ファイル）を
+5 形＋場面の多い形で 30 回ずつ測り、結果をこの節に追記する（dev 専用で PR に含めない）。
+
+### gate
+
+1. 同値性・Err の非保存・読みの回数・停止の掃引・scope の閉じ：上の試験（`registration_shared_reads::`）。
+2. 既存の試験：`cargo test -p grimodex-db --lib` 全件、feature `nir1-material-diagnostics` 付きの `registration_`。
+3. worker の実 process：release の worker binary に対し `scripts/nir1-c-query-worker-ci.sh lifecycle`（26 case）。
+4. steps：dev の `semantic_stage_steps` で前後を比べ、減る方向だけであることを確かめる（未実施）。
+5. memory：dev で S・Q の高水位を前後で測り、今と並べて報告する（未実施。S に合否の線は置かない）。
+6. W の対の測定（未実施）。
+7. DR：この文書。
+
+### やらないこと（別の決定）
+
+- 他の入口（Apply・Freshness・Verify・Restore・B の build・diagnostics）への拡大。
+- `pending::read` の cursor と head の共有（a-2b）。
+- `is_complete_registered_with_control_unmetered` の k=0 の epoch を memo の初期値に使うこと（loop の中の最初の読みが消え、「同じ呼び出し位置で読む」から外れる。得は 1 文だけ）。
+- run の `semantic_epoch_id` の共有（run_id を key にすれば共有できるが、今回はしない）。
+- 場面数の admission の追加（今通る入力を拒むので確認が要る。採らない）。S の枯渇（約 4,800 場面）の解消（別 lane）。
+- memo が一定の大きさを超えたら保持しない上限（結果を変えず何も拒まないので委任内だが、gate で S の余裕が足りないと分かった場合の対処として残す。今は入れない）。
