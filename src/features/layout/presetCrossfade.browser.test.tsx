@@ -1,12 +1,12 @@
 /**
- * プリセット切替クロスフェードの実配線テスト（実 Chromium）。
+ * プリセット切替（外形のモーフ）の実配線テスト（実 Chromium）。
  *
  * happy-dom 側のフック単体テストは controls.set/start の dispatch しか検証
  * できない（motion.div への購読が無いと set/start は no-op で素通りする）。
- * ここでは applyPreset 後に data-layout-shell の computed opacity が一旦
- * 1 未満に落ち（useLayoutEffect での paint 前 set(0)）、アニメ完了で 1 に
- * 戻ること、そしてその間 DOM ノードが remount されないことを実ブラウザで
- * gate する。
+ * ここでは applyPreset 後に、外形がカードの旧矩形から新矩形へ動き、その間
+ * data-layout-shell の computed opacity が 1 未満に落ちて（中身を隠す）、
+ * 外形が消えた後に 1 へ戻ること、そしてその間 DOM ノードが remount されない
+ * ことを実ブラウザで gate する。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, act, waitFor } from "@testing-library/react";
@@ -42,6 +42,7 @@ vi.mock("./EditorArea", () => ({
 import { LayoutShell } from "./LayoutShell";
 import { useLayoutStore } from "./layoutStore";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 
 describe("preset crossfade (real browser)", () => {
   beforeEach(() => {
@@ -55,6 +56,9 @@ describe("preset crossfade (real browser)", () => {
       customPresets: [],
       initialized: true,
     });
+    useSettingsStore.setState((state) => ({
+      cache: { ...state.cache, "display.reduceMotion": "false" },
+    }));
   });
 
   it("fades opacity in place (dips below 1, returns to 1) without remount", async () => {
@@ -88,5 +92,62 @@ describe("preset crossfade (real browser)", () => {
 
     // フェードは同一ノード上で起きた（remount していない）
     expect(container.querySelector("[data-layout-shell]")).toBe(shell);
+  });
+
+  it("morphs card outlines from the old layout to the new one, then clears them", async () => {
+    const { container } = render(
+      <div style={{ width: 1200, height: 800 }}>
+        <LayoutShell />
+      </div>,
+    );
+    await new Promise((r) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => r(null))),
+    );
+    const editorBefore = container
+      .querySelector('[data-center-segment-kind="editor"]')!
+      .getBoundingClientRect();
+
+    act(() => {
+      useLayoutStore.getState().applyPreset("builtin:review");
+    });
+
+    const layer = container.querySelector("[data-layout-morph-layer]")!;
+    const editorOutline = layer.querySelector<HTMLElement>(
+      '[data-layout-morph-outline="editor"]',
+    );
+    expect(editorOutline).not.toBeNull();
+    // 外形は旧矩形から動き始める。
+    const start = editorOutline!.getBoundingClientRect();
+    expect(Math.abs(start.left - editorBefore.left)).toBeLessThan(2);
+    expect(Math.abs(start.width - editorBefore.width)).toBeLessThan(2);
+
+    await waitFor(
+      () => {
+        expect(layer.children).toHaveLength(0);
+        expect(
+          getComputedStyle(
+            container.querySelector("[data-layout-shell]") as HTMLElement,
+          ).opacity,
+        ).toBe("1");
+      },
+      { timeout: 2000 },
+    );
+  });
+
+  it("switches at once under Reduced Motion", () => {
+    useSettingsStore.setState((state) => ({
+      cache: { ...state.cache, "display.reduceMotion": "true" },
+    }));
+    const { container } = render(
+      <div style={{ width: 1200, height: 800 }}>
+        <LayoutShell />
+      </div>,
+    );
+    act(() => {
+      useLayoutStore.getState().applyPreset("builtin:review");
+    });
+    expect(
+      container.querySelector("[data-layout-morph-layer]")!.children,
+    ).toHaveLength(0);
   });
 });

@@ -12,8 +12,6 @@ import {
   OVERLAY_DURATIONS,
 } from "@/lib/animation";
 
-export const PRESET_ANIMATION_DEBOUNCE_MS = 300;
-
 /**
  * サイドと下のリージョンの引き出し（案 A）。寸法（grid の列・行）は即時に
  * 確定し、リージョンのカードを stripe 側の辺から滑り出させる／滑り込ませる。
@@ -85,12 +83,6 @@ export function chromeEnterTransition(reduced: boolean) {
 }
 
 export function chromeExitTransition(reduced: boolean) {
-  return reduced
-    ? { duration: 0 }
-    : { duration: DURATIONS.fast, ease: EASINGS.easeOut };
-}
-
-export function presetCrossfadeTransition(reduced: boolean) {
   return reduced
     ? { duration: 0 }
     : { duration: DURATIONS.fast, ease: EASINGS.easeOut };

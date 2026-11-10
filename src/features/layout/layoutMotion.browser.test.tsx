@@ -87,7 +87,7 @@ function emptyRegion(
   layout.regions[to].slots[0].panels.push(...moved);
 }
 
-function shellView() {
+function shellView(zenMode = false) {
   return (
     <div
       className="app-shell"
@@ -100,7 +100,7 @@ function shellView() {
         height: SHELL_SIZE.height,
       }}
     >
-      <LayoutShell />
+      <LayoutShell zenMode={zenMode} />
     </div>
   );
 }
@@ -518,5 +518,47 @@ describe("layout motion in the shell (real Chromium)", () => {
     await waitFor(() => {
       expect(document.querySelector("[data-panel-drag-ghost]")).toBeNull();
     });
+  });
+
+  it("shrinks the maximized card's outline back to its place on restore", async () => {
+    setLayout((layout) => activate(layout, "scenes"));
+    const { container } = renderShell();
+    await settleFrames();
+    act(() => {
+      useLayoutStore.getState().toggleMaximizePanel("scenes");
+    });
+    await settleFrames();
+    const full = container
+      .querySelector('[data-slot-panel="scenes"]')!
+      .closest("[data-drop-slot]")!
+      .getBoundingClientRect();
+
+    act(() => {
+      useLayoutStore.getState().clearMaximize();
+    });
+    const outline = container.querySelector<HTMLElement>(
+      '[data-layout-morph-outline="panel:scenes"]',
+    );
+    expect(outline).not.toBeNull();
+    expect(
+      Math.abs(outline!.getBoundingClientRect().width - full.width),
+    ).toBeLessThan(2);
+    await waitFor(() => {
+      expect(
+        container.querySelector("[data-layout-morph-layer]")!.children,
+      ).toHaveLength(0);
+    });
+  });
+
+  it("widens the editor cell with a clip when entering Zen", async () => {
+    setLayout((layout) => activate(layout, "scenes"));
+    const { container, rerender } = render(shellView(false));
+    await settleFrames();
+    rerender(shellView(true));
+    const cell = container.querySelector<HTMLElement>(
+      '[data-zoom-cell="center"]',
+    )!;
+    expect(cell.style.clipPath).toContain("inset(");
+    await waitFor(() => expect(cell.style.clipPath).toBe(""));
   });
 });

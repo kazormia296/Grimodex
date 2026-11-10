@@ -10,7 +10,6 @@ import { renderHook, act } from "@testing-library/react";
 import { useLayoutPresetCrossfade } from "./useLayoutPresetCrossfade";
 import { useLayoutStore } from "./layoutStore";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
-import { PRESET_ANIMATION_DEBOUNCE_MS } from "./layoutAnimation";
 
 vi.mock("@/lib/animation", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/animation")>();
@@ -132,28 +131,32 @@ describe("useLayoutPresetCrossfade", () => {
     expect(startSpy).not.toHaveBeenCalled();
   });
 
-  it("debounces rapid preset switches (fade only, never remount)", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(1_000_000);
+  it("restarts on every rapid preset switch (no throttle, never remount)", () => {
     const { result } = renderHook(() => useLayoutPresetCrossfade());
     const setSpy = vi.spyOn(result.current.crossfadeControls, "set");
 
     act(() => {
       useLayoutStore.setState({ activePresetId: "builtin:chat-main" });
     });
-    expect(setSpy).toHaveBeenCalledTimes(1);
-
-    // debounce 窓内の連打はフェードを再トリガーしない
     act(() => {
       useLayoutStore.setState({ activePresetId: "builtin:plan" });
     });
-    expect(setSpy).toHaveBeenCalledTimes(1);
-
-    // 窓を抜ければ再びフェードする
-    vi.setSystemTime(1_000_000 + PRESET_ANIMATION_DEBOUNCE_MS + 1);
     act(() => {
       useLayoutStore.setState({ activePresetId: "builtin:default" });
     });
-    expect(setSpy).toHaveBeenCalledTimes(2);
+    // 連打の途中でも毎回つなぐ（以前の 300ms の throttle は廃止）。
+    expect(setSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it("treats re-applying the same preset as a replacement", () => {
+    const { result } = renderHook(() => useLayoutPresetCrossfade());
+    const setSpy = vi.spyOn(result.current.crossfadeControls, "set");
+
+    act(() => {
+      useLayoutStore.setState((state) => ({
+        layoutReplaceSeq: state.layoutReplaceSeq + 1,
+      }));
+    });
+    expect(setSpy).toHaveBeenCalledWith({ opacity: 0 });
   });
 });

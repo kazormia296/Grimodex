@@ -104,8 +104,15 @@ export const LayoutShell = memo(function LayoutShell({
   const layout = useLayoutStore((s) => s.layout);
   const initialized = useLayoutStore((s) => s.initialized);
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
-  const { crossfadeControls } = useLayoutPresetCrossfade();
   const shellRef = useRef<HTMLDivElement>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const morphLayerRef = useRef<HTMLDivElement>(null);
+  const { crossfadeControls } = useLayoutPresetCrossfade({
+    hostRef,
+    shellRef,
+    layerRef: morphLayerRef,
+    zenMode,
+  });
   const glass = useZenGlassConfig();
   const workspaceGlassStyle = {
     "--workspace-fluid-glass-blur": `${glass.blur}px`,
@@ -166,7 +173,9 @@ export const LayoutShell = memo(function LayoutShell({
   }, [initialized]);
 
   // 最大化突入時の clip-path reveal（ズームっぽい展開演出）。
-  useZoomReveal(zoomRegion, layout, shellRef);
+  // Zen に入るときもエディタのセルを同じ clip で全面へ広げる（出るときは
+  // useLayoutPresetCrossfade の外形のモーフ）。
+  useZoomReveal(zoomRegion ?? (zenMode ? "center" : null), layout, shellRef);
   // 下の角の取り合いで、角を取った側を直前の矩形から広げる。
   useCornerReveal(getBottomCorners(layout), layout, shellRef, motionReadyRef);
 
@@ -326,11 +335,15 @@ export const LayoutShell = memo(function LayoutShell({
       {!zenMode && !editorOnly && <StripeInsertIndicator />}
       {!zenMode && !editorOnly && <LayoutPanelDragGhost />}
       {/* key={crossfadeKey} による remount 方式は禁止 — 配下の全エディタ/パネルが
-          破棄・再生成されフリーズする。フェードは controls の opacity 再トリガーで
-          実現する（useLayoutPresetCrossfade 参照）。 */}
+          破棄・再生成されフリーズする。一括の差し替えは外形のモーフと controls の
+          opacity で見せる（useLayoutPresetCrossfade 参照）。 */}
       {/* 外側の host は grid（data-layout-shell）と overlay の層を重ねる。つまみは
           cstripe セルの両端に置き、host の幅は画面幅いっぱい。 */}
-      <div data-overlay-host className="relative flex h-full w-full min-w-0">
+      <div
+        ref={hostRef}
+        data-overlay-host
+        className="relative flex h-full w-full min-w-0"
+      >
         <motion.div
           ref={shellRef}
           data-workspace-glass-root
@@ -557,6 +570,14 @@ export const LayoutShell = memo(function LayoutShell({
             <BottomCornerToggle side="right" />
           )}
         </motion.div>
+        {/* プリセット切替・最大化の解除の外形のモーフの層（useLayoutPresetCrossfade が
+            中身を命令的に足し引きする）。grid の上、オーバーレイの層より下。 */}
+        <div
+          ref={morphLayerRef}
+          aria-hidden
+          data-layout-morph-layer
+          className="pointer-events-none absolute inset-0 z-[5]"
+        />
         {/* オーバーレイの層。grid と Stripe より上、DnD のハイライトとドラッグゴースト
             （fixed、z-[9998]〜）より下。エディタだけの表示（phone）では出さない。 */}
         {!editorOnly && <OverlayLayer side="left" zenMode={zenMode} />}

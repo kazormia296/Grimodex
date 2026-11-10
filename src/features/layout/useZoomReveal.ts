@@ -23,8 +23,9 @@ const ZOOM_CELLS: ZoomRegion[] = ["left", "right", "center", "bottom"];
  * - 補間は startClipReveal（clipReveal.ts）が inset の 4 数値を rAF で
  *   自前駆動する（DURATIONS.slow / EASINGS.easeOut）。完了・中断とも inline
  *   clip-path を除去するので残留しない（中断は巻き戻さずキャンセル）。
- * - 解除（zoom→null）と zoom 間切替は reveal しない（解除側のフェードは
- *   useLayoutPresetCrossfade が担当）。
+ * - 解除（zoom→null）と zoom 間切替は reveal しない（解除側は
+ *   useLayoutPresetCrossfade の外形のモーフが担当）。Zen に入るときも同じ
+ *   reveal を使う（LayoutShell が zoomRegion に "center" を渡す）。
  */
 export function useZoomReveal(
   zoomRegion: ZoomRegion | null,
