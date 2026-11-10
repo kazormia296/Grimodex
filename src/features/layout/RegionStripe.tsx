@@ -1,4 +1,4 @@
-import { Fragment } from "react";
+import { Fragment, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { ToolWindowIcon } from "./ToolWindowIcon";
 import { StripeBandContextMenu } from "./StripeBandContextMenu";
@@ -18,6 +18,7 @@ import {
   slotSplitterPx,
 } from "./layoutConstants";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
+import { useStripeIconFlip } from "./useStripeIconFlip";
 import type { LayoutRegionId, RegionId } from "./layoutTypes";
 import type { RegionSegment } from "./useRegionSegments";
 
@@ -279,6 +280,9 @@ export function RegionStripe({
         : s.layout.regions[region as RegionId].slots.map((slot) => slot.id),
     ),
   );
+  const rootRef = useRef<HTMLDivElement>(null);
+  // ⑤ band が動く・パネルが移ると、アイコンを直前の位置から滑らせる。
+  useStripeIconFlip(rootRef);
   const movePanelToNewSlot = useLayoutStore((s) => s.movePanelToNewSlot);
   const setDraggingPanel = useLayoutStore((s) => s.setDraggingPanel);
   const setDragOverTarget = useLayoutStore((s) => s.setDragOverTarget);
@@ -406,6 +410,7 @@ export function RegionStripe({
     // 回避は先頭/末尾 CollapsedCluster の anchor 側 offset と、先頭 open band
     // の absolute シフト (firstOpenBandLeadingPx) として吸収する。
     <div
+      ref={rootRef}
       data-stripe-root
       data-stripe-region={region}
       data-ambient-glass-surface={region !== "center" ? "stripe" : undefined}

@@ -250,7 +250,12 @@ describe("RegionStripe", () => {
     const cls = (panel: string) =>
       container.querySelector(`[data-stripe-icon="${panel}"]`)?.className ?? "";
 
-    expect(cls("scenes")).toContain("bg-accent"); // open + active
+    // open + active（面は slot のアイコン間を滑る pill が描く）
+    expect(
+      container.querySelector(
+        '[data-stripe-icon="scenes"] [data-stripe-active-pill]',
+      ),
+    ).not.toBeNull();
     expect(cls("codex-quick")).toContain("text-foreground"); // open + inactive
     expect(cls("timeline")).toContain("text-muted-foreground"); // collapsed
     expect(cls("codex-quick")).not.toMatch(/text-[^\s]+\/\d+/);

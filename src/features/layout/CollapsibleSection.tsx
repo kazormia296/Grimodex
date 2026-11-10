@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface CollapsibleSectionProps {
@@ -31,7 +31,6 @@ export function CollapsibleSection({
   children,
   className,
 }: CollapsibleSectionProps) {
-  const Chevron = open ? ChevronDown : ChevronRight;
   return (
     <div className={cn("flex flex-col", className)}>
       <div className="flex items-center gap-1 px-2 py-1">
@@ -41,7 +40,14 @@ export function CollapsibleSection({
           aria-expanded={open}
           className="flex flex-1 items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
         >
-          <Chevron className="size-3 shrink-0" aria-hidden="true" />
+          {/* 開閉はシェブロンの回転で伝える（高さは補間しない。中身は動かさない）。 */}
+          <ChevronRight
+            className={cn(
+              "size-3 shrink-0 transition-transform duration-150 ease-out",
+              open && "rotate-90",
+            )}
+            aria-hidden="true"
+          />
           <span className="truncate">{title}</span>
         </button>
         {actions != null && (

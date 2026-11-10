@@ -924,6 +924,27 @@ export function isRegionOpen(region: RegionState): boolean {
   return region.slots.some((s) => s.activePanel !== null);
 }
 
+/**
+ * 閉じる動き（AnimatedRegionChrome）の間に描く slot。直前に開いていた slot の
+ * うち、active panel がまだこのリージョンに残っているものだけを、残っている
+ * panel に絞って返す。閉じただけなら panel は slot に残る。DnD や「移動先」で
+ * 別の場所へ移った panel は移動先でも mount されるので、閉じる側には残さない
+ * （裏に keepalive している非 active の panel も同じ）。
+ */
+export function slotsKeptWhileClosing<
+  S extends { panels: ReadonlyArray<string>; activePanel: string | null },
+>(snapshot: ReadonlyArray<S>, current: ReadonlyArray<S>): S[] {
+  const remaining = new Set(current.flatMap((slot) => slot.panels));
+  return snapshot
+    .filter(
+      (slot) => slot.activePanel !== null && remaining.has(slot.activePanel),
+    )
+    .map((slot) => ({
+      ...slot,
+      panels: slot.panels.filter((panel) => remaining.has(panel)),
+    }));
+}
+
 export function findPanelLocation(
   state: LayoutState,
   panelId: PanelId,

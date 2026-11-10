@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { cn } from "@/lib/utils";
 import { CenterStripeBands } from "./CenterStripeBands";
@@ -14,6 +14,7 @@ import { useLayoutStore } from "./layoutStore";
 import { useCenterSegments } from "./useCenterSegments";
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { useRegionSegments } from "./useRegionSegments";
+import { useStripeIconFlip } from "./useStripeIconFlip";
 
 function regionIsOpen(slots: { activePanel: string | null }[]): boolean {
   return slots.some((slot) => slot.activePanel !== null);
@@ -89,6 +90,10 @@ export function CenterStripe({ overlayKnobs = NO_KNOBS }: CenterStripeProps) {
     [segments],
   );
 
+  const rootRef = useRef<HTMLDivElement>(null);
+  // ⑤ center の band が動く・パネルが移ると、アイコンを直前の位置から滑らせる。
+  useStripeIconFlip(rootRef);
+
   const stripeEndInsertIndex = useMemo(() => {
     if (segments.length === 0) return 0;
     const lastSlotId = segments[segments.length - 1].slotId;
@@ -98,6 +103,7 @@ export function CenterStripe({ overlayKnobs = NO_KNOBS }: CenterStripeProps) {
 
   return (
     <div
+      ref={rootRef}
       data-center-stripe
       data-ambient-glass-surface="stripe"
       className="gx-panel relative grid h-full w-full min-w-0 overflow-hidden"

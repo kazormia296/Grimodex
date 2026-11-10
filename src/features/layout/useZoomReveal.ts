@@ -1,19 +1,10 @@
 import { useLayoutEffect, useRef, type RefObject } from "react";
-import { cubicBezier } from "motion/react";
-import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
+import { DURATIONS, useReducedMotion } from "@/lib/animation";
+import { startClipReveal } from "./clipReveal";
 import type { ZoomRegion } from "./layoutMetrics";
 import type { LayoutState } from "./layoutTypes";
 
 const ZOOM_CELLS: ZoomRegion[] = ["left", "right", "center", "bottom"];
-
-/**
- * 終端 inset。負値なのは clip を panel の box-shadow より外側に逃がすため
- * （REGION_OPEN_CLIP と同じ意図）。開始値と同じ 4 値で持ち、数値だけを
- * 自前補間する — `inset(-200px)`（1 値ショートハンド）との文字列補間は
- * エンジン/ライブラリによって構造不一致で discrete になる罠があるため、
- * 文字列補間には一切頼らない。
- */
-const OPEN_INSET_PX = -200;
 
 /**
  * 最大化（視覚 zoom）突入時の「ズームっぽい」展開演出。
@@ -29,11 +20,12 @@ const OPEN_INSET_PX = -200;
  *   （store の mutation は React の外で起きるため、変更前 DOM を
  *   イベント時点では測れない）。window リサイズ直後の 1 回だけ僅かに
  *   ズレうるが、reveal の始点が数 px 逸れるだけで実害はない。
- * - 補間は inset の 4 数値を rAF で自前駆動する（duration/easing は
- *   DURATIONS.slow / EASINGS.easeOut）。完了・中断とも inline clip-path を
- *   除去するので残留しない（中断は巻き戻さずキャンセル）。
- * - 解除（zoom→null）と zoom 間切替は reveal しない（解除側のフェードは
- *   useLayoutPresetCrossfade が担当）。
+ * - 補間は startClipReveal（clipReveal.ts）が inset の 4 数値を rAF で
+ *   自前駆動する（DURATIONS.slow / EASINGS.easeOut）。完了・中断とも inline
+ *   clip-path を除去するので残留しない（中断は巻き戻さずキャンセル）。
+ * - 解除（zoom→null）と zoom 間切替は reveal しない（解除側は
+ *   useLayoutPresetCrossfade の外形のモーフが担当）。Zen に入るときも同じ
+ *   reveal を使う（LayoutShell が zoomRegion に "center" を渡す）。
  */
 export function useZoomReveal(
   zoomRegion: ZoomRegion | null,
@@ -69,48 +61,6 @@ export function useZoomReveal(
     );
     const first = restRectsRef.current[zoomRegion];
     if (!el || !first) return;
-    const last = el.getBoundingClientRect();
-    if (last.width <= 0 || last.height <= 0) return;
-
-    const from = {
-      top: Math.max(0, first.top - last.top),
-      right: Math.max(0, last.right - first.right),
-      bottom: Math.max(0, last.bottom - first.bottom),
-      left: Math.max(0, first.left - last.left),
-    };
-    const ease = cubicBezier(...EASINGS.easeOut);
-    const durationMs = DURATIONS.slow * 1000;
-    const startedAt = performance.now();
-    let raf = 0;
-
-    const apply = (progress: number) => {
-      const eased = ease(progress);
-      const at = (v: number) => v + (OPEN_INSET_PX - v) * eased;
-      el.style.clipPath = `inset(${at(from.top)}px ${at(from.right)}px ${at(
-        from.bottom,
-      )}px ${at(from.left)}px)`;
-    };
-
-    const tick = (now: number) => {
-      const progress = Math.min(1, (now - startedAt) / durationMs);
-      if (progress >= 1) {
-        // 完了: 残留 clip を持たない（自前駆動なので書き戻し競合も無い）。
-        el.style.clipPath = "";
-        raf = 0;
-        return;
-      }
-      apply(progress);
-      raf = requestAnimationFrame(tick);
-    };
-
-    apply(0);
-    raf = requestAnimationFrame(tick);
-
-    return () => {
-      // 解除・切替・unmount で発火。中断は巻き戻さずキャンセルし、残留
-      // clip を取り除く。
-      if (raf !== 0) cancelAnimationFrame(raf);
-      el.style.clipPath = "";
-    };
+    return startClipReveal(el, first, DURATIONS.slow);
   }, [zoomRegion, layout, reduced, shellRef]);
 }

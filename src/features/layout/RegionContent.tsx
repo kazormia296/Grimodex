@@ -1,4 +1,5 @@
 import { Fragment, memo, useCallback, useRef } from "react";
+import { useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import {
   acceptsToolWindowReassignDrag,
@@ -13,7 +14,8 @@ import {
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { Splitter } from "./Splitter";
 import { AnimatedSlotPanel } from "./AnimatedSlotPanel";
-import { normalizeFlexGrow } from "./layoutStateUtils";
+import { useGroupMotion } from "./useGroupMotion";
+import { normalizeFlexGrow, slotsKeptWhileClosing } from "./layoutStateUtils";
 import type { RegionId } from "./layoutTypes";
 
 interface RegionContentProps {
@@ -43,9 +45,23 @@ function insertIndexAfterSlot(slots: { id: string }[], slotId: string): number {
 export const RegionContent = memo(function RegionContent({
   region,
   orientation,
-  dormant = false,
+  dormant: dormantProp = false,
 }: RegionContentProps) {
-  const slots = useLayoutStore((s) => s.layout.regions[region].slots);
+  const storeSlots = useLayoutStore((s) => s.layout.regions[region].slots);
+  // リージョンを閉じる動き（AnimatedRegionChrome）の間は、直前に開いていた slot を
+  // そのまま描く。store では既に閉じているので、そのまま読むと中身が同じ描画で
+  // 消える。panel が別の場所へ移った場合は移動先でも mount されるので残さない。
+  const isPresent = useIsPresent();
+  const lastOpenSlotsRef = useRef(storeSlots);
+  if (isPresent && regionHasOpenSlots(storeSlots)) {
+    lastOpenSlotsRef.current = storeSlots;
+  }
+  const keptSlots = isPresent
+    ? null
+    : slotsKeptWhileClosing(lastOpenSlotsRef.current, storeSlots);
+  const slots = keptSlots && keptSlots.length > 0 ? keptSlots : storeSlots;
+  // 閉じる間は drop・splitter を受け付けない。
+  const dormant = dormantProp || !isPresent;
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
   const containerRef = useRef<HTMLDivElement>(null);
   const nudgeAdjacentSlotSizes = useLayoutStore(
@@ -180,6 +196,17 @@ export const RegionContent = memo(function RegionContent({
       setDraggingPanel,
     ],
   );
+
+  // ⑤ slot の開閉。最大化の出入りとプリセットの一括の差し替えは別の動きが担う。
+  const layoutReplaceSeq = useLayoutStore((s) => s.layoutReplaceSeq);
+  const groupGhosts = useGroupMotion({
+    containerRef,
+    itemSelector: "[data-drop-slot]",
+    idAttribute: "dropSlot",
+    orientation,
+    enabled: !dormant && !zoomActive,
+    skipToken: `${maximizedPanelId ?? ""}|${layoutReplaceSeq}`,
+  });
 
   const contentEndInsertIndex =
     openSlots.length > 0
@@ -327,12 +354,16 @@ export const RegionContent = memo(function RegionContent({
                 <AnimatedSlotPanel
                   panelId={slot.activePanel}
                   slotPanels={slot.panels}
+                  // stripe のアイコンが並ぶ向き（左右は縦、下は横）。
+                  shiftAxis={orientation === "vertical" ? "y" : "x"}
                 />
               )}
             </div>
           </Fragment>
         );
       })}
+
+      {groupGhosts}
 
       {showDropZones && (
         <>

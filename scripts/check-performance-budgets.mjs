@@ -14,7 +14,7 @@ const DIST_DIR = path.resolve("dist/assets");
  * reviewed change and can never cross the absolute product ceiling.
  */
 export const INITIAL_JS_GRAPH_BUDGET = {
-  baseline: { rawBytes: 4_230_233, gzipBytes: 1_333_359 },
+  baseline: { rawBytes: 4_247_133, gzipBytes: 1_338_059 },
   allowance: { rawBytes: 32_768, gzipBytes: 16_384 },
   // raw は 4_250_000 から 700 byte だけ上げた。チャット入力の書きかけを session／project の
   // 削除と一緒に消す処理（chatInputDraftPurge.ts）が初期 graph の store に入るため
@@ -35,7 +35,15 @@ export const INITIAL_JS_GRAPH_BUDGET = {
   // raw は 4_261_500 から 200 byte だけ上げた。日本語の画面に英語のまま残っていた 14 件の
   // 訳を ja.json（初期 graph）に入れたため。日本語は UTF-8 で 1 文字 3 byte になる（実測
   // raw 4,261,421 → 4,261,613 で +192、gzip は上限の内側）。
-  absoluteMax: { rawBytes: 4_261_700, gzipBytes: 1_350_000 },
+  // raw は baseline と上限の両方を 16,900 byte、gzip は baseline を 4,700 byte・上限を
+  // 4,500 byte 上げた。レイアウトの動き（リージョンの引き出し、slot・band の開閉、
+  // パネル切替、stripe のアイコンの FLIP、外形のモーフの記録、パネルの先読み）が
+  // 初期 graph の layout に入るため（同じ toolchain で master と比べた実測 raw
+  // 4,261,696 → 4,278,090 で +16,394、gzip 1,348,183 → 1,353,791 で +5,608）。
+  // 先に lazy にできる分は外した: motion の命令的な animate() をやめて宣言的な
+  // motion.div と WAAPI にし（-7.5 KB）、外形のモーフの本体とドラッグのゴーストを
+  // 動的 import にした。残りは毎 commit の矩形の記録と比較で、初期 graph に要る。
+  absoluteMax: { rawBytes: 4_278_600, gzipBytes: 1_354_500 },
 };
 const INITIAL_CSS_MAX_BYTES = 240_000;
 const INITIAL_CSS_MAX_GZIP_BYTES = 42_000;

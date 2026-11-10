@@ -78,8 +78,8 @@ export const OverlayKnob = memo(function OverlayKnob({
               title={label}
               onClick={() => toggleOverlay(side)}
               className={cn(
-                "relative z-30 flex shrink-0 select-none items-center justify-center rounded-full transition-colors",
-                "transition-transform duration-75 active:scale-[0.94]",
+                "gx-press-button relative z-30 flex shrink-0 select-none items-center justify-center rounded-full",
+                "active:scale-[0.94]",
                 open
                   ? "bg-accent text-foreground"
                   : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",

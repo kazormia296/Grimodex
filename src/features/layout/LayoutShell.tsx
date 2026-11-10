@@ -1,4 +1,12 @@
-import { lazy, memo, Suspense, useEffect, useMemo, useRef } from "react";
+import {
+  lazy,
+  memo,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { motion } from "motion/react";
 import type { PanelId } from "./panelIds";
 import {
@@ -13,8 +21,10 @@ import {
   findPanelLocation,
   getBottomCorners,
   getOverlays,
+  getToolSegments,
   isCenterContentVisible,
 } from "./layoutStateUtils";
+import type { LayoutState } from "./layoutTypes";
 import { RegionDock, SideRegionStripeColumn } from "./RegionDock";
 import { RegionContent } from "./RegionContent";
 import { RegionResizeSplitter } from "./RegionResizeSplitter";
@@ -31,13 +41,15 @@ import {
 import { STRIPE_GAP_PX, STRIPE_SIZE } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
 import { useZoomReveal } from "./useZoomReveal";
+import { useCornerReveal } from "./useCornerReveal";
 import { ZoomRestoreBar } from "./ZoomRestoreBar";
 import { useRegionSegments } from "./useRegionSegments";
-import { LayoutPanelDragGhost } from "./LayoutPanelDragGhost";
 import { OverlayLayer } from "./OverlayLayer";
 import { OverlayKnob } from "./OverlayKnob";
 import { StripeInsertIndicator } from "./StripeInsertIndicator";
 import { useLayoutPresetCrossfade } from "./useLayoutPresetCrossfade";
+import { LayoutMotionReadyContext } from "./layoutAnimation";
+import { startPanelIdlePreload } from "./panelPreload";
 import { useZenGlassConfig } from "@/features/editor/zen/useZenBackgroundAppearance";
 
 // gsap(+@gsap/react)を static import する drop-zone ハイライトを遅延化。常時 mount
@@ -50,6 +62,14 @@ const LayoutDnDHighlightOverlay = lazy(() =>
   })),
 );
 
+// ドラッグのゴーストも、最初の pointer ドラッグで読む（起動時の graph に入れない）。
+// 着地の動きはドラッグの後に走るので、一度読んだら mount したままにする。
+const LayoutPanelDragGhost = lazy(() =>
+  import("./LayoutPanelDragGhost").then((m) => ({
+    default: m.LayoutPanelDragGhost,
+  })),
+);
+
 interface LayoutShellProps {
   /** Solo mode (screenshot capture / Codex window): hide stripes and show a single panel full-screen */
   hidden?: boolean;
@@ -58,6 +78,23 @@ interface LayoutShellProps {
   zenMode?: boolean;
   /** Responsive editor projection. Unlike Zen, normal editor chrome stays visible. */
   editorOnly?: boolean;
+}
+
+/** 先読みの順。stripe に並ぶ順（左・右・下・center・overlay）。 */
+function collectLayoutPanelIds(layout: LayoutState): PanelId[] {
+  const ids: PanelId[] = [];
+  for (const region of ["left", "right", "bottom"] as const) {
+    for (const slot of layout.regions[region].slots) ids.push(...slot.panels);
+  }
+  for (const segment of getToolSegments(layout.center)) {
+    ids.push(...segment.panels);
+  }
+  const overlays = getOverlays(layout);
+  for (const side of ["left", "right"] as const) {
+    const panel = overlays[side].panel;
+    if (panel) ids.push(panel);
+  }
+  return ids;
 }
 
 function regionIsOpen(slots: { activePanel: string | null }[]): boolean {
@@ -82,8 +119,17 @@ export const LayoutShell = memo(function LayoutShell({
   const layout = useLayoutStore((s) => s.layout);
   const initialized = useLayoutStore((s) => s.initialized);
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
-  const { crossfadeControls } = useLayoutPresetCrossfade();
+  const [dragGhostLoaded, setDragGhostLoaded] = useState(false);
+  if (draggingPanel && !dragGhostLoaded) setDragGhostLoaded(true);
   const shellRef = useRef<HTMLDivElement>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const morphLayerRef = useRef<HTMLDivElement>(null);
+  const { crossfadeControls } = useLayoutPresetCrossfade({
+    hostRef,
+    shellRef,
+    layerRef: morphLayerRef,
+    zenMode,
+  });
   const glass = useZenGlassConfig();
   const workspaceGlassStyle = {
     "--workspace-fluid-glass-blur": `${glass.blur}px`,
@@ -136,8 +182,28 @@ export const LayoutShell = memo(function LayoutShell({
     [showOverlayKnobs, overlayLeftOccupied, overlayRightOccupied],
   );
 
+  // 起動時の hydration・mount し直しと同じ commit で mount された chrome は
+  // 動かさない。effect は子の mount の後に走るので、この commit の子は false を読む。
+  const motionReadyRef = useRef(false);
+  useEffect(() => {
+    if (initialized) motionReadyRef.current = true;
+  }, [initialized]);
+
   // 最大化突入時の clip-path reveal（ズームっぽい展開演出）。
-  useZoomReveal(zoomRegion, layout, shellRef);
+  // Zen に入るときもエディタのセルを同じ clip で全面へ広げる（出るときは
+  // useLayoutPresetCrossfade の外形のモーフ）。
+  useZoomReveal(zoomRegion ?? (zenMode ? "center" : null), layout, shellRef);
+  // 下の角の取り合いで、角を取った側を直前の矩形から広げる。
+  useCornerReveal(getBottomCorners(layout), layout, shellRef, motionReadyRef);
+
+  // 置かれているパネルの chunk を、手が止まっている idle の間に先読みする
+  // （初回表示のもたつきの主因は chunk の parse と評価）。
+  useEffect(() => {
+    if (!initialized || hidden) return;
+    return startPanelIdlePreload(() =>
+      collectLayoutPanelIds(useLayoutStore.getState().layout),
+    );
+  }, [initialized, hidden]);
 
   // Esc で zoom 解除。階層的 Esc として一番外側に置く:
   // - isComposing: IME 変換キャンセルの Escape を奪わない（CodexEntryHeader
@@ -277,20 +343,28 @@ export const LayoutShell = memo(function LayoutShell({
   ): React.CSSProperties => (hidden ? { ...base, visibility: "hidden" } : base);
 
   return (
-    <>
+    <LayoutMotionReadyContext.Provider value={motionReadyRef}>
       {!zenMode && !editorOnly && draggingPanel && (
         <Suspense fallback={null}>
           <LayoutDnDHighlightOverlay />
         </Suspense>
       )}
       {!zenMode && !editorOnly && <StripeInsertIndicator />}
-      {!zenMode && !editorOnly && <LayoutPanelDragGhost />}
+      {!zenMode && !editorOnly && dragGhostLoaded && (
+        <Suspense fallback={null}>
+          <LayoutPanelDragGhost />
+        </Suspense>
+      )}
       {/* key={crossfadeKey} による remount 方式は禁止 — 配下の全エディタ/パネルが
-          破棄・再生成されフリーズする。フェードは controls の opacity 再トリガーで
-          実現する（useLayoutPresetCrossfade 参照）。 */}
+          破棄・再生成されフリーズする。一括の差し替えは外形のモーフと controls の
+          opacity で見せる（useLayoutPresetCrossfade 参照）。 */}
       {/* 外側の host は grid（data-layout-shell）と overlay の層を重ねる。つまみは
           cstripe セルの両端に置き、host の幅は画面幅いっぱい。 */}
-      <div data-overlay-host className="relative flex h-full w-full min-w-0">
+      <div
+        ref={hostRef}
+        data-overlay-host
+        className="relative flex h-full w-full min-w-0"
+      >
         <motion.div
           ref={shellRef}
           data-workspace-glass-root
@@ -378,7 +452,9 @@ export const LayoutShell = memo(function LayoutShell({
               data-zoom-cell="left"
               style={cellStyle({ gridArea: "lcontent" }, cellHidden("left"))}
               {...hiddenCellProps(cellHidden("left"))}
-              className="min-h-0 min-w-0"
+              // relative: 閉じる間のカード（AnimatedRegionChrome）を、0 幅になった
+              // このセルの stripe 側の辺に寄せて absolute で重ねる。
+              className="relative min-h-0 min-w-0"
             >
               <AnimatedRegionChrome
                 region="left"
@@ -431,7 +507,9 @@ export const LayoutShell = memo(function LayoutShell({
               data-zoom-cell="right"
               style={cellStyle({ gridArea: "rcontent" }, cellHidden("right"))}
               {...hiddenCellProps(cellHidden("right"))}
-              className="min-h-0 min-w-0"
+              // relative: 閉じる間のカード（AnimatedRegionChrome）を、0 幅になった
+              // このセルの stripe 側の辺に寄せて absolute で重ねる。
+              className="relative min-h-0 min-w-0"
             >
               <AnimatedRegionChrome
                 region="right"
@@ -513,11 +591,19 @@ export const LayoutShell = memo(function LayoutShell({
             <BottomCornerToggle side="right" />
           )}
         </motion.div>
+        {/* プリセット切替・最大化の解除の外形のモーフの層（useLayoutPresetCrossfade が
+            中身を命令的に足し引きする）。grid の上、オーバーレイの層より下。 */}
+        <div
+          ref={morphLayerRef}
+          aria-hidden
+          data-layout-morph-layer
+          className="pointer-events-none absolute inset-0 z-[5]"
+        />
         {/* オーバーレイの層。grid と Stripe より上、DnD のハイライトとドラッグゴースト
             （fixed、z-[9998]〜）より下。エディタだけの表示（phone）では出さない。 */}
         {!editorOnly && <OverlayLayer side="left" zenMode={zenMode} />}
         {!editorOnly && <OverlayLayer side="right" zenMode={zenMode} />}
       </div>
-    </>
+    </LayoutMotionReadyContext.Provider>
   );
 });

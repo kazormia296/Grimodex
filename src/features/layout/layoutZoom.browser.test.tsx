@@ -44,6 +44,7 @@ vi.mock("./EditorArea", () => ({
 
 import { LayoutShell } from "./LayoutShell";
 import { useLayoutStore } from "./layoutStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
 import type { LayoutState, ToolWindowPanelId } from "./layoutTypes";
 
@@ -131,6 +132,16 @@ function expectFillsShell(rect: DOMRect, shellRect: DOMRect) {
   expect(rect.top).toBeGreaterThanOrEqual(shellRect.top - 0.5);
   expect(rect.bottom).toBeLessThanOrEqual(shellRect.bottom + 0.5);
 }
+
+// このファイルは操作の直後の「確定した寸法」を測る。リージョンの引き出しや
+// stripe の出現は transform で動くので、動きの途中を測らないよう「動きを減らす」
+// にする（寸法は即時に確定するので、settled の値は動きの有無で変わらない）。
+// 動きそのものは AnimatedRegionChrome.browser.test などで別に gate する。
+beforeEach(() => {
+  useSettingsStore.setState((state) => ({
+    cache: { ...state.cache, "display.reduceMotion": "true" },
+  }));
+});
 
 describe("panel zoom geometry invariants (real Chromium)", () => {
   beforeEach(() => {
@@ -378,6 +389,10 @@ describe("panel zoom geometry invariants (real Chromium)", () => {
   });
 
   it("zoom 突入時に対象セルへ clip-path reveal が走り、完了後に残留しない", async () => {
+    // この試験は動きそのものを見る。
+    useSettingsStore.setState((state) => ({
+      cache: { ...state.cache, "display.reduceMotion": "false" },
+    }));
     setLayout((layout) => {
       setSlots(layout, "left", [
         { id: "l0", panels: ["scenes"], activePanel: "scenes" },

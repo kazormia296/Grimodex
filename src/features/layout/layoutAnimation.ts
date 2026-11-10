@@ -1,38 +1,80 @@
 import {
+  createContext,
+  useCallback,
+  useContext,
+  type CSSProperties,
+} from "react";
+import { HORIZONTAL_STRIPE_SIZE } from "./layoutConstants";
+import {
   CSS_EASINGS,
   DURATIONS,
   EASINGS,
   OVERLAY_DURATIONS,
 } from "@/lib/animation";
 
-export const PRESET_ANIMATION_DEBOUNCE_MS = 300;
+/**
+ * サイドと下のリージョンの引き出し（案 A）。寸法（grid の列・行）は即時に
+ * 確定し、リージョンのカードを stripe 側の辺から滑り出させる／滑り込ませる。
+ *
+ * - `clip`: 滑っている間だけ外側の窓に掛ける clip-path。stripe 側の 1 辺だけを
+ *   切り、残りの 3 辺は負の inset で panel の box-shadow を逃がす。settled 状態に
+ *   clip-path を残すと Backdrop Root になり、配下の Glass が背後の ambient shader
+ *   を blur できないので、動き終えたら必ず外す。
+ * - `axis`／`sign`: カードを滑らせる向き。閉じた位置は sign × カードの寸法。
+ * - `exitAnchor`: 閉じる間、列（行）は既に 0 になっている。カードを直前の寸法の
+ *   まま absolute で center の上に重ね、stripe 側の辺に寄せる。
+ */
+export const REGION_DRAWER = {
+  left: {
+    clip: "inset(-200px -200px -200px 0px)",
+    axis: "x",
+    sign: -1,
+    exitAnchor: { top: 0, left: 0 },
+  },
+  right: {
+    clip: "inset(-200px 0px -200px -200px)",
+    axis: "x",
+    sign: 1,
+    exitAnchor: { top: 0, right: 0 },
+  },
+  bottom: {
+    clip: "inset(-200px -200px 0px -200px)",
+    axis: "y",
+    sign: 1,
+    // 閉じた後の dock は stripe だけ。カードは stripe と stripe-gap の上に置く。
+    exitAnchor: {
+      left: 0,
+      bottom: `calc(${HORIZONTAL_STRIPE_SIZE}px + var(--gx-stripe-gap))`,
+    },
+  },
+} as const satisfies Record<
+  string,
+  {
+    clip: string;
+    axis: "x" | "y";
+    sign: 1 | -1;
+    exitAnchor: CSSProperties;
+  }
+>;
+
+export type RegionChromeId = keyof typeof REGION_DRAWER;
 
 /**
- * `open` uses a generous negative inset during interpolation because Framer
- * Motion can't interpolate between `inset()` and the `none` keyword and
- * silently substitutes `inset(0 0 0 0)` — which clips inter-panel
- * `box-shadow` to the region border-box and reveals raw canvas in the gaps.
- * AnimatedRegionChrome clears the clip to `none` with transitionEnd once the
- * enter animation settles; a permanent clip-path would become a Backdrop Root
- * and isolate descendant Glass from the ambient shader behind the region.
+ * 起動時の hydration と同じ commit で mount された chrome は動かさない。
+ * LayoutShell がインスタンスごとに持ち、`initialized` になった commit の後
+ * （effect）で true にする。LayoutShell の外（単体の描画）では常に true。
+ * mount し直した LayoutShell（ワークスペースの切替、Adaptive の枝の切替）の
+ * 最初の commit も false なので動かない。
  */
-const REGION_OPEN_CLIP = "inset(-200px)";
+export const LayoutMotionReadyContext = createContext<{ current: boolean }>({
+  current: true,
+});
 
-export const REGION_CLIP_PATH = {
-  left: { closed: "inset(0 100% 0 0)", open: REGION_OPEN_CLIP },
-  right: { closed: "inset(0 0% 0 100%)", open: REGION_OPEN_CLIP },
-  bottom: { closed: "inset(100% 0 0 0)", open: REGION_OPEN_CLIP },
-  center: { closed: "inset(0 0 100% 0)", open: REGION_OPEN_CLIP },
-} as const;
-
-export type RegionChromeId = keyof typeof REGION_CLIP_PATH;
-
-export const REGION_TRANSFORM_ORIGIN: Record<RegionChromeId, string> = {
-  left: "left center",
-  right: "right center",
-  bottom: "bottom center",
-  center: "top center",
-};
+/** 今の commit で動かしてよいかを返す getter（effect や mount 時に読む）。 */
+export function useLayoutMotionReady(): () => boolean {
+  const ref = useContext(LayoutMotionReadyContext);
+  return useCallback(() => ref.current, [ref]);
+}
 
 export function chromeEnterTransition(reduced: boolean) {
   return reduced
@@ -41,12 +83,6 @@ export function chromeEnterTransition(reduced: boolean) {
 }
 
 export function chromeExitTransition(reduced: boolean) {
-  return reduced
-    ? { duration: 0 }
-    : { duration: DURATIONS.fast, ease: EASINGS.easeOut };
-}
-
-export function presetCrossfadeTransition(reduced: boolean) {
   return reduced
     ? { duration: 0 }
     : { duration: DURATIONS.fast, ease: EASINGS.easeOut };

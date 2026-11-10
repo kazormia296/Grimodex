@@ -30,6 +30,27 @@ export const OVERLAY_DURATIONS = {
   slide: 0.3,
 } as const;
 
+/**
+ * レイアウト（リージョン・slot・パネル切替・プリセット）の動き。
+ * 既存の DURATIONS の値域から選ぶ。退場は入場より速くする。
+ * - region*: サイドと下のリージョンの引き出し（stripe の裏から滑り出る）
+ * - group*: リージョン内の slot、stripe の band、center の segment の開閉
+ * - morph: プリセット切替・最大化の解除で、カードの外形を旧矩形から新矩形へ動かす
+ * - contentIn: 外形が着いた後に中身を見せるフェード
+ * - panelShiftPx: パネル切替で入る側を寄せる距離（パネル内側の wrapper だけ）
+ * - stripeShiftPx: stripe が新しく現れるとき、外側から寄せる距離
+ */
+export const LAYOUT_MOTION = {
+  regionEnter: DURATIONS.slow,
+  regionExit: DURATIONS.normal,
+  groupEnter: DURATIONS.normal,
+  groupExit: DURATIONS.fast,
+  morph: DURATIONS.slow,
+  contentIn: DURATIONS.fast,
+  panelShiftPx: 6,
+  stripeShiftPx: 8,
+} as const;
+
 export const EASINGS = {
   easeOut: [0.16, 1, 0.3, 1] as [number, number, number, number],
   spring: { type: "spring" as const, damping: 25, stiffness: 300 },
@@ -81,6 +102,11 @@ export const CSS_DURATIONS = {
 /** CSS timing-function strings aligned with EASINGS（CSS transition 用）。 */
 export const CSS_EASINGS = {
   easeOut: `cubic-bezier(${EASINGS.easeOut.join(", ")})`,
+  /**
+   * 着地の小さな弾み（WAAPI 用。EASINGS.spring の代わり）。わずかに行き過ぎて
+   * 戻る。跳ねる系なので、パネルの移動の着地のような稀な操作にだけ使う。
+   */
+  settle: "cubic-bezier(0.34, 1.4, 0.64, 1)",
 } as const;
 
 /**

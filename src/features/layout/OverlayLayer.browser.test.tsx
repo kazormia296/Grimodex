@@ -4,7 +4,7 @@
  * ここで測る。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { fireEvent, render } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import { LayoutShell } from "./LayoutShell";
 import { HORIZONTAL_STRIPE_SIZE, OVERLAY_WIDTH } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
@@ -73,7 +73,26 @@ function renderHost(width: number) {
   );
 }
 
-const settle = () => new Promise((r) => setTimeout(r, SETTLE_MS));
+/**
+ * スライド（CSS transition）が終わるまで待つ。固定の待ちだけだと、並列に走る
+ * 他の試験で main thread が詰まったときに transition の開始が遅れ、途中の位置を
+ * 測ってしまう。最低 SETTLE_MS 待ってから、host の中の transition が残らないこと
+ * を待つ。
+ */
+const settle = async () => {
+  await new Promise((r) => setTimeout(r, SETTLE_MS));
+  const host = document.querySelector("[data-overlay-host]");
+  if (!host) return;
+  await waitFor(
+    () => {
+      const running = host
+        .getAnimations({ subtree: true })
+        .filter((a) => a.playState === "running");
+      expect(running).toHaveLength(0);
+    },
+    { timeout: 3000 },
+  );
+};
 const frame = () => new Promise((r) => requestAnimationFrame(() => r(null)));
 
 describe.each<[OverlayId]>([["left"], ["right"]])(
