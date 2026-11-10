@@ -120,9 +120,9 @@ export function ToolWindowIcon({
               : undefined
           }
           className={cn(
-            "relative z-30 flex shrink-0 items-center justify-center rounded-full transition-colors",
+            "gx-press-button relative z-30 flex shrink-0 items-center justify-center rounded-full",
             compact ? "h-[27px] w-[27px]" : "h-7 w-7",
-            "transition-transform duration-75 active:scale-[0.94]",
+            "active:scale-[0.94]",
             "touch-none select-none",
             passThroughDrop && "pointer-events-none",
             draggingPanel === panelId &&

@@ -924,6 +924,21 @@ export function isRegionOpen(region: RegionState): boolean {
   return region.slots.some((s) => s.activePanel !== null);
 }
 
+/**
+ * `panels` がすべて、まだ `slots` のどれかに置かれているか。リージョンを閉じる
+ * 動きの間に中身を残してよいかの判定に使う。閉じただけなら panel は slot に
+ * 残る。DnD や「移動先」で別の場所へ移ったなら移動先でも mount されるので、
+ * 閉じる側に残すと同じ panel が 2 つ同時に生きてしまう。
+ */
+export function slotsStillHoldPanels(
+  slots: ReadonlyArray<{ panels: ReadonlyArray<string> }>,
+  panels: ReadonlyArray<string>,
+): boolean {
+  return panels.every((panel) =>
+    slots.some((slot) => slot.panels.includes(panel)),
+  );
+}
+
 export function findPanelLocation(
   state: LayoutState,
   panelId: PanelId,

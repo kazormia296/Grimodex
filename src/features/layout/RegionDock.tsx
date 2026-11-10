@@ -1,4 +1,7 @@
-import { memo } from "react";
+import { memo, useState, type ComponentProps } from "react";
+import { motion } from "motion/react";
+import { EASINGS, LAYOUT_MOTION, useReducedMotion } from "@/lib/animation";
+import { isLayoutMotionReady } from "./layoutAnimation";
 import { HORIZONTAL_STRIPE_SIZE } from "./layoutConstants";
 import { AnimatedRegionChrome } from "./AnimatedRegionChrome";
 import { RegionStripe } from "./RegionStripe";
@@ -18,6 +21,42 @@ interface SideRegionStripeColumnProps {
 }
 
 /**
+ * stripe が新しく現れる（リージョンに最初の panel が入った）ときだけ、外側から
+ * LAYOUT_MOTION.stripeShiftPx 寄せながらフェードインする。起動時の hydration と
+ * 同じ commit の mount は動かさない（isLayoutMotionReady）。消えるときは grid の
+ * 列が即時に 0 になるので動かさない。
+ */
+function StripeAppear({
+  axis,
+  sign,
+  ...rest
+}: Omit<
+  ComponentProps<typeof motion.div>,
+  "initial" | "animate" | "transition"
+> & {
+  axis: "x" | "y";
+  sign: 1 | -1;
+}) {
+  const reduced = useReducedMotion();
+  const [animateEntry] = useState(() => !reduced && isLayoutMotionReady());
+  const shift = sign * LAYOUT_MOTION.stripeShiftPx;
+  return (
+    <motion.div
+      {...rest}
+      initial={
+        animateEntry
+          ? axis === "x"
+            ? { opacity: 0, x: shift }
+            : { opacity: 0, y: shift }
+          : false
+      }
+      animate={axis === "x" ? { opacity: 1, x: 0 } : { opacity: 1, y: 0 }}
+      transition={{ duration: LAYOUT_MOTION.groupEnter, ease: EASINGS.easeOut }}
+    />
+  );
+}
+
+/**
  * Side stripe column — fills its whole grid area. When the side region
  * owns the bottom corner, lstripe/rstripe spans the bottom row too, so
  * the stripe extends all the way down into the corner.
@@ -29,8 +68,10 @@ export const SideRegionStripeColumn = memo(function SideRegionStripeColumn({
   reserveEndPx = 0,
 }: SideRegionStripeColumnProps) {
   return (
-    <div
+    <StripeAppear
       data-region-stripe-column={region}
+      axis="x"
+      sign={region === "left" ? -1 : 1}
       className="flex h-full min-h-0 w-full flex-col"
     >
       <RegionStripe
@@ -39,7 +80,7 @@ export const SideRegionStripeColumn = memo(function SideRegionStripeColumn({
         segments={segments}
         reserveEndPx={reserveEndPx}
       />
-    </div>
+    </StripeAppear>
   );
 });
 
@@ -81,7 +122,8 @@ function BottomRegionDock({
   return (
     <div
       data-region-dock="bottom"
-      className="flex min-h-0 w-full flex-1 flex-col"
+      // relative: 閉じる間のカード（AnimatedRegionChrome）を stripe の上に重ねる。
+      className="relative flex min-h-0 w-full flex-1 flex-col"
       // content と icon stripe の間の stripe-gap。bottomDockPx が同じ
       // 値をドック高さに加算しているので overflow しない。
       style={{
@@ -105,7 +147,9 @@ function BottomRegionDock({
         />
       </AnimatedRegionChrome>
 
-      <div
+      <StripeAppear
+        axis="y"
+        sign={1}
         style={
           bottomZoomed
             ? { height: 0, flexShrink: 0, visibility: "hidden" }
@@ -122,7 +166,7 @@ function BottomRegionDock({
           reserveStartPx={stripeReserveStartPx}
           reserveEndPx={stripeReserveEndPx}
         />
-      </div>
+      </StripeAppear>
     </div>
   );
 }

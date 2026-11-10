@@ -2319,6 +2319,17 @@ button[role="switch"][aria-checked="true"] {
    below inline styles but above Tailwind utilities.
    ───────────────────────────────────────────── */
 @layer components {
+  /* stripe まわりのアイコンボタン。色（背景・文字・ring）は DURATIONS.fast、
+     押し込みの scale は 75ms。Tailwind の transition-colors と
+     transition-transform を併記すると twMerge が前者を落とし、色が補間されない
+     ため、1 つの宣言にまとめる。 */
+  .gx-press-button {
+    transition-property:
+      color, background-color, border-color, box-shadow, transform;
+    transition-duration: 150ms, 150ms, 150ms, 150ms, 75ms;
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
   /* Base paper: left-glue default (tight left shadow, curling right).
      The bg color is supplied by the StickyNode component via the inline
      `--sticky-bg-light` CSS variable (resolved through stickyPalettes.ts).
@@ -2522,6 +2533,17 @@ button[role="switch"][aria-checked="true"] {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* アプリ設定 display.reduceMotion（ApplicationBootstrapHost が root に
+   data-reduce-motion を立てる）でも、OS の設定と同じ規則を効かせる。 */
+:root[data-reduce-motion="true"] *,
+:root[data-reduce-motion="true"] *::before,
+:root[data-reduce-motion="true"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
 }
 
 /* ── Electron シェル: data-tauri-drag-region → app-region 写像 ────────────

@@ -25,6 +25,7 @@ import {
   STRIPE_SIZE,
 } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
 import type { OverlayId, ToolWindowPanelId } from "./layoutTypes";
 import type { PanelId } from "./panelIds";
@@ -199,6 +200,16 @@ function renderShell() {
     </div>,
   );
 }
+
+// このファイルは操作の直後の「確定した寸法」を測る。リージョンの引き出しや
+// stripe の出現は transform で動くので、動きの途中を測らないよう「動きを減らす」
+// にする（寸法は即時に確定するので、settled の値は動きの有無で変わらない）。
+// 動きそのものは AnimatedRegionChrome.browser.test などで別に gate する。
+beforeEach(() => {
+  useSettingsStore.setState((state) => ({
+    cache: { ...state.cache, "display.reduceMotion": "true" },
+  }));
+});
 
 describe("layout geometry invariants (real Chromium)", () => {
   beforeEach(() => {

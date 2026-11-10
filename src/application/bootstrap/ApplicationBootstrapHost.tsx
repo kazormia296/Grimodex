@@ -96,6 +96,9 @@ export function ApplicationBootstrapHost({
   const uiFontFamily = useSettingsStore((state) =>
     state.get("display.uiFontFamily"),
   );
+  const appReduceMotion = useSettingsStore((state) =>
+    state.getBoolean("display.reduceMotion", false),
+  );
   const toggleDebugLog = useDebugLogStore((state) => state.toggle);
   const { t } = useTranslation();
   const [closeFailures, setCloseFailures] = useState<ReturnType<
@@ -231,6 +234,15 @@ export function ApplicationBootstrapHost({
     if (value) html.style.setProperty("--ui-font", value);
     else html.style.removeProperty("--ui-font");
   }, [uiFontFamily]);
+
+  // アプリ設定の「動きを減らす」を CSS に渡す。index.css の reduced-motion の規則は
+  // OS の media query だけを見るので、同じ規則を root の属性でも効かせる
+  // （JS 側は useReducedMotion／isReducedMotion が両方を見ている）。
+  useEffect(() => {
+    const html = document.documentElement;
+    if (appReduceMotion) html.dataset.reduceMotion = "true";
+    else delete html.dataset.reduceMotion;
+  }, [appReduceMotion]);
 
   useEffect(() => {
     initialize();

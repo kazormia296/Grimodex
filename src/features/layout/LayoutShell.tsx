@@ -31,6 +31,7 @@ import {
 import { STRIPE_GAP_PX, STRIPE_SIZE } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
 import { useZoomReveal } from "./useZoomReveal";
+import { useCornerReveal } from "./useCornerReveal";
 import { ZoomRestoreBar } from "./ZoomRestoreBar";
 import { useRegionSegments } from "./useRegionSegments";
 import { LayoutPanelDragGhost } from "./LayoutPanelDragGhost";
@@ -38,6 +39,7 @@ import { OverlayLayer } from "./OverlayLayer";
 import { OverlayKnob } from "./OverlayKnob";
 import { StripeInsertIndicator } from "./StripeInsertIndicator";
 import { useLayoutPresetCrossfade } from "./useLayoutPresetCrossfade";
+import { setLayoutMotionReady } from "./layoutAnimation";
 import { useZenGlassConfig } from "@/features/editor/zen/useZenBackgroundAppearance";
 
 // gsap(+@gsap/react)を static import する drop-zone ハイライトを遅延化。常時 mount
@@ -138,6 +140,16 @@ export const LayoutShell = memo(function LayoutShell({
 
   // 最大化突入時の clip-path reveal（ズームっぽい展開演出）。
   useZoomReveal(zoomRegion, layout, shellRef);
+  // 下の角の取り合いで、角を取った側を直前の矩形から広げる。
+  useCornerReveal(getBottomCorners(layout), layout, shellRef);
+
+  // 起動時の hydration と同じ commit で mount された chrome は動かさない。
+  // effect は子の mount の後に走るので、この commit の子は false を読む。
+  useEffect(() => {
+    if (!initialized) return;
+    setLayoutMotionReady(true);
+    return () => setLayoutMotionReady(false);
+  }, [initialized]);
 
   // Esc で zoom 解除。階層的 Esc として一番外側に置く:
   // - isComposing: IME 変換キャンセルの Escape を奪わない（CodexEntryHeader
@@ -378,7 +390,9 @@ export const LayoutShell = memo(function LayoutShell({
               data-zoom-cell="left"
               style={cellStyle({ gridArea: "lcontent" }, cellHidden("left"))}
               {...hiddenCellProps(cellHidden("left"))}
-              className="min-h-0 min-w-0"
+              // relative: 閉じる間のカード（AnimatedRegionChrome）を、0 幅になった
+              // このセルの stripe 側の辺に寄せて absolute で重ねる。
+              className="relative min-h-0 min-w-0"
             >
               <AnimatedRegionChrome
                 region="left"
@@ -431,7 +445,9 @@ export const LayoutShell = memo(function LayoutShell({
               data-zoom-cell="right"
               style={cellStyle({ gridArea: "rcontent" }, cellHidden("right"))}
               {...hiddenCellProps(cellHidden("right"))}
-              className="min-h-0 min-w-0"
+              // relative: 閉じる間のカード（AnimatedRegionChrome）を、0 幅になった
+              // このセルの stripe 側の辺に寄せて absolute で重ねる。
+              className="relative min-h-0 min-w-0"
             >
               <AnimatedRegionChrome
                 region="right"

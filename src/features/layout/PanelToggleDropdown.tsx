@@ -162,7 +162,7 @@ export function PanelToggleDropdown() {
             if (isOpen) setHoveredPanelId(null);
           }}
           className={cn(
-            "flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-sm transition-colors active:scale-[0.97] transition-transform duration-75",
+            "gx-press-button flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-sm active:scale-[0.97]",
             isOpen
               ? "bg-accent text-foreground"
               : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",

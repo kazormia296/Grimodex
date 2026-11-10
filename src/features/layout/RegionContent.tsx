@@ -1,4 +1,5 @@
 import { Fragment, memo, useCallback, useRef } from "react";
+import { useIsPresent } from "motion/react";
 import { cn } from "@/lib/utils";
 import {
   acceptsToolWindowReassignDrag,
@@ -13,7 +14,7 @@ import {
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { Splitter } from "./Splitter";
 import { AnimatedSlotPanel } from "./AnimatedSlotPanel";
-import { normalizeFlexGrow } from "./layoutStateUtils";
+import { normalizeFlexGrow, slotsStillHoldPanels } from "./layoutStateUtils";
 import type { RegionId } from "./layoutTypes";
 
 interface RegionContentProps {
@@ -43,9 +44,28 @@ function insertIndexAfterSlot(slots: { id: string }[], slotId: string): number {
 export const RegionContent = memo(function RegionContent({
   region,
   orientation,
-  dormant = false,
+  dormant: dormantProp = false,
 }: RegionContentProps) {
-  const slots = useLayoutStore((s) => s.layout.regions[region].slots);
+  const storeSlots = useLayoutStore((s) => s.layout.regions[region].slots);
+  // リージョンを閉じる動き（AnimatedRegionChrome）の間は、直前に開いていた slot を
+  // そのまま描く。store では既に閉じているので、そのまま読むと中身が同じ描画で
+  // 消える。panel が別の場所へ移った場合は移動先でも mount されるので残さない。
+  const isPresent = useIsPresent();
+  const lastOpenSlotsRef = useRef(storeSlots);
+  if (isPresent && regionHasOpenSlots(storeSlots)) {
+    lastOpenSlotsRef.current = storeSlots;
+  }
+  const frozen =
+    !isPresent &&
+    slotsStillHoldPanels(
+      storeSlots,
+      lastOpenSlotsRef.current.flatMap((slot) =>
+        slot.activePanel ? [slot.activePanel] : [],
+      ),
+    );
+  const slots = frozen ? lastOpenSlotsRef.current : storeSlots;
+  // 閉じる間は drop・splitter を受け付けない。
+  const dormant = dormantProp || !isPresent;
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
   const containerRef = useRef<HTMLDivElement>(null);
   const nudgeAdjacentSlotSizes = useLayoutStore(

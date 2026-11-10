@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { getBottomCorners } from "./layoutStateUtils";
 import { STRIPE_ICON_INSET_PX, STRIPE_ICON_SIZE } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
+import { AnimatedIconSwap } from "./AnimatedIconSwap";
 
 interface BottomCornerToggleProps {
   side: "left" | "right";
@@ -56,7 +57,9 @@ export function BottomCornerToggle({ side }: BottomCornerToggleProps) {
         height: STRIPE_ICON_SIZE,
       }}
     >
-      <Icon className="h-4 w-4" />
+      <AnimatedIconSwap swapKey={ownedByBottom ? "bottom" : "side"}>
+        <Icon className="h-4 w-4" />
+      </AnimatedIconSwap>
     </button>
   );
 }
