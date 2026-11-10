@@ -60,31 +60,31 @@ describe("settings category motion (real Chromium)", () => {
     view.rerender(
       <CategoryNav active="keys" onChange={() => {}} motionScope={1} />,
     );
-    // 途中（project と keys の間）に来るまで待つ。
-    let hitWhilePassing: Element | null = null;
+    // 前の位置から滑る（途中で transform が掛かる）。
     await waitFor(() => {
-      const r = pill(view.container).getBoundingClientRect();
-      expect(r.top).toBeGreaterThan(from.top + 1);
-      expect(r.top).toBeLessThan(target.top - 1);
-      const label = passed.querySelector("span")!.getBoundingClientRect();
-      const midY = label.top + label.height / 2;
-      if (r.top <= midY && midY <= r.bottom) {
-        // 背景は pointer-events: none なので、描く順を見る間だけ戻す。
-        const el = pill(view.container);
-        el.style.pointerEvents = "auto";
-        hitWhilePassing = document.elementFromPoint(label.left + 2, midY);
-        el.style.pointerEvents = "";
-      }
-      expect(hitWhilePassing).not.toBeNull();
+      expect(getComputedStyle(pill(view.container)).transform).not.toBe("none");
     });
-    // 背景が上を通っている間も、文字は背景より上に描かれる。
-    expect(passed.contains(hitWhilePassing)).toBe(true);
-
     await waitFor(() => {
       expect(getComputedStyle(pill(view.container)).transform).toBe("none");
     });
-    const r = pill(view.container).getBoundingClientRect();
+    const el = pill(view.container);
+    const r = el.getBoundingClientRect();
     expect(Math.abs(r.top - target.top)).toBeLessThan(0.5);
+    expect(r.top).toBeGreaterThan(from.top + 1);
+
+    // 滑り終えてから、背景を途中のボタンの文字の上へ手で置き、描く順を調べる
+    // （動いている途中を捕まえる形は、負荷でフレームが粗いと取り逃がす）。
+    // 背景は pointer-events: none なので、調べる間だけ戻す。
+    const label = passed.querySelector("span")!.getBoundingClientRect();
+    const x = label.left + 2;
+    const y = label.top + label.height / 2;
+    el.style.transform = `translateY(${y - (r.top + r.height / 2)}px)`;
+    el.style.pointerEvents = "auto";
+    const hit = document.elementFromPoint(x, y);
+    el.style.transform = "";
+    el.style.pointerEvents = "";
+    // 背景が上を通っても、文字は背景より上に描かれる。
+    expect(passed.contains(hit)).toBe(true);
   });
 
   it("does not slide when the dialog is opened again on another category", async () => {

@@ -60,13 +60,18 @@ export function TabPresence({
  * タブの位置から滑る（layoutId）。測るのはアクティブが変わった時だけ
  * （TabBar は入力のたびに re-render されるので、毎回は測らない）。
  * グループをまたいでは滑らせない（layoutId に groupIndex を含める）。
+ * TabBar を mount し直した（プロジェクトの切替、分割の開き直しなど）ときも
+ * 古い位置から滑らせない（layoutId に TabBar ごとの scope を含める）。
  */
 export function TabActiveIndicator({
   groupIndex,
+  scope,
   activeTabId,
   reduced,
 }: {
   groupIndex: number;
+  /** TabBar の mount ごとの id（useId）。 */
+  scope: string;
   activeTabId: string;
   reduced: boolean;
 }) {
@@ -74,7 +79,7 @@ export function TabActiveIndicator({
     <motion.span
       aria-hidden
       data-editor-tab-active-indicator
-      layoutId={`editor-tab-active:${groupIndex}`}
+      layoutId={`editor-tab-active:${groupIndex}:${scope}`}
       layoutDependency={activeTabId}
       className="pointer-events-none absolute inset-x-0 bottom-0 h-0.5 bg-primary"
       transition={reduced ? { duration: 0 } : TAB_MOTION.indicator}

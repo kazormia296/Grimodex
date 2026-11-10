@@ -446,18 +446,20 @@ describe("layout motion in the shell (real Chromium)", () => {
     const pill = container.querySelector<HTMLElement>(
       `[data-stripe-icon="${panels[2]}"] [data-stripe-active-pill]`,
     )!;
-    // 印が途中のアイコンの記号の上に来た時点で、描く順を調べる（印は
-    // pointer-events: none なので、調べる間だけ戻す）。
-    let hit: Element | null = null;
+    // 滑り終えてから、印を途中のアイコンの記号の上へ手で置き、描く順を調べる
+    // （動いている途中を捕まえる形は、負荷でフレームが粗いと取り逃がす）。
+    // 印は pointer-events: none なので、調べる間だけ戻す。
     await waitFor(() => {
-      const r = pill.getBoundingClientRect();
-      expect(
-        r.top <= cy && cy <= r.bottom && r.left <= cx && cx <= r.right,
-      ).toBe(true);
-      pill.style.pointerEvents = "auto";
-      hit = document.elementFromPoint(cx, cy);
-      pill.style.pointerEvents = "";
+      expect(getComputedStyle(pill).transform).toBe("none");
     });
+    const r = pill.getBoundingClientRect();
+    pill.style.transform = `translate(${cx - (r.left + r.width / 2)}px, ${
+      cy - (r.top + r.height / 2)
+    }px)`;
+    pill.style.pointerEvents = "auto";
+    const hit = document.elementFromPoint(cx, cy);
+    pill.style.transform = "";
+    pill.style.pointerEvents = "";
     expect(hit).not.toBe(pill);
     expect(
       container

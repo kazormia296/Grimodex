@@ -11,8 +11,9 @@ interface CategoryNavProps {
   onChange: (cat: SettingsCategory) => void;
   phoneWorkspace?: boolean;
   /**
-   * ダイアログを開くたびに変わる番号。選択中の背景は、開いてからの切替の間
-   * だけ前の位置から滑る（開き直したときに前回の位置から飛んでこない）。
+   * ダイアログを開き直したときに変わる番号。選択中の背景は、同じ番号の間の
+   * 切替だけ前の位置から滑る（開き直したときに前回の位置から飛んでこない）。
+   * mount し直したときは layoutId の useId が変わるので、そちらでも切れる。
    */
   motionScope?: number;
 }

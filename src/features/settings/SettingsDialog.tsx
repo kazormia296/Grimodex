@@ -82,7 +82,9 @@ export function SettingsDialog({
   const { t } = useTranslation();
   const [activeCategory, setActiveCategory] =
     useState<SettingsCategory>(initialCategory);
-  // 開くたびに上げる。開いたときのカテゴリの切替は動かさない。
+  // 開いたまま initialCategory で開き直されたときに上げる（閉じると
+  // SettingsDialog ごと外れ、次に開くときは新しく mount される）。開いたときの
+  // カテゴリの切替は動かさない。
   const [openSeq, setOpenSeq] = useState(0);
   const reduced = useReducedMotion();
   const contentRef = useRef<HTMLDivElement>(null);

@@ -90,7 +90,17 @@ function CollapsibleBody({ children }: { children: ReactNode }) {
         ease: EASINGS.easeOut,
       }}
       onAnimationStart={() => setAnimating(true)}
-      onAnimationComplete={() => setAnimating(false)}
+      // 外すのは開く動き（height: auto）が終わったときだけ。閉じる途中で
+      // 開き直すと、止まった閉じる動きの完了の通知が後から届くことがある。
+      onAnimationComplete={(definition) => {
+        if (
+          typeof definition === "object" &&
+          definition !== null &&
+          (definition as { height?: unknown }).height === "auto"
+        ) {
+          setAnimating(false);
+        }
+      }}
       style={{ overflow: animating || !isPresent ? "hidden" : undefined }}
     >
       {children}

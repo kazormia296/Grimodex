@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from "react";
+import { useId, useRef, useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence } from "motion/react";
 import { useReducedMotion } from "@/lib/animation";
@@ -143,6 +143,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   const [splitMenuOpen, setSplitMenuOpen] = useState(false);
   const reduced = useReducedMotion();
   const captureTabPositions = useTabReorderFlip(scrollRef, reduced);
+  const indicatorScope = useId();
 
   // Reset drag state on dragend (safety net for normal drops)
   useEffect(() => {
@@ -473,6 +474,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                   {isActive && (
                     <TabActiveIndicator
                       groupIndex={groupIndex}
+                      scope={indicatorScope}
                       activeTabId={tab.nodeId}
                       reduced={reduced}
                     />

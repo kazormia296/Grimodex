@@ -51,6 +51,7 @@ vi.mock("@/lib/gsap", () => ({
 vi.mock("@/lib/animation", () => ({
   DURATIONS: { fast: 0, normal: 0 },
   CSS_DURATIONS: { fast: "0ms" },
+  HIGHLIGHT_PULSE_S: 0.9,
   EASINGS: {
     easeOut: [0, 0, 1, 1],
     spring: { type: "spring" },
