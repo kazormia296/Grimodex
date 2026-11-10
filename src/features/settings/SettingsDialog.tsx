@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { X } from "lucide-react";
 import { useSettingsStore } from "./settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
@@ -7,6 +7,8 @@ import { useBackgroundStudioStore } from "@/features/editor/background/backgroun
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { CategoryNav } from "./CategoryNav";
+import { useCategoryShift } from "./settingsMotion";
+import { useReducedMotion } from "@/lib/animation";
 import type { SettingsCategory } from "./types";
 import { ProjectCategory } from "./categories/ProjectCategory";
 import { AiCategory } from "./categories/AiCategory";
@@ -80,12 +82,18 @@ export function SettingsDialog({
   const { t } = useTranslation();
   const [activeCategory, setActiveCategory] =
     useState<SettingsCategory>(initialCategory);
+  // 開くたびに上げる。開いたときのカテゴリの切替は動かさない。
+  const [openSeq, setOpenSeq] = useState(0);
+  const reduced = useReducedMotion();
+  const contentRef = useRef<HTMLDivElement>(null);
+  useCategoryShift(contentRef, activeCategory, openSeq, reduced);
   const { loadAll, flushPending } = useSettingsStore();
 
   useEffect(() => {
     if (open) {
       loadAll();
       setActiveCategory(initialCategory);
+      setOpenSeq((seq) => seq + 1);
     }
   }, [open, initialCategory, loadAll]);
 
@@ -148,17 +156,20 @@ export function SettingsDialog({
             active={activeCategory}
             onChange={setActiveCategory}
             phoneWorkspace={phoneWorkspace}
+            motionScope={openSeq}
           />
           <div
             data-testid="settings-content"
             className="@container min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto"
           >
-            <CategoryContent
-              category={activeCategory}
-              onOpenBackgroundStudio={() => {
-                void handleOpenBackgroundStudio();
-              }}
-            />
+            <div ref={contentRef} data-settings-content-shift>
+              <CategoryContent
+                category={activeCategory}
+                onOpenBackgroundStudio={() => {
+                  void handleOpenBackgroundStudio();
+                }}
+              />
+            </div>
           </div>
         </div>
       </div>
