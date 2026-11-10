@@ -25,7 +25,6 @@ import {
   createEditorInputScopeKey,
   waitForForegroundEditorInputReady,
 } from "@/features/editor/editorInputReady";
-import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useSyncUiScale } from "@/features/workspace/useSyncUiScale";
 import type { RuntimeCapabilities } from "@/runtime/runtimeCapabilities";
@@ -47,6 +46,7 @@ import {
   classifyCloseFailure,
 } from "@/application/lifecycle/closeFailureClassification";
 import { useApplicationTheme } from "./applicationTheme";
+import { useRootDisplaySettings } from "./rootDisplaySettings";
 import { useUnsavedEditsBootstrap } from "./unsavedEditsBootstrap";
 
 export { applyCloseFailureToDialogState, classifyCloseFailure };
@@ -90,15 +90,6 @@ export function ApplicationBootstrapHost({
   );
   const currentProjectId = useProjectStore((state) => state.currentProjectId);
   const tabStateHydrated = useTabStore((state) => state.tabStateHydrated);
-  const attributionOpacity = useSettingsStore((state) =>
-    state.getNumber("display.attributionHighlightOpacity", 10),
-  );
-  const uiFontFamily = useSettingsStore((state) =>
-    state.get("display.uiFontFamily"),
-  );
-  const appReduceMotion = useSettingsStore((state) =>
-    state.getBoolean("display.reduceMotion", false),
-  );
   const toggleDebugLog = useDebugLogStore((state) => state.toggle);
   const { t } = useTranslation();
   const [closeFailures, setCloseFailures] = useState<ReturnType<
@@ -221,28 +212,7 @@ export function ApplicationBootstrapHost({
 
   useApplicationTheme(theme, colorTheme);
 
-  useEffect(() => {
-    document.documentElement.style.setProperty(
-      "--attribution-pct",
-      `${attributionOpacity * 2}%`,
-    );
-  }, [attributionOpacity]);
-
-  useEffect(() => {
-    const html = document.documentElement;
-    const value = uiFontFamily.trim();
-    if (value) html.style.setProperty("--ui-font", value);
-    else html.style.removeProperty("--ui-font");
-  }, [uiFontFamily]);
-
-  // アプリ設定の「動きを減らす」を CSS に渡す。index.css の reduced-motion の規則は
-  // OS の media query だけを見るので、同じ規則を root の属性でも効かせる
-  // （JS 側は useReducedMotion／isReducedMotion が両方を見ている）。
-  useEffect(() => {
-    const html = document.documentElement;
-    if (appReduceMotion) html.dataset.reduceMotion = "true";
-    else delete html.dataset.reduceMotion;
-  }, [appReduceMotion]);
+  useRootDisplaySettings();
 
   useEffect(() => {
     initialize();
