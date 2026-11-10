@@ -14,7 +14,7 @@ import {
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { Splitter } from "./Splitter";
 import { AnimatedSlotPanel } from "./AnimatedSlotPanel";
-import { normalizeFlexGrow, slotsStillHoldPanels } from "./layoutStateUtils";
+import { normalizeFlexGrow, slotsKeptWhileClosing } from "./layoutStateUtils";
 import type { RegionId } from "./layoutTypes";
 
 interface RegionContentProps {
@@ -55,15 +55,10 @@ export const RegionContent = memo(function RegionContent({
   if (isPresent && regionHasOpenSlots(storeSlots)) {
     lastOpenSlotsRef.current = storeSlots;
   }
-  const frozen =
-    !isPresent &&
-    slotsStillHoldPanels(
-      storeSlots,
-      lastOpenSlotsRef.current.flatMap((slot) =>
-        slot.activePanel ? [slot.activePanel] : [],
-      ),
-    );
-  const slots = frozen ? lastOpenSlotsRef.current : storeSlots;
+  const keptSlots = isPresent
+    ? null
+    : slotsKeptWhileClosing(lastOpenSlotsRef.current, storeSlots);
+  const slots = keptSlots && keptSlots.length > 0 ? keptSlots : storeSlots;
   // 閉じる間は drop・splitter を受け付けない。
   const dormant = dormantProp || !isPresent;
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);

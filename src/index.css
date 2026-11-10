@@ -2324,9 +2324,10 @@ button[role="switch"][aria-checked="true"] {
      transition-transform を併記すると twMerge が前者を落とし、色が補間されない
      ため、1 つの宣言にまとめる。 */
   .gx-press-button {
+    /* Tailwind v4 の scale-* は個別の scale プロパティを出す。 */
     transition-property:
-      color, background-color, border-color, box-shadow, transform;
-    transition-duration: 150ms, 150ms, 150ms, 150ms, 75ms;
+      color, background-color, border-color, box-shadow, transform, scale;
+    transition-duration: 150ms, 150ms, 150ms, 150ms, 75ms, 75ms;
     transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
   }
 

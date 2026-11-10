@@ -1,7 +1,7 @@
 import { memo, useState, type ComponentProps } from "react";
 import { motion } from "motion/react";
 import { EASINGS, LAYOUT_MOTION, useReducedMotion } from "@/lib/animation";
-import { isLayoutMotionReady } from "./layoutAnimation";
+import { useLayoutMotionReady } from "./layoutAnimation";
 import { HORIZONTAL_STRIPE_SIZE } from "./layoutConstants";
 import { AnimatedRegionChrome } from "./AnimatedRegionChrome";
 import { RegionStripe } from "./RegionStripe";
@@ -23,7 +23,7 @@ interface SideRegionStripeColumnProps {
 /**
  * stripe が新しく現れる（リージョンに最初の panel が入った）ときだけ、外側から
  * LAYOUT_MOTION.stripeShiftPx 寄せながらフェードインする。起動時の hydration と
- * 同じ commit の mount は動かさない（isLayoutMotionReady）。消えるときは grid の
+ * 同じ commit の mount は動かさない（useLayoutMotionReady）。消えるときは grid の
  * 列が即時に 0 になるので動かさない。
  */
 function StripeAppear({
@@ -38,7 +38,8 @@ function StripeAppear({
   sign: 1 | -1;
 }) {
   const reduced = useReducedMotion();
-  const [animateEntry] = useState(() => !reduced && isLayoutMotionReady());
+  const motionReady = useLayoutMotionReady();
+  const [animateEntry] = useState(() => !reduced && motionReady());
   const shift = sign * LAYOUT_MOTION.stripeShiftPx;
   return (
     <motion.div

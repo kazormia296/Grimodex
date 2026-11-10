@@ -1,4 +1,9 @@
-import type { CSSProperties } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  type CSSProperties,
+} from "react";
 import { HORIZONTAL_STRIPE_SIZE } from "./layoutConstants";
 import {
   CSS_EASINGS,
@@ -58,17 +63,19 @@ export type RegionChromeId = keyof typeof REGION_DRAWER;
 
 /**
  * 起動時の hydration と同じ commit で mount された chrome は動かさない。
- * LayoutShell が `initialized` になった commit の後（effect）で true にし、
- * unmount（ワークスペースの切替）で false に戻す。mount 時に一度だけ読む。
+ * LayoutShell がインスタンスごとに持ち、`initialized` になった commit の後
+ * （effect）で true にする。LayoutShell の外（単体の描画）では常に true。
+ * mount し直した LayoutShell（ワークスペースの切替、Adaptive の枝の切替）の
+ * 最初の commit も false なので動かない。
  */
-let layoutMotionReady = false;
+export const LayoutMotionReadyContext = createContext<{ current: boolean }>({
+  current: true,
+});
 
-export function setLayoutMotionReady(ready: boolean): void {
-  layoutMotionReady = ready;
-}
-
-export function isLayoutMotionReady(): boolean {
-  return layoutMotionReady;
+/** 今の commit で動かしてよいかを返す getter（effect や mount 時に読む）。 */
+export function useLayoutMotionReady(): () => boolean {
+  const ref = useContext(LayoutMotionReadyContext);
+  return useCallback(() => ref.current, [ref]);
 }
 
 export function chromeEnterTransition(reduced: boolean) {

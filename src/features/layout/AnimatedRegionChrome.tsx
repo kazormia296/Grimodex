@@ -18,8 +18,12 @@ import {
 } from "motion/react";
 import { cn } from "@/lib/utils";
 import { EASINGS, LAYOUT_MOTION, useReducedMotion } from "@/lib/animation";
-import { REGION_DRAWER, type RegionChromeId } from "./layoutAnimation";
-import { slotsStillHoldPanels } from "./layoutStateUtils";
+import {
+  REGION_DRAWER,
+  useLayoutMotionReady,
+  type RegionChromeId,
+} from "./layoutAnimation";
+import { slotsKeptWhileClosing } from "./layoutStateUtils";
 import { useLayoutStore } from "./layoutStore";
 
 /** 閉じる間、カードを center の上に重ねる。 */
@@ -56,13 +60,9 @@ export const AnimatedRegionChrome = memo(function AnimatedRegionChrome({
   const reduced = useReducedMotion();
   const initialized = useLayoutStore((state) => state.initialized);
   const slots = useLayoutStore((state) => state.layout.regions[region].slots);
-  // 開いている間の active panel を控える。閉じた瞬間の store には残っていない。
-  const activePanelsRef = useRef<string[]>([]);
-  if (open) {
-    activePanelsRef.current = slots.flatMap((slot) =>
-      slot.activePanel ? [slot.activePanel] : [],
-    );
-  }
+  // 開いている間の slot を控える。閉じた瞬間の store では active が消えている。
+  const openSlotsRef = useRef(slots);
+  if (open) openSlotsRef.current = slots;
   // initializeLayout() と同じ render で閉じた region が開く場合、その enter は
   // ユーザー操作ではなく起動 hydration。最終状態を静的に表示し、初期化完了後の
   // toggle だけをアニメーションする。ref は次回の open render で効けばよいので、
@@ -71,7 +71,18 @@ export const AnimatedRegionChrome = memo(function AnimatedRegionChrome({
   useEffect(() => {
     if (initialized) animationReadyRef.current = true;
   }, [initialized]);
-  const animateEntry = !reduced && animationReadyRef.current;
+  // 最初の render で開いているカードは動かさない（AnimatePresence の
+  // initial={false} と同じ。LayoutShell の mount し直しも含む）。
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+  }, []);
+  const motionReady = useLayoutMotionReady();
+  const animateEntry =
+    !reduced &&
+    animationReadyRef.current &&
+    mountedRef.current &&
+    motionReady();
 
   return (
     <AnimatePresence initial={false}>
@@ -82,7 +93,7 @@ export const AnimatedRegionChrome = memo(function AnimatedRegionChrome({
           className={className}
           style={style}
           animateEntry={animateEntry}
-          activePanelsRef={activePanelsRef}
+          openSlotsRef={openSlotsRef}
         >
           {children}
         </RegionDrawer>
@@ -96,7 +107,9 @@ interface RegionDrawerProps {
   className?: string;
   style?: CSSProperties;
   animateEntry: boolean;
-  activePanelsRef: RefObject<string[]>;
+  openSlotsRef: RefObject<
+    ReadonlyArray<{ panels: ReadonlyArray<string>; activePanel: string | null }>
+  >;
   children: ReactNode;
 }
 
@@ -105,7 +118,7 @@ function RegionDrawer({
   className,
   style,
   animateEntry,
-  activePanelsRef,
+  openSlotsRef,
   children,
 }: RegionDrawerProps) {
   const [isPresent, safeToRemove] = usePresence();
@@ -134,6 +147,8 @@ function RegionDrawer({
     if (!el) return;
     const record = () => {
       if (!presentRef.current) return;
+      // 最大化中はリージョンが全面に伸びている。閉じる動きは通常の寸法で行う。
+      if (useLayoutStore.getState().maximizedPanelId !== null) return;
       const rect = el.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
         sizeRef.current = { width: rect.width, height: rect.height };
@@ -195,10 +210,12 @@ function RegionDrawer({
     exitingRef.current = true;
     controlsRef.current?.stop();
     const distance = distanceOf(sizeRef.current);
-    const keepContent = slotsStillHoldPanels(
-      useLayoutStore.getState().layout.regions[region].slots,
-      activePanelsRef.current ?? [],
-    );
+    // RegionContent と同じ基準。残す slot が無ければ（panel が移った）すぐ外す。
+    const keepContent =
+      slotsKeptWhileClosing(
+        openSlotsRef.current ?? [],
+        useLayoutStore.getState().layout.regions[region].slots,
+      ).length > 0;
     if (reduced || distance <= 0 || !keepContent) {
       safeToRemove?.();
       return;

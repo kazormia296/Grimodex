@@ -289,14 +289,100 @@ describe("layout motion in the shell (real Chromium)", () => {
     act(() => {
       useLayoutStore.getState().toggleBottomCorner("left");
     });
-    const grower = container.querySelector<HTMLElement>(
+    // side が角を取ると、stripe の列と content のセルの両方が下へ伸びる。
+    const growers = (
       ownedByBottom
-        ? '[data-region-stripe-column="left"]'
-        : '[data-zoom-cell="bottom"]',
-    )!;
-    expect(grower.style.clipPath).toContain("inset(");
+        ? ['[data-region-stripe-column="left"]', '[data-zoom-cell="left"]']
+        : ['[data-zoom-cell="bottom"]']
+    ).map((selector) => container.querySelector<HTMLElement>(selector)!);
+    for (const grower of growers) {
+      expect(grower.style.clipPath).toContain("inset(");
+    }
     await waitFor(() => {
-      expect(grower.style.clipPath).toBe("");
+      for (const grower of growers) expect(grower.style.clipPath).toBe("");
     });
+
+    // 逆向き（角を返す）も同じ。
+    act(() => {
+      useLayoutStore.getState().toggleBottomCorner("left");
+    });
+    const back = (
+      ownedByBottom
+        ? ['[data-zoom-cell="bottom"]']
+        : ['[data-region-stripe-column="left"]', '[data-zoom-cell="left"]']
+    ).map((selector) => container.querySelector<HTMLElement>(selector)!);
+    for (const grower of back) {
+      expect(grower.style.clipPath).toContain("inset(");
+    }
+  });
+
+  it("closes a region from a maximized panel at its normal size", async () => {
+    setLayout((layout) => activate(layout, "scenes"));
+    const { container } = renderShell();
+    await settleFrames();
+    const normal = container
+      .querySelector('[data-animated-region="left"]')!
+      .getBoundingClientRect();
+
+    act(() => {
+      useLayoutStore.getState().toggleMaximizePanel("scenes");
+    });
+    await settleFrames();
+    act(() => {
+      useLayoutStore.getState().togglePanel("scenes");
+    });
+    const exiting = container.querySelector<HTMLElement>(
+      '[data-animated-region="left"][data-exiting="true"]',
+    );
+    expect(exiting).not.toBeNull();
+    expect(
+      Math.abs(exiting!.getBoundingClientRect().width - normal.width),
+    ).toBeLessThan(1);
+  });
+
+  it("drops a keepalive panel from the closing region when it moves away", async () => {
+    setLayout((layout) => activate(layout, "codex"));
+    const { container } = renderShell();
+    await settleFrames();
+    // 同じ slot で codex-quick に切り替え、codex を裏の keepalive に残す。
+    act(() => {
+      useLayoutStore.getState().showPanel("codex-quick");
+    });
+    expect(
+      container.querySelectorAll('[data-story-panel="codex"]'),
+    ).toHaveLength(1);
+
+    act(() => {
+      useLayoutStore.getState().collapseLayoutRegion("left");
+    });
+    expect(
+      container.querySelector('[data-animated-region="left"][data-exiting]'),
+    ).not.toBeNull();
+    act(() => {
+      useLayoutStore.getState().movePanelToRegion("codex", "right");
+      useLayoutStore.getState().showPanel("codex");
+    });
+    expect(
+      container.querySelectorAll('[data-story-panel="codex"]'),
+    ).toHaveLength(1);
+  });
+
+  it("does not slide open regions in when the shell mounts again", async () => {
+    setLayout((layout) => activate(layout, "scenes"));
+    const first = renderShell();
+    await settleFrames();
+    first.unmount();
+
+    const { container } = renderShell();
+    const chrome = container.querySelector<HTMLElement>(
+      '[data-animated-region="left"]',
+    )!;
+    expect(getComputedStyle(chrome).clipPath).toBe("none");
+    expect(getComputedStyle(chrome.firstElementChild!).transform).toBe("none");
+    expect(
+      getComputedStyle(
+        container.querySelector('[data-region-stripe-column="left"]')!,
+      ).opacity,
+    ).toBe("1");
   });
 });

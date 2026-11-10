@@ -39,7 +39,7 @@ import { OverlayLayer } from "./OverlayLayer";
 import { OverlayKnob } from "./OverlayKnob";
 import { StripeInsertIndicator } from "./StripeInsertIndicator";
 import { useLayoutPresetCrossfade } from "./useLayoutPresetCrossfade";
-import { setLayoutMotionReady } from "./layoutAnimation";
+import { LayoutMotionReadyContext } from "./layoutAnimation";
 import { useZenGlassConfig } from "@/features/editor/zen/useZenBackgroundAppearance";
 
 // gsap(+@gsap/react)を static import する drop-zone ハイライトを遅延化。常時 mount
@@ -138,18 +138,17 @@ export const LayoutShell = memo(function LayoutShell({
     [showOverlayKnobs, overlayLeftOccupied, overlayRightOccupied],
   );
 
+  // 起動時の hydration・mount し直しと同じ commit で mount された chrome は
+  // 動かさない。effect は子の mount の後に走るので、この commit の子は false を読む。
+  const motionReadyRef = useRef(false);
+  useEffect(() => {
+    if (initialized) motionReadyRef.current = true;
+  }, [initialized]);
+
   // 最大化突入時の clip-path reveal（ズームっぽい展開演出）。
   useZoomReveal(zoomRegion, layout, shellRef);
   // 下の角の取り合いで、角を取った側を直前の矩形から広げる。
-  useCornerReveal(getBottomCorners(layout), layout, shellRef);
-
-  // 起動時の hydration と同じ commit で mount された chrome は動かさない。
-  // effect は子の mount の後に走るので、この commit の子は false を読む。
-  useEffect(() => {
-    if (!initialized) return;
-    setLayoutMotionReady(true);
-    return () => setLayoutMotionReady(false);
-  }, [initialized]);
+  useCornerReveal(getBottomCorners(layout), layout, shellRef, motionReadyRef);
 
   // Esc で zoom 解除。階層的 Esc として一番外側に置く:
   // - isComposing: IME 変換キャンセルの Escape を奪わない（CodexEntryHeader
@@ -289,7 +288,7 @@ export const LayoutShell = memo(function LayoutShell({
   ): React.CSSProperties => (hidden ? { ...base, visibility: "hidden" } : base);
 
   return (
-    <>
+    <LayoutMotionReadyContext.Provider value={motionReadyRef}>
       {!zenMode && !editorOnly && draggingPanel && (
         <Suspense fallback={null}>
           <LayoutDnDHighlightOverlay />
@@ -534,6 +533,6 @@ export const LayoutShell = memo(function LayoutShell({
         {!editorOnly && <OverlayLayer side="left" zenMode={zenMode} />}
         {!editorOnly && <OverlayLayer side="right" zenMode={zenMode} />}
       </div>
-    </>
+    </LayoutMotionReadyContext.Provider>
   );
 });

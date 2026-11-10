@@ -1,13 +1,14 @@
 import { useLayoutEffect, useRef, type RefObject } from "react";
 import { LAYOUT_MOTION, useReducedMotion } from "@/lib/animation";
 import { startClipReveal } from "./clipReveal";
-import { isLayoutMotionReady } from "./layoutAnimation";
 import type { BottomCornerOwnership, LayoutState } from "./layoutTypes";
 
 const CORNER_TARGETS = {
   bottom: '[data-zoom-cell="bottom"]',
   left: '[data-region-stripe-column="left"]',
   right: '[data-region-stripe-column="right"]',
+  leftContent: '[data-zoom-cell="left"]',
+  rightContent: '[data-zoom-cell="right"]',
 } as const;
 
 type CornerTarget = keyof typeof CORNER_TARGETS;
@@ -24,6 +25,7 @@ export function useCornerReveal(
   corners: BottomCornerOwnership,
   layout: LayoutState,
   shellRef: RefObject<HTMLDivElement | null>,
+  motionReadyRef: RefObject<boolean>,
 ) {
   const reduced = useReducedMotion();
   const restRectsRef = useRef<Partial<Record<CornerTarget, DOMRect>>>({});
@@ -40,14 +42,19 @@ export function useCornerReveal(
       shell.querySelector<HTMLElement>(CORNER_TARGETS[target]);
 
     const cancels: Array<() => void> = [];
-    if (!reduced && isLayoutMotionReady()) {
+    if (!reduced && motionReadyRef.current) {
       for (const side of ["left", "right"] as const) {
         if (prev[side] === next[side]) continue;
-        const grower: CornerTarget = next[side] ? "bottom" : side;
-        const el = find(grower);
-        const first = restRectsRef.current[grower];
-        if (el && first) {
-          cancels.push(startClipReveal(el, first, LAYOUT_MOTION.groupEnter));
+        // side が角を取ると、stripe の列と content のセルの両方が下へ伸びる。
+        const growers: CornerTarget[] = next[side]
+          ? ["bottom"]
+          : [side, side === "left" ? "leftContent" : "rightContent"];
+        for (const grower of growers) {
+          const el = find(grower);
+          const first = restRectsRef.current[grower];
+          if (el && first) {
+            cancels.push(startClipReveal(el, first, LAYOUT_MOTION.groupEnter));
+          }
         }
       }
     }
@@ -62,5 +69,5 @@ export function useCornerReveal(
     return () => {
       for (const cancel of cancels) cancel();
     };
-  }, [left, right, layout, reduced, shellRef]);
+  }, [left, right, layout, reduced, shellRef, motionReadyRef]);
 }
