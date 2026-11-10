@@ -873,7 +873,8 @@ pub(crate) fn roster_candidate_page_sql() -> String {
 /// same point as before. Each later use binds the same program again. The row
 /// reader that `query_row` creates resets the statement when it drops, on
 /// success, on an error and on an unwind, so no use leaves a running VM, an
-/// ephemeral table or a bound cursor behind.
+/// ephemeral table or a bound cursor behind, and the bindings are cleared after
+/// every use, so the values of the last Revision are not kept either.
 ///
 /// `prepare_cached` is deliberately not used: its cache is one per connection,
 /// and its keys and list nodes are Rust allocations that would land in the
@@ -883,6 +884,12 @@ struct ReusedStatement<'conn> {
     /// How often this slot prepared its statement.
     #[cfg(test)]
     prepares: usize,
+    /// How often the slot was used, including a use whose prepare failed.
+    #[cfg(test)]
+    attempts: usize,
+    /// The SQL of the first use: every later use of the slot must be the same.
+    #[cfg(test)]
+    first_sql: Option<String>,
 }
 
 impl<'conn> ReusedStatement<'conn> {
@@ -891,6 +898,10 @@ impl<'conn> ReusedStatement<'conn> {
             statement: None,
             #[cfg(test)]
             prepares: 0,
+            #[cfg(test)]
+            attempts: 0,
+            #[cfg(test)]
+            first_sql: None,
         }
     }
 
@@ -908,6 +919,12 @@ impl<'conn> ReusedStatement<'conn> {
         P: rusqlite::Params,
         F: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
     {
+        #[cfg(test)]
+        {
+            self.attempts += 1;
+            let first = self.first_sql.get_or_insert_with(|| sql.to_owned());
+            assert_eq!(first, sql, "a slot was used with a different SQL");
+        }
         if self.statement.is_none() {
             self.statement = Some(conn.prepare(sql)?);
             #[cfg(test)]
@@ -915,11 +932,16 @@ impl<'conn> ReusedStatement<'conn> {
                 self.prepares += 1;
             }
         }
-        let result = self
+        let statement = self
             .statement
             .as_mut()
-            .expect("the statement was prepared above")
-            .query_row(params, map);
+            .expect("the statement was prepared above");
+        let result = statement.query_row(params, map);
+        // The row reader has reset the statement. rusqlite binds a `&str` as a
+        // copy that SQLite keeps until the next bind, and a Revision id can be
+        // up to the input limit long, so release the copies too: between uses a
+        // slot holds its compiled program and nothing the last Revision named.
+        statement.clear_bindings();
         #[cfg(test)]
         if fresh_statements() {
             // The oracle form: one statement per use, finalized right after it.
@@ -929,11 +951,12 @@ impl<'conn> ReusedStatement<'conn> {
     }
 
     #[cfg(test)]
-    fn observe(&self) -> (usize, i32, i32, i32) {
+    fn observe(&self) -> (usize, usize, i32, i32, i32) {
         use rusqlite::StatementStatus::{MemUsed, RePrepare, Run};
         let status = |what| self.statement.as_ref().map_or(0, |s| s.get_status(what));
         (
             self.prepares,
+            self.attempts,
             status(MemUsed),
             status(RePrepare),
             status(Run),
@@ -965,6 +988,21 @@ impl<'conn> RevisionStatements<'conn> {
             live_lengths: ReusedStatement::new(),
         }
     }
+
+    /// `MemUsed` of the statements held now.
+    #[cfg(test)]
+    fn mem_used_sum(&self) -> i32 {
+        [
+            &self.input_lengths,
+            &self.input_counts,
+            &self.basis_entity,
+            &self.basis_relation,
+            &self.live_lengths,
+        ]
+        .into_iter()
+        .map(|slot| slot.observe().2)
+        .sum()
+    }
 }
 
 /// What the five statements of one `read_eligibility_source_counted` showed
@@ -975,6 +1013,8 @@ impl<'conn> RevisionStatements<'conn> {
 pub(crate) struct RevisionStatementsObservation {
     /// How often each slot prepared its statement.
     pub(crate) prepares: [usize; 5],
+    /// How often each slot was used (a use whose prepare failed counts).
+    pub(crate) attempts: [usize; 5],
     /// `StatementStatus::MemUsed` of each statement still held.
     pub(crate) mem_used: [i32; 5],
     /// `StatementStatus::RePrepare`: SQLite's own re-prepares of a held statement.
@@ -995,8 +1035,9 @@ impl Drop for RevisionStatements<'_> {
         ];
         let mut seen = RevisionStatementsObservation::default();
         for (index, slot) in slots.into_iter().enumerate() {
-            let (prepares, mem_used, reprepares, runs) = slot.observe();
+            let (prepares, attempts, mem_used, reprepares, runs) = slot.observe();
             seen.prepares[index] = prepares;
+            seen.attempts[index] = attempts;
             seen.mem_used[index] = mem_used;
             seen.reprepares[index] = reprepares;
             seen.runs[index] = runs;
@@ -1101,6 +1142,65 @@ pub(crate) fn measure_statement_peaks(
         peaks.push(row);
     }
     Ok(peaks)
+}
+
+/// Test-only: run the first three steps of the Revision loop over `revision_ids`
+/// in order with one holder, as the loop does (a step runs only if the one before
+/// it let the Revision through). Returns, per id, what the steps answered (a
+/// string that names each answer, so a value carried over from an earlier
+/// Revision shows) and the `MemUsed` of the held statements after it. Wrap it in
+/// `with_fresh_statements` for the form before the change.
+#[cfg(test)]
+pub(crate) fn stage_trace(
+    conn: &Connection,
+    project: &str,
+    revision_ids: &[String],
+) -> Vec<(String, i32)> {
+    let mut statements = RevisionStatements::new(conn);
+    let mut capacity = SourceCapacity::default();
+    let mut trace = Vec::new();
+    for revision_id in revision_ids {
+        let mut answer = String::new();
+        match read_revision_input_stats(
+            conn,
+            project,
+            revision_id,
+            None,
+            &mut capacity,
+            &mut statements,
+        ) {
+            Err(error) => answer.push_str(&format!("stats=Err({error:#})")),
+            Ok(None) => answer.push_str("stats=None"),
+            Ok(Some(stats)) => {
+                answer.push_str(&format!("stats=Some({})", stats.material_records));
+                match preflight_revision_source_basis(
+                    conn,
+                    project,
+                    revision_id,
+                    None,
+                    &mut statements,
+                ) {
+                    Err(error) => answer.push_str(&format!(" basis=Err({error:#})")),
+                    Ok(false) => answer.push_str(" basis=false"),
+                    Ok(true) => {
+                        answer.push_str(" basis=true");
+                        match preflight_live_source_lengths(
+                            conn,
+                            project,
+                            revision_id,
+                            None,
+                            &mut statements,
+                        ) {
+                            Err(error) => answer.push_str(&format!(" live=Err({error:#})")),
+                            Ok(live) => answer.push_str(&format!(" live={live:?}")),
+                        }
+                    }
+                }
+            }
+        }
+        trace.push((answer, statements.mem_used_sum()));
+    }
+    trace
 }
 
 fn read_eligibility_source_counted(
@@ -1229,16 +1329,17 @@ fn read_eligibility_source_counted(
             // Each step below reads one Revision's documents. In the worker the
             // Rust side of that work is allocated in S. The A2 reader's payload
             // and envelope and the qualified Revision are freed when their scope
-            // ends, so Q keeps what only SQLite may use. The five statements of
-            // the first three steps are the exception on the SQLite side: they
-            // live in `statements`, a local of this call that allocates nothing
-            // in S (a prepare makes no Rust allocation, and every parameter is
-            // positional), and each is reset after its use.
-            // The roster is the exception: its buffer and its row strings are
-            // allocated in S by the first push and stay there until the source
-            // is dropped (a roster of more than 128 rows moves to Q when the
-            // sort merges it), which happens before the worker seals S. The
-            // roster may only grow inside a scope. Owner checks of `control`
+            // ends, so Q keeps what only SQLite may use.
+            // The five statements of the first three steps are kept in
+            // `statements`, a local of this call that allocates nothing in S (a
+            // prepare makes no Rust allocation, and every parameter is
+            // positional). Each is reset and its bindings are cleared after its
+            // use, so between steps it holds only its compiled program.
+            // The roster is the other thing that stays: its buffer and its row
+            // strings are allocated in S by the first push and stay there until
+            // the source is dropped (a roster of more than 128 rows moves to Q
+            // when the sort merges it), which happens before the worker seals S.
+            // The roster may only grow inside a scope. Owner checks of `control`
             // run between the steps, in Q.
             let Some(input_stats) = in_scratch(&mut scratch_scope, || {
                 read_revision_input_stats(

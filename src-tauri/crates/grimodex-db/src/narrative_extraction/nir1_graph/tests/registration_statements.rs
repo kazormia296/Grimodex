@@ -126,6 +126,33 @@ fn alike(name: &str, fixture: &Fixture) -> Result<(Run, Run)> {
             "{name} ({form}): the registration left a statement behind"
         );
     }
+    // The seam must not pass through: the oracle holds nothing and prepares at
+    // every use, and both forms take the same path through the loop.
+    if let (Some(reuse_seen), Some(fresh_seen)) = (reuse.observed, fresh.observed) {
+        assert_eq!(
+            reuse_seen.attempts, fresh_seen.attempts,
+            "{name}: same path"
+        );
+        assert_eq!(
+            fresh_seen.mem_used, [0; 5],
+            "{name}: the oracle holds nothing"
+        );
+        for slot in 0..5 {
+            let attempts = reuse_seen.attempts[slot];
+            assert!(reuse_seen.prepares[slot] <= 1, "{name}: slot {slot}");
+            assert!(
+                fresh_seen.prepares[slot] + 1 >= attempts,
+                "{name}: slot {slot}: the oracle prepares at every use ({attempts} uses, {} prepares)",
+                fresh_seen.prepares[slot]
+            );
+            if attempts >= 3 {
+                assert!(
+                    fresh_seen.prepares[slot] > reuse_seen.prepares[slot],
+                    "{name}: slot {slot}: the seam made no difference"
+                );
+            }
+        }
+    }
     Ok((reuse, fresh))
 }
 
@@ -372,27 +399,47 @@ fn registration_answers_alike_when_ineligible_revisions_are_mixed_in() -> Result
 
 // A statement that cannot be prepared fails where it always did, at the first
 // Revision that reaches it, with the same text, in both forms. The reuse form
-// does not prepare ahead: the statements before the broken one were used.
+// does not prepare ahead: the statements before the broken one were used, and
+// the ones after it were never asked for (`attempts`). Each break is chosen so
+// that the roster's page statement, which reads some of the same tables, still
+// runs and the loop is reached.
 #[test]
 fn registration_answers_alike_when_the_first_revision_cannot_prepare() -> Result<()> {
-    let breaks = [
-        // The stats statements read `narrative_extraction_runs`.
+    // (name, DDL, the table named in the error, attempts, prepares)
+    type PrepareBreak = (
+        &'static str,
+        &'static str,
+        &'static str,
+        [usize; 5],
+        [usize; 5],
+    );
+    let breaks: [PrepareBreak; 3] = [
+        // Only the input-lengths statement reads the Decisions' sizes.
         (
             "input lengths",
-            "ALTER TABLE narrative_extraction_runs RENAME TO grw_bak",
+            "ALTER TABLE narrative_proposal_decisions RENAME TO grw_bak",
+            "narrative_proposal_decisions",
+            [1, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0],
         ),
         // The basis statements read the basis table; the stats statements ran.
         (
             "source basis",
             "ALTER TABLE narrative_revision_source_basis RENAME TO grw_bak",
+            "narrative_revision_source_basis",
+            [1, 1, 1, 0, 0],
+            [1, 1, 0, 0, 0],
         ),
         // Only the live lengths statement reads the Codex relations.
         (
             "live lengths",
             "ALTER TABLE codex_relations RENAME TO grw_bak",
+            "codex_relations",
+            [1, 1, 1, 1, 1],
+            [1, 1, 1, 1, 0],
         ),
     ];
-    for (name, ddl) in breaks {
+    for (name, ddl, table, attempts, prepares) in breaks {
         let fixture = multi_fixture()?;
         execute(&fixture, ddl)?;
         let (reuse, fresh) = alike(name, &fixture)?;
@@ -401,11 +448,16 @@ fn registration_answers_alike_when_the_first_revision_cannot_prepare() -> Result
             .result
             .as_ref()
             .expect_err("the break must bite");
-        eprintln!(
-            "{name}: {error}; prepares reuse {:?} fresh {:?}",
-            reuse.observed.map(|seen| seen.prepares),
-            fresh.observed.map(|seen| seen.prepares)
+        assert!(error.contains(table), "{name}: {error}");
+        let reuse_seen = reuse.observed.expect("the loop's holder was made");
+        let fresh_seen = fresh.observed.expect("the loop's holder was made");
+        assert_eq!(
+            reuse_seen.attempts, attempts,
+            "{name}: where the loop got to"
         );
+        assert_eq!(reuse_seen.prepares, prepares, "{name}");
+        assert_eq!(fresh_seen.prepares, prepares, "{name}");
+        eprintln!("{name}: {error}; attempts {attempts:?}, prepares {prepares:?}");
     }
     Ok(())
 }
@@ -558,12 +610,42 @@ fn state_stops_end_in_the_typed_stop_in_both_forms_and_leave_no_statement() -> R
 struct LiveProbe<'conn> {
     conn: &'conn Connection,
     live: Vec<usize>,
+    /// At every check, how many statements over the Revision tables were busy
+    /// (stepped and not reset). The owner checks run between the steps, so none
+    /// may be: each statement is reset before the next one is prepared or run
+    /// (DR-CQL-13).
+    busy: Vec<usize>,
     panic_at: Option<usize>,
+}
+
+/// How many statements are busy that read a Revision or its basis. The roster's
+/// page statement (which is busy while its rows are read) reads neither.
+fn busy_revision_statements(conn: &Connection) -> usize {
+    // SAFETY: a read-only walk of the connection's statements on its own thread.
+    unsafe {
+        let db = conn.handle();
+        let mut busy = 0;
+        let mut statement = rusqlite::ffi::sqlite3_next_stmt(db, std::ptr::null_mut());
+        while !statement.is_null() {
+            if rusqlite::ffi::sqlite3_stmt_busy(statement) != 0 {
+                let sql = std::ffi::CStr::from_ptr(rusqlite::ffi::sqlite3_sql(statement))
+                    .to_string_lossy();
+                if sql.contains("narrative_proposal_revisions")
+                    || sql.contains("narrative_revision_source_basis")
+                {
+                    busy += 1;
+                }
+            }
+            statement = rusqlite::ffi::sqlite3_next_stmt(db, statement);
+        }
+        busy
+    }
 }
 
 impl GraphWorkControl for LiveProbe<'_> {
     fn check(&mut self, _: GraphWorkStage) -> Result<()> {
         self.live.push(live_statements(self.conn));
+        self.busy.push(busy_revision_statements(self.conn));
         if self.panic_at == Some(self.live.len()) {
             panic!("TEST_OWNER_PANIC");
         }
@@ -590,6 +672,7 @@ fn read_with<T>(
         let mut probe = LiveProbe {
             conn,
             live: Vec::new(),
+            busy: Vec::new(),
             panic_at,
         };
         let mut scope = |operation: &mut dyn FnMut()| {
@@ -613,6 +696,12 @@ fn read_with<T>(
                 run()
             }
         }));
+        assert!(
+            probe.busy.iter().all(|busy| *busy == 0),
+            "a statement over a Revision was still busy at an owner check: {:?}",
+            probe.busy
+        );
+        assert!(!probe.busy.is_empty());
         inspect(conn, result, probe.live, before)
     })
 }
@@ -896,6 +985,262 @@ fn the_sqlite_heap_peak_of_each_step_rises_by_no_more_than_the_held_programs() -
     assert!(
         worst_rise < 400_000,
         "a step's SQLite heap peak rose by {worst_rise} B"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// A statement that is reused never answers with an earlier Revision's value.
+// ---------------------------------------------------------------------------
+
+/// The answers of the first three steps over `order` in both forms, on one
+/// connection: the reuse form first.
+type Trace = Vec<(String, i32)>;
+
+fn traces(fixture: &Fixture, order: &[String]) -> Result<(Trace, Trace)> {
+    fixture.authority.with_read_transaction(|conn| {
+        let reuse = index::stage_trace(conn, PROJECT, order);
+        let fresh = with_fresh_statements(|| index::stage_trace(conn, PROJECT, order));
+        Ok((reuse, fresh))
+    })
+}
+
+// Only the third Revision differs, and only in what one statement answers. A
+// statement that kept the value of the Revision before it would answer the
+// third like the second; the answers of both forms must be the same, and the
+// third's must be the broken one.
+#[test]
+fn a_reused_statement_answers_for_the_revision_in_front_of_it() -> Result<()> {
+    type Break = fn(&Fixture, &str) -> Result<()>;
+    let cases: [(&str, Break, &str); 3] = [
+        // More records than a Revision may carry: the JSON counts say so.
+        (
+            "input counts",
+            |fixture, revision| {
+                fixture.authority.with_conn(|conn| {
+                conn.execute_batch(
+                    "DROP TRIGGER narrative_proposal_revisions_v2_immutable_update_guard",
+                )?;
+                conn.execute(
+                    "UPDATE narrative_proposal_revisions
+                        SET payload_json = '{\"bundle\":{\"entities\":['
+                            || (WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 700)
+                                SELECT group_concat('{}') FROM c)
+                            || '],\"relations\":[]}}'
+                      WHERE id = ?1",
+                    [revision],
+                )?;
+                Ok(())
+            })
+            },
+            "stats=None",
+        ),
+        // Only the Relation's basis row differs: the Relation statement says so.
+        (
+            "basis relation",
+            |fixture, revision| {
+                fixture.authority.with_conn(|conn| {
+                    conn.execute_batch("DROP TRIGGER narrative_source_basis_immutable_update")?;
+                    conn.execute(
+                        "UPDATE narrative_revision_source_basis SET revision_token = 'tampered'
+                      WHERE revision_id = ?1 AND source_kind = 'codex-relation'",
+                        [revision],
+                    )?;
+                    Ok(())
+                })
+            },
+            "stats=Some(5) basis=false",
+        ),
+        // The payload and the basis agree on a Source token that the live Source
+        // no longer has: the live-lengths statement says so.
+        (
+            "live lengths",
+            |fixture, revision| {
+                fixture.authority.with_conn(|conn| {
+                    conn.execute_batch(
+                        "DROP TRIGGER narrative_source_basis_immutable_update;
+                     DROP TRIGGER narrative_proposal_revisions_v2_immutable_update_guard",
+                    )?;
+                    let tokens: Vec<String> = conn
+                        .prepare(
+                            "SELECT revision_token FROM narrative_revision_source_basis
+                          WHERE revision_id = ?1 AND source_kind = 'codex-entry'",
+                        )?
+                        .query_map([revision], |row| row.get(0))?
+                        .collect::<std::result::Result<_, _>>()?;
+                    assert!(!tokens.is_empty());
+                    for token in tokens {
+                        let stale = format!("{token}#stale");
+                        conn.execute(
+                            "UPDATE narrative_proposal_revisions
+                            SET payload_json = replace(payload_json, ?2, ?3) WHERE id = ?1",
+                            params![revision, token, stale],
+                        )?;
+                        conn.execute(
+                            "UPDATE narrative_revision_source_basis SET revision_token = ?3
+                          WHERE revision_id = ?1 AND revision_token = ?2",
+                            params![revision, token, stale],
+                        )?;
+                    }
+                    Ok(())
+                })
+            },
+            "stats=Some(5) basis=true live=None",
+        ),
+    ];
+    for (name, apply, broken) in cases {
+        let fixture = multi_fixture()?;
+        let order = scan_order(&fixture)?;
+        apply(&fixture, &order[2])?;
+        let (reuse, fresh) = traces(&fixture, &order)?;
+        let answers = |trace: &[(String, i32)]| -> Vec<String> {
+            trace.iter().map(|(answer, _)| answer.clone()).collect()
+        };
+        assert_eq!(answers(&reuse), answers(&fresh), "{name}");
+        eprintln!("{name}: {:?}", answers(&reuse));
+        assert!(
+            reuse[2].0.starts_with(broken) || reuse[2].0 == broken,
+            "{name}: the third Revision must answer {broken}: {:?}",
+            answers(&reuse)
+        );
+        for healthy in [0, 1, 3] {
+            assert!(
+                reuse[healthy].0.contains("live=Some("),
+                "{name}: Revision {healthy}: {:?}",
+                answers(&reuse)
+            );
+        }
+    }
+    Ok(())
+}
+
+// A candidate with no Revision row answers "none" from the first statement
+// (`.optional()`) and leaves the statement ready for the Revision after it.
+#[test]
+fn a_candidate_without_a_revision_row_leaves_the_statements_ready() -> Result<()> {
+    let fixture = multi_fixture()?;
+    let mut order = scan_order(&fixture)?;
+    order.insert(1, "no-such-revision".into());
+    order.insert(3, "another-missing-revision".into());
+    let (reuse, fresh) = traces(&fixture, &order)?;
+    let answers = |trace: &[(String, i32)]| -> Vec<String> {
+        trace.iter().map(|(answer, _)| answer.clone()).collect()
+    };
+    assert_eq!(answers(&reuse), answers(&fresh));
+    for (index, answer) in answers(&reuse).iter().enumerate() {
+        if index == 1 || index == 3 {
+            assert_eq!(answer, "stats=None");
+        } else {
+            assert!(answer.contains("live=Some("), "{index}: {answer}");
+        }
+    }
+    // The same through the registration: a proposal whose current Revision has no
+    // row sits among the candidates.
+    execute(
+        &fixture,
+        "PRAGMA foreign_keys = OFF;
+         INSERT INTO narrative_proposals
+            (id, proposal_set_id, proposal_key, kind, status, payload_json,
+             current_revision_id, created_at, updated_at)
+         SELECT 'dangling-proposal', proposal_set_id, 'dangling', kind, 'draft', '{}',
+                'dangling-revision', created_at, updated_at
+           FROM narrative_proposals LIMIT 1",
+    )?;
+    let (reuse, fresh) = alike("dangling candidate", &fixture)?;
+    eprintln!("dangling candidate: {:?}", reuse.outcome.result);
+    assert_eq!(reuse.observed.unwrap().attempts[0], 5);
+    assert_eq!(fresh.observed.unwrap().attempts[0], 5);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// What a held statement keeps.
+// ---------------------------------------------------------------------------
+
+/// A copy of `source` (its row and its basis rows) under the id `new_id`.
+fn clone_revision(fixture: &Fixture, source: &str, new_id: &str) -> Result<()> {
+    fixture.authority.with_conn(|conn| {
+        conn.execute_batch("PRAGMA foreign_keys = OFF")?;
+        conn.execute(
+            "CREATE TEMP TABLE grw_rev AS SELECT * FROM narrative_proposal_revisions WHERE id = ?1",
+            [source],
+        )?;
+        conn.execute(
+            "UPDATE grw_rev SET id = ?1, revision_number = revision_number + 100",
+            [new_id],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_proposal_revisions SELECT * FROM grw_rev",
+            [],
+        )?;
+        conn.execute_batch("DROP TABLE grw_rev")?;
+        conn.execute(
+            "CREATE TEMP TABLE grw_basis AS
+               SELECT * FROM narrative_revision_source_basis WHERE revision_id = ?1",
+            [source],
+        )?;
+        conn.execute("UPDATE grw_basis SET revision_id = ?1", [new_id])?;
+        conn.execute(
+            "INSERT INTO narrative_revision_source_basis SELECT * FROM grw_basis",
+            [],
+        )?;
+        conn.execute_batch("DROP TABLE grw_basis")?;
+        Ok(())
+    })
+}
+
+// rusqlite binds a `&str` as a copy that SQLite keeps until the next bind. A
+// Revision id can be long (up to the input limit), so the reused statements clear
+// their bindings: after a Revision with a 512 KiB id, the five held statements
+// are no larger than after one with a short id.
+#[test]
+fn held_statements_do_not_keep_the_values_of_the_last_revision() -> Result<()> {
+    let fixture = multi_fixture()?;
+    let order = scan_order(&fixture)?;
+    let long_id = "r".repeat(512 * 1024);
+    clone_revision(&fixture, &order[0], &long_id)?;
+    let ids = vec![order[1].clone(), long_id.clone(), order[2].clone()];
+    let (reuse, fresh) = traces(&fixture, &ids)?;
+    for (index, (answer, _)) in reuse.iter().enumerate() {
+        assert!(answer.contains("live=Some("), "{index}: {answer}");
+        assert_eq!(answer, &fresh[index].0);
+    }
+    let (short, long, after) = (reuse[0].1, reuse[1].1, reuse[2].1);
+    eprintln!("MemUsed of the five held statements: short id {short} B, 512 KiB id {long} B, then short {after} B");
+    assert!(
+        long <= short + 64 * 1024,
+        "the statements kept the long id: {short} B -> {long} B"
+    );
+    assert!(after <= short + 64 * 1024);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Statistics (STAT4) and a held statement.
+// ---------------------------------------------------------------------------
+
+// With `sqlite_stat4` SQLite may choose a plan by the bound value, so rebinding can
+// make it re-prepare the held statement (`RePrepare`). That costs the saving, not
+// the answer: the result is the same as ever.
+#[test]
+fn analyzed_statistics_change_no_answer() -> Result<()> {
+    let fixture = multi_fixture()?;
+    execute(&fixture, "ANALYZE")?;
+    let stat4 = fixture.authority.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'sqlite_stat4'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?)
+    })?;
+    let (reuse, fresh) = alike("analyzed", &fixture)?;
+    assert_eq!(reuse.outcome.result, Ok(true));
+    let seen = reuse.observed.expect("read");
+    eprintln!(
+        "STAT4: sqlite_stat4 tables {stat4}; RePrepare per statement {:?}; prepares {:?}; fresh prepares {:?}",
+        seen.reprepares,
+        seen.prepares,
+        fresh.observed.map(|seen| seen.prepares)
     );
     Ok(())
 }
