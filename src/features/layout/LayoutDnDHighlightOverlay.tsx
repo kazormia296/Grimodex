@@ -2,7 +2,13 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
-import { CSS_DURATIONS } from "@/lib/animation";
+import { AnimatePresence, motion } from "motion/react";
+import {
+  CSS_DURATIONS,
+  DURATIONS,
+  EASINGS,
+  useReducedMotion,
+} from "@/lib/animation";
 import { getDropTargetRect, type DropTargetRect } from "./layoutDnD";
 import { useLayoutStore } from "./layoutStore";
 import { isReducedMotion } from "@/lib/gsap";
@@ -12,6 +18,7 @@ const GLOW_COLOR = "oklch(0.55 0.22 264 / 0.45)";
 
 /** Highlights the active drop zone while a tool window panel is being dragged. */
 export function LayoutDnDHighlightOverlay() {
+  const reduced = useReducedMotion();
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const dragOverTarget = useLayoutStore((s) => s.dragOverTarget);
   // layout はドラッグ中の measure (getDropTargetRect) にしか使わないため、
@@ -84,35 +91,50 @@ export function LayoutDnDHighlightOverlay() {
     { dependencies: [rect] },
   );
 
-  if (!draggingPanel || layoutLocked || !dragOverTarget || !rect) {
-    return null;
-  }
+  const visible =
+    !!draggingPanel && !layoutLocked && !!dragOverTarget && !!rect;
 
+  // 出入りは DURATIONS.fast でフェードする（ゾーン間の移動は CSS の transition）。
+  // ドロップで draggingPanel が null になると LayoutShell がこの overlay ごと外すので、
+  // そこではフェードしない（着地はゴーストが担う）。
   return createPortal(
-    <div
-      data-dnd-highlight
-      style={{
-        position: "fixed",
-        left: rect.left,
-        top: rect.top,
-        width: rect.width,
-        height: rect.height,
-        pointerEvents: "none",
-        zIndex: 9998,
-        transition: `left ${CSS_DURATIONS.fast} ease, top ${CSS_DURATIONS.fast} ease, width ${CSS_DURATIONS.fast} ease, height ${CSS_DURATIONS.fast} ease`,
-      }}
-    >
-      <div
-        ref={highlightRef}
-        className="h-full w-full"
-        style={{
-          borderRadius: 6,
-          border: `2px dashed ${RING_COLOR}`,
-          boxShadow: `0 0 16px 3px ${GLOW_COLOR}`,
-          background: "oklch(0.55 0.22 264 / 0.08)",
-        }}
-      />
-    </div>,
+    <AnimatePresence>
+      {visible && (
+        <motion.div
+          key="dnd-highlight"
+          data-dnd-highlight
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={
+            reduced
+              ? { duration: 0 }
+              : { duration: DURATIONS.fast, ease: EASINGS.easeOut }
+          }
+          style={{
+            position: "fixed",
+            left: rect.left,
+            top: rect.top,
+            width: rect.width,
+            height: rect.height,
+            pointerEvents: "none",
+            zIndex: 9998,
+            transition: `left ${CSS_DURATIONS.fast} ease, top ${CSS_DURATIONS.fast} ease, width ${CSS_DURATIONS.fast} ease, height ${CSS_DURATIONS.fast} ease`,
+          }}
+        >
+          <div
+            ref={highlightRef}
+            className="h-full w-full"
+            style={{
+              borderRadius: 6,
+              border: `2px dashed ${RING_COLOR}`,
+              boxShadow: `0 0 16px 3px ${GLOW_COLOR}`,
+              background: "oklch(0.55 0.22 264 / 0.08)",
+            }}
+          />
+        </motion.div>
+      )}
+    </AnimatePresence>,
     document.body,
   );
 }

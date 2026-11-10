@@ -1,6 +1,12 @@
 import { useLayoutEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { CSS_DURATIONS } from "@/lib/animation";
+import { AnimatePresence, motion } from "motion/react";
+import {
+  CSS_DURATIONS,
+  DURATIONS,
+  EASINGS,
+  useReducedMotion,
+} from "@/lib/animation";
 import type { DragOverTarget } from "./layoutDnD";
 import { useLayoutStore } from "./layoutStore";
 
@@ -20,6 +26,7 @@ function stripeOrientationForSegment(
  * https://github.com/leoweyr/react-ide-workspace-layout
  */
 export function StripeInsertIndicator() {
+  const reduced = useReducedMotion();
   const draggingPanel = useLayoutStore((s) => s.draggingPanel);
   const dragOverTarget = useLayoutStore((s) => s.dragOverTarget);
   const stripeSwapMode = useLayoutStore((s) => s.stripeSwapMode);
@@ -121,20 +128,32 @@ export function StripeInsertIndicator() {
     return () => observer.disconnect();
   }, [dragOverTarget, draggingPanel, layoutLocked, stripeSwapMode]);
 
-  if (!line) return null;
-
+  // 出入りは DURATIONS.fast でフェードする（位置の移動は CSS の transition）。
   return createPortal(
-    <div
-      data-stripe-insert-indicator
-      className="pointer-events-none fixed z-[9998] rounded-full bg-primary"
-      style={{
-        left: line.left,
-        top: line.top,
-        width: line.width,
-        height: line.height,
-        transition: `left ${CSS_DURATIONS.fast} ease, top ${CSS_DURATIONS.fast} ease`,
-      }}
-    />,
+    <AnimatePresence>
+      {line && (
+        <motion.div
+          key="stripe-insert-indicator"
+          data-stripe-insert-indicator
+          className="pointer-events-none fixed z-[9998] rounded-full bg-primary"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={
+            reduced
+              ? { duration: 0 }
+              : { duration: DURATIONS.fast, ease: EASINGS.easeOut }
+          }
+          style={{
+            left: line.left,
+            top: line.top,
+            width: line.width,
+            height: line.height,
+            transition: `left ${CSS_DURATIONS.fast} ease, top ${CSS_DURATIONS.fast} ease`,
+          }}
+        />
+      )}
+    </AnimatePresence>,
     document.body,
   );
 }

@@ -486,4 +486,37 @@ describe("layout motion in the shell (real Chromium)", () => {
       }
     });
   });
+
+  it("grows the drag ghost in and lands it on the stripe icon after the drop", async () => {
+    setLayout((layout) => activate(layout, "scenes"));
+    renderShell();
+    await settleFrames();
+
+    act(() => {
+      useLayoutStore
+        .getState()
+        .setDraggingPanel("chat", "pointer", { x: 14, y: 14 });
+    });
+    act(() => {
+      document.dispatchEvent(
+        new PointerEvent("pointermove", { clientX: 400, clientY: 300 }),
+      );
+    });
+    const ghost = document.querySelector<HTMLElement>(
+      "[data-panel-drag-ghost]",
+    )!;
+    expect(ghost).not.toBeNull();
+    expect(ghost.getAnimations().length).toBeGreaterThan(0);
+
+    act(() => {
+      useLayoutStore.getState().setDraggingPanel(null);
+    });
+    const landing = document.querySelector<HTMLElement>(
+      '[data-panel-drag-ghost][data-landing="true"]',
+    );
+    expect(landing).not.toBeNull();
+    await waitFor(() => {
+      expect(document.querySelector("[data-panel-drag-ghost]")).toBeNull();
+    });
+  });
 });

@@ -748,6 +748,13 @@ button[role="switch"][aria-checked="true"] {
   backdrop-filter: none;
 }
 
+/* 持ち上げと下ろしを補間する（DURATIONS.fast と EASINGS.easeOut）。 */
+.app-shell .gx-panel {
+  transition:
+    box-shadow 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 /* Dragging a panel lifts the card — a touch more shadow + scale.
    Hover is intentionally left alone (the user rejected hover motion). */
 .app-shell .gx-panel--dragging {
