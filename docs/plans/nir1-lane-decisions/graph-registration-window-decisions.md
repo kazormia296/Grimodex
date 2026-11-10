@@ -725,9 +725,10 @@ D2064 で約 0.21 s（場面が少ない形の見込み。場面の多い projec
    観測点の無い区間のうち、scope の load の中の Rust の処理（derive、検証、digest）も消える。revision 1 の区間は今と同じで、
    観測の無い最長の区間は延びない。
 2. **steps・180 s・START_TIMEOUT 30 s の境目は、通る方向にだけ動く。** 課金される作業が減るだけで、増える経路は無い。
-3. **今は起動上限を超える形が通るようになる。** 場面数 × revision 数がおよそ 80 万〜170 万の帯（R1022＋1,000 場面の 102 万、
-   R1022＋2,000 場面の 204 万の手前から）は、今は worker の起動が START_TIMEOUT を超える、または index の build が 180 s で落ちるが、
-   a-2 では通る。**閾値の値（600M steps、180 s、30 s、A2 bytes、Q 16 MiB、85%）は変えない。** この扱い（通る範囲が広がること）は
+3. **今は起動上限を超える形が通るようになる。** 場面数 × revision 数がおよそ 80 万〜170 万の帯（R1022＋1,000 場面の 102 万を含む）は、
+   index は build できるが、今は worker の起動（registration）が START_TIMEOUT（30 s）を超える。a-2 では通る。
+   **B の build は変えない**（「変わらない点」）ので、R1022＋2,000 場面（204 万）で index の build が 180 s の capacity deadline で落ちる形は、a-2 でも変わらない。
+   **閾値の値（600M steps、180 s、30 s、A2 bytes、Q 16 MiB、85%）は変えない。** この扱い（通る範囲が広がること）は
    2026-11-11 にユーザーが確認した（「進める」）。
 4. **S の peak が、最大で memo 1 個分上がりうる（通らない方向）。** 今は authority が revision の bundle・material と同時に生き、load の瞬間に
    一時領域（tree の Vec、binding の生の行、digest 用の `Vec<Value>`、bindings の clone）が重なる。memo は一時領域を持たないが、
@@ -793,7 +794,7 @@ oracle は `with_unshared_project_reads`。型（`Outcome`／`Run`／`register`�
    - 3 番目の revision が壊れた 4 形：basis の不一致、A2 の上限超（`NIR1_GRAPH_REGISTRATION_REVISION_INPUT_LIMIT`）、6 MiB 超の component、
      live lengths が None（`registration_answers_alike_for_each_shape_of_revision`）。
    - 不適格の混在（rejected、pending、6 MiB 超の rejected。`..._ineligible_revisions_are_mixed_in`）。
-   - 最初の revision が epoch の読みの手前で unavailable になる形（proposal の status を rejected にして `revision-not-human-approved`）。
+   - 最初の revision が epoch の読みの手前で unavailable になる形（proposal の status を rejected にする。意図は typed reader の `revision-not-human-approved` だが、typed reader に届いたのか手前の step で skip されたのかは、読みの回数だけでは区別できない）。
      memo は AuthorityTree と CurrentEpoch を各 1 回（最初の読みは 2 番目の revision）、oracle は 3 回と 9 回、C2zcMarker は 3 回
      （`..._first_revision_ends_before_the_first_shared_read`）。
    - Semantic 段の失敗 5 種（`registration_semantic_failures_answer_alike`）。
@@ -848,11 +849,11 @@ oracle は `with_unshared_project_reads`。型（`Outcome`／`Run`／`register`�
   （`8a7f4ceb`）で S5000 で再現した。原因は、場面あたり約 10 KB の S を使うこと。これは a-2 の後に別 lane で扱う（2026-11-11、ユーザー決定）。
   測定の材料は `drift-measure/a2-scenes-2026-11-11/summary.txt`。
 - S の peak は最大で memo 1 個分上がりうる（「変わる点」の 4）。値は gate の測定で得て、この節に追記する（**この commit の時点では未測定**）。
-- Q の使用量は増えない（memo は S に作られ、Q には載らない。Q の高水位は場面数に依存しないと測定済み）。
+- Q の使用量は増えない**見込み**（memo は S に作られ、Q には載らない。Q の高水位は場面数に依存しないと、今のコードで測定済み。a-2 の後の値は未測定）。
 
 ### W の対の測定
 
-**この commit の時点では未実施。** dev の A2 の harness（`a2-scenes-harness.patch`）で、前（`8a7f4ceb`）と後（この commit の製品 2 ファイル）を
+**この commit の時点では未実施。** dev の A2 の harness（`a2-scenes-harness.patch`）で、前（`8a7f4ceb`）と後（この PR の製品 3 ファイル：`nir1_entity_relation.rs`、`nir1_entity_relation/project_reads.rs`、`nir1_entity_relation_index.rs`。`nir1_capacity.rs` の差は test 専用の probe の variant だけ）を
 5 形＋場面の多い形で 30 回ずつ測り、結果をこの節に追記する（dev 専用で PR に含めない）。
 
 ### gate
