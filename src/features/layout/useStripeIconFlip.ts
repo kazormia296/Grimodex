@@ -19,23 +19,26 @@ const ARRIVE_SCALE = 0.6;
 export function useStripeIconFlip(rootRef: RefObject<HTMLElement | null>) {
   const reduced = useReducedMotion();
   const motionReady = useLayoutMotionReady();
-  const swapping = useLayoutStore((s) => s.stripeSwapMode !== null);
+  const swapMode = useLayoutStore((s) => s.stripeSwapMode);
+  const swapping = swapMode !== null;
   const layoutReplaceSeq = useLayoutStore((s) => s.layoutReplaceSeq);
   const maximized = useLayoutStore((s) => s.maximizedPanelId);
   const skipToken = `${layoutReplaceSeq}|${maximized ?? ""}`;
   const prevRef = useRef<Map<string, { x: number; y: number }> | null>(null);
   const prevSignatureRef = useRef("");
   const prevSkipRef = useRef(skipToken);
-  const prevSwappingRef = useRef(swapping);
+  const prevSwapModeRef = useRef(swapMode);
 
   useLayoutEffect(() => {
     const root = rootRef.current;
     const skipChanged = prevSkipRef.current !== skipToken;
     prevSkipRef.current = skipToken;
-    // 並べ替えのドロップ: プレビューで既に行き先に見えているので FLIP しない
-    // （掛けると元の位置へ巻き戻ってから滑る）。
-    const swapDropped = prevSwappingRef.current && !swapping;
-    prevSwappingRef.current = swapping;
+    // 同じ stripe 内の並べ替え（axis-locked）のドロップ: プレビューで既に行き先に
+    // 見えているので FLIP しない（掛けると元の位置へ巻き戻ってから滑る）。free の
+    // ドラッグはプレビューのずらしが無いので、ドロップでも FLIP する。
+    const swapDropped =
+      prevSwapModeRef.current === "axis-locked" && swapMode === null;
+    prevSwapModeRef.current = swapMode;
     if (!root) {
       prevRef.current = null;
       return;

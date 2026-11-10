@@ -436,14 +436,21 @@ describe("layout motion in the shell (real Chromium)", () => {
     // 閉じた slot（下）の外形が重なり、広がった隣（上）が clip で広がる。
     const ghost = container.querySelector<HTMLElement>("[data-group-ghost]");
     expect(ghost).not.toBeNull();
+    // 外形は flex の場所を取らない（Glass の面の規則に relative にされない）。
+    expect(getComputedStyle(ghost!).position).toBe("absolute");
     const scenesSlot = container
       .querySelector('[data-story-panel="scenes"]')!
       .closest<HTMLElement>("[data-drop-slot]")!;
     expect(scenesSlot.style.clipPath).toContain("inset(");
+    const during = scenesSlot.getBoundingClientRect().height;
     await waitFor(() => {
       expect(container.querySelector("[data-group-ghost]")).toBeNull();
       expect(scenesSlot.style.clipPath).toBe("");
     });
+    // 外形がある間も、広がった隣は最終の寸法のまま。
+    expect(
+      Math.abs(scenesSlot.getBoundingClientRect().height - during),
+    ).toBeLessThan(1);
   });
 
   it("reveals an opening slot from the boundary with the neighbour that shrank", async () => {
@@ -631,5 +638,48 @@ describe("layout motion in the shell (real Chromium)", () => {
     const from = ghost.getBoundingClientRect();
     // 終点の大きさはアイコンのレイアウト上の大きさ（弾みの 0.6 倍ではない）。
     expect(from.width * m.a).toBeCloseTo(icon.offsetWidth, 0);
+  });
+
+  it("still slides stripe icons after a free-mode drag drop", async () => {
+    setLayout((layout) => activate(layout, "scenes"));
+    const { container } = renderShell();
+    await settleFrames();
+    act(() => {
+      useLayoutStore
+        .getState()
+        .setDraggingPanel("chat", "pointer", { x: 14, y: 14 });
+      useLayoutStore.setState({ stripeSwapMode: "free" });
+    });
+    act(() => {
+      useLayoutStore.getState().movePanelToRegion("chat", "left");
+      useLayoutStore.getState().setDraggingPanel(null);
+    });
+    const flipping = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-stripe-icon]"),
+    ).filter((el) =>
+      el.getAnimations().some((a) => a.id === "stripe-icon-flip"),
+    );
+    expect(flipping.length).toBeGreaterThan(0);
+  });
+
+  it("slides the pill on the first switch after a preset replacement", async () => {
+    setLayout((layout) => activate(layout, "codex-quick"));
+    const { container } = renderShell();
+    await settleFrames();
+    act(() => {
+      useLayoutStore.setState((state) => ({
+        layoutReplaceSeq: state.layoutReplaceSeq + 1,
+      }));
+    });
+    await settleFrames();
+    act(() => {
+      useLayoutStore.getState().showPanel("codex");
+    });
+    const pill = container.querySelector<HTMLElement>(
+      '[data-stripe-icon="codex"] [data-stripe-active-pill]',
+    )!;
+    await waitFor(() => {
+      expect(getComputedStyle(pill).transform).not.toBe("none");
+    });
   });
 });

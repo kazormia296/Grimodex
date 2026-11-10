@@ -301,6 +301,9 @@ function CollapsingGhost({
       data-editor-fluid-glass={ghost.surface.editorGlass}
       className={`${ghost.surface.className} pointer-events-none absolute`}
       style={{
+        // index.css の Glass の面の規則（@layer の外）が position: relative を
+        // 付けるので、inline で absolute に固定する（flex の場所を取らない）。
+        position: "absolute",
         left: ghost.rect.left,
         top: ghost.rect.top,
         width: ghost.rect.width,

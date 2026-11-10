@@ -144,6 +144,9 @@ export function ToolWindowIcon({
         >
           {active && (
             <motion.span
+              // layoutId は mount の時にだけ登録されるので、一括の差し替えで
+              // mount し直して新しい layoutId に載せる。
+              key={layoutReplaceSeq}
               aria-hidden
               data-stripe-active-pill
               // 同じ slot の中で active が移ると、前のアイコンの位置から滑る。
