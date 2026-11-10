@@ -385,4 +385,39 @@ describe("layout motion in the shell (real Chromium)", () => {
       ).opacity,
     ).toBe("1");
   });
+
+  it("slides the stripe's active pill between icons of the same slot", async () => {
+    setLayout((layout) => activate(layout, "codex-quick"));
+    const { container } = renderShell();
+    await settleFrames();
+    const before = container
+      .querySelector(
+        '[data-stripe-icon="codex-quick"] [data-stripe-active-pill]',
+      )!
+      .getBoundingClientRect();
+
+    act(() => {
+      useLayoutStore.getState().showPanel("codex");
+    });
+    const pill = container.querySelector<HTMLElement>(
+      '[data-stripe-icon="codex"] [data-stripe-active-pill]',
+    )!;
+    expect(pill).not.toBeNull();
+    expect(
+      container.querySelector(
+        '[data-stripe-icon="codex-quick"] [data-stripe-active-pill]',
+      ),
+    ).toBeNull();
+    // 前のアイコンの位置から滑り始める。
+    await waitFor(() => {
+      const r = pill.getBoundingClientRect();
+      expect(
+        Math.abs(r.top - before.top) + Math.abs(r.left - before.left),
+      ).toBeGreaterThan(0.5);
+      expect(getComputedStyle(pill).transform).not.toBe("none");
+    });
+    await waitFor(() => {
+      expect(getComputedStyle(pill).transform).toBe("none");
+    });
+  });
 });

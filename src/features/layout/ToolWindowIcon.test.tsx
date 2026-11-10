@@ -99,8 +99,13 @@ describe("ToolWindowIcon context menu", () => {
     );
 
     const button = screen.getByRole("button");
-    expect(button.className).toContain("bg-accent");
-    expect(button.querySelector("span[aria-hidden]")).toBeNull();
+    // active の面は slot のアイコン間を滑る pill が描く。
+    expect(
+      button.querySelector("[data-stripe-active-pill]")?.className,
+    ).toContain("bg-accent");
+    expect(
+      button.querySelector('[data-testid="stripe-busy-badge"]'),
+    ).toBeNull();
   });
 });
 

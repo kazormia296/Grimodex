@@ -342,6 +342,8 @@ export const RegionContent = memo(function RegionContent({
                 <AnimatedSlotPanel
                   panelId={slot.activePanel}
                   slotPanels={slot.panels}
+                  // stripe のアイコンが並ぶ向き（左右は縦、下は横）。
+                  shiftAxis={orientation === "vertical" ? "y" : "x"}
                 />
               )}
             </div>

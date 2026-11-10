@@ -5,7 +5,8 @@ import {
   PANEL_COMMAND_ID,
   useMergedBindings,
 } from "@/features/settings/keybindings";
-import { CSS_DURATIONS } from "@/lib/animation";
+import { motion } from "motion/react";
+import { CSS_DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -27,6 +28,7 @@ import { stripeAxisForRegion } from "./layoutStripeSwap";
 import type { PanelId } from "./panelIds";
 import { PANEL_ICON_MAP } from "./panelIcons";
 import { usePanelBusy } from "./usePanelBusy";
+import { preloadPanel } from "./panelPreload";
 import { KEYBOARD_SHORTCUT_MAP } from "./panelRegions";
 import type { LayoutRegionId, OverlayId, RegionId } from "./layoutTypes";
 
@@ -56,6 +58,7 @@ export function ToolWindowIcon({
   slotOpen,
 }: ToolWindowIconProps) {
   const { t } = useTranslation();
+  const reduced = useReducedMotion();
   const Icon = PANEL_ICON_MAP[panelId];
   const movePanelToRegion = useLayoutStore((s) => s.movePanelToRegion);
   const movePanelToOverlay = useLayoutStore((s) => s.movePanelToOverlay);
@@ -108,6 +111,9 @@ export function ToolWindowIcon({
           aria-label={label}
           aria-pressed={active}
           onPointerDown={handlePointerDown}
+          // 押す直前に chunk の評価を始める（初回表示のもたつきを減らす）。
+          onPointerEnter={() => void preloadPanel(panelId)}
+          onFocus={() => void preloadPanel(panelId)}
           style={
             swapOffset != null
               ? {
@@ -128,12 +134,23 @@ export function ToolWindowIcon({
             draggingPanel === panelId &&
               stripeSwapMode !== "axis-locked" &&
               "opacity-40",
+            // active の面は下の pill（同じ slot のアイコン間を滑る）が描く。
             active
-              ? "bg-accent text-foreground"
+              ? "text-foreground"
               : "hover:bg-accent/30 hover:text-foreground",
             !active && (slotOpen ? "text-foreground" : "text-muted-foreground"),
           )}
         >
+          {active && (
+            <motion.span
+              aria-hidden
+              data-stripe-active-pill
+              // 同じ slot の中で active が移ると、前のアイコンの位置から滑る。
+              layoutId={`stripe-active:${region}:${slotId}`}
+              className="pointer-events-none absolute inset-0 -z-10 rounded-full bg-accent"
+              transition={reduced ? { duration: 0 } : EASINGS.spring}
+            />
+          )}
           <Icon className="h-4 w-4" />
           {showBusyBadge && (
             <span

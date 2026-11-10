@@ -13,8 +13,10 @@ import {
   findPanelLocation,
   getBottomCorners,
   getOverlays,
+  getToolSegments,
   isCenterContentVisible,
 } from "./layoutStateUtils";
+import type { LayoutState } from "./layoutTypes";
 import { RegionDock, SideRegionStripeColumn } from "./RegionDock";
 import { RegionContent } from "./RegionContent";
 import { RegionResizeSplitter } from "./RegionResizeSplitter";
@@ -40,6 +42,7 @@ import { OverlayKnob } from "./OverlayKnob";
 import { StripeInsertIndicator } from "./StripeInsertIndicator";
 import { useLayoutPresetCrossfade } from "./useLayoutPresetCrossfade";
 import { LayoutMotionReadyContext } from "./layoutAnimation";
+import { startPanelIdlePreload } from "./panelPreload";
 import { useZenGlassConfig } from "@/features/editor/zen/useZenBackgroundAppearance";
 
 // gsap(+@gsap/react)を static import する drop-zone ハイライトを遅延化。常時 mount
@@ -60,6 +63,23 @@ interface LayoutShellProps {
   zenMode?: boolean;
   /** Responsive editor projection. Unlike Zen, normal editor chrome stays visible. */
   editorOnly?: boolean;
+}
+
+/** 先読みの順。stripe に並ぶ順（左・右・下・center・overlay）。 */
+function collectLayoutPanelIds(layout: LayoutState): PanelId[] {
+  const ids: PanelId[] = [];
+  for (const region of ["left", "right", "bottom"] as const) {
+    for (const slot of layout.regions[region].slots) ids.push(...slot.panels);
+  }
+  for (const segment of getToolSegments(layout.center)) {
+    ids.push(...segment.panels);
+  }
+  const overlays = getOverlays(layout);
+  for (const side of ["left", "right"] as const) {
+    const panel = overlays[side].panel;
+    if (panel) ids.push(panel);
+  }
+  return ids;
 }
 
 function regionIsOpen(slots: { activePanel: string | null }[]): boolean {
@@ -149,6 +169,15 @@ export const LayoutShell = memo(function LayoutShell({
   useZoomReveal(zoomRegion, layout, shellRef);
   // 下の角の取り合いで、角を取った側を直前の矩形から広げる。
   useCornerReveal(getBottomCorners(layout), layout, shellRef, motionReadyRef);
+
+  // 置かれているパネルの chunk を、手が止まっている idle の間に先読みする
+  // （初回表示のもたつきの主因は chunk の parse と評価）。
+  useEffect(() => {
+    if (!initialized || hidden) return;
+    return startPanelIdlePreload(() =>
+      collectLayoutPanelIds(useLayoutStore.getState().layout),
+    );
+  }, [initialized, hidden]);
 
   // Esc で zoom 解除。階層的 Esc として一番外側に置く:
   // - isComposing: IME 変換キャンセルの Escape を奪わない（CodexEntryHeader

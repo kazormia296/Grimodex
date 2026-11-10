@@ -300,6 +300,7 @@ export const CenterContent = memo(function CenterContent({
                   <AnimatedSlotPanel
                     panelId={segment.activePanel}
                     slotPanels={segment.panels}
+                    shiftAxis="x"
                   />
                 )}
               </div>

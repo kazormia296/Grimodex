@@ -1,4 +1,5 @@
 import { memo, Suspense } from "react";
+import { PanelLoadingSkeleton } from "./PanelLoadingSkeleton";
 import { cn } from "@/lib/utils";
 import type { ToolWindowPanelId } from "./layoutTypes";
 import { PANEL_COMPONENT_MAP } from "./panelComponents";
@@ -23,7 +24,7 @@ export const SlotView = memo(function SlotView({ panelId }: SlotViewProps) {
       )}
     >
       {/* lazy パネル (chronicle 等) の初回 import 中はパネル背景だけ見せる。 */}
-      <Suspense fallback={<div className="min-h-0 flex-1" aria-hidden />}>
+      <Suspense fallback={<PanelLoadingSkeleton />}>
         <Component />
       </Suspense>
     </div>
