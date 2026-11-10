@@ -6,7 +6,7 @@
 同 dev worktree の `nir1_graph/tests/drift_window.rs`）。基点は `origin/master` の `880d55f0`、
 branch は `claude/graph-source-index-linear`。
 
-この lane は窓を縮める実装の変更を 1 件ずつ進める。1 件目（DR-GRW-1）は SourceIndex の UNEXPECTED の 1 文だけ、2 件目（DR-GRW-2）は registration の表の存在確認を pinned snapshot で答えること。
+この lane は窓を縮める実装の変更を 1 件ずつ進める。1 件目は SourceIndex の UNEXPECTED の 1 文だけ。
 結果・述語・admission の上限・エラーの種類・停止の粒度・schema・閾値・契約・authority は変えない
 （AGENTS.md の「委任に含まれないもの」のどれにも当たらない）。
 
@@ -115,6 +115,10 @@ UNEXPECTED には届かない。旧が error になる入力は、新も同じ e
 
 ## DR-GRW-2 registration の表の存在確認を pinned snapshot の schema cache で答える（B1）
 
+2026-11-10 の 2 件目。基点は `origin/master` の `67549453`（DR-GRW-1 を含む）、branch は `claude/graph-registration-pinned`。
+冒頭の約束（結果・エラーの種類・停止の粒度などを変えない）のうち、この決定では、steps の上限・期限の境目の結果と、
+停止を見つける時期・stage・エラーの種類（raw か typed か）が「変わる点」の 2〜4 の範囲で動く。閾値の値・schema・契約・authority は変えない。
+
 ### 決定
 
 Graph worker の registration（`Nir1GraphReader::register_with_control_observed`）の read transaction の中で、
@@ -162,14 +166,21 @@ JSON の読みも同じ callback を呼ぶ（`nir1_capacity.rs:179-196`）ので
 
 違いは次の 2 点である。
 
-1. **registration の停止は状態で決まり、後の Rust 側の check が同じ条件を見る。**
-   callback が見る条件は、どれも owner の `check()` が同じく読む状態である
-   （`narrative_maintenance_connection.rs:560-616`。closed、stop、participant、generation、期限、foreground）。
-   callback で SQLite が中断されても、中断されなくても、registration の終わりの
-   `registration_owner.check(CompleteRegistration)` が同じ typed の停止を返す。変わるのは、停止を**見る時期**
-   （callback の何回目か）と、そのときの stage だけである。callback の回数は近道で減るので、停止は後の点で見つかる。
-   停止が、近道の下の registration が終わった後にしか来ない場合は、registration が完了する
-   （試験 `registration_state_stops_end_in_the_same_typed_stop_and_never_leak_the_scope`）。
+1. **registration の停止は状態で決まる。ただし callback が見る条件は 2 種類あり、終わり方が違う。**
+   - **owner の条件**（closed、stop、participant の終了、generation、期限、foreground の待ち。`narrative_maintenance_connection.rs:560-616`）：
+     owner の `check()` も同じ状態を読む。callback で SQLite が中断されても、されなくても、registration の終わりの
+     `registration_owner.check(CompleteRegistration)` が同じ typed の停止を返す。変わるのは、停止を**見る時期**
+     （callback の何回目か）と、そのときの stage だけである。callback の回数は近道で減るので、停止は後の点で見つかる。
+     停止が、近道の下の registration が終わった後にしか来ない場合は、registration が完了する
+     （試験 `registration_state_stops_end_in_the_same_typed_stop_and_never_leak_the_scope`。この試験は owner の条件だけを模す）。
+   - **reader の条件**（registration が積む callback の先頭の `control.check(GraphWorkStage::Row)` が見る `ReaderControl` の
+     cancelled、epoch の変化、participant の `stop_requested()`。`nir1_graph.rs` の `install_owner_with_stop` と `ReaderControl::check`）：
+     owner の `check()` は読まない。SQLite がこの条件で中断すると、closure の後の `registration_owner.check` が Ok を返すので、
+     raw の SQLite の中断のまま返る。中断されずに Rust 側（`lifecycle.check`、`check_active_work`、postflight の `self.check()`）で
+     見れば、typed の `Cancelled` になる。このため reader の条件では、近道でエラーの種類が raw と typed の間で動きうる
+     （worker の分類では `CanonicalRegistrationSqliteError` と `CanonicalRegistration` の間）。
+     worker では registration の間に reader の条件を立てる経路が無い（bin は `cancellation()` を渡さず、thread を起こさず、
+     epoch を進める操作を呼ばず、participant は worker の中だけのもの。呼び出しの経路の確認による）。到達するのは in-process の試験と diagnostics だけである。
 2. **Chronicle の publication は、停止点が試験で固定されている。** publication が 1,000 steps の callback で
    止まることを `nir1_participant_sql_publication_installs_only_after_clean_success` が固定している
    （固定しているのは「publication が steps の callback で止まること」で、近道を入れないことではない）。
@@ -209,15 +220,16 @@ SAVEPOINT／RELEASE だけが観測された。他の SQL の SAVEPOINT（`sourc
    （`docs/plans/nir1-c-query-acceptance-2026-10.md:329-334`。「値を変えずに steps を減らす最適化」で、
    `nir1_graph/tests/cq_opt.rs` の `before_cq_opt` は、最適化前には上限を超えていた入力が通ることを前提に、
    steps の上限を外して比較している）。registration の上限（600M steps）と実入力との距離は「steps の実測」に書く。
-3. **停止を見つける時期が動きうる。** 「CQ-OPT の範囲の反転と、その反証」の 1。状態で決まる停止は、
-   終わりの `check()` が同じ typed の停止として返す。変わるのは時期と stage だけである。
+3. **停止を見つける時期と、reader の条件ではエラーの種類が動きうる。** 「CQ-OPT の範囲の反転と、その反証」の 1。
+   owner の条件の停止は、終わりの `check()` が同じ typed の停止として返し、変わるのは時期と stage だけである。
+   reader の条件の停止は、raw の中断と typed の `Cancelled` の間で動きうる（worker では到達しない）。
 4. **worker の `registration_error_stage`（`bin/nir1-c-query-worker.rs:92-117`）で、raw の SQLite エラーと
    typed のエラーの割合が動きうる。** 近道は stage の更新順とエラーの型を変えない。ただし、表の存在確認の SQL が
    走らなくなるので、その statement 内で当たっていた SQLite の失敗（NOMEM や progress による中断など）は
    起きなくなり、残る失敗は残りの statement で当たる。このため、起動失敗の分類
    （`CanonicalRegistrationSqliteNoMem`、`CanonicalRegistrationSqliteError`、typed）の割合が変わりうる。
    これは worker の起動失敗の分類にだけ効く到達しない経路（製品の契約・復旧・利用者向けの文言に出ない）として扱う。
-   registration の成否（true／false／Err）の判定は変えない。
+   上限・期限・停止に当たらない限り、registration の成否（true／false／Err）の判定は変えない（当たる場合は 2・3）。
 5. **親の START_TIMEOUT（`c_query_worker.rs:32`、30 s）に対しては、通る方向にだけ動く。** registration が使う時間が
    減るだけで、増える経路は無い。
 6. **大文字小文字の差。** 近道は SQLite の名前解決（大文字小文字を区別しない）に従い、SQL 版は `name = ?` の
@@ -245,6 +257,26 @@ SAVEPOINT／RELEASE だけが観測された。他の SQL の SAVEPOINT（`sourc
   BEGIN と identity の読みの間の commit は DRIFT になる。BEGIN の前の commit は、nonpositive の query が
   cache を snapshot に揃える。postflight の identity が、registration の間に DB が動いたことを従来どおり検出する。
 - 新しい送信先、保存範囲、契約、authority、schema、依存、閾値の値の変更は無い。秘密・データの流れは変わらない。
+
+### owner／lifecycle の表（GDX-PRECHECK-001）
+
+worker（subprocess）が停止を観測する時期を変えるので、変更の前に次を確かめた。新しい経路・handle・待ち・状態は足さない。
+
+| 項目 | B1 の前後 |
+| --- | --- |
+| 入口・開始 | worker の起動時の registration（`bin/nir1-c-query-worker.rs:229`）だけ。変えない |
+| 再試行・Suspended | owner が失敗を数え 5 回で Suspended にする扱いは変えない。drift の判定（postflight の identity）も変えない |
+| 再入 | scope は thread-local で入れ子にでき、内側の scope は自分の pin を記録し、closure の終わり（unwind を含む）で外側の値に戻す |
+| admission の閉鎖 | admission の上限・順序・課金の順は変えない（存在確認は課金の対象の外の読み） |
+| 開始待ちの作業 | 足さない |
+| 有効な handle の所有 | 足さない（新しい thread・接続・statement の保持は無い） |
+| 取消 | 観測する時期が動く（「変わる点」の 3）。owner の条件は同じ typed の停止で終わる |
+| 有限の待ち | 親の START_TIMEOUT 30 s、DEFERRED_RELEASE_LIMIT 10 s は変えない。registration の時間が縮むので、通る方向にだけ動く |
+| 終了の証拠 | 変えない（worker の終了と ROLLBACK。scope は ROLLBACK の前に閉じる） |
+| error／timeout／onClosed の所有 | 起動失敗の分類（`registration_error_stage`）の割合が動きうる（「変わる点」の 4） |
+| 保存される再開の状態 | 無い（scope は保存されない） |
+
+ユーザー確認が要る項目（新しい送信先・保存範囲・閾値の緩和・契約・authority）には当たらないので、NIR-1 の委任の範囲の技術判断として記録する。
 
 ### 呼び出しの内訳（健全な試験 fixture）
 
@@ -284,9 +316,14 @@ release、`nir1-material-diagnostics`）で、registration の Semantic 段 1 �
 | D2064/report-heavy | 16,744,472 | 3,374,757 | 13,369,715 | 79.8% | 2.79% → 0.56% |
 
 - R1022 の差は約 1,990 万 steps で、DR の見積り（約 2,000 万 steps、上限の約 3%）と合う。
-- どの size でも、SQL 版は上限の 4% 未満で、600M steps の上限から 25 倍以上離れている。したがって
-  「変わる点」の 2（境目で Err から成功へ動く）は、この 5 つの size には当たらない。境目の入力は、
-  Revision 数や Candidate が上限の size を大きく超える形でしか現れない。
+- 測った 5 形（admission の上限に近い R1022、Q8176、D2064 を含む）では、SQL 版は 600M の 4% 未満（25 倍以上離れている）で、
+  「変わる点」の 2（境目で Err から成功へ動く）には当たらない。
+- 近道で減る steps Δ は、存在確認の回数と `sqlite_master` の行数で決まる。Revision 数は admission の上限（1,024）で止まるので、
+  この schema（672 行）では R1022 の約 2,000 万 steps が目安になる（Revision あたりの回数が一定という推定つき。schema に余分な
+  object がある DB では Δ は大きくなる）。境目で結果が動くのは、SQL 版の総 steps が 600M−Δ から 600M の間にある入力だけである。
+  総 steps は admission が抑えない量（場面・binding・relation の数など）にもよるので、admission の内側にそういう入力が無いことは
+  確かめていない。値（600M・180 s）は変えず、課金される作業を減らすだけなので、閾値の緩和には当たらないと判断した
+  （CQ-OPT が C-query の上限について同じ形を受け入れた先例と同じ扱い）。
 - 差は、Revision 数（R）が多い size（R1022、report-heavy）で大きい。R が少ない size（R3、R4、R16）は 5〜21% で、
   Semantic 段の steps の大半は存在確認の外にある。
 - 経過時間（cadence-one の progress handler つき、参考値）：R1022 は約 2.6 s → 2.0 s、report-heavy は約 2.8 s → 2.4 s、

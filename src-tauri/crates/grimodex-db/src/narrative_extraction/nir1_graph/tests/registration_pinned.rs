@@ -209,7 +209,8 @@ fn execute(fixture: &Fixture, ddl: &str) -> Result<()> {
 
 // A healthy project registers to the same seal either way. Under the shortcut
 // the registration reads no schema table and the owner's progress callback runs
-// fewer times (SQLite runs it every 1,000 VM steps); under SQL it reads the
+// fewer times (SQLite calls it per 1,000 VM steps of a statement, and the
+// Rust-side checks call it too); under SQL it reads the
 // schema table for every presence check.
 #[test]
 fn registration_answers_alike_and_reads_no_schema_table_under_the_shortcut() -> Result<()> {
@@ -411,6 +412,9 @@ fn registration_owner_check_stops_end_alike_and_never_leak_the_scope() -> Result
     Ok(())
 }
 
+// Only the owner's stop states are modelled here: a reader-side condition
+// (`ReaderControl`) can instead end as a raw SQLite interrupt under one mode and
+// a typed `Cancelled` under the other (DR-GRW-2), and the worker never raises it.
 // A stop that is a state (a raised stop flag, as a closing workspace, a
 // deadline or a foreground waiter leaves) is seen by SQLite's progress callback
 // and by every later `check`. Under the shortcut the callback runs fewer times,

@@ -35,10 +35,17 @@
 //! Rust-side checks (`check_active_work`, JSON reads) call it too. With fewer
 //! steps the callback runs less often, so a stop that arrives while a presence
 //! check would have been running is seen at a later point (and stage).
-//! Every stop condition is also a state that the owner's `check()` reads, so it
-//! is still seen by the next Rust-side check and ends the registration with the
-//! same typed stop; only when and where it is seen changes. The range is not
-//! reachable by the Chronicle publication: they share no call path.
+//! The callback checks two kinds of condition. The owner's (stop, deadline,
+//! close, generation, foreground waiters) are states the owner's `check()` also
+//! reads, so the registration still ends with the same typed stop; only when
+//! and where it is seen changes. The reader's (`ReaderControl`: cancelled, epoch
+//! change, participant stop) are not read by the owner's `check()`: an
+//! interrupt they cause returns as the raw SQLite interrupt, while the same
+//! condition seen by a later Rust-side check returns a typed `Cancelled`, so
+//! under the shortcut the error can move between the two. The worker raises no
+//! reader condition during its registration; only in-process tests and
+//! diagnostics reach it. The range is not reachable by the Chronicle
+//! publication: they share no call path.
 //!
 //! A scope does not rely on the transaction it was opened in staying the one
 //! that runs. It records the connection and the pager's data version
