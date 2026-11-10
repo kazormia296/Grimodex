@@ -56,6 +56,20 @@ export const EASINGS = {
   spring: { type: "spring" as const, damping: 25, stiffness: 300 },
 } as const;
 
+/**
+ * エディタのタブの動き。
+ * - spring: タブの開閉。共有の EASINGS.spring より速く軽い（タブは小さく、
+ *   頻繁に開け閉めする）。
+ * - indicator: アクティブの下線が隣のタブへ滑る。
+ */
+export const TAB_MOTION = {
+  spring: { type: "spring" as const, damping: 22, stiffness: 380, mass: 0.7 },
+  indicator: { duration: DURATIONS.normal, ease: EASINGS.easeOut },
+} as const;
+
+/** 位置を知らせるハイライトの点滅の半周期（GSAP の yoyo、秒）。 */
+export const HIGHLIGHT_PULSE_S = 0.9;
+
 export const VARIANTS = {
   fadeIn: {
     initial: { opacity: 0 },

@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "motion/react";
-import { useReducedMotion } from "@/lib/animation";
+import { TAB_MOTION, useReducedMotion } from "@/lib/animation";
 import {
   X,
   ChevronDown,
@@ -437,11 +437,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                       }
                     : { opacity: 0, width: 0, scale: 0.92 }
                 }
-                transition={
-                  reduced
-                    ? { duration: 0 }
-                    : { type: "spring", damping: 22, stiffness: 380, mass: 0.7 }
-                }
+                transition={reduced ? { duration: 0 } : TAB_MOTION.spring}
                 style={{ overflow: "hidden" }}
               >
                 <div

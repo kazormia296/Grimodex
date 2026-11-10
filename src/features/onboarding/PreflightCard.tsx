@@ -3,7 +3,12 @@ import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "motion/react";
 import { X } from "lucide-react";
 import i18next from "@/lib/i18n";
-import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
+import {
+  CSS_DURATIONS,
+  DURATIONS,
+  EASINGS,
+  useReducedMotion,
+} from "@/lib/animation";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { expandPreset } from "@/features/ai-policy/preset";
 import type { AiPolicyPreset } from "@/features/ai-policy/types";
@@ -159,13 +164,14 @@ export function PreflightCard() {
               <span
                 key={s}
                 className={[
-                  "h-1.5 rounded-full transition-all duration-200",
+                  "h-1.5 rounded-full transition-all",
                   i === stepIndex
                     ? "w-5 bg-primary"
                     : i < stepIndex
                       ? "w-1.5 bg-primary/40"
                       : "w-1.5 bg-border",
                 ].join(" ")}
+                style={{ transitionDuration: CSS_DURATIONS.normal }}
               />
             ))}
           </div>

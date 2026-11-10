@@ -16,6 +16,7 @@ import { useSettingNumber } from "@/features/settings/useSettingControl";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getDocText } from "@/features/editor/RubyNode";
 import { markStart, markEnd } from "@/lib/perfLog";
+import { CSS_DURATIONS } from "@/lib/animation";
 import { cn } from "@/lib/utils";
 
 interface EditorStatsFooterProps {
@@ -178,13 +179,14 @@ export function EditorStatsFooter({
               >
                 <span
                   className={cn(
-                    "absolute inset-y-0 left-0 transition-[width] duration-200",
+                    "absolute inset-y-0 left-0 transition-[width]",
                     primaryCount >= targetCount
                       ? "bg-emerald-500"
                       : "bg-primary",
                   )}
                   style={{
                     width: `${Math.min(100, (primaryCount / targetCount) * 100)}%`,
+                    transitionDuration: CSS_DURATIONS.normal,
                   }}
                 />
               </span>

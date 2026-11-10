@@ -2,7 +2,11 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
-import { CSS_DURATIONS, useReducedMotion } from "@/lib/animation";
+import {
+  CSS_DURATIONS,
+  HIGHLIGHT_PULSE_S,
+  useReducedMotion,
+} from "@/lib/animation";
 import type { PanelId } from "./panelIds";
 import { PANEL_REGION_MAP, type PanelRegion } from "./panelRegions";
 import { isReducedMotion } from "@/lib/gsap";
@@ -116,7 +120,7 @@ export function PanelHighlightOverlay({ panelId }: PanelHighlightOverlayProps) {
         { opacity: 1 },
         {
           opacity: 0.3,
-          duration: 0.9,
+          duration: HIGHLIGHT_PULSE_S,
           ease: "sine.inOut",
           yoyo: true,
           repeat: -1,

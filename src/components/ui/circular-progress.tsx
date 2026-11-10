@@ -68,6 +68,8 @@ export function CircularProgress({
           strokeLinecap="round"
           strokeDasharray={circumference}
           strokeDashoffset={offset}
+          // 進み具合への追従。UI の動きの共有値（DURATIONS）ではなく、値の
+          // 更新の間隔をならすための長さ。
           className={cn(
             "transition-[stroke-dashoffset] duration-500",
             strokeClass,
