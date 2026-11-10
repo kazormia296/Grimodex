@@ -363,3 +363,299 @@ release、`nir1-material-diagnostics`）で、registration の Semantic 段 1 �
 
   縮むのは Revision の多い形（R1022、D2064）で、上の steps の減り（87.7%、79.8%）と向きが合う。R の少ない形は数 % で、
   W の主は存在確認の外（SourceIndex 段、Revision の中身の読み・検査）にある。
+
+## DR-GRW-3 registration の revision ごとの 5 文を、1 回の読みの間だけ再利用する（P′）
+
+2026-11-10 の 3 件目。基点は `origin/master` の `6cf81d9b`（DR-GRW-1、DR-GRW-2 を含む）、branch は
+`claude/graph-registration-stmt-reuse`。冒頭の約束（結果・エラーの種類・停止の粒度などを変えない）のうち、この決定で動くのは次の 3 つ。
+steps と owner callback の回数が減る点（「変わる点」の 1・2。通る方向）、停止を見つける時期（3）、
+そして **Q の使用量が、保持する program の分だけ増える点（4。通らない方向〔成功から NOMEM〕に動きうる）**。
+加えて、lookaside を使う in-process の呼び出しでは、revision の少ない形の実時間が数 % 延びうる（「変わる点」の 7）。
+閾値の値・schema・契約・authority は変えない。
+
+### 決定
+
+`nir1_entity_relation_index.rs` の `read_eligibility_source_counted` の revision ごとの loop が、revision ごとに
+`conn.prepare` していた次の 5 文を、その関数の frame に置いた holder（`RevisionStatements`。5 つの
+`Option<Statement<'_>>`）で再利用する。
+
+| 文 | 呼び出し元 |
+| --- | --- |
+| octet_length の文（入力の長さ） | `read_revision_input_stats` |
+| JSON の数え文（entity／relation／evidence／anchor の数） | `read_revision_input_stats` |
+| Entity の payload_root の文（`SOURCE_BASIS_ENTITY_PREFLIGHT_SQL`） | `preflight_revision_source_basis` |
+| Relation の payload_root の文 | `preflight_revision_source_basis` |
+| live lengths の文 | `preflight_live_source_lengths` |
+
+- **prepare は初回の使用時に、今と同じ呼び出し位置で行う。** 先にまとめて prepare しない（最初のエラーの順と、
+  最初の revision で prepare が失敗する形のエラー文・stage を変えないため）。
+- 2 回目以降は、同じ文を bind し直して使う。5 文はすべて位置引数（`?N`）だけで、rusqlite の名前の cache
+  （`ParamIndexCache`）は空のまま。`Statement::query_row` の `Rows` は drop で `sqlite3_reset` するので、成功・
+  エラー・途中で `?` で抜ける、のどの経路でも次の使用の前に reset されている（rusqlite 0.40.1。`Rows::drop`）。
+- **使うたびに（Ok でも Err でも）reset の後で `Statement::clear_bindings()` を呼ぶ**（独立レビューの P2-1）。rusqlite は
+  `&str` を `SQLITE_TRANSIENT` で bind する（SQLite が写しを持ち、次の bind まで残す）。revision id の長さは
+  6 MiB の入力上限でしか縛られず（worker の承認済みの revision でも約 0.9 MiB まで通りうる）、reset だけでは 5 文が
+  直前の revision の id の写しを Q に持ち続け、次の revision の basis の山（w:600000 で 11.3 MB）と重なる。
+  `clear_bindings` で、保持する性質を旧形（finalize）と同じ「program だけ」に戻した。実測（試験
+  `held_statements_do_not_keep_the_values_of_the_last_revision`）：512 KiB の id の revision の後、保持中の 5 文の
+  `MemUsed` は短い id のときと同じ 147,984 B。`clear_bindings` を外すと 2,771,224 B（512 KiB × 5 の写し）になって
+  この試験が落ちる（一度外して確かめた）。
+- 試験専用に、slot ごとに最初の使用の SQL を覚え、2 回目以降に違う SQL が来たら panic する（slot の取り違えの検出。P3-1）。
+- holder は `read_eligibility_source_counted` のローカルで、return と unwind の両方で drop（finalize）する。
+  loop の後の、source index の組み立て（`graph_source_from_roster*`）の**前**に明示的に drop し、
+  SourceIndex・postflight・ROLLBACK・scratch の seal の前に必ず終わる。
+- 5 文の呼び出し元は `read_eligibility_source_counted` だけ。この関数の入口は 4 つある（コードで確かめた）。
+  1. worker の registration：`read_eligibility_source_with_control_and_scratch`（scratch scope あり）。
+  2. `read_eligibility_source_with_control`（scratch なし、admission なし）。上流は
+     `source_revision.rs:269-290`（`resolve_source_revision_with_control_and_reads` が Entity／Relation eligibility の
+     Source の読みで呼ぶ。`conn.is_autocommit()` なら `unchecked_transaction` を張り、そうでなければ呼び出し側の
+     transaction の中で読む）で、その上流は `resolve_source_revision_with_control` を呼ぶ
+     `v2_apply_sources.rs:93`、`verify_coverage.rs:353`、`reconciliation_envelope.rs:607/657`、
+     `resolve_source_revision_with_validation_context` 経由の `commit.rs:550/611`（Apply。コメントのとおり
+     `BEGIN IMMEDIATE` の下）、`restore_rebuild.rs` の `resolve_current_source_state_with_control(_and_reads)`
+     （583、1932。`source_revision.rs:433-445` で `resolve_source_revision_with_control_and_reads` に届くことを確かめた）。`incremental_freshness.rs:310` の `LifecycleGraphControl` と `commit.rs:122` の
+     `StandaloneForegroundValidationControl` は、これらの経路に渡される control の実装である（呼び出し元ではない）。
+     加えて `nir1_capacity_diagnostics.rs` の測定と `read_eligibility_source`（`#[allow(dead_code)]`）。
+  3. B の build／publish：`read_eligibility_source_for_native_build`（admission あり）。
+  4. diagnostics：`source_capacity_usage`（feature `nir1-material-diagnostics`）。
+  すべて同じ holder を通る。**要件は `!conn.is_autocommit()`（transaction の中であること）だけで、read transaction とは
+  限らない。foreground の write transaction（Apply の `BEGIN IMMEDIATE`）の中でも走る。** holder はその関数の中で作り、
+  戻る前に drop するので、transaction の commit／rollback は常に holder の drop の後になる（write transaction の中で
+  保持した statement が commit を妨げることは無い。reset 済みで `clear_bindings` 済み）。
+  holder なしの経路は残さない（残すと同じ SQL を 2 つの形で持ち、oracle の形が製品に残る）。5 つの関数は holder を
+  引数に取り、それぞれの単体試験は使い捨ての holder を渡す。
+- **使わないもの**: rusqlite の `prepare_cached` と、接続の cache 容量の変更。cache の key（`Arc<str>`）と LRU の
+  node は Rust の割当で、scratch scope の中で S に割り当てられて scope の後も残り、zero-live の seal を壊す。
+  cache は接続全体の設定なので lane の外の利用者にも及ぶ。（なお authorizer の付け外しは cache を無効にするのではなく、
+  `sqlite3_set_authorizer` が接続の statement を失効させ、次の step で再 prepare させる。P′ の holder も、読みの途中で
+  authorizer を付け外しすれば再 prepare されて効果が消える〔結果は同じ〕。registration の読みの途中では付け外ししない。）
+- 試験専用の seam `with_fresh_statements`（`#[cfg(test)]`、thread-local。DR-GRW-2 の `with_sql_checks` と同じ型）で、
+  文ごとに prepare し、使い終わりに finalize する今の形に戻せる。製品の build には入らない。
+
+### 理由
+
+registration の窓 W は、大きい DB では revision ごとの prepare が支配的な成分の 1 つである
+（`window-shortening-next-2026-11-10.md`。推測は R1022 で約 0.5〜0.65 s、D2064 で約 1.05〜1.25 s。実測は「W の対の測定」で、
+worker と同じ lookaside 0 の条件で R1022 −0.78 s、D2064 −1.51 s）。SQL の text は revision によらず同じで、違うのは bind する値だけなので、
+1 回の読みの間 compile 済みの program を持てば、prepare の費用は初回だけになる。
+DR-GRW-1（SourceIndex の線形化）、DR-GRW-2（表の存在確認）と同じく、挙動を変えずに窓を縮める。
+
+### DR-CQL-13 との関係
+
+DR-CQL-13 は、Entity の文を finalize してから次の文を prepare する前提で、Entity の大きさの写しが同時に Q に
+残らないことを数えていた（`entity_items` の MATERIALIZED）。reuse でも、reset で実行時の memory
+（ephemeral 表、`Mem` の buffer、auxdata、値の写し）は解放されるので、その意図は保たれる
+（`sqlite3VdbeReset`→`Halt`→`closeAllCursors`）。残るのは compile 済みの program、bind 値、SQL の写しだけで、
+5 文で 0.13〜0.15 MB（`StatementStatus::MemUsed`。「memory」）。コメントの文言は「finalize」から「reset」に直した
+（`SOURCE_BASIS_ENTITY_PREFLIGHT_SQL` の doc と `preflight_revision_source_basis` の注記）。
+
+### 変わる点
+
+1. **registration と B の build の VM steps と owner callback の回数が減る。** prepare は steps に課金される
+   （SQLite 3.53 の `sqlite3ProgressCheck` の 4 か所。DR-GRW-2 の「変わる点」の 1 と同じ形）。reuse では revision 数 N に対して
+   各文の prepare が N 回から 1 回になる。減る見込みだが、未測定である。試験の小さい fixture（4 revision）では owner callback の回数は両形で同じ（306 回）だった。
+   理由は推測で、SQLite が progress callback を 1,000 steps ごとに呼び、Rust 側の check も呼ぶので、prepare の steps の差が
+   この小さい入力では 1,000 に届かない、と考えている。steps の数値の前後比較はしていない（「gate」の 6）。大きい DB での実時間の差は「W の対の測定」に記録した。
+2. **steps の上限の境目では、Err から成功へ、通る方向にだけ動く。** 課金される作業が減るだけで、
+   増える経路は無い（DR-GRW-2 の「変わる点」の 2 と同じ）。この効果は、1 の入口のすべて（registration、B の build、
+   Apply・Freshness・Verify・Restore の eligibility の読み。foreground の write transaction の中を含む）に及ぶ。
+   実時間の期限（180 s など）の境目は、worker（lookaside 0）では通る方向だが、lookaside を使う in-process の入口では、
+   revision の少ない形で実時間が数 % 延びうるので、失敗の方向にも動きうる（「変わる点」の 7）。
+3. **停止を見つける時期が動きうる。** owner の `check()` は同じ位置・同じ回数で走る（試験で全 stop point の
+   Outcome が一致）。SQLite の progress callback が数える steps が減るので、k 回目の callback の位置が変わる。
+   終わりは同じ typed の停止で、seal は無く、handle は残らない。
+4. **Q の使用量が増える。通らない方向にも動く。** 保持する 5 文の compile 済みの program の分で、`MemUsed` の合計
+   約 0.13〜0.15 MB（試験の実測 128,984〜152,344 B）。reuse は読みの間ずっと program を持つので、Q の上限（16 MiB）の
+   境目では、**成功から NOMEM の方向**に動きうる（旧形は文ごとに finalize して、持ち越さなかった）。worker の実 process の
+   registration の Q 高水位は「memory」の表（最大 +0.48 ポイント）で、85% の条件に対する余裕を実測で確かめた。
+   `clear_bindings` により、持ち越すのは program だけで、revision の id の長さには依存しない。
+5. **worker の起動失敗の分類（`registration_error_stage`）の割合は、prepare 中の NOMEM／中断が減る分だけ動きうる。**
+   これは worker の起動失敗の分類にだけ効く到達しない経路で、DR-GRW-2 の 4 と同じ扱い。
+6. **親の START_TIMEOUT（30 s）に対しては、通る方向にだけ動く。**
+7. **lookaside を使う in-process の呼び出しでは、revision の少ない形の実時間が数 % 延びうる。** 保持する program が
+   接続の lookaside の枠（SQLite の既定）を占め、大きい revision の処理の小さい割当が通常の malloc に回ると考えている
+   （推測。下の「W の対の測定」で、lookaside 0 にすると延びが消え、B1 側だけが lookaside 0 で遅くなることと合う）。
+   worker は `SQLITE_CONFIG_LOOKASIDE 0,0` なので、worker の registration には当たらない。当たるのは in-process の入口
+   （eligibility の読みの上流、B の build、diagnostics）で、測った形では R4 +2.5〜4.1%（+8〜12 ms）、R16 +2.7〜4.3%（+32〜51 ms）。
+   結果・閾値・期限の値には関わらない（steps は減る方向）。
+
+### 変わらない点
+
+次は変えない（試験で固定）。
+
+- registration と B の source read の結果（`Ok(roster, digest)`／Err）、seal、失敗の種類、エラー文、stage の更新順、
+  owner の `check()` の位置と回数。
+- 文・stage・admission の課金の順（CQ-LIM-2。`read_revision_input_stats` の B の component guard → A2 の admission、
+  `capacity.input` の順）、最初のエラーの順。最初の revision で prepare が失敗する形は、同じ文で同じエラー文。
+- 5 文の SQL、bind の値と順序、返す値と判定。`revision_is_approved`（例外経路だけで走る 6 つ目の文）は reuse の対象の外。
+- 閾値の値（CapacityBudget の 600M steps・180 s、START_TIMEOUT 30 s、A2 の admission bytes、Q 16 MiB、85%）。
+- B の build／publish／Verify／Rebuild の結果と admission の確認の位置。
+
+### 信頼境界
+
+- 呼び出し元は「決定」の 4 つの入口（worker の registration、eligibility の読みの上流〔Apply・Freshness・Verify・Restore。
+  foreground の write transaction を含む〕、B の build、diagnostics）と試験で、renderer・main・MCP からは変わらない。
+  どの入口も `!is_autocommit()` の transaction の中で、同じ接続・同じ thread で呼ぶ。
+- holder は 1 回の読み（`read_eligibility_source_counted` の 1 呼び出し）の間だけ生き、その関数の frame に閉じる
+  （thread をまたがない。`Send`／共有の経路は無い）。transaction の終わり（commit／ROLLBACK）と接続を閉じる前に、
+  必ず drop される。
+- 保持するのは compile 済みの program だけで、payload・envelope・live source の本文は reset で、直前の revision の
+  bind 値（revision id、project id）は `clear_bindings` で、使うたびに解放される。
+- 新しい送信先、保存範囲、契約、authority、schema、依存、閾値の値の変更は無い。秘密・データの流れは変わらない。
+
+### owner／lifecycle の表（GDX-PRECHECK-001）
+
+DR-GRW-2 の表の「statement の保持は無い」は、この決定で「関数の中で保持し、return と unwind で finalize する」に変わる。
+
+| 項目 | P′ の前後 |
+| --- | --- |
+| 入口・開始 | worker の起動時の registration、B の build、Apply・Freshness・Verify・Restore の eligibility の読み、diagnostics。変えない |
+| 再試行・Suspended | 変えない（失敗を数える owner の扱い、drift の判定も同じ） |
+| 再入 | holder は呼び出しごとのローカルで、入れ子の読みは別の holder を持つ。共有しない |
+| admission の閉鎖 | admission の上限・順序・課金の順は変えない。`ensure_current` の位置も同じ |
+| 開始待ちの作業 | 足さない |
+| 有効な handle の所有 | **足す。** 5 つの prepared statement を、`read_eligibility_source_counted` の frame の holder が持つ。作るのは最初の使用時、終わりは return・`?`・unwind の drop（finalize）。loop の後の SourceIndex・postflight・commit／ROLLBACK・seal の前に終わる（foreground の write transaction の中の呼び出しでも、その transaction の終わりの前）。thread・接続・他の handle は足さない |
+| 取消 | owner の `check()` と progress callback で、これまでの typed の停止で終わる。停止を見つける時期が動く（「変わる点」の 3）。停止のとき statement は reset 済みか、使用中なら unwind／戻りの drop で finalize される |
+| 有限の待ち | 親の START_TIMEOUT 30 s、DEFERRED_RELEASE_LIMIT 10 s は変えない |
+| 終了の証拠 | 変えない（worker の終了と ROLLBACK。statement は ROLLBACK の前に finalize 済み。接続に残る statement が無いことは試験で数える） |
+| error／timeout／onClosed の所有 | 起動失敗の分類は「変わる点」の 5。statement の finalize の結果は捨てる（rusqlite の `Statement` の drop の既存の扱い。`sqlite3_finalize` が返すのは直前の実行のエラーの再掲で、各使用のエラーは `query_row` が既に返している）。DR-GRW-2 までの `Connection::query_row` の statement と同じ扱いで、新しい失敗の経路は足さない |
+| 保存される再開の状態 | 無い（holder は保存されない） |
+
+### 試験（`nir1_graph/tests/registration_statements.rs`、`nir1_entity_relation.rs`）
+
+- 同値性の oracle（`with_fresh_statements`）：健全な形、basis の不一致、live lengths が None、A2 の limit、
+  6 MiB 超の component、不適格な候補（rejected、pending、rejected で 6 MiB 超、current revision の行が無い proposal）が
+  混じる形、最初の revision で prepare が失敗する形（3 通り。件ごとに、壊した slot の前までの `prepares` と、各 slot を
+  何回使ったか〔`attempts`〕を断言する。`input lengths` は、元の試験では roster の page の statement が先に落ちて loop に
+  届いていなかったので、page が読まない `narrative_proposal_decisions` を壊す形に直した）、Semantic 段の失敗 5 種（declaration 表の欠落は loop の前で終わり holder が作られない、registry・binding・marker 行の欠落は 4 revision を読み終えた後に false で終わり〔prepare 1 回対 4 回〕、migration 表の欠落は最初の revision の marker の確認で終わる〔両形とも各文 1 回で、reuse は通らない〕）、capacity fixture の不適格 5 種（decisionless、rejected、
+  source-drift、stale-freshness、scope-drift／report-missing-source）。結果・seal・失敗の種類・エラー文・stage・
+  scope の閉じを比べる。
+- 古い値を返し続ける回帰の検出（`a_reused_statement_answers_for_the_revision_in_front_of_it`）：3 番目の revision だけが、
+  JSON の数え文（レコード数が上限超）、Relation の basis の文（Relation の basis 行だけ改ざん）、live lengths の文
+  （payload と basis が同じ古い Source token を持つ）のどれか 1 つの答えだけ変わる形にし、5 文の答え（`stage_trace`）が
+  両形で同じで、3 番目が期待どおり（`stats=None`、`basis=false`、`live=None`）、他の 3 つが健全であることを見る。
+  行の無い candidate（`.optional()` の None）の後に健全な revision が続く形も同じ方法で見る。
+- seam が素通りしていないこと（`alike`）：oracle 側の `MemUsed` が `[0;5]`、使用回数が両形で同じ、3 回以上使った slot では
+  oracle の prepare が reuse より多い。
+- DR-CQL-13 の性質（各文が次の文の前に reset されている）：owner の `check()` のたびに、Revision と basis の表を読む
+  statement が `sqlite3_stmt_busy` でないことを、既定の CI で断言する（`read_with` の `LiveProbe`）。
+- STAT4（`analyzed_statistics_change_no_answer`）：`ANALYZE` して `sqlite_stat4` を持つ DB（sqlite_stat4 の表は作られた）で
+  registration は両形で同じ結果、`RePrepare` は 5 文とも 0、prepare は 1 回のまま。この fixture（等価条件の主キー・
+  一意 index の検索だけ）では、bind の値で plan が変わらないので再 prepare は起きない。SQLite が `RePrepare` を起こす
+  のは、stat4 を使う range 条件や LIKE／GLOB の parameter が値で plan を変える場合で、5 文の SQL には無い。起きれば
+  効果（prepare の削減）が消えるだけで、結果は変わらない。
+- prepare の回数：4 revision で、reuse は 5 文とも 1 回、oracle は 4 回。実行回数（`StatementStatus::Run`）は 4、SQLite の
+  自動 re-prepare（`RePrepare`）は 0。13 候補の capacity fixture でも 1 回対 13 回。
+- 停止の掃引：owner の `check()` の k 回目（最初の 100、stride、最後の 30）と、progress callback の k 回目で止めて、
+  両方の形が同じ typed の停止で終わり、seal が無く、handle が残らない。
+- handle の寿命：`sqlite3_next_stmt` で数えた statement が、成功・エラー・check／callback の停止・panic の unwind
+  （check は最初の 100、13 ごと、最後の 30 の位置）の後で、読みの前と同じ。反証できる形として、counter が `prepare_cached` の残りを数えること、
+  reuse の形が loop の途中で 5 つ多く持ち、oracle は多くないことも見る。
+- 既存の `registration_reads_each_revision_in_the_scratch_scope_and_checks_outside_it` を、3 revision の fixture にして、
+  prepare 時の authorizer だけでなく、実行時（progress callback で、実行中の statement を `sqlite3_next_stmt` と
+  `sqlite3_stmt_busy` で列挙）に、大きい document に触れる statement が scope の中で走っていることと、再利用された
+  statement が最後の revision でも scope の中で走ることを見る形に強めた。
+
+### 試験の限界（正直な記録）
+
+- progress callback の回数は、試験の fixture（4 revision）では両形で同じ（306 回）だったので、停止の掃引の
+  「両者の回数の間の k」の分岐は走っていない（回数が違う大きい fixture では走る作りだが、確かめていない）。
+- prepare の回数と `RePrepare` の断言は、ordinary reader の registration と IDX の直接呼び、B の build で行った。
+  worker reader（`register_with_worker_maintenance`）の経路では、結果が緑であること（lifecycle の B2・B4 など）だけを見ている。
+- heap の試験は debug build の in-process で、process 全体の SQLite heap の差であり、worker の Q の区間ごとの high water ではない。
+
+### memory
+
+- 5 文の `StatementStatus::MemUsed` の合計：seed の fixture と payload 形（counted 600,000 B、A2 2,034,277 B）の
+  どちらでも、`clear_bindings` を入れた後は `[13,984, 30,208, 41,440, 31,048, 31,304]`、合計 147,984 B（0.15 MB。
+  入れる前は 152,344 B）。4 revision の registration の後は 128,984 B。payload の大きさにも、revision の id の長さにも
+  依存しない（program は SQL で決まる）。
+- SQLite の heap の high water（in-process の代理。`SQLITE_STATUS_MEMORY_USED`、step ごとに reset。payload 形の同じ revision
+  を 3 回読む。試験 `the_sqlite_heap_peak_of_each_step_rises_by_no_more_than_the_held_programs`。counter が process 全体なので
+  `#[ignore]` にして `--test-threads=1` で単独に実行する）：各 step の peak の上昇は、oracle（文ごとに prepare）対 reuse で
+  最大 +0.10 MB（input stats +0.01〜0.09 MB、basis +0.04〜0.08 MB、live +0.08〜0.10 MB）。preflight（basis）の peak は
+  process 全体の heap で 18,385,120 B（oracle）→ 18,469,096 B（reuse、+83,976 B）。差は保持する 4〜5 文の program の分で、
+  step が組んだものではない（この値は `clear_bindings` を入れる前の測定。入れた後に再測はしていない）。
+- **Q の high water（実測。worker の実 process の registration、READY までの全域、release、各形 2 回で bytes が一致）。**
+  計測は dev 枝 `claude/dev-q-hw-measure`（計測 instrumentation の commit `a39315b9`。製品の commit は載せていない）。
+  Q は 16 MiB（16,777,216 B）。前は DR-GRW-3 の前（`6cf81d9b` 相当）、後は `clear_bindings` を入れた最終の commit
+  （`5d5bc0fa` の cherry-pick `5055ab40`）。
+
+  | 形 | 前（B／%） | 後（B／%） | 増加 |
+  | --- | --- | --- | --- |
+  | payload 形 w:400000 | 8,464,300（50.45%） | 8,505,899（50.70%） | +41,599 B（+0.25 ポイント） |
+  | payload 形 w:600000 | 11,680,284（69.62%） | 11,721,883（69.87%） | +41,599 B（+0.25 ポイント） |
+  | B4（payload 形 3 件） | 11,680,646（69.62%） | 11,760,840（70.10%） | +80,194 B（+0.48 ポイント） |
+  | 製品形の上限近傍 p:682000 | 7,058,189（42.07%） | 7,139,466（42.55%） | +81,277 B（+0.48 ポイント） |
+
+  - 最大は 70.10%（B4）で、条件（85% 以下）に対して 14.9 ポイントの余裕がある。READY の `available` は 15,019,232 B
+    （p:682000 は 15,019,104 B）。
+  - 前の値は DR-CQL-14 の表（w:600000 で 67.4%＝11,309,614 B）より一律に約 +370 KB 高い。DR-CQL-14 以降（10-18 以降）の
+    master の変更による READY 時の常駐分の増加で、P′ とは無関係（P′ の前の commit で測った値）。
+  - 増加は 41.6〜81.3 KB で、`MemUsed` の合計（約 0.13〜0.15 MB）より小さい。worker では Q に載るのは SQLite の割当のうち
+    registration の間に同時に生きているものだけで、program の一部は peak の時点で別の文の memory と重ならない、または
+    lookaside（worker では 0）でなく通常の割当で数えられるため、と考える（未確認）。
+  - `clear_bindings` を入れる前の commit（`4615b442`）での値は、w:400000 8,506,229、w:600000 11,722,213、B4 11,761,264、
+    p:682000 7,139,841 B で、入れた後は 330〜424 B だけ減った。実測の revision の id は短いので、この差は小さい。
+    id が長い revision（512 KiB）では、入れない場合に保持が 2.6 MB 増える（試験で確認）ので、`clear_bindings` は
+    長い id に対する上限の保証である。
+- **in-process の heap の差の位置づけ**：上の in-process の +0.10 MB は、process 全体の heap の差を debug build で
+  測ったもので、lookaside が効く区間を含む。worker は lookaside が 0 なので、worker の値は上の実測を正とする。
+  in-process の値は、保持が program 数十〜百数十 KB の規模に収まることの確認に使うだけで、Q の予測には使わない。
+
+### W の対の測定（2026-11-10〜11、dev、A2 の harness、release、各 30 回、writer なし）
+
+前は DR-GRW-2 の測定の「後」と同じ `724452b1`（B1 の測定枝）、後はそれに P′ の製品 2 ファイル（`5d5bc0fa` の
+`nir1_entity_relation_index.rs`、`nir1_entity_relation.rs` と同一）だけを載せた `d7d7432f`。harness は in-process で、
+既定では SQLite の lookaside が効く。3 列目は、測定の試験の冒頭で SQLite を一度 shutdown し、process 全体を
+`SQLITE_CONFIG_LOOKASIDE 0,0`（worker と同じ）にした run（切り替えは dev の `f58d3936`／`2d2fd68f`。製品コードは同じ）。
+記録は `fusion-eval-data/design-notes/db-connection-2026-11-07/drift-measure/` の `drift-a2-prb1b`／`drift-a2-prp`（1 回目）、
+`drift-a2-prp2`／`drift-a2-prb1c`（逆順）、`drift-a2-prb1-nolook`／`drift-a2-prp-nolook2`（lookaside 0）。開始時の負荷は 1.4〜3.2。
+
+| case | W p50 前 → 後（1 回目） | 逆順（後を先に） | lookaside 0（worker と同じ） |
+|---|---|---|---|
+| Q513／R3 | 73.1 → 74.8 ms（+2.2%） | 73.7 → 74.2 ms（+0.6%） | 77.3 → 74.3 ms（−3.9%） |
+| Q2044／R4 | 295.3 → 307.5 ms（+4.1%） | 297.1 → 304.6 ms（+2.5%） | 311.4 → 305.8 ms（−1.8%） |
+| Q2044／R1022 | 2,063.5 → 1,468.3 ms（**−28.8%**） | 2,092.3 → 1,455.0 ms（−30.5%） | 2,273.8 → 1,494.8 ms（**−34.3%**） |
+| Q8176／R16 | 1,192.7 → 1,243.6 ms（+4.3%） | 1,202.5 → 1,234.7 ms（+2.7%） | 1,265.0 → 1,238.3 ms（−2.1%） |
+| D2064／report-heavy | 2,596.6 → 1,240.5 ms（**−52.2%**） | 2,600.3 → 1,229.3 ms（−52.7%） | 2,776.8 → 1,263.3 ms（**−54.5%**） |
+
+- 結果はすべて `ok_true`（両形とも）。`Q2044／byte-heavy` は前後とも登録前に `err_other` で終わる形（入力上限）で、W を持たない。
+- p95 は p50 と同じ向き（例：D2064 2,604.6 → 1,244.8 ms、R1022 2,077.6 → 1,476.2 ms）。
+- 縮みは推測（R1022 −0.5〜−0.65 s、D2064 −1.05〜−1.25 s）より大きい。prepare に加えて、文ごとの finalize と
+  authorizer の呼び出し（harness は観測用の authorizer を付けている）の回数も減るためと考える（未分解）。
+- revision の少ない形（R3、R4、R16）は、lookaside が効く条件では数 % 遅く、順を逆にしても残る。lookaside 0 では
+  5 形とも後が速い（R1022・D2064 以外は −1.8〜−3.9%）。P′ の値は lookaside の有無でほぼ同じで、B1 だけが lookaside 0 で
+  遅くなる（「変わる点」の 7）。製品の registration は worker（lookaside 0）で走るので、R1022 と D2064 は大きく縮み、
+  revision の少ない形は差なし〜数 % 減と見る（lookaside 0 の対は各 1 回で、system malloc の in-process の代理。実 worker の W ではない）。
+- lookaside 0 の対は各 1 回で、B1 側の run は負荷 3.18 で始まった。
+
+### gate
+
+1. 同値性の oracle：上の試験（`registration_statements::`）。既定で 16 件（+ ignore の heap 1 件）、capacity fixture の 1 件は feature `nir1-material-diagnostics` が要る。`cargo test -p grimodex-db --lib` 全件：2,624 passed、0 failed、55 ignored。
+2. 停止の掃引：同上。
+3. handle の寿命：同上。
+4. 既存の試験の強化：`nir1_entity_relation::tests::registration_reads_each_revision_in_the_scratch_scope_and_checks_outside_it`。
+5. memory：release の worker binary（`heavy.sh cargo build --locked --release … --bin nir1-c-query-worker`）に対し、
+   `scripts/nir1-c-query-worker-ci.sh lifecycle`（26 case。fixture の builder、Q2／Q512 の preseed、case ごとの
+   test process を含む）を実行し、26 case すべてが緑（exit 0）。registration と memory に関わる case は
+   `native_worker_uses_a_payload_shaped_revision_near_the_preflight_limit`（B2。scratch の zero-live seal を含む）、
+   `native_worker_registers_multiple_payload_shaped_revisions`（B4）、
+   `cq_avail::native_worker_registers_multiple_product_shaped_revisions`（4 revision）、
+   `native_worker_registration_does_not_load_a_revision_over_the_preflight_limit`、
+   `native_worker_registration_refuses_a_payload_shaped_revision_before_it_runs_out_of_memory`、
+   `native_worker_uses_a_candidate_*`、`native_worker_refuses_the_whole_graph_*`、
+   `native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph`。
+   （最終の commit でも lifecycle 26 case が緑。）
+   B4 の `query after READY: NIR1_GRAPH_QUERY_DEADLINE_NO_TIMELY_FRAME` は DR-CQL-13 の再測と同じ typed の期限で、
+   test は緑（B4 は registration を試験する）。
+6. steps：数値の前後比較はしていない。prepare の steps が revision ごとから初回だけになる向き（減る方向だけ）は、
+   SQLite 3.53 の `sqlite3ProgressCheck` の位置から独立レビューで確かめた。owner の `check()` の位置と回数は試験で同じ。
+7. W の対の測定（下の節）。
+8. DR：この文書。owner／lifecycle の表を上のとおり書き直した。
+
+### やらないこと（別の決定）
+
+- 文字どおりの P（worker の allocator のモデルを変える、本体の接続の cache 容量を変える）。
+- b-2（DR-CQL-13 を戻す）、b-3（admission が動きうる）、a-2（registration 専用の共有読み。DR-GRW-4）、b-1。
+- `revision_is_approved` の文の再利用（例外経路だけ）。

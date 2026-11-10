@@ -866,6 +866,343 @@ pub(crate) fn roster_candidate_page_sql() -> String {
     )
 }
 
+/// One prepared statement that the per-Revision loop reuses (DR-GRW-3).
+///
+/// It is prepared on the first use, at the call site that always prepared it,
+/// so a failing prepare (a missing table, a refused authorizer) reports at the
+/// same point as before. Each later use binds the same program again. The row
+/// reader that `query_row` creates resets the statement when it drops, on
+/// success, on an error and on an unwind, so no use leaves a running VM, an
+/// ephemeral table or a bound cursor behind, and the bindings are cleared after
+/// every use, so the values of the last Revision are not kept either.
+///
+/// `prepare_cached` is deliberately not used: its cache is one per connection,
+/// and its keys and list nodes are Rust allocations that would land in the
+/// worker's scratch area S and outlive the scope.
+struct ReusedStatement<'conn> {
+    statement: Option<rusqlite::Statement<'conn>>,
+    /// How often this slot prepared its statement.
+    #[cfg(test)]
+    prepares: usize,
+    /// How often the slot was used, including a use whose prepare failed.
+    #[cfg(test)]
+    attempts: usize,
+    /// The SQL of the first use: every later use of the slot must be the same.
+    #[cfg(test)]
+    first_sql: Option<String>,
+}
+
+impl<'conn> ReusedStatement<'conn> {
+    const fn new() -> Self {
+        Self {
+            statement: None,
+            #[cfg(test)]
+            prepares: 0,
+            #[cfg(test)]
+            attempts: 0,
+            #[cfg(test)]
+            first_sql: None,
+        }
+    }
+
+    /// `Connection::query_row` over a statement kept in this slot. Every
+    /// parameter of the five statements is positional (`?N`), so rebinding is a
+    /// plain bind and rusqlite's parameter-name cache stays empty.
+    fn query_row<T, P, F>(
+        &mut self,
+        conn: &'conn Connection,
+        sql: &str,
+        params: P,
+        map: F,
+    ) -> rusqlite::Result<T>
+    where
+        P: rusqlite::Params,
+        F: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    {
+        #[cfg(test)]
+        {
+            self.attempts += 1;
+            let first = self.first_sql.get_or_insert_with(|| sql.to_owned());
+            assert_eq!(first, sql, "a slot was used with a different SQL");
+        }
+        if self.statement.is_none() {
+            self.statement = Some(conn.prepare(sql)?);
+            #[cfg(test)]
+            {
+                self.prepares += 1;
+            }
+        }
+        let statement = self
+            .statement
+            .as_mut()
+            .expect("the statement was prepared above");
+        let result = statement.query_row(params, map);
+        // The row reader has reset the statement. rusqlite binds a `&str` as a
+        // copy that SQLite keeps until the next bind, and a Revision id can be
+        // up to the input limit long, so release the copies too: between uses a
+        // slot holds its compiled program and nothing the last Revision named.
+        statement.clear_bindings();
+        #[cfg(test)]
+        if fresh_statements() {
+            // The oracle form: one statement per use, finalized right after it.
+            self.statement = None;
+        }
+        result
+    }
+
+    #[cfg(test)]
+    fn observe(&self) -> (usize, usize, i32, i32, i32) {
+        use rusqlite::StatementStatus::{MemUsed, RePrepare, Run};
+        let status = |what| self.statement.as_ref().map_or(0, |s| s.get_status(what));
+        (
+            self.prepares,
+            self.attempts,
+            status(MemUsed),
+            status(RePrepare),
+            status(Run),
+        )
+    }
+}
+
+/// The five statements `read_eligibility_source_counted` runs once per
+/// Revision: the input lengths and the JSON counts of
+/// [`read_revision_input_stats`], the Entity and Relation statements of
+/// [`preflight_revision_source_basis`], and the live lengths of
+/// [`preflight_live_source_lengths`]. The holder is a local of that function and
+/// drops (finalizes) its statements on return and on unwind.
+struct RevisionStatements<'conn> {
+    input_lengths: ReusedStatement<'conn>,
+    input_counts: ReusedStatement<'conn>,
+    basis_entity: ReusedStatement<'conn>,
+    basis_relation: ReusedStatement<'conn>,
+    live_lengths: ReusedStatement<'conn>,
+}
+
+impl<'conn> RevisionStatements<'conn> {
+    fn new(_conn: &'conn Connection) -> Self {
+        Self {
+            input_lengths: ReusedStatement::new(),
+            input_counts: ReusedStatement::new(),
+            basis_entity: ReusedStatement::new(),
+            basis_relation: ReusedStatement::new(),
+            live_lengths: ReusedStatement::new(),
+        }
+    }
+
+    /// `MemUsed` of the statements held now.
+    #[cfg(test)]
+    fn mem_used_sum(&self) -> i32 {
+        [
+            &self.input_lengths,
+            &self.input_counts,
+            &self.basis_entity,
+            &self.basis_relation,
+            &self.live_lengths,
+        ]
+        .into_iter()
+        .map(|slot| slot.observe().2)
+        .sum()
+    }
+}
+
+/// What the five statements of one `read_eligibility_source_counted` showed
+/// when its holder dropped (on return, error or unwind), in the order input
+/// lengths, input counts, basis Entity, basis Relation, live lengths.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RevisionStatementsObservation {
+    /// How often each slot prepared its statement.
+    pub(crate) prepares: [usize; 5],
+    /// How often each slot was used (a use whose prepare failed counts).
+    pub(crate) attempts: [usize; 5],
+    /// `StatementStatus::MemUsed` of each statement still held.
+    pub(crate) mem_used: [i32; 5],
+    /// `StatementStatus::RePrepare`: SQLite's own re-prepares of a held statement.
+    pub(crate) reprepares: [i32; 5],
+    /// `StatementStatus::Run`: how often a held statement ran.
+    pub(crate) runs: [i32; 5],
+}
+
+#[cfg(test)]
+impl Drop for RevisionStatements<'_> {
+    fn drop(&mut self) {
+        let slots = [
+            &self.input_lengths,
+            &self.input_counts,
+            &self.basis_entity,
+            &self.basis_relation,
+            &self.live_lengths,
+        ];
+        let mut seen = RevisionStatementsObservation::default();
+        for (index, slot) in slots.into_iter().enumerate() {
+            let (prepares, attempts, mem_used, reprepares, runs) = slot.observe();
+            seen.prepares[index] = prepares;
+            seen.attempts[index] = attempts;
+            seen.mem_used[index] = mem_used;
+            seen.reprepares[index] = reprepares;
+            seen.runs[index] = runs;
+        }
+        LAST_STATEMENTS.with(|cell| cell.set(Some(seen)));
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static FRESH_STATEMENTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static LAST_STATEMENTS: std::cell::Cell<Option<RevisionStatementsObservation>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn fresh_statements() -> bool {
+    FRESH_STATEMENTS.with(std::cell::Cell::get)
+}
+
+/// Test-only oracle: run `operation` with one statement per use, prepared at the
+/// same call site and finalized right after it, which is the form before
+/// DR-GRW-3.
+#[cfg(test)]
+pub(crate) fn with_fresh_statements<T>(operation: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FRESH_STATEMENTS.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(FRESH_STATEMENTS.with(|cell| cell.replace(true)));
+    operation()
+}
+
+/// Test-only: take what the last holder of this thread showed when it dropped.
+#[cfg(test)]
+pub(crate) fn take_revision_statements_observation() -> Option<RevisionStatementsObservation> {
+    LAST_STATEMENTS.with(std::cell::Cell::take)
+}
+
+/// Test-only measurement (DR-GRW-3): run the first three steps of the Revision
+/// loop `repeat` times over one Revision with one holder, and return, for each
+/// run and step (input stats, source basis, live lengths), the high water of the
+/// SQLite heap in bytes (`SQLITE_STATUS_MEMORY_USED`, reset before the step), and
+/// the heap in use when the step ended. Wrap it in `with_fresh_statements` for
+/// the form before the change.
+#[cfg(test)]
+pub(crate) fn measure_statement_peaks(
+    conn: &Connection,
+    project: &str,
+    revision_id: &str,
+    repeat: usize,
+) -> Result<Vec<[(i64, i64); 3]>> {
+    fn heap(reset: bool) -> (i64, i64) {
+        let (mut current, mut high) = (0i64, 0i64);
+        // SAFETY: plain out-parameters of a SQLite status read.
+        unsafe {
+            rusqlite::ffi::sqlite3_status64(
+                rusqlite::ffi::SQLITE_STATUS_MEMORY_USED,
+                &mut current,
+                &mut high,
+                i32::from(reset),
+            );
+        }
+        (current, high)
+    }
+    let mut statements = RevisionStatements::new(conn);
+    let mut capacity = SourceCapacity {
+        registration_a2_limit: Some(REVISION_INPUT_BYTE_LIMIT),
+        ..SourceCapacity::default()
+    };
+    let mut peaks = Vec::new();
+    for _ in 0..repeat {
+        let mut row = [(0, 0); 3];
+        heap(true);
+        let stats = read_revision_input_stats(
+            conn,
+            project,
+            revision_id,
+            None,
+            &mut capacity,
+            &mut statements,
+        )?;
+        ensure!(stats.is_some(), "the Revision must pass the input stats");
+        row[0] = (heap(false).1, heap(false).0);
+        heap(true);
+        ensure!(preflight_revision_source_basis(
+            conn,
+            project,
+            revision_id,
+            None,
+            &mut statements
+        )?);
+        row[1] = (heap(false).1, heap(false).0);
+        heap(true);
+        ensure!(
+            preflight_live_source_lengths(conn, project, revision_id, None, &mut statements)?
+                .is_some()
+        );
+        row[2] = (heap(false).1, heap(false).0);
+        peaks.push(row);
+    }
+    Ok(peaks)
+}
+
+/// Test-only: run the first three steps of the Revision loop over `revision_ids`
+/// in order with one holder, as the loop does (a step runs only if the one before
+/// it let the Revision through). Returns, per id, what the steps answered (a
+/// string that names each answer, so a value carried over from an earlier
+/// Revision shows) and the `MemUsed` of the held statements after it. Wrap it in
+/// `with_fresh_statements` for the form before the change.
+#[cfg(test)]
+pub(crate) fn stage_trace(
+    conn: &Connection,
+    project: &str,
+    revision_ids: &[String],
+) -> Vec<(String, i32)> {
+    let mut statements = RevisionStatements::new(conn);
+    let mut capacity = SourceCapacity::default();
+    let mut trace = Vec::new();
+    for revision_id in revision_ids {
+        let mut answer = String::new();
+        match read_revision_input_stats(
+            conn,
+            project,
+            revision_id,
+            None,
+            &mut capacity,
+            &mut statements,
+        ) {
+            Err(error) => answer.push_str(&format!("stats=Err({error:#})")),
+            Ok(None) => answer.push_str("stats=None"),
+            Ok(Some(stats)) => {
+                answer.push_str(&format!("stats=Some({})", stats.material_records));
+                match preflight_revision_source_basis(
+                    conn,
+                    project,
+                    revision_id,
+                    None,
+                    &mut statements,
+                ) {
+                    Err(error) => answer.push_str(&format!(" basis=Err({error:#})")),
+                    Ok(false) => answer.push_str(" basis=false"),
+                    Ok(true) => {
+                        answer.push_str(" basis=true");
+                        match preflight_live_source_lengths(
+                            conn,
+                            project,
+                            revision_id,
+                            None,
+                            &mut statements,
+                        ) {
+                            Err(error) => answer.push_str(&format!(" live=Err({error:#})")),
+                            Ok(live) => answer.push_str(&format!(" live={live:?}")),
+                        }
+                    }
+                }
+            }
+        }
+        trace.push((answer, statements.mem_used_sum()));
+    }
+    trace
+}
+
 fn read_eligibility_source_counted(
     conn: &Connection,
     project: &str,
@@ -896,6 +1233,11 @@ fn read_eligibility_source_counted(
     let mut cursor = String::new();
     let mut seen_revision_ids = HashSet::new();
     let page_sql = roster_candidate_page_sql();
+    // The five per-Revision statements are prepared on first use and reused
+    // for every later Revision (DR-GRW-3). The holder is a local of this call:
+    // it finalizes them on every exit, return or unwind, before the caller
+    // reads the source index, runs the postflight or ends the transaction.
+    let mut statements = RevisionStatements::new(conn);
     loop {
         check_graph_work(&mut control, GraphWorkStage::Page)?;
         if let Some(admission) = admission {
@@ -985,27 +1327,51 @@ fn read_eligibility_source_counted(
                 admission.ensure_current(conn)?;
             }
             // Each step below reads one Revision's documents. In the worker the
-            // Rust side of that work is allocated in S. The statements, the A2
-            // reader's payload and envelope, and the qualified Revision are
-            // freed when their scope ends, so Q keeps what only SQLite may use.
-            // The roster is the exception: its buffer and its row strings are
-            // allocated in S by the first push and stay there until the source
-            // is dropped (a roster of more than 128 rows moves to Q when the
-            // sort merges it), which happens before the worker seals S. The
-            // roster may only grow inside a scope. Owner checks of `control`
+            // Rust side of that work is allocated in S. The A2 reader's payload
+            // and envelope and the qualified Revision are freed when their scope
+            // ends, so Q keeps what only SQLite may use.
+            // The five statements of the first three steps are kept in
+            // `statements`, a local of this call that allocates nothing in S (a
+            // prepare makes no Rust allocation, and every parameter is
+            // positional). Each is reset and its bindings are cleared after its
+            // use, so between steps it holds only its compiled program.
+            // The roster is the other thing that stays: its buffer and its row
+            // strings are allocated in S by the first push and stay there until
+            // the source is dropped (a roster of more than 128 rows moves to Q
+            // when the sort merges it), which happens before the worker seals S.
+            // The roster may only grow inside a scope. Owner checks of `control`
             // run between the steps, in Q.
             let Some(input_stats) = in_scratch(&mut scratch_scope, || {
-                read_revision_input_stats(conn, project, &revision_id, admission, capacity)
+                read_revision_input_stats(
+                    conn,
+                    project,
+                    &revision_id,
+                    admission,
+                    capacity,
+                    &mut statements,
+                )
             })??
             else {
                 continue;
             };
             check_graph_work(&mut control, GraphWorkStage::A2)?;
             let Some(live_bytes) = in_scratch(&mut scratch_scope, || -> Result<Option<usize>> {
-                if !preflight_revision_source_basis(conn, project, &revision_id, admission)? {
+                if !preflight_revision_source_basis(
+                    conn,
+                    project,
+                    &revision_id,
+                    admission,
+                    &mut statements,
+                )? {
                     return Ok(None);
                 }
-                preflight_live_source_lengths(conn, project, &revision_id, admission)
+                preflight_live_source_lengths(
+                    conn,
+                    project,
+                    &revision_id,
+                    admission,
+                    &mut statements,
+                )
             })??
             else {
                 continue;
@@ -1071,6 +1437,9 @@ fn read_eligibility_source_counted(
             }
         }
     }
+    // Nothing below reads a Revision, so the statements end here (they hold
+    // only their compiled programs once reset).
+    drop(statements);
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
     }
@@ -1085,18 +1454,21 @@ fn read_eligibility_source_counted(
     Ok(source)
 }
 
-fn read_revision_input_stats(
-    conn: &Connection,
+fn read_revision_input_stats<'conn>(
+    conn: &'conn Connection,
     project: &str,
     revision_id: &str,
     admission: Option<&GraphReadAdmission<'_>>,
     capacity: &mut SourceCapacity,
+    statements: &mut RevisionStatements<'conn>,
 ) -> Result<Option<RevisionInputStats>> {
     // Lengths are deliberately selected without invoking any JSON function.
     // The size guard below therefore runs before SQLite starts parsing the
     // payload or walking its material arrays.
-    let lengths: Option<(i64, i64, i64)> = conn
+    let lengths: Option<(i64, i64, i64)> = statements
+        .input_lengths
         .query_row(
+            conn,
             "SELECT COALESCE(octet_length(revision.payload_json), 0),
                     COALESCE(octet_length(revision.reconciliation_envelope_json), 0),
                     COALESCE(octet_length(proposal_set.id), 0) +
@@ -1195,7 +1567,8 @@ fn read_revision_input_stats(
     // The scope row of a version-2 Revision is one Scene Scope projection per
     // distinct anchor Scene, so the scope term of the record admission is the
     // anchor count (a version-1 Revision carried one project-token row).
-    let (entity_count, relation_count, evidence_count, anchor_count): (i64, i64, i64, i64) = conn.query_row(
+    let (entity_count, relation_count, evidence_count, anchor_count): (i64, i64, i64, i64) = statements.input_counts.query_row(
+        conn,
         "SELECT CASE WHEN json_valid(revision.payload_json)
                          THEN COALESCE(
                               CASE WHEN json_type(
@@ -1370,6 +1743,11 @@ fn revision_is_approved(conn: &Connection, revision_id: &str) -> Result<bool> {
 
 /// The Entity statement of [`preflight_revision_source_basis`].
 ///
+/// The statement is reused across Revisions (DR-GRW-3). Resetting it after each
+/// row releases the ephemeral `entity_items` table and the Entity-sized values
+/// below, so at most one Revision's copy is in Q at a time, as when it was
+/// finalized each time; what stays between Revisions is its compiled program.
+///
 /// `entity_items` is MATERIALIZED: each Entity's scalars (ids, tokens, the
 /// anchor key and the JSON types) are extracted from the payload once into a
 /// small ephemeral table, and the rollup, the two LEFT JOINs and the
@@ -1489,11 +1867,12 @@ SELECT entity.payload_count,
 /// operators inspect only the already-size-bounded payload and return scalar
 /// ids/tokens; the Rust A2 reader therefore cannot allocate a large live body
 /// for a Source whose basis row was deleted or replaced.
-fn preflight_revision_source_basis(
-    conn: &Connection,
+fn preflight_revision_source_basis<'conn>(
+    conn: &'conn Connection,
     _project: &str,
     revision_id: &str,
     admission: Option<&GraphReadAdmission<'_>>,
+    statements: &mut RevisionStatements<'conn>,
 ) -> Result<bool> {
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
@@ -1502,7 +1881,9 @@ fn preflight_revision_source_basis(
     // Scene and no `project-scope-authority` row. A version-1 basis (the old
     // project-token row) is an ordinary A2-unavailable Revision: it is skipped
     // here and never read as a project token.
-    // query_row finalizes its statement before the relation statement is prepared.
+    // Each statement is reset (not finalized) when its row is read, which frees
+    // the ephemeral tables and buffers the Entity statement built before the
+    // relation statement runs (DR-GRW-3, DR-CQL-13).
     let (
         entity_payload_count,
         basis_count,
@@ -1515,26 +1896,29 @@ fn preflight_revision_source_basis(
         matched_scope_count,
         matched_projection_basis_count,
         invalid_entity_count,
-    ): (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = conn.query_row(
-        SOURCE_BASIS_ENTITY_PREFLIGHT_SQL,
-        params![revision_id],
-        |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-                row.get(7)?,
-                row.get(8)?,
-                row.get(9)?,
-                row.get(10)?,
-            ))
-        },
-    )?;
-    let (relation_payload_count, relation_matched_payload_count, relation_matched_basis_count, invalid_relation_count): (i64, i64, i64, i64) = conn.query_row(
+    ): (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) =
+        statements.basis_entity.query_row(
+            conn,
+            SOURCE_BASIS_ENTITY_PREFLIGHT_SQL,
+            params![revision_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                ))
+            },
+        )?;
+    let (relation_payload_count, relation_matched_payload_count, relation_matched_basis_count, invalid_relation_count): (i64, i64, i64, i64) = statements.basis_relation.query_row(
+        conn,
         "WITH payload_root AS MATERIALIZED (
     SELECT CASE WHEN json_valid(revision.payload_json)
                 THEN jsonb(revision.payload_json)
@@ -1614,16 +1998,18 @@ SELECT relation.payload_count,
 /// allocated until the per-Revision envelope has passed its admission check.
 /// `None` means this candidate is no longer a valid typed Source; callers
 /// skip it as an ordinary A2-unavailable Revision.
-fn preflight_live_source_lengths(
-    conn: &Connection,
+fn preflight_live_source_lengths<'conn>(
+    conn: &'conn Connection,
     project: &str,
     revision_id: &str,
     admission: Option<&GraphReadAdmission<'_>>,
+    statements: &mut RevisionStatements<'conn>,
 ) -> Result<Option<usize>> {
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
     }
-    let (basis_count, matched_count, bytes): (i64, i64, i64) = conn.query_row(
+    let (basis_count, matched_count, bytes): (i64, i64, i64) = statements.live_lengths.query_row(
+        conn,
         "SELECT COUNT(*),
                 SUM(CASE
                     WHEN basis.source_kind = 'codex-entry'
@@ -2965,6 +3351,7 @@ mod tests {
                     "revision-1",
                     None,
                     &mut capacity,
+                    &mut RevisionStatements::new(&conn),
                 );
                 if approved {
                     let error = result
@@ -3010,6 +3397,7 @@ mod tests {
                     "revision-1",
                     None,
                     &mut SourceCapacity::default(),
+                    &mut RevisionStatements::new(&conn),
                 )?;
                 assert!(
                     stats.is_some(),
@@ -3053,6 +3441,7 @@ mod tests {
                 revision_id,
                 None,
                 &mut SourceCapacity::default(),
+                &mut RevisionStatements::new(&conn),
             )?
             .expect("revision is in scope");
             assert_eq!(stats.material_records, expected_records);
@@ -3105,6 +3494,7 @@ mod tests {
                 &revision_id,
                 None,
                 &mut SourceCapacity::default(),
+                &mut RevisionStatements::new(&conn),
             )?;
             assert_eq!(stats.is_some(), admitted, "{name}");
         }
@@ -3331,7 +3721,13 @@ mod tests {
                 )?;
             }
             assert_eq!(
-                preflight_revision_source_basis(&conn, "project-1", "revision-1", None)?,
+                preflight_revision_source_basis(
+                    &conn,
+                    "project-1",
+                    "revision-1",
+                    None,
+                    &mut RevisionStatements::new(&conn)
+                )?,
                 expected,
                 "unexpected source-basis eligibility for {name}"
             );

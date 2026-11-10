@@ -24,16 +24,16 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 /// - as a state, from its k-th progress callback on: the callback then reports
 ///   "stop" and every later `check` returns the typed stop, as a real owner
 ///   whose stop flag was raised does.
-struct CountingOwner {
-    callbacks: Arc<AtomicU64>,
-    checks: usize,
+pub(super) struct CountingOwner {
+    pub(super) callbacks: Arc<AtomicU64>,
+    pub(super) checks: usize,
     stop_at_check: Option<usize>,
     stop_at_callback: Option<u64>,
     stopped: Arc<AtomicBool>,
 }
 
 impl CountingOwner {
-    fn new(stop_at_check: Option<usize>) -> Self {
+    pub(super) fn new(stop_at_check: Option<usize>) -> Self {
         Self {
             callbacks: Arc::new(AtomicU64::new(0)),
             checks: 0,
@@ -43,7 +43,7 @@ impl CountingOwner {
         }
     }
 
-    fn stopping_at_callback(callback: u64) -> Self {
+    pub(super) fn stopping_at_callback(callback: u64) -> Self {
         Self {
             stop_at_callback: Some(callback),
             ..Self::new(None)
@@ -103,7 +103,7 @@ struct Outcome {
 /// probe holds a read snapshot of its own (BEGIN and an ordinary table read, as
 /// the registration did) and asks inside it: a leaked scope would answer
 /// `Some` there.
-fn scope_is_closed(conn: &Connection) -> Result<bool> {
+pub(super) fn scope_is_closed(conn: &Connection) -> Result<bool> {
     conn.execute_batch("BEGIN DEFERRED")?;
     conn.query_row("SELECT count(*) FROM codex_entries", [], |row| {
         row.get::<_, i64>(0)
