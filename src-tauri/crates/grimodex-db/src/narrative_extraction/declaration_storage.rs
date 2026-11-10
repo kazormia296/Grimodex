@@ -866,8 +866,9 @@ fn is_digest(value: &str) -> bool {
 }
 
 fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {
-    // Inside the Graph C-query's pinned snapshot the schema cache answers
-    // without VM steps; every other caller keeps the SQL check below.
+    // Inside the Graph C-query's and the Graph registration's pinned
+    // snapshots the schema cache answers without VM steps; every other caller
+    // keeps the SQL check below.
     if let Some(present) = crate::nir1_pinned_snapshot::table_exists(conn, table)? {
         return Ok(present);
     }

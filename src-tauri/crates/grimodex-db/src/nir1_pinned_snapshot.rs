@@ -1,5 +1,5 @@
-//! Table-presence checks that cost no SQLite VM steps inside the Graph
-//! C-query's pinned read snapshot.
+//! Table-presence checks that cost no SQLite VM steps inside the pinned read
+//! snapshot of the Graph C-query and of the Graph worker's registration.
 //!
 //! `SELECT ... FROM sqlite_master WHERE name = ?` has no index to use, so every
 //! presence check walks all schema rows (thousands of VM steps in a migrated
@@ -18,11 +18,34 @@
 //! Only values that cannot change inside that one snapshot are shared; no
 //! Revision-wide check is skipped or narrowed.
 //!
-//! Only the C-query opens a [`with_pinned_snapshot`] scope, after its pinned
-//! identity and seal reads. Every other caller keeps its SQL check, because some of them
-//! observe cancellation through the steps that check consumes (the Chronicle
-//! index publication stops at its 1,000-step progress callback), so a global
-//! shortcut would change when they stop.
+//! Only two ranges open a [`with_pinned_snapshot`] scope: the Graph
+//! C-query, after its pinned identity and seal reads, and the Graph worker's
+//! registration, from its first ordinary table-reading statement (the
+//! dependency-edge cursor check) until its seal read ends, before the ROLLBACK
+//! that closes its read. Every other caller keeps its SQL check, because some
+//! of them observe cancellation through the steps that check consumes: the
+//! Chronicle index publication stops at its 1,000-step progress callback, at a
+//! stop point its own test fixes, so a global shortcut would change when it
+//! stops.
+//!
+//! The registration also observes stops through steps, and its stop points do
+//! move. It installs an owner progress callback (`install_owner_with_stop`)
+//! that SQLite calls every 1,000 VM steps and that checks the stop flag, the
+//! deadline, close, the workspace generation and foreground waiters; the
+//! Rust-side checks (`check_active_work`, JSON reads) call it too. With fewer
+//! steps the callback runs less often, so a stop that arrives while a presence
+//! check would have been running is seen at a later point (and stage).
+//! The callback checks two kinds of condition. The owner's (stop, deadline,
+//! close, generation, foreground waiters) are states the owner's `check()` also
+//! reads, so the registration still ends with the same typed stop; only when
+//! and where it is seen changes. The reader's (`ReaderControl`: cancelled, epoch
+//! change, participant stop) are not read by the owner's `check()`: an
+//! interrupt they cause returns as the raw SQLite interrupt, while the same
+//! condition seen by a later Rust-side check returns a typed `Cancelled`, so
+//! under the shortcut the error can move between the two. The worker raises no
+//! reader condition during its registration; only in-process tests and
+//! diagnostics reach it. The range is not reachable by the Chronicle
+//! publication: they share no call path.
 //!
 //! A scope does not rely on the transaction it was opened in staying the one
 //! that runs. It records the connection and the pager's data version
@@ -57,6 +80,10 @@ thread_local! {
     /// behavior before the shortcut, to compare responses and steps with it.
     #[cfg(test)]
     static SQL_ONLY: Cell<bool> = const { Cell::new(false) };
+    /// Test-only: the table names presence checks were asked about, in order,
+    /// whichever way they were answered.
+    #[cfg(test)]
+    static ASKED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn identity(conn: &Connection) -> usize {
@@ -116,7 +143,8 @@ const fn sql_only() -> bool {
 /// nest and always end, also when `operation` unwinds.
 ///
 /// The caller must already have run an ordinary statement that reads a table
-/// on `conn` inside that transaction (the C-query's seal read): until then
+/// on `conn` inside that transaction (the C-query's seal read, the
+/// registration's dependency-edge cursor check): until then
 /// SQLite has not compared the snapshot's schema cookie with the connection's
 /// schema cache. Where `conn` holds no read snapshot the scope is inert, and it
 /// hides the enclosing scope's snapshot too, which `conn` no longer holds.
@@ -142,6 +170,8 @@ pub(crate) fn with_pinned_snapshot<T>(conn: &Connection, operation: impl FnOnce(
 /// virtual and shadow tables are. SQLite resolves the name without regard to
 /// case; callers pass the lowercase spelling their DDL creates.
 pub(crate) fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<Option<bool>> {
+    #[cfg(test)]
+    ASKED.with(|asked| asked.borrow_mut().push(table.to_owned()));
     let bytes = table.as_bytes();
     let plain_name = !bytes
         .get(..7)
@@ -156,6 +186,12 @@ pub(crate) fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<O
         }
         _ => Ok(None),
     }
+}
+
+/// Test-only: take (and clear) the table names asked about so far.
+#[cfg(test)]
+pub(crate) fn take_asked_tables() -> Vec<String> {
+    ASKED.with(|asked| std::mem::take(&mut *asked.borrow_mut()))
 }
 
 /// Run `operation` with every presence check answered by the callers' SQL.

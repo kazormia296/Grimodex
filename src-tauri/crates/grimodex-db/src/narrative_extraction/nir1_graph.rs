@@ -645,26 +645,44 @@ impl Nir1GraphReader {
             // auto-allocate positive rowids; reject malformed imported cursors.
             set_registration_stage(&mut observer, Nir1GraphRegistrationStage::SemanticIndex);
             let nonpositive: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM narrative_dependency_edges WHERE project_id=?1 AND rowid<=0)", [project], |r| r.get(0))?;
-            if nonpositive
-                || !is_complete_registered_with_scratch(
+            if nonpositive {
+                return Ok(None);
+            }
+            // The cache may answer a presence check only after an ordinary
+            // statement that reads a table has run in this transaction: that
+            // is when SQLite compares the pinned snapshot's schema cookie with
+            // the connection's schema cache and reloads the cache if they
+            // differ.  The header PRAGMAs of `ReadIdentity::read` pin the
+            // snapshot but do not make that comparison.  The statement above
+            // is that read, and it runs before the first presence check inside
+            // the scope; it stays outside the scope, so the scope never rests
+            // on a stale cache.  Inside the scope table presence is answered
+            // from the cache without VM steps.  The scope ends before
+            // `finish_read`'s ROLLBACK, the scratch (allocator) scope runs
+            // inside it, and nothing in this range ends the transaction.
+            with_pinned_snapshot(conn, || -> Result<Option<Seal>> {
+                if !is_complete_registered_with_scratch(
                     conn,
                     project,
                     INDEX_KEY,
                     &mut registration_owner,
                     scratch_scope,
                     Some(input::REVISION_A2_BYTES),
-                )?
-            {
-                return Ok(None);
-            }
-            set_registration_stage(&mut observer, Nir1GraphRegistrationStage::SourceIndex);
-            if !candidates::verify_complete_source_index(conn, project, &mut registration_owner)? {
-                return Ok(None);
-            }
-            lifecycle.check(GraphWorkStage::CompleteRegistration)?;
-            set_registration_stage(&mut observer, Nir1GraphRegistrationStage::Seal);
-            let seal = read_seal(conn, project)?;
-            Ok(seal)
+                )? {
+                    return Ok(None);
+                }
+                set_registration_stage(&mut observer, Nir1GraphRegistrationStage::SourceIndex);
+                if !candidates::verify_complete_source_index(
+                    conn,
+                    project,
+                    &mut registration_owner,
+                )? {
+                    return Ok(None);
+                }
+                lifecycle.check(GraphWorkStage::CompleteRegistration)?;
+                set_registration_stage(&mut observer, Nir1GraphRegistrationStage::Seal);
+                read_seal(conn, project)
+            })
         })();
         let result = self.finish_read(conn, result, owner_scope)?;
         let result = match result {
@@ -1059,9 +1077,10 @@ impl Nir1GraphReader {
                 // The seal read above is an ordinary table-reading statement of
                 // this transaction: SQLite compared the pinned snapshot's schema
                 // cookie with the connection's schema cache when it started, so
-                // the cache is now the snapshot's schema. Only this window
-                // answers table presence from it; registration and every other
-                // reader keep their SQL checks.
+                // the cache is now the snapshot's schema. Only this window and
+                // the registration's (opened in `register_with_control_observed`
+                // after its own first table read) answer table presence from
+                // it; every other reader keeps its SQL check.
                 with_pinned_snapshot(conn, || {
                     query_in_snapshot(
                         conn,

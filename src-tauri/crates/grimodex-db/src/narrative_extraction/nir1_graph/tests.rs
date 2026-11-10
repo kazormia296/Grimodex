@@ -37,6 +37,7 @@ const STARTUP_REFUSAL_PROJECT_ID: &str = "nir1-project-that-does-not-exist";
 
 mod cq_avail;
 mod cq_opt;
+mod registration_pinned;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Q2WorkerScenario {

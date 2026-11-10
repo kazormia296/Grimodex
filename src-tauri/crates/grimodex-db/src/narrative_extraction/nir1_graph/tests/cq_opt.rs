@@ -2,11 +2,12 @@
 //! authorities with far fewer SQLite VM steps.
 //!
 //! T answers table-presence checks from the connection's schema cache inside
-//! the C-query's pinned snapshot (`nir1_pinned_snapshot`); J joins the
+//! the C-query's pinned snapshot and the registration's (`nir1_pinned_snapshot`;
+//! the registration's scope is fixed by `registration_pinned`); J joins the
 //! Revision's payload to `codex_relations` by primary key (`input.rs`). The
 //! tests fix that the response is unchanged across shapes, that T reaches the
-//! C-query's read transaction and nothing else, and that the cost no longer
-//! follows the project's unrelated Relations.
+//! C-query's read transaction and the registration's and nothing else, and
+//! that the cost no longer follows the project's unrelated Relations.
 
 use super::super::input::with_legacy_relation_bytes;
 use super::*;
@@ -771,7 +772,7 @@ fn query_steps_stay_far_below_the_budget_and_grow_linearly() -> Result<()> {
 
 /// Reads of the schema table the Graph query must not make, and the callers
 /// outside it keep making.
-fn schema_reads(conn: &Connection) -> Result<Arc<AtomicUsize>> {
+pub(super) fn schema_reads(conn: &Connection) -> Result<Arc<AtomicUsize>> {
     let reads = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&reads);
     conn.authorizer(Some(move |context: AuthContext<'_>| {
@@ -803,13 +804,14 @@ fn read_sites(conn: &Connection, revision: &str) -> Result<SiteReads> {
     ))
 }
 
-// T reaches the C-query's read transaction and nothing else: a query reads no
-// sqlite_master, the same connection reads it again as soon as the query is
-// over, and a caller outside the pinned snapshot is unchanged. (The Chronicle
-// index publication, which observes its stop through these steps, is fixed by
+// T reaches the C-query's read transaction and the registration's (see
+// `registration_pinned`) and nothing else: a query reads no sqlite_master, the
+// same connection reads it again as soon as the query is over, and a caller
+// outside the pinned snapshot is unchanged. (The Chronicle index publication,
+// which observes its stop through these steps and so stays on SQL, is fixed by
 // its own test, `nir1_participant_sql_publication_installs_only_after_clean_success`.)
 #[test]
-fn table_presence_is_answered_from_the_schema_cache_only_inside_the_c_query() -> Result<()> {
+fn table_presence_is_answered_from_the_schema_cache_only_inside_the_pinned_scopes() -> Result<()> {
     let fixture = Fixture::new()?;
     let request = graph_request(SEED);
 
