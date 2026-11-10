@@ -266,30 +266,72 @@ const SOURCE_INDEX_DUPLICATE_SQL: &str = "SELECT EXISTS(
              HAVING COUNT(*)<>1
          )";
 
-const SOURCE_INDEX_UNEXPECTED_SQL: &str = "SELECT EXISTS(
-             SELECT 1
+/// UNEXPECTED, in one pass per Revision (DR-GRW-1). It asks whether the project
+/// has a `codex:` Edge of the proposal-Revision consumer that names an Entity
+/// its Revision's payload does not list. The statement used to answer that Edge
+/// by Edge, with `NOT EXISTS (SELECT .. FROM json_each(r.payload_json, ..))`
+/// inside the loop over Edges, so SQLite parsed the payload again for every
+/// Edge: the time grew with the square of the Entities of a Revision. This one
+/// parses each payload once, in two more CTEs that follow [`QUALIFYING_REVISIONS`]
+/// (hence the statement starts with a comma):
+///
+/// - `valid`: the Revisions of `qualifying` whose payload passes the six JSON
+///   conditions the statement used to state per Edge, and that have at least
+///   one `codex:` Edge of this consumer. It starts from `qualifying` and reaches
+///   `r` by primary key, so a payload is read only for a Revision of the set.
+///   The Edge condition keeps `entity_ids` to the Revisions that have an Edge
+///   to answer, as the per-Edge statement did: it never read the Entities of a
+///   Revision without one, and so it never failed on one.
+/// - `entity_ids`: the `codex:<entityId>` identity of every Entity of a `valid`
+///   Revision. `CAST(.. AS TEXT)` gives `identity` TEXT affinity, which lets
+///   SQLite build the automatic index on `(rid, identity)` for the probe below;
+///   without it the index is on `rid` alone and every probe scans the Entities
+///   of its Revision. The value is unchanged: `'codex:' || x` is already text,
+///   or NULL.
+///
+/// The result, the predicates, the bound parameters and the reads (the same
+/// tables, payloads and snapshot) are the per-Edge statement's. Its text is the
+/// test oracle `SOURCE_INDEX_UNEXPECTED_PER_EDGE_ORACLE_SQL`.
+const SOURCE_INDEX_UNEXPECTED_SQL: &str = ", valid(id, project_id) AS MATERIALIZED (
+             SELECT q.id, q.project_id
                FROM qualifying q
-               CROSS JOIN narrative_dependency_edges edge ON edge.consumer_key=q.id
                CROSS JOIN narrative_proposal_revisions r ON r.id=q.id
-              WHERE edge.project_id=?1
-                AND edge.consumer_kind=?7
+              WHERE EXISTS(
+                    SELECT 1
+                      FROM narrative_dependency_edges edge
+                     WHERE edge.project_id=?1
+                       AND edge.consumer_kind=?7
+                       AND edge.consumer_key=q.id
+                       AND edge.source_object_identity LIKE 'codex:%'
+                )
                 AND json_valid(r.payload_json)=1
                 AND json_extract(r.payload_json,'$.schemaVersion')=1
                 AND json_extract(r.payload_json,'$.kind')=?4
                 AND json_extract(r.payload_json,'$.producer')=?6
                 AND json_extract(r.payload_json,'$.projectId')=q.project_id
                 AND json_extract(r.payload_json,'$.revisionId')=r.id
+         ), entity_ids(rid, identity) AS MATERIALIZED (
+             SELECT v.id,
+                    CAST('codex:' || json_extract(entity.value,'$.entityId') AS TEXT)
+               FROM valid v
+               CROSS JOIN narrative_proposal_revisions r ON r.id=v.id
+               CROSS JOIN json_each(r.payload_json,'$.bundle.entities') entity
+         ) SELECT EXISTS(
+             SELECT 1
+               FROM valid v
+               CROSS JOIN narrative_dependency_edges edge ON edge.consumer_key=v.id
+              WHERE edge.project_id=?1
+                AND edge.consumer_kind=?7
                 AND edge.source_object_identity LIKE 'codex:%'
                 AND NOT EXISTS(
-                    SELECT 1
-                      FROM json_each(r.payload_json,'$.bundle.entities') entity
-                     WHERE edge.source_object_identity=
-                           'codex:' || json_extract(entity.value,'$.entityId')
+                    SELECT 1 FROM entity_ids e
+                     WHERE e.rid=v.id AND e.identity=edge.source_object_identity
                 )
          )";
 
 /// One of the proof's statements: [`QUALIFYING_REVISIONS`] first, then the
-/// statement that reads payloads through it.
+/// statement that reads payloads through it. UNEXPECTED's own text continues
+/// the `WITH` with the CTEs it needs.
 fn source_index_sql(statement: &str) -> String {
     format!("{QUALIFYING_REVISIONS}{statement}")
 }
@@ -1328,5 +1370,699 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    // ---- DR-GRW-1: UNEXPECTED in one pass per Revision ----
+
+    // UNEXPECTED as it was before DR-GRW-1, verbatim: the payload's Entities are
+    // searched Edge by Edge, so SQLite parses the payload again for every Edge.
+    // Test oracle only: the production statement must give the same result.
+    const SOURCE_INDEX_UNEXPECTED_PER_EDGE_ORACLE_SQL: &str = "SELECT EXISTS(
+             SELECT 1
+               FROM qualifying q
+               CROSS JOIN narrative_dependency_edges edge ON edge.consumer_key=q.id
+               CROSS JOIN narrative_proposal_revisions r ON r.id=q.id
+              WHERE edge.project_id=?1
+                AND edge.consumer_kind=?7
+                AND json_valid(r.payload_json)=1
+                AND json_extract(r.payload_json,'$.schemaVersion')=1
+                AND json_extract(r.payload_json,'$.kind')=?4
+                AND json_extract(r.payload_json,'$.producer')=?6
+                AND json_extract(r.payload_json,'$.projectId')=q.project_id
+                AND json_extract(r.payload_json,'$.revisionId')=r.id
+                AND edge.source_object_identity LIKE 'codex:%'
+                AND NOT EXISTS(
+                    SELECT 1
+                      FROM json_each(r.payload_json,'$.bundle.entities') entity
+                     WHERE edge.source_object_identity=
+                           'codex:' || json_extract(entity.value,'$.entityId')
+                )
+         )";
+
+    /// The real edge table's constraint (`UNIQUE(project_id, consumer_kind,
+    /// consumer_key, source_object_identity)`) is what keeps DUPLICATE from ever
+    /// being true; the fixture without it is the synthetic case.
+    fn equivalence_fixture(real_unique: bool) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE narrative_dependency_edges (
+                id TEXT NOT NULL, project_id TEXT NOT NULL,
+                consumer_kind TEXT NOT NULL, consumer_key TEXT NOT NULL,
+                source_object_identity TEXT NOT NULL,
+                PRIMARY KEY(id){});
+             CREATE INDEX idx_narrative_dependency_edges_source
+                ON narrative_dependency_edges(project_id, source_object_identity);
+             CREATE INDEX idx_narrative_dependency_edges_consumer
+                ON narrative_dependency_edges(project_id, consumer_kind, consumer_key);
+             CREATE TABLE narrative_proposal_revisions (
+                id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL,
+                origin_kind TEXT NOT NULL, payload_json TEXT NOT NULL);
+             CREATE TABLE narrative_proposals (
+                id TEXT PRIMARY KEY, proposal_set_id TEXT NOT NULL, status TEXT NOT NULL,
+                current_revision_id TEXT, kind TEXT NOT NULL);
+             CREATE TABLE narrative_proposal_sets (
+                id TEXT PRIMARY KEY, run_id TEXT NOT NULL, project_id TEXT NOT NULL,
+                set_kind TEXT NOT NULL);
+             CREATE TABLE narrative_extraction_runs (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, surface_path_id TEXT NOT NULL);",
+            if real_unique {
+                ",
+                UNIQUE(project_id, consumer_kind, consumer_key, source_object_identity)"
+            } else {
+                ""
+            }
+        ))
+        .unwrap();
+        // Two qualifying Revisions, three Entities each, one Edge per Entity.
+        for (revision, entities) in [("rev-0", ["a0", "a1", "a2"]), ("rev-1", ["b0", "b1", "b2"])] {
+            let payload = serde_json::json!({
+                "schemaVersion": 1,
+                "kind": NIR1_ENTITY_RELATION_PROPOSAL_KIND,
+                "producer": ENTITY_RELATION_PRODUCER,
+                "projectId": "project",
+                "revisionId": revision,
+                "bundle": { "entities": entities.iter()
+                    .map(|entity| serde_json::json!({ "entityId": entity }))
+                    .collect::<Vec<_>>() },
+            })
+            .to_string();
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs VALUES (?1, 'project', ?2)",
+                params![
+                    format!("run-{revision}"),
+                    NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO narrative_proposal_sets VALUES (?1, ?2, 'project', ?3)",
+                params![
+                    format!("set-{revision}"),
+                    format!("run-{revision}"),
+                    NIR1_ENTITY_RELATION_SET_KIND
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO narrative_proposals VALUES (?1, ?2, 'approved', ?3, ?4)",
+                params![
+                    format!("proposal-{revision}"),
+                    format!("set-{revision}"),
+                    revision,
+                    NIR1_ENTITY_RELATION_PROPOSAL_KIND
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO narrative_proposal_revisions VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    revision,
+                    format!("proposal-{revision}"),
+                    NIR1_ENTITY_RELATION_REVISION_ORIGIN,
+                    payload
+                ],
+            )
+            .unwrap();
+            for entity in entities {
+                conn.execute(
+                    "INSERT INTO narrative_dependency_edges VALUES (?1, 'project',
+                        'proposal-revision', ?2, ?3)",
+                    params![
+                        format!("e-{revision}-{entity}"),
+                        revision,
+                        format!("codex:{entity}")
+                    ],
+                )
+                .unwrap();
+            }
+        }
+        conn
+    }
+
+    /// The damaged copies of the healthy fixture (`rev-0`/`rev-1`, Entities
+    /// `a0..a2`/`b0..b2`, Edges `e-<revision>-<entity>`). Each is a list of
+    /// statements applied to its own copy.
+    fn equivalence_damage() -> Vec<(&'static str, Vec<String>)> {
+        let revision = |id: &str, set: &str| {
+            format!("UPDATE narrative_proposal_revisions SET payload_json={set} WHERE id='{id}'")
+        };
+        let rev0 = |set: &str| revision("rev-0", set);
+        let edge = |id: &str, kind: &str, project: &str, key: &str, identity: &str| {
+            format!(
+                "INSERT INTO narrative_dependency_edges VALUES ('{id}', '{project}', '{kind}',
+                    '{key}', '{identity}')"
+            )
+        };
+        let delete_edges_of = |id: &str| {
+            format!(
+                "DELETE FROM narrative_dependency_edges
+                  WHERE consumer_kind='proposal-revision' AND consumer_key='{id}'"
+            )
+        };
+        let string_entity = |id: &str, index: usize| {
+            revision(
+                id,
+                &format!("json_set(payload_json,'$.bundle.entities[{index}]','abc')"),
+            )
+        };
+        vec![
+            ("none (healthy)", vec![]),
+            (
+                "MALFORMED: invalid JSON (truncated)",
+                vec![rev0("substr(payload_json,1,length(payload_json)-7)")],
+            ),
+            (
+                "MALFORMED: producer key removed",
+                vec![rev0("json_remove(payload_json,'$.producer')")],
+            ),
+            (
+                "MALFORMED: schemaVersion=2",
+                vec![rev0("json_set(payload_json,'$.schemaVersion',2)")],
+            ),
+            (
+                "MALFORMED: projectId differs",
+                vec![rev0("json_set(payload_json,'$.projectId','other-project')")],
+            ),
+            (
+                "MALFORMED: revisionId differs",
+                vec![rev0(
+                    "json_set(payload_json,'$.revisionId','other-revision')",
+                )],
+            ),
+            (
+                "MALFORMED: entities is an object",
+                vec![rev0(
+                    "json_set(payload_json,'$.bundle.entities',json('{\"a\":1}'))",
+                )],
+            ),
+            (
+                "MALFORMED: entities key removed",
+                vec![rev0("json_remove(payload_json,'$.bundle.entities')")],
+            ),
+            (
+                "MALFORMED: entity[0].entityId removed",
+                vec![rev0(
+                    "json_remove(payload_json,'$.bundle.entities[0].entityId')",
+                )],
+            ),
+            (
+                "MALFORMED: entity[0].entityId blank",
+                vec![rev0(
+                    "json_set(payload_json,'$.bundle.entities[0].entityId',' ')",
+                )],
+            ),
+            (
+                "MALFORMED: entity[0].entityId numeric",
+                vec![rev0(
+                    "json_set(payload_json,'$.bundle.entities[0].entityId',5)",
+                )],
+            ),
+            (
+                "MALFORMED: entity[0].entityId null",
+                vec![rev0(
+                    "json_set(payload_json,'$.bundle.entities[0].entityId',NULL)",
+                )],
+            ),
+            (
+                "MALFORMED: entity[0] is a string",
+                vec![string_entity("rev-0", 0)],
+            ),
+            (
+                "MISSING: one edge deleted",
+                vec!["DELETE FROM narrative_dependency_edges WHERE id='e-rev-0-a0'".into()],
+            ),
+            (
+                "MISSING: all edges of one revision deleted",
+                vec![delete_edges_of("rev-0")],
+            ),
+            (
+                "DUPLICATE: same-key edge inserted (UNIQUE in the real schema)",
+                vec![edge(
+                    "dup-1",
+                    "proposal-revision",
+                    "project",
+                    "rev-0",
+                    "codex:a0",
+                )],
+            ),
+            (
+                "DUPLICATE: two same-key edges inserted (UNIQUE in the real schema)",
+                vec![
+                    edge("dup-1", "proposal-revision", "project", "rev-0", "codex:a0"),
+                    edge("dup-2", "proposal-revision", "project", "rev-0", "codex:a0"),
+                ],
+            ),
+            (
+                "UNEXPECTED: extra codex edge (entity not in revision)",
+                vec![edge(
+                    "x",
+                    "proposal-revision",
+                    "project",
+                    "rev-0",
+                    "codex:__extra__",
+                )],
+            ),
+            (
+                "UNEXPECTED: extra non-codex edge",
+                vec![edge(
+                    "x",
+                    "proposal-revision",
+                    "project",
+                    "rev-0",
+                    "scene:__extra__",
+                )],
+            ),
+            (
+                "UNEXPECTED: extra codex edge, other consumer kind",
+                vec![edge(
+                    "x",
+                    "other-kind",
+                    "project",
+                    "rev-0",
+                    "codex:__extra__",
+                )],
+            ),
+            (
+                "UNEXPECTED: extra codex edge, other project",
+                vec![edge(
+                    "x",
+                    "proposal-revision",
+                    "other-project",
+                    "rev-0",
+                    "codex:__extra__",
+                )],
+            ),
+            (
+                "UNEXPECTED: edge identity differs only by case",
+                vec!["UPDATE narrative_dependency_edges
+                        SET source_object_identity=upper(source_object_identity)
+                      WHERE id='e-rev-0-a0'"
+                    .into()],
+            ),
+            (
+                "UNEXPECTED: edge of rev-0 carries an entity id of rev-1 only",
+                vec![
+                    "UPDATE narrative_dependency_edges SET source_object_identity='codex:b0'
+                      WHERE id='e-rev-0-a0'"
+                        .into(),
+                ],
+            ),
+            (
+                "MISSING+UNEXPECTED: one edge re-keyed from rev-0 to rev-1",
+                vec!["UPDATE narrative_dependency_edges SET consumer_key='rev-1'
+                      WHERE id='e-rev-0-a0'"
+                    .into()],
+            ),
+            (
+                "ORDER: rev-1 entity[0] is a string + rev-1 edges deleted (rev-0 healthy)",
+                vec![delete_edges_of("rev-1"), string_entity("rev-1", 0)],
+            ),
+            (
+                "ORDER: rev-0 entity[0] is a string + rev-0 edges deleted (rev-1 healthy)",
+                vec![delete_edges_of("rev-0"), string_entity("rev-0", 0)],
+            ),
+            (
+                "ORDER: rev-0 one edge deleted + rev-1 entity[0] is a string",
+                vec![
+                    "DELETE FROM narrative_dependency_edges WHERE id='e-rev-0-a0'".into(),
+                    string_entity("rev-1", 0),
+                ],
+            ),
+            (
+                "ORDER: rev-1 one edge deleted + rev-0 entity[0] is a string",
+                vec![
+                    "DELETE FROM narrative_dependency_edges WHERE id='e-rev-1-b0'".into(),
+                    string_entity("rev-0", 0),
+                ],
+            ),
+            (
+                "ENTITY: rev-0 entity[2] is a string, every edge kept",
+                vec![string_entity("rev-0", 2)],
+            ),
+            (
+                "ENTITY: rev-0 entity[0] is a string, every edge kept",
+                vec![string_entity("rev-0", 0)],
+            ),
+            (
+                "payload: entity[1].entityId := entity[0] (edges unchanged)",
+                vec![rev0(
+                    "json_set(payload_json,'$.bundle.entities[1].entityId',
+                       json_extract(payload_json,'$.bundle.entities[0].entityId'))",
+                )],
+            ),
+            (
+                "payload: entity[1].entityId := entity[0] (+ old entity[1] edge deleted)",
+                vec![
+                    "DELETE FROM narrative_dependency_edges WHERE id='e-rev-0-a1'".into(),
+                    rev0(
+                        "json_set(payload_json,'$.bundle.entities[1].entityId',
+                           json_extract(payload_json,'$.bundle.entities[0].entityId'))",
+                    ),
+                ],
+            ),
+            (
+                "payload: entities := [] (edges remain)",
+                vec![rev0(
+                    "json_set(payload_json,'$.bundle.entities',json('[]'))",
+                )],
+            ),
+            (
+                "payload: entities := [] (+ its edges deleted)",
+                vec![
+                    delete_edges_of("rev-0"),
+                    rev0("json_set(payload_json,'$.bundle.entities',json('[]'))"),
+                ],
+            ),
+            (
+                "not qualifying: draft revision with broken payload",
+                vec![
+                    "UPDATE narrative_proposals SET status='draft' WHERE id='proposal-rev-0'"
+                        .into(),
+                    rev0("'{broken'"),
+                ],
+            ),
+            (
+                "not qualifying: rejected revision with broken payload + extra edge",
+                vec![
+                    "UPDATE narrative_proposals SET status='rejected' WHERE id='proposal-rev-0'"
+                        .into(),
+                    rev0("'{broken'"),
+                    edge(
+                        "x",
+                        "proposal-revision",
+                        "project",
+                        "rev-0",
+                        "codex:__extra__",
+                    ),
+                ],
+            ),
+        ]
+    }
+
+    /// One statement of the proof, run with the seven parameters the product
+    /// binds (a statement that uses fewer takes the first ones).
+    fn run_source_index_statement(conn: &Connection, sql: &str) -> Result<bool, String> {
+        let mut prepared = conn.prepare(sql).map_err(|error| error.to_string())?;
+        let arguments: Vec<&str> = [
+            "project",
+            NIR1_ENTITY_RELATION_SET_KIND,
+            NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
+            NIR1_ENTITY_RELATION_PROPOSAL_KIND,
+            NIR1_ENTITY_RELATION_REVISION_ORIGIN,
+            ENTITY_RELATION_PRODUCER,
+            "proposal-revision",
+        ]
+        .into_iter()
+        .take(prepared.parameter_count())
+        .collect();
+        prepared
+            .query_row(rusqlite::params_from_iter(arguments), |row| row.get(0))
+            .map_err(|error| error.to_string())
+    }
+
+    /// The proof's four statements in the order and with the early exits of
+    /// [`verify_complete_source_index`], with `unexpected` as the last one.
+    /// `Ok(true)` is a proven index; an error is the statement's own text.
+    fn proof_with_unexpected(conn: &Connection, unexpected: &str) -> Result<bool, String> {
+        for statement in [
+            SOURCE_INDEX_MALFORMED_SQL,
+            SOURCE_INDEX_MISSING_SQL,
+            SOURCE_INDEX_DUPLICATE_SQL,
+        ] {
+            if run_source_index_statement(conn, &source_index_sql(statement))? {
+                return Ok(false);
+            }
+        }
+        Ok(!run_source_index_statement(
+            conn,
+            &source_index_sql(unexpected),
+        )?)
+    }
+
+    #[test]
+    fn the_edge_table_of_the_real_schema_forbids_a_duplicate_proposal_revision_edge() {
+        let directory = std::env::temp_dir().join(format!("grw-unique-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let db = crate::Database::new(&directory.join("grimodex.db")).unwrap();
+        db.migrate().unwrap();
+        let unique_columns: Vec<Vec<String>> = db
+            .with_conn(|conn| {
+                let mut indexes = conn
+                    .prepare("SELECT name FROM pragma_index_list('narrative_dependency_edges') WHERE \"unique\"=1")?;
+                let names: Vec<String> = indexes
+                    .query_map([], |row| row.get(0))?
+                    .collect::<Result<_, _>>()?;
+                names
+                    .into_iter()
+                    .map(|name| {
+                        let mut info = conn.prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")?;
+                        let columns: Vec<String> = info
+                            .query_map([&name], |row| row.get(0))?
+                            .collect::<Result<_, _>>()?;
+                        Ok(columns)
+                    })
+                    .collect()
+            })
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&directory);
+        assert!(
+            unique_columns.contains(&vec![
+                "project_id".to_owned(),
+                "consumer_kind".to_owned(),
+                "consumer_key".to_owned(),
+                "source_object_identity".to_owned(),
+            ]),
+            "{unique_columns:?}"
+        );
+    }
+
+    #[test]
+    fn unexpected_in_one_pass_agrees_with_the_per_edge_statement_on_every_damage() {
+        let mut control =
+            crate::narrative_extraction::nir1_entity_relation_index::NeverStopGraphWorkControl;
+        let mut compared = 0;
+        let mut verdicts = std::collections::BTreeSet::new();
+        for real_unique in [true, false] {
+            for (name, statements) in equivalence_damage() {
+                let conn = equivalence_fixture(real_unique);
+                let mut refused = Vec::new();
+                for statement in &statements {
+                    if let Err(error) = conn.execute(statement, []) {
+                        refused.push(error.to_string());
+                    }
+                }
+                // Only the real schema refuses, and only a duplicate edge.
+                assert_eq!(
+                    !refused.is_empty(),
+                    real_unique && name.starts_with("DUPLICATE"),
+                    "{name} (real_unique={real_unique}): {refused:?}"
+                );
+                assert!(refused
+                    .iter()
+                    .all(|error| error.contains("UNIQUE constraint failed")));
+
+                // The statement alone: the EXISTS value or the error.
+                let oracle = run_source_index_statement(
+                    &conn,
+                    &source_index_sql(SOURCE_INDEX_UNEXPECTED_PER_EDGE_ORACLE_SQL),
+                );
+                let linear = run_source_index_statement(
+                    &conn,
+                    &source_index_sql(SOURCE_INDEX_UNEXPECTED_SQL),
+                );
+                assert_eq!(
+                    linear, oracle,
+                    "UNEXPECTED: {name} (real_unique={real_unique})"
+                );
+
+                // The proof: the verdict and the error text.
+                let expected =
+                    proof_with_unexpected(&conn, SOURCE_INDEX_UNEXPECTED_PER_EDGE_ORACLE_SQL);
+                let actual = verify_complete_source_index(&conn, "project", &mut control)
+                    .map_err(|error| error.to_string());
+                assert_eq!(
+                    actual, expected,
+                    "proof: {name} (real_unique={real_unique})"
+                );
+                assert_eq!(
+                    proof_with_unexpected(&conn, SOURCE_INDEX_UNEXPECTED_SQL),
+                    expected,
+                    "chain: {name} (real_unique={real_unique})"
+                );
+                verdicts.insert(format!("{actual:?}"));
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 2 * 36);
+        assert_eq!(
+            verdicts,
+            std::collections::BTreeSet::from(["Ok(false)".to_owned(), "Ok(true)".to_owned()]),
+            "the damage must reach both verdicts"
+        );
+    }
+
+    #[test]
+    fn unexpected_in_one_pass_does_not_read_the_entities_of_a_revision_without_an_edge() {
+        // A Revision without a `codex:` Edge of the consumer has no Edge to answer.
+        // Its Entities, even one that is not an object, must not fail the statement
+        // (the per-Edge statement never read them).
+        for damage in [
+            "ORDER: rev-1 entity[0] is a string + rev-1 edges deleted (rev-0 healthy)",
+            "ORDER: rev-0 entity[0] is a string + rev-0 edges deleted (rev-1 healthy)",
+        ] {
+            let (_, statements) = equivalence_damage()
+                .into_iter()
+                .find(|(name, _)| *name == damage)
+                .unwrap();
+            let conn = equivalence_fixture(true);
+            for statement in &statements {
+                conn.execute(statement, []).unwrap();
+            }
+            for sql in [
+                SOURCE_INDEX_UNEXPECTED_PER_EDGE_ORACLE_SQL,
+                SOURCE_INDEX_UNEXPECTED_SQL,
+            ] {
+                assert_eq!(
+                    run_source_index_statement(&conn, &source_index_sql(sql)),
+                    Ok(false),
+                    "{damage}"
+                );
+            }
+        }
+    }
+
+    /// The plan of the statement as `[(depth-first order) detail]` lines.
+    fn source_index_plan(conn: &Connection, statement: &str) -> Vec<String> {
+        let mut prepared = conn
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                source_index_sql(statement)
+            ))
+            .unwrap();
+        let arguments: Vec<&str> = [
+            "project",
+            NIR1_ENTITY_RELATION_SET_KIND,
+            NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
+            NIR1_ENTITY_RELATION_PROPOSAL_KIND,
+            NIR1_ENTITY_RELATION_REVISION_ORIGIN,
+            ENTITY_RELATION_PRODUCER,
+            "proposal-revision",
+        ]
+        .into_iter()
+        .take(prepared.parameter_count())
+        .collect();
+        prepared
+            .query_map(rusqlite::params_from_iter(arguments), |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    #[test]
+    fn unexpected_in_one_pass_reads_each_payload_once_and_probes_the_entities_by_index() {
+        let conn = equivalence_fixture(true);
+        let scans_of_payload_entities = |plan: &[String]| {
+            plan.iter()
+                .filter(|step| step.starts_with("SCAN entity VIRTUAL TABLE"))
+                .count()
+        };
+
+        // Control: the per-Edge statement searches the payload inside the loop over
+        // Edges (a correlated subquery that is never materialized).
+        let before = source_index_plan(&conn, SOURCE_INDEX_UNEXPECTED_PER_EDGE_ORACLE_SQL);
+        let at = format!("per-Edge plan:\n{}", before.join("\n"));
+        assert!(
+            !before
+                .iter()
+                .any(|step| step.starts_with("MATERIALIZE entity")),
+            "{at}"
+        );
+        assert_eq!(scans_of_payload_entities(&before), 1, "{at}");
+        assert!(
+            before
+                .iter()
+                .any(|step| step == "CORRELATED SCALAR SUBQUERY 2"),
+            "{at}"
+        );
+
+        // One pass: the Entities are listed once, in the materialized `entity_ids`,
+        // and the NOT EXISTS probes its automatic index on `(rid, identity)`.
+        let after = source_index_plan(&conn, SOURCE_INDEX_UNEXPECTED_SQL);
+        let at = format!("one-pass plan:\n{}", after.join("\n"));
+        let position = |line: &str| after.iter().position(|step| step == line);
+        let valid = position("MATERIALIZE valid").expect(&at);
+        let entity_ids = position("MATERIALIZE entity_ids").expect(&at);
+        let listing = after
+            .iter()
+            .position(|step| step.starts_with("SCAN entity VIRTUAL TABLE"))
+            .expect(&at);
+        let probe =
+            position("SEARCH e USING AUTOMATIC COVERING INDEX (rid=? AND identity=?)").expect(&at);
+        assert_eq!(scans_of_payload_entities(&after), 1, "{at}");
+        assert_eq!(
+            after
+                .iter()
+                .filter(|step| *step == "MATERIALIZE entity_ids" || *step == "MATERIALIZE valid")
+                .count(),
+            2,
+            "{at}"
+        );
+        assert!(
+            valid < entity_ids && entity_ids < listing && listing < probe,
+            "{at}"
+        );
+    }
+
+    #[test]
+    fn unexpected_in_one_pass_parses_the_payload_of_nothing_but_its_subject() {
+        let conn = gate_project();
+        let calls = record_json_calls(&conn);
+        assert_eq!(
+            run_source_index_statement(&conn, &source_index_sql(SOURCE_INDEX_UNEXPECTED_SQL)),
+            Ok(false)
+        );
+        assert_eq!(
+            marked_payloads(&calls),
+            std::collections::BTreeSet::from(["OK".to_owned()]),
+        );
+    }
+
+    #[test]
+    fn a_non_object_entity_behind_a_revision_that_has_edges_fails_only_the_statement_not_the_proof()
+    {
+        // The per-Edge statement stops reading a payload's Entities at the first one
+        // an Edge names, so it can finish before a malformed Entity it never
+        // reached; the one-pass statement lists every Entity of a Revision that has
+        // an Edge. That Revision is already refused by MALFORMED, which runs first
+        // in the proof, so the proof's verdict and error are the same (below).
+        let mut control =
+            crate::narrative_extraction::nir1_entity_relation_index::NeverStopGraphWorkControl;
+        let conn = equivalence_fixture(true);
+        conn.execute_batch(
+            "DELETE FROM narrative_dependency_edges WHERE id IN ('e-rev-0-a1', 'e-rev-0-a2');
+             UPDATE narrative_proposal_revisions
+                SET payload_json=json_set(payload_json,'$.bundle.entities[2]','abc')
+              WHERE id='rev-0';",
+        )
+        .unwrap();
+        assert_eq!(
+            run_source_index_statement(
+                &conn,
+                &source_index_sql(SOURCE_INDEX_UNEXPECTED_PER_EDGE_ORACLE_SQL)
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            run_source_index_statement(&conn, &source_index_sql(SOURCE_INDEX_UNEXPECTED_SQL)),
+            Err("malformed JSON".to_owned())
+        );
+        assert_eq!(
+            verify_complete_source_index(&conn, "project", &mut control)
+                .map_err(|error| error.to_string()),
+            proof_with_unexpected(&conn, SOURCE_INDEX_UNEXPECTED_PER_EDGE_ORACLE_SQL),
+        );
+        assert!(!verify_complete_source_index(&conn, "project", &mut control).unwrap());
     }
 }
