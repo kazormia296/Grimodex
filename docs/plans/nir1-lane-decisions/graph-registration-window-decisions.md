@@ -45,8 +45,7 @@ branch は `claude/graph-source-index-linear`。
   | Q2044／R1022 | 12.3 ms | 14.6 ms | 48.5 → 51.5 ms（二乗の部分が無い形で、変わらない） |
 
   この表の「新」は dev の試作（`entity_ids` に edge の有無の条件が無い版）の値。この PR の文は `valid` に edge の条件を足しているので、
-  dev で同条件の測り直しが要る（gate）。窓 W の縮みの見積り（R4：約 1.0 s → 約 0.33 s、R16：約 4.75 s → 約 2.1 s）は、
-  「W の残りは変わらない」という仮定の推定で、測っていない。
+  dev で同条件の測り直しが要る（gate）。この PR の文での窓 W の測定は gate 4 にある（R4 は約 0.95 s → 約 0.30 s、R16 は約 3.9 s → 約 1.2 s）。
 
 ### edge の無い revision（試作との差）
 
@@ -88,7 +87,7 @@ UNEXPECTED には届かない。旧が error になる入力は、新も同じ e
 
 ### gate
 
-1. oracle の同値性：旧の UNEXPECTED と新の文を、健全な fixture と壊した copy 34 種で、(a) 文単体の EXISTS の値（または error）、
+1. oracle の同値性：旧の UNEXPECTED と新の文を、健全な fixture と壊した copy 35 種（合わせて 36 通り。下の 2 種の表で 72 件）で、(a) 文単体の EXISTS の値（または error）、
    (b) `verify_complete_source_index` の結果と error 文で比べる。実 schema の `UNIQUE(project_id, consumer_kind, consumer_key, source_object_identity)` を持つ表と、持たない表（DUPLICATE の synthetic）の両方で行う
    （`unexpected_in_one_pass_agrees_with_the_per_edge_statement_on_every_damage`）。DUPLICATE が実 schema の UNIQUE で入らない事実は
    `the_edge_table_of_the_real_schema_forbids_a_duplicate_proposal_revision_edge` と、同じ試験の「UNIQUE の表では DUPLICATE の挿入が拒否される」断言で表す。
@@ -96,4 +95,20 @@ UNEXPECTED には届かない。旧が error になる入力は、新も同じ e
    旧は correlated subquery で materialize が無い対照）。既存の `registration_proof_parses_the_payload_of_nothing_but_its_subject` の plan の断言は、新しい plan でもそのまま成り立つ（変更なし）。
 3. memory diagnostics：実 worker の固定 allocator で `native_worker_registration_*` の 2 本（ignored、`NIR1_C_QUERY_WORKER_BIN`）を通す。
    大きい DB の heap の山は、dev の測定値（上）だけで、official Q2 preseed の diagnostics は未実行。
-4. dev で A2 の W を同条件で測り直す（R4／R16。この PR の文で。時間はここでは測らない）。
+4. dev で A2 の W を同条件で測り直す（この PR の文で）。結果（2026-11-10、release、各 30 回、writer なし、読取の接続は毎回新しい。
+   PR の前は dev 枝 `84a110c3`、後は同じ dev の測定にこの PR の文を載せた `88397983`。2 つの枝の差は `candidates.rs` だけで、試験・fixture・回数は同じ。
+   1 分平均の負荷は、前が開始 2.23・終了 2.29、後が開始 2.31・終了 1.33。
+   記録は `drift-measure/drift-a2-base2-summary.txt` と `drift-a2-pra-summary.txt`。前回の A2〔`drift-a2-summary.txt`〕は負荷平均 4〜9 の下の値なので、比べるのに使わない）：
+
+   | case | W p50 前 → 後 | W p95 前 → 後 |
+   |---|---|---|
+   | Q513／R3 | 126 → 76 ms（−40%） | 128 → 77 ms |
+   | Q2044／R4 | 949 → 297 ms（−69%） | 960 → 305 ms |
+   | Q2044／R1022 | 2,736 → 2,704 ms（−1%。二乗の部分が無い形で、対象外） | 2,786 → 2,721 ms |
+   | Q8176／R16 | 3,877 → 1,198 ms（−69%） | 3,987 → 1,211 ms |
+   | D2064／report-heavy | 3,130 → 2,995 ms（−4%） | 3,246 → 3,034 ms |
+
+   縮んだ量（R4 −652 ms、R16 −2,678 ms）は、上の表の試作（edge の条件が無い版）で測った UNEXPECTED の文単体の縮み（−666 ms、−2,659 ms）とほぼ同じ。
+   R1022 は二乗の部分が無く対象外で、−1% にとどまる。前後の負荷の差による影響は 1% 程度とみる（対照）。
+   D2064 は p50 −135 ms・p95 −212 ms（−4%）。最後に走る case で後の run は負荷が下がっていたので、UNEXPECTED の分か負荷の差かは切り分けていない。
+   R1022 と D2064 の W の主は Semantic 段（B1／B2 の対象）。byte-heavy は前後とも admission の上限で止まる（同じ）。
