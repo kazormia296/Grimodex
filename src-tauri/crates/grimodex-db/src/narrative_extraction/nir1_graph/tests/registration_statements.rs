@@ -19,7 +19,7 @@ use crate::narrative_extraction::nir1_entity_relation_index::{
 };
 
 /// How many statements the connection holds unfinalized.
-fn live_statements(conn: &Connection) -> usize {
+pub(super) fn live_statements(conn: &Connection) -> usize {
     // SAFETY: the walk only reads the connection's list of statements, on the
     // thread that owns the connection.
     unsafe {
@@ -156,7 +156,7 @@ fn alike(name: &str, fixture: &Fixture) -> Result<(Run, Run)> {
     Ok((reuse, fresh))
 }
 
-fn execute(fixture: &Fixture, sql: &str) -> Result<()> {
+pub(super) fn execute(fixture: &Fixture, sql: &str) -> Result<()> {
     fixture.authority.with_conn(|conn| {
         conn.execute_batch(sql)?;
         Ok(())
@@ -165,7 +165,7 @@ fn execute(fixture: &Fixture, sql: &str) -> Result<()> {
 
 /// The seed Revision and three more approved ones: four Revisions, so a
 /// statement is reused three times when nothing ends the read early.
-fn multi_fixture() -> Result<Fixture> {
+pub(super) fn multi_fixture() -> Result<Fixture> {
     let fixture = Fixture::new()?;
     for serial in 1..=3 {
         fixture.add_candidate_revision(serial, 0)?;
@@ -176,7 +176,7 @@ fn multi_fixture() -> Result<Fixture> {
 
 /// The candidate Revisions in the order the roster reads them (primary key of
 /// the proposal, which is a random identifier), so a test can break the n-th.
-fn scan_order(fixture: &Fixture) -> Result<Vec<String>> {
+pub(super) fn scan_order(fixture: &Fixture) -> Result<Vec<String>> {
     fixture.authority.with_conn(|conn| {
         let mut statement = conn.prepare(&index::roster_candidate_page_sql())?;
         let rows =
@@ -187,7 +187,11 @@ fn scan_order(fixture: &Fixture) -> Result<Vec<String>> {
 
 /// A typed Revision of the seed Entities with its decision (`None` leaves it
 /// pending), as the Graph tests of `cq_opt` make them.
-fn add_decided(fixture: &Fixture, serial: usize, decision: Option<&str>) -> Result<String> {
+pub(super) fn add_decided(
+    fixture: &Fixture,
+    serial: usize,
+    decision: Option<&str>,
+) -> Result<String> {
     let db = fixture.authority.db();
     let mut payload = request(db);
     payload.proposal_key = format!("nir1:review:decided-{serial:04}");
@@ -216,7 +220,7 @@ fn add_decided(fixture: &Fixture, serial: usize, decision: Option<&str>) -> Resu
 }
 
 /// Six million bytes and more of padding, as SQL.
-const OVER_6_MIB_PAD: &str = "replace(hex(zeroblob(3300000)), '0', ' ')";
+pub(super) const OVER_6_MIB_PAD: &str = "replace(hex(zeroblob(3300000)), '0', ' ')";
 
 // ---------------------------------------------------------------------------
 // The counter, the saving and the shapes.

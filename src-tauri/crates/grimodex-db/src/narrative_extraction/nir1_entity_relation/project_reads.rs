@@ -17,6 +17,7 @@
 //! result for a Revision is the same as when it is evaluated alone
 //! ([`evaluate_nir1_entity_relation_disclosure`] is that evaluation).
 
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 
 use anyhow::Result;
@@ -34,7 +35,9 @@ use rusqlite::{params, OptionalExtension};
 
 #[cfg(test)]
 use super::super::nir1_capacity::project_read_probe::{self, Read};
-use super::super::project_scope_authority::load_live_project_scope_authority_with_scene_bindings;
+use super::super::project_scope_authority::{
+    load_live_project_scope_authority_with_scene_bindings, LiveProjectScopeRead,
+};
 use super::super::retrieval_admission::{
     read_retrieval_scene_source, scene_axis, RetrievalSceneSourceRead,
 };
@@ -285,6 +288,76 @@ impl Nir1ProjectReads {
         self.query
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("NIR1_ENTITY_RELATION_A3_SHARED_QUERY_UNAVAILABLE"))
+    }
+}
+
+/// The project-level reads a Graph registration shares across the Revisions it
+/// reads (DR-GRW-4): the live Scope authority, the latest Semantic Epoch and the
+/// C2-ZC marker. None of them binds a Revision, a Scene or a proposal, and the
+/// registration reads in one pinned snapshot, so each is the same for every
+/// Revision.
+///
+/// Each is its own cell, read at the first use at the call site the unshared
+/// evaluation reads it from (never ahead of it), so a Revision that ends before
+/// that site reads nothing and the first error is met where it always was. **Only
+/// a read that succeeded is kept.** A read that fails is not remembered: the next
+/// Revision reads it again, as it does without the memo (a Scope authority that
+/// fails to load is `source-revision-changed` for that Revision alone, and a
+/// transient failure of one read must not become the answer for the rest). A stop
+/// is such an error and is returned as it is.
+///
+/// The value is built inside the registration's scratch scope and only read after
+/// that: a cell is set once and never grown, because a buffer allocated in the
+/// scratch region cannot be reallocated outside its scope. The registration owns
+/// it as a local of its source read and drops it before it seals the region.
+pub(crate) struct RegistrationProjectReads<'p> {
+    project_id: &'p str,
+    epoch: OnceCell<Option<CurrentEpoch>>,
+    scope: OnceCell<LiveProjectScopeRead>,
+    generic_freshness_canonical: OnceCell<bool>,
+}
+
+impl<'p> RegistrationProjectReads<'p> {
+    /// An empty memo: nothing is read, nothing is allocated.
+    pub(crate) fn new(project_id: &'p str) -> Self {
+        Self {
+            project_id,
+            epoch: OnceCell::new(),
+            scope: OnceCell::new(),
+            generic_freshness_canonical: OnceCell::new(),
+        }
+    }
+
+    /// Whether these reads are about `project_id`.
+    pub(super) fn is_for(&self, project_id: &str) -> bool {
+        self.project_id == project_id
+    }
+
+    /// The project's latest Semantic Epoch (`None` when it has none).
+    pub(super) fn epoch(&self, conn: &Connection) -> Result<&Option<CurrentEpoch>> {
+        if let Some(epoch) = self.epoch.get() {
+            return Ok(epoch);
+        }
+        let read = super::read_current_epoch(conn, self.project_id)?;
+        Ok(self.epoch.get_or_init(|| read))
+    }
+
+    /// The live Scope authority and the validated Scene bindings.
+    pub(super) fn scope(&self, conn: &Connection) -> Result<&LiveProjectScopeRead> {
+        if let Some(scope) = self.scope.get() {
+            return Ok(scope);
+        }
+        let read = super::read_live_project_scope(conn, self.project_id)?;
+        Ok(self.scope.get_or_init(|| read))
+    }
+
+    /// Whether the C2-ZC cutover marker is current.
+    pub(super) fn generic_freshness_canonical(&self, conn: &Connection) -> Result<bool> {
+        if let Some(canonical) = self.generic_freshness_canonical.get() {
+            return Ok(*canonical);
+        }
+        let read = super::read_generic_freshness_canonical(conn)?;
+        Ok(*self.generic_freshness_canonical.get_or_init(|| read))
     }
 }
 

@@ -660,6 +660,8 @@ pub(crate) mod project_read_probe {
         RegistryRow,
         /// The latest Semantic Epoch.
         CurrentEpoch,
+        /// The C2-ZC cutover marker (`schema_data_migrations`, one row).
+        C2zcMarker,
         /// The query Scene's saved source and the project's phase mode.
         QueryScene,
         /// The query Scene's POV character.

@@ -38,6 +38,7 @@ use super::nir1_capacity::{self, with_capacity_scope, CapacityBudget};
 use super::nir1_chronicle_index::NirChronicleIndexRuntime;
 use super::nir1_entity_relation::{
     read_nir1_entity_relation_revision_current_for_graph_index, Nir1EntityRelationRevision,
+    RegistrationProjectReads,
 };
 use super::publish_runtime::publish_complete_runless_graph_freshness_in_tx;
 use super::semantic_epoch::get_current_epoch;
@@ -1049,6 +1050,7 @@ impl Drop for RevisionStatements<'_> {
 #[cfg(test)]
 thread_local! {
     static FRESH_STATEMENTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static UNSHARED_PROJECT_READS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static LAST_STATEMENTS: std::cell::Cell<Option<RevisionStatementsObservation>> =
         const { std::cell::Cell::new(None) };
 }
@@ -1070,6 +1072,27 @@ pub(crate) fn with_fresh_statements<T>(operation: impl FnOnce() -> T) -> T {
         }
     }
     let _restore = Restore(FRESH_STATEMENTS.with(|cell| cell.replace(true)));
+    operation()
+}
+
+#[cfg(test)]
+fn unshared_project_reads() -> bool {
+    UNSHARED_PROJECT_READS.with(std::cell::Cell::get)
+}
+
+/// Test-only oracle (DR-GRW-4): run `operation` with the registration reading the
+/// project-level reads of each Revision itself, at each use, which is the form
+/// before the change. The typed reader's unshared branch is the code every other
+/// caller still runs, so this is the form before the change by identity.
+#[cfg(test)]
+pub(crate) fn with_unshared_project_reads<T>(operation: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            UNSHARED_PROJECT_READS.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(UNSHARED_PROJECT_READS.with(|cell| cell.replace(true)));
     operation()
 }
 
@@ -1238,6 +1261,18 @@ fn read_eligibility_source_counted(
     // it finalizes them on every exit, return or unwind, before the caller
     // reads the source index, runs the postflight or ends the transaction.
     let mut statements = RevisionStatements::new(conn);
+    // The Graph registration (and only it: `registration_a2_limit` is `Some`
+    // for no other reader) reads the project-level facts every Revision's A2
+    // read needs once, at the first Revision that needs them, and keeps them
+    // for the rest (DR-GRW-4). The memo is empty until then, is filled inside
+    // the third scratch scope below and never grown, and drops after the loop
+    // with the statements, before the source index is built and S is sealed.
+    let registration_reads = {
+        let enabled = capacity.registration_a2_limit.is_some();
+        #[cfg(test)]
+        let enabled = enabled && !unshared_project_reads();
+        enabled.then(|| RegistrationProjectReads::new(project))
+    };
     loop {
         check_graph_work(&mut control, GraphWorkStage::Page)?;
         if let Some(admission) = admission {
@@ -1390,6 +1425,7 @@ fn read_eligibility_source_counted(
                         conn,
                         project,
                         &revision_id,
+                        registration_reads.as_ref(),
                     )?
                 else {
                     return Ok(None);
@@ -1437,9 +1473,10 @@ fn read_eligibility_source_counted(
             }
         }
     }
-    // Nothing below reads a Revision, so the statements end here (they hold
-    // only their compiled programs once reset).
+    // Nothing below reads a Revision, so the statements and the shared reads end
+    // here (the statements hold only their compiled programs once reset).
     drop(statements);
+    drop(registration_reads);
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
     }

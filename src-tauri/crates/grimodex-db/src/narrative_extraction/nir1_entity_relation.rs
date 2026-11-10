@@ -78,7 +78,6 @@ use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
 use crate::Database;
 
 mod project_reads;
-pub(crate) use project_reads::Nir1ProjectReads;
 use project_reads::{load_a3_query_context, A3QueryOutcome, SceneScopes};
 #[cfg(feature = "native-current-human-capture")]
 pub(crate) use project_reads::{
@@ -86,6 +85,7 @@ pub(crate) use project_reads::{
 };
 #[cfg(all(test, feature = "native-current-human-capture"))]
 pub(crate) use project_reads::{HistoryAutoFacts, HistoryMappingFacts};
+pub(crate) use project_reads::{Nir1ProjectReads, RegistrationProjectReads};
 
 /// Reserved ProposalSet kind. Generic proposal persistence cannot use this
 /// value; the typed adapter below is the only writer for this contract.
@@ -1486,16 +1486,60 @@ fn read_current_epoch(conn: &Connection, project_id: &str) -> anyhow::Result<Opt
     get_current_epoch(conn, project_id)
 }
 
+/// Where a typed read gets the project-level reads (the live Scope authority,
+/// the latest Semantic Epoch, the C2-ZC marker): every one of them is about the
+/// project, not the Revision, so inside one read snapshot they cannot change.
+#[derive(Clone, Copy)]
+enum ProjectReadSource<'a> {
+    /// Read them here, at each use, as every caller but the two below does.
+    Unshared,
+    /// The ones a Graph query read once for all its Revisions.
+    Query(&'a Nir1ProjectReads),
+    /// The ones a Graph registration reads at the first use and keeps for the
+    /// rest of its Revisions (DR-GRW-4).
+    Registration(&'a RegistrationProjectReads<'a>),
+}
+
+impl<'a> From<Option<&'a Nir1ProjectReads>> for ProjectReadSource<'a> {
+    fn from(shared: Option<&'a Nir1ProjectReads>) -> Self {
+        shared.map_or(Self::Unshared, Self::Query)
+    }
+}
+
+/// The marker read of the C2-ZC cutover, behind a name the read probe counts (the
+/// registration's reads and the unshared ones; a query's are not counted).
+fn read_generic_freshness_canonical(conn: &Connection) -> anyhow::Result<bool> {
+    #[cfg(test)]
+    super::nir1_capacity::project_read_probe::record(
+        super::nir1_capacity::project_read_probe::Read::C2zcMarker,
+    );
+    is_generic_freshness_canonical(conn)
+}
+
+/// The live Scope authority and the validated Scene bindings of the project,
+/// read in the caller's snapshot.
+fn read_live_project_scope(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<super::project_scope_authority::LiveProjectScopeRead> {
+    load_live_project_scope_authority_with_scene_bindings(
+        conn,
+        project_id,
+        &format!("project:scope-authority:{project_id}"),
+    )
+}
+
 fn typed_run_matches_current_epoch(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
-    shared: Option<&Nir1ProjectReads>,
+    shared: ProjectReadSource<'_>,
 ) -> anyhow::Result<bool> {
     let read_epoch;
     let epoch = match shared {
-        Some(shared) => shared.epoch(),
-        None => {
+        ProjectReadSource::Query(shared) => shared.epoch(),
+        ProjectReadSource::Registration(reads) => reads.epoch(conn)?.as_ref(),
+        ProjectReadSource::Unshared => {
             read_epoch = read_current_epoch(conn, project_id)?;
             read_epoch.as_ref()
         }
@@ -1526,15 +1570,23 @@ fn read_typed_canonical_freshness(
     revision_id: &str,
     material: &MaterialBasis,
     scope: &LiveScope<'_>,
-    shared: Option<&Nir1ProjectReads>,
+    shared: ProjectReadSource<'_>,
 ) -> anyhow::Result<Option<Nir1EntityRelationFreshness>> {
-    if !is_generic_freshness_canonical(conn)? {
+    let canonical = match shared {
+        ProjectReadSource::Registration(reads) => reads.generic_freshness_canonical(conn)?,
+        // A query reads the marker for every Revision, as it always has. Its read
+        // probe does not count it (it is not one of the reads a query shares).
+        ProjectReadSource::Query(_) => is_generic_freshness_canonical(conn)?,
+        ProjectReadSource::Unshared => read_generic_freshness_canonical(conn)?,
+    };
+    if !canonical {
         return Ok(None);
     }
     let read_epoch;
     let epoch = match shared {
-        Some(shared) => shared.epoch(),
-        None => {
+        ProjectReadSource::Query(shared) => shared.epoch(),
+        ProjectReadSource::Registration(reads) => reads.epoch(conn)?.as_ref(),
+        ProjectReadSource::Unshared => {
             read_epoch = read_current_epoch(conn, project_id)?;
             read_epoch.as_ref()
         }
@@ -2063,16 +2115,37 @@ pub fn read_nir1_entity_relation_revision_current_for_revision(
 /// Crate-private projection for the Native Graph Index producer. The exact
 /// A2 reader above remains the qualification authority; this accessor only
 /// attaches the unique latest Decision id that the Graph roster records.
+///
+/// `reads` is `Some` only for the Graph registration: it holds the project-level
+/// reads its Revisions share (DR-GRW-4). Every other caller passes `None` and
+/// reads them itself, at each use.
 pub(crate) fn read_nir1_entity_relation_revision_current_for_graph_index(
     conn: &Connection,
     project_id: &str,
     revision_id: &str,
+    reads: Option<&RegistrationProjectReads<'_>>,
 ) -> anyhow::Result<Option<(Nir1EntityRelationRevision, String)>> {
+    let source = match reads {
+        Some(reads) => {
+            anyhow::ensure!(
+                reads.is_for(project_id),
+                "NIR1_ENTITY_RELATION_REGISTRATION_READS_MISMATCH"
+            );
+            ProjectReadSource::Registration(reads)
+        }
+        None => ProjectReadSource::Unshared,
+    };
     // Registration reads every approved Revision of the project, so the
     // Decision is read for who approved it only; its free-form body stays in
     // SQLite.
-    let response =
-        read_typed_revision_core(conn, project_id, revision_id, true, DecisionRead::Approval)?;
+    let response = read_typed_revision_core_from(
+        conn,
+        project_id,
+        revision_id,
+        true,
+        source,
+        DecisionRead::Approval,
+    )?;
     let Nir1EntityRelationRevisionCurrentRead::Available(revision) = response else {
         return Ok(None);
     };
@@ -2293,12 +2366,30 @@ fn read_typed_revision_core(
     allow_draft: bool,
     decision_read: DecisionRead,
 ) -> anyhow::Result<Nir1EntityRelationRevisionCurrentRead> {
+    read_typed_revision_core_from(
+        conn,
+        project_id,
+        revision_id,
+        allow_draft,
+        ProjectReadSource::Unshared,
+        decision_read,
+    )
+}
+
+fn read_typed_revision_core_from(
+    conn: &Connection,
+    project_id: &str,
+    revision_id: &str,
+    allow_draft: bool,
+    source: ProjectReadSource<'_>,
+    decision_read: DecisionRead,
+) -> anyhow::Result<Nir1EntityRelationRevisionCurrentRead> {
     Ok(read_typed_revision_core_with_scope_authority(
         conn,
         project_id,
         revision_id,
         allow_draft,
-        None,
+        source,
         decision_read,
         |revision, _scope| Ok(revision),
     )?
@@ -2375,7 +2466,7 @@ fn read_typed_revision_core_with_scope_authority<T>(
     project_id: &str,
     revision_id: &str,
     allow_draft: bool,
-    shared: Option<&Nir1ProjectReads>,
+    shared: ProjectReadSource<'_>,
     decision_read: DecisionRead,
     on_available: impl FnOnce(Box<Nir1EntityRelationRevision>, &LiveScope<'_>) -> anyhow::Result<T>,
 ) -> anyhow::Result<TypedRevisionCoreRead<T>> {
@@ -2639,7 +2730,7 @@ fn read_typed_revision_core_with_scope_authority<T>(
     if validate_entity_relation_bundle(&payload.bundle).is_err() {
         return Ok(unavailable("source-revision-changed"));
     }
-    let scope = match validate_live_sources(conn, project_id, &payload.bundle, shared) {
+    let scope = match validate_live_sources_from(conn, project_id, &payload.bundle, shared) {
         Ok(scope) => scope,
         Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(_) => return Ok(unavailable("source-revision-changed")),
@@ -2787,7 +2878,7 @@ fn evaluate_disclosure(
         project_id,
         revision_id,
         false,
-        shared,
+        shared.into(),
         decision_read,
         |revision, scope| {
             evaluate_nir1_entity_relation_disclosure_with_authority(
@@ -3962,20 +4053,37 @@ fn validate_live_sources<'a>(
     bundle: &EntityRelationBundle,
     shared: Option<&'a Nir1ProjectReads>,
 ) -> anyhow::Result<LiveScope<'a>> {
-    let scope = match shared {
+    validate_live_sources_from(conn, project_id, bundle, shared.into())
+}
+
+fn validate_live_sources_from<'a>(
+    conn: &Connection,
+    project_id: &str,
+    bundle: &EntityRelationBundle,
+    source: ProjectReadSource<'a>,
+) -> anyhow::Result<LiveScope<'a>> {
+    let scope = match source {
         // The query's own read of the same snapshot; the failure to load it is
         // the failure each Revision would have met loading it itself.
-        Some(shared) => LiveScope::new(
+        ProjectReadSource::Query(shared) => LiveScope::new(
             Cow::Borrowed(shared.authority().ok_or_else(|| {
                 anyhow::anyhow!("NIR1_ENTITY_RELATION_SCOPE_AUTHORITY_UNAVAILABLE")
             })?),
             Cow::Borrowed(shared.scene_bindings()),
         ),
-        None => LiveScope::from_read(load_live_project_scope_authority_with_scene_bindings(
-            conn,
-            project_id,
-            &format!("project:scope-authority:{project_id}"),
-        )?),
+        // The registration's read of the same snapshot, made by the first
+        // Revision that got here. A load that failed was not kept, so it is
+        // made again here and fails as it does for any Revision.
+        ProjectReadSource::Registration(reads) => {
+            let read = reads.scope(conn)?;
+            LiveScope::new(
+                Cow::Borrowed(&read.authority),
+                Cow::Borrowed(&read.scene_bindings),
+            )
+        }
+        ProjectReadSource::Unshared => {
+            LiveScope::from_read(read_live_project_scope(conn, project_id)?)
+        }
     };
     for entity in &bundle.entities {
         check_active_work(conn)?;
@@ -12774,6 +12882,7 @@ pub(super) mod tests {
                     conn,
                     "default-project",
                     &revision_id,
+                    None,
                 )
             })?
             .expect("the approved Revision is read without its decision body");
