@@ -339,13 +339,61 @@ fn rechain_from(conn: &Connection, start: i64) {
 const APPEND_KEY: &str =
     "UPDATE ai_audit_events SET payload = substr(payload, 1, length(payload) - 1) || ',\"zz\":1}'
      WHERE scope_id = ? AND sequence = ?";
-const FLIP_HASH: &str =
-    "UPDATE ai_audit_events SET hash = 'ff' || substr(hash, 3) WHERE scope_id = ? AND sequence = ?";
-const FLIP_PREV: &str = "UPDATE ai_audit_events SET prev_hash = 'ff' || substr(prev_hash, 3)
+/// 先頭 2 文字を必ず別の値に変える。hash は `recorded_at`（実行時刻）を含むので実行ごとに違い、
+/// 元が `ff` で始まる確率が 1/256 ある。常に `ff` に置くと、その時は何も変わらず（改ざんにならず）、
+/// 「改ざんを検出する」試験が偶然に落ちる。
+const FLIP_HASH: &str = "UPDATE ai_audit_events
+     SET hash = CASE WHEN substr(hash, 1, 2) = 'ff' THEN '00' ELSE 'ff' END || substr(hash, 3)
      WHERE scope_id = ? AND sequence = ?";
-const FLIP_PAYLOAD_SHA: &str =
-    "UPDATE ai_audit_events SET payload_sha256 = 'ff' || substr(payload_sha256, 3)
+const FLIP_PREV: &str = "UPDATE ai_audit_events
+     SET prev_hash = CASE WHEN substr(prev_hash, 1, 2) = 'ff' THEN '00' ELSE 'ff' END
+         || substr(prev_hash, 3)
      WHERE scope_id = ? AND sequence = ?";
+const FLIP_PAYLOAD_SHA: &str = "UPDATE ai_audit_events
+     SET payload_sha256 = CASE WHEN substr(payload_sha256, 1, 2) = 'ff' THEN '00' ELSE 'ff' END
+         || substr(payload_sha256, 3)
+     WHERE scope_id = ? AND sequence = ?";
+/// 元の値が `ff` で始まっていても、置換は必ず値を変える（hash は実行ごとに違うので、
+/// この場合を決定的に確かめる）。
+#[test]
+fn the_flip_changes_the_value_even_when_it_already_starts_with_ff() {
+    let db = fixture_with_rows(3);
+    db.with_conn(|conn| {
+        for (sql, column) in [
+            (FLIP_HASH, "hash"),
+            (FLIP_PREV, "prev_hash"),
+            (FLIP_PAYLOAD_SHA, "payload_sha256"),
+        ] {
+            let read = |conn: &Connection| -> String {
+                conn.query_row(
+                    &format!(
+                        "SELECT {column} FROM ai_audit_events WHERE scope_id = ? AND sequence = 2"
+                    ),
+                    params![SCOPE],
+                    |row| row.get(0),
+                )
+                .unwrap()
+            };
+            conn.execute_batch("BEGIN").unwrap();
+            conn.execute(
+                &format!(
+                    "UPDATE ai_audit_events SET {column} = 'ff' || substr({column}, 3)
+                     WHERE scope_id = ? AND sequence = 2"
+                ),
+                params![SCOPE],
+            )
+            .unwrap();
+            let before = read(conn);
+            assert!(before.starts_with("ff"), "{column}");
+            execute(conn, sql, 2);
+            assert_ne!(read(conn), before, "{column}");
+            conn.execute_batch("ROLLBACK").unwrap();
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
 const SET_PAYLOAD_INVALID: &str =
     "UPDATE ai_audit_events SET payload = '{\"a\":' WHERE scope_id = ? AND sequence = ?";
 
