@@ -12898,12 +12898,63 @@ pub(super) mod tests {
 
         let db = fresh_migrated_memory()?;
         seed_run_and_catalog(&db)?;
-        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
-        approve_typed_revision(&db, "nir1-run", &created)?;
+        // Three Revisions: the statements of the first three steps are prepared for
+        // the first and reused for the other two (DR-GRW-3), so a prepare-time
+        // authorizer sees only the first. The runtime observer below sees all three.
+        let revisions = 3usize;
+        for serial in 0..revisions {
+            let mut typed = request(&db);
+            typed.proposal_key = format!("nir1:review:scope-{serial}");
+            rebind_scope_tokens(&db, &mut typed)?;
+            let created = create_nir1_entity_relation_revision(&db, typed)?;
+            approve_typed_revision(&db, "nir1-run", &created)?;
+        }
 
         // Record, for every statement the registration prepares that mentions one
         // of the two large documents, whether it was prepared inside the scope.
         let active = Arc::new(AtomicBool::new(false));
+        // And, at every VM step of every statement that mentions one of them, whether
+        // the statement runs inside the scope, with how often that statement has run.
+        let running = Arc::new(Mutex::new(Vec::<(String, bool, i32)>::new()));
+        let db_handle = db.with_conn(|conn| {
+            // SAFETY: the pointer is only used to walk this connection's statement
+            // list from its progress callback, on the thread that runs the read.
+            Ok(unsafe { conn.handle() } as usize)
+        })?;
+        db.with_conn(|conn| {
+            let active = Arc::clone(&active);
+            let running = Arc::clone(&running);
+            crate::narrative_extraction::nir1_capacity::set_progress_owner(conn, 1, Some(move || {
+                use rusqlite::ffi;
+                let in_scope = active.load(Ordering::SeqCst);
+                // SAFETY: a read-only walk of the connection's statements while one
+                // of them is running; SQLite allows it from a progress callback.
+                unsafe {
+                    let db = db_handle as *mut ffi::sqlite3;
+                    let mut statement = ffi::sqlite3_next_stmt(db, std::ptr::null_mut());
+                    while !statement.is_null() {
+                        if ffi::sqlite3_stmt_busy(statement) != 0 {
+                            let sql = std::ffi::CStr::from_ptr(ffi::sqlite3_sql(statement))
+                                .to_string_lossy()
+                                .into_owned();
+                            if sql.contains("payload_json")
+                                || sql.contains("reconciliation_envelope_json")
+                            {
+                                let runs = ffi::sqlite3_stmt_status(
+                                    statement,
+                                    ffi::SQLITE_STMTSTATUS_RUN,
+                                    0,
+                                );
+                                running.lock().unwrap().push((sql, in_scope, runs));
+                            }
+                        }
+                        statement = ffi::sqlite3_next_stmt(db, statement);
+                    }
+                }
+                false
+            }))?;
+            Ok(())
+        })?;
         let scopes = Arc::new(AtomicUsize::new(0));
         let reads = Arc::new(Mutex::new(Vec::<(String, bool)>::new()));
         db.with_conn(|conn| {
@@ -12926,6 +12977,7 @@ pub(super) mod tests {
             }))?;
             Ok(())
         })?;
+        crate::narrative_extraction::nir1_entity_relation_index::take_revision_statements_observation();
         let source = db.with_read_transaction(|conn| {
             let mut control = OutsideScope(Arc::clone(&active));
             let mut scope = |operation: &mut dyn FnMut()| {
@@ -12948,10 +13000,52 @@ pub(super) mod tests {
         })?;
         db.with_conn(|conn| {
             conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+            crate::narrative_extraction::nir1_capacity::set_progress_owner(
+                conn,
+                0,
+                None::<fn() -> bool>,
+            )?;
             Ok(())
         })?;
 
-        assert_eq!(source.roster.len(), 5);
+        assert_eq!(source.roster.len(), 5 * revisions);
+        // The five statements were prepared once and ran once per Revision.
+        let held = crate::narrative_extraction::nir1_entity_relation_index::take_revision_statements_observation()
+            .expect("the read held its statements");
+        assert_eq!(held.prepares, [1; 5], "{held:?}");
+        assert_eq!(held.runs, [revisions as i32; 5], "{held:?}");
+        assert_eq!(held.reprepares, [0; 5], "{held:?}");
+        // What a statement does at run time is what the scope must cover, not only
+        // where it was prepared: every step of a statement over a large document ran
+        // inside the scope, and the statements reused for the later Revisions did too.
+        let running = running.lock().unwrap();
+        assert!(
+            running.iter().all(|(_, in_scope, _)| *in_scope),
+            "a statement over a large document ran outside the scratch scope: {:?}",
+            running
+                .iter()
+                .filter(|(_, in_scope, _)| !*in_scope)
+                .map(|(sql, _, runs)| (sql.chars().take(60).collect::<String>(), *runs))
+                .collect::<Vec<_>>()
+        );
+        for (name, marker) in [
+            ("input lengths", "COALESCE(octet_length(revision.payload_json), 0)"),
+            ("input counts", "json_array_length"),
+            ("basis entity", "entity_items"),
+            ("basis relation", "relation_items"),
+        ] {
+            let latest_run = running
+                .iter()
+                .filter(|(sql, _, _)| sql.contains(marker))
+                .map(|(_, _, runs)| *runs)
+                .max();
+            assert_eq!(
+                latest_run,
+                Some(revisions as i32),
+                "{name}: the reused statement must run in the scope for the last Revision too"
+            );
+        }
+        drop(running);
         assert!(!active.load(Ordering::SeqCst));
         // The page, its rows, the stats, the source basis and live lengths, and the
         // A2 read of the one Revision.
