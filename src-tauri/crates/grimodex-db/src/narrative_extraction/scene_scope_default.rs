@@ -109,6 +109,9 @@ pub struct NarrativeScopeProjectDefaultUpdatePayload {
 }
 
 fn table_exists(conn: &Connection) -> Result<bool> {
+    // Inside the Graph C-query's and the Graph registration's pinned
+    // snapshots the schema cache answers without VM steps; every other caller
+    // keeps the SQL check below.
     if let Some(present) =
         crate::nir1_pinned_snapshot::table_exists(conn, SCOPE_PROJECT_DEFAULT_TABLE)?
     {

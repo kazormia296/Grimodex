@@ -31,8 +31,9 @@ impl Database {
     pub(crate) const C2_ZC_CUTOVER_CONTRACT_VERSION: i64 = 1;
 
     pub(crate) fn read_c2zc_cutover_marker(conn: &Connection) -> anyhow::Result<Option<i64>> {
-        // Inside the Graph C-query's pinned snapshot the schema cache answers
-        // without VM steps; every other caller keeps the SQL check.
+        // Inside the Graph C-query's and the Graph registration's pinned
+        // snapshots the schema cache answers without VM steps; every other
+        // caller keeps the SQL check.
         let table_exists: bool =
             match crate::nir1_pinned_snapshot::table_exists(conn, "schema_data_migrations")? {
                 Some(present) => present,
