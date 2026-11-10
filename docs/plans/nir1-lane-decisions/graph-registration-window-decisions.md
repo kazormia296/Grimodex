@@ -413,7 +413,7 @@ steps と owner callback の回数が減る点（「変わる点」の 1・2。�
      `v2_apply_sources.rs:93`、`verify_coverage.rs:353`、`reconciliation_envelope.rs:607/657`、
      `resolve_source_revision_with_validation_context` 経由の `commit.rs:550/611`（Apply。コメントのとおり
      `BEGIN IMMEDIATE` の下）、`restore_rebuild.rs` の `resolve_current_source_state_with_control(_and_reads)`
-     （583、1932）。`incremental_freshness.rs:310` の `LifecycleGraphControl` と `commit.rs:122` の
+     （583、1932。`source_revision.rs:433-445` で `resolve_source_revision_with_control_and_reads` に届くことを確かめた）。`incremental_freshness.rs:310` の `LifecycleGraphControl` と `commit.rs:122` の
      `StandaloneForegroundValidationControl` は、これらの経路に渡される control の実装である（呼び出し元ではない）。
      加えて `nir1_capacity_diagnostics.rs` の測定と `read_eligibility_source`（`#[allow(dead_code)]`）。
   3. B の build／publish：`read_eligibility_source_for_native_build`（admission あり）。
@@ -456,9 +456,11 @@ DR-CQL-13 は、Entity の文を finalize してから次の文を prepare す�
    各文の prepare が N 回から 1 回になる。減る見込みだが、未測定である。試験の小さい fixture（4 revision）では owner callback の回数は両形で同じ（306 回）だった。
    理由は推測で、SQLite が progress callback を 1,000 steps ごとに呼び、Rust 側の check も呼ぶので、prepare の steps の差が
    この小さい入力では 1,000 に届かない、と考えている。steps の数値の前後比較はしていない（「gate」の 6）。大きい DB での実時間の差は「W の対の測定」に記録した。
-2. **steps の上限・期限の境目では、Err から成功へ、通る方向にだけ動く。** 課金される作業が減るだけで、
+2. **steps の上限の境目では、Err から成功へ、通る方向にだけ動く。** 課金される作業が減るだけで、
    増える経路は無い（DR-GRW-2 の「変わる点」の 2 と同じ）。この効果は、1 の入口のすべて（registration、B の build、
    Apply・Freshness・Verify・Restore の eligibility の読み。foreground の write transaction の中を含む）に及ぶ。
+   実時間の期限（180 s など）の境目は、worker（lookaside 0）では通る方向だが、lookaside を使う in-process の入口では、
+   revision の少ない形で実時間が数 % 延びうるので、失敗の方向にも動きうる（「変わる点」の 7）。
 3. **停止を見つける時期が動きうる。** owner の `check()` は同じ位置・同じ回数で走る（試験で全 stop point の
    Outcome が一致）。SQLite の progress callback が数える steps が減るので、k 回目の callback の位置が変わる。
    終わりは同じ typed の停止で、seal は無く、handle は残らない。
@@ -516,7 +518,7 @@ DR-GRW-2 の表の「statement の保持は無い」は、この決定で「関�
 | 取消 | owner の `check()` と progress callback で、これまでの typed の停止で終わる。停止を見つける時期が動く（「変わる点」の 3）。停止のとき statement は reset 済みか、使用中なら unwind／戻りの drop で finalize される |
 | 有限の待ち | 親の START_TIMEOUT 30 s、DEFERRED_RELEASE_LIMIT 10 s は変えない |
 | 終了の証拠 | 変えない（worker の終了と ROLLBACK。statement は ROLLBACK の前に finalize 済み。接続に残る statement が無いことは試験で数える） |
-| error／timeout／onClosed の所有 | 起動失敗の分類は「変わる点」の 4。statement の finalize の結果は捨てる（rusqlite の `Statement` の drop の既存の扱い。`sqlite3_finalize` が返すのは直前の実行のエラーの再掲で、各使用のエラーは `query_row` が既に返している）。DR-GRW-2 までの `Connection::query_row` の statement と同じ扱いで、新しい失敗の経路は足さない |
+| error／timeout／onClosed の所有 | 起動失敗の分類は「変わる点」の 5。statement の finalize の結果は捨てる（rusqlite の `Statement` の drop の既存の扱い。`sqlite3_finalize` が返すのは直前の実行のエラーの再掲で、各使用のエラーは `query_row` が既に返している）。DR-GRW-2 までの `Connection::query_row` の statement と同じ扱いで、新しい失敗の経路は足さない |
 | 保存される再開の状態 | 無い（holder は保存されない） |
 
 ### 試験（`nir1_graph/tests/registration_statements.rs`、`nir1_entity_relation.rs`）
@@ -623,8 +625,9 @@ DR-GRW-2 の表の「statement の保持は無い」は、この決定で「関�
 - 縮みは推測（R1022 −0.5〜−0.65 s、D2064 −1.05〜−1.25 s）より大きい。prepare に加えて、文ごとの finalize と
   authorizer の呼び出し（harness は観測用の authorizer を付けている）の回数も減るためと考える（未分解）。
 - revision の少ない形（R3、R4、R16）は、lookaside が効く条件では数 % 遅く、順を逆にしても残る。lookaside 0 では
-  5 形すべてで速い。P′ の値は lookaside の有無でほぼ同じで、B1 だけが lookaside 0 で遅くなる（「変わる点」の 7）。
-  製品の registration は worker（lookaside 0）で走るので、窓 W は測った 5 形のすべてで縮む。
+  5 形とも後が速い（R1022・D2064 以外は −1.8〜−3.9%）。P′ の値は lookaside の有無でほぼ同じで、B1 だけが lookaside 0 で
+  遅くなる（「変わる点」の 7）。製品の registration は worker（lookaside 0）で走るので、R1022 と D2064 は大きく縮み、
+  revision の少ない形は差なし〜数 % 減と見る（lookaside 0 の対は各 1 回で、system malloc の in-process の代理。実 worker の W ではない）。
 - lookaside 0 の対は各 1 回で、B1 側の run は負荷 3.18 で始まった。
 
 ### gate
