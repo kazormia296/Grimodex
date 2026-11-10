@@ -422,6 +422,50 @@ describe("layout motion in the shell (real Chromium)", () => {
     });
   });
 
+  it("keeps the icons it passes above the travelling pill", async () => {
+    // 同じ slot に 3 つ以上のアイコンを並べ、先頭から 3 つ目へ移す。
+    let panels: ToolWindowPanelId[] = [];
+    setLayout((layout) => {
+      emptyRegion(layout, "bottom", "left");
+      panels = layout.regions.left.slots[0].panels.slice(0, 3);
+      layout.regions.left.slots[0].activePanel = panels[0];
+    });
+    const { container } = renderShell();
+    await settleFrames();
+    for (let i = 0; i < 20; i++) await settleFrames();
+    const passed = container.querySelector<HTMLElement>(
+      `[data-stripe-icon="${panels[1]}"] svg`,
+    )!;
+    const glyph = passed.getBoundingClientRect();
+    const cx = glyph.left + glyph.width / 2;
+    const cy = glyph.top + glyph.height / 2;
+
+    act(() => {
+      useLayoutStore.getState().showPanel(panels[2]);
+    });
+    const pill = container.querySelector<HTMLElement>(
+      `[data-stripe-icon="${panels[2]}"] [data-stripe-active-pill]`,
+    )!;
+    // 印が途中のアイコンの記号の上に来た時点で、描く順を調べる（印は
+    // pointer-events: none なので、調べる間だけ戻す）。
+    let hit: Element | null = null;
+    await waitFor(() => {
+      const r = pill.getBoundingClientRect();
+      expect(
+        r.top <= cy && cy <= r.bottom && r.left <= cx && cx <= r.right,
+      ).toBe(true);
+      pill.style.pointerEvents = "auto";
+      hit = document.elementFromPoint(cx, cy);
+      pill.style.pointerEvents = "";
+    });
+    expect(hit).not.toBe(pill);
+    expect(
+      container
+        .querySelector(`[data-stripe-icon="${panels[1]}"]`)!
+        .contains(hit),
+    ).toBe(true);
+  });
+
   it("folds a closing slot's outline toward the far side and widens the neighbour", async () => {
     setLayout((layout) => {
       activate(layout, "scenes");
