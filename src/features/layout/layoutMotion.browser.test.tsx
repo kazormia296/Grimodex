@@ -539,6 +539,46 @@ describe("layout motion in the shell (real Chromium)", () => {
     });
   });
 
+  it("does not start a slide outside the icon's band (the band would clip it)", async () => {
+    // 下の stripe で、右の slot（b1）の 2 つ目のアイコンを左の slot（b0）へ移す。
+    // 旧位置は右の band の中なので、左の band の箱の外から滑り始めかねない
+    // （前回のレビューの指摘。既定の配置では再現しない。再発の見張り）。
+    let moved: ToolWindowPanelId | undefined;
+    let targetSlot = "";
+    setLayout((layout) => {
+      const slots = layout.regions.bottom.slots;
+      expect(slots.length).toBeGreaterThanOrEqual(2);
+      moved = slots[1].panels[1];
+      targetSlot = slots[0].id;
+      // 右の slot を開き、左の slot は閉じたまま。
+      slots[1].activePanel = slots[1].panels[0];
+    });
+    expect(moved).toBeDefined();
+    const { container } = renderShell();
+    for (let i = 0; i < 20; i++) await settleFrames();
+
+    act(() => {
+      useLayoutStore.getState().movePanelToSlot(moved!, "bottom", targetSlot);
+    });
+    // band はスクロール容器（overflow）なので、band の外から滑り始めると切れて
+    // 見えず、スクロールバーも一瞬出る。滑り始めのアイコンは自分の band の中にいる。
+    const icon = container.querySelector<HTMLElement>(
+      `[data-stripe-icon="${moved}"]`,
+    )!;
+    const band = icon.closest<HTMLElement>("[data-drop-slot-id]")!;
+    expect(band.dataset.dropSlotId).toBe(targetSlot);
+    // 滑りは実際に起きている（そのうえで band の外から始まらない）。
+    expect(icon.getAnimations().some((a) => a.id === "stripe-icon-flip")).toBe(
+      true,
+    );
+    const r = icon.getBoundingClientRect();
+    const b = band.getBoundingClientRect();
+    expect(r.top).toBeGreaterThanOrEqual(b.top - 1);
+    expect(r.bottom).toBeLessThanOrEqual(b.bottom + 1);
+    expect(r.left).toBeGreaterThanOrEqual(b.left - 1);
+    expect(r.right).toBeLessThanOrEqual(b.right + 1);
+  });
+
   it("grows the drag ghost in and lands it on the stripe icon after the drop", async () => {
     setLayout((layout) => activate(layout, "scenes"));
     renderShell();
