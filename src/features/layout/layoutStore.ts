@@ -457,6 +457,11 @@ export interface LayoutViewportBaseline {
 
 export interface LayoutStoreState {
   layout: LayoutState;
+  /**
+   * レイアウトを一括で差し替えた回数（プリセットの適用、viewport の baseline の
+   * 復元）。動きの側で「個々の開閉」と「一括の差し替え」を区別するのに使う。
+   */
+  layoutReplaceSeq: number;
   layoutLocked: boolean;
   draggingPanel: ToolWindowPanelId | null;
   dragOverTarget: DragOverTarget | null;
@@ -623,6 +628,7 @@ export interface LayoutStoreState {
 
 export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   layout: buildDefaultLayoutState({ allInactive: true }),
+  layoutReplaceSeq: 0,
   layoutLocked: false,
   draggingPanel: null,
   dragOverTarget: null,
@@ -1374,6 +1380,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       layout: applyValidatedLayout(baseline.layout, state.layout, vp),
       activePresetId: baseline.activePresetId,
       hiddenStripePanels: new Set(baseline.hiddenStripePanels),
+      layoutReplaceSeq: state.layoutReplaceSeq + 1,
       // The layout-change subscriber clears a non-null maximize target. Restore
       // the transient target only after the baseline layout is in place.
       maximizedPanelId: null,
@@ -1573,11 +1580,12 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   saveLayout: () => scheduleSave(get),
 
   resetToDefaultLayout: () => {
-    set({
+    set((state) => ({
       layout: buildDefaultLayoutState({ allInactive: true }),
       activePresetId: null,
       hiddenStripePanels: new Set(),
-    });
+      layoutReplaceSeq: state.layoutReplaceSeq + 1,
+    }));
     // activeLayoutPresetId は scheduleSave の全量書き込みに含まれる
     scheduleSave(get);
   },
@@ -1605,6 +1613,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         ),
         activePresetId: presetId,
         hiddenStripePanels: new Set(hidden),
+        layoutReplaceSeq: get().layoutReplaceSeq + 1,
       });
       scheduleSave(get);
       return;
@@ -1622,6 +1631,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         ),
         activePresetId: presetId,
         hiddenStripePanels: new Set(custom.hiddenStripePanels ?? []),
+        layoutReplaceSeq: get().layoutReplaceSeq + 1,
       });
       scheduleSave(get);
     }

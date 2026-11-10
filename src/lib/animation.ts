@@ -102,6 +102,11 @@ export const CSS_DURATIONS = {
 /** CSS timing-function strings aligned with EASINGS（CSS transition 用）。 */
 export const CSS_EASINGS = {
   easeOut: `cubic-bezier(${EASINGS.easeOut.join(", ")})`,
+  /**
+   * 着地の小さな弾み（WAAPI 用。EASINGS.spring の代わり）。わずかに行き過ぎて
+   * 戻る。跳ねる系なので、パネルの移動の着地のような稀な操作にだけ使う。
+   */
+  settle: "cubic-bezier(0.34, 1.4, 0.64, 1)",
 } as const;
 
 /**

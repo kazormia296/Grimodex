@@ -15,6 +15,7 @@ import {
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { Splitter } from "./Splitter";
 import { AnimatedSlotPanel } from "./AnimatedSlotPanel";
+import { useGroupMotion } from "./useGroupMotion";
 import { EditorArea } from "./EditorArea";
 import { normalizeFlexGrow } from "./layoutStateUtils";
 import type { CenterSegment } from "./layoutTypes";
@@ -181,6 +182,18 @@ export const CenterContent = memo(function CenterContent({
     ],
   );
 
+  // ⑤ center の segment（エディタとツール）の開閉。閉じたエディタは外形だけを
+  // 畳む。最大化・Zen とプリセットの一括の差し替えは別の動きが担う。
+  const layoutReplaceSeq = useLayoutStore((s) => s.layoutReplaceSeq);
+  const groupGhosts = useGroupMotion({
+    containerRef,
+    itemSelector: "[data-center-segment]",
+    idAttribute: "centerSegment",
+    orientation: "horizontal",
+    enabled: !zoomActive,
+    skipToken: `${effectiveMaximizedPanelId ?? ""}|${layoutReplaceSeq}`,
+  });
+
   const contentEndInsertIndex = center.segments.length;
   const contentStartInsertIndex = 0;
 
@@ -308,6 +321,8 @@ export const CenterContent = memo(function CenterContent({
           </Fragment>
         );
       })}
+
+      {groupGhosts}
 
       {showDropZones && (
         <>

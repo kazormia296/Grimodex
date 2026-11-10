@@ -14,6 +14,7 @@ import {
 import { useDragDropZonesReady } from "./useDragDropZonesReady";
 import { Splitter } from "./Splitter";
 import { AnimatedSlotPanel } from "./AnimatedSlotPanel";
+import { useGroupMotion } from "./useGroupMotion";
 import { normalizeFlexGrow, slotsKeptWhileClosing } from "./layoutStateUtils";
 import type { RegionId } from "./layoutTypes";
 
@@ -196,6 +197,17 @@ export const RegionContent = memo(function RegionContent({
     ],
   );
 
+  // ⑤ slot の開閉。最大化の出入りとプリセットの一括の差し替えは別の動きが担う。
+  const layoutReplaceSeq = useLayoutStore((s) => s.layoutReplaceSeq);
+  const groupGhosts = useGroupMotion({
+    containerRef,
+    itemSelector: "[data-drop-slot]",
+    idAttribute: "dropSlot",
+    orientation,
+    enabled: !dormant && !zoomActive,
+    skipToken: `${maximizedPanelId ?? ""}|${layoutReplaceSeq}`,
+  });
+
   const contentEndInsertIndex =
     openSlots.length > 0
       ? insertIndexAfterSlot(slots, openSlots[openSlots.length - 1].id)
@@ -350,6 +362,8 @@ export const RegionContent = memo(function RegionContent({
           </Fragment>
         );
       })}
+
+      {groupGhosts}
 
       {showDropZones && (
         <>

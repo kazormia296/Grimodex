@@ -420,4 +420,70 @@ describe("layout motion in the shell (real Chromium)", () => {
       expect(getComputedStyle(pill).transform).toBe("none");
     });
   });
+
+  it("folds a closing slot's outline toward the far side and widens the neighbour", async () => {
+    setLayout((layout) => {
+      activate(layout, "scenes");
+      activate(layout, "codex");
+    });
+    const { container } = renderShell();
+    await settleFrames();
+
+    act(() => {
+      useLayoutStore.getState().togglePanel("codex");
+    });
+    // 閉じた slot（下）の外形が重なり、広がった隣（上）が clip で広がる。
+    const ghost = container.querySelector<HTMLElement>("[data-group-ghost]");
+    expect(ghost).not.toBeNull();
+    const scenesSlot = container
+      .querySelector('[data-story-panel="scenes"]')!
+      .closest<HTMLElement>("[data-drop-slot]")!;
+    expect(scenesSlot.style.clipPath).toContain("inset(");
+    await waitFor(() => {
+      expect(container.querySelector("[data-group-ghost]")).toBeNull();
+      expect(scenesSlot.style.clipPath).toBe("");
+    });
+  });
+
+  it("reveals an opening slot from the boundary with the neighbour that shrank", async () => {
+    setLayout((layout) => activate(layout, "scenes"));
+    const { container } = renderShell();
+    await settleFrames();
+
+    act(() => {
+      useLayoutStore.getState().togglePanel("codex");
+    });
+    const codexSlot = container
+      .querySelector('[data-story-panel="codex"]')!
+      .closest<HTMLElement>("[data-drop-slot]")!;
+    expect(codexSlot.style.clipPath).toContain("inset(");
+    await waitFor(() => {
+      expect(codexSlot.style.clipPath).toBe("");
+    });
+  });
+
+  it("slides stripe icons from their previous place when the bands move", async () => {
+    setLayout((layout) => activate(layout, "scenes"));
+    const { container } = renderShell();
+    await settleFrames();
+
+    act(() => {
+      useLayoutStore.getState().togglePanel("codex");
+    });
+    const flipping = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '[data-stripe-region="left"] [data-stripe-icon]',
+      ),
+    ).filter((el) =>
+      el.getAnimations().some((a) => a.id === "stripe-icon-flip"),
+    );
+    expect(flipping.length).toBeGreaterThan(0);
+    await waitFor(() => {
+      for (const el of flipping) {
+        expect(
+          el.getAnimations().some((a) => a.id === "stripe-icon-flip"),
+        ).toBe(false);
+      }
+    });
+  });
 });
