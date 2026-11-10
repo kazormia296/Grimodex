@@ -783,28 +783,62 @@ D2064 で約 0.21 s（場面が少ない形の見込み。場面の多い projec
 
 ### 試験（`nir1_graph/tests/registration_shared_reads.rs`、既存の関連試験）
 
-oracle は `with_unshared_project_reads`。型は `registration_statements.rs` の `register`／`alike`／`Outcome` を流用する。
+oracle は `with_unshared_project_reads`。型（`Outcome`／`Run`／`register`／`alike`）は `registration_statements.rs` のものに倣い、同じ fixture の helper
+（`multi_fixture`、`scan_order`、`add_decided`、`execute`、`live_statements`、`OVER_6_MIB_PAD`）を `pub(super)` にして流用した。新しい試験は 18 件
+（既定 16 件、feature `nir1-material-diagnostics` が要る 1 件、実 worker の binary が要る `#[ignore]` の 1 件）。
 
-1. 同値性：memo と oracle で、結果・seal・失敗の種類・エラー文・stage が一致する（健全な形、不適格の混在、最初の revision が epoch の読みの手前で
-   unavailable になる形、Semantic 段の失敗 5 種、`RegistrationRevisionInputLimit`、6 MiB 超の component）。
-2. 読みの回数（`project_read_probe`）：eligible な N revision の registration で、memo は AuthorityTree・ScopeExtension・RegistryFull・
-   RegistryRow・C2zcMarker が各 1、CurrentEpoch が 1。oracle は N と 3N。registration でない入口（`read_eligibility_source_with_control`、B の build の経路）は
-   memo の形でも N のまま（範囲の固定）。
-3. Err を memo しない：決定的な Err（registry の行や tree を壊す）は両形で一致し、AuthorityTree が両形とも N。一過性の Err（authorizer で最初の
-   tree_nodes の読みを 1 回だけ拒む）は revision 1 が skip、revision 2 が読めて成功する形で、両形で一致。epoch の Err は両形で同じ Err・同じ stage。
-4. 停止の掃引：owner の `check()` の k 回目は両形の結果が一致。progress callback の k 回目は全 k で typed の停止で終わり seal されない（k は揃えない）。
-   状態による停止（最初の scope の load の文の中を含む）。
-5. scope の閉じ：memo を埋める読みが scratch の closure の中で起きる（authorizer と scope の flag）。
-6. 場面数の多い fixture（場面と scope binding の両方を足す。revision は 4 以上、anchor を散らす）で 1〜3 を通す。既定の試験では場面数を小さくして時間を抑える。
-7. 他の caller の回帰：`cq_avail`、`cq_opt`、`oracle_tests`、`registration_pinned`、`registration_statements`、`nir1_graph_index_maintenance_tests`、
-   `nir1_entity_relation` の typed reader の試験、`project_read_probe` を使う既存の試験。
+1. 同値性（結果・seal・失敗の種類・エラー文・stage・scope の閉じ・owner の check の回数・statement の残りが一致し、memo の callback が oracle を超えず、memo の読みが oracle の読みを超えない）：
+   - 健全な 4 revision。読みの回数は、memo で AuthorityTree・ScopeExtension・RegistryFull・RegistryRow・C2zcMarker が各 1、CurrentEpoch が 1。
+     oracle で各 4、CurrentEpoch が 12（`shared_reads_are_made_once_and_the_oracle_makes_them_per_revision`）。
+   - 3 番目の revision が壊れた 4 形：basis の不一致、A2 の上限超（`NIR1_GRAPH_REGISTRATION_REVISION_INPUT_LIMIT`）、6 MiB 超の component、
+     live lengths が None（`registration_answers_alike_for_each_shape_of_revision`）。
+   - 不適格の混在（rejected、pending、6 MiB 超の rejected。`..._ineligible_revisions_are_mixed_in`）。
+   - 最初の revision が epoch の読みの手前で unavailable になる形（proposal の status を rejected にして `revision-not-human-approved`）。
+     memo は AuthorityTree と CurrentEpoch を各 1 回（最初の読みは 2 番目の revision）、oracle は 3 回と 9 回、C2zcMarker は 3 回
+     （`..._first_revision_ends_before_the_first_shared_read`）。
+   - Semantic 段の失敗 5 種（`registration_semantic_failures_answer_alike`）。
+2. 読みの回数の範囲（`only_the_registration_shares_its_reads`）：`registration_a2_limit` が None の入口（`read_eligibility_source_with_control`、
+   B の `prepare_graph_index_build`、`..._with_scratch` の None）は、memo の seam があってもなくても N のまま（AuthorityTree 等が 4、CurrentEpoch が 12）。
+   limit が Some の入口だけが 1 になる。
+3. Err を覚えない：
+   - 決定的な Err（registry の行を全部消す／registry の表を改名する）は、両形で結果が同じで、AuthorityTree が両形とも N（4）。
+     場面の多い project でも同じ（N＝5）。
+   - 一過性の Err（authorizer で、scratch scope の中で最初に準備される `tree_nodes` の読みを 1 回だけ拒む）：revision 1 が skip されて結果は両形で同じ（`Ok(false)`）。
+     memo の AuthorityTree は 2（失敗した 1 回と、成功して覚えた 1 回）、oracle は 4。
+   - epoch の Err（`narrative_semantic_epochs` の読みを 1 回拒む）は、両形で同じ Err、同じ stage（SemanticIndex）。
+4. 停止：owner の `check()` の k 回目（最初の 100、13 ごと、最後の 30。計 1,153 check の健全な registration）は両形の結果が一致。
+   progress callback の k 回目（最初の 40、7 ごと）は両形とも typed の停止で終わり seal が無く statement が残らない（memo と oracle の回数の間の k は、
+   oracle だけが止まり memo は完了する）。状態による停止を、最初の scope の load の文を準備する瞬間に raise する形（`a_stop_in_the_first_scope_load_ends_typed_in_both_forms`）。
+5. scope の閉じ（`the_shared_reads_are_made_inside_the_scratch_scope`）：authorizer で `tree_nodes` の読みがすべて scratch scope の中であること、
+   probe で memo の load が 1 回・CurrentEpoch が 1 回であること、Epoch と marker の読みが scope の中にあることを確かめる。
+   **これは既存の `registration_reads_each_revision_in_the_scratch_scope_and_checks_outside_it` の強化ではなく、新しい試験である**（既存の試験は DR-GRW-3 の
+   強化のまま変えていない。その試験の `read_nir1_entity_relation_revision_current_for_graph_index` の呼び出しには `None` を足しただけ）。
+6. 場面数の多い fixture（既定は 100 場面と anchor を散らした 6 revision。環境変数 `GRW_SCENES` で広げられる。場面と scope binding の両方を足す）：
+   結果が同じで、各共有読みが 1 回（oracle は revision 数）、memo の callback が oracle より少ない。owner の check と callback の stride の停止、
+   anchor の場面が消えた形、seal の一致も通す。
+7. capacity fixture（feature 付き。Q513/R3/D10 と D2064/report-heavy）：registration の入口（limit が Some）の source read が、memo と oracle で同じ結果になる。
+   読みは memo で各 1 以下、oracle は Q513 で AuthorityTree 9・CurrentEpoch 23、D2064 で 4・12。
+8. 実 worker（`#[ignore]`。`native_worker_registers_a_project_of_many_bound_scenes`）：1,000 の bound 場面と 13 revision（anchor を散らす）の project で、worker の registration が
+   READY に届く（zero-live の seal が通る）。**`scripts/nir1-c-query-worker-ci.sh lifecycle` には足していない。** 足すと、Full admission が script の sizing source digest を
+   pin しているので `ci-pause.test.mjs` の「Reviewed Full workload data …」が落ちる（一度足して確かめ、戻した）。digest と reviewed workload data の更新は別の決定にする。
+   release の worker binary に対して手で走らせる：`NIR1_C_QUERY_WORKER_BIN=src-tauri/target/release/nir1-c-query-worker cargo test --release -p grimodex-db --lib narrative_extraction::nir1_graph::tests::registration_shared_reads::native_worker_registers_a_project_of_many_bound_scenes -- --ignored --exact --nocapture --test-threads=1`
+9. 他の caller の回帰：既存の試験群を全件で走らせる（gate の 2）。`cq_avail` の `project_level_reads_are_made_once_and_charged_as_made` は、
+   probe の `C2zcMarker` を数える位置を `Unshared` と registration だけにして（Query の枝は数えない）、期待値を変えずに通す。
 
 ### 試験の限界
 
-- progress callback の k 回目は、memo と oracle で回数が違うので揃えて比べられない（結果の種類だけを比べる）。
-- 小さい fixture では callback の回数の差が出ない可能性がある（DR-GRW-3 と同じ）。回数の差の大きさは dev の gate で見る。
-- S の高水位は、試験（in-process、`ordinary` の heap）では測れない。worker の実 process の測定（dev）が要る。
-- `heavy.sh` の下の既定の試験は場面数を小さくしてあり、START_TIMEOUT・180 s の境目の移動そのものは試験では見ない（dev の測定）。
+- progress callback の k 回目は、memo と oracle で回数が違うので揃えて比べられない（結果の種類だけを比べる）。4 revision の fixture では
+  memo 304 回、oracle 306 回（差 2 回）で、「両者の回数の間の k」の分岐は走るが 1 点だけ。場面の多い fixture（100 場面、7 revision）では差が大きい
+  （この試験は `shared.callbacks < unshared.callbacks` を断言する）。
+- 場面の多い fixture の既定は 100 場面で、START_TIMEOUT・180 s の境目の移動そのもの（場面数 × revision 数が約 80 万〜170 万の帯）は試験では見ない。
+  `GRW_SCENES`、`GRW_WORKER_SCENES` で広げて手元で走らせられるが、既定の gate には入れていない。境目の移動は dev の測定（W の対の測定）で見る。
+- S の高水位は、試験（in-process の heap）では測れない。実 worker の試験（1,000 場面、13 revision の READY）は、zero-live の seal が通ることを見るだけで、
+  S の高水位の値は出さない。値は dev の測定が要る（「memory」）。
+- 一過性の Err の試験は、authorizer で最初の `tree_nodes` の準備を拒む形（scratch scope の中で最初に準備される読み）で、SQLITE_INTERRUPT や NOMEM
+  そのものを起こしてはいない。「Err を覚えない」は読みの回数（失敗した 1 回と成功した 1 回）と結果の一致で固定している。
+- 最初の scope の load の文の実行中に止まる形は、authorizer による raise（文の準備の瞬間）で近似している。progress callback が文の途中の
+  VM step で止める形は、k の掃引（最初の 40 点と 7 ごと）が含む。
+- 「Epoch の不一致」（新しい epoch を足す）は、Semantic 段で registration が loop の前に終わるので、memo の読みを通らず、同値性の試験には入れていない。
 
 ### memory
 
@@ -823,13 +857,26 @@ oracle は `with_unshared_project_reads`。型は `registration_statements.rs` �
 
 ### gate
 
-1. 同値性・Err の非保存・読みの回数・停止の掃引・scope の閉じ：上の試験（`registration_shared_reads::`）。
-2. 既存の試験：`cargo test -p grimodex-db --lib` 全件、feature `nir1-material-diagnostics` 付きの `registration_`。
-3. worker の実 process：release の worker binary に対し `scripts/nir1-c-query-worker-ci.sh lifecycle`（26 case）。
-4. steps：dev の `semantic_stage_steps` で前後を比べ、減る方向だけであることを確かめる（未実施）。
-5. memory：dev で S・Q の高水位を前後で測り、今と並べて報告する（未実施。S に合否の線は置かない）。
-6. W の対の測定（未実施）。
-7. DR：この文書。
+結果は 2026-11-11（基点 `8a7f4ceb` に本 PR の commit を載せたもの）。
+
+1. 同値性・Err の非保存・読みの回数・停止の掃引・scope の閉じ・場面数の多い fixture：新しい試験（`registration_shared_reads::`）。既定で 16 件が通る。
+   feature `nir1-material-diagnostics` 付きで 17 件（capacity fixture の 1 件が増える）。実 worker の 1 件は `#[ignore]`（3 を見よ）。
+2. 既存の試験：`cargo test -p grimodex-db --lib` 全件で **2,640 passed、0 failed、56 ignored**（DR-GRW-3 の記録は 2,624 passed、55 ignored。増えた 16 件は新しい既定の試験、
+   ignored の 1 件は実 worker の試験）。関連の群（`registration_`、`cq_avail`、`cq_opt`、`oracle_tests`、`nir1_graph_index_maintenance`、`project_read`、`freshness_share`、
+   `query_context_reuse`、`nir1_entity_relation::`）：242 passed、0 failed、11 ignored。feature 付きの `registration_`：57 passed、0 failed、5 ignored。
+   `cargo clippy -p grimodex-db --all-targets -- -D warnings`：通る。
+   （初回の全件で、`cq_avail::project_level_reads_are_made_once_and_charged_as_made` が、probe の `C2zcMarker` を Query の枝でも数えたために落ちた。数える位置を
+   `Unshared` と registration だけにして直し、期待値は変えていない。）
+3. worker の実 process：`heavy.sh cargo build --locked --release … --bin nir1-c-query-worker` の後に `bash scripts/nir1-c-query-worker-ci.sh lifecycle`：
+   26 case すべてが緑（DR-GRW-3 と同じ case。新しい実 worker の試験を 1 case として足した 27 case の版で走らせ、全件が緑。その後に script の変更だけを戻した〔「試験」の 8〕）。
+   新しい `native_worker_registers_a_project_of_many_bound_scenes` は 1,000 場面・13 revision で READY（zero-live の seal が通る。3.65 s）。その後の seed の query は
+   disclosure の record 上限で refuse された。READY が検証の対象。この試験は lifecycle の外で、手で走らせる。
+4. steps：dev の `semantic_stage_steps` による前後の比較は**未実施**。共有読みの中に Rust の `check` が無いこと、減るのは SQL の VM steps と callback だけであることは、
+   コードで確認した。owner の `check()` の回数と位置は試験で一致（健全な 4 revision の registration の 1,153 check を、k ごとに掃引）。
+5. memory：dev で S・Q の高水位を前後で測る gate は**未実施**（「memory」）。S に合否の線は置かない。
+6. W の対の測定：**未実施**（「W の対の測定」）。
+7. `fnm exec --using=22 pnpm -s verify:quality`：通る（node の試験 587 pass・0 fail・1 skip、vitest 853 pass、narrative writers ok）。
+8. DR：この文書。
 
 ### やらないこと（別の決定）
 
@@ -838,4 +885,5 @@ oracle は `with_unshared_project_reads`。型は `registration_statements.rs` �
 - `is_complete_registered_with_control_unmetered` の k=0 の epoch を memo の初期値に使うこと（loop の中の最初の読みが消え、「同じ呼び出し位置で読む」から外れる。得は 1 文だけ）。
 - run の `semantic_epoch_id` の共有（run_id を key にすれば共有できるが、今回はしない）。
 - 場面数の admission の追加（今通る入力を拒むので確認が要る。採らない）。S の枯渇（約 4,800 場面）の解消（別 lane）。
+- 実 worker の試験を `scripts/nir1-c-query-worker-ci.sh lifecycle` に足すこと（Full admission の sizing source digest と reviewed workload data の更新が要る。別の決定）。
 - memo が一定の大きさを超えたら保持しない上限（結果を変えず何も拒まないので委任内だが、gate で S の余裕が足りないと分かった場合の対処として残す。今は入れない）。
