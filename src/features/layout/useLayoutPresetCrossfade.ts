@@ -132,8 +132,9 @@ function measureCards(shell: HTMLElement, base: DOMRect): Map<string, Rect> {
  * 動かす。controls.set の DOM 反映は motion の frameloop (rAF) 経由で同フレームの
  * paint 直前なので、useLayoutEffect で set する。
  *
- * 最大化に入る（null→panel）ときと Zen に入るときは動かさない。そちらは
- * useZoomReveal の clip の展開が担う。
+ * 最大化に入る（null→panel）ときは動かさない。そちらは useZoomReveal の
+ * clip の展開が担う。Zen に入るときも center は clip が広げ、周りのカードの
+ * 外形だけを縮めながら消す（fadeOutLeavingCards）。
  */
 export function useLayoutPresetCrossfade(refs?: MorphRefs) {
   const activePresetId = useLayoutStore((s) => s.activePresetId);
@@ -151,6 +152,26 @@ export function useLayoutPresetCrossfade(refs?: MorphRefs) {
   const prevInitializedRef = useRef(initialized);
   const restRectsRef = useRef<Map<string, Rect> | null>(null);
 
+  /**
+   * Zen に入る: 周りのカード（Zen の後は見えないもの）の外形を、旧矩形の
+   * まま縮めながら消す。center は useZoomReveal の clip が広げるので、中身の
+   * opacity は触らない（触ると clip の展開と同時に消えて見える）。
+   */
+  function fadeOutLeavingCards() {
+    const host = refs?.hostRef.current;
+    const shell = refs?.shellRef.current;
+    const layer = refs?.layerRef.current;
+    const rest = restRectsRef.current;
+    if (!host || !shell || !layer || !rest || !morphModule) return;
+    const base = host.getBoundingClientRect();
+    const staying = measureCards(shell, base);
+    const leaving = new Map(
+      Array.from(rest).filter(([key]) => !staying.has(key)),
+    );
+    if (leaving.size > 0)
+      morphModule.startMorph(layer, base, leaving, new Map());
+  }
+
   // 差し替えを検出したら動かす（下の「控える」effect より先に走る）。
   useLayoutEffect(() => {
     const presetChanged =
@@ -159,6 +180,7 @@ export function useLayoutPresetCrossfade(refs?: MorphRefs) {
     const zoomChanged = prevZoomRef.current !== maximizedPanelId;
     const zoomEntering = zoomChanged && prevZoomRef.current === null;
     const zenExit = prevZenRef.current && !zenMode;
+    const zenEnter = !prevZenRef.current && zenMode;
     const startupHydrationCompleted =
       !prevInitializedRef.current && initialized;
     prevPresetRef.current = activePresetId;
@@ -170,6 +192,10 @@ export function useLayoutPresetCrossfade(refs?: MorphRefs) {
     // 保存済みレイアウトの最終状態をそのまま示す。loadPresets() が
     // initialized=false のまま preset id を先に読む二段階更新もここで吸収する。
     if (!initialized || startupHydrationCompleted) return;
+    if (zenEnter) {
+      if (!reduced && !layoutLocked) fadeOutLeavingCards();
+      return;
+    }
     if (!presetChanged && !zenExit && (!zoomChanged || zoomEntering)) return;
     if (reduced || layoutLocked) return;
 

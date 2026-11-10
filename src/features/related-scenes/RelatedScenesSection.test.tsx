@@ -6,6 +6,7 @@ import {
   screen,
   cleanup,
   fireEvent,
+  waitFor,
 } from "@testing-library/react";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSemanticNavStore } from "@/features/semantic-search/semanticNavStore";
@@ -136,7 +137,12 @@ describe("RelatedScenesSection", () => {
     const header = screen.getByRole("button", { expanded: true });
     fireEvent.click(header);
 
-    expect(screen.queryAllByTestId("related-scene-row")).toHaveLength(0);
+    // 閉じる動き（CollapsibleSection）の後に外れる。動きは偽の時計では
+    // 進まないので、ここからは本物の時計で待つ。
+    vi.useRealTimers();
+    await waitFor(() => {
+      expect(screen.queryAllByTestId("related-scene-row")).toHaveLength(0);
+    });
   });
 
   it("行クリックで requestJump + setActiveScene が走る (ジャンプ配線)", async () => {

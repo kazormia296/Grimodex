@@ -1,6 +1,6 @@
-import { useRef, useState, useEffect } from "react";
+import { useId, useRef, useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { motion, AnimatePresence } from "motion/react";
+import { AnimatePresence } from "motion/react";
 import { useReducedMotion } from "@/lib/animation";
 import {
   X,
@@ -20,6 +20,12 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { TabContextMenu } from "./TabContextMenu";
+import {
+  TabActiveIndicator,
+  TabDropIndicator,
+  TabPresence,
+  useTabReorderFlip,
+} from "./tabMotion";
 import { UnsavedDialog } from "./UnsavedDialog";
 import { discardDocumentInGroup, saveScene } from "./editorSaveRegistry";
 import type { GroupIndex, TabEntry } from "./tabStore";
@@ -136,6 +142,8 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   const splitMenuRef = useRef<HTMLDivElement>(null);
   const [splitMenuOpen, setSplitMenuOpen] = useState(false);
   const reduced = useReducedMotion();
+  const captureTabPositions = useTabReorderFlip(scrollRef, reduced);
+  const indicatorScope = useId();
 
   // Reset drag state on dragend (safety net for normal drops)
   useEffect(() => {
@@ -327,6 +335,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
     if (srcGroup === dstGroup) {
       const srcIndex = tabs.findIndex((t) => t.nodeId === srcId);
       if (srcIndex === -1 || srcId === targetNodeId) return;
+      captureTabPositions();
       useTabStore.getState().reorderTab(srcIndex, insertIndex, dstGroup);
     } else {
       useTabStore
@@ -354,6 +363,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
     if (srcGroup === dstGroup) {
       const srcIndex = tabs.findIndex((t) => t.nodeId === srcId);
       if (srcIndex === -1) return;
+      captureTabPositions();
       useTabStore.getState().reorderTab(srcIndex, tabs.length, dstGroup);
     } else {
       useTabStore.getState().moveTabBetweenGroups(srcId, srcGroup, dstGroup);
@@ -418,31 +428,11 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
               dropTarget?.nodeId === tab.nodeId && dropTarget.side === "right";
 
             return (
-              <motion.div
+              <TabPresence
                 key={tab.nodeId}
-                className="flex-shrink-0"
-                initial={
-                  !reduced && (!tab.isPreview || tab.animateIn)
-                    ? { opacity: 0, x: -8, scale: 0.92 }
-                    : false
-                }
-                animate={{ opacity: 1, x: 0, scale: 1 }}
-                exit={
-                  tab.isPreview || reduced
-                    ? {
-                        opacity: 0,
-                        width: 0,
-                        scale: 0.92,
-                        transition: { duration: 0 },
-                      }
-                    : { opacity: 0, width: 0, scale: 0.92 }
-                }
-                transition={
-                  reduced
-                    ? { duration: 0 }
-                    : { type: "spring", damping: 22, stiffness: 380, mass: 0.7 }
-                }
-                style={{ overflow: "hidden" }}
+                animateIn={!tab.isPreview || !!tab.animateIn}
+                instantExit={tab.isPreview || reduced}
+                reduced={reduced}
               >
                 <div
                   draggable
@@ -454,17 +444,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                     isActive
                       ? "bg-background/10 font-medium text-foreground"
                       : "text-muted-foreground",
-                    isActive &&
-                      "after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-primary",
                   )}
-                  style={{
-                    borderLeft: isDropLeft
-                      ? "2px solid hsl(var(--primary))"
-                      : undefined,
-                    borderRight: isDropRight
-                      ? "2px solid hsl(var(--primary))"
-                      : undefined,
-                  }}
                   onClick={() => handleTabClick(tab.nodeId)}
                   onDoubleClick={() =>
                     handleTabDoubleClick(tab.nodeId, tab.isPreview)
@@ -491,6 +471,18 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                     handleDrop(e, tab.nodeId);
                   }}
                 >
+                  {isActive && (
+                    <TabActiveIndicator
+                      groupIndex={groupIndex}
+                      scope={indicatorScope}
+                      activeTabId={tab.nodeId}
+                      reduced={reduced}
+                    />
+                  )}
+                  <TabDropIndicator
+                    side={isDropLeft ? "left" : isDropRight ? "right" : null}
+                    reduced={reduced}
+                  />
                   {synced && (
                     <span
                       className="mr-0.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-primary/70"
@@ -555,7 +547,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                     )}
                   </button>
                 </div>
-              </motion.div>
+              </TabPresence>
             );
           })}
         </AnimatePresence>

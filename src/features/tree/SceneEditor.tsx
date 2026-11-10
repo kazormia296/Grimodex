@@ -21,6 +21,7 @@ import { useProjectStore } from "@/features/project/projectStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 import { PhoneEmptySceneBootstrap } from "./PhoneEmptySceneBootstrap";
+import { useEditorSplitReveal } from "./editorSplitMotion";
 
 const LinearEditorView = lazy(async () => {
   const module = await import("@/features/editor/LinearEditorView");
@@ -204,6 +205,8 @@ export function SceneEditor() {
   );
   const isLinearMode = useTabStore((s) => s.isLinearMode);
   const tabStateHydrated = useTabStore((s) => s.tabStateHydrated);
+  const primaryGroupRef = useRef<HTMLDivElement>(null);
+  const secondaryGroupRef = useRef<HTMLDivElement>(null);
   const revisionHistoryOpen = useRevisionStore((s) => s.isOpen);
 
   const primaryActiveTabId = useTabStore((s) => s.activeTabId);
@@ -211,6 +214,13 @@ export function SceneEditor() {
   const secondaryGroupOpen = useTabStore((s) => s.secondaryGroupOpen);
   const activeGroupIndex = useTabStore((s) => s.activeGroupIndex);
   const splitDirection = useTabStore((s) => s.splitDirection);
+  useEditorSplitReveal({
+    primaryRef: primaryGroupRef,
+    secondaryRef: secondaryGroupRef,
+    secondaryOpen: secondaryGroupOpen,
+    direction: splitDirection,
+    enabled: !singleGroupProjection && tabStateHydrated,
+  });
   const primaryTab = useTabStore((s) =>
     s.tabs.find((t) => t.nodeId === s.activeTabId),
   );
@@ -397,6 +407,7 @@ export function SceneEditor() {
       <div className={splitClass}>
         {/* ---- Primary group ---- */}
         <div
+          ref={primaryGroupRef}
           data-editor-group="0"
           className={primaryClass}
           aria-hidden={
@@ -461,6 +472,7 @@ export function SceneEditor() {
         {/* ---- Secondary group ---- */}
         {secondaryGroupOpen && (
           <div
+            ref={secondaryGroupRef}
             data-editor-group="1"
             className={secondaryClass}
             aria-hidden={

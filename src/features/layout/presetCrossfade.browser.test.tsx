@@ -162,6 +162,46 @@ describe("preset crossfade (real browser)", () => {
     );
   });
 
+  it("fades out the surrounding cards' outlines when entering Zen, keeping the content visible", async () => {
+    const view = render(
+      <div style={{ width: 1200, height: 800 }}>
+        <LayoutShell zenMode={false} />
+      </div>,
+    );
+    await new Promise((r) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => r(null))),
+    );
+    await preloadLayoutMorph();
+
+    view.rerender(
+      <div style={{ width: 1200, height: 800 }}>
+        <LayoutShell zenMode />
+      </div>,
+    );
+    const layer = view.container.querySelector("[data-layout-morph-layer]")!;
+    const keys = Array.from(
+      layer.querySelectorAll<HTMLElement>("[data-layout-morph-outline]"),
+      (el) => el.dataset.layoutMorphOutline,
+    );
+    // 周りのカード（stripe など）の外形が出て、Zen の後も見えるエディタは出ない。
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys).not.toContain("editor");
+    // 中身は隠さない（center は clip で広がる）。
+    const shellEl = view.container.querySelector<HTMLElement>(
+      "[data-layout-shell]",
+    )!;
+    for (let i = 0; i < 5; i++) {
+      expect(getComputedStyle(shellEl).opacity).toBe("1");
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    }
+    await waitFor(
+      () => {
+        expect(layer.children).toHaveLength(0);
+      },
+      { timeout: 2000 },
+    );
+  });
+
   it("switches at once under Reduced Motion", () => {
     useSettingsStore.setState((state) => ({
       cache: { ...state.cache, "display.reduceMotion": "true" },

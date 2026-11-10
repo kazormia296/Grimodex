@@ -13,7 +13,7 @@ import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 import { useTranslation } from "react-i18next";
 import { motion } from "motion/react";
 import { Play } from "lucide-react";
-import { useReducedMotion } from "@/lib/animation";
+import { EASINGS, useReducedMotion } from "@/lib/animation";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import {
@@ -484,11 +484,7 @@ function ChatMessageViewport({
                       data-animate-in={animateIn || undefined}
                       initial={animateIn ? { opacity: 0, x: 20 } : false}
                       animate={{ opacity: 1, x: 0 }}
-                      transition={
-                        reduced
-                          ? { duration: 0 }
-                          : { type: "spring", stiffness: 260, damping: 22 }
-                      }
+                      transition={reduced ? { duration: 0 } : EASINGS.spring}
                     >
                       {renderMessage(message, isStreaming)}
                     </motion.div>

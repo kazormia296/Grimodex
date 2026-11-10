@@ -12,6 +12,7 @@ import {
 import { getDropTargetRect, type DropTargetRect } from "./layoutDnD";
 import { useLayoutStore } from "./layoutStore";
 import { isReducedMotion } from "@/lib/gsap";
+import { HIGHLIGHT_PULSE_S } from "@/lib/animation";
 
 const RING_COLOR = "oklch(0.55 0.22 264)";
 const GLOW_COLOR = "oklch(0.55 0.22 264 / 0.45)";
@@ -82,7 +83,7 @@ export function LayoutDnDHighlightOverlay() {
         { opacity: 1 },
         {
           opacity: 0.35,
-          duration: 0.9,
+          duration: HIGHLIGHT_PULSE_S,
           ease: "sine.inOut",
           yoyo: true,
           repeat: -1,

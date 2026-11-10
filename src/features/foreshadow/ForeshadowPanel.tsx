@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { PanelHeader } from "@/features/layout/PanelHeader";
+import { CSS_DURATIONS } from "@/lib/animation";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import {
@@ -611,9 +612,10 @@ export function ForeshadowPanel() {
                 ref={(el) => {
                   itemRefs.current[item.id] = el;
                 }}
-                className={`border-b border-border/50 transition-colors duration-300 ${
+                className={`border-b border-border/50 transition-colors ${
                   highlightedId === item.id ? "bg-primary/10" : ""
                 }`}
+                style={{ transitionDuration: CSS_DURATIONS.slow }}
               >
                 {/* Item row */}
                 <div

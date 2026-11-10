@@ -14,7 +14,7 @@ const DIST_DIR = path.resolve("dist/assets");
  * reviewed change and can never cross the absolute product ceiling.
  */
 export const INITIAL_JS_GRAPH_BUDGET = {
-  baseline: { rawBytes: 4_247_133, gzipBytes: 1_338_059 },
+  baseline: { rawBytes: 4_250_900, gzipBytes: 1_338_800 },
   allowance: { rawBytes: 32_768, gzipBytes: 16_384 },
   // raw は 4_250_000 から 700 byte だけ上げた。チャット入力の書きかけを session／project の
   // 削除と一緒に消す処理（chatInputDraftPurge.ts）が初期 graph の store に入るため
@@ -43,7 +43,14 @@ export const INITIAL_JS_GRAPH_BUDGET = {
   // 先に lazy にできる分は外した: motion の命令的な animate() をやめて宣言的な
   // motion.div と WAAPI にし（-7.5 KB）、外形のモーフの本体とドラッグのゴーストを
   // 動的 import にした。残りは毎 commit の矩形の記録と比較で、初期 graph に要る。
-  absoluteMax: { rawBytes: 4_278_600, gzipBytes: 1_354_500 },
+  // raw は baseline を 3,767 byte・上限を 3,800 byte、gzip は baseline を 741 byte・
+  // 上限を 700 byte 上げた。エディタの動き（タブの下線・ドロップ線・並べ替えの FLIP、
+  // 本文の skeleton の遅れとフェード、分割の開閉の clip、折りたたみの高さ）が初期
+  // graph の editor／tree／layout に入るため（CI の実測で master #849 の
+  // raw 4,278,161 → 4,281,883 で +3,722、gzip 1,353,852 → 1,355,042 で +1,190）。
+  // 設定ダイアログ（カテゴリの背景・本文の寄せ）は lazy chunk なので含まない。
+  // どれも描く時点で要る小さな hook と部品で、後から読む形にできる大きな本体は無い。
+  absoluteMax: { rawBytes: 4_282_400, gzipBytes: 1_355_200 },
 };
 const INITIAL_CSS_MAX_BYTES = 240_000;
 const INITIAL_CSS_MAX_GZIP_BYTES = 42_000;

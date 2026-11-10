@@ -127,7 +127,11 @@ export function ToolWindowIcon({
               : undefined
           }
           className={cn(
-            "gx-press-button relative z-30 flex shrink-0 items-center justify-center rounded-full",
+            "gx-press-button relative flex shrink-0 items-center justify-center rounded-full",
+            // ボタンはドロップの当たり領域（z-20）より上に置く。アクティブの
+            // ボタン（滑ってくる pill を持つ）だけ 1 段下げる。pill が途中の
+            // アイコンの上を通っても、その記号を隠さない（DOM の順に依らない）。
+            active ? "z-[29]" : "z-30",
             compact ? "h-[27px] w-[27px]" : "h-7 w-7",
             "active:scale-[0.94]",
             "touch-none select-none",

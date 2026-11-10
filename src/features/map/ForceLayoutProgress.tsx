@@ -12,6 +12,7 @@ export function ForceLayoutProgress({ alpha }: ForceLayoutProgressProps) {
     <div className="pointer-events-none absolute bottom-4 left-1/2 z-50 -translate-x-1/2">
       <div className="flex items-center gap-2 rounded-lg bg-background/90 px-3 py-1.5 shadow-md backdrop-blur-sm">
         <div className="h-1.5 w-32 overflow-hidden rounded-full bg-muted">
+          {/* 力学計算の進み（毎 tick 更新）への追従。共有の DURATIONS より短くする。 */}
           <div
             className="h-full rounded-full bg-primary transition-all duration-100"
             style={{ width: `${progress}%` }}

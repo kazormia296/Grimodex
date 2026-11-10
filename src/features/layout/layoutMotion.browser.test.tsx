@@ -422,6 +422,52 @@ describe("layout motion in the shell (real Chromium)", () => {
     });
   });
 
+  it("keeps the icons it passes above the travelling pill", async () => {
+    // 同じ slot に 3 つ以上のアイコンを並べ、先頭から 3 つ目へ移す。
+    let panels: ToolWindowPanelId[] = [];
+    setLayout((layout) => {
+      emptyRegion(layout, "bottom", "left");
+      panels = layout.regions.left.slots[0].panels.slice(0, 3);
+      layout.regions.left.slots[0].activePanel = panels[0];
+    });
+    const { container } = renderShell();
+    await settleFrames();
+    for (let i = 0; i < 20; i++) await settleFrames();
+    const passed = container.querySelector<HTMLElement>(
+      `[data-stripe-icon="${panels[1]}"] svg`,
+    )!;
+    const glyph = passed.getBoundingClientRect();
+    const cx = glyph.left + glyph.width / 2;
+    const cy = glyph.top + glyph.height / 2;
+
+    act(() => {
+      useLayoutStore.getState().showPanel(panels[2]);
+    });
+    const pill = container.querySelector<HTMLElement>(
+      `[data-stripe-icon="${panels[2]}"] [data-stripe-active-pill]`,
+    )!;
+    // 滑り終えてから、印を途中のアイコンの記号の上へ手で置き、描く順を調べる
+    // （動いている途中を捕まえる形は、負荷でフレームが粗いと取り逃がす）。
+    // 印は pointer-events: none なので、調べる間だけ戻す。
+    await waitFor(() => {
+      expect(getComputedStyle(pill).transform).toBe("none");
+    });
+    const r = pill.getBoundingClientRect();
+    pill.style.transform = `translate(${cx - (r.left + r.width / 2)}px, ${
+      cy - (r.top + r.height / 2)
+    }px)`;
+    pill.style.pointerEvents = "auto";
+    const hit = document.elementFromPoint(cx, cy);
+    pill.style.transform = "";
+    pill.style.pointerEvents = "";
+    expect(hit).not.toBe(pill);
+    expect(
+      container
+        .querySelector(`[data-stripe-icon="${panels[1]}"]`)!
+        .contains(hit),
+    ).toBe(true);
+  });
+
   it("folds a closing slot's outline toward the far side and widens the neighbour", async () => {
     setLayout((layout) => {
       activate(layout, "scenes");
@@ -493,6 +539,46 @@ describe("layout motion in the shell (real Chromium)", () => {
         ).toBe(false);
       }
     });
+  });
+
+  it("does not start a slide outside the icon's band (the band would clip it)", async () => {
+    // 下の stripe で、右の slot（b1）の 2 つ目のアイコンを左の slot（b0）へ移す。
+    // 旧位置は右の band の中なので、左の band の箱の外から滑り始めかねない
+    // （前回のレビューの指摘。既定の配置では再現しない。再発の見張り）。
+    let moved: ToolWindowPanelId | undefined;
+    let targetSlot = "";
+    setLayout((layout) => {
+      const slots = layout.regions.bottom.slots;
+      expect(slots.length).toBeGreaterThanOrEqual(2);
+      moved = slots[1].panels[1];
+      targetSlot = slots[0].id;
+      // 右の slot を開き、左の slot は閉じたまま。
+      slots[1].activePanel = slots[1].panels[0];
+    });
+    expect(moved).toBeDefined();
+    const { container } = renderShell();
+    for (let i = 0; i < 20; i++) await settleFrames();
+
+    act(() => {
+      useLayoutStore.getState().movePanelToSlot(moved!, "bottom", targetSlot);
+    });
+    // band はスクロール容器（overflow）なので、band の外から滑り始めると切れて
+    // 見えず、スクロールバーも一瞬出る。滑り始めのアイコンは自分の band の中にいる。
+    const icon = container.querySelector<HTMLElement>(
+      `[data-stripe-icon="${moved}"]`,
+    )!;
+    const band = icon.closest<HTMLElement>("[data-drop-slot-id]")!;
+    expect(band.dataset.dropSlotId).toBe(targetSlot);
+    // 滑りは実際に起きている（そのうえで band の外から始まらない）。
+    expect(icon.getAnimations().some((a) => a.id === "stripe-icon-flip")).toBe(
+      true,
+    );
+    const r = icon.getBoundingClientRect();
+    const b = band.getBoundingClientRect();
+    expect(r.top).toBeGreaterThanOrEqual(b.top - 1);
+    expect(r.bottom).toBeLessThanOrEqual(b.bottom + 1);
+    expect(r.left).toBeGreaterThanOrEqual(b.left - 1);
+    expect(r.right).toBeLessThanOrEqual(b.right + 1);
   });
 
   it("grows the drag ghost in and lands it on the stripe icon after the drop", async () => {

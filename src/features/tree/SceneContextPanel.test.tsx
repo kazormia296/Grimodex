@@ -1,6 +1,12 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 
 vi.mock("./CodexQuickSection", () => ({
   CodexQuickSection: () => <div data-testid="codex-section-stub">codex</div>,
@@ -33,7 +39,7 @@ describe("SceneContextPanel", () => {
     expect(relatedEnabledSpy).toHaveBeenCalledWith(false);
   });
 
-  it("Codex セクションに sort select があり、折りたたむと中身が消える", () => {
+  it("Codex セクションに sort select があり、折りたたむと中身が消える", async () => {
     render(<SceneContextPanel isActive />);
     // Codex セクションの sort select
     expect(screen.getByRole("combobox")).toBeTruthy();
@@ -41,7 +47,10 @@ describe("SceneContextPanel", () => {
 
     // Codex 見出し (関連シーンはモックなので展開ボタンは Codex のみ) を折りたたむ
     fireEvent.click(screen.getByRole("button", { expanded: true }));
-    expect(screen.queryByTestId("codex-section-stub")).toBeNull();
+    // 閉じる動き（CollapsibleSection）の後に外れる。
+    await waitFor(() => {
+      expect(screen.queryByTestId("codex-section-stub")).toBeNull();
+    });
     // 関連シーンセクションは折りたたみの影響を受けない
     expect(screen.getByTestId("related-stub")).toBeTruthy();
   });
