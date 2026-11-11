@@ -95,7 +95,7 @@ fn scene_ids_of(conn: &Connection, project: &str) -> Result<ProjectSceneIds> {
         .prepare("SELECT id FROM tree_nodes WHERE project_id = ?1 AND node_type = 'scene'")?
         .query_map([project], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(ProjectSceneIds::from_unsorted(ids))
+    Ok(ProjectSceneIds::from_unsorted(ids.iter().map(String::as_str)))
 }
 
 /// The set and the join agree on everything the extension produces and the
@@ -345,15 +345,8 @@ fn the_extension_statement_does_not_read_tree_nodes() {
 
 #[test]
 fn the_scene_id_set_is_sorted_deduplicated_and_compared_by_bytes() {
-    let ids = ProjectSceneIds::from_unsorted(vec![
-        "b".to_owned(),
-        "a10".to_owned(),
-        "A1".to_owned(),
-        "a1".to_owned(),
-        "a1".to_owned(),
-        "\u{30b7}".to_owned(),
-    ]);
-    assert_eq!(ids.0, ["A1", "a1", "a10", "b", "\u{30b7}"]);
+    let ids = ProjectSceneIds::from_unsorted(["b", "a10", "A1", "a1", "a1", "\u{30b7}"]);
+    assert_eq!(ids.ids(), ["A1", "a1", "a10", "b", "\u{30b7}"]);
     for member in ["A1", "a1", "a10", "b", "\u{30b7}"] {
         assert!(ids.contains(member), "{member}");
     }

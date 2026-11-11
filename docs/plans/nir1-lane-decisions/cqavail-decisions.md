@@ -7,7 +7,7 @@
 | DR-CQA-3 | 2026-10-14 | CQ-AVAIL | project 単位の読取（Scope authority の tree、binding、registry、epoch、query scene、POV）を query で1回だけ読み、1回だけ admit する。Revision に結び付く行は Revision ごと。読取を減らさずに課金だけを減らすことはしない | 上限の値は変えない。post-B の「request-local で重複検証を抑える」に合う。読取と課金を1対1に保つ | 課金だけ減らす（閾値の緩和で [precheck]）。何もしない（2件目の Revision で 512 を超える） | 同上 | 該当なし（値も数え方の対象も変えず、実際の読取を減らす） | 不要 | 記録済み（実装前） |
 | DR-CQA-4 | 2026-10-14 | CQ-AVAIL（レビュー指摘の修正） | Full workload allocation の worker.q512 の reviewed inventory を、新しい Q512 fixture（materials 164、registry の参照 5、材料の無い Scene 60）で再導出する。式は pages = 679 + 21×materials + 93 + refs に、材料の無い Scene の項（Scene ごとに tree_nodes／FTS／Scene binding の 20 の table・index 面に 1 page ずつ）を足す。式の導出は schema-contract.json と sqlite_master の数え直しによる。派生する fullMemoryRisk の「other-full-consumers」の DB 項と、その合計の試験定数、docs/pr610-full-workload-risk.md の数値も合わせる。journey の inventory（schema baseline + 旧 Q512 の mutation image の size class）は再導出しない | 資源の見積りを増やす方向だけ（安全側）。新しい送信先、保存範囲、閾値の緩和は無い。dataset は独立 review が前提なので、変更は PR 本文と台帳に残す | 式を変えず 679 + 21×164 + 93 + 5 = 4,221 pages にする（Scene 項なし。材料の無い Scene 60 の tree／Scene binding の行を見積りから落とす）。journey の inventory も新 Q512 に合わせて再導出する（製品 journey は C-query fixture を使わないので根拠が無い） | 指摘 P2（レビュー）が方針を示した | 該当なし | 不要 | 記録済み（実装前） |
 | DR-CQA-5 | 2026-10-14 | CQ-AVAIL（レビュー指摘の修正） | DR-CQA-3 の「読取と課金は 1 対 1」を、読取の回数（statement）の単位に限定する。Scope extension の LEFT JOIN が読む principal の Codex 行（knowledge holder／audience が character の binding あたり最大 2 行）は課金に入っていない既存の会計の穴で、本変更が増やしたものではない。課金は厳しくせず、残る制約として台帳に記録する。あわせて、課金された rows を製品側で観測する試験（test-only の hook）に置き換える | 上限の値は変えない。課金を厳しくする案は、DISCLOSURE_GLOBAL_ROWS_SQL の追加で A3 の観測 slot と steps の基準値が動き、別 lane の範囲になるので採らない | 課金に principal の行を足す（委任の範囲だが、SQL steps と診断 slot に波及する）。何もしない（台帳の「保守的な上限」が実際と食い違う） | 指摘 P3（レビュー）が両案を示した | 該当なし | 不要 | 記録済み（実装前） |
-| DR-CQA-6 | 2026-11-11 | C-query の場面数の壁（A-α）。枝 `claude/cquery-binding-join`（DR-GRW-5＝#862 の head の上） | Scope extension の binding の SELECT から `LEFT JOIN tree_nodes` を外し、`sceneOwned` を authority が読んだ nodes の「project の Scene の id の集合」で決める（読取 −N_b）。`DISCLOSURE_GLOBAL_ROWS_SQL` の binding の行の乗数を 2→1 にする（課金 −N_b。課金−実読の差 N_t−P は不変）。閾値（2,048 ほか）・bytes の乗数・tree の×2 は変えない | 上限の値は変えない。DR-CQA-3 の「実際の読取を減らした分だけ課金を減らす」線の内。同じ snapshot の読みだけ。新しい送信先・保存・契約・authority・schema は無い | 課金だけ減らす（緩和で [precheck]）。A-β（課金を実読に合わせる。確認が要る）。join を残す（床は 489 のまま） | 設計調査（`cquery-scene-wall-2026-11-11.md` §2、§4、§5.2）が A-α を「委任内の見込み」とした。実装後に advisor（read-only）に諮り、停止条件 1 の読み替え、床の限定、試験の allowlist 化、記述の訂正の指摘を受けて反映した | 該当なし（実際の読取を減らした分だけ課金を減らす。値の緩和・新しい閾値・契約の変更ではない） | 不要（thread・handle・取消点・再開の状態を足さない。下の節） | 記録済み（実装と同じ commit に記録） |
+| DR-CQA-6 | 2026-11-11 | C-query の場面数の壁（A-α）。枝 `claude/cquery-binding-join`（DR-GRW-5＝#862 の head の上） | Scope extension の binding の SELECT から `LEFT JOIN tree_nodes` を外し、`sceneOwned` を authority が読んだ nodes の「project の Scene の id の集合」で決める（読取 −N_b）。`DISCLOSURE_GLOBAL_ROWS_SQL` の binding の行の乗数を 2→1 にする（課金 −N_b。課金−実読の差 N_t−P は不変）。閾値（2,048 ほか）・bytes の乗数・tree の×2 は変えない | 上限の値は変えない。行の数では、課金されていなかった join の N_b を読まなくし、CQ-AVAIL から残っていた binding の 2 回目の N_b の課金を外す（下の「×2 の由来と、委任の判断」）。文の単位では binding の表の読みは減らず課金だけが減るので、DR-CQA-3 の線の内とは断じず、2026-11-11 にユーザーが承認した A-β（課金を実読に合わせる）の一部として扱う（統合者の判断）。同じ snapshot の読みだけ。新しい送信先・保存・契約・authority・schema は無い | 課金だけ減らす（緩和で [precheck]）。A-β（課金を実読に合わせる。確認が要る）。join を残す（床は 489 のまま） | 設計調査（`cquery-scene-wall-2026-11-11.md` §2、§4、§5.2）が A-α を「委任内の見込み」とした。実装後に advisor（read-only）に諮り、停止条件 1 の読み替え、床の限定、試験の allowlist 化、記述の訂正の指摘を受けて反映した | 承認済みの A-β の範囲（課金を実読に合わせる。2026-11-11 ユーザー決定）。値・新しい閾値・契約は変えない。principal の行を数える残りは A-β の PR で入れる | 不要（thread・handle・取消点・再開の状態を足さない。下の節） | 記録済み（実装と同じ commit に記録） |
 
 ## DR-CQA-6 の詳細（2026-11-11）
 
@@ -22,7 +22,7 @@
    `sceneOwned`（raw の 11 列目）は `ProjectSceneIds`（project の `node_type='scene'` の node の id。archived を含む。sort して `binary_search`）で決めて、
    `SqlValue::Integer(0/1)` として 11 列目に差し込む。`rawDigest` が見る 13 列の値は旧と同じ。
 2. 呼出し元 `project_scope_authority.rs` の `load_live_project_scope_authority_in_snapshot` は、`derive_live_scene_projection` の後で
-   `take_scene_ids(nodes)`（`nodes` を consume し、Scene の id の String を move して集合にする。ほかの field と非 Scene の node はここで解放）を呼ぶ。
+   `scene_ids_of(&nodes)`（Scene の id を 1 つの buffer に写した集合。確保は buffer と span の 2 つ）を作ってから `drop(nodes)` する（下の「時間の対照と、集合の形」）。
    DR-GRW-5 の `drop(nodes)` は、集合を残す形に置き換わる（`scenes` の drop は変えない）。
 3. `nir1_graph/input.rs` の `DISCLOSURE_GLOBAL_ROWS_SQL` の `COUNT(*) narrative_scene_scope_bindings` の乗数を 2→1 にする。
    bytes の乗数、tree の行の×2、registry、projects、query Scene、POV、Epoch は変えない。
@@ -37,7 +37,21 @@
 | 新 | N_t ＋ N_b ＋ P ＋ 2R ＋ 3（**−N_b**） | 2N_t ＋ N_b ＋ 2R ＋ 3（**−N_b**） |
 | 課金−実読 | N_t − P | N_t − P（**不変**） |
 
-読取と課金を同じ N_b だけ減らす。課金が実読を下回る形は増えない（差は変わらない）。principal の Codex 行 P を課金しない穴（DR-CQA-5）は、そのまま残る（A-β の範囲）。
+読取と課金を同じ N_b だけ減らす。project ごとに見れば、課金−実読の差は変わらない。principal の Codex 行 P を課金しない穴（DR-CQA-5）は、そのまま残る（A-β の範囲）。
+**ただし通る project の範囲が広がるので、課金が実読を下回ったまま通る query の実読の最大は上がる**（独立レビューの P2-1）。P＞N_t の形（binding あたり平均 1 件を超える character の principal）では、
+旧は拒否、新は通る 490〜652 場面の project がある。例：bare に P＝2N_b を足した形の実読は、旧の床 489 で約 2,463 行、新の床 652 で約 2,626 行（2,048 からのはみ出しは約 415→約 578 行）。
+P≤N_b の形では実読＜課金≤2,048 で、問題は無い。この広がりは、A-β で principal の行を数えるまで残る。
+
+### ×2 の由来と、委任の判断（独立レビューの P2-1 の後に書き直した）
+
+- 由来（コードと履歴で確認）：post-B（`fb967eb9`）の A3 は、Revision ごとに Scope authority を全件 2 回 load していた（`validate_live_sources` の中の load と、`evaluate_nir1_entity_relation_disclosure` の中の load）。
+  tree×2・binding×2 は「authority を 2 回 load する」ことの課金で、binding の bytes が×2 なのもこれと合う。join で読む tree の行は、当時から課金されていなかった（P と同じ種類の穴）。
+  CQ-AVAIL が load を 1 回にしたとき、×2 は「旧来のまま」残った（台帳 `nir1-c-query-acceptance-2026-10.md` の 363 行付近）。
+- したがって A-α は、正確には「課金されていなかった読み（join の N_b）を読まなくし、CQ-AVAIL から残っていた過大な課金（binding の 2 回目の N_b）を外す」変更である。行の数では差し引きが合う。
+  DR-CQA-5 は「1 対 1」を文（statement）の単位に限っていて、その単位では binding の表の読みは減らず、binding の課金だけが減る。
+- 判断（統合者）：これは DR-CQA-3 の「課金だけ減らす」に当たりうるので、委任の内とは断じない。2026-11-11 にユーザーが承認した A-β（数える行を実読に合わせる＝数え方の緩和）の一部であり、
+  その承認の範囲として進める。A-β の残り（tree×2→×1、join の tree 行と principal の行を数える）は別の PR で入れ、その前に設計 §7 の 5・8・9（現実の形、孤立した binding、principal の分布）を測る。
+  上の「広がり」が A-β までの間だけ残ることを、ユーザーに報告する。
 bare の fixture（N_t＝n＋1、N_b＝n、P＝0）の shared は 4n＋19 から 3n＋19 になる。
 
 ### 等価性の根拠
@@ -49,7 +63,7 @@ bare の fixture（N_t＝n＋1、N_b＝n、P＝0）の shared は 4n＋19 から
   列は TEXT affinity で、整数は '7' の text として保存されるので、Text の経路に入る（旧と同じ）。`scene_id` は NOT NULL なので NULL の行は作れない（試験では作れない。
   コードは Text 以外を 0 にする）。
 - 「missing or belongs to another project」の error は同じ位置・同じ文（loop の中の closure は diff に無い）。行の順（`ORDER BY b.scene_id`）も変えない。
-  error は `unavailable` の entry の `rawDigest`（13 列の raw。`sceneOwned` を含む）として digest に入るので、`rawDigest` の一致が error の位置と文の一致も確かめる。
+  closure の error は loop の match で捨てられ、digest に入るのは `unavailable` の entry の `rawDigest`（13 列の raw。`sceneOwned` を含む）だけである。error の文は外から見えないので、等価性の対象は `rawDigest` を含む entry の一致である（error の文の一致は、この試験では確かめていない）。
 - 集合の照合は SQL の `ORDER BY id` の並びに頼らず、`ProjectSceneIds::from_unsorted` が sort と dedup をする。
 - **transaction**：ただ 1 つの入口 `load_live_project_scope_read` が、nodes の読みと extension の読みを同じ `SAVEPOINT narrative_project_scope_authority_snapshot` の中に置く
   （autocommit で呼ばれても、SAVEPOINT が transaction を始め、最初の読み〔`projects`〕で snapshot が決まる）。したがって、どの入口でも nodes と extension は同じ snapshot で、
@@ -60,7 +74,7 @@ bare の fixture（N_t＝n＋1、N_b＝n、P＝0）の shared は 4n＋19 から
 
 作業の依頼は「query の経路で、extension 以外の binding の表を読む文が走るなら止める」だった。**文字どおりには、extension 以外にも binding の表に触れる文がある。**
 SQLite の authorizer（文を prepare するときに、その文が読む列の許可を求める）で、query 1 本の間に準備された文を数えた
-（`a_query_loads_the_scene_bindings_in_one_statement`。列と文の数の全体を完全一致で固定している）。
+（`a_query_loads_the_scene_bindings_in_one_statement`。列と文の数の全体を完全一致で固定している）。authorizer が数えるのは prepare の回数で、実行の回数ではない。query の経路に `prepare_cached` は無く、実行の回数は既存の probe の試験 `project_level_reads_are_made_once_and_charged_as_made` が断言している。
 
 | 文 | binding の表に触れ方 | 課金 | ×1 への影響 |
 |---|---|---|---|
@@ -78,16 +92,28 @@ preflight の 2 文は旧も新も読むが、課金の側の文で、旧来ど�
 
 床の 652／653 は、実 worker の process ではなく、worker の構成（`worker_reader`、`query_for_worker_with_maintenance_deadline`）を in-process で動かした値である。
 admission の式と文は worker と同じコードで、同じ試験を乗数 2 に戻すと実 worker の実測（489／490。`drift-measure/cquery-scenes-2026-11-11`）を再現した。
-実 worker での 652／653 と Q の高水位は未測定（dev で測る）。
+実 worker でも測った（dev、`fusion-eval-data/design-notes/db-connection-2026-11-07/drift-measure/cquery-binding-join-2026-11-11/`）：652 場面で available、653 場面で `candidate-record-limit`。
+query の Q 高水位は 489 場面と 652 場面で同じ 3,814,832 B（22.74%。load の前の床の値で、load の peak はこの下にあり見えない）。4 Revision（p4:300000）の 352／353 は動かなかった。
 
 ### 変わる点
 
 - 1 Revision の bare の形（設計 §3.1 の p:300000）の床：489 → **652**（実測。N で available、N＋1＝653 で `candidate-record-limit`）。予測は 652〜653。
   式は 37＋(3n＋19)＋13＋t ≤ 2,048（t＝20〜23）。旧の 489 は同じ試験を乗数 2 に戻して再現した（489 で available、490 で `candidate-record-limit`）。
-- Q の見込み（設計 §5.1）：通る最大で A 約 8.2〜8.4 MB（Q の 50%）、C（×1.31）で約 10〜11 MB（60〜66%）。1b（DR-GRW-5）の上なので、1b の前に入れても安全な範囲（設計 §5.2）。
+- Q（設計 §5.1 の見込みは、通る最大で A 約 8.2〜8.4 MB、C で約 10〜11 MB）：この変更は DR-GRW-5（1b）の上に載せるので、query の load の Q は 1b の後の傾きで増える。実測は上の床の節のとおり。
 - 読取が N_b 行減るので、extension の SELECT の VM steps も減る（上限・基準値の変更は不要。全件の試験が通る）。
-- 集合 `ProjectSceneIds`（Vec＜String＞。Scene の id の String は nodes から move するので、新しい確保はほぼ `Vec` の 24 B/場面）が extension の間だけ生きる。
-  DR-GRW-5 は nodes 全体を drop していたので、その分（場面あたり 24 B ＋ id の長さ程度。推測）だけ extension 中の保持が増える。非 Scene の node と各 node の他 field は引き続き早く解放される。
+- 集合 `ProjectSceneIds`（Scene の id を写した 1 つの buffer と、場面あたり 16 B の span）が生きる。
+  集合は extension の間だけでなく、`build_narrative_project_scope_authority_v1` の間も生きる。DR-GRW-5 は nodes 全体を drop していたので、その分だけ保持が増える。非 Scene の node と各 node の他 field は引き続き早く解放される。
+  実 worker の registration の S 高水位は、489 場面で不変、5,004 場面で +150,122 B、20,004 場面で +600,122 B（約 30 B/場面）。すべて READY し、registration の Q は不変だった。
+
+### 時間の対照と、集合の形（2026-11-11、dev の実 worker）
+
+- 最初の実装は、Scene の id の String を nodes から move して `Vec<String>` で持った。4 Revision（p4:300000）の 352・337 場面で、基点（`43dbdcf3`＋harness）と交互に各 8 本流すと、
+  `NIR1_GRAPH_QUERY_DEADLINE_NO_TIMELY_FRAME`（100 ms）が A-α 12／16 本、基点 2／16 本で、worker 内の query_ms は約 13〜14 ms 長かった。
+- 内訳：admit の回数・種類・値、評価した Revision、候補 page、frame の bytes、Q 高水位は両腕で同じで、読む量は増えていない。scope の load の段ごとの時間にも差は無かった。
+  違ったのは allocator の fragment の数（QUERY_DONE の時点で A-α 362〜402、基点 267〜295）。場面ごとの小さい String が、固定の Q heap に散って残り、その後の確保が遅くなったと見ている（推測）。
+- id を 1 つの buffer に写す形（診断用の変形）では、fragment は 344〜353、query_ms の中央値は 84.5 ms（基点 83、最初の実装 90.5）で、増えの約 6 ms が戻った。製品の形はこれに合わせた。
+  残りの約 +1.5 ms と fragment の差は説明できていない。製品の形での取り直しの結果は下の追記に書く。
+- 記録：`fusion-eval-data/design-notes/db-connection-2026-11-07/drift-measure/cquery-binding-join-2026-11-11/results.md`（「対照」「対照 2」「内訳」の節）。
 
 ### 変わらない点
 
@@ -99,7 +125,7 @@ admission の式と文は worker と同じコードで、同じ試験を乗数 2
 ### 信頼境界
 
 呼び出し元と入力は変わらない（同じ接続、同じ thread、同じ snapshot の中の読みだけ）。新しい送信先、保存範囲、契約、authority、schema、依存、閾値の緩和は無い。
-digest に入る bytes は同じなので、renderer・main・MCP から見える token も変わらない。**課金は実際の読取を減らした分だけ減らす**ので、閾値の緩和（課金だけ減らす）に当たらない。
+digest に入る bytes は同じなので、renderer・main・MCP から見える token も変わらない。課金の変化の扱いは、上の「×2 の由来と、委任の判断」のとおり（承認済みの A-β の一部）。
 
 ### owner／lifecycle の表（GDX-PRECHECK-001）
 

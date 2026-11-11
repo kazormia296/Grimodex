@@ -1470,9 +1470,9 @@ fn project_level_reads_are_made_once_and_charged_as_made() -> Result<()> {
 }
 
 // DR-CQA-6: the shared binding charge is one row per binding because one
-// statement loads each binding row, and that statement does not join
-// `tree_nodes` (the join that did is gone; `scene_scope_ownership_tests` checks
-// the statement itself). Whatever else touches the binding table in a query is
+// statement loads each binding row (the old 2 counted A3's second load of the
+// Scope authority, which is long gone), and that statement no longer joins
+// `tree_nodes` (`scene_scope_ownership_tests` checks the statement itself). Whatever else touches the binding table in a query is
 // a different read with its own charge: the COUNT and the byte sums that are
 // the preflight (they read the payload columns for `octet_length`, never
 // `version`), and a pinned Scene's two token columns in the Scene join. The
@@ -2347,8 +2347,8 @@ fn the_floor_of_a_bare_one_revision_project_is_n_available_and_n_plus_1_refused(
     assert!(over.graph.is_none());
     let reason = over.reason.as_deref().unwrap_or_default();
     assert!(
-        reason.contains("record-limit"),
-        "refused for a record limit: {reason}"
+        reason.contains("candidate-record-limit"),
+        "refused for the candidate page's records: {reason}"
     );
     Ok(())
 }

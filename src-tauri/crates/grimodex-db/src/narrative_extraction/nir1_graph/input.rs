@@ -1318,10 +1318,10 @@ const DISCLOSURE_GLOBAL_ROWS_SQL: &[(&str, usize, DisclosureGlobalRowsParams)] =
         0,
         DisclosureGlobalRowsParams::Project,
     ),
-    // Once, not twice (DR-CQA-6): the Scope extension reads each binding row
-    // once and no longer joins `tree_nodes` for it (which read one more row
-    // per binding), so the read and its charge both went from 2 to 1 per
-    // binding. The bytes below stay as they were.
+    // Once, not twice (DR-CQA-6): the 2 dated from when A3 loaded the Scope
+    // authority twice per Revision; one load reads each binding row once. The
+    // `tree_nodes` join that read one uncharged row per binding is gone too.
+    // The bytes below stay as they were.
     (
         "SELECT COUNT(*) FROM narrative_scene_scope_bindings
           WHERE project_id=?1",

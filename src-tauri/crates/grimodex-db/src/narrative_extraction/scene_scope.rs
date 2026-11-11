@@ -850,21 +850,47 @@ pub(crate) struct ScopeExtension {
 /// binding's Scene must belong to (DR-CQA-6). Built from the rows the Scope
 /// authority has already read, so the extension does not read `tree_nodes`
 /// again to decide `sceneOwned`.
-pub(crate) struct ProjectSceneIds(Vec<String>);
+///
+/// The ids are copied into one buffer, so the set is two allocations
+/// whatever the number of Scenes. Keeping one small allocation per Scene
+/// alive while the rest of the tree is freed scattered them through the
+/// worker's fixed Q heap and slowed every later allocation of the query
+/// (about +7 ms at 352 Scenes and 4 Revisions; DR-CQA-6).
+pub(crate) struct ProjectSceneIds {
+    buf: String,
+    spans: Vec<(usize, usize)>,
+}
 
 impl ProjectSceneIds {
     /// Sorted here, whatever order the caller read the nodes in: membership
     /// does not depend on the SQL `ORDER BY` of the read it came from.
-    pub(crate) fn from_unsorted(mut ids: Vec<String>) -> Self {
+    pub(crate) fn from_unsorted<'a>(ids: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut ids: Vec<&str> = ids.into_iter().collect();
         ids.sort_unstable();
         ids.dedup();
-        Self(ids)
+        let mut buf = String::with_capacity(ids.iter().map(|id| id.len()).sum());
+        let mut spans = Vec::with_capacity(ids.len());
+        for id in ids {
+            let start = buf.len();
+            buf.push_str(id);
+            spans.push((start, buf.len()));
+        }
+        Self { buf, spans }
+    }
+
+    fn id(&self, &(start, end): &(usize, usize)) -> &str {
+        &self.buf[start..end]
     }
 
     fn contains(&self, id: &str) -> bool {
-        self.0
-            .binary_search_by(|candidate| candidate.as_str().cmp(id))
+        self.spans
+            .binary_search_by(|span| self.id(span).cmp(id))
             .is_ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ids(&self) -> Vec<&str> {
+        self.spans.iter().map(|span| self.id(span)).collect()
     }
 }
 
@@ -3176,7 +3202,7 @@ mod tests {
             .prepare("SELECT id FROM tree_nodes WHERE project_id = ?1 AND node_type = 'scene'")?
             .query_map([project_id], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(ProjectSceneIds::from_unsorted(ids))
+        Ok(ProjectSceneIds::from_unsorted(ids.iter().map(String::as_str)))
     }
 
     fn assert_scope_extension_matches_the_value_form(db: &Database) -> (usize, usize) {

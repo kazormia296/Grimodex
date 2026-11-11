@@ -216,20 +216,13 @@ enum ExtensionOwnership {
 /// The Scene nodes' ids of `nodes`, moved out of them: a Scene node's id is
 /// reused and every other field of every node is freed here, so the set adds
 /// one `Vec` to what the tree read held (DR-CQA-6).
-fn take_scene_ids(nodes: Vec<PersistedProjectTreeNode>) -> ProjectSceneIds {
-    let mut ids = Vec::with_capacity(
+fn scene_ids_of(nodes: &[PersistedProjectTreeNode]) -> ProjectSceneIds {
+    ProjectSceneIds::from_unsorted(
         nodes
             .iter()
             .filter(|node| node.node_type == "scene")
-            .count(),
-    );
-    ids.extend(
-        nodes
-            .into_iter()
-            .filter(|node| node.node_type == "scene")
-            .map(|node| node.id),
-    );
-    ProjectSceneIds::from_unsorted(ids)
+            .map(|node| node.id.as_str()),
+    )
 }
 
 fn load_live_project_scope_authority_in_snapshot(
@@ -277,8 +270,9 @@ fn load_live_project_scope_authority_in_snapshot(
     // The tree rows and the scene inputs are not read again; release them
     // before the extension digest so they are not live at the peak (DR-GRW-5).
     // What the extension needs of the tree, which ids are the project's
-    // Scenes, stays (DR-CQA-6); the rest is freed.
-    let scene_ids = take_scene_ids(nodes);
+    // Scenes, stays as one packed copy (DR-CQA-6); the rows are freed.
+    let scene_ids = scene_ids_of(&nodes);
+    drop(nodes);
     let mut authority = build_narrative_project_scope_authority_v1(project_id, &scenes)?;
     drop(scenes);
     let extension = super::scene_scope::read_scope_extension(
