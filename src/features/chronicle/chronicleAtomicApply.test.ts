@@ -8,7 +8,7 @@ import {
 import {
   buildProposalSafetyFlags,
   getChronicleApplyReadiness,
-  isChronicleEditedProposalApplyError,
+  classifyChronicleApplyFailure,
   selectChronicleProposalsForAtomicApply,
   type ChronicleReviewProposal,
 } from "./chronicleExtractionStore";
@@ -161,14 +161,14 @@ describe("Chronicle atomic review apply", () => {
     riskLow: false,
   });
 
-  it("blocks apply when an approved proposal was edited by the author", () => {
+  it("allows apply when an approved proposal was edited by the author", () => {
     const base = proposal("proposal-edited", { status: "approved" });
     const edited = { ...base, safety: editedSafety(base) };
     const other = proposal("proposal-other", { status: "approved" });
     expect(getChronicleApplyReadiness([edited, other])).toEqual({
-      ready: false,
+      ready: true,
       approvedCount: 2,
-      errorCode: "NEX_V2_APPLY_BASIS_UNSUPPORTED",
+      errorCode: null,
     });
   });
 
@@ -183,16 +183,45 @@ describe("Chronicle atomic review apply", () => {
     });
   });
 
-  it("recognizes the Native edited-basis rejection in apply errors", () => {
+  it("classifies Native apply failures by their message", () => {
     expect(
-      isChronicleEditedProposalApplyError(
+      classifyChronicleApplyFailure(
+        new Error("NEX_V2_APPLY_LINEAGE_INVALID: lineage mismatch"),
+      ),
+    ).toBe("lineage-invalid");
+    expect(
+      classifyChronicleApplyFailure(
         new Error(
-          "NEX_V2_APPLY_BASIS_UNSUPPORTED: only interpretation is supported",
+          "NEX_SOURCE_BASIS_STALE: source 'scope-dependency:v1:abc' expected 'x' but found 'y'",
         ),
       ),
-    ).toBe(true);
-    expect(isChronicleEditedProposalApplyError(new Error("boom"))).toBe(false);
-    expect(isChronicleEditedProposalApplyError("x")).toBe(false);
+    ).toBe("disclosure-scope-stale");
+    expect(
+      classifyChronicleApplyFailure(
+        new Error(
+          "NEX_SOURCE_BASIS_STALE: source 'scene:1' expected 'a' but found 'b'",
+        ),
+      ),
+    ).toBe("source-stale");
+    expect(
+      classifyChronicleApplyFailure(
+        new Error("NEX_READ_SET_STALE: V2 material source changed"),
+      ),
+    ).toBe("source-stale");
+    expect(
+      classifyChronicleApplyFailure(
+        new Error(
+          "NEX_SCENE_VERSION_MISMATCH: scene 's1' expected version 2, found 3",
+        ),
+      ),
+    ).toBe("source-stale");
+    expect(classifyChronicleApplyFailure(new Error("boom"))).toBe("unknown");
+    expect(classifyChronicleApplyFailure("boom")).toBe("unknown");
+    expect(
+      classifyChronicleApplyFailure(
+        "NEX_V2_APPLY_LINEAGE_INVALID: as a string",
+      ),
+    ).toBe("lineage-invalid");
   });
 
   it("requires skip-as-same before a probable duplicate is terminally rejected", async () => {

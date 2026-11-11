@@ -43,7 +43,7 @@ import { ChronicleProposalReview } from "./ChronicleProposalReview";
 import { useChronicleExtractionStore } from "./chronicleExtractionStore";
 import {
   getChronicleApplyReadiness,
-  isChronicleEditedProposalApplyError,
+  classifyChronicleApplyFailure,
 } from "./chronicleExtractionStore";
 import {
   chronicleScopeKey,
@@ -516,13 +516,24 @@ export function ChronicleExtractDialog({
       onOpenChange(false);
     } catch (error) {
       if (isSessionCurrent(session)) {
+        const reason = classifyChronicleApplyFailure(error);
         toast.error(
-          isChronicleEditedProposalApplyError(error)
+          reason === "lineage-invalid"
             ? t(
-                "chronicle.extract.editedProposalBlocked",
-                "編集した提案があるため、この組は年表に取り込めません",
+                "chronicle.extract.applyLineageInvalid",
+                "編集した提案の履歴を確かめられないため、取り込めません。提案を編集し直してください",
               )
-            : t("chronicle.extract.importFailed", "取り込みに失敗しました"),
+            : reason === "disclosure-scope-stale"
+              ? t(
+                  "chronicle.extract.applyDisclosureScopeStale",
+                  "場面の並びや開示の設定が変わった可能性があります。編集した提案の開示の設定を選び直してから、取り込んでください",
+                )
+              : reason === "source-stale"
+                ? t(
+                    "chronicle.extract.applySourceStale",
+                    "抽出の後に原稿などが変わったため、取り込めません。抽出し直してください",
+                  )
+                : t("chronicle.extract.importFailed", "取り込みに失敗しました"),
         );
       }
     } finally {
@@ -863,17 +874,6 @@ export function ChronicleExtractDialog({
                 </button>
               </div>
             )}
-          {applyReadiness?.errorCode === "NEX_V2_APPLY_BASIS_UNSUPPORTED" && (
-            <p
-              className="text-xs text-amber-800 dark:text-amber-300"
-              data-testid="chronicle-edited-proposal-blocked"
-            >
-              {t(
-                "chronicle.extract.editedProposalBlocked",
-                "編集した提案があるため、この組は年表に取り込めません",
-              )}
-            </p>
-          )}
         </div>
 
         <DialogFooter>
