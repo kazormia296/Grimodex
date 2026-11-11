@@ -410,6 +410,8 @@ rules:
       - electron/shared/ipcContract.ts
       - electron/shared/nir1GraphIpcContract.test.ts
       - electron/shared/nir1EntityRelationIpcContract.test.ts
+      - scripts/chronicle-extraction-product-journey.test.mjs
+      - scripts/chronicle-edited-apply-product-journey.test.mjs
       - scripts/codex-entity-relation-product-journey.test.mjs
       - scripts/nir1-scene-scope-projection-product-journey.test.mjs
       - scripts/product-journey-backlog.test.mjs

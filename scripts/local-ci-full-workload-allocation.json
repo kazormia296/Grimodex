@@ -1,6 +1,6 @@
 {
   "version": "full-workload-allocation/1",
-  "registryDigest": "sha256:1bd418abb81258f952e72384c78bd8c2085ef79db8548357b87da3c271f3faee",
+  "registryDigest": "sha256:2538b3aece1838cbad05f8d1aa5667668913f81ee7a5ea5fcbe69f297ec05ea0",
   "maxParallelTasks": 1,
   "sources": [
     {
@@ -9,7 +9,7 @@
     },
     {
       "path": "scripts/local-ci-registry.json",
-      "sha256": "c90c8c6dece50ed730ec539d3f4b7127b316c1be4e25106187c85878e1add6cd"
+      "sha256": "b74b5d01c194d94afd3675733c23de2601fffa09320d25ecce2865e730fe7b28"
     },
     {
       "path": "scripts/local-ci-full-admission.mjs",
@@ -41,7 +41,7 @@
     },
     {
       "path": "package.json",
-      "sha256": "3b618f81a421d8271ccb121c22799b0ac5e9616325e59889f95eed18b00acd32"
+      "sha256": "2efd35dc0289a14ba2c542a5cf7eb94b167105614e79529b37e8544e5dbbdaff"
     },
     {
       "path": "pnpm-lock.yaml",

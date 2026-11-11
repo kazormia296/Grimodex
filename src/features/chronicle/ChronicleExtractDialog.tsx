@@ -521,7 +521,7 @@ export function ChronicleExtractDialog({
           reason === "lineage-invalid"
             ? t(
                 "chronicle.extract.applyLineageInvalid",
-                "編集した提案の履歴を確かめられないため、取り込めません。提案を編集し直してください",
+                "編集した提案の履歴を確かめられないため、取り込めません。抽出し直してください",
               )
             : reason === "disclosure-scope-stale"
               ? t(
