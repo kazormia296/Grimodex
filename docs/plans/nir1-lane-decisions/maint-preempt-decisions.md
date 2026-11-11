@@ -283,9 +283,9 @@ K1b の 5 項目：値＝3（単位は回数）、検査する位置＝Main sche
     not-admitted・capacity が回数を増やしも戻しもしないこと（時刻の列で固定）、`begin` の失敗、wake だけで受領書が `works=[]` の cycle、work の受領書と空の受領書の交互、Verify 成功後の follow-up discovery の preempt。
   - 変異で赤くなることを確認した：時計の置き直しを clamp だけに戻す（1 件）、rebind が全 scope を消す（1 件）、進捗の判定を崩す（19 件）。
 - 限界：Main の模型であり、実機の位相は揺れる（実機では確率的）。模型は最悪の位相を決定的に作る。編集 trace（`index-unavailable`、`graph-late`）と a2 型の Gold への影響、
-  journey の restore の後の settle の待ち時間は **未測定**（DR-MPS-16 の教訓から、Verify と Rebuild の開始が最大 1 s 遅れる）。
+  journey の restore の後の settle の待ち時間は、この試験では測れない（DR-MPS-16 の教訓から、Verify と Rebuild の開始が最大 1 s 遅れる）。dev の A/B で測った（下の「dev の A/B の結果」）。
   wake だけの cycle で Native が実際に返す受領書の `works`（空か）は Main の試験では確かめられず、模型は「空」と「work あり」の両方を通した（Native 側の実際の形は未確認）。
-  journey と実機（Xvfb）、cargo は走らせていない。
+  この PR の試験では journey と実機（Xvfb）、cargo は走らせていない（実機は dev の A/B で走らせた）。
 
 ### やらないこと
 
@@ -314,7 +314,7 @@ L-27 の「製品側の候補」（連続 N 回目以降は 10 ms でなく `ERR
 
 ### A/B の gate と止める線（測る前に書く。2026-11-11）
 
-- **A/B は未実施**。この PR の試験は Main の模型だけで、実機・dev の A/B は走らせていない。**A/B を merge の gate にする**（S6-4 の (4) が (c) を「dev の A/B まで進める」と決めたため）。
+- **A/B は 2026-11-11 に実施した**（結果は下の「dev の A/B の結果」。この節の線は測る前に書いたまま変えていない）。この PR の試験は Main の模型だけ。**A/B を merge の gate にする**（S6-4 の (4) が (c) を「dev の A/B まで進める」と決めたため）。
   CP-4 の正式の測り直しは別（ユーザーの判断。dev の結果は判定に数えない）。
 - 主指標：(1) restore の後の Verify の完了時刻（a2 型の Gold。watcher の `verify` が completed になるまで）、(2) Graph arm の sample ごとの registration-unavailable／driftAtQuery（35 sample）、
   (3) 編集 trace（dev-lantern の `base`、100 サイクル×5 本）の `index-unavailable`／`graph-late`／registration-unavailable、(4) journey の restore の後の settle の待ち時間の分布（p50／p95／最大。
@@ -344,3 +344,26 @@ L-27 の「製品側の候補」（連続 N 回目以降は 10 ms でなく `ERR
 - **P2-c（DR の記述）**：Verify の完了の延び（約 5 倍）、前の決定との関係、(f)／(f2) の照合、A/B の未実施と gate、止める線、委任を上に書いた。
 - **P3 の個別の扱い**：rebind は元の binding の分だけ消すようにした（対応）。attempt guard の無い経路の preempt（rejection で届く）は数えない（すでに error の retry で 1 s 待ち、lifecycle が有効な製品の経路では attempt guard がある）。
   batch の中で not-started のまま並ぶ後ろの work と、別の scheduler が project を握る場合は、回数（project 単位）にも backoff の判定にも影響しないので対応しない。
+
+### dev の A/B の結果（2026-11-11。dev 専用・判定に数えない）
+
+- 腕：M＝master `8a7f4ceb`（#853）、A＝`8a1bb521`（この枝の改訂 1）。差分は `electron/main/narrativeMaintenance.ts` だけ。定義と止める線は測る前に固定した
+  （`fusion-eval-data/design-notes/db-connection-2026-11-07/maint-backoff-ab-2026-11-11/definitions.md`。結果は同じ場所の `results.md`、生データは `raw/`）。
+- **止める線には、どれも当たらなかった**（事実）。
+
+| 段 | M | A | 線 |
+|---|---|---|---|
+| a2 型の Gold（各 3 回）：V-10 停止・slot Suspended | 0／3 | 0／3 | 1 回でも出たら停止 |
+| 同：Verify の完了（最初の DB tick から、1 s tick） | 3／4／4 s（中央値 4） | 5／8／4 s（中央値 5） | 中央値 6 s 超で停止 |
+| 同：registration-unavailable／driftAtQuery | 0／105、0 | 0／105、0 | 基準より増えたら停止 |
+| 編集 trace（dev-lantern `base`、各 5 本）：index-unavailable | 0／505 | 0／505 | 1 件で本数を足す、2 件で停止 |
+| 同：graph-late／registration-unavailable | 1／505、0／505 | 2／505、0／505 | 基準（2／505、1／505）の 2 倍超で停止 |
+| journey の restore の後の settle（各 10 本）：p50／p95＝最大 | 2.95／5.48 s | 1.63／4.69 s | 1.5 倍超、または最大 60 s で停止 |
+
+- Gold の間の maintenance の cancel の増分は M ＋9〜＋11、A ＋1〜＋5（backoff が動いた間接の証拠）。Verify は A で約 1 s 長い向きで、DR の予測（約 1 s）と同じ向き。ただし n＝3・1 s の精度で、有意とは言えない。
+- journey は A の settle が短い向き（並べ替え検定 p≈0.007）だが、対の中で常に M→A の順に流したので順序の効果と分けられない。「悪化させていない」までにとどめる。
+- 限界（事実）：a2 型の cold DB は 8 回の setup で 1 つしか得られず、その写しを両腕で 3 回ずつ使った。freshness の Run が Verify の区間に入る動機の指標は、この Gold では両腕とも 0 で観測できなかった。
+  journey で「3 回連続の preempt」に届いたかは未確認。編集 trace は小さい fixture で、0／505 の検出力は小さい（95% の上限は約 0.6%）。CI で見えた長い settle（数十秒）は、この局所環境では M でも再現しなかった。
+- 運用の逸脱（事実）：origin/master が `adaf28b8` に進み build の祖先の検査が通らないため、`git clone --shared` の clone の中でだけ origin/master を `8a7f4ceb` に置いて worktree を作った（本体の ref は触っていない）。
+  journey の harness の FAIL 13／20 本は Main の stderr の `atspi-WARNING` の誤判定で arm と無関係。settle は実測値を使った（`definitions.md` 追記 1。1 組目の値を見た後の追記）。
+- 判断：線に当たらないので merge へ進める。新しい候補での CP-4 の正式な測り直しは、上のとおりユーザーの判断として残す。
