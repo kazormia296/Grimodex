@@ -412,6 +412,7 @@ CQ-AVAIL（§2.12）は、このうち records の数え方と版の衝突を、
 - 50 場面の主人公級は、上のとおり 512 に届く。
 - 課金に入っていない行（既存の会計の穴。DR-CQA-5）：Scope extension の LEFT JOIN（`scene_scope.rs` の `read_scope_extension`）は、binding の knowledge holder と audience が character のとき、principal の Codex 行を binding あたり最大 2 行読む。`preflight_project_reads` の課金は、この行を数えない。tree の全件 56、binding 50、join で読む tree 50 の project で、どの binding も character の principal を持てば、shared の実際の読取は principal の 100 行を加えて約 256 行になり、課金（tree×2 の 112 と binding×2 の 100）を約 44 行上回る。変更前の A3 の課金も同じ行を数えていないので、本変更が増やした穴ではない。ただし、変更前は shared の行を Revision ごとに課金していたので、Revision が 2 件以上のとき課金が読取を上回っていた。今は shared を 1 回だけ課金するので、この形では旧来の乗数が実際の読取を覆うとは言えない。「読取と課金は 1 対 1」は読取の回数（statement）の単位の主張で、行の単位ではない。課金に principal の行を足すかは別に決める（課金を厳しくする変更だが、A3 の SQL、診断の観測 slot、steps の基準値に波及する）。
 - DR-CQA-6（2026-11-11。[cqavail-decisions.md](nir1-lane-decisions/cqavail-decisions.md)）以降、shared の binding は×1（tree は×2 のまま）で、binding の SELECT は tree を join しない。上の「binding×2」と Q512 の shared 263・512 行（registry33 は 77）は当時の値で、今は 201・450 行（75・510 行）。上限の値は変わっていない。
+- DR-CQA-7（2026-11-12。[cqavail-decisions.md](nir1-lane-decisions/cqavail-decisions.md)）以降、shared の tree も×1 で、principal の Codex 行（上の DR-CQA-5 の穴）は課金に入る。上の「課金に入っていない行」と Q512 の shared 201・450 行（registry33 は 75・510 行）は DR-CQA-6 の時点の値で、今は 139・388 行（73・508 行）。上限の値と bytes の乗数は変わっていない。
 - 512 行の実 work が大きい形でも期限に収まることは、lifecycle の `registry33`（E=144）で確かめる。hosted の 3 OS での Q512 の call は、この変更の最初の run で観測して §4.1 に足す（§8）。
 
 ## 3. CI 証跡

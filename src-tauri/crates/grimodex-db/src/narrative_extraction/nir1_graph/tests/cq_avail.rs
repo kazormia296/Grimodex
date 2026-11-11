@@ -1524,8 +1524,10 @@ fn a_query_loads_the_scene_bindings_in_one_statement() -> Result<()> {
     };
     // The whole set of reads of the binding table in this query, by column and
     // by the number of statements prepared that name it (a column a statement
-    // names twice counts twice). Two statements name the payload columns: the
-    // preflight's byte sum (no `version`) and the extension's. A new statement
+    // names twice counts twice). Three statements name the payload columns:
+    // the preflight's byte sum (no `version`), the extension's, and the
+    // principals' Codex row count (DR-CQA-7: the extension's two joins, so the
+    // two principal columns twice more each and `project_id` three times). A new statement
     // on the table, or a second load, changes this and fails here. The Scene
     // join's two token columns (`scene_incarnation_id`, `source_token` of a
     // pinned Scene) are not in it: this query pins no Scene, and that read has
@@ -1540,11 +1542,11 @@ fn a_query_loads_the_scene_bindings_in_one_statement() -> Result<()> {
     assert_eq!(
         on_bindings,
         BTreeMap::from([
-            ("audience_json", 4),
+            ("audience_json", 6),
             ("compatibility_marker", 2),
-            ("knowledge_holder_json", 4),
+            ("knowledge_holder_json", 6),
             ("material_constraint_json", 2),
-            ("project_id", 5),
+            ("project_id", 8),
             ("query_identity_json", 2),
             ("scene_id", 3),
             ("scene_incarnation_id", 2),
@@ -1588,7 +1590,8 @@ fn budget_fixture(total: usize, decoys: usize) -> Result<Fixture> {
 /// `admitted_rows` observes): the reverse-index rows it pages through for
 /// alice and bob, each Revision's Entities, Relations and Evidence, its
 /// Decision and the Codex rows its Entities name, and, once, the project-level
-/// rows the Revisions share (the tree twice, the Scene bindings once, the
+/// rows the Revisions share (the tree once, the Scene bindings once, the Codex
+/// rows their principals name once each, the
 /// registry for each of the two reads that make it, the project, the query
 /// Scene, its POV and the Epoch).
 fn rows_charged_by_the_seed_query(fixture: &Fixture) -> Result<(usize, usize)> {
@@ -1654,8 +1657,22 @@ fn rows_charged_by_the_seed_query(fixture: &Fixture) -> Result<(usize, usize)> {
                                     WHERE project_id=?1 ORDER BY epoch_number DESC LIMIT 1)",
             &[&PROJECT],
         )?;
+        // The Codex rows a binding's holder or audience names, counted from
+        // the stored principals (a second way of counting, not the charge's
+        // statement): a character of the project, once for each of the two.
+        let principals = count(
+            "SELECT (SELECT COUNT(*) FROM narrative_scene_scope_bindings b
+                       JOIN codex_entries c ON c.project_id=b.project_id AND c.type='character'
+                        AND c.id=json_extract(b.knowledge_holder_json,'$.ref')
+                      WHERE b.project_id=?1)
+                  + (SELECT COUNT(*) FROM narrative_scene_scope_bindings b
+                       JOIN codex_entries c ON c.project_id=b.project_id AND c.type='character'
+                        AND c.id=json_extract(b.audience_json,'$.ref')
+                      WHERE b.project_id=?1)",
+            &[&PROJECT],
+        )?;
         // project 1, query Scene 1, its POV 0 (the fixture's Scene has none)
-        let shared = 2 * tree + bindings + 2 * registry + 1 + 1 + epoch;
+        let shared = tree + bindings + principals + 2 * registry + 1 + 1 + epoch;
         Ok((candidates + revisions + shared, shared))
     })
 }
@@ -2164,6 +2181,39 @@ fn same_entity_product_fixture_with_scenes(
     total_summary_bytes: usize,
     extra_scenes: usize,
 ) -> Result<Fixture> {
+    same_entity_product_fixture_with_shaped_scenes(
+        revisions,
+        total_summary_bytes,
+        extra_scenes,
+        SceneShape::default(),
+    )
+}
+
+/// What the extra Scenes of a product fixture look like around them: the bare
+/// shape (every Scene under one folder, readers as principals) is the
+/// smallest project a Scene count can describe; a real manuscript has folders
+/// and notes in its tree, and binds characters as a Scene's holder and
+/// audience (DR-CQA-7).
+#[derive(Clone, Copy, Default)]
+struct SceneShape {
+    /// A folder for every ten extra Scenes (the Scenes under it) and a note
+    /// under the folder for each extra Scene: the tree has about 2.1 nodes per
+    /// Scene.
+    folders_and_notes: bool,
+    /// Every extra Scene's knowledge holder and audience are characters of the
+    /// project: two Codex rows per binding for the extension to read (the
+    /// worst case of the principal rows the shared-read charge counts).
+    character_principals: bool,
+}
+
+/// [`same_entity_product_fixture_with_scenes`] with the extra Scenes in a
+/// [`SceneShape`].
+fn same_entity_product_fixture_with_shaped_scenes(
+    revisions: usize,
+    total_summary_bytes: usize,
+    extra_scenes: usize,
+    shape: SceneShape,
+) -> Result<Fixture> {
     use crate::narrative_extraction::nir1_entity_relation::prepare_nir1_entity_relation_revision;
     use crate::narrative_extraction::Nir1EntityRelationRevisionPrepareRequest;
     let entity_count = 12usize;
@@ -2198,14 +2248,31 @@ fn same_entity_product_fixture_with_scenes(
                 crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
         }
+        let mut parent = String::from("ch00");
         for extra in 0..extra_scenes {
+            if shape.folders_and_notes && extra % 10 == 0 {
+                parent = format!("f{extra:05}");
+                conn.execute(
+                    "INSERT INTO tree_nodes (id, project_id, node_type, title, content, sort_order)
+                     VALUES (?1, 'default-project', 'folder', ?1, '{}', ?2)",
+                    params![parent, format!("a1c{extra:05}")],
+                )?;
+            }
             let scene_id = format!("x{extra:05}");
             conn.execute(
                 "INSERT INTO tree_nodes
                     (id, project_id, parent_id, node_type, title, content, sort_order)
-                 VALUES (?1, 'default-project', 'ch00', 'scene', ?1, '{}', ?1)",
-                [&scene_id],
+                 VALUES (?1, 'default-project', ?2, 'scene', ?1, '{}', ?1)",
+                params![scene_id, parent],
             )?;
+            if shape.folders_and_notes {
+                conn.execute(
+                    "INSERT INTO tree_nodes
+                        (id, project_id, parent_id, node_type, title, content, sort_order)
+                     VALUES (?1, 'default-project', ?2, 'note', ?1, '{}', ?3)",
+                    params![format!("n{extra:05}"), parent, format!("z{extra:05}")],
+                )?;
+            }
             crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
                 conn,
                 PROJECT,
@@ -2213,6 +2280,30 @@ fn same_entity_product_fixture_with_scenes(
                 "2026-09-17T00:00:00.000Z",
                 crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
+            if shape.character_principals {
+                let read = read_narrative_scene_scope(conn, PROJECT, &scene_id)?;
+                let mut binding = read.binding;
+                binding.knowledge_holder = NarrativeScopePrincipalV1::Character {
+                    reference: format!("v{:02}", extra % entity_count),
+                };
+                binding.audience = NarrativeScopePrincipalV1::Character {
+                    reference: format!("v{:02}", (extra + 1) % entity_count),
+                };
+                binding.source_token =
+                    grimodex_core::narrative_scene_scope::source_token(&read.registry, &binding)?;
+                conn.execute(
+                    "UPDATE narrative_scene_scope_bindings
+                        SET knowledge_holder_json=?1, audience_json=?2, source_token=?3
+                      WHERE project_id=?4 AND scene_id=?5",
+                    params![
+                        serde_json::to_string(&binding.knowledge_holder)?,
+                        serde_json::to_string(&binding.audience)?,
+                        binding.source_token,
+                        PROJECT,
+                        scene_id
+                    ],
+                )?;
+            }
         }
         let body: String = "物語".repeat(per_entity_chars / 2 + 1);
         for index in 0..entity_count {
@@ -2284,49 +2375,87 @@ fn same_entity_product_fixture_with_scenes(
     })
 }
 
-// DR-CQA-6: the floor of a bare one-Revision project (the product's p:300000
-// shape: twelve Entities, one Revision, short-id Scenes with a binding each).
-// Every query's shared reads scale with the Scenes, so past a number of Scenes
-// no seed gets a Graph. The charge is 2 per tree node, 1 per binding (it was
-// 2), 2 per registry reference and 3 once; the Revision's 37 + 13 rows and the
-// candidate rows after its first Revision come on top. It was 489 Scenes
-// (4n + 19; this same test, run with the binding charge at 2, gives 489, as the
-// real worker did) and is 652 now (3n + 19): 652 is admitted, and 653 is
-// refused for the candidate rows that no longer fit after the Revision. This
-// runs the worker's configuration in process: the admission it measures is the
-// same code the worker runs.
-const BARE_FLOOR_SCENES: usize = 652;
+// The floor of a one-Revision project: the number of bound Scenes at which no
+// seed gets a Graph, on the worker's configuration run in process (the
+// admission it measures is the code the worker runs). What the shared reads
+// charge, once per query (DR-CQA-6 and DR-CQA-7): one row per tree node (every
+// node, folders and notes too: the authority reads them all), one per binding,
+// one per Codex row a binding's holder or audience makes the extension read, two
+// per registry reference and three more; the Revision's 37 + 13 rows and the
+// candidate rows after its first Revision come on top. At N Scenes the project
+// is available; at N + 1 the candidate page no longer fits and the Graph is
+// refused, whole, with `candidate-record-limit`.
+//
+// | shape | before DR-CQA-6 | DR-CQA-6 | now |
+// |---|---:|---:|---:|
+// | bare (a tree of Scenes, readers) | 489 | 652 | BARE_FLOOR_SCENES |
+// | folders and notes | - | - | FOLDERS_AND_NOTES_FLOOR_SCENES |
+// | every principal a character | - | - | CHARACTER_PRINCIPALS_FLOOR_SCENES |
+const BARE_FLOOR_SCENES: usize = 979;
+const FOLDERS_AND_NOTES_FLOOR_SCENES: usize = 633;
+const CHARACTER_PRINCIPALS_FLOOR_SCENES: usize = 491;
 
-fn bare_floor_query(total_scenes: usize) -> Result<Nir1GraphResponse> {
+fn floor_query(shape: SceneShape, total_scenes: usize) -> Result<Nir1GraphResponse> {
     // The fixture has 4 bound Scenes of its own.
-    let fixture = same_entity_product_fixture_with_scenes(1, 300_000, total_scenes - 4)?;
-    let scenes: i64 = fixture.authority.with_conn(|conn| {
-        Ok(conn.query_row(
-            "SELECT COUNT(*) FROM narrative_scene_scope_bindings WHERE project_id=?1",
-            [PROJECT],
-            |row| row.get(0),
-        )?)
+    let fixture =
+        same_entity_product_fixture_with_shaped_scenes(1, 300_000, total_scenes - 4, shape)?;
+    let (scenes, nodes, principal_rows) = fixture.authority.with_conn(|conn| {
+        let count =
+            |sql: &str| -> Result<i64> { Ok(conn.query_row(sql, [PROJECT], |row| row.get(0))?) };
+        Ok((
+            count("SELECT COUNT(*) FROM narrative_scene_scope_bindings WHERE project_id=?1")?,
+            count("SELECT COUNT(*) FROM tree_nodes WHERE project_id=?1")?,
+            count(crate::narrative_extraction::scene_scope::SCOPE_EXTENSION_PRINCIPAL_ROWS_SQL)?,
+        ))
     })?;
     assert_eq!(usize::try_from(scenes)?, total_scenes);
+    // The shape is what it says: a shape that silently became bare would pass
+    // as a different floor.
+    let extra = i64::try_from(total_scenes - 4)?;
+    assert_eq!(
+        principal_rows,
+        if shape.character_principals {
+            2 * extra
+        } else {
+            0
+        },
+        "principal rows"
+    );
+    if shape.folders_and_notes {
+        // a note for each extra Scene, besides the Scenes themselves
+        assert!(
+            nodes >= scenes + extra,
+            "{nodes} tree nodes for {scenes} Scenes"
+        );
+    }
     let mut reader = fixture.worker_reader()?;
     reader.query_for_worker_with_maintenance_deadline(&request_for("v00", "nir1"), LARGE_N_LEASE)
 }
 
+fn shape_from_env() -> SceneShape {
+    let shape = std::env::var("CQ_FLOOR_SHAPE").unwrap_or_default();
+    SceneShape {
+        folders_and_notes: shape.contains("folders"),
+        character_principals: shape.contains("characters"),
+    }
+}
+
 #[test]
-#[ignore = "DR-CQA-6 measurement: bisects the floor of the bare one-Revision project (CQ_FLOOR_LO, CQ_FLOOR_HI)"]
-fn measure_the_bare_floor() -> Result<()> {
+#[ignore = "DR-CQA-6/7 measurement: bisects the floor of the one-Revision project (CQ_FLOOR_LO, CQ_FLOOR_HI, CQ_FLOOR_SHAPE=folders+characters)"]
+fn measure_the_floor() -> Result<()> {
     let env = |name: &str, default: usize| {
         std::env::var(name)
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(default)
     };
-    let (mut lo, mut hi) = (env("CQ_FLOOR_LO", 400), env("CQ_FLOOR_HI", 800));
-    assert_eq!(bare_floor_query(lo)?.status, "available");
-    assert_eq!(bare_floor_query(hi)?.status, "unavailable");
+    let shape = shape_from_env();
+    let (mut lo, mut hi) = (env("CQ_FLOOR_LO", 400), env("CQ_FLOOR_HI", 1200));
+    assert_eq!(floor_query(shape, lo)?.status, "available");
+    assert_eq!(floor_query(shape, hi)?.status, "unavailable");
     while hi - lo > 1 {
         let mid = (lo + hi) / 2;
-        let response = bare_floor_query(mid)?;
+        let response = floor_query(shape, mid)?;
         eprintln!("FLOOR {mid}: {} {:?}", response.status, response.reason);
         if response.status == "available" {
             lo = mid;
@@ -2338,19 +2467,95 @@ fn measure_the_bare_floor() -> Result<()> {
     Ok(())
 }
 
+/// DR-CQA-7, observed on the query itself: what the shared reads charge for
+/// the same Scenes in other shapes. A tree node is one row (a folder and a note
+/// per Scene add their rows, once), and the two principals of a binding that
+/// name characters of the project add one row each (the Codex rows the
+/// extension's joins read). The rows are counted by the query's own admission
+/// (`QueryUsage::rows`), not by a helper.
 #[test]
-fn the_floor_of_a_bare_one_revision_project_is_n_available_and_n_plus_1_refused() -> Result<()> {
-    let at = bare_floor_query(BARE_FLOOR_SCENES)?;
-    assert_eq!(at.status, "available", "{:?}", at.reason);
-    let over = bare_floor_query(BARE_FLOOR_SCENES + 1)?;
-    assert_eq!(over.status, "unavailable", "{:?}", over.reason);
+fn the_tree_and_the_principals_codex_rows_are_charged_once_each() -> Result<()> {
+    const EXTRA: usize = 20;
+    let rows = |shape: SceneShape| -> Result<usize> {
+        let fixture = same_entity_product_fixture_with_shaped_scenes(1, 300_000, EXTRA, shape)?;
+        LAST_QUERY_ROWS.take();
+        let response = fixture
+            .worker_reader()?
+            .query_for_worker_with_maintenance_deadline(
+                &request_for("v00", "nir1"),
+                LARGE_N_LEASE,
+            )?;
+        assert_eq!(response.status, "available", "{:?}", response.reason);
+        LAST_QUERY_ROWS
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("the query did not record the rows it admitted"))
+    };
+    let bare = rows(SceneShape::default())?;
+    let characters = rows(SceneShape {
+        character_principals: true,
+        ..SceneShape::default()
+    })?;
+    // two principals for each of the extra Scenes' bindings, and no other change
+    assert_eq!(characters - bare, 2 * EXTRA);
+    let folders = rows(SceneShape {
+        folders_and_notes: true,
+        ..SceneShape::default()
+    })?;
+    // a note for each extra Scene and a folder for every ten of them, one row
+    // each (the tree was charged twice before DR-CQA-7)
+    assert_eq!(folders - bare, EXTRA + EXTRA / 10);
+    Ok(())
+}
+
+/// N is available and N + 1 is refused for exactly the candidate page's
+/// records, whole (no partial Graph).
+fn assert_floor(shape: SceneShape, floor: usize) -> Result<()> {
+    let at = floor_query(shape, floor)?;
+    assert_eq!(at.status, "available", "{floor}: {:?}", at.reason);
+    let over = floor_query(shape, floor + 1)?;
+    assert_eq!(
+        over.status,
+        "unavailable",
+        "{}: {:?}",
+        floor + 1,
+        over.reason
+    );
     assert!(over.graph.is_none());
-    let reason = over.reason.as_deref().unwrap_or_default();
-    assert!(
-        reason.contains("candidate-record-limit"),
-        "refused for the candidate page's records: {reason}"
+    assert_eq!(
+        over.reason.as_deref(),
+        Some(
+            "query-worker-work-candidate-record-limit-pre-cleanup-work-failed-candidate-record-limit"
+        ),
+        "refused for the candidate page's records, not for the shared reads' (disclosure-record-limit)"
     );
     Ok(())
+}
+
+#[test]
+fn the_floor_of_a_bare_one_revision_project_is_n_available_and_n_plus_1_refused() -> Result<()> {
+    assert_floor(SceneShape::default(), BARE_FLOOR_SCENES)
+}
+
+#[test]
+fn the_floor_with_folders_and_notes_is_n_available_and_n_plus_1_refused() -> Result<()> {
+    assert_floor(
+        SceneShape {
+            folders_and_notes: true,
+            ..SceneShape::default()
+        },
+        FOLDERS_AND_NOTES_FLOOR_SCENES,
+    )
+}
+
+#[test]
+fn the_floor_with_character_principals_is_n_available_and_n_plus_1_refused() -> Result<()> {
+    assert_floor(
+        SceneShape {
+            character_principals: true,
+            ..SceneShape::default()
+        },
+        CHARACTER_PRINCIPALS_FLOOR_SCENES,
+    )
 }
 
 // B3 (in-process): projects with several product-shaped Revisions register on

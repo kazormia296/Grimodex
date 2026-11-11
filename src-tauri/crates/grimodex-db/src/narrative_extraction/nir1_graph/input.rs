@@ -88,8 +88,15 @@ impl A2SqlObservation {
 #[cfg(feature = "nir1-material-diagnostics")]
 const _: () = assert!(RELATED_BYTES_SQL.len() == A2_RELATED_QUERY_COUNT);
 
+/// The A3 statements' slots: 1..=8 the global row counts, 9 the material rows,
+/// 10..=17 the global byte sums, 18..=22 the material byte sums, 23 the
+/// principals' Codex rows (DR-CQA-7). Slot 0 has been empty since the registry
+/// stopped being scaled by an entity count, and stays empty: the Linux probe
+/// reads it as "A3 SQL reached".
 #[cfg(feature = "nir1-material-diagnostics")]
-const A3_SQL_QUERY_COUNT: usize = 23;
+const A3_SQL_QUERY_COUNT: usize = 24;
+#[cfg(feature = "nir1-material-diagnostics")]
+const A3_PRINCIPAL_ROWS_SLOT: u8 = 23;
 #[cfg(feature = "nir1-material-diagnostics")]
 const _: () = {
     assert!(DISCLOSURE_GLOBAL_ROWS_SQL.len() == 8);
@@ -1085,6 +1092,24 @@ fn preflight_project_reads_inner(
         };
         admit_rows(&mut rows, value, multiplier, remaining_rows)?;
     }
+    // The Codex rows the Scope extension's binding read makes through its two
+    // principal joins, once each (DR-CQA-7). The statement is the extension's
+    // own FROM clause, so the rows it counts are the rows that read makes.
+    #[cfg(feature = "nir1-material-diagnostics")]
+    let started = start_a3_sql_timer(&observation);
+    let principal_rows_query: rusqlite::Result<i64> = conn.query_row(
+        crate::narrative_extraction::scene_scope::SCOPE_EXTENSION_PRINCIPAL_ROWS_SQL,
+        [project],
+        |row| row.get(0),
+    );
+    #[cfg(feature = "nir1-material-diagnostics")]
+    record_a3_sql_query(
+        &mut observation,
+        A3_PRINCIPAL_ROWS_SLOT,
+        started,
+        principal_rows_query.is_err(),
+    );
+    admit_rows(&mut rows, principal_rows_query?, 1, remaining_rows)?;
     let mut bytes = 0usize;
     #[cfg(feature = "nir1-material-diagnostics")]
     let global_byte_queries = DISCLOSURE_GLOBAL_BYTES_SQL.iter().enumerate();
@@ -1297,9 +1322,12 @@ enum DisclosureGlobalRowsParams {
 }
 
 const DISCLOSURE_GLOBAL_ROWS_SQL: &[(&str, usize, DisclosureGlobalRowsParams)] = &[
+    // Once (DR-CQA-7): the Scope authority reads the project's tree one time
+    // (every node, folders and notes included, because the tree's checks need
+    // them). The 2 dated from when A3 loaded the authority twice per Revision.
     (
         "SELECT COUNT(*) FROM tree_nodes WHERE project_id=?1",
-        2,
+        1,
         DisclosureGlobalRowsParams::Project,
     ),
     (
@@ -1661,7 +1689,9 @@ mod disclosure_tests {
         );
         // Slot 0 was the entity count that scaled the registry reads; the
         // registry is now charged for the reads it gets, so nothing runs there.
+        // The principals' Codex rows (DR-CQA-7) are the last slot, 23.
         assert!(observation.timings_ns[0].is_none());
+        assert!(observation.timings_ns[usize::from(A3_PRINCIPAL_ROWS_SLOT)].is_some());
         assert!(observation.timings_ns[1..].iter().all(Option::is_some));
         assert_eq!(observation.error_slot, None);
         assert_eq!(observation.overflow_mask, 0);
@@ -1689,6 +1719,10 @@ mod disclosure_tests {
         assert_eq!(overflow.error_slot, Some(22));
         assert_eq!(overflow.overflow_mask, 1 << 22);
         assert!(overflow.unattributed);
+        let mut last = A3SqlObservation::default();
+        last.record(A3_PRINCIPAL_ROWS_SLOT, u128::from(u64::MAX) + 1, true);
+        assert_eq!(last.timings_ns[usize::from(A3_PRINCIPAL_ROWS_SLOT)], None);
+        assert_eq!(last.overflow_mask, 1 << A3_PRINCIPAL_ROWS_SLOT);
     }
 
     #[test]
@@ -1704,9 +1738,10 @@ mod disclosure_tests {
         )
         .unwrap();
         let bytes = admission.bytes;
-        // 7 shared (tree 2, registry 2, bindings 1, project 1, query Scene 1)
-        // + 1 entity + 1 phase of the Revision
-        assert_eq!(admission.rows, 9);
+        // 6 shared (tree 1, registry 2, bindings 1, project 1, query Scene 1;
+        // the binding names no principal, so no Codex row) + 1 entity + 1
+        // phase of the Revision
+        assert_eq!(admission.rows, 8);
         assert!(bytes > 0);
         let payload_bytes: usize = conn
             .query_row(
@@ -1942,7 +1977,9 @@ mod disclosure_tests {
     #[test]
     fn disclosure_rejects_auxiliary_row_cardinality_before_materialization() {
         let conn = fixture();
-        for index in 0..MAX_GRAPH_QUERY_RECORDS / 2 {
+        // The tree is charged once (DR-CQA-7), so it takes the whole budget of
+        // notes to be refused.
+        for index in 0..MAX_GRAPH_QUERY_RECORDS {
             conn.execute(
                 "INSERT INTO tree_nodes (id, project_id, node_type) VALUES (?1, 'project', 'note')",
                 [format!("node-{index}")],
@@ -1986,11 +2023,11 @@ mod disclosure_tests {
             INPUT_BYTES,
         )
         .unwrap();
-        // 7 shared (tree 2, registry 2, bindings 1, project 1, query Scene 1)
+        // 6 shared (tree 1, registry 2, bindings 1, project 1, query Scene 1)
         // + 2 each for entity, phase, link, POV of the Revision
-        assert_eq!(admission.rows, 15);
+        assert_eq!(admission.rows, 14);
         assert_eq!(
-            preflight_disclosure(&conn, "project", "r", "scene", 14, INPUT_BYTES)
+            preflight_disclosure(&conn, "project", "r", "scene", 13, INPUT_BYTES)
                 .unwrap_err()
                 .to_string(),
             DISCLOSURE_ROW_LIMIT
@@ -2053,6 +2090,10 @@ mod plan_tests {
                 .enumerate()
                 .map(|(index, query)| (format!("A3 global rows {index}"), query.0)),
         );
+        statements.push((
+            "A3 principal rows".to_owned(),
+            crate::narrative_extraction::scene_scope::SCOPE_EXTENSION_PRINCIPAL_ROWS_SQL,
+        ));
         statements.extend(
             DISCLOSURE_GLOBAL_BYTES_SQL
                 .iter()
@@ -2139,7 +2180,7 @@ mod plan_tests {
         db.migrate().unwrap();
         db.with_conn(|conn| {
             let statements = a2_a3_statements();
-            assert_eq!(statements.len(), 3 + 10 + 8 + 8 + 5);
+            assert_eq!(statements.len(), 3 + 10 + 8 + 1 + 8 + 5);
             for (label, sql) in &statements {
                 let plan = query_plan(conn, sql);
                 let violations = plan_violations(label, sql, &plan);

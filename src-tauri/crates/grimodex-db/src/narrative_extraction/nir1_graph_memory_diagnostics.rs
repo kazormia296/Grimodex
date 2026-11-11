@@ -144,7 +144,7 @@ impl From<A2SqlObservation> for QueryA2SqlObservation {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryA3SqlObservation {
-    pub timings_ns: [Option<u64>; 23],
+    pub timings_ns: [Option<u64>; 24],
     pub error_slot: Option<u8>,
     pub overflow_mask: u32,
     pub unattributed: bool,
@@ -910,7 +910,7 @@ mod tests {
                 "a3Sql": {
                     "timingsNs": [null, null, null, null, null, null, null, null, null, 8,
                                   null, null, null, null, null, null, null, null, null, null,
-                                  null, null, null],
+                                  null, null, null, null],
                     "errorSlot": 10,
                     "overflowMask": 0,
                     "unattributed": false,

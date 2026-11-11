@@ -947,15 +947,14 @@ struct ScopeExtensionParts {
 /// and the Codex rows its two principals name. It does not join `tree_nodes`;
 /// the Scene a binding belongs to is decided from [`ProjectSceneIds`] and
 /// returned to the caller as the eleventh raw column.
-const SCOPE_EXTENSION_SQL: &str =
-    "SELECT b.scene_id, b.scene_incarnation_id, b.compatibility_marker,
-                b.query_identity_json, b.material_constraint_json,
-                b.knowledge_holder_json, b.version, b.audience_json,
-                b.source_token, b.updated_at,
-                CASE WHEN kh.id IS NOT NULL THEN 1 ELSE 0 END,
-                CASE WHEN au.id IS NOT NULL THEN 1 ELSE 0 END
-           FROM narrative_scene_scope_bindings b
-           LEFT JOIN codex_entries kh
+/// The two `LEFT JOIN codex_entries` that read a binding's principals: the
+/// holder and the audience, each a Codex row of the project's characters that
+/// the principal's `$.ref` names. The extension's read and the charge that
+/// counts the rows it makes ([`SCOPE_EXTENSION_PRINCIPAL_ROWS_SQL`], DR-CQA-7)
+/// are built from this one text, so they cannot name different rows.
+macro_rules! scope_extension_principal_joins {
+    () => {
+        "           LEFT JOIN codex_entries kh
              ON kh.project_id = b.project_id
             AND kh.type = 'character'
             AND kh.id = CASE WHEN json_valid(b.knowledge_holder_json)
@@ -967,8 +966,39 @@ const SCOPE_EXTENSION_SQL: &str =
             AND au.id = CASE WHEN json_valid(b.audience_json)
                              THEN json_extract(b.audience_json, '$.ref')
                              ELSE NULL END
-          WHERE b.project_id = ?1
-          ORDER BY b.scene_id";
+"
+    };
+}
+
+pub(crate) const SCOPE_EXTENSION_SQL: &str = concat!(
+    "SELECT b.scene_id, b.scene_incarnation_id, b.compatibility_marker,
+                b.query_identity_json, b.material_constraint_json,
+                b.knowledge_holder_json, b.version, b.audience_json,
+                b.source_token, b.updated_at,
+                CASE WHEN kh.id IS NOT NULL THEN 1 ELSE 0 END,
+                CASE WHEN au.id IS NOT NULL THEN 1 ELSE 0 END
+           FROM narrative_scene_scope_bindings b
+",
+    scope_extension_principal_joins!(),
+    "          WHERE b.project_id = ?1
+          ORDER BY b.scene_id"
+);
+
+/// The number of Codex rows [`SCOPE_EXTENSION_SQL`] reads through its two
+/// `LEFT JOIN codex_entries` for one project (`?1`): a holder that names a
+/// character of the project counts one, an audience that does counts one more,
+/// so one character named by both counts twice (DR-CQA-7). The statement is
+/// the extension's own FROM clause (the same binding rows, the same joins,
+/// from [`scope_extension_principal_joins`]) with the two joined ids counted
+/// instead of returned. It is what the query's shared-read charge adds for the
+/// principals.
+pub(crate) const SCOPE_EXTENSION_PRINCIPAL_ROWS_SQL: &str = concat!(
+    "SELECT COUNT(kh.id) + COUNT(au.id)
+           FROM narrative_scene_scope_bindings b
+",
+    scope_extension_principal_joins!(),
+    "          WHERE b.project_id = ?1"
+);
 
 /// The statement before DR-CQA-6, verbatim: `sceneOwned` from a `LEFT JOIN
 /// tree_nodes`. Tests only; the oracle [`SCOPE_EXTENSION_SQL`] and the Scene-id
@@ -3709,3 +3739,7 @@ mod parsed_scope_control_tests {
 #[cfg(test)]
 #[path = "scene_scope_ownership_tests.rs"]
 mod ownership_tests;
+
+#[cfg(test)]
+#[path = "scene_scope_principal_rows_tests.rs"]
+mod principal_rows_tests;
