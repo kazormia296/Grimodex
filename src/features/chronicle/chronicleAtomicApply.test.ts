@@ -8,6 +8,7 @@ import {
 import {
   buildProposalSafetyFlags,
   getChronicleApplyReadiness,
+  isChronicleEditedProposalApplyError,
   selectChronicleProposalsForAtomicApply,
   type ChronicleReviewProposal,
 } from "./chronicleExtractionStore";
@@ -151,6 +152,47 @@ describe("Chronicle atomic review apply", () => {
       applyChronicleExtractionReview({ projectId: "project-1", proposals }),
     ).rejects.toThrow("NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH");
     expect(commitMock).not.toHaveBeenCalled();
+  });
+
+  const editedSafety = (p: ChronicleReviewProposal) => ({
+    ...p.safety,
+    fresh: false,
+    noDuplicate: false,
+    riskLow: false,
+  });
+
+  it("blocks apply when an approved proposal was edited by the author", () => {
+    const base = proposal("proposal-edited", { status: "approved" });
+    const edited = { ...base, safety: editedSafety(base) };
+    const other = proposal("proposal-other", { status: "approved" });
+    expect(getChronicleApplyReadiness([edited, other])).toEqual({
+      ready: false,
+      approvedCount: 2,
+      errorCode: "NEX_V2_APPLY_BASIS_UNSUPPORTED",
+    });
+  });
+
+  it("keeps an edited but rejected proposal out of the block", () => {
+    const base = proposal("proposal-edited", { status: "rejected" });
+    const edited = { ...base, safety: editedSafety(base) };
+    const other = proposal("proposal-other", { status: "approved" });
+    expect(getChronicleApplyReadiness([edited, other])).toEqual({
+      ready: true,
+      approvedCount: 1,
+      errorCode: null,
+    });
+  });
+
+  it("recognizes the Native edited-basis rejection in apply errors", () => {
+    expect(
+      isChronicleEditedProposalApplyError(
+        new Error(
+          "NEX_V2_APPLY_BASIS_UNSUPPORTED: only interpretation is supported",
+        ),
+      ),
+    ).toBe(true);
+    expect(isChronicleEditedProposalApplyError(new Error("boom"))).toBe(false);
+    expect(isChronicleEditedProposalApplyError("x")).toBe(false);
   });
 
   it("requires skip-as-same before a probable duplicate is terminally rejected", async () => {
