@@ -246,7 +246,9 @@ fn event_create_payload(event_id: &str, title: &str, scene_id: &str, version: i6
         "kind": "generic",
         "precision": "unknown",
         "placement": { "mode": "append-tail", "afterOrdinal": null },
-        "secret": false,
+        // 取り込みの操作は、年表の出来事を常に secret で作る（DR-CAS-2）。
+        // 版の disclosure.secret は current_chronicle_plan_proposal 側で別に与える。
+        "secret": true,
         "revealSceneId": scene_id,
         "evidenceSceneLinks": [{
             "sceneId": scene_id,
@@ -280,7 +282,16 @@ fn seed_proposals(
     )
 }
 
+/// 版の `disclosure.secret` は既定で false（作者が IR に出すと承認した非 secret の版）。
+/// 操作の `secret` は版と無関係に別で与える（DR-CAS-7）。
 fn current_chronicle_plan_proposal(operation_payload: &Value) -> Value {
+    current_chronicle_plan_proposal_with_disclosure_secret(operation_payload, json!(false))
+}
+
+fn current_chronicle_plan_proposal_with_disclosure_secret(
+    operation_payload: &Value,
+    disclosure_secret: Value,
+) -> Value {
     let evidence_anchor_ids = operation_payload
         .pointer("/evidenceSceneLinks/0/evidenceAnchorIds")
         .cloned()
@@ -294,7 +305,7 @@ fn current_chronicle_plan_proposal(operation_payload: &Value) -> Value {
         "evidenceAnchorIds": evidence_anchor_ids,
         "evidenceDocumentRefs": ["D000001"],
         "disclosure": {
-            "secret": operation_payload["secret"],
+            "secret": disclosure_secret,
             "revealDocumentRef": "D000001",
         },
         "unresolvedMetadata": {
@@ -515,13 +526,32 @@ fn append_current_chronicle_revision(
     proposal: &mut (String, String),
     operation_payload: &Value,
 ) {
+    append_current_chronicle_revision_with_disclosure_secret(
+        db,
+        run_id,
+        proposal,
+        operation_payload,
+        json!(false),
+    );
+}
+
+fn append_current_chronicle_revision_with_disclosure_secret(
+    db: &Database,
+    run_id: &str,
+    proposal: &mut (String, String),
+    operation_payload: &Value,
+    disclosure_secret: Value,
+) {
     let revised = narrative_extraction::narrative_extraction_append_revision(
         db,
         AppendRevisionPayload {
             run_id: run_id.to_string(),
             project_id: "project-1".to_string(),
             proposal_id: proposal.0.clone(),
-            payload_json: current_chronicle_plan_proposal(operation_payload),
+            payload_json: current_chronicle_plan_proposal_with_disclosure_secret(
+                operation_payload,
+                disclosure_secret,
+            ),
             reconciliation_envelope: Some(current_chronicle_envelope(
                 run_id,
                 &format!("{run_id}-task"),
@@ -5452,5 +5482,422 @@ fn list_resumable_runs_excludes_already_satisfied_deferred_only() {
     assert!(
         ids.contains(&"run-deferred-open"),
         "deferred without already-satisfied must remain resumable"
+    );
+}
+
+// ---- DR-CAS: 取り込みは年表の出来事を常に secret で作る ----
+
+/// IR の資格（retrieval_admission の current.rs／disclosure.rs）が読む永続状態：
+/// 提案の状態、現行の版、最新の human の承認、版の payload（disclosure.secret）と envelope。
+fn retrieval_gate_state(db: &Database, proposal_id: &str) -> Value {
+    db.with_conn(|conn| {
+        let (status, current_revision_id): (String, Option<String>) = conn.query_row(
+            "SELECT status, current_revision_id FROM narrative_proposals WHERE id = ?1",
+            [proposal_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let decision: (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+        ) = conn.query_row(
+            "SELECT id, revision_id, decision, decision_json, actor_kind, actor_id, authority_scope
+                   FROM narrative_proposal_decisions WHERE proposal_id = ?1
+                  ORDER BY created_at DESC, id DESC LIMIT 1",
+            [proposal_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )?;
+        let (payload_json, envelope_digest, envelope_json): (
+            String,
+            Option<String>,
+            Option<String>,
+        ) = conn.query_row(
+            "SELECT payload_json, reconciliation_envelope_digest, reconciliation_envelope_json
+                   FROM narrative_proposal_revisions WHERE id = ?1",
+            [current_revision_id.as_deref().expect("current revision")],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        Ok(json!({
+            "status": status,
+            "currentRevisionId": current_revision_id,
+            "latestDecision": decision,
+            "payloadJson": payload_json,
+            "envelopeDigest": envelope_digest,
+            "envelopeJson": envelope_json,
+        }))
+    })
+    .expect("read retrieval gate state")
+}
+
+fn event_secret_and_reveal(db: &Database, event_id: &str) -> (i64, Option<String>) {
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT secret, reveal_scene_id FROM events WHERE id = ?1 AND project_id = 'project-1'",
+            [event_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(Into::into)
+    })
+    .expect("read applied Chronicle Event secret")
+}
+
+fn count_apply_commits(db: &Database) -> i64 {
+    db.with_conn(|conn| {
+        Ok(
+            conn.query_row("SELECT COUNT(*) FROM narrative_apply_commits", [], |row| {
+                row.get(0)
+            })?,
+        )
+    })
+    .expect("count apply commits")
+}
+
+/// 現行の形式の run を作り、版の disclosure.secret を与えて承認する。
+fn seed_current_chronicle_approved_with_disclosure_secret(
+    db: &Database,
+    run_id: &str,
+    event_id: &str,
+    disclosure_secret: Value,
+) -> (String, (String, String), Value) {
+    insert_scene(db, "scene-1", 0);
+    let payload = event_create_payload(event_id, "宿舎が砲撃される", "scene-1", 0);
+    let set_id = current_chronicle_proposal_set_id(run_id);
+    let mut pairs =
+        seed_current_chronicle_proposals(db, run_id, &set_id, std::slice::from_ref(&payload));
+    seal_run_as_current_chronicle(db, run_id);
+    append_current_chronicle_revision_with_disclosure_secret(
+        db,
+        run_id,
+        &mut pairs[0],
+        &payload,
+        disclosure_secret,
+    );
+    decide_proposal(db, run_id, &pairs[0], "approved");
+    (set_id, pairs.remove(0), payload)
+}
+
+#[test]
+fn current_chronicle_apply_creates_secret_event_from_nonsecret_or_secret_revision() {
+    // 版が false（作者が IR に出すと承認）でも true でも、年表の出来事は secret。
+    // reveal の場面は版の reveal の文書の場面のまま。IR の資格の永続状態は変わらない。
+    for (case, version_secret) in [("nonsecret", false), ("secret", true)] {
+        let db = migrated_db();
+        let run_id = format!("run-cas-create-{case}");
+        let event_id = format!("event-cas-create-{case}");
+        let (set_id, pair, payload) = seed_current_chronicle_approved_with_disclosure_secret(
+            &db,
+            &run_id,
+            &event_id,
+            json!(version_secret),
+        );
+        let before = retrieval_gate_state(&db, &pair.0);
+        let stored: Value =
+            serde_json::from_str(before["payloadJson"].as_str().expect("payload")).unwrap();
+        assert_eq!(stored["disclosure"]["secret"], json!(version_secret));
+        assert_eq!(before["status"], "approved");
+
+        let applied = prepare_and_apply(
+            &db,
+            build_prepare(
+                &format!("{run_id}-apply"),
+                &format!("{run_id}-plan"),
+                &set_id,
+                &run_id,
+                vec![(pair.0.clone(), pair.1.clone(), payload)],
+            ),
+        );
+        assert_eq!(applied["status"], "applied");
+
+        assert_eq!(
+            event_secret_and_reveal(&db, &event_id),
+            (1, Some("scene-1".to_string())),
+            "{case}: Chronicle Event must be secret with the Revision's reveal Scene"
+        );
+        // IR の資格が読む状態（提案の状態・現行の版・最新の承認・版の secret と envelope）は
+        // 取り込みで変わらない。版の secret は取り込み後も承認時の値のまま。
+        let after = retrieval_gate_state(&db, &pair.0);
+        assert_eq!(
+            after, before,
+            "{case}: retrieval gate state must not change"
+        );
+        assert_eq!(after["status"], "approved");
+        assert_eq!(after["currentRevisionId"], json!(pair.1));
+        let after_payload: Value =
+            serde_json::from_str(after["payloadJson"].as_str().expect("payload")).unwrap();
+        assert_eq!(after_payload["disclosure"]["secret"], json!(version_secret));
+    }
+}
+
+#[test]
+fn current_chronicle_apply_rejects_nonsecret_operation_even_for_nonsecret_revision() {
+    let db = migrated_db();
+    let run_id = "run-cas-current-nonsecret-op";
+    let (set_id, pair, payload) = seed_current_chronicle_approved_with_disclosure_secret(
+        &db,
+        run_id,
+        "event-cas-current-nonsecret-op",
+        json!(false),
+    );
+    let mut forged = payload.clone();
+    forged["secret"] = json!(false);
+    enable_manual_apply(&db);
+
+    let error = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(
+            "req-cas-current-nonsecret-op",
+            "ignored",
+            &set_id,
+            run_id,
+            vec![(pair.0.clone(), pair.1.clone(), forged)],
+        ),
+    )
+    .expect_err("a non-secret Chronicle Event operation must be refused");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_APPLY_SECRET_REQUIRED"),
+        "unexpected non-secret operation error: {error:#}"
+    );
+    assert_eq!(count_apply_commits(&db), 0);
+}
+
+#[test]
+fn legacy_chronicle_apply_rejects_nonsecret_operation() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let mut payload = event_create_payload("event-cas-legacy-nonsecret", "Legacy", "scene-1", 0);
+    payload["secret"] = json!(false);
+    let pairs = seed_approved_proposals(
+        &db,
+        "run-cas-legacy-nonsecret",
+        "set-cas-legacy-nonsecret",
+        std::slice::from_ref(&payload),
+    );
+    enable_manual_apply(&db);
+
+    let error = narrative_extraction::narrative_extraction_prepare_commit(
+        &db,
+        build_prepare(
+            "req-cas-legacy-nonsecret",
+            "ignored",
+            "set-cas-legacy-nonsecret",
+            "run-cas-legacy-nonsecret",
+            vec![(pairs[0].0.clone(), pairs[0].1.clone(), payload)],
+        ),
+    )
+    .expect_err("the legacy branch must not create a non-secret Chronicle Event");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_APPLY_SECRET_REQUIRED"),
+        "unexpected legacy non-secret operation error: {error:#}"
+    );
+    assert_eq!(count_apply_commits(&db), 0);
+}
+
+#[test]
+fn current_chronicle_revision_with_non_boolean_disclosure_secret_cannot_be_approved_or_applied() {
+    // 既存の版の検証（validate_chronicle_scene_event_proposal_payload）が、規則の変更の後も
+    // bool でない disclosure.secret の版を、承認でも取り込みでも通さないことの固定。
+    // commit.rs に足した bool の ensure（DR-CAS-3）は予備の検査で、この検証が先に拒むため
+    // この試験では到達しない。
+    for (case, malformed) in [
+        ("string", json!("false")),
+        ("number", json!(0)),
+        ("null", Value::Null),
+    ] {
+        let db = migrated_db();
+        let run_id = format!("run-cas-malformed-{case}");
+        let event_id = format!("event-cas-malformed-{case}");
+        insert_scene(&db, "scene-1", 0);
+        let payload = event_create_payload(&event_id, "宿舎が砲撃される", "scene-1", 0);
+        let set_id = current_chronicle_proposal_set_id(&run_id);
+        let mut pairs =
+            seed_current_chronicle_proposals(&db, &run_id, &set_id, std::slice::from_ref(&payload));
+        seal_run_as_current_chronicle(&db, &run_id);
+        append_current_chronicle_revision_with_disclosure_secret(
+            &db,
+            &run_id,
+            &mut pairs[0],
+            &payload,
+            malformed.clone(),
+        );
+        let refused = append_decision(&db, &run_id, &pairs[0], "approved", None)
+            .expect_err("a malformed disclosure.secret must not be approvable");
+        let refused = refused.to_string();
+        assert!(
+            refused.contains("NEX_PROPOSAL_PAYLOAD_MISMATCH")
+                && refused.contains("payload is invalid"),
+            "{case}: unexpected approval error: {refused}"
+        );
+
+        // 承認済みの版を、保存の後に崩した場合。
+        append_current_chronicle_revision(&db, &run_id, &mut pairs[0], &payload);
+        decide_proposal(&db, &run_id, &pairs[0], "approved");
+        db.with_conn(|conn| {
+            let raw: String = conn.query_row(
+                "SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?1",
+                [&pairs[0].1],
+                |row| row.get(0),
+            )?;
+            let mut stored: Value = serde_json::from_str(&raw)?;
+            stored["disclosure"]["secret"] = malformed.clone();
+            conn.execute(
+                "UPDATE narrative_proposal_revisions SET payload_json = ?1 WHERE id = ?2",
+                rusqlite::params![stored.to_string(), pairs[0].1],
+            )?;
+            Ok(())
+        })
+        .expect("corrupt the stored Revision after approval");
+        enable_manual_apply(&db);
+
+        let error = narrative_extraction::narrative_extraction_prepare_commit(
+            &db,
+            build_prepare(
+                &format!("req-cas-malformed-{case}"),
+                "ignored",
+                &set_id,
+                &run_id,
+                vec![(pairs[0].0.clone(), pairs[0].1.clone(), payload)],
+            ),
+        )
+        .expect_err("a corrupted disclosure.secret must not compile into an operation");
+        let error = error.to_string();
+        assert!(
+            error.contains("NEX_PROPOSAL_PAYLOAD_MISMATCH") && error.contains("payload is invalid"),
+            "{case}: unexpected corrupted Revision error: {error}"
+        );
+        assert_eq!(count_apply_commits(&db), 0);
+    }
+}
+
+#[test]
+fn current_chronicle_secret_event_survives_undo_and_redo() {
+    let db = migrated_db();
+    let run_id = "run-cas-undo-redo";
+    let event_id = "event-cas-undo-redo";
+    let (set_id, pair, payload) =
+        seed_current_chronicle_approved_with_disclosure_secret(&db, run_id, event_id, json!(false));
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-cas-undo-redo",
+            "plan-cas-undo-redo",
+            &set_id,
+            run_id,
+            vec![(pair.0.clone(), pair.1.clone(), payload)],
+        ),
+    );
+    let commit_id = applied["commitId"].as_str().expect("commit id").to_string();
+    let gate_after_apply = retrieval_gate_state(&db, &pair.0);
+
+    let undo_payload = |request_id: &str| UndoCommitPayload {
+        project_id: "project-1".to_string(),
+        session_id: "sess-cas-undo-redo".to_string(),
+        surface: None,
+        commit_id: Some(commit_id.clone()),
+        request_id: Some(request_id.to_string()),
+    };
+    narrative_extraction::narrative_extraction_undo_commit(&db, undo_payload("undo-cas-undo-redo"))
+        .expect("undo");
+    narrative_extraction::narrative_extraction_redo_commit(&db, undo_payload("redo-cas-undo-redo"))
+        .expect("redo");
+    assert_eq!(
+        event_secret_and_reveal(&db, event_id),
+        (1, Some("scene-1".to_string())),
+        "Redo must restore the Event as secret"
+    );
+    assert_eq!(retrieval_gate_state(&db, &pair.0), gate_after_apply);
+}
+
+#[test]
+fn current_chronicle_prepared_before_the_rule_is_refused_and_can_be_prepared_again() {
+    // DR-CAS-5：規則の前に prepare された計画（操作に secret:false が残る）は、apply で拒否される。
+    // その後、同じ提案の組を新しい request で prepare し直して取り込める。
+    let db = migrated_db();
+    let run_id = "run-cas-stale-plan";
+    let event_id = "event-cas-stale-plan";
+    let (set_id, pair, payload) =
+        seed_current_chronicle_approved_with_disclosure_secret(&db, run_id, event_id, json!(false));
+    enable_manual_apply(&db);
+    let prepare = build_prepare(
+        "req-cas-stale-plan-1",
+        "plan-cas-stale-plan-1",
+        &set_id,
+        run_id,
+        vec![(pair.0.clone(), pair.1.clone(), payload.clone())],
+    );
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(&db, prepare.clone())
+        .expect("prepare");
+    let prepared_commit_id = prepared["preparedCommitId"].as_str().unwrap().to_string();
+
+    // 規則の前に準備された計画を再現する：保存済みの計画の操作を secret:false に戻す。
+    db.with_conn(|conn| {
+        let raw: String = conn.query_row(
+            "SELECT prepared_plan_json FROM narrative_apply_commits WHERE id = ?1",
+            [&prepared_commit_id],
+            |row| row.get(0),
+        )?;
+        let mut plan: Value = serde_json::from_str(&raw)?;
+        plan["operations"][0]["payload"]["secret"] = json!(false);
+        conn.execute(
+            "UPDATE narrative_apply_commits SET prepared_plan_json = ?1 WHERE id = ?2",
+            rusqlite::params![plan.to_string(), prepared_commit_id],
+        )?;
+        Ok(())
+    })
+    .expect("rewrite the sealed plan as a pre-rule plan");
+
+    let error = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: "project-1".to_string(),
+            prepared_commit_id: prepared_commit_id.clone(),
+            request_id: prepare.request_id.clone(),
+            session_id: prepare.session_id.clone(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect_err("a pre-rule plan with a non-secret operation must be refused at Apply");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_APPLY_SECRET_REQUIRED"),
+        "unexpected stale plan error: {error:#}"
+    );
+    let events: i64 = db
+        .with_conn(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?))
+        .unwrap();
+    assert_eq!(events, 0);
+
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-cas-stale-plan-2",
+            "plan-cas-stale-plan-2",
+            &set_id,
+            run_id,
+            vec![(pair.0.clone(), pair.1.clone(), payload)],
+        ),
+    );
+    assert_eq!(applied["status"], "applied");
+    assert_eq!(
+        event_secret_and_reveal(&db, event_id),
+        (1, Some("scene-1".to_string()))
     );
 }

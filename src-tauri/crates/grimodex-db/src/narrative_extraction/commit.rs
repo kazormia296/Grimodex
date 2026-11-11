@@ -2286,6 +2286,13 @@ fn validate_commit_plan(
         match op.kind.as_str() {
             OP_KIND_EVENT_CREATE => {
                 let payload = parse_event_create_payload(&op.payload)?;
+                // 抽出の取り込みは、年表の出来事を常に secret で作る（DR-CAS-2）。
+                // 提案への束縛や形式の枝より前に、操作そのものへ掛ける。
+                anyhow::ensure!(
+                    payload.secret,
+                    "NEX_CHRONICLE_APPLY_SECRET_REQUIRED: extraction commit must create Chronicle events as secret (operation '{}')",
+                    payload.event_id
+                );
                 ensure_event_id_available(conn, ctx.project_id, &payload.event_id)?;
                 ensure_scene_versions(conn, ctx.project_id, &payload.evidence_scene_links)?;
             }
@@ -3100,6 +3107,14 @@ fn compile_current_chronicle_event_operation_payload(
         }
     }
 
+    // 値は使わないが、形の崩れた版を規則の変更で通さない（DR-CAS-3）。
+    anyhow::ensure!(
+        proposal
+            .pointer("/disclosure/secret")
+            .is_some_and(Value::is_boolean),
+        "NEX_PROPOSAL_PAYLOAD_MISMATCH: current Chronicle proposal disclosure.secret must be a boolean"
+    );
+
     let reveal_document_ref = proposal
         .pointer("/disclosure/revealDocumentRef")
         .and_then(Value::as_str)
@@ -3120,7 +3135,9 @@ fn compile_current_chronicle_event_operation_payload(
         "kind": "generic",
         "precision": "unknown",
         "placement": { "mode": "append-tail", "afterOrdinal": null },
-        "secret": proposal.pointer("/disclosure/secret").cloned().unwrap_or(Value::Null),
+        // 版の disclosure.secret は IR の関門。年表の出来事は版の値に関わらず
+        // 常に secret で作る（DR-CAS-1）。画面側の compiler.ts と同時に変えること。
+        "secret": true,
         "revealSceneId": reveal_scene_id,
         "evidenceSceneLinks": evidence_scene_links,
         "detail": null,
