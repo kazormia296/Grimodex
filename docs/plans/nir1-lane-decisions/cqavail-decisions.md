@@ -334,3 +334,17 @@ Q512／registry33 の fixture の行は下げた（388／508）が、同じ fixt
   既定の lane 全体（`nir1-c-query-worker-ci.sh` の引数なし）と practical-retention は実行していない。
 - `fnm exec --using=22 pnpm -s verify:quality`：通る（終了コード 0）。
 - 床の 979／633／491 は in-process（worker の構成〔`worker_reader`、`query_for_worker_with_maintenance_deadline`〕を同じ process で動かした値。admission の文と式は worker と同じコード）。実 worker の測定は次の節。
+
+### 実 worker の測定（2026-11-12、dev の実 worker、PR の前）
+
+dev 枝 `claude/dev-cquery-charge-actual-measure`（`ff2d4f81`＝本 DR の commit `3e3d2c75`＋測定 harness `274a56da` の cherry-pick。製品コードは変えず、push・PR なし）。記録：
+`fusion-eval-data/design-notes/db-connection-2026-11-07/drift-measure/cquery-charge-actual-2026-11-12/results.md`（raw、集計、binary の sha256、build log）。
+
+- **床（1 Revision。N は available、N＋1 は型付きの拒否 `candidate-record-limit`。worker は abort せず frame まで進んだ。各 3 回同一）**：bare **979／980**、folder＋note **633／634**、character（P＝2×追加場面）**491／492**。in-process の二分探索の値と一致。
+- **query の Q 高水位**：bare 979 は 4,199,070 B（25.03%。A-α の 652 は 3,814,832 B）、folder＋note の 633 と character の 491 は 3,814,832 B（22.74%）。worker 内 query_ms は 49〜50、39〜41、36〜37 ms。
+- **4 Revision（p4:300000）の 352／353 は動かない**：352 は available、353 は `other`（retained）。bytes を変えていないため。
+- **時間の対照（p4 の 352・337 場面、A-β 対 A-α〔基点 `383b8568`＝A-α＋harness〕、各腕 8 本、AB／BA の交互、開始時の loadavg 1.34、run の 1 分値は 1.2〜1.3）**：
+  時間切れは A-β 0／16、A-α 0／16。worker 内 query_ms の中央値／最大は 352 場面で 79.5／80 対 85／86 ms、337 場面で 79.5／81 対 85／86 ms。owner の往復は 107〜108 対 108〜112 ms。
+  A-β が足した preflight の文（binding ごとの JSON の読み）は、100 ms の期限の余裕（約 15 ms）を食わなかった（A-β の方が約 5 ms 短かった。原因は未確認）。
+  DR-CQA-6 の対照（loadavg 2.3〜4.2）では両腕とも 6／16 が時間切れだった。時間の余裕が無い形は load しだいで 100 ms に当たる点は A-α と同じで、本 DR は変えていない。
+- 限界：3 形の床だけ（半分だけ character・UUID・長い title は in-process の dev の測定のみ）。時間の対照は静かな時間帯の 1 回。principal の分布は実データが無く測れていない。
