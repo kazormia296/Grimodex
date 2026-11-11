@@ -14,8 +14,8 @@ const DIST_DIR = path.resolve("dist/assets");
  * reviewed change and can never cross the absolute product ceiling.
  */
 export const INITIAL_JS_GRAPH_BUDGET = {
-  baseline: { rawBytes: 4_250_900, gzipBytes: 1_338_800 },
-  allowance: { rawBytes: 32_768, gzipBytes: 16_384 },
+  baseline: { rawBytes: 3_803_000, gzipBytes: 1_195_000 },
+  allowance: { rawBytes: 98_304, gzipBytes: 36_864 },
   // raw は 4_250_000 から 700 byte だけ上げた。チャット入力の書きかけを session／project の
   // 削除と一緒に消す処理（chatInputDraftPurge.ts）が初期 graph の store に入るため
   // （実測 raw 4,249,993 → 4,250,669 で +676、gzip 1,342,871 → 1,343,227 で +356）。
@@ -50,7 +50,18 @@ export const INITIAL_JS_GRAPH_BUDGET = {
   // raw 4,278,161 → 4,281,883 で +3,722、gzip 1,353,852 → 1,355,042 で +1,190）。
   // 設定ダイアログ（カテゴリの背景・本文の寄せ）は lazy chunk なので含まない。
   // どれも描く時点で要る小さな hook と部品で、後から読む形にできる大きな本体は無い。
-  absoluteMax: { rawBytes: 4_282_400, gzipBytes: 1_355_200 },
+  // ここまでが、上限を少しずつ上げてきた記録（旧 baseline raw 4,250,900／gzip 1,338,800、
+  // 旧上限 raw 4,282,400／gzip 1,355,200）。
+  //
+  // 起動時に要らないものを初期 graph から外し、baseline と上限を下げた（同じ toolchain の
+  // 実測で raw 4,281,883 → 3,802,998 で -478,885、gzip 1,354,989 → 1,194,962 で -160,027）。
+  // 外したもの: 英語の辞書（英語の画面でだけ読む）、利用規約の同意ダイアログと Markdown の
+  // 描画（同意が要るときだけ読む）、gsap（パネルの強調と節目の演出で初めて読む）、撮影用の
+  // 校閲デモの文面。これらが初期 graph に戻らないことは FORBIDDEN_INITIAL_JS で検査する。
+  // 上限は旧上限より raw 379,400／gzip 123,200 低い。allowance は raw 32,768 → 98,304、
+  // gzip 16,384 → 36,864 に広げた。機能を足すたびに数百 byte ずつ上限を上げる運用を
+  // やめるためで、広げても実効の上限（baseline＋allowance）は旧上限よりずっと低い。
+  absoluteMax: { rawBytes: 3_903_000, gzipBytes: 1_232_000 },
 };
 const INITIAL_CSS_MAX_BYTES = 240_000;
 const INITIAL_CSS_MAX_GZIP_BYTES = 42_000;
@@ -188,6 +199,26 @@ function checkAssetSet(label, names, maxBytes, maxGzipBytes) {
   return measured;
 }
 
+/**
+ * 起動時には要らないので後から読むことにした chunk。初期 graph（HTML が直接読む
+ * script と modulepreload）に戻っていたら、合計が上限の内側でも失敗にする。
+ */
+export const FORBIDDEN_INITIAL_JS = [
+  [/^en-[^/]+\.js$/, "英語の辞書（src/locales/en.json）"],
+  [/^gsap-[^/]+\.js$/, "gsap（src/lib/gsap.ts を含む）"],
+  [/^EulaConsentDialog-[^/]+\.js$/, "利用規約の同意ダイアログ"],
+  [/^MarkdownDoc-[^/]+\.js$/, "Markdown の描画（react-markdown）"],
+  [/^screenshotSeedContent-[^/]+\.js$/, "撮影用の校閲デモの文面"],
+];
+
+export function findForbiddenInitialJs(names) {
+  return names.flatMap((name) =>
+    FORBIDDEN_INITIAL_JS.filter(([pattern]) => pattern.test(name)).map(
+      ([, description]) => `${name}: ${description}`,
+    ),
+  );
+}
+
 const lazyBudgets = [
   [/^SettingsDialog-[^/]+\.js$/, 240_000, 60_000],
   [/^MapPanel-[^/]+\.js$/, 340_000, 100_000],
@@ -209,6 +240,12 @@ export function main() {
     initialJsBudget.rawBytes,
     initialJsBudget.gzipBytes,
   );
+  const forbidden = findForbiddenInitialJs(htmlAssets.js);
+  if (forbidden.length > 0) {
+    throw new Error(
+      `initial JS graph contains chunks that must stay lazy:\n${forbidden.join("\n")}`,
+    );
+  }
   console.log(
     `[perf-budget] initial JS graph ratchet: baseline(raw=${INITIAL_JS_GRAPH_BUDGET.baseline.rawBytes}, gzip=${INITIAL_JS_GRAPH_BUDGET.baseline.gzipBytes}), allowance(raw=${INITIAL_JS_GRAPH_BUDGET.allowance.rawBytes}, gzip=${INITIAL_JS_GRAPH_BUDGET.allowance.gzipBytes}), absolute(raw=${INITIAL_JS_GRAPH_BUDGET.absoluteMax.rawBytes}, gzip=${INITIAL_JS_GRAPH_BUDGET.absoluteMax.gzipBytes})`,
   );
