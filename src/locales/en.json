@@ -373,12 +373,13 @@
   "launcher": {
     "recentWorkspaces": "Recent Workspaces",
     "noWorkspaces": "No workspaces",
-    "openFolder": "Open Folder",
-    "newWorkspace": "New Workspace"
+    "openFolder": "Open Folder"
   },
   "workspaceMenu": {
-    "openOther": "Open Other Folder…",
-    "newWorkspace": "New Workspace",
+    "openOther": "Open Folder…",
+    "openFolderHint": "Choosing a folder that is not a workspace creates one there.",
+    "currentSection": "This workspace",
+    "otherSection": "Other workspaces",
     "startScreen": "Start Screen",
     "import": "Import…",
     "importNovelcrafter": "Import from Novelcrafter…",
@@ -397,7 +398,7 @@
       "action": "Import…"
     },
     "export": {
-      "action": "Export…"
+      "action": "Export Project as ZIP…"
     },
     "snapshot": {
       "action": "Project Snapshot…"
@@ -5229,11 +5230,11 @@
         "slides": {
           "workspace": {
             "title": "Workspace",
-            "body": "A workspace is the place where you manage multiple projects and their settings together. Use the menu at the top left to open another folder or create a new workspace."
+            "body": "A workspace is the place where you manage multiple projects and their settings together. Use the lower part of the menu at the top left to open another folder or create a new workspace."
           },
           "project": {
             "title": "Project",
-            "body": "A project is a single work inside a workspace. Its manuscript, scenes, Codex, and chat history stay organized by project, and you can switch projects from the menu above."
+            "body": "A project is a single work inside a workspace. Its manuscript, scenes, Codex, and chat history stay organized by project, and you can switch projects from the upper part of the same menu."
           }
         }
       },

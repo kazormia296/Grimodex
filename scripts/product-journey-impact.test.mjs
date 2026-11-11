@@ -254,7 +254,35 @@ test("each newly classified lifecycle or MCP domain selects its declared journey
       ],
     ],
     [
+      // 統合メニューはプロジェクトの切り替えの入口でもあるので、project-switch も選ぶ。
       "src/features/workspace/WorkspaceMenu.tsx",
+      [
+        "workspace-switch-authority",
+        "chat-stream-project-switch",
+        "agent-stream-project-switch",
+        "chat-stream-workspace-switch",
+        "agent-stream-workspace-switch",
+        "editor-pending-project-switch",
+        "codex-entity-relation-review-apply-reopen",
+        "nir1-scene-scope-projection-acceptance",
+      ],
+    ],
+    [
+      "src/features/workspace/WorkspaceMenuTrigger.tsx",
+      [
+        "workspace-switch-authority",
+        "chat-stream-project-switch",
+        "agent-stream-project-switch",
+        "chat-stream-workspace-switch",
+        "agent-stream-workspace-switch",
+        "editor-pending-project-switch",
+        "codex-entity-relation-review-apply-reopen",
+        "nir1-scene-scope-projection-acceptance",
+      ],
+    ],
+    [
+      // メニュー以外の workspace のファイルは、従来どおり workspace 側だけ。
+      "src/features/workspace/store.ts",
       [
         "workspace-switch-authority",
         "chat-stream-workspace-switch",

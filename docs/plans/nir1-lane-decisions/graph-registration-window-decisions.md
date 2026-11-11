@@ -951,3 +951,142 @@ worker の係数 37 µs×S×R の外挿は後は成り立たない（新しい�
 - 場面数の admission の追加（今通る入力を拒むので確認が要る。採らない）。S の枯渇（約 4,800 場面）の解消（別 lane）。
 - 実 worker の試験を `scripts/nir1-c-query-worker-ci.sh lifecycle` に足すこと（Full admission の sizing source digest と reviewed workload data の更新が要る。別の決定）。
 - memo が一定の大きさを超えたら保持しない上限（結果を変えず何も拒まないので委任内だが、gate で S の余裕が足りないと分かった場合の対処として残す。今は入れない）。
+
+## DR-GRW-5 scope authority の load の一時領域を減らす（extension の digest を流す、nodes／scenes の早い drop、mappings の事前確保）
+
+2026-11-11 の 5 件目。基点は `origin/master` の `7edc29ba`（DR-GRW-1〜4 を含む）、branch は
+`claude/graph-scope-digest-stream`。設計の正本は
+`fusion-eval-data/design-notes/db-connection-2026-11-07/s-exhaustion-2026-11-11.md`（read-only の調査。§1 の内訳、§3 の案 1b・2・3、§3.8 の見積り、§6 の未確認）。
+ユーザーが 2026-11-11 に決めた lane（Graph の query を使える場面数を約 1,000 にする計画の最初の一歩）。
+**値（上限・閾値・契約・authority・admission・schema）は変えない。結果・seal・digest・エラーの種類と順・VM steps・progress callback の回数も変えない。**
+動くのは、scope authority の load の間に同時に生きる Rust の確保の量（S と Q の peak）だけで、下がる方向にだけ動く。
+
+### 原因
+
+registration の 3 番目の scratch scope の中で、live の Scope authority の load
+（`load_live_project_scope_authority_in_snapshot`、bindings を集める版）が、場面あたり約 10 KB（Talc の `allocated_bytes`）を一時に使う。
+S（64 MiB）は約 4,800 場面で枯渇し、worker が `handle_alloc_error` で abort する（READY 前）。
+
+- **10 KB の内訳【計算。実測の 9.95〜10.04 KB と 3〜5% 以内で合う】**：binding ごとの `serde_json::Value` 木が 2 本（`bindings: Vec<Value>` の本体と、
+  最後の `canonical_json_digest(&json!({… "bindings": bindings}))` の `json!` が `to_value(&bindings)` で作る deep copy）で約 8.6 KB、
+  `scene_bindings` の BTreeMap が約 0.94 KB、nodes／scenes／mappings が約 0.64 KB（nodes と scenes は使い終えても関数の終わりまで生きる）。
+- **51 MB で落ちる理由**：断片化ではない。Talc は 1 確保ごとに tail 8 B を足して 32 B に切り上げるので、peak の確保の約 150 個/場面（小さなものが大半）で
+  実際に heap を占める量（C）は `allocated_bytes`（A）の約 1.31 倍になる。67.1 MB を 1.31 で割ると約 51 MB で、失敗点（50.1〜51.4 MB）と合う。
+- **同じ関数を query（C-query の `Nir1ProjectReads::load`）も通る**ので、同じ一時の peak が Q（16 MiB）にも載る。
+
+### 決定
+
+次の 3 つの変更を 1 件で行う（どれも読み取り専用の経路の実装の変更で、値を変えない）。
+
+1. **extension の digest を、行ごとに `CanonicalJsonStream` へ流す**（案 1b）。`scene_scope.rs` の `read_scope_extension` で、`bindings: Vec<Value>` と
+   `json!({…"bindings": bindings})` をやめる。loop の前に `CanonicalJsonStream::digest()` を作って `begin_object`、`key("bindings")`、`begin_array` を書き、
+   行ごとに（今と同じ `Value`、行ごとの一時）`stream.value(&…)` で 1 要素を書く。loop の後に `end_array`、`key("contractId")`、`key("registry")`、
+   `key("registryRevision")`、`key("registrySourceToken")` の順で書き、`end_object`、`finish_digest`。
+2. **`nodes` と `scenes` を、使い終えた所で drop する**（案 2）。`project_scope_authority.rs` の `load_live_project_scope_authority_in_snapshot` で、
+   `derive_live_scene_projection` の直後に `drop(nodes)`、`build_narrative_project_scope_authority_v1` の直後に `drop(scenes)`。
+3. **mappings を `Vec::with_capacity(scenes.len())` で作る**（案 3）。core の `build_narrative_project_scope_authority_v1` の
+   `collect::<Result<Vec<_>, _>>()`（size hint の下限が 0 なので倍々に伸びる）を、for と push と `?` に書き換える。
+
+### 変わる点
+
+- **S と Q の peak が下がる。** 設計メモの見積り（C、短い id、`allocated` の A は括弧内）：1b で −11.5 KB/場面（A −8.6 KB。Value 木 2 本が消える）、
+  2 で −0.46 KB（A −0.33 KB）、3 で capacity の余りの分 −0.1〜0.14 KB。20,000 場面の C/S は 400% から約 58%（UUID の id で約 66%）の見込み。
+  **実測（dev、gate の 5）**：registration の S の高水位（allocated_bytes）は場面あたり約 10.0 KB から約 1.2〜1.3 KB に下がった（約 −88%）。
+  前は 5,004 場面で worker が READY の前に abort し、後は 5,004 場面で S 7.38 MB（11.0%）、20,004 場面でも 27.59 MB（allocated の A で 41.1%）で READY した（それ以上は未測定）。
+  この百分率は allocated（A）の値で、枯渇を決めるのは claimed−available（C、A の約 1.31 倍）。C は未測定。
+  query（1 Revision、489 場面）の Q の高水位は 6,508,694 B から 3,814,843 B（load の前の床）へ下がった。
+  **今は abort する形が通るようになる**（通る方向にだけ動く）。それ以外の上限（START_TIMEOUT 30 s、index の build の 180 s、600M steps、
+  query の A3 の 2,048 records）は別の壁として残る。
+- 行ごとの一時（binding の `Value`）は残る。1 行ずつ作って流して捨てるので、peak には入らない。
+
+### 変わらない点（試験で固定する）
+
+- extension の digest は 1 bit も変わらない。旧の `json!` の形は、`#[cfg(test)]` の oracle として試験に残し、新しい流しと
+  場面数・binding の形の組で digest と `scene_bindings` を `assert_eq` する（空、1 件、多数、unicode／escape の要る文字列、数値、null、入れ子、unavailable の行）。
+  - 旧の digest は `canonical_json_digest(Value)`（object の key を UTF-16 順に並べて書く）。上位の key の UTF-16 順は
+    `bindings < contractId < registry < registryRevision < registrySourceToken` で、stream に書く順と同じ（`stream.key` は順が違えば `KeyOrder` で止まるので、実行時にも検査される）。
+  - `stream.value` は旧と同じ `write_value` を呼ぶので、要素ごとの bytes は同じ。配列の要素は `ORDER BY b.scene_id` の順のまま。
+- エラー：loop の中の `?`（`to_value(binding)`、`rawDigest`）の位置と順は変わらない。stream の書込みが失敗しうるのは、key の順（固定の literal で起きない）、
+  sink の IO（SHA の sink は失敗しない）、数値の非有限（整数だけで起きない）。どれも実行時に到達しないので、エラーの集合と順は旧と同じ。
+  旧の到達しない `to_value(..).unwrap()` の panic が、新では `?` の Err に変わった（どちらも到達しない）。
+- `scene_bindings` の中身と順、`LiveProjectScopeRead`、authority の `revision_token`（試験の独立 oracle で固定。下記）、mappings の要素・順・最初に `Err` になる添字。
+  loop の中の 2 つの `Err`（`u64::try_from(index)` と「unique story key が rank を持たない」）は、`story_ranks` の作り方（count が 1 の key だけを rank 付けする）から到達しない。
+- SQL、bind、行の読み方（`rows` を先に全部読む順も変えない。逐次処理にするとエラーの順が変わりうるので採らない）、progress callback の位置と回数。これらの不変の根拠は「diff に SQL・bind・行の読みの変更が無い」ことで、Rust の処理が減るだけで SQL は同じ。
+- 閾値の値、schema、契約、authority、依存、他の入口。**この 2 つの関数は registration と C-query の両方が通るので、両方の経路で同じ値を返す**（CQ-AVAIL の shared／unshared の oracle で確かめる）。
+
+### 信頼境界
+
+呼び出し元と入力は変わらない（同じ接続、同じ thread、同じ snapshot の中の読みだけ）。新しい送信先、保存範囲、契約、authority、schema、依存、閾値の値の変更は無い。
+秘密・データの流れは変わらない。digest に入る bytes は同じなので、renderer・main・MCP から見える token も変わらない。
+
+### owner／lifecycle の表（GDX-PRECHECK-001）
+
+新しい thread、接続、待ち、状態、handle、取消点、再開の状態は無い。`CanonicalJsonStream` は関数の中のローカルの値で、`?` と unwind で drop される
+（SHA の sink だけを持ち、SQLite の handle を持たない）。早い drop は寿命を縮めるだけ（`Vec<String>` の Drop に外から見える作用は無い）。
+
+| 項目 | 前後 |
+| --- | --- |
+| 入口・開始・再試行・再入・admission・取消・有限の待ち | 変えない |
+| 有効な handle の所有 | 足さない（stream は Rust の値だけを持つ） |
+| 終了の証拠 | 変えない（worker の終了、ROLLBACK、zero-live の seal。peak が下がるだけ） |
+| error／timeout／onClosed の所有 | 変えない。新しい失敗の経路は足さない |
+| 保存される再開の状態 | 無い |
+
+### 試験
+
+- `scene_scope.rs` の試験：旧の実装を `#[cfg(test)]` の `scope_extension_digest_reference`（旧の `json!` の形）として置き、新旧の digest と `scene_bindings` が等しいことを比べる
+  （上の「変わらない点」の fixture の形）。既存の scope authority・registration・C-query の試験と、revision token の独立 oracle の試験（`json!` で token を計算して比べる。固定の hex ではない）が、すべて通ること。
+  - `the_extension_entries_keep_the_base_loops_shapes_for_valid_and_broken_rows`（P2 の指摘で追加）：行ごとの entry の形が、新しい loop から独立に固定されている。
+    壊れた行 7 種と valid な行 2 件を含む DB で、`read_scope_extension_entries` が返す各 entry を、試験の中に `json!` で手書きした期待
+    （base `7edc29ba` の loop が作る形：binding は `to_value(binding)`、壊れた行は `{sceneId, status: "unavailable", rawDigest}`、`rawDigest` は 13 列の raw を手書きした literal の canonical digest）と比べる。
+    生成される値（incarnation id と source token）だけは SQL で読み戻す。base と差は無かった。
+- core：mappings の既存の試験（最初に `Err` になる添字が変わらないこと）。
+- memory は dev の再測定（製品の commit には入れない）。
+
+### 試験の限界
+
+- 新旧の同値は、fixture の形の集合で示す（有限）。key の順の不変は `stream.key` の実行時の検査が守る。
+- memory の見積り（設計メモ）は型の大きさの推定を含み、3〜5% 高めに出る。判定は実測（dev）の値で行う。
+
+### gate
+
+結果は 2026-11-11（基点 `origin/master` の `7edc29ba` に本 PR の commit を載せたもの）。
+
+1. 新しい試験（`scene_scope.rs` の `tests`。旧の `json!` の形を oracle として置く）：
+   - `the_streamed_extension_digest_equals_the_value_form_for_every_shape`：registry 3 形（通常、空、unicode／escape／astral を含む）×
+     revision 4 値 × source token 3 値 × entry の列 5 形（空、1 件、300 件、escape・制御文字・BMP と astral の文字・UTF-16 順と UTF-8 順の違う key・
+     整数の端〔i64 の最小・最大、u64 の最大〕・null・真偽・入れ子を含む形、その後ろに binding を 40 件足した形）の全組で、新旧の digest が一致する。
+   - `the_streamed_extension_digest_matches_a_pinned_value`：旧の形の digest を固定値と比べる。固定値は試験の oracle（旧の `json!` の形の写し）が出した値で、
+     base の製品の関数で出した値ではない。
+   - `the_extension_digest_of_a_real_project_equals_the_value_form`：実 DB で binding が 1 件、0 件、301 件（unicode の scene id）の 3 形。
+     `read_scope_extension`（collect あり／なし）の digest が、同じ行の entry を旧の形に組んだ digest と一致し、`scene_bindings` が一致する。
+   - `the_extension_digest_equals_the_value_form_with_unavailable_and_explicit_rows`：Explicit の binding（Exact の ref、Character の principal）と、
+     壊れた行 7 種（壊れた JSON、source token の不一致、version が text、REAL と BLOB の列、note への binding、Scene の欠落）を含む 25 行。
+     unavailable の entry が 7 件になること、新旧の digest と `scene_bindings` が一致することを確かめる。
+2. 既存の試験：`cargo test -p grimodex-db --lib` 全件で **2,644 passed、0 failed、56 ignored**（DR-GRW-4 の記録は 2,640 passed。増えた 4 件は上の新しい試験。P2 の試験 1 件は後から足したので、この件数に入っていない）。
+   `cargo test -p grimodex-core` 全件通過（210 passed ほか）。revision token の独立 oracle（`json!` で計算）を持つ
+   `tests/narrative_project_scope_authority_runtime.rs`（22 passed）と `tests/narrative_scope_authority_runtime.rs`（19 passed）も通る。
+   `cargo clippy -p grimodex-db -p grimodex-core --all-targets -- -D warnings`：通る。
+3. worker の実 process：`scripts/nir1-c-query-worker-ci.sh lifecycle`：26 case の `test result: ok`（終了コード 0）。DR-GRW-4 と同じ 26 case。
+4. steps：SQL・bind・行の読み方は変えていない（Rust の処理が減るだけ）。VM steps と progress callback の回数を正確に固定する試験は無い。
+   あるのは上限と比例の検査（`cq_opt.rs` の `STEP_CEILINGS`）で、全件の中で通った。不変の根拠は「diff に SQL・bind・行の読みの変更が無い」こと。
+5. memory：dev で S と Q の高水位を前後で測った（dev 枝 `claude/dev-scope-digest-stream-measure`＝この commit ＋ `ec455fc8` の計装の cherry-pick。
+   記録は `fusion-eval-data/design-notes/db-connection-2026-11-07/drift-measure/scope-digest-stream-2026-11-11/results.md`）。product 形 `p:300000`（1 Revision）に場面を足した実 worker：
+   | 場面 | 前の S 高水位 | 後の S 高水位 |
+   | ---: | --- | --- |
+   | 489 | 5.52 MB（READY） | 1.91 MB（READY） |
+   | 1,004 | 10.66 MB | 2.51 MB |
+   | 4,504 | 46.97 MB | 6.76 MB |
+   | 4,750 | 49.33 MB | 7.07 MB |
+   | 5,004 | abort（READY の前） | 7.38 MB（READY） |
+   | 10,004 | 未測定 | 14.12 MB（READY） |
+   | 20,004 | 未測定 | 27.59 MB（A で 41.1%、READY） |
+   query（489 場面）の Q の高水位：6,508,694 B（38.79%）→ 3,814,843 B（22.74%。load の前の床）。registration の Q 高水位（4,055,206 B）と query の結果（digest を除く全文）は前後で同じ（digest は fixture の uuid で run ごとに変わるので比べていない）。
+   R4（capacity fixture）形、UUID の id の形、S の claimed−available（C、約 1.31 倍）での判定は未測定。
+6. `fnm exec --using=22 pnpm -s verify:quality`：通る（node の試験 587 pass・0 fail・1 skip、vitest 853 pass、narrative writers ok）。
+7. DR：この文書。
+
+### やらないこと（別の決定）
+
+- core の build の digest 3 本を流す（案 5）、`scene_bindings` を詰める（案 6）、成功した行で `raw` を作らない（案 7）。1b＋2＋3 の実測で足りなければ別の DR で採る。
+- S の大きさの変更、場面数の admission の新設、query の A3 の数え方や 2,048 の変更（確認済みの値・閾値の変更なので、この lane では扱わない）。

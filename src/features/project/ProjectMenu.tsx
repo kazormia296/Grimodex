@@ -1,342 +1,166 @@
 import { Check } from "lucide-react";
-import { useState, useRef, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
-import {
-  useProjectStore,
-  useCurrentProjectId,
-  useCurrentProject,
-} from "./projectStore";
-import { CreateProjectDialog } from "./CreateProjectDialog";
-import { isLicenseRestrictedError } from "@/features/license/gate";
-import { ResponsiveAlertDialog } from "@/components/ui/responsive-alert-dialog";
-import { DialogFooter } from "@/components/ui/dialog";
-import { cn } from "@/lib/utils";
-import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
+import { useProjectStore, useCurrentProjectId } from "./projectStore";
 import { runProjectLoadWithFailureToast } from "./projectLoadFailure";
 
-export function ProjectMenu({
-  onOpenImport,
-  onOpenExport,
-  onOpenSnapshot,
-  onOpenWebEditorHandoff,
-}: {
-  onOpenImport?: () => void;
-  onOpenExport?: () => void;
-  onOpenSnapshot?: () => void;
-  onOpenWebEditorHandoff?: () => void;
-}) {
-  const { t } = useTranslation();
-  const currentProjectId = useCurrentProjectId();
-  const currentProject = useCurrentProject();
-  const projects = useProjectStore((s) => s.projects);
-  const projectLoadStatus = useProjectStore((s) => s.projectLoadStatus);
-  const degradedParticipants = useProjectStore((s) => s.degradedParticipants);
-  const loadProject = useProjectStore((s) => s.loadProject);
-  const createNewProject = useProjectStore((s) => s.createNewProject);
-  const deleteProjectById = useProjectStore((s) => s.deleteProjectById);
-  const refreshProjects = useProjectStore((s) => s.refreshProjects);
-  const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
+/**
+ * ヘッダーの統合メニュー（`WorkspaceMenu`）が使う、プロジェクト側の状態。
+ * 作成ダイアログと削除の確認ダイアログの開閉を持ち、mount 時に一覧を読む。
+ * メニューを閉じている間も一覧を最新にしておくため、メニューの root で呼ぶ。
+ */
+export interface ProjectMenuState {
+  createOpen: boolean;
+  openCreate: () => void;
+  closeCreate: () => void;
+  pendingDeleteId: string | null;
+  requestDelete: (projectId: string) => void;
+  cancelDelete: () => void;
+}
 
-  const [isOpen, setIsOpen] = useState(false);
-  const [showCreateDialog, setShowCreateDialog] = useState(false);
+export function useProjectMenu(): ProjectMenuState {
+  const refreshProjects = useProjectStore((s) => s.refreshProjects);
+  const [createOpen, setCreateOpen] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     void refreshProjects();
   }, [refreshProjects]);
 
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setIsOpen(false);
-      }
-    }
-    if (isOpen) {
-      document.addEventListener("mousedown", handleClickOutside);
-    }
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isOpen]);
+  return {
+    createOpen,
+    openCreate: useCallback(() => setCreateOpen(true), []),
+    closeCreate: useCallback(() => setCreateOpen(false), []),
+    pendingDeleteId,
+    requestDelete: useCallback((id: string) => setPendingDeleteId(id), []),
+    cancelDelete: useCallback(() => setPendingDeleteId(null), []),
+  };
+}
+
+interface ProjectMenuSectionProps {
+  /** 項目を選んだときにメニューを閉じる。 */
+  onClose: () => void;
+  onRequestCreate: () => void;
+  onRequestDelete: (projectId: string) => void;
+}
+
+/**
+ * 統合メニューの「このワークスペース」の区画の中身。読み込みの警告、
+ * プロジェクトの一覧（切り替えと削除）、「新規プロジェクト…」を描く。
+ * トリガーとドロップダウンの枠は `WorkspaceMenu` が持つ。
+ */
+export function ProjectMenuSection({
+  onClose,
+  onRequestCreate,
+  onRequestDelete,
+}: ProjectMenuSectionProps) {
+  const { t } = useTranslation();
+  const currentProjectId = useCurrentProjectId();
+  const projects = useProjectStore((s) => s.projects);
+  const projectLoadStatus = useProjectStore((s) => s.projectLoadStatus);
+  const degradedParticipants = useProjectStore((s) => s.degradedParticipants);
+  const loadProject = useProjectStore((s) => s.loadProject);
 
   async function handleSwitch(projectId: string) {
-    if (projectId === currentProjectId) {
-      setIsOpen(false);
-      return;
-    }
-    setIsOpen(false);
+    onClose();
+    if (projectId === currentProjectId) return;
     await runProjectLoadWithFailureToast(() => loadProject(projectId));
   }
 
-  async function handleCreate(data: {
-    title: string;
-    genre: string;
-    language: string;
-    timelapseEnabled: boolean;
-    seedFromProjectId?: string;
-    seedTypeSlugs: string[];
-    sceneScopeMainLine: boolean;
-  }) {
-    try {
-      await createNewProject({
-        title: data.title,
-        genre: data.genre || undefined,
-        language: data.language || undefined,
-        timelapseEnabled: data.timelapseEnabled,
-        seedFromProjectId: data.seedFromProjectId,
-        seedTypeSlugs: data.seedTypeSlugs,
-        sceneScopeMainLine: data.sceneScopeMainLine,
-      });
-      toast.success(t("project.create.success"));
-    } catch (e) {
-      // ライセンス制限の拒否は gate 側が理由 toast を表示済み。
-      // 「失敗しました」を重ねると編集ロックを障害と誤認させるため出さない。
-      if (!isLicenseRestrictedError(e)) {
-        toast.error(t("project.create.failed"));
-      }
-      throw new Error("create failed", { cause: e });
-    }
-  }
-
-  async function handleConfirmDelete() {
-    if (!pendingDeleteId) return;
-    const id = pendingDeleteId;
-    setPendingDeleteId(null);
-    try {
-      await deleteProjectById(id);
-      toast.success(t("project.delete.success"));
-    } catch (e) {
-      const message =
-        e instanceof Error && /last project/i.test(e.message)
-          ? t("project.delete.lastProject")
-          : t("project.delete.failed");
-      toast.error(message);
-    }
-  }
-
-  const displayTitle = currentProject?.title ?? t("project.menu.fallback");
-
   return (
     <>
-      <div ref={menuRef} className="relative" data-tour-target="project-menu">
-        <button
-          ref={triggerRef}
-          type="button"
-          data-testid="project-menu-trigger"
-          onClick={() => setIsOpen(!isOpen)}
-          aria-label={
-            projectLoadStatus === "degraded"
-              ? `${displayTitle}: ${t("project.loadDegraded")}`
-              : displayTitle
-          }
-          className="flex w-44 items-center justify-between gap-1 rounded px-2 py-1 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
+      {projectLoadStatus === "degraded" && (
+        <div
+          role="status"
+          data-testid="project-load-degraded"
+          className="mx-2 mb-1 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-2 text-xs"
         >
-          <span className="min-w-0 truncate">{displayTitle}</span>
-          {projectLoadStatus === "degraded" && (
-            <span
-              aria-hidden
-              className="shrink-0 text-xs font-bold text-amber-600 dark:text-amber-400"
-            >
-              !
-            </span>
-          )}
-          <span className="shrink-0 text-xs">▾</span>
-        </button>
-
-        {isOpen && (
-          <div
-            data-testid="project-menu-dropdown"
-            className="absolute left-0 top-full z-50 mt-1 w-72 rounded-md border border-border bg-popover py-1 shadow-lg"
+          <p>{t("project.loadDegraded")}</p>
+          <p className="mt-0.5 text-muted-foreground">
+            {t("project.loadDegradedCount", {
+              count: degradedParticipants.length,
+            })}
+          </p>
+          <button
+            type="button"
+            className="mt-1 font-medium text-foreground underline underline-offset-2"
+            onClick={() => {
+              onClose();
+              void runProjectLoadWithFailureToast(() =>
+                loadProject(currentProjectId),
+              );
+            }}
           >
-            {projectLoadStatus === "degraded" && (
-              <div
-                role="status"
-                data-testid="project-load-degraded"
-                className="mx-2 mb-1 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-2 text-xs"
-              >
-                <p>{t("project.loadDegraded")}</p>
-                <p className="mt-0.5 text-muted-foreground">
-                  {t("project.loadDegradedCount", {
-                    count: degradedParticipants.length,
-                  })}
-                </p>
-                <button
-                  type="button"
-                  className="mt-1 font-medium text-foreground underline underline-offset-2"
-                  onClick={() => {
-                    setIsOpen(false);
-                    void runProjectLoadWithFailureToast(() =>
-                      loadProject(currentProjectId),
-                    );
-                  }}
-                >
-                  {t("common.retry")}
-                </button>
-              </div>
-            )}
-            {projectLoadStatus === "recovering" && (
-              <div
-                role="alert"
-                className="mx-2 mb-1 rounded border border-destructive/40 bg-destructive/10 px-2 py-2 text-xs"
-              >
-                {t("project.recovering")}
-              </div>
-            )}
-            {projects.map((project) => (
-              <div
-                key={project.id}
-                className="group flex items-center hover:bg-accent"
-              >
-                <button
-                  type="button"
-                  data-testid={`project-switch-${project.id}`}
-                  onClick={() => void handleSwitch(project.id)}
-                  className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-sm hover:text-accent-foreground"
-                >
-                  <span className="inline-flex w-4 shrink-0 items-center">
-                    {project.id === currentProjectId && (
-                      <Check className="h-3 w-3" strokeWidth={3} aria-hidden />
-                    )}
-                  </span>
-                  <span className="truncate">{project.title}</span>
-                </button>
-                {projects.length > 1 && (
-                  <button
-                    type="button"
-                    data-testid={`project-delete-${project.id}`}
-                    title={t("project.delete.action")}
-                    onClick={() => {
-                      setIsOpen(false);
-                      setPendingDeleteId(project.id);
-                    }}
-                    className="mr-2 hidden rounded px-1.5 py-0.5 text-xs text-muted-foreground group-hover:inline hover:bg-destructive/10 hover:text-destructive"
-                  >
-                    {t("common.delete")}
-                  </button>
-                )}
-              </div>
-            ))}
-
-            <div className="my-1 border-t border-border" />
-
-            <button
-              type="button"
-              data-testid="project-create-open"
-              onClick={() => {
-                setIsOpen(false);
-                setShowCreateDialog(true);
-              }}
-              className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+            {t("common.retry")}
+          </button>
+        </div>
+      )}
+      {projectLoadStatus === "recovering" && (
+        <div
+          role="alert"
+          className="mx-2 mb-1 rounded border border-destructive/40 bg-destructive/10 px-2 py-2 text-xs"
+        >
+          {t("project.recovering")}
+        </div>
+      )}
+      {/* 6 行（1 行 32px）を超えたら、一覧の中だけをスクロールさせる。 */}
+      <div data-project-menu-list className="max-h-48 overflow-y-auto">
+        {projects.map((project) => {
+          const current = project.id === currentProjectId;
+          return (
+            <div
+              key={project.id}
+              className="group flex items-center hover:bg-accent"
             >
-              <span className="w-4" />
-              {t("project.create.action")}
-            </button>
-            {onOpenImport && (
               <button
                 type="button"
-                data-testid="project-import-open"
-                onClick={() => {
-                  setIsOpen(false);
-                  onOpenImport();
-                }}
-                className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+                data-testid={`project-switch-${project.id}`}
+                aria-current={current ? "true" : undefined}
+                title={project.title}
+                onClick={() => void handleSwitch(project.id)}
+                className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left text-sm hover:text-accent-foreground"
               >
-                <span className="w-4" />
-                {t("project.import.action")}
+                <span className="inline-flex w-4 shrink-0 items-center">
+                  {current && (
+                    <Check className="h-3 w-3" strokeWidth={3} aria-hidden />
+                  )}
+                </span>
+                <span className="truncate">{project.title}</span>
               </button>
-            )}
-            {onOpenExport && (
-              <button
-                type="button"
-                data-testid="project-export-open"
-                onClick={() => {
-                  setIsOpen(false);
-                  onOpenExport();
-                }}
-                className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
-              >
-                <span className="w-4" />
-                {t("project.export.action")}
-              </button>
-            )}
-            {onOpenSnapshot && (
-              <button
-                type="button"
-                data-testid="project-snapshot-open"
-                onClick={() => {
-                  setIsOpen(false);
-                  onOpenSnapshot();
-                }}
-                className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
-              >
-                <span className="w-4" />
-                {t("project.snapshot.action")}
-              </button>
-            )}
-            {onOpenWebEditorHandoff && (
-              <button
-                type="button"
-                data-testid="web-editor-handoff-open"
-                onClick={() => {
-                  setIsOpen(false);
-                  onOpenWebEditorHandoff();
-                }}
-                className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
-              >
-                <span className="w-4" />
-                {t("hostedEditor.desktopImport.action")}
-              </button>
-            )}
-          </div>
-        )}
+              {projects.length > 1 && (
+                // 行のボタンとは兄弟のまま。キーボードで行に来たときにも出し、
+                // Tab で届く（上下キーの移動先には入れない：data-menu-secondary）。
+                <button
+                  type="button"
+                  data-testid={`project-delete-${project.id}`}
+                  data-menu-secondary
+                  title={t("project.delete.action")}
+                  onClick={() => {
+                    onClose();
+                    onRequestDelete(project.id);
+                  }}
+                  className="mr-2 hidden shrink-0 rounded px-1.5 py-0.5 text-xs text-muted-foreground group-focus-within:inline group-hover:inline hover:bg-destructive/10 hover:text-destructive"
+                >
+                  {t("common.delete")}
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
 
-      <CreateProjectDialog
-        open={showCreateDialog}
-        onClose={() => setShowCreateDialog(false)}
-        projects={projects}
-        defaultSourceProjectId={currentProjectId}
-        onCreate={handleCreate}
-      />
-
-      <ResponsiveAlertDialog
-        open={pendingDeleteId !== null}
-        onClose={() => setPendingDeleteId(null)}
-        title={t("project.delete.confirmTitle")}
-        description={t("project.delete.confirmBody", {
-          title:
-            projects.find((project) => project.id === pendingDeleteId)?.title ??
-            "",
-        })}
-        className="max-w-sm"
-        testId="project-delete-confirm"
-        restoreFocusRef={triggerRef}
+      <button
+        type="button"
+        data-testid="project-create-open"
+        onClick={() => {
+          onClose();
+          onRequestCreate();
+        }}
+        className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
       >
-        <DialogFooter className={cn(phoneWorkspace && "grid grid-cols-1")}>
-          <button
-            type="button"
-            onClick={() => setPendingDeleteId(null)}
-            className={cn(
-              "rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent",
-              phoneWorkspace && "min-h-11 w-full",
-            )}
-          >
-            {t("common.cancel")}
-          </button>
-          <button
-            type="button"
-            data-testid="project-delete-confirm-btn"
-            onClick={() => void handleConfirmDelete()}
-            className={cn(
-              "rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground",
-              phoneWorkspace && "min-h-11 w-full",
-            )}
-          >
-            {t("common.deleteConfirm")}
-          </button>
-        </DialogFooter>
-      </ResponsiveAlertDialog>
+        <span className="w-4 shrink-0" />
+        {t("project.create.action")}
+      </button>
     </>
   );
 }
