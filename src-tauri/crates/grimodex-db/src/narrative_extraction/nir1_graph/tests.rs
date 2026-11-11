@@ -38,6 +38,7 @@ const STARTUP_REFUSAL_PROJECT_ID: &str = "nir1-project-that-does-not-exist";
 mod cq_avail;
 mod cq_opt;
 mod registration_pinned;
+mod registration_shared_reads;
 mod registration_statements;
 
 #[derive(Clone, Copy, PartialEq, Eq)]

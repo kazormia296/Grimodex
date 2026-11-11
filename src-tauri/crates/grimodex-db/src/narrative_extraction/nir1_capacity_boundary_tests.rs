@@ -333,7 +333,7 @@ fn source_byte_boundary_and_roster_projection_guard_preserve_prior_generation() 
         let id: String = conn.query_row("SELECT r.id FROM narrative_proposal_revisions r
             JOIN narrative_proposals p ON p.id=r.proposal_id JOIN narrative_proposal_sets s ON s.id=p.proposal_set_id
             WHERE s.run_id='nir1-capacity-qualified-run' LIMIT 1", [], |row| row.get(0))?;
-        let (mut revision, decision) = read_nir1_entity_relation_revision_current_for_graph_index(conn, project, &id)?.expect("qualified Native A2 revision");
+        let (mut revision, decision) = read_nir1_entity_relation_revision_current_for_graph_index(conn, project, &id, None)?.expect("qualified Native A2 revision");
         let mut used = SourceCapacity::default();
         admit_roster_bytes(&mut used, &revision, &decision)?;
         // Exercise the projection's own independent limit, without pretending
