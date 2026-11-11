@@ -1,6 +1,6 @@
 import { useLayoutEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { getPanelRect } from "@/features/layout/PanelHighlightOverlay";
+import { getPanelRect } from "@/features/layout/panelRect";
 import type { PanelId } from "@/features/layout/layoutStore";
 
 export interface FocusRect {

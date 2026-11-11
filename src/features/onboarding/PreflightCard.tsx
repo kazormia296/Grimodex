@@ -2,7 +2,7 @@ import { useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "motion/react";
 import { X } from "lucide-react";
-import i18next from "@/lib/i18n";
+import { changeUiLanguage } from "@/lib/i18n";
 import {
   CSS_DURATIONS,
   DURATIONS,
@@ -100,7 +100,7 @@ export function PreflightCard() {
   function handleLangChange(lang: string) {
     setSelectedLang(lang);
     void updateGlobalSettings({ uiLanguage: lang });
-    void i18next.changeLanguage(lang);
+    void changeUiLanguage(lang);
   }
 
   function handleBack() {

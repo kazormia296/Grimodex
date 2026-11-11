@@ -40,7 +40,7 @@ import { discardQuiescenceParticipants } from "@/application/lifecycle/quiescenc
 import { discardQuiescenceProviders } from "@/lib/quiescenceProviders";
 import { hasUnresolvedEditorChanges } from "@/lib/editorQuiescence";
 import { useTranslation } from "react-i18next";
-import i18next from "@/lib/i18n";
+import { changeUiLanguage } from "@/lib/i18n";
 import {
   applyCloseFailureToDialogState,
   classifyCloseFailure,
@@ -169,8 +169,7 @@ export function ApplicationBootstrapHost({
   ]);
 
   useEffect(() => {
-    if (i18next.language !== uiLanguage)
-      void i18next.changeLanguage(uiLanguage);
+    void changeUiLanguage(uiLanguage);
   }, [uiLanguage]);
 
   useEffect(() => {
