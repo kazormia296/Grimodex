@@ -83,6 +83,29 @@ pub fn read_revision_material_membership(
     )
 }
 
+/// 取り込み（prepare／apply）が、作者が編集した版の系譜を検証して、最初の AI の版の
+/// id と Envelope を得るための入口。検証は `read_revision_material_membership` と同じ
+/// `lineage::read` で、最初の版の材料の再生（`read_root_material_with_memo`）は呼ばない。
+/// 呼び出し側は読み取りを含む transaction を持つ。系譜が通らないときは `Err`、
+/// 版が見つからないときは `Ok(None)`。
+pub(in crate::narrative_extraction) fn read_lineage_root_for_apply(
+    conn: &Connection,
+    project_id: &str,
+    revision_id: &str,
+) -> Result<Option<(String, serde_json::Value)>> {
+    ensure!(
+        !conn.is_autocommit(),
+        "lineage verification requires a read transaction"
+    );
+    ensure!(
+        !project_id.trim().is_empty() && !revision_id.trim().is_empty(),
+        "nonempty identity required"
+    );
+    Ok(lineage::read(conn, project_id, revision_id)?
+        .and_then(|chain| chain.into_iter().next())
+        .map(|root| (root.id.clone(), root.envelope().clone())))
+}
+
 /// The same read, reusing the Run-level proofs that `memo` collected from
 /// other Roots read under this same read transaction (see `RunProofMemo`).
 pub(in crate::narrative_extraction) fn read_revision_material_membership_with_memo(
