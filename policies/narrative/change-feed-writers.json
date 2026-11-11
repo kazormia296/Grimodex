@@ -1195,6 +1195,35 @@
       "canonical": null
     },
     {
+      "id": "narrative.proposal.chronicle-bulk-approve",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Chronicle bulk approval composes the Human-derived child creation and the Human decision per proposal; both are authority metadata until apply emits the domain Feed transaction.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_chronicle_bulk_approve"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_chronicle_bulk_approve",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_chronicle_bulk_approve",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.authority", "narrative.revision-envelope"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
       "id": "narrative.proposal.revise-and-decide",
       "authorityRoute": "interpreter-projection",
       "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],

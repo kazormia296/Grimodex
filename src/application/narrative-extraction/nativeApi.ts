@@ -267,6 +267,41 @@ export interface ReviewBundleProposalApplication {
   readonly compensatesApplicationId: string | null;
 }
 
+/**
+ * Native's bulk-approval judgement for one proposal (BAO/1). Present for
+ * current Chronicle reviews only; the review screen shows it and never
+ * computes the condition itself.
+ */
+export type ChronicleBulkApprovalReasonCode =
+  | "approved"
+  | "rejected"
+  | "held"
+  | "deferred"
+  | "status-other"
+  | "applied"
+  | "set-applied"
+  | "edited"
+  | "probable-duplicate"
+  | "plan-unavailable"
+  | "evidence-unverified"
+  | "r0-material-unavailable"
+  | "r1-narrative-frame"
+  | "r2-attribution"
+  | "r3-significance"
+  | "r4-actuality"
+  | "already-nonsecret"
+  | "reveal-scene-unresolved"
+  | "scope-authority-unavailable"
+  | "semantic-epoch-missing"
+  | "parent-seal-missing"
+  | "proposal-not-found"
+  | "revision-changed";
+
+export interface ChronicleBulkApproval {
+  readonly eligible: boolean;
+  readonly reasons: readonly ChronicleBulkApprovalReasonCode[];
+}
+
 export interface ReviewBundleProposal {
   readonly proposalId: string;
   readonly proposalSetId: string;
@@ -283,6 +318,8 @@ export interface ReviewBundleProposal {
   readonly latestDecision: ReviewBundleLatestDecision | null;
   /** Present when Native already applied this proposal (partial Apply / cold-start). */
   readonly application?: ReviewBundleProposalApplication | null;
+  /** Native's bulk-approval judgement; current Chronicle reviews only. */
+  readonly bulkApproval?: ChronicleBulkApproval;
 }
 
 /** Explicit CAS mode for carrying an existing envelope to a new revision. */
@@ -755,6 +792,20 @@ export async function narrativeExtractionAppendHumanDecision(
   );
 }
 
+/**
+ * Chronicle "bulk approve" (BAO/1): per proposal, one Native transaction that
+ * writes the unsealed Human-derived child and its Human approval. The review
+ * screen does not call this yet.
+ */
+export async function narrativeExtractionChronicleBulkApprove(
+  payload: ChronicleBulkApprovePayload,
+): Promise<ChronicleBulkApproveResult> {
+  return invoke<ChronicleBulkApproveResult>(
+    "narrative_extraction_chronicle_bulk_approve",
+    { payload },
+  );
+}
+
 export async function narrativeExtractionReviseAndDecide(
   payload: ReviseAndDecidePayload,
 ): Promise<ReviseAndDecideResult> {
@@ -772,6 +823,43 @@ export async function narrativeExtractionReviseAndDecideAsHuman(
     "narrative_extraction_revise_and_decide_as_human",
     { payload },
   );
+}
+
+export interface ChronicleBulkApproveTarget {
+  readonly proposalId: string;
+  /** The proposal's current revision the author was shown. */
+  readonly revisionId: string;
+}
+
+/**
+ * The author-shown targets only. Native judges each one again; it takes no
+ * content, secret value, actor or request identity from the renderer.
+ */
+export interface ChronicleBulkApprovePayload {
+  readonly projectId: string;
+  readonly runId: string;
+  readonly targets: readonly ChronicleBulkApproveTarget[];
+}
+
+export interface ChronicleBulkApproveResult {
+  /** `revisionId` is the new Human-derived (unsealed) child that was approved. */
+  readonly approved: readonly {
+    readonly proposalId: string;
+    readonly revisionId: string;
+    readonly decisionId: string;
+  }[];
+  /** Not (or no longer) a target; nothing was written for these. */
+  readonly skipped: readonly {
+    readonly proposalId: string;
+    readonly reasons: readonly ChronicleBulkApprovalReasonCode[];
+  }[];
+  /** Rolled back as a whole; `code` is the stable `NEX_...` error code. */
+  readonly failed: readonly {
+    readonly proposalId: string;
+    readonly code: string;
+  }[];
+  /** Shutdown or a workspace switch stopped the run between proposals. */
+  readonly stopped: boolean;
 }
 
 /** Native-owned C2B writer for Chronicle Human title/secret edits. */

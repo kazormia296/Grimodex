@@ -593,6 +593,51 @@ mod narrative_extraction_workspace_binding_tests {
         })
     }
 
+    /// 「まとめて承認」の停止の確かめは、Ready の間は止めず、終了の要求と workspace の
+    /// lifecycle が Ready でなくなったときに止める。N-API の入口は、未知の項目を拒む。
+    #[tokio::test]
+    async fn chronicle_bulk_approve_stop_check_follows_the_lifecycle_and_shutdown() {
+        let root = test_root();
+        let resources = root.join("resources");
+        let (authority, _path) = workspace_authority(&root, "workspace-a", "clone-id");
+        let state = AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+            .expect("app state");
+        assert!(
+            chronicle_bulk_approve_stop_requested(&state),
+            "no workspace: nothing to write to, stop"
+        );
+        install_test_workspace(&state, authority);
+        assert!(
+            !chronicle_bulk_approve_stop_requested(&state),
+            "a Ready workspace keeps the bulk approval running"
+        );
+        let backend = Backend {
+            state: Arc::new(state),
+        };
+        let unknown_field = backend
+            .narrative_extraction_chronicle_bulk_approve(serde_json::json!({
+                "projectId": "project-1",
+                "runId": "run-1",
+                "targets": [{"proposalId": "p", "revisionId": "r"}],
+                "secret": false,
+            }))
+            .await;
+        assert!(unknown_field.is_err(), "unknown payload fields are refused");
+        let unknown_run = backend
+            .narrative_extraction_chronicle_bulk_approve(serde_json::json!({
+                "projectId": "project-1",
+                "runId": "run-1",
+                "targets": [{"proposalId": "p", "revisionId": "r"}],
+            }))
+            .await;
+        assert!(unknown_run.is_err(), "a run that does not exist is an error, nothing is written");
+        backend.state.request_workspace_shutdown();
+        assert!(
+            chronicle_bulk_approve_stop_requested(&backend.state),
+            "a shutdown request stops the run between proposals"
+        );
+    }
+
     fn table_count(authority: &PinnedWorkspaceDb, table: &str) -> i64 {
         authority
             .db()
@@ -5231,6 +5276,23 @@ fn pin_ime_workspace_request(
         if let Some(request) = register(&state.ime_request_gate, generation) {
             return Ok((workspace, request));
         }
+    }
+}
+
+/// 「まとめて承認」が提案と提案の間で確かめる停止の要求。`ForegroundValidationControl::check`
+/// と同じ印を見る：終了の要求、workspace の lifecycle が Transition（切り替え）・Closed・
+/// RecoveryRequired、または Ready でない（workspace 無し）。状態が読めないときも止める側に倒す。
+/// 通常の書き込みは Ready で走るので、Ready の間は止めない。
+fn chronicle_bulk_approve_stop_requested(state: &AppState) -> bool {
+    if state
+        .workspace_shutdown_requested
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return true;
+    }
+    match state.ws.switching.core().snapshot() {
+        Ok(snapshot) => !matches!(snapshot.state, LifecycleState::Ready(_)),
+        Err(_) => true,
     }
 }
 
@@ -15664,6 +15726,32 @@ impl Backend {
             "payload",
             payload,
             narrative_extraction::narrative_extraction_append_human_decision,
+        )
+        .await
+    }
+
+    /// Chronicle "bulk approve" (BAO/1). Registered as a workspace operation
+    /// like the single approval. Native judges every target again; the renderer
+    /// supplies only the targets it showed. Between proposals the loop asks
+    /// whether shutdown or a workspace transition was requested and, if so,
+    /// stops and returns what was done so far.
+    #[napi]
+    pub async fn narrative_extraction_chronicle_bulk_approve(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let stop_state = Arc::clone(&self.state);
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            move |db, dto: grimodex_db::narrative_extraction::ChronicleBulkApprovePayload| {
+                narrative_extraction::narrative_extraction_chronicle_bulk_approve(
+                    db,
+                    dto,
+                    &mut || chronicle_bulk_approve_stop_requested(&stop_state),
+                )
+            },
         )
         .await
     }

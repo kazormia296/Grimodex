@@ -4629,6 +4629,20 @@ pub fn get_run_review_bundle(
             }
         }
 
+        // Native's bulk-approval judgement (BAO/1), computed from stored values
+        // only. Current Chronicle reviews only; other surfaces share this read.
+        if current_chronicle_spec {
+            if let Some(proposal_set_id) = current_chronicle_proposal_set_id.as_deref() {
+                super::bulk_approval::attach_bulk_approval(
+                    conn,
+                    &project_id,
+                    &run_id,
+                    proposal_set_id,
+                    &mut proposals,
+                );
+            }
+        }
+
         Ok(json!({
             "runId": run_id,
             "projectId": project_id,
@@ -5563,6 +5577,23 @@ pub fn append_human_decision(
         db,
         payload,
         TrustedDecisionActor::Human {
+            actor_id: "electron:human-review".to_string(),
+        },
+    )
+}
+
+/// Human decision on an existing transaction. The actor is the same fixed
+/// `electron:human-review` that [`append_human_decision`] records; the caller
+/// owns the surrounding `with_immediate_transaction` (the Chronicle bulk
+/// approval composes this with the Human-derived child creation).
+pub(crate) fn append_human_decision_in_tx(
+    conn: &Connection,
+    payload: &AppendDecisionPayload,
+) -> anyhow::Result<Value> {
+    append_decision_on_conn(
+        conn,
+        payload,
+        &TrustedDecisionActor::Human {
             actor_id: "electron:human-review".to_string(),
         },
     )

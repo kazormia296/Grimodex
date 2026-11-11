@@ -461,6 +461,7 @@ const INTERNAL_COMMANDS = new Set([
   "narrative_extraction_apply_commit",
   "narrative_extraction_cancel_run",
   "narrative_extraction_capture_workspace_binding",
+  "narrative_extraction_chronicle_bulk_approve",
   "narrative_extraction_create_human_derived_revision",
   "narrative_extraction_create_run",
   "narrative_extraction_fail_task",

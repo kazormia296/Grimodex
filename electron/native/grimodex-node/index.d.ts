@@ -1066,6 +1066,14 @@ export declare class Backend {
    * caller cannot turn `createdBy` into a human authority grant.
    */
   narrativeExtractionAppendHumanDecision(payload: any): Promise<string>
+  /**
+   * Chronicle "bulk approve" (BAO/1). Registered as a workspace operation
+   * like the single approval. Native judges every target again; the renderer
+   * supplies only the targets it showed. Between proposals the loop asks
+   * whether shutdown or a workspace transition was requested and, if so,
+   * stops and returns what was done so far.
+   */
+  narrativeExtractionChronicleBulkApprove(payload: any): Promise<string>
   narrativeExtractionReviseAndDecide(payload: any): Promise<string>
   narrativeExtractionReviseAndDecideAsHuman(payload: any): Promise<string>
   narrativeExtractionSetHumanFieldLock(payload: any): Promise<string>

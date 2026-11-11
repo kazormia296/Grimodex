@@ -14,6 +14,8 @@ use grimodex_db::domain_writes::{
 use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::narrative_extraction::{
     narrative_extraction_append_human_decision, narrative_extraction_apply_commit,
+    narrative_extraction_chronicle_bulk_approve, narrative_extraction_get_run_review_bundle,
+    ChronicleBulkApprovePayload, ChronicleBulkApproveTarget, RunRefPayload,
     narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto,
     narrative_extraction_prepare_commit, narrative_extraction_redo_commit,
     narrative_extraction_undo_commit, read_and_pack_native_a2_context, read_narrative_scene_scope,
@@ -2391,4 +2393,833 @@ fn outermost_error_message_carries_the_source_stale_code_without_scope_marker() 
         error.contains("NEX_SOURCE_BASIS_STALE") && !error.contains("scope-dependency:v1:"),
         "unexpected outermost message: {error}"
     );
+}
+
+
+// ───────────────────────── BAO/1: Chronicle bulk approve ─────────────────────────
+//
+// The cold fixtures are real normal-UI runs, but every sealed value in them is
+// `significance: major`, so no real proposal is a bulk-approval target. These
+// tests rewrite one sealed assertion value on a private copy and re-seal the
+// whole chain (Envelope digests, Plan manifest binding) so every validator still
+// passes; the rewritten copy is exactly a run whose event is scene-level. The
+// rewrite never touches what the writers under test check.
+
+const TWO_WINDOW_FIRST_PROPOSAL: &str = "f3baa553-d148-4cab-a0e7-a8b3f10dc0ef";
+const TWO_WINDOW_SECOND_PROPOSAL: &str = "78f95d27-b8de-4aa6-9854-1bf447834a3f";
+const TWO_WINDOW_SECOND_ROOT: &str = "411f5ebc-84b4-406b-ad00-c94da2c8ccb9";
+/// 2 つの場面（s1、s2）の後ろの場面。
+const BULK_QUERY_SCENE: &str = "en-query-05";
+const TWO_WINDOW_OTHER_RUN_PROPOSAL: &str = "5a8a5fb7-91d0-45f6-9072-79c0706430ac";
+
+/// Recompute the Plan manifest digest of the set that owns `proposal_set_id`
+/// from the stored rows and store it in the set's Native binding.
+fn rebind_plan_manifest(conn: &Connection, proposal_set_id: &str) {
+    let (project, run, set_kind, summary_json): (String, String, String, String) = conn
+        .query_row(
+            "SELECT project_id, run_id, set_kind, summary_json
+               FROM narrative_proposal_sets WHERE id = ?1",
+            [proposal_set_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("ProposalSet to rebind");
+    let mut summary: Value = serde_json::from_str(&summary_json).expect("summary");
+    let mut binding = summary
+        .as_object_mut()
+        .expect("summary object")
+        .remove("chroniclePlanTaskBinding")
+        .expect("Native plan binding");
+    let plan_digest: String = conn
+        .query_row(
+            "SELECT payload_digest FROM narrative_extraction_artifacts
+              WHERE run_id = ?1 AND artifact_kind = 'chronicle.proposal-plan@1'",
+            [&run],
+            |row| row.get(0),
+        )
+        .expect("plan artifact digest");
+    let proposals: Vec<Value> = conn
+        .prepare(
+            "SELECT p.proposal_key, p.kind, r.payload_json,
+                    r.reconciliation_envelope_json, r.reconciliation_envelope_digest
+               FROM narrative_proposals p
+               JOIN narrative_proposal_revisions r
+                 ON r.proposal_id = p.id AND r.revision_number = 1
+              WHERE p.proposal_set_id = ?1
+              ORDER BY p.proposal_key ASC",
+        )
+        .expect("manifest rows")
+        .query_map([proposal_set_id], |row| {
+            let payload: String = row.get(2)?;
+            let envelope: String = row.get(3)?;
+            Ok(json!({
+                "proposalKey": row.get::<_, String>(0)?,
+                "kind": row.get::<_, String>(1)?,
+                "payloadJson": serde_json::from_str::<Value>(&payload).expect("payload"),
+                "reconciliationEnvelope": serde_json::from_str::<Value>(&envelope).expect("envelope"),
+                "reconciliationEnvelopeDigest": row.get::<_, String>(4)?,
+            }))
+        })
+        .expect("manifest query")
+        .collect::<Result<_, _>>()
+        .expect("manifest proposals");
+    let manifest = json!({
+        "kind": "chronicle.plan-proposal-set-manifest@1",
+        "version": 1,
+        "projectId": project,
+        "runId": run,
+        "taskId": binding["taskId"],
+        "attemptId": binding["attemptId"],
+        "proposalSetId": proposal_set_id,
+        "setKind": set_kind,
+        "summaryJson": summary,
+        "proposalPlanArtifactDigest": plan_digest,
+        "proposals": proposals,
+    });
+    binding["proposalManifestDigest"] = json!(canonical_json_digest(&manifest).expect("digest"));
+    summary["chroniclePlanTaskBinding"] = binding;
+    conn.execute(
+        "UPDATE narrative_proposal_sets SET summary_json = ?2 WHERE id = ?1",
+        params![proposal_set_id, serde_json::to_string(&summary).expect("summary")],
+    )
+    .expect("store rebound manifest digest");
+}
+
+fn set_of_revision(conn: &Connection, revision: &str) -> String {
+    conn.query_row(
+        "SELECT p.proposal_set_id FROM narrative_proposals p
+           JOIN narrative_proposal_revisions r ON r.proposal_id = p.id WHERE r.id = ?1",
+        [revision],
+        |row| row.get(0),
+    )
+    .expect("set of the revision")
+}
+
+/// Rewrite values of the sealed `assertion.payload` of a first revision, re-seal
+/// the Envelope digests, and rebind the Plan manifest.
+fn reseal_assertion_values(conn: &Connection, revision: &str, edits: &[(&str, &str)]) {
+    let raw: String = conn
+        .query_row(
+            "SELECT reconciliation_envelope_json FROM narrative_proposal_revisions WHERE id = ?1",
+            [revision],
+            |row| row.get(0),
+        )
+        .expect("Envelope");
+    let mut envelope: Value = serde_json::from_str(&raw).expect("Envelope JSON");
+    for (field, value) in edits {
+        envelope["assertion"]["payload"][*field] = json!(value);
+    }
+    let assertion = &envelope["assertion"];
+    let mut core = json!({
+        "assertionKind": assertion["assertionKind"],
+        "payloadSchemaRef": assertion["payloadSchemaRef"],
+        "typedSemanticPayload": assertion["payload"],
+        "modality": assertion["modality"],
+        "polarity": assertion["polarity"],
+        "supportClass": assertion["supportClass"],
+        "producer": assertion["producer"],
+    });
+    if let Some(confidence) = assertion.get("producerConfidence") {
+        core["producerConfidence"] = confidence.clone();
+    }
+    let core_digest = canonical_json_digest(&core).expect("assertion core digest");
+    let scope_digest = envelope["assertionDigests"]["scopeDigest"].clone();
+    envelope["assertionDigests"]["assertionCoreDigest"] = json!(core_digest);
+    envelope["assertionDigests"]["assertionDigest"] = json!(canonical_json_digest(&json!({
+        "assertionCoreDigest": core_digest,
+        "scopeDigest": scope_digest,
+    }))
+    .expect("assertion digest"));
+    store_envelope(conn, revision, &envelope);
+}
+
+/// Store an Envelope with its canonical digest and rebind the Plan manifest.
+fn store_envelope(conn: &Connection, revision: &str, envelope: &Value) {
+    conn.execute(
+        "UPDATE narrative_proposal_revisions SET reconciliation_envelope_json = ?2,
+            reconciliation_envelope_digest = ?3 WHERE id = ?1",
+        params![
+            revision,
+            canonical_json_string(envelope).expect("canonical Envelope"),
+            canonical_json_digest(envelope).expect("Envelope digest")
+        ],
+    )
+    .expect("store the re-sealed Envelope");
+    rebind_plan_manifest(conn, &set_of_revision(conn, revision));
+}
+
+/// Rewrite the sealed duplicate judgement of the planned entry of `event_id`.
+fn reseal_plan_match(conn: &Connection, run: &str, event_id: &str, status: &str) {
+    let (artifact_id, payload): (String, String) = conn
+        .query_row(
+            "SELECT id, payload_json FROM narrative_extraction_artifacts
+              WHERE run_id = ?1 AND artifact_kind = 'chronicle.proposal-plan@1'",
+            [run],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("plan artifact");
+    let mut plan: Value = serde_json::from_str(&payload).expect("plan JSON");
+    let mut changed = false;
+    for planned in plan["planned"].as_array_mut().expect("planned roster") {
+        if planned["proposal"]["eventId"] == event_id {
+            planned["match"] = json!({ "status": status });
+            changed = true;
+        }
+    }
+    assert!(changed, "planned entry of the event");
+    conn.execute(
+        "UPDATE narrative_extraction_artifacts SET payload_json = ?2, payload_digest = ?3 WHERE id = ?1",
+        params![
+            artifact_id,
+            canonical_json_string(&plan).expect("canonical plan"),
+            canonical_json_digest(&plan).expect("plan digest")
+        ],
+    )
+    .expect("store the re-sealed plan");
+    rebind_plan_manifest(
+        conn,
+        plan["proposalSetId"].as_str().expect("plan ProposalSet"),
+    );
+}
+
+/// Drop the V2 pointer guard so a private copy can put a proposal back on its
+/// AI root (a state the product never reaches); the writers still run on top.
+fn put_proposal_back_on_its_root(conn: &Connection, proposal: &str, root: &str) {
+    conn.execute_batch(
+        "DROP TRIGGER IF EXISTS narrative_proposals_v2_pointer_monotonicity_guard;",
+    )
+    .expect("drop the pointer guard on the private copy");
+    conn.execute(
+        "UPDATE narrative_proposals
+            SET current_revision_id = ?2, status = 'unreviewed',
+                payload_json = (SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?2)
+          WHERE id = ?1",
+        params![proposal, root],
+    )
+    .expect("put the proposal back on its root");
+}
+
+/// A private two-window copy where the first proposal's AI root is a bulk
+/// approval target (`scene-level`, the rest already `story-world` / `narrator` /
+/// `actual`), after `setup` ran on a plain connection.
+fn bulk_two_window(setup: impl FnOnce(&Connection)) -> (Fixture, Database) {
+    let fixture = Fixture::two_window();
+    {
+        let conn = fixture.corruption_connection();
+        reseal_assertion_values(&conn, TWO_WINDOW_UNREVIEWED_REVISION, &[("significance", "scene-level")]);
+        setup(&conn);
+    }
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    db.migrate().expect("migrate the private two-window copy");
+    enable_manual_apply(&db);
+    (fixture, db)
+}
+
+fn bulk_targets(db: &Database, proposals: &[&str]) -> Vec<ChronicleBulkApproveTarget> {
+    db.with_conn(|conn| {
+        proposals
+            .iter()
+            .map(|proposal| {
+                Ok(ChronicleBulkApproveTarget {
+                    proposal_id: (*proposal).to_owned(),
+                    revision_id: conn.query_row(
+                        "SELECT current_revision_id FROM narrative_proposals WHERE id = ?1",
+                        [proposal],
+                        |row| row.get(0),
+                    )?,
+                })
+            })
+            .collect()
+    })
+    .expect("current revisions of the targets")
+}
+
+fn bulk_approve_targets(
+    db: &Database,
+    fixture: &Fixture,
+    run: &str,
+    targets: Vec<ChronicleBulkApproveTarget>,
+) -> Value {
+    narrative_extraction_chronicle_bulk_approve(
+        db,
+        ChronicleBulkApprovePayload {
+            project_id: fixture.project().to_owned(),
+            run_id: run.to_owned(),
+            targets,
+        },
+        &mut || false,
+    )
+    .expect("bulk approve")
+}
+
+/// proposalId -> `bulkApproval` of the review read.
+fn read_bulk_approvals(db: &Database, fixture: &Fixture, run: &str) -> std::collections::BTreeMap<String, Value> {
+    let bundle = narrative_extraction_get_run_review_bundle(
+        db,
+        RunRefPayload {
+            run_id: run.to_owned(),
+            project_id: fixture.project().to_owned(),
+            chronicle_blocked_discard: None,
+        },
+    )
+    .expect("review bundle");
+    bundle["proposals"]
+        .as_array()
+        .expect("proposals")
+        .iter()
+        .map(|proposal| {
+            (
+                proposal["proposalId"].as_str().expect("id").to_owned(),
+                proposal["bulkApproval"].clone(),
+            )
+        })
+        .collect()
+}
+
+/// Everything a bulk approval may write, as one comparable string.
+fn bulk_state(db: &Database) -> String {
+    db.with_conn(|conn| {
+        let counts: (i64, i64, i64, i64) = conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM narrative_proposal_revisions),
+                    (SELECT COUNT(*) FROM narrative_proposal_decisions),
+                    (SELECT COUNT(*) FROM narrative_consumer_freshness),
+                    (SELECT COUNT(*) FROM narrative_dependency_edges)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        let pointers: Vec<String> = conn
+            .prepare("SELECT id || '|' || status || '|' || COALESCE(current_revision_id,'') FROM narrative_proposals ORDER BY id")?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(format!("{counts:?} {pointers:?}"))
+    })
+    .expect("bulk state")
+}
+
+fn reasons_of(value: &Value) -> Vec<String> {
+    value["reasons"]
+        .as_array()
+        .expect("reasons")
+        .iter()
+        .map(|reason| reason.as_str().expect("reason code").to_owned())
+        .collect()
+}
+
+/// The review read and the write path agree, and an ineligible target writes nothing.
+fn assert_bulk_refused(
+    db: &Database,
+    fixture: &Fixture,
+    proposal: &str,
+    expected: &[&str],
+) {
+    let read = read_bulk_approvals(db, fixture, TWO_WINDOW_RUN);
+    let judged = &read[proposal];
+    assert_eq!(judged["eligible"], false, "{proposal}: {judged}");
+    let read_reasons = reasons_of(judged);
+    let mut exact: Vec<String> = expected.iter().map(|code| (*code).to_owned()).collect();
+    exact.sort();
+    let mut sorted = read_reasons.clone();
+    sorted.sort();
+    assert_eq!(sorted, exact, "{proposal}: exactly these reasons");
+    let before = bulk_state(db);
+    let result = bulk_approve_targets(db, fixture, TWO_WINDOW_RUN, bulk_targets(db, &[proposal]));
+    assert_eq!(result["approved"], json!([]), "{proposal}");
+    assert_eq!(result["failed"], json!([]), "{proposal}");
+    let skipped = result["skipped"].as_array().expect("skipped");
+    assert_eq!(skipped.len(), 1, "{proposal}: {result}");
+    assert_eq!(skipped[0]["proposalId"], proposal);
+    assert_eq!(
+        reasons_of(&skipped[0]),
+        read_reasons,
+        "{proposal}: the write path judges exactly like the read"
+    );
+    assert_eq!(bulk_state(db), before, "{proposal}: a refused target writes nothing");
+}
+
+/// 正例：対象の提案が、command 1 回で、秘密の印を外した子の版（human-derived、変わった項目は
+/// `/disclosure/secret` だけ）と、その版への Human の承認を持つ。承認の actor／権限の範囲は
+/// 1 件ずつの承認と同じで、子の版は IR の資格を通る。その後、取り込みが通り、出来事は secret。
+#[test]
+fn bulk_approve_writes_the_unsealed_child_and_its_human_approval() {
+    let (fixture, db) = bulk_two_window(|_| {});
+    let root = TWO_WINDOW_UNREVIEWED_REVISION;
+    let read = read_bulk_approvals(&db, &fixture, TWO_WINDOW_RUN);
+    assert_eq!(read[TWO_WINDOW_FIRST_PROPOSAL]["eligible"], true, "{read:?}");
+    assert_eq!(reasons_of(&read[TWO_WINDOW_FIRST_PROPOSAL]), Vec::<String>::new());
+    // 承認済みの編集版は、承認済み・編集済み・見せる理由（major）で対象外。
+    assert_eq!(read[TWO_WINDOW_SECOND_PROPOSAL]["eligible"], false);
+    let second = reasons_of(&read[TWO_WINDOW_SECOND_PROPOSAL]);
+    for code in ["approved", "edited", "r3-significance"] {
+        assert!(second.iter().any(|r| r == code), "{code} in {second:?}");
+    }
+    db.with_conn(|conn| {
+        // 未承認・secret の AI の版は、資格を通らない（漏れ 0）。
+        assert_unavailable(conn, &fixture, root, fixture.scene("s2"));
+        Ok(())
+    })
+    .expect("root is not retrievable before");
+
+    let targets = bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL]);
+    let result = bulk_approve_targets(&db, &fixture, TWO_WINDOW_RUN, targets);
+    assert_eq!(result["skipped"], json!([]), "{result}");
+    assert_eq!(result["failed"], json!([]), "{result}");
+    assert_eq!(result["stopped"], false);
+    let approved = result["approved"].as_array().expect("approved");
+    assert_eq!(approved.len(), 1, "{result}");
+    let child = approved[0]["revisionId"].as_str().expect("child").to_owned();
+    let decision = approved[0]["decisionId"].as_str().expect("decision").to_owned();
+    assert_eq!(approved[0]["proposalId"], TWO_WINDOW_FIRST_PROPOSAL);
+    assert_ne!(child, root);
+
+    db.with_conn(|conn| {
+        let (basis, parent, number, root_payload, child_payload): (String, String, i64, String, String) = conn.query_row(
+            "SELECT json_extract(c.reconciliation_envelope_json, '$.revisionBasis.kind'),
+                    json_extract(c.reconciliation_envelope_json, '$.revisionBasis.parentRevisionId'),
+                    c.revision_number, r.payload_json, c.payload_json
+               FROM narrative_proposal_revisions c, narrative_proposal_revisions r
+              WHERE c.id = ?1 AND r.id = ?2",
+            params![child, root],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )?;
+        assert_eq!((basis.as_str(), parent.as_str(), number), ("human-derived", root, 2));
+        let mut expected: Value = serde_json::from_str(&root_payload)?;
+        assert_eq!(expected["disclosure"]["secret"], true);
+        expected["disclosure"]["secret"] = json!(false);
+        assert_eq!(
+            serde_json::from_str::<Value>(&child_payload)?,
+            expected,
+            "only /disclosure/secret changed"
+        );
+        // 承認の記録は、1 件ずつの承認（native_human_decision）と同じ actor／権限の範囲。
+        let stored: (String, String, String, String, String, String, String) = conn.query_row(
+            "SELECT revision_id, decision, actor_kind, actor_id, authority_scope, created_by, decision_json
+               FROM narrative_proposal_decisions WHERE id = ?1",
+            [&decision],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+        )?;
+        assert_eq!(
+            stored,
+            (
+                child.clone(),
+                "approved".to_owned(),
+                "human".to_owned(),
+                "electron:human-review".to_owned(),
+                format!("project/{}/proposal/{TWO_WINDOW_FIRST_PROPOSAL}/revision/{child}", fixture.project()),
+                "chronicle-extract-dialog".to_owned(),
+                "{}".to_owned(),
+            )
+        );
+        let (status, current): (String, String) = conn.query_row(
+            "SELECT status, current_revision_id FROM narrative_proposals WHERE id = ?1",
+            [TWO_WINDOW_FIRST_PROPOSAL],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!((status, current), ("approved".to_owned(), child.clone()));
+        Ok(())
+    })
+    .expect("child revision and approval");
+    // Freshness の周期が空になるまで回す（この作りでは、版の作成が出した分は既に評価済みのこともある）。
+    for _ in 0..8 {
+        if matches!(
+            run_incremental_freshness_cycle(&db).expect("production Native Freshness cycle"),
+            IncrementalFreshnessCycleOutcome::Idle
+        ) {
+            break;
+        }
+    }
+    db.with_conn(|conn| {
+        assert_complete_and_fresh(conn, &fixture, &child);
+        // この fixture の 2 つの場面は、どちらも版の材料（source basis）に入る。問い合わせの場面は、
+        // 両方より後の場面（en-query-05）にする。
+        let tx = conn.unchecked_transaction()?;
+        let read = read_revision_retrieval_eligibility(&tx, fixture.project(), &child, BULK_QUERY_SCENE)?;
+        assert!(matches!(read, RevisionEligibilityRead::Eligible(_)), "approved unsealed child: {read:?}");
+        // 元の AI の版は、今も資格を通らない。
+        let read = read_revision_retrieval_eligibility(&tx, fixture.project(), root, BULK_QUERY_SCENE)?;
+        assert!(matches!(read, RevisionEligibilityRead::Unavailable { .. }), "AI root: {read:?}");
+        Ok(())
+    })
+    .expect("the approved unsealed child passes the retrieval eligibility");
+
+    // 取り込み（prepare → apply）が通り、年表の出来事は secret。
+    let revisions = approved_current_revisions_of_run(&db, TWO_WINDOW_RUN);
+    assert_eq!(revisions.len(), 2);
+    let prepare = chronicle_prepare_payload(&db, &fixture, "bao-two-window-apply", &revisions);
+    prepare_and_apply(&db, &prepare);
+    assert_eq!(event_row_of(&db, &child).0, 1, "the Chronicle Event is secret");
+    // 取り込み済みの組は、対象にならない（読み出しも、command も）。
+    let again = read_bulk_approvals(&db, &fixture, TWO_WINDOW_RUN);
+    for proposal in [TWO_WINDOW_FIRST_PROPOSAL, TWO_WINDOW_SECOND_PROPOSAL] {
+        let reasons = reasons_of(&again[proposal]);
+        assert!(reasons.iter().any(|r| r == "applied") && reasons.iter().any(|r| r == "set-applied"), "{reasons:?}");
+    }
+    let before = bulk_state(&db);
+    let consumed = bulk_approve_targets(
+        &db,
+        &fixture,
+        TWO_WINDOW_RUN,
+        bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL, TWO_WINDOW_SECOND_PROPOSAL]),
+    );
+    assert_eq!(consumed["approved"], json!([]), "{consumed}");
+    for skipped in consumed["skipped"].as_array().expect("skipped") {
+        let reasons = reasons_of(skipped);
+        assert!(reasons.iter().any(|r| r == "set-applied"), "{reasons:?}");
+    }
+    assert_eq!(consumed["skipped"].as_array().expect("skipped").len(), 2);
+    assert_eq!(bulk_state(&db), before, "a consumed set is never written to");
+}
+
+const TWO_WINDOW_FIRST_EVENT: &str = "fbe1f4a3-bd22-4dd4-a6d1-87456eb7fc08";
+
+/// 見せる理由（R1〜R4、未知の値は R0）が付く提案は、一覧に入れても書かれず、理由が返る。
+/// 読み出しの判定と、書く直前の判定は同じ。
+#[test]
+fn bulk_approve_refuses_every_review_reason() {
+    for (edits, expected) in [
+        (vec![("narrativeFrame", "flashback")], "r1-narrative-frame"),
+        (vec![("narrativeFrame", "dream")], "r1-narrative-frame"),
+        (vec![("attribution", "character:mara")], "r2-attribution"),
+        (vec![("attribution", "unknown")], "r2-attribution"),
+        (vec![("significance", "major")], "r3-significance"),
+        (vec![("actuality", "attempted")], "r4-actuality"),
+        (vec![("actuality", "prevented")], "r4-actuality"),
+        (vec![("narrativeFrame", "mystery")], "r0-material-unavailable"),
+        (vec![("significance", "")], "r0-material-unavailable"),
+    ] {
+        let (fixture, db) = bulk_two_window(|conn| {
+            reseal_assertion_values(conn, TWO_WINDOW_UNREVIEWED_REVISION, &edits);
+        });
+        assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &[expected]);
+    }
+}
+
+/// 版が V2 でない（値が読めない）提案は、R0 で対象外。
+#[test]
+fn bulk_approve_refuses_a_revision_that_is_not_v2() {
+    let (fixture, db) = bulk_two_window(|conn| {
+        let raw: String = conn
+            .query_row(
+                "SELECT reconciliation_envelope_json FROM narrative_proposal_revisions WHERE id = ?1",
+                [TWO_WINDOW_UNREVIEWED_REVISION],
+                |row| row.get(0),
+            )
+            .expect("Envelope");
+        let mut envelope: Value = serde_json::from_str(&raw).expect("Envelope JSON");
+        envelope["schemaVersion"] = json!(1);
+        store_envelope(conn, TWO_WINDOW_UNREVIEWED_REVISION, &envelope);
+    });
+    assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &["r0-material-unavailable"]);
+}
+
+/// 保留・延期・却下・承認済みは、それぞれ別の理由で対象外。
+#[test]
+fn bulk_approve_refuses_every_non_unreviewed_status() {
+    for (status, expected) in [
+        ("approved", "approved"),
+        ("rejected", "rejected"),
+        ("held", "held"),
+        ("deferred", "deferred"),
+    ] {
+        let (fixture, db) = bulk_two_window(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposals SET status = ?2 WHERE id = ?1",
+                params![TWO_WINDOW_FIRST_PROPOSAL, status],
+            )
+            .expect("status of the private copy");
+        });
+        assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &[expected]);
+    }
+}
+
+/// 作者が 1 度でも編集した提案は、元に戻していても対象外（版の id で判定し、中身の比較は使わない）。
+/// 一覧が古い（版の id が違う）提案は「変わった」で返る。
+#[test]
+fn bulk_approve_refuses_an_edited_proposal_even_when_restored() {
+    // 題を直した版。
+    let (fixture, db) = bulk_two_window(|_| {});
+    let title: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT json_extract(payload_json, '$.title') FROM narrative_proposal_revisions WHERE id = ?1",
+                [TWO_WINDOW_UNREVIEWED_REVISION],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("title");
+    let stale = bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL]);
+    let edited = create_native_child(&db, &fixture, TWO_WINDOW_UNREVIEWED_REVISION, |payload| {
+        payload["title"] = json!("Another title");
+    });
+    // 題が封印済みの計画の題と違うので、重複の可能性の再確認も付く（今の承認の検査と同じ保守的な扱い）。
+    assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &["edited", "probable-duplicate"]);
+    // 題を元に戻した版（中身は AI の版と同じ）。
+    let restored = create_native_child(&db, &fixture, &edited, |payload| {
+        payload["title"] = json!(title);
+    });
+    assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &["edited"]);
+    // 作者が secret を外し、まだ承認していない版。
+    create_native_child(&db, &fixture, &restored, |payload| {
+        payload["disclosure"]["secret"] = json!(false);
+    });
+    assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &["edited"]);
+    // 画面が持っていた古い版の id。
+    let before = bulk_state(&db);
+    let result = bulk_approve_targets(&db, &fixture, TWO_WINDOW_RUN, stale);
+    assert_eq!(result["approved"], json!([]));
+    assert_eq!(result["skipped"], json!([{"proposalId": TWO_WINDOW_FIRST_PROPOSAL, "reasons": ["revision-changed"]}]));
+    assert_eq!(bulk_state(&db), before);
+}
+
+/// 重複の可能性（封印済みの計画の判定）、根拠の対応が欠ける提案、開示の場面が解決できない提案は対象外。
+#[test]
+fn bulk_approve_refuses_duplicate_evidence_and_unresolvable_reveal() {
+    let (fixture, db) = bulk_two_window(|conn| {
+        reseal_plan_match(conn, TWO_WINDOW_RUN, TWO_WINDOW_FIRST_EVENT, "probable-duplicate");
+    });
+    assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &["probable-duplicate"]);
+
+    // 根拠の記録（evidence.resolved@1）に、Envelope の根拠が 1 件も対応しない。
+    let (fixture, db) = bulk_two_window(|conn| {
+        let (id, payload): (String, String) = conn
+            .query_row(
+                "SELECT id, payload_json FROM narrative_extraction_artifacts
+                  WHERE run_id = ?1 AND artifact_kind = 'evidence.resolved@1'",
+                [TWO_WINDOW_RUN],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("evidence artifact");
+        let mut artifact: Value = serde_json::from_str(&payload).expect("artifact JSON");
+        artifact["anchors"]
+            .as_array_mut()
+            .expect("anchors")
+            .retain(|anchor| anchor["id"] != "anchor-0001");
+        conn.execute(
+            "UPDATE narrative_extraction_artifacts SET payload_json = ?2, payload_digest = ?3 WHERE id = ?1",
+            params![
+                id,
+                canonical_json_string(&artifact).expect("canonical"),
+                canonical_json_digest(&artifact).expect("digest")
+            ],
+        )
+        .expect("evidence artifact without the anchor");
+    });
+    assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &["evidence-unverified"]);
+
+    // 開示の場面が、今の場面の一覧から消えた（子の版を今は作れない）。
+    let (fixture, db) = bulk_two_window(|conn| {
+        conn.execute(
+            "UPDATE tree_nodes SET archived_at = datetime('now') WHERE id = 'en-distractor-gift'",
+            [],
+        )
+        .expect("archive the reveal Scene");
+    });
+    assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &["reveal-scene-unresolved"]);
+}
+
+/// 別の抽出の提案・存在しない提案は書かれず、同じコードで返る。別の抽出・不正な入力は拒まれる。
+#[test]
+fn bulk_approve_refuses_foreign_targets_and_invalid_requests() {
+    let (fixture, db) = bulk_two_window(|_| {});
+    let before = bulk_state(&db);
+    let mut targets = bulk_targets(&db, &[TWO_WINDOW_OTHER_RUN_PROPOSAL]);
+    targets.push(ChronicleBulkApproveTarget {
+        proposal_id: "no-such-proposal".to_owned(),
+        revision_id: "no-such-revision".to_owned(),
+    });
+    let result = bulk_approve_targets(&db, &fixture, TWO_WINDOW_RUN, targets);
+    assert_eq!(result["approved"], json!([]));
+    assert_eq!(
+        result["skipped"],
+        json!([
+            {"proposalId": TWO_WINDOW_OTHER_RUN_PROPOSAL, "reasons": ["proposal-not-found"]},
+            {"proposalId": "no-such-proposal", "reasons": ["proposal-not-found"]},
+        ])
+    );
+    assert_eq!(bulk_state(&db), before);
+
+    let first = bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL]);
+    let request = |project: &str, run: &str, targets: Vec<ChronicleBulkApproveTarget>| {
+        narrative_extraction_chronicle_bulk_approve(
+            &db,
+            ChronicleBulkApprovePayload {
+                project_id: project.to_owned(),
+                run_id: run.to_owned(),
+                targets,
+            },
+            &mut || false,
+        )
+    };
+    assert!(request(fixture.project(), TWO_WINDOW_RUN, vec![]).is_err(), "empty list");
+    let twice = vec![first[0].clone(), first[0].clone()];
+    assert!(request(fixture.project(), TWO_WINDOW_RUN, twice).is_err(), "duplicate target");
+    assert!(request("another-project", TWO_WINDOW_RUN, first.clone()).is_err(), "another project");
+    assert!(request(fixture.project(), "another-run", first).is_err(), "unknown run");
+    assert_eq!(bulk_state(&db), before, "an invalid request writes nothing");
+
+    // 入力は未知の項目を拒む。中身、secret の値、actor、要求の識別は受け取らない。
+    for extra in [
+        ("proposalPayload", json!({"title": "x"})),
+        ("secret", json!(false)),
+        ("actor", json!("electron:human-review")),
+        ("requestId", json!("r1")),
+    ] {
+        let mut wire = json!({
+            "projectId": "p", "runId": "r",
+            "targets": [{"proposalId": "a", "revisionId": "b"}],
+        });
+        wire[extra.0] = extra.1;
+        assert!(serde_json::from_value::<ChronicleBulkApprovePayload>(wire).is_err(), "{}", extra.0);
+    }
+    let mut wire = json!({"projectId": "p", "runId": "r", "targets": [{"proposalId": "a", "revisionId": "b", "payload": {}}]});
+    assert!(serde_json::from_value::<ChronicleBulkApprovePayload>(wire.clone()).is_err());
+    wire["targets"][0] = json!({"proposalId": "a", "revisionId": "b"});
+    assert!(serde_json::from_value::<ChronicleBulkApprovePayload>(wire).is_ok());
+}
+
+/// 子の版の前提（project の意味の世代の記録、親の版の封印の記録）が無い提案は、対象外。
+#[test]
+fn bulk_approve_refuses_when_the_child_prerequisites_are_missing() {
+    let (fixture, db) = bulk_two_window(|conn| {
+        conn.execute_batch("PRAGMA foreign_keys = OFF; DELETE FROM narrative_semantic_epochs;")
+            .expect("remove the Semantic Epoch records of the private copy");
+    });
+    assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &["semantic-epoch-missing"]);
+
+    let (fixture, db) = bulk_two_window(|conn| {
+        conn.execute(
+            "DELETE FROM narrative_dependency_declaration_heads
+              WHERE consumer_kind = 'proposal-revision' AND consumer_key = ?1",
+            [TWO_WINDOW_UNREVIEWED_REVISION],
+        )
+        .expect("remove the parent's D1 head of the private copy");
+    });
+    assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &["parent-seal-missing"]);
+}
+
+/// 2 件の対象のうち、一覧にある分だけが処理される。1 件が途中（子の版を書いた後の承認）で
+/// 失敗しても、その提案は何も書かれず（子の版だけが残らない）、残りは処理される。
+/// 同じ要求をもう一度送っても、子の版と承認は二重にならない。
+#[test]
+fn bulk_approve_continues_after_one_failure_and_is_idempotent() {
+    let (fixture, db) = bulk_two_window(|conn| {
+        put_proposal_back_on_its_root(conn, TWO_WINDOW_SECOND_PROPOSAL, TWO_WINDOW_SECOND_ROOT);
+        reseal_assertion_values(conn, TWO_WINDOW_SECOND_ROOT, &[("significance", "scene-level")]);
+    });
+    let read = read_bulk_approvals(&db, &fixture, TWO_WINDOW_RUN);
+    assert_eq!(read[TWO_WINDOW_FIRST_PROPOSAL]["eligible"], true, "{read:?}");
+    assert_eq!(read[TWO_WINDOW_SECOND_PROPOSAL]["eligible"], true, "{read:?}");
+    let pointer = |db: &Database, proposal: &str| -> (String, String, i64) {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT p.status, p.current_revision_id,
+                        (SELECT COUNT(*) FROM narrative_proposal_revisions WHERE proposal_id = p.id)
+                   FROM narrative_proposals p WHERE p.id = ?1",
+                [proposal],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        })
+        .expect("proposal pointer")
+    };
+    let second_before = pointer(&db, TWO_WINDOW_SECOND_PROPOSAL);
+
+    // 一覧に無い提案は、対象であっても書かれない。
+    let only_first = bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL]);
+    let result = bulk_approve_targets(&db, &fixture, TWO_WINDOW_RUN, only_first);
+    assert_eq!(result["approved"].as_array().expect("approved").len(), 1, "{result}");
+    assert_eq!(pointer(&db, TWO_WINDOW_SECOND_PROPOSAL), second_before, "not listed -> not written");
+
+    // 2 件目の承認だけが失敗する。
+    db.with_conn(|conn| {
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER bao_injected_failure BEFORE INSERT ON narrative_proposal_decisions
+               WHEN NEW.proposal_id = '{TWO_WINDOW_SECOND_PROPOSAL}'
+             BEGIN SELECT RAISE(ABORT, 'bao-injected-failure'); END;"
+        ))?;
+        Ok(())
+    })
+    .expect("failure injection on the private copy");
+    let both = bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL, TWO_WINDOW_SECOND_PROPOSAL]);
+    let result = bulk_approve_targets(&db, &fixture, TWO_WINDOW_RUN, both.clone());
+    assert_eq!(result["approved"], json!([]), "{result}");
+    assert_eq!(result["failed"].as_array().expect("failed").len(), 1, "{result}");
+    assert_eq!(result["failed"][0]["proposalId"], TWO_WINDOW_SECOND_PROPOSAL);
+    assert!(result["failed"][0]["code"].as_str().expect("code").starts_with("NEX_"), "{result}");
+    let skipped = result["skipped"].as_array().expect("skipped");
+    assert_eq!(skipped.len(), 1, "{result}");
+    assert_eq!(skipped[0]["proposalId"], TWO_WINDOW_FIRST_PROPOSAL);
+    assert_eq!(
+        pointer(&db, TWO_WINDOW_SECOND_PROPOSAL),
+        second_before,
+        "the failed proposal keeps no child revision and no decision"
+    );
+    db.with_conn(|conn| {
+        assert!(conn.is_autocommit());
+        Ok(())
+    })
+    .expect("no transaction is left open");
+
+    // 失敗を取り除くと、残りが処理される。済んだ分は二重にならない。
+    db.with_conn(|conn| Ok(conn.execute_batch("DROP TRIGGER bao_injected_failure")?))
+        .expect("remove the injected failure");
+    let result = bulk_approve_targets(&db, &fixture, TWO_WINDOW_RUN, both.clone());
+    assert_eq!(result["failed"], json!([]), "{result}");
+    let approved = result["approved"].as_array().expect("approved");
+    assert_eq!(approved.len(), 1, "{result}");
+    assert_eq!(approved[0]["proposalId"], TWO_WINDOW_SECOND_PROPOSAL);
+    let after = bulk_state(&db);
+    let again = bulk_approve_targets(&db, &fixture, TWO_WINDOW_RUN, both);
+    assert_eq!(again["approved"], json!([]), "{again}");
+    assert_eq!(again["skipped"].as_array().expect("skipped").len(), 2, "{again}");
+    assert_eq!(bulk_state(&db), after, "the same request again writes nothing");
+    // 片方だけ（子の版だけ、承認だけ）が残る提案が無い。
+    db.with_conn(|conn| {
+        let half: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_proposals p
+              WHERE p.status = 'approved'
+                AND NOT EXISTS (SELECT 1 FROM narrative_proposal_decisions d
+                                 WHERE d.proposal_id = p.id AND d.revision_id = p.current_revision_id
+                                   AND d.decision = 'approved' AND d.actor_kind = 'human')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(half, 0);
+        Ok(())
+    })
+    .expect("every approved proposal has its human approval on the current revision");
+}
+
+/// 終了や workspace の切り替えの要求が来たら、提案と提案の間で止まり、それまでの結果を返す。
+#[test]
+fn bulk_approve_stops_between_proposals_when_asked() {
+    let (fixture, db) = bulk_two_window(|conn| {
+        put_proposal_back_on_its_root(conn, TWO_WINDOW_SECOND_PROPOSAL, TWO_WINDOW_SECOND_ROOT);
+        reseal_assertion_values(conn, TWO_WINDOW_SECOND_ROOT, &[("significance", "scene-level")]);
+    });
+    let targets = bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL, TWO_WINDOW_SECOND_PROPOSAL]);
+    let mut asked = 0;
+    let result = narrative_extraction_chronicle_bulk_approve(
+        &db,
+        ChronicleBulkApprovePayload {
+            project_id: fixture.project().to_owned(),
+            run_id: TWO_WINDOW_RUN.to_owned(),
+            targets,
+        },
+        &mut || {
+            asked += 1;
+            asked > 1
+        },
+    )
+    .expect("a stopped run still returns its results");
+    assert_eq!(result["stopped"], true);
+    assert_eq!(result["approved"].as_array().expect("approved").len(), 1, "{result}");
+    assert_eq!(result["approved"][0]["proposalId"], TWO_WINDOW_FIRST_PROPOSAL);
+    let second_status: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT status FROM narrative_proposals WHERE id = ?1",
+                [TWO_WINDOW_SECOND_PROPOSAL],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("status");
+    assert_eq!(second_status, "unreviewed", "the proposal after the stop is untouched");
 }

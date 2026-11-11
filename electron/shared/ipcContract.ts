@@ -1207,6 +1207,7 @@ export interface NapiBackendLike {
   narrativeExtractionAppendRevision(payload: unknown): Promise<string>;
   narrativeExtractionAppendDecision(payload: unknown): Promise<string>;
   narrativeExtractionAppendHumanDecision(payload: unknown): Promise<string>;
+  narrativeExtractionChronicleBulkApprove(payload: unknown): Promise<string>;
   narrativeExtractionReviseAndDecide(payload: unknown): Promise<string>;
   narrativeExtractionReviseAndDecideAsHuman(payload: unknown): Promise<string>;
   narrativeExtractionSetHumanFieldLock(payload: unknown): Promise<string>;
@@ -11255,6 +11256,22 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
             a,
             "payload",
             "narrative_extraction_append_human_decision",
+          ),
+        ),
+      ),
+  },
+  narrative_extraction_chronicle_bulk_approve: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionChronicleBulkApprove,
+          "narrativeExtractionChronicleBulkApprove",
+        )(
+          requireRecord(
+            a,
+            "payload",
+            "narrative_extraction_chronicle_bulk_approve",
           ),
         ),
       ),

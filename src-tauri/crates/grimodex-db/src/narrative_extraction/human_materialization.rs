@@ -633,7 +633,7 @@ pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization(
     })
 }
 
-fn create_human_derived_revision_with_c2b_projection_materialization_in_tx(
+pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization_in_tx(
     conn: &Connection,
     trusted_project_id: &str,
     request: &CreateHumanDerivedRevisionRequest,
