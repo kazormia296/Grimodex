@@ -217,7 +217,12 @@ enum ExtensionOwnership {
 /// reused and every other field of every node is freed here, so the set adds
 /// one `Vec` to what the tree read held (DR-CQA-6).
 fn take_scene_ids(nodes: Vec<PersistedProjectTreeNode>) -> ProjectSceneIds {
-    let mut ids = Vec::with_capacity(nodes.iter().filter(|node| node.node_type == "scene").count());
+    let mut ids = Vec::with_capacity(
+        nodes
+            .iter()
+            .filter(|node| node.node_type == "scene")
+            .count(),
+    );
     ids.extend(
         nodes
             .into_iter()
@@ -372,8 +377,12 @@ fn load_live_project_scope_read(
     );
 
     conn.execute_batch(&format!("SAVEPOINT {PROJECT_SCOPE_AUTHORITY_SNAPSHOT}"))?;
-    let result =
-        load_live_project_scope_authority_in_snapshot(conn, project_id, collect_scene_bindings, ownership);
+    let result = load_live_project_scope_authority_in_snapshot(
+        conn,
+        project_id,
+        collect_scene_bindings,
+        ownership,
+    );
     match result {
         Ok(read) => {
             conn.execute_batch(&format!("RELEASE {PROJECT_SCOPE_AUTHORITY_SNAPSHOT}"))?;

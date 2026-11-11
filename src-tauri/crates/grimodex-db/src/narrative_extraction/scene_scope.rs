@@ -921,7 +921,8 @@ struct ScopeExtensionParts {
 /// and the Codex rows its two principals name. It does not join `tree_nodes`;
 /// the Scene a binding belongs to is decided from [`ProjectSceneIds`] and
 /// returned to the caller as the eleventh raw column.
-const SCOPE_EXTENSION_SQL: &str = "SELECT b.scene_id, b.scene_incarnation_id, b.compatibility_marker,
+const SCOPE_EXTENSION_SQL: &str =
+    "SELECT b.scene_id, b.scene_incarnation_id, b.compatibility_marker,
                 b.query_identity_json, b.material_constraint_json,
                 b.knowledge_holder_json, b.version, b.audience_json,
                 b.source_token, b.updated_at,
@@ -947,7 +948,8 @@ const SCOPE_EXTENSION_SQL: &str = "SELECT b.scene_id, b.scene_incarnation_id, b.
 /// tree_nodes`. Tests only; the oracle [`SCOPE_EXTENSION_SQL`] and the Scene-id
 /// set are checked against.
 #[cfg(test)]
-const SCOPE_EXTENSION_LEGACY_JOIN_SQL: &str = "SELECT b.scene_id, b.scene_incarnation_id, b.compatibility_marker,
+const SCOPE_EXTENSION_LEGACY_JOIN_SQL: &str =
+    "SELECT b.scene_id, b.scene_incarnation_id, b.compatibility_marker,
                 b.query_identity_json, b.material_constraint_json,
                 b.knowledge_holder_json, b.version, b.audience_json,
                 b.source_token, b.updated_at,
@@ -3362,10 +3364,16 @@ mod tests {
             .with_read_transaction(|conn| {
                 let scene_ids = project_scene_ids(conn, "p1")?;
                 let mut entries = Vec::new();
-                read_scope_extension_entries(conn, "p1", false, SceneOwnership::Set(&scene_ids), |entry| {
-                    entries.push(entry);
-                    Ok(())
-                })?;
+                read_scope_extension_entries(
+                    conn,
+                    "p1",
+                    false,
+                    SceneOwnership::Set(&scene_ids),
+                    |entry| {
+                        entries.push(entry);
+                        Ok(())
+                    },
+                )?;
                 Ok(entries)
             })
             .expect("entries");

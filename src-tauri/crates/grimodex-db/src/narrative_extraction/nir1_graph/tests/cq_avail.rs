@@ -1522,6 +1522,37 @@ fn a_query_loads_the_scene_bindings_in_one_statement() -> Result<()> {
             .filter(|(t, c)| t == table && c == column)
             .count()
     };
+    // The whole set of reads of the binding table in this query, by column and
+    // by the number of statements prepared that name it (a column a statement
+    // names twice counts twice). Two statements name the payload columns: the
+    // preflight's byte sum (no `version`) and the extension's. A new statement
+    // on the table, or a second load, changes this and fails here. The Scene
+    // join's two token columns (`scene_incarnation_id`, `source_token` of a
+    // pinned Scene) are not in it: this query pins no Scene, and that read has
+    // its own charge in `SceneJoinBudget`.
+    let on_bindings = reads
+        .iter()
+        .filter(|(table, _)| table == "narrative_scene_scope_bindings")
+        .fold(BTreeMap::<&str, usize>::new(), |mut counts, (_, column)| {
+            *counts.entry(column.as_str()).or_default() += 1;
+            counts
+        });
+    assert_eq!(
+        on_bindings,
+        BTreeMap::from([
+            ("audience_json", 4),
+            ("compatibility_marker", 2),
+            ("knowledge_holder_json", 4),
+            ("material_constraint_json", 2),
+            ("project_id", 5),
+            ("query_identity_json", 2),
+            ("scene_id", 3),
+            ("scene_incarnation_id", 2),
+            ("source_token", 2),
+            ("updated_at", 2),
+            ("version", 1),
+        ])
+    );
     assert_eq!(of("narrative_scene_scope_bindings", "version"), 1);
     Ok(())
 }
