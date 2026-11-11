@@ -1,16 +1,8 @@
 import { gsap } from "gsap";
-import { useSettingsStore } from "@/features/settings/settingsStore";
+import { isReducedMotion } from "./reducedMotion";
 import { ZEN_AMBIENT_DURATIONS } from "@/lib/animation";
 
-export function isReducedMotion(): boolean {
-  const osReduced =
-    typeof window !== "undefined" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const appReduced = useSettingsStore
-    .getState()
-    .getBoolean("display.reduceMotion", false);
-  return osReduced || appReduced;
-}
+export { isReducedMotion };
 
 export function celebrationBurst(
   target: HTMLElement,

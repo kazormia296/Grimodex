@@ -3,13 +3,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook } from "@testing-library/react";
 
 vi.mock("canvas-confetti", () => ({ default: vi.fn() }));
-vi.mock("@/lib/gsap", () => ({
+vi.mock("@/lib/reducedMotion", () => ({
   isReducedMotion: vi.fn(() => false),
+}));
+vi.mock("@/lib/gsap", () => ({
   pulseHighlight: vi.fn(),
 }));
 
 import confetti from "canvas-confetti";
-import { isReducedMotion, pulseHighlight } from "@/lib/gsap";
+import { pulseHighlight } from "@/lib/gsap";
+import { isReducedMotion } from "@/lib/reducedMotion";
 import { useCharCountMilestone } from "./useCharCountMilestone";
 
 function makeRef(el: HTMLElement | null = document.createElement("span")) {
@@ -22,49 +25,54 @@ describe("useCharCountMilestone", () => {
     vi.mocked(isReducedMotion).mockReturnValue(false);
   });
 
-  it("does nothing when target is 0", () => {
+  it("does nothing when target is 0", async () => {
     const ref = makeRef();
     renderHook(() => useCharCountMilestone(100, 0, ref));
+    await vi.dynamicImportSettled();
     expect(pulseHighlight).not.toHaveBeenCalled();
     expect(confetti).not.toHaveBeenCalled();
   });
 
-  it("does nothing on initial mount even if at milestone", () => {
+  it("does nothing on initial mount even if at milestone", async () => {
     const ref = makeRef();
     renderHook(() => useCharCountMilestone(500, 500, ref));
+    await vi.dynamicImportSettled();
     expect(pulseHighlight).not.toHaveBeenCalled();
     expect(confetti).not.toHaveBeenCalled();
   });
 
-  it("fires pulseHighlight when crossing 25% milestone", () => {
+  it("fires pulseHighlight when crossing 25% milestone", async () => {
     const ref = makeRef();
     const { rerender } = renderHook(
       ({ count }: { count: number }) => useCharCountMilestone(count, 1000, ref),
       { initialProps: { count: 240 } },
     );
     rerender({ count: 250 });
+    await vi.dynamicImportSettled();
     expect(pulseHighlight).toHaveBeenCalledWith(ref.current);
     expect(confetti).not.toHaveBeenCalled();
   });
 
-  it("fires pulseHighlight when crossing 50% milestone", () => {
+  it("fires pulseHighlight when crossing 50% milestone", async () => {
     const ref = makeRef();
     const { rerender } = renderHook(
       ({ count }: { count: number }) => useCharCountMilestone(count, 1000, ref),
       { initialProps: { count: 490 } },
     );
     rerender({ count: 500 });
+    await vi.dynamicImportSettled();
     expect(pulseHighlight).toHaveBeenCalledWith(ref.current);
     expect(confetti).not.toHaveBeenCalled();
   });
 
-  it("fires pulseHighlight when crossing 75% milestone", () => {
+  it("fires pulseHighlight when crossing 75% milestone", async () => {
     const ref = makeRef();
     const { rerender } = renderHook(
       ({ count }: { count: number }) => useCharCountMilestone(count, 1000, ref),
       { initialProps: { count: 740 } },
     );
     rerender({ count: 750 });
+    await vi.dynamicImportSettled();
     expect(pulseHighlight).toHaveBeenCalledWith(ref.current);
     expect(confetti).not.toHaveBeenCalled();
   });
@@ -76,24 +84,27 @@ describe("useCharCountMilestone", () => {
       { initialProps: { count: 990 } },
     );
     rerender({ count: 1000 });
+    await vi.dynamicImportSettled();
     expect(pulseHighlight).toHaveBeenCalledWith(ref.current);
     // confetti は動的 import 後(microtask)に発火する（起動時バンドルから除外）
     await vi.waitFor(() => expect(confetti).toHaveBeenCalled());
   });
 
-  it("does not fire again for a milestone already passed", () => {
+  it("does not fire again for a milestone already passed", async () => {
     const ref = makeRef();
     const { rerender } = renderHook(
       ({ count }: { count: number }) => useCharCountMilestone(count, 1000, ref),
       { initialProps: { count: 240 } },
     );
     rerender({ count: 250 }); // cross 25%
+    await vi.dynamicImportSettled();
     vi.clearAllMocks();
     rerender({ count: 260 }); // still above 25%, no new milestone
+    await vi.dynamicImportSettled();
     expect(pulseHighlight).not.toHaveBeenCalled();
   });
 
-  it("skips animations when reduced motion is enabled", () => {
+  it("skips animations when reduced motion is enabled", async () => {
     vi.mocked(isReducedMotion).mockReturnValue(true);
     const ref = makeRef();
     const { rerender } = renderHook(
@@ -101,28 +112,31 @@ describe("useCharCountMilestone", () => {
       { initialProps: { count: 990 } },
     );
     rerender({ count: 1000 });
+    await vi.dynamicImportSettled();
     expect(pulseHighlight).not.toHaveBeenCalled();
     expect(confetti).not.toHaveBeenCalled();
   });
 
-  it("does not fire confetti when document loads with charCount already at target", () => {
+  it("does not fire confetti when document loads with charCount already at target", async () => {
     const ref = makeRef();
     const { rerender } = renderHook(
       ({ count }: { count: number }) => useCharCountMilestone(count, 1000, ref),
       { initialProps: { count: 0 } },
     );
     rerender({ count: 1000 });
+    await vi.dynamicImportSettled();
     expect(confetti).not.toHaveBeenCalled();
     expect(pulseHighlight).not.toHaveBeenCalled();
   });
 
-  it("does not fire when document loads above target", () => {
+  it("does not fire when document loads above target", async () => {
     const ref = makeRef();
     const { rerender } = renderHook(
       ({ count }: { count: number }) => useCharCountMilestone(count, 1000, ref),
       { initialProps: { count: 0 } },
     );
     rerender({ count: 1200 });
+    await vi.dynamicImportSettled();
     expect(confetti).not.toHaveBeenCalled();
     expect(pulseHighlight).not.toHaveBeenCalled();
   });
@@ -138,7 +152,7 @@ describe("useCharCountMilestone", () => {
     await vi.waitFor(() => expect(confetti).toHaveBeenCalled());
   });
 
-  it("does nothing when element ref is null", () => {
+  it("does nothing when element ref is null", async () => {
     const ref = makeRef(null);
     const { rerender } = renderHook(
       ({ count }: { count: number }) => useCharCountMilestone(count, 1000, ref),

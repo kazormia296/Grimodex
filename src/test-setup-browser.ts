@@ -1,10 +1,13 @@
 import "@testing-library/jest-dom/vitest";
-import "@/lib/i18n";
+import { ensureLocale } from "@/lib/i18n";
 // Layout/CSS-dependent tests (e.g. layoutInvariants.browser.test.tsx) need
 // Tailwind + CSS variables loaded. The editor browser tests don't depend on
 // CSS so they were happy without it; importing globally is harmless for them.
 import "@/index.css";
 import { vi } from "vitest";
+
+// 製品は英語の辞書を後から読む。試験は言語を直接切り替えるので先に入れておく。
+await ensureLocale("en");
 
 // Real browser has ResizeObserver, but we still stub virtualizer
 // to avoid layout-dependent behavior in component tests.

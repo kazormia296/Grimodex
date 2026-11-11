@@ -4,6 +4,8 @@ import {
   collectFontAssetNames,
   collectHtmlEntrypointAssets,
   INITIAL_JS_GRAPH_BUDGET,
+  checkForbiddenInitialMarkers,
+  findForbiddenInitialJs,
   resolveRatchetedBudget,
 } from "./check-performance-budgets.mjs";
 
@@ -94,4 +96,55 @@ test("initial JS budget never lets the ratchet cross the absolute ceiling", () =
       }),
     /absolute ceiling/,
   );
+});
+
+test("chunks moved out of the initial JS graph are reported when they return", () => {
+  assert.deepEqual(
+    findForbiddenInitialJs([
+      "index-2r46Nr9D.js",
+      "i18n-C6M6KyXv.js",
+      "treeStore-BKBnnaL3.js",
+    ]),
+    [],
+  );
+  assert.deepEqual(
+    findForbiddenInitialJs([
+      "index-2r46Nr9D.js",
+      "en-Dw1CmGRU.js",
+      "gsap-BHS3Flg1.js",
+      "EulaConsentDialog-BHFUs7Oh.js",
+      "MarkdownDoc-CztBp2qN.js",
+      "screenshotSeedContent-CE80gllx.js",
+    ]).map((line) => line.split(":")[0]),
+    [
+      "en-Dw1CmGRU.js",
+      "gsap-BHS3Flg1.js",
+      "EulaConsentDialog-BHFUs7Oh.js",
+      "MarkdownDoc-CztBp2qN.js",
+      "screenshotSeedContent-CE80gllx.js",
+    ],
+  );
+});
+
+test("modules moved out of the initial JS graph are found by content, and stale markers are reported", () => {
+  const lazy = [
+    { name: "gsap-a.js", source: "x GSAP target y" },
+    { name: "Eula-b.js", source: 't("legal.eula.agreeCheckbox")' },
+    { name: "seed-c.js", source: '"akane:foreign-memory:scene-1"' },
+  ];
+  const initial = [{ name: "index-d.js", source: "app" }];
+  assert.deepEqual(
+    checkForbiddenInitialMarkers(initial, [...initial, ...lazy]),
+    [],
+  );
+
+  const merged = [{ name: "index-d.js", source: "app GSAP target" }];
+  const problems = checkForbiddenInitialMarkers(merged, [
+    ...merged,
+    ...lazy.slice(1),
+  ]);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /index-d\.js/);
+
+  assert.equal(checkForbiddenInitialMarkers(initial, initial).length, 3);
 });
