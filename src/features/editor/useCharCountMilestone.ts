@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { isReducedMotion, pulseHighlight } from "@/lib/gsap";
+import { isReducedMotion } from "@/lib/reducedMotion";
 
 const MILESTONES = [0.25, 0.5, 0.75, 1.0];
 
@@ -42,7 +42,11 @@ export function useCharCountMilestone(
       if (ratio >= m && !reachedRef.current.has(m)) {
         reachedRef.current.add(m);
         if (isReducedMotion() || !elementRef.current) return;
-        pulseHighlight(elementRef.current);
+        // gsap は節目の演出でしか使わないので、起動時には読まず、ここで読む。
+        const element = elementRef.current;
+        void import("@/lib/gsap").then(({ pulseHighlight }) => {
+          pulseHighlight(element);
+        });
         if (m === 1.0) {
           const rect = elementRef.current.getBoundingClientRect();
           const origin = {

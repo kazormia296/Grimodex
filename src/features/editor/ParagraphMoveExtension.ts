@@ -4,7 +4,7 @@ import { TextSelection } from "prosemirror-state";
 import type { EditorState, Transaction } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import { isReducedMotion } from "@/lib/gsap";
+import { isReducedMotion } from "@/lib/reducedMotion";
 import { CSS_DURATIONS, CSS_EASINGS } from "@/lib/animation";
 
 /**

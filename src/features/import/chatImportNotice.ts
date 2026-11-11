@@ -26,7 +26,7 @@ const CHAT_IMPORT_NOTICE = {
 
 let installed = false;
 
-function ensureChatImportNotice(): void {
+export function ensureChatImportNotice(): void {
   if (installed) return;
   for (const [language, importChat] of Object.entries(CHAT_IMPORT_NOTICE)) {
     i18next.addResourceBundle(
