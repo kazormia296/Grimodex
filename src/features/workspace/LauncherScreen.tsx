@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { openFolderDialog } from "@/lib/dialog";
 import { useWorkspaceStore } from "./store";
@@ -27,6 +27,7 @@ export function LauncherScreen() {
     (s) => s.workspaceSwitchInProgress,
   );
   const [opening, setOpening] = useState<string | null>(null);
+  const openFolderHintId = useId();
 
   const recentWorkspaces = globalSettings?.recentWorkspaces ?? [];
   const workspaceBusy =
@@ -116,23 +117,24 @@ export function LauncherScreen() {
           </p>
         )}
 
-        <div className="flex gap-3">
+        {/* 開くのも作るのも同じフォルダ選択。ワークスペースでないフォルダを選ぶと
+            そこに新しく作る。 */}
+        <div className="flex flex-col gap-2">
           <button
             type="button"
             onClick={handleBrowse}
             disabled={workspaceBusy}
-            className="flex-1 rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
+            aria-describedby={openFolderHintId}
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
             {t("launcher.openFolder")}
           </button>
-          <button
-            type="button"
-            onClick={handleBrowse}
-            disabled={workspaceBusy}
-            className="flex-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          <p
+            id={openFolderHintId}
+            className="text-center text-xs text-muted-foreground"
           >
-            {t("launcher.newWorkspace")}
-          </button>
+            {t("workspaceMenu.openFolderHint")}
+          </p>
         </div>
         {runtimeCapabilities.genericProjectTransfer && (
           <button

@@ -577,6 +577,18 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
     paths: ["src/features/project/**", "src/application/project/**"],
   },
   {
+    // ヘッダーの統合メニューは workspace 配下にあるが、プロジェクトの切り替えも
+    // このトリガーとパネルを通る。メニューの枠だけを変えたときにも
+    // project-switch の journey を選ぶ。
+    id: "workspace-menu-project-switch",
+    domains: ["project-lifecycle"],
+    paths: [
+      "src/features/workspace/WorkspaceMenu.tsx",
+      "src/features/workspace/WorkspaceMenuTrigger.tsx",
+      "src/features/workspace/useWorkspaceMenuKeyboard.ts",
+    ],
+  },
+  {
     id: "chat-project-scope-picker",
     domains: ["project-lifecycle"],
     contracts: ["scope-transition:chat-stream:project"],

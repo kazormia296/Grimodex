@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { ProjectMenu } from "./ProjectMenu";
+import { WorkspaceMenu } from "@/features/workspace/WorkspaceMenu";
+import { useWorkspaceStore } from "@/features/workspace/store";
 import { useProjectStore } from "./projectStore";
 import { PROJECT_ID } from "./constants";
 import { WorkspaceViewportProvider } from "@/runtime/workspaceViewportContext";
@@ -51,6 +52,12 @@ vi.mock("./CreateProjectDialog", () => ({
 }));
 
 beforeEach(() => {
+  useWorkspaceStore.setState({
+    activeWorkspaceName: "mynovel",
+    activeWorkspacePath: "/work/mynovel",
+    workspaceOpenRequestInProgress: false,
+    workspaceSwitchInProgress: false,
+  });
   vi.mocked(toast.error).mockClear();
   vi.mocked(toast.success).mockClear();
   useProjectStore.setState({
@@ -97,22 +104,46 @@ beforeEach(() => {
   });
 });
 
-describe("ProjectMenu", () => {
+// プロジェクトの一覧・操作は、ヘッダーの統合メニュー（WorkspaceMenu）の
+// 「このワークスペース」の区画と中段にある。ここではその振る舞いを固定する。
+describe("ProjectMenu (in the unified WorkspaceMenu)", () => {
   it("shows current project title and lists all projects", () => {
-    render(<ProjectMenu />);
+    render(<WorkspaceMenu />);
     expect(screen.getByTestId("project-menu-trigger")).toHaveTextContent(
       "Novel A",
     );
-    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    fireEvent.click(screen.getByTestId("workspace-menu-trigger"));
     expect(screen.getByTestId("project-switch-proj-b")).toBeInTheDocument();
+    expect(screen.getByTestId(`project-switch-${PROJECT_ID}`)).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(screen.getByTestId("project-switch-proj-b")).not.toHaveAttribute(
+      "aria-current",
+    );
+  });
+
+  it("opens the panel when the title span itself is clicked (journey path)", () => {
+    render(<WorkspaceMenu />);
+    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    expect(screen.getByTestId("workspace-menu-dropdown")).toBeInTheDocument();
+    expect(screen.getByTestId("project-switch-proj-b")).toBeInTheDocument();
+  });
+
+  it("loads the Project list on mount, while the menu is still closed", () => {
+    const refreshProjects = vi.fn().mockResolvedValue(undefined);
+    useProjectStore.setState({ refreshProjects });
+    render(<WorkspaceMenu />);
+    expect(screen.queryByTestId("workspace-menu-dropdown")).toBeNull();
+    expect(refreshProjects).toHaveBeenCalledOnce();
   });
 
   it("calls loadProject when selecting another project", async () => {
     const loadProject = vi.fn().mockResolvedValue(undefined);
     useProjectStore.setState({ loadProject });
 
-    render(<ProjectMenu />);
-    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    render(<WorkspaceMenu />);
+    fireEvent.click(screen.getByTestId("workspace-menu-trigger"));
     fireEvent.click(screen.getByTestId("project-switch-proj-b"));
 
     await waitFor(() => {
@@ -128,8 +159,8 @@ describe("ProjectMenu", () => {
       degradedParticipants: ["plot-threads-load", "last-active-project"],
     });
 
-    render(<ProjectMenu />);
-    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    render(<WorkspaceMenu />);
+    fireEvent.click(screen.getByTestId("workspace-menu-trigger"));
     expect(screen.getByTestId("project-load-degraded")).toHaveTextContent(
       "project.loadDegraded",
     );
@@ -150,8 +181,8 @@ describe("ProjectMenu", () => {
       degradedParticipants: ["last-active-project"],
     });
 
-    render(<ProjectMenu />);
-    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    render(<WorkspaceMenu />);
+    fireEvent.click(screen.getByTestId("workspace-menu-trigger"));
     fireEvent.click(screen.getByText("common.retry"));
 
     await waitFor(() => {
@@ -161,46 +192,49 @@ describe("ProjectMenu", () => {
   });
 
   it("opens create dialog from menu", () => {
-    render(<ProjectMenu />);
-    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    render(<WorkspaceMenu />);
+    fireEvent.click(screen.getByTestId("workspace-menu-trigger"));
     fireEvent.click(screen.getByTestId("project-create-open"));
     expect(screen.getByTestId("mock-create-submit")).toBeInTheDocument();
   });
 
   it("calls onOpenImport when import is clicked", () => {
     const onOpenImport = vi.fn();
-    render(<ProjectMenu onOpenImport={onOpenImport} />);
-    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    render(<WorkspaceMenu onOpenImport={onOpenImport} />);
+    fireEvent.click(screen.getByTestId("workspace-menu-trigger"));
     fireEvent.click(screen.getByTestId("project-import-open"));
     expect(onOpenImport).toHaveBeenCalledOnce();
   });
 
   it("calls onOpenExport when the unified export item is clicked", () => {
     const onOpenExport = vi.fn();
-    render(<ProjectMenu onOpenExport={onOpenExport} />);
-    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    render(<WorkspaceMenu onOpenExport={onOpenExport} />);
+    fireEvent.click(screen.getByTestId("workspace-menu-trigger"));
     fireEvent.click(screen.getByTestId("project-export-open"));
     expect(onOpenExport).toHaveBeenCalledOnce();
   });
 
   it("omits the export item when onOpenExport is not provided", () => {
-    render(<ProjectMenu />);
-    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    render(<WorkspaceMenu />);
+    fireEvent.click(screen.getByTestId("workspace-menu-trigger"));
     expect(screen.queryByTestId("project-export-open")).toBeNull();
   });
 
-  // 回帰ゲート: トリガー幅・パネル幅は内容に左右されない固定幅であること。
-  // (プロジェクト名やコマンドラベルの長さで揺れていた問題の再発防止)
-  it("uses content-independent fixed widths for trigger and dropdown panel", () => {
-    render(<ProjectMenu onOpenImport={vi.fn()} onOpenExport={vi.fn()} />);
+  // 回帰ゲート: パネル幅は内容に左右されない固定幅であること。
+  // (プロジェクト名やコマンドラベルの長さで揺れていた問題の再発防止。618051bd)
+  // 統合メニューのトリガーは「フォルダ名 / 題名」を中身の幅で出し、上限 320px
+  // （max-w-80）で抑える。旧プロジェクトメニューの 176px 固定（w-44）はやめた。
+  it("keeps a content-independent panel width and caps the content-sized trigger", () => {
+    render(<WorkspaceMenu onOpenImport={vi.fn()} onOpenExport={vi.fn()} />);
 
-    const trigger = screen.getByTestId("project-menu-trigger");
-    expect(trigger.className).toContain("w-44");
-    expect(trigger.className).toContain("justify-between");
+    const trigger = screen.getByTestId("workspace-menu-trigger");
+    expect(trigger.className).not.toMatch(/(^|\s)w-\d/);
+    expect(trigger.parentElement?.className).toContain("max-w-80");
+    expect(trigger.parentElement?.className).not.toMatch(/(^|\s)w-\d/);
 
     fireEvent.click(trigger);
-    const panel = screen.getByTestId("project-menu-dropdown");
-    expect(panel.className).toContain("w-72");
+    const panel = screen.getByTestId("workspace-menu-dropdown");
+    expect(panel.className).toContain("w-80");
     expect(panel.className).not.toContain("min-w-56");
 
     // コマンド項目は固定幅内で折り返さない。
@@ -211,26 +245,27 @@ describe("ProjectMenu", () => {
 
   it("calls onOpenSnapshot when the snapshot item is clicked", () => {
     const onOpenSnapshot = vi.fn();
-    render(<ProjectMenu onOpenSnapshot={onOpenSnapshot} />);
-    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    render(<WorkspaceMenu onOpenSnapshot={onOpenSnapshot} />);
+    fireEvent.click(screen.getByTestId("workspace-menu-trigger"));
     fireEvent.click(screen.getByTestId("project-snapshot-open"));
     expect(onOpenSnapshot).toHaveBeenCalledOnce();
   });
 
   it("omits the snapshot item when onOpenSnapshot is not provided", () => {
-    render(<ProjectMenu />);
-    fireEvent.click(screen.getByTestId("project-menu-trigger"));
+    render(<WorkspaceMenu />);
+    fireEvent.click(screen.getByTestId("workspace-menu-trigger"));
     expect(screen.queryByTestId("project-snapshot-open")).toBeNull();
   });
 
   it("uses a focus-managed, safe-area alert dialog for phone deletion", async () => {
     render(
       <WorkspaceViewportProvider profile="phone">
-        <ProjectMenu />
+        <WorkspaceMenu />
       </WorkspaceViewportProvider>,
     );
 
-    const trigger = screen.getByTestId("project-menu-trigger");
+    // 削除の確認を閉じたら、統合メニューのトリガー（button）へ focus を戻す。
+    const trigger = screen.getByTestId("workspace-menu-trigger");
     fireEvent.click(trigger);
     trigger.focus();
     fireEvent.click(screen.getByTestId("project-delete-proj-b"));
