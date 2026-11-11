@@ -284,6 +284,7 @@ const ELECTRON_MUTATING_ROUTES = [
   "narrative_extraction_create_human_derived_revision",
   "narrative_extraction_append_decision",
   "narrative_extraction_append_human_decision",
+  "narrative_extraction_chronicle_bulk_approve",
   "narrative_extraction_revise_and_decide",
   "narrative_extraction_revise_and_decide_as_human",
   "narrative_extraction_set_human_field_lock",
