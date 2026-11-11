@@ -3310,44 +3310,36 @@ export function assertC2ZcRestoreLifecycleOrder(
       `${label} must contain exactly Verify/Rebuild/Verify/Freshness`,
     );
   }
-  const expectedKinds = [
+  // Verify -> Rebuild -> confirmation Verify is the only ordered lifecycle.
+  // The one Freshness Run is the last Run, except for a zero-width idle
+  // checkpoint: it is scheduler evidence (never a cutover proof or a Generic
+  // publisher), so the order between it and the Verify/Rebuild queue is not a
+  // product invariant (DR-MP-9). A non-idle Freshness stays last.
+  const coreKinds = [
     "dependency-verify",
     "semantic-index-rebuild",
     "dependency-verify",
-    "freshness-evaluation",
   ];
-  // A zero-width checkpoint can be committed while the Verify/Rebuild queue
-  // is still draining. It is scheduler evidence, not a Generic publisher, so
-  // accept it only in the bounded pre-Rebuild slot and keep the final Verify
-  // as the lifecycle's confirmation boundary.
-  const idleBeforeRebuild =
-    lifecycleRuns[1]?.runKind === "freshness-evaluation" &&
-    isC2ZcIdleFreshnessProducer(lifecycleRuns[1]) &&
-    lifecycleRuns[2]?.runKind === "semantic-index-rebuild" &&
-    lifecycleRuns[3]?.runKind === "dependency-verify";
-  const canonicalOrder = lifecycleRuns.every(
-    (run, index) => run.runKind === expectedKinds[index],
+  const freshnessIndex = lifecycleRuns.findIndex(
+    (run) => run.runKind === "freshness-evaluation",
   );
+  const freshnessRun = lifecycleRuns[freshnessIndex];
+  const idleFreshness =
+    freshnessRun !== undefined && isC2ZcIdleFreshnessProducer(freshnessRun);
+  const coreRuns = lifecycleRuns.filter((_, index) => index !== freshnessIndex);
   if (
-    (!canonicalOrder && !idleBeforeRebuild) ||
-    lifecycleRuns[0]?.runKind !== "dependency-verify" ||
-    lifecycleRuns[0].id === lifecycleRuns[idleBeforeRebuild ? 3 : 2].id ||
+    freshnessIndex < 0 ||
+    (freshnessIndex !== lifecycleRuns.length - 1 && !idleFreshness) ||
+    coreRuns.length !== coreKinds.length ||
+    coreRuns.some((run, index) => run.runKind !== coreKinds[index]) ||
+    coreRuns[0].id === coreRuns[2].id ||
     lifecycleRuns.some((run) => run.status !== "completed")
   ) {
     throw new Error(`${label} has an invalid canonical run order`);
   }
-  const firstVerify = lifecycleRuns[0];
-  const rebuild = lifecycleRuns[idleBeforeRebuild ? 2 : 1];
-  const finalVerify = lifecycleRuns[idleBeforeRebuild ? 3 : 2];
-  const freshness = lifecycleRuns[idleBeforeRebuild ? 1 : 3];
-  const observedKinds = idleBeforeRebuild
-    ? [
-        "dependency-verify",
-        "freshness-evaluation",
-        "semantic-index-rebuild",
-        "dependency-verify",
-      ]
-    : expectedKinds;
+  const [firstVerify, rebuild, finalVerify] = coreRuns;
+  const freshness = freshnessRun;
+  const observedKinds = lifecycleRuns.map((run) => run.runKind);
   const timestamps = [];
   for (const [index, run] of lifecycleRuns.entries()) {
     const createdAt = assertCanonicalTimestamp(
