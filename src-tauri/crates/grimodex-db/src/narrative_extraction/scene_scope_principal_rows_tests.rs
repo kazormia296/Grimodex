@@ -2,7 +2,12 @@
 //! joins are counted by `SCOPE_EXTENSION_PRINCIPAL_ROWS_SQL`, which the query's
 //! shared-read charge adds. The count must be what the extension's own read
 //! makes: never fewer (a charge below the read is a loosening the approval does
-//! not cover), and the same on every shape of principal, valid or not.
+//! not cover), and the same on every shape of principal, valid or not. The one
+//! exception is a row the join drops after finding it (a ref to a character of
+//! another project, or to an entry that is not a character), which the charge
+//! does not count: a form that the ordinary paths cannot write
+//! (`validate_principal_ownership`, `NEX_SCENE_SCOPE_CHARACTER_REFERENCED`) and
+//! only a database written with its checks or foreign keys off can hold.
 
 use std::path::Path;
 
@@ -184,6 +189,42 @@ fn a_principal_without_a_usable_ref_is_not_a_row() {
         assert_shape(unusable, &character("c1"), 1);
         assert_shape(&character("c1"), unusable, 1);
     }
+}
+
+/// A numeric `$.ref` is a number to `json_extract`, and a Codex row whose id
+/// is the same digits is the row both statements find (the id column has TEXT
+/// affinity, so `id = 7` compares as the text `'7'`): the charge and the
+/// extension's read are the same on it, as on every shape.
+#[test]
+fn a_numeric_ref_names_the_codex_row_with_the_same_digits_in_both_statements() {
+    let db = fixture();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name)
+             VALUES ('7', 'p1', 'character', 'Seven')",
+            [],
+        )?;
+        set_principals(
+            conn,
+            "s1",
+            r#"{"kind":"character","ref":7}"#,
+            r#"{"kind":"reader"}"#,
+        )?;
+        let counted = charged(conn, "p1")?;
+        assert_eq!(counted, read_by_the_extension(conn, "p1")?);
+        assert_eq!(counted, 1);
+        // the digits as a string, and a number that no id has
+        set_principals(
+            conn,
+            "s1",
+            r#"{"kind":"character","ref":"7"}"#,
+            r#"{"kind":"character","ref":8}"#,
+        )?;
+        assert_eq!(charged(conn, "p1")?, read_by_the_extension(conn, "p1")?);
+        assert_eq!(charged(conn, "p1")?, 1);
+        Ok(())
+    })
+    .expect("numeric ref");
 }
 
 #[test]

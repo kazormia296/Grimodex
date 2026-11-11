@@ -13,7 +13,7 @@
 | [broute-decisions.md](broute-decisions.md) | B-ROUTE（#643） | 会話記録から復元 |
 | [cp2a-decisions.md](cp2a-decisions.md) | CP-2a（#655） | integrator の作業領域の写し |
 | [x1a-decisions.md](x1a-decisions.md) | X1-1（DR-X1-1。#662） | integrator の作業領域の写し（mutation の前の記録） |
-| [cqavail-decisions.md](cqavail-decisions.md) | CQ-AVAIL（DR-CQA-1〜5。#663）と、C-query の場面数の壁の A-α（DR-CQA-6。binding の SELECT から tree の join を外し、binding の課金を×2→×1。床 489→652）・A-β（DR-CQA-7。tree の課金を×1、principal の Codex 行を実読どおりに数える。床 bare 652→979、principal が全部 character 652→491） | 同上（DR-CQA-4、5 はレビュー指摘の修正の前に足した記録。DR-CQA-6、7 は実装と同じ commit に記録） |
+| [cqavail-decisions.md](cqavail-decisions.md) | CQ-AVAIL（DR-CQA-1〜5。#663）と、C-query の場面数の壁の A-α（DR-CQA-6。binding の SELECT から tree の join を外し、binding の課金を×2→×1。床 489→652）・A-β（DR-CQA-7。tree の課金を×1、principal の Codex 行を実読どおりに数える。床 bare 652→978、principal が全部 character 652→491） | 同上（DR-CQA-4、5 はレビュー指摘の修正の前に足した記録。DR-CQA-6、7 は実装と同じ commit に記録） |
 | [cqmem-decisions.md](cqmem-decisions.md) | CQ-MEM（DR-CQM-1〜2。#664） | 同上 |
 | [x1-2-decisions.md](x1-2-decisions.md) | X1-2（DR-X1-2-1〜14。S1〜S4: T 方式、Scope 世代の条件つき進行、POV の NULL 化、方式 J1、writer 網羅の manifest。#670） | 確認済み契約 X1/1 の「実装で決めること」の記録 |
 | [cb1-decisions.md](cb1-decisions.md) | CB-1（DR-CB1-1〜11。S1〜S4。#673） | 同上（mutation の前の記録。K2/4 の `scope-storage-authority`） |

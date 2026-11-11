@@ -4235,20 +4235,21 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
 // 2): the shared part is 263 - 62 = 201 and 77 - 2 = 75, the 512 charged rows
 // 450 and 510. DR-CQA-7 charges each tree node once instead of twice (62 nodes
 // and 2) and adds the Codex rows of the principals (none here: the Scenes'
-// principals are readers): 201 - 62 = 139 and 75 - 2 = 73, the charged rows
-// 388 and 508. The fixtures, the dataset hash and the entity counts are
+// principals are readers), and the project row and the query Scene's row twice
+// each, as the query reads them (+2): 201 - 62 + 2 = 141 and 75 - 2 + 2 = 75,
+// the charged rows 390 and 510. The fixtures, the dataset hash and the entity counts are
 // unchanged; only the charge of the tree and binding rows moved. The 512 was
 // the former limit these fixtures were sized to, not a value anything
 // accepts on: what stays is the 2,049 refusal below, whose unrelated edges are
 // packed again so that it is one over the (unchanged) limit of 2,048.
-const Q512_CHARGED_ROWS: usize = 388;
-const REGISTRY33_CHARGED_ROWS: usize = 508;
+const Q512_CHARGED_ROWS: usize = 390;
+const REGISTRY33_CHARGED_ROWS: usize = 510;
 const Q512_ENTITIES: usize = 82;
 const Q512_REGISTRY_ROWS: usize = 6;
-const Q512_SHARED_ROWS: usize = 139;
+const Q512_SHARED_ROWS: usize = 141;
 const Q512_REVISION_ROWS: usize = 1 + Q512_ENTITIES;
 const REGISTRY33_ENTITIES: usize = 144;
-const REGISTRY33_SHARED_ROWS: usize = 73;
+const REGISTRY33_SHARED_ROWS: usize = 75;
 const REGISTRY33_REVISION_ROWS: usize = 1 + REGISTRY33_ENTITIES;
 
 #[test]
@@ -4291,7 +4292,7 @@ fn native_worker_refuses_exact_2049_seed_local_unrelated_reverse_index_edges() -
         shared_rows: Q512_SHARED_ROWS,
         charged_rows: Q512_CHARGED_ROWS,
         revision_rows: Q512_REVISION_ROWS,
-        // 388 charged rows + 1,661 = 2,049: one over the query limit.
+        // 390 charged rows + 1,659 = 2,049: one over the query limit.
         unrelated_seed_edges: MAX_GRAPH_QUERY_RECORDS + 1 - Q512_CHARGED_ROWS,
         native_runs: 1,
     })

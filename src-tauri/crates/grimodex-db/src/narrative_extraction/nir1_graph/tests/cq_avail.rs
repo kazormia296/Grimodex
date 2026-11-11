@@ -1592,8 +1592,8 @@ fn budget_fixture(total: usize, decoys: usize) -> Result<Fixture> {
 /// Decision and the Codex rows its Entities name, and, once, the project-level
 /// rows the Revisions share (the tree once, the Scene bindings once, the Codex
 /// rows their principals name once each, the
-/// registry for each of the two reads that make it, the project, the query
-/// Scene, its POV and the Epoch).
+/// registry for each of the two reads that make it, the project and the query
+/// Scene twice each, its POV and the Epoch).
 fn rows_charged_by_the_seed_query(fixture: &Fixture) -> Result<(usize, usize)> {
     fixture.authority.with_read_transaction(|conn| {
         let count = |sql: &str, parameters: &[&dyn rusqlite::ToSql]| -> Result<usize> {
@@ -1671,8 +1671,10 @@ fn rows_charged_by_the_seed_query(fixture: &Fixture) -> Result<(usize, usize)> {
                       WHERE b.project_id=?1)",
             &[&PROJECT],
         )?;
-        // project 1, query Scene 1, its POV 0 (the fixture's Scene has none)
-        let shared = tree + bindings + principals + 2 * registry + 1 + 1 + epoch;
+        // project 2 and query Scene 2 (each is read twice in a query: by the
+        // authority's load and the Scene's source, and by the Scene's source
+        // and its viewpoint), its POV 0 (the fixture's Scene has none)
+        let shared = tree + bindings + principals + 2 * registry + 2 + 2 + epoch;
         Ok((candidates + revisions + shared, shared))
     })
 }
@@ -2381,7 +2383,8 @@ fn same_entity_product_fixture_with_shaped_scenes(
 // charge, once per query (DR-CQA-6 and DR-CQA-7): one row per tree node (every
 // node, folders and notes too: the authority reads them all), one per binding,
 // one per Codex row a binding's holder or audience makes the extension read, two
-// per registry reference and three more; the Revision's 37 + 13 rows and the
+// per registry reference, two each for the project row and the query Scene's
+// row (the query reads each twice) and the Epoch; the Revision's 37 + 13 rows and the
 // candidate rows after its first Revision come on top. At N Scenes the project
 // is available; at N + 1 the candidate page no longer fits and the Graph is
 // refused, whole, with `candidate-record-limit`.
@@ -2389,10 +2392,10 @@ fn same_entity_product_fixture_with_shaped_scenes(
 // | shape | before DR-CQA-6 | DR-CQA-6 | now |
 // |---|---:|---:|---:|
 // | bare (a tree of Scenes, readers) | 489 | 652 | BARE_FLOOR_SCENES |
-// | folders and notes | - | - | FOLDERS_AND_NOTES_FLOOR_SCENES |
-// | every principal a character | - | - | CHARACTER_PRINCIPALS_FLOOR_SCENES |
-const BARE_FLOOR_SCENES: usize = 979;
-const FOLDERS_AND_NOTES_FLOOR_SCENES: usize = 633;
+// | folders and notes | 316 | 377 | FOLDERS_AND_NOTES_FLOOR_SCENES |
+// | every principal a character | 489 | 652 | CHARACTER_PRINCIPALS_FLOOR_SCENES |
+const BARE_FLOOR_SCENES: usize = 978;
+const FOLDERS_AND_NOTES_FLOOR_SCENES: usize = 632;
 const CHARACTER_PRINCIPALS_FLOOR_SCENES: usize = 491;
 
 fn floor_query(shape: SceneShape, total_scenes: usize) -> Result<Nir1GraphResponse> {
@@ -2504,6 +2507,57 @@ fn the_tree_and_the_principals_codex_rows_are_charged_once_each() -> Result<()> 
     // a note for each extra Scene and a folder for every ten of them, one row
     // each (the tree was charged twice before DR-CQA-7)
     assert_eq!(folders - bare, EXTRA + EXTRA / 10);
+    Ok(())
+}
+
+/// DR-CQA-7 measurement: the SQL VM steps the principals' Codex row count adds
+/// at the floor of the bare project, next to the statements already in the
+/// preflight (counted by a progress handler called once per VM instruction).
+#[test]
+#[ignore = "DR-CQA-7 measurement: prints the VM steps of the principal rows statement"]
+fn measure_the_principal_rows_statement_steps() -> Result<()> {
+    for (label, shape) in [
+        ("bare", SceneShape::default()),
+        (
+            "characters",
+            SceneShape {
+                character_principals: true,
+                ..SceneShape::default()
+            },
+        ),
+    ] {
+        let floor = if shape.character_principals {
+            CHARACTER_PRINCIPALS_FLOOR_SCENES
+        } else {
+            BARE_FLOOR_SCENES
+        };
+        let fixture = same_entity_product_fixture_with_shaped_scenes(1, 300_000, floor - 4, shape)?;
+        fixture.authority.with_conn(|conn| {
+            let steps = |sql: &str| -> Result<(u64, i64)> {
+                let counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+                let seen = std::sync::Arc::clone(&counter);
+                conn.progress_handler(
+                    1,
+                    Some(move || {
+                        seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        false
+                    }),
+                );
+                let value = conn.query_row(sql, [PROJECT], |row| row.get::<_, i64>(0));
+                conn.progress_handler(1, None::<fn() -> bool>);
+                Ok((counter.load(std::sync::atomic::Ordering::Relaxed), value?))
+            };
+            let (p_steps, p) =
+                steps(crate::narrative_extraction::scene_scope::SCOPE_EXTENSION_PRINCIPAL_ROWS_SQL)?;
+            let (b_steps, b) =
+                steps("SELECT COUNT(*) FROM narrative_scene_scope_bindings WHERE project_id=?1")?;
+            let (t_steps, t) = steps("SELECT COUNT(*) FROM tree_nodes WHERE project_id=?1")?;
+            eprintln!(
+                "STEPS {label}: scenes {floor}: principal rows statement {p_steps} steps (P={p}); binding COUNT {b_steps} steps ({b}); tree COUNT {t_steps} steps ({t}); QUERY_SQL_STEPS {QUERY_SQL_STEPS}"
+            );
+            Ok(())
+        })?;
+    }
     Ok(())
 }
 

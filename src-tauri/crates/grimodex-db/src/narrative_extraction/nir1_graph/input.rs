@@ -91,8 +91,9 @@ const _: () = assert!(RELATED_BYTES_SQL.len() == A2_RELATED_QUERY_COUNT);
 /// The A3 statements' slots: 1..=8 the global row counts, 9 the material rows,
 /// 10..=17 the global byte sums, 18..=22 the material byte sums, 23 the
 /// principals' Codex rows (DR-CQA-7). Slot 0 has been empty since the registry
-/// stopped being scaled by an entity count, and stays empty: the Linux probe
-/// reads it as "A3 SQL reached".
+/// stopped being scaled by an entity count, and stays empty so that the shape
+/// of the probe's output does not change (the probe reads slot 0 as "A3 SQL
+/// reached", which is always false today; that is an existing matter).
 #[cfg(feature = "nir1-material-diagnostics")]
 const A3_SQL_QUERY_COUNT: usize = 24;
 #[cfg(feature = "nir1-material-diagnostics")]
@@ -1356,15 +1357,21 @@ const DISCLOSURE_GLOBAL_ROWS_SQL: &[(&str, usize, DisclosureGlobalRowsParams)] =
         1,
         DisclosureGlobalRowsParams::Project,
     ),
+    // Twice (DR-CQA-7): the project row is read by the Scope authority's
+    // load (`SELECT 1 FROM projects`) and again by the query Scene's source
+    // (`read_retrieval_scene_source`, a join of the project and the Scene).
     (
         "SELECT COUNT(*) FROM projects WHERE id=?1",
-        1,
+        2,
         DisclosureGlobalRowsParams::Project,
     ),
+    // Twice (DR-CQA-7), besides the authority's read of the whole tree: the
+    // query Scene's row is read by the Scene's source and again by
+    // `read_scene_viewpoint` (its `pov_character_id`).
     (
         "SELECT COUNT(*) FROM tree_nodes
           WHERE project_id=?1 AND id=?2 AND node_type='scene'",
-        1,
+        2,
         DisclosureGlobalRowsParams::ProjectScene,
     ),
     (
@@ -1738,10 +1745,10 @@ mod disclosure_tests {
         )
         .unwrap();
         let bytes = admission.bytes;
-        // 6 shared (tree 1, registry 2, bindings 1, project 1, query Scene 1;
+        // 8 shared (tree 1, registry 2, bindings 1, project 2, query Scene 2;
         // the binding names no principal, so no Codex row) + 1 entity + 1
         // phase of the Revision
-        assert_eq!(admission.rows, 8);
+        assert_eq!(admission.rows, 10);
         assert!(bytes > 0);
         let payload_bytes: usize = conn
             .query_row(
@@ -2023,11 +2030,11 @@ mod disclosure_tests {
             INPUT_BYTES,
         )
         .unwrap();
-        // 6 shared (tree 1, registry 2, bindings 1, project 1, query Scene 1)
+        // 8 shared (tree 1, registry 2, bindings 1, project 2, query Scene 2)
         // + 2 each for entity, phase, link, POV of the Revision
-        assert_eq!(admission.rows, 14);
+        assert_eq!(admission.rows, 16);
         assert_eq!(
-            preflight_disclosure(&conn, "project", "r", "scene", 13, INPUT_BYTES)
+            preflight_disclosure(&conn, "project", "r", "scene", 15, INPUT_BYTES)
                 .unwrap_err()
                 .to_string(),
             DISCLOSURE_ROW_LIMIT

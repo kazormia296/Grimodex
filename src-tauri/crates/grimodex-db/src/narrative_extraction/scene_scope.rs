@@ -943,10 +943,6 @@ struct ScopeExtensionParts {
     scene_bindings: BTreeMap<String, NarrativeSceneScopeBindingV1>,
 }
 
-/// The extension's one read of the Scene bindings (DR-CQA-6): the binding row
-/// and the Codex rows its two principals name. It does not join `tree_nodes`;
-/// the Scene a binding belongs to is decided from [`ProjectSceneIds`] and
-/// returned to the caller as the eleventh raw column.
 /// The two `LEFT JOIN codex_entries` that read a binding's principals: the
 /// holder and the audience, each a Codex row of the project's characters that
 /// the principal's `$.ref` names. The extension's read and the charge that
@@ -970,6 +966,10 @@ macro_rules! scope_extension_principal_joins {
     };
 }
 
+/// The extension's one read of the Scene bindings (DR-CQA-6): the binding row
+/// and the Codex rows its two principals name. It does not join `tree_nodes`;
+/// the Scene a binding belongs to is decided from [`ProjectSceneIds`] and
+/// returned to the caller as the eleventh raw column.
 const SCOPE_EXTENSION_SQL: &str = concat!(
     "SELECT b.scene_id, b.scene_incarnation_id, b.compatibility_marker,
                 b.query_identity_json, b.material_constraint_json,
