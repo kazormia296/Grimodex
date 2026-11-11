@@ -1017,3 +1017,13 @@ export function createChronicleExtractionJourney({
     },
   };
 }
+
+// Shared fixture plumbing for sibling Chronicle journeys (the edited-revision
+// apply journey reuses the same fixed provider response and workspace setup).
+export {
+  rows as queryChronicleFixtureRows,
+  reviewBundle as readChronicleReviewBundle,
+  saveEvidence as saveChronicleEvidence,
+  createNode as createChronicleFixtureNode,
+  readFixtureApplyPolicy as readChronicleFixtureApplyPolicy,
+};

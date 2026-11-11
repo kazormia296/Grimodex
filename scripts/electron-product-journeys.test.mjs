@@ -713,6 +713,17 @@ test("package.json exposes the runner and canonical product journey contracts", 
       .includes("scripts/codex-entity-relation-product-journey.test.mjs"),
     "canonical product journey contracts must include the NIR-1 Entity/Relation journey",
   );
+  for (const file of [
+    "scripts/chronicle-extraction-product-journey.test.mjs",
+    "scripts/chronicle-edited-apply-product-journey.test.mjs",
+  ]) {
+    assert.ok(
+      packageJson.scripts["test:product-journey-contracts"]
+        .split(/\s+/)
+        .includes(file),
+      `canonical product journey contracts must include ${file}`,
+    );
+  }
 });
 
 test("D-Bus address classification never exposes or contacts unsupported addresses", async () => {

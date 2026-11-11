@@ -1,6 +1,6 @@
 {
   "version": "full-workload-allocation/1",
-  "registryDigest": "sha256:1bd418abb81258f952e72384c78bd8c2085ef79db8548357b87da3c271f3faee",
+  "registryDigest": "sha256:2538b3aece1838cbad05f8d1aa5667668913f81ee7a5ea5fcbe69f297ec05ea0",
   "maxParallelTasks": 1,
   "sources": [
     {
@@ -9,7 +9,7 @@
     },
     {
       "path": "scripts/local-ci-registry.json",
-      "sha256": "c90c8c6dece50ed730ec539d3f4b7127b316c1be4e25106187c85878e1add6cd"
+      "sha256": "b74b5d01c194d94afd3675733c23de2601fffa09320d25ecce2865e730fe7b28"
     },
     {
       "path": "scripts/local-ci-full-admission.mjs",
@@ -41,7 +41,7 @@
     },
     {
       "path": "package.json",
-      "sha256": "3b618f81a421d8271ccb121c22799b0ac5e9616325e59889f95eed18b00acd32"
+      "sha256": "2efd35dc0289a14ba2c542a5cf7eb94b167105614e79529b37e8544e5dbbdaff"
     },
     {
       "path": "pnpm-lock.yaml",
@@ -105,7 +105,7 @@
     },
     {
       "path": "electron/scripts/product-journey-catalog.mjs",
-      "sha256": "fe90a227aeed054ad6b2e188c54a217e95a1e565abcbd578d57683e072a859f6"
+      "sha256": "d9f81a1a4597d02bfc1920ed8b2441c6344a4638436279120b5ec1343b12de84"
     },
     {
       "path": "src/features/chat/chatScopeRegistry.json",
@@ -133,7 +133,7 @@
     },
     {
       "path": "electron/scripts/product-journey-shards.mjs",
-      "sha256": "abe370a69bb3c939f140b828f6a04d742d82f66d571cc1c5dab3fbdb875a68de"
+      "sha256": "0c8aeb047cacad566e72d24bc432b46f98788f26eaa73a826215ba4190b46f65"
     }
   ],
   "fullMemoryRisk": {
@@ -2567,6 +2567,88 @@
     },
     {
       "id": "journey.chronicle-extract-review-apply-reopen.failure",
+      "sources": [
+        2,
+        29
+      ],
+      "basis": "Official backup image and full receipt/diagnostic text snapshots plus1920x1080 RGBA/PNG scanlines/header image under source-selected Xvfb screen. Full-page/HiDPI screenshot growth remains covered by fixtures.uncertainty; no screenshot suppression. Producer separately charges original+whole artifact copy+renderer.png.",
+      "operation": "Construct declared finite source-grounded scenario from candidate sources and directly bound accepted metadata; not a peak or resource receipt",
+      "items": [
+        {
+          "role": "backup",
+          "bytes": "17997824",
+          "inodes": "2"
+        },
+        {
+          "role": "receipt-snapshot",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "diagnostics",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "screenshot",
+          "bytes": "8364032",
+          "inodes": "1"
+        }
+      ]
+    },
+    {
+      "id": "journey.chronicle-extract-edit-approve-apply-reopen.runtime",
+      "sources": [
+        2,
+        29
+      ],
+      "basis": "Entire chronicle-extract-edit-approve-apply-reopen case/restart/workspace scenario: schema baseline plus Q512 mutation image per owned-tree aggregate, whole desktop/renderer/log image for profile settings/userData and full renderer assets plus RGBA surface image for browser disk/GPU caches, complete log/receipt text images. Cross-case no-sharing forecast, NOT app measurement. Extra workspace/restart image in other; no serial/fail-fast savings.",
+      "operation": "Construct declared finite source-grounded scenario from candidate sources and directly bound accepted metadata; not a peak or resource receipt",
+      "items": [
+        {
+          "role": "db",
+          "bytes": "17997824",
+          "inodes": "2"
+        },
+        {
+          "role": "wal",
+          "bytes": "18104320",
+          "inodes": "1"
+        },
+        {
+          "role": "shm",
+          "bytes": "65536",
+          "inodes": "1"
+        },
+        {
+          "role": "user-data",
+          "bytes": "177168384",
+          "inodes": "785"
+        },
+        {
+          "role": "cache",
+          "bytes": "55279616",
+          "inodes": "778"
+        },
+        {
+          "role": "logs",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "receipts",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "other",
+          "bytes": "17997824",
+          "inodes": "2"
+        }
+      ]
+    },
+    {
+      "id": "journey.chronicle-extract-edit-approve-apply-reopen.failure",
       "sources": [
         2,
         29

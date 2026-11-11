@@ -330,6 +330,18 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
       "fixed provider response -> production extraction and quote display -> human review -> Native V2 Prepare/Apply -> restart without duplicate Events",
   },
   {
+    id: "chronicle-extract-edit-approve-apply-reopen",
+    domains: ["chronicle-extraction"],
+    interactions: [
+      "chronicle-extraction->sqlite",
+      "sqlite->chronicle-extraction",
+    ],
+    contracts: ["chronicle:extract-edit-approve-apply-reopen"],
+    capabilities: ["electron", "napi"],
+    description:
+      "fixed provider response -> production extraction -> human edit of one proposal (secret off, human-derived child) -> approve all -> Native V2 Prepare/Apply of the edited revision with secret Events -> restart without duplicate Events",
+  },
+  {
     id: "codex-entity-relation-review-apply-reopen",
     domains: ["codex", "scene-persistence", "workspace-lifecycle"],
     interactions: ["codex->sqlite", "sqlite->codex"],
@@ -474,6 +486,8 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
       "electron/shared/productJourneyChronicleFixture.json",
       "electron/scripts/chronicle-extraction-product-journey.mjs",
       "scripts/chronicle-extraction-product-journey.test.mjs",
+      "electron/scripts/chronicle-edited-apply-product-journey.mjs",
+      "scripts/chronicle-edited-apply-product-journey.test.mjs",
       "scripts/product-journey-*.test.mjs",
       "scripts/electron-product-journey-*.test.mjs",
       "scripts/electron-product-journeys.test.mjs",
@@ -621,7 +635,10 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
   {
     id: "chronicle-extraction",
     domains: ["chronicle-extraction"],
-    contracts: ["chronicle:extract-review-apply-reopen"],
+    contracts: [
+      "chronicle:extract-review-apply-reopen",
+      "chronicle:extract-edit-approve-apply-reopen",
+    ],
     paths: [
       "src/features/chronicle/ChronicleExtractDialog.*",
       "src/features/chronicle/ChronicleEvidencePane.*",
@@ -716,6 +733,10 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
 export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
   {
     id: "chronicle:extract-review-apply-reopen",
+    domains: ["chronicle-extraction"],
+  },
+  {
+    id: "chronicle:extract-edit-approve-apply-reopen",
     domains: ["chronicle-extraction"],
   },
   {

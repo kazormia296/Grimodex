@@ -1493,6 +1493,15 @@ fn assert_prepare_refused(db: &Database, prepare: &PrepareCommitPayload) -> Stri
     format!("{error:#}")
 }
 
+/// 実機（N-API の変換）が画面へ渡す文字列。anyhow の連鎖の最も外側の文だけである。
+fn assert_prepare_refused_outermost(db: &Database, prepare: &PrepareCommitPayload) -> String {
+    let before = apply_counts(db);
+    let error = narrative_extraction_prepare_commit(db, prepare.clone())
+        .expect_err("the edited revision must be refused");
+    assert_eq!(apply_counts(db), before, "a refused prepare writes nothing");
+    error.to_string()
+}
+
 /// 取り込んだ出来事の (secret, reveal_scene_id, title)。
 fn event_rows(db: &Database) -> Vec<(i64, Option<String>, Option<String>)> {
     db.with_conn(|conn| {
@@ -2302,5 +2311,84 @@ fn two_window_secret_reveal_edited_revision_is_refused_after_the_reveal_scene_or
     assert!(
         error.contains("NEX_SOURCE_BASIS_STALE") && error.contains("scope-dependency:v1:"),
         "unexpected error after the reveal Scene order change: {error}"
+    );
+}
+
+/// 画面の案内（取り込みの拒否の分類）は、実機では連鎖の最も外側の文だけを見る。
+/// 系譜の検証の拒否は、最も外側の文にコードが入る。
+#[test]
+fn outermost_error_message_carries_the_lineage_code() {
+    let fixture = Fixture::new();
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    let target = fixture.child().to_owned();
+    drop(db);
+    let conn = fixture.corruption_connection();
+    reseal(&conn, &target, |envelope| {
+        envelope["revisionBasis"]["expectedParentEnvelopeDigest"] =
+            json!(format!("sha256:{}", "0".repeat(64)));
+    });
+    drop(conn);
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    enable_manual_apply(&db);
+    let revisions = current_revisions(&db);
+    let prepare = chronicle_prepare_payload(&db, &fixture, "era-outermost-lineage", &revisions);
+    let error = assert_prepare_refused_outermost(&db, &prepare);
+    assert!(
+        error.contains("NEX_V2_APPLY_LINEAGE_INVALID"),
+        "outermost message lacks the lineage code: {error}"
+    );
+}
+
+/// secret の版で場面の並びが変わった拒否は、最も外側の文に code と scope の投影の目印が入る。
+#[test]
+fn outermost_error_message_carries_the_scope_dependency_stale_marker() {
+    let fixture = Fixture::two_window();
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    db.migrate().expect("migrate the private two-window copy");
+    enable_manual_apply(&db);
+    native_human_decision(&db, &fixture, TWO_WINDOW_UNREVIEWED_REVISION, "rejected");
+    let first = create_native_child(&db, &fixture, fixture.child(), |payload| {
+        payload["disclosure"]["revealDocumentRef"] = json!("D000001");
+    });
+    let second = create_native_child(&db, &fixture, &first, |payload| {
+        payload["disclosure"]["secret"] = json!(true);
+    });
+    native_human_decision(&db, &fixture, &second, "approved");
+    let revisions = approved_current_revisions_of_run(&db, TWO_WINDOW_RUN);
+    let prepare = chronicle_prepare_payload(&db, &fixture, "era-outermost-scope", &revisions);
+    native_patch_node(
+        &db,
+        &fixture,
+        "en-query-05",
+        json!({"sortOrder":"Zz"}),
+        false,
+    );
+    let error = assert_prepare_refused_outermost(&db, &prepare);
+    assert!(
+        error.contains("NEX_SOURCE_BASIS_STALE") && error.contains("scope-dependency:v1:"),
+        "outermost message lacks the scope marker: {error}"
+    );
+}
+
+/// 根拠の場面の本文が変わった拒否は、最も外側の文に code が入り、scope の投影の目印は入らない。
+#[test]
+fn outermost_error_message_carries_the_source_stale_code_without_scope_marker() {
+    let fixture = Fixture::new();
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    enable_manual_apply(&db);
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE tree_nodes SET updated_at = '2099-01-01T00:00:00.000Z' WHERE id = ?1",
+            [fixture.scene("s1")],
+        )?;
+        Ok(())
+    })
+    .expect("test-only token change");
+    let revisions = current_revisions(&db);
+    let prepare = chronicle_prepare_payload(&db, &fixture, "era-outermost-source", &revisions);
+    let error = assert_prepare_refused_outermost(&db, &prepare);
+    assert!(
+        error.contains("NEX_SOURCE_BASIS_STALE") && !error.contains("scope-dependency:v1:"),
+        "unexpected outermost message: {error}"
     );
 }

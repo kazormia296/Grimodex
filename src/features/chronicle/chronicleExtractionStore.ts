@@ -90,8 +90,7 @@ export interface ChronicleReviewProposal {
 
 export type ChronicleApplyPreflightErrorCode =
   | "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE"
-  | "NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH"
-  | "NEX_V2_APPLY_BASIS_UNSUPPORTED";
+  | "NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH";
 
 export interface ChronicleApplyReadiness {
   readonly ready: boolean;
@@ -174,19 +173,6 @@ export function getChronicleApplyReadiness(
     };
   }
 
-  // Native Prepare/Apply currently rejects an author-edited revision, so the
-  // whole set cannot be imported. `safety.fresh === false` means the revision
-  // payload differs from the Run-sealed plan. Known gap: a proposal edited and
-  // then reverted to the planned content stays fresh although its revision is
-  // still an edited one; the apply-failure message covers that case.
-  if (approved.some((proposal) => !proposal.safety.fresh)) {
-    return {
-      ready: false,
-      approvedCount: approved.length,
-      errorCode: "NEX_V2_APPLY_BASIS_UNSUPPORTED",
-    };
-  }
-
   return {
     ready: true,
     approvedCount: approved.length,
@@ -194,10 +180,34 @@ export function getChronicleApplyReadiness(
   };
 }
 
-/** Whether an apply failure came from an author-edited proposal in the set. */
-export function isChronicleEditedProposalApplyError(error: unknown): boolean {
+export type ChronicleApplyFailureReason =
+  | "lineage-invalid"
+  | "disclosure-scope-stale"
+  | "source-stale"
+  | "unknown";
+
+/** Classifies a Native apply failure by its error message. */
+export function classifyChronicleApplyFailure(
+  error: unknown,
+): ChronicleApplyFailureReason {
   const message = error instanceof Error ? error.message : String(error);
-  return message.includes("NEX_V2_APPLY_BASIS_UNSUPPORTED");
+  if (message.includes("NEX_V2_APPLY_LINEAGE_INVALID")) {
+    return "lineage-invalid";
+  }
+  if (
+    message.includes("NEX_SOURCE_BASIS_STALE") &&
+    message.includes("scope-dependency:v1:")
+  ) {
+    return "disclosure-scope-stale";
+  }
+  if (
+    message.includes("NEX_SOURCE_BASIS_STALE") ||
+    message.includes("NEX_READ_SET_STALE") ||
+    message.includes("NEX_SCENE_VERSION_MISMATCH")
+  ) {
+    return "source-stale";
+  }
+  return "unknown";
 }
 
 export function selectChronicleProposalsForAtomicApply(
