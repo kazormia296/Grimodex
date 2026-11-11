@@ -16,11 +16,13 @@ use super::stage_provenance::{load_v2_context_artifact, VerifiedV2ContextArtifac
 
 pub(crate) fn ensure_supported_intent(envelope: &Value) -> anyhow::Result<()> {
     ensure!(
-        envelope
-            .pointer("/revisionBasis/kind")
-            .and_then(Value::as_str)
-            == Some("interpretation"),
-        "NEX_V2_APPLY_BASIS_UNSUPPORTED: only interpretation is supported"
+        matches!(
+            envelope
+                .pointer("/revisionBasis/kind")
+                .and_then(Value::as_str),
+            Some("interpretation" | "human-derived")
+        ),
+        "NEX_V2_APPLY_BASIS_UNSUPPORTED: only interpretation and human-derived are supported"
     );
     ensure!(
         envelope
@@ -84,7 +86,23 @@ pub(crate) fn load_v2_apply_sources_with_control(
 ) -> anyhow::Result<Vec<SourceBasisRow>> {
     ensure_supported_intent(envelope)?;
     control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
-    let artifact = load_v2_context_artifact(conn, project_id, run_id, revision_id, envelope)?;
+    // AI が出したままの版は、その版自身を受領書と文脈の検査の対象にする。
+    // 作者が編集した版（human-derived）は、系譜が最初の AI の版まで通ることを
+    // 確かめ、受領書と文脈の検査を最初の AI の版に対して行う（DR-ERA-2/3）。
+    let root = if is_human_derived(envelope) {
+        Some(load_verified_root(conn, project_id, revision_id)?)
+    } else {
+        None
+    };
+    let artifact = match &root {
+        None => load_v2_context_artifact(conn, project_id, run_id, revision_id, envelope)?,
+        Some(root) => {
+            load_v2_context_artifact(conn, project_id, run_id, &root.revision_id, &root.envelope)?
+        }
+    };
+    if let Some(root) = &root {
+        validate_root_coverage(root, &artifact)?;
+    }
     let mut sources = BTreeMap::new();
     for entry in array(envelope, "/effectiveMaterialBasis/sourceBasis")? {
         let source_key = string(entry, "sourceKey")?;
@@ -122,7 +140,9 @@ pub(crate) fn load_v2_apply_sources_with_control(
         !sources.is_empty(),
         "NEX_V2_READ_COVERAGE_INVALID: source basis is empty"
     );
-    validate_coverage(envelope, &artifact, &sources)?;
+    if root.is_none() {
+        validate_coverage(envelope, &artifact, &sources)?;
+    }
     let artifact_row = SourceBasisRow {
         ordinal: 0,
         source_kind: "narrative-artifact".to_owned(),
@@ -147,6 +167,77 @@ pub(crate) fn load_v2_apply_sources_with_control(
             Ok(row)
         })
         .collect()
+}
+
+/// 最初の AI の版の文脈と依存の対応は、その版自身の材料（記録された token のまま）に
+/// 対して検査する。取り込む版の材料を渡すと、開示の項目を変えた版の材料が orphan に
+/// なり必ず拒まれる。編集した版の形は系譜の検証が確かめる（DR-ERA-2）。
+fn validate_root_coverage(
+    root: &VerifiedRoot,
+    artifact: &VerifiedV2ContextArtifact,
+) -> anyhow::Result<()> {
+    let mut root_sources = BTreeMap::new();
+    for entry in array(&root.envelope, "/effectiveMaterialBasis/sourceBasis")? {
+        let source_key = string(entry, "sourceKey")?;
+        ensure!(
+            root_sources
+                .insert(
+                    source_key.to_owned(),
+                    SourceBasisRow {
+                        ordinal: 0,
+                        source_kind: string(entry, "sourceKind")?.to_owned(),
+                        source_key: source_key.to_owned(),
+                        revision_token: string(entry, "revisionToken")?.to_owned(),
+                        observed_at: None,
+                    }
+                )
+                .is_none(),
+            "NEX_V2_READ_COVERAGE_INVALID: duplicate source"
+        );
+    }
+    ensure!(
+        !root_sources.is_empty(),
+        "NEX_V2_READ_COVERAGE_INVALID: source basis is empty"
+    );
+    validate_coverage(&root.envelope, artifact, &root_sources)
+}
+
+fn is_human_derived(envelope: &Value) -> bool {
+    envelope
+        .pointer("/revisionBasis/kind")
+        .and_then(Value::as_str)
+        == Some("human-derived")
+}
+
+/// 編集した版から最初の AI の版までの系譜を検証した結果。
+struct VerifiedRoot {
+    revision_id: String,
+    envelope: Value,
+}
+
+/// 系譜の検証（関連場面の資格と同じ検証）を通して、最初の AI の版を得る。
+/// 通らないときは `NEX_V2_APPLY_LINEAGE_INVALID` で拒む。DB の読み書きの
+/// エラー（rusqlite）は、そのまま伝える。最初の版の材料の再生は呼ばない。
+fn load_verified_root(
+    conn: &Connection,
+    project_id: &str,
+    revision_id: &str,
+) -> anyhow::Result<VerifiedRoot> {
+    match super::material_membership::read_lineage_root_for_apply(conn, project_id, revision_id) {
+        Ok(Some((revision_id, envelope))) => Ok(VerifiedRoot {
+            revision_id,
+            envelope,
+        }),
+        Ok(None) => Err(anyhow!(
+            "NEX_V2_APPLY_LINEAGE_INVALID: revision '{revision_id}' was not found"
+        )),
+        Err(error) => {
+            if error.downcast_ref::<rusqlite::Error>().is_some() {
+                return Err(error);
+            }
+            Err(anyhow!("NEX_V2_APPLY_LINEAGE_INVALID: {error:#}"))
+        }
+    }
 }
 
 /// Context-coupled V2 loader for Prepare/Apply.  The same transaction that
@@ -414,8 +505,22 @@ mod tests {
             envelope["changeIntent"]["changeKind"] = intent;
             assert!(ensure_supported_intent(&envelope).is_err());
         }
+        // 作者が編集した版（human-derived）は、種類の検査では通る。系譜の検証は
+        // 別の段（load_v2_apply_sources_with_control）で行う。
+        let mut envelope = valid.clone();
+        envelope["revisionBasis"]["kind"] = json!("human-derived");
+        ensure_supported_intent(&envelope).expect("human-derived add");
+        // 知らない版の種類は拒む。
+        for kind in [json!("unknown"), json!("ai-derived"), Value::Null] {
+            let mut envelope = valid.clone();
+            envelope["revisionBasis"]["kind"] = kind;
+            let error = ensure_supported_intent(&envelope).expect_err("unknown basis");
+            assert!(error.to_string().contains("NEX_V2_APPLY_BASIS_UNSUPPORTED"));
+        }
+        // human-derived でも add 以外の変更の種類は拒む。
         let mut envelope = valid;
         envelope["revisionBasis"]["kind"] = json!("human-derived");
+        envelope["changeIntent"]["changeKind"] = json!("retract");
         assert!(ensure_supported_intent(&envelope).is_err());
     }
 }

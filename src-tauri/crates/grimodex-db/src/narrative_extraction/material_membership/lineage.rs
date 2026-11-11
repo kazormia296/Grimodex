@@ -41,6 +41,10 @@ pub(super) struct Revision {
 }
 
 impl Revision {
+    pub fn envelope(&self) -> &Value {
+        &self.envelope
+    }
+
     pub fn parent_id(&self) -> Option<&str> {
         self.envelope
             .pointer("/revisionBasis/parentRevisionId")

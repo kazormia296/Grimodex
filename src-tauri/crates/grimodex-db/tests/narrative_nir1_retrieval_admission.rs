@@ -7,27 +7,24 @@ use std::path::PathBuf;
 use flate2::read::GzDecoder;
 use grimodex_core::narrative_nir1::PackingPurpose;
 use grimodex_core::{canonical_json_digest, canonical_json_string};
-use grimodex_db::agent_writes::{
-    agent_codex_create_impl, agent_event_create_impl, AgentCodexCreatePayload,
-    AgentEventCreatePayload,
-};
+use grimodex_db::agent_writes::{agent_codex_create_impl, AgentCodexCreatePayload};
 use grimodex_db::domain_writes::{
     project_patch, tree_node_patch, ProjectPatchPayload, TreeNodePatchPayload,
 };
 use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::narrative_extraction::{
-    narrative_extraction_append_human_decision,
+    narrative_extraction_append_human_decision, narrative_extraction_apply_commit,
     narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto,
-    narrative_extraction_prepare_commit, read_and_pack_native_a2_context,
-    read_narrative_scene_scope, read_revision_canonical_freshness,
-    read_revision_material_membership, read_revision_retrieval_eligibility,
-    run_incremental_freshness_cycle, update_narrative_scene_scope,
-    update_narrative_scene_scope_registry, AppendDecisionPayload, CommitApplicationRef,
-    CommitOperation, CreateHumanDerivedRevisionRequest, IncrementalFreshnessCycleOutcome,
-    MaterialMembershipRead, NarrativeAdapterIdentity, NarrativeSceneScopeRegistryUpdatePayload,
-    NarrativeSceneScopeUpdatePayload, NativeNir1PackingRequest, NativeNir1RawContextItem,
-    PrepareCommitPayload, RevisionEligibilityRead, RevisionEligibilityReason,
-    RevisionFreshnessRead,
+    narrative_extraction_prepare_commit, narrative_extraction_redo_commit,
+    narrative_extraction_undo_commit, read_and_pack_native_a2_context, read_narrative_scene_scope,
+    read_revision_canonical_freshness, read_revision_material_membership,
+    read_revision_retrieval_eligibility, run_incremental_freshness_cycle,
+    update_narrative_scene_scope, update_narrative_scene_scope_registry, AppendDecisionPayload,
+    ApplyCommitPayload, CommitApplicationRef, CommitOperation, CreateHumanDerivedRevisionRequest,
+    IncrementalFreshnessCycleOutcome, MaterialMembershipRead, NarrativeAdapterIdentity,
+    NarrativeSceneScopeRegistryUpdatePayload, NarrativeSceneScopeUpdatePayload,
+    NativeNir1PackingRequest, NativeNir1RawContextItem, PrepareCommitPayload,
+    RevisionEligibilityRead, RevisionEligibilityReason, RevisionFreshnessRead, UndoCommitPayload,
 };
 use grimodex_db::{
     load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
@@ -205,12 +202,12 @@ fn saved_canonical_state(conn: &Connection, revision: &str) -> (String, String) 
     .expect("stored canonical revision state")
 }
 
-fn create_native_child(
+fn try_create_native_child(
     db: &Database,
     fixture: &Fixture,
     parent: &str,
     edit: impl FnOnce(&mut Value),
-) -> String {
+) -> anyhow::Result<String> {
     let (proposal_id, envelope_digest, payload): (String, String, String) = db
         .with_conn(|conn| {
             Ok(conn.query_row(
@@ -233,11 +230,21 @@ fn create_native_child(
             adapter: NarrativeAdapterIdentity { id: "chronicle.scene-event".to_owned(), version: "1".to_owned() },
             surface_id: "chronicle-review".to_owned(),
         },
-    ).expect("production Native C2B child creation");
-    saved["revisionId"]
+    )?;
+    Ok(saved["revisionId"]
         .as_str()
         .expect("Native child ID")
-        .to_owned()
+        .to_owned())
+}
+
+fn create_native_child(
+    db: &Database,
+    fixture: &Fixture,
+    parent: &str,
+    edit: impl FnOnce(&mut Value),
+) -> String {
+    try_create_native_child(db, fixture, parent, edit)
+        .expect("production Native C2B child creation")
 }
 
 fn native_human_decision(
@@ -1326,21 +1333,251 @@ fn retrieval_read(db: &Database, fixture: &Fixture, revision: &str) -> String {
     .expect("retrieval eligibility read")
 }
 
-/// DR-CAS-7 f：作者が承認した非 secret の版は、年表の出来事が secret で取り込まれた後も、
-/// 資格の本体（read_revision_retrieval_eligibility）で eligible のまま。
+fn enable_manual_apply(db: &Database) {
+    let before = load_narrative_runtime_policy_from_db(db).expect("runtime policy");
+    set_narrative_runtime_policy(
+        db,
+        SetNarrativeRuntimePolicyInput {
+            expected_version: before.version,
+            runtime_mode: "manual-apply".into(),
+            maintenance_enabled: before.maintenance_enabled,
+            generic_import_enabled: before.generic_import_enabled,
+            background_ai_enabled: before.background_ai_enabled,
+        },
+    )
+    .expect("enable manual-apply without changing other policy flags");
+}
+
+/// fixture の 2 つの提案の現行の版（承認済みの、secret を外した human-derived の子）。
+fn current_revisions(db: &Database) -> Vec<String> {
+    db.with_conn(|conn| {
+        let mut stmt = conn
+            .prepare("SELECT current_revision_id FROM narrative_proposals ORDER BY proposal_key")?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    })
+    .expect("current revisions")
+}
+
+/// 指定した版を取り込む prepare の入力。操作は Native の組み立てと同じ形（secret は常に true）。
+fn chronicle_prepare_payload(
+    db: &Database,
+    fixture: &Fixture,
+    request_id: &str,
+    revisions: &[String],
+) -> PrepareCommitPayload {
+    let run_id = fixture.manifest["runId"].as_str().expect("run").to_owned();
+    db.with_conn(|conn| {
+        let mut set_id = String::new();
+        let mut operations = Vec::new();
+        let mut applications = Vec::new();
+        for revision in revisions {
+            let (proposal, set): (String, String) = conn.query_row(
+                "SELECT p.id, p.proposal_set_id FROM narrative_proposals p
+                   JOIN narrative_proposal_revisions r ON r.proposal_id = p.id
+                  WHERE r.id = ?1",
+                [revision],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            set_id = set;
+            let operation = chronicle_apply_operation(conn, &run_id, revision);
+            assert_eq!(operation["secret"], true);
+            operations.push(CommitOperation {
+                kind: "chronicle.event.create".to_owned(),
+                payload: operation,
+                proposal_id: proposal.clone(),
+                revision_id: revision.clone(),
+            });
+            applications.push(CommitApplicationRef {
+                proposal_id: proposal,
+                revision_id: revision.clone(),
+            });
+        }
+        Ok(PrepareCommitPayload {
+            project_id: fixture.project().to_owned(),
+            run_id: run_id.clone(),
+            proposal_set_id: set_id,
+            request_id: request_id.to_owned(),
+            plan_digest: "ignored".to_owned(),
+            session_id: format!("session-{request_id}"),
+            surface: Some("narrative-extraction".to_owned()),
+            operations,
+            applications,
+            expected_tail_ordinal: None,
+            entity_bindings: vec![],
+            expected_calendar_version: None,
+        })
+    })
+    .expect("prepare payload for the approved revisions")
+}
+
+fn prepare_and_apply(db: &Database, prepare: &PrepareCommitPayload) -> Value {
+    let prepared = narrative_extraction_prepare_commit(db, prepare.clone())
+        .expect("Chronicle prepare of the edited revisions");
+    narrative_extraction_apply_commit(
+        db,
+        ApplyCommitPayload {
+            project_id: prepare.project_id.clone(),
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .expect("preparedCommitId")
+                .to_owned(),
+            request_id: prepare.request_id.clone(),
+            session_id: prepare.session_id.clone(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect("Chronicle apply of the edited revisions")
+}
+
+/// (events, narrative_apply_commits, narrative_proposal_applications)
+fn apply_counts(db: &Database) -> (i64, i64, i64) {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM events),
+                    (SELECT COUNT(*) FROM narrative_apply_commits),
+                    (SELECT COUNT(*) FROM narrative_proposal_applications)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?)
+    })
+    .expect("apply counts")
+}
+
+/// 取り込みが拒まれ、年表の出来事と取り込みの記録が増えないこと。エラーの文面を返す。
+fn assert_prepare_refused(db: &Database, prepare: &PrepareCommitPayload) -> String {
+    let before = apply_counts(db);
+    let error = narrative_extraction_prepare_commit(db, prepare.clone())
+        .expect_err("the edited revision must be refused");
+    assert_eq!(apply_counts(db), before, "a refused prepare writes nothing");
+    format!("{error:#}")
+}
+
+/// 取り込んだ出来事の (secret, reveal_scene_id, title)。
+fn event_rows(db: &Database) -> Vec<(i64, Option<String>, Option<String>)> {
+    db.with_conn(|conn| {
+        let rows = conn
+            .prepare("SELECT secret, reveal_scene_id, title FROM events ORDER BY ordinal")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    })
+    .expect("event rows")
+}
+
+/// 版の payload の eventId の出来事の (secret, reveal_scene_id, title)。
+fn event_row_of(db: &Database, revision: &str) -> (i64, Option<String>, Option<String>) {
+    db.with_conn(|conn| {
+        let payload: String = conn.query_row(
+            "SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?1",
+            [revision],
+            |row| row.get(0),
+        )?;
+        let payload: Value = serde_json::from_str(&payload)?;
+        let event_id = payload["eventId"].as_str().expect("eventId").to_owned();
+        Ok(conn.query_row(
+            "SELECT secret, reveal_scene_id, title FROM events WHERE id = ?1",
+            [event_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?)
+    })
+    .expect("event of the revision")
+}
+
+fn revision_title(db: &Database, revision: &str) -> String {
+    db.with_conn(|conn| {
+        let payload: String = conn.query_row(
+            "SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?1",
+            [revision],
+            |row| row.get(0),
+        )?;
+        let payload: Value = serde_json::from_str(&payload)?;
+        Ok(payload["title"].as_str().expect("title").to_owned())
+    })
+    .expect("revision title")
+}
+
+fn drain_freshness(db: &Database) {
+    let mut cycles = 0;
+    for _ in 0..8 {
+        if matches!(
+            run_incremental_freshness_cycle(db).expect("production Native Freshness cycle"),
+            IncrementalFreshnessCycleOutcome::Idle
+        ) {
+            break;
+        }
+        cycles += 1;
+    }
+    assert!(
+        cycles >= 1,
+        "the writes must have been evaluated by the Feed"
+    );
+}
+
+/// 承認済みの 2 つの編集した版（fixture の現行の版）が、年表に取り込める。
+/// 出来事は secret で、reveal は版の reveal の場面、題は版の題（E6、CAS/1）。
+#[test]
+fn edited_revisions_pass_chronicle_prepare_and_apply_as_secret_events() {
+    let fixture = Fixture::new();
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    enable_manual_apply(&db);
+    let revisions = current_revisions(&db);
+    assert_eq!(revisions.len(), 2);
+    db.with_conn(|conn| {
+        for revision in &revisions {
+            // 現行の版は human-derived の子（承認済み）。
+            let basis: String = conn.query_row(
+                "SELECT json_extract(reconciliation_envelope_json, '$.revisionBasis.kind')
+                   FROM narrative_proposal_revisions WHERE id = ?1",
+                [revision],
+                |row| row.get(0),
+            )?;
+            assert_eq!(basis, "human-derived");
+        }
+        Ok(())
+    })
+    .expect("fixture revisions are human-derived");
+    let prepare = chronicle_prepare_payload(&db, &fixture, "era-fixture-request", &revisions);
+    let applied = prepare_and_apply(&db, &prepare);
+    assert_eq!(applied["status"], "applied");
+    assert_eq!(apply_counts(&db), (2, 1, 2));
+    let mut titles: Vec<String> = revisions
+        .iter()
+        .map(|revision| revision_title(&db, revision))
+        .collect();
+    titles.sort();
+    let rows = event_rows(&db);
+    for (secret, reveal, _) in &rows {
+        assert_eq!(*secret, 1, "Chronicle Event must be secret");
+        assert_eq!(reveal.as_deref(), Some(fixture.scene("s1")));
+    }
+    let mut actual: Vec<String> = rows.into_iter().filter_map(|(_, _, title)| title).collect();
+    actual.sort();
+    assert_eq!(actual, titles);
+    db.with_conn(|conn| {
+        let rows: Vec<(String, i64)> = conn
+            .prepare("SELECT event_id, COUNT(*) FROM scene_events GROUP BY event_id")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|(_, linked)| *linked >= 1));
+        Ok(())
+    })
+    .expect("Events are linked to evidence scenes");
+}
+
+/// DR-CAS-7 f／DR-ERA-6：承認した非 secret の版は、本物の取り込み（prepare → apply）で
+/// 年表の出来事が secret で作られた後も、資格の本体で eligible のまま。
+/// 取り込みの直後も、Freshness の周期の後も変わらない。
 #[test]
 fn approved_nonsecret_child_stays_eligible_after_its_secret_chronicle_apply() {
     let fixture = Fixture::new();
     let db = Database::new(&fixture.path).expect("Native private fixture");
-    let run_id = fixture.manifest["runId"].as_str().expect("run").to_owned();
-
-    // 取り込みの前：承認済みの非 secret の版は、どちらも eligible。
-    let revisions: Vec<String> = fixture.manifest["revisionIds"]
-        .as_array()
-        .expect("revision ids")
-        .iter()
-        .map(|id| id.as_str().expect("revision id").to_owned())
-        .collect();
+    enable_manual_apply(&db);
+    let revisions = current_revisions(&db);
+    assert_eq!(revisions.len(), 2);
     db.with_conn(|conn| {
         for revision in &revisions {
             let payload: String = conn.query_row(
@@ -1356,137 +1593,23 @@ fn approved_nonsecret_child_stays_eligible_after_its_secret_chronicle_apply() {
     })
     .expect("non-secret approved revisions are eligible before the apply");
 
-    // 承認済みの版は human-derived（作者が秘密を外した子）なので、本物の取り込みは
-    // prepare で拒否される（NEX_V2_APPLY_BASIS_UNSUPPORTED、v2_apply_sources.rs の
-    // ensure_supported_intent）。そこで、取り込みが書く行を直接書く：
-    //   - 年表の出来事（apply_event_create_in_tx と同じ Native writer。secret=1、reveal の場面、
-    //     場面への結び付け）
-    //   - narrative_proposal_applications の行
-    // 操作は、版の payload・Envelope の evidenceSet・封印済み snapshot から、Native の組み立て
-    // と同じ形で組む（操作の secret は常に true）。
-    let operations: Vec<(String, String, Value)> = db
-        .with_conn(|conn| {
-            let mut stmt = conn
-                .prepare("SELECT id, current_revision_id FROM narrative_proposals ORDER BY id")?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(rows
-                .into_iter()
-                .map(|(proposal_id, revision_id)| {
-                    let operation = chronicle_apply_operation(conn, &run_id, &revision_id);
-                    (proposal_id, revision_id, operation)
-                })
-                .collect())
-        })
-        .expect("compiled Chronicle operations");
-    assert_eq!(operations.len(), 2);
-    for (index, (proposal_id, revision_id, operation)) in operations.iter().enumerate() {
-        assert_eq!(operation["secret"], true);
-        let event_id = operation["eventId"].as_str().expect("event id").to_owned();
-        let scene_ids: Vec<String> = operation["evidenceSceneLinks"]
-            .as_array()
-            .expect("evidence links")
-            .iter()
-            .map(|link| link["sceneId"].as_str().expect("scene").to_owned())
-            .collect();
-        agent_event_create_impl(
-            &db,
-            AgentEventCreatePayload {
-                request_id: format!("nir1-cas-event-{index}"),
-                event_id: Some(event_id.clone()),
-                project_id: fixture.project().to_owned(),
-                session_id: "nir1-cas-apply-session".to_owned(),
-                surface: Some("narrative-extraction".to_owned()),
-                title: operation["title"].as_str().map(str::to_owned),
-                note: None,
-                detail: None,
-                ordinal: Some(format!("a{index}")),
-                primary_codex_id: None,
-                lane_group: None,
-                location_codex_id: None,
-                start_time: None,
-                end_time: None,
-                start_minute: None,
-                end_minute: None,
-                start_granularity: Some("none".to_owned()),
-                end_granularity: Some("none".to_owned()),
-                precision: Some("unknown".to_owned()),
-                kind: Some("generic".to_owned()),
-                secret: operation["secret"].as_bool(),
-                reveal_scene_id: operation["revealSceneId"].as_str().map(str::to_owned),
-                participant_codex_ids: None,
-                scene_ids: Some(scene_ids),
-            },
-        )
-        .expect("Native Chronicle Event create for the applied proposal");
-        db.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO narrative_proposal_applications
-                    (id, commit_id, proposal_id, revision_id, applied_entity_kind,
-                     applied_entity_id, created_at, application_kind, compensates_application_id)
-                 VALUES (?1, 'nir1-cas-direct-commit', ?2, ?3, 'event', ?4,
-                         '2026-11-11T00:00:00.000Z', 'normal', NULL)",
-                params![
-                    Uuid::new_v4().to_string(),
-                    proposal_id,
-                    revision_id,
-                    event_id
-                ],
-            )?;
-            Ok(())
-        })
-        .expect("proposal application row");
+    let prepare = chronicle_prepare_payload(&db, &fixture, "era-eligible-request", &revisions);
+    prepare_and_apply(&db, &prepare);
+    assert_eq!(apply_counts(&db), (2, 1, 2));
+    for (secret, reveal, _) in event_rows(&db) {
+        assert_eq!(secret, 1);
+        assert_eq!(reveal.as_deref(), Some(fixture.scene("s1")));
     }
-
-    // 年表の出来事は secret で、reveal の場面は版の reveal の文書の場面。場面にも結び付く。
-    db.with_conn(|conn| {
-        let rows: Vec<(String, i64, Option<String>)> = conn
-            .prepare("SELECT id, secret, reveal_scene_id FROM events ORDER BY id")?
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-            .collect::<Result<_, _>>()?;
-        assert_eq!(rows.len(), 2);
-        for (event_id, secret, reveal) in rows {
-            assert_eq!(secret, 1, "Chronicle Event {event_id} must be secret");
-            assert_eq!(reveal.as_deref(), Some(fixture.scene("s1")));
-            let linked: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM scene_events WHERE event_id = ?1 AND scene_id = ?2",
-                params![event_id, fixture.scene("s1")],
-                |row| row.get(0),
-            )?;
-            assert_eq!(linked, 1);
-        }
-        Ok(())
-    })
-    .expect("applied Chronicle Events are secret");
 
     // 書いた直後（Freshness の変更を処理する前）も、資格は変わらない。
     for revision in &revisions {
         let read = retrieval_read(&db, &fixture, revision);
         assert!(
             read.starts_with("Eligible("),
-            "immediately after the Chronicle writes: {read}"
+            "immediately after the Chronicle apply: {read}"
         );
     }
-
-    // 既存の試験と同じ手順：Native の Freshness の周期を最後まで処理する。
-    let mut cycles = 0;
-    for _ in 0..8 {
-        if matches!(
-            run_incremental_freshness_cycle(&db).expect("production Native Freshness cycle"),
-            IncrementalFreshnessCycleOutcome::Idle
-        ) {
-            break;
-        }
-        cycles += 1;
-    }
-    assert!(
-        cycles >= 1,
-        "the Chronicle writes must have been evaluated by the Feed"
-    );
-
+    drain_freshness(&db);
     db.with_conn(|conn| {
         for revision in &revisions {
             assert_complete_and_fresh(conn, &fixture, revision);
@@ -1497,114 +1620,402 @@ fn approved_nonsecret_child_stays_eligible_after_its_secret_chronicle_apply() {
     .expect("the approved non-secret revisions stay eligible after a secret Chronicle apply");
 }
 
-/// 今の制限の固定（characterization）。作者が編集した版（human-derived）は、承認済みでも
-/// 現行の形式の取り込みの prepare で拒否される（v2_apply_sources.rs の ensure_supported_intent）。
-/// 操作の secret が true でも変わらない。編集した版の取り込みを許す変更のときは、この試験を
-/// 「prepare と apply が通り、events.secret = 1」へ書き換える（資格の確認は上の試験の形）。
+fn undo_replay(commit_id: &str, project: &str, session: &str, action: &str) -> UndoCommitPayload {
+    UndoCommitPayload {
+        project_id: project.to_owned(),
+        session_id: session.to_owned(),
+        surface: None,
+        commit_id: Some(commit_id.to_owned()),
+        request_id: Some(format!("era-{action}:{commit_id}")),
+    }
+}
+
+/// 編集した版から取り込んだ出来事は、取り消し（undo）とやり直し（redo）の後も動き、
+/// redo の後も secret である。
 #[test]
-fn current_limit_human_derived_revision_is_refused_by_chronicle_prepare() {
+fn edited_revision_apply_survives_undo_and_redo_as_secret_events() {
     let fixture = Fixture::new();
     let db = Database::new(&fixture.path).expect("Native private fixture");
-    let run_id = fixture.manifest["runId"].as_str().expect("run").to_owned();
+    enable_manual_apply(&db);
+    let revisions = current_revisions(&db);
+    let prepare = chronicle_prepare_payload(&db, &fixture, "era-undo-request", &revisions);
+    let applied = prepare_and_apply(&db, &prepare);
+    let commit_id = applied["commitId"].as_str().expect("commit id").to_owned();
+    assert_eq!(apply_counts(&db).0, 2);
 
-    let before = load_narrative_runtime_policy_from_db(&db).expect("runtime policy");
-    set_narrative_runtime_policy(
+    let undone = narrative_extraction_undo_commit(
         &db,
-        SetNarrativeRuntimePolicyInput {
-            expected_version: before.version,
-            runtime_mode: "manual-apply".into(),
-            maintenance_enabled: before.maintenance_enabled,
-            generic_import_enabled: before.generic_import_enabled,
-            background_ai_enabled: before.background_ai_enabled,
-        },
+        undo_replay(&commit_id, fixture.project(), &prepare.session_id, "undo"),
     )
-    .expect("enable manual-apply without changing other policy flags");
+    .expect("undo of the edited-revision apply");
+    assert_eq!(undone["status"], "undone");
+    assert_eq!(apply_counts(&db).0, 0, "undo removes the created Events");
 
-    let (set_id, mut planned): (String, Vec<(String, String, Value)>) = db
-        .with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, current_revision_id, proposal_key, proposal_set_id
-                   FROM narrative_proposals ORDER BY id",
-            )?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            let set_id = rows[0].3.clone();
-            let mut planned = Vec::new();
-            for (proposal_id, revision_id, key, _) in rows {
-                // 現行の版は human-derived の子（承認済み）。
-                let basis: String = conn.query_row(
-                    "SELECT json_extract(reconciliation_envelope_json, '$.revisionBasis.kind')
-                       FROM narrative_proposal_revisions WHERE id = ?1",
-                    [&revision_id],
-                    |row| row.get(0),
-                )?;
-                assert_eq!(basis, "human-derived");
-                let operation = chronicle_apply_operation(conn, &run_id, &revision_id);
-                assert_eq!(operation["secret"], true);
-                planned.push((key, (proposal_id, revision_id, operation)));
-            }
-            planned.sort_by_key(|(key, _)| {
-                key.rsplit(':')
-                    .next()
-                    .and_then(|index| index.parse::<usize>().ok())
-                    .expect("proposal key index")
-            });
-            Ok((set_id, planned.into_iter().map(|(_, row)| row).collect()))
-        })
-        .expect("approved human-derived proposals and compiled operations");
-
-    let error = narrative_extraction_prepare_commit(
+    let redone = narrative_extraction_redo_commit(
         &db,
-        PrepareCommitPayload {
-            project_id: fixture.project().to_owned(),
-            run_id: run_id.clone(),
-            proposal_set_id: set_id,
-            request_id: "nir1-cas-limit-request".to_owned(),
-            plan_digest: "ignored".to_owned(),
-            session_id: "nir1-cas-limit-session".to_owned(),
-            surface: Some("narrative-extraction".to_owned()),
-            operations: planned
-                .iter()
-                .map(|(proposal_id, revision_id, operation)| CommitOperation {
-                    kind: "chronicle.event.create".to_owned(),
-                    payload: operation.clone(),
-                    proposal_id: proposal_id.clone(),
-                    revision_id: revision_id.clone(),
-                })
-                .collect(),
-            applications: planned
-                .drain(..)
-                .map(|(proposal_id, revision_id, _)| CommitApplicationRef {
-                    proposal_id,
-                    revision_id,
-                })
-                .collect(),
-            expected_tail_ordinal: None,
-            entity_bindings: vec![],
-            expected_calendar_version: None,
-        },
+        undo_replay(&commit_id, fixture.project(), &prepare.session_id, "redo"),
     )
-    .expect_err("a human-derived revision is outside the current V2 Apply basis");
-    assert!(
-        error.to_string().contains("NEX_V2_APPLY_BASIS_UNSUPPORTED"),
-        "unexpected human-derived prepare error: {error:#}"
-    );
+    .expect("redo of the edited-revision apply");
+    assert_eq!(redone["status"], "redone");
+    let rows = event_rows(&db);
+    assert_eq!(rows.len(), 2);
+    for (secret, reveal, _) in rows {
+        assert_eq!(secret, 1, "Events stay secret after redo");
+        assert_eq!(reveal.as_deref(), Some(fixture.scene("s1")));
+    }
+    drain_freshness(&db);
     db.with_conn(|conn| {
-        let events: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?;
-        let commits: i64 =
-            conn.query_row("SELECT COUNT(*) FROM narrative_apply_commits", [], |row| {
-                row.get(0)
-            })?;
-        assert_eq!((events, commits), (0, 0));
+        for revision in &revisions {
+            assert_eligible(conn, &fixture, revision);
+        }
         Ok(())
     })
-    .expect("a refused prepare writes no Event and no commit");
+    .expect("eligibility is unchanged after undo and redo");
+}
+
+/// 作者が編集して承認した版を、承認済みの現行の全提案と一緒に取り込む（取り込みの計画は、
+/// 承認済みの現行の全提案を過不足なく覆う必要がある）。
+fn apply_all_current(db: &Database, fixture: &Fixture, request_id: &str) -> PrepareCommitPayload {
+    let revisions = current_revisions(db);
+    assert_eq!(revisions.len(), 2);
+    let prepare = chronicle_prepare_payload(db, fixture, request_id, &revisions);
+    prepare_and_apply(db, &prepare);
+    assert_eq!(apply_counts(db), (2, 1, 2));
+    prepare
+}
+
+/// 題だけ直した版（projection-only）を承認して取り込むと、出来事の題は編集後の値になる。
+#[test]
+fn title_only_edited_revision_applies_with_the_edited_title() {
+    let fixture = Fixture::new();
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    enable_manual_apply(&db);
+    let edited = create_native_child(&db, &fixture, fixture.child(), |payload| {
+        payload["title"] = json!("作者が直した題");
+    });
+    native_human_decision(&db, &fixture, &edited, "approved");
+    apply_all_current(&db, &fixture, "era-title-request");
+    assert_eq!(
+        event_row_of(&db, &edited),
+        (
+            1,
+            Some(fixture.scene("s1").to_owned()),
+            Some("作者が直した題".to_owned())
+        )
+    );
+}
+
+/// 開示の項目を 2 回編集した版（secret を付ける → 外す）を承認して取り込む。
+/// 同じ id の文脈が親から引き継がれて複数になる形で、系譜の検証が通ること。
+#[test]
+fn twice_edited_disclosure_revision_applies() {
+    let fixture = Fixture::new();
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    enable_manual_apply(&db);
+    let current = native_fresh_nonsecret_child(&db, &fixture);
+    apply_all_current(&db, &fixture, "era-twice-request");
+    let row = event_row_of(&db, &current);
+    assert_eq!(row.0, 1);
+    assert_eq!(row.1.as_deref(), Some(fixture.scene("s1")));
+}
+
+/// 開示の項目を繰り返し編集した版（secret を付ける → 外す → 付ける → 外す）を承認して取り込む。
+#[test]
+fn four_times_edited_disclosure_revision_applies() {
+    let fixture = Fixture::new();
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    enable_manual_apply(&db);
+    let mut current = fixture.child().to_owned();
+    for secret in [true, false, true, false] {
+        current = create_native_child(&db, &fixture, &current, |payload| {
+            payload["disclosure"]["secret"] = json!(secret);
+        });
+    }
+    native_human_decision(&db, &fixture, &current, "approved");
+    apply_all_current(&db, &fixture, "era-four-request");
+    let row = event_row_of(&db, &current);
+    assert_eq!(row.0, 1);
+    assert_eq!(row.1.as_deref(), Some(fixture.scene("s1")));
+}
+
+/// この fixture の Snapshot には文書が 1 つ（D000001＝s1）しか無い。reveal を別の場面へ
+/// 変える編集は、Native の版の作成が拒む（reveal の文書は Snapshot の文書でなければならない）。
+/// そのため「reveal を別の場面に変えた版」の取り込みは、この fixture では作れない。
+#[test]
+fn reveal_edit_to_a_document_outside_the_snapshot_cannot_be_created() {
+    let fixture = Fixture::new();
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    let error = try_create_native_child(&db, &fixture, fixture.child(), |payload| {
+        payload["disclosure"]["revealDocumentRef"] = json!("D000002");
+    })
+    .expect_err("a reveal document outside the Snapshot must be refused at creation");
+    eprintln!("reveal outside snapshot: {error:#}");
+}
+
+fn reseal(conn: &Connection, revision: &str, edit: impl FnOnce(&mut Value)) {
+    let raw: String = conn
+        .query_row(
+            "SELECT reconciliation_envelope_json FROM narrative_proposal_revisions WHERE id = ?1",
+            [revision],
+            |row| row.get(0),
+        )
+        .expect("Envelope to rewrite");
+    let mut envelope: Value = serde_json::from_str(&raw).expect("Envelope JSON");
+    edit(&mut envelope);
+    conn.execute(
+        "UPDATE narrative_proposal_revisions SET reconciliation_envelope_json = ?2,
+            reconciliation_envelope_digest = ?3 WHERE id = ?1",
+        params![
+            revision,
+            canonical_json_string(&envelope).expect("canonical Envelope"),
+            canonical_json_digest(&envelope).expect("Envelope digest")
+        ],
+    )
+    .expect("reseal the private corrupted copy");
+}
+
+/// 親（最初の AI の版）の Envelope を書き換えて封印し直す。子の「親の digest」が合わなくなる。
+/// 選んだ版には触らない。
+#[test]
+fn edited_revision_with_a_mismatched_parent_digest_is_refused_before_apply() {
+    let fixture = Fixture::new();
+    let conn = fixture.corruption_connection();
+    rewrite_resealed_scope(
+        &conn,
+        fixture.root(),
+        "audience",
+        json!({"kind":"exact","ref":"reader"}),
+    );
+    drop(conn);
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    enable_manual_apply(&db);
+    let revisions = current_revisions(&db);
+    let prepare = chronicle_prepare_payload(&db, &fixture, "era-parent-request", &revisions);
+    let error = assert_prepare_refused(&db, &prepare);
+    // 親（最初の AI の版）の行の改ざんは、取り込みの計画の段（提案の組の整合）が先に拒む。
+    assert!(
+        error.contains("NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT"),
+        "unexpected parent-digest error: {error}"
+    );
+}
+
+/// 親の payload を書き換える（payload の digest が Envelope と合わなくなる）。
+#[test]
+fn edited_revision_with_a_tampered_root_payload_is_refused_before_apply() {
+    let fixture = Fixture::new();
+    let conn = fixture.corruption_connection();
+    let raw: String = conn
+        .query_row(
+            "SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?1",
+            [fixture.root()],
+            |row| row.get(0),
+        )
+        .expect("root payload");
+    let mut payload: Value = serde_json::from_str(&raw).expect("payload JSON");
+    payload["title"] = json!("tampered root title");
+    conn.execute(
+        "UPDATE narrative_proposal_revisions SET payload_json = ?2 WHERE id = ?1",
+        params![fixture.root(), payload.to_string()],
+    )
+    .expect("tamper the private root payload");
+    drop(conn);
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    enable_manual_apply(&db);
+    let revisions = current_revisions(&db);
+    let prepare = chronicle_prepare_payload(&db, &fixture, "era-rootpayload-request", &revisions);
+    let error = assert_prepare_refused(&db, &prepare);
+    assert!(
+        error.contains("NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT"),
+        "unexpected root-payload error: {error}"
+    );
+}
+
+/// 子の Envelope が指す「最初の AI の版」の id を別の id に変えて封印し直す。
+/// 取り込みの計画の段を通り、系譜の検証（作り直した形との不一致）が拒む。
+#[test]
+fn edited_revision_with_a_wrong_root_identity_is_refused() {
+    let fixture = Fixture::new();
+    let conn = fixture.corruption_connection();
+    let child = fixture.child().to_owned();
+    reseal(&conn, &child, |envelope| {
+        envelope["revisionBasis"]["rootInterpretationRevisionId"] =
+            json!(Uuid::new_v4().to_string());
+    });
+    drop(conn);
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    enable_manual_apply(&db);
+    let revisions = current_revisions(&db);
+    let prepare = chronicle_prepare_payload(&db, &fixture, "era-rootid-request", &revisions);
+    let error = assert_prepare_refused(&db, &prepare);
+    assert!(
+        error.contains("NEX_V2_APPLY_LINEAGE_INVALID"),
+        "unexpected root-identity error: {error}"
+    );
+}
+
+/// 最初の AI の版の受領書が無いとき、編集した版は拒まれる。
+#[test]
+fn edited_revision_without_the_root_receipt_is_refused() {
+    let fixture = Fixture::new();
+    let conn = fixture.corruption_connection();
+    let run_id = fixture.manifest["runId"].as_str().expect("run").to_owned();
+    let summary: String = conn
+        .query_row(
+            "SELECT summary_json FROM narrative_proposal_sets WHERE run_id = ?1",
+            [&run_id],
+            |row| row.get(0),
+        )
+        .expect("set summary");
+    let mut summary: Value = serde_json::from_str(&summary).expect("summary JSON");
+    summary
+        .as_object_mut()
+        .expect("summary object")
+        .remove("chronicleStageReceiptRefs");
+    conn.execute(
+        "UPDATE narrative_proposal_sets SET summary_json = ?2 WHERE run_id = ?1",
+        params![run_id, summary.to_string()],
+    )
+    .expect("remove the receipt roster of the private copy");
+    drop(conn);
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    enable_manual_apply(&db);
+    let revisions = current_revisions(&db);
+    let prepare = chronicle_prepare_payload(&db, &fixture, "era-receipt-request", &revisions);
+    let error = assert_prepare_refused(&db, &prepare);
+    assert!(
+        error.contains("NEX_CHRONICLE_STAGE_PROVENANCE_REQUIRED"),
+        "unexpected receipt error: {error}"
+    );
+}
+
+/// 根拠の場面の本文が変わった後は、編集した版も拒まれる。Native の通常の更新（版が上がる）は、
+/// 計画の段（場面の版の照合）が先に拒む。版を上げずに updated_at だけを動かした場合は、
+/// 材料の今の値との照合が拒む。
+#[test]
+fn edited_revision_is_refused_after_the_evidence_scene_changed() {
+    for case in ["native-version-bump", "token-only"] {
+        let fixture = Fixture::new();
+        let db = Database::new(&fixture.path).expect("Native private fixture");
+        enable_manual_apply(&db);
+        if case == "native-version-bump" {
+            native_patch_node(
+                &db,
+                &fixture,
+                fixture.scene("s1"),
+                json!({"content":"The Native source has changed."}),
+                false,
+            );
+        } else {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE tree_nodes SET updated_at = '2099-01-01T00:00:00.000Z' WHERE id = ?1",
+                    [fixture.scene("s1")],
+                )?;
+                Ok(())
+            })
+            .expect("test-only token change");
+        }
+        let revisions = current_revisions(&db);
+        let prepare = chronicle_prepare_payload(&db, &fixture, "era-stale-request", &revisions);
+        let error = assert_prepare_refused(&db, &prepare);
+        eprintln!("{case}: {error}");
+        let expected = if case == "native-version-bump" {
+            "NEX_SCENE_VERSION_MISMATCH"
+        } else {
+            "NEX_SOURCE_BASIS_STALE"
+        };
+        assert!(
+            error.contains(expected),
+            "{case}: unexpected error: {error}"
+        );
+    }
+}
+
+/// secret の版（scope の投影が材料に入る）は、場面の並び（reading order の順位）が変わると、
+/// 材料が古くなって拒まれる。secret を外した版と、並び以外の変更は影響を受けない。
+/// reveal を別の場面へ変える編集はこの fixture で作れない（上の試験）ため、spec の
+/// 「secret のまま reveal を別の場面に変えた版」そのものは作れず、reveal が s1 の secret の版で
+/// 確かめる（投影の形は同じで、順位の対象の場面だけが違う）。
+#[test]
+fn scope_projection_material_goes_stale_when_the_reading_order_changes() {
+    for (case, secret, scene, patch, retain, stale) in [
+        (
+            "secret / s2 sortOrder",
+            true,
+            "s2",
+            json!({"sortOrder":"Zz"}),
+            false,
+            true,
+        ),
+        (
+            "secret / s2 storyTimeOrder",
+            true,
+            "s2",
+            json!({"storyTimeOrder":"z9"}),
+            false,
+            false,
+        ),
+        (
+            "secret / s1 sortOrder (token kept)",
+            true,
+            "s1",
+            json!({"sortOrder":"Zz"}),
+            true,
+            false,
+        ),
+        (
+            "nonsecret / s2 sortOrder",
+            false,
+            "s2",
+            json!({"sortOrder":"Zz"}),
+            false,
+            false,
+        ),
+    ] {
+        let fixture = Fixture::new();
+        let db = Database::new(&fixture.path).expect("Native private fixture");
+        enable_manual_apply(&db);
+        if secret {
+            let edited = create_native_child(&db, &fixture, fixture.child(), |payload| {
+                payload["disclosure"]["secret"] = json!(true);
+            });
+            native_human_decision(&db, &fixture, &edited, "approved");
+        }
+        let revisions = current_revisions(&db);
+        let prepare = chronicle_prepare_payload(&db, &fixture, "era-order-request", &revisions);
+        native_patch_node(&db, &fixture, fixture.scene(scene), patch, retain);
+        if stale {
+            let error = assert_prepare_refused(&db, &prepare);
+            assert!(
+                error.contains("NEX_SOURCE_BASIS_STALE") && error.contains("scope-dependency:v1:"),
+                "{case}: unexpected error: {error}"
+            );
+        } else {
+            narrative_extraction_prepare_commit(&db, prepare.clone())
+                .unwrap_or_else(|error| panic!("{case}: must stay applicable: {error:#}"));
+        }
+    }
+}
+
+/// changeKind が add でない版は拒まれる。選んだ版の Envelope を書き換えるので、
+/// 版の種類の検査より前の段が先に拒む可能性がある（実際の拒否の理由を固定する）。
+#[test]
+fn edited_revision_with_a_non_add_change_kind_is_refused() {
+    let fixture = Fixture::new();
+    let conn = fixture.corruption_connection();
+    let child = fixture.child().to_owned();
+    reseal(&conn, &child, |envelope| {
+        envelope["changeIntent"]["changeKind"] = json!("patch");
+    });
+    drop(conn);
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    enable_manual_apply(&db);
+    let revisions = current_revisions(&db);
+    let prepare = chronicle_prepare_payload(&db, &fixture, "era-kind-request", &revisions);
+    let error = assert_prepare_refused(&db, &prepare);
+    // 選んだ版の Envelope の検証（schema）が、版の種類の検査より先に拒む。
+    assert!(
+        error.contains("NEX_ENVELOPE_V2_INVALID"),
+        "unexpected change-kind error: {error}"
+    );
 }
