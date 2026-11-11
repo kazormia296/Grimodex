@@ -1,6 +1,6 @@
 import { lazy, Suspense } from "react";
 
-import { EulaConsentDialog } from "@/features/legal/EulaConsentDialog";
+import { EulaConsentGate } from "@/features/legal/EulaConsentGate";
 import { ProfileEgressStatusSlot } from "@/features/profile-egress/ProfileEgressStatusSlot";
 import { useReleaseNotesStore } from "@/features/release-notes/releaseNotesStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
@@ -53,7 +53,7 @@ export function ApplicationDialogs({
           <WorkspaceTrustDialog />
         </Suspense>
       )}
-      <EulaConsentDialog />
+      <EulaConsentGate />
       {releaseNotesOpen && (
         <Suspense fallback={null}>
           <ReleaseNotesDialog />

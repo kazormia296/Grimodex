@@ -1,5 +1,5 @@
 import type { EditorView } from "@tiptap/pm/view";
-import { isReducedMotion } from "@/lib/gsap";
+import { isReducedMotion } from "@/lib/reducedMotion";
 import { CSS_DURATIONS, CSS_EASINGS } from "@/lib/animation";
 
 const FLASH_MS = parseFloat(CSS_DURATIONS.normal);
