@@ -5,7 +5,6 @@ import type { RuntimeCapabilities } from "@/runtime/runtimeCapabilities";
 import type { PanelId } from "@/features/layout/panelIds";
 import type { TransferTab } from "@/features/transfer/TransferDialog";
 import { WorkspaceMenu } from "@/features/workspace/WorkspaceMenu";
-import { ProjectMenu } from "@/features/project/ProjectMenu";
 import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
 import { LayoutPresetDropdown } from "@/features/layout/LayoutPresetDropdown";
 import { UpdateDot } from "@/features/updater/UpdateDot";
@@ -14,7 +13,6 @@ import { HistoryButtons } from "@/features/history/HistoryButtons";
 import { HeaderBarLayout } from "@/components/HeaderBarLayout";
 import { GrimodexLogo } from "@/components/GrimodexLogo";
 import { WindowControls } from "@/components/WindowControls";
-import { requestWebEditorHandoffImport } from "@/features/import/webEditorHandoffRequest";
 import { cn } from "@/lib/utils";
 import { WorkPulse } from "@/features/work-layer/WorkPulse";
 
@@ -62,43 +60,54 @@ export function EditorWorkspaceHeader({
       className={cn(screenshotPanelId && "no-screenshot")}
       left={
         <>
-          {/* ロゴは縮めない。左のレールが足りないときはワークスペース名が先に省略される。 */}
-          <GrimodexLogo height={24} className="shrink-0 text-foreground" />
-          <WorkspaceMenu />
-          <ProjectMenu
-            onOpenImport={
-              runtimeCapabilities.localFileImport
-                ? () => onOpenTransfer("import")
-                : undefined
-            }
-            onOpenExport={
-              runtimeCapabilities.genericProjectTransfer
-                ? () => onOpenTransfer("zip")
-                : undefined
-            }
-            onOpenSnapshot={onOpenSnapshot}
-            onOpenWebEditorHandoff={
-              runtimeCapabilities.genericProjectTransfer
-                ? requestWebEditorHandoffImport
-                : undefined
-            }
+          {/* ロゴは縮めない。窓幅 1680px 未満は本の記号だけにして、幅をメニューに回す。 */}
+          <GrimodexLogo
+            height={24}
+            variant="mark"
+            className="shrink-0 text-foreground min-[1680px]:hidden"
           />
-          <HistoryButtons />
-          {runtimeCapabilities.genericProjectTransfer && (
-            <button
-              type="button"
-              data-tour-target="export-button"
-              aria-label={t("app.exportLabel")}
-              title={t("app.exportTitle")}
-              onClick={onToggleExport}
-              className="flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              <FileOutput className="h-4 w-4 shrink-0" />
-              <span className="hidden whitespace-nowrap text-sm xl:inline">
-                {t("app.exportLabel")}
-              </span>
-            </button>
-          )}
+          <GrimodexLogo
+            height={24}
+            className="hidden shrink-0 text-foreground min-[1680px]:block"
+          />
+          {/* ロゴの後ろの 3 つ（統合メニュー・元に戻す／やり直す・書き出し）を
+              名前付きの container（header-menu）にまとめる。メニューの後ろの固定分は
+              132px（12+32+12+32+12+32）で一定なので、この内容幅が 288px 未満のとき
+              （メニューに残る幅が、フォルダ名を出すトリガーの最小幅 約 147px を切るとき）
+              はメニューがフォルダ名を隠す。並びは左詰めのままで見た目は変わらない。 */}
+          <div
+            data-tauri-drag-region
+            data-header-menu-group
+            className="@container/header-menu flex min-w-0 flex-1 items-center gap-3"
+          >
+            <WorkspaceMenu
+              onOpenImport={
+                runtimeCapabilities.localFileImport
+                  ? () => onOpenTransfer("import")
+                  : undefined
+              }
+              onOpenExport={
+                runtimeCapabilities.genericProjectTransfer
+                  ? () => onOpenTransfer("zip")
+                  : undefined
+              }
+              onOpenSnapshot={onOpenSnapshot}
+            />
+            <HistoryButtons />
+            {runtimeCapabilities.genericProjectTransfer && (
+              // どの幅でもアイコンだけ。名前は aria-label、ショートカットは title に。
+              <button
+                type="button"
+                data-tour-target="export-button"
+                aria-label={t("app.exportLabel")}
+                title={t("app.exportTitle")}
+                onClick={onToggleExport}
+                className="flex h-8 shrink-0 items-center rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <FileOutput className="h-4 w-4 shrink-0" />
+              </button>
+            )}
+          </div>
         </>
       }
       center={<WorkPulse />}

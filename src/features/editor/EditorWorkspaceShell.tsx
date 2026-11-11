@@ -8,13 +8,11 @@ import type { SettingsCategory } from "@/features/settings/types";
 import type { TransferTab } from "@/features/transfer/TransferDialog";
 import type { ExportDialogMode } from "@/features/export/ExportDialog";
 import { WorkspaceMenu } from "@/features/workspace/WorkspaceMenu";
-import { ProjectMenu } from "@/features/project/ProjectMenu";
 import { LayoutShell } from "@/features/layout/LayoutShell";
 import { ZenModeController } from "@/features/editor/ZenModeController";
 import { BackgroundStudioHost } from "@/features/editor/background/BackgroundStudioHost";
 import { AdaptiveWorkspaceShell } from "@/features/layout/adaptive/AdaptiveWorkspaceShell";
 import { ConnectedMobileWorkspaceSurface } from "@/features/layout/adaptive/MobileWorkspaceSurfaces";
-import { requestWebEditorHandoffImport } from "@/features/import/webEditorHandoffRequest";
 import { EditorWorkspaceDialogs } from "@/features/editor/EditorWorkspaceDialogs";
 import { EditorWorkspaceHeader } from "@/features/editor/EditorWorkspaceHeader";
 import { EditorWorkspaceProviders } from "@/features/editor/EditorWorkspaceProviders";
@@ -199,8 +197,7 @@ export function EditorWorkspaceShell({
                   }
                   workspaceControls={
                     <div data-phone-workspace-controls className="grid gap-2">
-                      <WorkspaceMenu />
-                      <ProjectMenu
+                      <WorkspaceMenu
                         onOpenImport={
                           runtimeCapabilities.localFileImport
                             ? () => onOpenTransfer("import")
@@ -212,11 +209,6 @@ export function EditorWorkspaceShell({
                             : undefined
                         }
                         onOpenSnapshot={onOpenSnapshot}
-                        onOpenWebEditorHandoff={
-                          runtimeCapabilities.genericProjectTransfer
-                            ? requestWebEditorHandoffImport
-                            : undefined
-                        }
                       />
                     </div>
                   }

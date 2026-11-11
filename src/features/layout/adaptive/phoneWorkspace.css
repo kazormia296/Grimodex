@@ -197,35 +197,47 @@
   color: var(--accent-foreground);
 }
 
+/* 「その他」の統合メニュー（WorkspaceMenu）。ヘッダーの container の外なので
+   フォルダ名は常に出る。題名の span（project-menu-trigger）には枠を当てない。 */
 [data-phone-workspace-controls] > div,
-[data-phone-workspace-controls] [data-testid="workspace-menu-trigger"],
-[data-phone-workspace-controls] [data-testid="project-menu-trigger"] {
+[data-phone-workspace-controls] [data-testid="workspace-menu-trigger"] {
   width: 100%;
   max-width: none;
 }
 
-[data-phone-workspace-controls] [data-testid="workspace-menu-trigger"],
-[data-phone-workspace-controls] [data-testid="project-menu-trigger"] {
+[data-phone-workspace-controls] [data-testid="workspace-menu-trigger"] {
   min-height: 48px;
-  justify-content: space-between;
+  justify-content: flex-start;
   border: 1px solid var(--border);
   border-radius: 0.5rem;
   background: var(--card);
   padding-inline: 1rem;
 }
 
-[data-phone-workspace-controls] [data-testid="workspace-menu-dropdown"],
-[data-phone-workspace-controls] [data-testid="project-menu-dropdown"] {
+/* 題名の後ろ（「!」と ▾）を右端へ寄せる。 */
+[data-phone-workspace-controls] [data-testid="project-menu-trigger"] {
+  margin-inline-end: auto;
+}
+
+/* パネルはその場で開く。シート自体がスクロールするので、高さの上限と
+   内側のスクロールは外す。 */
+[data-phone-workspace-controls] [data-testid="workspace-menu-dropdown"] {
   position: relative;
   top: auto;
   left: auto;
   width: 100%;
   min-width: 0;
+  max-height: none;
+  overflow: visible;
   margin-top: 0.5rem;
 }
 
-[data-phone-workspace-controls] [data-testid="workspace-menu-dropdown"] button,
-[data-phone-workspace-controls] [data-testid="project-menu-dropdown"] button {
+[data-phone-workspace-controls] [data-project-menu-list] {
+  max-height: none;
+  overflow: visible;
+}
+
+[data-phone-workspace-controls] [data-testid="workspace-menu-dropdown"] button {
   min-height: 44px;
 }
 

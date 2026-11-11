@@ -1,18 +1,43 @@
-import { Check } from "lucide-react";
-import { useState, useRef, useEffect } from "react";
+import { Folder } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { openFolderDialog } from "@/lib/dialog";
 import { useWorkspaceStore } from "./store";
-import { debugLog, errorDetail } from "@/lib/debugLog";
+import { WorkspaceMenuTrigger } from "./WorkspaceMenuTrigger";
+import { WorkspaceMenuOtherSection } from "./WorkspaceMenuOtherSection";
+import { useWorkspaceMenuKeyboard } from "./useWorkspaceMenuKeyboard";
+import {
+  useCurrentProject,
+  useProjectStore,
+} from "@/features/project/projectStore";
+import {
+  ProjectMenuSection,
+  useProjectMenu,
+} from "@/features/project/ProjectMenu";
+import { ProjectMenuDialogs } from "@/features/project/ProjectMenuDialogs";
+import {
+  ProjectMenuCommands,
+  hasProjectMenuCommands,
+} from "@/features/project/ProjectMenuCommands";
 
-export function WorkspaceMenu() {
+export interface WorkspaceMenuProps {
+  onOpenImport?: () => void;
+  onOpenExport?: () => void;
+  onOpenSnapshot?: () => void;
+}
+
+/**
+ * ヘッダー左の統合メニュー。ワークスペース（フォルダ）とプロジェクトを
+ * 1 本のトリガー「フォルダ名 / 題名」と 1 枚のパネルで扱う。
+ * パネルは上から「このワークスペース」（プロジェクト）、プロジェクトの操作、
+ * 「別のワークスペース」の順。
+ */
+export function WorkspaceMenu({
+  onOpenImport,
+  onOpenExport,
+  onOpenSnapshot,
+}: WorkspaceMenuProps) {
   const { t } = useTranslation();
   const activeWorkspaceName = useWorkspaceStore((s) => s.activeWorkspaceName);
-  const globalSettings = useWorkspaceStore((s) => s.globalSettings);
-  const requestOpenWorkspace = useWorkspaceStore((s) => s.requestOpenWorkspace);
-  const openRecentWorkspace = useWorkspaceStore((s) => s.openRecentWorkspace);
-  const showLauncher = useWorkspaceStore((s) => s.showLauncher);
-  const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
   const workspaceOpenRevision = useWorkspaceStore(
     (s) => s.workspaceOpenRevision,
   );
@@ -22,13 +47,29 @@ export function WorkspaceMenu() {
   const workspaceSwitchInProgress = useWorkspaceStore(
     (s) => s.workspaceSwitchInProgress,
   );
+  const currentProject = useCurrentProject();
+  const projectLoadStatus = useProjectStore((s) => s.projectLoadStatus);
+  // 一覧の読み込みはメニューの mount 時。閉じている間も一覧を最新にする。
+  const projectMenu = useProjectMenu();
 
   const [isOpen, setIsOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const currentHeadingId = useId();
+  const panelId = useId();
+
+  const workspaceBusy =
+    workspaceOpenRequestInProgress || workspaceSwitchInProgress;
+  const workspaceLabel = activeWorkspaceName ?? t("workspaceMenu.fallback");
+  const projectTitle = currentProject?.title ?? t("project.menu.fallback");
+  const commands = { onOpenImport, onOpenExport, onOpenSnapshot };
+
+  const close = useCallback(() => setIsOpen(false), []);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
         setIsOpen(false);
       }
     }
@@ -38,125 +79,90 @@ export function WorkspaceMenu() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isOpen]);
 
-  const recentWorkspaces = (globalSettings?.recentWorkspaces ?? [])
-    .filter((ws) => ws.path !== activeWorkspacePath)
-    .slice(0, 4);
-  const workspaceBusy =
-    workspaceOpenRequestInProgress || workspaceSwitchInProgress;
-
-  async function handleOpenOther() {
-    if (workspaceBusy) return;
-    setIsOpen(false);
-    try {
-      const path = await openFolderDialog();
-      if (path) await requestOpenWorkspace(path, "folder-picker");
-    } catch (error) {
-      debugLog.error(
-        "workspaceMenu",
-        "workspace picker request failed",
-        errorDetail(error),
-      );
-    }
-  }
-
-  function handleShowLauncher() {
-    if (workspaceBusy) return;
-    setIsOpen(false);
-    showLauncher();
-  }
-
-  function folderName(path: string): string {
-    const parts = path.replace(/\\/g, "/").split("/");
-    return parts[parts.length - 1] || path;
-  }
+  const keyboard = useWorkspaceMenuKeyboard({
+    isOpen,
+    setIsOpen,
+    triggerRef,
+    panelRef,
+  });
 
   return (
-    // ヘッダーの左のレールが足りないとき、ロゴではなくこの名前が縮んで省略される。
-    <div
-      ref={menuRef}
-      className="relative min-w-0"
-      data-tour-target="workspace-menu"
-    >
-      <button
-        type="button"
-        data-testid="workspace-menu-trigger"
-        data-workspace-open-revision={workspaceOpenRevision}
-        onClick={() => setIsOpen(!isOpen)}
-        disabled={workspaceBusy}
-        className="flex max-w-full min-w-0 items-center gap-1 rounded px-2 py-1 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
+    <>
+      {/* ヘッダーの左のレールが足りないとき、ロゴや後ろのボタンではなく、
+          このメニューが先に縮んで名前が省略される（shrink-[1000]）。最小幅は
+          トリガーの左右の padding（16px）。それより狭くすると button が root から
+          はみ出して隣の「元に戻す」に重なるので、その先は後ろのボタンが縮む。 */}
+      <div
+        ref={rootRef}
+        data-tour-target="workspace-menu"
+        className="relative min-w-4 max-w-80 shrink-[1000]"
+        onKeyDown={keyboard.onRootKeyDown}
       >
-        <span className="min-w-0 max-w-40 truncate">
-          {activeWorkspaceName ?? t("workspaceMenu.fallback")}
-        </span>
-        <span className="shrink-0 text-xs">▾</span>
-      </button>
+        <WorkspaceMenuTrigger
+          triggerRef={triggerRef}
+          workspaceLabel={workspaceLabel}
+          projectTitle={projectTitle}
+          degradedLabel={
+            projectLoadStatus === "degraded" ? t("project.loadDegraded") : null
+          }
+          isOpen={isOpen}
+          panelId={panelId}
+          busy={workspaceBusy}
+          workspaceOpenRevision={workspaceOpenRevision}
+          onToggle={() => setIsOpen((open) => !open)}
+          onKeyDown={keyboard.onTriggerKeyDown}
+        />
 
-      {isOpen && (
-        <div
-          data-testid="workspace-menu-dropdown"
-          className="absolute left-0 top-full z-50 mt-1 min-w-56 rounded-md border border-border bg-popover py-1 shadow-lg"
-        >
-          <div className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground">
-            <Check
-              className="h-3.5 w-3.5 shrink-0"
-              strokeWidth={3}
-              aria-hidden
-            />
-            <span className="truncate font-medium text-foreground">
-              {activeWorkspaceName}
-            </span>
+        {isOpen && (
+          // Electron ではヘッダーがウィンドウのドラッグ領域。パネルの中の
+          // 見出しや補足まで drag にならないよう、パネルごと除外する。
+          <div
+            ref={panelRef}
+            id={panelId}
+            data-testid="workspace-menu-dropdown"
+            data-tauri-drag-region="false"
+            className="absolute left-0 top-full z-50 mt-1 max-h-[calc(100vh-4rem)] w-80 overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-lg"
+          >
+            <div role="group" aria-labelledby={currentHeadingId}>
+              <div
+                id={currentHeadingId}
+                data-workspace-menu-heading
+                className="flex items-center gap-2 px-3 py-1.5 text-sm"
+              >
+                <span
+                  className="inline-flex w-4 shrink-0 justify-center"
+                  aria-hidden
+                >
+                  <Folder className="h-3.5 w-3.5 text-muted-foreground" />
+                </span>
+                <span className="min-w-0 truncate font-medium">
+                  {workspaceLabel}
+                </span>
+                <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                  {t("workspaceMenu.currentSection")}
+                </span>
+              </div>
+              <ProjectMenuSection
+                onClose={close}
+                onRequestCreate={projectMenu.openCreate}
+                onRequestDelete={projectMenu.requestDelete}
+              />
+            </div>
+
+            {hasProjectMenuCommands(commands) && (
+              <>
+                <div className="my-1 border-t border-border" />
+                <ProjectMenuCommands onClose={close} {...commands} />
+              </>
+            )}
+
+            <div className="my-1 border-t border-border" />
+            <WorkspaceMenuOtherSection busy={workspaceBusy} onClose={close} />
           </div>
+        )}
+      </div>
 
-          {recentWorkspaces.map((ws) => (
-            <button
-              key={ws.path}
-              type="button"
-              disabled={workspaceBusy}
-              onClick={() => {
-                setIsOpen(false);
-                void openRecentWorkspace(ws.path, "workspace-menu-recent");
-              }}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
-            >
-              <span className="w-4" />
-              <span className="truncate">{folderName(ws.path)}</span>
-            </button>
-          ))}
-
-          <div className="my-1 border-t border-border" />
-
-          <button
-            type="button"
-            onClick={handleOpenOther}
-            disabled={workspaceBusy}
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
-          >
-            <span className="w-4" />
-            {t("workspaceMenu.openOther")}
-          </button>
-          <button
-            type="button"
-            onClick={handleOpenOther}
-            disabled={workspaceBusy}
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
-          >
-            <span className="w-4" />
-            {t("workspaceMenu.newWorkspace")}
-          </button>
-
-          <div className="my-1 border-t border-border" />
-
-          <button
-            type="button"
-            onClick={handleShowLauncher}
-            disabled={workspaceBusy}
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
-          >
-            <span className="w-4" />
-            {t("workspaceMenu.startScreen")}
-          </button>
-        </div>
-      )}
-    </div>
+      <ProjectMenuDialogs state={projectMenu} restoreFocusRef={triggerRef} />
+    </>
   );
 }

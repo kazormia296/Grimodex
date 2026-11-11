@@ -105,7 +105,7 @@
     },
     {
       "path": "electron/scripts/product-journey-catalog.mjs",
-      "sha256": "de4300e6b189f624809197ff04796a60d248b346b2d0329e32bfe9ff8ea69c42"
+      "sha256": "fe90a227aeed054ad6b2e188c54a217e95a1e565abcbd578d57683e072a859f6"
     },
     {
       "path": "src/features/chat/chatScopeRegistry.json",

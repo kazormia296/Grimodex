@@ -474,7 +474,7 @@ ON→OFF（`enabled === false`）:
 | 2 | `timelapse/toggle.ts`（新規） | `setTimelapseEnabled(projectId, enabled)`（§15.6/15.7） |
 | 3 | `project/projectStore.ts:94-102` | 設定を読んで条件付き enable（§15.5）/ `CreateProjectInput` + `createNewProject` で `setProjectSetting`（§15.4-3,4） |
 | 4 | `project/CreateProjectDialog.tsx` | チェックボックス追加（§15.4-1） |
-| 5 | `project/ProjectMenu.tsx:61-81` | `handleCreate` で flag 伝搬（§15.4-2） |
+| 5 | `project/ProjectMenuDialogs.tsx:36-64` | `handleCreate` で flag 伝搬（§15.4-2） |
 | 6 | `settings/types.ts` | `KEY_SCOPE` + `DEFAULT_SETTINGS` に `timelapse.enabled`（§15.3-1,2） |
 | 7 | `settings/categories/ProjectCategory.tsx` | トグル行 + wipe ハンドラ配線（§15.3-3,6） |
 | 8 | `locales/ja.json` / `en.json` | `settings.project.timelapse*` ラベル（§15.3-4） |
