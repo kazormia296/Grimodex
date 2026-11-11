@@ -951,3 +951,99 @@ worker の係数 37 µs×S×R の外挿は後は成り立たない（新しい�
 - 場面数の admission の追加（今通る入力を拒むので確認が要る。採らない）。S の枯渇（約 4,800 場面）の解消（別 lane）。
 - 実 worker の試験を `scripts/nir1-c-query-worker-ci.sh lifecycle` に足すこと（Full admission の sizing source digest と reviewed workload data の更新が要る。別の決定）。
 - memo が一定の大きさを超えたら保持しない上限（結果を変えず何も拒まないので委任内だが、gate で S の余裕が足りないと分かった場合の対処として残す。今は入れない）。
+
+## DR-GRW-5 scope authority の load の一時領域を減らす（extension の digest を流す、nodes／scenes の早い drop、mappings の事前確保）
+
+2026-11-11 の 5 件目。基点は `origin/master` の `7edc29ba`（DR-GRW-1〜4 を含む）、branch は
+`claude/graph-scope-digest-stream`。設計の正本は
+`fusion-eval-data/design-notes/db-connection-2026-11-07/s-exhaustion-2026-11-11.md`（read-only の調査。§1 の内訳、§3 の案 1b・2・3、§3.8 の見積り、§6 の未確認）。
+ユーザーが 2026-11-11 に決めた lane（Graph の query を使える場面数を約 1,000 にする計画の最初の一歩）。
+**値（上限・閾値・契約・authority・admission・schema）は変えない。結果・seal・digest・エラーの種類と順・VM steps・progress callback の回数も変えない。**
+動くのは、scope authority の load の間に同時に生きる Rust の確保の量（S と Q の peak）だけで、下がる方向にだけ動く。
+
+### 原因
+
+registration の 3 番目の scratch scope の中で、live の Scope authority の load
+（`load_live_project_scope_authority_in_snapshot`、bindings を集める版）が、場面あたり約 10 KB（Talc の `allocated_bytes`）を一時に使う。
+S（64 MiB）は約 4,800 場面で枯渇し、worker が `handle_alloc_error` で abort する（READY 前）。
+
+- **10 KB の内訳【計算。実測の 9.95〜10.04 KB と 3〜5% 以内で合う】**：binding ごとの `serde_json::Value` 木が 2 本（`bindings: Vec<Value>` の本体と、
+  最後の `canonical_json_digest(&json!({… "bindings": bindings}))` の `json!` が `to_value(&bindings)` で作る deep copy）で約 8.6 KB、
+  `scene_bindings` の BTreeMap が約 0.94 KB、nodes／scenes／mappings が約 0.64 KB（nodes と scenes は使い終えても関数の終わりまで生きる）。
+- **51 MB で落ちる理由**：断片化ではない。Talc は 1 確保ごとに tail 8 B を足して 32 B に切り上げるので、peak の確保の約 150 個/場面（小さなものが大半）で
+  実際に heap を占める量（C）は `allocated_bytes`（A）の約 1.31 倍になる。67.1 MB を 1.31 で割ると約 51 MB で、失敗点（50.1〜51.4 MB）と合う。
+- **同じ関数を query（C-query の `Nir1ProjectReads::load`）も通る**ので、同じ一時の peak が Q（16 MiB）にも載る。
+
+### 決定
+
+次の 3 つの変更を 1 件で行う（どれも読み取り専用の経路の実装の変更で、値を変えない）。
+
+1. **extension の digest を、行ごとに `CanonicalJsonStream` へ流す**（案 1b）。`scene_scope.rs` の `read_scope_extension` で、`bindings: Vec<Value>` と
+   `json!({…"bindings": bindings})` をやめる。loop の前に `CanonicalJsonStream::digest()` を作って `begin_object`、`key("bindings")`、`begin_array` を書き、
+   行ごとに（今と同じ `Value`、行ごとの一時）`stream.value(&…)` で 1 要素を書く。loop の後に `end_array`、`key("contractId")`、`key("registry")`、
+   `key("registryRevision")`、`key("registrySourceToken")` の順で書き、`end_object`、`finish_digest`。
+2. **`nodes` と `scenes` を、使い終えた所で drop する**（案 2）。`project_scope_authority.rs` の `load_live_project_scope_authority_in_snapshot` で、
+   `derive_live_scene_projection` の直後に `drop(nodes)`、`build_narrative_project_scope_authority_v1` の直後に `drop(scenes)`。
+3. **mappings を `Vec::with_capacity(scenes.len())` で作る**（案 3）。core の `build_narrative_project_scope_authority_v1` の
+   `collect::<Result<Vec<_>, _>>()`（size hint の下限が 0 なので倍々に伸びる）を、for と push と `?` に書き換える。
+
+### 変わる点
+
+- **S と Q の peak が下がる。** 設計メモの見積り（C、短い id、`allocated` の A は括弧内）：1b で −11.5 KB/場面（A −8.6 KB。Value 木 2 本が消える）、
+  2 で −0.46 KB（A −0.33 KB）、3 で capacity の余りの分 −0.1〜0.14 KB。20,000 場面の C/S は 400% から約 58%（UUID の id で約 66%）の見込み。
+  実測は gate の「memory」に書く（未測定の間は書かない）。S の枯渇の場面数は約 4,800 から約 35,000 に上がる見込みで、**今は abort する形が通るようになる**
+  （通る方向にだけ動く）。それ以外の上限（START_TIMEOUT 30 s、index の build の 180 s、600M steps、query の A3 の 2,048 records）は別の壁として残る。
+- 行ごとの一時（binding の `Value`）は残る。1 行ずつ作って流して捨てるので、peak には入らない。
+
+### 変わらない点（試験で固定する）
+
+- extension の digest は 1 bit も変わらない。旧の `json!` の形は、`#[cfg(test)]` の oracle として試験に残し、新しい流しと
+  場面数・binding の形の組で digest と `scene_bindings` を `assert_eq` する（空、1 件、多数、unicode／escape の要る文字列、数値、null、入れ子、unavailable の行）。
+  - 旧の digest は `canonical_json_digest(Value)`（object の key を UTF-16 順に並べて書く）。上位の key の UTF-16 順は
+    `bindings < contractId < registry < registryRevision < registrySourceToken` で、stream に書く順と同じ（`stream.key` は順が違えば `KeyOrder` で止まるので、実行時にも検査される）。
+  - `stream.value` は旧と同じ `write_value` を呼ぶので、要素ごとの bytes は同じ。配列の要素は `ORDER BY b.scene_id` の順のまま。
+- エラー：loop の中の `?`（`to_value(binding)`、`rawDigest`）の位置と順は変わらない。stream の書込みが失敗しうるのは、key の順（固定の literal で起きない）、
+  sink の IO（SHA の sink は失敗しない）、数値の非有限（整数だけで起きない）。どれも実行時に到達しないので、エラーの集合と順は旧と同じ。
+  旧の `json!` は `.unwrap()` で取り込んでいたので、panic していた経路も無い。
+- `scene_bindings` の中身と順、`LiveProjectScopeRead`、authority の `revision_token`（revision token の golden を試験で固定）、mappings の要素・順・最初に `Err` になる添字。
+- SQL、bind、行の読み方（`rows` を先に全部読む順も変えない。逐次処理にするとエラーの順が変わりうるので採らない）、progress callback の位置と回数（Rust の処理が減るだけで SQL は同じ）。
+- 閾値の値、schema、契約、authority、依存、他の入口。**この 2 つの関数は registration と C-query の両方が通るので、両方の経路で同じ値を返す**（CQ-AVAIL の shared／unshared の oracle で確かめる）。
+
+### 信頼境界
+
+呼び出し元と入力は変わらない（同じ接続、同じ thread、同じ snapshot の中の読みだけ）。新しい送信先、保存範囲、契約、authority、schema、依存、閾値の値の変更は無い。
+秘密・データの流れは変わらない。digest に入る bytes は同じなので、renderer・main・MCP から見える token も変わらない。
+
+### owner／lifecycle の表（GDX-PRECHECK-001）
+
+新しい thread、接続、待ち、状態、handle、取消点、再開の状態は無い。`CanonicalJsonStream` は関数の中のローカルの値で、`?` と unwind で drop される
+（SHA の sink だけを持ち、SQLite の handle を持たない）。早い drop は寿命を縮めるだけ（`Vec<String>` の Drop に外から見える作用は無い）。
+
+| 項目 | 前後 |
+| --- | --- |
+| 入口・開始・再試行・再入・admission・取消・有限の待ち | 変えない |
+| 有効な handle の所有 | 足さない（stream は Rust の値だけを持つ） |
+| 終了の証拠 | 変えない（worker の終了、ROLLBACK、zero-live の seal。peak が下がるだけ） |
+| error／timeout／onClosed の所有 | 変えない。新しい失敗の経路は足さない |
+| 保存される再開の状態 | 無い |
+
+### 試験
+
+- `scene_scope.rs` の試験：旧の実装を `#[cfg(test)]` の `scope_extension_digest_reference`（旧の `json!` の形）として置き、新旧の digest と `scene_bindings` が等しいことを比べる
+  （上の「変わらない点」の fixture の形）。既存の scope authority・registration・C-query の試験と revision token の golden が、すべて通ること。
+- core：mappings の既存の試験と golden（最初に `Err` になる添字が変わらないこと）。
+- memory は dev の再測定（製品の commit には入れない）。
+
+### 試験の限界
+
+- 新旧の同値は、fixture の形の集合で示す（有限）。key の順の不変は `stream.key` の実行時の検査が守る。
+- memory の見積り（設計メモ）は型の大きさの推定を含み、3〜5% 高めに出る。判定は実測（dev）の値で行う。
+
+### gate
+
+実装後に結果を書く（このブランチの docs commit の後に追記する）。
+
+### やらないこと（別の決定）
+
+- core の build の digest 3 本を流す（案 5）、`scene_bindings` を詰める（案 6）、成功した行で `raw` を作らない（案 7）。1b＋2＋3 の実測で足りなければ別の DR で採る。
+- S の大きさの変更、場面数の admission の新設、query の A3 の数え方や 2,048 の変更（確認済みの値・閾値の変更なので、この lane では扱わない）。
