@@ -191,11 +191,12 @@ describe("ProjectMenu (in the unified WorkspaceMenu)", () => {
     });
   });
 
-  it("opens create dialog from menu", () => {
+  it("opens create dialog from menu", async () => {
     render(<WorkspaceMenu />);
     fireEvent.click(screen.getByTestId("workspace-menu-trigger"));
     fireEvent.click(screen.getByTestId("project-create-open"));
-    expect(screen.getByTestId("mock-create-submit")).toBeInTheDocument();
+    // 作成ダイアログは初めて開くときに読み込む（起動時に読む JS に入れない）。
+    expect(await screen.findByTestId("mock-create-submit")).toBeInTheDocument();
   });
 
   it("calls onOpenImport when import is clicked", () => {

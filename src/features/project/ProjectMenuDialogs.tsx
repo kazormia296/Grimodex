@@ -1,14 +1,21 @@
-import { useState, type RefObject } from "react";
+import { lazy, Suspense, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useProjectStore, useCurrentProjectId } from "./projectStore";
-import { CreateProjectDialog } from "./CreateProjectDialog";
 import { isLicenseRestrictedError } from "@/features/license/gate";
 import { ResponsiveAlertDialog } from "@/components/ui/responsive-alert-dialog";
 import { DialogFooter } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { useWorkspaceViewportProfile } from "@/runtime/workspaceViewportContext";
 import type { ProjectMenuState } from "./ProjectMenu";
+
+// 作成ダイアログのフォームは、初めて開くときに読み込む。統合メニューは
+// ヘッダーに常に描かれるので、静的に import すると起動時に読む JS に入る。
+const CreateProjectDialog = lazy(() =>
+  import("./CreateProjectDialog").then((module) => ({
+    default: module.CreateProjectDialog,
+  })),
+);
 
 interface ProjectMenuDialogsProps {
   state: ProjectMenuState;
@@ -28,8 +35,8 @@ export function ProjectMenuDialogs({
   const deleteProjectById = useProjectStore((s) => s.deleteProjectById);
   const phoneWorkspace = useWorkspaceViewportProfile() === "phone";
   const { createOpen, closeCreate, pendingDeleteId, cancelDelete } = state;
-  // 作成ダイアログは初めて開くときに mount し、以後は閉じる動きのために残す。
-  // ヘッダーの描画のたびに重いフォームを mount しない。
+  // 作成ダイアログは初めて開くときに読み込んで mount し、以後は閉じる動きの
+  // ために残す。
   const [createMounted, setCreateMounted] = useState(createOpen);
   if (createOpen && !createMounted) setCreateMounted(true);
 
@@ -82,13 +89,15 @@ export function ProjectMenuDialogs({
   return (
     <>
       {createMounted && (
-        <CreateProjectDialog
-          open={createOpen}
-          onClose={closeCreate}
-          projects={projects}
-          defaultSourceProjectId={currentProjectId}
-          onCreate={handleCreate}
-        />
+        <Suspense fallback={null}>
+          <CreateProjectDialog
+            open={createOpen}
+            onClose={closeCreate}
+            projects={projects}
+            defaultSourceProjectId={currentProjectId}
+            onCreate={handleCreate}
+          />
+        </Suspense>
       )}
 
       <ResponsiveAlertDialog
