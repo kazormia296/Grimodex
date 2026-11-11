@@ -20,7 +20,7 @@ export interface CreateChronicleEventOperationPayloadV1 {
   readonly kind: "generic";
   readonly precision: "unknown";
   readonly placement: FractionalPlacement;
-  readonly secret: boolean;
+  readonly secret: true;
   readonly revealSceneId: string;
   readonly evidenceSceneLinks: readonly {
     readonly sceneId: string;
@@ -121,7 +121,10 @@ export function compileCreateChronicleEventOperation(
         mode: "append-tail",
         afterOrdinal: options.afterOrdinal ?? null,
       },
-      secret: proposal.disclosure.secret,
+      // 版の disclosure.secret は IR（関連場面の検索）の関門。年表の出来事は
+      // 版の値に関わらず常に secret で作る（DR-CAS-1）。Native の
+      // compile_current_chronicle_event_operation_payload と同時に変えること。
+      secret: true,
       revealSceneId: revealDocument.origin.nodeId,
       evidenceSceneLinks: [...linksByScene.values()].map((link) => ({
         sceneId: link.sceneId,

@@ -97,7 +97,7 @@
     },
     {
       "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs",
-      "sha256": "deb4643e2cc3e1a6a9ffb8beee2d3c843dd06cd7611c92ff183b0257be4ba73e"
+      "sha256": "d5eeda71b0250697a90c63e4dc9c2645d534952f6f4969c39ff64d21c2acef6d"
     },
     {
       "path": "electron/scripts/product-journey-harness.mjs",

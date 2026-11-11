@@ -109,7 +109,7 @@ fn event_payload() -> Value {
         "kind": "generic",
         "precision": "unknown",
         "placement": { "mode": "append-tail", "afterOrdinal": null },
-        "secret": false,
+        "secret": true,
         "revealSceneId": "scene-1",
         "evidenceSceneLinks": [{
             "sceneId": "scene-1",
