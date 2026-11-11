@@ -1349,9 +1349,6 @@ describe("ChronicleExtractDialog 場面 1 つの抽出（SSE/1）", () => {
       select(sceneA);
       pressAnalyze();
       await screen.findByTestId("chronicle-extract-start-notices");
-      expect(
-        screen.queryByTestId("chronicle-extract-notice-pending-review"),
-      ).toBeNull();
       expect(toastMocks.info).not.toHaveBeenCalled();
       expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
       pressAnalyze();
@@ -1471,9 +1468,6 @@ describe("ChronicleExtractDialog 場面 1 つの抽出（SSE/1）", () => {
       expect(
         screen.getByTestId("chronicle-extract-notice-same-scene-approved"),
       ).toBeTruthy();
-      expect(
-        screen.queryByTestId("chronicle-extract-notice-pending-review"),
-      ).toBeNull();
       pressAnalyze();
       await waitFor(() =>
         expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(

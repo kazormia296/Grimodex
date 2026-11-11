@@ -556,9 +556,10 @@ test("the setup sets the main-line project default with the read baseVersion, an
     payload.default.queryIdentity,
     payload.default.materialConstraint,
   );
-  assert.deepEqual(payload.default.queryIdentity.timeline, {
-    kind: "exact",
-    ref: "timeline:main",
+  assert.deepEqual(payload.default.queryIdentity, {
+    timeline: { kind: "exact", ref: "timeline:main" },
+    worldline: { kind: "exact", ref: "worldline:prime" },
+    narrativeLayer: { kind: "exact", ref: "layer:manuscript" },
   });
   const good = ["a", "b", "c"].map((sceneId) => ({
     sceneId,

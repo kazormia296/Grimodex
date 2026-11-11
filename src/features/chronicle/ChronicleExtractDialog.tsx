@@ -490,7 +490,7 @@ export function ChronicleExtractDialog({
         toast.info(
           t(
             "chronicle.extract.noticePendingReview",
-            "前の組の提案が{{count}}件残っています。提案は消えません。新しい組の提案をすべて取り込むか拒否すると、前の組に戻れます。承認済みで秘密の印を外した提案は、取り込まなくても関連場面に使われます。",
+            "前の組の提案が{{count}}件残っています。提案は消えません。新しい組の提案をすべて取り込むか拒否すると、前の組に戻れます。承認済みで秘密の印を外した提案は、取り込まなくても関連場面に使われることがあります。",
             { count: pendingCount },
           ),
         );
