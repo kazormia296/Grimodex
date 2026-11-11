@@ -304,40 +304,39 @@ pub fn build_narrative_project_scope_authority_v1(
         })
         .collect::<Result<HashMap<_, _>, _>>()?;
 
-    let mappings = scenes
-        .iter()
-        .enumerate()
-        .map(|(index, scene)| {
-            let reading_rank = u64::try_from(index)
-                .map_err(|_| invalid("Reading rank exceeds the u64 contract"))?;
-            let story_time_order = match scene.raw_story_key.as_deref() {
-                None => NarrativeScopeAuthorityStoryTimeOrderV2::unresolved_not_provided(),
-                Some(raw_story_key)
-                    if story_counts.get(raw_story_key).copied().unwrap_or_default() > 1 =>
-                {
-                    NarrativeScopeAuthorityStoryTimeOrderV2::unresolved_ambiguous(
-                        raw_story_key.to_owned(),
-                    )
-                }
-                Some(raw_story_key) => NarrativeScopeAuthorityStoryTimeOrderV2::Resolved {
-                    raw_story_key: raw_story_key.to_owned(),
-                    story_rank: story_ranks
-                        .get(raw_story_key)
-                        .copied()
-                        .ok_or_else(|| invalid("unique story key is missing its derived rank"))?,
-                },
-            };
+    // `collect::<Result<Vec<_>, _>>()` has a size-hint lower bound of 0 and
+    // grows by doubling; the length is known, so allocate it once.
+    let mut mappings = Vec::with_capacity(scenes.len());
+    for (index, scene) in scenes.iter().enumerate() {
+        let reading_rank =
+            u64::try_from(index).map_err(|_| invalid("Reading rank exceeds the u64 contract"))?;
+        let story_time_order = match scene.raw_story_key.as_deref() {
+            None => NarrativeScopeAuthorityStoryTimeOrderV2::unresolved_not_provided(),
+            Some(raw_story_key)
+                if story_counts.get(raw_story_key).copied().unwrap_or_default() > 1 =>
+            {
+                NarrativeScopeAuthorityStoryTimeOrderV2::unresolved_ambiguous(
+                    raw_story_key.to_owned(),
+                )
+            }
+            Some(raw_story_key) => NarrativeScopeAuthorityStoryTimeOrderV2::Resolved {
+                raw_story_key: raw_story_key.to_owned(),
+                story_rank: story_ranks
+                    .get(raw_story_key)
+                    .copied()
+                    .ok_or_else(|| invalid("unique story key is missing its derived rank"))?,
+            },
+        };
 
-            Ok(NarrativeProjectScopeAuthorityMappingV1 {
-                source_key: format!("{PROJECT_SCENE_PREFIX}{}", scene.scene_id),
-                scene_ref: format!("{SCENE_REF_PREFIX}{}", scene.scene_id),
-                reading_order_ref: format!("{READING_REF_PREFIX}{}", scene.scene_id),
-                story_time_ref: format!("{STORY_REF_PREFIX}{}", scene.scene_id),
-                reading_rank,
-                story_time_order,
-            })
-        })
-        .collect::<Result<Vec<_>, NarrativeProjectScopeAuthorityError>>()?;
+        mappings.push(NarrativeProjectScopeAuthorityMappingV1 {
+            source_key: format!("{PROJECT_SCENE_PREFIX}{}", scene.scene_id),
+            scene_ref: format!("{SCENE_REF_PREFIX}{}", scene.scene_id),
+            reading_order_ref: format!("{READING_REF_PREFIX}{}", scene.scene_id),
+            story_time_ref: format!("{STORY_REF_PREFIX}{}", scene.scene_id),
+            reading_rank,
+            story_time_order,
+        });
+    }
 
     let mut authority = NarrativeProjectScopeAuthorityV1 {
         project_id: project_id.to_owned(),
