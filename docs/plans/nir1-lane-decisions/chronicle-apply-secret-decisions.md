@@ -41,3 +41,22 @@
 | 評価の harness（CP-4、IR の評価） | 変わらない。取り込みを呼ばない（`scripts/quality/nir1-graph-eval/`） | 2026-11-11 に確認 |
 
 外部への送信、subprocess、背景の処理、非同期の lifecycle は変えない。新しい保存先と IPC は足さない。
+
+## 実装後の追記（2026-11-11）
+
+上の判断と影響の表は、mutation の前の記録としてそのまま残す。実装、独立の受入れレビュー（候補に触らない read-only）、追加の調査で分かったことを、ここに足す。
+
+| ID | 追記 |
+| -- | ---- |
+| DR-CAS-2 | 理由のうち「提案への束縛の検査は、操作の `proposal_id` が空だと丸ごと飛ばされる」は不正確だった。操作のループの中では飛ぶが、同じ検証の末尾が、`proposal_id` が空の操作を `NEX_COMMIT_APPLICATIONS_MISMATCH` で必ず拒む。新しい検査を出来事の作成の腕の先頭に置く判断は変えない（形式の枝や束縛の有無より前に、操作そのものへ掛かる）。古い形式の枝の実際の挙動は次のとおり。保存済みの版が非 secret なら、操作が非 secret のときは新しい検査（`NEX_CHRONICLE_APPLY_SECRET_REQUIRED`）、操作が secret のときは版との照合（`NEX_PROPOSAL_PAYLOAD_MISMATCH`）で拒まれ、どちらも取り込めない。保存済みの版が secret なら、今までどおり取り込める |
+| DR-CAS-3 | 足した bool の検査には処理が届かない。手前の版の検証（`validate_chronicle_scene_event_proposal_payload`）が、bool でない `disclosure.secret` を先に拒む。承認のときにも同じ検証が拒む。足した検査は予備として残す。試験は「既存の検証が、規則の変更の後も bool でない版を通さない」ことの固定である |
+| DR-CAS-4 | 脅威モデルの受入れ「取り消しとやり直しの後も secret である」は、この規則の後の取り込みについての文として読む。規則の前に非 secret で取り込んだ出来事を取り消してやり直すと、記録どおり非 secret で戻る |
+| DR-CAS-5 | 結果：規則の前に準備した計画（操作が非 secret）を apply すると `NEX_CHRONICLE_APPLY_SECRET_REQUIRED` で拒まれ、年表の出来事は作られない。同じ提案の組を新しい request で準備し直すと、secret で取り込める（試験 `current_chronicle_prepared_before_the_rule_is_refused_and_can_be_prepared_again`）。古い準備済みの行は残る。製品の画面は、取り込みのたびに新しい request で準備から apply までを続けて呼び、古い準備済みの計画を使い回さない（受入れレビューの報告） |
+| DR-CAS-7 | 「承認した非 secret の版が、取り込みの後も IR の資格を持つ」は、資格の判定そのもの（`read_revision_retrieval_eligibility`）で固定した（`tests/narrative_nir1_retrieval_admission.rs`）。ただし、本物の取り込みではなく、取り込みが書く行（secret の出来事、場面への結び付け、取り込みの記録）を書いた後に判定する形である。理由は DR-CAS-8。書いた直後も、Freshness の周期を回した後も、資格は変わらなかった |
+| DR-CAS-8 | **今の製品では、作者が review で編集した版（secret を外した版を含む）は年表に取り込めない。** 取り込みは、版の Envelope の `revisionBasis.kind` が `interpretation` でなければ `NEX_V2_APPLY_BASIS_UNSUPPORTED` で拒む（`v2_apply_sources.rs` の `ensure_supported_intent`。prepare と apply の両方で、取り込む全件に掛かる。#566 で入った試行の制限）。取り込みは承認済みの全部が対象なので、編集して承認した提案が 1 件でもあると、その組の取り込みは全体が通らない。このため、「版は非 secret・年表の出来事は secret」の組は、今の経路ではまだ生じない。今の経路で取り込めるのは AI が出したままの版で、その secret は常に true である。**この PR は、今の製品の挙動を変えない。** 入るのは、画面側が非 secret の操作を出しても Native が拒む防御と、編集した版の取り込みを許すときの前提である。現状の制限は試験で固定した（`tests/narrative_nir1_retrieval_admission.rs`）。ユーザーは 2026-11-11 に、編集した版を「取り込めるようにする」と答えた（別の設計案と脅威モデルを書き、文面の確認の後に実装する） |
+
+**確認された下書きの記述の誤り。** `nir1-chronicle-apply-keeps-secret-proposal-1-draft.md` の §4 の「今は、review 画面の checkbox で secret を外して取り込むと、年表でも秘密でなくなる」と、★2 の質問の同じ説明は、事実と違った。今は、外した版は取り込めない（DR-CAS-8）。★2 の回答（区別しない）が効くのは、編集した版の取り込みを許した後である。ユーザーには 2026-11-11 に報告した。上の影響の表の「Graph の本文の開示の拒否」の行の代償（作者が個別に secret を外した版から取り込んだ出来事にも拒否が掛かる）も、同じく、その後に生じる。
+
+**受入れレビューの結果。** 漏れ（P0）と仕様違反・回帰（P1）は無かった。P2 の 3 件（DR-CAS-3 の検査に届かないことと試験の目的、DR-CAS-5 の結果の追記、IR の資格の判定そのものでの固定）は、この追記と試験の修正で解消した。確かめられた主な点：prepare と apply の両方が同じ検証を通る／apply は封じた計画を 1 回だけ読み、同じ値に検証と実行を掛ける／抽出の取り込みで年表の出来事を作るのは出来事の作成の操作だけで、rekey、cutover、restore、保守は出来事を書かない／Redo は取り込み直後の値を戻す／画面側と Native は同じ版から同じ操作を組み立てる／片方だけが元に戻っても、照合か新しい検査で拒まれる／人物、伏線、プロットの取り込みには影響しない。
+
+**未確認のまま。** 古い形式の年表の抽出が、今の製品で取り込みまで届くか。年表から AI への秘密の判定（chat の tool、年表の snapshot、MCP）のコードそのものは、この PR では読み直していない（判定のコードに差分は無い）。
