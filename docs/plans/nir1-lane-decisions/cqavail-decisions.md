@@ -8,7 +8,7 @@
 | DR-CQA-4 | 2026-10-14 | CQ-AVAIL（レビュー指摘の修正） | Full workload allocation の worker.q512 の reviewed inventory を、新しい Q512 fixture（materials 164、registry の参照 5、材料の無い Scene 60）で再導出する。式は pages = 679 + 21×materials + 93 + refs に、材料の無い Scene の項（Scene ごとに tree_nodes／FTS／Scene binding の 20 の table・index 面に 1 page ずつ）を足す。式の導出は schema-contract.json と sqlite_master の数え直しによる。派生する fullMemoryRisk の「other-full-consumers」の DB 項と、その合計の試験定数、docs/pr610-full-workload-risk.md の数値も合わせる。journey の inventory（schema baseline + 旧 Q512 の mutation image の size class）は再導出しない | 資源の見積りを増やす方向だけ（安全側）。新しい送信先、保存範囲、閾値の緩和は無い。dataset は独立 review が前提なので、変更は PR 本文と台帳に残す | 式を変えず 679 + 21×164 + 93 + 5 = 4,221 pages にする（Scene 項なし。材料の無い Scene 60 の tree／Scene binding の行を見積りから落とす）。journey の inventory も新 Q512 に合わせて再導出する（製品 journey は C-query fixture を使わないので根拠が無い） | 指摘 P2（レビュー）が方針を示した | 該当なし | 不要 | 記録済み（実装前） |
 | DR-CQA-5 | 2026-10-14 | CQ-AVAIL（レビュー指摘の修正） | DR-CQA-3 の「読取と課金は 1 対 1」を、読取の回数（statement）の単位に限定する。Scope extension の LEFT JOIN が読む principal の Codex 行（knowledge holder／audience が character の binding あたり最大 2 行）は課金に入っていない既存の会計の穴で、本変更が増やしたものではない。課金は厳しくせず、残る制約として台帳に記録する。あわせて、課金された rows を製品側で観測する試験（test-only の hook）に置き換える | 上限の値は変えない。課金を厳しくする案は、DISCLOSURE_GLOBAL_ROWS_SQL の追加で A3 の観測 slot と steps の基準値が動き、別 lane の範囲になるので採らない | 課金に principal の行を足す（委任の範囲だが、SQL steps と診断 slot に波及する）。何もしない（台帳の「保守的な上限」が実際と食い違う） | 指摘 P3（レビュー）が両案を示した | 該当なし | 不要 | 記録済み（実装前） |
 | DR-CQA-6 | 2026-11-11 | C-query の場面数の壁（A-α）。枝 `claude/cquery-binding-join`（DR-GRW-5＝#862 の head の上） | Scope extension の binding の SELECT から `LEFT JOIN tree_nodes` を外し、`sceneOwned` を authority が読んだ nodes の「project の Scene の id の集合」で決める（読取 −N_b）。`DISCLOSURE_GLOBAL_ROWS_SQL` の binding の行の乗数を 2→1 にする（課金 −N_b。課金−実読の差 N_t−P は不変）。閾値（2,048 ほか）・bytes の乗数・tree の×2 は変えない | 上限の値は変えない。行の数では、課金されていなかった join の N_b を読まなくし、CQ-AVAIL から残っていた binding の 2 回目の N_b の課金を外す（下の「×2 の由来と、委任の判断」）。文の単位では binding の表の読みは減らず課金だけが減るので、DR-CQA-3 の線の内とは断じず、2026-11-11 にユーザーが承認した A-β（課金を実読に合わせる）の一部として扱う（統合者の判断）。同じ snapshot の読みだけ。新しい送信先・保存・契約・authority・schema は無い | 課金だけ減らす（緩和で [precheck]）。A-β（課金を実読に合わせる。確認が要る）。join を残す（床は 489 のまま） | 設計調査（`cquery-scene-wall-2026-11-11.md` §2、§4、§5.2）が A-α を「委任内の見込み」とした。実装後に advisor（read-only）に諮り、停止条件 1 の読み替え、床の限定、試験の allowlist 化、記述の訂正の指摘を受けて反映した | 承認済みの A-β の範囲（課金を実読に合わせる。2026-11-11 ユーザー決定）。値・新しい閾値・契約は変えない。principal の行を数える残りは A-β の PR で入れる | 不要（thread・handle・取消点・再開の状態を足さない。下の節） | 記録済み（実装と同じ commit に記録） |
-| DR-CQA-7 | 2026-11-12 | C-query の場面数の壁（A-β。行の課金を実読に合わせる）。枝 `claude/cquery-charge-actual`（DR-CQA-6＝#869 の head `f7ece285` の上） | `DISCLOSURE_GLOBAL_ROWS_SQL` の `tree_nodes` の COUNT の乗数を 2→1 にし（authority が tree を読むのは 1 回）、principal の Codex 行 P（Scope extension の binding の SELECT が `LEFT JOIN codex_entries kh`／`au` で読む行）を数える文 `SCOPE_EXTENSION_PRINCIPAL_ROWS_SQL` を `preflight_project_reads` に足す（×1。kh と au は別に数える）。P の文は extension の SELECT と同じ join の文（macro で 1 つの文字列）から作り、binding を読んで `COUNT(kh.id)+COUNT(au.id)` を返す。bytes の乗数・閾値（2,048 ほか）・registry・binding の×1・join の tree 行の 0 は変えない | 上限の値と bytes の乗数は変えない。数える行を実際に読む行に合わせるだけで、実読を下回る数え方は作らない（P は実読と同じ join の結果）。新しい送信先・保存・契約・authority・schema・依存は無い。同じ snapshot の中の読みが 1 文増える（binding を project 単位で 1 回走査し、codex を主キーで引く） | 表 `DISCLOSURE_GLOBAL_ROWS_SQL` に行を足す（診断の slot が 9 に衝突し、material rows と bytes の slot を全部ずらす）。binding の COUNT 文を `COUNT(*)+COUNT(kh.id)+COUNT(au.id)` にして 8 行のまま保つ（依頼の「文を足す」から外れる）。P を課金せず tree だけ×1 にする（実読を下回る緩和で承認の外）。bytes も×1 にする（4 Revision の台帳の壁が動くので別の決定） | 着手前に advisor（read-only）に 1 回諮った（表の外に足す、slot は末尾の 23、P の文は extension の FROM を写す、512 の扱い、床は bisect で取り直す）。実装後にもう 1 回諮る | 2026-11-11 にユーザーが承認した A-β（「数える行を実際に読む行に合わせる（約 978 場面）。数え方の緩和に当たる。上限 2,048 の値は変えない」）の範囲の**行（rows）の課金だけ**。bytes の乗数は変えない（別の決定）。値・契約・新しい閾値・D2・B・100 ms の壁・主人公級は含まない | 不要（thread・handle・取消点・再開の状態を足さない。下の節） | 記録済み（実装と同じ commit に記録） |
+| DR-CQA-7 | 2026-11-12 | C-query の場面数の壁（A-β。行の課金を実読に合わせる）。枝 `claude/cquery-charge-actual`（DR-CQA-6＝#869 の head `f7ece285` の上） | `DISCLOSURE_GLOBAL_ROWS_SQL` の `tree_nodes` の COUNT の乗数を 2→1 にし（authority が tree を読むのは 1 回）、principal の Codex 行 P（Scope extension の binding の SELECT が `LEFT JOIN codex_entries kh`／`au` で読む行）を数える文 `SCOPE_EXTENSION_PRINCIPAL_ROWS_SQL` を `preflight_project_reads` に足す（×1。kh と au は別に数える）。P の文は extension の SELECT と同じ join の文（macro で 1 つの文字列）から作り、binding を読んで `COUNT(kh.id)+COUNT(au.id)` を返す。bytes の乗数・閾値（2,048 ほか）・registry・binding の×1・join の tree 行の 0 は変えない | 上限の値と bytes の乗数は変えない。数える行を実際に読む行に合わせるだけで、実読を下回る数え方は作らない（P は実読と同じ join の結果）。新しい送信先・保存・契約・authority・schema・依存は無い。同じ snapshot の中の読みが 1 文増える（binding を project 単位で 1 回走査し、codex を主キーで引く） | 表 `DISCLOSURE_GLOBAL_ROWS_SQL` に行を足す（診断の slot が 9 に衝突し、material rows と bytes の slot を全部ずらす）。binding の COUNT 文を `COUNT(*)+COUNT(kh.id)+COUNT(au.id)` にして 8 行のまま保つ（依頼の「文を足す」から外れる）。P を課金せず tree だけ×1 にする（実読を下回る緩和で承認の外）。bytes も×1 にする（4 Revision の台帳の壁が動くので別の決定） | 着手前に advisor（read-only）に 1 回諮り（表の外に足す、slot は末尾の 23、P の文は extension の FROM を写す、512 の扱い、床は bisect で取り直す）、実装と測定の後にもう 1 回諮った（feature 付きの試験と clippy の取り直し、pin の確認、時間の対照の書き方、DR の記述の根拠、512 の説明、最終 HEAD での verify:quality の取り直し）。指摘は反映した | 2026-11-11 にユーザーが承認した A-β（「数える行を実際に読む行に合わせる（約 978 場面）。数え方の緩和に当たる。上限 2,048 の値は変えない」）の範囲の**行（rows）の課金だけ**。bytes の乗数は変えない（別の決定）。値・契約・新しい閾値・D2・B・100 ms の壁・主人公級は含まない | 不要（thread・handle・取消点・再開の状態を足さない。下の節） | 記録済み（実装と同じ commit に記録） |
 
 ## DR-CQA-6 の詳細（2026-11-11）
 
@@ -229,7 +229,7 @@ bare（N_t＝n＋1、N_b＝n、P＝0）の shared は 3n＋19 から 2n＋18 に
 
 - extension の SELECT は binding ごとに `kh` と `au` を `LEFT JOIN` し、join が成り立つ（`CASE WHEN kh.id IS NOT NULL`）列を最後の 2 列に返す。P の文はその FROM 句をそのまま使い、
   joined id を `COUNT` するので、P ＝ extension の最後の 2 列の合計。
-- 試験（`scene_scope_principal_rows_tests.rs`）で固定する：同じ join の文字列（macro の出力が 2 つの文で一致する）、P の文の plan（binding と codex を主キーで引き、`TEMP B-TREE`・`AUTOMATIC` が無い）、
+- 試験（`scene_scope_principal_rows_tests.rs`）で固定する：同じ join の文字列（macro の出力が 2 つの文で一致する）、P の文の plan（binding は project の index、codex は id〔主キー〕で seek し、`TEMP B-TREE`・`AUTOMATIC` が無い。`EXPLAIN QUERY PLAN` の行を assert する）、
   各形で「課金の P ＝ extension の SELECT が返す flag の合計＝ 手で数えた期待値」：reader だけ 0、holder だけ 1、audience だけ 1、同じ character を kh と au が指して 2、別の character で 2、
   別 project の character 0、character でない type（location）0、`$.ref` が無い・null・存在しない id・数値の ref・`{"kind":"reader"}`・不正な JSON・空文字・配列（CHECK を OFF にして書く）0、
   有効な principal の隣の無効な値が有効な方の行を消さないこと、project をまたがないこと（p2 の binding は p1 の P に入らない）。
@@ -237,7 +237,8 @@ bare（N_t＝n＋1、N_b＝n、P＝0）の shared は 3n＋19 から 2n＋18 に
   query の admission（`QueryUsage::rows`）で確かめる。budget の fixture の期待値の helper（`rows_charged_by_the_seed_query`）も、principal を別の数え方（subselect の join）で足して製品の課金と突き合わせる。
 - **「実読」の定義**：P は **join が成り立った行**（flag が 1 になる行）の数。SQLite は codex を主キーで引くので、ref が別 project の entry や character でない entry を指す binding では、
   その行に触れてから join の条件で落とす。落ちた行は P に入らない（依頼の定義＝extension の join に従う）。そのような ref は通常の経路では作られず
-  （principal の ref は character の id で、削除時に参照は無効化される）、あっても最大 2N_b 行の差で、1 行の主キーの seek 1 回の読み。これを数える案は取らなかった。
+  （binding が参照している character は、削除も type の変更も `NEX_SCENE_SCOPE_CHARACTER_REFERENCED` で拒否される。`scene_scope.rs` の試験を読んだ範囲で、本 PR では実行して確かめていない）、
+  あっても最大 2N_b 行の差で、1 行の主キーの seek 1 回の読み。これを数える案は取らなかった。
 
 ### 信頼境界
 
@@ -258,6 +259,9 @@ bare（N_t＝n＋1、N_b＝n、P＝0）の shared は 3n＋19 から 2n＋18 に
 | error／timeout／onClosed の所有 | 変えない。P の文の失敗は表の文の失敗と同じ経路（`?`）で戻る |
 | 保存される再開の状態 | 無い |
 
+P の文は tree と binding の COUNT を admit した後（rows が 2,048 以下であることを確かめた後）に走るので、走査する binding は高々 2,048 行。
+DR-CQA-5 が波及先に挙げた steps の基準値には、動いたものが無い（絶対値で pin した試験は無く、steps を見る試験は「共有読みで増えない」という相対の断言で、全件が通る。ignore の試験は測定の記録だけ）。
+
 ### 変わる点
 
 - **A-α 比で、principal が多い形は通る場面数が下がる（principal が全部 character の形で 652→約 491）。失敗の方向。**
@@ -276,7 +280,7 @@ bare（N_t＝n＋1、N_b＝n、P＝0）の shared は 3n＋19 から 2n＋18 に
   | principal が全部 character（P≈2N_b。base の 4 場面は reader のまま） | 489 | 652 | **491** |
 
   folder・note の形は、N_t を実読と同じ×1 にした分で A-α の 377 から上がる（633）が、bare の 979 には届かない（tree の行が 1 場面あたり約 2.1 行あるため）。
-  principal が全部 character の形は、実読ベースで課金されるので A-α の 652 から下がる（上の「A-α 比で…」）。半分の binding だけ character（P≈N_b）の形は 654（A-α と同じ）。
+  principal が全部 character の形は、実読ベースで課金されるので A-α の 652 から下がる（上の「A-α 比で…」）。半分の binding だけ character（P≈N_b）の形は、dev の仮実装の in-process で 654（A-α の 652 とほぼ同じ）。製品形では測っていない。
   principal の分布は、実データが無くて測れなかった（この機械の実 workspace に character の principal は 0 件。dev の調べ）。最悪の形（全部 character）を実測した。
 - 4 Revision（p4:300000）の 352／353 は動かない見込み（peak の台帳が先に当たり、bytes を変えないため）。実測は下記。
 - 診断の slot の長さ（23→24）。
@@ -304,6 +308,8 @@ bare（N_t＝n＋1、N_b＝n、P＝0）の shared は 3n＋19 から 2n＋18 に
 台帳（`nir1-c-query-acceptance-2026-10.md` の RB-5 や PF-1 の「Q512（charged rows 512）」）は、100 ms の lease の下で実 worker が frame を返すことの確認に使う。
 受入れの意味を持つのは **2,049 の拒否**（上限 2,048 ちょうどの 1 つ上）で、これは `unrelated_seed_edges` を詰め直して同じ値（2,049）に保った（A-α の 1,537→1,599 と同じ扱い。本 DR は 1,661）。
 Q512／registry33 の fixture の行は下げた（388／508）が、同じ fixture が同じ frame を同じ 100 ms の内に返すことは lifecycle で確かめる。
+台帳の「512 行の実 work が大きい形でも期限に収まる」（registry33、E=144）の「実 work」は、読む行（A2 288、A3 145、registry 66）で、本 DR では**変わらない**。変わったのは数え方だけ（512→510〔DR-CQA-6〕→508）。
+fixture を詰め直して 512 に戻すと dataset hash が動く（fixture は hash に束縛されている）ので、A-α と同じく期待値を下げた。これは統合者が覆せる判断で、覆す場合は fixture を作り直して hash を取り直す。
 
 ### やらないこと
 
@@ -345,6 +351,10 @@ dev 枝 `claude/dev-cquery-charge-actual-measure`（`ff2d4f81`＝本 DR の comm
 - **4 Revision（p4:300000）の 352／353 は動かない**：352 は available、353 は `other`（retained）。bytes を変えていないため。
 - **時間の対照（p4 の 352・337 場面、A-β 対 A-α〔基点 `383b8568`＝A-α＋harness〕、各腕 8 本、AB／BA の交互、開始時の loadavg 1.34、run の 1 分値は 1.2〜1.3）**：
   時間切れは A-β 0／16、A-α 0／16。worker 内 query_ms の中央値／最大は 352 場面で 79.5／80 対 85／86 ms、337 場面で 79.5／81 対 85／86 ms。owner の往復は 107〜108 対 108〜112 ms。
-  A-β が足した preflight の文（binding ごとの JSON の読み）は、100 ms の期限の余裕（約 15 ms）を食わなかった（A-β の方が約 5 ms 短かった。原因は未確認）。
+  harness（worker bin、allocator、`nir1_graph.rs` の trace）は両腕で同一（`git diff 383b8568 ff2d4f81` で確認）で、差は A-β の変更だけ。A-β の worker 内の時間は最大 81 ms で、期限 100 ms との差は約 19 ms 残った。
+  A-β の方が約 5 ms 短かったが、追加の文が速くなる理由は無いので、binary 間のばらつきの範囲と読み、追加の文のコストは A／B の対照からは分離できていない（DR-CQA-6 の対照にも説明できない数 ms の差がある）。
+  追加の文だけの時間は下の「P の文の単独の時間」で別に測った。
   DR-CQA-6 の対照（loadavg 2.3〜4.2）では両腕とも 6／16 が時間切れだった。時間の余裕が無い形は load しだいで 100 ms に当たる点は A-α と同じで、本 DR は変えていない。
+- **P の文の単独の時間**（release、4 Revision の 352 場面の project、200 回の中央値。dev 枝の `cq_principal_rows_statement_cost`、`p-statement.jsonl`）：
+  principal が reader だけなら 0.15 ms、全部 character（P＝690）なら 0.44 ms（binding の COUNT は 0.016 ms）。期限の余裕（約 19 ms）に対して小さい。
 - 限界：3 形の床だけ（半分だけ character・UUID・長い title は in-process の dev の測定のみ）。時間の対照は静かな時間帯の 1 回。principal の分布は実データが無く測れていない。

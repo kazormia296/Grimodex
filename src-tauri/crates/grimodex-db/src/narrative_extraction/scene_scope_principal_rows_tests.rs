@@ -259,11 +259,20 @@ fn the_counting_statement_seeks_by_project_and_codex_key() {
             !plan.contains("TEMP B-TREE") && !plan.contains("AUTOMATIC"),
             "{plan}"
         );
-        for alias in ["b", "kh", "au"] {
+        // The binding rows of the project by the project index, each Codex row
+        // by its key (`id`), not by a scan.
+        let line_of = |alias: &str| -> String {
+            plan.lines()
+                .find(|line| line.starts_with(&format!("SEARCH {alias} USING")))
+                .unwrap_or_else(|| panic!("{alias} is sought, not scanned:\n{plan}"))
+                .to_owned()
+        };
+        assert!(line_of("b").contains("(project_id=?)"), "{plan}");
+        for alias in ["kh", "au"] {
+            let line = line_of(alias);
             assert!(
-                plan.lines()
-                    .any(|line| line.starts_with(&format!("SEARCH {alias} USING"))),
-                "{alias} is sought, not scanned:\n{plan}"
+                line.contains("sqlite_autoindex_codex_entries") && line.contains("(id=?)"),
+                "{alias}: {plan}"
             );
         }
         Ok(())

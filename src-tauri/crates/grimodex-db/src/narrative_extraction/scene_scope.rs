@@ -970,7 +970,7 @@ macro_rules! scope_extension_principal_joins {
     };
 }
 
-pub(crate) const SCOPE_EXTENSION_SQL: &str = concat!(
+const SCOPE_EXTENSION_SQL: &str = concat!(
     "SELECT b.scene_id, b.scene_incarnation_id, b.compatibility_marker,
                 b.query_identity_json, b.material_constraint_json,
                 b.knowledge_holder_json, b.version, b.audience_json,
