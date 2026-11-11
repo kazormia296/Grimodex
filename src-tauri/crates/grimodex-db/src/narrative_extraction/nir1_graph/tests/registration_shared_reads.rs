@@ -18,6 +18,7 @@ use super::registration_statements::{
     add_decided, execute, live_statements, multi_fixture, scan_order, OVER_6_MIB_PAD,
 };
 use super::*;
+use crate::narrative_extraction::nir1_capacity::active_work_probe;
 use crate::narrative_extraction::nir1_capacity::project_read_probe::{self, Read};
 use crate::narrative_extraction::nir1_entity_relation_index::{
     self as index, with_unshared_project_reads,
@@ -52,6 +53,9 @@ struct Run {
     reads: BTreeMap<Read, usize>,
     callbacks: u64,
     checks: usize,
+    /// The Rust-side `check_active_work` calls, apart from the SQLite progress
+    /// callbacks (which `callbacks` mixes them with).
+    active_checks: usize,
     live_before: usize,
     live_after: usize,
 }
@@ -102,9 +106,11 @@ fn register_with(
             &mut scratch_scope,
         )
     };
-    let (result, reads) = project_read_probe::recording(|| match form {
-        Form::Shared => run(),
-        Form::Unshared => with_unshared_project_reads(&mut run),
+    let ((result, active_checks), reads) = project_read_probe::recording(|| {
+        active_work_probe::recording(|| match form {
+            Form::Shared => run(),
+            Form::Unshared => with_unshared_project_reads(&mut run),
+        })
     });
     let live_after = live_statements(&conn);
     assert!(conn.is_autocommit(), "the registration's read was ended");
@@ -130,6 +136,7 @@ fn register_with(
             reads,
             callbacks: 0,
             checks: 0,
+            active_checks,
             live_before,
             live_after,
         },
@@ -166,18 +173,59 @@ fn register(fixture: &Fixture, owner: CountingOwner, form: Form) -> Result<Run> 
     Ok(run)
 }
 
+/// The registration's source read (the roster and its digest) in one form: what
+/// the seal is made of, which an outcome that ends in `Ok(false)` does not show.
+fn source_in(
+    fixture: &Fixture,
+    form: Form,
+) -> std::result::Result<index::GraphEligibilitySource, String> {
+    let read = || {
+        fixture.authority.with_read_transaction(|conn| {
+            let mut scope = |operation: &mut dyn FnMut()| {
+                operation();
+                true
+            };
+            Ok(index::read_eligibility_source_with_control_and_scratch(
+                conn,
+                PROJECT,
+                &mut RegistrationOwner,
+                &mut scope,
+                Some(REGISTRATION_A2_LIMIT),
+            ))
+        })
+    };
+    let read = match form {
+        Form::Shared => read(),
+        Form::Unshared => with_unshared_project_reads(read),
+    };
+    read.expect("the read transaction")
+        .map_err(|error| format!("{error:#}"))
+}
+
 /// Both forms on one fixture. Asserts what must hold for every shape: the
-/// outcomes are the same, the same owner checks ran, the memo never made a read
-/// the oracle did not make or more of one, the memo never ran more progress
-/// callbacks, and neither form left a statement behind.
+/// outcomes are the same, the registration's source read (roster and digest) is
+/// the same, the same owner checks and the same Rust-side active-work checks ran,
+/// the memo never made a read the oracle did not make or more of one, the memo
+/// never ran more progress callbacks, and neither form left a statement behind.
 fn alike(name: &str, fixture: &Fixture) -> Result<(Run, Run)> {
     let shared = register(fixture, CountingOwner::new(None), Form::Shared)?;
     let unshared = register(fixture, CountingOwner::new(None), Form::Unshared)?;
     assert_eq!(shared.outcome, unshared.outcome, "{name}");
     assert!(shared.outcome.scope_closed, "{name}");
+    // An outcome that ends in `Ok(false)` shows neither the roster nor its digest,
+    // so a memo that remembered a wrong answer would pass the line above.
+    assert_eq!(
+        source_in(fixture, Form::Shared),
+        source_in(fixture, Form::Unshared),
+        "{name}: the source read (roster and digest)"
+    );
     assert_eq!(
         shared.checks, unshared.checks,
         "{name}: the same owner checks ran"
+    );
+    assert_eq!(
+        shared.active_checks, unshared.active_checks,
+        "{name}: the same Rust-side active-work checks ran"
     );
     assert!(
         shared.callbacks <= unshared.callbacks,
@@ -683,10 +731,13 @@ fn a_transient_failure_of_the_scope_read_skips_one_revision_only() -> Result<()>
     Ok(())
 }
 
-// A failure of the Epoch read is the registration's own failure: both forms end
-// in the same error at the same stage, and the failed read was not kept.
+// A failure of the Epoch read is the registration's own failure and ends the
+// whole registration, so there is no later read that could show the failure was
+// not kept. What this fixes: both forms end in the same error at the same stage,
+// and both made exactly one Epoch read, the one that failed (the memo neither
+// read ahead of the first use nor read again after the failure).
 #[test]
-fn a_failure_of_the_epoch_read_ends_alike_and_is_not_kept() -> Result<()> {
+fn a_failure_of_the_epoch_read_ends_both_forms_alike_at_its_first_read() -> Result<()> {
     let fixture = multi_fixture()?;
     let refuse = refuse_first_read_of("narrative_semantic_epochs");
     let (shared, _) = register_with(&fixture, CountingOwner::new(None), Form::Shared, &refuse)?;
@@ -699,6 +750,8 @@ fn a_failure_of_the_epoch_read_ends_alike_and_is_not_kept() -> Result<()> {
     );
     assert!(shared.outcome.seal.is_none());
     assert!(shared.outcome.scope_closed);
+    assert_eq!(shared.reads(Read::CurrentEpoch), 1);
+    assert_eq!(unshared.reads(Read::CurrentEpoch), 1);
     eprintln!(
         "epoch read refused: {:?} at {:?}",
         shared.outcome.result, shared.outcome.stage
@@ -868,11 +921,24 @@ fn a_stop_in_the_first_scope_load_ends_typed_in_both_forms() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 // The shared reads are prepared inside the registration's scratch scope: the
-// values the memo keeps are allocated in S, and nothing grows them after.
+// values the memo keeps are allocated in S, and nothing grows them after. The
+// authorizer is asked once per column of a prepared read, so the number of
+// events a read makes is fixed, and the events inside the scope are the reads'
+// count times that: the memo's inside count is the oracle's divided by the
+// number of times the oracle reads. What the registration reads outside the
+// scope is the same in both forms.
 #[test]
 fn the_shared_reads_are_made_inside_the_scratch_scope() -> Result<()> {
+    const TABLES: [&str; 4] = [
+        "tree_nodes",
+        "narrative_semantic_epochs",
+        "schema_data_migrations",
+        "narrative_scene_scope_bindings",
+    ];
     let fixture = multi_fixture()?;
     let seen = Arc::new(std::sync::Mutex::new(Vec::<(String, bool)>::new()));
+    // Per form: (outside, inside) authorizer events of each table, and the run.
+    let mut counted = Vec::new();
     for form in [Form::Shared, Form::Unshared] {
         seen.lock().unwrap().clear();
         let record = {
@@ -882,13 +948,7 @@ fn the_shared_reads_are_made_inside_the_scratch_scope() -> Result<()> {
                 let in_scope = Arc::clone(in_scope);
                 conn.authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
                     if let rusqlite::hooks::AuthAction::Read { table_name, .. } = context.action {
-                        if matches!(
-                            table_name,
-                            "tree_nodes"
-                                | "narrative_semantic_epochs"
-                                | "schema_data_migrations"
-                                | "narrative_scene_scope_bindings"
-                        ) {
+                        if TABLES.contains(&table_name) {
                             seen.lock()
                                 .unwrap()
                                 .push((table_name.to_owned(), in_scope.load(Ordering::SeqCst)));
@@ -903,27 +963,51 @@ fn the_shared_reads_are_made_inside_the_scratch_scope() -> Result<()> {
         assert_eq!(run.outcome.result, Ok(true));
         assert!(scopes > 0);
         let seen = seen.lock().unwrap();
-        let count = |table: &str, inside: bool| {
-            seen.iter()
-                .filter(|(name, scoped)| name == table && *scoped == inside)
-                .count()
-        };
-        // The Scope authority's tree is read only by its load, always in scope,
-        // once (shared) or per Revision (unshared). The authorizer is asked per
-        // column, so the loads are counted by the probe.
-        assert_eq!(count("tree_nodes", false), 0, "{form:?}");
-        assert!(count("tree_nodes", true) >= 1, "{form:?}");
+        let events = TABLES.map(|table| {
+            let count = |inside: bool| {
+                seen.iter()
+                    .filter(|(name, scoped)| name == table && *scoped == inside)
+                    .count()
+            };
+            (count(false), count(true))
+        });
         let loads = if form == Form::Shared { 1 } else { 4 };
         assert_eq!(run.reads(Read::AuthorityTree), loads, "{form:?}");
         assert_eq!(
             run.reads(Read::CurrentEpoch),
             if form == Form::Shared { 1 } else { 12 }
         );
-        // The Epoch and marker reads the memo keeps are in scope: one of each
-        // (shared), where the oracle makes them per Revision.
-        assert!(count("narrative_semantic_epochs", true) >= 1, "{form:?}");
-        assert!(count("schema_data_migrations", true) >= 1, "{form:?}");
+        counted.push((events, run));
     }
+    let (shared, unshared) = (&counted[0], &counted[1]);
+    // How many times the oracle reads what the memo reads once.
+    let times = [
+        unshared.1.reads(Read::AuthorityTree),
+        unshared.1.reads(Read::CurrentEpoch),
+        unshared.1.reads(Read::C2zcMarker),
+        unshared.1.reads(Read::ScopeExtension),
+    ];
+    for (index, table) in TABLES.iter().enumerate() {
+        let ((shared_out, shared_in), (unshared_out, unshared_in)) =
+            (shared.0[index], unshared.0[index]);
+        // Nothing is read outside the scope but what both forms read there.
+        assert_eq!(
+            shared_out, unshared_out,
+            "{table}: events outside the scope"
+        );
+        // The memo's one read is inside the scope, and the oracle's N are the same
+        // read made N times.
+        assert!(shared_in >= 1, "{table}: no event inside the scope");
+        assert_eq!(
+            unshared_in,
+            shared_in * times[index],
+            "{table}: events inside the scope (memo {shared_in}, oracle {unshared_in}, \
+             oracle reads {})",
+            times[index]
+        );
+    }
+    // The tree is read only by the Scope authority's load.
+    assert_eq!(shared.0[0].0, 0);
     Ok(())
 }
 

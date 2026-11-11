@@ -153,6 +153,8 @@ fn state_for(conn: &Connection) -> SharedProgress {
 /// never installs a hook or executes SQL. Owners have the same no-reentrant-SQL
 /// requirement as when SQLite invokes their progress callback.
 pub(crate) fn check_active_work(conn: &Connection) -> anyhow::Result<()> {
+    #[cfg(test)]
+    active_work_probe::record();
     check_progress_state(&state_for(conn))
 }
 
@@ -693,6 +695,35 @@ pub(crate) mod project_read_probe {
             .with(|counts| counts.replace(previous))
             .unwrap_or_default();
         (result, counts)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod active_work_probe {
+    //! Counts the Rust-side `check_active_work` calls one operation makes on this
+    //! thread, apart from the SQLite progress callbacks the owner also sees
+    //! (DR-GRW-4: the memo moves no Rust-side check). Test-only; recording is off
+    //! until [`recording`] turns it on for a closure.
+    use std::cell::Cell;
+
+    thread_local! {
+        static COUNT: Cell<Option<usize>> = const { Cell::new(None) };
+    }
+
+    pub(crate) fn record() {
+        COUNT.with(|count| {
+            if let Some(n) = count.get() {
+                count.set(Some(n + 1));
+            }
+        });
+    }
+
+    /// Run `operation`, counting the `check_active_work` calls it makes.
+    pub(crate) fn recording<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+        let previous = COUNT.with(|count| count.replace(Some(0)));
+        let result = operation();
+        let counted = COUNT.with(|count| count.replace(previous)).unwrap_or(0);
+        (result, counted)
     }
 }
 
