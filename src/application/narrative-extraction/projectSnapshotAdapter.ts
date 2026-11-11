@@ -63,6 +63,22 @@ export interface ScopeFlushResult {
   }>;
 }
 
+/**
+ * How the requested Scene list relates to the folder.
+ * - `folder-exact` (default): the list must be exactly the folder's full
+ *   persisted DFS Scene list.
+ * - `requested-direct-children`: each requested Scene must be a direct child
+ *   Scene of the folder; other Scenes of the folder are neither required nor
+ *   read nor awaited. Never persisted: it is not part of the Run scope or spec.
+ */
+export type NarrativeSceneScopeMode =
+  | "folder-exact"
+  | "requested-direct-children";
+
+export interface NarrativeSceneScopeOptions {
+  readonly sceneScopeMode?: NarrativeSceneScopeMode;
+}
+
 export interface ProjectSnapshotAdapterServices {
   /** A detached renderer cannot observe or flush another window's dirty draft. */
   canFlushCompleteScope?: () => boolean | Promise<boolean>;
@@ -85,12 +101,16 @@ export interface ProjectSnapshotAdapterServices {
     projectId: string,
     folderId: string,
     sourceRows: readonly ProjectNarrativeSourceRow[],
+    /** Passed only when a non-default scope mode was requested. */
+    options?: NarrativeSceneScopeOptions,
   ) => Promise<void>;
   /** Optional production preflight; dependency-injected pure tests may omit it. */
   validateSceneScope?: (
     projectId: string,
     folderId: string,
     orderedSceneIds: readonly string[],
+    /** Passed only when a non-default scope mode was requested. */
+    options?: NarrativeSceneScopeOptions,
   ) => Promise<PersistedNarrativeSceneScopeResult>;
   /** Cross-registry revision used to repeat a scoped drain to a fixed point. */
   getScopeRevision?: () => string;
@@ -114,6 +134,11 @@ export interface ProjectNarrativeSnapshotRequest {
   language: string;
   sceneIds: readonly string[];
   authority: MutationAuthority;
+  /**
+   * Omitted means `folder-exact`. Transient adapter argument only; it must not
+   * be copied into a Run scope, spec digest, or sealed value.
+   */
+  sceneScopeMode?: NarrativeSceneScopeMode;
 }
 
 export type ProjectNarrativeSnapshotResult =
@@ -212,21 +237,26 @@ export function collectNarrativeExternalSourceUris(
   return [...sourceUris];
 }
 
+type PersistedFolderResolution =
+  | { readonly ok: true; readonly folder: PersistedNarrativeTreeNode }
+  | {
+      readonly ok: false;
+      readonly reason: "folder-unavailable" | "invalid-tree";
+    };
+
 /**
- * Resolve the same persisted DFS order used by the tree UI without trusting
- * the optimistic Zustand tree. Invalid/orphaned/cyclic subtrees are omitted,
- * which makes the caller fail closed when a requested Scene cannot be reached.
+ * The folder must exist as a folder and every ancestor up to the root must be
+ * a folder too (no cycles). Shared by the folder-exact and the
+ * requested-direct-children derivations so both mean the same thing.
  */
-export function derivePersistedNarrativeSceneScope(
-  nodes: readonly PersistedNarrativeTreeNode[],
+function resolvePersistedFolderWithAncestors(
+  nodesById: ReadonlyMap<string, PersistedNarrativeTreeNode>,
   folderId: string,
-): PersistedNarrativeSceneScopeResult {
-  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+): PersistedFolderResolution {
   const requestedFolder = nodesById.get(folderId);
   if (!requestedFolder || requestedFolder.nodeType !== "folder") {
     return { ok: false, reason: "folder-unavailable" };
   }
-
   const ancestorIds = new Set<string>();
   let ancestor: PersistedNarrativeTreeNode | undefined = requestedFolder;
   while (ancestor) {
@@ -243,6 +273,93 @@ export function derivePersistedNarrativeSceneScope(
     }
     ancestor = parent;
   }
+  return { ok: true, folder: requestedFolder };
+}
+
+/**
+ * `requested-direct-children` derivation. Returns the requested Scenes that
+ * are, in the persisted tree, direct child Scenes of the folder, in tree
+ * order. A requested id that is missing, not a Scene, or not a direct child is
+ * simply absent from the result, so the caller's existing "unavailable" /
+ * "changed" comparisons fail closed with their usual codes.
+ *
+ * Deliberately NOT checked: other Scenes of the folder, and the consistency of
+ * siblings that were not requested (duplicate sort keys, etc.). Checked: the
+ * folder and its ancestors, a requested Scene having children, and ambiguous
+ * (equal) sort keys between requested Scenes.
+ */
+export function deriveRequestedDirectChildSceneScope(
+  nodes: readonly PersistedNarrativeTreeNode[],
+  folderId: string,
+  requestedSceneIds: readonly string[],
+): PersistedNarrativeSceneScopeResult {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const folderResolution = resolvePersistedFolderWithAncestors(
+    nodesById,
+    folderId,
+  );
+  if (!folderResolution.ok) return folderResolution;
+
+  const parentIdsWithChildren = new Set<string>();
+  for (const node of nodes) {
+    if (node.parentId !== null) parentIdsWithChildren.add(node.parentId);
+  }
+  const accepted: PersistedNarrativeTreeNode[] = [];
+  for (const sceneId of new Set(requestedSceneIds)) {
+    const node = nodesById.get(sceneId);
+    if (!node || node.nodeType !== "scene" || node.parentId !== folderId) {
+      continue;
+    }
+    if (parentIdsWithChildren.has(node.id)) {
+      return { ok: false, reason: "invalid-tree" };
+    }
+    accepted.push(node);
+  }
+  accepted.sort((left, right) => cmpKeys(left.sortOrder, right.sortOrder));
+  for (let index = 1; index < accepted.length; index += 1) {
+    if (
+      cmpKeys(accepted[index - 1].sortOrder, accepted[index].sortOrder) === 0
+    ) {
+      return { ok: false, reason: "invalid-tree" };
+    }
+  }
+  return { ok: true, sceneIds: accepted.map((node) => node.id) };
+}
+
+/**
+ * Source URIs to settle/verify for `requested-direct-children`: only the
+ * requested Scenes' own files. The folder and external-mount root (`.mount`)
+ * are excluded: verification of a directory/mount target requires every file
+ * below it to be among the expectations, which sibling Scenes would break.
+ */
+export function collectRequestedSceneExternalSourceUris(
+  sourceRows: readonly Pick<ProjectNarrativeSourceRow, "sourceUri">[],
+): string[] {
+  return [
+    ...new Set(
+      sourceRows
+        .map((row) => row.sourceUri)
+        .filter((sourceUri): sourceUri is string => sourceUri !== null),
+    ),
+  ];
+}
+
+/**
+ * Resolve the same persisted DFS order used by the tree UI without trusting
+ * the optimistic Zustand tree. Invalid/orphaned/cyclic subtrees are omitted,
+ * which makes the caller fail closed when a requested Scene cannot be reached.
+ */
+export function derivePersistedNarrativeSceneScope(
+  nodes: readonly PersistedNarrativeTreeNode[],
+  folderId: string,
+): PersistedNarrativeSceneScopeResult {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const folderResolution = resolvePersistedFolderWithAncestors(
+    nodesById,
+    folderId,
+  );
+  if (!folderResolution.ok) return folderResolution;
+  const requestedFolder = folderResolution.folder;
 
   const childrenByParent = new Map<
     string | null,
@@ -302,6 +419,49 @@ export function derivePersistedNarrativeSceneScope(
     : { ok: true, sceneIds: orderedSceneIds };
 }
 
+/** Default `requested-direct-children` validation: reads only requested rows. */
+async function validateRequestedDirectChildScope(
+  projectId: string,
+  folderId: string,
+  requestedSceneIds: readonly string[],
+): Promise<PersistedNarrativeSceneScopeResult> {
+  await awaitPendingAuthoritativeMutations();
+  await waitForTreeTopologyMutationsIdle();
+  const initialScope = deriveRequestedDirectChildSceneScope(
+    await listNodes(projectId),
+    folderId,
+    requestedSceneIds,
+  );
+  if (!initialScope.ok) return initialScope;
+  const initialRows = await loadProjectNarrativeSourceRows(
+    projectId,
+    initialScope.sceneIds,
+  );
+  await settleExternalMountMutationsForSourceUris(
+    collectRequestedSceneExternalSourceUris(initialRows),
+    initialRows.flatMap((row) =>
+      row.sourceUri === null ? [] : [{ sourceUri: row.sourceUri }],
+    ),
+  );
+  const persistedScope = deriveRequestedDirectChildSceneScope(
+    await listNodes(projectId),
+    folderId,
+    requestedSceneIds,
+  );
+  if (!persistedScope.ok) return persistedScope;
+  const availableRows = await loadProjectNarrativeSourceRows(
+    projectId,
+    persistedScope.sceneIds,
+  );
+  const available = new Set(availableRows.map((row) => row.nodeId));
+  return {
+    ok: true,
+    sceneIds: persistedScope.sceneIds.filter((sceneId) =>
+      available.has(sceneId),
+    ),
+  };
+}
+
 export const defaultProjectSnapshotAdapterServices: ProjectSnapshotAdapterServices =
   {
     canFlushCompleteScope: async () => {
@@ -339,7 +499,24 @@ export const defaultProjectSnapshotAdapterServices: ProjectSnapshotAdapterServic
         sceneIds.flatMap(sceneDocumentKeys),
       ),
     loadSourceRows: loadProjectNarrativeSourceRows,
-    settleExternalSourceMutations: async (projectId, folderId, sourceRows) => {
+    settleExternalSourceMutations: async (
+      projectId,
+      folderId,
+      sourceRows,
+      options,
+    ) => {
+      if (options?.sceneScopeMode === "requested-direct-children") {
+        // Requested Scenes' own files only: no folder / `.mount` target.
+        await settleExternalMountMutationsForSourceUris(
+          collectRequestedSceneExternalSourceUris(sourceRows),
+          sourceRows.flatMap((row) =>
+            row.sourceUri === null
+              ? []
+              : [{ sourceUri: row.sourceUri, content: row.content }],
+          ),
+        );
+        return;
+      }
       const nodes = await listNodes(projectId);
       const folder = nodes.find(
         (node) => node.id === folderId && node.nodeType === "folder",
@@ -356,7 +533,19 @@ export const defaultProjectSnapshotAdapterServices: ProjectSnapshotAdapterServic
         ),
       );
     },
-    validateSceneScope: async (projectId, folderId) => {
+    validateSceneScope: async (
+      projectId,
+      folderId,
+      requestedSceneIds,
+      options,
+    ) => {
+      if (options?.sceneScopeMode === "requested-direct-children") {
+        return validateRequestedDirectChildScope(
+          projectId,
+          folderId,
+          requestedSceneIds,
+        );
+      }
       await awaitPendingAuthoritativeMutations();
       await waitForTreeTopologyMutationsIdle();
       const initialNodes = await listNodes(projectId);
@@ -718,7 +907,28 @@ export async function buildProjectNarrativeSnapshot(
       workspacePath: untrustedRequest.authority.workspacePath,
       workspaceOpenRevision: untrustedRequest.authority.workspaceOpenRevision,
     },
+    // Anything but the one explicit value stays folder-exact (fail closed).
+    ...(untrustedRequest.sceneScopeMode === "requested-direct-children"
+      ? { sceneScopeMode: "requested-direct-children" as const }
+      : {}),
   });
+  // Non-default options are forwarded only when selected, so the default path
+  // keeps calling the injected services with their original arguments.
+  const scopeOptions: NarrativeSceneScopeOptions | undefined =
+    request.sceneScopeMode === "requested-direct-children"
+      ? { sceneScopeMode: "requested-direct-children" }
+      : undefined;
+  const callValidateSceneScope = (
+    validate: NonNullable<ProjectSnapshotAdapterServices["validateSceneScope"]>,
+  ) =>
+    scopeOptions
+      ? validate(
+          request.projectId,
+          request.folderId,
+          request.sceneIds,
+          scopeOptions,
+        )
+      : validate(request.projectId, request.folderId, request.sceneIds);
   if (!(await canFlushCompleteSnapshotScope(services))) {
     return {
       ok: false,
@@ -789,11 +999,7 @@ export async function buildProjectNarrativeSnapshot(
     if (services.validateSceneScope) {
       let validation: PersistedNarrativeSceneScopeResult;
       try {
-        validation = await services.validateSceneScope(
-          request.projectId,
-          request.folderId,
-          request.sceneIds,
-        );
+        validation = await callValidateSceneScope(services.validateSceneScope);
       } catch (error) {
         return {
           ok: false,
@@ -1062,11 +1268,7 @@ export async function buildProjectNarrativeSnapshot(
     if (services.validateSceneScope) {
       let validation: PersistedNarrativeSceneScopeResult;
       try {
-        validation = await services.validateSceneScope(
-          request.projectId,
-          request.folderId,
-          request.sceneIds,
-        );
+        validation = await callValidateSceneScope(services.validateSceneScope);
       } catch (error) {
         return {
           ok: false,
@@ -1178,11 +1380,18 @@ export async function buildProjectNarrativeSnapshot(
 
     if (services.settleExternalSourceMutations) {
       try {
-        await services.settleExternalSourceMutations(
-          request.projectId,
-          request.folderId,
-          verificationRows,
-        );
+        await (scopeOptions
+          ? services.settleExternalSourceMutations(
+              request.projectId,
+              request.folderId,
+              verificationRows,
+              scopeOptions,
+            )
+          : services.settleExternalSourceMutations(
+              request.projectId,
+              request.folderId,
+              verificationRows,
+            ));
       } catch (error) {
         return {
           ok: false,
@@ -1227,10 +1436,8 @@ export async function buildProjectNarrativeSnapshot(
     if (services.validateSceneScope) {
       let publishedScope: PersistedNarrativeSceneScopeResult;
       try {
-        publishedScope = await services.validateSceneScope(
-          request.projectId,
-          request.folderId,
-          request.sceneIds,
+        publishedScope = await callValidateSceneScope(
+          services.validateSceneScope,
         );
       } catch (error) {
         return {

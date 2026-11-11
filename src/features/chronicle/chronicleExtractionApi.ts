@@ -179,6 +179,9 @@ function captureStartChronicleExtractionRequest(
       ? {}
       : { existingEvents: cloneCatalog(request.existingEvents) ?? [] }),
     ...(request.useAi === undefined ? {} : { useAi: request.useAi }),
+    ...(request.sceneScopeMode === undefined
+      ? {}
+      : { sceneScopeMode: request.sceneScopeMode }),
   };
 }
 
@@ -667,6 +670,9 @@ export async function startChronicleExtraction(
     sceneIds: capturedRequest.sceneIds,
     authority: capturedRequest.authority,
     existingEvents: capturedRequest.existingEvents,
+    ...(capturedRequest.sceneScopeMode === undefined
+      ? {}
+      : { sceneScopeMode: capturedRequest.sceneScopeMode }),
   };
 
   const { runChronicleExtractionCoordinator } =

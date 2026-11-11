@@ -155,4 +155,82 @@ describe("startChronicleExtraction caller capture", () => {
       openRevision: 7,
     });
   });
+  describe("sceneScopeMode", () => {
+    function completedCoordinatorResult() {
+      return {
+        runId: "run-scope-mode",
+        snapshot: { documents: [] },
+        proposals: [proposal],
+        savedProposalSetId: "set-scope-mode",
+        savedProposals: [
+          {
+            proposalId: "proposal-scope-mode",
+            proposalKey: "event:start-capture:0",
+            revisionId: "revision-scope-mode",
+            status: "unreviewed",
+            payload: proposal,
+          },
+        ],
+      };
+    }
+
+    function startRequest(
+      sceneScopeMode?: "folder-exact" | "requested-direct-children",
+    ) {
+      return {
+        projectId: "project-start",
+        folderId: "folder-start",
+        language: "ja",
+        sceneIds: ["scene-start"],
+        authority: {
+          projectId: "project-start",
+          currentProjectId: () => "project-start",
+          workspacePath: "/workspace-start",
+          workspaceOpenRevision: 7,
+        },
+        workspacePath: "/workspace-start",
+        openRevision: 7,
+        useAi: false,
+        ...(sceneScopeMode === undefined ? {} : { sceneScopeMode }),
+      };
+    }
+
+    it("forwards requested-direct-children to the coordinator request without changing scope fields", async () => {
+      coordinatorMock.mockResolvedValue(completedCoordinatorResult());
+
+      await startChronicleExtraction(startRequest("requested-direct-children"));
+
+      const [coordinatorRequest, deps] = coordinatorMock.mock.calls[0]!;
+      expect(coordinatorRequest).toMatchObject({
+        folderId: "folder-start",
+        sceneIds: ["scene-start"],
+        sceneScopeMode: "requested-direct-children",
+      });
+      expect(deps).toEqual({ useAi: false });
+    });
+
+    it("sends no sceneScopeMode key when it is omitted", async () => {
+      coordinatorMock.mockResolvedValue(completedCoordinatorResult());
+
+      await startChronicleExtraction(startRequest());
+
+      const [coordinatorRequest] = coordinatorMock.mock.calls[0]!;
+      expect("sceneScopeMode" in coordinatorRequest).toBe(false);
+    });
+
+    it("captures the mode before the dynamic import so a later mutation cannot change it", async () => {
+      coordinatorMock.mockResolvedValue(completedCoordinatorResult());
+      const mutable = startRequest("requested-direct-children") as {
+        sceneScopeMode?: string;
+      } & ReturnType<typeof startRequest>;
+
+      const started = startChronicleExtraction(mutable);
+      mutable.sceneScopeMode = "folder-exact";
+      await started;
+
+      expect(coordinatorMock.mock.calls[0]![0].sceneScopeMode).toBe(
+        "requested-direct-children",
+      );
+    });
+  });
 });
