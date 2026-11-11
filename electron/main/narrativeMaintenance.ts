@@ -259,6 +259,13 @@ export interface NarrativeMaintenanceScheduler {
 
 export interface NarrativeMaintenanceSchedulerOptions {
   warn?: (...args: unknown[]) => void;
+  /**
+   * DR-MP-8 test seam: the streak length after which a project is backed off.
+   * Defaults to `NARRATIVE_MAINTENANCE_PREEMPT_BACKOFF_AFTER`;
+   * `Number.POSITIVE_INFINITY` disables the backoff (control arm). Only the
+   * Main-process constructor can set it; nothing from IPC reaches it.
+   */
+  preemptBackoffAfter?: number;
   /** Ask the main-only discovery owner to re-read the current authority. */
   onWorkspaceBindingMismatch?: () => void | Promise<void>;
   /** Start bounded discovery after exact completion proof and its delivery ACK. */
@@ -296,11 +303,12 @@ export const NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS = 10;
 export const NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS = 1_000;
 export const NARRATIVE_MAINTENANCE_MAX_RETRIES = 3;
 /**
- * DR-MP-8: a work key whose cycles were preempted by foreground work more
- * than this many times in a row (the 4th preempt and later) backs its project
- * off by `NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS` instead of the 10 ms
- * backlog delay. Without it a continuation chain re-takes the single
- * maintenance slot every ~250 ms and starves Freshness.
+ * DR-MP-8: a project whose cycles were preempted by foreground work more than
+ * this many times in a row (the 4th preempt and later) is backed off by
+ * `NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS` instead of the 10 ms backlog
+ * delay. Without it a continuation chain re-takes the single maintenance slot
+ * every ~250 ms and starves Freshness. The streak is per project scope and is
+ * reset by progress (a succeeded work in the receipt) or a non-preempt result.
  */
 export const NARRATIVE_MAINTENANCE_PREEMPT_BACKOFF_AFTER = 3;
 export const NARRATIVE_MAINTENANCE_MAX_WORK_ITEMS_PER_CYCLE = 32;
@@ -745,6 +753,27 @@ function sameMaintenanceWorkShape(
  * structurally valid receipt item is a dynamic follow-up and is reconstructed
  * as a normal pending request.
  */
+/**
+ * DR-MP-8: project scopes whose work the Native receipt proves succeeded.
+ * A receipt that names no succeeded work (a wake-only discovery preempted
+ * before it registered anything, or no usable receipt) proves no progress.
+ */
+function succeededProjectKeys(
+  receipt: NarrativeMaintenanceTerminalReceipt | null,
+  binding: NarrativeMaintenanceWorkspaceBinding | null | undefined,
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  if (receipt === null) return keys;
+  for (const work of receipt.works) {
+    if (work.status !== "succeeded") continue;
+    const effective = parseCanonicalMaintenanceWorkKey(work.workKey);
+    if (effective !== null) {
+      keys.add(scopedWakeKey(effective.projectId, binding));
+    }
+  }
+  return keys;
+}
+
 function interruptedMaintenanceWorkToRequeue(
   backendBatch: readonly PendingNarrativeMaintenanceWork[],
   receipt: NarrativeMaintenanceTerminalReceipt | null,
@@ -1274,15 +1303,18 @@ export function createNarrativeMaintenanceScheduler(
   const pending = new Map<string, PendingNarrativeMaintenanceWork>();
   const retryCounts = new Map<string, number>();
   /**
-   * DR-MP-8. Consecutive foreground-preempt counts per project scope
-   * (`scopedWakeKey`: binding + projectId), counted by canonical work key.
-   * `*` counts the project as a whole when no usable Native receipt names the
-   * work. `notBeforeMs` is 0 unless a key's streak exceeded the threshold.
-   * Counts are independent of `retryCounts`: a preempt never consumes retries.
+   * DR-MP-8. Consecutive foreground-preempted cycles per project scope
+   * (`scopedWakeKey`: binding + projectId). One counter per project: a cycle
+   * counts for every project it touched (work or wake), whether or not Native's
+   * receipt names unfinished work. `notBeforeMs` is 0 unless the streak
+   * exceeded the threshold. Independent of `retryCounts`: a preempt never
+   * consumes retries.
    */
+  const preemptBackoffAfter =
+    options.preemptBackoffAfter ?? NARRATIVE_MAINTENANCE_PREEMPT_BACKOFF_AFTER;
   const preemptStreaks = new Map<
     string,
-    { workCounts: Map<string, number>; notBeforeMs: number }
+    { count: number; notBeforeMs: number }
   >();
   // Main owns the bounded delivery ledger. Recovery descriptors are kept in
   // the ledger independently, so an ACK can retire a terminal receipt while
@@ -1343,9 +1375,23 @@ export function createNarrativeMaintenanceScheduler(
     preemptStreaks.clear();
   };
 
+  /** Drop only the streaks of one binding (a rebind leaves other scopes alone). */
+  const clearPreemptStreaksForBinding = (
+    binding: NarrativeMaintenanceWorkspaceBinding | null | undefined,
+  ): void => {
+    const prefix = `${workspaceBindingKey(binding)}\u0000`;
+    for (const projectKey of [...preemptStreaks.keys()]) {
+      if (projectKey.startsWith(prefix)) preemptStreaks.delete(projectKey);
+    }
+  };
+
   /**
-   * Remaining backoff of one project scope, clamped to the backoff length so
-   * a backwards wall-clock step can never park a project for longer.
+   * Remaining backoff of one project scope. A `notBefore` further away than
+   * one backoff length can only come from a backwards wall-clock step (it is
+   * recorded as `now + ERROR_RETRY_DELAY`); it is re-anchored to the current
+   * clock so a project never waits more than one backoff length from the
+   * moment the step is observed. A step smaller than the remaining time is
+   * not detectable and costs at most that much extra wait (< 1 s).
    */
   const preemptBackoffRemainingMs = (
     projectKey: string,
@@ -1353,10 +1399,13 @@ export function createNarrativeMaintenanceScheduler(
   ): number => {
     const streak = preemptStreaks.get(projectKey);
     if (streak === undefined || streak.notBeforeMs <= 0) return 0;
-    return Math.min(
-      Math.max(0, streak.notBeforeMs - nowMs),
-      NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS,
-    );
+    if (
+      streak.notBeforeMs - nowMs >
+      NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS
+    ) {
+      streak.notBeforeMs = nowMs + NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
+    }
+    return Math.max(0, streak.notBeforeMs - nowMs);
   };
 
   const isProjectPreemptBackedOff = (
@@ -1368,52 +1417,30 @@ export function createNarrativeMaintenanceScheduler(
       0;
 
   /**
-   * Record one foreground-preempted cycle. Counting is per canonical work key
-   * from the receipt's unfinished work; a project in the cycle with no
-   * unfinished key is reset, and `*` counts the whole project when no usable
-   * receipt exists. A key's streak above the threshold backs the project off.
+   * Record one foreground-preempted cycle for every project it touched.
+   * A project that made progress in the cycle (its receipt shows a succeeded
+   * work) restarts from 0; every other project's streak grows by one, even
+   * when the receipt names no unfinished work (a wake-only discovery that was
+   * preempted before registering anything). A streak above the threshold backs
+   * the project off.
    */
   const notePreemptedCycle = (
     cycleProjectKeys: ReadonlySet<string>,
-    binding: NarrativeMaintenanceWorkspaceBinding | null | undefined,
-    unfinished: readonly PendingNarrativeMaintenanceWork[] | null,
+    progressProjectKeys: ReadonlySet<string>,
   ): void => {
-    const keysByProject = new Map<string, string[]>();
-    if (unfinished === null) {
-      for (const projectKey of cycleProjectKeys) {
-        keysByProject.set(projectKey, ["*"]);
-      }
-    } else {
-      for (const work of unfinished) {
-        const projectKey = scopedWakeKey(
-          work.projectId,
-          work.workspaceBinding ?? binding,
-        );
-        const keys = keysByProject.get(projectKey) ?? [];
-        keys.push(canonicalNarrativeMaintenanceWorkKey(work));
-        keysByProject.set(projectKey, keys);
-      }
-      for (const projectKey of cycleProjectKeys) {
-        if (!keysByProject.has(projectKey)) preemptStreaks.delete(projectKey);
-      }
-    }
     const nowMs = Date.now();
-    for (const [projectKey, workKeys] of keysByProject) {
-      const previous = preemptStreaks.get(projectKey)?.workCounts;
-      const workCounts = new Map<string, number>();
-      let exceeded = false;
-      for (const workKey of workKeys) {
-        const count = (previous?.get(workKey) ?? 0) + 1;
-        workCounts.set(workKey, count);
-        if (count > NARRATIVE_MAINTENANCE_PREEMPT_BACKOFF_AFTER) {
-          exceeded = true;
-        }
+    for (const projectKey of cycleProjectKeys) {
+      if (progressProjectKeys.has(projectKey)) {
+        preemptStreaks.delete(projectKey);
+        continue;
       }
+      const count = (preemptStreaks.get(projectKey)?.count ?? 0) + 1;
       preemptStreaks.set(projectKey, {
-        workCounts,
-        notBeforeMs: exceeded
-          ? nowMs + NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS
-          : 0,
+        count,
+        notBeforeMs:
+          count > preemptBackoffAfter
+            ? nowMs + NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS
+            : 0,
       });
     }
   };
@@ -1587,9 +1614,9 @@ export function createNarrativeMaintenanceScheduler(
     ) {
       return false;
     }
-    // DR-MP-8: a rebound binding is a new scope; the old scope's streaks are
-    // not carried over.
-    clearPreemptStreaks();
+    // DR-MP-8: a rebound binding is a new scope; only the old binding's
+    // streaks are dropped, other bindings' scopes keep theirs.
+    clearPreemptStreaksForBinding(original);
     let changed = false;
     for (const [key, work] of [...pending.entries()]) {
       if (
@@ -3410,12 +3437,12 @@ export function createNarrativeMaintenanceScheduler(
     let haltForProcessInterruption = false;
     let interruptedCycle = false;
     // DR-MP-8: set only when Native reported that foreground work preempted
-    // this cycle (accepted + `preempted`). `unfinished` is the receipt-proven
-    // interrupted/not-started work, or null when no usable receipt exists.
+    // this cycle (accepted + `preempted`). `progressProjectKeys` are the
+    // projects whose work the Native receipt proves succeeded in this cycle.
     // `interruptedCycle` is deliberately not used: it is also raised by
     // quiesce, dispose and stop requests, which are not foreground pressure.
     let preemptObservation: {
-      unfinished: readonly PendingNarrativeMaintenanceWork[] | null;
+      progressProjectKeys: ReadonlySet<string>;
     } | null = null;
     let settledCycleResult: NarrativeMaintenanceCycleResult | null = null;
     const lifecycleEnabled =
@@ -3755,10 +3782,11 @@ export function createNarrativeMaintenanceScheduler(
         retryCounts.delete(scopedWorkKey(work));
       }
       if (cycleResult.status === "accepted" && cycleResult.preempted === true) {
-        // A succeeded receipt proves nothing is left to retry; without a
-        // receipt the project as a whole is counted.
         preemptObservation = {
-          unfinished: nativeTerminalReceipt?.state === "succeeded" ? [] : null,
+          progressProjectKeys: succeededProjectKeys(
+            nativeTerminalReceipt,
+            cycleBinding,
+          ),
         };
       }
       shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
@@ -4126,7 +4154,12 @@ export function createNarrativeMaintenanceScheduler(
             settledCycleResult?.status === "accepted" &&
             settledCycleResult.preempted === true
           ) {
-            preemptObservation = { unfinished: selectivelyRequeued };
+            preemptObservation = {
+              progressProjectKeys: succeededProjectKeys(
+                nativeTerminalReceipt,
+                cycleBinding,
+              ),
+            };
           }
           for (const projectId of sendingWakeProjects) {
             const wakeKey = scopedWakeKey(projectId, cycleBinding);
@@ -4441,8 +4474,7 @@ export function createNarrativeMaintenanceScheduler(
         if (preemptObservation !== null) {
           notePreemptedCycle(
             cycleProjectKeys,
-            cycleBinding,
-            preemptObservation.unfinished,
+            preemptObservation.progressProjectKeys,
           );
         } else if (nativeCallStarted && !notAdmitted && !deliveryCapacity) {
           for (const projectKey of cycleProjectKeys) {

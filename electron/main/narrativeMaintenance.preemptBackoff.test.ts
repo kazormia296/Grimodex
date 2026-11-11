@@ -25,6 +25,81 @@ const PREEMPTED = {
 } as const;
 const SETTLED = { status: "accepted", hasMore: false } as const;
 
+const PRODUCT_BINDING = { authorityId: "authority-product", generation: 7 };
+
+type ReceiptWork = { workKey: string; status: string };
+
+/**
+ * 製品が通る経路の模型：binding・begin・cancel（受領書）を持つ backend。
+ * Native が `accepted+preempted` を返したあと、interrupted の受領書を読み、
+ * 「受領書 → throw → catch → selective requeue」を通る。結果が preempt でなければ
+ * 受領書は succeeded（batch の work がすべて成功）。
+ */
+function lifecycleBackend(options: {
+  run: (
+    request: NarrativeMaintenanceCycleRequest,
+    index: number,
+  ) => Promise<unknown> | unknown;
+  works?: (
+    request: NarrativeMaintenanceCycleRequest,
+    index: number,
+  ) => ReceiptWork[];
+}) {
+  let runIndex = 0;
+  let last: NarrativeMaintenanceCycleRequest | null = null;
+  let lastPreempted = false;
+  const calls: number[] = [];
+  const requests: NarrativeMaintenanceCycleRequest[] = [];
+  const begin = vi.fn((attemptId: string, received: typeof PRODUCT_BINDING) =>
+    JSON.stringify({
+      status: "open",
+      attemptId,
+      authorityId: received.authorityId,
+      generation: received.generation,
+    }),
+  );
+  const backend = {
+    getNarrativeMaintenanceWorkspaceBinding: () => PRODUCT_BINDING,
+    runNarrativeMaintenanceCycle: vi.fn(
+      async (request: NarrativeMaintenanceCycleRequest) => {
+        runIndex += 1;
+        last = request;
+        calls.push(Date.now());
+        requests.push(request);
+        const result = (await options.run(request, runIndex)) as {
+          preempted?: boolean;
+        };
+        lastPreempted = result?.preempted === true;
+        return result;
+      },
+    ),
+    beginNarrativeMaintenanceAttempt: begin,
+    cancelNarrativeMaintenanceAttempt: vi.fn((attemptId: string) => {
+      const request = last as NarrativeMaintenanceCycleRequest;
+      const interrupted = lastPreempted;
+      const works =
+        options.works?.(request, runIndex) ??
+        request.work.map((work) => ({
+          workKey: canonicalNarrativeMaintenanceWorkKey(work),
+          status: interrupted ? "interrupted" : "succeeded",
+        }));
+      return JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: interrupted ? "interrupted" : "succeeded",
+        stopReason: interrupted ? "foreground-preempted" : null,
+        generation: PRODUCT_BINDING.generation,
+        workspaceBinding: PRODUCT_BINDING,
+        publishedGeneration: interrupted ? null : PRODUCT_BINDING.generation,
+        works,
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      });
+    }),
+  };
+  return { backend, calls, requests, begin };
+}
+
 function verifyWork(
   projectId: string,
   reason = "verify-requested",
@@ -457,7 +532,7 @@ describe("narrative maintenance preempt backoff (DR-MP-8)", () => {
       };
     }
 
-    it("同じ key の interrupted が続くと 4 回目の後に backoff する（同じ cycle で別の work が成功しても切れない）", async () => {
+    it("成功の work がある cycle は回数を 0 に戻す（次の preempt から数え直し、5 回目の後に backoff する）", async () => {
       const verify = verifyWork("project-receipt-same");
       const backfill: NarrativeMaintenanceRequest = {
         projectId: "project-receipt-same",
@@ -485,17 +560,18 @@ describe("narrative maintenance preempt backoff (DR-MP-8)", () => {
       scheduler.request(verify);
       scheduler.request(backfill);
       scheduler.start();
+      // 1 回目は backfill が成功（進捗あり。回数は 0）。2〜5 回目の preempt が 1〜4 回目。
       await vi.advanceTimersByTimeAsync(
-        INITIAL_DELAY_MS + 3 * BACKLOG_DELAY_MS,
+        INITIAL_DELAY_MS + 4 * BACKLOG_DELAY_MS,
       );
-      expect(calls).toEqual([250, 260, 270, 280]);
+      expect(calls).toEqual([250, 260, 270, 280, 290]);
       await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS - 1);
-      expect(calls).toHaveLength(4);
-      await vi.advanceTimersByTimeAsync(1);
       expect(calls).toHaveLength(5);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(calls).toHaveLength(6);
     });
 
-    it("follow-up の予算超え（成功の work があり、key が毎回進む preempted:true）は数えない", async () => {
+    it("follow-up の予算超え（毎回成功の work があり、key が毎回進む preempted:true）は進捗なので数えない", async () => {
       const calls: number[] = [];
       const first = verifyWork("project-receipt-followup");
       const keyOf = (round: number): string =>
@@ -556,30 +632,35 @@ describe("narrative maintenance preempt backoff (DR-MP-8)", () => {
     });
   });
 
-  describe("2 つの scheduler の模型（最悪の位相を決定的に作る）", () => {
+  describe("2 つの scheduler の模型（製品の経路で最悪の位相を決定的に作る）", () => {
     const SLOT_MS = 240;
     const FRESHNESS_START_MS = 350; // maintenance の slot（250 から 240 ms）の内側
     const HORIZON_MS = 60_000;
 
-    function runModel() {
+    function runModel(
+      schedulerOptions: Parameters<typeof createNarrativeMaintenanceScheduler>[1] = {},
+    ) {
       const slot = { busy: false };
       const maintenanceStarts: number[] = [];
       const freshnessAttempts: number[] = [];
       const freshnessRuns: number[] = [];
-      const maintenance = createNarrativeMaintenanceScheduler(
-        {
-          runNarrativeMaintenanceCycle: vi.fn(async () => {
-            slot.busy = true;
-            maintenanceStarts.push(Date.now());
-            await new Promise<void>((resolve) => {
-              setTimeout(resolve, SLOT_MS);
-            });
-            slot.busy = false;
-            return PREEMPTED;
-          }),
+      // binding・begin・cancel（受領書）を持つ製品の経路。slot を 240 ms 持って
+      // `accepted+preempted` を返し、受領書（interrupted）から selective requeue に入る。
+      const { backend, begin } = lifecycleBackend({
+        run: async () => {
+          slot.busy = true;
+          maintenanceStarts.push(Date.now());
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, SLOT_MS);
+          });
+          slot.busy = false;
+          return PREEMPTED;
         },
-        { warn: vi.fn() },
-      );
+      });
+      const maintenance = createNarrativeMaintenanceScheduler(backend, {
+        warn: vi.fn(),
+        ...schedulerOptions,
+      });
       const freshness = createNarrativeFreshnessScheduler(
         {
           runNarrativeFreshnessCycle: vi.fn(async () => {
@@ -596,13 +677,24 @@ describe("narrative maintenance preempt backoff (DR-MP-8)", () => {
       maintenance.start();
       // freshness の初回（250 ms）が maintenance の slot の中に入る位相にする。
       setTimeout(() => freshness.start(), FRESHNESS_START_MS - 250);
-      return { maintenanceStarts, freshnessAttempts, freshnessRuns };
+      return { maintenanceStarts, freshnessAttempts, freshnessRuns, begin };
     }
+
+    it("対照：backoff を外す（閾値 Infinity）と、60 s で freshness は 0 件（modelが最悪の位相を作れている）", async () => {
+      const model = runModel({ preemptBackoffAfter: Number.POSITIVE_INFINITY });
+      await vi.advanceTimersByTimeAsync(HORIZON_MS);
+      expect(model.begin).toHaveBeenCalled(); // 製品の経路（begin／受領書）を通っている
+      expect(model.freshnessAttempts.length).toBeGreaterThanOrEqual(50);
+      expect(model.freshnessRuns).toEqual([]);
+      // backoff なしでは 250 ms 周期のまま。
+      expect(model.maintenanceStarts.length).toBeGreaterThan(200);
+    });
 
     it("backoff の後、2 tick 以内に freshness が 1 件通る", async () => {
       const model = runModel();
       await vi.advanceTimersByTimeAsync(HORIZON_MS);
 
+      expect(model.begin).toHaveBeenCalled();
       // 0 件が「試行していない」せいではない。
       expect(model.freshnessAttempts.length).toBeGreaterThanOrEqual(50);
       // 4 回目の preempt の cycle は 1,000 に始まり 1,240 に終わる。backoff はそこから。
@@ -617,6 +709,266 @@ describe("narrative maintenance preempt backoff (DR-MP-8)", () => {
       // 最初の 4 回は 250 ms 周期、その後は slot＋1 s。
       expect(model.maintenanceStarts.slice(0, 5)).toEqual([
         250, 500, 750, 1_000, 2_240,
+      ]);
+    });
+  });
+
+  describe("製品の経路（受領書 → throw → catch → selective requeue）", () => {
+    const interruptedWorks = (request: NarrativeMaintenanceCycleRequest) =>
+      request.work.map((work) => ({
+        workKey: canonicalNarrativeMaintenanceWorkKey(work),
+        status: "interrupted",
+      }));
+
+    it("全部の project が backoff の間に timer が発火しても、cycle を出さず残りの長さで張り直す（早期 return）", async () => {
+      const harness = lifecycleBackend({ run: () => PREEMPTED });
+      const scheduler = create(harness.backend);
+      scheduler.request(verifyWork("project-early"));
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + 3 * BACKLOG_DELAY_MS);
+      expect(harness.calls).toEqual([250, 260, 270, 280]);
+      expect(harness.begin).toHaveBeenCalledTimes(4);
+
+      // 時計が 500 ms 戻る。timer は元の長さ（1 s）で発火するが、notBefore までは 500 ms 残る。
+      vi.setSystemTime(Date.now() - 500);
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      // 発火したが cycle は出ない（begin も増えない）。timer は 1 本だけ残りの長さで張り直されている。
+      expect(harness.calls).toHaveLength(4);
+      expect(harness.begin).toHaveBeenCalledTimes(4);
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(500 - 1);
+      expect(harness.calls).toHaveLength(4);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(harness.calls).toHaveLength(5);
+    });
+
+    it("時計が backoff より大きく巻き戻っても、約 2 s 以内に再開する（notBefore を現在の時計へ置き直す）", async () => {
+      const harness = lifecycleBackend({ run: () => PREEMPTED });
+      const scheduler = create(harness.backend);
+      scheduler.request(verifyWork("project-clock"));
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + 3 * BACKLOG_DELAY_MS);
+      expect(harness.calls).toHaveLength(4);
+
+      // 1,500 ms の逆行。notBefore は現在の時計の 2,500 ms 先に見える。
+      vi.setSystemTime(Date.now() - 1_500);
+      // 1 回目の発火（1 s）で置き直し、2 回目の発火（さらに 1 s）で再開する。
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      expect(harness.calls).toHaveLength(4);
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS - 1);
+      expect(harness.calls).toHaveLength(4);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(harness.calls).toHaveLength(5);
+    });
+
+    it("時計が進む向きに跳んでも、backoff は短くなるだけで cycle は 1 回ずつ", async () => {
+      const harness = lifecycleBackend({ run: () => PREEMPTED });
+      const scheduler = create(harness.backend);
+      scheduler.request(verifyWork("project-forward"));
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + 3 * BACKLOG_DELAY_MS);
+      vi.setSystemTime(Date.now() + 5_000);
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      expect(harness.calls).toHaveLength(5);
+    });
+
+    it.each([
+      // not-admitted は 10 ms 後に再試行する。
+      ["not-admitted", { status: "not-admitted" }, [250, 260, 270, 280, 290]],
+      // capacity は 1 s 後に exact replay（回数に入れない）で再試行する。
+      [
+        "delivery の capacity",
+        { status: "workspace-unavailable", reason: "maintenance-delivery-capacity" },
+        [250, 260, 270, 1_270, 1_280, 1_290],
+      ],
+    ])("%s は回数を増やしも戻しもしない", async (_label, unavailable, expected) => {
+      const harness = lifecycleBackend({
+        run: (_request, index) => (index === 3 ? unavailable : PREEMPTED),
+      });
+      const scheduler = create(harness.backend);
+      scheduler.request(verifyWork("project-unavailable"));
+      scheduler.start();
+      // preempt 2 回（回数 2）→ 3 回目が not-admitted／capacity（1 s 待つ）。
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + 2 * BACKLOG_DELAY_MS);
+      expect(harness.calls).toEqual([250, 260, 270]);
+      await vi.advanceTimersByTimeAsync(expected.at(-1)! - Date.now());
+      // 回数 2 のまま（replay は数えない）：次の preempt が 3 回目、その次が 4 回目で backoff する。
+      // 増えていれば 1 cycle 早く backoff し、戻っていれば 10 ms 間隔がさらに続く。
+      expect(harness.calls).toEqual(expected);
+      const lastCall = expected.at(-1)!;
+      await vi.advanceTimersByTimeAsync(
+        lastCall + ERROR_RETRY_DELAY_MS - 1 - Date.now(),
+      );
+      expect(harness.calls).toHaveLength(expected.length);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(harness.calls).toHaveLength(expected.length + 1);
+    });
+
+    it("wake だけで受領書の works が空の cycle も数える（Native の no-wait の discovery が preempt された）", async () => {
+      const harness = lifecycleBackend({
+        run: () => PREEMPTED,
+        works: () => [],
+      });
+      const scheduler = create(harness.backend);
+      scheduler.start();
+      scheduler.requestGraphIndexBuildWakesWithBinding?.(
+        ["project-wake"],
+        PRODUCT_BINDING,
+      );
+      // start() の後の wake は 10 ms 後に cycle になる。
+      await vi.advanceTimersByTimeAsync(4 * BACKLOG_DELAY_MS);
+      expect(harness.calls).toEqual([10, 20, 30, 40]);
+      expect(harness.requests.every((request) => request.work.length === 0)).toBe(
+        true,
+      );
+      expect(
+        harness.requests.every((request) =>
+          request.wakeProjectIds.includes("project-wake"),
+        ),
+      ).toBe(true);
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS - 1);
+      expect(harness.calls).toHaveLength(4);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(harness.calls).toHaveLength(5);
+    });
+
+    it("work の受領書と空の受領書が交互に来ても、project 単位で 4 回目の後に backoff する", async () => {
+      const harness = lifecycleBackend({
+        run: () => PREEMPTED,
+        works: (request, index) =>
+          index % 2 === 1 ? interruptedWorks(request) : [],
+      });
+      const scheduler = create(harness.backend);
+      scheduler.request(verifyWork("project-alternate"));
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + 3 * BACKLOG_DELAY_MS);
+      expect(harness.calls).toEqual([250, 260, 270, 280]);
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS - 1);
+      expect(harness.calls).toHaveLength(4);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(harness.calls).toHaveLength(5);
+    });
+
+    it("Verify が成功した cycle の follow-up discovery が preempt されても、成功の cycle は戻し、続く wake だけの preempt から数える", async () => {
+      const verify = verifyWork("project-followup-wake");
+      const harness = lifecycleBackend({
+        run: () => PREEMPTED,
+        works: (request, index) =>
+          index === 1
+            ? request.work.map((work) => ({
+                workKey: canonicalNarrativeMaintenanceWorkKey(work),
+                status: "succeeded",
+              }))
+            : [],
+      });
+      const scheduler = create(harness.backend);
+      scheduler.request(verify);
+      scheduler.requestGraphIndexBuildWakesWithBinding?.(
+        [verify.projectId],
+        PRODUCT_BINDING,
+      );
+      scheduler.start();
+      // 1 回目：Verify 成功（進捗で 0）。2〜5 回目：wake だけの preempt が 1〜4 回目。
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + 4 * BACKLOG_DELAY_MS);
+      expect(harness.calls).toEqual([250, 260, 270, 280, 290]);
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS - 1);
+      expect(harness.calls).toHaveLength(5);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(harness.calls).toHaveLength(6);
+    });
+
+    it("begin が失敗した cycle（Native を呼ばなかった）は回数を動かさない", async () => {
+      let failBegin = false;
+      const harness = lifecycleBackend({ run: () => PREEMPTED });
+      const beginOriginal = harness.backend.beginNarrativeMaintenanceAttempt;
+      harness.backend.beginNarrativeMaintenanceAttempt = vi.fn(
+        (attemptId: string, received: typeof PRODUCT_BINDING) => {
+          if (failBegin) {
+            failBegin = false;
+            throw new Error("begin failed before native call");
+          }
+          return beginOriginal(attemptId, received);
+        },
+      );
+      const scheduler = create(harness.backend);
+      scheduler.request(verifyWork("project-begin-fail"));
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + BACKLOG_DELAY_MS);
+      expect(harness.calls).toEqual([250, 260]); // 回数 2
+      failBegin = true;
+      await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+      // begin の失敗で cycle は走らない。error の retry（1 s）の後に再開する。
+      expect(harness.calls).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS + BACKLOG_DELAY_MS);
+      // 回数は 2 のまま（begin の失敗は戻しも増やしもしない）：
+      // 1,270 が 3 回目、1,280 が 4 回目の preempt で backoff。戻っていれば 1,290 以降も 10 ms 間隔。
+      expect(harness.calls).toEqual([250, 260, 1_270, 1_280]);
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS - 1);
+      expect(harness.calls).toHaveLength(4);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(harness.calls).toEqual([250, 260, 1_270, 1_280, 2_280]);
+    });
+
+    it("rebind は元の binding の回数だけを消し、別の binding の回数は残す", async () => {
+      const w1 = { authorityId: "authority-w1", generation: 1 };
+      const w1Rebound = { authorityId: "authority-w1-reopened", generation: 2 };
+      const w2 = { authorityId: "authority-w2", generation: 5 };
+      const requests: NarrativeMaintenanceCycleRequest[] = [];
+      let rebind = false;
+      const scheduler = create({
+        runNarrativeMaintenanceCycle: vi.fn(
+          async (request: NarrativeMaintenanceCycleRequest) => {
+            requests.push(request);
+            return PREEMPTED;
+          },
+        ),
+        reconcileNarrativeMaintenanceRecovery: vi.fn(async () => {
+          if (!rebind) return { status: "none" };
+          rebind = false; // 1 回だけ rebind の証明を返す
+          return {
+                status: "reconciled",
+                descriptorId: 12,
+                reason: "maintenance-recovery-complete",
+                recoveredBinding: w1,
+                activeBinding: w1Rebound,
+                reboundBinding: w1Rebound,
+          };
+        }),
+      } as unknown as Parameters<typeof createNarrativeMaintenanceScheduler>[0]) as NarrativeMaintenanceScheduler & {
+        requestWithBinding: (
+          work: NarrativeMaintenanceRequest,
+          binding: typeof w1,
+        ) => void;
+      };
+      scheduler.requestWithBinding(verifyWork("project-w1"), w1);
+      scheduler.requestWithBinding(verifyWork("project-w2"), w2);
+      scheduler.start();
+      // 再 queue で work が交互に並ぶので、w1・w2 が 4 回ずつ preempt されて両方 backoff する。
+      await vi.advanceTimersByTimeAsync(400);
+      const bindingOf = (request: NarrativeMaintenanceCycleRequest) =>
+        request.workspaceBinding?.authorityId;
+      expect(requests.map(bindingOf)).toEqual([
+        "authority-w1",
+        "authority-w2",
+        "authority-w1",
+        "authority-w2",
+        "authority-w1",
+        "authority-w2",
+        "authority-w1",
+        "authority-w2",
+      ]);
+      // w1 の notBefore（1,310）で再開する cycle が rebind の証明を見る。w1 の scope の回数だけが消える。
+      // 回復の後の再試行は 1 s 後（2,310）：w2 は backoff が明けているが回数 4 を持ち越しているので、
+      // 1 回の preempt（5 回目）で再び backoff する。rebind が全 scope の回数を消していれば、
+      // w2 は 1 回目として 10 ms で走り続ける。
+      rebind = true;
+      await vi.advanceTimersByTimeAsync(2_360 - 400);
+      expect(requests.slice(8).map(bindingOf)).toEqual([
+        "authority-w2",
+        "authority-w1-reopened",
+        "authority-w1-reopened",
+        "authority-w1-reopened",
+        "authority-w1-reopened",
       ]);
     });
   });
