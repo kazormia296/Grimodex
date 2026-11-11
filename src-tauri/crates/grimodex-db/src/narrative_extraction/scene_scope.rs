@@ -845,19 +845,83 @@ pub(crate) struct ScopeExtension {
     pub(crate) scene_bindings: BTreeMap<String, NarrativeSceneScopeBindingV1>,
 }
 
+/// The ids of the project's Scene nodes (every `tree_nodes` row of the
+/// project whose `node_type` is `scene`, archived ones included), the set a
+/// binding's Scene must belong to (DR-CQA-6). Built from the rows the Scope
+/// authority has already read, so the extension does not read `tree_nodes`
+/// again to decide `sceneOwned`.
+///
+/// The ids are copied into one buffer, so the set is two allocations
+/// whatever the number of Scenes. Keeping one small allocation per Scene
+/// alive while the rest of the tree is freed scattered them through the
+/// worker's fixed Q heap and slowed every later allocation of the query
+/// (about +7 ms at 352 Scenes and 4 Revisions; DR-CQA-6).
+pub(crate) struct ProjectSceneIds {
+    buf: String,
+    spans: Vec<(usize, usize)>,
+}
+
+impl ProjectSceneIds {
+    /// Sorted here, whatever order the caller read the nodes in: membership
+    /// does not depend on the SQL `ORDER BY` of the read it came from.
+    pub(crate) fn from_unsorted<'a>(ids: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut ids: Vec<&str> = ids.into_iter().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut buf = String::with_capacity(ids.iter().map(|id| id.len()).sum());
+        let mut spans = Vec::with_capacity(ids.len());
+        for id in ids {
+            let start = buf.len();
+            buf.push_str(id);
+            spans.push((start, buf.len()));
+        }
+        Self { buf, spans }
+    }
+
+    fn id(&self, &(start, end): &(usize, usize)) -> &str {
+        &self.buf[start..end]
+    }
+
+    fn contains(&self, id: &str) -> bool {
+        self.spans
+            .binary_search_by(|span| self.id(span).cmp(id))
+            .is_ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ids(&self) -> Vec<&str> {
+        self.spans.iter().map(|span| self.id(span)).collect()
+    }
+}
+
+/// How the eleventh column of the extension's raw row, `sceneOwned`, is
+/// decided: from the project's Scene ids, or (tests only) by the join of
+/// `tree_nodes` that decided it before DR-CQA-6, kept as the oracle the set is
+/// checked against.
+#[derive(Clone, Copy)]
+pub(crate) enum SceneOwnership<'a> {
+    Set(&'a ProjectSceneIds),
+    #[cfg(test)]
+    LegacyJoin,
+}
+
 pub(crate) fn read_scope_extension(
     conn: &Connection,
     project_id: &str,
     collect_scene_bindings: bool,
+    ownership: SceneOwnership<'_>,
 ) -> Result<ScopeExtension> {
     // Each binding's observation goes straight into the digest as it is
     // produced; no `Vec<Value>` of every binding (and no second copy of it)
     // is held (DR-GRW-5).
     let mut digest_stream = begin_scope_extension_digest()?;
-    let parts =
-        read_scope_extension_entries(conn, project_id, collect_scene_bindings, |entry: Value| {
-            Ok(digest_stream.value(&entry)?)
-        })?;
+    let parts = read_scope_extension_entries(
+        conn,
+        project_id,
+        collect_scene_bindings,
+        ownership,
+        |entry: Value| Ok(digest_stream.value(&entry)?),
+    )?;
     let digest = finish_scope_extension_digest(
         digest_stream,
         &parts.registry,
@@ -879,27 +943,39 @@ struct ScopeExtensionParts {
     scene_bindings: BTreeMap<String, NarrativeSceneScopeBindingV1>,
 }
 
-/// Read and validate every Scene binding row of the project in `ORDER BY
-/// b.scene_id` order and hand one digest entry per row to `on_entry`: the
-/// binding itself, or an `unavailable` observation of the raw row.
-fn read_scope_extension_entries(
-    conn: &Connection,
-    project_id: &str,
-    collect_scene_bindings: bool,
-    mut on_entry: impl FnMut(Value) -> Result<()>,
-) -> Result<ScopeExtensionParts> {
-    anyhow::ensure!(
-        table_exists(conn, "narrative_scope_registries")?
-            && table_exists(conn, "narrative_scene_scope_bindings")?,
-        "NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE: scene scope storage tables are missing"
-    );
-    #[cfg(test)]
-    project_read_probe::record(project_read_probe::Read::ScopeExtension);
-    let registry = read_registry_in_tx(conn, project_id)?;
-    let (registry_revision, registry_source_token, _) = read_registry_row(conn, project_id)?;
-    let mut scene_bindings = BTreeMap::new();
-    let mut statement = conn.prepare(
-        "SELECT b.scene_id, b.scene_incarnation_id, b.compatibility_marker,
+/// The extension's one read of the Scene bindings (DR-CQA-6): the binding row
+/// and the Codex rows its two principals name. It does not join `tree_nodes`;
+/// the Scene a binding belongs to is decided from [`ProjectSceneIds`] and
+/// returned to the caller as the eleventh raw column.
+const SCOPE_EXTENSION_SQL: &str =
+    "SELECT b.scene_id, b.scene_incarnation_id, b.compatibility_marker,
+                b.query_identity_json, b.material_constraint_json,
+                b.knowledge_holder_json, b.version, b.audience_json,
+                b.source_token, b.updated_at,
+                CASE WHEN kh.id IS NOT NULL THEN 1 ELSE 0 END,
+                CASE WHEN au.id IS NOT NULL THEN 1 ELSE 0 END
+           FROM narrative_scene_scope_bindings b
+           LEFT JOIN codex_entries kh
+             ON kh.project_id = b.project_id
+            AND kh.type = 'character'
+            AND kh.id = CASE WHEN json_valid(b.knowledge_holder_json)
+                             THEN json_extract(b.knowledge_holder_json, '$.ref')
+                             ELSE NULL END
+           LEFT JOIN codex_entries au
+             ON au.project_id = b.project_id
+            AND au.type = 'character'
+            AND au.id = CASE WHEN json_valid(b.audience_json)
+                             THEN json_extract(b.audience_json, '$.ref')
+                             ELSE NULL END
+          WHERE b.project_id = ?1
+          ORDER BY b.scene_id";
+
+/// The statement before DR-CQA-6, verbatim: `sceneOwned` from a `LEFT JOIN
+/// tree_nodes`. Tests only; the oracle [`SCOPE_EXTENSION_SQL`] and the Scene-id
+/// set are checked against.
+#[cfg(test)]
+const SCOPE_EXTENSION_LEGACY_JOIN_SQL: &str =
+    "SELECT b.scene_id, b.scene_incarnation_id, b.compatibility_marker,
                 b.query_identity_json, b.material_constraint_json,
                 b.knowledge_holder_json, b.version, b.audience_json,
                 b.source_token, b.updated_at,
@@ -923,13 +999,60 @@ fn read_scope_extension_entries(
                              THEN json_extract(b.audience_json, '$.ref')
                              ELSE NULL END
           WHERE b.project_id = ?1
-          ORDER BY b.scene_id",
-    )?;
+          ORDER BY b.scene_id";
+
+/// Read and validate every Scene binding row of the project in `ORDER BY
+/// b.scene_id` order and hand one digest entry per row to `on_entry`: the
+/// binding itself, or an `unavailable` observation of the raw row.
+fn read_scope_extension_entries(
+    conn: &Connection,
+    project_id: &str,
+    collect_scene_bindings: bool,
+    ownership: SceneOwnership<'_>,
+    mut on_entry: impl FnMut(Value) -> Result<()>,
+) -> Result<ScopeExtensionParts> {
+    anyhow::ensure!(
+        table_exists(conn, "narrative_scope_registries")?
+            && table_exists(conn, "narrative_scene_scope_bindings")?,
+        "NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE: scene scope storage tables are missing"
+    );
+    #[cfg(test)]
+    project_read_probe::record(project_read_probe::Read::ScopeExtension);
+    let registry = read_registry_in_tx(conn, project_id)?;
+    let (registry_revision, registry_source_token, _) = read_registry_row(conn, project_id)?;
+    let mut scene_bindings = BTreeMap::new();
+    let (sql, scene_ids) = match ownership {
+        SceneOwnership::Set(ids) => (SCOPE_EXTENSION_SQL, Some(ids)),
+        #[cfg(test)]
+        SceneOwnership::LegacyJoin => (SCOPE_EXTENSION_LEGACY_JOIN_SQL, None),
+    };
+    let mut statement = conn.prepare(sql)?;
     let rows = statement
         .query_map(params![project_id], |row| {
-            (0..13)
-                .map(|index| row.get::<_, SqlValue>(index))
-                .collect::<rusqlite::Result<Vec<_>>>()
+            let mut values = Vec::with_capacity(13);
+            match scene_ids {
+                // The statement does not read `tree_nodes`: it returns the 12
+                // other columns, and `sceneOwned` goes in as the eleventh
+                // with the same value (a 0/1 integer) the join gave it.
+                Some(scene_ids) => {
+                    for index in 0..10 {
+                        values.push(row.get::<_, SqlValue>(index)?);
+                    }
+                    let scene_owned = match &values[0] {
+                        SqlValue::Text(scene_id) => scene_ids.contains(scene_id),
+                        _ => false,
+                    };
+                    values.push(SqlValue::Integer(i64::from(scene_owned)));
+                    values.push(row.get::<_, SqlValue>(10)?);
+                    values.push(row.get::<_, SqlValue>(11)?);
+                }
+                None => {
+                    for index in 0..13 {
+                        values.push(row.get::<_, SqlValue>(index)?);
+                    }
+                }
+            }
+            Ok(values)
         })?
         .collect::<rusqlite::Result<Vec<Vec<_>>>>()?;
     for raw_values in rows {
@@ -3072,10 +3195,22 @@ mod tests {
         .expect("seed many scenes");
     }
 
+    /// The Scene ids of `project_id` as the Scope authority takes them from
+    /// the nodes it reads: every `scene` node of the project.
+    fn project_scene_ids(conn: &Connection, project_id: &str) -> Result<ProjectSceneIds> {
+        let ids = conn
+            .prepare("SELECT id FROM tree_nodes WHERE project_id = ?1 AND node_type = 'scene'")?
+            .query_map([project_id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ProjectSceneIds::from_unsorted(ids.iter().map(String::as_str)))
+    }
+
     fn assert_scope_extension_matches_the_value_form(db: &Database) -> (usize, usize) {
         db.with_read_transaction(|conn| {
+            let scene_ids = project_scene_ids(conn, "p1")?;
+            let ownership = SceneOwnership::Set(&scene_ids);
             let mut entries = Vec::new();
-            let parts = read_scope_extension_entries(conn, "p1", true, |entry| {
+            let parts = read_scope_extension_entries(conn, "p1", true, ownership, |entry| {
                 entries.push(entry);
                 Ok(())
             })?;
@@ -3089,11 +3224,11 @@ mod tests {
                 &parts.registry_source_token,
                 entries.clone(),
             );
-            let collected = read_scope_extension(conn, "p1", true)?;
+            let collected = read_scope_extension(conn, "p1", true, ownership)?;
             assert_eq!(collected.digest, reference);
             assert_eq!(collected.scene_bindings, parts.scene_bindings);
             assert_eq!(collected.scene_bindings.len(), entries.len() - unavailable);
-            let uncollected = read_scope_extension(conn, "p1", false)?;
+            let uncollected = read_scope_extension(conn, "p1", false, ownership)?;
             assert_eq!(uncollected.digest, reference);
             assert!(uncollected.scene_bindings.is_empty());
             Ok((entries.len(), unavailable))
@@ -3253,11 +3388,18 @@ mod tests {
         .expect("corrupt rows");
         let entries = db
             .with_read_transaction(|conn| {
+                let scene_ids = project_scene_ids(conn, "p1")?;
                 let mut entries = Vec::new();
-                read_scope_extension_entries(conn, "p1", false, |entry| {
-                    entries.push(entry);
-                    Ok(())
-                })?;
+                read_scope_extension_entries(
+                    conn,
+                    "p1",
+                    false,
+                    SceneOwnership::Set(&scene_ids),
+                    |entry| {
+                        entries.push(entry);
+                        Ok(())
+                    },
+                )?;
                 Ok(entries)
             })
             .expect("entries");
@@ -3563,3 +3705,7 @@ mod parsed_scope_control_tests {
         assert_eq!(memo.answers.len(), 2);
     }
 }
+
+#[cfg(test)]
+#[path = "scene_scope_ownership_tests.rs"]
+mod ownership_tests;

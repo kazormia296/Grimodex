@@ -1469,6 +1469,94 @@ fn project_level_reads_are_made_once_and_charged_as_made() -> Result<()> {
     Ok(())
 }
 
+// DR-CQA-6: the shared binding charge is one row per binding because one
+// statement loads each binding row (the old 2 counted A3's second load of the
+// Scope authority, which is long gone), and that statement no longer joins
+// `tree_nodes` (`scene_scope_ownership_tests` checks the statement itself). Whatever else touches the binding table in a query is
+// a different read with its own charge: the COUNT and the byte sums that are
+// the preflight (they read the payload columns for `octet_length`, never
+// `version`), and a pinned Scene's two token columns in the Scene join. The
+// binding's `version` is read by the extension's statement alone, so it counts
+// the loads: one per query, however many Revisions the query evaluates. Counted
+// by what SQLite is asked to authorize when each statement is prepared.
+#[test]
+fn a_query_loads_the_scene_bindings_in_one_statement() -> Result<()> {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use std::sync::{Arc, Mutex};
+    let novel = novel_fixture(10, 5, ReviewMode::Scene)?;
+    // m1 meets 8 Revisions.
+    let request = request_for("m1", "nir1");
+    novel.fixture.authority.db().with_conn(|conn| {
+        conn.execute_batch("PRAGMA query_only=OFF")?;
+        Ok(())
+    })?;
+    let mut reader = novel.fixture.worker_reader()?;
+    let reads = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+    let sink = Arc::clone(&reads);
+    novel.fixture.authority.db().with_conn(|conn| {
+        conn.authorizer(Some(move |context: AuthContext<'_>| {
+            if let AuthAction::Read {
+                table_name,
+                column_name,
+            } = context.action
+            {
+                sink.lock()
+                    .unwrap()
+                    .push((table_name.to_owned(), column_name.to_owned()));
+            }
+            Authorization::Allow
+        }))?;
+        Ok(())
+    })?;
+    let response = reader.query_for_worker_with_maintenance_deadline(&request, DEADLINE);
+    novel.fixture.authority.db().with_conn(|conn| {
+        conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+        Ok(())
+    })?;
+    let response = response?;
+    assert_eq!(response.status, "available", "{:?}", response.reason);
+    let reads = reads.lock().unwrap();
+    let of = |table: &str, column: &str| {
+        reads
+            .iter()
+            .filter(|(t, c)| t == table && c == column)
+            .count()
+    };
+    // The whole set of reads of the binding table in this query, by column and
+    // by the number of statements prepared that name it (a column a statement
+    // names twice counts twice). Two statements name the payload columns: the
+    // preflight's byte sum (no `version`) and the extension's. A new statement
+    // on the table, or a second load, changes this and fails here. The Scene
+    // join's two token columns (`scene_incarnation_id`, `source_token` of a
+    // pinned Scene) are not in it: this query pins no Scene, and that read has
+    // its own charge in `SceneJoinBudget`.
+    let on_bindings = reads
+        .iter()
+        .filter(|(table, _)| table == "narrative_scene_scope_bindings")
+        .fold(BTreeMap::<&str, usize>::new(), |mut counts, (_, column)| {
+            *counts.entry(column.as_str()).or_default() += 1;
+            counts
+        });
+    assert_eq!(
+        on_bindings,
+        BTreeMap::from([
+            ("audience_json", 4),
+            ("compatibility_marker", 2),
+            ("knowledge_holder_json", 4),
+            ("material_constraint_json", 2),
+            ("project_id", 5),
+            ("query_identity_json", 2),
+            ("scene_id", 3),
+            ("scene_incarnation_id", 2),
+            ("source_token", 2),
+            ("updated_at", 2),
+            ("version", 1),
+        ])
+    );
+    assert_eq!(of("narrative_scene_scope_bindings", "version"), 1);
+    Ok(())
+}
+
 /// Approved Revisions of alice and bob in the seed Scene's own Scope: the
 /// seed Revision and `total - 1` more, plus `decoys` reverse-index rows on the
 /// seed that name no Revision.
@@ -1500,7 +1588,7 @@ fn budget_fixture(total: usize, decoys: usize) -> Result<Fixture> {
 /// `admitted_rows` observes): the reverse-index rows it pages through for
 /// alice and bob, each Revision's Entities, Relations and Evidence, its
 /// Decision and the Codex rows its Entities name, and, once, the project-level
-/// rows the Revisions share (the tree and the Scene bindings twice, the
+/// rows the Revisions share (the tree twice, the Scene bindings once, the
 /// registry for each of the two reads that make it, the project, the query
 /// Scene, its POV and the Epoch).
 fn rows_charged_by_the_seed_query(fixture: &Fixture) -> Result<(usize, usize)> {
@@ -1567,7 +1655,7 @@ fn rows_charged_by_the_seed_query(fixture: &Fixture) -> Result<(usize, usize)> {
             &[&PROJECT],
         )?;
         // project 1, query Scene 1, its POV 0 (the fixture's Scene has none)
-        let shared = 2 * tree + 2 * bindings + 2 * registry + 1 + 1 + epoch;
+        let shared = 2 * tree + bindings + 2 * registry + 1 + 1 + epoch;
         Ok((candidates + revisions + shared, shared))
     })
 }
@@ -2066,6 +2154,16 @@ fn query_fifty_scene_protagonists_are_available_on_the_12_plus_80_cast() -> Resu
 /// Entities, one per Scene (R2-4's shape: the product's `prepare` path, Japanese
 /// summaries of about `total_summary_bytes` across the Entities).
 fn same_entity_product_fixture(revisions: usize, total_summary_bytes: usize) -> Result<Fixture> {
+    same_entity_product_fixture_with_scenes(revisions, total_summary_bytes, 0)
+}
+
+/// [`same_entity_product_fixture`] with `extra_scenes` more bare Scenes
+/// (a short id, content `{}`, one Scope binding each) under the same folder.
+fn same_entity_product_fixture_with_scenes(
+    revisions: usize,
+    total_summary_bytes: usize,
+    extra_scenes: usize,
+) -> Result<Fixture> {
     use crate::narrative_extraction::nir1_entity_relation::prepare_nir1_entity_relation_revision;
     use crate::narrative_extraction::Nir1EntityRelationRevisionPrepareRequest;
     let entity_count = 12usize;
@@ -2096,6 +2194,22 @@ fn same_entity_product_fixture(revisions: usize, total_summary_bytes: usize) -> 
                 conn,
                 PROJECT,
                 scene_id,
+                "2026-09-17T00:00:00.000Z",
+                crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+            )?;
+        }
+        for extra in 0..extra_scenes {
+            let scene_id = format!("x{extra:05}");
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, parent_id, node_type, title, content, sort_order)
+                 VALUES (?1, 'default-project', 'ch00', 'scene', ?1, '{}', ?1)",
+                [&scene_id],
+            )?;
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                PROJECT,
+                &scene_id,
                 "2026-09-17T00:00:00.000Z",
                 crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
             )?;
@@ -2168,6 +2282,75 @@ fn same_entity_product_fixture(revisions: usize, total_summary_bytes: usize) -> 
         revision: first_revision,
         _directory: directory,
     })
+}
+
+// DR-CQA-6: the floor of a bare one-Revision project (the product's p:300000
+// shape: twelve Entities, one Revision, short-id Scenes with a binding each).
+// Every query's shared reads scale with the Scenes, so past a number of Scenes
+// no seed gets a Graph. The charge is 2 per tree node, 1 per binding (it was
+// 2), 2 per registry reference and 3 once; the Revision's 37 + 13 rows and the
+// candidate rows after its first Revision come on top. It was 489 Scenes
+// (4n + 19; this same test, run with the binding charge at 2, gives 489, as the
+// real worker did) and is 652 now (3n + 19): 652 is admitted, and 653 is
+// refused for the candidate rows that no longer fit after the Revision. This
+// runs the worker's configuration in process: the admission it measures is the
+// same code the worker runs.
+const BARE_FLOOR_SCENES: usize = 652;
+
+fn bare_floor_query(total_scenes: usize) -> Result<Nir1GraphResponse> {
+    // The fixture has 4 bound Scenes of its own.
+    let fixture = same_entity_product_fixture_with_scenes(1, 300_000, total_scenes - 4)?;
+    let scenes: i64 = fixture.authority.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM narrative_scene_scope_bindings WHERE project_id=?1",
+            [PROJECT],
+            |row| row.get(0),
+        )?)
+    })?;
+    assert_eq!(usize::try_from(scenes)?, total_scenes);
+    let mut reader = fixture.worker_reader()?;
+    reader.query_for_worker_with_maintenance_deadline(&request_for("v00", "nir1"), LARGE_N_LEASE)
+}
+
+#[test]
+#[ignore = "DR-CQA-6 measurement: bisects the floor of the bare one-Revision project (CQ_FLOOR_LO, CQ_FLOOR_HI)"]
+fn measure_the_bare_floor() -> Result<()> {
+    let env = |name: &str, default: usize| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    };
+    let (mut lo, mut hi) = (env("CQ_FLOOR_LO", 400), env("CQ_FLOOR_HI", 800));
+    assert_eq!(bare_floor_query(lo)?.status, "available");
+    assert_eq!(bare_floor_query(hi)?.status, "unavailable");
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        let response = bare_floor_query(mid)?;
+        eprintln!("FLOOR {mid}: {} {:?}", response.status, response.reason);
+        if response.status == "available" {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    eprintln!("FLOOR largest available = {lo}");
+    Ok(())
+}
+
+#[test]
+fn the_floor_of_a_bare_one_revision_project_is_n_available_and_n_plus_1_refused() -> Result<()> {
+    let at = bare_floor_query(BARE_FLOOR_SCENES)?;
+    assert_eq!(at.status, "available", "{:?}", at.reason);
+    let over = bare_floor_query(BARE_FLOOR_SCENES + 1)?;
+    assert_eq!(over.status, "unavailable", "{:?}", over.reason);
+    assert!(over.graph.is_none());
+    let reason = over.reason.as_deref().unwrap_or_default();
+    assert!(
+        reason.contains("candidate-record-limit"),
+        "refused for the candidate page's records: {reason}"
+    );
+    Ok(())
 }
 
 // B3 (in-process): projects with several product-shaped Revisions register on

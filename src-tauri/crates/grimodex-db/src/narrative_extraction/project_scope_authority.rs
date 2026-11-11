@@ -26,6 +26,8 @@ use grimodex_core::narrative_project_scope_authority::{
 use grimodex_core::narrative_scene_scope::NarrativeSceneScopeBindingV1;
 use rusqlite::{params, Connection, OptionalExtension};
 
+use super::scene_scope::{ProjectSceneIds, SceneOwnership};
+
 const PROJECT_SCOPE_AUTHORITY_SOURCE_PREFIX: &str = "project:scope-authority:";
 pub(crate) const PROJECT_SCOPE_AUTHORITY_SNAPSHOT: &str =
     "narrative_project_scope_authority_snapshot";
@@ -201,10 +203,33 @@ pub(crate) struct LiveProjectScopeRead {
     pub(crate) scene_bindings: BTreeMap<String, NarrativeSceneScopeBindingV1>,
 }
 
+/// Which `sceneOwned` rule the extension read runs under: the Scene-id set of
+/// the nodes this read just loaded (production), or, in tests, the join of
+/// `tree_nodes` the extension used before DR-CQA-6.
+#[derive(Clone, Copy)]
+enum ExtensionOwnership {
+    SceneIds,
+    #[cfg(test)]
+    LegacyJoin,
+}
+
+/// The Scene nodes' ids of `nodes`, moved out of them: a Scene node's id is
+/// reused and every other field of every node is freed here, so the set adds
+/// one `Vec` to what the tree read held (DR-CQA-6).
+fn scene_ids_of(nodes: &[PersistedProjectTreeNode]) -> ProjectSceneIds {
+    ProjectSceneIds::from_unsorted(
+        nodes
+            .iter()
+            .filter(|node| node.node_type == "scene")
+            .map(|node| node.id.as_str()),
+    )
+}
+
 fn load_live_project_scope_authority_in_snapshot(
     conn: &Connection,
     project_id: &str,
     collect_scene_bindings: bool,
+    ownership: ExtensionOwnership,
 ) -> anyhow::Result<LiveProjectScopeRead> {
     #[cfg(test)]
     super::nir1_capacity::project_read_probe::record(
@@ -244,11 +269,22 @@ fn load_live_project_scope_authority_in_snapshot(
     let scenes = derive_live_scene_projection(&nodes)?;
     // The tree rows and the scene inputs are not read again; release them
     // before the extension digest so they are not live at the peak (DR-GRW-5).
+    // What the extension needs of the tree, which ids are the project's
+    // Scenes, stays as one packed copy (DR-CQA-6); the rows are freed.
+    let scene_ids = scene_ids_of(&nodes);
     drop(nodes);
     let mut authority = build_narrative_project_scope_authority_v1(project_id, &scenes)?;
     drop(scenes);
-    let extension =
-        super::scene_scope::read_scope_extension(conn, project_id, collect_scene_bindings)?;
+    let extension = super::scene_scope::read_scope_extension(
+        conn,
+        project_id,
+        collect_scene_bindings,
+        match ownership {
+            ExtensionOwnership::SceneIds => SceneOwnership::Set(&scene_ids),
+            #[cfg(test)]
+            ExtensionOwnership::LegacyJoin => SceneOwnership::LegacyJoin,
+        },
+    )?;
     authority.source.revision_token = grimodex_core::canonical_json_digest(&serde_json::json!({
         "baseRevisionToken": authority.source.revision_token,
         "sceneScopeExtensionDigest": extension.digest,
@@ -264,7 +300,14 @@ pub(crate) fn load_live_project_scope_authority(
     project_id: &str,
     source_key: &str,
 ) -> anyhow::Result<NarrativeProjectScopeAuthorityV1> {
-    Ok(load_live_project_scope_read(conn, project_id, source_key, false)?.authority)
+    Ok(load_live_project_scope_read(
+        conn,
+        project_id,
+        source_key,
+        false,
+        ExtensionOwnership::SceneIds,
+    )?
+    .authority)
 }
 
 /// [`load_live_project_scope_authority`] that also returns the Scene bindings
@@ -275,7 +318,32 @@ pub(crate) fn load_live_project_scope_authority_with_scene_bindings(
     project_id: &str,
     source_key: &str,
 ) -> anyhow::Result<LiveProjectScopeRead> {
-    load_live_project_scope_read(conn, project_id, source_key, true)
+    load_live_project_scope_read(
+        conn,
+        project_id,
+        source_key,
+        true,
+        ExtensionOwnership::SceneIds,
+    )
+}
+
+/// [`load_live_project_scope_authority_with_scene_bindings`] with the extension
+/// deciding `sceneOwned` by the join it used before DR-CQA-6. Tests only: the
+/// oracle the production read is checked against.
+#[cfg(test)]
+pub(crate) fn load_live_project_scope_authority_with_legacy_join(
+    conn: &Connection,
+    project_id: &str,
+    source_key: &str,
+    collect_scene_bindings: bool,
+) -> anyhow::Result<LiveProjectScopeRead> {
+    load_live_project_scope_read(
+        conn,
+        project_id,
+        source_key,
+        collect_scene_bindings,
+        ExtensionOwnership::LegacyJoin,
+    )
 }
 
 fn load_live_project_scope_read(
@@ -283,6 +351,7 @@ fn load_live_project_scope_read(
     project_id: &str,
     source_key: &str,
     collect_scene_bindings: bool,
+    ownership: ExtensionOwnership,
 ) -> anyhow::Result<LiveProjectScopeRead> {
     anyhow::ensure!(
         !project_id.is_empty() && project_id.trim() == project_id,
@@ -302,8 +371,12 @@ fn load_live_project_scope_read(
     );
 
     conn.execute_batch(&format!("SAVEPOINT {PROJECT_SCOPE_AUTHORITY_SNAPSHOT}"))?;
-    let result =
-        load_live_project_scope_authority_in_snapshot(conn, project_id, collect_scene_bindings);
+    let result = load_live_project_scope_authority_in_snapshot(
+        conn,
+        project_id,
+        collect_scene_bindings,
+        ownership,
+    );
     match result {
         Ok(read) => {
             conn.execute_batch(&format!("RELEASE {PROJECT_SCOPE_AUTHORITY_SNAPSHOT}"))?;
