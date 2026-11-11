@@ -850,6 +850,44 @@ pub(crate) fn read_scope_extension(
     project_id: &str,
     collect_scene_bindings: bool,
 ) -> Result<ScopeExtension> {
+    // Each binding's observation goes straight into the digest as it is
+    // produced; no `Vec<Value>` of every binding (and no second copy of it)
+    // is held (DR-GRW-5).
+    let mut digest_stream = begin_scope_extension_digest()?;
+    let parts =
+        read_scope_extension_entries(conn, project_id, collect_scene_bindings, |entry: Value| {
+            Ok(digest_stream.value(&entry)?)
+        })?;
+    let digest = finish_scope_extension_digest(
+        digest_stream,
+        &parts.registry,
+        parts.registry_revision,
+        &parts.registry_source_token,
+    )?;
+    Ok(ScopeExtension {
+        digest,
+        scene_bindings: parts.scene_bindings,
+    })
+}
+
+/// What [`read_scope_extension_entries`] returns besides the per-binding
+/// entries it hands to its sink.
+struct ScopeExtensionParts {
+    registry: NarrativeSceneScopeRegistryV1,
+    registry_revision: i64,
+    registry_source_token: String,
+    scene_bindings: BTreeMap<String, NarrativeSceneScopeBindingV1>,
+}
+
+/// Read and validate every Scene binding row of the project in `ORDER BY
+/// b.scene_id` order and hand one digest entry per row to `on_entry`: the
+/// binding itself, or an `unavailable` observation of the raw row.
+fn read_scope_extension_entries(
+    conn: &Connection,
+    project_id: &str,
+    collect_scene_bindings: bool,
+    mut on_entry: impl FnMut(Value) -> Result<()>,
+) -> Result<ScopeExtensionParts> {
     anyhow::ensure!(
         table_exists(conn, "narrative_scope_registries")?
             && table_exists(conn, "narrative_scene_scope_bindings")?,
@@ -860,7 +898,6 @@ pub(crate) fn read_scope_extension(
     let registry = read_registry_in_tx(conn, project_id)?;
     let (registry_revision, registry_source_token, _) = read_registry_row(conn, project_id)?;
     let mut scene_bindings = BTreeMap::new();
-    let mut bindings = Vec::new();
     let mut statement = conn.prepare(
         "SELECT b.scene_id, b.scene_incarnation_id, b.compatibility_marker,
                 b.query_identity_json, b.material_constraint_json,
@@ -972,40 +1009,70 @@ pub(crate) fn read_scope_extension(
                 if collect_scene_bindings {
                     scene_bindings.insert(binding.scene_id.clone(), binding.clone());
                 }
-                bindings.push(serde_json::to_value(binding)?)
+                on_entry(serde_json::to_value(binding)?)?;
             }
             Ok(None) => {}
-            Err(_) => bindings.push(json!({
+            Err(_) => on_entry(json!({
                 "sceneId": scene_id_hint,
                 "status": "unavailable",
                 "rawDigest": grimodex_core::canonical_json_digest(&raw)?,
-            })),
+            }))?,
         }
     }
-    let digest = grimodex_core::canonical_json_digest(&json!({
-        "contractId": narrative_scene_scope::NARRATIVE_SCENE_SCOPE_CONTRACT_ID,
-        "registry": registry,
-        // Native-owned monotonic/source observations remain in the authority
-        // digest even for compatibility-only bindings: the registry revision
-        // and source token, and every binding's version, source token and
-        // updatedAt. They keep an A->B->A or same-timestamp write from
-        // recreating an old token.
-        //
-        // The tree's own `version`/`updated_at` are NOT observed here. A
-        // writer that changes where live Scenes sit therefore has to advance
-        // the affected Scenes' binding generation in the same transaction: a
-        // Scene patch refreshes its own binding, and a folder's
-        // parentId/sortOrder/archivedAt change refreshes every live Scene
-        // below it (`refresh_scene_scope_source_tokens_in_tx`). Empty folders
-        // and notes carry no Scene, so they never move this digest.
-        "registryRevision": registry_revision,
-        "registrySourceToken": registry_source_token,
-        "bindings": bindings,
-    }))?;
-    Ok(ScopeExtension {
-        digest,
+    Ok(ScopeExtensionParts {
+        registry,
+        registry_revision,
+        registry_source_token,
         scene_bindings,
     })
+}
+
+/// Open the extension digest's document: the `bindings` array, which is the
+/// first key in canonical (UTF-16) order. Every binding observation is then
+/// written with [`CanonicalJsonStream::value`] in `ORDER BY b.scene_id` order.
+fn begin_scope_extension_digest(
+) -> Result<grimodex_core::CanonicalJsonStream<grimodex_core::CanonicalDigestSink>> {
+    let mut stream = grimodex_core::CanonicalJsonStream::digest();
+    stream.begin_object()?;
+    stream.key("bindings")?;
+    stream.begin_array()?;
+    Ok(stream)
+}
+
+/// Close the document opened by [`begin_scope_extension_digest`] with the
+/// remaining keys in canonical order (`bindings < contractId < registry <
+/// registryRevision < registrySourceToken`; the stream checks the order). The
+/// digest equals `canonical_json_digest` of the same document built as one
+/// `serde_json::Value`.
+///
+/// Native-owned monotonic/source observations remain in the authority digest
+/// even for compatibility-only bindings: the registry revision and source
+/// token, and every binding's version, source token and updatedAt. They keep an
+/// A->B->A or same-timestamp write from recreating an old token.
+///
+/// The tree's own `version`/`updated_at` are NOT observed here. A writer that
+/// changes where live Scenes sit therefore has to advance the affected Scenes'
+/// binding generation in the same transaction: a Scene patch refreshes its own
+/// binding, and a folder's parentId/sortOrder/archivedAt change refreshes every
+/// live Scene below it (`refresh_scene_scope_source_tokens_in_tx`). Empty
+/// folders and notes carry no Scene, so they never move this digest.
+fn finish_scope_extension_digest(
+    mut stream: grimodex_core::CanonicalJsonStream<grimodex_core::CanonicalDigestSink>,
+    registry: &NarrativeSceneScopeRegistryV1,
+    registry_revision: i64,
+    registry_source_token: &str,
+) -> Result<String> {
+    stream.end_array()?;
+    stream.key("contractId")?;
+    stream.string(narrative_scene_scope::NARRATIVE_SCENE_SCOPE_CONTRACT_ID)?;
+    stream.key("registry")?;
+    stream.value(&serde_json::to_value(registry)?)?;
+    stream.key("registryRevision")?;
+    stream.value(&Value::from(registry_revision))?;
+    stream.key("registrySourceToken")?;
+    stream.string(registry_source_token)?;
+    stream.end_object()?;
+    Ok(stream.finish_digest()?)
 }
 
 fn scene_scope_digest_raw_value(value: &SqlValue) -> Value {
@@ -2830,6 +2897,506 @@ mod tests {
             })
             .expect("read scope feed");
         assert_eq!(feed_count, 3);
+    }
+
+    /// The extension digest as it was built before DR-GRW-5: every entry held
+    /// in a `Vec<Value>` and the whole document built by `json!`, which copies
+    /// that vector once more. The streamed digest must equal this one for any
+    /// registry, revision, source token and entry list.
+    fn scope_extension_digest_reference(
+        registry: &NarrativeSceneScopeRegistryV1,
+        registry_revision: i64,
+        registry_source_token: &str,
+        bindings: Vec<Value>,
+    ) -> String {
+        grimodex_core::canonical_json_digest(&json!({
+            "contractId": narrative_scene_scope::NARRATIVE_SCENE_SCOPE_CONTRACT_ID,
+            "registry": registry,
+            "registryRevision": registry_revision,
+            "registrySourceToken": registry_source_token,
+            "bindings": bindings,
+        }))
+        .expect("reference digest")
+    }
+
+    fn streamed_scope_extension_digest(
+        registry: &NarrativeSceneScopeRegistryV1,
+        registry_revision: i64,
+        registry_source_token: &str,
+        bindings: &[Value],
+    ) -> String {
+        let mut stream = begin_scope_extension_digest().expect("begin digest");
+        for binding in bindings {
+            stream.value(binding).expect("write entry");
+        }
+        finish_scope_extension_digest(stream, registry, registry_revision, registry_source_token)
+            .expect("finish digest")
+    }
+
+    fn binding_shaped_value(index: usize) -> Value {
+        json!({
+            "schemaVersion": 1,
+            "projectId": "p1",
+            "sceneId": format!("scene-{index:05}"),
+            "sceneIncarnationId": format!("legacy:scene-{index:05}"),
+            "compatibilityMarker": "unknown",
+            "queryIdentity": {
+                "timeline": {"kind": "unresolved", "reason": "legacy-axis-unknown"},
+                "worldline": {"kind": "exact", "ref": format!("worldline:{index}")},
+                "narrativeLayer": {"kind": "any"},
+            },
+            "materialConstraint": {
+                "timeline": {"kind": "any"},
+                "worldline": {"kind": "any"},
+                "narrativeLayer": {"kind": "any"},
+            },
+            "knowledgeHolder": if index.is_multiple_of(2) {
+                json!({"kind": "reader"})
+            } else {
+                json!({"kind": "character", "ref": format!("c{index}")})
+            },
+            "audience": {"kind": "reader"},
+            "version": index as i64 + 1,
+            "sourceToken": format!("sha256:{index:064x}"),
+            "updatedAt": "2026-09-13T00:00:00.000Z",
+        })
+    }
+
+    fn odd_registries() -> Vec<NarrativeSceneScopeRegistryV1> {
+        vec![
+            initial_registry(),
+            NarrativeSceneScopeRegistryV1 {
+                registry_version: NARRATIVE_SCENE_SCOPE_REGISTRY_CONTRACT_ID.to_owned(),
+                timeline_refs: vec![],
+                worldline_refs: vec![],
+                narrative_layer_refs: vec![],
+            },
+            NarrativeSceneScopeRegistryV1 {
+                registry_version: NARRATIVE_SCENE_SCOPE_REGISTRY_CONTRACT_ID.to_owned(),
+                timeline_refs: vec!["timeline:é\u{301}".into(), "timeline:\u{1D4B3}".into()],
+                worldline_refs: vec!["w\"\\\n\t\u{1}\u{7f}\u{2028}".into()],
+                narrative_layer_refs: vec!["layer:\u{FF5E}".into(), "layer:\u{1F600}".into()],
+            },
+        ]
+    }
+
+    fn odd_entries() -> Vec<Vec<Value>> {
+        let tricky = vec![
+            // Escapes, controls, BMP and astral text, and keys whose UTF-16
+            // order differs from their UTF-8 order.
+            json!({"sceneId": "sc\"\\\n\r\t\u{8}\u{c}\u{1}\u{1f}", "status": "unavailable", "rawDigest": "sha256:ab"}),
+            json!({"sceneId": "é\u{301}\u{3042}\u{FF5E}\u{1D4B3}\u{1F600}", "status": "unavailable", "rawDigest": "sha256:"}),
+            json!({"\u{FF5E}": 1, "\u{1D4B3}": 2, "a": {"z": [], "\u{1F600}": null, "\u{FF5E}": {}}, "": ""}),
+            // Numbers, null, booleans and nesting.
+            json!([0, -1, 1, i64::MIN, i64::MAX, u64::MAX, null, true, false, [[[]], [null]], {"k": [{"k": [1, 2, {"k": null}]}]}]),
+            json!(null),
+            json!("plain string"),
+            json!(12345),
+            json!({"type": "integer", "value": -9_007_199_254_740_993_i64}),
+            json!({"type": "real", "bits": format!("{:016x}", 1.5_f64.to_bits())}),
+            json!({"type": "blob", "hex": hex::encode([0u8, 255, 16])}),
+        ];
+        vec![
+            vec![],
+            vec![binding_shaped_value(0)],
+            (0..300).map(binding_shaped_value).collect(),
+            tricky.clone(),
+            tricky
+                .into_iter()
+                .chain((0..40).map(binding_shaped_value))
+                .collect(),
+        ]
+    }
+
+    #[test]
+    fn the_streamed_extension_digest_equals_the_value_form_for_every_shape() {
+        for (registry_index, registry) in odd_registries().iter().enumerate() {
+            for revision in [0_i64, 1, 7, i64::MAX] {
+                for token in ["sha256:abc", "", "t\"\u{1D4B3}\n"] {
+                    for (entries_index, entries) in odd_entries().into_iter().enumerate() {
+                        let reference = scope_extension_digest_reference(
+                            registry,
+                            revision,
+                            token,
+                            entries.clone(),
+                        );
+                        let streamed =
+                            streamed_scope_extension_digest(registry, revision, token, &entries);
+                        assert_eq!(
+                            streamed, reference,
+                            "registry {registry_index}, revision {revision}, token {token:?}, entries {entries_index}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_streamed_extension_digest_matches_a_pinned_value() {
+        // Pinned from the Value-form oracle on the base commit, so a change on
+        // either side shows up as a difference from a number this code did not
+        // just compute.
+        let registry = initial_registry();
+        let entries = vec![binding_shaped_value(0), binding_shaped_value(1)];
+        let pinned = "sha256:84709e39088bd861c89d88d4b60053d06db1f8cc09b435e32c0ebc1ce61a147e";
+        assert_eq!(
+            scope_extension_digest_reference(&registry, 1, "sha256:abc", entries.clone()),
+            pinned
+        );
+        assert_eq!(
+            streamed_scope_extension_digest(&registry, 1, "sha256:abc", &entries),
+            pinned
+        );
+    }
+
+    fn seed_many_scenes(db: &Database, scene_count: usize) {
+        db.with_conn(|conn| {
+            for index in 0..scene_count {
+                let scene_id = format!("m{index:04}-\u{30b7}\u{30fc}\u{30f3}\u{1D4B3}");
+                conn.execute(
+                    "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+                     VALUES (?1, 'p1', 'scene', 'Scene', ?2)",
+                    params![scene_id, format!("b{index:04}")],
+                )?;
+                ensure_scene_scope_binding_in_tx(
+                    conn,
+                    "p1",
+                    &scene_id,
+                    "2026-09-13T00:00:00.000Z",
+                    crate::narrative_extraction::SceneScopeInit::UnknownRepairOrRestore,
+                )?;
+            }
+            Ok(())
+        })
+        .expect("seed many scenes");
+    }
+
+    fn assert_scope_extension_matches_the_value_form(db: &Database) -> (usize, usize) {
+        db.with_read_transaction(|conn| {
+            let mut entries = Vec::new();
+            let parts = read_scope_extension_entries(conn, "p1", true, |entry| {
+                entries.push(entry);
+                Ok(())
+            })?;
+            let unavailable = entries
+                .iter()
+                .filter(|entry| entry["status"] == "unavailable")
+                .count();
+            let reference = scope_extension_digest_reference(
+                &parts.registry,
+                parts.registry_revision,
+                &parts.registry_source_token,
+                entries.clone(),
+            );
+            let collected = read_scope_extension(conn, "p1", true)?;
+            assert_eq!(collected.digest, reference);
+            assert_eq!(collected.scene_bindings, parts.scene_bindings);
+            assert_eq!(collected.scene_bindings.len(), entries.len() - unavailable);
+            let uncollected = read_scope_extension(conn, "p1", false)?;
+            assert_eq!(uncollected.digest, reference);
+            assert!(uncollected.scene_bindings.is_empty());
+            Ok((entries.len(), unavailable))
+        })
+        .expect("compare the streamed extension digest")
+    }
+
+    #[test]
+    fn the_extension_digest_of_a_real_project_equals_the_value_form() {
+        // One binding (the seeded scene).
+        let db = migrated_db();
+        assert_eq!(assert_scope_extension_matches_the_value_form(&db), (1, 0));
+
+        // No binding at all.
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM narrative_scene_scope_bindings", [])?;
+            Ok(())
+        })
+        .expect("remove the only binding");
+        assert_eq!(assert_scope_extension_matches_the_value_form(&db), (0, 0));
+
+        // Many bindings, in scene-id order.
+        let many = migrated_db();
+        seed_many_scenes(&many, 300);
+        assert_eq!(
+            assert_scope_extension_matches_the_value_form(&many),
+            (301, 0)
+        );
+    }
+
+    #[test]
+    fn the_extension_digest_equals_the_value_form_with_unavailable_and_explicit_rows() {
+        let db = migrated_db();
+        seed_many_scenes(&db, 24);
+        // An Explicit binding with Exact refs and a Character principal.
+        update_narrative_scene_scope(
+            &db,
+            NarrativeSceneScopeUpdatePayload {
+                project_id: "p1".into(),
+                scene_id: "s1".into(),
+                request_id: "scope-request-1".into(),
+                session_id: "session-1".into(),
+                event_uid: "scope-event-1".into(),
+                base_version: 1,
+                updated_at: "2026-09-13T00:02:00.000Z".into(),
+                scope: NarrativeSceneScopeUpdateV1 {
+                    schema_version: 1,
+                    compatibility_marker: NarrativeScopeCompatibilityMarkerV1::Explicit,
+                    query_identity: NarrativeSceneQueryIdentityV1 {
+                        timeline: narrative_scene_scope::NarrativeScopeConstraintV1::Exact {
+                            reference: MAIN_LINE_TIMELINE_REF.into(),
+                        },
+                        worldline: narrative_scene_scope::NarrativeScopeConstraintV1::Exact {
+                            reference: MAIN_LINE_WORLDLINE_REF.into(),
+                        },
+                        narrative_layer: narrative_scene_scope::NarrativeScopeConstraintV1::Exact {
+                            reference: MAIN_LINE_LAYER_REF.into(),
+                        },
+                    },
+                    material_constraint: default_material_constraint(),
+                    knowledge_holder: NarrativeScopePrincipalV1::Character {
+                        reference: "c1".into(),
+                    },
+                    audience: NarrativeScopePrincipalV1::Character {
+                        reference: "c1".into(),
+                    },
+                },
+            },
+        )
+        .expect("explicit scope update");
+        let before_corruption = db
+            .with_read_transaction(|conn| read_narrative_scene_scope(conn, "p1", "s1"))
+            .expect("read explicit scope");
+        assert_eq!(
+            before_corruption.binding.compatibility_marker,
+            NarrativeScopeCompatibilityMarkerV1::Explicit
+        );
+        let (total, unavailable) = assert_scope_extension_matches_the_value_form(&db);
+        assert_eq!((total, unavailable), (25, 0));
+
+        // Rows that fail a check become `unavailable` entries holding a digest
+        // of the raw row: a broken JSON column, a wrong source token, a text
+        // version, a REAL and a BLOB in text columns, a binding of a note, and
+        // a binding whose Scene is missing.
+        db.with_conn(|conn| {
+            // The table's CHECKs and foreign keys keep a healthy database
+            // from holding such rows; a damaged one can.
+            conn.execute("PRAGMA foreign_keys = OFF", [])?;
+            conn.execute("PRAGMA ignore_check_constraints = ON", [])?;
+            let ids: Vec<String> = conn
+                .prepare(
+                    "SELECT scene_id FROM narrative_scene_scope_bindings
+                      WHERE project_id = 'p1' AND scene_id LIKE 'm%' ORDER BY scene_id",
+                )?
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            conn.execute(
+                "UPDATE narrative_scene_scope_bindings SET query_identity_json = 'not json'
+                  WHERE scene_id = ?1",
+                params![ids[0]],
+            )?;
+            conn.execute(
+                "UPDATE narrative_scene_scope_bindings SET source_token = 'sha256:00'
+                  WHERE scene_id = ?1",
+                params![ids[1]],
+            )?;
+            conn.execute(
+                "UPDATE narrative_scene_scope_bindings SET version = 'x' WHERE scene_id = ?1",
+                params![ids[2]],
+            )?;
+            conn.execute(
+                "UPDATE narrative_scene_scope_bindings SET scene_incarnation_id = 1.5
+                  WHERE scene_id = ?1",
+                params![ids[3]],
+            )?;
+            conn.execute(
+                "UPDATE narrative_scene_scope_bindings SET audience_json = x'00ff10'
+                  WHERE scene_id = ?1",
+                params![ids[4]],
+            )?;
+            conn.execute(
+                "UPDATE tree_nodes SET node_type = 'note' WHERE id = ?1",
+                params![ids[5]],
+            )?;
+            conn.execute("DELETE FROM tree_nodes WHERE id = ?1", params![ids[6]])?;
+            Ok(())
+        })
+        .expect("corrupt rows");
+        let (total, unavailable) = assert_scope_extension_matches_the_value_form(&db);
+        assert_eq!(total, 25);
+        assert_eq!(unavailable, 7);
+    }
+
+    #[test]
+    fn the_extension_entries_keep_the_base_loops_shapes_for_valid_and_broken_rows() {
+        let db = migrated_db();
+        seed_many_scenes(&db, 8);
+        db.with_conn(|conn| {
+            conn.execute("PRAGMA foreign_keys = OFF", [])?;
+            conn.execute("PRAGMA ignore_check_constraints = ON", [])?;
+            let ids: Vec<String> = conn
+                .prepare(
+                    "SELECT scene_id FROM narrative_scene_scope_bindings
+                      WHERE project_id = 'p1' AND scene_id LIKE 'm%' ORDER BY scene_id",
+                )?
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            conn.execute("UPDATE narrative_scene_scope_bindings SET query_identity_json = 'not json' WHERE scene_id = ?1", params![ids[0]])?;
+            conn.execute("UPDATE narrative_scene_scope_bindings SET source_token = 'sha256:00' WHERE scene_id = ?1", params![ids[1]])?;
+            conn.execute("UPDATE narrative_scene_scope_bindings SET version = 'x' WHERE scene_id = ?1", params![ids[2]])?;
+            conn.execute("UPDATE narrative_scene_scope_bindings SET scene_incarnation_id = 1.5 WHERE scene_id = ?1", params![ids[3]])?;
+            conn.execute("UPDATE narrative_scene_scope_bindings SET audience_json = x'00ff10' WHERE scene_id = ?1", params![ids[4]])?;
+            conn.execute("UPDATE tree_nodes SET node_type = 'note' WHERE id = ?1", params![ids[5]])?;
+            conn.execute("DELETE FROM tree_nodes WHERE id = ?1", params![ids[6]])?;
+            Ok(())
+        })
+        .expect("corrupt rows");
+        let entries = db
+            .with_read_transaction(|conn| {
+                let mut entries = Vec::new();
+                read_scope_extension_entries(conn, "p1", false, |entry| {
+                    entries.push(entry);
+                    Ok(())
+                })?;
+                Ok(entries)
+            })
+            .expect("entries");
+        // The per-row values that are generated (incarnation id, source token)
+        // are read back with plain SQL; every other value, and the shape of
+        // each expected entry, is written out by hand from the base loop
+        // (`7edc29ba`): a binding is `serde_json::to_value(binding)`, a row
+        // that fails a check is `{sceneId, status: "unavailable", rawDigest}`
+        // with `rawDigest` the canonical digest of the 13-column raw row.
+        let generated = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT scene_id, CAST(scene_incarnation_id AS TEXT), source_token
+                       FROM narrative_scene_scope_bindings ORDER BY scene_id",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .expect("generated values");
+        assert_eq!(generated.len(), 9);
+        let generated_of = |scene_id: &str| {
+            generated
+                .iter()
+                .find(|(id, _, _)| id == scene_id)
+                .map(|(_, incarnation, token)| (incarnation.clone(), token.clone()))
+                .expect("scene row")
+        };
+        let query_identity_text = r#"{"timeline":{"kind":"unresolved","reason":"legacy-axis-unknown"},"worldline":{"kind":"unresolved","reason":"legacy-axis-unknown"},"narrativeLayer":{"kind":"unresolved","reason":"legacy-axis-unknown"}}"#;
+        let material_constraint_text = r#"{"timeline":{"kind":"any"},"worldline":{"kind":"any"},"narrativeLayer":{"kind":"any"}}"#;
+        let reader_text = r#"{"kind":"reader"}"#;
+        let unavailable = |scene_id: &str, overrides: &[(&str, Value)], scene_owned: i64| {
+            let (incarnation, token) = generated_of(scene_id);
+            let mut raw = json!({
+                "sceneId": {"type": "text", "value": scene_id},
+                "sceneIncarnationId": {"type": "text", "value": incarnation},
+                "compatibilityMarker": {"type": "text", "value": "unknown"},
+                "queryIdentity": {"type": "text", "value": query_identity_text},
+                "materialConstraint": {"type": "text", "value": material_constraint_text},
+                "knowledgeHolder": {"type": "text", "value": reader_text},
+                "version": {"type": "integer", "value": 1},
+                "audience": {"type": "text", "value": reader_text},
+                "sourceToken": {"type": "text", "value": token},
+                "updatedAt": {"type": "text", "value": "2026-09-13T00:00:00.000Z"},
+                "sceneOwned": {"type": "integer", "value": scene_owned},
+                "knowledgeHolderOwned": {"type": "integer", "value": 0},
+                "audienceOwned": {"type": "integer", "value": 0},
+            });
+            for (key, value) in overrides {
+                raw[*key] = value.clone();
+            }
+            json!({
+                "sceneId": scene_id,
+                "status": "unavailable",
+                "rawDigest": grimodex_core::canonical_json_digest(&raw).expect("raw digest"),
+            })
+        };
+        let binding = |scene_id: &str| {
+            let (incarnation, token) = generated_of(scene_id);
+            json!({
+                "schemaVersion": 1,
+                "projectId": "p1",
+                "sceneId": scene_id,
+                "sceneIncarnationId": incarnation,
+                "compatibilityMarker": "unknown",
+                "queryIdentity": {
+                    "timeline": {"kind": "unresolved", "reason": "legacy-axis-unknown"},
+                    "worldline": {"kind": "unresolved", "reason": "legacy-axis-unknown"},
+                    "narrativeLayer": {"kind": "unresolved", "reason": "legacy-axis-unknown"},
+                },
+                "materialConstraint": {
+                    "timeline": {"kind": "any"},
+                    "worldline": {"kind": "any"},
+                    "narrativeLayer": {"kind": "any"},
+                },
+                "knowledgeHolder": {"kind": "reader"},
+                "audience": {"kind": "reader"},
+                "version": 1,
+                "sourceToken": token,
+                "updatedAt": "2026-09-13T00:00:00.000Z",
+            })
+        };
+        let id = |index: usize| format!("m{index:04}-\u{30b7}\u{30fc}\u{30f3}\u{1D4B3}");
+        let expected = vec![
+            // A broken JSON column.
+            unavailable(
+                &id(0),
+                &[(
+                    "queryIdentity",
+                    json!({"type": "text", "value": "not json"}),
+                )],
+                1,
+            ),
+            // A source token that does not match the state.
+            unavailable(
+                &id(1),
+                &[("sourceToken", json!({"type": "text", "value": "sha256:00"}))],
+                1,
+            ),
+            // A text version.
+            unavailable(
+                &id(2),
+                &[("version", json!({"type": "text", "value": "x"}))],
+                1,
+            ),
+            // A REAL written to a TEXT-affinity column is stored as text.
+            unavailable(
+                &id(3),
+                &[(
+                    "sceneIncarnationId",
+                    json!({"type": "text", "value": "1.5"}),
+                )],
+                1,
+            ),
+            // A BLOB in a text column.
+            unavailable(
+                &id(4),
+                &[("audience", json!({"type": "blob", "hex": "00ff10"}))],
+                1,
+            ),
+            // A binding of a note, and one whose Scene is missing.
+            unavailable(&id(5), &[], 0),
+            unavailable(&id(6), &[], 0),
+            // Valid rows.
+            binding(&id(7)),
+            binding("s1"),
+        ];
+        let actual = entries
+            .iter()
+            .map(|entry| serde_json::to_value(entry).expect("entry"))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
     }
 }
 

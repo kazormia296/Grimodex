@@ -242,7 +242,11 @@ fn load_live_project_scope_authority_in_snapshot(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let scenes = derive_live_scene_projection(&nodes)?;
+    // The tree rows and the scene inputs are not read again; release them
+    // before the extension digest so they are not live at the peak (DR-GRW-5).
+    drop(nodes);
     let mut authority = build_narrative_project_scope_authority_v1(project_id, &scenes)?;
+    drop(scenes);
     let extension =
         super::scene_scope::read_scope_extension(conn, project_id, collect_scene_bindings)?;
     authority.source.revision_token = grimodex_core::canonical_json_digest(&serde_json::json!({
