@@ -343,6 +343,62 @@ async function readRunAndDecisions(harness, page, identity, proposalIds) {
   return { run, decisions };
 }
 
+const MAIN_LINE_AXES = {
+  timeline: { kind: "exact", ref: "timeline:main" },
+  worldline: { kind: "exact", ref: "worldline:prime" },
+  narrativeLayer: { kind: "exact", ref: "layer:manuscript" },
+};
+
+/**
+ * The product's ordinary project shape (create dialog, main line ON): the
+ * project Scene Scope default is `set` to the main line before any Scene is
+ * created, so every new Scene binding is born `explicit`.
+ */
+export async function setMainLineSceneScopeDefault({
+  invoke,
+  workspace,
+  projectId,
+}) {
+  const current = await invoke("narrative_scope_project_default_read", {
+    expectedWorkspacePath: workspace,
+    projectId,
+  });
+  return invoke("narrative_scope_project_default_update", {
+    expectedWorkspacePath: workspace,
+    payload: {
+      projectId,
+      requestId: randomUUID(),
+      sessionId: randomUUID(),
+      eventUid: randomUUID(),
+      baseVersion: current.version,
+      updatedAt: new Date().toISOString(),
+      default: {
+        state: "set",
+        queryIdentity: MAIN_LINE_AXES,
+        materialConstraint: MAIN_LINE_AXES,
+      },
+    },
+  });
+}
+
+/** Every Scene must have a binding born `explicit` from the main-line default. */
+export function assertSceneBindingsExplicit(bindingRows, sceneIds) {
+  assert.equal(
+    bindingRows.length,
+    sceneIds.length,
+    "every Scene has a scope binding",
+  );
+  for (const sceneId of sceneIds) {
+    const row = bindingRows.find((r) => r.sceneId === sceneId);
+    assert.ok(row, `scope binding exists for ${sceneId}`);
+    assert.equal(
+      row.compatibilityMarker,
+      "explicit",
+      `scope binding of ${sceneId} must be explicit`,
+    );
+  }
+}
+
 export function createChronicleCurrentSceneJourney({
   configureWorkspace,
   evidenceDirectory,
@@ -391,6 +447,11 @@ export function createChronicleCurrentSceneJourney({
             fixtureApplyPolicy,
           ),
         });
+        await setMainLineSceneScopeDefault({
+          invoke: (command, args) => harness.invokeOk(seed.page, command, args),
+          workspace,
+          projectId,
+        });
         await createChronicleFixtureNode(harness, seed.page, projectId, {
           id: folderId,
           parentId: null,
@@ -423,6 +484,15 @@ export function createChronicleCurrentSceneJourney({
           sortOrder: "a2",
           content: JSON.stringify(paragraphs([SIBLING_BODIES.second])),
         });
+        assertSceneBindingsExplicit(
+          await queryChronicleFixtureRows(
+            harness,
+            seed.page,
+            "SELECT scene_id AS sceneId, compatibility_marker AS compatibilityMarker FROM narrative_scene_scope_bindings WHERE project_id=?",
+            [projectId],
+          ),
+          [sceneId, siblingIds.first, siblingIds.second],
+        );
       } finally {
         await harness.close(seed.app, seed.page, `${ID}/seed`);
       }

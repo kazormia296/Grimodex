@@ -17,6 +17,8 @@ import {
   CHRONICLE_CURRENT_SCENE_JOURNEY_ID as ID,
   SIBLING_BODIES,
   assertIrPreconditionsByDisclosure,
+  assertSceneBindingsExplicit,
+  setMainLineSceneScopeDefault,
   assertRevisionsSealOnlyScene,
   assertSceneScopedRun,
   assertSiblingBodiesAreInert,
@@ -526,4 +528,50 @@ test("a disabled apply button fails the current-scene journey and is never click
     dialog: enabled.dialog,
   });
   assert.deepEqual(enabled.clicks, ["apply"]);
+});
+
+test("the setup sets the main-line project default with the read baseVersion, and fails unless every Scene binding is explicit", async () => {
+  const calls = [];
+  const response = { ok: true };
+  const result = await setMainLineSceneScopeDefault({
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      return command.endsWith("_read") ? { version: 3 } : response;
+    },
+    workspace: "/w",
+    projectId: "p1",
+  });
+  assert.equal(result, response);
+  assert.deepEqual(
+    calls.map(([c]) => c),
+    [
+      "narrative_scope_project_default_read",
+      "narrative_scope_project_default_update",
+    ],
+  );
+  const payload = calls[1][1].payload;
+  assert.equal(payload.baseVersion, 3);
+  assert.equal(payload.default.state, "set");
+  assert.deepEqual(
+    payload.default.queryIdentity,
+    payload.default.materialConstraint,
+  );
+  assert.deepEqual(payload.default.queryIdentity.timeline, {
+    kind: "exact",
+    ref: "timeline:main",
+  });
+  const good = ["a", "b", "c"].map((sceneId) => ({
+    sceneId,
+    compatibilityMarker: "explicit",
+  }));
+  assertSceneBindingsExplicit(good, ["a", "b", "c"]);
+  assert.throws(() =>
+    assertSceneBindingsExplicit(
+      [{ ...good[0], compatibilityMarker: "unknown" }, good[1], good[2]],
+      ["a", "b", "c"],
+    ),
+  );
+  assert.throws(() =>
+    assertSceneBindingsExplicit(good.slice(0, 2), ["a", "b", "c"]),
+  );
 });
