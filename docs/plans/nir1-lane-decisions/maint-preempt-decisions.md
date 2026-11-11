@@ -175,3 +175,105 @@
   なる）。修正前は同じ場面で workspace 全体が recovery になっていた。
 - P3-4: manual の経路（Native の manual maintenance の permit）も同じ adapter を通るので、成功の後に所有が早く外れる。
   成功ならどのみち release するので害は無いが、DR-MP-2 の対象（automatic と manual の両方の permit）に含まれる。
+
+## DR-MP-8 preempt が続く maintenance の project に backoff を入れる（2026-11-11）
+
+DR-MP-3 が「別レーン」とした preempt の連鎖（P-6）と、DR-CP4-L-27 が「製品側の候補（PUB-G の前提）」に回した backoff を受ける lane。
+設計の正本は `fusion-eval-data/design-notes/db-connection-2026-11-07/maintenance-starvation-2026-11-11.md` の案 A′（read-only の設計調査。編集・実行なし）。
+委任の根拠は DR-MPS-15・16 と同じ読み（integrator の読み。AGENTS.md の NIR-1 の残レーンの worker／owner／lifecycle の技術判断）で、重要な変更
+（公開・送信先・保存・閾値の緩和・新しい契約・authority）のどれにも当たらない。難しい判断として read-only の advisor に一度通した。
+
+### 決定
+
+`electron/main/narrativeMaintenance.ts` の scheduler だけで、preempt が続いた project の再試行に backoff を入れる。
+
+- ある work key が preempt された続きの cycle の連続が 3 回までは、今の 10 ms（`NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS`）のまま。
+  4 回目の preempt の後からは、既存の `NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS`（1 s）の後に再試行する。
+- backoff の間は、その project の work と durable wake を cycle の候補から外す。ほかの project に走れる work があれば、timer は 10 ms のまま（その project は外して走る）。
+  backoff の project しか残っていなければ、timer は最も早い `notBefore` に置く。pending か wake が残る限り timer は 1 本だけ張る。
+- 回数は次のとき 0 に戻す：その key の成功、preempt 以外の結果（error・interrupted の別理由・workspace の変更など）、binding の変更（key が別になる）、
+  quiesce、dispose。not-admitted と delivery の capacity は回数を動かさない（すでに 1 s 待つ。結果が preempt かどうか分からない）。
+- 数える単位は受領書の work key。`interruptedMaintenanceWorkToRequeue` が返す interrupted／not-started の canonical な key が、cycle をまたいで同じなら数える。
+  同じ cycle で別の work が成功しても、interrupted の key の連続は切れない。follow-up の予算超え（`preempted:true` でも key が毎回進む）は同じ key の繰り返しにならず、4 に届かない。
+  受領書がない、または `null`（coverage を証明できない）のときは project 単位（key は `*`）で数える。
+- backoff を掛ける単位は project（`scopedWakeKey` ＝ binding と projectId）。preempt の続きは project の durable wake で戻るため。
+- preempt の判定は `interruptedCycle` ではなく、Native の結果が `accepted` かつ `preempted === true` のとき。`interruptedCycle` は quiesce・dispose・stop-requested でも立つ。
+- 時計は `Date.now()`。残りの待ちは 0〜1 s に clamp し、時計の逆行で長く止まらないようにする。
+
+### 理由（starvation の事実）
+
+product journey `nir1-scene-scope-projection-acceptance` の `settleFeed`（60 s）が揺れて落ちる件（ci 42816284264、Full 42894003764）。診断 DB の
+`narrative_extraction_runs` では、dependency-verify の連続区間が約 61 s、Verify の Run が 219〜221 回（cancelled 216〜218。約 218 回の preempt）、
+Run の寿命が区間の 92.2% を占め、Run の間の中央値は 21 ms。その区間内の freshness-evaluation の Run は 0 件だった。
+maintenance の slot は 1 つで、freshness も同じ `begin_maintenance` を使う。奪い手（harness の poll と renderer の `externalWriteFeed` の 750 ms の poll）が foreground として
+取るたびに Verify が preempt され、Main が 10 ms 後に次の cycle を出して slot を塞ぐ。freshness の 1 s ごとの試行が通る確率は 1 回あたり数 %。
+admit されれば freshness は 1〜7 ms で完了するので、slot を空ければ通る。
+
+### 変わる点
+
+- preempt が 4 回続いた project の maintenance の試行が、約 4 回/s から約 0.8 回/s になる（freshness が通る隙間ができる）。
+- Verify などの再開が最大で約 1 s 遅れる（preempt が 3 回を超えて続いた後、foreground が止まってから）。
+- ほかの project の maintenance は、backoff の project を待たずに 10 ms で走れる。
+- Verify の cancel と cancelled の Run の増え方が同じ割合で減る。
+
+### 変わらない点
+
+- foreground の優先（db `lib.rs` の no-wait の PREEMPTED と waiter の handoff。I1）、slot の数（I2）、preempt の分類（DR-MP-1〜3。I3）。
+- freshness の scheduler と定数（`narrativeFreshness.ts`。DR-JF-3）、coordinator の再発見（`narrativeMaintenanceTriggers.ts`。DR-MPS-2）。再発見は scheduler の候補の除外を通るので backoff を迂回しない。
+- IPC、N-API、Rust、renderer、保存、DB。requeue・受領書・delivery の retire の判定。`NARRATIVE_MAINTENANCE_MAX_RETRIES`（preempt は retry を消費しない。回数は別の map）。
+- 再試行が `deliveryRetry`（exact replay）と `terminalReceiptFailure` の recovery pump のときは backoff を見ない。
+- Verify の正しさ（Verify は run 単位でやり直す。遅らせるだけ）。
+
+### 信頼境界
+
+Main process の中の scheduler の内部状態だけ。新しい入力・送信先・保存・権限・契約はない。renderer／preload／IPC の入力は backoff の回数や時刻に影響しない
+（回数は Native の結果と受領書だけから決まり、時刻は Main の `Date.now()`）。
+
+### GDX-PRECHECK-001 の owner／lifecycle の表
+
+| 経路・状態 | 修正前 | 修正後 |
+|---|---|---|
+| preempt の連続が 3 回以下 | 10 ms で再投入 | 同じ |
+| 同じ key の連続が 3 回を超える（4 回目の preempt の後） | 10 ms で再投入 | project を 1 s 候補から外す。timer は最も早い `notBefore`（他に走れる project があれば 10 ms） |
+| 別 project の work の enqueue・wake（backoff の待ち中） | `timer` があれば何もしない | backoff の timer なら 10 ms に縮める。同じ project の再 enqueue は縮めない |
+| 成功・preempt 以外の結果（error・別理由の interrupted・workspace の変更・deferred） | retry の規則どおり | 回数を戻す（retry の規則は変えない） |
+| not-admitted・delivery の capacity | 1 s 待つ | 同じ。回数は動かさない |
+| binding の変更 | 新しい key | 回数も別 key（引き継がない）。rebind・quiesce で map を空にする |
+| dispose・quiesce・workspace の切替 | timer と queue を片付ける | 同じ＋回数の map を空にする。timer は既存の `clearTimer` と `schedule()` の guard（disposed／quiescing）が消す |
+| delivery の再試行（`retryableDelivery`、exact replay） | 既存の規則 | backoff を見ない（floor 0）。回数にも入れない |
+| 受領書なし・coverage 不明（`null`） | 既存 | project 単位（key `*`）で数える |
+| `terminalReceiptFailure` の recovery pump | 既存 | backoff を見ない |
+
+有限性：回数の map は project×binding ごとに高々 1 項目で、quiesce・rebind・dispose で空になる。timer は常に高々 1 本（`schedule` が既存の timer を置き換える）。
+60 s の常時 preempt でも cycle の数は `3 + ⌈60 / 1⌉` 程度に有界（試験で下限と上限を固定）。
+
+### 新しい定数
+
+回数 3（`NARRATIVE_MAINTENANCE_PREEMPT_BACKOFF_AFTER`）だけ。遅延は既存の 1 s を使い、新しい時間の値は作らない。
+K1b の 5 項目：値＝3（単位は回数）、検査する位置＝Main scheduler の cycle の終わり（preempt の判定の直後）、超えたときの結果＝その project を 1 s 候補から外す（失敗にも停止にもしない）、
+実測の条件＝上の starvation の記録（約 218 回/分の preempt、Verify の p50 244 ms）と、PR 本文に書く試験の結果。
+既存の閾値（確認台帳の現行閾値、Gold、retry の上限 3 回、DR-MPS-2 の cooldown）の緩和ではない。
+
+### 試験と限界
+
+- 新しい `electron/main/narrativeMaintenance.preemptBackoff.test.ts`（Main の vitest。fake timer）：
+  - 2 つの scheduler の模型：maintenance の偽は slot を 240 ms 持って `accepted+preempted` を返し（周期 250 ms）、freshness の偽は 1 s の周期（初回を slot の占有の中に置く）で slot が使用中なら `null`。
+    修正の前は 60 s で freshness の Run が 0 件、修正の後は backoff の後 2 tick 以内に 1 件。freshness の試行の回数も数え、0 件が「試行していない」せいでないことを示す。
+  - 境界（999／1000 ms）、別 project の割り込みと元の `notBefore` での再開、回数の戻し（成功・preempt 以外・binding の変更・dispose／quiesce）、受領書あり／なしの数え方、60 s の cycle 数の上限と下限。
+  - 修正の前に赤くなることを、製品の変更を外して確認する（定数を無限にする変異も確認する）。
+- 限界：Main の模型であり、実機の位相は揺れる（実機では確率的）。模型は最悪の位相を決定的に作る。編集 trace（`index-unavailable`、`graph-late`）と a2 型の Gold への影響は未測定
+  （DR-MPS-16 の教訓から、Verify と Rebuild の開始が最大 1 s 遅れる）。受領書の work key が wake だけの cycle でも安定して出るか（設計 §6 の 3）は Main の試験では確かめられない
+  ので未確認。journey と実機（Xvfb）は走らせていない。
+
+### やらないこと
+
+- C（一定時間譲り続けた maintenance が foreground と同等に取る）：I1 を破る新しい契約で、ユーザーの確認が要る。
+- B1（lifecycle core の admission での公平性）・B3（freshness の NotAdmitted を deferred にする）：別 lane。B3 は A′ の A/B で裾が残ったときだけ。
+- E（周期の foreground の読みが譲る。renderer の IPC の引数が増える）：別 lane。
+- F（Verify の再開可能化）：別 lane（DR-MPS-16 の別 lane。大きい DB の Verify が終わらない問題はこの修正では直らない）。
+- D（harness の poll の変更）：単独では採らない。
+
+### DR-CP4-L-27 との関係と、ユーザーの判断
+
+L-27 の「製品側の候補」（連続 N 回目以降は 10 ms でなく `ERROR_RETRY_DELAY` 相当）を実装する lane が、この DR-MP-8。PUB-G の前提 lane の 1 つにあたる。
+製品の挙動が変わるので、CP-4 の候補と受領書は旧候補に束縛されたまま。**新しい候補での CP-4 の正式な測り直しをするかどうかは、ユーザーの判断として残す**（この lane では走らせない）。
