@@ -57,6 +57,7 @@ vi.mock("./chronicleExtractionApi", async (importOriginal) => ({
 const toastMocks = vi.hoisted(() => ({
   error: vi.fn(),
   success: vi.fn(),
+  info: vi.fn(),
 }));
 vi.mock("sonner", () => ({ toast: toastMocks }));
 
@@ -1114,8 +1115,11 @@ describe("ChronicleExtractDialog 場面 1 つの抽出（SSE/1）", () => {
 
     it.each([
       ["", "エディタで場面を開くと、その場面だけを抽出できます。"],
-      ["note-1", "開いているのは場面ではないため、抽出できません。"],
-      ["scene-root", "フォルダに入っている場面だけ抽出できます。"],
+      ["note-1", "開いているのは場面ではないため、今の場面としては選べません"],
+      [
+        "scene-root",
+        "フォルダに入っていない場面は、今の場面としては選べません",
+      ],
       ["missing-node", "エディタで場面を開くと、その場面だけを抽出できます。"],
     ])("activeSceneId=%j は選べず、理由を出す", (activeSceneId, reason) => {
       seedTree(activeSceneId);
@@ -1311,30 +1315,65 @@ describe("ChronicleExtractDialog 場面 1 つの抽出（SSE/1）", () => {
   });
 
   describe("S8 前の組の提案", () => {
-    it("画面の組に未取り込みの提案が残っていれば、場面でもフォルダでも 1 回目は知らせる", async () => {
+    it("画面の組に未取り込みの提案が残っていても止めず、1 回の解析で始めて toast で知らせる（場面でもフォルダでも）", async () => {
       for (const choose of [sceneA, "folder-a"]) {
         extractionMocks.startChronicleExtraction.mockClear();
+        toastMocks.info.mockClear();
         seedPendingProjection(["approved", "held", "rejected"]);
         const { unmount } = renderDialog();
         select(choose);
-        pressAnalyze();
-        const notice = await screen.findByTestId(
-          "chronicle-extract-notice-pending-review",
-        );
-        expect(notice).toHaveTextContent("前の組の提案が2件残っています");
-        expect(notice).toHaveTextContent(
-          "承認済みの提案は、取り込まなくても関連場面に使われます",
-        );
-        expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
         pressAnalyze();
         await waitFor(() =>
           expect(
             extractionMocks.startChronicleExtraction,
           ).toHaveBeenCalledTimes(1),
         );
+        expect(
+          screen.queryByTestId("chronicle-extract-start-notices"),
+        ).toBeNull();
+        expect(toastMocks.info).toHaveBeenCalledTimes(1);
+        const message = String(toastMocks.info.mock.calls[0]?.[0]);
+        expect(message).toContain("前の組の提案が2件残っています");
+        expect(message).toContain("提案は消えません");
+        expect(message).toContain("秘密の印を外した提案は");
+        expect(toastMocks.error).not.toHaveBeenCalled();
         unmount();
         resetChronicleExtractionStoreForTests();
       }
+    });
+
+    it("止める知らせと同時に当たるときは、一覧の間は toast を出さず、始めるときに出す", async () => {
+      sceneLengthMocks.measure.mockResolvedValue({ canonicalLength: 7000 });
+      seedPendingProjection(["unreviewed"]);
+      renderDialog();
+      select(sceneA);
+      pressAnalyze();
+      await screen.findByTestId("chronicle-extract-start-notices");
+      expect(
+        screen.queryByTestId("chronicle-extract-notice-pending-review"),
+      ).toBeNull();
+      expect(toastMocks.info).not.toHaveBeenCalled();
+      expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+      pressAnalyze();
+      await waitFor(() =>
+        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
+          1,
+        ),
+      );
+      expect(toastMocks.info).toHaveBeenCalledTimes(1);
+    });
+
+    it("未取り込みの提案が無ければ toast を出さない", async () => {
+      seedPendingProjection(["rejected"]);
+      renderDialog();
+      select("folder-a");
+      pressAnalyze();
+      await waitFor(() =>
+        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
+          1,
+        ),
+      );
+      expect(toastMocks.info).not.toHaveBeenCalled();
     });
 
     it("未取り込みが無ければ（拒否だけ・取り込み済みだけ）知らせず 1 回で始まる", async () => {
@@ -1433,8 +1472,8 @@ describe("ChronicleExtractDialog 場面 1 つの抽出（SSE/1）", () => {
         screen.getByTestId("chronicle-extract-notice-same-scene-approved"),
       ).toBeTruthy();
       expect(
-        screen.getByTestId("chronicle-extract-notice-pending-review"),
-      ).toBeTruthy();
+        screen.queryByTestId("chronicle-extract-notice-pending-review"),
+      ).toBeNull();
       pressAnalyze();
       await waitFor(() =>
         expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
@@ -1490,6 +1529,24 @@ describe("ChronicleExtractDialog 場面 1 つの抽出（SSE/1）", () => {
       expect(rowText("run-scene")).toContain("場面：第一場");
       expect(rowText("run-gone")).toContain("場面（削除済み）");
       expect(rowText("run-folder")).toContain("folder-a ·");
+    });
+
+    it("配下の場面がその 1 つだけのフォルダの候補は、場面 1 つの形でもフォルダの表示", () => {
+      useTreeStore.setState({
+        nodes: useTreeStore.getState().nodes.filter((n) => n.id !== "scene-b"),
+      });
+      useChronicleExtractionStore.getState().setRecoveryCandidates(SCOPE_A, [
+        sceneRunCandidate("run-single", {
+          folderId: "folder-a",
+          sceneIds: ["scene-a"],
+        }),
+      ]);
+      renderDialog();
+      const text = screen.getByTitle(
+        "run-single · 2026-08-10T00:00:00.000Z",
+      ).textContent;
+      expect(text).toContain("folder-a ·");
+      expect(text).not.toContain("場面：");
     });
 
     async function discard(

@@ -49,6 +49,7 @@ import {
   chronicleCurrentSceneOptionValue,
   chronicleExtractTargetOptionValue,
   countChronicleUnsettledProposals,
+  isFolderEquivalentSingleScene,
   resolveChronicleExtractScene,
   resolveDiscardedRunTarget,
   singleSceneIdOfScope,
@@ -111,7 +112,6 @@ async function readSameSceneApprovedUnapplied(
 
 interface ChronicleStartNoticeState {
   readonly kinds: readonly ChronicleStartNoticeKind[];
-  readonly pendingCount: number;
 }
 
 /**
@@ -451,13 +451,12 @@ export function ChronicleExtractDialog({
       const pendingCount = scopedRunProjection
         ? countChronicleUnsettledProposals(scopedRunProjection.proposals)
         : priorPendingCount;
-      if (pendingCount > 0) notices.add("pending-review");
 
       // 知らせるべきことがあれば、同じ「解析」をもう一度押すまで始めない。
       // すでに見せた知らせに無い種類が増えたときは、出し直す。
       const shown = startNotices?.kinds ?? [];
       if ([...notices].some((kind) => !shown.includes(kind))) {
-        setStartNotices({ kinds: [...notices], pendingCount });
+        setStartNotices({ kinds: [...notices] });
         return;
       }
 
@@ -486,6 +485,16 @@ export function ChronicleExtractDialog({
       const existing = await listEvents(session.projectId);
       if (!isSessionCurrent(session)) return;
 
+      // 前の組の提案が残っていても止めない。始めるときに知らせる（SSE/1 S8）。
+      if (pendingCount > 0) {
+        toast.info(
+          t(
+            "chronicle.extract.noticePendingReview",
+            "前の組の提案が{{count}}件残っています。提案は消えません。新しい組の提案をすべて取り込むか拒否すると、前の組に戻れます。承認済みで秘密の印を外した提案は、取り込まなくても関連場面に使われます。",
+            { count: pendingCount },
+          ),
+        );
+      }
       await startChronicleExtraction({
         projectId: session.projectId,
         folderId: startFolderId,
@@ -826,7 +835,13 @@ export function ChronicleExtractDialog({
   };
   const recoveryScopeLabel = (candidate: ChronicleTaskResumeCandidate) => {
     const sceneId = singleSceneIdOfScope(candidate.scopeJson);
-    return sceneId === null
+    // 破棄の後の対象の判定と同じ規則：配下の場面がその 1 つだけならフォルダ。
+    return sceneId === null ||
+      isFolderEquivalentSingleScene(
+        candidate.scopeJson.folderId,
+        sceneId,
+        nodes,
+      )
       ? candidate.scopeJson.folderId
       : sceneLabel(sceneId);
   };
@@ -1064,10 +1079,7 @@ export function ChronicleExtractDialog({
           )}
 
           {startNotices && (
-            <ChronicleExtractStartNotices
-              kinds={startNotices.kinds}
-              pendingCount={startNotices.pendingCount}
-            />
+            <ChronicleExtractStartNotices kinds={startNotices.kinds} />
           )}
 
           {(analyzing || resuming || scopedRunProjection) && (

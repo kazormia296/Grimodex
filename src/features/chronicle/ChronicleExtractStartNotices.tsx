@@ -6,17 +6,14 @@ import {
 
 export interface ChronicleExtractStartNoticesProps {
   readonly kinds: readonly ChronicleStartNoticeKind[];
-  /** 前の組に残っている未取り込みの提案の件数（pending-review のときの文に使う）。 */
-  readonly pendingCount: number;
 }
 
 /**
- * 抽出を始める前の知らせ（SSE/1 S7・S8・S8b）。ボタンは持たず、同じ「解析」を
+ * 抽出を止める知らせ（SSE/1 S7・S8b）。前の組の提案（S8）は止めず、始めるときの toast で知らせる。ボタンは持たず、同じ「解析」を
  * もう一度押すと始まる。
  */
 export function ChronicleExtractStartNotices({
   kinds,
-  pendingCount,
 }: ChronicleExtractStartNoticesProps) {
   const { t } = useTranslation();
   const ordered = CHRONICLE_START_NOTICE_ORDER.filter((kind) =>
@@ -36,16 +33,10 @@ export function ChronicleExtractStartNotices({
                 "chronicle.extract.noticeLongScene",
                 "この場面は長いため、提案が関連場面に使われないことがあります。",
               )
-            : kind === "pending-review"
-              ? t(
-                  "chronicle.extract.noticePendingReview",
-                  "前の組の提案が{{count}}件残っています。提案は消えません。新しい組の提案をすべて取り込むか拒否すると、前の組に戻れます。承認済みの提案は、取り込まなくても関連場面に使われます。",
-                  { count: pendingCount },
-                )
-              : t(
-                  "chronicle.extract.noticeSameSceneApproved",
-                  "この場面には、承認済みで取り込んでいない提案があります。抽出し直すと、前の提案と新しい提案の両方が関連場面に使われることがあります。",
-                )}
+            : t(
+                "chronicle.extract.noticeSameSceneApproved",
+                "この場面には、承認済みで取り込んでいない提案があります。抽出し直すと、前の提案と新しい提案の両方が関連場面に使われることがあります。",
+              )}
         </p>
       ))}
       <p>

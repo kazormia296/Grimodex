@@ -386,7 +386,7 @@ test("a start notice after the first 解析 fails the journey and names the noti
   t.after(() => rm(directory, { recursive: true, force: true }));
   const { harness, dialog, calls } = noticeHarness([
     "long-scene",
-    "pending-review",
+    "same-scene-approved",
   ]);
   await assert.rejects(
     analyzeChronicleAndWaitForProposals({
@@ -397,7 +397,7 @@ test("a start notice after the first 解析 fails the journey and names the noti
       directory,
       failOnStartNotices: true,
     }),
-    /unexpected start notices before the Run: long-scene, pending-review/,
+    /unexpected start notices before the Run: long-scene, same-scene-approved/,
   );
   assert.equal(calls.analyze, 1, "the notice is never answered by a 2nd press");
 });

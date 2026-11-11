@@ -93,14 +93,12 @@ export function countChronicleUnsettledProposals(
   ).length;
 }
 
-export type ChronicleStartNoticeKind =
-  | "long-scene"
-  | "pending-review"
-  | "same-scene-approved";
+/** 抽出を止める知らせの種類。前の組の提案（S8）は止めず toast で知らせるため、ここに無い。 */
+export type ChronicleStartNoticeKind = "long-scene" | "same-scene-approved";
 
 /** 知らせの表示順。 */
 export const CHRONICLE_START_NOTICE_ORDER: readonly ChronicleStartNoticeKind[] =
-  ["long-scene", "same-scene-approved", "pending-review"];
+  ["long-scene", "same-scene-approved"];
 
 /**
  * 中断した抽出の対象の記録から、場面 1 つの抽出の場面 id を取る。
@@ -111,6 +109,19 @@ export function singleSceneIdOfScope(scopeJson: {
 }): string | null {
   const ids = scopeJson.sceneIds;
   return Array.isArray(ids) && ids.length === 1 && ids[0] ? ids[0] : null;
+}
+
+/** そのフォルダの配下の場面が、今もその 1 つだけか（フォルダの抽出と区別できない）。 */
+export function isFolderEquivalentSingleScene(
+  folderId: string,
+  sceneId: string,
+  nodes: readonly TreeNodeData[],
+): boolean {
+  const descendants = getDescendantScenesInOrder(
+    nodes as TreeNodeData[],
+    folderId,
+  );
+  return descendants.length === 1 && descendants[0]?.id === sceneId;
 }
 
 /**
@@ -132,11 +143,7 @@ export function resolveDiscardedRunTarget(
   if (sceneId === null) {
     return { kind: "folder", folderId: scopeJson.folderId };
   }
-  const descendants = getDescendantScenesInOrder(
-    nodes as TreeNodeData[],
-    scopeJson.folderId,
-  );
-  if (descendants.length === 1 && descendants[0]?.id === sceneId) {
+  if (isFolderEquivalentSingleScene(scopeJson.folderId, sceneId, nodes)) {
     return { kind: "folder", folderId: scopeJson.folderId };
   }
   const scene = resolveChronicleExtractScene(nodes, sceneId);
