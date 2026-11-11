@@ -843,7 +843,7 @@ fn fixture_event_payload(event_id: &str) -> Value {
         "kind": "generic",
         "precision": "unknown",
         "placement": { "mode": "append-tail", "afterOrdinal": null },
-        "secret": false,
+        "secret": true,
         "revealSceneId": SCENE_ID,
         "detail": null,
         "primaryCodexId": null,

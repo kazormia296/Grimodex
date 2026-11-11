@@ -1120,6 +1120,141 @@ test("C2-ZC lifecycle verifier accepts an idle checkpoint before rebuild", () =>
   );
 });
 
+test("C2-ZC lifecycle verifier accepts an idle checkpoint at any position and keeps every other check", () => {
+  const fixture = strictLifecycleRuns();
+  const [verify1, rebuild1, verify2, fresh1] = fixture.runs;
+  const idle = {
+    ...structuredClone(fresh1),
+    id: "fresh-idle-checkpoint",
+    outcomeSummaryJson: JSON.stringify({
+      kind: "current-epoch-idle-checkpoint",
+    }),
+  };
+  // Re-time a sequence so each Run starts after the previous one completed.
+  const retime = (sequence) =>
+    structuredClone(sequence).map((run, index) => ({
+      ...run,
+      createdAt: fixture.times[index * 3],
+      startedAt: fixture.times[index * 3 + 1],
+      completedAt: fixture.times[index * 3 + 2],
+    }));
+  const options = (overrides = {}) => ({
+    currentEpochId: "e1",
+    restoreEpochId: "e1",
+    expectedRestoreLifecycle: fixture.expectedRestoreLifecycle,
+    marker: fixture.marker,
+    rustOutcome: fixture.rustOutcome,
+    fixtureSemantic: fixtureSemantic(),
+    ...overrides,
+  });
+
+  for (const [label, sequence] of [
+    ["idle-first", [idle, verify1, rebuild1, verify2]],
+    ["idle-between-verify-and-rebuild", [verify1, idle, rebuild1, verify2]],
+    ["idle-between-rebuild-and-verify", [verify1, rebuild1, idle, verify2]],
+    ["idle-last", [verify1, rebuild1, verify2, idle]],
+  ]) {
+    const runs = retime(sequence);
+    const result = assertC2ZcRestoreLifecycleOrder(runs, options());
+    assert.equal(result.freshness.id, idle.id, label);
+    assert.equal(result.firstVerify.id, "verify-1", label);
+    assert.equal(result.rebuild.id, "rebuild-1", label);
+    assert.equal(result.finalVerify.id, "verify-2", label);
+  }
+
+  // A Freshness Run that is not an idle checkpoint is accepted only last.
+  for (const [label, sequence] of [
+    ["fresh-first", [fresh1, verify1, rebuild1, verify2]],
+    ["fresh-after-first-verify", [verify1, fresh1, rebuild1, verify2]],
+    ["fresh-after-rebuild", [verify1, rebuild1, fresh1, verify2]],
+  ]) {
+    assert.throws(
+      () => assertC2ZcRestoreLifecycleOrder(retime(sequence), options()),
+      /invalid canonical run order/i,
+      label,
+    );
+  }
+  assert.doesNotThrow(() =>
+    assertC2ZcRestoreLifecycleOrder(
+      retime([verify1, rebuild1, verify2, fresh1]),
+      options(),
+    ),
+  );
+
+  // Verify -> Rebuild -> confirmation Verify order is kept for any idle slot.
+  for (const [label, sequence] of [
+    ["idle-first-rebuild-before-verify", [idle, rebuild1, verify1, verify2]],
+    ["idle-first-verify-verify-rebuild", [idle, verify1, verify2, rebuild1]],
+    ["idle-last-rebuild-first", [rebuild1, verify1, verify2, idle]],
+    ["idle-between-without-rebuild", [verify1, idle, verify2, verify2]],
+    ["idle-and-fresh-no-rebuild", [verify1, idle, verify2, fresh1]],
+  ]) {
+    assert.throws(
+      () =>
+        assertC2ZcRestoreLifecycleOrder(
+          retime(sequence).map((run, index) => ({
+            ...run,
+            id: `${run.id}-${index}`,
+          })),
+          options(),
+        ),
+      /invalid canonical run order|Verify|Rebuild/i,
+      label,
+    );
+  }
+  assert.throws(
+    () =>
+      assertC2ZcRestoreLifecycleOrder(
+        retime([idle, verify1, rebuild1, verify2, fresh1]),
+        options(),
+      ),
+    /exactly Verify\/Rebuild\/Verify\/Freshness/i,
+  );
+
+  // The marker still has to come strictly after every Run, whatever the slot.
+  for (const sequence of [
+    [idle, verify1, rebuild1, verify2],
+    [verify1, rebuild1, verify2, idle],
+  ]) {
+    const runs = retime(sequence);
+    for (const appliedAt of [
+      runs[0].createdAt,
+      runs[1].completedAt,
+      runs[3].completedAt,
+    ]) {
+      assert.throws(
+        () =>
+          assertC2ZcRestoreLifecycleOrder(
+            runs,
+            options({ marker: { ...fixture.marker, appliedAt } }),
+          ),
+        /marker must be strictly after Freshness completion/i,
+      );
+    }
+  }
+
+  // Timestamps, E1 binding and Verify coverage still apply to the idle slot.
+  const overlapping = retime([idle, verify1, rebuild1, verify2]);
+  overlapping[1].createdAt = overlapping[0].startedAt;
+  assert.throws(
+    () => assertC2ZcRestoreLifecycleOrder(overlapping, options()),
+    /canonical order|timestamp/i,
+  );
+  const wrongEpoch = retime([idle, verify1, rebuild1, verify2]);
+  wrongEpoch[0].semanticEpochId = "e0";
+  assert.throws(
+    () => assertC2ZcRestoreLifecycleOrder(wrongEpoch, options()),
+    /not bound to (restored|current) E1/i,
+  );
+  const badCoverage = retime([idle, verify1, rebuild1, verify2]);
+  badCoverage[3].outcomeSummaryJson.checkCoverage.covered[0] =
+    "different-check";
+  assert.throws(
+    () => assertC2ZcRestoreLifecycleOrder(badCoverage, options()),
+    /covered|coverage|policy catalogue/i,
+  );
+});
+
 test("C2-ZC manifest baseline is immutable and exact", () => {
   const semantic = fixtureSemantic();
   const baseline = resolveC2ZcRestoreCanonicalLifecycleBaseline(semantic);

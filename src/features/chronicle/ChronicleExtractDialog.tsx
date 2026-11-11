@@ -41,7 +41,10 @@ import type { ChronicleTaskResumeCandidate } from "@/application/narrative-extra
 import { ChronicleExtractionProgress } from "./ChronicleExtractionProgress";
 import { ChronicleProposalReview } from "./ChronicleProposalReview";
 import { useChronicleExtractionStore } from "./chronicleExtractionStore";
-import { getChronicleApplyReadiness } from "./chronicleExtractionStore";
+import {
+  getChronicleApplyReadiness,
+  isChronicleEditedProposalApplyError,
+} from "./chronicleExtractionStore";
 import {
   chronicleScopeKey,
   type ChronicleScope,
@@ -511,9 +514,16 @@ export function ChronicleExtractDialog({
       clearProjection();
       onImported?.();
       onOpenChange(false);
-    } catch {
+    } catch (error) {
       if (isSessionCurrent(session)) {
-        toast.error(t("chronicle.extract.failed", "抽出に失敗しました"));
+        toast.error(
+          isChronicleEditedProposalApplyError(error)
+            ? t(
+                "chronicle.extract.editedProposalBlocked",
+                "編集した提案があるため、この組は年表に取り込めません",
+              )
+            : t("chronicle.extract.importFailed", "取り込みに失敗しました"),
+        );
       }
     } finally {
       endApplyMutation();
@@ -853,6 +863,17 @@ export function ChronicleExtractDialog({
                 </button>
               </div>
             )}
+          {applyReadiness?.errorCode === "NEX_V2_APPLY_BASIS_UNSUPPORTED" && (
+            <p
+              className="text-xs text-amber-800 dark:text-amber-300"
+              data-testid="chronicle-edited-proposal-blocked"
+            >
+              {t(
+                "chronicle.extract.editedProposalBlocked",
+                "編集した提案があるため、この組は年表に取り込めません",
+              )}
+            </p>
+          )}
         </div>
 
         <DialogFooter>

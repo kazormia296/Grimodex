@@ -1720,7 +1720,7 @@ fn prepared_event_payload_for(event_id: &str, scene_id: &str, title: &str) -> Va
         "kind": "generic",
         "precision": "unknown",
         "placement": { "mode": "append-tail", "afterOrdinal": null },
-        "secret": false,
+        "secret": true,
         "revealSceneId": scene_id,
         "detail": null,
         "primaryCodexId": null,
