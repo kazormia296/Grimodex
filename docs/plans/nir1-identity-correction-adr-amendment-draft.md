@@ -3,7 +3,7 @@
 | 項目 | 内容 |
 | ---- | ---- |
 | draftRef | `nir1-identity-correction-proposal/1` |
-| Status | `[precheck]` の draft。ユーザーの確認まで実装しない。既存の ADR・policy・コードは変えていない |
+| Status | `[precheck]` の draft。ユーザーの確認まで実装しない。既存の ADR・policy・コードは変えていない。**2026-11-11 にユーザーが「測ってから伺う」を選んだ**：先に、Codex の抽出を使ったデータで同定の review の負荷を測る方法を調べて示し、★8 つはその結果と一緒に伺う（評価データは Codex 0 件で、負荷は未測定）。同日に確かめた点：`CodexEntityResolutionPicker` は同定の review の画面で使われる（`src/features/codex/CodexEntityProposalReview.tsx:288`）／`candidateKey` は前後の空白の除去・NFC・英大文字の小文字化だけで、全角と半角・かなの揺れは吸収しない（`src/features/codex/codexCandidates.ts:25-30`）／観測は根拠の `sourceRef` を持つ（`src/features/narrative-extraction/evidence/types.ts:11-16`） |
 | 基点 | worktree `unruffled-shamir-d6147f`（master `2caf67a6`）。行番号はこの基点のもの |
 | 由来 | roadmap の M3「Epic P0-A」ERM-0（`docs/plans/narrative-semantic-core-roadmap.md:578-590`）。ユーザーの選択（2026-11-10）は「規則の ADR も起こす」 |
 | 前提 | 作者に長い文書を読ませない。Codex の名前・設定は抽出の文脈として provider に送ってよい（2026-11-05） |
