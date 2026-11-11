@@ -366,4 +366,18 @@ L-27 の「製品側の候補」（連続 N 回目以降は 10 ms でなく `ERR
   journey で「3 回連続の preempt」に届いたかは未確認。編集 trace は小さい fixture で、0／505 の検出力は小さい（95% の上限は約 0.6%）。CI で見えた長い settle（数十秒）は、この局所環境では M でも再現しなかった。
 - 運用の逸脱（事実）：origin/master が `adaf28b8` に進み build の祖先の検査が通らないため、`git clone --shared` の clone の中でだけ origin/master を `8a7f4ceb` に置いて worktree を作った（本体の ref は触っていない）。
   journey の harness の FAIL 13／20 本は Main の stderr の `atspi-WARNING` の誤判定で arm と無関係。settle は実測値を使った（`definitions.md` 追記 1。1 組目の値を見た後の追記）。
-- 判断：線に当たらないので merge へ進める。新しい候補での CP-4 の正式な測り直しは、上のとおりユーザーの判断として残す。
+- 判断（当初）：線に当たらないので merge へ進める。→ 下の「ci.yml の c2-zc journey の失敗」で **merge を止めた**。新しい候補での CP-4 の正式な測り直しは、上のとおりユーザーの判断として残す。
+
+### ci.yml の c2-zc journey の失敗と、merge の停止（2026-11-11）
+
+- 事実：PR #859 の ci.yml run 42972611053（head `5ae14983`）で、product journey `c2-zc-canonical-authority-cutover` が `C2-ZC canonical restore lifecycle settlement`（60 s）で timeout した。落ちた job だけの取り直しは成功。この journey は最近の他の run では落ちていない。
+- 事実（診断 DB）：落ちたのは Run の順の assert（`assertC2ZcRestoreLifecycleOrder`、`electron/scripts/c2zc-canonical-product-journey.mjs`）。restore の後の delta が「idle Freshness→Verify→Rebuild→Verify」で、許される「Verify→Rebuild→Verify→Freshness」「Verify→idle Freshness→Rebuild→Verify」のどちらでもない。
+  Run は 06:37:31.273 の後に増えず、待てば満たされる状態ではなかった（順が確定して壊れた）。
+- 時系列（06:37 台の秒）：Verify #1 30.098–30.113 cancelled、#2 30.121–30.139 cancelled、#3 30.145–31.174 cancelled（いずれも `NEX_MAINTENANCE_CONNECTION_PREEMPTED`）、idle Freshness 31.047–31.049 completed、Verify #4 31.182 completed、Rebuild 31.224、Verify #5 31.239–31.273 completed。
+  #1・#2 の cancel は次の cycle の約 8 ms 前に記録されていて、#3 の後の次の cycle までに約 1 s の空白がある。
+- 推測：1 s の空白は A′ の backoff（`ERROR_RETRY_DELAY_MS`）と合う。cancelled の Run は 3 本で、4 回目は Run を作らない preempt（wake だけの cycle）なら説明がつく（直接の記録は無い）。
+  master にもある 1 s の経路（attempt guard の無い preempt の error の retry）の可能性は排除しきれない。ただし帰属にかかわらず、A′ は「preempt が続く Verify の間に Freshness を通す」設計なので、restore の直後に preempt が 4 回続けば、この順は設計上起こりうる（構造的な衝突）。
+- A/B の欠落：dev の A/B は、この journey も restore の後の Run の順も見ていなかった。
+- 判断：取り直しは緑だが、確率的な赤を master に入れるので merge しない。PR は Draft に戻した。直し方（journey の順を広げる、A′ を条件付きにする、A′ を止めて B3／D から選び直す）は、受入れの assert か A′ の目的に触れるので、ユーザーに確認する。
+  `narrativeMaintenance.ts` を変える場合は `8a1bb521` の A/B は gate として失効し、取り直す A/B では c2-zc の Run の順を止める線に足す。
+- 付記：同じ run の Electron runtime performance の赤は 2026-11-10 に master（ci 42820712160）でも出ていて、取り直しで緑。
