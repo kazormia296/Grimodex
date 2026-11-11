@@ -46,12 +46,34 @@ impl Fixture {
             serde_json::from_str(include_str!("support/nir1-reviewed-child-cold.json"))
                 .expect("normal cold fixture manifest");
         let compressed = include_bytes!("support/nir1-reviewed-child-cold.db.gz");
+        Self::open(manifest, compressed)
+    }
+
+    /// 2 つの run を持つ fixture。run 4a2327c6 は Snapshot の文書が 2 件（D000001＝ en-distractor-gift、
+    /// D000002＝ en-distractor-rumor-fact）で、承認済みの human-derived 1 件（evidence も reveal も
+    /// D000002）と、unreviewed の interpretation 1 件（evidence も reveal も D000001）を持つ。
+    /// manifest の形が違うため、この試験が使うキー（runId、s1、s2、revisionIds、rootRevisionIds）を
+    /// 補う。s1＝D000001 の場面、s2＝D000002 の場面。
+    fn two_window() -> Self {
+        let mut manifest: Value =
+            serde_json::from_str(include_str!("support/nir1-two-window-cold.json"))
+                .expect("two-window cold fixture manifest");
+        manifest["runId"] = json!("4a2327c6-8d14-4234-aae9-72ce858186a0");
+        manifest["s1"] = json!("en-distractor-gift");
+        manifest["s2"] = json!("en-distractor-rumor-fact");
+        manifest["revisionIds"] = json!(["69760899-1f84-4d8d-a655-b574b1f277ab"]);
+        manifest["rootRevisionIds"] = json!(["411f5ebc-84b4-406b-ad00-c94da2c8ccb9"]);
+        let compressed = include_bytes!("support/nir1-two-window-cold.db.gz");
+        Self::open(manifest, compressed)
+    }
+
+    fn open(manifest: Value, compressed: &[u8]) -> Self {
         assert_eq!(
             hex::encode(Sha256::digest(compressed)),
             manifest["compressedDatabaseSha256"]
         );
         let mut bytes = Vec::new();
-        GzDecoder::new(compressed.as_slice())
+        GzDecoder::new(compressed)
             .read_to_end(&mut bytes)
             .expect("exact cold fixture bytes");
         assert_eq!(
@@ -1361,6 +1383,22 @@ fn current_revisions(db: &Database) -> Vec<String> {
     .expect("current revisions")
 }
 
+/// run の組（proposal set）の、承認済みの提案の現行の版。
+fn approved_current_revisions_of_run(db: &Database, run_id: &str) -> Vec<String> {
+    db.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT p.current_revision_id FROM narrative_proposals p
+               JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+              WHERE s.run_id = ?1 AND p.status = 'approved' ORDER BY p.proposal_key",
+        )?;
+        let rows = stmt
+            .query_map([run_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    })
+    .expect("approved current revisions of the run")
+}
+
 /// 指定した版を取り込む prepare の入力。操作は Native の組み立てと同じ形（secret は常に true）。
 fn chronicle_prepare_payload(
     db: &Database,
@@ -1630,6 +1668,20 @@ fn undo_replay(commit_id: &str, project: &str, session: &str, action: &str) -> U
     }
 }
 
+/// 取り込みの記録（application）の依存の辺の数と、そのうち scope の投影の辺の数。
+fn application_dependency_edges(db: &Database) -> (i64, i64) {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(source_object_identity LIKE '%scope-dependency%'), 0)
+               FROM narrative_dependency_edges WHERE consumer_kind = 'application'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?)
+    })
+    .expect("application dependency edges")
+}
+
 /// 編集した版から取り込んだ出来事は、取り消し（undo）とやり直し（redo）の後も動き、
 /// redo の後も secret である。
 #[test]
@@ -1639,7 +1691,17 @@ fn edited_revision_apply_survives_undo_and_redo_as_secret_events() {
     enable_manual_apply(&db);
     let revisions = current_revisions(&db);
     let prepare = chronicle_prepare_payload(&db, &fixture, "era-undo-request", &revisions);
+    let edges_before = application_dependency_edges(&db);
     let applied = prepare_and_apply(&db, &prepare);
+    // 取り込みの記録の依存：取り込みの前は 0 本。取り込むと、秘密を外した 2 版の scope の投影の
+    // 辺（各 1 本）が材料の辺に加わる（取り消し後の辺の扱いは固定しない）。
+    let edges_applied = application_dependency_edges(&db);
+    assert_eq!(edges_before, (0, 0));
+    assert_eq!(
+        edges_applied.1, 2,
+        "one scope-projection edge per edited revision"
+    );
+    assert!(edges_applied.0 > edges_applied.1);
     let commit_id = applied["commitId"].as_str().expect("commit id").to_owned();
     assert_eq!(apply_counts(&db).0, 2);
 
@@ -2017,5 +2079,228 @@ fn edited_revision_with_a_non_add_change_kind_is_refused() {
     assert!(
         error.contains("NEX_ENVELOPE_V2_INVALID"),
         "unexpected change-kind error: {error}"
+    );
+}
+
+/// 親の版の id を付け替え、文脈の「引き継ぎ元」と文脈一覧の digest も合わせる
+/// （Envelope の schema 検証は通し、系譜の検証だけが拒む形にする）。
+fn repoint_parent(envelope: &mut Value, parent: &str) {
+    envelope["revisionBasis"]["parentRevisionId"] = json!(parent);
+    let entries = envelope["revisionBasis"]["derivationContextSet"]
+        .as_array_mut()
+        .expect("derivationContextSet");
+    for entry in entries.iter_mut() {
+        entry["inheritedFromRevisionId"] = json!(parent);
+    }
+    let digest =
+        canonical_json_digest(&json!({"version":"chronicle.context-set/1","entries":entries}))
+            .expect("context set digest");
+    envelope["revisionBasis"]["derivationContextSetDigest"] = json!(digest);
+}
+
+/// 材料を書き換えた後、依存の digest と材料の digest を封印し直す。
+fn reseal_material_digests(envelope: &mut Value) {
+    let material = &mut envelope["effectiveMaterialBasis"];
+    let dependency_digest =
+        canonical_json_digest(&material["dependencySet"]).expect("dependencySet digest");
+    material["dependencySetDigest"] = json!(dependency_digest);
+    let material_digest = canonical_json_digest(&json!({
+        "sourceBasis": material["sourceBasis"],
+        "evidenceSet": material["evidenceSet"],
+        "dependencySet": material["dependencySet"],
+    }))
+    .expect("materialBasis digest");
+    material["materialBasisDigest"] = json!(material_digest);
+}
+
+/// 子の Envelope を書き換えて封印し直した形（親の digest、親の id、材料）が、系譜の検証
+/// （`NEX_V2_APPLY_LINEAGE_INVALID`）に届いて拒まれる。取り込みの計画の段は通り、
+/// `events` と `narrative_apply_commits` は増えない。
+#[test]
+fn resealed_child_lineage_corruptions_reach_the_lineage_verification() {
+    let mut failures = Vec::new();
+    for case in [
+        "expected-parent-digest",
+        "parent-revision-id-unknown",
+        "parent-revision-id-sibling",
+        "material-scope-token",
+        "material-extra-dependency",
+    ] {
+        let fixture = Fixture::new();
+        let db = Database::new(&fixture.path).expect("Native private fixture");
+        // 「同じ提案の別の版」を作るため、子の子（題だけ直した版）を承認しておく。
+        let target = if case == "parent-revision-id-sibling" {
+            let grandchild = create_native_child(&db, &fixture, fixture.child(), |payload| {
+                payload["title"] = json!("孫の題");
+            });
+            native_human_decision(&db, &fixture, &grandchild, "approved");
+            grandchild
+        } else {
+            fixture.child().to_owned()
+        };
+        drop(db);
+        let conn = fixture.corruption_connection();
+        let root = fixture.root().to_owned();
+        reseal(&conn, &target, |envelope| match case {
+            "expected-parent-digest" => {
+                envelope["revisionBasis"]["expectedParentEnvelopeDigest"] =
+                    json!(format!("sha256:{}", "0".repeat(64)));
+            }
+            "parent-revision-id-unknown" => {
+                repoint_parent(envelope, &Uuid::new_v4().to_string());
+            }
+            // 孫の親を、直接の親（子）ではなく同じ提案の最初の版へ付け替える。
+            "parent-revision-id-sibling" => repoint_parent(envelope, &root),
+            "material-scope-token" => {
+                let sources = envelope["effectiveMaterialBasis"]["sourceBasis"]
+                    .as_array_mut()
+                    .expect("sourceBasis");
+                let scope = sources
+                    .iter_mut()
+                    .find(|s| {
+                        s["sourceKind"]
+                            .as_str()
+                            .is_some_and(|kind| kind.starts_with("scope-"))
+                    })
+                    .expect("a scope projection material");
+                scope["revisionToken"] = json!(format!("sha256:{}", "1".repeat(64)));
+                reseal_material_digests(envelope);
+            }
+            "material-extra-dependency" => {
+                let dependencies = envelope["effectiveMaterialBasis"]["dependencySet"]
+                    .as_array_mut()
+                    .expect("dependencySet");
+                let mut extra = dependencies[0].clone();
+                extra["dependencyId"] = json!("dependency:era-extra");
+                dependencies.push(extra);
+                reseal_material_digests(envelope);
+            }
+            _ => unreachable!("enumerated corruption"),
+        });
+        if case == "material-scope-token" {
+            // 正規化した行も合わせる（Envelope と行の不一致が先に拒まないようにする）。
+            // 行の更新を止める trigger は、この私的な複製でだけ外す。
+            conn.execute_batch("DROP TRIGGER narrative_source_basis_immutable_update;")
+                .expect("remove the row guard only on the private negative copy");
+            conn.execute(
+                "UPDATE narrative_revision_source_basis SET revision_token = ?2
+                  WHERE revision_id = ?1 AND source_kind LIKE 'scope-%'",
+                params![target, format!("sha256:{}", "1".repeat(64))],
+            )
+            .expect("align the normalized source-basis row of the private copy");
+        }
+        drop(conn);
+        let db = Database::new(&fixture.path).expect("Native private fixture");
+        enable_manual_apply(&db);
+        let revisions = current_revisions(&db);
+        let prepare = chronicle_prepare_payload(&db, &fixture, "era-lineage-case", &revisions);
+        let error = assert_prepare_refused(&db, &prepare);
+        // scope の投影の token を書き換えた形は、今の値との照合（prepare の手前のループ）が
+        // 系譜の検証より先に拒む。ほかは系譜の検証に届く。
+        let expected = if case == "material-scope-token" {
+            "NEX_SOURCE_BASIS_STALE"
+        } else {
+            "NEX_V2_APPLY_LINEAGE_INVALID"
+        };
+        if !error.contains(expected) {
+            failures.push(format!("{case}: {error}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "cases refused by an unexpected check:\n{}",
+        failures.join("\n")
+    );
+}
+
+const TWO_WINDOW_RUN: &str = "4a2327c6-8d14-4234-aae9-72ce858186a0";
+const TWO_WINDOW_UNREVIEWED_REVISION: &str = "34aa64ae-35df-4ab7-a8ed-b833e7dbbc98";
+
+/// reveal を、evidence とは別の場面の文書へ変えた版を承認して取り込む（2 window の fixture）。
+/// この fixture のスキーマは現行より古く、scope の保存先の表が無い（reveal や secret を変える編集が
+/// 版の作成で拒まれる）。そのため、私的な複製に `Database::migrate` を掛けてから使う。
+/// 承認済みの版（evidence も reveal も D000002＝ en-distractor-rumor-fact）から、reveal を
+/// D000001（＝ en-distractor-gift）へ変えた子を作る。もう 1 件（unreviewed の AI の版）は承認する。
+/// 出来事の reveal は編集後の場面、場面への結び付けは根拠の場面、secret である。
+#[test]
+fn two_window_reveal_scene_edited_revision_applies_with_the_edited_reveal_scene() {
+    let fixture = Fixture::two_window();
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    db.migrate().expect("migrate the private two-window copy");
+    enable_manual_apply(&db);
+    native_human_decision(&db, &fixture, TWO_WINDOW_UNREVIEWED_REVISION, "approved");
+    let edited = create_native_child(&db, &fixture, fixture.child(), |payload| {
+        assert_eq!(payload["disclosure"]["revealDocumentRef"], "D000002");
+        payload["disclosure"]["revealDocumentRef"] = json!("D000001");
+    });
+    native_human_decision(&db, &fixture, &edited, "approved");
+    let revisions = approved_current_revisions_of_run(&db, TWO_WINDOW_RUN);
+    assert_eq!(revisions.len(), 2);
+    let prepare = chronicle_prepare_payload(&db, &fixture, "era-two-window-reveal", &revisions);
+    prepare_and_apply(&db, &prepare);
+    assert_eq!(apply_counts(&db), (2, 1, 2));
+    let row = event_row_of(&db, &edited);
+    assert_eq!(row.0, 1, "the Event is secret");
+    assert_eq!(
+        row.1.as_deref(),
+        Some(fixture.scene("s1")),
+        "reveal = edited Scene"
+    );
+    // 場面への結び付けは、reveal ではなく根拠の場面（D000002）。
+    db.with_conn(|conn| {
+        let payload: String = conn.query_row(
+            "SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?1",
+            [&edited],
+            |r| r.get(0),
+        )?;
+        let payload: Value = serde_json::from_str(&payload)?;
+        let event_id = payload["eventId"].as_str().expect("eventId").to_owned();
+        let linked: Vec<String> = conn
+            .prepare("SELECT scene_id FROM scene_events WHERE event_id = ?1")?
+            .query_map([event_id], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        assert_eq!(linked, vec![fixture.scene("s2").to_owned()]);
+        Ok(())
+    })
+    .expect("scene links of the edited-reveal Event");
+    // 併せて取り込んだ AI の版の出来事も secret。
+    for revision in revisions.iter().filter(|r| **r != edited) {
+        assert_eq!(event_row_of(&db, revision).0, 1);
+    }
+}
+
+/// secret のまま reveal を別の場面（D000001）へ変えた版を承認した後、場面の並び
+/// （別の場面の sortOrder）を変えて reveal の場面の順位が動くと、材料（scope の投影）が古くなって prepare が拒まれる。
+/// 親の run の unreviewed の版は却下して計画から外す。
+#[test]
+fn two_window_secret_reveal_edited_revision_is_refused_after_the_reveal_scene_order_changed() {
+    let fixture = Fixture::two_window();
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    db.migrate().expect("migrate the private two-window copy");
+    enable_manual_apply(&db);
+    native_human_decision(&db, &fixture, TWO_WINDOW_UNREVIEWED_REVISION, "rejected");
+    let first = create_native_child(&db, &fixture, fixture.child(), |payload| {
+        payload["disclosure"]["revealDocumentRef"] = json!("D000001");
+    });
+    let second = create_native_child(&db, &fixture, &first, |payload| {
+        payload["disclosure"]["secret"] = json!(true);
+    });
+    native_human_decision(&db, &fixture, &second, "approved");
+    let revisions = approved_current_revisions_of_run(&db, TWO_WINDOW_RUN);
+    assert_eq!(revisions, vec![second.clone()]);
+    let prepare = chronicle_prepare_payload(&db, &fixture, "era-two-window-order", &revisions);
+    // reveal の場面（D000001）より後ろにある別の場面を先頭へ動かし、reveal の場面の順位を変える。
+    // reveal の場面自身の sortOrder を変えても（本文の token を保っても）、この形では古くならない。
+    native_patch_node(
+        &db,
+        &fixture,
+        "en-query-05",
+        json!({"sortOrder":"Zz"}),
+        false,
+    );
+    let error = assert_prepare_refused(&db, &prepare);
+    assert!(
+        error.contains("NEX_SOURCE_BASIS_STALE") && error.contains("scope-dependency:v1:"),
+        "unexpected error after the reveal Scene order change: {error}"
     );
 }

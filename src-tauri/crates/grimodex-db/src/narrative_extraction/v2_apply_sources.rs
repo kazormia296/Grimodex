@@ -176,6 +176,8 @@ fn validate_root_coverage(
     root: &VerifiedRoot,
     artifact: &VerifiedV2ContextArtifact,
 ) -> anyhow::Result<()> {
+    #[cfg(test)]
+    ROOT_COVERAGE_CHECKS.with(|count| count.set(count.get() + 1));
     let mut root_sources = BTreeMap::new();
     for entry in array(&root.envelope, "/effectiveMaterialBasis/sourceBasis")? {
         let source_key = string(entry, "sourceKey")?;
@@ -200,6 +202,12 @@ fn validate_root_coverage(
         "NEX_V2_READ_COVERAGE_INVALID: source basis is empty"
     );
     validate_coverage(&root.envelope, artifact, &root_sources)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// 編集した版の分岐が、最初の AI の版の文脈の検査を通った回数（試験専用）。
+    static ROOT_COVERAGE_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn is_human_derived(envelope: &Value) -> bool {
@@ -522,5 +530,135 @@ mod tests {
         envelope["revisionBasis"]["kind"] = json!("human-derived");
         envelope["changeIntent"]["changeKind"] = json!("retract");
         assert!(ensure_supported_intent(&envelope).is_err());
+    }
+
+    fn root_of(envelope: &Value) -> VerifiedRoot {
+        // 最初の AI の版は、自身の材料（sourceBasis）を持つ。
+        let mut envelope = envelope.clone();
+        envelope["effectiveMaterialBasis"]["sourceBasis"] = json!([
+            {"sourceKey":"project:scene:s1", "sourceKind":"scene-body", "revisionToken":"v1"}
+        ]);
+        VerifiedRoot {
+            revision_id: "root-revision".into(),
+            envelope,
+        }
+    }
+
+    #[test]
+    fn root_coverage_accepts_a_valid_first_revision() {
+        let (envelope, artifact, _) = fixture();
+        validate_root_coverage(&root_of(&envelope), &artifact).expect("valid root");
+    }
+
+    #[test]
+    fn root_coverage_rejects_contract_orphan_and_empty_material() {
+        let (envelope, artifact, _) = fixture();
+        // 部品の契約（component-contract）の digest が、受領書の基準と合わない。
+        let mut root = root_of(&envelope);
+        root.envelope["effectiveMaterialBasis"]["dependencySet"][3]["selector"]["contractDigest"] =
+            json!("wrong");
+        assert!(
+            validate_root_coverage(&root, &artifact).is_err(),
+            "contract digest"
+        );
+        // どの依存からも参照されない材料（orphan）。
+        let mut root = root_of(&envelope);
+        root.envelope["effectiveMaterialBasis"]["sourceBasis"]
+            .as_array_mut()
+            .expect("sourceBasis")
+            .push(json!({"sourceKey":"project:scene:orphan", "sourceKind":"scene-body", "revisionToken":"v1"}));
+        assert!(
+            validate_root_coverage(&root, &artifact).is_err(),
+            "orphan material"
+        );
+        // 材料が空。
+        let mut root = root_of(&envelope);
+        root.envelope["effectiveMaterialBasis"]["sourceBasis"] = json!([]);
+        let error = validate_root_coverage(&root, &artifact).expect_err("empty material");
+        assert!(error.to_string().contains("source basis is empty"));
+        // 重複した材料。
+        let mut root = root_of(&envelope);
+        let duplicate = root.envelope["effectiveMaterialBasis"]["sourceBasis"][0].clone();
+        root.envelope["effectiveMaterialBasis"]["sourceBasis"]
+            .as_array_mut()
+            .expect("sourceBasis")
+            .push(duplicate);
+        assert!(
+            validate_root_coverage(&root, &artifact).is_err(),
+            "duplicate material"
+        );
+    }
+
+    /// 実際の DB（cold fixture の複製）で、編集した版（human-derived）の分岐が
+    /// 最初の AI の版の文脈の検査を必ず通ることと、AI が出したままの版は通らないことを固定する。
+    #[test]
+    fn human_derived_branch_runs_the_root_coverage_check_and_the_interpretation_branch_does_not() {
+        use std::io::Read;
+        let manifest: Value = serde_json::from_str(include_str!(
+            "../../tests/support/nir1-reviewed-child-cold.json"
+        ))
+        .expect("cold fixture manifest");
+        let mut bytes = Vec::new();
+        flate2::read::GzDecoder::new(
+            &include_bytes!("../../tests/support/nir1-reviewed-child-cold.db.gz")[..],
+        )
+        .read_to_end(&mut bytes)
+        .expect("cold fixture bytes");
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-v2-apply-sources-{}.db",
+            uuid_like_suffix()
+        ));
+        std::fs::write(&path, bytes).expect("private fixture copy");
+        let db = crate::Database::new(&path).expect("private fixture database");
+        let project = manifest["projectId"].as_str().expect("project");
+        let run = manifest["runId"].as_str().expect("run");
+        let load = |revision: &str| {
+            db.with_conn(|conn| {
+                let raw: String = conn.query_row(
+                    "SELECT reconciliation_envelope_json FROM narrative_proposal_revisions WHERE id = ?1",
+                    [revision],
+                    |row| row.get(0),
+                )?;
+                let envelope: Value = serde_json::from_str(&raw)?;
+                let tx = conn.unchecked_transaction()?;
+                let before = ROOT_COVERAGE_CHECKS.with(|count| count.get());
+                let rows = load_v2_apply_sources(&tx, project, run, revision, &envelope);
+                let after = ROOT_COVERAGE_CHECKS.with(|count| count.get());
+                Ok((rows.map(|rows| rows.len()), after - before))
+            })
+            .expect("loader call")
+        };
+        let child = manifest["revisionIds"][0].as_str().expect("child");
+        let root = manifest["rootRevisionIds"][0].as_str().expect("root");
+        let (rows, checks) = load(child);
+        assert!(rows.is_ok(), "edited revision loads: {rows:?}");
+        assert_eq!(
+            checks, 1,
+            "the human-derived branch must check the root coverage"
+        );
+        let (rows, checks) = load(root);
+        assert!(rows.is_ok(), "AI revision loads: {rows:?}");
+        assert_eq!(
+            checks, 0,
+            "the interpretation branch checks its own coverage instead"
+        );
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = path.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            let _ = std::fs::remove_file(std::path::PathBuf::from(sidecar));
+        }
+    }
+
+    fn uuid_like_suffix() -> String {
+        format!(
+            "{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        )
     }
 }
