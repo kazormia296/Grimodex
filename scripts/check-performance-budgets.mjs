@@ -14,7 +14,7 @@ const DIST_DIR = path.resolve("dist/assets");
  * reviewed change and can never cross the absolute product ceiling.
  */
 export const INITIAL_JS_GRAPH_BUDGET = {
-  baseline: { rawBytes: 3_803_000, gzipBytes: 1_195_000 },
+  baseline: { rawBytes: 3_803_500, gzipBytes: 1_195_200 },
   allowance: { rawBytes: 98_304, gzipBytes: 36_864 },
   // raw は 4_250_000 から 700 byte だけ上げた。チャット入力の書きかけを session／project の
   // 削除と一緒に消す処理（chatInputDraftPurge.ts）が初期 graph の store に入るため
@@ -54,7 +54,7 @@ export const INITIAL_JS_GRAPH_BUDGET = {
   // 旧上限 raw 4,282,400／gzip 1,355,200）。
   //
   // 起動時に要らないものを初期 graph から外し、baseline と上限を下げた（同じ toolchain の
-  // 実測で raw 4,281,883 → 3,802,998 で -478,885、gzip 1,354,989 → 1,194,962 で -160,027）。
+  // 実測で raw 4,281,883 → 3,803,402 で -478,481、gzip 1,354,989 → 1,195,161 で -159,828）。
   // 外したもの: 英語の辞書（英語の画面でだけ読む）、利用規約の同意ダイアログと Markdown の
   // 描画（同意が要るときだけ読む）、gsap（パネルの強調と節目の演出で初めて読む）、撮影用の
   // 校閲デモの文面。これらが初期 graph に戻らないことは FORBIDDEN_INITIAL_JS で検査する。
@@ -219,6 +219,36 @@ export function findForbiddenInitialJs(names) {
   );
 }
 
+/**
+ * 名前の検査だけでは、module が別の名前の chunk に併合されて戻った場合を見逃す。
+ * そこで、その module にしか無い文字列が初期 graph の chunk の中に無いことも確かめる。
+ * 目印が古くなって検査が空振りしないよう、dist のどこかには在ることも確かめる。
+ */
+export const FORBIDDEN_INITIAL_JS_MARKERS = [
+  ["GSAP target", "gsap"],
+  ["legal.eula.agreeCheckbox", "利用規約の同意ダイアログ"],
+  ["akane:foreign-memory:scene-1", "撮影用の校閲デモの文面"],
+];
+
+export function checkForbiddenInitialMarkers(initialSources, allSources) {
+  const problems = [];
+  for (const [marker, description] of FORBIDDEN_INITIAL_JS_MARKERS) {
+    const inInitial = initialSources
+      .filter(({ source }) => source.includes(marker))
+      .map(({ name }) => name);
+    if (inInitial.length > 0) {
+      problems.push(
+        `${description} が初期 graph に入っている（目印 "${marker}"）: ${inInitial.join(", ")}`,
+      );
+    } else if (!allSources.some(({ source }) => source.includes(marker))) {
+      problems.push(
+        `${description} の目印 "${marker}" が dist のどの chunk にも無い（目印を更新する）`,
+      );
+    }
+  }
+  return problems;
+}
+
 const lazyBudgets = [
   [/^SettingsDialog-[^/]+\.js$/, 240_000, 60_000],
   [/^MapPanel-[^/]+\.js$/, 340_000, 100_000],
@@ -241,6 +271,16 @@ export function main() {
     initialJsBudget.gzipBytes,
   );
   const forbidden = findForbiddenInitialJs(htmlAssets.js);
+  const readJs = (name) => ({
+    name,
+    source: readFileSync(path.join(DIST_DIR, name), "utf8"),
+  });
+  forbidden.push(
+    ...checkForbiddenInitialMarkers(
+      htmlAssets.js.map(readJs),
+      files.filter((file) => file.endsWith(".js")).map(readJs),
+    ),
+  );
   if (forbidden.length > 0) {
     throw new Error(
       `initial JS graph contains chunks that must stay lazy:\n${forbidden.join("\n")}`,

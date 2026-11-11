@@ -4,6 +4,7 @@ import {
   collectFontAssetNames,
   collectHtmlEntrypointAssets,
   INITIAL_JS_GRAPH_BUDGET,
+  checkForbiddenInitialMarkers,
   findForbiddenInitialJs,
   resolveRatchetedBudget,
 } from "./check-performance-budgets.mjs";
@@ -123,4 +124,27 @@ test("chunks moved out of the initial JS graph are reported when they return", (
       "screenshotSeedContent-CE80gllx.js",
     ],
   );
+});
+
+test("modules moved out of the initial JS graph are found by content, and stale markers are reported", () => {
+  const lazy = [
+    { name: "gsap-a.js", source: "x GSAP target y" },
+    { name: "Eula-b.js", source: 't("legal.eula.agreeCheckbox")' },
+    { name: "seed-c.js", source: '"akane:foreign-memory:scene-1"' },
+  ];
+  const initial = [{ name: "index-d.js", source: "app" }];
+  assert.deepEqual(
+    checkForbiddenInitialMarkers(initial, [...initial, ...lazy]),
+    [],
+  );
+
+  const merged = [{ name: "index-d.js", source: "app GSAP target" }];
+  const problems = checkForbiddenInitialMarkers(merged, [
+    ...merged,
+    ...lazy.slice(1),
+  ]);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /index-d\.js/);
+
+  assert.equal(checkForbiddenInitialMarkers(initial, initial).length, 3);
 });
