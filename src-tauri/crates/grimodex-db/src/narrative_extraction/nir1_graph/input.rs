@@ -1318,10 +1318,14 @@ const DISCLOSURE_GLOBAL_ROWS_SQL: &[(&str, usize, DisclosureGlobalRowsParams)] =
         0,
         DisclosureGlobalRowsParams::Project,
     ),
+    // Once, not twice (DR-CQA-6): the Scope extension reads each binding row
+    // once and no longer joins `tree_nodes` for it (which read one more row
+    // per binding), so the read and its charge both went from 2 to 1 per
+    // binding. The bytes below stay as they were.
     (
         "SELECT COUNT(*) FROM narrative_scene_scope_bindings
           WHERE project_id=?1",
-        2,
+        1,
         DisclosureGlobalRowsParams::Project,
     ),
     (
@@ -1700,9 +1704,9 @@ mod disclosure_tests {
         )
         .unwrap();
         let bytes = admission.bytes;
-        // 8 shared (tree 2, registry 2, bindings 2, project 1, query Scene 1)
+        // 7 shared (tree 2, registry 2, bindings 1, project 1, query Scene 1)
         // + 1 entity + 1 phase of the Revision
-        assert_eq!(admission.rows, 10);
+        assert_eq!(admission.rows, 9);
         assert!(bytes > 0);
         let payload_bytes: usize = conn
             .query_row(
@@ -1982,11 +1986,11 @@ mod disclosure_tests {
             INPUT_BYTES,
         )
         .unwrap();
-        // 8 shared (tree 2, registry 2, bindings 2, project 1, query Scene 1)
+        // 7 shared (tree 2, registry 2, bindings 1, project 1, query Scene 1)
         // + 2 each for entity, phase, link, POV of the Revision
-        assert_eq!(admission.rows, 16);
+        assert_eq!(admission.rows, 15);
         assert_eq!(
-            preflight_disclosure(&conn, "project", "r", "scene", 15, INPUT_BYTES)
+            preflight_disclosure(&conn, "project", "r", "scene", 14, INPUT_BYTES)
                 .unwrap_err()
                 .to_string(),
             DISCLOSURE_ROW_LIMIT

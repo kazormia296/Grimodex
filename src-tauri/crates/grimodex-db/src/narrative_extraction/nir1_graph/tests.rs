@@ -4219,7 +4219,8 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
 // The A3 rows of the two official fixtures under the two-part accounting
 // (`input::preflight_project_reads` once, `preflight_disclosure_revision` per
 // Revision). Each fixture is sized so that the seed's candidate rows, its A2
-// rows and these add up to 511, and the traversal's own first row makes 512.
+// rows and these added up to 511 (512 with the traversal's own first row) before
+// DR-CQA-6 (below).
 // Those fixtures were sized for the former query limit of 512 and are bound to
 // their dataset hash, so they stay as they are: a 512-record load is now an
 // ordinary query well inside `MAX_GRAPH_QUERY_RECORDS` (2,048), and the
@@ -4228,13 +4229,20 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
 // Q512 is a project of 62 Scenes (60 of them hold no material) and 82
 // Entities; the registry33 fixture keeps the two Scenes, a 33-row registry
 // and 144 Entities, the heavier Entity work for the same 512.
-const CANONICAL_CHARGED_ROWS: usize = 512;
+//
+// DR-CQA-6 charges each binding once instead of twice, so the same fixtures
+// now charge fewer rows (the Q512 project has 62 bindings, the registry33 one
+// 2): the shared part is 263 - 62 = 201 and 77 - 2 = 75, the 512 charged rows
+// 450 and 510. The fixtures, the dataset hash and the entity counts are
+// unchanged; only the charge of the binding rows moved.
+const Q512_CHARGED_ROWS: usize = 450;
+const REGISTRY33_CHARGED_ROWS: usize = 510;
 const Q512_ENTITIES: usize = 82;
 const Q512_REGISTRY_ROWS: usize = 6;
-const Q512_SHARED_ROWS: usize = 263;
+const Q512_SHARED_ROWS: usize = 201;
 const Q512_REVISION_ROWS: usize = 1 + Q512_ENTITIES;
 const REGISTRY33_ENTITIES: usize = 144;
-const REGISTRY33_SHARED_ROWS: usize = 77;
+const REGISTRY33_SHARED_ROWS: usize = 75;
 const REGISTRY33_REVISION_ROWS: usize = 1 + REGISTRY33_ENTITIES;
 
 #[test]
@@ -4245,6 +4253,7 @@ fn native_worker_returns_canonical_512_a3_eligible_seed_local_graph() -> Result<
         entity_count: Q512_ENTITIES,
         registry_rows: Q512_REGISTRY_ROWS,
         shared_rows: Q512_SHARED_ROWS,
+        charged_rows: Q512_CHARGED_ROWS,
         revision_rows: Q512_REVISION_ROWS,
         unrelated_seed_edges: 0,
         native_runs: 1,
@@ -4259,6 +4268,7 @@ fn native_worker_practical_retention_q512_30x() -> Result<()> {
         entity_count: Q512_ENTITIES,
         registry_rows: Q512_REGISTRY_ROWS,
         shared_rows: Q512_SHARED_ROWS,
+        charged_rows: Q512_CHARGED_ROWS,
         revision_rows: Q512_REVISION_ROWS,
         unrelated_seed_edges: 0,
         native_runs: 30,
@@ -4273,9 +4283,10 @@ fn native_worker_refuses_exact_2049_seed_local_unrelated_reverse_index_edges() -
         entity_count: Q512_ENTITIES,
         registry_rows: Q512_REGISTRY_ROWS,
         shared_rows: Q512_SHARED_ROWS,
+        charged_rows: Q512_CHARGED_ROWS,
         revision_rows: Q512_REVISION_ROWS,
-        // 512 charged rows + 1,537 = 2,049: one over the query limit.
-        unrelated_seed_edges: MAX_GRAPH_QUERY_RECORDS + 1 - CANONICAL_CHARGED_ROWS,
+        // 450 charged rows + 1,599 = 2,049: one over the query limit.
+        unrelated_seed_edges: MAX_GRAPH_QUERY_RECORDS + 1 - Q512_CHARGED_ROWS,
         native_runs: 1,
     })
 }
@@ -4288,6 +4299,7 @@ fn native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph()
         entity_count: REGISTRY33_ENTITIES,
         registry_rows: 33,
         shared_rows: REGISTRY33_SHARED_ROWS,
+        charged_rows: REGISTRY33_CHARGED_ROWS,
         revision_rows: REGISTRY33_REVISION_ROWS,
         unrelated_seed_edges: 0,
         native_runs: 1,
@@ -4302,6 +4314,8 @@ struct Canonical512FixtureCase {
     /// A3 rows read once for the query: the project's tree, Scene bindings and
     /// registry (twice), its phase mode, the latest Epoch and the query Scene.
     shared_rows: usize,
+    /// Every row the seed query charges, the traversal's own first row included.
+    charged_rows: usize,
     /// A3 rows bound to the one Revision: its Decision and its Entities' Codex
     /// rows.
     revision_rows: usize,
@@ -4467,7 +4481,7 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
     // The fixtures charge the former limit's 511 + 1 rows; the limits they now
     // run under are the query's (2,048 records, 600,000 steps) and the
     // Revision's own 512 (the one Revision here is well inside it).
-    assert_eq!(charged_rows, CANONICAL_CHARGED_ROWS - 1);
+    assert_eq!(charged_rows, case.charged_rows - 1);
     assert_eq!(MAX_GRAPH_QUERY_RECORDS, 2_048);
     assert_eq!(MAX_GRAPH_RECORDS, 512);
     assert_eq!(MAX_GRAPH_INPUT_BYTES, 6_291_456);
@@ -4476,9 +4490,9 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
     drop(source_db);
     if observe_practical {
         eprintln!(
-            "Native practical fixture: label={}; os={}; arch={}; source_bytes={}; materials={}; revisions=1; registry_rows={}; charged_rows=512; runs={}; usage_unit=KiB; snapshots_not_peak=true",
+            "Native practical fixture: label={}; os={}; arch={}; source_bytes={}; materials={}; revisions=1; registry_rows={}; charged_rows={}; runs={}; usage_unit=KiB; snapshots_not_peak=true",
             case.label, std::env::consts::OS, std::env::consts::ARCH,
-            std::fs::metadata(&source)?.len(), material_rows, registry_rows, case.native_runs
+            std::fs::metadata(&source)?.len(), material_rows, registry_rows, case.charged_rows, case.native_runs
         );
     }
 
@@ -4803,7 +4817,7 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
             case.shared_rows,
             if extra == 0 { case.revision_rows } else { 0 },
             if extra == 0 {
-                CANONICAL_CHARGED_ROWS
+                case.charged_rows
             } else {
                 2 + extra + 2 * case.entity_count + case.shared_rows
             },
