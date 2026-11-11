@@ -383,6 +383,21 @@ L-27 の「製品側の候補」（連続 N 回目以降は 10 ms でなく `ERR
 - 付記：同じ run の Electron runtime performance の赤は 2026-11-10 に master（ci 42820712160）でも出ていて、取り直しで緑。
 - 決定（2026-11-11、ユーザーの指示で Fable に相談）：A′ は変えず、journey の順の検査を idle checkpoint に限り広げる（DR-MP-9、#861 で merge、master `58df4e59`）。#859 は master を取り込んだうえで、
   c2-zc の journey を master と A′ で各 20 本流し、Run の順と終状態（marker の時刻、Generic の publisher、cursor）を run ごとに記録してから merge する（merge の gate）。`narrativeMaintenance.ts` は変えないので、`8a1bb521` の A/B は失効しない。
+
+### c2-zc の journey の 20 本の結果（2026-11-11。dev 専用・判定に数えない）
+
+- 腕：M＝master `58df4e59`、A＝この枝 `143031cf`（`58df4e59` の merge）。build receipt の Electron main の sha256 は両腕で違い、A の `main.cjs` にだけ A′ の識別子がある。
+  止める線（A に M に無い種類の失敗が 1 本、A の失敗が M より 2 本多い、終状態の異常）は測る前に `definitions.md` に書いた。
+- **止める線には当たらなかった。** journey 本体の失敗・timeout は M 0／20、A 0／20。
+  harness の FAIL 16／20 本（両腕同数）は Main の stderr の `atspi-WARNING` の誤判定で、全本が restart-persistence の phase まで進み、rendererErrorCount は 0。
+- 終状態：marker が全 Run の後、Generic の publisher が Rebuild、cursor が ack 済み、dependency-repair の Run が無い、を両腕とも 20／20 本で満たした（判定点は open 段の settle）。
+- open 段の核は全本で Verify→Rebuild→確認 Verify。idle checkpoint が delta の最後でない run は A で 2／20（A-9、A-15）、M で 0／20。
+  この 2 本は DR-MP-9 の検査の下で通った。どちらも最後の cancelled の Verify（約 1 s）の間に idle が作られて完了している。A′ による候補外しと合うが、A′ の発動を直接示すログは無い。頻度の差は n が小さく断定しない。
+- cancelled の Verify（open 段まで）は M が合計 30（最大 4）、A が 33（最大 3）。この n では増減を言えない。所要時間の中央値は M 26.1 s、A 26.4 s。
+- 条件：`CI=true`、Node 22、receipt から MCP の 1 件を除いた写しを渡した（candidate と sha は prepare の値のまま）。watcher（250 ms の read-only reader）の影響は測っていない（両腕同じ）。
+- 判断：merge の gate を満たしたので、#859 を merge に進める。
+- 生データ：`fusion-eval-data/design-notes/db-connection-2026-11-07/maint-backoff-c2zc-20-2026-11-11/`（`definitions.md`、`results.md`、`run-table.md`、`raw/`）。
+
 ## DR-MP-9 C2-ZC の journey の Run の順で、idle checkpoint の位置を問わない（2026-11-11）
 
 - きっかけ: PR #859（DR-MP-8、maintenance の preempt の backoff）の ci.yml run 42972611053 で、
