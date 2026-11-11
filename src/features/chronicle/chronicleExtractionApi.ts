@@ -35,6 +35,7 @@ import {
 } from "@/application/narrative-extraction/commitCoordinator";
 import {
   captureNarrativeExtractionWorkspaceBinding,
+  narrativeExtractionGetRunReviewBundle,
   narrativeExtractionIsRunResumableForReview,
   type ChronicleBlockedDiscardExpectation,
   type ChronicleTaskResumeCandidate,
@@ -1447,6 +1448,65 @@ export async function restoreChronicleExtractionReview(scope: {
     if (isChronicleReanalysisRequired(error)) throw error;
     return null;
   }
+}
+
+/**
+ * How many of the newest review-resumable Chronicle Runs the same-Scene notice
+ * inspects (Native clamps `limit` to 1..100; its default is 20).
+ */
+export const SAME_SCENE_NOTICE_RUN_LIMIT = 50;
+
+/**
+ * Advisory read for the pre-start notice (SSE/1 S8b): does any review-resumable
+ * Chronicle Run that requested `sceneId` still hold a proposal that is approved
+ * but not applied? Pure read: it never touches the review projection or the
+ * artifact cache (unlike `getChronicleExtractionReview`).
+ *
+ * Reach (what it can miss):
+ * - only the newest `SAME_SCENE_NOTICE_RUN_LIMIT` Runs that Native lists as
+ *   review-resumable (status pending/running/completed, an unapplied
+ *   unreviewed/approved/held/deferred proposal); older Runs are not inspected;
+ * - a Run is matched by `scopeJson.sceneIds` (the Scene was requested), not by
+ *   proposal evidence, so it may notify slightly more widely than "proposals
+ *   grounded in this Scene";
+ * - `listResumableRuns` falls back to the process-local Run index when the
+ *   Native list fails, so a Native failure there is not visible here.
+ * A thrown error means "could not be determined"; callers must not treat it as
+ * a safety boundary (the notice is advisory).
+ */
+export async function hasApprovedUnappliedProposalForScene(args: {
+  readonly projectId: string;
+  readonly sceneId: string;
+}): Promise<boolean> {
+  const runs = await listResumableRuns({
+    projectId: args.projectId,
+    surfacePathId: CHRONICLE_EXTRACT_SURFACE_PATH,
+    limit: SAME_SCENE_NOTICE_RUN_LIMIT,
+  });
+  for (const projection of runs) {
+    const sceneIds = projection.run.scopeJson["sceneIds"];
+    if (!Array.isArray(sceneIds) || !sceneIds.includes(args.sceneId)) continue;
+    const bundle = await narrativeExtractionGetRunReviewBundle({
+      runId: projection.run.runId,
+      projectId: args.projectId,
+    });
+    if (
+      bundle.runId !== projection.run.runId ||
+      bundle.projectId !== args.projectId
+    ) {
+      throw new Error(
+        "Chronicle extraction review bundle does not match the requested Run",
+      );
+    }
+    if (
+      bundle.proposals.some(
+        (proposal) => proposal.status === "approved" && !proposal.application,
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

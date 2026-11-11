@@ -37,6 +37,23 @@ const treeApiMocks = vi.hoisted(() => ({
 }));
 vi.mock("@/features/tree/api", () => treeApiMocks);
 
+const sceneLengthMocks = vi.hoisted(() => ({ measure: vi.fn() }));
+vi.mock(
+  "@/application/narrative-extraction/sceneBodyLength",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("@/application/narrative-extraction/sceneBodyLength")
+    >()),
+    measureSceneCanonicalBodyLength: sceneLengthMocks.measure,
+  }),
+);
+
+const sameSceneMocks = vi.hoisted(() => ({ read: vi.fn() }));
+vi.mock("./chronicleExtractionApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./chronicleExtractionApi")>()),
+  hasApprovedUnappliedProposalForScene: sameSceneMocks.read,
+}));
+
 const toastMocks = vi.hoisted(() => ({
   error: vi.fn(),
   success: vi.fn(),
@@ -44,6 +61,8 @@ const toastMocks = vi.hoisted(() => ({
 vi.mock("sonner", () => ({ toast: toastMocks }));
 
 import { ChronicleExtractDialog } from "./ChronicleExtractDialog";
+import { chronicleCurrentSceneOptionValue } from "./chronicleExtractScene";
+import { SceneBodyLengthError } from "@/application/narrative-extraction/sceneBodyLength";
 import type { ChronicleScope } from "./chronicleScope";
 import {
   resetChronicleExtractionStoreForTests,
@@ -963,5 +982,606 @@ describe("ChronicleExtractDialog run-path cutover", () => {
     await waitFor(() =>
       expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(1),
     );
+  });
+});
+
+describe("ChronicleExtractDialog 場面 1 つの抽出（SSE/1）", () => {
+  const sceneA = chronicleCurrentSceneOptionValue("scene-a");
+
+  function sceneNode(
+    id: string,
+    parentId: string | null,
+    title: string,
+  ): TreeNodeData {
+    return { ...node(id, "scene", parentId), title };
+  }
+
+  function seedTree(activeSceneId: string): void {
+    useTreeStore.setState({
+      activeSceneId,
+      nodes: [
+        node("folder-a", "folder", null),
+        sceneNode("scene-a", "folder-a", "第一場"),
+        sceneNode("scene-b", "folder-a", "第二場"),
+        sceneNode("scene-root", null, "直下の場面"),
+        { ...node("note-1", "scene", "folder-a"), nodeType: "note" },
+      ],
+    });
+  }
+
+  function renderDialog() {
+    return render(
+      <ChronicleExtractDialog
+        open
+        scope={SCOPE_A}
+        isActive
+        onOpenChange={vi.fn()}
+      />,
+    );
+  }
+
+  function select(value: string): void {
+    fireEvent.change(screen.getByRole("combobox"), { target: { value } });
+  }
+
+  function pressAnalyze(): void {
+    fireEvent.click(screen.getByRole("button", { name: "解析" }));
+  }
+
+  function startCall(): Record<string, unknown> {
+    const call = extractionMocks.startChronicleExtraction.mock.calls[0];
+    if (!call) throw new Error("startChronicleExtraction was not called");
+    return call[0] as Record<string, unknown>;
+  }
+
+  function seedPendingProjection(
+    statuses: ChronicleReviewProposal["status"][],
+  ): void {
+    seedProjection();
+    const current = useChronicleExtractionStore.getState().projection;
+    const base = current?.proposals[0];
+    if (!current || !base) throw new Error("expected seeded projection");
+    useChronicleExtractionStore.getState().setProjection({
+      ...current,
+      proposals: statuses.map((status, index) => ({
+        ...base,
+        proposalId: `proposal-${index}`,
+        revisionId: `rev-${index}`,
+        proposalKey: `key-${index}`,
+        status,
+        displayTitle: `候補${index}`,
+        payload: base.payload
+          ? {
+              ...base.payload,
+              eventId: `event-${index}`,
+              title: `候補${index}`,
+            }
+          : null,
+      })),
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetMutationAuthorityForTests();
+    resetChronicleExtractionStoreForTests();
+    publishScope(SCOPE_A);
+    seedTree("scene-a");
+    apiMocks.listEvents.mockResolvedValue([]);
+    treeApiMocks.loadSceneContents.mockResolvedValue(new Map());
+    extractionMocks.startChronicleExtraction.mockReset();
+    extractionMocks.startChronicleExtraction.mockResolvedValue({
+      runId: "run-1",
+    });
+    extractionMocks.discoverChronicleTaskResumeCandidates.mockReset();
+    extractionMocks.discoverChronicleTaskResumeCandidates.mockResolvedValue([]);
+    extractionMocks.discardChronicleTaskResumeCandidate.mockReset();
+    extractionMocks.restoreChronicleExtractionReview.mockResolvedValue(null);
+    sceneLengthMocks.measure.mockReset();
+    sceneLengthMocks.measure.mockResolvedValue({ canonicalLength: 100 });
+    sameSceneMocks.read.mockReset();
+    sameSceneMocks.read.mockResolvedValue(false);
+  });
+
+  describe("S5/S6 対象の選択", () => {
+    it("開いている場面を「今の場面：題」として選べ、select と解析は 1 つのまま", () => {
+      renderDialog();
+      const option = screen.getByRole("option", { name: "今の場面：第一場" });
+      expect(option).toHaveValue(sceneA);
+      expect((option as HTMLOptionElement).disabled).toBe(false);
+      expect(screen.getAllByRole("combobox")).toHaveLength(1);
+      expect(screen.getAllByRole("button", { name: "解析" })).toHaveLength(1);
+      expect(
+        screen.queryByTestId("chronicle-extract-current-scene-unavailable"),
+      ).toBeNull();
+      // フォルダの option の value はフォルダの id のまま。
+      expect(screen.getByRole("option", { name: "folder-a" })).toHaveValue(
+        "folder-a",
+      );
+    });
+
+    it("題が空なら（無名）を出す", () => {
+      useTreeStore.setState({
+        nodes: useTreeStore
+          .getState()
+          .nodes.map((n) => (n.id === "scene-a" ? { ...n, title: "" } : n)),
+      });
+      renderDialog();
+      expect(
+        screen.getByRole("option", { name: "今の場面：（無名）" }),
+      ).toBeTruthy();
+    });
+
+    it.each([
+      ["", "エディタで場面を開くと、その場面だけを抽出できます。"],
+      ["note-1", "開いているのは場面ではないため、抽出できません。"],
+      ["scene-root", "フォルダに入っている場面だけ抽出できます。"],
+      ["missing-node", "エディタで場面を開くと、その場面だけを抽出できます。"],
+    ])("activeSceneId=%j は選べず、理由を出す", (activeSceneId, reason) => {
+      seedTree(activeSceneId);
+      renderDialog();
+      const option = screen.getByRole("option", { name: "今の場面" });
+      expect((option as HTMLOptionElement).disabled).toBe(true);
+      expect(
+        screen.getByTestId("chronicle-extract-current-scene-unavailable"),
+      ).toHaveTextContent(reason);
+      expect(screen.getAllByRole("combobox")).toHaveLength(1);
+    });
+
+    it("開いている場面は描くたびに導く（後から開いた場面が選べる）", () => {
+      seedTree("");
+      renderDialog();
+      expect(screen.getByRole("option", { name: "今の場面" })).toBeTruthy();
+      act(() => useTreeStore.setState({ activeSceneId: "scene-b" }));
+      expect(
+        screen.getByRole("option", { name: "今の場面：第二場" }),
+      ).toBeTruthy();
+    });
+  });
+
+  describe("開始（S5/S7）", () => {
+    it("場面を選んで解析すると、親のフォルダと場面 1 つで requested-direct-children を渡す", async () => {
+      renderDialog();
+      select(sceneA);
+      pressAnalyze();
+      await waitFor(() =>
+        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
+          1,
+        ),
+      );
+      expect(startCall()).toEqual(
+        expect.objectContaining({
+          projectId: "project-a",
+          folderId: "folder-a",
+          sceneIds: ["scene-a"],
+          sceneScopeMode: "requested-direct-children",
+        }),
+      );
+      // 保存の後に長さを見る。木の全走査（本文の一括読み込み）はしない。
+      expect(editorMocks.saveScene).toHaveBeenCalledWith("scene-a");
+      expect(sceneLengthMocks.measure).toHaveBeenCalledWith(
+        "project-a",
+        "scene-a",
+      );
+      expect(treeApiMocks.loadSceneContents).not.toHaveBeenCalled();
+    });
+
+    it("フォルダを選ぶと、今までどおり全場面で sceneScopeMode を渡さない", async () => {
+      renderDialog();
+      select("folder-a");
+      pressAnalyze();
+      await waitFor(() =>
+        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
+          1,
+        ),
+      );
+      const request = startCall();
+      expect(request["folderId"]).toBe("folder-a");
+      expect(request["sceneIds"]).toEqual(["scene-a", "scene-b"]);
+      expect("sceneScopeMode" in request).toBe(false);
+      expect(sceneLengthMocks.measure).not.toHaveBeenCalled();
+      expect(sameSceneMocks.read).not.toHaveBeenCalled();
+    });
+
+    it("選んだ後に開いている場面が変わっても、選んだ場面を対象にし、両方を保存する", async () => {
+      renderDialog();
+      select(sceneA);
+      act(() => useTreeStore.setState({ activeSceneId: "scene-b" }));
+      expect(screen.getByRole("combobox")).toHaveValue(sceneA);
+      expect(
+        screen.getByRole("option", { name: "今の場面：第二場" }),
+      ).toBeTruthy();
+      pressAnalyze();
+      await waitFor(() =>
+        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
+          1,
+        ),
+      );
+      expect(startCall()["sceneIds"]).toEqual(["scene-a"]);
+      expect(editorMocks.saveScene).toHaveBeenCalledWith("scene-b");
+      expect(editorMocks.saveScene).toHaveBeenCalledWith("scene-a");
+    });
+
+    it("本文が 0 字なら始めず、知らせを出す", async () => {
+      sceneLengthMocks.measure.mockResolvedValue({ canonicalLength: 0 });
+      renderDialog();
+      select(sceneA);
+      pressAnalyze();
+      await waitFor(() =>
+        expect(toastMocks.error).toHaveBeenCalledWith(
+          "本文が空のため抽出できません。",
+        ),
+      );
+      expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "解析" })).toBeEnabled();
+    });
+
+    it("6,000 字ちょうどは 1 回で始まる", async () => {
+      sceneLengthMocks.measure.mockResolvedValue({ canonicalLength: 6000 });
+      renderDialog();
+      select(sceneA);
+      pressAnalyze();
+      await waitFor(() =>
+        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
+          1,
+        ),
+      );
+      expect(
+        screen.queryByTestId("chronicle-extract-start-notices"),
+      ).toBeNull();
+    });
+
+    it("6,000 字を超えると 1 回目は知らせ、同じ解析をもう一度押すと始まる", async () => {
+      sceneLengthMocks.measure.mockResolvedValue({ canonicalLength: 6001 });
+      renderDialog();
+      select(sceneA);
+      pressAnalyze();
+      expect(
+        await screen.findByTestId("chronicle-extract-notice-long-scene"),
+      ).toHaveTextContent("提案が関連場面に使われないことがあります");
+      expect(
+        screen.getByTestId("chronicle-extract-start-notices"),
+      ).toHaveTextContent("もう一度「解析」を押すと始めます。");
+      expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "解析" })).toBeEnabled();
+
+      pressAnalyze();
+      await waitFor(() =>
+        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
+          1,
+        ),
+      );
+      expect(sceneLengthMocks.measure).toHaveBeenCalledTimes(2);
+      await waitFor(() =>
+        expect(
+          screen.queryByTestId("chronicle-extract-start-notices"),
+        ).toBeNull(),
+      );
+    });
+
+    it("SceneBodyLengthError は一般の失敗として扱い、始めない", async () => {
+      sceneLengthMocks.measure.mockRejectedValue(
+        new SceneBodyLengthError("SCENE_BODY_UNREADABLE", "bad"),
+      );
+      renderDialog();
+      select(sceneA);
+      pressAnalyze();
+      await waitFor(() =>
+        expect(toastMocks.error).toHaveBeenCalledWith("抽出に失敗しました"),
+      );
+      expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+    });
+
+    it("選んだ後に場面が消えたら、始めずに理由を出す", async () => {
+      renderDialog();
+      select(sceneA);
+      act(() =>
+        useTreeStore.setState({
+          nodes: useTreeStore
+            .getState()
+            .nodes.filter((n) => n.id !== "scene-a"),
+        }),
+      );
+      pressAnalyze();
+      await waitFor(() =>
+        expect(toastMocks.error).toHaveBeenCalledWith(
+          "選んだ場面が見つからないか、フォルダに入っていません。選び直してください。",
+        ),
+      );
+      expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+      expect(screen.getByRole("combobox")).toHaveValue("");
+    });
+
+    it("選んだ後に場面がフォルダの外へ移されたら、始めない", async () => {
+      renderDialog();
+      select(sceneA);
+      act(() =>
+        useTreeStore.setState({
+          nodes: useTreeStore
+            .getState()
+            .nodes.map((n) =>
+              n.id === "scene-a" ? { ...n, parentId: null } : n,
+            ),
+        }),
+      );
+      pressAnalyze();
+      await waitFor(() => expect(toastMocks.error).toHaveBeenCalled());
+      expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("S8 前の組の提案", () => {
+    it("画面の組に未取り込みの提案が残っていれば、場面でもフォルダでも 1 回目は知らせる", async () => {
+      for (const choose of [sceneA, "folder-a"]) {
+        extractionMocks.startChronicleExtraction.mockClear();
+        seedPendingProjection(["approved", "held", "rejected"]);
+        const { unmount } = renderDialog();
+        select(choose);
+        pressAnalyze();
+        const notice = await screen.findByTestId(
+          "chronicle-extract-notice-pending-review",
+        );
+        expect(notice).toHaveTextContent("前の組の提案が2件残っています");
+        expect(notice).toHaveTextContent(
+          "承認済みの提案は、取り込まなくても関連場面に使われます",
+        );
+        expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+        pressAnalyze();
+        await waitFor(() =>
+          expect(
+            extractionMocks.startChronicleExtraction,
+          ).toHaveBeenCalledTimes(1),
+        );
+        unmount();
+        resetChronicleExtractionStoreForTests();
+      }
+    });
+
+    it("未取り込みが無ければ（拒否だけ・取り込み済みだけ）知らせず 1 回で始まる", async () => {
+      seedPendingProjection(["rejected"]);
+      renderDialog();
+      select(sceneA);
+      pressAnalyze();
+      await waitFor(() =>
+        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
+          1,
+        ),
+      );
+      expect(
+        screen.queryByTestId("chronicle-extract-start-notices"),
+      ).toBeNull();
+    });
+
+    it("画面に組が無ければ（通常の流れ）知らせず 1 回で始まる", async () => {
+      renderDialog();
+      select("folder-a");
+      pressAnalyze();
+      await waitFor(() =>
+        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
+          1,
+        ),
+      );
+    });
+  });
+
+  describe("S8b 同じ場面の承認済みで取り込んでいない提案", () => {
+    it("該当があれば 1 回目は知らせ、2 回目で始まる", async () => {
+      sameSceneMocks.read.mockResolvedValue(true);
+      renderDialog();
+      select(sceneA);
+      pressAnalyze();
+      expect(
+        await screen.findByTestId(
+          "chronicle-extract-notice-same-scene-approved",
+        ),
+      ).toHaveTextContent("承認済みで取り込んでいない提案があります");
+      expect(sameSceneMocks.read).toHaveBeenCalledWith({
+        projectId: "project-a",
+        sceneId: "scene-a",
+      });
+      expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+      pressAnalyze();
+      await waitFor(() =>
+        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
+          1,
+        ),
+      );
+    });
+
+    it("該当が無ければ 1 回で始まる", async () => {
+      renderDialog();
+      select(sceneA);
+      pressAnalyze();
+      await waitFor(() =>
+        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
+          1,
+        ),
+      );
+      expect(
+        screen.queryByTestId("chronicle-extract-start-notices"),
+      ).toBeNull();
+    });
+
+    it("読み取りが失敗したら知らせを出さず、抽出は今までどおり進む", async () => {
+      sameSceneMocks.read.mockRejectedValue(new Error("native down"));
+      renderDialog();
+      select(sceneA);
+      pressAnalyze();
+      await waitFor(() =>
+        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
+          1,
+        ),
+      );
+      expect(
+        screen.queryByTestId("chronicle-extract-start-notices"),
+      ).toBeNull();
+      expect(toastMocks.error).not.toHaveBeenCalled();
+    });
+
+    it("知らせは複数の種類をまとめて出す", async () => {
+      sceneLengthMocks.measure.mockResolvedValue({ canonicalLength: 7000 });
+      sameSceneMocks.read.mockResolvedValue(true);
+      seedPendingProjection(["unreviewed"]);
+      renderDialog();
+      select(sceneA);
+      pressAnalyze();
+      await screen.findByTestId("chronicle-extract-start-notices");
+      expect(
+        screen.getByTestId("chronicle-extract-notice-long-scene"),
+      ).toBeTruthy();
+      expect(
+        screen.getByTestId("chronicle-extract-notice-same-scene-approved"),
+      ).toBeTruthy();
+      expect(
+        screen.getByTestId("chronicle-extract-notice-pending-review"),
+      ).toBeTruthy();
+      pressAnalyze();
+      await waitFor(() =>
+        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
+          1,
+        ),
+      );
+    });
+  });
+
+  it("対象の選択を変えると知らせが消え、最初からになる", async () => {
+    sceneLengthMocks.measure.mockResolvedValue({ canonicalLength: 6001 });
+    renderDialog();
+    select(sceneA);
+    pressAnalyze();
+    await screen.findByTestId("chronicle-extract-start-notices");
+
+    select("folder-a");
+    expect(screen.queryByTestId("chronicle-extract-start-notices")).toBeNull();
+    select(sceneA);
+    pressAnalyze();
+    await screen.findByTestId("chronicle-extract-start-notices");
+    // 選び直したので、2 回押すまで始まらない。
+    expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
+  });
+
+  describe("S9 再開の候補と破棄の後", () => {
+    function sceneRunCandidate(
+      runId: string,
+      scopeJson: { folderId: string; sceneIds: string[] },
+      availability: ChronicleTaskResumeCandidate["availability"] = "blocked",
+    ): ChronicleTaskResumeCandidate {
+      return { ...recoveryCandidate(runId, availability), scopeJson };
+    }
+
+    it("場面 1 つの候補は題、消えた場面は削除済み、フォルダの候補は今のまま", async () => {
+      useChronicleExtractionStore.getState().setRecoveryCandidates(SCOPE_A, [
+        sceneRunCandidate("run-scene", {
+          folderId: "folder-a",
+          sceneIds: ["scene-a"],
+        }),
+        sceneRunCandidate("run-gone", {
+          folderId: "folder-a",
+          sceneIds: ["scene-gone"],
+        }),
+        sceneRunCandidate("run-folder", {
+          folderId: "folder-a",
+          sceneIds: ["scene-a", "scene-b"],
+        }),
+      ]);
+      renderDialog();
+      const rowText = (runId: string) =>
+        screen.getByTitle(`${runId} · 2026-08-10T00:00:00.000Z`).textContent;
+      expect(rowText("run-scene")).toContain("場面：第一場");
+      expect(rowText("run-gone")).toContain("場面（削除済み）");
+      expect(rowText("run-folder")).toContain("folder-a ·");
+    });
+
+    async function discard(
+      candidate: ChronicleTaskResumeCandidate,
+    ): Promise<void> {
+      useChronicleExtractionStore
+        .getState()
+        .setRecoveryCandidates(SCOPE_A, [candidate]);
+      extractionMocks.discardChronicleTaskResumeCandidate.mockImplementation(
+        async () => {
+          useChronicleExtractionStore
+            .getState()
+            .setRecoveryCandidates(SCOPE_A, []);
+          return { runId: candidate.runId };
+        },
+      );
+      renderDialog();
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: `中断Runを破棄 ${candidate.runId}`,
+        }),
+      );
+      await waitFor(() =>
+        expect(toastMocks.success).toHaveBeenCalledWith(
+          "中断した抽出を破棄しました。新しい解析を開始できます。",
+        ),
+      );
+    }
+
+    it("場面 1 つの抽出を破棄すると、その場面（開いていなくても）が選ばれ、場面として始まる", async () => {
+      seedTree("scene-b");
+      await discard(
+        sceneRunCandidate("run-scene", {
+          folderId: "folder-a",
+          sceneIds: ["scene-a"],
+        }),
+      );
+      expect(screen.getByRole("combobox")).toHaveValue(sceneA);
+      expect(screen.getByRole("option", { name: "場面：第一場" })).toBeTruthy();
+      pressAnalyze();
+      await waitFor(() =>
+        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
+          1,
+        ),
+      );
+      expect(startCall()).toEqual(
+        expect.objectContaining({
+          folderId: "folder-a",
+          sceneIds: ["scene-a"],
+          sceneScopeMode: "requested-direct-children",
+        }),
+      );
+    });
+
+    it("場面が消えた・フォルダの外へ移された場合は未選択", async () => {
+      useTreeStore.setState({
+        nodes: useTreeStore
+          .getState()
+          .nodes.map((n) =>
+            n.id === "scene-a" ? { ...n, parentId: null } : n,
+          ),
+      });
+      await discard(
+        sceneRunCandidate("run-scene", {
+          folderId: "folder-a",
+          sceneIds: ["scene-a"],
+        }),
+      );
+      expect(screen.getByRole("combobox")).toHaveValue("");
+    });
+
+    it("フォルダの抽出（場面が複数）は今までどおりフォルダ", async () => {
+      await discard(
+        sceneRunCandidate("run-folder", {
+          folderId: "folder-a",
+          sceneIds: ["scene-a", "scene-b"],
+        }),
+      );
+      expect(screen.getByRole("combobox")).toHaveValue("folder-a");
+    });
+
+    it("配下の場面がその 1 つだけのフォルダは、場面 1 つの形でもフォルダに戻す", async () => {
+      useTreeStore.setState({
+        nodes: useTreeStore.getState().nodes.filter((n) => n.id !== "scene-b"),
+      });
+      await discard(
+        sceneRunCandidate("run-single", {
+          folderId: "folder-a",
+          sceneIds: ["scene-a"],
+        }),
+      );
+      expect(screen.getByRole("combobox")).toHaveValue("folder-a");
+    });
   });
 });
