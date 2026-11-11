@@ -343,20 +343,27 @@ fixture を詰め直して 512 に戻すと dataset hash が動く（fixture は
   character の形は fixture の P が 2×追加場面であることを断言する（P が 0 に落ちると別の床で通るため）。値は `measure_the_floor`（ignore の測定、`CQ_FLOOR_SHAPE`）の二分探索で取り直した（仮実装の値は写していない）。
 - `input.rs`：admission の rows、診断の slot 23（観測・失敗・overflow）、plan（P の文を含む）、行の上限の拒否。
 
-### 検証の結果（2026-11-12、commit の時点）
+### 検証の結果（2026-11-12、独立レビューの指摘を直した commit の時点）
 
-- `cargo test -p grimodex-db --lib` 全件：**2,667 passed、0 failed、57 ignored**。`cargo clippy -p grimodex-db --all-targets -- -D warnings`：通る。
-- `scripts/nir1-c-query-worker-ci.sh lifecycle`：26 case の `test result: ok`（終了コード 0）。registry33 は shared 73、admitted 508 で通る。
+- `cargo test -p grimodex-db --lib` 全件：**2,668 passed、0 failed、58 ignored**。`cargo clippy -p grimodex-db --all-targets -- -D warnings`：通る。
+- `cargo test -p grimodex-db --lib --features nir1-material-diagnostics -- nir1_graph::input nir1_graph_memory_diagnostics nir1_capacity principal_rows`：**69 passed、0 failed、1 ignored**
+  （診断の slot 23 と 24 個の配列の試験 `observed_a3_keeps_admission_and_fixed_sql_slots`・`query_stage_observation_preserves_missing_timings_and_failure_flags`、plan の試験を含む）。
+  feature 付きの `cargo clippy` は、本 PR が触っていない関数（dead code、引数の数）の 7 件で落ちる。基点では取り直していない。
+- `scripts/nir1-c-query-worker-ci.sh lifecycle`：26 case の `test result: ok`（終了コード 0）。registry33 は shared 75、admitted 510 で通る。
 - Q512（実 worker。lifecycle の外なので、同じ手順〔`nir1-material-capacity fixture`、worker の build、2 つの ignored test〕を手で実行）：
-  `native_worker_returns_canonical_512_a3_eligible_seed_local_graph` は shared 139、admitted 388 で通る。
-  `native_worker_refuses_exact_2049_seed_local_unrelated_reverse_index_edges` は candidate_rows 1,663（2＋1,661）、admitted 1,966 で `disclosure-record-limit` を返す。
+  `native_worker_returns_canonical_512_a3_eligible_seed_local_graph` は shared 141、admitted 390 で通る。
+  `native_worker_refuses_exact_2049_seed_local_unrelated_reverse_index_edges` は candidate_rows 1,661（2＋1,659）、shared 141 で `disclosure-record-limit` を返す。
   既定の lane 全体（`nir1-c-query-worker-ci.sh` の引数なし）と practical-retention は実行していない。
-- `fnm exec --using=22 pnpm -s verify:quality`：通る（終了コード 0）。
-- 床の 979／633／491 は in-process（worker の構成〔`worker_reader`、`query_for_worker_with_maintenance_deadline`〕を同じ process で動かした値。admission の文と式は worker と同じコード）。実 worker の測定は次の節。
+- `fnm exec --using=22 pnpm -s verify:quality`：@@VQ@@
+- 床の 978／632／491 は in-process（worker の構成〔`worker_reader`、`query_for_worker_with_maintenance_deadline`〕を同じ process で動かした値。admission の文と式は worker と同じコード）。bare の 978／979 は実 worker でも取り直した（次の節）。
+- **P の文の SQL の VM 命令数**（in-process、floor の形。`measure_the_principal_rows_statement_steps`〔ignore〕。progress handler を 1 命令ごとに呼んだ回数）：
+  bare の 978 場面で 36,224 命令（P＝0）、全部 character の 491 場面で 23,075 命令（P＝974）。binding の COUNT は 2,948／1,487 命令。P の文は binding 1 行あたり約 37〜47 命令（2 つの JSON の検査と 2 回の主キーの seek）で、
+  `QUERY_SQL_STEPS`（600,000）の約 6%（bare の 978 場面）。1 query で足す分はこの 1 文だけ。
 
 ### 実 worker の測定（2026-11-12、dev の実 worker、PR の前）
 
-dev 枝 `claude/dev-cquery-charge-actual-measure`（`ff2d4f81`＝本 DR の commit `3e3d2c75`＋測定 harness `274a56da` の cherry-pick。製品コードは変えず、push・PR なし）。記録：
+dev 枝 `claude/dev-cquery-charge-actual-measure`（`ff2d4f81`＝本 DR の最初の commit〔rebase 前の `3e3d2c75`〕＋測定 harness `274a56da` の cherry-pick。製品コードは変えず、push・PR なし）。
+**この節の測定は、projects と query Scene を×1 の課金にした最初の commit のもの**（bare の床が 979）。その後、独立レビューの指摘で両方を×2 にした（bare の床は 978）ので、bare の床だけ実 worker で取り直した（下の「取り直し」）。ほかの値（folder＋note・character の床、p4 の 352／353、時間の対照、P の文の単独の時間）は、行の課金が +2 だけ違い、読む行・bytes・時間は同じなので取り直していない。記録：
 `fusion-eval-data/design-notes/db-connection-2026-11-07/drift-measure/cquery-charge-actual-2026-11-12/results.md`（raw、集計、binary の sha256、build log）。
 
 - **床（1 Revision。N は available、N＋1 は型付きの拒否 `candidate-record-limit`。worker は abort せず frame まで進んだ。各 3 回同一）**：bare **979／980**、folder＋note **633／634**、character（P＝2×追加場面）**491／492**。in-process の二分探索の値と一致。
@@ -368,6 +375,7 @@ dev 枝 `claude/dev-cquery-charge-actual-measure`（`ff2d4f81`＝本 DR の comm
   A-β の方が約 5 ms 短かったが、追加の文が速くなる理由は無いので、binary 間のばらつきの範囲と読み、追加の文のコストは A／B の対照からは分離できていない（DR-CQA-6 の対照にも説明できない数 ms の差がある）。
   追加の文だけの時間は下の「P の文の単独の時間」で別に測った。
   DR-CQA-6 の対照（loadavg 2.3〜4.2）では両腕とも 6／16 が時間切れだった。時間の余裕が無い形は load しだいで 100 ms に当たる点は A-α と同じで、本 DR は変えていない。
+- **取り直し（bare の床。dev 枝 `claude/dev-cquery-charge-actual-measure2`＝製品の commit `d601bad3`＋`274a56da` の cherry-pick〔`9904bad5`〕）**：bare は **978 が available（Q 高水位 4,198,623 B、worker 内 49〜50 ms）、979 が型付きの拒否 `candidate-record-limit`**（各 3 回同一。worker は abort せず frame まで進んだ）。in-process の二分探索の値（978）と一致。
 - **P の文の単独の時間**（release、4 Revision の 352 場面の project、200 回の中央値。dev 枝の `cq_principal_rows_statement_cost`、`p-statement.jsonl`）：
   principal が reader だけなら 0.15 ms、全部 character（P＝690）なら 0.44 ms（binding の COUNT は 0.016 ms）。期限の余裕（約 19 ms）に対して小さい。
 - 限界：3 形の床だけ（半分だけ character・UUID・長い title は in-process の dev の測定のみ）。時間の対照は静かな時間帯の 1 回。principal の分布は実データが無く測れていない。
