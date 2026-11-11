@@ -280,6 +280,7 @@ requirements:
       - electron/main/narrativeMaintenance.review-fixes.test.ts
       - electron/main/narrativeMaintenance.reacceptance.test.ts
       - electron/main/narrativeMaintenance.reacceptance.wire.test.ts
+      - electron/main/narrativeMaintenance.preemptBackoff.test.ts
       - electron/main/narrativeMaintenance.wiring.test.ts
       - electron/main/narrativeMaintenance.electronRoute.test.ts
       - scripts/quality/narrative-maintenance-boundary-rule.mjs
@@ -1375,6 +1376,7 @@ requirements:
       - electron/main/narrativeMaintenance.review-fixes.test.ts
       - electron/main/narrativeMaintenance.reacceptance.test.ts
       - electron/main/narrativeMaintenance.reacceptance.wire.test.ts
+      - electron/main/narrativeMaintenance.preemptBackoff.test.ts
       - electron/main/narrativeMaintenance.wiring.test.ts
       - electron/main/narrativeMaintenance.electronRoute.test.ts
       - electron/main/narrativeMaintenanceBootstrap.ts
