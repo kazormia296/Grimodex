@@ -3226,6 +3226,178 @@ mod tests {
         assert_eq!(total, 25);
         assert_eq!(unavailable, 7);
     }
+
+    #[test]
+    fn the_extension_entries_keep_the_base_loops_shapes_for_valid_and_broken_rows() {
+        let db = migrated_db();
+        seed_many_scenes(&db, 8);
+        db.with_conn(|conn| {
+            conn.execute("PRAGMA foreign_keys = OFF", [])?;
+            conn.execute("PRAGMA ignore_check_constraints = ON", [])?;
+            let ids: Vec<String> = conn
+                .prepare(
+                    "SELECT scene_id FROM narrative_scene_scope_bindings
+                      WHERE project_id = 'p1' AND scene_id LIKE 'm%' ORDER BY scene_id",
+                )?
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            conn.execute("UPDATE narrative_scene_scope_bindings SET query_identity_json = 'not json' WHERE scene_id = ?1", params![ids[0]])?;
+            conn.execute("UPDATE narrative_scene_scope_bindings SET source_token = 'sha256:00' WHERE scene_id = ?1", params![ids[1]])?;
+            conn.execute("UPDATE narrative_scene_scope_bindings SET version = 'x' WHERE scene_id = ?1", params![ids[2]])?;
+            conn.execute("UPDATE narrative_scene_scope_bindings SET scene_incarnation_id = 1.5 WHERE scene_id = ?1", params![ids[3]])?;
+            conn.execute("UPDATE narrative_scene_scope_bindings SET audience_json = x'00ff10' WHERE scene_id = ?1", params![ids[4]])?;
+            conn.execute("UPDATE tree_nodes SET node_type = 'note' WHERE id = ?1", params![ids[5]])?;
+            conn.execute("DELETE FROM tree_nodes WHERE id = ?1", params![ids[6]])?;
+            Ok(())
+        })
+        .expect("corrupt rows");
+        let entries = db
+            .with_read_transaction(|conn| {
+                let mut entries = Vec::new();
+                read_scope_extension_entries(conn, "p1", false, |entry| {
+                    entries.push(entry);
+                    Ok(())
+                })?;
+                Ok(entries)
+            })
+            .expect("entries");
+        // The per-row values that are generated (incarnation id, source token)
+        // are read back with plain SQL; every other value, and the shape of
+        // each expected entry, is written out by hand from the base loop
+        // (`7edc29ba`): a binding is `serde_json::to_value(binding)`, a row
+        // that fails a check is `{sceneId, status: "unavailable", rawDigest}`
+        // with `rawDigest` the canonical digest of the 13-column raw row.
+        let generated = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT scene_id, CAST(scene_incarnation_id AS TEXT), source_token
+                       FROM narrative_scene_scope_bindings ORDER BY scene_id",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .expect("generated values");
+        assert_eq!(generated.len(), 9);
+        let generated_of = |scene_id: &str| {
+            generated
+                .iter()
+                .find(|(id, _, _)| id == scene_id)
+                .map(|(_, incarnation, token)| (incarnation.clone(), token.clone()))
+                .expect("scene row")
+        };
+        let query_identity_text = r#"{"timeline":{"kind":"unresolved","reason":"legacy-axis-unknown"},"worldline":{"kind":"unresolved","reason":"legacy-axis-unknown"},"narrativeLayer":{"kind":"unresolved","reason":"legacy-axis-unknown"}}"#;
+        let material_constraint_text = r#"{"timeline":{"kind":"any"},"worldline":{"kind":"any"},"narrativeLayer":{"kind":"any"}}"#;
+        let reader_text = r#"{"kind":"reader"}"#;
+        let unavailable = |scene_id: &str, overrides: &[(&str, Value)], scene_owned: i64| {
+            let (incarnation, token) = generated_of(scene_id);
+            let mut raw = json!({
+                "sceneId": {"type": "text", "value": scene_id},
+                "sceneIncarnationId": {"type": "text", "value": incarnation},
+                "compatibilityMarker": {"type": "text", "value": "unknown"},
+                "queryIdentity": {"type": "text", "value": query_identity_text},
+                "materialConstraint": {"type": "text", "value": material_constraint_text},
+                "knowledgeHolder": {"type": "text", "value": reader_text},
+                "version": {"type": "integer", "value": 1},
+                "audience": {"type": "text", "value": reader_text},
+                "sourceToken": {"type": "text", "value": token},
+                "updatedAt": {"type": "text", "value": "2026-09-13T00:00:00.000Z"},
+                "sceneOwned": {"type": "integer", "value": scene_owned},
+                "knowledgeHolderOwned": {"type": "integer", "value": 0},
+                "audienceOwned": {"type": "integer", "value": 0},
+            });
+            for (key, value) in overrides {
+                raw[*key] = value.clone();
+            }
+            json!({
+                "sceneId": scene_id,
+                "status": "unavailable",
+                "rawDigest": grimodex_core::canonical_json_digest(&raw).expect("raw digest"),
+            })
+        };
+        let binding = |scene_id: &str| {
+            let (incarnation, token) = generated_of(scene_id);
+            json!({
+                "schemaVersion": 1,
+                "projectId": "p1",
+                "sceneId": scene_id,
+                "sceneIncarnationId": incarnation,
+                "compatibilityMarker": "unknown",
+                "queryIdentity": {
+                    "timeline": {"kind": "unresolved", "reason": "legacy-axis-unknown"},
+                    "worldline": {"kind": "unresolved", "reason": "legacy-axis-unknown"},
+                    "narrativeLayer": {"kind": "unresolved", "reason": "legacy-axis-unknown"},
+                },
+                "materialConstraint": {
+                    "timeline": {"kind": "any"},
+                    "worldline": {"kind": "any"},
+                    "narrativeLayer": {"kind": "any"},
+                },
+                "knowledgeHolder": {"kind": "reader"},
+                "audience": {"kind": "reader"},
+                "version": 1,
+                "sourceToken": token,
+                "updatedAt": "2026-09-13T00:00:00.000Z",
+            })
+        };
+        let id = |index: usize| format!("m{index:04}-\u{30b7}\u{30fc}\u{30f3}\u{1D4B3}");
+        let expected = vec![
+            // A broken JSON column.
+            unavailable(
+                &id(0),
+                &[(
+                    "queryIdentity",
+                    json!({"type": "text", "value": "not json"}),
+                )],
+                1,
+            ),
+            // A source token that does not match the state.
+            unavailable(
+                &id(1),
+                &[("sourceToken", json!({"type": "text", "value": "sha256:00"}))],
+                1,
+            ),
+            // A text version.
+            unavailable(
+                &id(2),
+                &[("version", json!({"type": "text", "value": "x"}))],
+                1,
+            ),
+            // A REAL written to a TEXT-affinity column is stored as text.
+            unavailable(
+                &id(3),
+                &[(
+                    "sceneIncarnationId",
+                    json!({"type": "text", "value": "1.5"}),
+                )],
+                1,
+            ),
+            // A BLOB in a text column.
+            unavailable(
+                &id(4),
+                &[("audience", json!({"type": "blob", "hex": "00ff10"}))],
+                1,
+            ),
+            // A binding of a note, and one whose Scene is missing.
+            unavailable(&id(5), &[], 0),
+            unavailable(&id(6), &[], 0),
+            // Valid rows.
+            binding(&id(7)),
+            binding("s1"),
+        ];
+        let actual = entries
+            .iter()
+            .map(|entry| serde_json::to_value(entry).expect("entry"))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
 }
 
 #[cfg(test)]
