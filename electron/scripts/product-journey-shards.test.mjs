@@ -193,10 +193,10 @@ async function setupAggregateFixture(t) {
   return { bindings, dependencies, outputDirectory, root, shardDirectories };
 }
 
-test("fixed shards are disjoint and preserve catalog order within all 35 entries", () => {
+test("fixed shards are disjoint and preserve catalog order within all 36 entries", () => {
   assert.deepEqual(
     FIXED_PRODUCT_JOURNEY_SHARDS.map((ids) => ids.length),
-    [6, 4, 2, 6, 6, 7, 4],
+    [6, 4, 3, 6, 6, 7, 4],
   );
   assert.deepEqual(FIXED_PRODUCT_JOURNEY_SHARDS, [
     [
@@ -213,7 +213,11 @@ test("fixed shards are disjoint and preserve catalog order within all 35 entries
       "chat-stream-workspace-switch",
       "agent-stream-workspace-switch",
     ],
-    ["chat-stream-snippet-switch", "chat-stream-codex-switch"],
+    [
+      "chat-stream-snippet-switch",
+      "chat-stream-codex-switch",
+      "chronicle-extract-current-scene-apply-reopen",
+    ],
     [
       "editor-pending-project-switch",
       "mcp-external-write-conflict",
@@ -246,7 +250,7 @@ test("fixed shards are disjoint and preserve catalog order within all 35 entries
       "c2-zc-renderer-mcp-dml-denial",
     ],
   ]);
-  assert.equal(new Set(FIXED_PRODUCT_JOURNEY_SHARDS.flat()).size, 35);
+  assert.equal(new Set(FIXED_PRODUCT_JOURNEY_SHARDS.flat()).size, 36);
   assert.deepEqual(
     new Set(FIXED_PRODUCT_JOURNEY_SHARDS.flat()),
     new Set(catalogIds),
@@ -289,7 +293,7 @@ test("fixed shard runner binds its partition and private artifact directory", as
     received.journeys.map(({ id }) => id),
     FIXED_PRODUCT_JOURNEY_SHARDS[6],
   );
-  assert.equal(received.artifactJourneys.length, 35);
+  assert.equal(received.artifactJourneys.length, 36);
   assert.deepEqual(
     received.requiredJourneyIds,
     FIXED_PRODUCT_JOURNEY_SHARDS[6],

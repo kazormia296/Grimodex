@@ -399,6 +399,9 @@ rules:
       - electron/native/grimodex-node/src/nir1_graph_reach_tests.rs
       - electron/native/grimodex-node/src/nir1_history_turns_tests.rs
       - electron/native/grimodex-node/src/nir1_graph_activation_tests.rs
+      - electron/scripts/chronicle-extraction-product-journey.mjs
+      - electron/scripts/chronicle-edited-apply-product-journey.mjs
+      - electron/scripts/chronicle-current-scene-product-journey.mjs
       - electron/scripts/codex-entity-relation-product-journey.mjs
       - electron/scripts/nir1-scene-scope-projection-product-journey.mjs
       - electron/scripts/product-journey-catalog.mjs
@@ -413,6 +416,7 @@ rules:
       - electron/shared/nir1EntityRelationIpcContract.test.ts
       - scripts/chronicle-extraction-product-journey.test.mjs
       - scripts/chronicle-edited-apply-product-journey.test.mjs
+      - scripts/chronicle-current-scene-product-journey.test.mjs
       - scripts/codex-entity-relation-product-journey.test.mjs
       - scripts/nir1-scene-scope-projection-product-journey.test.mjs
       - scripts/product-journey-backlog.test.mjs

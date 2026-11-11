@@ -957,6 +957,7 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "--test",
         "scripts/chronicle-extraction-product-journey.test.mjs",
         "scripts/chronicle-edited-apply-product-journey.test.mjs",
+        "scripts/chronicle-current-scene-product-journey.test.mjs",
         "scripts/codex-entity-relation-product-journey.test.mjs",
         "scripts/nir1-scene-scope-projection-product-journey.test.mjs",
         "scripts/product-journey-backlog.test.mjs",

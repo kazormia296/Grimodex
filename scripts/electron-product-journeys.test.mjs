@@ -716,6 +716,7 @@ test("package.json exposes the runner and canonical product journey contracts", 
   for (const file of [
     "scripts/chronicle-extraction-product-journey.test.mjs",
     "scripts/chronicle-edited-apply-product-journey.test.mjs",
+    "scripts/chronicle-current-scene-product-journey.test.mjs",
   ]) {
     assert.ok(
       packageJson.scripts["test:product-journey-contracts"]

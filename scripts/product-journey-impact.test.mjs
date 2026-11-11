@@ -74,6 +74,7 @@ test("the current catalog has complete journey, contract, and interaction covera
     "snapshot-native-roundtrip",
     "chronicle-extract-review-apply-reopen",
     "chronicle-extract-edit-approve-apply-reopen",
+    "chronicle-extract-current-scene-apply-reopen",
     "codex-entity-relation-review-apply-reopen",
     "nir1-scene-scope-projection-acceptance",
     ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(

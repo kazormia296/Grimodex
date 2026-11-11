@@ -320,6 +320,9 @@ export async function analyzeChronicleAndWaitForProposals({
   dialog,
   projectId,
   directory,
+  // Scene-scoped journeys expect the first press of 解析 to start the Run. When
+  // set, a visible start notice (SSE/1 S7/S8) fails the wait and names the kinds.
+  failOnStartNotices = false,
 }) {
   const runSql =
     "SELECT id AS runId FROM narrative_extraction_runs WHERE project_id = ? AND surface_path_id = ? ORDER BY created_at, id";
@@ -345,7 +348,26 @@ export async function analyzeChronicleAndWaitForProposals({
           const current = (
             await rows(harness, page, runSql, [projectId, "chronicle.extract"])
           ).filter((run) => !previousIds.has(run.runId));
-          if (current.length === 0) return false;
+          if (current.length === 0) {
+            if (failOnStartNotices) {
+              const kinds = await dialog
+                .locator('[data-testid^="chronicle-extract-notice-"]')
+                .evaluateAll((nodes) =>
+                  nodes.map((node) =>
+                    node
+                      .getAttribute("data-testid")
+                      .replace(/^chronicle-extract-notice-/u, ""),
+                  ),
+                );
+              if (kinds.length > 0) {
+                return {
+                  failed: true,
+                  message: `unexpected start notices before the Run: ${kinds.join(", ")}`,
+                };
+              }
+            }
+            return false;
+          }
           if (current.length !== 1) {
             diagnostic = {
               ...diagnostic,

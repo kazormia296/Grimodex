@@ -405,6 +405,7 @@
             "electron/scripts/product-journey-shards.test.mjs",
             "scripts/chronicle-extraction-product-journey.test.mjs",
             "scripts/chronicle-edited-apply-product-journey.test.mjs",
+            "scripts/chronicle-current-scene-product-journey.test.mjs",
             "scripts/codex-entity-relation-product-journey.test.mjs",
             "scripts/nir1-scene-scope-projection-product-journey.test.mjs",
             "scripts/generate-licenses.test.mjs",

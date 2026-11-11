@@ -17,6 +17,7 @@ import { isDeepStrictEqual } from "node:util";
 import { rootDir } from "./build.mjs";
 import { createChronicleExtractionJourney } from "./chronicle-extraction-product-journey.mjs";
 import { createChronicleEditedApplyJourney } from "./chronicle-edited-apply-product-journey.mjs";
+import { createChronicleCurrentSceneJourney } from "./chronicle-current-scene-product-journey.mjs";
 import {
   PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_CATALOG_DIGEST,
@@ -41,6 +42,8 @@ const ARTIFACT_DIR_ENV = "GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR";
 const DIGEST_ENV = "GRIMODEX_PRODUCT_JOURNEY_CATALOG_DIGEST";
 const CHRONICLE_ID = "chronicle-extract-review-apply-reopen";
 const CHRONICLE_EDITED_ID = "chronicle-extract-edit-approve-apply-reopen";
+const CHRONICLE_CURRENT_SCENE_ID =
+  "chronicle-extract-current-scene-apply-reopen";
 const REPORT_FIELDS = [
   "status",
   "catalogDigest",
@@ -57,7 +60,7 @@ const REPORT_FIELDS = [
 ];
 
 if (
-  IDS.length !== 35 ||
+  IDS.length !== 36 ||
   PRODUCT_JOURNEY_CATALOG.some(
     (entry) =>
       entry.required === false || entry.acceptanceRole === "diagnostic",
@@ -80,7 +83,11 @@ export const FIXED_PRODUCT_JOURNEY_SHARDS = Object.freeze([
     "chat-stream-workspace-switch",
     "agent-stream-workspace-switch",
   ]),
-  Object.freeze(["chat-stream-snippet-switch", "chat-stream-codex-switch"]),
+  Object.freeze([
+    "chat-stream-snippet-switch",
+    "chat-stream-codex-switch",
+    "chronicle-extract-current-scene-apply-reopen",
+  ]),
   Object.freeze([
     "editor-pending-project-switch",
     "mcp-external-write-conflict",
@@ -128,7 +135,7 @@ if (
   FIXED_PRODUCT_JOURNEY_SHARDS.length !== 7 ||
   FIXED_PRODUCT_JOURNEY_SHARDS.some(
     (ids, index) =>
-      ids.length !== [6, 4, 2, 6, 6, 7, 4][index] ||
+      ids.length !== [6, 4, 3, 6, 6, 7, 4][index] ||
       !isDeepStrictEqual(
         ids,
         IDS.filter((id) => ids.includes(id)),
@@ -219,7 +226,12 @@ export async function runFixedProductJourneyShard({
               configureWorkspace,
               evidenceDirectory: artifactDirectory,
             })
-          : journey,
+          : journey.id === CHRONICLE_CURRENT_SCENE_ID
+            ? createChronicleCurrentSceneJourney({
+                configureWorkspace,
+                evidenceDirectory: artifactDirectory,
+              })
+            : journey,
   );
   same(
     journeys.map(({ id }) => id),
