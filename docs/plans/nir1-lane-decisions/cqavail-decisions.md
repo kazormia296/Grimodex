@@ -112,7 +112,11 @@ query の Q 高水位は 489 場面と 652 場面で同じ 3,814,832 B（22.74%�
 - 内訳：admit の回数・種類・値、評価した Revision、候補 page、frame の bytes、Q 高水位は両腕で同じで、読む量は増えていない。scope の load の段ごとの時間にも差は無かった。
   違ったのは allocator の fragment の数（QUERY_DONE の時点で A-α 362〜402、基点 267〜295）。場面ごとの小さい String が、固定の Q heap に散って残り、その後の確保が遅くなったと見ている（推測）。
 - id を 1 つの buffer に写す形（診断用の変形）では、fragment は 344〜353、query_ms の中央値は 84.5 ms（基点 83、最初の実装 90.5）で、増えの約 6 ms が戻った。製品の形はこれに合わせた。
-  残りの約 +1.5 ms と fragment の差は説明できていない。製品の形での取り直しの結果は下の追記に書く。
+  残りの約 +1.5 ms と fragment の差は説明できていない。
+- 製品の形（`&nodes` から 1 つの buffer に写してから `drop(nodes)`）で取り直した（基点と交互に各 8 本、loadavg 2.3〜4.2）：時間切れは 352 場面で 3／8 対 2／8、337 場面で 3／8 対 4／8（計 6／16 対 6／16）。
+  worker 内 query_ms の中央値は 87 対 83 ms、89.5 対 88.5 ms で、差は run のばらつきと同程度。fragment の数は基点より約 60〜70 多いまま（原因は未確認）。
+  1 Revision の床は製品の形でも 652 で available、653 で `candidate-record-limit`、Q 高水位は同じ 3,814,832 B。
+- 4 Revision・約 340〜350 場面の形は、基点でも 100 ms の期限に数割の確率で当たる（設計の「時間の壁」。本変更の範囲外）。
 - 記録：`fusion-eval-data/design-notes/db-connection-2026-11-07/drift-measure/cquery-binding-join-2026-11-11/results.md`（「対照」「対照 2」「内訳」の節）。
 
 ### 変わらない点
