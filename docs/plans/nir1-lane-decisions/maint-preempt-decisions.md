@@ -175,3 +175,49 @@
   なる）。修正前は同じ場面で workspace 全体が recovery になっていた。
 - P3-4: manual の経路（Native の manual maintenance の permit）も同じ adapter を通るので、成功の後に所有が早く外れる。
   成功ならどのみち release するので害は無いが、DR-MP-2 の対象（automatic と manual の両方の permit）に含まれる。
+
+## DR-MP-9 C2-ZC の journey の Run の順で、idle checkpoint の位置を問わない（2026-11-11）
+
+- きっかけ: PR #859（DR-MP-8、maintenance の preempt の backoff）の ci.yml run 42972611053 で、
+  `c2-zc-canonical-authority-cutover` の journey が、Run の順の検査 `assertC2ZcRestoreLifecycleOrder`
+  （`electron/scripts/c2zc-canonical-product-journey.mjs`）の strict の枝で落ちた。観測した delta は
+  「idle Freshness → Verify → Rebuild → Verify」。今の検査が許す順は「Verify → Rebuild → 確認 Verify → Freshness」と、
+  #600 で足した「Verify → idle Freshness → Rebuild → 確認 Verify」の 2 つだけだった。
+  落ちた run の診断 DB の `narrative_extraction_runs` では、idle checkpoint（`fromSequenceExclusive = throughSequenceInclusive = 3`、
+  outcome の `kind = current-epoch-idle-checkpoint`）が、preempt された Verify 3 件（`NEX_MAINTENANCE_CONNECTION_PREEMPTED`。
+  検査が数えない）の間に commit され、その後に Verify → Rebuild → 確認 Verify が続いていた。
+- 根拠（この順は製品の不変条件ではない。製品コードは変えていない）:
+  - Rust の `select_idle_checkpoint_project`（`incremental_freshness.rs`）は、Verify が済んだことを条件にしない。
+    idle checkpoint は feed の head に cursor が追いついた project に scheduler が打つだけの Freshness の Run で、
+    Verify・Rebuild の queue が流れている間にも commit されうる。
+  - cutover の readiness（`c2z_preparation.rs`）が見るのは、backfill → Rebuild → Verify だけ。idle checkpoint は見ない。
+  - [narrative-c2zc-canonical-cutover-impact-matrix.md](../narrative-c2zc-canonical-cutover-impact-matrix.md) の C2ZC-P11 は、
+    idle checkpoint を cutover の証拠でも Generic の publisher でもないとしている（`isC2ZcGenericFreshnessProducer` も
+    idle を producer に数えない）。
+  - #600 も同じ理由で、idle を Rebuild の前の枠に 1 つだけ許す拡張を一度している。今回はその枠を一般化するだけ。
+- 承認（2026-11-11、ユーザー）: 「C2-ZC の journey の Run の順の検査で、idle checkpoint に限り位置を問わないことにします。
+  Verify→Rebuild→確認 Verify の順、E1 への束縛、coverage、idle でない Freshness は最後だけ、marker は全 Run の後、は残します。」
+  この文言の外には広げない。
+- 残す検査（どれも変えない）:
+  - 数える Run はちょうど 4 件（Verify／Rebuild／確認 Verify と Freshness 1 件）。全件 completed。
+  - Verify → Rebuild → 確認 Verify の順（idle を取り除いた 3 件で見る）。first と confirmation が別の Run。
+  - idle でない Freshness は最後の 1 件だけ。先頭・途中に来る順は拒否のまま。
+  - Run の timestamp（`createdAt ≤ startedAt ≤ completedAt`、前の Run の `completedAt` ≤ 次の `createdAt`）。位置を問わないのは種類の順だけで、
+    Run 同士の重なりは今までどおり拒否する。
+  - 全 Run の E1（restore／current Semantic Epoch）への束縛、first／confirmation Verify の report と coverage と Semantic Index の 0 件、
+    fixture の Application gap、`expectedRestoreLifecycle`、Rust の Verify outcome との一致。
+  - marker は全 Run の最後の完了より後（`marker must be strictly after Freshness completion`。最後の Run が idle のときも同じ）。
+- 変わる点: 受入れが受け付ける順が増える。idle checkpoint が、先頭、Verify と Rebuild の間、Rebuild と確認 Verify の間、最後のどこに
+  あってもよい。idle でない Freshness が Verify／Rebuild より前に来る順は、拒否のまま。
+- 変えない点: 製品コード、fixture、digest（fixture の manifest と、Run の projection の key は触らない）、非 strict の枝。
+  非 strict の枝（`expectedRestoreLifecycle` も marker も無いときの寛い検査）は journey からは呼ばれない（journey は常に strict）ので、
+  範囲外とし、変えない（承認の文言も strict の検査についてのもの）。
+- 試験（`scripts/c2zc-product-journeys.test.mjs`）:
+  - 受理: idle が先頭、Verify と Rebuild の間、Rebuild と確認 Verify の間、最後（既存の 1 件〔Rebuild の前〕も残す）。
+  - 拒否: idle でない Freshness が先頭・途中、Verify → Rebuild → 確認 Verify の順の崩れ（idle の位置ごと）、Freshness が 2 件、
+    marker が Run の前や最後の Run の完了と同時、timestamp の重なり、E1 の束縛違い、coverage 違い。
+  - 既存の試験は変えずにすべて通る。落ちた run の診断 DB の Run の列で、広げた検査が受理することを、オフラインの一回きりで確かめた
+    （fixture や試験には DB を入れていない）。
+- 限界: これは受入れの検査を実機の観測に合わせるだけで、idle の位置が変わった理由（preempt された Verify の再試行の間に
+  scheduler の idle checkpoint が先に commit された）を直すものではない。A′（DR-MP-8）が元の 60 s の settle を直すかは、
+  実機では未確認のまま。journey が緑になることは、A′ の効果の証拠ではない。
