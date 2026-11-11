@@ -354,7 +354,7 @@ fixture を詰め直して 512 に戻すと dataset hash が動く（fixture は
   `native_worker_returns_canonical_512_a3_eligible_seed_local_graph` は shared 141、admitted 390 で通る。
   `native_worker_refuses_exact_2049_seed_local_unrelated_reverse_index_edges` は candidate_rows 1,661（2＋1,659）、shared 141 で `disclosure-record-limit` を返す。
   既定の lane 全体（`nir1-c-query-worker-ci.sh` の引数なし）と practical-retention は実行していない。
-- `fnm exec --using=22 pnpm -s verify:quality`：@@VQ@@
+- `fnm exec --using=22 pnpm -s verify:quality`：通る（終了コード 0。最終の commit で取り直した）。
 - 床の 978／632／491 は in-process（worker の構成〔`worker_reader`、`query_for_worker_with_maintenance_deadline`〕を同じ process で動かした値。admission の文と式は worker と同じコード）。bare の 978／979 は実 worker でも取り直した（次の節）。
 - **P の文の SQL の VM 命令数**（in-process、floor の形。`measure_the_principal_rows_statement_steps`〔ignore〕。progress handler を 1 命令ごとに呼んだ回数）：
   bare の 978 場面で 36,224 命令（P＝0）、全部 character の 491 場面で 23,075 命令（P＝974）。binding の COUNT は 2,948／1,487 命令。P の文は binding 1 行あたり約 37〜47 命令（2 つの JSON の検査と 2 回の主キーの seek）で、

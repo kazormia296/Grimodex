@@ -2542,9 +2542,9 @@ fn measure_the_principal_rows_statement_steps() -> Result<()> {
                         seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         false
                     }),
-                );
+                )?;
                 let value = conn.query_row(sql, [PROJECT], |row| row.get::<_, i64>(0));
-                conn.progress_handler(1, None::<fn() -> bool>);
+                conn.progress_handler(1, None::<fn() -> bool>)?;
                 Ok((counter.load(std::sync::atomic::Ordering::Relaxed), value?))
             };
             let (p_steps, p) =
