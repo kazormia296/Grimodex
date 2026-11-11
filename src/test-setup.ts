@@ -1,5 +1,9 @@
-import "@/lib/i18n";
+import { ensureLocale } from "@/lib/i18n";
 import { vi } from "vitest";
+
+// 製品は英語の辞書を後から読む。試験は `changeLanguage("en")` を直接呼ぶものがあるので、
+// 先に入れておく（vitest では locale は fs 読みで、変換の費用はかからない）。
+await ensureLocale("en");
 
 // Mock @tanstack/react-virtual for jsdom (no ResizeObserver / element dimensions)
 vi.mock("@tanstack/react-virtual", () => ({
