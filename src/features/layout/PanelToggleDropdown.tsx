@@ -1,14 +1,29 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { LayoutGrid, ChevronDown, Lock, Unlock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useLayoutStore } from "./layoutStore";
 import type { PanelId } from "./panelIds";
-import { PanelHighlightOverlay } from "./PanelHighlightOverlay";
 import { usePanelDropdownPointerDrag } from "./usePanelDropdownPointerDrag";
 import type { ToolWindowPanelId } from "./layoutTypes";
 import { PanelPickerMenuItems } from "./PanelPickerMenuItems";
+
+// 強調の overlay は gsap（+@gsap/react）を使う。メニューでパネル名を指したときにしか
+// 出ないので、起動時には読まず、最初に指したときに読む（LayoutShell の drop-zone の
+// overlay と同じ扱い）。出ていない間は元々 null を返すだけなので、挙動は変わらない。
+const PanelHighlightOverlay = lazy(() =>
+  import("./PanelHighlightOverlay").then((m) => ({
+    default: m.PanelHighlightOverlay,
+  })),
+);
 
 export function PanelToggleDropdown() {
   const { t } = useTranslation();
@@ -180,7 +195,11 @@ export function PanelToggleDropdown() {
           />
         </button>
 
-        <PanelHighlightOverlay panelId={isOpen ? hoveredPanelId : null} />
+        {isOpen && hoveredPanelId && (
+          <Suspense fallback={null}>
+            <PanelHighlightOverlay panelId={hoveredPanelId} />
+          </Suspense>
+        )}
       </div>
 
       {menu && createPortal(menu, document.body)}
