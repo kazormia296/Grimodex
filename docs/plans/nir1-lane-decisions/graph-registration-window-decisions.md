@@ -991,8 +991,11 @@ S（64 MiB）は約 4,800 場面で枯渇し、worker が `handle_alloc_error` �
 
 - **S と Q の peak が下がる。** 設計メモの見積り（C、短い id、`allocated` の A は括弧内）：1b で −11.5 KB/場面（A −8.6 KB。Value 木 2 本が消える）、
   2 で −0.46 KB（A −0.33 KB）、3 で capacity の余りの分 −0.1〜0.14 KB。20,000 場面の C/S は 400% から約 58%（UUID の id で約 66%）の見込み。
-  実測は gate の「memory」に書く（未測定の間は書かない）。S の枯渇の場面数は約 4,800 から約 35,000 に上がる見込みで、**今は abort する形が通るようになる**
-  （通る方向にだけ動く）。それ以外の上限（START_TIMEOUT 30 s、index の build の 180 s、600M steps、query の A3 の 2,048 records）は別の壁として残る。
+  **実測（dev、gate の 5）**：registration の S の高水位（allocated_bytes）は場面あたり約 10.0 KB から約 1.2〜1.3 KB に下がった（約 −88%）。
+  前は 5,004 場面で worker が READY の前に abort し、後は 5,004 場面で S 7.38 MB（11.0%）、20,004 場面でも 27.59 MB（41.1%）で READY した（それ以上は未測定）。
+  query（1 Revision、489 場面）の Q の高水位は 6,508,694 B から 3,814,843 B（load の前の床）へ下がった。
+  **今は abort する形が通るようになる**（通る方向にだけ動く）。それ以外の上限（START_TIMEOUT 30 s、index の build の 180 s、600M steps、
+  query の A3 の 2,048 records）は別の壁として残る。
 - 行ごとの一時（binding の `Value`）は残る。1 行ずつ作って流して捨てるので、peak には入らない。
 
 ### 変わらない点（試験で固定する）
@@ -1041,7 +1044,39 @@ S（64 MiB）は約 4,800 場面で枯渇し、worker が `handle_alloc_error` �
 
 ### gate
 
-実装後に結果を書く（このブランチの docs commit の後に追記する）。
+結果は 2026-11-11（基点 `origin/master` の `7edc29ba` に本 PR の commit を載せたもの）。
+
+1. 新しい試験（`scene_scope.rs` の `tests`。旧の `json!` の形を oracle として置く）：
+   - `the_streamed_extension_digest_equals_the_value_form_for_every_shape`：registry 3 形（通常、空、unicode／escape／astral を含む）×
+     revision 4 値 × source token 3 値 × entry の列 5 形（空、1 件、300 件、escape・制御文字・BMP と astral の文字・UTF-16 順と UTF-8 順の違う key・
+     整数の端〔i64 の最小・最大、u64 の最大〕・null・真偽・入れ子を含む形、その後ろに binding を 40 件足した形）の全組で、新旧の digest が一致する。
+   - `the_streamed_extension_digest_matches_a_pinned_value`：旧の形の digest を固定値（この commit の前に oracle が出した値）と比べる。
+   - `the_extension_digest_of_a_real_project_equals_the_value_form`：実 DB で binding が 1 件、0 件、301 件（unicode の scene id）の 3 形。
+     `read_scope_extension`（collect あり／なし）の digest が、同じ行の entry を旧の形に組んだ digest と一致し、`scene_bindings` が一致する。
+   - `the_extension_digest_equals_the_value_form_with_unavailable_and_explicit_rows`：Explicit の binding（Exact の ref、Character の principal）と、
+     壊れた行 7 種（壊れた JSON、source token の不一致、version が text、REAL と BLOB の列、note への binding、Scene の欠落）を含む 25 行。
+     unavailable の entry が 7 件になること、新旧の digest と `scene_bindings` が一致することを確かめる。
+2. 既存の試験：`cargo test -p grimodex-db --lib` 全件で **2,644 passed、0 failed、56 ignored**（DR-GRW-4 の記録は 2,640 passed。増えた 4 件は上の新しい試験）。
+   `cargo test -p grimodex-core` 全件通過（210 passed ほか）。revision token の golden を持つ
+   `tests/narrative_project_scope_authority_runtime.rs`（22 passed）と `tests/narrative_scope_authority_runtime.rs`（19 passed）も通る。
+   `cargo clippy -p grimodex-db -p grimodex-core --all-targets -- -D warnings`：通る。
+3. worker の実 process：`scripts/nir1-c-query-worker-ci.sh lifecycle`：26 case の `test result: ok`（終了コード 0）。DR-GRW-4 と同じ 26 case。
+4. steps：SQL・bind・行の読み方は変えていない（Rust の処理が減るだけ）。VM steps と progress callback の回数は、既存の steps／callback を固定する試験（全件の中）が通ることで確かめた。
+5. memory：dev で S と Q の高水位を前後で測った（dev 枝 `claude/dev-scope-digest-stream-measure`＝この commit ＋ `ec455fc8` の計装の cherry-pick。
+   記録は `fusion-eval-data/design-notes/db-connection-2026-11-07/drift-measure/scope-digest-stream-2026-11-11/results.md`）。product 形 `p:300000`（1 Revision）に場面を足した実 worker：
+   | 場面 | 前の S 高水位 | 後の S 高水位 |
+   | ---: | --- | --- |
+   | 489 | 5.52 MB（READY） | 1.91 MB（READY） |
+   | 1,004 | 10.66 MB | 2.51 MB |
+   | 4,504 | 46.97 MB | 6.76 MB |
+   | 4,750 | 49.33 MB | 7.07 MB |
+   | 5,004 | abort（READY の前） | 7.38 MB（READY） |
+   | 10,004 | 未測定 | 14.12 MB（READY） |
+   | 20,004 | 未測定 | 27.59 MB（41.1%、READY） |
+   query（489 場面）の Q の高水位：6,508,694 B（38.79%）→ 3,814,843 B（22.74%。load の前の床）。registration の Q 高水位（4,055,206 B）と query の結果（digest を除く全文）は前後で同じ。
+   R4（capacity fixture）形、UUID の id の形、S の claimed−available（C）での判定は未測定。
+6. `fnm exec --using=22 pnpm -s verify:quality`：通る（node の試験 587 pass・0 fail・1 skip、vitest 853 pass、narrative writers ok）。
+7. DR：この文書。
 
 ### やらないこと（別の決定）
 
