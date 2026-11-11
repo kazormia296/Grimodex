@@ -83,7 +83,7 @@ export function EditorRuntimeHost({
         usePhaseStore.getState().setResolutionMode(project.phaseResolutionMode);
       }
       await bootstrapScreenshotWorkspace();
-      applyScreenshotUiState();
+      await applyScreenshotUiState();
       markScreenshotStageReady();
     })();
   }, []);

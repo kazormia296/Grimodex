@@ -12,7 +12,6 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { getScreenshotLanguage } from "./screenshotMode";
-import { SCREENSHOT_SEED_CONTENT } from "./screenshotSeedContent";
 
 export function getScreenshotCaptureId(): string | null {
   try {
@@ -70,7 +69,7 @@ export function clearScreenshotStageReady(): void {
 /**
  * プリセット／パネルに応じて選択・Lit／校閲デモ状態を適用する。
  */
-export function applyScreenshotUiState(): void {
+export async function applyScreenshotUiState(): Promise<void> {
   if (!getScreenshotCaptureId()) return;
 
   const panelId = getScreenshotPanelId();
@@ -107,6 +106,8 @@ export function applyScreenshotUiState(): void {
   if (!needsKouetsuDemo) return;
 
   const now = new Date().toISOString();
+  // 撮影の校閲デモでしか使わない文面なので、起動時には読まず、ここで読む。
+  const { SCREENSHOT_SEED_CONTENT } = await import("./screenshotSeedContent");
   const c = SCREENSHOT_SEED_CONTENT[getScreenshotLanguage()];
   const { lint, annotations } = c;
   useKouetsuStore.setState({
