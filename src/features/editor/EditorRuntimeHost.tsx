@@ -1,3 +1,4 @@
+import { uiLanguageSettled } from "@/lib/i18n";
 import { useEffect } from "react";
 
 import type { RuntimeCapabilities } from "@/runtime/runtimeCapabilities";
@@ -84,6 +85,8 @@ export function EditorRuntimeHost({
       }
       await bootstrapScreenshotWorkspace();
       await applyScreenshotUiState();
+      // 英語の辞書は後から読むので、文言が揃ってから撮影の ready を立てる。
+      await uiLanguageSettled();
       markScreenshotStageReady();
     })();
   }, []);

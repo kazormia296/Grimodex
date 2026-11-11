@@ -124,8 +124,8 @@ describe("useCharCountMilestone", () => {
       { initialProps: { count: 0 } },
     );
     rerender({ count: 1000 });
-    expect(confetti).not.toHaveBeenCalled();
     await vi.dynamicImportSettled();
+    expect(confetti).not.toHaveBeenCalled();
     expect(pulseHighlight).not.toHaveBeenCalled();
   });
 
@@ -136,8 +136,8 @@ describe("useCharCountMilestone", () => {
       { initialProps: { count: 0 } },
     );
     rerender({ count: 1200 });
-    expect(confetti).not.toHaveBeenCalled();
     await vi.dynamicImportSettled();
+    expect(confetti).not.toHaveBeenCalled();
     expect(pulseHighlight).not.toHaveBeenCalled();
   });
 

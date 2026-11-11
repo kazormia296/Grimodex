@@ -147,4 +147,44 @@ describe("changeUiLanguage", () => {
     );
     await changeUiLanguage("ja");
   });
+
+  it("辞書を読めなかったときも切り替え、裏で読み直して、読めたら描き直す", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    try {
+      const {
+        default: i18next,
+        changeUiLanguage,
+        uiLanguageSettled,
+      } = await import("@/lib/i18n");
+      i18next.removeResourceBundle("en", "translation");
+      await i18next.changeLanguage("ja");
+      const add = vi
+        .spyOn(i18next, "addResourceBundle")
+        .mockImplementationOnce(() => {
+          throw new Error("chunk load failed");
+        });
+      const languageChanged = vi.fn();
+      i18next.on("languageChanged", languageChanged);
+
+      await changeUiLanguage("en");
+      await uiLanguageSettled();
+      expect(i18next.language).toBe("en");
+      expect(i18next.hasResourceBundle("en", "translation")).toBe(false);
+      expect(languageChanged).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() =>
+        expect(i18next.hasResourceBundle("en", "translation")).toBe(true),
+      );
+      await vi.waitFor(() => expect(languageChanged).toHaveBeenCalledTimes(2));
+      expect(i18next.language).toBe("en");
+
+      i18next.off("languageChanged", languageChanged);
+      add.mockRestore();
+      await changeUiLanguage("ja");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

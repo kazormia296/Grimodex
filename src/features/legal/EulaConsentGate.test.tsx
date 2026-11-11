@@ -27,16 +27,18 @@ describe("EulaConsentGate", () => {
     dialogModuleLoaded.mockClear();
   });
 
-  it("同意済みなら何も描かず、ダイアログの module も読まない", () => {
+  it("同意済みなら何も描かず、ダイアログの module も読まない", async () => {
     setAcceptedVersion(EULA_VERSION);
     const { container } = render(<EulaConsentGate />);
+    await vi.dynamicImportSettled();
     expect(container.innerHTML).toBe("");
     expect(dialogModuleLoaded).not.toHaveBeenCalled();
   });
 
-  it("設定を読み終えるまでは何も描かない", () => {
+  it("設定を読み終えるまでは何も描かない", async () => {
     useWorkspaceStore.setState({ globalSettings: null } as never);
     const { container } = render(<EulaConsentGate />);
+    await vi.dynamicImportSettled();
     expect(container.innerHTML).toBe("");
     expect(dialogModuleLoaded).not.toHaveBeenCalled();
   });

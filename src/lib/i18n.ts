@@ -51,21 +51,62 @@ export function ensureLocale(language: string): Promise<void> {
 }
 
 let languageRequest = 0;
+let languageChange: Promise<void> = Promise.resolve();
 
-/**
- * 画面の言語を切り替える。辞書を読み終えてから切り替えるので、切替の再描画の時点で
- * 文言が揃っている。読み込み中に別の言語が要求されたら、後の要求だけを適用する。
- * 辞書を読めなかったときも切り替える（fallbackLng の日本語が出る）。
- */
-export async function changeUiLanguage(language: string): Promise<void> {
-  const request = ++languageRequest;
+// 辞書を読めなかったときに、裏でやり直す間隔。
+const LOCALE_RETRY_DELAYS_MS = [1_000, 5_000, 20_000];
+
+async function retryLocale(language: string, request: number): Promise<void> {
+  for (const delay of LOCALE_RETRY_DELAYS_MS) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (request !== languageRequest) return;
+    try {
+      await ensureLocale(language);
+    } catch {
+      continue;
+    }
+    if (request !== languageRequest) return;
+    // 辞書を足しただけでは画面は描き直されないので、同じ言語でも切替を通知する。
+    await i18next.changeLanguage(language);
+    return;
+  }
+}
+
+async function applyUiLanguage(
+  language: string,
+  request: number,
+): Promise<void> {
+  let loaded = true;
   try {
     await ensureLocale(language);
   } catch (error) {
+    loaded = false;
     debugLog.error("i18n", "failed to load locale", errorDetail(error));
   }
   if (request !== languageRequest) return;
   if (i18next.language !== language) await i18next.changeLanguage(language);
+  if (!loaded) void retryLocale(language, request);
+}
+
+/**
+ * 画面の言語を切り替える。辞書を読み終えてから切り替えるので、切替の再描画の時点で
+ * 文言が揃っている。読み込み中に別の言語が要求されたら、後の要求だけを適用する。
+ * 辞書を読めなかったときも切り替え（fallbackLng の日本語が出る）、裏で読み直して、
+ * 読めたら描き直す。
+ */
+export function changeUiLanguage(language: string): Promise<void> {
+  const change = applyUiLanguage(language, ++languageRequest);
+  languageChange = change;
+  return change;
+}
+
+/** 進行中の言語の切替が終わるのを待つ（撮影のように、文言が揃ってから進めたい場面で使う）。 */
+export async function uiLanguageSettled(): Promise<void> {
+  let observed: Promise<void> | null = null;
+  while (observed !== languageChange) {
+    observed = languageChange;
+    await observed;
+  }
 }
 
 export default i18next;
