@@ -105,7 +105,7 @@
     },
     {
       "path": "electron/scripts/product-journey-catalog.mjs",
-      "sha256": "c2c6b8841fefe54e69d009fb698c6ded18b538a88c1e40371f8a811aef2cf617"
+      "sha256": "e2f8986303b6534d8a218e0151248fa4cbbc1b54f26bdb21b3aab86988ab70ca"
     },
     {
       "path": "src/features/chat/chatScopeRegistry.json",
@@ -133,7 +133,7 @@
     },
     {
       "path": "electron/scripts/product-journey-shards.mjs",
-      "sha256": "abe370a69bb3c939f140b828f6a04d742d82f66d571cc1c5dab3fbdb875a68de"
+      "sha256": "0c8aeb047cacad566e72d24bc432b46f98788f26eaa73a826215ba4190b46f65"
     }
   ],
   "fullMemoryRisk": {
@@ -2567,6 +2567,88 @@
     },
     {
       "id": "journey.chronicle-extract-review-apply-reopen.failure",
+      "sources": [
+        2,
+        29
+      ],
+      "basis": "Official backup image and full receipt/diagnostic text snapshots plus1920x1080 RGBA/PNG scanlines/header image under source-selected Xvfb screen. Full-page/HiDPI screenshot growth remains covered by fixtures.uncertainty; no screenshot suppression. Producer separately charges original+whole artifact copy+renderer.png.",
+      "operation": "Construct declared finite source-grounded scenario from candidate sources and directly bound accepted metadata; not a peak or resource receipt",
+      "items": [
+        {
+          "role": "backup",
+          "bytes": "17997824",
+          "inodes": "2"
+        },
+        {
+          "role": "receipt-snapshot",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "diagnostics",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "screenshot",
+          "bytes": "8364032",
+          "inodes": "1"
+        }
+      ]
+    },
+    {
+      "id": "journey.chronicle-extract-edit-approve-apply-reopen.runtime",
+      "sources": [
+        2,
+        29
+      ],
+      "basis": "Entire chronicle-extract-edit-approve-apply-reopen case/restart/workspace scenario: schema baseline plus Q512 mutation image per owned-tree aggregate, whole desktop/renderer/log image for profile settings/userData and full renderer assets plus RGBA surface image for browser disk/GPU caches, complete log/receipt text images. Cross-case no-sharing forecast, NOT app measurement. Extra workspace/restart image in other; no serial/fail-fast savings.",
+      "operation": "Construct declared finite source-grounded scenario from candidate sources and directly bound accepted metadata; not a peak or resource receipt",
+      "items": [
+        {
+          "role": "db",
+          "bytes": "17997824",
+          "inodes": "2"
+        },
+        {
+          "role": "wal",
+          "bytes": "18104320",
+          "inodes": "1"
+        },
+        {
+          "role": "shm",
+          "bytes": "65536",
+          "inodes": "1"
+        },
+        {
+          "role": "user-data",
+          "bytes": "177168384",
+          "inodes": "785"
+        },
+        {
+          "role": "cache",
+          "bytes": "55279616",
+          "inodes": "778"
+        },
+        {
+          "role": "logs",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "receipts",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "other",
+          "bytes": "17997824",
+          "inodes": "2"
+        }
+      ]
+    },
+    {
+      "id": "journey.chronicle-extract-edit-approve-apply-reopen.failure",
       "sources": [
         2,
         29
