@@ -9,7 +9,10 @@ import {
   buildSynthesisPromptArtifact,
   runEventSynthesisTask,
 } from "./runEventSynthesisTask";
-import { runObservationExtractionTask } from "./runObservationExtractionTask";
+import {
+  buildObservationPromptArtifact,
+  runObservationExtractionTask,
+} from "./runObservationExtractionTask";
 import { runStructuredRepairTask } from "./runStructuredRepairTask";
 import {
   buildChroniclePromptArtifact,
@@ -542,4 +545,160 @@ describe("Chronicle stage requests", () => {
       }),
     );
   });
+});
+
+/**
+ * DMS/1 DR-DMS-7. Narrowing a proposal's declared material trusts that the
+ * request the sealed digest names is the request that was sent. Native only
+ * re-derives the recorded request, so this fixes the side we own: the
+ * arguments handed to `sendChatMessageWithThinking` (the value that is
+ * recorded). `sendChatMessageWithThinking` is mocked here, so the inside of
+ * the Responses, Ollama and AI のべりすと transports is NOT
+ * exercised. That inside was read, not tested (see the decisions record).
+ * For the observation and the synthesis request, on each route shape, the
+ * model-visible text reassembled from the messages passed to it hashes to the
+ * finalRequestDigest the receipt recorded, and no message carries anything
+ * beyond the prompt (no extra roles or segments).
+ */
+describe("arguments passed to sendChatMessageWithThinking equal the recorded request (DMS/1)", () => {
+  const ROUTES: readonly [string, Record<string, string | null>][] = [
+    ["anthropic", ANTHROPIC],
+    [
+      "openrouter-claude",
+      {
+        apiVariant: null,
+        model: "anthropic/claude-sonnet-5-5",
+        provider: "openrouter",
+        endpointId: null,
+      },
+    ],
+    [
+      "openrouter-responses",
+      {
+        apiVariant: "responses",
+        model: "openai/gpt-5",
+        provider: "openrouter",
+        endpointId: null,
+      },
+    ],
+    [
+      "openai-responses",
+      {
+        apiVariant: "responses",
+        model: "gpt-5",
+        provider: "openai",
+        endpointId: null,
+      },
+    ],
+    [
+      "ollama",
+      {
+        apiVariant: null,
+        model: "qwen3",
+        provider: "ollama",
+        endpointId: null,
+      },
+    ],
+    [
+      "ainoverist",
+      {
+        apiVariant: null,
+        model: "kayra-v1",
+        provider: "ainoverist",
+        endpointId: null,
+      },
+    ],
+  ];
+  const clusterObservations = [
+    observation("window-001:obs-001", "門が開いた。"),
+    observation("window-003:obs-001", "兵が走った。"),
+  ];
+
+  async function sentRequestDigest(call: SentCall, base: unknown) {
+    const artifact = base as Parameters<typeof buildChroniclePromptDigests>[0];
+    // Rebuild the request from the arguments passed to the (mocked) send
+    // function. The transport internals are not part of this.
+    return buildChroniclePromptDigests({
+      ...artifact,
+      messages: [{ role: "user", content: modelVisibleText(call) }],
+    } as never);
+  }
+
+  function recordedStage(callIndex: number) {
+    return (
+      sendMock.mock.calls[callIndex]![1] as {
+        metadata: { chronicleStage: Record<string, unknown> };
+      }
+    ).metadata.chronicleStage;
+  }
+
+  it.each(ROUTES)(
+    "event synthesis on %s: the text passed to sendChatMessageWithThinking hashes to the recorded finalRequestDigest",
+    async (_name, override) => {
+      overrideMock.mockReturnValue(override as never);
+      await runEventSynthesisTask({
+        clusterRef: "cluster-A",
+        observations: clusterObservations,
+        projectId: "project-test",
+        repairOnFailure: false,
+        stageExecution: createStageExecutionContext({
+          projectId: "project-test",
+          runId: "run-1",
+          taskId: "task-1",
+          attemptId: "attempt-1",
+          stageId: NARRATIVE_STAGE_IDS.eventSynthesis,
+          stageExecutionId: "synthesis-1",
+        }),
+      }).catch(() => undefined);
+      expect(sendMock).toHaveBeenCalledTimes(1);
+      const [call] = sentCalls();
+      const canonical = buildSynthesisPromptArtifact({
+        clusterRef: "cluster-A",
+        observations: clusterObservations,
+      });
+      expect(
+        call!.messages.every((m) => m.role === "system" || m.role === "user"),
+      ).toBe(true);
+      expect(modelVisibleText(call!)).toBe(canonical.messages[0].content);
+      const sent = await sentRequestDigest(call!, canonical);
+      expect(recordedStage(0).finalRequestDigest).toBe(sent.finalRequestDigest);
+      expect(recordedStage(0).contextSetDigest).toBe(sent.contextSetDigest);
+      // Every observation line of the cluster, and only those, is in the text.
+      for (const line of clusterObservations) {
+        expect(modelVisibleText(call!)).toContain(line.localId);
+      }
+    },
+  );
+
+  it.each(ROUTES)(
+    "observation extraction on %s: the text passed to sendChatMessageWithThinking hashes to the recorded finalRequestDigest",
+    async (_name, override) => {
+      overrideMock.mockReturnValue(override as never);
+      const windows = [{ sourceRef: "S0001", text: "門が開いた。" }];
+      await runObservationExtractionTask({
+        windows,
+        projectId: "project-test",
+        repairOnFailure: false,
+        stageExecution: createStageExecutionContext({
+          projectId: "project-test",
+          runId: "run-1",
+          taskId: "task-1",
+          attemptId: "attempt-1",
+          stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+          stageExecutionId: "observation-1",
+        }),
+      }).catch(() => undefined);
+      expect(sendMock).toHaveBeenCalledTimes(1);
+      const [call] = sentCalls();
+      const canonical = buildObservationPromptArtifact(windows);
+      expect(
+        call!.messages.every((m) => m.role === "system" || m.role === "user"),
+      ).toBe(true);
+      expect(modelVisibleText(call!)).toBe(canonical.messages[0].content);
+      const sent = await sentRequestDigest(call!, canonical);
+      expect(recordedStage(0).finalRequestDigest).toBe(sent.finalRequestDigest);
+      expect(recordedStage(0).contextSetDigest).toBe(sent.contextSetDigest);
+      expect(modelVisibleText(call!)).toContain("門が開いた。");
+    },
+  );
 });

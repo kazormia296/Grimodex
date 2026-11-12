@@ -1216,6 +1216,206 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
     expect("sceneScopeMode" in buildSnapshot.mock.calls[0]![0]).toBe(false);
   });
 
+  it("DMS/1 DR-DMS-5: a proposal whose material scope cannot be decided stops the whole extraction before any ProposalSet is built or finished", async () => {
+    const quoteOne = "教会の尖塔が砲撃で崩れ落ちた。";
+    const quoteTwo = "兵士たちは避難した。";
+    const built = await buildNarrativeCorpusSnapshot({
+      snapshotId: "snapshot-coord-ai-observe-scope",
+      language: "ja",
+      origin: { kind: "grimodex-project", projectId: "project-a" },
+      documents: [
+        {
+          sourceKey: "project:scene:one",
+          parentSourceKey: null,
+          title: "籠城",
+          orderIndex: 0,
+          proseMirrorJson: prose(quoteOne),
+          origin: {
+            kind: "project-node",
+            projectId: "project-a",
+            nodeId: "scene-one",
+            sourceVersion: 3,
+            sourceUpdatedAt: "2026-08-09T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+        {
+          sourceKey: "project:scene:two",
+          parentSourceKey: null,
+          title: "避難",
+          orderIndex: 1,
+          proseMirrorJson: prose(quoteTwo),
+          origin: {
+            kind: "project-node",
+            projectId: "project-a",
+            nodeId: "scene-two",
+            sourceVersion: 1,
+            sourceUpdatedAt: "2026-08-09T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+      ],
+      omissions: [],
+      createdAt: "2026-08-10T00:00:00.000Z",
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+
+    const observeCalls: string[] = [];
+    const synthesizeObservationIds: string[][] = [];
+
+    buildProductionV2EnvelopesMock.mockRejectedValueOnce(
+      new Error("NEX_CHRONICLE_V2_MATERIAL_SCOPE_UNDECIDABLE: test"),
+    );
+    const outcome = runChronicleExtractionCoordinator(
+      {
+        projectId: "project-a",
+        folderId: "folder-1",
+        language: "ja",
+        sceneIds: ["scene-one", "scene-two"],
+        authority: authority(),
+        runId: "run-ai-observe-scope",
+      },
+      {
+        useAi: true,
+        evidenceMode: LEGACY_OBSERVATION_EVIDENCE_MODE,
+        createId: (() => {
+          let n = 0;
+          return () => `id-${++n}`;
+        })(),
+        buildSnapshot: async () => ({
+          ok: true as const,
+          snapshot: built.snapshot,
+          scopeAuthorityDocuments: [],
+          flush: {
+            status: "already-clean" as const,
+            blockedDocuments: [],
+          },
+        }),
+        observeWithAi: async ({ windows }) => {
+          const window = windows[0];
+          if (!window) return [];
+          observeCalls.push(window.sourceRef);
+          return [
+            {
+              localId: "obs-1",
+              evidence: [
+                {
+                  sourceRef: window.sourceRef,
+                  quote: window.text.includes(quoteOne) ? quoteOne : quoteTwo,
+                },
+              ],
+              assertion: {
+                attribution: "narrator",
+                narrativeFrame: "story-world",
+              },
+              payload: {
+                // Shared predicate → same cluster; Map collision would drop one.
+                predicate: "砲撃で崩れ落ちた",
+                actuality: "actual",
+                participants: [],
+                temporalExpressions: [],
+                durationKind: "instant",
+              },
+            },
+          ];
+        },
+        synthesizeWithAi: async ({
+          clusterRef,
+          observations,
+          createId,
+          onStageReceipt,
+          onTerminalOutput,
+          stageExecution,
+        }) => {
+          if (!stageExecution) throw new Error("missing synthesis stage");
+          synthesizeObservationIds.push(
+            observations.map((observation) => observation.localId),
+          );
+          const nextId = createId ?? (() => "hypothesis-test-id");
+          const hypotheses = [
+            {
+              hypothesisId: nextId(),
+              clusterRef,
+              observationRefs: observations.map(
+                (observation) => observation.localId,
+              ),
+              titleSuggestion: "砲撃",
+              summary: "砲撃で崩れ落ちた",
+              actuality: "actual",
+              significance: "major",
+            } satisfies EventHypothesis,
+          ];
+          const eventOutput = {
+            clusterRef,
+            resolution: "single-event",
+            events: [
+              {
+                observationRefs: observations.map(
+                  (observation) => observation.localId,
+                ),
+                titleSuggestion: "砲撃",
+                summary: "砲撃で崩れ落ちた",
+                actuality: "actual",
+                significance: "major",
+              },
+            ],
+          } as const;
+          await onStageReceipt?.(
+            await buildChronicleStageTerminalReceiptV1({
+              stageExecution,
+              contextSetVersion: "chronicle-context-set/1",
+              contextSetDigest: TEST_STAGE_DIGEST,
+              componentContractDigest: TEST_STAGE_DIGEST,
+              finalRequestDigest: TEST_STAGE_DIGEST,
+              modelExecutionBinding: createStageModelExecutionBindingV1({
+                resolutionStatus: "unresolved",
+              }),
+              responseDigest: TEST_STAGE_DIGEST,
+              rawObservationsDigest: TEST_STAGE_DIGEST,
+              parsedOutputDigest: TEST_STAGE_DIGEST,
+              parseStatus: "parsed",
+              terminalStatus: "succeeded",
+            }),
+          );
+          await onTerminalOutput?.({
+            rootStageExecution: stageExecution,
+            terminalStageExecution: stageExecution,
+            disposition: "root-success",
+            clusterRef,
+            rawObservations: observations,
+            eventOutput,
+            hypotheses,
+            rawObservationsDigest: TEST_STAGE_DIGEST,
+            parsedOutputDigest: TEST_STAGE_DIGEST,
+          });
+          return hypotheses;
+        },
+      },
+    );
+    await expect(outcome).rejects.toThrow(
+      "NEX_CHRONICLE_V2_MATERIAL_SCOPE_UNDECIDABLE",
+    );
+    // The plan Task is failed (no requeue) and never finished, so no
+    // ProposalSet reaches Native: the extraction's proposals are all dropped.
+    expect(failMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorMessage: expect.stringContaining(
+          "NEX_CHRONICLE_V2_MATERIAL_SCOPE_UNDECIDABLE",
+        ),
+        requeue: false,
+      }),
+      expect.anything(),
+    );
+    expect(buildProposalSetPayloadMock).not.toHaveBeenCalled();
+    const finishedWithProposalSet = finishMock.mock.calls.some(
+      (call) =>
+        (call[0] as { chroniclePlanProposalSet?: unknown })
+          .chroniclePlanProposalSet !== undefined,
+    );
+    expect(finishedWithProposalSet).toBe(false);
+  });
+
   it("rekeys AI observe localIds so multi-window obs-1 batches do not collide", async () => {
     const quoteOne = "教会の尖塔が砲撃で崩れ落ちた。";
     const quoteTwo = "兵士たちは避難した。";
@@ -1432,6 +1632,20 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
     expect(localIds.every((id) => observationById.has(id))).toBe(true);
     expect(result.proposals.length).toBeGreaterThan(0);
     expect(buildProductionV2EnvelopesMock).toHaveBeenCalledTimes(1);
+    // DMS/1: the proposals' material scope is looked up in the persisted
+    // window plan (one window per scene here), not an in-memory plan.
+    expect(buildProductionV2EnvelopesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        windowPlan: [
+          { windowId: "window-001", documentRef: expect.any(String) },
+          { windowId: "window-002", documentRef: expect.any(String) },
+        ],
+      }),
+    );
+    const planned = buildProductionV2EnvelopesMock.mock.calls[0]![0] as {
+      windowPlan: readonly { windowId: string; documentRef: string }[];
+    };
+    expect(new Set(planned.windowPlan.map((w) => w.documentRef)).size).toBe(2);
     expect(buildProposalSetPayloadMock).toHaveBeenCalledWith(
       expect.objectContaining({
         v2EnvelopeByProposalKey: expect.any(Map),
@@ -2312,6 +2526,15 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
 
     expect(resumed.runId).toBe("run-resume-observation");
     expect(createRunMock).not.toHaveBeenCalled();
+    // DMS/1: a resumed Run reads the window plan from its persisted artifact,
+    // the same path as a fresh one, to decide each proposal's material scope.
+    expect(buildProductionV2EnvelopesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        windowPlan: [
+          { windowId: expect.any(String), documentRef: expect.any(String) },
+        ],
+      }),
+    );
     expect(
       claimMock.mock.calls.map(([payload]) => payload.taskKinds?.[0]),
     ).toEqual([

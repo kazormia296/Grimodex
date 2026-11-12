@@ -13,9 +13,21 @@
 //       of window 1 with one of window 3; cluster "bell" reads window 2 only.
 //   (B) folder "mw-folder-three": three scenes, one window each. Cluster "fire"
 //       folds scene 1 with scene 3; cluster "writ" reads scene 2 only.
-// Around them: a scene before both folders and a scene after both.
+//   (C) folder "mw-folder-split" (DMS/1): three scenes, one window each.
+//       Cluster "dawn" reads scene 1 only. Cluster "tide" holds an actual
+//       observation of scene 2 and a PLANNED one of scene 3 (same predicate), so
+//       the event cites scene 2 only while its synthesis request read scenes 2
+//       and 3: the declared material is {scene 2, scene 3} and the evidence is
+//       {scene 2}.
+// Around them: a scene before both folders and a scene after all of them.
 //
-// usage: node electron/scripts/nir1-multi-window-cold-fixture.mjs <new absolute output directory>
+// usage: node electron/scripts/nir1-multi-window-cold-fixture.mjs <new absolute output directory> [name]
+// `name` (default nir1-multi-window-cold) is the base name of the output files and
+// the manifest's schemaVersion prefix. DMS/1 made the product record each
+// proposal's material as the scenes its synthesis request read, so the same
+// setup run again with the product of that change is committed as
+// `nir1-declared-scope-cold` (the MW/1 database, made when every proposal
+// declared every scene of its extraction, stays as the old-form fixture).
 // Needs a standard build (pnpm napi:build && pnpm electron:build) of this tree.
 // Run it under Xvfb like the product journeys (scripts/local-ci-xvfb.mjs).
 // Output: nir1-multi-window-cold.db.gz and .json (copy to
@@ -23,9 +35,11 @@
 // three-golden.json (copy to src-tauri/crates/grimodex-db/src/
 // narrative_extraction/material_roster/ as production-multi-window-long-golden.json
 // and production-multi-window-folder-golden.json). The committed manifest also
-// records each golden's file name and sha256, added by hand after copying.
+// records each golden's file name and sha256 (for the declared-scope run) and
+// the product commit that ran.
 // Every run makes new ids, so all of them are replaced together.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -52,10 +66,10 @@ import {
 } from "./nir1-reviewed-child-evidence.mjs";
 
 const root = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const [output] = process.argv.slice(2);
+const [output, name = "nir1-multi-window-cold"] = process.argv.slice(2);
 assert.ok(
   output && path.isAbsolute(output),
-  "usage: node electron/scripts/nir1-multi-window-cold-fixture.mjs <new absolute output directory>",
+  "usage: node electron/scripts/nir1-multi-window-cold-fixture.mjs <new absolute output directory> [name]",
 );
 const fixture = JSON.parse(
   readFileSync(
@@ -73,6 +87,8 @@ const IDS = {
   long: "mw-long-scene",
   folderThree: "mw-folder-three",
   three: ["mw-scene-1", "mw-scene-2", "mw-scene-3"],
+  folderSplit: "mw-folder-split",
+  split: ["mw-split-1", "mw-split-2", "mw-split-3"],
   after: "mw-after",
 };
 
@@ -101,6 +117,11 @@ const threeBodies = [
   prose("Saltmere", 3, { 1: marker("writ-middle") }),
   prose("Saltmere", 3, { 1: marker("fire-last") }),
 ];
+const splitBodies = [
+  prose("Greywater", 3, { 1: marker("dawn-first") }),
+  prose("Greywater", 3, { 1: marker("tide-first") }),
+  prose("Greywater", 3, { 1: marker("tide-last") }),
+];
 const plainBody = (text) => [text];
 const paragraphs = (texts) =>
   JSON.stringify({
@@ -111,6 +132,22 @@ const paragraphs = (texts) =>
     })),
   });
 
+// Where each golden is committed (copy it there verbatim): the manifest records
+// the name and the sha256 of the file this script wrote.
+const COMMITTED_GOLDENS = {
+  "nir1-declared-scope-cold": {
+    three: "production-declared-scope-folder-golden.json",
+    split: "production-declared-scope-split-golden.json",
+  },
+};
+const git = (...args) =>
+  execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+assert.equal(
+  git("status", "--porcelain", "--untracked-files=no"),
+  "",
+  "the tree must be clean so productCommit names the code that ran",
+);
+const productCommit = git("rev-parse", "HEAD");
 await mkdir(output);
 const save = (name, data) =>
   writeFile(path.join(output, name), JSON.stringify(data, null, 2) + "\n");
@@ -137,7 +174,10 @@ const bundleOf = (page, identity) =>
   readChronicleReviewBundle(harness, page, identity);
 
 /** What the sealed Run must look like for the shape to prove what it claims. */
-function assertShape(bundle, { windows, cluster, names, windowOf }) {
+function assertShape(
+  bundle,
+  { windows, cluster, names, windowOf, clusterCount = 2 },
+) {
   const artifact = (kind) => {
     const found = bundle.artifacts.filter((row) => row.artifactKind === kind);
     assert.equal(found.length, 1, kind);
@@ -162,7 +202,7 @@ function assertShape(bundle, { windows, cluster, names, windowOf }) {
     "one observation request per window",
   );
   const clusters = artifact("chronicle.event-clusters@1").clusters;
-  assert.equal(clusters.length, 2);
+  assert.equal(clusters.length, clusterCount);
   const prefixes = (ref) =>
     new Set(ref.observationRefs.map((id) => id.split(":")[0]));
   assert.equal(
@@ -295,6 +335,17 @@ try {
         threeBodies[index],
       );
     }
+    // "a2V" sorts between the three-scene folder ("a2") and the scene after ("a3").
+    await folder(IDS.folderSplit, "Split material scenes", "a2V");
+    for (const [index, id] of IDS.split.entries()) {
+      await scene(
+        id,
+        IDS.folderSplit,
+        `Stair ${index + 1}`,
+        `a${index}`,
+        splitBodies[index],
+      );
+    }
     await scene(
       IDS.after,
       null,
@@ -346,6 +397,24 @@ try {
         },
         titles: [fixture.clusters.fire.title, fixture.clusters.writ.title],
       },
+      {
+        name: "split",
+        folderId: IDS.folderSplit,
+        windows: 3,
+        clusterCount: 2,
+        cluster: ["tide-first", "tide-last"],
+        windowOf: {
+          "dawn-first": "window-001",
+          "tide-first": "window-002",
+          "tide-last": "window-003",
+        },
+        titles: [fixture.clusters.dawn.title, fixture.clusters.tide.title],
+        // The golden is the Run's, with the root Envelope of this proposal.
+        goldenTitle: fixture.clusters.tide.title,
+        // Declared scenes {2, 3}; evidence scene {2} (DMS/1 D1).
+        declared: [IDS.split[1], IDS.split[2]],
+        evidence: [IDS.split[1]],
+      },
     ];
     for (const shape of shapes) {
       await dialog.locator("select").selectOption(shape.folderId);
@@ -364,6 +433,7 @@ try {
         cluster: shape.cluster,
         names: shape.titles,
         windowOf: shape.windowOf,
+        clusterCount: shape.clusterCount,
       });
       await save(`${shape.name}-initial.json`, initial);
       const proposals = [];
@@ -422,12 +492,41 @@ try {
         reviewed.page,
         initial,
       );
+      const goldenProposal = shape.goldenTitle
+        ? proposals.find((p) => p.title === shape.goldenTitle)
+        : proposals[0];
+      assert.ok(goldenProposal, "golden proposal");
       const [{ envelope }] = await rows(
         reviewed.page,
         "SELECT reconciliation_envelope_json AS envelope FROM narrative_proposal_revisions WHERE id = ?",
-        [proposals[0].rootRevisionId],
+        [goldenProposal.rootRevisionId],
       );
-      await save(`${shape.name}-golden.json`, {
+      const rootEnvelope = JSON.parse(envelope);
+      if (shape.declared) {
+        // The record must be the narrowed one this shape exists to prove.
+        const basis = rootEnvelope.effectiveMaterialBasis;
+        const scenes = (keys) => keys.map((id) => `project:scene:${id}`).sort();
+        assert.deepEqual(
+          basis.sourceBasis
+            .filter((entry) => entry.sourceKind === "scene-body")
+            .map((entry) => entry.sourceKey)
+            .sort(),
+          scenes(shape.declared),
+          "declared scenes",
+        );
+        assert.deepEqual(
+          [
+            ...new Set(
+              basis.evidenceSet
+                .map((entry) => entry.sourceKey)
+                .filter((key) => key?.startsWith("project:scene:")),
+            ),
+          ].sort(),
+          scenes(shape.evidence),
+          "evidence scenes",
+        );
+      }
+      const golden = {
         provenance: {
           source: "normal planner, production extraction path, Human review UI",
           setup: "electron/scripts/nir1-multi-window-cold-fixture.mjs",
@@ -436,9 +535,15 @@ try {
         plan: sealedArtifact("source.window-plan@1"),
         outputs: companion.payloadJson.outputs,
         receipts: initial.stageReceipts,
-        rootEnvelope: JSON.parse(envelope),
-      });
+        rootEnvelope,
+      };
+      const goldenText = JSON.stringify(golden, null, 2) + "\n";
+      await writeFile(path.join(output, `${shape.name}-golden.json`), goldenText);
       runs[shape.name] = {
+        ...(COMMITTED_GOLDENS[name]?.[shape.name]
+          ? { goldenFile: COMMITTED_GOLDENS[name][shape.name] }
+          : {}),
+        goldenSha256: sha(goldenText),
         ...identity,
         folderId: shape.folderId,
         sealed,
@@ -486,15 +591,15 @@ try {
   });
   const database = await readFile(path.join(coldWorkspace, "grimodex.db"));
   const compressed = gzipSync(database, { level: 9, mtime: 0 });
-  await writeFile(
-    path.join(output, "nir1-multi-window-cold.db.gz"),
-    compressed,
-  );
-  await save("nir1-multi-window-cold.json", {
-    schemaVersion: "nir1-multi-window-cold/1",
+  await writeFile(path.join(output, `${name}.db.gz`), compressed);
+  await save(`${name}.json`, {
+    schemaVersion: `${name}/1`,
     projectId,
     scenes: IDS,
     runs,
+    // The product that made every row: this tree's HEAD (the run refuses a
+    // dirty tree, so the commit names the code that ran).
+    productCommit,
     setupScript: "electron/scripts/nir1-multi-window-cold-fixture.mjs",
     providerFixture: "electron/shared/productJourneyMultiWindowFixture.json",
     compressedDatabaseSha256: sha(compressed),
