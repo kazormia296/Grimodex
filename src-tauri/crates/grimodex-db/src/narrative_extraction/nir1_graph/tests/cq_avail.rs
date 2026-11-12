@@ -3208,7 +3208,7 @@ fn shared_bytes_equal_what_the_reads_return_on_a_product_project() -> Result<()>
 /// The (table, column) pairs `Nir1ProjectReads::load` makes SQLite authorize,
 /// each with the number of times (one for each statement preparing it).
 fn columns_read_by_one_load(
-    conn: &rusqlite::Connection,
+    conn: &mut rusqlite::Connection,
 ) -> Result<BTreeMap<(String, String), usize>> {
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     use std::sync::{Arc, Mutex};
@@ -3323,8 +3323,8 @@ fn measure_the_shared_preflight_steps() -> Result<()> {
         scenes - fixture_scenes(revisions),
         shape,
     )?;
-    fixture.authority.with_conn(|conn| {
-        let steps = |legacy: bool| -> Result<(u64, usize)> {
+    fixture.authority.with_conn_mut(|conn| {
+        let mut steps = |legacy: bool| -> Result<(u64, usize)> {
             let counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             let seen = std::sync::Arc::clone(&counter);
             conn.progress_handler(

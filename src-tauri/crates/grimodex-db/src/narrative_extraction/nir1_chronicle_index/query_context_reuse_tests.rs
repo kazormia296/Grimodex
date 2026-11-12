@@ -359,7 +359,7 @@ fn nir1_temp_schema_and_rolled_back_writes_do_not_move_the_identity() {
     let snapshot = snapshot(&f, s2(&f));
     let (before, _) = read(&f, &snapshot);
     let identity =
-        f.db.with_read_transaction(ReadIdentity::read)
+        f.db.with_read_transaction(|conn| ReadIdentity::read(conn))
             .expect("identity");
     f.db.with_conn(|conn| {
         conn.execute_batch("CREATE TEMP TABLE inv_temp_change (value INTEGER)")?;
@@ -370,7 +370,7 @@ fn nir1_temp_schema_and_rolled_back_writes_do_not_move_the_identity() {
     })
     .expect("temp schema change and a rolled-back write");
     assert_eq!(
-        f.db.with_read_transaction(ReadIdentity::read)
+        f.db.with_read_transaction(|conn| ReadIdentity::read(conn))
             .expect("identity"),
         identity
     );

@@ -732,7 +732,7 @@ pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization_
 /// for a caller that holds the Run's sealed documents (`None`: the writer reads
 /// them itself, as the one-child path does).
 pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization_in_tx_reusing(
-    conn: &Connection,
+    conn: &mut Connection,
     trusted_project_id: &str,
     request: &CreateHumanDerivedRevisionRequest,
     requested_kind: Option<HumanMaterialDerivationKind>,

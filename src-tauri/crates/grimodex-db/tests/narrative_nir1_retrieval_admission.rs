@@ -2439,12 +2439,12 @@ fn three_window_material_moved_after_the_query_is_denied_by_disclosure_alone() {
                 .collect::<Vec<_>>()
         };
         let before = db
-            .with_conn(|conn| {
-                let tx = conn.unchecked_transaction()?;
+            .with_conn_mut(|conn| {
+                let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
                 assert!(
                     matches!(
                         read_revision_retrieval_eligibility(
-                            &tx,
+                            &mut tx,
                             fixture.project(),
                             fixture.child(),
                             fixture.scene("s2"),
@@ -2469,12 +2469,12 @@ fn three_window_material_moved_after_the_query_is_denied_by_disclosure_alone() {
         );
         drain_native_feed(&db);
         let current = native_fresh_nonsecret_child(&db, &fixture);
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             assert_complete_and_fresh(conn, &fixture, &current);
             assert_eq!(membership(conn, &current), before, "the material is kept");
-            let tx = conn.unchecked_transaction()?;
+            let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
             let verdict = read_revision_retrieval_eligibility(
-                &tx,
+                &mut tx,
                 fixture.project(),
                 &current,
                 fixture.scene("s2"),
@@ -2489,6 +2489,7 @@ fn three_window_material_moved_after_the_query_is_denied_by_disclosure_alone() {
                 ),
                 "crossing={crossing}: only the disclosure order refuses: {verdict:?}"
             );
+            drop(tx);
             let approved: String = conn.query_row(
                 "SELECT decision FROM narrative_proposal_decisions WHERE revision_id=?1",
                 [&current],
@@ -2527,15 +2528,15 @@ fn three_window_proposals_with_later_material_do_not_change_the_verdict_of_the_o
         .map(|p| p["revisionId"].as_str().expect("child").to_owned())
         .collect();
     let verdicts = |revisions: &[String]| -> Vec<String> {
-        db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        db.with_conn_mut(|conn| {
+            let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
             Ok(revisions
                 .iter()
                 .map(|revision| {
                     let text = format!(
                         "{:?}",
                         read_revision_retrieval_eligibility(
-                            &tx,
+                            &mut tx,
                             fixture.project(),
                             revision,
                             fixture.scene("s2"),
@@ -3797,7 +3798,7 @@ fn bulk_approve_writes_the_unsealed_child_and_its_human_approval() {
     for code in ["approved", "edited", "r3-significance"] {
         assert!(second.iter().any(|r| r == code), "{code} in {second:?}");
     }
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         // 未承認・secret の AI の版は、資格を通らない（漏れ 0）。
         assert_unavailable(conn, &fixture, root, fixture.scene("s2"));
         Ok(())
@@ -3872,15 +3873,15 @@ fn bulk_approve_writes_the_unsealed_child_and_its_human_approval() {
             break;
         }
     }
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         assert_complete_and_fresh(conn, &fixture, &child);
         // この fixture の 2 つの場面は、どちらも版の材料（source basis）に入る。問い合わせの場面は、
         // 両方より後の場面（en-query-05）にする。
-        let tx = conn.unchecked_transaction()?;
-        let read = read_revision_retrieval_eligibility(&tx, fixture.project(), &child, BULK_QUERY_SCENE)?;
+        let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
+        let read = read_revision_retrieval_eligibility(&mut tx, fixture.project(), &child, BULK_QUERY_SCENE)?;
         assert!(matches!(read, RevisionEligibilityRead::Eligible(_)), "approved unsealed child: {read:?}");
         // 元の AI の版は、今も資格を通らない。
-        let read = read_revision_retrieval_eligibility(&tx, fixture.project(), root, BULK_QUERY_SCENE)?;
+        let read = read_revision_retrieval_eligibility(&mut tx, fixture.project(), root, BULK_QUERY_SCENE)?;
         assert!(matches!(read, RevisionEligibilityRead::Unavailable { .. }), "AI root: {read:?}");
         Ok(())
     })
@@ -4443,11 +4444,11 @@ fn bulk_approve_first_and_settle(db: &Database, fixture: &Fixture) -> String {
 fn bulk_approved_child_is_not_retrievable_from_earlier_or_the_same_scene() {
     let (fixture, db) = bulk_two_window(|_| {});
     let child = bulk_approve_first_and_settle(&db, &fixture);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         assert_complete_and_fresh(conn, &fixture, &child);
-        let read_from = |scene: &str| {
-            let tx = conn.unchecked_transaction().expect("snapshot");
-            read_revision_retrieval_eligibility(&tx, fixture.project(), &child, scene)
+        let mut read_from = |scene: &str| {
+            let mut tx = grimodex_db::ScopedTransaction::begin(conn).expect("snapshot");
+            read_revision_retrieval_eligibility(&mut tx, fixture.project(), &child, scene)
                 .expect("typed retrieval read")
         };
         assert!(
@@ -4773,9 +4774,13 @@ fn envelope_of(conn: &Connection, revision: &str) -> Value {
     serde_json::from_str(&raw).expect("Envelope JSON")
 }
 
-fn declared_verdict(fixture: &Fixture, conn: &Connection, query: &str) -> RevisionEligibilityRead {
-    let tx = conn.unchecked_transaction().expect("snapshot");
-    read_revision_retrieval_eligibility(&tx, fixture.project(), fixture.child(), query)
+fn declared_verdict(
+    fixture: &Fixture,
+    conn: &mut Connection,
+    query: &str,
+) -> RevisionEligibilityRead {
+    let mut tx = grimodex_db::ScopedTransaction::begin(conn).expect("snapshot");
+    read_revision_retrieval_eligibility(&mut tx, fixture.project(), fixture.child(), query)
         .expect("public Rust retrieval admission")
 }
 
@@ -4865,7 +4870,7 @@ fn a_proposal_declares_and_replays_only_the_scenes_its_synthesis_request_read() 
     ];
     for (shape, title, declared, windows) in cases {
         let fixture = Fixture::declared_scope(shape, title);
-        let conn = fixture.read_only();
+        let mut conn = fixture.read_only();
         for revision in [fixture.root().to_owned(), fixture.child().to_owned()] {
             let envelope = envelope_of(&conn, &revision);
             let mut expected = declared.clone();
@@ -4915,7 +4920,7 @@ fn a_proposal_declares_and_replays_only_the_scenes_its_synthesis_request_read() 
             }
             drop(tx);
             if revision == fixture.child() {
-                assert_complete_and_fresh(&conn, &fixture, &revision);
+                assert_complete_and_fresh(&mut conn, &fixture, &revision);
             }
         }
     }
@@ -4928,9 +4933,9 @@ fn a_proposal_declares_and_replays_only_the_scenes_its_synthesis_request_read() 
 #[test]
 fn a_proposal_is_eligible_after_its_own_scenes_even_inside_the_extraction() {
     let writ = Fixture::declared_scope("three", WRIT);
-    let conn = writ.read_only();
+    let mut conn = writ.read_only();
     let before = writ.digest();
-    let verdict = |query: &str| declared_verdict(&writ, &conn, query);
+    let mut verdict = |query: &str| declared_verdict(&writ, &mut conn, query);
     let (s1, s2, s3) = (
         writ.folder_scene(0),
         writ.folder_scene(1),
@@ -4956,9 +4961,9 @@ fn a_proposal_is_eligible_after_its_own_scenes_even_inside_the_extraction() {
     // The same proposal of the MW/1 database (broad record) is refused from
     // scene 3: the difference is the declared scope alone.
     let old = Fixture::multi_window(false);
-    let old_conn = old.read_only();
-    let tx = old_conn.unchecked_transaction().expect("snapshot");
-    let broad = read_revision_retrieval_eligibility(&tx, old.project(), old.child(), &s3)
+    let mut old_conn = old.read_only();
+    let mut tx = grimodex_db::ScopedTransaction::begin(&mut old_conn).expect("snapshot");
+    let broad = read_revision_retrieval_eligibility(&mut tx, old.project(), old.child(), &s3)
         .expect("admission");
     assert_source_not_before(&broad, "MW/1 writ from scene 3");
     drop(conn);
@@ -4969,11 +4974,11 @@ fn a_proposal_is_eligible_after_its_own_scenes_even_inside_the_extraction() {
     // rule whatever the declared scope is: this block does not test the declared
     // scope. The tide proposal below (request in two scenes, evidence in one) does.
     let fire = Fixture::declared_scope("three", FIRE);
-    let conn = fire.read_only();
+    let mut conn = fire.read_only();
     for query in [s1, s2, s3, fire.scene("s2").to_owned()] {
         assert!(
             !matches!(
-                declared_verdict(&fire, &conn, &query),
+                declared_verdict(&fire, &mut conn, &query),
                 RevisionEligibilityRead::Eligible(_)
             ),
             "fire from {query}"
@@ -4982,25 +4987,25 @@ fn a_proposal_is_eligible_after_its_own_scenes_even_inside_the_extraction() {
     // One scene cut into windows: nothing changes for it (shown after its
     // scene, not before or at it).
     let seal = Fixture::declared_scope("long", SEAL);
-    let conn = seal.read_only();
+    let mut conn = seal.read_only();
     assert!(matches!(
-        declared_verdict(&seal, &conn, &seal.folder_scene(0)),
+        declared_verdict(&seal, &mut conn, &seal.folder_scene(0)),
         RevisionEligibilityRead::Eligible(_)
     ));
     assert_source_not_before(
         &declared_verdict(
             &seal,
-            &conn,
+            &mut conn,
             seal.manifest["scenes"]["long"].as_str().expect("long"),
         ),
         "seal from its own scene",
     );
 }
 
-fn freshness_of(conn: &Connection, fixture: &Fixture, revision: &str) -> bool {
-    let tx = conn.unchecked_transaction().expect("snapshot");
+fn freshness_of(conn: &mut Connection, fixture: &Fixture, revision: &str) -> bool {
+    let mut tx = grimodex_db::ScopedTransaction::begin(conn).expect("snapshot");
     matches!(
-        read_revision_canonical_freshness(&tx, fixture.project(), revision)
+        read_revision_canonical_freshness(&mut tx, fixture.project(), revision)
             .expect("canonical revision Freshness"),
         RevisionFreshnessRead::Fresh(_)
     )
@@ -5045,7 +5050,7 @@ fn evidence_scene_keys(envelope: &Value) -> Vec<String> {
 #[test]
 fn a_request_that_read_two_scenes_keeps_both_material_though_the_evidence_is_in_one() {
     let tide = Fixture::declared_scope("split", TIDE);
-    let conn = tide.read_only();
+    let mut conn = tide.read_only();
     let before = tide.digest();
     let (s1, s2, s3) = (
         tide.split_scene(0),
@@ -5092,7 +5097,7 @@ fn a_request_that_read_two_scenes_keeps_both_material_though_the_evidence_is_in_
         );
         drop(tx);
     }
-    let verdict = |query: &str| declared_verdict(&tide, &conn, query);
+    let mut verdict = |query: &str| declared_verdict(&tide, &mut conn, query);
     // Scene 1 and the scene before the folder: before the material.
     // Scene 2: the evidence. Scene 3: no evidence, but the request read it.
     for query in [
@@ -5117,19 +5122,19 @@ fn a_request_that_read_two_scenes_keeps_both_material_though_the_evidence_is_in_
     // Control, same Run: the proposal that read scene 1 only is shown from
     // scenes 2 and 3 and after, never from scene 1 or before it.
     let dawn = Fixture::declared_scope("split", DAWN);
-    let dawn_conn = dawn.read_only();
+    let mut dawn_conn = dawn.read_only();
     for query in [s2, s3, dawn.scene("s2").to_owned()] {
         assert!(
             matches!(
-                declared_verdict(&dawn, &dawn_conn, &query),
+                declared_verdict(&dawn, &mut dawn_conn, &query),
                 RevisionEligibilityRead::Eligible(_)
             ),
             "dawn from {query}: {:?}",
-            declared_verdict(&dawn, &dawn_conn, &query)
+            declared_verdict(&dawn, &mut dawn_conn, &query)
         );
     }
     assert_source_not_before(
-        &declared_verdict(&dawn, &dawn_conn, &s1),
+        &declared_verdict(&dawn, &mut dawn_conn, &s1),
         "dawn from scene 1",
     );
     drop(conn);
@@ -5157,15 +5162,15 @@ fn a_scene_the_request_read_but_the_event_did_not_cite_still_stales_the_proposal
             false,
         );
         drain_native_feed(&db);
-        let conn = fixture.read_only();
+        let mut conn = fixture.read_only();
         assert_eq!(
-            freshness_of(&conn, &fixture, &tide),
+            freshness_of(&mut conn, &fixture, &tide),
             tide_fresh,
             "edit scene {}: tide",
             index + 1
         );
         assert_eq!(
-            freshness_of(&conn, &fixture, &dawn),
+            freshness_of(&mut conn, &fixture, &dawn),
             dawn_fresh,
             "edit scene {}: dawn",
             index + 1
@@ -5195,15 +5200,15 @@ fn editing_an_unrelated_scene_leaves_a_declared_scope_proposal_fresh() {
             false,
         );
         drain_native_feed(&db);
-        let conn = fixture.read_only();
+        let mut conn = fixture.read_only();
         assert_eq!(
-            freshness_of(&conn, &fixture, &writ),
+            freshness_of(&mut conn, &fixture, &writ),
             writ_fresh,
             "edit scene {}: writ",
             index + 1
         );
         assert_eq!(
-            freshness_of(&conn, &fixture, &fire),
+            freshness_of(&mut conn, &fixture, &fire),
             fire_fresh,
             "edit scene {}: fire",
             index + 1
@@ -5220,10 +5225,10 @@ fn editing_an_unrelated_scene_leaves_a_declared_scope_proposal_fresh() {
         false,
     );
     drain_native_feed(&db);
-    let conn = fixture.read_only();
+    let mut conn = fixture.read_only();
     for title in [WRIT, FIRE] {
         assert!(
-            freshness_of(&conn, &fixture, &fixture.child_of("three", title)),
+            freshness_of(&mut conn, &fixture, &fixture.child_of("three", title)),
             "{title}"
         );
     }
@@ -5239,9 +5244,9 @@ fn editing_an_unrelated_scene_leaves_a_declared_scope_proposal_fresh() {
         false,
     );
     drain_native_feed(&db);
-    let conn = old.read_only();
+    let mut conn = old.read_only();
     assert!(
-        !freshness_of(&conn, &old, old.child()),
+        !freshness_of(&mut conn, &old, old.child()),
         "MW/1 writ is stale from the scene-3 edit"
     );
 }
