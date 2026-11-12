@@ -142,7 +142,7 @@ pub(crate) fn verify_application_revision_artifact_references_with_control(
     check_control(control, GraphWorkStage::Coverage)?;
     let mut check = VerifyCoverageCheck::default();
     let mut applications = Vec::new();
-    let rows = {
+    {
         let mut statement = conn.prepare(
             "SELECT a.id, a.commit_id, a.proposal_id, a.revision_id, r.origin_kind,
                     r.proposal_id, p.proposal_set_id, c.proposal_set_id,
@@ -156,7 +156,7 @@ pub(crate) fn verify_application_revision_artifact_references_with_control(
                  OR (c.id IS NULL AND ps.project_id = ?1)
               ORDER BY a.id ASC",
         )?;
-        let collected = statement.query_map(params![project_id], |row| {
+        let rows = statement.query_map(params![project_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -169,82 +169,80 @@ pub(crate) fn verify_application_revision_artifact_references_with_control(
                 row.get::<_, Option<String>>(8)?,
                 row.get::<_, Option<String>>(9)?,
             ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-        collected
-    };
-    for row in rows {
-        check_control(control, GraphWorkStage::Coverage)?;
-        let (
-            application_id,
-            commit_id,
-            proposal_id,
-            revision_id,
-            origin_kind,
-            revision_proposal_id,
-            proposal_set_id,
-            commit_proposal_set_id,
-            proposal_set_project_id,
-            commit_project_id,
-        ) = row;
-        if commit_project_id.is_none() {
-            check.incomplete.push(format!(
-                "application:{application_id}:commit:{commit_id}:missing"
-            ));
-            continue;
-        }
-        match (proposal_set_id.as_deref(), proposal_set_project_id.as_deref()) {
-            (None, _) => check.incomplete.push(format!(
-                "application:{application_id}:proposal:{proposal_id}:proposal-set-missing"
-            )),
-            (Some(_), None) => check.incomplete.push(format!(
-                "application:{application_id}:proposal:{proposal_id}:proposal-set-row-missing"
-            )),
-            (Some(_), Some(owner)) if owner != project_id => check.issues.push(format!(
-                "application:{application_id}:proposal:{proposal_id}:proposal-set-cross-project:{owner}"
-            )),
-            (Some(_), Some(_)) => {}
-        }
-        if let (Some(commit_set), Some(proposal_set)) = (
-            commit_proposal_set_id.as_deref(),
-            proposal_set_id.as_deref(),
-        ) {
-            if commit_set != proposal_set {
+        })?;
+        for row in rows {
+            check_control(control, GraphWorkStage::Coverage)?;
+            let (
+                application_id,
+                commit_id,
+                proposal_id,
+                revision_id,
+                origin_kind,
+                revision_proposal_id,
+                proposal_set_id,
+                commit_proposal_set_id,
+                proposal_set_project_id,
+                commit_project_id,
+            ) = row?;
+            if commit_project_id.is_none() {
+                check.incomplete.push(format!(
+                    "application:{application_id}:commit:{commit_id}:missing"
+                ));
+                continue;
+            }
+            match (proposal_set_id.as_deref(), proposal_set_project_id.as_deref()) {
+                (None, _) => check.incomplete.push(format!(
+                    "application:{application_id}:proposal:{proposal_id}:proposal-set-missing"
+                )),
+                (Some(_), None) => check.incomplete.push(format!(
+                    "application:{application_id}:proposal:{proposal_id}:proposal-set-row-missing"
+                )),
+                (Some(_), Some(owner)) if owner != project_id => check.issues.push(format!(
+                    "application:{application_id}:proposal:{proposal_id}:proposal-set-cross-project:{owner}"
+                )),
+                (Some(_), Some(_)) => {}
+            }
+            if let (Some(commit_set), Some(proposal_set)) = (
+                commit_proposal_set_id.as_deref(),
+                proposal_set_id.as_deref(),
+            ) {
+                if commit_set != proposal_set {
+                    check.issues.push(format!(
+                        "application:{application_id}:proposal:{proposal_id}:commit-proposal-set-mismatch:{commit_set}:{proposal_set}"
+                    ));
+                }
+            }
+            if let Some(revision_proposal_id) = revision_proposal_id.as_deref() {
+                if revision_proposal_id != proposal_id {
+                    check.issues.push(format!(
+                        "application:{application_id}:revision:{revision_id}:proposal-mismatch:{revision_proposal_id}:{proposal_id}"
+                    ));
+                }
+            }
+            let Some(origin_kind) = origin_kind else {
+                check.incomplete.push(format!(
+                    "application:{application_id}:revision:{revision_id}:missing"
+                ));
+                continue;
+            };
+            if !matches!(origin_kind.as_str(), "enveloped" | "legacy-unbound") {
                 check.issues.push(format!(
-                    "application:{application_id}:proposal:{proposal_id}:commit-proposal-set-mismatch:{commit_set}:{proposal_set}"
+                    "application:{application_id}:revision:{revision_id}:origin-kind-invalid:{origin_kind}"
                 ));
             }
-        }
-        if let Some(revision_proposal_id) = revision_proposal_id.as_deref() {
-            if revision_proposal_id != proposal_id {
-                check.issues.push(format!(
-                    "application:{application_id}:revision:{revision_id}:proposal-mismatch:{revision_proposal_id}:{proposal_id}"
+            if origin_kind == "legacy-unbound" {
+                // An applied Revision that still carries the legacy-unbound
+                // origin has no durable envelope proving the source set that was
+                // actually committed.  Treat it as an evidence hole even when a
+                // caller happened to add a basis row later; the legacy origin is
+                // itself the production writer's admission that the binding was
+                // not sealed.
+                check.incomplete.push(format!(
+                    "application:{application_id}:revision:{revision_id}:legacy-unbound-applied"
                 ));
             }
+            applications.push((application_id, revision_id, origin_kind));
         }
-        let Some(origin_kind) = origin_kind else {
-            check.incomplete.push(format!(
-                "application:{application_id}:revision:{revision_id}:missing"
-            ));
-            continue;
-        };
-        if !matches!(origin_kind.as_str(), "enveloped" | "legacy-unbound") {
-            check.issues.push(format!(
-                "application:{application_id}:revision:{revision_id}:origin-kind-invalid:{origin_kind}"
-            ));
-        }
-        if origin_kind == "legacy-unbound" {
-            // An applied Revision that still carries the legacy-unbound
-            // origin has no durable envelope proving the source set that was
-            // actually committed.  Treat it as an evidence hole even when a
-            // caller happened to add a basis row later; the legacy origin is
-            // itself the production writer's admission that the binding was
-            // not sealed.
-            check.incomplete.push(format!(
-                "application:{application_id}:revision:{revision_id}:legacy-unbound-applied"
-            ));
-        }
-        applications.push((application_id, revision_id, origin_kind));
     }
 
     for (application_id, revision_id, origin_kind) in applications {

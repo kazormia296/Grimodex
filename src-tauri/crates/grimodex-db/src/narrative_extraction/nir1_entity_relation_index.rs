@@ -949,6 +949,11 @@ impl<'conn> ReusedStatement<'conn> {
         // statement, which would reprepare it at each use and undo the reuse
         // (DR-DBC-4). A bind of NULL frees the copy and keeps the program. A bind
         // that fails only leaves the previous copy until the next use.
+        // This is weaker than it reads: 3.54 also expires the statement when the
+        // value being overwritten is the integer 0 or 1 (the bind sees a change
+        // from 0/1 to NULL). Every slot here binds a Revision id (text) only, so
+        // no parameter ever holds 0 or 1; a slot that bound such an integer would
+        // reprepare at this call instead of at the next use (DR-DBC-4, P3-8).
         for index in 1..=statement.parameter_count() {
             let _ = statement.raw_bind_parameter(index, rusqlite::types::Null);
         }

@@ -861,6 +861,75 @@ mod tests {
         assert_eq!(callbacks.load(Ordering::Relaxed), 3);
     }
 
+    /// The same order with what `commit_transaction` is documented to rely on
+    /// and the plain in-memory test above does not exercise: an FTS5 table
+    /// (`xSync`/`xCommit` run inside COMMIT and may run SQL of their own) and a
+    /// WAL database. The audit of the interpreter (`AUDITED_SQLITE_SOURCE_ID`) is
+    /// a reading of the source; this pins the one property the reservation needs
+    /// on a real FTS5 write: the commit hook runs after every callback of the
+    /// FTS sync, and exactly one more callback is delivered after it.
+    #[test]
+    fn audited_commit_callback_order_holds_with_fts5_and_wal() {
+        use std::sync::atomic::AtomicU64;
+
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-commit-order-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let mut conn = Connection::open(&path).unwrap();
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        conn.execute_batch(
+            "CREATE TABLE t(x);
+             CREATE VIRTUAL TABLE docs USING fts5(body);",
+        )
+        .unwrap();
+
+        let callbacks = Arc::new(AtomicU64::new(0));
+        let at_commit_hook = Arc::new(AtomicU64::new(u64::MAX));
+        let counted = Arc::clone(&callbacks);
+        conn.progress_handler(
+            1,
+            Some(move || {
+                counted.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )
+        .unwrap();
+        let seen = Arc::clone(&callbacks);
+        let recorded = Arc::clone(&at_commit_hook);
+        conn.commit_hook(Some(move || {
+            recorded.store(seen.load(Ordering::Relaxed), Ordering::Relaxed);
+            false
+        }))
+        .unwrap();
+        conn.execute_batch("BEGIN").unwrap();
+        conn.execute_batch(
+            "INSERT INTO t VALUES (1);
+             INSERT INTO docs(body) VALUES ('the quick brown fox');",
+        )
+        .unwrap();
+        callbacks.store(0, Ordering::Relaxed);
+        conn.execute_batch("COMMIT").unwrap();
+        conn.commit_hook(None::<fn() -> bool>).unwrap();
+        conn.progress_handler(0, None::<fn() -> bool>).unwrap();
+        let at_hook = at_commit_hook.load(Ordering::Relaxed);
+        let total = callbacks.load(Ordering::Relaxed);
+        eprintln!("FTS5+WAL COMMIT: callbacks before the commit hook {at_hook}, in total {total}");
+        // Init -> Goto drain two callbacks; the FTS5 sync may add more before the
+        // hook; the final one comes after it.
+        assert!(at_hook >= 2, "hook after the Init/Goto callbacks: {at_hook}");
+        assert_eq!(total, at_hook + 1, "exactly one callback after the commit hook");
+        drop(conn);
+        for suffix in ["", "-wal", "-shm"] {
+            let mut file = path.as_os_str().to_os_string();
+            file.push(suffix);
+            let _ = std::fs::remove_file(file);
+        }
+    }
+
     #[test]
     fn commit_tail_step_reservation_is_bounded_and_does_not_wrap() {
         let budget = CapacityBudget::new(1, Instant::now() + DEADLINE);

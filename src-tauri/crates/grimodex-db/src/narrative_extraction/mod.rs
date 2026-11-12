@@ -242,6 +242,8 @@ mod semantic_bindings;
 mod semantic_epoch;
 mod semantic_index_diagnostics;
 mod source_revision;
+#[cfg(test)]
+mod reprepare_cost_tests;
 #[allow(unused_imports)]
 pub(crate) use source_revision::{
     resolve_current_source_state_with_control, resolve_source_revision_with_control,
