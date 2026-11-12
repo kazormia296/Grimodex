@@ -11,7 +11,7 @@ pub(super) const OBSERVATION: &str = "narrative_observation_extract";
 pub(super) const SYNTHESIS: &str = "narrative_event_synthesize";
 const VERSION: &str = "chronicle.context-set/1";
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Digests {
     pub context_set_digest: String,
@@ -19,7 +19,7 @@ pub struct Digests {
     pub final_request_digest: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestProof {
     pub execution_id: String,
@@ -62,14 +62,10 @@ pub(in crate::narrative_extraction) fn accepted_contract(
 }
 
 /// IDs are unique. Match JS code-unit ordering, including astral characters.
-/// `component_contract_digest` selects one frozen accepted contract.
-pub(super) fn replay(
-    stage: &str,
-    component_contract_digest: &str,
-    mut inputs: Vec<(String, String, String)>,
-) -> Result<Digests> {
-    let c = accepted_contract(stage, component_contract_digest)?
-        .ok_or_else(|| anyhow::anyhow!("component-recipe-unsupported"))?;
+/// The digest reads only the stage and the (contextId, inputRef) pairs, never
+/// the model-visible text, so a caller can tell which request a persisted
+/// receipt belongs to before it builds any text.
+fn context_set_digest(stage: &str, inputs: &mut [(String, String, String)]) -> Result<String> {
     inputs.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
     ensure!(
         inputs.windows(2).all(|p| p[0].0 != p[1].0),
@@ -85,7 +81,33 @@ pub(super) fn replay(
         "selector":{"kind":"whole-source"}})
         })
         .collect();
-    let context_set_digest = canonical_json_digest(&json!({"version":VERSION,"entries":entries}))?;
+    Ok(canonical_json_digest(
+        &json!({"version":VERSION,"entries":entries}),
+    )?)
+}
+
+/// The context-set digest of the one request that carries one observation
+/// window (`observation-citation-window:<id>`).
+pub(super) fn observation_window_context_digest(window_id: &str) -> Result<String> {
+    context_set_digest(
+        OBSERVATION,
+        &mut [(
+            format!("observation-citation-window:{window_id}"),
+            format!("citation-window:{window_id}"),
+            String::new(),
+        )],
+    )
+}
+
+/// `component_contract_digest` selects one frozen accepted contract.
+pub(super) fn replay(
+    stage: &str,
+    component_contract_digest: &str,
+    mut inputs: Vec<(String, String, String)>,
+) -> Result<Digests> {
+    let c = accepted_contract(stage, component_contract_digest)?
+        .ok_or_else(|| anyhow::anyhow!("component-recipe-unsupported"))?;
+    let context_set_digest = context_set_digest(stage, &mut inputs)?;
     let component_contract_digest = contract_digest_of(stage, &c)?;
     let sections = if inputs.is_empty() {
         "(no model-visible context)".into()
