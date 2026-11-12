@@ -133,7 +133,7 @@ fn serve(mut stream: TcpStream, script: Vec<Step>, shared: &Recorded) {
     let mut request = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut buffer = [0u8; 4096];
-    while !request_total_len(&request).is_some_and(|total| request.len() >= total)
+    while request_total_len(&request).is_none_or(|total| request.len() < total)
         && Instant::now() < deadline
         && !shared.stop.load(Ordering::Acquire)
     {
