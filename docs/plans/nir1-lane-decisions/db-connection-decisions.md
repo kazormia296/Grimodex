@@ -461,7 +461,7 @@ lease の timeout の案内文を出す画面の場所、SQLite が TRIGGER 本�
 | `busy_timeout` | 設定のみ | 成功すると busy handler の clientdata も消す | busy handler は使っていない（登録箇所なし）。`busy_timeout` は `&self` のまま |
 | `Statement::column_names()`／`columns()` | `Vec` | `impl DoubleEndedIterator + ExactSizeIterator` | `execute.rs`・`project_snapshots.rs` の 2 か所の `.iter()` を外した |
 | `Connection::backup` の進捗引数 | 推論できた | 型注釈が要る | 試験 2 か所（`nir1_capacity.rs`、`nir1_capacity_boundary_tests.rs`）に `None::<fn(rusqlite::backup::Progress)>` を足した |
-| bundled のビルド | `-DSQLITE_ENABLE_MEMORY_MANAGEMENT` あり | **無し**（`libsqlite3-sys-0.39.1/build.rs`。ほかの compile flag の差は無い） | `sqlite3_release_memory`／`soft_heap_limit`／`PRAGMA shrink_memory` は無効になるが、この repo はどれも呼ばない（`rg` で 0 件）。`sqlite3_memory_used`／`sqlite3_memory_highwater` は常に有効で、診断（feature）が使うのはこの 2 つだけ |
+| bundled のビルド | `-DSQLITE_ENABLE_MEMORY_MANAGEMENT` あり | **無し**（`libsqlite3-sys-0.39.1/build.rs`。ほかの compile flag の差は無い） | `sqlite3_release_memory`／`soft_heap_limit`／`PRAGMA shrink_memory` は無効になるが、この repo はどれも呼ばない（`rg` で 0 件）。`sqlite3_memory_used`／`sqlite3_memory_highwater` は常に有効で、診断（feature）が使うのはこの 2 つだけ **時間への影響あり**：in-process の W（R1022／D2064）で約 +4〜5%（下の「W の遅れの残りの切り分け」）。 |
 | 同梱の SQLite | 3.53.2、source ID `2026-06-03 19:12:13 d6e03d8c…1a24` | 3.54.1、`2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76` | 下の「監査」 |
 
 ### 監査（`AUDITED_SQLITE_SOURCE_ID` の更新の根拠）
@@ -595,3 +595,38 @@ quiet の run 数は R4 が各腕 3、R16 は base 3／head2 5、R1022・D2064 �
 **製品で当たる経路**：registration は実 worker では 30 s の START_TIMEOUT 内で行う。今回の in-process の W は最大 R16 で約 1.3 s（修正前 2.1 s）で、30 s に対する余裕は 23 倍以上ある。ただし W は Q8176/R16 の fixture の値で、これより Revision が大きい取込みでは Edge ごとの再解析の費用が payload の大きさ × Edge の数で増えるので、修正前は 3.54 で窓が広がる向きだった。窓の縮小（DR-GRW-1〜4）の効果は DUPLICATE の修正で回復し、残りの 4〜8% は上の通り。実 worker での W は未測定（変更していない）。
 
 3.54 では `json_valid` を行ごとに評価する文が全て同じ遅れ方をする。`candidates.rs` 以外（`nir1_graph/input.rs`、`scene_scope.rs`、`nir1_entity_relation_index.rs` など）の `json_valid` が per-row の loop に入っていないかは、今回は調べていない（W の statement trace では DUPLICATE のほかに 1 文だけの大きな増加は無かった）。
+
+### W の遅れの残りの切り分け（2026-11-13。dev 専用の測定、記録は `fusion-eval-data/design-notes/db-connection-2026-11-07/drift-measure/plan-rusqlite-2026-11-13/` と `…-13-b/`）
+
+**(a) MALFORMED を `json_valid` が Revision ごと 1 回の形にした**（`candidates.rs` の `SOURCE_INDEX_MALFORMED_SQL`、commit `a464d99f`）。旧文は `json_valid(r.payload_json)` を条件ごとの `CASE` で繰り返し、健全な Revision で 8 回（`=0` の 1 回、`$.schemaVersion`／`kind`／`producer`／`projectId`／`revisionId` の 5 回、`json_type` の 1 回、`json_each` の引数の 1 回）payload を解析し直す。新文は `QUALIFYING_REVISIONS` の後ろに materialized CTE `parsed(id, project_id, ok)`（`qualifying` から始め、`r` を主キーで引き、`ok = json_valid(r.payload_json)` を 1 回）を足し、各条件は `v.ok` を読む。`ok` は元の呼び出しと同じ値（0／1／NULL）で、`json_extract`・`json_type`（3.54 でも cache される）と Entity ごとの小さい値への検査は変えていない。
+
+- **同じ結果の根拠**：(1) 述語と読む行が同じ（payload を読むのは `qualifying` の Revision だけ。`parsed` も `qualifying` から始まる）。(2) 旧文を試験の oracle `SOURCE_INDEX_MALFORMED_REPEATED_VALID_ORACLE_SQL` に残し、`malformed_with_one_validity_check_agrees_with_the_repeated_one_on_every_damage` で、既存の damage 36 通りと、payload の形 14 種（不正 JSON・途中で切れた・空・`null`・数値・文字列・配列・JSON5・BOM 付き・BLOB・JSON でない BLOB・`schemaVersion` が文字列・`bundle` が配列・Entity が `{}`／`null`）を Edge の残る Revision 0／1・Edge の無い Revision 1・両方の 4 通りに当てた 56 通りを足し、実 schema（UNIQUE あり）と UNIQUE 無しの 2 通り（合計 184 件）で、文単独の結果（値またはエラー文）と `verify_complete_source_index` の判定が一致することを固定した（結果は `Ok(true)`／`Ok(false)` の 2 種だけで、エラーは 0）。空・健全・Edge 無し・別 project の Set は `…_agrees_on_the_empty_and_the_healthy_project`。(3) `json_valid` の評価回数（payload に対して 16 回 → 2 回。Entity の値への 12 回は同じ）と plan の順（`MATERIALIZE parsed` → `qualifying` → `SCAN q` → `SCAN v`、`SCAN r` は集合を選ぶ 1 回、`SEARCH r … (id=?)` が 2 回）を `…_tests_each_payload_once_not_once_per_condition`、payload を読むのが subject の Revision だけであることを `…_parses_the_payload_of_nothing_but_its_subject` で固定した。
+- **残る差（結果は変わらない）**：旧文は最初の malformed な Revision で止まり、残りの payload を解析しなかった。新文は `parsed` を全 Revision で作ってから判定する。差が出るのは答えが true の場合だけで、そのとき proof はそこで終わる（W に入る健全な経路では両方とも全 Revision を読む）。`r` を `parsed` の中と本体の 2 回主キーで引くので、C の再現では旧文（3.53.2）より 1〜4 ms 遅いまま。
+
+C の再現（`c/` の amalgamation、同じ flag、lookaside 0、各文 7 回の中央の CPU 時間、ms。この session の別の再測定で、他の lane の負荷は 2 前後）：
+
+    fixture   旧文（3.53.2）  旧文（3.54.1）  新文（3.54.1）
+    R4            7.5            12.7             8.6
+    R16          29.7            50.2            33.5
+    R1022        14.2            23.1            15.3
+    D2064        18.3            31.0            20.6
+
+**(b) 小さい文の loop の遅れの切り分け**（W の遅れの残り。base＝master の `a067f7f7`〔rusqlite 0.40.1、SQLite 3.53.2、`MEMORY_MANAGEMENT` あり〕、F＝この枝の `a464d99f`〔0.41.1、3.54.1、flag なし〕）。
+
+1. **rusqlite の呼出しの費用ではない**：独立の Rust bench（0.40.1 と 0.41.1 を別 crate で build、release、r1022 の fixture、1,022 id を 20 回、`prepare_cached`／持ち回しの `query_row`／index に使われない `AND origin_kind = ?2` の項／4 行の `query`／`String` の取得／毎回 `Connection::prepare`／progress handler〔cadence 1 と 1000〕の有無）。**0.41.1＋3.54.1 の方が 5〜8% 速い**（例：`prepare_cached` の PK 検索 1,499〜1,518 → 1,414〜1,437 ns、持ち回し 1,324〜1,339 → 1,241〜1,253 ns、cadence 1 の handler 付きでも同じ）。index に使われない項の文の差（`prepare_cached` と持ち回しの差）は両版とも約 115 ns で、`clear_bindings` による再 prepare の費用は見えない（`RePrepare` の回数は bench では数えていない。registration の statement が `RePrepare` 0 であることは `registration_statements` の試験が固定している）。毎回 prepare する文は、PK 検索で 3.75 → 3.70 µs、`COUNT_SQL`（長い文）で 54.8 → 57.1 µs。この文は持ち回しでは 14.9 → 17.0 µs（+14%）で、これは下の `json_valid` の繰り返し。
+2. **SQLite 3.54 の本体でもない**：W を 3 腕で測った（R1022、各腕 3 run×10 回、すべて quiet、交互）。base 1217.4 ms、F 1307.4 ms（+7.4%）、**X 1297.4 ms（+6.6%）**。X は F と同じ source に libsqlite3-sys 0.39.1 の amalgamation だけを 3.53.2 のものに替えた build（`SQLITE_SOURCE_ID` の文字列は製品の監査〔`AUDITED_SQLITE_SOURCE_ID`〕を通すために 3.54.1 のものにした。dev 専用）。X が F と同じ遅さなので、残りは SQLite のバージョンでは説明できない。
+3. **有力な原因は、bundled のビルド flag の差**：libsqlite3-sys 0.39.1 の `build.rs` は `-DSQLITE_ENABLE_MEMORY_MANAGEMENT` を渡さない（0.38.x は渡す。上の表）。この flag は pcache の mode を変える（あり：全接続で 1 つの cache を共有〔`pcache1.separateCache = 0`〕、無し：接続ごとの cache）。F と同じ source に環境変数 `LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_MEMORY_MANAGEMENT` を足して build した **F3** は、R1022 で 1,245.6 ms（70 回）と、**F の 1,303〜1,311 ms から約 60 ms 戻る**（base 比 +1.5〜2.2%）。ほかの case は下の表。**ただし仕組みは特定していない**：C で同じ flag の差（3.54.1、同じ amalgamation、lookaside 0）を、同じ文の loop・接続を毎 round 開き直す形で測っても差は出ない（無しの方がわずかに速い）。差が出るのは製品の経路をそのまま回す in-process の harness だけで、**実 worker（固定 allocator）での W は未測定**なので、実 worker で同じ効果があるかは分からない。
+4. **この lane の変更（hook の `&mut`、`ScopedTransaction`、`ReusedStatement` の NULL bind）の影響**：F3 が base の +1〜3% に収まる（残りは次の 5 と、小さい文の誤差）ので、この lane のコードによる遅れは大きくても 2〜3% 以下。個別の寄与の分離はしていない。
+5. **`json_valid` の繰り返しが残る per-Revision の文**：`nir1_graph/input.rs` の `COUNT_SQL`（4 回）と `nir1_entity_relation_index.rs` の `input_counts`（同形、4 回）は Revision ごとに実行される。C の再現（3.53.2 → 3.54.1、1 回あたり）で `COUNT_SQL` が R1022 17.5 → 20.5 µs・D2064 19.1 → 22.6 µs、`input_counts` が 23.4 → 28.2 µs・25.2 → 31.0 µs。1 回の registration で R1022 は約 +8 ms、D2064 は約 +19 ms（W の 0.7〜1.8%）。`scene_scope.rs` ほかにも同じ形の文があるが、Revision の payload より小さい binding の JSON なので別に数えていない。**書き直しはしていない**：`WHERE revision.id = ?1` の 1 行を `json_valid` の評価回数だけのために CTE にすると、「admission の前に JSON の演算をしない」「payload を読むのは subject の Revision だけ」の 2 つの既存の約束を文ごとに確かめ直す必要があり、見込みの回収が W の 1〜2% に届かないため。
+
+**W の取り直し**（in-process の DR-GRW-3 と同じ harness、lookaside 0、各 run 20 回、base と head を case ごとに交互、各 run の開始時に loadavg の 1 分値が 3 未満になるまで最大 20 分待つ〔今回は待ちが生じず、51 run すべて quiet〕。base は master `a067f7f7`、head は `a464d99f`〔DUPLICATE と MALFORMED の書き直しを含む〕。F3 は head に `LIBSQLITE3_FLAGS` を足した参考腕。binary の sha256：base `77e10e08…`、head `92662007…`、F3 `76a7bf67…`、X `1897cdbf…`。run は新しい directory に記録）：
+
+    case                 base      head      head/base     head＋MM（F3）  F3/base   quiet run（base／head／F3）
+    Q2044/R4             303.2     308.7     +1.8%（前は +4.4%）   305.8    +0.9%     5／5／3
+    Q8176/R16            1228.7    1255.2    +2.2%（前は +4.5%）   1246.3   +1.4%     5／5／3
+    Q2044/R1022          1226.6    1311.3    +6.9%（前は +6.7%）   1245.6   +1.5%     5／5／5（F3 は 70 回）
+    D2064/report-heavy   1032.7    1110.7    +7.6%（前は +7.7%）   1066.3   +3.3%     5／5／3
+
+各 run の p50 の範囲は、R4 と R16 では base と head が一部重なる（R4：base 299〜309、head 304〜310。R16：base 1217〜1243、head 1249〜1261）。R1022 と D2064 は重ならない（R1022：base 1220〜1237、head 1301〜1319。D2064：base 1021〜1050、head 1105〜1120）。
+
+**結論と残る問題**：R4／R16 の遅れは +4.4／+4.5% から +1.8／+2.2% になった（MALFORMED の書き直しと DUPLICATE の分）。R1022／D2064 の +7% は MALFORMED の書き直しでは動かず、**4〜5 ポイントは libsqlite3-sys 0.39 が `SQLITE_ENABLE_MEMORY_MANAGEMENT` を外したこと**に当たる見込み。戻すなら `LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_MEMORY_MANAGEMENT`（repo の `.cargo/config.toml` の `[env]`、ほか CI・Electron の native の build の環境）だが、**この lane では適用していない**：build 設定と CI・release・native build に広く効くこと、仕組みを特定していないこと、実 worker で効くかを確かめていないことが理由で、別の判断（と実 worker での W の測定）に残す。W の絶対値は最大 R1022 で約 1.3 s で、30 s の START_TIMEOUT に対する余裕（23 倍以上）には影響しない。
