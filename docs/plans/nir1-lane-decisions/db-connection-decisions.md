@@ -555,3 +555,43 @@ task の「時間の測定は不要」の例外（DB の書込み・読みの性
 - G1（Rust 水準の保存 p50、g-ja-1 の写し、5 run）：base 7188 µs／head 7170 µs。G3（project 削除、5 個ずつ）：p50 3159／3231 ms（+2.3%、範囲は重なる）。`prepare_cached` の 5 か所の影響は、この 2 つでは見えない（分けては測っていない）。
 - 未測定：実 worker の W・時間切れの本数、G1 の IPC 水準（disk の残りで Electron の build を 2 腕分置けない）、DUPLICATE 文の `EXPLAIN QUERY PLAN`。W の 1 run は開始時の負荷が 10.21（quiet でない）。他の lane の cargo と完全には分離できていない。
 - 判断：「影響なし」とは書けない。W の悪化は DR-GRW-1〜4 の窓を縮める効果を打ち消す方向で、DUPLICATE 文の plan を 3.53.2 と 3.54.1 で比べ、書き直し（または `CROSS JOIN` の順・`MATERIALIZED` の扱いの固定）で戻せるかを次に調べる。この lane の変更（hook の `&mut Connection`、`ReusedStatement` の NULL bind）が主因でないことは、statement 単位の差（1 文に集中）から言えるが、SQLite の更新との切り分けは未実施。
+
+### W の遅れの原因と対処（2026-11-13。dev 専用の測定、記録は `fusion-eval-data/design-notes/db-connection-2026-11-07/drift-measure/plan-rusqlite-2026-11-13/`）
+
+**原因（確定）**：SQLite 3.54 の `json_valid` は、1 引数の text に対しても解析結果を次の呼び出しへ残さない（amalgamation の `jsonValidFunc` が `jsonParseFuncArg(.., JSON_KEEPERROR|JSON_NOCACHE)` を渡す。3.53.2 は `JSON_KEEPERROR` だけで、同じ行の後続の呼び出しが解析を使い回していた）。`json_extract` は 3.54 でも cache される。`SOURCE_INDEX_DUPLICATE_SQL`（`candidates.rs`）は `qualifying q → narrative_dependency_edges edge → narrative_proposal_revisions r` の順で、`r` だけを見る 6 個の JSON 条件（`json_valid(r.payload_json)=1` ほか）を **Edge の行ごと** に評価していた。3.53.2 では cache が効いて Revision ごと 1 回の解析と同じ費用だったが、3.54 では Edge ごとに payload 全体（R4 の fixture で 1 つ約 178 KB）を解析し直す。lane の変更（hook の `&mut Connection`、`ReusedStatement` の NULL bind）ではない。
+
+切り分け（rusqlite を通さない C の再現で、libsqlite3-sys 0.38.2＝3.53.2 と 0.39.1＝3.54.1 の amalgamation を同じ flag で build。R4 の fixture の DB、lookaside 0。`c/` に source と結果）：
+- `EXPLAIN QUERY PLAN` と `EXPLAIN`（opcode）は両版で同一。VM steps も同一（55,351）。plan の変化ではない。
+- DUPLICATE 文の CPU 時間：3.53.2 は 4.98 ms、3.54.1 は 254 ms（R4）。`json_valid(r.payload_json)=1` だけを Edge ごとに評価する最小の文で 2.3 ms → 290 ms、`json_extract` だけでは差なし。
+- 文を `q → r → edge` の順に変えると、3.54.1 で 254 → 2.96 ms（R4）、VM steps は 55,351 → 28,938。
+
+**対処**：`SOURCE_INDEX_DUPLICATE_SQL` の `CROSS JOIN` の順を `q → r → edge` にした（述語・束縛・`GROUP BY … HAVING COUNT(*)<>1` は同じ）。`r` を先に読むので、`r` だけの 6 条件は Revision ごと 1 回評価される。**同じ結果**の根拠は 3 つ：(1) 述語と読む行が同じ。違うのは、Edge の無い qualifying Revision の payload も読むことだけで、DUPLICATE は MALFORMED が false を返した後にだけ実行される（`verify_complete_source_index`）。MALFORMED が同じ payload を全部読んで有効と確かめた後なので、新たな読みでエラーは起きない。(2) 旧文を `SOURCE_INDEX_DUPLICATE_EDGES_FIRST_ORACLE_SQL`（試験の oracle）に残し、既存の 36 通りの damage × 実 schema／UNIQUE 無しの 2 通りに、「Edge の無い Revision の payload が invalid／空／null／数値／配列／BOM 付き／BLOB／形が違う」の 20 通りを足して、**文単独の結果（値またはエラー文）が一致**することを固定した（空・healthy・Edge 無しの形も）。(3) `json_valid` の評価回数（healthy で 6 回 → 2 回）と plan の順（`SEARCH r` が `SEARCH edge` より前）を試験で固定した。UNEXPECTED は DR-GRW-1 の `valid` CTE で Revision ごとに 1 回なので変更しない。
+
+**CPU 時間（C の再現、各文 7 回の中央、lookaside 0、`c/bench-out.txt`。3.53.2 → 3.54.1、ms）**：
+
+    fixture   DUPLICATE（旧文）    DUPLICATE（新文）   MALFORMED（変更なし）
+    R4        5.0 → 254.3          3.2 → 3.0           11.9 → 20.9
+    R16       17.3 → 1040.3        11.2 → 10.9         43.5 → 68.9
+    R1022     9.4 → 11.1           11.0 → 10.8         19.5 → 34.3
+    D2064     13.8 → 15.2          13.4 → 15.4         29.5 → 49.1
+
+R1022／D2064 は Revision が小さい（約 1 KB）ので、旧文でも遅れは小さい（+1.7／+1.5 ms）。遅くなる範囲は「Revision の payload の大きさ × その Edge の数」で、R の小さい（1 Revision が大きい）形、つまり Q²/R の大きい形で効く。製品で当たるのは Revision あたりの Entity が多い取込み（Q2044/R4 は 1 Revision が約 178 KB・約 250 Edge）。
+
+**W の取り直し**（in-process、DR-GRW-3 と同じ harness、lookaside 0、各 run 20 回、腕は交互。base は master `a067f7f7`、head2 はこの枝に DUPLICATE の変更だけを当てた build。binary の sha256：base `77e10e08…`、head（前の測定）`098891bc…`、head2 `def28c78…`）。開始時の loadavg が 3 未満（quiet）だった run だけで集計する。他の lane の cargo で最初の run は 8〜20 だった（`loadW.txt`、`analysisQ.txt`）：
+
+    case                 base      head（前）   head2     head2/base（quiet のみ）
+    Q2044/R4             303.1     516.7        316.5     +4.4%（前は +69.8%）
+    Q8176/R16            1224.8    2078.9       1279.9    +4.5%（前は +67.4%）
+    Q2044/R1022          1225.7    1336.6       1307.4    +6.7%
+    D2064/report-heavy   1035.3    1137.1       1115.2    +7.7%
+
+quiet の run 数は R4 が各腕 3、R16 は base 3／head2 5、R1022・D2064 は各腕 3（各 20 回）。各 run の p50 の範囲は 4 case とも base と head2 で重ならない（R1022：base 1197〜1229、head2 1301〜1321）。quiet でない run（R4 の 6 本、R16 の 4 本）は集計から外した（荷重で base も 437 ms などに遅くなる）。
+
+**残る遅れ**：4〜8%（R4 +13 ms、R16 +55 ms、R1022 +82 ms、D2064 +80 ms）は直っていない。切り分けの結果：
+- MALFORMED（`CASE WHEN json_valid(..)` を条件ごとに繰り返すので 3.54 では Revision ごとに約 8 回解析する）が C の再現で +9／+25／+15／+20 ms（R4／R16／R1022／D2064）。R4 の +13 ms の大半はこれで、R16 は約半分。
+- R1022／D2064 の statement trace（各腕 16 回、`trace-*`、`analyzeT.mjs`）では、残りは 1 文に集まらず、小さい文の loop（`… WHERE id = ?1`、`… ORDER BY ordinal ASC` など）が 3〜15% ずつ遅い。同じ文を C で回すと両版で同じ（1022 回で 3.1 ms）ので、SQLite の statement の費用ではない。Cargo.lock の差は rusqlite／libsqlite3-sys だけなので、rusqlite 0.41 側の呼び出しの費用（`prepare_cached` の `clear_bindings` 後の再 prepare を含む判断 11 の影響）かこの lane の変更が候補だが、**未特定**。
+- 次の手：MALFORMED の `json_valid` を Revision ごと 1 回にする書き直し（見込み +10〜25 ms の回収。結果が同じことの試験は今回の oracle の方式で足りる）。R1022／D2064 の diffuse な遅れは、statement 単位の CPU 時間を rusqlite 0.40 と 0.41 で比べる測定が要る。
+
+**製品で当たる経路**：registration は実 worker では 30 s の START_TIMEOUT 内で行う。今回の in-process の W は最大 R16 で約 1.3 s（修正前 2.1 s）で、30 s に対する余裕は 23 倍以上ある。ただし W は Q8176/R16 の fixture の値で、これより Revision が大きい取込みでは Edge ごとの再解析の費用が payload の大きさ × Edge の数で増えるので、修正前は 3.54 で窓が広がる向きだった。窓の縮小（DR-GRW-1〜4）の効果は DUPLICATE の修正で回復し、残りの 4〜8% は上の通り。実 worker での W は未測定（変更していない）。
+
+3.54 では `json_valid` を行ごとに評価する文が全て同じ遅れ方をする。`candidates.rs` 以外（`nir1_graph/input.rs`、`scene_scope.rs`、`nir1_entity_relation_index.rs` など）の `json_valid` が per-row の loop に入っていないかは、今回は調べていない（W の statement trace では DUPLICATE のほかに 1 文だけの大きな増加は無かった）。

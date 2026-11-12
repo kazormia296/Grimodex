@@ -248,11 +248,21 @@ const SOURCE_INDEX_MISSING_SQL: &str = "SELECT EXISTS(
                 )
          )";
 
+/// DUPLICATE reads the Revision before its Edges (`q`, then `r`, then `edge`;
+/// DR-DBC-4). With the Edges first, the six JSON terms that mention only `r`
+/// are evaluated once per Edge, and SQLite 3.54's `json_valid` no longer keeps
+/// its parse for the next call (it passes `JSON_NOCACHE`), so every Edge parsed
+/// the whole payload again: one statement went from 3.8 to 241.8 ms on the
+/// Q2044/R4 fixture. With `r` first the terms run once per Revision, as they
+/// did before 3.54 thanks to the cache. The result is the same: the same
+/// predicates over the same rows. The statement now reads the payload of a
+/// qualifying Revision that has no Edge; it runs only after MALFORMED returned
+/// false, which has already read every such payload and found it valid.
 const SOURCE_INDEX_DUPLICATE_SQL: &str = "SELECT EXISTS(
              SELECT 1
                FROM qualifying q
-               CROSS JOIN narrative_dependency_edges edge ON edge.consumer_key=q.id
                CROSS JOIN narrative_proposal_revisions r ON r.id=q.id
+               CROSS JOIN narrative_dependency_edges edge ON edge.consumer_key=q.id
               WHERE edge.project_id=?1
                 AND edge.consumer_kind=?7
                 AND json_valid(r.payload_json)=1
@@ -1929,6 +1939,206 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- DR-DBC-4: DUPLICATE reads the Revision before its Edges ----
+
+    // DUPLICATE as it was before DR-DBC-4, verbatim: the Edges first, then the
+    // Revision, so the JSON terms on `r` run once per Edge. Test oracle only: the
+    // production statement must give the same result.
+    const SOURCE_INDEX_DUPLICATE_EDGES_FIRST_ORACLE_SQL: &str = "SELECT EXISTS(
+             SELECT 1
+               FROM qualifying q
+               CROSS JOIN narrative_dependency_edges edge ON edge.consumer_key=q.id
+               CROSS JOIN narrative_proposal_revisions r ON r.id=q.id
+              WHERE edge.project_id=?1
+                AND edge.consumer_kind=?7
+                AND json_valid(r.payload_json)=1
+                AND json_extract(r.payload_json,'$.schemaVersion')=1
+                AND json_extract(r.payload_json,'$.kind')=?4
+                AND json_extract(r.payload_json,'$.producer')=?6
+                AND json_extract(r.payload_json,'$.projectId')=q.project_id
+                AND json_extract(r.payload_json,'$.revisionId')=r.id
+                AND edge.source_object_identity LIKE 'codex:%'
+              GROUP BY edge.consumer_key, edge.source_object_identity
+             HAVING COUNT(*)<>1
+         )";
+
+    #[test]
+    fn duplicate_with_the_revision_first_agrees_with_the_edges_first_statement_on_every_damage() {
+        // The Revision-first statement also reads the payload of a qualifying
+        // Revision that has no Edge, which the Edges-first one never did. Payloads
+        // that are not JSON object text, behind a Revision without an Edge, must
+        // still give the same result (and the same error, if any) in both.
+        let no_edge_payloads: Vec<(String, Vec<String>)> = [
+            ("invalid JSON", "'{broken'"),
+            (
+                "truncated JSON",
+                "substr(payload_json,1,length(payload_json)-7)",
+            ),
+            ("empty text", "''"),
+            ("JSON null", "'null'"),
+            ("JSON number", "'123'"),
+            ("JSON array", "'[1,2]'"),
+            (
+                "JSON text with a BOM-like prefix",
+                "char(65279) || payload_json",
+            ),
+            ("BLOB of valid JSON", "CAST(payload_json AS BLOB)"),
+            ("BLOB that is not JSON", "x'00ff'"),
+            (
+                "wrong shape (schemaVersion 2)",
+                "json_set(payload_json,'$.schemaVersion',2)",
+            ),
+        ]
+        .into_iter()
+        .flat_map(|(label, set)| {
+            ["rev-0", "rev-1"].map(|id| {
+                (
+                    format!("NO EDGE: {id} payload is {label}"),
+                    vec![
+                        format!(
+                            "DELETE FROM narrative_dependency_edges
+                              WHERE consumer_kind='proposal-revision' AND consumer_key='{id}'"
+                        ),
+                        format!(
+                            "UPDATE narrative_proposal_revisions SET payload_json={set}
+                              WHERE id='{id}'"
+                        ),
+                    ],
+                )
+            })
+        })
+        .collect();
+        let damage: Vec<(String, Vec<String>)> = equivalence_damage()
+            .into_iter()
+            .map(|(name, statements)| (name.to_owned(), statements))
+            .chain(no_edge_payloads)
+            .collect();
+        let mut compared = 0;
+        let mut found = std::collections::BTreeSet::new();
+        for real_unique in [true, false] {
+            for (name, statements) in &damage {
+                let conn = equivalence_fixture(real_unique);
+                for statement in statements {
+                    // The real schema refuses a duplicate Edge; the synthetic one takes it.
+                    let _ = conn.execute(statement, []);
+                }
+                let oracle = run_source_index_statement(
+                    &conn,
+                    &source_index_sql(SOURCE_INDEX_DUPLICATE_EDGES_FIRST_ORACLE_SQL),
+                );
+                let actual = run_source_index_statement(
+                    &conn,
+                    &source_index_sql(SOURCE_INDEX_DUPLICATE_SQL),
+                );
+                assert_eq!(
+                    actual, oracle,
+                    "DUPLICATE: {name} (real_unique={real_unique})"
+                );
+                found.insert(format!("{actual:?}"));
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 2 * (36 + 20));
+        // The damage reaches the case where the statement is true (a duplicate Edge
+        // of the synthetic schema) and the one where it is false.
+        assert_eq!(
+            found,
+            std::collections::BTreeSet::from(["Ok(false)".to_owned(), "Ok(true)".to_owned()]),
+            "the damage must reach both results"
+        );
+    }
+
+    #[test]
+    fn duplicate_with_the_revision_first_agrees_on_the_empty_and_the_healthy_project() {
+        for real_unique in [true, false] {
+            let healthy = equivalence_fixture(real_unique);
+            let empty = equivalence_fixture(real_unique);
+            empty
+                .execute_batch(
+                    "DELETE FROM narrative_dependency_edges;
+                     DELETE FROM narrative_proposal_revisions;",
+                )
+                .unwrap();
+            let no_edges = equivalence_fixture(real_unique);
+            no_edges
+                .execute_batch("DELETE FROM narrative_dependency_edges")
+                .unwrap();
+            for (name, conn) in [
+                ("healthy", &healthy),
+                ("empty", &empty),
+                ("no edges", &no_edges),
+            ] {
+                for sql in [
+                    SOURCE_INDEX_DUPLICATE_EDGES_FIRST_ORACLE_SQL,
+                    SOURCE_INDEX_DUPLICATE_SQL,
+                ] {
+                    assert_eq!(
+                        run_source_index_statement(conn, &source_index_sql(sql)),
+                        Ok(false),
+                        "{name} (real_unique={real_unique})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// How many times the statement evaluates `json_valid`, with a counting
+    /// replacement of the function on this connection. The fixtures hold valid
+    /// JSON only, so the replacement answers from `serde_json`.
+    fn json_valid_calls(conn: &Connection, sql: &str) -> usize {
+        use rusqlite::functions::FunctionFlags;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        conn.create_scalar_function(
+            "json_valid",
+            1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            move |context| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let text: String = context.get(0)?;
+                Ok(i64::from(
+                    serde_json::from_str::<serde_json::Value>(&text).is_ok(),
+                ))
+            },
+        )
+        .unwrap();
+        run_source_index_statement(conn, sql).unwrap();
+        calls.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn duplicate_with_the_revision_first_tests_each_payload_once_not_once_per_edge() {
+        // The healthy fixture: two qualifying Revisions, three Edges each. SQLite 3.54
+        // does not cache the parse of `json_valid`, so the number of evaluations is
+        // the number of payload parses.
+        let conn = equivalence_fixture(true);
+        let before = json_valid_calls(
+            &conn,
+            &source_index_sql(SOURCE_INDEX_DUPLICATE_EDGES_FIRST_ORACLE_SQL),
+        );
+        let after = json_valid_calls(&conn, &source_index_sql(SOURCE_INDEX_DUPLICATE_SQL));
+        assert_eq!(before, 6, "the Edges-first statement evaluates it per Edge");
+        assert_eq!(
+            after, 2,
+            "the Revision-first statement evaluates it per Revision"
+        );
+
+        // The plan: `r` is searched by primary key before the Edge index is.
+        let plan = source_index_plan(&conn, SOURCE_INDEX_DUPLICATE_SQL);
+        let at = format!("plan:\n{}", plan.join("\n"));
+        let revision = plan
+            .iter()
+            .position(|step| step.starts_with("SEARCH r USING INDEX"))
+            .expect(&at);
+        let edge = plan
+            .iter()
+            .position(|step| step.starts_with("SEARCH edge USING"))
+            .expect(&at);
+        assert!(revision < edge, "{at}");
     }
 
     /// The plan of the statement as `[(depth-first order) detail]` lines.
