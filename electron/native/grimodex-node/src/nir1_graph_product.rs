@@ -569,15 +569,26 @@ impl Shared {
         }
     }
 
+    // The body is fixed by the CP-4 S1a architecture check
+    // (scripts/quality/nir1-graph-eval/native-architecture.mjs, FIXED_BODIES);
+    // in a release build without the eval feature it reduces to a constant.
+    #[allow(clippy::needless_bool)]
     fn publication_open(&self) -> bool {
-        // Short-circuits in the same order as before: the product constant,
-        // then the eval switch, then the test switch (each only when built).
-        let open = PRODUCT_GRAPH_PUBLISHED;
+        if PRODUCT_GRAPH_PUBLISHED {
+            return true;
+        }
         #[cfg(feature = "nir1-graph-eval")]
-        let open = open || self.publication_open_for_eval.load(Ordering::SeqCst);
+        if self.publication_open_for_eval.load(Ordering::SeqCst) {
+            return true;
+        }
         #[cfg(test)]
-        let open = open || self.publication_open_for_test.load(Ordering::SeqCst);
-        open
+        {
+            self.publication_open_for_test.load(Ordering::SeqCst)
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
     }
 
     fn config(&self) -> GraphOwnerConfig {
