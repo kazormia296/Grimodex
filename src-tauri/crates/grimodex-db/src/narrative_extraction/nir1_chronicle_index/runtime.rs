@@ -17,11 +17,13 @@ use super::{
     binding::StoredBinding,
     ChronicleReaderError, NirEmbeddingIdentity, NirIndexUnavailableReason,
 };
-use crate::{read_sqlite_source_revision, workspace_lifecycle::WorkspaceParticipant, Database};
+use crate::{workspace_lifecycle::WorkspaceParticipant, Database};
 
 pub struct NirChronicleIndexRuntime {
     owner: u64,
-    connection_epoch: Option<String>,
+    /// The database lineage this runtime was bound to (DR-DBC-5). `None` when
+    /// it could not be read: the runtime then starts unavailable.
+    lineage: Option<String>,
     cancellation_epoch: Arc<AtomicU64>,
     state: Mutex<RuntimeState>,
     /// DR-IRB-3 (E13): one dedicated-reader slot per authority. Process-local.
@@ -233,12 +235,12 @@ impl NirChronicleIndexRuntime {
     // WorkspaceAuthority is the only production constructor. A connection
     // metadata failure starts unavailable and cannot bind to another DB later.
     pub(crate) fn new(db: &Database, owner: u64) -> Self {
-        let connection_epoch = db
-            .with_conn(|conn| Ok(read_sqlite_source_revision(conn)?.connection_epoch))
+        let lineage = db
+            .with_conn(|conn| Ok(crate::read_db_clock(conn)?.lineage))
             .ok();
         Self {
             owner,
-            connection_epoch,
+            lineage,
             cancellation_epoch: Arc::new(AtomicU64::new(1)),
             reader_slot: Arc::new(AtomicUsize::new(0)),
             reader_slot_blocked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -262,10 +264,22 @@ impl NirChronicleIndexRuntime {
         &self,
         conn: &Connection,
     ) -> Result<std::result::Result<u64, NirIndexUnavailableReason>> {
-        if self.connection_epoch.as_deref()
-            != Some(read_sqlite_source_revision(conn)?.connection_epoch.as_str())
-        {
-            return Ok(Err(NirIndexUnavailableReason::ConnectionChanged));
+        // The runtime is bound to the authority's writable primary connection.
+        // A reader (query_only, read-only main) is never that connection: fail
+        // closed with an error rather than answering for it (DR-DBC-5, C5 #3).
+        let (query_only, lineage): (i64, Option<String>) = conn.query_row(
+            "SELECT (SELECT query_only FROM pragma_query_only),
+                    (SELECT id FROM main.grimodex_db_lineage WHERE singleton = 1)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if query_only != 0 || conn.is_readonly(rusqlite::MAIN_DB)? {
+            return Err(anyhow!(
+                "NIR1_RUNTIME_REQUIRES_THE_AUTHORITY_CONNECTION: the connection is read-only"
+            ));
+        }
+        if self.lineage.is_none() || self.lineage != lineage {
+            return Ok(Err(NirIndexUnavailableReason::DatabaseLineageChanged));
         }
         let state = self.lock()?;
         Ok(if state.active && !state.stopped {

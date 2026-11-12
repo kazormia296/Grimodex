@@ -253,6 +253,9 @@ fn validated(f: &Fixture) -> (NirQuerySnapshot, Option<Context>) {
         f,
         "CREATE TABLE IF NOT EXISTS inv_unrelated_rows (value INTEGER)",
     );
+    // A table created after migration needs its clock trigger (the migration invariant
+    // installs it for real tables), or its writes would not move the identity.
+    crate::write_clock::cover_adhoc_tables_for_test(&f.db).expect("cover the test table");
     // The status read validates the proof and keeps its query context.
     let snapshot = snapshot(f);
     let (first, reads) = read(f, &snapshot);
@@ -330,8 +333,8 @@ fn nir1_a_write_between_two_audit_appends_restarts_the_audit_only_states() {
 }
 
 #[test]
-fn nir1_audit_only_inheritance_never_covers_another_connection_or_schema() {
-    for case in ["other-before", "other-after", "schema", "temp-schema"] {
+fn nir1_audit_only_inheritance_never_covers_another_commit_or_schema() {
+    for case in ["other-before", "other-after", "schema"] {
         let f = published();
         let (snapshot, first) = validated(&f);
         let other = || {
@@ -352,13 +355,9 @@ fn nir1_audit_only_inheritance_never_covers_another_connection_or_schema() {
                 append(&f);
                 other();
             }
-            "schema" => {
-                append(&f);
-                write(&f, "CREATE TABLE inv_schema_change (value INTEGER)");
-            }
             _ => {
                 append(&f);
-                write(&f, "CREATE TEMP TABLE inv_temp_schema (value INTEGER)");
+                write(&f, "CREATE TABLE inv_schema_change (value INTEGER)");
             }
         }
         let (after, reads) = read(&f, &snapshot);
@@ -371,17 +370,30 @@ fn nir1_audit_only_inheritance_never_covers_another_connection_or_schema() {
 fn nir1_rolled_back_audit_append_is_not_an_audit_only_commit() {
     let f = published();
     let (snapshot, first) = validated(&f);
+    let committed = f.db.with_conn(crate::read_db_clock).expect("clock").seq;
     let mut invalid = audit_event();
     invalid.event_id = " ".into();
     // The first row is inserted, the second fails validation: the whole
-    // append rolls back and total_changes has still moved.
+    // append rolls back. The write clock rolls back with it (DR-DBC-5), so the
+    // committed state is exactly the validated one and its verdict stays valid;
+    // the failed append records nothing as an audit-only commit.
     assert!(f
         .db
         .append_ai_audit_events_for_scope(Some(f.project()), &[audit_event(), invalid])
         .is_err());
+    assert_eq!(
+        f.db.with_conn(crate::read_db_clock).expect("clock").seq,
+        committed
+    );
     let (after, reads) = read(&f, &snapshot);
-    assert!(after.is_some() && !same(&first, &after));
-    assert!(reads > 0, "a rolled-back append is never inherited");
+    assert!(
+        same(&first, &after) && reads == 0,
+        "the unchanged state reuses its verdict"
+    );
+    // A real append afterwards is joined by the audit-only list as usual.
+    append(&f);
+    let (after, reads) = read(&f, &snapshot);
+    assert!(after.is_some() && reads == 0);
 }
 
 #[test]
@@ -403,16 +415,17 @@ fn nir1_audit_after_a_freshness_change_still_sees_the_change() {
 }
 
 #[test]
-fn nir1_audit_only_inheritance_ends_with_the_connection_and_the_runtime_epoch() {
-    // Another connection (a reopened Database) has another connection epoch:
-    // the runtime is bound to its own connection, so the proof is not current
-    // there at all, whatever the audit-only states of the old connection are.
+fn nir1_audit_only_inheritance_ends_with_the_lineage_and_the_runtime_epoch() {
+    // A replaced database (a restore, a shadow migration or a handoff mints a new
+    // lineage) is not the one the runtime is bound to: the proof is not current
+    // there at all, whatever the audit-only states of the old lineage are.
     let f = published();
     let (snapshot, _) = validated(&f);
     append(&f);
-    let reopened = Database::new(f.path()).expect("reopened connection");
-    let (after, _) = read_on(&reopened, &f, &snapshot);
-    assert!(after.is_none(), "a new connection never inherits");
+    f.db.with_conn(|conn| crate::write_clock::rotate_db_lineage(conn).map(drop))
+        .expect("a new lineage");
+    let (after, _) = read(&f, &snapshot);
+    assert!(after.is_none(), "a new lineage never inherits");
     // A runtime epoch change is checked outside the inheritance.
     let f = published();
     let (snapshot, _) = validated(&f);
@@ -668,11 +681,13 @@ fn nir1_append_rolled_back_at_commit_is_not_an_audit_only_commit() {
         f.db.append_ai_audit_events_for_scope(Some(f.project()), &[audit_event()])
             .expect_err("COMMIT fails on the deferred foreign key");
     assert!(error.to_string().contains("FOREIGN KEY"), "{error:#}");
+    // The failed commit rolled the write clock back with it: the committed state is the
+    // validated one (its verdict is still right), and nothing was recorded as an
+    // audit-only commit (DR-DBC-5).
     let (after, reads) = read(&f, &snapshot);
-    assert!(after.is_some() && !same(&first, &after));
     assert!(
-        reads > 0,
-        "an append that did not commit is never inherited"
+        same(&first, &after) && reads == 0,
+        "an append that did not commit leaves the state unchanged"
     );
 }
 
@@ -695,31 +710,59 @@ fn nir1_audit_only_inheritance_never_covers_a_user_version_change() {
 #[test]
 fn nir1_audit_only_states_keep_their_bounds() {
     use super::super::read_identity::{state_for_test as state, AuditOnlyStates};
-    // One connection's list keeps its last `max_states` states.
+    // One database's list keeps its last `max_states` states.
     let mut states = AuditOnlyStates::new(4, 3);
     for changes in 0..5 {
-        states.record(state("c", changes), state("c", changes + 1));
+        states.record("", state("c", changes), state("c", changes + 1));
     }
-    assert!(states.joined(&state("c", 3), &state("c", 5)));
-    assert!(!states.joined(&state("c", 2), &state("c", 5)), "pushed out");
+    assert!(states.joined("", &state("c", 3), &state("c", 5)));
     assert!(
-        !states.joined(&state("c", 3), &state("c", 4)),
+        !states.joined("", &state("c", 2), &state("c", 5)),
+        "pushed out"
+    );
+    assert!(
+        !states.joined("", &state("c", 3), &state("c", 4)),
         "not the last"
     );
     // Another write between appends starts the list again.
-    states.record(state("c", 7), state("c", 8));
-    assert!(!states.joined(&state("c", 5), &state("c", 8)));
-    assert!(states.joined(&state("c", 7), &state("c", 8)));
-    // Connections beyond `max_connections` push out the least recently used.
+    states.record("", state("c", 7), state("c", 8));
+    assert!(!states.joined("", &state("c", 5), &state("c", 8)));
+    assert!(states.joined("", &state("c", 7), &state("c", 8)));
+    // Databases beyond `max_connections` push out the least recently used.
     let mut states = AuditOnlyStates::new(2, 3);
-    states.record(state("a", 0), state("a", 1));
-    states.record(state("b", 0), state("b", 1));
-    states.record(state("a", 1), state("a", 2)); // `a` used again
-    states.record(state("c", 0), state("c", 1)); // pushes out `b`
-    assert!(states.joined(&state("a", 0), &state("a", 2)));
-    assert!(!states.joined(&state("b", 0), &state("b", 1)), "pushed out");
-    assert!(states.joined(&state("c", 0), &state("c", 1)));
-    // States of different connections are never joined.
-    states.record(state("a", 2), state("d", 3));
-    assert!(!states.joined(&state("a", 2), &state("d", 3)));
+    states.record("", state("a", 0), state("a", 1));
+    states.record("", state("b", 0), state("b", 1));
+    states.record("", state("a", 1), state("a", 2)); // `a` used again
+    states.record("", state("c", 0), state("c", 1)); // pushes out `b`
+    assert!(states.joined("", &state("a", 0), &state("a", 2)));
+    assert!(
+        !states.joined("", &state("b", 0), &state("b", 1)),
+        "pushed out"
+    );
+    assert!(states.joined("", &state("c", 0), &state("c", 1)));
+    // States of different lineages are never joined.
+    states.record("", state("a", 2), state("d", 3));
+    assert!(!states.joined("", &state("a", 2), &state("d", 3)));
+    // The same lineage and sequence in another file (a duplicated workspace
+    // folder) never reads this file's list (DR-DBC-5).
+    let mut states = AuditOnlyStates::new(4, 3);
+    states.record("/ws/a/grimodex.db", state("l", 4), state("l", 5));
+    assert!(states.joined("/ws/a/grimodex.db", &state("l", 4), &state("l", 5)));
+    assert!(!states.joined("/ws/b/grimodex.db", &state("l", 4), &state("l", 5)));
+}
+
+/// The TEMP schema is private to one connection and moves nothing a covered read
+/// depends on (DR-DBC-5): an audit-only list survives it.
+#[test]
+fn nir1_audit_only_inheritance_ignores_the_temp_schema() {
+    let f = published();
+    let (snapshot, first) = validated(&f);
+    append(&f);
+    write(&f, "CREATE TEMP TABLE inv_temp_schema (value INTEGER)");
+    let (after, reads) = read(&f, &snapshot);
+    assert!(
+        after.is_some() && reads == 0,
+        "inherited across a TEMP change"
+    );
+    let _ = first;
 }

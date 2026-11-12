@@ -40,7 +40,7 @@ use super::reconciliation_envelope::SourceBasisRow;
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::task_leases::with_immediate_transaction;
 use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
-use crate::{read_sqlite_source_revision, Database};
+use crate::{read_db_clock, Database};
 
 /// Durable activation marker for the C2-ZC Generic Consumer Freshness
 /// authority.  This is intentionally a data marker rather than a schema
@@ -132,12 +132,12 @@ struct LiveSchedulerReceipt {
     evidence: SchedulerLivenessEvidence,
     authority_id: String,
     generation: u64,
-    /// `Database` serializes access to one rusqlite connection.  The
-    /// connection-local epoch is minted when that Database opens, so an
-    /// authority A heartbeat cannot be replayed against authority B when both
-    /// databases happen to expose the same project ids or a pointer address is
-    /// later reused.
-    connection_epoch: String,
+    /// The database lineage the heartbeat was minted on (DR-DBC-5). A restore,
+    /// a shadow migration or a handoff mints a new lineage, so a heartbeat from
+    /// the replaced database cannot be replayed against the new one. The same
+    /// file reopened keeps its lineage: refusing that is the N-API revalidate's
+    /// job (approved C5 #5/#6), not this crate's.
+    lineage: String,
     registered_at: Instant,
 }
 
@@ -603,14 +603,10 @@ pub fn record_live_scheduler_heartbeat(
         generation > 0 && generation <= NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
         "generation must be a safe non-zero integer"
     );
-    let (project_ids, connection_epoch) = db.with_conn(|conn| {
-        Ok((
-            workspace_project_ids(conn)?,
-            connection_epoch_identity(conn)?,
-        ))
-    })?;
+    let (project_ids, lineage) =
+        db.with_conn(|conn| Ok((workspace_project_ids(conn)?, lineage_identity(conn)?)))?;
     anyhow::ensure!(
-        successful_cycle.connection_epoch() == connection_epoch,
+        successful_cycle.lineage() == lineage,
         "NEX_C2ZC_SCHEDULER_LIVENESS_CYCLE_DATABASE_MISMATCH: completed Incremental Freshness cycle belongs to a different Database authority"
     );
     if !successful_cycle.is_fresh_for_liveness(MAX_SCHEDULER_LIVENESS_AGE) {
@@ -629,7 +625,7 @@ pub fn record_live_scheduler_heartbeat(
         evidence: evidence.clone(),
         authority_id: authority_id.to_string(),
         generation,
-        connection_epoch,
+        lineage,
         registered_at: Instant::now(),
     };
     let slot = LIVE_SCHEDULER_RECEIPT.get_or_init(|| Mutex::new(None));
@@ -1075,7 +1071,7 @@ fn validate_registered_scheduler_liveness(
         "NEX_C2ZC_SCHEDULER_LIVENESS_RECEIPT_INVALID: authority binding is invalid"
     );
     anyhow::ensure!(
-        receipt.connection_epoch == connection_epoch_identity(conn)?,
+        receipt.lineage == lineage_identity(conn)?,
         "NEX_C2ZC_SCHEDULER_LIVENESS_DATABASE_MISMATCH: receipt belongs to a different Database authority"
     );
     // The receipt is process-local and replaced on authority swap.  Reading
@@ -1089,8 +1085,8 @@ fn validate_registered_scheduler_liveness(
     Ok(())
 }
 
-fn connection_epoch_identity(conn: &Connection) -> Result<String> {
-    Ok(read_sqlite_source_revision(conn)?.connection_epoch)
+fn lineage_identity(conn: &Connection) -> Result<String> {
+    Ok(read_db_clock(conn)?.lineage)
 }
 
 fn project_gate_reasons(

@@ -2543,13 +2543,14 @@ export async function createBrowserMock(
     }
     ensureBrowserSchema(db, () => options.onDatabaseDirty?.());
   }
-  db.run(`CREATE TEMP TABLE grimodex_connection_meta (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    epoch TEXT NOT NULL
-  )`);
+  // Native opens its in-database write clock to renderer SQL only through the
+  // TEMP view `grimodex_clock_read(lineage, seq)` (DR-DBC-5). BrowserMock has no
+  // clock tables or triggers, so the view stands in for it: a per-database
+  // random 32-hex lineage and `total_changes()` as the sequence (a single
+  // connection, so its own writes are the only commits).
   db.run(
-    "INSERT INTO temp.grimodex_connection_meta (singleton, epoch) VALUES (1, ?)",
-    [crypto.randomUUID()],
+    `CREATE TEMP VIEW grimodex_clock_read (lineage, seq) AS
+       SELECT '${crypto.randomUUID().replaceAll("-", "")}', total_changes()`,
   );
 
   const now = new Date().toISOString();

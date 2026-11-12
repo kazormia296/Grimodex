@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::{read_sqlite_source_revision, Database};
+use crate::{read_db_clock, Database};
 use grimodex_core::narrative_dependency::{
     aggregate_dependency_build_actions, evaluate_dependency_effect, load_dependency_role_registry,
     DependencyEffectInput, DependencyEffectRegistry, DependencyRole,
@@ -383,14 +383,17 @@ pub enum IncrementalFreshnessCycleOutcome {
 /// never by a public arbitrary heartbeat call.
 #[derive(Debug)]
 pub struct SuccessfulIncrementalFreshnessCycle {
-    connection_epoch: String,
+    /// The database lineage the cycle ran on (DR-DBC-5). A restore, a shadow
+    /// migration or a handoff replaces it; the same file reopened keeps it (the
+    /// N-API revalidate refuses that, not this crate).
+    lineage: String,
     completed_at: Instant,
     _private: (),
 }
 
 impl SuccessfulIncrementalFreshnessCycle {
-    pub(crate) fn connection_epoch(&self) -> &str {
-        &self.connection_epoch
+    pub(crate) fn lineage(&self) -> &str {
+        &self.lineage
     }
 
     pub(crate) fn is_fresh_for_liveness(&self, max_age: Duration) -> bool {
@@ -596,15 +599,14 @@ pub fn run_incremental_freshness_cycle_with_liveness_capability_and_hold(
     let outcome = run_incremental_freshness_cycle_with_hold(db, freshness_hold_project_id)?;
     let completed_at = Instant::now();
     // The capability must belong to the same live SQLite authority that will
-    // mint the scheduler receipt.  Capturing its connection epoch here keeps
+    // mint the scheduler receipt.  Capturing its lineage here keeps
     // a completed cycle from another Database wrapper from being reused as
     // liveness proof for this workspace.
-    let connection_epoch =
-        db.with_conn(|conn| Ok(read_sqlite_source_revision(conn)?.connection_epoch))?;
+    let lineage = db.with_conn(|conn| Ok(read_db_clock(conn)?.lineage))?;
     Ok((
         outcome,
         SuccessfulIncrementalFreshnessCycle {
-            connection_epoch,
+            lineage,
             completed_at,
             _private: (),
         },
@@ -630,12 +632,11 @@ where
         lifecycle_control,
     )?;
     let completed_at = Instant::now();
-    let connection_epoch =
-        db.with_conn(|conn| Ok(read_sqlite_source_revision(conn)?.connection_epoch))?;
+    let lineage = db.with_conn(|conn| Ok(read_db_clock(conn)?.lineage))?;
     Ok((
         outcome,
         SuccessfulIncrementalFreshnessCycle {
-            connection_epoch,
+            lineage,
             completed_at,
             _private: (),
         },

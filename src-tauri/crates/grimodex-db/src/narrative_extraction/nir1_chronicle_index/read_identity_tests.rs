@@ -35,7 +35,7 @@ fn valid(f: &Fixture, batch: &NirQualifiedBatch) -> bool {
 }
 
 #[test]
-fn cached_read_cannot_survive_a_temporary_repair_rolled_back_with_unchanged_change_count() {
+fn cached_read_cannot_survive_a_temporary_repair_rolled_back_with_a_reused_sequence() {
     for use_savepoint in [false, true] {
         let (f, batch) = prepared();
         assert!(valid(&f, &batch));
@@ -50,6 +50,7 @@ fn cached_read_cannot_survive_a_temporary_repair_rolled_back_with_unchanged_chan
         .expect("canonical row is no longer usable");
         assert!(!valid(&f, &batch));
         f.db.with_conn(|conn| {
+            let committed = crate::read_db_clock(conn)?.seq;
             let tx = conn.unchecked_transaction()?;
             if use_savepoint {
                 tx.execute_batch("SAVEPOINT temporary_repair")?;
@@ -64,7 +65,9 @@ fn cached_read_cannot_survive_a_temporary_repair_rolled_back_with_unchanged_chan
                 super::read_identity::ReadIdentity::read(&tx)?.is_none(),
                 "an uncommitted write cannot seed or hit the read cache"
             );
-            let changes = crate::read_sqlite_source_revision(&tx)?.total_changes;
+            // The write moved the sequence inside the transaction. A rollback
+            // gives the same value back, so a value read here must never be kept.
+            assert!(crate::read_db_clock(&tx)?.seq > committed);
             if use_savepoint {
                 tx.execute_batch("ROLLBACK TO temporary_repair; RELEASE temporary_repair")?;
                 assert!(super::read_identity::ReadIdentity::read(&tx)?.is_none());
@@ -72,8 +75,9 @@ fn cached_read_cannot_survive_a_temporary_repair_rolled_back_with_unchanged_chan
             }
             tx.rollback()?;
             assert_eq!(
-                crate::read_sqlite_source_revision(conn)?.total_changes,
-                changes
+                crate::read_db_clock(conn)?.seq,
+                committed,
+                "a rolled-back write leaves the committed sequence (DR-DBC-5)"
             );
             Ok(())
         })
@@ -83,6 +87,37 @@ fn cached_read_cannot_survive_a_temporary_repair_rolled_back_with_unchanged_chan
             "temporary repair must not escape rollback"
         );
     }
+}
+
+/// DR-DBC-5 §1.5: a sequence read in a write transaction is reused after a
+/// rollback by an unrelated commit. The identity is therefore never observable
+/// there, and the same value read after the rollback names a different state.
+#[test]
+fn a_sequence_value_read_in_a_write_transaction_is_reused_by_another_commit() {
+    let f = Fixture::new();
+    f.db.with_conn(|conn| {
+        let committed = crate::read_db_clock(conn)?.seq;
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO app_settings(key, value) VALUES ('aba-probe', 'rolled-back')",
+            [],
+        )?;
+        let in_tx = crate::read_db_clock(&tx)?.seq;
+        assert!(super::read_identity::ReadIdentity::read(&tx)?.is_none());
+        tx.rollback()?;
+        conn.execute(
+            "INSERT INTO app_settings(key, value) VALUES ('aba-probe', 'committed')",
+            [],
+        )?;
+        assert_eq!(
+            crate::read_db_clock(conn)?.seq,
+            in_tx,
+            "another content reached the same sequence value"
+        );
+        assert_eq!(in_tx, committed + 1);
+        Ok(())
+    })
+    .expect("sequence reuse after rollback");
 }
 
 #[test]
@@ -127,13 +162,14 @@ fn schema_only_changes_cannot_reuse_a_cached_canonical_verdict() {
     let (f, batch) = prepared();
     assert!(valid(&f, &batch));
     f.db.with_conn(|conn| {
-        let before = crate::read_sqlite_source_revision(conn)?.total_changes;
+        let before = crate::read_db_clock(conn)?.seq;
         conn.execute_batch(
             "ALTER TABLE narrative_consumer_freshness RENAME TO unavailable_freshness",
         )?;
         assert_eq!(
-            crate::read_sqlite_source_revision(conn)?.total_changes,
-            before
+            crate::read_db_clock(conn)?.seq,
+            before,
+            "a schema change writes no row, so only the schema version names it"
         );
         Ok(())
     })
@@ -147,8 +183,11 @@ fn schema_only_changes_cannot_reuse_a_cached_canonical_verdict() {
     );
 }
 
+/// DR-DBC-5: the TEMP schema is private to one connection and no covered read
+/// depends on it, so it no longer moves the identity (the former H-e). A runtime
+/// revocation is still not hidden by an identical main database.
 #[test]
-fn temp_schema_changes_and_runtime_revocation_are_not_hidden_by_an_identical_main_database() {
+fn temp_schema_changes_do_not_move_the_identity_and_runtime_revocation_is_not_hidden() {
     let (f, batch) = prepared();
     let before =
         f.db.with_read_transaction(super::read_identity::ReadIdentity::read)
@@ -161,11 +200,8 @@ fn temp_schema_changes_and_runtime_revocation_are_not_hidden_by_an_identical_mai
     let after =
         f.db.with_read_transaction(super::read_identity::ReadIdentity::read)
             .expect("new read identity");
-    assert_ne!(before, after);
-    assert!(
-        valid(&f, &batch),
-        "unchanged authority can pass a fresh full check"
-    );
+    assert_eq!(before, after);
+    assert!(valid(&f, &batch), "unchanged authority passes");
     f.runtime.pause().expect("pause runtime");
     f.runtime
         .resume()
@@ -173,11 +209,12 @@ fn temp_schema_changes_and_runtime_revocation_are_not_hidden_by_an_identical_mai
     assert!(!valid(&f, &batch));
 }
 
-/// DR-DBC-3: clock triggers add rows to `total_changes` but the identity is only compared
-/// for equality, so the judgement is the same with and without them: no write means two
-/// reads are equal, a write means they differ.
+/// DR-DBC-5: the identity is the in-database write clock, so it depends on the clock
+/// triggers. With them a write moves it; the invariant `has_v46_write_clock` is what
+/// keeps a database without them from being opened for writes (the fail-open case is
+/// refused there, not here).
 #[test]
-fn read_identity_judgement_is_unchanged_by_clock_triggers() {
+fn read_identity_follows_the_clock_triggers_and_the_invariant_names_their_absence() {
     let mut verdicts = Vec::new();
     for drop_clock_triggers in [false, true] {
         let f = Fixture::new();
@@ -218,7 +255,10 @@ fn read_identity_judgement_is_unchanged_by_clock_triggers() {
         })
         .expect("write");
         let after_write = read();
-        verdicts.push((unchanged, first != after_write));
+        let invariant =
+            f.db.with_conn(grimodex_core::write_clock::has_v46_write_clock)
+                .expect("invariant");
+        verdicts.push((unchanged, first != after_write, invariant));
     }
-    assert_eq!(verdicts, [(true, true), (true, true)]);
+    assert_eq!(verdicts, [(true, true, true), (true, false, false)]);
 }

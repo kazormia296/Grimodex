@@ -1513,7 +1513,7 @@ fn append_ai_audit_events_with_durability(
     });
     if result.is_ok() {
         if let Some((before, after)) = audit_only {
-            record_audit_only_commit(before, after);
+            record_audit_only_commit(conn, before, after);
         }
     }
     finish_durable_commit(durable_commit, result)

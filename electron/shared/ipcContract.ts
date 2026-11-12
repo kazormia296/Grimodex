@@ -6098,41 +6098,29 @@ function validateOptionalSqliteSourceGuard(
     );
   }
   const guard = requireRecord(args, "source_guard", cmd);
-  const allowedKeys = new Set([
-    "kind",
-    "expected_connection_epoch",
-    "expected_total_changes",
-    "expected_data_version",
-  ]);
+  const allowedKeys = new Set(["kind", "expected_lineage", "expected_seq"]);
   if (Object.keys(guard).some((key) => !allowedKeys.has(key))) {
     throw new Error(
       `invalid args \`source_guard\` for command \`${cmd}\`: unexpected key`,
     );
   }
-  if (guard.kind !== "sqlite_revision_v1") {
+  if (guard.kind !== "sqlite_write_clock_v1") {
     throw new Error(
-      `invalid args \`source_guard.kind\` for command \`${cmd}\`: expected sqlite_revision_v1`,
+      `invalid args \`source_guard.kind\` for command \`${cmd}\`: expected sqlite_write_clock_v1`,
     );
   }
   if (
-    typeof guard.expected_connection_epoch !== "string" ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
-      guard.expected_connection_epoch,
-    )
+    typeof guard.expected_lineage !== "string" ||
+    !/^[0-9a-f]{32}$/.test(guard.expected_lineage)
   ) {
     throw new Error(
-      `invalid args \`source_guard.expected_connection_epoch\` for command \`${cmd}\`: expected a canonical UUID`,
+      `invalid args \`source_guard.expected_lineage\` for command \`${cmd}\`: expected 32 lowercase hex characters`,
     );
   }
-  for (const key of [
-    "expected_total_changes",
-    "expected_data_version",
-  ] as const) {
-    if (!isCanonicalU64Decimal(guard[key])) {
-      throw new Error(
-        `invalid args \`source_guard.${key}\` for command \`${cmd}\`: expected a canonical u64 decimal string`,
-      );
-    }
+  if (!isCanonicalU64Decimal(guard.expected_seq)) {
+    throw new Error(
+      `invalid args \`source_guard.expected_seq\` for command \`${cmd}\`: expected a canonical u64 decimal string`,
+    );
   }
 }
 

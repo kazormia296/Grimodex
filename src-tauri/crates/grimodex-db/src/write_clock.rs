@@ -39,6 +39,60 @@ fn quote_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// DB の中の連番で測る「データが変わったか」の物差し（DB 段 1 の PR-2、DR-DBC-5）。
+///
+/// どの接続・どの process から読んでも同じ値になる。保存してよいのは Read の tx か
+/// autocommit で読んだ値だけ（write tx の中の値は rollback で再利用される）。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DbClock {
+    pub lineage: String,
+    pub seq: i64,
+}
+
+/// 接続ごとの TEMP view の名前。renderer の SQL は clock・lineage をこの view 経由でだけ読める
+/// （authorizer の accessor。`execute.rs`）。view は最初の renderer の文の前に作る
+/// （`ClockAccessorCache::ensure_read_view`。migration の前に作ると `ALTER TABLE` が壊れる）。
+pub const CLOCK_READ_VIEW: &str = "grimodex_clock_read";
+
+/// `CLOCK_READ_VIEW` を作る SQL。TEMP なので schema contract・backup・migration に触れない。
+pub(crate) const CLOCK_READ_VIEW_DDL: &str =
+    "CREATE TEMP VIEW IF NOT EXISTS grimodex_clock_read (lineage, seq) AS \
+     SELECT (SELECT id FROM main.grimodex_db_lineage WHERE singleton = 1), \
+            (SELECT seq FROM main.grimodex_write_clock WHERE name = '*')";
+
+/// lineage と `'*'` の seq を 1 文（1 つの snapshot）で読む。行が無い・型が違う場合は error
+/// （fail-closed。黙って 0 にしない）。
+pub fn read_db_clock(conn: &Connection) -> anyhow::Result<DbClock> {
+    let (lineage, seq): (Option<String>, Option<i64>) = conn.query_row(
+        "SELECT (SELECT id FROM main.grimodex_db_lineage WHERE singleton = 1),
+                (SELECT seq FROM main.grimodex_write_clock WHERE name = '*')",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    match (lineage, seq) {
+        (Some(lineage), Some(seq)) if seq >= 0 => Ok(DbClock { lineage, seq }),
+        _ => anyhow::bail!("DBCLOCK_UNAVAILABLE: lineage or the global clock row is missing"),
+    }
+}
+
+/// `DbClock` に main の `schema_version` と `user_version` を足した、1 文で読む identity。
+pub(crate) fn read_db_clock_with_versions(
+    conn: &Connection,
+) -> anyhow::Result<(DbClock, i64, i64)> {
+    let (lineage, seq, schema, user): (Option<String>, Option<i64>, i64, i64) = conn.query_row(
+        "SELECT (SELECT id FROM main.grimodex_db_lineage WHERE singleton = 1),
+                (SELECT seq FROM main.grimodex_write_clock WHERE name = '*'),
+                (SELECT schema_version FROM pragma_schema_version),
+                (SELECT user_version FROM pragma_user_version)",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    match (lineage, seq) {
+        (Some(lineage), Some(seq)) if seq >= 0 => Ok((DbClock { lineage, seq }, schema, user)),
+        _ => anyhow::bail!("DBCLOCK_UNAVAILABLE: lineage or the global clock row is missing"),
+    }
+}
+
 /// lineage の `id` を新しい uuid v4（小文字 32 hex）に差し替えて返す。
 /// 行が無ければ作る。restore・shadow migration・handoff の staged から呼ぶ。
 pub fn rotate_db_lineage(conn: &Connection) -> anyhow::Result<String> {
@@ -155,6 +209,22 @@ pub fn install_write_clock_in_tx(conn: &Connection) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// 試験用：migration の後に試験が作った ad-hoc の表にも clock の TRIGGER を付ける
+/// （付けないと、その表への書込みは連番を進めず、identity が動かない）。
+#[cfg(test)]
+pub(crate) fn cover_adhoc_tables_for_test(db: &crate::Database) -> anyhow::Result<()> {
+    db.with_conn(|conn| {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let installed = install_write_clock_in_tx(conn);
+        if installed.is_ok() {
+            conn.execute_batch("COMMIT")?;
+        } else {
+            let _ = conn.execute_batch("ROLLBACK");
+        }
+        installed
+    })
 }
 
 #[cfg(test)]
@@ -571,5 +641,199 @@ mod tests {
             Ok(())
         })
         .expect("verify");
+    }
+
+    // ---- DbClock の読み（DB 段 1 の PR-2、DR-DBC-5） ----
+
+    fn data_version(conn: &Connection) -> i64 {
+        conn.query_row("SELECT data_version FROM pragma_data_version", [], |row| {
+            row.get(0)
+        })
+        .expect("data_version")
+    }
+
+    #[test]
+    fn read_db_clock_names_lineage_and_the_global_sequence() {
+        let (_path, db) = migrated("read-db-clock");
+        db.with_conn(|conn| {
+            let clock = read_db_clock(conn)?;
+            assert_eq!(clock.lineage, lineage(conn));
+            assert!(is_hex32(&clock.lineage));
+            assert_eq!(Some(clock.seq), clock_seq(conn, CLOCK_KEY_ALL));
+            // One statement also carries the versions (the identity's other parts).
+            let (same, schema, user) = read_db_clock_with_versions(conn)?;
+            assert_eq!(same, clock);
+            assert_eq!(
+                schema,
+                conn.query_row("PRAGMA main.schema_version", [], |r| r.get::<_, i64>(0))?
+            );
+            assert_eq!(
+                user,
+                conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?
+            );
+            insert_project(conn, "clock-reader");
+            assert!(read_db_clock(conn)?.seq > clock.seq);
+            Ok(())
+        })
+        .expect("read");
+    }
+
+    /// A database without the clock is unreadable, never a silent zero.
+    #[test]
+    fn read_db_clock_fails_closed_without_the_clock() {
+        let conn = Connection::open_in_memory().expect("memory");
+        assert!(read_db_clock(&conn).is_err(), "no tables");
+        conn.execute_batch(WRITE_CLOCK_TABLE_DDL).expect("clock");
+        conn.execute_batch(DB_LINEAGE_TABLE_DDL).expect("lineage");
+        let error = read_db_clock(&conn).expect_err("no rows");
+        assert!(error.to_string().contains("DBCLOCK_UNAVAILABLE"), "{error}");
+        install_write_clock_in_tx(&conn).expect("install");
+        assert!(read_db_clock(&conn).is_ok());
+        conn.execute("DELETE FROM grimodex_db_lineage", [])
+            .expect("remove lineage");
+        assert!(read_db_clock(&conn).is_err(), "no lineage row");
+    }
+
+    /// P-1 (DR-DBC-5): the clock moves with writes to the covered (real) tables,
+    /// not with FTS-only writes or `PRAGMA optimize`; a no-op UPDATE still moves it;
+    /// a rolled-back write does not. The assertions on `data_version` (another
+    /// connection's observation of the old measure) show the FTS write was real.
+    #[test]
+    fn p1_the_clock_ignores_fts_only_writes_and_optimize_but_not_noop_updates() {
+        let (path, db) = migrated("p1");
+        db.with_conn(|conn| {
+            insert_project(conn, "p1");
+            conn.execute(
+                "INSERT INTO tree_nodes(id, project_id, node_type, title)
+                 VALUES ('n1', 'p1', 'scene', 'アリスの町')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed searchable content");
+        let observer = Connection::open(&path).expect("observer");
+        let observed_version = data_version(&observer);
+        let before = db.with_conn(read_db_clock).expect("clock");
+
+        // FTS-only writes: rebuild and optimize of every kind.
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO tree_nodes_fts(tree_nodes_fts) VALUES('rebuild');
+                 INSERT INTO tree_nodes_fts(tree_nodes_fts) VALUES('optimize');",
+            )?;
+            Ok(())
+        })
+        .expect("fts-only writes");
+        db.fts_optimize().expect("fts optimize");
+        let after_fts = db.with_conn(read_db_clock).expect("clock");
+        assert_eq!(after_fts, before, "FTS-only writes do not move the clock");
+        assert_ne!(
+            data_version(&observer),
+            observed_version,
+            "the FTS writes were real pages another connection can observe"
+        );
+
+        // PRAGMA optimize writes no covered row. (On a small database it can write
+        // nothing at all, so ANALYZE below makes the statistics write certain.)
+        db.optimize().expect("pragma optimize");
+        assert_eq!(db.with_conn(read_db_clock).expect("clock"), before);
+        let version_before_analyze = data_version(&observer);
+        let versions_before = db.with_conn(read_db_clock_with_versions).expect("versions");
+        db.with_conn(|conn| {
+            conn.execute_batch("ANALYZE")?;
+            Ok(())
+        })
+        .expect("analyze");
+        assert_eq!(db.with_conn(read_db_clock).expect("clock"), before);
+        assert_ne!(
+            data_version(&observer),
+            version_before_analyze,
+            "the statistics write was a real page change another connection can observe"
+        );
+        // Observation only: whether the schema cookie moved with ANALYZE.
+        let versions_after = db.with_conn(read_db_clock_with_versions).expect("versions");
+        eprintln!(
+            "ANALYZE moved (schema, user_version): {}",
+            (versions_before.1, versions_before.2) != (versions_after.1, versions_after.2)
+        );
+
+        // A no-op UPDATE (same value) fires the row trigger: the clock moves.
+        db.with_conn(|conn| {
+            conn.execute("UPDATE tree_nodes SET title = title WHERE id = 'n1'", [])?;
+            Ok(())
+        })
+        .expect("no-op update");
+        let after_noop = db.with_conn(read_db_clock).expect("clock");
+        assert_eq!(after_noop.lineage, before.lineage);
+        assert_eq!(after_noop.seq, before.seq + 1);
+
+        // An UPDATE that matches no row writes nothing and moves nothing.
+        db.with_conn(|conn| {
+            conn.execute("UPDATE tree_nodes SET title = 'x' WHERE id = 'missing'", [])?;
+            Ok(())
+        })
+        .expect("update without a row");
+        assert_eq!(db.with_conn(read_db_clock).expect("clock"), after_noop);
+
+        // A rolled-back write leaves the committed sequence.
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
+                "UPDATE tree_nodes SET title = 'rolled back' WHERE id = 'n1'",
+                [],
+            )?;
+            assert!(read_db_clock(&tx)?.seq > after_noop.seq);
+            tx.rollback()?;
+            assert_eq!(read_db_clock(conn)?, after_noop);
+            Ok(())
+        })
+        .expect("rollback");
+    }
+
+    /// The identity is read through any connection: a second connection of another
+    /// process (here another handle) sees the same values.
+    #[test]
+    fn the_clock_reads_the_same_through_another_connection() {
+        let (path, db) = migrated("other-reader");
+        db.with_conn(|conn| {
+            insert_project(conn, "visible");
+            Ok(())
+        })
+        .expect("write");
+        let own = db.with_conn(read_db_clock).expect("own");
+        let other = Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .expect("read-only connection");
+        assert_eq!(read_db_clock(&other).expect("other"), own);
+        let (with_versions, _, _) = read_db_clock_with_versions(&other).expect("versions");
+        assert_eq!(with_versions, own);
+    }
+
+    /// DR-DBC-5 判断 4：周期的な Freshness の cycle は、することが無い（idle）とき clock を
+    /// 進めない（値の変わらない書込みを周期的に行わない）。進むなら、worker の登録の窓の
+    /// 間に drift が増える。収束した open が WAL を変えないこと（DR-DBC-3 追記 4）と対。
+    #[test]
+    fn idle_freshness_cycles_do_not_advance_the_clock() {
+        let (_path, db) = migrated("idle-freshness");
+        db.with_conn(|conn| {
+            insert_project(conn, "idle-project");
+            Ok(())
+        })
+        .expect("a project with nothing to do");
+        // The first cycles may settle initial state; the idle ones after that must not write.
+        for _ in 0..3 {
+            crate::narrative_extraction::run_incremental_freshness_cycle(&db).expect("settle");
+        }
+        let settled = db.with_conn(read_db_clock).expect("clock");
+        for _ in 0..5 {
+            crate::narrative_extraction::run_incremental_freshness_cycle(&db).expect("idle cycle");
+        }
+        assert_eq!(
+            db.with_conn(read_db_clock).expect("clock"),
+            settled,
+            "idle Freshness cycles are read-only"
+        );
     }
 }

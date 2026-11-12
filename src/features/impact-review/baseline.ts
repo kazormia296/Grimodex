@@ -64,10 +64,12 @@ export async function saveBaseline(
   const contentHash = stableHash(snapshotJson);
   const reviewedAt = new Date().toISOString();
   let saved: Array<{ entryId: string }>;
+  // grimodex_clock_read is the connection-local TEMP view over the in-database
+  // write clock (lineage and the global sequence). Native opens it to renderer
+  // SQL as the only read path of the clock (DR-DBC-5).
   const sourceRevisionPredicate: SQL | undefined = sourceGuard
-    ? sql`(SELECT epoch FROM temp.grimodex_connection_meta WHERE singleton = 1) = ${sourceGuard.expected_connection_epoch}
-        AND CAST(total_changes() AS TEXT) = ${sourceGuard.expected_total_changes}
-        AND CAST((SELECT data_version FROM pragma_data_version) AS TEXT) = ${sourceGuard.expected_data_version}`
+    ? sql`(SELECT lineage FROM grimodex_clock_read) = ${sourceGuard.expected_lineage}
+        AND (SELECT CAST(seq AS TEXT) FROM grimodex_clock_read) = ${sourceGuard.expected_seq}`
     : undefined;
   const guardedValues = sourceGuard
     ? db
@@ -78,8 +80,8 @@ export async function saveBaseline(
           contentHash: sql<string>`${contentHash}`.as("content_hash"),
           reviewedAt: sql<string>`${reviewedAt}`.as("reviewed_at"),
         })
-        .from(sql`temp.grimodex_connection_meta`)
-        .where(and(sql`singleton = 1`, sourceRevisionPredicate))
+        .from(sql`grimodex_clock_read`)
+        .where(sourceRevisionPredicate)
     : null;
 
   if (expectedContentHash === undefined && guardedValues) {

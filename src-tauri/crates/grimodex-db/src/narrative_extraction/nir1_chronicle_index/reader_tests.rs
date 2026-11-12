@@ -237,8 +237,9 @@ fn reader_prepare_leaves_the_authority_proof_untouched() {
         .is_empty());
 }
 
-/// (m) Open order: the TEMP meta exists and `query_only` is on. Calling the
-/// connection-bound epoch on a reader fails closed, never silently empty.
+/// (m) A reader (`query_only`, read-only main) is never the authority's primary
+/// connection: asking the runtime for its connection-bound epoch on one fails
+/// closed with an error, never silently answers (DR-DBC-5, C5 #3).
 #[test]
 fn reader_open_order_and_the_epoch_of_a_foreign_connection() {
     let f = Fixture::new();
@@ -247,33 +248,50 @@ fn reader_open_order_and_the_epoch_of_a_foreign_connection() {
     reader
         .with_conn(|conn| {
             let query_only: i64 = conn.pragma_query_value(None, "query_only", |r| r.get(0))?;
-            let meta: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM temp.grimodex_connection_meta",
-                [],
-                |r| r.get(0),
-            )?;
-            assert_eq!((query_only, meta), (1, 1));
-            assert_eq!(
-                f.runtime.current_epoch(conn)?,
-                Err(NirIndexUnavailableReason::ConnectionChanged)
-            );
+            assert_eq!(query_only, 1);
+            let error = f
+                .runtime
+                .current_epoch(conn)
+                .expect_err("a reader is not the authority connection");
+            assert!(error
+                .to_string()
+                .contains("NIR1_RUNTIME_REQUIRES_THE_AUTHORITY_CONNECTION"));
+            // The reader still reads the same write clock the authority does.
+            let on_reader = crate::read_db_clock(conn)?;
+            let on_authority = f.db.with_conn(crate::read_db_clock)?;
+            assert_eq!(on_reader, on_authority);
             Ok(())
         })
         .expect("reader state");
-    // Without the TEMP meta the shared revision read has no table.
+    // A plain read-only connection (not even `query_only`) is refused too.
     let raw = Connection::open_with_flags(
         f.path(),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .expect("raw read-only");
     assert!(f.runtime.current_epoch(&raw).is_err());
-    // `query_only` first would forbid the TEMP meta (so the order is load
-    // bearing, not cosmetic).
-    raw.execute_batch("PRAGMA query_only=ON")
-        .expect("query_only");
-    assert!(raw
-        .execute_batch("CREATE TEMP TABLE grimodex_connection_meta(a)")
-        .is_err());
+    // The authority's own connection is bound to this runtime.
+    f.db.with_conn(|conn| {
+        assert_eq!(f.runtime.current_epoch(conn)?.map(|_| ()), Ok(()));
+        Ok(())
+    })
+    .expect("authority connection");
+}
+
+/// (m') A replaced database (another lineage) is not the one the runtime is bound to.
+#[test]
+fn a_new_lineage_is_refused_with_the_lineage_reason() {
+    let f = Fixture::new();
+    f.db.with_conn(|conn| {
+        assert!(f.runtime.current_epoch(conn)?.is_ok());
+        crate::write_clock::rotate_db_lineage(conn)?;
+        assert_eq!(
+            f.runtime.current_epoch(conn)?,
+            Err(NirIndexUnavailableReason::DatabaseLineageChanged)
+        );
+        Ok(())
+    })
+    .expect("lineage binding");
 }
 
 /// (n) Admission runs inside the authority's read transaction without

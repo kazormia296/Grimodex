@@ -546,14 +546,7 @@ fn worker_reader_uses_one_authority_connection_for_registration_and_query() -> R
     fixture.authority.db().with_conn(|conn| {
         conn.busy_timeout(Duration::ZERO)?;
         conn.execute_batch(
-            "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
-             CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta(
-                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL
-             );",
-        )?;
-        conn.execute(
-            "INSERT OR REPLACE INTO temp.grimodex_connection_meta VALUES(1,?1)",
-            [uuid::Uuid::new_v4().to_string()],
+            "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;",
         )?;
         conn.execute_batch("PRAGMA query_only=ON")?;
         Ok(())
@@ -587,11 +580,7 @@ fn worker_reader_uses_one_authority_connection_for_registration_and_query() -> R
         .is_some_and(|graph| !graph.nodes.is_empty()));
     fixture.authority.db().with_conn(|conn| {
         assert!(conn.is_autocommit());
-        conn.query_row(
-            "SELECT 1 FROM temp.grimodex_connection_meta WHERE singleton=1",
-            [],
-            |_| Ok(()),
-        )?;
+        crate::read_db_clock(conn)?;
         Ok(())
     })?;
     Ok(())
@@ -614,14 +603,7 @@ fn worker_reader_restore_admitted_during_query_read_refuses_result() -> Result<(
     fixture.authority.db().with_conn(|conn| {
         conn.busy_timeout(Duration::ZERO)?;
         conn.execute_batch(
-            "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
-             CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta(
-                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL
-             );",
-        )?;
-        conn.execute(
-            "INSERT OR REPLACE INTO temp.grimodex_connection_meta VALUES(1,?1)",
-            [uuid::Uuid::new_v4().to_string()],
+            "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;",
         )?;
         conn.execute_batch("PRAGMA query_only=ON")?;
         Ok(())
@@ -737,14 +719,7 @@ fn worker_registration_is_not_published_when_scratch_seal_fails() -> Result<()> 
     fixture.authority.db().with_conn(|conn| {
         conn.busy_timeout(Duration::ZERO)?;
         conn.execute_batch(
-            "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
-             CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta(
-                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL
-             );",
-        )?;
-        conn.execute(
-            "INSERT OR REPLACE INTO temp.grimodex_connection_meta VALUES(1,?1)",
-            [uuid::Uuid::new_v4().to_string()],
+            "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;",
         )?;
         conn.execute_batch("PRAGMA query_only=ON")?;
         Ok(())
@@ -794,14 +769,7 @@ fn worker_registration_observes_cancellation_during_postflight_identity() -> Res
     fixture.authority.db().with_conn(|conn| {
         conn.busy_timeout(Duration::ZERO)?;
         conn.execute_batch(
-            "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
-             CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta(
-                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL
-             );",
-        )?;
-        conn.execute(
-            "INSERT OR REPLACE INTO temp.grimodex_connection_meta VALUES(1,?1)",
-            [uuid::Uuid::new_v4().to_string()],
+            "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;",
         )?;
         conn.execute_batch("PRAGMA query_only=ON")?;
         Ok(())
@@ -8045,14 +8013,7 @@ impl Fixture {
         self.authority.db().with_conn(|conn| {
             conn.busy_timeout(Duration::ZERO)?;
             conn.execute_batch(
-                "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
-                 CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta(
-                     singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL
-                 );",
-            )?;
-            conn.execute(
-                "INSERT OR REPLACE INTO temp.grimodex_connection_meta VALUES(1,?1)",
-                [uuid::Uuid::new_v4().to_string()],
+                "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;",
             )?;
             conn.execute_batch("PRAGMA query_only=ON")?;
             Ok(())

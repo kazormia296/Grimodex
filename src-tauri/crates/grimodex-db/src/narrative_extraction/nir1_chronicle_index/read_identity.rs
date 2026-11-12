@@ -5,43 +5,42 @@ use std::sync::Mutex;
 use anyhow::{ensure, Result};
 use rusqlite::{Connection, TransactionState};
 
-use crate::{read_sqlite_source_revision, SqliteSourceRevision};
+use crate::write_clock::{read_db_clock_with_versions, DbClock};
 
+/// The committed database state as the in-database write clock names it
+/// (DR-DBC-5): lineage, main `schema_version`, `user_version` and the global
+/// sequence. Every connection and process reads the same value for the same
+/// state; nothing here is connection-local.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ReadIdentity {
-    source: SqliteSourceRevision,
+    clock: DbClock,
     main_schema: i64,
-    temp_schema: i64,
     user_version: i64,
 }
 
 impl ReadIdentity {
-    /// Observe committed state before pinning a validation snapshot and again
-    /// after releasing it. A commit during the observation makes it unusable;
-    /// callers retain the original pre-validation stamp, never a later one.
+    /// Observe committed state outside a transaction. One statement reads one
+    /// snapshot, so the four components always belong to a single state (the
+    /// former before/after pair of pragma reads is no longer needed). `None`
+    /// only when the state cannot be named; an unreadable clock is an error.
     pub(crate) fn read_unpinned(conn: &Connection) -> Result<Option<Self>> {
         ensure!(
             conn.is_autocommit(),
             "NIR1 unpinned identity requires autocommit"
         );
-        let before = read_sqlite_source_revision(conn)?;
-        let main_schema = conn.pragma_query_value(Some("main"), "schema_version", |r| r.get(0))?;
-        let temp_schema = conn.pragma_query_value(Some("temp"), "schema_version", |r| r.get(0))?;
-        let user_version = conn.pragma_query_value(Some("main"), "user_version", |r| r.get(0))?;
-        let source = read_sqlite_source_revision(conn)?;
-        Ok((source == before).then_some(Self {
-            source,
+        let (clock, main_schema, user_version) = read_db_clock_with_versions(conn)?;
+        Ok(Some(Self {
+            clock,
             main_schema,
-            temp_schema,
             user_version,
         }))
     }
 
-    /// The same state as `self` seen through another connection epoch.
+    /// The same state as `self` under another lineage (a replaced database).
     #[cfg(test)]
-    pub(crate) fn with_connection_epoch_for_test(&self, epoch: &str) -> Self {
+    pub(crate) fn with_lineage_for_test(&self, lineage: &str) -> Self {
         let mut other = self.clone();
-        other.source.connection_epoch = epoch.to_owned();
+        other.clock.lineage = lineage.to_owned();
         other
     }
 
@@ -50,25 +49,17 @@ impl ReadIdentity {
             !conn.is_autocommit(),
             "NIR1 proof identity requires a transaction"
         );
-        // Pin the main snapshot before reading its data_version. Schema-only
-        // changes need their own guard because total_changes counts row writes.
-        let main_schema =
-            conn.pragma_query_value(Some("main"), "schema_version", |row| row.get(0))?;
-        let temp_schema =
-            conn.pragma_query_value(Some("temp"), "schema_version", |row| row.get(0))?;
-        let user_version =
-            conn.pragma_query_value(Some("main"), "user_version", |row| row.get(0))?;
-        let source = read_sqlite_source_revision(conn)?;
-        // A rolled-back write retains total_changes. Never retain or reuse a
-        // verdict observed in a write transaction, including after a savepoint
-        // rollback. SQLite keeps TXN_WRITE until the outer COMMIT/ROLLBACK.
+        let (clock, main_schema, user_version) = read_db_clock_with_versions(conn)?;
+        // A rolled-back write reuses its sequence values. Never retain or
+        // reuse a verdict observed in a write transaction, including after a
+        // savepoint rollback. SQLite keeps TXN_WRITE until the outer
+        // COMMIT/ROLLBACK.
         if conn.transaction_state(None::<&str>)? != TransactionState::Read {
             return Ok(None);
         }
         Ok(Some(Self {
-            source,
+            clock,
             main_schema,
-            temp_schema,
             user_version,
         }))
     }
@@ -84,44 +75,42 @@ impl ReadIdentity {
         if conn.transaction_state(None::<&str>).ok()? != TransactionState::Write {
             return None;
         }
-        let main_schema = conn
-            .pragma_query_value(Some("main"), "schema_version", |row| row.get(0))
-            .ok()?;
-        let temp_schema = conn
-            .pragma_query_value(Some("temp"), "schema_version", |row| row.get(0))
-            .ok()?;
-        let user_version = conn
-            .pragma_query_value(Some("main"), "user_version", |row| row.get(0))
-            .ok()?;
-        let source = read_sqlite_source_revision(conn).ok()?;
+        let (clock, main_schema, user_version) = read_db_clock_with_versions(conn).ok()?;
         Some(Self {
-            source,
+            clock,
             main_schema,
-            temp_schema,
             user_version,
         })
     }
 }
 
-/// DR-CP4-V-6: per connection, the committed states joined only by generic
-/// AI-audit appends, oldest first. Process memory only (never durable); a new
-/// connection has a new `connection_epoch` and therefore its own list. Any
-/// other write moves the identity away from the list's last state, so the next
-/// append starts a new list and a reader never inherits across that write.
-/// Most recently used connections last; dropping a list only costs a complete
-/// check.
+/// DR-CP4-V-6: per database (the main file's path and the lineage the states
+/// carry), the committed states joined only by generic AI-audit appends,
+/// oldest first. Process memory only (never durable). Any other write moves the
+/// identity away from the list's last state, so the next append starts a new
+/// list and a reader never inherits across that write. The path keeps a
+/// duplicated workspace folder (same lineage, another file) from reading this
+/// list; the lineage keeps a restored or migrated file from reading the old
+/// one (DR-DBC-5). Most recently used databases last; dropping a list only
+/// costs a complete check.
 static AUDIT_ONLY_STATES: Mutex<AuditOnlyStates> = Mutex::new(AuditOnlyStates::new(
     AUDIT_ONLY_CONNECTIONS,
     AUDIT_ONLY_STATES_PER_CONNECTION,
 ));
-/// Parallel test binaries open hundreds of connections; keep enough of them.
+/// Parallel test binaries open hundreds of databases; keep enough of them.
 const AUDIT_ONLY_CONNECTIONS: usize = 256;
 const AUDIT_ONLY_STATES_PER_CONNECTION: usize = 16;
+
+/// The main database file of `conn` (empty for an in-memory database).
+fn audit_only_path(conn: &Connection) -> String {
+    conn.path().unwrap_or("").to_owned()
+}
 
 /// The process registry's lists, with their bounds (a value, so the bounds can
 /// be tested without the shared registry).
 pub(super) struct AuditOnlyStates {
-    connections: Vec<Vec<ReadIdentity>>,
+    /// (file path, states). Every state of a list carries the same lineage.
+    connections: Vec<(String, Vec<ReadIdentity>)>,
     max_connections: usize,
     max_states: usize,
 }
@@ -135,19 +124,20 @@ impl AuditOnlyStates {
         }
     }
 
-    pub(super) fn record(&mut self, before: ReadIdentity, after: ReadIdentity) {
-        if before.source.connection_epoch != after.source.connection_epoch {
+    pub(super) fn record(&mut self, path: &str, before: ReadIdentity, after: ReadIdentity) {
+        if before.clock.lineage != after.clock.lineage {
             return;
         }
         let mut states = self
             .connections
             .iter()
-            .position(|states| {
-                states.first().is_some_and(|first| {
-                    first.source.connection_epoch == after.source.connection_epoch
-                })
+            .position(|(known, states)| {
+                known == path
+                    && states
+                        .first()
+                        .is_some_and(|first| first.clock.lineage == after.clock.lineage)
             })
-            .map(|index| self.connections.remove(index))
+            .map(|index| self.connections.remove(index).1)
             .unwrap_or_default();
         if states.last() != Some(&before) {
             states.clear();
@@ -159,50 +149,62 @@ impl AuditOnlyStates {
         if states.len() > self.max_states {
             states.drain(..states.len() - self.max_states);
         }
-        self.connections.push(states);
+        self.connections.push((path.to_owned(), states));
         if self.connections.len() > self.max_connections {
             self.connections.remove(0);
         }
     }
 
-    pub(super) fn joined(&self, validated: &ReadIdentity, current: &ReadIdentity) -> bool {
-        self.connections.iter().any(|states| {
-            states.last() == Some(current) && states.iter().any(|state| state == validated)
+    pub(super) fn joined(
+        &self,
+        path: &str,
+        validated: &ReadIdentity,
+        current: &ReadIdentity,
+    ) -> bool {
+        self.connections.iter().any(|(known, states)| {
+            known == path
+                && states.last() == Some(current)
+                && states.iter().any(|state| state == validated)
         })
     }
 }
 
 /// Record one committed generic AI-audit append whose `before` and `after`
 /// states were both read inside its IMMEDIATE transaction.
-pub(crate) fn record_audit_only_commit(before: ReadIdentity, after: ReadIdentity) {
+pub(crate) fn record_audit_only_commit(
+    conn: &Connection,
+    before: ReadIdentity,
+    after: ReadIdentity,
+) {
+    let path = audit_only_path(conn);
     if let Ok(mut states) = AUDIT_ONLY_STATES.lock() {
-        states.record(before, after);
+        states.record(&path, before, after);
     }
 }
 
-/// Whether only generic AI-audit appends of this connection lie between
-/// `validated` and `current`: `validated` is in the connection's list and
+/// Whether only generic AI-audit appends of this database lie between
+/// `validated` and `current`: `validated` is in the database's list and
 /// `current` is its last state.
 pub(crate) fn joined_by_audit_only_commits(
+    conn: &Connection,
     validated: &ReadIdentity,
     current: &ReadIdentity,
 ) -> bool {
+    let path = audit_only_path(conn);
     AUDIT_ONLY_STATES
         .lock()
-        .is_ok_and(|states| states.joined(validated, current))
+        .is_ok_and(|states| states.joined(&path, validated, current))
 }
 
-/// A synthetic state of connection `epoch` after `changes` row changes.
+/// A synthetic state of database `lineage` after `seq` commits.
 #[cfg(test)]
-pub(super) fn state_for_test(epoch: &str, changes: u64) -> ReadIdentity {
+pub(super) fn state_for_test(lineage: &str, seq: i64) -> ReadIdentity {
     ReadIdentity {
-        source: SqliteSourceRevision {
-            connection_epoch: epoch.to_owned(),
-            total_changes: changes,
-            data_version: 1,
+        clock: DbClock {
+            lineage: lineage.to_owned(),
+            seq,
         },
         main_schema: 1,
-        temp_schema: 1,
         user_version: 1,
     }
 }
