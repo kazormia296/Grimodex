@@ -10,7 +10,7 @@
 //! changes, true -> false) and the Human approval of that child.  Neither
 //! body's checks are skipped or loosened here.
 
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 use std::collections::{BTreeSet, HashMap};
 
 use anyhow::anyhow;
@@ -25,17 +25,18 @@ use super::declaration_storage::{
 };
 use super::human_materialization::{
     classify_reveal_mappings,
-    create_human_derived_revision_with_c2b_projection_materialization_in_tx, reveal_scene_ref,
-    RevealMappingMatch,
+    create_human_derived_revision_with_c2b_projection_materialization_in_tx_reusing,
+    reveal_scene_ref, RevealMappingMatch, SealedRunDocuments,
 };
 use super::models::{
     AppendDecisionPayload, CreateHumanDerivedRevisionRequest, NarrativeAdapterIdentity,
 };
 use super::project_scope_authority::load_live_project_scope_authority;
 use super::repository::{
-    append_human_decision_in_tx, current_chronicle_run_spec_for_run,
-    load_current_chronicle_proposal_matches, load_validated_chronicle_proposal_matches,
-    CurrentChronicleProposalPlanAuthority,
+    append_human_decision_in_tx_with_reuse, current_chronicle_run_spec_for_run,
+    load_verified_chronicle_revision_review_authority, ChronicleDecisionReuse,
+    ChroniclePlanAuthority, ChronicleReuseWitness, CurrentChronicleProposalPlanAuthority,
+    VerifiedChronicleRevisionReviewAuthority,
 };
 use super::scope_authority_runtime::{
     load_sealed_snapshot_document_bindings_in_tx, SealedSnapshotDocumentBinding,
@@ -185,12 +186,25 @@ impl EvidenceAnchors {
 /// make the write path skip a proposal or fail it (never write one the writer
 /// would refuse).  Values that change per proposal (status, current Revision,
 /// Application, parent seal) are never held here.
+///
+/// The sealed plan roster and the Snapshot/catalog proof are also handed to the
+/// Decision writer ([`BulkApprovalContext::decision_reuse`]) so that it does not
+/// verify them again for every proposal (DR-BAO-10).  Only the write path's
+/// `PlanSource::Verify` roster, which is the writer's own full verification, can
+/// be handed over.
 pub(crate) struct BulkApprovalContext {
     project_id: String,
     run_id: String,
     proposal_set_id: String,
     plan_source: PlanSource,
-    plan: OnceCell<Option<HashMap<String, CurrentChronicleProposalPlanAuthority>>>,
+    plan: OnceCell<Option<ChroniclePlanAuthority>>,
+    /// The Snapshot/catalog proof of the Decision writer (sealed records).
+    review_authority: OnceCell<Option<VerifiedChronicleRevisionReviewAuthority>>,
+    /// What the sealed rows held when the plan and the Snapshot were verified.
+    reuse_witness: OnceCell<Option<ChronicleReuseWitness>>,
+    /// A transaction found the sealed rows different from the verified ones:
+    /// nothing is reused for the rest of the command.
+    reuse_abandoned: Cell<bool>,
     evidence: OnceCell<Option<EvidenceAnchors>>,
     sealed_documents: OnceCell<Option<Vec<SealedSnapshotDocumentBinding>>>,
     /// `scene_ref` of every live Scope authority mapping.
@@ -211,6 +225,9 @@ impl BulkApprovalContext {
             proposal_set_id: proposal_set_id.to_owned(),
             plan_source,
             plan: OnceCell::new(),
+            review_authority: OnceCell::new(),
+            reuse_witness: OnceCell::new(),
+            reuse_abandoned: Cell::new(false),
             evidence: OnceCell::new(),
             sealed_documents: OnceCell::new(),
             mapping_scene_refs: OnceCell::new(),
@@ -243,13 +260,10 @@ impl BulkApprovalContext {
 
     /// `conn` must be inside a caller-owned transaction (the sealed Snapshot
     /// lookup requires one).
-    fn plan(
-        &self,
-        conn: &Connection,
-    ) -> Option<&HashMap<String, CurrentChronicleProposalPlanAuthority>> {
+    fn plan_authority(&self, conn: &Connection) -> Option<&ChroniclePlanAuthority> {
         self.plan
             .get_or_init(|| match &self.plan_source {
-                PlanSource::Verify => load_current_chronicle_proposal_matches(
+                PlanSource::Verify => ChroniclePlanAuthority::load_verified(
                     conn,
                     &self.project_id,
                     &self.run_id,
@@ -259,8 +273,9 @@ impl BulkApprovalContext {
                 PlanSource::Verified {
                     task_id,
                     attempt_id,
-                } => load_validated_chronicle_proposal_matches(
+                } => ChroniclePlanAuthority::from_bundle_verified(
                     conn,
+                    &self.project_id,
                     &self.run_id,
                     &self.proposal_set_id,
                     task_id,
@@ -269,6 +284,67 @@ impl BulkApprovalContext {
                 .ok(),
             })
             .as_ref()
+    }
+
+    /// `conn` must be inside a caller-owned transaction (the sealed Snapshot
+    /// lookup requires one).
+    fn plan(
+        &self,
+        conn: &Connection,
+    ) -> Option<&HashMap<String, CurrentChronicleProposalPlanAuthority>> {
+        self.plan_authority(conn)
+            .map(ChroniclePlanAuthority::matches)
+    }
+
+    fn review_authority(
+        &self,
+        conn: &Connection,
+    ) -> Option<&VerifiedChronicleRevisionReviewAuthority> {
+        self.review_authority
+            .get_or_init(|| {
+                load_verified_chronicle_revision_review_authority(
+                    conn,
+                    &self.project_id,
+                    &self.run_id,
+                )
+                .ok()
+            })
+            .as_ref()
+    }
+
+    /// What the Decision writer may reuse instead of verifying it again, or
+    /// `None` (the writer then verifies everything itself, exactly as the
+    /// one-Decision path does) when either part could not be verified up front
+    /// or the roster was not the writer's own full verification.
+    fn decision_reuse(&self, conn: &Connection) -> Option<ChronicleDecisionReuse<'_>> {
+        let plan = self.plan_authority(conn)?;
+        if !plan.is_fully_verified() {
+            return None;
+        }
+        let review = self.review_authority(conn)?;
+        Some(ChronicleDecisionReuse { plan, review })
+    }
+
+    /// Whether the verified plan roster and Snapshot proof may still be reused
+    /// by the transaction `conn` is in: the rows they were verified from still
+    /// hold what they held then (one primary-key SELECT, see
+    /// [`ChronicleReuseWitness`]). On a difference, or when there was nothing
+    /// verified up front, it is `false` for the rest of the command and the
+    /// writer verifies everything itself, exactly as the one-Decision path does.
+    fn reuse_still_holds(&self, conn: &Connection) -> bool {
+        if self.reuse_abandoned.get() {
+            return false;
+        }
+        let holds = self.decision_reuse(conn).is_some()
+            && self
+                .reuse_witness
+                .get()
+                .and_then(Option::as_ref)
+                .is_some_and(|witness| witness.still_holds(conn, &self.project_id, &self.run_id));
+        if !holds {
+            self.reuse_abandoned.set(true);
+        }
+        holds
     }
 
     fn evidence(&self, conn: &Connection) -> Option<&EvidenceAnchors> {
@@ -288,6 +364,15 @@ impl BulkApprovalContext {
                     .ok()
             })
             .as_deref()
+    }
+
+    /// The sealed Snapshot documents of the Run, for the child writer.
+    fn sealed_run_documents(&self, conn: &Connection) -> Option<SealedRunDocuments<'_>> {
+        Some(SealedRunDocuments {
+            project_id: &self.project_id,
+            run_id: &self.run_id,
+            documents: self.sealed_documents(conn)?,
+        })
     }
 
     fn mapping_scene_refs(&self, conn: &Connection) -> Option<&[String]> {
@@ -324,6 +409,14 @@ impl BulkApprovalContext {
     /// values.
     fn warm(&self, conn: &Connection) {
         self.plan(conn);
+        self.review_authority(conn);
+        // Only when both were verified: the witness is what a later transaction
+        // compares the rows with, and it is read in this same transaction.
+        if self.decision_reuse(conn).is_some() {
+            self.reuse_witness.get_or_init(|| {
+                ChronicleReuseWitness::capture(conn, &self.project_id, &self.run_id).ok()
+            });
+        }
         self.evidence(conn);
         self.sealed_documents(conn);
         self.mapping_scene_refs(conn);
@@ -972,7 +1065,16 @@ fn approve_one(
         ]));
     };
     payload["disclosure"]["secret"] = Value::Bool(false);
-    let saved = create_human_derived_revision_with_c2b_projection_materialization_in_tx(
+    // Inside this transaction: do the rows the plan roster and the Snapshot proof
+    // were verified from still hold what they held then? If not, the child
+    // writer and the Decision writer verify everything themselves.
+    let reusable = ctx.reuse_still_holds(conn);
+    let sealed_run_documents = if reusable {
+        ctx.sealed_run_documents(conn)
+    } else {
+        None
+    };
+    let saved = create_human_derived_revision_with_c2b_projection_materialization_in_tx_reusing(
         conn,
         &ctx.project_id,
         &CreateHumanDerivedRevisionRequest {
@@ -988,13 +1090,24 @@ fn approve_one(
             surface_id: REVIEW_SURFACE_ID.to_owned(),
         },
         None,
+        sealed_run_documents.as_ref(),
     )?;
     let child_revision_id = saved
         .get("revisionId")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("NEX_BULK_APPROVE_CHILD_RECEIPT_INVALID: no child revisionId"))?
         .to_owned();
-    let decision = append_human_decision_in_tx(
+    // The sealed plan roster and Snapshot proof were verified in full when the
+    // run-level material was warmed. The writer still reads, for this
+    // proposal and inside this transaction, everything that can change between
+    // two proposals (set consumption, Applications, Run spec, current Revision
+    // and status, the child's title).
+    let reuse = if reusable {
+        ctx.decision_reuse(conn)
+    } else {
+        None
+    };
+    let decision = append_human_decision_in_tx_with_reuse(
         conn,
         &AppendDecisionPayload {
             run_id: ctx.run_id.clone(),
@@ -1005,6 +1118,7 @@ fn approve_one(
             decision_json: None,
             created_by: Some(REVIEW_DECISION_CREATED_BY.to_owned()),
         },
+        reuse.as_ref(),
     )?;
     let decision_id = decision
         .get("decisionId")
