@@ -488,16 +488,20 @@ digest の回数と bytes も不変（p4：431 回／6,968,797 B、978 場面：
 - Scope extension の loop の残り（binding あたり約 196 回の確保。`parse_binding_row`、`validate_binding` の registry の再検証、`to_value(binding)`、収集用の clone）、Revision ごとの payload／envelope の parse と canonical 化
   （約 6.3 MB／4 Revision）、Scope authority の組立（`derive_live_scene_projection`＋`build_narrative_project_scope_authority_v1`。352 場面で 17K 回）。時間の対照で効果が足りなければ、次の候補。
 
-### 検証の結果（2026-11-12）
+### 検証の結果（2026-11-13。独立レビューの指摘を直した後。master `2efb9ec2`〔DR-BAO-10＝#877〕に載せ直した HEAD）
 
-- `cargo test -p grimodex-core`：全件通る（lib 216 passed、1 ignored。統合試験も全部 ok）。
-- `cargo test -p grimodex-db --lib` 全件：**2,671 passed、0 failed、58 ignored**（DR-CQA-7 の 2,668 に、本 DR の 3 件〔nested digest の同値、損傷 10 種、registry を準備できない場合〕が増えた。core の 3 件〔role 表、依存 set、`SourceTokenRegistry`〕は core の側）。
-- `cargo clippy -p grimodex-core -p grimodex-db --all-targets -- -D warnings`：通る（最初の実行は `map_identity` で落ち、`match` に直した）。
-- `scripts/nir1-c-query-worker-ci.sh lifecycle`：26 case の `test result: ok`（終了コード 0）。実 worker の固定 allocator（Q 16 MiB／S 64 MiB）で、registration・query・frame が通る
-  （product 形の複数 Revision を含む `native_worker_answers_a_project_reviewed_scene_by_scene` ほか）。表の初期化が S の zero-live の封印を動かさないことは、この lifecycle の通過で確かめた。
-  出力の `panicked … reader-join failure` は、その case が起こす失敗の試験（quarantine の確認）の想定どおりの出力。
-- `fnm exec --using=22 pnpm -s verify:quality`：通る（終了コード 0。cargo と並走させずに、最終の commit で実行）。
-- 未実行：`nir1-material-diagnostics` feature つきの試験、既定の lane 全体（`nir1-c-query-worker-ci.sh` の引数なし）と practical-retention、**時間の対照**（下の手順。この段では測らない）。
+独立レビュー（Opus、read-only）の P2・P3 を直した（到達しない fallback の記述と試験名、複製した digest の数、core の試験件数、単一 binding の読み、lifecycle を seal の根拠にしない書き方、VM steps の限定、
+表の純関数化と壊した registry の同値試験、sourceBasis を欠いた envelope の digest の試験、効果の書き方）。載せ直しは衝突なし。以下は載せ直した後の HEAD で実行した結果。
+
+- `cargo test -p grimodex-core --lib`：**217 passed**、0 failed、1 ignored（`the_table_of_a_registry_that_does_not_validate_...` を 1 件足した）。
+- `cargo test -p grimodex-db --lib` 全件：**2,694 passed、0 failed、61 ignored**（master の増分を含む）。
+- `cargo clippy -p grimodex-core -p grimodex-db --all-targets --locked -- -D warnings`：通る。
+- `scripts/nir1-c-query-worker-ci.sh lifecycle`：26 case の `test result: ok`、failed 0。実 worker の固定 allocator（Q 16 MiB／S 64 MiB）で、registration・query・frame が通る
+  （product 形の複数 Revision を含む `native_worker_answers_a_project_reviewed_scene_by_scene` ほか）。**この通過は、表の初期化が S の zero-live の封印を動かさないことの根拠にしない**
+  （初期化が S の scope の中で起きるかは未確認。封印に影響しない理由は上の「決定 1」に書いた表の性質）。出力の `panicked … reader-join failure` は、quarantine の確認の試験が起こす想定どおりの出力。
+- `fnm exec --using=22 pnpm -s verify:quality`：通る（終了コード 0）。1 回目は load が高い（1 分値 約 15）時間帯に `src/lib/browser-mock.persistence-contract.test.ts` の 1 件が 5,000 ms の timeout で落ち
+  （本変更は Rust と docs だけで、この試験に触れない）、load が下がってから取り直して通った。cargo とは並走させていない。
+- 未実行：`nir1-material-diagnostics` feature つきの試験、既定の lane 全体（`nir1-c-query-worker-ci.sh` の引数なし）と practical-retention、時間の対照の取り直し（本変更はコードの挙動を変えない試験・記述の修正と、表を作る部分の関数への分割だけ）。
 - 注意：debug の test binary は worktree ごとに同じ hash になるので、dev 枝と製品の枝が同じ target dir を使うと、片方の source が古い mtime のまま「新しい」と判定されて古い binary を使う。
   測定の後は製品の source の mtime を更新してから build した（`touch`）。
 
