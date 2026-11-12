@@ -701,6 +701,98 @@ fn a_run_without_windows_is_still_unsupported() {
     );
 }
 
+/// The same Run, resealed so that the merge stage's output differs from the
+/// raw observations (a non-identity merge): the artifact's label follows its
+/// payload, as a real digest would.
+fn with_nonidentity_merge(run: &Run) -> Loaded {
+    let mut map = loaded(run);
+    let mut payload = run.raw.clone();
+    let observations = payload["observations"]
+        .as_array_mut()
+        .expect("observations");
+    assert!(observations.len() >= 2, "a merge that can drop one");
+    observations.pop();
+    assert_ne!(payload, run.raw);
+    let label = format!(
+        "sha256:merged-{}",
+        grimodex_core::canonical_json_digest(&payload).expect("label")
+    );
+    map.insert(
+        (
+            "chronicle.merge-local-observations@1",
+            "chronicle.merged-observations@1",
+        ),
+        artifact("merged", &label, "t-merge", "a-merge", payload),
+    );
+    map
+}
+
+const NONIDENTITY: &str = "unsupported nonidentity-merge-recipe-not-implemented";
+
+/// A merge that is not the identity is not replayed at any window count, cold
+/// or through the Run-level cache the roster reads share (`RunReplay`, the cache
+/// `RunProofMemo` holds): a warm cache never turns it into material, whatever
+/// it has read before, and a refused read leaves nothing behind for a good Root.
+#[test]
+fn a_nonidentity_merge_is_unsupported_cold_and_through_a_shared_cache() {
+    for run in [
+        long_scene(3),
+        long_scene(8),
+        long_scene(16),
+        folder_of_scenes(),
+    ] {
+        let clusters = run.cluster_refs.len();
+        assert!(clusters >= 2);
+        let bad = with_nonidentity_merge(&run);
+        let good = loaded(&run);
+        let expected: Vec<String> = (0..clusters).map(|c| cold(&run, c)).collect();
+        assert!(expected.iter().all(|e| e.starts_with("complete")));
+        for c in 0..clusters {
+            // Cold.
+            assert_eq!(
+                describe(&replay_loaded(&run, &bad, &mut RunReplay::default(), c)),
+                NONIDENTITY,
+                "cold, Root {c}"
+            );
+        }
+        for order in [[0, 1], [1, 0]] {
+            // A cache warmed by the Run's identity-merge reads first.
+            let mut warm = RunReplay::default();
+            for c in order {
+                assert_eq!(
+                    describe(&replay_loaded(&run, &good, &mut warm, c)),
+                    expected[c]
+                );
+            }
+            for c in order {
+                for _ in 0..2 {
+                    assert_eq!(
+                        describe(&replay_loaded(&run, &bad, &mut warm, c)),
+                        NONIDENTITY,
+                        "warm cache, Root {c}"
+                    );
+                }
+            }
+            // A cache warmed by a refused read, and one that went on to a good
+            // Root afterwards.
+            let mut shared = RunReplay::default();
+            for c in order {
+                assert_eq!(
+                    describe(&replay_loaded(&run, &bad, &mut shared, c)),
+                    NONIDENTITY
+                );
+            }
+            for c in order {
+                assert_eq!(
+                    describe(&replay_loaded(&run, &good, &mut shared, c)),
+                    expected[c],
+                    "the refusal is not remembered"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn a_shared_run_cache_gives_every_root_the_cold_result() {
     for run in [
@@ -984,6 +1076,108 @@ fn scaling_of_a_root_read_with_and_without_the_run_cache() {
             shared_ms / roots as f64
         );
     }
+}
+
+/// One document of `windows * per_window` sentences read by `windows` windows,
+/// and `roots` clusters, each reading one sentence (every fifth folds the
+/// sentences of two windows together).
+fn held_run(windows: usize, per_window: usize, roots: usize) -> Run {
+    let doc = sentence_doc(0, windows * per_window);
+    let wins: Vec<Win> = (0..windows)
+        .map(|w| Win {
+            doc: 0,
+            range: (
+                doc.sentences[w * per_window].0,
+                if w + 1 == windows {
+                    doc.text.len()
+                } else {
+                    doc.sentences[(w + 1) * per_window].0
+                },
+            ),
+        })
+        .collect();
+    let clusters: Vec<Vec<(usize, usize)>> = (0..roots)
+        .map(|r| {
+            let w = r % windows;
+            let mut members = vec![(w, w * per_window + r % per_window)];
+            if r % 5 == 4 && windows > 1 {
+                let v = (w + 1) % windows;
+                members.push((v, v * per_window));
+            }
+            members
+        })
+        .collect();
+    build_run(&[doc], &wins, &clusters)
+}
+
+fn anon_kb() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find(|line| line.starts_with("RssAnon:"))
+                .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
+        })
+        .unwrap_or(0)
+}
+
+/// What a Prepare holds for its candidates while it walks the roster, before
+/// the release (every Root's replay: `before`) and after it (the material
+/// source keys only: `after`). Memory, not a check:
+/// `MW_HELD_WINDOWS=32 MW_HELD_ROOTS=416 MW_HELD_MODE=after cargo test -p grimodex-db --lib --release held_memory -- --ignored --nocapture --exact narrative_extraction::material_membership_root::multi_window_tests::held_memory_of_a_prepare_before_and_after_the_release`.
+#[test]
+#[ignore = "memory probe; needs MW_HELD_WINDOWS, MW_HELD_ROOTS and MW_HELD_MODE"]
+fn held_memory_of_a_prepare_before_and_after_the_release() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    let var = |name: &str| std::env::var(name).ok();
+    let (Some(windows), Some(roots), Some(mode)) = (
+        var("MW_HELD_WINDOWS").and_then(|v| v.parse::<usize>().ok()),
+        var("MW_HELD_ROOTS").and_then(|v| v.parse::<usize>().ok()),
+        var("MW_HELD_MODE"),
+    ) else {
+        return;
+    };
+    let release = mode == "after";
+    let run = held_run(windows, 64, roots);
+    let map = loaded(&run);
+    let base = anon_kb();
+    let peak = std::sync::Arc::new(AtomicU64::new(0));
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let sampler = {
+        let (peak, stop) = (peak.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                peak.fetch_max(anon_kb(), Ordering::Relaxed);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        })
+    };
+    let start = std::time::Instant::now();
+    let mut shared = RunReplay::default();
+    let mut held_outcomes = vec![];
+    let mut held_keys: Vec<Vec<String>> = vec![];
+    let mut materials = 0;
+    for c in 0..roots {
+        let (materials_of, proofs) = complete(replay_loaded(&run, &map, &mut shared, c));
+        materials = materials_of.len();
+        if release {
+            held_keys.push(materials_of.iter().map(|m| m.source_key.clone()).collect());
+        } else {
+            held_outcomes.push((materials_of, proofs));
+        }
+    }
+    let ms = start.elapsed().as_secs_f64() * 1000.0;
+    drop(shared);
+    let at_end = anon_kb();
+    stop.store(true, Ordering::Relaxed);
+    sampler.join().expect("sampler");
+    println!(
+        "{}",
+        json!({"mode": mode, "windows": windows, "roots": roots, "materialsPerRoot": materials,
+            "replayMs": ms, "anonBaseKb": base, "anonPeakAboveBaseKb": peak.load(Ordering::Relaxed).saturating_sub(base),
+            "anonAtEndAboveBaseKb": at_end.saturating_sub(base),
+            "held": held_outcomes.len() + held_keys.len()})
+    );
 }
 
 /// Timing and equivalence on a PRIVATE COPY of a database. Set MW_TIMING_DB
