@@ -80,7 +80,15 @@ pub(in crate::narrative_extraction) struct BuildCandidatePreflight {
     pub current_decision_id: String,
     pub envelope_digest: String,
     pub envelope: Value,
+    /// The replay's `materials`, `replayed_requests` and `verified_receipts`
+    /// are released once the preflight has used them (`disclosure` holds what
+    /// the later stages need from them), so a Prepare that holds every
+    /// candidate's preflight does not hold every Root's replay. The later
+    /// stages read only `revision_id`, `run_id`, `material_basis`,
+    /// `active_scope_controls` and `verified_artifacts` of this membership.
     pub membership: RevisionMaterialMembership,
+    /// `membership.materials[*].source_key`, in the replay's order.
+    pub material_source_keys: Vec<String>,
     pub disclosure: disclosure::VerifiedDisclosureMaterial,
 }
 
@@ -116,7 +124,7 @@ pub(in crate::narrative_extraction) fn preflight_build_candidate_with_memo(
     // Replay the sealed membership once even when the current row is
     // unapproved. It remains candidate-local data and must not contribute to
     // the global scope union until all preliminary gates below pass.
-    let membership =
+    let mut membership =
         match read_revision_material_membership_with_memo(conn, project, revision, memo)? {
             MaterialMembershipRead::Complete(value) => value,
             MaterialMembershipRead::Unavailable { .. } => {
@@ -146,6 +154,14 @@ pub(in crate::narrative_extraction) fn preflight_build_candidate_with_memo(
         Ok(value) => value,
         Err(reason) => return Ok(Err(reason)),
     };
+    let material_source_keys = membership
+        .materials
+        .iter()
+        .map(|material| material.source_key.clone())
+        .collect();
+    membership.materials = Vec::new();
+    membership.replayed_requests = Vec::new();
+    membership.verified_receipts = Vec::new();
     Ok(Ok(BuildCandidatePreflight {
         revision_id: revision.to_owned(),
         proposal_id: current.proposal_id,
@@ -153,6 +169,7 @@ pub(in crate::narrative_extraction) fn preflight_build_candidate_with_memo(
         envelope_digest: current.envelope_digest,
         envelope,
         membership,
+        material_source_keys,
         disclosure,
     }))
 }
@@ -186,15 +203,9 @@ pub(in crate::narrative_extraction) fn finalize_build_candidate_with_control(
     control: &mut dyn super::super::nir1_entity_relation_index::GraphWorkControl,
     reads: Option<&mut super::super::source_revision::CandidateFreshnessReads>,
 ) -> Result<std::result::Result<BuildCandidate, Reason>> {
-    let material_source_keys = preflight
-        .membership
-        .materials
-        .iter()
-        .map(|material| material.source_key.clone())
-        .collect::<Vec<_>>();
     let material_scopes = match super::super::scene_scope::select_material_scene_scopes(
         material_scope_cache,
-        &material_source_keys,
+        &preflight.material_source_keys,
     ) {
         Ok(scopes) => scopes,
         Err(_) => return Ok(Err(Reason::MaterialAuthorityUnavailable)),

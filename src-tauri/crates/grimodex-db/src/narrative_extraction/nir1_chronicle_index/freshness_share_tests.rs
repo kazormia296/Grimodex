@@ -151,13 +151,7 @@ fn prepare(tx: &Connection, project: &str) -> Prepared {
     }
     let keys = preflights
         .iter()
-        .flat_map(|preflight| {
-            preflight
-                .membership
-                .materials
-                .iter()
-                .map(|material| material.source_key.clone())
-        })
+        .flat_map(|preflight| preflight.material_source_keys.iter().cloned())
         .collect::<Vec<_>>();
     let cache = preload_material_scene_scopes(tx, project, &keys).expect("material scopes");
     Prepared {

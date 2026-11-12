@@ -17,21 +17,32 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub fn new() -> Self {
-        let mut bytes = Vec::new();
-        GzDecoder::new(
-            include_bytes!("../../../tests/support/nir1-reviewed-child-cold.db.gz").as_slice(),
+        Self::open(
+            include_bytes!("../../../tests/support/nir1-reviewed-child-cold.db.gz"),
+            include_str!("../../../tests/support/nir1-reviewed-child-cold.json"),
         )
-        .read_to_end(&mut bytes)
-        .expect("normal UI cold workspace");
+    }
+
+    /// The three-window cold workspace (MW/1): two Runs, four approved
+    /// current proposals, each with a secret unapproved Root.
+    pub fn multi_window() -> Self {
+        Self::open(
+            include_bytes!("../../../tests/support/nir1-multi-window-cold.db.gz"),
+            include_str!("../../../tests/support/nir1-multi-window-cold.json"),
+        )
+    }
+
+    fn open(compressed: &[u8], manifest: &str) -> Self {
+        let mut bytes = Vec::new();
+        GzDecoder::new(compressed)
+            .read_to_end(&mut bytes)
+            .expect("cold workspace");
         let path = std::env::temp_dir().join(format!("nir1-index-{}.db", uuid::Uuid::new_v4()));
         std::fs::write(&path, bytes).expect("private workspace");
         let db = Database::new(&path).expect("fixture connection");
         db.migrate().expect("schema upgrade");
         let runtime = NirChronicleIndexRuntime::new(&db, 1);
-        let manifest = serde_json::from_str(include_str!(
-            "../../../tests/support/nir1-reviewed-child-cold.json"
-        ))
-        .expect("provenance");
+        let manifest = serde_json::from_str(manifest).expect("provenance");
         Self {
             db,
             runtime,
