@@ -4,7 +4,6 @@ import { markdownToPmJson } from "@/features/external-mount/markdownBridge";
 import { buildNarrativeCorpusSnapshot } from "@/features/narrative-extraction/source/buildSnapshot";
 import type { ProjectNarrativeSourceRow } from "@/features/narrative-extraction/source/types";
 import {
-  DEFAULT_MAX_WINDOW_OWNED_CHARS,
   measureSceneCanonicalBodyLength,
   SceneBodyLengthError,
 } from "./sceneBodyLength";
@@ -70,10 +69,6 @@ async function sealedLength(
 }
 
 describe("measureSceneCanonicalBodyLength", () => {
-  it("re-exports the window planner's owned-text budget", () => {
-    expect(DEFAULT_MAX_WINDOW_OWNED_CHARS).toBe(6000);
-  });
-
   it("reads exactly one Scene through the snapshot's row loader", async () => {
     const loadSourceRows = vi.fn(async () => [
       row({ content: databaseContent }),

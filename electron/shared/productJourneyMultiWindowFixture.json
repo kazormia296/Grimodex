@@ -1,0 +1,61 @@
+{
+  "id": "multi-window-synthetic-v1",
+  "version": 1,
+  "note": "Synthetic English prose written for this fixture only. Every marker sentence is unique in its scene bodies; the setup script (electron/scripts/nir1-multi-window-cold-fixture.mjs) builds the bodies around them. A request is answered only when a marker is a visible span of the request; any other request is left to the other Journey responses.",
+  "rows": [
+    {
+      "key": "seal-first",
+      "marker": "Mirelle the tide clerk sealed the first ledger at Brackwater Gate.",
+      "predicate": "seals a ledger at the gate",
+      "cluster": "seal"
+    },
+    {
+      "key": "bell-middle",
+      "marker": "Old Hask rang the harbour bell twice at dusk.",
+      "predicate": "rings the harbour bell",
+      "cluster": "bell"
+    },
+    {
+      "key": "seal-last",
+      "marker": "Mirelle the tide clerk sealed the last ledger at Brackwater Gate.",
+      "predicate": "seals a ledger at the gate",
+      "cluster": "seal"
+    },
+    {
+      "key": "fire-first",
+      "marker": "Captain Orrel lit the signal fire on Saltmere Quay.",
+      "predicate": "lights a signal fire",
+      "cluster": "fire"
+    },
+    {
+      "key": "writ-middle",
+      "marker": "A courier delivered the sealed writ to Saltmere Quay.",
+      "predicate": "delivers a writ",
+      "cluster": "writ"
+    },
+    {
+      "key": "fire-last",
+      "marker": "Captain Orrel lit the signal fire again on Saltmere Quay.",
+      "predicate": "lights a signal fire",
+      "cluster": "fire"
+    }
+  ],
+  "clusters": {
+    "seal": {
+      "title": "Ledger seals at the gate",
+      "summary": "Mirelle sealed ledgers at Brackwater Gate."
+    },
+    "bell": {
+      "title": "Harbour bell at dusk",
+      "summary": "Old Hask rang the harbour bell."
+    },
+    "fire": {
+      "title": "Signal fire on the quay",
+      "summary": "Captain Orrel lit the signal fire on Saltmere Quay."
+    },
+    "writ": {
+      "title": "Writ delivered to the quay",
+      "summary": "A courier delivered the sealed writ."
+    }
+  }
+}

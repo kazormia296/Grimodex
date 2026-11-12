@@ -305,6 +305,26 @@ test("IR preconditions: the secret-free approved proposal passes and the secret 
   );
 });
 
+test("IR preconditions accept any number of windows from one up", () => {
+  for (const count of [1, 2, 3, 8, 32]) {
+    const result = readings((input) => {
+      input.run = runRow({
+        coverageJson: JSON.stringify({ windowCount: count }),
+      });
+      input.bundle.artifacts[1].payloadJson.windows = Array.from(
+        { length: count },
+        () => ({}),
+      );
+    });
+    assertIrPreconditionsByDisclosure(result, { editedProposalId: "p1" });
+    assert.deepEqual(
+      result.map((row) => row.failures),
+      [["Secret"], []],
+      `${count} windows`,
+    );
+  }
+});
+
 test("IR preconditions fail when a readable obstacle other than the disclosure mark appears", () => {
   const edited = { editedProposalId: "p1" };
   const cases = {
@@ -326,9 +346,13 @@ test("IR preconditions fail when a readable obstacle other than the disclosure m
       (input.revisions[1].envelope.assertion.scope.audience = {
         kind: "unresolved",
       }),
-    "three windows": (input) => {
+    "no window at all": (input) => {
+      input.run = runRow({ coverageJson: JSON.stringify({ windowCount: 0 }) });
+      input.bundle.artifacts[1].payloadJson.windows = [];
+    },
+    "coverage names more windows than the plan holds": (input) => {
       input.run = runRow({ coverageJson: JSON.stringify({ windowCount: 3 }) });
-      input.bundle.artifacts[1].payloadJson.windows = [{}, {}, {}];
+      input.bundle.artifacts[1].payloadJson.windows = [{}, {}];
     },
     "a repair stage ran": (input) =>
       input.bundle.stageReceipts.push({
@@ -387,8 +411,8 @@ test("a start notice after the first 解析 fails the journey and names the noti
   const directory = await mkdtemp(path.join(tmpdir(), "chronicle-notice-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const { harness, dialog, calls } = noticeHarness([
-    "long-scene",
     "same-scene-approved",
+    "a-notice-kind-that-does-not-exist-yet",
   ]);
   await assert.rejects(
     analyzeChronicleAndWaitForProposals({
@@ -399,7 +423,7 @@ test("a start notice after the first 解析 fails the journey and names the noti
       directory,
       failOnStartNotices: true,
     }),
-    /unexpected start notices before the Run: long-scene, same-scene-approved/,
+    /unexpected start notices before the Run: same-scene-approved, a-notice-kind-that-does-not-exist-yet/,
   );
   assert.equal(calls.analyze, 1, "the notice is never answered by a 2nd press");
 });

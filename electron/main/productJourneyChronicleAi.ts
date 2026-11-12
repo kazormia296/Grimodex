@@ -3,6 +3,10 @@ import {
   productJourneyNir1Observation,
   productJourneyNir1Synthesis,
 } from "./productJourneyNir1Ai.js";
+import {
+  productJourneyMultiWindowObservation,
+  productJourneyMultiWindowSynthesis,
+} from "./productJourneyMultiWindowAi.js";
 
 type JsonObject = Record<string, unknown>;
 type ContextSection = { contextId: string; inputRef: string; value: string };
@@ -70,6 +74,8 @@ function contextSections(args: JsonObject): ContextSection[] {
 function observationReply(sections: ContextSection[]): JsonObject {
   const nir1 = productJourneyNir1Observation(sections);
   if (nir1) return nir1 as JsonObject;
+  const multiWindow = productJourneyMultiWindowObservation(sections);
+  if (multiWindow) return multiWindow as JsonObject;
   const windows = sections.filter((row) =>
     row.contextId.startsWith("observation-citation-window:"),
   );
@@ -113,6 +119,8 @@ function observationReply(sections: ContextSection[]): JsonObject {
 function synthesisReply(sections: ContextSection[]): JsonObject {
   const nir1 = productJourneyNir1Synthesis(sections);
   if (nir1) return nir1 as JsonObject;
+  const multiWindow = productJourneyMultiWindowSynthesis(sections);
+  if (multiWindow) return multiWindow as JsonObject;
   const clusters = sections.filter((row) =>
     row.contextId.startsWith("event-cluster:"),
   );

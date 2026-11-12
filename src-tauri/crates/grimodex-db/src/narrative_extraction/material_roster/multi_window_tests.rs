@@ -6,6 +6,18 @@
 //! dropped, nothing is remembered wrongly). The recipe's agreement with the
 //! TypeScript builders is proven by the production goldens, the two-window
 //! cold fixture and the evaluation database, not here.
+//!
+//! On the cache's "can never be matched to a different Run state" (see
+//! `replay::Fingerprint`): the fingerprint holds the digests of the snapshot,
+//! plan and observation artifacts and, per observation receipt, only its
+//! execution id and `stageExecutionReceiptDigest`. The sentence is therefore a
+//! consequence of one premise: that receipt digest seals the receipt's whole
+//! content, `contextSetDigest` and `finalRequestDigest` included. The premise
+//! holds in production because a stored receipt is recomputed and compared
+//! with its digest when it is hydrated (`stage_provenance::validate_receipt`,
+//! `TERMINAL_RECEIPT_DOMAIN`). These tests do NOT exercise that seal: a
+//! synthetic receipt's fields are edited freely, so a test that edits a field
+//! without its digest builds a receipt a stored one could not be.
 use super::super::stage_provenance::VerifiedV2ContextArtifact;
 use super::replay::{self, AcceptedArtifact, Outcome, RunReplay};
 use super::{prompt, segments};
@@ -502,43 +514,163 @@ fn many_windows_replay_without_a_limit_on_their_number() {
     }
 }
 
+/// Why a Run stopped. A replay that stops for the wrong reason would pass a
+/// bare `is_err()`, so every refusal below names its reason.
+fn refusal(run: &Run) -> String {
+    match replay_with(run, &mut RunReplay::default(), 0) {
+        Err(error) => error.to_string(),
+        other => panic!("must be refused: {}", describe(&other)),
+    }
+}
+
 #[test]
 fn a_missing_duplicated_changed_or_foreign_window_request_never_replays() {
     let base = long_scene(3);
-    let mut variants: Vec<(&str, Run)> = vec![];
+    let mut variants: Vec<(&str, Run, &str)> = vec![];
     let mut missing = base.clone();
     missing.receipts.remove(1);
-    variants.push(("a window request is missing", missing));
+    variants.push((
+        "a window request is missing",
+        missing,
+        "observation-request-roster-invalid",
+    ));
     let mut duplicated = base.clone();
     duplicated.receipts[2] = duplicated.receipts[1].clone();
-    variants.push(("one request answers two windows", duplicated));
+    variants.push((
+        "one request answers two windows",
+        duplicated,
+        "observation-window-request-binding-invalid",
+    ));
     let mut changed = base.clone();
     changed.receipts[1]["finalRequestDigest"] = json!("sha256:changed");
-    variants.push(("a request digest was changed", changed));
+    variants.push((
+        "a request digest was changed",
+        changed,
+        "request-digest-mismatch",
+    ));
     let mut foreign = base.clone();
     foreign.receipts[2]["stageExecution"]["runId"] = json!("run-2");
-    variants.push(("a request of another Run", foreign));
+    variants.push((
+        "a request of another Run",
+        foreign,
+        "request-digest-mismatch",
+    ));
     let mut other_task = base.clone();
     other_task.receipts[0]["stageExecution"]["taskId"] = json!("task-other");
-    variants.push(("a request of another Task", other_task));
+    variants.push((
+        "a request of another Task",
+        other_task,
+        "observation-request-roster-invalid",
+    ));
     let mut extra = base.clone();
     let mut again = extra.receipts[0].clone();
     again["stageExecution"]["stageExecutionId"] = json!("exec-observe-extra");
     extra.receipts.insert(1, again);
-    variants.push(("a fourth request for three windows", extra));
+    variants.push((
+        "a fourth request for three windows",
+        extra,
+        "observation-request-roster-invalid",
+    ));
     let mut text = base.clone();
     text.snapshot["sourceViews"][1]["text"] = json!("changed words that are no longer the scene");
-    variants.push(("a window text that is not the scene's", text));
-    for (name, run) in variants {
-        let result = replay_with(&run, &mut RunReplay::default(), 0);
-        assert!(result.is_err(), "{name}: {}", describe(&result));
+    variants.push((
+        "a window text that is not the scene's",
+        text,
+        "source-view-text-mismatch",
+    ));
+    for (name, run, reason) in variants {
+        assert_eq!(refusal(&run), reason, "{name}");
     }
-    let mut digest = base.clone();
-    digest.receipts[1]["finalRequestDigest"] = json!("sha256:changed");
-    let error = replay_with(&digest, &mut RunReplay::default(), 0)
-        .err()
-        .expect("must fail");
-    assert_eq!(error.to_string(), "request-digest-mismatch");
+}
+
+/// The count of receipts stays the count of windows, so the roster check
+/// passes and only the narrowing by context-set digest can refuse the Run.
+#[test]
+fn a_receipt_that_keeps_the_count_but_not_the_window_it_names_never_replays() {
+    let base = long_scene(3);
+    let context = |run: &Run, i: usize| run.receipts[i]["contextSetDigest"].clone();
+    assert_eq!(
+        base.receipts
+            .iter()
+            .filter(|r| r["stageExecution"]["stageId"] == prompt::OBSERVATION)
+            .count(),
+        3
+    );
+    // (a) No receipt carries window 2's context-set digest: nothing matches it.
+    let mut none = base.clone();
+    none.receipts[1]["contextSetDigest"] = json!(context(&base, 1)
+        .as_str()
+        .expect("digest")
+        .replace("sha256:", "sha256:0"));
+    assert_eq!(refusal(&none), "observation-window-request-binding-invalid");
+    // (c) A receipt carries a context-set digest that no window has.
+    let mut foreign = base.clone();
+    foreign.receipts[2]["contextSetDigest"] = json!("sha256:no-window-has-this");
+    assert_eq!(
+        refusal(&foreign),
+        "observation-window-request-binding-invalid"
+    );
+    // Two receipts name window 2: window 3 is left with none, and the receipt
+    // that really answers window 3 is rebuilt against window 2 first.
+    let mut twice = base.clone();
+    twice.receipts[2]["contextSetDigest"] = context(&base, 1);
+    assert_eq!(refusal(&twice), "request-digest-mismatch");
+    // Windows 2 and 3 swapped their context-set digests only.
+    let mut swapped = base.clone();
+    swapped.receipts[1]["contextSetDigest"] = context(&base, 2);
+    swapped.receipts[2]["contextSetDigest"] = context(&base, 1);
+    assert_eq!(refusal(&swapped), "request-digest-mismatch");
+    // The untouched Run still replays: the refusals come from the change.
+    assert!(cold(&base, 0).starts_with("complete"));
+}
+
+/// A Run whose declaration names only some of its documents. The documents
+/// left out have windows too; they are read and bound, but are not material.
+fn partly_declared() -> Run {
+    let docs: Vec<Doc> = (0..3).map(|i| sentence_doc(i * 10, 1)).collect();
+    let wins: Vec<Win> = docs
+        .iter()
+        .enumerate()
+        .map(|(i, d)| Win {
+            doc: i,
+            range: (0, d.text.len()),
+        })
+        .collect();
+    let mut run = build_run(&docs, &wins, &[vec![(0, 0), (1, 0)]]);
+    run.declared = vec!["project:scene:n0".to_owned(), "project:scene:n1".to_owned()];
+    run
+}
+
+#[test]
+fn a_window_outside_the_declaration_is_not_material_but_is_still_proven() {
+    let run = partly_declared();
+    let (materials, proofs) = complete(replay_with(&run, &mut RunReplay::default(), 0));
+    assert_eq!(
+        materials
+            .iter()
+            .map(|m| m.source_key.clone())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["project:scene:n0".to_owned(), "project:scene:n1".to_owned()]),
+        "the undeclared scene is not material"
+    );
+    assert_eq!(window_ids(&materials).len(), 2);
+    assert_eq!(proofs.len(), 3, "two declared windows and the synthesis");
+    // Its receipt is checked all the same: the Run is the unit that was sealed.
+    let mut digest = run.clone();
+    digest.receipts[2]["finalRequestDigest"] = json!("sha256:changed");
+    assert_eq!(refusal(&digest), "request-digest-mismatch");
+    let mut context = run.clone();
+    context.receipts[2]["contextSetDigest"] = json!("sha256:no-window-has-this");
+    assert_eq!(
+        refusal(&context),
+        "observation-window-request-binding-invalid"
+    );
+    let mut text = run.clone();
+    text.snapshot["sourceViews"][2]["text"] = json!("not the scene's words");
+    assert_eq!(refusal(&text), "source-view-text-mismatch");
+    let mut missing = run.clone();
+    missing.receipts.remove(2);
+    assert_eq!(refusal(&missing), "observation-request-roster-invalid");
 }
 
 #[test]
@@ -635,9 +767,30 @@ fn a_cache_built_for_other_inputs_is_dropped() {
     assert!(replay_with(&other, &mut shared, 0).is_err());
 }
 
+/// The goldens are Runs the normal planner, production extraction path and
+/// review UI persisted, with receipts sealed by the TypeScript builders (the
+/// TS test of the same goldens rebuilds every request digest independently).
+/// Here the Native replay must accept every Root of them.
 #[test]
-fn the_two_window_production_golden_reads_the_same_through_a_shared_cache() {
-    let g = golden();
+fn the_production_goldens_read_the_same_through_a_shared_cache() {
+    for (file, windows) in [
+        (include_str!("production-two-window-golden.json"), 2),
+        (include_str!("production-multi-window-long-golden.json"), 3),
+        (
+            include_str!("production-multi-window-folder-golden.json"),
+            3,
+        ),
+    ] {
+        let g: Value = serde_json::from_str(file).expect("production golden");
+        golden_reads_the_same_through_a_shared_cache(&g, windows);
+    }
+}
+
+fn golden_reads_the_same_through_a_shared_cache(g: &Value, window_count: usize) {
+    assert_eq!(
+        g["plan"]["windows"].as_array().expect("windows").len(),
+        window_count
+    );
     let receipts: Vec<Value> = g["receipts"].as_array().expect("receipts").clone();
     let outputs: Vec<Value> = g["outputs"].as_array().expect("outputs").clone();
     let observations: Vec<Value> = outputs
@@ -747,13 +900,18 @@ fn the_two_window_production_golden_reads_the_same_through_a_shared_cache() {
                 cluster_ref: cluster_ref.to_owned(),
                 observation_refs: refs,
             },
-            &json!({"windowCount": 2}),
+            &json!({"windowCount": window_count}),
             &receipts,
             &g["rootEnvelope"],
         )
     };
     let mut shared = RunReplay::default();
-    for cluster in ["cluster-0001", "cluster-0002", "cluster-0001"] {
+    let refs: Vec<String> = outputs
+        .iter()
+        .map(|o| o["clusterRef"].as_str().expect("cluster").to_owned())
+        .collect();
+    let order = [refs[0].clone(), refs[1].clone(), refs[0].clone()];
+    for cluster in &order {
         let warm = describe(&read(&mut shared, cluster));
         let cold = describe(&read(&mut RunReplay::default(), cluster));
         assert!(cold.starts_with("complete"), "{cluster}: {cold}");
