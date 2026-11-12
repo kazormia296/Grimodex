@@ -611,4 +611,4 @@ raw：`/tmp/claude-1000/cquery-bytes-actual-results/`（`l-lift.jsonl`、`llog-l
 - `cargo test -p grimodex-db --lib` 全件：**2,703 passed、0 failed、63 ignored**（ignore は測定用）。
 - `scripts/nir1-c-query-worker-ci.sh lifecycle`（標準のまま、`bash` で起動。開始時 loadavg 約 4〜10）：exit 0、**26 case とも `1 passed`**（15 番目の case を含む）。
 - Q の測定（UUID の p4 651 場面、folder＋note＋character＋UUID の p4 352 場面）は、使い捨ての dev harness（push しない）を当てた release build の実 worker で取った。測定後、harness の 5 ファイルは `git checkout HEAD --` で戻した（差分なし）。
-- `fnm exec --using=22 pnpm -s verify:quality`：下の追記を参照。
+- `fnm exec --using=22 pnpm -s verify:quality`：通る（exit 0、vitest 88 files・859 tests）。1 回目は無関係の `browser-mock.persistence-contract.test.ts` が vitest の 5 s の timeout で落ち（以前にも出た load 依存の flake）、取り直した 2 回目が通った。
