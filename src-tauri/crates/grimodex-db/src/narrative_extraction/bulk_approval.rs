@@ -311,6 +311,9 @@ impl BulkApprovalContext {
     /// or the roster was not the writer's own full verification.
     fn decision_reuse(&self, conn: &Connection) -> Option<ChronicleDecisionReuse<'_>> {
         let plan = self.plan_authority(conn)?;
+        if !plan.is_fully_verified() {
+            return None;
+        }
         let review = self.review_authority(conn)?;
         Some(ChronicleDecisionReuse { plan, review })
     }

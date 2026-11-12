@@ -3608,17 +3608,39 @@ impl ChroniclePlanAuthority {
     pub(crate) fn matches(&self) -> &HashMap<String, CurrentChronicleProposalPlanAuthority> {
         &self.matches
     }
+
+    /// Whether the Decision writer may reuse this roster (see
+    /// [`ChronicleDecisionReuse`]).
+    pub(crate) fn is_fully_verified(&self) -> bool {
+        self.binding_verified
+    }
 }
 
 /// Sealed authority a caller that decides many Proposals of one Run in a row
 /// (the Chronicle bulk approval) verified once, so each Decision does not
-/// verify it again. Everything in it is derived from immutable records of the
-/// Run: the plan roster (sealed plan artifact, Native task binding, revision-1
-/// payloads and Envelopes, receipt roster) and the Snapshot/catalog proof.
-/// Everything that can change between two Decisions is still read by the
-/// writer itself (consumption of the set, Application rows, Run spec, the
-/// Proposal's current Revision and status, its Entity/Relation lock, its
-/// current Revision's title).
+/// verify it again (DR-BAO-10).
+///
+/// Not repeated per Decision, and why none of it needs to be:
+/// - the plan artifact lookup (exactly one, inline-json, canonical digest) and
+///   the `Native` task binding with its owner Task/Attempt state: a completed
+///   Task, its Attempt and its artifacts are never rewritten (every writer of
+///   those rows filters on `queued` / `running`, and the Run cancellation on a
+///   non-terminal Run);
+/// - the manifest digest over the revision-1 payloads and Envelopes (protected
+///   by `narrative_proposal_revisions_v2_immutable_update_guard`) and the
+///   ProposalSet summary (written once, when the plan Task finishes);
+/// - the receipt roster and stage receipts (append-only Run records);
+/// - the Snapshot/catalog proof (the completed snapshot Task, its artifact and
+///   the Run's digests and spec, none written after completion).
+///
+/// Still read by the writer for every Decision, inside its own transaction:
+/// consumption of the set and Application rows, the Run spec, the Proposal's
+/// current Revision and status, its Entity/Relation lock, the Decision's own
+/// target Revision (whose title is compared with the sealed one) and the
+/// Proposal's own entry of the roster. A rewrite of the sealed rows by a
+/// writer outside the product during one command is not noticed until the next
+/// command; one made before the command is (the up-front verification fails and
+/// the writer verifies for itself).
 pub(crate) struct ChronicleDecisionReuse<'a> {
     pub(crate) plan: &'a ChroniclePlanAuthority,
     pub(crate) review: &'a VerifiedChronicleRevisionReviewAuthority,
