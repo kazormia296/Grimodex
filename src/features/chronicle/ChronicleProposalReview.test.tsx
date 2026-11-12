@@ -31,7 +31,7 @@ vi.mock("./chronicleExtractionApi", async () => {
     decideChronicleProposal: decideMock,
     decideChronicleProbableDuplicate: decideDuplicateMock,
     reviseChronicleProposal: reviseMock,
-    bulkApproveSafeChronicleProposals: bulkMock,
+    bulkApproveChronicleProposals: bulkMock,
   };
 });
 
@@ -207,8 +207,15 @@ describe("ChronicleProposalReview", () => {
           );
       },
     );
-    bulkMock.mockImplementation(async () => {
-      return useChronicleExtractionStore.getState().bulkApproveSafe();
+    bulkMock.mockResolvedValue({
+      runId: "run-1",
+      approved: 0,
+      skipped: [],
+      failed: [],
+      stopped: false,
+      notSent: 0,
+      refreshed: true,
+      remaining: 0,
     });
   });
 
@@ -232,7 +239,7 @@ describe("ChronicleProposalReview", () => {
     expect(screen.getByText(/場所: 教会/)).toBeInTheDocument();
   });
 
-  it("approves from card and supports safe bulk approve", async () => {
+  it("approves from card", async () => {
     useChronicleExtractionStore
       .getState()
       .setProjection(projection([proposal()]));
@@ -248,19 +255,6 @@ describe("ChronicleProposalReview", () => {
       proposalId: "proposal-1",
       status: "approved",
     });
-
-    act(() => {
-      useChronicleExtractionStore
-        .getState()
-        .updateProposalStatus("proposal-1", "unreviewed");
-    });
-    fireEvent.click(screen.getByTestId("chronicle-bulk-approve-safe"));
-    await waitFor(() => {
-      expect(
-        useChronicleExtractionStore.getState().projection?.proposals[0]?.status,
-      ).toBe("approved");
-    });
-    expect(bulkMock).toHaveBeenCalled();
   });
 
   it("publishes decision persistence as a shared Apply interlock", async () => {
@@ -468,5 +462,324 @@ describe("ChronicleProposalReview", () => {
     expect(screen.getByRole("button", { name: "承認" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "拒否" })).toBeEnabled();
     expect(reviseMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+const ELIGIBLE = { eligible: true, reasons: [] } as const;
+
+function bulkOutcome(
+  overrides: Partial<{
+    runId: string;
+    approved: number;
+    skipped: { proposalId: string; reasons: string[] }[];
+    failed: { proposalId: string; code: string }[];
+    stopped: boolean;
+    notSent: number;
+    refreshed: boolean;
+    remaining: number;
+  }> = {},
+) {
+  return {
+    runId: "run-1",
+    approved: 0,
+    skipped: [],
+    failed: [],
+    stopped: false,
+    notSent: 0,
+    refreshed: true,
+    remaining: 0,
+    ...overrides,
+  };
+}
+
+describe("ChronicleProposalReview: bulk approve (BAO/1)", () => {
+  beforeEach(() => {
+    resetChronicleExtractionStoreForTests();
+    vi.clearAllMocks();
+    bulkMock.mockResolvedValue(bulkOutcome());
+  });
+
+  it("counts, marks and enables by Native's judgement only", () => {
+    useChronicleExtractionStore.getState().setProjection(
+      projection([
+        // Plan-time flags are green, but Native has said nothing: no mark.
+        proposal({ proposalId: "flags-green", bulkApproval: null }),
+        proposal({
+          proposalId: "native-eligible",
+          proposalKey: "k2",
+          bulkApproval: ELIGIBLE,
+          safety: {
+            fresh: false,
+            evidenceExact: false,
+            actualitySettled: false,
+            noDuplicate: false,
+            lossless: false,
+            noDeps: false,
+            riskLow: false,
+          },
+        }),
+        proposal({
+          proposalId: "native-not",
+          proposalKey: "k3",
+          bulkApproval: { eligible: false, reasons: ["r3-significance"] },
+        }),
+      ]),
+    );
+    render(<ChronicleProposalReview />);
+    expect(screen.getByTestId("chronicle-bulk-approve-safe")).toHaveTextContent(
+      "見せる理由の無い提案をまとめて承認 (1)",
+    );
+    expect(screen.getByTestId("chronicle-bulk-approve-safe")).toBeEnabled();
+    expect(
+      screen.getByTestId("chronicle-proposal-bulk-target-native-eligible"),
+    ).toHaveTextContent("まとめて承認の対象");
+    expect(
+      screen.queryByTestId("chronicle-proposal-bulk-target-flags-green"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("chronicle-proposal-bulk-target-native-not"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("always explains what the button does, and is disabled for zero targets", () => {
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(projection([proposal({ bulkApproval: null })]));
+    render(<ChronicleProposalReview />);
+    const description = screen.getByTestId(
+      "chronicle-bulk-approve-description",
+    );
+    expect(description).toHaveTextContent(
+      "見せる理由の無い提案 0 件の秘密の印を外して承認します。場面の Scope が設定されていれば、根拠の本文が、後の場面の関連場面に出るようになります。年表に入れたいだけの提案は、1 件ずつ承認してください。",
+    );
+    expect(screen.getByTestId("chronicle-bulk-approve-safe")).toBeDisabled();
+  });
+
+  it("shows the count in the explanation", () => {
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(projection([proposal({ bulkApproval: ELIGIBLE })]));
+    render(<ChronicleProposalReview />);
+    expect(
+      screen.getByTestId("chronicle-bulk-approve-description"),
+    ).toHaveTextContent(
+      "見せる理由の無い提案 1 件の秘密の印を外して承認します",
+    );
+  });
+
+  it("calls the command once on click, blocks a second run, and shows the result", async () => {
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(projection([proposal({ bulkApproval: ELIGIBLE })]));
+    let resolveBulk!: (value: ReturnType<typeof bulkOutcome>) => void;
+    bulkMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveBulk = resolve;
+      }),
+    );
+    render(<ChronicleProposalReview />);
+    const button = screen.getByTestId("chronicle-bulk-approve-safe");
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toBeDisabled());
+    expect(bulkMock).toHaveBeenCalledTimes(1);
+    expect(useChronicleExtractionStore.getState().reviewMutationCount).toBe(1);
+    // The Apply interlock: Apply cannot start while the bulk run is in flight.
+    expect(useChronicleExtractionStore.getState().tryBeginApplyMutation()).toBe(
+      false,
+    );
+
+    await act(async () => {
+      resolveBulk(
+        bulkOutcome({
+          approved: 3,
+          skipped: [
+            { proposalId: "x", reasons: ["revision-changed"] },
+            { proposalId: "y", reasons: ["revision-changed", "edited"] },
+          ],
+          failed: [{ proposalId: "z", code: "NEX_FAIL" }],
+          remaining: 5,
+        }),
+      );
+      await Promise.resolve();
+    });
+    const result = await screen.findByTestId("chronicle-bulk-approve-result");
+    expect(result).toHaveTextContent("3 件を承認しました。");
+    expect(result).toHaveTextContent("3 件は飛ばしました（");
+    expect(result).toHaveTextContent("承認の前に提案が変わりました");
+    expect(result).toHaveTextContent("個別に決める提案が 5 件残っています。");
+    expect(result).not.toHaveTextContent("途中で止まりました");
+    expect(useChronicleExtractionStore.getState().reviewMutationCount).toBe(0);
+  });
+
+  it("says when Native stopped partway, when the list is stale, and when some were not sent", async () => {
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(projection([proposal({ bulkApproval: ELIGIBLE })]));
+    bulkMock.mockResolvedValue(
+      bulkOutcome({ stopped: true, refreshed: false, notSent: 7 }),
+    );
+    render(<ChronicleProposalReview />);
+    fireEvent.click(screen.getByTestId("chronicle-bulk-approve-safe"));
+    const result = await screen.findByTestId("chronicle-bulk-approve-result");
+    expect(result).toHaveTextContent("途中で止まりました");
+    expect(result).toHaveTextContent("一覧を読み直せませんでした");
+    expect(result).toHaveTextContent("7 件は送っていません");
+  });
+
+  it("does not show a result after another Run became active", async () => {
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(projection([proposal({ bulkApproval: ELIGIBLE })]));
+    render(<ChronicleProposalReview />);
+    fireEvent.click(screen.getByTestId("chronicle-bulk-approve-safe"));
+    await screen.findByTestId("chronicle-bulk-approve-result");
+    act(() => {
+      useChronicleExtractionStore.getState().setProjection({
+        ...projection([proposal({ bulkApproval: null })]),
+        runId: "run-2",
+      });
+    });
+    expect(
+      screen.queryByTestId("chronicle-bulk-approve-result"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a general failure when the whole command fails, and can be retried", async () => {
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(projection([proposal({ bulkApproval: ELIGIBLE })]));
+    bulkMock.mockRejectedValueOnce(new Error("NEX_BULK_DOWN"));
+    render(<ChronicleProposalReview />);
+    fireEvent.click(screen.getByTestId("chronicle-bulk-approve-safe"));
+    const error = await screen.findByTestId("chronicle-proposal-persist-error");
+    expect(error).toHaveTextContent("まとめて承認に失敗しました");
+    expect(
+      screen.queryByTestId("chronicle-bulk-approve-result"),
+    ).not.toBeInTheDocument();
+    expect(useChronicleExtractionStore.getState().reviewMutationCount).toBe(0);
+    await waitFor(() =>
+      expect(screen.getByTestId("chronicle-bulk-approve-safe")).toBeEnabled(),
+    );
+  });
+
+  it("is disabled while Apply owns the review boundary", () => {
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(projection([proposal({ bulkApproval: ELIGIBLE })]));
+    useChronicleExtractionStore.getState().tryBeginApplyMutation();
+    render(<ChronicleProposalReview />);
+    expect(screen.getByTestId("chronicle-bulk-approve-safe")).toBeDisabled();
+  });
+
+  it("shows one reason line for a non-target, reasons-to-show first, and none for review state", () => {
+    useChronicleExtractionStore.getState().setProjection(
+      projection([
+        proposal({
+          proposalId: "multi",
+          bulkApproval: {
+            eligible: false,
+            reasons: ["edited", "r2-attribution", "r4-actuality"],
+          },
+        }),
+        proposal({
+          proposalId: "state-only",
+          proposalKey: "k2",
+          bulkApproval: { eligible: false, reasons: ["approved", "applied"] },
+        }),
+        proposal({
+          proposalId: "unknown-judgement",
+          proposalKey: "k3",
+          bulkApproval: null,
+        }),
+      ]),
+    );
+    render(<ChronicleProposalReview />);
+    expect(
+      screen.getByTestId("chronicle-proposal-reasons-multi"),
+    ).toHaveTextContent(
+      "登場人物の発言や心の声の中の出来事です 試みたが成らなかった／阻まれた出来事です 編集した提案です",
+    );
+    expect(
+      screen.queryByTestId("chronicle-proposal-reasons-state-only"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("chronicle-proposal-reasons-unknown-judgement"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("adds no reason line for a duplicate the card already shows", () => {
+    useChronicleExtractionStore.getState().setProjection(
+      projection([
+        proposal({
+          match: {
+            status: "probable-duplicate",
+            candidates: ["教会砲撃"],
+            reasons: ["title"],
+          },
+          bulkApproval: { eligible: false, reasons: ["probable-duplicate"] },
+        }),
+      ]),
+    );
+    render(<ChronicleProposalReview />);
+    expect(
+      screen.getByText("既存Eventと同一の可能性があります"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("chronicle-proposal-reasons-proposal-1"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("moves unreviewed proposals with a reason to show to the top, for display only", () => {
+    useChronicleExtractionStore.getState().setProjection(
+      projection([
+        proposal({
+          proposalId: "plain-1",
+          proposalKey: "k1",
+          bulkApproval: ELIGIBLE,
+        }),
+        proposal({
+          proposalId: "shown-1",
+          proposalKey: "k2",
+          bulkApproval: { eligible: false, reasons: ["r3-significance"] },
+        }),
+        proposal({
+          proposalId: "plain-2",
+          proposalKey: "k3",
+          bulkApproval: ELIGIBLE,
+        }),
+        proposal({
+          proposalId: "shown-2",
+          proposalKey: "k4",
+          bulkApproval: { eligible: false, reasons: ["r1-narrative-frame"] },
+        }),
+        proposal({
+          proposalId: "decided",
+          proposalKey: "k5",
+          status: "approved",
+          bulkApproval: {
+            eligible: false,
+            reasons: ["approved", "r3-significance"],
+          },
+        }),
+      ]),
+    );
+    render(<ChronicleProposalReview />);
+    const shown = screen
+      .getAllByTestId(/^chronicle-proposal-card-/)
+      .map((node) => node.getAttribute("data-testid"));
+    expect(shown).toEqual([
+      "chronicle-proposal-card-shown-1",
+      "chronicle-proposal-card-shown-2",
+      "chronicle-proposal-card-plain-1",
+      "chronicle-proposal-card-plain-2",
+      "chronicle-proposal-card-decided",
+    ]);
+    // The store's order is untouched.
+    expect(
+      useChronicleExtractionStore
+        .getState()
+        .projection?.proposals.map((row) => row.proposalId),
+    ).toEqual(["plain-1", "shown-1", "plain-2", "shown-2", "decided"]);
   });
 });

@@ -35,9 +35,11 @@ import {
 } from "@/application/narrative-extraction/commitCoordinator";
 import {
   captureNarrativeExtractionWorkspaceBinding,
+  narrativeExtractionChronicleBulkApprove,
   narrativeExtractionGetRunReviewBundle,
   narrativeExtractionIsRunResumableForReview,
   type ChronicleBlockedDiscardExpectation,
+  type ChronicleBulkApproval,
   type ChronicleTaskResumeCandidate,
   type GetRunReviewBundleResult,
   type ReviewBundleProposal,
@@ -62,13 +64,15 @@ import { matchChronicleEventTitleAgainstCatalog } from "./extraction/existingEve
 import {
   buildProposalSafetyFlags,
   emptyTaskCounts,
-  isSafeForBulkApprove,
+  isBulkApprovalTarget,
   selectChronicleProposalsForAtomicApply,
   useChronicleExtractionStore,
   type ChronicleExtractionCoverage,
   type ChronicleExtractionRecoveryScope,
   type ChronicleExtractionReviewProjection,
+  type ChronicleNativeReviewRow,
   type ChronicleReviewEvidenceQuote,
+  type ChronicleReviewProjectionIdentity,
   type ChronicleReviewProposal,
   type ProbableDuplicateChoice,
   type StartChronicleExtractionRequest,
@@ -297,6 +301,7 @@ function buildReviewProposalFromPlanned(args: {
     | null;
   readonly probableDuplicateChoice?: ProbableDuplicateChoice | null;
   readonly application?: ReviewBundleProposalApplication | null;
+  readonly bulkApproval?: ChronicleBulkApproval | null;
 }): ChronicleReviewProposal {
   // Match/safety is computed against the immutable plan-time payload. A
   // human-derived revision may change title/disclosure after the sealed Event
@@ -355,6 +360,7 @@ function buildReviewProposalFromPlanned(args: {
     // remains conservatively non-bulk-safe.
     probableDuplicateChoice: args.probableDuplicateChoice ?? null,
     application: args.application ?? null,
+    bulkApproval: args.bulkApproval ?? null,
     blockedReason: fragmented
       ? "断片 Evidence のため適用不可（確認のみ）"
       : undefined,
@@ -371,6 +377,8 @@ type SavedReviewSeed = {
   readonly payload?: CreateChronicleEventProposalPayloadV1;
   readonly probableDuplicateChoice?: ProbableDuplicateChoice | null;
   readonly application?: ReviewBundleProposalApplication | null;
+  /** Native's bulk-approval judgement, read with the review bundle (B3). */
+  readonly bulkApproval?: ChronicleBulkApproval | null;
 };
 
 function cloneReviewApplication(
@@ -385,6 +393,16 @@ function cloneReviewApplication(
     createdAt: application.createdAt,
     applicationKind: application.applicationKind,
     compensatesApplicationId: application.compensatesApplicationId,
+  };
+}
+
+function cloneBulkApproval(
+  value: ChronicleBulkApproval | null | undefined,
+): ChronicleBulkApproval | null {
+  if (!value || typeof value.eligible !== "boolean") return null;
+  return {
+    eligible: value.eligible,
+    reasons: Array.isArray(value.reasons) ? [...value.reasons] : [],
   };
 }
 
@@ -416,6 +434,7 @@ function savedSeedsFromBundle(
         status: proposal.status,
         payload,
         application: cloneReviewApplication(proposal.application),
+        bulkApproval: cloneBulkApproval(proposal.bulkApproval),
         probableDuplicateChoice:
           proposal.latestDecision?.revisionId === proposal.currentRevisionId
             ? probableDuplicateChoiceFromDecisionJson(
@@ -503,6 +522,7 @@ export function buildChronicleExtractionReviewProjection(args: {
         existingEventsCatalog: args.existingEventsCatalog,
         probableDuplicateChoice: seed.probableDuplicateChoice ?? null,
         application: seed.application ?? null,
+        bulkApproval: seed.bulkApproval ?? null,
       });
     },
   );
@@ -652,6 +672,9 @@ async function projectChronicleCoordinatorResult(
   });
 
   useChronicleExtractionStore.getState().setProjection(projection);
+  // The seeds come from the save, which carries no judgement: read Native's
+  // bulk-approval judgement once now (B3). A failed read leaves it unknown.
+  await refreshChronicleBulkApprovalJudgements();
   return { runId: result.runId };
 }
 
@@ -1691,14 +1714,104 @@ export async function recordChronicleProposalRevision(args: {
   };
 }
 
+function chronicleProjectionIdentity(
+  projection: ChronicleExtractionReviewProjection,
+): ChronicleReviewProjectionIdentity {
+  return {
+    runId: projection.runId,
+    projectId: projection.projectId,
+    workspacePath: projection.workspacePath,
+    openRevision: projection.openRevision,
+  };
+}
+
 /**
- * Approve / reject / hold via Native, then mirror status into the store.
+ * Re-read Native's bulk-approval judgement for the active review projection
+ * (B3, DR-BAO-8): one review-bundle read. Only `bulkApproval` is merged (and,
+ * with `syncRevisions`, the revision/status/payload of proposals whose current
+ * revision changed — the result of a bulk approval). The author's selection and
+ * choices are not rolled back. A failed read makes every judgement unknown
+ * (null), so no stale judgement is shown or sent. Never throws.
+ * @returns true when Native's judgement was merged.
+ */
+export async function refreshChronicleBulkApprovalJudgements(
+  options: { readonly syncRevisions?: boolean } = {},
+): Promise<boolean> {
+  const projection = useChronicleExtractionStore.getState().projection;
+  if (!projection) return false;
+  const identity = chronicleProjectionIdentity(projection);
+  try {
+    const bundle = await narrativeExtractionGetRunReviewBundle({
+      runId: identity.runId,
+      projectId: identity.projectId,
+    });
+    if (
+      bundle.runId !== identity.runId ||
+      bundle.projectId !== identity.projectId ||
+      !Array.isArray(bundle.proposals)
+    ) {
+      throw new Error("Native review bundle does not match the active Run");
+    }
+    const latest = useChronicleExtractionStore.getState().projection;
+    const localById = new Map(
+      (latest?.proposals ?? []).map((item) => [item.proposalId, item] as const),
+    );
+    const rows: ChronicleNativeReviewRow[] = bundle.proposals.map((native) => {
+      const bulkApproval = cloneBulkApproval(native.bulkApproval);
+      const local = localById.get(native.proposalId);
+      if (
+        options.syncRevisions &&
+        local &&
+        native.currentRevisionId &&
+        native.currentRevisionId !== local.revisionId
+      ) {
+        assertCurrentChronicleProposalPayload(native.payloadJson);
+        return {
+          proposalId: native.proposalId,
+          bulkApproval,
+          sync: {
+            revisionId: native.currentRevisionId,
+            status: native.status,
+            payload: native.payloadJson,
+            reconciliationEnvelopeDigest:
+              native.reconciliationEnvelopeDigest ?? null,
+            reconciliationEnvelopeSchemaVersion:
+              native.reconciliationEnvelopeSchemaVersion ?? null,
+          },
+        };
+      }
+      return { proposalId: native.proposalId, bulkApproval };
+    });
+    return useChronicleExtractionStore
+      .getState()
+      .applyNativeReviewRows(identity, rows);
+  } catch {
+    useChronicleExtractionStore
+      .getState()
+      .clearBulkApprovalJudgements(identity);
+    return false;
+  }
+}
+
+/**
+ * Approve / reject / hold via Native, then mirror status into the store and
+ * re-read Native's bulk-approval judgement.
  */
 export async function decideChronicleProposal(args: {
   readonly proposalId: string;
   readonly status: NarrativeProposalStatus;
   readonly decisionJson?: Readonly<Record<string, unknown>>;
 }): Promise<void> {
+  const wrote = await persistChronicleProposalDecision(args);
+  if (wrote) await refreshChronicleBulkApprovalJudgements();
+}
+
+/** @returns true when Native was written (the judgement needs a re-read). */
+async function persistChronicleProposalDecision(args: {
+  readonly proposalId: string;
+  readonly status: NarrativeProposalStatus;
+  readonly decisionJson?: Readonly<Record<string, unknown>>;
+}): Promise<boolean> {
   const projection = useChronicleExtractionStore.getState().projection;
   if (!projection) {
     throw new Error("No active chronicle extraction review");
@@ -1718,7 +1831,7 @@ export async function decideChronicleProposal(args: {
     useChronicleExtractionStore
       .getState()
       .updateProposalStatus(args.proposalId, args.status);
-    return;
+    return false;
   }
   const decision =
     args.status === "approved"
@@ -1739,6 +1852,7 @@ export async function decideChronicleProposal(args: {
   useChronicleExtractionStore
     .getState()
     .updateProposalStatus(args.proposalId, args.status);
+  return true;
 }
 
 /**
@@ -1749,13 +1863,21 @@ export async function decideChronicleProbableDuplicate(args: {
   readonly proposalId: string;
   readonly choice: ProbableDuplicateChoice;
 }): Promise<void> {
+  const wrote = await persistChronicleProbableDuplicate(args);
+  if (wrote) await refreshChronicleBulkApprovalJudgements();
+}
+
+async function persistChronicleProbableDuplicate(args: {
+  readonly proposalId: string;
+  readonly choice: ProbableDuplicateChoice;
+}): Promise<boolean> {
   const status =
     args.choice === "hold"
       ? ("held" as const)
       : args.choice === "skip-as-same"
         ? ("rejected" as const)
         : ("approved" as const);
-  await decideChronicleProposal({
+  const wrote = await persistChronicleProposalDecision({
     proposalId: args.proposalId,
     status,
     decisionJson: { probableDuplicateChoice: args.choice },
@@ -1763,6 +1885,7 @@ export async function decideChronicleProbableDuplicate(args: {
   useChronicleExtractionStore
     .getState()
     .setProbableDuplicateChoice(args.proposalId, args.choice);
+  return wrote;
 }
 
 export interface AbandonChroniclePartialReviewRequest {
@@ -1838,7 +1961,8 @@ export async function abandonChroniclePartialReview(
       ) {
         continue;
       }
-      await decideChronicleProbableDuplicate({
+      // The review is dropped afterwards: no per-proposal judgement re-read.
+      await persistChronicleProbableDuplicate({
         proposalId: proposal.proposalId,
         choice: "skip-as-same",
       });
@@ -1846,7 +1970,7 @@ export async function abandonChroniclePartialReview(
       continue;
     }
     if (proposal.status === "rejected") continue;
-    await decideChronicleProposal({
+    await persistChronicleProposalDecision({
       proposalId: proposal.proposalId,
       status: "rejected",
       decisionJson: { reason: "historical-partial-review-abandoned" },
@@ -1971,38 +2095,118 @@ export async function reviseChronicleProposal(args: {
       effectiveMatch,
       args.patch,
     );
+  await refreshChronicleBulkApprovalJudgements();
+}
+
+/** The command takes 1..4096 targets (Native: `BULK_APPROVE_MAX_TARGETS`). */
+export const CHRONICLE_BULK_APPROVE_MAX_TARGETS = 4096;
+
+export interface ChronicleBulkApproveOutcome {
+  /** The Run the result belongs to; a different active Run must not show it. */
+  readonly runId: string;
+  /** Proposals approved with a Human-derived (unsealed) child revision. */
+  readonly approved: number;
+  /** Not (or no longer) targets, by Native's reason codes. */
+  readonly skipped: readonly {
+    readonly proposalId: string;
+    readonly reasons: readonly string[];
+  }[];
+  /** Rolled back individually; `code` is the stable error code. */
+  readonly failed: readonly {
+    readonly proposalId: string;
+    readonly code: string;
+  }[];
+  /** Shutdown or a workspace switch stopped the run between proposals. */
+  readonly stopped: boolean;
+  /** Eligible proposals beyond the per-call limit; not sent. */
+  readonly notSent: number;
+  /** false: the re-read failed, so the list may be stale (judgements unknown). */
+  readonly refreshed: boolean;
+  /** Proposals still to decide one by one (unreviewed, held, deferred). */
+  readonly remaining: number;
+}
+
+function countUndecidedProposals(runId: string): number {
+  const projection = useChronicleExtractionStore.getState().projection;
+  // Another Run became active meanwhile: its proposals are not this result's.
+  if (projection?.runId !== runId) return 0;
+  return projection.proposals.filter(
+    (proposal) =>
+      proposal.applicability === "applicable" &&
+      proposal.application === null &&
+      (proposal.status === "unreviewed" ||
+        proposal.status === "held" ||
+        proposal.status === "deferred"),
+  ).length;
 }
 
 /**
- * Bulk-approve safe proposals with Native persistence. Stops on first failure.
+ * "Bulk approve" (BAO/1): send Native the author-shown targets (the proposals
+ * Native judged eligible and their current revision), nothing else. Native
+ * judges each again and, per proposal, writes the unsealed child revision plus
+ * the author's approval in one transaction. Afterwards the review is always
+ * re-read. The screen never decides eligibility itself.
  */
-export async function bulkApproveSafeChronicleProposals(): Promise<number> {
+export async function bulkApproveChronicleProposals(): Promise<ChronicleBulkApproveOutcome> {
   const projection = useChronicleExtractionStore.getState().projection;
-  if (!projection) return 0;
-  let approved = 0;
-  for (const proposal of projection.proposals) {
-    if (
-      proposal.applicability !== "applicable" ||
-      proposal.application !== null ||
-      proposal.status !== "unreviewed" ||
-      !isSafeForBulkApprove(proposal.safety) ||
-      !proposal.revisionId
-    ) {
-      continue;
-    }
-    await recordChronicleProposalDecision({
-      runId: projection.runId,
-      projectId: projection.projectId,
-      proposalId: proposal.proposalId,
-      revisionId: proposal.revisionId,
-      decision: "approved",
+  if (!projection) throw new Error("No active chronicle extraction review");
+  const identity = chronicleProjectionIdentity(projection);
+  const eligible = projection.proposals.filter(isBulkApprovalTarget);
+  const sent = eligible.slice(0, CHRONICLE_BULK_APPROVE_MAX_TARGETS);
+  const notSent = eligible.length - sent.length;
+  if (sent.length === 0) {
+    return {
+      runId: identity.runId,
+      approved: 0,
+      skipped: [],
+      failed: [],
+      stopped: false,
+      notSent,
+      refreshed: true,
+      remaining: countUndecidedProposals(identity.runId),
+    };
+  }
+  let result: Awaited<
+    ReturnType<typeof narrativeExtractionChronicleBulkApprove>
+  >;
+  try {
+    result = await narrativeExtractionChronicleBulkApprove({
+      projectId: identity.projectId,
+      runId: identity.runId,
+      targets: sent.map((proposal) => ({
+        proposalId: proposal.proposalId,
+        revisionId: proposal.revisionId as string,
+      })),
     });
+  } catch (error) {
+    // Whatever happened, the list may no longer match Native.
+    await refreshChronicleBulkApprovalJudgements({ syncRevisions: true });
+    throw error;
+  }
+  const refreshed = await refreshChronicleBulkApprovalJudgements({
+    syncRevisions: true,
+  });
+  if (!refreshed) {
     useChronicleExtractionStore
       .getState()
-      .updateProposalStatus(proposal.proposalId, "approved");
-    approved += 1;
+      .mirrorBulkApproved(identity, result.approved);
   }
-  return approved;
+  return {
+    runId: identity.runId,
+    approved: result.approved.length,
+    skipped: result.skipped.map((item) => ({
+      proposalId: item.proposalId,
+      reasons: [...item.reasons],
+    })),
+    failed: result.failed.map((item) => ({
+      proposalId: item.proposalId,
+      code: item.code,
+    })),
+    stopped: result.stopped,
+    notSent,
+    refreshed,
+    remaining: countUndecidedProposals(identity.runId),
+  };
 }
 
 export type {

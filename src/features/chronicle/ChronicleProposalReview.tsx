@@ -1,14 +1,18 @@
 import { useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ChronicleEvidencePane } from "./ChronicleEvidencePane";
 import { ChronicleProposalCard } from "./ChronicleProposalCard";
+import { ChronicleBulkApproveOutcomeNote } from "./ChronicleBulkApproveOutcomeNote";
+import { orderProposalsForReview } from "./chronicleBulkApprovalReasons";
 import {
-  bulkApproveSafeChronicleProposals,
+  bulkApproveChronicleProposals,
   decideChronicleProbableDuplicate,
   decideChronicleProposal,
   reviseChronicleProposal,
+  type ChronicleBulkApproveOutcome,
 } from "./chronicleExtractionApi";
 import {
-  isSafeForBulkApprove,
+  isBulkApprovalTarget,
   useChronicleExtractionStore,
   type ChronicleReviewEvidenceQuote,
   type ChronicleReviewProposal,
@@ -52,9 +56,16 @@ export function ChronicleProposalReview({
     (s) => s.applyMutationInFlight,
   );
 
+  const { t } = useTranslation();
   const proposals = useMemo(
     () => proposalsProp ?? storeProjection?.proposals ?? EMPTY_PROPOSALS,
     [proposalsProp, storeProjection?.proposals],
+  );
+  // Display order only: proposals with a "show the author" reason go first.
+  // The store's order is unchanged (DR-BAO-9).
+  const displayProposals = useMemo(
+    () => orderProposalsForReview(proposals),
+    [proposals],
   );
   const selectedProposalId =
     selectedProp !== undefined
@@ -76,6 +87,8 @@ export function ChronicleProposalReview({
   const [persistError, setPersistError] = useState<string | null>(null);
   const [persisting, setPersisting] = useState(false);
   const persistingRef = useRef(false);
+  const [bulkOutcome, setBulkOutcome] =
+    useState<ChronicleBulkApproveOutcome | null>(null);
 
   const titleValue =
     draftTitle ?? selected?.payload?.title ?? selected?.displayTitle ?? "";
@@ -138,14 +151,27 @@ export function ChronicleProposalReview({
     void runPersist(() => reviseChronicleProposal({ proposalId, patch }));
   };
 
-  const safeCount = proposals.filter(
-    (proposal) =>
-      proposal.applicability === "applicable" &&
-      proposal.application === null &&
-      proposal.status === "unreviewed" &&
-      isSafeForBulkApprove(proposal.safety),
-  ).length;
+  // Native's judgement is the only source of the count (BAO/1, B3).
+  const bulkTargetCount = proposals.filter(isBulkApprovalTarget).length;
   const reviewControlsDisabled = persisting || applyMutationInFlight;
+
+  const handleBulkApprove = () => {
+    if (!boundToStore) return;
+    setBulkOutcome(null);
+    void runPersist(async () => {
+      try {
+        setBulkOutcome(await bulkApproveChronicleProposals());
+      } catch (error) {
+        throw new Error(
+          t(
+            "chronicle.extract.bulkApproveFailed",
+            "まとめて承認に失敗しました。一覧を読み直しました。もう一度試してください。",
+          ),
+          { cause: error },
+        );
+      }
+    });
+  };
 
   return (
     <div
@@ -153,24 +179,44 @@ export function ChronicleProposalReview({
       data-testid="chronicle-proposal-review"
     >
       <div className="flex max-h-80 flex-col border-b border-border md:border-b-0 md:border-r">
-        <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
-          <span className="text-xs font-medium text-foreground">
-            Proposal一覧
-          </span>
+        <div className="flex flex-col gap-1 border-b border-border px-2 py-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-medium text-foreground">
+              Proposal一覧
+            </span>
+            {boundToStore && (
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={bulkTargetCount === 0 || reviewControlsDisabled}
+                onClick={handleBulkApprove}
+                data-testid="chronicle-bulk-approve-safe"
+              >
+                {t(
+                  "chronicle.extract.bulkApprove",
+                  "見せる理由の無い提案をまとめて承認",
+                )}
+                {bulkTargetCount > 0 ? ` (${bulkTargetCount})` : ""}
+              </button>
+            )}
+          </div>
           {boundToStore && (
-            <button
-              type="button"
-              className="rounded px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
-              disabled={safeCount === 0 || reviewControlsDisabled}
-              onClick={() =>
-                void runPersist(() => bulkApproveSafeChronicleProposals())
-              }
-              data-testid="chronicle-bulk-approve-safe"
+            <p
+              className="text-[10px] leading-snug text-muted-foreground"
+              data-testid="chronicle-bulk-approve-description"
             >
-              安全な提案をまとめて承認
-              {safeCount > 0 ? ` (${safeCount})` : ""}
-            </button>
+              {t(
+                "chronicle.extract.bulkApproveDescription",
+                "見せる理由の無い提案 {{count}} 件の秘密の印を外して承認します。場面の Scope が設定されていれば、根拠の本文が、後の場面の関連場面に出るようになります。年表に入れたいだけの提案は、1 件ずつ承認してください。",
+                { count: bulkTargetCount },
+              )}
+            </p>
           )}
+          {boundToStore &&
+            bulkOutcome &&
+            bulkOutcome.runId === storeProjection?.runId && (
+              <ChronicleBulkApproveOutcomeNote outcome={bulkOutcome} />
+            )}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {proposals.length === 0 ? (
@@ -178,7 +224,7 @@ export function ChronicleProposalReview({
               抽出できるイベントが見つかりませんでした。
             </p>
           ) : (
-            proposals.map((proposal) => (
+            displayProposals.map((proposal) => (
               <ChronicleProposalCard
                 key={proposal.proposalId}
                 proposal={proposal}

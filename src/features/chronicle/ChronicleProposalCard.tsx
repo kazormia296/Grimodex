@@ -1,8 +1,10 @@
+import { useTranslation } from "react-i18next";
+import { describeBulkApprovalReasons } from "./chronicleBulkApprovalReasons";
 import type {
   ChronicleReviewProposal,
   ProbableDuplicateChoice,
 } from "./chronicleExtractionStore";
-import { isSafeForBulkApprove } from "./chronicleExtractionStore";
+import { isBulkApprovalTarget } from "./chronicleExtractionStore";
 import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
 
 export interface ChronicleProposalCardProps {
@@ -37,15 +39,22 @@ export function ChronicleProposalCard({
   onDuplicateChoice,
   disabled = false,
 }: ChronicleProposalCardProps) {
+  const { t } = useTranslation();
   const alreadySatisfied = proposal.applicability === "already-satisfied";
   const applied = proposal.application !== null;
   const probable =
     proposal.match.status === "probable-duplicate" ? proposal.match : null;
-  const safeHint =
-    !alreadySatisfied &&
-    !applied &&
-    proposal.status === "unreviewed" &&
-    isSafeForBulkApprove(proposal.safety);
+  // Native's judgement only (BAO/1, B3): the card never computes it.
+  const bulkTarget =
+    !alreadySatisfied && !applied && isBulkApprovalTarget(proposal);
+  const reasonSentences =
+    alreadySatisfied || applied || bulkTarget
+      ? []
+      : describeBulkApprovalReasons(
+          proposal.bulkApproval,
+          (key, fallback) => t(key, fallback),
+          { omitDuplicate: probable !== null },
+        );
 
   return (
     <div
@@ -82,9 +91,20 @@ export function ChronicleProposalCard({
               既存Eventと同一の可能性があります
             </span>
           )}
-          {safeHint && (
-            <span className="block text-[10px] text-emerald-700 dark:text-emerald-400">
-              安全一括承認の対象
+          {bulkTarget && (
+            <span
+              className="block text-[10px] text-emerald-700 dark:text-emerald-400"
+              data-testid={`chronicle-proposal-bulk-target-${proposal.proposalId}`}
+            >
+              {t("chronicle.extract.bulkTarget", "まとめて承認の対象")}
+            </span>
+          )}
+          {reasonSentences.length > 0 && (
+            <span
+              className="block text-[10px] text-muted-foreground"
+              data-testid={`chronicle-proposal-reasons-${proposal.proposalId}`}
+            >
+              {reasonSentences.join("　")}
             </span>
           )}
         </span>

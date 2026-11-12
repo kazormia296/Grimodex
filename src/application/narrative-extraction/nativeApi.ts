@@ -794,8 +794,8 @@ export async function narrativeExtractionAppendHumanDecision(
 
 /**
  * Chronicle "bulk approve" (BAO/1): per proposal, one Native transaction that
- * writes the unsealed Human-derived child and its Human approval. The review
- * screen does not call this yet.
+ * writes the unsealed Human-derived child and its Human approval. The Chronicle
+ * review screen's "bulk approve" button calls it with the Native-judged targets.
  */
 export async function narrativeExtractionChronicleBulkApprove(
   payload: ChronicleBulkApprovePayload,
