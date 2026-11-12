@@ -490,6 +490,7 @@ digest の回数と bytes も不変（p4：431 回／6,968,797 B、978 場面：
 - `scripts/nir1-c-query-worker-ci.sh lifecycle`：26 case の `test result: ok`（終了コード 0）。実 worker の固定 allocator（Q 16 MiB／S 64 MiB）で、registration・query・frame が通る
   （product 形の複数 Revision を含む `native_worker_answers_a_project_reviewed_scene_by_scene` ほか）。表の初期化が S の zero-live の封印を動かさないことは、この lifecycle の通過で確かめた。
   出力の `panicked … reader-join failure` は、その case が起こす失敗の試験（quarantine の確認）の想定どおりの出力。
+- `fnm exec --using=22 pnpm -s verify:quality`：通る（終了コード 0。cargo と並走させずに、最終の commit で実行）。
 - 未実行：`nir1-material-diagnostics` feature つきの試験、既定の lane 全体（`nir1-c-query-worker-ci.sh` の引数なし）と practical-retention、**時間の対照**（下の手順。この段では測らない）。
 - 注意：debug の test binary は worktree ごとに同じ hash になるので、dev 枝と製品の枝が同じ target dir を使うと、片方の source が古い mtime のまま「新しい」と判定されて古い binary を使う。
   測定の後は製品の source の mtime を更新してから build した（`touch`）。
