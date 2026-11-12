@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import fixture from "../shared/productJourneyChronicleFixture.json" with { type: "json" };
 import { productJourneyChronicleResponse } from "./productJourneyChronicleAi.js";
 
 const sentences = [
@@ -108,6 +109,12 @@ describe("request-bound Chronicle Journey response", () => {
         "計画に含まれる開門",
         "夢に含まれる開門",
       ]);
+      // 混合 cluster の 4 件は、すべて fixture の既定の重要度（major）のまま。
+      expect(
+        result.events.map(
+          (event: { significance: string }) => event.significance,
+        ),
+      ).toEqual(["major", "major", "major", "major"]);
     }
   });
 
@@ -120,9 +127,31 @@ describe("request-bound Chronicle Journey response", () => {
           observationRefs: ["independent:opaque-4"],
           actuality: "actual",
           titleSuggestion: "鐘が鳴った",
+          // 独立した出来事だけが、ふつうの重要度（まとめて承認の対象）になる。
+          significance: "scene-level",
         },
       ],
     });
+  });
+
+  it("takes each event's significance from its fixture row and only accepts the core enum", () => {
+    const rows = fixture.rows as { key: string; significance?: string }[];
+    expect(rows.map((row) => [row.key, row.significance ?? "major"])).toEqual([
+      ["mixed-actual", "major"],
+      ["mixed-rumored", "major"],
+      ["mixed-planned", "major"],
+      ["mixed-dreamed", "major"],
+      ["independent-actual", "scene-level"],
+    ]);
+    const original = rows[4]!.significance;
+    try {
+      rows[4]!.significance = "minor";
+      expect(() => parsed(synthesisRequest("independent", [4]))).toThrow(
+        "invalid significance",
+      );
+    } finally {
+      rows[4]!.significance = original;
+    }
   });
 
   it("rejects missing or ambiguous fixture evidence instead of inventing a citation", () => {

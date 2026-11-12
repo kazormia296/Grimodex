@@ -319,7 +319,12 @@ export async function chooseCurrentSceneTarget(dialog, sceneId) {
   assert.equal(await select.inputValue(), currentSceneOptionValue(sceneId));
 }
 
-async function readRunAndDecisions(harness, page, identity, proposalIds) {
+export async function readRunAndDecisions(
+  harness,
+  page,
+  identity,
+  proposalIds,
+) {
   const [run] = await queryChronicleFixtureRows(
     harness,
     page,

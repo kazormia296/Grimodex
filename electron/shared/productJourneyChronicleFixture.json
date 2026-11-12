@@ -52,7 +52,8 @@
       "actuality": "actual",
       "narrativeFrame": "story-world",
       "title": "鐘が鳴った",
-      "summary": "船頭が実際に鐘を鳴らした。"
+      "summary": "船頭が実際に鐘を鳴らした。",
+      "significance": "scene-level"
     }
   ],
   "expected": {
