@@ -172,6 +172,25 @@ fn an_entry_that_is_not_a_character_is_not_a_row() {
     assert_shape(&character("l1"), &character("c1"), 1);
 }
 
+/// The join does not read `kind`: a principal names a Codex row by its
+/// `$.ref` and the row's own `type = 'character'`. A `kind` that is not
+/// "character" (or no `kind` at all) whose `ref` names a character is a row,
+/// in the charge and in the extension's read alike.
+#[test]
+fn the_kind_of_a_principal_is_not_read_only_its_ref_is() {
+    for odd in [
+        r#"{"kind":"reader","ref":"c1"}"#,
+        r#"{"kind":"location","ref":"c1"}"#,
+        r#"{"ref":"c1"}"#,
+    ] {
+        assert_shape(odd, r#"{"kind":"reader"}"#, 1);
+        assert_shape(r#"{"kind":"reader"}"#, odd, 1);
+        assert_shape(odd, odd, 2);
+        // a ref that names a location is no row whatever the kind says
+        assert_shape(&odd.replace("c1", "l1"), &odd.replace("c1", "l1"), 0);
+    }
+}
+
 #[test]
 fn a_principal_without_a_usable_ref_is_not_a_row() {
     for unusable in [
@@ -395,6 +414,8 @@ fn the_byte_charge_is_the_extensions_returned_bytes_on_every_shape_of_principal(
         (character("c1"), character("c2")),
         // not a character of the project: the join finds none
         (character("l1"), character("x1")),
+        // `kind` is not read: a ref that names a character is found whatever it says
+        (r#"{"kind":"reader","ref":"c1"}"#.to_owned(), r#"{"ref":"c2"}"#.to_owned()),
         (character("missing"), r#"{"kind":"character","ref":7}"#.to_owned()),
         ("not json".to_owned(), "[]".to_owned()),
     ];

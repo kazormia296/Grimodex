@@ -1221,9 +1221,12 @@ fn preflight_project_reads_inner(
         );
         let value = value_query?;
         // 0 reads as the registry's read count: the rows table's convention,
-        // and the registry's byte statement before DR-CQA-8. A statement of
-        // the bytes table now writes the reads it makes in its own text and
-        // runs once (`the_shared_byte_statements_run_once_each`).
+        // and the registry's byte statement before DR-CQA-8. No statement of
+        // the bytes table has a 0 now (it writes the reads it makes in its own
+        // text and runs once; `the_shared_byte_statements_run_once_each` pins
+        // it), so the branch is not taken. It stays because the legacy table
+        // (`with_legacy_shared_bytes`, tests only) is read through this same
+        // loop and still carries the 0.
         let multiplier = if multiplier == 0 {
             SHARED_REGISTRY_READS
         } else {
@@ -1763,6 +1766,9 @@ mod disclosure_tests {
                archived_at,version,updated_at,content,pov_character_id)
              VALUES ('ch','project',NULL,'folder','aaa',NULL,NULL,12,'not-read-updated',
                      'not-read-content-of-a-folder',NULL);
+        INSERT INTO tree_nodes (id,project_id,parent_id,node_type,sort_order,archived_at,
+               version,updated_at,content)
+             VALUES ('old','project','ch','note','z','arch12',2,'not-read-updated','{}');
         INSERT INTO tree_nodes (id,project_id,node_type,version,updated_at,content)
              VALUES ('foreign-scene','other','scene',1,'x','{}');
         UPDATE narrative_scope_registries SET registry_version='v1', timeline_refs_json='[]',
@@ -1808,7 +1814,9 @@ mod disclosure_tests {
         // The authority's tree: six columns of every node of the project, once
         // (not `version` or `updated_at`; not the other project's node).
         let tree = ["scene", "ch", "scene", "a", "bb"].iter().map(|v| v.len()).sum::<usize>()
-            + ["ch", "folder", "aaa"].iter().map(|v| v.len()).sum::<usize>();
+            + ["ch", "folder", "aaa"].iter().map(|v| v.len()).sum::<usize>()
+            // an archived note: its `archived_at` is a returned column too
+            + ["old", "ch", "note", "z", "arch12"].iter().map(|v| v.len()).sum::<usize>();
         // The registry's two statements: `version` and `source_token` are read
         // by both, the rest by one.
         let registry = "v1".len()
@@ -1868,6 +1876,11 @@ mod disclosure_tests {
             ("UPDATE tree_nodes SET updated_at=updated_at||'0123456789' WHERE id='ch'", 0),
             ("UPDATE tree_nodes SET version=1234567890 WHERE id='ch'", 0),
             ("UPDATE tree_nodes SET content=content||'0123456789' WHERE id='ch'", 0),
+            // `archived_at` is returned by the tree's read (any node) and by the
+            // query Scene's read: on the query Scene it counts twice
+            ("UPDATE tree_nodes SET archived_at=archived_at||'0123456789' WHERE id='old'", 10),
+            ("UPDATE tree_nodes SET archived_at='0123456789' WHERE id='ch'", 10),
+            ("UPDATE tree_nodes SET archived_at='0123456789' WHERE id='scene'", 20),
             // another Scene's content is not the query Scene's
             ("INSERT INTO tree_nodes (id,project_id,node_type,content) VALUES ('s2','project','scene','0123456789')", "s2".len() + "scene".len()),
             // the query Scene: its source once, its POV once
@@ -1902,13 +1915,11 @@ mod disclosure_tests {
 
     #[test]
     fn the_shared_byte_statements_run_once_each() {
-        for (index, &(_, multiplier, reads)) in DISCLOSURE_GLOBAL_BYTES_SQL.iter().enumerate() {
+        for (index, &(_, multiplier, _)) in DISCLOSURE_GLOBAL_BYTES_SQL.iter().enumerate() {
+            // 0 is the rows table's convention for the registry's read count
+            // (`SHARED_REGISTRY_READS`); a bytes statement writes the reads it
+            // makes in its own text, so every statement runs exactly once.
             assert_eq!(multiplier, 1, "statement {index}");
-            if reads == DisclosureReads::Shared {
-                // 0 is the rows table's read count of the registry; a bytes
-                // statement writes its reads in its text
-                assert_ne!(multiplier, 0);
-            }
         }
     }
 

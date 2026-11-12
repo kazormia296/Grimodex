@@ -2731,7 +2731,11 @@ fn the_floor_with_character_principals_is_n_available_and_n_plus_1_refused() -> 
 // before (the tree and the bindings twice, columns the reads do not return),
 // 733 now. At N + 1 the refusal is the ledger's, which the worker's frame
 // reports as `other` (the same reason as before DR-CQA-8: the ledger has no
-// reason of its own).
+// reason of its own). This runs in-process with a 10 s lease
+// (`LARGE_N_LEASE`), so it decides the ledger's wall only; the production
+// lease is 100 ms, and the wall it sets in practice (716 to 726 Scenes, a
+// measurement of the real worker) is a separate one that this test does not
+// see.
 const FOUR_REVISIONS_FLOOR_BEFORE_DR_CQA_8: usize = 352;
 const FOUR_REVISIONS_FLOOR_SCENES: usize = 733;
 const PEAK_LEDGER_REFUSAL: &str = "query-worker-work-other-pre-cleanup-work-failed-other";
@@ -2990,11 +2994,17 @@ fn shared_bytes_returned(conn: &rusqlite::Connection, scene: &str) -> Result<usi
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (holder, audience) in pairs {
         for principal in [holder, audience] {
-            let value: serde_json::Value = serde_json::from_str(&principal)?;
-            if value.get("kind").and_then(|kind| kind.as_str()) != Some("character") {
+            // The product's join does not look at `kind`: it names a Codex row by
+            // the principal's `$.ref` and the row's own `type = 'character'`
+            // (`scope_extension_principal_joins!`). So do not filter on `kind`
+            // here; a ref that names no character row returns nothing below.
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&principal) else {
                 continue;
-            }
-            let reference = value["ref"].as_str().unwrap_or_default().to_owned();
+            };
+            let Some(reference) = value.get("ref").and_then(|reference| reference.as_str()) else {
+                continue;
+            };
+            let reference = reference.to_owned();
             total += returned_bytes(
                 conn,
                 "SELECT id FROM codex_entries
@@ -3052,16 +3062,48 @@ fn shared_bytes_equal_what_the_reads_return_on_a_product_project() -> Result<()>
         uuid_ids: true,
     };
     let fixture = same_entity_product_fixture_with_shaped_scenes(1, 300_000, 25, shape)?;
-    fixture.authority.with_conn(|conn| {
+    let original = fixture.authority.with_conn(|conn| {
         conn.execute_batch("PRAGMA query_only=OFF")?;
         // a POV for the query Scene, and a long saved content
         conn.execute(
             "UPDATE tree_nodes SET pov_character_id='v00', content=?1 WHERE id='nir1'",
             [format!("{{}}{}", " ".repeat(5_000))],
         )?;
-        Ok(())
+        // `archived_at` is a column the tree's read and the query Scene's read
+        // both return: archive the query Scene, and add an archived note. The
+        // query Scene's archive and the binding below are for the charge
+        // only; both are restored before the load is observed, which stops at
+        // an archived query Scene and at a malformed binding.
+        conn.execute(
+            "UPDATE tree_nodes SET archived_at='2026-01-01T00:00:00.000Z' WHERE id='nir1'",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO tree_nodes
+                (id, project_id, parent_id, node_type, title, content, sort_order, archived_at)
+             SELECT 'archived-note', ?1, parent_id, 'note', 'Old note', '{}', 'zzzzzz',
+                    '2026-02-02T00:00:00.000Z'
+               FROM tree_nodes WHERE project_id=?1 AND node_type='note' LIMIT 1",
+            [PROJECT],
+        )?;
+        // The product's join does not read a principal's `kind`, only its `ref`
+        // and the Codex row's `type`: one audience of another kind that names a
+        // character is a row the oracle must count too.
+        let original: String = conn.query_row(
+            "SELECT audience_json FROM narrative_scene_scope_bindings
+              WHERE rowid=(SELECT MIN(rowid) FROM narrative_scene_scope_bindings WHERE project_id=?1)",
+            [PROJECT],
+            |row| row.get(0),
+        )?;
+        let changed = conn.execute(
+            "UPDATE narrative_scene_scope_bindings SET audience_json='{\"kind\":\"reader\",\"ref\":\"v00\"}'
+              WHERE rowid=(SELECT MIN(rowid) FROM narrative_scene_scope_bindings WHERE project_id=?1)",
+            [PROJECT],
+        )?;
+        assert_eq!(changed, 1);
+        Ok(original)
     })?;
-    let (charged, before, expected, columns) = fixture.authority.with_read_transaction(|conn| {
+    let (charged, before, expected) = fixture.authority.with_read_transaction(|conn| {
         let charged = super::input::preflight_project_reads(
             conn,
             PROJECT,
@@ -3081,9 +3123,21 @@ fn shared_bytes_equal_what_the_reads_return_on_a_product_project() -> Result<()>
         })?
         .bytes;
         let expected = shared_bytes_returned(conn, "nir1")?;
-        let columns = columns_read_by_one_load(conn)?;
-        Ok((charged, before, expected, columns))
+        Ok((charged, before, expected))
     })?;
+    fixture.authority.with_conn(|conn| {
+        conn.execute_batch("PRAGMA query_only=OFF")?;
+        conn.execute("UPDATE tree_nodes SET archived_at=NULL WHERE id='nir1'", [])?;
+        conn.execute(
+            "UPDATE narrative_scene_scope_bindings SET audience_json=?2
+              WHERE rowid=(SELECT MIN(rowid) FROM narrative_scene_scope_bindings WHERE project_id=?1)",
+            params![PROJECT, original],
+        )?;
+        Ok(())
+    })?;
+    let columns = fixture
+        .authority
+        .with_read_transaction(|conn| columns_read_by_one_load(conn))?;
     assert_eq!(charged, expected);
     // the old count read the tree twice and every binding twice
     assert!(before > charged, "{before} before, {charged} now");
