@@ -3096,8 +3096,10 @@ fn bulk_approve_writes_the_same_rows_as_creating_and_approving_one_proposal_at_a
     assert_same_database_rows(&db_bulk, &db_each, "after");
 }
 
-/// Corrupt the sealed plan artifact of the run before the command: the same
-/// outcome as before the plan was verified once (every target is `plan-unavailable`,
+/// Corrupt the sealed plan artifact of the run BEFORE the command, so the up-front
+/// (warm) verification of the command fails and nothing is reused. A rewrite DURING
+/// the command is the tests of `bulk_approve_stops_like_one_at_a_time_when_a_reused_row_is_rewritten_between_proposals`.
+/// The same outcome as before the plan was verified once (every target is `plan-unavailable`,
 /// nothing is written) and the one-proposal writer still fails with its own code.
 fn assert_broken_plan_is_refused(corrupt: impl FnOnce(&Connection), what: &str) {
     let (fixture, db) = bulk_two_window_two_targets();
@@ -3141,7 +3143,7 @@ fn assert_broken_plan_is_refused(corrupt: impl FnOnce(&Connection), what: &str) 
 }
 
 #[test]
-fn bulk_approve_with_a_missing_plan_artifact_writes_nothing_and_reports_plan_unavailable() {
+fn bulk_approve_with_a_plan_artifact_missing_before_the_command_stops_at_the_up_front_verification() {
     assert_broken_plan_is_refused(
         |conn| {
             conn.execute(
@@ -3156,7 +3158,7 @@ fn bulk_approve_with_a_missing_plan_artifact_writes_nothing_and_reports_plan_una
 }
 
 #[test]
-fn bulk_approve_with_a_corrupted_plan_artifact_writes_nothing_and_reports_plan_unavailable() {
+fn bulk_approve_with_a_plan_artifact_corrupted_before_the_command_stops_at_the_up_front_verification() {
     assert_broken_plan_is_refused(
         |conn| {
             conn.execute(
@@ -3172,7 +3174,7 @@ fn bulk_approve_with_a_corrupted_plan_artifact_writes_nothing_and_reports_plan_u
 }
 
 #[test]
-fn bulk_approve_with_another_runs_plan_artifact_writes_nothing_and_reports_plan_unavailable() {
+fn bulk_approve_with_another_runs_plan_artifact_before_the_command_stops_at_the_up_front_verification() {
     assert_broken_plan_is_refused(
         |conn| {
             let other_run: String = conn
@@ -3255,6 +3257,213 @@ fn bulk_approve_stops_the_next_proposal_when_the_set_is_consumed_between_proposa
         Ok(())
     })
     .expect("the stopped proposal");
+}
+
+/// 一括を 2 件で走らせ、1 件目を承認した後・2 件目の前（「止めるか」を聞かれる所）で、別の接続が
+/// `between` で DB を書き換える。
+fn bulk_approve_both_with_a_write_between(
+    fixture: &Fixture,
+    db: &Database,
+    between: impl FnOnce(&Connection),
+) -> Value {
+    let both = [TWO_WINDOW_FIRST_PROPOSAL, TWO_WINDOW_SECOND_PROPOSAL];
+    let targets = bulk_targets(db, &both);
+    let mut between = Some(between);
+    let mut asked = 0;
+    narrative_extraction_chronicle_bulk_approve(
+        db,
+        ChronicleBulkApprovePayload {
+            project_id: fixture.project().to_owned(),
+            run_id: TWO_WINDOW_RUN.to_owned(),
+            targets,
+        },
+        &mut || {
+            asked += 1;
+            if asked == 2 {
+                if let Some(between) = between.take() {
+                    let other = Connection::open(&fixture.path).expect("another connection");
+                    other
+                        .busy_timeout(std::time::Duration::from_secs(5))
+                        .expect("busy timeout");
+                    between(&other);
+                }
+            }
+            false
+        },
+    )
+    .expect("bulk approve")
+}
+
+/// `NEX_...` の先頭の符号（失敗の鎖の文面から）。
+fn first_nex_code(text: &str) -> String {
+    let start = text.find("NEX_").expect("a NEX_ code");
+    text[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
+        .collect()
+}
+
+/// 同じ書き換えを先に済ませた DB で、2 件目を「1 件ずつ（子の版を作って承認）」で通したときの、
+/// 最初の失敗の符号。通れば `None`。
+fn one_at_a_time_second_proposal_failure(mutate: impl FnOnce(&Connection)) -> Option<String> {
+    let (fixture, db) = bulk_two_window_two_targets();
+    mutate(&Connection::open(&fixture.path).expect("another connection"));
+    let parent = bulk_targets(&db, &[TWO_WINDOW_SECOND_PROPOSAL])[0].revision_id.clone();
+    let child = match try_create_native_child(&db, &fixture, &parent, |payload| {
+        payload["disclosure"]["secret"] = json!(false);
+    }) {
+        Ok(child) => child,
+        Err(error) => return Some(first_nex_code(&format!("{error:#}"))),
+    };
+    narrative_extraction_append_human_decision(
+        &db,
+        AppendDecisionPayload {
+            run_id: TWO_WINDOW_RUN.to_owned(),
+            project_id: fixture.project().to_owned(),
+            proposal_id: TWO_WINDOW_SECOND_PROPOSAL.to_owned(),
+            revision_id: child,
+            decision: "approved".to_owned(),
+            decision_json: None,
+            created_by: Some("chronicle-extract-dialog".to_owned()),
+        },
+    )
+    .err()
+    .map(|error| first_nex_code(&format!("{error:#}")))
+}
+
+/// 使い回す行（計画の artifact の digest、計画／Snapshot の Task の status、Run の digest）を、
+/// command の途中（提案と提案の間）で別の接続が書き換えると、2 件目は 1 件ずつの経路と同じ失敗の符号で
+/// 止まり、何も書かれない（1 件目は承認済みのまま）。書く transaction の中の照合（主キーの読み）が
+/// 使い回しをやめ、書き手が全検証に落ちるから。照合が無い使い回しだけの版では、2 件目が承認されてしまう
+/// （Run の catalog digest だけは、子の版を書く側の別の検査でも止まるので、照合が無くても通る）。
+#[test]
+fn bulk_approve_stops_like_one_at_a_time_when_a_reused_row_is_rewritten_between_proposals() {
+    type Rewrite = fn(&Connection);
+    let cases: [(&str, Rewrite); 5] = [
+        ("plan artifact digest", |conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_artifacts SET payload_digest = payload_digest || '0'
+                  WHERE run_id = ?1 AND artifact_kind = 'chronicle.proposal-plan@1'",
+                [TWO_WINDOW_RUN],
+            )
+            .expect("rewrite the plan artifact digest");
+        }),
+        ("plan owner task status", |conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks SET status = 'failed'
+                  WHERE id = (SELECT task_id FROM narrative_extraction_artifacts
+                               WHERE run_id = ?1 AND artifact_kind = 'chronicle.proposal-plan@1')",
+                [TWO_WINDOW_RUN],
+            )
+            .expect("rewrite the plan owner task status");
+        }),
+        ("snapshot task status", |conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks SET status = 'failed'
+                  WHERE run_id = ?1 AND task_kind = 'source.snapshot@1'",
+                [TWO_WINDOW_RUN],
+            )
+            .expect("rewrite the snapshot task status");
+        }),
+        ("run snapshot digest", |conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs SET snapshot_digest = snapshot_digest || '0' WHERE id = ?1",
+                [TWO_WINDOW_RUN],
+            )
+            .expect("rewrite the run snapshot digest");
+        }),
+        ("run catalog digest", |conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs SET catalog_digest = catalog_digest || '0' WHERE id = ?1",
+                [TWO_WINDOW_RUN],
+            )
+            .expect("rewrite the run catalog digest");
+        }),
+    ];
+    for (label, rewrite) in cases {
+        let expected = one_at_a_time_second_proposal_failure(rewrite)
+            .unwrap_or_else(|| panic!("{label}: the one-at-a-time path must stop on this rewrite"));
+        let (fixture, db) = bulk_two_window_two_targets();
+        let result = bulk_approve_both_with_a_write_between(&fixture, &db, rewrite);
+        let approved = result["approved"].as_array().expect("approved");
+        assert_eq!(approved.len(), 1, "{label}: {result}");
+        assert_eq!(approved[0]["proposalId"], TWO_WINDOW_FIRST_PROPOSAL, "{label}: {result}");
+        assert_eq!(result["skipped"], json!([]), "{label}: {result}");
+        assert_eq!(
+            result["failed"],
+            json!([{"proposalId": TWO_WINDOW_SECOND_PROPOSAL, "code": expected}]),
+            "{label}: stops with the one-at-a-time failure code"
+        );
+        db.with_conn(|conn| {
+            let (status, revisions): (String, i64) = conn.query_row(
+                "SELECT p.status, (SELECT COUNT(*) FROM narrative_proposal_revisions WHERE proposal_id = p.id)
+                   FROM narrative_proposals p WHERE p.id = ?1",
+                [TWO_WINDOW_SECOND_PROPOSAL],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!((status.as_str(), revisions), ("unreviewed", 2), "{label}: the stopped proposal is untouched");
+            Ok(())
+        })
+        .expect("the stopped proposal");
+    }
+}
+
+/// 照合が違いを見つけても、書き手の全検証が通る書き換え（Task の version だけ）なら、2 件目は
+/// 1 件ずつの経路と同じく承認される（照合は余計に止めない）。
+#[test]
+fn bulk_approve_still_approves_when_only_a_checked_version_changes_between_proposals() {
+    let (fixture, db) = bulk_two_window_two_targets();
+    let result = bulk_approve_both_with_a_write_between(&fixture, &db, |conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_tasks SET version = version + 1
+              WHERE run_id = ?1 AND task_kind = 'source.snapshot@1'",
+            [TWO_WINDOW_RUN],
+        )
+        .expect("bump the snapshot task version");
+    });
+    assert_eq!(result["approved"].as_array().expect("approved").len(), 2, "{result}");
+    assert_eq!(result["skipped"], json!([]), "{result}");
+    assert_eq!(result["failed"], json!([]), "{result}");
+}
+
+/// 提案ごとに読み直す物は、これまで通り止める：2 件目の現在の版が変わった（作者が編集した）なら
+/// 「変わった」、Run の spec が変わったなら書き手の失敗（符号は 1 件ずつの経路と同じ）。
+#[test]
+fn bulk_approve_stops_the_next_proposal_when_its_revision_or_the_run_spec_changes_between_proposals() {
+    // 作者が 2 件目を編集した。
+    let (fixture, db) = bulk_two_window_two_targets();
+    let result = bulk_approve_both_with_a_write_between(&fixture, &db, |_| {
+        create_native_child(&db, &fixture, TWO_WINDOW_SECOND_ROOT, |payload| {
+            payload["title"] = json!("Edited between proposals");
+        });
+    });
+    assert_eq!(result["approved"].as_array().expect("approved").len(), 1, "{result}");
+    assert_eq!(result["failed"], json!([]), "{result}");
+    assert_eq!(
+        result["skipped"],
+        json!([{"proposalId": TWO_WINDOW_SECOND_PROPOSAL, "reasons": ["revision-changed"]}]),
+        "{result}"
+    );
+
+    // Run の spec が変わった。
+    let respec: fn(&Connection) = |conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_runs SET spec_json = json_set(spec_json, '$.bulkApproveTest', 1) WHERE id = ?1",
+            [TWO_WINDOW_RUN],
+        )
+        .expect("rewrite the run spec");
+    };
+    let expected = one_at_a_time_second_proposal_failure(respec)
+        .expect("the one-at-a-time path stops on a changed Run spec");
+    let (fixture, db) = bulk_two_window_two_targets();
+    let result = bulk_approve_both_with_a_write_between(&fixture, &db, respec);
+    assert_eq!(result["approved"].as_array().expect("approved").len(), 1, "{result}");
+    assert_eq!(result["skipped"], json!([]), "{result}");
+    assert_eq!(
+        result["failed"],
+        json!([{"proposalId": TWO_WINDOW_SECOND_PROPOSAL, "code": expected}]),
+        "{result}"
+    );
 }
 
 /// 正例：対象の提案が、command 1 回で、秘密の印を外した子の版（human-derived、変わった項目は

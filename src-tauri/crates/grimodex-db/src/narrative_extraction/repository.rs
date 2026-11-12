@@ -3637,10 +3637,11 @@ impl ChroniclePlanAuthority {
 /// consumption of the set and Application rows, the Run spec, the Proposal's
 /// current Revision and status, its Entity/Relation lock, the Decision's own
 /// target Revision (whose title is compared with the sealed one) and the
-/// Proposal's own entry of the roster. A rewrite of the sealed rows by a
-/// writer outside the product during one command is not noticed until the next
-/// command; one made before the command is (the up-front verification fails and
-/// the writer verifies for itself).
+/// Proposal's own entry of the roster. A rewrite of the sealed rows made before
+/// the command is noticed by the up-front verification (it fails and the writer
+/// verifies for itself). One made during the command is noticed, for the rows
+/// the verification stood on, by [`ChronicleReuseWitness`]: the caller compares
+/// it inside every Decision's transaction and stops reusing on a difference.
 pub(crate) struct ChronicleDecisionReuse<'a> {
     pub(crate) plan: &'a ChroniclePlanAuthority,
     pub(crate) review: &'a VerifiedChronicleRevisionReviewAuthority,
@@ -3667,6 +3668,152 @@ impl ChronicleDecisionReuse<'_> {
             "NEX_CHRONICLE_DECISION_AUTHORITY_MISMATCH: the reused authority belongs to another project, Run or ProposalSet"
         );
         Ok(())
+    }
+}
+
+/// What the sealed plan roster and the Snapshot proof were read from, and what
+/// those rows held when they were verified (DR-BAO-10).
+///
+/// The heavy verification (the binding, the manifest, the canonical digests of
+/// the plan artifact and the Snapshot) runs once, before the per-Proposal
+/// transactions. Each Proposal's transaction then re-reads, by primary key
+/// only and in one SELECT, the rows the verification stood on and compares them
+/// with this value: the Run (project, the Snapshot and catalog digests), the
+/// plan owner Task and Attempt (status, version, ownership, attempt number),
+/// the Snapshot owner Task and Attempt (the same) and the two artifacts
+/// (owner, kind, payload digest). A difference means the verified material is
+/// not the material of the transaction, and the writer verifies everything for
+/// itself (the one-Decision path).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ChronicleReuseWitness {
+    ids: ChronicleReuseWitnessIds,
+    seen: Vec<rusqlite::types::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChronicleReuseWitnessIds {
+    plan_task_id: String,
+    plan_attempt_id: String,
+    plan_artifact_id: String,
+    snapshot_task_id: String,
+    snapshot_attempt_id: String,
+    snapshot_artifact_id: String,
+}
+
+impl ChronicleReuseWitness {
+    /// Read the identity of the verified rows and what they hold now. Call it in
+    /// the transaction that verified the plan and the Snapshot.
+    pub(crate) fn capture(
+        conn: &Connection,
+        project_id: &str,
+        run_id: &str,
+    ) -> anyhow::Result<Self> {
+        let (plan_task_id, plan_attempt_id) = sole_chronicle_plan_artifact_owner(conn, run_id)?;
+        let plan_artifact_id: String = conn.query_row(
+            "SELECT id FROM narrative_extraction_artifacts
+              WHERE run_id = ?1 AND task_id = ?2 AND attempt_id = ?3 AND artifact_kind = ?4",
+            params![run_id, plan_task_id, plan_attempt_id, CHRONICLE_PLAN_ARTIFACT_KIND],
+            |row| row.get(0),
+        )?;
+        let snapshot_rows = conn
+            .prepare(
+                "SELECT task.id, attempt.id, artifact.id
+                   FROM narrative_extraction_tasks task
+                   JOIN narrative_extraction_attempts attempt
+                     ON attempt.task_id = task.id
+                    AND attempt.attempt_number = task.attempt_count
+                    AND attempt.status = 'completed'
+                   JOIN narrative_extraction_artifacts artifact
+                     ON artifact.run_id = task.run_id
+                    AND artifact.task_id = task.id
+                    AND artifact.attempt_id = attempt.id
+                    AND artifact.artifact_kind = 'source.snapshot@1'
+                  WHERE task.run_id = ?1
+                    AND task.task_kind = 'source.snapshot@1'
+                    AND task.status = 'completed'",
+            )?
+            .query_map(params![run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let [(snapshot_task_id, snapshot_attempt_id, snapshot_artifact_id)] =
+            <[_; 1]>::try_from(snapshot_rows).map_err(|_| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID: current Chronicle Run needs exactly one Snapshot Task, Attempt and artifact"
+                )
+            })?;
+        let ids = ChronicleReuseWitnessIds {
+            plan_task_id,
+            plan_attempt_id,
+            plan_artifact_id,
+            snapshot_task_id,
+            snapshot_attempt_id,
+            snapshot_artifact_id,
+        };
+        let seen = Self::read(conn, project_id, run_id, &ids)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID: the verified Run row is no longer readable"
+            )
+        })?;
+        Ok(Self { ids, seen })
+    }
+
+    /// Whether every row this witness stands on still holds what it held at
+    /// capture. One SELECT, primary keys only. An unreadable row is a difference.
+    pub(crate) fn still_holds(&self, conn: &Connection, project_id: &str, run_id: &str) -> bool {
+        matches!(
+            Self::read(conn, project_id, run_id, &self.ids),
+            Ok(Some(now)) if now == self.seen
+        )
+    }
+
+    fn read(
+        conn: &Connection,
+        project_id: &str,
+        run_id: &str,
+        ids: &ChronicleReuseWitnessIds,
+    ) -> rusqlite::Result<Option<Vec<rusqlite::types::Value>>> {
+        const COLUMNS: usize = 24;
+        conn.query_row(
+            "SELECT run.project_id, run.snapshot_digest, run.catalog_digest,
+                    plan_task.run_id, plan_task.task_kind, plan_task.status,
+                    plan_task.version, plan_task.attempt_count,
+                    plan_attempt.task_id, plan_attempt.attempt_number, plan_attempt.status,
+                    plan_artifact.run_id, plan_artifact.task_id, plan_artifact.attempt_id,
+                    plan_artifact.artifact_kind, plan_artifact.payload_digest,
+                    snap_task.run_id, snap_task.status, snap_task.version,
+                    snap_task.attempt_count,
+                    snap_attempt.task_id, snap_attempt.attempt_number, snap_attempt.status,
+                    snap_artifact.payload_digest
+               FROM narrative_extraction_runs run
+               LEFT JOIN narrative_extraction_tasks plan_task ON plan_task.id = ?3
+               LEFT JOIN narrative_extraction_attempts plan_attempt ON plan_attempt.id = ?4
+               LEFT JOIN narrative_extraction_artifacts plan_artifact ON plan_artifact.id = ?5
+               LEFT JOIN narrative_extraction_tasks snap_task ON snap_task.id = ?6
+               LEFT JOIN narrative_extraction_attempts snap_attempt ON snap_attempt.id = ?7
+               LEFT JOIN narrative_extraction_artifacts snap_artifact ON snap_artifact.id = ?8
+              WHERE run.id = ?1 AND run.project_id = ?2",
+            params![
+                run_id,
+                project_id,
+                ids.plan_task_id,
+                ids.plan_attempt_id,
+                ids.plan_artifact_id,
+                ids.snapshot_task_id,
+                ids.snapshot_attempt_id,
+                ids.snapshot_artifact_id,
+            ],
+            |row| {
+                (0..COLUMNS)
+                    .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            },
+        )
+        .optional()
     }
 }
 
