@@ -550,13 +550,17 @@ describe("Chronicle stage requests", () => {
 /**
  * DMS/1 DR-DMS-7. Narrowing a proposal's declared material trusts that the
  * request the sealed digest names is the request that was sent. Native only
- * re-derives the recorded request, so this fixes the sent side: for the
- * observation and the synthesis request, on every route shape the
- * single-shot transport can take, the model-visible text reassembled from the
- * wire messages hashes to the finalRequestDigest the receipt recorded, and no
- * message carries anything beyond the prompt (no extra roles or segments).
+ * re-derives the recorded request, so this fixes the side we own: the
+ * arguments handed to `sendChatMessageWithThinking` (the value that is
+ * recorded). `sendChatMessageWithThinking` is mocked here, so the inside of
+ * the Responses, Ollama and AI のべりすと transports is NOT
+ * exercised. That inside was read, not tested (see the decisions record).
+ * For the observation and the synthesis request, on each route shape, the
+ * model-visible text reassembled from the messages passed to it hashes to the
+ * finalRequestDigest the receipt recorded, and no message carries anything
+ * beyond the prompt (no extra roles or segments).
  */
-describe("sent request equals the recorded request (DMS/1)", () => {
+describe("arguments passed to sendChatMessageWithThinking equal the recorded request (DMS/1)", () => {
   const ROUTES: readonly [string, Record<string, string | null>][] = [
     ["anthropic", ANTHROPIC],
     [
@@ -612,7 +616,8 @@ describe("sent request equals the recorded request (DMS/1)", () => {
 
   async function sentRequestDigest(call: SentCall, base: unknown) {
     const artifact = base as Parameters<typeof buildChroniclePromptDigests>[0];
-    // Rebuild the request from what was sent, as the model reads it.
+    // Rebuild the request from the arguments passed to the (mocked) send
+    // function. The transport internals are not part of this.
     return buildChroniclePromptDigests({
       ...artifact,
       messages: [{ role: "user", content: modelVisibleText(call) }],
@@ -628,7 +633,7 @@ describe("sent request equals the recorded request (DMS/1)", () => {
   }
 
   it.each(ROUTES)(
-    "event synthesis on %s: the sent text hashes to the recorded finalRequestDigest",
+    "event synthesis on %s: the text passed to sendChatMessageWithThinking hashes to the recorded finalRequestDigest",
     async (_name, override) => {
       overrideMock.mockReturnValue(override as never);
       await runEventSynthesisTask({
@@ -666,7 +671,7 @@ describe("sent request equals the recorded request (DMS/1)", () => {
   );
 
   it.each(ROUTES)(
-    "observation extraction on %s: the sent text hashes to the recorded finalRequestDigest",
+    "observation extraction on %s: the text passed to sendChatMessageWithThinking hashes to the recorded finalRequestDigest",
     async (_name, override) => {
       overrideMock.mockReturnValue(override as never);
       const windows = [{ sourceRef: "S0001", text: "門が開いた。" }];
