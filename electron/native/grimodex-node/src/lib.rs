@@ -51,6 +51,8 @@ mod related_scenes_registry;
 mod state;
 #[cfg(test)]
 mod test_link_stubs;
+#[cfg(test)]
+mod sqlite_compile_options_tests;
 mod typed_writers;
 mod workspace_lifecycle_view;
 use lifecycle_failure_diagnostics::{FailureClass, Producer};

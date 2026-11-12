@@ -58,6 +58,18 @@ where
     hook_registration::set_progress_handler(conn, interval, handler)
 }
 
+/// `PRAGMA compile_options` of the bundled SQLite. The compile flags are part of
+/// the behaviour the audits assume (for example `ENABLE_MEMORY_MANAGEMENT`,
+/// DR-DBC-4), so the crates that build SQLite assert them through this.
+pub fn sqlite_compile_options() -> rusqlite::Result<Vec<String>> {
+    let conn = Connection::open_in_memory()?;
+    let mut statement = conn.prepare("PRAGMA compile_options")?;
+    let options = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(options)
+}
+
 /// Run a foreground maintenance command under the ordinary blocking
 /// connection acquisition policy. Automatic maintenance remains no-wait, but
 /// user initiated Verify/Backfill/Rebuild commands must retain the existing
