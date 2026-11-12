@@ -1740,6 +1740,11 @@ export async function refreshChronicleBulkApprovalJudgements(
   const projection = useChronicleExtractionStore.getState().projection;
   if (!projection) return false;
   const identity = chronicleProjectionIdentity(projection);
+  // A newer read, or a local operation that nulls a judgement, makes this
+  // answer stale: the store then drops it.
+  const epoch = useChronicleExtractionStore
+    .getState()
+    .advanceBulkJudgementEpoch();
   try {
     const bundle = await narrativeExtractionGetRunReviewBundle({
       runId: identity.runId,
@@ -1768,6 +1773,7 @@ export async function refreshChronicleBulkApprovalJudgements(
         assertCurrentChronicleProposalPayload(native.payloadJson);
         return {
           proposalId: native.proposalId,
+          revisionId: native.currentRevisionId,
           bulkApproval,
           sync: {
             revisionId: native.currentRevisionId,
@@ -1780,15 +1786,19 @@ export async function refreshChronicleBulkApprovalJudgements(
           },
         };
       }
-      return { proposalId: native.proposalId, bulkApproval };
+      return {
+        proposalId: native.proposalId,
+        revisionId: native.currentRevisionId,
+        bulkApproval,
+      };
     });
     return useChronicleExtractionStore
       .getState()
-      .applyNativeReviewRows(identity, rows);
+      .applyNativeReviewRows(identity, rows, epoch);
   } catch {
     useChronicleExtractionStore
       .getState()
-      .clearBulkApprovalJudgements(identity);
+      .clearBulkApprovalJudgements(identity, epoch);
     return false;
   }
 }
@@ -1841,6 +1851,9 @@ async function persistChronicleProposalDecision(args: {
         : args.status === "held"
           ? "held"
           : "deferred";
+  // The judgement of this proposal is about to be stale: any read in flight
+  // must not bring it back.
+  useChronicleExtractionStore.getState().advanceBulkJudgementEpoch();
   await recordChronicleProposalDecision({
     runId: projection.runId,
     projectId: projection.projectId,
@@ -2070,6 +2083,17 @@ export async function reviseChronicleProposal(args: {
       projection.existingEventsCatalog,
     );
   }
+  if (
+    current.reconciliationEnvelopeSchemaVersion === 2 &&
+    !current.reconciliationEnvelopeDigest
+  ) {
+    // E.g. after a bulk approval whose re-read failed: the sealed Envelope
+    // digest was not read back, so an edit cannot inherit it.
+    throw new Error(
+      "一覧を読み直してから、もう一度試してください。（この提案の最新の状態を読めていません）",
+    );
+  }
+  useChronicleExtractionStore.getState().advanceBulkJudgementEpoch();
   const revision = await recordChronicleProposalRevision({
     runId: projection.runId,
     projectId: projection.projectId,
@@ -2126,6 +2150,19 @@ export interface ChronicleBulkApproveOutcome {
   readonly remaining: number;
 }
 
+/**
+ * The command as a whole failed. Carries the command's own message and whether
+ * the list could be re-read afterwards.
+ */
+export class ChronicleBulkApproveCommandError extends Error {
+  readonly listRefreshed: boolean;
+  constructor(cause: unknown, listRefreshed: boolean) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "ChronicleBulkApproveCommandError";
+    this.listRefreshed = listRefreshed;
+  }
+}
+
 function countUndecidedProposals(runId: string): number {
   const projection = useChronicleExtractionStore.getState().projection;
   // Another Run became active meanwhile: its proposals are not this result's.
@@ -2180,8 +2217,10 @@ export async function bulkApproveChronicleProposals(): Promise<ChronicleBulkAppr
     });
   } catch (error) {
     // Whatever happened, the list may no longer match Native.
-    await refreshChronicleBulkApprovalJudgements({ syncRevisions: true });
-    throw error;
+    const listRefreshed = await refreshChronicleBulkApprovalJudgements({
+      syncRevisions: true,
+    });
+    throw new ChronicleBulkApproveCommandError(error, listRefreshed);
   }
   const refreshed = await refreshChronicleBulkApprovalJudgements({
     syncRevisions: true,

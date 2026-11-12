@@ -112,12 +112,15 @@ export interface ChronicleReviewProposal {
 export function isBulkApprovalTarget(
   proposal: Pick<
     ChronicleReviewProposal,
-    "applicability" | "application" | "revisionId" | "bulkApproval"
+    "applicability" | "application" | "revisionId" | "bulkApproval" | "status"
   >,
 ): boolean {
   return (
     proposal.applicability === "applicable" &&
     proposal.application === null &&
+    // Native's judgement may be older than the screen: a decided proposal is
+    // never a target.
+    proposal.status === "unreviewed" &&
     proposal.revisionId !== null &&
     proposal.bulkApproval?.eligible === true
   );
@@ -142,6 +145,11 @@ export interface ChronicleNativeRevisionSync {
 
 export interface ChronicleNativeReviewRow {
   readonly proposalId: string;
+  /**
+   * The revision Native's judgement describes. When present and different
+   * from the projection's current revision, the judgement is not copied.
+   */
+  readonly revisionId?: string | null;
   readonly bulkApproval: ChronicleBulkApproval | null;
   /** Present only when the caller wants the revision/status copied too. */
   readonly sync?: ChronicleNativeRevisionSync;
@@ -374,6 +382,8 @@ interface ChronicleExtractionState {
   selectedProposalId: string | null;
   /** Decision/revision writes in flight; Apply must not race these writes. */
   reviewMutationCount: number;
+  /** Generation of the bulk-approval judgement; see `advanceBulkJudgementEpoch`. */
+  bulkJudgementEpoch: number;
   /** Atomic Apply owns the review boundary until its Native journey settles. */
   applyMutationInFlight: boolean;
   setProjection: (projection: ChronicleExtractionReviewProjection) => void;
@@ -437,16 +447,39 @@ interface ChronicleExtractionState {
   applyNativeReviewRows: (
     identity: ChronicleReviewProjectionIdentity,
     rows: readonly ChronicleNativeReviewRow[],
+    epoch?: number,
   ) => boolean;
   /** A failed re-read: judgements become unknown (null) for that projection. */
   clearBulkApprovalJudgements: (
     identity: ChronicleReviewProjectionIdentity,
+    epoch?: number,
   ) => void;
+  /**
+   * Monotonic generation of the bulk-approval judgement. A re-read takes a new
+   * one when it starts; an answer is applied only while it is still the
+   * newest. Operations that null a judgement advance it too.
+   * @returns the new generation.
+   */
+  advanceBulkJudgementEpoch: () => number;
   /** Bulk approval succeeded but the re-read failed: mirror the response. */
   mirrorBulkApproved: (
     identity: ChronicleReviewProjectionIdentity,
     approved: readonly { proposalId: string; revisionId: string }[],
   ) => void;
+}
+
+/**
+ * Native's judgement describes one revision. If that is not the projection's
+ * current revision, the judgement is unknown (null).
+ */
+function judgementFor(
+  current: ChronicleReviewProposal,
+  row: ChronicleNativeReviewRow,
+): ChronicleBulkApproval | null {
+  if (row.revisionId !== undefined && row.revisionId !== current.revisionId) {
+    return null;
+  }
+  return row.bulkApproval;
 }
 
 function sameProjectionIdentity(
@@ -478,6 +511,7 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
     recovery: EMPTY_RECOVERY_STATE,
     selectedProposalId: null,
     reviewMutationCount: 0,
+    bulkJudgementEpoch: 0,
     applyMutationInFlight: false,
 
     setProjection: (projection) => {
@@ -642,6 +676,7 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
         return;
       }
       set({
+        bulkJudgementEpoch: get().bulkJudgementEpoch + 1,
         projection: {
           ...projection,
           proposals: replaceProposal(projection.proposals, proposalId, {
@@ -675,6 +710,7 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
             ? "rejected"
             : "approved";
       set({
+        bulkJudgementEpoch: get().bulkJudgementEpoch + 1,
         projection: {
           ...projection,
           proposals: replaceProposal(projection.proposals, proposalId, {
@@ -729,6 +765,7 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
         },
       };
       set({
+        bulkJudgementEpoch: get().bulkJudgementEpoch + 1,
         projection: {
           ...projection,
           proposals: replaceProposal(projection.proposals, proposalId, {
@@ -755,9 +792,14 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
       });
     },
 
-    applyNativeReviewRows: (identity, rows) => {
+    applyNativeReviewRows: (identity, rows, epoch) => {
       const projection = get().projection;
       if (!sameProjectionIdentity(projection, identity)) return false;
+      // A newer read started, or a local operation nulled a judgement since:
+      // this answer is older than what the screen knows.
+      if (epoch !== undefined && epoch !== get().bulkJudgementEpoch) {
+        return false;
+      }
       const byId = new Map(rows.map((row) => [row.proposalId, row] as const));
       const proposals = projection.proposals.map((current) => {
         const row = byId.get(current.proposalId);
@@ -795,15 +837,22 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
             bulkApproval: row.bulkApproval,
           };
         }
-        return { ...current, bulkApproval: row.bulkApproval };
+        return { ...current, bulkApproval: judgementFor(current, row) };
       });
       set({ projection: { ...projection, proposals } });
       return true;
     },
 
-    clearBulkApprovalJudgements: (identity) => {
+    advanceBulkJudgementEpoch: () => {
+      const next = get().bulkJudgementEpoch + 1;
+      set({ bulkJudgementEpoch: next });
+      return next;
+    },
+
+    clearBulkApprovalJudgements: (identity, epoch) => {
       const projection = get().projection;
       if (!sameProjectionIdentity(projection, identity)) return;
+      if (epoch !== undefined && epoch !== get().bulkJudgementEpoch) return;
       set({
         projection: {
           ...projection,
@@ -864,6 +913,7 @@ export function resetChronicleExtractionStoreForTests(): void {
     recovery: EMPTY_RECOVERY_STATE,
     selectedProposalId: null,
     reviewMutationCount: 0,
+    bulkJudgementEpoch: 0,
     applyMutationInFlight: false,
   });
 }

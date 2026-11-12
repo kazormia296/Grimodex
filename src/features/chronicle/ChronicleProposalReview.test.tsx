@@ -36,6 +36,7 @@ vi.mock("./chronicleExtractionApi", async () => {
 });
 
 import { ChronicleProposalReview } from "./ChronicleProposalReview";
+import { ChronicleBulkApproveCommandError } from "./chronicleExtractionApi";
 
 function payload(
   overrides: Partial<CreateChronicleEventProposalPayloadV1> = {},
@@ -542,17 +543,84 @@ describe("ChronicleProposalReview: bulk approve (BAO/1)", () => {
   });
 
   it("always explains what the button does, and is disabled for zero targets", () => {
-    useChronicleExtractionStore
-      .getState()
-      .setProjection(projection([proposal({ bulkApproval: null })]));
+    useChronicleExtractionStore.getState().setProjection(
+      projection([
+        proposal({
+          bulkApproval: { eligible: false, reasons: ["r3-significance"] },
+        }),
+      ]),
+    );
     render(<ChronicleProposalReview />);
     const description = screen.getByTestId(
       "chronicle-bulk-approve-description",
     );
-    expect(description).toHaveTextContent(
-      "見せる理由の無い提案 0 件の秘密の印を外して承認します。場面の Scope が設定されていれば、根拠の本文が、後の場面の関連場面に出るようになります。年表に入れたいだけの提案は、1 件ずつ承認してください。",
-    );
+    expect(description).toHaveTextContent("まとめて承認の対象はありません。");
     expect(screen.getByTestId("chronicle-bulk-approve-safe")).toBeDisabled();
+  });
+
+  it("says the judgement could not be read, not 'no targets', when it is unknown", () => {
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(
+        projection([
+          proposal({ bulkApproval: ELIGIBLE }),
+          proposal({ proposalId: "p2", proposalKey: "k2", bulkApproval: null }),
+        ]),
+      );
+    render(<ChronicleProposalReview />);
+    expect(
+      screen.getByTestId("chronicle-bulk-approve-unknown"),
+    ).toHaveTextContent(
+      "まとめて承認の対象を確かめられませんでした。画面を開き直してください。",
+    );
+    expect(
+      screen.queryByTestId("chronicle-bulk-approve-description"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not call a decided proposal a target even if Native's judgement is older", () => {
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(
+        projection([proposal({ status: "approved", bulkApproval: ELIGIBLE })]),
+      );
+    render(<ChronicleProposalReview />);
+    expect(
+      screen.queryByTestId("chronicle-proposal-bulk-target-proposal-1"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("chronicle-bulk-approve-safe")).toBeDisabled();
+  });
+
+  it("clears the result of the last bulk approval when a one-at-a-time operation succeeds", async () => {
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(projection([proposal({ bulkApproval: ELIGIBLE })]));
+    decideMock.mockResolvedValue(undefined);
+    bulkMock.mockResolvedValue(bulkOutcome({ approved: 1 }));
+    render(<ChronicleProposalReview />);
+    fireEvent.click(screen.getByTestId("chronicle-bulk-approve-safe"));
+    await screen.findByTestId("chronicle-bulk-approve-result");
+    fireEvent.click(screen.getByRole("button", { name: "拒否" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("chronicle-bulk-approve-result"),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("says the list could not be re-read when the whole command failed and the re-read failed", async () => {
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(projection([proposal({ bulkApproval: ELIGIBLE })]));
+    bulkMock.mockRejectedValueOnce(
+      new ChronicleBulkApproveCommandError(new Error("NEX_BULK_DOWN"), false),
+    );
+    render(<ChronicleProposalReview />);
+    fireEvent.click(screen.getByTestId("chronicle-bulk-approve-safe"));
+    const error = await screen.findByTestId("chronicle-proposal-persist-error");
+    expect(error).toHaveTextContent(
+      "まとめて承認に失敗しました。一覧も読み直せませんでした。画面を開き直してください。",
+    );
   });
 
   it("shows the count in the explanation", () => {

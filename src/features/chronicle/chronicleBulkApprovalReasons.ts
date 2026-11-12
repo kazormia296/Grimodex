@@ -127,6 +127,18 @@ const UNKNOWN_REASON = {
   text: "まとめて承認の対象ではありません",
 } as const;
 
+/**
+ * Codes after which the proposal is decided (or applied) and the card shows
+ * that state. `held` and `deferred` are not decided: their reasons still show.
+ */
+const DECIDED_CODES: ReadonlySet<string> = new Set([
+  "approved",
+  "rejected",
+  "applied",
+  "set-applied",
+  "status-other",
+]);
+
 /** Shown reasons first (R1..R4, R0), then the other author-meaningful ones. */
 const REVIEW_ORDER = [
   "r1-narrative-frame",
@@ -149,8 +161,8 @@ export function hasReviewReason(
 
 /**
  * Sentences for the card of a proposal that is not a target. If Native reports
- * any review/apply state (approved, rejected, held, deferred, applied, ...) the
- * proposal is already decided: the card shows that state, and the other codes
+ * any decided/apply state (approved, rejected, applied, set-applied, status-other)
+ * the proposal is already decided: the card shows that state, and the other codes
  * would describe the decided revision (an approved bulk-approved child is
  * "edited"), so no line is given. An unknown code gets one generic sentence. `omitDuplicate`: the card already has its own duplicate
  * display, so `probable-duplicate` adds nothing.
@@ -162,7 +174,7 @@ export function describeBulkApprovalReasons(
 ): string[] {
   if (!judgement || judgement.eligible) return [];
   const codes = [...new Set(judgement.reasons)];
-  if (codes.some((code) => REASONS[code]?.kind === "state")) return [];
+  if (codes.some((code) => DECIDED_CODES.has(code))) return [];
   const sentences: string[] = [];
   const push = (entry: { key: string; text: string }) => {
     const sentence = t(entry.key, entry.text);
@@ -201,7 +213,7 @@ export function describeBulkApprovalOutcomeReason(
 }
 
 /**
- * Display order only: unreviewed proposals that carry a "show the author"
+ * Display order only: undecided (unreviewed, held, deferred) proposals that carry a "show the author"
  * reason go first; the relative order inside each group is kept. The store's
  * order is never changed (DR-BAO-9).
  */
@@ -219,7 +231,9 @@ export function orderProposalsForReview<
     if (
       proposal.applicability === "applicable" &&
       proposal.application === null &&
-      proposal.status === "unreviewed" &&
+      (proposal.status === "unreviewed" ||
+        proposal.status === "held" ||
+        proposal.status === "deferred") &&
       hasReviewReason(proposal.bulkApproval)
     ) {
       shown.push(proposal);

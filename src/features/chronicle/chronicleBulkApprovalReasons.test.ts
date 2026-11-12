@@ -105,10 +105,31 @@ describe("describeBulkApprovalReasons", () => {
     ).toEqual([]);
     expect(
       describeBulkApprovalReasons(
-        { eligible: false, reasons: ["held", "r3-significance"] },
+        { eligible: false, reasons: ["rejected", "r3-significance"] },
         identity,
       ),
     ).toEqual([]);
+    expect(
+      describeBulkApprovalReasons(
+        { eligible: false, reasons: ["status-other", "r3-significance"] },
+        identity,
+      ),
+    ).toEqual([]);
+  });
+
+  it("still gives the reasons of a held or deferred proposal", () => {
+    expect(
+      describeBulkApprovalReasons(
+        { eligible: false, reasons: ["held", "r3-significance"] },
+        identity,
+      ),
+    ).toEqual(["物語の大きな出来事です"]);
+    expect(
+      describeBulkApprovalReasons(
+        { eligible: false, reasons: ["deferred", "edited"] },
+        identity,
+      ),
+    ).toEqual(["編集した提案です"]);
   });
 
   it("omits probable-duplicate only when the card has its own duplicate display", () => {
@@ -222,6 +243,21 @@ describe("hasReviewReason / orderProposalsForReview", () => {
     const ordered = orderProposalsForReview(input).map((item) => item.id);
     expect(ordered).toEqual(["b", "d", "a", "c", "e", "f"]);
     expect(input.map((item) => item.id)).toEqual(ids);
+  });
+
+  it("moves held and deferred proposals with a reason to show, not decided ones", () => {
+    const input = [
+      row("a", []),
+      row("b", ["held", "r3-significance"], { status: "held" }),
+      row("c", ["deferred", "r4-actuality"], { status: "deferred" }),
+      row("d", ["rejected", "r3-significance"], { status: "rejected" }),
+    ];
+    expect(orderProposalsForReview(input).map((item) => item.id)).toEqual([
+      "b",
+      "c",
+      "a",
+      "d",
+    ]);
   });
 
   it("returns the same array when nothing moves", () => {

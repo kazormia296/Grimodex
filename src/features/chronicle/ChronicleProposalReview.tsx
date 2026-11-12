@@ -6,6 +6,7 @@ import { ChronicleBulkApproveOutcomeNote } from "./ChronicleBulkApproveOutcomeNo
 import { orderProposalsForReview } from "./chronicleBulkApprovalReasons";
 import {
   bulkApproveChronicleProposals,
+  ChronicleBulkApproveCommandError,
   decideChronicleProbableDuplicate,
   decideChronicleProposal,
   reviseChronicleProposal,
@@ -125,7 +126,10 @@ export function ChronicleProposalReview({
     status: ChronicleReviewProposal["status"],
   ) => {
     if (!boundToStore) return;
-    void runPersist(() => decideChronicleProposal({ proposalId, status }));
+    void runPersist(async () => {
+      await decideChronicleProposal({ proposalId, status });
+      setBulkOutcome(null);
+    });
   };
 
   const handleDuplicateChoice = (
@@ -135,6 +139,7 @@ export function ChronicleProposalReview({
     if (!boundToStore) return;
     void runPersist(async () => {
       await decideChronicleProbableDuplicate({ proposalId, choice });
+      setBulkOutcome(null);
     });
   };
 
@@ -148,11 +153,23 @@ export function ChronicleProposalReview({
     },
   ) => {
     if (!boundToStore) return;
-    void runPersist(() => reviseChronicleProposal({ proposalId, patch }));
+    void runPersist(async () => {
+      await reviseChronicleProposal({ proposalId, patch });
+      setBulkOutcome(null);
+    });
   };
 
   // Native's judgement is the only source of the count (BAO/1, B3).
   const bulkTargetCount = proposals.filter(isBulkApprovalTarget).length;
+  // A proposal still to review whose judgement is unknown (the read failed or
+  // is not in yet): "no targets" would be a guess.
+  const bulkUnknownCount = proposals.filter(
+    (proposal) =>
+      proposal.applicability === "applicable" &&
+      proposal.application === null &&
+      proposal.status === "unreviewed" &&
+      (proposal.bulkApproval === null || proposal.bulkApproval === undefined),
+  ).length;
   const reviewControlsDisabled = persisting || applyMutationInFlight;
 
   const handleBulkApprove = () => {
@@ -162,11 +179,19 @@ export function ChronicleProposalReview({
       try {
         setBulkOutcome(await bulkApproveChronicleProposals());
       } catch (error) {
+        const listRefreshed =
+          !(error instanceof ChronicleBulkApproveCommandError) ||
+          error.listRefreshed;
         throw new Error(
-          t(
-            "chronicle.extract.bulkApproveFailed",
-            "まとめて承認に失敗しました。一覧を読み直しました。もう一度試してください。",
-          ),
+          listRefreshed
+            ? t(
+                "chronicle.extract.bulkApproveFailed",
+                "まとめて承認に失敗しました。一覧を読み直しました。もう一度試してください。",
+              )
+            : t(
+                "chronicle.extract.bulkApproveFailedNoRefresh",
+                "まとめて承認に失敗しました。一覧も読み直せませんでした。画面を開き直してください。",
+              ),
           { cause: error },
         );
       }
@@ -200,7 +225,29 @@ export function ChronicleProposalReview({
               </button>
             )}
           </div>
-          {boundToStore && (
+          {boundToStore && bulkUnknownCount > 0 && (
+            <p
+              className="text-[10px] leading-snug text-muted-foreground"
+              data-testid="chronicle-bulk-approve-unknown"
+            >
+              {t(
+                "chronicle.extract.bulkApproveUnknown",
+                "まとめて承認の対象を確かめられませんでした。画面を開き直してください。",
+              )}
+            </p>
+          )}
+          {boundToStore && bulkUnknownCount === 0 && bulkTargetCount === 0 && (
+            <p
+              className="text-[10px] leading-snug text-muted-foreground"
+              data-testid="chronicle-bulk-approve-description"
+            >
+              {t(
+                "chronicle.extract.bulkApproveNone",
+                "まとめて承認の対象はありません。",
+              )}
+            </p>
+          )}
+          {boundToStore && bulkUnknownCount === 0 && bulkTargetCount > 0 && (
             <p
               className="text-[10px] leading-snug text-muted-foreground"
               data-testid="chronicle-bulk-approve-description"

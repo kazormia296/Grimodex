@@ -57,6 +57,7 @@ import type { ReviewBundleProposal } from "@/application/narrative-extraction/na
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
 import {
   bulkApproveChronicleProposals,
+  ChronicleBulkApproveCommandError,
   CHRONICLE_BULK_APPROVE_MAX_TARGETS,
   decideChronicleProposal,
   refreshChronicleBulkApprovalJudgements,
@@ -536,6 +537,115 @@ describe("Chronicle bulk approve (BAO/1)", () => {
     });
   });
 
+  describe("stale answers and revision match", () => {
+    it("drops an older read that is answered after a one-at-a-time operation", async () => {
+      useChronicleExtractionStore
+        .getState()
+        .setProjection(
+          projection([
+            proposal("a", { bulkApproval: ELIGIBLE }),
+            proposal("b", { bulkApproval: ELIGIBLE }),
+          ]),
+        );
+      let release: (value: ReturnType<typeof bundle>) => void = () => {};
+      getRunReviewBundleMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      const slow = refreshChronicleBulkApprovalJudgements();
+      appendHumanDecisionMock.mockResolvedValue({});
+      getRunReviewBundleMock.mockResolvedValueOnce(
+        bundle([
+          nativeRow("a", {
+            status: "rejected",
+            bulkApproval: { eligible: false, reasons: ["rejected"] },
+          }),
+          nativeRow("b"),
+        ]),
+      );
+      await decideChronicleProposal({ proposalId: "a", status: "rejected" });
+      // The older answer still says "a" is eligible.
+      release(bundle([nativeRow("a"), nativeRow("b")]));
+      await slow;
+      expect(rowsInStore()[0]?.bulkApproval).toEqual({
+        eligible: false,
+        reasons: ["rejected"],
+      });
+    });
+
+    it("does not let an older read bring back a judgement nulled by a local operation", async () => {
+      useChronicleExtractionStore
+        .getState()
+        .setProjection(projection([proposal("a", { bulkApproval: ELIGIBLE })]));
+      let release: (value: ReturnType<typeof bundle>) => void = () => {};
+      getRunReviewBundleMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      const slow = refreshChronicleBulkApprovalJudgements();
+      useChronicleExtractionStore.getState().updateProposalStatus("a", "held");
+      release(bundle([nativeRow("a")]));
+      await slow;
+      expect(rowsInStore()[0]).toMatchObject({
+        status: "held",
+        bulkApproval: null,
+      });
+    });
+
+    it("copies a judgement only to a proposal whose current revision is the one Native judged", async () => {
+      useChronicleExtractionStore
+        .getState()
+        .setProjection(
+          projection([
+            proposal("a"),
+            proposal("b", { revisionId: "rev-b-old" }),
+          ]),
+        );
+      getRunReviewBundleMock.mockResolvedValue(
+        bundle([nativeRow("a"), nativeRow("b")]),
+      );
+      await refreshChronicleBulkApprovalJudgements();
+      const rows = rowsInStore();
+      expect(rows[0]?.bulkApproval).toEqual(ELIGIBLE);
+      expect(rows[1]?.bulkApproval).toBeNull();
+    });
+  });
+
+  describe("whole-command failure", () => {
+    it("tells whether the list could be re-read", async () => {
+      useChronicleExtractionStore
+        .getState()
+        .setProjection(projection([proposal("a", { bulkApproval: ELIGIBLE })]));
+      bulkApproveMock.mockRejectedValue(new Error("NEX_BULK_DOWN"));
+      getRunReviewBundleMock.mockRejectedValue(new Error("read failed"));
+      const failed = await bulkApproveChronicleProposals().catch(
+        (error: unknown) => error,
+      );
+      expect(failed).toBeInstanceOf(ChronicleBulkApproveCommandError);
+      expect((failed as ChronicleBulkApproveCommandError).listRefreshed).toBe(
+        false,
+      );
+    });
+
+    it("says to re-read when an edit follows a mirrored bulk approval", async () => {
+      useChronicleExtractionStore.getState().setProjection(
+        projection([
+          proposal("a", {
+            status: "approved",
+            reconciliationEnvelopeDigest: null,
+          }),
+        ]),
+      );
+      await expect(
+        reviseChronicleProposal({ proposalId: "a", patch: { title: "新" } }),
+      ).rejects.toThrow("一覧を読み直してから、もう一度試してください");
+    });
+  });
+
   describe("refreshChronicleBulkApprovalJudgements", () => {
     it("treats a bundle without judgements (not a current Chronicle Run) as unknown", async () => {
       useChronicleExtractionStore
@@ -597,6 +707,7 @@ describe("Chronicle bulk approve (BAO/1)", () => {
       getRunReviewBundleMock.mockResolvedValue(
         bundle([
           nativeRow("proposal-1", {
+            currentRevisionId: "rev-1",
             bulkApproval: { eligible: false, reasons: ["r4-actuality"] },
           }),
         ]),
