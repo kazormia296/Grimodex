@@ -10,6 +10,7 @@
 | DR-CQA-6 | 2026-11-11 | C-query の場面数の壁（A-α）。枝 `claude/cquery-binding-join`（DR-GRW-5＝#862 の head の上） | Scope extension の binding の SELECT から `LEFT JOIN tree_nodes` を外し、`sceneOwned` を authority が読んだ nodes の「project の Scene の id の集合」で決める（読取 −N_b）。`DISCLOSURE_GLOBAL_ROWS_SQL` の binding の行の乗数を 2→1 にする（課金 −N_b。課金−実読の差 N_t−P は不変）。閾値（2,048 ほか）・bytes の乗数・tree の×2 は変えない | 上限の値は変えない。行の数では、課金されていなかった join の N_b を読まなくし、CQ-AVAIL から残っていた binding の 2 回目の N_b の課金を外す（下の「×2 の由来と、委任の判断」）。文の単位では binding の表の読みは減らず課金だけが減るので、DR-CQA-3 の線の内とは断じず、2026-11-11 にユーザーが承認した A-β（課金を実読に合わせる）の一部として扱う（統合者の判断）。同じ snapshot の読みだけ。新しい送信先・保存・契約・authority・schema は無い | 課金だけ減らす（緩和で [precheck]）。A-β（課金を実読に合わせる。確認が要る）。join を残す（床は 489 のまま） | 設計調査（`cquery-scene-wall-2026-11-11.md` §2、§4、§5.2）が A-α を「委任内の見込み」とした。実装後に advisor（read-only）に諮り、停止条件 1 の読み替え、床の限定、試験の allowlist 化、記述の訂正の指摘を受けて反映した | 承認済みの A-β の範囲（課金を実読に合わせる。2026-11-11 ユーザー決定）。値・新しい閾値・契約は変えない。principal の行を数える残りは A-β の PR で入れる | 不要（thread・handle・取消点・再開の状態を足さない。下の節） | 記録済み（実装と同じ commit に記録） |
 | DR-CQA-7 | 2026-11-12 | C-query の場面数の壁（A-β。行の課金を実読に合わせる）。枝 `claude/cquery-charge-actual`（DR-CQA-6＝#869 の head `f7ece285` の上） | `DISCLOSURE_GLOBAL_ROWS_SQL` の `tree_nodes` の COUNT の乗数を 2→1 にし（authority が tree を読むのは 1 回）、projects と query Scene の COUNT の乗数を 1→2 にし（query はこの 2 行を各 2 回読む）、principal の Codex 行 P（Scope extension の binding の SELECT が `LEFT JOIN codex_entries kh`／`au` で読む行）を数える文 `SCOPE_EXTENSION_PRINCIPAL_ROWS_SQL` を `preflight_project_reads` に足す（×1。kh と au は別に数える）。P の文は extension の SELECT と同じ join の文（macro で 1 つの文字列）から作り、binding を読んで `COUNT(kh.id)+COUNT(au.id)` を返す。bytes の乗数・閾値（2,048 ほか）・registry・binding の×1・join の tree 行の 0 は変えない | 上限の値と bytes の乗数は変えない。数える行を実際に読む行に合わせるだけで、実読を下回る数え方は作らない（P は実読と同じ join の結果。join が行を見つけた後に落とす形〔別 project の character、character でない entry〕は、CHECK や FK を切って書いた DB にしか無く、数えない）。新しい送信先・保存・契約・authority・schema・依存は無い。同じ snapshot の中の読みが 1 文増える（binding を project 単位で 1 回走査し、codex を主キーで引く） | 表 `DISCLOSURE_GLOBAL_ROWS_SQL` に行を足す（診断の slot が 9 に衝突し、material rows と bytes の slot を全部ずらす）。binding の COUNT 文を `COUNT(*)+COUNT(kh.id)+COUNT(au.id)` にして 8 行のまま保つ（依頼の「文を足す」から外れる）。P を課金せず tree だけ×1 にする（実読を下回る緩和で承認の外）。bytes も×1 にする（4 Revision の台帳の壁が動くので別の決定） | 着手前に advisor（read-only）に 1 回諮り（表の外に足す、slot は末尾の 23、P の文は extension の FROM を写す、512 の扱い、床は bisect で取り直す）、実装と測定の後にもう 1 回諮った（feature 付きの試験と clippy の取り直し、pin の確認、時間の対照の書き方、DR の記述の根拠、512 の説明、最終 HEAD での verify:quality の取り直し）。指摘は反映した | 2026-11-11 にユーザーが承認した A-β（「二重の読みを省き、読む行と数える行を同じだけ減らします（約 652 場面、委任内の見込み）。その上で、数える行を実際に読む行に合わせます（約 978 場面）。後者は、数え方の緩和に当たります。上限 2,048 の値は変えません。」）の範囲の**行（rows）の課金だけ**。bytes の乗数は変えない（別の決定）。値・契約・新しい閾値・D2・B・100 ms の壁・主人公級は含まない | 不要（thread・handle・取消点・再開の状態を足さない。下の節） | 記録済み（実装と同じ commit に記録） |
 | DR-CQA-8 | 2026-11-12 | C-query の場面数の壁（A-β の bytes。共有読みの bytes の課金を実際に読む bytes に合わせる）。枝 `claude/cquery-bytes-actual`（origin/master `a067f7f7`＝DR-CQA-7 #871 の上） | `DISCLOSURE_GLOBAL_BYTES_SQL` の共有読みの 7 文（Revision に結び付く decision の文は対象外）を、query の経路（`Nir1ProjectReads::load`）が実際に返させる列の bytes を、実際に読む回数だけ数える形に直す。tree：authority が読む 6 列（`version`・`updated_at` は読まないので外す）を ×1（旧 ×2）。registry：2 文が読む列（`registry_version`、JSON 3 つ、`version`×2、`source_token`×2、`updated_at`）を ×1（旧は全体 ×2 で `source_token` が実質 ×4、`version` なし）。binding：extension の SELECT が返す 10 列（`version` を足す）を ×1（旧 ×2）と、join が成り立った principal の Codex 行の `id`（`kh.id`／`au.id`。extension が flag に評価する列）を足す。query Scene：`version` を足す（`read_retrieval_scene_source` が読む）。Epoch：`epoch_number` を足す。projects・POV の Codex の `type` は変えない。述語だけで読む列（`project_id`、`node_type`、`context_mode`、principal の Codex の `project_id`・`type` など）は、既存のどの文とも同じく数えない。表は 8 行のまま（診断の slot を動かさない）。閾値（2,048、2 MiB、6,291,456、Q、100 ms ほか）・rows の課金は変えない | 上限の値は変えない。数える bytes を実際に読む列の bytes に合わせる（旧は読まない列を足し、同じ読みを 2 回数え、読む列を数えていなかった。**列の値だけを数え、式・定数〔CASE の flag、`SELECT 1`〕は数えない**ので、「下回る」の比較は列の値についてだけ）。**効果の書き方**：4 Revision（p4）の台帳の壁は in-process（10 s の lease）で 352→733 場面だが、本番の 100 ms の lease での実効の壁は 716〜726 場面（716 は 8/8 available、726・733 は 8 本中 5 本が時間切れ）で、717 場面以上は結果が時間切れの揺れになる。承認の根拠は 2 つ：2026-11-11 の選択肢の文面（「数える行を実際に読む行に合わせます」）は **rows だけを書いていた**ので、それだけでは bytes を含むと言えない。bytes を含む根拠は、(1) 設計 A-β の定義（`cquery-scene-wall-2026-11-11.md` §5.2 の A-β「bytes も、読む列の bytes×1」。DR-CQA-7 が別の決定に残したもの）と、(2) 2026-11-12 にユーザーが、残る壁として bytes の課金を挙げた後に出した「全て並列に実装して下さい」の指示。C4 の代用（台帳が共有読みの実際の保持を数えず raw の入力 bytes×2 で代用する）が約半分になる点は、ユーザーに報告済み。同じ snapshot の中の読みだけ。新しい送信先・保存・契約・authority・schema・依存は無い。binding の bytes の文が principal の Codex 行を主キーで引く join を持つ（P の文と同じ join の macro。読む行は P の文の分だけ増え、新しい読みではなく既存の extension の読みと同じ行） | bytes の乗数だけ変える（読まない列と読む列の食い違いが残り、「実読に合う」とは言えない）。表に文を足す（診断の slot が衝突）。述語の列も数える（既存の文との一貫性がなく、tree の `project_id` など全行の 36 B を足すことになる。承認の範囲を超えて厳しくなる） | 着手前に advisor（read-only）に 1 回諮り（列ごとの照合、registry の乗数 0 の読み替え、述語の列の除外を DR に明記、試験の oracle は製品の文の返す値と摂動、`a_query_loads_the_scene_bindings_in_one_statement` の書き直し、時間切れを壁として数えない、bytes の壁は行が少なく bytes が大きい形で確かめる）。指摘は反映した。実装と測定の後にもう 1 回諮った（lifecycle の binary が dev の 10 s の lease の写しにならないこと、timing_plan の腕の commit、最終 tree での clippy、DR の未記入の節、UUID の p4、効果の書き方〔733 は admission の壁で、100 ms の lease で通るかは未確認〕。その後に測り、通らないと分かった〔下の「時間の対照」〕）。指摘は反映した | 承認済みの A-β（課金を実読に合わせる。2026-11-11）の bytes 側。値・新しい閾値・契約は変えない。主人公級・100 ms・Q の壁・D2・B は含まない | 不要（thread・handle・取消点・再開の状態を足さない。下の節） | 記録済み（実装と同じ commit に記録） |
+| DR-CQA-9 | 2026-11-12 | C-query の 100 ms の時間の壁（query を速くする。期限の値は変えない）。枝 `claude/cquery-time-wall`（master `a067f7f7` の上） | query の中で同じ結果を何度も作り直している CPU・確保の重複を、結果・digest・エラー・seal・読む行・課金を変えずに省く。(1) `validate_dependency_set`（Revision ごとの envelope 検証）が、埋め込みの dependency role registry の JSON を毎回 parse し、`evaluate_dependency_effect` が呼ぶたびに registry 全体を再検証していたのを、role ごとの判定をプロセスで 1 度だけ作る heap を持たない固定長の表（`OnceLock` の `[bool; 10]`。registry そのものは持たない）に置き換える。(2) `validate_v2_nested_digest_fields` の 7 つの digest のうち 4 つ（assertionCore・assertion・materialBasis・contextSet）が、`json!` で payload・sourceBasis・evidenceSet・dependencySet などを丸ごと複製してから digest を取っていたのを、`CanonicalJsonStream` で借用した値から直接 digest する（バイト列は同一。scopeDigest・dependencySetDigest は元から借用の `digest_json`、quoteDigest は `digest_bytes` で、変えていない）。(3) Scope extension の binding ごとの loop が、有効な行にも使わない raw の観測（13 個の `json!`）を作っていたのを error の経路だけで作り、registry の検証・直列化を binding ごとでなく 1 回にする。課金・閾値・読む文・読む行は変えない。**効果：確保の回数は約半分になるが、時間の対照では p4 の 100 ms の壁はほぼ動かない（352・337 場面で worker 内 −1〜1.5 ms、時間切れは 48 本で 0）。1 Revision の 978 場面で −6.5 ms（約 13%）。この lane は壁を押し上げたとは言えず、時間の主因は別（下の「時間の対照」）** | 呼び出し元・入力・受信先・保存・契約・authority は変わらない（同じ接続・thread・snapshot の中の純粋な計算の置き換え）。registry は crate に埋め込まれた定数で、外部の入力を含まない。共有する `OnceLock` は読み取り専用の不変値。新しい送信先・保存範囲・schema・依存は無い | 何もしない（p4 の 352 場面は worker 内 約 80 ms で期限 100 ms の余裕が約 19 ms）。期限や行の壁の値を動かす（承認の外）。registration の load を query に持ち越す（READY の zero-live seal と Q の保持量が変わる）。canonical writer 全体の高速化（効果が小さい見込みで、core 全体の digest に影響するので今回は見送り） | 着手前に advisor（read-only）に 1 回諮り（「1 query で 2 回の load」の前提の確認、`input.rs` に触れない、core の関数は残して読み専用の経路を足す、旧経路を oracle にした同値試験）、実装後にもう 1 回諮った（clippy の指摘、1 Revision の case の取り違え〔`p` は base 4 場面〕、DR の矛盾、lifecycle と verify:quality の取り直し、timing の腕〔dev 枝は計装を cfg(test) の外に置く core の counter を含むので使えない〕）。指摘は反映した | 該当なし（閾値の値・課金・読む行・契約・authority を変えない。数え方も変えない） | 不要（thread・handle・取消点・再開の状態を足さない。下の節） | 記録済み（実装と同じ commit に記録） |
 
 ## DR-CQA-6 の詳細（2026-11-11）
 
@@ -612,3 +613,154 @@ raw：`/tmp/claude-1000/cquery-bytes-actual-results/`（`l-lift.jsonl`、`llog-l
 - `scripts/nir1-c-query-worker-ci.sh lifecycle`（標準のまま、`bash` で起動。開始時 loadavg 約 4〜10）：exit 0、**26 case とも `1 passed`**（15 番目の case を含む）。
 - Q の測定（UUID の p4 651 場面、folder＋note＋character＋UUID の p4 352 場面）は、使い捨ての dev harness（push しない）を当てた release build の実 worker で取った。測定後、harness の 5 ファイルは `git checkout HEAD --` で戻した（差分なし）。
 - `fnm exec --using=22 pnpm -s verify:quality`：通る（exit 0、vitest 88 files・859 tests）。1 回目は無関係の `browser-mock.persistence-contract.test.ts` が vitest の 5 s の timeout で落ち（以前にも出た load 依存の flake）、取り直した 2 回目が通った。
+
+## DR-CQA-9 の詳細（2026-11-12）
+
+基点は master `a067f7f7`（DR-CQA-7＝#871）、枝は `claude/cquery-time-wall`。設計の正本は
+`fusion-eval-data/design-notes/db-connection-2026-11-07/cquery-scene-wall-2026-11-11.md`（§3.4 Q と時間）。手がかりは
+`drift-measure/cquery-binding-join-2026-11-11/results.md` の「内訳」の節（worker 内の scope authority の load が 1 回 約 10〜12 ms。p4:300000 の 352 場面で worker 内の query は約 80〜85 ms、
+1 Revision の bare の 978 場面で約 49〜50 ms）。**値（期限 100 ms、行の上限 2,048、bytes の 2 MiB、600M steps、180 s、START_TIMEOUT 30 s、Q 16 MiB、S 64 MiB、85% ほか）、課金（rows／bytes）、読む文、読む行、結果・seal・失敗の種類・エラー文・digest は変えない。**
+この段では時間を測っていない（ほかの lane が並行で cargo を回しているため）。決定的な値（VM steps、確保の回数と bytes、digest の回数と bytes）だけを測った。時間の対照の手順は PR 本文と報告の timing_plan。
+
+### 前提の訂正：「1 query で scope authority の load が 2 回」ではない
+
+手がかりの「worker 内で load が 1 query で 2 回」は、worker の 1 回目の load が**registration（`prepare`〜READY）の load**で、2 回目が query の load だった（trace の順が `SCOPELOAD → project_reads_preflight → SCOPELOAD`。
+`project_reads_preflight` は `Nir1ProjectReads::load` の前、つまり query の中でしか走らない）。query の中の load は 1 回で、既存の `project_level_reads_are_made_once_and_charged_as_made` が
+`Read::AuthorityTree == 1`（query 1 本）を断言している。今回の段階別の測定でも `auth:*` の hits は 1。query の load は約 10 ms（352 場面）で、80 ms の全体の約 12%。
+
+registration の load を query に持ち越して 2 回目を省く案は**取らない**。READY の zero-live seal（registration の後に S を空にして閉じる）と Q の保持量が変わり、query は固定した snapshot の中で読み直す（revision token が snapshot と
+一致することが query の前提）ので、registration の時点の authority は使えない。変えるなら seal の仕様の変更で、この lane の範囲（seal を変えない）の外。
+
+### 測った内訳（決定的な値。in-process の worker 構成、debug build。dev 枝 `claude/dev-cquery-time-wall-measure`）
+
+`cq_avail::measure_query_stages`（dev 専用）。VM steps は capacity budget の count（interval 1）、確保は counting allocator の呼出し回数と bytes、digest は `CanonicalDigestSink` の finish 回数と書いた bytes。
+段の内訳の抜粋（p4:300000＋345 場面＝352 場面・4 Revision の query 1 本。確保の回数／bytes）：
+
+| 段 | 旧 | 新 |
+|---|---|---|
+| query 全体 | 298,134／34.4 MB | **150,313／22.7 MB**（−49.6%／−34.2%） |
+| Scope extension の binding の loop（352 binding） | 112,887／8.46 MB | 68,906／4.10 MB |
+| `effectiveMaterialBasis` の検証（`validate_material_basis`。Revision ごと、4 回。依存 set の検証〔registry の parse〕を含む。残りは source basis と evidence の検証） | 102,120／6.09 MB | 2,556／0.18 MB |
+| envelope の nested digest（7 つ。4 回） | 5,340／1.56 MB | 1,064／0.07 MB |
+| Scope authority の組立（tree の導出＋authority） | 17,387／1.0 MB | 同じ |
+| Revision ごとの payload／envelope の parse と digest、材料の組立、persisted material、freshness（4 Revision の合計） | 46,624／15.3 MB | 同じ |
+
+1 Revision・978 場面（bare。床 978 ちょうどで available。`p` の base は 4 場面なので追加 974。dev の case は `p:300000+S974`）：確保 425,913 → **277,722**（−34.8%）、35.1 → 21.1 MB。
+VM steps は不変（978 場面は ±3、変更箇所に SQL なし）：p4 は 121,151 が両方で同じ、978 場面は 200,186 → 200,183。±3 は SQLite の schema 確認などの命令の揺れで、変更した箇所に SQL は無い。
+digest の回数と bytes も不変（p4：431 回／6,968,797 B、978 場面：1,003 回／3,367,051 B）＝同じ digest を同じ bytes から取っている。
+
+見つかった重複（効果の大きい順）：
+1. **`validate_dependency_set` が Revision ごとに、埋め込みの dependency role registry の JSON を parse し、さらに role×change class の評価ごとに registry 全体を再検証していた**
+   （`evaluate_dependency_effect` が呼ぶたびに `validate_dependency_effect_registry`。1 Revision で数百回）。1 Revision あたり約 25,000 回の確保。
+2. **Scope extension の binding の loop が、有効な行にも使わない raw の観測**（13 列を `json!` で 1 列ずつ包む）を作っていた（unavailable の行の `rawDigest` にしか使わない）。**加えて、binding ごとに registry を検証し、
+   `serde_json::to_value` で registry を複製し、`json!` で token の文書を組んでいた**（`source_token`）。352 binding で 113K 回の確保＝1 binding あたり約 320 回。
+3. **`validate_v2_nested_digest_fields` の 7 つの digest のうち 4 つ（assertionCore・assertion・materialBasis・contextSet）が、`json!` で payload・sourceBasis・evidenceSet・dependencySet などを丸ごと複製してから digest を取っていた**（scopeDigest・dependencySetDigest は元から借用の `digest_json`、quoteDigest は `digest_bytes` で複製は無い）。測定では 4 Revision で確保 1.56 MB（1 Revision あたり約 0.4 MB）の複製。
+
+### 決定
+
+1. **依存 set の検証（core `narrative_ir::validate_dependency_set`）**：registry の parse と role の評価を、プロセスで 1 度だけ作る**固定長の表**（`narrative_dependency::proposal_revision_role_effects`。
+   role ごとに「`proposal-revision` の consumer で、いずれかの change class に効果があり、ほかの種類の error が無い」を `[bool; 10]` で持つ。`OnceLock`）に置き換える。表は旧の判定そのもので作る
+   （registry を `load_dependency_role_registry` で 1 回 load し〔load が検証する〕、role×change class を検証なしの検索 `find_dependency_effect` で評価する）。registry が load できない場合は、旧と同じく依存 set 全部が
+   `invalid-material-basis`（path は依存 set）で失敗する。`evaluate_dependency_effect`（公開）は旧のまま registry を毎回検証する。
+   **表は heap を持たない**（registry そのものは持たない）。worker の固定 allocator（Q 16 MiB／S 64 MiB）では、registry のような heap の静的な保持が、S の zero-live の封印（S に生き残る確保）や Q の保持量を動かすので、表だけを持つ形にした。
+   初期化の中の一時の確保（registry の parse の中間）は、その中で解放される。**表の初期化が S の scope の中で起きるか（registration の中か、最初の query の中か）は確かめていない。**
+   seal に影響しない理由は、表が `static` の `OnceLock<Result<[bool; 10], ()>>` で heap を持たないことと、初期化の中の一時の確保が初期化の中で解放されることに置く（lifecycle の通過を根拠にしない）。
+2. **nested digest（db `reconciliation_envelope::validate_v2_nested_digest_fields`）**：`json!` の複製をやめ、借用した値を `CanonicalJsonStream` に canonical の key 順で直接書いて digest を取る
+   （`assertionCoreInput`：assertionKind、modality、payloadSchemaRef、polarity、producer、〔producerConfidence〕、supportClass、typedSemanticPayload。assertion／material／context の各文書も同じ形）。
+   stream は key の順を検査するので、順を誤れば `KeyOrder` で失敗し、黙って違う digest になることはない。無い member は `null`（`json!` が `Option::None` に書いたものと同じ）。エラーの文脈（`digest canonical envelope`）も同じ。
+3. **Scope extension の loop（db `scene_scope::read_scope_extension_entries`）**：(a) raw の観測と `scene_id_hint` は unavailable の行でだけ作る（行は参照で読む）。(b) registry を検証して直列化した `SourceTokenRegistry`
+   （core `narrative_scene_scope`）を loop の前に 1 回作り、binding の token を member ごとの stream で取る。registry が準備できない（検証が失敗する）場合は準備せず、binding ごとに旧の経路（`source_token`）を通す。
+   ただしこの fallback は**到達しない**：loop の前の `read_registry_in_tx` が `validate_registry` を通して失敗すれば関数ごと Err になり、`SourceTokenRegistry::new` が失敗する条件は `validate_registry` の失敗だけなので、
+   `read_registry_in_tx` が先に拒否する。fallback は防御として残す（到達しないので、fallback の同値性は確かめていない）。`source_token`、`validate_binding` は残す
+   （`scene_scope.rs` の `read_binding_in_tx`〔1 binding を読む経路〕が旧のまま `validate_binding` と `source_token` の両方を呼ぶ。loop の中の `validate_binding` も旧のまま）。
+4. 変えない：`input.rs` の SQL・乗数・slot（rows／bytes の課金）、`QUERY_DEADLINE` ほかの閾値、読む文、registration の load、registry の公開関数、canonical writer 全体。
+
+### 等価性の試験（旧の経路を試験専用に残す）
+
+- core `narrative_dependency::role_effects_tests`：表が、旧の判定（registry を毎回 load し、role を全 change class で検証つきの評価）と全 role で一致する。検証なしの検索が、検証つきの評価と
+  全 role×consumer×change class（不正な文字列を含む）で一致する。壊れた registry を検証つきの評価が拒否する。表がプロセスで 1 つ（同じ参照）。
+  表を作る部分は `&registry` を受け取る純関数 `role_effects_of`（registry を 1 回検証し、検証しない検索で role×change class を評価する）に分け、壊した registry（rule の欠落・重複・全消し、change class の全消し、role の欠落、contract version の違い）で
+  旧の判定（検証つきの評価を毎回）と全 role で一致すること、検証に落ちる registry では全 role が受理されないことを試験する。表が何を受理するかの現在の内訳（受理と拒否の混在）は断言しない（policy の変更で誤って落ちないように、同値性だけを断言する）。
+  限界：非 `MissingEffectRule` の error（`find_dependency_effect` が role・consumer・change class の文字列を enum に直すときの失敗）は、入力を enum の `as_str` で作るので届かない。旧と同じ分岐として残してある。
+- core `narrative_ir::dependency_set_tests`：旧の `validate_dependency_set`（registry を毎回 load）を oracle にし、全 role×selector の組と構造の不正（空・配列でない・context id・role が文字列でない・余分な key）で、
+  結果と error（Debug の文字列）が一致する（受理と拒否の両方に届くことも断言）。
+- core `narrative_scene_scope::tests`：`SourceTokenRegistry` の token が `source_token` と一致する（registry は空・astral・多数、binding は incarnation の特殊文字、version の大きい値と負、principal、unknown の marker、日本語の id）。
+  `source_token` が拒否する registry は、準備も同じ error で拒否する。
+- db `reconciliation_envelope::tests::streamed_nested_digests_answer_what_the_cloning_form_answered`：旧（cloning）を oracle にし、再 seal した variant（producerConfidence の有無・null、member の欠落、入れ子の payload、複数の dependency、human-derived、
+  未知の kind、sourceBasis を欠いて再 seal した variant〔material の digest は `null` の digest で、新旧が同じバイト列を seal し、両方が受理する〕）、偽造した 7 つの digest、欠落した 9 箇所で、結果と error の文字列が一致する。
+- db `scene_scope_ownership_tests`：旧の loop（`read_scope_extension_entries_before_dr_cqa_9`。raw を先に作り registry を binding ごとに検証・直列化する）を oracle にし、既存の損傷の段階（note・folder・別 project・欠落・blob・近い id）の各段で
+  entries（`rawDigest` を含む）・collected bindings・registry の各部が一致する。さらに 10 種の損傷（principal が JSON でない・character が無い・token の不一致・marker の未知・version が text／0・incarnation が blob・query identity が空・updated_at が空）を 1 行ずつ、
+  registry が準備できない場合（refs の重複。試験名は `a_registry_that_read_registry_refuses_fails_the_whole_read_as_before`）を追加。この場合は `read_registry_in_tx` が先に拒否して全体が同じ Err になる（新旧とも Err の枝を通る）ことを確かめる試験で、loop の fallback には届かない（上）。
+- 読みの回数：既存の `project_level_reads_are_made_once_and_charged_as_made`（query 1 本の `AuthorityTree`／`ScopeExtension`／registry／epoch／query scene が各 1）と `a_query_loads_the_scene_bindings_in_one_statement`
+  （binding の表を読む文の authorizer の列挙）が、変更の後も通る＝読む行・読む文・課金は変わっていない。
+
+### 信頼境界
+
+呼び出し元と入力は変わらない。変更は、同じ入力から同じ結果を作る計算の置き換えだけで、DB の読み書き・文・課金・frame・IPC・prompt・secret に触れない。registry は crate に埋め込まれた定数（外部の入力を含まない）。
+プロセス寿命の状態は 1 つ（`OnceLock` の固定長の表。読み取り専用）。新しい送信先・保存範囲・schema・authority・依存・契約は無い。
+
+### owner／lifecycle の表（GDX-PRECHECK-001）
+
+| 項目 | 前後 |
+|---|---|
+| 入口・開始・再試行・再入・admission・取消・有限の待ち | 変えない。`OnceLock` の初期化の待ちは、初回の 1 回の同期の計算（registry の parse＋80 回の検索）で、取消点・deadline の検査は足さない（旧の Revision ごとの parse より短い） |
+| 有効な handle の所有 | 足さない（heap を持たない固定長の表。thread・接続・fd・timer を足さない） |
+| 終了の証拠 | 変えない。表は `static` の `OnceLock<Result<[bool; 10], ()>>` で heap を持たず、初期化の中の一時の確保は初期化の中で解放されるので、S の zero-live の封印は動かない（初期化が S の scope の中で起きるかは未確認で、封印の根拠にしない） |
+| error／timeout／onClosed の所有 | 変えない。registry が load できないときは旧と同じ error（依存 set の検証の失敗）。表の初期化は panic しない（`Result` を表に持つ） |
+| 保存される再開の状態 | 無い |
+
+### 変わる点
+
+- 結果・digest・seal・エラー文・読む行・課金は変わらない（上の試験）。**失敗の方向の変化は無い。**
+- 確保の回数・bytes が減る（上の表。段の表は p4 の 352 場面の値）。worker の固定 allocator の断片化（DR-CQA-6 の heap の断片化）には、確保の回数と一時の大きさが減るので、悪くはならない見込みだが、**実 worker の時間と fragment 数は測っていない**（timing_plan）。
+- 初回の 1 回（registration か最初の query のどちらか）だけ、表の初期化（registry の parse＋検索）が走る。旧は Revision ごとに同じ parse をしていたので、1 Revision 以上の query では旧より短い。
+
+### やらないこと／残り
+
+- registration の load の持ち越し（seal の仕様が変わる）。canonical writer 全体の高速化（`write_object` の key の並べ替えと `write_number` の確保。core 全体の digest に触れ、効果は binding の loop で約 35 回／binding）。
+- Scope extension の loop の残り（binding あたり約 196 回の確保。`parse_binding_row`、`validate_binding` の registry の再検証、`to_value(binding)`、収集用の clone）、Revision ごとの payload／envelope の parse と canonical 化
+  （約 6.3 MB／4 Revision）、Scope authority の組立（`derive_live_scene_projection`＋`build_narrative_project_scope_authority_v1`。352 場面で 17K 回）。時間の対照で効果が足りなければ、次の候補。
+
+### 検証の結果（2026-11-13。独立レビューの指摘を直した後。master `2efb9ec2`〔DR-BAO-10＝#877〕に載せ直した HEAD）
+
+独立レビュー（Opus、read-only）の P2・P3 を直した（到達しない fallback の記述と試験名、複製した digest の数、core の試験件数、単一 binding の読み、lifecycle を seal の根拠にしない書き方、VM steps の限定、
+表の純関数化と壊した registry の同値試験、sourceBasis を欠いた envelope の digest の試験、効果の書き方）。載せ直しは衝突なし。以下は載せ直した後の HEAD で実行した結果。
+
+- `cargo test -p grimodex-core --lib`：**217 passed**、0 failed、1 ignored（`the_table_of_a_registry_that_does_not_validate_...` を 1 件足した）。
+- `cargo test -p grimodex-db --lib` 全件：**2,694 passed、0 failed、61 ignored**（master の増分を含む）。
+- `cargo clippy -p grimodex-core -p grimodex-db --all-targets --locked -- -D warnings`：通る。
+- `scripts/nir1-c-query-worker-ci.sh lifecycle`：26 case の `test result: ok`、failed 0。実 worker の固定 allocator（Q 16 MiB／S 64 MiB）で、registration・query・frame が通る
+  （product 形の複数 Revision を含む `native_worker_answers_a_project_reviewed_scene_by_scene` ほか）。**この通過は、表の初期化が S の zero-live の封印を動かさないことの根拠にしない**
+  （初期化が S の scope の中で起きるかは未確認。封印に影響しない理由は上の「決定 1」に書いた表の性質）。出力の `panicked … reader-join failure` は、quarantine の確認の試験が起こす想定どおりの出力。
+- `fnm exec --using=22 pnpm -s verify:quality`：通る（終了コード 0）。1 回目は load が高い（1 分値 約 15）時間帯に `src/lib/browser-mock.persistence-contract.test.ts` の 1 件が 5,000 ms の timeout で落ち
+  （本変更は Rust と docs だけで、この試験に触れない）、load が下がってから取り直して通った。cargo とは並走させていない。
+- 未実行：`nir1-material-diagnostics` feature つきの試験、既定の lane 全体（`nir1-c-query-worker-ci.sh` の引数なし）と practical-retention、時間の対照の取り直し（本変更はコードの挙動を変えない試験・記述の修正と、表を作る部分の関数への分割だけ）。
+- 注意：debug の test binary は worktree ごとに同じ hash になるので、dev 枝と製品の枝が同じ target dir を使うと、片方の source が古い mtime のまま「新しい」と判定されて古い binary を使う。
+  測定の後は製品の source の mtime を更新してから build した（`touch`）。
+
+### 時間の対照の手順（実装した人が走らせる。この段では測っていない）
+
+- 腕 B（基点）：commit `1fc2d901`（`a067f7f7`＋測定 harness `274a56da`〔`cq_avail.rs` の衝突は `extra_scenes + DEV_EXTRA_SCENES` で解消〕。dev 枝 `claude/dev-cquery-time-wall-measure` の最初の commit。計装なし）。
+  `git worktree add --detach <B> 1fc2d901`。
+- 腕 A（本 PR）：`claude/cquery-time-wall` の最終 HEAD に `1fc2d901` だけを cherry-pick（衝突しないことは `git merge-tree` で確かめた）。
+  `git worktree add -b claude/dev-cquery-time-wall-A <A> claude/cquery-time-wall && git -C <A> cherry-pick 1fc2d901`。計装つきの dev 枝（`6911f1dc`、`3ef2fcbc`）は使わない（core の digest・文字列の counter が cfg(test) の外にあり、worker の時間を乱す）。
+- binary：それぞれ release で `cargo build --locked --release --manifest-path src-tauri/Cargo.toml -p grimodex-db --bin nir1-c-query-worker`（worker）と
+  `cargo test --release --no-run -p grimodex-db --lib`（test binary）。sha256 を記録。
+- case：`p4:300000+S345`（352 場面）、`p4:300000+S330`（337 場面）、`p:300000+S974`（1 Revision の 978 場面。`p` の base は 4 場面）。
+- 実行：`NIR1_C_QUERY_WORKER_BIN=<worker> CQ_OUT=<out>.jsonl CQ_CASES=<case> CQ_REPS=1 <testbin> --ignored --nocapture --test-threads=1 cquery_scenes_boundary`。
+  腕を AB／BA で交互に各 case 8 本、開始前に loadavg の 1 分値が 3 未満になるまで待つ（`ctrl3.sh` の形。記録先は `drift-measure/` の下に新しい日付の dir）。
+- 見るもの：worker 内 `query_ms`（`q-hw-trace.txt` の `QUERY_DONE`）の中央値と最大、時間切れ（owner の往復が期限を超えた本数）、fragment 数、Q 高水位。結果の本文が両腕で同じこと。
+  1 Revision の 978 場面は両腕とも available で、worker 内 約 49〜50 ms（A-β の実測）からの差を見る。load が高い時間帯の分布は取らない（限界として書く）。
+
+### 時間の対照（2026-11-12、dev の実 worker・release・100 ms の lease）
+
+腕 A＝本 DR の `c5cb1aaf`＋harness（dev 枝 `claude/dev-cquery-time-wall-A` `d7a861b7`）、腕 B＝`a067f7f7`＋同じ harness（`443027e6`。上の手順の `1fc2d901` と同じ内容で、bytes lane の B binary を sha256 で確かめて再利用）。
+各 case 8 本、AB／BA 交互、開始時の loadavg 1 分値は 1.67〜2.41（48 run 全部が待たずに開始）。QUERY_DEADLINE は 100 ms のまま。
+
+- 全 48 本が available、**時間切れ（NIR1_GRAPH_QUERY_DEADLINE_NO_TIMELY_FRAME）は 0 本**。
+- worker 内 query_ms の中央値／最大：p4 352 場面 A 78／81、B 79.5／84 ms（−1.5 ms）。p4 337 場面 A 78／79、B 79／86 ms（−1 ms）。**p 978 場面 A 43.5／44、B 50／51 ms（−6.5 ms、約 13%）**。
+  owner の往復の中央値：352 場面 A 103.5／B 107、337 場面 A 96／B 106.5、978 場面 A 52／B 59.5 ms。
+- 読み：確保の回数が約半分になっても、**4 Revision の形では worker 内の時間は約 1〜1.5 ms しか縮まない**（検出の下限に近い）。100 ms の壁（p4 で 716〜726 場面）を押し下げたとは言えない。
+  1 Revision の 978 場面では約 6.5 ms 速い。時間の壁は確保の削減ではほとんど動かない＝時間の主因は別（この測定では内訳を取っていない）。
+- 未測定：p4 の 353 場面以上（時間切れの境が動いたか）、時間の内訳。限界：静かな時間帯の 1 回、同一機の 1 構成、B の binary は別の日の build。
+- 記録：`/home/grimodex/fusion-eval-data/design-notes/db-connection-2026-11-07/drift-measure/timing-time-2026-11-12/`（raw、results.md、analysis.txt、load.txt、sha256.txt）。

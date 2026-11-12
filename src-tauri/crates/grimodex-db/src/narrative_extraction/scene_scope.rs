@@ -1115,33 +1115,34 @@ fn read_scope_extension_entries(
             Ok(values)
         })?
         .collect::<rusqlite::Result<Vec<Vec<_>>>>()?;
+    // The registry of every binding's token, validated and written once.
+    // `read_registry_in_tx` has already refused a registry that fails
+    // `validate_registry`, and that is the only way `new` fails, so the
+    // per-binding fallback below is not reached today. It stays as a defence:
+    // a registry that cannot be prepared takes the old per-binding path
+    // (DR-CQA-9).
+    let source_tokens = narrative_scene_scope::SourceTokenRegistry::new(&registry).ok();
     for raw_values in rows {
-        let scene_id_hint = raw_values
-            .first()
-            .and_then(|value| match value {
-                SqlValue::Text(value) => Some(value.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| "<invalid-scene-id>".to_owned());
-        let raw = scene_scope_digest_raw_row(&raw_values);
+        // The binding reads the row by reference. The raw observation of the
+        // row (13 JSON objects) is what an unavailable binding is digested
+        // from; it is made for that binding only, not for every valid one.
         let binding = (|| -> Result<Option<NarrativeSceneScopeBindingV1>> {
             let [scene_id, incarnation, marker, query_identity, material_constraint, knowledge_holder, version, audience, source_token, updated_at, scene_owned, knowledge_holder_owned, audience_owned] =
-                raw_values
-                    .try_into()
+                <&[SqlValue; 13]>::try_from(raw_values.as_slice())
                     .map_err(|_| anyhow::anyhow!("scene scope row has an invalid column count"))?;
-            let scene_id = material_scope_text(scene_id)?;
-            let incarnation = material_scope_text(incarnation)?;
-            let marker = material_scope_text(marker)?;
-            let query_identity = material_scope_text(query_identity)?;
-            let material_constraint = material_scope_text(material_constraint)?;
-            let knowledge_holder = material_scope_text(knowledge_holder)?;
-            let version = material_scope_integer(version)?;
-            let audience = material_scope_text(audience)?;
-            let source_token = material_scope_text(source_token)?;
-            let updated_at = material_scope_text(updated_at)?;
-            let scene_owned = material_scope_integer(scene_owned)?;
-            let knowledge_holder_owned = material_scope_integer(knowledge_holder_owned)?;
-            let audience_owned = material_scope_integer(audience_owned)?;
+            let scene_id = material_scope_text_ref(scene_id)?.to_owned();
+            let incarnation = material_scope_text_ref(incarnation)?.to_owned();
+            let marker = material_scope_text_ref(marker)?.to_owned();
+            let query_identity = material_scope_text_ref(query_identity)?.to_owned();
+            let material_constraint = material_scope_text_ref(material_constraint)?.to_owned();
+            let knowledge_holder = material_scope_text_ref(knowledge_holder)?.to_owned();
+            let version = material_scope_integer_ref(version)?;
+            let audience = material_scope_text_ref(audience)?.to_owned();
+            let source_token = material_scope_text_ref(source_token)?.to_owned();
+            let updated_at = material_scope_text_ref(updated_at)?.to_owned();
+            let scene_owned = material_scope_integer_ref(scene_owned)?;
+            let knowledge_holder_owned = material_scope_integer_ref(knowledge_holder_owned)?;
+            let audience_owned = material_scope_integer_ref(audience_owned)?;
             anyhow::ensure!(
                 scene_owned == 1,
                 "NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE: scope binding scene '{scene_id}' is missing or belongs to another project"
@@ -1180,7 +1181,10 @@ fn read_scope_extension_entries(
                     "audience character is not in project '{project_id}'"
                 );
             }
-            let expected_token = narrative_scene_scope::source_token(&registry, &binding)?;
+            let expected_token = match &source_tokens {
+                Some(prepared) => prepared.source_token(&binding)?,
+                None => narrative_scene_scope::source_token(&registry, &binding)?,
+            };
             anyhow::ensure!(
                 binding.source_token == expected_token,
                 "NEX_SCENE_SCOPE_SOURCE_TOKEN_INVALID: scene scope source token does not match its state"
@@ -1195,11 +1199,21 @@ fn read_scope_extension_entries(
                 on_entry(serde_json::to_value(binding)?)?;
             }
             Ok(None) => {}
-            Err(_) => on_entry(json!({
-                "sceneId": scene_id_hint,
-                "status": "unavailable",
-                "rawDigest": grimodex_core::canonical_json_digest(&raw)?,
-            }))?,
+            Err(_) => {
+                let scene_id_hint = raw_values
+                    .first()
+                    .and_then(|value| match value {
+                        SqlValue::Text(value) => Some(value.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "<invalid-scene-id>".to_owned());
+                let raw = scene_scope_digest_raw_row(&raw_values);
+                on_entry(json!({
+                    "sceneId": scene_id_hint,
+                    "status": "unavailable",
+                    "rawDigest": grimodex_core::canonical_json_digest(&raw)?,
+                }))?
+            }
         }
     }
     Ok(ScopeExtensionParts {
@@ -2019,6 +2033,22 @@ fn material_scope_text(value: SqlValue) -> Result<String> {
     match value {
         SqlValue::Text(value) => Ok(value),
         _ => anyhow::bail!("material scene scope text column has an invalid SQLite type"),
+    }
+}
+
+/// [`material_scope_text`] of a column the caller keeps.
+fn material_scope_text_ref(value: &SqlValue) -> Result<&str> {
+    match value {
+        SqlValue::Text(value) => Ok(value),
+        _ => anyhow::bail!("material scene scope text column has an invalid SQLite type"),
+    }
+}
+
+/// [`material_scope_integer`] of a column the caller keeps.
+fn material_scope_integer_ref(value: &SqlValue) -> Result<i64> {
+    match value {
+        SqlValue::Integer(value) => Ok(*value),
+        _ => anyhow::bail!("material scene scope integer column has an invalid SQLite type"),
     }
 }
 

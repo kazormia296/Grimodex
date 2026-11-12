@@ -569,6 +569,10 @@ impl Shared {
         }
     }
 
+    // The body is fixed by the CP-4 S1a architecture check
+    // (scripts/quality/nir1-graph-eval/native-architecture.mjs, FIXED_BODIES);
+    // in a release build without the eval feature it reduces to a constant.
+    #[allow(clippy::needless_bool)]
     fn publication_open(&self) -> bool {
         if PRODUCT_GRAPH_PUBLISHED {
             return true;
