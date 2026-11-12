@@ -508,3 +508,16 @@ digest の回数と bytes も不変（p4：431 回／6,968,797 B、978 場面：
   腕を AB／BA で交互に各 case 8 本、開始前に loadavg の 1 分値が 3 未満になるまで待つ（`ctrl3.sh` の形。記録先は `drift-measure/` の下に新しい日付の dir）。
 - 見るもの：worker 内 `query_ms`（`q-hw-trace.txt` の `QUERY_DONE`）の中央値と最大、時間切れ（owner の往復が期限を超えた本数）、fragment 数、Q 高水位。結果の本文が両腕で同じこと。
   1 Revision の 978 場面は両腕とも available で、worker 内 約 49〜50 ms（A-β の実測）からの差を見る。load が高い時間帯の分布は取らない（限界として書く）。
+
+### 時間の対照（2026-11-12、dev の実 worker・release・100 ms の lease）
+
+腕 A＝本 DR の `c5cb1aaf`＋harness（dev 枝 `claude/dev-cquery-time-wall-A` `d7a861b7`）、腕 B＝`a067f7f7`＋同じ harness（`443027e6`。上の手順の `1fc2d901` と同じ内容で、bytes lane の B binary を sha256 で確かめて再利用）。
+各 case 8 本、AB／BA 交互、開始時の loadavg 1 分値は 1.67〜2.41（48 run 全部が待たずに開始）。QUERY_DEADLINE は 100 ms のまま。
+
+- 全 48 本が available、**時間切れ（NIR1_GRAPH_QUERY_DEADLINE_NO_TIMELY_FRAME）は 0 本**。
+- worker 内 query_ms の中央値／最大：p4 352 場面 A 78／81、B 79.5／84 ms（−1.5 ms）。p4 337 場面 A 78／79、B 79／86 ms（−1 ms）。**p 978 場面 A 43.5／44、B 50／51 ms（−6.5 ms、約 13%）**。
+  owner の往復の中央値：352 場面 A 103.5／B 107、337 場面 A 96／B 106.5、978 場面 A 52／B 59.5 ms。
+- 読み：確保の回数が約半分になっても、**4 Revision の形では worker 内の時間は約 1〜1.5 ms しか縮まない**（検出の下限に近い）。100 ms の壁（p4 で 716〜726 場面）を押し下げたとは言えない。
+  1 Revision の 978 場面では約 6.5 ms 速い。時間の壁は確保の削減ではほとんど動かない＝時間の主因は別（この測定では内訳を取っていない）。
+- 未測定：p4 の 353 場面以上（時間切れの境が動いたか）、時間の内訳。限界：静かな時間帯の 1 回、同一機の 1 構成、B の binary は別の日の build。
+- 記録：`/home/grimodex/fusion-eval-data/design-notes/db-connection-2026-11-07/drift-measure/timing-time-2026-11-12/`（raw、results.md、analysis.txt、load.txt、sha256.txt）。
