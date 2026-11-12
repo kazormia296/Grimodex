@@ -601,3 +601,14 @@ raw：`/tmp/claude-1000/cquery-bytes-actual-results/`（`l-lift.jsonl`、`llog-l
 - **A だけ（p4）：400／500／600／650／673／700／716 場面は各 8/8 available**（worker 81／85／88／89／90.5／91／92 ms の中央値）。**726 場面と 733 場面は 8 本中 5 本が時間切れ（`NIR1_GRAPH_QUERY_DEADLINE_NO_TIMELY_FRAME`）、3 本が available**（worker 内は 92〜94 ms で、通る本と時間切れの本で差が無い）。
 - したがって **p4 の実効の壁は台帳の 733 ではなく 100 ms の期限で、716〜726 場面の間**にある。台帳の拒否（`other`）が時間切れ（どちらも部分 Graph なしの unavailable）に置き換わり、通る形が増える効果は 352 → 約 716 場面まで。本番の lease（100 ms）で 733 場面は通らない（5/8）。1 場面刻みの境と、時間切れが worker 内の時間で説明できない理由（owner 側の寄与か。推測）は未測定。
 - 標準の `scripts/nir1-c-query-worker-ci.sh lifecycle` を静かな時間帯（開始時 loadavg 1.43）に標準のまま取り直した：exit 0、26 case 全部成功（前回の 15 番目の case の不安定は再現せず）。
+
+### レビュー指摘の後の検証（2026-11-13、origin/master `2efb9ec2` の上に rebase した後。commit の trailer は全て Opus 5.5）
+
+独立レビュー（Opus、read-only）の P2-1 と P3 の 10 件を直した（コード・試験は `1e9211dc`〔test〕と clippy の直し、文書は `42bb9e8b`）。製品の文・式は変えていない。
+
+- 試験の赤の確認：`DISCLOSURE_GLOBAL_BYTES_SQL` の tree の文、または query Scene の文から `archived_at` を一度外すと、`shared_bytes_are_the_columns_each_read_returns_once_each`（tree）・`shared_bytes_follow_exactly_the_columns_that_are_read`・実 DB の oracle `shared_bytes_equal_what_the_reads_return_on_a_product_project` が落ちることを確かめ、戻した（oracle は tree を外すと 25,210 対 25,258、query Scene を外すと 25,234 対 25,258）。
+- `cargo clippy -p grimodex-db --all-targets -- -D warnings`：通る（redundant closure 1 件を直した後。最終の tree）。
+- `cargo test -p grimodex-db --lib` 全件：**2,703 passed、0 failed、63 ignored**（ignore は測定用）。
+- `scripts/nir1-c-query-worker-ci.sh lifecycle`（標準のまま、`bash` で起動。開始時 loadavg 約 4〜10）：exit 0、**26 case とも `1 passed`**（15 番目の case を含む）。
+- Q の測定（UUID の p4 651 場面、folder＋note＋character＋UUID の p4 352 場面）は、使い捨ての dev harness（push しない）を当てた release build の実 worker で取った。測定後、harness の 5 ファイルは `git checkout HEAD --` で戻した（差分なし）。
+- `fnm exec --using=22 pnpm -s verify:quality`：下の追記を参照。
