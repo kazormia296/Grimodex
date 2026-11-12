@@ -9,6 +9,7 @@
 | DR-CQA-5 | 2026-10-14 | CQ-AVAIL（レビュー指摘の修正） | DR-CQA-3 の「読取と課金は 1 対 1」を、読取の回数（statement）の単位に限定する。Scope extension の LEFT JOIN が読む principal の Codex 行（knowledge holder／audience が character の binding あたり最大 2 行）は課金に入っていない既存の会計の穴で、本変更が増やしたものではない。課金は厳しくせず、残る制約として台帳に記録する。あわせて、課金された rows を製品側で観測する試験（test-only の hook）に置き換える | 上限の値は変えない。課金を厳しくする案は、DISCLOSURE_GLOBAL_ROWS_SQL の追加で A3 の観測 slot と steps の基準値が動き、別 lane の範囲になるので採らない | 課金に principal の行を足す（委任の範囲だが、SQL steps と診断 slot に波及する）。何もしない（台帳の「保守的な上限」が実際と食い違う） | 指摘 P3（レビュー）が両案を示した | 該当なし | 不要 | 記録済み（実装前） |
 | DR-CQA-6 | 2026-11-11 | C-query の場面数の壁（A-α）。枝 `claude/cquery-binding-join`（DR-GRW-5＝#862 の head の上） | Scope extension の binding の SELECT から `LEFT JOIN tree_nodes` を外し、`sceneOwned` を authority が読んだ nodes の「project の Scene の id の集合」で決める（読取 −N_b）。`DISCLOSURE_GLOBAL_ROWS_SQL` の binding の行の乗数を 2→1 にする（課金 −N_b。課金−実読の差 N_t−P は不変）。閾値（2,048 ほか）・bytes の乗数・tree の×2 は変えない | 上限の値は変えない。行の数では、課金されていなかった join の N_b を読まなくし、CQ-AVAIL から残っていた binding の 2 回目の N_b の課金を外す（下の「×2 の由来と、委任の判断」）。文の単位では binding の表の読みは減らず課金だけが減るので、DR-CQA-3 の線の内とは断じず、2026-11-11 にユーザーが承認した A-β（課金を実読に合わせる）の一部として扱う（統合者の判断）。同じ snapshot の読みだけ。新しい送信先・保存・契約・authority・schema は無い | 課金だけ減らす（緩和で [precheck]）。A-β（課金を実読に合わせる。確認が要る）。join を残す（床は 489 のまま） | 設計調査（`cquery-scene-wall-2026-11-11.md` §2、§4、§5.2）が A-α を「委任内の見込み」とした。実装後に advisor（read-only）に諮り、停止条件 1 の読み替え、床の限定、試験の allowlist 化、記述の訂正の指摘を受けて反映した | 承認済みの A-β の範囲（課金を実読に合わせる。2026-11-11 ユーザー決定）。値・新しい閾値・契約は変えない。principal の行を数える残りは A-β の PR で入れる | 不要（thread・handle・取消点・再開の状態を足さない。下の節） | 記録済み（実装と同じ commit に記録） |
 | DR-CQA-7 | 2026-11-12 | C-query の場面数の壁（A-β。行の課金を実読に合わせる）。枝 `claude/cquery-charge-actual`（DR-CQA-6＝#869 の head `f7ece285` の上） | `DISCLOSURE_GLOBAL_ROWS_SQL` の `tree_nodes` の COUNT の乗数を 2→1 にし（authority が tree を読むのは 1 回）、projects と query Scene の COUNT の乗数を 1→2 にし（query はこの 2 行を各 2 回読む）、principal の Codex 行 P（Scope extension の binding の SELECT が `LEFT JOIN codex_entries kh`／`au` で読む行）を数える文 `SCOPE_EXTENSION_PRINCIPAL_ROWS_SQL` を `preflight_project_reads` に足す（×1。kh と au は別に数える）。P の文は extension の SELECT と同じ join の文（macro で 1 つの文字列）から作り、binding を読んで `COUNT(kh.id)+COUNT(au.id)` を返す。bytes の乗数・閾値（2,048 ほか）・registry・binding の×1・join の tree 行の 0 は変えない | 上限の値と bytes の乗数は変えない。数える行を実際に読む行に合わせるだけで、実読を下回る数え方は作らない（P は実読と同じ join の結果。join が行を見つけた後に落とす形〔別 project の character、character でない entry〕は、CHECK や FK を切って書いた DB にしか無く、数えない）。新しい送信先・保存・契約・authority・schema・依存は無い。同じ snapshot の中の読みが 1 文増える（binding を project 単位で 1 回走査し、codex を主キーで引く） | 表 `DISCLOSURE_GLOBAL_ROWS_SQL` に行を足す（診断の slot が 9 に衝突し、material rows と bytes の slot を全部ずらす）。binding の COUNT 文を `COUNT(*)+COUNT(kh.id)+COUNT(au.id)` にして 8 行のまま保つ（依頼の「文を足す」から外れる）。P を課金せず tree だけ×1 にする（実読を下回る緩和で承認の外）。bytes も×1 にする（4 Revision の台帳の壁が動くので別の決定） | 着手前に advisor（read-only）に 1 回諮り（表の外に足す、slot は末尾の 23、P の文は extension の FROM を写す、512 の扱い、床は bisect で取り直す）、実装と測定の後にもう 1 回諮った（feature 付きの試験と clippy の取り直し、pin の確認、時間の対照の書き方、DR の記述の根拠、512 の説明、最終 HEAD での verify:quality の取り直し）。指摘は反映した | 2026-11-11 にユーザーが承認した A-β（「二重の読みを省き、読む行と数える行を同じだけ減らします（約 652 場面、委任内の見込み）。その上で、数える行を実際に読む行に合わせます（約 978 場面）。後者は、数え方の緩和に当たります。上限 2,048 の値は変えません。」）の範囲の**行（rows）の課金だけ**。bytes の乗数は変えない（別の決定）。値・契約・新しい閾値・D2・B・100 ms の壁・主人公級は含まない | 不要（thread・handle・取消点・再開の状態を足さない。下の節） | 記録済み（実装と同じ commit に記録） |
+| DR-CQA-8 | 2026-11-12 | C-query の場面数の壁（A-β の bytes。共有読みの bytes の課金を実際に読む bytes に合わせる）。枝 `claude/cquery-bytes-actual`（origin/master `a067f7f7`＝DR-CQA-7 #871 の上） | `DISCLOSURE_GLOBAL_BYTES_SQL` の共有読みの 7 文（Revision に結び付く decision の文は対象外）を、query の経路（`Nir1ProjectReads::load`）が実際に返させる列の bytes を、実際に読む回数だけ数える形に直す。tree：authority が読む 6 列（`version`・`updated_at` は読まないので外す）を ×1（旧 ×2）。registry：2 文が読む列（`registry_version`、JSON 3 つ、`version`×2、`source_token`×2、`updated_at`）を ×1（旧は全体 ×2 で `source_token` が実質 ×4、`version` なし）。binding：extension の SELECT が返す 10 列（`version` を足す）を ×1（旧 ×2）と、join が成り立った principal の Codex 行の `id`（`kh.id`／`au.id`。extension が flag に評価する列）を足す。query Scene：`version` を足す（`read_retrieval_scene_source` が読む）。Epoch：`epoch_number` を足す。projects・POV の Codex の `type` は変えない。述語だけで読む列（`project_id`、`node_type`、`context_mode`、principal の Codex の `project_id`・`type` など）は、既存のどの文とも同じく数えない。表は 8 行のまま（診断の slot を動かさない）。閾値（2,048、2 MiB、6,291,456、Q、100 ms ほか）・rows の課金は変えない | 上限の値は変えない。数える bytes を実際に読む列の bytes に合わせる（旧は読まない列を足し、同じ読みを 2 回数え、読む列を数えていなかった。下回る数え方は作らない）。これは 2026-11-11 にユーザーが承認した「数える行を実際に読む行に合わせます」の bytes 側（DR-CQA-7 が別の決定に残したもの）で、2026-11-12 の「全て並列に実装して下さい」の指示の範囲。同じ snapshot の中の読みだけ。新しい送信先・保存・契約・authority・schema・依存は無い。binding の bytes の文が principal の Codex 行を主キーで引く join を持つ（P の文と同じ join の macro。読む行は P の文の分だけ増え、新しい読みではなく既存の extension の読みと同じ行） | bytes の乗数だけ変える（読まない列と読む列の食い違いが残り、「実読に合う」とは言えない）。表に文を足す（診断の slot が衝突）。述語の列も数える（既存の文との一貫性がなく、tree の `project_id` など全行の 36 B を足すことになる。承認の範囲を超えて厳しくなる） | 着手前に advisor（read-only）に 1 回諮り（列ごとの照合、registry の乗数 0 の読み替え、述語の列の除外を DR に明記、試験の oracle は製品の文の返す値と摂動、`a_query_loads_the_scene_bindings_in_one_statement` の書き直し、時間切れを壁として数えない、bytes の壁は行が少なく bytes が大きい形で確かめる）。指摘は反映した | 承認済みの A-β（課金を実読に合わせる。2026-11-11）の bytes 側。値・新しい閾値・契約は変えない。主人公級・100 ms・Q の壁・D2・B は含まない | 不要（thread・handle・取消点・再開の状態を足さない。下の節） | 記録済み（実装と同じ commit に記録） |
 
 ## DR-CQA-6 の詳細（2026-11-11）
 
@@ -379,3 +380,60 @@ dev 枝 `claude/dev-cquery-charge-actual-measure`（`ff2d4f81`＝本 DR の最�
 - **P の文の単独の時間**（release、4 Revision の 352 場面の project、200 回の中央値。dev 枝の `cq_principal_rows_statement_cost`、`p-statement.jsonl`）：
   principal が reader だけなら 0.15 ms、全部 character（P＝690）なら 0.44 ms（binding の COUNT は 0.016 ms）。期限の余裕（約 19 ms）に対して小さい。
 - 限界：3 形の床だけ（半分だけ character・UUID・長い title は in-process の dev の測定のみ）。時間の対照は静かな時間帯の 1 回。principal の分布は実データが無く測れていない。
+
+## DR-CQA-8 の詳細（2026-11-12）
+
+基点は origin/master の `a067f7f7`（DR-CQA-7＝#871 を merge した後）、枝は `claude/cquery-bytes-actual`。設計の正本は
+`fusion-eval-data/design-notes/db-connection-2026-11-07/cquery-scene-wall-2026-11-11.md` の §3.2〜3.4（4 Revision の台帳の壁、bytes の壁、Q と時間）、§4、§5.2「A-β」の bytes（:316）。
+**値（上限・閾値・契約・authority・admission の閾値・schema）と rows の課金は変えない。変えるのは `preflight_project_reads` が共有読みに課す bytes の数え方だけ。**
+
+### 承認と範囲
+
+2026-11-11 にユーザーが選んだ文面（逐語）：「二重の読みを省き、読む行と数える行を同じだけ減らします（約 652 場面、委任内の見込み）。その上で、数える行を実際に読む行に合わせます（約 978 場面）。後者は、数え方の緩和に当たります。上限 2,048 の値は変えません。」
+DR-CQA-7 はこのうち行（rows）だけを入れ、bytes は「4 Revision の台帳の壁（352）が動き、p4 の時間の余裕が無い形に当たる」ので別の決定に残した。2026-11-12 にユーザーは、残る壁（bytes の課金、主人公級、100 ms）を「全て並列に実装して下さい」と指示した。
+本 DR はその bytes の課金。数え方の緩和に当たる（読まない列と二重の読みを数えるのをやめる）が、「実際に読む bytes」を下回らないことを試験で固定する。
+
+### 「実際に読む bytes」の定義（先に決める）
+
+- **数える**：query の経路の読みの文が**結果として返す、または SELECT 句で値として評価する列**の値の長さ（`octet_length`。整数の列は文字列表記の長さ）を、その文が**実際に実行される回数**だけ。
+- **数えない**：WHERE／ON の述語だけで使う列（tree の `project_id`・`node_type`、binding の `project_id`、POV の Codex の `project_id`・`context_mode`、principal の Codex の `project_id`・`type`）。既存の全ての文がこの定義で、述語の列は数えていない
+  （tree の全行の `project_id` 36 B を足すと承認の範囲を超えて厳しくなる）。この除外は DR に明記し、試験の authorizer の列挙（「課金に無い列＝述語だけ」）で機械的に示す。
+- 読む回数は `Nir1ProjectReads::load` を 1 回の query に 1 回だけ走る（`project_level_reads_are_made_once_and_charged_as_made`）。文ごとに実行回数を数える。
+
+### 列ごとの照合（コードで確かめた実際の読み）
+
+| 読み（文の位置） | 返す・評価する列 | 旧の課金 | 新の課金 |
+|---|---|---|---|
+| authority の tree（`project_scope_authority.rs` の SELECT） | `id`、`parent_id`、`node_type`、`sort_order`、`story_time_order`、`archived_at`。`version`・`updated_at` は読まない | 8 列（`version`・`updated_at` を足していた）×2 | 6 列 ×1 |
+| registry（`read_registry_in_tx`＋`read_registry_row` の 2 文） | 1 文目：`registry_version`、JSON 3 つ、`version`、`source_token`。2 文目：`version`、`source_token`、`updated_at` | 6 列（`version` なし。`source_token` は文の中で×2）の和を `SHARED_REGISTRY_READS`（2）で×2 | `registry_version`＋JSON 3＋`updated_at` を ×1、`version` と `source_token` を ×2（乗数は 1） |
+| binding（`SCOPE_EXTENSION_SQL`） | `scene_id`、`scene_incarnation_id`、`compatibility_marker`、JSON 3 つ（`query_identity`・`material_constraint`・`knowledge_holder`）、`audience_json`、`version`、`source_token`、`updated_at`。principal の join は `kh.id`／`au.id` の flag を評価する | 9 列（`version` なし）×2、join の Codex 列は 0 | 10 列 ×1＋join が成り立った `kh.id`／`au.id` |
+| projects（`read_retrieval_scene_source` の join） | `phase_resolution_mode`。authority の `SELECT 1 FROM projects` は列を返さない | 1 列 ×1 | 同じ |
+| query Scene（`read_retrieval_scene_source` と `read_scene_viewpoint`） | scene source：`version`、`updated_at`、`content`、`archived_at`。viewpoint：`pov_character_id`（別の列なので再読の bytes は無い） | `version` なしの 4 列 ×1 | `version` を足した 5 列 ×1 |
+| POV の Codex（`read_scene_viewpoint`） | `type` | 1 列 ×1 | 同じ |
+| 最新 Epoch（`get_current_epoch`） | `id`、`epoch_number`、`reason`、`created_at` | `epoch_number` なし | `epoch_number` を足す |
+
+rows の課金で DR-CQA-7 が見つけた「projects と query Scene の再読」（projects を 2 回、query Scene を別々の列で 2 回）は、bytes では**列が別**（projects：authority は列を返さない。query Scene：scene source と viewpoint は別の列）なので、同じ列の再読は無い。コードで確かめた。
+
+### 決定
+
+1. `DISCLOSURE_GLOBAL_BYTES_SQL` の共有読みの 7 文を上の「新の課金」の形にする。表は 8 行のまま（decision の PerRevision の文は変えない）。診断の slot 10〜17 は動かさない。
+2. 乗数は全文 1。registry の「2 文分」は文の中に書く（乗数 0＝`SHARED_REGISTRY_READS` の読み替えは bytes の表では使わない）。
+3. binding の bytes の文は `scene_scope.rs` の `SCOPE_EXTENSION_BINDING_BYTES_SQL` とし、P の文（`SCOPE_EXTENSION_PRINCIPAL_ROWS_SQL`）と同じ `scope_extension_principal_joins!()` の 1 つの文字列から作る。extension の SELECT・P の文・この文は別の join を持てない。
+4. 変えないもの：rows の課金、decision の bytes の文、`INPUT_BYTES`（2 MiB）、`MAX_GRAPH_INPUT_BYTES`（6,291,456）、`SHARED_REGISTRY_READS`（rows の表が使う）、Q・100 ms・600M steps ほかの閾値。
+
+### 信頼境界
+
+呼び出し元と入力は変わらない（同じ接続、同じ thread、同じ snapshot の中の読みだけ）。binding の bytes の文は `project_id` 1 つを bind し、binding と codex を読んで整数 1 つを返す（本文・principal の値は出さない）。
+新しい送信先、保存範囲、契約、authority、schema、依存は無い。課金の変化の扱い：読まない列と二重の数えを外すのは数え方の緩和（2026-11-11 の承認の範囲）。読む列（`version`、`epoch_number`、principal の `id`）を足すのは厳しくする側。
+
+### owner／lifecycle の表（GDX-PRECHECK-001）
+
+新しい thread、接続、待ち、状態、handle、取消点、再開の状態は無い。文の数は変わらず、同じ接続・同じ位置で `?` により失敗が戻る。
+
+| 項目 | 前後 |
+|---|---|
+| 入口・開始・再試行・再入・admission・取消・有限の待ち | 変えない（admission の閾値は同じ。数える bytes が実読に合う） |
+| 有効な handle の所有 | 足さない |
+| 終了の証拠 | 変えない |
+| error／timeout／onClosed の所有 | 変えない。新しい失敗の経路は足さない |
+| 保存される再開の状態 | 無い |

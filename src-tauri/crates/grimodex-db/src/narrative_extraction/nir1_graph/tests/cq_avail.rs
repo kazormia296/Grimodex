@@ -1473,12 +1473,13 @@ fn project_level_reads_are_made_once_and_charged_as_made() -> Result<()> {
 // statement loads each binding row (the old 2 counted A3's second load of the
 // Scope authority, which is long gone), and that statement no longer joins
 // `tree_nodes` (`scene_scope_ownership_tests` checks the statement itself). Whatever else touches the binding table in a query is
-// a different read with its own charge: the COUNT and the byte sums that are
-// the preflight (they read the payload columns for `octet_length`, never
-// `version`), and a pinned Scene's two token columns in the Scene join. The
-// binding's `version` is read by the extension's statement alone, so it counts
-// the loads: one per query, however many Revisions the query evaluates. Counted
-// by what SQLite is asked to authorize when each statement is prepared.
+// a different read with its own charge: the COUNT and the byte sum that are
+// the preflight, and a pinned Scene's two token columns in the Scene join. The
+// binding's `version` is named by the extension's statement and, since DR-CQA-8,
+// by the preflight's byte sum (the extension returns it), so it counts the
+// loads: 2 is one load per query, however many Revisions the query evaluates
+// (a second load would make it 3). Counted by what SQLite is asked to
+// authorize when each statement is prepared.
 #[test]
 fn a_query_loads_the_scene_bindings_in_one_statement() -> Result<()> {
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
@@ -1525,9 +1526,11 @@ fn a_query_loads_the_scene_bindings_in_one_statement() -> Result<()> {
     // The whole set of reads of the binding table in this query, by column and
     // by the number of statements prepared that name it (a column a statement
     // names twice counts twice). Three statements name the payload columns:
-    // the preflight's byte sum (no `version`), the extension's, and the
-    // principals' Codex row count (DR-CQA-7: the extension's two joins, so the
-    // two principal columns twice more each and `project_id` three times). A new statement
+    // the preflight's byte sum (DR-CQA-8: the extension's ten columns and its
+    // two joins, so the principal columns and `project_id` as the extension
+    // names them), the extension's, and the principals' Codex row count
+    // (DR-CQA-7: the extension's two joins, so the two principal columns twice
+    // more each and `project_id` three times). A new statement
     // on the table, or a second load, changes this and fails here. The Scene
     // join's two token columns (`scene_incarnation_id`, `source_token` of a
     // pinned Scene) are not in it: this query pins no Scene, and that read has
@@ -1542,20 +1545,20 @@ fn a_query_loads_the_scene_bindings_in_one_statement() -> Result<()> {
     assert_eq!(
         on_bindings,
         BTreeMap::from([
-            ("audience_json", 6),
+            ("audience_json", 8),
             ("compatibility_marker", 2),
-            ("knowledge_holder_json", 6),
+            ("knowledge_holder_json", 8),
             ("material_constraint_json", 2),
-            ("project_id", 8),
+            ("project_id", 10),
             ("query_identity_json", 2),
             ("scene_id", 3),
             ("scene_incarnation_id", 2),
             ("source_token", 2),
             ("updated_at", 2),
-            ("version", 1),
+            ("version", 2),
         ])
     );
-    assert_eq!(of("narrative_scene_scope_bindings", "version"), 1);
+    assert_eq!(of("narrative_scene_scope_bindings", "version"), 2);
     Ok(())
 }
 
@@ -2206,6 +2209,30 @@ struct SceneShape {
     /// project: two Codex rows per binding for the extension to read (the
     /// worst case of the principal rows the shared-read charge counts).
     character_principals: bool,
+    /// The ids of the extra Scenes, and of the folders and notes around them,
+    /// are UUIDs (36 bytes), as the product mints them; the sort keys are
+    /// short, as the product's are. The other shapes keep a short id.
+    uuid_ids: bool,
+}
+
+impl SceneShape {
+    /// The id of the `kind` (0 folder, 1 Scene, 2 note) numbered `number`.
+    fn id(self, kind: u8, number: usize, short: String) -> String {
+        if self.uuid_ids {
+            uuid::Uuid::from_u128((u128::from(kind) << 96) | number as u128 + 1).to_string()
+        } else {
+            short
+        }
+    }
+
+    /// The sort key of an id: the id itself in the short shapes.
+    fn sort_key(self, kind: u8, number: usize, id: &str) -> String {
+        if self.uuid_ids {
+            format!("a{kind}s{number:05}")
+        } else {
+            id.to_owned()
+        }
+    }
 }
 
 /// [`same_entity_product_fixture_with_scenes`] with the extra Scenes in a
@@ -2253,26 +2280,27 @@ fn same_entity_product_fixture_with_shaped_scenes(
         let mut parent = String::from("ch00");
         for extra in 0..extra_scenes {
             if shape.folders_and_notes && extra % 10 == 0 {
-                parent = format!("f{extra:05}");
+                parent = shape.id(0, extra, format!("f{extra:05}"));
                 conn.execute(
                     "INSERT INTO tree_nodes (id, project_id, node_type, title, content, sort_order)
                      VALUES (?1, 'default-project', 'folder', ?1, '{}', ?2)",
                     params![parent, format!("a1c{extra:05}")],
                 )?;
             }
-            let scene_id = format!("x{extra:05}");
+            let scene_id = shape.id(1, extra, format!("x{extra:05}"));
             conn.execute(
                 "INSERT INTO tree_nodes
                     (id, project_id, parent_id, node_type, title, content, sort_order)
-                 VALUES (?1, 'default-project', ?2, 'scene', ?1, '{}', ?1)",
-                params![scene_id, parent],
+                 VALUES (?1, 'default-project', ?2, 'scene', ?1, '{}', ?3)",
+                params![scene_id, parent, shape.sort_key(1, extra, &scene_id)],
             )?;
             if shape.folders_and_notes {
+                let note_id = shape.id(2, extra, format!("n{extra:05}"));
                 conn.execute(
                     "INSERT INTO tree_nodes
                         (id, project_id, parent_id, node_type, title, content, sort_order)
                      VALUES (?1, 'default-project', ?2, 'note', ?1, '{}', ?3)",
-                    params![format!("n{extra:05}"), parent, format!("z{extra:05}")],
+                    params![note_id, parent, format!("z{extra:05}")],
                 )?;
             }
             crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
@@ -2399,9 +2427,28 @@ const FOLDERS_AND_NOTES_FLOOR_SCENES: usize = 632;
 const CHARACTER_PRINCIPALS_FLOOR_SCENES: usize = 491;
 
 fn floor_query(shape: SceneShape, total_scenes: usize) -> Result<Nir1GraphResponse> {
-    // The fixture has 4 bound Scenes of its own.
-    let fixture =
-        same_entity_product_fixture_with_shaped_scenes(1, 300_000, total_scenes - 4, shape)?;
+    floor_query_of(1, shape, total_scenes)
+}
+
+/// The Scenes a product fixture has bound before the extra ones: three of its
+/// own and one for each Revision.
+const fn fixture_scenes(revisions: usize) -> usize {
+    3 + revisions
+}
+
+/// [`floor_query`] on a project of `revisions` approved Revisions (each of the
+/// 300 kB summaries the floors use), `total_scenes` bound Scenes in all.
+fn floor_query_of(
+    revisions: usize,
+    shape: SceneShape,
+    total_scenes: usize,
+) -> Result<Nir1GraphResponse> {
+    let fixture = same_entity_product_fixture_with_shaped_scenes(
+        revisions,
+        300_000,
+        total_scenes - fixture_scenes(revisions),
+        shape,
+    )?;
     let (scenes, nodes, principal_rows) = fixture.authority.with_conn(|conn| {
         let count =
             |sql: &str| -> Result<i64> { Ok(conn.query_row(sql, [PROJECT], |row| row.get(0))?) };
@@ -2414,7 +2461,7 @@ fn floor_query(shape: SceneShape, total_scenes: usize) -> Result<Nir1GraphRespon
     assert_eq!(usize::try_from(scenes)?, total_scenes);
     // The shape is what it says: a shape that silently became bare would pass
     // as a different floor.
-    let extra = i64::try_from(total_scenes - 4)?;
+    let extra = i64::try_from(total_scenes - fixture_scenes(revisions))?;
     assert_eq!(
         principal_rows,
         if shape.character_principals {
@@ -2440,11 +2487,12 @@ fn shape_from_env() -> SceneShape {
     SceneShape {
         folders_and_notes: shape.contains("folders"),
         character_principals: shape.contains("characters"),
+        uuid_ids: shape.contains("uuid"),
     }
 }
 
 #[test]
-#[ignore = "DR-CQA-6/7 measurement: bisects the floor of the one-Revision project (CQ_FLOOR_LO, CQ_FLOOR_HI, CQ_FLOOR_SHAPE=folders+characters)"]
+#[ignore = "DR-CQA-6/7/8 measurement: bisects the floor of the project (CQ_FLOOR_LO, CQ_FLOOR_HI, CQ_FLOOR_REVISIONS, CQ_FLOOR_SHAPE=folders+characters+uuid, CQ_FLOOR_LEGACY=1 for the bytes before DR-CQA-8)"]
 fn measure_the_floor() -> Result<()> {
     let env = |name: &str, default: usize| {
         std::env::var(name)
@@ -2453,12 +2501,21 @@ fn measure_the_floor() -> Result<()> {
             .unwrap_or(default)
     };
     let shape = shape_from_env();
+    let revisions = env("CQ_FLOOR_REVISIONS", 1);
+    let legacy = env("CQ_FLOOR_LEGACY", 0) == 1;
+    let query = |total: usize| -> Result<Nir1GraphResponse> {
+        if legacy {
+            super::input::with_legacy_shared_bytes(|| floor_query_of(revisions, shape, total))
+        } else {
+            floor_query_of(revisions, shape, total)
+        }
+    };
     let (mut lo, mut hi) = (env("CQ_FLOOR_LO", 400), env("CQ_FLOOR_HI", 1200));
-    assert_eq!(floor_query(shape, lo)?.status, "available");
-    assert_eq!(floor_query(shape, hi)?.status, "unavailable");
+    assert_eq!(query(lo)?.status, "available");
+    assert_eq!(query(hi)?.status, "unavailable");
     while hi - lo > 1 {
         let mid = (lo + hi) / 2;
-        let response = floor_query(shape, mid)?;
+        let response = query(mid)?;
         eprintln!("FLOOR {mid}: {} {:?}", response.status, response.reason);
         if response.status == "available" {
             lo = mid;
@@ -2467,6 +2524,59 @@ fn measure_the_floor() -> Result<()> {
         }
     }
     eprintln!("FLOOR largest available = {lo}");
+    let over = query(lo + 1)?;
+    eprintln!("FLOOR refused at {}: {:?}", lo + 1, over.reason);
+    Ok(())
+}
+
+/// What the shared reads charge in bytes for a project of `CQ_FLOOR_SCENES`
+/// bound Scenes in `CQ_FLOOR_SHAPE`, after DR-CQA-8 and before it, and what
+/// the charge is per Scene (the slope of the wall the charge makes).
+#[test]
+#[ignore = "DR-CQA-8 measurement: prints the shared bytes of a project (CQ_FLOOR_SCENES, CQ_FLOOR_REVISIONS, CQ_FLOOR_SHAPE)"]
+fn measure_the_shared_bytes() -> Result<()> {
+    let env = |name: &str, default: usize| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    };
+    let shape = shape_from_env();
+    let revisions = env("CQ_FLOOR_REVISIONS", 1);
+    let scenes = env("CQ_FLOOR_SCENES", 400);
+    let fixture = same_entity_product_fixture_with_shaped_scenes(
+        revisions,
+        300_000,
+        scenes - fixture_scenes(revisions),
+        shape,
+    )?;
+    let charged = |legacy: bool| -> Result<(usize, usize)> {
+        fixture.authority.with_conn(|conn| {
+            let run = || {
+                super::input::preflight_project_reads(
+                    conn,
+                    PROJECT,
+                    "nir1",
+                    MAX_GRAPH_QUERY_RECORDS,
+                    MAX_GRAPH_INPUT_BYTES,
+                )
+            };
+            let admission = if legacy {
+                super::input::with_legacy_shared_bytes(run)
+            } else {
+                run()
+            }?;
+            Ok((admission.rows, admission.bytes))
+        })
+    };
+    let (rows, now) = charged(false)?;
+    let (_, before) = charged(true)?;
+    eprintln!(
+        "SHARED scenes={scenes} revisions={revisions} rows={rows} bytes_now={now} \
+         bytes_before={before} per_scene_now={:.1} per_scene_before={:.1}",
+        now as f64 / scenes as f64,
+        before as f64 / scenes as f64
+    );
     Ok(())
 }
 
@@ -2612,6 +2722,49 @@ fn the_floor_with_character_principals_is_n_available_and_n_plus_1_refused() -> 
     )
 }
 
+// The floor of four Revisions (p4:300000: four approved Revisions of 300 kB
+// summaries, each Scene's Revision on its own Scene). The rows are not what
+// stops it (they would, at about 850 Scenes); the peak ledger is: the A2
+// inputs of the four Revisions take most of its 6,291,456 bytes and the shared
+// reads' bytes, one charge for each Scene, take the rest. So the wall follows
+// the bytes the shared reads charge (DR-CQA-8): 352 when they were counted as
+// before (the tree and the bindings twice, columns the reads do not return),
+// 733 now. At N + 1 the refusal is the ledger's, which the worker's frame
+// reports as `other` (the same reason as before DR-CQA-8: the ledger has no
+// reason of its own).
+const FOUR_REVISIONS_FLOOR_BEFORE_DR_CQA_8: usize = 352;
+const FOUR_REVISIONS_FLOOR_SCENES: usize = 733;
+const PEAK_LEDGER_REFUSAL: &str = "query-worker-work-other-pre-cleanup-work-failed-other";
+
+fn assert_four_revisions_floor(floor: usize, legacy: bool) -> Result<()> {
+    let query = |scenes: usize| -> Result<Nir1GraphResponse> {
+        if legacy {
+            super::input::with_legacy_shared_bytes(|| {
+                floor_query_of(4, SceneShape::default(), scenes)
+            })
+        } else {
+            floor_query_of(4, SceneShape::default(), scenes)
+        }
+    };
+    let at = query(floor)?;
+    assert_eq!(at.status, "available", "{floor}: {:?}", at.reason);
+    let over = query(floor + 1)?;
+    assert_eq!(over.status, "unavailable", "{}: {:?}", floor + 1, over.reason);
+    assert!(over.graph.is_none());
+    assert_eq!(over.reason.as_deref(), Some(PEAK_LEDGER_REFUSAL));
+    Ok(())
+}
+
+#[test]
+fn the_floor_of_four_revisions_is_n_available_and_n_plus_1_refused() -> Result<()> {
+    assert_four_revisions_floor(FOUR_REVISIONS_FLOOR_SCENES, false)
+}
+
+#[test]
+fn the_floor_of_four_revisions_with_the_bytes_counted_as_before_is_352() -> Result<()> {
+    assert_four_revisions_floor(FOUR_REVISIONS_FLOOR_BEFORE_DR_CQA_8, true)
+}
+
 // B3 (in-process): projects with several product-shaped Revisions register on
 // the worker's configuration, whether the twelve Entities are the same in every
 // Revision or differ from Scene to Scene (the novel project's cast). Every
@@ -2749,4 +2902,408 @@ fn native_worker_rebuild_cost_for_the_d_final_wait() -> Result<()> {
         );
     }
     Ok(())
+}
+
+// DR-CQA-8: what the shared reads charge in bytes is what the query's reads
+// return, once for each time a statement runs. Two checks that do not use the
+// preflight's SQL:
+//
+// - the charge equals the length of every value a read returns, summed here
+//   in Rust over the statements the query makes (the registry's two, the
+//   Scene source's and the POV's two, the principals' Codex rows decided by the
+//   binding's own JSON), on a project with folders, notes, UUID ids,
+//   character principals and a POV;
+// - the columns that one `Nir1ProjectReads::load` makes SQLite authorize are
+//   pinned, so a read this charge does not know (a column added, a statement
+//   run twice) changes the pin and fails here.
+
+/// The length of every value `sql` returns: text and blob by byte length, an
+/// integer by its text, NULL as 0.
+fn returned_bytes(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    parameters: &[&dyn rusqlite::ToSql],
+) -> Result<usize> {
+    use rusqlite::types::Value;
+    let mut statement = conn.prepare(sql)?;
+    let columns = statement.column_count();
+    let mut rows = statement.query(parameters)?;
+    let mut total = 0usize;
+    while let Some(row) = rows.next()? {
+        for column in 0..columns {
+            total += match row.get::<_, Value>(column)? {
+                Value::Null => 0,
+                Value::Integer(value) => value.to_string().len(),
+                Value::Real(value) => value.to_string().len(),
+                Value::Text(value) => value.len(),
+                Value::Blob(value) => value.len(),
+            };
+        }
+    }
+    Ok(total)
+}
+
+/// The bytes the shared reads of one query return, summed statement by
+/// statement as the code makes them.
+fn shared_bytes_returned(conn: &rusqlite::Connection, scene: &str) -> Result<usize> {
+    let project: &dyn rusqlite::ToSql = &PROJECT;
+    let scene_id: &dyn rusqlite::ToSql = &scene;
+    let mut total = 0usize;
+    // the authority's tree
+    total += returned_bytes(
+        conn,
+        "SELECT id, parent_id, node_type, sort_order, story_time_order, archived_at
+           FROM tree_nodes WHERE project_id = ?1",
+        &[project],
+    )?;
+    // the registry: the whole row, then its version row
+    total += returned_bytes(
+        conn,
+        "SELECT registry_version, timeline_refs_json, worldline_refs_json,
+                narrative_layer_refs_json, version, source_token
+           FROM narrative_scope_registries WHERE project_id = ?1",
+        &[project],
+    )?;
+    total += returned_bytes(
+        conn,
+        "SELECT version, source_token, updated_at
+           FROM narrative_scope_registries WHERE project_id = ?1",
+        &[project],
+    )?;
+    // the Scene bindings, and the Codex row each character principal names
+    total += returned_bytes(
+        conn,
+        "SELECT scene_id, scene_incarnation_id, compatibility_marker, query_identity_json,
+                material_constraint_json, knowledge_holder_json, version, audience_json,
+                source_token, updated_at
+           FROM narrative_scene_scope_bindings WHERE project_id = ?1",
+        &[project],
+    )?;
+    let mut principals = conn.prepare(
+        "SELECT knowledge_holder_json, audience_json
+           FROM narrative_scene_scope_bindings WHERE project_id = ?1",
+    )?;
+    let pairs = principals
+        .query_map([PROJECT], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (holder, audience) in pairs {
+        for principal in [holder, audience] {
+            let value: serde_json::Value = serde_json::from_str(&principal)?;
+            if value.get("kind").and_then(|kind| kind.as_str()) != Some("character") {
+                continue;
+            }
+            let reference = value["ref"].as_str().unwrap_or_default().to_owned();
+            total += returned_bytes(
+                conn,
+                "SELECT id FROM codex_entries
+                  WHERE id = ?1 AND project_id = ?2 AND type = 'character'",
+                &[&reference, project],
+            )?;
+        }
+    }
+    // the project's phase mode, the query Scene's source and its POV
+    total += returned_bytes(
+        conn,
+        "SELECT phase_resolution_mode FROM projects WHERE id = ?1",
+        &[project],
+    )?;
+    total += returned_bytes(
+        conn,
+        "SELECT version, updated_at, content, archived_at FROM tree_nodes
+          WHERE project_id = ?1 AND id = ?2 AND node_type = 'scene'",
+        &[project, scene_id],
+    )?;
+    total += returned_bytes(
+        conn,
+        "SELECT pov_character_id FROM tree_nodes
+          WHERE project_id = ?1 AND id = ?2 AND node_type = 'scene'",
+        &[project, scene_id],
+    )?;
+    let pov: Option<String> = conn.query_row(
+        "SELECT pov_character_id FROM tree_nodes WHERE project_id = ?1 AND id = ?2",
+        params![PROJECT, scene],
+        |row| row.get(0),
+    )?;
+    if let Some(pov) = pov {
+        total += returned_bytes(
+            conn,
+            "SELECT type FROM codex_entries
+              WHERE id = ?1 AND project_id = ?2 AND context_mode NOT IN ('hidden', 'suppress')",
+            &[&pov, project],
+        )?;
+    }
+    // the latest Epoch
+    total += returned_bytes(
+        conn,
+        "SELECT id, epoch_number, reason, created_at FROM narrative_semantic_epochs
+          WHERE project_id = ?1 ORDER BY epoch_number DESC LIMIT 1",
+        &[project],
+    )?;
+    Ok(total)
+}
+
+#[test]
+fn shared_bytes_equal_what_the_reads_return_on_a_product_project() -> Result<()> {
+    let shape = SceneShape {
+        folders_and_notes: true,
+        character_principals: true,
+        uuid_ids: true,
+    };
+    let fixture = same_entity_product_fixture_with_shaped_scenes(1, 300_000, 25, shape)?;
+    fixture.authority.with_conn(|conn| {
+        conn.execute_batch("PRAGMA query_only=OFF")?;
+        // a POV for the query Scene, and a long saved content
+        conn.execute(
+            "UPDATE tree_nodes SET pov_character_id='v00', content=?1 WHERE id='nir1'",
+            [format!("{{}}{}", " ".repeat(5_000))],
+        )?;
+        Ok(())
+    })?;
+    let (charged, before, expected, columns) = fixture.authority.with_read_transaction(|conn| {
+        let charged = super::input::preflight_project_reads(
+            conn,
+            PROJECT,
+            "nir1",
+            MAX_GRAPH_QUERY_RECORDS,
+            MAX_GRAPH_INPUT_BYTES,
+        )?
+        .bytes;
+        let before = super::input::with_legacy_shared_bytes(|| {
+            super::input::preflight_project_reads(
+                conn,
+                PROJECT,
+                "nir1",
+                MAX_GRAPH_QUERY_RECORDS,
+                MAX_GRAPH_INPUT_BYTES,
+            )
+        })?
+        .bytes;
+        let expected = shared_bytes_returned(conn, "nir1")?;
+        let columns = columns_read_by_one_load(conn)?;
+        Ok((charged, before, expected, columns))
+    })?;
+    assert_eq!(charged, expected);
+    // the old count read the tree twice and every binding twice
+    assert!(before > charged, "{before} before, {charged} now");
+    // Every column one load names, by the number of statements naming it. The
+    // columns the byte charge counts (once for each statement that returns
+    // them) are the returned ones: the tree's six (`id`, `parent_id`,
+    // `node_type`, `sort_order`, `story_time_order`, `archived_at`), the
+    // registry's, the bindings', `version`, `updated_at`, `content`,
+    // `archived_at` and `pov_character_id` of the query Scene, the project's
+    // `phase_resolution_mode`, the POV's Codex `type`, the principals' Codex
+    // `id`, the Epoch's four. The rest are predicates (`project_id`, `id` and
+    // `node_type` of a lookup, the join's `type`, `context_mode`, `ORDER BY
+    // epoch_number`), which no statement of the preflight counts. `version` of a
+    // binding is named once: the extension loads the bindings once.
+    let columns: Vec<(&str, &str, usize)> = columns
+        .iter()
+        .map(|((table, column), count)| (table.as_str(), column.as_str(), *count))
+        .collect();
+    assert_eq!(
+        columns,
+        vec![
+            ("codex_entries", "context_mode", 1),
+            ("codex_entries", "id", 5),
+            ("codex_entries", "project_id", 3),
+            ("codex_entries", "type", 3),
+            ("narrative_scene_scope_bindings", "audience_json", 3),
+            ("narrative_scene_scope_bindings", "compatibility_marker", 1),
+            ("narrative_scene_scope_bindings", "knowledge_holder_json", 3),
+            ("narrative_scene_scope_bindings", "material_constraint_json", 1),
+            ("narrative_scene_scope_bindings", "project_id", 3),
+            ("narrative_scene_scope_bindings", "query_identity_json", 1),
+            ("narrative_scene_scope_bindings", "scene_id", 2),
+            ("narrative_scene_scope_bindings", "scene_incarnation_id", 1),
+            ("narrative_scene_scope_bindings", "source_token", 1),
+            ("narrative_scene_scope_bindings", "updated_at", 1),
+            ("narrative_scene_scope_bindings", "version", 1),
+            ("narrative_scope_registries", "narrative_layer_refs_json", 1),
+            ("narrative_scope_registries", "project_id", 2),
+            ("narrative_scope_registries", "registry_version", 1),
+            ("narrative_scope_registries", "source_token", 2),
+            ("narrative_scope_registries", "timeline_refs_json", 1),
+            ("narrative_scope_registries", "updated_at", 1),
+            ("narrative_scope_registries", "version", 2),
+            ("narrative_scope_registries", "worldline_refs_json", 1),
+            ("narrative_semantic_epochs", "created_at", 1),
+            ("narrative_semantic_epochs", "epoch_number", 2),
+            ("narrative_semantic_epochs", "id", 1),
+            ("narrative_semantic_epochs", "project_id", 1),
+            ("narrative_semantic_epochs", "reason", 1),
+            ("projects", "id", 3),
+            ("projects", "phase_resolution_mode", 1),
+            ("tree_nodes", "archived_at", 2),
+            ("tree_nodes", "content", 1),
+            ("tree_nodes", "id", 4),
+            ("tree_nodes", "node_type", 3),
+            ("tree_nodes", "parent_id", 1),
+            ("tree_nodes", "pov_character_id", 1),
+            ("tree_nodes", "project_id", 3),
+            ("tree_nodes", "sort_order", 1),
+            ("tree_nodes", "story_time_order", 1),
+            ("tree_nodes", "updated_at", 1),
+            ("tree_nodes", "version", 1),
+        ]
+    );
+    Ok(())
+}
+
+/// The (table, column) pairs `Nir1ProjectReads::load` makes SQLite authorize,
+/// each with the number of times (one for each statement preparing it).
+fn columns_read_by_one_load(
+    conn: &rusqlite::Connection,
+) -> Result<BTreeMap<(String, String), usize>> {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use std::sync::{Arc, Mutex};
+    let reads = Arc::new(Mutex::new(BTreeMap::<(String, String), usize>::new()));
+    let sink = Arc::clone(&reads);
+    conn.authorizer(Some(move |context: AuthContext<'_>| {
+        if let AuthAction::Read {
+            table_name,
+            column_name,
+        } = context.action
+        {
+            if table_name != "sqlite_master" && table_name != "sqlite_schema" {
+                *sink
+                    .lock()
+                    .unwrap()
+                    .entry((table_name.to_owned(), column_name.to_owned()))
+                    .or_default() += 1;
+            }
+        }
+        Authorization::Allow
+    }))?;
+    let loaded = Nir1ProjectReads::load(conn, PROJECT, "nir1");
+    conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+    loaded?;
+    let reads = reads.lock().unwrap().clone();
+    Ok(reads)
+}
+
+/// Set the query Scene's saved content so that the shared reads charge exactly
+/// `target` bytes (the content is the one column the test grows).
+fn set_shared_bytes_to(fixture: &Fixture, target: usize) -> Result<()> {
+    fixture.authority.with_conn(|conn| {
+        conn.execute_batch("PRAGMA query_only=OFF")?;
+        let current: usize = conn.query_row(
+            "SELECT octet_length(content) FROM tree_nodes WHERE id='nir1'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
+        let base = super::input::preflight_project_reads(
+            conn,
+            PROJECT,
+            "nir1",
+            MAX_GRAPH_QUERY_RECORDS,
+            MAX_GRAPH_INPUT_BYTES,
+        )?
+        .bytes;
+        let length = target - (base - current);
+        conn.execute(
+            "UPDATE tree_nodes SET content=?1 WHERE id='nir1'",
+            [format!("{{}}{}", " ".repeat(length - 2))],
+        )?;
+        let now = super::input::preflight_project_reads(
+            conn,
+            PROJECT,
+            "nir1",
+            MAX_GRAPH_QUERY_RECORDS,
+            MAX_GRAPH_INPUT_BYTES,
+        );
+        match now {
+            Ok(admission) => assert_eq!(admission.bytes, target),
+            Err(error) => assert!(target > 2 * 1024 * 1024, "{error}"),
+        }
+        Ok(())
+    })
+}
+
+// The shared reads' bytes are the last typed stop when the rows are few and
+// the bytes are many (a long Scene, long JSON): the preflight's 2 MiB. Under it
+// the query is answered; over it, the whole Graph is refused (no partial Graph)
+// with the preflight's own refusal. The Revision's own bytes come out of what
+// the shared reads leave of the same 2 MiB, so the answered side stops short
+// of it.
+#[test]
+fn shared_bytes_over_the_preflight_refuse_the_whole_graph() -> Result<()> {
+    let fixture = same_entity_product_fixture_with_scenes(1, 300_000, 20)?;
+    let answer = |target: usize| -> Result<Nir1GraphResponse> {
+        set_shared_bytes_to(&fixture, target)?;
+        fixture
+            .worker_reader()?
+            .query_for_worker_with_maintenance_deadline(&request_for("v00", "nir1"), LARGE_N_LEASE)
+    };
+    let below = answer(1024 * 1024)?;
+    assert_eq!(below.status, "available", "{:?}", below.reason);
+    let over = answer(2 * 1024 * 1024 + 1)?;
+    assert_eq!(over.status, "unavailable");
+    assert!(over.graph.is_none());
+    // the refusal is the preflight's (`NIR1_GRAPH_DISCLOSURE_INPUT_LIMIT`), which
+    // the worker's frame reports as `other`, like the peak ledger's
+    assert_eq!(over.reason.as_deref(), Some(PEAK_LEDGER_REFUSAL));
+    Ok(())
+}
+
+/// DR-CQA-8: the SQLite VM instructions the shared reads' preflight runs for a
+/// project, with the bytes counted now and as before (a progress handler called
+/// once per VM instruction). The binding's byte sum now joins the Codex rows of
+/// the principals, as the extension's read does.
+#[test]
+#[ignore = "DR-CQA-8 measurement: prints the VM steps of the shared preflight (CQ_FLOOR_SCENES, CQ_FLOOR_REVISIONS, CQ_FLOOR_SHAPE)"]
+fn measure_the_shared_preflight_steps() -> Result<()> {
+    let env = |name: &str, default: usize| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    };
+    let shape = shape_from_env();
+    let revisions = env("CQ_FLOOR_REVISIONS", 1);
+    let scenes = env("CQ_FLOOR_SCENES", 978);
+    let fixture = same_entity_product_fixture_with_shaped_scenes(
+        revisions,
+        300_000,
+        scenes - fixture_scenes(revisions),
+        shape,
+    )?;
+    fixture.authority.with_conn(|conn| {
+        let steps = |legacy: bool| -> Result<(u64, usize)> {
+            let counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let seen = std::sync::Arc::clone(&counter);
+            conn.progress_handler(
+                1,
+                Some(move || {
+                    seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    false
+                }),
+            )?;
+            let run = || {
+                super::input::preflight_project_reads(
+                    conn,
+                    PROJECT,
+                    "nir1",
+                    MAX_GRAPH_QUERY_RECORDS,
+                    MAX_GRAPH_INPUT_BYTES,
+                )
+            };
+            let admission = if legacy {
+                super::input::with_legacy_shared_bytes(run)
+            } else {
+                run()
+            };
+            conn.progress_handler(1, None::<fn() -> bool>)?;
+            Ok((counter.load(std::sync::atomic::Ordering::Relaxed), admission?.bytes))
+        };
+        let (now, now_bytes) = steps(false)?;
+        let (before, before_bytes) = steps(true)?;
+        eprintln!(
+            "STEPS scenes={scenes} revisions={revisions}: shared preflight {now} steps \
+             (bytes {now_bytes}) now, {before} before (bytes {before_bytes}); \
+             QUERY_SQL_STEPS {QUERY_SQL_STEPS}"
+        );
+        Ok(())
+    })
 }
