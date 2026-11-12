@@ -1258,3 +1258,195 @@ fn memo_and_plain_reads_agree_on_a_private_database_copy() {
         rows.len()
     );
 }
+
+/// DMS/1: the lower bound through a real database. The cold database of the
+/// declared-scope fixture (made by the normal path with the narrowing product)
+/// holds the tide proposal, whose synthesis request read scenes 2 and 3 and
+/// whose event cites scene 2. The root Envelope is rewritten on a private copy
+/// the way a builder that narrowed the record would have made it: a scene's
+/// declaration is removed from the source basis and the dependency set and the
+/// material digests are sealed again, so the Envelope digest and its internal
+/// bindings agree with the narrowed content. The material replay
+/// (`read_root_material_with_memo`, which the eligibility read calls for the
+/// root of every revision) is then read on the copy. Only the Envelope is
+/// rewritten: the normalized rows of a stored revision are not, so this does
+/// not reach the human lineage check that compares them to the Envelope.
+mod declared_scope_database {
+    use super::super::{read_root_material_with_memo, RosterStatus, RunProofMemo};
+    use flate2::read::GzDecoder;
+    use rusqlite::{params, Connection};
+    use serde_json::{json, Value};
+    use std::collections::BTreeSet;
+    use std::io::Read;
+
+    struct Copy {
+        path: std::path::PathBuf,
+        project: String,
+        root: String,
+        scenes: Vec<String>,
+    }
+
+    impl Copy {
+        fn new() -> Self {
+            let manifest: Value = serde_json::from_str(include_str!(
+                "../../../tests/support/nir1-declared-scope-cold.json"
+            ))
+            .expect("manifest");
+            let mut bytes = Vec::new();
+            GzDecoder::new(
+                &include_bytes!("../../../tests/support/nir1-declared-scope-cold.db.gz")[..],
+            )
+            .read_to_end(&mut bytes)
+            .expect("cold database");
+            let path = std::env::temp_dir().join(format!(
+                "grimodex-dms-lower-bound-{}.db",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::write(&path, bytes).expect("private copy");
+            let tide = manifest["runs"]["split"]["proposals"]
+                .as_array()
+                .expect("proposals")
+                .iter()
+                .find(|p| p["title"] == "Tide chart pinned to the post")
+                .expect("tide")
+                .clone();
+            Self {
+                path,
+                project: manifest["projectId"].as_str().expect("project").to_owned(),
+                root: tide["rootRevisionId"].as_str().expect("root").to_owned(),
+                scenes: manifest["scenes"]["split"]
+                    .as_array()
+                    .expect("split scenes")
+                    .iter()
+                    .map(|s| format!("project:scene:{}", s.as_str().expect("scene")))
+                    .collect(),
+            }
+        }
+
+        /// Seal the root Envelope again, without `dropped` when given.
+        fn rewrite_root(&self, dropped: Option<&str>) {
+            let conn = Connection::open(&self.path).expect("private copy");
+            conn.execute_batch(
+                "DROP TRIGGER narrative_revision_envelope_immutable_update;
+                 DROP TRIGGER narrative_proposal_revisions_v2_immutable_update_guard;",
+            )
+            .expect("remove the guards only on the private copy");
+            let raw: String = conn
+                .query_row(
+                    "SELECT reconciliation_envelope_json FROM narrative_proposal_revisions WHERE id = ?1",
+                    [&self.root],
+                    |row| row.get(0),
+                )
+                .expect("root Envelope");
+            let mut envelope: Value = serde_json::from_str(&raw).expect("Envelope JSON");
+            if let Some(key) = dropped {
+                let material = &mut envelope["effectiveMaterialBasis"];
+                for field in ["sourceBasis", "dependencySet"] {
+                    material[field]
+                        .as_array_mut()
+                        .expect("array")
+                        .retain(|row| row["sourceKey"] != key && row["inputRef"] != key);
+                }
+                material["dependencySetDigest"] = json!(grimodex_core::canonical_json_digest(
+                    &material["dependencySet"]
+                )
+                .expect("dependencySet digest"));
+                material["materialBasisDigest"] =
+                    json!(grimodex_core::canonical_json_digest(&json!({
+                        "sourceBasis": material["sourceBasis"],
+                        "evidenceSet": material["evidenceSet"],
+                        "dependencySet": material["dependencySet"],
+                    }))
+                    .expect("materialBasis digest"));
+            }
+            conn.execute(
+                "UPDATE narrative_proposal_revisions SET reconciliation_envelope_json = ?2,
+                    reconciliation_envelope_digest = ?3 WHERE id = ?1",
+                params![
+                    self.root,
+                    grimodex_core::canonical_json_string(&envelope).expect("canonical Envelope"),
+                    grimodex_core::canonical_json_digest(&envelope).expect("Envelope digest")
+                ],
+            )
+            .expect("seal the private copy");
+        }
+
+        fn replay(&self) -> (RosterStatus, Vec<String>, BTreeSet<String>) {
+            let conn =
+                Connection::open_with_flags(&self.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                    .expect("read the private copy");
+            let tx = conn.unchecked_transaction().expect("read transaction");
+            let read = read_root_material_with_memo(
+                &tx,
+                &self.project,
+                &self.root,
+                &mut RunProofMemo::default(),
+            )
+            .expect("root material read");
+            let windows = read
+                .materials
+                .iter()
+                .filter_map(|m| {
+                    m.context_id
+                        .strip_prefix("observation-citation-window:")
+                        .map(str::to_owned)
+                })
+                .collect();
+            let codes = read.issues.iter().map(|i| i.code.to_owned()).collect();
+            (read.status, codes, windows)
+        }
+    }
+
+    impl Drop for Copy {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+            for suffix in ["-wal", "-shm"] {
+                let mut path = self.path.as_os_str().to_os_string();
+                path.push(suffix);
+                let _ = std::fs::remove_file(std::path::PathBuf::from(path));
+            }
+        }
+    }
+
+    #[test]
+    fn a_consistently_narrowed_root_is_stopped_by_the_lower_bound_and_the_control_replays() {
+        let both = BTreeSet::from(["window-002".to_owned(), "window-003".to_owned()]);
+        // The control: the same rewrite with nothing dropped. The record the
+        // normal path made, sealed again, replays completely with the windows of
+        // scenes 2 and 3 (the request read both, the event cites scene 2).
+        let control = Copy::new();
+        control.rewrite_root(None);
+        let (status, codes, windows) = control.replay();
+        assert_eq!(status, RosterStatus::Complete, "control: {codes:?}");
+        assert_eq!(windows, both);
+        // Scene 1 is not declared by this record (the request never read it):
+        // dropping it changes nothing, so the rewrite itself does not stop a replay.
+        let unread = Copy::new();
+        let scene1 = unread.scenes[0].clone();
+        unread.rewrite_root(Some(&scene1));
+        let (status, codes, windows) = unread.replay();
+        assert_eq!(status, RosterStatus::Complete, "scene 1 dropped: {codes:?}");
+        assert_eq!(windows, both);
+        // Scene 3, which the request read (the planned Observation the event does
+        // not cite), dropped from the declaration: refused by the lower bound in
+        // the replay. Every replay failure is reported under this one code; which
+        // check refused is shown by the unit test on the recorded golden
+        // (`selected-request-source-undeclared`), and the control above shows
+        // nothing else in the rewrite stops it.
+        let narrowed = Copy::new();
+        let scene3 = narrowed.scenes[2].clone();
+        narrowed.rewrite_root(Some(&scene3));
+        let (status, codes, windows) = narrowed.replay();
+        assert_eq!(status, RosterStatus::Inconsistent);
+        assert_eq!(codes, vec!["recipe-input-binding-invalid".to_owned()]);
+        assert!(windows.is_empty(), "no material is published");
+        // Scene 2, the cited scene, dropped: the Envelope's own binding refuses it
+        // earlier (evidence must be declared), so that is not the lower bound.
+        let evidence = Copy::new();
+        let scene2 = evidence.scenes[1].clone();
+        evidence.rewrite_root(Some(&scene2));
+        let (status, codes, _) = evidence.replay();
+        assert_eq!(status, RosterStatus::Inconsistent);
+        assert_eq!(codes, vec!["envelope-binding-invalid".to_owned()]);
+    }
+}

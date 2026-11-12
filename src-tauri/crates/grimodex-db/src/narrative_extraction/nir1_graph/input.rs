@@ -571,6 +571,93 @@ pub(super) fn with_legacy_relation_bytes<T>(operation: impl FnOnce() -> T) -> T 
     operation()
 }
 
+/// [`DISCLOSURE_GLOBAL_BYTES_SQL`] as it was before DR-CQA-8: the shared reads'
+/// bytes counted as tree ×2 (with `version` and `updated_at`), registry ×2,
+/// bindings ×2 (without `version`), the query Scene without `version`, the
+/// Epoch without `epoch_number`. Test oracle only, to measure what the
+/// accounting changed (walls, charged bytes) in the same binary.
+#[cfg(test)]
+const LEGACY_DISCLOSURE_GLOBAL_BYTES_SQL: &[(&str, usize, DisclosureReads)] = &[
+    ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(t.id), 0) +
+                COALESCE(octet_length(t.parent_id), 0) +
+                COALESCE(octet_length(t.node_type), 0) +
+                COALESCE(octet_length(t.sort_order), 0) +
+                COALESCE(octet_length(t.story_time_order), 0) +
+                COALESCE(octet_length(t.archived_at), 0) +
+                COALESCE(octet_length(t.version), 0) +
+                COALESCE(octet_length(t.updated_at), 0)), 0)
+         FROM tree_nodes t WHERE t.project_id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 2, DisclosureReads::Shared),
+    ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(r.registry_version), 0) +
+                COALESCE(octet_length(r.timeline_refs_json), 0) +
+                COALESCE(octet_length(r.worldline_refs_json), 0) +
+                COALESCE(octet_length(r.narrative_layer_refs_json), 0) +
+                2 * COALESCE(octet_length(r.source_token), 0) +
+                COALESCE(octet_length(r.updated_at), 0)), 0)
+         FROM narrative_scope_registries r WHERE r.project_id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 0, DisclosureReads::Shared),
+    ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(b.scene_id), 0) +
+                COALESCE(octet_length(b.scene_incarnation_id), 0) +
+                COALESCE(octet_length(b.compatibility_marker), 0) +
+                COALESCE(octet_length(b.query_identity_json), 0) +
+                COALESCE(octet_length(b.material_constraint_json), 0) +
+                COALESCE(octet_length(b.knowledge_holder_json), 0) +
+                COALESCE(octet_length(b.audience_json), 0) +
+                COALESCE(octet_length(b.source_token), 0) +
+                COALESCE(octet_length(b.updated_at), 0)), 0)
+         FROM narrative_scene_scope_bindings b WHERE b.project_id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 2, DisclosureReads::Shared),
+    ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(p.phase_resolution_mode), 0)), 0)
+         FROM projects p WHERE p.id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::Shared),
+    ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(t.content), 0) +
+                COALESCE(octet_length(t.updated_at), 0) +
+                COALESCE(octet_length(t.archived_at), 0) +
+                COALESCE(octet_length(t.pov_character_id), 0)), 0)
+         FROM tree_nodes t WHERE t.project_id=?1 AND t.id=?3 AND t.node_type='scene') SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::Shared),
+    ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(c.type), 0)), 0)
+         FROM codex_entries c JOIN tree_nodes t ON t.pov_character_id=c.id AND t.project_id=c.project_id WHERE t.project_id=?1 AND t.id=?3 AND t.node_type='scene') SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::Shared),
+    ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(e.id), 0) +
+                COALESCE(octet_length(e.reason), 0) +
+                COALESCE(octet_length(e.created_at), 0)), 0)
+         FROM (SELECT id, reason, created_at FROM narrative_semantic_epochs WHERE project_id=?1 ORDER BY epoch_number DESC LIMIT 1) e ) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::Shared),
+    ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(d.id), 0) +
+                COALESCE(octet_length(d.decision), 0) +
+                COALESCE(octet_length(d.decision_json), 0) +
+                COALESCE(octet_length(d.created_at), 0) +
+                COALESCE(octet_length(d.created_by), 0) +
+                COALESCE(octet_length(d.actor_kind), 0) +
+                COALESCE(octet_length(d.actor_id), 0) +
+                COALESCE(octet_length(d.authority_scope), 0) +
+                COALESCE(octet_length(d.override_field_paths_json), 0)), 0)
+         FROM narrative_proposal_decisions d JOIN narrative_proposal_revisions r ON r.id=d.revision_id AND r.proposal_id=d.proposal_id WHERE r.id=?2) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::PerRevision),
+];
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: the preflight counts the shared reads' bytes by
+    /// [`LEGACY_DISCLOSURE_GLOBAL_BYTES_SQL`].
+    static LEGACY_SHARED_BYTES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The bytes statements the preflight runs.
+fn global_bytes_sql() -> &'static [(&'static str, usize, DisclosureReads)] {
+    #[cfg(test)]
+    if LEGACY_SHARED_BYTES.get() {
+        return LEGACY_DISCLOSURE_GLOBAL_BYTES_SQL;
+    }
+    DISCLOSURE_GLOBAL_BYTES_SQL
+}
+
+/// Run `operation` with the shared reads' bytes counted as before DR-CQA-8.
+#[cfg(test)]
+pub(super) fn with_legacy_shared_bytes<T>(operation: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LEGACY_SHARED_BYTES.set(self.0);
+        }
+    }
+    let _restore = Restore(LEGACY_SHARED_BYTES.replace(true));
+    operation()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1113,9 +1200,9 @@ fn preflight_project_reads_inner(
     admit_rows(&mut rows, principal_rows_query?, 1, remaining_rows)?;
     let mut bytes = 0usize;
     #[cfg(feature = "nir1-material-diagnostics")]
-    let global_byte_queries = DISCLOSURE_GLOBAL_BYTES_SQL.iter().enumerate();
+    let global_byte_queries = global_bytes_sql().iter().enumerate();
     #[cfg(not(feature = "nir1-material-diagnostics"))]
-    let global_byte_queries = DISCLOSURE_GLOBAL_BYTES_SQL.iter().map(|query| ((), query));
+    let global_byte_queries = global_bytes_sql().iter().map(|query| ((), query));
     for (_index, &(sql, multiplier, reads)) in global_byte_queries {
         if reads != DisclosureReads::Shared {
             continue;
@@ -1133,6 +1220,13 @@ fn preflight_project_reads_inner(
             value_query.is_err(),
         );
         let value = value_query?;
+        // 0 reads as the registry's read count: the rows table's convention,
+        // and the registry's byte statement before DR-CQA-8. No statement of
+        // the bytes table has a 0 now (it writes the reads it makes in its own
+        // text and runs once; `the_shared_byte_statements_run_once_each` pins
+        // it), so the branch is not taken. It stays because the legacy table
+        // (`with_legacy_shared_bytes`, tests only) is read through this same
+        // loop and still carries the 0.
         let multiplier = if multiplier == 0 {
             SHARED_REGISTRY_READS
         } else {
@@ -1263,9 +1357,9 @@ fn preflight_disclosure_revision_inner(
     }
     let mut bytes = 0usize;
     #[cfg(feature = "nir1-material-diagnostics")]
-    let global_byte_queries = DISCLOSURE_GLOBAL_BYTES_SQL.iter().enumerate();
+    let global_byte_queries = global_bytes_sql().iter().enumerate();
     #[cfg(not(feature = "nir1-material-diagnostics"))]
-    let global_byte_queries = DISCLOSURE_GLOBAL_BYTES_SQL.iter().map(|query| ((), query));
+    let global_byte_queries = global_bytes_sql().iter().map(|query| ((), query));
     for (_index, &(sql, multiplier, reads)) in global_byte_queries {
         if reads != DisclosureReads::PerRevision {
             continue;
@@ -1350,7 +1444,6 @@ const DISCLOSURE_GLOBAL_ROWS_SQL: &[(&str, usize, DisclosureGlobalRowsParams)] =
     // Once, not twice (DR-CQA-6): the 2 dated from when A3 loaded the Scope
     // authority twice per Revision; one load reads each binding row once. The
     // `tree_nodes` join that read one uncharged row per binding is gone too.
-    // The bytes below stay as they were.
     (
         "SELECT COUNT(*) FROM narrative_scene_scope_bindings
           WHERE project_id=?1",
@@ -1421,36 +1514,44 @@ const DISCLOSURE_MATERIAL_ROWS_SQL: &str = "WITH material AS MATERIALIZED (
          (SELECT COUNT(*) FROM codex_entries c JOIN material m ON c.id=m.pov_id
            WHERE c.project_id=?1)";
 
+/// What the shared reads of one query charge in bytes (DR-CQA-8): for each
+/// statement the query makes, the length of every column it returns or
+/// evaluates for a value (a predicate-only column, `project_id` and the like,
+/// is not counted by any statement here), counted once for each time the
+/// statement runs (the multiplier; every shared read is made once, so 1).
+///
+/// | read | statement of the query | columns |
+/// |---|---|---|
+/// | tree | the authority's | `id`, `parent_id`, `node_type`, `sort_order`, `story_time_order`, `archived_at` (not `version`, `updated_at`) |
+/// | registry | the extension's two (`read_registry_in_tx`, `read_registry_row`) | `registry_version`, the three `*_refs_json`, `updated_at` once; `version` and `source_token` twice |
+/// | bindings | the extension's one | its ten columns and the `id` of each principal Codex row it joins |
+/// | project | the query Scene's source | `phase_resolution_mode` |
+/// | query Scene | its source, and its POV | `version`, `updated_at`, `content`, `archived_at`, and `pov_character_id` |
+/// | POV | its Codex row | `type` |
+/// | Epoch | the latest | `id`, `epoch_number`, `reason`, `created_at` |
+///
+/// The Revision's decision, the last statement, is bound to a Revision.
 const DISCLOSURE_GLOBAL_BYTES_SQL: &[(&str, usize, DisclosureReads)] = &[
     ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(t.id), 0) +
                 COALESCE(octet_length(t.parent_id), 0) +
                 COALESCE(octet_length(t.node_type), 0) +
                 COALESCE(octet_length(t.sort_order), 0) +
                 COALESCE(octet_length(t.story_time_order), 0) +
-                COALESCE(octet_length(t.archived_at), 0) +
-                COALESCE(octet_length(t.version), 0) +
-                COALESCE(octet_length(t.updated_at), 0)), 0)
-         FROM tree_nodes t WHERE t.project_id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 2, DisclosureReads::Shared),
+                COALESCE(octet_length(t.archived_at), 0)), 0)
+         FROM tree_nodes t WHERE t.project_id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::Shared),
     ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(r.registry_version), 0) +
                 COALESCE(octet_length(r.timeline_refs_json), 0) +
                 COALESCE(octet_length(r.worldline_refs_json), 0) +
                 COALESCE(octet_length(r.narrative_layer_refs_json), 0) +
+                2 * COALESCE(octet_length(r.version), 0) +
                 2 * COALESCE(octet_length(r.source_token), 0) +
                 COALESCE(octet_length(r.updated_at), 0)), 0)
-         FROM narrative_scope_registries r WHERE r.project_id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 0, DisclosureReads::Shared),
-    ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(b.scene_id), 0) +
-                COALESCE(octet_length(b.scene_incarnation_id), 0) +
-                COALESCE(octet_length(b.compatibility_marker), 0) +
-                COALESCE(octet_length(b.query_identity_json), 0) +
-                COALESCE(octet_length(b.material_constraint_json), 0) +
-                COALESCE(octet_length(b.knowledge_holder_json), 0) +
-                COALESCE(octet_length(b.audience_json), 0) +
-                COALESCE(octet_length(b.source_token), 0) +
-                COALESCE(octet_length(b.updated_at), 0)), 0)
-         FROM narrative_scene_scope_bindings b WHERE b.project_id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 2, DisclosureReads::Shared),
+         FROM narrative_scope_registries r WHERE r.project_id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::Shared),
+    (crate::narrative_extraction::scene_scope::SCOPE_EXTENSION_BINDING_BYTES_SQL, 1, DisclosureReads::Shared),
     ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(p.phase_resolution_mode), 0)), 0)
          FROM projects p WHERE p.id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::Shared),
-    ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(t.content), 0) +
+    ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(t.version), 0) +
+                COALESCE(octet_length(t.content), 0) +
                 COALESCE(octet_length(t.updated_at), 0) +
                 COALESCE(octet_length(t.archived_at), 0) +
                 COALESCE(octet_length(t.pov_character_id), 0)), 0)
@@ -1458,9 +1559,10 @@ const DISCLOSURE_GLOBAL_BYTES_SQL: &[(&str, usize, DisclosureReads)] = &[
     ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(c.type), 0)), 0)
          FROM codex_entries c JOIN tree_nodes t ON t.pov_character_id=c.id AND t.project_id=c.project_id WHERE t.project_id=?1 AND t.id=?3 AND t.node_type='scene') SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::Shared),
     ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(e.id), 0) +
+                COALESCE(octet_length(e.epoch_number), 0) +
                 COALESCE(octet_length(e.reason), 0) +
                 COALESCE(octet_length(e.created_at), 0)), 0)
-         FROM (SELECT id, reason, created_at FROM narrative_semantic_epochs WHERE project_id=?1 ORDER BY epoch_number DESC LIMIT 1) e ) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::Shared),
+         FROM (SELECT id, epoch_number, reason, created_at FROM narrative_semantic_epochs WHERE project_id=?1 ORDER BY epoch_number DESC LIMIT 1) e ) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::Shared),
     ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(d.id), 0) +
                 COALESCE(octet_length(d.decision), 0) +
                 COALESCE(octet_length(d.decision_json), 0) +
@@ -1543,12 +1645,12 @@ mod disclosure_tests {
              INSERT INTO projects VALUES ('project','reading');
              CREATE TABLE narrative_scope_registries (project_id TEXT,registry_version TEXT,
                 timeline_refs_json TEXT,worldline_refs_json TEXT,narrative_layer_refs_json TEXT,
-                source_token TEXT,updated_at TEXT);
+                version INTEGER,source_token TEXT,updated_at TEXT);
              INSERT INTO narrative_scope_registries (project_id,timeline_refs_json) VALUES ('project','[]');
              CREATE TABLE narrative_scene_scope_bindings (project_id TEXT,scene_id TEXT,
                 scene_incarnation_id TEXT,compatibility_marker TEXT,query_identity_json TEXT,
-                material_constraint_json TEXT,knowledge_holder_json TEXT,audience_json TEXT,
-                source_token TEXT,updated_at TEXT);
+                material_constraint_json TEXT,knowledge_holder_json TEXT,version INTEGER,
+                audience_json TEXT,source_token TEXT,updated_at TEXT);
              INSERT INTO narrative_scene_scope_bindings (project_id,scene_id,query_identity_json)
                 VALUES ('project','scene','{}');
              CREATE TABLE codex_entries (id TEXT,project_id TEXT,type TEXT,context_mode TEXT);
@@ -1650,6 +1752,208 @@ mod disclosure_tests {
         )
         .unwrap();
         assert_eq!(counted(), 0);
+    }
+
+    // DR-CQA-8: the shared reads charge the columns each read returns, once for
+    // each run. The fixture gives every column a length of its own, so a column
+    // counted twice, a column left out, and a column of a row nobody reads
+    // each change the total.
+    const SHARED_FIXTURE_UPDATES: &str = "
+        UPDATE tree_nodes SET id='scene', parent_id='ch', sort_order='a', story_time_order='bb',
+               archived_at=NULL, version=7, updated_at='uuu', content='ccccccccccc',
+               pov_character_id='entity' WHERE id='scene';
+        INSERT INTO tree_nodes (id,project_id,parent_id,node_type,sort_order,story_time_order,
+               archived_at,version,updated_at,content,pov_character_id)
+             VALUES ('ch','project',NULL,'folder','aaa',NULL,NULL,12,'not-read-updated',
+                     'not-read-content-of-a-folder',NULL);
+        INSERT INTO tree_nodes (id,project_id,parent_id,node_type,sort_order,archived_at,
+               version,updated_at,content)
+             VALUES ('old','project','ch','note','z','arch12',2,'not-read-updated','{}');
+        INSERT INTO tree_nodes (id,project_id,node_type,version,updated_at,content)
+             VALUES ('foreign-scene','other','scene',1,'x','{}');
+        UPDATE narrative_scope_registries SET registry_version='v1', timeline_refs_json='[]',
+               worldline_refs_json='[ ]', narrative_layer_refs_json='[  ]', version=5,
+               source_token='tok', updated_at='ru';
+        UPDATE narrative_scene_scope_bindings SET scene_incarnation_id='inc',
+               compatibility_marker='mk', material_constraint_json='{\"a\":1}',
+               knowledge_holder_json='{\"kind\":\"character\",\"ref\":\"entity\"}', version=3,
+               audience_json='{\"kind\":\"character\",\"ref\":\"entity\"}',
+               source_token='bt', updated_at='bu';
+        INSERT INTO narrative_scene_scope_bindings (project_id,scene_id,scene_incarnation_id,
+               compatibility_marker,query_identity_json,material_constraint_json,
+               knowledge_holder_json,version,audience_json,source_token,updated_at)
+             VALUES ('project','second','i2','m2','{}','{}',
+                     '{\"kind\":\"character\",\"ref\":\"place\"}',1,
+                     '{\"kind\":\"character\",\"ref\":\"entity\"}','t2','u2');
+        INSERT INTO codex_entries VALUES ('place','project','location','auto');
+        INSERT INTO narrative_semantic_epochs VALUES ('e1','project',12,'rr','cc');
+        INSERT INTO narrative_semantic_epochs VALUES ('e0','project',3,'old-reason','old-created');
+    ";
+
+    fn shared_fixture() -> Connection {
+        let conn = fixture();
+        conn.execute_batch(SHARED_FIXTURE_UPDATES).unwrap();
+        conn
+    }
+
+    fn shared_bytes(conn: &Connection) -> usize {
+        preflight_project_reads(
+            conn,
+            "project",
+            "scene",
+            MAX_GRAPH_QUERY_RECORDS,
+            INPUT_BYTES,
+        )
+        .unwrap()
+        .bytes
+    }
+
+    #[test]
+    fn shared_bytes_are_the_columns_each_read_returns_once_each() {
+        let conn = shared_fixture();
+        // The authority's tree: six columns of every node of the project, once
+        // (not `version` or `updated_at`; not the other project's node).
+        let tree = ["scene", "ch", "scene", "a", "bb"].iter().map(|v| v.len()).sum::<usize>()
+            + ["ch", "folder", "aaa"].iter().map(|v| v.len()).sum::<usize>()
+            // an archived note: its `archived_at` is a returned column too
+            + ["old", "ch", "note", "z", "arch12"].iter().map(|v| v.len()).sum::<usize>();
+        // The registry's two statements: `version` and `source_token` are read
+        // by both, the rest by one.
+        let registry = "v1".len()
+            + "[]".len()
+            + "[ ]".len()
+            + "[  ]".len()
+            + "ru".len()
+            + 2 * "5".len()
+            + 2 * "tok".len();
+        // The extension's one read: the ten columns of each binding, and the
+        // `id` of each principal Codex row that is a character of the project
+        // (the first binding names `entity` twice; the second names a location
+        // and `entity`).
+        let first = ["scene", "inc", "mk", "{}", "{\"a\":1}"]
+            .iter()
+            .map(|v| v.len())
+            .sum::<usize>()
+            + 2 * "{\"kind\":\"character\",\"ref\":\"entity\"}".len()
+            + "3".len()
+            + "bt".len()
+            + "bu".len()
+            + 2 * "entity".len();
+        let second = ["second", "i2", "m2", "{}", "{}"]
+            .iter()
+            .map(|v| v.len())
+            .sum::<usize>()
+            + "{\"kind\":\"character\",\"ref\":\"place\"}".len()
+            + "{\"kind\":\"character\",\"ref\":\"entity\"}".len()
+            + "1".len()
+            + "t2".len()
+            + "u2".len()
+            + "entity".len();
+        // The project's phase mode, the query Scene's source (`version`,
+        // `updated_at`, `content`, `archived_at`) and POV, the POV's Codex
+        // `type`, and the latest Epoch (not the older one).
+        let rest = "reading".len()
+            + ("7".len() + "uuu".len() + "ccccccccccc".len() + "entity".len())
+            + "character".len()
+            + ("e1".len() + "12".len() + "rr".len() + "cc".len());
+        assert_eq!(
+            shared_bytes(&conn),
+            tree + registry + first + second + rest
+        );
+    }
+
+    #[test]
+    fn shared_bytes_follow_exactly_the_columns_that_are_read() {
+        let base = shared_bytes(&shared_fixture());
+        // (statement, what it adds to the charge): a column read once adds its
+        // length; one read twice adds twice; a column no read returns adds
+        // nothing.
+        for (sql, delta) in [
+            // tree: a returned column of any node, once
+            ("UPDATE tree_nodes SET sort_order=sort_order||'0123456789' WHERE id='ch'", 10),
+            ("UPDATE tree_nodes SET parent_id='0123456789ch' WHERE id='scene'", 10),
+            // tree: not returned by the authority's read
+            ("UPDATE tree_nodes SET updated_at=updated_at||'0123456789' WHERE id='ch'", 0),
+            ("UPDATE tree_nodes SET version=1234567890 WHERE id='ch'", 0),
+            ("UPDATE tree_nodes SET content=content||'0123456789' WHERE id='ch'", 0),
+            // `archived_at` is returned by the tree's read (any node) and by the
+            // query Scene's read: on the query Scene it counts twice
+            ("UPDATE tree_nodes SET archived_at=archived_at||'0123456789' WHERE id='old'", 10),
+            ("UPDATE tree_nodes SET archived_at='0123456789' WHERE id='ch'", 10),
+            ("UPDATE tree_nodes SET archived_at='0123456789' WHERE id='scene'", 20),
+            // another Scene's content is not the query Scene's
+            ("INSERT INTO tree_nodes (id,project_id,node_type,content) VALUES ('s2','project','scene','0123456789')", "s2".len() + "scene".len()),
+            // the query Scene: its source once, its POV once
+            ("UPDATE tree_nodes SET content=content||'0123456789' WHERE id='scene'", 10),
+            ("UPDATE tree_nodes SET version=1234567890 WHERE id='scene'", 9),
+            ("UPDATE tree_nodes SET updated_at=updated_at||'0123456789' WHERE id='scene'", 10),
+            // registry: one read of the references, two of `source_token`
+            ("UPDATE narrative_scope_registries SET worldline_refs_json=worldline_refs_json||'          '", 10),
+            ("UPDATE narrative_scope_registries SET source_token=source_token||'0123456789'", 20),
+            ("UPDATE narrative_scope_registries SET version=1234567890", 18),
+            ("UPDATE narrative_scope_registries SET updated_at=updated_at||'0123456789'", 10),
+            // bindings: each column once, `version` as its text
+            ("UPDATE narrative_scene_scope_bindings SET audience_json=audience_json||'          ' WHERE scene_id='scene'", 10),
+            ("UPDATE narrative_scene_scope_bindings SET source_token=source_token||'0123456789' WHERE scene_id='scene'", 10),
+            ("UPDATE narrative_scene_scope_bindings SET version=1234567890 WHERE scene_id='scene'", 9),
+            // a principal that names a character of the project makes the join
+            // find a Codex row, and the statement evaluates its `id`; one that
+            // names another type of entry finds none
+            ("UPDATE codex_entries SET type='character' WHERE id='place'", "place".len()),
+            // the latest Epoch, not the older one
+            ("UPDATE narrative_semantic_epochs SET reason=reason||'0123456789' WHERE id='e1'", 10),
+            ("UPDATE narrative_semantic_epochs SET epoch_number=1234567890 WHERE id='e1'", 8),
+            ("UPDATE narrative_semantic_epochs SET reason=reason||'0123456789' WHERE id='e0'", 0),
+            // the project row: its phase mode, once
+            ("UPDATE projects SET phase_resolution_mode=phase_resolution_mode||'0123456789'", 10),
+        ] {
+            let conn = shared_fixture();
+            conn.execute_batch(sql).unwrap();
+            assert_eq!(shared_bytes(&conn), base + delta, "{sql}");
+        }
+    }
+
+    #[test]
+    fn the_shared_byte_statements_run_once_each() {
+        for (index, &(_, multiplier, _)) in DISCLOSURE_GLOBAL_BYTES_SQL.iter().enumerate() {
+            // 0 is the rows table's convention for the registry's read count
+            // (`SHARED_REGISTRY_READS`); a bytes statement writes the reads it
+            // makes in its own text, so every statement runs exactly once.
+            assert_eq!(multiplier, 1, "statement {index}");
+        }
+    }
+
+    #[test]
+    fn the_shared_bytes_are_refused_one_byte_over_the_preflight() {
+        let conn = shared_fixture();
+        let base = shared_bytes(&conn);
+        let content_len = "ccccccccccc".len();
+        // The query Scene's content takes the charge to INPUT_BYTES exactly,
+        // and then one over.
+        let at = INPUT_BYTES - (base - content_len);
+        conn.execute(
+            "UPDATE tree_nodes SET content=?1 WHERE id='scene'",
+            [format!("{{}}{}", " ".repeat(at - 2))],
+        )
+        .unwrap();
+        assert_eq!(shared_bytes(&conn), INPUT_BYTES);
+        conn.execute(
+            "UPDATE tree_nodes SET content=content||' ' WHERE id='scene'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            preflight_project_reads(
+                &conn,
+                "project",
+                "scene",
+                MAX_GRAPH_QUERY_RECORDS,
+                INPUT_BYTES,
+            )
+            .unwrap_err()
+            .to_string(),
+            "NIR1_GRAPH_DISCLOSURE_INPUT_LIMIT"
+        );
     }
 
     #[cfg(feature = "nir1-material-diagnostics")]

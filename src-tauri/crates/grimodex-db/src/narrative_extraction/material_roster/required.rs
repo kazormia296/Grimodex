@@ -147,4 +147,127 @@ mod tests {
             .is_err());
         }
     }
+    /// DMS/1: the production record of a proposal that read windows 1 and 3 of a
+    /// three-scene folder (made by the normal path with the narrowing product)
+    /// declares those two scenes only. The lower bound holds on it: a request
+    /// window outside the declaration is refused, and the unread scene is not
+    /// required.
+    #[test]
+    fn a_declared_scope_record_requires_the_read_scenes_and_refuses_a_request_outside_them() {
+        let g: Value =
+            serde_json::from_str(include_str!("production-declared-scope-folder-golden.json"))
+                .expect("declared-scope golden");
+        let plan = array_at(&g, "/plan/windows").expect("windows");
+        let read = vec![
+            "window-001:obs-001".to_owned(),
+            "window-003:obs-001".to_owned(),
+        ];
+        assert_eq!(
+            windows(&g["rootEnvelope"], &g["snapshot"], plan, &read).expect("required windows"),
+            BTreeSet::from(["window-001".into(), "window-003".into()])
+        );
+        // The middle scene was never read by this proposal's request.
+        let middle = vec!["window-002:obs-001".to_owned()];
+        let refused = windows(&g["rootEnvelope"], &g["snapshot"], plan, &middle)
+            .expect_err("a request window outside the declaration");
+        assert!(
+            format!("{refused:#}").contains("selected-request-source-undeclared"),
+            "{refused:#}"
+        );
+        // Drop the declaration of a scene a request window read: refused.
+        for dropped in ["window-001", "window-003"] {
+            let key = {
+                let window = plan
+                    .iter()
+                    .find(|w| w["windowId"] == dropped)
+                    .expect("window");
+                let document = array_at(&g, "/snapshot/snapshot/documents")
+                    .expect("documents")
+                    .iter()
+                    .find(|d| d["ref"] == window["documentRef"])
+                    .expect("document");
+                document["sourceKey"].as_str().expect("key").to_owned()
+            };
+            let mut envelope = g["rootEnvelope"].clone();
+            for field in ["sourceBasis", "dependencySet"] {
+                envelope["effectiveMaterialBasis"][field]
+                    .as_array_mut()
+                    .expect("array")
+                    .retain(|row| row["sourceKey"] != key && row["inputRef"] != key);
+            }
+            let refused = windows(&envelope, &g["snapshot"], plan, &read)
+                .expect_err("a narrower record than the request");
+            assert!(
+                format!("{refused:#}").contains("selected-request-source-undeclared"),
+                "{dropped}: {refused:#}"
+            );
+        }
+    }
+    /// DMS/1, the dangerous shape as the normal path recorded it: the request
+    /// read windows 2 and 3 (an actual and a planned Observation of one cluster),
+    /// the event cites window 2 only. Both scenes are declared and required; a
+    /// record that kept only the cited scene is refused as narrower than the
+    /// request (the cluster's whole Observation list is what is selected).
+    #[test]
+    fn a_request_over_two_scenes_requires_both_though_the_event_cites_one() {
+        let g: Value =
+            serde_json::from_str(include_str!("production-declared-scope-split-golden.json"))
+                .expect("declared-scope split golden");
+        let plan = array_at(&g, "/plan/windows").expect("windows");
+        let read = vec![
+            "window-002:obs-001".to_owned(),
+            "window-003:obs-001".to_owned(),
+        ];
+        assert_eq!(
+            windows(&g["rootEnvelope"], &g["snapshot"], plan, &read).expect("required windows"),
+            BTreeSet::from(["window-002".into(), "window-003".into()])
+        );
+        // Scene 1 was never read by this proposal's request.
+        let first = vec!["window-001:obs-001".to_owned()];
+        let refused = windows(&g["rootEnvelope"], &g["snapshot"], plan, &first)
+            .expect_err("a request window outside the declaration");
+        assert!(
+            format!("{refused:#}").contains("selected-request-source-undeclared"),
+            "{refused:#}"
+        );
+        // The record that kept only the cited scene (window 2): window 3 was read
+        // by the request (its planned Observation) and is undeclared.
+        let key = {
+            let window = plan
+                .iter()
+                .find(|w| w["windowId"] == "window-003")
+                .expect("window");
+            let document = array_at(&g, "/snapshot/snapshot/documents")
+                .expect("documents")
+                .iter()
+                .find(|d| d["ref"] == window["documentRef"])
+                .expect("document");
+            document["sourceKey"].as_str().expect("key").to_owned()
+        };
+        let mut narrow = g["rootEnvelope"].clone();
+        for field in ["sourceBasis", "dependencySet"] {
+            narrow["effectiveMaterialBasis"][field]
+                .as_array_mut()
+                .expect("array")
+                .retain(|row| row["sourceKey"] != key && row["inputRef"] != key);
+        }
+        let refused = windows(&narrow, &g["snapshot"], plan, &read)
+            .expect_err("a record narrower than the request");
+        assert!(
+            format!("{refused:#}").contains("selected-request-source-undeclared"),
+            "{refused:#}"
+        );
+        // The control: without window 3 in the request, the narrow record is
+        // exactly what a request of window 2 alone would need.
+        assert_eq!(
+            windows(
+                &narrow,
+                &g["snapshot"],
+                plan,
+                &["window-002:obs-001".to_owned()]
+            )
+            .expect("a request of window 2 alone"),
+            BTreeSet::from(["window-002".into()])
+        );
+    }
 }

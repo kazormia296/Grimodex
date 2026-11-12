@@ -1,7 +1,7 @@
 {
   "id": "multi-window-synthetic-v1",
   "version": 1,
-  "note": "Synthetic English prose written for this fixture only. Every marker sentence is unique in its scene bodies; the setup script (electron/scripts/nir1-multi-window-cold-fixture.mjs) builds the bodies around them. A request is answered only when a marker is a visible span of the request; any other request is left to the other Journey responses.",
+  "note": "Synthetic English prose written for this fixture only. Every marker sentence is unique in its scene bodies; the setup script (electron/scripts/nir1-multi-window-cold-fixture.mjs) builds the bodies around them. A request is answered only when a marker is a visible span of the request; any other request is left to the other Journey responses. The rows of the split folder (dawn-first, tide-first, tide-last) are added by DMS/1: tide-last is a planned (not an event) Observation of the same cluster as tide-first, so a synthesis event cites tide-first only while its request read both.",
   "rows": [
     {
       "key": "seal-first",
@@ -38,6 +38,25 @@
       "marker": "Captain Orrel lit the signal fire again on Saltmere Quay.",
       "predicate": "lights a signal fire",
       "cluster": "fire"
+    },
+    {
+      "key": "dawn-first",
+      "marker": "Warden Pell trimmed the dawn lamp on Greywater Stair.",
+      "predicate": "trims a lamp",
+      "cluster": "dawn"
+    },
+    {
+      "key": "tide-first",
+      "marker": "Surveyor Idrel pinned the tide chart to the Greywater post.",
+      "predicate": "pins a tide chart",
+      "cluster": "tide"
+    },
+    {
+      "key": "tide-last",
+      "marker": "Surveyor Idrel meant to pin the tide chart to the Greywater post again.",
+      "predicate": "pins a tide chart",
+      "cluster": "tide",
+      "actuality": "planned"
     }
   ],
   "clusters": {
@@ -56,6 +75,14 @@
     "writ": {
       "title": "Writ delivered to the quay",
       "summary": "A courier delivered the sealed writ."
+    },
+    "dawn": {
+      "title": "Lamp trimmed at dawn",
+      "summary": "Warden Pell trimmed the dawn lamp."
+    },
+    "tide": {
+      "title": "Tide chart pinned to the post",
+      "summary": "Surveyor Idrel pinned the tide chart."
     }
   }
 }

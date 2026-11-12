@@ -41,6 +41,16 @@ export interface ChronicleV2SynthesisCluster {
   readonly observationRefs: readonly string[];
 }
 
+/**
+ * The sealed window plan reduced to what the material scope needs: which
+ * snapshot document each window reads. It comes from the persisted
+ * `source.window-plan@1` artifact (also on resume), never from memory.
+ */
+export interface ChronicleV2WindowPlanEntry {
+  readonly windowId: string;
+  readonly documentRef: string;
+}
+
 export interface ChronicleV2ProductionInput {
   readonly projectId: string;
   readonly runId: string;
@@ -54,6 +64,7 @@ export interface ChronicleV2ProductionInput {
   readonly existingEventMatch: ChronicleExistingMatch;
   readonly snapshot: NarrativeCorpusSnapshot;
   readonly sourceBasis: SourceBasis;
+  readonly windowPlan: readonly ChronicleV2WindowPlanEntry[];
   readonly stageReceipts: readonly ChronicleStageTerminalReceiptV1[];
 }
 
@@ -81,6 +92,7 @@ export interface ChronicleV2ProductionBatchInput {
   readonly evidenceAnchors: readonly ResolvedEvidenceAnchor[];
   readonly snapshot: NarrativeCorpusSnapshot;
   readonly sourceBasis: SourceBasis;
+  readonly windowPlan: readonly ChronicleV2WindowPlanEntry[];
   readonly stageReceipts: readonly ChronicleStageTerminalReceiptV1[];
 }
 
@@ -306,6 +318,121 @@ function evidenceSourceBasisByDocumentRef(
   return result;
 }
 
+const OBSERVATION_LOCAL_ID_MARKER = ":obs-";
+
+function materialScopeError(detail: string): Error {
+  return new Error(`NEX_CHRONICLE_V2_MATERIAL_SCOPE_UNDECIDABLE: ${detail}`);
+}
+
+/**
+ * The scene source key of every window a proposal's synthesis request read.
+ * Chain: observation localId (`{windowId}:obs-NNN`) -> window plan ->
+ * documentRef -> snapshot document -> `project:scene:{nodeId}`. Native's
+ * lower bound (`material_roster/required.rs`) resolves the same chain, so the
+ * two sides name the same scenes. Fails closed: a localId that names no
+ * planned window, or a document without a project Scene origin, is an error.
+ */
+function sceneSourceKeysOfObservations(
+  observationRefs: readonly string[],
+  windowPlan: readonly ChronicleV2WindowPlanEntry[],
+  snapshot: NarrativeCorpusSnapshot,
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  for (const localId of observationRefs) {
+    const cut = localId.lastIndexOf(OBSERVATION_LOCAL_ID_MARKER);
+    const windowId = cut > 0 ? localId.slice(0, cut) : "";
+    const windows = windowPlan.filter((entry) => entry.windowId === windowId);
+    if (windows.length !== 1 || !windows[0]) {
+      throw materialScopeError(
+        `Observation '${localId}' does not name exactly one planned window`,
+      );
+    }
+    try {
+      keys.add(projectSourceKeyForDocument(snapshot, windows[0].documentRef));
+    } catch {
+      throw materialScopeError(
+        `window '${windowId}' reads document '${windows[0].documentRef}' with no project Scene origin`,
+      );
+    }
+  }
+  return keys;
+}
+
+/**
+ * DMS/1 D1: keep the extraction seal and only the Scene bodies the proposal's
+ * event could have been written from, in the original order. The set is the
+ * whole synthesis cluster (every Observation line in the request), not the
+ * hypothesis and not the evidence anchors.
+ */
+export function narrowSourceBasisToObservedScenes(
+  sourceBasis: SourceBasis,
+  observationRefs: readonly string[],
+  windowPlan: readonly ChronicleV2WindowPlanEntry[],
+  snapshot: NarrativeCorpusSnapshot,
+): SourceBasis {
+  const scenes = sceneSourceKeysOfObservations(
+    observationRefs,
+    windowPlan,
+    snapshot,
+  );
+  return sourceBasis.filter(
+    (source) =>
+      source.sourceKind !== "scene-body" || scenes.has(source.sourceKey),
+  );
+}
+
+/**
+ * DMS/1 D3 / DR-DMS-5: check the finished Envelope again, deriving the scenes
+ * from the Envelope's own Context Set rather than from the narrowing input.
+ * Every Observation line of the synthesis request must have its scene in the
+ * declared basis with a declaration, and every evidence scene must be declared.
+ */
+export function assertDeclaredMaterialScope(input: {
+  readonly envelope: ChronicleSceneEventRevision;
+  readonly windowPlan: readonly ChronicleV2WindowPlanEntry[];
+  readonly snapshot: NarrativeCorpusSnapshot;
+}): void {
+  const { effectiveMaterialBasis: basis, revisionBasis } = input.envelope;
+  if (revisionBasis.kind !== "interpretation") {
+    throw materialScopeError("a model proposal must carry an interpretation");
+  }
+  const prefix = "event-observation:";
+  const observed = sceneSourceKeysOfObservations(
+    revisionBasis.contextSet
+      .filter((context) => context.contextId.startsWith(prefix))
+      .map((context) => context.contextId.slice(prefix.length)),
+    input.windowPlan,
+    input.snapshot,
+  );
+  const declared = new Set(
+    basis.sourceBasis
+      .filter((source) => source.sourceKind === "scene-body")
+      .map((source) => source.sourceKey),
+  );
+  const evidenceScenes = new Set(
+    basis.evidenceSet.flatMap((evidence) =>
+      evidence.sourceKey ? [evidence.sourceKey] : [],
+    ),
+  );
+  for (const key of [...observed, ...evidenceScenes]) {
+    if (!declared.has(key)) {
+      throw materialScopeError(
+        `scene '${key}' read by the synthesis request or cited as evidence is not in the declared basis`,
+      );
+    }
+    if (!basis.dependencySet.some((entry) => entry.inputRef === key)) {
+      throw materialScopeError(`scene '${key}' has no dependency declaration`);
+    }
+  }
+  for (const key of declared) {
+    if (!observed.has(key) && !evidenceScenes.has(key)) {
+      throw materialScopeError(
+        `declared scene '${key}' was read by none of the synthesis request's observations`,
+      );
+    }
+  }
+}
+
 function synthesisReceiptsForInput(
   receipts: readonly ChronicleStageTerminalReceiptV1[],
   contextSetDigest: string,
@@ -469,9 +596,31 @@ export async function buildChronicleProductionV2Envelope(
     finalRequestDigest: synthesisReceipt.finalRequestDigest,
   } as const;
 
+  // DMS/1: declare only the Scene bodies this proposal's event was written
+  // from (the whole synthesis cluster), not every Scene of the extraction.
+  const declaredSourceBasis = narrowSourceBasisToObservedScenes(
+    input.sourceBasis,
+    input.synthesisCluster.observationRefs,
+    input.windowPlan,
+    input.snapshot,
+  );
+  const declaredSceneKeys = new Set(
+    declaredSourceBasis.map((source) => source.sourceKey),
+  );
+  for (const anchor of proposalAnchors) {
+    const sceneKey = projectSourceKeyForDocument(
+      input.snapshot,
+      anchor.documentRef,
+    );
+    if (!declaredSceneKeys.has(sceneKey)) {
+      throw materialScopeError(
+        `evidence scene '${sceneKey}' of anchor '${anchor.id}' is outside the scenes the synthesis request read`,
+      );
+    }
+  }
   const evidenceSourceBasis = evidenceSourceBasisByDocumentRef(
     input.snapshot,
-    input.sourceBasis,
+    declaredSourceBasis,
     proposalAnchors,
   );
 
@@ -496,7 +645,7 @@ export async function buildChronicleProductionV2Envelope(
     actuality: input.proposal.actuality,
     significance: input.proposal.significance,
     existingEventMatch: input.existingEventMatch,
-    sourceBasis: input.sourceBasis,
+    sourceBasis: declaredSourceBasis,
     evidenceSourceBasisByDocumentRef: evidenceSourceBasis,
     contextManifests,
     dependencyDeclarations: buildDependencyDeclarations(
@@ -504,12 +653,17 @@ export async function buildChronicleProductionV2Envelope(
       input.proposal,
       mergedObservations,
       proposalAnchors,
-      input.sourceBasis,
+      declaredSourceBasis,
       evidenceSourceBasis,
       contextManifests,
       synthesisReceipt.componentContractDigest,
     ),
     revealBasis: buildRevealBasis(input.proposal),
+  });
+  assertDeclaredMaterialScope({
+    envelope: result.envelope,
+    windowPlan: input.windowPlan,
+    snapshot: input.snapshot,
   });
 
   return {
@@ -564,6 +718,7 @@ export async function buildChronicleProductionV2Envelopes(
       existingEventMatch: plannedRow.match,
       snapshot: input.snapshot,
       sourceBasis: input.sourceBasis,
+      windowPlan: input.windowPlan,
       stageReceipts: input.stageReceipts,
     });
     envelopeByProposalKey.set(proposalKey, builtV2.envelope);

@@ -1,0 +1,1718 @@
+{
+  "provenance": {
+    "source": "normal planner, production extraction path, Human review UI",
+    "setup": "electron/scripts/nir1-multi-window-cold-fixture.mjs"
+  },
+  "snapshot": {
+    "snapshot": {
+      "schemaVersion": 1,
+      "id": "61758f11-5e25-4e97-8415-cd64ca9203e4",
+      "snapshotId": "61758f11-5e25-4e97-8415-cd64ca9203e4",
+      "createdAt": "2026-11-12T14:21:38.450Z",
+      "language": "ja",
+      "normalizerVersion": "gdx-canonical-text/1",
+      "origin": {
+        "kind": "grimodex-project",
+        "projectId": "default-project"
+      },
+      "documents": [
+        {
+          "ref": "D000001",
+          "sourceKey": "project:scene:mw-split-1",
+          "parentRef": null,
+          "title": "Stair 1",
+          "orderIndex": 0,
+          "canonical": {
+            "unit": "utf16",
+            "text": "The Greywater watch counted lamp 1 along the cold wall. The Greywater watch counted lamp 2 along the cold wall. The Greywater watch counted lamp 3 along the cold wall. The Greywater watch counted lamp 4 along the cold wall. The Greywater watch counted lamp 5 along the cold wall.\nWarden Pell trimmed the dawn lamp on Greywater Stair. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.\nThe Greywater watch counted lamp 11 along the cold wall. The Greywater watch counted lamp 12 along the cold wall. The Greywater watch counted lamp 13 along the cold wall. The Greywater watch counted lamp 14 along the cold wall. The Greywater watch counted lamp 15 along the cold wall.",
+            "blocks": [
+              {
+                "id": "B000001",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 0,
+                  "to": 279
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000002",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 280,
+                  "to": 558
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000003",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 559,
+                  "to": 843
+                },
+                "depth": 0
+              }
+            ],
+            "projection": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 843,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 279,
+                  "from": 1,
+                  "to": 280,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 279
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 280
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 279,
+                  "canonicalEnd": 280,
+                  "canonical": {
+                    "from": 279,
+                    "to": 280
+                  },
+                  "boundary": {
+                    "leftPmPos": 280,
+                    "rightPmPos": 282
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 280,
+                  "canonicalEnd": 558,
+                  "from": 282,
+                  "to": 560,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 280,
+                    "to": 558
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 282,
+                    "toPos": 560
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 558,
+                  "canonicalEnd": 559,
+                  "canonical": {
+                    "from": 558,
+                    "to": 559
+                  },
+                  "boundary": {
+                    "leftPmPos": 560,
+                    "rightPmPos": 562
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 559,
+                  "canonicalEnd": 843,
+                  "from": 562,
+                  "to": 846,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 559,
+                    "to": 843
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 562,
+                    "toPos": 846
+                  }
+                }
+              ]
+            },
+            "projectionMap": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 843,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 279,
+                  "from": 1,
+                  "to": 280,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 279
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 280
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 279,
+                  "canonicalEnd": 280,
+                  "canonical": {
+                    "from": 279,
+                    "to": 280
+                  },
+                  "boundary": {
+                    "leftPmPos": 280,
+                    "rightPmPos": 282
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 280,
+                  "canonicalEnd": 558,
+                  "from": 282,
+                  "to": 560,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 280,
+                    "to": 558
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 282,
+                    "toPos": 560
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 558,
+                  "canonicalEnd": 559,
+                  "canonical": {
+                    "from": 558,
+                    "to": 559
+                  },
+                  "boundary": {
+                    "leftPmPos": 560,
+                    "rightPmPos": 562
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 559,
+                  "canonicalEnd": 843,
+                  "from": 562,
+                  "to": 846,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 559,
+                    "to": 843
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 562,
+                    "toPos": 846
+                  }
+                }
+              ]
+            },
+            "diagnostics": []
+          },
+          "contentDigest": "sha256:6e3a41eff5ff9b6c127b22f670ad99dbfd634b9a44d49094af0937eed2faa9d0",
+          "documentDigest": "sha256:b506dbbc847794ff551907160d374a7c98de825de3bd70a6a216397aedf26a86",
+          "artifactDigest": "sha256:99461c164b7f2684b1687b27393ce09f7579c435edfc35fb2a611fce632aeddf",
+          "origin": {
+            "kind": "project-node",
+            "projectId": "default-project",
+            "nodeId": "mw-split-1",
+            "sourceVersion": 0,
+            "sourceUpdatedAt": "2026-11-12T14:21:24.751757610+00:00",
+            "sourceUri": null
+          }
+        },
+        {
+          "ref": "D000002",
+          "sourceKey": "project:scene:mw-split-2",
+          "parentRef": null,
+          "title": "Stair 2",
+          "orderIndex": 1,
+          "canonical": {
+            "unit": "utf16",
+            "text": "The Greywater watch counted lamp 1 along the cold wall. The Greywater watch counted lamp 2 along the cold wall. The Greywater watch counted lamp 3 along the cold wall. The Greywater watch counted lamp 4 along the cold wall. The Greywater watch counted lamp 5 along the cold wall.\nSurveyor Idrel pinned the tide chart to the Greywater post. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.\nThe Greywater watch counted lamp 11 along the cold wall. The Greywater watch counted lamp 12 along the cold wall. The Greywater watch counted lamp 13 along the cold wall. The Greywater watch counted lamp 14 along the cold wall. The Greywater watch counted lamp 15 along the cold wall.",
+            "blocks": [
+              {
+                "id": "B000001",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 0,
+                  "to": 279
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000002",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 280,
+                  "to": 564
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000003",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 565,
+                  "to": 849
+                },
+                "depth": 0
+              }
+            ],
+            "projection": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 849,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 279,
+                  "from": 1,
+                  "to": 280,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 279
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 280
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 279,
+                  "canonicalEnd": 280,
+                  "canonical": {
+                    "from": 279,
+                    "to": 280
+                  },
+                  "boundary": {
+                    "leftPmPos": 280,
+                    "rightPmPos": 282
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 280,
+                  "canonicalEnd": 564,
+                  "from": 282,
+                  "to": 566,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 280,
+                    "to": 564
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 282,
+                    "toPos": 566
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 564,
+                  "canonicalEnd": 565,
+                  "canonical": {
+                    "from": 564,
+                    "to": 565
+                  },
+                  "boundary": {
+                    "leftPmPos": 566,
+                    "rightPmPos": 568
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 565,
+                  "canonicalEnd": 849,
+                  "from": 568,
+                  "to": 852,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 565,
+                    "to": 849
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 568,
+                    "toPos": 852
+                  }
+                }
+              ]
+            },
+            "projectionMap": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 849,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 279,
+                  "from": 1,
+                  "to": 280,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 279
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 280
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 279,
+                  "canonicalEnd": 280,
+                  "canonical": {
+                    "from": 279,
+                    "to": 280
+                  },
+                  "boundary": {
+                    "leftPmPos": 280,
+                    "rightPmPos": 282
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 280,
+                  "canonicalEnd": 564,
+                  "from": 282,
+                  "to": 566,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 280,
+                    "to": 564
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 282,
+                    "toPos": 566
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 564,
+                  "canonicalEnd": 565,
+                  "canonical": {
+                    "from": 564,
+                    "to": 565
+                  },
+                  "boundary": {
+                    "leftPmPos": 566,
+                    "rightPmPos": 568
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 565,
+                  "canonicalEnd": 849,
+                  "from": 568,
+                  "to": 852,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 565,
+                    "to": 849
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 568,
+                    "toPos": 852
+                  }
+                }
+              ]
+            },
+            "diagnostics": []
+          },
+          "contentDigest": "sha256:3fa7e1374507ff729566107e2fb3f44a41ed7135fcccb7ba0a60884e2c0b14c1",
+          "documentDigest": "sha256:b8cc0a7627f1cd2d04f48b7dae59c14868cad9e9a356e8bb981bbdb967731d63",
+          "artifactDigest": "sha256:b070448bc7d71c7d9be62791df8f432560d11e20abe107175a1dcefe149f82b3",
+          "origin": {
+            "kind": "project-node",
+            "projectId": "default-project",
+            "nodeId": "mw-split-2",
+            "sourceVersion": 0,
+            "sourceUpdatedAt": "2026-11-12T14:21:24.760669450+00:00",
+            "sourceUri": null
+          }
+        },
+        {
+          "ref": "D000003",
+          "sourceKey": "project:scene:mw-split-3",
+          "parentRef": null,
+          "title": "Stair 3",
+          "orderIndex": 2,
+          "canonical": {
+            "unit": "utf16",
+            "text": "The Greywater watch counted lamp 1 along the cold wall. The Greywater watch counted lamp 2 along the cold wall. The Greywater watch counted lamp 3 along the cold wall. The Greywater watch counted lamp 4 along the cold wall. The Greywater watch counted lamp 5 along the cold wall.\nSurveyor Idrel meant to pin the tide chart to the Greywater post again. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.\nThe Greywater watch counted lamp 11 along the cold wall. The Greywater watch counted lamp 12 along the cold wall. The Greywater watch counted lamp 13 along the cold wall. The Greywater watch counted lamp 14 along the cold wall. The Greywater watch counted lamp 15 along the cold wall.",
+            "blocks": [
+              {
+                "id": "B000001",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 0,
+                  "to": 279
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000002",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 280,
+                  "to": 576
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000003",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 577,
+                  "to": 861
+                },
+                "depth": 0
+              }
+            ],
+            "projection": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 861,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 279,
+                  "from": 1,
+                  "to": 280,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 279
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 280
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 279,
+                  "canonicalEnd": 280,
+                  "canonical": {
+                    "from": 279,
+                    "to": 280
+                  },
+                  "boundary": {
+                    "leftPmPos": 280,
+                    "rightPmPos": 282
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 280,
+                  "canonicalEnd": 576,
+                  "from": 282,
+                  "to": 578,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 280,
+                    "to": 576
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 282,
+                    "toPos": 578
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 576,
+                  "canonicalEnd": 577,
+                  "canonical": {
+                    "from": 576,
+                    "to": 577
+                  },
+                  "boundary": {
+                    "leftPmPos": 578,
+                    "rightPmPos": 580
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 577,
+                  "canonicalEnd": 861,
+                  "from": 580,
+                  "to": 864,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 577,
+                    "to": 861
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 580,
+                    "toPos": 864
+                  }
+                }
+              ]
+            },
+            "projectionMap": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 861,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 279,
+                  "from": 1,
+                  "to": 280,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 279
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 280
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 279,
+                  "canonicalEnd": 280,
+                  "canonical": {
+                    "from": 279,
+                    "to": 280
+                  },
+                  "boundary": {
+                    "leftPmPos": 280,
+                    "rightPmPos": 282
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 280,
+                  "canonicalEnd": 576,
+                  "from": 282,
+                  "to": 578,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 280,
+                    "to": 576
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 282,
+                    "toPos": 578
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 576,
+                  "canonicalEnd": 577,
+                  "canonical": {
+                    "from": 576,
+                    "to": 577
+                  },
+                  "boundary": {
+                    "leftPmPos": 578,
+                    "rightPmPos": 580
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 577,
+                  "canonicalEnd": 861,
+                  "from": 580,
+                  "to": 864,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 577,
+                    "to": 861
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 580,
+                    "toPos": 864
+                  }
+                }
+              ]
+            },
+            "diagnostics": []
+          },
+          "contentDigest": "sha256:608e69579841e9daaef62775f60524d4626966836abbb0c7041074edd95523f3",
+          "documentDigest": "sha256:3976af62ac51dfed7a1b7ac7e2eb2439ce90b27b7a1071ef086a884f2591454f",
+          "artifactDigest": "sha256:ae487ef19413d5f0aa9928e6b3a1a70d2f194056bf4955e7717341fbd715d8c2",
+          "origin": {
+            "kind": "project-node",
+            "projectId": "default-project",
+            "nodeId": "mw-split-3",
+            "sourceVersion": 0,
+            "sourceUpdatedAt": "2026-11-12T14:21:24.771335011+00:00",
+            "sourceUri": null
+          }
+        }
+      ],
+      "omissions": [],
+      "digest": "sha256:5c12c9b110a93c0185770c9cb095a35c6478114462c9061dba827000a2b2ef5b",
+      "artifactDigest": "sha256:905d0b7fabb76c84015cdb23aabe467bf42badf0b557b5102274cd735c3e8110"
+    },
+    "sourceViews": [
+      {
+        "ref": "S0001",
+        "documentRef": "D000001",
+        "documentRange": {
+          "start": 0,
+          "end": 843
+        },
+        "text": "The Greywater watch counted lamp 1 along the cold wall. The Greywater watch counted lamp 2 along the cold wall. The Greywater watch counted lamp 3 along the cold wall. The Greywater watch counted lamp 4 along the cold wall. The Greywater watch counted lamp 5 along the cold wall.\nWarden Pell trimmed the dawn lamp on Greywater Stair. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.\nThe Greywater watch counted lamp 11 along the cold wall. The Greywater watch counted lamp 12 along the cold wall. The Greywater watch counted lamp 13 along the cold wall. The Greywater watch counted lamp 14 along the cold wall. The Greywater watch counted lamp 15 along the cold wall.",
+        "digest": "sha256:997b04931ddb73b0c986d108ca20cf56dc2d48cf2fd182f71254640d74bb57d2"
+      },
+      {
+        "ref": "S0002",
+        "documentRef": "D000002",
+        "documentRange": {
+          "start": 0,
+          "end": 849
+        },
+        "text": "The Greywater watch counted lamp 1 along the cold wall. The Greywater watch counted lamp 2 along the cold wall. The Greywater watch counted lamp 3 along the cold wall. The Greywater watch counted lamp 4 along the cold wall. The Greywater watch counted lamp 5 along the cold wall.\nSurveyor Idrel pinned the tide chart to the Greywater post. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.\nThe Greywater watch counted lamp 11 along the cold wall. The Greywater watch counted lamp 12 along the cold wall. The Greywater watch counted lamp 13 along the cold wall. The Greywater watch counted lamp 14 along the cold wall. The Greywater watch counted lamp 15 along the cold wall.",
+        "digest": "sha256:e545fe5758f45eee889c2b902cc2354bcdf98143bd903edb6cc3ef81a9f75a2a"
+      },
+      {
+        "ref": "S0003",
+        "documentRef": "D000003",
+        "documentRange": {
+          "start": 0,
+          "end": 861
+        },
+        "text": "The Greywater watch counted lamp 1 along the cold wall. The Greywater watch counted lamp 2 along the cold wall. The Greywater watch counted lamp 3 along the cold wall. The Greywater watch counted lamp 4 along the cold wall. The Greywater watch counted lamp 5 along the cold wall.\nSurveyor Idrel meant to pin the tide chart to the Greywater post again. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.\nThe Greywater watch counted lamp 11 along the cold wall. The Greywater watch counted lamp 12 along the cold wall. The Greywater watch counted lamp 13 along the cold wall. The Greywater watch counted lamp 14 along the cold wall. The Greywater watch counted lamp 15 along the cold wall.",
+        "digest": "sha256:b38bed863a48f326120611d58c90df8d797cc692f3c60d842023a93232f8f06b"
+      }
+    ],
+    "existingEventsCatalog": {
+      "kind": "chronicle.existing-events-catalog@1",
+      "events": []
+    },
+    "evidence": {
+      "kind": "chronicle.snapshot-evidence-companion@1",
+      "version": 1,
+      "mode": "citation-id-v2",
+      "catalogVersion": 1,
+      "catalogDigest": "sha256:61b0262a817f51528dfc53ff311a749453ef07a8ee55bdb05853879df196b057",
+      "snapshotDigest": "sha256:5c12c9b110a93c0185770c9cb095a35c6478114462c9061dba827000a2b2ef5b",
+      "snapshotArtifactDigest": "sha256:905d0b7fabb76c84015cdb23aabe467bf42badf0b557b5102274cd735c3e8110",
+      "catalog": {
+        "kind": "narrative-evidence-span-catalog",
+        "version": 1,
+        "segmentationVersion": "sentence-like-v1",
+        "snapshotId": "61758f11-5e25-4e97-8415-cd64ca9203e4",
+        "snapshotDigest": "sha256:5c12c9b110a93c0185770c9cb095a35c6478114462c9061dba827000a2b2ef5b",
+        "snapshotArtifactDigest": "sha256:905d0b7fabb76c84015cdb23aabe467bf42badf0b557b5102274cd735c3e8110",
+        "entries": [
+          {
+            "canonicalId": "occ:226f8daea689a4ca36ae27d8fc4958ec36025fad26777004efec94e6e1f8ed29",
+            "sourceRef": "E000001",
+            "documentRef": "D000001",
+            "canonicalRange": {
+              "start": 0,
+              "end": 279
+            },
+            "range": {
+              "start": 0,
+              "end": 279
+            },
+            "quote": "The Greywater watch counted lamp 1 along the cold wall. The Greywater watch counted lamp 2 along the cold wall. The Greywater watch counted lamp 3 along the cold wall. The Greywater watch counted lamp 4 along the cold wall. The Greywater watch counted lamp 5 along the cold wall.",
+            "text": "The Greywater watch counted lamp 1 along the cold wall. The Greywater watch counted lamp 2 along the cold wall. The Greywater watch counted lamp 3 along the cold wall. The Greywater watch counted lamp 4 along the cold wall. The Greywater watch counted lamp 5 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000001",
+              "documentRef": "D000001",
+              "documentRange": {
+                "start": 0,
+                "end": 279
+              },
+              "text": "The Greywater watch counted lamp 1 along the cold wall. The Greywater watch counted lamp 2 along the cold wall. The Greywater watch counted lamp 3 along the cold wall. The Greywater watch counted lamp 4 along the cold wall. The Greywater watch counted lamp 5 along the cold wall.",
+              "digest": "sha256:97958af4eda15e25e6651ccc928a21c415e4eb6562689e252a6c3f59aef45021"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:5c12c9b110a93c0185770c9cb095a35c6478114462c9061dba827000a2b2ef5b",
+              "snapshotArtifactDigest": "sha256:905d0b7fabb76c84015cdb23aabe467bf42badf0b557b5102274cd735c3e8110",
+              "documentRef": "D000001",
+              "documentArtifactDigest": "sha256:99461c164b7f2684b1687b27393ce09f7579c435edfc35fb2a611fce632aeddf",
+              "range": {
+                "start": 0,
+                "end": 279
+              },
+              "start": 0,
+              "end": 279,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:cd76e60c0951fa684df8ad7c55b3e3690d1a1956944503fc0b495a4761e0b8c9",
+            "sourceRef": "E000002",
+            "documentRef": "D000001",
+            "canonicalRange": {
+              "start": 280,
+              "end": 558
+            },
+            "range": {
+              "start": 280,
+              "end": 558
+            },
+            "quote": "Warden Pell trimmed the dawn lamp on Greywater Stair. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.",
+            "text": "Warden Pell trimmed the dawn lamp on Greywater Stair. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000002",
+              "documentRef": "D000001",
+              "documentRange": {
+                "start": 280,
+                "end": 558
+              },
+              "text": "Warden Pell trimmed the dawn lamp on Greywater Stair. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.",
+              "digest": "sha256:7732c319ef6e9b4c0723cf44e3078c01ae7a28ad146fb1c7c1e00d0e66806640"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:5c12c9b110a93c0185770c9cb095a35c6478114462c9061dba827000a2b2ef5b",
+              "snapshotArtifactDigest": "sha256:905d0b7fabb76c84015cdb23aabe467bf42badf0b557b5102274cd735c3e8110",
+              "documentRef": "D000001",
+              "documentArtifactDigest": "sha256:99461c164b7f2684b1687b27393ce09f7579c435edfc35fb2a611fce632aeddf",
+              "range": {
+                "start": 280,
+                "end": 558
+              },
+              "start": 280,
+              "end": 558,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:ef9791179ec22fb316bc87a9d2376e9db9151608ce065cc366586a149f744a11",
+            "sourceRef": "E000003",
+            "documentRef": "D000001",
+            "canonicalRange": {
+              "start": 559,
+              "end": 843
+            },
+            "range": {
+              "start": 559,
+              "end": 843
+            },
+            "quote": "The Greywater watch counted lamp 11 along the cold wall. The Greywater watch counted lamp 12 along the cold wall. The Greywater watch counted lamp 13 along the cold wall. The Greywater watch counted lamp 14 along the cold wall. The Greywater watch counted lamp 15 along the cold wall.",
+            "text": "The Greywater watch counted lamp 11 along the cold wall. The Greywater watch counted lamp 12 along the cold wall. The Greywater watch counted lamp 13 along the cold wall. The Greywater watch counted lamp 14 along the cold wall. The Greywater watch counted lamp 15 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000003",
+              "documentRef": "D000001",
+              "documentRange": {
+                "start": 559,
+                "end": 843
+              },
+              "text": "The Greywater watch counted lamp 11 along the cold wall. The Greywater watch counted lamp 12 along the cold wall. The Greywater watch counted lamp 13 along the cold wall. The Greywater watch counted lamp 14 along the cold wall. The Greywater watch counted lamp 15 along the cold wall.",
+              "digest": "sha256:5e4afe74b40bfda38c497b698ec06a5bb747aba7bd3364fa00c344a910fee8cb"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:5c12c9b110a93c0185770c9cb095a35c6478114462c9061dba827000a2b2ef5b",
+              "snapshotArtifactDigest": "sha256:905d0b7fabb76c84015cdb23aabe467bf42badf0b557b5102274cd735c3e8110",
+              "documentRef": "D000001",
+              "documentArtifactDigest": "sha256:99461c164b7f2684b1687b27393ce09f7579c435edfc35fb2a611fce632aeddf",
+              "range": {
+                "start": 559,
+                "end": 843
+              },
+              "start": 559,
+              "end": 843,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:18e52e65b5d30ceb4de8eb84940ef4b8fd934ab8b1b150e1e4cc4426f49fddcb",
+            "sourceRef": "E000004",
+            "documentRef": "D000002",
+            "canonicalRange": {
+              "start": 0,
+              "end": 279
+            },
+            "range": {
+              "start": 0,
+              "end": 279
+            },
+            "quote": "The Greywater watch counted lamp 1 along the cold wall. The Greywater watch counted lamp 2 along the cold wall. The Greywater watch counted lamp 3 along the cold wall. The Greywater watch counted lamp 4 along the cold wall. The Greywater watch counted lamp 5 along the cold wall.",
+            "text": "The Greywater watch counted lamp 1 along the cold wall. The Greywater watch counted lamp 2 along the cold wall. The Greywater watch counted lamp 3 along the cold wall. The Greywater watch counted lamp 4 along the cold wall. The Greywater watch counted lamp 5 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000004",
+              "documentRef": "D000002",
+              "documentRange": {
+                "start": 0,
+                "end": 279
+              },
+              "text": "The Greywater watch counted lamp 1 along the cold wall. The Greywater watch counted lamp 2 along the cold wall. The Greywater watch counted lamp 3 along the cold wall. The Greywater watch counted lamp 4 along the cold wall. The Greywater watch counted lamp 5 along the cold wall.",
+              "digest": "sha256:b44d32cbcf1fc87644db9b8e6d7eb9c5e70e66b2e9771ac4a12c1b1bf044a884"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:5c12c9b110a93c0185770c9cb095a35c6478114462c9061dba827000a2b2ef5b",
+              "snapshotArtifactDigest": "sha256:905d0b7fabb76c84015cdb23aabe467bf42badf0b557b5102274cd735c3e8110",
+              "documentRef": "D000002",
+              "documentArtifactDigest": "sha256:b070448bc7d71c7d9be62791df8f432560d11e20abe107175a1dcefe149f82b3",
+              "range": {
+                "start": 0,
+                "end": 279
+              },
+              "start": 0,
+              "end": 279,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:e504a07ef51c481e736d375367e8df15854a606b7bc4d3854c6d09240059df70",
+            "sourceRef": "E000005",
+            "documentRef": "D000002",
+            "canonicalRange": {
+              "start": 280,
+              "end": 564
+            },
+            "range": {
+              "start": 280,
+              "end": 564
+            },
+            "quote": "Surveyor Idrel pinned the tide chart to the Greywater post. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.",
+            "text": "Surveyor Idrel pinned the tide chart to the Greywater post. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000005",
+              "documentRef": "D000002",
+              "documentRange": {
+                "start": 280,
+                "end": 564
+              },
+              "text": "Surveyor Idrel pinned the tide chart to the Greywater post. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.",
+              "digest": "sha256:8be2772fa7a5d2883b1b0e7e7c6138f7af866799d4b9355993261d9f24b245d4"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:5c12c9b110a93c0185770c9cb095a35c6478114462c9061dba827000a2b2ef5b",
+              "snapshotArtifactDigest": "sha256:905d0b7fabb76c84015cdb23aabe467bf42badf0b557b5102274cd735c3e8110",
+              "documentRef": "D000002",
+              "documentArtifactDigest": "sha256:b070448bc7d71c7d9be62791df8f432560d11e20abe107175a1dcefe149f82b3",
+              "range": {
+                "start": 280,
+                "end": 564
+              },
+              "start": 280,
+              "end": 564,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:326131a540f6825a4d28a55fc117f3321a48b91013b4a7117a4c6545eabe1545",
+            "sourceRef": "E000006",
+            "documentRef": "D000002",
+            "canonicalRange": {
+              "start": 565,
+              "end": 849
+            },
+            "range": {
+              "start": 565,
+              "end": 849
+            },
+            "quote": "The Greywater watch counted lamp 11 along the cold wall. The Greywater watch counted lamp 12 along the cold wall. The Greywater watch counted lamp 13 along the cold wall. The Greywater watch counted lamp 14 along the cold wall. The Greywater watch counted lamp 15 along the cold wall.",
+            "text": "The Greywater watch counted lamp 11 along the cold wall. The Greywater watch counted lamp 12 along the cold wall. The Greywater watch counted lamp 13 along the cold wall. The Greywater watch counted lamp 14 along the cold wall. The Greywater watch counted lamp 15 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000006",
+              "documentRef": "D000002",
+              "documentRange": {
+                "start": 565,
+                "end": 849
+              },
+              "text": "The Greywater watch counted lamp 11 along the cold wall. The Greywater watch counted lamp 12 along the cold wall. The Greywater watch counted lamp 13 along the cold wall. The Greywater watch counted lamp 14 along the cold wall. The Greywater watch counted lamp 15 along the cold wall.",
+              "digest": "sha256:ab3e94097e3f6a4f4759599c6bb670569a55f3ff098142cba2ea830c6a96810a"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:5c12c9b110a93c0185770c9cb095a35c6478114462c9061dba827000a2b2ef5b",
+              "snapshotArtifactDigest": "sha256:905d0b7fabb76c84015cdb23aabe467bf42badf0b557b5102274cd735c3e8110",
+              "documentRef": "D000002",
+              "documentArtifactDigest": "sha256:b070448bc7d71c7d9be62791df8f432560d11e20abe107175a1dcefe149f82b3",
+              "range": {
+                "start": 565,
+                "end": 849
+              },
+              "start": 565,
+              "end": 849,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:6ad6fc0226e2d241093c340013f4d1f833c691a06751a7bce4b65d0141c2ef45",
+            "sourceRef": "E000007",
+            "documentRef": "D000003",
+            "canonicalRange": {
+              "start": 0,
+              "end": 279
+            },
+            "range": {
+              "start": 0,
+              "end": 279
+            },
+            "quote": "The Greywater watch counted lamp 1 along the cold wall. The Greywater watch counted lamp 2 along the cold wall. The Greywater watch counted lamp 3 along the cold wall. The Greywater watch counted lamp 4 along the cold wall. The Greywater watch counted lamp 5 along the cold wall.",
+            "text": "The Greywater watch counted lamp 1 along the cold wall. The Greywater watch counted lamp 2 along the cold wall. The Greywater watch counted lamp 3 along the cold wall. The Greywater watch counted lamp 4 along the cold wall. The Greywater watch counted lamp 5 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000007",
+              "documentRef": "D000003",
+              "documentRange": {
+                "start": 0,
+                "end": 279
+              },
+              "text": "The Greywater watch counted lamp 1 along the cold wall. The Greywater watch counted lamp 2 along the cold wall. The Greywater watch counted lamp 3 along the cold wall. The Greywater watch counted lamp 4 along the cold wall. The Greywater watch counted lamp 5 along the cold wall.",
+              "digest": "sha256:2e5143e6951c0c4889a0953646c5731b33e09f22aae1174ec593875932b83d4b"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:5c12c9b110a93c0185770c9cb095a35c6478114462c9061dba827000a2b2ef5b",
+              "snapshotArtifactDigest": "sha256:905d0b7fabb76c84015cdb23aabe467bf42badf0b557b5102274cd735c3e8110",
+              "documentRef": "D000003",
+              "documentArtifactDigest": "sha256:ae487ef19413d5f0aa9928e6b3a1a70d2f194056bf4955e7717341fbd715d8c2",
+              "range": {
+                "start": 0,
+                "end": 279
+              },
+              "start": 0,
+              "end": 279,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:9f59f295b5cf1036f9744f34c70bfdcc954d75a201cbbff3ca48165e6ef9714d",
+            "sourceRef": "E000008",
+            "documentRef": "D000003",
+            "canonicalRange": {
+              "start": 280,
+              "end": 576
+            },
+            "range": {
+              "start": 280,
+              "end": 576
+            },
+            "quote": "Surveyor Idrel meant to pin the tide chart to the Greywater post again. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.",
+            "text": "Surveyor Idrel meant to pin the tide chart to the Greywater post again. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000008",
+              "documentRef": "D000003",
+              "documentRange": {
+                "start": 280,
+                "end": 576
+              },
+              "text": "Surveyor Idrel meant to pin the tide chart to the Greywater post again. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.",
+              "digest": "sha256:40d6d42417ca4e6e322e3027307b4429137f7ee6f22b6bfd59cdad16ec18a577"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:5c12c9b110a93c0185770c9cb095a35c6478114462c9061dba827000a2b2ef5b",
+              "snapshotArtifactDigest": "sha256:905d0b7fabb76c84015cdb23aabe467bf42badf0b557b5102274cd735c3e8110",
+              "documentRef": "D000003",
+              "documentArtifactDigest": "sha256:ae487ef19413d5f0aa9928e6b3a1a70d2f194056bf4955e7717341fbd715d8c2",
+              "range": {
+                "start": 280,
+                "end": 576
+              },
+              "start": 280,
+              "end": 576,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:99f1971531dbbcdaa7aceff9ae8188c1479b2e149c4bbe2b9e720816e42a0d3d",
+            "sourceRef": "E000009",
+            "documentRef": "D000003",
+            "canonicalRange": {
+              "start": 577,
+              "end": 861
+            },
+            "range": {
+              "start": 577,
+              "end": 861
+            },
+            "quote": "The Greywater watch counted lamp 11 along the cold wall. The Greywater watch counted lamp 12 along the cold wall. The Greywater watch counted lamp 13 along the cold wall. The Greywater watch counted lamp 14 along the cold wall. The Greywater watch counted lamp 15 along the cold wall.",
+            "text": "The Greywater watch counted lamp 11 along the cold wall. The Greywater watch counted lamp 12 along the cold wall. The Greywater watch counted lamp 13 along the cold wall. The Greywater watch counted lamp 14 along the cold wall. The Greywater watch counted lamp 15 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000009",
+              "documentRef": "D000003",
+              "documentRange": {
+                "start": 577,
+                "end": 861
+              },
+              "text": "The Greywater watch counted lamp 11 along the cold wall. The Greywater watch counted lamp 12 along the cold wall. The Greywater watch counted lamp 13 along the cold wall. The Greywater watch counted lamp 14 along the cold wall. The Greywater watch counted lamp 15 along the cold wall.",
+              "digest": "sha256:f9001bace338910fe0af216eea6f497c2169b1887cf57da51c89e4e9367bf796"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:5c12c9b110a93c0185770c9cb095a35c6478114462c9061dba827000a2b2ef5b",
+              "snapshotArtifactDigest": "sha256:905d0b7fabb76c84015cdb23aabe467bf42badf0b557b5102274cd735c3e8110",
+              "documentRef": "D000003",
+              "documentArtifactDigest": "sha256:ae487ef19413d5f0aa9928e6b3a1a70d2f194056bf4955e7717341fbd715d8c2",
+              "range": {
+                "start": 577,
+                "end": 861
+              },
+              "start": 577,
+              "end": 861,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          }
+        ],
+        "digest": "sha256:61b0262a817f51528dfc53ff311a749453ef07a8ee55bdb05853879df196b057"
+      }
+    },
+    "scopeAuthorityDocuments": [
+      {
+        "documentRef": "D000001",
+        "sourceKey": "project:scene:mw-split-1",
+        "rawStoryKey": null
+      },
+      {
+        "documentRef": "D000002",
+        "sourceKey": "project:scene:mw-split-2",
+        "rawStoryKey": null
+      },
+      {
+        "documentRef": "D000003",
+        "sourceKey": "project:scene:mw-split-3",
+        "rawStoryKey": null
+      }
+    ]
+  },
+  "plan": {
+    "windows": [
+      {
+        "windowId": "window-001",
+        "documentRef": "D000001",
+        "sourceRef": "S0001",
+        "ownedRanges": [
+          {
+            "start": 0,
+            "end": 843
+          }
+        ],
+        "contextRanges": []
+      },
+      {
+        "windowId": "window-002",
+        "documentRef": "D000002",
+        "sourceRef": "S0002",
+        "ownedRanges": [
+          {
+            "start": 0,
+            "end": 849
+          }
+        ],
+        "contextRanges": []
+      },
+      {
+        "windowId": "window-003",
+        "documentRef": "D000003",
+        "sourceRef": "S0003",
+        "ownedRanges": [
+          {
+            "start": 0,
+            "end": 861
+          }
+        ],
+        "contextRanges": []
+      }
+    ]
+  },
+  "outputs": [
+    {
+      "rootStageExecutionId": "edce7ba1-d083-4210-9515-7d4360717879",
+      "terminalStageExecutionId": "edce7ba1-d083-4210-9515-7d4360717879",
+      "disposition": "root-success",
+      "clusterRef": "cluster-0001",
+      "rawObservations": {
+        "kind": "chronicle.raw-observations@1",
+        "version": 1,
+        "observations": [
+          {
+            "localId": "window-001:obs-001",
+            "evidence": [
+              {
+                "sourceRef": "E000002",
+                "quote": "Warden Pell trimmed the dawn lamp on Greywater Stair. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall."
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "trims a lamp",
+              "actuality": "actual",
+              "participants": [],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "eventOutput": {
+        "clusterRef": "cluster-0001",
+        "resolution": "single-event",
+        "events": [
+          {
+            "observationRefs": [
+              "window-001:obs-001"
+            ],
+            "titleSuggestion": "Lamp trimmed at dawn",
+            "summary": "Warden Pell trimmed the dawn lamp.",
+            "actuality": "actual",
+            "significance": "major"
+          }
+        ]
+      },
+      "output": {
+        "kind": "chronicle.event-synthesis-output@1",
+        "observationCount": 1,
+        "eventCount": 1,
+        "observationRefs": [
+          "window-001:obs-001"
+        ],
+        "rawObservationsDigest": "sha256:320cbc5e683381a326588d2950e29b0440bce740aa63ec8cf109cb9ef2d7b0b2",
+        "parsedOutputDigest": "sha256:22f75181a2692ea5b9454b0522d9ff70556146196ede23cf023a7e3a1903c53b",
+        "eventOutputDigest": "sha256:e0d5584f8adfef0668ab9d7819f5644c544a27f6556c96bd2c667b53240ea45c"
+      }
+    },
+    {
+      "rootStageExecutionId": "57754c58-5dc5-4ae0-a8db-7bf3760b08e8",
+      "terminalStageExecutionId": "57754c58-5dc5-4ae0-a8db-7bf3760b08e8",
+      "disposition": "root-success",
+      "clusterRef": "cluster-0002",
+      "rawObservations": {
+        "kind": "chronicle.raw-observations@1",
+        "version": 1,
+        "observations": [
+          {
+            "localId": "window-002:obs-001",
+            "evidence": [
+              {
+                "sourceRef": "E000005",
+                "quote": "Surveyor Idrel pinned the tide chart to the Greywater post. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall."
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "pins a tide chart",
+              "actuality": "actual",
+              "participants": [],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "window-003:obs-001",
+            "evidence": [
+              {
+                "sourceRef": "E000008",
+                "quote": "Surveyor Idrel meant to pin the tide chart to the Greywater post again. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall."
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "pins a tide chart",
+              "actuality": "planned",
+              "participants": [],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "eventOutput": {
+        "clusterRef": "cluster-0002",
+        "resolution": "single-event",
+        "events": [
+          {
+            "observationRefs": [
+              "window-002:obs-001"
+            ],
+            "titleSuggestion": "Tide chart pinned to the post",
+            "summary": "Surveyor Idrel pinned the tide chart.",
+            "actuality": "actual",
+            "significance": "major"
+          }
+        ]
+      },
+      "output": {
+        "kind": "chronicle.event-synthesis-output@1",
+        "observationCount": 2,
+        "eventCount": 1,
+        "observationRefs": [
+          "window-002:obs-001",
+          "window-003:obs-001"
+        ],
+        "rawObservationsDigest": "sha256:0698a9fbcd3ba56b3727833a0ec2ec281bb81ca1cb7f2526a7eee002ca8754b0",
+        "parsedOutputDigest": "sha256:3d994aa9eae68b5a325a0852b31874caddff58543096cfa05689e430f3b52219",
+        "eventOutputDigest": "sha256:0002e769a54a4abac737b7bde694ae268e1ce39203b9b5f252e22b6d5da19cce"
+      }
+    }
+  ],
+  "receipts": [
+    {
+      "kind": "chronicle-stage-terminal-receipt",
+      "version": 1,
+      "stageExecution": {
+        "projectId": "default-project",
+        "runId": "9945fd2c-cd22-425a-a2f7-befa5b94438a",
+        "taskId": "63058974-3169-4bfc-b624-2ec97f18dcd1",
+        "attemptId": "4af3956a-8ef8-463c-b7d6-db2cf4ea6a34",
+        "stageId": "narrative_observation_extract",
+        "stageExecutionId": "062d345d-a55f-47a8-ad9f-5bb1ea016db7"
+      },
+      "contextSetVersion": "chronicle.context-set/1",
+      "contextSetDigest": "sha256:cfc0455b49f4f1aa9604f8e136ad02e0415dd7210759449fbc5985f04054e317",
+      "componentContractDigest": "sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22",
+      "finalRequestDigest": "sha256:d51e68bf69849882d4ad891250d4730c9034f905f066eb25c85782aa52afcfcc",
+      "modelExecutionBinding": {
+        "kind": "chronicle-stage-model-binding",
+        "version": 1,
+        "provider": "ollama",
+        "endpointBindingId": null,
+        "requestedModel": "product-journey-model",
+        "effectiveModel": null,
+        "modelFingerprint": null,
+        "apiVariant": null,
+        "reasoningMode": null,
+        "generationMode": "provider-default",
+        "resolutionStatus": "requested-only"
+      },
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "responseDigest": "sha256:1bd82cc6eb3f0ace0a9e3ff877d8acffcf5b78ae1ce8ec887e6a67673a82dc48",
+      "rawObservationsDigest": null,
+      "parsedOutputDigest": null,
+      "parseStatus": "parsed",
+      "terminalStatus": "succeeded",
+      "stageExecutionReceiptDigest": "sha256:4e9f2fc5cad5e1562bb02a00896f69d828520b318ea1b9a29ac25bdd2cadba1a"
+    },
+    {
+      "kind": "chronicle-stage-terminal-receipt",
+      "version": 1,
+      "stageExecution": {
+        "projectId": "default-project",
+        "runId": "9945fd2c-cd22-425a-a2f7-befa5b94438a",
+        "taskId": "63058974-3169-4bfc-b624-2ec97f18dcd1",
+        "attemptId": "4af3956a-8ef8-463c-b7d6-db2cf4ea6a34",
+        "stageId": "narrative_observation_extract",
+        "stageExecutionId": "395bf420-a99e-4357-8357-befd172b273f"
+      },
+      "contextSetVersion": "chronicle.context-set/1",
+      "contextSetDigest": "sha256:dc5ce05c0af8ca8703db9ae39ebf75a9894fd00b1b550e3be8eb45ed29aff2d5",
+      "componentContractDigest": "sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22",
+      "finalRequestDigest": "sha256:fd9df29c01891a460fca159ccfbabd56de9b7abd4457642454f1e77286d181ec",
+      "modelExecutionBinding": {
+        "kind": "chronicle-stage-model-binding",
+        "version": 1,
+        "provider": "ollama",
+        "endpointBindingId": null,
+        "requestedModel": "product-journey-model",
+        "effectiveModel": null,
+        "modelFingerprint": null,
+        "apiVariant": null,
+        "reasoningMode": null,
+        "generationMode": "provider-default",
+        "resolutionStatus": "requested-only"
+      },
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "responseDigest": "sha256:a1f984dd6f072990fc976e3431ba9ef4fcaaf7cd4ff4fec5690728d2dba6a1d3",
+      "rawObservationsDigest": null,
+      "parsedOutputDigest": null,
+      "parseStatus": "parsed",
+      "terminalStatus": "succeeded",
+      "stageExecutionReceiptDigest": "sha256:03af92f5e4fd562f4eb9d3b8c7b0a94481e2ca0fca4d023180c1c676d075e8d2"
+    },
+    {
+      "kind": "chronicle-stage-terminal-receipt",
+      "version": 1,
+      "stageExecution": {
+        "projectId": "default-project",
+        "runId": "9945fd2c-cd22-425a-a2f7-befa5b94438a",
+        "taskId": "a6a14782-cfd4-4b51-a3f3-714d2ea1ea39",
+        "attemptId": "06544bb1-5787-408b-b9fd-da02d67e7c77",
+        "stageId": "narrative_event_synthesize",
+        "stageExecutionId": "57754c58-5dc5-4ae0-a8db-7bf3760b08e8"
+      },
+      "contextSetVersion": "chronicle.context-set/1",
+      "contextSetDigest": "sha256:040d2d641036ff32759c7dd6d2a98078acdb25b7c1fd8539149e5728dd21843f",
+      "componentContractDigest": "sha256:20bb71b13fa5f4b4ef85a12edd1698d420a1e42dcb48dcacb77581bc6fa8478f",
+      "finalRequestDigest": "sha256:2a23dc6ab7be0457abfed32b108f7b82a6215aae45da7e150a3680df87ffade7",
+      "modelExecutionBinding": {
+        "kind": "chronicle-stage-model-binding",
+        "version": 1,
+        "provider": "ollama",
+        "endpointBindingId": null,
+        "requestedModel": "product-journey-model",
+        "effectiveModel": null,
+        "modelFingerprint": null,
+        "apiVariant": null,
+        "reasoningMode": null,
+        "generationMode": "provider-default",
+        "resolutionStatus": "requested-only"
+      },
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "responseDigest": "sha256:a4cf1d3a5417621e0f880ddc8f24fa42e0884d00a4f997d31003067c68541a0c",
+      "rawObservationsDigest": "sha256:0698a9fbcd3ba56b3727833a0ec2ec281bb81ca1cb7f2526a7eee002ca8754b0",
+      "parsedOutputDigest": "sha256:3d994aa9eae68b5a325a0852b31874caddff58543096cfa05689e430f3b52219",
+      "parseStatus": "parsed",
+      "terminalStatus": "succeeded",
+      "stageExecutionReceiptDigest": "sha256:40b852d247fbdeb565c3fa0dd6f48712106ce5588820464a3f1246ed87286eb9"
+    },
+    {
+      "kind": "chronicle-stage-terminal-receipt",
+      "version": 1,
+      "stageExecution": {
+        "projectId": "default-project",
+        "runId": "9945fd2c-cd22-425a-a2f7-befa5b94438a",
+        "taskId": "a6a14782-cfd4-4b51-a3f3-714d2ea1ea39",
+        "attemptId": "06544bb1-5787-408b-b9fd-da02d67e7c77",
+        "stageId": "narrative_event_synthesize",
+        "stageExecutionId": "edce7ba1-d083-4210-9515-7d4360717879"
+      },
+      "contextSetVersion": "chronicle.context-set/1",
+      "contextSetDigest": "sha256:e1cc1fb8fa5ea41f576dbb303fea75f989d55dee3305dccc31791ec2e4eac861",
+      "componentContractDigest": "sha256:20bb71b13fa5f4b4ef85a12edd1698d420a1e42dcb48dcacb77581bc6fa8478f",
+      "finalRequestDigest": "sha256:4e19c5b9bfb6d441747cdc4ec26740f783abe5c15980d5d52f5708ececff969c",
+      "modelExecutionBinding": {
+        "kind": "chronicle-stage-model-binding",
+        "version": 1,
+        "provider": "ollama",
+        "endpointBindingId": null,
+        "requestedModel": "product-journey-model",
+        "effectiveModel": null,
+        "modelFingerprint": null,
+        "apiVariant": null,
+        "reasoningMode": null,
+        "generationMode": "provider-default",
+        "resolutionStatus": "requested-only"
+      },
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "responseDigest": "sha256:9340d4b0d2bea5366e6d82bf29d6cb5a2bcca775718746e25bdf949a2e0073da",
+      "rawObservationsDigest": "sha256:320cbc5e683381a326588d2950e29b0440bce740aa63ec8cf109cb9ef2d7b0b2",
+      "parsedOutputDigest": "sha256:22f75181a2692ea5b9454b0522d9ff70556146196ede23cf023a7e3a1903c53b",
+      "parseStatus": "parsed",
+      "terminalStatus": "succeeded",
+      "stageExecutionReceiptDigest": "sha256:b0253bad97e88cbd0542c934c816b1ab980adf26b984d6dd9db47c76fbb0b956"
+    },
+    {
+      "kind": "chronicle-stage-terminal-receipt",
+      "version": 1,
+      "stageExecution": {
+        "projectId": "default-project",
+        "runId": "9945fd2c-cd22-425a-a2f7-befa5b94438a",
+        "taskId": "63058974-3169-4bfc-b624-2ec97f18dcd1",
+        "attemptId": "4af3956a-8ef8-463c-b7d6-db2cf4ea6a34",
+        "stageId": "narrative_observation_extract",
+        "stageExecutionId": "f23eddc6-e35b-425f-90af-f034f0b235e1"
+      },
+      "contextSetVersion": "chronicle.context-set/1",
+      "contextSetDigest": "sha256:8941f5996c82342dc954a6ee13b881341a8fd929a3837399a8754e58d241e65e",
+      "componentContractDigest": "sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22",
+      "finalRequestDigest": "sha256:90c1c11a4920d6b5ac1d44dca74e66deefaf34045efd4a049596b2381b98c5d8",
+      "modelExecutionBinding": {
+        "kind": "chronicle-stage-model-binding",
+        "version": 1,
+        "provider": "ollama",
+        "endpointBindingId": null,
+        "requestedModel": "product-journey-model",
+        "effectiveModel": null,
+        "modelFingerprint": null,
+        "apiVariant": null,
+        "reasoningMode": null,
+        "generationMode": "provider-default",
+        "resolutionStatus": "requested-only"
+      },
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "responseDigest": "sha256:41e71bf36d73bd78f275cbf70a1da77addb95b1843dec6104a0f4c0a46ea6e6f",
+      "rawObservationsDigest": null,
+      "parsedOutputDigest": null,
+      "parseStatus": "parsed",
+      "terminalStatus": "succeeded",
+      "stageExecutionReceiptDigest": "sha256:07f284928e0966eca271c2de344598925d3ea6835c512afcfe2513032ec4e36d"
+    }
+  ],
+  "rootEnvelope": {
+    "assertion": {
+      "assertionId": null,
+      "assertionKind": "scene-event@1",
+      "modality": "modality-inference",
+      "payload": {
+        "actuality": "actual",
+        "attribution": "narrator",
+        "eventId": "97a61dcd-b3e9-4309-a718-da284faa62ab",
+        "mergedObservationRefs": [
+          "window-002:obs-001"
+        ],
+        "narrativeFrame": "story-world",
+        "observationRefs": [
+          "window-002:obs-001"
+        ],
+        "observationSummaries": [
+          {
+            "durationKind": "instant",
+            "observationRef": "window-002:obs-001",
+            "participants": [],
+            "predicate": "pins a tide chart",
+            "temporalExpressions": []
+          }
+        ],
+        "originalObservationRefs": [
+          "window-002:obs-001"
+        ],
+        "significance": "major",
+        "summary": "Surveyor Idrel pinned the tide chart."
+      },
+      "payloadSchemaRef": {
+        "id": "narrative.chronicle.scene-event",
+        "version": "1"
+      },
+      "polarity": "affirmative",
+      "producer": {
+        "id": "grimodex.chronicle-extraction",
+        "kind": "reconciler-proposal",
+        "version": "1"
+      },
+      "scope": {
+        "audience": {
+          "constraintId": "audience:97a61dcd-b3e9-4309-a718-da284faa62ab",
+          "kind": "unresolved",
+          "reason": "not-provided"
+        },
+        "knowledgeHolder": {
+          "kind": "any"
+        },
+        "narrativeLayer": {
+          "kind": "any"
+        },
+        "readingOrder": {
+          "constraintId": "reading-order:97a61dcd-b3e9-4309-a718-da284faa62ab",
+          "kind": "unresolved",
+          "reason": "not-provided"
+        },
+        "registryVersion": "narrative-scope/2",
+        "scene": {
+          "kind": "exact",
+          "ref": "scene:mw-split-2"
+        },
+        "schemaVersion": 2,
+        "storyTime": {
+          "kind": "any"
+        },
+        "timeline": {
+          "kind": "any"
+        },
+        "viewpoint": {
+          "kind": "any"
+        },
+        "worldline": {
+          "kind": "any"
+        }
+      },
+      "supportClass": "direct-source"
+    },
+    "assertionDigests": {
+      "assertionCoreDigest": "sha256:75c2ca8c970bb9c2af4e3ea07c38b9576cc89cc1b1c121a1ac5e9966979b9ac4",
+      "assertionDigest": "sha256:9195f0e40288a780810306fc5f0d7900a96c29656d390d944a31e7b92931b5c4",
+      "scopeDigest": "sha256:69e49ea3eea4130df75d094bd026d6ad753c73cd4c392f917d1e243ced8302e8"
+    },
+    "changeIntent": {
+      "changeKind": "add"
+    },
+    "effectiveMaterialBasis": {
+      "dependencySet": [
+        {
+          "contextIds": [
+            "event-cluster:cluster-0002",
+            "event-observation:window-002:obs-001"
+          ],
+          "dependencyId": "dependency:evidence:anchor-0002",
+          "inputRef": "project:scene:mw-split-2",
+          "role": "direct-evidence",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [
+            "event-cluster:cluster-0002",
+            "event-observation:window-002:obs-001"
+          ],
+          "dependencyId": "dependency:source-basis:snapshot:9945fd2c-cd22-425a-a2f7-befa5b94438a",
+          "inputRef": "snapshot:9945fd2c-cd22-425a-a2f7-befa5b94438a",
+          "role": "opaque-model-context",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [
+            "event-cluster:cluster-0002",
+            "event-observation:window-002:obs-001"
+          ],
+          "dependencyId": "dependency:source-basis:project:scene:mw-split-3",
+          "inputRef": "project:scene:mw-split-3",
+          "role": "opaque-model-context",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [
+            "event-cluster:cluster-0002"
+          ],
+          "dependencyId": "dependency:context:event-cluster:cluster-0002",
+          "inputRef": "cluster:cluster-0002",
+          "role": "opaque-model-context",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [
+            "event-observation:window-002:obs-001"
+          ],
+          "dependencyId": "dependency:context:event-observation:window-002:obs-001",
+          "inputRef": "observation:window-002:obs-001",
+          "role": "opaque-model-context",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [
+            "event-observation:window-003:obs-001"
+          ],
+          "dependencyId": "dependency:context:event-observation:window-003:obs-001",
+          "inputRef": "observation:window-003:obs-001",
+          "role": "opaque-model-context",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [],
+          "dependencyId": "dependency:component-contract",
+          "inputRef": "component:chronicle.event-synthesis.prompt",
+          "role": "component-contract",
+          "selector": {
+            "contractDigest": "sha256:20bb71b13fa5f4b4ef85a12edd1698d420a1e42dcb48dcacb77581bc6fa8478f",
+            "contractId": "chronicle.event-synthesis.prompt",
+            "kind": "component-contract"
+          }
+        }
+      ],
+      "dependencySetDigest": "sha256:d00a722cc771ef385360606300811ee9ea2bb5cc434dd002e7a4bd07a97236e9",
+      "evidenceSet": [
+        {
+          "documentRef": "D000002",
+          "evidenceRef": "anchor-0002",
+          "quote": "Surveyor Idrel pinned the tide chart to the Greywater post. The Greywater watch counted lamp 7 along the cold wall. The Greywater watch counted lamp 8 along the cold wall. The Greywater watch counted lamp 9 along the cold wall. The Greywater watch counted lamp 10 along the cold wall.",
+          "quoteDigest": "sha256:7ab74c8cdb467408196871c5e4aa1d8a00384a6f45a8011727976f7dea8e07d2",
+          "revisionToken": "v0@2026-11-12T14:21:24.760669450+00:00",
+          "sourceKey": "project:scene:mw-split-2"
+        }
+      ],
+      "materialBasisDigest": "sha256:8104395a19ab830bbab4b3d73d3572e9a226032d48c2b7c41834dd74d6ea370d",
+      "sourceBasis": [
+        {
+          "revisionToken": "sha256:5c12c9b110a93c0185770c9cb095a35c6478114462c9061dba827000a2b2ef5b",
+          "sourceKey": "snapshot:9945fd2c-cd22-425a-a2f7-befa5b94438a",
+          "sourceKind": "snapshot-document"
+        },
+        {
+          "revisionToken": "v0@2026-11-12T14:21:24.760669450+00:00",
+          "sourceKey": "project:scene:mw-split-2",
+          "sourceKind": "scene-body"
+        },
+        {
+          "revisionToken": "v0@2026-11-12T14:21:24.771335011+00:00",
+          "sourceKey": "project:scene:mw-split-3",
+          "sourceKind": "scene-body"
+        }
+      ]
+    },
+    "projectionBinding": {
+      "adapterContractId": "chronicle.scene-event",
+      "adapterContractVersion": "1",
+      "proposalKind": "chronicle.create-event@1",
+      "proposalPayloadDigest": "sha256:7ddb6e89458efa1c63a79f9e253c89c41260c3bc0816b1df5e0b2cea764a4627",
+      "proposalSchemaRef": {
+        "id": "narrative.chronicle-event.create",
+        "version": "1"
+      }
+    },
+    "revisionBasis": {
+      "componentContractDigest": "sha256:20bb71b13fa5f4b4ef85a12edd1698d420a1e42dcb48dcacb77581bc6fa8478f",
+      "contextSet": [
+        {
+          "contextId": "event-cluster:cluster-0002",
+          "exposure": "model-visible",
+          "inputRef": "cluster:cluster-0002",
+          "selector": {
+            "kind": "whole-source"
+          },
+          "stageId": "narrative_event_synthesize"
+        },
+        {
+          "contextId": "event-observation:window-002:obs-001",
+          "exposure": "model-visible",
+          "inputRef": "observation:window-002:obs-001",
+          "selector": {
+            "kind": "whole-source"
+          },
+          "stageId": "narrative_event_synthesize"
+        },
+        {
+          "contextId": "event-observation:window-003:obs-001",
+          "exposure": "model-visible",
+          "inputRef": "observation:window-003:obs-001",
+          "selector": {
+            "kind": "whole-source"
+          },
+          "stageId": "narrative_event_synthesize"
+        }
+      ],
+      "contextSetDigest": "sha256:040d2d641036ff32759c7dd6d2a98078acdb25b7c1fd8539149e5728dd21843f",
+      "finalRequestDigest": "sha256:2a23dc6ab7be0457abfed32b108f7b82a6215aae45da7e150a3680df87ffade7",
+      "kind": "interpretation",
+      "producer": {
+        "id": "grimodex.chronicle-extraction",
+        "kind": "reconciler-proposal",
+        "version": "1"
+      },
+      "runId": "9945fd2c-cd22-425a-a2f7-befa5b94438a",
+      "taskId": "a6a14782-cfd4-4b51-a3f3-714d2ea1ea39"
+    },
+    "schemaVersion": 2
+  }
+}
