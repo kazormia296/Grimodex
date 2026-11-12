@@ -35,7 +35,7 @@ function request(pathId: string, context: string) {
     auditContext: { pathId, executionId: "audit-execution" },
   };
 }
-const synthesisSections = (keys: string[]) => [
+const synthesisSections = (keys: string[], actualities: string[] = []) => [
   {
     contextId: "event-cluster:cluster-0001",
     inputRef: "cluster:cluster-0001",
@@ -44,7 +44,7 @@ const synthesisSections = (keys: string[]) => [
   ...keys.map((key, index) => ({
     contextId: `event-observation:window-00${index + 1}:${key}`,
     inputRef: `observation:window-00${index + 1}:${key}`,
-    value: `- localId=window-00${index + 1}:${key}; actuality=actual; predicate=${row(key).predicate}; evidence=S1:x`,
+    value: `- localId=window-00${index + 1}:${key}; actuality=${actualities[index] ?? "actual"}; predicate=${row(key).predicate}; evidence=S1:x`,
   })),
 ];
 
@@ -105,6 +105,37 @@ describe("multi-window Journey response", () => {
       "window-002:seal-last",
     ]);
     expect(reply.events[0]!.titleSuggestion).toBe(fixture.clusters.seal.title);
+  });
+
+  it("cites only the Observations that can make an event, leaving a planned one in the request", () => {
+    const reply = productJourneyMultiWindowSynthesis(
+      synthesisSections(["tide-first", "tide-last"], ["actual", "planned"]),
+    ) as { events: { observationRefs: string[]; titleSuggestion: string }[] };
+    expect(reply.events).toHaveLength(1);
+    expect(reply.events[0]!.observationRefs).toEqual(["window-001:tide-first"]);
+    expect(reply.events[0]!.titleSuggestion).toBe(fixture.clusters.tide.title);
+    expect(
+      productJourneyMultiWindowSynthesis(
+        synthesisSections(["tide-last"], ["planned"]),
+      ),
+    ).toBeNull();
+  });
+
+  it("answers a planned marker with its own actuality and the others as actual", () => {
+    const reply = productJourneyMultiWindowObservation([
+      windowSection("window-003", [
+        { kind: "span", text: row("tide-last").marker, evidenceRef: "E-7" },
+      ]),
+    ]) as { observations: { payload: { actuality: string } }[] };
+    expect(reply.observations.map((o) => o.payload.actuality)).toEqual([
+      "planned",
+    ]);
+    const other = productJourneyMultiWindowObservation([
+      windowSection("window-002", [
+        { kind: "span", text: row("tide-first").marker, evidenceRef: "E-8" },
+      ]),
+    ]) as { observations: { payload: { actuality: string } }[] };
+    expect(other.observations[0]!.payload.actuality).toBe("actual");
   });
 
   it("refuses a cluster that mixes two fixture clusters", () => {
