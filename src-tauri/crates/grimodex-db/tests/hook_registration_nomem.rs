@@ -211,6 +211,32 @@ fn a_disabled_progress_handler_keeps_its_entry_and_does_not_fire() {
         "disabled"
     );
 
+    // A handler registered by raw FFI (no clientdata entry, like the opt-in
+    // diagnostics' meter installed at open) is cleared by a disable as well.
+    let mut raw = Connection::open_in_memory().expect("open");
+    reset_counters();
+    unsafe extern "C" fn raw_progress(_: *mut std::ffi::c_void) -> std::ffi::c_int {
+        PROGRESS_CALLS.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+    // SAFETY: a live connection and a callback that ignores its argument.
+    unsafe {
+        ffi::sqlite3_progress_handler(raw.handle(), 1, Some(raw_progress), std::ptr::null_mut())
+    };
+    raw.execute_batch("CREATE TABLE t(x)").expect("run");
+    let raw_calls = PROGRESS_CALLS.load(Ordering::SeqCst);
+    assert!(raw_calls > 0);
+    assert!(
+        !hook_registration::entry_exists(&raw, hook_registration::PROGRESS_HANDLER_ENTRY).unwrap()
+    );
+    hook_registration::set_progress_handler(&mut raw, 0, None::<fn() -> bool>).expect("disable");
+    raw.execute_batch("INSERT INTO t VALUES (1)").expect("run");
+    assert_eq!(
+        PROGRESS_CALLS.load(Ordering::SeqCst),
+        raw_calls,
+        "the raw handler is cleared"
+    );
+
     // Enabling it again needs no memory (the nested progress owners restore the
     // outer handler after a cleanup that disabled it).
     without_sqlite_memory(|| {

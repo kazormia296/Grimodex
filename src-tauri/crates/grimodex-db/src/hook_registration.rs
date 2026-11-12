@@ -135,10 +135,18 @@ where
 fn disable_progress_handler(conn: &mut Connection) -> rusqlite::Result<()> {
     if entry_exists(conn, PROGRESS_HANDLER_ENTRY)? {
         // `sqlite3_progress_handler` with interval 0 clears the callback; the
-        // no-op closure replaces the entry's value without allocating.
+        // no-op closure replaces the entry's value (freeing the previous
+        // closure, as `None` did) without allocating.
         conn.progress_handler(0, Some(|| false))
     } else {
-        // No entry: this module (or rusqlite) never registered a handler.
+        // No entry: rusqlite never registered a handler on this connection. A
+        // handler registered by raw FFI (the opt-in diagnostics' meter at open)
+        // is still cleared, as `progress_handler(0, None)` cleared it before.
+        // SAFETY: `sqlite3_progress_handler` with no callback only resets the
+        // connection's handler fields; it allocates nothing and cannot fail.
+        unsafe {
+            rusqlite::ffi::sqlite3_progress_handler(conn.handle(), 0, None, std::ptr::null_mut());
+        }
         Ok(())
     }
 }
