@@ -420,3 +420,15 @@ lease の timeout の案内文を出す画面の場所、SQLite が TRIGGER 本�
   - 実 N-API の経路：debug の `.node` を `napi build` で作り、`electron/native/grimodex-node/test/post-effect-run.test.mjs`（9 件。guard の一致・stale を `backend.dbExecute` の renderer SQL で読む形）が通過。renderer の SQL が `execute_renderer_with_result` の authorizer を通り、TEMP view の guard が実際に使えることの確認。
   - vitest（`src/features/impact-review`、`src/lib`）、`--config vitest.electron.config.ts electron/shared/ipcContract.test.ts`（488 件）、`tsc --noEmit` 通過。`fnm exec --using=22 pnpm -s verify:quality` は、origin/master が基点の `a067f7f7` だった時に通過した。その後 origin/master が `9014e642` に進み、`scripts/quality/nir1-graph/observation-prep.test.mjs` を単独で回すと 101 件中 1 件（「origin/master が HEAD の祖先」の検査。基点が古いだけで、変更の欠陥ではない）が落ちる。**PR の前に master を取り込んで取り直す**（既知：ci-quality-needs-master-ancestor）。pin 済みの harness の bytes の pin の検査はほかの 100 件に含まれて通過しており、harness の file には触れていない。
   - 未実行：node crate の Rust 試験の残り（上の 150 件以外）、`pnpm test:browser`（レイアウトは触らない）、hosted CI。時間の gate（hold の p90、drift の件数、保存 IPC の p50）。
+
+### 時間の対照（2026-11-12。dev 専用の測定、製品コードは変えていない）
+
+記録：`/home/grimodex/fusion-eval-data/design-notes/db-connection-2026-11-07/drift-measure/timing-pr2-2026-11-12/results.md`（raw・集計・計装の差分・binary の sha256 を同じ dir に置いた）。base＝`a067f7f7`、head＝`d8b96398`。各腕 W1 5 run＋W0 5 run を ABAB、最初の 1 run を捨てて pooled。IPC は実 Electron（製品の main、g-ja-1 の写し）。
+
+- **ir.qualify の lock hold の p90（W1 pooled、約 2,400 件）：base 364.0 ms → head 5.54 ms**（run ごとの範囲は重ならない。目安 20 ms 未満に届いた。C8 の「止まって再相談」には当たらない）。**p99 は 481 → 433 ms、max は 1014 → 935 ms でほぼ同じ**で、長い hold（50 ms 以上、full check の推定。直接の計数は trace に無い）の割合が 13.0% → 6.4% に減って p90 が山を外れた。p90 は構成比で跳ぶ指標なので、割合・p99・max を併記する。
+- **WITH…SELECT の文で identity が変わる件数：base 3,796／3,796、head 0／4,050**（temp schema cookie は head でも全件動いた）。write 文は head で seq が +1 進む（陽性の対照）。
+- **保存 IPC（W0）の p50：base 11.1 → head 11.2 ms（+0.9%）**。p90 は 21.2 → 26.5 ms で head が高く見える（run の範囲が重なる／重ならないの境、原因は未分離）。
+- micro：`read_unpinned` 21.1 → 11.6 µs（2 回読み → 1 文）、`current_epoch` 7.1 → 7.0 µs。
+- 時間切れ（rebuild 待ち 5 分）は両腕 0／100 cycle。rebuild 待ちの median は 34.1 → 35.0 s（約 +3%）。publish の stale_snapshot は 47 → 57（80 published は同じ）。**この 2 点は head が悪い方向に見えるが、原因（判断 4 の (5)＝no-op の書込みで別接続の観測者に「変わった」が増える、など）は分けていない**。
+- **未測定**：(3) 登録の drift 件数・Suspended 件数（W1 は C-query worker の登録を通らず観測の経路が無い。worker 内の時間も同じ）、(4) cold DB の dependency-verify の Verify 完了時間。
+- **限界**：腕ごとに build が別。run の最中に他の lane の cargo が重なり load1 の最大が 13 を超えた run がある（開始時は全 run で 1.6〜2.1）。計装は master に後から入った関数に合わせて両腕で同じ形に直した（`try_lock_conn_with_check`）。閾値・線は変えていない。
