@@ -218,9 +218,9 @@ proposal/7 の後（2026-10-18、CQ-LIM-2、3）：worker の Q は 16 MiB、Nat
 条件：Q512 が parent admission から 100 ms の内に valid な result lease を返す（startup と cleanup の待ちは含めない）。100 ms を過ぎた結果は採用しない。
 
 - 正例
-  - Q512（charged rows 512）の実 worker：`tests.rs::native_worker_returns_canonical_512_a3_eligible_seed_local_graph`。call と admission→lease が `QUERY_DEADLINE`（100 ms）以下であることを assert し、frame を独立した Gold と比べる（既定 worker、practical）。観測値は §4（約 19〜26 ms）。
+  - Q512（charged rows 512。DR-CQA-6／7 以降の数え方では 450→390。下の注記）の実 worker：`tests.rs::native_worker_returns_canonical_512_a3_eligible_seed_local_graph`。call と admission→lease が `QUERY_DEADLINE`（100 ms）以下であることを assert し、frame を独立した Gold と比べる（既定 worker、practical）。観測値は §4（約 19〜26 ms）。
   - `tests.rs::production_query_has_an_available_100ms_success_path`：production の reader が 100 ms の内に available を返す（lifecycle。hosted の観測は 4.5〜4.6 ms）。
-  - `tests.rs::native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph`：registry 33行の fixture で charged rows 512（lifecycle。hosted の観測は H1〜H3 で 8.3〜8.4 ms）。
+  - `tests.rs::native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph`：registry 33行の fixture で charged rows 512（DR-CQA-6／7 以降は 510。数え方だけの変更で、読む行は同じ。下の注記。lifecycle。hosted の観測は H1〜H3 で 8.3〜8.4 ms）。
   - lease を返したときに child がまだ生きている case：`native_worker_reaps_live_committed_child_after_result_lease`（lifecycle。hosted の観測は、lease までの call が H1〜H3 で 7.6〜7.8 ms）。
 - 期限後の結果の不採用
   - `c_query_worker.rs::deadline_refusal_identifies_whether_frame_was_validated_in_time`：frame の検証が 100 ms ちょうどなら timely、100 ms + 1 ns なら timely ではない、と分類する（共有 Rust）。
@@ -412,6 +412,8 @@ CQ-AVAIL（§2.12）は、このうち records の数え方と版の衝突を、
 - 50 場面の主人公級は、上のとおり 512 に届く。
 - 課金に入っていない行（既存の会計の穴。DR-CQA-5）：Scope extension の LEFT JOIN（`scene_scope.rs` の `read_scope_extension`）は、binding の knowledge holder と audience が character のとき、principal の Codex 行を binding あたり最大 2 行読む。`preflight_project_reads` の課金は、この行を数えない。tree の全件 56、binding 50、join で読む tree 50 の project で、どの binding も character の principal を持てば、shared の実際の読取は principal の 100 行を加えて約 256 行になり、課金（tree×2 の 112 と binding×2 の 100）を約 44 行上回る。変更前の A3 の課金も同じ行を数えていないので、本変更が増やした穴ではない。ただし、変更前は shared の行を Revision ごとに課金していたので、Revision が 2 件以上のとき課金が読取を上回っていた。今は shared を 1 回だけ課金するので、この形では旧来の乗数が実際の読取を覆うとは言えない。「読取と課金は 1 対 1」は読取の回数（statement）の単位の主張で、行の単位ではない。課金に principal の行を足すかは別に決める（課金を厳しくする変更だが、A3 の SQL、診断の観測 slot、steps の基準値に波及する）。
 - DR-CQA-6（2026-11-11。[cqavail-decisions.md](nir1-lane-decisions/cqavail-decisions.md)）以降、shared の binding は×1（tree は×2 のまま）で、binding の SELECT は tree を join しない。上の「binding×2」と Q512 の shared 263・512 行（registry33 は 77）は当時の値で、今は 201・450 行（75・510 行）。上限の値は変わっていない。
+- DR-CQA-7（2026-11-12。[cqavail-decisions.md](nir1-lane-decisions/cqavail-decisions.md)）以降、shared の tree は×1、projects と query Scene は×2（query が各 2 回読む）で、principal の Codex 行（上の DR-CQA-5 の穴）は課金に入る。上の「課金に入っていない行」と Q512 の shared 201・450 行（registry33 は 75・510 行）は DR-CQA-6 の時点の値で、今は 141・390 行（75・510 行）。
+- 「charged rows 512」（§2.12 の試験の記述、§4 の fixture と実測の表）は、fixture が former limit の 512 に合わせて作られた時の数え方の値で、DR-CQA-6（binding×1）と DR-CQA-7（tree×1、projects・query Scene×2、principal の行）で数え方が変わり、同じ fixture が今は Q512 で 390、registry33 で 510 になる（読む行は不変。dataset hash に束縛されていて詰め直していない）。受入れの意味を持つのは 2,049 の拒否で、`unrelated_seed_edges` を詰め直して保っている。上限の値と bytes の乗数は変わっていない。
 - 512 行の実 work が大きい形でも期限に収まることは、lifecycle の `registry33`（E=144）で確かめる。hosted の 3 OS での Q512 の call は、この変更の最初の run で観測して §4.1 に足す（§8）。
 
 ## 3. CI 証跡
@@ -504,7 +506,7 @@ lane：`canonical_profile=c-query-practical`（`scripts/nir1-c-query-worker-ci.s
 
 | 項目 | H1（0c9064a0）run `38271969982` | H2（751dfc6c）run `38390445007` | H3（fbdc8588）run `38402070979` |
 |---|---|---|---|
-| fixture | `Q512/R2/A3-eligible-shared`。source 3,284,992 B、materials 140、revisions 1、registry rows 4、charged rows 512。linux／x86_64 | 同左 | 同左 |
+| fixture | `Q512/R2/A3-eligible-shared`。source 3,284,992 B、materials 140、revisions 1、registry rows 4、charged rows 512（当時の数え方）。linux／x86_64 | 同左 | 同左 |
 | 準備後の preflight | candidate_rows 2、canonical_candidates 1、A2_rows 140、A3_rows 370、admitted 512、attempted 512、first_refusal None | 同左 | 同左 |
 | 30回の admission（ms。最小／中央値／最大） | 24.474／25.172／25.763 | 19.435／20.545／22.675 | 14.880／15.391／17.861 |
 | 30回の call（ms。最小／中央値／最大） | 24.475／25.173／25.764 | 19.435／20.545／22.676 | 14.881／15.391／17.861 |
@@ -525,7 +527,7 @@ Q512 の fixture が変わった（§2.12）ので、新しい fixture の観測
 
 | 項目 | 値 |
 |---|---|
-| fixture | `Q512/R2/A3-eligible-shared`。source 3,518,464 B、materials 164、revisions 1、registry rows 6、charged rows 512。linux／x86_64 |
+| fixture | `Q512/R2/A3-eligible-shared`。source 3,518,464 B、materials 164、revisions 1、registry rows 6、charged rows 512（当時の数え方）。linux／x86_64 |
 | 準備後の preflight | candidate_rows 2、canonical_candidates 1、A2_rows 164、A3_shared_rows 263、A3_revision_rows 83、admitted 512、first_refusal None |
 | 30回 × 15 run の admission（ms。最小／中央値／最大） | 28.657／30.483／56.551 |
 | 同 call（ms） | 28.657／30.484／56.552（p95 41.4、p99 44.0。60 ms 超 0 回、100 ms 超 0 回。450 回） |
