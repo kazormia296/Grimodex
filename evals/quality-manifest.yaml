@@ -318,11 +318,15 @@ requirements:
       - electron/scripts/c2zc-canonical-product-journey.mjs
       - electron/scripts/product-journeys.mjs
       - electron/scripts/product-journey-shards.mjs
+      - electron/scripts/chronicle-extraction-product-journey.mjs
+      - electron/scripts/chronicle-edited-apply-product-journey.mjs
+      - electron/scripts/chronicle-current-scene-product-journey.mjs
       - electron/scripts/codex-entity-relation-product-journey.mjs
       - electron/scripts/nir1-scene-scope-projection-product-journey.mjs
       - electron/scripts/product-journey-catalog.mjs
       - scripts/chronicle-extraction-product-journey.test.mjs
       - scripts/chronicle-edited-apply-product-journey.test.mjs
+      - scripts/chronicle-current-scene-product-journey.test.mjs
       - scripts/codex-entity-relation-product-journey.test.mjs
       - scripts/nir1-scene-scope-projection-product-journey.test.mjs
       - scripts/product-journey-backlog.test.mjs
@@ -519,6 +523,7 @@ requirements:
       - electron/scripts/product-journey-shards.test.mjs
       - scripts/chronicle-extraction-product-journey.test.mjs
       - scripts/chronicle-edited-apply-product-journey.test.mjs
+      - scripts/chronicle-current-scene-product-journey.test.mjs
       - scripts/codex-entity-relation-product-journey.test.mjs
       - scripts/nir1-scene-scope-projection-product-journey.test.mjs
       - electron/shared/nir1EntityRelationIpcContract.test.ts
@@ -1011,6 +1016,7 @@ requirements:
       - src/features/narrative-semantic-core/nir1PackingApi.test.ts
       - scripts/chronicle-extraction-product-journey.test.mjs
       - scripts/chronicle-edited-apply-product-journey.test.mjs
+      - scripts/chronicle-current-scene-product-journey.test.mjs
       - scripts/codex-entity-relation-product-journey.test.mjs
       - scripts/nir1-scene-scope-projection-product-journey.test.mjs
       - scripts/quality/nir1-packing/contract.test.mjs
@@ -1415,6 +1421,9 @@ requirements:
       - electron/shared/nir1EntityRelationIpcContract.test.ts
       - src-tauri/crates/grimodex-core/src/narrative_nir1.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs
+      - electron/scripts/chronicle-extraction-product-journey.mjs
+      - electron/scripts/chronicle-edited-apply-product-journey.mjs
+      - electron/scripts/chronicle-current-scene-product-journey.mjs
       - electron/scripts/codex-entity-relation-product-journey.mjs
       - electron/scripts/nir1-scene-scope-projection-product-journey.mjs
       - electron/scripts/product-journey-catalog.mjs
@@ -1422,6 +1431,7 @@ requirements:
       - electron/scripts/product-journeys.mjs
       - scripts/chronicle-extraction-product-journey.test.mjs
       - scripts/chronicle-edited-apply-product-journey.test.mjs
+      - scripts/chronicle-current-scene-product-journey.test.mjs
       - scripts/codex-entity-relation-product-journey.test.mjs
       - scripts/nir1-scene-scope-projection-product-journey.test.mjs
       - scripts/product-journey-backlog.test.mjs
@@ -1519,6 +1529,7 @@ requirements:
       - electron/scripts/product-journey-shards.test.mjs
       - scripts/chronicle-extraction-product-journey.test.mjs
       - scripts/chronicle-edited-apply-product-journey.test.mjs
+      - scripts/chronicle-current-scene-product-journey.test.mjs
       - scripts/codex-entity-relation-product-journey.test.mjs
       - scripts/nir1-scene-scope-projection-product-journey.test.mjs
     heavyTests:
@@ -1965,6 +1976,9 @@ requirements:
       - scripts/quality/nir1-packing/scorer.mjs
       - src/features/ai-context/nir1Packing.ts
       - electron/scripts/narrative-maintenance-product-journeys.mjs
+      - electron/scripts/chronicle-extraction-product-journey.mjs
+      - electron/scripts/chronicle-edited-apply-product-journey.mjs
+      - electron/scripts/chronicle-current-scene-product-journey.mjs
       - electron/scripts/codex-entity-relation-product-journey.mjs
       - electron/scripts/nir1-scene-scope-projection-product-journey.mjs
       - electron/scripts/product-journey-catalog.mjs
@@ -1973,6 +1987,7 @@ requirements:
       - electron/scripts/product-journey-shards.test.mjs
       - scripts/chronicle-extraction-product-journey.test.mjs
       - scripts/chronicle-edited-apply-product-journey.test.mjs
+      - scripts/chronicle-current-scene-product-journey.test.mjs
       - scripts/codex-entity-relation-product-journey.test.mjs
       - scripts/nir1-scene-scope-projection-product-journey.test.mjs
       - scripts/product-journey-backlog.test.mjs

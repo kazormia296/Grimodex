@@ -199,7 +199,7 @@ export async function clickEnabledApplyButton({ harness, dialog }) {
   await button.click();
 }
 
-async function inspectEditedNative(harness, page, bundle, sceneId) {
+export async function inspectEditedNative(harness, page, bundle, sceneId) {
   const proposalIds = bundle.proposals.map((row) => row.proposalId);
   const revisionRows = await queryChronicleFixtureRows(
     harness,

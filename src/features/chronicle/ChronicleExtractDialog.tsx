@@ -1,5 +1,5 @@
 import { isChronicleReanalysisRequired } from "./extraction/savedPlanActualityGate";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Loader2, Sparkles } from "lucide-react";
@@ -38,8 +38,25 @@ import {
   restoreChronicleExtractionReview,
 } from "./extractEventsApi";
 import type { ChronicleTaskResumeCandidate } from "@/application/narrative-extraction/nativeApi";
+import {
+  DEFAULT_MAX_WINDOW_OWNED_CHARS,
+  measureSceneCanonicalBodyLength,
+} from "@/application/narrative-extraction/sceneBodyLength";
 import { ChronicleExtractionProgress } from "./ChronicleExtractionProgress";
 import { ChronicleProposalReview } from "./ChronicleProposalReview";
+import { ChronicleExtractStartNotices } from "./ChronicleExtractStartNotices";
+import {
+  chronicleCurrentSceneOptionValue,
+  chronicleExtractTargetOptionValue,
+  countChronicleUnsettledProposals,
+  isFolderEquivalentSingleScene,
+  resolveChronicleExtractScene,
+  resolveDiscardedRunTarget,
+  singleSceneIdOfScope,
+  type ChronicleExtractTarget,
+  type ChronicleSceneUnavailableReason,
+  type ChronicleStartNoticeKind,
+} from "./chronicleExtractScene";
 import { useChronicleExtractionStore } from "./chronicleExtractionStore";
 import {
   getChronicleApplyReadiness,
@@ -71,6 +88,30 @@ export async function loadChronicleExtractionScenes(
     bodyText: extractPlainText(contents.get(scene.id) ?? ""),
     orderIndex,
   }));
+}
+
+/**
+ * 同じ場面の承認済み・未取り込みの提案の読み取り（S8b）。常時マウントされるダイアログの
+ * 起動 graph に載せないよう、遅延 import する。読み取りの失敗は「知らせない」側に倒す
+ * （知らせは補助で、安全の境界ではない）。
+ */
+async function readSameSceneApprovedUnapplied(
+  projectId: string,
+  sceneId: string,
+): Promise<boolean> {
+  try {
+    const mod = await import("./chronicleExtractionApi");
+    return await mod.hasApprovedUnappliedProposalForScene({
+      projectId,
+      sceneId,
+    });
+  } catch {
+    return false;
+  }
+}
+
+interface ChronicleStartNoticeState {
+  readonly kinds: readonly ChronicleStartNoticeKind[];
 }
 
 /**
@@ -116,8 +157,22 @@ export function ChronicleExtractDialog({
     () => nodes.filter((n) => n.nodeType === "folder"),
     [nodes],
   );
+  const resetTargetState = useCallback(() => {
+    setTarget(null);
+    setStartNotices(null);
+    setPriorPendingCount(0);
+  }, []);
 
-  const [folderId, setFolderId] = useState("");
+  const activeSceneId = useTreeStore((s) => s.activeSceneId);
+  // 「今の場面」は、描くたびに今の値から導く。
+  const currentScene = resolveChronicleExtractScene(nodes, activeSceneId);
+  const [target, setTarget] = useState<ChronicleExtractTarget | null>(null);
+  // 解析を押した後に出した知らせ。同じ「解析」をもう一度押すと始まる。
+  const [startNotices, setStartNotices] =
+    useState<ChronicleStartNoticeState | null>(null);
+  // 対象を選んだ時点で画面に開いていた組の、未取り込みの提案の件数。
+  // 選択を変えると画面の組は外れるので、そのときの値を控える（S8）。
+  const [priorPendingCount, setPriorPendingCount] = useState(0);
   const [analyzing, setAnalyzing] = useState(false);
   const [importing, setImporting] = useState(false);
   const [discardingRunId, setDiscardingRunId] = useState<string | null>(null);
@@ -166,7 +221,7 @@ export function ChronicleExtractDialog({
     if (!open) {
       dialogScopeKeyRef.current = null;
       generationRef.current += 1;
-      setFolderId("");
+      resetTargetState();
       setAnalyzing(false);
       setImporting(false);
       setDiscardingRunId(null);
@@ -178,6 +233,7 @@ export function ChronicleExtractDialog({
       dialogScopeKeyRef.current = null;
       generationRef.current += 1;
       clearProjection();
+      resetTargetState();
       setAnalyzing(false);
       setImporting(false);
       setDiscardingRunId(null);
@@ -195,7 +251,7 @@ export function ChronicleExtractDialog({
     if (dialogScopeKeyRef.current === null) {
       dialogScopeKeyRef.current = currentScopeKey;
       generationRef.current += 1;
-      setFolderId("");
+      resetTargetState();
       setAnalyzing(false);
       setImporting(false);
       setDiscardingRunId(null);
@@ -245,6 +301,7 @@ export function ChronicleExtractDialog({
       dialogScopeKeyRef.current = null;
       generationRef.current += 1;
       clearProjection();
+      resetTargetState();
       setAnalyzing(false);
       setImporting(false);
       setDiscardingRunId(null);
@@ -258,11 +315,12 @@ export function ChronicleExtractDialog({
     isActive,
     onOpenChange,
     open,
+    resetTargetState,
     scope,
     t,
   ]);
 
-  const handleSelectFolder = (id: string) => {
+  const handleSelectTarget = (value: string) => {
     if (
       analyzing ||
       importing ||
@@ -274,7 +332,32 @@ export function ChronicleExtractDialog({
     ) {
       return;
     }
-    setFolderId(id);
+    // 画面に組が開いているうちに、未取り込みの件数を控える。選択を変えると組は外れる。
+    if (scopedRunProjection) {
+      setPriorPendingCount(
+        countChronicleUnsettledProposals(scopedRunProjection.proposals),
+      );
+    }
+    setStartNotices(null);
+    // 場面の項目は、今の場面か、選択済みの場面の value のときだけ場面として扱う
+    // （フォルダの id と接頭辞が衝突しても、フォルダを場面と取り違えない）。
+    if (
+      currentScene.available &&
+      value === chronicleCurrentSceneOptionValue(currentScene.sceneId)
+    ) {
+      setTarget({
+        kind: "scene",
+        sceneId: currentScene.sceneId,
+        folderId: currentScene.folderId,
+      });
+    } else if (
+      target?.kind === "scene" &&
+      value === chronicleCurrentSceneOptionValue(target.sceneId)
+    ) {
+      setTarget(target);
+    } else {
+      setTarget(value ? { kind: "folder", folderId: value } : null);
+    }
     clearProjection();
   };
 
@@ -286,7 +369,7 @@ export function ChronicleExtractDialog({
       recovery.candidates.length > 0 ||
       discardingRunId !== null;
     if (
-      !folderId ||
+      !target ||
       analyzing ||
       importing ||
       applyMutationInFlight ||
@@ -310,28 +393,116 @@ export function ChronicleExtractDialog({
     if (!isSessionCurrent(session)) return;
 
     setAnalyzing(true);
-    clearProjection();
     try {
       const activeId = useTreeStore.getState().activeSceneId;
       if (activeId) await saveScene(activeId);
+      // 選んだ場面が開いている場面と別のときも、保存を待つ（開いていなければ何もしない）。
+      if (target.kind === "scene" && target.sceneId !== activeId) {
+        await saveScene(target.sceneId);
+      }
       if (!isSessionCurrent(session)) return;
 
-      // 直下のシーンだけでなく、配下の全シーン（部>章>シーン等の入れ子も）を
-      // DFS pre-order（ツリー表示順）で収集する。直下フィルタだと入れ子構造で
-      // 候補が黙って空になる。
-      const sceneNodes = getDescendantScenesInOrder(
-        useTreeStore.getState().nodes,
-        folderId,
-      );
-      const scenes = await loadChronicleExtractionScenes(sceneNodes);
+      // 始める前の確認と知らせ。場面の抽出では、保存の後の本文で長さを数える。
+      const notices = new Set<ChronicleStartNoticeKind>();
+      let sceneStart: { sceneId: string; parentFolderId: string } | null = null;
+      if (target.kind === "scene") {
+        const scene = resolveChronicleExtractScene(
+          useTreeStore.getState().nodes,
+          target.sceneId,
+        );
+        if (!scene.available || scene.folderId !== target.folderId) {
+          // 選んだ後に、場面が消えた・フォルダの外へ移された。始めない。
+          toast.error(
+            t(
+              "chronicle.extract.sceneUnavailable",
+              "選んだ場面が見つからないか、フォルダに入っていません。選び直してください。",
+            ),
+          );
+          setTarget(null);
+          setStartNotices(null);
+          return;
+        }
+        sceneStart = {
+          sceneId: scene.sceneId,
+          parentFolderId: scene.folderId,
+        };
+        // SceneBodyLengthError は、今の抽出の失敗と同じ扱い（下の catch）。
+        const { canonicalLength } = await measureSceneCanonicalBodyLength(
+          session.projectId,
+          scene.sceneId,
+        );
+        if (!isSessionCurrent(session)) return;
+        if (canonicalLength === 0) {
+          toast.error(
+            t("chronicle.extract.sceneEmpty", "本文が空のため抽出できません。"),
+          );
+          return;
+        }
+        if (canonicalLength > DEFAULT_MAX_WINDOW_OWNED_CHARS) {
+          notices.add("long-scene");
+        }
+        if (
+          await readSameSceneApprovedUnapplied(session.projectId, scene.sceneId)
+        ) {
+          notices.add("same-scene-approved");
+        }
+        if (!isSessionCurrent(session)) return;
+      }
+      const pendingCount = scopedRunProjection
+        ? countChronicleUnsettledProposals(scopedRunProjection.proposals)
+        : priorPendingCount;
+
+      // 知らせるべきことがあれば、同じ「解析」をもう一度押すまで始めない。
+      // すでに見せた知らせに無い種類が増えたときは、出し直す。
+      const shown = startNotices?.kinds ?? [];
+      if ([...notices].some((kind) => !shown.includes(kind))) {
+        setStartNotices({ kinds: [...notices] });
+        return;
+      }
+
+      setStartNotices(null);
+      clearProjection();
+
+      let startFolderId: string;
+      let startSceneIds: string[];
+      if (sceneStart !== null) {
+        // 場面 1 つ：親のフォルダと、その場面だけ。木の全走査はしない。
+        startFolderId = sceneStart.parentFolderId;
+        startSceneIds = [sceneStart.sceneId];
+      } else {
+        startFolderId = target.folderId;
+        // 直下のシーンだけでなく、配下の全シーン（部>章>シーン等の入れ子も）を
+        // DFS pre-order（ツリー表示順）で収集する。直下フィルタだと入れ子構造で
+        // 候補が黙って空になる。
+        const sceneNodes = getDescendantScenesInOrder(
+          useTreeStore.getState().nodes,
+          target.folderId,
+        );
+        const scenes = await loadChronicleExtractionScenes(sceneNodes);
+        startSceneIds = scenes.map((scene) => scene.sceneId);
+      }
       if (!isSessionCurrent(session)) return;
       const existing = await listEvents(session.projectId);
       if (!isSessionCurrent(session)) return;
 
+      // 前の組の提案が残っていても止めない。始めるときに知らせる（SSE/1 S8）。
+      if (pendingCount > 0) {
+        toast.info(
+          t(
+            "chronicle.extract.noticePendingReview",
+            "前の組の提案が{{count}}件残っています。提案は消えません。新しい組の提案をすべて取り込むか拒否すると、前の組に戻れます。承認済みで秘密の印を外した提案は、取り込まなくても関連場面に使われることがあります。",
+            { count: pendingCount },
+          ),
+        );
+      }
       await startChronicleExtraction({
         projectId: session.projectId,
-        folderId,
-        sceneIds: scenes.map((scene) => scene.sceneId),
+        folderId: startFolderId,
+        sceneIds: startSceneIds,
+        // フォルダの抽出は、今までどおり sceneScopeMode を渡さない。
+        ...(sceneStart !== null
+          ? { sceneScopeMode: "requested-direct-children" as const }
+          : {}),
         authority: session.authority,
         workspacePath: session.scope.workspacePath,
         openRevision: session.scope.openRevision,
@@ -341,6 +512,8 @@ export function ChronicleExtractDialog({
         clearProjection();
         return;
       }
+      // 新しい組が画面に出た。前の組の件数はもう要らない。
+      setPriorPendingCount(0);
     } catch {
       if (isSessionCurrent(session)) {
         toast.error(t("chronicle.extract.failed", "抽出に失敗しました"));
@@ -434,7 +607,14 @@ export function ChronicleExtractDialog({
         onOpenChange(false);
         return;
       }
-      setFolderId(candidate.scopeJson.folderId);
+      // 場面 1 つの抽出なら、その場面が今も選べるときだけ場面に戻す（S9）。
+      setStartNotices(null);
+      setTarget(
+        resolveDiscardedRunTarget(
+          candidate.scopeJson,
+          useTreeStore.getState().nodes,
+        ),
+      );
       toast.success(
         t(
           "chronicle.extract.discardedInterruptedRun",
@@ -592,7 +772,7 @@ export function ChronicleExtractDialog({
         onOpenChange(false);
         return;
       }
-      setFolderId("");
+      resetTargetState();
       toast.success(
         t(
           "chronicle.extract.partialReviewAbandoned",
@@ -643,6 +823,45 @@ export function ChronicleExtractDialog({
     recovery.candidates.length > 0 ||
     discardingRunId !== null;
   const resuming = recovery.status === "resuming";
+  const unnamedLabel = t("chronicle.unnamed", "（無名）");
+  // 場面の題。木に無ければ削除済み（再開の候補の行と、選択済みの場面の項目に使う）。
+  const sceneLabel = (sceneId: string): string => {
+    const node = nodes.find((n) => n.id === sceneId && n.nodeType === "scene");
+    return node
+      ? t("chronicle.extract.scene", "場面：{{title}}", {
+          title: node.title || unnamedLabel,
+        })
+      : t("chronicle.extract.sceneDeleted", "場面（削除済み）");
+  };
+  const recoveryScopeLabel = (candidate: ChronicleTaskResumeCandidate) => {
+    const sceneId = singleSceneIdOfScope(candidate.scopeJson);
+    // 破棄の後の対象の判定と同じ規則：配下の場面がその 1 つだけならフォルダ。
+    return sceneId === null ||
+      isFolderEquivalentSingleScene(
+        candidate.scopeJson.folderId,
+        sceneId,
+        nodes,
+      )
+      ? candidate.scopeJson.folderId
+      : sceneLabel(sceneId);
+  };
+  const currentSceneUnavailableText = (
+    reason: ChronicleSceneUnavailableReason,
+  ): string =>
+    reason === "not-a-scene"
+      ? t(
+          "chronicle.extract.currentSceneNotScene",
+          "開いているのは場面ではないため、抽出できません。",
+        )
+      : reason === "not-in-folder"
+        ? t(
+            "chronicle.extract.currentSceneNotInFolder",
+            "フォルダに入っている場面だけ抽出できます。",
+          )
+        : t(
+            "chronicle.extract.currentSceneNoActive",
+            "エディタで場面を開くと、その場面だけを抽出できます。",
+          );
 
   return (
     <Dialog open={open} onOpenChange={handleDialogOpenChange}>
@@ -663,7 +882,7 @@ export function ChronicleExtractDialog({
           <p className="text-xs text-muted-foreground">
             {t(
               "chronicle.extract.hint",
-              "選んだ章/フォルダの本文を AI が読み、作中のイベントを提案します。取り込むと年表に追加されます。",
+              "選んだ章/フォルダ、または今の場面の本文を AI が読み、作中のイベントを提案します。取り込むと年表に追加されます。",
             )}
           </p>
 
@@ -701,7 +920,7 @@ export function ChronicleExtractDialog({
                     title={`${candidate.runId} · ${candidate.createdAt}`}
                   >
                     <span className="block truncate">
-                      {candidate.scopeJson.folderId} ·{" "}
+                      {recoveryScopeLabel(candidate)} ·{" "}
                       {candidate.nextTask.taskKind}
                     </span>
                     <span className="block truncate font-mono text-[10px]">
@@ -778,8 +997,8 @@ export function ChronicleExtractDialog({
 
           <div className="flex items-center gap-2">
             <select
-              value={folderId}
-              onChange={(e) => handleSelectFolder(e.target.value)}
+              value={chronicleExtractTargetOptionValue(target)}
+              onChange={(e) => handleSelectTarget(e.target.value)}
               disabled={
                 analyzing ||
                 importing ||
@@ -791,11 +1010,39 @@ export function ChronicleExtractDialog({
               className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-sm focus:outline-none"
             >
               <option value="">
-                {t("chronicle.extract.selectFolder", "章/フォルダを選択…")}
+                {t(
+                  "chronicle.extract.selectFolder",
+                  "章/フォルダ/今の場面を選択…",
+                )}
               </option>
+              {currentScene.available ? (
+                <option
+                  value={chronicleCurrentSceneOptionValue(currentScene.sceneId)}
+                >
+                  {t("chronicle.extract.currentScene", "今の場面：{{title}}", {
+                    title: currentScene.title || unnamedLabel,
+                  })}
+                </option>
+              ) : (
+                <option value={chronicleCurrentSceneOptionValue("")} disabled>
+                  {t("chronicle.extract.currentSceneDisabled", "今の場面")}
+                </option>
+              )}
+              {target?.kind === "scene" &&
+                !(
+                  currentScene.available &&
+                  currentScene.sceneId === target.sceneId
+                ) && (
+                  // 選んだ後に開いている場面が変わっても、選んだ場面の項目を残す。
+                  <option
+                    value={chronicleCurrentSceneOptionValue(target.sceneId)}
+                  >
+                    {sceneLabel(target.sceneId)}
+                  </option>
+                )}
               {folders.map((f) => (
                 <option key={f.id} value={f.id}>
-                  {f.title || t("chronicle.unnamed", "（無名）")}
+                  {f.title || unnamedLabel}
                 </option>
               ))}
             </select>
@@ -803,7 +1050,7 @@ export function ChronicleExtractDialog({
               type="button"
               onClick={handleAnalyze}
               disabled={
-                !folderId ||
+                !target ||
                 analyzing ||
                 importing ||
                 applyMutationInFlight ||
@@ -822,6 +1069,18 @@ export function ChronicleExtractDialog({
               {t("chronicle.extract.analyze", "解析")}
             </button>
           </div>
+          {!currentScene.available && (
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="chronicle-extract-current-scene-unavailable"
+            >
+              {currentSceneUnavailableText(currentScene.reason)}
+            </p>
+          )}
+
+          {startNotices && (
+            <ChronicleExtractStartNotices kinds={startNotices.kinds} />
+          )}
 
           {(analyzing || resuming || scopedRunProjection) && (
             <ChronicleExtractionProgress

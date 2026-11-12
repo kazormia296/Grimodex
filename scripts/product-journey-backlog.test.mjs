@@ -39,6 +39,7 @@ const EXPECTED_JOURNEY_IDS = [
   "snapshot-native-roundtrip",
   "chronicle-extract-review-apply-reopen",
   "chronicle-extract-edit-approve-apply-reopen",
+  "chronicle-extract-current-scene-apply-reopen",
   "codex-entity-relation-review-apply-reopen",
   "nir1-scene-scope-projection-acceptance",
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map((entry) => entry.id),

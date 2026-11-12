@@ -14,6 +14,7 @@ import type {
   ChronicleTaskResumeCandidate,
   ReviewBundleProposalApplication,
 } from "@/application/narrative-extraction/nativeApi";
+import type { NarrativeSceneScopeMode } from "@/application/narrative-extraction/projectSnapshotAdapter";
 
 export interface StartChronicleExtractionRequest {
   readonly projectId: string;
@@ -25,6 +26,13 @@ export interface StartChronicleExtractionRequest {
   readonly openRevision: number;
   readonly existingEvents?: readonly ExistingChronicleEventCatalogRecord[];
   readonly useAi?: boolean;
+  /**
+   * Omitted is `folder-exact` (the folder's every Scene must be requested).
+   * `requested-direct-children` checks only the requested Scenes, which must be
+   * direct children of `folderId`. Passed through to the Snapshot adapter only;
+   * never stored in the Run scope or spec.
+   */
+  readonly sceneScopeMode?: NarrativeSceneScopeMode;
 }
 
 export type ProbableDuplicateChoice = "skip-as-same" | "create-as-new" | "hold";

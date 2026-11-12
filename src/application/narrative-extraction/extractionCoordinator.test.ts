@@ -80,6 +80,7 @@ import {
   CHRONICLE_EXTRACT_TASK_KINDS,
   CHRONICLE_EXTRACT_RUN_SPEC_KIND,
   runChronicleExtractionCoordinator,
+  type ExtractionCoordinatorDeps,
 } from "./extractionCoordinator";
 import {
   CITATION_ID_OBSERVATION_EVIDENCE_MODE,
@@ -1061,6 +1062,158 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         .every((payload) => !("historicalScopeAuthorityBasis" in payload)),
     ).toBe(true);
     expect(buildProposalSetPayloadMock).toHaveBeenCalled();
+  });
+
+  it("hands sceneScopeMode to the snapshot adapter only, never to the Run scope or spec", async () => {
+    const built = await buildNarrativeCorpusSnapshot({
+      snapshotId: "snapshot-coord-scope-mode",
+      language: "ja",
+      origin: { kind: "grimodex-project", projectId: "project-a" },
+      documents: [
+        {
+          sourceKey: "project:scene:one",
+          parentSourceKey: null,
+          title: "籠城",
+          orderIndex: 0,
+          proseMirrorJson: prose(
+            "教会の尖塔が砲撃で崩れ落ちた。兵士たちは避難した。",
+          ),
+          origin: {
+            kind: "project-node",
+            projectId: "project-a",
+            nodeId: "scene-one",
+            sourceVersion: 3,
+            sourceUpdatedAt: "2026-08-09T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+      ],
+      omissions: [],
+      createdAt: "2026-08-10T00:00:00.000Z",
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    const buildSnapshot = vi.fn<
+      NonNullable<ExtractionCoordinatorDeps["buildSnapshot"]>
+    >(async () => ({
+      ok: true as const,
+      snapshot: built.snapshot,
+      scopeAuthorityDocuments: [
+        {
+          documentRef: "D000001",
+          sourceKey: "project:scene:one" as const,
+          rawStoryKey: "story-10",
+        },
+      ],
+      flush: { status: "already-clean" as const, blockedDocuments: [] },
+    }));
+
+    await runChronicleExtractionCoordinator(
+      {
+        projectId: "project-a",
+        folderId: "folder-1",
+        language: "ja",
+        sceneIds: ["scene-one"],
+        authority: authority(),
+        runId: "run-scope-mode",
+        sceneScopeMode: "requested-direct-children",
+      },
+      { useAi: false, buildSnapshot },
+    );
+
+    expect(buildSnapshot).toHaveBeenCalledTimes(1);
+    expect(buildSnapshot.mock.calls[0]![0]).toEqual({
+      projectId: "project-a",
+      folderId: "folder-1",
+      language: "ja",
+      sceneIds: ["scene-one"],
+      authority: expect.objectContaining({ projectId: "project-a" }),
+      sceneScopeMode: "requested-direct-children",
+    });
+    const created = createRunMock.mock.calls[0]![0] as {
+      scopeJson: unknown;
+      specJson: Record<string, unknown>;
+    };
+    expect(created.scopeJson).toStrictEqual({
+      folderId: "folder-1",
+      sceneIds: ["scene-one"],
+    });
+    expect(Object.keys(created.specJson).sort()).toEqual(
+      [
+        "kind",
+        "domain",
+        "version",
+        "taskChain",
+        "executionMode",
+        "existingEventsCatalogDigest",
+        "coordinatorContractDigest",
+      ].sort(),
+    );
+    // Nothing written to the native boundary may carry the transient option.
+    for (const mock of [createRunMock, claimMock, finishMock]) {
+      for (const call of mock.mock.calls) {
+        const serialized = JSON.stringify(call);
+        expect(serialized).not.toContain("sceneScopeMode");
+        expect(serialized).not.toContain("requested-direct-children");
+      }
+    }
+  });
+
+  it("omits sceneScopeMode from the snapshot request by default", async () => {
+    const built = await buildNarrativeCorpusSnapshot({
+      snapshotId: "snapshot-coord-scope-default",
+      language: "ja",
+      origin: { kind: "grimodex-project", projectId: "project-a" },
+      documents: [
+        {
+          sourceKey: "project:scene:one",
+          parentSourceKey: null,
+          title: "籠城",
+          orderIndex: 0,
+          proseMirrorJson: prose("教会の尖塔が砲撃で崩れ落ちた。"),
+          origin: {
+            kind: "project-node",
+            projectId: "project-a",
+            nodeId: "scene-one",
+            sourceVersion: 3,
+            sourceUpdatedAt: "2026-08-09T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+      ],
+      omissions: [],
+      createdAt: "2026-08-10T00:00:00.000Z",
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    const buildSnapshot = vi.fn<
+      NonNullable<ExtractionCoordinatorDeps["buildSnapshot"]>
+    >(async () => ({
+      ok: true as const,
+      snapshot: built.snapshot,
+      scopeAuthorityDocuments: [
+        {
+          documentRef: "D000001",
+          sourceKey: "project:scene:one" as const,
+          rawStoryKey: "story-10",
+        },
+      ],
+      flush: { status: "already-clean" as const, blockedDocuments: [] },
+    }));
+
+    await runChronicleExtractionCoordinator(
+      {
+        projectId: "project-a",
+        folderId: "folder-1",
+        language: "ja",
+        sceneIds: ["scene-one"],
+        authority: authority(),
+        runId: "run-scope-default",
+      },
+      { useAi: false, buildSnapshot },
+    );
+
+    expect("sceneScopeMode" in buildSnapshot.mock.calls[0]![0]).toBe(false);
   });
 
   it("rekeys AI observe localIds so multi-window obs-1 batches do not collide", async () => {

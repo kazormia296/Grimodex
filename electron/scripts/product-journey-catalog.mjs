@@ -342,6 +342,18 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
       "fixed provider response -> production extraction -> human edit of one proposal (secret off, human-derived child) -> approve all -> Native V2 Prepare/Apply of the edited revision with secret Events -> restart without duplicate Events",
   },
   {
+    id: "chronicle-extract-current-scene-apply-reopen",
+    domains: ["chronicle-extraction"],
+    interactions: [
+      "chronicle-extraction->sqlite",
+      "sqlite->chronicle-extraction",
+    ],
+    contracts: ["chronicle:extract-current-scene-apply-reopen"],
+    capabilities: ["electron", "napi"],
+    description:
+      "folder with sibling scenes -> open scene selected as the extraction target -> one-scene Run (scope, one window, sealed body of that scene only) -> human edit (secret off) and approval -> readable IR admission preconditions -> Native V2 Prepare/Apply with secret Events -> restart without duplicate Events",
+  },
+  {
     id: "codex-entity-relation-review-apply-reopen",
     domains: ["codex", "scene-persistence", "workspace-lifecycle"],
     interactions: ["codex->sqlite", "sqlite->codex"],
@@ -488,6 +500,8 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
       "scripts/chronicle-extraction-product-journey.test.mjs",
       "electron/scripts/chronicle-edited-apply-product-journey.mjs",
       "scripts/chronicle-edited-apply-product-journey.test.mjs",
+      "electron/scripts/chronicle-current-scene-product-journey.mjs",
+      "scripts/chronicle-current-scene-product-journey.test.mjs",
       "scripts/product-journey-*.test.mjs",
       "scripts/electron-product-journey-*.test.mjs",
       "scripts/electron-product-journeys.test.mjs",
@@ -638,6 +652,7 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
     contracts: [
       "chronicle:extract-review-apply-reopen",
       "chronicle:extract-edit-approve-apply-reopen",
+      "chronicle:extract-current-scene-apply-reopen",
     ],
     paths: [
       "src/features/chronicle/ChronicleExtractDialog.*",
@@ -737,6 +752,10 @@ export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
   },
   {
     id: "chronicle:extract-edit-approve-apply-reopen",
+    domains: ["chronicle-extraction"],
+  },
+  {
+    id: "chronicle:extract-current-scene-apply-reopen",
     domains: ["chronicle-extraction"],
   },
   {

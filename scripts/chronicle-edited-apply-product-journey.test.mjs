@@ -54,7 +54,7 @@ test("the edited-apply journey shares the Chronicle shard and stays after the ex
   assert.equal(FIXED_PRODUCT_JOURNEY_SHARDS[shard].length, 6);
   const ids = FIXED_PRODUCT_JOURNEY_SHARDS[shard];
   assert.equal(ids.indexOf(ID), ids.indexOf(EXISTING_ID) + 1);
-  assert.equal(FIXED_PRODUCT_JOURNEY_SHARDS.flat().length, 35);
+  assert.equal(FIXED_PRODUCT_JOURNEY_SHARDS.flat().length, 36);
 });
 
 test("a Chronicle review UI or journey-script change selects both Chronicle journeys", () => {

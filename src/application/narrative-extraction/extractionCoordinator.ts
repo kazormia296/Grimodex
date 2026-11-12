@@ -92,6 +92,7 @@ import {
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
 import {
   buildProjectNarrativeSnapshot,
+  type NarrativeSceneScopeMode,
   type ProjectSnapshotAdapterServices,
   type ProjectNarrativeSnapshotResult,
 } from "./projectSnapshotAdapter";
@@ -191,6 +192,13 @@ export interface ChronicleExtractionRequest {
   readonly existingEvents?: readonly ExistingChronicleEventCatalogRecord[];
   /** Optional evidence protocol override; omitted AI runs use citation-id-v2. */
   readonly evidenceMode?: ObservationEvidenceMode;
+  /**
+   * How the Snapshot adapter checks `sceneIds` against `folderId`. Omitted is
+   * `folder-exact`. Used only to build the Snapshot: never written to the Run
+   * scope, the sealed spec/digest, or any sealed value. Resume rebuilds no
+   * Snapshot, so it never needs it.
+   */
+  readonly sceneScopeMode?: NarrativeSceneScopeMode;
 }
 
 export interface ChronicleExtractionResult {
@@ -381,6 +389,9 @@ function captureChronicleExtractionRequest(
     ...(request.evidenceMode === undefined
       ? {}
       : { evidenceMode: request.evidenceMode }),
+    ...(request.sceneScopeMode === undefined
+      ? {}
+      : { sceneScopeMode: request.sceneScopeMode }),
   };
 }
 
@@ -2166,6 +2177,9 @@ export async function runChronicleExtractionCoordinator(
         language: sealedRequest.language,
         sceneIds: sealedRequest.sceneIds,
         authority: sealedRequest.authority,
+        ...(sealedRequest.sceneScopeMode === undefined
+          ? {}
+          : { sceneScopeMode: sealedRequest.sceneScopeMode }),
       },
       sealedDeps.snapshotServices,
     );
