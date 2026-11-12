@@ -1,6 +1,9 @@
 //! Retrieval admission against exact normal UI cold storage and Native writers.
 //! Membership, canonical Freshness, current Human review, and query Scope are
 //! separate assertions; private corruption copies never manufacture positives.
+//! The one exception is the BAO/1 section: no real fixture holds a scene-level
+//! event, so its positives reseal an AI root (payload, Envelope, sealed plan, Plan
+//! manifest) consistently, and `assert_sealed_chain_agrees` states the result.
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -2399,15 +2402,31 @@ fn outermost_error_message_carries_the_source_stale_code_without_scope_marker() 
 // ───────────────────────── BAO/1: Chronicle bulk approve ─────────────────────────
 //
 // The cold fixtures are real normal-UI runs, but every sealed value in them is
-// `significance: major`, so no real proposal is a bulk-approval target. These
-// tests rewrite one sealed assertion value on a private copy and re-seal the
-// whole chain (Envelope digests, Plan manifest binding) so every validator still
-// passes; the rewritten copy is exactly a run whose event is scene-level. The
-// rewrite never touches what the writers under test check.
+// `significance: major`, so no real proposal in them is a bulk-approval target,
+// and no public Rust writer can build a whole Chronicle run (Snapshot, evidence,
+// plan, Envelope, D1 declaration) from nothing. The one exception to "private
+// corruption copies never manufacture positives" is therefore the *scene-level*
+// reseal of an AI root below. It is not an Envelope-only edit: it rewrites the
+// payload, the Envelope (assertion value, `proposalPayloadDigest`, assertion
+// digests), the sealed plan (`proposals[]`, `planned[].proposal`) and the Plan
+// manifest binding together, so the copy is the state a real writer leaves for a
+// scene-level event. The upstream model-output records (event hypotheses, stage
+// synthesis) are bound to the stage receipts / response digests and keep what the
+// model recorded; no writer or judgement under test reads them.
+// `assert_sealed_chain_agrees` states that, and the writers under test (the child
+// writer re-verifies the parent's payload digest and Envelope; the review read
+// re-verifies the Plan binding and the payload) run on top of it. The values the
+// writers verify are rewritten consistently, never left in disagreement; the
+// writers' own checks are never skipped. No proposal pointer, decision or child
+// revision is moved: the second proposal of the run stays what the real product
+// left it (approved, edited), i.e. not a target. (Rust has no public path that
+// builds a Chronicle run with Snapshot, evidence, plan, V2 Envelope and D1
+// declarations: the other fixture builders in this repository insert the plan and
+// Snapshot by SQL, or save a legacy-kind proposal without Chronicle stage
+// provenance.)
 
 const TWO_WINDOW_FIRST_PROPOSAL: &str = "f3baa553-d148-4cab-a0e7-a8b3f10dc0ef";
 const TWO_WINDOW_SECOND_PROPOSAL: &str = "78f95d27-b8de-4aa6-9854-1bf447834a3f";
-const TWO_WINDOW_SECOND_ROOT: &str = "411f5ebc-84b4-406b-ad00-c94da2c8ccb9";
 /// 2 つの場面（s1、s2）の後ろの場面。
 const BULK_QUERY_SCENE: &str = "en-query-05";
 const TWO_WINDOW_OTHER_RUN_PROPOSAL: &str = "5a8a5fb7-91d0-45f6-9072-79c0706430ac";
@@ -2494,20 +2513,113 @@ fn set_of_revision(conn: &Connection, revision: &str) -> String {
     .expect("set of the revision")
 }
 
-/// Rewrite values of the sealed `assertion.payload` of a first revision, re-seal
-/// the Envelope digests, and rebind the Plan manifest.
-fn reseal_assertion_values(conn: &Connection, revision: &str, edits: &[(&str, &str)]) {
-    let raw: String = conn
-        .query_row(
-            "SELECT reconciliation_envelope_json FROM narrative_proposal_revisions WHERE id = ?1",
-            [revision],
-            |row| row.get(0),
-        )
-        .expect("Envelope");
-    let mut envelope: Value = serde_json::from_str(&raw).expect("Envelope JSON");
-    for (field, value) in edits {
-        envelope["assertion"]["payload"][*field] = json!(value);
+const CHAIN_VALUE_FIELDS: [&str; 4] = ["significance", "actuality", "narrativeFrame", "attribution"];
+
+fn chain_value_is_valid(field: &str, value: &str) -> bool {
+    match field {
+        "significance" => matches!(value, "major" | "scene-level"),
+        "actuality" => matches!(value, "actual" | "attempted" | "prevented"),
+        _ => true,
     }
+}
+
+/// Rewrite a stored artifact of the Run (by kind) and its canonical digest.
+fn rewrite_run_artifact(conn: &Connection, run: &str, kind: &str, edit: impl FnOnce(&mut Value)) {
+    let (id, payload): (String, String) = conn
+        .query_row(
+            "SELECT id, payload_json FROM narrative_extraction_artifacts
+              WHERE run_id = ?1 AND artifact_kind = ?2",
+            params![run, kind],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("one artifact of the kind");
+    let mut value: Value = serde_json::from_str(&payload).expect("artifact JSON");
+    edit(&mut value);
+    conn.execute(
+        "UPDATE narrative_extraction_artifacts SET payload_json = ?2, payload_digest = ?3 WHERE id = ?1",
+        params![
+            id,
+            canonical_json_string(&value).expect("canonical artifact"),
+            canonical_json_digest(&value).expect("artifact digest")
+        ],
+    )
+    .expect("store the rewritten artifact");
+}
+
+/// Rewrite values of the event of a first (AI root) revision the way a real
+/// writer would have sealed them. `significance` / `actuality` (when the value is
+/// a real one) go to the payload, the Envelope and the sealed plan together; the
+/// Envelope digests and the Plan manifest are re-sealed. `narrativeFrame` /
+/// `attribution` (and a value the product never writes, such as an empty
+/// significance, used by negatives) live in the Envelope only: the Envelope is the
+/// only place the judgement reads them. The upstream model-output records
+/// (hypotheses, stage synthesis) are bound to the stage receipts and the model
+/// response digests, so they keep what the model recorded; no writer or judgement
+/// under test reads them.
+fn reseal_assertion_values(conn: &Connection, revision: &str, edits: &[(&str, &str)]) {
+    reseal_event(conn, revision, &|_| {}, edits);
+}
+
+/// [`reseal_assertion_values`] that also edits the proposal payload itself
+/// (`edit_payload`), carried through the same sealed chain.
+fn reseal_event(
+    conn: &Connection,
+    revision: &str,
+    edit_payload: &dyn Fn(&mut Value),
+    edits: &[(&str, &str)],
+) {
+    let (proposal, run, payload_text, raw): (String, String, String, String) = conn
+        .query_row(
+            "SELECT r.proposal_id, s.run_id, r.payload_json, r.reconciliation_envelope_json
+               FROM narrative_proposal_revisions r
+               JOIN narrative_proposals p ON p.id = r.proposal_id
+               JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+              WHERE r.id = ?1 AND r.revision_number = 1",
+            [revision],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("AI root revision");
+    let mut payload: Value = serde_json::from_str(&payload_text).expect("payload JSON");
+    let mut envelope: Value = serde_json::from_str(&raw).expect("Envelope JSON");
+    let event_id = payload["eventId"].as_str().expect("eventId").to_owned();
+    edit_payload(&mut payload);
+    let mut sealed_fields = Vec::new();
+    for (field, value) in edits {
+        assert!(CHAIN_VALUE_FIELDS.contains(field), "{field}");
+        envelope["assertion"]["payload"][*field] = json!(value);
+        if matches!(*field, "significance" | "actuality") && chain_value_is_valid(field, value) {
+            payload[*field] = json!(value);
+            sealed_fields.push((*field, *value));
+        }
+    }
+    envelope["projectionBinding"]["proposalPayloadDigest"] =
+        json!(canonical_json_digest(&payload).expect("payload digest"));
+    // The payload, on the revision and on the Proposal's initial copy.
+    let payload_stored = serde_json::to_string(&payload).expect("payload text");
+    conn.execute(
+        "UPDATE narrative_proposal_revisions SET payload_json = ?2 WHERE id = ?1",
+        params![revision, payload_stored],
+    )
+    .expect("store the payload");
+    conn.execute(
+        "UPDATE narrative_proposals SET payload_json = ?2 WHERE id = ?1 AND payload_json = ?3",
+        params![proposal, payload_stored, payload_text],
+    )
+    .expect("store the Proposal's initial payload");
+    // The sealed plan of the Run.
+    rewrite_run_artifact(conn, &run, "chronicle.proposal-plan@1", |plan| {
+        for entry in plan["proposals"].as_array_mut().expect("proposals") {
+            if entry["eventId"] == event_id.as_str() {
+                *entry = payload.clone();
+            }
+        }
+        for planned in plan["planned"].as_array_mut().expect("planned") {
+            if planned["proposal"]["eventId"] == event_id.as_str() {
+                planned["proposal"] = payload.clone();
+            }
+        }
+    });
+    // The Envelope's assertion digests follow the assertion value.
     let assertion = &envelope["assertion"];
     let mut core = json!({
         "assertionKind": assertion["assertionKind"],
@@ -2530,6 +2642,59 @@ fn reseal_assertion_values(conn: &Connection, revision: &str, edits: &[(&str, &s
     }))
     .expect("assertion digest"));
     store_envelope(conn, revision, &envelope);
+}
+
+/// The sealed chain of an AI root agrees with itself the way a real writer's
+/// output does: the payload digest the Envelope binds is the payload's, the
+/// Envelope's assertion value is the payload's, the stored Envelope digest is the
+/// Envelope's canonical digest, and the sealed plan carries the same payload.
+fn assert_sealed_chain_agrees(conn: &Connection, revision: &str) {
+    let (run, payload_text, raw, digest): (String, String, String, String) = conn
+        .query_row(
+            "SELECT s.run_id, r.payload_json, r.reconciliation_envelope_json,
+                    r.reconciliation_envelope_digest
+               FROM narrative_proposal_revisions r
+               JOIN narrative_proposals p ON p.id = r.proposal_id
+               JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+              WHERE r.id = ?1",
+            [revision],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("revision of the chain");
+    let payload: Value = serde_json::from_str(&payload_text).expect("payload");
+    let envelope: Value = serde_json::from_str(&raw).expect("Envelope");
+    assert_eq!(
+        envelope["projectionBinding"]["proposalPayloadDigest"],
+        json!(canonical_json_digest(&payload).expect("payload digest")),
+        "the Envelope binds this payload"
+    );
+    assert_eq!(digest, canonical_json_digest(&envelope).expect("Envelope digest"));
+    for field in ["significance", "actuality"] {
+        assert_eq!(
+            envelope["assertion"]["payload"][field], payload[field],
+            "{field}: Envelope and payload agree"
+        );
+    }
+    let plan: Value = serde_json::from_str(
+        &conn
+            .query_row(
+                "SELECT payload_json FROM narrative_extraction_artifacts
+                  WHERE run_id = ?1 AND artifact_kind = 'chronicle.proposal-plan@1'",
+                [&run],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("plan"),
+    )
+    .expect("plan JSON");
+    assert!(plan["proposals"].as_array().expect("proposals").contains(&payload), "plan roster");
+    assert!(
+        plan["planned"]
+            .as_array()
+            .expect("planned")
+            .iter()
+            .any(|planned| planned["proposal"] == payload),
+        "planned roster"
+    );
 }
 
 /// Store an Envelope with its canonical digest and rebind the Plan manifest.
@@ -2579,23 +2744,6 @@ fn reseal_plan_match(conn: &Connection, run: &str, event_id: &str, status: &str)
         conn,
         plan["proposalSetId"].as_str().expect("plan ProposalSet"),
     );
-}
-
-/// Drop the V2 pointer guard so a private copy can put a proposal back on its
-/// AI root (a state the product never reaches); the writers still run on top.
-fn put_proposal_back_on_its_root(conn: &Connection, proposal: &str, root: &str) {
-    conn.execute_batch(
-        "DROP TRIGGER IF EXISTS narrative_proposals_v2_pointer_monotonicity_guard;",
-    )
-    .expect("drop the pointer guard on the private copy");
-    conn.execute(
-        "UPDATE narrative_proposals
-            SET current_revision_id = ?2, status = 'unreviewed',
-                payload_json = (SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?2)
-          WHERE id = ?1",
-        params![proposal, root],
-    )
-    .expect("put the proposal back on its root");
 }
 
 /// A private two-window copy where the first proposal's AI root is a bulk
@@ -2675,22 +2823,52 @@ fn read_bulk_approvals(db: &Database, fixture: &Fixture, run: &str) -> std::coll
         .collect()
 }
 
-/// Everything a bulk approval may write, as one comparable string.
+/// Everything a bulk approval may write, as one comparable string: Revisions,
+/// Decisions, Freshness, Edges, the D1 declaration heads, the revision source basis,
+/// the semantic-index cache flag and every proposal pointer.
 fn bulk_state(db: &Database) -> String {
     db.with_conn(|conn| {
-        let counts: (i64, i64, i64, i64) = conn.query_row(
+        let counts: (i64, i64, i64, i64, i64, i64, i64) = conn.query_row(
             "SELECT (SELECT COUNT(*) FROM narrative_proposal_revisions),
                     (SELECT COUNT(*) FROM narrative_proposal_decisions),
                     (SELECT COUNT(*) FROM narrative_consumer_freshness),
-                    (SELECT COUNT(*) FROM narrative_dependency_edges)",
+                    (SELECT COUNT(*) FROM narrative_dependency_edges),
+                    (SELECT COUNT(*) FROM narrative_dependency_declaration_sets),
+                    (SELECT COUNT(*) FROM narrative_dependency_declaration_heads),
+                    (SELECT COUNT(*) FROM narrative_revision_source_basis)",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
         )?;
-        let pointers: Vec<String> = conn
-            .prepare("SELECT id || '|' || status || '|' || COALESCE(current_revision_id,'') FROM narrative_proposals ORDER BY id")?
-            .query_map([], |row| row.get(0))?
-            .collect::<Result<_, _>>()?;
-        Ok(format!("{counts:?} {pointers:?}"))
+        let rows = |sql: &str| -> anyhow::Result<Vec<String>> {
+            Ok(conn
+                .prepare(sql)?
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()?)
+        };
+        let pointers = rows("SELECT id || '|' || status || '|' || COALESCE(current_revision_id,'') FROM narrative_proposals ORDER BY id")?;
+        let heads = rows(
+            "SELECT consumer_kind || '|' || consumer_key || '|' || active_declaration_set_id || '|' || version
+               FROM narrative_dependency_declaration_heads ORDER BY consumer_kind, consumer_key",
+        )?;
+        let source_basis = rows(
+            "SELECT revision_id || '|' || source_key || '|' || revision_token
+               FROM narrative_revision_source_basis ORDER BY revision_id, source_key, revision_token",
+        )?;
+        let cache = rows(
+            "SELECT index_key || '|' || generation || '|' || dirty_cache_flag
+               FROM narrative_semantic_index_metadata ORDER BY index_key",
+        )?;
+        Ok(format!("{counts:?} {pointers:?} {heads:?} {source_basis:?} {cache:?}"))
     })
     .expect("bulk state")
 }
@@ -2742,6 +2920,7 @@ fn assert_bulk_refused(
 fn bulk_approve_writes_the_unsealed_child_and_its_human_approval() {
     let (fixture, db) = bulk_two_window(|_| {});
     let root = TWO_WINDOW_UNREVIEWED_REVISION;
+    assert_sealed_chain_agrees(&fixture.read_only(), root);
     let read = read_bulk_approvals(&db, &fixture, TWO_WINDOW_RUN);
     assert_eq!(read[TWO_WINDOW_FIRST_PROPOSAL]["eligible"], true, "{read:?}");
     assert_eq!(reasons_of(&read[TWO_WINDOW_FIRST_PROPOSAL]), Vec::<String>::new());
@@ -3004,6 +3183,18 @@ fn bulk_approve_refuses_duplicate_evidence_and_unresolvable_reveal() {
     });
     assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &["evidence-unverified"]);
 
+    // 根拠の対応は取れるが、解決の方法が完全一致（exact／exact-with-context）でない。
+    let (fixture, db) = bulk_two_window(|conn| {
+        rewrite_run_artifact(conn, TWO_WINDOW_RUN, "evidence.resolved@1", |artifact| {
+            for anchor in artifact["anchors"].as_array_mut().expect("anchors") {
+                if anchor["id"] == "anchor-0001" {
+                    anchor["method"] = json!("fragmented");
+                }
+            }
+        });
+    });
+    assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &["evidence-unverified"]);
+
     // 開示の場面が、今の場面の一覧から消えた（子の版を今は作れない）。
     let (fixture, db) = bulk_two_window(|conn| {
         conn.execute(
@@ -3095,18 +3286,11 @@ fn bulk_approve_refuses_when_the_child_prerequisites_are_missing() {
     assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &["parent-seal-missing"]);
 }
 
-/// 2 件の対象のうち、一覧にある分だけが処理される。1 件が途中（子の版を書いた後の承認）で
-/// 失敗しても、その提案は何も書かれず（子の版だけが残らない）、残りは処理される。
-/// 同じ要求をもう一度送っても、子の版と承認は二重にならない。
+/// 承認が途中（子の版を書いた後）で失敗した提案は、何も書かれず（子の版だけが残らない）、後ろの
+/// 対象の判定は続く。失敗を取り除いて同じ要求を送ると処理され、もう一度送っても二重にならない。
 #[test]
-fn bulk_approve_continues_after_one_failure_and_is_idempotent() {
-    let (fixture, db) = bulk_two_window(|conn| {
-        put_proposal_back_on_its_root(conn, TWO_WINDOW_SECOND_PROPOSAL, TWO_WINDOW_SECOND_ROOT);
-        reseal_assertion_values(conn, TWO_WINDOW_SECOND_ROOT, &[("significance", "scene-level")]);
-    });
-    let read = read_bulk_approvals(&db, &fixture, TWO_WINDOW_RUN);
-    assert_eq!(read[TWO_WINDOW_FIRST_PROPOSAL]["eligible"], true, "{read:?}");
-    assert_eq!(read[TWO_WINDOW_SECOND_PROPOSAL]["eligible"], true, "{read:?}");
+fn bulk_approve_rolls_back_a_failed_proposal_continues_and_is_idempotent() {
+    let (fixture, db) = bulk_two_window(|_| {});
     let pointer = |db: &Database, proposal: &str| -> (String, String, i64) {
         db.with_conn(|conn| {
             Ok(conn.query_row(
@@ -3119,19 +3303,22 @@ fn bulk_approve_continues_after_one_failure_and_is_idempotent() {
         })
         .expect("proposal pointer")
     };
-    let second_before = pointer(&db, TWO_WINDOW_SECOND_PROPOSAL);
+    let first_before = pointer(&db, TWO_WINDOW_FIRST_PROPOSAL);
+    let state_before = bulk_state(&db);
 
     // 一覧に無い提案は、対象であっても書かれない。
-    let only_first = bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL]);
-    let result = bulk_approve_targets(&db, &fixture, TWO_WINDOW_RUN, only_first);
-    assert_eq!(result["approved"].as_array().expect("approved").len(), 1, "{result}");
-    assert_eq!(pointer(&db, TWO_WINDOW_SECOND_PROPOSAL), second_before, "not listed -> not written");
+    let only_second = bulk_targets(&db, &[TWO_WINDOW_SECOND_PROPOSAL]);
+    let result = bulk_approve_targets(&db, &fixture, TWO_WINDOW_RUN, only_second);
+    assert_eq!(result["approved"], json!([]), "{result}");
+    assert_eq!(result["skipped"].as_array().expect("skipped").len(), 1, "{result}");
+    assert_eq!(bulk_state(&db), state_before, "not listed -> not written");
+    assert_eq!(pointer(&db, TWO_WINDOW_FIRST_PROPOSAL), first_before);
 
-    // 2 件目の承認だけが失敗する。
+    // 1 件目の承認だけが失敗する。
     db.with_conn(|conn| {
         conn.execute_batch(&format!(
             "CREATE TRIGGER bao_injected_failure BEFORE INSERT ON narrative_proposal_decisions
-               WHEN NEW.proposal_id = '{TWO_WINDOW_SECOND_PROPOSAL}'
+               WHEN NEW.proposal_id = '{TWO_WINDOW_FIRST_PROPOSAL}'
              BEGIN SELECT RAISE(ABORT, 'bao-injected-failure'); END;"
         ))?;
         Ok(())
@@ -3141,31 +3328,35 @@ fn bulk_approve_continues_after_one_failure_and_is_idempotent() {
     let result = bulk_approve_targets(&db, &fixture, TWO_WINDOW_RUN, both.clone());
     assert_eq!(result["approved"], json!([]), "{result}");
     assert_eq!(result["failed"].as_array().expect("failed").len(), 1, "{result}");
-    assert_eq!(result["failed"][0]["proposalId"], TWO_WINDOW_SECOND_PROPOSAL);
+    assert_eq!(result["failed"][0]["proposalId"], TWO_WINDOW_FIRST_PROPOSAL);
     assert!(result["failed"][0]["code"].as_str().expect("code").starts_with("NEX_"), "{result}");
     let skipped = result["skipped"].as_array().expect("skipped");
-    assert_eq!(skipped.len(), 1, "{result}");
-    assert_eq!(skipped[0]["proposalId"], TWO_WINDOW_FIRST_PROPOSAL);
+    assert_eq!(skipped.len(), 1, "the target after the failure is still judged: {result}");
+    assert_eq!(skipped[0]["proposalId"], TWO_WINDOW_SECOND_PROPOSAL);
+    assert_eq!(result["stopped"], false);
     assert_eq!(
-        pointer(&db, TWO_WINDOW_SECOND_PROPOSAL),
-        second_before,
+        pointer(&db, TWO_WINDOW_FIRST_PROPOSAL),
+        first_before,
         "the failed proposal keeps no child revision and no decision"
     );
+    assert_eq!(bulk_state(&db), state_before, "a failed proposal leaves nothing behind");
     db.with_conn(|conn| {
         assert!(conn.is_autocommit());
         Ok(())
     })
     .expect("no transaction is left open");
 
-    // 失敗を取り除くと、残りが処理される。済んだ分は二重にならない。
+    // 失敗を取り除くと処理される。済んだ分は二重にならない。
     db.with_conn(|conn| Ok(conn.execute_batch("DROP TRIGGER bao_injected_failure")?))
         .expect("remove the injected failure");
     let result = bulk_approve_targets(&db, &fixture, TWO_WINDOW_RUN, both.clone());
     assert_eq!(result["failed"], json!([]), "{result}");
     let approved = result["approved"].as_array().expect("approved");
     assert_eq!(approved.len(), 1, "{result}");
-    assert_eq!(approved[0]["proposalId"], TWO_WINDOW_SECOND_PROPOSAL);
+    assert_eq!(approved[0]["proposalId"], TWO_WINDOW_FIRST_PROPOSAL);
+    assert_eq!(result["skipped"].as_array().expect("skipped").len(), 1, "{result}");
     let after = bulk_state(&db);
+    assert_ne!(after, state_before);
     let again = bulk_approve_targets(&db, &fixture, TWO_WINDOW_RUN, both);
     assert_eq!(again["approved"], json!([]), "{again}");
     assert_eq!(again["skipped"].as_array().expect("skipped").len(), 2, "{again}");
@@ -3188,13 +3379,12 @@ fn bulk_approve_continues_after_one_failure_and_is_idempotent() {
 }
 
 /// 終了や workspace の切り替えの要求が来たら、提案と提案の間で止まり、それまでの結果を返す。
+/// 止まった後の提案は判定もされない。
 #[test]
 fn bulk_approve_stops_between_proposals_when_asked() {
-    let (fixture, db) = bulk_two_window(|conn| {
-        put_proposal_back_on_its_root(conn, TWO_WINDOW_SECOND_PROPOSAL, TWO_WINDOW_SECOND_ROOT);
-        reseal_assertion_values(conn, TWO_WINDOW_SECOND_ROOT, &[("significance", "scene-level")]);
-    });
+    let (fixture, db) = bulk_two_window(|_| {});
     let targets = bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL, TWO_WINDOW_SECOND_PROPOSAL]);
+    let second_before = bulk_state(&db);
     let mut asked = 0;
     let result = narrative_extraction_chronicle_bulk_approve(
         &db,
@@ -3212,14 +3402,378 @@ fn bulk_approve_stops_between_proposals_when_asked() {
     assert_eq!(result["stopped"], true);
     assert_eq!(result["approved"].as_array().expect("approved").len(), 1, "{result}");
     assert_eq!(result["approved"][0]["proposalId"], TWO_WINDOW_FIRST_PROPOSAL);
-    let second_status: String = db
+    assert_eq!(result["skipped"], json!([]), "the proposal after the stop is not even judged: {result}");
+    assert_eq!(result["failed"], json!([]));
+    assert_ne!(bulk_state(&db), second_before);
+    // 止める要求が最初から来ていれば、何も書かない。
+    let (fixture, db) = bulk_two_window(|_| {});
+    let before = bulk_state(&db);
+    let result = narrative_extraction_chronicle_bulk_approve(
+        &db,
+        ChronicleBulkApprovePayload {
+            project_id: fixture.project().to_owned(),
+            run_id: TWO_WINDOW_RUN.to_owned(),
+            targets: bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL]),
+        },
+        &mut || true,
+    )
+    .expect("stopped before the first proposal");
+    assert_eq!(result["stopped"], true);
+    assert_eq!(result["approved"], json!([]));
+    assert_eq!(bulk_state(&db), before);
+}
+
+/// DB の接続は 1 本の mutex で、本文の自動保存などの書き込みと共有する。まとめて承認は提案ごとに
+/// 接続を取り直し、提案と提案の間（と最初の提案の前）は放している。退行すると、ほかの thread の
+/// 読み出しが待たされ、待ちの上限で失敗する（固まらない）。
+#[test]
+fn bulk_approve_releases_the_database_lock_between_proposals() {
+    let (fixture, db) = bulk_two_window(|_| {});
+    let targets = bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL, TWO_WINDOW_SECOND_PROPOSAL]);
+    let mut observed = Vec::new();
+    let result = {
+        let db_ref = &db;
+        narrative_extraction_chronicle_bulk_approve(
+            db_ref,
+            ChronicleBulkApprovePayload {
+                project_id: fixture.project().to_owned(),
+                run_id: TWO_WINDOW_RUN.to_owned(),
+                targets,
+            },
+            &mut || {
+                // 別 thread が、同じ Database から読めること（lock が放されていること）。
+                let (sender, receiver) = std::sync::mpsc::channel();
+                let read = std::thread::scope(|scope| {
+                    scope.spawn(move || {
+                        let outcome = db_ref.with_conn(|conn| {
+                            Ok(conn.query_row(
+                                "SELECT COUNT(*) FROM narrative_proposals",
+                                [],
+                                |row| row.get::<_, i64>(0),
+                            )?)
+                        });
+                        let _ = sender.send(outcome.is_ok());
+                    });
+                    receiver.recv_timeout(std::time::Duration::from_secs(20))
+                });
+                observed.push(read);
+                false
+            },
+        )
+        .expect("bulk approve")
+    };
+    assert_eq!(observed.len(), 2, "asked before each proposal");
+    for read in &observed {
+        assert_eq!(read, &Ok(true), "the connection is free while should_stop runs: {observed:?}");
+    }
+    assert_eq!(result["approved"].as_array().expect("approved").len(), 1, "{result}");
+}
+
+/// 提案の前に ctx（Scope authority、意味の世代）を読んだ後で、その値が古くなっても、書く直前の
+/// 子の版の作成が今の値で検査して失敗する（`failed`）。古い ctx のために書かれることは無い。
+#[test]
+fn bulk_approve_with_a_stale_scope_authority_fails_in_the_child_writer_and_writes_nothing() {
+    let (fixture, db) = bulk_two_window(|_| {});
+    let before = bulk_state(&db);
+    let mut asked = 0;
+    let result = narrative_extraction_chronicle_bulk_approve(
+        &db,
+        ChronicleBulkApprovePayload {
+            project_id: fixture.project().to_owned(),
+            run_id: TWO_WINDOW_RUN.to_owned(),
+            targets: bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL]),
+        },
+        &mut || {
+            asked += 1;
+            // ctx を読んだ後、最初の提案の前に、開示の場面が一覧から消える。
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE tree_nodes SET archived_at = datetime('now') WHERE id = 'en-distractor-gift'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("archive the reveal Scene after the run-level read");
+            false
+        },
+    )
+    .expect("bulk approve");
+    assert_eq!(asked, 1);
+    assert_eq!(result["approved"], json!([]), "{result}");
+    assert_eq!(result["skipped"], json!([]), "the stale pre-check still said eligible: {result}");
+    let failed = result["failed"].as_array().expect("failed");
+    assert_eq!(failed.len(), 1, "{result}");
+    assert_eq!(failed[0]["proposalId"], TWO_WINDOW_FIRST_PROPOSAL);
+    assert!(
+        failed[0]["code"].as_str().expect("code").starts_with("NEX_C2B_SCOPE_AUTHORITY"),
+        "the writer judges with today's authority: {result}"
+    );
+    let after = bulk_state(&db);
+    // 場面の archive 以外（子の版、承認、宣言、Freshness）は、何も書かれていない。
+    assert_eq!(after, before, "nothing of the bulk approval was written");
+}
+
+/// 子の版を作って承認し、Freshness の周期が空になるまで回す。
+fn bulk_approve_first_and_settle(db: &Database, fixture: &Fixture) -> String {
+    let result = bulk_approve_targets(
+        db,
+        fixture,
+        TWO_WINDOW_RUN,
+        bulk_targets(db, &[TWO_WINDOW_FIRST_PROPOSAL]),
+    );
+    assert_eq!(result["failed"], json!([]), "{result}");
+    let child = result["approved"][0]["revisionId"].as_str().expect("child").to_owned();
+    for _ in 0..8 {
+        if matches!(
+            run_incremental_freshness_cycle(db).expect("production Native Freshness cycle"),
+            IncrementalFreshnessCycleOutcome::Idle
+        ) {
+            break;
+        }
+    }
+    child
+}
+
+/// 漏れの負例（§4）：まとめて承認した子の版は、材料の場面より後ろの場面からだけ使える。材料の場面
+/// より前の場面、材料の場面と同じ場面からの問い合わせでは、同じ理由（材料が問い合わせの場面より前でない）
+/// で使えない。
+#[test]
+fn bulk_approved_child_is_not_retrievable_from_earlier_or_the_same_scene() {
+    let (fixture, db) = bulk_two_window(|_| {});
+    let child = bulk_approve_first_and_settle(&db, &fixture);
+    db.with_conn(|conn| {
+        assert_complete_and_fresh(conn, &fixture, &child);
+        let read_from = |scene: &str| {
+            let tx = conn.unchecked_transaction().expect("snapshot");
+            read_revision_retrieval_eligibility(&tx, fixture.project(), &child, scene)
+                .expect("typed retrieval read")
+        };
+        assert!(
+            matches!(read_from(BULK_QUERY_SCENE), RevisionEligibilityRead::Eligible(_)),
+            "a Scene after every material Scene reads it"
+        );
+        // 材料の場面（s1、s2）より前の場面（根の場面、フォルダの場面）、材料と同じ場面。
+        for scene in [
+            "en-raw-dialogue",
+            "en-raw-non-event",
+            "en-broken-passage",
+            fixture.scene("s1"),
+            fixture.scene("s2"),
+        ] {
+            let actual = read_from(scene);
+            assert!(
+                matches!(
+                    actual,
+                    RevisionEligibilityRead::Unavailable {
+                        reason: RevisionEligibilityReason::SourceNotBeforeQuery
+                    }
+                ),
+                "query {scene}: {actual:?}"
+            );
+        }
+        Ok(())
+    })
+    .expect("the approved child never leaks to an earlier or the same Scene");
+}
+
+/// 根拠・計画の記録が無い Run：review の読み出しは、その前の検査（記録の完全性）で拒む（変更前と
+/// 同じ）。まとめて承認の command は、読めない記録を「根拠が対応しない」「計画が無い」として対象外にし、
+/// 何も書かない。Chronicle でない Run の応答には `bulkApproval` が付かない。
+#[test]
+fn bulk_approval_without_run_material_is_refused_not_failed() {
+    let read_bundle = |db: &Database, fixture: &Fixture| {
+        narrative_extraction_get_run_review_bundle(
+            db,
+            RunRefPayload {
+                run_id: TWO_WINDOW_RUN.to_owned(),
+                project_id: fixture.project().to_owned(),
+                chronicle_blocked_discard: None,
+            },
+        )
+    };
+    // 根拠の記録（evidence.resolved@1）が無い。
+    let (fixture, db) = bulk_two_window(|conn| {
+        conn.execute(
+            "DELETE FROM narrative_extraction_artifacts WHERE run_id = ?1 AND artifact_kind = 'evidence.resolved@1'",
+            [TWO_WINDOW_RUN],
+        )
+        .expect("remove the evidence artifact of the private copy");
+    });
+    assert!(read_bundle(&db, &fixture).is_err(), "the bundle's own integrity check refuses first");
+    let before = bulk_state(&db);
+    let result = bulk_approve_targets(
+        &db,
+        &fixture,
+        TWO_WINDOW_RUN,
+        bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL]),
+    );
+    assert_eq!(result["approved"], json!([]), "{result}");
+    assert_eq!(
+        result["skipped"],
+        json!([{"proposalId": TWO_WINDOW_FIRST_PROPOSAL, "reasons": ["evidence-unverified"]}])
+    );
+    assert_eq!(bulk_state(&db), before);
+
+    // 計画の記録が無い。
+    let (fixture, db) = bulk_two_window(|conn| {
+        conn.execute(
+            "DELETE FROM narrative_extraction_artifacts
+              WHERE run_id = ?1 AND artifact_kind = 'chronicle.proposal-plan@1'",
+            [TWO_WINDOW_RUN],
+        )
+        .expect("remove the plan artifact of the private copy");
+    });
+    assert!(read_bundle(&db, &fixture).is_err(), "the bundle's own integrity check refuses first");
+    let before = bulk_state(&db);
+    let result = bulk_approve_targets(
+        &db,
+        &fixture,
+        TWO_WINDOW_RUN,
+        bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL]),
+    );
+    assert_eq!(result["approved"], json!([]), "{result}");
+    assert_eq!(
+        result["skipped"],
+        json!([{"proposalId": TWO_WINDOW_FIRST_PROPOSAL, "reasons": ["plan-unavailable"]}])
+    );
+    assert_eq!(bulk_state(&db), before);
+
+    // Chronicle でない Run（依存の検証 Run）：提案が無く、`bulkApproval` も付かない。
+    let (fixture, db) = bulk_two_window(|_| {});
+    let other_run: String = db
         .with_conn(|conn| {
             Ok(conn.query_row(
-                "SELECT status FROM narrative_proposals WHERE id = ?1",
-                [TWO_WINDOW_SECOND_PROPOSAL],
+                "SELECT id FROM narrative_extraction_runs WHERE surface_path_id = 'dependency-verify' LIMIT 1",
+                [],
                 |row| row.get(0),
             )?)
         })
-        .expect("status");
-    assert_eq!(second_status, "unreviewed", "the proposal after the stop is untouched");
+        .expect("a non-Chronicle Run");
+    let bundle = narrative_extraction_get_run_review_bundle(
+        &db,
+        RunRefPayload {
+            run_id: other_run,
+            project_id: fixture.project().to_owned(),
+            chronicle_blocked_discard: None,
+        },
+    )
+    .expect("a non-Chronicle review bundle still reads");
+    assert!(
+        bundle["proposals"].as_array().is_none_or(|proposals| proposals
+            .iter()
+            .all(|proposal| proposal.get("bulkApproval").is_none())),
+        "{bundle}"
+    );
+    // 別の Chronicle Run の提案は、その Run の読み出しで、その Run の材料で判定される。
+    let other = read_bulk_approvals(&db, &fixture, "dc741c52-091b-4aa2-8ed4-9f9c7490014d");
+    assert_eq!(other.len(), 1);
+    assert_eq!(other[TWO_WINDOW_OTHER_RUN_PROPOSAL]["eligible"], false);
+    // その Run は Chronicle の計画を書く command にも使えない（別の run の提案を渡しても書かれない）。
+    let before = bulk_state(&db);
+    let result = bulk_approve_targets(
+        &db,
+        &fixture,
+        "dc741c52-091b-4aa2-8ed4-9f9c7490014d",
+        bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL]),
+    );
+    assert_eq!(
+        result["skipped"],
+        json!([{"proposalId": TWO_WINDOW_FIRST_PROPOSAL, "reasons": ["proposal-not-found"]}])
+    );
+    assert_eq!(bulk_state(&db), before);
+    // Chronicle の Run でないものに command を向けると、何も書かず拒む。
+    let not_chronicle = narrative_extraction_chronicle_bulk_approve(
+        &db,
+        ChronicleBulkApprovePayload {
+            project_id: fixture.project().to_owned(),
+            run_id: "92b21f23-3d7c-48f7-be69-d3299e497d18".to_owned(),
+            targets: bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL]),
+        },
+        &mut || false,
+    );
+    assert!(not_chronicle.is_err(), "a non-Chronicle Run is refused");
+    assert_eq!(bulk_state(&db), before);
+}
+
+/// 試験の無かった理由のコード（取り込みの印のある提案を除く）：secret でない版、読めない状態、
+/// 場面の一覧が読めない。
+#[test]
+fn bulk_approve_refuses_with_the_remaining_reason_codes() {
+    // 版が既に secret でない（印を外す対象が無い）。
+    let (fixture, db) = bulk_two_window(|conn| {
+        reseal_event(
+            conn,
+            TWO_WINDOW_UNREVIEWED_REVISION,
+            &|payload| payload["disclosure"]["secret"] = json!(false),
+            &[],
+        );
+    });
+    assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &["already-nonsecret"]);
+
+    // 状態が既知の値のどれでもない。
+    let (fixture, db) = bulk_two_window(|conn| {
+        conn.execute(
+            "UPDATE narrative_proposals SET status = 'withdrawn' WHERE id = ?1",
+            [TWO_WINDOW_FIRST_PROPOSAL],
+        )
+        .expect("unknown status of the private copy");
+    });
+    assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &["status-other"]);
+
+    // 現行の場面の一覧（Scope authority）が読めない：木に、根から辿れない有効な節がある。
+    let (fixture, db) = bulk_two_window(|conn| {
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             UPDATE tree_nodes SET parent_id = 'nir1-folder-en-distractor-medicine'
+              WHERE id = 'nir1-folder-en-distractor-bridge-plan';
+             UPDATE tree_nodes SET parent_id = 'nir1-folder-en-distractor-bridge-plan'
+              WHERE id = 'nir1-folder-en-distractor-medicine';",
+        )
+        .expect("make the live tree unreadable on the private copy");
+    });
+    assert_bulk_refused(&db, &fixture, TWO_WINDOW_FIRST_PROPOSAL, &["scope-authority-unavailable"]);
+}
+
+/// 入力の境界：件数 0 と上限超過、trim していない id（project、run、提案、版）は、何も書かず拒まれる。
+#[test]
+fn bulk_approve_rejects_input_boundaries() {
+    let (fixture, db) = bulk_two_window(|_| {});
+    let before = bulk_state(&db);
+    let first = bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL]);
+    let request = |project: &str, run: &str, targets: Vec<ChronicleBulkApproveTarget>| {
+        narrative_extraction_chronicle_bulk_approve(
+            &db,
+            ChronicleBulkApprovePayload {
+                project_id: project.to_owned(),
+                run_id: run.to_owned(),
+                targets,
+            },
+            &mut || false,
+        )
+    };
+    let target = |proposal: &str, revision: &str| ChronicleBulkApproveTarget {
+        proposal_id: proposal.to_owned(),
+        revision_id: revision.to_owned(),
+    };
+    let limit = grimodex_db::narrative_extraction::BULK_APPROVE_MAX_TARGETS;
+    let too_many = (0..=limit).map(|n| target(&format!("p{n}"), "r")).collect();
+    assert!(request(fixture.project(), TWO_WINDOW_RUN, too_many).is_err(), "over the limit");
+    let at_limit: Vec<_> = (0..limit).map(|n| target(&format!("p{n}"), "r")).collect();
+    let result = request(fixture.project(), TWO_WINDOW_RUN, at_limit).expect("exactly the limit is accepted");
+    assert_eq!(result["skipped"].as_array().expect("skipped").len(), limit, "every unknown proposal is skipped");
+    let revision = first[0].revision_id.clone();
+    for (project, run, proposal, rev) in [
+        (format!(" {}", fixture.project()), TWO_WINDOW_RUN.to_owned(), TWO_WINDOW_FIRST_PROPOSAL.to_owned(), revision.clone()),
+        (fixture.project().to_owned(), format!("{TWO_WINDOW_RUN} "), TWO_WINDOW_FIRST_PROPOSAL.to_owned(), revision.clone()),
+        (fixture.project().to_owned(), TWO_WINDOW_RUN.to_owned(), format!(" {TWO_WINDOW_FIRST_PROPOSAL}"), revision.clone()),
+        (fixture.project().to_owned(), TWO_WINDOW_RUN.to_owned(), TWO_WINDOW_FIRST_PROPOSAL.to_owned(), format!("{revision} ")),
+        (String::new(), TWO_WINDOW_RUN.to_owned(), TWO_WINDOW_FIRST_PROPOSAL.to_owned(), revision.clone()),
+        (fixture.project().to_owned(), TWO_WINDOW_RUN.to_owned(), TWO_WINDOW_FIRST_PROPOSAL.to_owned(), String::new()),
+    ] {
+        assert!(
+            request(&project, &run, vec![target(&proposal, &rev)]).is_err(),
+            "{project:?} {run:?} {proposal:?} {rev:?}"
+        );
+    }
+    assert_eq!(bulk_state(&db), before, "an invalid request writes nothing");
 }

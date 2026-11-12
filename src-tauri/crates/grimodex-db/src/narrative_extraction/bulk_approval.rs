@@ -10,6 +10,7 @@
 //! changes, true -> false) and the Human approval of that child.  Neither
 //! body's checks are skipped or loosened here.
 
+use std::cell::OnceCell;
 use std::collections::{BTreeSet, HashMap};
 
 use anyhow::anyhow;
@@ -22,14 +23,19 @@ use serde_json::{json, Value};
 use super::declaration_storage::{
     read_active_dependency_declaration_set_in_tx, ActiveDependencyDeclarationSetRead,
 };
-use super::human_materialization::create_human_derived_revision_with_c2b_projection_materialization_in_tx;
+use super::human_materialization::{
+    classify_reveal_mappings,
+    create_human_derived_revision_with_c2b_projection_materialization_in_tx, reveal_scene_ref,
+    RevealMappingMatch,
+};
 use super::models::{
     AppendDecisionPayload, CreateHumanDerivedRevisionRequest, NarrativeAdapterIdentity,
 };
 use super::project_scope_authority::load_live_project_scope_authority;
 use super::repository::{
     append_human_decision_in_tx, current_chronicle_run_spec_for_run,
-    load_current_chronicle_proposal_matches, CurrentChronicleProposalPlanAuthority,
+    load_current_chronicle_proposal_matches, load_validated_chronicle_proposal_matches,
+    CurrentChronicleProposalPlanAuthority,
 };
 use super::scope_authority_runtime::{
     load_sealed_snapshot_document_bindings_in_tx, SealedSnapshotDocumentBinding,
@@ -142,24 +148,76 @@ impl BulkApprovalVerdict {
     }
 }
 
-/// Run-level material, read once per call. Every part that cannot be read is
-/// `None`, and the judgement then reports it as a reason instead of failing the
-/// caller. The sealed parts (plan, evidence, Snapshot documents) are immutable;
-/// the live parts (Scope authority, Semantic Epoch) are advisory pre-checks of
-/// the writer, which re-reads them itself.
+/// How the sealed Plan is read. The review bundle has already verified the
+/// Plan binding of the Run for exactly one (Task, Attempt) pair, so it does not
+/// pay for the same verification a second time.
+pub(crate) enum PlanSource {
+    /// Verify the whole binding again (the write path has no earlier proof).
+    Verify,
+    /// The caller verified the binding for this Task / Attempt just before.
+    Verified { task_id: String, attempt_id: String },
+}
+
+/// The `evidence.resolved@1` anchors of the Run, indexed by anchor id.
+pub(crate) struct EvidenceAnchors {
+    anchors: Vec<Value>,
+    by_id: HashMap<String, Vec<usize>>,
+}
+
+impl EvidenceAnchors {
+    fn new(anchors: Vec<Value>) -> Self {
+        let mut by_id: HashMap<String, Vec<usize>> = HashMap::new();
+        for (index, anchor) in anchors.iter().enumerate() {
+            if let Some(id) = anchor.get("id").and_then(Value::as_str) {
+                by_id.entry(id.to_owned()).or_default().push(index);
+            }
+        }
+        Self { anchors, by_id }
+    }
+}
+
+/// Run-level material. Every part is read at most once per call, the first time
+/// a judgement needs it, and a part that cannot be read is `None`: the judgement
+/// then reports it as a reason instead of failing the caller.  The sealed parts
+/// (Plan, evidence, Snapshot documents) are immutable.  The live parts (Scope
+/// authority, Semantic Epoch) are advisory pre-checks of the writer, which
+/// re-reads them itself inside its own transaction, so a stale value can only
+/// make the write path skip a proposal or fail it (never write one the writer
+/// would refuse).  Values that change per proposal (status, current Revision,
+/// Application, parent seal) are never held here.
 pub(crate) struct BulkApprovalContext {
     project_id: String,
     run_id: String,
     proposal_set_id: String,
-    plan: Option<HashMap<String, CurrentChronicleProposalPlanAuthority>>,
-    anchors: Option<Vec<Value>>,
-    sealed_documents: Option<Vec<SealedSnapshotDocumentBinding>>,
+    plan_source: PlanSource,
+    plan: OnceCell<Option<HashMap<String, CurrentChronicleProposalPlanAuthority>>>,
+    evidence: OnceCell<Option<EvidenceAnchors>>,
+    sealed_documents: OnceCell<Option<Vec<SealedSnapshotDocumentBinding>>>,
     /// `scene_ref` of every live Scope authority mapping.
-    mapping_scene_refs: Option<Vec<String>>,
-    epoch_present: bool,
+    mapping_scene_refs: OnceCell<Option<Vec<String>>>,
+    epoch_present: OnceCell<bool>,
 }
 
 impl BulkApprovalContext {
+    pub(crate) fn new(
+        project_id: &str,
+        run_id: &str,
+        proposal_set_id: &str,
+        plan_source: PlanSource,
+    ) -> Self {
+        Self {
+            project_id: project_id.to_owned(),
+            run_id: run_id.to_owned(),
+            proposal_set_id: proposal_set_id.to_owned(),
+            plan_source,
+            plan: OnceCell::new(),
+            evidence: OnceCell::new(),
+            sealed_documents: OnceCell::new(),
+            mapping_scene_refs: OnceCell::new(),
+            epoch_present: OnceCell::new(),
+        }
+    }
+
     /// The Chronicle ProposalSet of the Run. `None` when the Run is not a
     /// current Chronicle Run or does not own exactly one ProposalSet.
     pub(crate) fn proposal_set_id(
@@ -185,44 +243,91 @@ impl BulkApprovalContext {
 
     /// `conn` must be inside a caller-owned transaction (the sealed Snapshot
     /// lookup requires one).
-    pub(crate) fn load(
+    fn plan(
+        &self,
         conn: &Connection,
-        project_id: &str,
-        run_id: &str,
-        proposal_set_id: &str,
-    ) -> Self {
-        let plan =
-            load_current_chronicle_proposal_matches(conn, project_id, run_id, proposal_set_id).ok();
-        let anchors = load_resolved_evidence_anchors(conn, run_id).ok();
-        let sealed_documents =
-            load_sealed_snapshot_document_bindings_in_tx(conn, project_id, run_id).ok();
-        let mapping_scene_refs = load_live_project_scope_authority(
-            conn,
-            project_id,
-            &format!("project:scope-authority:{project_id}"),
-        )
-        .ok()
-        .map(|authority| {
-            authority
-                .mappings
-                .iter()
-                .map(|mapping| mapping.scene_ref.clone())
-                .collect()
-        });
-        let epoch_present = matches!(
-            super::semantic_epoch::get_current_epoch(conn, project_id),
-            Ok(Some(_))
-        );
-        Self {
-            project_id: project_id.to_owned(),
-            run_id: run_id.to_owned(),
-            proposal_set_id: proposal_set_id.to_owned(),
-            plan,
-            anchors,
-            sealed_documents,
-            mapping_scene_refs,
-            epoch_present,
-        }
+    ) -> Option<&HashMap<String, CurrentChronicleProposalPlanAuthority>> {
+        self.plan
+            .get_or_init(|| match &self.plan_source {
+                PlanSource::Verify => load_current_chronicle_proposal_matches(
+                    conn,
+                    &self.project_id,
+                    &self.run_id,
+                    &self.proposal_set_id,
+                )
+                .ok(),
+                PlanSource::Verified {
+                    task_id,
+                    attempt_id,
+                } => load_validated_chronicle_proposal_matches(
+                    conn,
+                    &self.run_id,
+                    &self.proposal_set_id,
+                    task_id,
+                    attempt_id,
+                )
+                .ok(),
+            })
+            .as_ref()
+    }
+
+    fn evidence(&self, conn: &Connection) -> Option<&EvidenceAnchors> {
+        self.evidence
+            .get_or_init(|| {
+                load_resolved_evidence_anchors(conn, &self.run_id)
+                    .ok()
+                    .map(EvidenceAnchors::new)
+            })
+            .as_ref()
+    }
+
+    fn sealed_documents(&self, conn: &Connection) -> Option<&[SealedSnapshotDocumentBinding]> {
+        self.sealed_documents
+            .get_or_init(|| {
+                load_sealed_snapshot_document_bindings_in_tx(conn, &self.project_id, &self.run_id)
+                    .ok()
+            })
+            .as_deref()
+    }
+
+    fn mapping_scene_refs(&self, conn: &Connection) -> Option<&[String]> {
+        self.mapping_scene_refs
+            .get_or_init(|| {
+                load_live_project_scope_authority(
+                    conn,
+                    &self.project_id,
+                    &format!("project:scope-authority:{}", self.project_id),
+                )
+                .ok()
+                .map(|authority| {
+                    authority
+                        .mappings
+                        .iter()
+                        .map(|mapping| mapping.scene_ref.clone())
+                        .collect()
+                })
+            })
+            .as_deref()
+    }
+
+    fn epoch_present(&self, conn: &Connection) -> bool {
+        *self.epoch_present.get_or_init(|| {
+            matches!(
+                super::semantic_epoch::get_current_epoch(conn, &self.project_id),
+                Ok(Some(_))
+            )
+        })
+    }
+
+    /// Read every part now. The write path does this once, in one short
+    /// transaction, so the per-proposal transactions only read per-proposal
+    /// values.
+    fn warm(&self, conn: &Connection) {
+        self.plan(conn);
+        self.evidence(conn);
+        self.sealed_documents(conn);
+        self.mapping_scene_refs(conn);
+        self.epoch_present(conn);
     }
 }
 
@@ -300,13 +405,34 @@ pub(crate) struct ProposalFacts {
     envelope_digest: Option<String>,
     payload: Option<Value>,
     envelope: Option<Value>,
+    /// `revision_number` of the current Revision row.
+    revision_number: Option<i64>,
     application_count: i64,
-    set_application_count: i64,
+    /// Some Proposal of the same ProposalSet already has an Application.
+    set_applied: bool,
 }
 
+/// Whether any Proposal of the set has an Application. One bounded probe.
+fn set_has_application(conn: &Connection, proposal_set_id: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+              FROM narrative_proposal_applications application
+              JOIN narrative_proposals sibling ON sibling.id = application.proposal_id
+             WHERE sibling.proposal_set_id = ?1)",
+        params![proposal_set_id],
+        |row| row.get(0),
+    )
+}
+
+/// `shared_set_applied`: the answer of [`set_has_application`] the caller
+/// already read once for `(proposal_set_id, applied)` in the same transaction.
+/// The write path passes `None` and reads it inside every per-proposal
+/// transaction.
 pub(crate) fn load_facts(
     conn: &Connection,
     proposal_id: &str,
+    shared_set_applied: Option<(&str, bool)>,
 ) -> anyhow::Result<Option<ProposalFacts>> {
     #[allow(clippy::type_complexity)]
     let row: Option<(
@@ -321,7 +447,7 @@ pub(crate) fn load_facts(
         Option<String>,
         Option<String>,
         Option<String>,
-        i64,
+        Option<i64>,
         i64,
     )> = conn
         .query_row(
@@ -329,13 +455,9 @@ pub(crate) fn load_facts(
                     p.status, p.current_revision_id, r.origin_kind,
                     r.reconciliation_envelope_digest, r.payload_json,
                     r.reconciliation_envelope_json,
+                    r.revision_number,
                     (SELECT COUNT(*) FROM narrative_proposal_applications
-                      WHERE proposal_id = p.id),
-                    (SELECT COUNT(*)
-                       FROM narrative_proposal_applications application
-                       JOIN narrative_proposals sibling
-                         ON sibling.id = application.proposal_id
-                      WHERE sibling.proposal_set_id = p.proposal_set_id)
+                      WHERE proposal_id = p.id)
                FROM narrative_proposals p
                JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
                LEFT JOIN narrative_proposal_revisions r
@@ -373,11 +495,15 @@ pub(crate) fn load_facts(
         envelope_digest,
         payload,
         envelope,
+        revision_number,
         application_count,
-        set_application_count,
     )) = row
     else {
         return Ok(None);
+    };
+    let set_applied = match shared_set_applied {
+        Some((set_id, applied)) if set_id == proposal_set_id => applied,
+        _ => set_has_application(conn, &proposal_set_id)?,
     };
     Ok(Some(ProposalFacts {
         proposal_id: proposal_id.to_owned(),
@@ -392,8 +518,9 @@ pub(crate) fn load_facts(
         envelope_digest,
         payload: payload.and_then(|text| serde_json::from_str(&text).ok()),
         envelope: envelope.and_then(|text| serde_json::from_str(&text).ok()),
+        revision_number,
         application_count,
-        set_application_count,
+        set_applied,
     }))
 }
 
@@ -447,8 +574,9 @@ fn review_reasons(assertion_payload: &Value, reasons: &mut BTreeSet<BulkApproval
 
 /// (d): the Envelope evidence set is non-empty and each entry corresponds to
 /// exactly one sealed `evidence.resolved@1` anchor (id, document, quote, quote
-/// digest). Like retrieval, this does not read the anchor's `method`.
-fn evidence_corresponds(envelope: &Value, anchors: &[Value]) -> bool {
+/// digest) whose resolution `method` is `exact` or `exact-with-context` (the
+/// same proposals the review screen counts as exactly evidenced).
+fn evidence_corresponds(envelope: &Value, evidence_anchors: &EvidenceAnchors) -> bool {
     let Some(evidence) = envelope
         .pointer("/effectiveMaterialBasis/evidenceSet")
         .and_then(Value::as_array)
@@ -472,16 +600,29 @@ fn evidence_corresponds(envelope: &Value, anchors: &[Value]) -> bool {
         if evidence_ref.is_empty() || !seen.insert(evidence_ref) {
             return false;
         }
-        let matching = anchors
-            .iter()
-            .filter(|anchor| {
-                anchor.get("id").and_then(Value::as_str) == Some(evidence_ref)
-                    && anchor.get("documentRef").and_then(Value::as_str) == Some(document_ref)
-                    && anchor.get("quote").and_then(Value::as_str) == Some(quote)
-                    && anchor.get("quoteDigest").and_then(Value::as_str) == Some(quote_digest)
+        let matching = evidence_anchors
+            .by_id
+            .get(evidence_ref)
+            .map(|indexes| {
+                indexes
+                    .iter()
+                    .map(|index| &evidence_anchors.anchors[*index])
+                    .filter(|anchor| {
+                        anchor.get("documentRef").and_then(Value::as_str) == Some(document_ref)
+                            && anchor.get("quote").and_then(Value::as_str) == Some(quote)
+                            && anchor.get("quoteDigest").and_then(Value::as_str)
+                                == Some(quote_digest)
+                    })
+                    .collect::<Vec<_>>()
             })
-            .count();
-        if matching != 1 {
+            .unwrap_or_default();
+        let [anchor] = matching.as_slice() else {
+            return false;
+        };
+        if !matches!(
+            anchor.get("method").and_then(Value::as_str),
+            Some("exact" | "exact-with-context")
+        ) {
             return false;
         }
     }
@@ -518,7 +659,7 @@ pub(crate) fn evaluate(
     if facts.application_count > 0 {
         reasons.insert(BulkApprovalReason::Applied);
     }
-    if facts.set_application_count > 0 {
+    if facts.set_applied {
         reasons.insert(BulkApprovalReason::SetApplied);
     }
     if facts.kind != CHRONICLE_EVENT_PROPOSAL_KIND
@@ -547,7 +688,9 @@ pub(crate) fn evaluate(
                 .pointer("/revisionBasis/parentRevisionId")
                 .is_some_and(|parent| !parent.is_null());
             match basis {
-                Some("interpretation") if !has_parent => {}
+                // The row must agree with the Envelope's own claim: the AI
+                // interpretation root is the first Revision of the Proposal.
+                Some("interpretation") if !has_parent && facts.revision_number == Some(1) => {}
                 Some("human-derived") => {
                     reasons.insert(BulkApprovalReason::Edited);
                 }
@@ -563,8 +706,7 @@ pub(crate) fn evaluate(
             }
             // (d)
             let corresponds = ctx
-                .anchors
-                .as_deref()
+                .evidence(conn)
                 .is_some_and(|anchors| evidence_corresponds(envelope, anchors));
             if !corresponds {
                 reasons.insert(BulkApprovalReason::EvidenceUnverified);
@@ -574,8 +716,7 @@ pub(crate) fn evaluate(
 
     // (c) the sealed duplicate judgement of extraction time.
     match ctx
-        .plan
-        .as_ref()
+        .plan(conn)
         .and_then(|plan| plan.get(&facts.proposal_key))
     {
         None => {
@@ -631,23 +772,31 @@ fn child_prerequisites(
         .pointer("/disclosure/revealDocumentRef")
         .and_then(Value::as_str)
         .filter(|reference| !reference.trim().is_empty() && reference.trim() == *reference);
-    match (reveal_ref, ctx.sealed_documents.as_ref()) {
+    match (reveal_ref, ctx.sealed_documents(conn)) {
         (Some(reveal_ref), Some(documents)) => {
             let nodes = documents
                 .iter()
                 .filter(|document| document.document_ref == reveal_ref)
                 .map(|document| document.node_id.as_str())
                 .collect::<Vec<_>>();
-            match (nodes.as_slice(), ctx.mapping_scene_refs.as_ref()) {
-                ([node], Some(scene_refs)) => {
-                    let scene_ref = format!("scene:{node}");
-                    if scene_refs.iter().filter(|r| **r == scene_ref).count() != 1 {
-                        reasons.insert(BulkApprovalReason::RevealSceneUnresolved);
+            match nodes.as_slice() {
+                [node] => match ctx.mapping_scene_refs(conn) {
+                    Some(scene_refs) => {
+                        let scene_ref = reveal_scene_ref(node);
+                        // The writer's own classification: exactly one mapping.
+                        if !matches!(
+                            classify_reveal_mappings(
+                                scene_refs.iter().filter(|r| **r == scene_ref)
+                            ),
+                            RevealMappingMatch::Unique(_)
+                        ) {
+                            reasons.insert(BulkApprovalReason::RevealSceneUnresolved);
+                        }
                     }
-                }
-                ([_], None) => {
-                    reasons.insert(BulkApprovalReason::ScopeAuthorityUnavailable);
-                }
+                    None => {
+                        reasons.insert(BulkApprovalReason::ScopeAuthorityUnavailable);
+                    }
+                },
                 _ => {
                     reasons.insert(BulkApprovalReason::RevealSceneUnresolved);
                 }
@@ -657,7 +806,7 @@ fn child_prerequisites(
             reasons.insert(BulkApprovalReason::RevealSceneUnresolved);
         }
     }
-    if !ctx.epoch_present {
+    if !ctx.epoch_present(conn) {
         reasons.insert(BulkApprovalReason::SemanticEpochMissing);
     }
     let sealed = facts
@@ -682,11 +831,18 @@ fn child_prerequisites(
 /// Add `bulkApproval: { eligible, reasons }` to every proposal of a current
 /// Chronicle review bundle. Never fails the bundle: material that cannot be
 /// read is reported as reasons.
+///
+/// `verified_plan` is the (Task, Attempt) pair whose Plan binding the bundle has
+/// just verified. Run-level material is read the first time a judgement needs
+/// it (the Snapshot documents, Scope authority and Semantic Epoch only when a
+/// proposal passes every earlier condition), and the set-wide Application probe
+/// runs once for the whole set.
 pub(crate) fn attach_bulk_approval(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
     proposal_set_id: &str,
+    verified_plan: Option<(&str, &str)>,
     proposals: &mut [Value],
 ) {
     let unavailable = || {
@@ -702,12 +858,28 @@ pub(crate) fn attach_bulk_approval(
         }
         return;
     };
-    let ctx = BulkApprovalContext::load(&tx, project_id, run_id, proposal_set_id);
+    let plan_source = match verified_plan {
+        Some((task_id, attempt_id)) => PlanSource::Verified {
+            task_id: task_id.to_owned(),
+            attempt_id: attempt_id.to_owned(),
+        },
+        None => PlanSource::Verify,
+    };
+    let ctx = BulkApprovalContext::new(project_id, run_id, proposal_set_id, plan_source);
+    let set_applied = set_has_application(&tx, proposal_set_id).ok();
     for proposal in proposals {
         let verdict = proposal
             .get("proposalId")
             .and_then(Value::as_str)
-            .and_then(|proposal_id| load_facts(&tx, proposal_id).ok().flatten())
+            .and_then(|proposal_id| {
+                load_facts(
+                    &tx,
+                    proposal_id,
+                    set_applied.map(|applied| (proposal_set_id, applied)),
+                )
+                .ok()
+                .flatten()
+            })
             .map(|facts| evaluate(&tx, &ctx, &facts))
             .unwrap_or_else(unavailable);
         if let Some(object) = proposal.as_object_mut() {
@@ -776,7 +948,7 @@ fn approve_one(
     target: &ChronicleBulkApproveTarget,
 ) -> anyhow::Result<Outcome> {
     require_narrative_extraction_allowed(conn)?;
-    let Some(facts) = load_facts(conn, &target.proposal_id)? else {
+    let Some(facts) = load_facts(conn, &target.proposal_id, None)? else {
         return Ok(Outcome::Skipped(vec![BulkApprovalReason::ProposalNotFound]));
     };
     if facts.project_id != ctx.project_id
@@ -865,66 +1037,94 @@ fn failure_code(error: &anyhow::Error) -> String {
 /// Bulk approval. One transaction per proposal; a failed proposal is rolled
 /// back and reported, the rest continue. `should_stop` is asked between
 /// proposals (shutdown / workspace switch): the results so far are returned.
+///
+/// The Database connection is one mutex shared with every other write (the
+/// manuscript autosave among them), so it is held only for one short read of
+/// the run-level material and then for one proposal at a time: the lock is
+/// released between proposals, and `should_stop` runs without it.
 pub fn chronicle_bulk_approve(
     db: &Database,
     payload: ChronicleBulkApprovePayload,
     should_stop: &mut dyn FnMut() -> bool,
 ) -> anyhow::Result<Value> {
     validate_payload(&payload)?;
-    db.with_conn(|conn| {
+    let ctx = db.with_conn(|conn| {
         require_narrative_extraction_allowed(conn)?;
-        let ctx = {
-            let tx = conn.unchecked_transaction()?;
-            let proposal_set_id =
-                BulkApprovalContext::proposal_set_id(&tx, &payload.project_id, &payload.run_id)?
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "NEX_BULK_APPROVE_RUN_UNSUPPORTED: run is not a current Chronicle review with one ProposalSet"
-                        )
-                    })?;
-            BulkApprovalContext::load(&tx, &payload.project_id, &payload.run_id, &proposal_set_id)
-        };
-        let mut approved = Vec::new();
-        let mut skipped = Vec::new();
-        let mut failed = Vec::new();
-        let mut stopped = false;
-        for target in &payload.targets {
-            if should_stop() {
+        let tx = conn.unchecked_transaction()?;
+        let proposal_set_id =
+            BulkApprovalContext::proposal_set_id(&tx, &payload.project_id, &payload.run_id)?
+                .ok_or_else(|| {
+                    anyhow!(
+                        "NEX_BULK_APPROVE_RUN_UNSUPPORTED: run is not a current Chronicle review with one ProposalSet"
+                    )
+                })?;
+        let ctx = BulkApprovalContext::new(
+            &payload.project_id,
+            &payload.run_id,
+            &proposal_set_id,
+            PlanSource::Verify,
+        );
+        ctx.warm(&tx);
+        Ok(ctx)
+    })?;
+    let mut approved = Vec::new();
+    let mut skipped = Vec::new();
+    let mut failed = Vec::new();
+    let mut stopped = false;
+    for target in &payload.targets {
+        if should_stop() {
+            stopped = true;
+            break;
+        }
+        let attempt = db.with_conn(|conn| {
+            Ok(with_immediate_transaction(conn, |conn| {
+                approve_one(conn, &ctx, target)
+            }))
+        });
+        let attempt = match attempt {
+            Ok(attempt) => attempt,
+            Err(error) => {
+                // The connection itself is unavailable (closed, switching
+                // workspace): nothing after this proposal can run either.
+                failed.push(json!({
+                    "proposalId": target.proposal_id,
+                    "code": failure_code(&error),
+                }));
                 stopped = true;
                 break;
             }
-            match with_immediate_transaction(conn, |conn| approve_one(conn, &ctx, target)) {
-                Ok(Outcome::Approved {
-                    proposal_id,
-                    revision_id,
-                    decision_id,
-                }) => approved.push(json!({
-                    "proposalId": proposal_id,
-                    "revisionId": revision_id,
-                    "decisionId": decision_id,
-                })),
-                Ok(Outcome::Skipped(reasons)) => skipped.push(json!({
-                    "proposalId": target.proposal_id,
-                    "reasons": reasons.iter().map(|reason| reason.code()).collect::<Vec<_>>(),
-                })),
-                Err(error) => {
-                    // An unproven rollback leaves the connection unreliable:
-                    // never continue on it.
-                    if format!("{error:#}").contains("NEX_DB_TRANSACTION_CLEANUP_UNPROVEN") {
-                        return Err(error);
-                    }
-                    failed.push(json!({
-                        "proposalId": target.proposal_id,
-                        "code": failure_code(&error),
-                    }));
+        };
+        match attempt {
+            Ok(Outcome::Approved {
+                proposal_id,
+                revision_id,
+                decision_id,
+            }) => approved.push(json!({
+                "proposalId": proposal_id,
+                "revisionId": revision_id,
+                "decisionId": decision_id,
+            })),
+            Ok(Outcome::Skipped(reasons)) => skipped.push(json!({
+                "proposalId": target.proposal_id,
+                "reasons": reasons.iter().map(|reason| reason.code()).collect::<Vec<_>>(),
+            })),
+            Err(error) => {
+                // An unproven rollback leaves the connection unreliable:
+                // never continue on it.
+                if format!("{error:#}").contains("NEX_DB_TRANSACTION_CLEANUP_UNPROVEN") {
+                    return Err(error);
                 }
+                failed.push(json!({
+                    "proposalId": target.proposal_id,
+                    "code": failure_code(&error),
+                }));
             }
         }
-        Ok(json!({
-            "approved": approved,
-            "skipped": skipped,
-            "failed": failed,
-            "stopped": stopped,
-        }))
-    })
+    }
+    Ok(json!({
+        "approved": approved,
+        "skipped": skipped,
+        "failed": failed,
+        "stopped": stopped,
+    }))
 }

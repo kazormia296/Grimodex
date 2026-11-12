@@ -3541,12 +3541,11 @@ pub(crate) struct CurrentChronicleProposalPlanAuthority {
     pub(crate) planned_title: String,
 }
 
-pub(crate) fn load_current_chronicle_proposal_matches(
+/// The (Task, Attempt) that owns the one proposal-plan artifact of the Run.
+fn sole_chronicle_plan_artifact_owner(
     conn: &Connection,
-    project_id: &str,
     run_id: &str,
-    proposal_set_id: &str,
-) -> anyhow::Result<HashMap<String, CurrentChronicleProposalPlanAuthority>> {
+) -> anyhow::Result<(String, String)> {
     let mut coordinate_statement = conn.prepare(
         "SELECT task_id, attempt_id
            FROM narrative_extraction_artifacts
@@ -3579,6 +3578,16 @@ pub(crate) fn load_current_chronicle_proposal_matches(
             "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan artifact has no Attempt owner"
         )
     })?;
+    Ok((task_id, attempt_id))
+}
+
+pub(crate) fn load_current_chronicle_proposal_matches(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    proposal_set_id: &str,
+) -> anyhow::Result<HashMap<String, CurrentChronicleProposalPlanAuthority>> {
+    let (task_id, attempt_id) = sole_chronicle_plan_artifact_owner(conn, run_id)?;
     let validated_set_id = validate_chronicle_plan_proposal_set_binding_for_resume(
         conn,
         project_id,
@@ -3590,7 +3599,50 @@ pub(crate) fn load_current_chronicle_proposal_matches(
         validated_set_id == proposal_set_id,
         "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: Native terminal plan binding does not own the Commit ProposalSet"
     );
-    let (artifact, _) = load_chronicle_plan_artifact_payload(conn, run_id, &task_id, &attempt_id)?;
+    chronicle_proposal_matches_of_verified_plan(
+        conn,
+        run_id,
+        proposal_set_id,
+        &task_id,
+        &attempt_id,
+    )
+}
+
+/// The same roster as [`load_current_chronicle_proposal_matches`], for a caller
+/// that has just run `validate_chronicle_plan_proposal_set_binding_for_resume`
+/// for `(verified_task_id, verified_attempt_id)` and the ProposalSet it
+/// returned (the review bundle). The Run must still own exactly one plan
+/// artifact and it must belong to that same Task / Attempt; the binding is not
+/// verified a second time.
+pub(crate) fn load_validated_chronicle_proposal_matches(
+    conn: &Connection,
+    run_id: &str,
+    proposal_set_id: &str,
+    verified_task_id: &str,
+    verified_attempt_id: &str,
+) -> anyhow::Result<HashMap<String, CurrentChronicleProposalPlanAuthority>> {
+    let (task_id, attempt_id) = sole_chronicle_plan_artifact_owner(conn, run_id)?;
+    anyhow::ensure!(
+        task_id == verified_task_id && attempt_id == verified_attempt_id,
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: the plan artifact is not owned by the verified Task and Attempt"
+    );
+    chronicle_proposal_matches_of_verified_plan(
+        conn,
+        run_id,
+        proposal_set_id,
+        &task_id,
+        &attempt_id,
+    )
+}
+
+fn chronicle_proposal_matches_of_verified_plan(
+    conn: &Connection,
+    run_id: &str,
+    proposal_set_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+) -> anyhow::Result<HashMap<String, CurrentChronicleProposalPlanAuthority>> {
+    let (artifact, _) = load_chronicle_plan_artifact_payload(conn, run_id, task_id, attempt_id)?;
     anyhow::ensure!(
         artifact.get("proposalSetId").and_then(Value::as_str) == Some(proposal_set_id),
         "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: proposal-plan artifact does not bind the Commit ProposalSet"
@@ -4441,6 +4493,7 @@ pub fn get_run_review_bundle(
         // not select the most recently inserted set: bind the review bundle
         // to the immutable first revision, the exact finishing Task/Attempt,
         // its canonical plan artifact, and the Native manifest instead.
+        let mut verified_plan_coordinates: Option<(String, String)> = None;
         let current_chronicle_proposal_set_id = if current_chronicle_spec {
             let plan_attempt: Option<(String, String)> = conn
                 .query_row(
@@ -4459,13 +4512,15 @@ pub fn get_run_review_bundle(
                 .optional()?;
             match plan_attempt {
                 Some((task_id, attempt_id)) => {
-                    Some(validate_chronicle_plan_proposal_set_binding_for_resume(
+                    let proposal_set_id = validate_chronicle_plan_proposal_set_binding_for_resume(
                         conn,
                         &project_id,
                         &run_id,
                         &task_id,
                         &attempt_id,
-                    )?)
+                    )?;
+                    verified_plan_coordinates = Some((task_id, attempt_id));
+                    Some(proposal_set_id)
                 }
                 None => {
                     let proposal_set_count: i64 = conn.query_row(
@@ -4638,6 +4693,9 @@ pub fn get_run_review_bundle(
                     &project_id,
                     &run_id,
                     proposal_set_id,
+                    verified_plan_coordinates
+                        .as_ref()
+                        .map(|(task_id, attempt_id)| (task_id.as_str(), attempt_id.as_str())),
                     &mut proposals,
                 );
             }
