@@ -45,3 +45,49 @@
 | 評価 | 場面ごとの抽出では、記録は変わらない。凍結した定義と Gold は変えない |
 
 外部への送信、subprocess、保存先、IPC は変えない。
+
+## 実装後の追記（2026-11-12）
+
+実装（commit 7bc9de63〜cfaf99ff）の独立の受入れレビューの指摘に、試験と記録で対応した。製品コードは変えていない。
+
+### 止める条件に当たらなかったこと
+
+- Native の製品コードは未変更である。絞った記録は、Native の保存、材料の再生、資格の判定、鮮度、取り込みを、そのまま通った。
+- 確かめた結果（3 場面のフォルダの、場面 2 だけを読む提案）：(a) 場面 3 と、その後ろの場面からは Eligible。(b) 場面 2 以前からは SourceNotBeforeQuery。MW/1 の DB（抽出の全部の場面を宣言する形）では、同じ提案が場面 3 から拒まれる（対照）。(c) 関係のない場面（場面 1・3）の編集で古くならず、取り込みも止まらない。場面 2 の編集では古くなる。MW/1 の DB は、どの場面の編集でも古くなる。
+- 試験 (b) の「場面 1 と 3 を読む提案はどこからも出ない」の部分は、宣言の範囲ではなく、Native の「根拠が 2 場面の提案は出さない」規則で止まっているだけである。試験のコメントを実態に合わせた。宣言の範囲を確かめる試験は、下の「危ない形」で足した。
+- 危ない形（観測が場面 2 と 3 にあり、根拠の引用は場面 2 だけ）：試験用の cold DB に新しいフォルダ（split）を足した。dawn は場面 1 だけを読む提案。tide は、場面 2 の actual の観測と、場面 3 の planned の観測が同じ cluster に入る。event は actual の観測だけを引き、合成の要求は両方の場面を読む。作り直した DB の記録は、場面 2・3 を宣言し（根拠は場面 2 だけ）、Native は window-002 と window-003 を完全に再生する。tide は、場面 3 以前と、フォルダの前の場面からは SourceNotBeforeQuery、フォルダの後ろの場面からは Eligible。dawn は、場面 2 以降から Eligible、場面 1 以前からは SourceNotBeforeQuery。場面 3 の編集で tide は古くなり（場面 3 は根拠ではないが、合成の要求が読んだ）、場面 1 の編集では古くならない。MW/1 の DB と正本は変えていない。`required::windows` の単体試験も、この形の正本で足した（場面 3 の宣言を落とした記録は `selected-request-source-undeclared` で拒まれる）。
+- 下限の end-to-end（digest まで合わせて狭く作った記録）：cold DB の私的な複製で、tide の root の Envelope だけを、場面 3 の宣言を落とし、依存の digest と材料の digest を封印し直して書き換え、材料の再生（`read_root_material_with_memo`。資格の判定と鮮度の読みが、root ごとに呼ぶ関数）を通した。何も落とさない同じ書き換えは Complete（window-002・003）。場面 1 を落としても変わらない（この記録は場面 1 を宣言していない）。場面 3 を落とすと Inconsistent で、材料は 1 つも出ない。理由の値は `recipe-input-binding-invalid` である（再生の失敗は、この 1 つの値にまとめて報告される。どの検査が拒んだかは、上の単体試験が `selected-request-source-undeclared` として示す）。場面 2（根拠の場面）を落とすと、`envelope-binding-invalid` で、Envelope 自身の束縛が先に拒む。この試験は Rust のクレート内にある（`multi_window_tests.rs`）。
+- 未確認：資格の判定そのものを、狭い記録で通すこと。root と子の Envelope と、正規化した source-basis の行を書き換えても、人の系譜の検証が `revision-lineage-binding-invalid` で先に拒む（D1 の宣言の組と V1 の edge の行を、Envelope と比べるため）。通すには、D1 の宣言の組と V1 の edge の行も、新しい Envelope に合わせて書き直す必要がある（それぞれの digest と head の鎖を含み、保存の不変条件の trigger を外す）。見積もりでは、補助の書き直しと確かめを足す作業で、半日以上かかる。そのため、「資格の判定そのものでの end-to-end は未確認、再生（root の材料）と単体（`required.rs`）まで」とする。
+
+### DR-DMS-7（実際に送る要求）
+
+- 試験が固定する範囲：`sendChatMessageWithThinking` に渡す引数（記録する値と同じ文面）である。観測と合成の要求について、渡す messages から作った本文が、受領書の `finalRequestDigest` と同じになる。この関数は試験で差し替えているので、transport の内側（Responses、Ollama、AI のべりすと）は試験で通っていない。試験の名前とコメントは、この範囲に狭めた。
+- 読んで確かめたこと（試験では固定していない）。年表の要求は、Anthropic 系の prompt cache の経路で、静的な前半を、そのまま system の 1 つに移す形（文面は変わらない）になる場合を除き、user 1 件である。Responses：system を結合して `instructions` に移し、残りを `input` に入れるだけである（`ai_responses.rs` の `build_chat_input`）。Ollama：OpenAI 互換の chat と同じ経路で、messages は素通しである。cache の system 分割は、対応するプロバイダだけに掛かる。AI のべりすと：単発の送信（Electron の `send_chat_message`）は Chat モードに固定で、system を最初の user に結合するだけである（`messages_to_chat_array`）。年表の要求は user 1 件なので、変わらない。Completion モード（`[role]` の見出しを前置する）は、この経路では使われない。この 3 つが、記録に無いものを足していないことを、コードの読みで確かめた。
+- 試験では固定していない：Native が作る実際の本文と、HTTP の body である。
+
+### 範囲の根拠
+
+- 観測の要求は、区切り 1 つで、同じ文書の中の文脈だけである（span catalog の見える範囲が、その区切りの文書に限られる）。
+- 合成の要求は、cluster の観測の行だけである。
+- 統合（merge）は、根拠の組と、主張の項目が完全に同じ行だけをまとめる（`observationMerger.ts`）。
+
+### Native の下限の検査が走る場面
+
+設計 §4 の範囲の記述を、呼び出し元を読んで確かめた。下限（`required::windows`）は、材料の再生の中で走る。次の読みは、どれも `read_revision_material_membership` を呼ぶので、下限を通る：関連場面の資格の判定、正本の鮮度の読み（`read_revision_canonical_freshness`）、検索の材料の作り直し。保存と取り込み（prepare と apply）は、材料の再生を呼ばない（apply は系譜の検証だけを呼ぶ）。したがって、設計 §4 の「鮮度では走らない」は、正確には「正本の鮮度の読みでは走る」である。狭すぎる記録は、鮮度の読みで「材料の再生ができない」として扱われ、古い・新しいの判定には進まない。取り込みの古さの判定は、別の依存の仕組みで行われる。設計の文書は変えていない。
+
+### 観測の alias の token
+
+観測の要求の evidence の alias（`E<token>-NNN`）の token は、要求の識別、catalog 全体の digest（抽出の全部の場面の本文を含む）、封印した snapshot の digest、その要求の区切りの座標から作った digest の先頭 12 桁である（`spanCatalog.ts` の `makeBindingToken`）。model に見える。本文は運ばないが、後ろの場面の本文を含む抽出全体の、一方向の写しが 1 つ入る。設計 §3 の列挙には無い。
+
+### 4 の確認
+
+- cold DB の manifest に、作ったときの製品の commit（`productCommit`）と、正本の sha256 を持たせた（script が書く。clean な tree でなければ動かない）。manifest の commit は 3bd0a008 で、製品の変更（28e00a0f〜405cb7eb）を含み、その後は試験の支援だけが変わった。
+- 場面 1 つの抽出の値を、絞る前のコードで採ったこと：基点 d85785a1 の `chronicleV2Production.ts` を、追跡しない別名で取り出し、commit 7bc9de63 の試験をそのコードに向けて走らせた。固定した `dependencySetDigest` と `materialBasisDigest` を含む 20 件が通った（兄弟のモジュールは HEAD の版である。基点との製品側の差分は `chronicleV2Production.ts`、`extractionCoordinator.ts`、`runObservationExtractionTask.ts` の 1 行だけ）。取り出したファイルは消した。
+
+### 未実施
+
+- chat の tool と MCP に、後ろの場面が渡らないことを、フォルダの形で配線を通して確かめる試験は無い。形に依らない資格の判定と、取り込んだ出来事が secret であることが守る。
+
+### 検証
+
+触った試験、vitest（`src/application/narrative-extraction` と `src/features/narrative-extraction`、968 件）、tsc（本体と electron）、cargo test（`grimodex-db` の `material_membership_root` と、`narrative_nir1_retrieval_admission`、`narrative_nir1_multi_window_membership`）は通った。`verify:quality`（Node 22、`GATE_B2_WORKTREE_SMOKE=1`）も通った。

@@ -126,7 +126,7 @@ ${OBSERVATION_CLAIM_GUIDANCE}`,
     '{"observations":[{"localId":"obs-1","evidence":[{"sourceRef":"S0001","quote":"原文の完全一致引用"}],"assertion":{"attribution":"narrator","narrativeFrame":"story-world"},"payload":{"predicate":"出来事の述語","actuality":"actual","participants":[],"temporalExpressions":[],"durationKind":"instant"}}]}',
 } as const;
 
-function buildObservationPromptArtifact(
+export function buildObservationPromptArtifact(
   windows: readonly ObservationExtractionWindowInput[],
 ): ChroniclePromptArtifact {
   return buildChroniclePromptArtifact({

@@ -2545,6 +2545,20 @@ export async function runChronicleExtractionCoordinator(
             throw new Error(
               "Missing synthesis clusters for proposal persistence",
             );
+          // The window plan comes from the persisted artifact (the same one
+          // the observe Task read, also on resume), never from the in-memory
+          // plan: DMS/1 names the scenes each proposal's observations came
+          // from by looking their windows up here.
+          const windowPlanPayload =
+            await loadCoordinatorInlineArtifact<WindowPlanArtifactPayload>(
+              runId,
+              sealedRequest.authority,
+              CHRONICLE_EXTRACT_ARTIFACT_KINDS.windowPlan,
+              sealedRequest.resume === true,
+            );
+          if (!windowPlanPayload) {
+            throw new Error("Missing window plan for proposal material scope");
+          }
           productionV2 = await buildChronicleProductionV2Envelopes({
             projectId: sealedRequest.projectId,
             runId,
@@ -2556,6 +2570,10 @@ export async function runChronicleExtractionCoordinator(
             evidenceAnchors: evidencePayload.anchors,
             snapshot: snapshotResult.snapshot,
             sourceBasis,
+            windowPlan: windowPlanPayload.windows.map((window) => ({
+              windowId: window.windowId,
+              documentRef: window.documentRef,
+            })),
             stageReceipts,
           });
         }
