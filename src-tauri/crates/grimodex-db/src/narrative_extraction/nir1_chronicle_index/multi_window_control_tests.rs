@@ -211,7 +211,8 @@ fn proposals_the_query_may_not_read_do_not_change_what_the_others_return() {
     let long_b = revision(&control, "long", "Ledger seals at the gate");
     let three_a = revision(&control, "three", "Writ delivered to the quay");
     // The folder Run's other proposal folds the evidence of two Scenes into one
-    // Event: one exact Scope Scene cannot hold it, so it is never returned.
+    // Event: one exact Scope Scene cannot hold it, so the control never returns
+    // it. It is only asserted absent; making it unavailable would check nothing.
     let three_b = revision(&control, "three", "Signal fire on the quay");
     let after = control.manifest["scenes"]["after"].as_str().expect("after");
     let inside = control.manifest["scenes"]["three"][0]
@@ -226,7 +227,7 @@ fn proposals_the_query_may_not_read_do_not_change_what_the_others_return() {
         vec![long_a.as_str(), three_a.as_str(), long_b.as_str()],
         "every other proposal is readable after the folders"
     );
-    assert!(all.iter().all(|row| !row.3.is_empty()));
+    assert!(all.iter().all(|row| !row.3.is_empty() && row.0 != three_b));
     assert_eq!(
         from_inside,
         only(&all, &[&long_a, &long_b]),
@@ -234,22 +235,22 @@ fn proposals_the_query_may_not_read_do_not_change_what_the_others_return() {
     );
     assert_eq!(from_inside.len(), 2);
 
-    // Mixed 1: the folder Run's proposals become unavailable, one a secret
-    // approved child and the other an unapproved child.
+    // Mixed 1: two proposals the control returns become unavailable, one a
+    // secret approved child and the other an unapproved child.
     let (one, replaced) = mixed(&[
         (&three_a, Unavailable::SecretApproved),
-        (&three_b, Unavailable::Unapproved),
+        (&long_a, Unavailable::Unapproved),
     ]);
     let result = qualified(&one, &[after]).remove(0);
     assert!(
         result
             .iter()
-            .all(|row| ![&three_a, &three_b].contains(&&row.0) && !replaced.contains(&row.0)),
+            .all(|row| ![&three_a, &long_a].contains(&&row.0) && !replaced.contains(&row.0)),
         "an unavailable proposal is never returned"
     );
     assert_eq!(
         result,
-        only(&all, &[&long_a, &long_b]),
+        only(&all, &[&long_b]),
         "the ids, the order, the vectors, the statements and the evidence of the others"
     );
 

@@ -159,6 +159,8 @@ pub(in crate::narrative_extraction) fn preflight_build_candidate_with_memo(
         .iter()
         .map(|material| material.source_key.clone())
         .collect();
+    // Emptied on purpose: after the preflight these three are empty and must
+    // not be read (`material_source_keys` and `disclosure` keep what is needed).
     membership.materials = Vec::new();
     membership.replayed_requests = Vec::new();
     membership.verified_receipts = Vec::new();
