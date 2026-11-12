@@ -1067,21 +1067,34 @@ pub fn chronicle_bulk_approve(
         ctx.warm(&tx);
         Ok(ctx)
     })?;
+    run_targets(&payload.targets, should_stop, &mut |target| {
+        db.with_conn(|conn| {
+            Ok(with_immediate_transaction(conn, |conn| {
+                approve_one(conn, &ctx, target)
+            }))
+        })
+    })
+}
+
+/// The per-proposal loop of [`chronicle_bulk_approve`]. `attempt` runs one
+/// proposal: the outer `Err` means the connection itself is unavailable, the inner
+/// result is the proposal's own outcome. Split out so the order of outcomes can be
+/// tested with a substitute for the database work.
+fn run_targets(
+    targets: &[ChronicleBulkApproveTarget],
+    should_stop: &mut dyn FnMut() -> bool,
+    attempt: &mut dyn FnMut(&ChronicleBulkApproveTarget) -> anyhow::Result<anyhow::Result<Outcome>>,
+) -> anyhow::Result<Value> {
     let mut approved = Vec::new();
     let mut skipped = Vec::new();
     let mut failed = Vec::new();
     let mut stopped = false;
-    for target in &payload.targets {
+    for target in targets {
         if should_stop() {
             stopped = true;
             break;
         }
-        let attempt = db.with_conn(|conn| {
-            Ok(with_immediate_transaction(conn, |conn| {
-                approve_one(conn, &ctx, target)
-            }))
-        });
-        let attempt = match attempt {
+        let attempt = match attempt(target) {
             Ok(attempt) => attempt,
             Err(error) => {
                 // The connection itself is unavailable (closed, switching
@@ -1127,4 +1140,81 @@ pub fn chronicle_bulk_approve(
         "failed": failed,
         "stopped": stopped,
     }))
+}
+
+#[cfg(test)]
+mod run_targets_tests {
+    use super::*;
+
+    fn target(id: &str) -> ChronicleBulkApproveTarget {
+        ChronicleBulkApproveTarget {
+            proposal_id: id.to_owned(),
+            revision_id: format!("{id}-rev"),
+        }
+    }
+
+    fn approved(id: &str) -> anyhow::Result<anyhow::Result<Outcome>> {
+        Ok(Ok(Outcome::Approved {
+            proposal_id: id.to_owned(),
+            revision_id: format!("{id}-child"),
+            decision_id: format!("{id}-decision"),
+        }))
+    }
+
+    /// A proposal that fails (rolled back) does not stop the next one: failed, then approved.
+    #[test]
+    fn a_failed_proposal_is_reported_and_the_next_one_is_approved() {
+        let targets = [target("a"), target("b")];
+        let mut ran = Vec::new();
+        let result = run_targets(&targets, &mut || false, &mut |t| {
+            ran.push(t.proposal_id.clone());
+            if t.proposal_id == "a" {
+                Ok(Err(anyhow!("NEX_TEST_FAILURE: boom")))
+            } else {
+                approved(&t.proposal_id)
+            }
+        })
+        .expect("results");
+        assert_eq!(ran, ["a", "b"]);
+        assert_eq!(result["failed"], json!([{"proposalId": "a", "code": "NEX_TEST_FAILURE"}]));
+        assert_eq!(result["approved"][0]["proposalId"], "b");
+        assert_eq!(result["skipped"], json!([]));
+        assert_eq!(result["stopped"], false);
+    }
+
+    /// The connection itself being unavailable fails that proposal, stops, and runs nothing after.
+    #[test]
+    fn an_unavailable_connection_fails_that_proposal_and_stops() {
+        let targets = [target("a"), target("b"), target("c")];
+        let mut ran = Vec::new();
+        let result = run_targets(&targets, &mut || false, &mut |t| {
+            ran.push(t.proposal_id.clone());
+            if t.proposal_id == "b" {
+                Err(anyhow!("NEX_DB_CONNECTION_UNUSABLE: quarantined"))
+            } else {
+                approved(&t.proposal_id)
+            }
+        })
+        .expect("results");
+        assert_eq!(ran, ["a", "b"], "nothing after the unavailable connection runs");
+        assert_eq!(result["approved"][0]["proposalId"], "a");
+        assert_eq!(
+            result["failed"],
+            json!([{"proposalId": "b", "code": "NEX_DB_CONNECTION_UNUSABLE"}])
+        );
+        assert_eq!(result["stopped"], true);
+    }
+
+    /// An unproven rollback is never continued on.
+    #[test]
+    fn an_unproven_rollback_aborts_the_whole_run() {
+        let targets = [target("a"), target("b")];
+        let mut ran = 0;
+        let result = run_targets(&targets, &mut || false, &mut |_| {
+            ran += 1;
+            Ok(Err(anyhow!("NEX_DB_TRANSACTION_CLEANUP_UNPROVEN: x")))
+        });
+        assert!(result.is_err());
+        assert_eq!(ran, 1);
+    }
 }

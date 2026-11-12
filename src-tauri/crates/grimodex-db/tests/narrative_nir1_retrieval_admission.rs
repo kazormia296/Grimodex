@@ -2412,7 +2412,10 @@ fn outermost_error_message_carries_the_source_stale_code_without_scope_marker() 
 // manifest binding together, so the copy is the state a real writer leaves for a
 // scene-level event. The upstream model-output records (event hypotheses, stage
 // synthesis) are bound to the stage receipts / response digests and keep what the
-// model recorded; no writer or judgement under test reads them.
+// model recorded. Material-roster replay does read the stage synthesis outputs, to
+// check material membership (the observation refs and receipts); it never reads
+// the rewritten values (significance, actuality), and no writer or judgement under
+// test reads those from the upstream records.
 // `assert_sealed_chain_agrees` states that, and the writers under test (the child
 // writer re-verifies the parent's payload digest and Envelope; the review read
 // re-verifies the Plan binding and the payload) run on top of it. The values the
@@ -2601,11 +2604,13 @@ fn reseal_event(
         params![revision, payload_stored],
     )
     .expect("store the payload");
-    conn.execute(
-        "UPDATE narrative_proposals SET payload_json = ?2 WHERE id = ?1 AND payload_json = ?3",
-        params![proposal, payload_stored, payload_text],
-    )
-    .expect("store the Proposal's initial payload");
+    let updated = conn
+        .execute(
+            "UPDATE narrative_proposals SET payload_json = ?2 WHERE id = ?1 AND payload_json = ?3",
+            params![proposal, payload_stored, payload_text],
+        )
+        .expect("store the Proposal's initial payload");
+    assert_eq!(updated, 1, "the Proposal's initial payload copy is rewritten");
     // The sealed plan of the Run.
     rewrite_run_artifact(conn, &run, "chronicle.proposal-plan@1", |plan| {
         for entry in plan["proposals"].as_array_mut().expect("proposals") {
@@ -2620,6 +2625,14 @@ fn reseal_event(
         }
     });
     // The Envelope's assertion digests follow the assertion value.
+    let (core_digest, assertion_digest) = assertion_digests_of(&envelope);
+    envelope["assertionDigests"]["assertionCoreDigest"] = json!(core_digest);
+    envelope["assertionDigests"]["assertionDigest"] = json!(assertion_digest);
+    store_envelope(conn, revision, &envelope);
+}
+
+/// (assertionCoreDigest, assertionDigest) of an Envelope's assertion value.
+fn assertion_digests_of(envelope: &Value) -> (String, String) {
     let assertion = &envelope["assertion"];
     let mut core = json!({
         "assertionKind": assertion["assertionKind"],
@@ -2635,13 +2648,12 @@ fn reseal_event(
     }
     let core_digest = canonical_json_digest(&core).expect("assertion core digest");
     let scope_digest = envelope["assertionDigests"]["scopeDigest"].clone();
-    envelope["assertionDigests"]["assertionCoreDigest"] = json!(core_digest);
-    envelope["assertionDigests"]["assertionDigest"] = json!(canonical_json_digest(&json!({
+    let assertion_digest = canonical_json_digest(&json!({
         "assertionCoreDigest": core_digest,
         "scopeDigest": scope_digest,
     }))
-    .expect("assertion digest"));
-    store_envelope(conn, revision, &envelope);
+    .expect("assertion digest");
+    (core_digest, assertion_digest)
 }
 
 /// The sealed chain of an AI root agrees with itself the way a real writer's
@@ -2669,6 +2681,9 @@ fn assert_sealed_chain_agrees(conn: &Connection, revision: &str) {
         "the Envelope binds this payload"
     );
     assert_eq!(digest, canonical_json_digest(&envelope).expect("Envelope digest"));
+    let (core_digest, assertion_digest) = assertion_digests_of(&envelope);
+    assert_eq!(envelope["assertionDigests"]["assertionCoreDigest"], json!(core_digest));
+    assert_eq!(envelope["assertionDigests"]["assertionDigest"], json!(assertion_digest));
     for field in ["significance", "actuality"] {
         assert_eq!(
             envelope["assertion"]["payload"][field], payload[field],
@@ -3424,17 +3439,19 @@ fn bulk_approve_stops_between_proposals_when_asked() {
 }
 
 /// DB の接続は 1 本の mutex で、本文の自動保存などの書き込みと共有する。まとめて承認は提案ごとに
-/// 接続を取り直し、提案と提案の間（と最初の提案の前）は放している。退行すると、ほかの thread の
-/// 読み出しが待たされ、待ちの上限で失敗する（固まらない）。
+/// 接続を取り直し、提案と提案の間（と最初の提案の前）は放している。確かめる側の thread は scope の
+/// 外（`Arc<Database>` を持つ detach の thread）で動かし、退行して lock が握られたままなら、その
+/// thread は止まるが、`recv_timeout` の時間切れで試験が失敗する（試験自体は固まらない）。
 #[test]
 fn bulk_approve_releases_the_database_lock_between_proposals() {
     let (fixture, db) = bulk_two_window(|_| {});
+    let db = std::sync::Arc::new(db);
     let targets = bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL, TWO_WINDOW_SECOND_PROPOSAL]);
     let mut observed = Vec::new();
     let result = {
-        let db_ref = &db;
+        let reader_db = std::sync::Arc::clone(&db);
         narrative_extraction_chronicle_bulk_approve(
-            db_ref,
+            &db,
             ChronicleBulkApprovePayload {
                 project_id: fixture.project().to_owned(),
                 run_id: TWO_WINDOW_RUN.to_owned(),
@@ -3443,20 +3460,18 @@ fn bulk_approve_releases_the_database_lock_between_proposals() {
             &mut || {
                 // 別 thread が、同じ Database から読めること（lock が放されていること）。
                 let (sender, receiver) = std::sync::mpsc::channel();
-                let read = std::thread::scope(|scope| {
-                    scope.spawn(move || {
-                        let outcome = db_ref.with_conn(|conn| {
-                            Ok(conn.query_row(
-                                "SELECT COUNT(*) FROM narrative_proposals",
-                                [],
-                                |row| row.get::<_, i64>(0),
-                            )?)
-                        });
-                        let _ = sender.send(outcome.is_ok());
+                let thread_db = std::sync::Arc::clone(&reader_db);
+                std::thread::spawn(move || {
+                    let outcome = thread_db.with_conn(|conn| {
+                        Ok(conn.query_row(
+                            "SELECT COUNT(*) FROM narrative_proposals",
+                            [],
+                            |row| row.get::<_, i64>(0),
+                        )?)
                     });
-                    receiver.recv_timeout(std::time::Duration::from_secs(20))
+                    let _ = sender.send(outcome.is_ok());
                 });
-                observed.push(read);
+                observed.push(receiver.recv_timeout(std::time::Duration::from_secs(20)));
                 false
             },
         )
@@ -3467,6 +3482,41 @@ fn bulk_approve_releases_the_database_lock_between_proposals() {
         assert_eq!(read, &Ok(true), "the connection is free while should_stop runs: {observed:?}");
     }
     assert_eq!(result["approved"].as_array().expect("approved").len(), 1, "{result}");
+}
+
+/// 前の提案が処理されなかった（対象外で skipped）後でも、次の提案は承認される。
+#[test]
+fn bulk_approve_approves_a_proposal_after_a_skipped_one() {
+    let (fixture, db) = bulk_two_window(|_| {});
+    let targets = bulk_targets(&db, &[TWO_WINDOW_SECOND_PROPOSAL, TWO_WINDOW_FIRST_PROPOSAL]);
+    let result = bulk_approve_targets(&db, &fixture, TWO_WINDOW_RUN, targets);
+    assert_eq!(result["failed"], json!([]), "{result}");
+    assert_eq!(result["stopped"], false);
+    let skipped = result["skipped"].as_array().expect("skipped");
+    assert_eq!(skipped.len(), 1, "{result}");
+    assert_eq!(skipped[0]["proposalId"], TWO_WINDOW_SECOND_PROPOSAL);
+    let approved = result["approved"].as_array().expect("approved");
+    assert_eq!(approved.len(), 1, "{result}");
+    assert_eq!(approved[0]["proposalId"], TWO_WINDOW_FIRST_PROPOSAL);
+    let child = approved[0]["revisionId"].as_str().expect("child").to_owned();
+    let decision = approved[0]["decisionId"].as_str().expect("decision").to_owned();
+    db.with_conn(|conn| {
+        let (number, parent): (i64, String) = conn.query_row(
+            "SELECT revision_number, json_extract(reconciliation_envelope_json, '$.revisionBasis.parentRevisionId')
+               FROM narrative_proposal_revisions WHERE id = ?1 AND proposal_id = ?2",
+            params![child, TWO_WINDOW_FIRST_PROPOSAL],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!((number, parent.as_str()), (2, TWO_WINDOW_UNREVIEWED_REVISION));
+        let decided: (String, String) = conn.query_row(
+            "SELECT revision_id, decision FROM narrative_proposal_decisions WHERE id = ?1",
+            [&decision],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(decided, (child.clone(), "approved".to_owned()));
+        Ok(())
+    })
+    .expect("the child revision and approval of the proposal after the skipped one");
 }
 
 /// 提案の前に ctx（Scope authority、意味の世代）を読んだ後で、その値が古くなっても、書く直前の
@@ -3638,7 +3688,7 @@ fn bulk_approval_without_run_material_is_refused_not_failed() {
     );
     assert_eq!(bulk_state(&db), before);
 
-    // Chronicle でない Run（依存の検証 Run）：提案が無く、`bulkApproval` も付かない。
+    // Chronicle でない Run（依存の検証 Run）：提案が無く、`bulkApproval` も付かない（下の注意を参照）。
     let (fixture, db) = bulk_two_window(|_| {});
     let other_run: String = db
         .with_conn(|conn| {
@@ -3658,12 +3708,11 @@ fn bulk_approval_without_run_material_is_refused_not_failed() {
         },
     )
     .expect("a non-Chronicle review bundle still reads");
-    assert!(
-        bundle["proposals"].as_array().is_none_or(|proposals| proposals
-            .iter()
-            .all(|proposal| proposal.get("bulkApproval").is_none())),
-        "{bundle}"
-    );
+    // 注意：この fixture に、提案を持つ Chronicle でない Run は無い（提案を持つ Run は
+    // chronicle.extract の 2 つだけ）。だからこの確認は「提案を持たない Run では付かない」までで、
+    // 「Chronicle でない Run の提案には付かない」は示さない。後者を守るコードは `repository.rs` の
+    // review bundle の読み出しにある `if current_chronicle_spec { ... attach_bulk_approval(..) }`。
+    assert_eq!(bundle["proposals"], json!([]), "{bundle}");
     // 別の Chronicle Run の提案は、その Run の読み出しで、その Run の材料で判定される。
     let other = read_bulk_approvals(&db, &fixture, "dc741c52-091b-4aa2-8ed4-9f9c7490014d");
     assert_eq!(other.len(), 1);
