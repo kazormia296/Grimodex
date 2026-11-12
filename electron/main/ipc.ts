@@ -310,6 +310,7 @@ const RELATED_SCENES_MUTATION_WAKE_COMMANDS = new Set([
   "narrative_extraction_append_revision",
   "narrative_extraction_append_decision",
   "narrative_extraction_append_human_decision",
+  "narrative_extraction_chronicle_bulk_approve",
   "narrative_extraction_revise_and_decide",
   "narrative_extraction_revise_and_decide_as_human",
   "narrative_extraction_apply_commit",

@@ -769,6 +769,10 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
         '{"decisionId":"d1","proposalId":"p1","revisionId":"rv1","decision":"approved","status":"approved"}',
       ),
     ) as never,
+    narrativeExtractionChronicleBulkApprove: record(
+      "narrativeExtractionChronicleBulkApprove",
+      Promise.resolve('{"approved":[],"skipped":[],"failed":[],"stopped":false}'),
+    ) as never,
     narrativeExtractionReviseAndDecide: record(
       "narrativeExtractionReviseAndDecide",
       Promise.resolve(
@@ -1803,6 +1807,81 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(env).toMatchObject({
       ok: false,
       error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionCreateHumanDerivedRevision`,
+    });
+  });
+
+  it("まとめて承認は payload をそのまま N-API へ渡し、結果を返す", async () => {
+    const method = vi
+      .fn()
+      .mockResolvedValue(
+        '{"approved":[{"proposalId":"p1","revisionId":"rv2","decisionId":"d1"}],"skipped":[],"failed":[],"stopped":false}',
+      );
+    const { backend } = fakeBackend({
+      narrativeExtractionChronicleBulkApprove: method,
+    });
+    const payload = {
+      projectId: "project-1",
+      runId: "run-1",
+      targets: [{ proposalId: "p1", revisionId: "rv1" }],
+    };
+
+    const env = await dispatchInvoke(
+      "narrative_extraction_chronicle_bulk_approve",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        approved: [{ proposalId: "p1", revisionId: "rv2", decisionId: "d1" }],
+        skipped: [],
+        failed: [],
+        stopped: false,
+      },
+    });
+    expect(method).toHaveBeenCalledExactlyOnceWith(payload);
+  });
+
+  it.each([{}, { payload: null }, { payload: 42 }])(
+    "まとめて承認は不正payloadをN-APIへ渡さず拒否する: %j",
+    async (args) => {
+      const method = vi.fn();
+      const { backend } = fakeBackend({
+        narrativeExtractionChronicleBulkApprove: method,
+      });
+
+      const env = await dispatchInvoke(
+        "narrative_extraction_chronicle_bulk_approve",
+        args,
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(method).not.toHaveBeenCalled();
+    },
+  );
+
+  it("まとめて承認は旧native bindingでbackend unavailableを返す", async () => {
+    const { backend } = fakeBackend();
+    delete (backend as Partial<NapiBackendLike>)
+      .narrativeExtractionChronicleBulkApprove;
+
+    const env = await dispatchInvoke(
+      "narrative_extraction_chronicle_bulk_approve",
+      {
+        payload: {
+          projectId: "p1",
+          runId: "r1",
+          targets: [{ proposalId: "p", revisionId: "v" }],
+        },
+      },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionChronicleBulkApprove`,
     });
   });
 
@@ -6500,6 +6579,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_apply_commit",
       "narrative_extraction_cancel_run",
       "narrative_extraction_capture_workspace_binding",
+      "narrative_extraction_chronicle_bulk_approve",
       "narrative_extraction_claim_task",
       "narrative_extraction_create_human_derived_revision",
       "narrative_extraction_create_run",

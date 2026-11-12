@@ -3,7 +3,7 @@ import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative
 import type { ChronicleTaskResumeCandidate } from "@/application/narrative-extraction/nativeApi";
 import {
   buildProposalSafetyFlags,
-  isSafeForBulkApprove,
+  isBulkApprovalTarget,
   resetChronicleExtractionStoreForTests,
   useChronicleExtractionStore,
   type ChronicleExtractionReviewProjection,
@@ -153,32 +153,40 @@ function recoveryCandidate(runId: string): ChronicleTaskResumeCandidate {
   };
 }
 
-describe("isSafeForBulkApprove", () => {
-  it("requires fresh + exact evidence + settled actuality + no duplicate + lossless + no deps + low risk", () => {
-    const safe = buildProposalSafetyFlags({
-      match: { status: "none" },
-      actuality: "actual",
-      evidenceMethods: ["exact"],
-    });
-    expect(isSafeForBulkApprove(safe)).toBe(true);
+describe("isBulkApprovalTarget", () => {
+  it("is decided by Native's judgement only (BAO/1)", () => {
+    const base = proposal({ proposalId: "p" });
+    // The plan-time safety flags are all green: they must not matter.
+    expect(base.safety.riskLow).toBe(true);
+    expect(isBulkApprovalTarget(base)).toBe(false);
+    expect(isBulkApprovalTarget({ ...base, bulkApproval: null })).toBe(false);
+    expect(
+      isBulkApprovalTarget({
+        ...base,
+        bulkApproval: { eligible: false, reasons: ["r3-significance"] },
+      }),
+    ).toBe(false);
+    expect(
+      isBulkApprovalTarget({
+        ...base,
+        bulkApproval: { eligible: true, reasons: [] },
+      }),
+    ).toBe(true);
+    // Native says eligible, but the safety flags are red: still a target.
+    const redFlags: ChronicleReviewProposal = {
+      ...base,
+      safety: { ...base.safety, riskLow: false, noDuplicate: false },
+      bulkApproval: { eligible: true, reasons: [] },
+    };
+    expect(isBulkApprovalTarget(redFlags)).toBe(true);
+  });
 
+  it("never counts applied, already-satisfied or revision-less proposals", () => {
+    const eligible = { eligible: true, reasons: [] } as const;
+    const base = proposal({ proposalId: "p", bulkApproval: eligible });
+    expect(isBulkApprovalTarget({ ...base, revisionId: null })).toBe(false);
     expect(
-      isSafeForBulkApprove({
-        ...safe,
-        noDuplicate: false,
-      }),
-    ).toBe(false);
-    expect(
-      isSafeForBulkApprove({
-        ...safe,
-        evidenceExact: false,
-      }),
-    ).toBe(false);
-    expect(
-      isSafeForBulkApprove({
-        ...safe,
-        riskLow: false,
-      }),
+      isBulkApprovalTarget({ ...base, applicability: "already-satisfied" }),
     ).toBe(false);
   });
 });
@@ -329,16 +337,18 @@ describe("chronicleExtractionStore", () => {
       noDuplicate: false,
       riskLow: false,
     });
-    expect(useChronicleExtractionStore.getState().bulkApproveSafe()).toBe(0);
+    expect(isBulkApprovalTarget(updated as ChronicleReviewProposal)).toBe(
+      false,
+    );
     expect(
       useChronicleExtractionStore.getState().projection?.proposals[0]?.status,
     ).toBe("unreviewed");
   });
 
-  it("bulkApproveSafe only approves safe unreviewed proposals", () => {
-    const safe = proposal({ proposalId: "safe" });
-    const unsafe = proposal({
-      proposalId: "dup",
+  it("(replaces the 7-flag bulkApproveSafe test) targets come from Native's judgement only", () => {
+    const safeByFlags = proposal({ proposalId: "safe-flags" });
+    const duplicateByFlags = proposal({
+      proposalId: "dup-flags",
       match: {
         status: "probable-duplicate",
         candidates: ["event-old"],
@@ -353,19 +363,153 @@ describe("chronicleExtractionStore", () => {
         actuality: "actual",
         evidenceMethods: ["exact"],
       }),
+      bulkApproval: { eligible: true, reasons: [] },
     });
     useChronicleExtractionStore
       .getState()
-      .setProjection(projection([safe, unsafe]));
-    const count = useChronicleExtractionStore.getState().bulkApproveSafe();
-    expect(count).toBe(1);
-    const statuses = useChronicleExtractionStore
+      .setProjection(projection([safeByFlags, duplicateByFlags]));
+    const targets = useChronicleExtractionStore
       .getState()
-      .projection?.proposals.map((item) => [item.proposalId, item.status]);
-    expect(statuses).toEqual([
-      ["safe", "approved"],
-      ["dup", "unreviewed"],
+      .projection?.proposals.filter(isBulkApprovalTarget)
+      .map((item) => item.proposalId);
+    // Flags green but no judgement yet: not a target. Flags red but Native
+    // says eligible: a target.
+    expect(targets).toEqual(["dup-flags"]);
+  });
+
+  it("local changes make the touched proposal's judgement unknown", () => {
+    const eligible = { eligible: true, reasons: [] } as const;
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(
+        projection([
+          proposal({ proposalId: "a", bulkApproval: eligible }),
+          proposal({ proposalId: "b", bulkApproval: eligible }),
+        ]),
+      );
+    useChronicleExtractionStore.getState().updateProposalStatus("a", "held");
+    const rows = useChronicleExtractionStore.getState().projection?.proposals;
+    expect(rows?.map((item) => item.bulkApproval ?? null)).toEqual([
+      null,
+      eligible,
     ]);
+  });
+
+  describe("Native judgement merge (applyNativeReviewRows)", () => {
+    const identity = {
+      runId: "run-1",
+      projectId: "project-a",
+      workspacePath: "/workspace-a",
+      openRevision: 1,
+    } as const;
+
+    it("updates only the judgement and keeps the author's choices", () => {
+      useChronicleExtractionStore
+        .getState()
+        .setProjection(
+          projection([
+            proposal({ proposalId: "a", status: "held" }),
+            proposal({ proposalId: "b" }),
+          ]),
+        );
+      useChronicleExtractionStore.getState().selectProposal("b");
+      const accepted = useChronicleExtractionStore
+        .getState()
+        .applyNativeReviewRows(identity, [
+          {
+            proposalId: "a",
+            bulkApproval: { eligible: false, reasons: ["held"] },
+          },
+          { proposalId: "b", bulkApproval: { eligible: true, reasons: [] } },
+        ]);
+      expect(accepted).toBe("applied");
+      const state = useChronicleExtractionStore.getState();
+      expect(state.selectedProposalId).toBe("b");
+      expect(state.projection?.proposals.map((p) => p.status)).toEqual([
+        "held",
+        "unreviewed",
+      ]);
+      expect(
+        state.projection?.proposals.map((p) => p.bulkApproval?.eligible),
+      ).toEqual([false, true]);
+    });
+
+    it("drops a result computed for another run, project or workspace", () => {
+      useChronicleExtractionStore
+        .getState()
+        .setProjection(projection([proposal({ proposalId: "a" })]));
+      for (const other of [
+        { ...identity, runId: "run-2" },
+        { ...identity, projectId: "project-b" },
+        { ...identity, workspacePath: "/workspace-b" },
+        { ...identity, openRevision: 2 },
+      ]) {
+        expect(
+          useChronicleExtractionStore.getState().applyNativeReviewRows(other, [
+            {
+              proposalId: "a",
+              bulkApproval: { eligible: true, reasons: [] },
+            },
+          ]),
+        ).toBe("stale");
+      }
+      expect(
+        useChronicleExtractionStore.getState().projection?.proposals[0]
+          ?.bulkApproval ?? null,
+      ).toBeNull();
+    });
+
+    it("makes a proposal missing from Native's answer unknown", () => {
+      useChronicleExtractionStore.getState().setProjection(
+        projection([
+          proposal({
+            proposalId: "a",
+            bulkApproval: { eligible: true, reasons: [] },
+          }),
+        ]),
+      );
+      useChronicleExtractionStore
+        .getState()
+        .applyNativeReviewRows(identity, []);
+      expect(
+        useChronicleExtractionStore.getState().projection?.proposals[0]
+          ?.bulkApproval,
+      ).toBeNull();
+    });
+
+    it("copies the new revision and status after a bulk approval", () => {
+      useChronicleExtractionStore.getState().setProjection(
+        projection([
+          proposal({
+            proposalId: "a",
+            bulkApproval: { eligible: true, reasons: [] },
+          }),
+        ]),
+      );
+      useChronicleExtractionStore.getState().applyNativeReviewRows(identity, [
+        {
+          proposalId: "a",
+          bulkApproval: { eligible: false, reasons: ["approved", "edited"] },
+          sync: {
+            revisionId: "rev-child",
+            status: "approved",
+            payload: payload({
+              disclosure: { secret: false, revealDocumentRef: "doc-1" },
+            }),
+            reconciliationEnvelopeDigest: `sha256:${"c".repeat(64)}`,
+            reconciliationEnvelopeSchemaVersion: 2,
+          },
+        },
+      ]);
+      const row =
+        useChronicleExtractionStore.getState().projection?.proposals[0];
+      expect(row).toMatchObject({
+        revisionId: "rev-child",
+        status: "approved",
+        reconciliationEnvelopeDigest: `sha256:${"c".repeat(64)}`,
+      });
+      expect(row?.payload?.disclosure.secret).toBe(false);
+    });
   });
 
   it("treats already-satisfied as non-actionable", () => {

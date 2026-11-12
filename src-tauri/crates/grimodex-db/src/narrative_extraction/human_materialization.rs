@@ -321,6 +321,31 @@ const SCOPE_AUTHORITY_SOURCE_KIND: &str = "project-scope-authority";
 const SCOPE_AUTHORITY_CONTEXT_ID: &str = "context:chronicle-scope-resolver";
 const SCOPE_AUTHORITY_DEPENDENCY_ID: &str = "dependency:scope-resolution";
 
+/// The Scene ref a sealed reveal document's project node is mapped under.
+/// Shared with the Chronicle bulk-approval pre-check, which must classify a
+/// reveal Scene exactly like this writer does.
+pub(crate) fn reveal_scene_ref(node_id: &str) -> String {
+    format!("scene:{node_id}")
+}
+
+/// How many live Scope authority mappings carry the reveal Scene.
+pub(crate) enum RevealMappingMatch<T> {
+    Missing,
+    Unique(T),
+    Ambiguous,
+}
+
+/// The reveal Scene must resolve to exactly one active mapping.
+pub(crate) fn classify_reveal_mappings<T>(
+    mut matching: impl Iterator<Item = T>,
+) -> RevealMappingMatch<T> {
+    match (matching.next(), matching.next()) {
+        (None, _) => RevealMappingMatch::Missing,
+        (Some(only), None) => RevealMappingMatch::Unique(only),
+        (Some(_), Some(_)) => RevealMappingMatch::Ambiguous,
+    }
+}
+
 fn resolve_live_scope_override_authority(
     conn: &Connection,
     trusted_project_id: &str,
@@ -353,30 +378,29 @@ fn resolve_live_scope_override_authority(
         &context.edited_document_ref,
     )
     .map_err(|error| anyhow!("NEX_C2B_SCOPE_AUTHORITY_REVEAL_BASIS_UNAVAILABLE: {error}"))?;
-    let reveal_scene_ref = format!("scene:{}", reveal_document.node_id);
+    let reveal_scene_ref = reveal_scene_ref(&reveal_document.node_id);
 
-    let matching_mappings = authority
-        .mappings
-        .iter()
-        .filter(|mapping| mapping.scene_ref == reveal_scene_ref)
-        .collect::<Vec<_>>();
-    let mapping = match matching_mappings.as_slice() {
-        [] => {
+    let mapping = match classify_reveal_mappings(
+        authority
+            .mappings
+            .iter()
+            .filter(|mapping| mapping.scene_ref == reveal_scene_ref),
+    ) {
+        RevealMappingMatch::Missing => {
             return Err(anyhow!(
                 "NEX_C2B_SCOPE_AUTHORITY_REVEAL_TARGET_MISSING: live authority has no active mapping for reveal document '{}' sealed as '{}'",
                 context.edited_document_ref,
                 reveal_document.source_key
             ));
         }
-        [mapping] => *mapping,
-        _ => {
+        RevealMappingMatch::Unique(mapping) => mapping,
+        RevealMappingMatch::Ambiguous => {
             return Err(anyhow!(
                 "NEX_C2B_SCOPE_AUTHORITY_REVEAL_TARGET_AMBIGUOUS: live authority has multiple mappings for reveal document '{}'",
                 context.edited_document_ref
             ));
         }
     };
-
     let identity = super::scope_dependency_projection::bind_identity_in_tx(
         conn,
         trusted_project_id,
@@ -633,7 +657,7 @@ pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization(
     })
 }
 
-fn create_human_derived_revision_with_c2b_projection_materialization_in_tx(
+pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization_in_tx(
     conn: &Connection,
     trusted_project_id: &str,
     request: &CreateHumanDerivedRevisionRequest,

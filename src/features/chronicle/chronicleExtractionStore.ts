@@ -11,6 +11,7 @@ import type {
   NarrativeProposalStatus,
 } from "@/features/narrative-extraction/runtime/types";
 import type {
+  ChronicleBulkApproval,
   ChronicleTaskResumeCandidate,
   ReviewBundleProposalApplication,
 } from "@/application/narrative-extraction/nativeApi";
@@ -51,6 +52,11 @@ export interface ChronicleExtractionCoverage {
   readonly gaps?: readonly ChronicleExtractionCoverageGap[];
 }
 
+/**
+ * Plan-time evidence/duplicate flags. They are display/diagnostic data only:
+ * "bulk approve" targets are decided by Native (`bulkApproval`, BAO/1), never
+ * by these flags.
+ */
 export interface ChronicleProposalSafetyFlags {
   readonly fresh: boolean;
   readonly evidenceExact: boolean;
@@ -94,6 +100,59 @@ export interface ChronicleReviewProposal {
   /** Native application proof. Non-null proposals are immutable/read-only. */
   readonly application: ReviewBundleProposalApplication | null;
   readonly blockedReason?: string;
+  /**
+   * Native's bulk-approval judgement (BAO/1, B3). `null`/absent means "not
+   * received (yet)", a Run without a judgement, or a read that failed: such a
+   * proposal is never counted as, or sent as, a bulk-approval target.
+   */
+  readonly bulkApproval?: ChronicleBulkApproval | null;
+}
+
+/** Native's judgement is the only source of "is a bulk-approval target". */
+export function isBulkApprovalTarget(
+  proposal: Pick<
+    ChronicleReviewProposal,
+    "applicability" | "application" | "revisionId" | "bulkApproval" | "status"
+  >,
+): boolean {
+  return (
+    proposal.applicability === "applicable" &&
+    proposal.application === null &&
+    // Native's judgement may be older than the screen: a decided proposal is
+    // never a target.
+    proposal.status === "unreviewed" &&
+    proposal.revisionId !== null &&
+    proposal.bulkApproval?.eligible === true
+  );
+}
+
+/** Identity of the review projection an async result was computed for. */
+export interface ChronicleReviewProjectionIdentity {
+  readonly runId: string;
+  readonly projectId: string;
+  readonly workspacePath: string | null;
+  readonly openRevision: number | null;
+}
+
+/** Native fields that replace the local copy after a bulk approval. */
+export interface ChronicleNativeRevisionSync {
+  readonly revisionId: string;
+  readonly status: NarrativeProposalStatus;
+  readonly payload: CreateChronicleEventProposalPayloadV1;
+  readonly reconciliationEnvelopeDigest: string | null;
+  readonly reconciliationEnvelopeSchemaVersion: 1 | 2 | null;
+}
+
+export interface ChronicleNativeReviewRow {
+  readonly proposalId: string;
+  /**
+   * The revision Native's judgement describes. When present and different
+   * from the projection's current revision, the judgement is not copied.
+   */
+  readonly revisionId?: string | null;
+  readonly bulkApproval: ChronicleBulkApproval | null;
+  /** Present only when the caller wants the revision/status copied too. */
+  readonly sync?: ChronicleNativeRevisionSync;
 }
 
 export type ChronicleApplyPreflightErrorCode =
@@ -274,20 +333,6 @@ const EMPTY_RECOVERY_STATE: ChronicleExtractionRecoveryState = {
   errorCode: null,
 };
 
-export function isSafeForBulkApprove(
-  flags: ChronicleProposalSafetyFlags,
-): boolean {
-  return (
-    flags.fresh &&
-    flags.evidenceExact &&
-    flags.actualitySettled &&
-    flags.noDuplicate &&
-    flags.lossless &&
-    flags.noDeps &&
-    flags.riskLow
-  );
-}
-
 export function buildProposalSafetyFlags(args: {
   readonly match: ChronicleExistingMatch;
   readonly actuality: string | null | undefined;
@@ -337,6 +382,10 @@ interface ChronicleExtractionState {
   selectedProposalId: string | null;
   /** Decision/revision writes in flight; Apply must not race these writes. */
   reviewMutationCount: number;
+  /** Generation of the bulk-approval judgement; see `advanceBulkJudgementEpoch`. */
+  bulkJudgementEpoch: number;
+  /** Judgement re-reads in flight (the screen shows "loading", not "unknown"). */
+  bulkJudgementReads: number;
   /** Atomic Apply owns the review boundary until its Native journey settles. */
   applyMutationInFlight: boolean;
   setProjection: (projection: ChronicleExtractionReviewProjection) => void;
@@ -391,7 +440,61 @@ interface ChronicleExtractionState {
       revealDocumentRef?: string;
     },
   ) => void;
-  bulkApproveSafe: () => number;
+  /**
+   * Merge Native's re-read judgements (and, after a bulk approval, the new
+   * revision/status) into the projection the result was computed for. A result
+   * for another run/project/workspace is dropped. Only `bulkApproval` (and the
+   * synced fields) change: the author's selection and choices are untouched.
+   */
+  applyNativeReviewRows: (
+    identity: ChronicleReviewProjectionIdentity,
+    rows: readonly ChronicleNativeReviewRow[],
+    epoch?: number,
+  ) => "applied" | "stale";
+  /** A failed re-read: judgements become unknown (null) for that projection. */
+  clearBulkApprovalJudgements: (
+    identity: ChronicleReviewProjectionIdentity,
+    epoch?: number,
+  ) => void;
+  /**
+   * Monotonic generation of the bulk-approval judgement. A re-read takes a new
+   * one when it starts; an answer is applied only while it is still the
+   * newest. Operations that null a judgement advance it too.
+   * @returns the new generation.
+   */
+  advanceBulkJudgementEpoch: () => number;
+  /** Bulk approval succeeded but the re-read failed: mirror the response. */
+  mirrorBulkApproved: (
+    identity: ChronicleReviewProjectionIdentity,
+    approved: readonly { proposalId: string; revisionId: string }[],
+  ) => void;
+}
+
+/**
+ * Native's judgement describes one revision. If that is not the projection's
+ * current revision, the judgement is unknown (null).
+ */
+function judgementFor(
+  current: ChronicleReviewProposal,
+  row: ChronicleNativeReviewRow,
+): ChronicleBulkApproval | null {
+  if (row.revisionId !== undefined && row.revisionId !== current.revisionId) {
+    return null;
+  }
+  return row.bulkApproval;
+}
+
+function sameProjectionIdentity(
+  projection: ChronicleExtractionReviewProjection | null,
+  identity: ChronicleReviewProjectionIdentity,
+): projection is ChronicleExtractionReviewProjection {
+  return (
+    projection !== null &&
+    projection.runId === identity.runId &&
+    projection.projectId === identity.projectId &&
+    projection.workspacePath === identity.workspacePath &&
+    projection.openRevision === identity.openRevision
+  );
 }
 
 function replaceProposal(
@@ -410,6 +513,8 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
     recovery: EMPTY_RECOVERY_STATE,
     selectedProposalId: null,
     reviewMutationCount: 0,
+    bulkJudgementEpoch: 0,
+    bulkJudgementReads: 0,
     applyMutationInFlight: false,
 
     setProjection: (projection) => {
@@ -419,7 +524,13 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
         )?.proposalId ??
         projection.proposals[0]?.proposalId ??
         null;
-      set({ projection, selectedProposalId: selected });
+      // A new projection carries no judgement: an answer read for the
+      // previous one must not be applied over it.
+      set({
+        projection,
+        selectedProposalId: selected,
+        bulkJudgementEpoch: get().bulkJudgementEpoch + 1,
+      });
     },
 
     clearProjection: () => {
@@ -574,11 +685,15 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
         return;
       }
       set({
+        bulkJudgementEpoch: get().bulkJudgementEpoch + 1,
         projection: {
           ...projection,
           proposals: replaceProposal(projection.proposals, proposalId, {
             ...current,
             status,
+            // Local change: the old judgement no longer describes it until the
+            // caller re-reads Native's judgement.
+            bulkApproval: null,
           }),
         },
       });
@@ -604,12 +719,14 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
             ? "rejected"
             : "approved";
       set({
+        bulkJudgementEpoch: get().bulkJudgementEpoch + 1,
         projection: {
           ...projection,
           proposals: replaceProposal(projection.proposals, proposalId, {
             ...current,
             probableDuplicateChoice: choice,
             status,
+            bulkApproval: null,
           }),
         },
       });
@@ -657,6 +774,7 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
         },
       };
       set({
+        bulkJudgementEpoch: get().bulkJudgementEpoch + 1,
         projection: {
           ...projection,
           proposals: replaceProposal(projection.proposals, proposalId, {
@@ -677,29 +795,131 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
               noDuplicate: false,
               riskLow: false,
             },
+            bulkApproval: null,
           }),
         },
       });
     },
 
-    bulkApproveSafe: () => {
+    applyNativeReviewRows: (identity, rows, epoch) => {
       const projection = get().projection;
-      if (!projection) return 0;
-      let approved = 0;
-      const proposals = projection.proposals.map((proposal) => {
-        if (
-          proposal.applicability !== "applicable" ||
-          proposal.application !== null ||
-          proposal.status !== "unreviewed" ||
-          !isSafeForBulkApprove(proposal.safety)
-        ) {
-          return proposal;
+      if (!sameProjectionIdentity(projection, identity)) return "stale";
+      // A newer read started, or a local operation nulled a judgement since:
+      // this answer is older than what the screen knows.
+      if (epoch !== undefined && epoch !== get().bulkJudgementEpoch) {
+        return "stale";
+      }
+      const byId = new Map(rows.map((row) => [row.proposalId, row] as const));
+      const proposals = projection.proposals.map((current) => {
+        const row = byId.get(current.proposalId);
+        if (!row) {
+          // Not in Native's answer: nothing is known about it.
+          return current.bulkApproval === null ||
+            current.bulkApproval === undefined
+            ? current
+            : { ...current, bulkApproval: null };
         }
-        approved += 1;
-        return { ...proposal, status: "approved" as const };
+        const sync = row.sync;
+        // Only a row whose revision differs is synced: the same revision must
+        // not have its (possibly newer, local) status overwritten.
+        if (
+          sync &&
+          sync.revisionId !== current.revisionId &&
+          current.application === null &&
+          current.applicability === "applicable"
+        ) {
+          return {
+            ...current,
+            revisionId: sync.revisionId,
+            status: sync.status,
+            payload: sync.payload,
+            displayTitle: sync.payload.title,
+            reconciliationEnvelopeDigest: sync.reconciliationEnvelopeDigest,
+            reconciliationEnvelopeSchemaVersion:
+              sync.reconciliationEnvelopeSchemaVersion,
+            safety:
+              sync.revisionId === current.revisionId
+                ? current.safety
+                : {
+                    ...current.safety,
+                    fresh: false,
+                    noDuplicate: false,
+                    riskLow: false,
+                  },
+            bulkApproval: row.bulkApproval,
+          };
+        }
+        return { ...current, bulkApproval: judgementFor(current, row) };
       });
       set({ projection: { ...projection, proposals } });
-      return approved;
+      return "applied";
+    },
+
+    advanceBulkJudgementEpoch: () => {
+      const next = get().bulkJudgementEpoch + 1;
+      set({ bulkJudgementEpoch: next });
+      return next;
+    },
+
+    clearBulkApprovalJudgements: (identity, epoch) => {
+      const projection = get().projection;
+      if (!sameProjectionIdentity(projection, identity)) return;
+      if (epoch !== undefined && epoch !== get().bulkJudgementEpoch) return;
+      set({
+        projection: {
+          ...projection,
+          proposals: projection.proposals.map((proposal) =>
+            proposal.bulkApproval === null ||
+            proposal.bulkApproval === undefined
+              ? proposal
+              : { ...proposal, bulkApproval: null },
+          ),
+        },
+      });
+    },
+
+    mirrorBulkApproved: (identity, approved) => {
+      const projection = get().projection;
+      if (!sameProjectionIdentity(projection, identity)) return;
+      // Whatever is read later is newer than this mirror.
+      set({ bulkJudgementEpoch: get().bulkJudgementEpoch + 1 });
+      const byId = new Map(
+        approved.map((item) => [item.proposalId, item.revisionId] as const),
+      );
+      set({
+        projection: {
+          ...projection,
+          proposals: projection.proposals.map((proposal) => {
+            const revisionId = byId.get(proposal.proposalId);
+            // Already synced from Native (a newer read): keep its status,
+            // digest and judgement.
+            if (
+              revisionId !== undefined &&
+              proposal.revisionId === revisionId
+            ) {
+              return proposal;
+            }
+            if (revisionId === undefined || !proposal.payload) {
+              return proposal.bulkApproval === null ||
+                proposal.bulkApproval === undefined
+                ? proposal
+                : { ...proposal, bulkApproval: null };
+            }
+            return {
+              ...proposal,
+              revisionId,
+              status: "approved" as const,
+              payload: {
+                ...proposal.payload,
+                disclosure: { ...proposal.payload.disclosure, secret: false },
+              },
+              // The child's sealed Envelope digest was not read back.
+              reconciliationEnvelopeDigest: null,
+              bulkApproval: null,
+            };
+          }),
+        },
+      });
     },
   }),
 );
@@ -715,6 +935,8 @@ export function resetChronicleExtractionStoreForTests(): void {
     recovery: EMPTY_RECOVERY_STATE,
     selectedProposalId: null,
     reviewMutationCount: 0,
+    bulkJudgementEpoch: 0,
+    bulkJudgementReads: 0,
     applyMutationInFlight: false,
   });
 }

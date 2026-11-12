@@ -9,12 +9,23 @@ import { selectProductJourneys } from "../electron/scripts/product-journey-impac
 import { PRODUCT_JOURNEYS } from "../electron/scripts/product-journeys.mjs";
 import { FIXED_PRODUCT_JOURNEY_SHARDS } from "../electron/scripts/product-journey-shards.mjs";
 import {
+  BULK_APPROVE_BUTTON_TESTID,
+  BULK_APPROVE_RESULT_TESTID,
   CHRONICLE_EDITED_APPLY_JOURNEY_ID as ID,
+  assertBulkApproveButtonIdle,
+  assertBulkApproveResultText,
+  assertBulkApprovalJudgement,
+  assertBulkApprovalLeftUntouched,
+  assertBulkApprovedChild,
   assertEditedChild,
   assertEditedChronicleApplied,
   assertHumanDerivedLineage,
+  assertNoBulkApprovalTargets,
+  assertSameApprovalActor,
+  bulkApproveCountFromLabel,
   clearProposalSecretInReview,
   clickEnabledApplyButton,
+  clickEnabledBulkApproveButton,
 } from "../electron/scripts/chronicle-edited-apply-product-journey.mjs";
 
 const CONTRACT = "chronicle:extract-edit-approve-apply-reopen";
@@ -400,4 +411,397 @@ test("a disabled apply button fails the journey and is never clicked", async () 
     dialog: enabled.dialog,
   });
   assert.deepEqual(enabled.calls.clicks, ["apply"]);
+});
+
+// ---- bulk approval (BAO/1) ----
+
+const gateProposal = (overrides = {}) => ({
+  proposalId: "pa",
+  payloadJson: { title: "門が開いた", disclosure: { secret: true } },
+  bulkApproval: { eligible: false, reasons: ["r3-significance"] },
+  ...overrides,
+});
+const bellProposal = (overrides = {}) => ({
+  proposalId: "pb",
+  payloadJson: { title: "鐘が鳴った", disclosure: { secret: true } },
+  bulkApproval: { eligible: true, reasons: [] },
+  ...overrides,
+});
+const JUDGEMENT_TITLES = {
+  eligibleTitle: "鐘が鳴った",
+  ineligibleTitle: "門が開いた",
+};
+
+test("the bulk approval judgement passes only for one target with no reason and one r3-significance exclusion", () => {
+  assertBulkApprovalJudgement(
+    [gateProposal(), bellProposal()],
+    JUDGEMENT_TITLES,
+  );
+  for (const proposals of [
+    [gateProposal(), bellProposal({ bulkApproval: undefined })],
+    [
+      gateProposal(),
+      bellProposal({
+        bulkApproval: { eligible: false, reasons: ["approved"] },
+      }),
+    ],
+    [
+      gateProposal({ bulkApproval: { eligible: true, reasons: [] } }),
+      bellProposal(),
+    ],
+    [
+      gateProposal({
+        bulkApproval: {
+          eligible: false,
+          reasons: ["r3-significance", "r4-actuality"],
+        },
+      }),
+      bellProposal(),
+    ],
+    [gateProposal()],
+  ]) {
+    assert.throws(() =>
+      assertBulkApprovalJudgement(proposals, JUDGEMENT_TITLES),
+    );
+  }
+});
+
+test("no bulk approval target may remain after the press", () => {
+  assertNoBulkApprovalTargets([
+    gateProposal(),
+    bellProposal({ bulkApproval: { eligible: false, reasons: ["approved"] } }),
+  ]);
+  assert.throws(() =>
+    assertNoBulkApprovalTargets([gateProposal(), bellProposal()]),
+  );
+  assert.throws(() =>
+    assertNoBulkApprovalTargets([gateProposal({ bulkApproval: undefined })]),
+  );
+});
+
+const bulkParent = {
+  proposalId: "pb",
+  currentRevisionId: "rev-b1",
+  payloadJson: { title: "鐘が鳴った", disclosure: { secret: true } },
+};
+const bulkChild = {
+  proposalId: "pb",
+  currentRevisionId: "rev-b2",
+  status: "approved",
+  latestDecision: {
+    decision: "approved",
+    actorKind: "human",
+    revisionId: "rev-b2",
+  },
+  payloadJson: { title: "鐘が鳴った", disclosure: { secret: false } },
+};
+
+test("the bulk-approved child differs from its parent only in secret and carries the approval of that revision", () => {
+  assertBulkApprovedChild(bulkParent, bulkChild);
+  for (const mutate of [
+    (row) => (row.currentRevisionId = "rev-b1"),
+    (row) => (row.payloadJson.disclosure.secret = true),
+    (row) => (row.payloadJson.title = "別の題"),
+    (row) => (row.status = "unreviewed"),
+    (row) => (row.latestDecision = null),
+    (row) => (row.latestDecision.revisionId = "rev-b1"),
+    (row) => (row.latestDecision.actorKind = "ai"),
+    (row) => (row.latestDecision.decision = "rejected"),
+    (row) => (row.application = { revisionId: "rev-b2" }),
+  ]) {
+    const changed = globalThis.structuredClone(bulkChild);
+    mutate(changed);
+    assert.throws(() => assertBulkApprovedChild(bulkParent, changed));
+  }
+});
+
+test("a proposal outside the bulk approval must not change", () => {
+  const before = {
+    proposalId: "pa",
+    currentRevisionId: "rev-a1",
+    status: "unreviewed",
+    latestDecision: null,
+    payloadJson: { title: "門が開いた", disclosure: { secret: true } },
+  };
+  assertBulkApprovalLeftUntouched(before, globalThis.structuredClone(before));
+  for (const mutate of [
+    (row) => (row.currentRevisionId = "rev-a2"),
+    (row) => (row.status = "approved"),
+    (row) => (row.latestDecision = { decision: "approved" }),
+    (row) => (row.payloadJson.disclosure.secret = false),
+    (row) => (row.application = { revisionId: "rev-a1" }),
+  ]) {
+    const changed = globalThis.structuredClone(before);
+    mutate(changed);
+    assert.throws(() => assertBulkApprovalLeftUntouched(before, changed));
+  }
+});
+
+test("every approval carries the author actor and the authority of its own revision", () => {
+  const proposals = [
+    { proposalId: "pa", currentRevisionId: "rev-a2" },
+    { proposalId: "pb", currentRevisionId: "rev-b2" },
+  ];
+  const decision = (proposalId, revisionId) => ({
+    proposalId,
+    revisionId,
+    decision: "approved",
+    actorKind: "human",
+    actorId: "electron:human-review",
+    authorityScope: `project/p1/proposal/${proposalId}/revision/${revisionId}`,
+  });
+  const good = [decision("pa", "rev-a2"), decision("pb", "rev-b2")];
+  assertSameApprovalActor(good, { projectId: "p1", proposals });
+  for (const mutate of [
+    (rows) => (rows[1].actorId = "bulk-approve"),
+    (rows) => (rows[1].actorKind = "system"),
+    (rows) => (rows[1].authorityScope = "project/p1/bulk"),
+    (rows) => (rows[1].revisionId = "rev-b1"),
+    (rows) => rows.push(decision("pb", "rev-b2")),
+    (rows) => rows.pop(),
+  ]) {
+    const rows = globalThis.structuredClone(good);
+    mutate(rows);
+    assert.throws(() =>
+      assertSameApprovalActor(rows, { projectId: "p1", proposals }),
+    );
+  }
+});
+
+test("the button label count and the result line are read strictly", () => {
+  assert.equal(
+    bulkApproveCountFromLabel("見せる理由の無い提案をまとめて承認 (1)"),
+    1,
+  );
+  assert.equal(
+    bulkApproveCountFromLabel("見せる理由の無い提案をまとめて承認"),
+    0,
+  );
+  const text = "1 件を承認しました。 個別に決める提案が 1 件残っています。";
+  assertBulkApproveResultText(text, { approved: 1, remaining: 1 });
+  for (const bad of [
+    "0 件を承認しました。 個別に決める提案が 1 件残っています。",
+    "1 件を承認しました。 個別に決める提案が 0 件残っています。",
+    "1 件を承認しました。 1 件は飛ばしました（編集済み）。 個別に決める提案が 1 件残っています。",
+    "1 件を承認しました。",
+    "1 件を承認しました。 個別に決める提案が 1 件残っています。 途中で止まりました（終了または workspace の切り替え）。",
+  ]) {
+    assert.throws(() =>
+      assertBulkApproveResultText(bad, { approved: 1, remaining: 1 }),
+    );
+  }
+});
+
+function bulkButtonFakes({ enabled = true, label, result = "" }) {
+  const calls = { clicks: [], testIds: [] };
+  const state = { enabled, label };
+  const button = {
+    waitFor: async () => {},
+    isEnabled: async () => state.enabled,
+    textContent: async () => state.label,
+    click: async () => {
+      calls.clicks.push("bulk");
+      state.enabled = false;
+      state.label = "見せる理由の無い提案をまとめて承認";
+    },
+  };
+  const note = {
+    waitFor: async () => {},
+    textContent: async () => result,
+  };
+  const dialog = {
+    getByTestId: (id) => {
+      calls.testIds.push(id);
+      if (id === BULK_APPROVE_BUTTON_TESTID) return button;
+      if (id === BULK_APPROVE_RESULT_TESTID) return note;
+      throw new Error(`unexpected testid ${id}`);
+    },
+  };
+  const harness = {
+    waitUntil: async (predicate, label) => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (await predicate()) return true;
+      }
+      throw new Error(`timeout: ${label}`);
+    },
+  };
+  return { calls, dialog, harness, state };
+}
+
+test("a disabled bulk approve button fails the journey and is never clicked", async () => {
+  const fake = bulkButtonFakes({
+    enabled: false,
+    label: "見せる理由の無い提案をまとめて承認",
+  });
+  await assert.rejects(
+    clickEnabledBulkApproveButton({
+      harness: fake.harness,
+      dialog: fake.dialog,
+      expectedCount: 1,
+    }),
+    /timeout/,
+  );
+  assert.deepEqual(fake.calls.clicks, []);
+});
+
+test("a bulk approve count other than the expected one fails before the click", async () => {
+  for (const label of [
+    "見せる理由の無い提案をまとめて承認 (2)",
+    "見せる理由の無い提案をまとめて承認 (0)",
+    "見せる理由の無い提案をまとめて承認",
+  ]) {
+    const fake = bulkButtonFakes({ label });
+    await assert.rejects(
+      clickEnabledBulkApproveButton({
+        harness: fake.harness,
+        dialog: fake.dialog,
+        expectedCount: 1,
+      }),
+    );
+    assert.deepEqual(fake.calls.clicks, []);
+  }
+});
+
+test("the bulk approve step presses once and returns the result line", async () => {
+  const fake = bulkButtonFakes({
+    label: "見せる理由の無い提案をまとめて承認 (1)",
+    result: " 1 件を承認しました。 ",
+  });
+  const text = await clickEnabledBulkApproveButton({
+    harness: fake.harness,
+    dialog: fake.dialog,
+    expectedCount: 1,
+  });
+  assert.equal(text, "1 件を承認しました。");
+  assert.deepEqual(fake.calls.clicks, ["bulk"]);
+});
+
+test("after the press the bulk approve button must be disabled with no target", async () => {
+  const idle = bulkButtonFakes({
+    enabled: false,
+    label: "見せる理由の無い提案をまとめて承認",
+  });
+  await assertBulkApproveButtonIdle({
+    harness: idle.harness,
+    dialog: idle.dialog,
+  });
+  for (const fake of [
+    bulkButtonFakes({
+      enabled: true,
+      label: "見せる理由の無い提案をまとめて承認 (1)",
+    }),
+    bulkButtonFakes({
+      enabled: false,
+      label: "見せる理由の無い提案をまとめて承認 (1)",
+    }),
+    bulkButtonFakes({
+      enabled: true,
+      label: "見せる理由の無い提案をまとめて承認",
+    }),
+  ]) {
+    await assert.rejects(
+      assertBulkApproveButtonIdle({
+        harness: fake.harness,
+        dialog: fake.dialog,
+      }),
+      /timeout/,
+    );
+  }
+});
+
+function bulkAppliedFixture() {
+  const rootA = interpretation("rev-a1", "pa");
+  const childA = humanDerived("rev-a2", "pa", rootA);
+  const rootB = interpretation("rev-b1", "pb");
+  const childB = humanDerived("rev-b2", "pb", rootB);
+  const bundle = {
+    proposals: [
+      proposal("pa", "rev-a2", "門が開いた", false, {
+        revisionId: "rev-a2",
+        commitId: "c1",
+        appliedEntityId: "e1",
+      }),
+      proposal("pb", "rev-b2", "鐘が鳴った", false, {
+        revisionId: "rev-b2",
+        commitId: "c1",
+        appliedEntityId: "e2",
+      }),
+    ],
+  };
+  const state = {
+    revisions: [rootA, childA, rootB, childB],
+    events: [
+      { id: "e1", title: "門が開いた", secret: 1 },
+      { id: "e2", title: "鐘が鳴った", secret: 1 },
+    ],
+    sceneLinks: [
+      { sceneId: "scene-1", eventId: "e1" },
+      { sceneId: "scene-1", eventId: "e2" },
+    ],
+    applications: [
+      { revisionId: "rev-a2", commitId: "c1", appliedEntityId: "e1" },
+      { revisionId: "rev-b2", commitId: "c1", appliedEntityId: "e2" },
+    ],
+    commits: [{ id: "c1", status: "applied" }],
+    journals: [{ id: "j1", commitId: "c1", afterJson: "{}" }],
+  };
+  const context = {
+    sceneId: "scene-1",
+    editedProposalId: "pa",
+    rootRevisionId: "rev-a1",
+    bulkApproved: [{ proposalId: "pb", rootRevisionId: "rev-b1" }],
+  };
+  return { bundle, state, context };
+}
+
+test("the applied state passes when both proposals were applied from a human-derived, secret-free child", () => {
+  const { bundle, state, context } = bulkAppliedFixture();
+  assertEditedChronicleApplied(state, bundle, context);
+});
+
+test("applied state fails if the bulk-approved proposal was applied from a non-derived or secret revision", () => {
+  for (const mutate of [
+    ({ state }) =>
+      (state.revisions.find(
+        (row) => row.revisionId === "rev-b2",
+      ).envelope.revisionBasis = { kind: "interpretation" }),
+    ({ bundle }) => (bundle.proposals[1].payloadJson.disclosure.secret = true),
+    ({ bundle, state }) => {
+      bundle.proposals[1].currentRevisionId = "rev-b1";
+      bundle.proposals[1].latestDecision.revisionId = "rev-b1";
+      bundle.proposals[1].application.revisionId = "rev-b1";
+      state.applications[1].revisionId = "rev-b1";
+    },
+    ({ state }) =>
+      (state.revisions.find(
+        (row) => row.revisionId === "rev-b2",
+      ).envelope.revisionBasis.derivation.proposalPayloadChangedPaths = [
+        "/disclosure/secret",
+        "/title",
+      ]),
+    ({ state }) =>
+      (state.revisions.find(
+        (row) => row.revisionId === "rev-b2",
+      ).envelope.revisionBasis.revisionActor.kind = "ai"),
+  ]) {
+    const fixtureState = bulkAppliedFixture();
+    mutate(fixtureState);
+    assert.throws(() =>
+      assertEditedChronicleApplied(
+        fixtureState.state,
+        fixtureState.bundle,
+        fixtureState.context,
+      ),
+    );
+  }
+});
+
+test("without the bulk-approved list a human-derived second proposal is not accepted as untouched", () => {
+  const { bundle, state, context } = bulkAppliedFixture();
+  assert.throws(() =>
+    assertEditedChronicleApplied(state, bundle, {
+      ...context,
+      bulkApproved: [],
+    }),
+  );
 });

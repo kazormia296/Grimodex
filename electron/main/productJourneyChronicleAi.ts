@@ -5,6 +5,22 @@ import {
 } from "./productJourneyNir1Ai.js";
 
 type JsonObject = Record<string, unknown>;
+// core の significance の列挙。fixture の行が持つ値はこの 2 つに限る。
+const FIXTURE_SIGNIFICANCES = ["major", "scene-level"] as const;
+type FixtureSignificance = (typeof FIXTURE_SIGNIFICANCES)[number];
+/** fixture の行の significance。省略時は "major"、列挙の外の値は拒む。 */
+function rowSignificance(row: {
+  key: string;
+  significance?: string;
+}): FixtureSignificance {
+  const value = row.significance ?? "major";
+  if (!(FIXTURE_SIGNIFICANCES as readonly string[]).includes(value)) {
+    throw new Error(
+      `Chronicle Journey fixture row has an invalid significance: ${row.key}`,
+    );
+  }
+  return value as FixtureSignificance;
+}
 type ContextSection = { contextId: string; inputRef: string; value: string };
 function object(value: unknown): JsonObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -157,7 +173,7 @@ function synthesisReply(sections: ContextSection[]): JsonObject {
       titleSuggestion: row.title,
       summary: row.summary,
       actuality: "actual",
-      significance: "major",
+      significance: rowSignificance(row),
     };
   });
   const mixed = seenKeys.has("mixed-actual");
