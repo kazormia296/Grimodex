@@ -4186,6 +4186,16 @@ impl Fixture {
         Self::open(manifest, compressed)
     }
 
+    /// The scenes of the split folder, in order (`mw-split-1..3`): the dawn
+    /// proposal read scene 1; the tide proposal's request read scenes 2 and 3
+    /// and its evidence is in scene 2 only.
+    fn split_scene(&self, index: usize) -> String {
+        self.manifest["scenes"]["split"][index]
+            .as_str()
+            .expect("split scene")
+            .to_owned()
+    }
+
     /// The scenes of the three-scene folder, in order (`mw-scene-1..3`).
     fn folder_scene(&self, index: usize) -> String {
         self.manifest["scenes"]["three"][index]
@@ -4199,6 +4209,8 @@ const FIRE: &str = "Signal fire on the quay";
 const WRIT: &str = "Writ delivered to the quay";
 const SEAL: &str = "Ledger seals at the gate";
 const BELL: &str = "Harbour bell at dusk";
+const DAWN: &str = "Lamp trimmed at dawn";
+const TIDE: &str = "Tide chart pinned to the post";
 
 fn scene_keys(envelope: &Value) -> Vec<String> {
     envelope["effectiveMaterialBasis"]["sourceBasis"]
@@ -4268,6 +4280,19 @@ fn the_declared_scope_golden_is_the_run_recorded_with_its_cold_database() {
         golden["snapshot"]["snapshot"]["documents"][0]["sourceKey"],
         json!(format!("project:scene:{}", fixture.folder_scene(0))),
         "the golden is the Run of this database"
+    );
+    let split_text = include_str!(
+        "../src/narrative_extraction/material_roster/production-declared-scope-split-golden.json"
+    );
+    assert_eq!(
+        hex::encode(Sha256::digest(split_text.as_bytes())),
+        fixture.manifest["runs"]["split"]["goldenSha256"]
+    );
+    let split: Value = serde_json::from_str(split_text).expect("split golden");
+    assert_eq!(
+        split["snapshot"]["snapshot"]["documents"][0]["sourceKey"],
+        json!(format!("project:scene:{}", fixture.split_scene(0))),
+        "the split golden is the Run of this database"
     );
 }
 
@@ -4413,8 +4438,10 @@ fn a_proposal_is_eligible_after_its_own_scenes_even_inside_the_extraction() {
     drop(conn);
     assert_eq!(writ.digest(), before, "admission writes nothing");
 
-    // A proposal whose observations span scenes 1 and 3 is still not shown
-    // inside the folder; its evidence is in two scenes, so it never is.
+    // A proposal whose observations span scenes 1 and 3 is not shown from any
+    // scene here. Its evidence is in two scenes, which Native refuses by its own
+    // rule whatever the declared scope is: this block does not test the declared
+    // scope. The tide proposal below (request in two scenes, evidence in one) does.
     let fire = Fixture::declared_scope("three", FIRE);
     let conn = fire.read_only();
     for query in [s1, s2, s3, fire.scene("s2").to_owned()] {
@@ -4465,6 +4492,158 @@ impl Fixture {
             .as_str()
             .expect("child")
             .to_owned()
+    }
+}
+
+/// The envelope's evidence scenes (`project:scene:*` of the evidence set).
+fn evidence_scene_keys(envelope: &Value) -> Vec<String> {
+    let mut keys: Vec<String> = envelope["effectiveMaterialBasis"]["evidenceSet"]
+        .as_array()
+        .expect("evidenceSet")
+        .iter()
+        .filter_map(|e| e["sourceKey"].as_str())
+        .filter(|k| k.starts_with("project:scene:"))
+        .map(str::to_owned)
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+/// The dangerous shape (DMS/1 D1): the synthesis request read scenes 2 and 3
+/// (an actual Observation of scene 2 and a planned one of scene 3 in one
+/// cluster), the event cites scene 2 only. The record must declare both scenes
+/// and Native must treat both as material: the proposal is not shown from scene
+/// 3 (its request read it), is shown after it. A proposal whose request read
+/// scene 1 only is shown from scenes 2 and 3 (the declared scope alone).
+#[test]
+fn a_request_that_read_two_scenes_keeps_both_material_though_the_evidence_is_in_one() {
+    let tide = Fixture::declared_scope("split", TIDE);
+    let conn = tide.read_only();
+    let before = tide.digest();
+    let (s1, s2, s3) = (
+        tide.split_scene(0),
+        tide.split_scene(1),
+        tide.split_scene(2),
+    );
+    let key = |id: &str| format!("project:scene:{id}");
+    for revision in [tide.root().to_owned(), tide.child().to_owned()] {
+        let envelope = envelope_of(&conn, &revision);
+        let mut declared = scene_keys(&envelope);
+        declared.sort();
+        assert_eq!(declared, vec![key(&s2), key(&s3)], "declared source basis");
+        assert_eq!(
+            declared_scene_dependencies(&envelope),
+            vec![key(&s2), key(&s3)],
+            "both scenes have a declaration, scene 1 has none"
+        );
+        assert_eq!(
+            evidence_scene_keys(&envelope),
+            vec![key(&s2)],
+            "the evidence is in scene 2 only"
+        );
+        // Native replays it completely, with the windows of both scenes.
+        let tx = conn.unchecked_transaction().expect("snapshot");
+        let MaterialMembershipRead::Complete(m) =
+            read_revision_material_membership(&tx, tide.project(), &revision)
+                .expect("typed material membership")
+        else {
+            panic!("a narrowed record must replay completely")
+        };
+        let windows: std::collections::BTreeSet<String> = m
+            .materials
+            .iter()
+            .map(|s| {
+                s.context_id
+                    .strip_prefix("observation-citation-window:")
+                    .expect("a window material")
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(
+            windows.into_iter().collect::<Vec<_>>(),
+            vec!["window-002", "window-003"]
+        );
+        drop(tx);
+    }
+    let verdict = |query: &str| declared_verdict(&tide, &conn, query);
+    // Scene 1 and the scene before the folder: before the material.
+    // Scene 2: the evidence. Scene 3: no evidence, but the request read it.
+    for query in [
+        tide.manifest["scenes"]["before"]
+            .as_str()
+            .expect("before")
+            .to_owned(),
+        s1.clone(),
+        s2.clone(),
+        s3.clone(),
+    ] {
+        assert_source_not_before(&verdict(&query), &format!("tide from {query}"));
+    }
+    assert!(
+        matches!(
+            verdict(tide.scene("s2")),
+            RevisionEligibilityRead::Eligible(_)
+        ),
+        "tide after its material: {:?}",
+        verdict(tide.scene("s2"))
+    );
+    // Control, same Run: the proposal that read scene 1 only is shown from
+    // scenes 2 and 3 and after, never from scene 1 or before it.
+    let dawn = Fixture::declared_scope("split", DAWN);
+    let dawn_conn = dawn.read_only();
+    for query in [s2, s3, dawn.scene("s2").to_owned()] {
+        assert!(
+            matches!(
+                declared_verdict(&dawn, &dawn_conn, &query),
+                RevisionEligibilityRead::Eligible(_)
+            ),
+            "dawn from {query}: {:?}",
+            declared_verdict(&dawn, &dawn_conn, &query)
+        );
+    }
+    assert_source_not_before(
+        &declared_verdict(&dawn, &dawn_conn, &s1),
+        "dawn from scene 1",
+    );
+    drop(conn);
+    assert_eq!(tide.digest(), before, "admission writes nothing");
+}
+
+/// (c) for the same shape: editing scene 3, which the event does not cite but
+/// the request read, makes the tide proposal stale; editing scene 1 does not.
+#[test]
+fn a_scene_the_request_read_but_the_event_did_not_cite_still_stales_the_proposal() {
+    // (scene edited, tide fresh, dawn fresh); tide read scenes 2 and 3, dawn 1.
+    let declared = [(0, true, false), (1, false, true), (2, false, true)];
+    for (index, tide_fresh, dawn_fresh) in declared {
+        let fixture = Fixture::declared_scope("split", TIDE);
+        let db = Database::new(&fixture.path).expect("Native private fixture");
+        let (tide, dawn) = (
+            fixture.child_of("split", TIDE),
+            fixture.child_of("split", DAWN),
+        );
+        native_patch_node(
+            &db,
+            &fixture,
+            &fixture.split_scene(index),
+            json!({"title": "Stair, revised"}),
+            false,
+        );
+        drain_native_feed(&db);
+        let conn = fixture.read_only();
+        assert_eq!(
+            freshness_of(&conn, &fixture, &tide),
+            tide_fresh,
+            "edit scene {}: tide",
+            index + 1
+        );
+        assert_eq!(
+            freshness_of(&conn, &fixture, &dawn),
+            dawn_fresh,
+            "edit scene {}: dawn",
+            index + 1
+        );
     }
 }
 

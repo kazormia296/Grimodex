@@ -27,6 +27,9 @@ it.each([
   // Made after DMS/1: each proposal declares only the scenes its synthesis
   // request read (src-tauri/crates/grimodex-db/tests/support/nir1-declared-scope-cold.*).
   ["production-declared-scope-folder-golden.json", 3, undefined],
+  // The split folder: the request of the tide proposal read scenes 2 and 3, its
+  // event cites scene 2 only (the root Envelope in this golden is that proposal's).
+  ["production-declared-scope-split-golden.json", 3, undefined],
 ])(
   "matches every independent persisted request of %s (%i windows) with production TS builders",
   async (file, windows, synthesisVersion) => {
@@ -145,4 +148,35 @@ it("the declared-scope golden declares exactly the scenes of its synthesis reque
   expect(declared).toEqual(expected);
   // The scene the plan reads but the request never did is not declared.
   expect(declared.size).toBeLessThan(new Set(sceneOfWindow.values()).size);
+});
+
+it("the split golden declares the scenes its request read, though the event cites one", () => {
+  const golden = readGolden("production-declared-scope-split-golden.json");
+  const sourceKeyOfWindow = (windowId: string) => {
+    const plan = golden.plan.windows.find(
+      (w: { windowId: string }) => w.windowId === windowId,
+    );
+    return golden.snapshot.snapshot.documents.find(
+      (d: { ref: string }) => d.ref === plan.documentRef,
+    ).sourceKey as string;
+  };
+  const basis = golden.rootEnvelope.effectiveMaterialBasis;
+  const declared = basis.sourceBasis
+    .filter((s: { sourceKind: string }) => s.sourceKind === "scene-body")
+    .map((s: { sourceKey: string }) => s.sourceKey);
+  expect(declared).toEqual([
+    sourceKeyOfWindow("window-002"),
+    sourceKeyOfWindow("window-003"),
+  ]);
+  const evidenceScenes = new Set<string>(
+    basis.evidenceSet
+      .map((e: { sourceKey?: string }) => e.sourceKey)
+      .filter((key?: string) => key?.startsWith("project:scene:")),
+  );
+  expect([...evidenceScenes]).toEqual([sourceKeyOfWindow("window-002")]);
+  // The request listed an Observation of window 3 that the event did not cite.
+  const contexts = golden.rootEnvelope.revisionBasis.contextSet.map(
+    (c: { contextId: string }) => c.contextId,
+  );
+  expect(contexts).toContain("event-observation:window-003:obs-001");
 });
