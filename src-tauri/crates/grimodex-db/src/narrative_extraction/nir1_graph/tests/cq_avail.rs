@@ -3137,7 +3137,7 @@ fn shared_bytes_equal_what_the_reads_return_on_a_product_project() -> Result<()>
     })?;
     let columns = fixture
         .authority
-        .with_read_transaction(|conn| columns_read_by_one_load(conn))?;
+        .with_read_transaction(columns_read_by_one_load)?;
     assert_eq!(charged, expected);
     // the old count read the tree twice and every binding twice
     assert!(before > charged, "{before} before, {charged} now");
