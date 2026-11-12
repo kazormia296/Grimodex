@@ -911,37 +911,48 @@ impl ProposalRevisionRoleEffects {
 pub(crate) fn proposal_revision_role_effects() -> Result<&'static ProposalRevisionRoleEffects, ()> {
     static EFFECTS: OnceLock<Result<ProposalRevisionRoleEffects, ()>> = OnceLock::new();
     match EFFECTS.get_or_init(|| {
-        // The registry is validated here, by the load; each lookup below
-        // is then the evaluation without validating it again.
         let registry = load_dependency_role_registry().map_err(|_| ())?;
-        let mut table = [false; ALL_ROLES.len()];
-        for (accepted, role) in table.iter_mut().zip(ALL_ROLES) {
-            let mut effect_found = false;
-            let mut refused = false;
-            for change_class in &registry.source_change_classes {
-                match find_dependency_effect(
-                    &registry,
-                    DependencyEffectInput {
-                        role: role.as_str(),
-                        consumer_kind: "proposal-revision",
-                        change_class: change_class.as_str(),
-                    },
-                ) {
-                    Ok(_) => effect_found = true,
-                    Err(DependencyContractError::MissingEffectRule { .. }) => {}
-                    Err(_) => {
-                        refused = true;
-                        break;
-                    }
-                }
-            }
-            *accepted = effect_found && !refused;
-        }
-        Ok(ProposalRevisionRoleEffects(table))
+        Ok(role_effects_of(&registry))
     }) {
         Ok(table) => Ok(table),
         Err(()) => Err(()),
     }
+}
+
+/// The table of a registry: the registry is validated once here, and each
+/// lookup below is then the evaluation without validating it again. A registry
+/// that does not validate gives the table [`evaluate_dependency_effect`] gave
+/// every role for it, which is that no role is accepted.
+fn role_effects_of(registry: &DependencyEffectRegistry) -> ProposalRevisionRoleEffects {
+    let mut table = [false; ALL_ROLES.len()];
+    if validate_dependency_effect_registry(registry).is_err() {
+        return ProposalRevisionRoleEffects(table);
+    }
+    for (accepted, role) in table.iter_mut().zip(ALL_ROLES) {
+        let mut effect_found = false;
+        let mut refused = false;
+        for change_class in &registry.source_change_classes {
+            match find_dependency_effect(
+                registry,
+                DependencyEffectInput {
+                    role: role.as_str(),
+                    consumer_kind: "proposal-revision",
+                    change_class: change_class.as_str(),
+                },
+            ) {
+                Ok(_) => effect_found = true,
+                Err(DependencyContractError::MissingEffectRule { .. }) => {}
+                // The inputs are spelled by the enums themselves, so a lookup
+                // fails only by having no rule; kept as the old check had it.
+                Err(_) => {
+                    refused = true;
+                    break;
+                }
+            }
+        }
+        *accepted = effect_found && !refused;
+    }
+    ProposalRevisionRoleEffects(table)
 }
 
 fn find_dependency_effect(
@@ -1098,14 +1109,13 @@ mod role_effects_tests {
     use super::*;
 
     /// What the dependency-set check worked out for a role before DR-CQA-9,
-    /// verbatim: the registry parsed, then the role evaluated under every
-    /// change class with the registry validated in each evaluation.
-    fn worked_out_per_call(role: DependencyRole) -> Result<bool, ()> {
-        let registry = load_dependency_role_registry().map_err(|_| ())?;
+    /// verbatim: the role evaluated under every change class of the registry
+    /// it was given, with the registry validated in each evaluation.
+    fn worked_out_per_call(registry: &DependencyEffectRegistry, role: DependencyRole) -> bool {
         let mut effect_found = false;
         for change_class in &registry.source_change_classes {
             match evaluate_dependency_effect(
-                &registry,
+                registry,
                 DependencyEffectInput {
                     role: role.as_str(),
                     consumer_kind: "proposal-revision",
@@ -1114,27 +1124,77 @@ mod role_effects_tests {
             ) {
                 Ok(_) => effect_found = true,
                 Err(DependencyContractError::MissingEffectRule { .. }) => {}
-                Err(_) => return Ok(false),
+                Err(_) => return false,
             }
         }
-        Ok(effect_found)
+        effect_found
+    }
+
+    fn assert_table_answers_alike(registry: &DependencyEffectRegistry, what: &str) {
+        let table = role_effects_of(registry);
+        for role in ALL_ROLES {
+            assert_eq!(
+                table.accepts(role),
+                worked_out_per_call(registry, role),
+                "{what}: {}",
+                role.as_str()
+            );
+        }
     }
 
     #[test]
     fn the_table_answers_what_evaluating_each_role_per_call_answered() {
+        let registry = load_dependency_role_registry().expect("the embedded policy loads");
+        assert_table_answers_alike(&registry, "embedded");
+        // The process's table is the embedded registry's, on every call. What
+        // the policy accepts is not asserted (a policy change must not fail
+        // this): only that the table and the per-call answer agree.
         let table = proposal_revision_role_effects().expect("the embedded policy loads");
-        let mut accepted = 0;
         for role in ALL_ROLES {
-            let expected = worked_out_per_call(role).expect("the embedded policy loads");
-            assert_eq!(table.accepts(role), expected, "{}", role.as_str());
-            accepted += usize::from(expected);
+            assert_eq!(
+                table.accepts(role),
+                worked_out_per_call(&registry, role),
+                "{}",
+                role.as_str()
+            );
         }
-        // The policy gives most roles an effect for a proposal revision and not
-        // all of them, so the table reaches both answers.
-        assert!(accepted > 0 && accepted < ALL_ROLES.len(), "{accepted}");
-        // The same table on every call: one computation for the process.
+        // One computation for the process.
         let again = proposal_revision_role_effects().expect("the embedded policy loads");
         assert!(std::ptr::eq(table, again));
+    }
+
+    #[test]
+    fn the_table_of_a_registry_that_does_not_validate_answers_what_the_checked_evaluation_answered() {
+        let embedded = load_dependency_role_registry().expect("the embedded policy loads");
+        let mut variants: Vec<(&str, DependencyEffectRegistry)> = Vec::new();
+        let mut without_a_rule = embedded.clone();
+        without_a_rule.effect_rules.pop();
+        variants.push(("a rule missing", without_a_rule));
+        let mut duplicated = embedded.clone();
+        let first = duplicated.effect_rules[0].clone();
+        duplicated.effect_rules.push(first);
+        variants.push(("a rule twice", duplicated));
+        let mut no_rules = embedded.clone();
+        no_rules.effect_rules.clear();
+        variants.push(("no rules", no_rules));
+        let mut no_classes = embedded.clone();
+        no_classes.source_change_classes.clear();
+        variants.push(("no change classes", no_classes));
+        let mut a_role_gone = embedded.clone();
+        a_role_gone.roles.pop();
+        variants.push(("a role missing", a_role_gone));
+        let mut other_version = embedded.clone();
+        other_version.role_contract_version.push('x');
+        variants.push(("another contract version", other_version));
+        for (what, registry) in &variants {
+            assert_table_answers_alike(registry, what);
+        }
+        // A registry that does not validate is not accepted for any role, as
+        // the checked evaluation refused it for every role.
+        let (_, broken) = &variants[0];
+        assert!(validate_dependency_effect_registry(broken).is_err());
+        let table = role_effects_of(broken);
+        assert!(ALL_ROLES.iter().all(|role| !table.accepts(*role)));
     }
 
     #[test]

@@ -564,8 +564,12 @@ fn a_damaged_row_of_each_kind_gives_the_old_loops_entry_and_digest() {
     }
 }
 
+// `read_registry_in_tx` refuses a registry that fails `validate_registry`
+// before the loop starts, so the whole read fails with the same error in the
+// new and the old loop. The loop's own fallback (a registry that cannot be
+// prepared) is a defence and is not reached by any stored registry.
 #[test]
-fn a_registry_the_loop_cannot_prepare_makes_every_binding_unavailable_as_before() {
+fn a_registry_that_read_registry_refuses_fails_the_whole_read_as_before() {
     let db = fixture();
     db.with_conn(|conn| {
         conn.execute("PRAGMA ignore_check_constraints = ON", [])?;

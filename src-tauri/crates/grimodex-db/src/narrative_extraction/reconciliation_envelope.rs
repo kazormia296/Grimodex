@@ -1152,6 +1152,12 @@ mod tests {
             reseal(&mut envelope);
             variants.push((format!("resealed without {member}"), envelope));
         }
+        // A sealed envelope without `sourceBasis`: the material digest is of
+        // `null` there, and the streamed form must seal the same bytes.
+        let mut without_source_basis =
+            without_member(nested_digest_fixture(), "/effectiveMaterialBasis/sourceBasis");
+        reseal(&mut without_source_basis);
+        variants.push(("resealed without sourceBasis".into(), without_source_basis));
         variants.push((
             "nested payload".into(),
             resealed(&|e| {
@@ -1224,6 +1230,9 @@ mod tests {
                 "{name}"
             );
             accepted += usize::from(streamed.is_ok());
+            if name == "resealed without sourceBasis" {
+                assert!(streamed.is_ok(), "{name}: {streamed:?}");
+            }
         }
         // The variants reach both answers: the resealed ones are accepted, the
         // forged and the incomplete ones are not.

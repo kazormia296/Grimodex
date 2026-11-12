@@ -1085,9 +1085,12 @@ fn read_scope_extension_entries(
             Ok(values)
         })?
         .collect::<rusqlite::Result<Vec<Vec<_>>>>()?;
-    // The registry of every binding's token, validated and written once. A
-    // registry that cannot be prepared is not prepared: every binding then
-    // takes the per-binding path, which refuses it as it always did (DR-CQA-9).
+    // The registry of every binding's token, validated and written once.
+    // `read_registry_in_tx` has already refused a registry that fails
+    // `validate_registry`, and that is the only way `new` fails, so the
+    // per-binding fallback below is not reached today. It stays as a defence:
+    // a registry that cannot be prepared takes the old per-binding path
+    // (DR-CQA-9).
     let source_tokens = narrative_scene_scope::SourceTokenRegistry::new(&registry).ok();
     for raw_values in rows {
         // The binding reads the row by reference. The raw observation of the
