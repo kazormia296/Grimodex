@@ -910,38 +910,38 @@ impl ProposalRevisionRoleEffects {
 /// registry failing to load, which fails every dependency set.
 pub(crate) fn proposal_revision_role_effects() -> Result<&'static ProposalRevisionRoleEffects, ()> {
     static EFFECTS: OnceLock<Result<ProposalRevisionRoleEffects, ()>> = OnceLock::new();
-    EFFECTS
-        .get_or_init(|| {
-            // The registry is validated here, by the load; each lookup below
-            // is then the evaluation without validating it again.
-            let registry = load_dependency_role_registry().map_err(|_| ())?;
-            let mut table = [false; ALL_ROLES.len()];
-            for (accepted, role) in table.iter_mut().zip(ALL_ROLES) {
-                let mut effect_found = false;
-                let mut refused = false;
-                for change_class in &registry.source_change_classes {
-                    match find_dependency_effect(
-                        &registry,
-                        DependencyEffectInput {
-                            role: role.as_str(),
-                            consumer_kind: "proposal-revision",
-                            change_class: change_class.as_str(),
-                        },
-                    ) {
-                        Ok(_) => effect_found = true,
-                        Err(DependencyContractError::MissingEffectRule { .. }) => {}
-                        Err(_) => {
-                            refused = true;
-                            break;
-                        }
+    match EFFECTS.get_or_init(|| {
+        // The registry is validated here, by the load; each lookup below
+        // is then the evaluation without validating it again.
+        let registry = load_dependency_role_registry().map_err(|_| ())?;
+        let mut table = [false; ALL_ROLES.len()];
+        for (accepted, role) in table.iter_mut().zip(ALL_ROLES) {
+            let mut effect_found = false;
+            let mut refused = false;
+            for change_class in &registry.source_change_classes {
+                match find_dependency_effect(
+                    &registry,
+                    DependencyEffectInput {
+                        role: role.as_str(),
+                        consumer_kind: "proposal-revision",
+                        change_class: change_class.as_str(),
+                    },
+                ) {
+                    Ok(_) => effect_found = true,
+                    Err(DependencyContractError::MissingEffectRule { .. }) => {}
+                    Err(_) => {
+                        refused = true;
+                        break;
                     }
                 }
-                *accepted = effect_found && !refused;
             }
-            Ok(ProposalRevisionRoleEffects(table))
-        })
-        .as_ref()
-        .map_err(|()| ())
+            *accepted = effect_found && !refused;
+        }
+        Ok(ProposalRevisionRoleEffects(table))
+    }) {
+        Ok(table) => Ok(table),
+        Err(()) => Err(()),
+    }
 }
 
 fn find_dependency_effect(
