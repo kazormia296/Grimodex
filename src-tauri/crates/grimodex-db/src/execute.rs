@@ -772,7 +772,10 @@ fn restore_renderer_sql_policy(
     );
     keep_first_cleanup_error(
         &mut first_error,
-        conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>),
+        crate::hook_registration::set_authorizer(
+            conn,
+            None::<fn(AuthContext<'_>) -> Authorization>,
+        ),
     );
     if reserved_project_setting_guard_requested {
         keep_first_cleanup_error(&mut first_error, drop_reserved_project_setting_guard(conn));
@@ -865,7 +868,7 @@ where
         // の読みだけ。
         clock_accessor_cache.ensure_read_view(conn);
         let allowed_clock_accessors = clock_accessor_cache.names(conn);
-        conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+        let renderer_authorizer = move |ctx: AuthContext<'_>| {
             let profile_reason = renderer_profile_egress_sql_rejection(&ctx);
             let clock_reason = || clock_surface_rejection(&ctx, allowed_clock_accessors.as_ref());
             if let Some(reason) = profile_reason
@@ -890,7 +893,8 @@ where
             } else {
                 Authorization::Allow
             }
-        }))?;
+        };
+        crate::hook_registration::set_authorizer(conn, Some(renderer_authorizer))?;
         let mut callbacks = 0usize;
         crate::set_sqlite_progress_handler(
             conn,

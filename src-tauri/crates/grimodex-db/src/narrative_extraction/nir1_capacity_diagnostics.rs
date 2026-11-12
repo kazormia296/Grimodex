@@ -547,10 +547,11 @@ where
 {
     let counter = ACTIVE_TRACE.with(|active| active.borrow().as_ref().cloned());
     let Some(counter) = counter else {
-        return conn.progress_handler(interval, handler);
+        return crate::hook_registration::set_progress_handler(conn, interval, handler);
     };
     let mut since_owner_check = 0;
-    conn.progress_handler(
+    crate::hook_registration::set_progress_handler(
+        conn,
         1,
         Some(move || {
             counter

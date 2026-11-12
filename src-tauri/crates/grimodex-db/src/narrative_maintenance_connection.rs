@@ -1466,7 +1466,7 @@ impl Database {
                 // A test failpoint may leave a one-shot commit hook behind;
                 // no hook may outlive this transaction.
                 #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
-                let _ = conn.commit_hook(None::<fn() -> bool>);
+                let _ = crate::hook_registration::set_commit_hook(conn, None::<fn() -> bool>);
                 let value = preserve_fenced_stop(result, &checks)?;
                 // A stop observed just after COMMIT makes this pass
                 // incomplete, while leaving the committed row idempotently

@@ -6114,12 +6114,12 @@ fn install_commit_failpoint(
     match failpoint {
         Some(Nir1GenerationFailpoint::VetoCommit) => {
             let fired = AtomicBool::new(false);
-            conn.commit_hook(Some(move || !fired.swap(true, Ordering::AcqRel)))?;
+            crate::hook_registration::set_commit_hook(conn, Some(move || !fired.swap(true, Ordering::AcqRel)))?;
         }
         Some(Nir1GenerationFailpoint::ProbeDuringCommit(probe)) => {
             let probe = Arc::clone(probe);
             let fired = AtomicBool::new(false);
-            conn.commit_hook(Some(move || {
+            crate::hook_registration::set_commit_hook(conn, Some(move || {
                 if !fired.swap(true, Ordering::AcqRel) {
                     probe();
                 }

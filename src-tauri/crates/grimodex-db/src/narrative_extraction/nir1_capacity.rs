@@ -426,7 +426,7 @@ pub(crate) fn commit_transaction(conn: &mut Connection) -> anyhow::Result<()> {
     // Charge the one remaining callback before allowing durability. The
     // synchronous connection owner consumes this credit only in COMMIT's tail.
     // This is the only commit-hook owner in the crate.
-    conn.commit_hook(Some(move || {
+    let commit_gate = move || {
         if budgets
             .iter()
             .any(|active| active.check().is_err() || !active.budget.try_reserve_commit_step())
@@ -436,14 +436,15 @@ pub(crate) fn commit_transaction(conn: &mut Connection) -> anyhow::Result<()> {
         }
         gate_tail.store(true, Ordering::Relaxed);
         false
-    }))?;
+    };
+    crate::hook_registration::set_commit_hook(conn, Some(commit_gate))?;
     let mut scope = CommitScope {
         conn,
         tail,
         installed: true,
     };
     let result = scope.conn.execute_batch("COMMIT");
-    let cleanup = scope.conn.commit_hook(None::<fn() -> bool>);
+    let cleanup = crate::hook_registration::set_commit_hook(scope.conn, None::<fn() -> bool>);
     scope.tail.store(false, Ordering::Relaxed);
     scope.installed = false;
     if let Err(error) = cleanup {
@@ -468,7 +469,7 @@ impl Drop for CommitScope<'_> {
     fn drop(&mut self) {
         self.tail.store(false, Ordering::Relaxed);
         if self.installed {
-            let _ = self.conn.commit_hook(None::<fn() -> bool>);
+            let _ = crate::hook_registration::set_commit_hook(self.conn, None::<fn() -> bool>);
         }
     }
 }

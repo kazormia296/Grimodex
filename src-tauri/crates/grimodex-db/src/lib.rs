@@ -18,6 +18,9 @@ use std::sync::{
 use std::time::Duration;
 
 pub(crate) mod background_checkpoint;
+pub(crate) mod hook_registration;
+#[cfg(test)]
+mod hook_registration_sources_tests;
 pub(crate) mod scoped_tx;
 pub use scoped_tx::ScopedTransaction;
 pub(crate) mod narrative_maintenance_connection;
@@ -52,7 +55,7 @@ where
             conn, interval, handler,
         );
     }
-    conn.progress_handler(interval, handler)
+    hook_registration::set_progress_handler(conn, interval, handler)
 }
 
 /// Run a foreground maintenance command under the ordinary blocking

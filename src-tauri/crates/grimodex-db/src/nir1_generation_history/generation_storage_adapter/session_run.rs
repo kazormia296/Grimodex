@@ -375,9 +375,7 @@ impl<'reader, 'connection> ReadOnlyRun<'reader, 'connection> {
     fn enter(
         reader: &'reader mut GenerationHistorySnapshotReader<'connection>,
     ) -> Result<Self> {
-        reader
-            .connection_mut()
-            .authorizer(Some(allow_reads_only))
+        crate::hook_registration::set_authorizer(reader.connection_mut(), Some(allow_reads_only))
             .context("NIR1_GENERATION_HISTORY_READ_ONLY_GUARD")?;
         Ok(Self { reader })
     }
@@ -400,10 +398,10 @@ impl<'connection> std::ops::DerefMut for ReadOnlyRun<'_, 'connection> {
 impl Drop for ReadOnlyRun<'_, '_> {
     fn drop(&mut self) {
         // Not SQL: clearing the hook cannot be interrupted or refused.
-        let _ = self
-            .reader
-            .connection_mut()
-            .authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+        let _ = crate::hook_registration::set_authorizer(
+            self.reader.connection_mut(),
+            None::<fn(AuthContext<'_>) -> Authorization>,
+        );
     }
 }
 
