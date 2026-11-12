@@ -16,6 +16,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import { rootDir } from "./build.mjs";
 import { createChronicleExtractionJourney } from "./chronicle-extraction-product-journey.mjs";
+import { createChronicleEditedApplyJourney } from "./chronicle-edited-apply-product-journey.mjs";
 import {
   PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_CATALOG_DIGEST,
@@ -39,6 +40,7 @@ const IDS = PRODUCT_JOURNEY_CATALOG.map(({ id }) => id);
 const ARTIFACT_DIR_ENV = "GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR";
 const DIGEST_ENV = "GRIMODEX_PRODUCT_JOURNEY_CATALOG_DIGEST";
 const CHRONICLE_ID = "chronicle-extract-review-apply-reopen";
+const CHRONICLE_EDITED_ID = "chronicle-extract-edit-approve-apply-reopen";
 const REPORT_FIELDS = [
   "status",
   "catalogDigest",
@@ -55,7 +57,7 @@ const REPORT_FIELDS = [
 ];
 
 if (
-  IDS.length !== 34 ||
+  IDS.length !== 35 ||
   PRODUCT_JOURNEY_CATALOG.some(
     (entry) =>
       entry.required === false || entry.acceptanceRole === "diagnostic",
@@ -89,6 +91,7 @@ export const FIXED_PRODUCT_JOURNEY_SHARDS = Object.freeze([
   ]),
   Object.freeze([
     "chronicle-extract-review-apply-reopen",
+    "chronicle-extract-edit-approve-apply-reopen",
     "codex-entity-relation-review-apply-reopen",
     "c2-5b-schema-backfill-verify",
     "c2-5b-restore-verify-rebuild-verify",
@@ -125,7 +128,7 @@ if (
   FIXED_PRODUCT_JOURNEY_SHARDS.length !== 7 ||
   FIXED_PRODUCT_JOURNEY_SHARDS.some(
     (ids, index) =>
-      ids.length !== [6, 4, 2, 6, 5, 7, 4][index] ||
+      ids.length !== [6, 4, 2, 6, 6, 7, 4][index] ||
       !isDeepStrictEqual(
         ids,
         IDS.filter((id) => ids.includes(id)),
@@ -211,7 +214,12 @@ export async function runFixedProductJourneyShard({
             configureWorkspace,
             evidenceDirectory: artifactDirectory,
           })
-        : journey,
+        : journey.id === CHRONICLE_EDITED_ID
+          ? createChronicleEditedApplyJourney({
+              configureWorkspace,
+              evidenceDirectory: artifactDirectory,
+            })
+          : journey,
   );
   same(
     journeys.map(({ id }) => id),

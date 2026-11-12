@@ -19,6 +19,7 @@ import { createProductJourneyHarness } from "./product-journey-harness.mjs";
 import { launchProductJourneyMcpClient } from "./product-journey-mcp-client.mjs";
 import { createNativeRoundTripJourneys } from "./product-journey-native-roundtrips.mjs";
 import { createChronicleExtractionJourney } from "./chronicle-extraction-product-journey.mjs";
+import { createChronicleEditedApplyJourney } from "./chronicle-edited-apply-product-journey.mjs";
 import { createCodexEntityRelationReviewJourney } from "./codex-entity-relation-product-journey.mjs";
 import { createNir1SceneScopeProjectionJourney } from "./nir1-scene-scope-projection-product-journey.mjs";
 import { createNarrativeMaintenanceProductJourneys } from "./narrative-maintenance-product-journeys.mjs";
@@ -4311,6 +4312,10 @@ export const PRODUCT_JOURNEYS = [
   },
   ...NATIVE_ROUND_TRIP_JOURNEYS,
   createChronicleExtractionJourney({
+    configureWorkspace,
+    evidenceDirectory: path.dirname(resolveResultsPath()),
+  }),
+  createChronicleEditedApplyJourney({
     configureWorkspace,
     evidenceDirectory: path.dirname(resolveResultsPath()),
   }),
