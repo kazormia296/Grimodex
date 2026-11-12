@@ -437,3 +437,84 @@ rows の課金で DR-CQA-7 が見つけた「projects と query Scene の再読�
 | 終了の証拠 | 変えない |
 | error／timeout／onClosed の所有 | 変えない。新しい失敗の経路は足さない |
 | 保存される再開の状態 | 無い |
+
+### 変わる点
+
+- **1 場面あたりの共有読みの bytes（`preflight_project_reads` の課金。in-process の実 fixture の傾き、N=200 と 400 の差）**：
+
+  | 形（1 Revision） | 旧 | 新 | 比 |
+  |---|---:|---:|---:|
+  | bare（短い id、reader、folder 1） | 約 1,010 B | 約 486 B | 0.48 |
+  | UUID の id（場面・folder・note） | 約 1,134 B | 約 548 B | 0.48 |
+  | folder＋note＋character の principal＋UUID | 約 1,476 B | 約 703 B | 0.48 |
+
+  （固定分は約 1.05 KB から約 0.56 KB。4 Revision でも同じ傾き〔bare 約 489 B、UUID 約 549 B〕。値は `measure_the_shared_bytes`〔ignore〕で取り直せる）
+  半分より少し上なのは、読む列を足した分（binding の `version`・principal の Codex の `id`、query Scene の `version`、Epoch の `epoch_number`）と、registry の `version` を足した分。
+- **4 Revision（p4:300000）の peak の台帳の壁は 352 から 733 場面に動く**（in-process の二分探索。N は available、N＋1 は `query-worker-work-other-pre-cleanup-work-failed-other`＝台帳の拒否で、旧と同じ理由。
+  台帳 6,291,456 B のうち A2 の入力 約 949 KB×4 などの固定分が約 5.94 MB、残る約 0.356 MB を共有読みの bytes が使う：旧 1,010 B/場面で 352、新 486 B/場面で 733。式の予測〔約 700〕と合う）。
+  実 worker（lease を 10 s に上げた dev の binary。下の節）でも 733 は available、734 は同じ理由の拒否。
+- **1 Revision の行の壁（bare 978、folder＋note 632、character 491）は動かない**（行は変えていない。bytes の壁が後ろに退いただけ）。既存の床の試験が全件そのまま通る。
+- **bytes の壁（1 Revision で共有読みの bytes が 2 MiB に届く場面数。上の傾きと切片からの線形外挿）は後ろへ動く**：bare 約 2,076→約 4,314、UUID 約 1,848→約 3,826、folder＋note＋character＋UUID 約 1,421→約 2,983。
+  どの形でも行の壁（978／632／491）より後ろなので、今は行が先に当たる。bytes の壁は、行が少なく bytes が大きい形（長い JSON、大きい query Scene の content）で型付きの止めとして残る：
+  - 単体（`the_shared_bytes_are_refused_one_byte_over_the_preflight`）：query Scene の content で共有読みの bytes が `INPUT_BYTES`（2 MiB）ちょうどで通り、＋1 で `NIR1_GRAPH_DISCLOSURE_INPUT_LIMIT`。
+  - query 全体（`shared_bytes_over_the_preflight_refuse_the_whole_graph`）：共有読みの bytes 1 MiB で available、2 MiB＋1 で部分 Graph なしの unavailable。worker の frame の理由は `query-worker-work-other-pre-cleanup-work-failed-other`
+    （台帳の拒否と同じ `other`。bytes の拒否にも台帳の拒否にも固有の理由は無く、これまでと変わらない。設計 §3.3 の「型付き」はエラー文字列の意味で、frame の理由が個別に付くという意味ではない）。
+- **失敗の方向（時間）**：p4 で新しく通る 353〜733 場面は、これまで台帳の拒否（typed ではない `other`）で止まっていたが、**100 ms の期限に近い形**（p4 の 352 場面で worker 内 約 80〜85 ms〔DR-CQA-7〕）に新しく入る。
+  通る場面数が増える分、load によっては型付きの拒否が 100 ms の時間切れ（`NIR1_GRAPH_QUERY_DEADLINE_NO_TIMELY_FRAME`。どちらも部分 Graph を出さない unavailable）に置き換わりうる。
+  実際、実 worker（100 ms の lease のまま。loadavg 約 25 の時間帯）の p4 の 733・734 場面は両方とも時間切れだった（**時間は測っていない。load が高く、値として読まない**）。時間の対照は timing_plan に手順を書いた（`needs_timing`）。
+  steps の面では余裕がある（下の「steps」）。
+- **Revision ごとの 2 MiB の preflight（`INPUT_BYTES − shared_bytes`）が、同じだけ広がる**（共有読みが使う分が約半分になる）。1 Revision の own の bytes（A2 の payload 以外、decision など）が使える量が増える。
+- **worker でない経路（ordinary reader）**：`admit_transient_material_reserve` の見積り（`raw_bytes × TRANSIENT_JSON_MULTIPLIER ＋ rows × TRANSIENT_BYTES_PER_ROW`）の raw_bytes に共有読みの bytes が入るので、その見積りも約半分になる。
+  worker の経路は固定の arena が代わりをする（この見積りは使わない）。設計 §5.2 の C4（台帳が共有読みの実際の保持を数えず、raw の入力 bytes×2 で代用している会計の穴）は、代用の量が約半分になった分だけ広がる（実際の保持は約 1.5〜2 KB/場面、課金は約 0.49 KB/場面）。
+  worker の経路は physical な Q（下の実 worker の Q）で守られる。C4 の穴は変えず、記録を更新するだけ（台帳に足した項）。
+- **steps**（in-process、`measure_the_shared_preflight_steps`〔ignore〕。progress handler を 1 命令ごとに呼んだ回数）：binding の bytes の文が principal の Codex 行を主キーで引く join を持つので、共有 preflight は増える。
+
+  | 形 | 共有 preflight 旧 | 新 | query 全体（新。steps の上限を外して測定） | `QUERY_SQL_STEPS` 600,000 に対する比 |
+  |---|---:|---:|---:|---:|
+  | 1 Revision bare 978 場面 | 116,965 | 152,203（＋35,238） | 235,424 | 39% |
+  | p4 の 733 場面 | 87,810 | 114,228（＋26,418） | 219,578 | 37% |
+  | 1 Revision character 491 場面 | 63,882 | 85,484 | 140,456 | 23% |
+
+  binding 1 行あたり約 36 命令（2 つの JSON の検査と 2 回の主キーの seek。DR-CQA-7 の P の文と同じ join）。steps の上限には余裕がある。
+- **診断の slot・A3 の SQL の文の数**：変わらない（表は 8 行のまま。slot 10〜17）。
+
+### 期待値の変更
+
+| 場所 | 旧 → 新 |
+|---|---|
+| `nir1_graph/input.rs` `DISCLOSURE_GLOBAL_BYTES_SQL` の tree の文 | 8 列×2 → 6 列×1（`version`・`updated_at` を外し、乗数 2→1） |
+| 同 registry の文 | 乗数 0（`SHARED_REGISTRY_READS`＝2 で全体×2。`source_token` は実質×4、`version` なし）→ 乗数 1、`version`×2・`source_token`×2・その他×1 を文の中に書く |
+| 同 binding の文 | `scene_id` ほか 9 列×2 → `scene_id` ほか 10 列（`version` を足す）×1＋`kh.id`・`au.id`（`SCOPE_EXTENSION_BINDING_BYTES_SQL`。`scene_scope.rs`） |
+| 同 query Scene の文 | `version` を足す |
+| 同 Epoch の文 | `epoch_number` を足す |
+| `input.rs` `disclosure_tests` の fixture の schema | `narrative_scope_registries` と `narrative_scene_scope_bindings` に `version INTEGER` を足す（実 schema にある列。文が読むので要る） |
+| `nir1_graph/tests/cq_avail.rs` `a_query_loads_the_scene_bindings_in_one_statement`（authorizer の列挙） | `audience_json` 6→8、`knowledge_holder_json` 6→8、`project_id` 8→10（bytes の文が extension と同じ join を持つ）、`version` 1→2（bytes の文と extension の各 1。2 が「load は 1 回」の印。2 回 load すれば 3） |
+| 同 p4 の床 | 新しい試験。352（旧の数え方）／353、733／734（新）|
+| 1 Revision の床（`BARE_FLOOR_SCENES`＝978、632、491）・`Q512_SHARED_ROWS` ほか rows の値 | 変更なし |
+
+台帳（`nir1-c-query-acceptance-2026-10.md`）の bytes の乗数の記述（「tree×2、registry×2、binding×2」の bytes 側）と、上限の値は変わらないという注記を更新した。
+
+### やらないこと
+
+- 述語だけで読む列（`project_id`、`node_type` など、tree の全行の 36 B 等）を数える：既存の全ての文の定義と合わない。承認の範囲を超えて厳しくなる。
+- worker の frame の理由に bytes の拒否・台帳の拒否の個別の理由を付ける（契約の変更）。
+- C4（共有読みの実際の保持を台帳に足す）、D2、B（上限 2,048 の値）、100 ms の壁、主人公級の行の壁、S の修正、Q の枯渇：本 DR の外。
+- 時間の測定（他の lane が並行で cargo を回している間は値が崩れる）：手順だけを timing_plan に書いた。
+
+### 試験
+
+- **bytes の課金＝返す値の長さ（`input.rs` の `disclosure_tests`。列ごとに長さを変えた fixture）**：
+  - `shared_bytes_are_the_columns_each_read_returns_once_each`：tree（読まない `version`・`updated_at`・別 project の node を数えない）、registry（`version`・`source_token`×2）、binding（`version`、join が成り立つ principal の `id` だけ。location を指す ref は数えない）、projects、query Scene、POV、最新の Epoch（古い Epoch を数えない）の合計を、長さの違う literal で足した値と等しい。
+  - `shared_bytes_follow_exactly_the_columns_that_are_read`：読む列を 10 B 伸ばすと課金がちょうど 10 B（`source_token`・registry の `version` は 2 回読むので 2 倍）増え、読まない列（folder の `updated_at`・`version`・`content`、古い Epoch の `reason`）は不変。principal の ref が character の entry を指すと `id` の長さだけ増える。
+  - `the_shared_byte_statements_run_once_each`：bytes の表の乗数が全て 1。
+  - `the_shared_bytes_are_refused_one_byte_over_the_preflight`：2 MiB ちょうどと＋1。
+  - 既存の plan の試験（`a2_a3_plans_seek_the_seed_revision_without_table_scans_or_temp_sorts`）が新しい文を含めて通る（`TEMP B-TREE`・`AUTOMATIC` なし）。
+- **principal（`scene_scope_principal_rows_tests.rs`）**：bytes の文と extension が同じ join の文字列（macro）を持つ。extension の SELECT が返す 10 列の長さと、flag が 1 の join の `id`（＝ ref）の長さを Rust で足した値が、reader だけ・holder だけ・audience だけ・同じ character を両方・別の character・別 project や location を指す ref・数値の ref・不正な JSON・配列の各形で bytes の文と一致する。
+  character の principal は reader より `id` の長さと JSON の差だけ増える。plan は binding を project の index で、Codex を主キー（`sqlite_autoindex_codex_entries (id=?)`）で seek する。
+- **実 DB の oracle（`cq_avail.rs` の `shared_bytes_equal_what_the_reads_return_on_a_product_project`）**：folder・note・UUID の id・character の principal・POV・長い content の project で、課金が、statement ごとの返す値の長さを Rust で足した値（registry の 2 文、principal の Codex 行を binding 自身の JSON で決める、など）と等しい。
+  `Nir1ProjectReads::load` 1 回が SQLite に認可を求める（表, 列）の全てと回数を pin し、課金に無い列が述語だけであること（`project_id`、lookup の `id`・`node_type`、join の `type`、`context_mode`）と、binding の `version` を読む statement が 1 回（load 1 回）であることを示す。
+  旧の数え方（`with_legacy_shared_bytes`）より新しい課金が小さいことも断言する。
+- **床の N／N＋1（`cq_avail.rs`。理由のコードは完全一致）**：1 Revision の bare・folder＋note・character（978／632／491、`candidate-record-limit`。変更なし）、
+  4 Revision の新 733／734（`other`）と旧の数え方 352／353（`with_legacy_shared_bytes`。旧の数え方でも 352 になることが、動いたのは数え方だけだという根拠）。
+- **bytes の壁（query 全体）**：`shared_bytes_over_the_preflight_refuse_the_whole_graph`（1 MiB で available、2 MiB＋1 で部分 Graph なしの unavailable、理由は `other`）。
+- 測定用の ignore の試験：`measure_the_shared_bytes`（形ごとの bytes と 1 場面あたり）、`measure_the_floor`（`CQ_FLOOR_REVISIONS`、`CQ_FLOOR_SHAPE` に `uuid`、`CQ_FLOOR_LEGACY=1`）、`measure_the_shared_preflight_steps`（共有 preflight と query 全体の steps）。

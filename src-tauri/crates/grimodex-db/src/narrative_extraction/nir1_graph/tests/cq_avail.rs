@@ -2219,7 +2219,7 @@ impl SceneShape {
     /// The id of the `kind` (0 folder, 1 Scene, 2 note) numbered `number`.
     fn id(self, kind: u8, number: usize, short: String) -> String {
         if self.uuid_ids {
-            uuid::Uuid::from_u128((u128::from(kind) << 96) | number as u128 + 1).to_string()
+            uuid::Uuid::from_u128((u128::from(kind) << 96) | (number as u128 + 1)).to_string()
         } else {
             short
         }
@@ -3305,5 +3305,11 @@ fn measure_the_shared_preflight_steps() -> Result<()> {
              QUERY_SQL_STEPS {QUERY_SQL_STEPS}"
         );
         Ok(())
-    })
+    })?;
+    // the whole query, with the steps cap lifted, as the worker runs it
+    let (status, reason, total) = uncapped_steps(&fixture, "v00")?;
+    eprintln!(
+        "STEPS whole query at {scenes} Scenes: {total} VM steps ({status} {reason:?}); QUERY_SQL_STEPS {QUERY_SQL_STEPS}"
+    );
+    Ok(())
 }

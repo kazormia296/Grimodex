@@ -1572,7 +1572,6 @@ const DISCLOSURE_GLOBAL_BYTES_SQL: &[(&str, usize, DisclosureReads)] = &[
          FROM narrative_proposal_decisions d JOIN narrative_proposal_revisions r ON r.id=d.revision_id AND r.proposal_id=d.proposal_id WHERE r.id=?2) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::PerRevision),
 ];
 
-
 const DISCLOSURE_MATERIAL_BYTES_SQL: &[&str] = &[
     "WITH material AS (
          SELECT entity.value FROM narrative_proposal_revisions revision,
