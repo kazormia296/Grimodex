@@ -1199,9 +1199,9 @@ fn i_b_the_real_worker_answers_a_query_released_after_the_begins_commits() {
             .with_read_transaction(|conn| prepare_graph_index_build(conn, runtime, PROJECT_ID))
             .expect("B snapshot");
         authority
-            .with_conn(|conn| {
-                let tx = conn.unchecked_transaction()?;
-                publish_nir1_entity_relation_index_in_tx(&tx, runtime, snapshot)?;
+            .with_conn_mut(|conn| {
+                let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
+                publish_nir1_entity_relation_index_in_tx(&mut tx, runtime, snapshot)?;
                 tx.commit()?;
                 Ok(())
             })

@@ -538,7 +538,7 @@ pub(crate) fn sql_measurement_active() -> bool {
 }
 
 pub(crate) fn set_measured_progress_handler<F>(
-    conn: &Connection,
+    conn: &mut Connection,
     interval: i32,
     mut handler: Option<F>,
 ) -> rusqlite::Result<()>
@@ -1791,7 +1791,7 @@ fn owned_mode_operation<T, F>(
 ) -> Result<Option<T>>
 where
     F: FnOnce(
-        &Connection,
+        &mut Connection,
         &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
     ) -> Result<T>,
 {
@@ -1895,7 +1895,7 @@ fn measure_interruption_probe(
     phase: &'static str,
     kind: InterruptionProbeKind,
     point: InterruptionPoint,
-    operation: impl FnOnce(&Connection, &mut dyn GraphWorkControl) -> Result<()>,
+    operation: impl FnOnce(&mut Connection, &mut dyn GraphWorkControl) -> Result<()>,
 ) -> Result<CapacityInterruptionProbe> {
     let before = db.with_read_transaction(|conn| capture_restore_graph_binding(conn, project_id))?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -2055,9 +2055,9 @@ pub fn measure_capacity_interruptions(
                         None,
                         Arc::new(AtomicBool::new(false)),
                         |conn, control| {
-                            let tx = conn.unchecked_transaction()?;
+                            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
                             let snapshot = prepare_graph_index_build_with_control(
-                                &tx, &runtime, project_id, control,
+                                &mut tx, &runtime, project_id, control,
                             )?;
                             tx.commit()?;
                             Ok(snapshot)
@@ -2159,8 +2159,8 @@ fn cold_reopen_on_fresh_database(
         progress_callbacks,
         Arc::new(std::sync::atomic::AtomicBool::new(false)),
         |conn, control| {
-            let tx = conn.unchecked_transaction()?;
-            let result = cold_reopen_graph_index_with_control(&tx, project_id, control);
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            let result = cold_reopen_graph_index_with_control(&mut tx, project_id, control);
             match result {
                 Ok(value) => {
                     tx.commit()?;
@@ -2198,8 +2198,8 @@ fn prepare_and_publish_for_mode(
         progress_callbacks.as_ref().map(Arc::clone),
         Arc::clone(&stop),
         |conn, control| {
-            let tx = conn.unchecked_transaction()?;
-            let result = prepare_graph_index_build_with_control(&tx, &runtime, project_id, control);
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            let result = prepare_graph_index_build_with_control(&mut tx, &runtime, project_id, control);
             match result {
                 Ok(snapshot) => {
                     tx.commit()?;
@@ -2234,13 +2234,13 @@ fn prepare_and_publish_for_mode(
     let publish_started = Instant::now();
     let mut publish_transaction_ms = None;
     let published = match owned_mode_operation(db, progress_callbacks, stop, |conn, control| {
-        let tx = conn.unchecked_transaction()?;
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         let transaction_started = Instant::now();
         let transaction_result = match snapshot.capacity_shape_with_control(control) {
             Ok(capacity_shape) => {
                 shape = Some(capacity_shape);
                 let result = publish_nir1_entity_relation_index_in_tx_with_control(
-                    &tx, &runtime, snapshot, control,
+                    &mut tx, &runtime, snapshot, control,
                 );
                 match result {
                     Ok(binding) => match tx.commit() {
@@ -2358,7 +2358,7 @@ fn copy_database_state(source: &Path, destination: &Path) -> Result<()> {
 }
 
 fn verify_restored_graph(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     expected_generation: i64,
     control: &mut dyn GraphWorkControl,
@@ -2447,10 +2447,10 @@ fn run_real_restore_mode(
             "restore diagnostic pre-restore roster tuple count does not match Graph shape"
         );
         let stale_runtime = NirChronicleIndexRuntime::new(&live_db, 2);
-        let stale_snapshot = live_db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let stale_snapshot = live_db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let snapshot = prepare_graph_index_build_with_control(
-                &tx,
+                &mut tx,
                 &stale_runtime,
                 project_id,
                 &mut ForegroundValidationControl,
@@ -2572,8 +2572,8 @@ fn run_real_restore_mode(
             .iter()
             .map(|revision| revision.revision_id.clone())
             .collect::<Vec<_>>();
-        let restored_binding_check = restored_authority.db().with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let restored_binding_check = restored_authority.db().with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let metadata: Option<(i64, i64)> = tx
                 .query_row(
                     "SELECT generation, dirty_cache_flag
@@ -2585,7 +2585,7 @@ fn run_real_restore_mode(
                 .optional()?;
             let (persisted_generation, dirty_cache_flag) =
                 metadata.context("restored Graph metadata row is missing")?;
-            let binding = read_graph_binding(&tx, project_id)?;
+            let binding = read_graph_binding(&mut tx, project_id)?;
             let binding_persisted = !matches!(binding, BindingRead::Missing);
             let generation_preserved = matches!(
                 &binding,
@@ -2607,12 +2607,12 @@ fn run_real_restore_mode(
                 expected_generation
             );
             let source = read_eligibility_source_with_control(
-                &tx,
+                &mut tx,
                 project_id,
                 &mut ForegroundValidationControl,
             )?;
             let incomplete = !is_complete_registered_with_control(
-                &tx,
+                &mut tx,
                 project_id,
                 ENTITY_RELATION_INDEX_KEY,
                 &mut ForegroundValidationControl,
@@ -2726,9 +2726,9 @@ fn run_real_restore_mode(
             progress_callbacks.as_ref().map(Arc::clone),
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
             |conn, control| {
-                let tx = conn.unchecked_transaction()?;
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
                 let result = publish_nir1_entity_relation_index_in_tx_with_control(
-                    &tx,
+                    &mut tx,
                     &stale_runtime,
                     stale_snapshot,
                     control,
@@ -2905,8 +2905,8 @@ fn run_real_restore_mode(
             progress_callbacks.as_ref().map(Arc::clone),
             stop,
             |conn, control| {
-                let tx = conn.unchecked_transaction()?;
-                let result = verify_restored_graph(&tx, project_id, rebuilt_generation, control)?;
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+                let result = verify_restored_graph(&mut tx, project_id, rebuilt_generation, control)?;
                 tx.commit()?;
                 Ok(result)
             },
@@ -2983,9 +2983,9 @@ fn run_real_restore_mode(
                     None,
                     Arc::new(AtomicBool::new(false)),
                     |conn, control| {
-                        let tx = conn.unchecked_transaction()?;
+                        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
                         let snapshot = prepare_graph_index_build_with_control(
-                            &tx, &runtime, project_id, control,
+                            &mut tx, &runtime, project_id, control,
                         )?;
                         tx.commit()?;
                         Ok(snapshot)
@@ -3099,8 +3099,8 @@ fn run_mode_operation(
         CapacityDiagnosticMode::SourceReresolution => {
             let started = Instant::now();
             let operation = owned_mode_operation(&db, progress_callbacks, stop, |conn, control| {
-                let tx = conn.unchecked_transaction()?;
-                let source = read_eligibility_source_with_control(&tx, project_id, control)?;
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+                let source = read_eligibility_source_with_control(&mut tx, project_id, control)?;
                 let records = source.roster.len();
                 tx.commit()?;
                 Ok(records)
@@ -3125,9 +3125,9 @@ fn run_mode_operation(
                 let started = Instant::now();
                 let operation =
                     owned_mode_operation(&db, progress_callbacks, stop, |conn, control| {
-                        let tx = conn.unchecked_transaction()?;
+                        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
                         let complete = is_complete_registered_with_control(
-                            &tx,
+                            &mut tx,
                             project_id,
                             ENTITY_RELATION_INDEX_KEY,
                             control,
@@ -3136,14 +3136,14 @@ fn run_mode_operation(
                             complete,
                             "coverage Graph binding is not complete for the exact roster"
                         );
-                        let binding = match read_graph_binding(&tx, project_id)? {
+                        let binding = match read_graph_binding(&mut tx, project_id)? {
                             BindingRead::Registered(binding) => binding,
                             other => {
                                 anyhow::bail!("coverage Graph binding is not registered: {other:?}")
                             }
                         };
                         let (report, _) = verify_dependency_graph_snapshot_with_control(
-                            &tx, project_id, control,
+                            &mut tx, project_id, control,
                         )?;
                         let records = report_observation_count(&report)?;
                         tx.commit()?;
@@ -3176,9 +3176,9 @@ fn run_mode_operation(
                 let started = Instant::now();
                 let operation =
                     owned_mode_operation(&db, progress_callbacks, stop, |conn, control| {
-                        let tx = conn.unchecked_transaction()?;
+                        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
                         let complete = is_complete_registered_with_control(
-                            &tx,
+                            &mut tx,
                             project_id,
                             ENTITY_RELATION_INDEX_KEY,
                             control,
@@ -3226,8 +3226,8 @@ fn run_mode_operation(
             let started = Instant::now();
             let operation =
                 owned_mode_operation(&reopened_db, progress_callbacks, stop, |conn, control| {
-                    let tx = conn.unchecked_transaction()?;
-                    let result = cold_reopen_graph_index_with_control(&tx, project_id, control)?;
+                    let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+                    let result = cold_reopen_graph_index_with_control(&mut tx, project_id, control)?;
                     tx.commit()?;
                     Ok(result)
                 });
@@ -3305,8 +3305,8 @@ fn run_graph_lifecycle(
         Arc::clone(&stop),
         config.clone(),
         |conn, control| {
-            let tx = conn.unchecked_transaction()?;
-            let result = prepare_graph_index_build_with_control(&tx, &runtime, project_id, control);
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            let result = prepare_graph_index_build_with_control(&mut tx, &runtime, project_id, control);
             match result {
                 Ok(snapshot) => {
                     tx.commit()?;
@@ -3395,13 +3395,13 @@ fn run_graph_lifecycle(
         stop,
         config,
         |conn, control| {
-            let tx = conn.unchecked_transaction()?;
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let transaction_started = Instant::now();
             let transaction_result = match snapshot.capacity_shape_with_control(control) {
                 Ok(capacity_shape) => {
                     shape = Some(capacity_shape);
                     let result = publish_nir1_entity_relation_index_in_tx_with_control(
-                        &tx, &runtime, snapshot, control,
+                        &mut tx, &runtime, snapshot, control,
                     );
                     match result {
                         Ok(binding) => match tx.commit() {
@@ -3519,8 +3519,8 @@ fn run_graph_lifecycle(
             },
         ),
         |conn, control| {
-            let tx = conn.unchecked_transaction()?;
-            let result = cold_reopen_graph_index_with_control(&tx, project_id, control);
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            let result = cold_reopen_graph_index_with_control(&mut tx, project_id, control);
             match result {
                 Ok(value) => {
                     tx.commit()?;
@@ -3553,8 +3553,8 @@ fn run_graph_lifecycle(
             NarrativeMaintenanceGraphControlConfig::with_progress_callbacks,
         ),
         |conn, control| {
-            let tx = conn.unchecked_transaction()?;
-            let result = verify_dependency_graph_snapshot_with_control(&tx, project_id, control);
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            let result = verify_dependency_graph_snapshot_with_control(&mut tx, project_id, control);
             match result {
                 Ok((report, _digest)) => {
                     control
@@ -3687,12 +3687,12 @@ pub fn measure_capacity_mode(
     let disk_measurement = DiskMeasurement::start(database_path)?;
     let measurement = DiagnosticSqlMeasurement::start()?;
     let trace = Arc::clone(&measurement.0);
-    let conn = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+    let mut conn = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
         .with_context(|| format!("open diagnostic database {}", database_path.display()))?;
     let progress = Arc::new(ProgressCounter::default());
     let progress_for_hook = Arc::clone(&progress);
     crate::set_sqlite_progress_handler(
-        &conn,
+        &mut conn,
         PROGRESS_CADENCE_VM_STEPS,
         Some(move || {
             progress_for_hook.callbacks.fetch_add(1, Ordering::Relaxed);
@@ -4279,7 +4279,7 @@ mod tests {
 
     #[test]
     fn native_vm_steps_include_trigger_work_and_interrupted_sql() -> Result<()> {
-        fn run(conn: &Connection) -> Result<u64> {
+        fn run(conn: &mut Connection) -> Result<u64> {
             conn.execute_batch("CREATE TABLE input(value); CREATE TABLE audit(value);
                 CREATE TRIGGER audit_input AFTER INSERT ON input BEGIN
                   INSERT INTO audit VALUES(new.value); UPDATE audit SET value=value+1;
@@ -4292,11 +4292,11 @@ mod tests {
             }
             Ok(steps)
         }
-        let baseline = Connection::open_in_memory()?;
-        let expected = run(&baseline)?;
+        let mut baseline = Connection::open_in_memory()?;
+        let expected = run(&mut baseline)?;
         let measurement = DiagnosticSqlMeasurement::start()?;
-        let conn = Connection::open_in_memory()?;
-        run(&conn)?;
+        let mut conn = Connection::open_in_memory()?;
+        run(&mut conn)?;
         // Remove setup costs by comparing a fresh execution of the same
         // trigger-bearing statement to the untraced native status counter.
         conn.execute_batch("DELETE FROM input; DELETE FROM audit;")?;
@@ -4306,9 +4306,9 @@ mod tests {
         drop(insert);
         assert_eq!(measurement.0.statement_vm_steps.load(Ordering::Relaxed) - before, expected);
         let before = measurement.0.statement_vm_steps.load(Ordering::Relaxed);
-        crate::set_sqlite_progress_handler(&conn, 1000, Some(|| true))?;
+        crate::set_sqlite_progress_handler(&mut conn, 1000, Some(|| true))?;
         assert!(conn.execute_batch("WITH RECURSIVE t(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM t WHERE n<100000) SELECT sum(n) FROM t").is_err());
-        crate::set_sqlite_progress_handler(&conn, 0, None::<fn() -> bool>)?;
+        crate::set_sqlite_progress_handler(&mut conn, 0, None::<fn() -> bool>)?;
         assert!(measurement.0.statement_vm_steps.load(Ordering::Relaxed) > before);
         drop(conn);
         assert!(measurement.complete());
@@ -4322,7 +4322,7 @@ mod tests {
     #[test]
     fn vacuum_internal_vms_are_not_an_exact_profile_total() -> Result<()> {
         let measurement = DiagnosticSqlMeasurement::start()?;
-        let conn = Connection::open_in_memory()?;
+        let mut conn = Connection::open_in_memory()?;
         conn.execute_batch("CREATE TABLE input(value);
             WITH RECURSIVE t(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM t WHERE n<1000)
             INSERT INTO input SELECT n FROM t;")?;
@@ -4332,7 +4332,7 @@ mod tests {
         // Test-only cadence 1 observes the hidden VACUUM SQL too. This is not
         // used to multiply production callback counts into an SQL total.
         crate::set_sqlite_progress_handler(
-            &conn,
+            &mut conn,
             1,
             Some(move || {
                 observed.fetch_add(1, Ordering::Relaxed);
@@ -4340,7 +4340,7 @@ mod tests {
             }),
         )?;
         conn.execute("VACUUM INTO ?1", [":memory:"])?;
-        crate::set_sqlite_progress_handler(&conn, 0, None::<fn() -> bool>)?;
+        crate::set_sqlite_progress_handler(&mut conn, 0, None::<fn() -> bool>)?;
         let profiled = measurement.0.statement_vm_steps.load(Ordering::Relaxed) - before;
         assert!(profiled > 0);
         assert!(callbacks.load(Ordering::Relaxed) > profiled * 10,
@@ -4365,11 +4365,11 @@ mod tests {
     #[test]
     fn lifecycle_meter_survives_owner_removal_and_counts_rollback_cleanup() -> Result<()> {
         let measurement = DiagnosticSqlMeasurement::start()?;
-        let conn = Connection::open_in_memory()?;
+        let mut conn = Connection::open_in_memory()?;
         let owner_callbacks = Arc::new(AtomicU64::new(0));
         let owner = Arc::clone(&owner_callbacks);
         crate::set_sqlite_progress_handler(
-            &conn,
+            &mut conn,
             1000,
             Some(move || {
                 owner.fetch_add(1, Ordering::Relaxed);
@@ -4378,7 +4378,7 @@ mod tests {
         )?;
         conn.execute_batch("BEGIN; CREATE TABLE input(value); WITH RECURSIVE t(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM t WHERE n<2000) INSERT INTO input SELECT n FROM t;")?;
         assert!(owner_callbacks.load(Ordering::Relaxed) > 0);
-        crate::set_sqlite_progress_handler(&conn, 0, None::<fn() -> bool>)?;
+        crate::set_sqlite_progress_handler(&mut conn, 0, None::<fn() -> bool>)?;
         let before = measurement.0.all_progress_callbacks.load(Ordering::Relaxed);
         conn.execute_batch("ROLLBACK")?;
         assert!(conn.is_autocommit());

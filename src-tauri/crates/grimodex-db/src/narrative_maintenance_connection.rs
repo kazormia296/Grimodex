@@ -670,7 +670,7 @@ pub(crate) fn with_narrative_maintenance_graph_control<T, F>(
     operation: F,
 ) -> Result<Option<NarrativeMaintenanceConnectionResult<T>>>
 where
-    F: FnOnce(&Connection, &mut dyn GraphWorkControl) -> Result<T>,
+    F: FnOnce(&mut Connection, &mut dyn GraphWorkControl) -> Result<T>,
 {
     let db_ref = db;
     let hook_config = config.clone();
@@ -772,7 +772,7 @@ pub(crate) fn with_narrative_maintenance_connection<T, F>(
     operation: F,
 ) -> Result<Option<NarrativeMaintenanceConnectionResult<T>>>
 where
-    F: FnOnce(&Connection) -> Result<T>,
+    F: FnOnce(&mut Connection) -> Result<T>,
 {
     with_narrative_maintenance_connection_with_latch(
         db,
@@ -793,9 +793,9 @@ fn with_narrative_maintenance_connection_with_latch<T, F>(
     operation: F,
 ) -> Result<Option<NarrativeMaintenanceConnectionResult<T>>>
 where
-    F: FnOnce(&Connection) -> Result<T>,
+    F: FnOnce(&mut Connection) -> Result<T>,
 {
-    let conn = if foreground_maintenance_wait_active() {
+    let mut conn = if foreground_maintenance_wait_active() {
         // Foreground commands preserve the existing wait behavior.  The
         // caller has already announced its lifecycle ownership; waiting here
         // lets an in-flight Freshness/maintenance phase finish instead of
@@ -809,7 +809,7 @@ where
     };
     let result = match catch_unwind(AssertUnwindSafe(|| {
         with_narrative_maintenance_connection_scope_with_latch(
-            &conn,
+            &mut conn,
             Some(timeout),
             progress_interval,
             stop,
@@ -844,8 +844,8 @@ where
 /// its capacity budget is added, and its ordinary busy timeout is retained.
 pub(crate) fn with_capacity_connection<T>(
     db: &Database,
-    conn: &Connection,
-    operation: impl FnOnce(&Connection) -> Result<T>,
+    conn: &mut Connection,
+    operation: impl FnOnce(&mut Connection) -> Result<T>,
 ) -> Result<T> {
     let result = catch_unwind(AssertUnwindSafe(|| {
         with_narrative_maintenance_connection_scope_with_latch(
@@ -856,9 +856,7 @@ pub(crate) fn with_capacity_connection<T>(
             NarrativeMaintenanceGraphControlConfig::default(),
             None,
             |conn| {
-                crate::narrative_extraction::nir1_capacity::with_database_attempt(conn, || {
-                    operation(conn)
-                })
+                crate::narrative_extraction::nir1_capacity::with_database_attempt(conn, operation)
             },
         )
     }));
@@ -885,14 +883,14 @@ pub(crate) fn with_capacity_connection<T>(
 /// `with_narrative_maintenance_graph_control`.
 #[cfg(test)]
 pub(crate) fn with_narrative_maintenance_connection_scope<T, F>(
-    conn: &Connection,
+    conn: &mut Connection,
     timeout: Duration,
     progress_interval: i32,
     stop: Arc<AtomicBool>,
     operation: F,
 ) -> NarrativeMaintenanceConnectionResult<T>
 where
-    F: FnOnce(&Connection) -> Result<T>,
+    F: FnOnce(&mut Connection) -> Result<T>,
 {
     with_narrative_maintenance_connection_scope_with_latch(
         conn,
@@ -906,7 +904,7 @@ where
 }
 
 fn with_narrative_maintenance_connection_scope_with_latch<T, F>(
-    conn: &Connection,
+    conn: &mut Connection,
     timeout: Option<Duration>,
     progress_interval: i32,
     stop: Arc<AtomicBool>,
@@ -915,7 +913,7 @@ fn with_narrative_maintenance_connection_scope_with_latch<T, F>(
     operation: F,
 ) -> NarrativeMaintenanceConnectionResult<T>
 where
-    F: FnOnce(&Connection) -> Result<T>,
+    F: FnOnce(&mut Connection) -> Result<T>,
 {
     let (nested, _scope_guard) = enter_scope(conn);
 
@@ -949,7 +947,7 @@ where
 }
 
 fn run_outer_scope<T, F>(
-    conn: &Connection,
+    conn: &mut Connection,
     timeout: Option<Duration>,
     progress_interval: i32,
     stop: Arc<AtomicBool>,
@@ -958,7 +956,7 @@ fn run_outer_scope<T, F>(
     operation: F,
 ) -> NarrativeMaintenanceConnectionResult<T>
 where
-    F: FnOnce(&Connection) -> Result<T>,
+    F: FnOnce(&mut Connection) -> Result<T>,
 {
     let mut receipt = NarrativeMaintenanceConnectionReceipt::clean();
     let mut setup_error = None;
@@ -1219,7 +1217,7 @@ impl Database {
         operation: F,
     ) -> Result<T>
     where
-        F: FnOnce(&Connection) -> Result<T>,
+        F: FnOnce(&mut Connection) -> Result<T>,
     {
         self.with_participant_sql_scope_config(
             participant,
@@ -1236,7 +1234,7 @@ impl Database {
         operation: F,
     ) -> Result<T>
     where
-        F: FnOnce(&Connection) -> Result<T>,
+        F: FnOnce(&mut Connection) -> Result<T>,
     {
         self.with_participant_read_transaction_control(
             participant,
@@ -1259,7 +1257,7 @@ impl Database {
         operation: F,
     ) -> Result<Option<T>>
     where
-        F: FnOnce(&Connection) -> Result<T>,
+        F: FnOnce(&mut Connection) -> Result<T>,
     {
         self.participant_read_transaction_control_mode(
             participant,
@@ -1279,7 +1277,7 @@ impl Database {
         operation: F,
     ) -> Result<T>
     where
-        F: FnOnce(&Connection) -> Result<T>,
+        F: FnOnce(&mut Connection) -> Result<T>,
     {
         self.participant_read_transaction_control_mode(participant, control, false, operation)?
             .ok_or_else(|| anyhow!("participant read was skipped without a try acquisition"))
@@ -1293,7 +1291,7 @@ impl Database {
         operation: F,
     ) -> Result<Option<T>>
     where
-        F: FnOnce(&Connection) -> Result<T>,
+        F: FnOnce(&mut Connection) -> Result<T>,
     {
         let stop = control.stop;
         let deadline = control.deadline;
@@ -1312,8 +1310,8 @@ impl Database {
             try_only,
             move |conn| {
                 check_participant_sql_control(participant, &operation_stop, deadline)?;
-                let tx = conn.unchecked_transaction()?;
-                let value = match operation(&tx) {
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+                let value = match operation(&mut tx) {
                     Ok(value) => {
                         check_participant_sql_control(participant, &operation_stop, deadline)?;
                         value
@@ -1343,7 +1341,7 @@ impl Database {
         operation: F,
     ) -> Result<T>
     where
-        F: FnOnce(&Connection) -> Result<T>,
+        F: FnOnce(&mut Connection) -> Result<T>,
     {
         self.with_participant_read_transaction_bounded_in(
             participant,
@@ -1364,7 +1362,7 @@ impl Database {
         operation: F,
     ) -> Result<T>
     where
-        F: FnOnce(&Connection) -> Result<T>,
+        F: FnOnce(&mut Connection) -> Result<T>,
     {
         let config = NarrativeMaintenanceGraphControlConfig {
             deadline: Some(budget.deadline),
@@ -1390,11 +1388,11 @@ impl Database {
                     deadline: Some(budget.deadline),
                 };
                 checks.check()?;
-                let tx = conn.unchecked_transaction()?;
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
                 // Recheck after BEGIN, then after the complete bounded page
                 // callback, immediately before COMMIT, and after COMMIT.
                 checks.check()?;
-                let value = preserve_fenced_stop(operation(&tx), &checks)?;
+                let value = preserve_fenced_stop(operation(&mut tx), &checks)?;
                 tx.commit()?;
                 checks.check()?;
                 Ok(value)
@@ -1413,7 +1411,7 @@ impl Database {
         operation: F,
     ) -> Result<T>
     where
-        F: FnOnce(&Connection) -> Result<T>,
+        F: FnOnce(&mut Connection) -> Result<T>,
     {
         self.with_participant_immediate_transaction_bounded_in(
             participant,
@@ -1433,7 +1431,7 @@ impl Database {
         operation: F,
     ) -> Result<T>
     where
-        F: FnOnce(&Connection) -> Result<T>,
+        F: FnOnce(&mut Connection) -> Result<T>,
     {
         let config = NarrativeMaintenanceGraphControlConfig {
             deadline: Some(budget.deadline),
@@ -1486,7 +1484,7 @@ impl Database {
         operation: F,
     ) -> Result<T>
     where
-        F: FnOnce(&Connection) -> Result<T>,
+        F: FnOnce(&mut Connection) -> Result<T>,
     {
         self.with_participant_sql_scope_config_with_stop(
             participant,
@@ -1504,7 +1502,7 @@ impl Database {
         operation: F,
     ) -> Result<T>
     where
-        F: FnOnce(&Connection) -> Result<T>,
+        F: FnOnce(&mut Connection) -> Result<T>,
     {
         self.with_participant_sql_scope_fenced(
             participant,
@@ -1532,7 +1530,7 @@ impl Database {
         operation: F,
     ) -> Result<T>
     where
-        F: FnOnce(&Connection) -> Result<T>,
+        F: FnOnce(&mut Connection) -> Result<T>,
     {
         self.with_participant_sql_scope_fenced_mode(
             participant,
@@ -1566,7 +1564,7 @@ impl Database {
         operation: F,
     ) -> Result<Option<T>>
     where
-        F: FnOnce(&Connection) -> Result<T>,
+        F: FnOnce(&mut Connection) -> Result<T>,
     {
         let deadline = config.deadline;
         // A Pinned owner observes no stop: its hook receives a private flag
@@ -1597,7 +1595,7 @@ impl Database {
             }
             Ok(())
         };
-        let conn = if try_only {
+        let mut conn = if try_only {
             match self.try_lock_conn_with_check(Some(&mut check_acquisition))? {
                 Some(conn) => conn,
                 None => return Ok(None),
@@ -1614,7 +1612,7 @@ impl Database {
         });
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             with_narrative_maintenance_connection_scope_with_latch(
-                &conn,
+                &mut conn,
                 busy_timeout,
                 1_000,
                 hook_stop,
@@ -1779,7 +1777,7 @@ impl Database {
         operation: F,
     ) -> Result<T>
     where
-        F: FnOnce(&Connection) -> Result<T>,
+        F: FnOnce(&mut Connection) -> Result<T>,
     {
         self.with_participant_chronicle_reader_stoppable(
             participant,
@@ -1800,7 +1798,7 @@ impl Database {
         operation: F,
     ) -> Result<T>
     where
-        F: FnOnce(&Connection) -> Result<T>,
+        F: FnOnce(&mut Connection) -> Result<T>,
     {
         let operation_stop = Arc::clone(&stop);
         let generation = cancellation.clone();
@@ -1827,8 +1825,8 @@ impl Database {
             None,
             |conn| {
                 check()?;
-                let tx = conn.unchecked_transaction()?;
-                let value = match operation(&tx) {
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+                let value = match operation(&mut tx) {
                     Ok(value) => value,
                     Err(error) => {
                         // Prefer the typed stop over a SQLite error it caused.

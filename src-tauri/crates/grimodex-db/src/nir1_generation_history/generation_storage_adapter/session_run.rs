@@ -363,24 +363,46 @@ fn plan_attempt<C: FnMut() -> bool>(
 /// authorizer is installed (the renderer SQL policy installs its own only for
 /// its own call); the guard clears the authorizer when it ends, also when the
 /// run fails.
-struct ReadOnlyRun<'connection> {
-    connection: &'connection Connection,
+///
+/// The guard holds the reader exclusively (rusqlite 0.41 hooks take
+/// `&mut Connection`, DR-DBC-4) and derefs to it, so the run goes on through
+/// the guard and the authorizer is cleared when the guard drops.
+struct ReadOnlyRun<'reader, 'connection> {
+    reader: &'reader mut GenerationHistorySnapshotReader<'connection>,
 }
 
-impl<'connection> ReadOnlyRun<'connection> {
-    fn enter(connection: &'connection Connection) -> Result<Self> {
-        connection
+impl<'reader, 'connection> ReadOnlyRun<'reader, 'connection> {
+    fn enter(
+        reader: &'reader mut GenerationHistorySnapshotReader<'connection>,
+    ) -> Result<Self> {
+        reader
+            .connection_mut()
             .authorizer(Some(allow_reads_only))
             .context("NIR1_GENERATION_HISTORY_READ_ONLY_GUARD")?;
-        Ok(Self { connection })
+        Ok(Self { reader })
     }
 }
 
-impl Drop for ReadOnlyRun<'_> {
+impl<'connection> std::ops::Deref for ReadOnlyRun<'_, 'connection> {
+    type Target = GenerationHistorySnapshotReader<'connection>;
+
+    fn deref(&self) -> &Self::Target {
+        self.reader
+    }
+}
+
+impl<'connection> std::ops::DerefMut for ReadOnlyRun<'_, 'connection> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.reader
+    }
+}
+
+impl Drop for ReadOnlyRun<'_, '_> {
     fn drop(&mut self) {
         // Not SQL: clearing the hook cannot be interrupted or refused.
         let _ = self
-            .connection
+            .reader
+            .connection_mut()
             .authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
     }
 }
@@ -458,7 +480,8 @@ fn run_session_history<C: FnMut() -> bool>(
 ) -> Result<SessionHistoryOutcome> {
     // Whatever the run decides, it only reads (DR-HC1-24 (3)); the guard is
     // in force before the first poll of the owner.
-    let _read_only = ReadOnlyRun::enter(reader.authority_connection().connection())?;
+    let mut read_only = ReadOnlyRun::enter(reader)?;
+    let reader: &mut GenerationHistorySnapshotReader<'_> = &mut read_only;
     ensure_snapshot_not_cancelled(cancellation, cancelled)?;
     // A current context that cannot be compared excludes all history and the
     // turn goes on: no row is read and no budget is spent.
@@ -697,7 +720,7 @@ fn collect_materials(
 /// budget. DI-1b calls this form so that the context, the candidates and
 /// every qualification are read in one snapshot.
 pub(crate) fn reauthorize_session_history_in_tx<C: FnMut() -> bool>(
-    connection: &Connection,
+    connection: &mut Connection,
     cancellation: &GenerationHistorySnapshotCancellation,
     caller_budget: &mut GenerationHistoryReadBudget,
     request: &SessionHistoryRequest<'_>,
@@ -747,7 +770,7 @@ pub(crate) fn reauthorize_session_history<C: FnMut() -> bool>(
 /// reason and every other error stay errors, a busy or locked error included
 /// (this form waits for nothing: the transaction is already open).
 pub(crate) fn reauthorize_session_history_for_turn_in_tx<C: FnMut() -> bool>(
-    connection: &Connection,
+    connection: &mut Connection,
     cancellation: &GenerationHistorySnapshotCancellation,
     caller_budget: &mut GenerationHistoryReadBudget,
     request: &SessionHistoryRequest<'_>,

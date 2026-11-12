@@ -147,7 +147,7 @@ static LIVE_SCHEDULER_RECEIPT: OnceLock<Mutex<Option<LiveSchedulerReceipt>>> = O
 /// the DB-only cursor/run proof remains an `Incomplete` gate even when every
 /// durable row happens to be at the Feed head.
 pub fn inspect_workspace_cutover_readiness_with_liveness(
-    conn: &Connection,
+    conn: &mut Connection,
     evidence: Option<&SchedulerLivenessEvidence>,
 ) -> Result<CanonicalCutoverReadiness> {
     let durable = inspect_workspace_cutover_readiness(conn)?;
@@ -218,7 +218,7 @@ pub fn inspect_workspace_cutover_readiness_with_liveness(
 /// value.  The check and marker write occur under one immediate transaction;
 /// a blocked or malformed workspace cannot leave a partial activation.
 pub fn cut_over_workspace_freshness(
-    conn: &Connection,
+    conn: &mut Connection,
     evidence: &SchedulerLivenessEvidence,
 ) -> Result<CanonicalCutoverReceipt> {
     with_immediate_transaction(conn, |conn| {
@@ -1388,7 +1388,7 @@ mod tests {
     #[test]
     fn import_project_birth_rejects_a_canonical_event_with_mismatched_payload_target() {
         let db = migrated_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 Database::record_c2zc_cutover_marker(conn, "2026-08-25T00:00:00.000Z")?;
                 conn.execute(
@@ -1438,7 +1438,7 @@ mod tests {
     #[test]
     fn scan_publish_birth_requires_its_exact_canonical_event_payload() {
         let db = migrated_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 Database::record_c2zc_cutover_marker(conn, "2026-08-25T00:00:00.000Z")?;
                 conn.execute(

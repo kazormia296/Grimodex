@@ -761,7 +761,7 @@ fn keep_first_cleanup_error<T>(
 }
 
 fn restore_renderer_sql_policy(
-    conn: &Connection,
+    conn: &mut Connection,
     state: &RendererSqlPolicyState,
     reserved_project_setting_guard_requested: bool,
 ) -> anyhow::Result<()> {
@@ -831,13 +831,13 @@ fn untrusted_sql_needs_reserved_project_setting_guard(sql: &str) -> bool {
 }
 
 fn with_untrusted_sql_policy<T, F>(
-    conn: &Connection,
+    conn: &mut Connection,
     clock_accessor_cache: &ClockAccessorCache,
     reserved_project_setting_guard_requested: bool,
     operation: F,
 ) -> anyhow::Result<T>
 where
-    F: FnOnce(&Connection) -> anyhow::Result<T>,
+    F: FnOnce(&mut Connection) -> anyhow::Result<T>,
 {
     let state = RendererSqlPolicyState {
         sql_length_limit: conn.limit(Limit::SQLITE_LIMIT_SQL_LENGTH)?,
@@ -1097,7 +1097,7 @@ impl Database {
         origin: SqlOrigin,
     ) -> anyhow::Result<SqlExecutionResult> {
         let lock_started = Instant::now();
-        let conn = self.lock_conn()?;
+        let mut conn = self.lock_conn()?;
         let lock_wait_ms = lock_started.elapsed().as_millis();
 
         let sql_started = Instant::now();
@@ -1109,7 +1109,7 @@ impl Database {
                             untrusted_sql_needs_reserved_project_setting_guard(&statement.sql)
                         });
                     let result = with_untrusted_sql_policy(
-                        &conn,
+                        &mut conn,
                         &self.clock_accessor_cache,
                         reserved_project_setting_guard_requested,
                         |conn| Self::execute_batch_tx_with_conn(conn, statements),
@@ -1279,7 +1279,7 @@ impl Database {
             });
         }
 
-        let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+        let column_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
         let rows = stmt.query_map(params_from_iter(param_refs.iter()), |row| {
             let mut map = serde_json::Map::new();
             for (i, col_name) in column_names.iter().enumerate() {
@@ -1447,7 +1447,7 @@ impl Database {
         origin: SqlOrigin,
     ) -> anyhow::Result<SqlExecutionResult> {
         let lock_started = Instant::now();
-        let conn = self.lock_conn()?;
+        let mut conn = self.lock_conn()?;
         let lock_wait_ms = lock_started.elapsed().as_millis();
 
         let sql_started = Instant::now();
@@ -1457,7 +1457,7 @@ impl Database {
                     let reserved_project_setting_guard_requested =
                         untrusted_sql_needs_reserved_project_setting_guard(sql);
                     let result = with_untrusted_sql_policy(
-                        &conn,
+                        &mut conn,
                         &self.clock_accessor_cache,
                         reserved_project_setting_guard_requested,
                         |conn| Self::execute_with_conn_result(conn, sql, params, method),
@@ -1570,7 +1570,7 @@ mod tests {
     ) -> Vec<Option<String>> {
         let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let observed_for_authorizer = std::sync::Arc::clone(&observed);
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(Some(move |ctx: AuthContext<'_>| {
                 if matches!(&ctx.action, AuthAction::Delete { table_name }
                     if *table_name == "nir1_chat_input_captures")
@@ -1958,7 +1958,7 @@ mod tests {
         // accessor name from the SQL declaration.
         let capture_updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let capture_updates_for_auth = std::sync::Arc::clone(&capture_updates);
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(Some(move |ctx: AuthContext<'_>| {
                 if matches!(&ctx.action, AuthAction::Update { table_name, column_name }
                     if *table_name == "nir1_chat_input_captures" && *column_name == "state")

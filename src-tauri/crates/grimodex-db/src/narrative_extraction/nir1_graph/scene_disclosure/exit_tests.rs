@@ -484,7 +484,7 @@ fn f6_every_entry_point_refuses_a_connection_that_is_not_in_a_read_transaction()
 /// is what a participant's SQL budget does on the connection. `tripped` is set
 /// when it stopped one, so a checkpoint can tell it from a cancel.
 fn install_budget(
-    conn: &Connection,
+    conn: &mut Connection,
     allowed: u64,
     tripped: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -504,7 +504,7 @@ fn install_budget(
     );
 }
 
-fn remove_budget(conn: &Connection) {
+fn remove_budget(conn: &mut Connection) {
     let _ = conn.progress_handler(0, None::<fn() -> bool>);
 }
 

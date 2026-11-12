@@ -46,7 +46,7 @@ pub fn set_attention(
     db: &Database,
     request: SetAttentionRequest<'_>,
 ) -> anyhow::Result<AttentionWriteOutcome> {
-    db.with_conn(|conn| with_immediate_transaction(conn, |conn| set_attention_in_tx(conn, request)))
+    db.with_conn_mut(|conn| with_immediate_transaction(conn, |conn| set_attention_in_tx(conn, request)))
 }
 
 /// Transaction-owning wrapper over [`clear_attention_in_tx`]; see
@@ -59,7 +59,7 @@ pub fn clear_attention(
     request_id: &str,
     expected_version: i64,
 ) -> anyhow::Result<AttentionWriteOutcome> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             clear_attention_in_tx(
                 conn,

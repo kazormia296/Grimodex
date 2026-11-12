@@ -52,7 +52,7 @@ fn snapshot(f: &Fixture) -> NirQuerySnapshot {
 }
 
 fn validate(
-    conn: &Connection,
+    conn: &mut Connection,
     f: &Fixture,
     snapshot: &NirQuerySnapshot,
 ) -> Option<Arc<RetrievalQueryContext>> {
@@ -110,9 +110,9 @@ fn without_clock_bookkeeping(mut written: BTreeSet<String>) -> BTreeSet<String> 
 }
 
 fn recording_tables<T>(
-    conn: &Connection,
+    conn: &mut Connection,
     reads: bool,
-    body: impl FnOnce() -> T,
+    body: impl FnOnce(&mut Connection) -> T,
 ) -> (T, BTreeSet<String>) {
     let seen = Arc::new(Mutex::new(BTreeSet::new()));
     let sink = Arc::clone(&seen);
@@ -135,7 +135,7 @@ fn recording_tables<T>(
         Authorization::Allow
     }))
     .expect("install recorder");
-    let value = body();
+    let value = body(conn);
     conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .expect("remove recorder");
     conn.flush_prepared_statement_cache();
@@ -147,8 +147,8 @@ fn recording_tables<T>(
 fn nir1_premise_generic_audit_append_writes_only_audit_rows() {
     let f = published();
     let (result, written) =
-        f.db.with_conn(|conn| {
-            Ok(recording_tables(conn, false, || {
+        f.db.with_conn_mut(|conn| {
+            Ok(recording_tables(conn, false, |conn| {
                 crate::ai_audit::append_ai_audit_events_for_scope(
                     conn,
                     Some(f.project()),
@@ -181,7 +181,7 @@ fn nir1_premise_complete_check_and_query_context_never_read_audit_rows() {
     forget(&snapshot);
     let (context, read) =
         f.db.with_read_transaction(|conn| {
-            Ok(recording_tables(conn, true, || {
+            Ok(recording_tables(conn, true, |conn| {
                 validate(conn, &f, &snapshot)
             }))
         })
@@ -502,7 +502,7 @@ fn nir1_status_read_context_is_reused_across_audit_only_commits() {
     // The begin status read: it validates the proof and keeps its context.
     let (status, read_tables) =
         f.db.with_read_transaction(|conn| {
-            Ok(recording_tables(conn, true, || {
+            Ok(recording_tables(conn, true, |conn| {
                 read_chronicle_query_status(conn, &f.runtime, f.project(), &scene)
             }))
         })
@@ -534,11 +534,11 @@ fn nir1_status_read_keeps_no_context_in_a_write_transaction() {
     let snapshot = snapshot(&f);
     forget(&snapshot);
     let scene = scene(&f);
-    f.db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    f.db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         tx.execute_batch("CREATE TABLE inv_write_state (value INTEGER)")?;
         let NirQueryStatusRead::Available { .. } =
-            read_chronicle_query_status(&tx, &f.runtime, f.project(), &scene)?
+            read_chronicle_query_status(&mut tx, &f.runtime, f.project(), &scene)?
         else {
             panic!("status");
         };
@@ -559,7 +559,7 @@ fn nir1_status_read_keeps_no_context_in_a_write_transaction() {
 fn recording_writes<T>(db: &Database, body: impl FnOnce() -> T) -> (T, BTreeSet<String>) {
     let seen = Arc::new(Mutex::new(BTreeSet::new()));
     let sink = Arc::clone(&seen);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         conn.flush_prepared_statement_cache();
         conn.authorizer(Some(move |context: AuthContext<'_>| {
             if let AuthAction::Insert { table_name }
@@ -574,7 +574,7 @@ fn recording_writes<T>(db: &Database, body: impl FnOnce() -> T) -> (T, BTreeSet<
     })
     .expect("install recorder");
     let value = body();
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
         conn.flush_prepared_statement_cache();
         Ok(())
@@ -642,7 +642,7 @@ fn nir1_premise_whole_qualify_never_reads_audit_rows() {
     forget(&snapshot);
     let (qualified, read) =
         f.db.with_read_transaction(|conn| {
-            Ok(recording_tables(conn, true, || {
+            Ok(recording_tables(conn, true, |conn| {
                 qualify_chronicle_index_snapshot(conn, &f.runtime, &snapshot)
             }))
         })

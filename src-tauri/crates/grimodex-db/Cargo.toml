@@ -7,7 +7,7 @@ publish.workspace = true
 description = "Grimodex workspace DB layer shared by the Electron N-API backend, MCP server, and frozen Tauri compatibility shell"
 
 [dependencies]
-rusqlite = { version = "0.40", features = ["bundled", "hooks", "limits"] }
+rusqlite = { version = "0.41", features = ["bundled", "hooks", "limits"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.11"
@@ -101,7 +101,7 @@ path = "src/bin/nir1-c-query-linux-probe.rs"
 required-features = ["nir1-material-diagnostics"]
 
 [dev-dependencies]
-rusqlite = { version = "0.40", features = ["bundled", "backup", "functions"] }
+rusqlite = { version = "0.41", features = ["bundled", "backup", "functions"] }
 sha2 = "0.11"
 hex = "0.4"
 uuid = { version = "1", features = ["v4"] }

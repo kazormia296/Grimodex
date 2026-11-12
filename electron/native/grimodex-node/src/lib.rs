@@ -7102,7 +7102,7 @@ fn run_narrative_freshness_cycle_body(
     };
     let mut cutover_not_ready = false;
     if let Some(liveness_evidence) = &liveness_evidence {
-        let cutover_result = current_workspace.authority.db().with_conn(|conn| {
+        let cutover_result = current_workspace.authority.db().with_conn_mut(|conn| {
             narrative_extraction::cut_over_workspace_freshness(conn, liveness_evidence)
         });
         if let Err(error) = cutover_result {
@@ -16137,7 +16137,7 @@ impl Backend {
                         ))
                     })?
                     .id;
-                let plan = db.with_conn(|conn| {
+                let plan = db.with_conn_mut(|conn| {
                     narrative_extraction::seal_repair_plan(
                         conn,
                         &dto.project_id,

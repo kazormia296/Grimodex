@@ -135,7 +135,7 @@ pub(super) fn place(env: &Env, scene: &str) -> NarrativeSceneBodyDeclarationV1 {
 pub(super) fn place_in(env: &Env, project: &str, scene: &str) -> NarrativeSceneBodyDeclarationV1 {
     let workspace = GraphDisclosureWorkspace::from_snapshot(&env.snapshot());
     let parts = workspace.parts().expect("workspace values");
-    env.with_conn(|conn| {
+    env.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |tx| {
             let (incarnation, scope_token): (String, String) = tx.query_row(
                 "SELECT scene_incarnation_id, source_token FROM narrative_scene_scope_bindings
@@ -339,7 +339,7 @@ pub(super) fn counts() -> Vec<(&'static str, u64)> {
 /// While installed, every statement the closure rejects fails to prepare, so
 /// a scan that succeeds did not issue one.
 pub(super) fn restrict(env: &Env, deny: impl Fn(&AuthAction<'_>) -> bool + Send + 'static) {
-    env.with_conn(|conn| {
+    env.with_conn_mut(|conn| {
         conn.authorizer(Some(move |context: AuthContext<'_>| {
             if deny(&context.action) {
                 Authorization::Deny
@@ -352,7 +352,7 @@ pub(super) fn restrict(env: &Env, deny: impl Fn(&AuthAction<'_>) -> bool + Send 
 }
 
 pub(super) fn unrestrict(env: &Env) {
-    env.with_conn(|conn| {
+    env.with_conn_mut(|conn| {
         conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
         Ok(())
     });
@@ -1018,7 +1018,7 @@ fn a6_a_declaration_bound_to_another_workspace_or_locator_does_not_hold() {
     ] {
         let mut binding = other.binding.clone();
         change(&mut binding);
-        env.with_conn(|conn| {
+        env.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |tx| {
                 let declaration = NarrativeSceneBodyDeclarationV1::new(
                     Uuid::new_v4().to_string(),

@@ -450,7 +450,7 @@ fn generation(db: &Database) -> Result<Option<i64>> {
 }
 
 fn complete_registered(db: &Database) -> Result<bool> {
-    db.with_conn(|conn| is_complete_registered(conn, PROJECT, INDEX_KEY))
+    db.with_conn_mut(|conn| is_complete_registered(conn, PROJECT, INDEX_KEY))
 }
 
 fn graph_edge_states(db: &Database) -> Result<Vec<(String, String, String)>> {
@@ -805,7 +805,7 @@ fn closed_gate_reads_no_sql_and_refuses_forged_work_before_a_connection() -> Res
     let item = fixture.graph_item()?;
     let statements = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&statements);
-    fixture.db().with_conn(|conn| {
+    fixture.db().with_conn_mut(|conn| {
         conn.authorizer(Some(move |_: rusqlite::hooks::AuthContext<'_>| {
             counted.fetch_add(1, Ordering::SeqCst);
             rusqlite::hooks::Authorization::Allow
@@ -844,7 +844,7 @@ fn closed_gate_reads_no_sql_and_refuses_forged_work_before_a_connection() -> Res
         before,
         "closed gate executed SQL"
     );
-    fixture.db().with_conn(|conn| {
+    fixture.db().with_conn_mut(|conn| {
         conn.authorizer(
             None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>,
         )?;

@@ -654,7 +654,7 @@ where
 /// read from the same authority connection, so no caller-shaped epoch can be
 /// attached to the seed.
 pub(crate) fn initialize_application_freshness_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     application_id: &str,
     updated_at: &str,
@@ -688,7 +688,7 @@ fn run_serialized_cycle_with_control(
     mut control: Option<&mut dyn GraphWorkControl>,
 ) -> anyhow::Result<IncrementalFreshnessCycleOutcome> {
     check_cycle_control(&mut control, GraphWorkStage::Page)?;
-    let reservation = db.with_conn(|conn| {
+    let reservation = db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             reserve_or_resume_batch_in_tx(conn, freshness_hold_project_id)
         })
@@ -721,7 +721,7 @@ fn run_serialized_cycle_with_control(
     #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
     publish_race_for_test::fire(db);
 
-    let publish_result = db.with_conn(|conn| {
+    let publish_result = db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             publish_batch_in_tx_with_control(conn, &batch, &plan, &mut control)
         })
@@ -2574,7 +2574,7 @@ fn evaluate_batch_with_control(
         let source_state = if let Some(state) = source_states.get(&source_cache_key) {
             state.clone()
         } else {
-            let state = db.with_conn(|conn| {
+            let state = db.with_conn_mut(|conn| {
                 if let Some(control) = control.as_deref_mut() {
                     resolve_edge_source_state_with_control(
                         conn,
@@ -3193,7 +3193,7 @@ fn evaluate_v2_shadow<'a>(
 }
 
 fn renew_batch_lease(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<()> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             let lease_modifier = format!("+{TASK_LEASE_DURATION_SECS} seconds");
             let task_updated = conn.execute(
@@ -3291,7 +3291,7 @@ fn check_v2_declaration_inputs_in_tx(
 
 #[allow(dead_code)]
 fn publish_batch_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     batch: &ClaimedBatch,
     plan: &EvaluationPlan,
 ) -> anyhow::Result<Option<String>> {
@@ -3300,7 +3300,7 @@ fn publish_batch_in_tx(
 }
 
 fn publish_batch_in_tx_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     batch: &ClaimedBatch,
     plan: &EvaluationPlan,
     control: &mut Option<&mut dyn GraphWorkControl>,
@@ -3672,7 +3672,7 @@ fn requeue_after_failure(
     batch: &ClaimedBatch,
     error: &anyhow::Error,
 ) -> anyhow::Result<RequeueOutcome> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             let message = format!("{error:#}");
             let attempt_count: i64 = conn.query_row(
@@ -5321,7 +5321,7 @@ mod tests {
         ));
 
         let readiness = db
-            .with_conn(|conn| inspect_project_cutover_readiness(conn, PROJECT_ID))
+            .with_conn_mut(|conn| inspect_project_cutover_readiness(conn, PROJECT_ID))
             .expect("inspect current-Epoch readiness after idle checkpoint");
         assert_eq!(
             readiness.incremental_runtime.state,
@@ -5348,7 +5348,7 @@ mod tests {
         ));
 
         let readiness = db
-            .with_conn(|conn| inspect_project_cutover_readiness(conn, PROJECT_ID))
+            .with_conn_mut(|conn| inspect_project_cutover_readiness(conn, PROJECT_ID))
             .expect("inspect current-Epoch readiness after future lifecycle checkpoint");
         assert_eq!(
             readiness.incremental_runtime.state,
@@ -5387,7 +5387,7 @@ mod tests {
 
     fn reserve_claimed_idle_checkpoint(db: &Database) -> ClaimedBatch {
         let reservation = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| reserve_or_resume_batch_in_tx(conn, None))
             })
             .expect("reserve idle checkpoint for recovery fixture");
@@ -5490,7 +5490,7 @@ mod tests {
                     && summary.through_sequence_inclusive == 1
         ));
 
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let readiness = inspect_project_cutover_readiness(conn, PROJECT_ID)?;
             assert_eq!(
                 readiness.incremental_runtime.reasons,
@@ -5548,7 +5548,7 @@ mod tests {
             second,
             IncrementalFreshnessCycleOutcome::Processed(_)
         ));
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let mut rows = conn.prepare(
                 "SELECT attempt_number, status, completed_at, failure_code,
                         retry_disposition, policy_version, next_attempt_at
@@ -5593,6 +5593,7 @@ mod tests {
             assert_eq!(attempts[2].4, None);
             assert_eq!(attempts[2].5, None);
             assert_eq!(attempts[2].6, None);
+            drop(rows);
             let readiness = inspect_project_cutover_readiness(conn, PROJECT_ID)?;
             assert_eq!(
                 readiness.incremental_runtime.reasons,
@@ -5641,7 +5642,7 @@ mod tests {
             IncrementalFreshnessCycleOutcome::Processed(_)
         ));
 
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let mut rows = conn.prepare(
                 "SELECT attempt_number, status, started_at, completed_at, next_attempt_at
                    FROM narrative_extraction_attempts
@@ -5679,6 +5680,7 @@ mod tests {
                     "failed Attempt timestamps must be monotonic: {attempt:?}"
                 );
             }
+            drop(rows);
             let readiness = inspect_project_cutover_readiness(conn, PROJECT_ID)?;
             assert_eq!(
                 readiness.incremental_runtime.reasons,
@@ -6329,7 +6331,7 @@ mod tests {
             })
             .expect("mutate idle checkpoint publish authority");
             let error = db
-                .with_conn(|conn| {
+                .with_conn_mut(|conn| {
                     with_immediate_transaction(conn, |conn| {
                         publish_batch_in_tx(conn, &batch, &EvaluationPlan::empty())
                     })
@@ -6376,7 +6378,7 @@ mod tests {
 
     fn reserve_and_evaluate_batch(db: &Database) -> (ClaimedBatch, EvaluationPlan) {
         let reservation = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| reserve_or_resume_batch_in_tx(conn, None))
             })
             .expect("reserve deterministic Feed range");
@@ -7355,7 +7357,7 @@ mod tests {
         let db = fixture_db();
         lose_race_as_requeue(&db, MAX_ATTEMPTS_PER_BATCH - 1);
         let reservation = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| reserve_or_resume_batch_in_tx(conn, None))
             })
             .expect("resume the requeued range");
@@ -7602,7 +7604,7 @@ mod tests {
         .expect("mutate live Source after evaluation");
 
         let error = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
             })
             .expect_err("source CAS must reject a stale evaluation plan");
@@ -7893,7 +7895,7 @@ mod tests {
         .expect("redeclare Dependency Edge after evaluation");
 
         let error = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
             })
             .expect_err("edge CAS must reject a stale evaluation plan");
@@ -7933,7 +7935,7 @@ mod tests {
         .expect("redeclare the reserved Consumer Edge after evaluation");
 
         let error = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
             })
             .expect_err("unknown Consumer Edge CAS must reject a stale plan");
@@ -7957,7 +7959,7 @@ mod tests {
         );
 
         let drift = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
             })
             .expect("a new affected V2 head is drift, not a V1 failure")
@@ -8000,7 +8002,7 @@ mod tests {
         );
 
         let drift = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
             })
             .expect("a changed affected V2 head is drift, not a V1 failure")
@@ -8035,7 +8037,7 @@ mod tests {
         seed_component_shadow_head(&db, PROJECT_ID, CONSUMER_RUN_ID, 0, 1);
 
         let drift = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
             })
             .expect("a new project-wide V2 head is drift, not a V1 failure")
@@ -8067,7 +8069,7 @@ mod tests {
         seed_component_shadow_head(&db, PROJECT_ID, CONSUMER_RUN_ID, 1, 2);
 
         let drift = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
             })
             .expect("a changed project-wide V2 head is drift, not a V1 failure")
@@ -8106,7 +8108,7 @@ mod tests {
         seed_component_shadow_head(&db, "unrelated-project", "unrelated-consumer", 0, 1);
 
         let drift = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
             })
             .expect("unrelated project V2 head must stay outside the global project guard");
@@ -8139,7 +8141,7 @@ mod tests {
         );
 
         let drift = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
             })
             .expect("unrelated V2 head must stay outside the bounded publication guard");
@@ -8784,7 +8786,7 @@ mod tests {
 
         /// Fail every write of `user_version`, as an interrupted stamp would.
         fn deny_user_version_stamp(db: &Database) {
-            db.with_conn(|conn| {
+            db.with_conn_mut(|conn| {
                 conn.authorizer(Some(
                     |context: rusqlite::hooks::AuthContext<'_>| match context.action {
                         rusqlite::hooks::AuthAction::Pragma {
@@ -8800,7 +8802,7 @@ mod tests {
         }
 
         fn allow_everything(db: &Database) {
-            db.with_conn(|conn| {
+            db.with_conn_mut(|conn| {
                 conn.authorizer(None::<
                     fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization,
                 >)?;

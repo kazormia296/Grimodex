@@ -658,7 +658,7 @@ fn occ_rejects_each_changed_component() {
     );
     changed_between_preview_and_write(
         |env| {
-            env.with_conn(|conn| {
+            env.with_conn_mut(|conn| {
                 crate::narrative_extraction::task_leases::with_immediate_transaction(conn, |tx| {
                     let declaration = super::test_support::test_declaration(tx, PROJECT, SCENE)?;
                     super::test_support::set_scene_body_declaration_for_test(tx, &declaration)

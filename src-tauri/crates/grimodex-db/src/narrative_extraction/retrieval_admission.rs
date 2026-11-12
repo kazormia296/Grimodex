@@ -34,7 +34,7 @@ fn digest(bytes: &[u8]) -> String {
 /// The caller owns one SQLite read transaction. This returns no Index, runtime,
 /// renderer or navigation capability. SQL/I/O failures remain errors.
 pub fn read_revision_retrieval_eligibility(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     revision_id: &str,
     query_scene_id: &str,

@@ -677,7 +677,7 @@ pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization(
     request: CreateHumanDerivedRevisionRequest,
     derivation_kind: HumanMaterialDerivationKind,
 ) -> anyhow::Result<Value> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
             create_human_derived_revision_with_c2b_projection_materialization_in_tx(
@@ -714,7 +714,7 @@ impl SealedRunDocuments<'_> {
 }
 
 pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     trusted_project_id: &str,
     request: &CreateHumanDerivedRevisionRequest,
     requested_kind: Option<HumanMaterialDerivationKind>,
@@ -889,7 +889,7 @@ pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization_
     trusted_project_id: &str,
     request: CreateHumanDerivedRevisionRequest,
 ) -> anyhow::Result<Value> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
             create_human_derived_revision_with_c2b_projection_materialization_in_tx(

@@ -66,7 +66,7 @@ fn snapshot(f: &Fixture, scene: &str) -> NirQuerySnapshot {
 }
 
 /// The validation every IR read runs (qualify, the title read, `current_operation`).
-fn validate(conn: &Connection, f: &Fixture, snapshot: &NirQuerySnapshot) -> Option<Context> {
+fn validate(conn: &mut Connection, f: &Fixture, snapshot: &NirQuerySnapshot) -> Option<Context> {
     let mut control = super::super::super::source_revision::ForegroundValidationControl;
     validate_binding_with_control(
         conn,
@@ -298,11 +298,11 @@ fn nir1_any_change_of_the_read_identity_takes_a_fresh_query_context() {
         let (before, _) = read(&f, &snapshot);
         assert!(before.is_some(), "{name}: current before");
         let identity =
-            f.db.with_read_transaction(ReadIdentity::read)
+            f.db.with_read_transaction(|conn| ReadIdentity::read(conn))
                 .expect("identity");
         change(&f);
         let after_identity =
-            f.db.with_read_transaction(ReadIdentity::read)
+            f.db.with_read_transaction(|conn| ReadIdentity::read(conn))
                 .expect("identity");
         assert_ne!(identity, after_identity, "{name}: the identity moved");
         let (after, _) = read(&f, &snapshot);
@@ -330,10 +330,10 @@ fn nir1_write_transaction_keeps_no_query_context() {
     let snapshot = snapshot(&f, s2(&f));
     let (before, _) = read(&f, &snapshot);
     let in_write =
-        f.db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        f.db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             tx.execute("INSERT INTO inv_unrelated_rows VALUES (4)", [])?;
-            let context = validate(&tx, &f, &snapshot);
+            let context = validate(&mut tx, &f, &snapshot);
             tx.rollback()?;
             Ok(context)
         })
@@ -590,7 +590,7 @@ fn nir1_query_contexts_of_an_older_state_are_dropped() {
     let (after, _) = read(&f, &first);
     assert!(after.is_some());
     let current =
-        f.db.with_read_transaction(ReadIdentity::read)
+        f.db.with_read_transaction(|conn| ReadIdentity::read(conn))
             .expect("identity");
     let entries = kept_contexts(&first);
     assert_eq!(entries.len(), 1, "the older state's entries are gone");
@@ -607,7 +607,7 @@ fn nir1_query_context_reuse_is_bounded() {
     let (warm, _) = read(&f, &snapshot);
     let warm = warm.expect("current");
     let identity =
-        f.db.with_read_transaction(ReadIdentity::read)
+        f.db.with_read_transaction(|conn| ReadIdentity::read(conn))
             .expect("identity")
             .expect("read state");
     {
@@ -726,15 +726,16 @@ fn nir1_identity_moved_during_the_complete_check_is_not_returned() {
     let snapshot = snapshot(&f, s2(&f));
     *snapshot.proof.validated_read.lock().expect("proof cache") = None;
     let observed =
-        f.db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        f.db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let _ = ReadIdentity::read(&tx)?.expect("a Read transaction at the start");
+            let writer = crate::test_support::same_handle_writer(&tx);
             let mut control = WriteDuringCheck {
-                conn: &tx,
+                conn: &writer,
                 calls: 0,
             };
             let observed = super::super::canonical::proof_current_observed(
-                &tx,
+                &mut tx,
                 &f.runtime,
                 &snapshot.proof,
                 &mut control,

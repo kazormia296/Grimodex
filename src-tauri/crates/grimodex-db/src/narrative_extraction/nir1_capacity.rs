@@ -12,7 +12,7 @@ pub(crate) const SQL_PROGRESS_LIMIT: u64 = 600_000_000;
 pub(crate) const DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
 
 pub(crate) const AUDITED_SQLITE_SOURCE_ID: &str =
-    "2026-06-03 19:12:13 d6e03d8c777cfa2d35e3b60d8ec3e0187f3e9f99d8e2ee9cac695fd6fcdf1a24";
+    "2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76";
 use super::nir1_entity_relation_index::{GraphProgressCallback, GraphWorkControl, GraphWorkStage};
 use super::source_revision::{validation_terminated, ValidationTerminationReason};
 use rusqlite::Connection;
@@ -246,7 +246,7 @@ pub(crate) fn parse_json_with_active_work<T: serde::de::DeserializeOwned>(
     result.map_err(Into::into)
 }
 
-fn install(conn: &Connection, state: SharedProgress) -> rusqlite::Result<()> {
+fn install(conn: &mut Connection, state: SharedProgress) -> rusqlite::Result<()> {
     let (owner, budgets, reserved_commit_tail) = {
         let state = state.lock().unwrap_or_else(|e| e.into_inner());
         (
@@ -295,7 +295,7 @@ fn install(conn: &Connection, state: SharedProgress) -> rusqlite::Result<()> {
 }
 
 pub(crate) fn set_progress_owner<F>(
-    conn: &Connection,
+    conn: &mut Connection,
     interval: i32,
     callback: Option<F>,
 ) -> rusqlite::Result<()>
@@ -318,7 +318,7 @@ where
 /// multiplexed at the smaller cadence and the prior callback is retained for
 /// restoration after the nested scope completes.
 pub(crate) fn push_progress_owner<F>(
-    conn: &Connection,
+    conn: &mut Connection,
     interval: i32,
     callback: F,
 ) -> rusqlite::Result<ProgressOwnerRestore>
@@ -388,11 +388,11 @@ where
 impl ProgressOwnerRestore {
     /// Disable SQLite's callback for rollback without removing the registered
     /// outer owner; `restore` reinstalls that owner before any later SQL runs.
-    pub(crate) fn clear_for_cleanup(&self, conn: &Connection) -> rusqlite::Result<()> {
+    pub(crate) fn clear_for_cleanup(&self, conn: &mut Connection) -> rusqlite::Result<()> {
         crate::install_sqlite_progress_handler(conn, 0, None::<fn() -> bool>)
     }
 
-    pub(crate) fn restore(mut self, conn: &Connection) -> rusqlite::Result<()> {
+    pub(crate) fn restore(mut self, conn: &mut Connection) -> rusqlite::Result<()> {
         let previous = self.previous.take();
         self.state
             .lock()
@@ -408,7 +408,7 @@ impl ProgressOwnerRestore {
 /// commit hook, after any FTS xSync SQL and before any durable commit. FTS
 /// xCommit is a no-op. This applies ONLY to this literal COMMIT statement.
 /// All terminal DML, preparation, xSync and the final count remain charged.
-pub(crate) fn commit_transaction(conn: &Connection) -> anyhow::Result<()> {
+pub(crate) fn commit_transaction(conn: &mut Connection) -> anyhow::Result<()> {
     let state = state_for(conn);
     let (budgets, tail) = {
         let state = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -442,8 +442,8 @@ pub(crate) fn commit_transaction(conn: &Connection) -> anyhow::Result<()> {
         tail,
         installed: true,
     };
-    let result = conn.execute_batch("COMMIT");
-    let cleanup = conn.commit_hook(None::<fn() -> bool>);
+    let result = scope.conn.execute_batch("COMMIT");
+    let cleanup = scope.conn.commit_hook(None::<fn() -> bool>);
     scope.tail.store(false, Ordering::Relaxed);
     scope.installed = false;
     if let Err(error) = cleanup {
@@ -459,7 +459,7 @@ pub(crate) fn commit_transaction(conn: &Connection) -> anyhow::Result<()> {
 }
 
 struct CommitScope<'conn> {
-    conn: &'conn Connection,
+    conn: &'conn mut Connection,
     tail: Arc<AtomicBool>,
     installed: bool,
 }
@@ -474,7 +474,7 @@ impl Drop for CommitScope<'_> {
 }
 
 struct BudgetScope<'conn> {
-    conn: &'conn Connection,
+    conn: &'conn mut Connection,
     state: SharedProgress,
     budget: Arc<CapacityBudget>,
     inserted: bool,
@@ -490,7 +490,7 @@ impl Drop for BudgetScope<'_> {
                 .retain(|budget| !Arc::ptr_eq(&budget.budget, &self.budget));
             // The enclosing owner still owns transaction cleanup and any
             // quarantine. Explicit finish below reports reinstallation errors.
-            let _ = install(self.conn, Arc::clone(&self.state));
+            let _ = install(&mut *self.conn, Arc::clone(&self.state));
         }
     }
 }
@@ -530,10 +530,14 @@ impl GraphWorkControl for CapacityControl<'_> {
 }
 
 pub(crate) fn with_capacity_scope<T>(
-    conn: &Connection,
+    conn: &mut Connection,
     requested: Option<Arc<CapacityBudget>>,
     owner: &mut dyn GraphWorkControl,
-    operation: impl FnOnce(&Arc<CapacityBudget>, &mut dyn GraphWorkControl) -> anyhow::Result<T>,
+    operation: impl FnOnce(
+        &mut Connection,
+        &Arc<CapacityBudget>,
+        &mut dyn GraphWorkControl,
+    ) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
     // A different interpreter must be audited before treating cadence-one
     // progress observations as a conservative successful-work SQL budget.
@@ -575,7 +579,7 @@ pub(crate) fn with_capacity_scope<T>(
         budget,
         inserted,
     };
-    install(conn, Arc::clone(&scope.state))?;
+    install(&mut *scope.conn, Arc::clone(&scope.state))?;
     let budgets = scope
         .state
         .lock()
@@ -585,7 +589,7 @@ pub(crate) fn with_capacity_scope<T>(
     let mut control = CapacityControl { owner, budgets };
     let mut result = control
         .check(GraphWorkStage::Page)
-        .and_then(|_| operation(&scope.budget, &mut control));
+        .and_then(|_| operation(&mut *scope.conn, &scope.budget, &mut control));
     if result.is_err() {
         if let Err(owner) = control.owner.check(GraphWorkStage::ResultAssembly) {
             result = Err(owner);
@@ -600,7 +604,7 @@ pub(crate) fn with_capacity_scope<T>(
             .retain(|budget| !Arc::ptr_eq(&budget.budget, &scope.budget));
         scope.inserted = false;
     }
-    let cleanup = install(conn, Arc::clone(&scope.state));
+    let cleanup = install(&mut *scope.conn, Arc::clone(&scope.state));
     // Preserve an owner-selected stop reason. Convert SQLITE_INTERRUPT to
     // the resource failure that triggered it, but never turn an already
     // committed success into a late deadline failure.
@@ -785,15 +789,15 @@ pub(crate) fn without_attempt<T>(operation: impl FnOnce() -> T) -> T {
 }
 
 pub(crate) fn with_current_attempt<T>(
-    conn: &Connection,
+    conn: &mut Connection,
     owner: &mut dyn GraphWorkControl,
-    operation: impl FnOnce(&mut dyn GraphWorkControl) -> anyhow::Result<T>,
+    operation: impl FnOnce(&mut Connection, &mut dyn GraphWorkControl) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
     match current_attempt() {
-        Some(budget) => {
-            with_capacity_scope(conn, Some(budget), owner, |_, control| operation(control))
-        }
-        None => operation(owner),
+        Some(budget) => with_capacity_scope(conn, Some(budget), owner, |conn, _, control| {
+            operation(conn, control)
+        }),
+        None => operation(conn, owner),
     }
 }
 #[cfg(test)]
@@ -802,6 +806,59 @@ mod tests {
     use crate::narrative_extraction::source_revision::ForegroundValidationControl;
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
+
+    /// The audited interpreter's COMMIT program and callback order (DR-DBC-4).
+    /// `commit_transaction` reserves the last progress count at the commit hook
+    /// because, in the audited source, `Goto` drains two cadence-one callbacks
+    /// and `AutoCommit` runs the commit hook (inside `sqlite3VdbeHalt`) before
+    /// `vdbe_return` delivers the third. A different SQLite source ID passes
+    /// this test only if the order is unchanged; this pins it empirically on
+    /// top of the source-ID check.
+    #[test]
+    fn audited_sqlite_commit_program_and_callback_order() {
+        use std::sync::atomic::AtomicU64;
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t(x)").unwrap();
+
+        let opcodes: Vec<String> = conn
+            .prepare("EXPLAIN COMMIT")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        // Address order: Init (0) jumps to Goto (3), which jumps to AutoCommit (1),
+        // which falls through to Halt (2): the audited Init -> Goto -> AutoCommit.
+        assert_eq!(opcodes, ["Init", "AutoCommit", "Halt", "Goto"]);
+
+        let callbacks = Arc::new(AtomicU64::new(0));
+        let at_commit_hook = Arc::new(AtomicU64::new(u64::MAX));
+        let counted = Arc::clone(&callbacks);
+        conn.progress_handler(
+            1,
+            Some(move || {
+                counted.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )
+        .unwrap();
+        let seen = Arc::clone(&callbacks);
+        let recorded = Arc::clone(&at_commit_hook);
+        conn.commit_hook(Some(move || {
+            recorded.store(seen.load(Ordering::Relaxed), Ordering::Relaxed);
+            false
+        }))
+        .unwrap();
+        conn.execute_batch("BEGIN").unwrap();
+        conn.execute_batch("INSERT INTO t VALUES (1)").unwrap();
+        callbacks.store(0, Ordering::Relaxed);
+        conn.execute_batch("COMMIT").unwrap();
+        conn.commit_hook(None::<fn() -> bool>).unwrap();
+        conn.progress_handler(0, None::<fn() -> bool>).unwrap();
+        assert_eq!(at_commit_hook.load(Ordering::Relaxed), 2);
+        assert_eq!(callbacks.load(Ordering::Relaxed), 3);
+    }
 
     #[test]
     fn commit_tail_step_reservation_is_bounded_and_does_not_wrap() {
@@ -818,13 +875,13 @@ mod tests {
 
     #[test]
     fn json_checks_existing_owner_inside_long_strings_without_replacing_hook() {
-        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let stopped = Arc::new(AtomicBool::new(true));
         let observed = Arc::clone(&calls);
         let signal = Arc::clone(&stopped);
         set_progress_owner(
-            &conn,
+            &mut conn,
             1,
             Some(move || {
                 let count = observed.fetch_add(1, Ordering::Relaxed) + 1;
@@ -852,7 +909,7 @@ mod tests {
                 .len(),
             32 * 1024
         );
-        set_progress_owner(&conn, 0, None::<fn() -> bool>).unwrap();
+        set_progress_owner(&mut conn, 0, None::<fn() -> bool>).unwrap();
     }
 
     #[test]
@@ -877,12 +934,12 @@ mod tests {
 
     #[test]
     fn nested_progress_owner_composes_and_restores_the_prior_owner() {
-        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
         let prior_calls = Arc::new(AtomicUsize::new(0));
         let nested_calls = Arc::new(AtomicUsize::new(0));
         let prior_observed = Arc::clone(&prior_calls);
         set_progress_owner(
-            &conn,
+            &mut conn,
             1,
             Some(move || {
                 prior_observed.fetch_add(1, Ordering::Relaxed);
@@ -891,7 +948,7 @@ mod tests {
         )
         .unwrap();
         let nested_observed = Arc::clone(&nested_calls);
-        let scope = push_progress_owner(&conn, 1, move || {
+        let scope = push_progress_owner(&mut conn, 1, move || {
             nested_observed.fetch_add(1, Ordering::Relaxed);
             false
         })
@@ -902,7 +959,7 @@ mod tests {
         conn.execute_batch(probe).unwrap();
         assert!(prior_calls.load(Ordering::Relaxed) > 0);
         assert!(nested_calls.load(Ordering::Relaxed) > 0);
-        scope.restore(&conn).unwrap();
+        scope.restore(&mut conn).unwrap();
         let prior_before_restore_probe = prior_calls.load(Ordering::Relaxed);
         let nested_before_restore_probe = nested_calls.load(Ordering::Relaxed);
         conn.execute_batch(probe).unwrap();
@@ -911,19 +968,19 @@ mod tests {
             nested_calls.load(Ordering::Relaxed),
             nested_before_restore_probe
         );
-        set_progress_owner(&conn, 0, None::<fn() -> bool>).unwrap();
+        set_progress_owner(&mut conn, 0, None::<fn() -> bool>).unwrap();
     }
 
     const INSERT: &str = "WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<?1) INSERT INTO bounded SELECT n FROM x";
 
     fn run_sql(limit: u64, rows: usize, padding_selects: usize) -> (u64, bool) {
-        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE bounded(n INTEGER)")
             .unwrap();
         let owner_calls = Arc::new(AtomicUsize::new(0));
         let calls = Arc::clone(&owner_calls);
         crate::set_sqlite_progress_handler(
-            &conn,
+            &mut conn,
             11,
             Some(move || {
                 calls.fetch_add(1, Ordering::Relaxed);
@@ -933,12 +990,12 @@ mod tests {
         .unwrap();
         let deadline = Instant::now() + Duration::from_secs(30);
         let budget = CapacityBudget::new(limit, deadline);
-        let tx = conn.unchecked_transaction().unwrap();
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(&mut conn).unwrap();
         let result = with_capacity_scope(
-            &tx,
+            &mut tx,
             Some(Arc::clone(&budget)),
             &mut ForegroundValidationControl,
-            |_, _| {
+            |tx, _, _| {
                 tx.execute(INSERT, [rows as i64])?;
                 for _ in 0..padding_selects {
                     let _: i64 = tx.query_row("SELECT 1", [], |row| row.get(0))?;
@@ -964,6 +1021,8 @@ mod tests {
             );
             if !tx.is_autocommit() {
                 tx.rollback().unwrap();
+            } else {
+                drop(tx);
             }
         } else {
             tx.commit().unwrap();
@@ -985,7 +1044,7 @@ mod tests {
             used,
             "finished budget no longer owns SQL"
         );
-        crate::set_sqlite_progress_handler(&conn, 0, None::<fn() -> bool>).unwrap();
+        crate::set_sqlite_progress_handler(&mut conn, 0, None::<fn() -> bool>).unwrap();
         (used, succeeded)
     }
 
@@ -1001,10 +1060,13 @@ mod tests {
     fn fixed_graph_sql_budget_admits_600000_steps_and_refuses_600001() {
         let limit = super::super::nir1_graph::QUERY_SQL_STEPS;
         assert_eq!(limit, 600_000);
-        // The recursive insert costs 23 steps a row and 17 more, and each
-        // padding statement 4 (the first 9): 26,082 rows and 23 statements are
-        // exactly 600,000 steps.
-        let (used, succeeded) = run_sql(limit, 26_082, 23);
+        // The recursive insert costs 23 steps a row, and each padding statement 4
+        // (the first 9). On SQLite 3.53.2 the fixed part was 17 and 26,082 rows
+        // with 23 statements were exactly 600,000 steps; SQLite 3.54.1 spends one
+        // step less (that workload now measures 599,999, DR-DBC-4), so the
+        // exact-cap workload is 26,081 rows and 29 statements:
+        // 23 * 26,081 + 4 * 29 + 21 = 600,000. The limit itself is unchanged.
+        let (used, succeeded) = run_sql(limit, 26_081, 29);
         assert!(succeeded, "the exact-cap workload must commit");
         assert_eq!(
             used, limit,
@@ -1039,7 +1101,7 @@ mod tests {
         std::fs::create_dir(&directory)?;
         let path = directory.join("capacity.sqlite");
         crate::test_support::current_schema_memory()?.with_conn(|conn| {
-            conn.backup("main", &path, None)?;
+            conn.backup("main", &path, None::<fn(rusqlite::backup::Progress)>)?;
             Ok(())
         })?;
         let db = crate::Database::new(&path)?;
@@ -1051,7 +1113,7 @@ mod tests {
         } else {
             (serde_json::json!({}), "dependency-rebuild-derived")
         };
-        let handle = db.with_conn(|conn| {
+        let handle = db.with_conn_mut(|conn| {
             conn.execute_batch(
                 "INSERT INTO projects(id,title) VALUES('capacity','Capacity');
                 INSERT INTO narrative_semantic_epochs(id,project_id,epoch_number,reason,created_at)
@@ -1085,7 +1147,7 @@ mod tests {
         }
         let mut granted = Granted(Arc::new(AtomicBool::new(true)));
         let mut foreground = ForegroundValidationControl;
-        let result = db.with_conn(|conn| {
+        let result = db.with_conn_mut(|conn| {
             with_capacity_scope(
                 conn,
                 Some(Arc::clone(&budget)),
@@ -1094,7 +1156,7 @@ mod tests {
                 } else {
                     &mut foreground
                 },
-                |_, _| {
+                |conn, _, _| {
                     with_immediate_transaction(conn, |conn| {
                         if granted_fts {
                             conn.execute(
@@ -1160,16 +1222,16 @@ mod tests {
 
     #[test]
     fn nested_scope_carries_usage_and_deadline_without_replacing_owner() {
-        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
         let budget = CapacityBudget::new(u64::MAX, Instant::now() + Duration::from_secs(30));
         with_capacity_scope(
-            &conn,
+            &mut conn,
             Some(Arc::clone(&budget)),
             &mut ForegroundValidationControl,
-            |outer, control| {
+            |conn, outer, control| {
                 conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
                 let before = outer.steps.load(Ordering::Relaxed);
-                with_capacity_scope(&conn, None, control, |inner, _| {
+                with_capacity_scope(conn, None, control, |conn, inner, _| {
                     assert!(Arc::ptr_eq(outer, inner));
                     conn.query_row("SELECT 2", [], |row| row.get::<_, i64>(0))?;
                     Ok(())
@@ -1182,10 +1244,10 @@ mod tests {
         let expired = CapacityBudget::new(u64::MAX, Instant::now());
         let mut ran = false;
         let result = with_capacity_scope(
-            &conn,
+            &mut conn,
             Some(expired),
             &mut ForegroundValidationControl,
-            |_, _| {
+            |_, _, _| {
                 ran = true;
                 Ok(())
             },
@@ -1228,9 +1290,9 @@ mod tests {
         let runtime = super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 1);
         let snapshot =
             db.with_read_transaction(|conn| prepare_graph_index_build(conn, &runtime, "capacity"))?;
-        let prior = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
-            let binding = publish_nir1_entity_relation_index_in_tx(&tx, &runtime, snapshot)?;
+        let prior = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            let binding = publish_nir1_entity_relation_index_in_tx(&mut tx, &runtime, snapshot)?;
             tx.commit()?;
             Ok(binding)
         })?;
@@ -1244,9 +1306,9 @@ mod tests {
             .steps
             .store(SQL_PROGRESS_LIMIT + 1, Ordering::Relaxed);
         let error = db
-            .with_conn(|conn| {
-                let tx = conn.unchecked_transaction()?;
-                publish_nir1_entity_relation_index_in_tx(&tx, &runtime, snapshot)?;
+            .with_conn_mut(|conn| {
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+                publish_nir1_entity_relation_index_in_tx(&mut tx, &runtime, snapshot)?;
                 tx.commit()?;
                 Ok(())
             })
@@ -1375,13 +1437,13 @@ mod tests {
 }
 
 pub(crate) fn with_database_attempt<T>(
-    conn: &Connection,
-    operation: impl FnOnce() -> anyhow::Result<T>,
+    conn: &mut Connection,
+    operation: impl FnOnce(&mut Connection) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
     with_current_attempt(
         conn,
         &mut super::source_revision::ForegroundValidationControl,
-        |_| operation(),
+        |conn, _| operation(conn),
     )
 }
 

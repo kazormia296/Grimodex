@@ -1644,7 +1644,7 @@ pub fn update_narrative_scene_scope(
         payload_hash: &request_hash,
         conflict_marker: "NEX_SCENE_SCOPE_REQUEST_CONFLICT",
     };
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |tx| {
             if let Some(response) = load_idempotent_response(tx, &idempotency)? {
                 return Ok(response);
@@ -1819,7 +1819,7 @@ pub fn update_narrative_scene_scope_registry(
         payload_hash: &request_hash,
         conflict_marker: "NEX_SCENE_SCOPE_REGISTRY_REQUEST_CONFLICT",
     };
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |tx| {
             if let Some(response) = load_idempotent_response(tx, &idempotency)? {
                 return Ok(response);
@@ -2962,7 +2962,7 @@ mod tests {
         .expect("seed material scenes");
 
         let measure = |keys: Vec<String>| -> Result<(usize, usize)> {
-            db.with_conn(|conn| {
+            db.with_conn_mut(|conn| {
                 let select_count = Arc::new(AtomicUsize::new(0));
                 let count_for_hook = Arc::clone(&select_count);
                 conn.authorizer(Some(move |context: AuthContext<'_>| {

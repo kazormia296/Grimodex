@@ -518,7 +518,7 @@ mod tests {
     #[test]
     fn reserve_then_acknowledge_round_trips() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = create_epoch(conn, "project-1");
             insert_run(conn, "run-1", "project-1", "running");
 
@@ -562,7 +562,7 @@ mod tests {
     #[test]
     fn a_second_run_cannot_overwrite_an_active_reservation() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = create_epoch(conn, "project-1");
             insert_run(conn, "run-1", "project-1", "running");
             insert_run(conn, "run-2", "project-1", "running");
@@ -588,7 +588,7 @@ mod tests {
     #[test]
     fn release_returns_a_stale_epoch_range_without_acknowledging_it() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = create_epoch(conn, "project-1");
             insert_run(conn, "run-1", "project-1", "running");
             with_immediate_transaction(conn, |conn| {
@@ -618,7 +618,7 @@ mod tests {
     #[test]
     fn acknowledge_never_moves_the_cursor_backward() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = create_epoch(conn, "project-1");
             insert_run(conn, "run-1", "project-1", "running");
             with_immediate_transaction(conn, |conn| {
@@ -643,7 +643,7 @@ mod tests {
     #[test]
     fn reserve_rejects_reserved_through_behind_acknowledged_through_before_hitting_sql() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = create_epoch(conn, "project-1");
             insert_run(conn, "run-1", "project-1", "running");
             // Advance acknowledged_through_sequence to 20 first via a
@@ -682,7 +682,7 @@ mod tests {
     #[test]
     fn reserve_rejects_negative_reserved_through_before_hitting_sql() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = create_epoch(conn, "project-1");
             insert_run(conn, "run-1", "project-1", "running");
             let error = with_immediate_transaction(conn, |conn| {
@@ -701,7 +701,7 @@ mod tests {
     #[test]
     fn reclaim_succeeds_when_all_five_conditions_match() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = create_epoch(conn, "project-1");
             insert_run(conn, "run-1", "project-1", "pending");
             with_immediate_transaction(conn, |conn| {
@@ -739,7 +739,7 @@ mod tests {
     #[test]
     fn reclaim_running_run_also_succeeds() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = create_epoch(conn, "project-1");
             insert_run(conn, "run-1", "project-1", "running");
             with_immediate_transaction(conn, |conn| {
@@ -767,7 +767,7 @@ mod tests {
     #[test]
     fn reclaim_fails_on_run_id_mismatch() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = create_epoch(conn, "project-1");
             insert_run(conn, "run-1", "project-1", "running");
             insert_run(conn, "run-2", "project-1", "running");
@@ -802,7 +802,7 @@ mod tests {
     #[test]
     fn reclaim_fails_on_epoch_mismatch() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = create_epoch(conn, "project-1");
             let other_epoch_id = create_epoch_in_tx(conn, "project-1", "restore", None)?;
             insert_run(conn, "run-1", "project-1", "running");
@@ -831,7 +831,7 @@ mod tests {
     #[test]
     fn reclaim_fails_on_reserved_through_mismatch() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = create_epoch(conn, "project-1");
             insert_run(conn, "run-1", "project-1", "running");
             with_immediate_transaction(conn, |conn| {
@@ -862,7 +862,7 @@ mod tests {
     #[test]
     fn reclaim_fails_when_run_is_not_resumable() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = create_epoch(conn, "project-1");
             insert_run(conn, "run-1", "project-1", "completed");
             with_immediate_transaction(conn, |conn| {
@@ -893,7 +893,7 @@ mod tests {
     #[test]
     fn reclaim_fails_when_run_belongs_to_a_different_project() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = create_epoch(conn, "project-1");
             // Adversarial/corrupt-data setup: the reserved run's own
             // project_id does not match the project the cursor row (and
@@ -924,7 +924,7 @@ mod tests {
     #[test]
     fn reclaim_fails_when_no_reservation_exists() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = create_epoch(conn, "project-1");
             insert_run(conn, "run-1", "project-1", "running");
             // Pre-C2-shaped row: acknowledged only, no reservation ever
@@ -971,7 +971,7 @@ mod tests {
     #[test]
     fn acknowledge_fails_when_no_cursor_row_exists() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let error = with_immediate_transaction(conn, |conn| {
                 acknowledge_cursor_in_tx(conn, "project-1", "never-seen", 1)
             })

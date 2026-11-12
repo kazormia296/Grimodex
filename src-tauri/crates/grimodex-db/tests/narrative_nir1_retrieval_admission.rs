@@ -168,11 +168,9 @@ impl Drop for Fixture {
     }
 }
 
-fn assert_unavailable(conn: &Connection, fixture: &Fixture, revision: &str, query_scene: &str) {
-    let tx = conn
-        .unchecked_transaction()
-        .expect("coherent negative retrieval snapshot");
-    let actual = read_revision_retrieval_eligibility(&tx, fixture.project(), revision, query_scene)
+fn assert_unavailable(conn: &mut Connection, fixture: &Fixture, revision: &str, query_scene: &str) {
+    let mut tx = grimodex_db::ScopedTransaction::begin(conn).expect("coherent negative retrieval snapshot");
+    let actual = read_revision_retrieval_eligibility(&mut tx, fixture.project(), revision, query_scene)
         .expect("retrieval denial is typed unavailable");
     assert!(
         matches!(actual, RevisionEligibilityRead::Unavailable { .. }),
@@ -180,12 +178,10 @@ fn assert_unavailable(conn: &Connection, fixture: &Fixture, revision: &str, quer
     );
 }
 
-fn assert_eligible(conn: &Connection, fixture: &Fixture, revision: &str) {
-    let tx = conn
-        .unchecked_transaction()
-        .expect("coherent positive retrieval snapshot");
+fn assert_eligible(conn: &mut Connection, fixture: &Fixture, revision: &str) {
+    let mut tx = grimodex_db::ScopedTransaction::begin(conn).expect("coherent positive retrieval snapshot");
     let actual =
-        read_revision_retrieval_eligibility(&tx, fixture.project(), revision, fixture.scene("s2"))
+        read_revision_retrieval_eligibility(&mut tx, fixture.project(), revision, fixture.scene("s2"))
             .expect("retrieval eligibility read");
     assert!(
         matches!(actual, RevisionEligibilityRead::Eligible(_)),
@@ -193,17 +189,15 @@ fn assert_eligible(conn: &Connection, fixture: &Fixture, revision: &str) {
     );
 }
 
-fn assert_complete_and_fresh(conn: &Connection, fixture: &Fixture, revision: &str) {
-    let tx = conn
-        .unchecked_transaction()
-        .expect("independent membership and Freshness snapshot");
+fn assert_complete_and_fresh(conn: &mut Connection, fixture: &Fixture, revision: &str) {
+    let mut tx = grimodex_db::ScopedTransaction::begin(conn).expect("independent membership and Freshness snapshot");
     let membership = read_revision_material_membership(&tx, fixture.project(), revision)
         .expect("typed material membership");
     assert!(
         matches!(membership, MaterialMembershipRead::Complete(_)),
         "membership: {membership:?}"
     );
-    let freshness = read_revision_canonical_freshness(&tx, fixture.project(), revision)
+    let freshness = read_revision_canonical_freshness(&mut tx, fixture.project(), revision)
         .expect("canonical revision Freshness");
     assert!(
         matches!(freshness, RevisionFreshnessRead::Fresh(_)),
@@ -403,7 +397,7 @@ fn native_decision_suspends_index_with_the_same_commit_and_preserves_sealed_gene
     seed_invalidation_probe(&db, fixture.project());
     native_human_decision(&db, &fixture, fixture.child(), "held");
     assert_eq!(index_probe(&db, fixture.project()), (7, true));
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         assert_unavailable(conn, &fixture, fixture.child(), fixture.scene("s2"));
         Ok(())
     })
@@ -684,12 +678,10 @@ fn rewrite_resealed_scope(conn: &Connection, revision: &str, axis: &str, replace
 fn normal_current_human_approved_child_is_eligible_for_distinct_later_s2() {
     let fixture = Fixture::new();
     let before = fixture.digest();
-    let conn = fixture.read_only();
-    let tx = conn
-        .unchecked_transaction()
-        .expect("coherent retrieval read snapshot");
+    let mut conn = fixture.read_only();
+    let mut tx = grimodex_db::ScopedTransaction::begin(&mut conn).expect("coherent retrieval read snapshot");
     let actual = read_revision_retrieval_eligibility(
-        &tx,
+        &mut tx,
         fixture.project(),
         fixture.child(),
         fixture.scene("s2"),
@@ -749,7 +741,7 @@ fn native_worldline_only_scope_change_denies_old_revision_after_feed_and_cold_re
 
     let current = native_fresh_nonsecret_child(&db, &fixture);
     drain_native_feed(&db);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         assert_complete_and_fresh(conn, &fixture, &current);
         assert_eligible(conn, &fixture, &current);
         Ok(())
@@ -779,10 +771,10 @@ fn native_worldline_only_scope_change_denies_old_revision_after_feed_and_cold_re
 
     let cold_db = Database::new(&fixture.path).expect("cold Database reopen");
     for database in [&db, &cold_db] {
-        database.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        database.with_conn_mut(|conn| {
+            let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
             let actual = read_revision_retrieval_eligibility(
-                &tx,
+                &mut tx,
                 fixture.project(),
                 &current,
                 fixture.scene("s2"),
@@ -793,7 +785,7 @@ fn native_worldline_only_scope_change_denies_old_revision_after_feed_and_cold_re
                     reason: RevisionEligibilityReason::ScopeUnsupported
                 }
             ));
-            let old_vectors: i64 = conn.query_row(
+            let old_vectors: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM narrative_nir1_chronicle_vectors
                   WHERE project_id = ?1 AND revision_id = ?2",
                 params![fixture.project(), &current],
@@ -848,11 +840,11 @@ fn native_character_material_principal_is_only_scope_unsupported_after_fresh_app
 
     let current = native_fresh_nonsecret_child(&db, &fixture);
     drain_native_feed(&db);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         assert_complete_and_fresh(conn, &fixture, &current);
-        let tx = conn.unchecked_transaction()?;
+        let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
         let actual = read_revision_retrieval_eligibility(
-            &tx,
+            &mut tx,
             fixture.project(),
             &current,
             fixture.scene("s2"),
@@ -871,9 +863,9 @@ fn native_character_material_principal_is_only_scope_unsupported_after_fresh_app
 #[test]
 fn retrieval_requires_a_caller_owned_read_transaction() {
     let fixture = Fixture::new();
-    let conn = fixture.read_only();
+    let mut conn = fixture.read_only();
     assert!(read_revision_retrieval_eligibility(
-        &conn,
+        &mut conn,
         fixture.project(),
         fixture.child(),
         fixture.scene("s2"),
@@ -884,22 +876,20 @@ fn retrieval_requires_a_caller_owned_read_transaction() {
 #[test]
 fn same_missing_or_absent_query_scene_cannot_admit_a_fresh_approved_child() {
     let fixture = Fixture::new();
-    let conn = fixture.read_only();
-    assert_complete_and_fresh(&conn, &fixture, fixture.child());
+    let mut conn = fixture.read_only();
+    assert_complete_and_fresh(&mut conn, &fixture, fixture.child());
     for query in [fixture.scene("s1"), "missing-query-scene", ""] {
-        assert_unavailable(&conn, &fixture, fixture.child(), query);
+        assert_unavailable(&mut conn, &fixture, fixture.child(), query);
     }
 }
 
 #[test]
 fn a_foreign_project_cannot_read_another_projects_approved_revision() {
     let fixture = Fixture::new();
-    let conn = fixture.read_only();
-    let tx = conn
-        .unchecked_transaction()
-        .expect("cross-project read snapshot");
+    let mut conn = fixture.read_only();
+    let mut tx = grimodex_db::ScopedTransaction::begin(&mut conn).expect("cross-project read snapshot");
     let actual = read_revision_retrieval_eligibility(
-        &tx,
+        &mut tx,
         "another-project",
         fixture.child(),
         fixture.scene("s2"),
@@ -914,8 +904,8 @@ fn a_foreign_project_cannot_read_another_projects_approved_revision() {
 #[test]
 fn a_complete_fresh_historical_root_is_not_the_current_approved_child() {
     let fixture = Fixture::new();
-    let conn = fixture.read_only();
-    assert_complete_and_fresh(&conn, &fixture, fixture.root());
+    let mut conn = fixture.read_only();
+    assert_complete_and_fresh(&mut conn, &fixture, fixture.root());
     let current: String = conn
         .query_row(
             "SELECT p.current_revision_id FROM narrative_proposals p
@@ -926,7 +916,7 @@ fn a_complete_fresh_historical_root_is_not_the_current_approved_child() {
         .expect("historical root current pointer");
     assert_eq!(current, fixture.child());
     assert_ne!(current, fixture.root());
-    assert_unavailable(&conn, &fixture, fixture.root(), fixture.scene("s2"));
+    assert_unavailable(&mut conn, &fixture, fixture.root(), fixture.scene("s2"));
 }
 
 #[test]
@@ -936,7 +926,7 @@ fn a_native_projection_child_requires_its_own_current_human_approval() {
     let child = create_native_child(&db, &fixture, fixture.child(), |payload| {
         payload["title"] = json!("A Human projection requiring its own review");
     });
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         assert_complete_and_fresh(conn, &fixture, &child);
         let decisions: i64 = conn.query_row(
             "SELECT COUNT(*) FROM narrative_proposal_decisions WHERE revision_id = ?1",
@@ -949,7 +939,7 @@ fn a_native_projection_child_requires_its_own_current_human_approval() {
     })
     .expect("a parent's approval cannot authorize a new Native child");
     native_human_decision(&db, &fixture, &child, "approved");
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         assert_complete_and_fresh(conn, &fixture, &child);
         assert_eligible(conn, &fixture, &child);
         assert_complete_and_fresh(conn, &fixture, fixture.child());
@@ -964,7 +954,7 @@ fn native_withdrawal_of_the_own_review_denies_the_still_complete_fresh_child() {
     let fixture = Fixture::new();
     let db = Database::new(&fixture.path).expect("Native private fixture");
     let withdrawal = native_human_decision(&db, &fixture, fixture.child(), "rejected");
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         assert_complete_and_fresh(conn, &fixture, fixture.child());
         let (status, decision): (String, String) = conn.query_row(
             "SELECT p.status, d.decision FROM narrative_proposals p
@@ -994,7 +984,7 @@ fn an_approved_status_does_not_replace_exact_human_actor_revision_and_scope() {
         "decision-revision",
     ] {
         let fixture = Fixture::new();
-        let conn = fixture.corruption_connection();
+        let mut conn = fixture.corruption_connection();
         let proposal = proposal_id(&conn, fixture.child());
         let expected = format!(
             "project/{}/proposal/{proposal}/revision/{}",
@@ -1051,15 +1041,15 @@ fn an_approved_status_does_not_replace_exact_human_actor_revision_and_scope() {
             )
             .expect("approved status remains stored");
         assert_eq!(status, "approved");
-        assert_complete_and_fresh(&conn, &fixture, fixture.child());
-        assert_unavailable(&conn, &fixture, fixture.child(), fixture.scene("s2"));
+        assert_complete_and_fresh(&mut conn, &fixture, fixture.child());
+        assert_unavailable(&mut conn, &fixture, fixture.child(), fixture.scene("s2"));
     }
 }
 
 #[test]
 fn missing_current_decision_denies_even_with_an_approved_proposal_status() {
     let fixture = Fixture::new();
-    let conn = fixture.corruption_connection();
+    let mut conn = fixture.corruption_connection();
     assert_eq!(
         conn.execute(
             "DELETE FROM narrative_proposal_decisions WHERE revision_id = ?1",
@@ -1068,8 +1058,8 @@ fn missing_current_decision_denies_even_with_an_approved_proposal_status() {
         .expect("remove only the private approval row"),
         1
     );
-    assert_complete_and_fresh(&conn, &fixture, fixture.child());
-    assert_unavailable(&conn, &fixture, fixture.child(), fixture.scene("s2"));
+    assert_complete_and_fresh(&mut conn, &fixture, fixture.child());
+    assert_unavailable(&mut conn, &fixture, fixture.child(), fixture.scene("s2"));
 }
 
 #[test]
@@ -1080,7 +1070,7 @@ fn a_native_secret_scope_child_stays_ineligible_after_its_own_human_approval() {
         payload["disclosure"]["secret"] = json!(true);
     });
     native_human_decision(&db, &fixture, &secret, "approved");
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         assert_complete_and_fresh(conn, &fixture, &secret);
         assert_unavailable(conn, &fixture, &secret, fixture.scene("s2"));
         Ok(())
@@ -1110,7 +1100,7 @@ fn effective_story_queries_reject_a_new_current_nonsecret_fresh_approved_child()
         native_set_mode(&db, &fixture, mode);
         drain_native_feed(&db);
         let current = native_fresh_nonsecret_child(&db, &fixture);
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let (stored_mode, explicit_story_scenes): (String, i64) = conn.query_row(
                 "SELECT phase_resolution_mode, (SELECT COUNT(*) FROM tree_nodes
                   WHERE project_id = ?1 AND node_type = 'scene' AND archived_at IS NULL
@@ -1144,7 +1134,7 @@ fn material_after_the_query_is_denied_even_after_native_fresh_scope_and_approval
     );
     drain_native_feed(&db);
     let current = native_fresh_nonsecret_child(&db, &fixture);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         let query_before_source: bool = conn.query_row(
             "SELECT q.sort_order < parent.sort_order FROM tree_nodes q
               JOIN tree_nodes s ON s.id = ?2 JOIN tree_nodes parent ON parent.id = s.parent_id
@@ -1187,7 +1177,7 @@ fn native_source_scope_archive_and_order_changes_deny_before_and_after_evaluatio
             _ => unreachable!("enumerated Native mutation"),
         };
         native_patch_node(&db, &fixture, scene, patch, false);
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             assert_eq!(
                 saved_canonical_state(conn, fixture.child()),
                 ("fresh".to_owned(), "none".to_owned())
@@ -1197,7 +1187,7 @@ fn native_source_scope_archive_and_order_changes_deny_before_and_after_evaluatio
         })
         .expect("saved fresh summary does not create an admission window after Native mutation");
         drain_native_feed(&db);
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             match case {
                 "source-body" | "source-archived" => {
                     assert_ne!(saved_canonical_state(conn, fixture.child()).0, "fresh");
@@ -1215,9 +1205,9 @@ fn native_source_scope_archive_and_order_changes_deny_before_and_after_evaluatio
                         saved_canonical_state(conn, fixture.child()),
                         ("fresh".to_owned(), "none".to_owned())
                     );
-                    let tx = conn.unchecked_transaction()?;
+                    let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
                     let actual = read_revision_retrieval_eligibility(
-                        &tx,
+                        &mut tx,
                         fixture.project(),
                         fixture.child(),
                         fixture.scene("s2"),
@@ -1245,7 +1235,7 @@ fn resealed_unresolved_or_mismatched_scope_cannot_bypass_immutable_lineage_valid
         "different-exact-scene",
     ] {
         let fixture = Fixture::new();
-        let conn = fixture.corruption_connection();
+        let mut conn = fixture.corruption_connection();
         let (axis, replacement) = match case {
             "unresolved-scene" => (
                 "scene",
@@ -1264,7 +1254,7 @@ fn resealed_unresolved_or_mismatched_scope_cannot_bypass_immutable_lineage_valid
         rewrite_resealed_scope(&conn, fixture.child(), axis, replacement);
         // These are deliberately invalid historical derivations. The Native
         // secret/story/order tests above isolate valid membership from policy.
-        assert_unavailable(&conn, &fixture, fixture.child(), fixture.scene("s2"));
+        assert_unavailable(&mut conn, &fixture, fixture.child(), fixture.scene("s2"));
     }
 }
 
@@ -1272,14 +1262,12 @@ fn resealed_unresolved_or_mismatched_scope_cannot_bypass_immutable_lineage_valid
 fn retrieval_sql_failures_remain_errors() {
     for table in ["narrative_proposal_decisions", "tree_nodes"] {
         let fixture = Fixture::new();
-        let conn = fixture.corruption_connection();
+        let mut conn = fixture.corruption_connection();
         conn.execute_batch(&format!("DROP TABLE {table}"))
             .expect("private SQL error copy");
-        let tx = conn
-            .unchecked_transaction()
-            .expect("SQL error read snapshot");
+        let mut tx = grimodex_db::ScopedTransaction::begin(&mut conn).expect("SQL error read snapshot");
         let error = read_revision_retrieval_eligibility(
-            &tx,
+            &mut tx,
             fixture.project(),
             fixture.child(),
             fixture.scene("s2"),
@@ -1377,10 +1365,10 @@ fn chronicle_apply_operation(conn: &Connection, run_id: &str, revision: &str) ->
 }
 
 fn retrieval_read(db: &Database, fixture: &Fixture, revision: &str) -> String {
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    db.with_conn_mut(|conn| {
+        let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
         let read = read_revision_retrieval_eligibility(
-            &tx,
+            &mut tx,
             fixture.project(),
             revision,
             fixture.scene("s2"),
@@ -1660,7 +1648,7 @@ fn approved_nonsecret_child_stays_eligible_after_its_secret_chronicle_apply() {
     enable_manual_apply(&db);
     let revisions = current_revisions(&db);
     assert_eq!(revisions.len(), 2);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         for revision in &revisions {
             let payload: String = conn.query_row(
                 "SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?1",
@@ -1692,7 +1680,7 @@ fn approved_nonsecret_child_stays_eligible_after_its_secret_chronicle_apply() {
         );
     }
     drain_freshness(&db);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         for revision in &revisions {
             assert_complete_and_fresh(conn, &fixture, revision);
             assert_eligible(conn, &fixture, revision);
@@ -1770,7 +1758,7 @@ fn edited_revision_apply_survives_undo_and_redo_as_secret_events() {
         assert_eq!(reveal.as_deref(), Some(fixture.scene("s1")));
     }
     drain_freshness(&db);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         for revision in &revisions {
             assert_eligible(conn, &fixture, revision);
         }

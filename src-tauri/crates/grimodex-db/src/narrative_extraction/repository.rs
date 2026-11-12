@@ -1057,7 +1057,7 @@ pub fn create_run(db: &Database, payload: CreateRunPayload) -> anyhow::Result<Va
         "running"
     };
 
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
             let semantic_epoch_id = current_c2zc_run_epoch_in_tx(conn, &payload.project_id)?;
@@ -1156,7 +1156,7 @@ pub(crate) fn create_system_run(
     reuse: SystemRunWorkKeyReuse,
     request: Option<&RunRequestIdentity<'_>>,
 ) -> anyhow::Result<Value> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             create_system_run_in_tx(
                 conn,
@@ -3046,7 +3046,7 @@ pub fn cancel_run_with_expectation(
     project_id: String,
     chronicle_blocked_discard: Option<ChronicleBlockedDiscardExpectation>,
 ) -> anyhow::Result<Value> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             ensure_run_project(conn, &run_id, &project_id)?;
             ensure_generic_task_api_allowed(conn, &run_id)?;
@@ -3125,7 +3125,7 @@ pub fn claim_task(
     db: &Database,
     payload: super::models::ClaimTaskPayload,
 ) -> anyhow::Result<Value> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
@@ -4130,7 +4130,7 @@ fn load_chronicle_plan_proposal_manifest(
 }
 
 fn save_chronicle_plan_proposal_set_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     payload: &FinishTaskPayload,
     finish: &ChroniclePlanProposalSetFinish,
     validation_owner: &mut dyn GraphWorkControl,
@@ -4449,7 +4449,7 @@ pub fn finish_task_with_control(
         .unwrap_or_else(default_object_json);
     let output_json = serde_json::to_string(&output_value)?;
 
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             validation_owner.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
@@ -4566,7 +4566,7 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
     let requeue = payload.requeue.unwrap_or(false);
     let next_status = if requeue { "queued" } else { "failed" };
 
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
             ensure_generic_task_api_allowed(conn, &payload.run_id)?;
@@ -5168,7 +5168,7 @@ fn save_proposal_set_atomic(
         Some(control) => control,
         None => &mut compatibility_owner,
     };
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             validation_owner.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
             require_narrative_extraction_allowed(conn)?;
@@ -5186,7 +5186,7 @@ fn save_proposal_set_atomic(
 /// in its own immediate transaction; Chronicle's typed plan finish invokes it
 /// from the Task terminal transaction so save and completion cannot diverge.
 fn save_proposal_set_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     payload: &SaveProposalSetPayload,
     validation_owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Value> {
@@ -5240,7 +5240,7 @@ fn save_proposal_set_in_tx(
 }
 
 fn insert_proposal_seed(
-    conn: &Connection,
+    conn: &mut Connection,
     proposal_set_id: &str,
     run_id: &str,
     project_id: &str,
@@ -5396,7 +5396,7 @@ fn insert_proposal_seed(
 /// the ProposalSet transaction: a V2 root without these authorities would be
 /// reviewable but could never safely enter the Human writer.
 fn materialize_initial_v2_authorities_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     revision_id: &str,
@@ -5664,7 +5664,7 @@ pub fn append_revision_with_control(
     payload: AppendRevisionPayload,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Value> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
             control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
@@ -5677,7 +5677,7 @@ pub fn append_revision_with_control(
 /// Callers own the surrounding `with_immediate_transaction` so this can be
 /// composed atomically with other writes (see `revise_and_decide`).
 fn append_revision_on_conn(
-    conn: &Connection,
+    conn: &mut Connection,
     payload: &AppendRevisionPayload,
     validation_owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Value> {
@@ -5944,7 +5944,7 @@ fn append_decision_with_actor(
     payload: AppendDecisionPayload,
     actor: TrustedDecisionActor,
 ) -> anyhow::Result<Value> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
             append_decision_on_conn(conn, &payload, &actor)
@@ -6313,7 +6313,7 @@ fn revise_and_decide_with_actor(
     actor: TrustedDecisionActor,
     validation_owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Value> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
             validation_owner.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
@@ -9969,7 +9969,7 @@ mod unit_tests {
                 .to_string()
                 .contains("NEX_SYSTEM_RUN_API_FORBIDDEN"));
 
-            db.with_conn(|conn| {
+            db.with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Completed)?;
                     record_run_outcome_in_tx(
