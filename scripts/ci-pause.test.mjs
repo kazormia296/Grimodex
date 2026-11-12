@@ -481,7 +481,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const shared = { ...defaults, canonical_profile: "shared-rust" };
   assert.deepEqual(admitted(shared), ["rust"]);
   assert.equal(rust["runs-on"], "ubuntu-latest");
-  assert.equal(rust["timeout-minutes"], 30);
+  assert.equal(rust["timeout-minutes"], 45);
   assert.deepEqual(rust.env, {
     CARGO_PROFILE_DEV_DEBUG: "0", CARGO_PROFILE_TEST_DEBUG: "0",
     OPENAI_API_KEY: "", OPENROUTER_API_KEY: "", OPEN_ROUTER_API_KEY: "",

@@ -72,6 +72,36 @@ impl Fixture {
         Self::open(manifest, compressed)
     }
 
+    /// The three-window cold fixture (MW/1), seen as one proposal of one Run:
+    /// `s1` is a scene of its material, `s2` the scene after both folders.
+    /// `crossing` picks the proposal whose cluster folds two windows (the
+    /// one-scene folder's), else the three-scene folder's single-scene one.
+    fn multi_window(crossing: bool) -> Self {
+        let mut manifest: Value =
+            serde_json::from_str(include_str!("support/nir1-multi-window-cold.json"))
+                .expect("multi-window cold fixture manifest");
+        let (shape, title, s1) = if crossing {
+            ("long", "Ledger seals at the gate", "mw-long-scene")
+        } else {
+            ("three", "Writ delivered to the quay", "mw-scene-2")
+        };
+        let run = manifest["runs"][shape].clone();
+        let proposal = run["proposals"]
+            .as_array()
+            .expect("proposals")
+            .iter()
+            .find(|p| p["title"] == title)
+            .expect("proposal")
+            .clone();
+        manifest["runId"] = run["runId"].clone();
+        manifest["s1"] = json!(s1);
+        manifest["s2"] = manifest["scenes"]["after"].clone();
+        manifest["revisionIds"] = json!([proposal["revisionId"]]);
+        manifest["rootRevisionIds"] = json!([proposal["rootRevisionId"]]);
+        let compressed = include_bytes!("support/nir1-multi-window-cold.db.gz");
+        Self::open(manifest, compressed)
+    }
+
     fn open(manifest: Value, compressed: &[u8]) -> Self {
         assert_eq!(
             hex::encode(Sha256::digest(compressed)),
@@ -2396,6 +2426,302 @@ fn outermost_error_message_carries_the_source_stale_code_without_scope_marker() 
         error.contains("NEX_SOURCE_BASIS_STALE") && !error.contains("scope-dependency:v1:"),
         "unexpected outermost message: {error}"
     );
+}
+
+/// MW/1 (DR-MW-8), carried over from the two-window checks: material that now
+/// lies after the query is refused by the disclosure order alone. The proposal
+/// stays approved, current and fresh, and its sealed material is unchanged.
+#[test]
+fn three_window_material_moved_after_the_query_is_denied_by_disclosure_alone() {
+    for crossing in [true, false] {
+        let fixture = Fixture::multi_window(crossing);
+        let db = Database::new(&fixture.path).expect("Native private fixture");
+        db.migrate().expect("migrate the private multi-window copy");
+        let membership = |conn: &Connection, revision: &str| {
+            let tx = conn.unchecked_transaction().expect("membership snapshot");
+            let MaterialMembershipRead::Complete(m) =
+                read_revision_material_membership(&tx, fixture.project(), revision)
+                    .expect("typed material membership")
+            else {
+                panic!("three-window material must be complete")
+            };
+            m.materials
+                .iter()
+                .map(|s| (s.context_id.clone(), s.content_digest.clone()))
+                .collect::<Vec<_>>()
+        };
+        let before = db
+            .with_conn(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                assert!(
+                    matches!(
+                        read_revision_retrieval_eligibility(
+                            &tx,
+                            fixture.project(),
+                            fixture.child(),
+                            fixture.scene("s2"),
+                        )
+                        .expect("public Rust retrieval admission"),
+                        RevisionEligibilityRead::Eligible(_)
+                    ),
+                    "crossing={crossing}: eligible before the move"
+                );
+                drop(tx);
+                Ok(membership(conn, fixture.child()))
+            })
+            .expect("pristine verdict");
+        assert!(before.len() > 3, "every window and its context");
+        // The scene after both folders now comes first in Reading order.
+        native_patch_node(
+            &db,
+            &fixture,
+            fixture.scene("s2"),
+            json!({"sortOrder":"Zz"}),
+            false,
+        );
+        drain_native_feed(&db);
+        let current = native_fresh_nonsecret_child(&db, &fixture);
+        db.with_conn(|conn| {
+            assert_complete_and_fresh(conn, &fixture, &current);
+            assert_eq!(membership(conn, &current), before, "the material is kept");
+            let tx = conn.unchecked_transaction()?;
+            let verdict = read_revision_retrieval_eligibility(
+                &tx,
+                fixture.project(),
+                &current,
+                fixture.scene("s2"),
+            )
+            .expect("public Rust retrieval admission");
+            assert!(
+                matches!(
+                    verdict,
+                    RevisionEligibilityRead::Unavailable {
+                        reason: RevisionEligibilityReason::SourceNotBeforeQuery
+                    }
+                ),
+                "crossing={crossing}: only the disclosure order refuses: {verdict:?}"
+            );
+            let approved: String = conn.query_row(
+                "SELECT decision FROM narrative_proposal_decisions WHERE revision_id=?1",
+                [&current],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                approved, "approved",
+                "approval is kept on the current child"
+            );
+            Ok(())
+        })
+        .expect("the move is refused by the disclosure order alone");
+    }
+}
+
+/// MW/1 (DR-MW-8): proposals whose material now lies after the query are
+/// mixed in with ones that do not. The verdict of the others is the verdict
+/// they had without the mix (here: before the mix existed), and each refusal is
+/// the disclosure order alone.
+#[test]
+fn three_window_proposals_with_later_material_do_not_change_the_verdict_of_the_others() {
+    let fixture = Fixture::multi_window(true);
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    db.migrate().expect("migrate the private multi-window copy");
+    let long: Vec<String> = fixture.manifest["runs"]["long"]["proposals"]
+        .as_array()
+        .expect("proposals")
+        .iter()
+        .map(|p| p["revisionId"].as_str().expect("child").to_owned())
+        .collect();
+    let three: Vec<String> = fixture.manifest["runs"]["three"]["proposals"]
+        .as_array()
+        .expect("proposals")
+        .iter()
+        .filter(|p| p["title"] == "Writ delivered to the quay")
+        .map(|p| p["revisionId"].as_str().expect("child").to_owned())
+        .collect();
+    let verdicts = |revisions: &[String]| -> Vec<String> {
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            Ok(revisions
+                .iter()
+                .map(|revision| {
+                    let text = format!(
+                        "{:?}",
+                        read_revision_retrieval_eligibility(
+                            &tx,
+                            fixture.project(),
+                            revision,
+                            fixture.scene("s2"),
+                        )
+                        .expect("public Rust retrieval admission")
+                    );
+                    // Keep what belongs to the proposal (its revision, Run,
+                    // Decision, material basis, dependencies, document and
+                    // evidence). The query side (reading rank, scope authority
+                    // token, freshness) is what the move itself changes.
+                    match (text.find("query_context:"), text.find("document: ")) {
+                        (Some(query), Some(document)) => {
+                            format!("{}|{}", &text[..query], &text[document..])
+                        }
+                        _ => text,
+                    }
+                })
+                .collect())
+        })
+        .expect("verdicts")
+    };
+    let control = verdicts(&long);
+    assert!(
+        control.iter().all(|v| v.starts_with("Eligible")),
+        "the control is eligible: {control:?}"
+    );
+    assert!(verdicts(&three)[0].starts_with("Eligible"));
+    // Put the three-scene folder after the query scene.
+    native_patch_node(
+        &db,
+        &fixture,
+        "mw-folder-three",
+        json!({"sortOrder":"a9"}),
+        false,
+    );
+    drain_native_feed(&db);
+    assert_eq!(verdicts(&long), control, "the others are answered alike");
+    assert!(
+        verdicts(&three)[0].contains("SourceNotBeforeQuery"),
+        "{:?}",
+        verdicts(&three)
+    );
+}
+
+/// MW/1 (DR-MW-8): the material's Scenes (a Run's folder) move after the query
+/// Scene. Every retrievable proposal of that Run is refused by
+/// the disclosure order alone, with its original current child and its original
+/// approval: no new child, no new decision, and the sealed material is kept.
+/// The other Run's proposals are answered as before.
+#[test]
+fn moving_the_material_folder_after_the_query_refuses_the_original_child_and_approval() {
+    for (moved, other, folder) in [
+        ("long", "three", "mw-folder-long"),
+        ("three", "long", "mw-folder-three"),
+    ] {
+        let fixture = Fixture::multi_window(true);
+        let db = Database::new(&fixture.path).expect("Native private fixture");
+        db.migrate().expect("migrate the private multi-window copy");
+        // The folder Run's other proposal folds the evidence of two Scenes into
+        // one Event, which one exact Scope Scene cannot hold: it is refused with
+        // `EvidenceMismatch` before any move, so it is not part of this check.
+        let revisions = |shape: &str| -> Vec<String> {
+            fixture.manifest["runs"][shape]["proposals"]
+                .as_array()
+                .expect("proposals")
+                .iter()
+                .filter(|p| p["title"] != "Signal fire on the quay")
+                .map(|p| p["revisionId"].as_str().expect("child").to_owned())
+                .collect()
+        };
+        let (moved_revisions, other_revisions) = (revisions(moved), revisions(other));
+        assert_eq!(moved_revisions.len(), if moved == "long" { 2 } else { 1 });
+        // Everything a proposal keeps: its current child, its decision rows and
+        // its sealed material (context ids and content digests).
+        type Kept = (String, Vec<(String, String, String)>, Vec<(String, String)>);
+        let kept = |revision: &str| -> Kept {
+            db.with_read_transaction(|conn| {
+                let current: String = conn.query_row(
+                    "SELECT p.current_revision_id FROM narrative_proposals p
+                       JOIN narrative_proposal_revisions r ON r.proposal_id = p.id
+                      WHERE r.id = ?1",
+                    [revision],
+                    |row| row.get(0),
+                )?;
+                let decisions = conn
+                    .prepare(
+                        "SELECT id, revision_id, decision FROM narrative_proposal_decisions
+                          WHERE revision_id = ?1 ORDER BY id",
+                    )?
+                    .query_map([revision], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                let MaterialMembershipRead::Complete(m) =
+                    read_revision_material_membership(conn, fixture.project(), revision)?
+                else {
+                    panic!("the material must stay complete")
+                };
+                let material = m
+                    .materials
+                    .iter()
+                    .map(|s| (s.context_id.clone(), s.content_digest.clone()))
+                    .collect();
+                Ok((current, decisions, material))
+            })
+            .expect("kept state")
+        };
+        let verdict = |revision: &str| -> RevisionEligibilityRead {
+            db.with_read_transaction(|conn| {
+                read_revision_retrieval_eligibility(
+                    conn,
+                    fixture.project(),
+                    revision,
+                    fixture.scene("s2"),
+                )
+            })
+            .expect("public Rust retrieval admission")
+        };
+        let before: Vec<_> = moved_revisions
+            .iter()
+            .chain(&other_revisions)
+            .map(|r| kept(r))
+            .collect();
+        for revision in moved_revisions.iter().chain(&other_revisions) {
+            assert!(
+                matches!(verdict(revision), RevisionEligibilityRead::Eligible(_)),
+                "{moved}: {revision} eligible before the move: {:?}",
+                verdict(revision)
+            );
+        }
+        for (current, decisions, material) in &before {
+            assert_eq!(decisions.len(), 1, "one approval");
+            assert_eq!(decisions[0].2, "approved");
+            assert!(material.len() > 3, "every window and its context");
+            assert!(!current.is_empty());
+        }
+        // The Run's folder now comes after the query Scene ("after" is a3).
+        native_patch_node(&db, &fixture, folder, json!({"sortOrder":"a9"}), false);
+        drain_native_feed(&db);
+        for revision in &moved_revisions {
+            assert!(
+                matches!(
+                    verdict(revision),
+                    RevisionEligibilityRead::Unavailable {
+                        reason: RevisionEligibilityReason::SourceNotBeforeQuery
+                    }
+                ),
+                "{moved}: {revision} must be refused by the disclosure order alone: {:?}",
+                verdict(revision)
+            );
+        }
+        for revision in &other_revisions {
+            assert!(
+                matches!(verdict(revision), RevisionEligibilityRead::Eligible(_)),
+                "{moved}: the other Run is answered as before"
+            );
+        }
+        let after: Vec<_> = moved_revisions
+            .iter()
+            .chain(&other_revisions)
+            .map(|r| kept(r))
+            .collect();
+        assert_eq!(
+            after, before,
+            "{moved}: same child, same approval, same material"
+        );
+        for revision in &moved_revisions {
+            let (current, _, _) = kept(revision);
+            assert_eq!(
+                &current, revision,
+                "{moved}: the original child is still current"
+            );
+        }
+    }
 }
 
 

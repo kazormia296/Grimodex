@@ -263,13 +263,7 @@ pub(super) fn read_snapshot_with_control(
     drop(run_proofs);
     let material_source_keys = preflights
         .iter()
-        .flat_map(|preflight| {
-            preflight
-                .membership
-                .materials
-                .iter()
-                .map(|material| material.source_key.clone())
-        })
+        .flat_map(|preflight| preflight.material_source_keys.iter().cloned())
         .collect::<Vec<_>>();
     let material_scope_cache = match super::super::scene_scope::preload_material_scene_scopes(
         conn,

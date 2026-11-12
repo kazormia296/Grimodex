@@ -45,13 +45,14 @@ fn describe(
         Err(error) => format!("error: {error}"),
         Ok(Err(reason)) => format!("unavailable: {reason:?}"),
         Ok(Ok(preflight)) => format!(
-            "ok: {} {} {} {} {} {:?}",
+            "ok: {} {} {} {} {} {:?} {:?}",
             preflight.revision_id,
             preflight.proposal_id,
             preflight.current_decision_id,
             preflight.envelope_digest,
             preflight.envelope,
-            preflight.membership
+            preflight.membership,
+            preflight.material_source_keys
         ),
     }
 }
@@ -164,6 +165,81 @@ fn memoized_preflight_matches_the_memo_less_preflight_for_every_candidate() {
         "the fixture must hold several verified Roots of one Run: {plain:?}"
     );
     assert_eq!(plain, memoized);
+}
+
+/// A preflight releases the replay's material rows, request proofs and
+/// receipts, but keeps the material source keys in the replay's own order:
+/// they feed the one scope preload and each candidate's scope selection.
+fn assert_preflight_keeps_the_keys(f: &Fixture, at_least: usize) {
+    let project = f.project().to_owned();
+    f.db.with_read_transaction(|tx| {
+        let authority = load_live_project_scope_authority(
+            tx,
+            &project,
+            &format!("project:scope-authority:{project}"),
+        )?;
+        let roster = read_eligibility_source(tx, &project)?;
+        let mut checked = 0;
+        for revision in &roster.revisions {
+            let MaterialMembershipRead::Complete(full) =
+                read_revision_material_membership(tx, &project, revision)?
+            else {
+                continue;
+            };
+            let expected = full
+                .materials
+                .iter()
+                .map(|material| material.source_key.clone())
+                .collect::<Vec<_>>();
+            let Ok(preflight) = preflight_build_candidate(tx, &project, revision, &authority)?
+            else {
+                continue;
+            };
+            assert!(!expected.is_empty());
+            assert_eq!(preflight.material_source_keys, expected);
+            assert!(preflight.membership.materials.is_empty());
+            assert!(preflight.membership.replayed_requests.is_empty());
+            assert!(preflight.membership.verified_receipts.is_empty());
+            assert_eq!(preflight.membership.run_id, full.run_id);
+            assert_eq!(preflight.membership.material_basis, full.material_basis);
+            checked += 1;
+        }
+        assert!(checked >= at_least, "verified Roots: {checked}");
+        Ok(())
+    })
+    .expect("preflight keys");
+}
+
+#[test]
+fn a_preflight_keeps_the_material_source_keys_of_the_full_replay_in_order() {
+    assert_preflight_keeps_the_keys(&Fixture::new(), 2);
+}
+
+#[test]
+fn a_preflight_keeps_the_keys_of_every_window_of_a_three_window_replay_in_order() {
+    let f = Fixture::multi_window();
+    // The folder Run's crossing proposal is refused by its disclosure
+    // (`EvidenceMismatch`) and has no preflight.
+    assert_preflight_keeps_the_keys(&f, 3);
+    // The material of a three-window Run spans several Scenes: the keys are
+    // not one Scene's, so an order change would be visible.
+    f.db.with_read_transaction(|tx| {
+        let roster = read_eligibility_source(tx, f.project())?;
+        let longest = roster
+            .revisions
+            .iter()
+            .filter_map(|revision| {
+                match read_revision_material_membership(tx, f.project(), revision).ok()? {
+                    MaterialMembershipRead::Complete(m) => Some(m.materials.len()),
+                    _ => None,
+                }
+            })
+            .max()
+            .unwrap_or(0);
+        assert!(longest >= 4, "a replay with several windows: {longest}");
+        Ok(())
+    })
+    .expect("longest replay");
 }
 
 #[test]

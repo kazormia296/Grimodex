@@ -94,11 +94,11 @@ export function countChronicleUnsettledProposals(
 }
 
 /** 抽出を止める知らせの種類。前の組の提案（S8）は止めず toast で知らせるため、ここに無い。 */
-export type ChronicleStartNoticeKind = "long-scene" | "same-scene-approved";
+export type ChronicleStartNoticeKind = "same-scene-approved";
 
 /** 知らせの表示順。 */
 export const CHRONICLE_START_NOTICE_ORDER: readonly ChronicleStartNoticeKind[] =
-  ["long-scene", "same-scene-approved"];
+  ["same-scene-approved"];
 
 /**
  * 中断した抽出の対象の記録から、場面 1 つの抽出の場面 id を取る。
