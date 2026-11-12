@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useCallback,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Trash2, X } from "lucide-react";
@@ -85,7 +93,6 @@ import {
   type ChronicleEventListItem,
 } from "./ChronicleEventList";
 import { CodexEntryPicker } from "./CodexEntryPicker";
-import { ChronicleExtractDialog } from "./ChronicleExtractDialog";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 import { useSeasonConflicts } from "./useSeasonConflicts";
 import { useChronicleQuery } from "./useChronicleQuery";
@@ -103,6 +110,13 @@ import {
   useExternalWriteStore,
 } from "@/features/concurrency/externalWriteStore";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
+
+// 重いので、初めて開くときに読み込む。
+const ChronicleExtractDialog = lazy(() =>
+  import("./ChronicleExtractDialog").then((module) => ({
+    default: module.ChronicleExtractDialog,
+  })),
+);
 
 type EventAggregateWriteResult = { version: number };
 type ChronicleAbsoluteDateFields = Pick<
@@ -584,6 +598,8 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
   const [showInspector, setShowInspector] = useState(true);
   const [showEdges, setShowEdges] = useState(true);
   const [extractOpen, setExtractOpen] = useState(false);
+  // 一度開いたら mount したままにする（閉じる動きと Run 投影の復元のため）。
+  const [extractMounted, setExtractMounted] = useState(false);
   // インスペクタ高さ（上端グリップでリサイズ。選択をまたいで保持）。
   const [inspectorWidth, setInspectorWidth] = useState(360);
   // 「レーンを追加」で増やす空の未割当レーン群（id）。出来事を入れると laneGroup で永続。
@@ -2181,7 +2197,10 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
         creating={creating}
         disabled={!chronicleInteractive}
         onNew={handleAdd}
-        onExtract={() => setExtractOpen(true)}
+        onExtract={() => {
+          setExtractMounted(true);
+          setExtractOpen(true);
+        }}
         onSaveCalendar={saveCalendar}
         onToggleLock={toggleLock}
         onGotoConflict={handleGotoConflict}
@@ -2446,13 +2465,17 @@ export function ChroniclePanel({ isActive = true }: SlotPanelProps = {}) {
         </div>
       )}
 
-      <ChronicleExtractDialog
-        open={extractOpen}
-        onOpenChange={setExtractOpen}
-        onImported={refresh}
-        scope={chronicleScope}
-        isActive={isActive && workspaceReady}
-      />
+      {extractMounted && (
+        <Suspense fallback={null}>
+          <ChronicleExtractDialog
+            open={extractOpen}
+            onOpenChange={setExtractOpen}
+            onImported={refresh}
+            scope={chronicleScope}
+            isActive={isActive && workspaceReady}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }
