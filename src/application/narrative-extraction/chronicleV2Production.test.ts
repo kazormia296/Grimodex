@@ -8,6 +8,7 @@ import { buildSnapshotSourceBasis } from "./proposalRepository";
 import {
   buildChronicleProductionV2Envelope,
   buildChronicleProductionV2Envelopes,
+  assertDeclaredMaterialScope,
   buildEventSynthesisContextManifests,
   type ChronicleV2ProductionInput,
 } from "./chronicleV2Production";
@@ -23,6 +24,10 @@ import {
 } from "@/features/narrative-extraction/reconciler/stageExecution";
 import type { NarrativeCorpusSnapshot } from "@/features/narrative-extraction/source/types";
 import { digestStableJson } from "@/features/narrative-extraction/source/digest";
+
+const WINDOW_PLAN = [
+  { windowId: "window-001", documentRef: "document:arrival" },
+];
 
 const DIGEST = `sha256:${"a".repeat(64)}` as const;
 
@@ -268,6 +273,7 @@ async function productionInput(): Promise<ChronicleV2ProductionInput> {
     existingEventMatch: { status: "none" },
     snapshot,
     sourceBasis: buildSnapshotSourceBasis("run:production", snapshot),
+    windowPlan: WINDOW_PLAN,
     stageReceipts: await receipts(),
   };
 }
@@ -312,6 +318,7 @@ describe("Chronicle V2 production adapter boundary", () => {
       existingEventMatch: { status: "none" } satisfies ChronicleExistingMatch,
       snapshot,
       sourceBasis: buildSnapshotSourceBasis("run:production", snapshot),
+      windowPlan: WINDOW_PLAN,
       stageReceipts,
     });
 
@@ -367,6 +374,7 @@ describe("Chronicle V2 production adapter boundary", () => {
       evidenceAnchors: [anchor],
       snapshot,
       sourceBasis: buildSnapshotSourceBasis("run:production", snapshot),
+      windowPlan: WINDOW_PLAN,
       stageReceipts,
     });
 
@@ -396,6 +404,7 @@ describe("Chronicle V2 production adapter boundary", () => {
       existingEventMatch: { status: "none" } satisfies ChronicleExistingMatch,
       snapshot,
       sourceBasis: buildSnapshotSourceBasis("run:production", snapshot),
+      windowPlan: WINDOW_PLAN,
       stageReceipts,
     });
 
@@ -442,6 +451,7 @@ describe("Chronicle V2 production adapter boundary", () => {
         existingEventMatch: { status: "none" },
         snapshot,
         sourceBasis: buildSnapshotSourceBasis("run:production", snapshot),
+        windowPlan: WINDOW_PLAN,
         stageReceipts,
       });
       const revisionBasis = result.envelope.revisionBasis;
@@ -600,6 +610,7 @@ describe("Chronicle V2 production adapter boundary", () => {
         existingEventMatch: { status: "none" } satisfies ChronicleExistingMatch,
         snapshot,
         sourceBasis: buildSnapshotSourceBasis("run:production", snapshot),
+        windowPlan: WINDOW_PLAN,
         stageReceipts: stageReceipts.filter(
           (receipt) =>
             receipt.stageExecution.stageId !==
@@ -618,7 +629,6 @@ describe("baseline of a single-scene Chronicle V2 envelope (DMS/1 D6)", () => {
     const input = await productionInput();
     const result = await buildChronicleProductionV2Envelope({
       ...input,
-      windowPlan: [{ windowId: "window-001", documentRef: "document:arrival" }],
     });
     const basis = result.envelope.effectiveMaterialBasis;
     expect(basis.sourceBasis).toEqual(input.sourceBasis);
@@ -628,5 +638,165 @@ describe("baseline of a single-scene Chronicle V2 envelope (DMS/1 D6)", () => {
     expect(basis.materialBasisDigest).toBe(
       "sha256:0546cee6abdaf1712abcee982b416ffc6fdd9c59f4fea97539322f69b3c5b778",
     );
+  });
+});
+
+describe("declared material scope of a multi-scene extraction (DMS/1)", () => {
+  const [sceneA] = snapshot.documents;
+  const documentFor = (ref: string, node: string) =>
+    ({
+      ...sceneA!,
+      ref,
+      sourceKey: `project:scene:${node}`,
+      origin: { ...sceneA!.origin, nodeId: node },
+    }) as NarrativeCorpusSnapshot["documents"][number];
+  const folder = {
+    ...snapshot,
+    documents: [
+      sceneA!,
+      documentFor("document:b", "scene-b"),
+      documentFor("document:c", "scene-c"),
+    ],
+  } as NarrativeCorpusSnapshot;
+  const plan = [
+    { windowId: "window-001", documentRef: "document:arrival" },
+    { windowId: "window-002", documentRef: "document:b" },
+    { windowId: "window-003", documentRef: "document:c" },
+  ];
+  const at = (windowId: string): RawChronicleEventObservation => ({
+    ...observation,
+    localId: `${windowId}:obs-001`,
+  });
+  const SCENE = (node: string) => `project:scene:${node}`;
+
+  async function build(
+    cluster: readonly RawChronicleEventObservation[],
+    overrides: Partial<ChronicleV2ProductionInput> = {},
+  ) {
+    const input = await productionInput();
+    return buildChronicleProductionV2Envelope({
+      ...input,
+      snapshot: folder,
+      sourceBasis: buildSnapshotSourceBasis("run:production", folder),
+      windowPlan: plan,
+      synthesisCluster: {
+        clusterRef: hypothesis.clusterRef,
+        observationRefs: cluster.map((item) => item.localId),
+      },
+      hypothesis: {
+        ...hypothesis,
+        observationRefs: [cluster[0]!.localId],
+      },
+      originalObservations: cluster,
+      mergedObservations: cluster,
+      stageReceipts: await receipts(cluster),
+      ...overrides,
+    });
+  }
+
+  it("declares only the scenes of the observations the synthesis request read", async () => {
+    const { envelope } = await build([at("window-001"), at("window-003")]);
+    const basis = envelope.effectiveMaterialBasis;
+    expect(basis.sourceBasis.map((source) => source.sourceKey)).toEqual([
+      "snapshot:run:production",
+      SCENE("scene-arrival"),
+      SCENE("scene-c"),
+    ]);
+    const roles = (key: string) =>
+      basis.dependencySet
+        .filter((entry) => entry.inputRef === key)
+        .map((entry) => entry.role);
+    expect(roles(SCENE("scene-arrival"))).toEqual(["direct-evidence"]);
+    expect(roles(SCENE("scene-c"))).toEqual(["opaque-model-context"]);
+    expect(roles(SCENE("scene-b"))).toEqual([]);
+    expect(roles("snapshot:run:production")).toEqual(["opaque-model-context"]);
+  });
+
+  it("a proposal read from one scene declares only that scene, whatever its siblings read", async () => {
+    const { envelope } = await build([at("window-001")]);
+    expect(
+      envelope.effectiveMaterialBasis.sourceBasis.map((s) => s.sourceKey),
+    ).toEqual(["snapshot:run:production", SCENE("scene-arrival")]);
+  });
+
+  it("uses the whole synthesis cluster, not the hypothesis or the evidence", async () => {
+    // The hypothesis cites only window 1; the request also showed window 2.
+    const { envelope } = await build([at("window-001"), at("window-002")]);
+    expect(
+      envelope.effectiveMaterialBasis.sourceBasis.map((s) => s.sourceKey),
+    ).toEqual([
+      "snapshot:run:production",
+      SCENE("scene-arrival"),
+      SCENE("scene-b"),
+    ]);
+  });
+
+  it("stops when an observation names no planned window", async () => {
+    const stray = { ...observation, localId: "window-009:obs-001" };
+    await expect(build([stray])).rejects.toThrow(
+      "NEX_CHRONICLE_V2_MATERIAL_SCOPE_UNDECIDABLE",
+    );
+  });
+
+  it("stops when a window has no project scene document", async () => {
+    await expect(
+      build([at("window-001")], {
+        windowPlan: [{ windowId: "window-001", documentRef: "document:gone" }],
+      }),
+    ).rejects.toThrow("NEX_CHRONICLE_V2_MATERIAL_SCOPE_UNDECIDABLE");
+  });
+
+  it("stops when the proposal cites evidence outside the scenes the request read", async () => {
+    await expect(
+      build([at("window-002")], {
+        // Anchor stays in the first scene while the request read scene B only.
+        evidenceAnchors: [anchor],
+      }),
+    ).rejects.toThrow("NEX_CHRONICLE_V2_MATERIAL_SCOPE_UNDECIDABLE");
+  });
+
+  it("the finished-envelope check rejects a record narrower than the request", async () => {
+    const { envelope } = await build([at("window-001"), at("window-003")]);
+    const check = (
+      mutate: (basis: typeof envelope.effectiveMaterialBasis) => unknown,
+    ) =>
+      assertDeclaredMaterialScope({
+        envelope: {
+          ...envelope,
+          effectiveMaterialBasis: {
+            ...envelope.effectiveMaterialBasis,
+            ...(mutate(envelope.effectiveMaterialBasis) as object),
+          },
+        },
+        windowPlan: plan,
+        snapshot: folder,
+      });
+    expect(() => check(() => ({}))).not.toThrow();
+    expect(() =>
+      check((basis) => ({
+        sourceBasis: basis.sourceBasis.filter(
+          (source) => source.sourceKey !== SCENE("scene-c"),
+        ),
+      })),
+    ).toThrow("not in the declared basis");
+    expect(() =>
+      check((basis) => ({
+        dependencySet: basis.dependencySet.filter(
+          (entry) => entry.inputRef !== SCENE("scene-c"),
+        ),
+      })),
+    ).toThrow("no dependency declaration");
+    expect(() =>
+      check((basis) => ({
+        sourceBasis: [
+          ...basis.sourceBasis,
+          {
+            sourceKind: "scene-body",
+            sourceKey: SCENE("scene-b"),
+            revisionToken: "v1@2026-08-25T00:00:00.000Z",
+          },
+        ],
+      })),
+    ).toThrow("read by none");
   });
 });

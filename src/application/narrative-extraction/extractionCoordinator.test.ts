@@ -1432,6 +1432,20 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
     expect(localIds.every((id) => observationById.has(id))).toBe(true);
     expect(result.proposals.length).toBeGreaterThan(0);
     expect(buildProductionV2EnvelopesMock).toHaveBeenCalledTimes(1);
+    // DMS/1: the proposals' material scope is looked up in the persisted
+    // window plan (one window per scene here), not an in-memory plan.
+    expect(buildProductionV2EnvelopesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        windowPlan: [
+          { windowId: "window-001", documentRef: expect.any(String) },
+          { windowId: "window-002", documentRef: expect.any(String) },
+        ],
+      }),
+    );
+    const planned = buildProductionV2EnvelopesMock.mock.calls[0]![0] as {
+      windowPlan: readonly { windowId: string; documentRef: string }[];
+    };
+    expect(new Set(planned.windowPlan.map((w) => w.documentRef)).size).toBe(2);
     expect(buildProposalSetPayloadMock).toHaveBeenCalledWith(
       expect.objectContaining({
         v2EnvelopeByProposalKey: expect.any(Map),
