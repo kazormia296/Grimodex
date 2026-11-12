@@ -5152,6 +5152,28 @@ mod tests {
             .collect()
     }
 
+    /// 陽性の対照（DR-DBC-5。`write_clock::tests::idle_freshness_cycles_do_not_advance_the_clock`
+    /// の「idle の cycle は seq を進めない」が空振りでないことの確認）：仕事がある cycle
+    /// （Feed の先頭に zero-width の checkpoint を書く）は、同じ DB の seq を進める。
+    #[test]
+    fn a_freshness_cycle_with_work_advances_the_write_clock() {
+        let db = rotated_idle_checkpoint_db();
+        let before = db.with_conn(crate::read_db_clock).expect("clock");
+        let outcome = run_incremental_freshness_cycle(&db).expect("cycle with work");
+        assert!(matches!(
+            outcome,
+            IncrementalFreshnessCycleOutcome::Processed(_)
+        ));
+        let after = db.with_conn(crate::read_db_clock).expect("clock");
+        assert_eq!(after.lineage, before.lineage);
+        assert!(
+            after.seq > before.seq,
+            "a cycle that writes must move the clock ({} -> {})",
+            before.seq,
+            after.seq
+        );
+    }
+
     #[test]
     fn idle_current_epoch_checkpoint_after_epoch_rotation_is_not_idle() {
         let db = rotated_idle_checkpoint_db();

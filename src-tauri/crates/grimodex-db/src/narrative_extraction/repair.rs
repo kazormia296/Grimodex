@@ -81,7 +81,7 @@ use super::restore_rebuild::{
 use super::semantic_epoch::get_current_epoch;
 use super::task_leases::with_immediate_transaction;
 use crate::backup_restore::{create_persistent_live_safety_artifact, LiveSafetyArtifact};
-use crate::{read_db_clock, Database};
+use crate::{write_clock::read_db_clock_with_versions, Database};
 
 const REPAIR_LEASE_TTL_SECONDS: i64 = 15 * 60;
 
@@ -1728,7 +1728,9 @@ fn execute_repair_steps(
     // 2. Capture the source revision before the backup. The backup uses a
     // separate SQLite connection, so this revision is the CAS boundary for
     // every canonical writer, not only Repair writers.
-    let source_revision_before_backup = db.with_conn(read_db_clock)?;
+    // lineage・seq に main の schema_version・user_version を足した値で比べる
+    // （DDL だけの変更は seq を進めないので、旧い比較と同じ強さにする）。
+    let source_revision_before_backup = db.with_conn(read_db_clock_with_versions)?;
 
     // 3. Automatic backup. Slow on a large workspace -- slow enough that
     //    the lease claimed above can expire and be re-claimed by someone
@@ -1764,7 +1766,7 @@ fn execute_repair_steps(
     //    terminalize -- atomically.
     let edges_deactivated = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            let source_revision_after_backup = read_db_clock(conn)?;
+            let source_revision_after_backup = read_db_clock_with_versions(conn)?;
             anyhow::ensure!(
                 source_revision_after_backup == source_revision_before_backup,
                 "NEX_REPAIR_WORKSPACE_CHANGED_DURING_BACKUP: a canonical writer committed while the safety artifact was being created; refusing to mutate or roll back that newer state"

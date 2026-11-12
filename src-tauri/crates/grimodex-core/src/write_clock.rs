@@ -217,7 +217,9 @@ pub fn has_v46_write_clock(conn: &Connection) -> anyhow::Result<bool> {
         .collect::<Result<_, _>>()?;
     if lineage.len() != 1
         || lineage[0].len() != 32
-        || !lineage[0].bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !lineage[0]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     {
         return Ok(false);
     }

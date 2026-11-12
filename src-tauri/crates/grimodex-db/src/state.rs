@@ -55,6 +55,13 @@ impl WorkspaceAuthority {
                 tracing::warn!("workspace WAL background checkpoint not started: {error}");
             }
         }
+        // DR-DBC-5: the in-memory audit-only lists (V-6) are keyed by file path
+        // and lineage. A file replaced by an older copy of itself keeps both, so
+        // a new authority never inherits lists recorded before it opened.
+        let _ = db.with_conn(|conn| {
+            crate::narrative_extraction::nir1_chronicle_index::read_identity::forget_audit_only_states(conn);
+            Ok(())
+        });
         let identity = NEXT_WORKSPACE_AUTHORITY_ID.fetch_add(1, Ordering::Relaxed);
         let nir_chronicle_index =
             crate::narrative_extraction::nir1_chronicle_index::NirChronicleIndexRuntime::new(

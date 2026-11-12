@@ -54,6 +54,12 @@ pub struct DbClock {
 /// （`ClockAccessorCache::ensure_read_view`。migration の前に作ると `ALTER TABLE` が壊れる）。
 pub const CLOCK_READ_VIEW: &str = "grimodex_clock_read";
 
+/// 将来の migration の注意：この TEMP view がある接続で clock の 2 表（`grimodex_write_clock`、
+/// `grimodex_db_lineage`）を作り直す（`ALTER TABLE`／`RENAME`）と、SQLite が全 view を解決
+/// しようとして `error in view grimodex_clock_read: no such table …` で失敗する。そういう
+/// migration は view を持たない接続（`Database::new` の直後。view は最初の renderer の文の
+/// 前に作る）で行うか、先に `DROP VIEW temp.grimodex_clock_read` する。
+///
 /// `CLOCK_READ_VIEW` を作る SQL。TEMP なので schema contract・backup・migration に触れない。
 pub(crate) const CLOCK_READ_VIEW_DDL: &str =
     "CREATE TEMP VIEW IF NOT EXISTS grimodex_clock_read (lineage, seq) AS \
@@ -154,7 +160,14 @@ pub fn install_write_clock_in_tx(conn: &Connection) -> anyhow::Result<()> {
         .optional()?;
     let lineage_valid = lineage
         .as_deref()
-        .is_some_and(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        .is_some_and(|id| {
+            // 小文字だけ（renderer の guard と post-effect の検証は小文字 32 桁だけを
+            // 受ける。大文字の lineage は不正として作り直す）。
+            id.len() == 32
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        });
 
     if !has_global {
         conn.execute(
@@ -560,6 +573,26 @@ mod tests {
         assert_eq!(clock_seq(&conn, CLOCK_KEY_ALL), Some(0));
     }
 
+    /// 大文字の lineage は renderer の guard（小文字 32 桁だけ）が受けないので不正として扱い、
+    /// 不変条件の検査（core）も偽にして、install が小文字の新しい id に作り直す。
+    #[test]
+    fn an_uppercase_lineage_is_invalid_and_is_rotated_to_lowercase() {
+        let conn = Connection::open_in_memory().expect("open");
+        install_write_clock_in_tx(&conn).expect("install");
+        let uppercase = "ABCDEF0123456789ABCDEF0123456789";
+        conn.execute(
+            &format!("UPDATE {DB_LINEAGE_TABLE} SET id = ?1 WHERE singleton = 1"),
+            [uppercase],
+        )
+        .expect("uppercase lineage");
+        assert!(!has_v46_write_clock(&conn).expect("invariant"));
+        install_write_clock_in_tx(&conn).expect("repair");
+        let repaired = lineage(&conn);
+        assert!(is_hex32(&repaired), "{repaired}");
+        assert_ne!(repaired, uppercase);
+        assert!(has_v46_write_clock(&conn).expect("invariant"));
+    }
+
     #[test]
     fn rotate_db_lineage_returns_a_different_hex_id_each_time() {
         let conn = Connection::open_in_memory().expect("open");
@@ -750,11 +783,14 @@ mod tests {
             version_before_analyze,
             "the statistics write was a real page change another connection can observe"
         );
-        // Observation only: whether the schema cookie moved with ANALYZE.
+        // ANALYZE creates `sqlite_stat1` the first time, which moves the main
+        // schema_version (a schema change, so the identity follows it); the
+        // sequence stays. The assertion below fixes which of the two this is.
         let versions_after = db.with_conn(read_db_clock_with_versions).expect("versions");
-        eprintln!(
-            "ANALYZE moved (schema, user_version): {}",
-            (versions_before.1, versions_before.2) != (versions_after.1, versions_after.2)
+        assert_eq!(
+            (versions_before.1, versions_before.2),
+            (versions_after.1, versions_after.2),
+            "ANALYZE leaves the schema_version and user_version"
         );
 
         // A no-op UPDATE (same value) fires the row trigger: the clock moves.
@@ -788,6 +824,35 @@ mod tests {
             Ok(())
         })
         .expect("rollback");
+    }
+
+    /// repair の CAS（backup の前後）は lineage・seq に schema_version・user_version を足した
+    /// 値で比べる。clock の trigger が付かない DDL（表の作成など）は seq を進めないので、
+    /// seq だけの比較では見逃す（旧い比較と同じ強さにするための試験）。
+    #[test]
+    fn a_ddl_only_change_moves_the_versions_but_not_the_sequence() {
+        let (_path, db) = migrated("ddl-only");
+        let (clock_before, versions_before) = db
+            .with_conn(|conn| {
+                Ok((read_db_clock(conn)?, read_db_clock_with_versions(conn)?))
+            })
+            .expect("before");
+        db.with_conn(|conn| {
+            conn.execute_batch("CREATE TABLE ddl_only_probe (value INTEGER)")?;
+            Ok(())
+        })
+        .expect("ddl");
+        let (clock_after, versions_after) = db
+            .with_conn(|conn| {
+                Ok((read_db_clock(conn)?, read_db_clock_with_versions(conn)?))
+            })
+            .expect("after");
+        assert_eq!(clock_after, clock_before, "the sequence does not move");
+        assert_eq!(versions_before.0, versions_after.0);
+        assert_ne!(
+            versions_before.1, versions_after.1,
+            "the schema_version of the same read does"
+        );
     }
 
     /// The identity is read through any connection: a second connection of another

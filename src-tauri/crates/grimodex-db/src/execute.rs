@@ -346,6 +346,9 @@ fn clock_surface_rejection(
         _ => return None,
     };
     let table = d2a_table_name(table_name);
+    // 既知の限界（DR-DBC-5）：判定は accessor の名前だけ。同じ名前の CTE・別名の subquery、
+    // main 側の同名の view からも clock の Read は通る。renderer の DDL は拒否されるので
+    // main に view は作れず、読みだけで書込みは通らない。
     let via_read_view = is_read && ctx.accessor == Some(crate::write_clock::CLOCK_READ_VIEW);
     if table.eq_ignore_ascii_case(grimodex_core::write_clock::WRITE_CLOCK_TABLE) {
         let exact = ctx
@@ -5563,9 +5566,13 @@ mod tests {
             temp_moved |= temp_schema(&db) != temp_before;
             assert_eq!(identity(&db), before, "{sql}");
         }
-        // Observation only (the old measure read it): a renderer statement may
-        // move the TEMP schema cookie; the identity no longer follows it.
-        eprintln!("renderer statements moved the temp schema cookie: {temp_moved}");
+        // The old measure read the TEMP schema cookie. These statements do move it
+        // (so the old identity named them as a change); the identity no longer
+        // follows it. Without this the assertions above would prove nothing.
+        assert!(
+            temp_moved,
+            "a renderer statement must move the TEMP schema cookie, or the old measure is not reproduced"
+        );
         // A real write still moves it.
         let before = identity(&db);
         db.execute_renderer(

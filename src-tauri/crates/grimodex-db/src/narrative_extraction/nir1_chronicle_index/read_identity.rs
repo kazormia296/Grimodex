@@ -22,7 +22,8 @@ impl ReadIdentity {
     /// Observe committed state outside a transaction. One statement reads one
     /// snapshot, so the four components always belong to a single state (the
     /// former before/after pair of pragma reads is no longer needed). `None`
-    /// only when the state cannot be named; an unreadable clock is an error.
+    /// only when the state cannot be named (today never: it always returns
+    /// `Some`); an unreadable clock is an `Err`, never a silent `None`.
     pub(crate) fn read_unpinned(conn: &Connection) -> Result<Option<Self>> {
         ensure!(
             conn.is_autocommit(),
@@ -91,8 +92,11 @@ impl ReadIdentity {
 /// list and a reader never inherits across that write. The path keeps a
 /// duplicated workspace folder (same lineage, another file) from reading this
 /// list; the lineage keeps a restored or migrated file from reading the old
-/// one (DR-DBC-5). Most recently used databases last; dropping a list only
-/// costs a complete check.
+/// one (DR-DBC-5). A file put back from an old copy under the same path keeps
+/// its lineage and can reach the same sequence values again, so opening a
+/// workspace authority drops every list of that path
+/// (`forget_audit_only_states`). Most recently used databases last; dropping a
+/// list only costs a complete check.
 static AUDIT_ONLY_STATES: Mutex<AuditOnlyStates> = Mutex::new(AuditOnlyStates::new(
     AUDIT_ONLY_CONNECTIONS,
     AUDIT_ONLY_STATES_PER_CONNECTION,
@@ -155,6 +159,11 @@ impl AuditOnlyStates {
         }
     }
 
+    /// Drop every list of the file at `path` (whatever its lineage).
+    pub(super) fn forget(&mut self, path: &str) {
+        self.connections.retain(|(known, _)| known != path);
+    }
+
     pub(super) fn joined(
         &self,
         path: &str,
@@ -179,6 +188,20 @@ pub(crate) fn record_audit_only_commit(
     let path = audit_only_path(conn);
     if let Ok(mut states) = AUDIT_ONLY_STATES.lock() {
         states.record(&path, before, after);
+    }
+}
+
+/// Drop the lists of the database file of `conn`. A workspace authority calls
+/// this when it opens: the file may have been replaced by an older copy of the
+/// same database since the lists were recorded (a manual backup promotion
+/// while the process kept running), and such a copy has the same path and
+/// lineage and can reach the same sequence values with other content (P2-1 of
+/// the DR-DBC-5 review). The lists are process memory, so this only costs a
+/// complete check.
+pub(crate) fn forget_audit_only_states(conn: &Connection) {
+    let path = audit_only_path(conn);
+    if let Ok(mut states) = AUDIT_ONLY_STATES.lock() {
+        states.forget(&path);
     }
 }
 

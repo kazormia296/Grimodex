@@ -766,3 +766,42 @@ fn nir1_audit_only_inheritance_ignores_the_temp_schema() {
     );
     let _ = first;
 }
+
+/// A file put back from an older copy under the same path keeps its lineage and
+/// can reach the same sequence values again. A workspace authority opened on it
+/// never inherits the lists recorded before (P2-1 of the DR-DBC-5 review; the
+/// old connection-epoch key made every reopened `Database` start a fresh list).
+#[test]
+fn nir1_audit_only_lists_are_not_inherited_by_a_reopened_workspace_authority() {
+    let f = published();
+    let (snapshot, first) = validated(&f);
+    append(&f);
+    // Positive control: without a reopen the audit-only commit is inherited.
+    let (kept, reads) = read(&f, &snapshot);
+    assert!(same(&first, &kept) && reads == 0);
+    append(&f);
+    let dir = std::env::temp_dir().join(format!("nir1-audit-lease-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("lease directory");
+    let lease = crate::workspace_lease::try_acquire_shared(&dir).expect("shared lease");
+    let reopened = Database::new(f.path()).expect("the same file, opened again");
+    let authority = crate::WorkspaceAuthority::new(reopened, f.path().to_path_buf(), lease);
+    let (after, reads) = read(&f, &snapshot);
+    assert!(after.is_some());
+    assert!(
+        reads > 0,
+        "the lists of the file are dropped when an authority opens it"
+    );
+    drop(authority);
+    std::fs::remove_dir_all(&dir).expect("remove the lease directory");
+}
+
+#[test]
+fn nir1_audit_only_states_forget_one_file_only() {
+    use super::super::read_identity::{state_for_test as state, AuditOnlyStates};
+    let mut states = AuditOnlyStates::new(4, 3);
+    states.record("/ws/a/grimodex.db", state("l", 4), state("l", 5));
+    states.record("/ws/b/grimodex.db", state("l", 4), state("l", 5));
+    states.forget("/ws/a/grimodex.db");
+    assert!(!states.joined("/ws/a/grimodex.db", &state("l", 4), &state("l", 5)));
+    assert!(states.joined("/ws/b/grimodex.db", &state("l", 4), &state("l", 5)));
+}
