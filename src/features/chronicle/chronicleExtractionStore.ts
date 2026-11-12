@@ -384,6 +384,8 @@ interface ChronicleExtractionState {
   reviewMutationCount: number;
   /** Generation of the bulk-approval judgement; see `advanceBulkJudgementEpoch`. */
   bulkJudgementEpoch: number;
+  /** Judgement re-reads in flight (the screen shows "loading", not "unknown"). */
+  bulkJudgementReads: number;
   /** Atomic Apply owns the review boundary until its Native journey settles. */
   applyMutationInFlight: boolean;
   setProjection: (projection: ChronicleExtractionReviewProjection) => void;
@@ -448,7 +450,7 @@ interface ChronicleExtractionState {
     identity: ChronicleReviewProjectionIdentity,
     rows: readonly ChronicleNativeReviewRow[],
     epoch?: number,
-  ) => boolean;
+  ) => "applied" | "stale";
   /** A failed re-read: judgements become unknown (null) for that projection. */
   clearBulkApprovalJudgements: (
     identity: ChronicleReviewProjectionIdentity,
@@ -512,6 +514,7 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
     selectedProposalId: null,
     reviewMutationCount: 0,
     bulkJudgementEpoch: 0,
+    bulkJudgementReads: 0,
     applyMutationInFlight: false,
 
     setProjection: (projection) => {
@@ -521,7 +524,13 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
         )?.proposalId ??
         projection.proposals[0]?.proposalId ??
         null;
-      set({ projection, selectedProposalId: selected });
+      // A new projection carries no judgement: an answer read for the
+      // previous one must not be applied over it.
+      set({
+        projection,
+        selectedProposalId: selected,
+        bulkJudgementEpoch: get().bulkJudgementEpoch + 1,
+      });
     },
 
     clearProjection: () => {
@@ -794,11 +803,11 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
 
     applyNativeReviewRows: (identity, rows, epoch) => {
       const projection = get().projection;
-      if (!sameProjectionIdentity(projection, identity)) return false;
+      if (!sameProjectionIdentity(projection, identity)) return "stale";
       // A newer read started, or a local operation nulled a judgement since:
       // this answer is older than what the screen knows.
       if (epoch !== undefined && epoch !== get().bulkJudgementEpoch) {
-        return false;
+        return "stale";
       }
       const byId = new Map(rows.map((row) => [row.proposalId, row] as const));
       const proposals = projection.proposals.map((current) => {
@@ -811,8 +820,11 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
             : { ...current, bulkApproval: null };
         }
         const sync = row.sync;
+        // Only a row whose revision differs is synced: the same revision must
+        // not have its (possibly newer, local) status overwritten.
         if (
           sync &&
+          sync.revisionId !== current.revisionId &&
           current.application === null &&
           current.applicability === "applicable"
         ) {
@@ -840,7 +852,7 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
         return { ...current, bulkApproval: judgementFor(current, row) };
       });
       set({ projection: { ...projection, proposals } });
-      return true;
+      return "applied";
     },
 
     advanceBulkJudgementEpoch: () => {
@@ -869,6 +881,8 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
     mirrorBulkApproved: (identity, approved) => {
       const projection = get().projection;
       if (!sameProjectionIdentity(projection, identity)) return;
+      // Whatever is read later is newer than this mirror.
+      set({ bulkJudgementEpoch: get().bulkJudgementEpoch + 1 });
       const byId = new Map(
         approved.map((item) => [item.proposalId, item.revisionId] as const),
       );
@@ -877,6 +891,14 @@ export const useChronicleExtractionStore = create<ChronicleExtractionState>(
           ...projection,
           proposals: projection.proposals.map((proposal) => {
             const revisionId = byId.get(proposal.proposalId);
+            // Already synced from Native (a newer read): keep its status,
+            // digest and judgement.
+            if (
+              revisionId !== undefined &&
+              proposal.revisionId === revisionId
+            ) {
+              return proposal;
+            }
             if (revisionId === undefined || !proposal.payload) {
               return proposal.bulkApproval === null ||
                 proposal.bulkApproval === undefined
@@ -914,6 +936,7 @@ export function resetChronicleExtractionStoreForTests(): void {
     selectedProposalId: null,
     reviewMutationCount: 0,
     bulkJudgementEpoch: 0,
+    bulkJudgementReads: 0,
     applyMutationInFlight: false,
   });
 }

@@ -422,7 +422,7 @@ describe("chronicleExtractionStore", () => {
           },
           { proposalId: "b", bulkApproval: { eligible: true, reasons: [] } },
         ]);
-      expect(accepted).toBe(true);
+      expect(accepted).toBe("applied");
       const state = useChronicleExtractionStore.getState();
       expect(state.selectedProposalId).toBe("b");
       expect(state.projection?.proposals.map((p) => p.status)).toEqual([
@@ -451,7 +451,7 @@ describe("chronicleExtractionStore", () => {
               bulkApproval: { eligible: true, reasons: [] },
             },
           ]),
-        ).toBe(false);
+        ).toBe("stale");
       }
       expect(
         useChronicleExtractionStore.getState().projection?.proposals[0]

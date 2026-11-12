@@ -5978,6 +5978,7 @@
       "bulkApproveFailed": "Bulk approval failed. The list was reloaded. Please try again.",
       "bulkApproveFailedNoRefresh": "Bulk approval failed, and the list could not be reloaded either. Please reopen this screen.",
       "bulkApproveNone": "There are no proposals to bulk approve.",
+      "bulkApproveLoading": "Checking which proposals can be bulk approved.",
       "bulkApproveUnknown": "Could not check which proposals can be bulk approved. Please reopen this screen.",
       "bulkTarget": "Eligible for bulk approval",
       "bulkResultApproved": "Approved {{count}} proposals.",

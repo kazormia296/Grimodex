@@ -615,6 +615,151 @@ describe("Chronicle bulk approve (BAO/1)", () => {
     });
   });
 
+  describe("overlapping re-reads", () => {
+    it("does not mirror over a newer read that answered while the bulk re-read was pending", async () => {
+      useChronicleExtractionStore
+        .getState()
+        .setProjection(
+          projection([
+            proposal("a", { bulkApproval: ELIGIBLE }),
+            proposal("b", { bulkApproval: ELIGIBLE }),
+          ]),
+        );
+      bulkApproveMock.mockResolvedValue({
+        approved: [
+          { proposalId: "a", revisionId: "rev-a-child", decisionId: "d" },
+        ],
+        skipped: [],
+        failed: [],
+        stopped: false,
+      });
+      const after = bundle([
+        nativeRow("a", {
+          status: "approved",
+          currentRevisionId: "rev-a-child",
+          payloadJson: payload("a", false) as unknown as Record<
+            string,
+            unknown
+          >,
+          reconciliationEnvelopeDigest: `sha256:${"b".repeat(64)}`,
+          bulkApproval: { eligible: false, reasons: ["approved", "edited"] },
+        }),
+        nativeRow("b"),
+      ]);
+      let releaseBulkRead: (
+        value: ReturnType<typeof bundle>,
+      ) => void = () => {};
+      getRunReviewBundleMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseBulkRead = resolve;
+          }),
+      );
+      const bulk = bulkApproveChronicleProposals();
+      await vi.waitFor(() =>
+        expect(getRunReviewBundleMock).toHaveBeenCalledTimes(1),
+      );
+      // Another re-read starts after the write and answers first.
+      getRunReviewBundleMock.mockResolvedValueOnce(after);
+      await refreshChronicleBulkApprovalJudgements({ syncRevisions: true });
+      releaseBulkRead(after);
+      const outcome = await bulk;
+      expect(outcome.refreshed).toBe(true);
+      const rows = rowsInStore();
+      expect(rows[0]).toMatchObject({
+        status: "approved",
+        revisionId: "rev-a-child",
+        reconciliationEnvelopeDigest: `sha256:${"b".repeat(64)}`,
+      });
+      expect(rows[1]?.bulkApproval).toEqual(ELIGIBLE);
+    });
+
+    it("lets a failed bulk re-read yield to a newer successful one", async () => {
+      useChronicleExtractionStore
+        .getState()
+        .setProjection(projection([proposal("a", { bulkApproval: ELIGIBLE })]));
+      let rejectOld: (reason: unknown) => void = () => {};
+      getRunReviewBundleMock.mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectOld = reject;
+          }),
+      );
+      const old = refreshChronicleBulkApprovalJudgements();
+      getRunReviewBundleMock.mockResolvedValueOnce(bundle([nativeRow("a")]));
+      await refreshChronicleBulkApprovalJudgements();
+      rejectOld(new Error("late failure"));
+      await expect(old).resolves.toBe(true);
+      expect(rowsInStore()[0]?.bulkApproval).toEqual(ELIGIBLE);
+    });
+
+    it("mirrorBulkApproved advances the generation and keeps an already synced row", () => {
+      useChronicleExtractionStore.getState().setProjection(
+        projection([
+          proposal("a", {
+            revisionId: "rev-a-child",
+            status: "approved",
+            reconciliationEnvelopeDigest: `sha256:${"b".repeat(64)}`,
+          }),
+        ]),
+      );
+      const before = useChronicleExtractionStore.getState().bulkJudgementEpoch;
+      useChronicleExtractionStore.getState().mirrorBulkApproved(
+        {
+          runId: "run-1",
+          projectId: "project-a",
+          workspacePath: "/workspace-a",
+          openRevision: 1,
+        },
+        [{ proposalId: "a", revisionId: "rev-a-child" }],
+      );
+      expect(useChronicleExtractionStore.getState().bulkJudgementEpoch).toBe(
+        before + 1,
+      );
+      expect(rowsInStore()[0]?.reconciliationEnvelopeDigest).toBe(
+        `sha256:${"b".repeat(64)}`,
+      );
+    });
+  });
+
+  describe("projection replacement and sync", () => {
+    it("setProjection advances the generation so an older answer is dropped", async () => {
+      useChronicleExtractionStore
+        .getState()
+        .setProjection(projection([proposal("a")]));
+      let release: (value: ReturnType<typeof bundle>) => void = () => {};
+      getRunReviewBundleMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      const slow = refreshChronicleBulkApprovalJudgements();
+      useChronicleExtractionStore
+        .getState()
+        .setProjection(projection([proposal("a")]));
+      release(bundle([nativeRow("a")]));
+      await slow;
+      expect(rowsInStore()[0]?.bulkApproval).toBeNull();
+    });
+
+    it("does not overwrite a row whose revision already equals the synced one", async () => {
+      useChronicleExtractionStore
+        .getState()
+        .setProjection(
+          projection([
+            proposal("a", { revisionId: "rev-a-child", status: "held" }),
+          ]),
+        );
+      getRunReviewBundleMock.mockImplementation(async () => {
+        // Native read says current revision differs at read time...
+        return bundle([nativeRow("a", { currentRevisionId: "rev-a-child" })]);
+      });
+      await refreshChronicleBulkApprovalJudgements({ syncRevisions: true });
+      expect(rowsInStore()[0]?.status).toBe("held");
+    });
+  });
+
   describe("whole-command failure", () => {
     it("tells whether the list could be re-read", async () => {
       useChronicleExtractionStore

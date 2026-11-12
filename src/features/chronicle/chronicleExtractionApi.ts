@@ -1737,14 +1737,30 @@ function chronicleProjectionIdentity(
 export async function refreshChronicleBulkApprovalJudgements(
   options: { readonly syncRevisions?: boolean } = {},
 ): Promise<boolean> {
+  return (await readChronicleBulkApprovalJudgements(options)) !== "failed";
+}
+
+/**
+ * Three outcomes: "applied"; "superseded" (a newer read or local operation
+ * already owns the screen, so this answer was dropped and the list is not
+ * unknown); "failed" (the read failed, judgements are unknown).
+ */
+async function readChronicleBulkApprovalJudgements(
+  options: { readonly syncRevisions?: boolean } = {},
+): Promise<"applied" | "superseded" | "failed"> {
   const projection = useChronicleExtractionStore.getState().projection;
-  if (!projection) return false;
+  if (!projection) return "failed";
   const identity = chronicleProjectionIdentity(projection);
   // A newer read, or a local operation that nulls a judgement, makes this
   // answer stale: the store then drops it.
   const epoch = useChronicleExtractionStore
     .getState()
     .advanceBulkJudgementEpoch();
+  const adjustReads = (delta: number) =>
+    useChronicleExtractionStore.setState((state) => ({
+      bulkJudgementReads: Math.max(0, state.bulkJudgementReads + delta),
+    }));
+  adjustReads(1);
   try {
     const bundle = await narrativeExtractionGetRunReviewBundle({
       runId: identity.runId,
@@ -1792,14 +1808,22 @@ export async function refreshChronicleBulkApprovalJudgements(
         bulkApproval,
       };
     });
-    return useChronicleExtractionStore
+    const applied = useChronicleExtractionStore
       .getState()
       .applyNativeReviewRows(identity, rows, epoch);
+    return applied === "applied" ? "applied" : "superseded";
   } catch {
+    // A newer read (taken after this one started, hence after any write this
+    // read follows) owns the screen: its answer decides, not this failure.
+    if (useChronicleExtractionStore.getState().bulkJudgementEpoch !== epoch) {
+      return "superseded";
+    }
     useChronicleExtractionStore
       .getState()
       .clearBulkApprovalJudgements(identity, epoch);
-    return false;
+    return "failed";
+  } finally {
+    adjustReads(-1);
   }
 }
 
@@ -2217,14 +2241,17 @@ export async function bulkApproveChronicleProposals(): Promise<ChronicleBulkAppr
     });
   } catch (error) {
     // Whatever happened, the list may no longer match Native.
-    const listRefreshed = await refreshChronicleBulkApprovalJudgements({
-      syncRevisions: true,
-    });
+    const listRefreshed =
+      (await readChronicleBulkApprovalJudgements({ syncRevisions: true })) !==
+      "failed";
     throw new ChronicleBulkApproveCommandError(error, listRefreshed);
   }
-  const refreshed = await refreshChronicleBulkApprovalJudgements({
+  // "superseded": a read that started after this command wrote has already put
+  // a newer list on screen. Only a real failure falls back to the response.
+  const outcome = await readChronicleBulkApprovalJudgements({
     syncRevisions: true,
   });
+  const refreshed = outcome !== "failed";
   if (!refreshed) {
     useChronicleExtractionStore
       .getState()

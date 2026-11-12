@@ -623,6 +623,31 @@ describe("ChronicleProposalReview: bulk approve (BAO/1)", () => {
     );
   });
 
+  it("says the list was not re-read when an unknown exception is thrown", async () => {
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(projection([proposal({ bulkApproval: ELIGIBLE })]));
+    bulkMock.mockRejectedValueOnce(new Error("unexpected"));
+    render(<ChronicleProposalReview />);
+    fireEvent.click(screen.getByTestId("chronicle-bulk-approve-safe"));
+    const error = await screen.findByTestId("chronicle-proposal-persist-error");
+    expect(error).toHaveTextContent("一覧も読み直せませんでした");
+  });
+
+  it("shows 'checking' while the first judgement read is in flight, not 'reopen'", () => {
+    useChronicleExtractionStore
+      .getState()
+      .setProjection(projection([proposal({ bulkApproval: null })]));
+    useChronicleExtractionStore.setState({ bulkJudgementReads: 1 });
+    render(<ChronicleProposalReview />);
+    expect(
+      screen.getByTestId("chronicle-bulk-approve-loading"),
+    ).toHaveTextContent("確かめています");
+    expect(
+      screen.queryByTestId("chronicle-bulk-approve-unknown"),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows the count in the explanation", () => {
     useChronicleExtractionStore
       .getState()

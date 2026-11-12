@@ -170,6 +170,9 @@ export function ChronicleProposalReview({
       proposal.status === "unreviewed" &&
       (proposal.bulkApproval === null || proposal.bulkApproval === undefined),
   ).length;
+  const bulkJudgementLoading = useChronicleExtractionStore(
+    (state) => state.bulkJudgementReads > 0,
+  );
   const reviewControlsDisabled = persisting || applyMutationInFlight;
 
   const handleBulkApprove = () => {
@@ -179,8 +182,9 @@ export function ChronicleProposalReview({
       try {
         setBulkOutcome(await bulkApproveChronicleProposals());
       } catch (error) {
+        // An unknown exception did not re-read anything.
         const listRefreshed =
-          !(error instanceof ChronicleBulkApproveCommandError) ||
+          error instanceof ChronicleBulkApproveCommandError &&
           error.listRefreshed;
         throw new Error(
           listRefreshed
@@ -225,7 +229,18 @@ export function ChronicleProposalReview({
               </button>
             )}
           </div>
-          {boundToStore && bulkUnknownCount > 0 && (
+          {boundToStore && bulkUnknownCount > 0 && bulkJudgementLoading && (
+            <p
+              className="text-[10px] leading-snug text-muted-foreground"
+              data-testid="chronicle-bulk-approve-loading"
+            >
+              {t(
+                "chronicle.extract.bulkApproveLoading",
+                "まとめて承認の対象を確かめています。",
+              )}
+            </p>
+          )}
+          {boundToStore && bulkUnknownCount > 0 && !bulkJudgementLoading && (
             <p
               className="text-[10px] leading-snug text-muted-foreground"
               data-testid="chronicle-bulk-approve-unknown"
