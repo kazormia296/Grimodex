@@ -167,45 +167,71 @@ const QUALIFYING_REVISIONS: &str = "WITH qualifying(id, project_id) AS MATERIALI
 // payloads of other projects and surfaces were still parsed). A set that is
 // selected by its own `SELECT` is outside that rewrite.
 
-const SOURCE_INDEX_MALFORMED_SQL: &str = "SELECT EXISTS(
-             SELECT 1
+/// MALFORMED, with `json_valid` evaluated once per Revision (DR-DBC-4). It asks
+/// whether any current approved typed Revision of the project has a payload that
+/// is not the expected JSON. It used to repeat `json_valid(r.payload_json)` in
+/// the `CASE` of every condition (eight times for a healthy Revision), and SQLite
+/// 3.54's `json_valid` no longer keeps its parse for the next call (it passes
+/// `JSON_NOCACHE`), so each repeat parsed the whole payload again (+9 to +25 ms
+/// per statement on the registration fixtures). This one asks once, in a
+/// materialized CTE `parsed` that follows [`QUALIFYING_REVISIONS`] (hence the
+/// statement starts with a comma), and the conditions read its `ok` instead.
+///
+/// - `parsed` starts from `qualifying` and reaches `r` by primary key, as every
+///   statement does, so a payload is read only for a Revision of the set. It
+///   holds the flag, not the payload.
+/// - `ok` is exactly `json_valid(r.payload_json)` (0, 1 or NULL), so each
+///   `v.ok=0` and `CASE WHEN v.ok ..` has the value the repeated call had. The
+///   other conditions (`json_extract`, `json_type`, which 3.54 still caches, and
+///   the per-Entity checks on a small value) are unchanged.
+/// - The statement used to stop at the first malformed Revision without parsing
+///   the rest; `parsed` is built whole first. That only matters when the answer
+///   is true, and the proof then ends there.
+///
+/// The old text is the test oracle `SOURCE_INDEX_MALFORMED_REPEATED_VALID_ORACLE_SQL`.
+const SOURCE_INDEX_MALFORMED_SQL: &str = ", parsed(id, project_id, ok) AS MATERIALIZED (
+             SELECT q.id, q.project_id, json_valid(r.payload_json)
                FROM qualifying q
                CROSS JOIN narrative_proposal_revisions r ON r.id=q.id
-              WHERE (json_valid(r.payload_json)=0
+         ) SELECT EXISTS(
+             SELECT 1
+               FROM parsed v
+               CROSS JOIN narrative_proposal_revisions r ON r.id=v.id
+              WHERE (v.ok=0
                      OR json_extract(
-                          CASE WHEN json_valid(r.payload_json)
+                          CASE WHEN v.ok
                                THEN r.payload_json ELSE '{}' END,
                           '$.schemaVersion'
                         ) IS NOT 1
                      OR json_extract(
-                          CASE WHEN json_valid(r.payload_json)
+                          CASE WHEN v.ok
                                THEN r.payload_json ELSE '{}' END,
                           '$.kind'
                         ) IS NOT ?4
                      OR json_extract(
-                          CASE WHEN json_valid(r.payload_json)
+                          CASE WHEN v.ok
                                THEN r.payload_json ELSE '{}' END,
                           '$.producer'
                         ) IS NOT ?6
                      OR json_extract(
-                          CASE WHEN json_valid(r.payload_json)
+                          CASE WHEN v.ok
                                THEN r.payload_json ELSE '{}' END,
                           '$.projectId'
-                        ) IS NOT q.project_id
+                        ) IS NOT v.project_id
                      OR json_extract(
-                          CASE WHEN json_valid(r.payload_json)
+                          CASE WHEN v.ok
                                THEN r.payload_json ELSE '{}' END,
                           '$.revisionId'
                         ) IS NOT r.id
                      OR json_type(
-                          CASE WHEN json_valid(r.payload_json)
+                          CASE WHEN v.ok
                                THEN r.payload_json ELSE '{}' END,
                           '$.bundle.entities'
                         )<>'array'
                      OR EXISTS(
                           SELECT 1 FROM json_each(
                               CASE WHEN json_type(
-                                           CASE WHEN json_valid(r.payload_json)
+                                           CASE WHEN v.ok
                                                 THEN r.payload_json ELSE '{}' END,
                                            '$.bundle.entities'
                                        )='array'
@@ -1939,6 +1965,349 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- DR-DBC-4: MALFORMED asks `json_valid` once per Revision ----
+
+    // MALFORMED as it was before, verbatim: `json_valid(r.payload_json)` is repeated
+    // in every condition. Test oracle only: the production statement must give the
+    // same result.
+    const SOURCE_INDEX_MALFORMED_REPEATED_VALID_ORACLE_SQL: &str = "SELECT EXISTS(
+                 SELECT 1
+                   FROM qualifying q
+                   CROSS JOIN narrative_proposal_revisions r ON r.id=q.id
+                  WHERE (json_valid(r.payload_json)=0
+                         OR json_extract(
+                              CASE WHEN json_valid(r.payload_json)
+                                   THEN r.payload_json ELSE '{}' END,
+                              '$.schemaVersion'
+                            ) IS NOT 1
+                         OR json_extract(
+                              CASE WHEN json_valid(r.payload_json)
+                                   THEN r.payload_json ELSE '{}' END,
+                              '$.kind'
+                            ) IS NOT ?4
+                         OR json_extract(
+                              CASE WHEN json_valid(r.payload_json)
+                                   THEN r.payload_json ELSE '{}' END,
+                              '$.producer'
+                            ) IS NOT ?6
+                         OR json_extract(
+                              CASE WHEN json_valid(r.payload_json)
+                                   THEN r.payload_json ELSE '{}' END,
+                              '$.projectId'
+                            ) IS NOT q.project_id
+                         OR json_extract(
+                              CASE WHEN json_valid(r.payload_json)
+                                   THEN r.payload_json ELSE '{}' END,
+                              '$.revisionId'
+                            ) IS NOT r.id
+                         OR json_type(
+                              CASE WHEN json_valid(r.payload_json)
+                                   THEN r.payload_json ELSE '{}' END,
+                              '$.bundle.entities'
+                            )<>'array'
+                         OR EXISTS(
+                              SELECT 1 FROM json_each(
+                                  CASE WHEN json_type(
+                                               CASE WHEN json_valid(r.payload_json)
+                                                    THEN r.payload_json ELSE '{}' END,
+                                               '$.bundle.entities'
+                                           )='array'
+                                       THEN json_extract(r.payload_json,'$.bundle.entities')
+                                       ELSE '[]' END
+                              ) entity
+                               WHERE entity.type<>'object'
+                                  OR json_type(
+                                       CASE WHEN json_valid(entity.value)
+                                            THEN entity.value ELSE '{}' END,
+                                       '$.entityId'
+                                     )<>'text'
+                                  OR trim(json_extract(
+                                       CASE WHEN json_valid(entity.value)
+                                            THEN entity.value ELSE '{}' END,
+                                       '$.entityId'
+                                  ))=''
+                         ))
+             )";
+
+    /// The Revision payloads (and a few whole-statement shapes) that the damage
+    /// list does not reach: a payload that is not JSON object text, on a Revision
+    /// that keeps its Edges and on one that has none, and on both Revisions.
+    fn payload_shape_damage() -> Vec<(String, Vec<String>)> {
+        let shapes: [(&str, &str); 14] = [
+            ("invalid JSON", "'{broken'"),
+            (
+                "truncated JSON",
+                "substr(payload_json,1,length(payload_json)-7)",
+            ),
+            ("empty text", "''"),
+            ("JSON null", "'null'"),
+            ("JSON number", "'123'"),
+            ("JSON string", "'\"abc\"'"),
+            ("JSON array", "'[1,2]'"),
+            ("JSON5 object", "'{a:1}'"),
+            (
+                "JSON text with a BOM-like prefix",
+                "char(65279) || payload_json",
+            ),
+            ("BLOB of valid JSON", "CAST(payload_json AS BLOB)"),
+            ("BLOB that is not JSON", "x'00ff'"),
+            (
+                "schemaVersion is the text 1",
+                "json_set(payload_json,'$.schemaVersion','1')",
+            ),
+            (
+                "bundle is an array",
+                "json_set(payload_json,'$.bundle',json('[]'))",
+            ),
+            (
+                "entities hold an object without entityId and a null",
+                "json_set(payload_json,'$.bundle.entities',json('[{},null]'))",
+            ),
+        ];
+        let mut damage = Vec::new();
+        for (label, set) in shapes {
+            let update = |id: &str| {
+                format!(
+                    "UPDATE narrative_proposal_revisions SET payload_json={set} WHERE id='{id}'"
+                )
+            };
+            let delete_edges = |id: &str| {
+                format!(
+                    "DELETE FROM narrative_dependency_edges
+                      WHERE consumer_kind='proposal-revision' AND consumer_key='{id}'"
+                )
+            };
+            damage.push((
+                format!("EDGES KEPT: rev-0 payload is {label}"),
+                vec![update("rev-0")],
+            ));
+            damage.push((
+                format!("EDGES KEPT: rev-1 payload is {label}"),
+                vec![update("rev-1")],
+            ));
+            damage.push((
+                format!("NO EDGE: rev-1 payload is {label}"),
+                vec![delete_edges("rev-1"), update("rev-1")],
+            ));
+            damage.push((
+                format!("BOTH: both payloads are {label}"),
+                vec![update("rev-0"), update("rev-1")],
+            ));
+        }
+        damage
+    }
+
+    /// The proof's chain with MALFORMED given, as in [`verify_complete_source_index`].
+    fn proof_with_malformed(conn: &Connection, malformed: &str) -> Result<bool, String> {
+        for statement in [
+            malformed,
+            SOURCE_INDEX_MISSING_SQL,
+            SOURCE_INDEX_DUPLICATE_SQL,
+        ] {
+            if run_source_index_statement(conn, &source_index_sql(statement))? {
+                return Ok(false);
+            }
+        }
+        Ok(!run_source_index_statement(
+            conn,
+            &source_index_sql(SOURCE_INDEX_UNEXPECTED_SQL),
+        )?)
+    }
+
+    #[test]
+    fn malformed_with_one_validity_check_agrees_with_the_repeated_one_on_every_damage() {
+        let mut control =
+            crate::narrative_extraction::nir1_entity_relation_index::NeverStopGraphWorkControl;
+        let damage: Vec<(String, Vec<String>)> = equivalence_damage()
+            .into_iter()
+            .map(|(name, statements)| (name.to_owned(), statements))
+            .chain(payload_shape_damage())
+            .collect();
+        let mut compared = 0;
+        let mut results = std::collections::BTreeSet::new();
+        for real_unique in [true, false] {
+            for (name, statements) in &damage {
+                let conn = equivalence_fixture(real_unique);
+                for statement in statements {
+                    // The real schema refuses a duplicate Edge; the synthetic one takes it.
+                    let _ = conn.execute(statement, []);
+                }
+                // The statement alone: the EXISTS value or the error.
+                let oracle = run_source_index_statement(
+                    &conn,
+                    &source_index_sql(SOURCE_INDEX_MALFORMED_REPEATED_VALID_ORACLE_SQL),
+                );
+                let actual = run_source_index_statement(
+                    &conn,
+                    &source_index_sql(SOURCE_INDEX_MALFORMED_SQL),
+                );
+                assert_eq!(
+                    actual, oracle,
+                    "MALFORMED: {name} (real_unique={real_unique})"
+                );
+                results.insert(format!("{actual:?}"));
+
+                // The proof: the verdict and the error text.
+                let expected =
+                    proof_with_malformed(&conn, SOURCE_INDEX_MALFORMED_REPEATED_VALID_ORACLE_SQL);
+                let verdict = verify_complete_source_index(&conn, "project", &mut control)
+                    .map_err(|error| error.to_string());
+                assert_eq!(
+                    verdict, expected,
+                    "proof: {name} (real_unique={real_unique})"
+                );
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 2 * (36 + 4 * 14));
+        // The damage reaches both answers of the statement (and no error).
+        assert_eq!(
+            results,
+            std::collections::BTreeSet::from(["Ok(false)".to_owned(), "Ok(true)".to_owned()]),
+        );
+    }
+
+    #[test]
+    fn malformed_with_one_validity_check_agrees_on_the_empty_and_the_healthy_project() {
+        for real_unique in [true, false] {
+            let healthy = equivalence_fixture(real_unique);
+            let empty = equivalence_fixture(real_unique);
+            empty
+                .execute_batch(
+                    "DELETE FROM narrative_dependency_edges;
+                     DELETE FROM narrative_proposal_revisions;",
+                )
+                .unwrap();
+            let no_edges = equivalence_fixture(real_unique);
+            no_edges
+                .execute_batch("DELETE FROM narrative_dependency_edges")
+                .unwrap();
+            let other_project = equivalence_fixture(real_unique);
+            other_project
+                .execute_batch("UPDATE narrative_proposal_sets SET project_id='other'")
+                .unwrap();
+            for (name, conn) in [
+                ("healthy", &healthy),
+                ("empty", &empty),
+                ("no edges", &no_edges),
+                ("another project's sets", &other_project),
+            ] {
+                for sql in [
+                    SOURCE_INDEX_MALFORMED_REPEATED_VALID_ORACLE_SQL,
+                    SOURCE_INDEX_MALFORMED_SQL,
+                ] {
+                    assert_eq!(
+                        run_source_index_statement(conn, &source_index_sql(sql)),
+                        Ok(false),
+                        "{name} (real_unique={real_unique})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// How many times the statement evaluates `json_valid` on a Revision payload,
+    /// and on anything else (an Entity's value), with a counting replacement of the
+    /// function on this connection. The fixtures hold valid JSON only, so the
+    /// replacement answers from `serde_json`.
+    fn json_valid_calls_by_argument(conn: &Connection, sql: &str) -> (usize, usize) {
+        use rusqlite::functions::FunctionFlags;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let payloads = Arc::new(AtomicUsize::new(0));
+        let others = Arc::new(AtomicUsize::new(0));
+        let (payload_counter, other_counter) = (Arc::clone(&payloads), Arc::clone(&others));
+        conn.create_scalar_function(
+            "json_valid",
+            1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            move |context| {
+                let text: String = context.get(0)?;
+                if text.contains("\"bundle\"") {
+                    payload_counter.fetch_add(1, Ordering::SeqCst);
+                } else {
+                    other_counter.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(i64::from(
+                    serde_json::from_str::<serde_json::Value>(&text).is_ok(),
+                ))
+            },
+        )
+        .unwrap();
+        run_source_index_statement(conn, sql).unwrap();
+        (
+            payloads.load(Ordering::SeqCst),
+            others.load(Ordering::SeqCst),
+        )
+    }
+
+    #[test]
+    fn malformed_with_one_validity_check_tests_each_payload_once_not_once_per_condition() {
+        // The healthy fixture: two qualifying Revisions of three Entities each. SQLite
+        // 3.54 does not cache the parse of `json_valid`, so the number of evaluations
+        // on a payload is the number of times the payload is parsed.
+        let conn = equivalence_fixture(true);
+        let (before, before_entities) = json_valid_calls_by_argument(
+            &conn,
+            &source_index_sql(SOURCE_INDEX_MALFORMED_REPEATED_VALID_ORACLE_SQL),
+        );
+        let (after, after_entities) =
+            json_valid_calls_by_argument(&conn, &source_index_sql(SOURCE_INDEX_MALFORMED_SQL));
+        assert_eq!(
+            before,
+            2 * 8,
+            "the repeated statement evaluates it eight times per Revision"
+        );
+        assert_eq!(after, 2, "the new statement evaluates it once per Revision");
+        // The checks on an Entity's own (small) value are the same in both.
+        assert_eq!(before_entities, 2 * 3 * 2);
+        assert_eq!(after_entities, before_entities);
+
+        // The plan: `parsed` is materialized from `qualifying` (reaching `r` by key),
+        // then the statement scans it and reaches `r` by key again; the one scan of
+        // the Revision table is the one that selects the set.
+        let plan = source_index_plan(&conn, SOURCE_INDEX_MALFORMED_SQL);
+        let at = format!("plan:\n{}", plan.join("\n"));
+        let position = |line: &str| plan.iter().position(|step| step == line);
+        // `parsed` is the outer materialization: the plan lists it, then the
+        // `qualifying` it reads from, then the scan of that set and the scan of
+        // `parsed` by the statement.
+        let parsed = position("MATERIALIZE parsed").expect(&at);
+        let qualifying = position("MATERIALIZE qualifying").expect(&at);
+        let scan_set = position("SCAN q").expect(&at);
+        let scan_parsed = position("SCAN v").expect(&at);
+        assert!(
+            parsed < qualifying && qualifying < scan_set && scan_set < scan_parsed,
+            "{at}"
+        );
+        assert_eq!(
+            plan.iter().filter(|step| *step == "SCAN r").count(),
+            1,
+            "{at}"
+        );
+        assert_eq!(
+            plan.iter()
+                .filter(|step| step.starts_with("SEARCH r USING INDEX"))
+                .count(),
+            2,
+            "{at}"
+        );
+    }
+
+    #[test]
+    fn malformed_with_one_validity_check_parses_the_payload_of_nothing_but_its_subject() {
+        let conn = gate_project();
+        let calls = record_json_calls(&conn);
+        assert_eq!(
+            run_source_index_statement(&conn, &source_index_sql(SOURCE_INDEX_MALFORMED_SQL)),
+            Ok(false)
+        );
+        assert_eq!(
+            marked_payloads(&calls),
+            std::collections::BTreeSet::from(["OK".to_owned()]),
+        );
     }
 
     // ---- DR-DBC-4: DUPLICATE reads the Revision before its Edges ----
