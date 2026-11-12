@@ -349,6 +349,7 @@ const REQUIRED_ACTIVATION_PRODUCTION_ENTRY_POINTS = Object.freeze([
   "narrative_extraction_save_proposal_set",
   "createHumanDerivedNarrativeRevisionV2",
   "narrative_extraction_create_human_derived_revision",
+  "narrative_extraction_chronicle_bulk_approve",
 ]);
 
 const PRODUCTION_SOURCE_FILE_PATTERN = /\.(?:cjs|mjs|js|jsx|ts|tsx|rs)$/u;

@@ -2,6 +2,7 @@
 
 pub(crate) mod application_contributions;
 mod attention;
+mod bulk_approval;
 mod c2z_preparation;
 pub(crate) mod c2zb_application_rekey;
 mod c2zc_canonical_cutover;
@@ -41,6 +42,10 @@ pub mod nir1_graph;
 #[cfg(feature = "nir1-graph-eval")]
 pub mod nir1_graph_eval;
 mod nir1_graph_index_maintenance;
+pub use bulk_approval::{
+    BulkApprovalReason, BulkApprovalVerdict,
+    ChronicleBulkApprovePayload, ChronicleBulkApproveTarget, BULK_APPROVE_MAX_TARGETS,
+};
 pub use declaration_storage::{
     read_active_dependency_declaration_set, verify_dependency_declaration_storage,
     write_dependency_declaration_set, write_dependency_declaration_set_in_tx,
@@ -722,6 +727,17 @@ pub fn narrative_extraction_append_human_decision(
     payload: AppendDecisionPayload,
 ) -> anyhow::Result<Value> {
     repository::append_human_decision(db, payload)
+}
+
+/// Chronicle "bulk approve" (BAO/1): per proposal, one transaction that writes
+/// the unsealed Human-derived child and its Human approval. `should_stop` is
+/// asked between proposals (shutdown / workspace switch).
+pub fn narrative_extraction_chronicle_bulk_approve(
+    db: &Database,
+    payload: ChronicleBulkApprovePayload,
+    should_stop: &mut dyn FnMut() -> bool,
+) -> anyhow::Result<Value> {
+    bulk_approval::chronicle_bulk_approve(db, payload, should_stop)
 }
 
 pub fn narrative_extraction_revise_and_decide(

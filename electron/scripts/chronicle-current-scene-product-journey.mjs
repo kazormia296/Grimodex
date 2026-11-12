@@ -320,7 +320,12 @@ export async function chooseCurrentSceneTarget(dialog, sceneId) {
   assert.equal(await select.inputValue(), currentSceneOptionValue(sceneId));
 }
 
-async function readRunAndDecisions(harness, page, identity, proposalIds) {
+export async function readRunAndDecisions(
+  harness,
+  page,
+  identity,
+  proposalIds,
+) {
   const [run] = await queryChronicleFixtureRows(
     harness,
     page,
@@ -863,6 +868,8 @@ export function createChronicleCurrentSceneJourney({
             .waitFor({ state: "visible" });
         await reopened.page.getByTitle("AI 抽出", { exact: true }).click();
         const dialog = reopened.page.getByRole("dialog");
+        // ダイアログは初回に読み込んで mount するので、出るのを待つ。
+        await dialog.waitFor({ state: "visible" });
         assert.equal(
           await dialog
             .locator('[data-testid^="chronicle-proposal-card-"]')

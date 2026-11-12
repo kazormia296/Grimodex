@@ -1,12 +1,21 @@
-// Chronicle extraction -> human edit of one proposal (secret off) -> approve all
-// -> apply -> restart. Same fixed provider response and workspace as
-// chronicle-extract-review-apply-reopen; the one extra operation is the edit,
-// which Native records as a human-derived child revision (ERA/1, DR-ERA-12).
+// Chronicle extraction -> "bulk approve" of the proposals with no review reason
+// (BAO/1) -> human edit of the remaining proposal (secret off) -> approve it ->
+// apply -> restart. Same fixed provider response and workspace as
+// chronicle-extract-review-apply-reopen. Native records both the bulk approval
+// and the edit as human-derived child revisions (ERA/1, DR-ERA-12; BAO/1).
+// The fixed response gives the bell event ordinary significance (the bulk
+// approval target) and keeps the gate event major (r3-significance).
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { URL } from "node:url";
+import {
+  assertSceneBindingsExplicit,
+  readIrAdmissionPreconditions,
+  readRunAndDecisions,
+  setMainLineSceneScopeDefault,
+} from "./chronicle-current-scene-product-journey.mjs";
 import {
   analyzeChronicleAndWaitForProposals,
   createChronicleFixtureNode,
@@ -32,7 +41,13 @@ export const CHRONICLE_EDITED_APPLY_JOURNEY_ID =
 const ID = CHRONICLE_EDITED_APPLY_JOURNEY_ID;
 // The proposal whose secret mark the journey clears in the review UI.
 export const EDITED_PROPOSAL_TITLE = "門が開いた";
+// The proposal the bulk approval must approve (its fixture row has ordinary
+// significance); the edited proposal above keeps r3-significance.
+export const BULK_APPROVED_PROPOSAL_TITLE = "鐘が鳴った";
 const TITLES = ["門が開いた", "鐘が鳴った"];
+export const BULK_APPROVE_BUTTON_TESTID = "chronicle-bulk-approve-safe";
+export const BULK_APPROVE_RESULT_TESTID = "chronicle-bulk-approve-result";
+const HUMAN_REVIEW_ACTOR_ID = "electron:human-review";
 
 /**
  * The edited proposal must have gained exactly one human-derived child that
@@ -78,12 +93,14 @@ export function assertHumanDerivedLineage(root, child) {
 /**
  * Applied state of the edited journey. `state.revisions` holds every stored
  * revision of every proposal; the applied revision of each proposal is the one
- * its application points at.
+ * its application points at. `bulkApproved` lists the proposals that the bulk
+ * approval turned into a human-derived child ({ proposalId, rootRevisionId });
+ * like the edited one they are applied from that child, secret-free.
  */
 export function assertEditedChronicleApplied(
   state,
   bundle,
-  { sceneId, editedProposalId, rootRevisionId },
+  { sceneId, editedProposalId, rootRevisionId, bulkApproved = [] },
 ) {
   const proposalCount = bundle.proposals.length;
   assert.equal(proposalCount, 2);
@@ -124,17 +141,22 @@ export function assertEditedChronicleApplied(
     );
     assert.ok(appliedRevision, "the applied revision is stored");
     assert.equal(appliedRevision.proposalId, proposal.proposalId);
-    if (proposal.proposalId === editedProposalId) {
-      assert.notEqual(proposal.currentRevisionId, rootRevisionId);
+    const derivedRootRevisionId =
+      proposal.proposalId === editedProposalId
+        ? rootRevisionId
+        : bulkApproved.find((row) => row.proposalId === proposal.proposalId)
+            ?.rootRevisionId;
+    if (derivedRootRevisionId !== undefined) {
+      assert.notEqual(proposal.currentRevisionId, derivedRootRevisionId);
       assert.equal(
         appliedRevision.envelope.revisionBasis.kind,
         "human-derived",
       );
       assert.equal(proposal.payloadJson.disclosure.secret, false);
       const root = state.revisions.find(
-        (row) => row.revisionId === rootRevisionId,
+        (row) => row.revisionId === derivedRootRevisionId,
       );
-      assert.ok(root, "the edited proposal's root revision is stored");
+      assert.ok(root, "the derived proposal's root revision is stored");
       assertHumanDerivedLineage(root, appliedRevision);
     } else {
       assert.equal(
@@ -144,6 +166,161 @@ export function assertEditedChronicleApplied(
       assert.equal(proposal.payloadJson.disclosure.secret, true);
     }
   }
+}
+
+/**
+ * Native's bulk-approval judgement as the review bundle carries it (BAO/1, B3):
+ * the proposal with ordinary significance is a target with no reason; the
+ * major one is not, for r3-significance alone.
+ */
+export function assertBulkApprovalJudgement(
+  proposals,
+  { eligibleTitle, ineligibleTitle },
+) {
+  assert.equal(proposals.length, 2);
+  const eligible = proposals.find(
+    (row) => row.payloadJson.title === eligibleTitle,
+  );
+  const ineligible = proposals.find(
+    (row) => row.payloadJson.title === ineligibleTitle,
+  );
+  assert.ok(eligible, `proposal ${eligibleTitle}`);
+  assert.ok(ineligible, `proposal ${ineligibleTitle}`);
+  assert.deepEqual(eligible.bulkApproval, { eligible: true, reasons: [] });
+  assert.deepEqual(ineligible.bulkApproval, {
+    eligible: false,
+    reasons: ["r3-significance"],
+  });
+}
+
+/** Nothing is left for the bulk approval to do. */
+export function assertNoBulkApprovalTargets(proposals) {
+  assert.ok(proposals.length > 0);
+  for (const row of proposals) {
+    assert.equal(row.bulkApproval?.eligible, false, "no bulk approval target");
+  }
+}
+
+/**
+ * The bulk-approved proposal gained one human-derived child that differs from
+ * its parent only in /disclosure/secret and carries the author's approval of
+ * that very revision.
+ */
+export function assertBulkApprovedChild(parent, child) {
+  assert.equal(child.proposalId, parent.proposalId);
+  assert.notEqual(
+    child.currentRevisionId,
+    parent.currentRevisionId,
+    "bulk approval must create a new revision",
+  );
+  assert.equal(parent.payloadJson.disclosure.secret, true);
+  assert.equal(child.payloadJson.disclosure.secret, false);
+  const expected = globalThis.structuredClone(parent.payloadJson);
+  expected.disclosure.secret = false;
+  assert.deepEqual(child.payloadJson, expected);
+  assert.equal(child.status, "approved");
+  assert.equal(child.latestDecision?.decision, "approved");
+  assert.equal(child.latestDecision.actorKind, "human");
+  assert.equal(
+    child.latestDecision.revisionId,
+    child.currentRevisionId,
+    "the approval is on the child revision",
+  );
+  assert.ok(!child.application, "bulk approval does not apply");
+}
+
+/** A proposal outside the bulk approval keeps its first revision and no decision. */
+export function assertBulkApprovalLeftUntouched(before, after) {
+  assert.equal(after.proposalId, before.proposalId);
+  assert.equal(after.currentRevisionId, before.currentRevisionId);
+  assert.equal(after.status, "unreviewed");
+  assert.equal(after.latestDecision, null);
+  assert.deepEqual(after.payloadJson, before.payloadJson);
+  assert.ok(!after.application);
+}
+
+/**
+ * Every decision of the journey (the bulk-approved one and the one-by-one one)
+ * has the ordinary author actor and authority for its own revision.
+ */
+export function assertSameApprovalActor(decisions, { projectId, proposals }) {
+  assert.equal(decisions.length, proposals.length);
+  for (const proposal of proposals) {
+    const rows = decisions.filter(
+      (row) => row.proposalId === proposal.proposalId,
+    );
+    assert.equal(rows.length, 1, "one approval per proposal");
+    assert.equal(rows[0].decision, "approved");
+    assert.equal(rows[0].actorKind, "human");
+    assert.equal(rows[0].actorId, HUMAN_REVIEW_ACTOR_ID);
+    assert.equal(rows[0].revisionId, proposal.currentRevisionId);
+    assert.equal(
+      rows[0].authorityScope,
+      `project/${projectId}/proposal/${proposal.proposalId}/revision/${proposal.currentRevisionId}`,
+    );
+  }
+}
+
+/** The number the button label shows ("... (N)"); 0 when there is none. */
+export function bulkApproveCountFromLabel(label) {
+  const match = /\((\d+)\)\s*$/u.exec(String(label).trim());
+  return match ? Number(match[1]) : 0;
+}
+
+/** Counts in the result line shown after a bulk approval (ChronicleBulkApproveOutcomeNote). */
+export function assertBulkApproveResultText(text, { approved, remaining }) {
+  const approvedMatch = /(\d+) 件を承認しました/u.exec(text);
+  assert.ok(approvedMatch, `result shows the approved count: ${text}`);
+  assert.equal(Number(approvedMatch[1]), approved);
+  const remainingMatch = /個別に決める提案が (\d+) 件残っています/u.exec(text);
+  assert.ok(remainingMatch, `result shows the remaining count: ${text}`);
+  assert.equal(Number(remainingMatch[1]), remaining);
+  assert.ok(!text.includes("飛ばしました"), "nothing was skipped");
+  assert.ok(!text.includes("途中で止まりました"), "the run was not stopped");
+}
+
+/**
+ * Press the bulk approve button. A disabled button, or a count other than
+ * `expectedCount`, fails the journey instead of being forced; the result line
+ * is returned after it appears.
+ */
+export async function clickEnabledBulkApproveButton({
+  harness,
+  dialog,
+  expectedCount,
+}) {
+  const button = dialog.getByTestId(BULK_APPROVE_BUTTON_TESTID);
+  await button.waitFor({ state: "visible" });
+  await harness.waitUntil(
+    async () => button.isEnabled(),
+    "the bulk approve button is enabled",
+    15_000,
+  );
+  assert.equal(await button.isEnabled(), true, "bulk approve is enabled");
+  assert.equal(
+    bulkApproveCountFromLabel(await button.textContent()),
+    expectedCount,
+    "the button shows the number of targets",
+  );
+  await button.click();
+  const result = dialog.getByTestId(BULK_APPROVE_RESULT_TESTID);
+  await result.waitFor({ state: "visible", timeout: 30_000 });
+  return (await result.textContent()).trim();
+}
+
+/** After the press: no target is left and the button is disabled. */
+export async function assertBulkApproveButtonIdle({ harness, dialog }) {
+  const button = dialog.getByTestId(BULK_APPROVE_BUTTON_TESTID);
+  await button.waitFor({ state: "visible" });
+  await harness.waitUntil(
+    async () =>
+      !(await button.isEnabled()) &&
+      bulkApproveCountFromLabel(await button.textContent()) === 0,
+    "the bulk approve button is disabled with no targets",
+    15_000,
+  );
+  assert.equal(await button.isEnabled(), false, "bulk approve is disabled");
+  assert.equal(bulkApproveCountFromLabel(await button.textContent()), 0);
 }
 
 /**
@@ -290,6 +467,14 @@ export function createChronicleEditedApplyJourney({
             fixtureApplyPolicy,
           ),
         });
+        // The product's ordinary project shape: the Scene Scope default is the
+        // main line before any Scene exists, so each Scene binding is born
+        // explicit and the bulk-approved revisions can meet the IR conditions.
+        await setMainLineSceneScopeDefault({
+          invoke: (command, args) => harness.invokeOk(seed.page, command, args),
+          workspace,
+          projectId,
+        });
         await createChronicleFixtureNode(harness, seed.page, projectId, {
           id: folderId,
           parentId: null,
@@ -312,6 +497,15 @@ export function createChronicleEditedApplyJourney({
             })),
           }),
         });
+        assertSceneBindingsExplicit(
+          await queryChronicleFixtureRows(
+            harness,
+            seed.page,
+            "SELECT scene_id AS sceneId, compatibility_marker AS compatibilityMarker FROM narrative_scene_scope_bindings WHERE project_id=?",
+            [projectId],
+          ),
+          [sceneId],
+        );
       } finally {
         await harness.close(seed.app, seed.page, `${ID}/seed`);
       }
@@ -322,6 +516,7 @@ export function createChronicleEditedApplyJourney({
       let stageReceiptDigests;
       let initialSynthesisCompanion;
       let edited;
+      let bulkApproved;
       try {
         await waitForChronicleFixtureWorkspace(harness, review.page, {
           projectId,
@@ -397,8 +592,122 @@ export function createChronicleEditedApplyJourney({
         );
         assert.ok(parent, `fixture proposal ${EDITED_PROPOSAL_TITLE}`);
         const rootRevisionId = parent.currentRevisionId;
+        const bulkParent = initial.proposals.find(
+          (row) => row.payloadJson.title === BULK_APPROVED_PROPOSAL_TITLE,
+        );
+        assert.ok(
+          bulkParent,
+          `fixture proposal ${BULK_APPROVED_PROPOSAL_TITLE}`,
+        );
+        const bulkRootRevisionId = bulkParent.currentRevisionId;
 
-        // Step 1: edit one proposal in the review UI.
+        // Step 1: Native's judgement. Only the ordinary-significance proposal
+        // is a bulk approval target; the major one is not (r3-significance).
+        assertBulkApprovalJudgement(initial.proposals, {
+          eligibleTitle: BULK_APPROVED_PROPOSAL_TITLE,
+          ineligibleTitle: EDITED_PROPOSAL_TITLE,
+        });
+
+        // Step 2: press "bulk approve" (the button shows 1 target).
+        const resultText = await clickEnabledBulkApproveButton({
+          harness,
+          dialog,
+          expectedCount: 1,
+        });
+        assertBulkApproveResultText(resultText, { approved: 1, remaining: 1 });
+        const bulkChild = await harness.waitUntil(async () => {
+          const row = (await bundleNow()).proposals.find(
+            (entry) => entry.proposalId === bulkParent.proposalId,
+          );
+          return row?.status === "approved" && row;
+        }, "Native records the bulk approval");
+        assertBulkApprovedChild(bulkParent, bulkChild);
+        const afterBulk = await bundleNow();
+        const afterBulkNative = await inspectEditedNative(
+          harness,
+          review.page,
+          afterBulk,
+          sceneId,
+        );
+        assert.equal(afterBulkNative.revisions.length, 3);
+        assert.equal(afterBulkNative.events.length, 0);
+        assert.equal(afterBulkNative.applications.length, 0);
+        assertHumanDerivedLineage(
+          afterBulkNative.revisions.find(
+            (row) => row.revisionId === bulkRootRevisionId,
+          ),
+          afterBulkNative.revisions.find(
+            (row) => row.revisionId === bulkChild.currentRevisionId,
+          ),
+        );
+        assertBulkApprovalLeftUntouched(
+          parent,
+          afterBulk.proposals.find(
+            (row) => row.proposalId === parent.proposalId,
+          ),
+        );
+        assert.equal(
+          afterBulkNative.revisions.filter(
+            (row) => row.proposalId === parent.proposalId,
+          ).length,
+          1,
+          "the proposal outside the bulk approval gained no revision",
+        );
+        assertNoBulkApprovalTargets(afterBulk.proposals);
+        await assertBulkApproveButtonIdle({ harness, dialog });
+        const afterBulkState = await readRunAndDecisions(
+          harness,
+          review.page,
+          identity,
+          afterBulk.proposals.map((row) => row.proposalId),
+        );
+        assert.equal(afterBulkState.decisions.length, 1);
+        assertSameApprovalActor(afterBulkState.decisions, {
+          projectId,
+          proposals: [bulkChild],
+        });
+        // The bulk-approved revision meets every readable IR precondition; the
+        // untouched one is neither approved nor secret-free.
+        const bulkIrReadings = readIrAdmissionPreconditions({
+          projectId,
+          sceneId,
+          bundle: afterBulk,
+          revisions: afterBulkNative.revisions,
+          decisions: afterBulkState.decisions,
+          run: afterBulkState.run,
+        });
+        assert.deepEqual(
+          bulkIrReadings.find((row) => row.proposalId === bulkParent.proposalId)
+            .failures,
+          [],
+        );
+        assert.deepEqual(
+          bulkIrReadings.find((row) => row.proposalId === parent.proposalId)
+            .failures,
+          ["RevisionNotCurrentHumanApproved", "Secret"],
+        );
+        bulkApproved = [
+          {
+            proposalId: bulkParent.proposalId,
+            rootRevisionId: bulkRootRevisionId,
+            childRevisionId: bulkChild.currentRevisionId,
+          },
+        ];
+        harness.recordTimeline(`${ID}/bulk-approved`, {
+          ...identity,
+          bulkApproved,
+          irReadings: bulkIrReadings,
+          evidence: await saveChronicleEvidence(directory, "bulk-approved", {
+            bundle: afterBulk,
+            native: afterBulkNative,
+            decisions: afterBulkState.decisions,
+            irReadings: bulkIrReadings,
+            resultText,
+            bulkApproved,
+          }),
+        });
+
+        // Step 3: edit the proposal that stays (secret off) in the review UI.
         const child = await clearProposalSecretInReview({
           harness,
           dialog,
@@ -412,7 +721,7 @@ export function createChronicleEditedApplyJourney({
           afterEdit,
           sceneId,
         );
-        assert.equal(afterEditNative.revisions.length, 3);
+        assert.equal(afterEditNative.revisions.length, 4);
         assert.equal(afterEditNative.events.length, 0);
         assert.equal(afterEditNative.applications.length, 0);
         assertHumanDerivedLineage(
@@ -423,10 +732,27 @@ export function createChronicleEditedApplyJourney({
             (row) => row.revisionId === child.currentRevisionId,
           ),
         );
-        for (const proposal of afterEdit.proposals) {
-          assert.equal(proposal.status, "unreviewed");
-          assert.equal(proposal.latestDecision, null);
-        }
+        // The edit did not touch the bulk-approved proposal.
+        const bulkAfterEdit = afterEdit.proposals.find(
+          (row) => row.proposalId === bulkParent.proposalId,
+        );
+        assert.equal(
+          bulkAfterEdit.currentRevisionId,
+          bulkChild.currentRevisionId,
+        );
+        assert.equal(bulkAfterEdit.status, "approved");
+        assert.equal(
+          afterEdit.proposals.find(
+            (row) => row.proposalId === parent.proposalId,
+          ).status,
+          "unreviewed",
+        );
+        assert.equal(
+          afterEdit.proposals.find(
+            (row) => row.proposalId === parent.proposalId,
+          ).latestDecision,
+          null,
+        );
         edited = {
           proposalId: parent.proposalId,
           rootRevisionId,
@@ -442,8 +768,10 @@ export function createChronicleEditedApplyJourney({
           }),
         });
 
-        // Step 2: approve every proposal, the edited one on its child revision.
+        // Step 4: approve the edited proposal on its child revision, one by
+        // one. The bulk-approved proposal is already approved: no button.
         for (const proposal of afterEdit.proposals) {
+          if (proposal.proposalId === bulkParent.proposalId) continue;
           const card = dialog.getByTestId(
             `chronicle-proposal-card-${proposal.proposalId}`,
           );
@@ -472,6 +800,7 @@ export function createChronicleEditedApplyJourney({
         );
         assert.equal(approvedNative.events.length, 0);
         assert.equal(approvedNative.applications.length, 0);
+        assert.equal(approvedNative.revisions.length, 4);
         for (const proposal of approved.proposals) {
           const decision = proposal.latestDecision;
           assert.equal(decision?.decision, "approved");
@@ -484,6 +813,38 @@ export function createChronicleEditedApplyJourney({
           edited.childRevisionId,
           "approval did not move the edited proposal off its child revision",
         );
+        assert.equal(
+          approved.proposals.find(
+            (row) => row.proposalId === bulkParent.proposalId,
+          ).currentRevisionId,
+          bulkChild.currentRevisionId,
+          "nothing moved the bulk-approved proposal off its child revision",
+        );
+        // Both approvals (bulk and one by one) carry the same author actor, and
+        // both revisions are secret-free and approved: every readable IR
+        // precondition holds for both.
+        const approvedState = await readRunAndDecisions(
+          harness,
+          review.page,
+          identity,
+          approved.proposals.map((row) => row.proposalId),
+        );
+        assertSameApprovalActor(approvedState.decisions, {
+          projectId,
+          proposals: approved.proposals,
+        });
+        const approvedIrReadings = readIrAdmissionPreconditions({
+          projectId,
+          sceneId,
+          bundle: approved,
+          revisions: approvedNative.revisions,
+          decisions: approvedState.decisions,
+          run: approvedState.run,
+        });
+        assert.equal(approvedIrReadings.length, 2);
+        for (const reading of approvedIrReadings) {
+          assert.deepEqual(reading.failures, [], "IR preconditions hold");
+        }
         const approvedCompanion = await readChronicleSynthesisCompanion(
           harness,
           review.page,
@@ -496,10 +857,12 @@ export function createChronicleEditedApplyJourney({
             bundle: approved,
             persistedSynthesisCompanion: approvedCompanion,
             native: approvedNative,
+            decisions: approvedState.decisions,
+            irReadings: approvedIrReadings,
           }),
         });
 
-        // Step 3: the apply button must be open for a set that contains an
+        // Step 5: the apply button must be open for a set that contains an
         // edited (human-derived) revision (E8); then apply.
         const policy = await readChronicleFixtureApplyPolicy(
           harness,
@@ -535,6 +898,7 @@ export function createChronicleEditedApplyJourney({
           sceneId,
           editedProposalId: edited.proposalId,
           rootRevisionId: edited.rootRevisionId,
+          bulkApproved,
         });
         const appliedCompanion = await readChronicleSynthesisCompanion(
           harness,
@@ -604,6 +968,7 @@ export function createChronicleEditedApplyJourney({
           sceneId,
           editedProposalId: edited.proposalId,
           rootRevisionId: edited.rootRevisionId,
+          bulkApproved,
         });
         assert.deepEqual(restored.events, appliedSnapshot.events);
         assert.deepEqual(restored.applications, appliedSnapshot.applications);
@@ -632,6 +997,8 @@ export function createChronicleEditedApplyJourney({
             .waitFor({ state: "visible" });
         await reopened.page.getByTitle("AI 抽出", { exact: true }).click();
         const dialog = reopened.page.getByRole("dialog");
+        // ダイアログは初回に読み込んで mount するので、出るのを待つ。
+        await dialog.waitFor({ state: "visible" });
         assert.equal(
           await dialog
             .locator('[data-testid^="chronicle-proposal-card-"]')

@@ -59,6 +59,7 @@ import {
   restoreChronicleExtractionReview,
 } from "./chronicleExtractionApi";
 import {
+  isBulkApprovalTarget,
   resetChronicleExtractionStoreForTests,
   useChronicleExtractionStore,
 } from "./chronicleExtractionStore";
@@ -604,7 +605,8 @@ describe("getChronicleExtractionReview cold-start restore", () => {
       noDuplicate: false,
       riskLow: false,
     });
-    expect(useChronicleExtractionStore.getState().bulkApproveSafe()).toBe(0);
+    // No Native judgement was received for it: never a bulk-approval target.
+    expect(row && isBulkApprovalTarget(row)).toBe(false);
 
     createHumanDerivedRevisionMock.mockResolvedValue({
       revisionId: "revision-3-reverted",
@@ -626,6 +628,156 @@ describe("getChronicleExtractionReview cold-start restore", () => {
       status: "unreviewed",
       probableDuplicateChoice: null,
     });
+  });
+
+  it("puts Native's bulk-approval judgement from the review bundle into the projection (BAO/1)", async () => {
+    const runId = "run-cold-judgement";
+    const body = sampleProposal();
+    const artifact = (
+      artifactId: string,
+      artifactKind: string,
+      payloadJson: unknown,
+    ) => ({
+      artifactId,
+      runId,
+      taskId: "task-1",
+      attemptId: "attempt-1",
+      artifactKind,
+      payloadStorage: "inline-json",
+      payloadJson,
+      payloadRef: null,
+      payloadDigest: null,
+      createdAt: "2026-01-01T00:00:30.000Z",
+    });
+    getRunMock.mockResolvedValue({
+      run: {
+        runId,
+        projectId: "project-cold",
+        surfacePathId: "chronicle.extract",
+        status: "completed",
+        coverageJson: {},
+      },
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+      tasks: [],
+    });
+    const nativeRow = (
+      proposalId: string,
+      proposalKey: string,
+      bulkApproval?: { eligible: boolean; reasons: string[] },
+    ) => ({
+      proposalId,
+      proposalSetId: "set-cold-judgement",
+      proposalKey,
+      kind: "chronicle.create-event@1",
+      status: "unreviewed",
+      payloadJson: body,
+      currentRevisionId: `rev-${proposalId}`,
+      createdAt: "2026-01-01T00:00:40.000Z",
+      updatedAt: "2026-01-01T00:00:50.000Z",
+      reconciliationEnvelopeDigest: `sha256:${"d".repeat(64)}`,
+      reconciliationEnvelopeSchemaVersion: 2,
+      latestDecision: null,
+      application: null,
+      ...(bulkApproval ? { bulkApproval } : {}),
+    });
+    const bundleWith = (rows: ReturnType<typeof nativeRow>[]) => ({
+      runId,
+      projectId: "project-cold",
+      artifacts: [
+        ...supportArtifacts(runId, "hyp-1", "actual"),
+        artifact("art-proposals", CHRONICLE_EXTRACT_ARTIFACT_KINDS.proposals, {
+          proposalSetId: "set-cold-judgement",
+          proposals: [body],
+          planned: [
+            {
+              proposal: body,
+              match: { status: "none" },
+              hypothesisId: "hyp-1",
+            },
+          ],
+        }),
+        artifact(
+          "art-evidence",
+          CHRONICLE_EXTRACT_ARTIFACT_KINDS.resolvedEvidence,
+          {
+            anchors: [
+              {
+                id: "anchor-1",
+                documentRef: "doc:scene-1",
+                quote: "quoted text",
+                method: "exact",
+              },
+            ],
+          },
+        ),
+        artifact("art-snapshot", CHRONICLE_EXTRACT_ARTIFACT_KINDS.snapshot, {
+          snapshot: {
+            documents: [
+              {
+                ref: "doc:scene-1",
+                origin: { kind: "project-node", nodeId: "scene-1" },
+              },
+            ],
+          },
+        }),
+      ],
+      proposalSet: {
+        proposalSetId: "set-cold-judgement",
+        runId,
+        projectId: "project-cold",
+        setKind: "chronicle.extract.review@1",
+        status: "draft",
+        summaryJson: {},
+        createdAt: "2026-01-01T00:00:40.000Z",
+        updatedAt: "2026-01-01T00:00:40.000Z",
+        version: 0,
+      },
+      proposals: rows,
+    });
+    const restore = async (rows: ReturnType<typeof nativeRow>[]) => {
+      resetNarrativeArtifactIndexForTests();
+      resetChronicleExtractionStoreForTests();
+      getRunReviewBundleMock.mockResolvedValue(bundleWith(rows));
+      return getChronicleExtractionReview(runId, {
+        projectId: "project-cold",
+        workspacePath: "/ws/cold",
+        openRevision: 3,
+      });
+    };
+    const eligible = await restore([
+      nativeRow("prop-eligible", "ev-cold-1:0", {
+        eligible: true,
+        reasons: [],
+      }),
+    ]);
+    expect(eligible.proposals[0]?.bulkApproval).toEqual({
+      eligible: true,
+      reasons: [],
+    });
+    expect(eligible.proposals.filter(isBulkApprovalTarget)).toHaveLength(1);
+
+    const notEligible = await restore([
+      nativeRow("prop-reason", "ev-cold-1:0", {
+        eligible: false,
+        reasons: ["r3-significance"],
+      }),
+    ]);
+    expect(notEligible.proposals[0]?.bulkApproval).toEqual({
+      eligible: false,
+      reasons: ["r3-significance"],
+    });
+    expect(notEligible.proposals.filter(isBulkApprovalTarget)).toHaveLength(0);
+
+    // A bundle row without a judgement (not a current Chronicle Run).
+    const none = await restore([nativeRow("prop-none", "ev-cold-1:0")]);
+    expect(none.proposals[0]?.bulkApproval ?? null).toBeNull();
+    expect(none.proposals.filter(isBulkApprovalTarget)).toHaveLength(0);
   });
 
   it("fails closed when Native proposal set is missing", async () => {
