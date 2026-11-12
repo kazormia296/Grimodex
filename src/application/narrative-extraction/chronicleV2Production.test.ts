@@ -46,7 +46,7 @@ const proposal = {
 } as unknown as CreateChronicleEventProposalPayloadV1;
 
 const observation: RawChronicleEventObservation = {
-  localId: "observation:arrival",
+  localId: "window-001:obs-001",
   evidence: [{ sourceRef: "source:scene:arrival", quote: "Arrival." }],
   assertion: { attribution: "narrator", narrativeFrame: "story-world" },
   payload: {
@@ -285,8 +285,8 @@ describe("Chronicle V2 production adapter boundary", () => {
         selector: { kind: "whole-source" },
       },
       {
-        contextId: "event-observation:observation:arrival",
-        inputRef: "observation:observation:arrival",
+        contextId: "event-observation:window-001:obs-001",
+        inputRef: "observation:window-001:obs-001",
         stageId: NARRATIVE_STAGE_IDS.eventSynthesis,
         exposure: "model-visible",
         selector: { kind: "whole-source" },
@@ -420,7 +420,7 @@ describe("Chronicle V2 production adapter boundary", () => {
     async (actuality) => {
       const contrast: RawChronicleEventObservation = {
         ...observation,
-        localId: `observation:${actuality}`,
+        localId: `window-001:obs-${actuality}`,
         payload: { ...observation.payload, actuality },
       };
       const all = [observation, contrast];
@@ -540,7 +540,7 @@ describe("Chronicle V2 production adapter boundary", () => {
   it("rejects a subset-only receipt for a saved mixed synthesis cluster", async () => {
     const contrast: RawChronicleEventObservation = {
       ...observation,
-      localId: "observation:planned",
+      localId: "window-001:obs-planned",
       payload: { ...observation.payload, actuality: "planned" },
     };
     const input = await productionInput();
@@ -607,5 +607,26 @@ describe("Chronicle V2 production adapter boundary", () => {
         ),
       }),
     ).rejects.toThrow("synthesis receipt");
+  });
+});
+
+describe("baseline of a single-scene Chronicle V2 envelope (DMS/1 D6)", () => {
+  // Captured from the code before the declared material scope was narrowed
+  // (the same fixture, with the full-extraction source basis). A one-scene
+  // extraction has one scene in the plan, so narrowing must not move a byte.
+  it("keeps the source basis, dependency set and digests byte-identical", async () => {
+    const input = await productionInput();
+    const result = await buildChronicleProductionV2Envelope({
+      ...input,
+      windowPlan: [{ windowId: "window-001", documentRef: "document:arrival" }],
+    });
+    const basis = result.envelope.effectiveMaterialBasis;
+    expect(basis.sourceBasis).toEqual(input.sourceBasis);
+    expect(basis.dependencySetDigest).toBe(
+      "sha256:af3baf702995ce9bc9e2e6bc40350a2a5979c99faa8538609cbc5bf25f296a07",
+    );
+    expect(basis.materialBasisDigest).toBe(
+      "sha256:0546cee6abdaf1712abcee982b416ffc6fdd9c59f4fea97539322f69b3c5b778",
+    );
   });
 });
