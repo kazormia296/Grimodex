@@ -3254,6 +3254,544 @@ fn assert_bulk_refused(
     assert_eq!(bulk_state(db), before, "{proposal}: a refused target writes nothing");
 }
 
+const TWO_WINDOW_SECOND_ROOT: &str = "411f5ebc-84b4-406b-ad00-c94da2c8ccb9";
+
+/// A private two-window copy where both proposals of the run are bulk-approval
+/// targets: the second proposal's current Revision is moved back to its AI root
+/// (resealed `scene-level`, like the first), its approval removed. The child
+/// Revision the real product left stays as an unreferenced Revision 2.
+fn bulk_two_window_two_targets() -> (Fixture, Database) {
+    bulk_two_window(|conn| {
+        conn.execute(
+            "UPDATE narrative_proposals
+                SET status = 'unreviewed', current_revision_id = ?2,
+                    payload_json = (SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?2)
+              WHERE id = ?1",
+            params![TWO_WINDOW_SECOND_PROPOSAL, TWO_WINDOW_SECOND_ROOT],
+        )
+        .expect("move the second proposal back to its AI root");
+        conn.execute(
+            "DELETE FROM narrative_proposal_decisions WHERE proposal_id = ?1",
+            params![TWO_WINDOW_SECOND_PROPOSAL],
+        )
+        .expect("remove the second proposal's approval");
+        reseal_assertion_values(conn, TWO_WINDOW_SECOND_ROOT, &[("significance", "scene-level")]);
+    })
+}
+
+/// `text` with what differs between two runs of the same operation masked: UUIDs,
+/// 32- and 64-hex ids and digests and `YYYY-MM-DD[ T]HH:MM:SS[.fff][Z]` timestamps.
+fn mask_volatile(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let hex = |c: char| c.is_ascii_hexdigit();
+    let run = |from: usize, pred: &dyn Fn(char) -> bool| {
+        chars[from..].iter().take_while(|c| pred(**c)).count()
+    };
+    let matches_at = |from: usize, shape: &str| {
+        // `x` hex, `d` digit, any other character literal.
+        let shape: Vec<char> = shape.chars().collect();
+        from + shape.len() <= chars.len()
+            && shape.iter().enumerate().all(|(offset, expected)| {
+                let c = chars[from + offset];
+                match expected {
+                    'x' => hex(c),
+                    'd' => c.is_ascii_digit(),
+                    'T' => c == 'T' || c == ' ',
+                    literal => c == *literal,
+                }
+            })
+    };
+    let mut masked = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < chars.len() {
+        let before_is_word = index > 0 && (chars[index - 1].is_ascii_alphanumeric());
+        let hex_run = run(index, &hex);
+        if !before_is_word
+            && (hex_run == 32 || hex_run == 64)
+            && run(index, &|c| c.is_ascii_alphanumeric()) == hex_run
+        {
+            masked.push_str("<HEX>");
+            index += hex_run;
+        } else if matches_at(index, "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx") {
+            masked.push_str("<ID>");
+            index += 36;
+        } else if matches_at(index, "dddd-dd-ddTdd:dd:dd") {
+            index += 19;
+            if chars.get(index) == Some(&'.') {
+                index += 1 + run(index + 1, &|c| c.is_ascii_digit());
+            }
+            if chars.get(index) == Some(&'Z') {
+                index += 1;
+            }
+            masked.push_str("<T>");
+        } else {
+            masked.push(chars[index]);
+            index += 1;
+        }
+    }
+    masked
+}
+
+/// Every row of every ordinary table, masked and sorted: two databases hold the
+/// same data exactly when these maps are equal (ids, digests and times of rows
+/// that two runs of the same operation must differ in are masked).
+fn masked_database_rows(db: &Database) -> std::collections::BTreeMap<String, Vec<String>> {
+    db.with_conn(|conn| {
+        let tables: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master
+                  WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                    AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'
+                  ORDER BY name",
+            )?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        let mut dump = std::collections::BTreeMap::new();
+        for table in tables {
+            let mut statement = conn.prepare(&format!("SELECT * FROM \"{table}\""))?;
+            let columns = statement.column_count();
+            let mut rows: Vec<String> = statement
+                .query_map([], |row| {
+                    let mut cells = Vec::with_capacity(columns);
+                    for column in 0..columns {
+                        cells.push(match row.get_ref(column)? {
+                            rusqlite::types::ValueRef::Null => "NULL".to_owned(),
+                            rusqlite::types::ValueRef::Integer(value) => value.to_string(),
+                            rusqlite::types::ValueRef::Real(value) => value.to_string(),
+                            rusqlite::types::ValueRef::Text(value) => {
+                                String::from_utf8_lossy(value).into_owned()
+                            }
+                            rusqlite::types::ValueRef::Blob(value) => hex::encode(value),
+                        });
+                    }
+                    Ok(mask_volatile(&cells.join(" | ")))
+                })?
+                .collect::<Result<_, _>>()?;
+            rows.sort();
+            dump.insert(table, rows);
+        }
+        Ok(dump)
+    })
+    .expect("masked database rows")
+}
+
+fn assert_same_database_rows(left: &Database, right: &Database, what: &str) {
+    let (left, right) = (masked_database_rows(left), masked_database_rows(right));
+    assert_eq!(left.keys().collect::<Vec<_>>(), right.keys().collect::<Vec<_>>(), "{what}: tables");
+    let mut compared_rows = 0;
+    for (table, rows) in &left {
+        assert_eq!(rows, &right[table], "{what}: table {table}");
+        compared_rows += rows.len();
+    }
+    assert!(compared_rows > 500, "{what}: a real comparison ({compared_rows} rows)");
+}
+
+/// 一括の承認は、「1 件ずつ、子の版を作って、承認する」の連続と、DB のどの行も同じにする。
+/// 違ってよいのは、行の id、封印の digest（id を含む）、時刻だけ。
+#[test]
+fn bulk_approve_writes_the_same_rows_as_creating_and_approving_one_proposal_at_a_time() {
+    let (fixture_bulk, db_bulk) = bulk_two_window_two_targets();
+    let (fixture_each, db_each) = bulk_two_window_two_targets();
+    let both = [TWO_WINDOW_FIRST_PROPOSAL, TWO_WINDOW_SECOND_PROPOSAL];
+
+    let result = bulk_approve_targets(&db_bulk, &fixture_bulk, TWO_WINDOW_RUN, bulk_targets(&db_bulk, &both));
+    assert_eq!(result["approved"].as_array().expect("approved").len(), 2, "{result}");
+    assert_eq!(result["skipped"], json!([]), "{result}");
+    assert_eq!(result["failed"], json!([]), "{result}");
+
+    for proposal in both {
+        let parent = bulk_targets(&db_each, &[proposal])[0].revision_id.clone();
+        let child = try_create_native_child(&db_each, &fixture_each, &parent, |payload| {
+            payload["disclosure"]["secret"] = json!(false);
+        })
+        .expect("one-at-a-time child");
+        narrative_extraction_append_human_decision(
+            &db_each,
+            AppendDecisionPayload {
+                run_id: TWO_WINDOW_RUN.to_owned(),
+                project_id: fixture_each.project().to_owned(),
+                proposal_id: proposal.to_owned(),
+                revision_id: child,
+                decision: "approved".to_owned(),
+                decision_json: None,
+                created_by: Some("chronicle-extract-dialog".to_owned()),
+            },
+        )
+        .expect("one-at-a-time approval");
+    }
+    assert_same_database_rows(&db_bulk, &db_each, "after");
+}
+
+/// Corrupt the sealed plan artifact of the run BEFORE the command, so the up-front
+/// (warm) verification of the command fails and nothing is reused. A rewrite DURING
+/// the command is the tests of `bulk_approve_stops_like_one_at_a_time_when_a_reused_row_is_rewritten_between_proposals`.
+/// The same outcome as before the plan was verified once (every target is `plan-unavailable`,
+/// nothing is written) and the one-proposal writer still fails with its own code.
+fn assert_broken_plan_is_refused(corrupt: impl FnOnce(&Connection), what: &str) {
+    let (fixture, db) = bulk_two_window_two_targets();
+    {
+        let conn = fixture.corruption_connection();
+        corrupt(&conn);
+    }
+    drop(db);
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    let both = [TWO_WINDOW_FIRST_PROPOSAL, TWO_WINDOW_SECOND_PROPOSAL];
+    let before = bulk_state(&db);
+    let result = bulk_approve_targets(&db, &fixture, TWO_WINDOW_RUN, bulk_targets(&db, &both));
+    assert_eq!(result["approved"], json!([]), "{what}: {result}");
+    assert_eq!(result["failed"], json!([]), "{what}: {result}");
+    let skipped = result["skipped"].as_array().expect("skipped");
+    assert_eq!(skipped.len(), 2, "{what}: {result}");
+    for target in skipped {
+        assert!(reasons_of(target).iter().any(|r| r == "plan-unavailable"), "{what}: {result}");
+    }
+    assert_eq!(bulk_state(&db), before, "{what}: nothing is written");
+    // The one-at-a-time writer verifies the plan itself and stops with its own code.
+    let parent = bulk_targets(&db, &[TWO_WINDOW_FIRST_PROPOSAL])[0].revision_id.clone();
+    let error = narrative_extraction_append_human_decision(
+        &db,
+        AppendDecisionPayload {
+            run_id: TWO_WINDOW_RUN.to_owned(),
+            project_id: fixture.project().to_owned(),
+            proposal_id: TWO_WINDOW_FIRST_PROPOSAL.to_owned(),
+            revision_id: parent,
+            decision: "rejected".to_owned(),
+            decision_json: Some(json!({"probableDuplicateChoice": "skip-as-same"})),
+            created_by: Some("nir1-bulk-test".to_owned()),
+        },
+    )
+    .expect_err("a broken plan stops the one-at-a-time decision");
+    assert!(
+        format!("{error:#}").contains("NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT"),
+        "{what}: {error:#}"
+    );
+    assert_eq!(bulk_state(&db), before, "{what}: the refused decision writes nothing");
+}
+
+#[test]
+fn bulk_approve_with_a_plan_artifact_missing_before_the_command_stops_at_the_up_front_verification() {
+    assert_broken_plan_is_refused(
+        |conn| {
+            conn.execute(
+                "DELETE FROM narrative_extraction_artifacts
+                  WHERE run_id = ?1 AND artifact_kind = 'chronicle.proposal-plan@1'",
+                [TWO_WINDOW_RUN],
+            )
+            .expect("remove the plan artifact");
+        },
+        "missing",
+    );
+}
+
+#[test]
+fn bulk_approve_with_a_plan_artifact_corrupted_before_the_command_stops_at_the_up_front_verification() {
+    assert_broken_plan_is_refused(
+        |conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_artifacts
+                    SET payload_json = json_set(payload_json, '$.planned[0].match.status', 'probable-duplicate')
+                  WHERE run_id = ?1 AND artifact_kind = 'chronicle.proposal-plan@1'",
+                [TWO_WINDOW_RUN],
+            )
+            .expect("change a sealed match without its digest");
+        },
+        "corrupted",
+    );
+}
+
+#[test]
+fn bulk_approve_with_another_runs_plan_artifact_before_the_command_stops_at_the_up_front_verification() {
+    assert_broken_plan_is_refused(
+        |conn| {
+            let other_run: String = conn
+                .query_row(
+                    "SELECT s.run_id FROM narrative_proposals p
+                       JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id WHERE p.id = ?1",
+                    [TWO_WINDOW_OTHER_RUN_PROPOSAL],
+                    |row| row.get(0),
+                )
+                .expect("the other run");
+            assert_ne!(other_run, TWO_WINDOW_RUN);
+            let swapped = conn
+                .execute(
+                    "UPDATE narrative_extraction_artifacts
+                        SET payload_json = (SELECT payload_json FROM narrative_extraction_artifacts
+                                             WHERE run_id = ?2 AND artifact_kind = 'chronicle.proposal-plan@1'),
+                            payload_digest = (SELECT payload_digest FROM narrative_extraction_artifacts
+                                               WHERE run_id = ?2 AND artifact_kind = 'chronicle.proposal-plan@1')
+                      WHERE run_id = ?1 AND artifact_kind = 'chronicle.proposal-plan@1'",
+                    params![TWO_WINDOW_RUN, other_run],
+                )
+                .expect("put the other run's plan in this run");
+            assert_eq!(swapped, 1);
+        },
+        "another run's",
+    );
+}
+
+/// 一括の途中（提案と提案の間）で、別の書き手が組を消費（取り込み）すると、次の提案は、今と同じ理由
+/// （`set-applied`）で止まり、書かれない。消費の見張りは、提案ごとに、その提案の transaction の中で読む。
+#[test]
+fn bulk_approve_stops_the_next_proposal_when_the_set_is_consumed_between_proposals() {
+    let (fixture, db) = bulk_two_window_two_targets();
+    let both = [TWO_WINDOW_FIRST_PROPOSAL, TWO_WINDOW_SECOND_PROPOSAL];
+    let targets = bulk_targets(&db, &both);
+    let mut asked = 0;
+    let result = narrative_extraction_chronicle_bulk_approve(
+        &db,
+        ChronicleBulkApprovePayload {
+            project_id: fixture.project().to_owned(),
+            run_id: TWO_WINDOW_RUN.to_owned(),
+            targets,
+        },
+        &mut || {
+            asked += 1;
+            if asked == 2 {
+                // Another writer consumes the set after the first proposal was approved.
+                db.with_conn(|conn| {
+                    conn.execute(
+                        "INSERT INTO narrative_proposal_applications
+                            (id, commit_id, proposal_id, revision_id, applied_entity_kind, applied_entity_id, created_at)
+                         SELECT 'bao-consumed', 'bao-commit', ?1, current_revision_id, 'event', 'bao-event', datetime('now')
+                           FROM narrative_proposals WHERE id = ?1",
+                        [TWO_WINDOW_FIRST_PROPOSAL],
+                    )?;
+                    Ok(())
+                })
+                .expect("consume the set");
+            }
+            false
+        },
+    )
+    .expect("bulk approve");
+    let approved = result["approved"].as_array().expect("approved");
+    assert_eq!(approved.len(), 1, "{result}");
+    assert_eq!(approved[0]["proposalId"], TWO_WINDOW_FIRST_PROPOSAL);
+    assert_eq!(result["failed"], json!([]), "{result}");
+    let skipped = result["skipped"].as_array().expect("skipped");
+    assert_eq!(skipped.len(), 1, "{result}");
+    assert_eq!(skipped[0]["proposalId"], TWO_WINDOW_SECOND_PROPOSAL);
+    assert!(reasons_of(&skipped[0]).iter().any(|r| r == "set-applied"), "{result}");
+    db.with_conn(|conn| {
+        let (status, revisions): (String, i64) = conn.query_row(
+            "SELECT p.status, (SELECT COUNT(*) FROM narrative_proposal_revisions WHERE proposal_id = p.id)
+               FROM narrative_proposals p WHERE p.id = ?1",
+            [TWO_WINDOW_SECOND_PROPOSAL],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!((status.as_str(), revisions), ("unreviewed", 2), "the stopped proposal is untouched");
+        Ok(())
+    })
+    .expect("the stopped proposal");
+}
+
+/// 一括を 2 件で走らせ、1 件目を承認した後・2 件目の前（「止めるか」を聞かれる所）で、別の接続が
+/// `between` で DB を書き換える。
+fn bulk_approve_both_with_a_write_between(
+    fixture: &Fixture,
+    db: &Database,
+    between: impl FnOnce(&Connection),
+) -> Value {
+    let both = [TWO_WINDOW_FIRST_PROPOSAL, TWO_WINDOW_SECOND_PROPOSAL];
+    let targets = bulk_targets(db, &both);
+    let mut between = Some(between);
+    let mut asked = 0;
+    narrative_extraction_chronicle_bulk_approve(
+        db,
+        ChronicleBulkApprovePayload {
+            project_id: fixture.project().to_owned(),
+            run_id: TWO_WINDOW_RUN.to_owned(),
+            targets,
+        },
+        &mut || {
+            asked += 1;
+            if asked == 2 {
+                if let Some(between) = between.take() {
+                    let other = Connection::open(&fixture.path).expect("another connection");
+                    other
+                        .busy_timeout(std::time::Duration::from_secs(5))
+                        .expect("busy timeout");
+                    between(&other);
+                }
+            }
+            false
+        },
+    )
+    .expect("bulk approve")
+}
+
+/// `NEX_...` の先頭の符号（失敗の鎖の文面から）。
+fn first_nex_code(text: &str) -> String {
+    let start = text.find("NEX_").expect("a NEX_ code");
+    text[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
+        .collect()
+}
+
+/// 同じ書き換えを先に済ませた DB で、2 件目を「1 件ずつ（子の版を作って承認）」で通したときの、
+/// 最初の失敗の符号。通れば `None`。
+fn one_at_a_time_second_proposal_failure(mutate: impl FnOnce(&Connection)) -> Option<String> {
+    let (fixture, db) = bulk_two_window_two_targets();
+    mutate(&Connection::open(&fixture.path).expect("another connection"));
+    let parent = bulk_targets(&db, &[TWO_WINDOW_SECOND_PROPOSAL])[0].revision_id.clone();
+    let child = match try_create_native_child(&db, &fixture, &parent, |payload| {
+        payload["disclosure"]["secret"] = json!(false);
+    }) {
+        Ok(child) => child,
+        Err(error) => return Some(first_nex_code(&format!("{error:#}"))),
+    };
+    narrative_extraction_append_human_decision(
+        &db,
+        AppendDecisionPayload {
+            run_id: TWO_WINDOW_RUN.to_owned(),
+            project_id: fixture.project().to_owned(),
+            proposal_id: TWO_WINDOW_SECOND_PROPOSAL.to_owned(),
+            revision_id: child,
+            decision: "approved".to_owned(),
+            decision_json: None,
+            created_by: Some("chronicle-extract-dialog".to_owned()),
+        },
+    )
+    .err()
+    .map(|error| first_nex_code(&format!("{error:#}")))
+}
+
+/// 使い回す行（計画の artifact の digest、計画／Snapshot の Task の status、Run の digest）を、
+/// command の途中（提案と提案の間）で別の接続が書き換えると、2 件目は 1 件ずつの経路と同じ失敗の符号で
+/// 止まり、何も書かれない（1 件目は承認済みのまま）。書く transaction の中の照合（主キーの読み）が
+/// 使い回しをやめ、書き手が全検証に落ちるから。照合が無い使い回しだけの版では、2 件目が承認されてしまう
+/// （Run の catalog digest だけは、子の版を書く側の別の検査でも止まるので、照合が無くても通る）。
+#[test]
+fn bulk_approve_stops_like_one_at_a_time_when_a_reused_row_is_rewritten_between_proposals() {
+    type Rewrite = fn(&Connection);
+    let cases: [(&str, Rewrite); 5] = [
+        ("plan artifact digest", |conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_artifacts SET payload_digest = payload_digest || '0'
+                  WHERE run_id = ?1 AND artifact_kind = 'chronicle.proposal-plan@1'",
+                [TWO_WINDOW_RUN],
+            )
+            .expect("rewrite the plan artifact digest");
+        }),
+        ("plan owner task status", |conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks SET status = 'failed'
+                  WHERE id = (SELECT task_id FROM narrative_extraction_artifacts
+                               WHERE run_id = ?1 AND artifact_kind = 'chronicle.proposal-plan@1')",
+                [TWO_WINDOW_RUN],
+            )
+            .expect("rewrite the plan owner task status");
+        }),
+        ("snapshot task status", |conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_tasks SET status = 'failed'
+                  WHERE run_id = ?1 AND task_kind = 'source.snapshot@1'",
+                [TWO_WINDOW_RUN],
+            )
+            .expect("rewrite the snapshot task status");
+        }),
+        ("run snapshot digest", |conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs SET snapshot_digest = snapshot_digest || '0' WHERE id = ?1",
+                [TWO_WINDOW_RUN],
+            )
+            .expect("rewrite the run snapshot digest");
+        }),
+        ("run catalog digest", |conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs SET catalog_digest = catalog_digest || '0' WHERE id = ?1",
+                [TWO_WINDOW_RUN],
+            )
+            .expect("rewrite the run catalog digest");
+        }),
+    ];
+    for (label, rewrite) in cases {
+        let expected = one_at_a_time_second_proposal_failure(rewrite)
+            .unwrap_or_else(|| panic!("{label}: the one-at-a-time path must stop on this rewrite"));
+        let (fixture, db) = bulk_two_window_two_targets();
+        let result = bulk_approve_both_with_a_write_between(&fixture, &db, rewrite);
+        let approved = result["approved"].as_array().expect("approved");
+        assert_eq!(approved.len(), 1, "{label}: {result}");
+        assert_eq!(approved[0]["proposalId"], TWO_WINDOW_FIRST_PROPOSAL, "{label}: {result}");
+        assert_eq!(result["skipped"], json!([]), "{label}: {result}");
+        assert_eq!(
+            result["failed"],
+            json!([{"proposalId": TWO_WINDOW_SECOND_PROPOSAL, "code": expected}]),
+            "{label}: stops with the one-at-a-time failure code"
+        );
+        db.with_conn(|conn| {
+            let (status, revisions): (String, i64) = conn.query_row(
+                "SELECT p.status, (SELECT COUNT(*) FROM narrative_proposal_revisions WHERE proposal_id = p.id)
+                   FROM narrative_proposals p WHERE p.id = ?1",
+                [TWO_WINDOW_SECOND_PROPOSAL],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!((status.as_str(), revisions), ("unreviewed", 2), "{label}: the stopped proposal is untouched");
+            Ok(())
+        })
+        .expect("the stopped proposal");
+    }
+}
+
+/// 照合が違いを見つけても、書き手の全検証が通る書き換え（Task の version だけ）なら、2 件目は
+/// 1 件ずつの経路と同じく承認される（照合は余計に止めない）。
+#[test]
+fn bulk_approve_still_approves_when_only_a_checked_version_changes_between_proposals() {
+    let (fixture, db) = bulk_two_window_two_targets();
+    let result = bulk_approve_both_with_a_write_between(&fixture, &db, |conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_tasks SET version = version + 1
+              WHERE run_id = ?1 AND task_kind = 'source.snapshot@1'",
+            [TWO_WINDOW_RUN],
+        )
+        .expect("bump the snapshot task version");
+    });
+    assert_eq!(result["approved"].as_array().expect("approved").len(), 2, "{result}");
+    assert_eq!(result["skipped"], json!([]), "{result}");
+    assert_eq!(result["failed"], json!([]), "{result}");
+}
+
+/// 提案ごとに読み直す物は、これまで通り止める：2 件目の現在の版が変わった（作者が編集した）なら
+/// 「変わった」、Run の spec が変わったなら書き手の失敗（符号は 1 件ずつの経路と同じ）。
+#[test]
+fn bulk_approve_stops_the_next_proposal_when_its_revision_or_the_run_spec_changes_between_proposals() {
+    // 作者が 2 件目を編集した。
+    let (fixture, db) = bulk_two_window_two_targets();
+    let result = bulk_approve_both_with_a_write_between(&fixture, &db, |_| {
+        create_native_child(&db, &fixture, TWO_WINDOW_SECOND_ROOT, |payload| {
+            payload["title"] = json!("Edited between proposals");
+        });
+    });
+    assert_eq!(result["approved"].as_array().expect("approved").len(), 1, "{result}");
+    assert_eq!(result["failed"], json!([]), "{result}");
+    assert_eq!(
+        result["skipped"],
+        json!([{"proposalId": TWO_WINDOW_SECOND_PROPOSAL, "reasons": ["revision-changed"]}]),
+        "{result}"
+    );
+
+    // Run の spec が変わった。
+    let respec: fn(&Connection) = |conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_runs SET spec_json = json_set(spec_json, '$.bulkApproveTest', 1) WHERE id = ?1",
+            [TWO_WINDOW_RUN],
+        )
+        .expect("rewrite the run spec");
+    };
+    let expected = one_at_a_time_second_proposal_failure(respec)
+        .expect("the one-at-a-time path stops on a changed Run spec");
+    let (fixture, db) = bulk_two_window_two_targets();
+    let result = bulk_approve_both_with_a_write_between(&fixture, &db, respec);
+    assert_eq!(result["approved"].as_array().expect("approved").len(), 1, "{result}");
+    assert_eq!(result["skipped"], json!([]), "{result}");
+    assert_eq!(
+        result["failed"],
+        json!([{"proposalId": TWO_WINDOW_SECOND_PROPOSAL, "code": expected}]),
+        "{result}"
+    );
+}
+
 /// 正例：対象の提案が、command 1 回で、秘密の印を外した子の版（human-derived、変わった項目は
 /// `/disclosure/secret` だけ）と、その版への Human の承認を持つ。承認の actor／権限の範囲は
 /// 1 件ずつの承認と同じで、子の版は IR の資格を通る。その後、取り込みが通り、出来事は secret。

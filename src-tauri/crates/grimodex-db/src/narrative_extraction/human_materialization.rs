@@ -39,7 +39,10 @@ use super::project_scope_authority::load_live_project_scope_authority;
 use super::reconciliation_envelope::load_source_basis_rows;
 use super::repository::record_revision_dependency_edges_in_tx;
 use super::restore_rebuild::evaluate_edge_from_db;
-use super::scope_authority_runtime::load_sealed_snapshot_document_binding_in_tx;
+use super::scope_authority_runtime::{
+    load_sealed_snapshot_document_binding_in_tx, select_sealed_snapshot_document_binding,
+    SealedSnapshotDocumentBinding,
+};
 use super::task_leases::with_immediate_transaction;
 use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
 use crate::Database;
@@ -103,6 +106,7 @@ fn admit_projection_parent(
     trusted_project_id: &str,
     request: &CreateHumanDerivedRevisionRequest,
     requested_kind: Option<HumanMaterialDerivationKind>,
+    sealed_documents: Option<&SealedRunDocuments<'_>>,
 ) -> anyhow::Result<ProjectionAdmission> {
     #[allow(clippy::type_complexity)]
     let row: Option<(
@@ -285,8 +289,13 @@ fn admit_projection_parent(
             None,
         ),
         HumanMaterialDerivationKind::ScopeOverride => {
-            let (trusted_material, scope_projection) =
-                resolve_live_scope_override_authority(conn, trusted_project_id, &parent, &context)?;
+            let (trusted_material, scope_projection) = resolve_live_scope_override_authority(
+                conn,
+                trusted_project_id,
+                &parent,
+                &context,
+                sealed_documents,
+            )?;
             (
                 resolve_human_material_basis(
                     HumanMaterialDerivationKind::ScopeOverride,
@@ -351,6 +360,7 @@ fn resolve_live_scope_override_authority(
     trusted_project_id: &str,
     parent: &HumanMaterialParentBundle,
     context: &HumanMaterialResolutionContext,
+    sealed_documents: Option<&SealedRunDocuments<'_>>,
 ) -> anyhow::Result<(
     TrustedHumanMaterialResolution,
     Option<TrustedScopeV2Projection>,
@@ -371,12 +381,25 @@ fn resolve_live_scope_override_authority(
     // first, then require that its sealed project node still has exactly one
     // active mapping in the live authority.  Using `context.scene_ref` here
     // would silently turn an edited disclosure target into the event Scene.
-    let reveal_document = load_sealed_snapshot_document_binding_in_tx(
-        conn,
-        trusted_project_id,
-        &parent.owning_run_id,
-        &context.edited_document_ref,
-    )
+    if let Some(sealed) = sealed_documents {
+        sealed.ensure_binds(trusted_project_id, &parent.owning_run_id)?;
+    }
+    let reveal_document = match sealed_documents {
+        Some(sealed) => {
+            select_sealed_snapshot_document_binding(sealed.documents, &context.edited_document_ref)
+                .map(|document| SealedSnapshotDocumentBinding {
+                    document_ref: document.document_ref.clone(),
+                    source_key: document.source_key.clone(),
+                    node_id: document.node_id.clone(),
+                })
+        }
+        None => load_sealed_snapshot_document_binding_in_tx(
+            conn,
+            trusted_project_id,
+            &parent.owning_run_id,
+            &context.edited_document_ref,
+        ),
+    }
     .map_err(|error| anyhow!("NEX_C2B_SCOPE_AUTHORITY_REVEAL_BASIS_UNAVAILABLE: {error}"))?;
     let reveal_scene_ref = reveal_scene_ref(&reveal_document.node_id);
 
@@ -401,14 +424,24 @@ fn resolve_live_scope_override_authority(
             ));
         }
     };
-    let identity = super::scope_dependency_projection::bind_identity_in_tx(
-        conn,
-        trusted_project_id,
-        &parent.owning_run_id,
-        &context.scene_ref,
-        &context.edited_document_ref,
-        context.secret_scope,
-    )?;
+    let identity = match sealed_documents {
+        Some(sealed) => super::scope_dependency_projection::bind_identity_from_documents(
+            sealed.documents,
+            trusted_project_id,
+            &parent.owning_run_id,
+            &context.scene_ref,
+            &context.edited_document_ref,
+            context.secret_scope,
+        )?,
+        None => super::scope_dependency_projection::bind_identity_in_tx(
+            conn,
+            trusted_project_id,
+            &parent.owning_run_id,
+            &context.scene_ref,
+            &context.edited_document_ref,
+            context.secret_scope,
+        )?,
+    };
     let projection_source_key = identity.source_key()?;
     let projection_token =
         grimodex_core::narrative_scope_dependency_projection::projection_revision(
@@ -657,13 +690,61 @@ pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization(
     })
 }
 
+/// The sealed Snapshot documents of one Run, read (and verified) once by a
+/// caller that creates the children of many Proposals of that Run in a row. The
+/// corpus is an immutable artifact of the Run: a ScopeOverride child reads it
+/// only to resolve the reveal document and bind its dependency identity, so
+/// the writer does not need to read it again for every child. The live Scope
+/// authority, the parent's own rows and every write stay per child.
+pub(crate) struct SealedRunDocuments<'a> {
+    pub(crate) project_id: &'a str,
+    pub(crate) run_id: &'a str,
+    pub(crate) documents: &'a [SealedSnapshotDocumentBinding],
+}
+
+impl SealedRunDocuments<'_> {
+    /// The documents must be the ones of the parent's own project and Run.
+    fn ensure_binds(&self, project_id: &str, run_id: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.project_id == project_id && self.run_id == run_id,
+            "NEX_C2B_SEALED_DOCUMENTS_MISMATCH: the reused sealed documents belong to another project or Run"
+        );
+        Ok(())
+    }
+}
+
 pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization_in_tx(
     conn: &Connection,
     trusted_project_id: &str,
     request: &CreateHumanDerivedRevisionRequest,
     requested_kind: Option<HumanMaterialDerivationKind>,
 ) -> anyhow::Result<Value> {
-    let admission = admit_projection_parent(conn, trusted_project_id, request, requested_kind)?;
+    create_human_derived_revision_with_c2b_projection_materialization_in_tx_reusing(
+        conn,
+        trusted_project_id,
+        request,
+        requested_kind,
+        None,
+    )
+}
+
+/// [`create_human_derived_revision_with_c2b_projection_materialization_in_tx`]
+/// for a caller that holds the Run's sealed documents (`None`: the writer reads
+/// them itself, as the one-child path does).
+pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization_in_tx_reusing(
+    conn: &Connection,
+    trusted_project_id: &str,
+    request: &CreateHumanDerivedRevisionRequest,
+    requested_kind: Option<HumanMaterialDerivationKind>,
+    sealed_documents: Option<&SealedRunDocuments<'_>>,
+) -> anyhow::Result<Value> {
+    let admission = admit_projection_parent(
+        conn,
+        trusted_project_id,
+        request,
+        requested_kind,
+        sealed_documents,
+    )?;
     let trusted_material_basis = (admission.actual_kind
         == HumanMaterialDerivationKind::ScopeOverride)
         .then_some(&admission.material_basis);
@@ -819,4 +900,68 @@ pub(crate) fn create_human_derived_revision_with_c2b_projection_materialization_
             )
         })
     })
+}
+
+#[cfg(test)]
+mod sealed_run_documents_tests {
+    use super::*;
+
+    #[test]
+    fn reused_sealed_documents_bind_only_their_own_project_and_run() {
+        let documents = [SealedSnapshotDocumentBinding {
+            document_ref: "D000001".to_owned(),
+            source_key: "k".to_owned(),
+            node_id: "n".to_owned(),
+        }];
+        let sealed = SealedRunDocuments {
+            project_id: "p",
+            run_id: "r",
+            documents: &documents,
+        };
+        sealed
+            .ensure_binds("p", "r")
+            .expect("its own project and Run");
+        for (project, run) in [("p2", "r"), ("p", "r2")] {
+            let error = sealed
+                .ensure_binds(project, run)
+                .expect_err("another project or Run");
+            assert!(
+                format!("{error:#}").contains("NEX_C2B_SEALED_DOCUMENTS_MISMATCH"),
+                "{error:#}"
+            );
+        }
+        // The reveal document is selected exactly like the loader does.
+        let found =
+            select_sealed_snapshot_document_binding(&documents, "D000001").expect("one match");
+        assert_eq!(found.node_id, "n");
+        for (reference, code) in [
+            ("D000002", "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_MISSING"),
+            (" D000001", "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_INVALID"),
+            ("", "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_INVALID"),
+        ] {
+            let error = select_sealed_snapshot_document_binding(&documents, reference)
+                .expect_err(reference);
+            assert!(
+                format!("{error:#}").contains(code),
+                "{reference}: {error:#}"
+            );
+        }
+        let twice = [
+            SealedSnapshotDocumentBinding {
+                document_ref: "D1".to_owned(),
+                source_key: "a".to_owned(),
+                node_id: "x".to_owned(),
+            },
+            SealedSnapshotDocumentBinding {
+                document_ref: "D1".to_owned(),
+                source_key: "b".to_owned(),
+                node_id: "y".to_owned(),
+            },
+        ];
+        let error = select_sealed_snapshot_document_binding(&twice, "D1").expect_err("two matches");
+        assert!(
+            format!("{error:#}").contains("NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_AMBIGUOUS"),
+            "{error:#}"
+        );
+    }
 }
