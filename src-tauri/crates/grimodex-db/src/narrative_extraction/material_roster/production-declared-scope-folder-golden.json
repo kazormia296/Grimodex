@@ -1,0 +1,1740 @@
+{
+  "provenance": {
+    "source": "normal planner, production extraction path, Human review UI",
+    "setup": "electron/scripts/nir1-multi-window-cold-fixture.mjs"
+  },
+  "snapshot": {
+    "snapshot": {
+      "schemaVersion": 1,
+      "id": "f314c820-67fa-4c2e-a826-e915a83586fe",
+      "snapshotId": "f314c820-67fa-4c2e-a826-e915a83586fe",
+      "createdAt": "2026-11-12T13:40:35.193Z",
+      "language": "ja",
+      "normalizerVersion": "gdx-canonical-text/1",
+      "origin": {
+        "kind": "grimodex-project",
+        "projectId": "default-project"
+      },
+      "documents": [
+        {
+          "ref": "D000001",
+          "sourceKey": "project:scene:mw-scene-1",
+          "parentRef": null,
+          "title": "Quay 1",
+          "orderIndex": 0,
+          "canonical": {
+            "unit": "utf16",
+            "text": "The Saltmere watch counted lamp 1 along the cold wall. The Saltmere watch counted lamp 2 along the cold wall. The Saltmere watch counted lamp 3 along the cold wall. The Saltmere watch counted lamp 4 along the cold wall. The Saltmere watch counted lamp 5 along the cold wall.\nCaptain Orrel lit the signal fire on Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.\nThe Saltmere watch counted lamp 11 along the cold wall. The Saltmere watch counted lamp 12 along the cold wall. The Saltmere watch counted lamp 13 along the cold wall. The Saltmere watch counted lamp 14 along the cold wall. The Saltmere watch counted lamp 15 along the cold wall.",
+            "blocks": [
+              {
+                "id": "B000001",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 0,
+                  "to": 274
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000002",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 275,
+                  "to": 547
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000003",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 548,
+                  "to": 827
+                },
+                "depth": 0
+              }
+            ],
+            "projection": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 827,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 274,
+                  "from": 1,
+                  "to": 275,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 274
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 275
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 274,
+                  "canonicalEnd": 275,
+                  "canonical": {
+                    "from": 274,
+                    "to": 275
+                  },
+                  "boundary": {
+                    "leftPmPos": 275,
+                    "rightPmPos": 277
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 275,
+                  "canonicalEnd": 547,
+                  "from": 277,
+                  "to": 549,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 275,
+                    "to": 547
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 277,
+                    "toPos": 549
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 547,
+                  "canonicalEnd": 548,
+                  "canonical": {
+                    "from": 547,
+                    "to": 548
+                  },
+                  "boundary": {
+                    "leftPmPos": 549,
+                    "rightPmPos": 551
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 548,
+                  "canonicalEnd": 827,
+                  "from": 551,
+                  "to": 830,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 548,
+                    "to": 827
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 551,
+                    "toPos": 830
+                  }
+                }
+              ]
+            },
+            "projectionMap": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 827,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 274,
+                  "from": 1,
+                  "to": 275,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 274
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 275
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 274,
+                  "canonicalEnd": 275,
+                  "canonical": {
+                    "from": 274,
+                    "to": 275
+                  },
+                  "boundary": {
+                    "leftPmPos": 275,
+                    "rightPmPos": 277
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 275,
+                  "canonicalEnd": 547,
+                  "from": 277,
+                  "to": 549,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 275,
+                    "to": 547
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 277,
+                    "toPos": 549
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 547,
+                  "canonicalEnd": 548,
+                  "canonical": {
+                    "from": 547,
+                    "to": 548
+                  },
+                  "boundary": {
+                    "leftPmPos": 549,
+                    "rightPmPos": 551
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 548,
+                  "canonicalEnd": 827,
+                  "from": 551,
+                  "to": 830,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 548,
+                    "to": 827
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 551,
+                    "toPos": 830
+                  }
+                }
+              ]
+            },
+            "diagnostics": []
+          },
+          "contentDigest": "sha256:dfdda83d02b2063f111c075d3711cd9f8ded6b8d113721c3f17a0034346e8552",
+          "documentDigest": "sha256:1815de40759c5ff934d1107cd4724f203d7890f371b6f66637ca77ab50099dd6",
+          "artifactDigest": "sha256:622634aec7c270dd4871a2aab881d1ce6fe33cfc1ad587ae7303166df3d7bbd1",
+          "origin": {
+            "kind": "project-node",
+            "projectId": "default-project",
+            "nodeId": "mw-scene-1",
+            "sourceVersion": 0,
+            "sourceUpdatedAt": "2026-11-12T13:40:24.187026419+00:00",
+            "sourceUri": null
+          }
+        },
+        {
+          "ref": "D000002",
+          "sourceKey": "project:scene:mw-scene-2",
+          "parentRef": null,
+          "title": "Quay 2",
+          "orderIndex": 1,
+          "canonical": {
+            "unit": "utf16",
+            "text": "The Saltmere watch counted lamp 1 along the cold wall. The Saltmere watch counted lamp 2 along the cold wall. The Saltmere watch counted lamp 3 along the cold wall. The Saltmere watch counted lamp 4 along the cold wall. The Saltmere watch counted lamp 5 along the cold wall.\nA courier delivered the sealed writ to Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.\nThe Saltmere watch counted lamp 11 along the cold wall. The Saltmere watch counted lamp 12 along the cold wall. The Saltmere watch counted lamp 13 along the cold wall. The Saltmere watch counted lamp 14 along the cold wall. The Saltmere watch counted lamp 15 along the cold wall.",
+            "blocks": [
+              {
+                "id": "B000001",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 0,
+                  "to": 274
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000002",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 275,
+                  "to": 549
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000003",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 550,
+                  "to": 829
+                },
+                "depth": 0
+              }
+            ],
+            "projection": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 829,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 274,
+                  "from": 1,
+                  "to": 275,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 274
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 275
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 274,
+                  "canonicalEnd": 275,
+                  "canonical": {
+                    "from": 274,
+                    "to": 275
+                  },
+                  "boundary": {
+                    "leftPmPos": 275,
+                    "rightPmPos": 277
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 275,
+                  "canonicalEnd": 549,
+                  "from": 277,
+                  "to": 551,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 275,
+                    "to": 549
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 277,
+                    "toPos": 551
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 549,
+                  "canonicalEnd": 550,
+                  "canonical": {
+                    "from": 549,
+                    "to": 550
+                  },
+                  "boundary": {
+                    "leftPmPos": 551,
+                    "rightPmPos": 553
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 550,
+                  "canonicalEnd": 829,
+                  "from": 553,
+                  "to": 832,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 550,
+                    "to": 829
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 553,
+                    "toPos": 832
+                  }
+                }
+              ]
+            },
+            "projectionMap": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 829,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 274,
+                  "from": 1,
+                  "to": 275,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 274
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 275
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 274,
+                  "canonicalEnd": 275,
+                  "canonical": {
+                    "from": 274,
+                    "to": 275
+                  },
+                  "boundary": {
+                    "leftPmPos": 275,
+                    "rightPmPos": 277
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 275,
+                  "canonicalEnd": 549,
+                  "from": 277,
+                  "to": 551,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 275,
+                    "to": 549
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 277,
+                    "toPos": 551
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 549,
+                  "canonicalEnd": 550,
+                  "canonical": {
+                    "from": 549,
+                    "to": 550
+                  },
+                  "boundary": {
+                    "leftPmPos": 551,
+                    "rightPmPos": 553
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 550,
+                  "canonicalEnd": 829,
+                  "from": 553,
+                  "to": 832,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 550,
+                    "to": 829
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 553,
+                    "toPos": 832
+                  }
+                }
+              ]
+            },
+            "diagnostics": []
+          },
+          "contentDigest": "sha256:f9b26d3eb6714d93bb6a6c296e5d8a1c9f1f6f5ba23aeabbba4244c42c4c6baa",
+          "documentDigest": "sha256:d4354fc08ad9f38c331cd5a276cb80f3af34dddd8415bb2c38839a4ef3a67c94",
+          "artifactDigest": "sha256:4f2e86952c8176c79270e8599a2cc96e754ef280cd59bb8306848acc246cf66d",
+          "origin": {
+            "kind": "project-node",
+            "projectId": "default-project",
+            "nodeId": "mw-scene-2",
+            "sourceVersion": 0,
+            "sourceUpdatedAt": "2026-11-12T13:40:24.200474718+00:00",
+            "sourceUri": null
+          }
+        },
+        {
+          "ref": "D000003",
+          "sourceKey": "project:scene:mw-scene-3",
+          "parentRef": null,
+          "title": "Quay 3",
+          "orderIndex": 2,
+          "canonical": {
+            "unit": "utf16",
+            "text": "The Saltmere watch counted lamp 1 along the cold wall. The Saltmere watch counted lamp 2 along the cold wall. The Saltmere watch counted lamp 3 along the cold wall. The Saltmere watch counted lamp 4 along the cold wall. The Saltmere watch counted lamp 5 along the cold wall.\nCaptain Orrel lit the signal fire again on Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.\nThe Saltmere watch counted lamp 11 along the cold wall. The Saltmere watch counted lamp 12 along the cold wall. The Saltmere watch counted lamp 13 along the cold wall. The Saltmere watch counted lamp 14 along the cold wall. The Saltmere watch counted lamp 15 along the cold wall.",
+            "blocks": [
+              {
+                "id": "B000001",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 0,
+                  "to": 274
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000002",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 275,
+                  "to": 553
+                },
+                "depth": 0
+              },
+              {
+                "id": "B000003",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 554,
+                  "to": 833
+                },
+                "depth": 0
+              }
+            ],
+            "projection": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 833,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 274,
+                  "from": 1,
+                  "to": 275,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 274
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 275
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 274,
+                  "canonicalEnd": 275,
+                  "canonical": {
+                    "from": 274,
+                    "to": 275
+                  },
+                  "boundary": {
+                    "leftPmPos": 275,
+                    "rightPmPos": 277
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 275,
+                  "canonicalEnd": 553,
+                  "from": 277,
+                  "to": 555,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 275,
+                    "to": 553
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 277,
+                    "toPos": 555
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 553,
+                  "canonicalEnd": 554,
+                  "canonical": {
+                    "from": 553,
+                    "to": 554
+                  },
+                  "boundary": {
+                    "leftPmPos": 555,
+                    "rightPmPos": 557
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 554,
+                  "canonicalEnd": 833,
+                  "from": 557,
+                  "to": 836,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 554,
+                    "to": 833
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 557,
+                    "toPos": 836
+                  }
+                }
+              ]
+            },
+            "projectionMap": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 833,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 274,
+                  "from": 1,
+                  "to": 275,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 274
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 275
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 274,
+                  "canonicalEnd": 275,
+                  "canonical": {
+                    "from": 274,
+                    "to": 275
+                  },
+                  "boundary": {
+                    "leftPmPos": 275,
+                    "rightPmPos": 277
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 275,
+                  "canonicalEnd": 553,
+                  "from": 277,
+                  "to": 555,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 275,
+                    "to": 553
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 277,
+                    "toPos": 555
+                  }
+                },
+                {
+                  "kind": "synthetic-boundary",
+                  "canonicalStart": 553,
+                  "canonicalEnd": 554,
+                  "canonical": {
+                    "from": 553,
+                    "to": 554
+                  },
+                  "boundary": {
+                    "leftPmPos": 555,
+                    "rightPmPos": 557
+                  },
+                  "reason": "block-boundary"
+                },
+                {
+                  "canonicalStart": 554,
+                  "canonicalEnd": 833,
+                  "from": 557,
+                  "to": 836,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 554,
+                    "to": 833
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 557,
+                    "toPos": 836
+                  }
+                }
+              ]
+            },
+            "diagnostics": []
+          },
+          "contentDigest": "sha256:fee2d121816149b97968c5e5b6447674ae1d66a046aa913729f1b8d3eebd3eb6",
+          "documentDigest": "sha256:2968d3e86a21560148320b7501317cafa4d1b09f7cf1e854d3c04645e5487cdb",
+          "artifactDigest": "sha256:98869caf7c124011c9b68fb2a7674d2e9fe7f1da31174cf4f61f983f469ed415",
+          "origin": {
+            "kind": "project-node",
+            "projectId": "default-project",
+            "nodeId": "mw-scene-3",
+            "sourceVersion": 0,
+            "sourceUpdatedAt": "2026-11-12T13:40:24.209047130+00:00",
+            "sourceUri": null
+          }
+        }
+      ],
+      "omissions": [],
+      "digest": "sha256:d39548f9236100048a868d78eba22fcb9b5af0f98b0203159ad057a9066867dc",
+      "artifactDigest": "sha256:bfe2a89d91b264f7bd8a5d7a29b879fbd06e86d2e0ad2c255e27f07439ae626e"
+    },
+    "sourceViews": [
+      {
+        "ref": "S0001",
+        "documentRef": "D000001",
+        "documentRange": {
+          "start": 0,
+          "end": 827
+        },
+        "text": "The Saltmere watch counted lamp 1 along the cold wall. The Saltmere watch counted lamp 2 along the cold wall. The Saltmere watch counted lamp 3 along the cold wall. The Saltmere watch counted lamp 4 along the cold wall. The Saltmere watch counted lamp 5 along the cold wall.\nCaptain Orrel lit the signal fire on Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.\nThe Saltmere watch counted lamp 11 along the cold wall. The Saltmere watch counted lamp 12 along the cold wall. The Saltmere watch counted lamp 13 along the cold wall. The Saltmere watch counted lamp 14 along the cold wall. The Saltmere watch counted lamp 15 along the cold wall.",
+        "digest": "sha256:e062e61ab966ce52ac78e35ea0f8cf57c67c918b6eda10693309da335e56848a"
+      },
+      {
+        "ref": "S0002",
+        "documentRef": "D000002",
+        "documentRange": {
+          "start": 0,
+          "end": 829
+        },
+        "text": "The Saltmere watch counted lamp 1 along the cold wall. The Saltmere watch counted lamp 2 along the cold wall. The Saltmere watch counted lamp 3 along the cold wall. The Saltmere watch counted lamp 4 along the cold wall. The Saltmere watch counted lamp 5 along the cold wall.\nA courier delivered the sealed writ to Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.\nThe Saltmere watch counted lamp 11 along the cold wall. The Saltmere watch counted lamp 12 along the cold wall. The Saltmere watch counted lamp 13 along the cold wall. The Saltmere watch counted lamp 14 along the cold wall. The Saltmere watch counted lamp 15 along the cold wall.",
+        "digest": "sha256:81c9692ab37d08c0037f19e572ce0f099b1a6e33ff6bbdd97a89881efcf8d577"
+      },
+      {
+        "ref": "S0003",
+        "documentRef": "D000003",
+        "documentRange": {
+          "start": 0,
+          "end": 833
+        },
+        "text": "The Saltmere watch counted lamp 1 along the cold wall. The Saltmere watch counted lamp 2 along the cold wall. The Saltmere watch counted lamp 3 along the cold wall. The Saltmere watch counted lamp 4 along the cold wall. The Saltmere watch counted lamp 5 along the cold wall.\nCaptain Orrel lit the signal fire again on Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.\nThe Saltmere watch counted lamp 11 along the cold wall. The Saltmere watch counted lamp 12 along the cold wall. The Saltmere watch counted lamp 13 along the cold wall. The Saltmere watch counted lamp 14 along the cold wall. The Saltmere watch counted lamp 15 along the cold wall.",
+        "digest": "sha256:8f3509d0d47f7b52c71373854b96c27fae3349d014e9a26b1ab1c7e111858831"
+      }
+    ],
+    "existingEventsCatalog": {
+      "kind": "chronicle.existing-events-catalog@1",
+      "events": []
+    },
+    "evidence": {
+      "kind": "chronicle.snapshot-evidence-companion@1",
+      "version": 1,
+      "mode": "citation-id-v2",
+      "catalogVersion": 1,
+      "catalogDigest": "sha256:98b940bee9a66d61e1505a9ce08b9a623ffa3f528e6444e66888ea0ba6c3bf5a",
+      "snapshotDigest": "sha256:d39548f9236100048a868d78eba22fcb9b5af0f98b0203159ad057a9066867dc",
+      "snapshotArtifactDigest": "sha256:bfe2a89d91b264f7bd8a5d7a29b879fbd06e86d2e0ad2c255e27f07439ae626e",
+      "catalog": {
+        "kind": "narrative-evidence-span-catalog",
+        "version": 1,
+        "segmentationVersion": "sentence-like-v1",
+        "snapshotId": "f314c820-67fa-4c2e-a826-e915a83586fe",
+        "snapshotDigest": "sha256:d39548f9236100048a868d78eba22fcb9b5af0f98b0203159ad057a9066867dc",
+        "snapshotArtifactDigest": "sha256:bfe2a89d91b264f7bd8a5d7a29b879fbd06e86d2e0ad2c255e27f07439ae626e",
+        "entries": [
+          {
+            "canonicalId": "occ:f9d8caccff52a08669243ac67427b853d0db480013d847de2a0b3cfa57feee62",
+            "sourceRef": "E000001",
+            "documentRef": "D000001",
+            "canonicalRange": {
+              "start": 0,
+              "end": 274
+            },
+            "range": {
+              "start": 0,
+              "end": 274
+            },
+            "quote": "The Saltmere watch counted lamp 1 along the cold wall. The Saltmere watch counted lamp 2 along the cold wall. The Saltmere watch counted lamp 3 along the cold wall. The Saltmere watch counted lamp 4 along the cold wall. The Saltmere watch counted lamp 5 along the cold wall.",
+            "text": "The Saltmere watch counted lamp 1 along the cold wall. The Saltmere watch counted lamp 2 along the cold wall. The Saltmere watch counted lamp 3 along the cold wall. The Saltmere watch counted lamp 4 along the cold wall. The Saltmere watch counted lamp 5 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000001",
+              "documentRef": "D000001",
+              "documentRange": {
+                "start": 0,
+                "end": 274
+              },
+              "text": "The Saltmere watch counted lamp 1 along the cold wall. The Saltmere watch counted lamp 2 along the cold wall. The Saltmere watch counted lamp 3 along the cold wall. The Saltmere watch counted lamp 4 along the cold wall. The Saltmere watch counted lamp 5 along the cold wall.",
+              "digest": "sha256:57aa0b31883229312fb79c207a8d64ecf7e1854de935e253bfe277837481e86b"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:d39548f9236100048a868d78eba22fcb9b5af0f98b0203159ad057a9066867dc",
+              "snapshotArtifactDigest": "sha256:bfe2a89d91b264f7bd8a5d7a29b879fbd06e86d2e0ad2c255e27f07439ae626e",
+              "documentRef": "D000001",
+              "documentArtifactDigest": "sha256:622634aec7c270dd4871a2aab881d1ce6fe33cfc1ad587ae7303166df3d7bbd1",
+              "range": {
+                "start": 0,
+                "end": 274
+              },
+              "start": 0,
+              "end": 274,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:c772bae244710b8e7ba7f5db602b18c8f85bc9536b3955b50a546a6e0b1b68fa",
+            "sourceRef": "E000002",
+            "documentRef": "D000001",
+            "canonicalRange": {
+              "start": 275,
+              "end": 547
+            },
+            "range": {
+              "start": 275,
+              "end": 547
+            },
+            "quote": "Captain Orrel lit the signal fire on Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.",
+            "text": "Captain Orrel lit the signal fire on Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000002",
+              "documentRef": "D000001",
+              "documentRange": {
+                "start": 275,
+                "end": 547
+              },
+              "text": "Captain Orrel lit the signal fire on Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.",
+              "digest": "sha256:c2b14646976074ae7442584e3fabeb51ec610a921b69d14cc25b4a7cffc76431"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:d39548f9236100048a868d78eba22fcb9b5af0f98b0203159ad057a9066867dc",
+              "snapshotArtifactDigest": "sha256:bfe2a89d91b264f7bd8a5d7a29b879fbd06e86d2e0ad2c255e27f07439ae626e",
+              "documentRef": "D000001",
+              "documentArtifactDigest": "sha256:622634aec7c270dd4871a2aab881d1ce6fe33cfc1ad587ae7303166df3d7bbd1",
+              "range": {
+                "start": 275,
+                "end": 547
+              },
+              "start": 275,
+              "end": 547,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:656e4d2dec0adc07b5e26e2748cd1a7840336089ecd7dd7de5fab46298095a7c",
+            "sourceRef": "E000003",
+            "documentRef": "D000001",
+            "canonicalRange": {
+              "start": 548,
+              "end": 827
+            },
+            "range": {
+              "start": 548,
+              "end": 827
+            },
+            "quote": "The Saltmere watch counted lamp 11 along the cold wall. The Saltmere watch counted lamp 12 along the cold wall. The Saltmere watch counted lamp 13 along the cold wall. The Saltmere watch counted lamp 14 along the cold wall. The Saltmere watch counted lamp 15 along the cold wall.",
+            "text": "The Saltmere watch counted lamp 11 along the cold wall. The Saltmere watch counted lamp 12 along the cold wall. The Saltmere watch counted lamp 13 along the cold wall. The Saltmere watch counted lamp 14 along the cold wall. The Saltmere watch counted lamp 15 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000003",
+              "documentRef": "D000001",
+              "documentRange": {
+                "start": 548,
+                "end": 827
+              },
+              "text": "The Saltmere watch counted lamp 11 along the cold wall. The Saltmere watch counted lamp 12 along the cold wall. The Saltmere watch counted lamp 13 along the cold wall. The Saltmere watch counted lamp 14 along the cold wall. The Saltmere watch counted lamp 15 along the cold wall.",
+              "digest": "sha256:1aed838dd2eb2ffa8406f8b315881d2f9fb2e340a674a01b8d60c179e3346644"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:d39548f9236100048a868d78eba22fcb9b5af0f98b0203159ad057a9066867dc",
+              "snapshotArtifactDigest": "sha256:bfe2a89d91b264f7bd8a5d7a29b879fbd06e86d2e0ad2c255e27f07439ae626e",
+              "documentRef": "D000001",
+              "documentArtifactDigest": "sha256:622634aec7c270dd4871a2aab881d1ce6fe33cfc1ad587ae7303166df3d7bbd1",
+              "range": {
+                "start": 548,
+                "end": 827
+              },
+              "start": 548,
+              "end": 827,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:96d10c67d1c75f0fe4e7b5f16e9d8bf0024cf8d3a83f5a191cd7957dc70b1d39",
+            "sourceRef": "E000004",
+            "documentRef": "D000002",
+            "canonicalRange": {
+              "start": 0,
+              "end": 274
+            },
+            "range": {
+              "start": 0,
+              "end": 274
+            },
+            "quote": "The Saltmere watch counted lamp 1 along the cold wall. The Saltmere watch counted lamp 2 along the cold wall. The Saltmere watch counted lamp 3 along the cold wall. The Saltmere watch counted lamp 4 along the cold wall. The Saltmere watch counted lamp 5 along the cold wall.",
+            "text": "The Saltmere watch counted lamp 1 along the cold wall. The Saltmere watch counted lamp 2 along the cold wall. The Saltmere watch counted lamp 3 along the cold wall. The Saltmere watch counted lamp 4 along the cold wall. The Saltmere watch counted lamp 5 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000004",
+              "documentRef": "D000002",
+              "documentRange": {
+                "start": 0,
+                "end": 274
+              },
+              "text": "The Saltmere watch counted lamp 1 along the cold wall. The Saltmere watch counted lamp 2 along the cold wall. The Saltmere watch counted lamp 3 along the cold wall. The Saltmere watch counted lamp 4 along the cold wall. The Saltmere watch counted lamp 5 along the cold wall.",
+              "digest": "sha256:4567fd0b4ec6bc44b43c5224036e1c3b13ea23af90b9a362dc0c3eff3fd8808c"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:d39548f9236100048a868d78eba22fcb9b5af0f98b0203159ad057a9066867dc",
+              "snapshotArtifactDigest": "sha256:bfe2a89d91b264f7bd8a5d7a29b879fbd06e86d2e0ad2c255e27f07439ae626e",
+              "documentRef": "D000002",
+              "documentArtifactDigest": "sha256:4f2e86952c8176c79270e8599a2cc96e754ef280cd59bb8306848acc246cf66d",
+              "range": {
+                "start": 0,
+                "end": 274
+              },
+              "start": 0,
+              "end": 274,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:29736cedcf28d9521bf005c23b9476de810a2a0e67a0bd5b3a76d09f6dde5fc1",
+            "sourceRef": "E000005",
+            "documentRef": "D000002",
+            "canonicalRange": {
+              "start": 275,
+              "end": 549
+            },
+            "range": {
+              "start": 275,
+              "end": 549
+            },
+            "quote": "A courier delivered the sealed writ to Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.",
+            "text": "A courier delivered the sealed writ to Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000005",
+              "documentRef": "D000002",
+              "documentRange": {
+                "start": 275,
+                "end": 549
+              },
+              "text": "A courier delivered the sealed writ to Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.",
+              "digest": "sha256:8563bd626bdc598d22d6a069b11b519577f6db03af4d57dc8f9a339af999475d"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:d39548f9236100048a868d78eba22fcb9b5af0f98b0203159ad057a9066867dc",
+              "snapshotArtifactDigest": "sha256:bfe2a89d91b264f7bd8a5d7a29b879fbd06e86d2e0ad2c255e27f07439ae626e",
+              "documentRef": "D000002",
+              "documentArtifactDigest": "sha256:4f2e86952c8176c79270e8599a2cc96e754ef280cd59bb8306848acc246cf66d",
+              "range": {
+                "start": 275,
+                "end": 549
+              },
+              "start": 275,
+              "end": 549,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:cc3359afa863d27a974b2abfa0816ba18f3aff1cb6f4b9088738ef697e6f827a",
+            "sourceRef": "E000006",
+            "documentRef": "D000002",
+            "canonicalRange": {
+              "start": 550,
+              "end": 829
+            },
+            "range": {
+              "start": 550,
+              "end": 829
+            },
+            "quote": "The Saltmere watch counted lamp 11 along the cold wall. The Saltmere watch counted lamp 12 along the cold wall. The Saltmere watch counted lamp 13 along the cold wall. The Saltmere watch counted lamp 14 along the cold wall. The Saltmere watch counted lamp 15 along the cold wall.",
+            "text": "The Saltmere watch counted lamp 11 along the cold wall. The Saltmere watch counted lamp 12 along the cold wall. The Saltmere watch counted lamp 13 along the cold wall. The Saltmere watch counted lamp 14 along the cold wall. The Saltmere watch counted lamp 15 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000006",
+              "documentRef": "D000002",
+              "documentRange": {
+                "start": 550,
+                "end": 829
+              },
+              "text": "The Saltmere watch counted lamp 11 along the cold wall. The Saltmere watch counted lamp 12 along the cold wall. The Saltmere watch counted lamp 13 along the cold wall. The Saltmere watch counted lamp 14 along the cold wall. The Saltmere watch counted lamp 15 along the cold wall.",
+              "digest": "sha256:7ad11b2e9abc91055a332e94753a31adf70c6896fcdfc208714b146b55555094"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:d39548f9236100048a868d78eba22fcb9b5af0f98b0203159ad057a9066867dc",
+              "snapshotArtifactDigest": "sha256:bfe2a89d91b264f7bd8a5d7a29b879fbd06e86d2e0ad2c255e27f07439ae626e",
+              "documentRef": "D000002",
+              "documentArtifactDigest": "sha256:4f2e86952c8176c79270e8599a2cc96e754ef280cd59bb8306848acc246cf66d",
+              "range": {
+                "start": 550,
+                "end": 829
+              },
+              "start": 550,
+              "end": 829,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:3ec633d1027e2c824f41ffdf7325d3ffb870127a1a71b91518319a30ed71341e",
+            "sourceRef": "E000007",
+            "documentRef": "D000003",
+            "canonicalRange": {
+              "start": 0,
+              "end": 274
+            },
+            "range": {
+              "start": 0,
+              "end": 274
+            },
+            "quote": "The Saltmere watch counted lamp 1 along the cold wall. The Saltmere watch counted lamp 2 along the cold wall. The Saltmere watch counted lamp 3 along the cold wall. The Saltmere watch counted lamp 4 along the cold wall. The Saltmere watch counted lamp 5 along the cold wall.",
+            "text": "The Saltmere watch counted lamp 1 along the cold wall. The Saltmere watch counted lamp 2 along the cold wall. The Saltmere watch counted lamp 3 along the cold wall. The Saltmere watch counted lamp 4 along the cold wall. The Saltmere watch counted lamp 5 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000007",
+              "documentRef": "D000003",
+              "documentRange": {
+                "start": 0,
+                "end": 274
+              },
+              "text": "The Saltmere watch counted lamp 1 along the cold wall. The Saltmere watch counted lamp 2 along the cold wall. The Saltmere watch counted lamp 3 along the cold wall. The Saltmere watch counted lamp 4 along the cold wall. The Saltmere watch counted lamp 5 along the cold wall.",
+              "digest": "sha256:4a750706ae2fef0274efaab5688c431ceeb78e3c331f944d52758826c3557c5a"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:d39548f9236100048a868d78eba22fcb9b5af0f98b0203159ad057a9066867dc",
+              "snapshotArtifactDigest": "sha256:bfe2a89d91b264f7bd8a5d7a29b879fbd06e86d2e0ad2c255e27f07439ae626e",
+              "documentRef": "D000003",
+              "documentArtifactDigest": "sha256:98869caf7c124011c9b68fb2a7674d2e9fe7f1da31174cf4f61f983f469ed415",
+              "range": {
+                "start": 0,
+                "end": 274
+              },
+              "start": 0,
+              "end": 274,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:e5dec9a394a60292f0b90c52d97038a7feb34b8e8efec152c3daf70bf0ebeb40",
+            "sourceRef": "E000008",
+            "documentRef": "D000003",
+            "canonicalRange": {
+              "start": 275,
+              "end": 553
+            },
+            "range": {
+              "start": 275,
+              "end": 553
+            },
+            "quote": "Captain Orrel lit the signal fire again on Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.",
+            "text": "Captain Orrel lit the signal fire again on Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000008",
+              "documentRef": "D000003",
+              "documentRange": {
+                "start": 275,
+                "end": 553
+              },
+              "text": "Captain Orrel lit the signal fire again on Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.",
+              "digest": "sha256:92d192509cffedbbe3158a99ef487db85563e636dba2e997bdb8f8ac32d04b72"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:d39548f9236100048a868d78eba22fcb9b5af0f98b0203159ad057a9066867dc",
+              "snapshotArtifactDigest": "sha256:bfe2a89d91b264f7bd8a5d7a29b879fbd06e86d2e0ad2c255e27f07439ae626e",
+              "documentRef": "D000003",
+              "documentArtifactDigest": "sha256:98869caf7c124011c9b68fb2a7674d2e9fe7f1da31174cf4f61f983f469ed415",
+              "range": {
+                "start": 275,
+                "end": 553
+              },
+              "start": 275,
+              "end": 553,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:d4e28c692643e1bd14885fb07bb0fb8af71b8a2968072a25e694bea968af3435",
+            "sourceRef": "E000009",
+            "documentRef": "D000003",
+            "canonicalRange": {
+              "start": 554,
+              "end": 833
+            },
+            "range": {
+              "start": 554,
+              "end": 833
+            },
+            "quote": "The Saltmere watch counted lamp 11 along the cold wall. The Saltmere watch counted lamp 12 along the cold wall. The Saltmere watch counted lamp 13 along the cold wall. The Saltmere watch counted lamp 14 along the cold wall. The Saltmere watch counted lamp 15 along the cold wall.",
+            "text": "The Saltmere watch counted lamp 11 along the cold wall. The Saltmere watch counted lamp 12 along the cold wall. The Saltmere watch counted lamp 13 along the cold wall. The Saltmere watch counted lamp 14 along the cold wall. The Saltmere watch counted lamp 15 along the cold wall.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000009",
+              "documentRef": "D000003",
+              "documentRange": {
+                "start": 554,
+                "end": 833
+              },
+              "text": "The Saltmere watch counted lamp 11 along the cold wall. The Saltmere watch counted lamp 12 along the cold wall. The Saltmere watch counted lamp 13 along the cold wall. The Saltmere watch counted lamp 14 along the cold wall. The Saltmere watch counted lamp 15 along the cold wall.",
+              "digest": "sha256:33bff88e41df96d17cd24414e864f491b6094517c995c765906ad63e0e3b879c"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:d39548f9236100048a868d78eba22fcb9b5af0f98b0203159ad057a9066867dc",
+              "snapshotArtifactDigest": "sha256:bfe2a89d91b264f7bd8a5d7a29b879fbd06e86d2e0ad2c255e27f07439ae626e",
+              "documentRef": "D000003",
+              "documentArtifactDigest": "sha256:98869caf7c124011c9b68fb2a7674d2e9fe7f1da31174cf4f61f983f469ed415",
+              "range": {
+                "start": 554,
+                "end": 833
+              },
+              "start": 554,
+              "end": 833,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          }
+        ],
+        "digest": "sha256:98b940bee9a66d61e1505a9ce08b9a623ffa3f528e6444e66888ea0ba6c3bf5a"
+      }
+    },
+    "scopeAuthorityDocuments": [
+      {
+        "documentRef": "D000001",
+        "sourceKey": "project:scene:mw-scene-1",
+        "rawStoryKey": null
+      },
+      {
+        "documentRef": "D000002",
+        "sourceKey": "project:scene:mw-scene-2",
+        "rawStoryKey": null
+      },
+      {
+        "documentRef": "D000003",
+        "sourceKey": "project:scene:mw-scene-3",
+        "rawStoryKey": null
+      }
+    ]
+  },
+  "plan": {
+    "windows": [
+      {
+        "windowId": "window-001",
+        "documentRef": "D000001",
+        "sourceRef": "S0001",
+        "ownedRanges": [
+          {
+            "start": 0,
+            "end": 827
+          }
+        ],
+        "contextRanges": []
+      },
+      {
+        "windowId": "window-002",
+        "documentRef": "D000002",
+        "sourceRef": "S0002",
+        "ownedRanges": [
+          {
+            "start": 0,
+            "end": 829
+          }
+        ],
+        "contextRanges": []
+      },
+      {
+        "windowId": "window-003",
+        "documentRef": "D000003",
+        "sourceRef": "S0003",
+        "ownedRanges": [
+          {
+            "start": 0,
+            "end": 833
+          }
+        ],
+        "contextRanges": []
+      }
+    ]
+  },
+  "outputs": [
+    {
+      "rootStageExecutionId": "10868e09-0d2a-48ff-a0f2-6d7de9ed6e22",
+      "terminalStageExecutionId": "10868e09-0d2a-48ff-a0f2-6d7de9ed6e22",
+      "disposition": "root-success",
+      "clusterRef": "cluster-0001",
+      "rawObservations": {
+        "kind": "chronicle.raw-observations@1",
+        "version": 1,
+        "observations": [
+          {
+            "localId": "window-001:obs-001",
+            "evidence": [
+              {
+                "sourceRef": "E000002",
+                "quote": "Captain Orrel lit the signal fire on Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall."
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "lights a signal fire",
+              "actuality": "actual",
+              "participants": [],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "window-003:obs-001",
+            "evidence": [
+              {
+                "sourceRef": "E000008",
+                "quote": "Captain Orrel lit the signal fire again on Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall."
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "lights a signal fire",
+              "actuality": "actual",
+              "participants": [],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "eventOutput": {
+        "clusterRef": "cluster-0001",
+        "resolution": "single-event",
+        "events": [
+          {
+            "observationRefs": [
+              "window-001:obs-001",
+              "window-003:obs-001"
+            ],
+            "titleSuggestion": "Signal fire on the quay",
+            "summary": "Captain Orrel lit the signal fire on Saltmere Quay.",
+            "actuality": "actual",
+            "significance": "major"
+          }
+        ]
+      },
+      "output": {
+        "kind": "chronicle.event-synthesis-output@1",
+        "observationCount": 2,
+        "eventCount": 1,
+        "observationRefs": [
+          "window-001:obs-001",
+          "window-003:obs-001"
+        ],
+        "rawObservationsDigest": "sha256:b2934e61439d7e3d3785546e3b2cf2405e084aff2fb88b132d88dde7744c098a",
+        "parsedOutputDigest": "sha256:e5f1190afca20516eac13166b4aa0c03e9ba249eeda9fce3fba86248b5be15d7",
+        "eventOutputDigest": "sha256:01a1fc70fa6150d063f0702987564e6abdec3b87befc7bdc45b3de48c8569a41"
+      }
+    },
+    {
+      "rootStageExecutionId": "e6b42725-7f50-4f8b-b3d8-0b371aa0967e",
+      "terminalStageExecutionId": "e6b42725-7f50-4f8b-b3d8-0b371aa0967e",
+      "disposition": "root-success",
+      "clusterRef": "cluster-0002",
+      "rawObservations": {
+        "kind": "chronicle.raw-observations@1",
+        "version": 1,
+        "observations": [
+          {
+            "localId": "window-002:obs-001",
+            "evidence": [
+              {
+                "sourceRef": "E000005",
+                "quote": "A courier delivered the sealed writ to Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall."
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "delivers a writ",
+              "actuality": "actual",
+              "participants": [],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "eventOutput": {
+        "clusterRef": "cluster-0002",
+        "resolution": "single-event",
+        "events": [
+          {
+            "observationRefs": [
+              "window-002:obs-001"
+            ],
+            "titleSuggestion": "Writ delivered to the quay",
+            "summary": "A courier delivered the sealed writ.",
+            "actuality": "actual",
+            "significance": "major"
+          }
+        ]
+      },
+      "output": {
+        "kind": "chronicle.event-synthesis-output@1",
+        "observationCount": 1,
+        "eventCount": 1,
+        "observationRefs": [
+          "window-002:obs-001"
+        ],
+        "rawObservationsDigest": "sha256:a66fa79f3f8d89353c9711e4a57d963e4b5d16ff076259b6e8ec64d28a41a727",
+        "parsedOutputDigest": "sha256:da1cee7c385472d80a56e788edd94a71b7fd0b3662bb67d9bed76b8fc2bc77c7",
+        "eventOutputDigest": "sha256:f112caedea5566b584eccb6cecea0ed49ac3016d4522028c60c44296c7926761"
+      }
+    }
+  ],
+  "receipts": [
+    {
+      "kind": "chronicle-stage-terminal-receipt",
+      "version": 1,
+      "stageExecution": {
+        "projectId": "default-project",
+        "runId": "5e1bced7-ef10-4020-be4c-6c28842c4a23",
+        "taskId": "83b9fe9b-2776-49b9-9130-32859ecafae9",
+        "attemptId": "c66b5bd4-ca3b-4724-915f-942a027b3049",
+        "stageId": "narrative_event_synthesize",
+        "stageExecutionId": "10868e09-0d2a-48ff-a0f2-6d7de9ed6e22"
+      },
+      "contextSetVersion": "chronicle.context-set/1",
+      "contextSetDigest": "sha256:835e469153d9a7513584fa7deb8aeb7940ee2cbebc6b57e0d9c583b64e1fe7af",
+      "componentContractDigest": "sha256:20bb71b13fa5f4b4ef85a12edd1698d420a1e42dcb48dcacb77581bc6fa8478f",
+      "finalRequestDigest": "sha256:e778cca280d21b4fc560c7fcdbe924d4c4a7d52b0d074ed0dc34150fa25e6891",
+      "modelExecutionBinding": {
+        "kind": "chronicle-stage-model-binding",
+        "version": 1,
+        "provider": "ollama",
+        "endpointBindingId": null,
+        "requestedModel": "product-journey-model",
+        "effectiveModel": null,
+        "modelFingerprint": null,
+        "apiVariant": null,
+        "reasoningMode": null,
+        "generationMode": "provider-default",
+        "resolutionStatus": "requested-only"
+      },
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "responseDigest": "sha256:51e48f1ca203ec922649d8375f5c83fd651aa0b5c638d56d1dbd44f70adaf3f5",
+      "rawObservationsDigest": "sha256:b2934e61439d7e3d3785546e3b2cf2405e084aff2fb88b132d88dde7744c098a",
+      "parsedOutputDigest": "sha256:e5f1190afca20516eac13166b4aa0c03e9ba249eeda9fce3fba86248b5be15d7",
+      "parseStatus": "parsed",
+      "terminalStatus": "succeeded",
+      "stageExecutionReceiptDigest": "sha256:9d4bb9749de05868823b277d13c1eae856194a58174900473b0ad8e685ac680e"
+    },
+    {
+      "kind": "chronicle-stage-terminal-receipt",
+      "version": 1,
+      "stageExecution": {
+        "projectId": "default-project",
+        "runId": "5e1bced7-ef10-4020-be4c-6c28842c4a23",
+        "taskId": "d1acb753-fb2c-4ede-85f7-ce43ee94895d",
+        "attemptId": "d3852864-dd73-4db3-8543-e6df75a20a79",
+        "stageId": "narrative_observation_extract",
+        "stageExecutionId": "18de215e-c0ae-4fe4-8648-94d89ac6ccaa"
+      },
+      "contextSetVersion": "chronicle.context-set/1",
+      "contextSetDigest": "sha256:8941f5996c82342dc954a6ee13b881341a8fd929a3837399a8754e58d241e65e",
+      "componentContractDigest": "sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22",
+      "finalRequestDigest": "sha256:7b624d3c03548f1cae0d8ca8d707fbf0c92711170e4ac548cf51e01950c342da",
+      "modelExecutionBinding": {
+        "kind": "chronicle-stage-model-binding",
+        "version": 1,
+        "provider": "ollama",
+        "endpointBindingId": null,
+        "requestedModel": "product-journey-model",
+        "effectiveModel": null,
+        "modelFingerprint": null,
+        "apiVariant": null,
+        "reasoningMode": null,
+        "generationMode": "provider-default",
+        "resolutionStatus": "requested-only"
+      },
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "responseDigest": "sha256:466d719ac35f604dabb43060e28f6c22f07cf31ef945c79ef4cccad5848d6101",
+      "rawObservationsDigest": null,
+      "parsedOutputDigest": null,
+      "parseStatus": "parsed",
+      "terminalStatus": "succeeded",
+      "stageExecutionReceiptDigest": "sha256:31952eb523fcb71b83e40c6be9585ac75e7ac3b37bc1d4d68f882139762e2a08"
+    },
+    {
+      "kind": "chronicle-stage-terminal-receipt",
+      "version": 1,
+      "stageExecution": {
+        "projectId": "default-project",
+        "runId": "5e1bced7-ef10-4020-be4c-6c28842c4a23",
+        "taskId": "d1acb753-fb2c-4ede-85f7-ce43ee94895d",
+        "attemptId": "d3852864-dd73-4db3-8543-e6df75a20a79",
+        "stageId": "narrative_observation_extract",
+        "stageExecutionId": "8c7f1856-1b92-46d6-b589-2370275ff0ed"
+      },
+      "contextSetVersion": "chronicle.context-set/1",
+      "contextSetDigest": "sha256:dc5ce05c0af8ca8703db9ae39ebf75a9894fd00b1b550e3be8eb45ed29aff2d5",
+      "componentContractDigest": "sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22",
+      "finalRequestDigest": "sha256:af29155d56343a3c82c5a8c51122c953b6988d223f914deabd9b1a0f9311f1b7",
+      "modelExecutionBinding": {
+        "kind": "chronicle-stage-model-binding",
+        "version": 1,
+        "provider": "ollama",
+        "endpointBindingId": null,
+        "requestedModel": "product-journey-model",
+        "effectiveModel": null,
+        "modelFingerprint": null,
+        "apiVariant": null,
+        "reasoningMode": null,
+        "generationMode": "provider-default",
+        "resolutionStatus": "requested-only"
+      },
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "responseDigest": "sha256:7d71ad6042e05995a8fe93f1cbe1db553e8f5c3dc9acc90ac5a9749e8636b5d5",
+      "rawObservationsDigest": null,
+      "parsedOutputDigest": null,
+      "parseStatus": "parsed",
+      "terminalStatus": "succeeded",
+      "stageExecutionReceiptDigest": "sha256:f3fbb790b3d12fd63c29191f75af3d7b2dce501775ba47da8ba57e99978742ae"
+    },
+    {
+      "kind": "chronicle-stage-terminal-receipt",
+      "version": 1,
+      "stageExecution": {
+        "projectId": "default-project",
+        "runId": "5e1bced7-ef10-4020-be4c-6c28842c4a23",
+        "taskId": "d1acb753-fb2c-4ede-85f7-ce43ee94895d",
+        "attemptId": "d3852864-dd73-4db3-8543-e6df75a20a79",
+        "stageId": "narrative_observation_extract",
+        "stageExecutionId": "9fce7a3a-c24e-4672-b3f3-731c2f6e7059"
+      },
+      "contextSetVersion": "chronicle.context-set/1",
+      "contextSetDigest": "sha256:cfc0455b49f4f1aa9604f8e136ad02e0415dd7210759449fbc5985f04054e317",
+      "componentContractDigest": "sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22",
+      "finalRequestDigest": "sha256:bf8bed6b74a5bbdf96144f0945f9b7c951194d709cd402f4d55e924928d23885",
+      "modelExecutionBinding": {
+        "kind": "chronicle-stage-model-binding",
+        "version": 1,
+        "provider": "ollama",
+        "endpointBindingId": null,
+        "requestedModel": "product-journey-model",
+        "effectiveModel": null,
+        "modelFingerprint": null,
+        "apiVariant": null,
+        "reasoningMode": null,
+        "generationMode": "provider-default",
+        "resolutionStatus": "requested-only"
+      },
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "responseDigest": "sha256:98fc023778fcf289ca7c12bbdc9fbfb3aa3e7e98b196ca0e0075b69bb1469915",
+      "rawObservationsDigest": null,
+      "parsedOutputDigest": null,
+      "parseStatus": "parsed",
+      "terminalStatus": "succeeded",
+      "stageExecutionReceiptDigest": "sha256:546db63ceec8814370c83546a1e993ff1c2ce05009fdfd2c639d8483b9804fe0"
+    },
+    {
+      "kind": "chronicle-stage-terminal-receipt",
+      "version": 1,
+      "stageExecution": {
+        "projectId": "default-project",
+        "runId": "5e1bced7-ef10-4020-be4c-6c28842c4a23",
+        "taskId": "83b9fe9b-2776-49b9-9130-32859ecafae9",
+        "attemptId": "c66b5bd4-ca3b-4724-915f-942a027b3049",
+        "stageId": "narrative_event_synthesize",
+        "stageExecutionId": "e6b42725-7f50-4f8b-b3d8-0b371aa0967e"
+      },
+      "contextSetVersion": "chronicle.context-set/1",
+      "contextSetDigest": "sha256:5b79455e0557237e3cdfaa299d049b5ad40f60dc83fa889ad4996289ec110847",
+      "componentContractDigest": "sha256:20bb71b13fa5f4b4ef85a12edd1698d420a1e42dcb48dcacb77581bc6fa8478f",
+      "finalRequestDigest": "sha256:eaff327e81d197f0ae1039c4d708c81e3793deaeac9a8b2ee7d78da2ecaf6232",
+      "modelExecutionBinding": {
+        "kind": "chronicle-stage-model-binding",
+        "version": 1,
+        "provider": "ollama",
+        "endpointBindingId": null,
+        "requestedModel": "product-journey-model",
+        "effectiveModel": null,
+        "modelFingerprint": null,
+        "apiVariant": null,
+        "reasoningMode": null,
+        "generationMode": "provider-default",
+        "resolutionStatus": "requested-only"
+      },
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "responseDigest": "sha256:e22df4fdfa9601020dd8d2249528211406562e1387e53c371f69ccff6a989fb0",
+      "rawObservationsDigest": "sha256:a66fa79f3f8d89353c9711e4a57d963e4b5d16ff076259b6e8ec64d28a41a727",
+      "parsedOutputDigest": "sha256:da1cee7c385472d80a56e788edd94a71b7fd0b3662bb67d9bed76b8fc2bc77c7",
+      "parseStatus": "parsed",
+      "terminalStatus": "succeeded",
+      "stageExecutionReceiptDigest": "sha256:1d58d590f38e9769c51f701c70a2630341666276ca705a58716e182aecebf328"
+    }
+  ],
+  "rootEnvelope": {
+    "assertion": {
+      "assertionId": null,
+      "assertionKind": "scene-event@1",
+      "modality": "modality-inference",
+      "payload": {
+        "actuality": "actual",
+        "attribution": "narrator",
+        "eventId": "1f8f8ceb-501e-4a97-bc14-47afc787fb6d",
+        "mergedObservationRefs": [
+          "window-001:obs-001",
+          "window-003:obs-001"
+        ],
+        "narrativeFrame": "story-world",
+        "observationRefs": [
+          "window-001:obs-001",
+          "window-003:obs-001"
+        ],
+        "observationSummaries": [
+          {
+            "durationKind": "instant",
+            "observationRef": "window-001:obs-001",
+            "participants": [],
+            "predicate": "lights a signal fire",
+            "temporalExpressions": []
+          },
+          {
+            "durationKind": "instant",
+            "observationRef": "window-003:obs-001",
+            "participants": [],
+            "predicate": "lights a signal fire",
+            "temporalExpressions": []
+          }
+        ],
+        "originalObservationRefs": [
+          "window-001:obs-001",
+          "window-003:obs-001"
+        ],
+        "significance": "major",
+        "summary": "Captain Orrel lit the signal fire on Saltmere Quay."
+      },
+      "payloadSchemaRef": {
+        "id": "narrative.chronicle.scene-event",
+        "version": "1"
+      },
+      "polarity": "affirmative",
+      "producer": {
+        "id": "grimodex.chronicle-extraction",
+        "kind": "reconciler-proposal",
+        "version": "1"
+      },
+      "scope": {
+        "audience": {
+          "constraintId": "audience:1f8f8ceb-501e-4a97-bc14-47afc787fb6d",
+          "kind": "unresolved",
+          "reason": "not-provided"
+        },
+        "knowledgeHolder": {
+          "kind": "any"
+        },
+        "narrativeLayer": {
+          "kind": "any"
+        },
+        "readingOrder": {
+          "constraintId": "reading-order:1f8f8ceb-501e-4a97-bc14-47afc787fb6d",
+          "kind": "unresolved",
+          "reason": "not-provided"
+        },
+        "registryVersion": "narrative-scope/2",
+        "scene": {
+          "kind": "exact",
+          "ref": "scene:mw-scene-1"
+        },
+        "schemaVersion": 2,
+        "storyTime": {
+          "kind": "any"
+        },
+        "timeline": {
+          "kind": "any"
+        },
+        "viewpoint": {
+          "kind": "any"
+        },
+        "worldline": {
+          "kind": "any"
+        }
+      },
+      "supportClass": "direct-source"
+    },
+    "assertionDigests": {
+      "assertionCoreDigest": "sha256:428a44942a1171ffb1d138971a8c4264d38a354301555ebf68580ee0e9233045",
+      "assertionDigest": "sha256:25a1164d16780c5beea62214a551ee9eb827d03887d63a7868fa006847ec83cf",
+      "scopeDigest": "sha256:f11179a78071d87e523eb6fdd404c36dae0a6c0e2b3b53e59e4cd03d0082bc7c"
+    },
+    "changeIntent": {
+      "changeKind": "add"
+    },
+    "effectiveMaterialBasis": {
+      "dependencySet": [
+        {
+          "contextIds": [
+            "event-cluster:cluster-0001",
+            "event-observation:window-001:obs-001",
+            "event-observation:window-003:obs-001"
+          ],
+          "dependencyId": "dependency:evidence:anchor-0001",
+          "inputRef": "project:scene:mw-scene-1",
+          "role": "direct-evidence",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [
+            "event-cluster:cluster-0001",
+            "event-observation:window-001:obs-001",
+            "event-observation:window-003:obs-001"
+          ],
+          "dependencyId": "dependency:evidence:anchor-0003",
+          "inputRef": "project:scene:mw-scene-3",
+          "role": "direct-evidence",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [
+            "event-cluster:cluster-0001",
+            "event-observation:window-001:obs-001",
+            "event-observation:window-003:obs-001"
+          ],
+          "dependencyId": "dependency:source-basis:snapshot:5e1bced7-ef10-4020-be4c-6c28842c4a23",
+          "inputRef": "snapshot:5e1bced7-ef10-4020-be4c-6c28842c4a23",
+          "role": "opaque-model-context",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [
+            "event-cluster:cluster-0001"
+          ],
+          "dependencyId": "dependency:context:event-cluster:cluster-0001",
+          "inputRef": "cluster:cluster-0001",
+          "role": "opaque-model-context",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [
+            "event-observation:window-001:obs-001"
+          ],
+          "dependencyId": "dependency:context:event-observation:window-001:obs-001",
+          "inputRef": "observation:window-001:obs-001",
+          "role": "opaque-model-context",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [
+            "event-observation:window-003:obs-001"
+          ],
+          "dependencyId": "dependency:context:event-observation:window-003:obs-001",
+          "inputRef": "observation:window-003:obs-001",
+          "role": "opaque-model-context",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [],
+          "dependencyId": "dependency:component-contract",
+          "inputRef": "component:chronicle.event-synthesis.prompt",
+          "role": "component-contract",
+          "selector": {
+            "contractDigest": "sha256:20bb71b13fa5f4b4ef85a12edd1698d420a1e42dcb48dcacb77581bc6fa8478f",
+            "contractId": "chronicle.event-synthesis.prompt",
+            "kind": "component-contract"
+          }
+        }
+      ],
+      "dependencySetDigest": "sha256:5e83251e3d4d6057323b3e9397a3869dcb804ca415a9149a1fd752e640017296",
+      "evidenceSet": [
+        {
+          "documentRef": "D000001",
+          "evidenceRef": "anchor-0001",
+          "quote": "Captain Orrel lit the signal fire on Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.",
+          "quoteDigest": "sha256:07a0988f8638f970085397d7644ca86056143302b89954073707fafc01d64553",
+          "revisionToken": "v0@2026-11-12T13:40:24.187026419+00:00",
+          "sourceKey": "project:scene:mw-scene-1"
+        },
+        {
+          "documentRef": "D000003",
+          "evidenceRef": "anchor-0003",
+          "quote": "Captain Orrel lit the signal fire again on Saltmere Quay. The Saltmere watch counted lamp 7 along the cold wall. The Saltmere watch counted lamp 8 along the cold wall. The Saltmere watch counted lamp 9 along the cold wall. The Saltmere watch counted lamp 10 along the cold wall.",
+          "quoteDigest": "sha256:1c06fd4d0276990bb069176d6e4e2a93e20dbf580b315ace973e497b8278b0a6",
+          "revisionToken": "v0@2026-11-12T13:40:24.209047130+00:00",
+          "sourceKey": "project:scene:mw-scene-3"
+        }
+      ],
+      "materialBasisDigest": "sha256:5ace846d3b18d19cbfeeb0baf8aabb162bdaa6ac11ef93a8268c7f91692c5b7b",
+      "sourceBasis": [
+        {
+          "revisionToken": "sha256:d39548f9236100048a868d78eba22fcb9b5af0f98b0203159ad057a9066867dc",
+          "sourceKey": "snapshot:5e1bced7-ef10-4020-be4c-6c28842c4a23",
+          "sourceKind": "snapshot-document"
+        },
+        {
+          "revisionToken": "v0@2026-11-12T13:40:24.187026419+00:00",
+          "sourceKey": "project:scene:mw-scene-1",
+          "sourceKind": "scene-body"
+        },
+        {
+          "revisionToken": "v0@2026-11-12T13:40:24.209047130+00:00",
+          "sourceKey": "project:scene:mw-scene-3",
+          "sourceKind": "scene-body"
+        }
+      ]
+    },
+    "projectionBinding": {
+      "adapterContractId": "chronicle.scene-event",
+      "adapterContractVersion": "1",
+      "proposalKind": "chronicle.create-event@1",
+      "proposalPayloadDigest": "sha256:778b2067d3e1b95aad72a365b211f50b0b6c0ecb9a3ef7a898eb8f88b0f1d619",
+      "proposalSchemaRef": {
+        "id": "narrative.chronicle-event.create",
+        "version": "1"
+      }
+    },
+    "revisionBasis": {
+      "componentContractDigest": "sha256:20bb71b13fa5f4b4ef85a12edd1698d420a1e42dcb48dcacb77581bc6fa8478f",
+      "contextSet": [
+        {
+          "contextId": "event-cluster:cluster-0001",
+          "exposure": "model-visible",
+          "inputRef": "cluster:cluster-0001",
+          "selector": {
+            "kind": "whole-source"
+          },
+          "stageId": "narrative_event_synthesize"
+        },
+        {
+          "contextId": "event-observation:window-001:obs-001",
+          "exposure": "model-visible",
+          "inputRef": "observation:window-001:obs-001",
+          "selector": {
+            "kind": "whole-source"
+          },
+          "stageId": "narrative_event_synthesize"
+        },
+        {
+          "contextId": "event-observation:window-003:obs-001",
+          "exposure": "model-visible",
+          "inputRef": "observation:window-003:obs-001",
+          "selector": {
+            "kind": "whole-source"
+          },
+          "stageId": "narrative_event_synthesize"
+        }
+      ],
+      "contextSetDigest": "sha256:835e469153d9a7513584fa7deb8aeb7940ee2cbebc6b57e0d9c583b64e1fe7af",
+      "finalRequestDigest": "sha256:e778cca280d21b4fc560c7fcdbe924d4c4a7d52b0d074ed0dc34150fa25e6891",
+      "kind": "interpretation",
+      "producer": {
+        "id": "grimodex.chronicle-extraction",
+        "kind": "reconciler-proposal",
+        "version": "1"
+      },
+      "runId": "5e1bced7-ef10-4020-be4c-6c28842c4a23",
+      "taskId": "83b9fe9b-2776-49b9-9130-32859ecafae9"
+    },
+    "schemaVersion": 2
+  }
+}

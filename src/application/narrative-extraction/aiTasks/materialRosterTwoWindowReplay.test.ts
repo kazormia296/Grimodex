@@ -24,6 +24,9 @@ it.each([
   ["production-two-window-golden.json", 2, "2"],
   ["production-multi-window-long-golden.json", 3, undefined],
   ["production-multi-window-folder-golden.json", 3, undefined],
+  // Made after DMS/1: each proposal declares only the scenes its synthesis
+  // request read (src-tauri/crates/grimodex-db/tests/support/nir1-declared-scope-cold.*).
+  ["production-declared-scope-folder-golden.json", 3, undefined],
 ])(
   "matches every independent persisted request of %s (%i windows) with production TS builders",
   async (file, windows, synthesisVersion) => {
@@ -106,3 +109,40 @@ async function matchesEveryPersistedRequest(
   }
   expect(usedWindows.size).toBe(windowCount);
 }
+
+it("the declared-scope golden declares exactly the scenes of its synthesis request's windows", () => {
+  const golden = readGolden("production-declared-scope-folder-golden.json");
+  const output = golden.outputs.find((o: { rootStageExecutionId: string }) =>
+    golden.receipts.some(
+      (r: { stageExecution: { stageId: string; stageExecutionId: string } }) =>
+        r.stageExecution.stageId === "narrative_event_synthesize" &&
+        r.stageExecution.stageExecutionId === o.rootStageExecutionId,
+    ),
+  );
+  const documentOf = new Map<string, string>(
+    golden.snapshot.snapshot.documents.map(
+      (d: { ref: string; sourceKey: string }) => [d.ref, d.sourceKey],
+    ),
+  );
+  const sceneOfWindow = new Map<string, string>(
+    golden.plan.windows.map((w: { windowId: string; documentRef: string }) => [
+      w.windowId,
+      documentOf.get(w.documentRef)!,
+    ]),
+  );
+  const expected = new Set<string>(
+    output.rawObservations.observations.map((o: { localId: string }) =>
+      sceneOfWindow.get(o.localId.slice(0, o.localId.lastIndexOf(":obs-"))),
+    ),
+  );
+  expect(expected.size).toBeGreaterThan(1);
+  const basis = golden.rootEnvelope.effectiveMaterialBasis;
+  const declared = new Set<string>(
+    basis.sourceBasis
+      .filter((s: { sourceKind: string }) => s.sourceKind === "scene-body")
+      .map((s: { sourceKey: string }) => s.sourceKey),
+  );
+  expect(declared).toEqual(expected);
+  // The scene the plan reads but the request never did is not declared.
+  expect(declared.size).toBeLessThan(new Set(sceneOfWindow.values()).size);
+});

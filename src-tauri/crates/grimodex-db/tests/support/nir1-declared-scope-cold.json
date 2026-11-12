@@ -1,0 +1,92 @@
+{
+  "schemaVersion": "nir1-declared-scope-cold/1",
+  "projectId": "default-project",
+  "scenes": {
+    "before": "mw-before",
+    "folderLong": "mw-folder-long",
+    "long": "mw-long-scene",
+    "folderThree": "mw-folder-three",
+    "three": [
+      "mw-scene-1",
+      "mw-scene-2",
+      "mw-scene-3"
+    ],
+    "after": "mw-after"
+  },
+  "runs": {
+    "long": {
+      "projectId": "default-project",
+      "runId": "cecb0525-a094-4efc-84c2-709f201a1c95",
+      "folderId": "mw-folder-long",
+      "sealed": {
+        "windows": [
+          "window-001",
+          "window-002",
+          "window-003"
+        ],
+        "observationIds": [
+          "window-001:obs-001",
+          "window-002:obs-001",
+          "window-003:obs-001"
+        ],
+        "crossingCluster": "cluster-0001"
+      },
+      "proposals": [
+        {
+          "proposalId": "393e6745-a0d5-47f2-a2c8-87182c3767d1",
+          "title": "Ledger seals at the gate",
+          "rootRevisionId": "d344acb4-2f79-49af-903a-b47a80580fe4",
+          "revisionId": "543b500c-51fe-4b08-8045-fc2fd6553235",
+          "decisionId": "e1af97f0-b258-4d37-a781-78ddcd11cfbc"
+        },
+        {
+          "proposalId": "4beccb74-c54e-4f37-8465-6b4e1f02f66e",
+          "title": "Harbour bell at dusk",
+          "rootRevisionId": "cbe3f241-5e44-4d21-8e95-5e0c502a0f1b",
+          "revisionId": "700918f3-c2e4-4fd4-aee6-e589f51ec189",
+          "decisionId": "fed78517-6e2a-48e9-bf61-46875e64cdc9"
+        }
+      ]
+    },
+    "three": {
+      "projectId": "default-project",
+      "runId": "5e1bced7-ef10-4020-be4c-6c28842c4a23",
+      "folderId": "mw-folder-three",
+      "sealed": {
+        "windows": [
+          "window-001",
+          "window-002",
+          "window-003"
+        ],
+        "observationIds": [
+          "window-001:obs-001",
+          "window-002:obs-001",
+          "window-003:obs-001"
+        ],
+        "crossingCluster": "cluster-0001"
+      },
+      "proposals": [
+        {
+          "proposalId": "6bea99c3-60c1-4746-bf9d-a36cb89c1222",
+          "title": "Signal fire on the quay",
+          "rootRevisionId": "f27c8ae3-69cf-4497-bb9e-606e0344bae1",
+          "revisionId": "6cab7dd7-12df-4519-bc66-b500ea145b71",
+          "decisionId": "4c17719a-3107-4a13-b9a4-5f1f8bc57b0a"
+        },
+        {
+          "proposalId": "fce51279-3714-4022-95a8-5313ad9e1214",
+          "title": "Writ delivered to the quay",
+          "rootRevisionId": "6847d3c4-3647-4a30-ba63-0310cd3032ea",
+          "revisionId": "7ced9159-44b6-4cb2-9fe0-d5b17e47bd96",
+          "decisionId": "43ae4173-cf9e-4dfc-a9c3-1e66e4df4692"
+        }
+      ],
+      "goldenFile": "production-declared-scope-folder-golden.json",
+      "goldenSha256": "7fa95544278231d0fd4af73ada802085643361c752f3efb5df3678d61b795321"
+    }
+  },
+  "setupScript": "electron/scripts/nir1-multi-window-cold-fixture.mjs",
+  "providerFixture": "electron/shared/productJourneyMultiWindowFixture.json",
+  "compressedDatabaseSha256": "dcac28f0b681b9dda49dede0af53faf3f5a723791eee84b464b6f1df6c3637dd",
+  "uncompressedDatabaseSha256": "47c9a939b0eb8de13365120edad52ff53cec20ea8eb5a98ac62b7abdd10eaf19"
+}

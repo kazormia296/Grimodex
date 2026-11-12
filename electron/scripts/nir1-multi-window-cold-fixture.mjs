@@ -15,7 +15,13 @@
 //       folds scene 1 with scene 3; cluster "writ" reads scene 2 only.
 // Around them: a scene before both folders and a scene after both.
 //
-// usage: node electron/scripts/nir1-multi-window-cold-fixture.mjs <new absolute output directory>
+// usage: node electron/scripts/nir1-multi-window-cold-fixture.mjs <new absolute output directory> [name]
+// `name` (default nir1-multi-window-cold) is the base name of the output files and
+// the manifest's schemaVersion prefix. DMS/1 made the product record each
+// proposal's material as the scenes its synthesis request read, so the same
+// setup run again with the product of that change is committed as
+// `nir1-declared-scope-cold` (the MW/1 database, made when every proposal
+// declared every scene of its extraction, stays as the old-form fixture).
 // Needs a standard build (pnpm napi:build && pnpm electron:build) of this tree.
 // Run it under Xvfb like the product journeys (scripts/local-ci-xvfb.mjs).
 // Output: nir1-multi-window-cold.db.gz and .json (copy to
@@ -52,10 +58,10 @@ import {
 } from "./nir1-reviewed-child-evidence.mjs";
 
 const root = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const [output] = process.argv.slice(2);
+const [output, name = "nir1-multi-window-cold"] = process.argv.slice(2);
 assert.ok(
   output && path.isAbsolute(output),
-  "usage: node electron/scripts/nir1-multi-window-cold-fixture.mjs <new absolute output directory>",
+  "usage: node electron/scripts/nir1-multi-window-cold-fixture.mjs <new absolute output directory> [name]",
 );
 const fixture = JSON.parse(
   readFileSync(
@@ -486,12 +492,9 @@ try {
   });
   const database = await readFile(path.join(coldWorkspace, "grimodex.db"));
   const compressed = gzipSync(database, { level: 9, mtime: 0 });
-  await writeFile(
-    path.join(output, "nir1-multi-window-cold.db.gz"),
-    compressed,
-  );
-  await save("nir1-multi-window-cold.json", {
-    schemaVersion: "nir1-multi-window-cold/1",
+  await writeFile(path.join(output, `${name}.db.gz`), compressed);
+  await save(`${name}.json`, {
+    schemaVersion: `${name}/1`,
     projectId,
     scenes: IDS,
     runs,

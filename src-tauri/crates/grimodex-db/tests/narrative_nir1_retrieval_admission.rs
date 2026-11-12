@@ -4152,3 +4152,436 @@ fn bulk_approve_rejects_input_boundaries() {
     }
     assert_eq!(bulk_state(&db), before, "an invalid request writes nothing");
 }
+// ---------------------------------------------------------------------------
+// DMS/1: a proposal declares only the scenes its synthesis request read.
+// `support/nir1-declared-scope-cold.db.gz` is the MW/1 setup
+// (`electron/scripts/nir1-multi-window-cold-fixture.mjs`) run again with the
+// product of DMS/1: the normal planner, the production extraction path (which
+// now narrows each proposal's source basis and dependency declarations) and
+// the Human review UI made every row. Mutations are confined to private copies.
+// The MW/1 database above stays: it is the old form (every proposal declares
+// every scene of its extraction), which Native keeps reading unchanged.
+// ---------------------------------------------------------------------------
+
+impl Fixture {
+    /// One proposal of the declared-scope database, as a single-proposal fixture
+    /// (`s1` the first scene of its material, `s2` the scene after both folders).
+    fn declared_scope(shape: &str, title: &str) -> Self {
+        let mut manifest: Value =
+            serde_json::from_str(include_str!("support/nir1-declared-scope-cold.json"))
+                .expect("declared-scope cold fixture manifest");
+        let run = manifest["runs"][shape].clone();
+        let proposal = run["proposals"]
+            .as_array()
+            .expect("proposals")
+            .iter()
+            .find(|p| p["title"] == title)
+            .expect("proposal")
+            .clone();
+        manifest["runId"] = run["runId"].clone();
+        manifest["s2"] = manifest["scenes"]["after"].clone();
+        manifest["revisionIds"] = json!([proposal["revisionId"]]);
+        manifest["rootRevisionIds"] = json!([proposal["rootRevisionId"]]);
+        let compressed = include_bytes!("support/nir1-declared-scope-cold.db.gz");
+        Self::open(manifest, compressed)
+    }
+
+    /// The scenes of the three-scene folder, in order (`mw-scene-1..3`).
+    fn folder_scene(&self, index: usize) -> String {
+        self.manifest["scenes"]["three"][index]
+            .as_str()
+            .expect("folder scene")
+            .to_owned()
+    }
+}
+
+const FIRE: &str = "Signal fire on the quay";
+const WRIT: &str = "Writ delivered to the quay";
+const SEAL: &str = "Ledger seals at the gate";
+const BELL: &str = "Harbour bell at dusk";
+
+fn scene_keys(envelope: &Value) -> Vec<String> {
+    envelope["effectiveMaterialBasis"]["sourceBasis"]
+        .as_array()
+        .expect("sourceBasis")
+        .iter()
+        .filter(|s| s["sourceKind"] == "scene-body")
+        .map(|s| s["sourceKey"].as_str().expect("key").to_owned())
+        .collect()
+}
+
+fn declared_scene_dependencies(envelope: &Value) -> Vec<String> {
+    let mut keys: Vec<String> = envelope["effectiveMaterialBasis"]["dependencySet"]
+        .as_array()
+        .expect("dependencySet")
+        .iter()
+        .filter_map(|d| d["inputRef"].as_str())
+        .filter(|k| k.starts_with("project:scene:"))
+        .map(str::to_owned)
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+fn envelope_of(conn: &Connection, revision: &str) -> Value {
+    let raw: String = conn
+        .query_row(
+            "SELECT reconciliation_envelope_json FROM narrative_proposal_revisions WHERE id = ?1",
+            [revision],
+            |row| row.get(0),
+        )
+        .expect("saved Envelope");
+    serde_json::from_str(&raw).expect("Envelope JSON")
+}
+
+fn declared_verdict(fixture: &Fixture, conn: &Connection, query: &str) -> RevisionEligibilityRead {
+    let tx = conn.unchecked_transaction().expect("snapshot");
+    read_revision_retrieval_eligibility(&tx, fixture.project(), fixture.child(), query)
+        .expect("public Rust retrieval admission")
+}
+
+fn assert_source_not_before(read: &RevisionEligibilityRead, context: &str) {
+    assert!(
+        matches!(
+            read,
+            RevisionEligibilityRead::Unavailable {
+                reason: RevisionEligibilityReason::SourceNotBeforeQuery
+            }
+        ),
+        "{context}: only the disclosure order may refuse: {read:?}"
+    );
+}
+
+#[test]
+fn the_declared_scope_golden_is_the_run_recorded_with_its_cold_database() {
+    let fixture = Fixture::declared_scope("three", WRIT);
+    let text = include_str!(
+        "../src/narrative_extraction/material_roster/production-declared-scope-folder-golden.json"
+    );
+    assert_eq!(
+        hex::encode(Sha256::digest(text.as_bytes())),
+        fixture.manifest["runs"]["three"]["goldenSha256"]
+    );
+    let golden: Value = serde_json::from_str(text).expect("golden");
+    assert_eq!(
+        golden["snapshot"]["snapshot"]["documents"][0]["sourceKey"],
+        json!(format!("project:scene:{}", fixture.folder_scene(0))),
+        "the golden is the Run of this database"
+    );
+}
+
+/// DR-DMS-1/4 as persisted by the normal path: every revision of every
+/// proposal (root and Human child) declares exactly the scenes of the windows
+/// its synthesis request read, and Native replays it completely with exactly
+/// those windows as material.
+#[test]
+fn a_proposal_declares_and_replays_only_the_scenes_its_synthesis_request_read() {
+    let scene = |shape: &str, index: usize| -> String {
+        let fixture = Fixture::declared_scope(shape, if shape == "long" { SEAL } else { FIRE });
+        if shape == "long" {
+            format!(
+                "project:scene:{}",
+                fixture.manifest["scenes"]["long"].as_str().expect("long")
+            )
+        } else {
+            format!("project:scene:{}", fixture.folder_scene(index))
+        }
+    };
+    // (shape, title, declared scenes, windows read, replayed requests)
+    let cases = [
+        (
+            "three",
+            FIRE,
+            vec![scene("three", 0), scene("three", 2)],
+            vec!["window-001", "window-003"],
+        ),
+        ("three", WRIT, vec![scene("three", 1)], vec!["window-002"]),
+        // One scene cut into three windows: the scene is declared once and
+        // every one of its windows is material, whichever observation read it.
+        (
+            "long",
+            SEAL,
+            vec![scene("long", 0)],
+            vec!["window-001", "window-002", "window-003"],
+        ),
+        (
+            "long",
+            BELL,
+            vec![scene("long", 0)],
+            vec!["window-001", "window-002", "window-003"],
+        ),
+    ];
+    for (shape, title, declared, windows) in cases {
+        let fixture = Fixture::declared_scope(shape, title);
+        let conn = fixture.read_only();
+        for revision in [fixture.root().to_owned(), fixture.child().to_owned()] {
+            let envelope = envelope_of(&conn, &revision);
+            let mut expected = declared.clone();
+            expected.sort();
+            let mut actual = scene_keys(&envelope);
+            actual.sort();
+            assert_eq!(actual, expected, "{shape} {title}: declared source basis");
+            assert_eq!(
+                declared_scene_dependencies(&envelope),
+                expected,
+                "{shape} {title}: every declared scene has a declaration and no other scene does"
+            );
+            // The extraction's seal stays declared.
+            assert!(
+                envelope["effectiveMaterialBasis"]["sourceBasis"]
+                    .as_array()
+                    .expect("sourceBasis")
+                    .iter()
+                    .any(|s| s["sourceKind"] == "snapshot-document"),
+                "{shape} {title}: the Snapshot seal is kept"
+            );
+            let tx = conn.unchecked_transaction().expect("snapshot");
+            let MaterialMembershipRead::Complete(m) =
+                read_revision_material_membership(&tx, fixture.project(), &revision)
+                    .expect("typed material membership")
+            else {
+                panic!("{shape} {title}: a narrowed record must replay completely")
+            };
+            let read: std::collections::BTreeSet<_> = m
+                .materials
+                .iter()
+                .map(|s| {
+                    s.context_id
+                        .strip_prefix("observation-citation-window:")
+                        .expect("a window material")
+                        .to_owned()
+                })
+                .collect();
+            assert_eq!(
+                read.into_iter().collect::<Vec<_>>(),
+                windows.iter().map(|w| w.to_string()).collect::<Vec<_>>(),
+                "{shape} {title}: only the declared scenes' windows are material"
+            );
+            assert_eq!(m.replayed_requests.len(), windows.len() + 1);
+            for proof in &m.replayed_requests {
+                assert_eq!(proof.reconstructed, proof.persisted);
+            }
+            drop(tx);
+            if revision == fixture.child() {
+                assert_complete_and_fresh(&conn, &fixture, &revision);
+            }
+        }
+    }
+}
+
+/// (a) and (b): a three-scene folder's proposal that reads only scene 2 is
+/// shown to scene 3, which comes after its material but is still inside the
+/// extraction (the MW/1 database refuses it there: its record declared scene
+/// 3); it is not shown to scenes at or before its material.
+#[test]
+fn a_proposal_is_eligible_after_its_own_scenes_even_inside_the_extraction() {
+    let writ = Fixture::declared_scope("three", WRIT);
+    let conn = writ.read_only();
+    let before = writ.digest();
+    let verdict = |query: &str| declared_verdict(&writ, &conn, query);
+    let (s1, s2, s3) = (
+        writ.folder_scene(0),
+        writ.folder_scene(1),
+        writ.folder_scene(2),
+    );
+    for query in [
+        writ.manifest["scenes"]["before"]
+            .as_str()
+            .expect("before")
+            .to_owned(),
+        s1.clone(),
+        s2.clone(),
+    ] {
+        assert_source_not_before(&verdict(&query), &format!("writ from {query}"));
+    }
+    for query in [s3.clone(), writ.scene("s2").to_owned()] {
+        assert!(
+            matches!(verdict(&query), RevisionEligibilityRead::Eligible(_)),
+            "writ from {query}: {:?}",
+            verdict(&query)
+        );
+    }
+    // The same proposal of the MW/1 database (broad record) is refused from
+    // scene 3: the difference is the declared scope alone.
+    let old = Fixture::multi_window(false);
+    let old_conn = old.read_only();
+    let tx = old_conn.unchecked_transaction().expect("snapshot");
+    let broad = read_revision_retrieval_eligibility(&tx, old.project(), old.child(), &s3)
+        .expect("admission");
+    assert_source_not_before(&broad, "MW/1 writ from scene 3");
+    drop(conn);
+    assert_eq!(writ.digest(), before, "admission writes nothing");
+
+    // A proposal whose observations span scenes 1 and 3 is still not shown
+    // inside the folder; its evidence is in two scenes, so it never is.
+    let fire = Fixture::declared_scope("three", FIRE);
+    let conn = fire.read_only();
+    for query in [s1, s2, s3, fire.scene("s2").to_owned()] {
+        assert!(
+            !matches!(
+                declared_verdict(&fire, &conn, &query),
+                RevisionEligibilityRead::Eligible(_)
+            ),
+            "fire from {query}"
+        );
+    }
+    // One scene cut into windows: nothing changes for it (shown after its
+    // scene, not before or at it).
+    let seal = Fixture::declared_scope("long", SEAL);
+    let conn = seal.read_only();
+    assert!(matches!(
+        declared_verdict(&seal, &conn, &seal.folder_scene(0)),
+        RevisionEligibilityRead::Eligible(_)
+    ));
+    assert_source_not_before(
+        &declared_verdict(
+            &seal,
+            &conn,
+            seal.manifest["scenes"]["long"].as_str().expect("long"),
+        ),
+        "seal from its own scene",
+    );
+}
+
+fn freshness_of(conn: &Connection, fixture: &Fixture, revision: &str) -> bool {
+    let tx = conn.unchecked_transaction().expect("snapshot");
+    matches!(
+        read_revision_canonical_freshness(&tx, fixture.project(), revision)
+            .expect("canonical revision Freshness"),
+        RevisionFreshnessRead::Fresh(_)
+    )
+}
+
+impl Fixture {
+    /// The current approved child of another proposal of the same Run.
+    fn child_of(&self, shape: &str, title: &str) -> String {
+        self.manifest["runs"][shape]["proposals"]
+            .as_array()
+            .expect("proposals")
+            .iter()
+            .find(|p| p["title"] == title)
+            .expect("proposal")["revisionId"]
+            .as_str()
+            .expect("child")
+            .to_owned()
+    }
+}
+
+/// (c): editing a scene a proposal's observations did not come from leaves it
+/// fresh; editing a scene they came from makes it stale. The MW/1 database
+/// (every proposal declares every scene) is stale for every folder scene.
+#[test]
+fn editing_an_unrelated_scene_leaves_a_declared_scope_proposal_fresh() {
+    // (scene edited, writ fresh, fire fresh); writ read scene 2, fire 1 and 3.
+    let declared = [(0, true, false), (1, false, true), (2, true, false)];
+    for (index, writ_fresh, fire_fresh) in declared {
+        let fixture = Fixture::declared_scope("three", WRIT);
+        let db = Database::new(&fixture.path).expect("Native private fixture");
+        let (writ, fire) = (
+            fixture.child_of("three", WRIT),
+            fixture.child_of("three", FIRE),
+        );
+        native_patch_node(
+            &db,
+            &fixture,
+            &fixture.folder_scene(index),
+            json!({"title": "Quay, revised"}),
+            false,
+        );
+        drain_native_feed(&db);
+        let conn = fixture.read_only();
+        assert_eq!(
+            freshness_of(&conn, &fixture, &writ),
+            writ_fresh,
+            "edit scene {}: writ",
+            index + 1
+        );
+        assert_eq!(
+            freshness_of(&conn, &fixture, &fire),
+            fire_fresh,
+            "edit scene {}: fire",
+            index + 1
+        );
+    }
+    // A scene outside the extraction never matters.
+    let fixture = Fixture::declared_scope("three", WRIT);
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    native_patch_node(
+        &db,
+        &fixture,
+        fixture.manifest["scenes"]["after"].as_str().expect("after"),
+        json!({"title": "After, revised"}),
+        false,
+    );
+    drain_native_feed(&db);
+    let conn = fixture.read_only();
+    for title in [WRIT, FIRE] {
+        assert!(
+            freshness_of(&conn, &fixture, &fixture.child_of("three", title)),
+            "{title}"
+        );
+    }
+    // Control, the MW/1 database: editing scene 3 stales the proposal that
+    // never read it, because its record declared every scene.
+    let old = Fixture::multi_window(false);
+    let db = Database::new(&old.path).expect("Native private fixture");
+    native_patch_node(
+        &db,
+        &old,
+        "mw-scene-3",
+        json!({"title": "Quay, revised"}),
+        false,
+    );
+    drain_native_feed(&db);
+    let conn = old.read_only();
+    assert!(
+        !freshness_of(&conn, &old, old.child()),
+        "MW/1 writ is stale from the scene-3 edit"
+    );
+}
+
+/// (c) for the import: with the proposal that read scene 3 set aside, editing
+/// scene 3 does not stop the import of the one that read scene 2. In the
+/// MW/1 database the same edit stops it.
+#[test]
+fn editing_an_unrelated_scene_does_not_stop_the_import() {
+    for declared in [true, false] {
+        let fixture = if declared {
+            Fixture::declared_scope("three", WRIT)
+        } else {
+            Fixture::multi_window(false)
+        };
+        let db = Database::new(&fixture.path).expect("Native private fixture");
+        enable_manual_apply(&db);
+        let (writ, fire) = (
+            fixture.child_of("three", WRIT),
+            fixture.child_of("three", FIRE),
+        );
+        native_human_decision(&db, &fixture, &fire, "rejected");
+        native_patch_node(
+            &db,
+            &fixture,
+            &fixture.folder_scene(2),
+            json!({"title": "Quay 3, revised"}),
+            false,
+        );
+        drain_native_feed(&db);
+        let run = fixture.manifest["runId"].as_str().expect("run").to_owned();
+        let revisions = approved_current_revisions_of_run(&db, &run);
+        assert_eq!(
+            revisions,
+            vec![writ.clone()],
+            "only the writ stays approved"
+        );
+        let prepare = chronicle_prepare_payload(&db, &fixture, "dms-request", &revisions);
+        if declared {
+            let applied = prepare_and_apply(&db, &prepare);
+            assert_eq!(applied["status"], "applied");
+            assert_eq!(apply_counts(&db), (1, 1, 1));
+        } else {
+            let error = assert_prepare_refused(&db, &prepare);
+            assert!(error.contains("STALE"), "MW/1 writ must be stale: {error}");
+        }
+    }
+}
