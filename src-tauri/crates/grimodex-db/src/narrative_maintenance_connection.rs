@@ -1724,20 +1724,12 @@ impl Database {
             conn.execute_batch(&format!(
                 "PRAGMA temp_store=MEMORY;
                  PRAGMA mmap_size=0;
-                 PRAGMA cache_size={CHRONICLE_READER_CACHE_SIZE};
-                 CREATE TEMP TABLE grimodex_connection_meta (
-                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                     epoch TEXT NOT NULL
-                 );"
+                 PRAGMA cache_size={CHRONICLE_READER_CACHE_SIZE};"
             ))?;
             #[cfg(test)]
             if CHRONICLE_OPEN_PANIC_FAILPOINT.with(std::cell::Cell::get) {
                 panic!("chronicle reader open failpoint");
             }
-            conn.execute(
-                "INSERT INTO temp.grimodex_connection_meta (singleton, epoch) VALUES (1, ?1)",
-                rusqlite::params![uuid::Uuid::new_v4().to_string()],
-            )?;
             conn.execute_batch("PRAGMA query_only=ON")?;
             Ok(())
         })();

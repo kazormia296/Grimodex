@@ -25,10 +25,9 @@ const snapshot: CodexSnapshot = {
   details: [{ name: "年齢", value: "15" }],
 };
 const sourceGuard = {
-  kind: "sqlite_revision_v1" as const,
-  expected_connection_epoch: "5c469be0-51e3-4f31-95e0-9bf457806c56",
-  expected_total_changes: "42",
-  expected_data_version: "7",
+  kind: "sqlite_write_clock_v1" as const,
+  expected_lineage: "5c469be051e34f31a95e0bf457806c56",
+  expected_seq: "42",
 };
 
 beforeEach(() => {
@@ -112,15 +111,15 @@ describe("impact review baseline", () => {
       string,
       { sql: string; params: unknown[]; method: string },
     ];
-    expect(args.sql).toContain("temp.grimodex_connection_meta");
-    expect(args.sql).toContain("total_changes()");
-    expect(args.sql).toContain("pragma_data_version");
+    expect(args.sql).toContain("grimodex_clock_read");
+    expect(args.sql).not.toContain("grimodex_connection_meta");
+    expect(args.sql).not.toContain("total_changes()");
+    expect(args.sql).not.toContain("pragma_data_version");
     expect(args.params).toEqual(
       expect.arrayContaining([
         "expected-hash",
-        sourceGuard.expected_connection_epoch,
-        sourceGuard.expected_total_changes,
-        sourceGuard.expected_data_version,
+        sourceGuard.expected_lineage,
+        sourceGuard.expected_seq,
       ]),
     );
   });
@@ -164,17 +163,9 @@ describe("impact review baseline", () => {
       method: "run",
     });
     const revision = await browser.invoke<{
-      rows: Array<{
-        epoch: string;
-        totalChanges: string;
-        dataVersion: string;
-      }>;
+      rows: Array<{ lineage: string; seq: string }>;
     }>("db_execute", {
-      sql: `SELECT epoch,
-                   CAST(total_changes() AS TEXT) AS totalChanges,
-                   CAST((SELECT data_version FROM pragma_data_version) AS TEXT) AS dataVersion
-              FROM temp.grimodex_connection_meta
-             WHERE singleton = 1`,
+      sql: `SELECT lineage, CAST(seq AS TEXT) AS seq FROM grimodex_clock_read`,
       params: [],
       method: "all",
     });
@@ -187,10 +178,9 @@ describe("impact review baseline", () => {
       snapshot,
       null,
       {
-        kind: "sqlite_revision_v1",
-        expected_connection_epoch: current.epoch,
-        expected_total_changes: current.totalChanges,
-        expected_data_version: current.dataVersion,
+        kind: "sqlite_write_clock_v1",
+        expected_lineage: current.lineage,
+        expected_seq: current.seq,
       },
     );
 

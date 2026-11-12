@@ -6,7 +6,7 @@ use super::background_checkpoint::{
 };
 use super::narrative_extraction::nir1_chronicle_index::read_identity::ReadIdentity;
 use super::open_wal::{sqlite_wal_checkpoint, OpenWalCheckpointMode, OpenWalPreparationOutcome};
-use super::{read_sqlite_source_revision, Database};
+use super::{read_db_clock, Database};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -218,17 +218,25 @@ fn a_large_commit_is_written_back_by_the_background_connection() {
     );
 }
 
-/// checkpoint は data_version・total_changes・schema・ReadIdentity を動かさない。
+/// checkpoint は write clock（lineage・seq）・schema・ReadIdentity を動かさない（DR-DBC-5）。
 #[test]
-fn checkpoint_does_not_move_data_version_or_read_identity() {
+fn checkpoint_does_not_move_the_write_clock_or_read_identity() {
     let fixture = Fixture::new("identity");
     let db = fixture.open();
+    // payload 表を clock の対象にする（この fixture は migration を通らない ad-hoc の DB）。
+    db.with_conn(|conn| {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        crate::write_clock::install_write_clock_in_tx(conn)?;
+        conn.execute_batch("COMMIT")?;
+        Ok(())
+    })
+    .expect("install the write clock");
     let probe = started(&db);
 
     // 自分の大きい commit。背景の checkpoint は、この直後に別接続で走る。
     let runs = probe.stats_runs();
     append_pages(&db, 2 * WAL_CHECKPOINT_PAGES);
-    let revision = db.with_conn(read_sqlite_source_revision).expect("revision");
+    let revision = db.with_conn(read_db_clock).expect("revision");
     let identity = db
         .with_conn(ReadIdentity::read_unpinned)
         .expect("identity")
@@ -237,8 +245,7 @@ fn checkpoint_does_not_move_data_version_or_read_identity() {
     let mut samples = 0;
     while probe.stats_runs() == runs || !probe.wait_idle(Duration::from_millis(1)) {
         assert_eq!(
-            db.with_conn(read_sqlite_source_revision)
-                .expect("revision sample"),
+            db.with_conn(read_db_clock).expect("revision sample"),
             revision
         );
         assert_eq!(
@@ -255,8 +262,7 @@ fn checkpoint_does_not_move_data_version_or_read_identity() {
         "a checkpoint ran after the commit"
     );
     assert_eq!(
-        db.with_conn(read_sqlite_source_revision)
-            .expect("revision after"),
+        db.with_conn(read_db_clock).expect("revision after"),
         revision
     );
     assert_eq!(
@@ -271,7 +277,7 @@ fn checkpoint_does_not_move_data_version_or_read_identity() {
     sqlite_wal_checkpoint(&other, OpenWalCheckpointMode::Passive).expect("passive from other");
     drop(other);
     assert_eq!(
-        db.with_conn(read_sqlite_source_revision)
+        db.with_conn(read_db_clock)
             .expect("revision after foreign checkpoint"),
         revision
     );
@@ -292,16 +298,17 @@ fn checkpoint_does_not_move_data_version_or_read_identity() {
     assert!(pinned.0.is_some());
     assert_eq!(pinned.0, pinned.1);
 
-    // 対照：別の接続の commit では data_version が進む。この試験はそれを検出できる。
+    // 対照：別の接続の commit では seq が進む。この試験はそれを検出できる。
     let writer = rusqlite::Connection::open(&fixture.path).expect("writer connection");
     writer
         .execute("INSERT INTO payload (body) VALUES (zeroblob(10))", [])
         .expect("foreign commit");
     drop(writer);
     let moved = db
-        .with_conn(read_sqlite_source_revision)
+        .with_conn(read_db_clock)
         .expect("revision after foreign commit");
-    assert_ne!(moved.data_version, revision.data_version);
+    assert_eq!(moved.lineage, revision.lineage);
+    assert_eq!(moved.seq, revision.seq + 1);
 }
 
 /// 停止：実行中でなければ join でき、2 回目は何もしない。以後は同期の checkpoint に戻る

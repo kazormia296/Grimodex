@@ -81,7 +81,7 @@ use super::restore_rebuild::{
 use super::semantic_epoch::get_current_epoch;
 use super::task_leases::with_immediate_transaction;
 use crate::backup_restore::{create_persistent_live_safety_artifact, LiveSafetyArtifact};
-use crate::{read_sqlite_source_revision, Database};
+use crate::{write_clock::read_db_clock_with_versions, Database};
 
 const REPAIR_LEASE_TTL_SECONDS: i64 = 15 * 60;
 
@@ -1680,6 +1680,21 @@ fn fail_repair_attempt(
     terminalize_repair_run(db, run_id, NarrativeRunStatus::Failed, error)
 }
 
+/// backup の後の CAS：backup の前に読んだ（lineage、seq、main の schema_version、
+/// user_version）と同じでなければ、新しい状態を書き換えたり巻き戻したりしない。
+/// seq だけでは clock の trigger が付かない DDL を見逃すので、versions も比べる。
+fn ensure_source_unchanged_since_backup(
+    conn: &rusqlite::Connection,
+    before_backup: &(crate::DbClock, i64, i64),
+) -> anyhow::Result<()> {
+    let after_backup = read_db_clock_with_versions(conn)?;
+    anyhow::ensure!(
+        &after_backup == before_backup,
+        "NEX_REPAIR_WORKSPACE_CHANGED_DURING_BACKUP: a canonical writer committed while the safety artifact was being created; refusing to mutate or roll back that newer state"
+    );
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_repair_steps(
     db: &Database,
@@ -1728,7 +1743,9 @@ fn execute_repair_steps(
     // 2. Capture the source revision before the backup. The backup uses a
     // separate SQLite connection, so this revision is the CAS boundary for
     // every canonical writer, not only Repair writers.
-    let source_revision_before_backup = db.with_conn(read_sqlite_source_revision)?;
+    // lineage・seq に main の schema_version・user_version を足した値で比べる
+    // （DDL だけの変更は seq を進めないので、旧い比較と同じ強さにする）。
+    let source_revision_before_backup = db.with_conn(read_db_clock_with_versions)?;
 
     // 3. Automatic backup. Slow on a large workspace -- slow enough that
     //    the lease claimed above can expire and be re-claimed by someone
@@ -1764,11 +1781,7 @@ fn execute_repair_steps(
     //    terminalize -- atomically.
     let edges_deactivated = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            let source_revision_after_backup = read_sqlite_source_revision(conn)?;
-            anyhow::ensure!(
-                source_revision_after_backup == source_revision_before_backup,
-                "NEX_REPAIR_WORKSPACE_CHANGED_DURING_BACKUP: a canonical writer committed while the safety artifact was being created; refusing to mutate or roll back that newer state"
-            );
+            ensure_source_unchanged_since_backup(conn, &source_revision_before_backup)?;
             assert_repair_lease_still_held_in_tx(
                 conn,
                 project_id,
@@ -1820,6 +1833,50 @@ mod tests {
     };
     use crate::narrative_extraction::semantic_epoch::create_epoch_in_tx;
     use std::path::PathBuf;
+
+    /// repair の CAS（`ensure_source_unchanged_since_backup`）は lineage・seq に
+    /// schema_version・user_version を足した値で比べる。clock の trigger が付かない DDL
+    /// （表の作成など）は seq を進めないので、seq だけの比較では見逃す。
+    #[test]
+    fn the_repair_cas_sees_a_ddl_only_change_that_leaves_the_sequence() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+        db.migrate().expect("migrate");
+        let before = db
+            .with_conn(crate::write_clock::read_db_clock_with_versions)
+            .expect("before");
+        db.with_conn(|conn| ensure_source_unchanged_since_backup(conn, &before))
+            .expect("nothing changed");
+        db.with_conn(|conn| {
+            conn.execute_batch("CREATE TABLE ddl_only_probe (value INTEGER)")?;
+            Ok(())
+        })
+        .expect("ddl");
+        let after = db
+            .with_conn(crate::write_clock::read_db_clock_with_versions)
+            .expect("after");
+        assert_eq!(after.0, before.0, "the sequence does not move");
+        assert_ne!(after.1, before.1, "the schema_version does");
+        let error = db
+            .with_conn(|conn| ensure_source_unchanged_since_backup(conn, &before))
+            .expect_err("a DDL-only change is a change");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_WORKSPACE_CHANGED_DURING_BACKUP"),
+            "{error}"
+        );
+        // A covered write (the sequence moves) is refused as well.
+        let current = db
+            .with_conn(crate::write_clock::read_db_clock_with_versions)
+            .expect("current");
+        db.with_conn(|conn| {
+            conn.execute("INSERT INTO projects(id) VALUES ('cas-write')", [])?;
+            Ok(())
+        })
+        .expect("write");
+        db.with_conn(|conn| ensure_source_unchanged_since_backup(conn, &current))
+            .expect_err("a covered write is a change");
+    }
 
     /// Repair's automatic backup step needs a real, file-backed workspace
     /// (it `VACUUM INTO`s the live `.db` file) -- unlike every other test

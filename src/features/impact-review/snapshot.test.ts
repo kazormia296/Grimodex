@@ -18,9 +18,8 @@ interface SnapshotProxyRow {
   summary: string | null;
   content: string | null;
   contextMode: string | null;
-  sourceConnectionEpoch: string | null;
-  sourceTotalChanges: string | null;
-  sourceDataVersion: string | null;
+  sourceLineage: string | null;
+  sourceSeq: string | null;
   detailId: string | null;
   detailName: string | null;
   detailValue: string | null;
@@ -43,9 +42,8 @@ const proxyColumns: Array<keyof SnapshotProxyRow> = [
   "summary",
   "content",
   "contextMode",
-  "sourceConnectionEpoch",
-  "sourceTotalChanges",
-  "sourceDataVersion",
+  "sourceLineage",
+  "sourceSeq",
   "detailId",
   "detailName",
   "detailValue",
@@ -119,12 +117,9 @@ describe("buildCodexSnapshot", () => {
     expect(result?.projectId).toBe("default-project");
     expect(result?.snapshot.name).toBe("アリス");
     expect(result?.sourceRevision).toEqual({
-      kind: "sqlite_revision_v1",
-      expected_connection_epoch: expect.stringMatching(
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-      ),
-      expected_total_changes: expect.stringMatching(/^\d+$/),
-      expected_data_version: expect.stringMatching(/^\d+$/),
+      kind: "sqlite_write_clock_v1",
+      expected_lineage: expect.stringMatching(/^[0-9a-f]{32}$/),
+      expected_seq: expect.stringMatching(/^\d+$/),
     });
   });
 
@@ -140,9 +135,8 @@ describe("buildCodexSnapshot", () => {
           summary: "主人公。",
           content: proseMirrorDoc("町に住んでいる。"),
           contextMode: "mentioned",
-          sourceConnectionEpoch: "5c469be0-51e3-4f31-95e0-9bf457806c56",
-          sourceTotalChanges: "42",
-          sourceDataVersion: "7",
+          sourceLineage: "5c469be051e34f31a95e0bf457806c56",
+          sourceSeq: "42",
         }),
         proxyRow({
           kind: "detail",
@@ -184,8 +178,10 @@ describe("buildCodexSnapshot", () => {
     expect(command).toBe("db_execute");
     expect(args.method).toBe("all");
     expect(args.sql.match(/\bunion all\b/gi)).toHaveLength(3);
-    expect(args.sql).toContain("total_changes()");
-    expect(args.sql).toContain("pragma_data_version");
+    expect(args.sql).toContain("grimodex_clock_read");
+    expect(args.sql).not.toContain("total_changes()");
+    expect(args.sql).not.toContain("pragma_data_version");
+    expect(args.sql).not.toContain("grimodex_connection_meta");
     expect(args.params).toEqual(
       expect.arrayContaining([
         "entry",
@@ -200,10 +196,9 @@ describe("buildCodexSnapshot", () => {
       entryType: "character",
       entryName: "アリス",
       sourceRevision: {
-        kind: "sqlite_revision_v1",
-        expected_connection_epoch: "5c469be0-51e3-4f31-95e0-9bf457806c56",
-        expected_total_changes: "42",
-        expected_data_version: "7",
+        kind: "sqlite_write_clock_v1",
+        expected_lineage: "5c469be051e34f31a95e0bf457806c56",
+        expected_seq: "42",
       },
       contextMode: "mentioned",
       hasRestrictedPhases: true,

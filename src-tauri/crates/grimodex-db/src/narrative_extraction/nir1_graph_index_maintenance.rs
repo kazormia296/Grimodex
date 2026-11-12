@@ -178,11 +178,11 @@ struct GraphBuildHint {
 }
 
 /// Process-local scope of one judgement: the admitted runtime owner (the
-/// authority identity) and epoch, plus the connection the runtime is bound to.
+/// authority identity) and epoch. The authority identity is the whole binding:
+/// a replaced database gets a new authority (DR-DBC-5, C5 (a)).
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RecordScope {
     owner: u64,
-    connection_epoch: String,
     runtime_epoch: u64,
 }
 
@@ -219,7 +219,6 @@ struct RecordEntry {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct RecordKey {
     owner: u64,
-    connection_epoch: String,
     project_id: String,
 }
 
@@ -227,7 +226,6 @@ impl RecordKey {
     fn new(scope: &RecordScope, project_id: &str) -> Self {
         Self {
             owner: scope.owner,
-            connection_epoch: scope.connection_epoch.clone(),
             project_id: project_id.to_owned(),
         }
     }
@@ -290,7 +288,6 @@ fn read_build_hint(
     let Some((owner, runtime_epoch)) = runtime.admit_native_build(conn)? else {
         return Ok(HintRead::Skip(Nir1GraphIndexSkipReason::RuntimeUnavailable));
     };
-    let connection_epoch = crate::read_sqlite_source_revision(conn)?.connection_epoch;
     control.check(GraphWorkStage::Coverage)?;
     let metadata = conn
         .query_row(
@@ -386,7 +383,6 @@ fn read_build_hint(
     Ok(HintRead::Ready {
         scope: RecordScope {
             owner,
-            connection_epoch,
             runtime_epoch,
         },
         hint: Box::new(GraphBuildHint {
@@ -986,7 +982,6 @@ pub(crate) fn recorded_outcome_for_test(
             };
             Ok(Some(RecordScope {
                 owner,
-                connection_epoch: crate::read_sqlite_source_revision(conn)?.connection_epoch,
                 runtime_epoch,
             }))
         })

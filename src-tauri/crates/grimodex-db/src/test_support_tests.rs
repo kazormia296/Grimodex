@@ -1,5 +1,5 @@
 use super::{current_schema_memory, fresh_migrated_memory};
-use crate::{read_sqlite_source_revision, Database};
+use crate::{read_db_clock, Database};
 
 type SchemaRow = (String, String, String, Option<String>);
 
@@ -67,17 +67,13 @@ fn cloned_fixture_matches_real_schema_bootstrap_fts_and_foreign_keys() -> anyhow
 }
 
 #[test]
-fn cloned_fixtures_keep_writes_and_temp_epochs_isolated() -> anyhow::Result<()> {
+fn cloned_fixtures_keep_writes_temp_objects_and_lineages_isolated() -> anyhow::Result<()> {
     let first = current_schema_memory()?;
     let second = current_schema_memory()?;
-    let first_epoch = first
-        .with_conn(read_sqlite_source_revision)?
-        .connection_epoch;
-    let second_epoch = second
-        .with_conn(read_sqlite_source_revision)?
-        .connection_epoch;
-    assert!(!first_epoch.is_empty());
-    assert_ne!(first_epoch, second_epoch);
+    let first_lineage = first.with_conn(read_db_clock)?.lineage;
+    let second_lineage = second.with_conn(read_db_clock)?.lineage;
+    assert_eq!(first_lineage.len(), 32);
+    assert_ne!(first_lineage, second_lineage);
 
     first.with_conn(|conn| {
         conn.execute(

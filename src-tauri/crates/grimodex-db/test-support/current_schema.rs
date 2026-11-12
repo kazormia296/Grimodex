@@ -12,13 +12,13 @@ static TEMPLATE: OnceLock<std::result::Result<CurrentSchemaTemplate, String>> = 
 
 struct CurrentSchemaTemplate {
     source: Database,
-    source_epoch: String,
+    source_lineage: String,
 }
 
-fn epoch(db: &Database) -> Result<String> {
+fn lineage(db: &Database) -> Result<String> {
     db.with_conn(|conn| {
         Ok(conn.query_row(
-            "SELECT epoch FROM temp.grimodex_connection_meta WHERE singleton=1",
+            "SELECT id FROM grimodex_db_lineage WHERE singleton=1",
             [],
             |row| row.get(0),
         )?)
@@ -28,20 +28,19 @@ fn epoch(db: &Database) -> Result<String> {
 impl CurrentSchemaTemplate {
     fn initialize() -> Result<Self> {
         let source = fresh_migrated_memory()?;
-        let source_epoch = epoch(&source)?;
+        let source_lineage = lineage(&source)?;
         source.with_conn(|conn| {
             conn.pragma_update(None, "query_only", true)?;
             Ok(())
         })?;
         Ok(Self {
             source,
-            source_epoch,
+            source_lineage,
         })
     }
 
     fn clone_database(&self) -> Result<Database> {
         let destination = new_memory()?;
-        let destination_epoch = epoch(&destination)?;
         {
             let source = self.source.lock()?;
             anyhow::ensure!(
@@ -55,12 +54,25 @@ impl CurrentSchemaTemplate {
                 "current-schema fixture backup did not complete"
             );
         }
-        let copied_epoch = epoch(&destination)?;
+        // The Backup API copies the template's lineage. Every database is its own
+        // lineage (as a restore or migration makes it), so the process-local keys
+        // and receipts that name a lineage never alias two test databases.
+        // (A SQL statement, not the db crate's helper: this file is also compiled into
+        // integration tests and downstream crates.) 16 random bytes in lowercase hex
+        // have the same shape as a lineage id.
+        destination.with_conn(|conn| {
+            let changed = conn.execute(
+                "UPDATE grimodex_db_lineage SET id = lower(hex(randomblob(16)))
+                  WHERE singleton = 1",
+                [],
+            )?;
+            anyhow::ensure!(changed == 1, "current-schema fixture has no lineage row");
+            Ok(())
+        })?;
+        let copied_lineage = lineage(&destination)?;
         anyhow::ensure!(
-            !copied_epoch.is_empty()
-                && copied_epoch == destination_epoch
-                && copied_epoch != self.source_epoch,
-            "current-schema fixture must keep a fresh destination TEMP epoch"
+            copied_lineage.len() == 32 && copied_lineage != self.source_lineage,
+            "current-schema fixture must get a fresh lineage"
         );
         Ok(destination)
     }

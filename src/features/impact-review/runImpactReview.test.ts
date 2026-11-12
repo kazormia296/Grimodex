@@ -54,10 +54,9 @@ const snap: CodexSnapshot = {
 };
 
 const sourceRevision = {
-  kind: "sqlite_revision_v1" as const,
-  expected_connection_epoch: "5c469be0-51e3-4f31-95e0-9bf457806c56",
-  expected_total_changes: "10",
-  expected_data_version: "3",
+  kind: "sqlite_write_clock_v1" as const,
+  expected_lineage: "5c469be051e34f31a95e0bf457806c56",
+  expected_seq: "10",
 };
 
 beforeEach(() => {
@@ -248,7 +247,7 @@ describe("runImpactReview", () => {
   it("rebases the guard after unrelated writes when the exact source payload is unchanged", async () => {
     const changedRevision = {
       ...sourceRevision,
-      expected_total_changes: "11",
+      expected_seq: "11",
     };
     const initial = {
       snapshot: snap,

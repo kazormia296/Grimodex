@@ -1295,22 +1295,6 @@ fn report_observation_count(report: &DependencyGraphVerifyReport) -> Result<u64>
     Ok(u64::try_from(count)?)
 }
 
-fn install_connection_metadata(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta (
-             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-             epoch TEXT NOT NULL
-         );
-         DELETE FROM temp.grimodex_connection_meta;",
-    )?;
-    conn.execute(
-        "INSERT INTO temp.grimodex_connection_meta (singleton, epoch)
-         VALUES (1, ?1)",
-        params![uuid::Uuid::new_v4().to_string()],
-    )?;
-    Ok(())
-}
-
 fn database_state_digest(path: &Path) -> Result<String> {
     let mut hasher = sha2::Sha256::new();
     for suffix in ["", "-wal", "-shm"] {
@@ -3238,7 +3222,6 @@ fn run_mode_operation(
                     .with_context(|| {
                         format!("reopen diagnostic database {}", database_path.display())
                     })?;
-            install_connection_metadata(&reopened_conn)?;
             let reopened_db = Database::from_connection(reopened_conn);
             let started = Instant::now();
             let operation =
@@ -3305,7 +3288,6 @@ fn run_graph_lifecycle(
             terminal_error: Some("project-id-required-for-graph-lifecycle".to_owned()),
         });
     };
-    install_connection_metadata(&conn)?;
     let db = Database::from_connection(conn);
     let runtime = NirChronicleIndexRuntime::new(&db, 1);
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -3520,7 +3502,6 @@ fn run_graph_lifecycle(
     let reopened_conn =
         Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
             .with_context(|| format!("reopen diagnostic database {}", database_path.display()))?;
-    install_connection_metadata(&reopened_conn)?;
     let reopened_db = Database::from_connection(reopened_conn);
 
     let cold_reopen_started = Instant::now();
@@ -3708,7 +3689,6 @@ pub fn measure_capacity_mode(
     let trace = Arc::clone(&measurement.0);
     let conn = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
         .with_context(|| format!("open diagnostic database {}", database_path.display()))?;
-    install_connection_metadata(&conn)?;
     let progress = Arc::new(ProgressCounter::default());
     let progress_for_hook = Arc::clone(&progress);
     crate::set_sqlite_progress_handler(

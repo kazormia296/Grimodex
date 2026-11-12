@@ -258,16 +258,18 @@ export interface StartPostEffectRunResult {
 }
 
 /**
- * Snapshot revision captured from the workspace SQLite connection.
- * `total_changes()` covers writes on this connection while `data_version`
- * covers commits made through another connection (for example standalone MCP).
- * Decimal strings avoid losing u64 precision at the JS boundary.
+ * Snapshot revision captured from the workspace database's in-database write
+ * clock (DR-DBC-5): the database lineage and the global commit sequence. Every
+ * connection and process (for example standalone MCP) reads the same values, so
+ * a commit by any of them moves `expected_seq`; a restore or migration replaces
+ * the lineage. The sequence is a decimal string to avoid losing u64 precision
+ * at the JS boundary.
  */
 export interface SqliteSourceRevisionGuard {
-  kind: "sqlite_revision_v1";
-  expected_connection_epoch: string;
-  expected_total_changes: string;
-  expected_data_version: string;
+  kind: "sqlite_write_clock_v1";
+  /** 32 lowercase hex characters. */
+  expected_lineage: string;
+  expected_seq: string;
 }
 
 interface StartPostEffectRunMultiBase {

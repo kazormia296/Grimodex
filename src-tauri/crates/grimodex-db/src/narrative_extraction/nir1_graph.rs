@@ -499,11 +499,8 @@ impl Nir1GraphReader {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         conn.busy_timeout(Duration::ZERO)?;
-        conn.execute_batch("PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
-            CREATE TEMP TABLE grimodex_connection_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),epoch TEXT NOT NULL);")?;
-        conn.execute(
-            "INSERT INTO temp.grimodex_connection_meta VALUES(1,?1)",
-            [uuid::Uuid::new_v4().to_string()],
+        conn.execute_batch(
+            "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;",
         )?;
         conn.execute_batch("PRAGMA query_only=ON")?;
         Self::new(authority, participant, ReaderConnection::Owned(conn))
@@ -652,11 +649,12 @@ impl Nir1GraphReader {
             // statement that reads a table has run in this transaction: that
             // is when SQLite compares the pinned snapshot's schema cookie with
             // the connection's schema cache and reloads the cache if they
-            // differ.  The header PRAGMAs of `ReadIdentity::read` pin the
-            // snapshot but do not make that comparison.  The statement above
-            // is that read, and it runs before the first presence check inside
-            // the scope; it stays outside the scope, so the scope never rests
-            // on a stale cache.  Inside the scope table presence is answered
+            // differ.  `ReadIdentity::read` (one SELECT over the clock tables and
+            // the `pragma_*` functions, DR-DBC-5) pins the snapshot, but this
+            // argument does not rest on what that statement does to the cache.
+            // The statement above is the explicit table read, and it runs before
+            // the first presence check inside the scope; it stays outside the
+            // scope, so the scope never rests on a stale cache.  Inside the scope table presence is answered
             // from the cache without VM steps.  The scope ends before
             // `finish_read`'s ROLLBACK, the scratch (allocator) scope runs
             // inside it, and nothing in this range ends the transaction.

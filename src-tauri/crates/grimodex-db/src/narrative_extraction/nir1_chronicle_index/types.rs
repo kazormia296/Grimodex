@@ -35,7 +35,7 @@ pub enum NirEmbeddedDocument {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NirIndexUnavailableReason {
     RuntimeUnavailable,
-    ConnectionChanged,
+    DatabaseLineageChanged,
     CanonicalAuthorityUnavailable,
     ReservedBinding,
     ScopeUnavailable,

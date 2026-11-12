@@ -293,20 +293,16 @@ async function rows(backend, sql, params = []) {
 }
 
 async function readSourceGuard(backend) {
+  // The write clock is readable by renderer SQL only through the
+  // connection-local TEMP view (DR-DBC-5).
   const [revision] = await rows(
     backend,
-    `SELECT meta.epoch AS connection_epoch,
-            CAST(total_changes() AS TEXT) AS total_changes,
-            CAST(version.data_version AS TEXT) AS data_version
-       FROM temp.grimodex_connection_meta AS meta
-       CROSS JOIN pragma_data_version AS version
-      WHERE meta.singleton = 1`,
+    `SELECT lineage, CAST(seq AS TEXT) AS seq FROM grimodex_clock_read`,
   );
   return {
-    kind: "sqlite_revision_v1",
-    expected_connection_epoch: revision.connection_epoch,
-    expected_total_changes: revision.total_changes,
-    expected_data_version: revision.data_version,
+    kind: "sqlite_write_clock_v1",
+    expected_lineage: revision.lineage,
+    expected_seq: revision.seq,
   };
 }
 

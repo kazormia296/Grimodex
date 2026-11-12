@@ -83,7 +83,7 @@ pub(super) fn proof_current_observed(
         // moves unless it matches.
         let previous = validated.clone();
         if let Some(previous) = previous.filter(|previous| {
-            super::read_identity::joined_by_audit_only_commits(previous, identity)
+            super::read_identity::joined_by_audit_only_commits(conn, previous, identity)
         }) {
             if runtime.current_epoch(conn)? != Ok(proof.runtime_epoch) {
                 return Ok(None);

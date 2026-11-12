@@ -55,13 +55,15 @@ export async function buildCodexSnapshot(
       summary: sql<string | null>`${codexEntries.summary}`,
       content: sql<string | null>`${codexEntries.content}`,
       contextMode: sql<string | null>`${codexEntries.contextMode}`,
-      sourceConnectionEpoch: sql<
+      // The in-database write clock (DR-DBC-5): lineage and the global
+      // sequence, read through the connection-local TEMP view that Native
+      // opens to renderer SQL as the clock's only read path.
+      sourceLineage: sql<
         string | null
-      >`(SELECT epoch FROM temp.grimodex_connection_meta LIMIT 1)`,
-      sourceTotalChanges: sql<string | null>`CAST(total_changes() AS TEXT)`,
-      sourceDataVersion: sql<
+      >`(SELECT lineage FROM grimodex_clock_read)`,
+      sourceSeq: sql<
         string | null
-      >`CAST((SELECT data_version FROM pragma_data_version) AS TEXT)`,
+      >`(SELECT CAST(seq AS TEXT) FROM grimodex_clock_read)`,
       detailId: nullText,
       detailName: nullText,
       detailValue: nullText,
@@ -87,9 +89,8 @@ export async function buildCodexSnapshot(
       summary: nullText,
       content: nullText,
       contextMode: nullText,
-      sourceConnectionEpoch: nullText,
-      sourceTotalChanges: nullText,
-      sourceDataVersion: nullText,
+      sourceLineage: nullText,
+      sourceSeq: nullText,
       detailId: sql<string | null>`${codexDetailDefinitions.id}`,
       detailName: sql<string | null>`${codexDetailDefinitions.name}`,
       detailValue: sql<string | null>`${codexDetailValues.value}`,
@@ -122,9 +123,8 @@ export async function buildCodexSnapshot(
       summary: nullText,
       content: nullText,
       contextMode: nullText,
-      sourceConnectionEpoch: nullText,
-      sourceTotalChanges: nullText,
-      sourceDataVersion: nullText,
+      sourceLineage: nullText,
+      sourceSeq: nullText,
       detailId: nullText,
       detailName: nullText,
       detailValue: nullText,
@@ -152,9 +152,8 @@ export async function buildCodexSnapshot(
       summary: nullText,
       content: nullText,
       contextMode: nullText,
-      sourceConnectionEpoch: nullText,
-      sourceTotalChanges: nullText,
-      sourceDataVersion: nullText,
+      sourceLineage: nullText,
+      sourceSeq: nullText,
       detailId: nullText,
       detailName: nullText,
       detailValue: nullText,
@@ -195,9 +194,8 @@ export async function buildCodexSnapshot(
     entry.entryName === null ||
     entry.content === null ||
     entry.contextMode === null ||
-    entry.sourceConnectionEpoch === null ||
-    entry.sourceTotalChanges === null ||
-    entry.sourceDataVersion === null
+    entry.sourceLineage === null ||
+    entry.sourceSeq === null
   ) {
     return null;
   }
@@ -299,10 +297,9 @@ export async function buildCodexSnapshot(
     entryType: entry.entryType,
     entryName: entry.entryName,
     sourceRevision: {
-      kind: "sqlite_revision_v1",
-      expected_connection_epoch: entry.sourceConnectionEpoch,
-      expected_total_changes: entry.sourceTotalChanges,
-      expected_data_version: entry.sourceDataVersion,
+      kind: "sqlite_write_clock_v1",
+      expected_lineage: entry.sourceLineage,
+      expected_seq: entry.sourceSeq,
     },
     contextMode: entry.contextMode,
     hasRestrictedPhases: restrictedPhaseIds.length > 0,

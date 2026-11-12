@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use uuid::Uuid;
 
 use grimodex_ai::{AiProvider, AiSettings};
-use grimodex_db::{read_sqlite_source_revision, AppError, Database, PinnedWorkspaceDb};
+use grimodex_db::{read_db_clock, AppError, Database, PinnedWorkspaceDb};
 
 mod audit;
 use audit::*;
@@ -394,8 +394,8 @@ pub struct ScenePayload {
 
 #[derive(Clone, Deserialize)]
 enum SqliteSourceRevisionKind {
-    #[serde(rename = "sqlite_revision_v1")]
-    SqliteRevisionV1,
+    #[serde(rename = "sqlite_write_clock_v1")]
+    SqliteWriteClockV1,
 }
 
 #[derive(Clone, Deserialize)]
@@ -403,9 +403,11 @@ enum SqliteSourceRevisionKind {
 struct SqliteSourceRevisionGuard {
     #[serde(rename = "kind")]
     _kind: SqliteSourceRevisionKind,
-    expected_connection_epoch: String,
-    expected_total_changes: String,
-    expected_data_version: String,
+    /// The database lineage (32 lowercase hex) the renderer read (DR-DBC-5).
+    expected_lineage: String,
+    /// The global write-clock sequence the renderer read, as a canonical u64
+    /// decimal string (it avoids losing precision at the JS boundary).
+    expected_seq: String,
 }
 
 #[derive(Clone, Deserialize)]
@@ -5766,30 +5768,29 @@ fn ensure_guarded_post_effect_run(
     input_hash: &str,
     guard: &SqliteSourceRevisionGuard,
 ) -> Result<EnsureRunOutcome, AppError> {
-    let expected_connection_epoch = Uuid::parse_str(&guard.expected_connection_epoch)
-        .map_err(|_| anyhow::anyhow!("source_guard.expected_connection_epoch must be a UUID"))?;
-    if expected_connection_epoch.to_string() != guard.expected_connection_epoch {
+    if guard.expected_lineage.len() != 32
+        || !guard
+            .expected_lineage
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
         return Err(anyhow::anyhow!(
-            "source_guard.expected_connection_epoch must be a canonical UUID"
+            "source_guard.expected_lineage must be 32 lowercase hex characters"
         )
         .into());
     }
-    let expected_total_changes = parse_canonical_u64(
-        "source_guard.expected_total_changes",
-        &guard.expected_total_changes,
-    )?;
-    let expected_data_version = parse_canonical_u64(
-        "source_guard.expected_data_version",
-        &guard.expected_data_version,
-    )?;
+    let expected_seq = parse_canonical_u64("source_guard.expected_seq", &guard.expected_seq)?;
 
     runtime.with_db(|db| {
         db.with_conn(|conn| {
             let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-            let current = read_sqlite_source_revision(&tx)?;
-            if current.connection_epoch != guard.expected_connection_epoch
-                || current.total_changes != expected_total_changes
-                || current.data_version != expected_data_version
+            // Read inside the IMMEDIATE transaction: no other connection can
+            // commit between this comparison and the cache lookup / run
+            // creation below, and this transaction has written nothing yet, so
+            // the value is the committed one (no rolled-back sequence reuse).
+            let current = read_db_clock(&tx)?;
+            if current.lineage != guard.expected_lineage
+                || u64::try_from(current.seq).ok() != Some(expected_seq)
             {
                 anyhow::bail!(
                     "{IMPACT_SOURCE_CHANGED_MARKER}: workspace source revision changed before dispatch"
@@ -6884,14 +6885,11 @@ mod runtime_contract_tests {
     }
 
     fn source_guard(db: &Database) -> SqliteSourceRevisionGuard {
-        let revision = db
-            .with_conn(read_sqlite_source_revision)
-            .expect("read source revision");
+        let clock = db.with_conn(read_db_clock).expect("read write clock");
         SqliteSourceRevisionGuard {
-            _kind: SqliteSourceRevisionKind::SqliteRevisionV1,
-            expected_connection_epoch: revision.connection_epoch,
-            expected_total_changes: revision.total_changes.to_string(),
-            expected_data_version: revision.data_version.to_string(),
+            _kind: SqliteSourceRevisionKind::SqliteWriteClockV1,
+            expected_lineage: clock.lineage,
+            expected_seq: clock.seq.to_string(),
         }
     }
 
@@ -7337,7 +7335,7 @@ mod runtime_contract_tests {
     }
 
     #[test]
-    fn stale_external_connection_guard_is_detected_by_data_version() {
+    fn stale_external_connection_guard_is_detected_by_the_write_clock() {
         let path = std::env::temp_dir().join(format!(
             "grimodex-post-effect-source-guard-{}.db",
             Uuid::new_v4()
@@ -7372,7 +7370,7 @@ mod runtime_contract_tests {
             "guard-external",
             Some(&guard),
         )
-        .expect_err("external commit must invalidate data_version");
+        .expect_err("external commit must advance the write clock");
 
         assert!(error.to_string().contains(IMPACT_SOURCE_CHANGED_MARKER));
         drop(external);
@@ -7384,7 +7382,7 @@ mod runtime_contract_tests {
     }
 
     #[test]
-    fn guard_from_replaced_database_is_rejected_by_connection_epoch() {
+    fn guard_from_replaced_database_is_rejected_by_lineage() {
         let runtime_a = runtime();
         let runtime_b = runtime();
         let guard = source_guard(runtime_a.db.db());
@@ -7400,7 +7398,7 @@ mod runtime_contract_tests {
             "guard-epoch",
             Some(&guard),
         )
-        .expect_err("another Database connection must have another epoch");
+        .expect_err("another Database must have another lineage");
 
         assert!(error.to_string().contains(IMPACT_SOURCE_CHANGED_MARKER));
         assert_eq!(run_count(&runtime_b), 0);

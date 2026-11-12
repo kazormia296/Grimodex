@@ -208,12 +208,7 @@ fn run(startup_stage: &mut StartupStage) -> Result<()> {
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     conn.busy_timeout(std::time::Duration::ZERO)?;
-    conn.execute_batch("PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
-        CREATE TEMP TABLE grimodex_connection_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),epoch TEXT NOT NULL);")?;
-    conn.execute(
-        "INSERT INTO temp.grimodex_connection_meta VALUES(1,?1)",
-        [uuid::Uuid::new_v4().to_string()],
-    )?;
+    conn.execute_batch("PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;")?;
     conn.execute_batch("PRAGMA query_only=ON")?;
     let authority = Arc::new(WorkspaceAuthority::new(
         Database::from_connection(conn),

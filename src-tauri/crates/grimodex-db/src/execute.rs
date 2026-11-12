@@ -324,8 +324,13 @@ fn renderer_typed_payload_read_rejection(ctx: &AuthContext<'_>) -> Option<String
 ///   top-level の SQL（accessor が無い）と期待外の trigger は、読みも拒否する（D2a で closed の
 ///   表の書込みの時刻と回数が renderer に見えないように）。trigger の本体は `seq` を読むので、
 ///   集合に一致する trigger の Read は通す。
-/// - `grimodex_db_lineage` への DML と Read は accessor に関わらず常に拒否する。PR-1 には
-///   読む側が無く、PR-2 で型つきの accessor で開ける。
+/// - **Read だけ**は、accessor（最内の view 名）が接続ごとの TEMP view
+///   `write_clock::CLOCK_READ_VIEW` のときも通す（DR-DBC-5。impact-review の guard が lineage と
+///   `'*'` の seq を 1 文の中で比べるため）。view は `'*'` の行と lineage だけを返す。DML は
+///   この accessor では通らない。既知の限界：SQLite は CTE や別名の subquery の名前も accessor として
+///   渡すので、同名の CTE から clock を読む文は通る（読みだけ。書込みは通らない）。
+/// - `grimodex_db_lineage` への DML は accessor に関わらず常に拒否する。Read は上の view の
+///   accessor のときだけ通す。
 /// - `sqlite_sequence` への DML は常に拒否する。AUTOINCREMENT の INSERT が内部で行う
 ///   `sqlite_sequence` の更新は authorizer を通らない（試験で固定）ので、これで壊れない。
 ///   `sqlite_sequence` の読みは判定しない。
@@ -341,18 +346,26 @@ fn clock_surface_rejection(
         _ => return None,
     };
     let table = d2a_table_name(table_name);
+    // 既知の限界（DR-DBC-5）：判定は accessor の名前だけ。同じ名前の CTE・別名の subquery、
+    // main 側の同名の view からも clock の Read は通る。renderer の DDL は拒否されるので
+    // main に view は作れず、読みだけで書込みは通らない。
+    let via_read_view = is_read && ctx.accessor == Some(crate::write_clock::CLOCK_READ_VIEW);
     if table.eq_ignore_ascii_case(grimodex_core::write_clock::WRITE_CLOCK_TABLE) {
         let exact = ctx
             .accessor
             .is_some_and(|accessor| allowed_clock_accessors.contains(accessor));
-        if exact {
+        if exact || via_read_view {
             None
         } else {
             Some(format!("{verb} of {table}"))
         }
-    } else if table.eq_ignore_ascii_case(grimodex_core::write_clock::DB_LINEAGE_TABLE)
-        || (!is_read && table.eq_ignore_ascii_case("sqlite_sequence"))
-    {
+    } else if table.eq_ignore_ascii_case(grimodex_core::write_clock::DB_LINEAGE_TABLE) {
+        if via_read_view {
+            None
+        } else {
+            Some(format!("{verb} of {table}"))
+        }
+    } else if !is_read && table.eq_ignore_ascii_case("sqlite_sequence") {
         Some(format!("{verb} of {table}"))
     } else {
         None
@@ -368,6 +381,8 @@ fn clock_surface_rejection(
 /// 作れなかった結果（空集合）は cache しない（一時的な失敗が次の DDL まで続かないように）。
 #[derive(Default)]
 pub(crate) struct ClockAccessorCache {
+    /// 接続ごとの TEMP view `grimodex_clock_read` を作り終えたか（DR-DBC-5）。
+    read_view_ready: AtomicBool,
     slot: Mutex<Option<(i64, Arc<HashSet<String>>)>>,
     /// 集合を作り直した回数（試験が「schema が変わらなければ再構築しない」を確かめる）。
     rebuilds: std::sync::atomic::AtomicUsize,
@@ -377,6 +392,38 @@ impl ClockAccessorCache {
     #[cfg(test)]
     pub(crate) fn rebuild_count(&self) -> usize {
         self.rebuilds.load(Ordering::Relaxed)
+    }
+
+    /// 接続ごとの TEMP view `grimodex_clock_read` を（まだ無ければ）作る。
+    ///
+    /// clock の 2 表が **無い間は作らない**：TEMP view が存在しない表を参照したまま残ると、
+    /// SQLite は `ALTER TABLE`（migration）のたびに全 view を解決しようとして失敗する
+    /// （`error in view …: no such table`）。migration を終えた DB（2 表がある）で、最初の
+    /// renderer の文の前に 1 回だけ作る。作れなければ view は無いまま（renderer の guard の
+    /// 読みが失敗するだけで、fail-closed）。authorizer を付ける**前**に呼ぶ。
+    pub(crate) fn ensure_read_view(&self, conn: &Connection) {
+        // Never create it inside a transaction: a rollback would take the view with it
+        // while the flag stayed set. The untrusted entry points run at autocommit
+        // (`reject_stale_untrusted_transaction`), so this only guards the invariant.
+        if self.read_view_ready.load(Ordering::Acquire) || !conn.is_autocommit() {
+            return;
+        }
+        let tables: rusqlite::Result<i64> = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+              WHERE type = 'table' AND name IN (?1, ?2)",
+            [
+                grimodex_core::write_clock::WRITE_CLOCK_TABLE,
+                grimodex_core::write_clock::DB_LINEAGE_TABLE,
+            ],
+            |row| row.get(0),
+        );
+        if tables.is_ok_and(|count| count == 2)
+            && conn
+                .execute_batch(crate::write_clock::CLOCK_READ_VIEW_DDL)
+                .is_ok()
+        {
+            self.read_view_ready.store(true, Ordering::Release);
+        }
     }
 
     /// 集合を返す。作れないときは空集合（fail-closed）。
@@ -816,6 +863,7 @@ where
         // 文の種類に依らず常に集合を渡す（`EXPLAIN` の DML や読み専用と判定された文でも、
         // trigger の本体の Read が空集合で拒否されないように）。cache が効けば schema_version
         // の読みだけ。
+        clock_accessor_cache.ensure_read_view(conn);
         let allowed_clock_accessors = clock_accessor_cache.names(conn);
         conn.authorizer(Some(move |ctx: AuthContext<'_>| {
             let profile_reason = renderer_profile_egress_sql_rejection(&ctx);
@@ -5276,8 +5324,269 @@ mod tests {
         assert_eq!(before, clock_seq(&db, "*"));
     }
 
+    // ---- DbClock の読み（DB 段 1 の PR-2、DR-DBC-5） ----
+
+    fn clock_view_row(db: &Database) -> (String, String) {
+        let rows = db
+            .execute_renderer(
+                "SELECT lineage, CAST(seq AS TEXT) AS seq FROM grimodex_clock_read",
+                &[],
+                "all",
+            )
+            .expect("the clock read view is open to renderer SQL");
+        let row = rows.first().expect("one row");
+        (
+            row["lineage"].as_str().expect("lineage").to_owned(),
+            row["seq"].as_str().expect("seq").to_owned(),
+        )
+    }
+
+    /// renderer は lineage と `'*'` の seq を、接続ごとの TEMP view 経由でだけ読める。
+    #[test]
+    fn renderer_reads_the_clock_only_through_the_read_view() {
+        let db = d2a_seeded_db();
+        let (lineage, seq) = clock_view_row(&db);
+        let trusted = db.with_conn(crate::read_db_clock).expect("trusted clock");
+        assert_eq!(
+            (lineage.clone(), seq.clone()),
+            (trusted.lineage, trusted.seq.to_string())
+        );
+        assert_eq!(lineage.len(), 32);
+        // Under the restricted profile-egress policy any read of the `temp` database is
+        // denied (the former `temp.grimodex_connection_meta` read was denied the same
+        // way), so the view adds no new egress path.
+        for open in [false, true] {
+            with_read_open(open, || {
+                let error = db
+                    .execute_renderer_profile_egress(
+                        "SELECT lineage, CAST(seq AS TEXT) AS seq FROM grimodex_clock_read",
+                        &[],
+                        "all",
+                    )
+                    .expect_err("the temp view stays outside the restricted policy");
+                assert!(error.to_string().contains("D2A_EGRESS_DENIED"), "{error}");
+            });
+        }
+        // The raw tables stay closed at top level (the view is the only path).
+        for sql in [
+            "SELECT seq FROM grimodex_write_clock WHERE name = '*'",
+            "SELECT id FROM grimodex_db_lineage",
+            "SELECT * FROM main.grimodex_write_clock",
+        ] {
+            let error = db
+                .execute_renderer(sql, &[], "all")
+                .expect_err("raw clock read stays denied");
+            assert!(clock_denied(&error), "{sql}: {error}");
+        }
+        // The view exposes neither the audit keys nor any other table's keys.
+        let columns = db
+            .execute_renderer("SELECT * FROM grimodex_clock_read", &[], "all")
+            .expect("view rows");
+        assert_eq!(columns.len(), 1);
+        assert_eq!(columns[0].len(), 2);
+    }
+
+    /// impact-review の guard の形：比較を 1 文の中で行う（旧い seq では 0 行になる）。
+    #[test]
+    fn the_guarded_statement_compares_the_clock_inside_one_statement() {
+        let db = d2a_seeded_db();
+        let (lineage, seq) = clock_view_row(&db);
+        let guarded = |key: &str, lineage: &str, seq: &str| {
+            db.execute_renderer(
+                "INSERT INTO app_settings(key, value)
+                 SELECT ?1, 'v' FROM grimodex_clock_read
+                  WHERE (SELECT lineage FROM grimodex_clock_read) = ?2
+                    AND (SELECT CAST(seq AS TEXT) FROM grimodex_clock_read) = ?3",
+                &[Value::from(key), Value::from(lineage), Value::from(seq)],
+                "run",
+            )
+            .expect("guarded insert")
+        };
+        let inserted = |key: &str| {
+            db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM app_settings WHERE key = ?1",
+                    [key],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .expect("count")
+        };
+        guarded("guard-current", &lineage, &seq);
+        assert_eq!(inserted("guard-current"), 1, "the current clock passes");
+        // The insert advanced the clock: the same (now stale) guard no longer passes.
+        guarded("guard-stale", &lineage, &seq);
+        assert_eq!(inserted("guard-stale"), 0, "a stale sequence is refused");
+        let (_, current) = clock_view_row(&db);
+        guarded(
+            "guard-other-lineage",
+            "0123456789abcdef0123456789abcdef",
+            &current,
+        );
+        assert_eq!(
+            inserted("guard-other-lineage"),
+            0,
+            "another lineage is refused"
+        );
+        // The same shape as an UPDATE's WHERE (the baseline's CAS form).
+        db.execute_renderer(
+            "UPDATE app_settings SET value = 'u' WHERE key = 'guard-current'
+               AND (SELECT lineage FROM grimodex_clock_read) = ?1
+               AND (SELECT CAST(seq AS TEXT) FROM grimodex_clock_read) = ?2",
+            &[Value::from(lineage), Value::from(current)],
+            "run",
+        )
+        .expect("guarded update");
+        let value: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT value FROM app_settings WHERE key = 'guard-current'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("value");
+        assert_eq!(value, "u");
+    }
+
+    /// 最初の renderer の文が rollback される batch でも、view は残って読める
+    /// （view は autocommit のときに作る。`ensure_read_view`）。
+    #[test]
+    fn the_read_view_survives_a_rolled_back_first_batch() {
+        let db = d2a_seeded_db();
+        let error = db
+            .execute_batch_tx_renderer_with_result(&[
+                BatchStatement {
+                    sql: "INSERT INTO app_settings(key,value) VALUES ('first-batch','v')".into(),
+                    params: vec![],
+                    method: "run".into(),
+                },
+                BatchStatement {
+                    sql: "INSERT INTO no_such_table(x) VALUES (1)".into(),
+                    params: vec![],
+                    method: "run".into(),
+                },
+            ])
+            .expect_err("the batch fails and rolls back");
+        assert!(!error.to_string().is_empty());
+        let (lineage, _) = clock_view_row(&db);
+        assert_eq!(lineage.len(), 32);
+    }
+
+    /// DDL は拒否されるので、renderer は view を作る・消す・差し替えることができない。
+    #[test]
+    fn renderer_cannot_create_or_drop_the_clock_read_view() {
+        let db = d2a_seeded_db();
+        for sql in [
+            "CREATE TEMP VIEW grimodex_clock_read2 AS SELECT * FROM grimodex_write_clock",
+            "CREATE VIEW grimodex_clock_read2 AS SELECT * FROM grimodex_write_clock",
+            "DROP VIEW temp.grimodex_clock_read",
+            "DROP VIEW grimodex_clock_read",
+        ] {
+            let error = db
+                .execute_renderer(sql, &[], "run")
+                .expect_err("view DDL must be rejected");
+            assert!(
+                error.to_string().contains(RENDERER_SQL_SECURITY_ERROR),
+                "{sql}: {error}"
+            );
+        }
+        clock_view_row(&db);
+    }
+
+    /// 既知の限界（DR-DBC-5 判断 7）：SQLite は CTE の名前も accessor として渡すので、
+    /// view と同名の CTE から clock を読む文は通る。読みだけで、書込みは通らない。
+    #[test]
+    fn a_cte_named_like_the_view_can_read_but_never_write_the_clock() {
+        let db = d2a_seeded_db();
+        let rows = db
+            .execute_renderer(
+                "WITH grimodex_clock_read AS (SELECT name, seq FROM grimodex_write_clock)
+                 SELECT name FROM grimodex_clock_read WHERE name = '*'",
+                &[],
+                "all",
+            )
+            .expect("the documented read-only limit");
+        assert_eq!(rows.len(), 1);
+        let before = clock_seq(&db, "*");
+        for sql in [
+            "WITH grimodex_clock_read AS (SELECT 1 AS n)
+             UPDATE grimodex_write_clock SET seq = (SELECT n FROM grimodex_clock_read)",
+            "WITH grimodex_clock_read AS (SELECT 1 AS n)
+             INSERT INTO grimodex_write_clock(name, seq) SELECT 'forged', n FROM grimodex_clock_read",
+            "WITH grimodex_clock_read AS (SELECT 1 AS n)
+             DELETE FROM grimodex_write_clock WHERE name = '*'",
+            "WITH grimodex_clock_read AS (SELECT 1 AS n)
+             UPDATE grimodex_db_lineage SET id = 'forged'",
+            "WITH grimodex_clock_read AS (SELECT id FROM grimodex_db_lineage)
+             SELECT id FROM grimodex_clock_read",
+        ] {
+            let result = db.execute_renderer(sql, &[], "all");
+            // The last statement reads the lineage through the same limit; only the
+            // writes must be refused.
+            if sql.contains("SELECT id FROM grimodex_clock_read") {
+                assert!(result.is_ok(), "documented read-only limit: {sql}");
+            } else {
+                let error = result.expect_err("a write through the accessor must be refused");
+                assert!(clock_denied(&error), "{sql}: {error}");
+            }
+        }
+        assert_eq!(clock_seq(&db, "*"), before);
+    }
+
+    /// WITH … SELECT などの renderer の文は、identity を動かさない（旧い物差しでは
+    /// temp schema の cookie が動き、W1 で 2,560 件が「変わった」になっていた）。
+    #[test]
+    fn renderer_statements_do_not_move_the_read_identity() {
+        use crate::narrative_extraction::nir1_chronicle_index::read_identity::ReadIdentity;
+        let db = d2a_seeded_db();
+        let identity = |db: &Database| {
+            db.with_conn(ReadIdentity::read_unpinned)
+                .expect("identity")
+                .expect("observable")
+        };
+        let temp_schema = |db: &Database| -> i64 {
+            db.with_conn(|conn| {
+                Ok(conn.pragma_query_value(Some("temp"), "schema_version", |r| r.get(0))?)
+            })
+            .expect("temp schema")
+        };
+        let mut temp_moved = false;
+        for sql in [
+            "SELECT 1",
+            "WITH s AS (SELECT 1 AS n) SELECT n FROM s",
+            "WITH s AS (SELECT key FROM app_settings) SELECT count(*) AS c FROM s",
+            "WITH s AS (SELECT value FROM project_settings) SELECT count(*) AS c FROM s",
+            "EXPLAIN SELECT 1",
+            "SELECT lineage, seq FROM grimodex_clock_read",
+        ] {
+            let (before, temp_before) = (identity(&db), temp_schema(&db));
+            db.execute_renderer(sql, &[], "all")
+                .unwrap_or_else(|error| panic!("{sql}: {error}"));
+            temp_moved |= temp_schema(&db) != temp_before;
+            assert_eq!(identity(&db), before, "{sql}");
+        }
+        // The old measure read the TEMP schema cookie. These statements do move it
+        // (so the old identity named them as a change); the identity no longer
+        // follows it. Without this the assertions above would prove nothing.
+        assert!(
+            temp_moved,
+            "a renderer statement must move the TEMP schema cookie, or the old measure is not reproduced"
+        );
+        // A real write still moves it.
+        let before = identity(&db);
+        db.execute_renderer(
+            "INSERT INTO app_settings(key,value) VALUES ('identity-moves','1')",
+            &[],
+            "run",
+        )
+        .expect("write");
+        assert_ne!(identity(&db), before);
+    }
+
     /// 書込みの時刻と回数が renderer に見えないよう、clock と lineage の top-level の
-    /// Read も拒否する（rev1 §1.2 の「常に拒否」）。読む側は PR-2 で型つきの accessor で開ける。
+    /// Read も拒否する（rev1 §1.2 の「常に拒否」）。読む側は接続ごとの TEMP view
+    /// `grimodex_clock_read` だけ（DR-DBC-5。上の試験）。
     #[test]
     fn renderer_cannot_read_clock_or_lineage_at_top_level() {
         let db = d2a_seeded_db();

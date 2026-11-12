@@ -37,6 +37,9 @@ fn published() -> Fixture {
         Ok(())
     })
     .expect("a table no authority reads");
+    // A table created after migration needs its clock trigger, or its writes would
+    // not move the identity (the migration invariant installs it for real tables).
+    crate::write_clock::cover_adhoc_tables_for_test(&f.db).expect("cover the test table");
     f
 }
 
@@ -256,7 +259,7 @@ fn nir1_reused_query_context_is_still_compared_with_the_expected_binding() {
 /// verdict; the verdict is the one without any reuse.
 #[test]
 fn nir1_any_change_of_the_read_identity_takes_a_fresh_query_context() {
-    let changes: [Change; 6] = [
+    let changes: [Change; 4] = [
         ("user_version change", |f| {
             f.db.with_conn(|conn| {
                 let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -265,14 +268,14 @@ fn nir1_any_change_of_the_read_identity_takes_a_fresh_query_context() {
             })
             .expect("user_version");
         }),
-        ("own connection commit (total_changes)", |f| {
+        ("own connection commit", |f| {
             f.db.with_conn(|conn| {
                 conn.execute("INSERT INTO inv_unrelated_rows VALUES (1)", [])?;
                 Ok(())
             })
             .expect("own write");
         }),
-        ("another connection's commit (data_version)", |f| {
+        ("another connection's commit", |f| {
             let other = crate::Database::new(f.path()).expect("second connection");
             other
                 .with_conn(|conn| {
@@ -287,22 +290,6 @@ fn nir1_any_change_of_the_read_identity_takes_a_fresh_query_context() {
                 Ok(())
             })
             .expect("main schema");
-        }),
-        ("temp schema change", |f| {
-            f.db.with_conn(|conn| {
-                conn.execute_batch("CREATE TEMP TABLE inv_temp_change (value INTEGER)")?;
-                Ok(())
-            })
-            .expect("temp schema");
-        }),
-        ("rolled-back write", |f| {
-            f.db.with_conn(|conn| {
-                let tx = conn.unchecked_transaction()?;
-                tx.execute("INSERT INTO inv_unrelated_rows VALUES (3)", [])?;
-                tx.rollback()?;
-                Ok(())
-            })
-            .expect("rolled back");
         }),
     ];
     for (name, change) in changes {
@@ -332,9 +319,11 @@ fn nir1_any_change_of_the_read_identity_takes_a_fresh_query_context() {
     }
 }
 
-/// A Write transaction neither reuses nor keeps a context: a rolled-back
-/// write leaves total_changes moved and data_version unchanged, so a context
-/// kept under its state would be offered to the next Read transaction.
+/// A Write transaction neither reuses nor keeps a context: a rolled-back write
+/// gives its sequence values back (DR-DBC-5), so a context kept under a state
+/// read there would be offered to an unrelated later commit with the same value.
+/// After the rollback the committed state is the one before, so its own kept
+/// context is still the right one.
 #[test]
 fn nir1_write_transaction_keeps_no_query_context() {
     let f = published();
@@ -356,7 +345,37 @@ fn nir1_write_transaction_keeps_no_query_context() {
         !same(&after, &in_write),
         "nothing kept from the Write state"
     );
-    assert!(!same(&after, &before), "the identity moved with the write");
+    assert!(
+        same(&after, &before),
+        "the rolled-back write left the committed state, whose context is reused"
+    );
+}
+
+/// The TEMP schema and a rolled-back write leave the committed database as it was:
+/// the identity does not move (the former H-e and `total_changes` retention are gone).
+#[test]
+fn nir1_temp_schema_and_rolled_back_writes_do_not_move_the_identity() {
+    let f = published();
+    let snapshot = snapshot(&f, s2(&f));
+    let (before, _) = read(&f, &snapshot);
+    let identity =
+        f.db.with_read_transaction(ReadIdentity::read)
+            .expect("identity");
+    f.db.with_conn(|conn| {
+        conn.execute_batch("CREATE TEMP TABLE inv_temp_change (value INTEGER)")?;
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("INSERT INTO inv_unrelated_rows VALUES (3)", [])?;
+        tx.rollback()?;
+        Ok(())
+    })
+    .expect("temp schema change and a rolled-back write");
+    assert_eq!(
+        f.db.with_read_transaction(ReadIdentity::read)
+            .expect("identity"),
+        identity
+    );
+    let (after, _) = read(&f, &snapshot);
+    assert!(same(&before, &after), "the kept context is still current");
 }
 
 fn mutate_material_scope(f: &Fixture) {
@@ -497,24 +516,29 @@ fn kept_contexts(snapshot: &NirQuerySnapshot) -> Vec<(ReadIdentity, String, Stri
         .collect()
 }
 
-/// The key's connection, project and state parts each decide alone: a
-/// different Database (its own connection epoch, change count and version), a
-/// state that differs only in its connection epoch, and another project never
-/// receive the kept context.
+/// The key's lineage, project and state parts each decide alone: a state that
+/// differs only in its lineage and another project never receive the kept
+/// context, while another connection of the same database state does (the
+/// identity is the in-database clock, DR-DBC-5).
 #[test]
-fn nir1_query_context_key_includes_connection_and_project() {
+fn nir1_query_context_key_includes_lineage_and_project() {
     let f = published();
     let snapshot = snapshot(&f, s2(&f));
     let (kept, _) = read(&f, &snapshot);
     assert!(kept.is_some());
     f.db.with_read_transaction(|conn| {
         let identity = ReadIdentity::read(conn)?.expect("read state");
-        let epoch_only = identity.with_connection_epoch_for_test("another-connection");
-        let read =
-            validated_query_context(conn, &snapshot.proof, Some(epoch_only), f.project(), s2(&f))?;
+        let lineage_only = identity.with_lineage_for_test("another-lineage");
+        let read = validated_query_context(
+            conn,
+            &snapshot.proof,
+            Some(lineage_only),
+            f.project(),
+            s2(&f),
+        )?;
         assert!(
             read.is_some() && !same(&read, &kept),
-            "only the connection epoch differs"
+            "only the lineage differs"
         );
         let elsewhere = validated_query_context(
             conn,
@@ -541,9 +565,12 @@ fn nir1_query_context_key_includes_connection_and_project() {
             validated_query_context(conn, &snapshot.proof, identity, f.project(), s2(&f))
         })
         .expect("other connection");
+    // The identity is the in-database clock, so another Database on the same file
+    // reads the same state and the kept context is the right one (DR-DBC-5). A
+    // different lineage never receives it (above).
     assert!(
-        from_other.is_some() && !same(&from_other, &kept),
-        "another Database reads its own"
+        from_other.is_some() && same(&from_other, &kept),
+        "another connection of the same database state reuses it"
     );
 }
 

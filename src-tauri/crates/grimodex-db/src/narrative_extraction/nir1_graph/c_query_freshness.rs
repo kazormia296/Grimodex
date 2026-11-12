@@ -19,7 +19,10 @@ pub fn try_read_c_query_freshness_stamp(db: &Database) -> Option<CQueryFreshness
         return None;
     }
     let conn = db.conn.try_lock().ok()?;
-    if !conn.is_autocommit() {
+    // The health check above runs before the lock: a connection quarantined or
+    // retired in between would otherwise be read here. Check again under the lock
+    // (DR-DBC-5, C5 #10).
+    if db.ensure_connection_reusable().is_err() || !conn.is_autocommit() {
         return None;
     }
     ReadIdentity::read_unpinned(&conn)
@@ -55,6 +58,9 @@ mod tests {
             conn.execute_batch("CREATE TABLE freshness_probe (x INTEGER);")?;
             Ok(())
         })?;
+        // A table created after migration needs its clock trigger, or its writes would
+        // not move the stamp (the migration invariant installs it for real tables).
+        crate::write_clock::cover_adhoc_tables_for_test(&db)?;
 
         let first = try_read_c_query_freshness_stamp(&db).expect("idle connection stamps");
         let second = try_read_c_query_freshness_stamp(&db).expect("idle connection stamps");
