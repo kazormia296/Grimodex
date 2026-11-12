@@ -1220,48 +1220,29 @@ describe("ChronicleExtractDialog 場面 1 つの抽出（SSE/1）", () => {
       expect(screen.getByRole("button", { name: "解析" })).toBeEnabled();
     });
 
-    it("6,000 字ちょうどは 1 回で始まる", async () => {
-      sceneLengthMocks.measure.mockResolvedValue({ canonicalLength: 6000 });
-      renderDialog();
-      select(sceneA);
-      pressAnalyze();
-      await waitFor(() =>
-        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
-          1,
-        ),
-      );
-      expect(
-        screen.queryByTestId("chronicle-extract-start-notices"),
-      ).toBeNull();
-    });
-
-    it("6,000 字を超えると 1 回目は知らせ、同じ解析をもう一度押すと始まる", async () => {
-      sceneLengthMocks.measure.mockResolvedValue({ canonicalLength: 6001 });
-      renderDialog();
-      select(sceneA);
-      pressAnalyze();
-      expect(
-        await screen.findByTestId("chronicle-extract-notice-long-scene"),
-      ).toHaveTextContent("提案が関連場面に使われないことがあります");
-      expect(
-        screen.getByTestId("chronicle-extract-start-notices"),
-      ).toHaveTextContent("もう一度「解析」を押すと始めます。");
-      expect(extractionMocks.startChronicleExtraction).not.toHaveBeenCalled();
-      expect(screen.getByRole("button", { name: "解析" })).toBeEnabled();
-
-      pressAnalyze();
-      await waitFor(() =>
-        expect(extractionMocks.startChronicleExtraction).toHaveBeenCalledTimes(
-          1,
-        ),
-      );
-      expect(sceneLengthMocks.measure).toHaveBeenCalledTimes(2);
-      await waitFor(() =>
+    it.each([6000, 6001, 12001, 60000])(
+      "%i 字でも、長い場面の知らせは出ず、1 回で始まる",
+      async (canonicalLength) => {
+        sceneLengthMocks.measure.mockResolvedValue({ canonicalLength });
+        renderDialog();
+        select(sceneA);
+        pressAnalyze();
+        await waitFor(() =>
+          expect(
+            extractionMocks.startChronicleExtraction,
+          ).toHaveBeenCalledTimes(1),
+        );
         expect(
           screen.queryByTestId("chronicle-extract-start-notices"),
-        ).toBeNull(),
-      );
-    });
+        ).toBeNull();
+        expect(
+          screen.queryByTestId("chronicle-extract-notice-long-scene"),
+        ).toBeNull();
+        // 長さは測るが、知らせのためには使わない。1 回の押下で測るのは 1 回。
+        expect(sceneLengthMocks.measure).toHaveBeenCalledTimes(1);
+        expect(toastMocks.error).not.toHaveBeenCalled();
+      },
+    );
 
     it("SceneBodyLengthError は一般の失敗として扱い、始めない", async () => {
       sceneLengthMocks.measure.mockRejectedValue(
@@ -1343,7 +1324,7 @@ describe("ChronicleExtractDialog 場面 1 つの抽出（SSE/1）", () => {
     });
 
     it("止める知らせと同時に当たるときは、一覧の間は toast を出さず、始めるときに出す", async () => {
-      sceneLengthMocks.measure.mockResolvedValue({ canonicalLength: 7000 });
+      sameSceneMocks.read.mockResolvedValue(true);
       seedPendingProjection(["unreviewed"]);
       renderDialog();
       select(sceneA);
@@ -1454,7 +1435,7 @@ describe("ChronicleExtractDialog 場面 1 つの抽出（SSE/1）", () => {
       expect(toastMocks.error).not.toHaveBeenCalled();
     });
 
-    it("知らせは複数の種類をまとめて出す", async () => {
+    it("長い場面でも、出る知らせは同じ場面の知らせだけ", async () => {
       sceneLengthMocks.measure.mockResolvedValue({ canonicalLength: 7000 });
       sameSceneMocks.read.mockResolvedValue(true);
       seedPendingProjection(["unreviewed"]);
@@ -1463,8 +1444,8 @@ describe("ChronicleExtractDialog 場面 1 つの抽出（SSE/1）", () => {
       pressAnalyze();
       await screen.findByTestId("chronicle-extract-start-notices");
       expect(
-        screen.getByTestId("chronicle-extract-notice-long-scene"),
-      ).toBeTruthy();
+        screen.queryByTestId("chronicle-extract-notice-long-scene"),
+      ).toBeNull();
       expect(
         screen.getByTestId("chronicle-extract-notice-same-scene-approved"),
       ).toBeTruthy();
@@ -1478,7 +1459,7 @@ describe("ChronicleExtractDialog 場面 1 つの抽出（SSE/1）", () => {
   });
 
   it("対象の選択を変えると知らせが消え、最初からになる", async () => {
-    sceneLengthMocks.measure.mockResolvedValue({ canonicalLength: 6001 });
+    sameSceneMocks.read.mockResolvedValue(true);
     renderDialog();
     select(sceneA);
     pressAnalyze();

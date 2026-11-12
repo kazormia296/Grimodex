@@ -13,7 +13,7 @@ pub(in crate::narrative_extraction) use prompt::accepted_contract as accepted_st
 pub use prompt::{Digests as RequestDigests, RequestProof};
 pub use segments::Material;
 
-use std::{collections::HashMap, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use anyhow::Result;
 use grimodex_core::{canonical_json_digest, narrative_ir::validate_chronicle_scene_event_v2};
@@ -97,6 +97,13 @@ pub struct RootMaterialRead {
 ///   verifiers re-wrap SQL errors into plain messages, so a failure cannot be
 ///   told from an SQL error afterwards) and costs nothing in practice because
 ///   a failed Run is rare;
+/// - the Root-independent replay of the Run (`replay::RunReplay`): each
+///   window's materials and the check of its observation request against the
+///   persisted receipt, the catalog and document texts they are cut from, and
+///   the Run-wide lineage checks. Successes only, built one window at a time
+///   by the first Root that reaches it, and dropped with the Run's other
+///   proofs. A Root still does its own work: the required windows, the
+///   evidence-to-material binding and the synthesis request;
 /// - the artifact-row scan: its result, including the terminal issue that
 ///   stopped it (`ArtifactScan::abort`), because that classification is made
 ///   by the scan itself and a SQL error inside the scan propagates uncached.
@@ -126,6 +133,7 @@ struct RunProofs {
     receipts: Option<Rc<Vec<Value>>>,
     artifacts: Option<Rc<ArtifactScan>>,
     snapshot_authority_verified: bool,
+    replay: Option<Rc<RefCell<replay::RunReplay>>>,
 }
 
 type RunKey = (String, String);
@@ -299,6 +307,17 @@ impl RunProofMemo {
             .or_default()
             .snapshot_authority_verified = true;
         Ok(())
+    }
+
+    /// The Root-independent replay cache of one Run.
+    fn replay_cache(&mut self, project_id: &str, run_id: &str) -> Rc<RefCell<replay::RunReplay>> {
+        Rc::clone(
+            self.runs
+                .entry(run_key(project_id, run_id))
+                .or_default()
+                .replay
+                .get_or_insert_with(Default::default),
+        )
     }
 
     /// Only successes are cached: the caller classifies an error by message.
@@ -622,23 +641,20 @@ pub(in crate::narrative_extraction) fn read_root_material_with_memo(
     if !report.issues.is_empty() {
         return Ok(report);
     }
-    match replay::resolve(
-        conn,
-        memo,
-        &run_id,
+    let replay_cache = memo.replay_cache(project_id, &run_id);
+    let resolved = replay::resolve_cached(
+        &mut replay_cache.borrow_mut(),
+        &mut |task, kind| memo.accepted_artifact(conn, &run_id, task, kind),
         &context_root,
         &coverage,
         &receipts,
         &envelope,
-    ) {
+    );
+    match resolved {
         Ok(replay::Outcome::Complete(materials, proofs)) => {
             report.materials = materials;
             report.replayed_requests = proofs;
-            report.recipe = Some(if coverage["windowCount"] == 1 {
-                "citation-id-v2/observation-v5/synthesis-v2/single-window/identity-merge/no-repair@1"
-            } else {
-                "citation-id-v2/observation-v5/synthesis-v2/two-window/identity-merge/no-repair@1"
-            });
+            report.recipe = Some(recipe_name(coverage["windowCount"].as_u64()));
             report.status = RosterStatus::Complete;
         }
         Ok(replay::Outcome::Unsupported(code)) => {
@@ -663,6 +679,20 @@ pub(in crate::narrative_extraction) fn read_root_material_with_memo(
     Ok(report)
 }
 
+/// The one- and two-window names are sealed in diagnostics and goldens.
+/// Three or more windows share one name that carries no count.
+fn recipe_name(window_count: Option<u64>) -> &'static str {
+    match window_count {
+        Some(1) => {
+            "citation-id-v2/observation-v5/synthesis-v2/single-window/identity-merge/no-repair@1"
+        }
+        Some(2) => {
+            "citation-id-v2/observation-v5/synthesis-v2/two-window/identity-merge/no-repair@1"
+        }
+        _ => "citation-id-v2/observation-v5/synthesis-v2/multi-window/identity-merge/no-repair@1",
+    }
+}
+
 fn string_at(value: &Value, pointer: &str) -> Result<String> {
     value
         .pointer(pointer)
@@ -677,6 +707,10 @@ fn array_at<'a>(value: &'a Value, pointer: &str) -> Result<&'a Vec<Value>> {
         .and_then(Value::as_array)
         .ok_or_else(|| anyhow::anyhow!("recipe array missing {pointer}"))
 }
+
+#[cfg(test)]
+#[path = "material_roster/multi_window_tests.rs"]
+mod multi_window_tests;
 
 #[cfg(test)]
 mod material_roster_tests {

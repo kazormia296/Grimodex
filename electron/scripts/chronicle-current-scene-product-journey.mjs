@@ -150,7 +150,8 @@ export function readIrAdmissionPreconditions({
   if (
     windowPlans.length !== 1 ||
     coverage.windowCount !== windowPlans[0].payloadJson.windows.length ||
-    ![1, 2].includes(coverage.windowCount)
+    !Number.isInteger(coverage.windowCount) ||
+    coverage.windowCount < 1
   ) {
     shared.push("multi-window-recipe-not-implemented");
   }

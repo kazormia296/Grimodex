@@ -38,10 +38,7 @@ import {
   restoreChronicleExtractionReview,
 } from "./extractEventsApi";
 import type { ChronicleTaskResumeCandidate } from "@/application/narrative-extraction/nativeApi";
-import {
-  DEFAULT_MAX_WINDOW_OWNED_CHARS,
-  measureSceneCanonicalBodyLength,
-} from "@/application/narrative-extraction/sceneBodyLength";
+import { measureSceneCanonicalBodyLength } from "@/application/narrative-extraction/sceneBodyLength";
 import { ChronicleExtractionProgress } from "./ChronicleExtractionProgress";
 import { ChronicleProposalReview } from "./ChronicleProposalReview";
 import { ChronicleExtractStartNotices } from "./ChronicleExtractStartNotices";
@@ -402,7 +399,8 @@ export function ChronicleExtractDialog({
       }
       if (!isSessionCurrent(session)) return;
 
-      // 始める前の確認と知らせ。場面の抽出では、保存の後の本文で長さを数える。
+      // 始める前の確認と知らせ。場面の抽出では、保存の後の本文が空でないことを確かめる。
+      // 長い場面でも知らせない（区切りの数は材料の再生を妨げない。MW/1 M8）。
       const notices = new Set<ChronicleStartNoticeKind>();
       let sceneStart: { sceneId: string; parentFolderId: string } | null = null;
       if (target.kind === "scene") {
@@ -437,9 +435,6 @@ export function ChronicleExtractDialog({
             t("chronicle.extract.sceneEmpty", "本文が空のため抽出できません。"),
           );
           return;
-        }
-        if (canonicalLength > DEFAULT_MAX_WINDOW_OWNED_CHARS) {
-          notices.add("long-scene");
         }
         if (
           await readSameSceneApprovedUnapplied(session.projectId, scene.sceneId)

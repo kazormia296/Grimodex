@@ -68,6 +68,8 @@ mod freshness_share_tests;
 #[cfg(test)]
 mod invalidate_tests;
 #[cfg(test)]
+mod multi_window_control_tests;
+#[cfg(test)]
 mod publish_tests;
 #[cfg(test)]
 mod query_tests;

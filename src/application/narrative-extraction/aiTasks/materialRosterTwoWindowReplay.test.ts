@@ -9,14 +9,39 @@ import {
   withComponentContract,
 } from "./chronicleFrozenContracts.testSupport";
 
-const golden = JSON.parse(
-  readFileSync(
-    "src-tauri/crates/grimodex-db/src/narrative_extraction/material_roster/production-two-window-golden.json",
-    "utf8",
-  ),
+const GOLDEN_DIR =
+  "src-tauri/crates/grimodex-db/src/narrative_extraction/material_roster";
+function readGolden(file: string) {
+  return JSON.parse(readFileSync(`${GOLDEN_DIR}/${file}`, "utf8"));
+}
+
+// Each golden is the sealed artifacts and receipts of one Run that the normal
+// planner, production extraction path and review UI persisted. The two-window
+// golden comes from the evaluation-corpus setup; the multi-window goldens come
+// from electron/scripts/nir1-multi-window-cold-fixture.mjs (synthetic prose).
+it.each([
+  // Sealed under Event Synthesis v2, which stays accepted beside v3 and v4.
+  ["production-two-window-golden.json", 2, "2"],
+  ["production-multi-window-long-golden.json", 3, undefined],
+  ["production-multi-window-folder-golden.json", 3, undefined],
+])(
+  "matches every independent persisted request of %s (%i windows) with production TS builders",
+  async (file, windows, synthesisVersion) => {
+    await matchesEveryPersistedRequest(
+      readGolden(file),
+      windows,
+      synthesisVersion,
+    );
+  },
 );
-it("matches every independent persisted two-window request with production TS builders", async () => {
-  expect(golden.plan.windows).toHaveLength(2);
+
+async function matchesEveryPersistedRequest(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- a JSON golden
+  golden: any,
+  windowCount: number,
+  synthesisVersion: string | undefined,
+) {
+  expect(golden.plan.windows).toHaveLength(windowCount);
   const usedWindows = new Set<string>();
   const snap = golden.snapshot;
   for (const receipt of golden.receipts) {
@@ -63,13 +88,15 @@ it("matches every independent persisted two-window request with production TS bu
         clusterRef: outputs[0].clusterRef,
         observations: outputs[0].rawObservations.observations,
       });
-      // Sealed under Event Synthesis v2, which stays accepted beside v3 and v4.
       const frozen = await frozenContractForDigest(
         execution.stageId,
         receipt.componentContractDigest,
       );
-      expect(frozen?.contractVersion).toBe("2");
+      expect(frozen).toBeTruthy();
       if (!frozen) return;
+      if (synthesisVersion) {
+        expect(frozen.contractVersion).toBe(synthesisVersion);
+      }
       expect(
         await buildChroniclePromptDigests(
           withComponentContract(artifact, frozen),
@@ -77,5 +104,5 @@ it("matches every independent persisted two-window request with production TS bu
       ).toEqual(expected);
     }
   }
-  expect(usedWindows.size).toBe(2);
-});
+  expect(usedWindows.size).toBe(windowCount);
+}

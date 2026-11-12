@@ -49,6 +49,8 @@ pub struct RevisionMaterialMembership {
     pub material_basis: MaterialBasis,
     /// Selected material controls, distinct from historical context provenance.
     pub active_scope_controls: Vec<MaterialSourceBasisEntry>,
+    /// These three are emptied by `preflight_build_candidate` once it has used
+    /// them: after a preflight they are empty. Do not read them there.
     pub materials: Vec<Material>,
     pub replayed_requests: Vec<RequestProof>,
     pub verified_receipts: Vec<VerifiedReceipt>,

@@ -1,10 +1,20 @@
-//! Candidate-scoped, one/two-window, identity-merge no-repair recipes.
+//! Candidate-scoped, one-or-more-window, identity-merge no-repair recipes.
 //! This is deliberately narrower than every citation-ID production path.
+//!
+//! What a window contributes (its materials and the check of its observation
+//! request against the persisted receipt) depends only on the sealed
+//! snapshot, the window plan and the receipts of the Run, never on the Root.
+//! `RunReplay` builds it once per window and reuses it for every Root of the
+//! Run read under the same memo.
 use super::super::stage_provenance::VerifiedV2ContextArtifact;
-use super::{array_at, prompt, required, segments, string_at, RunProofMemo};
+#[cfg(test)]
+use super::RunProofMemo;
+use super::{array_at, prompt, required, segments, string_at};
 use anyhow::{ensure, Result};
 use rusqlite::{params, Connection};
 use serde_json::Value;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
 
 pub(super) struct AcceptedArtifact {
     pub id: String,
@@ -66,10 +76,143 @@ pub(super) enum Outcome {
     Unsupported(&'static str),
 }
 
+/// A window's materials and its request proof, once its observation request
+/// was rebuilt and matched exactly one persisted receipt.
+struct WindowBinding {
+    materials: Vec<segments::Material>,
+    proof: prompt::RequestProof,
+    /// canonical source ref -> (how many materials carry it, the first one)
+    by_source_ref: HashMap<String, (usize, usize)>,
+}
+
+/// Everything a cached value was derived from. A cache built for other inputs
+/// is dropped, so a stale value can never be matched to a different Run state.
+#[derive(PartialEq, Eq)]
+struct Fingerprint {
+    snapshot: String,
+    plan: String,
+    raw: String,
+    merged: String,
+    observation_receipts: Vec<(String, String)>,
+}
+
+/// Root-independent replay results of ONE Run. Only successes are kept: a
+/// failure is raised again, from the same verifier, by the next Root.
+#[derive(Default)]
+pub(super) struct RunReplay {
+    fingerprint: Option<Fingerprint>,
+    segments: segments::SnapshotSegments,
+    windows: HashMap<String, Rc<WindowBinding>>,
+    identity_merge: bool,
+    window_lineage: bool,
+    /// (stage, component contract digest) pairs found among the frozen
+    /// accepted contracts. Looking one up parses and digests every frozen
+    /// contract, which used to happen once per receipt per Root.
+    accepted_contracts: HashSet<(String, String)>,
+}
+
+impl RunReplay {
+    /// Whether `digest` names a frozen accepted contract of `stage`. Only a
+    /// hit is remembered; a miss is looked up again, as before.
+    fn accepts_contract(&mut self, stage: &str, digest: &str) -> Result<bool> {
+        let key = (stage.to_owned(), digest.to_owned());
+        if self.accepted_contracts.contains(&key) {
+            return Ok(true);
+        }
+        let accepted = prompt::accepted_contract(stage, digest)?.is_some();
+        if accepted {
+            self.accepted_contracts.insert(key);
+        }
+        Ok(accepted)
+    }
+
+    fn keep_only_for(&mut self, fingerprint: Fingerprint) {
+        if self.fingerprint.as_ref() != Some(&fingerprint) {
+            // The frozen contracts do not depend on the Run.
+            let contracts = std::mem::take(&mut self.accepted_contracts);
+            *self = Self::default();
+            self.accepted_contracts = contracts;
+            self.fingerprint = Some(fingerprint);
+        }
+    }
+
+    /// Rebuild the observation request of one window and match it with the
+    /// persisted receipts. The context-set digest names the request, so only
+    /// receipts that carry it are rebuilt; each rebuilt one must also prove all
+    /// three digests, and exactly one receipt may carry it.
+    fn bind_window(
+        &mut self,
+        snapshot: &Value,
+        window: &Value,
+        window_id: &str,
+        observation_receipts: &[&Value],
+    ) -> Result<Rc<WindowBinding>> {
+        if let Some(bound) = self.windows.get(window_id) {
+            return Ok(Rc::clone(bound));
+        }
+        let context = prompt::observation_window_context_digest(window_id)?;
+        let mut matches = vec![];
+        for receipt in observation_receipts {
+            if receipt["contextSetDigest"] != context {
+                continue;
+            }
+            let (digests, materials) = self.segments.observation(snapshot, window, receipt)?;
+            let proof = prompt::proof(receipt, digests)?;
+            matches.push((materials, proof));
+        }
+        ensure!(
+            matches.len() == 1,
+            "observation-window-request-binding-invalid"
+        );
+        let (materials, proof) = matches
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("missing observation request"))?;
+        let mut by_source_ref: HashMap<String, (usize, usize)> = HashMap::new();
+        for (index, material) in materials.iter().enumerate() {
+            if let Some(source_ref) = &material.canonical_source_ref {
+                by_source_ref
+                    .entry(source_ref.clone())
+                    .or_insert((0, index))
+                    .0 += 1;
+            }
+        }
+        let bound = Rc::new(WindowBinding {
+            materials,
+            proof,
+            by_source_ref,
+        });
+        self.windows.insert(window_id.to_owned(), Rc::clone(&bound));
+        Ok(bound)
+    }
+}
+
+/// Reads one accepted artifact of the Run by (task kind, artifact kind).
+pub(super) type LoadAccepted<'a> = dyn FnMut(&str, &str) -> Result<Rc<AcceptedArtifact>> + 'a;
+
+/// `resolve_cached` with a Run cache that lives only for this call.
+#[cfg(test)]
 pub(super) fn resolve(
     conn: &Connection,
     memo: &mut RunProofMemo,
     run: &str,
+    root: &VerifiedV2ContextArtifact,
+    coverage: &Value,
+    receipts: &[Value],
+    envelope: &Value,
+) -> Result<Outcome> {
+    resolve_cached(
+        &mut RunReplay::default(),
+        &mut |task, kind| memo.accepted_artifact(conn, run, task, kind),
+        root,
+        coverage,
+        receipts,
+        envelope,
+    )
+}
+
+pub(super) fn resolve_cached(
+    cache: &mut RunReplay,
+    load: &mut LoadAccepted<'_>,
     root: &VerifiedV2ContextArtifact,
     coverage: &Value,
     receipts: &[Value],
@@ -83,11 +226,11 @@ pub(super) fn resolve(
             ));
         }
         let accepted_contract = match receipt["componentContractDigest"].as_str() {
-            Some(digest) => prompt::accepted_contract(&stage, digest)?,
-            None => None,
+            Some(digest) => cache.accepts_contract(&stage, digest)?,
+            None => false,
         };
         if ![prompt::OBSERVATION, prompt::SYNTHESIS].contains(&stage.as_str())
-            || accepted_contract.is_none()
+            || !accepted_contract
             || receipt["contextSetVersion"] != "chronicle.context-set/1"
         {
             return Ok(Outcome::Unsupported("component-recipe-unsupported"));
@@ -99,14 +242,16 @@ pub(super) fn resolve(
             "no-repair-terminal-binding-invalid"
         );
     }
-    let snapshot = memo.accepted_artifact(conn, run, "source.snapshot@1", "source.snapshot@1")?;
-    let plan = memo.accepted_artifact(conn, run, "source.window-plan@1", "source.window-plan@1")?;
+    let snapshot = load("source.snapshot@1", "source.snapshot@1")?;
+    let plan = load("source.window-plan@1", "source.window-plan@1")?;
     let windows = array_at(&plan.payload, "/windows")?;
     ensure!(
         coverage["windowCount"].as_u64() == Some(windows.len() as u64),
         "window-plan-coverage-mismatch"
     );
-    if !(1..=2).contains(&windows.len()) {
+    // A Run without a window has nothing to replay. Every other count is
+    // bound the same way: each window needs its own request and receipt.
+    if windows.is_empty() {
         return Ok(Outcome::Unsupported("multi-window-recipe-not-implemented"));
     }
     if snapshot.payload["evidence"]["catalog"]["version"] != 1
@@ -114,32 +259,46 @@ pub(super) fn resolve(
     {
         return Ok(Outcome::Unsupported("catalog-recipe-unsupported"));
     }
-    let raw = memo.accepted_artifact(
-        conn,
-        run,
-        "chronicle.observe-events@1",
-        "chronicle.raw-observations@1",
-    )?;
-    let merged = memo.accepted_artifact(
-        conn,
-        run,
+    let raw = load("chronicle.observe-events@1", "chronicle.raw-observations@1")?;
+    let merged = load(
         "chronicle.merge-local-observations@1",
         "chronicle.merged-observations@1",
     )?;
-    if raw.payload["observations"] != merged.payload["observations"] {
-        return Ok(Outcome::Unsupported(
-            "nonidentity-merge-recipe-not-implemented",
-        ));
+    cache.keep_only_for(Fingerprint {
+        snapshot: snapshot.digest.clone(),
+        plan: plan.digest.clone(),
+        raw: raw.digest.clone(),
+        merged: merged.digest.clone(),
+        observation_receipts: receipts
+            .iter()
+            .filter(|r| r["stageExecution"]["stageId"] == prompt::OBSERVATION)
+            .map(|r| {
+                (
+                    r["stageExecution"]["stageExecutionId"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    r["stageExecutionReceiptDigest"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+            })
+            .collect(),
+    });
+    if !cache.identity_merge {
+        if raw.payload["observations"] != merged.payload["observations"] {
+            return Ok(Outcome::Unsupported(
+                "nonidentity-merge-recipe-not-implemented",
+            ));
+        }
+        cache.identity_merge = true;
     }
-    let clusters = memo.accepted_artifact(
-        conn,
-        run,
+    let clusters = load(
         "chronicle.cluster-event-observations@1",
         "chronicle.event-clusters@1",
     )?;
-    let synthesis = memo.accepted_artifact(
-        conn,
-        run,
+    let synthesis = load(
         "chronicle.synthesize-event@1",
         "chronicle.stage-synthesis-outputs@1",
     )?;
@@ -181,21 +340,24 @@ pub(super) fn resolve(
     let window_ids = windows
         .iter()
         .map(|w| string_at(w, "/windowId"))
-        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+        .collect::<Result<BTreeSet<_>>>()?;
     ensure!(window_ids.len() == windows.len(), "duplicate-window-id");
     let all_observations = array_at(&raw.payload, "/observations")?;
-    let mut all_ids = std::collections::BTreeSet::new();
-    for o in all_observations {
-        let id = string_at(o, "/localId")?;
-        ensure!(
-            window_ids
-                .iter()
-                .filter(|w| id.starts_with(&format!("{w}:")))
-                .count()
-                == 1
-                && all_ids.insert(id),
-            "observation-window-lineage-invalid"
-        );
+    if !cache.window_lineage {
+        let mut all_ids = BTreeSet::new();
+        for o in all_observations {
+            let id = string_at(o, "/localId")?;
+            ensure!(
+                window_ids
+                    .iter()
+                    .filter(|w| id.starts_with(&format!("{w}:")))
+                    .count()
+                    == 1
+                    && all_ids.insert(id),
+                "observation-window-lineage-invalid"
+            );
+        }
+        cache.window_lineage = true;
     }
     for o in observations {
         ensure!(
@@ -225,52 +387,39 @@ pub(super) fn resolve(
     let required = required::windows(envelope, &snapshot.payload, windows, &ids)?;
     let mut materials = vec![];
     let mut proofs = vec![];
-    let mut used_receipts = std::collections::BTreeSet::new();
+    let mut used_receipts = BTreeSet::new();
     for window in windows {
         let window_id = string_at(window, "/windowId")?;
-        let mut matches = vec![];
-        for receipt in &obs_receipts {
-            let (digests, segments) = segments::observation(&snapshot.payload, window, receipt)?;
-            if digests.context_set_digest == receipt["contextSetDigest"] {
-                let proof = prompt::proof(receipt, digests)?;
-                matches.push((segments, proof));
-            }
-        }
+        // Built on the first Root that reaches this window, one window at a
+        // time, so the first failure a Root meets is the one it always met.
+        let bound = cache.bind_window(&snapshot.payload, window, &window_id, &obs_receipts)?;
         ensure!(
-            matches.len() == 1,
-            "observation-window-request-binding-invalid"
-        );
-        let (window_materials, proof) = matches
-            .pop()
-            .ok_or_else(|| anyhow::anyhow!("missing observation request"))?;
-        ensure!(
-            used_receipts.insert(proof.execution_id.clone()),
+            used_receipts.insert(bound.proof.execution_id.clone()),
             "duplicate-window-request"
         );
         // Check evidence against its own ancestor request, including when
         // different windows expose overlapping canonical source ranges.
+        let prefix = format!("{window_id}:");
         for observation in observations.iter().filter(|o| {
             o["localId"]
                 .as_str()
-                .is_some_and(|id| id.starts_with(&format!("{window_id}:")))
+                .is_some_and(|id| id.starts_with(&prefix))
         }) {
             for evidence in array_at(observation, "/evidence")? {
                 let source_ref = string_at(evidence, "/sourceRef")?;
-                let matches = window_materials
-                    .iter()
-                    .filter(|m| m.canonical_source_ref.as_deref() == Some(&source_ref))
-                    .collect::<Vec<_>>();
-                ensure!(
-                    matches.len() == 1
-                        && matches[0].content_digest
-                            == grimodex_core::canonical_json_digest(&evidence["quote"])?,
-                    "synthesis-source-material-binding-invalid"
-                );
+                let bound_material = match bound.by_source_ref.get(&source_ref) {
+                    Some(&(1, index)) => {
+                        bound.materials[index].content_digest
+                            == grimodex_core::canonical_json_digest(&evidence["quote"])?
+                    }
+                    _ => false,
+                };
+                ensure!(bound_material, "synthesis-source-material-binding-invalid");
             }
         }
         if required.contains(&window_id) {
-            materials.extend(window_materials);
-            proofs.push(proof);
+            materials.extend(bound.materials.iter().cloned());
+            proofs.push(bound.proof.clone());
         }
     }
     let syn_proof = prompt::proof(
