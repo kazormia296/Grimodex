@@ -3541,6 +3541,113 @@ pub(crate) struct CurrentChronicleProposalPlanAuthority {
     pub(crate) planned_title: String,
 }
 
+/// The sealed plan roster of one current Chronicle ProposalSet, with the Run
+/// it was verified for. The roster is only ever built by
+/// [`ChroniclePlanAuthority::load_verified`] (the full binding verification of
+/// [`load_current_chronicle_proposal_matches`]) or
+/// [`ChroniclePlanAuthority::from_bundle_verified`] (a caller that has just
+/// verified the binding itself); the Decision writer reuses only the first kind.
+pub(crate) struct ChroniclePlanAuthority {
+    project_id: String,
+    run_id: String,
+    proposal_set_id: String,
+    matches: HashMap<String, CurrentChronicleProposalPlanAuthority>,
+    /// The whole binding (owner Task/Attempt, manifest digest, receipt roster,
+    /// artifact digest) was verified by this load.
+    binding_verified: bool,
+}
+
+impl ChroniclePlanAuthority {
+    /// The full verification the Decision writer does for one Proposal.
+    pub(crate) fn load_verified(
+        conn: &Connection,
+        project_id: &str,
+        run_id: &str,
+        proposal_set_id: &str,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            project_id: project_id.to_owned(),
+            run_id: run_id.to_owned(),
+            proposal_set_id: proposal_set_id.to_owned(),
+            matches: load_current_chronicle_proposal_matches(
+                conn,
+                project_id,
+                run_id,
+                proposal_set_id,
+            )?,
+            binding_verified: true,
+        })
+    }
+
+    /// For a caller that verified the binding of `(verified_task_id,
+    /// verified_attempt_id)` just before (the review bundle). Not reusable by
+    /// the Decision writer.
+    pub(crate) fn from_bundle_verified(
+        conn: &Connection,
+        project_id: &str,
+        run_id: &str,
+        proposal_set_id: &str,
+        verified_task_id: &str,
+        verified_attempt_id: &str,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            project_id: project_id.to_owned(),
+            run_id: run_id.to_owned(),
+            proposal_set_id: proposal_set_id.to_owned(),
+            matches: load_validated_chronicle_proposal_matches(
+                conn,
+                run_id,
+                proposal_set_id,
+                verified_task_id,
+                verified_attempt_id,
+            )?,
+            binding_verified: false,
+        })
+    }
+
+    pub(crate) fn matches(&self) -> &HashMap<String, CurrentChronicleProposalPlanAuthority> {
+        &self.matches
+    }
+}
+
+/// Sealed authority a caller that decides many Proposals of one Run in a row
+/// (the Chronicle bulk approval) verified once, so each Decision does not
+/// verify it again. Everything in it is derived from immutable records of the
+/// Run: the plan roster (sealed plan artifact, Native task binding, revision-1
+/// payloads and Envelopes, receipt roster) and the Snapshot/catalog proof.
+/// Everything that can change between two Decisions is still read by the
+/// writer itself (consumption of the set, Application rows, Run spec, the
+/// Proposal's current Revision and status, its Entity/Relation lock, its
+/// current Revision's title).
+pub(crate) struct ChronicleDecisionReuse<'a> {
+    pub(crate) plan: &'a ChroniclePlanAuthority,
+    pub(crate) review: &'a VerifiedChronicleRevisionReviewAuthority,
+}
+
+impl ChronicleDecisionReuse<'_> {
+    /// The authority must belong to the Proposal's own project, Run and set.
+    fn ensure_binds(
+        &self,
+        project_id: &str,
+        run_id: &str,
+        proposal_set_id: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.plan.binding_verified,
+            "NEX_CHRONICLE_DECISION_AUTHORITY_UNVERIFIED: the reused plan roster was not fully verified"
+        );
+        anyhow::ensure!(
+            self.plan.project_id == project_id
+                && self.plan.run_id == run_id
+                && self.plan.proposal_set_id == proposal_set_id
+                && self.review.project_id == project_id
+                && self.review.run_id == run_id,
+            "NEX_CHRONICLE_DECISION_AUTHORITY_MISMATCH: the reused authority belongs to another project, Run or ProposalSet"
+        );
+        Ok(())
+    }
+}
+
 /// The (Task, Attempt) that owns the one proposal-plan artifact of the Run.
 fn sole_chronicle_plan_artifact_owner(
     conn: &Connection,
@@ -5644,16 +5751,22 @@ pub fn append_human_decision(
 /// `electron:human-review` that [`append_human_decision`] records; the caller
 /// owns the surrounding `with_immediate_transaction` (the Chronicle bulk
 /// approval composes this with the Human-derived child creation).
-pub(crate) fn append_human_decision_in_tx(
+///
+/// `reuse` is for a caller that decides many Proposals of one Run and verified
+/// the Run's sealed authority once. `None` is the one-Decision path: the writer
+/// verifies everything itself.
+pub(crate) fn append_human_decision_in_tx_with_reuse(
     conn: &Connection,
     payload: &AppendDecisionPayload,
+    reuse: Option<&ChronicleDecisionReuse<'_>>,
 ) -> anyhow::Result<Value> {
-    append_decision_on_conn(
+    append_decision_on_conn_with_reuse(
         conn,
         payload,
         &TrustedDecisionActor::Human {
             actor_id: "electron:human-review".to_string(),
         },
+        reuse,
     )
 }
 
@@ -5678,6 +5791,15 @@ fn append_decision_on_conn(
     payload: &AppendDecisionPayload,
     actor: &TrustedDecisionActor,
 ) -> anyhow::Result<Value> {
+    append_decision_on_conn_with_reuse(conn, payload, actor, None)
+}
+
+fn append_decision_on_conn_with_reuse(
+    conn: &Connection,
+    payload: &AppendDecisionPayload,
+    actor: &TrustedDecisionActor,
+    reuse: Option<&ChronicleDecisionReuse<'_>>,
+) -> anyhow::Result<Value> {
     let proposal_status = map_decision_to_status(&payload.decision)?;
     ensure_nir1_entity_relation_decision_is_appendable(conn, payload)?;
     ensure_proposal_not_applied(conn, &payload.proposal_id)?;
@@ -5693,6 +5815,7 @@ fn append_decision_on_conn(
         payload,
         proposal_status,
         &decision_value,
+        reuse,
     )?;
     let decision_json = serde_json::to_string(&decision_value)?;
     let decision_id = Uuid::new_v4().to_string();
@@ -5847,6 +5970,7 @@ fn validate_current_chronicle_decision_against_plan(
     payload: &AppendDecisionPayload,
     proposal_status: &str,
     decision_value: &Value,
+    reuse: Option<&ChronicleDecisionReuse<'_>>,
 ) -> anyhow::Result<()> {
     let context: Option<(String, String, String, String)> = conn
         .query_row(
@@ -5870,13 +5994,22 @@ fn validate_current_chronicle_decision_against_plan(
     if !current_chronicle_run_spec_for_run(conn, &project_id, &run_id)? {
         return Ok(());
     }
-    let plan_authority = load_current_chronicle_proposal_matches(
-        conn,
-        &project_id,
-        &run_id,
-        &proposal_set_id,
-    )?
-    .remove(&proposal_key)
+    // Reused authority: the sealed plan roster was verified in full once by the
+    // caller (see `ChronicleDecisionReuse`); the lookup of this Proposal's own
+    // entry and everything below stays per Decision.
+    let plan_authority = match reuse {
+        Some(reuse) => {
+            reuse.ensure_binds(&project_id, &run_id, &proposal_set_id)?;
+            reuse.plan.matches.get(&proposal_key).cloned()
+        }
+        None => load_current_chronicle_proposal_matches(
+            conn,
+            &project_id,
+            &run_id,
+            &proposal_set_id,
+        )?
+        .remove(&proposal_key),
+    }
     .ok_or_else(|| {
         anyhow::anyhow!(
             "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: current Proposal has no sealed match metadata"
@@ -5902,12 +6035,19 @@ fn validate_current_chronicle_decision_against_plan(
             "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: current Chronicle Proposal cannot be terminalized as deferred/already-satisfied; the planner omits already-satisfied hypotheses instead of creating a Proposal"
         );
     }
-    let revision_review_authority =
-        load_verified_chronicle_revision_review_authority(conn, &project_id, &run_id)?;
+    let loaded_review_authority;
+    let revision_review_authority = match reuse {
+        Some(reuse) => reuse.review,
+        None => {
+            loaded_review_authority =
+                load_verified_chronicle_revision_review_authority(conn, &project_id, &run_id)?;
+            &loaded_review_authority
+        }
+    };
     let current_revision_requires_probable_duplicate_review =
         current_chronicle_revision_requires_probable_duplicate_review(
             conn,
-            &revision_review_authority,
+            revision_review_authority,
             &proposal_set_id,
             &payload.proposal_id,
             &payload.revision_id,
@@ -10471,5 +10611,74 @@ mod unit_tests {
         assert_eq!(first["reused"], false);
         assert_eq!(second["reused"], false);
         assert_ne!(first["runId"], second["runId"]);
+    }
+}
+
+#[cfg(test)]
+mod chronicle_decision_reuse_tests {
+    use super::*;
+
+    fn plan(project: &str, run: &str, set: &str, verified: bool) -> ChroniclePlanAuthority {
+        ChroniclePlanAuthority {
+            project_id: project.to_owned(),
+            run_id: run.to_owned(),
+            proposal_set_id: set.to_owned(),
+            matches: HashMap::new(),
+            binding_verified: verified,
+        }
+    }
+
+    fn review(project: &str, run: &str) -> VerifiedChronicleRevisionReviewAuthority {
+        VerifiedChronicleRevisionReviewAuthority {
+            project_id: project.to_owned(),
+            run_id: run.to_owned(),
+        }
+    }
+
+    fn bind(
+        plan: &ChroniclePlanAuthority,
+        review: &VerifiedChronicleRevisionReviewAuthority,
+    ) -> anyhow::Result<()> {
+        ChronicleDecisionReuse { plan, review }.ensure_binds("p", "r", "s")
+    }
+
+    #[test]
+    fn a_reused_authority_binds_only_its_own_project_run_and_set() {
+        bind(&plan("p", "r", "s", true), &review("p", "r")).expect("its own project, Run and set");
+        for (label, plan, review) in [
+            (
+                "other project",
+                plan("p2", "r", "s", true),
+                review("p", "r"),
+            ),
+            ("other Run", plan("p", "r2", "s", true), review("p", "r")),
+            ("other set", plan("p", "r", "s2", true), review("p", "r")),
+            (
+                "review of another Run",
+                plan("p", "r", "s", true),
+                review("p", "r2"),
+            ),
+            (
+                "review of another project",
+                plan("p", "r", "s", true),
+                review("p2", "r"),
+            ),
+        ] {
+            let error = bind(&plan, &review).expect_err(label);
+            assert!(
+                format!("{error:#}").contains("NEX_CHRONICLE_DECISION_AUTHORITY_MISMATCH"),
+                "{label}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_plan_roster_that_was_not_fully_verified_is_never_reused() {
+        let error = bind(&plan("p", "r", "s", false), &review("p", "r"))
+            .expect_err("a bundle-verified roster is not the writer's own verification");
+        assert!(
+            format!("{error:#}").contains("NEX_CHRONICLE_DECISION_AUTHORITY_UNVERIFIED"),
+            "{error:#}"
+        );
     }
 }

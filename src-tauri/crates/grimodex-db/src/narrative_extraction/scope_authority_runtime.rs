@@ -689,14 +689,41 @@ pub(crate) fn load_sealed_snapshot_document_binding_in_tx(
     run_id: &str,
     document_ref: &str,
 ) -> anyhow::Result<SealedSnapshotDocumentBinding> {
+    ensure_sealed_document_ref_valid(document_ref)?;
+    let mut documents = load_sealed_snapshot_document_bindings_in_tx(conn, project_id, run_id)?;
+    let index = sealed_document_index(&documents, document_ref)?;
+    Ok(documents.swap_remove(index))
+}
+
+fn ensure_sealed_document_ref_valid(document_ref: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         !document_ref.trim().is_empty() && document_ref.trim() == document_ref,
         "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_INVALID: edited revealDocumentRef must be trimmed and non-empty"
     );
-    let mut matches = load_sealed_snapshot_document_bindings_in_tx(conn, project_id, run_id)?
-        .into_iter()
-        .filter(|d| d.document_ref == document_ref);
-    let document = matches.next().ok_or_else(|| {
+    Ok(())
+}
+
+/// The one document of an already loaded sealed corpus that `document_ref`
+/// names: the same checks and errors as
+/// [`load_sealed_snapshot_document_binding_in_tx`], for a caller that holds the
+/// Run's sealed documents already.
+pub(crate) fn select_sealed_snapshot_document_binding<'a>(
+    documents: &'a [SealedSnapshotDocumentBinding],
+    document_ref: &str,
+) -> anyhow::Result<&'a SealedSnapshotDocumentBinding> {
+    ensure_sealed_document_ref_valid(document_ref)?;
+    Ok(&documents[sealed_document_index(documents, document_ref)?])
+}
+
+fn sealed_document_index(
+    documents: &[SealedSnapshotDocumentBinding],
+    document_ref: &str,
+) -> anyhow::Result<usize> {
+    let mut matches = documents
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.document_ref == document_ref);
+    let (index, _) = matches.next().ok_or_else(|| {
         anyhow::anyhow!(
             "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_MISSING: parent corpus has no document '{}'",
             document_ref
@@ -707,7 +734,7 @@ pub(crate) fn load_sealed_snapshot_document_binding_in_tx(
         "NEX_SCOPE_AUTHORITY_REVEAL_DOCUMENT_AMBIGUOUS: parent corpus has multiple documents '{}'",
         document_ref
     );
-    Ok(document)
+    Ok(index)
 }
 
 pub(crate) fn load_sealed_snapshot_document_bindings_in_tx(

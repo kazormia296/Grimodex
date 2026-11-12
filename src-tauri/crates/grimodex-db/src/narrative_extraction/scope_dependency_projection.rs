@@ -64,7 +64,7 @@ pub(crate) fn bind_identity_in_tx(
     )
 }
 
-fn bind_identity_from_documents(
+pub(crate) fn bind_identity_from_documents(
     documents: &[SealedSnapshotDocumentBinding],
     project_id: &str,
     run_id: &str,
