@@ -5,7 +5,7 @@
 //! Consumer × Source Change mapping, canonicalizes selectors and digest
 //! inputs, and keeps required Build Actions separate from advisory actions.
 
-use std::{cmp::Ordering, collections::HashSet};
+use std::{cmp::Ordering, collections::HashSet, sync::OnceLock};
 
 use serde::{
     de::{self, Visitor},
@@ -881,6 +881,73 @@ pub fn evaluate_dependency_effect(
     input: DependencyEffectInput<'_>,
 ) -> Result<DependencyEffect, DependencyContractError> {
     validate_dependency_effect_registry(registry)?;
+    find_dependency_effect(registry, input)
+}
+
+/// Which dependency roles the registry gives an effect for a `proposal-revision`
+/// consumer, which is what an Envelope's dependency set needs of each role it
+/// names (DR-CQA-9). It is a fixed-size table, not a copy of the registry, so
+/// nothing of it is held on the heap.
+pub(crate) struct ProposalRevisionRoleEffects([bool; ALL_ROLES.len()]);
+
+impl ProposalRevisionRoleEffects {
+    /// Whether [`evaluate_dependency_effect`] finds an effect of `role` for a
+    /// `proposal-revision` consumer under some change class, and answers no
+    /// other error under any.
+    pub(crate) fn accepts(&self, role: DependencyRole) -> bool {
+        ALL_ROLES
+            .iter()
+            .position(|candidate| *candidate == role)
+            .is_some_and(|index| self.0[index])
+    }
+}
+
+/// [`ProposalRevisionRoleEffects`] of the embedded registry, worked out once for
+/// the process. The policy is a constant embedded in the crate, so the table is
+/// the same on every call; computing it is what the dependency-set check did
+/// for every Envelope (parse the registry, evaluate the role under every change
+/// class, validating the whole registry in each evaluation). `Err` is the
+/// registry failing to load, which fails every dependency set.
+pub(crate) fn proposal_revision_role_effects() -> Result<&'static ProposalRevisionRoleEffects, ()> {
+    static EFFECTS: OnceLock<Result<ProposalRevisionRoleEffects, ()>> = OnceLock::new();
+    EFFECTS
+        .get_or_init(|| {
+            // The registry is validated here, by the load; each lookup below
+            // is then the evaluation without validating it again.
+            let registry = load_dependency_role_registry().map_err(|_| ())?;
+            let mut table = [false; ALL_ROLES.len()];
+            for (accepted, role) in table.iter_mut().zip(ALL_ROLES) {
+                let mut effect_found = false;
+                let mut refused = false;
+                for change_class in &registry.source_change_classes {
+                    match find_dependency_effect(
+                        &registry,
+                        DependencyEffectInput {
+                            role: role.as_str(),
+                            consumer_kind: "proposal-revision",
+                            change_class: change_class.as_str(),
+                        },
+                    ) {
+                        Ok(_) => effect_found = true,
+                        Err(DependencyContractError::MissingEffectRule { .. }) => {}
+                        Err(_) => {
+                            refused = true;
+                            break;
+                        }
+                    }
+                }
+                *accepted = effect_found && !refused;
+            }
+            Ok(ProposalRevisionRoleEffects(table))
+        })
+        .as_ref()
+        .map_err(|()| ())
+}
+
+fn find_dependency_effect(
+    registry: &DependencyEffectRegistry,
+    input: DependencyEffectInput<'_>,
+) -> Result<DependencyEffect, DependencyContractError> {
     let role = DependencyRole::try_from(input.role)?;
     let consumer_kind = NarrativeConsumerKind::try_from(input.consumer_kind)?;
     let change_class = SourceChangeClass::try_from(input.change_class)?;
@@ -1023,5 +1090,98 @@ pub fn aggregate_dependency_build_actions(effects: &[DependencyEffect]) -> Consu
         required_actions,
         advisory_actions,
         compatibility_primary_action,
+    }
+}
+
+#[cfg(test)]
+mod role_effects_tests {
+    use super::*;
+
+    /// What the dependency-set check worked out for a role before DR-CQA-9,
+    /// verbatim: the registry parsed, then the role evaluated under every
+    /// change class with the registry validated in each evaluation.
+    fn worked_out_per_call(role: DependencyRole) -> Result<bool, ()> {
+        let registry = load_dependency_role_registry().map_err(|_| ())?;
+        let mut effect_found = false;
+        for change_class in &registry.source_change_classes {
+            match evaluate_dependency_effect(
+                &registry,
+                DependencyEffectInput {
+                    role: role.as_str(),
+                    consumer_kind: "proposal-revision",
+                    change_class: change_class.as_str(),
+                },
+            ) {
+                Ok(_) => effect_found = true,
+                Err(DependencyContractError::MissingEffectRule { .. }) => {}
+                Err(_) => return Ok(false),
+            }
+        }
+        Ok(effect_found)
+    }
+
+    #[test]
+    fn the_table_answers_what_evaluating_each_role_per_call_answered() {
+        let table = proposal_revision_role_effects().expect("the embedded policy loads");
+        let mut accepted = 0;
+        for role in ALL_ROLES {
+            let expected = worked_out_per_call(role).expect("the embedded policy loads");
+            assert_eq!(table.accepts(role), expected, "{}", role.as_str());
+            accepted += usize::from(expected);
+        }
+        // The policy gives most roles an effect for a proposal revision and not
+        // all of them, so the table reaches both answers.
+        assert!(accepted > 0 && accepted < ALL_ROLES.len(), "{accepted}");
+        // The same table on every call: one computation for the process.
+        let again = proposal_revision_role_effects().expect("the embedded policy loads");
+        assert!(std::ptr::eq(table, again));
+    }
+
+    #[test]
+    fn a_lookup_without_validating_answers_what_the_checked_evaluation_answers() {
+        let registry = load_dependency_role_registry().expect("the embedded policy loads");
+        let roles = ALL_ROLES.iter().map(|role| role.as_str()).chain([
+            "",
+            "future-role",
+            "Direct-Evidence",
+        ]);
+        for role in roles {
+            let consumers = ALL_CONSUMER_KINDS
+                .iter()
+                .map(|kind| kind.as_str())
+                .chain(["", "future-consumer"]);
+            for consumer_kind in consumers {
+                let classes = ALL_SOURCE_CHANGE_CLASSES
+                    .iter()
+                    .map(|class| class.as_str())
+                    .chain(["", "future-class"]);
+                for change_class in classes {
+                    let input = || DependencyEffectInput {
+                        role,
+                        consumer_kind,
+                        change_class,
+                    };
+                    assert_eq!(
+                        find_dependency_effect(&registry, input()),
+                        evaluate_dependency_effect(&registry, input()),
+                        "{role}|{consumer_kind}|{change_class}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_checked_evaluation_still_refuses_a_registry_that_is_not_valid() {
+        let mut broken = load_dependency_role_registry().expect("the embedded policy loads");
+        broken.effect_rules.pop();
+        let input = DependencyEffectInput {
+            role: "direct-evidence",
+            consumer_kind: "proposal-revision",
+            change_class: "source-content-changed",
+        };
+        // `evaluate_dependency_effect` keeps validating what it is handed.
+        assert!(validate_dependency_effect_registry(&broken).is_err());
+        assert!(evaluate_dependency_effect(&broken, input).is_err());
     }
 }

@@ -11,7 +11,8 @@ use anyhow::{anyhow, Context};
 use grimodex_core::narrative_ir::validate_chronicle_scene_event_v2;
 use grimodex_core::{
     canonical_json_digest as core_canonical_json_digest,
-    canonical_json_string as core_canonical_json_string,
+    canonical_json_string as core_canonical_json_string, CanonicalDigestSink, CanonicalJsonError,
+    CanonicalJsonStream,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{Map, Value};
@@ -436,6 +437,14 @@ fn validate_v2_reconciliation_envelope(
 /// persisted authority: the stable mismatch code is intentionally shared by
 /// every nested field.
 pub(crate) fn validate_v2_nested_digest_fields(object: &Map<String, Value>) -> anyhow::Result<()> {
+    // Every digest below is taken over the canonical form of a small document
+    // whose members are borrowed from the envelope. The documents are written
+    // to the hasher member by member, in canonical key order, instead of being
+    // built as a `json!` value that clones the payload, the source basis, the
+    // evidence and the dependency set first (DR-CQA-9). The bytes are the
+    // canonical bytes of the same documents, so every digest is the one the
+    // cloned value gave; `validate_v2_nested_digest_fields_legacy` in the tests
+    // is the cloning form, kept as the oracle.
     let assertion = object
         .get("assertion")
         .and_then(Value::as_object)
@@ -444,22 +453,28 @@ pub(crate) fn validate_v2_nested_digest_fields(object: &Map<String, Value>) -> a
         .get("assertionDigests")
         .and_then(Value::as_object)
         .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: assertionDigests is missing"))?;
-    let mut assertion_core_input = serde_json::json!({
-        "assertionKind": assertion.get("assertionKind"),
-        "payloadSchemaRef": assertion.get("payloadSchemaRef"),
-        "typedSemanticPayload": assertion.get("payload"),
-        "modality": assertion.get("modality"),
-        "polarity": assertion.get("polarity"),
-        "supportClass": assertion.get("supportClass"),
-        "producer": assertion.get("producer")
-    });
     // `producerConfidence` is optional in the C1 assertion shape. Match the
     // canonical object domain exactly: absent means the key is omitted, while
-    // an explicitly supplied confidence participates in the digest.
-    if let Some(producer_confidence) = assertion.get("producerConfidence") {
-        assertion_core_input["producerConfidence"] = producer_confidence.clone();
-    }
-    let assertion_core = digest_json(&assertion_core_input)?;
+    // an explicitly supplied confidence participates in the digest. Every other
+    // member is present as its value or as `null` when it is missing.
+    let assertion_core = digest_stream(|stream| {
+        stream.begin_object()?;
+        stream_member(stream, "assertionKind", assertion.get("assertionKind"))?;
+        stream_member(stream, "modality", assertion.get("modality"))?;
+        stream_member(
+            stream,
+            "payloadSchemaRef",
+            assertion.get("payloadSchemaRef"),
+        )?;
+        stream_member(stream, "polarity", assertion.get("polarity"))?;
+        stream_member(stream, "producer", assertion.get("producer"))?;
+        if let Some(producer_confidence) = assertion.get("producerConfidence") {
+            stream_member(stream, "producerConfidence", Some(producer_confidence))?;
+        }
+        stream_member(stream, "supportClass", assertion.get("supportClass"))?;
+        stream_member(stream, "typedSemanticPayload", assertion.get("payload"))?;
+        stream.end_object()
+    })?;
     ensure_nested_digest(assertion_digests, "assertionCoreDigest", &assertion_core)?;
     let scope_digest = digest_json(
         assertion
@@ -467,10 +482,14 @@ pub(crate) fn validate_v2_nested_digest_fields(object: &Map<String, Value>) -> a
             .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: assertion.scope is missing"))?,
     )?;
     ensure_nested_digest(assertion_digests, "scopeDigest", &scope_digest)?;
-    let assertion_digest = digest_json(&serde_json::json!({
-        "assertionCoreDigest": assertion_core,
-        "scopeDigest": scope_digest
-    }))?;
+    let assertion_digest = digest_stream(|stream| {
+        stream.begin_object()?;
+        stream.key("assertionCoreDigest")?;
+        stream.string(&assertion_core)?;
+        stream.key("scopeDigest")?;
+        stream.string(&scope_digest)?;
+        stream.end_object()
+    })?;
     ensure_nested_digest(assertion_digests, "assertionDigest", &assertion_digest)?;
 
     let material = object
@@ -498,11 +517,14 @@ pub(crate) fn validate_v2_nested_digest_fields(object: &Map<String, Value>) -> a
     }
     let dependency_digest = digest_json(dependency_set)?;
     ensure_nested_digest(material, "dependencySetDigest", &dependency_digest)?;
-    let material_digest = digest_json(&serde_json::json!({
-        "sourceBasis": material.get("sourceBasis"),
-        "evidenceSet": material.get("evidenceSet"),
-        "dependencySet": dependency_set
-    }))?;
+    let material_digest = digest_stream(|stream| {
+        stream.begin_object()?;
+        stream.key("dependencySet")?;
+        stream.value(dependency_set)?;
+        stream_member(stream, "evidenceSet", material.get("evidenceSet"))?;
+        stream_member(stream, "sourceBasis", material.get("sourceBasis"))?;
+        stream.end_object()
+    })?;
     ensure_nested_digest(material, "materialBasisDigest", &material_digest)?;
 
     let basis = object
@@ -517,10 +539,14 @@ pub(crate) fn validate_v2_nested_digest_fields(object: &Map<String, Value>) -> a
     let context = basis
         .get(context_key)
         .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: {context_key} is missing"))?;
-    let context_digest = digest_json(&serde_json::json!({
-        "version": "chronicle.context-set/1",
-        "entries": context
-    }))?;
+    let context_digest = digest_stream(|stream| {
+        stream.begin_object()?;
+        stream.key("entries")?;
+        stream.value(context)?;
+        stream.key("version")?;
+        stream.string("chronicle.context-set/1")?;
+        stream.end_object()
+    })?;
     let context_digest_key = if context_key == "contextSet" {
         "contextSetDigest"
     } else {
@@ -528,6 +554,28 @@ pub(crate) fn validate_v2_nested_digest_fields(object: &Map<String, Value>) -> a
     };
     ensure_nested_digest(basis, context_digest_key, &context_digest)?;
     Ok(())
+}
+
+/// The digest of the canonical document `write` streams, in the error
+/// [`digest_json`] gives.
+fn digest_stream(
+    write: impl FnOnce(&mut CanonicalJsonStream<CanonicalDigestSink>) -> Result<(), CanonicalJsonError>,
+) -> anyhow::Result<String> {
+    let mut stream = CanonicalJsonStream::digest();
+    write(&mut stream)
+        .and_then(|()| stream.finish_digest())
+        .context("digest canonical envelope")
+}
+
+/// One member of a streamed object: the value, or `null` for a member the
+/// envelope does not have (what `json!` writes for a missing `Option`).
+fn stream_member(
+    stream: &mut CanonicalJsonStream<CanonicalDigestSink>,
+    key: &str,
+    value: Option<&Value>,
+) -> Result<(), CanonicalJsonError> {
+    stream.key(key)?;
+    stream.value(value.unwrap_or(&Value::Null))
 }
 
 fn ensure_nested_digest(
@@ -794,9 +842,11 @@ fn digest_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::{
         core_canonical_json_string as canonical_json_string, digest_bytes, digest_json,
-        ensure_v2_proposal_payload_digest, validate_v2_nested_digest_fields,
+        ensure_nested_digest, ensure_sha256_digest, ensure_v2_proposal_payload_digest,
+        required_string, validate_v2_nested_digest_fields,
     };
-    use serde_json::{json, Value};
+    use anyhow::anyhow;
+    use serde_json::{json, Map, Value};
 
     const FORGED_DIGEST: &str =
         "sha256:1111111111111111111111111111111111111111111111111111111111111111";
@@ -901,6 +951,102 @@ mod tests {
         })
     }
 
+    /// The cloning form before DR-CQA-9, verbatim: the oracle the streamed digests are checked against.
+    fn validate_v2_nested_digest_fields_legacy(object: &Map<String, Value>) -> anyhow::Result<()> {
+        let assertion = object
+            .get("assertion")
+            .and_then(Value::as_object)
+            .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: assertion is missing"))?;
+        let assertion_digests = object
+            .get("assertionDigests")
+            .and_then(Value::as_object)
+            .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: assertionDigests is missing"))?;
+        let mut assertion_core_input = serde_json::json!({
+            "assertionKind": assertion.get("assertionKind"),
+            "payloadSchemaRef": assertion.get("payloadSchemaRef"),
+            "typedSemanticPayload": assertion.get("payload"),
+            "modality": assertion.get("modality"),
+            "polarity": assertion.get("polarity"),
+            "supportClass": assertion.get("supportClass"),
+            "producer": assertion.get("producer")
+        });
+        // `producerConfidence` is optional in the C1 assertion shape. Match the
+        // canonical object domain exactly: absent means the key is omitted, while
+        // an explicitly supplied confidence participates in the digest.
+        if let Some(producer_confidence) = assertion.get("producerConfidence") {
+            assertion_core_input["producerConfidence"] = producer_confidence.clone();
+        }
+        let assertion_core = digest_json(&assertion_core_input)?;
+        ensure_nested_digest(assertion_digests, "assertionCoreDigest", &assertion_core)?;
+        let scope_digest = digest_json(
+            assertion
+                .get("scope")
+                .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: assertion.scope is missing"))?,
+        )?;
+        ensure_nested_digest(assertion_digests, "scopeDigest", &scope_digest)?;
+        let assertion_digest = digest_json(&serde_json::json!({
+            "assertionCoreDigest": assertion_core,
+            "scopeDigest": scope_digest
+        }))?;
+        ensure_nested_digest(assertion_digests, "assertionDigest", &assertion_digest)?;
+
+        let material = object
+            .get("effectiveMaterialBasis")
+            .and_then(Value::as_object)
+            .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: effectiveMaterialBasis is missing"))?;
+        let dependency_set = material
+            .get("dependencySet")
+            .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: dependencySet is missing"))?;
+        let evidence_set = material
+            .get("evidenceSet")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: evidenceSet is missing"))?;
+        for (index, evidence) in evidence_set.iter().enumerate() {
+            let evidence = evidence.as_object().ok_or_else(|| {
+                anyhow!("NEX_ENVELOPE_V2_INVALID: evidenceSet entry {index} is not an object")
+            })?;
+            let quote = required_string(evidence, "quote")?;
+            let supplied_quote_digest = required_string(evidence, "quoteDigest")?;
+            ensure_sha256_digest(supplied_quote_digest, "quoteDigest")?;
+            anyhow::ensure!(
+                supplied_quote_digest == digest_bytes(quote.as_bytes()),
+                "NEX_ENVELOPE_DIGEST_MISMATCH: quoteDigest does not match raw UTF-8 quote bytes"
+            );
+        }
+        let dependency_digest = digest_json(dependency_set)?;
+        ensure_nested_digest(material, "dependencySetDigest", &dependency_digest)?;
+        let material_digest = digest_json(&serde_json::json!({
+            "sourceBasis": material.get("sourceBasis"),
+            "evidenceSet": material.get("evidenceSet"),
+            "dependencySet": dependency_set
+        }))?;
+        ensure_nested_digest(material, "materialBasisDigest", &material_digest)?;
+
+        let basis = object
+            .get("revisionBasis")
+            .and_then(Value::as_object)
+            .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: revisionBasis is missing"))?;
+        let context_key = match basis.get("kind").and_then(Value::as_str) {
+            Some("interpretation") => "contextSet",
+            Some("human-derived") => "derivationContextSet",
+            _ => "contextSet",
+        };
+        let context = basis
+            .get(context_key)
+            .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: {context_key} is missing"))?;
+        let context_digest = digest_json(&serde_json::json!({
+            "version": "chronicle.context-set/1",
+            "entries": context
+        }))?;
+        let context_digest_key = if context_key == "contextSet" {
+            "contextSetDigest"
+        } else {
+            "derivationContextSetDigest"
+        };
+        ensure_nested_digest(basis, context_digest_key, &context_digest)?;
+        Ok(())
+    }
+
     fn forge_digest_field(envelope: &mut Value, field: &str) {
         let slot = match field {
             "assertionCoreDigest" | "scopeDigest" | "assertionDigest" => {
@@ -916,6 +1062,173 @@ mod tests {
         *slot = Value::String(FORGED_DIGEST.to_owned());
     }
 
+    /// Re-seal the fixture so every nested digest matches its (changed)
+    /// content, the way the writer would, so a variant is valid rather than
+    /// rejected at the first digest.
+    fn reseal(envelope: &mut Value) {
+        let assertion = envelope["assertion"].clone();
+        let mut core = json!({
+            "assertionKind": assertion.get("assertionKind"),
+            "payloadSchemaRef": assertion.get("payloadSchemaRef"),
+            "typedSemanticPayload": assertion.get("payload"),
+            "modality": assertion.get("modality"),
+            "polarity": assertion.get("polarity"),
+            "supportClass": assertion.get("supportClass"),
+            "producer": assertion.get("producer")
+        });
+        if let Some(confidence) = assertion.get("producerConfidence") {
+            core["producerConfidence"] = confidence.clone();
+        }
+        let core = digest_json(&core).expect("core digest");
+        let scope = digest_json(&assertion["scope"]).expect("scope digest");
+        let whole = digest_json(&json!({"assertionCoreDigest": core, "scopeDigest": scope}))
+            .expect("assertion digest");
+        envelope["assertionDigests"] = json!({
+            "assertionCoreDigest": core,
+            "scopeDigest": scope,
+            "assertionDigest": whole
+        });
+        let material = envelope["effectiveMaterialBasis"].clone();
+        let dependency = digest_json(&material["dependencySet"]).expect("dependency digest");
+        let basis = digest_json(&json!({
+            "sourceBasis": material.get("sourceBasis"),
+            "evidenceSet": material.get("evidenceSet"),
+            "dependencySet": material.get("dependencySet")
+        }))
+        .expect("material digest");
+        envelope["effectiveMaterialBasis"]["dependencySetDigest"] = json!(dependency);
+        envelope["effectiveMaterialBasis"]["materialBasisDigest"] = json!(basis);
+        let context_key = if envelope["revisionBasis"]["kind"] == "human-derived" {
+            "derivationContextSet"
+        } else {
+            "contextSet"
+        };
+        let context = digest_json(&json!({
+            "version": "chronicle.context-set/1",
+            "entries": envelope["revisionBasis"][context_key]
+        }))
+        .expect("context digest");
+        envelope["revisionBasis"][format!("{context_key}Digest")] = json!(context);
+    }
+
+    fn without_member(mut envelope: Value, pointer: &str) -> Value {
+        let (parent, key) = pointer.rsplit_once('/').expect("a pointer with a parent");
+        let parent = if parent.is_empty() {
+            &mut envelope
+        } else {
+            envelope.pointer_mut(parent).expect("the parent exists")
+        };
+        parent
+            .as_object_mut()
+            .expect("the parent is an object")
+            .shift_remove(key);
+        envelope
+    }
+
+    #[test]
+    fn streamed_nested_digests_answer_what_the_cloning_form_answered() {
+        let resealed = |change: &dyn Fn(&mut Value)| {
+            let mut envelope = nested_digest_fixture();
+            change(&mut envelope);
+            reseal(&mut envelope);
+            envelope
+        };
+        let mut variants: Vec<(String, Value)> = vec![("fixture".into(), nested_digest_fixture())];
+        variants.push((
+            "producer confidence".into(),
+            resealed(&|e| e["assertion"]["producerConfidence"] = json!(0.75)),
+        ));
+        variants.push((
+            "confidence zero".into(),
+            resealed(&|e| e["assertion"]["producerConfidence"] = json!(0)),
+        ));
+        variants.push((
+            "null confidence".into(),
+            resealed(&|e| e["assertion"]["producerConfidence"] = Value::Null),
+        ));
+        for member in ["modality", "payload", "producer", "polarity"] {
+            let mut envelope =
+                without_member(nested_digest_fixture(), &format!("/assertion/{member}"));
+            reseal(&mut envelope);
+            variants.push((format!("resealed without {member}"), envelope));
+        }
+        variants.push((
+            "nested payload".into(),
+            resealed(&|e| {
+                e["assertion"]["payload"] = json!({
+                    "zeta": [1, 2.5, -3, true, null, "é\u{1F600}\n\"quote\""],
+                    "alpha": {"k": "日本語", "a": {"z": 1, "b": 2}},
+                    "bundleDigest": "sha256:abc"
+                })
+            }),
+        ));
+        variants.push((
+            "several dependencies".into(),
+            resealed(&|e| {
+                e["effectiveMaterialBasis"]["dependencySet"] = json!([
+                    {"dependencyId": "d1", "inputRef": "a", "contextIds": [], "role": "direct-evidence", "selector": {"kind": "whole-source"}},
+                    {"dependencyId": "d2", "inputRef": "b", "contextIds": ["c"], "role": "entity-resolution", "selector": {"kind": "whole-source"}}
+                ])
+            }),
+        ));
+        variants.push((
+            "human-derived basis".into(),
+            resealed(&|e| {
+                e["revisionBasis"] = json!({
+                    "kind": "human-derived",
+                    "derivationContextSet": [{"contextId": "x"}],
+                })
+            }),
+        ));
+        variants.push((
+            "unknown basis kind".into(),
+            resealed(&|e| e["revisionBasis"]["kind"] = json!("future-kind")),
+        ));
+        for field in [
+            "assertionCoreDigest",
+            "scopeDigest",
+            "assertionDigest",
+            "dependencySetDigest",
+            "materialBasisDigest",
+            "quoteDigest",
+            "contextSetDigest",
+        ] {
+            let mut forged = nested_digest_fixture();
+            forge_digest_field(&mut forged, field);
+            variants.push((format!("forged {field}"), forged));
+        }
+        for pointer in [
+            "/assertion",
+            "/assertionDigests",
+            "/assertion/scope",
+            "/effectiveMaterialBasis",
+            "/effectiveMaterialBasis/dependencySet",
+            "/effectiveMaterialBasis/evidenceSet",
+            "/effectiveMaterialBasis/sourceBasis",
+            "/revisionBasis",
+            "/revisionBasis/contextSet",
+        ] {
+            variants.push((
+                format!("without {pointer}"),
+                without_member(nested_digest_fixture(), pointer),
+            ));
+        }
+        let mut accepted = 0;
+        for (name, envelope) in &variants {
+            let object = envelope.as_object().expect("envelope object");
+            let streamed = validate_v2_nested_digest_fields(object);
+            let cloning = validate_v2_nested_digest_fields_legacy(object);
+            assert_eq!(
+                streamed.as_ref().map_err(|e| format!("{e:#}")),
+                cloning.as_ref().map_err(|e| format!("{e:#}")),
+                "{name}"
+            );
+            accepted += usize::from(streamed.is_ok());
+        }
+        // The variants reach both answers: the resealed ones are accepted, the
+        // forged and the incomplete ones are not.
+        assert!(accepted >= 6 && accepted < variants.len(), "{accepted}");
+    }
     #[test]
     fn canonical_json_sorts_objects_but_preserves_arrays() {
         let value = json!({"z": 1, "a": {"y": true, "b": [3, 2, 1]}});

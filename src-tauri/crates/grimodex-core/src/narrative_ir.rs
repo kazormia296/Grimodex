@@ -12,9 +12,8 @@ use thiserror::Error;
 use crate::canonical_json::{canonical_json_digest, canonical_json_string};
 use crate::contract_string::is_contract_non_empty;
 use crate::narrative_dependency::{
-    canonicalize_dependency_selector, evaluate_dependency_effect, load_dependency_role_registry,
-    validate_dependency_selector_value, DependencyContractError, DependencyEffectInput,
-    DependencyRole,
+    canonicalize_dependency_selector, proposal_revision_role_effects,
+    validate_dependency_selector_value, DependencyRole,
 };
 
 pub const NARRATIVE_SCOPE_V2_SCHEMA_VERSION: u64 = 2;
@@ -686,7 +685,9 @@ fn validate_dependency_set(value: &Value, path: &str) -> Result<(), NarrativeIrV
     if values.is_empty() {
         return Err(validation_error("invalid-material-basis", path));
     }
-    let registry = load_dependency_role_registry()
+    // What the registry gives each role, worked out once for the process
+    // instead of parsing the registry for every Envelope (DR-CQA-9).
+    let role_effects = proposal_revision_role_effects()
         .map_err(|_| validation_error("invalid-material-basis", path))?;
     for (index, entry) in values.iter().enumerate() {
         let entry_path = format!("{path}[{index}]");
@@ -716,28 +717,7 @@ fn validate_dependency_set(value: &Value, path: &str) -> Result<(), NarrativeIrV
                 .ok_or_else(|| validation_error("invalid-material-basis", &entry_path))?,
         )
         .map_err(|_| validation_error("invalid-material-basis", format!("{entry_path}.role")))?;
-        let role_name = role.as_str();
-        let mut effect_found = false;
-        for change_class in &registry.source_change_classes {
-            match evaluate_dependency_effect(
-                &registry,
-                DependencyEffectInput {
-                    role: role_name,
-                    consumer_kind: "proposal-revision",
-                    change_class: change_class.as_str(),
-                },
-            ) {
-                Ok(_) => effect_found = true,
-                Err(DependencyContractError::MissingEffectRule { .. }) => {}
-                Err(_) => {
-                    return Err(validation_error(
-                        "invalid-material-basis",
-                        format!("{entry_path}.role"),
-                    ));
-                }
-            }
-        }
-        if !effect_found {
+        if !role_effects.accepts(role) {
             return Err(validation_error(
                 "invalid-material-basis",
                 format!("{entry_path}.role"),
@@ -2118,4 +2098,179 @@ pub fn classify_chronicle_scene_event_changes(
         derivation_kind: Some(derivation_kind.to_owned()),
         changed_path_classes,
     })
+}
+
+#[cfg(test)]
+mod dependency_set_tests {
+    use super::*;
+    use crate::narrative_dependency::{
+        evaluate_dependency_effect, load_dependency_role_registry, DependencyContractError,
+        DependencyEffectInput,
+    };
+    use serde_json::json;
+
+    /// `validate_dependency_set` before DR-CQA-9, verbatim: the registry parsed
+    /// on every call and validated again by every evaluation. The oracle the
+    /// shared registry is checked against.
+    fn legacy_validate_dependency_set(
+        value: &Value,
+        path: &str,
+    ) -> Result<(), NarrativeIrValidationError> {
+        let values = value
+            .as_array()
+            .ok_or_else(|| validation_error("invalid-material-basis", path))?;
+        if values.is_empty() {
+            return Err(validation_error("invalid-material-basis", path));
+        }
+        let registry = load_dependency_role_registry()
+            .map_err(|_| validation_error("invalid-material-basis", path))?;
+        for (index, entry) in values.iter().enumerate() {
+            let entry_path = format!("{path}[{index}]");
+            let entry = object(entry, &entry_path)?;
+            reject_unknown(
+                entry,
+                &["dependencyId", "inputRef", "contextIds", "role", "selector"],
+                &entry_path,
+            )?;
+            for field in ["dependencyId", "inputRef", "role"] {
+                if !non_empty_string(require(entry, field, &entry_path)?) {
+                    return Err(validation_error(
+                        "invalid-material-basis",
+                        format!("{entry_path}.{field}"),
+                    ));
+                }
+            }
+            let context_ids = require(entry, "contextIds", &entry_path)?
+                .as_array()
+                .ok_or_else(|| validation_error("invalid-material-basis", &entry_path))?;
+            if context_ids.iter().any(|id| !non_empty_string(id)) {
+                return Err(validation_error("invalid-material-basis", &entry_path));
+            }
+            let role = DependencyRole::try_from(
+                require(entry, "role", &entry_path)?
+                    .as_str()
+                    .ok_or_else(|| validation_error("invalid-material-basis", &entry_path))?,
+            )
+            .map_err(|_| {
+                validation_error("invalid-material-basis", format!("{entry_path}.role"))
+            })?;
+            let role_name = role.as_str();
+            let mut effect_found = false;
+            for change_class in &registry.source_change_classes {
+                match evaluate_dependency_effect(
+                    &registry,
+                    DependencyEffectInput {
+                        role: role_name,
+                        consumer_kind: "proposal-revision",
+                        change_class: change_class.as_str(),
+                    },
+                ) {
+                    Ok(_) => effect_found = true,
+                    Err(DependencyContractError::MissingEffectRule { .. }) => {}
+                    Err(_) => {
+                        return Err(validation_error(
+                            "invalid-material-basis",
+                            format!("{entry_path}.role"),
+                        ));
+                    }
+                }
+            }
+            if !effect_found {
+                return Err(validation_error(
+                    "invalid-material-basis",
+                    format!("{entry_path}.role"),
+                ));
+            }
+            validate_dependency_selector_value(require(entry, "selector", &entry_path)?, None)
+                .map_err(|_| {
+                    validation_error("invalid-material-basis", format!("{entry_path}.selector"))
+                })?;
+        }
+        Ok(())
+    }
+
+    const DIGEST: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+
+    fn entry(role: &str, selector: Value) -> Value {
+        json!({
+            "dependencyId": "dependency:1",
+            "inputRef": "anchor:1",
+            "contextIds": ["context:1"],
+            "role": role,
+            "selector": selector,
+        })
+    }
+
+    #[test]
+    fn the_shared_registry_validates_a_dependency_set_as_the_per_call_registry_did() {
+        let whole = || json!({"kind": "whole-source"});
+        let component = || {
+            json!({
+                "kind": "component-contract",
+                "contractId": "chronicle.event-synthesis.prompt",
+                "contractDigest": DIGEST,
+            })
+        };
+        let field =
+            || json!({"kind": "field-path", "objectIdentity": "object:1", "fieldPath": "title"});
+        let mut sets: Vec<Value> = Vec::new();
+        for role in [
+            "direct-evidence",
+            "opaque-model-context",
+            "entity-resolution",
+            "temporal-resolution",
+            "scope-resolution",
+            "projection-match",
+            "author-correction",
+            "component-contract",
+            "quality-context",
+            "ranking-only",
+            "future-role",
+            "",
+        ] {
+            for selector in [
+                whole(),
+                component(),
+                field(),
+                json!({"kind": "nope"}),
+                json!(7),
+            ] {
+                sets.push(json!([entry(role, selector)]));
+            }
+        }
+        sets.push(json!([]));
+        sets.push(json!({}));
+        sets.push(json!([7]));
+        sets.push(json!([{"dependencyId": "d"}]));
+        sets.push(json!([{
+            "dependencyId": "d", "inputRef": "i", "contextIds": [""],
+            "role": "direct-evidence", "selector": whole()
+        }]));
+        sets.push(json!([{
+            "dependencyId": "d", "inputRef": "i", "contextIds": "x",
+            "role": "direct-evidence", "selector": whole()
+        }]));
+        sets.push(json!([{
+            "dependencyId": "d", "inputRef": "i", "contextIds": [],
+            "role": 3, "selector": whole()
+        }]));
+        sets.push(json!([{
+            "dependencyId": "d", "inputRef": "i", "contextIds": [],
+            "role": "direct-evidence", "selector": whole(), "extra": 1
+        }]));
+        sets.push(json!([
+            entry("direct-evidence", whole()),
+            entry("component-contract", component())
+        ]));
+        let mut accepted = 0;
+        for set in &sets {
+            let shared = validate_dependency_set(set, "effectiveMaterialBasis.dependencySet");
+            let legacy =
+                legacy_validate_dependency_set(set, "effectiveMaterialBasis.dependencySet");
+            assert_eq!(format!("{shared:?}"), format!("{legacy:?}"), "{set}");
+            accepted += usize::from(shared.is_ok());
+        }
+        // The grid reaches both answers.
+        assert!(accepted > 4 && accepted < sets.len(), "{accepted}");
+    }
 }

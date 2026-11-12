@@ -198,6 +198,61 @@ pub fn source_token(
     canonical_json_digest(&value).map_err(Into::into)
 }
 
+/// The registry of a [`source_token`], validated and written as the token's
+/// document carries it, once, for the tokens of many bindings of one registry
+/// (a Scope extension read computes one per binding; DR-CQA-9). A token from
+/// here is the token [`source_token`] gives for the same registry and binding:
+/// the document is the same canonical document, written member by member from
+/// borrowed values and the registry's serialized form instead of a `json!`
+/// value that serializes and copies the registry for every binding.
+pub struct SourceTokenRegistry {
+    registry: serde_json::Value,
+}
+
+impl SourceTokenRegistry {
+    /// The preparation of a registry [`source_token`] would refuse is refused
+    /// with the error [`source_token`] gives.
+    pub fn new(registry: &NarrativeSceneScopeRegistryV1) -> anyhow::Result<Self> {
+        validate_registry(registry)?;
+        Ok(Self {
+            registry: serde_json::to_value(registry)?,
+        })
+    }
+
+    pub fn source_token(&self, binding: &NarrativeSceneScopeBindingV1) -> anyhow::Result<String> {
+        use crate::canonical_json::CanonicalJsonStream;
+        // The keys are in canonical (UTF-16) order, which the stream checks.
+        let mut stream = CanonicalJsonStream::digest();
+        stream.begin_object()?;
+        stream.key("audience")?;
+        stream.value(&serde_json::to_value(&binding.audience)?)?;
+        stream.key("compatibilityMarker")?;
+        stream.value(&serde_json::to_value(binding.compatibility_marker)?)?;
+        stream.key("contractId")?;
+        stream.string(NARRATIVE_SCENE_SCOPE_CONTRACT_ID)?;
+        stream.key("knowledgeHolder")?;
+        stream.value(&serde_json::to_value(&binding.knowledge_holder)?)?;
+        stream.key("materialConstraint")?;
+        stream.value(&serde_json::to_value(&binding.material_constraint)?)?;
+        stream.key("projectId")?;
+        stream.string(&binding.project_id)?;
+        stream.key("queryIdentity")?;
+        stream.value(&serde_json::to_value(&binding.query_identity)?)?;
+        stream.key("registry")?;
+        stream.value(&self.registry)?;
+        stream.key("sceneId")?;
+        stream.string(&binding.scene_id)?;
+        stream.key("sceneIncarnationId")?;
+        stream.string(&binding.scene_incarnation_id)?;
+        stream.key("updatedAt")?;
+        stream.string(&binding.updated_at)?;
+        stream.key("version")?;
+        stream.value(&serde_json::Value::from(binding.version))?;
+        stream.end_object()?;
+        Ok(stream.finish_digest()?)
+    }
+}
+
 pub fn is_unresolved(constraint: &NarrativeScopeConstraintV1) -> bool {
     matches!(constraint, NarrativeScopeConstraintV1::Unresolved { .. })
 }
@@ -338,6 +393,77 @@ mod tests {
         value.scene_incarnation_id = "inc-2".into();
         let second = source_token(&registry, &value).expect("digest");
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn a_prepared_registry_gives_the_token_source_token_gives() {
+        let registries = {
+            let mut empty = registry();
+            empty.timeline_refs.clear();
+            empty.worldline_refs.clear();
+            empty.narrative_layer_refs.clear();
+            let mut astral = registry();
+            astral.timeline_refs = vec!["t:\u{1F600}".into(), "t:\u{FF5E}".into(), "日本語".into()];
+            let mut many = registry();
+            many.timeline_refs = (0..30).map(|index| format!("timeline:{index}")).collect();
+            vec![registry(), empty, astral, many]
+        };
+        let mut bindings = vec![binding()];
+        let mut variant = |change: &dyn Fn(&mut NarrativeSceneScopeBindingV1)| {
+            let mut value = binding();
+            change(&mut value);
+            bindings.push(value);
+        };
+        variant(&|value| value.scene_incarnation_id = "inc-\u{1F600}\n\"x\"".into());
+        variant(&|value| value.version = 9_007_199_254_740_993);
+        variant(&|value| value.version = -4);
+        variant(&|value| value.updated_at = "2026-12-31T23:59:59.999Z".into());
+        variant(&|value| {
+            value.knowledge_holder = NarrativeScopePrincipalV1::Character {
+                reference: "v01".into(),
+            };
+            value.audience = NarrativeScopePrincipalV1::Character {
+                reference: "v\u{00e9}".into(),
+            };
+        });
+        variant(&|value| {
+            value.compatibility_marker = NarrativeScopeCompatibilityMarkerV1::Unknown;
+            value.query_identity = NarrativeSceneQueryIdentityV1 {
+                timeline: NarrativeScopeConstraintV1::Unresolved { reason: "r".into() },
+                worldline: NarrativeScopeConstraintV1::Unresolved { reason: "r".into() },
+                narrative_layer: NarrativeScopeConstraintV1::Unresolved { reason: "r".into() },
+            };
+        });
+        variant(&|value| {
+            value.material_constraint.timeline = NarrativeScopeConstraintV1::Exact {
+                reference: "timeline:main".into(),
+            };
+        });
+        variant(&|value| value.project_id = "p\u{3042}".into());
+        for registry in &registries {
+            let prepared = SourceTokenRegistry::new(registry).expect("a valid registry");
+            for binding in &bindings {
+                assert_eq!(
+                    prepared.source_token(binding).expect("prepared token"),
+                    source_token(registry, binding).expect("token"),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_registry_source_token_refuses_is_refused_when_prepared() {
+        let mut invalid = registry();
+        invalid.registry_version = "narrative-scene-scope-registry/0".into();
+        let mut duplicated = registry();
+        duplicated.timeline_refs = vec!["a".into(), "a".into()];
+        for registry in [invalid, duplicated] {
+            let expected = source_token(&registry, &binding()).expect_err("refused");
+            let refused = SourceTokenRegistry::new(&registry)
+                .err()
+                .expect("refused when prepared");
+            assert_eq!(refused.to_string(), expected.to_string());
+        }
     }
 
     #[test]
