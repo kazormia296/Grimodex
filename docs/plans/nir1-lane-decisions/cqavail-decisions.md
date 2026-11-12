@@ -567,3 +567,12 @@ raw：`/tmp/claude-1000/cquery-bytes-actual-results/`（`l-lift.jsonl`、`llog-l
 - `fnm exec --using=22 pnpm -s verify:quality`：通る（終了コード 0）。1 回目は無関係の `browser-mock.persistence-contract.test.ts` が vitest の 5 s の timeout で落ち（load が高い時間帯）、空いてから取り直した 2 回目が通った。
 - 未実行：標準の lifecycle の通し（上のとおり）、lane の既定の全体と `practical-retention`、hosted CI（Quick／Full）、実 worker の時間の対照（timing_plan）、実 worker で 100 ms の lease のまま p4 の 733 場面が通るかの確認。
 - 測定の raw と binary（push しない dev のもの）：`/tmp/claude-1000/cquery-bytes-actual-results/`（床・shared bytes・steps の in-process の出力、実 worker の jsonl、lifecycle の log、sha256）、`/tmp/claude-1000/bytes-actual/`（100 ms の binary）、`/tmp/claude-1000/bytes-actual-lift/`（lease を上げた binary）、`/tmp/claude-1000/bytes-lifecycle/{A,B}/`（lifecycle の A／B の binary）。
+
+### 時間の対照（2026-11-12、dev の実 worker・release・100 ms の lease・静かな時間帯。上の手順を実施した結果）
+
+腕 A＝`a90dec3d`（本 PR の製品コード＋harness）、腕 B＝`443027e6`（master `a067f7f7`＋同じ harness）、AB／BA 交互、各 case 各腕 8 本、各 run の開始時 loadavg 1 分値は 1.22〜2.36（3 未満。run ごとの値は raw の load.txt）。binary の sha256 は A testbin `8ad682f0…`・A worker `4003ee87…`（前回の 100 ms 版と一致）、B testbin `f1e64c97…`・B worker `53cf7cbd…`。記録：`/home/grimodex/fusion-eval-data/design-notes/db-connection-2026-11-07/drift-measure/timing-bytes-2026-11-12/`（results.md、raw、load.txt）。
+
+- **A 対 B（352・337・978 場面）：全 24 本 available、時間切れ 0 本。** worker 内 query_ms の中央値（最大）は p4 352 場面で A 80（87）／B 79.5（81）、p4 337 場面で A 80（80）／B 78（83）、p 978 場面で A 50（51）／B 50（52）。owner の往復の中央値は A 105／104.5／59 ms、B 107／106／58.5 ms。差は中央値で 2 ms 以内で向きも揃わず、**join の追加でばらつきの範囲を超える悪化は無い**。
+- **A だけ（p4）：400／500／600／650／673／700／716 場面は各 8/8 available**（worker 81／85／88／89／90.5／91／92 ms の中央値）。**726 場面と 733 場面は 8 本中 5 本が時間切れ（`NIR1_GRAPH_QUERY_DEADLINE_NO_TIMELY_FRAME`）、3 本が available**（worker 内は 92〜94 ms で、通る本と時間切れの本で差が無い）。
+- したがって **p4 の実効の壁は台帳の 733 ではなく 100 ms の期限で、716〜726 場面の間**にある。台帳の拒否（`other`）が時間切れ（どちらも部分 Graph なしの unavailable）に置き換わり、通る形が増える効果は 352 → 約 716 場面まで。本番の lease（100 ms）で 733 場面は通らない（5/8）。1 場面刻みの境と、時間切れが worker 内の時間で説明できない理由（owner 側の寄与か。推測）は未測定。
+- 標準の `scripts/nir1-c-query-worker-ci.sh lifecycle` を静かな時間帯（開始時 loadavg 1.43）に標準のまま取り直した：exit 0、26 case 全部成功（前回の 15 番目の case の不安定は再現せず）。
