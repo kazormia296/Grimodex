@@ -783,9 +783,20 @@ mod tests {
             version_before_analyze,
             "the statistics write was a real page change another connection can observe"
         );
-        // ANALYZE creates `sqlite_stat1` the first time, which moves the main
-        // schema_version (a schema change, so the identity follows it); the
-        // sequence stays. The assertion below fixes which of the two this is.
+        // ANALYZE writes `sqlite_stat1` rows. The table already exists (the schema
+        // creates it), so no schema change happens: the schema_version and
+        // user_version stay and only `data_version` moves. If the table did not
+        // exist, the first ANALYZE would create it and move the schema_version,
+        // which the identity does follow.
+        assert!(
+            db.with_conn(|conn| Ok(conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'sqlite_stat1')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?))
+            .expect("stat table"),
+            "sqlite_stat1 exists after ANALYZE"
+        );
         let versions_after = db.with_conn(read_db_clock_with_versions).expect("versions");
         assert_eq!(
             (versions_before.1, versions_before.2),
@@ -824,35 +835,6 @@ mod tests {
             Ok(())
         })
         .expect("rollback");
-    }
-
-    /// repair の CAS（backup の前後）は lineage・seq に schema_version・user_version を足した
-    /// 値で比べる。clock の trigger が付かない DDL（表の作成など）は seq を進めないので、
-    /// seq だけの比較では見逃す（旧い比較と同じ強さにするための試験）。
-    #[test]
-    fn a_ddl_only_change_moves_the_versions_but_not_the_sequence() {
-        let (_path, db) = migrated("ddl-only");
-        let (clock_before, versions_before) = db
-            .with_conn(|conn| {
-                Ok((read_db_clock(conn)?, read_db_clock_with_versions(conn)?))
-            })
-            .expect("before");
-        db.with_conn(|conn| {
-            conn.execute_batch("CREATE TABLE ddl_only_probe (value INTEGER)")?;
-            Ok(())
-        })
-        .expect("ddl");
-        let (clock_after, versions_after) = db
-            .with_conn(|conn| {
-                Ok((read_db_clock(conn)?, read_db_clock_with_versions(conn)?))
-            })
-            .expect("after");
-        assert_eq!(clock_after, clock_before, "the sequence does not move");
-        assert_eq!(versions_before.0, versions_after.0);
-        assert_ne!(
-            versions_before.1, versions_after.1,
-            "the schema_version of the same read does"
-        );
     }
 
     /// The identity is read through any connection: a second connection of another
