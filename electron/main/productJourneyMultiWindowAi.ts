@@ -13,6 +13,18 @@ function isClusterKey(value: string): value is ClusterKey {
   return Object.hasOwn(fixture.clusters, value);
 }
 
+// A row may name an actuality other than the default "actual" (the split
+// folder's planned Observation). Only the four event actualities may be
+// cited by a synthesis event; the rest are left out, like the product asks.
+const rowActuality = (row: Row): string =>
+  (row as { actuality?: string }).actuality ?? "actual";
+const EVENT_ACTUALITIES = new Set([
+  "actual",
+  "attempted",
+  "prevented",
+  "rumored",
+]);
+
 export function productJourneyMultiWindowObservation(
   sections: Section[],
 ): object | null {
@@ -48,7 +60,7 @@ export function productJourneyMultiWindowObservation(
         assertion: { attribution: "narrator", narrativeFrame: "story-world" },
         payload: {
           predicate: row.predicate,
-          actuality: "actual",
+          actuality: rowActuality(row),
           participants: [],
           temporalExpressions: [],
           durationKind: "instant",
@@ -81,7 +93,9 @@ export function productJourneyMultiWindowSynthesis(
     )
       return null;
     const rows = fixture.rows.filter((row) => row.predicate === match[3]);
-    return rows.length === 0 ? null : { localId: match[1]!, rows };
+    return rows.length === 0
+      ? null
+      : { localId: match[1]!, actuality: match[2]!, rows };
   });
   if (parsed.some((entry) => entry === null)) return null;
   const names = new Set(
@@ -90,6 +104,12 @@ export function productJourneyMultiWindowSynthesis(
   const [name] = names;
   if (names.size !== 1 || name === undefined || !isClusterKey(name))
     throw new Error("Multi-window Journey cluster membership is ambiguous");
+  // The event cites the observations that can make an event; an Observation
+  // of another actuality stays in the request but is left out of the event.
+  const cited = parsed.filter((entry) =>
+    EVENT_ACTUALITIES.has(entry!.actuality),
+  );
+  if (cited.length === 0) return null;
   const cluster = clusters[0]!;
   if (
     cluster.contextId !== `event-cluster:${cluster.value}` ||
@@ -102,7 +122,7 @@ export function productJourneyMultiWindowSynthesis(
     resolution: "single-event",
     events: [
       {
-        observationRefs: parsed.map((entry) => entry!.localId),
+        observationRefs: cited.map((entry) => entry!.localId),
         titleSuggestion: expected.title,
         summary: expected.summary,
         actuality: "actual",

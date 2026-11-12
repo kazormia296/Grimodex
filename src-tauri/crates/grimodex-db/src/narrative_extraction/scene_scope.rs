@@ -1000,6 +1000,36 @@ pub(crate) const SCOPE_EXTENSION_PRINCIPAL_ROWS_SQL: &str = concat!(
     "          WHERE b.project_id = ?1"
 );
 
+/// The bytes [`SCOPE_EXTENSION_SQL`] returns for one project (`?1`), counted the
+/// way the shared-read preflight counts a read (DR-CQA-8): the length of every
+/// column the statement returns, once (`version` is an integer, counted by
+/// its text length), and the `id` of each Codex row the two principal joins
+/// found, which the statement evaluates for its flag (`CASE WHEN kh.id IS NOT
+/// NULL`). The columns the joins only compare (`project_id`, `type`) are
+/// predicates, which no preflight statement counts. It is built from the
+/// extension's own FROM clause (`scope_extension_principal_joins`), like
+/// [`SCOPE_EXTENSION_PRINCIPAL_ROWS_SQL`], so it reads the rows the extension
+/// reads. `?2` and `?3` are the preflight's other two slots, bound only as
+/// non-null guards (every statement of that table takes the same three).
+pub(crate) const SCOPE_EXTENSION_BINDING_BYTES_SQL: &str = concat!(
+    "WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(b.scene_id), 0) +
+                COALESCE(octet_length(b.scene_incarnation_id), 0) +
+                COALESCE(octet_length(b.compatibility_marker), 0) +
+                COALESCE(octet_length(b.query_identity_json), 0) +
+                COALESCE(octet_length(b.material_constraint_json), 0) +
+                COALESCE(octet_length(b.knowledge_holder_json), 0) +
+                COALESCE(octet_length(b.version), 0) +
+                COALESCE(octet_length(b.audience_json), 0) +
+                COALESCE(octet_length(b.source_token), 0) +
+                COALESCE(octet_length(b.updated_at), 0) +
+                COALESCE(octet_length(kh.id), 0) +
+                COALESCE(octet_length(au.id), 0)), 0)
+           FROM narrative_scene_scope_bindings b
+",
+    scope_extension_principal_joins!(),
+    "          WHERE b.project_id = ?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL"
+);
+
 /// The statement before DR-CQA-6, verbatim: `sceneOwned` from a `LEFT JOIN
 /// tree_nodes`. Tests only; the oracle [`SCOPE_EXTENSION_SQL`] and the Scene-id
 /// set are checked against.

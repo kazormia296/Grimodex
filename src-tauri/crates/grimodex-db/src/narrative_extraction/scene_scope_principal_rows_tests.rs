@@ -172,6 +172,25 @@ fn an_entry_that_is_not_a_character_is_not_a_row() {
     assert_shape(&character("l1"), &character("c1"), 1);
 }
 
+/// The join does not read `kind`: a principal names a Codex row by its
+/// `$.ref` and the row's own `type = 'character'`. A `kind` that is not
+/// "character" (or no `kind` at all) whose `ref` names a character is a row,
+/// in the charge and in the extension's read alike.
+#[test]
+fn the_kind_of_a_principal_is_not_read_only_its_ref_is() {
+    for odd in [
+        r#"{"kind":"reader","ref":"c1"}"#,
+        r#"{"kind":"location","ref":"c1"}"#,
+        r#"{"ref":"c1"}"#,
+    ] {
+        assert_shape(odd, r#"{"kind":"reader"}"#, 1);
+        assert_shape(r#"{"kind":"reader"}"#, odd, 1);
+        assert_shape(odd, odd, 2);
+        // a ref that names a location is no row whatever the kind says
+        assert_shape(&odd.replace("c1", "l1"), &odd.replace("c1", "l1"), 0);
+    }
+}
+
 #[test]
 fn a_principal_without_a_usable_ref_is_not_a_row() {
     for unusable in [
@@ -305,6 +324,153 @@ fn the_counting_statement_seeks_by_project_and_codex_key() {
         let line_of = |alias: &str| -> String {
             plan.lines()
                 .find(|line| line.starts_with(&format!("SEARCH {alias} USING")))
+                .unwrap_or_else(|| panic!("{alias} is sought, not scanned:\n{plan}"))
+                .to_owned()
+        };
+        assert!(line_of("b").contains("(project_id=?)"), "{plan}");
+        for alias in ["kh", "au"] {
+            let line = line_of(alias);
+            assert!(
+                line.contains("sqlite_autoindex_codex_entries") && line.contains("(id=?)"),
+                "{alias}: {plan}"
+            );
+        }
+        Ok(())
+    })
+    .expect("plan");
+}
+
+// DR-CQA-8: the bytes the same read returns, counted by
+// `SCOPE_EXTENSION_BINDING_BYTES_SQL` in the shared-read preflight: the ten
+// columns the extension's SELECT returns for each binding, and the `id` of each
+// Codex row its two joins found (the id is what the statement evaluates for the
+// flag; `project_id` and `type` are predicates of the join, which no preflight
+// statement counts).
+
+/// What the preflight's bytes statement counts for `project`.
+fn binding_bytes(conn: &Connection, project: &str) -> Result<i64> {
+    Ok(conn.query_row(
+        SCOPE_EXTENSION_BINDING_BYTES_SQL,
+        params![project, "", "no-scene"],
+        |row| row.get(0),
+    )?)
+}
+
+/// The bytes the extension's own statement returns for `project`, summed in
+/// Rust: the length of each of its ten value columns, and the length of the id
+/// a flagged join matched (which is the principal's `$.ref`).
+fn returned_by_the_extension(conn: &Connection, project: &str) -> Result<i64> {
+    use rusqlite::types::Value;
+    let mut statement = conn.prepare(SCOPE_EXTENSION_SQL)?;
+    let mut rows = statement.query([project])?;
+    let mut total = 0i64;
+    while let Some(row) = rows.next()? {
+        for column in 0..10 {
+            total += match row.get::<_, Value>(column)? {
+                Value::Null => 0,
+                Value::Integer(value) => value.to_string().len() as i64,
+                Value::Text(value) => value.len() as i64,
+                other => panic!("{other:?}"),
+            };
+        }
+        for (flag, json) in [(10, 5), (11, 7)] {
+            if row.get::<_, i64>(flag)? == 1 {
+                let principal: serde_json::Value =
+                    serde_json::from_str(&row.get::<_, String>(json)?)?;
+                total += principal["ref"].as_str().expect("a ref").len() as i64;
+            }
+        }
+    }
+    Ok(total)
+}
+
+#[test]
+fn the_byte_charge_and_the_extension_share_the_principal_joins() {
+    let joins = |sql: &str| -> String {
+        let from = sql.find("LEFT JOIN codex_entries kh").expect("kh join");
+        let to = sql.find("WHERE b.project_id = ?1").expect("where");
+        sql[from..to].trim_end().to_owned()
+    };
+    assert_eq!(
+        joins(SCOPE_EXTENSION_SQL),
+        joins(SCOPE_EXTENSION_BINDING_BYTES_SQL)
+    );
+    assert!(SCOPE_EXTENSION_BINDING_BYTES_SQL.contains("FROM narrative_scene_scope_bindings b"));
+    // the preflight binds three slots to every statement of its table, and
+    // the other two are only guards
+    for slot in ["?2 IS NOT NULL", "?3 IS NOT NULL"] {
+        assert!(SCOPE_EXTENSION_BINDING_BYTES_SQL.contains(slot), "{slot}");
+    }
+}
+
+#[test]
+fn the_byte_charge_is_the_extensions_returned_bytes_on_every_shape_of_principal() {
+    let shapes = [
+        (r#"{"kind":"reader"}"#.to_owned(), r#"{"kind":"reader"}"#.to_owned()),
+        (character("c1"), r#"{"kind":"reader"}"#.to_owned()),
+        (r#"{"kind":"reader"}"#.to_owned(), character("c2")),
+        // the same character as holder and audience: two joined rows
+        (character("c1"), character("c1")),
+        (character("c1"), character("c2")),
+        // not a character of the project: the join finds none
+        (character("l1"), character("x1")),
+        // `kind` is not read: a ref that names a character is found whatever it says
+        (r#"{"kind":"reader","ref":"c1"}"#.to_owned(), r#"{"ref":"c2"}"#.to_owned()),
+        (character("missing"), r#"{"kind":"character","ref":7}"#.to_owned()),
+        ("not json".to_owned(), "[]".to_owned()),
+    ];
+    for (holder, audience) in shapes {
+        let db = fixture();
+        db.with_conn(|conn| {
+            set_principals(conn, "s1", &holder, &audience)?;
+            assert_eq!(
+                binding_bytes(conn, "p1")?,
+                returned_by_the_extension(conn, "p1")?,
+                "{holder} / {audience}"
+            );
+            Ok(())
+        })
+        .expect("shape");
+    }
+    // the joined ids are in the count: a character principal costs more than a
+    // reader by the id of its Codex row (and its longer JSON)
+    let db = fixture();
+    db.with_conn(|conn| {
+        let readers = binding_bytes(conn, "p1")?;
+        set_principals(
+            conn,
+            "s1",
+            &character("c1"),
+            r#"{"kind":"reader"}"#,
+        )?;
+        let one = binding_bytes(conn, "p1")?;
+        let json = character("c1").len() - r#"{"kind":"reader"}"#.len();
+        assert_eq!(one - readers, (json + "c1".len()) as i64);
+        // no other project's rows, and none for a project that is not there
+        assert_eq!(binding_bytes(conn, "no-such-project")?, 0);
+        Ok(())
+    })
+    .expect("joined id");
+}
+
+#[test]
+fn the_byte_statement_seeks_by_project_and_codex_key() {
+    let db = fixture();
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(&format!(
+            "EXPLAIN QUERY PLAN {SCOPE_EXTENSION_BINDING_BYTES_SQL}"
+        ))?;
+        let plan = statement
+            .query_map(params!["p1", "", "x"], |row| row.get::<_, String>(3))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .join("\n");
+        assert!(
+            !plan.contains("TEMP B-TREE") && !plan.contains("AUTOMATIC"),
+            "{plan}"
+        );
+        let line_of = |alias: &str| -> String {
+            plan.lines()
+                .find(|line| line.contains(&format!("SEARCH {alias} USING")))
                 .unwrap_or_else(|| panic!("{alias} is sought, not scanned:\n{plan}"))
                 .to_owned()
         };
