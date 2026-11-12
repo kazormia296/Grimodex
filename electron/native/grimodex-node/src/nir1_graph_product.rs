@@ -570,21 +570,14 @@ impl Shared {
     }
 
     fn publication_open(&self) -> bool {
-        if PRODUCT_GRAPH_PUBLISHED {
-            return true;
-        }
+        // Short-circuits in the same order as before: the product constant,
+        // then the eval switch, then the test switch (each only when built).
+        let open = PRODUCT_GRAPH_PUBLISHED;
         #[cfg(feature = "nir1-graph-eval")]
-        if self.publication_open_for_eval.load(Ordering::SeqCst) {
-            return true;
-        }
+        let open = open || self.publication_open_for_eval.load(Ordering::SeqCst);
         #[cfg(test)]
-        {
-            self.publication_open_for_test.load(Ordering::SeqCst)
-        }
-        #[cfg(not(test))]
-        {
-            false
-        }
+        let open = open || self.publication_open_for_test.load(Ordering::SeqCst);
+        open
     }
 
     fn config(&self) -> GraphOwnerConfig {
