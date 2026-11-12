@@ -90,4 +90,4 @@
 
 ### 検証
 
-触った試験、vitest（`src/application/narrative-extraction` と `src/features/narrative-extraction`、968 件）、tsc（本体と electron）、cargo test（`grimodex-db` の `material_membership_root` と、`narrative_nir1_retrieval_admission`、`narrative_nir1_multi_window_membership`）は通った。`verify:quality` の結果は、PR の本文に書く。
+触った試験、vitest（`src/application/narrative-extraction` と `src/features/narrative-extraction`、968 件）、tsc（本体と electron）、cargo test（`grimodex-db` の `material_membership_root` と、`narrative_nir1_retrieval_admission`、`narrative_nir1_multi_window_membership`）は通った。`verify:quality`（Node 22、`GATE_B2_WORKTREE_SMOKE=1`）も通った。
