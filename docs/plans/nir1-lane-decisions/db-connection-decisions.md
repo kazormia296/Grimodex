@@ -455,13 +455,13 @@ lease の timeout の案内文を出す画面の場所、SQLite が TRIGGER 本�
 | 項目 | 0.40.1 | 0.41.1 | この lane への影響 |
 |---|---|---|---|
 | 登録の API | `commit_hook`／`rollback_hook`／`update_hook`／`progress_handler`／`authorizer` は `&self`。`busy_handler`／`wal_hook`／`trace_v2` は `fn` ポインタだけ | すべて `&mut self`、closure は `FnMut + Send + 'static`、`Result` を返す | 登録する側が接続の排他的な借用を持つ必要がある。これが本体 |
-| closure の保持 | `InnerConnection` の field に `Box`。置換で古い closure は代入時に drop | `sqlite3_set_clientdata`（hook ごとに別の名前）に `Box::into_raw`。置換は「新しい hook を SQLite に登録 → clientdata の置換で古い closure を destructor が free」、解除は「hook を外す → destructor が closure を free」、接続を閉じると SQLite が destructor を走らせる | 置換・解除・close の各時点で closure が生きている期間は 0.40 と同じ。`install` が登録に失敗したときは新しい closure だけが free され、古い hook は残る（`set_clientdata` の `preset` が失敗したとき）。`progress_handler` の `num_ops`・`None` の扱いは同じ |
-| 借用の検査 | `check_owned()` が接続の所有を実行時に確かめる | 型が `&mut Connection` を要求する。実行時の確認は無い | 実行時の確認の代わりに、型で「登録中は他の借用が無い」を保証する（hook の中から自分自身を登録できない、statement の途中に登録できない） |
+| closure の保持 | `InnerConnection` の field に `Box`。置換で古い closure は代入時に drop | `sqlite3_set_clientdata`（hook ごとに別の名前）に `Box::into_raw`。置換は「新しい hook を SQLite に登録 → clientdata の置換で古い closure を destructor が free」、解除は「hook を外す → destructor が closure を free」、接続を閉じると SQLite が destructor を走らせる | 置換・解除・close の各時点で closure が生きている期間は 0.40 と同じ。**登録は 2 段で、失敗の形が 0.40 と違う**（2026-11-13 訂正。当初の「`preset` が失敗したとき古い hook が残る」は事実と違った）：① `preset` が closure の生 pointer を SQLite に登録し（`sqlite3_commit_hook(db, x, ptr)` など）、② `sqlite3_set_clientdata(db, 名前, ptr, destructor)` が記録する（`inner_connection.rs:340-370`）。② は **その名前の entry がまだ無いときだけ `sqlite3_malloc64` し**、失敗すると destructor で closure を free して `SQLITE_NOMEM` を返すが、① の登録は残る。**hook は free 済みの closure を指したまま残り**、次にその hook が呼ばれる文（COMMIT、prepare、progress の tick）で use after free になる（3.54.1 の `sqlite3_set_clientdata` と rusqlite のソースで確認し、`tests/hook_registration_nomem.rs` が `sqlite3_hard_heap_limit64` で実際に再現する）。① が失敗した場合（`sqlite3_set_authorizer` の MISUSE）だけが、closure が free され古い hook は残る形。entry の置換と解除（`None`）は malloc しない。→ 判断 12。`progress_handler` の `num_ops`・`None` の扱いは同じ |
+| 借用の検査 | `check_owned()`（hooks の登録の入口）が、**所有していない接続**（`Connection::from_handle` の wrapper）への登録を `SQLITE_MISUSE`〔"Connection is not owned"〕で拒否する | 型が `&mut Connection` を要求する。`check_owned` は無くなり、**所有の検査も無い**：試験専用の `test_support::same_handle_writer`（`from_handle` の非所有の wrapper。判断 8a）でも、同じ `sqlite3*` に hook を登録できる | 型で「登録中は他の借用が無い」を保証する（hook の中から自分自身を登録できない、statement の途中に登録できない）。所有の検査が無くなった影響は **試験だけ**（`same_handle_writer` は読みの最中の書込み・観測にだけ使い、hook は登録しない。本番のコードは 2 つ目の wrapper を作らない） |
 | `Transaction`／`Savepoint` | `Deref<Target = Connection>` | 同じ（**`DerefMut` は無い**） | transaction の下では hook を登録できない。`unchecked_transaction()` の下で capacity scope（progress の入れ替え）や commit hook を使う経路は、`ScopedTransaction`（下の判断 3）に替える |
 | `busy_timeout` | 設定のみ | 成功すると busy handler の clientdata も消す | busy handler は使っていない（登録箇所なし）。`busy_timeout` は `&self` のまま |
 | `Statement::column_names()`／`columns()` | `Vec` | `impl DoubleEndedIterator + ExactSizeIterator` | `execute.rs`・`project_snapshots.rs` の 2 か所の `.iter()` を外した |
 | `Connection::backup` の進捗引数 | 推論できた | 型注釈が要る | 試験 2 か所（`nir1_capacity.rs`、`nir1_capacity_boundary_tests.rs`）に `None::<fn(rusqlite::backup::Progress)>` を足した |
-| bundled のビルド | `-DSQLITE_ENABLE_MEMORY_MANAGEMENT` あり | **無し**（`libsqlite3-sys-0.39.1/build.rs`。ほかの compile flag の差は無い） | `sqlite3_release_memory`／`soft_heap_limit`／`PRAGMA shrink_memory` は無効になるが、この repo はどれも呼ばない（`rg` で 0 件）。`sqlite3_memory_used`／`sqlite3_memory_highwater` は常に有効で、診断（feature）が使うのはこの 2 つだけ **時間への影響あり**：in-process の W（R1022／D2064）で約 +4〜5%（下の「W の遅れの残りの切り分け」）。 |
+| bundled のビルド | `-DSQLITE_ENABLE_MEMORY_MANAGEMENT` あり | **無し**（`libsqlite3-sys-0.39.1/build.rs`。ほかの compile flag の差は無い） | `sqlite3_release_memory`／`soft_heap_limit`／`PRAGMA shrink_memory` は無効になるが、この repo はどれも呼ばない（`rg` で 0 件）。`sqlite3_memory_used`／`sqlite3_memory_highwater` は常に有効で、診断（feature）が使うのはこの 2 つだけ **時間への影響あり**：in-process の W（R1022／D2064）で約 +4〜5%（下の「W の遅れの残りの切り分け」）。**2026-11-13：`.cargo/config.toml` の `[env] LIBSQLITE3_FLAGS` で戻した**（下の「独立レビューへの対応」の 2）。 |
 | 同梱の SQLite | 3.53.2、source ID `2026-06-03 19:12:13 d6e03d8c…1a24` | 3.54.1、`2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76` | 下の「監査」 |
 
 ### 監査（`AUDITED_SQLITE_SOURCE_ID` の更新の根拠）
@@ -483,7 +483,7 @@ lease の timeout の案内文を出す画面の場所、SQLite が TRIGGER 本�
 1. **依存**：workspace の `rusqlite` と、grimodex-core・grimodex-db（本体と dev）・grimodex-semantic・grimodex-post-effect・grimodex-mcp の `rusqlite` を `0.40` → `0.41`。`src-tauri/Cargo.lock` と `electron/native/grimodex-node/Cargo.lock` は `cargo update -p rusqlite --offline` で `rusqlite` 0.41.1・`libsqlite3-sys` 0.39.1 の 2 package（と checksum）だけが変わる。grimodex-node は rusqlite を直に依存せず、grimodex-db 経由でだけ引く（Cargo.toml の注記のとおり）。standalone MCP は `src-tauri` の workspace member なので lock は `src-tauri/Cargo.lock` の 1 本。
 2. **hook は `&mut Connection` を型で通す**。`unsafe` で hook の登録を `&Connection` に戻す shim（`sqlite3_progress_handler` などを自前の trampoline で直接呼ぶ）、`RefCell`、registry の opcode ごとの lock は採らない（shim は upstream が型で閉じた再入の穴〔hook の実行中・statement の途中の登録〕を開け直す。per-opcode の lock は課金の cadence と性能の gate を動かす）。登録・解除をする関数と、それを guard として持つ型（`BudgetScope`、`CommitScope`、`ProgressOwnerRestore` の復元、`ValidationContext`、`ScopedTransaction`）が `&mut Connection` を持つ。その間、本体へは `&mut *guard.conn` の再借用で貸す。
 3. **`ScopedTransaction`**（`src/scoped_tx.rs`、`grimodex_db::ScopedTransaction`）：`BEGIN DEFERRED`／`COMMIT`／drop で開いていれば `ROLLBACK`（失敗は無視）。rusqlite の `Transaction`（既定の `DropBehavior::Rollback`）と同じ意味で、`Deref`＋`DerefMut` を持つ。`unchecked_transaction()` が `&Transaction` を渡していた、hook を使う経路（Graph・Chronicle の読み、`with_participant_read_transaction*`、`with_read_transaction`）だけを替える。hook を使わない箇所の `unchecked_transaction()` は残す。
-4. **statement を `&mut` の呼出しの前に閉じる**：`conn.prepare` した statement を持ったまま、capacity scope などの `&mut Connection` の呼出しをしていた箇所は、statement の寿命を block に閉じる、または行を先に集める。行を先に集めるのは `verify_coverage.rs` の application の行だけ（`narrative_proposal_applications` の join。1 行が 10 個の文字列の tuple で、件数は project の applied proposal 数のオーダー。以前は `query_map` の iterator のまま、行ごとに別の query を同じ接続で走らせていた）。同じ SQL・同じ順序・同じ総 VM steps で、`check_control` は行ごとに残す。差は、stop や deadline が行の読み出しの途中で効いたとき、typed の停止が `check_control` ではなく progress hook の SQLITE_INTERRUPT（`map_interrupted_error` が同じ typed の停止に直す）から来る点だけ。ほかの箇所（`nir1_chronicle_index/canonical.rs`、`publish_runtime.rs`、`revision_eligibility/freshness.rs`、`restore_rebuild.rs`、`verify_coverage.rs` の basis の statement）は、すでに `collect` していた、または statement が最後の使用の後も scope の終わりまで残っていただけなので、statement を block に閉じる／`drop` するだけで、挙動は同じ。
+4. **statement を `&mut` の呼出しの前に閉じる**：`conn.prepare` した statement を持ったまま、capacity scope などの `&mut Connection` の呼出しをしていた箇所は、statement の寿命を block に閉じる、または行を先に集める。**行を先に集める形は採らない**（2026-11-13 訂正。当初は `verify_coverage.rs` の application の行だけ先に集めていて、DR に「以前は行ごとに別の query」と書いたが、**事実と違った**：application の行の loop の本体は接続を使わず、旧コードは `query_map` の iterator を行ごとに `check_control` を挟んで読むだけだった。接続を使う `resolve_source_revision_with_control`〔`&mut`〕は後続の別の loop にあり、statement が scope の終わりまで残っていたのが衝突の原因）。statement と `query_map` を block に閉じ、その中で行ごとに `check_control` を挟んで読む形に戻した。SQL・順序・VM steps・行に比例するメモリ（先集めの `Vec` 無し）・`check_control` の挟まり方が旧と同じ。ほかの箇所（`nir1_chronicle_index/canonical.rs`、`publish_runtime.rs`、`revision_eligibility/freshness.rs`、`restore_rebuild.rs`、`verify_coverage.rs` の basis の statement）は、すでに `collect` していた、または statement が最後の使用の後も scope の終わりまで残っていただけなので、statement を block に閉じる／`drop` するだけで、挙動は同じ。
 5. **`with_conn` は `&Connection` のまま**にし、hook を登録・解除する closure のための `Database::with_conn_mut`（`&mut Connection`）を足す。`with_conn` は `with_conn_mut` の薄い wrapper で、`attempt_active` の経路（`with_capacity_connection`）の差は無い。`with_participant_sql_scope`／`with_participant_read_transaction*`／`with_chronicle_reader`／`with_immediate_transaction*`／`with_graph_no_wait` と maintenance scope の operation は `FnOnce(&mut Connection)` に変える。
 6. **`ValidationContext`** は `&Connection` ではなく `&mut Connection` を持ち、`connection()`（`&mut`）と、接続と stop owner を同時に借りる `parts()` を持つ。`ensure_connection`（context の作成に使った接続と同じ接続かの pointer 比較）は、`&mut` を context が持つので自明（同じ接続しか持てない）になり、2 か所の呼出しと一緒に削除する。
 7. **`with_pinned_snapshot`** は guard 版の `pinned_snapshot_scope(conn)` を足す（Graph の読みの 2 か所〔registration と query〕が使う）。guard は pin（値）だけを持ち接続を借りないので、scope の間も `&mut Connection` を使える。scope は guard の寿命（unwind でも）で終わり、`finish_read` の ROLLBACK の前に閉じる順序は変わらない。closure 版は試験用（`#[cfg(test)]`）に残す。
@@ -493,7 +493,7 @@ lease の timeout の案内文を出す画面の場所、SQLite が TRIGGER 本�
 9. **`AUDITED_SQLITE_SOURCE_ID` の更新**（上の監査）。
 10. **grimodex-node**：`with_conn` → `with_conn_mut` を、cutover の 2 か所（`cut_over_workspace_freshness` 等）と評価 harness の `update_hook` に、関連場面の build の `|conn: &mut _|` を 2 か所、試験 2 件に。`ScopedTransaction` は `grimodex_db::ScopedTransaction` として公開する（node の試験と、grimodex-db の integration 試験と example が使う）。公開関数のうち `&mut Connection` を取る形に変わったのは、`narrative_extraction` の cutover・skip evidence・Chronicle の build と query・Graph の build／publish・repair・verify・retrieval／revision eligibility の読み（約 30 個。`git diff` の `pub fn`）。
 
-11. **`ReusedStatement`（`nir1_entity_relation_index.rs`）の `sqlite3_clear_bindings` を NULL の bind に替える**。SQLite 3.54 の planner は、index に使われない `x = ?` の項の parameter を「bind し直すと reprepare」として登録する（`sqlite3ExprIsInteger(…, pParse, 1)`。整数 0／1 への・からの変化でだけ失効）。`sqlite3_clear_bindings` は登録のある statement を必ず失効させるので、Graph の registration が 5 つの statement を Revision ごとに持ち回す最適化（prepare は 1 回、DR-GRW-3）が、使うたびの再 prepare（`RePrepare` が 2〜3）に戻っていた（試験 4 件の失敗で見つかった）。bind の解放の目的（長い Revision id の copy を SQLite が次の bind まで持たない）は、全 parameter に NULL を bind すれば同じに果たせ、登録のある parameter でも text → NULL → text は失効しない。意味（答え・保持する memory）は同じで、試験（`registration_statements` の prepares／reprepares／mem_used）が固定する。rusqlite の `prepare_cached` も返却時に `clear_bindings` を呼ぶので、同じ条件の cached statement は 3.54 で使うたびに再 prepare される（この lane では変えない。時間への影響は下の「時間の測定」）。
+11. **`ReusedStatement`（`nir1_entity_relation_index.rs`）の `sqlite3_clear_bindings` を NULL の bind に替える**。SQLite 3.54 の planner は、index に使われない `x = ?` の項の parameter を「bind し直すと reprepare」として登録する（`sqlite3ExprIsInteger(…, pParse, 1)`。整数 0／1 への・からの変化でだけ失効）。`sqlite3_clear_bindings` は登録のある statement を必ず失効させるので、Graph の registration が 5 つの statement を Revision ごとに持ち回す最適化（prepare は 1 回、DR-GRW-3）が、使うたびの再 prepare（`RePrepare` が 2〜3）に戻っていた（試験 4 件の失敗で見つかった）。bind の解放の目的（長い Revision id の copy を SQLite が次の bind まで持たない）は、全 parameter に NULL を bind すれば同じに果たせ、登録のある parameter でも text → NULL → text は失効しない。意味（答え・保持する memory）は同じで、試験（`registration_statements` の prepares／reprepares／mem_used）が固定する。rusqlite の `prepare_cached` も返却時に `clear_bindings` を呼ぶので、同じ条件の cached statement は 3.54 で使うたびに再 prepare されうる（この lane では変えない。capacity scope の steps への課金は**実測した**：下の「独立レビューへの対応」の 3）。
 
 ### owner／lifecycle matrix（GDX-PRECHECK-001。新しい thread・subprocess・背景の処理は無い。hook ごとの登録・解除の owner）
 
@@ -506,7 +506,8 @@ lease の timeout の案内文を出す画面の場所、SQLite が TRIGGER 本�
 | progress | 診断（`nir1-material-diagnostics`、`set_measured_progress_handler`） | capacity の `install` と同じ | 同じ | 引数が `&mut` |
 | authorizer | renderer SQL の policy（上）、`ReadOnlyRun`（generation history の読み。`Drop` で解除） | policy の cleanup／`ReadOnlyRun::drop` | 同じ | `ReadOnlyRun` は `&mut Connection` を持ち、`Deref` で読みに貸す。drop の解除は同じ |
 | commit | capacity の `commit_transaction`（`CommitScope`。literal COMMIT の間だけ。`Drop` で外す） | `CommitScope`（`&mut Connection` を持つ） | 同じ | `scope.conn` 経由で COMMIT と解除を行う。期間は同じ |
-| update／rollback／wal／busy／trace | 本番では登録しない（`rg` で 0 件）。`update_hook` は `grimodex-node` の評価 harness の `CaseWorkspace::open` だけ | harness の接続の寿命 | `with_conn_mut` | 登録の API が `with_conn_mut` になっただけ |
+| update／rollback／busy（`busy_handler`）／preupdate | 本番では rusqlite で登録しない（`rg` で 0 件）。`update_hook` は `grimodex-node` の評価 harness の `CaseWorkspace::open` だけ。`busy_timeout` は `sqlite3_busy_timeout` の後に `busy_handler` の clientdata を `None` で消すだけ（entry が無ければ malloc しない）なので P3-1 の対象外 | harness の接続の寿命 | `with_conn_mut` | 登録の API が `with_conn_mut` になっただけ |
+| wal／trace_v2 | **本番でも登録している**が、rusqlite を通さない生の FFI：`background_checkpoint.rs`（`sqlite3_wal_hook`〔749・798行〕。自前の callback と引数）、診断 feature の `nir1_capacity_diagnostics.rs`（`sqlite3_trace_v2`〔608行〕と、open 時の meter の `sqlite3_progress_handler`）。2026-11-13 訂正：当初は「wal／trace は本番で 0 件」と書いたが誤り | それぞれの接続の寿命（診断の meter は `disable_progress_handler` が entry の有無にかかわらず外す） | 同じ | rusqlite 0.41 の clientdata を使わないので **0.41 の影響は無い**。P3-1 の dangling も起きない（entry を作らない） |
 
 ### 信頼境界
 
@@ -523,8 +524,9 @@ actor・防御・受信先・保存範囲・脅威モデルは変えない。こ
 
 | 試験・値 | 3.53.2 | 3.54.1 | 扱い |
 |---|---|---|---|
-| `fixed_graph_sql_budget_admits_600000_steps_and_refuses_600001`（`nir1_capacity.rs`。`QUERY_SQL_STEPS` 600,000 の「ちょうど」の workload） | 26,082 行＋padding 23 文で 600,000 steps | 同じ workload が **599,999** | 閾値は変えず、workload を 26,081 行＋padding 29 文（23×26,081＋4×29＋21＝600,000）に較正し直した（1 step 少ない原因が固定部分か padding かは切り分けていない推定。較正後の workload で 600,000 になり、N+1 で拒否する 2 つ目の表明は同じ）。 |
-| COMMIT の progress（新しい試験 `audited_sqlite_commit_program_and_callback_order`） | （監査の文書の記述） | `EXPLAIN COMMIT` は Init／AutoCommit／Halt／Goto（実行順は Init → Goto → AutoCommit）、cadence 1 の progress は 3 件、commit hook は 2 件目の後 | 前提どおり。過少課金の変化は無い |
+| `fixed_graph_sql_budget_admits_600000_steps_and_refuses_600001`（`nir1_capacity.rs`。`QUERY_SQL_STEPS` 600,000 の「ちょうど」の workload） | 26,082 行＋padding 23 文で 600,000 steps | 同じ workload が **599,999** | 閾値は変えず、workload を 26,081 行＋padding 29 文（23×26,081＋4×29＋21＝600,000）に較正し直した（1 step 少ない原因が固定部分か padding かは切り分けていない推定。較正後の workload で 600,000 になり、N+1 で拒否する 2 つ目の表明は同じ）。**過少課金ではない**（2026-11-13 の独立レビューへの回答）：課金は VM の opcode 単位（cadence 1 の progress は opcode ごとに 1 回）で、同じ workload が 1 step 少なくなる＝同じ SQL の program が 1 opcode 短くなったということ。監査の `sqlite3VdbeExec` の diff（413 行）に `OP_IfNotOpen` の本体の削除があり、codegen の差（3.54 が同形の文で opcode を 1 つ減らした）が候補だが、**どの opcode かは切り分けていない**。課金が減る向き（拒否が緩む向き）の変化ではなく、閾値の値は変えていない。上限ちょうどの workload の較正を取り直しただけで、各 statement の opcode 数の差が閾値の判定を緩めるわけではない（実際の SQL の steps は SQLite の program が決め、閾値は「その program を何 step まで許すか」のまま）。 |
+| COMMIT の progress（新しい試験 `audited_sqlite_commit_program_and_callback_order`） | （監査の文書の記述） | `EXPLAIN COMMIT` は Init／AutoCommit／Halt／Goto（実行順は Init → Goto → AutoCommit）、cadence 1 の progress は 3 件、commit hook は 2 件目の後 | 前提どおり。過少課金の変化は無い。**ただしこの試験は in-memory・FTS 無し・WAL 無し**で、監査の前提 (3)（FTS の `xSync`／`xCommit` の順序）の根拠は **3.53.2 と 3.54.1 の source の diff だけ**だった（2026-11-13 の独立レビュー）。FTS5 と WAL の形を足した（下の行） |
+| COMMIT の progress（FTS5＋WAL。新しい試験 `audited_commit_callback_order_holds_with_fts5_and_wal`、2026-11-13） | — | WAL の db で `fts5` の table に INSERT した transaction の COMMIT：commit hook の前に **83 件**（Init／Goto の 2 件＋FTS5 の `xSync` が内部の SQL を走らせて足す 81 件）、hook の後に**ちょうど 1 件**（合計 84 件） | `commit_transaction` が前提にする「hook は FTS の sync の後、最後の 1 件は hook の後」が、実際の FTS5 の write と WAL でも成り立つ。件数そのものは固定せず、`hook 時点 ≥ 2` と `合計 = hook 時点 + 1` を表明する |
 | registration の statement の `RePrepare`（`registration_statements`、`nir1_entity_relation::tests::registration_reads_each_revision_in_the_scratch_scope_and_checks_outside_it`。4 件） | 0 | 2〜3（`clear_bindings` による失効） | 判断 11 で 0 に戻した |
 | 表明のある VM steps の基準値・Q／S の高水位・capacity fixture の期待値（全件の lib 試験、`--all-features` の capacity／history の試験、`nir1-c-query-worker-ci.sh lifecycle` の実 worker 26 件） | — | 上の 1 件以外は変化なし（pass） | 表明のある値は不変 |
 | ignored の測定（`measure_*`、`cq_avail` の記録など、値を表明せず記録だけする試験） | — | **未再測定** | この lane では走らせていない。次に測る lane が 3.54.1 の値として取り直す |
@@ -540,7 +542,7 @@ actor・防御・受信先・保存範囲・脅威モデルは変えない。こ
 - Linux 以外の `cfg`（`windows`・`not(unix)`・`not(target_os = "linux")`）の block は、`with_conn`・transaction・hook・変わった公開関数を使うものが無いことを grep で確かめた。3 OS の hosted CI は走らせていない。
 - 未実行：`cargo audit`（網が要る。`cargo install cargo-audit` と advisory DB の取得）。`grimodex-node` の release の `.node` の build と Electron の journey。時間の測定（下）。
 
-### 時間の測定（この lane では実施していない。要る）
+### 時間の測定（計画。2026-11-12 時点では未実施。**その後に実施した**：registration の W は下の「時間の対照」「W の遅れの原因と対処」「W の遅れの残りの切り分け」と「独立レビューへの対応」の 2・4、`prepare_cached` の steps は 3）
 
 task の「時間の測定は不要」の例外（DB の書込み・読みの性能の gate に当たる変化が疑われる）に当たる変化を 2 つ見つけたので、`needs_timing = true`。値は実測する前に「影響なし」とは書かない。
 
@@ -630,3 +632,45 @@ C の再現（`c/` の amalgamation、同じ flag、lookaside 0、各文 7 回�
 各 run の p50 の範囲は、R4 と R16 では base と head が一部重なる（R4：base 299〜309、head 304〜310。R16：base 1217〜1243、head 1249〜1261）。R1022 と D2064 は重ならない（R1022：base 1220〜1237、head 1301〜1319。D2064：base 1021〜1050、head 1105〜1120）。
 
 **結論と残る問題**：R4／R16 の遅れは +4.4／+4.5% から +1.8／+2.2% になった（MALFORMED の書き直しと DUPLICATE の分）。R1022／D2064 の +7% は MALFORMED の書き直しでは動かず、**4〜5 ポイントは libsqlite3-sys 0.39 が `SQLITE_ENABLE_MEMORY_MANAGEMENT` を外したこと**に当たる見込み。戻すなら `LIBSQLITE3_FLAGS=-DSQLITE_ENABLE_MEMORY_MANAGEMENT`（repo の `.cargo/config.toml` の `[env]`、ほか CI・Electron の native の build の環境）だが、**この lane では適用していない**：build 設定と CI・release・native build に広く効くこと、仕組みを特定していないこと、実 worker で効くかを確かめていないことが理由で、別の判断（と実 worker での W の測定）に残す。W の絶対値は最大 R1022 で約 1.3 s で、30 s の START_TIMEOUT に対する余裕（23 倍以上）には影響しない。
+
+### 独立レビュー（Opus、read-only、範囲 `a067f7f7..fc5d276f`）への対応（2026-11-13〜14）
+
+P1 は 0 件。直したものと判断は次のとおり。
+
+1. **P3-1（メモリ安全。hook の登録の失敗で解放済みの closure を指す hook が残る）**：直した（`c59df9d1`、補足 `22770e03`）。
+   - `hook_registration` の wrapper（authorizer／progress／commit）を通す形にした。production の登録は、すべてこの wrapper を通す。
+   - 登録の前に、hook を入れない preset で clientdata の entry を先に作る。以後の登録は既存 entry の置換だけになり、malloc しない。
+   - 登録が Err のときは、同じ種類の hook を外してから返す。
+   - progress は、None で外さずに interval 0 の no-op にして、entry を残す。entry が無いとき（生の FFI で入れた診断の meter）は、生の `sqlite3_progress_handler(db, 0, None, null)` で外す。
+   - 試験：`tests/hook_registration_nomem.rs` が `sqlite3_hard_heap_limit64` で割当てを拒否し、次を確かめる。
+     - rusqlite 単体では、3 種とも Err の後に hook が残ること（前提）。
+     - wrapper では残らないこと。
+     - 生の FFI の handler も外れること。
+   - `hook_registration_sources_tests` は、production のコードが wrapper の外で hook を登録しないことを source で縛る。
+2. **P2-1（3.54 の reprepare-on-bind が steps を余分に課金する）**：測った（`f5795d10` の `reprepare_cost_tests`）。
+   - capacity scope の下で動く 2 文（`resolve_scene_body`、snapshot の run）は、unique key の lookup で planner を通らない。そのため reprepare は 0 step で、stat4 があってもなくても同じだった。
+   - 毎回作り直して約 11 step を払うのは `matching_field_paths` だけで、これは capacity の attempt の外（Application の contribution の reader）にある。
+   - **判断**：上限への影響は無いので、受け入れる。`prepare_cached` の使い方は変えない。
+3. **P2-2（残る時間の遅れ）**：
+   - MEMORY_MANAGEMENT の flag を戻した（`172e0ca7`、上の「W の遅れの残りの切り分け」の F3 の build と同じ設定）。
+   - その後の W は、base 比で次のとおり（in-process、quiet の run、各腕 3〜5）。
+     - R4：+0.9%
+     - R16：+1.4%
+     - R1022：+1.5%
+     - D2064：+3.3%
+   - **判断**：受け入れて merge する。理由は 3 つ。
+     - 遅れは最大 +3.3%（D2064 で約 34 ms）。
+     - registration の START_TIMEOUT 30 s に対して、in-process の W は最大約 1.3 s で、余裕が 23 倍以上ある。
+     - 残りは SQLite 3.54 への更新（セキュリティの修正）に伴うもので、取り除く手が見つかっていない。
+   - 実 worker（固定 allocator）での W は測っていない。
+4. **P3-2〜8**：
+   - `verify_coverage` は、statement を block に閉じて行ごとに `check_control` を挟む旧の形に戻した（先集めをやめた）。
+   - wal／trace_v2 の記述、`check_owned()` の説明、README と continuation の記述を、事実に合わせた。
+   - 600,000 steps の較正の 1 step の差は、opcode 単位の課金なので過少課金ではない。
+   - FTS5＋WAL の COMMIT の順の試験（`audited_commit_callback_order_holds_with_fts5_and_wal`）を足した。
+   - NULL の bind が、上書きされる値が整数 0／1 のときに失効させる点をコメントにした。
+5. **P3-9（commit の trailer）**：枝の commit の trailer を Opus 5.5 にそろえた（Sonnet 5.5 は 0 件）。
+
+`cargo audit`：
+- 例外を外した両方の lock で、RUSTSEC-2026-0459 は解消している（libsqlite3-sys 0.39.1）。
+- 別に出た RUSTSEC-2026-0538（quinn-udp）は、master への別の PR（#883）で直す。
