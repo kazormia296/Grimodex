@@ -53,7 +53,7 @@
     },
     {
       "path": "src-tauri/Cargo.lock",
-      "sha256": "80eec3453904500b23ab2753bf151dbca14badb220e76622b74167ae263c6e3b"
+      "sha256": "2f8b21207e7aa1d336f907c8e49e43296782fbd60144f3c16c4da0cb1db6309a"
     },
     {
       "path": "electron/native/grimodex-node/Cargo.toml",
@@ -61,7 +61,7 @@
     },
     {
       "path": "electron/native/grimodex-node/Cargo.lock",
-      "sha256": "0ff3ea1a7dbf148de01c06c83515eeceab5008630a25a0f030d9c5e12525576c"
+      "sha256": "cd580c659942138bdf9c3c3eefcd281f97aa7ee82f134b37b65f49ef863ec956"
     },
     {
       "path": "electron/native/grimodex-node/package.json",
