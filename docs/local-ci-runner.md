@@ -126,10 +126,11 @@ workflow attempt: re-run all jobs (or dispatch again), never only failed ones.
 A local `pnpm ci:local:quick` is unchanged in effect: the three tasks form a
 chain (`after`), so one process runs the parts one after another, and
 `pnpm ci:local:verify -- quick` needs no part reports. Only hosted Quick uses
-`--part` and `--aggregate`. Quick (not Full) also restores a cargo cache per part
-with `Swatinem/rust-cache` and sets `CARGO_PROFILE_DEV_DEBUG=0` /
-`CARGO_PROFILE_TEST_DEBUG=0`, as the Quality job does; Full's setup assessment
-must still run before any cache is restored.
+`--part` and `--aggregate`. Quick sets `CARGO_PROFILE_DEV_DEBUG=0` /
+`CARGO_PROFILE_TEST_DEBUG=0`, as the Quality job does. It does not use
+`Swatinem/rust-cache`: canonical Quick is dispatched only on PR branches, whose
+cache scope never restores a master cache, while each branch would save about
+3 GB and evict master's caches.
 
 ### Manual GitHub connection (source preparation)
 

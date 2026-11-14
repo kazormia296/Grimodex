@@ -5,7 +5,7 @@
   "sources": [
     {
       "path": ".github/workflows/canonical-ci.yml",
-      "sha256": "b114db1684242680518c520ad6fba5212aff716e369e6f504e64b81c50bcb2fa"
+      "sha256": "46dc0fda6ce9ff77ee4cf1535cbebf80de5ca56e26f9568cf55acfdd075db953"
     },
     {
       "path": "scripts/local-ci-registry.json",

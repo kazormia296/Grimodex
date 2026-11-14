@@ -1624,8 +1624,44 @@ function runCommand(command, args, cwd, { routeStdoutToStderr = false } = {}) {
   });
 }
 
+/**
+ * The suite definitions as they actually run for `selection`: a docs-only
+ * change narrows every suite's commands (docsOnlyCommands). The single source
+ * for both runSelectedSuites and the Quick command plan, so part assignment,
+ * `stepIndex` and the coverage check all index the narrowed commands.
+ */
+export function effectiveSuiteDefinitions(selection, definitions) {
+  if (!selection.docsOnly) return definitions;
+  const effective = {};
+  for (const suiteId of selection.suiteIds) {
+    const definition = definitions[suiteId];
+    if (definition) {
+      effective[suiteId] = {
+        ...definition,
+        commands: docsOnlyCommands(definition.commands),
+      };
+    }
+  }
+  return effective;
+}
+
+/** Every command that runs for `selection`, with the Quick part that runs it. */
+export function planSelectedCommands(
+  selection,
+  definitions = LIGHT_SUITE_DEFINITIONS,
+) {
+  return planImpactCommands(
+    selection,
+    effectiveSuiteDefinitions(selection, definitions),
+  );
+}
+
 // `part` ({ index, count }, 1-based) runs only that part of the selected
-// commands (hosted Quick split); omitted, every selected command runs.
+// commands (hosted Quick split); omitted, every selected command runs. In part
+// mode a suite with no command in this part is left out of the report: the
+// aggregate coverage check compares reports with the command plan, which lists
+// commands only, so a docs-only suite with nothing to run is not reported (it
+// would otherwise be a "skipped" entry that no part is assigned).
 export async function runSelectedSuites(
   selection,
   {
@@ -1638,15 +1674,16 @@ export async function runSelectedSuites(
 ) {
   const results = [];
   let previousFailure = null;
+  const effective = effectiveSuiteDefinitions(selection, definitions);
   const assigned = part
     ? new Set(
-        partitionImpactCommands(selection, definitions, part.count)[
+        partitionImpactCommands(selection, effective, part.count)[
           part.index - 1
         ].map(impactCommandKey),
       )
     : null;
   for (const suiteId of selection.suiteIds) {
-    const fullDefinition = definitions[suiteId];
+    const fullDefinition = effective[suiteId];
     if (!fullDefinition) throw new Error(`No static command for suite ${suiteId}`);
     const definition = assigned
       ? {
@@ -1672,9 +1709,7 @@ export async function runSelectedSuites(
       });
       continue;
     }
-    const commands = selection.docsOnly
-      ? docsOnlyCommands(definition.commands)
-      : definition.commands;
+    const commands = definition.commands;
     if (commands.length === 0) {
       results.push({
         suiteId,
@@ -1830,7 +1865,7 @@ async function main() {
     // Every selected command with the Quick part that runs it (the aggregate
     // job recomputes this independently of the parts).
     ...(args.commandPlan
-      ? { commandPlan: planImpactCommands(selection, LIGHT_SUITE_DEFINITIONS) }
+      ? { commandPlan: planSelectedCommands(selection) }
       : {}),
     execution,
     heavy: deferredHeavy(selection, heavyEvaluations),

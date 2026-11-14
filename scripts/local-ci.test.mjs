@@ -5919,6 +5919,43 @@ test("split Quick coverage fails on any omitted, duplicated, foreign or failed c
   reject(() => {}, /ran 6 commands but the selection has 5|did not run exactly/u, { commandPlan: commandPlan.slice(1) });
 });
 
+test("split Quick passes coverage for docs-only, Rust, empty and mixed changes and the parts sum to the unsplit run", async () => {
+  const map = impactMap.parseImpactMap(await fs.promises.readFile(path.join(repoRoot, "evals/impact-map.yaml"), "utf8"));
+  const runner = async () => ({ status: "passed", exitCode: 0, durationMs: 1 });
+  const changes = {
+    "docs only": ["docs/local-ci-runner.md", "docs/plans/x.md"],
+    "docs only (single)": ["docs/a.md"],
+    rust: ["src-tauri/crates/grimodex-db/src/lib.rs"],
+    empty: [],
+    "docs and src": ["docs/a.md", "src/lib/foo.ts"],
+  };
+  for (const [name, paths] of Object.entries(changes)) {
+    const selection = impactMap.selectImpact(map, paths);
+    // What the unsplit selection runs: the narrowed commands of each non-skipped suite.
+    const unsplit = (await impactMap.runSelectedSuites(selection, { runner }))
+      .flatMap(({ suiteId, steps }) => steps.map(({ command }) => `${suiteId}:${JSON.stringify(command)}`));
+    const reports = new Map();
+    const split = [];
+    for (const index of [1, 2, 3]) {
+      const part = { index, count: 3 };
+      const execution = await impactMap.runSelectedSuites(selection, { part, runner });
+      assert.ok(execution.every(({ status, commands }) => status === "passed" && commands.length > 0), `${name}: part ${index} reports only suites that ran`);
+      reports.set(String(index), { impact: quickParts.summarizeQuickPartImpact({ selection, execution, part }) });
+      split.push(...execution.flatMap(({ suiteId, steps }) => steps.map(({ command }) => `${suiteId}:${JSON.stringify(command)}`)));
+    }
+    assert.equal(selection.docsOnly, name.startsWith("docs only"), name);
+    const commandPlan = impactMap.planSelectedCommands(selection);
+    assert.equal(commandPlan.length, unsplit.length, `${name}: the plan lists exactly the commands that run`);
+    assert.deepEqual([...split].sort(), [...unsplit].sort(), `${name}: parts sum to the unsplit run`);
+    assert.equal(new Set(split).size, split.length, `${name}: no command runs twice`);
+    assert.deepEqual(quickParts.checkQuickPartCoverage({ reports, selection, commandPlan }), { selectedCommands: unsplit.length }, name);
+  }
+  // The docs-only plan indexes the narrowed commands, not the 80 unnarrowed ones.
+  const docs = impactMap.selectImpact(map, ["docs/a.md"]);
+  assert.ok(impactMap.planSelectedCommands(docs).length < impactParts.planImpactCommands(docs, impactMap.LIGHT_SUITE_DEFINITIONS).length);
+  assert.ok(impactMap.planSelectedCommands(docs).every(({ command }) => command[0] !== "cargo"));
+});
+
 test("split Quick aggregate binds every part to one candidate, plan and run in plan order", async () => {
   const plan = await splitQuickPlan();
   const { candidate, makeReports, planDescriptor, runId } = quickPartFixture(plan);
@@ -5995,11 +6032,9 @@ test("the hosted Quick runs three part jobs and a quick-aggregate that keeps one
   assert.match(part.run, /pnpm ci:local:quick -- --part "\$QUICK_PART" --base "\$candidate_base" --head "\$candidate_head" --max-parallel-tasks "\$MAX_PARALLEL_TASKS"/u);
   assert.doesNotMatch(part.run, /ci:local:verify/u, "a Quick part leaves assembly and verify to quick-aggregate");
   assert.match(part.run, /export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0/u);
-  // rust-cache is Quick-only so Full's setup assessment stays before any cache.
-  const cache = canonical.steps.find(({ uses }) => uses?.startsWith("Swatinem/rust-cache@"));
-  assert.equal(cache.if, "inputs.profile == 'quick'");
-  assert.match(cache.with.workspaces, /matrix\.part == '3' && 'electron\/native\/grimodex-node' \|\| 'src-tauri'/u);
-  assert.ok(canonical.steps.indexOf(cache) > canonical.steps.findIndex(({ id }) => id === "full_setup"));
+  // canonical Quick runs only on PR branches, so a cache is never restored from
+  // master and each branch would save ~3 GB; the job uses no rust-cache.
+  assert.equal(canonical.steps.some(({ uses }) => uses?.startsWith("Swatinem/rust-cache@")), false);
   const uploads = canonical.steps.filter(({ uses }) => uses?.startsWith("actions/upload-artifact@"));
   const names = uploads.map(({ with: { name } }) => name);
   assert.ok(names.some((name) => /canonical-quick-part-\$\{\{ matrix\.part \}\}-/u.test(name)));

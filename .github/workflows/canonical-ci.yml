@@ -131,14 +131,6 @@ jobs:
           toolchain: stable
           components: clippy
 
-      # Quick only: Full must assess its setup before any cache is restored.
-      # Part 3 builds the N-API crate (own target); parts 1 and 2 build src-tauri.
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-        if: inputs.profile == 'quick'
-        with:
-          workspaces: ${{ matrix.part == '3' && 'electron/native/grimodex-node' || 'src-tauri' }}
-          key: quick-part-${{ matrix.part }}
-
       - name: Canonical system dependencies
         if: inputs.profile != 'contracts'
         env:

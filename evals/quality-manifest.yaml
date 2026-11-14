@@ -1917,6 +1917,8 @@ requirements:
       - docs/local-ci-runner.md
       - scripts/nir1-c-query-worker-ci.sh
       - scripts/local-ci.mjs
+      - scripts/local-ci-impact-parts.mjs
+      - scripts/local-ci-quick-parts.mjs
       - scripts/local-ci-registry.json
       - scripts/local-ci-full-workload-allocation.json
       - scripts/local-ci-runner.mjs
