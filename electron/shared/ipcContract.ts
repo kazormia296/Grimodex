@@ -1173,6 +1173,10 @@ export interface NapiBackendLike {
     workspaceBinding: unknown,
   ): Promise<string>;
   narrativeExtractionGetRun(payload: unknown): Promise<string>;
+  narrativeExtractionResolveCodexCatalogRevision?(
+    payload: unknown,
+    workspaceBinding: unknown,
+  ): Promise<string>;
   narrativeExtractionListResumableRuns(payload: unknown): Promise<string>;
   narrativeExtractionIsRunResumableForReview?(
     payload: unknown,
@@ -1572,6 +1576,36 @@ function requireNarrativeExtractionBoundMutation(
     requirePresent(args, "payload", command),
     requireNarrativeExtractionWorkspaceBinding(args, command),
   ];
+}
+
+/**
+ * `narrative_extraction_resolve_codex_catalog_revision` (DR-CSX-1): read-only.
+ * The payload names only the Project; Native derives the Source key and the
+ * token itself, so the renderer cannot ask for any other Source.
+ */
+function requireResolveCodexCatalogRevisionArgs(
+  args: CommandArgs,
+): readonly [CommandArgs, CommandArgs] {
+  const command = "narrative_extraction_resolve_codex_catalog_revision";
+  const [, workspaceBinding] = requireNarrativeExtractionBoundMutation(
+    args,
+    command,
+  );
+  const payload = requireRecord(args, "payload", command);
+  for (const key of Object.keys(payload)) {
+    if (key !== "projectId") {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  const projectId = requireNonEmptyString(payload, "projectId", command);
+  if (projectId.trim() !== projectId) {
+    throw new Error(
+      `invalid args \`projectId\` for command \`${command}\`: expected a non-empty exact string`,
+    );
+  }
+  return [{ projectId }, workspaceBinding];
 }
 
 function requireNarrativeExtractionCaptureWorkspacePath(
@@ -11089,6 +11123,19 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         );
       return parseWire(
         await b.narrativeExtractionCreateRun(payload, workspaceBinding),
+      );
+    },
+  },
+  narrative_extraction_resolve_codex_catalog_revision: {
+    run: async (b, a) => {
+      const [payload, workspaceBinding] =
+        requireResolveCodexCatalogRevisionArgs(a);
+      return parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeExtractionResolveCodexCatalogRevision,
+          "narrativeExtractionResolveCodexCatalogRevision",
+        )(payload, workspaceBinding),
       );
     },
   },

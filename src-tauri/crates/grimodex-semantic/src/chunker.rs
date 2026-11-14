@@ -26,9 +26,14 @@ use anyhow::Result;
 use serde_json::Value;
 
 /// 現行チャンク化ルールのバージョン識別子。
-/// 分類・スプリッタ・パッキングのいずれかを変更したらインクリメントする。
-/// DB の `scene_chunks.chunker_version` と突き合わせて stale 判定する。
-pub const CHUNKER_VERSION: &str = "semantic-prose-chunker-v1";
+/// 段落抽出・分類・スプリッタ・パッキングのいずれかを変更したらインクリメントする。
+/// DB の `scene_chunks.chunker_version` / `codex_chunks.chunker_version` と突き合わせて
+/// stale 判定し、自動の back-index が作り直す。
+///
+/// - v1: inline は `text` と `hardBreak` だけを読んでいた (ruby の親文字が本文から消えた)。
+/// - v2: inline の atom (`ruby` / `mention` / `image`) と CR を TS の canonical
+///   (`gdx-canonical-text/1`) と同じ規則で読む。
+pub const CHUNKER_VERSION: &str = "semantic-prose-chunker-v2";
 
 #[derive(Debug, Clone, Copy)]
 pub struct ChunkerConfig {
@@ -118,15 +123,40 @@ fn collect_paragraphs(node: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// inline node を本文へ足す。規則は TS の canonical
+/// (`proseMirrorSerializer.ts` の `serializeTextBlock`) と Rust の
+/// `change_feed::append_canonical_inline_text` に揃える:
+/// `text` は CR を LF に、`hardBreak` は `\n`、`ruby` は親文字 (`attrs.base`) だけ
+/// (読み `annotation` は本文に入れない)、`mention` は `@` + `label` (無ければ `id`)、
+/// `image` は U+FFFC。block の扱い (paragraph だけを本文とし、sceneBeat・codeBlock・
+/// heading 等を拾わない) は canonical と違い、意味検索の本文の定義として維持する。
 fn extract_inline_text(node: &Value, buf: &mut String) {
     let node_type = node.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let attr = |name: &str| {
+        node.get("attrs")
+            .and_then(|attrs| attrs.get(name))
+            .and_then(|v| v.as_str())
+    };
     match node_type {
         "text" => {
             if let Some(t) = node.get("text").and_then(|v| v.as_str()) {
-                buf.push_str(t);
+                push_normalized(buf, t);
             }
         }
         "hardBreak" => buf.push('\n'),
+        "ruby" => {
+            if let Some(base) = attr("base") {
+                push_normalized(buf, base);
+            }
+        }
+        "mention" => {
+            buf.push('@');
+            push_normalized(
+                buf,
+                attr("label").or_else(|| attr("id")).unwrap_or_default(),
+            );
+        }
+        "image" => buf.push('\u{fffc}'),
         _ => {
             // mark wrapper や未知 inline は中身を再帰
             if let Some(content) = node.get("content").and_then(|v| v.as_array()) {
@@ -134,6 +164,21 @@ fn extract_inline_text(node: &Value, buf: &mut String) {
                     extract_inline_text(child, buf);
                 }
             }
+        }
+    }
+}
+
+/// CRLF と単独の CR を LF にして足す (canonical の `normalize_canonical_fragment` と同じ)。
+fn push_normalized(buf: &mut String, value: &str) {
+    let mut chars = value.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            buf.push('\n');
+        } else {
+            buf.push(c);
         }
     }
 }
@@ -816,5 +861,104 @@ mod tests {
         // 内容としては「「行くぞ」\n\nと彼は言った。」になる (空段落の \n を保持)
         assert!(c.text.contains("「行くぞ」"));
         assert!(c.text.contains("と彼は言った。"));
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // inline の atom (ruby / mention / image) と CR — TS の canonical と揃える
+    // ──────────────────────────────────────────────────────────
+
+    fn ruby_doc() -> Value {
+        json!({
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [
+                    {"type": "ruby", "attrs": {"base": "灯里", "annotation": "あかり"}},
+                    {"type": "text", "text": "は"},
+                    {"type": "ruby", "attrs": {"base": "星環", "annotation": "せいかん"}},
+                    {"type": "text", "text": "を見上げた。"}
+                ]}
+            ]
+        })
+    }
+
+    #[test]
+    fn ruby_contributes_base_but_not_annotation() {
+        let paras = extract_paragraph_texts(&ruby_doc());
+        assert_eq!(paras, vec!["灯里は星環を見上げた。".to_string()]);
+    }
+
+    #[test]
+    fn chunk_scene_keeps_ruby_base_in_chunk_text() {
+        let chunks = chunk_scene(&ruby_doc(), &ChunkerConfig::default()).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].text.contains("灯里"), "{}", chunks[0].text);
+        assert!(chunks[0].text.contains("星環"), "{}", chunks[0].text);
+        assert!(!chunks[0].text.contains("あかり"), "{}", chunks[0].text);
+    }
+
+    #[test]
+    fn inline_atoms_follow_the_canonical_rules() {
+        let doc = json!({
+            "type": "doc",
+            "content": [{"type": "paragraph", "content": [
+                {"type": "text", "text": "a\r\nb\rc"},
+                {"type": "hardBreak"},
+                {"type": "mention", "attrs": {"label": "灯里", "id": "e1"}},
+                {"type": "mention", "attrs": {"id": "e2"}},
+                {"type": "image", "attrs": {"src": "x.png"}},
+                {"type": "ruby", "attrs": {"annotation": "よみ"}}
+            ]}]
+        });
+        assert_eq!(
+            extract_paragraph_texts(&doc),
+            vec!["a\nb\nc\n@灯里@e2\u{fffc}".to_string()]
+        );
+    }
+
+    /// TS の canonical (`gdx-canonical-text/1`) の共有 golden と、意味検索の本文
+    /// (`extract_paragraph_texts` を `\n` で結んだもの) が一致すること。
+    /// 意味検索の本文は paragraph だけなので、paragraph 以外の block を本文として
+    /// 持つ fixture だけを理由付きで外す (inline の規則の差は外さない)。
+    #[test]
+    fn paragraph_text_matches_the_shared_canonical_golden() {
+        #[derive(serde::Deserialize)]
+        struct GoldenFixture {
+            id: String,
+            document: Value,
+            #[serde(rename = "canonicalText")]
+            canonical_text: String,
+        }
+        // block の定義の違い (canonical は空の block atom・sceneBeat・codeBlock も
+        // 1 block と数える。意味検索は paragraph だけを本文にする)。
+        const BLOCK_LEVEL_DIFFERENCES: &[&str] =
+            &["empty-block-atoms", "scene-beat", "blockquote-and-code"];
+
+        let fixtures: Vec<GoldenFixture> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../evals/fixtures/narrative/canonical-text-v1.json"
+        )))
+        .expect("parse canonical text golden fixtures");
+        let mut compared = 0;
+        for fixture in &fixtures {
+            if BLOCK_LEVEL_DIFFERENCES.contains(&fixture.id.as_str()) {
+                continue;
+            }
+            let actual = extract_paragraph_texts(&fixture.document).join("\n");
+            assert_eq!(actual, fixture.canonical_text, "fixture {}", fixture.id);
+            compared += 1;
+        }
+        for id in [
+            "ruby",
+            "mention",
+            "inline-image",
+            "hard-break",
+            "cr-and-crlf",
+        ] {
+            assert!(
+                fixtures.iter().any(|f| f.id == id),
+                "golden fixture {id} must stay covered"
+            );
+        }
+        assert_eq!(compared, fixtures.len() - BLOCK_LEVEL_DIFFERENCES.len());
     }
 }

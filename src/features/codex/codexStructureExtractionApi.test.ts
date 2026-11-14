@@ -27,7 +27,13 @@ const captureWorkspaceBindingMock = vi.hoisted(() => vi.fn());
 const buildSnapshotMock = vi.hoisted(() => vi.fn());
 const runPrepassMock = vi.hoisted(() => vi.fn());
 const getRunReviewBundleMock = vi.hoisted(() => vi.fn());
+const captureCodexCatalogRevisionMock = vi.hoisted(() => vi.fn());
+const NATIVE_CODEX_CATALOG_TOKEN =
+  "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 
+vi.mock("./codexCatalogRevision", () => ({
+  captureCodexCatalogRevision: captureCodexCatalogRevisionMock,
+}));
 vi.mock("@/application/narrative-extraction/runRepository", () => ({
   createRun: createRunMock,
   getRun: getRunMock,
@@ -241,6 +247,14 @@ describe("startCodexStructureExtraction product safety", () => {
       generation: 1,
       authorityInstanceId: "1",
     });
+    captureCodexCatalogRevisionMock.mockReset();
+    captureCodexCatalogRevisionMock.mockImplementation(
+      async (input: { projectId: string }) => ({
+        sourceKind: "codex-catalog",
+        sourceKey: `project:codex-catalog:${input.projectId}`,
+        revisionToken: NATIVE_CODEX_CATALOG_TOKEN,
+      }),
+    );
     prepareApplyMock.mockReset();
     appendDecisionMock.mockReset();
     appendHumanDecisionMock.mockReset();
@@ -464,6 +478,25 @@ describe("startCodexStructureExtraction product safety", () => {
     expect(saveProposalSetMock).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: "p1" }),
       workspaceBinding,
+    );
+    // DR-CSX-1: the codex-catalog Source token is the one Native returned.
+    expect(captureCodexCatalogRevisionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "p1", binding: workspaceBinding }),
+    );
+    expect(createRunMock).toHaveBeenCalledWith(
+      expect.objectContaining({ catalogDigest: NATIVE_CODEX_CATALOG_TOKEN }),
+      workspaceBinding,
+    );
+    expect(buildNativeReconciliationEnvelopeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceBasis: expect.arrayContaining([
+          {
+            sourceKind: "codex-catalog",
+            sourceKey: "project:codex-catalog:p1",
+            revisionToken: NATIVE_CODEX_CATALOG_TOKEN,
+          },
+        ]),
+      }),
     );
     expect(projection.runId).toBe("native-run-1");
     expect(projection.proposalSetId).toBe("native-ps-1");

@@ -693,6 +693,28 @@ export async function narrativeExtractionCreateRun(
   });
 }
 
+export interface CodexCatalogRevision {
+  readonly sourceKind: "codex-catalog";
+  readonly sourceKey: string;
+  readonly revisionToken: string;
+}
+
+/**
+ * The Native revision token of the Project's Codex catalog Source
+ * (`project:codex-catalog:<projectId>`), computed by the resolver that checks
+ * a ReadSet on save and Apply (DR-CSX-1). Renderer code must not derive it.
+ */
+export async function narrativeExtractionResolveCodexCatalogRevision(
+  payload: { readonly projectId: string },
+  binding: NarrativeExtractionWorkspaceBinding,
+): Promise<CodexCatalogRevision> {
+  const workspaceBinding = assertNarrativeExtractionWorkspaceBinding(binding);
+  return invoke<CodexCatalogRevision>(
+    "narrative_extraction_resolve_codex_catalog_revision",
+    { payload: { projectId: payload.projectId }, workspaceBinding },
+  );
+}
+
 export async function narrativeExtractionGetRun(
   payload: RunRefPayload,
 ): Promise<NarrativeExtractionRunProjection> {

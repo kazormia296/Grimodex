@@ -15496,6 +15496,30 @@ impl Backend {
         .await
     }
 
+    /// Read-only: the Native `codex-catalog` Source revision token, pinned to
+    /// the captured extraction workspace authority (DR-CSX-1).
+    #[napi]
+    pub async fn narrative_extraction_resolve_codex_catalog_revision(
+        &self,
+        payload: serde_json::Value,
+        workspace_binding: serde_json::Value,
+    ) -> Result<String> {
+        narrative_extraction_bound_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            workspace_binding,
+            |db, dto| {
+                Ok(serde_json::to_value(
+                    narrative_extraction::narrative_extraction_resolve_codex_catalog_revision(
+                        db, dto,
+                    )?,
+                )?)
+            },
+        )
+        .await
+    }
+
     #[napi]
     pub async fn narrative_extraction_get_run(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
