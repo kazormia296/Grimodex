@@ -26,6 +26,8 @@ overrides:
   "prosemirror-transform@1.12.0": 1.12.1
   "postcss>nanoid": 3.3.18
   tar: 7.5.21
+  "minimatch@9.0.9": 11.0.1
+  "minimatch@10.2.5": 11.0.1
 
 patchedDependencies:
   "@paper-design/shaders@0.0.77": patches/@paper-design__shaders@0.0.77.patch
