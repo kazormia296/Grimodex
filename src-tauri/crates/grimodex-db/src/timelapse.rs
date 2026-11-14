@@ -1878,7 +1878,7 @@ mod tests {
         .expect("seed later rebaselines");
         let change_event_reads = Arc::new(AtomicUsize::new(0));
         let reads_for_hook = Arc::clone(&change_event_reads);
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(Some(move |context: AuthContext<'_>| {
                 if matches!(
                     context.action,
@@ -1902,7 +1902,7 @@ mod tests {
             &entity_ids,
             2,
         );
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
             Ok(())
         })
@@ -2206,7 +2206,7 @@ mod tests {
 
         let source_reads = Arc::new(AtomicUsize::new(0));
         let reads_for_hook = Arc::clone(&source_reads);
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(Some(move |context: AuthContext<'_>| {
                 if matches!(
                     context.action,

@@ -353,7 +353,7 @@ fn null_declaration_columns(conn: &Connection, project_id: &str, scene_id: &str)
 /// reads the cells, so a half-set or unknown-version row is cleared like any
 /// other. Returns the number of rows cleared.
 pub fn clear_all_scene_body_declarations_for_staged_restore(db: &crate::Database) -> Result<usize> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         super::task_leases::with_immediate_transaction(conn, |conn| {
             let rows = {
                 let mut statement = conn.prepare(

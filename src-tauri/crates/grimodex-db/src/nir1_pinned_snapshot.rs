@@ -148,16 +148,28 @@ const fn sql_only() -> bool {
 /// SQLite has not compared the snapshot's schema cookie with the connection's
 /// schema cache. Where `conn` holds no read snapshot the scope is inert, and it
 /// hides the enclosing scope's snapshot too, which `conn` no longer holds.
+#[cfg(test)]
 pub(crate) fn with_pinned_snapshot<T>(conn: &Connection, operation: impl FnOnce() -> T) -> T {
-    struct Restore(Option<Pin>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            PINNED.set(self.0);
-        }
-    }
-    let _restore = Restore(PINNED.get());
-    PINNED.set(current_pin(conn));
+    let _scope = pinned_snapshot_scope(conn);
     operation()
+}
+
+/// The scope of [`with_pinned_snapshot`] as a guard, for a caller that needs
+/// `&mut Connection` while the scope is open (rusqlite 0.41 hooks take it, DR-DBC-4).
+/// The guard holds the pin it read from `conn`, not `conn` itself, so the
+/// connection stays usable; the scope ends when the guard drops, also on unwind.
+pub(crate) fn pinned_snapshot_scope(conn: &Connection) -> PinnedSnapshotScope {
+    let restore = PinnedSnapshotScope(PINNED.get());
+    PINNED.set(current_pin(conn));
+    restore
+}
+
+pub(crate) struct PinnedSnapshotScope(Option<Pin>);
+
+impl Drop for PinnedSnapshotScope {
+    fn drop(&mut self) {
+        PINNED.set(self.0);
+    }
 }
 
 /// Whether `table` is a table of the main schema, as
@@ -256,7 +268,7 @@ mod tests {
 
     /// VM steps `operation` spends on `conn`, counted per instruction like the
     /// Graph budget.
-    fn steps_of<T>(conn: &Connection, operation: impl FnOnce() -> T) -> (T, u64) {
+    fn steps_of<T>(conn: &mut Connection, operation: impl FnOnce(&Connection) -> T) -> (T, u64) {
         let steps = Arc::new(AtomicU64::new(0));
         let counter = Arc::clone(&steps);
         crate::set_sqlite_progress_handler(
@@ -268,7 +280,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let value = operation();
+        let value = operation(conn);
         crate::set_sqlite_progress_handler(conn, 0, None::<fn() -> bool>).unwrap();
         (value, steps.load(Ordering::Relaxed))
     }
@@ -283,15 +295,16 @@ mod tests {
 
     #[test]
     fn pinned_snapshot_answers_like_sqlite_master_without_vm_steps() {
-        let conn = schema_connection();
+        let mut conn = schema_connection();
         pin_transaction(&conn);
         // EXISTS stops at the first match, so a missing name shows the walk.
-        let (_, sql_steps) = steps_of(&conn, || sql_answer(&conn, "missing_table"));
+        let (_, sql_steps) = steps_of(&mut conn, |conn| sql_answer(conn, "missing_table"));
         assert!(
             sql_steps > 100,
             "the SQL check walks the schema: {sql_steps}"
         );
-        with_pinned_snapshot(&conn, || {
+        {
+            let _pinned = pinned_snapshot_scope(&conn);
             for (table, expected) in [
                 ("present_table", true),
                 ("padding_17", true),
@@ -304,11 +317,11 @@ mod tests {
                 ("", false),
             ] {
                 assert_eq!(sql_answer(&conn, table), expected, "{table}");
-                let (answer, steps) = steps_of(&conn, || table_exists(&conn, table));
+                let (answer, steps) = steps_of(&mut conn, |conn| table_exists(conn, table));
                 assert_eq!(answer.unwrap(), Some(expected), "{table}");
                 assert_eq!(steps, 0, "{table} must not run a statement");
             }
-        });
+        }
     }
 
     #[test]

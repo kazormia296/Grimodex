@@ -98,9 +98,9 @@ fn publish_graph_index(authority: &WorkspaceAuthority) -> Result<()> {
     let runtime = authority.nir_chronicle_index_runtime();
     let snapshot = authority
         .with_read_transaction(|conn| prepare_graph_index_build(conn, runtime, PROJECT))?;
-    authority.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        publish_nir1_entity_relation_index_in_tx(&tx, runtime, snapshot)?;
+    authority.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        publish_nir1_entity_relation_index_in_tx(&mut tx, runtime, snapshot)?;
         tx.commit()?;
         Ok(())
     })
@@ -522,7 +522,7 @@ fn measure(
                 }
                 Cap::Uncapped => {
                     let authority = Arc::clone(&reader.authority);
-                    authority.db().with_conn(|conn| {
+                    authority.db().with_conn_mut(|conn| {
                         reader.query_with_deadline_observed(
                             conn,
                             request,
@@ -772,7 +772,7 @@ fn query_steps_stay_far_below_the_budget_and_grow_linearly() -> Result<()> {
 
 /// Reads of the schema table the Graph query must not make, and the callers
 /// outside it keep making.
-pub(super) fn schema_reads(conn: &Connection) -> Result<Arc<AtomicUsize>> {
+pub(super) fn schema_reads(conn: &mut Connection) -> Result<Arc<AtomicUsize>> {
     let reads = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&reads);
     conn.authorizer(Some(move |context: AuthContext<'_>| {
@@ -817,7 +817,7 @@ fn table_presence_is_answered_from_the_schema_cache_only_inside_the_pinned_scope
 
     // The ordinary reader's own connection.
     let mut reader = fixture.registered_reader()?;
-    let ReaderConnection::Owned(conn) = &reader.connection else {
+    let ReaderConnection::Owned(conn) = &mut reader.connection else {
         panic!("an ordinary reader owns its connection");
     };
     let reads = schema_reads(conn)?;
@@ -849,7 +849,7 @@ fn table_presence_is_answered_from_the_schema_cache_only_inside_the_pinned_scope
     // The worker's reader over the authority connection, under the
     // maintenance owner.
     let mut worker = fixture.worker_reader()?;
-    let reads = fixture.authority.db().with_conn(schema_reads)?;
+    let reads = fixture.authority.db().with_conn_mut(schema_reads)?;
     reads.store(0, Ordering::Relaxed);
     let response = worker.query_for_worker_with_maintenance_deadline(&request, DEADLINE)?;
     assert_eq!(response.status, "available", "{:?}", response.reason);
@@ -864,7 +864,10 @@ fn table_presence_is_answered_from_the_schema_cache_only_inside_the_pinned_scope
 
 /// VM steps `operation` spends on `conn`, counted per instruction like the
 /// Graph budget.
-fn count_steps<T>(conn: &Connection, operation: impl FnOnce() -> T) -> Result<(T, u64)> {
+fn count_steps<T>(
+    conn: &mut Connection,
+    operation: impl FnOnce(&mut Connection) -> T,
+) -> Result<(T, u64)> {
     let steps = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let counter = Arc::clone(&steps);
     crate::set_sqlite_progress_handler(
@@ -875,7 +878,7 @@ fn count_steps<T>(conn: &Connection, operation: impl FnOnce() -> T) -> Result<(T
             false
         }),
     )?;
-    let value = operation();
+    let value = operation(conn);
     crate::set_sqlite_progress_handler(conn, 0, None::<fn() -> bool>)?;
     Ok((value, steps.load(Ordering::Relaxed)))
 }
@@ -895,14 +898,14 @@ fn every_presence_check_site_shortcuts_in_a_pinned_snapshot_and_answers_alike() 
         })?;
         let revision = &fixture.revision;
 
-        let (sql, outside_steps) = count_steps(conn, || read_sites(conn, revision))?;
+        let (sql, outside_steps) = count_steps(conn, |conn| read_sites(conn, revision))?;
         let sql = sql?;
         let sql_reads = reads.swap(0, Ordering::Relaxed);
         assert!(
             sql_reads >= 5,
             "scene scope 2 + declaration set 3 + marker 1: {sql_reads}"
         );
-        let (_, legacy_steps) = count_steps(conn, || {
+        let (_, legacy_steps) = count_steps(conn, |conn| {
             nir1_pinned_snapshot::with_sql_checks(|| read_sites(conn, revision))
         })?;
         assert_eq!(
@@ -911,7 +914,7 @@ fn every_presence_check_site_shortcuts_in_a_pinned_snapshot_and_answers_alike() 
         );
         reads.store(0, Ordering::Relaxed);
 
-        let (pinned, pinned_steps) = count_steps(conn, || {
+        let (pinned, pinned_steps) = count_steps(conn, |conn| {
             with_pinned_snapshot(conn, || read_sites(conn, revision))
         })?;
         let pinned = pinned?;
@@ -941,13 +944,15 @@ fn seed_evaluation_steps(fixture: &Fixture, pinned: bool) -> Result<u64> {
         conn.query_row("SELECT count(*) FROM codex_entries", [], |row| {
             row.get::<_, i64>(0)
         })?;
-        let evaluate =
-            || evaluate_nir1_entity_relation_disclosure(conn, PROJECT, &fixture.revision, "nir1");
-        let (read, steps) = count_steps(conn, || {
+        let evaluate = |conn: &mut Connection| {
+            evaluate_nir1_entity_relation_disclosure(conn, PROJECT, &fixture.revision, "nir1")
+        };
+        let (read, steps) = count_steps(conn, |conn| {
             if pinned {
-                with_pinned_snapshot(conn, evaluate)
+                let _pinned = crate::nir1_pinned_snapshot::pinned_snapshot_scope(conn);
+                evaluate(conn)
             } else {
-                evaluate()
+                evaluate(conn)
             }
         })?;
         assert!(

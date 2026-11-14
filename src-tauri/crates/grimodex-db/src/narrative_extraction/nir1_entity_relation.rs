@@ -1117,7 +1117,7 @@ fn record_typed_dependency_edges_in_tx(
 }
 
 fn materialize_typed_authorities_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     _run_id: &str,
     revision_id: &str,
@@ -1751,7 +1751,7 @@ pub fn create_nir1_entity_relation_revision(
     db: &Database,
     request: Nir1EntityRelationRevisionRequest,
 ) -> anyhow::Result<Value> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
             create_in_tx(conn, request)
@@ -1780,7 +1780,7 @@ fn ensure_stored_component_within_limit(
 }
 
 fn create_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     request: Nir1EntityRelationRevisionRequest,
 ) -> anyhow::Result<Value> {
     create_in_tx_with(
@@ -1795,7 +1795,7 @@ fn create_in_tx(
 /// contract. Production passes the current contract; the test-only version 1
 /// builder passes the superseded one to seal a Revision this reader refuses.
 fn create_in_tx_with(
-    conn: &Connection,
+    conn: &mut Connection,
     request: Nir1EntityRelationRevisionRequest,
     build_material: impl FnOnce(
         &Connection,
@@ -1978,7 +1978,7 @@ pub fn prepare_nir1_entity_relation_revision(
     db: &Database,
     request: Nir1EntityRelationRevisionPrepareRequest,
 ) -> anyhow::Result<Value> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
             let bundle = build_live_typed_bundle(conn, &request)?;
@@ -7344,7 +7344,7 @@ pub(super) mod tests {
                 super::TYPED_MATERIAL_CONTRACT_LEGACY_VERSION,
             )
         }
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             super::with_immediate_transaction(conn, |conn| {
                 super::create_in_tx_with(
                     conn,
@@ -8130,7 +8130,7 @@ pub(super) mod tests {
         // tempting but forbidden recovery shortcut. The old Run remains
         // stamped with the pre-restore Epoch, so the typed reader must still
         // reject it.
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let edges = super::find_edges_by_consumer(
                 conn,
                 "default-project",
@@ -8587,10 +8587,10 @@ pub(super) mod tests {
             .into_iter()
             .collect()
         );
-        let binding = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let binding = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx, &runtime, snapshot,
+                &mut tx, &runtime, snapshot,
             )?;
             tx.commit()?;
             Ok(binding)
@@ -8599,10 +8599,10 @@ pub(super) mod tests {
         let repeated = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
-        let repeated_binding = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let repeated_binding = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx, &runtime, repeated,
+                &mut tx, &runtime, repeated,
             )?;
             tx.commit()?;
             Ok(binding)
@@ -9483,10 +9483,10 @@ pub(super) mod tests {
         let snapshot = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
-        db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx, &runtime, snapshot,
+                &mut tx, &runtime, snapshot,
             )?;
             tx.commit()?;
             Ok(())
@@ -9544,10 +9544,10 @@ pub(super) mod tests {
         let rebuilt = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
-        let rebuilt_binding = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let rebuilt_binding = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx, &runtime, rebuilt,
+                &mut tx, &runtime, rebuilt,
             )?;
             tx.commit()?;
             Ok(binding)
@@ -9589,10 +9589,10 @@ pub(super) mod tests {
         let initial_source_snapshot = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
-        db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx,
+                &mut tx,
                 &runtime,
                 initial_source_snapshot,
             )?;
@@ -9602,7 +9602,7 @@ pub(super) mod tests {
         let source_snapshot = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
-        let source_before = db.with_read_transaction(graph_surface_snapshot)?;
+        let source_before = db.with_read_transaction(|conn| graph_surface_snapshot(conn))?;
         let event_uid = uuid::Uuid::new_v4().to_string();
         tree_node_patch(
             &db,
@@ -9632,7 +9632,7 @@ pub(super) mod tests {
                 canonical_payload: None,
             },
         )?;
-        let source_after_mutation = db.with_read_transaction(graph_surface_snapshot)?;
+        let source_after_mutation = db.with_read_transaction(|conn| graph_surface_snapshot(conn))?;
         assert_ne!(source_before, source_after_mutation);
         let source_metadata: (i64, i64) = db.with_conn(|conn| {
             conn.query_row(
@@ -9645,10 +9645,10 @@ pub(super) mod tests {
         })?;
         assert_eq!(source_metadata, (1, 1));
         assert_graph_verify_reports_dirty(&db)?;
-        let source_error = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let source_error = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let error = match nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx,
+                &mut tx,
                 &runtime,
                 source_snapshot,
             ) {
@@ -9663,7 +9663,7 @@ pub(super) mod tests {
             "{source_error}"
         );
         assert_eq!(
-            db.with_read_transaction(graph_surface_snapshot)?,
+            db.with_read_transaction(|conn| graph_surface_snapshot(conn))?,
             source_after_mutation,
             "source rejection must roll back Graph writes"
         );
@@ -9677,10 +9677,10 @@ pub(super) mod tests {
         let initial_scope_snapshot = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
-        db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx,
+                &mut tx,
                 &runtime,
                 initial_scope_snapshot,
             )?;
@@ -9690,7 +9690,7 @@ pub(super) mod tests {
         let scope_snapshot = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
-        let scope_before = db.with_read_transaction(graph_surface_snapshot)?;
+        let scope_before = db.with_read_transaction(|conn| graph_surface_snapshot(conn))?;
         let current_scope = db.with_read_transaction(|conn| {
             super::super::scene_scope::read_narrative_scene_scope(conn, "default-project", "nir1")
         })?;
@@ -9718,7 +9718,7 @@ pub(super) mod tests {
                 },
             },
         )?;
-        let scope_after_mutation = db.with_read_transaction(graph_surface_snapshot)?;
+        let scope_after_mutation = db.with_read_transaction(|conn| graph_surface_snapshot(conn))?;
         assert_ne!(scope_before, scope_after_mutation);
         let scope_metadata: (i64, i64) = db.with_conn(|conn| {
             conn.query_row(
@@ -9731,10 +9731,10 @@ pub(super) mod tests {
         })?;
         assert_eq!(scope_metadata, (1, 1));
         assert_graph_verify_reports_dirty(&db)?;
-        let scope_error = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let scope_error = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let error = match nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx,
+                &mut tx,
                 &runtime,
                 scope_snapshot,
             ) {
@@ -9749,7 +9749,7 @@ pub(super) mod tests {
             "{scope_error}"
         );
         assert_eq!(
-            db.with_read_transaction(graph_surface_snapshot)?,
+            db.with_read_transaction(|conn| graph_surface_snapshot(conn))?,
             scope_after_mutation,
             "scope rejection must roll back Graph writes"
         );
@@ -9847,7 +9847,7 @@ pub(super) mod tests {
     #[test]
     fn graph_index_rejects_tampered_snapshot_before_generation_write() -> anyhow::Result<()> {
         let (db, runtime, _) = published_graph_fixture()?;
-        let before = db.with_read_transaction(graph_surface_snapshot)?;
+        let before = db.with_read_transaction(|conn| graph_surface_snapshot(conn))?;
 
         for tamper in 0..3 {
             let mut snapshot = db.with_read_transaction(|conn| {
@@ -9882,10 +9882,10 @@ pub(super) mod tests {
             }
             snapshot.replace_edges_for_test(edges);
 
-            let (error, during, after) = db.with_conn(|conn| {
-                let tx = conn.unchecked_transaction()?;
+            let (error, during, after) = db.with_conn_mut(|conn| {
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
                 let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                    &tx, &runtime, snapshot,
+                    &mut tx, &runtime, snapshot,
                 )
                 .expect_err("tampered Graph V1 set must be denied before D1 write")
                 .to_string();
@@ -9904,7 +9904,7 @@ pub(super) mod tests {
     #[test]
     fn graph_index_work_control_cancels_before_d1_publish() -> anyhow::Result<()> {
         let (db, runtime, _) = published_graph_fixture()?;
-        let before = db.with_read_transaction(graph_surface_snapshot)?;
+        let before = db.with_read_transaction(|conn| graph_surface_snapshot(conn))?;
         let snapshot = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
@@ -9923,12 +9923,12 @@ pub(super) mod tests {
             }
         }
 
-        let (error, during, after) = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let (error, during, after) = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let mut control = StopAt(nir1_entity_relation_index::GraphWorkStage::D1);
             let error =
                 nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx_with_control(
-                    &tx,
+                    &mut tx,
                     &runtime,
                     snapshot,
                     &mut control,
@@ -10174,15 +10174,15 @@ pub(super) mod tests {
                     "default-project",
                 )
             })?;
-            db.with_conn(|conn| {
-                let tx = conn.unchecked_transaction()?;
+            db.with_conn_mut(|conn| {
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
                 nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                    &tx, &runtime, first,
+                    &mut tx, &runtime, first,
                 )?;
                 tx.commit()?;
                 Ok::<_, anyhow::Error>(())
             })?;
-            let before = db.with_read_transaction(graph_surface_snapshot)?;
+            let before = db.with_read_transaction(|conn| graph_surface_snapshot(conn))?;
             let second = db.with_read_transaction(|conn| {
                 nir1_entity_relation_index::prepare_graph_index_build(
                     conn,
@@ -10205,10 +10205,10 @@ pub(super) mod tests {
                 Ok::<_, anyhow::Error>(())
             })?;
 
-            db.with_conn(|conn| {
-                let tx = conn.unchecked_transaction()?;
+            db.with_conn_mut(|conn| {
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
                 let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                    &tx, &runtime, second,
+                    &mut tx, &runtime, second,
                 )
                 .expect_err("metadata failpoint must abort the publication")
                 .to_string();
@@ -10228,7 +10228,7 @@ pub(super) mod tests {
 
             let cold_db = Database::new(&path)?;
             cold_db.migrate()?;
-            let cold = cold_db.with_read_transaction(graph_surface_snapshot)?;
+            let cold = cold_db.with_read_transaction(|conn| graph_surface_snapshot(conn))?;
             assert_eq!(
                 cold, before,
                 "cold reopen must retain the prior generation only"
@@ -11133,10 +11133,10 @@ pub(super) mod tests {
         let snapshot = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
-        db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx, &runtime, snapshot,
+                &mut tx, &runtime, snapshot,
             )?;
             tx.commit()?;
             Ok::<_, anyhow::Error>(())
@@ -11283,10 +11283,10 @@ pub(super) mod tests {
         })?;
         assert_eq!(before_source_failure, (1, 0));
         append_typed_decision(&db, "nir1-run", &created, "rejected")?;
-        let stale_error = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let stale_error = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx,
+                &mut tx,
                 &runtime,
                 stale_source,
             )
@@ -11320,10 +11320,10 @@ pub(super) mod tests {
             )?;
             Ok::<_, anyhow::Error>(())
         })?;
-        let freshness_error = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let freshness_error = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx,
+                &mut tx,
                 &runtime,
                 freshness_failure,
             )
@@ -11348,10 +11348,10 @@ pub(super) mod tests {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
         runtime.pause()?;
-        let paused_error = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let paused_error = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx, &runtime, paused,
+                &mut tx, &runtime, paused,
             )
             .expect_err("paused runtime must cancel Graph publication");
             tx.rollback()?;
@@ -11366,10 +11366,10 @@ pub(super) mod tests {
         })?;
         runtime.pause()?;
         runtime.resume()?;
-        let resumed_error = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let resumed_error = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx,
+                &mut tx,
                 &runtime,
                 resumed_old,
             )
@@ -11382,10 +11382,10 @@ pub(super) mod tests {
         let resumed_new = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
-        let resumed_binding = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let resumed_binding = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx,
+                &mut tx,
                 &runtime,
                 resumed_new,
             )?;
@@ -11399,10 +11399,10 @@ pub(super) mod tests {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
         runtime.stop()?;
-        let stopped_error = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let stopped_error = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx, &runtime, stopped,
+                &mut tx, &runtime, stopped,
             )
             .expect_err("stopped runtime must cancel Graph publication");
             tx.rollback()?;
@@ -11416,10 +11416,10 @@ pub(super) mod tests {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
         runtime.bind_embedding_generation(7)?;
-        let embedding_error = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let embedding_error = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx,
+                &mut tx,
                 &runtime,
                 embedding_replaced,
             )
@@ -11436,10 +11436,10 @@ pub(super) mod tests {
         })?;
         let replacement_runtime =
             super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&db, 2);
-        let owner_error = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let owner_error = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx,
+                &mut tx,
                 &replacement_runtime,
                 owner_replaced,
             )
@@ -11457,10 +11457,10 @@ pub(super) mod tests {
         let replacement_db = fresh_migrated_memory()?;
         let replacement_connection_runtime =
             super::super::nir1_chronicle_index::NirChronicleIndexRuntime::new(&replacement_db, 1);
-        let cancellation_error = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let cancellation_error = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let error = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx,
+                &mut tx,
                 &replacement_connection_runtime,
                 connection_replaced,
             )
@@ -11668,10 +11668,10 @@ pub(super) mod tests {
         let snapshot = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
-        let binding = db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        let binding = db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx, &runtime, snapshot,
+                &mut tx, &runtime, snapshot,
             )?;
             tx.commit()?;
             Ok::<_, anyhow::Error>(binding)
@@ -11703,10 +11703,10 @@ pub(super) mod tests {
                     "default-project",
                 )
             })?;
-            db.with_conn(|conn| {
-                let tx = conn.unchecked_transaction()?;
+            db.with_conn_mut(|conn| {
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
                 let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                    &tx, &runtime, snapshot,
+                    &mut tx, &runtime, snapshot,
                 )?;
                 tx.commit()?;
                 Ok::<_, anyhow::Error>(binding.generation)
@@ -11871,10 +11871,10 @@ pub(super) mod tests {
         let snapshot = db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         })?;
-        db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx, &runtime, snapshot,
+                &mut tx, &runtime, snapshot,
             )?;
             tx.commit()?;
             Ok(())
@@ -11930,10 +11930,10 @@ pub(super) mod tests {
                     "default-project",
                 )
             })?;
-            db.with_conn(|conn| {
-                let tx = conn.unchecked_transaction()?;
+            db.with_conn_mut(|conn| {
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
                 nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                    &tx, &runtime, snapshot,
+                    &mut tx, &runtime, snapshot,
                 )?;
                 tx.commit()?;
                 Ok(())
@@ -12092,8 +12092,8 @@ pub(super) mod tests {
                 "{label} must be surfaced by Restore/Verify consumer scope"
             );
 
-            let error = db.with_conn(|conn| {
-                let tx = conn.unchecked_transaction()?;
+            let error = db.with_conn_mut(|conn| {
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
                 let epoch_id: String = tx.query_row(
                     "SELECT id FROM narrative_semantic_epochs
                       WHERE project_id='default-project'
@@ -12103,7 +12103,7 @@ pub(super) mod tests {
                 )?;
                 let error =
                     super::super::publish_runtime::publish_complete_runless_graph_freshness_in_tx(
-                        &tx,
+                        &mut tx,
                         "default-project",
                         "semantic-index",
                         nir1_entity_relation_index::INDEX_KEY,
@@ -12525,10 +12525,10 @@ pub(super) mod tests {
                     "default-project",
                 )
             })?;
-            db.with_conn(|conn| {
-                let tx = conn.unchecked_transaction()?;
+            db.with_conn_mut(|conn| {
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
                 nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                    &tx, &runtime, snapshot,
+                    &mut tx, &runtime, snapshot,
                 )?;
                 tx.commit()?;
                 Ok(())
@@ -13030,7 +13030,7 @@ pub(super) mod tests {
             // list from its progress callback, on the thread that runs the read.
             Ok(unsafe { conn.handle() } as usize)
         })?;
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let active = Arc::clone(&active);
             let running = Arc::clone(&running);
             crate::narrative_extraction::nir1_capacity::set_progress_owner(conn, 1, Some(move || {
@@ -13066,7 +13066,7 @@ pub(super) mod tests {
         })?;
         let scopes = Arc::new(AtomicUsize::new(0));
         let reads = Arc::new(Mutex::new(Vec::<(String, bool)>::new()));
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let active = Arc::clone(&active);
             let reads = Arc::clone(&reads);
             conn.authorizer(Some(move |context: AuthContext<'_>| {
@@ -13107,7 +13107,7 @@ pub(super) mod tests {
                 None,
             )
         })?;
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
             crate::narrative_extraction::nir1_capacity::set_progress_owner(
                 conn,

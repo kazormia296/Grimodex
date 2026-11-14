@@ -53,8 +53,8 @@ fn fixture() -> Database {
     db
 }
 
-fn in_tx<T>(db: &Database, operation: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-    db.with_conn(|conn| with_immediate_transaction(conn, operation))
+fn in_tx<T>(db: &Database, operation: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
+    db.with_conn_mut(|conn| with_immediate_transaction(conn, operation))
 }
 
 fn declare(db: &Database, project: &str, scene: &str) -> NarrativeSceneBodyDeclarationV1 {
@@ -1101,10 +1101,10 @@ mod pending_and_indexes {
                 nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, PROJECT)
             })
             .unwrap();
-        db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-                &tx, &runtime, snapshot,
+                &mut tx, &runtime, snapshot,
             )?;
             tx.commit()?;
             conn.execute(

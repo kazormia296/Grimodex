@@ -58,7 +58,7 @@ struct Run {
 /// reuses its statements (`fresh` false) or the one that prepares each use.
 fn register(fixture: &Fixture, mut owner: CountingOwner, fresh: bool) -> Result<Run> {
     let mut reader = fixture.reader()?;
-    let conn = reader.take_owned_connection()?;
+    let mut conn = reader.take_owned_connection()?;
     let mut stage = Nir1GraphRegistrationStage::Maintenance;
     let mut current_heap = |operation: &mut dyn FnMut()| {
         operation();
@@ -68,7 +68,7 @@ fn register(fixture: &Fixture, mut owner: CountingOwner, fresh: bool) -> Result<
     take_revision_statements_observation();
     let mut run = || {
         reader.register_with_control_observed(
-            &conn,
+            &mut conn,
             PROJECT,
             &mut owner,
             Some(&mut stage),
@@ -673,8 +673,12 @@ fn read_with<T>(
 ) -> Result<T> {
     fixture.authority.with_read_transaction(|conn| {
         let before = live_statements(conn);
+        // The probe observes the connection's statements at each owner check
+        // while the read holds `&mut Connection`: it watches through its own
+        // non-owning wrapper over the same handle (test-only, DR-DBC-4).
+        let observer = crate::test_support::same_handle_writer(conn);
         let mut probe = LiveProbe {
-            conn,
+            conn: &observer,
             live: Vec::new(),
             busy: Vec::new(),
             panic_at,
@@ -807,7 +811,7 @@ fn the_build_path_reads_alike_and_leaves_no_statement() -> Result<()> {
             fixture.authority.with_read_transaction(|conn| {
                 let before = live_statements(conn);
                 take_revision_statements_observation();
-                let run = || prepare_graph_index_build(conn, runtime, PROJECT).map(|_| ());
+                let mut run = || prepare_graph_index_build(conn, runtime, PROJECT).map(|_| ());
                 let result = if fresh {
                     with_fresh_statements(run)
                 } else {
@@ -900,7 +904,7 @@ fn the_source_read_is_alike_over_ineligible_candidates_of_every_kind() -> Result
                 let (read, observed) = db.with_read_transaction(|conn| {
                     let before = live_statements(conn);
                     take_revision_statements_observation();
-                    let run = || {
+                    let mut run = || {
                         index::read_eligibility_source_with_control(
                             conn,
                             NIR1_CAPACITY_FIXTURE_PROJECT_ID,

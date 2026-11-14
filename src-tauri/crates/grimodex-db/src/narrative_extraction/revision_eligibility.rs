@@ -69,7 +69,7 @@ fn is_storage_error(error: &anyhow::Error) -> bool {
 /// Feed. A historical revision may be fresh; this does not make it current or
 /// Human-approved. The retrieval reader applies those independent constraints.
 pub fn read_revision_canonical_freshness(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     revision_id: &str,
 ) -> Result<RevisionFreshnessRead> {

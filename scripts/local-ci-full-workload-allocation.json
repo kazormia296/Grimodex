@@ -49,11 +49,11 @@
     },
     {
       "path": "src-tauri/Cargo.toml",
-      "sha256": "54768c0f6317e147d86bc06aecff3b5ea9997ea297f328be4b39d00b48839ae1"
+      "sha256": "a8939cb7b0b67e4898fc252d610fc42b2bcf646c1ec5c132a23ca5b46e4cd4a2"
     },
     {
       "path": "src-tauri/Cargo.lock",
-      "sha256": "2f8b21207e7aa1d336f907c8e49e43296782fbd60144f3c16c4da0cb1db6309a"
+      "sha256": "6db97d2c332db26fe245728d9a29b391da4a9fc0988905bed3023903dbc15a43"
     },
     {
       "path": "electron/native/grimodex-node/Cargo.toml",
@@ -61,7 +61,7 @@
     },
     {
       "path": "electron/native/grimodex-node/Cargo.lock",
-      "sha256": "cd580c659942138bdf9c3c3eefcd281f97aa7ee82f134b37b65f49ef863ec956"
+      "sha256": "06a74d39871aa0b3efa9ad359d241f809e1baedf45a7584e725fddde541189fe"
     },
     {
       "path": "electron/native/grimodex-node/package.json",
@@ -69,7 +69,7 @@
     },
     {
       "path": "src-tauri/crates/grimodex-db/Cargo.toml",
-      "sha256": "844f8a6f18354f38f55b6bee05248bfbc6dc6970a8ab770f6f2a5b8add1122fd"
+      "sha256": "2c92d5127a64dbba2a050e14425a3cd6ca5fe03602c89cf2ab8011a7e5acf0d9"
     },
     {
       "path": "src-tauri/crates/grimodex-lint/Cargo.toml",
@@ -77,7 +77,7 @@
     },
     {
       "path": "src-tauri/crates/grimodex-semantic/Cargo.toml",
-      "sha256": "60d3afda81fbd2e6b7dfc2b8ff3d365000c669c1a8e77d5099d7e6b46867cdc0"
+      "sha256": "7b5fa9c601fe9baec48d8255170d54c94e4b764ad31909dc4ca9a7d1fda3210a"
     },
     {
       "path": "experiments/lfm25-encoder-phase0/pyproject.toml",
@@ -93,7 +93,7 @@
     },
     {
       "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",
-      "sha256": "58a1abe1316343aef487f4f95aba95e972004e51296c78f088aade50626b54e3"
+      "sha256": "f8760c9cc0017c41b81968a2c7935ab319595dac09626cd77fdc5f4f73a24527"
     },
     {
       "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs",

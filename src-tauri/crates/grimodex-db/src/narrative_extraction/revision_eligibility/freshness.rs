@@ -37,7 +37,7 @@ fn canonical_instant(value: &str) -> bool {
 
 // Internal composition reuses one membership replay in the caller's snapshot.
 pub(in crate::narrative_extraction) fn read(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     membership: &RevisionMaterialMembership,
 ) -> Result<RevisionFreshnessRead> {
@@ -54,8 +54,7 @@ pub(in crate::narrative_extraction) fn read_with_validation_context(
     project: &str,
     membership: &RevisionMaterialMembership,
 ) -> Result<RevisionFreshnessRead> {
-    let conn = context.connection();
-    let control = context.control();
+    let (conn, control) = context.parts();
     read_impl(conn, project, membership, Some(control), None)
 }
 
@@ -70,14 +69,13 @@ pub(in crate::narrative_extraction) fn read_with_validation_context_and_reads(
     membership: &RevisionMaterialMembership,
     reads: &mut CandidateFreshnessReads,
 ) -> Result<RevisionFreshnessRead> {
-    let conn = context.connection();
-    let control = context.control();
+    let (conn, control) = context.parts();
     let reads = (!conn.is_autocommit()).then_some(reads);
     read_impl(conn, project, membership, Some(control), reads)
 }
 
 fn read_impl(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     membership: &RevisionMaterialMembership,
     mut control: Option<&mut dyn GraphWorkControl>,
@@ -146,23 +144,26 @@ fn read_impl(
     };
     // The L1 reader checked this exact D1 head and V1 set against the sealed
     // material in this transaction. D1 and V1 digests describe different sets.
-    let mut statement = conn.prepare(
-        "SELECT s.project_id,s.evidence_freshness,s.reason_code,s.build_action,s.evaluated_at_epoch_id,s.evaluated_at
-         FROM narrative_dependency_edges e LEFT JOIN narrative_dependency_edge_states s ON s.edge_id=e.id
-         WHERE e.project_id=?1 AND e.consumer_kind='proposal-revision' AND e.consumer_key=?2 ORDER BY e.id",
-    )?;
-    let states = statement
-        .query_map(params![project, revision], |r| {
-            Ok((
-                r.get::<_, Option<String>>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, Option<String>>(3)?,
-                r.get::<_, Option<String>>(4)?,
-                r.get::<_, Option<String>>(5)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let states = {
+        let mut statement = conn.prepare(
+            "SELECT s.project_id,s.evidence_freshness,s.reason_code,s.build_action,s.evaluated_at_epoch_id,s.evaluated_at
+             FROM narrative_dependency_edges e LEFT JOIN narrative_dependency_edge_states s ON s.edge_id=e.id
+             WHERE e.project_id=?1 AND e.consumer_kind='proposal-revision' AND e.consumer_key=?2 ORDER BY e.id",
+        )?;
+        let rows = statement
+            .query_map(params![project, revision], |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
     if states.len() != edges.len() {
         return Ok(unavailable(Reason::EdgeStateUnavailable));
     }

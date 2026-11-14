@@ -373,7 +373,7 @@ fn the_records_part_agrees_with_the_full_veto_on_records_and_leaves_the_body_alo
     assert_eq!(records(&db, "s1", 512).unwrap().veto, None);
 
     // The records part does not even prepare a statement that names `content`.
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
             AuthAction::Read {
                 table_name,
@@ -392,7 +392,7 @@ fn the_records_part_agrees_with_the_full_veto_on_records_and_leaves_the_body_alo
         .is_err(),
         "the full veto does need the body"
     );
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
         Ok(())
     })

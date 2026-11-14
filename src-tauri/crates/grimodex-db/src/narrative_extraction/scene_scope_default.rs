@@ -580,7 +580,7 @@ pub fn update_narrative_scope_project_default(
         payload_hash: &request_hash,
         conflict_marker: "NEX_SCENE_SCOPE_DEFAULT_REQUEST_CONFLICT",
     };
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |tx| {
             if let Some(response) = load_idempotent_response(tx, &idempotency)? {
                 return Ok(response);

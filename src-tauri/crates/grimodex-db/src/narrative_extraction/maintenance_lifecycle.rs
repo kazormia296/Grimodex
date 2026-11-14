@@ -2533,7 +2533,7 @@ mod tests {
     #[test]
     fn malformed_child_timestamp_fails_closed_and_rolls_back_a_batch() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let first = create_canonical(conn, "backfill")?;
             let second = create_canonical(conn, "dependency-verify")?;
             conn.execute(
@@ -2601,7 +2601,7 @@ mod tests {
     #[test]
     fn creation_rolls_back_run_task_and_attempt_together() {
         let db = open_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let error = with_immediate_transaction(conn, |conn| -> anyhow::Result<()> {
                 let _ = create(conn, "backfill")?;
                 anyhow::bail!("force lifecycle transaction rollback")

@@ -46,9 +46,9 @@ fn nir1_maintenance_hint_survives_query_release_and_observes_real_dirty_state() 
 }
 
 fn query(f: &Fixture, scene: &str) -> NirQualifiedRead {
-    f.db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        qualify_chronicle_index_query(&tx, &f.runtime, f.project(), scene)
+    f.db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        qualify_chronicle_index_query(&mut tx, &f.runtime, f.project(), scene)
     })
     .expect("query snapshot")
 }
@@ -62,9 +62,9 @@ fn batch(f: &Fixture) -> NirQualifiedBatch {
 }
 
 fn valid(f: &Fixture, batch: &NirQualifiedBatch) -> bool {
-    f.db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        validate_chronicle_query_snapshot(&tx, &f.runtime, batch)
+    f.db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        validate_chronicle_query_snapshot(&mut tx, &f.runtime, batch)
     })
     .expect("currentness")
 }
@@ -217,10 +217,10 @@ fn nir1_native_query_admits_the_whole_material_before_lending_vectors_and_eviden
         assert_eq!(document.embedding().len(), 8);
         assert!(!document.evidence_handles().is_empty());
         for handle in document.evidence_handles() {
-            f.db.with_conn(|conn| {
-                let tx = conn.unchecked_transaction()?;
+            f.db.with_conn_mut(|conn| {
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
                 let NirEvidenceNavigationRead::Available(navigation) =
-                    read_chronicle_evidence_navigation(&tx, &f.runtime, handle)?
+                    read_chronicle_evidence_navigation(&mut tx, &f.runtime, handle)?
                 else {
                     panic!("current full Evidence");
                 };
@@ -245,17 +245,17 @@ fn nir1_human_withdrawal_invalidates_held_result_and_click_before_rebuild() {
     let handle = batch.documents()[0].evidence_handles()[0].clone();
     f.hold(batch.documents()[0].revision_id());
     assert!(!valid(&f, &batch));
-    f.db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    f.db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         assert!(matches!(
-            read_chronicle_evidence_navigation(&tx, &f.runtime, &handle)?,
+            read_chronicle_evidence_navigation(&mut tx, &f.runtime, &handle)?,
             NirEvidenceNavigationRead::Unavailable { .. }
         ));
         assert_eq!(
-            reconcile_chronicle_index_runtime(&tx, &f.runtime)?,
+            reconcile_chronicle_index_runtime(&mut tx, &f.runtime)?,
             [f.project()]
         );
-        assert!(reconcile_chronicle_index_runtime(&tx, &f.runtime)?.is_empty());
+        assert!(reconcile_chronicle_index_runtime(&mut tx, &f.runtime)?.is_empty());
         Ok(())
     })
     .expect("one invalidation, no stale click");
@@ -507,18 +507,18 @@ fn nir1_cold_or_paused_runtime_cannot_restore_authority_from_cached_vectors() {
     publish(&f);
     let batch = batch(&f);
     let cold = NirChronicleIndexRuntime::new(&f.db, 2);
-    f.db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    f.db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         assert!(matches!(
             qualify_chronicle_index_query(
-                &tx,
+                &mut tx,
                 &cold,
                 f.project(),
                 f.manifest["s2"].as_str().expect("S2")
             )?,
             NirQualifiedRead::Unavailable { .. }
         ));
-        assert!(!validate_chronicle_query_snapshot(&tx, &cold, &batch)?);
+        assert!(!validate_chronicle_query_snapshot(&mut tx, &cold, &batch)?);
         Ok(())
     })
     .expect("cold proof absence");
@@ -536,10 +536,10 @@ fn nir1_cold_or_paused_runtime_cannot_restore_authority_from_cached_vectors() {
 fn nir1_current_proof_suppresses_an_unnecessary_rebuild() {
     let f = Fixture::new();
     publish(&f);
-    f.db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    f.db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         assert!(matches!(
-            prepare_chronicle_index_build(&tx, &f.runtime, f.project())?,
+            prepare_chronicle_index_build(&mut tx, &f.runtime, f.project())?,
             NirIndexBuildRead::AlreadyUsable
         ));
         Ok(())
@@ -557,9 +557,9 @@ fn nir1_query_storage_errors_do_not_become_usable_empty_results() {
         Ok(())
     })
     .expect("private storage failure");
-    f.db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        assert!(validate_chronicle_query_snapshot(&tx, &f.runtime, &batch).is_err());
+    f.db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        assert!(validate_chronicle_query_snapshot(&mut tx, &f.runtime, &batch).is_err());
         Ok(())
     })
     .expect("SQL failure preserved");
@@ -584,7 +584,7 @@ fn nir1_registered_binding_is_rebuildable_while_dirty_and_unknown_rows_remain_re
     publish(&f);
     let batch = batch(&f);
     f.hold(batch.documents()[0].revision_id());
-    f.db.with_conn(|conn| {
+    f.db.with_conn_mut(|conn| {
         let (digest,generation) = super::super::verify_coverage::verify_semantic_index_checks(conn,f.project())?;
         assert!(digest.passed && generation.passed);
         assert!(digest.has_reserved_footprint_observation());
@@ -602,11 +602,11 @@ fn nir1_registered_binding_is_rebuildable_while_dirty_and_unknown_rows_remain_re
 fn nir1_corrupt_registered_generation_is_manual_and_cannot_be_rebuilt_silently() {
     let f = Fixture::new();
     publish(&f);
-    f.db.with_conn(|conn| {
+    f.db.with_conn_mut(|conn| {
         conn.execute("UPDATE narrative_semantic_index_metadata SET generation=generation+1 WHERE project_id=?1",[f.project()])?;
-        let tx = conn.unchecked_transaction()?;
-        assert!(matches!(prepare_chronicle_index_build(&tx,&f.runtime,f.project())?,NirIndexBuildRead::Unavailable {reason:NirIndexUnavailableReason::ReservedBinding}));
-        let (digest,generation) = super::super::verify_coverage::verify_semantic_index_checks(&tx,f.project())?;
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        assert!(matches!(prepare_chronicle_index_build(&mut tx,&f.runtime,f.project())?,NirIndexBuildRead::Unavailable {reason:NirIndexUnavailableReason::ReservedBinding}));
+        let (digest,generation) = super::super::verify_coverage::verify_semantic_index_checks(&mut tx,f.project())?;
         assert!(!digest.completed && !generation.completed);
         Ok(())
     }).expect("incoherent producer identity remains reserved");

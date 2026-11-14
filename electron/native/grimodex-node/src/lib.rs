@@ -51,6 +51,8 @@ mod related_scenes_registry;
 mod state;
 #[cfg(test)]
 mod test_link_stubs;
+#[cfg(test)]
+mod sqlite_compile_options_tests;
 mod typed_writers;
 mod workspace_lifecycle_view;
 use lifecycle_failure_diagnostics::{FailureClass, Producer};
@@ -7102,7 +7104,7 @@ fn run_narrative_freshness_cycle_body(
     };
     let mut cutover_not_ready = false;
     if let Some(liveness_evidence) = &liveness_evidence {
-        let cutover_result = current_workspace.authority.db().with_conn(|conn| {
+        let cutover_result = current_workspace.authority.db().with_conn_mut(|conn| {
             narrative_extraction::cut_over_workspace_freshness(conn, liveness_evidence)
         });
         if let Err(error) = cutover_result {
@@ -16161,7 +16163,7 @@ impl Backend {
                         ))
                     })?
                     .id;
-                let plan = db.with_conn(|conn| {
+                let plan = db.with_conn_mut(|conn| {
                     narrative_extraction::seal_repair_plan(
                         conn,
                         &dto.project_id,

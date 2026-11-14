@@ -2649,7 +2649,7 @@ fn validate_refs(
 #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub fn create_attempt(db: &Database, request: NewAttempt) -> Result<StoredAttempt> {
     validate_new_attempt(&request)?;
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_bound_session_and_scene(conn, &request.binding)?;
             validate_refs(
@@ -3504,7 +3504,10 @@ fn message_version_materialization_bytes_in_tx(conn: &Connection, id: &str) -> R
 /// full Scope-axis, input-use, purpose, or send-classification tuple required
 /// by history.
 pub(crate) struct GenerationHistorySnapshotReader<'connection> {
-    connection: &'connection Connection,
+    /// Exclusive: the history run installs its read-only authorizer guard
+    /// through this borrow (rusqlite 0.41 registers hooks through
+    /// `&mut Connection`, DR-DBC-4).
+    connection: &'connection mut Connection,
     cancellation: GenerationHistorySnapshotCancellation,
     capacity: Arc<CapacityBudget>,
     attempts: BTreeMap<String, std::result::Result<GenerationHistoryAttempt, String>>,
@@ -3527,7 +3530,7 @@ pub(crate) struct GenerationHistorySnapshotReader<'connection> {
 
 impl<'connection> GenerationHistorySnapshotReader<'connection> {
     fn new(
-        connection: &'connection Connection,
+        connection: &'connection mut Connection,
         cancellation: GenerationHistorySnapshotCancellation,
         capacity: Arc<CapacityBudget>,
     ) -> Self {
@@ -3922,7 +3925,7 @@ where
 /// caller's exact turn capacity budget for the callback and restores the prior
 /// progress owner afterwards; its caller must own the outer participant scope.
 pub(crate) fn with_generation_history_snapshot_in_tx<T, F>(
-    connection: &Connection,
+    connection: &mut Connection,
     cancellation: &GenerationHistorySnapshotCancellation,
     caller_budget: &mut GenerationHistoryReadBudget,
     read_snapshot: F,
@@ -3945,7 +3948,7 @@ where
         connection,
         Some(Arc::clone(&admitted.capacity)),
         &mut owner,
-        |capacity, _| {
+        |connection, capacity, _| {
             let mut reader = GenerationHistorySnapshotReader::new(
                 connection,
                 cancellation.clone(),
@@ -3970,7 +3973,7 @@ pub fn claim_attempt(
     now_ms: i64,
     budget: ReadBudget,
 ) -> Result<bool> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             let attempt = read_attempt_in_tx(conn, id, budget)?;
             ensure!(
@@ -4312,7 +4315,7 @@ pub fn bind_human_message(
     message: &str,
     now_ms: i64,
 ) -> Result<MessageVersion> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             let role_length: Option<i64> = conn
                 .query_row(
@@ -5411,7 +5414,7 @@ pub fn finish_attempt(
     body: Option<NewMessageBody>,
     now_ms: i64,
 ) -> Result<StoredTerminal> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             finish_in_tx(
                 conn,
@@ -5431,7 +5434,7 @@ pub fn finish_attempt(
 /// Unbounded test-support form; the sweep uses [`recover_attempt_bounded`].
 #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub fn recover_attempt(db: &Database, id: &str, now_ms: i64) -> Result<StoredTerminal> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| recover_attempt_in_tx(conn, id, now_ms))
     })
 }
@@ -6105,18 +6108,18 @@ pub(crate) fn bounded_write<T>(
 /// removes any hook after the transaction returns.
 #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 fn install_commit_failpoint(
-    conn: &Connection,
+    conn: &mut Connection,
     failpoint: Option<&Nir1GenerationFailpoint>,
 ) -> Result<()> {
     match failpoint {
         Some(Nir1GenerationFailpoint::VetoCommit) => {
             let fired = AtomicBool::new(false);
-            conn.commit_hook(Some(move || !fired.swap(true, Ordering::AcqRel)))?;
+            crate::hook_registration::set_commit_hook(conn, Some(move || !fired.swap(true, Ordering::AcqRel)))?;
         }
         Some(Nir1GenerationFailpoint::ProbeDuringCommit(probe)) => {
             let probe = Arc::clone(probe);
             let fired = AtomicBool::new(false);
-            conn.commit_hook(Some(move || {
+            crate::hook_registration::set_commit_hook(conn, Some(move || {
                 if !fired.swap(true, Ordering::AcqRel) {
                     probe();
                 }

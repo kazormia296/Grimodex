@@ -32,7 +32,7 @@ pub(super) fn canonical_instant(value: &str) -> bool {
 /// only for the exact same committed DB state; runtime/owner/S2 checks remain
 /// outside that reuse and changed DB state always takes the complete path.
 pub(super) fn proof_current(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     proof: &IndexProof,
 ) -> Result<bool> {
@@ -41,7 +41,7 @@ pub(super) fn proof_current(
 }
 
 pub(super) fn proof_current_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     proof: &IndexProof,
     control: &mut dyn GraphWorkControl,
@@ -54,7 +54,7 @@ pub(super) fn proof_current_with_control(
 /// proof is current, where `identity` is `None` outside a Read transaction.
 /// A caller may reuse a read of this snapshot only under that same identity.
 pub(super) fn proof_current_observed(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     proof: &IndexProof,
     control: &mut dyn GraphWorkControl,
@@ -173,33 +173,35 @@ pub(super) fn proof_current_observed(
     if edges != proof.input_edges || pending::read(conn, &proof.project, &edges)?.is_err() {
         return Ok(None);
     }
-    let mut statement = conn.prepare("SELECT project_id,evidence_freshness,reason_code,build_action,evaluated_at_epoch_id,evaluated_at
-        FROM narrative_dependency_edge_states WHERE edge_id=?1")?;
-    for edge in &edges {
-        control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Edge)?;
-        let state = statement
-            .query_row([&edge.id], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
-                    r.get::<_, String>(5)?,
-                ))
-            })
-            .optional()?;
-        let Some((project, freshness, reason, action, epoch, updated)) = state else {
-            return Ok(None);
-        };
-        if project != proof.project
-            || freshness != "fresh"
-            || reason.is_some()
-            || action != "none"
-            || epoch != proof.semantic_epoch
-            || !canonical_instant(&updated)
-        {
-            return Ok(None);
+    {
+        let mut statement = conn.prepare("SELECT project_id,evidence_freshness,reason_code,build_action,evaluated_at_epoch_id,evaluated_at
+            FROM narrative_dependency_edge_states WHERE edge_id=?1")?;
+        for edge in &edges {
+            control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Edge)?;
+            let state = statement
+                .query_row([&edge.id], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
+                    ))
+                })
+                .optional()?;
+            let Some((project, freshness, reason, action, epoch, updated)) = state else {
+                return Ok(None);
+            };
+            if project != proof.project
+                || freshness != "fresh"
+                || reason.is_some()
+                || action != "none"
+                || epoch != proof.semantic_epoch
+                || !canonical_instant(&updated)
+            {
+                return Ok(None);
+            }
         }
     }
     // Only reads of this transaction lie between the roster read and here.

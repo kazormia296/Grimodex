@@ -323,6 +323,11 @@ impl Env {
         self.db().db().with_conn(f).expect("with_conn")
     }
 
+    /// `with_conn` for a closure that registers an SQLite hook (DR-DBC-4).
+    pub fn with_conn_mut<T>(&self, f: impl FnOnce(&mut Connection) -> anyhow::Result<T>) -> T {
+        self.db().db().with_conn_mut(f).expect("with_conn_mut")
+    }
+
     pub fn declaration_token(&self, scene: &str) -> Option<String> {
         self.with_conn(|conn| {
             Ok(conn.query_row(
@@ -425,11 +430,7 @@ pub(crate) fn dump_row(
     skip: &[&str],
 ) -> BTreeMap<String, String> {
     let mut statement = conn.prepare(sql).expect("prepare dump");
-    let names: Vec<String> = statement
-        .column_names()
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+    let names: Vec<String> = statement.column_names().map(str::to_owned).collect();
     let bound: Vec<&dyn rusqlite::ToSql> = key.iter().map(|k| k as &dyn rusqlite::ToSql).collect();
     statement
         .query_row(bound.as_slice(), |row| {

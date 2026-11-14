@@ -760,11 +760,9 @@ fn resealed_human_envelopes_must_still_match_their_parent_and_scope_control() {
 #[test]
 fn project_boundary_and_read_snapshot_are_required() {
     let fixture = ColdFixture::new();
-    let conn = fixture.read_only();
+    let mut conn = fixture.read_only();
     assert!(read_revision_material_membership(&conn, fixture.project(), fixture.child()).is_err());
-    let tx = conn
-        .unchecked_transaction()
-        .expect("coherent read snapshot");
+    let tx = grimodex_db::ScopedTransaction::begin(&mut conn).expect("coherent read snapshot");
     assert!(matches!(
         read_revision_material_membership(&tx, "another-project", fixture.child())
             .expect("wrong project is typed unavailable"),
@@ -779,8 +777,8 @@ fn native_unapproved_projection_child_retains_complete_historical_membership() {
     let grandchild = create_native_child(&db, &fixture, fixture.child(), |payload| {
         payload["title"] = json!("Human projection title edit");
     });
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    db.with_conn_mut(|conn| {
+        let tx = grimodex_db::ScopedTransaction::begin(conn)?;
         let decisions: i64 = tx.query_row(
             "SELECT COUNT(*) FROM narrative_proposal_decisions WHERE revision_id = ?1",
             [&grandchild],
@@ -848,8 +846,8 @@ fn native_scope_grandchild_accepts_ancestor_with_an_older_scope_authority_token(
     .expect("production Native live Scope authority update");
     publish_native_freshness_after_change(&db);
     let new_scope_token = db
-        .with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        .with_conn_mut(|conn| {
+            let tx = grimodex_db::ScopedTransaction::begin(conn)?;
             assert_eq!(current_revision(&tx, fixture.child()), fixture.child());
             assert_eq!(stored_freshness(&tx, &fixture, fixture.child()), "fresh");
             assert_eq!(scope_token(&tx, fixture.child())?, old_scope_token);
@@ -873,8 +871,8 @@ fn native_scope_grandchild_accepts_ancestor_with_an_older_scope_authority_token(
         assert_eq!(payload["disclosure"]["secret"], false);
         payload["disclosure"]["secret"] = json!(true);
     });
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    db.with_conn_mut(|conn| {
+        let tx = grimodex_db::ScopedTransaction::begin(conn)?;
         assert_eq!(current_revision(&tx, fixture.child()), grandchild);
         assert_eq!(stored_freshness(&tx, &fixture, fixture.child()), "fresh");
         assert_eq!(scope_token(&tx, fixture.child())?, old_scope_token);
@@ -918,8 +916,8 @@ fn native_projection_then_scope_chain_retains_all_historical_material() {
         assert_eq!(payload["disclosure"]["secret"], false);
         payload["disclosure"]["secret"] = json!(true);
     });
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    db.with_conn_mut(|conn| {
+        let tx = grimodex_db::ScopedTransaction::begin(conn)?;
         assert_eq!(current_revision(&tx, fixture.child()), scope);
         for (revision, expected_depth) in
             [(fixture.child(), 2), (&projection[..], 3), (&scope[..], 4)]
@@ -973,8 +971,8 @@ fn new_nonsecret_scope_replaces_legacy_dependency_and_survives_unrelated_story_c
     let projection = create_native_child(&db, &fixture, &child, |p| {
         p["title"] = json!("Inherited new Scope basis")
     });
-    let original = db.with_conn(|conn| {
-        let tx=conn.unchecked_transaction()?;
+    let original = db.with_conn_mut(|conn| {
+        let mut tx=grimodex_db::ScopedTransaction::begin(conn)?;
         for (revision,generation) in [(fixture.child(),2),(&secret,2),(&child,2),(&projection,2)] {
             let actual: i64=tx.query_row("SELECT producer_generation FROM narrative_dependency_declaration_heads WHERE consumer_kind='proposal-revision' AND consumer_key=?1",[revision],|r|r.get(0))?;
             assert_eq!(actual,generation);
@@ -987,7 +985,7 @@ fn new_nonsecret_scope_replaces_legacy_dependency_and_survives_unrelated_story_c
             let count:i64=tx.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE {idcolumn}=?1 AND {column} LIKE 'project:scope-authority:%'"),[&projection],|r|r.get(0))?;
             assert_eq!(count,0,"obsolete Scope-only dependency removed from {table}");
         }
-        assert!(matches!(read_revision_canonical_freshness(&tx,fixture.project(),&projection)?,RevisionFreshnessRead::Fresh(_)));
+        assert!(matches!(read_revision_canonical_freshness(&mut tx,fixture.project(),&projection)?,RevisionFreshnessRead::Fresh(_)));
         Ok(scope_token(&tx,&projection)?)
     }).expect("new and legacy contracts coexist");
     tree_node_patch(
@@ -1016,11 +1014,11 @@ fn new_nonsecret_scope_replaces_legacy_dependency_and_survives_unrelated_story_c
         },
     )
     .expect("normal Native tree writer");
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    db.with_conn_mut(|conn| {
+        let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
         assert!(
             !matches!(
-                read_revision_canonical_freshness(&tx, fixture.project(), &projection)?,
+                read_revision_canonical_freshness(&mut tx, fixture.project(), &projection)?,
                 RevisionFreshnessRead::Fresh(_)
             ),
             "pending notification still blocks old query authority"
@@ -1029,8 +1027,8 @@ fn new_nonsecret_scope_replaces_legacy_dependency_and_survives_unrelated_story_c
     })
     .expect("pending check");
     publish_native_freshness_after_change(&db);
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    db.with_conn_mut(|conn| {
+        let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
         assert_eq!(
             scope_token(&tx, &projection)?,
             original,
@@ -1046,7 +1044,7 @@ fn new_nonsecret_scope_replaces_legacy_dependency_and_survives_unrelated_story_c
             "fresh",
             "nonsecret projection ignores unrelated story change"
         );
-        let fresh = read_revision_canonical_freshness(&tx, fixture.project(), &projection)?;
+        let fresh = read_revision_canonical_freshness(&mut tx, fixture.project(), &projection)?;
         assert!(
             matches!(fresh, RevisionFreshnessRead::Fresh(_)),
             "new contract canonical recovery: {fresh:?}"
@@ -1099,10 +1097,10 @@ fn new_scope_detects_archived_anchor_through_native_feed_without_rewriting_histo
     )
     .expect("archive through Native writer");
     publish_native_freshness_after_change(&db);
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    db.with_conn_mut(|conn| {
+        let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
         assert_eq!(load_envelope(&tx, &child), before);
-        let result = read_revision_canonical_freshness(&tx, fixture.project(), &child)?;
+        let result = read_revision_canonical_freshness(&mut tx, fixture.project(), &child)?;
         assert!(
             !matches!(result, RevisionFreshnessRead::Fresh(_)),
             "archived target must fail closed"
@@ -1160,13 +1158,13 @@ fn new_secret_scope_becomes_stale_when_another_scene_ambiguates_its_story_key() 
         .with_conn(|c| Ok::<_, anyhow::Error>(scope_token(c, &secret)?))
         .expect("sealed projection token");
     patch_scope_story(&db, &fixture, other, "10", "other-story-10");
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    db.with_conn_mut(|conn| {
+        let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
         assert_eq!(scope_token(&tx, &secret)?, sealed);
         assert_ne!(current_projection_token(&tx, &fixture, &secret), sealed);
         assert_eq!(stored_freshness(&tx, &fixture, &secret), "stale");
         assert!(!matches!(
-            read_revision_canonical_freshness(&tx, fixture.project(), &secret)?,
+            read_revision_canonical_freshness(&mut tx, fixture.project(), &secret)?,
             RevisionFreshnessRead::Fresh(_)
         ));
         let value: String = tx.query_row(

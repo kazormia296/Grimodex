@@ -255,7 +255,7 @@ pub fn write_dependency_declaration_set(
     db: &Database,
     request: DependencyDeclarationSetRequest,
 ) -> anyhow::Result<DependencyDeclarationSetReceipt> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             write_dependency_declaration_set_in_tx(conn, request)
         })

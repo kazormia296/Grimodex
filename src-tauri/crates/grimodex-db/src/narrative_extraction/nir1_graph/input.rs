@@ -2611,7 +2611,7 @@ mod relation_bytes_tests {
     }
 
     /// VM steps of one statement, counted per instruction like the Graph budget.
-    fn steps_of(conn: &Connection, sql: &str) -> (i64, u64) {
+    fn steps_of(conn: &mut Connection, sql: &str) -> (i64, u64) {
         let steps = Arc::new(AtomicU64::new(0));
         let counter = Arc::clone(&steps);
         crate::set_sqlite_progress_handler(
@@ -2716,7 +2716,7 @@ mod relation_bytes_tests {
     fn relation_bytes_cost_follows_the_payload_not_the_project() {
         const PAYLOAD: usize = 10;
         let db = migrated();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             set_payload(
                 conn,
                 &payload_naming((0..PAYLOAD).map(|index| format!("rel-{index:04}"))),
@@ -2753,7 +2753,7 @@ mod relation_bytes_tests {
     #[test]
     fn relation_bytes_cost_is_linear_in_the_payload_relations() {
         let db = migrated();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             for index in 0..1_000 {
                 add_relation(conn, PROJECT, &format!("rel-{index:04}"));
             }

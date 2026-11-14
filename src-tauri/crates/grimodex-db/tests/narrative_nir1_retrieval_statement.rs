@@ -22,15 +22,15 @@ fn retrieval_statement_is_ordered_immutable_assertion_text_with_exact_bindings()
     let path = std::env::temp_dir().join(format!("nir1-statement-{}.db", uuid::Uuid::new_v4()));
     std::fs::write(&path, bytes).expect("private fixture copy");
     {
-        let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        let mut conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .expect("read-only DB");
-        let tx = conn.unchecked_transaction().expect("one read snapshot");
+        let mut tx = grimodex_db::ScopedTransaction::begin(&mut conn).expect("one read snapshot");
         let project = manifest["projectId"].as_str().expect("project");
         let query = manifest["s2"].as_str().expect("S2");
         for revision in manifest["revisionIds"].as_array().expect("children") {
             let revision = revision.as_str().expect("revision");
             let RevisionEligibilityRead::Eligible(snapshot) =
-                read_revision_retrieval_eligibility(&tx, project, revision, query)
+                read_revision_retrieval_eligibility(&mut tx, project, revision, query)
                     .expect("complete normal UI child")
             else {
                 panic!("normal approved child must be eligible");

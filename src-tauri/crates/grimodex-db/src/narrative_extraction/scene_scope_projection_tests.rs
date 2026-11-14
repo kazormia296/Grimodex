@@ -1629,9 +1629,9 @@ fn x13_graph_publish_reads_the_scope_once_for_any_number_of_anchors() -> Result<
         let snapshot = authority
             .with_read_transaction(|conn| prepare_graph_index_build(conn, runtime, PROJECT))?;
         let (published, reads) = project_read_probe::recording(|| {
-            authority.with_conn(|conn| {
-                let tx = conn.unchecked_transaction()?;
-                publish_nir1_entity_relation_index_in_tx(&tx, runtime, snapshot)?;
+            authority.with_conn_mut(|conn| {
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+                publish_nir1_entity_relation_index_in_tx(&mut tx, runtime, snapshot)?;
                 tx.commit()?;
                 Ok(())
             })

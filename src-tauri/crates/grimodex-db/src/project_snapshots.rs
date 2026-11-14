@@ -407,8 +407,7 @@ fn query_rows(conn: &Connection, sql: &str, params: &[SqlValue]) -> anyhow::Resu
     let mut statement = conn.prepare(sql)?;
     let column_names: Vec<String> = statement
         .column_names()
-        .iter()
-        .map(|name| (*name).to_string())
+        .map(|name| name.to_string())
         .collect();
     let rows = statement.query_map(params_from_iter(params.iter()), |row| {
         let mut result = RawRow::new();
@@ -4851,7 +4850,7 @@ mod tests {
                 RestoreScope::Snippet,
             ],
         );
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
                 AuthAction::Insert {
                     table_name: "state_snapshots",
@@ -4864,7 +4863,7 @@ mod tests {
         .expect("install state snapshot insert authorizer");
         let error = apply_project_snapshot_restore(&db, payload)
             .expect_err("state snapshot insert denial must abort the restore");
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
             Ok(())
         })
@@ -4915,7 +4914,7 @@ mod tests {
     };
 
     fn declare_scene(db: &Database, project_id: &str, scene_id: &str) {
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             crate::narrative_extraction::with_immediate_transaction(conn, |conn| {
                 let declaration = test_declaration(conn, project_id, scene_id)?;
                 set_scene_body_declaration_for_test(conn, &declaration)
@@ -5146,7 +5145,7 @@ mod tests {
                 RestoreScope::Snippet,
             ],
         );
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
                 AuthAction::Insert {
                     table_name: "state_snapshots",
@@ -5159,7 +5158,7 @@ mod tests {
         .expect("install state snapshot insert authorizer");
         apply_project_snapshot_restore(&db, payload)
             .expect_err("state snapshot insert denial must abort the restore");
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
             Ok(())
         })
