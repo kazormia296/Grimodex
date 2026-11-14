@@ -188,7 +188,7 @@ jobs:
     name: Change scope
     if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 10
     outputs:
       journeys: ${{ steps.scope.outputs.journeys }}
       rust: ${{ steps.scope.outputs.rust }}
@@ -211,6 +211,7 @@ jobs:
       - name: Set up Node.js for the scope script
         if: github.event_name == 'pull_request'
         continue-on-error: true
+        timeout-minutes: 2
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
@@ -218,6 +219,7 @@ jobs:
       - name: Decide which lanes run
         id: scope
         continue-on-error: true
+        timeout-minutes: 2
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -226,7 +228,10 @@ jobs:
           set -u
           lanes="journeys rust native migration windows browser lfm security"
           decision=""
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] && [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ]; then
+          # A pull request that changes the decision code or a workflow is never judged by that code:
+          # git diff exits 1 for a change and 128 for an error, and both leave every lane running.
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] && [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ] &&
+            git diff --quiet "$BASE_SHA...$HEAD_SHA" -- scripts/ci-change-scope.mjs scripts/impact/ .github/workflows/; then
             decision="$(node scripts/ci-change-scope.mjs --event "$GITHUB_EVENT_NAME" --base "$BASE_SHA" --head "$HEAD_SHA" --summary "$GITHUB_STEP_SUMMARY" --json "$RUNNER_TEMP/ci-change-scope.json")" || decision=""
           fi
           valid=1
@@ -247,8 +252,8 @@ jobs:
             {
               echo "## Change scope"
               echo
-              echo "Every lane runs: this is not a pull request, or the scope decision was unavailable or invalid."
-              echo "Anything the script wrote above this line was discarded."
+              echo "Every lane runs: this is not a pull request, the pull request changes the scope decision code or a workflow, or the scope decision was unavailable or invalid."
+              echo "Anything the script wrote above this line is superseded by the final outputs below."
             } >> "$GITHUB_STEP_SUMMARY"
             if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
               # A script that failed may have left a stale record behind; replace it with the final values.
@@ -273,6 +278,7 @@ jobs:
       - name: Upload change scope evidence
         if: github.event_name == 'pull_request'
         continue-on-error: true
+        timeout-minutes: 1
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-change-scope-${{ github.run_id }}-${{ github.run_attempt }}

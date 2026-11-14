@@ -130,7 +130,7 @@ test("the changes job never fails the run and diffs only for pull requests", () 
   assert.equal(changes["runs-on"], "ubuntu-24.04");
   // The checkout is the only step that can hang on the network; it has its own
   // step timeout, and the job timeout covers checkout, setup, script and upload.
-  assert.equal(changes["timeout-minutes"], 8);
+  assert.equal(changes["timeout-minutes"], 10);
   // Same guard as the journey roots, so a root that runs always has `changes`.
   assert.equal(
     changes.if,
@@ -1019,6 +1019,55 @@ test("the workflow step runs every lane for a source change, but still skips lfm
     const result = await runScopeStep({ root, repo, event: "pull_request", base, head });
     assert.deepEqual(asBooleans(result.outputs), { ...ALL_TRUE_STRINGS, lfm: "false" });
   });
+});
+
+test("the workflow step never lets a pull request's own decision code or workflow judge it", async () => {
+  await withTemp(async (root) => {
+    for (const changed of [
+      "scripts/ci-change-scope.mjs",
+      "scripts/impact/core.mjs",
+      ".github/workflows/ci.yml",
+    ]) {
+      const { repo, base, head } = await makeRepository(
+        path.join(root, changed.replaceAll("/", "_")),
+        { "docs/a.md": "one\n", [changed]: "// base\n" },
+        { "docs/a.md": "two\n", [changed]: "// head\n" },
+      );
+      // A stand-in "script" that would skip everything must not even be consulted.
+      const result = await runScopeStep({
+        root: path.join(root, changed.replaceAll("/", "_")),
+        repo,
+        event: "pull_request",
+        base,
+        head,
+        command: `printf '${LANES.map((lane) => `${lane}=false`).join("\\n")}\\n'`,
+      });
+      assert.deepEqual(asBooleans(result.outputs), ALL_TRUE_STRINGS, changed);
+      assertFinalOutputsSummary(result.summary, result.outputs, changed);
+    }
+    // Control: with only docs changed, the same stand-in script is consulted and skips.
+    const control = await makeRepository(path.join(root, "control"), { "docs/a.md": "one\n" }, { "docs/a.md": "two\n" });
+    const skipped = await runScopeStep({
+      root: path.join(root, "control"),
+      repo: control.repo,
+      event: "pull_request",
+      base: control.base,
+      head: control.head,
+      command: `printf '${LANES.map((lane) => `${lane}=false`).join("\\n")}\\n'`,
+    });
+    assert.deepEqual(asBooleans(skipped.outputs), Object.fromEntries(LANES.map((lane) => [lane, "false"])));
+  });
+});
+
+test("every step of the changes job has its own timeout inside the job's timeout", () => {
+  const job = ci.jobs.changes;
+  let total = 0;
+  for (const step of job.steps) {
+    assert.ok(Number.isInteger(step["timeout-minutes"]) && step["timeout-minutes"] > 0, step.name);
+    assert.equal(step["continue-on-error"], true, step.name);
+    total += step["timeout-minutes"];
+  }
+  assert.ok(total < job["timeout-minutes"], `step timeouts ${total} must stay below the job timeout ${job["timeout-minutes"]}`);
 });
 
 test("the workflow step runs every lane for push, schedule, dispatch and call without a checkout", async () => {

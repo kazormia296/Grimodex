@@ -135,6 +135,7 @@ async function gitText(repoRoot, args) {
     cwd: repoRoot,
     encoding: "utf8",
     maxBuffer: 4 * 1024 * 1024,
+    timeout: 60_000,
   });
   return result.stdout;
 }
