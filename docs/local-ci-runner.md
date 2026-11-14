@@ -113,6 +113,8 @@ the bounded OS owner; exact malformed or mixed inputs reject before checkout/set
 Nonempty profiles still exclude all fifteen ordinary jobs. Keep product mode
 `all`, all booleans false and canonical tuple/options empty. Existing
 contracts/quick/full semantics are unchanged.
+The pull-request-only `Change scope` job (`changes`) is excluded by every
+nonempty canonical selector as well; see the pull-request lane skipping below.
 
 The single Linux check inventories those fixed executable permissions, owner,
 mode and digest, then attempts user/mount/network/PID namespaces with the
@@ -146,6 +148,41 @@ remain deferred pending reviewed admission and affected proof after removal of
 host-cache reclamation. Removing those deletion steps does not establish resource
 admission or a job pass. These five jobs remain **deferred / SKIPPED, not passed**.
 Their default/reusable selection and complete product commands are retained.
+
+Pull requests only: registered `ci.yml` has a `Change scope` job (`changes`) that
+skips heavy lanes when every changed path is neutral for them. The rules are
+`scripts/ci-change-scope.json`; `scripts/ci-change-scope.mjs` decides from the
+`base...head` diff and needs no dependency installation. The lanes are journeys
+(the two journey roots; the shards, the aggregate and runtime performance skip
+through `needs`), Rust (shared crates and the three-OS C-query worker), native,
+migration, windows, browser (Browser, WebGL, Storybook), LFM and security.
+Quality, Frontend and Electron always run. Selection is deny by default: an
+unclassified path, a forced-all path (workflows, lockfiles, manifests,
+`electron/**`), an empty or incomplete diff, any failure, and every event other
+than `pull_request` (push, schedule, manual dispatch, reusable call) run every
+lane. A lane skipped this way was **not verified** by that pull request run: it
+is skipped, not passed. Its evidence comes from the master push run and the
+canonical Quick and Full runs. The job summary and the `ci-change-scope-*`
+artifact record each lane's reason.
+The decision is made with both the pull request's `scripts/ci-change-scope.json`
+and the base commit's copy of it (read from git, so no second checkout), and a
+lane is skipped only when both rules skip it: a pull request cannot skip a lane by
+editing the rules. If the base commit has no such file only the pull request's
+rules apply; if git fails or the base copy cannot be trusted every lane runs. The
+script itself still runs from the pull request's checkout. The Windows lane also
+keeps running for paths the installer packs (`public/**`, `LICENSING.md`,
+`experiments/lfm25-encoder-phase0/local/**`); a test derives them from
+`electron-builder.yml` and the vite config.
+When the shell falls back to running every lane, it appends a `Final outputs`
+section to the job summary (authoritative over any table above it) and rewrites
+the JSON artifact with the final values.
+`changes` is built not to fail (soft steps, a 3 minute step timeout on the
+checkout, an 8 minute job timeout): a skipped `changes` job leaves empty outputs,
+which run every lane, but if the `changes` job itself fails as a whole the shard,
+aggregate and runtime-performance jobs are skipped by their implicit `success()`
+and the journeys evidence of that run is lost.
+After the merge, compare the time from the start of a run until each lane starts,
+before and after the introduction.
 
 For a separately reviewed real-worker lane, `canonical_profile=c-query-workers`
 selects **only the existing Linux/macOS/Windows `nir1-c-query-worker` matrix**.
@@ -743,6 +780,8 @@ before checkout/setup/install. There is no nonempty disabled sentinel: `none`,
 whitespace and unknown profiles are invalid. Contracts rejects candidate tuples;
 its artifact contains checkout identity and source TAP, not canonical receipts.
 The new manual inputs are absent from reusable release calls.
+On pull requests the `Change scope` job may skip lanes the diff cannot reach;
+a skipped lane is never reported as passed (see the lane skipping above).
 
 The earlier `source_focused=true`/`source_canonical_contracts=true` fallback still
 runs the same four suites in the Electron source owner, with new canonical inputs
