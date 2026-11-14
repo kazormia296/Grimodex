@@ -131,7 +131,7 @@ Rust マイグレーション: `src-tauri/crates/grimodex-db/src/migrate.rs` の
 | `embedding_dim` | INTEGER | 256 / 768 等。長さ整合 + モデル変更検出 |
 | `model_id` | TEXT | 例: `cl-nagoya/ruri-v3-30m@local/model_int8.onnx/prefix-v1` |
 | `content_hash` | TEXT | シーン本文の SHA-256 hex (race condition 検出) |
-| `chunker_version` | TEXT | 例: `semantic-prose-chunker-v1` |
+| `chunker_version` | TEXT | 例: `semantic-prose-chunker-v2` |
 | `created_at` | INTEGER | ms-since-epoch（Drizzle `mode: "timestamp_ms"` と一致） |
 | `updated_at` | INTEGER | 同上 |
 
@@ -172,7 +172,9 @@ DB スキーマ詳細（`scene_chunks` / `codex_chunks` の完全な DDL）は
 ## チャンク化戦略
 
 実装: `src-tauri/crates/grimodex-semantic/src/chunker.rs`。
-バージョン定数 `CHUNKER_VERSION = "semantic-prose-chunker-v1"`。
+バージョン定数 `CHUNKER_VERSION = "semantic-prose-chunker-v2"`（英語は `semantic-prose-chunker-en-v2`）。
+版を上げると既存の `scene_chunks` は stale、`codex_chunks` は未 index と数えられ、
+プロジェクトを開いたときの自動の back-index（`autoIndex.ts`）が全件作り直す。
 **ProseMirror / TipTap JSON 起点で行う**（生 plain_text から再構築しない）。
 
 ### 第1段階 — 段落抽出と分類
@@ -180,6 +182,17 @@ DB スキーマ詳細（`scene_chunks` / `codex_chunks` の完全な DDL）は
 1. doc を descend して `paragraph` ノードのテキストを順に拾う。
    - `sceneBeat` サブツリーは **本文ではないのでスキップ**。
    - `generatedProseBlock` 等のラッパーは中身に降りる。
+   - 段落の中の inline は TS の canonical（`gdx-canonical-text/1`、
+     `proseMirrorSerializer.ts` の `serializeTextBlock`）と同じ規則で読む:
+     `text`（CRLF・CR は LF に）、`hardBreak` は `\n`、`ruby` は親文字 `attrs.base` だけ
+     （読み `annotation` は入れない）、`mention` は `@` + `label`（無ければ `id`）、
+     `image` は U+FFFC。v1 は `text` と `hardBreak` だけを読み、ルビを振った語が
+     本文・Codex の索引・Codex の候補から消えていた（v2 で修正）。
+   - block の定義は canonical と違う（paragraph だけが本文。空の block atom・
+     `sceneBeat`・`codeBlock`・`heading` は数えない）。一致の試験は共有 golden
+     `evals/fixtures/narrative/canonical-text-v1.json` のうち block の定義が違う
+     fixture だけを理由付きで外す（`chunker.rs` の
+     `paragraph_text_matches_the_shared_canonical_golden`）。
 2. 各段落を以下で分類:
    - 先頭の非空白文字が `「` または `『` なら **Dialogue**。
    - それ以外 (空段落含む) は **Prose**。
@@ -258,7 +271,7 @@ DB スキーマ詳細（`scene_chunks` / `codex_chunks` の完全な DDL）は
 | `max_seq_len` | 8192 | 512 |
 | dir | `resources/semantic/ruri-v3-30m/` | `resources/semantic/bge-small-en-v15/` |
 | `model_id` suffix | `@local/model_int8.onnx/prefix-v1` | `@local/model_int8.onnx/en-v1` |
-| `chunker_version` | `semantic-prose-chunker-v1` | `semantic-prose-chunker-en-v1` |
+| `chunker_version` | `semantic-prose-chunker-v2` | `semantic-prose-chunker-en-v2` |
 | golden fixture | `ruri_v3_30m_golden.json` | `bge_small_en_v15_golden.json` |
 
 `scene_chunks.model_id` / `codex_chunks.model_id` に書く文字列は spec の
