@@ -269,3 +269,55 @@ export function matchExistingEntity(
 
   return { status: "none" };
 }
+
+/** {@link inspectExactEntityMatch} の結果。resolved／ambiguous の判定は変えない別の見方。 */
+export interface ExactEntityMatchInspection {
+  /** 名前または別名が完全一致した Entry（名前と別名を通した重複なしの一覧）。 */
+  readonly exactRefs: readonly KnowledgeEntityRef[];
+  /**
+   * 完全一致していないが、語の一部だけが当たる他の Entry（敬称除去・prefix・substring）。
+   * 姓だけの Entry と姓名の Entry が両方ある名簿で、姓だけの表記が前者に完全一致しても、
+   * 後者がここに出る。呼び名の完全一致だけに狭める規則（{@link isRelationalTerm}）はかけず、
+   * 常に全部の当たり方を見る。
+   */
+  readonly partialOtherRefs: readonly KnowledgeEntityRef[];
+}
+
+/**
+ * 表記 1 つが名簿のどの Entry に当たるかを、{@link matchExistingEntity} と同じ走査で数える。
+ * 一括承認の条件（完全一致が 1 Entry だけ・他に部分一致が無い）の判定に使う。
+ * {@link matchExistingEntity} は名前に 1 件当たると別名の当たりを見ないので、
+ * 「名前が A、別名が B」のような表記は resolved（A）のまま、ここでだけ該当 2 Entry になる。
+ */
+export function inspectExactEntityMatch(
+  surface: string,
+  catalog: readonly ExistingEntityCatalogRecord[],
+): ExactEntityMatchInspection {
+  const surfaceKey = candidateKey(surface);
+  if (!surfaceKey) return { exactRefs: [], partialOtherRefs: [] };
+  const strippedKey = candidateKey(stripHonorific(surface));
+  const exactRefs: KnowledgeEntityRef[] = [];
+  const partialOtherRefs: KnowledgeEntityRef[] = [];
+  for (const entry of catalog) {
+    const entryNameKey = candidateKey(entry.name);
+    const aliasKeys = parseAliases(
+      entry.aliases as string[] | string | null | undefined,
+    )
+      .map(candidateKey)
+      .filter((key) => key.length > 0);
+    const { methods } = scoreAgainstEntry(
+      surfaceKey,
+      strippedKey,
+      entryNameKey,
+      aliasKeys,
+      false,
+    );
+    if (methods.length === 0) continue;
+    if (methods.includes("exact-name") || methods.includes("exact-alias")) {
+      if (!exactRefs.includes(entry.ref)) exactRefs.push(entry.ref);
+    } else if (!partialOtherRefs.includes(entry.ref)) {
+      partialOtherRefs.push(entry.ref);
+    }
+  }
+  return { exactRefs, partialOtherRefs };
+}

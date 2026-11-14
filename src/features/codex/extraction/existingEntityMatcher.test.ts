@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  inspectExactEntityMatch,
   matchExistingEntity,
   type ExistingEntityCatalogRecord,
 } from "./existingEntityMatcher";
@@ -154,5 +155,79 @@ describe("matchExistingEntity", () => {
       if (result.status !== "ambiguous") return;
       expect(result.candidates[0]?.methods).toContain("honorific-strip");
     });
+  });
+});
+
+describe("inspectExactEntityMatch", () => {
+  it("名前が A・別名が B に当たる表記は、resolved は A のまま、該当は 2 Entry になる", () => {
+    const catalog = [
+      entry({ ref: "K0001", name: "ミナト" }),
+      entry({ ref: "K0002", name: "リオ", aliases: ["ミナト"] }),
+    ];
+    expect(matchExistingEntity({ surfaces: ["ミナト"] }, catalog)).toEqual({
+      status: "resolved",
+      ref: "K0001",
+      method: "exact-name",
+    });
+    expect(inspectExactEntityMatch("ミナト", catalog).exactRefs).toEqual([
+      "K0001",
+      "K0002",
+    ]);
+  });
+
+  it("名前と別名の両方に同じ Entry で当たっても 1 Entry と数える", () => {
+    const result = inspectExactEntityMatch("ミナト", [
+      entry({ ref: "K0001", name: "ミナト", aliases: ["ミナト"] }),
+    ]);
+    expect(result.exactRefs).toEqual(["K0001"]);
+    expect(result.partialOtherRefs).toEqual([]);
+  });
+
+  it("姓だけの Entry と姓名の Entry がある名簿では、姓名の Entry を部分一致の他 Entry に出す", () => {
+    const catalog = [
+      entry({ ref: "K0001", name: "ミナト" }),
+      entry({ ref: "K0002", name: "ミナトソウ" }),
+    ];
+    // resolved は姓だけの Entry に完全一致のまま（挙動は変えない）。
+    expect(matchExistingEntity({ surfaces: ["ミナト"] }, catalog)).toEqual({
+      status: "resolved",
+      ref: "K0001",
+      method: "exact-name",
+    });
+    const result = inspectExactEntityMatch("ミナト", catalog);
+    expect(result.exactRefs).toEqual(["K0001"]);
+    expect(result.partialOtherRefs).toEqual(["K0002"]);
+  });
+
+  it("敬称除去で当たる別の Entry も部分一致に数える", () => {
+    const result = inspectExactEntityMatch("ミナト", [
+      entry({ ref: "K0001", name: "ミナト" }),
+      entry({ ref: "K0002", name: "ミナトさん" }),
+    ]);
+    expect(result.exactRefs).toEqual(["K0001"]);
+    expect(result.partialOtherRefs).toEqual(["K0002"]);
+  });
+
+  it("他に何も当たらなければ部分一致は空", () => {
+    const result = inspectExactEntityMatch("ミナト", [
+      entry({ ref: "K0001", name: "ミナト" }),
+      entry({ ref: "K0002", name: "ハル" }),
+    ]);
+    expect(result).toEqual({ exactRefs: ["K0001"], partialOtherRefs: [] });
+  });
+
+  it("呼び名の語でも、完全一致の狭めはかけず部分一致の他 Entry を見る", () => {
+    const result = inspectExactEntityMatch("姉ちゃん", [
+      entry({ ref: "K0001", name: "姉ちゃん" }),
+      entry({ ref: "K0002", name: "姉ちゃんの家" }),
+    ]);
+    expect(result.exactRefs).toEqual(["K0001"]);
+    expect(result.partialOtherRefs).toEqual(["K0002"]);
+  });
+
+  it("空の表記は何にも当たらない", () => {
+    expect(
+      inspectExactEntityMatch("  ", [entry({ ref: "K0001", name: "" })]),
+    ).toEqual({ exactRefs: [], partialOtherRefs: [] });
   });
 });
