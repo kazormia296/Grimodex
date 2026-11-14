@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { CodexEntityReviewProposal } from "./codexStructureExtractionStore";
 import { isSafeForCodexEntityBulkApprove } from "./codexStructureExtractionStore";
 import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
@@ -5,6 +6,8 @@ import type { NarrativeProposalStatus } from "@/features/narrative-extraction/ru
 export interface CodexEntityProposalCardProps {
   readonly proposal: CodexEntityReviewProposal;
   readonly selected?: boolean;
+  /** 結び先 Entry の名前（既存への結び付けのとき）。無ければ不透明な ref を出す。 */
+  readonly targetName?: string;
   readonly onSelect?: () => void;
   readonly onDecide?: (
     status: Exclude<NarrativeProposalStatus, "unreviewed">,
@@ -19,10 +22,16 @@ function statusGlyph(proposal: CodexEntityReviewProposal): string {
   return "□";
 }
 
-function bindingLabel(proposal: CodexEntityReviewProposal): string {
+function bindingLabel(
+  proposal: CodexEntityReviewProposal,
+  targetName: string | undefined,
+  existingLabel: (name: string) => string,
+): string {
   const binding = proposal.proposal.payload.binding;
   if (binding.kind === "create-new") return "新規作成";
-  if (binding.kind === "bind-existing") return `既存 · ${binding.entityRef}`;
+  if (binding.kind === "bind-existing") {
+    return existingLabel(targetName ?? binding.entityRef);
+  }
   return "未解決";
 }
 
@@ -32,9 +41,11 @@ function bindingLabel(proposal: CodexEntityReviewProposal): string {
 export function CodexEntityProposalCard({
   proposal,
   selected = false,
+  targetName,
   onSelect,
   onDecide,
 }: CodexEntityProposalCardProps) {
+  const { t } = useTranslation();
   const blocked = proposal.applicability === "blocked";
   const applied = Boolean(proposal.application);
   const safeHint =
@@ -64,7 +75,9 @@ export function CodexEntityProposalCard({
             {proposal.displayTitle}
           </span>
           <span className="block text-[10px] text-muted-foreground">
-            {bindingLabel(proposal)}
+            {bindingLabel(proposal, targetName, (name) =>
+              t("codex.structureReview.bindingExisting", { name }),
+            )}
           </span>
           {blocked && (
             <span className="block text-[10px] text-amber-700 dark:text-amber-400">
@@ -76,9 +89,21 @@ export function CodexEntityProposalCard({
               適用済み（編集不可）
             </span>
           )}
+          {proposal.staleBind && (
+            <span
+              className="block text-[10px] text-amber-700 dark:text-amber-400"
+              data-testid="codex-entity-stale-bind-note"
+            >
+              {proposal.staleBindCause === "target-missing"
+                ? t("codex.structureReview.staleBindTargetMissing")
+                : t("codex.structureReview.staleBind")}
+            </span>
+          )}
           {safeHint && (
             <span className="block text-[10px] text-emerald-700 dark:text-emerald-400">
-              安全一括承認の対象
+              {proposal.proposal.payload.binding.kind === "bind-existing"
+                ? t("codex.structureReview.safeHintBind")
+                : t("codex.structureReview.safeHintCreate")}
             </span>
           )}
         </span>

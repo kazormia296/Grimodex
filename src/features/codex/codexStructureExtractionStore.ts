@@ -18,6 +18,7 @@ import {
   rematchCodexRelationProposals,
   relationEndpointsReady,
 } from "./extraction/relationApplicability";
+import { refreshEntityBindSafety } from "./extraction/entityBulkSafety";
 
 export { relationEndpointsReady };
 
@@ -53,6 +54,11 @@ export interface CodexStructureExtractionCoverage {
 /**
  * Safe bulk-approve gates for Entity Binding (spec §22).
  * Relation bulk approve is disabled in v1.
+ *
+ * 一括承認の対象は 2 通り（{@link isSafeForCodexEntityBulkApprove}）：
+ * 新規作成（下の 7 つの旗）と、完全一致の既存への結び付け（`existingExactBind` ほか）。
+ * 結び付けを承認できるのは `bulkApproveSafeCodexStructureProposals`（Native の revision・decision と
+ * 今の Codex での再検査を通る）だけ。この store の `bulkApproveSafe` は新規作成だけを反転する。
  */
 export interface CodexEntityProposalSafetyFlags {
   readonly evidenceExact: boolean;
@@ -61,8 +67,19 @@ export interface CodexEntityProposalSafetyFlags {
   readonly explicitProperName: boolean;
   readonly explicitAliasesOnly: boolean;
   readonly noRelationDeps: boolean;
-  /** create-new only — existing bind / enrichment is never bulk-safe. */
+  /** create-new の一括の条件。既存への結び付けは `existingExactBind` の側で判定する。 */
   readonly createNew: boolean;
+  /**
+   * 完全一致の既存 Entry への結び付けで、読まずに通せる静的な条件を満たす（設計 §3.2 の 3 の
+   * (a)(b)(c)(f)(g)(h)）。`refreshEntityBindSafety` が catalog から引き直す。
+   * 今の Codex での再検査は一括承認の実行時（`bulkApproveSafeCodexStructureProposals`）。
+   */
+  readonly existingExactBind: boolean;
+  /**
+   * (e) この実体を端点・依存に持つ関係・Phase・Base Detail の提案が無い。
+   * `existingExactBind` の側だけに効く（新規作成の一括は `noRelationDeps` のまま変えない）。
+   */
+  readonly existingBindNoDependents: boolean;
 }
 
 export interface CodexReviewEvidenceQuote {
@@ -111,6 +128,18 @@ export interface CodexEntityReviewProposal {
   readonly compiledOperation?: CodexCompiledDomainOperation | null;
   /** Set after Native Apply; cold-start must not re-send these proposals. */
   readonly application?: CodexReviewProposalApplication | null;
+  /**
+   * 一括承認で、読まずに通した完全一致の結び付け。decision の記録（decisionJson）から復元できる。
+   * 作者が 1 件ずつ承認し直すと外れる。見返す一覧（T3）の対象。
+   */
+  readonly bulkApprovedExactBind?: boolean;
+  /**
+   * Apply の前に、結び先の版が古い・条件が変わったとして承認前へ戻された。作者が今の版で
+   * 承認し直すまで Apply に入らない。decision の記録（decisionJson）から復元できる。
+   */
+  readonly staleBind?: boolean;
+  /** `staleBind` の原因（decisionJson.cause）。結び先が見つからないときは文言を分ける。 */
+  readonly staleBindCause?: string;
 }
 
 export interface CodexRelationReviewProposal {
@@ -269,7 +298,8 @@ export interface CodexStructureExtractionReviewProjection {
    */
   readonly skippedRelationalTerms?: readonly CodexStructureSkippedRelationalTerm[];
 }
-export function isSafeForCodexEntityBulkApprove(
+/** 新規作成の一括承認の条件（従来どおり）。 */
+export function isSafeCreateNewForCodexEntityBulkApprove(
   flags: CodexEntityProposalSafetyFlags,
 ): boolean {
   return (
@@ -280,6 +310,29 @@ export function isSafeForCodexEntityBulkApprove(
     flags.explicitAliasesOnly &&
     flags.noRelationDeps &&
     flags.createNew
+  );
+}
+
+/**
+ * 完全一致の既存 Entry への結び付けの一括承認の条件。(d) 根拠が全件完全一致、(e) 依存する提案が
+ * 無い、残り (a)(b)(c)(f)(g)(h) は `existingExactBind`。
+ */
+export function isSafeExistingExactBindForCodexEntityBulkApprove(
+  flags: CodexEntityProposalSafetyFlags,
+): boolean {
+  return (
+    flags.existingExactBind &&
+    flags.evidenceExact &&
+    flags.existingBindNoDependents
+  );
+}
+
+export function isSafeForCodexEntityBulkApprove(
+  flags: CodexEntityProposalSafetyFlags,
+): boolean {
+  return (
+    isSafeCreateNewForCodexEntityBulkApprove(flags) ||
+    isSafeExistingExactBindForCodexEntityBulkApprove(flags)
   );
 }
 
@@ -361,6 +414,9 @@ export function buildCodexEntityProposalSafetyFlags(args: {
   readonly aliasesAllExplicit: boolean;
   readonly hasRelationDeps?: boolean;
 }): CodexEntityProposalSafetyFlags {
+  // existingExactBind／existingBindNoDependents は catalog と projection 全体が要るので、
+  // ここでは保守側の既定値にし、refreshEntityBindSafety（setProjection・各 action・
+  // 復元／live の組み立ての最後）が引き直す。
   const evidenceExact =
     args.evidenceMethods.length > 0 &&
     args.evidenceMethods.every(
@@ -374,6 +430,8 @@ export function buildCodexEntityProposalSafetyFlags(args: {
     explicitAliasesOnly: args.aliasesAllExplicit,
     noRelationDeps: !(args.hasRelationDeps ?? false),
     createNew: args.bindingKind === "create-new",
+    existingExactBind: false,
+    existingBindNoDependents: false,
   };
 }
 
@@ -598,7 +656,8 @@ export const useCodexStructureExtractionStore =
     selectedBaseDetailProposalId: null,
     selectedPhaseProposalId: null,
 
-    setProjection: (projection) => {
+    setProjection: (incoming) => {
+      const projection = refreshEntityBindSafety(incoming);
       const entities = projection.proposals;
       const relationProposals = reevaluateRelationProposals(
         projection,
@@ -723,6 +782,14 @@ export const useCodexStructureExtractionStore =
       const proposals = replaceProposal(projection.proposals, proposalId, {
         ...current,
         status,
+        // 状態を変えたら、一括で通した印・承認前へ戻された印は外す（decide が必要なら付け直す）。
+        ...(status !== current.status
+          ? {
+              bulkApprovedExactBind: false,
+              staleBind: false,
+              staleBindCause: undefined,
+            }
+          : {}),
       });
       const relationProposals = reevaluateRelationProposals(
         projection,
@@ -851,6 +918,10 @@ export const useCodexStructureExtractionStore =
           applicability === "blocked" ? "Codex Type が未解決です" : undefined,
         revisionId: current.revisionId,
         status: "unreviewed",
+        // 承認前へ戻すので、一括で通した印・承認前へ戻された印は持ち越さない。
+        bulkApprovedExactBind: false,
+        staleBind: false,
+        staleBindCause: undefined,
         safety: buildCodexEntityProposalSafetyFlags({
           bindingKind: nextProposal.payload.binding.kind,
           typeStatus: nextProposal.payload.typeResolution.status,
@@ -868,9 +939,11 @@ export const useCodexStructureExtractionStore =
       );
       set({
         projection: {
-          ...projection,
-          proposals,
-          relationProposals,
+          ...refreshEntityBindSafety({
+            ...projection,
+            proposals,
+            relationProposals,
+          }),
           ...recount(
             proposals,
             relationProposals,
@@ -967,6 +1040,9 @@ export const useCodexStructureExtractionStore =
         displayTitle: nextProposal.payload.canonicalName,
         revisionId: current.revisionId,
         status: "unreviewed",
+        bulkApprovedExactBind: false,
+        staleBind: false,
+        staleBindCause: undefined,
         applicability,
         blockedReason:
           applicability === "blocked"
@@ -981,7 +1057,11 @@ export const useCodexStructureExtractionStore =
           hasExistingCandidates:
             nextProposal.payload.binding.kind === "unresolved",
           hasProperNameMention: current.safety.explicitProperName,
-          aliasesAllExplicit: true,
+          // 編集で渡された別名は確認済みとして payload に入る。渡されなかった別名は元の
+          // 確認状態のままなので、固定の true にせず payload から作る。
+          aliasesAllExplicit: nextProposal.payload.aliases.every(
+            (alias) => alias.status === "explicit",
+          ),
           hasRelationDeps: !current.safety.noRelationDeps,
         }),
       });
@@ -992,9 +1072,11 @@ export const useCodexStructureExtractionStore =
       );
       set({
         projection: {
-          ...projection,
-          proposals,
-          relationProposals,
+          ...refreshEntityBindSafety({
+            ...projection,
+            proposals,
+            relationProposals,
+          }),
           ...recount(
             proposals,
             relationProposals,
@@ -1400,7 +1482,9 @@ export const useCodexStructureExtractionStore =
         if (
           proposal.applicability !== "applicable" ||
           proposal.status !== "unreviewed" ||
-          !isSafeForCodexEntityBulkApprove(proposal.safety)
+          // 完全一致の結び付けは、今の Codex での再検査と Native の revision・decision・op の固定を
+          // 通る bulkApproveSafeCodexStructureProposals だけが承認する（ここでは対象にしない）。
+          !isSafeCreateNewForCodexEntityBulkApprove(proposal.safety)
         ) {
           return proposal;
         }

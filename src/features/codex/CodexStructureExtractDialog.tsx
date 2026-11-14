@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -23,6 +24,7 @@ import { useCodexStructureExtractionStore } from "./codexStructureExtractionStor
 import {
   applyCodexStructureExtractionReview,
   buildCodexStructureCatalogs,
+  readCurrentCodexEntries,
   restoreCodexStructureExtractionReview,
   startCodexStructureExtraction,
 } from "./codexStructureExtractionApi";
@@ -30,6 +32,12 @@ import { useCodexStore } from "./codexStore";
 import { listCodexRelations } from "./codexRelationApi";
 import { listCodexTypes } from "./typeApi";
 import { buildExistingRelationCatalog } from "./extraction/existingRelationMatcher";
+
+/** toast に出す提案名。先頭の数件と「+N」に切る（数百件が同時に古くなりうる）。 */
+function summarizeNames(names: readonly string[], limit = 5): string {
+  if (names.length <= limit) return names.join(", ");
+  return `${names.slice(0, limit).join(", ")} +${names.length - limit}`;
+}
 
 /**
  * Folder-scoped Codex Structure Extraction dialog
@@ -56,6 +64,7 @@ export function CodexStructureExtractDialog({
     (s) => s.setProjection,
   );
   const entries = useCodexStore((s) => s.entries);
+  const { t } = useTranslation();
 
   const folders = useMemo(
     () => nodes.filter((node) => node.nodeType === "folder"),
@@ -211,15 +220,27 @@ export function CodexStructureExtractDialog({
     setApplying(true);
     setError(null);
     try {
+      let excludedCount = 0;
+      // 画面の store は検索・種別で絞られうるので、Apply の前の古さの検査には DB から読んだ
+      // プロジェクト全体の Entry を使う。読めなければ空にして、検査を飛ばす（従来どおり）。
+      const currentEntries = await readCurrentCodexEntries(projectId).catch(
+        () => [],
+      );
       const applied = await applyCodexStructureExtractionReview({
         projectId,
-        entries: entries.map((entry) => ({
-          id: entry.id,
-          version: entry.version,
-          aliases: entry.aliases,
-          type: entry.type,
-        })),
+        entries: currentEntries,
+        onEntityApprovalsExcluded: (excluded) => {
+          excludedCount = excluded.length;
+          toast.warning(
+            t("codex.structureReview.applyExcluded", {
+              count: excluded.length,
+              names: summarizeNames(excluded.map((item) => item.displayTitle)),
+            }),
+          );
+        },
       });
+      // 全部が外れて何も取り込まなかったときは、承認し直せるように review を残す。
+      if (applied === 0 && excludedCount > 0) return;
       toast.success(`Codex 構造を ${applied} 件取り込みました`);
       generationRef.current += 1;
       clearProjection();
