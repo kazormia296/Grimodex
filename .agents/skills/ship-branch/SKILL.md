@@ -7,7 +7,7 @@ description: >
 
 # Ship Branch
 
-現在の作業ブランチを `push → PR → gate確認 → merge → remote base検証 → master Full` のうち、依頼された段階まで進める。マージまでがゴールなら、通常のPRでは merge 後の master の Full の dispatch（§8）まで含む。docs-only PR（§2.10 の例外2）は dispatch しない。base branch へ直接 push しない。失敗・pending・競合・未解決レビュー・HEAD 不一致がある状態ではマージしない。ただし通常のPRの2つの例外（§2.10）では、候補 head の `ci.yml` の完了を待たず、pending のまま merge できる。それでも競合・未解決レビュー・HEAD 不一致では merge しない。候補 head の `ci.yml` の failed／cancelled／timed out は、例外1では merge しない。例外2では docs の変更と関係ないと確かめた場合だけ merge する（§5）。
+現在の作業ブランチを `push → PR → gate確認 → merge → remote base検証 → master Full` のうち、依頼された段階まで進める。マージまでがゴールなら、通常のPRでは merge 後の master の Full の dispatch（§8）まで含む。base branch へ直接 push しない。失敗・pending・競合・未解決レビュー・HEAD 不一致がある状態ではマージしない。通常のPRの2つの例外（master の取込みだけの head、docs-only PR）は §2.10 に従う。
 
 merge のために遅れた branch を安全に同期する作業は含む（方法は §2.3）。新たな実装修正とその completion commit は
 実装／修正 skill が担当し、候補が変われば証跡を取り直す。
@@ -15,7 +15,7 @@ merge のために遅れた branch を安全に同期する作業は含む（方
 merge 前の証跡は PR の種類で分かれる。規則の正本は [GDX-TRACE-001](../../../policies/quality/iron-laws.md#GDX-TRACE-001) で、本スキルはその手順を担当する。
 本文の「手順N」と「§N」は節 N（`## N.`）を、「§N.M」はその節の項目 M を指す。
 
-- 通常のPR（既定。以下 通常path）: rebase 済みの候補の canonical Quick と、同じ head の `ci.yml` checks でマージする。canonical Full は通常のPRの merge 条件ではなく、merge 後に master の head で走らせる（§8）。例外として、master の取込みだけの head（§2.10 の例外1）と docs-only PR（§2.10 の例外2）は、候補 head の `ci.yml` の完了を待たない。どちらも release PR には使わない。
+- 通常のPR（既定。以下 通常path）: rebase 済みの候補の canonical Quick と、同じ head の `ci.yml` checks でマージする。canonical Full は通常のPRの merge 条件ではなく、merge 後に master の head で走らせる（§8）。例外として、master の取込みだけの head（§2.10 の例外1）と docs-only PR（§2.10 の例外2）は、§2.10 の条件で候補 head の `ci.yml` の完了を待たずに merge できる。どちらも release PR には使わない。
 - release PR（`package.json` の `version` を変える PR。`/bump-version` が作るものを含む。以下 release path。判定は §1.9）: 従来どおり complete な hosted Full と直後の verify を要求する。
 
 ## 1. ゴールと前提を確認する
@@ -131,58 +131,112 @@ master の Full（§8）は `--ref master` で dispatch し、`candidate_head` �
     [GDX-TRACE-001](../../../policies/quality/iron-laws.md#GDX-TRACE-001)。どちらもrelease PRには使わない。completeなQuick receipt
     （祖先確認と直後のverifyを含む）、review gate、required checks、masterの赤の確認、`--match-head-commit`付きのmergeは緩めない。
     判定のどれかが外れた場合、または取込みの結果に候補の変更が要った場合は例外を使わず、§2.5のとおり候補headで`ci.yml`の成功を取り直す。
-    - 例外1（masterの取込みだけのhead）: PRの変更のhead `ci_head`で、通常の`ci.yml`（pull_request）がpendingもfailureも無く成功している。
+    この項が、2つの例外での`ci.yml`の結論の扱いの唯一の置き場である（冒頭、§5、§6、停止条件、完了報告はこの項を参照する）。
+
+    `ci.yml`のrunはSHAで絞って読む。`gh run list --workflow ci.yml --event pull_request --commit "$sha" --json databaseId,status,conclusion,attempt`の
+    各runについて、`status`がcompletedでなければpending、completedなら`conclusion`で見る。
+    - 成功: 1件以上あり、全部がcompletedかつ`conclusion`が`success`。`--jq 'length > 0 and all(.[]; .status == "completed" and .conclusion == "success")'`が`true`を出す。
+      0件は成功ではない（候補headではpendingとして扱う）。
+    - 例外1の候補head: completedで`conclusion`が`success`でないrunが1件でもあればmergeしない。pendingだけなら待たずにmergeできる。
+    - 例外2の候補head: completedで`conclusion`が`failure`のrunは、docsの変更と関係ないと確かめた場合だけmergeできる。`failure`以外で`success`でない結論
+      （`cancelled`、`timed_out`、`startup_failure`、`action_required`など）は`ci.yml`を取り直し、新しいattemptを同じ規則で扱う。pendingだけなら待たずにmergeできる。
+    - docsの変更と関係ないことの材料は、ログを読んだうえで次のどれかが成り立つこと: 失敗したjobや試験が変更したpathを読まない（`git grep`で確かめる）、
+      同じ失敗がmasterの最新のpushの`ci.yml`にもある、再実行で通る。確かめた材料は完了報告に書く。確かめられなければmergeしない。
+
+    - 例外1（masterの取込みだけのhead）: 取込みの前の、PRの変更を含む最後のhead`ci_head`で、通常の`ci.yml`（pull_request）が上の成功である。
       その後の`candidate_head`は、`ci_head`に`origin/master`をmergeで取り込んだだけである（rebaseとforce pushでは使えない）。
       `ci.yml`のconcurrency（`ci-pr-<番号>`、cancel-in-progress）は、新しいheadをpushすると走っているrunを取り消し、取り消されたrunは成功の根拠にならない。
-      取込みをpushする前に、PRのheadが`ci_head`であることと、その`ci.yml`（pull_request）のrunが成功で終わっていることを
-      `gh run list --workflow ci.yml --event pull_request --branch <branch> --json headSha,status,conclusion`のrunごとに確かめて`ci_head`を記録し、
+      取込みをpushする前に、PRのheadが`ci_head`であることと、`ci_head`の`ci.yml`が上の成功であることを`ci_head`のSHAで絞って確かめて`ci_head`を記録し、
       完了を待ってから取り込む。判定は次のとおりで、(a)〜(c)のどれかが不成立ならこの例外は使えない。
 
       ```bash
-      git fetch origin master
       ci_head="<ci.ymlが成功したheadのSHA>"
-      candidate_head="$(git rev-parse 'HEAD^{commit}')"
-      # (a) 取込みだけである。出力があれば不成立
-      git merge-base --is-ancestor "$ci_head" "$candidate_head" || echo "ci_headが候補の祖先でない"
-      git rev-list --no-merges "$ci_head..$candidate_head" ^origin/master
-      # (b) 取込みのmerge commit（masterにないもの）に手編集（競合解決）が無い。出力があれば不成立
-      for m in $(git rev-list --merges "$ci_head..$candidate_head" ^origin/master); do
-        tree="$(git merge-tree --write-tree "$m^1" "$m^2")" && [ "$tree" = "$(git rev-parse "$m^{tree}")" ] || echo "手編集あり: $m"
-      done
-      # (c) PRの変更ファイルと取り込んだmasterの変更ファイルが交わらない。出力があれば不成立
-      base0="$(git merge-base "$ci_head" origin/master)"
-      comm -12 \
-        <(git -c core.quotePath=false diff --name-only --no-renames "$base0" "$ci_head" | LC_ALL=C sort) \
-        <(git -c core.quotePath=false diff --name-only --no-renames "$base0" origin/master | LC_ALL=C sort)
+      (
+        set -o pipefail
+        export LC_ALL=C
+        no() { echo "merge-in-only: no: $1"; exit 1; }
+        git fetch origin master || no "fetchが失敗"
+        candidate_head="$(git rev-parse 'HEAD^{commit}')" || no "HEADを解決できない"
+        [ -n "$ci_head" ] && [ -n "$candidate_head" ] || no "SHAが空"
+        base0="$(git merge-base "$ci_head" origin/master)" && [ -n "$base0" ] || no "merge-baseを求められない（base0が空）"
+        # (a) 取込みだけである
+        git merge-base --is-ancestor "$ci_head" "$candidate_head" || no "ci_headが候補の祖先でない"
+        extra="$(git rev-list --no-merges "$ci_head..$candidate_head" ^origin/master)" || no "rev-listが失敗"
+        [ -z "$extra" ] || no "取込み以外のcommitがある: $(echo $extra)"
+        # (b) 取込みのmerge commit（masterにないもの）に手編集（競合解決）が無い
+        merges="$(git rev-list --merges "$ci_head..$candidate_head" ^origin/master)" || no "rev-listが失敗"
+        for m in $merges; do
+          tree="$(git merge-tree --write-tree "$m^1" "$m^2")" && [ "$tree" = "$(git rev-parse "$m^{tree}")" ] || no "手編集あり: $m"
+        done
+        # (c) PRの変更ファイルと取り込んだmasterの変更ファイルが交わらない
+        pr_files="$(git -c core.quotePath=false diff --name-only --no-renames "$base0" "$ci_head" | LC_ALL=C sort)" || no "diffが失敗（PR側）"
+        master_files="$(git -c core.quotePath=false diff --name-only --no-renames "$base0" origin/master | LC_ALL=C sort)" || no "diffが失敗（master側）"
+        overlap="$(LC_ALL=C comm -12 <(printf '%s\n' "$pr_files") <(printf '%s\n' "$master_files"))" || no "commが失敗"
+        [ -z "$overlap" ] || no "変更ファイルが交わる: $(echo $overlap)"
+        echo "merge-in-only: ok"
+      )
       ```
 
-      (b)は`git merge-tree --write-tree`がexit 0で、出力のtreeが取込みのmerge commitのtreeと一致することを見る。`git diff-tree --cc`や`git show --cc`は、
-      片方の親を採る解決を出さないので手編集の判定に使わない。(c)の`--no-renames`はrenameの両方の名前を数える。
+      出力がちょうど`merge-in-only: ok`の1行のときだけ成立で、空の出力、ほかの出力、commandの失敗は全て不成立である（fail-closed）。
+      各commandのexitを確かめ、`LC_ALL=C`でlocaleに依らず並びを固定している。(b)は`git merge-tree --write-tree`がexit 0で、出力のtreeが取込みのmerge commitのtreeと一致することを見る。
+      `git diff-tree --cc`や`git show --cc`は、片方の親を採る解決を出さないので手編集の判定に使わない。(c)の`--no-renames`はrenameの両方の名前を数える。
       `candidate_head`では、completeなQuick receiptに加えて、ローカルのNode 22で`pnpm -s verify:quality`が成功している必要がある
       （Quickは`verify:quality`を含まず、PRの変更と取り込んだ変更が別ファイルの間で噛み合うdigestやcatalogの崩れを拾えないため）。
-      `candidate_head`の`ci.yml`は待たなくてよい。ただしfailed／cancelled／timed outならマージしない。
-    - 例外2（docs-only PR）: `git diff --name-only --no-renames origin/master...HEAD`の全パスが`^docs/.+\.md$`に一致し、次の8ファイルのどれにも当たらない
-      （運用の規則か、試験が文言を照合する文書）: `docs/local-ci-runner.md`、`docs/DEVELOPMENT_SETUP.md`、`docs/communication-style-guide.md`、
-      `docs/AI経路検証.md`、`docs/plans/nir1-continuation-2026-10.md`、`docs/plans/nir1-l6-l9-execution-plan.md`、
-      `docs/plans/nir1-post-b-execution-plan.md`、`docs/plans/narrative-ir-nir1-implementation-plan.md`。差分が空のPRは対象外である。
-      release PRの判定（§1.9。`package.json`の`version`）に当たるPRは、docs-onlyにならない。名前が似ているが、release pathの
-      editorial docs/ADR-only exception（§2.8）とは別で、混ぜない。
+      `candidate_head`の`ci.yml`は、上の「例外1の候補head」で扱う。
+    - 例外2（docs-only PR）: docs配下のMarkdownだけを変え、運用の規則の文書と、docsの外のコードや試験がpathを名指しで読む文書は変えないPRである。
+      差分は`git -c core.quotePath=false diff --name-only --no-renames origin/master...HEAD`で見る。空ならdocs-onlyではない。
+      `--no-renames`でrenameは両方の名前を数える。差分の全パスが、次の3つを全て満たす。
+      1. `^docs/.+\.md$`に一致する。
+      2. 運用の規則の文書である次の8ファイルに当たらない: `docs/local-ci-runner.md`、`docs/DEVELOPMENT_SETUP.md`、`docs/communication-style-guide.md`、
+         `docs/AI経路検証.md`、`docs/plans/nir1-continuation-2026-10.md`、`docs/plans/nir1-l6-l9-execution-plan.md`、
+         `docs/plans/nir1-post-b-execution-plan.md`、`docs/plans/narrative-ir-nir1-implementation-plan.md`
+      3. docsの外のファイルに、そのpathと、そのpathの上位directoryのうち3階層以上のもの（`docs/a/b/c.md`なら`docs/a/b`。`docs/plans`のような2階層は調べない）が
+         文字列として現れない（リポジトリのrootから、HEADと`origin/master`の両方のtreeを`git grep -qF`で調べる）。
+         docsの外のコードや試験がpathを名指しで読む文書、またはdirectoryを名指しして中を読む文書（名指しした文書の隣のREADME.mdなど）は、`ci.yml`の試験が文言やhashで束縛するため除く。
+         例は、`release-workflows.test.mjs`が読み、`ci.yml`のrelease試験でしか走らない`docs/user-guide/ja/Install-and-update.md`である。
+         部品から組み立てるpath、2階層のdirectoryの一括読込みは文字列として現れず、この確認では拾えない。その取りこぼしはmerge後のmasterのpushの`ci.yml`で見つかる（§8の冒頭）。
 
       ```bash
-      git fetch origin master
-      changed="$(git -c core.quotePath=false diff --name-only --no-renames origin/master...HEAD)"
-      if [ -n "$changed" ] \
-        && ! printf '%s\n' "$changed" | grep -qEv '^docs/.+\.md$' \
-        && ! printf '%s\n' "$changed" | grep -qFx \
-             -e docs/local-ci-runner.md -e docs/DEVELOPMENT_SETUP.md -e docs/communication-style-guide.md \
-             -e 'docs/AI経路検証.md' -e docs/plans/nir1-continuation-2026-10.md \
-             -e docs/plans/nir1-l6-l9-execution-plan.md -e docs/plans/nir1-post-b-execution-plan.md \
-             -e docs/plans/narrative-ir-nir1-implementation-plan.md; then echo docs-only; else echo not-docs-only; fi
+      (
+        set -o pipefail
+        export LC_ALL=C
+        no() { echo "docs-only: no: $1"; exit 1; }
+        cd "$(git rev-parse --show-toplevel)" || no "リポジトリのrootへ移れない"
+        git fetch origin master || no "fetchが失敗"
+        excluded=(
+          docs/local-ci-runner.md
+          docs/DEVELOPMENT_SETUP.md
+          docs/communication-style-guide.md
+          docs/AI経路検証.md
+          docs/plans/nir1-continuation-2026-10.md
+          docs/plans/nir1-l6-l9-execution-plan.md
+          docs/plans/nir1-post-b-execution-plan.md
+          docs/plans/narrative-ir-nir1-implementation-plan.md
+        )
+        changed="$(git -c core.quotePath=false diff --name-only --no-renames origin/master...HEAD)" || no "diffが失敗"
+        [ -n "$changed" ] || no "差分が空"
+        while IFS= read -r p; do
+          [[ "$p" =~ ^docs/.+\.md$ ]] || no "docs/配下の.md以外: $p"
+          for e in "${excluded[@]}"; do [ "$p" != "$e" ] || no "運用の規則の文書: $p"; done
+          d="$p"
+          while :; do
+            git -c core.quotePath=false grep -qF -e "$d" HEAD origin/master -- ':!docs/'
+            [ $? -eq 1 ] || no "docsの外が名指しする、または確かめられない: $d"
+            d="${d%/*}"
+            [[ "$d" == */*/* ]] || break
+          done
+        done <<< "$changed"
+        echo "docs-only: ok"
+      )
       ```
 
-      条件は、completeなQuick receipt、ローカルのNode 22での`pnpm -s verify:quality`の成功、review gateである。`ci.yml`の完了は待たなくてよい。
-      `ci.yml`がfailureになっていたら、それがdocsの変更と関係ないことをログで確かめてからmergeし、確かめられなければmergeしない。
-      mergeの後にmasterのFullをdispatchしない（§8の冒頭。masterへのpushで`ci.yml`が走る）。
+      出力がちょうど`docs-only: ok`の1行のときだけ成立で、空の出力、ほかの出力、commandの失敗は全て不成立である（fail-closed）。
+      release PRの判定（§1.9。`package.json`の`version`）に当たるPRは、docs-onlyにならない。名前が似ているが、release pathの
+      editorial docs/ADR-only exception（§2.8）とは別で、混ぜない。
+      条件は、completeなQuick receipt、ローカルのNode 22での`pnpm -s verify:quality`の成功、review gateである。
+      `candidate_head`の`ci.yml`は、上の「例外2の候補head」で扱う。
+      mergeの後にmasterのFullをdispatchしない（§8の冒頭）。かわりに、そのmerge commitのmasterのpushの`ci.yml`のrun idを完了報告に書いて見届けを引き継ぎ、
+      success以外で終われば§8.5の赤として扱う。
 
 ## 3. Branch を push する
 
@@ -221,9 +275,8 @@ required check が設定されていない場合も、同じ head の通常 PR c
 手順2のcompleteなhosted Full receipt（同じtupleの`full-aggregate`成功）が有効であることを確認する。
 `no checks reported`だけを根拠にマージしない。
 
-例外1・例外2（§2.10）では、候補 head の `ci.yml` の完了を待たず、pending のまま次へ進める。待たなくてよいのは pending の `ci.yml` だけで、
-required checks、手順2のQuick receipt、review の確認は同じである。候補 head の `ci.yml` が failed／cancelled／timed out の場合、
-例外1ではマージしない。例外2では、その失敗が docs の変更と関係ないことをログで確かめられた場合だけマージできる（本節5の「マージしない」は、この確認で解消する）。
+例外1・例外2（§2.10）では、候補 head の `ci.yml` の扱いは §2.10 に従う（pending の `ci.yml` は待たない。success でない結論の扱いは、例外ごとに §2.10 が決める）。
+required checks、手順2のQuick receipt、review の確認は同じである。本節5の「マージしない」は、§2.10 が merge を認める場合に限って、その確認で解消する。
 
 ## 6. Merge 直前に再検証する
 
@@ -260,10 +313,10 @@ required checks、手順2のQuick receipt、review の確認は同じである�
 - 例外1または例外2（§2.10）を使う場合は、上の共通部の「同じ head の通常 PR checks（`ci.yml`）が成功している」と「pending／failed checks がない」のうち
   `ci.yml` に関する部分だけを、次で置き換える。required checks、master の赤の確認、requested changes と未解決 review thread の確認は置き換えない
   （required checks が設定されていて success でなければ GitHub が merge を拒否する。例外でも回避しない）。
-  - 例外1: §2.10 の (a)〜(c) が `candidate_head` で全て成り立ち、`ci_head` の `ci.yml` が成功で終わっている。`candidate_head` の Quick と、
-    Node 22 のローカルの `pnpm -s verify:quality` が成功している。`candidate_head` の `ci.yml` は pending でもよいが、failed／cancelled／timed out ならマージしない。
-  - 例外2: §2.10 の docs-only の判定が `candidate_head` で成り立つ。`candidate_head` の Quick と、Node 22 のローカルの `pnpm -s verify:quality` が成功している。
-    `candidate_head` の `ci.yml` は pending でもよい。failed／cancelled／timed out なら、その失敗が docs の変更と関係ないことをログで確かめた場合だけマージする。
+  - 例外1: §2.10 の (a)〜(c) が `candidate_head` で全て成り立ち（`merge-in-only: ok`）、`ci_head` の `ci.yml` が成功している。`candidate_head` の Quick と、
+    Node 22 のローカルの `pnpm -s verify:quality` が成功している。`candidate_head` の `ci.yml` は §2.10 の「例外1の候補head」で扱う。
+  - 例外2: §2.10 の docs-only の判定が `candidate_head` で成り立つ（`docs-only: ok`）。`candidate_head` の Quick と、Node 22 のローカルの `pnpm -s verify:quality` が成功している。
+    `candidate_head` の `ci.yml` は §2.10 の「例外2の候補head」で扱う。
 
 release path（release PR）では、上の通常path固有の確認の代わりに次を確認する。
 
@@ -303,6 +356,11 @@ release path（release PR）では、上の通常path固有の確認の代わり
 merge後に運用で補う証跡である。release PRはmerge前にcompleteなhosted Fullを通しているため、master のFullを重ねてdispatchしなくてよい
 （release tag用のFullは、`/bump-version` がmerge後のrelease commit自身に対して要求する）。
 docs-only PR（§2.10の例外2）をmergeした場合は、masterへのpushで`ci.yml`が走るため、本節1〜4のmasterのFullをdispatchしない。
+かわりに、そのmerge commitのmasterのpushで走った`ci.yml`のrunを、`gh run list --workflow ci.yml --event push --branch master --commit <merge-sha> --json databaseId,status,conclusion,attempt`で特定し、
+run idを完了報告に書く。見届けは、終わるまで待てる担当ならこの担当、待てない担当（短命のsubagentなど）なら呼び出し元（integratorまたは依頼したユーザー）に引き継ぐ。
+そのrunがsuccess以外（failure、cancelled、timed outなど）で終わったら、masterの赤として本節5〜6に従う。
+その赤は、そのrunの再実行の成功、より新しいmasterのpushの`ci.yml`の成功、または原因の修正かrevertが`origin/master`に入ったときに解ける。
+無関係なflakeの例外とその記録の要件は、本節5と同じである。
 本節5〜6の赤の判定と対応は、docs-only PRの後も他のPRのmergeに今のまま適用する。
 
 1. §7の反映確認の後、`git fetch origin master` を実行する。dispatch の `candidate_base` 入力（下の `master_base`）には、直前にcompleteなFull
@@ -362,13 +420,14 @@ docs-only PR（§2.10の例外2）をmergeした場合は、masterへのpushで`
 
 - PR だけがゴール: PR URL と現在の checks 状態を報告して停止する。
 - draft PR: ready 化または merge を依頼されるまで停止する。
-- local CI／CI failure: failしたstageまたはcheckと原因調査結果を報告し、修正後に本フローを再開する。ただし例外2（§2.10）で候補 head の `ci.yml` の失敗が docs の変更と関係ないと確かめられた場合は、§5に従う。
+- local CI／CI failure: failしたstageまたはcheckと原因調査結果を報告し、修正後に本フローを再開する。ただし例外1・例外2の候補 head の `ci.yml` は §2.10 に従う。
 - release workflow failure: `/debug-release-ci`のfocused gateへ戻す。本スキルはversion、release notes、tagを作らない。
 - conflict／requested changes／未解決 thread: 解消するまで停止する。
-- master の Full が未解決の赤（判定は§8.5）: その修正またはrevertだけを先にmergeし、それ以外のPRはmergeせず停止する（§8.6）。
+- master の Full が未解決の赤（判定は§8.5）: その修正またはrevertだけを先にmergeし、それ以外のPRはmergeせず停止する（§8.6）。docs-only PR の merge 後の `ci.yml` の赤も同じである（§8.5）。
 
 ## 完了報告
 
 PR URL、Quick／Full receiptの結果（通常のPRはQuickと同じheadのPR checks、release PRはFull）、hosted checks／review、merge method、`origin/master`への包含確認、
 master Fullの扱い（dispatchしたrunのidとその見届け先、実行中のため未dispatchとその引き継ぎ先、判定済みの赤とその対応）、local branchの状態を簡潔に報告する。SHAは不一致があった場合またはユーザーが求めた場合だけ recite する。
 §2.10の例外1・例外2を使った場合は、どちらを使ったか、判定の結果、ローカルの`pnpm -s verify:quality`の結果、候補 head の `ci.yml` の状態（完了を待たずにmergeしたか）も報告する。
+例外2では、docsの変更と関係ないと確かめた失敗があればその材料と、merge commitのmasterのpushの`ci.yml`のrun idと見届け先（§8の冒頭）も報告する。
