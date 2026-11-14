@@ -3414,6 +3414,20 @@ pub(crate) fn journal_op_kind_wrote_nothing(op_kind: &str) -> bool {
     op_kind == "ensure-existing"
 }
 
+/// The commit-journal `opKind` that `bind-existing` records for a Codex Entry.
+pub(crate) const JOURNAL_OP_KIND_BIND: &str = "bind";
+
+/// Whether a commit-journal `opKind` is a `bind-existing` binding.
+///
+/// A binding links a proposal to an Entry the author already owns and never
+/// writes that Entry's row. Undo and Redo therefore must not roll it back,
+/// re-create it, or emit a change event for it: `undo.rs` (preflight, undo,
+/// redo preflight) and `events_from_journal_entities` all share this one
+/// predicate so they cannot drift apart.
+pub(crate) fn journal_op_kind_is_bind(op_kind: &str) -> bool {
+    op_kind == JOURNAL_OP_KIND_BIND
+}
+
 /// Convert the existing immutable commit-journal entity snapshots into typed
 /// freshness events. This does not mutate persistence and never applies a fix.
 pub fn events_from_journal_entities(
@@ -3435,6 +3449,14 @@ pub fn events_from_journal_entities(
             .and_then(Value::as_str)
             .unwrap_or("create");
         if journal_op_kind_wrote_nothing(op_kind) {
+            continue;
+        }
+        // bind-existing は Forward では結び付けた Entry を更新事象として数えるが、Entry の行
+        // は書いていない。Undo／Redo も Entry に触れないので事象を作らない。作ると、作者が
+        // bind の後に Entry を編集した（Feed の head が進んだ）とき、古い snapshot を前提に
+        // した事象が NARRATIVE_CHANGE_FEED_DISCONTINUITY で落ち、削除済みなら "is not in
+        // project" で落ちる。
+        if journal_op_kind_is_bind(op_kind) && direction != NarrativeChangeCauseKind::Forward {
             continue;
         }
         let before_snapshot = entity.get("beforeSnapshot");
@@ -3620,6 +3642,42 @@ mod tests {
         let redo = events_from_journal_entities(&entities, NarrativeChangeCauseKind::Redo).unwrap();
         assert_eq!(undo[0].mutation_kind, "delete");
         assert_eq!(redo[0].mutation_kind, "restore");
+    }
+
+    #[test]
+    fn bind_journal_emits_a_forward_event_but_no_undo_or_redo_event() {
+        // bind-existing は Entry の行を書かない。Forward は従来どおり更新事象を 1 件出し、
+        // Undo／Redo は何も出さない（出すと Feed の head が進んだ後や Entry 削除後に落ちる）。
+        let entities = vec![json!({
+            "entityKind": "codex_entry",
+            "entityId": "entry-1",
+            "opKind": "bind",
+            "version": 3,
+            "beforeSnapshot": { "id": "entry-1", "version": 3 },
+            "snapshot": { "id": "entry-1", "version": 3 }
+        })];
+        let forward =
+            events_from_journal_entities(&entities, NarrativeChangeCauseKind::Forward).unwrap();
+        let undo = events_from_journal_entities(&entities, NarrativeChangeCauseKind::Undo).unwrap();
+        let redo = events_from_journal_entities(&entities, NarrativeChangeCauseKind::Redo).unwrap();
+        assert_eq!(forward.len(), 1);
+        assert!(undo.is_empty());
+        assert!(redo.is_empty());
+
+        // 同じ journal の bind でない行（patch）は Undo／Redo でも事象を出す。
+        let mixed = vec![
+            entities[0].clone(),
+            json!({
+                "entityKind": "codex_entry",
+                "entityId": "entry-2",
+                "opKind": "patch",
+                "version": 2,
+                "beforeSnapshot": { "id": "entry-2", "version": 1 },
+                "snapshot": { "id": "entry-2", "version": 2 }
+            }),
+        ];
+        let undo = events_from_journal_entities(&mixed, NarrativeChangeCauseKind::Undo).unwrap();
+        assert_eq!(undo.len(), 1);
     }
 
     #[test]
