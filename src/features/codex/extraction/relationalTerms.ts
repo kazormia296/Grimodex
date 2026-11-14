@@ -34,23 +34,15 @@ const KINSHIP_STEMS = [
   "嫁",
   "息子",
   "娘",
-  "孫",
   "旦那",
-  "奥",
   "親父",
   "兄貴",
   "姉貴",
-  // 平仮名（片仮名は自動で足す）
+  // 平仮名
   "ちち",
   "はは",
-  "とう",
-  "かあ",
   "あに",
   "あね",
-  "にい",
-  "にぃ",
-  "ねえ",
-  "ねぇ",
   "いもうと",
   "おとうと",
   "おじ",
@@ -61,8 +53,6 @@ const KINSHIP_STEMS = [
   "ばば",
   "おじい",
   "おばあ",
-  "ぱぱ",
-  "まま",
   "だんな",
   "おやじ",
   "おふくろ",
@@ -70,6 +60,33 @@ const KINSHIP_STEMS = [
   "あねき",
   "むすこ",
   "むすめ",
+  // 片仮名の呼び名（平仮名からは自動で作らない：「トウ」「ジジ」などの名前を巻き込むため）
+  "パパ",
+  "ママ",
+  "ダンナ",
+  "オヤジ",
+] as const;
+
+/**
+ * 語尾（さん・ちゃん・様 など）が付いたときだけ続柄になる語幹。
+ * 語尾なしの「とう」「にい」「ねえ」は続柄の語として確かでないので当てない。
+ */
+const KINSHIP_SUFFIX_ONLY_STEMS = [
+  "とう",
+  "かあ",
+  "にい",
+  "にぃ",
+  "ねえ",
+  "ねぇ",
+] as const;
+
+/** 語尾が必須の語幹に付けてよい語尾（丁寧・親愛の語尾だけ）。 */
+const SUFFIX_ONLY_SUFFIXES = [
+  "さん",
+  "さま",
+  "様",
+  "ちゃん",
+  "ちゃま",
 ] as const;
 
 const SECOND_PERSON_STEMS = [
@@ -86,6 +103,9 @@ const SECOND_PERSON_STEMS = [
   "てめぇ",
   "君",
   "きみ",
+  "アンタ",
+  "オマエ",
+  "キミ",
 ] as const;
 
 const THIRD_PERSON_STEMS = [
@@ -110,6 +130,12 @@ const THIRD_PERSON_STEMS = [
   "このひと",
   "その人",
   "そのひと",
+  "カレ",
+  "カノジョ",
+  "アイツ",
+  "コイツ",
+  "ソイツ",
+  "ヤツ",
 ] as const;
 
 /** 接頭。語幹の前に付く丁寧の「お」「ご」「御」。 */
@@ -133,33 +159,29 @@ const KINSHIP_SUFFIXES = [
 /** 二人称・三人称にだけ付く複数の語尾（「彼ら」「あなたたち」）。 */
 const PLURAL_SUFFIXES = ["たち", "ら", "達"] as const;
 
-/** 平仮名だけの語を片仮名にする（ぱぱ → パパ）。 */
-function toKatakana(value: string): string {
-  return value.replace(/[ぁ-ゖ]/g, (ch) =>
-    String.fromCharCode(ch.charCodeAt(0) + 0x60),
-  );
+interface StemInfo {
+  readonly kind: RelationalTermKind;
+  /** true: 語尾が付いたときだけ呼び名。 */
+  readonly suffixOnly: boolean;
 }
 
-function isAllHiragana(value: string): boolean {
-  return /^[ぁ-ゖー]+$/.test(value);
-}
-
-function buildStemMap(): ReadonlyMap<string, RelationalTermKind> {
-  const map = new Map<string, RelationalTermKind>();
-  const add = (stems: readonly string[], kind: RelationalTermKind): void => {
-    for (const stem of stems) {
-      const key = candidateKey(stem);
-      map.set(key, kind);
-      if (isAllHiragana(stem)) map.set(candidateKey(toKatakana(stem)), kind);
-    }
+function buildStemMap(): ReadonlyMap<string, StemInfo> {
+  const map = new Map<string, StemInfo>();
+  const add = (
+    stems: readonly string[],
+    kind: RelationalTermKind,
+    suffixOnly = false,
+  ): void => {
+    for (const stem of stems) map.set(candidateKey(stem), { kind, suffixOnly });
   };
   add(KINSHIP_STEMS, "kinship");
+  add(KINSHIP_SUFFIX_ONLY_STEMS, "kinship", true);
   add(SECOND_PERSON_STEMS, "second-person");
   add(THIRD_PERSON_STEMS, "third-person");
   return map;
 }
 
-const STEM_KIND = buildStemMap();
+const STEM_INFO = buildStemMap();
 
 /**
  * 表記が関係の呼び名なら、その kind を返す。そうでなければ null。
@@ -179,18 +201,30 @@ export function relationalTermKind(surface: string): RelationalTermKind | null {
   }
 
   for (const head of heads) {
-    const direct = STEM_KIND.get(head);
-    if (direct) return direct;
+    const direct = STEM_INFO.get(head);
+    if (direct && !direct.suffixOnly) return direct.kind;
     for (const suffix of KINSHIP_SUFFIXES) {
       if (head.endsWith(suffix) && head.length > suffix.length) {
-        const stem = head.slice(0, -suffix.length);
-        if (STEM_KIND.get(stem) === "kinship") return "kinship";
+        const info = STEM_INFO.get(head.slice(0, -suffix.length));
+        if (info?.kind !== "kinship") continue;
+        if (
+          info.suffixOnly &&
+          !(SUFFIX_ONLY_SUFFIXES as readonly string[]).includes(suffix)
+        ) {
+          continue;
+        }
+        return "kinship";
       }
     }
     for (const suffix of PLURAL_SUFFIXES) {
       if (head.endsWith(suffix) && head.length > suffix.length) {
-        const kind = STEM_KIND.get(head.slice(0, -suffix.length));
-        if (kind === "second-person" || kind === "third-person") return kind;
+        const info = STEM_INFO.get(head.slice(0, -suffix.length));
+        if (
+          !info?.suffixOnly &&
+          (info?.kind === "second-person" || info?.kind === "third-person")
+        ) {
+          return info.kind;
+        }
       }
     }
   }

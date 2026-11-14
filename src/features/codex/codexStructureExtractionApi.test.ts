@@ -1216,11 +1216,6 @@ describe("startCodexStructureExtraction product safety", () => {
   }, 15_000);
 
   it("omits the skipped-terms diagnostic when no relational term was skipped", async () => {
-    runPrepassMock.mockResolvedValue({
-      status: "complete",
-      seeds: [],
-      rejections: [],
-    });
     const { buildNarrativeCorpusSnapshot } =
       await import("@/features/narrative-extraction/source/buildSnapshot");
     const snapshotResult = await buildNarrativeCorpusSnapshot({
@@ -1229,13 +1224,71 @@ describe("startCodexStructureExtraction product safety", () => {
       origin: { kind: "grimodex-project", projectId: "p1" },
       omissions: [],
       createdAt: "2026-08-10T00:01:00.000Z",
-      documents: [],
+      documents: [
+        {
+          sourceKey: "project:scene:s1",
+          parentSourceKey: null,
+          title: "Scene",
+          orderIndex: 0,
+          proseMirrorJson: JSON.stringify({
+            type: "doc",
+            content: [
+              {
+                type: "paragraph",
+                content: [{ type: "text", text: "ライカとライカ嬢" }],
+              },
+            ],
+          }),
+          origin: {
+            kind: "project-node",
+            projectId: "p1",
+            nodeId: "s1",
+            sourceVersion: 1,
+            sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+      ],
     });
+    expect(snapshotResult.ok).toBe(true);
     if (!snapshotResult.ok) return;
+    const documentRef = snapshotResult.snapshot.documents[0]!.ref;
     buildSnapshotMock.mockResolvedValue({
       ok: true,
       snapshot: snapshotResult.snapshot,
       diagnostics: [],
+    });
+    runPrepassMock.mockResolvedValue({
+      status: "complete",
+      seeds: [
+        {
+          seedId: "seed-laika",
+          surface: "ライカ",
+          normalizedSurface: "ライカ",
+          features: {
+            occurrenceCount: 1,
+            appearsAsProperName: true,
+            appearsInDialogue: false,
+            appearsInNarration: true,
+          },
+          occurrences: [
+            {
+              sourceRef: "S0001",
+              documentRef,
+              quote: "ライカ",
+              canonicalRange: { start: 0, end: 3 },
+              context: { prefix: "", suffix: "" },
+              evidence: {
+                id: "ea-laika",
+                quote: "ライカ",
+                documentRef,
+                method: "exact",
+              },
+            },
+          ],
+        },
+      ],
+      rejections: [],
     });
     const projection = await startCodexStructureExtraction({
       projectId: "p1",
@@ -1252,6 +1305,9 @@ describe("startCodexStructureExtraction product safety", () => {
       useAi: false,
       skipNativePersist: true,
     });
+    expect(projection.proposals.map((row) => row.displayTitle)).toEqual([
+      "ライカ",
+    ]);
     expect(projection.skippedRelationalTerms).toBeUndefined();
   });
 });
@@ -1517,6 +1573,12 @@ describe("reviseCodexStructureProposal concurrency", () => {
     resetNarrativeArtifactIndexForTests();
     getRunReviewBundleMock.mockReset();
     seedEditableEntity();
+    // live の診断（関係の呼び名の除外）は Native に無く、resync で消えてはいけない。
+    const seeded = useCodexStructureExtractionStore.getState().projection!;
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...seeded,
+      skippedRelationalTerms: [{ surface: "姉ちゃん", kind: "kinship" }],
+    });
 
     const nativePayload = createNewBindCodexEntityProposal(
       {
@@ -1635,6 +1697,10 @@ describe("reviseCodexStructureProposal concurrency", () => {
     expect(row?.revisionId).toBe("rev-2");
     expect(row?.displayTitle).toBe("灰の目");
     expect(row?.proposal.payload.canonicalName).toBe("灰の目");
+    expect(
+      useCodexStructureExtractionStore.getState().projection
+        ?.skippedRelationalTerms,
+    ).toEqual([{ surface: "姉ちゃん", kind: "kinship" }]);
   });
 
   it("serializes decide and revise on the same proposal queue", async () => {

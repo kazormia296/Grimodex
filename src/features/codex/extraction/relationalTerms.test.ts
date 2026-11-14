@@ -20,6 +20,13 @@ describe("relationalTermKind", () => {
     ["パパ", "kinship"],
     ["ママさん", "kinship"],
     ["兄貴", "kinship"],
+    ["御父上", "kinship"],
+    ["かあさん", "kinship"],
+    ["おとうさん", "kinship"],
+    ["にいちゃん", "kinship"],
+    ["ねえさん", "kinship"],
+    ["アンタ", "second-person"],
+    ["アイツ", "third-person"],
     ["あなた", "second-person"],
     ["おまえ", "second-person"],
     ["お前", "second-person"],
@@ -48,6 +55,23 @@ describe("relationalTermKind", () => {
       "ライカ姉さん",
       "きみちゃん",
       "あなたちゃん",
+      // 平仮名の語幹から片仮名を自動で作らない（名前を巻き込まない）
+      "ジジ",
+      "ババ",
+      "トウ",
+      "トウくん",
+      "ニイ",
+      // 語尾なしの「とう」「にい」「ねえ」は続柄の語として確かでない
+      "とう",
+      "かあ",
+      "にい",
+      "ねえ",
+      // 語尾つきでも、親愛の語尾以外は付けない
+      "とうくん",
+      // 姓と衝突する語は入れない
+      "孫くん",
+      "孫さん",
+      "奥",
     ]) {
       expect(isRelationalTerm(surface), surface).toBe(false);
     }

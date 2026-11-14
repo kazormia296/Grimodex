@@ -1456,15 +1456,19 @@ async function resyncReviewAfterEditFailure(
       },
       { forceNative: true },
     );
-    if (
-      !reviewEditScopeMatches(
-        useCodexStructureExtractionStore.getState().projection,
-        scope,
-      )
-    ) {
+    const current = useCodexStructureExtractionStore.getState().projection;
+    if (!reviewEditScopeMatches(current, scope)) {
       return;
     }
-    useCodexStructureExtractionStore.getState().setProjection(refreshed);
+    // Native から組み直した projection には live の診断が無いので、同じ run の分を引き継ぐ。
+    const skippedRelationalTerms = current?.skippedRelationalTerms;
+    useCodexStructureExtractionStore
+      .getState()
+      .setProjection(
+        skippedRelationalTerms && skippedRelationalTerms.length > 0
+          ? { ...refreshed, skippedRelationalTerms }
+          : refreshed,
+      );
   } catch {
     // Leave local state untouched; do not resurrect a cleared/foreign projection.
   }
