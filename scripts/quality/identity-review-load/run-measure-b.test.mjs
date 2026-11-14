@@ -13,6 +13,7 @@ import { createGate } from "./ledger.mjs";
 import { candidateKey, hashSurface, safeErrorSummary } from "./lib.mjs";
 import {
   CONFIRM_SEND,
+  DRY_RUN_ASSUMPTIONS,
   assertSafeStorageBackend,
   bindPageApi,
   assertSendAllowed,
@@ -612,4 +613,9 @@ test("偽の provider（B2）：模擬作者が名簿どおりに進め、ceil(N
     assert.equal(value.result.decisionCounts.alias, 2);
     assert.equal(value.result.dismissReasons.unlisted, 118);
   });
+});
+
+test("乾いた実行の summary の前提の文は、出力の混入検査（ASCII の識別子の形・key の形なし）を通る", () => {
+  assert.deepEqual(findUnsafeStrings(DRY_RUN_ASSUMPTIONS), []);
+  assert.ok(Object.keys(DRY_RUN_ASSUMPTIONS).includes("entryOrderAndIds"));
 });

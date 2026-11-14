@@ -180,6 +180,22 @@ export async function registeredKeyHashesOf(entries) {
   return out;
 }
 
+/** 乾いた実行の summary の前提の文（出力の混入検査を通る ASCII の識別子の形に限る。試験が検査する）。 */
+export const DRY_RUN_ASSUMPTIONS = Object.freeze({
+  tokenEstimate:
+    "ascii 0.3 token per char and non-ascii 1.0 token per char as a provisional ratio without a tokenizer. It is not called conservative until the trial measured tokens_in including ids calibrates it",
+  entryOrderAndIds:
+    "entries are in database order while the product screen uses store order newest first. ids are short rt- or synth- strings while the product uses UUIDs so an id heavy prompt is under estimated here. The window is the same when entries are at most 200",
+  outputEstimate: "120 token per judged candidate with a floor of 800",
+  b2Requests:
+    "ceil of initial N over 50 at L2 and each request sized like the first",
+  trialRequests: "3 requests sized like the largest B1 request",
+  roster:
+    "empty and synthetic small rosters built from the candidate list for sizing only",
+  projection:
+    "candidate part from the empty roster as an upper bound and entry part scaled from the synthetic per entity and per alias cost",
+});
+
 // ---- 乾いた実行 -----------------------------------------------------------------
 
 /**
@@ -505,20 +521,7 @@ async function mainDry(options) {
     model: MODEL,
     pricingPerMillion: pricing,
     caps: { totalUsd: TOTAL_CAP_USD, stagesUsd: STAGE_CAPS_USD },
-    assumptions: {
-      tokenEstimate:
-        "ascii 0.3 token per char and non-ascii 1.0 token per char as a provisional ratio without a tokenizer; not called a conservative value until the trial measured tokens_in (including ids) calibrates it",
-      entryOrderAndIds:
-        "entries are listed in database order while the product screen uses the store order, newest first; ids are short rt- or synth- strings while the product uses UUIDs, so an id-heavy prompt is under-estimated here; the window is the same when entries are at most 200",
-      outputEstimate: "120 token per judged candidate with a floor of 800",
-      b2Requests:
-        "ceil of initial N over 50 at L2 and each request sized like the first",
-      trialRequests: "3 requests sized like the largest B1 request",
-      roster:
-        "empty and synthetic small rosters built from the candidate list for sizing only",
-      projection:
-        "candidate part from the empty roster as an upper bound and entry part scaled from the synthetic per entity and per alias cost",
-    },
+    assumptions: DRY_RUN_ASSUMPTIONS,
     synthetic: synth,
     works: summary,
     rows,
