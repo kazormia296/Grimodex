@@ -1838,3 +1838,685 @@ fn apply_commit_records_application_contributions_per_affected_field() {
         "every Contribution must carry this commit's own canonical sequence          ({canonical_sequence}), got {baselines:?}"
     );
 }
+
+// --- bind-existing の undo / redo ------------------------------------------
+//
+// bind-existing は既存の Codex Entry の行を一切書かない。undo / redo も
+// Entry の行（内容・版）に触れず、作者が作った Entry を消してはならない。
+
+fn seed_existing_entry(db: &Database, entry_id: &str, version: i64) {
+    db.execute(
+        "INSERT INTO codex_entries
+            (id, project_id, type, name, aliases, summary, content, parent_id, version, created_at, updated_at)
+         VALUES (?, 'project-1', 'character', 'Existing', '[\"旧\"]', '作者の要約', '{}', NULL, ?, 't', 't')",
+        &[
+            Value::String(entry_id.to_string()),
+            Value::Number(version.into()),
+        ],
+        "run",
+    )
+    .expect("seed existing");
+}
+
+fn bind_op(entry_id: &str, narrative_entity_id: &str, base_version: i64) -> Value {
+    json!({
+        "entryId": entry_id,
+        "narrativeEntityId": narrative_entity_id,
+        "baseVersion": base_version
+    })
+}
+
+fn existing_binding(narrative_entity_id: &str, entry_id: &str) -> EntityBindingSeed {
+    EntityBindingSeed {
+        narrative_entity_id: narrative_entity_id.to_string(),
+        codex_entry_id: entry_id.to_string(),
+        source: "existing".to_string(),
+    }
+}
+
+/// Entry の行全体（updated_at を含む）。不変であることの比較に使う。
+fn entry_row_fingerprint(db: &Database, entry_id: &str) -> Option<String> {
+    db.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT type || '|' || name || '|' || COALESCE(aliases,'') || '|' ||
+                    COALESCE(summary,'') || '|' || COALESCE(content,'') || '|' ||
+                    COALESCE(parent_id,'') || '|' || version || '|' || updated_at
+               FROM codex_entries WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query([entry_id])?;
+        Ok(match rows.next()? {
+            Some(row) => Some(row.get::<_, String>(0)?),
+            None => None,
+        })
+    })
+    .unwrap()
+}
+
+fn commit_replay_payload(commit_id: &str, request_id: &str) -> UndoCommitPayload {
+    UndoCommitPayload {
+        project_id: "project-1".to_string(),
+        session_id: "sess".to_string(),
+        surface: None,
+        commit_id: Some(commit_id.to_string()),
+        request_id: Some(request_id.to_string()),
+    }
+}
+
+fn count_rows(db: &Database, sql: &str) -> i64 {
+    db.with_conn(|conn| Ok(conn.query_row(sql, [], |r| r.get(0))?))
+        .unwrap()
+}
+
+#[test]
+fn bind_existing_undo_redo_never_touches_entry_row() {
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-bind-1", 3);
+    let before = entry_row_fingerprint(&db, "entry-bind-1").unwrap();
+
+    let items = [(
+        "codex.entity.bind-existing",
+        bind_op("entry-bind-1", "ent:bind-1", 3),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-bind-1", "set-bind-1", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-bind-1",
+            "digest-bind-1",
+            "set-bind-1",
+            "run-bind-1",
+            ops_from_pairs(&pairs, &items),
+            vec![existing_binding("ent:bind-1", "entry-bind-1")],
+        ),
+    );
+    assert_eq!(applied["status"], "applied");
+    assert_eq!(
+        entry_row_fingerprint(&db, "entry-bind-1").as_deref(),
+        Some(before.as_str()),
+        "bind apply must not write the entry row"
+    );
+    let commit_id = applied["commitId"].as_str().unwrap().to_string();
+
+    for cycle in 1..=2 {
+        let undone = narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            commit_replay_payload(&commit_id, &format!("bind-undo-{cycle}")),
+        )
+        .unwrap_or_else(|err| panic!("undo cycle {cycle}: {err}"));
+        assert_eq!(undone["status"], "undone");
+        assert_eq!(
+            entry_row_fingerprint(&db, "entry-bind-1").as_deref(),
+            Some(before.as_str()),
+            "undo of bind must leave the author's entry untouched (cycle {cycle})"
+        );
+
+        let redone = narrative_extraction::narrative_extraction_redo_commit(
+            &db,
+            commit_replay_payload(&commit_id, &format!("bind-redo-{cycle}")),
+        )
+        .unwrap_or_else(|err| panic!("redo cycle {cycle}: {err}"));
+        assert_eq!(redone["status"], "redone");
+        assert_eq!(
+            entry_row_fingerprint(&db, "entry-bind-1").as_deref(),
+            Some(before.as_str()),
+            "redo of bind must not rewrite the entry (cycle {cycle})"
+        );
+    }
+
+    let undone_final = narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        commit_replay_payload(&commit_id, "bind-undo-final"),
+    )
+    .expect("final undo");
+    assert_eq!(undone_final["status"], "undone");
+    assert_eq!(
+        entry_row_fingerprint(&db, "entry-bind-1").as_deref(),
+        Some(before.as_str())
+    );
+}
+
+#[test]
+fn bind_existing_undo_does_not_hit_external_dependency_or_later_edits() {
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-bind-dep", 3);
+    seed_existing_entry(&db, "entry-bind-other", 1);
+
+    let items = [(
+        "codex.entity.bind-existing",
+        bind_op("entry-bind-dep", "ent:bind-dep", 3),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-bind-dep", "set-bind-dep", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-bind-dep",
+            "digest-bind-dep",
+            "set-bind-dep",
+            "run-bind-dep",
+            ops_from_pairs(&pairs, &items),
+            vec![existing_binding("ent:bind-dep", "entry-bind-dep")],
+        ),
+    );
+    let commit_id = applied["commitId"].as_str().unwrap().to_string();
+
+    // bind 後に作者が関係を足し、Entry を編集する（版が進む）。
+    db.execute(
+        "INSERT INTO codex_relations
+            (id, project_id, from_codex_id, to_codex_id, relation_type, label,
+             directionality, inverse_label, semantic_key, version, created_at, updated_at)
+         VALUES ('rel-bind-ext', 'project-1', 'entry-bind-dep', 'entry-bind-other', 'enemy', '敵',
+                 'symmetric', '敵', 's\tproject-1\tentry-bind-dep\tentry-bind-other\tenemy\t敵', 1, 't', 't')",
+        &[],
+        "run",
+    )
+    .expect("external relation");
+    db.execute(
+        "UPDATE codex_entries SET summary = '作者が後で編集', version = 4, updated_at = 'u'
+          WHERE id = 'entry-bind-dep'",
+        &[],
+        "run",
+    )
+    .expect("author edit");
+    let edited = entry_row_fingerprint(&db, "entry-bind-dep").unwrap();
+
+    // bind 自身は依存を作っていないので、作者の関係・編集は undo を妨げず、保持される。
+    let undone = narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        commit_replay_payload(&commit_id, "bind-dep-undo"),
+    )
+    .expect("undo of bind must not be blocked by author-owned dependencies");
+    assert_eq!(undone["status"], "undone");
+    assert_eq!(
+        entry_row_fingerprint(&db, "entry-bind-dep").as_deref(),
+        Some(edited.as_str())
+    );
+    assert_eq!(
+        count_rows(
+            &db,
+            "SELECT COUNT(*) FROM codex_relations WHERE id = 'rel-bind-ext'"
+        ),
+        1
+    );
+
+    let redone = narrative_extraction::narrative_extraction_redo_commit(
+        &db,
+        commit_replay_payload(&commit_id, "bind-dep-redo"),
+    )
+    .expect("redo of bind");
+    assert_eq!(redone["status"], "redone");
+    assert_eq!(
+        entry_row_fingerprint(&db, "entry-bind-dep").as_deref(),
+        Some(edited.as_str()),
+        "redo of bind must not rewrite or recreate the entry"
+    );
+}
+
+#[test]
+fn bind_existing_redo_refuses_when_bound_entry_was_deleted() {
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-bind-gone", 1);
+    let items = [(
+        "codex.entity.bind-existing",
+        bind_op("entry-bind-gone", "ent:bind-gone", 1),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-bind-gone", "set-bind-gone", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-bind-gone",
+            "digest-bind-gone",
+            "set-bind-gone",
+            "run-bind-gone",
+            ops_from_pairs(&pairs, &items),
+            vec![existing_binding("ent:bind-gone", "entry-bind-gone")],
+        ),
+    );
+    let commit_id = applied["commitId"].as_str().unwrap().to_string();
+    narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        commit_replay_payload(&commit_id, "bind-gone-undo"),
+    )
+    .expect("undo");
+    db.execute(
+        "DELETE FROM codex_entries WHERE id = 'entry-bind-gone'",
+        &[],
+        "run",
+    )
+    .expect("author deletes entry");
+
+    let err = narrative_extraction::narrative_extraction_redo_commit(
+        &db,
+        commit_replay_payload(&commit_id, "bind-gone-redo"),
+    )
+    .expect_err("redo must not recreate the author's deleted entry");
+    assert!(err.to_string().contains("NEX_COMMIT_ENTRY_EDITED"), "{err}");
+    assert!(entry_row_fingerprint(&db, "entry-bind-gone").is_none());
+}
+
+#[test]
+fn bind_with_patch_and_create_round_trips_and_only_removes_the_created_entry() {
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-mix-bound", 3);
+    seed_existing_entry(&db, "entry-mix-patched", 3);
+    let bound_before = entry_row_fingerprint(&db, "entry-mix-bound").unwrap();
+
+    let items = [
+        (
+            "codex.entity.bind-existing",
+            bind_op("entry-mix-bound", "ent:mix-bound", 3),
+        ),
+        (
+            "codex.entry.patch",
+            json!({
+                "entryId": "entry-mix-patched",
+                "baseVersion": 3,
+                "aliases": { "kind": "set", "values": ["旧", "灰の目"] },
+                "summary": { "kind": "leave" },
+                "name": { "kind": "leave" },
+                "typeSlug": { "kind": "leave" },
+                "parentId": { "kind": "leave" },
+                "narrativeEntityId": "ent:mix-patched"
+            }),
+        ),
+        (
+            "codex.entry.create",
+            entry_create("entry-mix-new", "Belka", "ent:mix-new"),
+        ),
+        (
+            "codex.relation.create",
+            relation_create("rel-mix", "ent:mix-bound", "ent:mix-new", None),
+        ),
+    ];
+    let pairs = seed_approved_proposals(&db, "run-mix", "set-mix", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-mix",
+            "digest-mix",
+            "set-mix",
+            "run-mix",
+            ops_from_pairs(&pairs, &items),
+            vec![
+                existing_binding("ent:mix-bound", "entry-mix-bound"),
+                existing_binding("ent:mix-patched", "entry-mix-patched"),
+            ],
+        ),
+    );
+    assert_eq!(applied["status"], "applied");
+    let commit_id = applied["commitId"].as_str().unwrap().to_string();
+    assert_eq!(
+        entry_row_fingerprint(&db, "entry-mix-bound").as_deref(),
+        Some(bound_before.as_str())
+    );
+
+    for cycle in 1..=2 {
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            commit_replay_payload(&commit_id, &format!("mix-undo-{cycle}")),
+        )
+        .unwrap_or_else(|err| panic!("undo cycle {cycle}: {err}"));
+        // bind した既存 Entry は残り、create した Entry と関係だけが消える。
+        assert_eq!(
+            entry_row_fingerprint(&db, "entry-mix-bound").as_deref(),
+            Some(bound_before.as_str()),
+            "bound entry survives undo (cycle {cycle})"
+        );
+        assert!(entry_row_fingerprint(&db, "entry-mix-new").is_none());
+        assert_eq!(
+            count_rows(
+                &db,
+                "SELECT COUNT(*) FROM codex_relations WHERE id = 'rel-mix'"
+            ),
+            0
+        );
+        let patched = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT aliases FROM codex_entries WHERE id = 'entry-mix-patched'",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )?)
+            })
+            .unwrap();
+        assert!(!patched.contains("灰の目"), "patch is rolled back");
+
+        narrative_extraction::narrative_extraction_redo_commit(
+            &db,
+            commit_replay_payload(&commit_id, &format!("mix-redo-{cycle}")),
+        )
+        .unwrap_or_else(|err| panic!("redo cycle {cycle}: {err}"));
+        assert_eq!(
+            entry_row_fingerprint(&db, "entry-mix-bound").as_deref(),
+            Some(bound_before.as_str()),
+            "bound entry is untouched by redo (cycle {cycle})"
+        );
+        assert!(entry_row_fingerprint(&db, "entry-mix-new").is_some());
+        assert_eq!(
+            count_rows(
+                &db,
+                "SELECT COUNT(*) FROM codex_relations WHERE id = 'rel-mix'"
+            ),
+            1
+        );
+        assert!(entry_row_fingerprint(&db, "entry-mix-patched")
+            .unwrap()
+            .contains("灰の目"));
+    }
+}
+
+#[test]
+fn bind_existing_commit_cannot_be_reapplied_after_undo_like_other_commits() {
+    // 今の規則：undo した commit の提案は applied のまま（NEX_PROPOSAL_ALREADY_APPLIED）。
+    // bind でも create と同じで、undo が bind だけ別の状態にはしない。
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-bind-re", 3);
+    let items = [(
+        "codex.entity.bind-existing",
+        bind_op("entry-bind-re", "ent:bind-re", 3),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-bind-re", "set-bind-re", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-bind-re",
+            "digest-bind-re",
+            "set-bind-re",
+            "run-bind-re",
+            ops_from_pairs(&pairs, &items),
+            vec![existing_binding("ent:bind-re", "entry-bind-re")],
+        ),
+    );
+    let commit_id = applied["commitId"].as_str().unwrap().to_string();
+    narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        commit_replay_payload(&commit_id, "bind-re-undo"),
+    )
+    .expect("undo");
+    let err = prepare_then_apply(
+        &db,
+        build_prepare(
+            "req-bind-re-2",
+            "digest-bind-re-2",
+            "set-bind-re",
+            "run-bind-re",
+            ops_from_pairs(&pairs, &items),
+            vec![existing_binding("ent:bind-re", "entry-bind-re")],
+        ),
+    )
+    .expect_err("re-apply of the same proposal");
+    assert!(
+        err.to_string().contains("NEX_PROPOSAL_ALREADY_APPLIED"),
+        "{err}"
+    );
+    assert!(entry_row_fingerprint(&db, "entry-bind-re").is_some());
+}
+
+/// undo／redo が ledger（Field Authority・applications・依存・freshness・Contribution）を
+/// 動かさない、という既存の規則を比べるための写し。
+fn ledger_state(db: &Database) -> String {
+    let q = |sql: &str| -> String {
+        db.with_conn(|conn| {
+            let mut stmt = conn.prepare(sql)?;
+            let n = stmt.column_count();
+            let rows = stmt.query_map([], |row| {
+                let mut cols = Vec::new();
+                for i in 0..n {
+                    let v: rusqlite::types::Value = row.get(i)?;
+                    cols.push(format!("{v:?}"));
+                }
+                Ok(cols.join(","))
+            })?;
+            let mut out: Vec<String> = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            Ok(out.join(" ; "))
+        })
+        .unwrap()
+    };
+    format!(
+        "FA[{}] APPS[{}] DEP[{}] FRESH[{}] CONTR[{}]",
+        q("SELECT entity_kind, entity_id, field_path, owner_kind FROM narrative_field_authority ORDER BY 1,2,3"),
+        q("SELECT COUNT(*) FROM narrative_proposal_applications"),
+        q("SELECT COUNT(*) FROM narrative_projection_dependencies"),
+        q("SELECT status FROM narrative_projection_freshness ORDER BY application_id"),
+        q("SELECT field_path, target_state FROM narrative_application_contributions ORDER BY 1,2"),
+    )
+}
+
+#[test]
+fn bind_existing_undo_redo_leaves_ledger_like_patch_does() {
+    // bind が書いた付随の記録（/narrativeEntityId の Field Authority、applications、依存、
+    // freshness、Contribution）は、undo／redo で動かない。patch の commit でも同じ
+    // （undo は Entry の行以外の ledger を巻き戻さない既存の規則）なので、両者で
+    // 「apply 後＝undo 後＝redo 後」が成り立つことを揃えて確かめる。
+    for kind in ["bind", "patch"] {
+        let db = migrated_db();
+        seed_existing_entry(&db, "entry-l", 3);
+        let items = if kind == "bind" {
+            [("codex.entity.bind-existing", bind_op("entry-l", "ent:l", 3))]
+        } else {
+            [(
+                "codex.entry.patch",
+                json!({
+                    "entryId": "entry-l", "baseVersion": 3,
+                    "aliases": { "kind": "set", "values": ["旧", "灰の目"] },
+                    "summary": { "kind": "leave" }, "name": { "kind": "leave" },
+                    "typeSlug": { "kind": "leave" }, "parentId": { "kind": "leave" },
+                    "narrativeEntityId": "ent:l"
+                }),
+            )]
+        };
+        let pairs = seed_approved_proposals(&db, "run-l", "set-l", &items);
+        let applied = prepare_and_apply(
+            &db,
+            build_prepare(
+                "req-l",
+                "dg-l",
+                "set-l",
+                "run-l",
+                ops_from_pairs(&pairs, &items),
+                vec![existing_binding("ent:l", "entry-l")],
+            ),
+        );
+        let commit_id = applied["commitId"].as_str().unwrap().to_string();
+        let applied_state = ledger_state(&db);
+        if kind == "bind" {
+            assert!(
+                applied_state.contains("/narrativeEntityId"),
+                "{applied_state}"
+            );
+        }
+        narrative_extraction::narrative_extraction_undo_commit(
+            &db,
+            commit_replay_payload(&commit_id, "l-undo"),
+        )
+        .unwrap();
+        assert_eq!(ledger_state(&db), applied_state, "{kind}: undo");
+        narrative_extraction::narrative_extraction_redo_commit(
+            &db,
+            commit_replay_payload(&commit_id, "l-redo"),
+        )
+        .unwrap();
+        assert_eq!(ledger_state(&db), applied_state, "{kind}: redo");
+    }
+}
+
+fn product_codex_update(db: &Database, entry_id: &str, base_version: i64, summary: &str) {
+    let payload: grimodex_db::agent_writes::AgentCodexUpdatePayload =
+        serde_json::from_value(json!({
+            "projectId": "project-1",
+            "sessionId": "sess-author",
+            "surface": "codex-editor",
+            "entryId": entry_id,
+            "baseVersion": base_version,
+            "summary": summary,
+            "name": null,
+            "content": null,
+            "aliases": null
+        }))
+        .expect("update payload");
+    grimodex_db::agent_writes::agent_codex_update_impl(db, payload).expect("product codex update");
+}
+
+#[test]
+fn bind_existing_undo_redo_survive_author_edit_through_product_write_path() {
+    // 製品の書き込み経路は Change Feed の head を進める。bind の undo／redo が古い
+    // snapshot 前提の事象を出すと DISCONTINUITY で落ちる。
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-bind-pe", 3);
+    let items = [(
+        "codex.entity.bind-existing",
+        bind_op("entry-bind-pe", "ent:pe", 3),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-pe", "set-pe", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-pe",
+            "dg-pe",
+            "set-pe",
+            "run-pe",
+            ops_from_pairs(&pairs, &items),
+            vec![existing_binding("ent:pe", "entry-bind-pe")],
+        ),
+    );
+    let commit_id = applied["commitId"].as_str().unwrap().to_string();
+    product_codex_update(&db, "entry-bind-pe", 3, "製品経路で編集");
+    let edited = entry_row_fingerprint(&db, "entry-bind-pe").unwrap();
+    assert!(edited.contains("製品経路で編集"));
+
+    narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        commit_replay_payload(&commit_id, "pe-undo"),
+    )
+    .expect("undo after product-path edit");
+    assert_eq!(
+        entry_row_fingerprint(&db, "entry-bind-pe").as_deref(),
+        Some(edited.as_str())
+    );
+    narrative_extraction::narrative_extraction_redo_commit(
+        &db,
+        commit_replay_payload(&commit_id, "pe-redo"),
+    )
+    .expect("redo after product-path edit");
+    assert_eq!(
+        entry_row_fingerprint(&db, "entry-bind-pe").as_deref(),
+        Some(edited.as_str())
+    );
+}
+
+fn bind_journal_after_entity_version(db: &Database, commit_id: &str) -> i64 {
+    db.with_conn(|conn| {
+        let after: String = conn.query_row(
+            "SELECT after_json FROM narrative_commit_journals
+              WHERE commit_id = ?1 ORDER BY created_at DESC LIMIT 1",
+            [commit_id],
+            |r| r.get(0),
+        )?;
+        let v: Value = serde_json::from_str(&after)?;
+        let entity = v["entities"]
+            .as_array()
+            .and_then(|a| a.iter().find(|e| e["opKind"] == "bind"))
+            .expect("bind journal entity");
+        assert_eq!(
+            entity["snapshot"]["version"], entity["version"],
+            "journal snapshot and version must agree"
+        );
+        Ok(entity["version"].as_i64().unwrap())
+    })
+    .unwrap()
+}
+
+#[test]
+fn bind_existing_undo_edit_redo_undo_keeps_journal_row_and_entry() {
+    // undo の後に作者が Entry を編集（版 3→4）してから redo しても、bind の journal 行は
+    // 元の snapshot／版（3）のまま。live の値で上書きすると legacy の Forward 事象の
+    // digest が元の apply 時と変わる。往復の最後の undo も通る。
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-bind-rt", 3);
+    let items = [(
+        "codex.entity.bind-existing",
+        bind_op("entry-bind-rt", "ent:rt", 3),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-rt", "set-rt", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-rt",
+            "dg-rt",
+            "set-rt",
+            "run-rt",
+            ops_from_pairs(&pairs, &items),
+            vec![existing_binding("ent:rt", "entry-bind-rt")],
+        ),
+    );
+    let commit_id = applied["commitId"].as_str().unwrap().to_string();
+    assert_eq!(bind_journal_after_entity_version(&db, &commit_id), 3);
+
+    narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        commit_replay_payload(&commit_id, "rt-undo-1"),
+    )
+    .expect("first undo");
+    product_codex_update(&db, "entry-bind-rt", 3, "undo の後の編集");
+    let edited = entry_row_fingerprint(&db, "entry-bind-rt").unwrap();
+    assert!(edited.contains("undo の後の編集"));
+
+    narrative_extraction::narrative_extraction_redo_commit(
+        &db,
+        commit_replay_payload(&commit_id, "rt-redo"),
+    )
+    .expect("redo after edit");
+    assert_eq!(bind_journal_after_entity_version(&db, &commit_id), 3);
+    assert_eq!(
+        entry_row_fingerprint(&db, "entry-bind-rt").as_deref(),
+        Some(edited.as_str())
+    );
+
+    narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        commit_replay_payload(&commit_id, "rt-undo-2"),
+    )
+    .expect("second undo");
+    assert_eq!(
+        entry_row_fingerprint(&db, "entry-bind-rt").as_deref(),
+        Some(edited.as_str())
+    );
+}
+
+#[test]
+fn bind_existing_undo_succeeds_even_if_author_deleted_the_entry_after_apply() {
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-bind-pd", 3);
+    let items = [(
+        "codex.entity.bind-existing",
+        bind_op("entry-bind-pd", "ent:pd", 3),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-pd", "set-pd", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-pd",
+            "dg-pd",
+            "set-pd",
+            "run-pd",
+            ops_from_pairs(&pairs, &items),
+            vec![existing_binding("ent:pd", "entry-bind-pd")],
+        ),
+    );
+    let commit_id = applied["commitId"].as_str().unwrap().to_string();
+    db.execute(
+        "DELETE FROM codex_entries WHERE id = 'entry-bind-pd'",
+        &[],
+        "run",
+    )
+    .unwrap();
+    let undone = narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        commit_replay_payload(&commit_id, "pd-undo"),
+    )
+    .expect("undo has nothing to roll back on the deleted entry");
+    assert_eq!(undone["status"], "undone");
+    assert!(entry_row_fingerprint(&db, "entry-bind-pd").is_none());
+}
