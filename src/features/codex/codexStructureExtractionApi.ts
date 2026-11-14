@@ -75,11 +75,9 @@ import {
   type ClaimTaskResult,
   type ReviewBundleProposal,
 } from "@/application/narrative-extraction/nativeApi";
+import { captureCodexCatalogRevision } from "./codexCatalogRevision";
 import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
-import {
-  digestStableJson,
-  sha256Digest,
-} from "@/features/narrative-extraction/source/digest";
+import { sha256Digest } from "@/features/narrative-extraction/source/digest";
 import { parseAliases } from "./codexMatcher";
 import { BUILTIN_CODEX_TYPES } from "./api";
 import {
@@ -1537,6 +1535,20 @@ export async function startCodexStructureExtraction(
     );
   }
   const workspaceBinding = bindingOutcome?.value ?? null;
+  // DR-CSX-1: the codex-catalog Source token is Native's (a digest of the DB
+  // content), never a renderer-derived digest. Capture it before any material
+  // is read here, and confirm the caller's catalog is still the DB's.
+  const catalogRevision =
+    workspaceBinding === null
+      ? null
+      : await captureCodexCatalogRevision({
+          projectId: request.projectId,
+          binding: workspaceBinding,
+          material: codexCatalogVersionVector(
+            catalogSnapshot,
+            request.existingRelations ?? [],
+          ),
+        });
 
   if (!seeds) {
     const snapshotResult = await buildProjectNarrativeSnapshot({
@@ -1973,9 +1985,7 @@ export async function startCodexStructureExtraction(
           documentCount: coverageDocumentCount,
           windowCount: coverageWindowCount,
         },
-        catalogDigest: await digestStableJson(
-          codexCatalogVersionVector(catalogSnapshot, existingRelations),
-        ),
+        catalogDigest: catalogRevision?.revisionToken,
         tasks: [
           {
             taskKind: CODEX_STRUCTURE_TASK_KIND,
@@ -1992,9 +2002,12 @@ export async function startCodexStructureExtraction(
         "Cannot persist Codex proposals without a sealed snapshot",
       );
     }
-    const catalogRevisionToken = await digestStableJson(
-      codexCatalogVersionVector(catalogSnapshot, existingRelations),
-    );
+    if (!catalogRevision) {
+      throw new Error(
+        "Cannot persist Codex proposals without the Native Codex catalog revision",
+      );
+    }
+    const catalogRevisionToken = catalogRevision.revisionToken;
     const sourceBasis = [
       ...buildSnapshotSourceBasis(runId, persistenceSnapshot),
       {
