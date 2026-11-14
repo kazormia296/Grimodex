@@ -23,6 +23,7 @@ import { CodexStatePhaseReview } from "./extraction-ui/CodexStatePhaseReview";
 import { useCodexStructureExtractionStore } from "./codexStructureExtractionStore";
 import {
   applyCodexStructureExtractionReview,
+  CodexStructureApplyBlockedError,
   buildCodexStructureCatalogs,
   readCurrentCodexEntries,
   restoreCodexStructureExtractionReview,
@@ -246,7 +247,19 @@ export function CodexStructureExtractDialog({
       clearProjection();
       onOpenChange(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // 同じ項目への patch の重なり・別名の条件の外れは、Apply の前に止めて理由を出す（打ち手 1）。
+      if (err instanceof CodexStructureApplyBlockedError) {
+        setError(
+          t(
+            err.kind === "same-entry-patch"
+              ? "codex.structureReview.applyBlocked.sameEntryPatch"
+              : "codex.structureReview.applyBlocked.surfaceAlias",
+            { names: summarizeNames(err.displayTitles) },
+          ),
+        );
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setApplying(false);
     }

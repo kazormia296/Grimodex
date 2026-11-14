@@ -3,15 +3,24 @@ import type {
   BindCodexEntityProposal,
 } from "@/features/narrative-extraction/proposals/bindCodexEntityProposal";
 import type { CreateCodexRelationProposalPayload } from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
+import { withSurfaceAlias } from "./surfaceAlias";
+
+/** 提案の編集の patch。画面・Api・store で同じ形を使う。 */
+export interface BindCodexEntityPayloadPatch {
+  readonly canonicalName?: string;
+  readonly summary?: string | null;
+  readonly aliases?: readonly string[];
+  readonly typeRef?: string;
+  /**
+   * 既存への結び付けで、表記（名前）を結び先の別名にも足すか（打ち手 1、既定 OFF）。
+   * 判定（足してよい表記か）は呼び手が先に行う。名前を変えた編集では、指定が無ければ外す。
+   */
+  readonly addSurfaceAlias?: boolean;
+}
 
 export function patchBindCodexEntityPayload(
   payload: BindCodexEntityPayload,
-  patch: {
-    readonly canonicalName?: string;
-    readonly summary?: string | null;
-    readonly aliases?: readonly string[];
-    readonly typeRef?: string;
-  },
+  patch: BindCodexEntityPayloadPatch,
 ): BindCodexEntityPayload {
   const binding = payload.binding;
   let nextBinding = binding;
@@ -58,7 +67,7 @@ export function patchBindCodexEntityPayload(
       ? { status: "resolved" as const, typeRef: patch.typeRef }
       : payload.typeResolution;
 
-  return {
+  const next: BindCodexEntityPayload = {
     ...payload,
     canonicalName:
       patch.canonicalName !== undefined
@@ -74,6 +83,15 @@ export function patchBindCodexEntityPayload(
           }))
         : payload.aliases,
   };
+  if (next.binding.kind !== "bind-existing") return next;
+  if (patch.addSurfaceAlias !== undefined) {
+    return withSurfaceAlias(next, patch.addSurfaceAlias, payload.canonicalName);
+  }
+  // 名前（表記）を直すと足すはずの表記が変わるので、別名に足す印は外す（§14 の T1-5）。
+  if (next.canonicalName.trim() !== payload.canonicalName.trim()) {
+    return withSurfaceAlias(next, false, payload.canonicalName);
+  }
+  return next;
 }
 
 export function resolveBindCodexEntityPayload(

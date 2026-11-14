@@ -48,7 +48,7 @@
 - 何が変わるか。review で結び先を選んだ表記を、「『X』を別名にも足す」の 1 行で確認して、その Entry の別名に残す。別名は作品全体のすべての場面で効く。次の抽出から、同じ表記は完全一致で自動に結ばれる。結ばれた提案の承認は、引き続き要る。打ち手 2 と組むと、以後は一括で通る。
 - 効く範囲。敬称を外せば名簿の人に当たる表記だけに限る。愛称や呼び方の違い、語の一部だけが当たる表記は足さない。作者が選ぶ負荷の大半はその外にあるので、「同じ判断が戻る」問題の一部しか解けない。
 - 危険。誤って足すと、その表記が出るたびに別人の Entry が強調され、以後は一括で通る。確認の行にそれを書く。足した別名を消せるか（Codex の編集と undo）は、着手の前に実機で確かめる。
-- 危険。同じ Entry に別名を足す提案が同じ抽出に 2 件あると、今の構成では保存が丸ごと失敗する。そのため、1 つの抽出で 1 つの Entry に別名を足せる提案は 1 件に制限する。同じ Entry への他の結び付けが同じ抽出にあるときも、別名の確認を出さない。
+- 危険。同じ Entry に別名を足す提案が同じ抽出に 2 件あると、今の構成では保存が丸ごと失敗する。そのため、1 つの抽出で 1 つの Entry に別名を足せる提案は 1 件に制限する。同じ Entry への他の結び付け（別名を足さないもの）は妨げない（打ち手 2 で Apply が結び付けを先に並べるので通る。§14）。
 - 足さない表記。呼び名、短い表記、別の Entry と衝突する表記、除外した表記、場面で指す人が変わりうる表記（役職の呼称・一人称）。
 
 ### 打ち手 3：名簿に無い表記を、一度却下したら覚えて畳む
@@ -256,7 +256,7 @@ IPC・保存・AI 送信・脅威モデル・閾値は動かない。触れる�
    - (e) 1 字以下（照合は 2 字以上、`extraction/existingEntityMatcher.ts:84-103`）。
    - (f) 場面で指す人が変わりうる表記（役職の呼称・一人称）。一覧で完全には判定できないので、確認の行に警告を出す。除外するかは Q6。
    (b)(b')(c) には catalog に全 Entry の名前・別名と `excludedAliases` が要る（今の `buildCodexStructureCatalogs`、`codexStructureExtractionApi.ts:824-905` に `excludedAliases` は無い）。**足しても AI へは送らない**（ローカルだけ）。
-5. 同じ Entry に別名を足せる提案は、1 つの抽出で 1 件に制限する（本線）。2 件目以降には、別名の確認の行を出さない（解決時に、同じ抽出の他の提案との衝突として検査する）。同じ Entry への他の bind-existing が同じ抽出にあるときも、別名の確認の行を出さない。理由：
+5. 同じ Entry に別名を足せる提案は、1 つの抽出で 1 件に制限する（本線）。2 件目以降には、別名の確認の行を出さない（解決時に、同じ抽出の他の提案との衝突として検査する）。~~同じ Entry への他の bind-existing が同じ抽出にあるときも、別名の確認の行を出さない。~~（2026-11-15 に取り下げ。打ち手 2 で Apply が bind-existing を patch より先に並べるようになったので、bind と patch 1 件は同じ commit で通る。§14 の T1-1）理由：
    - 同じ Entry への patch が 2 件あると、1 件目が Entry の版を上げ、2 件目は同じ `baseVersion` のまま失敗する。失敗する場所は版の不一致の検査（`agent_writes.rs:2309`）で、追加のみの検査（`codex_operations.rs:468-473`）より前。
    - patch の後に、同じ Entry への bind-existing（`baseVersion` 付き）が続いても失敗する。bind が apply 時に版を再検査する（`codex_operations.rs:691-708`）。bind を先、patch を後に並べれば通るので、提案の並びで結果が変わる。
    - 打ち手 2 で bind-existing が増えると、打ち手 1 の確認が出る場面は減る。この効きの減りは測る（§4.7）。
@@ -599,3 +599,29 @@ dev 専用の枝 `claude/dev-exact-bind-measure`（この枝に測定の道具�
 - 言えないこと：AI なしの抽出には関係・Phase・Base Detail の提案が無いので、(e)（依存のある結び付けは外す）の件数は 0 になっている。AI ありの run では (e) で外れる件数が増え、一括に入る数は上の表より少なくなる見込み（未測定）。
 - m-ja-2 で外れる多くは「人物でない型」（場所・組織などの名簿の行）。設計どおり人物だけを一括に入れている。広げるかは条件の緩和に当たるので、作者に伺う。
 - 理由の「全部数え」の 2 つ目以降は、製品の判定が最初の理由で止まるので、製品と照合できていない（最初の理由と一括の可否は全行で製品と一致）。
+
+## 14. 打ち手 1 の実装の判断（2026-11-15、枝 claude/alias-on-bind。編集の前に記録）
+
+作者の確認は §10（Q5・Q6 は推奨どおり：既定 OFF、足すのは敬称を外して当たった表記だけ、役職の呼称・一人称は足さない）。以下は技術の判断。
+
+### 14.1 着手の条件の確かめ（§4.3・§4.6）
+
+- **足した別名を消せるか**。コードと Rust の試験で確かめた。実機（Electron の画面）での確認ではない。§4.3 の「実機で確かめる」はこれで置き換えたので、作者に報告する。
+  - Codex の編集：別名欄の削除（`AliasesField.tsx:60`）は手の更新 `codex_update`（surface `manual`）で丸ごと置き換える。narrative の「追加のみ」（`codex_operations.rs:466-473`）は構造抽出の Apply の中だけで効き、手の編集には効かない。Field Authority の拒否は人でない decision にだけ効く（`field_authority.rs:908-913`）。
+  - narrative の undo：patch の undo は before の別名を書き戻す（`codex_snapshots.rs:130`、既存試験 `patch_undo_redo_undo_cycle`）。作者が後で Entry を編集していれば `NEX_COMMIT_ENTRY_EDITED` で止まり、そのときは Codex の編集で消す。この流れ（patch で足す → 手の更新で消す → undo は止まる）を Rust の試験で固定する。
+- **承認は人の decision として届く**。カードの承認は `reviseAndDecideAsHuman`／`appendHumanDecision` を使う。別名を持つ Entry の `/aliases` は Field Authority の行が無くても「値がある＝人の所有」扱い（`legacy_human`）だが、人の decision なので拒否されない。`explicit_lock` を立てる経路（`narrative_extraction_set_human_field_lock`）は renderer から呼ばれていないので、lock された `/aliases` は今の製品では起きない（起きれば commit 全体が `NEX_FIELD_AUTHORITY_DENIED` で落ちる。既存の AI の別名と同じ）。
+- **同じ Entry の失敗の再現**。Rust の試験で 3 通りを固定した：patch → patch は失敗、patch → bind は失敗、bind → patch は通る（後 2 つは打ち手 2 の試験）。
+  - patch → patch（`same_entry_patch_then_patch_fails_whole_commit_and_rolls_back`）：2 件とも承認時の同じ別名から組まれるので、2 件目の set は 1 件目の追加を含まず、追加のみの検査 `NEX_CODEX_PATCH_ALIASES_REMOVAL` で落ちる（版の検査より先）。2 件目が 1 件目の追加を含む set でも、版の検査（`version conflict: expected 3 but database has 4`）で落ちる。どちらも commit 全体が巻き戻る。§4.2 の 5 の「版の不一致で落ちる」は、製品で起きる形では追加のみの検査が先だった。
+  - 足した別名を消す（`alias_added_by_patch_is_removable_by_author_edit_and_undo_then_stops`）：patch で足す → 手の更新（`agent_codex_update_impl`、surface `codex-editor`。renderer の `renderer_codex_update_impl` と同じ内部関数）で消す → 消えている → その後の undo は `NEX_COMMIT_ENTRY_EDITED` で止まり、作者の編集が残る。
+
+### 14.2 判断
+
+- **T1-1（同じ Entry の他の結び付けは妨げない）**：§4.2 の 5 の「他の bind-existing があるときも出さない」を取り下げた。打ち手 2 で Apply が bind-existing を先に並べるので、bind（何件でも）と patch 1 件は通る。主な場面（「リク」が完全一致で結ばれ、「リクさん」を picker で結ぶ）が、この制限だと必ず出なくなる。patch 同士（別名を足す提案が同じ Entry に 2 件、または AI の明示の別名・要約の fill による patch と重なる）は今までどおり出さない。
+- **T1-2（状態の置き場）**：チェックの状態は `binding.enrichment.aliasesToAdd` に表記（`canonicalName`）が入っているかで表す。新しい列・schema は無い。切替は既存の revise の経路（`reviseCodexStructureProposal` の patch に `addSurfaceAlias` を足す）に載せる：編集キュー、新しい revision、承認前へ戻す、旗の引き直し、一括・stale の印を持ち越さない。復元は revision の payload からそのまま戻る。
+- **T1-3（判定）**：純関数 1 つ（`evaluateSurfaceAlias`）。条件は §4.2 の 4 の (a)(b)(b')(c)(d)(e) と、敬称を外すと結び先の名前・別名に当たること（Q6）。(b)(b') は `inspectExactEntityMatch` を使い、完全一致が無く、語の一部が当たる Entry が結び先だけであること。(c) は結び先の `excludedAliases` のどれかが表記を含むと外す。判定は画面の表示（run の catalog で見込み。(c) は見ない）、チェックを入れる時、カードの承認時、Apply の前の 4 か所。後の 3 つは DB から読んだプロジェクト全体の Codex（`readCurrentCodexEntries` に `excludedAliases` を足す。AI へは送らない）。
+- **T1-4（Apply の前の衝突）**：Apply の前に、承認済みの op のうち同じ Entry に向く patch が 2 件以上ある、または作者が足した別名が今の Codex で条件を外れた場合は、**Apply を止めて**該当のカード名を出す。decision は書かない（自動で保留に戻すのは、作者の Q4(a) の範囲＝古くなった結び付けの外にあるため。§4.4）。これは AI の明示の別名・要約の fill による patch 同士にも効く（今は commit 全体が版の不一致で落ちる。止める位置が Apply の前に変わる）。
+- **T1-5（表記を名前で編集したとき）**：結び付けのカードで名前（表記）を直すと、足すはずの表記が変わるので、別名を足す印は外す（OFF に戻す）。
+- **T1-6（2 か所の変換）**：store の `resolveBinding`・`reviseProposalFields` が Api と同じ変換を手で重ねていたのを、`reviewEditPayload.ts` の関数呼び出しに寄せる（§4.2 の 2）。
+- **T1-7（役職の呼称・一人称、§4.2 の 4 の (f)）**：別の判定も警告も置かない。足せるのは「敬称を外すと結び先の名前・別名に当たる表記」だけなので、「先生」「わたし」のような単独の語は敬称を外せず（not-honorific-form）、1 字の一人称は 1 字の条件で落ちる。通るのは、作者が既に結び先の名前・別名に入れた語に敬称が付いた形（例：別名「団長」に対する「団長さん」）と、固有名＋先生・隊長（「田中先生」。照合の敬称の一覧に先生・隊長がある）だけで、前者の曖昧さは作者の名簿の宣言に既にある。レビュー（2026-11-15）の指摘で、2 人の検証者がともに設計の範囲内と判断した。
+- **T1-8（文言と no-op）**：連鎖の文言の「まとめて承認でも通る」は、一括（打ち手 2）が結び先の型が人物のときだけなので、人物でない結び先では出さない。AI の明示の別名に同じ表記があるときはチェックを出さず、切替だけで何も変わらない編集では revision を作らない。承認時の再検査で外れたときも、理由ごとの文言を出す。
+

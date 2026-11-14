@@ -11,8 +11,17 @@ import {
   decideCodexStructureProposal,
   reviseCodexStructureProposal,
   resolveCodexStructureBinding,
+  surfaceAliasVerdictForReview,
+  CodexSurfaceAliasNotAllowedError,
 } from "./codexStructureExtractionApi";
-import type { CurrentCodexEntryRecord } from "./extraction/entityBulkSafety";
+import {
+  PERSON_TYPE_SLUG,
+  type CurrentCodexEntryRecord,
+} from "./extraction/entityBulkSafety";
+import {
+  hasSurfaceAlias,
+  type SurfaceAliasDecline,
+} from "./extraction/surfaceAlias";
 import {
   isSafeForCodexEntityBulkApprove,
   useCodexStructureExtractionStore,
@@ -35,6 +44,14 @@ export interface CodexEntityProposalReviewProps {
     projectId: string,
   ) => Promise<readonly CurrentCodexEntryRecord[]>;
 }
+
+/** 別名に足せない理由のうち、画面で作者に知らせるもの（敬称の形ではあるが足せない場合）。 */
+const SURFACE_ALIAS_NOTE_KEYS: Partial<Record<SurfaceAliasDecline, string>> = {
+  "same-entry-patch": "sameEntryPatch",
+  "exact-other": "exactOther",
+  "partial-other": "partialOther",
+  excluded: "excluded",
+};
 
 /**
  * Entity Proposal list + detail split (mirrors Chronicle Proposal Review).
@@ -144,6 +161,77 @@ export function CodexEntityProposalReview({
       binding.entityRef,
       storeProjection?.catalog,
     );
+  };
+
+  // 打ち手 1：結び先に選んだ表記を別名にも足すか（既定 OFF）。画面の判定は run の catalog での
+  // 見込み（除外語は見ない）。チェックを入れる時・承認時・Apply の前に、今の Codex で確かめ直す。
+  const surfaceAlias = (() => {
+    if (
+      !selected ||
+      applied ||
+      !boundToStore ||
+      !storeProjection ||
+      selected.proposal.payload.binding.kind !== "bind-existing"
+    ) {
+      return null;
+    }
+    const payload = selected.proposal.payload;
+    // AI の明示の別名に同じ表記があれば、既に足される（チェックは効かない）ので出さない。
+    if (
+      payload.aliases.some(
+        (alias) =>
+          alias.status === "explicit" &&
+          alias.surface === payload.canonicalName.trim(),
+      )
+    ) {
+      return null;
+    }
+    const on = hasSurfaceAlias(payload);
+    const base = surfaceAliasVerdictForReview(
+      selected,
+      storeProjection,
+      undefined,
+      { sameEntry: false },
+    );
+    const verdict = base.ok
+      ? surfaceAliasVerdictForReview(selected, storeProjection)
+      : base;
+    const noteKey = verdict.ok
+      ? undefined
+      : SURFACE_ALIAS_NOTE_KEYS[verdict.reason];
+    if (!on && !verdict.ok && !noteKey) return null;
+    // 一括承認（打ち手 2）は結び先が人物の型のときだけなので、連鎖の文言もそのときだけ出す。
+    const binding = payload.binding;
+    const targetTypeRef =
+      binding.kind === "bind-existing"
+        ? storeProjection.catalog?.entities.find(
+            (entity) => entity.ref === binding.entityRef,
+          )?.typeRef
+        : undefined;
+    const targetIsPerson =
+      storeProjection.catalog?.types.find((type) => type.ref === targetTypeRef)
+        ?.slug === PERSON_TYPE_SLUG;
+    return {
+      on,
+      verdict,
+      noteKey,
+      targetIsPerson,
+      surface: payload.canonicalName,
+      name: targetNameOf(selected) ?? "",
+    };
+  })();
+
+  const surfaceAliasErrorMessage = (error: unknown) => {
+    if (error instanceof CodexSurfaceAliasNotAllowedError) {
+      return t(
+        `codex.structureReview.surfaceAlias.notAllowed.${
+          SURFACE_ALIAS_NOTE_KEYS[error.reason] ?? "generic"
+        }`,
+      );
+    }
+    return error instanceof Error
+      ? error.message
+      : t("codex.structureReview.surfaceAlias.saveFailed");
   };
 
   return (
@@ -277,9 +365,11 @@ export function CodexEntityProposalReview({
                     });
                   })().catch((error) => {
                     toast.error(
-                      error instanceof Error
-                        ? error.message
-                        : t("codex.structureReview.errorSave"),
+                      error instanceof CodexSurfaceAliasNotAllowedError
+                        ? surfaceAliasErrorMessage(error)
+                        : error instanceof Error
+                          ? error.message
+                          : t("codex.structureReview.errorSave"),
                     );
                   });
                 }}
@@ -455,6 +545,67 @@ export function CodexEntityProposalReview({
                 }
               />
             )}
+
+            {surfaceAlias &&
+              (surfaceAlias.on || surfaceAlias.verdict.ok ? (
+                <div
+                  className="flex flex-col gap-1 rounded border border-border px-2 py-1.5 text-xs"
+                  data-testid="codex-surface-alias"
+                >
+                  <label className="flex items-center gap-2 text-foreground">
+                    <input
+                      type="checkbox"
+                      checked={surfaceAlias.on}
+                      onChange={(event) => {
+                        void reviseCodexStructureProposal({
+                          proposalId: selected.proposalId,
+                          patch: { addSurfaceAlias: event.target.checked },
+                          readEntries,
+                        }).catch((error) => {
+                          toast.error(surfaceAliasErrorMessage(error));
+                        });
+                      }}
+                      data-testid="codex-surface-alias-toggle"
+                    />
+                    {t("codex.structureReview.surfaceAlias.label", {
+                      surface: surfaceAlias.surface,
+                      name: surfaceAlias.name,
+                    })}
+                  </label>
+                  <span className="text-muted-foreground">
+                    {t(
+                      surfaceAlias.targetIsPerson
+                        ? "codex.structureReview.surfaceAlias.hint"
+                        : "codex.structureReview.surfaceAlias.hintNoBulk",
+                      {
+                        surface: surfaceAlias.surface,
+                        name: surfaceAlias.name,
+                      },
+                    )}
+                  </span>
+                  {surfaceAlias.on && !surfaceAlias.verdict.ok && (
+                    <span
+                      className="text-destructive"
+                      data-testid="codex-surface-alias-warning"
+                    >
+                      {t(
+                        `codex.structureReview.surfaceAlias.notAllowed.${
+                          surfaceAlias.noteKey ?? "generic"
+                        }`,
+                      )}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <p
+                  className="text-xs text-muted-foreground"
+                  data-testid="codex-surface-alias-note"
+                >
+                  {t(
+                    `codex.structureReview.surfaceAlias.notAllowed.${surfaceAlias.noteKey}`,
+                  )}
+                </p>
+              ))}
 
             <CodexExtractionEvidencePane
               proposal={selected}
