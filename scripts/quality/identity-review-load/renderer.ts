@@ -901,6 +901,7 @@ interface BState {
   keyHashToSurface: Map<string, string>;
 }
 let bState: BState | null = null;
+let synthBase: CodexCandidate[] | null = null;
 
 function requireB(): BState {
   if (!bState) throw new Error("[precheck] B_NOT_PREPARED no candidate screen");
@@ -1080,6 +1081,53 @@ async function bJudge() {
 }
 
 /**
+ * 乾いた実行用の合成の名簿（件数の見積りだけに使う。品質の主張には使わない）。
+ * 実体 i の名前＝候補一覧（既知の名前を除く前の raw）の i 番目、別名＝それより後ろの候補を
+ * 実体へ順に割り当てたもの（aliasTotal 個まで。段が進むと同じ割り当てに足す）。
+ * 実体の ID は synth-NNN。本物の名簿ではない（表記は原稿の候補から取るので repo 外の workspace に限る）。
+ */
+async function bSynthRoster(input: { entityCount: number; aliasTotal: number }) {
+  const a = requireActive();
+  const b = requireB();
+  // 最初の呼び出し（Codex が空のときの候補一覧）を基準に固定する。登録すると raw の走査結果が縮むため。
+  if (!synthBase) synthBase = b.raw.slice();
+  const raw = synthBase;
+  const names = raw.slice(0, input.entityCount);
+  const pool = raw.slice(
+    input.entityCount,
+    input.entityCount + input.aliasTotal,
+  );
+  const existing = new Set(b.entries.map((e) => e.id));
+  let created = 0;
+  let updated = 0;
+  for (let i = 0; i < names.length; i++) {
+    const id = `synth-${String(i + 1).padStart(3, "0")}`;
+    const aliases = pool
+      .filter((_, j) => j % names.length === i)
+      .map((c) => c.surface);
+    if (!existing.has(id)) {
+      await createCodexEntry(
+        {
+          id,
+          projectId: a.projectId,
+          type: "character",
+          name: names[i].surface,
+          aliases: aliases.length ? JSON.stringify(aliases) : null,
+        },
+        { suppressImeExport: true },
+      );
+      created++;
+    } else if (aliases.length > 0) {
+      await updateCodexEntry(a.projectId, id, {
+        aliases: JSON.stringify(aliases),
+      });
+      updated++;
+    }
+  }
+  return { created, updated, aliasAssigned: pool.length };
+}
+
+/**
  * B2 の模擬作者の決定を、製品の handler と同じ呼び出しで反映する。
  * accept＝createCodexEntry（handleCreateEntry）、alias＝entry の aliases 更新（handleRegisterAlias）、
  * dismiss＝却下キー集合の保存（handleDismiss）。反映の後に候補を作り直す（再スキャンはしない）。
@@ -1151,6 +1199,7 @@ Object.assign(window, {
     extractStructure,
     inventory,
     bPrepare,
+    bSynthRoster,
     bEstimate,
     bAiGate,
     bConfigureAi,

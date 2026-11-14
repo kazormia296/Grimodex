@@ -1,0 +1,430 @@
+/* global window */
+// 測定 B（候補画面の AI 判定）の駆動（事前登録 §6・§9）。
+//
+// モード：
+//   --mode dry-run  乾いた実行。送信の直前まで進め（候補・visible・entries を作り、要求の本文を製品と同じ式で
+//                   組んで文字数から token を見積もる）、作品×段ごとの要求数と見積りの費用だけを出す。
+//                   AI の設定・key・要求は一切しない。名簿が無いので、空の名簿と合成の名簿（候補の表記から作る）で行う。
+//   --mode trial|b1|b2  本測定（Anthropic へ送る）。--confirm-send yes-send-to-anthropic が無ければ始めない。
+//                   この作業（道具づくり）では実行しない。
+//
+// 隔離は run-measure-a.mjs と同じ（dbus-run-session・local-ci-xvfb・TMPDIR）。出力は件数・ID・path だけ
+// （repo 外の 0700／0600）。偽 AI の env（GRIMODEX_PRODUCT_JOURNEY*）は node・main のどちらにも立てない
+// （launcher-common の assertNoFakeAiEnv。試験では使ってよいが本測定の経路とは分ける）。
+import assert from "node:assert/strict";
+import console from "node:console";
+import process from "node:process";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { setTimeout } from "node:timers";
+import { pathToFileURL } from "node:url";
+import {
+  ROSTER_LEVELS,
+  WORKS,
+  assertOutputClean,
+  candidateKey,
+  findAiCommands,
+  hashSurface,
+  rosterAtLevel,
+  safeErrorSummary,
+  validateRoster,
+} from "./lib.mjs";
+import { readAiUsageRows, readAuditPathIds } from "./ai-usage-db.mjs";
+import { createGate, readModelPricing, STAGE_CAPS_USD, TOTAL_CAP_USD } from "./ledger.mjs";
+import {
+  buildRosterIndex,
+  codexTypeOf,
+} from "./measure-a-metrics.mjs";
+import {
+  assertOnlyCodexJudgment,
+  buildDryRunPlan,
+  dryMeasure,
+  runB1,
+  runB2,
+  truncateRosterForB,
+} from "./measure-b-core.mjs";
+import {
+  DEFAULT_OUTPUT,
+  assertNoFakeAiEnv,
+  ensurePrivateDir,
+  runCell,
+  withVite,
+  writeJson0600,
+} from "./launcher-common.mjs";
+import {
+  hashKeyStore,
+  installKey,
+  productStoreWriter,
+  receiveKeyViaFifo,
+  removeKey,
+} from "./key-supply.mjs";
+
+export const MODEL = "claude-sonnet-5-5";
+export const PROVIDER = "anthropic";
+export const CONFIRM_SEND = "yes-send-to-anthropic";
+export const B1_LEVELS = Object.freeze(["L0", "L1", "L2", "L3"]);
+/** 乾いた実行の合成の名簿：実体数と、段ごとの別名の累計（候補の表記から作る。件数の見積りだけに使う）。 */
+export const DEFAULT_SYNTH = Object.freeze({
+  entityCount: 60,
+  aliasTotals: Object.freeze({ L0: 0, L1: 40, L2: 100, L3: 160 }),
+});
+/** 本測定で許す AI の command。それ以外の AI 経路を検知したら cell を採用しない。 */
+export const ALLOWED_REAL_AI_COMMANDS = Object.freeze([
+  "get_ai_settings",
+  "save_ai_settings",
+  "send_chat_message",
+]);
+
+/** 本測定に進んでよいか（明示の許可が無ければ始めない）。 */
+export function assertSendAllowed(options) {
+  assert.ok(
+    ["trial", "b1", "b2"].includes(options.mode),
+    "[precheck] SEND_MODE only trial, b1 and b2 send",
+  );
+  assert.equal(
+    options["confirm-send"],
+    CONFIRM_SEND,
+    "[precheck] SEND_NOT_CONFIRMED real mode needs --confirm-send yes-send-to-anthropic",
+  );
+}
+
+/** 隔離した profile の safeStorage の backend が basic_text でないこと（本測定の前）。 */
+export function assertSafeStorageBackend(backend) {
+  assert.ok(
+    typeof backend === "string" && !["basic_text", "unknown", ""].includes(backend),
+    `[precheck] SAFE_STORAGE_BACKEND backend=${String(backend).replace(/[^A-Za-z0-9_]/gu, "_")}`,
+  );
+}
+
+/** page に束縛した api（measure-b-core が使う層）。ai_usage は DB から読む（fail-closed）。 */
+export function bindPageApi({ page, workspaceDir, readUsage = readAiUsageRows, sleep }) {
+  const rows = () => {
+    const r = readUsage(workspaceDir);
+    if (r.readable === 0)
+      throw new Error("[artifact] USAGE_DB_UNREADABLE no readable database for ai_usage");
+    return r.rows;
+  };
+  return {
+    gate: () => page.evaluate(() => window.identityLoad.bAiGate()),
+    prepare: (arg) => page.evaluate((a) => window.identityLoad.bPrepare(a), arg),
+    estimate: () => page.evaluate(() => window.identityLoad.bEstimate()),
+    judge: () => page.evaluate(() => window.identityLoad.bJudge()),
+    apply: (decisions) =>
+      page.evaluate((d) => window.identityLoad.bApply({ decisions: d }), decisions),
+    usageRowCount: async () => rows().length,
+    usageRowsSince: async (n) => rows().slice(n),
+    sleep: sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+  };
+}
+
+/** 登録した表記の hash（名前・別名。候補に出ない既存名の数え方に使う）。 */
+export async function registeredKeyHashesOf(entries) {
+  const out = [];
+  for (const entry of entries) {
+    out.push(await hashSurface(candidateKey(entry.name)));
+    for (const alias of entry.aliases ?? [])
+      out.push(await hashSurface(candidateKey(alias)));
+  }
+  return out;
+}
+
+// ---- 乾いた実行 -----------------------------------------------------------------
+
+/**
+ * 1 作品の乾いた実行：空の名簿→合成の名簿の段ごとに、送信の直前まで進めて件数を測る。
+ * 送らない（api.judge は呼ばない）。page は window.identityLoad を持つ（試験では fake）。
+ */
+export async function dryCellBody({ page, synth = DEFAULT_SYNTH, levels = B1_LEVELS }) {
+  const api = bindPageApi({ page, workspaceDir: "unused", readUsage: () => ({ rows: [], readable: 1 }) });
+  const out = [];
+  out.push({ level: "empty", ...(await dryMeasure({ api })) });
+  for (const level of levels) {
+    await page.evaluate(
+      (input) => window.identityLoad.bSynthRoster(input),
+      { entityCount: synth.entityCount, aliasTotal: synth.aliasTotals[level] },
+    );
+    out.push({ level, ...(await dryMeasure({ api })) });
+  }
+  return { levels: out, synthetic: { entityCount: synth.entityCount, aliasTotals: synth.aliasTotals } };
+}
+
+/** 乾いた実行の cell の採用条件：AI の command・AI の行・要求の送信が 0。 */
+export function dryCellStatus(cell) {
+  const names = cell.ipc?.commandNames ?? [];
+  if (findAiCommands(names).length > 0 || (cell.ipc?.commandCounts?.send_chat_message ?? 0) > 0)
+    return "ai-detected";
+  if (!cell.aiRows?.verified) return "ai-unverified";
+  if (Object.values(cell.aiRows.tables ?? {}).some((n) => n !== 0)) return "ai-detected";
+  if ((cell.egress?.nonLoopbackDestinationCount ?? 0) > 0) return "egress-detected";
+  if ((cell.egress?.sampleCount ?? 0) === 0) return "egress-unverified";
+  return "ok";
+}
+
+// ---- 本測定の cell ----------------------------------------------------------------
+
+/**
+ * 本測定の cell の中身（送信する）。key は installKey で入れ、終わりに必ず消す。
+ * mode：trial（B1 を 1 要求）／b1（3 回）／b2（L2 の模擬作者）。
+ */
+export async function measureBBody({
+  page,
+  app,
+  projectId,
+  workspaceDir,
+  roster,
+  level,
+  mode,
+  gate,
+  key,
+  expectedSafeStorageCheck = true,
+  usagePoll,
+}) {
+  const { roster: used, cut } = truncateRosterForB(roster);
+  const index = await buildRosterIndex(used);
+  const entries = rosterAtLevel(used, level).map((entity) => ({
+    ...entity,
+    type: codexTypeOf(entity.type),
+  }));
+  const registered = await page.evaluate(
+    (input) => window.identityLoad.registerRoster(input),
+    { projectId, entries },
+  );
+  assert.equal(registered.created, entries.length, "[artifact] REGISTRATION_COUNT_DIFFERS");
+  if (expectedSafeStorageCheck) {
+    const backend = await app.evaluate(
+      ({ safeStorage }) => safeStorage.getSelectedStorageBackend?.() ?? "unknown",
+    );
+    assertSafeStorageBackend(backend);
+  }
+  const configured = await installKey(page, { provider: PROVIDER, model: MODEL, key });
+  try {
+    assert.equal(configured.provider, PROVIDER, "[precheck] PROVIDER_NOT_APPLIED");
+    assert.equal(configured.model, MODEL, "[precheck] MODEL_NOT_APPLIED");
+    assert.equal(configured.keyPresent, true, "[precheck] KEY_NOT_PRESENT");
+    const api = bindPageApi({ page, workspaceDir });
+    const registeredKeyHashes = await registeredKeyHashesOf(entries);
+    let result;
+    if (mode === "b2") {
+      result = await runB2({
+        api,
+        gate,
+        index,
+        rosterTypeOf: (id) => index.entities.get(id)?.type,
+        registeredIds: new Set(entries.map((e) => e.id)),
+        registeredKeyHashes,
+        usagePoll,
+      });
+    } else {
+      result = await runB1({
+        api,
+        gate,
+        index,
+        registeredKeyHashes,
+        stage: mode === "trial" ? "trial" : "B1",
+        repeats: mode === "trial" ? 1 : 3,
+        usagePoll,
+      });
+    }
+    const requestsSent = (result.requests ?? result.iterations ?? []).reduce(
+      (n, r) => n + (r.attempts ?? 1),
+      0,
+    );
+    // 終了時：ai_usage と audit の surface・pathId の集合が codex_judgment だけ。
+    const usage = readAiUsageRows(workspaceDir);
+    const audit = readAuditPathIds(workspaceDir);
+    assert.ok(usage.readable > 0 && audit.readable > 0, "[artifact] SURFACE_DB_UNREADABLE");
+    const surfaces = assertOnlyCodexJudgment({
+      usageSurfaces: usage.rows.map((r) => r.surface),
+      auditPathIds: audit.pathIds,
+      requestsSent,
+    });
+    const models = {};
+    for (const row of usage.rows) models[row.model ?? "null"] = (models[row.model ?? "null"] ?? 0) + 1;
+    return {
+      mode,
+      level,
+      roster: { entityCount: used.entities.length, cut, registeredEntries: entries.length },
+      settings: { provider: configured.provider, model: configured.model, thinkingEnabled: configured.thinkingEnabled },
+      result,
+      requestsSent,
+      surfaces,
+      usageModels: models,
+      resolvedModel: "not-available-from-ai-usage",
+    };
+  } finally {
+    await removeKey(page, { provider: PROVIDER });
+  }
+}
+
+/** 本測定の cell の採用条件：許した AI command だけ。送信回数は IPC の send_chat_message と一致。 */
+export function realCellStatus(cell, value) {
+  const names = cell.ipc?.commandNames ?? [];
+  const unexpected = findAiCommands(names).filter(
+    (name) => !ALLOWED_REAL_AI_COMMANDS.includes(name),
+  );
+  if (unexpected.length > 0) return "unexpected-ai-command";
+  const sent = cell.ipc?.commandCounts?.send_chat_message ?? 0;
+  if (value && sent !== value.requestsSent) return "send-count-mismatch";
+  return "ok";
+}
+
+// ---- 引数・main ------------------------------------------------------------------
+
+function parseArgs(args) {
+  const options = {
+    mode: "dry-run",
+    works: Object.keys(WORKS).join(","),
+    output: DEFAULT_OUTPUT,
+    "data-dir": "",
+    "roster-dir": "",
+    "roster-name": "roster-final.json",
+    "confirm-send": "",
+    "synth-entities": String(DEFAULT_SYNTH.entityCount),
+    "synth-aliases": B1_LEVELS.map((l) => DEFAULT_SYNTH.aliasTotals[l]).join(","),
+    "trial-work": "",
+    keep: "false",
+  };
+  for (let i = 0; i < args.length; i += 2) {
+    assert.ok(args[i].startsWith("--") && args[i + 1] !== undefined, "use --name value arguments");
+    options[args[i].slice(2)] = args[i + 1];
+  }
+  assert.ok(["dry-run", "trial", "b1", "b2"].includes(options.mode), "[precheck] unknown --mode");
+  for (const work of options.works.split(","))
+    assert.ok(work in WORKS, `[precheck] unknown work ${work}`);
+  return options;
+}
+
+async function mainDry(options) {
+  const output = path.resolve(options.output);
+  const outDir = path.join(output, "dry-run");
+  ensurePrivateDir(outDir);
+  const aliasList = options["synth-aliases"].split(",").map(Number);
+  const synth = {
+    entityCount: Number(options["synth-entities"]),
+    aliasTotals: Object.fromEntries(B1_LEVELS.map((level, i) => [level, aliasList[i] ?? 0])),
+  };
+  const pricing = readModelPricing(MODEL);
+  const rows = [];
+  const summary = [];
+  await withVite(output, async ({ vite, busAddress }) => {
+    for (const work of options.works.split(",")) {
+      const { cell, value, scenesTexts } = await runCell({
+        output,
+        vite,
+        busAddress,
+        cellId: `B-dry-${work}`,
+        workKey: work,
+        dataDir: options["data-dir"],
+        keep: options.keep === "true",
+        body: (ctx) => dryCellBody({ page: ctx.page, synth }),
+      });
+      const status = cell.status === "failed" ? "failed" : dryCellStatus(cell);
+      const result = { schemaVersion: "identity-load-measure-b-dry/1", work, status, observed: cell, ...(value ?? {}) };
+      try {
+        assertOutputClean(result, scenesTexts);
+        writeJson0600(path.join(outDir, `${work}.json`), result);
+      } catch (error) {
+        writeJson0600(path.join(outDir, `${work}.failed.json`), { work, status: "output-withheld", errors: [safeErrorSummary(error)] });
+      }
+      for (const level of value?.levels ?? [])
+        rows.push({ work, level: level.level, candidates: level.candidates, request: level.request, b1Requests: level.b1Requests, b2Requests: level.b2Requests });
+      summary.push({ work, status });
+      console.log(JSON.stringify(summary.at(-1)));
+    }
+  });
+  const plan = buildDryRunPlan(rows, { pricing });
+  const report = {
+    schemaVersion: "identity-load-measure-b-dry-summary/1",
+    model: MODEL,
+    pricingPerMillion: pricing,
+    caps: { totalUsd: TOTAL_CAP_USD, stagesUsd: STAGE_CAPS_USD },
+    assumptions: {
+      tokenEstimate: "ascii 0.3 token/char, non-ascii 1.0 token/char (conservative; no tokenizer)",
+      outputEstimate: "120 token per judged candidate, floor 800",
+      b2Requests: "ceil(initial N / 50) at L2; each request sized like the first",
+      trialRequests: "3 requests sized like the largest B1 request",
+      roster: "empty and synthetic (names and aliases taken from the candidate list; sizing only)",
+    },
+    synthetic: synth,
+    works: summary,
+    rows,
+    cost: plan.cost,
+  };
+  assertOutputClean(report, []);
+  writeJson0600(path.join(outDir, "summary.json"), report);
+  if (summary.some((s) => s.status !== "ok")) process.exitCode = 1;
+  return report;
+}
+
+async function mainReal(options) {
+  assertSendAllowed(options);
+  const output = path.resolve(options.output);
+  const works = options["trial-work"] ? [options["trial-work"]] : options.works.split(",");
+  const outDir = path.join(output, `measure-b-${options.mode}`);
+  ensurePrivateDir(outDir);
+  assertNoFakeAiEnv(process.env);
+  const rosterDir = options["roster-dir"] || path.join(output, "roster");
+  const gate = createGate({
+    file: path.join(output, "ledger", "spend-ledger.jsonl"),
+    model: MODEL,
+  });
+  const keyStoreBefore = hashKeyStore();
+  const key = await receiveKeyViaFifo(productStoreWriter(), { parent: output });
+  const levels = options.mode === "b2" ? ["L2"] : options.mode === "trial" ? ["L2"] : B1_LEVELS;
+  const summary = [];
+  try {
+    await withVite(output, async ({ vite, busAddress }) => {
+      for (const work of works) {
+        const roster = JSON.parse(readFileSync(path.join(rosterDir, work, options["roster-name"]), "utf8"));
+        assert.ok(validateRoster(roster, {}).ok, `[precheck] ROSTER_INVALID ${work}`);
+        for (const level of levels) {
+          if (gate.state.stopped) break;
+          assert.ok(ROSTER_LEVELS.includes(level));
+          const { cell, value, scenesTexts } = await runCell({
+            output,
+            vite,
+            busAddress,
+            cellId: `B-${options.mode}-${work}-${level}`,
+            workKey: work,
+            dataDir: options["data-dir"],
+            passwordStoreBasic: false,
+            keep: options.keep === "true",
+            body: (ctx) =>
+              measureBBody({ ...ctx, roster, level, mode: options.mode, gate, key }),
+          });
+          const status = cell.status === "failed" ? "failed" : realCellStatus(cell, value);
+          const result = { schemaVersion: "identity-load-measure-b/1", work, level, status, observed: cell, value, ledger: { total: Number(gate.state.total.toFixed(4)), stopped: gate.state.stopped?.code ?? null } };
+          try {
+            assertOutputClean(result, scenesTexts);
+            writeJson0600(path.join(outDir, `${work}-${level}.json`), result);
+          } catch (error) {
+            writeJson0600(path.join(outDir, `${work}-${level}.failed.json`), { work, level, status: "output-withheld", errors: [safeErrorSummary(error)] });
+          }
+          summary.push({ work, level, status });
+          console.log(JSON.stringify(summary.at(-1)));
+        }
+      }
+    });
+  } finally {
+    const keyStoreAfter = hashKeyStore();
+    writeJson0600(path.join(outDir, "key-store-check.json"), {
+      productKeyStoreUnchanged: keyStoreBefore === keyStoreAfter,
+    });
+  }
+  if (summary.some((s) => s.status !== "ok")) process.exitCode = 1;
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.mode === "dry-run") await mainDry(options);
+  else await mainReal(options);
+}
+
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  try {
+    await main();
+  } catch (error) {
+    console.log(JSON.stringify({ status: "launcher-failed", ...safeErrorSummary(error) }));
+    process.exitCode = 1;
+  }
+}
