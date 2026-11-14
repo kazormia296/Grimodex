@@ -750,7 +750,7 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
 /// Inspect every Project in this database connection. A Workspace is ready
 /// only when every Project is ready; missing Projects are reported as
 /// incomplete rather than vacuously passing.
-pub fn inspect_workspace_cutover_readiness(conn: &Connection) -> Result<WorkspaceCutoverReadiness> {
+pub fn inspect_workspace_cutover_readiness(conn: &mut Connection) -> Result<WorkspaceCutoverReadiness> {
     let mut statement = conn.prepare("SELECT id FROM projects ORDER BY created_at ASC, id ASC")?;
     let project_ids = statement
         .query_map([], |row| row.get::<_, String>(0))?
@@ -790,7 +790,7 @@ pub fn inspect_workspace_cutover_readiness(conn: &Connection) -> Result<Workspac
 
 /// Inspect one Project's C2-Z gates without triggering any Run or repair.
 pub fn inspect_project_cutover_readiness(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
 ) -> Result<ProjectCutoverReadiness> {
     require_project_id(project_id)?;
@@ -1309,7 +1309,7 @@ fn inspect_backfill_gate(
 }
 
 fn inspect_verify_gate(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     epoch_id: Option<&str>,
 ) -> Result<VerifyReadiness> {
@@ -3553,7 +3553,7 @@ mod tests {
     #[test]
     fn historical_v3_backfill_is_a_valid_boundary_for_current_epoch_readiness() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let backfill_spec_digest = format!(
                 "sha256:{}",
                 digest_plan(&serde_json::json!({
@@ -4004,7 +4004,7 @@ mod tests {
     #[test]
     fn readiness_does_not_call_clean_verify_a_full_cutover_pass() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             seed_legacy_freshness_and_dependency(conn, "fresh");
             seed_generic_application(conn, "fresh");
             conn.execute(
@@ -4049,7 +4049,7 @@ mod tests {
         .expect("seed clean incremental cursor");
 
         let baseline_digest = db
-            .with_conn(|conn| durable_graph_state_digest(conn, PROJECT_ID))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, PROJECT_ID))
             .expect("digest before cursor error");
         let baseline_gate = db
             .with_conn(|conn| inspect_incremental_runtime_gate(conn, PROJECT_ID, Some(EPOCH_ID)))
@@ -4070,7 +4070,7 @@ mod tests {
         .expect("seed cursor error");
 
         let after_error_digest = db
-            .with_conn(|conn| durable_graph_state_digest(conn, PROJECT_ID))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, PROJECT_ID))
             .expect("digest after cursor error");
         assert_eq!(
             baseline_digest, after_error_digest,
@@ -4089,8 +4089,8 @@ mod tests {
     #[test]
     fn verify_outcome_must_name_the_current_semantic_epoch() {
         let db = test_db();
-        db.with_conn(|conn| {
-            let insert_verify = |outcome: &str| -> anyhow::Result<()> {
+        db.with_conn_mut(|conn| {
+            let insert_verify = |conn: &Connection, outcome: &str| -> anyhow::Result<()> {
                 conn.execute(
                     "DELETE FROM narrative_extraction_runs WHERE id = 'verify-c2z-epoch'",
                     [],
@@ -4109,7 +4109,7 @@ mod tests {
                 Ok(())
             };
 
-            insert_verify(r#"{"verifyContractVersion":"4"}"#)?;
+            insert_verify(conn, r#"{"verifyContractVersion":"4"}"#)?;
             let missing = inspect_project_cutover_readiness(conn, PROJECT_ID)?;
             assert_eq!(missing.verify.state, ReadinessState::Incomplete);
             assert!(missing
@@ -4118,7 +4118,7 @@ mod tests {
                 .iter()
                 .any(|reason| reason == "verify-outcome-semantic-epoch-missing"));
 
-            insert_verify(r#"{"verifyContractVersion":"4","semanticEpochId":"epoch-other"}"#)?;
+            insert_verify(conn, r#"{"verifyContractVersion":"4","semanticEpochId":"epoch-other"}"#)?;
             let mismatched = inspect_project_cutover_readiness(conn, PROJECT_ID)?;
             assert_eq!(mismatched.verify.state, ReadinessState::Blocked);
             assert!(mismatched
@@ -4134,7 +4134,7 @@ mod tests {
     #[test]
     fn verify_run_without_canonical_work_key_is_incomplete() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.execute(
                 "INSERT INTO narrative_extraction_runs
                     (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
@@ -4164,7 +4164,7 @@ mod tests {
     #[test]
     fn verify_run_with_noncanonical_work_key_is_blocked() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.execute(
                 "INSERT INTO narrative_extraction_runs
                     (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
@@ -4195,7 +4195,7 @@ mod tests {
     #[test]
     fn rebuild_summary_missing_keeps_cutover_incomplete() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.execute(
                 "INSERT INTO narrative_extraction_runs
                     (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
@@ -4225,7 +4225,7 @@ mod tests {
     #[test]
     fn rebuild_run_without_canonical_work_key_is_incomplete() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.execute(
                 "INSERT INTO narrative_extraction_runs
                     (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
@@ -4256,7 +4256,7 @@ mod tests {
     #[test]
     fn rebuild_run_with_noncanonical_work_key_is_blocked() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.execute(
                 "INSERT INTO narrative_extraction_runs
                     (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
@@ -4291,7 +4291,7 @@ mod tests {
         rebuild_narrative_derived_state_for_project(&db, PROJECT_ID)
             .expect("manual rebuild executor should complete");
 
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let readiness = inspect_project_cutover_readiness(conn, PROJECT_ID)?;
             assert_eq!(
                 readiness.derived_state_rebuild.state,
@@ -4339,7 +4339,7 @@ mod tests {
         rebuild_narrative_derived_state_for_project(&db, PROJECT_ID)
             .expect("manual rebuild executor should complete");
 
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let tampered = r#"{
                 "rebuildContractVersion":"1",
                 "semanticEpochId":"epoch-c2z",
@@ -4402,7 +4402,7 @@ mod tests {
     #[test]
     fn workspace_readiness_requires_every_project() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title) VALUES ('project-c2z-blocked', 'Blocked')",
                 [],

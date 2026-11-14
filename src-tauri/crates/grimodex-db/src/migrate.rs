@@ -11807,7 +11807,7 @@ mod tests {
 
         let first_index_dropped = Arc::new(AtomicBool::new(false));
         let first_index_dropped_for_hook = Arc::clone(&first_index_dropped);
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(Some(move |context: AuthContext<'_>| match context.action {
                 AuthAction::DropIndex {
                     index_name: "idx_change_events_project_domain_op_entity_seq",
@@ -11832,7 +11832,7 @@ mod tests {
             .expect_err("a failed second index create must abort the repair savepoint");
         assert!(first_index_dropped.load(Ordering::SeqCst));
         assert!(error.to_string().contains("not authorized"));
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
             let change_columns = conn
                 .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")?
@@ -12023,7 +12023,7 @@ mod tests {
 
         let first_index_created = Arc::new(AtomicBool::new(false));
         let first_index_created_for_hook = Arc::clone(&first_index_created);
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(Some(move |context: AuthContext<'_>| match context.action {
                 AuthAction::CreateIndex {
                     index_name: "idx_narrative_decisions_revision_proposal",
@@ -12046,7 +12046,7 @@ mod tests {
             .expect_err("a failed v42 index must fail the migration");
         assert!(first_index_created.load(Ordering::SeqCst));
         assert!(error.to_string().contains("not authorized"), "{error:#}");
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
             let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
             assert_eq!(version, 41, "a failed v42 step must not promote the marker");
@@ -12269,7 +12269,7 @@ mod tests {
         let (db, v1_rows) = v42_workspace_with_scene_bindings();
         let binding_alters = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let binding_alters_for_hook = Arc::clone(&binding_alters);
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(Some(move |context: AuthContext<'_>| match context.action {
                 AuthAction::AlterTable {
                     table_name: "narrative_scene_scope_bindings",
@@ -12292,7 +12292,7 @@ mod tests {
             .expect_err("a failed second column must fail the migration");
         assert!(binding_alters.load(Ordering::SeqCst) >= 2);
         assert!(error.to_string().contains("not authorized"), "{error:#}");
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
             let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
             assert_eq!(version, 42, "a failed v43 step must not promote the marker");

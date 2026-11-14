@@ -19,7 +19,7 @@ use super::project_scope_authority::{load_live_project_scope_authority, LiveProj
 /// re-admit a nested maintenance operation.  The owner is never retained by a
 /// Source result.
 pub(crate) struct ValidationConnectionScope<'conn> {
-    connection: &'conn Connection,
+    connection: &'conn mut Connection,
 }
 
 pub(crate) struct ValidationContext<'conn, 'owner> {
@@ -47,27 +47,27 @@ impl super::nir1_entity_relation_index::GraphWorkControl for ForegroundValidatio
 }
 
 impl<'conn, 'owner> ValidationContext<'conn, 'owner> {
-    pub(crate) fn ensure_connection(&self, candidate: &Connection) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            std::ptr::eq(self.scope.connection, candidate),
-            "NEX_VALIDATION_CONTEXT_CONNECTION_MISMATCH: validation context must borrow the enclosing transaction"
-        );
-        Ok(())
-    }
-
-    pub(crate) fn control(
-        &mut self,
-    ) -> &mut dyn super::nir1_entity_relation_index::GraphWorkControl {
-        self.owner
-    }
-
-    pub(crate) fn connection(&self) -> &'conn Connection {
+    /// The borrowed connection. rusqlite 0.41 registers every hook through
+    /// `&mut Connection`, and the Graph reads that run under this context
+    /// install capacity hooks, so the context borrows it exclusively.
+    pub(crate) fn connection(&mut self) -> &mut Connection {
         self.scope.connection
+    }
+
+    /// The connection and the stop owner together (two disjoint fields), for a
+    /// read that needs both at once.
+    pub(crate) fn parts(
+        &mut self,
+    ) -> (
+        &mut Connection,
+        &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
+    ) {
+        (&mut *self.scope.connection, &mut *self.owner)
     }
 }
 
 pub(crate) fn validation_context<'conn, 'owner>(
-    connection: &'conn Connection,
+    connection: &'conn mut Connection,
     owner: &'owner mut dyn super::nir1_entity_relation_index::GraphWorkControl,
 ) -> ValidationContext<'conn, 'owner> {
     ValidationContext {
@@ -235,7 +235,7 @@ pub(crate) fn resolve_source_revision(
 /// this variant binds the Graph eligibility Source to the caller's finite
 /// work owner so a cancellation cannot be normalized as missing or stale.
 pub(crate) fn resolve_source_revision_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     source_kind: &str,
@@ -257,7 +257,7 @@ pub(crate) fn resolve_source_revision_with_control(
 /// Prepare's candidate loop (DR-IRB-6). `reads: None` is the ordinary path; the
 /// only Source kind that uses `Some` is the Scope dependency projection.
 pub(super) fn resolve_source_revision_with_control_and_reads(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     source_kind: &str,
@@ -278,9 +278,9 @@ pub(super) fn resolve_source_revision_with_control_and_reads(
             "NEX_SOURCE_KEY_INVALID: Entity/Relation eligibility Source must belong to the exact project"
         );
         let source = if conn.is_autocommit() {
-            let tx = conn.unchecked_transaction()?;
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             super::nir1_entity_relation_index::read_eligibility_source_with_control(
-                &tx, project_id, control,
+                &mut tx, project_id, control,
             )?
         } else {
             super::nir1_entity_relation_index::read_eligibility_source_with_control(
@@ -348,15 +348,8 @@ pub(crate) fn resolve_source_revision_with_validation_context(
     source_kind: &str,
     source_key: &str,
 ) -> anyhow::Result<CurrentSourceRevision> {
-    let conn = context.scope.connection;
-    resolve_source_revision_with_control(
-        conn,
-        project_id,
-        run_id,
-        source_kind,
-        source_key,
-        context.control(),
-    )
+    let (conn, control) = context.parts();
+    resolve_source_revision_with_control(conn, project_id, run_id, source_kind, source_key, control)
 }
 
 /// Lazy-load-safe summary of a source's current state. Deliberately has no
@@ -410,7 +403,7 @@ pub(crate) fn resolve_current_source_state(
 /// the same missing/stale normalization as the ordinary reader while keeping
 /// `ValidationTerminated` errors intact.
 pub(crate) fn resolve_current_source_state_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     source_kind: &str,
@@ -431,7 +424,7 @@ pub(crate) fn resolve_current_source_state_with_control(
 /// [`resolve_current_source_state_with_control`] that may share the reads of
 /// one Prepare's candidate loop (DR-IRB-6).
 pub(super) fn resolve_current_source_state_with_control_and_reads(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     source_kind: &str,
@@ -573,7 +566,7 @@ impl CandidateFreshnessReads {
 /// Each versioned Scope Source still verifies its sealed Run/document binding.
 /// Do not retain this state between batches or across a write in the caller.
 pub(super) fn resolve_current_source_state_in_batch_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     source_kind: &str,

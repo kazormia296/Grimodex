@@ -60,7 +60,7 @@ pub(super) struct BuildSnapshot {
 }
 
 pub fn prepare_chronicle_index_build(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     project: &str,
 ) -> Result<NirIndexBuildRead> {
@@ -69,7 +69,7 @@ pub fn prepare_chronicle_index_build(
 }
 
 pub fn prepare_chronicle_index_build_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     project: &str,
     control: &mut dyn GraphWorkControl,
@@ -119,7 +119,7 @@ pub fn prepare_chronicle_index_build_with_control(
 /// authority. Everything from `read_snapshot_with_control` on is shared with
 /// the authority path.
 pub fn prepare_chronicle_index_build_on_reader(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     admission: &ChronicleReaderAdmission,
     project: &str,
@@ -171,7 +171,7 @@ pub fn prepare_chronicle_index_build_on_reader(
 
 #[cfg(test)]
 pub(super) fn read_snapshot(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
 ) -> Result<std::result::Result<BuildSnapshot, Reason>> {
     let mut control = super::super::source_revision::ForegroundValidationControl;
@@ -179,7 +179,7 @@ pub(super) fn read_snapshot(
 }
 
 pub(super) fn read_snapshot_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     control: &mut dyn GraphWorkControl,
 ) -> Result<std::result::Result<BuildSnapshot, Reason>> {
@@ -322,7 +322,7 @@ pub(super) fn read_snapshot_with_control(
 /// atomically, then resolve every live Source and the bounded Feed again.
 /// A partial roster or changed dependency can never publish a cached subset.
 pub(super) fn snapshot_current_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     snapshot: &BuildSnapshot,
     control: &mut dyn GraphWorkControl,

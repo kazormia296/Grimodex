@@ -357,7 +357,7 @@ pub(crate) fn production_history_read_budget(
 ///   preparation.
 #[allow(clippy::too_many_arguments)] // One explicit value per input of the D-final snapshot.
 pub(crate) fn reauthorize_turn_history_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     stage: &HistoryContextStage,
     range: &TurnHistoryRange,
     purpose: GenerationPurpose,
@@ -385,7 +385,7 @@ pub(crate) fn reauthorize_turn_history_in_tx(
 /// a shorter one to reach a dimension's edge.
 #[allow(clippy::too_many_arguments)] // One explicit value per input of the D-final snapshot.
 pub(crate) fn reauthorize_turn_history_with_budget_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     stage: &HistoryContextStage,
     range: &TurnHistoryRange,
     purpose: GenerationPurpose,

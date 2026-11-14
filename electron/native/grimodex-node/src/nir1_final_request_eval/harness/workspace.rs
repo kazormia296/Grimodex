@@ -256,7 +256,7 @@ impl CaseWorkspace {
         database.migrate()?;
         let audit = Arc::new(WriteAudit::default());
         let hook_audit = Arc::clone(&audit);
-        database.with_conn(|conn| {
+        database.with_conn_mut(|conn| {
             conn.update_hook(Some(move |action, _database: &str, table: &str, _rowid| {
                 hook_audit.record(format!("{action:?}"), table.to_owned());
             }))

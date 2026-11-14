@@ -168,7 +168,7 @@ pub struct NirQuerySnapshot {
 }
 
 pub fn validate_chronicle_query_status_snapshot(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     snapshot: &NirQuerySnapshot,
 ) -> Result<bool> {
@@ -177,7 +177,7 @@ pub fn validate_chronicle_query_status_snapshot(
 }
 
 pub fn validate_chronicle_query_status_snapshot_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     snapshot: &NirQuerySnapshot,
     control: &mut dyn GraphWorkControl,
@@ -207,7 +207,7 @@ pub enum NirEvidenceNavigationRead {
 }
 
 pub(super) fn current_proof(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     project: &str,
 ) -> Result<Option<Arc<IndexProof>>> {
@@ -216,7 +216,7 @@ pub(super) fn current_proof(
 }
 
 pub(super) fn current_proof_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     project: &str,
     control: &mut dyn GraphWorkControl,
@@ -235,7 +235,7 @@ pub(super) fn current_proof_with_control(
 }
 
 pub fn read_chronicle_query_status(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     project: &str,
     scene: &str,
@@ -245,7 +245,7 @@ pub fn read_chronicle_query_status(
 }
 
 pub fn read_chronicle_query_status_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     project: &str,
     scene: &str,
@@ -292,7 +292,7 @@ pub fn read_chronicle_query_status_with_control(
 }
 
 pub fn qualify_chronicle_index_query(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     project: &str,
     scene: &str,
@@ -316,7 +316,7 @@ pub fn qualify_chronicle_index_query(
 /// Lend only the exact capability captured before query embedding. One full
 /// currentness check covers its immutable proof and original S2 binding.
 pub fn qualify_chronicle_index_snapshot(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     snapshot: &NirQuerySnapshot,
 ) -> Result<NirQualifiedRead> {
@@ -325,7 +325,7 @@ pub fn qualify_chronicle_index_snapshot(
 }
 
 pub fn qualify_chronicle_index_snapshot_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     snapshot: &NirQuerySnapshot,
     control: &mut dyn GraphWorkControl,
@@ -405,7 +405,7 @@ fn qualify_proof(
 }
 
 pub fn validate_chronicle_query_snapshot(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     batch: &NirQualifiedBatch,
 ) -> Result<bool> {
@@ -414,7 +414,7 @@ pub fn validate_chronicle_query_snapshot(
 }
 
 pub fn validate_chronicle_query_snapshot_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     batch: &NirQualifiedBatch,
     control: &mut dyn GraphWorkControl,
@@ -433,7 +433,7 @@ pub fn validate_chronicle_query_snapshot_with_control(
 /// Equality of private proof/query identities permits one currentness check;
 /// it cannot make a different generation or S2 borrow the original verdict.
 pub fn validate_chronicle_bound_batch(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     original: &NirQuerySnapshot,
     batch: &NirQualifiedBatch,
@@ -443,7 +443,7 @@ pub fn validate_chronicle_bound_batch(
 }
 
 pub fn validate_chronicle_bound_batch_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     original: &NirQuerySnapshot,
     batch: &NirQualifiedBatch,
@@ -459,7 +459,7 @@ pub fn validate_chronicle_bound_batch_with_control(
 }
 
 fn validate_binding_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     owner: u64,
     proof: &Arc<IndexProof>,
@@ -589,7 +589,7 @@ fn keep_query_context(
 }
 
 pub fn read_chronicle_evidence_navigation(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     handle: &NirEvidenceHandle,
 ) -> Result<NirEvidenceNavigationRead> {
@@ -598,7 +598,7 @@ pub fn read_chronicle_evidence_navigation(
 }
 
 pub fn read_chronicle_evidence_navigation_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     handle: &NirEvidenceHandle,
     control: &mut dyn GraphWorkControl,
@@ -653,7 +653,7 @@ pub fn read_chronicle_evidence_navigation_with_control(
 /// Reconciliation drops unusable proofs and returns projects for synchronous
 /// operation/UI invalidation before a background worker starts rebuilding.
 pub fn reconcile_chronicle_index_runtime(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
 ) -> Result<Vec<String>> {
     ensure!(

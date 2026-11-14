@@ -44,7 +44,7 @@ fn insert_row(
     new.binding.chat_session_id = session.into();
     new.created_at_ms = created_at_ms;
     new.expires_at_ms = created_at_ms + 9_000;
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             insert_attempt_in_tx(conn, id, &new, true).map(|_| ())
         })
@@ -217,7 +217,7 @@ fn history_enumeration_ignores_caller_session_and_renderer_selection() {
         new.binding.caller.caller_session_id = caller_session.into();
         new.created_at_ms = at;
         new.expires_at_ms = at + 9_000;
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 insert_attempt_in_tx(conn, id, &new, true).map(|_| ())
             })

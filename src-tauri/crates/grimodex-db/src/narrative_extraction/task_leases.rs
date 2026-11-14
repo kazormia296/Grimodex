@@ -501,8 +501,8 @@ pub(crate) fn load_task_row(
 }
 
 pub(crate) fn with_immediate_transaction<T>(
-    conn: &Connection,
-    operation: impl FnOnce(&Connection) -> anyhow::Result<T>,
+    conn: &mut Connection,
+    operation: impl FnOnce(&mut Connection) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let operation_result = catch_unwind(AssertUnwindSafe(|| operation(conn)));
@@ -551,8 +551,8 @@ pub(crate) fn with_immediate_transaction<T>(
 /// It reports confirmed rollback separately from an ambiguous commit/cleanup
 /// failure so the lifecycle core can retain the exact reservation correctly.
 pub(crate) fn with_immediate_transaction_with_creation_outcome<T>(
-    conn: &Connection,
-    operation: impl FnOnce(&Connection) -> anyhow::Result<T>,
+    conn: &mut Connection,
+    operation: impl FnOnce(&mut Connection) -> anyhow::Result<T>,
     outcome: impl FnOnce(RunCreationTransactionOutcome) -> anyhow::Result<()>,
 ) -> anyhow::Result<T> {
     conn.execute_batch("BEGIN IMMEDIATE")?;
@@ -604,10 +604,10 @@ mod tests {
 
     #[test]
     fn creation_outcome_reports_confirmed_rollback_after_partial_dml() {
-        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let mut conn = Connection::open_in_memory().expect("in-memory sqlite");
         let mut observed = None;
         let error = with_immediate_transaction_with_creation_outcome(
-            &conn,
+            &mut conn,
             |conn| {
                 conn.execute_batch(
                     "CREATE TABLE creation_probe (id INTEGER PRIMARY KEY);\n                     INSERT INTO creation_probe (id) VALUES (1);",
@@ -639,10 +639,10 @@ mod tests {
 
     #[test]
     fn creation_outcome_is_unknown_when_rollback_cannot_be_confirmed() {
-        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let mut conn = Connection::open_in_memory().expect("in-memory sqlite");
         let mut observed = None;
         let error = with_immediate_transaction_with_creation_outcome(
-            &conn,
+            &mut conn,
             |conn| {
                 conn.execute_batch(
                     "CREATE TABLE creation_probe (id INTEGER PRIMARY KEY);\n                     INSERT INTO creation_probe (id) VALUES (1);\n                     ROLLBACK;",
@@ -663,9 +663,9 @@ mod tests {
 
     #[test]
     fn immediate_transaction_rolls_back_before_resuming_a_panic() {
-        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let mut conn = Connection::open_in_memory().expect("in-memory sqlite");
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = with_immediate_transaction(&conn, |conn| {
+            let _ = with_immediate_transaction(&mut conn, |conn| {
                 conn.execute_batch(
                     "CREATE TABLE panic_probe (id INTEGER PRIMARY KEY); INSERT INTO panic_probe (id) VALUES (1);",
                 )?;

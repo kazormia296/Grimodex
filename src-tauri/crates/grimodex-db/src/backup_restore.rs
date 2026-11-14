@@ -3327,7 +3327,7 @@ mod tests {
     /// and one (restore-decl-b / scene-4) is left without one.
     fn seed_declared_workspace(state: &WorkspaceState) {
         with_db_state(state, |db| {
-            db.with_conn(|conn| {
+            db.with_conn_mut(|conn| {
                 crate::narrative_extraction::with_immediate_transaction(conn, |conn| {
                     for (project, scenes) in [
                         ("restore-decl-a", ["scene-1", "scene-2"]),
@@ -3450,7 +3450,7 @@ mod tests {
         // A restore leaves the Scene free to declare again: the continuity of
         // the declaration feed does not block it (DR-CB1-7).
         with_db_state(&state, |db| {
-            db.with_conn(|conn| {
+            db.with_conn_mut(|conn| {
                 crate::narrative_extraction::with_immediate_transaction(conn, |conn| {
                     let declaration = test_declaration(conn, "restore-decl-a", "scene-1")?;
                     set_scene_body_declaration_for_test(conn, &declaration)

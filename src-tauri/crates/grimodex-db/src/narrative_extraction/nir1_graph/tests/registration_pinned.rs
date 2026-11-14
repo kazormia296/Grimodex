@@ -127,8 +127,8 @@ struct Cost {
 
 /// An ordinary reader plus its schema-table read counter.
 fn probed_reader(fixture: &Fixture) -> Result<(Nir1GraphReader, Arc<AtomicUsize>)> {
-    let reader = fixture.reader()?;
-    let ReaderConnection::Owned(conn) = &reader.connection else {
+    let mut reader = fixture.reader()?;
+    let ReaderConnection::Owned(conn) = &mut reader.connection else {
         panic!("an ordinary reader owns its connection");
     };
     let reads = schema_reads(conn)?;
@@ -143,7 +143,7 @@ fn register(
     mut owner: CountingOwner,
     sql_checks: bool,
 ) -> Result<(Outcome, Cost)> {
-    let conn = reader.take_owned_connection()?;
+    let mut conn = reader.take_owned_connection()?;
     let mut stage = Nir1GraphRegistrationStage::Maintenance;
     let mut current_heap = |operation: &mut dyn FnMut()| {
         operation();
@@ -153,7 +153,7 @@ fn register(
     nir1_pinned_snapshot::take_asked_tables();
     let mut run = || {
         reader.register_with_control_observed(
-            &conn,
+            &mut conn,
             PROJECT,
             &mut owner,
             Some(&mut stage),
@@ -284,7 +284,7 @@ fn worker_registration_reads_no_schema_table_under_the_shortcut() -> Result<()> 
     // connection query-only, so it cannot open a second one.
     for sql_checks in [true, false] {
         let fixture = Fixture::new()?;
-        let reads = fixture.authority.db().with_conn(schema_reads)?;
+        let reads = fixture.authority.db().with_conn_mut(schema_reads)?;
         let mut reader = fixture.open_worker_reader()?;
         reads.store(0, Ordering::Relaxed);
         let registered = if sql_checks {
@@ -486,8 +486,8 @@ fn registration_state_stops_end_in_the_same_typed_stop_and_never_leak_the_scope(
 #[test]
 fn registration_scope_statements_never_end_the_transaction() -> Result<()> {
     let fixture = Fixture::new()?;
-    let (reader, _) = probed_reader(&fixture)?;
-    let ReaderConnection::Owned(conn) = &reader.connection else {
+    let (mut reader, _) = probed_reader(&fixture)?;
+    let ReaderConnection::Owned(conn) = &mut reader.connection else {
         panic!("an ordinary reader owns its connection");
     };
     let transactions = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -622,8 +622,8 @@ fn registration_shortcut_ignores_ddl_committed_after_the_snapshot_was_pinned() -
     let mut outcomes = Vec::new();
     for sql_checks in [true, false] {
         let fixture = Fixture::new()?;
-        let (reader, reads) = probed_reader(&fixture)?;
-        let ReaderConnection::Owned(conn) = &reader.connection else {
+        let (mut reader, reads) = probed_reader(&fixture)?;
+        let ReaderConnection::Owned(conn) = &mut reader.connection else {
             panic!("an ordinary reader owns its connection");
         };
         // The authorizer sees the dependency-edge read being prepared, after

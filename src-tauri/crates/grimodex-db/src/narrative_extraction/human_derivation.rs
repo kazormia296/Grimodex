@@ -65,7 +65,7 @@ pub(crate) fn create_human_derived_revision_with_scope(
     trusted_scope: Option<TrustedHumanDerivationScope>,
     request: CreateHumanDerivedRevisionRequest,
 ) -> anyhow::Result<Value> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
             create_human_derived_revision_in_tx(

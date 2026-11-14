@@ -1,22 +1,12 @@
-# cargo audit exceptions. Each exception is scoped, expires, and is asserted by
-# scripts/release-workflows.test.mjs ("scopes the Rust audit exception").
+# cargo audit exceptions. None are in force: an exception needs its own scope,
+# reason and expiry, and asserted by scripts/release-workflows.test.mjs
+# ("keeps the Rust audit exception list empty ...").
 #
-# libsqlite3-sys 0.38.1 bundles SQLite < 3.54.0 (RUSTSEC-2026-0459 / CVE-2026-119375):
-# a process that opens a database file together with a sibling -wal file whose
-# page size differs from the database's can read uninitialized page-cache
-# memory. Only a file a less trusted party could have written is exposed.
-# Grimodex opens its own workspace database and restores workspace-internal
-# backups only after `PRAGMA quick_check`; opening a workspace received from
-# someone else is the open question.
-# The fix is rusqlite >= 0.41 (libsqlite3-sys >= 0.39). Its connection hooks
-# (authorizer, progress, commit, busy, trace) all take `&mut self`, while
-# grimodex-db hands `&Connection` through its guard and scope machinery (about
-# 105 hook call sites), so the update is its own lane (GDX-PRECHECK-001:
-# security-sensitive boundary), not a dependency bump.
-# Revisit by: remove the exception once rusqlite >= 0.41 (libsqlite3-sys >= 0.39)
-# is locked in both Cargo.lock files.
-# expires-at: 2026-12-10T00:00:00+09:00
+# RUSTSEC-2026-0459 / CVE-2026-119375 (libsqlite3-sys 0.38.1 bundled SQLite
+# < 3.54.0: a process that opens a database file together with a sibling -wal
+# file whose page size differs from the database's can read uninitialized
+# page-cache memory) was excepted until rusqlite 0.41 (libsqlite3-sys 0.39.1,
+# bundled SQLite 3.54.1) was locked in both Cargo.lock files (DR-DBC-4,
+# docs/plans/nir1-lane-decisions/db-connection-decisions.md).
 [advisories]
-ignore = [
-  "RUSTSEC-2026-0459", # libsqlite3-sys: bundled SQLite < 3.54.0 may expose uninitialized memory (WAL page-size mismatch)
-]
+ignore = []

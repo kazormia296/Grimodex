@@ -62,7 +62,7 @@ fn in_snapshot<T>(
     session: &SessionFixture,
     capture: &AcceptedChatInputCapture,
     body: impl FnOnce(
-        &Connection,
+        &mut Connection,
         &HistoryContextStage,
         &TurnHistoryRange,
         &AttemptSceneBinding,
@@ -428,7 +428,8 @@ fn sql_capacity_and_deadline_continue_without_history() -> Result<()> {
     let never_stops = &mut || Ok(());
     in_snapshot(&session, &capture, |conn, stage, range, scene| {
         let started = Instant::now();
-        let run = |budget: GenerationHistoryReadBudget,
+        let run = |conn: &mut Connection,
+                   budget: GenerationHistoryReadBudget,
                    owner_check: &mut dyn FnMut() -> Result<()>| {
             reauthorize_turn_history_with_budget_in_tx(
                 conn,
@@ -461,7 +462,7 @@ fn sql_capacity_and_deadline_continue_without_history() -> Result<()> {
         // 1. The VM-step ledger ends part-way through the run.
         let mut few_steps = production_budget(&prepare);
         few_steps.sql = ledger(300, Instant::now() + Duration::from_secs(60));
-        let outcome = run(few_steps, never_stops)?;
+        let outcome = run(conn, few_steps, never_stops)?;
         assert_eq!(
             outcome.without_history,
             Some(NoHistory::SqlCapacityExhausted)
@@ -474,7 +475,7 @@ fn sql_capacity_and_deadline_continue_without_history() -> Result<()> {
         // 2. The history's deadline elapses while the run is polling.
         let mut late = production_budget(&prepare);
         late.sql = ledger(u64::MAX / 4, Instant::now() + Duration::from_millis(40));
-        let outcome = run(late, &mut || {
+        let outcome = run(conn, late, &mut || {
             std::thread::sleep(Duration::from_millis(15));
             Ok(())
         })?;
@@ -534,7 +535,8 @@ fn cancel_stops_the_turn() -> Result<()> {
     let (capture, _) = session.accept("probe", "probe")?;
     let prepare = prepared_sql_budget();
     in_snapshot(&session, &capture, |conn, stage, range, _| {
-        let run = |prepare: &ParticipantSqlOperationBudget,
+        let run = |conn: &mut Connection,
+                   prepare: &ParticipantSqlOperationBudget,
                    owner_check: &mut dyn FnMut() -> Result<()>| {
             reauthorize_turn_history_in_tx(
                 conn,
@@ -550,7 +552,7 @@ fn cancel_stops_the_turn() -> Result<()> {
         };
         // D-final's checkpoint stops part-way through.
         let mut polls = 0;
-        let error = run(&prepare, &mut || {
+        let error = run(conn, &prepare, &mut || {
             polls += 1;
             if polls > 4 {
                 return Err(validation_terminated(
@@ -568,7 +570,7 @@ fn cancel_stops_the_turn() -> Result<()> {
         // The operation's own deadline: the owner's TimedOut is the turn's
         // error, not "no history".
         let mut polls = 0;
-        let error = run(&prepare, &mut || {
+        let error = run(conn, &prepare, &mut || {
             polls += 1;
             if polls > 4 {
                 return Err(validation_terminated(
@@ -584,7 +586,7 @@ fn cancel_stops_the_turn() -> Result<()> {
             Some(ValidationTerminationReason::TimedOut)
         );
         // An error of another kind from the owner is returned as it is.
-        let error = run(&prepare, &mut || Err(anyhow::anyhow!("NIR1_OWNER_FAILED")))
+        let error = run(conn, &prepare, &mut || Err(anyhow::anyhow!("NIR1_OWNER_FAILED")))
             .expect_err("an owner error stops the turn");
         assert!(format!("{error:#}").contains("NIR1_OWNER_FAILED"));
         // The participant's stop flag, observed by the run itself.
@@ -593,7 +595,7 @@ fn cancel_stops_the_turn() -> Result<()> {
             Instant::now() + Duration::from_secs(20),
             Duration::from_millis(100),
         );
-        let error = run(&stopped, &mut || Ok(())).expect_err("a stopped owner");
+        let error = run(conn, &stopped, &mut || Ok(())).expect_err("a stopped owner");
         assert_eq!(
             termination(&error),
             Some(ValidationTerminationReason::Cancelled)
@@ -791,10 +793,14 @@ fn history_run_writes_nothing_in_the_d_final_snapshot() -> Result<()> {
     in_snapshot(&session, &capture, |conn, stage, range, _| {
         let changes = conn.total_changes();
         let mut refused = 0usize;
+        // The probe writes from inside the run, which holds `conn` exclusively:
+        // it goes through its own non-owning wrapper over the same handle, whose
+        // authorizer is the run's (test-only, DR-DBC-4).
+        let writer = crate::test_support::same_handle_writer(conn);
         let mut probe = || {
-            let write = conn.execute_batch("CREATE TEMP TABLE di1b_probe(a)");
+            let write = writer.execute_batch("CREATE TEMP TABLE di1b_probe(a)");
             let rows =
-                conn.execute_batch("INSERT INTO chat_sessions(id,project_id) VALUES ('x','y')");
+                writer.execute_batch("INSERT INTO chat_sessions(id,project_id) VALUES ('x','y')");
             for result in [write, rows] {
                 match result {
                     Err(rusqlite::Error::SqliteFailure(failure, _))

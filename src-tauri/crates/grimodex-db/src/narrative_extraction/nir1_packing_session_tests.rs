@@ -1207,7 +1207,7 @@ fn clock_stamp() -> String {
 }
 
 fn run_in(
-    conn: &Connection,
+    conn: &mut Connection,
     current: &CurrentHistoryContext,
     budget: &mut GenerationHistoryReadBudget,
     now_ms: i64,
@@ -3158,7 +3158,7 @@ fn the_in_snapshot_form_refuses_an_autocommit_connection() -> Result<()> {
         )?;
     let error = session
         .db()
-        .with_conn(|conn| {
+        .with_conn_mut(|conn| {
             assert!(conn.is_autocommit());
             run_in(
                 conn,
