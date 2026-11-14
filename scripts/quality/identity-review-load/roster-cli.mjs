@@ -4,6 +4,8 @@
 //
 //   node roster-cli.mjs chunks --work g-ja-2
 //   node roster-cli.mjs check --work g-ja-2 --roster <file>
+//   node roster-cli.mjs merge-b --work g-ja-2
+//     （roster-B-chunk-NN.json を全部読み、決まった規則で roster-B.json と merge-report.json にする）
 //   node roster-cli.mjs reconcile --work g-ja-2            （roster-A.json と roster-B.json を突き合わせる）
 //   node roster-cli.mjs sheet --work g-ja-2 --roster <file> --seed <種>
 //   node roster-cli.mjs ingest --work g-ja-2 --roster <file> --responses <file>
@@ -18,6 +20,7 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   statSync,
@@ -43,6 +46,7 @@ import {
   diffRosters,
   finalizeUnreviewed,
   ingestReview,
+  mergeBRosters,
   renderChunkText,
   renderReviewHtml,
   selectReviewRows,
@@ -151,6 +155,41 @@ function importResponsesFile(source, workDir, root) {
   };
 }
 
+/** merge-b の入力（chunk ごとの B の名簿）の最小限の形を要求する（統合の規則は形が正しい前提）。 */
+function assertChunkRosterShape(chunk, work) {
+  const ok =
+    chunk &&
+    chunk.work === work &&
+    chunk.lineage === "B" &&
+    Array.isArray(chunk.entities) &&
+    chunk.entities.every(
+      (e) =>
+        e &&
+        typeof e.id === "string" &&
+        typeof e.name === "string" &&
+        typeof e.type === "string" &&
+        Array.isArray(e.aliases ?? []) &&
+        (e.aliases ?? []).every(
+          (a) =>
+            a &&
+            typeof a.surface === "string" &&
+            ["L1", "L2", "L3"].includes(a.level),
+        ) &&
+        Array.isArray(e.honorificSurfaces ?? []) &&
+        (e.honorificSurfaces ?? []).every((h) => typeof h === "string") &&
+        Array.isArray(e.ambiguousSurfaces ?? []) &&
+        (e.ambiguousSurfaces ?? []).every(
+          (a) =>
+            a &&
+            typeof a.surface === "string" &&
+            Array.isArray(a.sceneRanges) &&
+            a.sceneRanges.every((r) => Array.isArray(r) && r.length === 2),
+        ) &&
+        Array.isArray(e.evidence ?? []),
+    );
+  assert.ok(ok, "[precheck] CHUNK_ROSTER_MALFORMED");
+}
+
 /** 名簿が形式の検査と初出場面の検査を通ることを要求する（通らなければ止まる）。 */
 function assertRosterOk(roster, scenes) {
   assert.ok(
@@ -223,6 +262,44 @@ export function runCommand(command, options) {
       errors: [...validation.errors, ...sceneErrors].slice(0, 100),
       collisionCount: collisions.length,
       collisions,
+    };
+  }
+  if (command === "merge-b") {
+    const files = readdirSync(workDir)
+      .filter((file) => /^roster-B-chunk-\d+\.json$/u.test(file))
+      .sort();
+    assert.ok(files.length > 0, "[precheck] NO_B_CHUNK_ROSTERS");
+    const chunkRosters = files.map((file) =>
+      readJson(path.join(workDir, file)),
+    );
+    chunkRosters.forEach((chunk) =>
+      assertChunkRosterShape(chunk, options.work),
+    );
+    const { roster, report, summary } = mergeBRosters(
+      chunkRosters,
+      options.work,
+    );
+    const paragraphCounts = scenes.map((s) => s.paragraphs.length);
+    const validation = validateRoster(roster, { paragraphCounts });
+    const textErrors = checkRosterAgainstScenes(roster, scenes);
+    const countByCode = (errors) => {
+      const counts = {};
+      for (const e of errors) counts[e.code] = (counts[e.code] ?? 0) + 1;
+      return counts;
+    };
+    writePrivateJson(path.join(workDir, "roster-B.json"), roster);
+    writePrivateJson(path.join(workDir, "merge-report.json"), report);
+    // 落ちても書く（止めない）。件数と ID だけを返す。
+    return {
+      ...summary,
+      mergedValid: validation.ok && textErrors.length === 0,
+      validationErrorCount: validation.errors.length,
+      validationByCode: countByCode(validation.errors),
+      textErrorCount: textErrors.length,
+      textByCode: countByCode(textErrors),
+      nameDivergedIds: report.nameDivergedIds,
+      roster: path.join(workDir, "roster-B.json"),
+      report: path.join(workDir, "merge-report.json"),
     };
   }
   if (command === "reconcile") {

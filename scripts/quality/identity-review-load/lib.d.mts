@@ -192,6 +192,7 @@ export interface Roster {
   lineage: "A" | "B" | "adjudicated";
   entities: RosterEntity[];
   reviewSummary?: unknown;
+  narrator?: string | null;
 }
 export interface RosterViolation {
   code: string;
@@ -221,7 +222,11 @@ export function wilsonUpper(k: number, n: number, z?: number): number;
 export function checkRosterAgainstScenes(
   roster: unknown,
   scenes: readonly { paragraphs: readonly string[] }[],
-): { code: string; entityId: string; count: number }[];
+): { code: string; entityId: string; count: number; field?: string }[];
+export function checkSurfacesAgainstScenes(
+  roster: unknown,
+  scenes: readonly { paragraphs: readonly string[] }[],
+): { code: string; entityId: string; count: number; field?: string }[];
 
 export function scenesTextsForScan(
   scenes: readonly { paragraphs: readonly string[] }[],

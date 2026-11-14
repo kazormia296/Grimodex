@@ -993,6 +993,13 @@ export function validateRoster(roster, options = {}) {
     )
       add("REVIEW_STATUS", id, at("review"));
   });
+  // 語り手（任意の最上位の欄）：実体 ID か null。
+  if (roster.narrator !== undefined && roster.narrator !== null) {
+    if (typeof roster.narrator !== "string")
+      add("NARRATOR_INVALID", null, "$.narrator");
+    else if (!ids.has(roster.narrator))
+      add("NARRATOR_UNKNOWN", null, "$.narrator");
+  }
   // 敬称の対応表と、名前・別名の重なり（機械検査。作者の確認には回さない）
   const owners = new Set([...nameKeys.keys(), ...aliasKeys]);
   roster.entities.forEach((entity, index) => {
@@ -1171,6 +1178,103 @@ export function checkRosterAgainstScenes(roster, scenes) {
         entityId: String(entity.id),
         count: earlier,
       });
+  }
+  return [...errors, ...checkSurfacesAgainstScenes(roster, scenes)];
+}
+
+/**
+ * 名簿の表記が本文に出ることの機械検査（原稿の文字列は返さない。ルビは親文字だけにした本文を使う）。
+ * - SURFACE_NOT_IN_TEXT：実体の name・別名（alias）・敬称（honorific）・ambiguous の表記が、
+ *   全場面の本文のどこにも出ない。{ code, entityId, field, count }（count は出ない表記の数）
+ * - EVIDENCE_SURFACE_ABSENT：evidence の段落に、その実体のどの表記（name・別名・敬称・ambiguous）も無い。
+ *   count は該当する evidence の数。範囲外の evidence は形式の検査（validateRoster）に任せて飛ばす
+ * - AMBIGUOUS_RANGE_SURFACE_ABSENT：ambiguousSurfaces の sceneRanges の場面のどれにも、その表記が出ない。
+ *   count は該当する surface の数
+ * 表記は candidateKey ではなく本文への単純な部分一致。
+ */
+export function checkSurfacesAgainstScenes(roster, scenes) {
+  const paragraphTexts = scenes.map((scene) =>
+    scene.paragraphs.map(rubyBaseText),
+  );
+  const texts = paragraphTexts.map((paragraphs) => paragraphs.join("\n"));
+  const strings = (list) =>
+    list.filter((surface) => typeof surface === "string" && surface.length > 0);
+  const errors = [];
+  for (const entity of Array.isArray(roster?.entities) ? roster.entities : []) {
+    if (!entity || typeof entity !== "object") continue;
+    const entityId = String(entity.id);
+    const fields = {
+      name: strings([entity.name]),
+      alias: strings(
+        Array.isArray(entity.aliases)
+          ? entity.aliases.map((alias) => alias?.surface)
+          : [],
+      ),
+      honorific: strings(
+        Array.isArray(entity.honorificSurfaces) ? entity.honorificSurfaces : [],
+      ),
+      ambiguous: strings(
+        Array.isArray(entity.ambiguousSurfaces)
+          ? entity.ambiguousSurfaces.map((item) => item?.surface)
+          : [],
+      ),
+    };
+    for (const [field, surfaces] of Object.entries(fields)) {
+      const absent = surfaces.filter(
+        (surface) => !texts.some((text) => text.includes(surface)),
+      ).length;
+      if (absent > 0)
+        errors.push({
+          code: "SURFACE_NOT_IN_TEXT",
+          entityId,
+          field,
+          count: absent,
+        });
+    }
+    const all = Object.values(fields).flat();
+    if (Array.isArray(entity.evidence)) {
+      let absent = 0;
+      for (const ev of entity.evidence) {
+        const text = isPositiveInt(ev?.scene)
+          ? paragraphTexts[ev.scene - 1]?.[ev.paragraph - 1]
+          : undefined;
+        if (text === undefined) continue;
+        if (!all.some((surface) => text.includes(surface))) absent++;
+      }
+      if (absent > 0)
+        errors.push({
+          code: "EVIDENCE_SURFACE_ABSENT",
+          entityId,
+          count: absent,
+        });
+    }
+    if (Array.isArray(entity.ambiguousSurfaces)) {
+      let absent = 0;
+      for (const item of entity.ambiguousSurfaces) {
+        if (
+          typeof item?.surface !== "string" ||
+          item.surface.length === 0 ||
+          !Array.isArray(item.sceneRanges)
+        )
+          continue;
+        const found = item.sceneRanges.some(
+          (range) =>
+            Array.isArray(range) &&
+            isPositiveInt(range[0]) &&
+            isPositiveInt(range[1]) &&
+            texts
+              .slice(range[0] - 1, Math.min(range[1], texts.length))
+              .some((text) => text.includes(item.surface)),
+        );
+        if (!found) absent++;
+      }
+      if (absent > 0)
+        errors.push({
+          code: "AMBIGUOUS_RANGE_SURFACE_ABSENT",
+          entityId,
+          count: absent,
+        });
+    }
   }
   return errors;
 }

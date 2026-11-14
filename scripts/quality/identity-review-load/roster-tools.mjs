@@ -803,3 +803,235 @@ export function finalizeUnreviewed(roster) {
   };
   return { roster: next, validation: validateRoster(next) };
 }
+
+// ---- (e) 系統 B の統合（chunk ごとの B の名簿 → 1 本の roster-B） -----------------------
+
+const LEVEL_ORDER = Object.freeze(["L1", "L2", "L3"]);
+const minLevel = (a, b) =>
+  LEVEL_ORDER.indexOf(a) <= LEVEL_ORDER.indexOf(b) ? a : b;
+
+/**
+ * chunk ごとの B の名簿（lineage "B"）を、本文も A も見ずに決まった規則で 1 本の名簿にする。
+ * 規則（事前登録どおり。ここでは直さない）：
+ * - 同じ type で name か別名の candidateKey が一致する実体どうしを束ねる（union-find、推移的）。
+ *   type が違えば束ねない（そのような一致の組の数を typeConflict に数える）。
+ * - name：束の中で evidence の件数が最も多いメンバー（同数なら文字数の長い方、さらに firstScene の早い方、
+ *   さらに入力の順）。ほかの name は、採用した name と candidateKey が違えば alias（level は別のメンバーの
+ *   alias の最小の level、無ければ L2）。alias・honorific は candidateKey で和集合、ambiguous は
+ *   surface ごとに sceneRanges の和集合（重なる区間は併合）、evidence は重複除去して場面・段落の順。
+ * - ID は rt-<作品>-NNN に振り直す（firstScene の順、同じなら元の ID の文字列の順）。
+ * - 束ねた結果の規則違反（別名と敬称の重なりなど）は直さない。検査（validateRoster）に任せる。
+ * chunkRosters は chunk の順（入力の順が最後の決め手）。戻り値の report は ID だけ（表記を含まない）。
+ */
+export function mergeBRosters(chunkRosters, work) {
+  const members = [];
+  chunkRosters.forEach((chunk, chunkIndex) => {
+    for (const entity of chunk.entities)
+      members.push({ entity, chunkIndex, order: members.length });
+  });
+  const parent = members.map((_, i) => i);
+  const find = (i) => {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]];
+      i = parent[i];
+    }
+    return i;
+  };
+  const union = (a, b) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+  };
+  // key → type → 最初のメンバー（同じ type は束ねる）。type 違いの組は数える。
+  const byKey = new Map();
+  members.forEach((member, i) => {
+    for (const key of new Set(entityKeySets(member.entity).all)) {
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push(i);
+    }
+  });
+  const conflictPairs = new Set();
+  for (const list of byKey.values())
+    for (let a = 0; a < list.length; a++)
+      for (let b = a + 1; b < list.length; b++) {
+        if (members[list[a]].entity.type === members[list[b]].entity.type)
+          union(list[a], list[b]);
+        else conflictPairs.add(`${list[a]},${list[b]}`);
+      }
+  const clusters = new Map();
+  members.forEach((member, i) => {
+    const root = find(i);
+    if (!clusters.has(root)) clusters.set(root, []);
+    clusters.get(root).push(member);
+  });
+
+  const built = [...clusters.values()].map((group) => {
+    const evidenceCount = (m) =>
+      Array.isArray(m.entity.evidence) ? m.entity.evidence.length : 0;
+    const rank = (m) => [
+      -evidenceCount(m),
+      -codePoints(m.entity.name),
+      firstSceneOf(m.entity) ?? Number.MAX_SAFE_INTEGER,
+      m.order,
+    ];
+    const lead = [...group].sort((a, b) => {
+      const ra = rank(a);
+      const rb = rank(b);
+      for (let i = 0; i < ra.length; i++)
+        if (ra[i] !== rb[i]) return ra[i] - rb[i];
+      return 0;
+    })[0];
+    const name = lead.entity.name;
+    const nameKey = candidateKey(name);
+    const nameKinds = new Set(group.map((m) => candidateKey(m.entity.name)));
+    // 別名：明示の別名は最小の level。name 由来は L2（明示の別名があればそちら）。
+    const aliasSurface = new Map();
+    const aliasLevel = new Map();
+    const derived = new Map();
+    for (const m of group) {
+      const memberName = m.entity.name;
+      if (candidateKey(memberName) !== nameKey)
+        if (!derived.has(candidateKey(memberName)))
+          derived.set(candidateKey(memberName), memberName);
+      for (const alias of m.entity.aliases ?? []) {
+        const key = candidateKey(alias.surface);
+        if (!aliasSurface.has(key)) aliasSurface.set(key, alias.surface);
+        aliasLevel.set(
+          key,
+          aliasLevel.has(key)
+            ? minLevel(aliasLevel.get(key), alias.level)
+            : alias.level,
+        );
+      }
+    }
+    for (const [key, surface] of derived)
+      if (!aliasSurface.has(key)) aliasSurface.set(key, surface);
+    const aliases = [];
+    for (const [key, surface] of aliasSurface) {
+      if (key === nameKey) continue;
+      aliases.push({ surface, level: aliasLevel.get(key) ?? "L2" });
+    }
+    const honorifics = new Map();
+    for (const m of group)
+      for (const surface of m.entity.honorificSurfaces ?? [])
+        if (!honorifics.has(candidateKey(surface)))
+          honorifics.set(candidateKey(surface), surface);
+    const ambiguous = new Map();
+    for (const m of group)
+      for (const item of m.entity.ambiguousSurfaces ?? []) {
+        const key = candidateKey(item.surface);
+        if (!ambiguous.has(key))
+          ambiguous.set(key, { surface: item.surface, ranges: [] });
+        ambiguous.get(key).ranges.push(...item.sceneRanges.map((r) => [...r]));
+      }
+    const mergeRanges = (ranges) => {
+      const sorted = ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      const out = [];
+      for (const range of sorted) {
+        const last = out[out.length - 1];
+        if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1]);
+        else out.push([...range]);
+      }
+      return out;
+    };
+    const evidence = new Map();
+    for (const m of group)
+      for (const ev of m.entity.evidence ?? [])
+        evidence.set(`${ev.scene}:${ev.paragraph}`, {
+          scene: ev.scene,
+          paragraph: ev.paragraph,
+        });
+    const scenes = group
+      .map((m) => firstSceneOf(m.entity))
+      .filter((scene) => scene !== null);
+    // 元の ID は入力の順に全メンバー分（chunk が違えば同じ ID が重なりうる。重複は消さない）。
+    const origin = group.map((m) => m.entity.id);
+    const entity = {
+      id: "",
+      type: lead.entity.type,
+      name,
+      ...(group.some((m) => m.entity.nameIsRole === true)
+        ? { nameIsRole: true }
+        : {}),
+      ...(lead.entity.frequentSurface !== undefined
+        ? { frequentSurface: lead.entity.frequentSurface }
+        : {}),
+      aliases,
+      honorificSurfaces: [...honorifics.values()],
+      ambiguousSurfaces: [...ambiguous.values()].map(({ surface, ranges }) => ({
+        surface,
+        sceneRanges: mergeRanges(ranges),
+      })),
+      ...(scenes.length > 0 ? { firstScene: Math.min(...scenes) } : {}),
+      evidence: [...evidence.values()].sort(
+        (a, b) => a.scene - b.scene || a.paragraph - b.paragraph,
+      ),
+      lineage: "B",
+      origin: { B: origin },
+    };
+    return {
+      entity,
+      group,
+      diverged: nameKinds.size >= 2,
+      minOriginId: [...origin].sort()[0],
+      firstSceneKey: entity.firstScene ?? Number.MAX_SAFE_INTEGER,
+      firstMember: Math.min(...group.map((m) => m.order)),
+    };
+  });
+  built.sort(
+    (a, b) =>
+      a.firstSceneKey - b.firstSceneKey ||
+      (a.minOriginId < b.minOriginId
+        ? -1
+        : a.minOriginId > b.minOriginId
+          ? 1
+          : 0) ||
+      a.firstMember - b.firstMember,
+  );
+  built.forEach((item, i) => {
+    item.entity.id = `rt-${work}-${String(i + 1).padStart(3, "0")}`;
+  });
+  // 語り手：chunk の名簿の narrator（非 null）が全部同じ束を指すならその ID、食い違えば null。
+  const clusterOf = new Map(); // `${chunkIndex}|${元の ID}` → 新しい ID
+  for (const item of built)
+    for (const m of item.group)
+      clusterOf.set(`${m.chunkIndex}|${m.entity.id}`, item.entity.id);
+  const narratorTargets = new Set();
+  let narratorUnknown = 0;
+  chunkRosters.forEach((chunk, chunkIndex) => {
+    if (chunk.narrator === undefined || chunk.narrator === null) return;
+    const target = clusterOf.get(`${chunkIndex}|${chunk.narrator}`);
+    if (target === undefined) narratorUnknown++;
+    else narratorTargets.add(target);
+  });
+  const narratorConflict = narratorTargets.size > 1;
+  const narrator = narratorTargets.size === 1 ? [...narratorTargets][0] : null;
+  const divergedIds = built
+    .filter((item) => item.diverged)
+    .map((item) => item.entity.id);
+  return {
+    roster: {
+      schemaVersion: "identity-roster/1",
+      work,
+      lineage: "B",
+      entities: built.map((item) => item.entity),
+      narrator,
+    },
+    report: {
+      work,
+      nameDivergedCount: divergedIds.length,
+      nameDivergedIds: divergedIds,
+    },
+    summary: {
+      work,
+      chunkCount: chunkRosters.length,
+      memberCount: members.length,
+      entityCount: built.length,
+      typeConflict: conflictPairs.size,
+      nameDiverged: divergedIds.length,
+      narrator: narrator === null ? null : narrator,
+      narratorConflict: narratorConflict ? 1 : 0,
+      narratorUnknown,
+    },
+  };
+}

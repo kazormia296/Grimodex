@@ -47,6 +47,7 @@ import {
   finalizeUnreviewed,
   ingestReview,
   interiorBoundaries,
+  mergeBRosters,
   renderChunkText,
   renderReviewHtml,
   selectReviewRows,
@@ -1192,6 +1193,508 @@ test("CLI：壊れた名簿・日本語の work 名・repo 内の root でも、
         .mode & 0o077,
       0,
     );
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// ---- 本文に出ない表記の検査・narrator ------------------------------------------------
+
+const SURFACE_SCENES = [
+  { paragraphs: ["｜甲野《こうの》が来た。", "別名甲と呼ばれる。"] },
+  { paragraphs: ["甲野さんが笑う。", "乙川が来た。"] },
+];
+function surfaceEntity(overrides) {
+  return {
+    id: "e",
+    name: "甲野",
+    aliases: [],
+    honorificSurfaces: [],
+    ambiguousSurfaces: [],
+    firstScene: 1,
+    evidence: [{ scene: 1, paragraph: 1 }],
+    ...overrides,
+  };
+}
+const surfaceCodes = (entity, scenes = SURFACE_SCENES) =>
+  checkRosterAgainstScenes({ entities: [entity] }, scenes)
+    .map((r) => `${r.code}:${r.field ?? "-"}:${r.count}`)
+    .sort();
+
+test("表記の本文検査：すべて本文に出る名簿は通る（ルビは親文字で見る）", () => {
+  assert.deepEqual(
+    surfaceCodes(
+      surfaceEntity({
+        aliases: [{ surface: "別名甲", level: "L2" }],
+        honorificSurfaces: ["甲野さん"],
+        ambiguousSurfaces: [{ surface: "乙川", sceneRanges: [[2, 2]] }],
+        evidence: [
+          { scene: 1, paragraph: 1 },
+          { scene: 1, paragraph: 2 },
+          { scene: 2, paragraph: 2 },
+        ],
+      }),
+    ),
+    [],
+  );
+});
+
+test("表記の本文検査：出ない name・別名・敬称・ambiguous を field と件数で返し、表記は返さない", () => {
+  const result = checkRosterAgainstScenes(
+    {
+      entities: [
+        surfaceEntity({
+          name: "架空丙",
+          aliases: [
+            { surface: "架空丁", level: "L1" },
+            { surface: "架空戊", level: "L2" },
+            { surface: "別名甲", level: "L2" },
+          ],
+          honorificSurfaces: ["架空己さん", "甲野さん"],
+          ambiguousSurfaces: [{ surface: "架空庚", sceneRanges: [[1, 2]] }],
+          evidence: [{ scene: 1, paragraph: 2 }],
+        }),
+      ],
+    },
+    SURFACE_SCENES,
+  );
+  assert.deepEqual(
+    result.map((r) => `${r.code}:${r.field ?? "-"}:${r.count}`).sort(),
+    [
+      "AMBIGUOUS_RANGE_SURFACE_ABSENT:-:1",
+      "SURFACE_NOT_IN_TEXT:alias:2",
+      "SURFACE_NOT_IN_TEXT:ambiguous:1",
+      "SURFACE_NOT_IN_TEXT:honorific:1",
+      "SURFACE_NOT_IN_TEXT:name:1",
+    ],
+  );
+  assert.ok(findUnsafeStringsFree(result));
+  assert.ok(!JSON.stringify(result).includes("架空"));
+});
+
+test("表記の本文検査：evidence の段落にどの表記も無ければ EVIDENCE_SURFACE_ABSENT（範囲外は飛ばす）", () => {
+  assert.deepEqual(
+    surfaceCodes(
+      surfaceEntity({
+        evidence: [
+          { scene: 1, paragraph: 1 }, // 甲野が出る
+          { scene: 1, paragraph: 2 }, // 出ない
+          { scene: 2, paragraph: 2 }, // 出ない
+          { scene: 2, paragraph: 9 }, // 範囲外：形式の検査に任せる
+        ],
+      }),
+    ),
+    ["EVIDENCE_SURFACE_ABSENT:-:2"],
+  );
+  // 別名・敬称・ambiguous の表記でも根拠になる
+  assert.deepEqual(
+    surfaceCodes(
+      surfaceEntity({
+        aliases: [{ surface: "別名甲", level: "L2" }],
+        ambiguousSurfaces: [{ surface: "乙川", sceneRanges: [[2, 2]] }],
+        evidence: [
+          { scene: 1, paragraph: 2 },
+          { scene: 2, paragraph: 2 },
+        ],
+      }),
+    ),
+    [],
+  );
+});
+
+test("表記の本文検査：ambiguous は sceneRanges の場面のどれかに出る必要がある（本文の別の場面に出るだけでは足りない）", () => {
+  assert.deepEqual(
+    surfaceCodes(
+      surfaceEntity({
+        ambiguousSurfaces: [
+          { surface: "乙川", sceneRanges: [[1, 1]] }, // 場面 2 にしか出ない
+          {
+            surface: "乙川",
+            sceneRanges: [
+              [1, 1],
+              [2, 9],
+            ],
+          }, // 範囲の端は本文の場面数で切る
+        ],
+      }),
+    ),
+    ["AMBIGUOUS_RANGE_SURFACE_ABSENT:-:1"],
+  );
+});
+
+test("narrator：実体 ID か null を許し、未知の ID と型違いは落とす", () => {
+  const entities = [entity(1), entity(2)];
+  const okIds = [undefined, null, entities[0].id];
+  for (const narrator of okIds)
+    assert.equal(
+      validateRoster(
+        roster(entities, narrator === undefined ? {} : { narrator }),
+      ).ok,
+      true,
+    );
+  assert.deepEqual(
+    codes(validateRoster(roster(entities, { narrator: "rt-g-ja-2-099" }))),
+    ["NARRATOR_UNKNOWN"],
+  );
+  assert.deepEqual(codes(validateRoster(roster(entities, { narrator: 3 }))), [
+    "NARRATOR_INVALID",
+  ]);
+});
+
+// ---- 系統 B の統合（merge-b） -------------------------------------------------------
+
+const chunkRoster = (entities, extra = {}) => ({
+  schemaVersion: "identity-roster/1",
+  work: WORK,
+  lineage: "B",
+  entities,
+  ...extra,
+});
+function bEntity(id, name, overrides = {}) {
+  return {
+    id,
+    type: "character",
+    name,
+    aliases: [],
+    honorificSurfaces: [],
+    ambiguousSurfaces: [],
+    firstScene: 1,
+    evidence: [{ scene: 1, paragraph: 1 }],
+    lineage: "B",
+    ...overrides,
+  };
+}
+const rid = (n) => `rt-${WORK}-${String(n).padStart(3, "0")}`;
+
+test("merge-b：同じ type で表記が一致すれば束ね（推移的）、type が違えば束ねず typeConflict に数える", () => {
+  const chunks = [
+    chunkRoster([
+      bEntity(rid(1), "甲野", {
+        aliases: [{ surface: "KO", level: "L1" }],
+        evidence: [{ scene: 1, paragraph: 1 }],
+      }),
+      bEntity(rid(2), "丙山", { type: "location" }),
+    ]),
+    chunkRoster([
+      // 別名 ko（ASCII の大文字小文字は candidateKey で同じ）で甲野と一致
+      bEntity(rid(1), "甲野の兄", {
+        aliases: [
+          { surface: "ko", level: "L2" },
+          { surface: "丁原", level: "L3" },
+        ],
+        firstScene: 30,
+        evidence: [{ scene: 30, paragraph: 2 }],
+      }),
+      // 丁原で推移的に束ねる
+      bEntity(rid(2), "丁原", {
+        firstScene: 40,
+        evidence: [{ scene: 40, paragraph: 1 }],
+      }),
+      // 丙山と同じ表記だが type が違う
+      bEntity(rid(3), "丙山", {
+        type: "character",
+        firstScene: 5,
+        evidence: [{ scene: 5, paragraph: 1 }],
+      }),
+    ]),
+  ];
+  const { roster: merged, summary, report } = mergeBRosters(chunks, WORK);
+  assert.equal(summary.entityCount, 3);
+  assert.equal(summary.memberCount, 5);
+  assert.equal(summary.typeConflict, 1);
+  assert.deepEqual(
+    merged.entities.map((e) => e.origin.B.length),
+    [3, 1, 1],
+  );
+  assert.deepEqual(
+    merged.entities.map((e) => [e.id, e.type, e.firstScene]),
+    [
+      [rid(1), "character", 1],
+      [rid(2), "location", 1],
+      [rid(3), "character", 5],
+    ],
+  );
+  assert.equal(merged.lineage, "B");
+  assert.equal(report.nameDivergedCount, 1);
+  assert.deepEqual(report.nameDivergedIds, [rid(1)]);
+  assert.ok(!JSON.stringify(report).includes("甲野"));
+});
+
+test("merge-b：name は evidence 件数 → 文字数 → firstScene → 入力順で決め、他の name は alias（level は最小）", () => {
+  const merge = (list) =>
+    mergeBRosters([chunkRoster(list)], WORK).roster.entities[0];
+  const pair = (a, b) => [
+    bEntity(rid(1), a.name, {
+      aliases: [
+        { surface: "共通", level: a.level ?? "L3" },
+        ...(a.aliases ?? []),
+      ],
+      evidence: Array.from({ length: a.ev }, (_, i) => ({
+        scene: 1,
+        paragraph: i + 1,
+      })),
+      firstScene: a.fs ?? 1,
+    }),
+    bEntity(rid(2), b.name, {
+      aliases: [{ surface: "共通", level: b.level ?? "L2" }],
+      evidence: Array.from({ length: b.ev }, (_, i) => ({
+        scene: 1,
+        paragraph: i + 1,
+      })),
+      firstScene: b.fs ?? 1,
+    }),
+  ];
+  // evidence の件数が多い方
+  assert.equal(
+    merge(pair({ name: "短", ev: 1 }, { name: "長い名前", ev: 3 })).name,
+    "長い名前",
+  );
+  // 同数なら文字数の長い方
+  assert.equal(
+    merge(pair({ name: "短", ev: 2 }, { name: "長い名前", ev: 2 })).name,
+    "長い名前",
+  );
+  assert.equal(
+    merge(pair({ name: "長い名前", ev: 2 }, { name: "短", ev: 2 })).name,
+    "長い名前",
+  );
+  // 文字数も同じなら firstScene の早い方（evidence の場面は別に持たせる）
+  const sameLen = pair(
+    { name: "同甲", ev: 1, fs: 9 },
+    { name: "同乙", ev: 1, fs: 4 },
+  );
+  sameLen[0].evidence = [{ scene: 9, paragraph: 1 }];
+  sameLen[1].evidence = [{ scene: 4, paragraph: 1 }];
+  assert.equal(merge(sameLen).name, "同乙");
+  // すべて同じなら入力の順
+  assert.equal(
+    merge(pair({ name: "同甲", ev: 1 }, { name: "同乙", ev: 1 })).name,
+    "同甲",
+  );
+  // 他の name は alias。共通の別名は最小の level（L2）。name 由来は、別のメンバーの alias の level があればそれ
+  const merged = merge(pair({ name: "同甲", ev: 1 }, { name: "同乙", ev: 1 }));
+  assert.deepEqual(
+    merged.aliases.map((a) => [a.surface, a.level]),
+    [
+      ["共通", "L2"],
+      ["同乙", "L2"],
+    ],
+  );
+  const derived = merge([
+    bEntity(rid(1), "主名", {
+      aliases: [
+        { surface: "副名", level: "L3" },
+        { surface: "共通", level: "L1" },
+      ],
+      evidence: [
+        { scene: 1, paragraph: 1 },
+        { scene: 1, paragraph: 2 },
+      ],
+    }),
+    bEntity(rid(2), "副名", { aliases: [{ surface: "共通", level: "L2" }] }),
+  ]);
+  assert.equal(derived.name, "主名");
+  assert.deepEqual(
+    derived.aliases.map((a) => [a.surface, a.level]),
+    [
+      ["副名", "L3"], // 別のメンバーの alias として level が付いている
+      ["共通", "L1"],
+    ],
+  );
+  // name と同じ表記の alias は落とす
+  const dropped = merge([
+    bEntity(rid(1), "主名", { aliases: [{ surface: "共通", level: "L1" }] }),
+    bEntity(rid(2), "共通", { aliases: [{ surface: "主名", level: "L2" }] }),
+  ]);
+  assert.ok(!dropped.aliases.some((a) => a.surface === dropped.name));
+});
+
+test("merge-b：honorific・ambiguous の区間・evidence・firstScene・nameIsRole・origin の和集合", () => {
+  const { roster: merged } = mergeBRosters(
+    [
+      chunkRoster([
+        bEntity(rid(1), "甲野", {
+          honorificSurfaces: ["甲野さん"],
+          ambiguousSurfaces: [
+            {
+              surface: "先生",
+              sceneRanges: [
+                [1, 3],
+                [10, 12],
+              ],
+            },
+          ],
+          evidence: [
+            { scene: 2, paragraph: 3 },
+            { scene: 2, paragraph: 1 },
+          ],
+          firstScene: 2,
+          frequentSurface: "甲",
+        }),
+      ]),
+      chunkRoster([
+        bEntity(rid(1), "甲野", {
+          honorificSurfaces: ["甲野さん", "甲野君"],
+          ambiguousSurfaces: [
+            {
+              surface: "先生",
+              sceneRanges: [
+                [3, 5],
+                [20, 21],
+              ],
+            },
+            { surface: "隊長", sceneRanges: [[1, 1]] },
+          ],
+          evidence: [
+            { scene: 2, paragraph: 1 },
+            { scene: 1, paragraph: 4 },
+          ],
+          firstScene: 1,
+          nameIsRole: true,
+          frequentSurface: "別形",
+        }),
+      ]),
+    ],
+    WORK,
+  );
+  assert.equal(merged.entities.length, 1);
+  const e = merged.entities[0];
+  assert.deepEqual(e.honorificSurfaces, ["甲野さん", "甲野君"]);
+  assert.deepEqual(e.ambiguousSurfaces, [
+    {
+      surface: "先生",
+      sceneRanges: [
+        [1, 5],
+        [10, 12],
+        [20, 21],
+      ],
+    },
+    { surface: "隊長", sceneRanges: [[1, 1]] },
+  ]);
+  assert.deepEqual(e.evidence, [
+    { scene: 1, paragraph: 4 },
+    { scene: 2, paragraph: 1 },
+    { scene: 2, paragraph: 3 },
+  ]);
+  assert.equal(e.firstScene, 1);
+  assert.equal(e.nameIsRole, true);
+  // 採用した name のメンバーの値（evidence が同数・同じ name 長・firstScene の早い 2 つ目）
+  assert.equal(e.frequentSurface, "別形");
+  assert.deepEqual(e.origin, { B: [rid(1), rid(1)] });
+});
+
+test("merge-b：ID は firstScene の順・元の ID の順で振り直し、入力の順に依らず決定的。narrator は束に写す", () => {
+  const a = bEntity(rid(7), "丙", {
+    firstScene: 3,
+    evidence: [{ scene: 3, paragraph: 1 }],
+  });
+  const b = bEntity(rid(2), "乙", {
+    firstScene: 3,
+    evidence: [{ scene: 3, paragraph: 1 }],
+  });
+  const c = bEntity(rid(9), "甲", {
+    firstScene: 1,
+    evidence: [{ scene: 1, paragraph: 1 }],
+  });
+  const forward = mergeBRosters(
+    [
+      chunkRoster([a, b], { narrator: rid(2) }),
+      chunkRoster([c], { narrator: null }),
+    ],
+    WORK,
+  );
+  const backward = mergeBRosters(
+    [chunkRoster([c]), chunkRoster([b, a], { narrator: rid(2) })],
+    WORK,
+  );
+  const names = (r) => r.roster.entities.map((e) => [e.id, e.name]);
+  assert.deepEqual(names(forward), [
+    [rid(1), "甲"],
+    [rid(2), "乙"], // 同じ firstScene なら元の ID の文字列の順（rid(2) < rid(7)）
+    [rid(3), "丙"],
+  ]);
+  assert.deepEqual(names(forward), names(backward));
+  assert.equal(forward.roster.narrator, rid(2));
+  assert.equal(backward.roster.narrator, rid(2));
+  // 食い違えば null
+  const conflict = mergeBRosters(
+    [
+      chunkRoster([a], { narrator: rid(7) }),
+      chunkRoster([b], { narrator: rid(2) }),
+    ],
+    WORK,
+  );
+  assert.equal(conflict.roster.narrator, null);
+  assert.equal(conflict.summary.narratorConflict, 1);
+  // 同じ入力は同じ出力
+  assert.deepEqual(
+    mergeBRosters([chunkRoster([a, b]), chunkRoster([c])], WORK),
+    mergeBRosters([chunkRoster([a, b]), chunkRoster([c])], WORK),
+  );
+});
+
+test("CLI：merge-b は chunk の名簿を束ねて roster-B.json（0600）と merge-report.json を書き、規則違反は直さず件数に出す", () => {
+  const base = mkdtempSync(path.join(os.tmpdir(), "idl-mergeb-"));
+  try {
+    const dataDir = path.join(base, "data");
+    const out = path.join(base, "out");
+    mkdirSync(dataDir, { recursive: true });
+    mkdirSync(out, { recursive: true, mode: 0o700 });
+    const scenes = Array.from({ length: 60 }, (_, i) => ({
+      index: i + 1,
+      size: 0,
+      paragraphs: [`架空甲${i + 1}が来た。`, "何もない段落。"],
+    }));
+    scenes[0].paragraphs[0] = "架空乙が架空甲さんと話す。";
+    writeFileSync(
+      path.join(dataDir, "g-ja-2.json"),
+      JSON.stringify({ scenes }),
+    );
+    const workDir = path.join(out, "roster", WORK);
+    mkdirSync(workDir, { recursive: true, mode: 0o700 });
+    const one = chunkRoster(
+      [
+        bEntity(rid(1), "架空乙", {
+          honorificSurfaces: ["架空甲さん"],
+          aliases: [{ surface: "架空幻", level: "L2" }], // 本文に出ない別名
+        }),
+      ],
+      { narrator: rid(1) },
+    );
+    const two = chunkRoster([
+      bEntity(rid(1), "架空乙", {
+        // 別名と敬称の両方に入る（直さず validateRoster に任せる）
+        aliases: [{ surface: "架空甲さん", level: "L2" }],
+      }),
+    ]);
+    writeFileSync(
+      path.join(workDir, "roster-B-chunk-01.json"),
+      JSON.stringify(one),
+    );
+    writeFileSync(
+      path.join(workDir, "roster-B-chunk-02.json"),
+      JSON.stringify(two),
+    );
+    const summary = runCommand("merge-b", {
+      work: WORK,
+      root: out,
+      "data-dir": dataDir,
+    });
+    assert.equal(summary.entityCount, 1);
+    assert.equal(summary.narrator, rid(1));
+    assert.equal(summary.mergedValid, false);
+    assert.equal(summary.textByCode.SURFACE_NOT_IN_TEXT, 1);
+    assert.ok(summary.validationByCode.HONORIFIC_OVERLAPS_ALIAS >= 1);
+    const file = path.join(workDir, "roster-B.json");
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+    assert.equal(
+      statSync(path.join(workDir, "merge-report.json")).mode & 0o777,
+      0o600,
+    );
+    const written = JSON.parse(readFileSync(file, "utf8"));
+    assert.equal(written.lineage, "B");
+    assert.equal(written.narrator, rid(1));
+    assert.ok(!JSON.stringify(summary).includes("架空"));
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
