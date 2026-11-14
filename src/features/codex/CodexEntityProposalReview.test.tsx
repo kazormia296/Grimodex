@@ -370,7 +370,7 @@ describe("CodexEntityProposalReview: 完全一致の既存への結び付け", (
     ).toHaveTextContent("結び先が編集されたため");
   });
 
-  it("結び先が見つからないために戻された結び付けは、承認し直しでなく選び直し・却下へ誘導する", () => {
+  it("結び先が見つからないために戻された結び付けは、承認し直しでなく却下へ誘導する（選び直しの経路は無い）", () => {
     publish([
       bindProposal({
         status: "deferred",

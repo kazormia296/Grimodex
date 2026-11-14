@@ -222,4 +222,37 @@ describe("CodexStructureExtractDialog の適用", () => {
     expect(toastMocks.warning.mock.calls[0]?.[0]).toContain("開き直す");
     expect(toastMocks.success).toHaveBeenCalledTimes(1);
   });
+  it("外れた提案が多いときは、toast に先頭の数件と +N だけを出す", async () => {
+    publishApprovedProjection();
+    applyMock.mockImplementation(
+      async (input: {
+        onEntityApprovalsExcluded?: (
+          excluded: readonly {
+            proposalId: string;
+            displayTitle: string;
+            reason: string;
+          }[],
+        ) => void;
+      }) => {
+        input.onEntityApprovalsExcluded?.(
+          Array.from({ length: 8 }, (_, index) => ({
+            proposalId: `b${index}`,
+            displayTitle: `名前${index}`,
+            reason: "stale-version",
+          })),
+        );
+        return 0;
+      },
+    );
+    render(
+      <CodexStructureExtractDialog open onOpenChange={vi.fn()} folderId="f1" />,
+    );
+    fireEvent.click(screen.getByTestId("codex-structure-apply"));
+    await waitFor(() => expect(toastMocks.warning).toHaveBeenCalledTimes(1));
+    const message = toastMocks.warning.mock.calls[0]?.[0] as string;
+    expect(message).toContain("名前0");
+    expect(message).toContain("名前4");
+    expect(message).not.toContain("名前5");
+    expect(message).toContain("+3");
+  });
 });

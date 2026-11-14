@@ -33,6 +33,12 @@ import { listCodexRelations } from "./codexRelationApi";
 import { listCodexTypes } from "./typeApi";
 import { buildExistingRelationCatalog } from "./extraction/existingRelationMatcher";
 
+/** toast に出す提案名。先頭の数件と「+N」に切る（数百件が同時に古くなりうる）。 */
+function summarizeNames(names: readonly string[], limit = 5): string {
+  if (names.length <= limit) return names.join(", ");
+  return `${names.slice(0, limit).join(", ")} +${names.length - limit}`;
+}
+
 /**
  * Folder-scoped Codex Structure Extraction dialog
  * (Entity + Relation review → Atomic Commit).
@@ -228,7 +234,7 @@ export function CodexStructureExtractDialog({
           toast.warning(
             t("codex.structureReview.applyExcluded", {
               count: excluded.length,
-              names: excluded.map((item) => item.displayTitle).join(", "),
+              names: summarizeNames(excluded.map((item) => item.displayTitle)),
             }),
           );
         },

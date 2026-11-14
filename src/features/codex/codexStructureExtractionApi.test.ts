@@ -3729,6 +3729,49 @@ describe("applyCodexStructureExtractionReview: 古くなった結び付けの除
     expect(appendHumanDecisionMock).toHaveBeenCalledTimes(1);
   });
 
+  it("外す前に作者が今の版で承認し直した提案（revision が進んだもの）は外さない", async () => {
+    publish([
+      approvedBind("b1", "リク", "K0003", "ne-b1", { baseVersion: 1 }),
+      approvedBind("b2", "ソラ", "K0005", "ne-b2", { baseVersion: 0 }),
+    ]);
+    appendHumanDecisionMock.mockImplementationOnce(async () => {
+      // 1 件目を外している間に、2 件目を作者が今の版で承認し直した（revision が進んだ）。
+      const store = useCodexStructureExtractionStore.getState();
+      const projection = store.projection!;
+      store.setProjection({
+        ...projection,
+        proposals: projection.proposals.map((row) =>
+          row.proposalId === "b2"
+            ? {
+                ...row,
+                revisionId: "rev-b2-reapproved",
+                compiledOperation: {
+                  kind: "codex.entity.bind-existing",
+                  payload: {
+                    entryId: "entry-sora",
+                    narrativeEntityId: "ne-b2",
+                    baseVersion: 1,
+                  },
+                },
+              }
+            : row,
+        ),
+      });
+      return {};
+    });
+    const report = vi.fn();
+    await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: LIVE(7),
+      onEntityApprovalsExcluded: report,
+    });
+    expect(report).toHaveBeenCalledWith([
+      { proposalId: "b1", displayTitle: "リク", reason: "stale-version" },
+    ]);
+    expect(stored("b2")?.status).toBe("approved");
+    expect(appendHumanDecisionMock).toHaveBeenCalledTimes(1);
+  });
+
   it("全部が外れたら commit を呼ばず 0 件を返す", async () => {
     publish([approvedBind("b1", "リク", "K0003", "ne-b1", { baseVersion: 1 })]);
     const applied = await applyCodexStructureExtractionReview({

@@ -3643,6 +3643,11 @@ async function excludeStaleEntityApprovals(
   // 競合しない）。キューの中で最新の状態を読み直し、作者が先に承認し直し・拒否したものは外さない。
   // 途中で失敗しても、済んだ分は Native と store が揃い、報告できるよう `failure` に分けて返す。
   const done: ApplyExcludedEntityApproval[] = [];
+  const revisionAtCheck = new Map(
+    projection.proposals.map(
+      (row) => [row.proposalId, row.revisionId] as const,
+    ),
+  );
   let failure: unknown = null;
   for (const item of excluded) {
     try {
@@ -3652,11 +3657,13 @@ async function excludeStaleEntityApprovals(
           .projection?.proposals.find(
             (row) => row.proposalId === item.proposalId,
           );
+        // 待っている間に作者が拒否・承認し直した（revision が進んだ）提案は外さない。
         if (
           !current ||
           current.status !== "approved" ||
           current.application ||
-          !current.revisionId
+          !current.revisionId ||
+          current.revisionId !== revisionAtCheck.get(item.proposalId)
         ) {
           return false;
         }
@@ -4155,6 +4162,17 @@ export async function decideCodexStructureProposal(args: {
     let compiledOperation: CodexCompiledDomainOperation | null = null;
     let alreadySatisfiedLocal: CodexRelationReviewProposal | null = null;
 
+    // 一括の結び付けは、編集キューの中の最新の提案にもう一度条件をかける（一括の再検査の後に
+    // 1 件ずつの編集が先にキューへ入っていても、編集後の内容をそのまま通さない）。Native には
+    // 何も書いていない除外なので、失敗時の再同期（下の try の catch）の外で投げる。
+    if (args.status === "approved" && kind === "entity" && args.bulkExactBind) {
+      assertBulkExactBindStillSafe(
+        proposal as CodexEntityReviewProposal,
+        projection.catalog,
+        args.entries,
+      );
+    }
+
     const decision =
       args.status === "approved"
         ? "approved"
@@ -4168,15 +4186,6 @@ export async function decideCodexStructureProposal(args: {
       if (args.status === "approved") {
         if (kind === "entity") {
           const entity = proposal as CodexEntityReviewProposal;
-          // 一括の結び付けは、編集キューの中の最新の提案にもう一度条件をかける（一括の再検査の後に
-          // 1 件ずつの編集が先にキューへ入っていても、編集後の内容をそのまま通さない）。
-          if (args.bulkExactBind) {
-            assertBulkExactBindStillSafe(
-              entity,
-              projection.catalog,
-              args.entries,
-            );
-          }
           const operation = compileEntityOperationForReview(
             entity,
             projection.catalog,

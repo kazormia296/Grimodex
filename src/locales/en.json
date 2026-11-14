@@ -2358,7 +2358,7 @@
       "bulkCodexUnreadable": "Could not read the current Codex, so {{count}} binding(s) were left out of the bulk approval",
       "bulkNoLongerSafe": "{{count}} proposal(s) changed just before approval and were left out of the bulk approval",
       "staleBind": "The bound entry was edited. Approve again against the current version",
-      "staleBindTargetMissing": "The bound entry was not found. Pick a candidate again or reject it",
+      "staleBindTargetMissing": "The bound entry was not found. This binding cannot be applied; reject it",
       "errorSave": "Could not save the approval",
       "applyExcluded": "{{count}} binding(s) ({{names}}) were not applied because the bound entry changed after approval. They were set back to deferred; reopen the structure extraction to approve them again against the current version",
       "boundList": {

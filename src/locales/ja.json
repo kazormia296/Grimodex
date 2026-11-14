@@ -2357,7 +2357,7 @@
       "bulkCodexUnreadable": "今の Codex を読めなかったため、結び付け {{count}} 件は一括から外しました",
       "bulkNoLongerSafe": "{{count}} 件は承認の直前に条件が変わったため、一括から外しました",
       "staleBind": "結び先が編集されたため、今の版で承認し直してください",
-      "staleBindTargetMissing": "結び先の Entry が見つかりません。候補を選び直すか、却下してください",
+      "staleBindTargetMissing": "結び先の Entry が見つかりません。この結び付けは取り込めないので、却下してください",
       "errorSave": "承認の保存に失敗しました",
       "applyExcluded": "{{count}} 件の結び付け（{{names}}）は、承認の後に結び先が変わったため取り込まず、保留に戻しました。構造抽出を開き直すと、今の版で承認し直せます",
       "boundList": {
