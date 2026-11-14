@@ -30,14 +30,17 @@ import {
   validateRoster,
 } from "./lib.mjs";
 import { readAiUsageRows, readAuditPathIds } from "./ai-usage-db.mjs";
-import { createGate, readModelPricing, STAGE_CAPS_USD, TOTAL_CAP_USD } from "./ledger.mjs";
 import {
-  buildRosterIndex,
-  codexTypeOf,
-} from "./measure-a-metrics.mjs";
+  createGate,
+  readModelPricing,
+  STAGE_CAPS_USD,
+  TOTAL_CAP_USD,
+} from "./ledger.mjs";
+import { buildRosterIndex, codexTypeOf } from "./measure-a-metrics.mjs";
 import {
   assertOnlyCodexJudgment,
   buildDryRunPlan,
+  buildProjectedPlan,
   dryMeasure,
   runB1,
   runB2,
@@ -63,10 +66,24 @@ export const MODEL = "claude-sonnet-5-5";
 export const PROVIDER = "anthropic";
 export const CONFIRM_SEND = "yes-send-to-anthropic";
 export const B1_LEVELS = Object.freeze(["L0", "L1", "L2", "L3"]);
-/** 乾いた実行の合成の名簿：実体数と、段ごとの別名の累計（候補の表記から作る。件数の見積りだけに使う）。 */
+/**
+ * 乾いた実行の合成の名簿：空の名簿の候補数 N0 に対する割合で、実体数と段ごとの別名の累計を決める
+ * （候補の表記から作る。名簿の無い今、候補が名簿に吸われる影響と Entry の内訳の測定にだけ使う）。
+ */
 export const DEFAULT_SYNTH = Object.freeze({
-  entityCount: 60,
-  aliasTotals: Object.freeze({ L0: 0, L1: 40, L2: 100, L3: 160 }),
+  entityFraction: 0.3,
+  aliasFractions: Object.freeze({ L0: 0, L1: 0.1, L2: 0.2, L3: 0.3 }),
+});
+/** 名簿の規模の仮定（上限側の外挿。本物の名簿の実体数・別名数はまだ無い）。 */
+export const PROJECTION_SCENARIOS = Object.freeze({
+  entities100: {
+    entities: 100,
+    aliasesPerEntityByLevel: { L0: 0, L1: 1, L2: 2, L3: 4 },
+  },
+  entities200: {
+    entities: 200,
+    aliasesPerEntityByLevel: { L0: 0, L1: 1, L2: 2, L3: 4 },
+  },
 });
 /** 本測定で許す AI の command。それ以外の AI 経路を検知したら cell を採用しない。 */
 export const ALLOWED_REAL_AI_COMMANDS = Object.freeze([
@@ -91,26 +108,38 @@ export function assertSendAllowed(options) {
 /** 隔離した profile の safeStorage の backend が basic_text でないこと（本測定の前）。 */
 export function assertSafeStorageBackend(backend) {
   assert.ok(
-    typeof backend === "string" && !["basic_text", "unknown", ""].includes(backend),
+    typeof backend === "string" &&
+      !["basic_text", "unknown", ""].includes(backend),
     `[precheck] SAFE_STORAGE_BACKEND backend=${String(backend).replace(/[^A-Za-z0-9_]/gu, "_")}`,
   );
 }
 
 /** page に束縛した api（measure-b-core が使う層）。ai_usage は DB から読む（fail-closed）。 */
-export function bindPageApi({ page, workspaceDir, readUsage = readAiUsageRows, sleep }) {
+export function bindPageApi({
+  page,
+  workspaceDir,
+  readUsage = readAiUsageRows,
+  sleep,
+}) {
   const rows = () => {
     const r = readUsage(workspaceDir);
     if (r.readable === 0)
-      throw new Error("[artifact] USAGE_DB_UNREADABLE no readable database for ai_usage");
+      throw new Error(
+        "[artifact] USAGE_DB_UNREADABLE no readable database for ai_usage",
+      );
     return r.rows;
   };
   return {
     gate: () => page.evaluate(() => window.identityLoad.bAiGate()),
-    prepare: (arg) => page.evaluate((a) => window.identityLoad.bPrepare(a), arg),
+    prepare: (arg) =>
+      page.evaluate((a) => window.identityLoad.bPrepare(a), arg),
     estimate: () => page.evaluate(() => window.identityLoad.bEstimate()),
     judge: () => page.evaluate(() => window.identityLoad.bJudge()),
     apply: (decisions) =>
-      page.evaluate((d) => window.identityLoad.bApply({ decisions: d }), decisions),
+      page.evaluate(
+        (d) => window.identityLoad.bApply({ decisions: d }),
+        decisions,
+      ),
     usageRowCount: async () => rows().length,
     usageRowsSince: async (n) => rows().slice(n),
     sleep: sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
@@ -134,28 +163,49 @@ export async function registeredKeyHashesOf(entries) {
  * 1 作品の乾いた実行：空の名簿→合成の名簿の段ごとに、送信の直前まで進めて件数を測る。
  * 送らない（api.judge は呼ばない）。page は window.identityLoad を持つ（試験では fake）。
  */
-export async function dryCellBody({ page, synth = DEFAULT_SYNTH, levels = B1_LEVELS }) {
-  const api = bindPageApi({ page, workspaceDir: "unused", readUsage: () => ({ rows: [], readable: 1 }) });
+export async function dryCellBody({
+  page,
+  synth = DEFAULT_SYNTH,
+  levels = B1_LEVELS,
+}) {
+  const api = bindPageApi({
+    page,
+    workspaceDir: "unused",
+    readUsage: () => ({ rows: [], readable: 1 }),
+  });
   const out = [];
-  out.push({ level: "empty", ...(await dryMeasure({ api })) });
+  const empty = await dryMeasure({ api });
+  out.push({ level: "empty", ...empty });
+  const n0 = empty.candidates.visibleCount;
+  const entityCount = Math.max(1, Math.floor(synth.entityFraction * n0));
+  const aliasTotals = {};
   for (const level of levels) {
-    await page.evaluate(
-      (input) => window.identityLoad.bSynthRoster(input),
-      { entityCount: synth.entityCount, aliasTotal: synth.aliasTotals[level] },
-    );
+    aliasTotals[level] = Math.floor(synth.aliasFractions[level] * n0);
+    await page.evaluate((input) => window.identityLoad.bSynthRoster(input), {
+      entityCount,
+      aliasTotal: aliasTotals[level],
+    });
     out.push({ level, ...(await dryMeasure({ api })) });
   }
-  return { levels: out, synthetic: { entityCount: synth.entityCount, aliasTotals: synth.aliasTotals } };
+  return {
+    levels: out,
+    synthetic: { entityCount, aliasTotals, candidateCountN0: n0 },
+  };
 }
 
 /** 乾いた実行の cell の採用条件：AI の command・AI の行・要求の送信が 0。 */
 export function dryCellStatus(cell) {
   const names = cell.ipc?.commandNames ?? [];
-  if (findAiCommands(names).length > 0 || (cell.ipc?.commandCounts?.send_chat_message ?? 0) > 0)
+  if (
+    findAiCommands(names).length > 0 ||
+    (cell.ipc?.commandCounts?.send_chat_message ?? 0) > 0
+  )
     return "ai-detected";
   if (!cell.aiRows?.verified) return "ai-unverified";
-  if (Object.values(cell.aiRows.tables ?? {}).some((n) => n !== 0)) return "ai-detected";
-  if ((cell.egress?.nonLoopbackDestinationCount ?? 0) > 0) return "egress-detected";
+  if (Object.values(cell.aiRows.tables ?? {}).some((n) => n !== 0))
+    return "ai-detected";
+  if ((cell.egress?.nonLoopbackDestinationCount ?? 0) > 0)
+    return "egress-detected";
   if ((cell.egress?.sampleCount ?? 0) === 0) return "egress-unverified";
   return "ok";
 }
@@ -189,16 +239,29 @@ export async function measureBBody({
     (input) => window.identityLoad.registerRoster(input),
     { projectId, entries },
   );
-  assert.equal(registered.created, entries.length, "[artifact] REGISTRATION_COUNT_DIFFERS");
+  assert.equal(
+    registered.created,
+    entries.length,
+    "[artifact] REGISTRATION_COUNT_DIFFERS",
+  );
   if (expectedSafeStorageCheck) {
     const backend = await app.evaluate(
-      ({ safeStorage }) => safeStorage.getSelectedStorageBackend?.() ?? "unknown",
+      ({ safeStorage }) =>
+        safeStorage.getSelectedStorageBackend?.() ?? "unknown",
     );
     assertSafeStorageBackend(backend);
   }
-  const configured = await installKey(page, { provider: PROVIDER, model: MODEL, key });
+  const configured = await installKey(page, {
+    provider: PROVIDER,
+    model: MODEL,
+    key,
+  });
   try {
-    assert.equal(configured.provider, PROVIDER, "[precheck] PROVIDER_NOT_APPLIED");
+    assert.equal(
+      configured.provider,
+      PROVIDER,
+      "[precheck] PROVIDER_NOT_APPLIED",
+    );
     assert.equal(configured.model, MODEL, "[precheck] MODEL_NOT_APPLIED");
     assert.equal(configured.keyPresent, true, "[precheck] KEY_NOT_PRESENT");
     const api = bindPageApi({ page, workspaceDir });
@@ -232,19 +295,31 @@ export async function measureBBody({
     // 終了時：ai_usage と audit の surface・pathId の集合が codex_judgment だけ。
     const usage = readAiUsageRows(workspaceDir);
     const audit = readAuditPathIds(workspaceDir);
-    assert.ok(usage.readable > 0 && audit.readable > 0, "[artifact] SURFACE_DB_UNREADABLE");
+    assert.ok(
+      usage.readable > 0 && audit.readable > 0,
+      "[artifact] SURFACE_DB_UNREADABLE",
+    );
     const surfaces = assertOnlyCodexJudgment({
       usageSurfaces: usage.rows.map((r) => r.surface),
       auditPathIds: audit.pathIds,
       requestsSent,
     });
     const models = {};
-    for (const row of usage.rows) models[row.model ?? "null"] = (models[row.model ?? "null"] ?? 0) + 1;
+    for (const row of usage.rows)
+      models[row.model ?? "null"] = (models[row.model ?? "null"] ?? 0) + 1;
     return {
       mode,
       level,
-      roster: { entityCount: used.entities.length, cut, registeredEntries: entries.length },
-      settings: { provider: configured.provider, model: configured.model, thinkingEnabled: configured.thinkingEnabled },
+      roster: {
+        entityCount: used.entities.length,
+        cut,
+        registeredEntries: entries.length,
+      },
+      settings: {
+        provider: configured.provider,
+        model: configured.model,
+        thinkingEnabled: configured.thinkingEnabled,
+      },
       result,
       requestsSent,
       surfaces,
@@ -279,16 +354,24 @@ function parseArgs(args) {
     "roster-dir": "",
     "roster-name": "roster-final.json",
     "confirm-send": "",
-    "synth-entities": String(DEFAULT_SYNTH.entityCount),
-    "synth-aliases": B1_LEVELS.map((l) => DEFAULT_SYNTH.aliasTotals[l]).join(","),
+    "synth-entity-fraction": String(DEFAULT_SYNTH.entityFraction),
+    "synth-alias-fractions": B1_LEVELS.map(
+      (l) => DEFAULT_SYNTH.aliasFractions[l],
+    ).join(","),
     "trial-work": "",
     keep: "false",
   };
   for (let i = 0; i < args.length; i += 2) {
-    assert.ok(args[i].startsWith("--") && args[i + 1] !== undefined, "use --name value arguments");
+    assert.ok(
+      args[i].startsWith("--") && args[i + 1] !== undefined,
+      "use --name value arguments",
+    );
     options[args[i].slice(2)] = args[i + 1];
   }
-  assert.ok(["dry-run", "trial", "b1", "b2"].includes(options.mode), "[precheck] unknown --mode");
+  assert.ok(
+    ["dry-run", "trial", "b1", "b2"].includes(options.mode),
+    "[precheck] unknown --mode",
+  );
   for (const work of options.works.split(","))
     assert.ok(work in WORKS, `[precheck] unknown work ${work}`);
   return options;
@@ -298,10 +381,12 @@ async function mainDry(options) {
   const output = path.resolve(options.output);
   const outDir = path.join(output, "dry-run");
   ensurePrivateDir(outDir);
-  const aliasList = options["synth-aliases"].split(",").map(Number);
+  const aliasList = options["synth-alias-fractions"].split(",").map(Number);
   const synth = {
-    entityCount: Number(options["synth-entities"]),
-    aliasTotals: Object.fromEntries(B1_LEVELS.map((level, i) => [level, aliasList[i] ?? 0])),
+    entityFraction: Number(options["synth-entity-fraction"]),
+    aliasFractions: Object.fromEntries(
+      B1_LEVELS.map((level, i) => [level, aliasList[i] ?? 0]),
+    ),
   };
   const pricing = readModelPricing(MODEL);
   const rows = [];
@@ -319,36 +404,67 @@ async function mainDry(options) {
         body: (ctx) => dryCellBody({ page: ctx.page, synth }),
       });
       const status = cell.status === "failed" ? "failed" : dryCellStatus(cell);
-      const result = { schemaVersion: "identity-load-measure-b-dry/1", work, status, observed: cell, ...(value ?? {}) };
+      const result = {
+        schemaVersion: "identity-load-measure-b-dry/1",
+        work,
+        status,
+        observed: cell,
+        ...(value ?? {}),
+      };
       try {
         assertOutputClean(result, scenesTexts);
         writeJson0600(path.join(outDir, `${work}.json`), result);
       } catch (error) {
-        writeJson0600(path.join(outDir, `${work}.failed.json`), { work, status: "output-withheld", errors: [safeErrorSummary(error)] });
+        writeJson0600(path.join(outDir, `${work}.failed.json`), {
+          work,
+          status: "output-withheld",
+          errors: [safeErrorSummary(error)],
+        });
       }
       for (const level of value?.levels ?? [])
-        rows.push({ work, level: level.level, candidates: level.candidates, request: level.request, b1Requests: level.b1Requests, b2Requests: level.b2Requests });
+        rows.push({
+          work,
+          level: level.level,
+          candidates: level.candidates,
+          request: level.request,
+          b1Requests: level.b1Requests,
+          b2Requests: level.b2Requests,
+        });
       summary.push({ work, status });
       console.log(JSON.stringify(summary.at(-1)));
     }
   });
-  const plan = buildDryRunPlan(rows, { pricing });
+  const rowsByWork = {};
+  for (const row of rows) (rowsByWork[row.work] ??= []).push(row);
+  // 合成の小さな名簿で測った値（測定値）と、名簿の規模を仮定した上限側の外挿。
+  const measured = buildDryRunPlan(rows, { pricing });
+  const projections = {};
+  for (const [name, scenario] of Object.entries(PROJECTION_SCENARIOS)) {
+    const p = buildProjectedPlan(rowsByWork, scenario, { pricing });
+    projections[name] = { scenario, perWork: p.perWork, cost: p.cost };
+  }
   const report = {
     schemaVersion: "identity-load-measure-b-dry-summary/1",
     model: MODEL,
     pricingPerMillion: pricing,
     caps: { totalUsd: TOTAL_CAP_USD, stagesUsd: STAGE_CAPS_USD },
     assumptions: {
-      tokenEstimate: "ascii 0.3 token/char, non-ascii 1.0 token/char (conservative; no tokenizer)",
-      outputEstimate: "120 token per judged candidate, floor 800",
-      b2Requests: "ceil(initial N / 50) at L2; each request sized like the first",
+      tokenEstimate:
+        "ascii 0.3 token per char and non-ascii 1.0 token per char as a conservative ratio without a tokenizer",
+      outputEstimate: "120 token per judged candidate with a floor of 800",
+      b2Requests:
+        "ceil of initial N over 50 at L2 and each request sized like the first",
       trialRequests: "3 requests sized like the largest B1 request",
-      roster: "empty and synthetic (names and aliases taken from the candidate list; sizing only)",
+      roster:
+        "empty and synthetic small rosters built from the candidate list for sizing only",
+      projection:
+        "candidate part from the empty roster as an upper bound and entry part scaled from the synthetic per entity and per alias cost",
     },
     synthetic: synth,
     works: summary,
     rows,
-    cost: plan.cost,
+    measuredSynthetic: measured.cost,
+    projections,
   };
   assertOutputClean(report, []);
   writeJson0600(path.join(outDir, "summary.json"), report);
@@ -359,7 +475,9 @@ async function mainDry(options) {
 async function mainReal(options) {
   assertSendAllowed(options);
   const output = path.resolve(options.output);
-  const works = options["trial-work"] ? [options["trial-work"]] : options.works.split(",");
+  const works = options["trial-work"]
+    ? [options["trial-work"]]
+    : options.works.split(",");
   const outDir = path.join(output, `measure-b-${options.mode}`);
   ensurePrivateDir(outDir);
   assertNoFakeAiEnv(process.env);
@@ -370,13 +488,26 @@ async function mainReal(options) {
   });
   const keyStoreBefore = hashKeyStore();
   const key = await receiveKeyViaFifo(productStoreWriter(), { parent: output });
-  const levels = options.mode === "b2" ? ["L2"] : options.mode === "trial" ? ["L2"] : B1_LEVELS;
+  const levels =
+    options.mode === "b2"
+      ? ["L2"]
+      : options.mode === "trial"
+        ? ["L2"]
+        : B1_LEVELS;
   const summary = [];
   try {
     await withVite(output, async ({ vite, busAddress }) => {
       for (const work of works) {
-        const roster = JSON.parse(readFileSync(path.join(rosterDir, work, options["roster-name"]), "utf8"));
-        assert.ok(validateRoster(roster, {}).ok, `[precheck] ROSTER_INVALID ${work}`);
+        const roster = JSON.parse(
+          readFileSync(
+            path.join(rosterDir, work, options["roster-name"]),
+            "utf8",
+          ),
+        );
+        assert.ok(
+          validateRoster(roster, {}).ok,
+          `[precheck] ROSTER_INVALID ${work}`,
+        );
         for (const level of levels) {
           if (gate.state.stopped) break;
           assert.ok(ROSTER_LEVELS.includes(level));
@@ -390,15 +521,39 @@ async function mainReal(options) {
             passwordStoreBasic: false,
             keep: options.keep === "true",
             body: (ctx) =>
-              measureBBody({ ...ctx, roster, level, mode: options.mode, gate, key }),
+              measureBBody({
+                ...ctx,
+                roster,
+                level,
+                mode: options.mode,
+                gate,
+                key,
+              }),
           });
-          const status = cell.status === "failed" ? "failed" : realCellStatus(cell, value);
-          const result = { schemaVersion: "identity-load-measure-b/1", work, level, status, observed: cell, value, ledger: { total: Number(gate.state.total.toFixed(4)), stopped: gate.state.stopped?.code ?? null } };
+          const status =
+            cell.status === "failed" ? "failed" : realCellStatus(cell, value);
+          const result = {
+            schemaVersion: "identity-load-measure-b/1",
+            work,
+            level,
+            status,
+            observed: cell,
+            value,
+            ledger: {
+              total: Number(gate.state.total.toFixed(4)),
+              stopped: gate.state.stopped?.code ?? null,
+            },
+          };
           try {
             assertOutputClean(result, scenesTexts);
             writeJson0600(path.join(outDir, `${work}-${level}.json`), result);
           } catch (error) {
-            writeJson0600(path.join(outDir, `${work}-${level}.failed.json`), { work, level, status: "output-withheld", errors: [safeErrorSummary(error)] });
+            writeJson0600(path.join(outDir, `${work}-${level}.failed.json`), {
+              work,
+              level,
+              status: "output-withheld",
+              errors: [safeErrorSummary(error)],
+            });
           }
           summary.push({ work, level, status });
           console.log(JSON.stringify(summary.at(-1)));
@@ -420,11 +575,16 @@ async function main() {
   else await mainReal(options);
 }
 
-if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+if (
+  process.argv[1] &&
+  pathToFileURL(process.argv[1]).href === import.meta.url
+) {
   try {
     await main();
   } catch (error) {
-    console.log(JSON.stringify({ status: "launcher-failed", ...safeErrorSummary(error) }));
+    console.log(
+      JSON.stringify({ status: "launcher-failed", ...safeErrorSummary(error) }),
+    );
     process.exitCode = 1;
   }
 }

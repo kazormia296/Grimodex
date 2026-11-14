@@ -57,7 +57,10 @@ test("単価は modelPricing.ts から読み、未定義のモデルは例外", 
 });
 
 test("usdOf・上限の定数（§9・§15）・手本の commit の記録", () => {
-  assert.equal(usdOf(PRICING, { input_tokens: 10_000, output_tokens: 5_000 }), 0.07);
+  assert.equal(
+    usdOf(PRICING, { input_tokens: 10_000, output_tokens: 5_000 }),
+    0.07,
+  );
   assert.equal(TOTAL_CAP_USD, 15);
   assert.deepEqual(STAGE_CAPS_USD, { trial: 1, B1: 8, B2: 4, reserve: 2 });
   assert.equal(LEDGER_SOURCE_COMMIT, "aa67168f");
@@ -116,7 +119,12 @@ test("preflight：全体の上限を超える見積りは送らない", () => {
   const { dir, gate: g } = gate({ totalCapUsd: 0.05 });
   try {
     assert.throws(
-      () => g.preflight({ stage: "B1", estInputTokens: 10_000, estOutputTokens: 5_000 }),
+      () =>
+        g.preflight({
+          stage: "B1",
+          estInputTokens: 10_000,
+          estOutputTokens: 5_000,
+        }),
       (e) => e instanceof BudgetStop && e.code === "TOTAL_CAP_WOULD_EXCEED",
     );
   } finally {
@@ -125,14 +133,22 @@ test("preflight：全体の上限を超える見積りは送らない", () => {
 });
 
 test("preflight：段の上限を超える見積りは送らない", () => {
-  const { dir, gate: g } = gate({ stageCapsUsd: { ...STAGE_CAPS_USD, trial: 0.05 } });
+  const { dir, gate: g } = gate({
+    stageCapsUsd: { ...STAGE_CAPS_USD, trial: 0.05 },
+  });
   try {
     assert.throws(
-      () => g.preflight({ stage: "trial", estInputTokens: 10_000, estOutputTokens: 5_000 }),
+      () =>
+        g.preflight({
+          stage: "trial",
+          estInputTokens: 10_000,
+          estOutputTokens: 5_000,
+        }),
       (e) => e.code === "STAGE_CAP_WOULD_EXCEED",
     );
     assert.throws(
-      () => g.preflight({ stage: "nope", estInputTokens: 1, estOutputTokens: 1 }),
+      () =>
+        g.preflight({ stage: "nope", estInputTokens: 1, estOutputTokens: 1 }),
       (e) => e.code === "UNKNOWN_STAGE",
     );
   } finally {
@@ -143,9 +159,17 @@ test("preflight：段の上限を超える見積りは送らない", () => {
 test("上限に達したら即時停止し、以後の preflight も止まる", () => {
   const { dir, gate: g } = gate({ totalCapUsd: 0.1 });
   try {
-    g.preflight({ stage: "B1", estInputTokens: 10_000, estOutputTokens: 5_000 });
+    g.preflight({
+      stage: "B1",
+      estInputTokens: 10_000,
+      estOutputTokens: 5_000,
+    });
     assert.throws(
-      () => send(g, ok(20_000, 6_000), { estInputTokens: 20_000, estOutputTokens: 6_000 }),
+      () =>
+        send(g, ok(20_000, 6_000), {
+          estInputTokens: 20_000,
+          estOutputTokens: 6_000,
+        }),
       (e) => e.code === "TOTAL_CAP_REACHED",
     );
     assert.throws(
@@ -159,9 +183,13 @@ test("上限に達したら即時停止し、以後の preflight も止まる", 
 
 test("累計 80％で、残りの外挿が上限を超えるなら止める", () => {
   // 上限 1 USD、1 要求 0.07 USD。12 要求で 0.84（84％）。残り 3 要求の外挿 = 0.84+0.21 = 1.05 > 1。
-  const { dir, gate: g } = gate({ totalCapUsd: 1, stageCapsUsd: { ...STAGE_CAPS_USD, B1: 100 } });
+  const { dir, gate: g } = gate({
+    totalCapUsd: 1,
+    stageCapsUsd: { ...STAGE_CAPS_USD, B1: 100 },
+  });
   try {
-    for (let i = 0; i < 11; i++) send(g, ok(10_000, 5_000), { remainingAfterThis: 3 });
+    for (let i = 0; i < 11; i++)
+      send(g, ok(10_000, 5_000), { remainingAfterThis: 3 });
     assert.throws(
       () => send(g, ok(10_000, 5_000), { remainingAfterThis: 3 }),
       (e) => e.code === "EXTRAPOLATION_EXCEEDS_CAP",
@@ -170,9 +198,13 @@ test("累計 80％で、残りの外挿が上限を超えるなら止める", ()
     rmSync(dir, { recursive: true, force: true });
   }
   // 残りが少なければ止まらない。
-  const second = gate({ totalCapUsd: 1, stageCapsUsd: { ...STAGE_CAPS_USD, B1: 100 } });
+  const second = gate({
+    totalCapUsd: 1,
+    stageCapsUsd: { ...STAGE_CAPS_USD, B1: 100 },
+  });
   try {
-    for (let i = 0; i < 12; i++) send(second.gate, ok(10_000, 5_000), { remainingAfterThis: 1 });
+    for (let i = 0; i < 12; i++)
+      send(second.gate, ok(10_000, 5_000), { remainingAfterThis: 1 });
     assert.equal(second.gate.state.stopped, null);
   } finally {
     rmSync(second.dir, { recursive: true, force: true });
@@ -202,7 +234,8 @@ test("429 が 2 回連続で停止（間に成功があれば数え直す）", (
     send(a.gate, { ok: false, failureKind: "rate-limit", httpStatus: 429 });
     assert.equal(a.gate.state.stopped, null);
     assert.throws(
-      () => send(a.gate, { ok: false, failureKind: "rate-limit", httpStatus: 429 }),
+      () =>
+        send(a.gate, { ok: false, failureKind: "rate-limit", httpStatus: 429 }),
       (e) => e.code === "RATE_LIMIT_STREAK",
     );
   } finally {
@@ -214,7 +247,8 @@ test("API の失敗が 5 件連続で停止", () => {
   const { dir, gate: g } = gate();
   try {
     for (let i = 0; i < 6; i++) send(g, ok(9_000, 4_000));
-    for (let i = 0; i < 4; i++) send(g, { ok: false, failureKind: "server", httpStatus: 500 });
+    for (let i = 0; i < 4; i++)
+      send(g, { ok: false, failureKind: "server", httpStatus: 500 });
     assert.throws(
       () => send(g, { ok: false, failureKind: "server", httpStatus: 500 }),
       (e) => e.code === "FAILURE_STREAK",
@@ -284,10 +318,24 @@ test("token が無い（行なし・null・0）要求は費用 0 の失敗とし
   const { dir, file, gate: g } = gate();
   try {
     send(g, { ok: false, failureKind: "no-usage-row" });
-    send(g, { ok: false, failureKind: "tokens-null", usage: { input_tokens: null, output_tokens: null } });
-    send(g, { ok: false, failureKind: "tokens-zero", usage: { input_tokens: 0, output_tokens: 0 } });
-    const rows = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    assert.deepEqual(rows.map((r) => r.billed), [false, false, false]);
+    send(g, {
+      ok: false,
+      failureKind: "tokens-null",
+      usage: { input_tokens: null, output_tokens: null },
+    });
+    send(g, {
+      ok: false,
+      failureKind: "tokens-zero",
+      usage: { input_tokens: 0, output_tokens: 0 },
+    });
+    const rows = readFileSync(file, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    assert.deepEqual(
+      rows.map((r) => r.billed),
+      [false, false, false],
+    );
     assert.equal(g.state.total, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });

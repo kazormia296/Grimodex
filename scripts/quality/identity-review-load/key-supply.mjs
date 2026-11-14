@@ -14,7 +14,10 @@ import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { makeKeyFifo, readKeyFromFifo } from "../chronicle-prompt-cache-diag/fifo-key.mjs";
+import {
+  makeKeyFifo,
+  readKeyFromFifo,
+} from "../chronicle-prompt-cache-diag/fifo-key.mjs";
 
 const require = createRequire(import.meta.url);
 const HERE = import.meta.dirname;
@@ -32,7 +35,9 @@ export function assertKeyShape(value) {
     value.length > 300 ||
     /\s/u.test(value)
   )
-    throw new Error("[key] KEY_SHAPE the key does not have the expected prefix and length");
+    throw new Error(
+      "[key] KEY_SHAPE the key does not have the expected prefix and length",
+    );
   return value;
 }
 
@@ -40,7 +45,10 @@ export function assertKeyShape(value) {
  * FIFO を作り、writer(fifoPath) に書かせ、1 回だけ読む。writer は key を書く非同期関数
  * （本番は productStoreWriter、試験は fake）。FIFO は終わったら必ず消す。
  */
-export async function receiveKeyViaFifo(writer, { parent = os.tmpdir(), timeoutMs = 120_000 } = {}) {
+export async function receiveKeyViaFifo(
+  writer,
+  { parent = os.tmpdir(), timeoutMs = 120_000 } = {},
+) {
   const { fifo, cleanup } = makeKeyFifo(parent);
   const abort = new globalThis.AbortController();
   try {
@@ -79,7 +87,10 @@ export function productStoreWriter(store = DEFAULT_PRODUCT_KEY_STORE) {
       delete env.ELECTRON_RUN_AS_NODE;
       const args = [
         "--no-sandbox",
-        path.join(HERE, "../chronicle-prompt-cache-diag/product-key-to-fifo.mjs"),
+        path.join(
+          HERE,
+          "../chronicle-prompt-cache-diag/product-key-to-fifo.mjs",
+        ),
         "--store",
         store,
         "--fifo",
@@ -92,7 +103,9 @@ export function productStoreWriter(store = DEFAULT_PRODUCT_KEY_STORE) {
       const child = spawn(command, argv, { env, stdio: "ignore" });
       child.on("error", () => reject(new Error("[key] HELPER_SPAWN_FAILED")));
       child.on("exit", (code) =>
-        code === 0 ? resolve() : reject(new Error(`[key] HELPER_FAILED code=${code}`)),
+        code === 0
+          ? resolve()
+          : reject(new Error(`[key] HELPER_FAILED code=${code}`)),
       );
     });
 }
@@ -100,7 +113,10 @@ export function productStoreWriter(store = DEFAULT_PRODUCT_KEY_STORE) {
 /** 製品の ai-keys.json の hash（実行の前後で比べる。内容は返さない）。無ければ "absent"。 */
 export function hashKeyStore(store = DEFAULT_PRODUCT_KEY_STORE) {
   if (!existsSync(store)) return "absent";
-  return createHash("sha256").update(readFileSync(store)).digest("hex").slice(0, 16);
+  return createHash("sha256")
+    .update(readFileSync(store))
+    .digest("hex")
+    .slice(0, 16);
 }
 
 /**
@@ -108,13 +124,16 @@ export function hashKeyStore(store = DEFAULT_PRODUCT_KEY_STORE) {
  * key は引数として page に渡るだけで、返り値・記録に含めない。
  */
 export async function installKey(page, { provider, model, key }) {
-  return page.evaluate(
-    (input) => window.identityLoad.bConfigureAi(input),
-    { provider, model, key },
-  );
+  return page.evaluate((input) => window.identityLoad.bConfigureAi(input), {
+    provider,
+    model,
+    key,
+  });
 }
 
 /** 実行後に key を消す。 */
 export async function removeKey(page, { provider }) {
-  return page.evaluate((input) => window.identityLoad.bDeleteKey(input), { provider });
+  return page.evaluate((input) => window.identityLoad.bDeleteKey(input), {
+    provider,
+  });
 }

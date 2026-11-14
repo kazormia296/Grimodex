@@ -21,14 +21,23 @@ export function findDbFiles(workspaceDir) {
 function query(file, sql) {
   return execFileSync(
     "sqlite3",
-    ["-readonly", "-nullvalue", "NULL", "-separator", "|", `file:${file}?mode=ro`, sql],
+    [
+      "-readonly",
+      "-nullvalue",
+      "NULL",
+      "-separator",
+      "|",
+      `file:${file}?mode=ro`,
+      sql,
+    ],
     { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
   )
     .split("\n")
     .filter(Boolean);
 }
 
-const toNumber = (text) => (text === "NULL" || text === "" ? null : Number(text));
+const toNumber = (text) =>
+  text === "NULL" || text === "" ? null : Number(text);
 
 /**
  * ai_usage の全行（作成順）。tokens が NULL の行は null として返す（行なし・null・0 を別の失敗理由にするため）。
@@ -67,7 +76,10 @@ export function readAuditPathIds(workspaceDir) {
   let readable = 0;
   for (const file of findDbFiles(workspaceDir)) {
     try {
-      for (const line of query(file, "SELECT DISTINCT path_id FROM ai_audit_events"))
+      for (const line of query(
+        file,
+        "SELECT DISTINCT path_id FROM ai_audit_events",
+      ))
         ids.add(line);
       readable++;
     } catch {

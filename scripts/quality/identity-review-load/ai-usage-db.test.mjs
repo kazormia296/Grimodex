@@ -25,11 +25,23 @@ test("ai_usage の行は NULL を null で返し、audit の path_id は distinc
     const usage = readAiUsageRows(path.dirname(db));
     assert.equal(usage.unreadable, 0);
     assert.deepEqual(usage.rows, [
-      { surface: "codex_judgment", model: "claude-sonnet-5-5", tokens_in: 9000, tokens_out: 4000 },
-      { surface: "codex_judgment", model: null, tokens_in: null, tokens_out: null },
+      {
+        surface: "codex_judgment",
+        model: "claude-sonnet-5-5",
+        tokens_in: 9000,
+        tokens_out: 4000,
+      },
+      {
+        surface: "codex_judgment",
+        model: null,
+        tokens_in: null,
+        tokens_out: null,
+      },
       { surface: "codex_judgment", model: "m", tokens_in: 0, tokens_out: 0 },
     ]);
-    assert.deepEqual(readAuditPathIds(path.dirname(db)).pathIds, ["codex_judgment"]);
+    assert.deepEqual(readAuditPathIds(path.dirname(db)).pathIds, [
+      "codex_judgment",
+    ]);
     // DB が無ければ空（readable 0）。
     assert.equal(readAiUsageRows(path.join(dir, "none")).readable, 0);
   } finally {

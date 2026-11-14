@@ -38,13 +38,20 @@ test("key が届かない・形式が違う場合の失敗に、値を載せな�
   try {
     const bad = "sk-ant-short";
     await assert.rejects(
-      receiveKeyViaFifo((fifo) => writeKeyToFifo(fifo, bad), { parent, timeoutMs: 5_000 }),
-      (error) => /KEY_SHAPE/u.test(error.message) && !error.message.includes(bad),
+      receiveKeyViaFifo((fifo) => writeKeyToFifo(fifo, bad), {
+        parent,
+        timeoutMs: 5_000,
+      }),
+      (error) =>
+        /KEY_SHAPE/u.test(error.message) && !error.message.includes(bad),
     );
     await assert.rejects(
-      receiveKeyViaFifo(async () => {
-        throw new Error(`helper said ${FAKE_KEY}`);
-      }, { parent, timeoutMs: 5_000 }),
+      receiveKeyViaFifo(
+        async () => {
+          throw new Error(`helper said ${FAKE_KEY}`);
+        },
+        { parent, timeoutMs: 5_000 },
+      ),
       (error) => !error.message.includes(FAKE_KEY),
     );
   } finally {
@@ -58,8 +65,18 @@ test("installKey／removeKey は製品の経路（bConfigureAi／bDeleteKey）�
   globalThis.window = {
     identityLoad: {
       bConfigureAi: async (input) => {
-        calls.push(["configure", input.provider, input.model, input.key === FAKE_KEY]);
-        return { provider: input.provider, model: input.model, thinkingEnabled: false, keyPresent: true };
+        calls.push([
+          "configure",
+          input.provider,
+          input.model,
+          input.key === FAKE_KEY,
+        ]);
+        return {
+          provider: input.provider,
+          model: input.model,
+          thinkingEnabled: false,
+          keyPresent: true,
+        };
       },
       bDeleteKey: async (input) => {
         calls.push(["delete", input.provider]);
@@ -68,10 +85,21 @@ test("installKey／removeKey は製品の経路（bConfigureAi／bDeleteKey）�
     },
   };
   const page = { evaluate: async (fn, arg) => fn(arg) };
-  const result = await installKey(page, { provider: "anthropic", model: "claude-sonnet-5-5", key: FAKE_KEY });
-  assert.deepEqual(calls[0], ["configure", "anthropic", "claude-sonnet-5-5", true]);
+  const result = await installKey(page, {
+    provider: "anthropic",
+    model: "claude-sonnet-5-5",
+    key: FAKE_KEY,
+  });
+  assert.deepEqual(calls[0], [
+    "configure",
+    "anthropic",
+    "claude-sonnet-5-5",
+    true,
+  ]);
   assert.ok(!JSON.stringify(result).includes(FAKE_KEY));
-  assert.deepEqual(await removeKey(page, { provider: "anthropic" }), { keyPresent: false });
+  assert.deepEqual(await removeKey(page, { provider: "anthropic" }), {
+    keyPresent: false,
+  });
 });
 
 test("hashKeyStore：内容を返さず、無ければ absent", () => {

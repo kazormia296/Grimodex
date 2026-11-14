@@ -5,11 +5,23 @@
 // 出力は件数・ID・hash・path だけ。
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { clearInterval, setInterval } from "node:timers";
-import { WORKS, safeErrorSummary, scenesFromWork, scenesTextsForScan } from "./lib.mjs";
+import {
+  WORKS,
+  safeErrorSummary,
+  scenesFromWork,
+  scenesTextsForScan,
+} from "./lib.mjs";
 import { resolveWorkSource } from "./sources.mjs";
 import {
   countAiRows,

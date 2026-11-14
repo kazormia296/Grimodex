@@ -419,3 +419,17 @@
 - **敬称の規則**：§3。
 - **保存の強制**：出力 root は repo の内側・0700 でない場所・自分の所有でない場所を拒む。作者に渡すのは `review-sheet/` だけで、層・一致の印を持つ key は別の `review-key/` に置く。root の外の応答 file は `review-responses/` に 0600 で取り込み、元の file は利用者が消す。
 - **走査の材料**：標準出力・rows の混入検査は、記法つきの本文と親文字だけの本文の両方を使う。repo の走査は、root 配下の全 JSON の非 ASCII の文字列を材料にし、読めない JSON は件数で報告する。
+
+## 17.1 第 3 段の道具（測定 A・B の駆動、費用の台帳、乾いた実行、集計）の技術判断（2026-11-14）
+
+道具は `scripts/quality/identity-review-load/` に置いた（製品のコードは変えない）。§13・§15・§16 の文面は変えない。AI へは何も送っていない（key に触れず、keyring を読んでいない）。
+
+- **名簿の照合**：renderer の rows は表記の hash（`keyHash` ＝ 製品の `candidateKey` で正規化した表記の sha256 先頭 16 桁）と出現場面（`scenes`）を持ち、node 側が名簿の全表記を同じ式で hash して突き合わせる。名簿の Entry は `rt-` の ID を Codex の id にして登録するので、catalog の ref（`K0001`…）は `sourceKey` で名簿の実体 ID に戻す。
+- **提案の分類・食い違いの定義**：§5 の順（0 名簿に無い → 解決が要る〔候補内／候補外〕→ 型を決める → 結び付け確認 → 一括承認 → 手で見る create-new）。「部分一致の候補のうち別人の割合」は、分母を名簿に載る単一実体の表記の unresolved 提案とし、提案単位で「部分一致（prefix・substring）の候補を持つ提案」「そのうち別人の候補を含む提案」「部分一致の候補が全部別人の提案」を数え、候補 slot の合計と別人の slot も併記する。型の食い違いは「名簿が character でない実体を person の create-new にした数」（一括承認に入る数を別に）。操作の数の実体単位は、(分類, 名簿の実体) の組を 1 件にして数える。
+- **restore 列**：保存経路が製品の不具合で使えないので出せない（`restoreColumn: not-available`）。PR #888 が merge されたら `--persist try` で保存を試せる（失敗したら理由の code だけ記録して live の読みに落とす）。
+- **費用の台帳**：全体 15 USD、段は試走 1・B1 8・B2 4・予備 2。単価は `modelPricing.ts` の表から読み、複製しない。見積りは要求の本文の文字数から（ASCII 0.3 token／字、ASCII 以外 1.0 token／字の保守側の比。tokenizer は持たない）、出力は候補 1 件 120 token（下限 800）。止める条件は §9 のとおり（上限、累計 80％の外挿、401／403、429 が 2 回連続、失敗 5 件連続、最初の 5 要求で 3 件以上の失敗、token が見積りの 2 倍超）。上限を超える見積りの要求は送らないが、以後の要求は止めない（上限に達した・停止線に当たった場合は以後すべて止める）。手本の commit は `aa67168f`（枝は取り込まない）。
+- **測定 B の要求**：`judgeCandidates` を無改造で呼ぶ。1 要求ごとに `ai_usage` を DB から読み（行なし・tokens が null・tokens が 0・別 surface を別の失敗理由にする）、成功は「surface が codex_judgment で tokens_in・tokens_out が正の行」。再送は通信の失敗（429／5xx／接続）に限り 1 回。終了時に `ai_usage` の surface と `ai_audit_events` の path_id の集合が codex_judgment だけであることを検査し、IPC の `send_chat_message` の回数が送信回数と一致することを検査する。偽 AI の env（`GRIMODEX_PRODUCT_JOURNEY*`）は node と main のどちらにも立てない（立っていれば止める）。本測定は `--confirm-send yes-send-to-anthropic` が無ければ始めない。
+- **B2 の決定**：名簿どおり（既存の実体の表記は別名、未登録の実体は受理、敬称の形・名簿に無い表記・場面で決まらない表記は却下を種類別に数える）。AI の判定は決定に使わず、測るだけ。
+- **key の供給**：製品の `ai-keys.json` を Electron の helper で復号し、FIFO（0700 の dir の 0600）で 1 回だけ受ける（env の `ANTHROPIC_API_KEY` は読まない）。page の `save_api_key` に渡し、実行後に `delete_api_key` と userData の削除、製品の `ai-keys.json` の前後の hash の比較。**未解決**：隔離した profile の safeStorage の backend が `basic_text` だと本測定の前検査が止める。隔離した bus には secret service が無いので、本測定の方法（keyring をどう扱うか）は別に決める必要がある。
+- **乾いた実行**：送信の直前まで進め（候補・visible・Entry を作り、要求の本文を製品と同じ式で組んで文字数だけ取る）、IPC の command・`ai_usage`・`ai_audit_events` に AI の痕跡が 0 件であることを cell ごとに確かめる。名簿が無いので、空の名簿と、候補の表記から作る小さな合成の名簿（空の名簿の候補数 N0 の 30％ を実体、別名を段ごとに 0／10／20／30％）で行い、名簿の規模（実体 100 または 200、別名は段ごとに 0／1／2／4 件／実体）を仮定した上限側の外挿を別に出す。要求の本文の組み立ては `judgeCandidates` と同じ式の写しで、写しの窓（50 件・200 件）は node 側で突き合わせる。
+- **集計**：A と B は別表。A は作品間の最小〜最大（平均しない）、B は作品×段の 3 回の最小〜最大。★の対応表は常に `decided: false`。records は欄名が credential を示すもの（authorization・api-key・credential・password・bearer・secret）と、ASCII の識別子の形でない文字列を拒み、原稿の shingle 走査も通す。

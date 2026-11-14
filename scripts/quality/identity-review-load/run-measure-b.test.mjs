@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
+import process from "node:process";
 import path from "node:path";
 import { test } from "node:test";
 import { createGate } from "./ledger.mjs";
@@ -25,13 +26,26 @@ const PRICING = { inputPerMillion: 2, outputPerMillion: 10 };
 
 const roster = {
   entities: [
-    { id: "e1", type: "character", name: "n1", aliases: [{ surface: "c000", level: "L2" }, { surface: "c001", level: "L3" }] },
+    {
+      id: "e1",
+      type: "character",
+      name: "n1",
+      aliases: [
+        { surface: "c000", level: "L2" },
+        { surface: "c001", level: "L3" },
+      ],
+    },
     { id: "e2", type: "location", name: "n2", aliases: [] },
   ],
 };
 
 /** page 側の window.identityLoad を模す。judge は ai_usage・audit に 1 行ずつ書く（製品の recordAiUsage・audit の代わり）。 */
-async function installFakeWindow({ workspaceDir, calls, usageSurface = "codex_judgment", candidateCount = 60 }) {
+async function installFakeWindow({
+  workspaceDir,
+  calls,
+  usageSurface = "codex_judgment",
+  candidateCount = 60,
+}) {
   mkdirSync(workspaceDir, { recursive: true });
   const db = path.join(workspaceDir, "ws.db");
   execFileSync("sqlite3", [
@@ -41,8 +55,14 @@ async function installFakeWindow({ workspaceDir, calls, usageSurface = "codex_ju
   ]);
   const hashes = [];
   for (let i = 0; i < candidateCount; i++)
-    hashes.push(await hashSurface(candidateKey(`c${String(i).padStart(3, "0")}`)));
-  let visible = hashes.map((keyHash, i) => ({ keyHash, count: 100 - i, firstSceneIndex: 1 }));
+    hashes.push(
+      await hashSurface(candidateKey(`c${String(i).padStart(3, "0")}`)),
+    );
+  let visible = hashes.map((keyHash, i) => ({
+    keyHash,
+    count: 100 - i,
+    firstSceneIndex: 1,
+  }));
   let entries = 0;
   let seq = 0;
   const prepared = () => ({
@@ -61,14 +81,28 @@ async function installFakeWindow({ workspaceDir, calls, usageSurface = "codex_ju
         return { created: input.entries.length };
       },
       bConfigureAi: async (input) => {
-        calls.push(["configure", input.provider, input.model, input.key === FAKE_KEY]);
-        return { provider: input.provider, model: input.model, thinkingEnabled: false, keyPresent: true };
+        calls.push([
+          "configure",
+          input.provider,
+          input.model,
+          input.key === FAKE_KEY,
+        ]);
+        return {
+          provider: input.provider,
+          model: input.model,
+          thinkingEnabled: false,
+          keyPresent: true,
+        };
       },
       bDeleteKey: async () => {
         calls.push(["delete-key"]);
         return { keyPresent: false };
       },
-      bAiGate: async () => ({ policyBlocked: false, licenseRestricted: false, language: "ja" }),
+      bAiGate: async () => ({
+        policyBlocked: false,
+        licenseRestricted: false,
+        language: "ja",
+      }),
       bPrepare: async () => prepared(),
       bEstimate: async () => ({
         judgedSlots: Math.min(visible.length, 50),
@@ -115,27 +149,59 @@ function withTmp(fn) {
 }
 
 test("本測定は明示の許可が無ければ始めない。dry-run は送るモードではない", () => {
-  assert.throws(() => assertSendAllowed({ mode: "b1", "confirm-send": "" }), /SEND_NOT_CONFIRMED/u);
-  assert.throws(() => assertSendAllowed({ mode: "b1", "confirm-send": "yes" }), /SEND_NOT_CONFIRMED/u);
-  assert.throws(() => assertSendAllowed({ mode: "dry-run", "confirm-send": CONFIRM_SEND }), /SEND_MODE/u);
-  assert.doesNotThrow(() => assertSendAllowed({ mode: "b2", "confirm-send": CONFIRM_SEND }));
+  assert.throws(
+    () => assertSendAllowed({ mode: "b1", "confirm-send": "" }),
+    /SEND_NOT_CONFIRMED/u,
+  );
+  assert.throws(
+    () => assertSendAllowed({ mode: "b1", "confirm-send": "yes" }),
+    /SEND_NOT_CONFIRMED/u,
+  );
+  assert.throws(
+    () => assertSendAllowed({ mode: "dry-run", "confirm-send": CONFIRM_SEND }),
+    /SEND_MODE/u,
+  );
+  assert.doesNotThrow(() =>
+    assertSendAllowed({ mode: "b2", "confirm-send": CONFIRM_SEND }),
+  );
 });
 
 test("safeStorage の backend：basic_text・不明は止める", () => {
-  assert.throws(() => assertSafeStorageBackend("basic_text"), /SAFE_STORAGE_BACKEND/u);
-  assert.throws(() => assertSafeStorageBackend("unknown"), /SAFE_STORAGE_BACKEND/u);
-  assert.throws(() => assertSafeStorageBackend(undefined), /SAFE_STORAGE_BACKEND/u);
+  assert.throws(
+    () => assertSafeStorageBackend("basic_text"),
+    /SAFE_STORAGE_BACKEND/u,
+  );
+  assert.throws(
+    () => assertSafeStorageBackend("unknown"),
+    /SAFE_STORAGE_BACKEND/u,
+  );
+  assert.throws(
+    () => assertSafeStorageBackend(undefined),
+    /SAFE_STORAGE_BACKEND/u,
+  );
   assert.doesNotThrow(() => assertSafeStorageBackend("gnome_libsecret"));
 });
 
 test("偽 AI の env（GRIMODEX_PRODUCT_JOURNEY*）が立っていれば本測定の process は止まる（名前だけ数える）", () => {
-  assert.deepEqual(findForbiddenEnv({ PATH: "/bin", GRIMODEX_PRODUCT_JOURNEY_FAKE_AI: "deterministic-v1", GRIMODEX_PRODUCT_JOURNEY_STREAM_GATE_DIR: "x" }), [
-    "GRIMODEX_PRODUCT_JOURNEY_FAKE_AI",
-    "GRIMODEX_PRODUCT_JOURNEY_STREAM_GATE_DIR",
-  ]);
+  assert.deepEqual(
+    findForbiddenEnv({
+      PATH: "/bin",
+      GRIMODEX_PRODUCT_JOURNEY_FAKE_AI: "deterministic-v1",
+      GRIMODEX_PRODUCT_JOURNEY_STREAM_GATE_DIR: "x",
+    }),
+    [
+      "GRIMODEX_PRODUCT_JOURNEY_FAKE_AI",
+      "GRIMODEX_PRODUCT_JOURNEY_STREAM_GATE_DIR",
+    ],
+  );
   assert.throws(
-    () => assertNoFakeAiEnv({ GRIMODEX_PRODUCT_JOURNEY_FAKE_AI: "deterministic-v1" }),
-    (e) => /FAKE_AI_ENV_SET/u.test(e.message) && !e.message.includes("deterministic-v1"),
+    () =>
+      assertNoFakeAiEnv({
+        GRIMODEX_PRODUCT_JOURNEY_FAKE_AI: "deterministic-v1",
+      }),
+    (e) =>
+      /FAKE_AI_ENV_SET/u.test(e.message) &&
+      !e.message.includes("deterministic-v1"),
   );
   assert.doesNotThrow(() => assertNoFakeAiEnv({ PATH: "/bin" }));
   // この試験 process 自身にも立っていない。
@@ -150,8 +216,19 @@ test("乾いた実行：送信の関数（bJudge）を呼ばず、key の導入�
         calls.push(["synth", input.entityCount, input.aliasTotal]);
         return { created: input.entityCount };
       },
-      bAiGate: async () => ({ policyBlocked: false, licenseRestricted: false, language: "ja" }),
-      bPrepare: async () => ({ rawCount: 150, activeCount: 150, visibleCount: 150, dismissedCount: 0, entryCount: 5, candidates: [] }),
+      bAiGate: async () => ({
+        policyBlocked: false,
+        licenseRestricted: false,
+        language: "ja",
+      }),
+      bPrepare: async () => ({
+        rawCount: 150,
+        activeCount: 150,
+        visibleCount: 150,
+        dismissedCount: 0,
+        entryCount: 5,
+        candidates: [],
+      }),
       bEstimate: async () => ({
         judgedSlots: 50,
         entrySlots: 5,
@@ -170,14 +247,30 @@ test("乾いた実行：送信の関数（bJudge）を呼ばず、key の導入�
   };
   const page = { evaluate: async (fn, arg) => fn(arg) };
   const out = await dryCellBody({ page });
-  assert.deepEqual(out.levels.map((l) => l.level), ["empty", "L0", "L1", "L2", "L3"]);
-  assert.ok(out.levels.every((l) => l.request.estInputTokens > 0 && l.b1Requests === 3 && l.b2Requests === 3));
+  assert.deepEqual(
+    out.levels.map((l) => l.level),
+    ["empty", "L0", "L1", "L2", "L3"],
+  );
+  assert.ok(
+    out.levels.every(
+      (l) =>
+        l.request.estInputTokens > 0 &&
+        l.b1Requests === 3 &&
+        l.b2Requests === 3,
+    ),
+  );
+  // 空の名簿の候補数 N0=150 に対する割合：実体 30％＝45、別名の累計 0／10％／20％／30％。
   assert.deepEqual(calls, [
-    ["synth", 60, 0],
-    ["synth", 60, 40],
-    ["synth", 60, 100],
-    ["synth", 60, 160],
+    ["synth", 45, 0],
+    ["synth", 45, 15],
+    ["synth", 45, 30],
+    ["synth", 45, 45],
   ]);
+  assert.deepEqual(out.synthetic, {
+    entityCount: 45,
+    aliasTotals: { L0: 0, L1: 15, L2: 30, L3: 45 },
+    candidateCountN0: 150,
+  });
 });
 
 test("乾いた実行の採用条件：AI の command・send_chat_message・AI の行・外向き通信が 0", () => {
@@ -187,18 +280,64 @@ test("乾いた実行の採用条件：AI の command・send_chat_message・AI �
     egress: { nonLoopbackDestinationCount: 0, sampleCount: 4 },
   };
   assert.equal(dryCellStatus(good), "ok");
-  assert.equal(dryCellStatus({ ...good, ipc: { commandNames: ["send_chat_message"], commandCounts: { send_chat_message: 1 } } }), "ai-detected");
-  assert.equal(dryCellStatus({ ...good, ipc: { commandNames: ["get_ai_settings"], commandCounts: {} } }), "ai-detected");
-  assert.equal(dryCellStatus({ ...good, aiRows: { verified: true, tables: { ai_usage: 1 } } }), "ai-detected");
-  assert.equal(dryCellStatus({ ...good, aiRows: { verified: false, tables: {} } }), "ai-unverified");
-  assert.equal(dryCellStatus({ ...good, egress: { nonLoopbackDestinationCount: 1, sampleCount: 4 } }), "egress-detected");
+  assert.equal(
+    dryCellStatus({
+      ...good,
+      ipc: {
+        commandNames: ["send_chat_message"],
+        commandCounts: { send_chat_message: 1 },
+      },
+    }),
+    "ai-detected",
+  );
+  assert.equal(
+    dryCellStatus({
+      ...good,
+      ipc: { commandNames: ["get_ai_settings"], commandCounts: {} },
+    }),
+    "ai-detected",
+  );
+  assert.equal(
+    dryCellStatus({
+      ...good,
+      aiRows: { verified: true, tables: { ai_usage: 1 } },
+    }),
+    "ai-detected",
+  );
+  assert.equal(
+    dryCellStatus({ ...good, aiRows: { verified: false, tables: {} } }),
+    "ai-unverified",
+  );
+  assert.equal(
+    dryCellStatus({
+      ...good,
+      egress: { nonLoopbackDestinationCount: 1, sampleCount: 4 },
+    }),
+    "egress-detected",
+  );
 });
 
 test("本測定の採用条件：許した AI command だけ・送信回数が IPC と一致", () => {
-  const cell = (names, sent) => ({ ipc: { commandNames: names, commandCounts: { send_chat_message: sent } } });
-  assert.equal(realCellStatus(cell(["get_ai_settings", "save_ai_settings", "send_chat_message"], 3), { requestsSent: 3 }), "ok");
-  assert.equal(realCellStatus(cell(["send_chat_message", "send_chat_message_stream"], 3), { requestsSent: 3 }), "unexpected-ai-command");
-  assert.equal(realCellStatus(cell(["send_chat_message"], 2), { requestsSent: 3 }), "send-count-mismatch");
+  const cell = (names, sent) => ({
+    ipc: { commandNames: names, commandCounts: { send_chat_message: sent } },
+  });
+  assert.equal(
+    realCellStatus(
+      cell(["get_ai_settings", "save_ai_settings", "send_chat_message"], 3),
+      { requestsSent: 3 },
+    ),
+    "ok",
+  );
+  assert.equal(
+    realCellStatus(cell(["send_chat_message", "send_chat_message_stream"], 3), {
+      requestsSent: 3,
+    }),
+    "unexpected-ai-command",
+  );
+  assert.equal(
+    realCellStatus(cell(["send_chat_message"], 2), { requestsSent: 3 }),
+    "send-count-mismatch",
+  );
 });
 
 test("偽の provider での本測定の経路（B1）：key を入れ、3 要求、surface を確かめ、key を消す", async () => {
@@ -206,7 +345,11 @@ test("偽の provider での本測定の経路（B1）：key を入れ、3 要�
     const calls = [];
     const workspaceDir = path.join(dir, "workspace");
     const { page } = await installFakeWindow({ workspaceDir, calls });
-    const gate = createGate({ file: path.join(dir, "ledger.jsonl"), model: "claude-sonnet-5-5", pricing: PRICING });
+    const gate = createGate({
+      file: path.join(dir, "ledger.jsonl"),
+      model: "claude-sonnet-5-5",
+      pricing: PRICING,
+    });
     const value = await measureBBody({
       page,
       app: null,
@@ -222,11 +365,19 @@ test("偽の provider での本測定の経路（B1）：key を入れ、3 要�
     });
     assert.equal(value.requestsSent, 3);
     assert.equal(value.result.successCount, 3);
-    assert.deepEqual(value.surfaces, { usageSurfaceCount: 1, auditPathCount: 1 });
+    assert.deepEqual(value.surfaces, {
+      usageSurfaceCount: 1,
+      auditPathCount: 1,
+    });
     assert.deepEqual(value.usageModels, { "claude-sonnet-5-5": 3 });
     assert.equal(calls.filter((c) => c[0] === "judge").length, 3);
     assert.deepEqual(calls[0], ["register", 2]);
-    assert.deepEqual(calls[1], ["configure", "anthropic", "claude-sonnet-5-5", true]);
+    assert.deepEqual(calls[1], [
+      "configure",
+      "anthropic",
+      "claude-sonnet-5-5",
+      true,
+    ]);
     assert.deepEqual(calls.at(-1), ["delete-key"]);
     assert.equal(gate.state.billedRequests, 3);
     // 結果に key・表記の文字列が無い。
@@ -238,8 +389,16 @@ test("偽の provider：別の surface の AI 経路が混ざれば止まり、�
   await withTmp(async (dir) => {
     const calls = [];
     const workspaceDir = path.join(dir, "workspace");
-    const { page } = await installFakeWindow({ workspaceDir, calls, usageSurface: "chat" });
-    const gate = createGate({ file: path.join(dir, "ledger.jsonl"), model: "claude-sonnet-5-5", pricing: PRICING });
+    const { page } = await installFakeWindow({
+      workspaceDir,
+      calls,
+      usageSurface: "chat",
+    });
+    const gate = createGate({
+      file: path.join(dir, "ledger.jsonl"),
+      model: "claude-sonnet-5-5",
+      pricing: PRICING,
+    });
     await assert.rejects(
       measureBBody({
         page,
@@ -265,8 +424,16 @@ test("偽の provider（B2）：模擬作者が名簿どおりに進め、ceil(N
   await withTmp(async (dir) => {
     const calls = [];
     const workspaceDir = path.join(dir, "workspace");
-    const { page } = await installFakeWindow({ workspaceDir, calls, candidateCount: 120 });
-    const gate = createGate({ file: path.join(dir, "ledger.jsonl"), model: "claude-sonnet-5-5", pricing: PRICING });
+    const { page } = await installFakeWindow({
+      workspaceDir,
+      calls,
+      candidateCount: 120,
+    });
+    const gate = createGate({
+      file: path.join(dir, "ledger.jsonl"),
+      model: "claude-sonnet-5-5",
+      pricing: PRICING,
+    });
     const value = await measureBBody({
       page,
       app: null,

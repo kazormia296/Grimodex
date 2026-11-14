@@ -138,8 +138,14 @@ test("unresolvedReason：最も強い方法を理由にする", () => {
     unresolvedReason([{ methods: ["substring"] }, { methods: ["exact-name"] }]),
     "exact-multiple",
   );
-  assert.equal(unresolvedReason([{ methods: ["honorific-strip", "prefix"] }]), "honorific-strip");
-  assert.equal(unresolvedReason([{ methods: ["prefix"] }, { methods: ["substring"] }]), "prefix");
+  assert.equal(
+    unresolvedReason([{ methods: ["honorific-strip", "prefix"] }]),
+    "honorific-strip",
+  );
+  assert.equal(
+    unresolvedReason([{ methods: ["prefix"] }, { methods: ["substring"] }]),
+    "prefix",
+  );
   assert.equal(unresolvedReason([{ methods: ["embedding"] }]), "other");
 });
 
@@ -147,10 +153,16 @@ test("classifyRow：5 分類と 0（名簿に無い）。順に判定する", as
   const index = await buildRosterIndex(roster, ident);
   const listed = lookupRoster(index, "alpha", [1]);
   const unlisted = lookupRoster(index, "zzz", [1]);
-  assert.equal(classifyRow(row("zzz", "create-new"), unlisted, { bulkApprovable: true }).category, "notInRoster");
+  assert.equal(
+    classifyRow(row("zzz", "create-new"), unlisted, { bulkApprovable: true })
+      .category,
+    "notInRoster",
+  );
   assert.equal(
     classifyRow(
-      row("al", "unresolved", { candidates: [{ id: "e1", score: 90, methods: ["prefix"] }] }),
+      row("al", "unresolved", {
+        candidates: [{ id: "e1", score: 90, methods: ["prefix"] }],
+      }),
       listed,
       { bulkApprovable: false },
     ).category,
@@ -158,19 +170,36 @@ test("classifyRow：5 分類と 0（名簿に無い）。順に判定する", as
   );
   assert.equal(
     classifyRow(
-      row("al", "unresolved", { candidates: [{ id: "e9", score: 90, methods: ["prefix"] }] }),
+      row("al", "unresolved", {
+        candidates: [{ id: "e9", score: 90, methods: ["prefix"] }],
+      }),
       listed,
       { bulkApprovable: false },
     ).category,
     "unresolvedCandidateOut",
   );
   assert.equal(
-    classifyRow(row("al", "create-new", { typeStatus: "unresolved" }), listed, { bulkApprovable: false }).category,
+    classifyRow(row("al", "create-new", { typeStatus: "unresolved" }), listed, {
+      bulkApprovable: false,
+    }).category,
     "typeNeeded",
   );
-  assert.equal(classifyRow(row("alpha", "bind-existing"), listed, { bulkApprovable: false }).category, "bindCheck");
-  assert.equal(classifyRow(row("al", "create-new"), listed, { bulkApprovable: true }).category, "bulk");
-  assert.equal(classifyRow(row("al", "create-new"), listed, { bulkApprovable: false }).category, "manualCreate");
+  assert.equal(
+    classifyRow(row("alpha", "bind-existing"), listed, {
+      bulkApprovable: false,
+    }).category,
+    "bindCheck",
+  );
+  assert.equal(
+    classifyRow(row("al", "create-new"), listed, { bulkApprovable: true })
+      .category,
+    "bulk",
+  );
+  assert.equal(
+    classifyRow(row("al", "create-new"), listed, { bulkApprovable: false })
+      .category,
+    "manualCreate",
+  );
 });
 
 test("computeMeasureA：件数・食い違い・操作の数・衝突の挙動", async () => {
@@ -196,7 +225,10 @@ test("computeMeasureA：件数・食い違い・操作の数・衝突の挙動",
       candidates: [{ id: "e2", score: 80, methods: ["honorific-strip"] }],
     }),
     // 結び残し（create-new）で、一括承認で通る（後始末）、型は person だが名簿は location。
-    row("gamma2", "create-new", { bulkApprovable: true, coarseClass: "person" }),
+    row("gamma2", "create-new", {
+      bulkApprovable: true,
+      coarseClass: "person",
+    }),
     // 衝突：shared は ambiguous、gamma は name-over-alias で e3 に結ぶ。
     row("shared", "unresolved", {
       candidates: [
@@ -249,7 +281,9 @@ test("computeMeasureA：件数・食い違い・操作の数・衝突の挙動",
   assert.equal(m.operations.surfaceUnit.keepSurface, 1 + 6 + 6 + 2 + 2);
   // 実体単位は、同じ実体に束ねた表記を 1 件にする（bindCheck は e1・e3 の 2 実体）。
   assert.equal(m.operations.entityUnit.counts.bindCheck, 3);
-  assert.ok(m.operations.entityUnit.approval <= m.operations.surfaceUnit.approval);
+  assert.ok(
+    m.operations.entityUnit.approval <= m.operations.surfaceUnit.approval,
+  );
   assert.equal(m.restoreColumn, "not-available");
 });
 
@@ -266,7 +300,14 @@ test("指標は表記の文字列を持たない（hash と ID と件数だけ�
 test("run 間の比較：表記×種類の集合", () => {
   const a = surfaceKindSet([row("x", "create-new"), row("y", "unresolved")]);
   const b = surfaceKindSet([row("y", "unresolved"), row("x", "create-new")]);
-  assert.deepEqual(compareSets(a, b), { left: 2, right: 2, both: 2, leftOnly: 0, rightOnly: 0, equal: true });
+  assert.deepEqual(compareSets(a, b), {
+    left: 2,
+    right: 2,
+    both: 2,
+    leftOnly: 0,
+    rightOnly: 0,
+    equal: true,
+  });
   const c = surfaceKindSet([row("x", "bind-existing")]);
   const d = compareSets(a, c);
   assert.equal(d.equal, false);
@@ -276,8 +317,23 @@ test("run 間の比較：表記×種類の集合", () => {
 test("★8：前の回の未 review が最新の run に同じ表記で残る件数と、たまる run 数", () => {
   const runs = [
     { label: "F25", rows: [row("a", "create-new"), row("b", "create-new")] },
-    { label: "F50", rows: [row("a", "create-new"), row("b", "unresolved"), row("c", "create-new")] },
-    { label: "F100", rows: [row("a", "create-new"), row("b", "create-new"), row("c", "create-new"), row("d", "create-new")] },
+    {
+      label: "F50",
+      rows: [
+        row("a", "create-new"),
+        row("b", "unresolved"),
+        row("c", "create-new"),
+      ],
+    },
+    {
+      label: "F100",
+      rows: [
+        row("a", "create-new"),
+        row("b", "create-new"),
+        row("c", "create-new"),
+        row("d", "create-new"),
+      ],
+    },
   ];
   const r = carryOverStability(runs);
   assert.equal(r.runCount, 3);

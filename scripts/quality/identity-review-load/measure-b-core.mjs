@@ -37,7 +37,8 @@ export function truncateRosterForB(roster, limit = MAX_ENTRIES) {
     [...roster.entities]
       .sort(
         (a, b) =>
-          sceneCountOf(b) - sceneCountOf(a) || String(a.id).localeCompare(String(b.id)),
+          sceneCountOf(b) - sceneCountOf(a) ||
+          String(a.id).localeCompare(String(b.id)),
       )
       .slice(0, limit)
       .map((entity) => entity.id),
@@ -71,11 +72,17 @@ export function assertEstimateMatches(prepared, estimate) {
 /** 送信の前の状態（policy・license・言語）。空の Map を返す経路があるので、送る前に止める。 */
 export function assertAiGate(gate) {
   if (gate.policyBlocked)
-    throw new Error("[precheck] AI_POLICY_OFF analysis policy blocks the judgment");
+    throw new Error(
+      "[precheck] AI_POLICY_OFF analysis policy blocks the judgment",
+    );
   if (gate.licenseRestricted)
-    throw new Error("[precheck] LICENSE_RESTRICTED license restricts the judgment");
+    throw new Error(
+      "[precheck] LICENSE_RESTRICTED license restricts the judgment",
+    );
   if (gate.language !== "ja")
-    throw new Error("[precheck] LANGUAGE_NOT_JA candidate judgment needs a ja project");
+    throw new Error(
+      "[precheck] LANGUAGE_NOT_JA candidate judgment needs a ja project",
+    );
 }
 
 /** B の Entry は先頭 200 の窓に収まること（窓の外は 0）。 */
@@ -91,7 +98,11 @@ export function assertEntriesWithinWindow(prepared) {
  * （要約・題名・保守・Agent など他の AI 経路が起動していないことの確認）。
  * 要求を 1 件も送っていなければ両方が空でよい。
  */
-export function assertOnlyCodexJudgment({ usageSurfaces, auditPathIds, requestsSent }) {
+export function assertOnlyCodexJudgment({
+  usageSurfaces,
+  auditPathIds,
+  requestsSent,
+}) {
   const usage = [...new Set(usageSurfaces)].sort();
   const audit = [...new Set(auditPathIds)].sort();
   const ok = (set) =>
@@ -118,7 +129,7 @@ export async function readUsageForRequest(
   { timeoutMs = 10_000, intervalMs = 100 } = {},
 ) {
   const deadline = Date.now() + timeoutMs;
-  let rows = [];
+  let rows;
   for (;;) {
     rows = await api.usageRowsSince(before);
     if (rows.length > 0 || Date.now() >= deadline) break;
@@ -126,7 +137,8 @@ export async function readUsageForRequest(
   }
   if (rows.length === 0) return { ok: false, kind: "no-usage-row" };
   const row = rows[0];
-  if (row.surface !== CODEX_JUDGMENT) return { ok: false, kind: "wrong-surface" };
+  if (row.surface !== CODEX_JUDGMENT)
+    return { ok: false, kind: "wrong-surface" };
   if (row.tokens_in === null || row.tokens_out === null)
     return { ok: false, kind: "tokens-null", rowCount: rows.length };
   if (!(row.tokens_in > 0 && row.tokens_out > 0))
@@ -160,7 +172,12 @@ export async function sendOne({
   let attempts = 0;
   let retried = false;
   for (;;) {
-    gate.preflight({ stage, estInputTokens, estOutputTokens, remainingAfterThis });
+    gate.preflight({
+      stage,
+      estInputTokens,
+      estOutputTokens,
+      remainingAfterThis,
+    });
     const before = await api.usageRowCount();
     attempts++;
     const res = await api.judge();
@@ -177,7 +194,11 @@ export async function sendOne({
         outcome = { ok: false, failureKind: usage.kind };
       }
     } else {
-      outcome = { ok: false, failureKind: res.kind, httpStatus: res.httpStatus ?? null };
+      outcome = {
+        ok: false,
+        failureKind: res.kind,
+        httpStatus: res.httpStatus ?? null,
+      };
     }
     try {
       gate.afterRequest({
@@ -259,7 +280,9 @@ export function judgmentMetrics({ index, candidates, judgments }) {
     aliasOfUnknownId: 0,
   };
   candidates.forEach((candidate, i) => {
-    const lookup = lookupRoster(index, candidate.keyHash, [candidate.firstSceneIndex]);
+    const lookup = lookupRoster(index, candidate.keyHash, [
+      candidate.firstSceneIndex,
+    ]);
     const inWindow = i < MAX_CANDIDATES;
     const judgment = inWindow ? judgments.get(candidate.keyHash) : undefined;
     if (lookup.kind === "entity") m.listedEntityCandidates++;
@@ -278,7 +301,12 @@ export function judgmentMetrics({ index, candidates, judgments }) {
       else m.missedBindNullAlias++;
       if (judgment) {
         m.typeChecked++;
-        if (!typeMatches(index.entities.get(lookup.id)?.type, judgment.suggestedType))
+        if (
+          !typeMatches(
+            index.entities.get(lookup.id)?.type,
+            judgment.suggestedType,
+          )
+        )
           m.typeMismatch++;
       }
     } else if (lookup.kind === "ambiguous" && alias !== null) {
@@ -313,11 +341,19 @@ export function selfAgreement(runs) {
   for (const list of byKey.values()) {
     if (list.length < 2) continue;
     compared++;
-    if (list.every((j) => (j.aliasOfId ?? null) === (list[0].aliasOfId ?? null)))
+    if (
+      list.every((j) => (j.aliasOfId ?? null) === (list[0].aliasOfId ?? null))
+    )
       aliasAgree++;
-    if (list.every((j) => j.suggestedType === list[0].suggestedType)) typeAgree++;
+    if (list.every((j) => j.suggestedType === list[0].suggestedType))
+      typeAgree++;
   }
-  return { keysCompared: compared, aliasAgree, typeAgree, successfulRuns: runs.length };
+  return {
+    keysCompared: compared,
+    aliasAgree,
+    typeAgree,
+    successfulRuns: runs.length,
+  };
 }
 
 function toJudgmentMap(judgments) {
@@ -399,7 +435,7 @@ export async function runB1({
       registeredKeyHashes,
       prepared.candidates,
     ),
-    requests: requests.map(({ judgmentMap, ...rest }) => rest),
+    requests: requests.map(({ judgmentMap: _judgmentMap, ...rest }) => rest),
     selfAgreement: selfAgreement(successes.map((r) => r.judgmentMap)),
     failuresByKind: requests.reduce((acc, r) => {
       if (!r.ok) bump(acc, r.failureKind ?? "other");
@@ -425,7 +461,11 @@ function buildRequestRecord(result, prepared, index) {
     model: result.model ?? null,
     durationMs: result.durationMs ?? 0,
     metrics: result.ok
-      ? judgmentMetrics({ index, candidates: prepared.candidates, judgments: judgmentMap })
+      ? judgmentMetrics({
+          index,
+          candidates: prepared.candidates,
+          judgments: judgmentMap,
+        })
       : null,
     judgmentMap,
   };
@@ -448,8 +488,10 @@ export function authorDecision(lookup, registeredIds, rosterTypeOf) {
       reason: "accept",
     };
   }
-  if (lookup.kind === "entity") return { action: "dismiss", reason: "honorific" };
-  if (lookup.kind === "ambiguous") return { action: "dismiss", reason: "ambiguous" };
+  if (lookup.kind === "entity")
+    return { action: "dismiss", reason: "honorific" };
+  if (lookup.kind === "ambiguous")
+    return { action: "dismiss", reason: "ambiguous" };
   return { action: "dismiss", reason: "unlisted" };
 }
 
@@ -501,11 +543,16 @@ export async function runB2({
       break;
     }
     const record = buildRequestRecord(result, prepared, index);
-    iterations.push({ ...(({ judgmentMap, ...rest }) => rest)(record), visibleBefore: prepared.visibleCount });
+    iterations.push({
+      ...(({ judgmentMap: _judgmentMap, ...rest }) => rest)(record),
+      visibleBefore: prepared.visibleCount,
+    });
     if (!result.ok) break; // 判定なしでは進められない（失敗は別に数える。再送は sendOne が 1 回だけ行った）
     const window = prepared.candidates.slice(0, MAX_CANDIDATES);
     const decisions = window.map((candidate) => {
-      const lookup = lookupRoster(index, candidate.keyHash, [candidate.firstSceneIndex]);
+      const lookup = lookupRoster(index, candidate.keyHash, [
+        candidate.firstSceneIndex,
+      ]);
       const d = authorDecision(lookup, registeredIds, rosterTypeOf);
       if (d.action === "accept") registeredIds.add(d.newId);
       decisionCounts[d.action]++;
@@ -514,7 +561,7 @@ export async function runB2({
     });
     const before = prepared.visibleCount;
     const applied = await api.apply(
-      decisions.map(({ reason, ...rest }) => rest),
+      decisions.map(({ reason: _reason, ...rest }) => rest),
     );
     prepared = applied;
     if (applied.visibleCount >= before) {
@@ -568,6 +615,7 @@ export async function dryMeasure({ api, repeats = REPEATS_B1 }) {
       contextChars: estimate.contextChars,
       promptChars: estimate.promptChars,
       promptNonAsciiChars: estimate.promptNonAsciiChars,
+      parts: estimate.parts ?? null,
       estInputTokens: estimateInputTokens(estimate),
       estOutputTokens: estimateOutputTokens(estimate.judgedSlots),
     },
@@ -603,10 +651,7 @@ export function buildDryRunPlan(rows, { pricing, trialRequests = 3 }) {
           estInputTokens: row.request.estInputTokens,
           estOutputTokens: row.request.estOutputTokens,
         });
-    if (
-      largest === null ||
-      row.request.estInputTokens > largest.estInputTokens
-    )
+    if (largest === null || row.request.estInputTokens > largest.estInputTokens)
       largest = row.request;
   }
   if (largest)
@@ -619,4 +664,122 @@ export function buildDryRunPlan(rows, { pricing, trialRequests = 3 }) {
         estOutputTokens: largest.estOutputTokens,
       });
   return { requests, cost: planCost(requests, { pricing }) };
+}
+
+// ---- 乾いた実行の外挿（名簿の規模を仮定した上限の見積り）--------------------------------
+
+/** 内訳（ascii・非 ascii の文字数）から token を見積もる（estimateInputTokens と同じ比）。 */
+function tokensOfParts(ascii, nonAscii) {
+  return estimateInputTokens({
+    promptChars: ascii + nonAscii,
+    promptNonAsciiChars: nonAscii,
+  });
+}
+
+/**
+ * 合成の小さな名簿で測った内訳から、本物の名簿の規模（実体数・実体あたりの別名数）を仮定した 1 要求の見積りを作る。
+ * 候補の部分は空の名簿の行（候補が最も多い＝上限側）、Entry の部分は実体あたり・別名あたりの測定値に実体数を掛ける。
+ * emptyRow・l0Row・l3Row：dryMeasure の行（parts を持つもの）。
+ * 戻り値：{ estInputTokens, estOutputTokens, basis } または、内訳が無ければ null。
+ */
+export function projectRequest({
+  emptyRow,
+  l0Row,
+  l3Row,
+  entities,
+  aliasesPerEntity,
+}) {
+  const parts = (row) => row?.request?.parts ?? null;
+  const e = parts(emptyRow);
+  const z = parts(l0Row);
+  const t = parts(l3Row);
+  if (!e || !z || !t) return null;
+  const sides = (p, key) => ({
+    ascii: p[`${key}Chars`] - p[`${key}NonAscii`],
+    non: p[`${key}NonAscii`],
+  });
+  const base = sides(e, "base");
+  const cand = sides(e, "candidates");
+  const entity0 = sides(z, "entries");
+  const entity3 = sides(t, "entries");
+  const e0 = Math.max(1, l0Row.request.entrySlots);
+  const dAliases = Math.max(
+    0,
+    l3Row.request.entryAliasCount - l0Row.request.entryAliasCount,
+  );
+  const perEntity = { ascii: entity0.ascii / e0, non: entity0.non / e0 };
+  // 別名あたり：増分が取れなければ、実体あたりの 1/2 を仮置きする。
+  const perAlias =
+    dAliases > 0
+      ? {
+          ascii: Math.max(0, entity3.ascii - entity0.ascii) / dAliases,
+          non: Math.max(0, entity3.non - entity0.non) / dAliases,
+        }
+      : { ascii: perEntity.ascii / 2, non: perEntity.non / 2 };
+  const ascii =
+    base.ascii +
+    cand.ascii +
+    entities * perEntity.ascii +
+    entities * aliasesPerEntity * perAlias.ascii;
+  const non =
+    base.non +
+    cand.non +
+    entities * perEntity.non +
+    entities * aliasesPerEntity * perAlias.non;
+  return {
+    estInputTokens: tokensOfParts(ascii, non),
+    estOutputTokens: estimateOutputTokens(emptyRow.request.judgedSlots),
+    basis: {
+      entities,
+      aliasesPerEntity,
+      candidateSlots: emptyRow.request.judgedSlots,
+      aliasCostFallback: dAliases === 0,
+    },
+  };
+}
+
+/**
+ * 作品ごとの dryMeasure の行（level は empty・L0〜L3）から、名簿の規模を仮定した要求の一覧と費用を作る。
+ * scenario：{ entities, aliasesPerEntityByLevel:{L0..L3} }。B2 の要求数は空の名簿の N から ceil(N/50)。
+ */
+export function buildProjectedPlan(
+  rowsByWork,
+  scenario,
+  { pricing, trialRequests = 3 },
+) {
+  const requests = [];
+  const perWork = {};
+  let largest = null;
+  for (const [work, rows] of Object.entries(rowsByWork)) {
+    const by = Object.fromEntries(rows.map((r) => [r.level, r]));
+    const b2Requests = Math.ceil(
+      (by.empty?.candidates.visibleCount ?? 0) / MAX_CANDIDATES,
+    );
+    perWork[work] = { levels: {}, b2Requests };
+    for (const level of ["L0", "L1", "L2", "L3"]) {
+      const p = projectRequest({
+        emptyRow: by.empty,
+        l0Row: by.L0,
+        l3Row: by.L3,
+        entities: scenario.entities,
+        aliasesPerEntity: scenario.aliasesPerEntityByLevel[level],
+      });
+      if (!p) continue;
+      perWork[work].levels[level] = {
+        estInputTokens: p.estInputTokens,
+        estOutputTokens: p.estOutputTokens,
+      };
+      for (let i = 0; i < REPEATS_B1; i++)
+        requests.push({ stage: "B1", work, level, ...p });
+      if (level === "L2")
+        for (let i = 0; i < b2Requests; i++)
+          requests.push({ stage: "B2", work, level, ...p });
+      if (largest === null || p.estInputTokens > largest.estInputTokens)
+        largest = p;
+    }
+  }
+  if (largest)
+    for (let i = 0; i < trialRequests; i++)
+      requests.push({ stage: "trial", work: "-", level: "-", ...largest });
+  return { requests, perWork, cost: planCost(requests, { pricing }) };
 }

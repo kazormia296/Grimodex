@@ -232,7 +232,9 @@ export function computeMeasureA({ index, rows }) {
       bump(notInRosterByKind, row.bindingKind);
       if (
         row.bindingKind === "unresolved" &&
-        row.candidates.some((c) => (c.methods ?? []).includes("honorific-strip"))
+        row.candidates.some((c) =>
+          (c.methods ?? []).includes("honorific-strip"),
+        )
       )
         honorific.unlistedUnresolvedByHonorificStrip++;
       if (row.bindingKind === "unresolved")
@@ -273,7 +275,11 @@ export function computeMeasureA({ index, rows }) {
     if (row.bindingKind === "unresolved") {
       bump(reasons, unresolvedReason(row.candidates));
       bump(candidateCountDistribution, String(row.candidates.length));
-      if (row.candidates.some((c) => (c.methods ?? []).includes("honorific-strip")))
+      if (
+        row.candidates.some((c) =>
+          (c.methods ?? []).includes("honorific-strip"),
+        )
+      )
         honorific.unresolvedByHonorificStrip++;
       if (cls.rank !== null && cls.rank !== undefined) {
         if (cls.rank === 1) rankCounts.r1++;
@@ -325,7 +331,8 @@ export function computeMeasureA({ index, rows }) {
   const entityUnit = {
     bulk: bulkTotal > 0 ? 1 : 0,
     bindCheck: entityKeysByCategory.bindCheck?.size ?? 0,
-    unresolvedCandidateIn: entityKeysByCategory.unresolvedCandidateIn?.size ?? 0,
+    unresolvedCandidateIn:
+      entityKeysByCategory.unresolvedCandidateIn?.size ?? 0,
     unresolvedCandidateOut:
       entityKeysByCategory.unresolvedCandidateOut?.size ?? 0,
     typeNeeded: entityKeysByCategory.typeNeeded?.size ?? 0,

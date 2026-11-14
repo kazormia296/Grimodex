@@ -135,7 +135,7 @@ function withLock(lockFile, fn) {
         // 競合して消えた。
       }
       if (Date.now() - started > 120_000)
-        throw new Error("[ledger] LOCK_TIMEOUT");
+        throw new Error("[ledger] LOCK_TIMEOUT", { cause: error });
       sleepSync(20 + Math.floor(Math.random() * 40));
     }
   }
@@ -288,7 +288,9 @@ export function createGate({
         est_input_tokens: estInputTokens,
         est_output_tokens: estOutputTokens,
         usd: Number(usd.toFixed(6)),
-        note: String(note).replace(/[^A-Za-z0-9_.:/+=\- ]/gu, "_").slice(0, 80),
+        note: String(note)
+          .replace(/[^A-Za-z0-9_.:/+=\- ]/gu, "_")
+          .slice(0, 80),
       };
       const append = () =>
         appendFileSync(file, `${JSON.stringify(row)}\n`, { mode: 0o600 });

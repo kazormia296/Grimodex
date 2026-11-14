@@ -52,19 +52,57 @@ export const DEFAULT_SOLO_WORKS = Object.freeze(["m-ja-2"]);
  * 実行する cell の一覧（純関数）。cell：{ id, work, kind, level, steps }。
  * level：null は Codex を空にする基準。steps は構造抽出を流す folder の列（同じ workspace で順に）。
  */
-export function planCells(works, { soloWorks = DEFAULT_SOLO_WORKS, only = null } = {}) {
+export function planCells(
+  works,
+  { soloWorks = DEFAULT_SOLO_WORKS, only = null } = {},
+) {
   const cells = [];
   for (const work of works) {
     for (const level of ROSTER_LEVELS)
-      cells.push({ id: `${work}-matrix-${level}`, work, kind: "matrix", level, steps: [100] });
-    cells.push({ id: `${work}-empty`, work, kind: "baseline", level: null, steps: [100] });
-    cells.push({ id: `${work}-determinism-L2`, work, kind: "determinism", level: "L2", steps: [100] });
-    cells.push({ id: `${work}-cumulative-L2`, work, kind: "cumulative", level: "L2", steps: [...FOLDER_STEPS] });
+      cells.push({
+        id: `${work}-matrix-${level}`,
+        work,
+        kind: "matrix",
+        level,
+        steps: [100],
+      });
+    cells.push({
+      id: `${work}-empty`,
+      work,
+      kind: "baseline",
+      level: null,
+      steps: [100],
+    });
+    cells.push({
+      id: `${work}-determinism-L2`,
+      work,
+      kind: "determinism",
+      level: "L2",
+      steps: [100],
+    });
+    cells.push({
+      id: `${work}-cumulative-L2`,
+      work,
+      kind: "cumulative",
+      level: "L2",
+      steps: [...FOLDER_STEPS],
+    });
     if (soloWorks.includes(work))
       for (const percent of [25, 50, 75])
-        cells.push({ id: `${work}-solo-L2-F${percent}`, work, kind: "solo", level: "L2", steps: [percent] });
+        cells.push({
+          id: `${work}-solo-L2-F${percent}`,
+          work,
+          kind: "solo",
+          level: "L2",
+          steps: [percent],
+        });
   }
-  return only ? cells.filter((c) => only.includes(c.id) || only.includes(c.id.slice(c.work.length + 1))) : cells;
+  return only
+    ? cells.filter(
+        (c) =>
+          only.includes(c.id) || only.includes(c.id.slice(c.work.length + 1)),
+      )
+    : cells;
 }
 
 /** 名簿の登録用の実体（rosterAtLevel の型を Codex の型にする）。 */
@@ -88,7 +126,14 @@ export function runCompleted(extract) {
  * cell の中身。page は window.identityLoad を持つ（試験では fake）。
  * 戻り値：{ runs, registration }。runs[].rows は repo 外の rows file に書く（hash の行）。
  */
-export async function measureABody({ page, projectId, roster, index, cell, persist = "skip" }) {
+export async function measureABody({
+  page,
+  projectId,
+  roster,
+  index,
+  cell,
+  persist = "skip",
+}) {
   const entries = registrationEntries(roster, cell.level);
   let registration = { created: 0 };
   if (entries.length > 0)
@@ -96,7 +141,11 @@ export async function measureABody({ page, projectId, roster, index, cell, persi
       (input) => window.identityLoad.registerRoster(input),
       { projectId, entries },
     );
-  assert.equal(registration.created, entries.length, "[artifact] REGISTRATION_COUNT_DIFFERS");
+  assert.equal(
+    registration.created,
+    entries.length,
+    "[artifact] REGISTRATION_COUNT_DIFFERS",
+  );
   const runs = [];
   for (const percent of cell.steps) {
     let persisted;
@@ -132,20 +181,27 @@ export async function measureABody({ page, projectId, roster, index, cell, persi
       rows,
     });
   }
-  return { runs, registration: { created: registration.created, entryCount: entries.length } };
+  return {
+    runs,
+    registration: { created: registration.created, entryCount: entries.length },
+  };
 }
 
 /** cell の status を決める（run-inventory と同じ順で、採用できないものを落とす）。 */
 export function cellStatus(cell, value) {
   const names = cell.ipc?.commandNames ?? [];
-  const persistAllowed = value?.runs?.some((r) => r.persistAttempt?.status !== "not-attempted")
+  const persistAllowed = value?.runs?.some(
+    (r) => r.persistAttempt?.status !== "not-attempted",
+  )
     ? ["narrative_extraction_claim_task"]
     : [];
   const ai = findAiCommands(names).filter((n) => !persistAllowed.includes(n));
   if (ai.length > 0) return "ai-detected";
   if (!cell.aiRows?.verified) return "ai-unverified";
-  if (Object.values(cell.aiRows.tables ?? {}).some((n) => n !== 0)) return "ai-detected";
-  if ((cell.egress?.nonLoopbackDestinationCount ?? 0) > 0) return "egress-detected";
+  if (Object.values(cell.aiRows.tables ?? {}).some((n) => n !== 0))
+    return "ai-detected";
+  if ((cell.egress?.nonLoopbackDestinationCount ?? 0) > 0)
+    return "egress-detected";
   if ((cell.egress?.sampleCount ?? 0) === 0) return "egress-unverified";
   if (!value?.runs?.every((r) => r.completed)) return "extract-unverified";
   return "ok";
@@ -164,10 +220,16 @@ function parseArgs(args) {
     keep: "false",
   };
   for (let i = 0; i < args.length; i += 2) {
-    assert.ok(args[i].startsWith("--") && args[i + 1] !== undefined, "use --name value arguments");
+    assert.ok(
+      args[i].startsWith("--") && args[i + 1] !== undefined,
+      "use --name value arguments",
+    );
     options[args[i].slice(2)] = args[i + 1];
   }
-  assert.ok(["skip", "try"].includes(options.persist), "[precheck] --persist must be skip or try");
+  assert.ok(
+    ["skip", "try"].includes(options.persist),
+    "[precheck] --persist must be skip or try",
+  );
   for (const work of options.works.split(","))
     assert.ok(work in WORKS, `[precheck] unknown work ${work}`);
   return options;
@@ -190,14 +252,21 @@ async function main() {
     const file = path.join(rosterDir, work, options["roster-name"]);
     const roster = JSON.parse(readFileSync(file, "utf8"));
     const check = validateRoster(roster, {});
-    assert.ok(check.ok, `[precheck] ROSTER_INVALID ${work} errors=${check.errors.length}`);
+    assert.ok(
+      check.ok,
+      `[precheck] ROSTER_INVALID ${work} errors=${check.errors.length}`,
+    );
     rosters.set(work, { roster, index: await buildRosterIndex(roster) });
   }
   const summary = [];
   await withVite(output, async ({ vite, busAddress }) => {
     for (const cell of cells) {
       const { roster, index } = rosters.get(cell.work);
-      const { cell: observed, value, scenesTexts } = await runCell({
+      const {
+        cell: observed,
+        value,
+        scenesTexts,
+      } = await runCell({
         output,
         vite,
         busAddress,
@@ -206,17 +275,36 @@ async function main() {
         dataDir: options["data-dir"],
         keep: options.keep === "true",
         body: (ctx) =>
-          measureABody({ ...ctx, roster, index, cell, persist: options.persist }),
+          measureABody({
+            ...ctx,
+            roster,
+            index,
+            cell,
+            persist: options.persist,
+          }),
       });
-      const status = observed.status === "failed" ? "failed" : cellStatus(observed, value);
-      const result = { schemaVersion: "identity-load-measure-a/1", cell: cell.id, kind: cell.kind, level: cell.level, steps: cell.steps, status, observed, registration: value?.registration ?? null };
+      const status =
+        observed.status === "failed" ? "failed" : cellStatus(observed, value);
+      const result = {
+        schemaVersion: "identity-load-measure-a/1",
+        cell: cell.id,
+        kind: cell.kind,
+        level: cell.level,
+        steps: cell.steps,
+        status,
+        observed,
+        registration: value?.registration ?? null,
+      };
       let rowsFile = null;
       if (value) {
         result.runs = value.runs.map((run) => {
-          const { rows, ...rest } = run;
+          const { rows: _rows, ...rest } = run;
           return rest;
         });
-        rowsFile = value.runs.map((run) => ({ label: run.label, rows: run.rows }));
+        rowsFile = value.runs.map((run) => ({
+          label: run.label,
+          rows: run.rows,
+        }));
       }
       try {
         assertOutputClean(result, scenesTexts);
@@ -232,7 +320,11 @@ async function main() {
           });
         }
       } catch (error) {
-        writeJson0600(path.join(outDir, `${cell.id}.failed.json`), { cell: cell.id, status: "output-withheld", errors: [safeErrorSummary(error)] });
+        writeJson0600(path.join(outDir, `${cell.id}.failed.json`), {
+          cell: cell.id,
+          status: "output-withheld",
+          errors: [safeErrorSummary(error)],
+        });
       }
       summary.push({ cell: cell.id, status });
       console.log(JSON.stringify(summary.at(-1)));
@@ -241,11 +333,16 @@ async function main() {
   if (summary.some((s) => s.status !== "ok")) process.exitCode = 1;
 }
 
-if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+if (
+  process.argv[1] &&
+  pathToFileURL(process.argv[1]).href === import.meta.url
+) {
   try {
     await main();
   } catch (error) {
-    console.log(JSON.stringify({ status: "launcher-failed", ...safeErrorSummary(error) }));
+    console.log(
+      JSON.stringify({ status: "launcher-failed", ...safeErrorSummary(error) }),
+    );
     process.exitCode = 1;
   }
 }

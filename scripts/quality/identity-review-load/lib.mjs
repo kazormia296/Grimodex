@@ -1233,14 +1233,23 @@ export function classifyJudgmentFailure(error) {
     return { kind: "no-valid-result", httpStatus: null };
   if (/LICENSE|license.?restrict/iu.test(text) && !code)
     return { kind: "license", httpStatus: null };
-  if (code === 401 || code === 403 || /unauthori[sz]ed|forbidden|invalid.{0,10}api.?key|authentication/iu.test(text))
+  if (
+    code === 401 ||
+    code === 403 ||
+    /unauthori[sz]ed|forbidden|invalid.{0,10}api.?key|authentication/iu.test(
+      text,
+    )
+  )
     return { kind: "auth", httpStatus: code === 403 ? 403 : 401 };
   if (code === 429 || /rate.?limit|too many requests/iu.test(text))
     return { kind: "rate-limit", httpStatus: 429 };
-  if (code !== null && code >= 500)
-    return { kind: "server", httpStatus: code };
+  if (code !== null && code >= 500) return { kind: "server", httpStatus: code };
   if (/overloaded/iu.test(text)) return { kind: "server", httpStatus: 529 };
-  if (/ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|timed? ?out|fetch failed|network|IPC_TIMEOUT|socket hang up/iu.test(text))
+  if (
+    /ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|timed? ?out|fetch failed|network|IPC_TIMEOUT|socket hang up/iu.test(
+      text,
+    )
+  )
     return { kind: "network", httpStatus: null };
   return { kind: "other", httpStatus: code };
 }

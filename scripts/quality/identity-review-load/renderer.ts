@@ -13,7 +13,11 @@ import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { setCurrentRuntimeProjectId } from "@/runtime/projectIdentity";
 import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
-import { createProject, getProject, listProjects } from "@/features/project/api";
+import {
+  createProject,
+  getProject,
+  listProjects,
+} from "@/features/project/api";
 import {
   getCurrentProjectId,
   useProjectStore,
@@ -970,7 +974,9 @@ async function bEstimate() {
   const lang = project?.language ?? "ja";
   const candidates = b.visible.slice(0, JUDGMENT_MAX_CANDIDATES);
   const entries = b.entries.slice(0, JUDGMENT_MAX_ENTRIES);
-  const prompt = getPromptCatalog(lang).codexJudgment.buildCandidateJudgmentPrompt({
+  const prompt = getPromptCatalog(
+    lang,
+  ).codexJudgment.buildCandidateJudgmentPrompt({
     candidates: candidates.map((c) => ({
       surface: c.surface,
       lemma: c.lemma,
@@ -983,12 +989,55 @@ async function bEstimate() {
       aliases: parseAliases(e.aliases),
     })),
   });
-  let nonAscii = 0;
-  for (const ch of prompt) if ((ch.codePointAt(0) ?? 0) > 0x7f) nonAscii++;
+  const countChars = (text: string) => {
+    let nonAscii = 0;
+    for (const ch of text) if ((ch.codePointAt(0) ?? 0) > 0x7f) nonAscii++;
+    return { chars: [...text].length, nonAscii };
+  };
+  const catalog = getPromptCatalog(lang).codexJudgment;
+  const candidateInput = candidates.map((c) => ({
+    surface: c.surface,
+    lemma: c.lemma,
+    count: c.count,
+    context: c.context,
+  }));
+  const entryInput = entries.map((e) => ({
+    id: e.id,
+    name: e.name ?? "",
+    aliases: parseAliases(e.aliases),
+  }));
+  // 内訳（乾いた実行の外挿用）：候補なし・Entry なしの土台／候補だけの増分／Entry だけの増分。
+  const base = countChars(
+    catalog.buildCandidateJudgmentPrompt({
+      candidates: [],
+      existingEntries: [],
+    }),
+  );
+  const withCandidates = countChars(
+    catalog.buildCandidateJudgmentPrompt({
+      candidates: candidateInput,
+      existingEntries: [],
+    }),
+  );
+  const withEntries = countChars(
+    catalog.buildCandidateJudgmentPrompt({
+      candidates: [],
+      existingEntries: entryInput,
+    }),
+  );
+  const total = countChars(prompt);
   return {
     language: lang,
-    promptChars: [...prompt].length,
-    promptNonAsciiChars: nonAscii,
+    promptChars: total.chars,
+    promptNonAsciiChars: total.nonAscii,
+    parts: {
+      baseChars: base.chars,
+      baseNonAscii: base.nonAscii,
+      candidatesChars: withCandidates.chars - base.chars,
+      candidatesNonAscii: withCandidates.nonAscii - base.nonAscii,
+      entriesChars: withEntries.chars - base.chars,
+      entriesNonAscii: withEntries.nonAscii - base.nonAscii,
+    },
     judgedSlots: candidates.length,
     entrySlots: entries.length,
     entryAliasCount: entries.reduce(
@@ -1022,7 +1071,8 @@ async function bConfigureAi(input: {
     provider: input.provider as typeof settings.provider,
     model: input.model,
   });
-  if (input.key) await saveApiKey(input.provider as typeof settings.provider, input.key);
+  if (input.key)
+    await saveApiKey(input.provider as typeof settings.provider, input.key);
   await useAiSettingsStore.getState().loadSettings();
   const after = await getAiSettings();
   return {
@@ -1086,7 +1136,10 @@ async function bJudge() {
  * 実体へ順に割り当てたもの（aliasTotal 個まで。段が進むと同じ割り当てに足す）。
  * 実体の ID は synth-NNN。本物の名簿ではない（表記は原稿の候補から取るので repo 外の workspace に限る）。
  */
-async function bSynthRoster(input: { entityCount: number; aliasTotal: number }) {
+async function bSynthRoster(input: {
+  entityCount: number;
+  aliasTotal: number;
+}) {
   const a = requireActive();
   const b = requireB();
   // 最初の呼び出し（Codex が空のときの候補一覧）を基準に固定する。登録すると raw の走査結果が縮むため。
@@ -1144,7 +1197,7 @@ async function bApply(input: {
   const a = requireActive();
   const b = requireB();
   const counts = { accept: 0, alias: 0, dismiss: 0, missing: 0 };
-  let dismissed = new Set(b.dismissed);
+  const dismissed = new Set(b.dismissed);
   let entries = b.entries;
   for (const d of input.decisions) {
     const surface = b.keyHashToSurface.get(d.keyHash);
@@ -1186,7 +1239,8 @@ async function bApply(input: {
       counts.alias++;
     }
   }
-  if (counts.dismiss > 0) await saveDismissedCandidateKeys(a.projectId, dismissed);
+  if (counts.dismiss > 0)
+    await saveDismissedCandidateKeys(a.projectId, dismissed);
   const refreshed = await bRefresh(false);
   return { counts, ...refreshed };
 }
