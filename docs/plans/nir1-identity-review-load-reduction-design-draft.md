@@ -610,7 +610,9 @@ dev 専用の枝 `claude/dev-exact-bind-measure`（この枝に測定の道具�
   - Codex の編集：別名欄の削除（`AliasesField.tsx:60`）は手の更新 `codex_update`（surface `manual`）で丸ごと置き換える。narrative の「追加のみ」（`codex_operations.rs:466-473`）は構造抽出の Apply の中だけで効き、手の編集には効かない。Field Authority の拒否は人でない decision にだけ効く（`field_authority.rs:908-913`）。
   - narrative の undo：patch の undo は before の別名を書き戻す（`codex_snapshots.rs:130`、既存試験 `patch_undo_redo_undo_cycle`）。作者が後で Entry を編集していれば `NEX_COMMIT_ENTRY_EDITED` で止まり、そのときは Codex の編集で消す。この流れ（patch で足す → 手の更新で消す → undo は止まる）を Rust の試験で固定する。
 - **承認は人の decision として届く**。カードの承認は `reviseAndDecideAsHuman`／`appendHumanDecision` を使う。別名を持つ Entry の `/aliases` は Field Authority の行が無くても「値がある＝人の所有」扱い（`legacy_human`）だが、人の decision なので拒否されない。`explicit_lock` を立てる経路（`narrative_extraction_set_human_field_lock`）は renderer から呼ばれていないので、lock された `/aliases` は今の製品では起きない（起きれば commit 全体が `NEX_FIELD_AUTHORITY_DENIED` で落ちる。既存の AI の別名と同じ）。
-- **同じ Entry の失敗の再現**。Rust の試験で 3 通りを固定する：patch → patch は失敗（実際のエラーを 1 つに固定）、patch → bind は失敗、bind → patch は通る（後 2 つは打ち手 2 の試験）。
+- **同じ Entry の失敗の再現**。Rust の試験で 3 通りを固定した：patch → patch は失敗、patch → bind は失敗、bind → patch は通る（後 2 つは打ち手 2 の試験）。
+  - patch → patch（`same_entry_patch_then_patch_fails_whole_commit_and_rolls_back`）：2 件とも承認時の同じ別名から組まれるので、2 件目の set は 1 件目の追加を含まず、追加のみの検査 `NEX_CODEX_PATCH_ALIASES_REMOVAL` で落ちる（版の検査より先）。2 件目が 1 件目の追加を含む set でも、版の検査（`version conflict: expected 3 but database has 4`）で落ちる。どちらも commit 全体が巻き戻る。§4.2 の 5 の「版の不一致で落ちる」は、製品で起きる形では追加のみの検査が先だった。
+  - 足した別名を消す（`alias_added_by_patch_is_removable_by_author_edit_and_undo_then_stops`）：patch で足す → 手の更新（`agent_codex_update_impl`、surface `codex-editor`。renderer の `renderer_codex_update_impl` と同じ内部関数）で消す → 消えている → その後の undo は `NEX_COMMIT_ENTRY_EDITED` で止まり、作者の編集が残る。
 
 ### 14.2 判断
 
