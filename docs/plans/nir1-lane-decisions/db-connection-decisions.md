@@ -674,3 +674,9 @@ P1 は 0 件。直したものと判断は次のとおり。
 `cargo audit`：
 - 例外を外した両方の lock で、RUSTSEC-2026-0459 は解消している（libsqlite3-sys 0.39.1）。
 - 別に出た RUSTSEC-2026-0538（quinn-udp）は、master への別の PR（#883）で直す。
+
+### harness の接続の検査（2026-11-14、ユーザー決定）
+
+- 0.41 で `workspace.rs` の audit hook の登録が `with_conn_mut` になり、`scripts/quality/nir1-packing/final-request/architecture.mjs` の「`with_conn` は 1 回だけ」の検査がそれを数えなくなった（数は 0）。
+- 検査器を直すと CP-4 の S4 の bytes pin（`dp-h-unknown-scope`）が外れ、pin の表は凍結済みの `evals/nir1-graph/observation-prep.v1.json` と一致する必要があるため、直すには S4 の再凍結が要る。
+- ユーザーの選択で、検査器は今は変えず、`architecture.test.mjs` の「2 回以上」の確認を `with_conn` 2 つの追加で行う形にした。**次の S4 まで、harness が `with_conn_mut` を 2 回以上使っても検査は気づかない**（品質規則の一時的な緩和）。検査器の直し（`/\.with_conn(?:_mut)?\(/`）は次の S4 の枝で入れる。
