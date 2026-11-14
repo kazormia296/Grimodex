@@ -102,16 +102,14 @@ export function evaluateSurfaceAlias(args: {
   ) {
     return { ok: false, reason: "not-honorific-form" };
   }
-  const catalog: ExistingEntityCatalogRecord[] = args.records.map(
-    (record) => ({
-      ref: record.key,
-      sourceKey: record.key,
-      name: record.name ?? "",
-      aliases: record.aliases,
-      typeRef: "",
-      expectedVersion: 0,
-    }),
-  );
+  const catalog: ExistingEntityCatalogRecord[] = args.records.map((record) => ({
+    ref: record.key,
+    sourceKey: record.key,
+    name: record.name ?? "",
+    aliases: record.aliases,
+    typeRef: "",
+    expectedVersion: 0,
+  }));
   const inspection = inspectExactEntityMatch(surface, catalog);
   if (inspection.exactRefs.length > 0) {
     return { ok: false, reason: "exact-other" };
@@ -165,8 +163,7 @@ export function withSurfaceAlias(
   const previous = previousSurface.trim();
   const surface = payload.canonicalName.trim();
   const kept = binding.enrichment.aliasesToAdd.filter(
-    (alias) =>
-      explicit.has(alias) || (alias !== previous && alias !== surface),
+    (alias) => explicit.has(alias) || (alias !== previous && alias !== surface),
   );
   const next =
     add && surface.length > 0 && !kept.includes(surface)
@@ -174,7 +171,9 @@ export function withSurfaceAlias(
       : kept;
   if (
     next.length === binding.enrichment.aliasesToAdd.length &&
-    next.every((alias, index) => alias === binding.enrichment.aliasesToAdd[index])
+    next.every(
+      (alias, index) => alias === binding.enrichment.aliasesToAdd[index],
+    )
   ) {
     return payload;
   }

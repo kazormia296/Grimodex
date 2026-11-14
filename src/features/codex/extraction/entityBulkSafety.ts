@@ -183,6 +183,8 @@ export interface CurrentCodexEntryRecord {
   readonly aliases: string | null;
   readonly type: string;
   readonly version: number;
+  /** 除外語（打ち手 1 の判定 (c) だけに使う。AI へは送らない）。読んでいなければ undefined。 */
+  readonly excludedAliases?: string | null;
 }
 
 /**

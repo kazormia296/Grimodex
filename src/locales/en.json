@@ -2365,6 +2365,22 @@
         "title": "Bindings approved in bulk ({{count}})",
         "hint": "Check that each surface refers to the same person as the bound entry. Select one to reject or defer it. Applying does not rewrite the Codex entry.",
         "item": "{{surface}} → {{target}}"
+      },
+      "surfaceAlias": {
+        "label": "Also add \"{{surface}}\" as an alias of \"{{name}}\"",
+        "hint": "An alias applies in every scene of the work. In later extractions \"{{surface}}\" is bound to \"{{name}}\" automatically and passes bulk approval. If it is wrong, remove it from the aliases in the Codex editor.",
+        "saveFailed": "Failed to save the alias setting",
+        "notAllowed": {
+          "sameEntryPatch": "Another proposal already adds aliases or a summary to the same entry, so this one cannot add an alias (the import would fail as a whole)",
+          "exactOther": "This form matches the name or an alias of another entry, so it cannot be added as an alias",
+          "partialOther": "This form partly overlaps the name or an alias of another entry, so it cannot be added as an alias (later extractions could not tell them apart)",
+          "excluded": "An excluded alias of the target contains this form, so adding it would have no effect",
+          "generic": "This form cannot be added as an alias with the current Codex"
+        }
+      },
+      "applyBlocked": {
+        "sameEntryPatch": "Several approvals write aliases or a summary to the same entry, so they cannot be imported ({{names}}). Keep only one and defer or reject the others",
+        "surfaceAlias": "An alias to add is no longer allowed with the current Codex ({{names}}). Uncheck \"also add as an alias\" on the card, then import again"
       }
     },
     "candidates": {

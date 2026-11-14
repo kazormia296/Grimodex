@@ -160,7 +160,16 @@ import {
   patchCreateCodexRelationPayload,
   resolveBindCodexEntityPayload,
   swapCreateCodexRelationEndpoints,
+  type BindCodexEntityPayloadPatch,
 } from "./extraction/reviewEditPayload";
+import {
+  evaluateSurfaceAlias,
+  hasOtherPatchOnSameEntry,
+  hasSurfaceAlias,
+  type SurfaceAliasDecline,
+  type SurfaceAliasRecord,
+  type SurfaceAliasVerdict,
+} from "./extraction/surfaceAlias";
 import { formatProjectedDetailValue } from "./extraction-ui/BaseDetailProposalCard";
 import type { ProjectedDetailValue } from "@/features/codex/details/semanticBindingTypes";
 import type { ExistingPhaseCatalogRecord } from "./extraction/existingPhaseMatcher";
@@ -3490,6 +3499,8 @@ export interface ApplyCodexStructureExtractionInput {
     readonly type: string;
     /** あれば、一括で通した結び付けを Apply の直前に今の名前で再検査する。 */
     readonly name?: string | null;
+    /** あれば、作者が足すと決めた別名を Apply の直前に除外語でも再検査する（打ち手 1）。 */
+    readonly excludedAliases?: string | null;
   }[];
   /** Apply から外した提案があれば、Apply の前に呼ぶ（画面で報告する）。 */
   readonly onEntityApprovalsExcluded?: (
@@ -3723,6 +3734,58 @@ async function excludeStaleEntityApprovals(
   };
 }
 
+/**
+ * Apply の前に、commit が丸ごと失敗する組と、作者が足すと決めた別名の条件の外れを止める
+ * （打ち手 1、§14 の T1-4）。decision は書かない。同じ Entry に向く patch が 2 件以上だと、
+ * 2 件目は承認時の同じ別名から組まれているので追加のみの検査（NEX_CODEX_PATCH_ALIASES_REMOVAL）
+ * か版の検査で落ちる（Rust の試験で固定）。AI の明示の別名・要約の fill による patch にも効く。
+ */
+function assertApplyHasNoBlockedEntityOperations(
+  projection: CodexStructureExtractionReviewProjection,
+  approvedEntities: readonly CodexEntityReviewProposal[],
+  operations: readonly {
+    readonly operation: CodexDomainOperationV1;
+    readonly proposalId: string;
+  }[],
+  input: ApplyCodexStructureExtractionInput,
+): void {
+  const patchesByEntry = new Map<string, string[]>();
+  for (const item of operations) {
+    if (item.operation.kind !== "codex.entry.patch") continue;
+    const entryId = (item.operation.payload as { entryId?: unknown }).entryId;
+    if (typeof entryId !== "string") continue;
+    patchesByEntry.set(entryId, [
+      ...(patchesByEntry.get(entryId) ?? []),
+      item.proposalId,
+    ]);
+  }
+  const titleOf = (proposalId: string) =>
+    projection.proposals.find((row) => row.proposalId === proposalId)
+      ?.displayTitle ?? proposalId;
+  const duplicated = [...patchesByEntry.values()].filter(
+    (ids) => ids.length > 1,
+  );
+  if (duplicated.length > 0) {
+    throw new CodexStructureApplyBlockedError(
+      "same-entry-patch",
+      duplicated.flat().map(titleOf),
+    );
+  }
+  const failing = approvedEntities.filter(
+    (review) =>
+      hasSurfaceAlias(review.proposal.payload) &&
+      !surfaceAliasVerdictForReview(review, projection, input.entries, {
+        sameEntry: false,
+      }).ok,
+  );
+  if (failing.length > 0) {
+    throw new CodexStructureApplyBlockedError(
+      "surface-alias",
+      failing.map((review) => review.displayTitle),
+    );
+  }
+}
+
 export async function applyCodexStructureExtractionReview(
   input: ApplyCodexStructureExtractionInput,
 ): Promise<number> {
@@ -3878,6 +3941,12 @@ export async function applyCodexStructureExtractionReview(
     0,
     operations.length,
     ...orderBindExistingBeforePatch(operations),
+  );
+  assertApplyHasNoBlockedEntityOperations(
+    active,
+    approvedEntities,
+    operations,
+    input,
   );
 
   const approvedRelations = active.relationProposals.filter(
@@ -4075,6 +4144,105 @@ export class BulkExactBindNoLongerSafeError extends Error {
   }
 }
 
+/** 作者が足すと決めた別名（打ち手 1）が条件を外れたとき。画面は理由ごとの文言を出す。 */
+export class CodexSurfaceAliasNotAllowedError extends Error {
+  readonly reason: SurfaceAliasDecline;
+  constructor(reason: SurfaceAliasDecline) {
+    super(`Surface alias is not allowed: ${reason}`);
+    this.name = "CodexSurfaceAliasNotAllowedError";
+    this.reason = reason;
+  }
+}
+
+/** Apply の前に止めた理由。decision は書かない（作者がカードで直してから取り込み直す）。 */
+export type CodexStructureApplyBlockKind =
+  /** 同じ Entry に向く patch（別名・要約を書く承認）が 2 件以上ある。commit が丸ごと失敗する。 */
+  | "same-entry-patch"
+  /** 作者が足すと決めた別名が、今の Codex では条件を外れた。 */
+  | "surface-alias";
+
+export class CodexStructureApplyBlockedError extends Error {
+  readonly kind: CodexStructureApplyBlockKind;
+  readonly displayTitles: readonly string[];
+  constructor(
+    kind: CodexStructureApplyBlockKind,
+    displayTitles: readonly string[],
+  ) {
+    super(`Codex structure apply blocked: ${kind}`);
+    this.name = "CodexStructureApplyBlockedError";
+    this.kind = kind;
+    this.displayTitles = displayTitles;
+  }
+}
+
+function surfaceAliasRecordsFromEntries(
+  entries: ApplyCodexStructureExtractionInput["entries"],
+): SurfaceAliasRecord[] | null {
+  if (
+    entries.length === 0 ||
+    !entries.every((entry) => entry.name !== undefined)
+  ) {
+    return null;
+  }
+  return entries.map((entry) => ({
+    key: entry.id,
+    name: entry.name ?? "",
+    aliases: entry.aliases,
+    excludedAliases: entry.excludedAliases,
+  }));
+}
+
+/**
+ * 表記を結び先の別名に足してよいか（打ち手 1、§14 の T1-3）。`entries`（DB から読んだ
+ * プロジェクト全体の Codex）があればそれで、無ければ run の catalog で見込みを出す（除外語は見ない）。
+ * `sameEntry` は同じ抽出の他の提案との衝突も見るか（Apply の前は承認済みの op どうしを別に数える）。
+ */
+export function surfaceAliasVerdictForReview(
+  review: CodexEntityReviewProposal,
+  projection: Pick<
+    CodexStructureExtractionReviewProjection,
+    "proposals" | "catalog"
+  >,
+  entries?: ApplyCodexStructureExtractionInput["entries"],
+  options: { readonly sameEntry?: boolean } = {},
+): SurfaceAliasVerdict {
+  const payload = review.proposal.payload;
+  const binding = payload.binding;
+  if (binding.kind !== "bind-existing") {
+    return { ok: false, reason: "not-bind-existing" };
+  }
+  if (
+    options.sameEntry !== false &&
+    hasOtherPatchOnSameEntry(
+      projection.proposals,
+      review.proposalId,
+      binding.entityRef,
+    )
+  ) {
+    return { ok: false, reason: "same-entry-patch" };
+  }
+  const fromEntries = entries ? surfaceAliasRecordsFromEntries(entries) : null;
+  if (fromEntries) {
+    return evaluateSurfaceAlias({
+      surface: payload.canonicalName,
+      targetKey: resolveCodexEntitySourceKey(
+        binding.entityRef,
+        projection.catalog,
+      ),
+      records: fromEntries,
+    });
+  }
+  return evaluateSurfaceAlias({
+    surface: payload.canonicalName,
+    targetKey: binding.entityRef,
+    records: (projection.catalog?.entities ?? []).map((entity) => ({
+      key: entity.ref,
+      name: entity.name,
+      aliases: entity.aliases ?? [],
+    })),
+  });
+}
+
 function assertBulkExactBindStillSafe(
   entity: CodexEntityReviewProposal,
   catalog: CodexStructureCatalogSnapshot | null | undefined,
@@ -4171,6 +4339,20 @@ export async function decideCodexStructureProposal(args: {
         projection.catalog,
         args.entries,
       );
+    }
+    // 作者が足すと決めた別名（打ち手 1）は、承認の時点の今の Codex でもう一度確かめる。
+    if (
+      args.status === "approved" &&
+      kind === "entity" &&
+      hasSurfaceAlias((proposal as CodexEntityReviewProposal).proposal.payload)
+    ) {
+      const verdict = surfaceAliasVerdictForReview(
+        proposal as CodexEntityReviewProposal,
+        projection,
+        args.entries,
+      );
+      if (!verdict.ok)
+        throw new CodexSurfaceAliasNotAllowedError(verdict.reason);
     }
 
     const decision =
@@ -4454,6 +4636,7 @@ export async function readCurrentCodexEntries(
     aliases: row.aliases,
     type: row.type,
     version: row.version,
+    excludedAliases: row.excludedAliases ?? null,
   }));
 }
 
@@ -4605,12 +4788,14 @@ export async function bulkApproveSafeCodexStructureProposals(
 
 export async function reviseCodexStructureProposal(args: {
   readonly proposalId: string;
-  readonly patch: {
-    canonicalName?: string;
-    summary?: string | null;
-    aliases?: readonly string[];
-    typeRef?: string;
-  };
+  readonly patch: BindCodexEntityPayloadPatch;
+  /**
+   * 別名に足す印を入れるときに、今の Codex（プロジェクト全体）を読む。既定は DB。
+   * 読めなければ run の catalog で判定する（除外語は見ない）。
+   */
+  readonly readEntries?: (
+    projectId: string,
+  ) => Promise<readonly CurrentCodexEntryRecord[]>;
 }): Promise<void> {
   return enqueueProposalEdit(args.proposalId, async () => {
     const store = useCodexStructureExtractionStore.getState();
@@ -4629,6 +4814,20 @@ export async function reviseCodexStructureProposal(args: {
       current.proposal.payload,
       args.patch,
     );
+    // 別名に足す印を入れるときは、今の Codex（除外語を含む）で足してよい表記かを確かめる。
+    // Native には何も書いていないので、失敗時の再同期の外で投げる。
+    if (args.patch.addSurfaceAlias === true && hasSurfaceAlias(nextPayload)) {
+      const entries = await (args.readEntries ?? readCurrentCodexEntries)(
+        projection.projectId,
+      ).catch(() => undefined);
+      const verdict = surfaceAliasVerdictForReview(
+        { ...current, proposal: { ...current.proposal, payload: nextPayload } },
+        projection,
+        entries,
+      );
+      if (!verdict.ok)
+        throw new CodexSurfaceAliasNotAllowedError(verdict.reason);
+    }
     let result: { revisionId: string };
     try {
       result = await appendRevision({
