@@ -266,7 +266,7 @@ test("computeMeasureA：件数・食い違い・操作の数・衝突の挙動",
   assert.equal(m.partial.partialSlots, 2);
   assert.equal(m.partial.partialSlotsWrong, 1);
   assert.equal(m.honorific.listedRows, 1);
-  assert.equal(m.honorific.unresolvedByHonorificStrip, 1);
+  assert.equal(m.honorific.unresolvedWithHonorificStripCandidate, 1);
   // 衝突。
   assert.equal(m.collision.ambiguousRows, 1);
   assert.deepEqual(m.collision.ambiguousByBinding, { unresolved: 1 });

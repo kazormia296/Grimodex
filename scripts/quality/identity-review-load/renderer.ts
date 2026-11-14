@@ -896,8 +896,12 @@ async function inventory(input: { folderPercent: number }) {
 const JUDGMENT_MAX_CANDIDATES = 50;
 const JUDGMENT_MAX_ENTRIES = 200;
 
+/** bJudge は、key を入れた設定（bConfigureAi が key つきで成功）の間だけ送る。乾いた実行では常に false。 */
+let sendArmed = false;
+
 interface BState {
   raw: CodexCandidate[];
+  rawKeyHashes: string[];
   entries: Awaited<ReturnType<typeof listCodexEntries>>;
   dismissed: Set<string>;
   visible: CodexCandidate[];
@@ -929,6 +933,11 @@ async function bRefresh(rescan: boolean) {
     (c) => !dismissed.has(productCandidateKey(c.surface)),
   );
   const keyHashToSurface = new Map<string, string>();
+  // scan の結果（既知名の除外の前）の表記の hash。登録した表記が、完全一致で除かれたのか、そもそも候補に上がらないのかの区別に使う。
+  const rawKeyHashes: string[] =
+    rescan || !previous
+      ? await Promise.all(raw.map((c) => hashSurface(candidateKey(c.surface))))
+      : previous.rawKeyHashes;
   const rows = [];
   for (const c of visible) {
     const keyHash = await hashSurface(candidateKey(c.surface));
@@ -941,6 +950,7 @@ async function bRefresh(rescan: boolean) {
   }
   bState = {
     raw,
+    rawKeyHashes,
     entries,
     dismissed,
     visible,
@@ -953,6 +963,7 @@ async function bRefresh(rescan: boolean) {
     visibleCount: visible.length,
     dismissedCount: dismissed.size,
     entryCount: entries.length,
+    rawKeyHashes,
     candidates: rows,
   };
 }
@@ -1075,15 +1086,18 @@ async function bConfigureAi(input: {
     await saveApiKey(input.provider as typeof settings.provider, input.key);
   await useAiSettingsStore.getState().loadSettings();
   const after = await getAiSettings();
+  const keyPresent = await hasApiKey(after.provider);
+  sendArmed = Boolean(input.key) && keyPresent;
   return {
     provider: String(after.provider),
     model: String(after.model),
     thinkingEnabled: Boolean(after.thinkingEnabled),
-    keyPresent: await hasApiKey(after.provider),
+    keyPresent,
   };
 }
 
 async function bDeleteKey(input: { provider: string }) {
+  sendArmed = false;
   await deleteApiKey(input.provider as never);
   return { keyPresent: await hasApiKey(input.provider as never) };
 }
@@ -1092,6 +1106,9 @@ async function bDeleteKey(input: { provider: string }) {
 async function bJudge() {
   const b = requireB();
   const started = Date.now();
+  // 乾いた実行・key の導入前は送らない（送信の関数が page にあっても、ここで止める）。
+  if (!sendArmed)
+    return { ok: false as const, kind: "not-armed", durationMs: 0 };
   if (isAiFeatureBlockedByPolicy("analysis") || isWriteRestrictedByLicense()) {
     return { ok: false as const, kind: "policy-or-license", durationMs: 0 };
   }
@@ -1218,6 +1235,8 @@ async function bApply(input: {
         },
         { suppressImeExport: true },
       );
+      // 同じ batch で、受理した実体への別名の決定が後ろにあっても見つかるよう、取り直す。
+      entries = await listCodexEntries(a.projectId);
       counts.accept++;
     } else {
       const target = entries.find((e) => e.id === d.targetId);

@@ -38,10 +38,12 @@ import {
 } from "./ledger.mjs";
 import { buildRosterIndex, codexTypeOf } from "./measure-a-metrics.mjs";
 import {
-  assertOnlyCodexJudgment,
   buildDryRunPlan,
   buildProjectedPlan,
+  checkOnlyCodexJudgment,
+  checkUsageCoversSuccesses,
   dryMeasure,
+  remainingRequestsAfterCell,
   runB1,
   runB2,
   truncateRosterForB,
@@ -49,11 +51,13 @@ import {
 import {
   DEFAULT_OUTPUT,
   assertNoFakeAiEnv,
+  assertNoOverlappingJobs,
   ensurePrivateDir,
   runCell,
   withVite,
   writeJson0600,
 } from "./launcher-common.mjs";
+import { findKeyResidue } from "./cleanup.mjs";
 import {
   hashKeyStore,
   installKey,
@@ -114,12 +118,17 @@ export function assertSafeStorageBackend(backend) {
   );
 }
 
-/** page に束縛した api（measure-b-core が使う層）。ai_usage は DB から読む（fail-closed）。 */
+/**
+ * page に束縛した api（measure-b-core が使う層）。ai_usage は DB から読む（fail-closed）。
+ * allowSend が false（乾いた実行）の api は judge・apply を持たない（送信の関数を渡さないので、
+ * dry の経路から呼ばれても TypeError で止まり、送信にならない）。
+ */
 export function bindPageApi({
   page,
   workspaceDir,
   readUsage = readAiUsageRows,
   sleep,
+  allowSend = true,
 }) {
   const rows = () => {
     const r = readUsage(workspaceDir);
@@ -129,20 +138,34 @@ export function bindPageApi({
       );
     return r.rows;
   };
-  return {
+  const base = {
     gate: () => page.evaluate(() => window.identityLoad.bAiGate()),
     prepare: (arg) =>
       page.evaluate((a) => window.identityLoad.bPrepare(a), arg),
     estimate: () => page.evaluate(() => window.identityLoad.bEstimate()),
+    usageRowCount: async () => rows().length,
+    usageRowsSince: async (n) => rows().slice(n),
+    sleep: sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+  };
+  if (!allowSend) return base;
+  return {
+    ...base,
     judge: () => page.evaluate(() => window.identityLoad.bJudge()),
     apply: (decisions) =>
       page.evaluate(
         (d) => window.identityLoad.bApply({ decisions: d }),
         decisions,
       ),
-    usageRowCount: async () => rows().length,
-    usageRowsSince: async (n) => rows().slice(n),
-    sleep: sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+  };
+}
+
+/** 名簿の実体を、registeredKeyHashesOf の形（name と aliases の文字列）にする。 */
+function entryNamesOf(entity) {
+  return {
+    name: entity.name,
+    aliases: (entity.aliases ?? []).map((a) =>
+      typeof a === "string" ? a : a.surface,
+    ),
   };
 }
 
@@ -172,6 +195,7 @@ export async function dryCellBody({
     page,
     workspaceDir: "unused",
     readUsage: () => ({ rows: [], readable: 1 }),
+    allowSend: false,
   });
   const out = [];
   const empty = await dryMeasure({ api });
@@ -226,11 +250,19 @@ export async function measureBBody({
   mode,
   gate,
   key,
+  getKey,
+  remainingAfter = 0,
   expectedSafeStorageCheck = true,
   usagePoll,
 }) {
-  const { roster: used, cut } = truncateRosterForB(roster);
+  const { roster: used, cut, cutEntities } = truncateRosterForB(roster);
   const index = await buildRosterIndex(used);
+  // 切った実体の表記（名前・別名）の hash。未登録（unlisted）と分けて数える。
+  index.cutKeys = new Set(
+    (await registeredKeyHashesOf(cutEntities.map(entryNamesOf))).filter(
+      Boolean,
+    ),
+  );
   const entries = rosterAtLevel(used, level).map((entity) => ({
     ...entity,
     type: codexTypeOf(entity.type),
@@ -251,10 +283,11 @@ export async function measureBBody({
     );
     assertSafeStorageBackend(backend);
   }
+  // key は検査・登録・backend の確認がすべて通った後、送信の直前に読む（getKey）。
   const configured = await installKey(page, {
     provider: PROVIDER,
     model: MODEL,
-    key,
+    key: key ?? (await getKey()),
   });
   try {
     assert.equal(
@@ -275,6 +308,7 @@ export async function measureBBody({
         rosterTypeOf: (id) => index.entities.get(id)?.type,
         registeredIds: new Set(entries.map((e) => e.id)),
         registeredKeyHashes,
+        remainingAfter,
         usagePoll,
       });
     } else {
@@ -285,6 +319,7 @@ export async function measureBBody({
         registeredKeyHashes,
         stage: mode === "trial" ? "trial" : "B1",
         repeats: mode === "trial" ? 1 : 3,
+        remainingAfter,
         usagePoll,
       });
     }
@@ -292,18 +327,35 @@ export async function measureBBody({
       (n, r) => n + (r.attempts ?? 1),
       0,
     );
-    // 終了時：ai_usage と audit の surface・pathId の集合が codex_judgment だけ。
+    // 終了時：ai_usage と audit の surface・pathId の集合が空か codex_judgment だけ。検査の失敗は例外にせず、
+    // 結果（surfaces.ok）に残して cell を不採用にする（realCellStatus）。
     const usage = readAiUsageRows(workspaceDir);
     const audit = readAuditPathIds(workspaceDir);
-    assert.ok(
-      usage.readable > 0 && audit.readable > 0,
-      "[artifact] SURFACE_DB_UNREADABLE",
-    );
-    const surfaces = assertOnlyCodexJudgment({
-      usageSurfaces: usage.rows.map((r) => r.surface),
-      auditPathIds: audit.pathIds,
-      requestsSent,
-    });
+    const readable = usage.readable > 0 && audit.readable > 0;
+    const successfulRequests = (
+      result.requests ??
+      result.iterations ??
+      []
+    ).filter((r) => r.ok).length;
+    const surfaceCheck = readable
+      ? checkOnlyCodexJudgment({
+          usageSurfaces: usage.rows.map((r) => r.surface),
+          auditPathIds: audit.pathIds,
+          requestsSent,
+        })
+      : { ok: false, usageSurfaceCount: 0, auditPathCount: 0 };
+    const surfaces = {
+      ok: surfaceCheck.ok,
+      readable,
+      usageSurfaceCount: surfaceCheck.usageSurfaceCount,
+      auditPathCount: surfaceCheck.auditPathCount,
+      usageRows: usage.rows.length,
+      successfulRequests,
+      usageCoversSuccesses: checkUsageCoversSuccesses({
+        usageRows: usage.rows.length,
+        successfulRequests,
+      }),
+    };
     const models = {};
     for (const row of usage.rows)
       models[row.model ?? "null"] = (models[row.model ?? "null"] ?? 0) + 1;
@@ -340,6 +392,11 @@ export function realCellStatus(cell, value) {
   if (unexpected.length > 0) return "unexpected-ai-command";
   const sent = cell.ipc?.commandCounts?.send_chat_message ?? 0;
   if (value && sent !== value.requestsSent) return "send-count-mismatch";
+  if (value?.surfaces?.ok === false) return "ai-surface-set";
+  if (value?.surfaces?.usageCoversSuccesses === false)
+    return "usage-rows-short";
+  const stopped = value?.result?.stopped;
+  if (stopped) return "budget-stopped";
   return "ok";
 }
 
@@ -450,7 +507,9 @@ async function mainDry(options) {
     caps: { totalUsd: TOTAL_CAP_USD, stagesUsd: STAGE_CAPS_USD },
     assumptions: {
       tokenEstimate:
-        "ascii 0.3 token per char and non-ascii 1.0 token per char as a conservative ratio without a tokenizer",
+        "ascii 0.3 token per char and non-ascii 1.0 token per char as a provisional ratio without a tokenizer; not called a conservative value until the trial measured tokens_in (including ids) calibrates it",
+      entryOrderAndIds:
+        "entries are listed in database order while the product screen uses the store order, newest first; ids are short rt- or synth- strings while the product uses UUIDs, so an id-heavy prompt is under-estimated here; the window is the same when entries are at most 200",
       outputEstimate: "120 token per judged candidate with a floor of 800",
       b2Requests:
         "ceil of initial N over 50 at L2 and each request sized like the first",
@@ -472,6 +531,21 @@ async function mainDry(options) {
   return report;
 }
 
+/** 乾いた実行の結果から、作品ごとの B2 の要求数の上限（空の名簿の N から ceil(N/50)）を読む。無ければ空。 */
+function readB2UpperByWork(outDirDry) {
+  try {
+    const summary = JSON.parse(
+      readFileSync(path.join(outDirDry, "summary.json"), "utf8"),
+    );
+    const out = {};
+    for (const row of summary.rows ?? [])
+      if (row.level === "empty") out[row.work] = row.b2Requests;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 async function mainReal(options) {
   assertSendAllowed(options);
   const output = path.resolve(options.output);
@@ -481,83 +555,116 @@ async function mainReal(options) {
   const outDir = path.join(output, `measure-b-${options.mode}`);
   ensurePrivateDir(outDir);
   assertNoFakeAiEnv(process.env);
+  // 安い前検査を先に行う（key は最後、各 cell の送信の直前に読む）。
+  const residue = findKeyResidue(output);
+  assert.equal(
+    residue.length,
+    0,
+    `[precheck] KEY_RESIDUE ${residue.length} leftover key-fifo or B cell directories from an interrupted run`,
+  );
   const rosterDir = options["roster-dir"] || path.join(output, "roster");
+  const rosters = new Map();
+  for (const work of works) {
+    const roster = JSON.parse(
+      readFileSync(path.join(rosterDir, work, options["roster-name"]), "utf8"),
+    );
+    assert.ok(
+      validateRoster(roster, {}).ok,
+      `[precheck] ROSTER_INVALID ${work}`,
+    );
+    rosters.set(work, roster);
+  }
   const gate = createGate({
     file: path.join(output, "ledger", "spend-ledger.jsonl"),
     model: MODEL,
   });
-  const keyStoreBefore = hashKeyStore();
-  const key = await receiveKeyViaFifo(productStoreWriter(), { parent: output });
+  // 台帳に STOP 行があれば、解除（人が STOP 行を消す）まで始めない。
+  assert.ok(
+    !gate.state.stopped,
+    `[precheck] LEDGER_STOPPED code=${String(gate.state.stopped?.code).replace(/[^A-Za-z0-9_]/gu, "_")}`,
+  );
   const levels =
     options.mode === "b2"
       ? ["L2"]
       : options.mode === "trial"
         ? ["L2"]
         : B1_LEVELS;
+  const cells = works.flatMap((work) =>
+    levels.map((level) => ({ work, level })),
+  );
+  const b2Upper = readB2UpperByWork(path.join(output, "dry-run"));
+  const keyStoreBefore = hashKeyStore();
+  // key は復号の helper（launcher と同じ env）で FIFO から cell の中で 1 回ずつ受ける。
+  // 復号の helper の env と、測定の Electron の隔離 bus の分離の方針は未決（preregistration §17.2）。
+  const getKey = () =>
+    receiveKeyViaFifo(productStoreWriter(), { parent: output });
   const summary = [];
   try {
     await withVite(output, async ({ vite, busAddress }) => {
-      for (const work of works) {
-        const roster = JSON.parse(
-          readFileSync(
-            path.join(rosterDir, work, options["roster-name"]),
-            "utf8",
-          ),
-        );
-        assert.ok(
-          validateRoster(roster, {}).ok,
-          `[precheck] ROSTER_INVALID ${work}`,
-        );
-        for (const level of levels) {
-          if (gate.state.stopped) break;
-          assert.ok(ROSTER_LEVELS.includes(level));
-          const { cell, value, scenesTexts } = await runCell({
-            output,
-            vite,
-            busAddress,
-            cellId: `B-${options.mode}-${work}-${level}`,
-            workKey: work,
-            dataDir: options["data-dir"],
-            passwordStoreBasic: false,
-            keep: options.keep === "true",
-            body: (ctx) =>
-              measureBBody({
-                ...ctx,
-                roster,
-                level,
+      for (const [cellIndex, { work, level }] of cells.entries()) {
+        if (gate.state.stopped) break;
+        assert.ok(ROSTER_LEVELS.includes(level));
+        assertNoOverlappingJobs();
+        const roster = rosters.get(work);
+        const { cell, value, scenesTexts } = await runCell({
+          output,
+          vite,
+          busAddress,
+          cellId: `B-${options.mode}-${work}-${level}`,
+          workKey: work,
+          dataDir: options["data-dir"],
+          passwordStoreBasic: false,
+          keep: options.keep === "true",
+          body: (ctx) =>
+            measureBBody({
+              ...ctx,
+              roster,
+              level,
+              mode: options.mode,
+              gate,
+              getKey,
+              remainingAfter: remainingRequestsAfterCell({
                 mode: options.mode,
-                gate,
-                key,
+                cells,
+                cellIndex,
+                allWorks: options.works.split(","),
+                levels: B1_LEVELS,
+                b2Upper,
               }),
-          });
-          const status =
-            cell.status === "failed" ? "failed" : realCellStatus(cell, value);
-          const result = {
-            schemaVersion: "identity-load-measure-b/1",
+            }),
+        });
+        const status =
+          cell.status === "failed" ? "failed" : realCellStatus(cell, value);
+        const result = {
+          schemaVersion: "identity-load-measure-b/1",
+          work,
+          level,
+          status,
+          observed: cell,
+          value,
+          ledger: {
+            total: Number(gate.state.total.toFixed(4)),
+            stopped: gate.state.stopped?.code ?? null,
+          },
+        };
+        try {
+          assertOutputClean(result, scenesTexts);
+          writeJson0600(path.join(outDir, `${work}-${level}.json`), result);
+        } catch (error) {
+          writeJson0600(path.join(outDir, `${work}-${level}.failed.json`), {
             work,
             level,
-            status,
-            observed: cell,
-            value,
-            ledger: {
-              total: Number(gate.state.total.toFixed(4)),
-              stopped: gate.state.stopped?.code ?? null,
-            },
-          };
-          try {
-            assertOutputClean(result, scenesTexts);
-            writeJson0600(path.join(outDir, `${work}-${level}.json`), result);
-          } catch (error) {
-            writeJson0600(path.join(outDir, `${work}-${level}.failed.json`), {
-              work,
-              level,
-              status: "output-withheld",
-              errors: [safeErrorSummary(error)],
-            });
-          }
-          summary.push({ work, level, status });
-          console.log(JSON.stringify(summary.at(-1)));
+            status: "output-withheld",
+            errors: [safeErrorSummary(error)],
+          });
+          // 出力を出せない cell は、以後の送信を止める（key を入れた次の cell を走らせない）。
+          gate.halt("OUTPUT_WITHHELD", { work, level });
         }
+        summary.push({ work, level, status });
+        console.log(JSON.stringify(summary.at(-1)));
+        // 送信の後の異常（cell が ok でない・予算の停止）は fail-closed：以後の cell を送らない。
+        // STOP 行は台帳に残り、launcher を再起動しても停止のまま（解除は人）。
+        if (status !== "ok") gate.halt("CELL_NOT_OK", { status, work, level });
       }
     });
   } finally {

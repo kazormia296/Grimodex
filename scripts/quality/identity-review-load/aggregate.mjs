@@ -83,7 +83,8 @@ export function flattenRunA(run) {
     collisionNameOverAliasRows: m.collision.nameOverAliasRows,
     sceneRangeRows: m.collision.sceneRangeRows,
     sceneRangeUnresolved: m.collision.sceneRangeByBinding.unresolved ?? 0,
-    honorificStripUnresolvedListed: m.honorific.unresolvedByHonorificStrip,
+    honorificStripCandidateUnresolvedListed:
+      m.honorific.unresolvedWithHonorificStripCandidate,
     opsApprovalSurface: m.operations.surfaceUnit.approval,
     opsKeepSurfaceSurface: m.operations.surfaceUnit.keepSurface,
     opsApprovalEntity: m.operations.entityUnit.approval,
@@ -180,6 +181,10 @@ const B_METRIC_COLUMNS = [
   "aliasOnUnlisted",
   "aliasOnAmbiguousInSet",
   "aliasOnAmbiguousOutOfSet",
+  "honorificCandidates",
+  "honorificWithAlias",
+  "cutRosterCandidates",
+  "aliasOnCutRoster",
   "missedBindNullAlias",
   "missedBindBeyondWindow",
   "missedBindDropped",
@@ -216,7 +221,7 @@ export function buildMeasureB1(results) {
       retried: requests.filter((q) => q.retried).length,
       undeterminable: res?.undeterminable ?? true,
       stopped: res?.stopped?.code ?? null,
-      registeredNotInCandidates: res?.registeredNotInCandidates ?? null,
+      registeredSurfaces: res?.registeredSurfaces ?? null,
       selfAgreement: res?.selfAgreement ?? null,
       metricRanges: ranges,
       tokensIn: rangeOf(ok.map((q) => q.usage?.input_tokens)),
@@ -242,6 +247,9 @@ export function buildMeasureB2(results) {
       dismissReasons: res?.dismissReasons ?? null,
       stopped: res?.stopped?.code ?? null,
       noProgress: res?.noProgress ?? null,
+      applyMissing: res?.applyMissing ?? null,
+      undeterminable: res?.undeterminable ?? true,
+      registeredSurfaces: res?.registeredSurfaces ?? null,
       finalVisibleCount: res?.finalVisibleCount ?? null,
       metricTotals: sumMetrics(
         iterations.filter((i) => i.ok).map((i) => i.metrics),
@@ -442,27 +450,27 @@ export function renderRecordsMarkdown(records) {
   }
   lines.push("## 測定 B（候補画面。AI 判定）", "");
   lines.push(
-    "作品 × 段。3 回の最小〜最大。N は段ごとに候補の集合が違うので、段をまたいで比べない。",
+    "作品 × 段。3 回の最小〜最大。N は段ごとに候補の集合が違うので、段をまたいで比べない。敬称の形（別名に入れない）は別枠で、名簿どおり・結び残しに含めない。",
     "",
   );
   lines.push(
-    "| 作品 | 段 | N | 成功/要求 | 別名ボタン | 名簿どおり | 名簿と違う | 結び残し(null) | 窓の外 | 自己一致 | 判断不能 |",
+    "| 作品 | 段 | N | 成功/要求 | 別名ボタン | 名簿どおり | 名簿と違う | 結び残し(null) | 結び残し(窓の外) | 結び残し(窓内で判定なし) | 敬称の形(別枠) | 自己一致 | 判断不能 |",
   );
-  lines.push("|---|---|---|---|---|---|---|---|---|---|---|");
+  lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const r of records.measureB.b1) {
     const m = r.metricRanges;
     lines.push(
-      `| ${r.work} | ${r.level} | ${r.candidates?.visibleCount ?? "-"} | ${r.successCount}/${r.requestCount} | ${rangeText(m.aliasButtons)} | ${rangeText(m.aliasMatchRoster)} | ${rangeText(m.aliasMismatchRoster)} | ${rangeText(m.missedBindNullAlias)} | ${rangeText(m.missedBindBeyondWindow)} | ${r.selfAgreement ? `${r.selfAgreement.aliasAgree}/${r.selfAgreement.keysCompared}` : "-"} | ${r.undeterminable ? "はい" : "いいえ"} |`,
+      `| ${r.work} | ${r.level} | ${r.candidates?.visibleCount ?? "-"} | ${r.successCount}/${r.requestCount} | ${rangeText(m.aliasButtons)} | ${rangeText(m.aliasMatchRoster)} | ${rangeText(m.aliasMismatchRoster)} | ${rangeText(m.missedBindNullAlias)} | ${rangeText(m.missedBindBeyondWindow)} | ${rangeText(m.missedBindDropped)} | ${rangeText(m.honorificCandidates)} | ${r.selfAgreement ? `${r.selfAgreement.aliasAgree}/${r.selfAgreement.keysCompared}` : "-"} | ${r.undeterminable ? "はい" : "いいえ"} |`,
     );
   }
   lines.push("", "B2（L2・模擬作者）。", "");
   lines.push(
-    "| 作品 | 初期 N | 要求/予定 | 別名 | 受理 | 却下 | 名簿どおりの別名 | 名簿と違う別名 |",
+    "| 作品 | 初期 N | 要求/予定 | 別名 | 受理 | 却下 | 名簿どおりの別名 | 名簿と違う別名 | 反映できなかった決定 | 判断不能 |",
   );
-  lines.push("|---|---|---|---|---|---|---|---|");
+  lines.push("|---|---|---|---|---|---|---|---|---|---|");
   for (const r of records.measureB.b2)
     lines.push(
-      `| ${r.work} | ${r.initialCandidateCount ?? "-"} | ${r.iterationCount}/${r.plannedIterations ?? "-"} | ${r.decisionCounts?.alias ?? "-"} | ${r.decisionCounts?.accept ?? "-"} | ${r.decisionCounts?.dismiss ?? "-"} | ${r.metricTotals.aliasMatchRoster} | ${r.metricTotals.aliasMismatchRoster} |`,
+      `| ${r.work} | ${r.initialCandidateCount ?? "-"} | ${r.iterationCount}/${r.plannedIterations ?? "-"} | ${r.decisionCounts?.alias ?? "-"} | ${r.decisionCounts?.accept ?? "-"} | ${r.decisionCounts?.dismiss ?? "-"} | ${r.metricTotals.aliasMatchRoster} | ${r.metricTotals.aliasMismatchRoster} | ${r.applyMissing ?? "-"} | ${r.undeterminable ? "はい" : "いいえ"} |`,
     );
   if (records.starMapping) {
     lines.push(

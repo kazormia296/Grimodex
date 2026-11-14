@@ -208,9 +208,11 @@ export function computeMeasureA({ index, rows }) {
     sceneRangeRows: 0,
     sceneRangeByBinding: {},
   };
+  // unresolvedWithHonorificStripCandidate は「候補のどれかに honorific-strip がある」行の数で、
+  // reasons（最も強い methods 1 つで排他に分類）とは別の数え方。exact-multiple と重なる行が両方に入りうる。
   const honorific = {
     listedRows: 0,
-    unresolvedByHonorificStrip: 0,
+    unresolvedWithHonorificStripCandidate: 0,
     unlistedUnresolvedByHonorificStrip: 0,
   };
   const entityKeysByCategory = {};
@@ -280,7 +282,7 @@ export function computeMeasureA({ index, rows }) {
           (c.methods ?? []).includes("honorific-strip"),
         )
       )
-        honorific.unresolvedByHonorificStrip++;
+        honorific.unresolvedWithHonorificStripCandidate++;
       if (cls.rank !== null && cls.rank !== undefined) {
         if (cls.rank === 1) rankCounts.r1++;
         else if (cls.rank === 2) rankCounts.r2++;

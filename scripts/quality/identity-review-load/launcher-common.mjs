@@ -4,6 +4,7 @@
 // AI は呼ばない（B の送信は run-measure-b.mjs が、別の経路で明示的に許したときだけ行う）。
 // 出力は件数・ID・hash・path だけ。
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import {
   chmodSync,
@@ -22,6 +23,7 @@ import {
   scenesFromWork,
   scenesTextsForScan,
 } from "./lib.mjs";
+import { registerCleanup } from "./cleanup.mjs";
 import { resolveWorkSource } from "./sources.mjs";
 import {
   countAiRows,
@@ -38,11 +40,21 @@ export const ROOT = path.resolve(import.meta.dirname, "../../..");
 export const DEFAULT_OUTPUT = "/home/grimodex/identity-review-load-2026-11";
 const require = createRequire(import.meta.url);
 
-/** 偽 AI の env（GRIMODEX_PRODUCT_JOURNEY_*）を、本測定の process に持ち込まないことの検査。 */
+/**
+ * 本測定の process に持ち込まない env：偽 AI の env（GRIMODEX_PRODUCT_JOURNEY_*）、Rust 側の
+ * 送受信の本文を tracing に出す GRIMODEX_AI_WIRE_LOG、trace／debug の RUST_LOG（本文が出うる）。
+ * 検査は node の process.env と、main の process.env（名前）の両方に同じ集合を使う。
+ */
 export const FORBIDDEN_ENV_PREFIX = "GRIMODEX_PRODUCT_JOURNEY";
+export const FORBIDDEN_ENV_NAMES = Object.freeze(["GRIMODEX_AI_WIRE_LOG"]);
 export function findForbiddenEnv(env) {
   return Object.keys(env)
-    .filter((name) => name.startsWith(FORBIDDEN_ENV_PREFIX))
+    .filter(
+      (name) =>
+        name.startsWith(FORBIDDEN_ENV_PREFIX) ||
+        FORBIDDEN_ENV_NAMES.includes(name) ||
+        (name === "RUST_LOG" && /\b(trace|debug)\b/iu.test(String(env[name]))),
+    )
     .sort();
 }
 /** 立っていれば [precheck] で止める（値は出さず、名前だけ数える）。 */
@@ -51,7 +63,34 @@ export function assertNoFakeAiEnv(env = process.env) {
   assert.equal(
     found.length,
     0,
-    `[precheck] FAKE_AI_ENV_SET ${found.length} GRIMODEX_PRODUCT_JOURNEY* variables are set`,
+    `[precheck] FORBIDDEN_ENV_SET ${found.length} forbidden variables are set (fake AI, wire log or trace log)`,
+  );
+}
+
+/** 他の job（cargo・rustc・Electron）が動いていないこと。重なりの疑いは測定を始めない（§9）。 */
+export const OVERLAP_PROCESS_NAMES = Object.freeze([
+  "cargo",
+  "rustc",
+  "electron",
+]);
+export function findOverlappingJobs(psText, ownPids = []) {
+  const own = new Set([String(process.pid), ...ownPids.map(String)]);
+  const found = [];
+  for (const line of String(psText).split("\n")) {
+    const match = /^\s*(\d+)\s+(\S+)/u.exec(line);
+    if (!match || own.has(match[1])) continue;
+    if (OVERLAP_PROCESS_NAMES.includes(match[2])) found.push(match[2]);
+  }
+  return found.sort();
+}
+export function assertNoOverlappingJobs(
+  run = () => execFileSync("ps", ["-eo", "pid,comm"], { encoding: "utf8" }),
+) {
+  const found = findOverlappingJobs(run());
+  assert.equal(
+    found.length,
+    0,
+    `[precheck] OVERLAPPING_JOBS ${found.length} other cargo, rustc or electron processes are running`,
   );
 }
 
@@ -125,6 +164,15 @@ export async function runCell({
   let sampler;
   let app;
   const started = Date.now();
+  // kill されたとき（finally が走らない）も、隔離 userData の key と workRoot を消す。
+  const unregisterCleanup = registerCleanup(() => {
+    try {
+      app?.process().kill("SIGKILL");
+    } catch {
+      // 既に終わっている。
+    }
+    rmSync(workRoot, { recursive: true, force: true });
+  });
   const cell = {
     cellId,
     work: workKey,
@@ -196,8 +244,16 @@ export async function runCell({
       timeout: 60000,
     });
     // main の process.env にも偽 AI の env が無いこと（件数だけ）。
-    const mainEnvNames = await app.evaluate(() => Object.keys(process.env));
-    assertNoFakeAiEnv(Object.fromEntries(mainEnvNames.map((n) => [n, "1"])));
+    const mainEnv = await app.evaluate(() => ({
+      names: Object.keys(process.env),
+      rustLog: process.env.RUST_LOG ?? "",
+    }));
+    assertNoFakeAiEnv({
+      ...Object.fromEntries(mainEnv.names.map((n) => [n, "1"])),
+      ...(mainEnv.names.includes("RUST_LOG")
+        ? { RUST_LOG: mainEnv.rustLog }
+        : {}),
+    });
     const rootPid = app.process().pid;
     sampler = setInterval(() => {
       try {
@@ -291,6 +347,7 @@ export async function runCell({
     if (sampler) clearInterval(sampler);
     if (app) await app.close().catch(() => undefined);
     if (!keep) rmSync(workRoot, { recursive: true, force: true });
+    unregisterCleanup();
   }
 }
 

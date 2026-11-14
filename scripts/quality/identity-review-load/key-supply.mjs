@@ -14,6 +14,7 @@ import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { registerCleanup } from "./cleanup.mjs";
 import {
   makeKeyFifo,
   readKeyFromFifo,
@@ -50,6 +51,7 @@ export async function receiveKeyViaFifo(
   { parent = os.tmpdir(), timeoutMs = 120_000 } = {},
 ) {
   const { fifo, cleanup } = makeKeyFifo(parent);
+  const unregister = registerCleanup(cleanup); // kill されても FIFO の dir を残さない
   const abort = new globalThis.AbortController();
   try {
     const reading = readKeyFromFifo(fifo, { timeoutMs, signal: abort.signal });
@@ -75,6 +77,7 @@ export async function receiveKeyViaFifo(
     return assertKeyShape(value);
   } finally {
     cleanup();
+    unregister();
   }
 }
 

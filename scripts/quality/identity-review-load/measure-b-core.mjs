@@ -32,7 +32,12 @@ export function truncateRosterForB(roster, limit = MAX_ENTRIES) {
       ? entity.sceneCount
       : new Set((entity.evidence ?? []).map((ev) => ev.scene)).size;
   if (roster.entities.length <= limit)
-    return { roster, cut: 0, entityCount: roster.entities.length };
+    return {
+      roster,
+      cutEntities: [],
+      cut: 0,
+      entityCount: roster.entities.length,
+    };
   const keep = new Set(
     [...roster.entities]
       .sort(
@@ -48,6 +53,7 @@ export function truncateRosterForB(roster, limit = MAX_ENTRIES) {
       ...roster,
       entities: roster.entities.filter((entity) => keep.has(entity.id)),
     },
+    cutEntities: roster.entities.filter((entity) => !keep.has(entity.id)),
     cut: roster.entities.length - limit,
     entityCount: limit,
   };
@@ -94,11 +100,13 @@ export function assertEntriesWithinWindow(prepared) {
 }
 
 /**
- * 終了時：ai_usage の surface と ai_audit_events の path_id が codex_judgment だけであること
- * （要約・題名・保守・Agent など他の AI 経路が起動していないことの確認）。
- * 要求を 1 件も送っていなければ両方が空でよい。
+ * 終了時：ai_usage の surface と ai_audit_events の path_id が「空、または codex_judgment だけ」であること
+ * （要約・題名・保守・Agent など他の AI 経路が起動していないことの確認）。要求を 1 件も送っていなければ
+ * 両方が空。全要求が行を残さずに失敗した cell（401／429 など。recordAiUsage の前に throw する）も空になるので
+ * 許す。送信の成功数と行数の一致は別に検査する（checkUsageCoversSuccesses）。
+ * 例外は投げずに結果を返す（結果を records に残してから cell を不採用にする）。
  */
-export function assertOnlyCodexJudgment({
+export function checkOnlyCodexJudgment({
   usageSurfaces,
   auditPathIds,
   requestsSent,
@@ -107,27 +115,36 @@ export function assertOnlyCodexJudgment({
   const audit = [...new Set(auditPathIds)].sort();
   const ok = (set) =>
     requestsSent > 0
-      ? set.length === 1 && set[0] === CODEX_JUDGMENT
+      ? set.length === 0 || (set.length === 1 && set[0] === CODEX_JUDGMENT)
       : set.length === 0;
-  if (!ok(usage) || !ok(audit))
+  return {
+    ok: ok(usage) && ok(audit),
+    usageSurfaceCount: usage.length,
+    auditPathCount: audit.length,
+  };
+}
+
+/** 例外版（試験・単独の検査用）。 */
+export function assertOnlyCodexJudgment(input) {
+  const result = checkOnlyCodexJudgment(input);
+  if (!result.ok)
     throw new Error(
-      `[artifact] AI_SURFACE_SET usageSurfaces=${usage.length} auditPaths=${audit.length} requests=${requestsSent}`,
+      `[artifact] AI_SURFACE_SET usageSurfaces=${result.usageSurfaceCount} auditPaths=${result.auditPathCount} requests=${input.requestsSent}`,
     );
-  return { usageSurfaceCount: usage.length, auditPathCount: audit.length };
+  return {
+    usageSurfaceCount: result.usageSurfaceCount,
+    auditPathCount: result.auditPathCount,
+  };
+}
+
+/** 成功した要求の数以上の usage の行があること（成功した要求は、必ず行を 1 つ以上残す）。 */
+export function checkUsageCoversSuccesses({ usageRows, successfulRequests }) {
+  return usageRows >= successfulRequests;
 }
 
 // ---- ai_usage の読み ----------------------------------------------------------
 
-/**
- * 1 要求の後の ai_usage の行を読む。judgeCandidates は recordAiUsage を待たないので、行が増えるまで
- * poll する（上限つき）。行なし・tokens が null・tokens が 0 は、別の失敗理由として返す。
- * 成功＝surface が codex_judgment で tokens_in・tokens_out がどちらも正の行。
- */
-export async function readUsageForRequest(
-  api,
-  before,
-  { timeoutMs = 10_000, intervalMs = 100 } = {},
-) {
+async function pollUsageRows(api, before, { timeoutMs, intervalMs }) {
   const deadline = Date.now() + timeoutMs;
   let rows;
   for (;;) {
@@ -135,18 +152,66 @@ export async function readUsageForRequest(
     if (rows.length > 0 || Date.now() >= deadline) break;
     await api.sleep(intervalMs);
   }
+  return rows;
+}
+
+/** 行の token の合計（null は 0 として足す）。課金の元になるので全件を足す。 */
+function sumRows(rows) {
+  return rows.reduce(
+    (acc, row) => ({
+      input_tokens: acc.input_tokens + (Number(row.tokens_in) || 0),
+      output_tokens: acc.output_tokens + (Number(row.tokens_out) || 0),
+    }),
+    { input_tokens: 0, output_tokens: 0 },
+  );
+}
+
+/**
+ * 1 要求の後の ai_usage の行を読む。judgeCandidates は recordAiUsage を待たないので、行が増えるまで
+ * poll する（上限つき）。行なし・tokens が null・tokens が 0・別の surface は、別の失敗理由として返す。
+ * 成功＝全行の surface が codex_judgment で tokens_in・tokens_out がどちらも正。課金は全行の合算
+ * （失敗の理由の返り値にも usage の合算を付け、台帳が課金できるようにする）。
+ */
+export async function readUsageForRequest(
+  api,
+  before,
+  { timeoutMs = 10_000, intervalMs = 100 } = {},
+) {
+  const rows = await pollUsageRows(api, before, { timeoutMs, intervalMs });
   if (rows.length === 0) return { ok: false, kind: "no-usage-row" };
-  const row = rows[0];
-  if (row.surface !== CODEX_JUDGMENT)
-    return { ok: false, kind: "wrong-surface" };
-  if (row.tokens_in === null || row.tokens_out === null)
-    return { ok: false, kind: "tokens-null", rowCount: rows.length };
-  if (!(row.tokens_in > 0 && row.tokens_out > 0))
-    return { ok: false, kind: "tokens-zero", rowCount: rows.length };
+  const usage = sumRows(rows);
+  const rowCount = rows.length;
+  if (rows.some((row) => row.surface !== CODEX_JUDGMENT))
+    return { ok: false, kind: "wrong-surface", usage, rowCount };
+  if (rows.some((row) => row.tokens_in === null || row.tokens_out === null))
+    return { ok: false, kind: "tokens-null", usage, rowCount };
+  if (rows.some((row) => !(row.tokens_in > 0 && row.tokens_out > 0)))
+    return { ok: false, kind: "tokens-zero", usage, rowCount };
+  return { ok: true, usage, model: rows[0].model, rowCount };
+}
+
+/** 通信の前に終わる失敗（課金されない）。これ以外の失敗は、行が残っていないか読む。 */
+const NO_COMMUNICATION_KINDS = Object.freeze([
+  "not-armed",
+  "policy-or-license",
+  "no-candidates",
+  "license",
+]);
+
+/**
+ * 失敗した要求の後の行（API は応答して課金済みで、parse の前に recordAiUsage が走る経路がある）。
+ * 行があれば、全行の合算 usage と、別の surface の有無を返す。無ければ null。
+ */
+export async function readUsageAfterFailure(
+  api,
+  before,
+  { timeoutMs = 2_000, intervalMs = 100 } = {},
+) {
+  const rows = await pollUsageRows(api, before, { timeoutMs, intervalMs });
+  if (rows.length === 0) return null;
   return {
-    ok: true,
-    usage: { input_tokens: row.tokens_in, output_tokens: row.tokens_out },
-    model: row.model,
+    usage: sumRows(rows),
+    wrongSurface: rows.some((row) => row.surface !== CODEX_JUDGMENT),
     rowCount: rows.length,
   };
 }
@@ -187,11 +252,17 @@ export async function sendOne({
     if (res.ok) {
       const usage = await readUsageForRequest(api, before, usagePoll);
       if (usage.ok) {
-        outcome = { ok: true, usage: usage.usage };
+        outcome = { ok: true, usage: usage.usage, responded: true };
         judgments = res.judgments;
         model = usage.model;
       } else {
-        outcome = { ok: false, failureKind: usage.kind };
+        // 応答は課金されている。行から読めた token は台帳に載せる（読めない理由は停止線が見る）。
+        outcome = {
+          ok: false,
+          failureKind: usage.kind,
+          usage: usage.usage,
+          responded: true,
+        };
       }
     } else {
       outcome = {
@@ -199,6 +270,25 @@ export async function sendOne({
         failureKind: res.kind,
         httpStatus: res.httpStatus ?? null,
       };
+      if (!NO_COMMUNICATION_KINDS.includes(res.kind)) {
+        // 送信の後に例外を投げる経路（有効結果なしなど）は、課金済みで行が残る。台帳が実費を見るため読む。
+        const failedPoll = {
+          ...(usagePoll?.timeoutMs !== undefined
+            ? { timeoutMs: Math.min(usagePoll.timeoutMs, 2_000) }
+            : {}),
+          ...(usagePoll?.intervalMs !== undefined
+            ? { intervalMs: usagePoll.intervalMs }
+            : {}),
+          ...(usagePoll?.failureTimeoutMs !== undefined
+            ? { timeoutMs: usagePoll.failureTimeoutMs }
+            : {}),
+        };
+        const after = await readUsageAfterFailure(api, before, failedPoll);
+        if (after) {
+          outcome.usage = after.usage;
+          if (after.wrongSurface) outcome.failureKind = "wrong-surface";
+        }
+      }
     }
     try {
       gate.afterRequest({
@@ -275,6 +365,12 @@ export function judgmentMetrics({ index, candidates, judgments }) {
     listedEntityCandidates: 0,
     ambiguousCandidates: 0,
     unlistedCandidates: 0,
+    // 敬称の形（§3：別名に入れない）は、名簿どおり・結び残しの母集団から外して別枠に数える。
+    honorificCandidates: 0,
+    honorificWithAlias: 0,
+    // B の名簿の窓（200 実体）で切った実体の表記は、未登録（unlisted）と分けて数える。
+    cutRosterCandidates: 0,
+    aliasOnCutRoster: 0,
     typeChecked: 0,
     typeMismatch: 0,
     aliasOfUnknownId: 0,
@@ -285,15 +381,22 @@ export function judgmentMetrics({ index, candidates, judgments }) {
     ]);
     const inWindow = i < MAX_CANDIDATES;
     const judgment = inWindow ? judgments.get(candidate.keyHash) : undefined;
-    if (lookup.kind === "entity") m.listedEntityCandidates++;
+    const honorific = lookup.kind === "entity" && lookup.honorific === true;
+    const cut =
+      lookup.kind === "unlisted" && index.cutKeys?.has(candidate.keyHash);
+    if (honorific) m.honorificCandidates++;
+    else if (lookup.kind === "entity") m.listedEntityCandidates++;
     else if (lookup.kind === "ambiguous") m.ambiguousCandidates++;
+    else if (cut) m.cutRosterCandidates++;
     else m.unlistedCandidates++;
     if (inWindow && judgment) m.judged++;
     if (inWindow && !judgment) m.droppedInWindow++;
     if (judgment && judgment.aliasKnown === false) m.aliasOfUnknownId++;
     const alias = judgment?.aliasOfId ?? null;
     if (alias !== null) m.aliasButtons++;
-    if (lookup.kind === "entity") {
+    if (honorific) {
+      if (alias !== null) m.honorificWithAlias++;
+    } else if (lookup.kind === "entity") {
       if (alias === lookup.id) m.aliasMatchRoster++;
       else if (alias !== null) m.aliasMismatchRoster++;
       else if (!inWindow) m.missedBindBeyondWindow++;
@@ -313,18 +416,43 @@ export function judgmentMetrics({ index, candidates, judgments }) {
       if (lookup.ids.includes(alias)) m.aliasOnAmbiguousInSet++;
       else m.aliasOnAmbiguousOutOfSet++;
     } else if (lookup.kind === "unlisted" && alias !== null) {
-      m.aliasOnUnlisted++;
+      if (cut) m.aliasOnCutRoster++;
+      else m.aliasOnUnlisted++;
     }
   });
   return m;
 }
 
-/** 候補に出ない既存名：登録した表記（名前・別名の keyHash）のうち、画面の候補に無いもの。 */
-export function registeredNotInCandidates(registeredKeyHashes, candidates) {
+/**
+ * 登録した表記（名前・別名の keyHash）が、画面の候補にどう現れるか。画面の候補（visible）は既知名の
+ * 完全一致を除いた後の集合なので、登録した表記は構成上かならず visible に無い。分けて数える：
+ *   excludedByExactMatch  scan の結果（raw。既知名の除外の前）にあり、完全一致で除かれた
+ *   notInRaw              raw に無い（出現 2 未満などで、そもそも候補に上がらない）
+ *   shownDespiteRegistered 画面の候補に残っている（除外の式の違い。0 でなければ道具の確認）
+ * rawKeyHashes が無い（古い prepared）ときは raw の区別をせず total と shown だけ返す。
+ */
+export function registeredSurfaceSplit(
+  registeredKeyHashes,
+  { candidates = [], rawKeyHashes = null } = {},
+) {
   const shown = new Set(candidates.map((c) => c.keyHash));
-  let absent = 0;
-  for (const keyHash of registeredKeyHashes) if (!shown.has(keyHash)) absent++;
-  return absent;
+  const raw = rawKeyHashes ? new Set(rawKeyHashes) : null;
+  const unique = new Set(registeredKeyHashes);
+  let excludedByExactMatch = 0;
+  let notInRaw = 0;
+  let shownDespiteRegistered = 0;
+  for (const keyHash of unique) {
+    if (shown.has(keyHash)) shownDespiteRegistered++;
+    else if (raw === null) continue;
+    else if (raw.has(keyHash)) excludedByExactMatch++;
+    else notInRaw++;
+  }
+  return {
+    registered: unique.size,
+    excludedByExactMatch: raw ? excludedByExactMatch : null,
+    notInRaw: raw ? notInRaw : null,
+    shownDespiteRegistered,
+  };
 }
 
 /** 3 回の自己一致（aliasOfId）。2 回以上判定された候補について、全回で同じか。 */
@@ -431,10 +559,7 @@ export async function runB1({
       entryCount: prepared.entryCount,
     },
     estimate,
-    registeredNotInCandidates: registeredNotInCandidates(
-      registeredKeyHashes,
-      prepared.candidates,
-    ),
+    registeredSurfaces: registeredSurfaceSplit(registeredKeyHashes, prepared),
     requests: requests.map(({ judgmentMap: _judgmentMap, ...rest }) => rest),
     selfAgreement: selfAgreement(successes.map((r) => r.judgmentMap)),
     failuresByKind: requests.reduce((acc, r) => {
@@ -478,6 +603,8 @@ function buildRequestRecord(result, prepared, index) {
  * 敬称の形・場面で指す人が決まらない表記・名簿に無い表記→却下（種類別に数える）。
  */
 export function authorDecision(lookup, registeredIds, rosterTypeOf) {
+  if (lookup.kind === "unlisted" && lookup.cut === true)
+    return { action: "dismiss", reason: "cut-roster" };
   if (lookup.kind === "entity" && !lookup.honorific) {
     if (registeredIds.has(lookup.id))
       return { action: "alias", targetId: lookup.id, reason: "alias" };
@@ -507,12 +634,15 @@ export async function runB2({
   registeredIds,
   registeredKeyHashes = [],
   stage = "B2",
+  remainingAfter = 0,
   usagePoll,
   maxIterations = 200,
 }) {
   assertAiGate(await api.gate());
   let prepared = await api.prepare({ rescan: true });
+  const firstPrepared = prepared;
   assertEntriesWithinWindow(prepared);
+  let applyMissing = 0;
   const initialCount = prepared.visibleCount;
   const plannedIterations = Math.ceil(initialCount / MAX_CANDIDATES);
   const iterations = [];
@@ -530,10 +660,9 @@ export async function runB2({
         gate,
         stage,
         estimate,
-        remainingAfterThis: Math.max(
-          0,
-          Math.ceil(prepared.visibleCount / MAX_CANDIDATES) - 1,
-        ),
+        remainingAfterThis:
+          remainingAfter +
+          Math.max(0, Math.ceil(prepared.visibleCount / MAX_CANDIDATES) - 1),
         note: `b2 i${n + 1}`,
         usagePoll,
       });
@@ -550,9 +679,13 @@ export async function runB2({
     if (!result.ok) break; // 判定なしでは進められない（失敗は別に数える。再送は sendOne が 1 回だけ行った）
     const window = prepared.candidates.slice(0, MAX_CANDIDATES);
     const decisions = window.map((candidate) => {
-      const lookup = lookupRoster(index, candidate.keyHash, [
+      const found = lookupRoster(index, candidate.keyHash, [
         candidate.firstSceneIndex,
       ]);
+      const lookup =
+        found.kind === "unlisted" && index.cutKeys?.has(candidate.keyHash)
+          ? { ...found, cut: true }
+          : found;
       const d = authorDecision(lookup, registeredIds, rosterTypeOf);
       if (d.action === "accept") registeredIds.add(d.newId);
       decisionCounts[d.action]++;
@@ -564,6 +697,8 @@ export async function runB2({
       decisions.map(({ reason: _reason, ...rest }) => rest),
     );
     prepared = applied;
+    // 反映できなかった決定（対象の実体が見つからないなど）。0 でなければ、その作品の B2 は判断不能。
+    applyMissing += applied.counts?.missing ?? 0;
     if (applied.visibleCount >= before) {
       noProgress = true;
       break;
@@ -577,12 +712,53 @@ export async function runB2({
     dismissReasons,
     stopped,
     noProgress,
-    registeredNotInCandidates: registeredNotInCandidates(
+    registeredSurfaces: registeredSurfaceSplit(
       registeredKeyHashes,
-      prepared.candidates ?? [],
+      firstPrepared,
     ),
+    applyMissing,
+    // §6 の「未登録の実体は受理」の経路は、B の名簿が L2 の全 Entry を登録するので通らない（accept は 0 のはず）。
+    // 0 でない、反映できなかった決定がある、失敗・停止・進まなかった要求があるときは判断不能。
+    undeterminable:
+      decisionCounts.accept > 0 ||
+      applyMissing > 0 ||
+      stopped !== null ||
+      noProgress ||
+      iterations.some((i) => !i.ok),
     finalVisibleCount: prepared.visibleCount,
   };
+}
+
+// ---- 計画の残り（外挿の元）--------------------------------------------------------
+
+/**
+ * §9 の「累計 80% で、残りの外挿が上限を超えるなら止める」の「残り」は、cell 内でなく計画の残り全体。
+ * cells：この launcher の cell の並び（{work, level}）。cellIndex：いまの cell。この cell の後に予定している
+ * 要求の数を返す：後ろの cell の要求（trial 1、B1 は repeats、B2 は作品ごとの上限 b2Upper[work]。
+ * 乾いた実行の結果が無ければ fallbackB2Upper）と、この launcher の後に続くモードの要求
+ * （trial の後は B1 全作品×全段と B2、B1 の後は B2）。
+ */
+export function remainingRequestsAfterCell({
+  mode,
+  cells,
+  cellIndex,
+  allWorks,
+  levels = ["L0", "L1", "L2", "L3"],
+  b2Upper = {},
+  fallbackB2Upper = 6,
+  repeats = REPEATS_B1,
+}) {
+  const b2Of = (work) => b2Upper[work] ?? fallbackB2Upper;
+  const perCell = (cell) =>
+    mode === "trial" ? 1 : mode === "b1" ? repeats : b2Of(cell.work);
+  let remaining = 0;
+  for (let i = cellIndex + 1; i < cells.length; i++)
+    remaining += perCell(cells[i]);
+  const b1All = allWorks.length * levels.length * repeats;
+  const b2All = allWorks.reduce((n, work) => n + b2Of(work), 0);
+  if (mode === "trial") remaining += b1All + b2All;
+  else if (mode === "b1") remaining += b2All;
+  return remaining;
 }
 
 // ---- 乾いた実行 -----------------------------------------------------------------

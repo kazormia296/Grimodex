@@ -289,6 +289,8 @@ export function crossSetCounts(seedSurfaces, candidateSurfaces) {
 
 /** 出力に許す文字列は ASCII の識別子・数値・日時・path の形だけ（日本語などは拒む）。 */
 const SAFE_STRING = /^[A-Za-z0-9_.:/+=\- ]{0,400}$/u;
+/** API key の形（Anthropic の sk-ant-…、一般の sk-…）。ASCII の識別子の形に収まるので、別に拒む。 */
+const KEY_SHAPED = /sk-ant-|sk-[A-Za-z0-9_-]{20,}/u;
 
 /**
  * 出力 JSON の「文字列の欄」を拒む。ASCII の識別子の形（hash・enum・日時・path）以外の
@@ -297,14 +299,15 @@ const SAFE_STRING = /^[A-Za-z0-9_.:/+=\- ]{0,400}$/u;
 export function findUnsafeStrings(value, trail = "$") {
   const found = [];
   if (typeof value === "string") {
-    if (!SAFE_STRING.test(value)) found.push(trail);
+    if (!SAFE_STRING.test(value) || KEY_SHAPED.test(value)) found.push(trail);
   } else if (Array.isArray(value)) {
     value.forEach((item, i) =>
       found.push(...findUnsafeStrings(item, `${trail}[${i}]`)),
     );
   } else if (value && typeof value === "object") {
     for (const [key, item] of Object.entries(value)) {
-      if (!SAFE_STRING.test(key)) found.push(`${trail}.<key>`);
+      if (!SAFE_STRING.test(key) || KEY_SHAPED.test(key))
+        found.push(`${trail}.<key>`);
       found.push(...findUnsafeStrings(item, `${trail}.${key}`));
     }
   }

@@ -7,6 +7,9 @@
 // - 台帳は 1 行 1 要求の JSONL（0600）。本文・key は載せない（件数・token・USD・理由コードだけ）。
 // - 乾いた実行（dry-run）は台帳に書かない。見積りだけを返す。
 // - 上限・停止線は凍結の値で、緩めない（§9）。
+// - 停止（STOP 行）は台帳に追記し、次に createGate が読み込んだときも停止のまま始める（解除は人が行う）。
+// - ai_usage の token の 2 倍超の線は、試走の実測の比（実測 token ÷ 見積り）で較正した値に対する 2 倍。
+//   試走の行が無ければ B1／B2 は始めない（preflight が拒否する）。
 import {
   appendFileSync,
   chmodSync,
@@ -44,6 +47,9 @@ export const STOP_LINES = Object.freeze({
   earlyFailures: 3,
   tokenOverFactor: 2,
 });
+/** 試走の実測で較正する段（比の元になる段）と、較正が要る段。 */
+export const CALIBRATION_STAGE = "trial";
+export const CALIBRATED_STAGES = Object.freeze(["B1", "B2"]);
 
 const PRICING_SOURCE = path.resolve(
   import.meta.dirname,
@@ -150,6 +156,18 @@ function withLock(lockFile, fn) {
   }
 }
 
+/** STOP 行の detail は数値・ASCII の識別子だけ残す（本文・表記を載せない）。 */
+function safeDetail(detail) {
+  const out = {};
+  for (const [key, value] of Object.entries(detail ?? {})) {
+    if (typeof value === "number" || typeof value === "boolean")
+      out[key] = value;
+    else if (typeof value === "string")
+      out[key] = value.replace(/[^A-Za-z0-9_.:/+=\- ]/gu, "_").slice(0, 80);
+  }
+  return out;
+}
+
 /**
  * 台帳と停止の gate。
  * - preflight（送信の前）：見積りと累計を検査し、超えるなら BudgetStop。dry-run は preflight だけ（記録しない）。
@@ -162,6 +180,7 @@ export function createGate({
   pricing = readModelPricing(model),
   totalCapUsd = TOTAL_CAP_USD,
   stageCapsUsd = STAGE_CAPS_USD,
+  requireTrial = true,
   now = () => new Date().toISOString(),
 }) {
   if (file) {
@@ -175,6 +194,7 @@ export function createGate({
   const state = {
     total: 0,
     byStage: {},
+    trial: null, // 試走の実測の比（loadFromFile）
     requests: 0, // 結果を受けた要求（成功・失敗とも）
     billedRequests: 0, // token が記録された要求
     consecutiveFailures: 0,
@@ -182,19 +202,61 @@ export function createGate({
     window: [], // 最初の earlyWindow 件の成否
     stopped: null,
   };
-  // 既存の台帳があれば累計を引き継ぐ（process をまたぐ集計）。
-  if (file && existsSync(file)) {
+  // 台帳が単一の真実。累計・段の費用・試走の較正・STOP は、読み込みのたびにファイルから取り直す
+  // （並列の launcher の累計も見える。連続失敗・窓の成否は process 内）。
+  function loadFromFile() {
+    if (!file || !existsSync(file)) return;
+    let total = 0;
+    let billed = 0;
+    const byStage = {};
+    let stopped = null;
+    let trialN = 0;
+    let maxIn = 0;
+    let maxOut = 0;
     for (const line of readFileSync(file, "utf8").split("\n")) {
       if (!line) continue;
       const row = JSON.parse(line);
-      state.total += row.usd;
-      state.byStage[row.stage] = (state.byStage[row.stage] ?? 0) + row.usd;
-      if (row.billed) state.billedRequests++;
+      if (row.type === "STOP") {
+        stopped ??= { code: row.code, detail: row.detail ?? {} };
+        continue;
+      }
+      total += row.usd;
+      byStage[row.stage] = (byStage[row.stage] ?? 0) + row.usd;
+      if (row.billed) billed++;
+      if (
+        row.stage === CALIBRATION_STAGE &&
+        row.billed &&
+        row.est_input_tokens > 0 &&
+        row.est_output_tokens > 0
+      ) {
+        trialN++;
+        maxIn = Math.max(maxIn, row.input_tokens / row.est_input_tokens);
+        maxOut = Math.max(maxOut, row.output_tokens / row.est_output_tokens);
+      }
     }
+    state.total = total;
+    state.byStage = byStage;
+    state.billedRequests = billed;
+    state.trial = trialN > 0 ? { n: trialN, maxIn, maxOut } : null;
+    if (stopped && !state.stopped) state.stopped = stopped;
   }
+  loadFromFile();
 
+  const persistStop = (code, detail) => {
+    if (!file) return;
+    withLock(lockFile, () =>
+      appendFileSync(
+        file,
+        `${JSON.stringify({ type: "STOP", ts: now(), code, detail: safeDetail(detail) })}\n`,
+        { mode: 0o600 },
+      ),
+    );
+  };
   const stop = (code, detail) => {
-    if (!state.stopped) state.stopped = { code, detail };
+    if (!state.stopped) {
+      state.stopped = { code, detail };
+      persistStop(code, detail);
+    }
     throw new BudgetStop(code, detail);
   };
   // 送らないだけ（以後の要求は止めない）。見積りが上限を超える要求の拒否に使う。
@@ -212,6 +274,17 @@ export function createGate({
   return {
     pricing,
     state,
+    /**
+     * 外から止める（送信の後の異常・cell の不採用など）。STOP 行を台帳に追記し、以後の preflight は
+     * 送らずに BudgetStop を投げる。投げずに返す。解除は人が STOP 行を消す。
+     */
+    halt(code, detail = {}) {
+      if (!state.stopped) {
+        state.stopped = { code, detail };
+        persistStop(code, detail);
+      }
+      return state.stopped;
+    },
     /** 見積り USD。 */
     estimateUsd(estInputTokens, estOutputTokens) {
       return usdOf(pricing, {
@@ -229,9 +302,12 @@ export function createGate({
       estOutputTokens,
       remainingAfterThis = 0,
     }) {
+      loadFromFile();
       if (state.stopped)
         throw new BudgetStop(state.stopped.code, state.stopped.detail);
       if (!(stage in stageCapsUsd)) refuse("UNKNOWN_STAGE", { stage });
+      if (requireTrial && CALIBRATED_STAGES.includes(stage) && !state.trial)
+        refuse("TRIAL_REQUIRED", { stage });
       const estimate = usdOf(pricing, {
         input_tokens: estInputTokens,
         output_tokens: estOutputTokens,
@@ -294,11 +370,15 @@ export function createGate({
       };
       const append = () =>
         appendFileSync(file, `${JSON.stringify(row)}\n`, { mode: 0o600 });
-      if (file) withLock(lockFile, append);
-      state.total += row.usd;
-      state.byStage[stage] = (state.byStage[stage] ?? 0) + row.usd;
+      if (file) {
+        withLock(lockFile, append);
+        loadFromFile(); // 他の launcher の行も含めた累計に取り直す
+      } else {
+        state.total += row.usd;
+        state.byStage[stage] = (state.byStage[stage] ?? 0) + row.usd;
+        if (billed) state.billedRequests++;
+      }
       state.requests++;
-      if (billed) state.billedRequests++;
       if (state.window.length < STOP_LINES.earlyWindow)
         state.window.push(Boolean(outcome.ok));
       if (outcome.ok) {
@@ -314,6 +394,19 @@ export function createGate({
       // 停止線（先に当たったものを理由にする）。
       if (outcome.failureKind === "auth")
         stop("AUTH_401_403", { httpStatus: outcome.httpStatus ?? null });
+      if (outcome.failureKind === "wrong-surface")
+        stop("AI_SURFACE_UNEXPECTED", {});
+      if (outcome.failureKind === "other")
+        stop("UNCLASSIFIED_FAILURE", {
+          httpStatus: outcome.httpStatus ?? null,
+        });
+      if (
+        outcome.responded === true &&
+        ["no-usage-row", "tokens-null", "tokens-zero"].includes(
+          outcome.failureKind,
+        )
+      )
+        stop("USAGE_NOT_RECORDED", { kind: outcome.failureKind });
       if (state.consecutiveRateLimits >= STOP_LINES.rateLimitStreak)
         stop("RATE_LIMIT_STREAK", { streak: state.consecutiveRateLimits });
       if (state.consecutiveFailures >= STOP_LINES.failureStreak)
@@ -326,17 +419,25 @@ export function createGate({
         stop("EARLY_FAILURES", {
           failures: state.window.filter((ok) => !ok).length,
         });
-      if (
-        billed &&
-        (usage.input_tokens > STOP_LINES.tokenOverFactor * estInputTokens ||
-          usage.output_tokens > STOP_LINES.tokenOverFactor * estOutputTokens)
-      )
-        stop("TOKENS_OVER_ESTIMATE", {
-          inputRatio: Number((usage.input_tokens / estInputTokens).toFixed(2)),
-          outputRatio: Number(
-            (usage.output_tokens / estOutputTokens).toFixed(2),
-          ),
-        });
+      if (billed) {
+        // 試走の実測の比で較正した見積りの 2 倍超（試走自身は見積りの 2 倍超）。
+        const calibrated =
+          stage !== CALIBRATION_STAGE && state.trial
+            ? state.trial
+            : { maxIn: 1, maxOut: 1 };
+        const inputLimit =
+          STOP_LINES.tokenOverFactor * estInputTokens * calibrated.maxIn;
+        const outputLimit =
+          STOP_LINES.tokenOverFactor * estOutputTokens * calibrated.maxOut;
+        if (
+          usage.input_tokens > inputLimit ||
+          usage.output_tokens > outputLimit
+        )
+          stop("TOKENS_OVER_TRIAL_MEASURED", {
+            inputRatio: Number((usage.input_tokens / inputLimit).toFixed(2)),
+            outputRatio: Number((usage.output_tokens / outputLimit).toFixed(2)),
+          });
+      }
       if (state.total >= totalCapUsd)
         stop("TOTAL_CAP_REACHED", { total: state.total });
       if ((state.byStage[stage] ?? 0) >= stageCapsUsd[stage])

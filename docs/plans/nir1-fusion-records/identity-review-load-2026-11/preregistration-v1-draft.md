@@ -433,3 +433,32 @@
 - **key の供給**：製品の `ai-keys.json` を Electron の helper で復号し、FIFO（0700 の dir の 0600）で 1 回だけ受ける（env の `ANTHROPIC_API_KEY` は読まない）。page の `save_api_key` に渡し、実行後に `delete_api_key` と userData の削除、製品の `ai-keys.json` の前後の hash の比較。**未解決**：隔離した profile の safeStorage の backend が `basic_text` だと本測定の前検査が止める。隔離した bus には secret service が無いので、本測定の方法（keyring をどう扱うか）は別に決める必要がある。
 - **乾いた実行**：送信の直前まで進め（候補・visible・Entry を作り、要求の本文を製品と同じ式で組んで文字数だけ取る）、IPC の command・`ai_usage`・`ai_audit_events` に AI の痕跡が 0 件であることを cell ごとに確かめる。名簿が無いので、空の名簿と、候補の表記から作る小さな合成の名簿（空の名簿の候補数 N0 の 30％ を実体、別名を段ごとに 0／10／20／30％）で行い、名簿の規模（実体 100 または 200、別名は段ごとに 0／1／2／4 件／実体）を仮定した上限側の外挿を別に出す。要求の本文の組み立ては `judgeCandidates` と同じ式の写しで、写しの窓（50 件・200 件）は node 側で突き合わせる。
 - **集計**：A と B は別表。A は作品間の最小〜最大（平均しない）、B は作品×段の 3 回の最小〜最大。★の対応表は常に `decided: false`。records は欄名が credential を示すもの（authorization・api-key・credential・password・bearer・secret）と、ASCII の識別子の形でない文字列を拒み、原稿の shingle 走査も通す。
+
+## 17.2 第 3 段の道具へのレビュー指摘（17 件）の反映（2026-11-14、技術判断）
+
+§13・§15・§16 の文面と、§9 の凍結する値（上限・段の上限・停止線の数値）は変えていない。§17.1 の「止める条件は §9 のとおり」のうち、次の 2 点は実装の形を §9 の趣旨に寄せて改めた。AI へは送っていない。
+
+**直したもの**
+
+- **停止の永続化と fail-closed（gate）**：停止は台帳に STOP 行として追記し、`createGate` は STOP 行があれば停止のまま始める（解除は人が行う。本測定の launcher は STOP 行があると key を読む前に止まる）。本測定の launcher は、cell が ok でない（surface の集合・送信回数・usage の行・予算の停止・例外・出力を出せない）とき、以後の cell を送らず STOP 行を残す。累計・段の費用は、読み込みと各要求の前後に台帳から取り直す（並列の launcher の累計も見える。ただし 2 つの launcher が同時に送ると、互いの直前の要求の分は見えない。並列に走らせない運用で残る隙として記す）。
+- **失敗した要求の課金**：`judgeCandidates` は parse の前に usage を記録するので、送信の後に失敗した要求（有効結果なしなど）でも `ai_usage` の行を読み、全行の合算を台帳に課金する。成功時も全行の合算で課金する（先頭の行だけでなく）。別の surface の行が 1 つでもあれば、課金したうえで停止（`AI_SURFACE_UNEXPECTED`）。応答があったのに行・token が読めない場合は、費用が見えないので停止（`USAGE_NOT_RECORDED`）。
+- **停止線 2 倍超の基準**：§9 の「試走の実測値の 2 倍超」に合わせ、試走の実測の比（実測 token ÷ 見積り token の最大値）で較正した見積りの 2 倍を超えたら停止（`TOKENS_OVER_TRIAL_MEASURED`）。試走自身は見積りの 2 倍。試走の行が無ければ B1／B2 は送らない（`TRIAL_REQUIRED`）。見積りが保守側なので、較正が無いと 2 倍超はほぼ起きないための変更。
+- **他の job との重なり**：各 cell の開始前に、`ps` で cargo・rustc・electron が動いていれば始めない（`OVERLAPPING_JOBS`）。cell の実行中の重なりは見ない（未実装。cell の途中で別の job が始まったら検知できない）。
+- **外挿の「残り」**：cell 内でなく計画の残り全体（後ろの cell の要求、続くモードの要求）を渡す。B2 の要求数は乾いた実行の空の名簿の N から出した上限（無ければ作品あたり 6）。
+- **分類できない失敗**：失敗の例外から HTTP status が取れない経路は未確認（試走で確かめる）。分類できない失敗（`other`）が 1 件でも出たら停止する（保守側。試走の 1 要求で例外の形を見てから、分類を直す）。
+- **key の読み込み順**：key は、名簿の検査・台帳の STOP・残骸・重なりの検査と、cell の登録・safeStorage の backend の確認が済んだ後、送信の直前に読む（cell ごとに 1 回）。signal（SIGINT・SIGTERM・SIGHUP）で、隔離 userData・workRoot・FIFO の dir を消す。起動時に前の run の key-fifo・B の cell の残りがあれば始めない。
+- **送信の遮断**：乾いた実行の api は `judge`・`apply` を持たない。page 側の `bJudge` は、key を入れた設定（`bConfigureAi` が key つきで成功）の間だけ送る。
+- **混入検査**：records・出力に、key の形（`sk-ant-`、`sk-` に続く長い識別子）の値があれば拒む。本文を出しうる env（`GRIMODEX_AI_WIRE_LOG`、trace／debug の `RUST_LOG`）も、node と main の両方で禁じる。
+- **B2 の反映と受理**：`bApply` は受理の後に Entry を取り直す（同じ batch で受理した実体への別名の決定が後ろにあっても見つかる）。反映できなかった決定は数え、0 でなければその作品の B2 は判断不能。B の名簿は L2 の全 Entry を登録するので、`accept` は通らない前提で、通れば未検証の経路として判断不能にする（§6 の「未登録の実体は受理」の経路は、この測定では検証しない）。
+- **登録表記の数え方**：画面の候補は既知名の完全一致を除いた後の集合なので、登録した表記が候補に無いのは構成上のこと。scan の結果（既知名を除く前）の hash を返し、登録した表記を「完全一致で除かれた」「scan に無い（出現 2 未満など）」「候補に残った（除外の式の違い。0 でなければ道具の確認）」に分けて数える。
+- **敬称の形（B1 と B2 の揃え）**：§3 のとおり別名に入れない形なので、B1 の指標でも名簿どおり・名簿と違う・結び残しの母集団から外し、`honorificCandidates`（別名ボタンを押された数は `honorificWithAlias`）の別枠に数える（B2 の却下と同じ扱い）。
+- **切った実体**：B の名簿は実体を 200 に切る。切った実体の表記は未登録（unlisted）と分け、`cutRosterCandidates`・`aliasOnCutRoster`・B2 の却下理由 `cut-roster` で数える。
+- **要求本文の写しの突き合わせ**：窓の定数（50・200）と、`buildCandidateJudgmentPrompt` に渡す欄（候補は surface・lemma・count・context、Entry は id・name・aliases）が、製品の `candidateJudgment.ts` と renderer の写しで一致することを試験で検査する。
+- **集計の表**：B の表に、窓内で判定が欠けた結び残し（`missedBindDropped`）と敬称の形を足した。A の敬称除去の数は「どれかの候補に敬称除去を含む」行の数であり、理由（最も強い methods 1 つの排他の分類）とは別の数え方なので、名前を `unresolvedWithHonorificStripCandidate` に改めた。
+- **終了時の surface の検査**：「空、または codex_judgment だけ」を許す（全要求が行を残さずに失敗した cell を、検査の例外で失わない）。検査は例外にせず結果に残し、cell を不採用にする。成功した要求の数以上の usage の行があることも検査する。
+
+**直さないもの（理由）**
+
+- **Entry の順と ID の形**：製品の画面は store の順（作成の新しい順）、道具は DB の順で、ID は製品の UUID でなく短い `rt-`・`synth-` の ID。Entry が 200 以下なら窓は同じで、順が変わるのは catalog の ref の割り当てと prompt の並びだけ。順を作り替えるとかえって製品の順との対応が不確かになるので、差として records に明記するだけにする（乾いた実行の summary の assumptions にも入れた）。token の見積りの比は、ID を含む試走の実測で較正するまで「保守値」と呼ばず、暫定の比とする。UUID の多い入力では token を少なく見積もる向きの偏りがある。
+- **key の復号の経路（未解決）**：復号の helper は launcher と同じ env で走り、隔離した bus には secret service が無い。本物の keyring に届く env にすると、A・名簿の process に key を渡さない、隔離 bus に本物の secret service を入れない、の線が崩れうる。読む順は直したが、**復号の helper の env と測定の Electron の隔離 bus を分ける方針は、確認が要る**。確認が済むまで本測定は始めない。
+- **要求ごとの cell の途中の重なりの検知、並列 launcher の同時送信の競合**：上記のとおり未実装で、運用（並列に走らせない・測定中は他の job を動かさない）で避ける。

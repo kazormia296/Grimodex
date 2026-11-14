@@ -3,23 +3,33 @@
 // Anthropic へは送らない。key・keyring・Electron は使わない。
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import process from "node:process";
 import path from "node:path";
 import { test } from "node:test";
+import { URL } from "node:url";
 import { createGate } from "./ledger.mjs";
-import { candidateKey, hashSurface } from "./lib.mjs";
+import { candidateKey, hashSurface, safeErrorSummary } from "./lib.mjs";
 import {
   CONFIRM_SEND,
   assertSafeStorageBackend,
+  bindPageApi,
   assertSendAllowed,
   dryCellBody,
   dryCellStatus,
   measureBBody,
   realCellStatus,
 } from "./run-measure-b.mjs";
-import { assertNoFakeAiEnv, findForbiddenEnv } from "./launcher-common.mjs";
+import {
+  assertNoFakeAiEnv,
+  assertNoOverlappingJobs,
+  findForbiddenEnv,
+  findOverlappingJobs,
+} from "./launcher-common.mjs";
+import { findKeyResidue, registerCleanup, runCleanups } from "./cleanup.mjs";
+import { assertRecordsClean } from "./aggregate.mjs";
+import { findUnsafeStrings } from "./lib.mjs";
 
 const FAKE_KEY = `sk-ant-${"y".repeat(50)}`;
 const PRICING = { inputPerMillion: 2, outputPerMillion: 10 };
@@ -200,7 +210,7 @@ test("偽 AI の env（GRIMODEX_PRODUCT_JOURNEY*）が立っていれば本測�
         GRIMODEX_PRODUCT_JOURNEY_FAKE_AI: "deterministic-v1",
       }),
     (e) =>
-      /FAKE_AI_ENV_SET/u.test(e.message) &&
+      /FORBIDDEN_ENV_SET/u.test(e.message) &&
       !e.message.includes("deterministic-v1"),
   );
   assert.doesNotThrow(() => assertNoFakeAiEnv({ PATH: "/bin" }));
@@ -349,6 +359,7 @@ test("偽の provider での本測定の経路（B1）：key を入れ、3 要�
       file: path.join(dir, "ledger.jsonl"),
       model: "claude-sonnet-5-5",
       pricing: PRICING,
+      requireTrial: false,
     });
     const value = await measureBBody({
       page,
@@ -366,9 +377,21 @@ test("偽の provider での本測定の経路（B1）：key を入れ、3 要�
     assert.equal(value.requestsSent, 3);
     assert.equal(value.result.successCount, 3);
     assert.deepEqual(value.surfaces, {
+      ok: true,
+      readable: true,
       usageSurfaceCount: 1,
       auditPathCount: 1,
+      usageRows: 3,
+      successfulRequests: 3,
+      usageCoversSuccesses: true,
     });
+    assert.equal(
+      realCellStatus(
+        { ipc: { commandNames: [], commandCounts: { send_chat_message: 3 } } },
+        value,
+      ),
+      "ok",
+    );
     assert.deepEqual(value.usageModels, { "claude-sonnet-5-5": 3 });
     assert.equal(calls.filter((c) => c[0] === "judge").length, 3);
     assert.deepEqual(calls[0], ["register", 2]);
@@ -385,7 +408,7 @@ test("偽の provider での本測定の経路（B1）：key を入れ、3 要�
   });
 });
 
-test("偽の provider：別の surface の AI 経路が混ざれば止まり、それでも key は消す", async () => {
+test("偽の provider：別の surface の AI 経路が混ざれば、課金したうえで停止し、cell は不採用。それでも key は消す", async () => {
   await withTmp(async (dir) => {
     const calls = [];
     const workspaceDir = path.join(dir, "workspace");
@@ -398,26 +421,160 @@ test("偽の provider：別の surface の AI 経路が混ざれば止まり、�
       file: path.join(dir, "ledger.jsonl"),
       model: "claude-sonnet-5-5",
       pricing: PRICING,
+      requireTrial: false,
     });
-    await assert.rejects(
-      measureBBody({
-        page,
-        app: null,
-        projectId: "p",
-        workspaceDir,
-        roster,
-        level: "L2",
-        mode: "trial",
-        gate,
-        key: FAKE_KEY,
-        expectedSafeStorageCheck: false,
-        usagePoll: { timeoutMs: 50, intervalMs: 5 },
-      }),
-      // surface が chat の行は codex_judgment の成功に数えられず、要求は失敗になる。終了時の集合の検査でも止まる。
-      () => true,
+    const value = await measureBBody({
+      page,
+      app: null,
+      projectId: "p",
+      workspaceDir,
+      roster,
+      level: "L2",
+      mode: "trial",
+      gate,
+      key: FAKE_KEY,
+      expectedSafeStorageCheck: false,
+      usagePoll: { timeoutMs: 50, intervalMs: 5 },
+    });
+    // surface が chat の行は課金され、停止線（AI_SURFACE_UNEXPECTED）が立つ。結果は残り、cell は不採用。
+    assert.equal(value.result.stopped.code, "AI_SURFACE_UNEXPECTED");
+    assert.equal(gate.state.stopped.code, "AI_SURFACE_UNEXPECTED");
+    assert.equal(gate.state.billedRequests, 1);
+    assert.equal(value.surfaces.ok, false);
+    assert.equal(
+      realCellStatus(
+        { ipc: { commandNames: [], commandCounts: { send_chat_message: 1 } } },
+        value,
+      ),
+      "ai-surface-set",
     );
     assert.deepEqual(calls.at(-1), ["delete-key"]);
   });
+});
+
+test("key は getKey で、検査・登録の後・送信の直前に 1 回だけ読む", async () => {
+  await withTmp(async (dir) => {
+    const calls = [];
+    const workspaceDir = path.join(dir, "workspace");
+    const { page } = await installFakeWindow({ workspaceDir, calls });
+    const gate = createGate({
+      file: path.join(dir, "ledger.jsonl"),
+      model: "claude-sonnet-5-5",
+      pricing: PRICING,
+      requireTrial: false,
+    });
+    let reads = 0;
+    await measureBBody({
+      page,
+      app: null,
+      projectId: "p",
+      workspaceDir,
+      roster,
+      level: "L2",
+      mode: "trial",
+      gate,
+      getKey: async () => {
+        reads++;
+        assert.deepEqual(
+          calls.map((c) => c[0]),
+          ["register"],
+        ); // 登録の後
+        return FAKE_KEY;
+      },
+      expectedSafeStorageCheck: false,
+      usagePoll: { timeoutMs: 1000, intervalMs: 5 },
+    });
+    assert.equal(reads, 1);
+  });
+});
+
+test("乾いた実行の api は judge・apply を持たない（送信の関数を渡さない）。本測定の api は持つ", () => {
+  const page = { evaluate: async () => undefined };
+  const dry = bindPageApi({ page, workspaceDir: "x", allowSend: false });
+  assert.equal("judge" in dry, false);
+  assert.equal("apply" in dry, false);
+  assert.equal(typeof dry.prepare, "function");
+  const real = bindPageApi({ page, workspaceDir: "x" });
+  assert.equal(typeof real.judge, "function");
+  assert.equal(typeof real.apply, "function");
+  // page 側：bJudge は key を入れた設定（bConfigureAi が key つき）の間だけ送る。
+  const renderer = readFileSync(
+    new URL("./renderer.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    renderer,
+    /if \(!sendArmed\)\s+return \{ ok: false as const, kind: "not-armed"/u,
+  );
+  assert.match(renderer, /sendArmed = Boolean\(input\.key\) && keyPresent/u);
+});
+
+test("本文の出る env（GRIMODEX_AI_WIRE_LOG・trace の RUST_LOG）も本測定の process に持ち込まない", () => {
+  assert.deepEqual(
+    findForbiddenEnv({
+      GRIMODEX_AI_WIRE_LOG: "1",
+      RUST_LOG: "grimodex_ai=trace",
+    }),
+    ["GRIMODEX_AI_WIRE_LOG", "RUST_LOG"],
+  );
+  assert.deepEqual(findForbiddenEnv({ RUST_LOG: "warn" }), []);
+  assert.throws(
+    () => assertNoFakeAiEnv({ GRIMODEX_AI_WIRE_LOG: "1" }),
+    /FORBIDDEN_ENV_SET/u,
+  );
+  assert.doesNotThrow(() => assertNoFakeAiEnv(process.env));
+});
+
+test("他の job（cargo・rustc・electron）の重なりは測定を始めない", () => {
+  const ps = [
+    "    1 systemd",
+    "  200 cargo",
+    "  300 node",
+    "  400 electron",
+    "  500 rustc",
+  ].join("\n");
+  assert.deepEqual(findOverlappingJobs(ps), ["cargo", "electron", "rustc"]);
+  assert.deepEqual(findOverlappingJobs("  1 systemd\n  2 node"), []);
+  assert.throws(() => assertNoOverlappingJobs(() => ps), /OVERLAPPING_JOBS/u);
+  assert.doesNotThrow(() => assertNoOverlappingJobs(() => "  1 systemd"));
+});
+
+test("kill された run の残り（key-fifo・B の cell）を検出し、signal の後始末は登録した処理を実行する", async () => {
+  await withTmp(async (dir) => {
+    mkdirSync(path.join(dir, "run", "B-b1-g-ja-2-L2"), { recursive: true });
+    mkdirSync(path.join(dir, "run", "B-dry-g-ja-2"), { recursive: true });
+    mkdirSync(path.join(dir, "key-fifo-abc"), { recursive: true });
+    assert.deepEqual(
+      findKeyResidue(dir),
+      ["key-fifo-abc", "B-b1-g-ja-2-L2"].sort(),
+    );
+    assert.deepEqual(findKeyResidue(path.join(dir, "none")), []);
+    let ran = 0;
+    const off = registerCleanup(() => ran++);
+    const kept = registerCleanup(() => ran++);
+    off(); // 通常の後始末の後は登録を外す
+    runCleanups();
+    assert.equal(ran, 1);
+    void kept;
+  });
+});
+
+test("records・出力に、key の形の値が混ざっていれば拒む（欄名でなく値の形。失敗経路の混入も）", () => {
+  assert.equal(findUnsafeStrings({ a: FAKE_KEY }).length, 1);
+  assert.equal(findUnsafeStrings({ [FAKE_KEY]: "x" }).length, 1);
+  assert.equal(findUnsafeStrings({ a: "sk-" + "z".repeat(24) }).length, 1);
+  assert.equal(findUnsafeStrings({ a: "task-1 desk" }).length, 0);
+  assert.throws(
+    () =>
+      assertRecordsClean({ cells: [{ errors: [`failed with ${FAKE_KEY}`] }] }),
+    /RECORDS_UNCLEAN/u,
+  );
+  // 本測定の失敗の cell の記録（safeErrorSummary）にも、key の値は載らない。
+  assert.ok(
+    !JSON.stringify(safeErrorSummary(new Error(`bad ${FAKE_KEY}`))).includes(
+      FAKE_KEY,
+    ),
+  );
 });
 
 test("偽の provider（B2）：模擬作者が名簿どおりに進め、ceil(N/50) 要求", async () => {
@@ -433,6 +590,7 @@ test("偽の provider（B2）：模擬作者が名簿どおりに進め、ceil(N
       file: path.join(dir, "ledger.jsonl"),
       model: "claude-sonnet-5-5",
       pricing: PRICING,
+      requireTrial: false,
     });
     const value = await measureBBody({
       page,

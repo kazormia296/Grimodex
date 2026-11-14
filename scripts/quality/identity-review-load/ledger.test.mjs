@@ -30,6 +30,7 @@ function gate(overrides = {}) {
     file: t.file,
     model: SONNET,
     pricing: PRICING,
+    requireTrial: false,
     ...overrides,
   });
   return { ...t, gate: g };
@@ -286,12 +287,12 @@ test("最初の 5 要求で 3 件以上失敗したら停止（連続でなく�
   }
 });
 
-test("token が見積りの 2 倍超なら停止（入力・出力のどちらでも）", () => {
+test("token が見積りの 2 倍超なら停止（入力・出力のどちらでも。較正の無い試走の段は見積りの 2 倍）", () => {
   const a = gate();
   try {
     assert.throws(
       () => send(a.gate, ok(20_001, 4_000)),
-      (e) => e.code === "TOKENS_OVER_ESTIMATE",
+      (e) => e.code === "TOKENS_OVER_TRIAL_MEASURED",
     );
   } finally {
     rmSync(a.dir, { recursive: true, force: true });
@@ -300,7 +301,7 @@ test("token が見積りの 2 倍超なら停止（入力・出力のどちら�
   try {
     assert.throws(
       () => send(b.gate, ok(9_000, 10_001)),
-      (e) => e.code === "TOKENS_OVER_ESTIMATE",
+      (e) => e.code === "TOKENS_OVER_TRIAL_MEASURED",
     );
   } finally {
     rmSync(b.dir, { recursive: true, force: true });
@@ -346,7 +347,12 @@ test("既存の台帳があれば累計を引き継ぐ（process をまたぐ）
   const { dir, file, gate: first } = gate();
   try {
     send(first, ok(10_000, 5_000));
-    const second = createGate({ file, model: SONNET, pricing: PRICING });
+    const second = createGate({
+      file,
+      model: SONNET,
+      pricing: PRICING,
+      requireTrial: false,
+    });
     assert.equal(Number(second.state.total.toFixed(4)), 0.07);
     assert.equal(second.state.billedRequests, 1);
   } finally {
@@ -373,4 +379,172 @@ test("planCost：段ごとの上限と照らす（台帳に書かない）", () 
   );
   assert.equal(over.byStage.trial.withinCap, false);
   assert.equal(over.withinCap, true);
+});
+
+test("STOP は台帳に残り、createGate を作り直しても停止のまま（halt も同じ。解除は STOP 行を消す人）", () => {
+  const { dir, file, gate: first } = gate();
+  try {
+    assert.throws(
+      () => send(first, { ok: false, failureKind: "auth", httpStatus: 401 }),
+      (e) => e.code === "AUTH_401_403",
+    );
+    const lines = readFileSync(file, "utf8").trim().split("\n").map(JSON.parse);
+    assert.equal(lines.at(-1).type, "STOP");
+    assert.equal(lines.at(-1).code, "AUTH_401_403");
+    const second = createGate({
+      file,
+      model: SONNET,
+      pricing: PRICING,
+      requireTrial: false,
+    });
+    assert.equal(second.state.stopped.code, "AUTH_401_403");
+    assert.throws(
+      () =>
+        second.preflight({
+          stage: "B1",
+          estInputTokens: 1,
+          estOutputTokens: 1,
+        }),
+      (e) => e.code === "AUTH_401_403",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const h = gate();
+  try {
+    const stopped = h.gate.halt("CELL_NOT_OK", { status: "ai-surface-set" });
+    assert.equal(stopped.code, "CELL_NOT_OK");
+    h.gate.halt("OTHER"); // 最初の停止の理由を保つ
+    assert.equal(h.gate.state.stopped.code, "CELL_NOT_OK");
+    const again = createGate({
+      file: h.file,
+      model: SONNET,
+      pricing: PRICING,
+      requireTrial: false,
+    });
+    assert.equal(again.state.stopped.code, "CELL_NOT_OK");
+    assert.throws(
+      () =>
+        again.preflight({ stage: "B1", estInputTokens: 1, estOutputTokens: 1 }),
+      (e) => e.code === "CELL_NOT_OK",
+    );
+  } finally {
+    rmSync(h.dir, { recursive: true, force: true });
+  }
+});
+
+test("試走の行が無ければ B1／B2 は始めない。較正は試走の実測の比の 2 倍で見る", () => {
+  const t = gate({ requireTrial: true });
+  try {
+    assert.throws(
+      () =>
+        t.gate.preflight({
+          stage: "B1",
+          estInputTokens: 10_000,
+          estOutputTokens: 5_000,
+        }),
+      (e) => e.code === "TRIAL_REQUIRED",
+    );
+    assert.equal(t.gate.state.stopped, null); // 送らないだけ
+    // 試走：実測は見積りの 0.5 倍（入力 5k・出力 2.5k）。
+    t.gate.preflight({
+      stage: "trial",
+      estInputTokens: 10_000,
+      estOutputTokens: 5_000,
+    });
+    t.gate.afterRequest({
+      stage: "trial",
+      outcome: ok(5_000, 2_500),
+      estInputTokens: 10_000,
+      estOutputTokens: 5_000,
+    });
+    assert.deepEqual(
+      {
+        n: t.gate.state.trial.n,
+        maxIn: t.gate.state.trial.maxIn,
+        maxOut: t.gate.state.trial.maxOut,
+      },
+      { n: 1, maxIn: 0.5, maxOut: 0.5 },
+    );
+    t.gate.preflight({
+      stage: "B1",
+      estInputTokens: 10_000,
+      estOutputTokens: 5_000,
+    });
+    // B1：較正した見積りは 5k／2.5k なので、その 2 倍 = 10k／5k を超えたら停止。
+    t.gate.afterRequest({
+      stage: "B1",
+      outcome: ok(10_000, 5_000),
+      estInputTokens: 10_000,
+      estOutputTokens: 5_000,
+    });
+    assert.throws(
+      () => send(t.gate, ok(10_001, 2_000)),
+      (e) => e.code === "TOKENS_OVER_TRIAL_MEASURED",
+    );
+    // 台帳から作り直しても較正は引き継ぐ。
+    const again = createGate({ file: t.file, model: SONNET, pricing: PRICING });
+    assert.equal(again.state.trial.maxIn, 0.5);
+  } finally {
+    rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+test("失敗でも読めた token は課金する。別 surface・分類不能・応答後の usage 不明は停止", () => {
+  const a = gate();
+  try {
+    // 有効結果なし（失敗）でも usage があれば台帳に課金される。
+    send(a.gate, {
+      ok: false,
+      failureKind: "no-valid-result",
+      usage: { input_tokens: 10_000, output_tokens: 5_000 },
+      responded: true,
+    });
+    assert.equal(Number(a.gate.state.total.toFixed(4)), 0.07);
+    assert.equal(a.gate.state.billedRequests, 1);
+  } finally {
+    rmSync(a.dir, { recursive: true, force: true });
+  }
+  for (const [outcome, code] of [
+    [
+      {
+        ok: false,
+        failureKind: "wrong-surface",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+      "AI_SURFACE_UNEXPECTED",
+    ],
+    [{ ok: false, failureKind: "other" }, "UNCLASSIFIED_FAILURE"],
+    [
+      { ok: false, failureKind: "no-usage-row", responded: true },
+      "USAGE_NOT_RECORDED",
+    ],
+  ]) {
+    const b = gate();
+    try {
+      assert.throws(
+        () => send(b.gate, outcome),
+        (e) => e.code === code,
+      );
+    } finally {
+      rmSync(b.dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("累計は台帳から取り直す（別の gate が追記した行も見える）", () => {
+  const { dir, file, gate: first } = gate();
+  try {
+    const second = createGate({
+      file,
+      model: SONNET,
+      pricing: PRICING,
+      requireTrial: false,
+    });
+    send(second, ok(10_000, 5_000));
+    first.preflight({ stage: "B1", estInputTokens: 1, estOutputTokens: 1 });
+    assert.equal(Number(first.state.total.toFixed(4)), 0.07);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

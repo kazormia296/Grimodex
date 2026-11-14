@@ -1,13 +1,15 @@
 // 測定 B の中身の試験（fake の api・合成の名簿。AI・Electron は使わない）。
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { URL } from "node:url";
 import { BudgetStop, createGate } from "./ledger.mjs";
 import { buildRosterIndex } from "./measure-a-metrics.mjs";
 import {
   MAX_CANDIDATES,
+  MAX_ENTRIES,
   assertAiGate,
   assertEntriesWithinWindow,
   assertEstimateMatches,
@@ -15,7 +17,12 @@ import {
   authorDecision,
   buildDryRunPlan,
   buildProjectedPlan,
+  checkOnlyCodexJudgment,
+  checkUsageCoversSuccesses,
   projectRequest,
+  readUsageAfterFailure,
+  registeredSurfaceSplit,
+  remainingRequestsAfterCell,
   dryMeasure,
   judgmentMetrics,
   readUsageForRequest,
@@ -28,6 +35,7 @@ import {
 } from "./measure-b-core.mjs";
 
 const ident = async (s) => s;
+const FAST = { timeoutMs: 5, intervalMs: 1 };
 const PRICING = { inputPerMillion: 2, outputPerMillion: 10 };
 const roster = {
   entities: [
@@ -63,6 +71,7 @@ function tmpGate(overrides = {}) {
     file: path.join(dir, "ledger.jsonl"),
     model: "claude-sonnet-5-5",
     pricing: PRICING,
+    requireTrial: false,
     ...overrides,
   });
   return { dir, gate };
@@ -108,13 +117,22 @@ function fakeApi({ candidateCount = 120, script = null, entryCount = 3 } = {}) {
     judge: async () => {
       state.judgeCalls++;
       const step = script ? script(state.judgeCalls) : { ok: true };
-      if (!step.ok)
+      if (!step.ok) {
+        // 送信の後に投げる経路（有効結果なし）は、課金済みで行が残る。
+        if (step.failUsage)
+          state.usageRows.push({
+            surface: step.failUsage.surface ?? "codex_judgment",
+            model: "claude-sonnet-5-5",
+            tokens_in: step.failUsage.tokens_in,
+            tokens_out: step.failUsage.tokens_out,
+          });
         return {
           ok: false,
           kind: step.kind,
           httpStatus: step.httpStatus ?? null,
           durationMs: 5,
         };
+      }
       if (step.usage !== false)
         state.usageRows.push(
           step.usage ?? {
@@ -264,14 +282,13 @@ test("検査：窓の一致・policy／license／言語・Entry の窓・surface
       }),
     /AI_SURFACE_SET/u,
   );
-  assert.throws(
-    () =>
-      assertOnlyCodexJudgment({
-        usageSurfaces: [],
-        auditPathIds: [],
-        requestsSent: 1,
-      }),
-    /AI_SURFACE_SET/u,
+  // 全要求が行を残さずに失敗した cell（401／429 など）は空になる。許す（成功数との一致は別に検査する）。
+  assert.doesNotThrow(() =>
+    assertOnlyCodexJudgment({
+      usageSurfaces: [],
+      auditPathIds: [],
+      requestsSent: 1,
+    }),
   );
   assert.doesNotThrow(() =>
     assertOnlyCodexJudgment({
@@ -279,6 +296,23 @@ test("検査：窓の一致・policy／license／言語・Entry の窓・surface
       auditPathIds: [],
       requestsSent: 0,
     }),
+  );
+  // 例外にしない版は結果を返す（cell の結果に残してから不採用にする）。
+  assert.equal(
+    checkOnlyCodexJudgment({
+      usageSurfaces: ["codex_judgment", "chat"],
+      auditPathIds: [],
+      requestsSent: 1,
+    }).ok,
+    false,
+  );
+  assert.equal(
+    checkUsageCoversSuccesses({ usageRows: 2, successfulRequests: 2 }),
+    true,
+  );
+  assert.equal(
+    checkUsageCoversSuccesses({ usageRows: 1, successfulRequests: 2 }),
+    false,
   );
   assert.throws(
     () =>
@@ -371,7 +405,11 @@ test("judgmentMetrics：名簿どおり・名簿と違う別名・結び残し�
   assert.equal(m.aliasMismatchRoster, 1);
   assert.equal(m.aliasOnUnlisted, 1);
   assert.equal(m.missedBindNullAlias, 2); // c001・c003
-  assert.equal(m.missedBindDropped, 1); // c004
+  // c004 は敬称の形：名簿どおり・結び残しの母集団から外して別枠に数える（B2 の authorDecision と同じ扱い）。
+  assert.equal(m.honorificCandidates, 1);
+  assert.equal(m.honorificWithAlias, 0);
+  assert.equal(m.missedBindDropped, 0);
+  assert.equal(m.listedEntityCandidates, 4); // c000〜c003
   assert.equal(m.typeChecked, 4);
   assert.equal(m.typeMismatch, 1); // c003 は location なのに character
   // 窓の外：51 件目以降は判定なしで、名簿で既存なら結び残し（窓の外）。
@@ -428,6 +466,7 @@ test("sendOne：成功・429 は 1 回だけ再送・判定の中身の失敗は
       gate,
       stage: "B1",
       estimate: await api.estimate(),
+      usagePoll: FAST,
     });
     assert.equal(ok.ok, true);
     assert.equal(ok.attempts, 1);
@@ -447,6 +486,7 @@ test("sendOne：成功・429 は 1 回だけ再送・判定の中身の失敗は
       gate,
       stage: "B1",
       estimate: await api.estimate(),
+      usagePoll: FAST,
     });
     assert.equal(r.ok, true);
     assert.equal(r.attempts, 2);
@@ -462,23 +502,91 @@ test("sendOne：成功・429 は 1 回だけ再送・判定の中身の失敗は
       gate,
       stage: "B1",
       estimate: await api.estimate(),
+      usagePoll: FAST,
     });
     assert.equal(f.ok, false);
     assert.equal(f.attempts, 1);
     assert.equal(api.state.judgeCalls, 1);
   });
-  // 行なしは、空の Map と同じく別の失敗理由。
+  // 応答があったのに行が無い（課金が見えない）なら、台帳が停止する。
   await withGate(async (gate) => {
     const api = fakeApi({ script: () => ({ ok: true, usage: false }) });
-    const nr = await sendOne({
+    await assert.rejects(
+      sendOne({
+        api,
+        gate,
+        stage: "B1",
+        estimate: await api.estimate(),
+        usagePoll: { timeoutMs: 1, intervalMs: 1 },
+      }),
+      (e) =>
+        e instanceof BudgetStop &&
+        e.code === "USAGE_NOT_RECORDED" &&
+        e.partial.outcome.failureKind === "no-usage-row",
+    );
+    assert.equal(gate.state.stopped.code, "USAGE_NOT_RECORDED");
+  });
+  // 送信の後に投げる失敗（有効結果なし）でも、行が残っていれば実費を台帳に課金する。
+  await withGate(async (gate) => {
+    const api = fakeApi({
+      script: () => ({
+        ok: false,
+        kind: "no-valid-result",
+        failUsage: { tokens_in: 9000, tokens_out: 4000 },
+      }),
+    });
+    const f = await sendOne({
       api,
       gate,
       stage: "B1",
       estimate: await api.estimate(),
-      usagePoll: { timeoutMs: 1, intervalMs: 1 },
+      usagePoll: FAST,
     });
-    assert.equal(nr.ok, false);
-    assert.equal(nr.failureKind, "no-usage-row");
+    assert.equal(f.ok, false);
+    assert.equal(f.failureKind, "no-valid-result");
+    assert.deepEqual(f.usage, { input_tokens: 9000, output_tokens: 4000 });
+    assert.equal(gate.state.billedRequests, 1);
+    assert.ok(gate.state.total > 0);
+  });
+  // 失敗の行が codex_judgment 以外の surface なら、課金したうえで停止。
+  await withGate(async (gate) => {
+    const api = fakeApi({
+      script: () => ({
+        ok: false,
+        kind: "no-valid-result",
+        failUsage: { surface: "chat", tokens_in: 100, tokens_out: 50 },
+      }),
+    });
+    await assert.rejects(
+      sendOne({
+        api,
+        gate,
+        stage: "B1",
+        estimate: await api.estimate(),
+        usagePoll: FAST,
+      }),
+      (e) => e instanceof BudgetStop && e.code === "AI_SURFACE_UNEXPECTED",
+    );
+    assert.equal(gate.state.billedRequests, 1);
+  });
+  // 通信の前に終わる失敗（policy など）は、行を読みに行かない。
+  await withGate(async (gate) => {
+    const api = fakeApi({ script: () => ({ ok: false, kind: "not-armed" }) });
+    let reads = 0;
+    const original = api.usageRowsSince;
+    api.usageRowsSince = async (n) => {
+      reads++;
+      return original(n);
+    };
+    const f = await sendOne({
+      api,
+      gate,
+      stage: "B1",
+      estimate: await api.estimate(),
+      usagePoll: FAST,
+    });
+    assert.equal(f.failureKind, "not-armed");
+    assert.equal(reads, 0);
   });
   // 401 で停止（BudgetStop）。
   await withGate(async (gate) => {
@@ -486,7 +594,13 @@ test("sendOne：成功・429 は 1 回だけ再送・判定の中身の失敗は
       script: () => ({ ok: false, kind: "auth", httpStatus: 401 }),
     });
     await assert.rejects(
-      sendOne({ api, gate, stage: "B1", estimate: await api.estimate() }),
+      sendOne({
+        api,
+        gate,
+        stage: "B1",
+        estimate: await api.estimate(),
+        usagePoll: FAST,
+      }),
       (e) => e instanceof BudgetStop && e.code === "AUTH_401_403",
     );
   });
@@ -495,7 +609,13 @@ test("sendOne：成功・429 は 1 回だけ再送・判定の中身の失敗は
     async (gate) => {
       const api = fakeApi();
       await assert.rejects(
-        sendOne({ api, gate, stage: "B1", estimate: await api.estimate() }),
+        sendOne({
+          api,
+          gate,
+          stage: "B1",
+          estimate: await api.estimate(),
+          usagePoll: FAST,
+        }),
         (e) => e.code === "TOTAL_CAP_WOULD_EXCEED",
       );
       assert.equal(api.state.judgeCalls, 0);
@@ -519,7 +639,13 @@ test("runB1：同じ候補に 3 回。2 回以上の失敗は判断不能。要�
     assert.equal(r.successCount, 3);
     assert.equal(r.undeterminable, false);
     assert.equal(r.candidates.visibleCount, 120);
-    assert.equal(r.registeredNotInCandidates, 1); // "gone" は候補に無い
+    // fake は既知名を除かないので c000 は画面に残る（shownDespiteRegistered）。raw が無いので除外の区別は null。
+    assert.deepEqual(r.registeredSurfaces, {
+      registered: 2,
+      excludedByExactMatch: null,
+      notInRaw: null,
+      shownDespiteRegistered: 1,
+    });
     assert.equal(r.selfAgreement.keysCompared, 50);
     assert.equal(r.selfAgreement.aliasAgree, 50);
     assert.equal(r.requests[0].metrics.aliasMatchRoster, 2);
@@ -534,7 +660,7 @@ test("runB1：同じ候補に 3 回。2 回以上の失敗は判断不能。要�
       script: (n) =>
         n === 1 ? { ok: true } : { ok: false, kind: "no-valid-result" },
     });
-    const r = await runB1({ api, gate: b.gate, index });
+    const r = await runB1({ api, gate: b.gate, index, usagePoll: FAST });
     assert.equal(r.undeterminable, true);
     assert.deepEqual(r.failuresByKind, { "no-valid-result": 2 });
   } finally {
@@ -756,4 +882,243 @@ test("外挿：合成の内訳から、名簿の規模を仮定した要求の�
   assert.equal(plan.cost.byStage.B2.requests, 3);
   assert.equal(plan.cost.byStage.trial.requests, 3);
   assert.equal(plan.perWork.w.b2Requests, 3);
+});
+
+test("registeredSurfaceSplit：登録した表記を、完全一致で除かれた／raw に無い／画面に残るに分ける", () => {
+  const split = registeredSurfaceSplit(["a", "b", "b", "c"], {
+    candidates: [{ keyHash: "c" }],
+    rawKeyHashes: ["a", "c", "z"],
+  });
+  assert.deepEqual(split, {
+    registered: 3,
+    excludedByExactMatch: 1, // a：raw にあり画面に無い
+    notInRaw: 1, // b：raw に無い（出現 2 未満など）
+    shownDespiteRegistered: 1, // c：除外の式の違い
+  });
+  assert.equal(
+    registeredSurfaceSplit(["a"], { candidates: [] }).excludedByExactMatch,
+    null,
+  );
+});
+
+test("readUsageForRequest：複数行は合算して課金し、読めない行・別 surface を含めて理由にする。失敗後の行も読む", async () => {
+  const mk = (rows) => ({
+    usageRowsSince: async (n) => rows.slice(n),
+    sleep: async () => undefined,
+  });
+  const row = (over) => ({
+    surface: "codex_judgment",
+    model: "m",
+    tokens_in: 10,
+    tokens_out: 5,
+    ...over,
+  });
+  const two = await readUsageForRequest(
+    mk([row({}), row({ tokens_in: 7 })]),
+    0,
+  );
+  assert.equal(two.ok, true);
+  assert.deepEqual(two.usage, { input_tokens: 17, output_tokens: 10 });
+  assert.equal(two.rowCount, 2);
+  const mixed = await readUsageForRequest(
+    mk([row({}), row({ surface: "chat", tokens_in: 3, tokens_out: 2 })]),
+    0,
+  );
+  assert.equal(mixed.kind, "wrong-surface");
+  assert.deepEqual(mixed.usage, { input_tokens: 13, output_tokens: 7 });
+  assert.equal(
+    await readUsageAfterFailure(mk([]), 0, { timeoutMs: 1, intervalMs: 1 }),
+    null,
+  );
+  const after = await readUsageAfterFailure(
+    mk([row({}), row({ surface: "x" })]),
+    0,
+  );
+  assert.equal(after.wrongSurface, true);
+  assert.deepEqual(after.usage, { input_tokens: 20, output_tokens: 10 });
+});
+
+test("切った実体の表記は unlisted と分けて数え、B2 では cut-roster の却下にする", async () => {
+  const cut = truncateRosterForB(
+    {
+      entities: Array.from({ length: 202 }, (_, i) => ({
+        id: `e${i}`,
+        sceneCount: i < 200 ? 10 : 1,
+        name: `n${i}`,
+        aliases: [],
+      })),
+    },
+    200,
+  );
+  assert.equal(cut.cutEntities.length, 2);
+  assert.equal(cut.cut, 2);
+  const index = await buildRosterIndex(roster, ident);
+  index.cutKeys = new Set(["cut1"]);
+  const m = judgmentMetrics({
+    index,
+    candidates: [
+      { keyHash: "cut1", count: 5, firstSceneIndex: 1 },
+      { keyHash: "zzz1", count: 4, firstSceneIndex: 1 },
+    ],
+    judgments: new Map([
+      [
+        "cut1",
+        { suggestedType: "character", aliasOfId: "e1", aliasKnown: true },
+      ],
+      [
+        "zzz1",
+        { suggestedType: "character", aliasOfId: "e1", aliasKnown: true },
+      ],
+    ]),
+  });
+  assert.equal(m.cutRosterCandidates, 1);
+  assert.equal(m.aliasOnCutRoster, 1);
+  assert.equal(m.unlistedCandidates, 1);
+  assert.equal(m.aliasOnUnlisted, 1);
+  assert.equal(
+    authorDecision({ kind: "unlisted", cut: true }, new Set(), () => "other")
+      .reason,
+    "cut-roster",
+  );
+});
+
+test("runB2：反映できなかった決定・受理の経路を通った・失敗した要求は判断不能として残す", async () => {
+  const index = await buildRosterIndex(roster, ident);
+  const run = async (mutate) => {
+    const t = tmpGate();
+    try {
+      const api = fakeApi({ candidateCount: 10 });
+      mutate(api);
+      return await runB2({
+        api,
+        gate: t.gate,
+        index,
+        rosterTypeOf: (id) => index.entities.get(id)?.type,
+        registeredIds: new Set(["e1", "e2", "e3"]),
+        usagePoll: FAST,
+      });
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  };
+  const ok = await run(() => undefined);
+  assert.equal(ok.undeterminable, false);
+  assert.equal(ok.applyMissing, 0);
+  const missing = await run((api) => {
+    const apply = api.apply;
+    api.apply = async (d) => ({ ...(await apply(d)), counts: { missing: 2 } });
+  });
+  assert.equal(missing.applyMissing, 2);
+  assert.equal(missing.undeterminable, true);
+  // 登録が L2 の全 Entry なので accept は通らない。通ったら、その経路は未検証として判断不能にする。
+  const accepted = await run(() => undefined).then(async () => {
+    const t = tmpGate();
+    try {
+      const api = fakeApi({ candidateCount: 10 });
+      return await runB2({
+        api,
+        gate: t.gate,
+        index,
+        rosterTypeOf: (id) => index.entities.get(id)?.type,
+        registeredIds: new Set(["e2", "e3"]), // e1 を未登録にして accept を起こす
+        usagePoll: FAST,
+      });
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+  assert.ok(accepted.decisionCounts.accept > 0);
+  assert.equal(accepted.undeterminable, true);
+  const failed = await run((api) => {
+    api.judge = async () => ({
+      ok: false,
+      kind: "no-valid-result",
+      durationMs: 1,
+    });
+  });
+  assert.equal(failed.undeterminable, true);
+});
+
+test("remainingRequestsAfterCell：cell の後ろの要求と、続くモードの要求の計画の残り全体", () => {
+  const works = ["w1", "w2"];
+  const cells = works.flatMap((work) =>
+    ["L0", "L1", "L2", "L3"].map((level) => ({ work, level })),
+  );
+  const common = { cells, allWorks: works, b2Upper: { w1: 3, w2: 5 } };
+  // b1：最後の cell でも、続く B2（w1 3 ＋ w2 5）が残る。最初の cell は後ろの 7 cell×3 ＋ 8。
+  assert.equal(
+    remainingRequestsAfterCell({ mode: "b1", cellIndex: 7, ...common }),
+    8,
+  );
+  assert.equal(
+    remainingRequestsAfterCell({ mode: "b1", cellIndex: 0, ...common }),
+    7 * 3 + 8,
+  );
+  // b2：後ろの cell の B2 の上限（乾いた実行の結果が無い作品は fallback 6）だけ。
+  assert.equal(
+    remainingRequestsAfterCell({
+      mode: "b2",
+      cells: [{ work: "w1" }, { work: "w2" }, { work: "w3" }],
+      cellIndex: 0,
+      allWorks: ["w1", "w2", "w3"],
+      b2Upper: { w1: 3, w2: 5 },
+    }),
+    5 + 6,
+  );
+  // trial：1 要求の後に、B1 全作品×全段と B2 が続く。
+  assert.equal(
+    remainingRequestsAfterCell({
+      mode: "trial",
+      cells: [{ work: "w1", level: "L2" }],
+      cellIndex: 0,
+      allWorks: works,
+      b2Upper: { w1: 3, w2: 5 },
+    }),
+    2 * 4 * 3 + 8,
+  );
+});
+
+test("要求本文の組み立ての写し：窓の定数と引数の欄が製品の candidateJudgment.ts・renderer.ts と一致する", () => {
+  const product = readFileSync(
+    new URL(
+      "../../../src/features/codex/candidateJudgment.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const renderer = readFileSync(
+    new URL("./renderer.ts", import.meta.url),
+    "utf8",
+  );
+  const num = (text, name) =>
+    Number(new RegExp(`const ${name} = (\\d+);`, "u").exec(text)?.[1]);
+  assert.equal(num(product, "MAX_CANDIDATES"), MAX_CANDIDATES);
+  assert.equal(num(product, "MAX_ENTRIES"), MAX_ENTRIES);
+  assert.equal(num(renderer, "JUDGMENT_MAX_CANDIDATES"), MAX_CANDIDATES);
+  assert.equal(num(renderer, "JUDGMENT_MAX_ENTRIES"), MAX_ENTRIES);
+  const fields = (text, collection) => {
+    const match = new RegExp(
+      `${collection}: [\\w.]+(?:\\.slice\\([^)]*\\))?\\.map\\(\\(\\w\\) => \\(\\{([\\s\\S]*?)\\}\\)\\)`,
+      "u",
+    ).exec(text);
+    assert.ok(match, `${collection} mapping not found`);
+    return [...match[1].matchAll(/(\w+):/gu)].map((m) => m[1]);
+  };
+  for (const collection of ["candidates", "existingEntries"])
+    assert.deepEqual(
+      fields(renderer, collection),
+      fields(product, collection),
+      `${collection} fields differ from the product`,
+    );
+  assert.deepEqual(fields(product, "candidates"), [
+    "surface",
+    "lemma",
+    "count",
+    "context",
+  ]);
+  assert.deepEqual(fields(product, "existingEntries"), [
+    "id",
+    "name",
+    "aliases",
+  ]);
 });
