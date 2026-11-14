@@ -491,6 +491,11 @@ export function runPerformanceBenchmark(argv = process.argv) {
       }
     },
   });
+  if (result.retryDecision && !result.retryDecision.eligible) {
+    console.error(
+      `[electron:perf] not retried: ${result.retryDecision.reason}`,
+    );
+  }
   if (
     process.env.GRIMODEX_PERF_CAPTURE_BUILD_IDENTITY === "1" &&
     !captureRuntimePerformanceBuildIdentity(

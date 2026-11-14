@@ -226,8 +226,9 @@ const performanceMetrics = {
     actualCardinality: null,
   },
   coldStartMs: null,
+  coldStartBootstrapMs: null,
   coldStartFirstFrameMs: null,
-  coldStartGpuChannelFailureCount: null,
+  coldStartGpuChannelFailureOffsetsMs: null,
   projectOpenMs: null,
   editorInput: null,
   autosave: null,
@@ -544,7 +545,8 @@ async function launchApp(phase, { deferMemorySampler = false } = {}) {
       : null;
   runtimeContext.memorySampler = memorySampler;
   // main プロセスの標準出力を prefix 付きで透過（CI 調査用）。起動ごとに GPU の
-  // 通信路の失敗を数え、coldStart のやり直しの判定に使う（runtime-performance-retry）。
+  // 通信路の失敗の行を受け取った時刻を記録し、coldStart のやり直しの判定に使う
+  // （runtime-performance-retry、DR-PIS-8）。
   const gpuChannelFailures = createGpuChannelFailureScanner();
   runtimeContext.launchGpuChannelFailures = gpuChannelFailures;
   app.process().stdout?.on("data", (d) => {
@@ -2708,14 +2710,17 @@ async function phaseWrite() {
       const editorReadyHandle = await page.waitForFunction(
         (markName) => {
           const mark = performance.getEntriesByName(markName, "mark").at(-1);
-          // 同じ起動の最初のフレームの印も一緒に取る（coldStart のやり直しの判定用）。
-          const firstFrame = performance
-            .getEntriesByName("grimodex:renderer-first-frame", "mark")
-            .at(-1);
+          // 同じ起動の bootstrap と最初のフレームの印も一緒に取る（coldStart の
+          // やり直しの判定用、DR-PIS-8）。timeOrigin は GPU の行の時刻との照合用。
+          const lastStart = (name) =>
+            performance.getEntriesByName(name, "mark").at(-1)?.startTime ??
+            null;
           return mark
             ? {
                 startTime: mark.startTime,
-                firstFrameStartTime: firstFrame ? firstFrame.startTime : null,
+                bootstrapStartTime: lastStart("grimodex:renderer-bootstrap"),
+                firstFrameStartTime: lastStart("grimodex:renderer-first-frame"),
+                timeOrigin: performance.timeOrigin,
               }
             : false;
         },
@@ -2727,13 +2732,20 @@ async function phaseWrite() {
         throw new Error("seed scene editor input-ready mark is invalid");
       }
       performanceMetrics.coldStartMs = editorReadyTiming.startTime;
-      performanceMetrics.coldStartFirstFrameMs = Number.isFinite(
+      const finiteOrNull = (value) => (Number.isFinite(value) ? value : null);
+      performanceMetrics.coldStartBootstrapMs = finiteOrNull(
+        editorReadyTiming.bootstrapStartTime,
+      );
+      performanceMetrics.coldStartFirstFrameMs = finiteOrNull(
         editorReadyTiming.firstFrameStartTime,
-      )
-        ? editorReadyTiming.firstFrameStartTime
-        : null;
-      performanceMetrics.coldStartGpuChannelFailureCount =
-        runtimeContext.launchGpuChannelFailures?.count ?? 0;
+      );
+      performanceMetrics.coldStartGpuChannelFailureOffsetsMs =
+        runtimeContext.launchGpuChannelFailures?.offsetsFrom(
+          Number.isFinite(editorReadyTiming.timeOrigin) &&
+            Number.isFinite(editorReadyTiming.firstFrameStartTime)
+            ? editorReadyTiming.timeOrigin + editorReadyTiming.firstFrameStartTime
+            : null,
+        ) ?? null;
       log("  seed scene editor が入力可能（coldStart完了）");
       performanceMetrics.openEvidence = await collectRuntimeOpenEvidence({
         app,

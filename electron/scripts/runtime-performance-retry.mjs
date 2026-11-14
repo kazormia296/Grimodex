@@ -11,15 +11,29 @@ export const TRANSIENT_PERFORMANCE_RETRY_POLICY = Object.freeze({
 });
 
 /**
- * Cold start retry (2026-11-14 user decision): some GitHub-hosted runners
- * (AWS) lose the GPU process channel while the first frame is pending. The
- * renderer then waits ~2.8 s for a new channel, and the first-frame and
- * editor-ready marks land near 4.1 s instead of ~1.1 s. The 4,000 ms budget
- * is unchanged; only a cold start whose time is the first-frame wait and that
- * coincides with this exact Chromium signature may be sampled once more.
+ * Cold start retry (DR-PIS-8, 2026-11-14 user decision; supersedes DR-PIS-5).
+ * Some GitHub-hosted runners (AWS) lose the GPU process channel while the
+ * first frame is pending: bootstrap stays at ~0.28 s, but the first frame and
+ * editor-ready wait ~2.8 s more (frame ~4.1 s / ready ~4.1 s instead of
+ * ~0.28 s / ~1.29 s). The 4,000 ms budget is unchanged. A cold start may be
+ * sampled once more only when all of these hold (measured values captured
+ * with coldStartMs; the informational open evidence never gates):
+ * - coldStartMs is the only failed check;
+ * - bootstrap is normal and the time is the wait between bootstrap and the
+ *   first frame (excludes bundle/bootstrap regressions);
+ * - the first frame is most of the cold start;
+ * - this exact Chromium GPU channel failure was received near the first frame
+ *   (the same line can appear harmlessly right after launch).
+ * A regression that only sometimes crosses the budget can still pass on the
+ * second sample (DR-PIS-5 (4)); that residual risk is accepted in DR-PIS-8.
  */
 export const COLD_START_GPU_RETRY_POLICY = Object.freeze({
   minimumFirstFrameShare: 0.9,
+  maximumBootstrapMs: 1_000,
+  minimumBootstrapToFirstFrameMs: 2_000,
+  // GPU failure line receipt relative to the first frame (wall clock).
+  gpuFailureWindowBeforeFirstFrameMs: 1_000,
+  gpuFailureWindowAfterFirstFrameMs: 500,
 });
 
 // One signature only. "WebGL2 blocklisted" (kFatalFailure) and SharedImageManager
@@ -27,25 +41,34 @@ export const COLD_START_GPU_RETRY_POLICY = Object.freeze({
 const GPU_CHANNEL_FAILURE_LINE =
   /gpu\/ipc\/client\/command_buffer_proxy_impl\.cc:\d+\] ContextResult::kTransientFailure: Failed to send GpuControl\.CreateCommandBuffer\./u;
 const MAX_PENDING_LINE_CHARS = 16_384;
+const MAX_RECORDED_FAILURES = 64;
 
 /**
- * Count GPU channel failure lines in one Electron launch's stdout/stderr.
- * Chunks may split or join lines, so each stream keeps its partial line.
+ * Record when GPU channel failure lines arrive in one Electron launch's
+ * stdout/stderr (wall clock, ms). Chunks may split or join lines, so each
+ * stream keeps its own partial line.
  */
-export function createGpuChannelFailureScanner() {
+export function createGpuChannelFailureScanner({ now = () => Date.now() } = {}) {
   const pending = new Map();
-  let count = 0;
+  const receivedAt = [];
   return Object.freeze({
     scan(stream, chunk) {
       const lines = `${pending.get(stream) ?? ""}${String(chunk)}`.split("\n");
       const rest = lines.pop();
       pending.set(stream, rest.slice(-MAX_PENDING_LINE_CHARS));
       for (const line of lines) {
-        if (GPU_CHANNEL_FAILURE_LINE.test(line)) count += 1;
+        if (
+          GPU_CHANNEL_FAILURE_LINE.test(line) &&
+          receivedAt.length < MAX_RECORDED_FAILURES
+        ) {
+          receivedAt.push(now());
+        }
       }
     },
-    get count() {
-      return count;
+    /** Receipt times relative to `firstFrameWallMs` (null when unknown). */
+    offsetsFrom(firstFrameWallMs) {
+      if (!finite(firstFrameWallMs)) return null;
+      return receivedAt.map((at) => at - firstFrameWallMs);
     },
   });
 }
@@ -60,32 +83,52 @@ function finite(value) {
 
 function classifyColdStartGpuChannelRetry(metrics, failedChecks) {
   if (!failedChecks.every((check) => check.name === "coldStartMs")) return null;
-  // Measured values only (captured with coldStartMs in the same renderer
-  // read); the informational open evidence never gates.
-  const count = metrics.coldStartGpuChannelFailureCount;
+  const policy = COLD_START_GPU_RETRY_POLICY;
   const coldStartMs = metrics.coldStartMs;
+  const bootstrapMs = metrics.coldStartBootstrapMs;
   const firstFrameMs = metrics.coldStartFirstFrameMs;
+  const offsets = metrics.coldStartGpuChannelFailureOffsetsMs;
   if (
-    !Number.isInteger(count) ||
-    count < 0 ||
     !finite(coldStartMs) ||
     coldStartMs <= 0 ||
+    !finite(bootstrapMs) ||
+    bootstrapMs < 0 ||
     !finite(firstFrameMs) ||
-    firstFrameMs < 0 ||
-    firstFrameMs > coldStartMs
+    firstFrameMs < bootstrapMs ||
+    firstFrameMs > coldStartMs ||
+    !Array.isArray(offsets) ||
+    !offsets.every(finite)
   ) {
     return rejected("coldstart-evidence-incomplete");
   }
-  if (count === 0) return rejected("coldstart-without-gpu-channel-failure");
+  if (
+    bootstrapMs > policy.maximumBootstrapMs ||
+    firstFrameMs - bootstrapMs < policy.minimumBootstrapToFirstFrameMs
+  ) {
+    return rejected("coldstart-not-first-frame-wait");
+  }
   const firstFrameShare = firstFrameMs / coldStartMs;
-  if (firstFrameShare < COLD_START_GPU_RETRY_POLICY.minimumFirstFrameShare) {
+  if (firstFrameShare < policy.minimumFirstFrameShare) {
     return rejected("coldstart-not-first-frame-bound");
+  }
+  const nearFirstFrame = offsets.filter(
+    (offset) =>
+      offset >= -policy.gpuFailureWindowBeforeFirstFrameMs &&
+      offset <= policy.gpuFailureWindowAfterFirstFrameMs,
+  );
+  if (nearFirstFrame.length === 0) {
+    return rejected(
+      offsets.length === 0
+        ? "coldstart-without-gpu-channel-failure"
+        : "coldstart-gpu-channel-failure-not-near-first-frame",
+    );
   }
   return Object.freeze({
     eligible: true,
     reason: "coldstart-gpu-channel-first-frame",
-    gpuChannelFailureCount: count,
+    gpuChannelFailureCount: nearFirstFrame.length,
     coldStartMs,
+    bootstrapMs,
     firstFrameMs,
     firstFrameShare,
   });
@@ -110,9 +153,11 @@ export function describeRecoveredPerformanceRetry(decision) {
 }
 
 /**
- * Allow one retry only for a single gesture Long Task whose wall time is
- * overwhelmingly outside Grimodex's instrumented work. Every functional,
- * cardinality, frame, memory, and non-gesture budget must already pass.
+ * Allow one retry only for (a) a single gesture Long Task whose wall time is
+ * overwhelmingly outside Grimodex's instrumented work, with every functional,
+ * cardinality, frame, memory, and non-gesture budget already passing, or
+ * (b) a cold start delayed by a GPU channel failure before the first frame
+ * (DR-PIS-8, see COLD_START_GPU_RETRY_POLICY).
  */
 export function classifyTransientPerformanceRetry(metrics, evaluation) {
   if (!metrics || !evaluation || !Array.isArray(evaluation.checks)) {
