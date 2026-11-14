@@ -125,5 +125,16 @@ describe("CodexCandidatesReport relational terms", () => {
       relationalRow!.querySelector('[data-testid="codex-candidates-dismiss"]'),
     ).not.toBeNull();
     expect(relationalRow!.textContent).not.toContain("ライカ");
+    // 別名ボタンが消えた理由を 1 行で出す。呼び名でない行には出さない。
+    expect(
+      relationalRow!.querySelector(
+        '[data-testid="codex-candidates-relational-note"]',
+      ),
+    ).not.toBeNull();
+    expect(
+      ordinaryRow!.querySelector(
+        '[data-testid="codex-candidates-relational-note"]',
+      ),
+    ).toBeNull();
   });
 });

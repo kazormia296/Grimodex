@@ -134,6 +134,18 @@ describe("matchExistingEntity", () => {
       expect(result.status).toBe("ambiguous");
     });
 
+    it("narrows to exact only per surface when AI-style input mixes a relational term and an ordinary one (shared by AI resolution and clustering)", () => {
+      const catalog = [entry({ ref: "K0001", name: "ライカ" })];
+      expect(
+        matchExistingEntity({ surfaces: ["姉ちゃん", "ライカ"] }, catalog),
+      ).toEqual({ status: "resolved", ref: "K0001", method: "exact-name" });
+      expect(
+        matchExistingEntity({ surfaces: ["姉ちゃん"] }, [
+          entry({ ref: "K0002", name: "姉ちゃんの影" }),
+        ]),
+      ).toEqual({ status: "none" });
+    });
+
     it("still strips ordinary honorifics from a non-relational surface", () => {
       const result = matchExistingEntity({ surfaces: ["ライカさん"] }, [
         entry({ ref: "K0001", name: "ライカ" }),

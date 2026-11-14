@@ -16,6 +16,8 @@ export interface CodexStructureExtractionProgressProps {
   readonly skippedRelationalTerms?: readonly CodexStructureSkippedRelationalTerm[];
 }
 
+const SKIPPED_SURFACE_DISPLAY_LIMIT = 10;
+
 /**
  * Task progress summary for Codex Structure Extraction runs.
  */
@@ -28,6 +30,10 @@ export function CodexStructureExtractionProgress({
   unresolvedCount = 0,
   skippedRelationalTerms = [],
 }: CodexStructureExtractionProgressProps) {
+  // 表記の種類の数（出現数ではない）。同じ表記は 1 件にまとめ、表示は先頭だけにする。
+  const skippedSurfaces = [
+    ...new Set(skippedRelationalTerms.map((term) => term.surface)),
+  ];
   const windowCount = coverage?.windowCount ?? 0;
   const completedWindows =
     coverage?.completedWindows ??
@@ -84,15 +90,21 @@ export function CodexStructureExtractionProgress({
           ))}
         </ul>
       )}
-      {skippedRelationalTerms.length > 0 && (
+      {skippedSurfaces.length > 0 && (
         <p
           className="text-[11px]"
           data-testid="codex-structure-extraction-skipped-relational"
         >
-          関係の呼び名として新しい人物の提案にしなかった語{" "}
-          {skippedRelationalTerms.length}件：
-          {skippedRelationalTerms.map((term) => `「${term.surface}」`).join("")}
-          （Codex の名前・別名に入れた語は、今までどおり既存の項目に結びます）
+          {skippedSurfaces
+            .slice(0, SKIPPED_SURFACE_DISPLAY_LIMIT)
+            .map((surface) => `「${surface}」`)
+            .join("")}
+          {skippedSurfaces.length > SKIPPED_SURFACE_DISPLAY_LIMIT
+            ? `ほか${skippedSurfaces.length - SKIPPED_SURFACE_DISPLAY_LIMIT}件`
+            : ""}
+          など、話し手で指す人が変わる呼び方 {skippedSurfaces.length}
+          種は、新しい人物として提案していません（Codex
+          の名前・別名に入れた語は結びます）
         </p>
       )}
     </div>
