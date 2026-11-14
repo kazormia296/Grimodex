@@ -11,9 +11,9 @@ import {
   DOCS_READER_VITEST_FILES,
   LIGHT_SUITE_DEFINITIONS,
   collectChangedPaths,
-  docsOnlyCommands,
+  docsMarkdownOnlyCommands,
   formatImpactSummary,
-  isDocsOnlyChange,
+  isDocsMarkdownOnlyChange,
   parseImpactMap,
   runSelectedSuites,
   selectImpact,
@@ -1975,7 +1975,7 @@ test("CP-4 S5-B diagnostics and frozen trace assets are registered, selected and
     assert.ok(commandLines.some((command) => command.includes(testPath)), testPath);
 });
 
-// B1 (2026-11-15): a docs-only change runs no cargo command and only the
+// B1 (2026-11-15): a docs-markdown-only selection runs no cargo command and only the
 // commands that can read docs/.
 async function loadImpactMap() {
   return parseImpactMap(
@@ -1983,12 +1983,12 @@ async function loadImpactMap() {
   );
 }
 
-const keptDocsOnlyCommands = () =>
+const keptDocsMarkdownOnlyCommands = () =>
   Object.values(LIGHT_SUITE_DEFINITIONS).flatMap((definition) =>
-    docsOnlyCommands(definition.commands),
+    docsMarkdownOnlyCommands(definition.commands),
   );
 
-test("a docs-only change keeps the suite selection but drops every cargo command", async () => {
+test("a docs-markdown-only selection keeps the suite selection but drops every cargo command", async () => {
   const map = await loadImpactMap();
   for (const changed of [
     ["docs/plans/nir1-continuation-2026-10.md"],
@@ -1996,10 +1996,10 @@ test("a docs-only change keeps the suite selection but drops every cargo command
     ["docs/adr/005-narrative-semantic-core-boundary.md"],
   ]) {
     const selection = selectImpact(map, changed);
-    assert.equal(selection.docsOnly, true, changed.join(","));
+    assert.equal(selection.docsMarkdownOnly, true, changed.join(","));
     // The suite, requirement, heavy and blocked reporting is not narrowed.
     assert.ok(selection.suiteIds.length > 0, "suites stay selected as before");
-    assert.match(selection.reason, /Docs-only change/);
+    assert.match(selection.reason, /Docs-markdown-only selection/);
   }
   const allSelection = selectImpact(map, ["docs/some-new-note.md"]);
   assert.deepEqual(allSelection.suiteIds, [...map.allSuites]);
@@ -2008,7 +2008,7 @@ test("a docs-only change keeps the suite selection but drops every cargo command
     .flatMap((definition) => definition.commands)
     .filter(([executable]) => executable === "cargo");
   assert.ok(cargoBefore.length > 0, "the full suites do contain cargo commands");
-  const kept = keptDocsOnlyCommands();
+  const kept = keptDocsMarkdownOnlyCommands();
   assert.deepEqual(
     kept.filter(([executable]) => executable === "cargo"),
     [],
@@ -2027,8 +2027,8 @@ test("a docs-only change keeps the suite selection but drops every cargo command
   }
 });
 
-test("a docs-only change still runs the Node tests that read docs/", () => {
-  const kept = keptDocsOnlyCommands().map((command) => command.join(" "));
+test("a docs-markdown-only selection still runs the Node tests that read docs/", () => {
+  const kept = keptDocsMarkdownOnlyCommands().map((command) => command.join(" "));
   const keptText = kept.join("\n");
   assert.ok(kept.includes("pnpm test:quality"));
   assert.ok(kept.includes("pnpm test:narrative:execution-state"));
@@ -2097,6 +2097,44 @@ test("the vitest files that read docs/ are all accounted for", async () => {
   }
 });
 
+test("no Rust source embeds a file under docs/ (cargo is dropped for docs-markdown-only)", async () => {
+  // P2 guard: the docs-markdown-only selection drops every cargo command, which
+  // is only safe while no Rust code compiles in a document through
+  // include_str!/include_bytes!. If one starts to, either keep cargo for it or
+  // add the crate to the selection rule. (A runtime fs read of docs/ is not
+  // visible to this scan; it is guarded by review of DOCS_READER_VITEST_FILES.)
+  const { readdir } = await import("node:fs/promises");
+  const root = new URL("../../", import.meta.url);
+  const offenders = [];
+  const walk = async (directory) => {
+    for (const entry of await readdir(new URL(directory, root), {
+      withFileTypes: true,
+    })) {
+      if (
+        entry.name === "node_modules" ||
+        entry.name === "target" ||
+        entry.name === ".git"
+      )
+        continue;
+      const relative = `${directory}${entry.name}`;
+      if (entry.isDirectory()) await walk(`${relative}/`);
+      else if (entry.name.endsWith(".rs")) {
+        const text = await readFile(new URL(relative, root), "utf8");
+        if (/include_(?:str|bytes)!\s*\([^)]*docs\//u.test(text)) {
+          offenders.push(relative);
+        }
+      }
+    }
+  };
+  await walk("src-tauri/");
+  await walk("electron/native/");
+  assert.deepEqual(
+    offenders,
+    [],
+    "a Rust file embeds docs/ through include_str!/include_bytes!; cargo must not be dropped for a docs-markdown-only selection",
+  );
+});
+
 test("a change that is not only Markdown under docs/ keeps every command", async () => {
   const map = await loadImpactMap();
   for (const changed of [
@@ -2109,18 +2147,18 @@ test("a change that is not only Markdown under docs/ keeps every command", async
     ["scripts/quality/impact-map.mjs"],
     [],
   ]) {
-    assert.equal(isDocsOnlyChange(changed), false, changed.join(","));
-    assert.equal(selectImpact(map, changed).docsOnly, false, changed.join(","));
+    assert.equal(isDocsMarkdownOnlyChange(changed), false, changed.join(","));
+    assert.equal(selectImpact(map, changed).docsMarkdownOnly, false, changed.join(","));
   }
-  // An incomplete diff is never docs-only, whatever its paths.
+  // An incomplete diff is never a docs-markdown-only selection, whatever its paths.
   assert.equal(
     selectImpact(map, ["docs/a.md"], { forceAllReason: "diff incomplete" })
-      .docsOnly,
+      .docsMarkdownOnly,
     false,
   );
 });
 
-test("docs-only execution reports a suite with nothing to run as skipped, not passed", async () => {
+test("docs-markdown-only execution reports a suite with nothing to run as skipped, not passed", async () => {
   const map = await loadImpactMap();
   const selection = selectImpact(map, ["docs/some-new-note.md"]);
   const results = await runSelectedSuites({

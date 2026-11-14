@@ -537,7 +537,9 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const lifecycleOnly = { ...defaults, canonical_profile: "c-query-lifecycle" };
   const workerProfiles = [workerOnly, cancellationOnly, startupOnly, trailingOnly, partialTerminalOnly, terminalRefusalsOnly, practicalOnly, frameLifecycleOnly, lifecycleOnly];
   // B3 (2026-11-15): a pull request runs the worker on Linux only; every other
-  // event (master push, manual dispatch, reusable call) keeps the three OSes.
+  // event (master push, manual dispatch) keeps the three OSes. A reusable call
+  // is not an event of its own: the called workflow inherits the caller's
+  // `github.event_name`, so "workflow_call" is never a value of it.
   assert.equal(workers.strategy.matrix.os, "${{ fromJSON((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle' || github.event_name == 'pull_request') && '[\"ubuntu-latest\"]' || '[\"ubuntu-latest\",\"macos-latest\",\"windows-latest\"]') }}");
   const matrixFor = (event, profile = "") => {
     const expression = workers.strategy.matrix.os;
@@ -546,7 +548,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     return pullRequestOnly ? ["ubuntu-latest"] : ["ubuntu-latest", "macos-latest", "windows-latest"];
   };
   assert.deepEqual(matrixFor("pull_request"), ["ubuntu-latest"]);
-  for (const event of ["push", "workflow_dispatch", "workflow_call"]) {
+  for (const event of ["push", "workflow_dispatch"]) {
     assert.deepEqual(matrixFor(event), ["ubuntu-latest", "macos-latest", "windows-latest"], event);
   }
   assert.deepEqual(matrixFor("workflow_dispatch", "c-query-workers"), ["ubuntu-latest", "macos-latest", "windows-latest"]);

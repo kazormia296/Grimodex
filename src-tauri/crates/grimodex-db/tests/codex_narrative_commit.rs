@@ -2618,3 +2618,187 @@ fn same_entry_bind_before_patch_commits_and_patch_before_bind_fails_whole_commit
         "the failed commit rolled back"
     );
 }
+
+fn alias_patch_op(
+    entry_id: &str,
+    narrative_entity_id: &str,
+    base_version: i64,
+    aliases: &[&str],
+) -> Value {
+    json!({
+        "entryId": entry_id,
+        "baseVersion": base_version,
+        "aliases": { "kind": "set", "values": aliases },
+        "summary": { "kind": "leave" },
+        "name": { "kind": "leave" },
+        "typeSlug": { "kind": "leave" },
+        "parentId": { "kind": "leave" },
+        "narrativeEntityId": narrative_entity_id
+    })
+}
+
+fn entry_aliases(db: &Database, entry_id: &str) -> String {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT aliases FROM codex_entries WHERE id = ?1",
+            [entry_id],
+            |row| row.get(0),
+        )?)
+    })
+    .expect("read aliases")
+}
+
+/// 同じ Entry に別名を足す patch が 2 件ある commit は、1 件目が版を上げた後に
+/// 2 件目が版の不一致で落ち、commit 全体が巻き戻る（打ち手 1 の §4.2 の 5）。
+/// Apply の前の検査（TS）がこの組を止める。
+#[test]
+fn same_entry_patch_then_patch_fails_whole_commit_and_rolls_back() {
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-pp", 3);
+    let items = [
+        (
+            "codex.entry.patch",
+            alias_patch_op("entry-pp", "ent:pp-a", 3, &["旧", "甲"]),
+        ),
+        (
+            "codex.entry.patch",
+            alias_patch_op("entry-pp", "ent:pp-b", 3, &["旧", "乙"]),
+        ),
+    ];
+    let pairs = seed_approved_proposals(&db, "run-pp", "set-pp", &items);
+    let err = prepare_then_apply(
+        &db,
+        build_prepare(
+            "req-pp",
+            "dg-pp",
+            "set-pp",
+            "run-pp",
+            ops_from_pairs(&pairs, &items),
+            vec![
+                existing_binding("ent:pp-a", "entry-pp"),
+                existing_binding("ent:pp-b", "entry-pp"),
+            ],
+        ),
+    )
+    .expect_err("two patches on the same entry must fail the whole commit");
+    // 2 件とも承認時の同じ別名（旧）から組まれるので、2 件目の set は 1 件目が足した「甲」を
+    // 含まず、追加のみの検査で落ちる（版の検査より先）。
+    assert!(
+        format!("{err:#}").contains("NEX_CODEX_PATCH_ALIASES_REMOVAL"),
+        "unexpected error: {err:#}"
+    );
+    assert_eq!(
+        count_rows(
+            &db,
+            "SELECT version FROM codex_entries WHERE id = 'entry-pp'"
+        ),
+        3,
+        "the failed commit rolled back"
+    );
+    assert_eq!(entry_aliases(&db, "entry-pp"), "[\"旧\"]");
+
+    // 2 件目が 1 件目の追加を含む set でも、版（baseVersion 3）の不一致で落ちる。
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-pp", 3);
+    let items = [
+        (
+            "codex.entry.patch",
+            alias_patch_op("entry-pp", "ent:pp-a", 3, &["旧", "甲"]),
+        ),
+        (
+            "codex.entry.patch",
+            alias_patch_op("entry-pp", "ent:pp-b", 3, &["旧", "甲", "乙"]),
+        ),
+    ];
+    let pairs = seed_approved_proposals(&db, "run-pp2", "set-pp2", &items);
+    let err = prepare_then_apply(
+        &db,
+        build_prepare(
+            "req-pp2",
+            "dg-pp2",
+            "set-pp2",
+            "run-pp2",
+            ops_from_pairs(&pairs, &items),
+            vec![
+                existing_binding("ent:pp-a", "entry-pp"),
+                existing_binding("ent:pp-b", "entry-pp"),
+            ],
+        ),
+    )
+    .expect_err("a superset patch still fails on the version");
+    assert!(
+        format!("{err:#}").contains("version conflict: expected 3 but database has 4"),
+        "unexpected error: {err:#}"
+    );
+    assert_eq!(
+        count_rows(
+            &db,
+            "SELECT version FROM codex_entries WHERE id = 'entry-pp'"
+        ),
+        3
+    );
+    assert_eq!(entry_aliases(&db, "entry-pp"), "[\"旧\"]");
+}
+
+/// patch で足した別名は、作者が Codex の編集（製品の更新経路）で消せる。消した後の
+/// narrative の undo は、作者の編集を上書きせず NEX_COMMIT_ENTRY_EDITED で止まる
+/// （打ち手 1 の着手の条件、§4.3・§14.1）。
+#[test]
+fn alias_added_by_patch_is_removable_by_author_edit_and_undo_then_stops() {
+    let db = migrated_db();
+    seed_existing_entry(&db, "entry-rm", 3);
+    let items = [(
+        "codex.entry.patch",
+        alias_patch_op("entry-rm", "ent:rm", 3, &["旧", "リクさん"]),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-rm", "set-rm", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-rm",
+            "dg-rm",
+            "set-rm",
+            "run-rm",
+            ops_from_pairs(&pairs, &items),
+            vec![existing_binding("ent:rm", "entry-rm")],
+        ),
+    );
+    let commit_id = applied["commitId"].as_str().unwrap().to_string();
+    assert_eq!(entry_aliases(&db, "entry-rm"), "[\"旧\",\"リクさん\"]");
+    let version_after_apply = count_rows(
+        &db,
+        "SELECT version FROM codex_entries WHERE id = 'entry-rm'",
+    );
+
+    let payload: grimodex_db::agent_writes::AgentCodexUpdatePayload =
+        serde_json::from_value(json!({
+            "projectId": "project-1",
+            "sessionId": "sess-author",
+            "surface": "codex-editor",
+            "entryId": "entry-rm",
+            "baseVersion": version_after_apply,
+            "name": null,
+            "summary": null,
+            "content": null,
+            "aliases": "[\"旧\"]"
+        }))
+        .expect("update payload");
+    grimodex_db::agent_writes::agent_codex_update_impl(&db, payload)
+        .expect("author removes the added alias");
+    assert_eq!(entry_aliases(&db, "entry-rm"), "[\"旧\"]");
+
+    let err = narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        commit_replay_payload(&commit_id, "rm-undo"),
+    )
+    .expect_err("undo after the author edit must stop");
+    assert!(
+        format!("{err:#}").contains("NEX_COMMIT_ENTRY_EDITED"),
+        "unexpected error: {err:#}"
+    );
+    assert_eq!(
+        entry_aliases(&db, "entry-rm"),
+        "[\"旧\"]",
+        "the author's edit stays"
+    );
+}

@@ -347,9 +347,13 @@ jobs:
         run: pnpm verify:quality
 
       # Pull requests do not run this step: the canonical Quick already ran the
-      # same impact selection on the same head (2026-11-15). A master push, a
-      # manual dispatch and a reusable call still run it, and Gate B2 accepts
-      # only those events.
+      # same impact selection on the candidate head (2026-11-15). The PR's
+      # ci.yml measures the merge ref (`github.sha`), not the candidate head,
+      # so the combination with master changes that landed after the Quick is
+      # not checked by impact until the master push. A master push and a manual
+      # dispatch still run it; a reusable call inherits the caller's
+      # `github.event_name`, so it follows its caller. Gate B2 accepts only the
+      # events that run it.
       - name: Impact-selected light gates
         if: github.event_name != 'pull_request'
         env:
@@ -1772,8 +1776,8 @@ jobs:
       fail-fast: false
       matrix:
         # A pull request runs the real-worker tests on Linux only (2026-11-15);
-        # the master push, a manual dispatch and a reusable call keep the
-        # three-OS matrix, so a macOS- or Windows-only failure is found by the
+        # the master push and a manual dispatch (a reusable call follows its
+        # caller's event) keep the three-OS matrix, so a macOS- or Windows-only failure is found by the
         # `ci.yml` of the master push after the merge.
         os: ${{ fromJSON((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle' || github.event_name == 'pull_request') && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     runs-on: ${{ matrix.os }}

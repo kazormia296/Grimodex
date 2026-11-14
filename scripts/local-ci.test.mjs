@@ -5943,7 +5943,7 @@ test("split Quick passes coverage for docs-only, Rust, empty and mixed changes a
       reports.set(String(index), { impact: quickParts.summarizeQuickPartImpact({ selection, execution, part }) });
       split.push(...execution.flatMap(({ suiteId, steps }) => steps.map(({ command }) => `${suiteId}:${JSON.stringify(command)}`)));
     }
-    assert.equal(selection.docsOnly, name.startsWith("docs only"), name);
+    assert.equal(selection.docsMarkdownOnly, name.startsWith("docs only"), name);
     const commandPlan = impactMap.planSelectedCommands(selection);
     assert.equal(commandPlan.length, unsplit.length, `${name}: the plan lists exactly the commands that run`);
     assert.deepEqual([...split].sort(), [...unsplit].sort(), `${name}: parts sum to the unsplit run`);
