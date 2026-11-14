@@ -76,7 +76,21 @@ export function normalizeRoster(roster, scenes) {
         counts.nameToHonorific++;
       } else counts.nameUnresolvedHonorific++;
     }
-    // 3
+    // 2b. 名前が本文に出ず、敬称の形から敬称を外した表記が本文に出るなら、それを名前にする（元の名前は捨てる）。
+    if (typeof e.name === "string" && !inText(e.name)) {
+      const fromHonorific = e.honorificSurfaces.map((h) => stripHonorific(h)).find((s) => s && inText(s));
+      if (fromHonorific) {
+        e.name = fromHonorific;
+        counts.nameFromHonorific = (counts.nameFromHonorific ?? 0) + 1;
+      }
+    }
+    // 3（名前と同じ場面依存の表記は、名前を優先して場面依存の表記から外す）
+    {
+      const nk = candidateKey(e.name ?? "");
+      const kept = e.ambiguousSurfaces.filter((a) => candidateKey(a.surface) !== nk);
+      counts.ambiguousDroppedAsName = (counts.ambiguousDroppedAsName ?? 0) + (e.ambiguousSurfaces.length - kept.length);
+      e.ambiguousSurfaces = kept;
+    }
     const ambiguousKeys = new Set(e.ambiguousSurfaces.map((a) => candidateKey(a.surface)));
     const seen = new Map();
     const nameKey = candidateKey(e.name ?? "");
