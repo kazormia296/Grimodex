@@ -79,17 +79,17 @@ function parseArgs(args) {
   return options;
 }
 
-function ensurePrivateDir(dir) {
+export function ensurePrivateDir(dir) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
 }
-function writePrivateJson(file, value) {
+export function writePrivateJson(file, value) {
   writeFileSync(file, JSON.stringify(value, null, 2), { mode: 0o600 });
   chmodSync(file, 0o600);
 }
 
 /** Electron に渡す env。key・token を持ち込まない（API key に触らない）。XDG_RUNTIME_DIR は隔離 dir。 */
-function electronEnv(extra) {
+export function electronEnv(extra) {
   const keep = [
     "PATH",
     "HOME",
@@ -162,7 +162,7 @@ export function precheckEnvironment(output, env = process.env) {
  * service activation の無い session bus を起こす（servicedir を持たない設定）。Electron の
  * portal 経由で secret service（keyring）が起動されないようにする。
  */
-async function startIsolatedBus(output) {
+export async function startIsolatedBus(output) {
   const dir = path.join(output, "dbus");
   ensurePrivateDir(dir);
   const socket = path.join(dir, "bus");

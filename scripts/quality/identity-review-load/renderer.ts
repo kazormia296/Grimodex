@@ -13,7 +13,7 @@ import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { setCurrentRuntimeProjectId } from "@/runtime/projectIdentity";
 import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
-import { createProject, listProjects } from "@/features/project/api";
+import { createProject, getProject, listProjects } from "@/features/project/api";
 import {
   getCurrentProjectId,
   useProjectStore,
@@ -26,7 +26,11 @@ import {
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { kakuyomuBodyToProseMirror } from "@/features/import/kakuyomuMarkup";
 import { captureMutationAuthority } from "@/features/concurrency/mutationAuthority";
-import { createCodexEntry, listCodexEntries } from "@/features/codex/api";
+import {
+  createCodexEntry,
+  listCodexEntries,
+  updateCodexEntry,
+} from "@/features/codex/api";
 import { listCodexTypes } from "@/features/codex/typeApi";
 import { listCodexRelations } from "@/features/codex/codexRelationApi";
 import {
@@ -34,6 +38,28 @@ import {
   startCodexStructureExtraction,
 } from "@/features/codex/codexStructureExtractionApi";
 import { isSafeForCodexEntityBulkApprove } from "@/features/codex/codexStructureExtractionStore";
+import {
+  activeCandidates,
+  candidateKey as productCandidateKey,
+} from "@/features/codex/codexCandidates";
+import {
+  loadDismissedCandidateKeys,
+  saveDismissedCandidateKeys,
+} from "@/features/codex/codexCandidateDismissals";
+import { judgeCandidates } from "@/features/codex/candidateJudgment";
+import type { CodexCandidate } from "@/features/codex/candidateExtractor";
+import { parseAliases } from "@/features/codex/codexMatcher";
+import { getPromptCatalog } from "@/prompts/index";
+import { isAiFeatureBlockedByPolicy } from "@/features/ai-policy/policyGuard";
+import { isWriteRestrictedByLicense } from "@/features/license/gate";
+import {
+  getAiSettings,
+  saveAiSettings,
+  saveApiKey,
+  hasApiKey,
+  deleteApiKey,
+} from "@/features/chat/api";
+import { useAiSettingsStore } from "@/features/chat/store";
 import { buildExistingRelationCatalog } from "@/features/codex/extraction/existingRelationMatcher";
 import { runEntityCandidatePrepass } from "@/features/codex/extraction/entityCandidatePrepass";
 import { buildProjectNarrativeSnapshot } from "@/application/narrative-extraction/projectSnapshotAdapter";
@@ -55,6 +81,7 @@ import {
   countRubyNotations,
   crossSetCounts,
   expectedCanonicalText,
+  classifyJudgmentFailure,
   hashSurface,
   isBulkApprovableRow,
   planNestedFolders,
@@ -492,12 +519,46 @@ async function extractStructure(input: {
     existingRelations: catalog.existingRelations,
   });
 
+  // 既存 Entry の catalog の ref（K0001…）→ Entry の id（名簿の実体 ID）。
+  const refToEntityId = new Map<string, string>(
+    catalog.existingEntries.map((e) => [e.ref, e.sourceKey]),
+  );
+  const entityIdOf = (ref: string) => refToEntityId.get(ref) ?? "unknown";
+  // 提案の表記 → 出現場面（[場面 index, 出現数]）。seed を独立に読んだ結果から引く（本文は出さない）。
+  const scenesBySurface = new Map<string, [number, number][]>();
+  if (observedSeeds.ok) {
+    for (const m of observedSeeds.mapped) {
+      const per = new Map<number, number>();
+      for (const sceneId of m.sceneIds) {
+        const index = a.sceneIndexById.get(sceneId) ?? 0;
+        per.set(index, (per.get(index) ?? 0) + 1);
+      }
+      scenesBySurface.set(
+        m.surface,
+        [...per.entries()].sort((x, y) => x[0] - y[0]),
+      );
+    }
+  }
   const rows = [];
   for (const proposal of projection.proposals) {
     const payload = proposal.proposal.payload;
     const binding = payload.binding;
     rows.push({
       surfaceHash: await hashSurface(proposal.displayTitle),
+      // 名簿との照合用：製品の candidateKey で正規化した表記の hash（名簿側も同じ式で作る）。
+      keyHash: await hashSurface(candidateKey(proposal.displayTitle)),
+      scenes: scenesBySurface.get(proposal.displayTitle) ?? [],
+      coarseClass: String(payload.coarseClass),
+      bindExistingEntityId:
+        binding.kind === "bind-existing" ? entityIdOf(binding.entityRef) : null,
+      candidates:
+        binding.kind === "unresolved"
+          ? binding.candidates.map((c) => ({
+              id: entityIdOf(c.ref),
+              score: c.score,
+              methods: [...c.methods],
+            }))
+          : [],
       bindingKind: binding.kind,
       candidateCount:
         binding.kind === "unresolved" ? binding.candidates.length : 0,
@@ -822,6 +883,266 @@ async function inventory(input: { folderPercent: number }) {
   };
 }
 
+// ---- 測定 B（候補画面）----------------------------------------------------------
+// 画面の式（CodexCandidatesReport.tsx）と同じ：IPC extract_codex_candidates（直接。ラッパは失敗を [] に潰す）
+// → activeCandidates(candidates, entries) → 却下キーで除く → judgeCandidates(visible, entries)。
+// 候補の本文・表記は page の中に持ち、node へは hash・件数・場面 index だけを返す。
+
+/** candidateJudgment.ts の MAX_CANDIDATES／MAX_ENTRIES（非 export のため写し。node 側で件数を突き合わせる）。 */
+const JUDGMENT_MAX_CANDIDATES = 50;
+const JUDGMENT_MAX_ENTRIES = 200;
+
+interface BState {
+  raw: CodexCandidate[];
+  entries: Awaited<ReturnType<typeof listCodexEntries>>;
+  dismissed: Set<string>;
+  visible: CodexCandidate[];
+  activeCount: number;
+  keyHashToSurface: Map<string, string>;
+}
+let bState: BState | null = null;
+
+function requireB(): BState {
+  if (!bState) throw new Error("[precheck] B_NOT_PREPARED no candidate screen");
+  return bState;
+}
+
+async function bRefresh(rescan: boolean) {
+  const a = requireActive();
+  const previous = bState;
+  const raw =
+    rescan || !previous
+      ? ((await invoke("extract_codex_candidates", {
+          projectId: a.projectId,
+          minCount: null,
+        })) as CodexCandidate[])
+      : previous.raw;
+  const entries = await listCodexEntries(a.projectId);
+  const dismissed = await loadDismissedCandidateKeys(a.projectId);
+  const active = activeCandidates(raw, entries);
+  const visible = active.filter(
+    (c) => !dismissed.has(productCandidateKey(c.surface)),
+  );
+  const keyHashToSurface = new Map<string, string>();
+  const rows = [];
+  for (const c of visible) {
+    const keyHash = await hashSurface(candidateKey(c.surface));
+    keyHashToSurface.set(keyHash, c.surface);
+    rows.push({
+      keyHash,
+      count: c.count,
+      firstSceneIndex: a.sceneIndexById.get(c.firstSceneId) ?? 0,
+    });
+  }
+  bState = {
+    raw,
+    entries,
+    dismissed,
+    visible,
+    activeCount: active.length,
+    keyHashToSurface,
+  };
+  return {
+    rawCount: raw.length,
+    activeCount: active.length,
+    visibleCount: visible.length,
+    dismissedCount: dismissed.size,
+    entryCount: entries.length,
+    candidates: rows,
+  };
+}
+
+/** 候補画面の候補を作る（要求の前の AI なしの段。要求数と費用の再計算の基になる N）。 */
+async function bPrepare(input: { rescan: boolean }) {
+  return bRefresh(input.rescan);
+}
+
+/**
+ * 要求の本文を、judgeCandidates と同じ式で作る（送らない）。文字数と件数だけを返す。
+ * judgeCandidates 本体は prompt の組み立てと送信が 1 つの関数に入っているので、組み立ての式を写した。
+ * 写しの乖離は、node 側で judgedSlots == min(visible, 50)・entrySlots == min(entries, 200) を突き合わせる。
+ */
+async function bEstimate() {
+  const a = requireActive();
+  const b = requireB();
+  const project = await getProject(a.projectId);
+  const lang = project?.language ?? "ja";
+  const candidates = b.visible.slice(0, JUDGMENT_MAX_CANDIDATES);
+  const entries = b.entries.slice(0, JUDGMENT_MAX_ENTRIES);
+  const prompt = getPromptCatalog(lang).codexJudgment.buildCandidateJudgmentPrompt({
+    candidates: candidates.map((c) => ({
+      surface: c.surface,
+      lemma: c.lemma,
+      count: c.count,
+      context: c.context,
+    })),
+    existingEntries: entries.map((e) => ({
+      id: e.id,
+      name: e.name ?? "",
+      aliases: parseAliases(e.aliases),
+    })),
+  });
+  let nonAscii = 0;
+  for (const ch of prompt) if ((ch.codePointAt(0) ?? 0) > 0x7f) nonAscii++;
+  return {
+    language: lang,
+    promptChars: [...prompt].length,
+    promptNonAsciiChars: nonAscii,
+    judgedSlots: candidates.length,
+    entrySlots: entries.length,
+    entryAliasCount: entries.reduce(
+      (acc, e) => acc + parseAliases(e.aliases).length,
+      0,
+    ),
+    contextChars: candidates.reduce((acc, c) => acc + [...c.context].length, 0),
+  };
+}
+
+/** 送信の前に要る状態（policy・license・言語）。空の Map を返す経路を失敗として数えるための確認。 */
+async function bAiGate() {
+  const a = requireActive();
+  const project = await getProject(a.projectId);
+  return {
+    policyBlocked: isAiFeatureBlockedByPolicy("analysis"),
+    licenseRestricted: isWriteRestrictedByLicense(),
+    language: project?.language ?? "unknown",
+  };
+}
+
+/** AI 設定（provider・model）を明示し、key を製品の save_api_key で入れる。値は返さない。 */
+async function bConfigureAi(input: {
+  provider: string;
+  model: string;
+  key: string | null;
+}) {
+  const settings = await getAiSettings();
+  await saveAiSettings({
+    ...settings,
+    provider: input.provider as typeof settings.provider,
+    model: input.model,
+  });
+  if (input.key) await saveApiKey(input.provider as typeof settings.provider, input.key);
+  await useAiSettingsStore.getState().loadSettings();
+  const after = await getAiSettings();
+  return {
+    provider: String(after.provider),
+    model: String(after.model),
+    thinkingEnabled: Boolean(after.thinkingEnabled),
+    keyPresent: await hasApiKey(after.provider),
+  };
+}
+
+async function bDeleteKey(input: { provider: string }) {
+  await deleteApiKey(input.provider as never);
+  return { keyPresent: await hasApiKey(input.provider as never) };
+}
+
+/** 1 要求（judgeCandidates）。失敗は理由の分類だけを返し、メッセージは返さない。 */
+async function bJudge() {
+  const b = requireB();
+  const started = Date.now();
+  if (isAiFeatureBlockedByPolicy("analysis") || isWriteRestrictedByLicense()) {
+    return { ok: false as const, kind: "policy-or-license", durationMs: 0 };
+  }
+  if (b.visible.length === 0) {
+    return { ok: false as const, kind: "no-candidates", durationMs: 0 };
+  }
+  try {
+    const map = await judgeCandidates(b.visible, b.entries);
+    if (map.size === 0)
+      return {
+        ok: false as const,
+        kind: "empty-map",
+        durationMs: Date.now() - started,
+      };
+    const knownIds = new Set(b.entries.map((e) => e.id));
+    const judgments = [];
+    for (const [key, j] of map) {
+      judgments.push({
+        keyHash: await hashSurface(key),
+        suggestedType: j.suggestedType,
+        aliasOfId: j.aliasOfId,
+        aliasKnown: j.aliasOfId === null || knownIds.has(j.aliasOfId),
+      });
+    }
+    return {
+      ok: true as const,
+      judgments,
+      durationMs: Date.now() - started,
+    };
+  } catch (error) {
+    return {
+      ok: false as const,
+      ...classifyJudgmentFailure(error),
+      durationMs: Date.now() - started,
+    };
+  }
+}
+
+/**
+ * B2 の模擬作者の決定を、製品の handler と同じ呼び出しで反映する。
+ * accept＝createCodexEntry（handleCreateEntry）、alias＝entry の aliases 更新（handleRegisterAlias）、
+ * dismiss＝却下キー集合の保存（handleDismiss）。反映の後に候補を作り直す（再スキャンはしない）。
+ */
+async function bApply(input: {
+  decisions: {
+    keyHash: string;
+    action: "accept" | "alias" | "dismiss";
+    targetId?: string;
+    type?: string;
+    newId?: string;
+  }[];
+}) {
+  const a = requireActive();
+  const b = requireB();
+  const counts = { accept: 0, alias: 0, dismiss: 0, missing: 0 };
+  let dismissed = new Set(b.dismissed);
+  let entries = b.entries;
+  for (const d of input.decisions) {
+    const surface = b.keyHashToSurface.get(d.keyHash);
+    if (surface === undefined) {
+      counts.missing++;
+      continue;
+    }
+    if (d.action === "dismiss") {
+      dismissed.add(productCandidateKey(surface));
+      counts.dismiss++;
+    } else if (d.action === "accept") {
+      await createCodexEntry(
+        {
+          id: d.newId ?? crypto.randomUUID(),
+          projectId: a.projectId,
+          type: d.type ?? "character",
+          name: surface,
+        },
+        { suppressImeExport: true },
+      );
+      counts.accept++;
+    } else {
+      const target = entries.find((e) => e.id === d.targetId);
+      if (!target) {
+        counts.missing++;
+        continue;
+      }
+      const aliases = parseAliases(target.aliases);
+      const key = productCandidateKey(surface);
+      const dup =
+        productCandidateKey(target.name ?? "") === key ||
+        aliases.some((x) => productCandidateKey(x) === key);
+      if (!dup) {
+        await updateCodexEntry(a.projectId, target.id, {
+          aliases: JSON.stringify([...aliases, surface]),
+        });
+      }
+      entries = await listCodexEntries(a.projectId);
+      counts.alias++;
+    }
+  }
+  if (counts.dismiss > 0) await saveDismissedCandidateKeys(a.projectId, dismissed);
+  const refreshed = await bRefresh(false);
+  return { counts, ...refreshed };
+}
+
 Object.assign(window, {
   identityLoad: {
     openProject,
@@ -829,6 +1150,13 @@ Object.assign(window, {
     registerRoster,
     extractStructure,
     inventory,
+    bPrepare,
+    bEstimate,
+    bAiGate,
+    bConfigureAi,
+    bDeleteKey,
+    bJudge,
+    bApply,
     ready: true,
   },
 });

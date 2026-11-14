@@ -226,3 +226,9 @@ export function checkRosterAgainstScenes(
 export function scenesTextsForScan(
   scenes: readonly { paragraphs: readonly string[] }[],
 ): string[];
+
+export const RETRYABLE_FAILURE_KINDS: readonly string[];
+export function classifyJudgmentFailure(error: unknown): {
+  kind: string;
+  httpStatus: number | null;
+};

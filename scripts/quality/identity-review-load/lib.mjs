@@ -1192,3 +1192,55 @@ export function wilsonUpper(k, n, z = 1.96) {
     (1 + z2 / n)
   );
 }
+
+// ---- 測定 B：AI 判定の失敗の分類 ---------------------------------------------
+
+/** 再送してよい失敗の種類（通信の失敗＝429／5xx／接続）。判定の中身の失敗は再送しない。 */
+export const RETRYABLE_FAILURE_KINDS = Object.freeze([
+  "rate-limit",
+  "server",
+  "network",
+]);
+
+/**
+ * judgeCandidates が投げた例外を、失敗の種類（と HTTP status があれば数値）に分類する。
+ * メッセージの本文は返さない（返り値は enum と数値だけ）。
+ * - auth：401／403
+ * - rate-limit：429
+ * - server：5xx（529 を含む）
+ * - network：接続・名前解決・timeout
+ * - no-valid-result：判定の中身が有効でない（CODEX_JUDGMENT_NO_VALID_RESULT）
+ * - license：ライセンス制限
+ * - other：上のどれでもない
+ */
+export function classifyJudgmentFailure(error) {
+  const text = [
+    error && typeof error === "object" ? error.name : "",
+    error && typeof error === "object" ? error.code : "",
+    error && typeof error === "object" ? error.message : String(error ?? ""),
+    error && typeof error === "object" && error.cause
+      ? (error.cause.message ?? "")
+      : "",
+  ]
+    .map((part) => String(part ?? ""))
+    .join(" ");
+  const status = /\b(?:status|http|error|code)\D{0,6}([45]\d\d)\b/iu.exec(
+    text,
+  )?.[1];
+  const bare = /\b(401|403|429|5\d\d)\b/u.exec(text)?.[1];
+  const code = Number(status ?? bare ?? 0) || null;
+  if (/CODEX_JUDGMENT_NO_VALID_RESULT/u.test(text))
+    return { kind: "no-valid-result", httpStatus: null };
+  if (/LICENSE|license.?restrict/iu.test(text) && !code)
+    return { kind: "license", httpStatus: null };
+  if (code === 401 || code === 403 || /unauthori[sz]ed|forbidden|invalid.{0,10}api.?key|authentication/iu.test(text))
+    return { kind: "auth", httpStatus: code === 403 ? 403 : 401 };
+  if (code === 429 || /rate.?limit|too many requests/iu.test(text))
+    return { kind: "rate-limit", httpStatus: 429 };
+  if (code !== null && code >= 500)
+    return { kind: "server", httpStatus: code };
+  if (/overloaded/iu.test(text)) return { kind: "server", httpStatus: 529 };
+  if (/ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|timed? ?out|fetch failed|network|IPC_TIMEOUT|socket hang up/iu.test(text))
+    return { kind: "network", httpStatus: null };
+  return { kind: "other", httpStatus: code };
+}
