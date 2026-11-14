@@ -346,7 +346,12 @@ jobs:
           GATE_B2_WORKTREE_SMOKE: "1"
         run: pnpm verify:quality
 
+      # Pull requests do not run this step: the canonical Quick already ran the
+      # same impact selection on the same head (2026-11-15). A master push, a
+      # manual dispatch and a reusable call still run it, and Gate B2 accepts
+      # only those events.
       - name: Impact-selected light gates
+        if: github.event_name != 'pull_request'
         env:
           QUALITY_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           QUALITY_HEAD_SHA: ${{ github.sha }}
@@ -1766,7 +1771,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle') && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+        # A pull request runs the real-worker tests on Linux only (2026-11-15);
+        # the master push, a manual dispatch and a reusable call keep the
+        # three-OS matrix, so a macOS- or Windows-only failure is found by the
+        # `ci.yml` of the master push after the merge.
+        os: ${{ fromJSON((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle' || github.event_name == 'pull_request') && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:

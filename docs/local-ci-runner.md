@@ -154,7 +154,8 @@ skips heavy lanes when every changed path is neutral for them. The rules are
 `scripts/ci-change-scope.json`; `scripts/ci-change-scope.mjs` decides from the
 `base...head` diff and needs no dependency installation. The lanes are journeys
 (the two journey roots; the shards, the aggregate and runtime performance skip
-through `needs`), Rust (shared crates and the three-OS C-query worker), native,
+through `needs`), Rust (shared crates and the C-query worker, which a pull request
+runs on Linux only: macOS and Windows run in the `master` push), native,
 migration, windows, browser (Browser, WebGL, Storybook), LFM and security.
 Quality, Frontend and Electron always run. Selection is deny by default: an
 unclassified path, a forced-all path (workflows, lockfiles, manifests,

@@ -278,6 +278,14 @@ outside a standard GitHub-hosted job, so a local Full is never merge evidence. W
 compilation remains a separate manual Full CI / tag-release obligation; an unavailable release-only
 check is never passed.
 
+What the ordinary `ci.yml` runs depends on the event. On a pull request its Quality job does not repeat the
+impact-selected Light suites (the canonical Quick, which the merge needs on the same candidate, already runs that
+selection) and its C-query worker matrix runs on Linux only; the `master` push, a manual dispatch and a reusable call
+run both in full, the worker on Linux, macOS and Windows. A pull request run is therefore not evidence for the
+impact-selected suites or for the macOS and Windows workers: a failure that only those show is found after the merge, in
+the `ci.yml` of the `master` push, and is handled as a red `master`. The merge condition itself is unchanged: the rebased
+candidate's complete Quick plus the same head's `ci.yml`.
+
 Before any canonical Quick/Full evidence, focused validation finishes first. If a completion commit is in scope,
 the candidate commit is created before any PR/release evidence; the candidate must be clean. Only when PR/release evidence is requested
 and CI is allowed does the clean candidate run local Quick or the hosted canonical Quick; the Quick is immediately verified with the same fixed base/head

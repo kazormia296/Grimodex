@@ -536,7 +536,21 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const terminalRefusalsOnly = { ...defaults, canonical_profile: "c-query-terminal-refusals" };
   const lifecycleOnly = { ...defaults, canonical_profile: "c-query-lifecycle" };
   const workerProfiles = [workerOnly, cancellationOnly, startupOnly, trailingOnly, partialTerminalOnly, terminalRefusalsOnly, practicalOnly, frameLifecycleOnly, lifecycleOnly];
-  assert.equal(workers.strategy.matrix.os, "${{ fromJSON((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle') && '[\"ubuntu-latest\"]' || '[\"ubuntu-latest\",\"macos-latest\",\"windows-latest\"]') }}");
+  // B3 (2026-11-15): a pull request runs the worker on Linux only; every other
+  // event (master push, manual dispatch, reusable call) keeps the three OSes.
+  assert.equal(workers.strategy.matrix.os, "${{ fromJSON((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle' || github.event_name == 'pull_request') && '[\"ubuntu-latest\"]' || '[\"ubuntu-latest\",\"macos-latest\",\"windows-latest\"]') }}");
+  const matrixFor = (event, profile = "") => {
+    const expression = workers.strategy.matrix.os;
+    const condition = expression.slice(expression.indexOf("fromJSON((") + "fromJSON((".length, expression.indexOf(") && '"));
+    const pullRequestOnly = evaluateIf(`\${{ ${condition} }}`, { inputs: { canonical_profile: profile }, event, changes: {} });
+    return pullRequestOnly ? ["ubuntu-latest"] : ["ubuntu-latest", "macos-latest", "windows-latest"];
+  };
+  assert.deepEqual(matrixFor("pull_request"), ["ubuntu-latest"]);
+  for (const event of ["push", "workflow_dispatch", "workflow_call"]) {
+    assert.deepEqual(matrixFor(event), ["ubuntu-latest", "macos-latest", "windows-latest"], event);
+  }
+  assert.deepEqual(matrixFor("workflow_dispatch", "c-query-workers"), ["ubuntu-latest", "macos-latest", "windows-latest"]);
+  assert.deepEqual(matrixFor("workflow_dispatch", "c-query-practical"), ["ubuntu-latest"]);
   for (const standalone of workerProfiles) {
     await validateWorkers(standalone);
     await validateWorkers({ ...standalone, source_focused: "" });
