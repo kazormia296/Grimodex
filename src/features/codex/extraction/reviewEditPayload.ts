@@ -88,7 +88,7 @@ export function patchBindCodexEntityPayload(
     return withSurfaceAlias(next, patch.addSurfaceAlias, payload.canonicalName);
   }
   // 名前（表記）を直すと足すはずの表記が変わるので、別名に足す印は外す（§14 の T1-5）。
-  if (next.canonicalName !== payload.canonicalName.trim()) {
+  if (next.canonicalName.trim() !== payload.canonicalName.trim()) {
     return withSurfaceAlias(next, false, payload.canonicalName);
   }
   return next;
