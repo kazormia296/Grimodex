@@ -23,7 +23,7 @@ import {
   scenesFromWork,
   scenesTextsForScan,
 } from "./lib.mjs";
-import { registerCleanup } from "./cleanup.mjs";
+import { inspectKeyFiles, registerCleanup } from "./cleanup.mjs";
 import { resolveWorkSource } from "./sources.mjs";
 import {
   countAiRows,
@@ -117,6 +117,39 @@ export function assertNoOverlappingJobs(
   );
 }
 
+/**
+ * 測定の Electron の env を組む（純関数）。bus・runtime dir は隔離したもの（busAddress・xdgDir）だけで、
+ * 起動した人の本物の session の env（key の復号の helper にだけ渡す。real-env.mjs）は入れない。
+ * plainTextRunRoot を渡したとき（本測定の B）に限り、safeStorage の basic_text を認める上書き
+ * （electron-observer-b.mjs）の条件の env を立てる。
+ */
+export function buildMeasureElectronEnv({
+  rendererUrl,
+  userData,
+  native,
+  main,
+  tmpDir,
+  xdgDir,
+  busAddress,
+  plainTextRunRoot = "",
+}) {
+  return electronEnv({
+    ELECTRON_RENDERER_URL: rendererUrl,
+    GRIMODEX_USER_DATA_DIR: userData,
+    GRIMODEX_NODE_PATH: native,
+    GRIMODEX_NIR1_PRODUCTION_MAIN: main,
+    TMPDIR: tmpDir,
+    XDG_RUNTIME_DIR: xdgDir,
+    DBUS_SESSION_BUS_ADDRESS: busAddress,
+    ...(plainTextRunRoot
+      ? {
+          GRIMODEX_IDL_PLAIN_TEXT_KEYSTORE: "1",
+          GRIMODEX_IDL_RUN_ROOT: plainTextRunRoot,
+        }
+      : {}),
+  });
+}
+
 /** 作品の scenes JSON を読む（件数の検査つき）。 */
 export function loadWork(workKey, dataDir = "") {
   const work = JSON.parse(
@@ -157,6 +190,38 @@ export async function withVite(output, fn) {
 }
 
 /**
+ * cell の後始末と検査（keep でないとき）。key を含みうる file（ai-keys.json など）が userData に残っていないこと
+ * （delete_api_key の後に entry が 0）を、削除の前に見て、workRoot を消し、消えたことを確かめる。
+ * 数だけ cell.keyCleanup に記録し（内容は読まない）、残っていれば cell を failed にする（以後の cell は launcher が止める）。
+ */
+export function finishCellCleanup(cell, { userData, workRoot }) {
+  const residue = inspectKeyFiles(userData);
+  try {
+    rmSync(workRoot, { recursive: true, force: true });
+  } catch {
+    // 消せなかった事実は下の existsSync で見る。
+  }
+  const removed = !existsSync(workRoot);
+  cell.keyCleanup = {
+    keyFilesBeforeRemoval: residue.files,
+    keyFilesWithEntries: residue.withEntries,
+    workRootRemoved: removed,
+  };
+  if (residue.withEntries > 0 || !removed) {
+    cell.status = "failed";
+    cell.errors = [
+      ...(cell.errors ?? []),
+      safeErrorSummary(
+        new Error(
+          `[artifact] KEY_RESIDUE_AFTER_CELL entries=${residue.withEntries} workRootRemoved=${removed ? 1 : 0}`,
+        ),
+      ),
+    ];
+  }
+  return cell;
+}
+
+/**
  * 1 つの cell（作品×段）を、別の Electron process・別の workspace で動かす。
  * body({ page, app, userData, workspaceDir, scenes, work }) が測定を行い、値を返す。
  * 返り値に cell の観測（IPC の command 名・AI 行の数・接続先・時間）を付ける。
@@ -170,10 +235,12 @@ export async function runCell({
   workKey,
   dataDir = "",
   passwordStoreBasic = true,
+  plainTextKeyStore = false,
   body,
   keep = false,
 }) {
-  const workRoot = path.join(output, "run", cellId);
+  const runRoot = path.join(output, "run");
+  const workRoot = path.join(runRoot, cellId);
   rmSync(workRoot, { recursive: true, force: true });
   const userData = path.join(workRoot, "user-data");
   const workspaceDir = path.join(workRoot, "workspace");
@@ -188,6 +255,10 @@ export async function runCell({
   let app;
   const started = Date.now();
   // kill されたとき（finally が走らない）も、隔離 userData の key と workRoot を消す。
+  assert.ok(
+    !(plainTextKeyStore && keep),
+    "[precheck] KEEP_FORBIDDEN a cell that may hold a key on disk must be deleted at its end",
+  );
   const unregisterCleanup = registerCleanup(() => {
     try {
       app?.process().kill("SIGKILL");
@@ -235,31 +306,34 @@ export async function runCell({
       ROOT,
       "electron/native/grimodex-node/grimodex-node.node",
     );
-    const observer = path.join(
-      ROOT,
-      "scripts/quality/nir1-retrieval/electron-observer.mjs",
-    );
+    // 本測定の B（plainTextKeyStore）だけ、basic_text の safeStorage を認める上書き（§17.6）を包んだ起動 script を使う。
+    const observer = plainTextKeyStore
+      ? path.join(import.meta.dirname, "electron-observer-b.mjs")
+      : path.join(ROOT, "scripts/quality/nir1-retrieval/electron-observer.mjs");
     for (const file of [main, native, observer])
       assert.ok(
         existsSync(file),
         `[precheck] missing ${path.relative(ROOT, file)}`,
       );
     const { _electron } = await import("playwright");
-    const env = electronEnv({
-      ELECTRON_RENDERER_URL: rendererUrl,
-      GRIMODEX_USER_DATA_DIR: userData,
-      GRIMODEX_NODE_PATH: native,
-      GRIMODEX_NIR1_PRODUCTION_MAIN: main,
-      TMPDIR: tmpDir,
-      XDG_RUNTIME_DIR: xdgDir,
-      DBUS_SESSION_BUS_ADDRESS: busAddress,
+    const env = buildMeasureElectronEnv({
+      rendererUrl,
+      userData,
+      native,
+      main,
+      tmpDir,
+      xdgDir,
+      busAddress,
+      plainTextRunRoot: plainTextKeyStore ? runRoot : "",
     });
     assertNoFakeAiEnv(env);
     app = await _electron.launch({
       executablePath: require("electron"),
       args: [
         "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1",
-        ...(passwordStoreBasic ? ["--password-store=basic"] : []),
+        ...(passwordStoreBasic || plainTextKeyStore
+          ? ["--password-store=basic"]
+          : []),
         observer,
       ],
       cwd: ROOT,
@@ -337,6 +411,9 @@ export async function runCell({
       projectId,
       userData,
       workspaceDir,
+      workRoot,
+      runRoot,
+      keep,
       scenes: loaded.scenes,
       scenesTexts: loaded.scenesTexts,
     });
@@ -361,6 +438,8 @@ export async function runCell({
       nonLoopbackDestinations: [...destinations].sort(),
     };
     cell.elapsedMs = Date.now() - started;
+    // 初期値の "blocked" を書き換える。採用の可否（ok など）は呼び出し側が最終の status として書き戻す。
+    cell.status = "completed";
     return { cell, value, scenesTexts: loaded.scenesTexts };
   } catch (error) {
     cell.status = "failed";
@@ -369,7 +448,7 @@ export async function runCell({
   } finally {
     if (sampler) clearInterval(sampler);
     if (app) await app.close().catch(() => undefined);
-    if (!keep) rmSync(workRoot, { recursive: true, force: true });
+    if (!keep) finishCellCleanup(cell, { userData, workRoot });
     unregisterCleanup();
   }
 }

@@ -3,7 +3,13 @@
 // Anthropic へは送らない。key・keyring・Electron は使わない。
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import os from "node:os";
 import process from "node:process";
 import path from "node:path";
@@ -14,7 +20,7 @@ import { candidateKey, hashSurface, safeErrorSummary } from "./lib.mjs";
 import {
   CONFIRM_SEND,
   DRY_RUN_ASSUMPTIONS,
-  assertSafeStorageBackend,
+  assertSafeStorageCondition,
   bindPageApi,
   assertSendAllowed,
   dryCellBody,
@@ -177,20 +183,127 @@ test("本測定は明示の許可が無ければ始めない。dry-run は送る
   );
 });
 
-test("safeStorage の backend：basic_text・不明は止める", () => {
-  assert.throws(
-    () => assertSafeStorageBackend("basic_text"),
-    /SAFE_STORAGE_BACKEND/u,
-  );
-  assert.throws(
-    () => assertSafeStorageBackend("unknown"),
-    /SAFE_STORAGE_BACKEND/u,
-  );
-  assert.throws(
-    () => assertSafeStorageBackend(undefined),
-    /SAFE_STORAGE_BACKEND/u,
-  );
-  assert.doesNotThrow(() => assertSafeStorageBackend("gnome_libsecret"));
+test("safeStorage の backend：basic_text は条件つきで認める。unknown・空は止める。記録に backend の名前を残す", async () => {
+  await withTmp((dir) => {
+    const runRoot = path.join(dir, "run");
+    const userData = path.join(runRoot, "cell", "user-data");
+    mkdirSync(userData, { recursive: true });
+    chmodSync(path.join(runRoot, "cell"), 0o700);
+    chmodSync(userData, 0o700);
+    const ok = { userData, runRoot, keep: false, overridden: true };
+    const record = assertSafeStorageCondition({ ...ok, backend: "basic_text" });
+    assert.deepEqual(record, {
+      backend: "basic_text",
+      plainTextAllowed: true,
+      userDataPrivate: true,
+      underRunRoot: true,
+      deletedAtCellEnd: true,
+    });
+    assert.equal(
+      assertSafeStorageCondition({ ...ok, backend: "gnome_libsecret" })
+        .plainTextAllowed,
+      false,
+    );
+    for (const backend of ["unknown", "", undefined])
+      assert.throws(
+        () => assertSafeStorageCondition({ ...ok, backend }),
+        /SAFE_STORAGE_BACKEND/u,
+      );
+    const code = (patch) => {
+      try {
+        assertSafeStorageCondition({ ...ok, backend: "basic_text", ...patch });
+      } catch (error) {
+        assert.ok(!error.message.includes(dir));
+        return /SAFE_STORAGE_CONDITION (\w+)/u.exec(error.message)?.[1];
+      }
+      return "none";
+    };
+    assert.equal(code({ keep: true }), "KEEP_FORBIDDEN");
+    assert.equal(code({ overridden: false }), "PLAIN_TEXT_OVERRIDE_INACTIVE");
+    assert.equal(
+      code({ userData: path.join(dir, "missing") }),
+      "USERDATA_NOT_FOUND",
+    );
+    const outside = path.join(dir, "outside");
+    mkdirSync(outside, { mode: 0o700 });
+    assert.equal(code({ userData: outside }), "USERDATA_ROOT");
+    chmodSync(userData, 0o755);
+    assert.equal(code({}), "USERDATA_MODE");
+    chmodSync(userData, 0o700);
+    chmodSync(path.join(runRoot, "cell"), 0o755); // cell の dir（userData の親）も 0700 であること
+    assert.equal(code({}), "USERDATA_MODE");
+  });
+});
+
+test("measureBBody：条件が満たせなければ key を読まず、満たせば backend の名前を結果に残す", async () => {
+  await withTmp(async (dir) => {
+    const runRoot = path.join(dir, "run");
+    const userData = path.join(runRoot, "cell", "user-data");
+    mkdirSync(userData, { recursive: true });
+    chmodSync(path.join(runRoot, "cell"), 0o700);
+    chmodSync(userData, 0o700);
+    const gate = () =>
+      createGate({
+        file: path.join(dir, `ledger-${Math.random()}.jsonl`),
+        model: "claude-sonnet-5-5",
+        pricing: PRICING,
+        requireTrial: false,
+      });
+    const app = {
+      evaluate: async (fn) =>
+        fn({ safeStorage: { getSelectedStorageBackend: () => "basic_text" } }),
+    };
+    const run = async (extra, calls, workspaceDir) => {
+      const { page } = await installFakeWindow({ workspaceDir, calls });
+      let reads = 0;
+      const result = await measureBBody({
+        page,
+        app,
+        projectId: "p",
+        workspaceDir,
+        roster,
+        level: "L2",
+        mode: "trial",
+        gate: gate(),
+        getKey: async () => {
+          reads++;
+          return FAKE_KEY;
+        },
+        userData,
+        runRoot,
+        usagePoll: { timeoutMs: 1000, intervalMs: 5 },
+        ...extra,
+      });
+      return { result, reads };
+    };
+    // 上書きが無い（製品の拒否を通せない）なら key を読まず、AI の設定もしない。
+    const calls1 = [];
+    await assert.rejects(
+      run({}, calls1, path.join(dir, "w1")),
+      /SAFE_STORAGE_CONDITION PLAIN_TEXT_OVERRIDE_INACTIVE/u,
+    );
+    assert.ok(!calls1.some((c) => c[0] === "configure" || c[0] === "judge"));
+    // --keep の cell でも読まない。
+    globalThis.idlRealStorageBackend = () => "basic_text";
+    try {
+      const calls2 = [];
+      await assert.rejects(
+        run({ keep: true }, calls2, path.join(dir, "w2")),
+        /SAFE_STORAGE_CONDITION KEEP_FORBIDDEN/u,
+      );
+      assert.ok(!calls2.some((c) => c[0] === "configure"));
+      // 条件が揃えば進み、backend の名前と条件を結果に残す（key は消す）。
+      const calls3 = [];
+      const { result, reads } = await run({}, calls3, path.join(dir, "w3"));
+      assert.equal(reads, 1);
+      assert.equal(result.safeStorage.backend, "basic_text");
+      assert.equal(result.safeStorage.plainTextAllowed, true);
+      assert.equal(calls3.at(-1)[0], "delete-key");
+      assert.ok(!JSON.stringify(result).includes(FAKE_KEY));
+    } finally {
+      delete globalThis.idlRealStorageBackend;
+    }
+  });
 });
 
 test("偽 AI の env（GRIMODEX_PRODUCT_JOURNEY*）が立っていれば本測定の process は止まる（名前だけ数える）", () => {

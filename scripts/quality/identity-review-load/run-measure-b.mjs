@@ -8,13 +8,15 @@
 //   --mode trial|b1|b2  本測定（Anthropic へ送る）。--confirm-send yes-send-to-anthropic が無ければ始めない。
 //                   この作業（道具づくり）では実行しない。
 //
+// 本測定は外側の script（launch-measure-b.mjs）から起動する。外側の script が本物の session の env を控え、隔離した
+// launcher（dbus-run-session・local-ci-xvfb・TMPDIR）へ FIFO で 1 回渡す（--real-env-fifo。key の復号の helper にだけ使う。§17.6）。
 // 隔離は run-measure-a.mjs と同じ（dbus-run-session・local-ci-xvfb・TMPDIR）。出力は件数・ID・path だけ
 // （repo 外の 0700／0600）。偽 AI の env（GRIMODEX_PRODUCT_JOURNEY*）は node・main のどちらにも立てない
 // （launcher-common の assertNoFakeAiEnv。試験では使ってよいが本測定の経路とは分ける）。
 import assert from "node:assert/strict";
 import console from "node:console";
 import process from "node:process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { setTimeout } from "node:timers";
 import { pathToFileURL } from "node:url";
@@ -58,11 +60,11 @@ import {
   writeJson0600,
 } from "./launcher-common.mjs";
 import { findKeyResidue } from "./cleanup.mjs";
+import { assertRealBusEnv, receiveRealEnv } from "./real-env.mjs";
 import {
   hashKeyStore,
   installKey,
-  productStoreWriter,
-  receiveKeyViaFifo,
+  makeKeyGetter,
   removeKey,
 } from "./key-supply.mjs";
 
@@ -109,13 +111,56 @@ export function assertSendAllowed(options) {
   );
 }
 
-/** 隔離した profile の safeStorage の backend が basic_text でないこと（本測定の前）。 */
-export function assertSafeStorageBackend(backend) {
+/**
+ * 隔離した profile の safeStorage の backend の条件（事前登録 §17.6。本測定の前、cell ごと）。
+ * 測定の Electron は隔離した bus で動くので backend は basic_text になる。作者の決定により、次の条件を満たすときに限り
+ * basic_text を認める（満たさなければ止める）：userData が自分の所有の 0700 で、launcher の一時 root（<output>/run）の下にあり、
+ * cell の終わりに消されること（--keep true でないこと）。backend が unknown・空なら（判定できないので）止める。
+ * basic_text のときは、製品の拒否を通す上書き（electron-observer-b.mjs）が有効であることも要る。
+ * 返り値は records に残す（backend の名前と条件の充足。パス・値は含めない）。
+ */
+export function assertSafeStorageCondition({
+  backend,
+  overridden = false,
+  userData,
+  runRoot,
+  keep = false,
+}) {
+  const name = String(backend).replace(/[^A-Za-z0-9_]/gu, "_");
   assert.ok(
-    typeof backend === "string" &&
-      !["basic_text", "unknown", ""].includes(backend),
-    `[precheck] SAFE_STORAGE_BACKEND backend=${String(backend).replace(/[^A-Za-z0-9_]/gu, "_")}`,
+    typeof backend === "string" && !["unknown", ""].includes(backend),
+    `[precheck] SAFE_STORAGE_BACKEND backend=${name}`,
   );
+  const fail = (code) =>
+    assert.fail(`[precheck] SAFE_STORAGE_CONDITION ${code} backend=${name}`);
+  if (keep !== false) fail("KEEP_FORBIDDEN");
+  let rel = "..";
+  try {
+    for (const dir of [userData, path.dirname(userData)]) {
+      const info = statSync(dir);
+      if (
+        !info.isDirectory() ||
+        info.uid !== process.getuid() ||
+        (info.mode & 0o077) !== 0
+      )
+        fail("USERDATA_MODE");
+    }
+    rel = path.relative(realpathSync(runRoot), realpathSync(userData));
+  } catch (error) {
+    if (error?.message?.includes("SAFE_STORAGE_CONDITION")) throw error;
+    fail("USERDATA_NOT_FOUND");
+  }
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel))
+    fail("USERDATA_ROOT");
+  if (backend === "basic_text" && overridden !== true)
+    fail("PLAIN_TEXT_OVERRIDE_INACTIVE");
+  return {
+    backend: name,
+    plainTextAllowed: backend === "basic_text",
+    userDataPrivate: true,
+    underRunRoot: true,
+    deletedAtCellEnd: true,
+  };
 }
 
 /**
@@ -270,6 +315,9 @@ export async function measureBBody({
   remainingAfter = 0,
   expectedSafeStorageCheck = true,
   usagePoll,
+  userData,
+  runRoot,
+  keep = false,
 }) {
   const { roster: used, cut, cutEntities } = truncateRosterForB(roster);
   const index = await buildRosterIndex(used);
@@ -292,12 +340,22 @@ export async function measureBBody({
     entries.length,
     "[artifact] REGISTRATION_COUNT_DIFFERS",
   );
+  let safeStorageRecord = null;
   if (expectedSafeStorageCheck) {
-    const backend = await app.evaluate(
-      ({ safeStorage }) =>
-        safeStorage.getSelectedStorageBackend?.() ?? "unknown",
-    );
-    assertSafeStorageBackend(backend);
+    // 上書きが有効なら本物の backend（idlRealStorageBackend）を読む。上書きの無い経路では safeStorage の値を読む。
+    const seen = await app.evaluate(({ safeStorage }) => ({
+      backend:
+        globalThis.idlRealStorageBackend?.() ??
+        safeStorage.getSelectedStorageBackend?.() ??
+        "unknown",
+      overridden: typeof globalThis.idlRealStorageBackend === "function",
+    }));
+    safeStorageRecord = assertSafeStorageCondition({
+      ...seen,
+      userData,
+      runRoot,
+      keep,
+    });
   }
   // key は検査・登録・backend の確認がすべて通った後、送信の直前に読む（getKey）。
   const configured = await installKey(page, {
@@ -383,6 +441,7 @@ export async function measureBBody({
         cut,
         registeredEntries: entries.length,
       },
+      safeStorage: safeStorageRecord,
       settings: {
         provider: configured.provider,
         model: configured.model,
@@ -432,6 +491,7 @@ function parseArgs(args) {
       (l) => DEFAULT_SYNTH.aliasFractions[l],
     ).join(","),
     "trial-work": "",
+    "real-env-fifo": "",
     keep: "false",
   };
   for (let i = 0; i < args.length; i += 2) {
@@ -477,6 +537,7 @@ async function mainDry(options) {
         body: (ctx) => dryCellBody({ page: ctx.page, synth }),
       });
       const status = cell.status === "failed" ? "failed" : dryCellStatus(cell);
+      cell.status = status;
       const result = {
         schemaVersion: "identity-load-measure-b-dry/1",
         work,
@@ -559,6 +620,17 @@ async function mainReal(options) {
   ensurePrivateDir(outDir);
   assertNoFakeAiEnv(process.env);
   // 安い前検査を先に行う（key は最後、各 cell の送信の直前に読む）。
+  // key が disk に残りうる cell（basic_text の userData。§17.6）は、終わりに消す前提なので --keep true は使えない。
+  assert.ok(
+    options.keep !== "true",
+    "[precheck] KEEP_FORBIDDEN a real run deletes each cell userData at its end",
+  );
+  // key の復号の helper に渡す本物の session の env は、外側の script（launch-measure-b.mjs）が FIFO で 1 回渡す。
+  // 無い・本物の bus を指さない（隔離 bus と同じ・socket が無い）なら、cell も key も使わずに止まる。
+  const realEnv = assertRealBusEnv(
+    await receiveRealEnv(options["real-env-fifo"]),
+    { isolatedAddresses: [process.env.DBUS_SESSION_BUS_ADDRESS] },
+  );
   const residue = findKeyResidue(output);
   assert.equal(
     residue.length,
@@ -602,13 +674,21 @@ async function mainReal(options) {
   );
   const b2Upper = readB2UpperByWork(path.join(output, "dry-run"));
   const keyStoreBefore = hashKeyStore();
-  // key は復号の helper（launcher と同じ env）で FIFO から cell の中で 1 回ずつ受ける。
-  // 復号の helper の env と、測定の Electron の隔離 bus の分離の方針は未決（preregistration §17.2）。
-  const getKey = () =>
-    receiveKeyViaFifo(productStoreWriter(), { parent: output });
   const summary = [];
   try {
     await withVite(output, async ({ vite, busAddress }) => {
+      // key は復号の helper で FIFO から cell の中で 1 回ずつ受ける。helper の env は控えた本物の session の env
+      // （測定の Electron・A・名簿・目録には渡さない。§17.6）。本物の bus を指さなければ FIFO も作らずに止まる。
+      const isolatedAddresses = [
+        busAddress,
+        process.env.DBUS_SESSION_BUS_ADDRESS,
+      ];
+      const getKey = makeKeyGetter({
+        realEnv,
+        isolatedAddresses,
+        parent: output,
+        tmpDir: process.env.TMPDIR,
+      });
       for (const [cellIndex, { work, level }] of cells.entries()) {
         if (gate.state.stopped) break;
         assert.ok(ROSTER_LEVELS.includes(level));
@@ -621,8 +701,8 @@ async function mainReal(options) {
           cellId: `B-${options.mode}-${work}-${level}`,
           workKey: work,
           dataDir: options["data-dir"],
-          passwordStoreBasic: false,
-          keep: options.keep === "true",
+          plainTextKeyStore: true,
+          keep: false,
           body: (ctx) =>
             measureBBody({
               ...ctx,
@@ -643,6 +723,7 @@ async function mainReal(options) {
         });
         const status =
           cell.status === "failed" ? "failed" : realCellStatus(cell, value);
+        cell.status = status;
         const result = {
           schemaVersion: "identity-load-measure-b/1",
           work,
@@ -680,6 +761,7 @@ async function mainReal(options) {
     writeJson0600(path.join(outDir, "key-store-check.json"), {
       productKeyStoreUnchanged: keyStoreBefore === keyStoreAfter,
     });
+    if (keyStoreBefore !== keyStoreAfter) process.exitCode = 1;
   }
   if (summary.some((s) => s.status !== "ok")) process.exitCode = 1;
 }

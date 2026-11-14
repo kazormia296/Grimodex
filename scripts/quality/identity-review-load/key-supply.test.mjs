@@ -1,14 +1,24 @@
 // key の供給の試験（fake の key・fake の writer。製品の key store・keyring・Electron は使わない）。
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import process from "node:process";
 import { test } from "node:test";
 import { writeKeyToFifo } from "../chronicle-prompt-cache-diag/fifo-key.mjs";
 import {
   assertKeyShape,
   hashKeyStore,
   installKey,
+  makeKeyGetter,
+  productStoreWriter,
   receiveKeyViaFifo,
   removeKey,
 } from "./key-supply.mjs";
@@ -111,6 +121,129 @@ test("hashKeyStore：内容を返さず、無ければ absent", () => {
     const hash = hashKeyStore(file);
     assert.match(hash, /^[0-9a-f]{16}$/u);
     assert.equal(hashKeyStore(file), hash);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- helper の env の分離（§17.6）。偽の helper（node の小さな script）・偽の bus・偽の key だけ。 ----
+
+const FIFO_KEY_MODULE = path.resolve(
+  import.meta.dirname,
+  "../chronicle-prompt-cache-diag/fifo-key.mjs",
+);
+
+/** 偽の helper：渡された env の要点を file に書き、偽の key を FIFO に書く（製品の key store・keyring は読まない）。 */
+function writeFakeHelper(dir) {
+  const script = path.join(dir, "fake-helper.mjs");
+  writeFileSync(
+    script,
+    `import { writeFileSync } from "node:fs";
+import { writeKeyToFifo } from ${JSON.stringify(FIFO_KEY_MODULE)};
+const [fifo, report] = process.argv.slice(2);
+writeFileSync(report, JSON.stringify({
+  dbus: process.env.DBUS_SESSION_BUS_ADDRESS ?? null,
+  runtime: process.env.XDG_RUNTIME_DIR ?? null,
+  tmp: process.env.TMPDIR ?? null,
+  leak: process.env.IDL_TEST_LEAK ?? null,
+  runAsNode: process.env.ELECTRON_RUN_AS_NODE ?? null,
+  names: Object.keys(process.env).sort(),
+}));
+await writeKeyToFifo(fifo, ${JSON.stringify(FAKE_KEY)});
+`,
+  );
+  return script;
+}
+
+test("helper は launcher の隔離 bus でなく、控えた本物の bus の env で起動する。launcher の他の変数は渡さない", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "idl-key-"));
+  const saved = {
+    dbus: process.env.DBUS_SESSION_BUS_ADDRESS,
+    leak: process.env.IDL_TEST_LEAK,
+    runAsNode: process.env.ELECTRON_RUN_AS_NODE,
+  };
+  try {
+    const isolated = `unix:path=${path.join(dir, "isolated-bus")}`;
+    process.env.DBUS_SESSION_BUS_ADDRESS = isolated; // launcher の process.env は隔離 bus
+    process.env.IDL_TEST_LEAK = "launcher-only";
+    process.env.ELECTRON_RUN_AS_NODE = "1";
+    const realSocket = path.join(dir, "real-bus");
+    writeFileSync(realSocket, "");
+    const realEnv = {
+      DBUS_SESSION_BUS_ADDRESS: `unix:path=${realSocket}`,
+      XDG_RUNTIME_DIR: dir,
+      PATH: process.env.PATH,
+    };
+    const report = path.join(dir, "report.json");
+    const script = writeFakeHelper(dir);
+    const getKey = makeKeyGetter({
+      realEnv,
+      isolatedAddresses: [isolated],
+      parent: dir,
+      tmpDir: path.join(dir, "tmp"),
+      helperCommand: (fifo) => [process.execPath, [script, fifo, report]],
+      timeoutMs: 10_000,
+    });
+    assert.equal(await getKey(), FAKE_KEY);
+    const seen = JSON.parse(readFileSync(report, "utf8"));
+    assert.equal(seen.dbus, realEnv.DBUS_SESSION_BUS_ADDRESS);
+    assert.notEqual(seen.dbus, isolated);
+    assert.equal(seen.runtime, dir);
+    assert.equal(seen.tmp, path.join(dir, "tmp"));
+    assert.equal(seen.leak, null);
+    assert.equal(seen.runAsNode, null);
+    assert.ok(!seen.names.includes("IDL_TEST_LEAK"));
+  } finally {
+    for (const [name, value] of [
+      ["DBUS_SESSION_BUS_ADDRESS", saved.dbus],
+      ["IDL_TEST_LEAK", saved.leak],
+      ["ELECTRON_RUN_AS_NODE", saved.runAsNode],
+    ])
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("本物の bus が無い・隔離 bus と同じなら、FIFO も作らず helper も起動せず、key を読まずに止まる", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "idl-key-"));
+  try {
+    let spawned = 0;
+    const spawnImpl = () => {
+      spawned++;
+      throw new Error("must not spawn");
+    };
+    const isolated = "unix:path=/iso/bus";
+    for (const realEnv of [
+      undefined,
+      {},
+      { DBUS_SESSION_BUS_ADDRESS: isolated, XDG_RUNTIME_DIR: dir },
+      {
+        DBUS_SESSION_BUS_ADDRESS: `unix:path=${dir}/none`,
+        XDG_RUNTIME_DIR: dir,
+      },
+    ]) {
+      const getKey = makeKeyGetter({
+        realEnv,
+        isolatedAddresses: [isolated],
+        parent: dir,
+        spawnImpl,
+      });
+      await assert.rejects(
+        async () => getKey(),
+        (error) =>
+          /REAL_BUS_MISSING/u.test(error.message) &&
+          !error.message.includes(dir),
+      );
+    }
+    assert.equal(spawned, 0);
+    assert.deepEqual(readdirSync(dir), []); // FIFO の dir も作られていない
+    // writer 単体でも、本物の bus の env が無ければ起動しない（launcher の process.env へは落とさない）。
+    await assert.rejects(
+      productStoreWriter(undefined, { spawnImpl })("/unused"),
+      /REAL_BUS_MISSING/u,
+    );
+    assert.equal(spawned, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -285,6 +285,7 @@ async function main() {
       });
       const status =
         observed.status === "failed" ? "failed" : cellStatus(observed, value);
+      observed.status = status; // 初期値の "blocked" を最終の採用の可否に書き換える。
       const result = {
         schemaVersion: "identity-load-measure-a/1",
         cell: cell.id,

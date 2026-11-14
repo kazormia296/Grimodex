@@ -1,7 +1,8 @@
 /* global window */
 // 測定 B の key の供給（事前登録 §6）。本測定でだけ使う。この作業（道具づくり）では実行しない。
 //
-// 経路：製品の profile の ai-keys.json（safeStorage）を Electron の helper が復号し、FIFO（0700 の dir の
+// 経路：製品の profile の ai-keys.json（safeStorage）を、本物の session の bus に届く別 process の Electron の
+// helper（env は real-env.mjs が控えたもの。測定の Electron の隔離 bus とは分ける）が復号し、FIFO（0700 の dir の
 // 0600）で launcher に 1 回だけ渡す（chronicle-prompt-cache-diag の product-key-to-fifo.mjs と fifo-key.mjs）。
 // launcher は key を、隔離した profile の page の bConfigureAi（製品の save_api_key）へ渡す。
 // 値・長さは表示・記録しない（エラーにも載せない）。env の ANTHROPIC_API_KEY は読まない。
@@ -15,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { registerCleanup } from "./cleanup.mjs";
+import { assertRealBusEnv, buildHelperEnv } from "./real-env.mjs";
 import {
   makeKeyFifo,
   readKeyFromFifo,
@@ -81,29 +83,36 @@ export async function receiveKeyViaFifo(
   }
 }
 
-/** 本番の writer：製品の ai-keys.json を Electron の helper で復号して FIFO に書く。 */
-export function productStoreWriter(store = DEFAULT_PRODUCT_KEY_STORE) {
+/**
+ * 本番の writer：製品の ai-keys.json を Electron の helper で復号して FIFO に書く。
+ * helper は launcher の隔離した env でなく、控えた本物の session の env（helperEnv。real-env.mjs）で起動する。
+ * helperEnv が無い・本物の bus を指さないときは、key を読まずに止まる（launcher の process.env へは落とさない）。
+ * helperCommand(fifo, store) は試験用の差し替え（[command, argv]）。値・env はエラーに載せない。
+ */
+export function productStoreWriter(
+  store = DEFAULT_PRODUCT_KEY_STORE,
+  {
+    helperEnv,
+    isolatedAddresses = [],
+    tmpDir,
+    helperCommand,
+    spawnImpl = spawn,
+  } = {},
+) {
   return (fifo) =>
     new Promise((resolve, reject) => {
-      const electron = require("electron");
-      const env = { ...process.env };
-      delete env.ELECTRON_RUN_AS_NODE;
-      const args = [
-        "--no-sandbox",
-        path.join(
-          HERE,
-          "../chronicle-prompt-cache-diag/product-key-to-fifo.mjs",
-        ),
-        "--store",
-        store,
-        "--fifo",
-        fifo,
-      ];
-      const [command, argv] =
-        process.env.GDX_DIAG_NO_XVFB === "1"
-          ? [electron, args]
-          : ["xvfb-run", ["-a", electron, ...args]];
-      const child = spawn(command, argv, { env, stdio: "ignore" });
+      let env;
+      try {
+        assertRealBusEnv(helperEnv, { isolatedAddresses });
+        env = buildHelperEnv(helperEnv, { tmpDir });
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      const [command, argv] = helperCommand
+        ? helperCommand(fifo, store)
+        : defaultHelperCommand(fifo, store);
+      const child = spawnImpl(command, argv, { env, stdio: "ignore" });
       child.on("error", () => reject(new Error("[key] HELPER_SPAWN_FAILED")));
       child.on("exit", (code) =>
         code === 0
@@ -111,6 +120,50 @@ export function productStoreWriter(store = DEFAULT_PRODUCT_KEY_STORE) {
           : reject(new Error(`[key] HELPER_FAILED code=${code}`)),
       );
     });
+}
+
+function defaultHelperCommand(fifo, store) {
+  const electron = require("electron");
+  const args = [
+    "--no-sandbox",
+    path.join(HERE, "../chronicle-prompt-cache-diag/product-key-to-fifo.mjs"),
+    "--store",
+    store,
+    "--fifo",
+    fifo,
+  ];
+  return process.env.GDX_DIAG_NO_XVFB === "1"
+    ? [electron, args]
+    : ["xvfb-run", ["-a", electron, ...args]];
+}
+
+/**
+ * cell ごとに 1 回 key を受ける関数（run-measure-b.mjs が使う）。呼ぶとまず、控えた env が本物の bus を指すことを確かめ、
+ * 指さなければ FIFO も作らず helper も起動せずに止まる（key を読まない）。
+ */
+export function makeKeyGetter({
+  realEnv,
+  isolatedAddresses = [],
+  parent,
+  tmpDir,
+  store,
+  helperCommand,
+  spawnImpl,
+  timeoutMs,
+}) {
+  return () => {
+    assertRealBusEnv(realEnv, { isolatedAddresses });
+    return receiveKeyViaFifo(
+      productStoreWriter(store, {
+        helperEnv: realEnv,
+        isolatedAddresses,
+        tmpDir,
+        helperCommand,
+        spawnImpl,
+      }),
+      { parent, ...(timeoutMs ? { timeoutMs } : {}) },
+    );
+  };
 }
 
 /** 製品の ai-keys.json の hash（実行の前後で比べる。内容は返さない）。無ければ "absent"。 */
