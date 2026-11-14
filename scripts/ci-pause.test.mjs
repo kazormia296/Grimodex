@@ -44,6 +44,7 @@ import {
   validateFullSetupEstimate,
   validateFullSetupLocations,
   validateFullMemoryRisk,
+  standardHostedVm,
 } from "./local-ci-full-admission.mjs";
 
 const repoRoot = path.resolve(
@@ -1448,6 +1449,17 @@ test("cold solver rejection projects syntax without exposing text or accepting a
   assert.throws(() => coldSystemPackages(invalidPrefix), /recognized cold APT/u);
   assert.deepEqual(coldSystemSolverFormat("PRIVATE_NOT_AN_INSTALL\n"), { installLines: 0, rejectedLines: 0, firstRejected: null });
   assert.deepEqual(coldSystemPackages(valid), [{ package: "sample", version: "1:2.3-4", architecture: "amd64" }]);
+});
+
+test("Full admission accepts only the VM identities of GitHub's standard hosted compute", () => {
+  // Azure (Hyper-V) and, since 2026-11, AWS EC2 virtualized sizes ("Cloud: AWS" in the provisioner log).
+  for (const [vendor, model] of [["Microsoft Corporation", "Virtual Machine"], ["Amazon EC2", "m8id.xlarge"], ["Amazon EC2", "c7i.4xlarge"], ["Amazon EC2", "m5.large"], ["Amazon EC2", "u-6tb1.112xlarge"]]) {
+    assert.equal(standardHostedVm(vendor, model), true, `${vendor} / ${model}`);
+  }
+  // Bare metal, other hypervisors, containers/self-hosted machines and near misses stay refused.
+  for (const [vendor, model] of [["Amazon EC2", "m7i.metal-24xl"], ["Amazon EC2", "c5.metal"], ["Amazon EC2", ""], ["Amazon EC2", "Virtual Machine"], ["Amazon EC2", "m8id.xlarge "], ["Amazon EC2", "M8ID.XLARGE"], ["Microsoft Corporation", "m8id.xlarge"], ["Microsoft Corporation", "Surface Laptop"], ["QEMU", "Standard PC (Q35 + ICH9, 2009)"], ["Google", "Google Compute Engine"], ["Dell Inc.", "PowerEdge R760"], ["", ""], ["amazon ec2", "m8id.xlarge"]]) {
+    assert.equal(standardHostedVm(vendor, model), false, `${vendor} / ${model}`);
+  }
 });
 
 test("canonical prerequisite reference is isolated from Full ingestion and heavy effects", async () => {
