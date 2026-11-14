@@ -41,7 +41,8 @@ export interface MatchExistingEntityInput {
   readonly explicitIdentityRefs?: readonly KnowledgeEntityRef[];
 }
 
-function stripHonorific(surface: string): string {
+/** 表記の末尾の敬称（さん・様・先生 等）を 1 つだけ外す。外せなければそのまま。 */
+export function stripHonorific(surface: string): string {
   let value = surface.trim();
   for (const suffix of HONORIFIC_SUFFIXES) {
     if (value.endsWith(suffix) && value.length > suffix.length) {

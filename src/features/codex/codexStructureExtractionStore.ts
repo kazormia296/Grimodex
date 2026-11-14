@@ -19,6 +19,11 @@ import {
   relationEndpointsReady,
 } from "./extraction/relationApplicability";
 import { refreshEntityBindSafety } from "./extraction/entityBulkSafety";
+import {
+  patchBindCodexEntityPayload,
+  resolveBindCodexEntityPayload,
+  type BindCodexEntityPayloadPatch,
+} from "./extraction/reviewEditPayload";
 
 export { relationEndpointsReady };
 
@@ -489,12 +494,7 @@ interface CodexStructureExtractionState {
   ) => void;
   reviseProposalFields: (
     proposalId: string,
-    patch: {
-      canonicalName?: string;
-      summary?: string | null;
-      aliases?: readonly string[];
-      typeRef?: string;
-    },
+    patch: BindCodexEntityPayloadPatch,
   ) => void;
   reviseRelationFields: (
     proposalId: string,
@@ -862,48 +862,19 @@ export const useCodexStructureExtractionStore =
       ) {
         return;
       }
-      const payload = current.proposal.payload;
-      const aliases = payload.aliases
-        .filter((alias) => alias.status === "explicit")
-        .map((alias) => alias.surface);
-      const nextProposal: BindCodexEntityProposal =
-        resolution.kind === "create-new"
-          ? {
-              ...current.proposal,
-              target: {
+      // 変換は Api（Native に送る revision）と同じ関数に寄せる（片方だけ直すと画面と保存が
+      // 食い違う。§4.2 の 2）。
+      const nextProposal: BindCodexEntityProposal = {
+        ...current.proposal,
+        target:
+          resolution.kind === "create-new"
+            ? {
                 kind: "new",
-                logicalRef: payload.narrativeEntityId,
-              },
-              payload: {
-                ...payload,
-                binding: {
-                  kind: "create-new",
-                  entry: {
-                    name: payload.canonicalName,
-                    aliases,
-                    summary: null,
-                  },
-                },
-              },
-            }
-          : {
-              ...current.proposal,
-              target: {
-                kind: "existing",
-                entityRef: resolution.entityRef,
-              },
-              payload: {
-                ...payload,
-                binding: {
-                  kind: "bind-existing",
-                  entityRef: resolution.entityRef,
-                  enrichment: {
-                    aliasesToAdd: aliases,
-                    summary: { kind: "leave" },
-                  },
-                },
-              },
-            };
+                logicalRef: current.proposal.payload.narrativeEntityId,
+              }
+            : { kind: "existing", entityRef: resolution.entityRef },
+        payload: resolveBindCodexEntityPayload(current.proposal, resolution),
+      };
       const typeResolved =
         nextProposal.payload.typeResolution.status === "resolved";
       const applicability =
@@ -961,71 +932,12 @@ export const useCodexStructureExtractionStore =
         (proposal) => proposal.proposalId === proposalId,
       );
       if (!current || current.application) return;
-      const payload = current.proposal.payload;
-      const binding = payload.binding;
-      let nextBinding = binding;
-      if (binding.kind === "create-new") {
-        nextBinding = {
-          ...binding,
-          entry: {
-            name:
-              patch.canonicalName !== undefined
-                ? patch.canonicalName.trim()
-                : binding.entry.name,
-            aliases:
-              patch.aliases !== undefined
-                ? [...patch.aliases]
-                : binding.entry.aliases,
-            summary:
-              patch.summary !== undefined
-                ? patch.summary === null
-                  ? null
-                  : patch.summary.trim() || null
-                : binding.entry.summary,
-          },
-        };
-      } else if (
-        binding.kind === "bind-existing" &&
-        patch.summary !== undefined &&
-        patch.summary !== null &&
-        patch.summary.trim()
-      ) {
-        nextBinding = {
-          ...binding,
-          enrichment: {
-            ...binding.enrichment,
-            summary: {
-              kind: "fill-if-empty",
-              value: patch.summary.trim(),
-            },
-          },
-        };
-      }
-
-      const nextType =
-        patch.typeRef !== undefined
-          ? ({ status: "resolved", typeRef: patch.typeRef } as const)
-          : payload.typeResolution;
-
+      // 変換は Api（Native に送る revision）と同じ関数に寄せる（§4.2 の 2）。
       const nextProposal: BindCodexEntityProposal = {
         ...current.proposal,
-        payload: {
-          ...payload,
-          canonicalName:
-            patch.canonicalName !== undefined
-              ? patch.canonicalName.trim()
-              : payload.canonicalName,
-          typeResolution: nextType,
-          binding: nextBinding,
-          aliases:
-            patch.aliases !== undefined
-              ? patch.aliases.map((surface) => ({
-                  surface,
-                  status: "explicit" as const,
-                }))
-              : payload.aliases,
-        },
+        payload: patchBindCodexEntityPayload(current.proposal.payload, patch),
       };
+      const nextType = nextProposal.payload.typeResolution;
 
       const typeResolved = nextType.status === "resolved";
       const applicability =
