@@ -199,6 +199,19 @@ export function diffRosters(rosterA, rosterB) {
         kinds.push("aliases");
         details.aliases = { onlyA, onlyB };
       }
+      // 関係の呼び名（relationalSurfaces）の違い。別名の違いと同じ形で出す（表記は repo 外だけ）。
+      const relOf = (entity) =>
+        new Map(
+          (entity.relationalSurfaces ?? []).map((x) => [candidateKey(x), x]),
+        );
+      const relA = relOf(a.entity);
+      const relB = relOf(b.entity);
+      const relOnlyA = [...relA].filter(([k]) => !relB.has(k)).map(([, x]) => x);
+      const relOnlyB = [...relB].filter(([k]) => !relA.has(k)).map(([, x]) => x);
+      if (relOnlyA.length || relOnlyB.length) {
+        kinds.push("relational");
+        details.relational = { onlyA: relOnlyA, onlyB: relOnlyB };
+      }
     }
     if (kinds.length === 0) {
       agree++;
@@ -435,7 +448,7 @@ function scriptJson(value) {
 
 /**
  * 作者向けの確認の表（自己完結の HTML。外部の資源を読まない）。表に出すのは、実体の行（名前・型・
- * 別名・敬称付きの形・場面で変わる表記）・根拠の場面と段落の番号・短い抜粋・応答の固定語彙の
+ * 別名・敬称付きの形・関係の呼び名・場面で変わる表記）・根拠の場面と段落の番号・短い抜粋・応答の固定語彙の
  * 選択欄。実体 ID・層・A と B の一致の印・packet は出さない（key file にだけ書く）。
  * 戻り値は文字列。原稿の抜粋を含むので repo 外の 0600 の file にだけ書く。
  */
@@ -449,8 +462,17 @@ export function renderReviewHtml({ roster, scenes, rows, sheetId }) {
     const surfaces = [
       entity.name,
       ...(entity.aliases ?? []).map((a) => a.surface),
+      ...(entity.relationalSurfaces ?? []),
     ];
-    const evidence = (entity.evidence ?? [])
+    // 同じ（場面, 段落）の根拠は 1 件だけ抜粋する（重複した根拠で同じ抜粋が 2 回出ないように）。
+    const seenEvidence = new Set();
+    const uniqueEvidence = (entity.evidence ?? []).filter((ev) => {
+      const at = `${ev.scene}:${ev.paragraph}`;
+      if (seenEvidence.has(at)) return false;
+      seenEvidence.add(at);
+      return true;
+    });
+    const evidence = uniqueEvidence
       .slice(0, MAX_EXCERPTS)
       .map((ev) => {
         const paragraph =
@@ -462,7 +484,7 @@ export function renderReviewHtml({ roster, scenes, rows, sheetId }) {
             : ' <span class="warn">（この段落に表記が見つかりません）</span>'
         }</li>`;
       });
-    const more = (entity.evidence ?? []).length - MAX_EXCERPTS;
+    const more = uniqueEvidence.length - MAX_EXCERPTS;
     const list = (title, items) =>
       items.length
         ? `<div><span class="lab">${title}</span> ${items.join("、")}</div>`
@@ -487,6 +509,7 @@ export function renderReviewHtml({ roster, scenes, rows, sheetId }) {
     }</div>
 ${list("別名", aliasItems)}
 ${list("敬称付きの形", (entity.honorificSurfaces ?? []).map(esc))}
+${list("関係の呼び名", (entity.relationalSurfaces ?? []).map(esc))}
 ${list(
   "場面で指す人が変わる表記",
   (entity.ambiguousSurfaces ?? []).map(
@@ -677,6 +700,10 @@ export function ingestReview({ roster, key, responses }) {
       entity.aliases = (entity.aliases ?? []).filter(
         (a) => candidateKey(a.surface) !== candidateKey(newName),
       );
+      if (Array.isArray(entity.relationalSurfaces))
+        entity.relationalSurfaces = entity.relationalSurfaces.filter(
+          (r) => candidateKey(r) !== candidateKey(newName),
+        );
       entity.name = newName;
       stats.edits.rename++;
       edited = true;
@@ -690,7 +717,8 @@ export function ingestReview({ roster, key, responses }) {
         const exists =
           k === candidateKey(entity.name) ||
           (entity.aliases ?? []).some((a) => candidateKey(a.surface) === k) ||
-          (entity.honorificSurfaces ?? []).some((h) => candidateKey(h) === k);
+          (entity.honorificSurfaces ?? []).some((h) => candidateKey(h) === k) ||
+          (entity.relationalSurfaces ?? []).some((r) => candidateKey(r) === k);
         if (!surface.trim() || exists) {
           stats.edits.aliasAddSkipped++;
           continue;
@@ -813,11 +841,11 @@ const minLevel = (a, b) =>
 /**
  * chunk ごとの B の名簿（lineage "B"）を、本文も A も見ずに決まった規則で 1 本の名簿にする。
  * 規則（事前登録どおり。ここでは直さない）：
- * - 同じ type で name か別名の candidateKey が一致する実体どうしを束ねる（union-find、推移的）。
+ * - 同じ type で name か別名の candidateKey が一致する実体どうしを束ねる（union-find、推移的。関係の呼び名は束ねの手がかりにしない）。
  *   type が違えば束ねない（そのような一致の組の数を typeConflict に数える）。
  * - name：束の中で evidence の件数が最も多いメンバー（同数なら文字数の長い方、さらに firstScene の早い方、
  *   さらに入力の順）。ほかの name は、採用した name と candidateKey が違えば alias（level は別のメンバーの
- *   alias の最小の level、無ければ L2）。alias・honorific は candidateKey で和集合、ambiguous は
+ *   alias の最小の level、無ければ L2）。alias・honorific・relational（関係の呼び名）は candidateKey で和集合、ambiguous は
  *   surface ごとに sceneRanges の和集合（重なる区間は併合）、evidence は重複除去して場面・段落の順。
  * - ID は rt-<作品>-NNN に振り直す（firstScene の順、同じなら元の ID の文字列の順）。
  * - 束ねた結果の規則違反（別名と敬称の重なりなど）は直さない。検査（validateRoster）に任せる。
@@ -916,6 +944,11 @@ export function mergeBRosters(chunkRosters, work) {
       for (const surface of m.entity.honorificSurfaces ?? [])
         if (!honorifics.has(candidateKey(surface)))
           honorifics.set(candidateKey(surface), surface);
+    const relationals = new Map();
+    for (const m of group)
+      for (const surface of m.entity.relationalSurfaces ?? [])
+        if (!relationals.has(candidateKey(surface)))
+          relationals.set(candidateKey(surface), surface);
     const ambiguous = new Map();
     for (const m of group)
       for (const item of m.entity.ambiguousSurfaces ?? []) {
@@ -958,6 +991,9 @@ export function mergeBRosters(chunkRosters, work) {
         : {}),
       aliases,
       honorificSurfaces: [...honorifics.values()],
+      ...(relationals.size > 0
+        ? { relationalSurfaces: [...relationals.values()] }
+        : {}),
       ambiguousSurfaces: [...ambiguous.values()].map(({ surface, ranges }) => ({
         surface,
         sceneRanges: mergeRanges(ranges),

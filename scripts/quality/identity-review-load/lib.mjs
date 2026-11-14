@@ -777,6 +777,9 @@ export const REVIEW_VERDICT_CODES = Object.freeze({
  *   nameIsRole?: boolean, frequentSurface?: string（最頻形。別列）,
  *   aliases: [{ surface, level: "L1"|"L2"|"L3" }]（L0 は name だけ。敬称付きの形は入れない）,
  *   honorificSurfaces: [string]（敬称の対応表。表記→この実体。別名としては登録しない）,
+ *   relationalSurfaces?: [string]（関係の呼び名。続柄・二人称・三人称の呼び方で、誰が言うか・どの場面かで指す人が決まる。
+ *     別名・敬称の形・場面依存の表記のどれにも入れず、別の種類として持つ。Codex には登録しない。
+ *     同じ表記が複数の実体にあってよい）,
  *   ambiguousSurfaces: [{ surface, sceneRanges: [[from, to], ...] }]（場面で指す実体が変わる表記。
  *     この実体を指す場面の範囲。別名に入れない）,
  *   firstScene: 初出場面（1 始まり。必須。evidence に含まれ、evidence のどの場面より後でない。
@@ -952,6 +955,33 @@ export function validateRoster(roster, options = {}) {
         )
           add("AMBIGUOUS_RANGE_INVALID", id, `${where}.sceneRanges`);
       });
+    // 関係の呼び名（任意）。同じ実体の name・別名・敬称の形・場面依存の表記と重ならない。
+    // 同じ表記が別の実体の relationalSurfaces にあるのは許す。
+    if (entity.relationalSurfaces !== undefined) {
+      if (!Array.isArray(entity.relationalSurfaces))
+        add("RELATIONAL_NOT_ARRAY", id, at("relationalSurfaces"));
+      else {
+        const otherKeys = new Set(ownKeys);
+        for (const surface of Array.isArray(honorifics) ? honorifics : [])
+          if (typeof surface === "string") otherKeys.add(candidateKey(surface));
+        for (const item of Array.isArray(ambiguous) ? ambiguous : [])
+          if (typeof item?.surface === "string")
+            otherKeys.add(candidateKey(item.surface));
+        const seenRelational = new Set();
+        entity.relationalSurfaces.forEach((surface, i) => {
+          const where = `${at("relationalSurfaces")}[${i}]`;
+          if (!isPlainString(surface)) {
+            add("RELATIONAL_SURFACE_INVALID", id, where);
+            return;
+          }
+          const key = candidateKey(surface);
+          if (seenRelational.has(key))
+            add("RELATIONAL_DUPLICATE_IN_ENTITY", id, where);
+          seenRelational.add(key);
+          if (otherKeys.has(key)) add("RELATIONAL_OVERLAP", id, where);
+        });
+      }
+    }
     // 初出場面（必須）
     const hasFirstScene = isPositiveInt(entity.firstScene);
     if (!hasFirstScene) add("FIRST_SCENE_INVALID", id, at("firstScene"));
@@ -1118,6 +1148,7 @@ export function findCollisions(roster) {
 /**
  * 名簿から、段ごとの登録用の実体を作る（registerRoster に渡す形）。
  * L0：name だけ／L1／L2／L3／"L2-1char"：L2 から 1 字の別名を除く。
+ * 登録するのは name と別名だけ。敬称の形・場面依存の表記・関係の呼び名（relationalSurfaces）は含めない。
  */
 export const ROSTER_LEVELS = Object.freeze([
   "L0",
@@ -1184,9 +1215,9 @@ export function checkRosterAgainstScenes(roster, scenes) {
 
 /**
  * 名簿の表記が本文に出ることの機械検査（原稿の文字列は返さない。ルビは親文字だけにした本文を使う）。
- * - SURFACE_NOT_IN_TEXT：実体の name・別名（alias）・敬称（honorific）・ambiguous の表記が、
+ * - SURFACE_NOT_IN_TEXT：実体の name・別名（alias）・敬称（honorific）・ambiguous・関係の呼び名（relational）の表記が、
  *   全場面の本文のどこにも出ない。{ code, entityId, field, count }（count は出ない表記の数）
- * - EVIDENCE_SURFACE_ABSENT：evidence の段落に、その実体のどの表記（name・別名・敬称・ambiguous）も無い。
+ * - EVIDENCE_SURFACE_ABSENT：evidence の段落に、その実体のどの表記（name・別名・敬称・ambiguous・relational）も無い。
  *   count は該当する evidence の数。範囲外の evidence は形式の検査（validateRoster）に任せて飛ばす
  * - AMBIGUOUS_RANGE_SURFACE_ABSENT：ambiguousSurfaces の sceneRanges の場面のどれにも、その表記が出ない。
  *   count は該当する surface の数
@@ -1217,6 +1248,11 @@ export function checkSurfacesAgainstScenes(roster, scenes) {
       ambiguous: strings(
         Array.isArray(entity.ambiguousSurfaces)
           ? entity.ambiguousSurfaces.map((item) => item?.surface)
+          : [],
+      ),
+      relational: strings(
+        Array.isArray(entity.relationalSurfaces)
+          ? entity.relationalSurfaces
           : [],
       ),
     };

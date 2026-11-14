@@ -177,6 +177,8 @@ function assertChunkRosterShape(chunk, work) {
         ) &&
         Array.isArray(e.honorificSurfaces ?? []) &&
         (e.honorificSurfaces ?? []).every((h) => typeof h === "string") &&
+        Array.isArray(e.relationalSurfaces ?? []) &&
+        (e.relationalSurfaces ?? []).every((r) => typeof r === "string") &&
         Array.isArray(e.ambiguousSurfaces ?? []) &&
         (e.ambiguousSurfaces ?? []).every(
           (a) =>

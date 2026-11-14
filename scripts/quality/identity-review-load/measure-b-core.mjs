@@ -368,6 +368,9 @@ export function judgmentMetrics({ index, candidates, judgments }) {
     // 敬称の形（§3：別名に入れない）は、名簿どおり・結び残しの母集団から外して別枠に数える。
     honorificCandidates: 0,
     honorificWithAlias: 0,
+    // 関係の呼び名（続柄・二人称・三人称の呼び方）は登録しない別の種類。名簿どおり・結び残しの母集団から外して別枠に数える。
+    relationalCandidates: 0,
+    relationalWithAlias: 0,
     // B の名簿の窓（200 実体）で切った実体の表記は、未登録（unlisted）と分けて数える。
     cutRosterCandidates: 0,
     aliasOnCutRoster: 0,
@@ -384,7 +387,9 @@ export function judgmentMetrics({ index, candidates, judgments }) {
     const honorific = lookup.kind === "entity" && lookup.honorific === true;
     const cut =
       lookup.kind === "unlisted" && index.cutKeys?.has(candidate.keyHash);
+    const relational = lookup.kind === "relational";
     if (honorific) m.honorificCandidates++;
+    else if (relational) m.relationalCandidates++;
     else if (lookup.kind === "entity") m.listedEntityCandidates++;
     else if (lookup.kind === "ambiguous") m.ambiguousCandidates++;
     else if (cut) m.cutRosterCandidates++;
@@ -396,6 +401,8 @@ export function judgmentMetrics({ index, candidates, judgments }) {
     if (alias !== null) m.aliasButtons++;
     if (honorific) {
       if (alias !== null) m.honorificWithAlias++;
+    } else if (relational) {
+      if (alias !== null) m.relationalWithAlias++;
     } else if (lookup.kind === "entity") {
       if (alias === lookup.id) m.aliasMatchRoster++;
       else if (alias !== null) m.aliasMismatchRoster++;
@@ -600,7 +607,8 @@ function buildRequestRecord(result, prepared, index) {
 
 /**
  * 模擬作者の決定。名簿で既存の実体の表記→別名（登録済みの実体へ）／未登録の実体→受理／
- * 敬称の形・場面で指す人が決まらない表記・名簿に無い表記→却下（種類別に数える）。
+ * 敬称の形・関係の呼び名・場面で指す人が決まらない表記・名簿に無い表記→却下（種類別に数える）。
+ * 関係の呼び名（relational）は Codex に登録しないので、別名にも受理にもしない。
  */
 export function authorDecision(lookup, registeredIds, rosterTypeOf) {
   if (lookup.kind === "unlisted" && lookup.cut === true)
@@ -619,6 +627,8 @@ export function authorDecision(lookup, registeredIds, rosterTypeOf) {
     return { action: "dismiss", reason: "honorific" };
   if (lookup.kind === "ambiguous")
     return { action: "dismiss", reason: "ambiguous" };
+  if (lookup.kind === "relational")
+    return { action: "dismiss", reason: "relational" };
   return { action: "dismiss", reason: "unlisted" };
 }
 

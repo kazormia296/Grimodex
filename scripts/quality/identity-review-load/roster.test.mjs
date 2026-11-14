@@ -1699,3 +1699,246 @@ test("CLI：merge-b は chunk の名簿を束ねて roster-B.json（0600）と m
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+// ---- 関係の呼び名（relationalSurfaces） ----------------------------------------------
+
+test("名簿の検査：関係の呼び名は任意。形式・重複・同じ実体の name・別名・敬称・場面依存との重なりを検査し、複数の実体で共有してよい", () => {
+  const good = roster([
+    entity(1, { relationalSurfaces: ["架空の呼び名", "別の呼び名"] }),
+    entity(2, { relationalSurfaces: ["架空の呼び名"] }), // 同じ表記が別の実体にあってよい
+    entity(3), // 欄が無くてよい
+  ]);
+  assert.deepEqual(validateRoster(good).errors, []);
+  const cases = [
+    ["RELATIONAL_NOT_ARRAY", entity(1, { relationalSurfaces: "文字列" })],
+    ["RELATIONAL_SURFACE_INVALID", entity(1, { relationalSurfaces: [""] })],
+    [
+      "RELATIONAL_SURFACE_INVALID",
+      entity(1, { relationalSurfaces: [" 空白つき "] }),
+    ],
+    [
+      "RELATIONAL_DUPLICATE_IN_ENTITY",
+      entity(1, { relationalSurfaces: ["呼び名", "呼び名"] }),
+    ],
+    ["RELATIONAL_OVERLAP", entity(1, { relationalSurfaces: ["名前1"] })],
+    [
+      "RELATIONAL_OVERLAP",
+      entity(1, {
+        aliases: [{ surface: "架空の別名", level: "L2" }],
+        relationalSurfaces: ["架空の別名"],
+      }),
+    ],
+    [
+      "RELATIONAL_OVERLAP",
+      entity(1, {
+        honorificSurfaces: ["名前1さん"],
+        relationalSurfaces: ["名前1さん"],
+      }),
+    ],
+    [
+      "RELATIONAL_OVERLAP",
+      entity(1, {
+        ambiguousSurfaces: [{ surface: "場面の表記", sceneRanges: [[1, 2]] }],
+        relationalSurfaces: ["場面の表記"],
+      }),
+    ],
+  ];
+  for (const [code, e] of cases) {
+    const result = validateRoster(roster([e]));
+    assert.ok(codes(result).includes(code), code);
+    assert.ok(!JSON.stringify(result).includes("呼び名"), "表記は載せない");
+  }
+});
+
+test("関係の呼び名：Codex に登録する段（rosterAtLevel）に含めず、名前・別名の衝突にも数えない", () => {
+  const input = roster([
+    entity(1, {
+      aliases: [{ surface: "架空の別名", level: "L1" }],
+      relationalSurfaces: ["共有の呼び名"],
+    }),
+    entity(2, { relationalSurfaces: ["共有の呼び名"] }),
+  ]);
+  for (const level of ["L0", "L1", "L2", "L3", "L2-1char"]) {
+    const entries = rosterAtLevel(input, level);
+    const all = entries.flatMap((e) => [e.name, ...e.aliases]);
+    assert.ok(!all.includes("共有の呼び名"), level);
+    assert.deepEqual(Object.keys(entries[0]).sort(), [
+      "aliases",
+      "id",
+      "name",
+      "type",
+    ]);
+  }
+  assert.deepEqual(findCollisions(input), []);
+});
+
+test("表記の本文検査：関係の呼び名が本文に出なければ field relational で数え、evidence の段落の判定には含める", () => {
+  const scenes = [
+    { paragraphs: ["｜甲野《こうの》が来た。", "架空の呼び名で呼ばれる。"] },
+    { paragraphs: ["乙川が来た。"] },
+  ];
+  const result = checkRosterAgainstScenes(
+    {
+      entities: [
+        surfaceEntity({
+          relationalSurfaces: ["架空の呼び名", "出ない呼び名"],
+          // 2 段落目には甲野も別名も無く、関係の呼び名だけが出る。
+          evidence: [
+            { scene: 1, paragraph: 1 },
+            { scene: 1, paragraph: 2 },
+          ],
+        }),
+      ],
+    },
+    scenes,
+  );
+  assert.deepEqual(
+    result.map((r) => `${r.code}:${r.field ?? "-"}:${r.count}`),
+    ["SURFACE_NOT_IN_TEXT:relational:1"],
+  );
+  assert.ok(!JSON.stringify(result).includes("呼び名"));
+});
+
+test("突合：関係の呼び名の違いを別名の違いと同じ形で packet に出す（kind relational）", () => {
+  const mk = (list) => roster(list, { lineage: "A" });
+  const a = mk([
+    entity(1, { name: "甲", relationalSurfaces: ["呼び名甲", "共通の呼び名"] }),
+    entity(2, { name: "乙", relationalSurfaces: ["共通の呼び名"] }),
+  ]);
+  const b = mk([
+    entity(1, {
+      name: "甲",
+      relationalSurfaces: ["共通の呼び名", "呼び名乙"],
+      lineage: "B",
+    }),
+    entity(2, { name: "乙", relationalSurfaces: ["共通の呼び名"], lineage: "B" }),
+  ]);
+  const { packets, summary } = diffRosters(a, b);
+  assert.equal(packets.length, 1);
+  assert.deepEqual(packets[0].kinds, ["relational"]);
+  assert.deepEqual(packets[0].details.relational, {
+    onlyA: ["呼び名甲"],
+    onlyB: ["呼び名乙"],
+  });
+  assert.equal(summary.kindCounts.relational, 1);
+  assert.equal(summary.agreed, 1);
+});
+
+test("merge-b：関係の呼び名は和集合にし、それだけでは実体を束ねない", () => {
+  const { roster: merged } = mergeBRosters(
+    [
+      chunkRoster([
+        bEntity(rid(1), "甲野", { relationalSurfaces: ["呼び名甲", "共有"] }),
+        bEntity(rid(2), "乙川", { relationalSurfaces: ["共有"] }),
+      ]),
+      chunkRoster([
+        bEntity(rid(1), "甲野", { relationalSurfaces: ["共有", "呼び名乙"] }),
+      ]),
+    ],
+    WORK,
+  );
+  assert.equal(merged.entities.length, 2); // 共有の呼び名では束ねない
+  const byName = Object.fromEntries(merged.entities.map((e) => [e.name, e]));
+  assert.deepEqual(byName["甲野"].relationalSurfaces, [
+    "呼び名甲",
+    "共有",
+    "呼び名乙",
+  ]);
+  assert.deepEqual(byName["乙川"].relationalSurfaces, ["共有"]);
+  // 関係の呼び名の無い入力は、欄を作らない。
+  const { roster: plain } = mergeBRosters(
+    [chunkRoster([bEntity(rid(1), "丙原")])],
+    WORK,
+  );
+  assert.equal("relationalSurfaces" in plain.entities[0], false);
+});
+
+test("確認の表：同じ（場面, 段落）の根拠の抜粋は 1 回だけ出し、関係の呼び名の欄を出す（無ければ出さない）", () => {
+  const scenes = [
+    {
+      index: 1,
+      paragraphs: ["冒頭に架空の甲が出る。", "ここには呼び名ばかりが出る。"],
+    },
+  ];
+  const input = roster(
+    [
+      entity(1, {
+        name: "架空の甲",
+        relationalSurfaces: ["呼び名"],
+        evidence: [
+          { scene: 1, paragraph: 1 },
+          { scene: 1, paragraph: 1 },
+          { scene: 1, paragraph: 2 },
+        ],
+      }),
+      entity(2, { name: "架空の乙", evidence: [{ scene: 1, paragraph: 1 }] }),
+    ],
+    {},
+  );
+  const rows = [
+    { rowId: "row-001", entityId: input.entities[0].id },
+    { rowId: "row-002", entityId: input.entities[1].id },
+  ];
+  const html = renderReviewHtml({
+    roster: input,
+    scenes,
+    rows,
+    sheetId: "s",
+  });
+  const [first, second] = html.split('<section class="row"').slice(1);
+  assert.equal((first.match(/場面 1・段落 1</gu) ?? []).length, 1);
+  assert.equal((first.match(/場面 1・段落 2</gu) ?? []).length, 1);
+  assert.ok(!first.includes("見つかりません")); // 呼び名で段落 2 を見つけられる
+  assert.ok(first.includes("関係の呼び名"));
+  assert.ok(!second.includes("関係の呼び名"));
+  // 重複を除いた後の件数で「ほか N 件」を数える。
+  const many = roster(
+    [
+      entity(1, {
+        name: "架空の甲",
+        evidence: [
+          { scene: 1, paragraph: 1 },
+          { scene: 1, paragraph: 1 },
+          { scene: 1, paragraph: 2 },
+        ],
+      }),
+    ],
+    {},
+  );
+  const html2 = renderReviewHtml({
+    roster: many,
+    scenes,
+    rows: [{ rowId: "row-001", entityId: many.entities[0].id }],
+    sheetId: "s",
+  });
+  assert.ok(!html2.includes("ほか"));
+});
+
+test("応答の取り込み：足す別名が関係の呼び名と同じならスキップし、改名先が関係の呼び名と同じなら呼び名の側を外す", () => {
+  const input = roster([
+    entity(1, { relationalSurfaces: ["架空の呼び名"] }),
+    entity(2, { relationalSurfaces: ["改名先"] }),
+  ]);
+  const key = sampleKey(input, [keyRow(1, "random"), keyRow(2, "random")]);
+  const { roster: next, summary, validation } = ingestReview({
+    roster: input,
+    key,
+    responses: {
+      schemaVersion: "identity-review-responses/1",
+      work: WORK,
+      sheetId: "s",
+      responses: [
+        {
+          rowId: "row-01",
+          verdict: REVIEW_VERDICTS[2],
+          aliasesToAdd: ["架空の呼び名"],
+        },
+        { rowId: "row-02", verdict: REVIEW_VERDICTS[1], newName: "改名先" },
+      ],
+    },
+  });
+  assert.deepEqual(next.entities[0].aliases, []);
+  assert.equal(summary.edits.aliasAddSkipped, 1);
+  assert.deepEqual(next.entities[1].relationalSurfaces, []);
+  assert.deepEqual(validation.errors, []);
+});

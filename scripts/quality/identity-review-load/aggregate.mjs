@@ -56,6 +56,10 @@ export function flattenRunA(run) {
     entryCount: run.extract?.entryCountInCatalog ?? null,
     proposals: m.proposalCount,
     notInRoster: c.notInRoster,
+    relational: c.relational ?? 0,
+    relationalUnresolved: m.relational?.byBinding?.unresolved ?? 0,
+    relationalBindExisting: m.relational?.byBinding?.["bind-existing"] ?? 0,
+    relationalCreateNew: m.relational?.byBinding?.["create-new"] ?? 0,
     bindCheck: c.bindCheck,
     unresolvedCandidateIn: c.unresolvedCandidateIn,
     unresolvedCandidateOut: c.unresolvedCandidateOut,
@@ -183,6 +187,8 @@ const B_METRIC_COLUMNS = [
   "aliasOnAmbiguousOutOfSet",
   "honorificCandidates",
   "honorificWithAlias",
+  "relationalCandidates",
+  "relationalWithAlias",
   "cutRosterCandidates",
   "aliasOnCutRoster",
   "missedBindNullAlias",
@@ -414,15 +420,15 @@ export function renderRecordsMarkdown(records) {
       "",
     );
     lines.push(
-      "| 作品 | 段 | 場面数 | 提案 | 名簿に無い | 結び付け確認 | 解決(候補内) | 解決(候補外) | 型を決める | 手で見る create | 一括承認 | 承認の下限 | 表記を残す下限 |",
+      "| 作品 | 段 | 場面数 | 提案 | 名簿に無い | 関係の呼び名 | 結び付け確認 | 解決(候補内) | 解決(候補外) | 型を決める | 手で見る create | 一括承認 | 承認の下限 | 表記を残す下限 |",
     );
-    lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
     for (const [work, w] of Object.entries(records.measureA.byWork))
       for (const level of MATRIX_LEVELS) {
         const r = w.matrix[level];
         if (!r) continue;
         lines.push(
-          `| ${work} | ${level} | ${r.sceneCount} | ${r.proposals} | ${r.notInRoster} | ${r.bindCheck} | ${r.unresolvedCandidateIn} | ${r.unresolvedCandidateOut} | ${r.typeNeeded} | ${r.manualCreate} | ${r.bulk} | ${r.opsApprovalSurface} | ${r.opsKeepSurfaceSurface} |`,
+          `| ${work} | ${level} | ${r.sceneCount} | ${r.proposals} | ${r.notInRoster} | ${r.relational} | ${r.bindCheck} | ${r.unresolvedCandidateIn} | ${r.unresolvedCandidateOut} | ${r.typeNeeded} | ${r.manualCreate} | ${r.bulk} | ${r.opsApprovalSurface} | ${r.opsKeepSurfaceSurface} |`,
         );
       }
     lines.push("", "作品間の範囲（段ごと）。", "");
@@ -450,17 +456,17 @@ export function renderRecordsMarkdown(records) {
   }
   lines.push("## 測定 B（候補画面。AI 判定）", "");
   lines.push(
-    "作品 × 段。3 回の最小〜最大。N は段ごとに候補の集合が違うので、段をまたいで比べない。敬称の形（別名に入れない）は別枠で、名簿どおり・結び残しに含めない。",
+    "作品 × 段。3 回の最小〜最大。N は段ごとに候補の集合が違うので、段をまたいで比べない。敬称の形（別名に入れない）と関係の呼び名（登録しない別の種類）は別枠で、名簿どおり・結び残しに含めない。",
     "",
   );
   lines.push(
-    "| 作品 | 段 | N | 成功/要求 | 別名ボタン | 名簿どおり | 名簿と違う | 結び残し(null) | 結び残し(窓の外) | 結び残し(窓内で判定なし) | 敬称の形(別枠) | 自己一致 | 判断不能 |",
+    "| 作品 | 段 | N | 成功/要求 | 別名ボタン | 名簿どおり | 名簿と違う | 結び残し(null) | 結び残し(窓の外) | 結び残し(窓内で判定なし) | 敬称の形(別枠) | 関係の呼び名(別枠) | 自己一致 | 判断不能 |",
   );
-  lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+  lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const r of records.measureB.b1) {
     const m = r.metricRanges;
     lines.push(
-      `| ${r.work} | ${r.level} | ${r.candidates?.visibleCount ?? "-"} | ${r.successCount}/${r.requestCount} | ${rangeText(m.aliasButtons)} | ${rangeText(m.aliasMatchRoster)} | ${rangeText(m.aliasMismatchRoster)} | ${rangeText(m.missedBindNullAlias)} | ${rangeText(m.missedBindBeyondWindow)} | ${rangeText(m.missedBindDropped)} | ${rangeText(m.honorificCandidates)} | ${r.selfAgreement ? `${r.selfAgreement.aliasAgree}/${r.selfAgreement.keysCompared}` : "-"} | ${r.undeterminable ? "はい" : "いいえ"} |`,
+      `| ${r.work} | ${r.level} | ${r.candidates?.visibleCount ?? "-"} | ${r.successCount}/${r.requestCount} | ${rangeText(m.aliasButtons)} | ${rangeText(m.aliasMatchRoster)} | ${rangeText(m.aliasMismatchRoster)} | ${rangeText(m.missedBindNullAlias)} | ${rangeText(m.missedBindBeyondWindow)} | ${rangeText(m.missedBindDropped)} | ${rangeText(m.honorificCandidates)} | ${rangeText(m.relationalCandidates)} | ${r.selfAgreement ? `${r.selfAgreement.aliasAgree}/${r.selfAgreement.keysCompared}` : "-"} | ${r.undeterminable ? "はい" : "いいえ"} |`,
     );
   }
   lines.push("", "B2（L2・模擬作者）。", "");

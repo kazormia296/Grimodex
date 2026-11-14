@@ -355,3 +355,89 @@ test("★8：前の回の未 review が最新の run に同じ表記で残る件
   ]);
   assert.equal(reviewed.perRun[0].unreviewed, 0);
 });
+
+// ---- 関係の呼び名（relationalSurfaces）：名簿に無い表記（0 番）とは別の枠 ----------------
+
+const relationalRoster = {
+  entities: [
+    {
+      id: "e1",
+      type: "character",
+      name: "alpha",
+      aliases: [],
+      relationalSurfaces: ["kin-call", "shared-call"],
+    },
+    {
+      id: "e2",
+      type: "character",
+      name: "beta",
+      aliases: [{ surface: "beta-alias", level: "L2" }],
+      relationalSurfaces: ["shared-call", "beta-alias-rel"],
+    },
+    // 別の実体の別名と同じ表記：登録した別名として結ぶ方を優先する。
+    {
+      id: "e3",
+      type: "character",
+      name: "gamma",
+      aliases: [],
+      relationalSurfaces: ["beta-alias"],
+    },
+  ],
+};
+
+test("lookupRoster：関係の呼び名は kind relational（指しうる実体の一覧つき）。名前・別名として引ける表記が先", async () => {
+  const index = await buildRosterIndex(relationalRoster, ident);
+  assert.deepEqual(lookupRoster(index, "kin-call", [1]), {
+    kind: "relational",
+    ids: ["e1"],
+  });
+  assert.deepEqual(lookupRoster(index, "shared-call", [1]), {
+    kind: "relational",
+    ids: ["e1", "e2"],
+  });
+  // 名簿の別名（e2）として引けるので relational にはならない。
+  assert.equal(lookupRoster(index, "beta-alias", [1]).kind, "entity");
+  assert.deepEqual(lookupRoster(index, "nobody", [1]), { kind: "unlisted" });
+  // 関係の呼び名の欄が無い名簿でも引ける（これまでと同じ）。
+  const plain = await buildRosterIndex({ entities: [relationalRoster.entities[0]] }, ident);
+  assert.equal(lookupRoster(plain, "alpha", [1]).kind, "entity");
+});
+
+test("computeMeasureA：関係の呼び名が作る提案は別の枠（relational）に数え、notInRoster・名簿の実体の分類・操作の下限に入れない", async () => {
+  const index = await buildRosterIndex(relationalRoster, ident);
+  const rows = [
+    row("alpha", "bind-existing", { bindExistingEntityId: "e1" }),
+    row("kin-call", "create-new", { bulkApprovable: true }),
+    row("kin-call", "unresolved", {
+      candidates: [{ id: "e1", score: 90, methods: ["prefix"] }],
+    }),
+    row("shared-call", "bind-existing", { bindExistingEntityId: "e2" }),
+    row("shared-call", "create-new"),
+    row("zzz", "create-new"),
+  ];
+  const m = computeMeasureA({ index, rows });
+  assert.equal(m.proposalCount, 6);
+  assert.equal(m.categoryCounts.relational, 4);
+  assert.equal(m.categoryCounts.notInRoster, 1);
+  assert.equal(m.categoryCounts.bindCheck, 1);
+  assert.equal(m.categoryCounts.bulk, 0);
+  assert.equal(m.categoryCounts.unresolvedCandidateIn, 0);
+  assert.equal(m.relational.rows, 4);
+  assert.deepEqual(m.relational.byBinding, {
+    "create-new": 2,
+    unresolved: 1,
+    "bind-existing": 1,
+  });
+  assert.deepEqual(m.listedByBinding, { "bind-existing": 1 });
+  assert.equal(m.mismatch.leftoverCreateNew, 0);
+  assert.equal(m.operations.surfaceUnit.approval, 1); // bindCheck の 1 件だけ
+  assert.equal(m.honorific.unresolvedWithHonorificStripCandidate, 0);
+  assert.ok(Object.keys(m.categoryCounts).includes("relational"));
+});
+
+test("classifyRow：relational は 0（名簿に無い）とも 1〜5 とも別の分類", () => {
+  assert.equal(
+    classifyRow(row("kin-call", "create-new"), { kind: "relational", ids: ["e1"] }, { bulkApprovable: true }).category,
+    "relational",
+  );
+});

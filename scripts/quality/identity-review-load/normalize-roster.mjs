@@ -12,6 +12,9 @@
 //   5. 根拠のうち、その段落に実体の表記がどれも無いものは外す。根拠が 0 件になれば、本文で最初にその実体の表記が
 //      出る段落を根拠に足す。
 //   6. firstScene を、名前・別名のうち最も早く本文に出る場面にする（check の定義と同じ）。
+//   7. 関係の呼び名（relationalSurfaces。続柄・二人称・三人称の呼び方）は別の種類として保つ。同じ表記が同じ実体の
+//      別名・敬称の形・場面依存の表記にもあれば、そちらから外す（関係の呼び名を優先。1〜3 より前に当てる）。
+//      名前と同じなら関係の呼び名の側を外す。本文に出ない関係の呼び名は外す（4 と同じ）。重複は 1 つにする。
 //
 // 使い方：node normalize-roster.mjs --work <作品> --roster <file> [--out <file>]（--out が無ければ上書き）
 import assert from "node:assert/strict";
@@ -37,6 +40,10 @@ export function normalizeRoster(roster, scenes) {
     aliasDroppedAmbiguous: 0,
     aliasDroppedDuplicate: 0,
     surfaceDroppedNotInText: 0,
+    relationalPrioritized: 0,
+    relationalDroppedAsName: 0,
+    relationalDroppedDuplicate: 0,
+    relationalDroppedNotInText: 0,
     evidenceDropped: 0,
     evidenceAdded: 0,
     firstSceneChanged: 0,
@@ -47,6 +54,31 @@ export function normalizeRoster(roster, scenes) {
     e.honorificSurfaces = Array.isArray(e.honorificSurfaces) ? e.honorificSurfaces : [];
     e.ambiguousSurfaces = Array.isArray(e.ambiguousSurfaces) ? e.ambiguousSurfaces : [];
     e.evidence = Array.isArray(e.evidence) ? e.evidence : [];
+    // 7（関係の呼び名を優先。1〜3 の前に、別名・敬称の形・場面依存の表記から外す）
+    const hasRelational = Array.isArray(e.relationalSurfaces);
+    if (hasRelational) {
+      const seenRel = new Set();
+      e.relationalSurfaces = e.relationalSurfaces.filter((r) => {
+        const k = candidateKey(r);
+        if (seenRel.has(k)) {
+          counts.relationalDroppedDuplicate++;
+          return false;
+        }
+        seenRel.add(k);
+        return true;
+      });
+    }
+    const relationalKeys = () => new Set((e.relationalSurfaces ?? []).map((r) => candidateKey(r)));
+    const prioritizeRelational = () => {
+      const keys = relationalKeys();
+      if (keys.size === 0) return;
+      const n0 = e.aliases.length + e.honorificSurfaces.length + e.ambiguousSurfaces.length;
+      e.aliases = e.aliases.filter((a) => !keys.has(candidateKey(a.surface)));
+      e.honorificSurfaces = e.honorificSurfaces.filter((h) => !keys.has(candidateKey(h)));
+      e.ambiguousSurfaces = e.ambiguousSurfaces.filter((a) => !keys.has(candidateKey(a.surface)));
+      counts.relationalPrioritized += n0 - (e.aliases.length + e.honorificSurfaces.length + e.ambiguousSurfaces.length);
+    };
+    prioritizeRelational();
     // 1
     const keepHon = [];
     for (const h of e.honorificSurfaces) {
@@ -84,6 +116,14 @@ export function normalizeRoster(roster, scenes) {
         counts.nameFromHonorific = (counts.nameFromHonorific ?? 0) + 1;
       }
     }
+    // 7（続き：名前が確定した後。名前と同じ関係の呼び名は外し、2 で敬称の対応表へ移った表記からも外す）
+    if (hasRelational) {
+      const nk = candidateKey(e.name ?? "");
+      const kept = e.relationalSurfaces.filter((r) => candidateKey(r) !== nk);
+      counts.relationalDroppedAsName += e.relationalSurfaces.length - kept.length;
+      e.relationalSurfaces = kept;
+    }
+    prioritizeRelational();
     // 3（名前と同じ場面依存の表記は、名前を優先して場面依存の表記から外す）
     {
       const nk = candidateKey(e.name ?? "");
@@ -120,12 +160,18 @@ export function normalizeRoster(roster, scenes) {
     e.honorificSurfaces = e.honorificSurfaces.filter((h) => inText(h));
     e.ambiguousSurfaces = e.ambiguousSurfaces.filter((a) => inText(a.surface));
     counts.surfaceDroppedNotInText += before - (e.aliases.length + e.honorificSurfaces.length + e.ambiguousSurfaces.length);
+    if (hasRelational) {
+      const kept = e.relationalSurfaces.filter((r) => inText(r));
+      counts.relationalDroppedNotInText += e.relationalSurfaces.length - kept.length;
+      e.relationalSurfaces = kept;
+    }
     // 5
     const surfaces = [
       e.name,
       ...e.aliases.map((a) => a.surface),
       ...e.honorificSurfaces,
       ...e.ambiguousSurfaces.map((a) => a.surface),
+      ...(e.relationalSurfaces ?? []),
     ].filter((s) => typeof s === "string" && s.length > 0);
     const evKept = e.evidence.filter((ev) => {
       const p = paragraphs[ev.scene - 1]?.[ev.paragraph - 1];

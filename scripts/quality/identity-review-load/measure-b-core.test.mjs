@@ -1122,3 +1122,49 @@ test("要求本文の組み立ての写し：窓の定数と引数の欄が製�
     "aliases",
   ]);
 });
+
+// ---- 関係の呼び名（relationalSurfaces）----------------------------------------------
+
+test("judgmentMetrics：関係の呼び名は別枠（relationalCandidates）で、名簿どおり・結び残しの母集団から外す", async () => {
+  const relRoster = {
+    entities: [
+      {
+        id: "e1",
+        type: "character",
+        name: "c000",
+        aliases: [],
+        relationalSurfaces: ["rel1", "rel2"],
+      },
+    ],
+  };
+  const index = await buildRosterIndex(relRoster, ident);
+  const candidates = ["rel1", "rel2", "c000", "zzz1"].map((keyHash) => ({
+    keyHash,
+    count: 5,
+    firstSceneIndex: 1,
+  }));
+  const judgments = new Map([
+    ["rel1", { suggestedType: "character", aliasOfId: "e1", aliasKnown: true }],
+    ["rel2", { suggestedType: "character", aliasOfId: null, aliasKnown: true }],
+    ["c000", { suggestedType: "character", aliasOfId: "e1", aliasKnown: true }],
+    ["zzz1", { suggestedType: "item", aliasOfId: null, aliasKnown: true }],
+  ]);
+  const m = judgmentMetrics({ index, candidates, judgments });
+  assert.equal(m.relationalCandidates, 2);
+  assert.equal(m.relationalWithAlias, 1);
+  assert.equal(m.aliasButtons, 2);
+  assert.equal(m.aliasMatchRoster, 1); // c000 だけ
+  assert.equal(m.aliasMismatchRoster, 0);
+  assert.equal(m.missedBindNullAlias, 0); // rel2 は結び残しに数えない
+  assert.equal(m.listedEntityCandidates, 1);
+  assert.equal(m.unlistedCandidates, 1);
+  assert.equal(m.typeChecked, 1);
+});
+
+test("authorDecision：関係の呼び名は別名にも受理にもせず却下（理由 relational）", () => {
+  const typeOf = () => "character";
+  assert.deepEqual(
+    authorDecision({ kind: "relational", ids: ["e1", "e2"] }, new Set(["e1"]), typeOf),
+    { action: "dismiss", reason: "relational" },
+  );
+});

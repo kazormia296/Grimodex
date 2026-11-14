@@ -6,6 +6,9 @@
 //
 // 提案の分類（entity の提案だけ。重ならない。順に判定）：
 //   0 notInRoster        名簿にも敬称の対応表にも無い（抽出のノイズ。種類別に件数だけ別枠）
+//   0' relational        名簿の「関係の呼び名」（relationalSurfaces。続柄・二人称・三人称の呼び方）。
+//                        Codex には登録しない別の種類で、0 とも 1〜5 とも別の枠に数える
+//                        （提案の数と binding の内訳だけ。操作の下限・listedByBinding には入れない）
 //   1 unresolved…        binding が unresolved：
 //       unresolvedCandidateIn   名簿の実体が候補に入っている（順位つき。同点は同順位）
 //       unresolvedCandidateOut  候補に無い
@@ -17,6 +20,7 @@ import { candidateKey, hashSurface } from "./lib.mjs";
 
 export const CATEGORIES = Object.freeze([
   "notInRoster",
+  "relational",
   "unresolvedCandidateIn",
   "unresolvedCandidateOut",
   "typeNeeded",
@@ -39,6 +43,7 @@ export async function buildRosterIndex(roster, hash = hashSurface) {
   const names = new Map(); // keyHash → Set(entityId)
   const aliases = new Map();
   const honorific = new Map();
+  const relational = new Map(); // 関係の呼び名（登録しない。keyHash → Set(entityId)）
   const ambiguous = new Map(); // keyHash → Map(entityId → ranges)
   const push = (map, key, id) => {
     if (!map.has(key)) map.set(key, new Set());
@@ -54,6 +59,9 @@ export async function buildRosterIndex(roster, hash = hashSurface) {
     for (const surface of entity.honorificSurfaces ?? [])
       if (typeof surface === "string")
         push(honorific, await hashKey(surface), entity.id);
+    for (const surface of entity.relationalSurfaces ?? [])
+      if (typeof surface === "string")
+        push(relational, await hashKey(surface), entity.id);
     for (const item of entity.ambiguousSurfaces ?? []) {
       if (typeof item.surface !== "string") continue;
       const key = await hashKey(item.surface);
@@ -61,7 +69,7 @@ export async function buildRosterIndex(roster, hash = hashSurface) {
       ambiguous.get(key).set(entity.id, item.sceneRanges ?? []);
     }
   }
-  return { entities, names, aliases, honorific, ambiguous };
+  return { entities, names, aliases, honorific, relational, ambiguous };
 }
 
 function inRanges(ranges, scene) {
@@ -70,8 +78,10 @@ function inRanges(ranges, scene) {
 
 /**
  * (表記, 場面) → 実体。
- * { kind: "entity", id, via, honorific } | { kind: "ambiguous", ids } | { kind: "unlisted" }
+ * { kind: "entity", id, via, honorific } | { kind: "ambiguous", ids } | { kind: "relational", ids } | { kind: "unlisted" }
  * via：exact（名前・別名が 1 つの実体）／name-over-alias（名前が 1 件だけ一致）／scene-range（場面で指す人が変わる表記）／honorific。
+ * relational：名簿の関係の呼び名（ids は指しうる実体の一覧）。名前・別名・場面依存の表記として引けなかった表記だけが
+ * 当たる（登録した名前・別名として製品が結ぶ表記は、そちらを優先する）。敬称の対応表より先に判定する。
  */
 export function lookupRoster(index, keyHash, sceneIndexes) {
   const nameOwners = [...(index.names.get(keyHash) ?? [])];
@@ -114,6 +124,8 @@ export function lookupRoster(index, keyHash, sceneIndexes) {
       };
     return { kind: "ambiguous", ids: allOwners };
   }
+  const rel = [...(index.relational?.get(keyHash) ?? [])];
+  if (rel.length > 0) return { kind: "relational", ids: rel };
   const hon = [...(index.honorific.get(keyHash) ?? [])];
   if (hon.length === 1)
     return { kind: "entity", id: hon[0], via: "honorific", honorific: true };
@@ -152,6 +164,7 @@ const PARTIAL = new Set(["prefix", "substring"]);
 /** 1 行を分類する。 */
 export function classifyRow(row, lookup, { bulkApprovable }) {
   if (lookup.kind === "unlisted") return { category: "notInRoster" };
+  if (lookup.kind === "relational") return { category: "relational" };
   const ids = lookup.kind === "entity" ? [lookup.id] : lookup.ids;
   if (row.bindingKind === "unresolved") {
     const rank = candidateRank(row.candidates, ids);
@@ -198,6 +211,7 @@ export function computeMeasureA({ index, rows }) {
     typePersonOnNonCharacter: 0,
     typePersonOnNonCharacterInBulk: 0,
   };
+  const relationalByBinding = {};
   const collision = {
     ambiguousRows: 0,
     ambiguousByBinding: {},
@@ -241,6 +255,11 @@ export function computeMeasureA({ index, rows }) {
         honorific.unlistedUnresolvedByHonorificStrip++;
       if (row.bindingKind === "unresolved")
         bump(unlistedUnresolvedReasons, unresolvedReason(row.candidates));
+      continue;
+    }
+    if (cls.category === "relational") {
+      // 関係の呼び名が作る提案。名簿の実体の提案とは別枠（listedByBinding・操作の下限に入れない）。
+      bump(relationalByBinding, row.bindingKind);
       continue;
     }
     bump(listedByBinding, row.bindingKind);
@@ -361,6 +380,10 @@ export function computeMeasureA({ index, rows }) {
     proposalCount: rows.length,
     proposalByBinding,
     listedByBinding,
+    relational: {
+      rows: categoryCounts.relational,
+      byBinding: relationalByBinding,
+    },
     categoryCounts,
     notInRosterByKind,
     unresolved: {

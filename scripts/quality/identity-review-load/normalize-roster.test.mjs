@@ -110,3 +110,60 @@ test("同じ入力から同じ出力を作る（決定的）", () => {
   assert.deepEqual(a, b);
   assert.deepEqual(a.roster.entities[0].aliases, [{ surface: "架空先輩", level: "L2" }]);
 });
+
+test("関係の呼び名：保ち、同じ実体の別名・敬称の形・場面依存の表記から外し、本文に出ないものと名前と同じものは外す", () => {
+  const r = roster([
+    {
+      id: "rt-g-ja-3-001",
+      type: "character",
+      name: "架空太郎",
+      lineage: "A",
+      aliases: [
+        { surface: "架空先輩", level: "L2" },
+        { surface: "架空次郎", level: "L3" },
+      ],
+      honorificSurfaces: ["太郎さん"],
+      ambiguousSurfaces: [{ surface: "先生", sceneRanges: [[3, 3]] }],
+      relationalSurfaces: [
+        "架空先輩", // 別名と重なる
+        "太郎さん", // 敬称の形と重なる
+        "先生", // 場面依存と重なる
+        "先生", // 重複
+        "本文に無い呼び名", // 本文に出ない
+        "架空太郎", // 名前と同じ
+      ],
+      firstScene: 1,
+      evidence: [{ scene: 1, paragraph: 1 }],
+    },
+  ]);
+  const { roster: out, counts } = normalizeRoster(r, scenes);
+  const e = out.entities[0];
+  assert.deepEqual(e.relationalSurfaces, ["架空先輩", "太郎さん", "先生"]);
+  assert.deepEqual(e.aliases, [{ surface: "架空次郎", level: "L3" }]);
+  assert.deepEqual(e.honorificSurfaces, []);
+  assert.deepEqual(e.ambiguousSurfaces, []);
+  assert.equal(counts.relationalPrioritized, 3);
+  assert.equal(counts.relationalDroppedDuplicate, 1);
+  assert.equal(counts.relationalDroppedNotInText, 1);
+  assert.equal(counts.relationalDroppedAsName, 1);
+  assert.deepEqual(validateRoster(out).errors, []);
+  assert.deepEqual(checkRosterAgainstScenes(out, scenes), []);
+});
+
+test("関係の呼び名の欄が無い名簿では欄を作らない", () => {
+  const r = roster([
+    {
+      id: "rt-g-ja-3-001",
+      type: "character",
+      name: "架空太郎",
+      lineage: "A",
+      aliases: [],
+      honorificSurfaces: [],
+      ambiguousSurfaces: [],
+      firstScene: 1,
+      evidence: [{ scene: 1, paragraph: 1 }],
+    },
+  ]);
+  const { roster: out } = normalizeRoster(r, scenes);
+  assert.equal("relationalSurfaces" in out.entities[0], false);
+});

@@ -107,6 +107,9 @@ test("flattenRunA：列は件数だけ", async () => {
   assert.equal(flat.sceneCount, 60);
   assert.equal(flat.bulk, 1);
   assert.ok(Object.values(flat).every((v) => v === null || Number.isFinite(v)));
+  // 関係の呼び名の枠（この合成の名簿には無いので 0）。
+  assert.equal(flat.relational, 0);
+  assert.equal(flat.relationalCreateNew, 0);
 });
 
 test("buildMeasureA：作品ごとの表・一致の検査・累積の参考値・作品間の範囲", async () => {

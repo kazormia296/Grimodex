@@ -179,6 +179,7 @@ export interface RosterEntity {
   frequentSurface?: string;
   aliases: RosterAlias[];
   honorificSurfaces?: string[];
+  relationalSurfaces?: string[];
   ambiguousSurfaces?: { surface: string; sceneRanges: [number, number][] }[];
   evidence: { scene: number; paragraph: number }[];
   lineage: "A" | "B" | "adjudicated";
