@@ -65,7 +65,10 @@ stdout の banner を JSON として扱わない。明示的な比較 ref を使
 
 ## 結果の扱い
 
-selected Light suite がすべて成功した場合だけ Light gate の成功とする。
+selected Light suite のうち、実行された command がすべて成功した場合だけ Light gate の成功とする。
+changed path がすべて `^docs/.+\.md$` に合う docs Markdown だけの選択では、cargo・src の vitest・tsc など
+文書を読めない command を落とし、文書を読む node の試験だけを残す。command が 0 本になった suite は
+`skipped` で、失敗ではない（成功の証拠にも読み替えない）。merge 条件の docs-only PR の例外とは別の規則である。
 Quick は complete receipt の requested／resolved base・head と現在候補が一致する場合だけ成功とし、
 partial `--from`、dry-run、stale receipt は受入れ証拠にしない。
 immutable child／revision の評価では

@@ -1135,9 +1135,10 @@ test("CI runs the diff gate with full history and selected light suites", async 
   assert.match(workflow, /--run/);
 
   // Q (2026-11-15): the impact step does not run on a pull request, because the
-  // canonical Quick already ran the same selection on that head. Every other
-  // event (master push, manual dispatch, reusable call) still runs it with
-  // `--run`, and Gate B2 accepts only those events.
+  // canonical Quick already ran the same selection on the candidate head (the
+  // PR's ci.yml itself measures the merge ref). Every other event (master push,
+  // manual dispatch) still runs it with `--run`; a reusable call inherits the
+  // caller's event, and Gate B2 accepts only the events that run it.
   const quality = yaml.load(workflow).jobs.quality;
   const impactSteps = quality.steps.filter(
     (step) => step.name === "Impact-selected light gates",

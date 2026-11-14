@@ -94,6 +94,7 @@ master の Full（§8）は `--ref master` で dispatch し、`candidate_head` �
    Quickとmergeを開始せず、merge readinessを主張しない。
    同じheadの`ci.yml`の成功には、§2.10の2つの例外がある。
    PRの`ci.yml`は、Qualityのimpact-selected Light suite（canonical Quickが同じ候補で実行済み）を繰り返さず、C-query workerはLinuxだけで走らせる。
+   PRの`ci.yml`はmerge ref（`github.sha`）を測り、Quickは候補headを測る。Quickの後に進んだmasterとの組合せは、impactではmasterへのpushまで検査されない。
    その2つとmacOS／Windowsのworkerはmasterのpushの`ci.yml`で走るため、PRのcheckがgreenでも、macOS／Windowsだけの失敗はmergeの後にmasterのpushで見つかり、masterの赤として§8に従う。
 6. release PRでmergeまでがゴールでCIが許可されている場合だけ、Fullを要求する。初回Fullの前提として`git fetch origin master`後のcurrent `origin/master`がcandidate HEADの
    祖先であることを確認する。branchが遅れていれば安全に更新してレビュー対象を取り直し、cleanなcommit済みHEADで最初のstageから

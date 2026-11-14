@@ -1269,32 +1269,36 @@ export function parseImpactMap(source, options = {}) {
   return map;
 }
 
-// A docs-only change touches nothing but Markdown under docs/ (the same pattern
-// as the docs-only PR exception in the ship-branch skill, work records
-// included). No Rust code, build script or manifest reads docs/, so such a
-// change gets no cargo command; of the Node commands only the ones that can read
-// docs/ are kept. The suite selection itself (requirements, heavy and blocked
-// reports) is unchanged. Keep DOCS_READER_VITEST_FILES in step with the vitest
-// files that read docs/ (impact-map.test.mjs scans for new ones).
-const DOCS_ONLY_PATH = /^docs\/.+\.md$/u;
+// A docs-markdown-only selection: every changed path is Markdown under docs/
+// (`^docs/.+\.md$`), work records included. This is NOT the docs-only PR
+// exception of GDX-TRACE-001 / ship-branch (a narrower merge-condition rule
+// that excludes operational-rule documents and documents named by path from
+// code); it only decides which Light commands run. No Rust code, build script
+// or manifest reads docs/, so such a selection gets no cargo command; of the
+// Node commands only the ones that can read docs/ are kept. The suite selection
+// itself (requirements, heavy and blocked reports) is unchanged. Keep
+// DOCS_READER_VITEST_FILES in step with the vitest files that read docs/
+// (impact-map.test.mjs scans for new ones).
+const DOCS_MARKDOWN_ONLY_PATH = /^docs\/.+\.md$/u;
 export const DOCS_READER_VITEST_FILES = Object.freeze([
   "electron/main/rendererContainmentGOpenRecord.test.ts",
 ]);
 
-export function isDocsOnlyChange(changedPaths) {
+export function isDocsMarkdownOnlyChange(changedPaths) {
   return (
     changedPaths.length > 0 &&
-    changedPaths.every((candidate) => DOCS_ONLY_PATH.test(candidate))
+    changedPaths.every((candidate) => DOCS_MARKDOWN_ONLY_PATH.test(candidate))
   );
 }
 
 /**
- * The commands of one Light suite that still run for a docs-only change.
+ * The commands of one Light suite that still run for a docs-markdown-only
+ * selection (a suite left with no command is reported as skipped, not failed).
  * Kept: `pnpm test:quality`, `pnpm test:narrative:*` and `node --test ...`
  * (Node-only readers of docs/), and the vitest run narrowed to the electron
  * test that reads docs/. Dropped: every cargo command and every other command.
  */
-export function docsOnlyCommands(commands) {
+export function docsMarkdownOnlyCommands(commands) {
   const kept = [];
   for (const command of commands) {
     const [executable, script, flag, ...rest] = command;
@@ -1362,7 +1366,7 @@ export function selectImpact(map, changedPaths, options = {}) {
   const requirementIds = allSelected
     ? allRequirementIds
     : unique(matchedRules.flatMap((rule) => rule.requirements));
-  const docsOnly = !forcedReason && isDocsOnlyChange(paths);
+  const docsMarkdownOnly = !forcedReason && isDocsMarkdownOnlyChange(paths);
   const reason = forcedReason
     ? forcedReason
     : paths.length === 0
@@ -1388,9 +1392,9 @@ export function selectImpact(map, changedPaths, options = {}) {
     suiteIds,
     fallback,
     allSelected,
-    docsOnly,
-    reason: docsOnly
-      ? `${reason} Docs-only change: cargo and commands that cannot read docs/ are not run.`
+    docsMarkdownOnly,
+    reason: docsMarkdownOnly
+      ? `${reason} Docs-markdown-only selection: cargo and commands that cannot read docs/ are not run.`
       : reason,
   };
 }
@@ -1642,8 +1646,8 @@ export async function runSelectedSuites(
       });
       continue;
     }
-    const commands = selection.docsOnly
-      ? docsOnlyCommands(definition.commands)
+    const commands = selection.docsMarkdownOnly
+      ? docsMarkdownOnlyCommands(definition.commands)
       : definition.commands;
     if (commands.length === 0) {
       results.push({
@@ -1655,7 +1659,7 @@ export async function runSelectedSuites(
         steps: [],
         status: "skipped",
         exitCode: null,
-        reason: "Docs-only change: no command of this suite can read docs/.",
+        reason: "Docs-markdown-only selection: no command of this suite can read docs/.",
         durationMs: 0,
       });
       continue;
