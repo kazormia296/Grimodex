@@ -143,6 +143,7 @@ import {
 } from "./extraction/relationApplicability";
 import {
   BULK_EXACT_BIND_DECISION_SOURCE,
+  entitiesWithDependents,
   STALE_BIND_DECISION_REASON,
   recheckExactBindAgainstEntries,
   refreshEntityBindSafety,
@@ -3454,6 +3455,23 @@ export async function restoreCodexStructureExtractionReview(scope: {
   }
 }
 
+/** Apply の前に、承認を承認前へ戻して Apply から外した提案（承認し直しが要る）。 */
+export interface ApplyExcludedEntityApproval {
+  readonly proposalId: string;
+  readonly displayTitle: string;
+  /**
+   * `stale-version`：承認で固定した版と今の Codex の版が違う（結び先が編集された）。
+   * `target-missing`：結び先の Entry が今の Codex に無い。
+   * `dependent-added`：一括で通した後に、この実体に依存する関係・Phase・Base Detail が付いた。
+   * `no-longer-exact`：一括で通した結び付けが、今の Codex では完全一致の条件を満たさない。
+   */
+  readonly reason:
+    | "stale-version"
+    | "target-missing"
+    | "dependent-added"
+    | "no-longer-exact";
+}
+
 export interface ApplyCodexStructureExtractionInput {
   readonly projectId: string;
   readonly entries: readonly {
@@ -3461,7 +3479,13 @@ export interface ApplyCodexStructureExtractionInput {
     readonly version: number;
     readonly aliases: string | null;
     readonly type: string;
+    /** あれば、一括で通した結び付けを Apply の直前に今の名前で再検査する。 */
+    readonly name?: string | null;
   }[];
+  /** Apply から外した提案があれば、Apply の前に呼ぶ（画面で報告する）。 */
+  readonly onEntityApprovalsExcluded?: (
+    excluded: readonly ApplyExcludedEntityApproval[],
+  ) => void;
   /** Map KnowledgeTypeRef → type slug used by codex.entry.create. */
   readonly resolveTypeSlug?: (typeRef: string) => string;
   /** Map Detail definitionRef → concrete definition id. */
@@ -3509,15 +3533,155 @@ function defaultEncodePhaseWrite(
  * Prefer operation payloads locked at approve time (`compiledOperation`) so Native
  * revision digests match Apply operations.
  */
+/**
+ * 承認済みの結び付け・patch のうち、Apply の commit が丸ごと失敗する（NEX_CODEX_VERSION_MISMATCH）
+ * ものと、一括で通した後に条件が変わったものを、Apply の前に外す。外したものは Native の decision を
+ * deferred（decisionJson.reason = stale-bind）に戻し、store でも承認前（保留）にして、作者が今の版で
+ * 承認し直せるようにする。op の組み直しはしない（commit は承認時に固定した revision の payload と
+ * 照合するので、組み直した op は拒否される）。関係は、実体が承認でなくなるので後続の再評価が止める。
+ */
+async function excludeStaleEntityApprovals(
+  projection: CodexStructureExtractionReviewProjection,
+  input: ApplyCodexStructureExtractionInput,
+): Promise<{
+  readonly projection: CodexStructureExtractionReviewProjection;
+  readonly excluded: readonly ApplyExcludedEntityApproval[];
+}> {
+  const entries = input.entries;
+  const named =
+    entries.length > 0 && entries.every((entry) => entry.name !== undefined)
+      ? entries.map((entry) => ({
+          id: entry.id,
+          name: entry.name ?? null,
+          aliases: entry.aliases,
+          type: entry.type,
+          version: entry.version,
+        }))
+      : null;
+  const withDependents = entitiesWithDependents(projection);
+  const excluded: ApplyExcludedEntityApproval[] = [];
+
+  for (const review of projection.proposals) {
+    if (
+      review.applicability !== "applicable" ||
+      review.status !== "approved" ||
+      !review.revisionId ||
+      review.application
+    ) {
+      continue;
+    }
+    const operation = review.compiledOperation;
+    const entryId =
+      operation &&
+      (operation.kind === "codex.entity.bind-existing" ||
+        operation.kind === "codex.entry.patch") &&
+      typeof operation.payload.entryId === "string"
+        ? operation.payload.entryId
+        : null;
+    if (!operation || !entryId) continue;
+
+    let reason: ApplyExcludedEntityApproval["reason"] | null = null;
+    // 今の Codex の一覧が空のときは「読めていない」可能性があり、削除とは判断しない。
+    if (entries.length > 0) {
+      const live = entries.find((entry) => entry.id === entryId);
+      if (!live) reason = "target-missing";
+      else if (operation.payload.baseVersion !== live.version) {
+        reason = "stale-version";
+      }
+    }
+    if (!reason && review.bulkApprovedExactBind) {
+      if (withDependents.has(review.proposal.payload.narrativeEntityId)) {
+        reason = "dependent-added";
+      } else if (
+        named &&
+        !recheckExactBindAgainstEntries(
+          review.proposal.payload,
+          projection.catalog,
+          named,
+        ).ok
+      ) {
+        reason = "no-longer-exact";
+      }
+    }
+    if (!reason) continue;
+    excluded.push({
+      proposalId: review.proposalId,
+      displayTitle: review.displayTitle,
+      reason,
+    });
+  }
+  if (excluded.length === 0) return { projection, excluded };
+
+  const byId = new Map(excluded.map((item) => [item.proposalId, item]));
+  for (const review of projection.proposals) {
+    const item = byId.get(review.proposalId);
+    if (!item) continue;
+    await appendHumanDecision({
+      runId: projection.runId,
+      projectId: projection.projectId,
+      proposalId: review.proposalId,
+      revisionId: review.revisionId!,
+      decision: "deferred",
+      decisionJson: {
+        reason: STALE_BIND_DECISION_REASON,
+        cause: item.reason,
+      },
+      createdBy: "codex-structure-extract-dialog",
+    });
+  }
+  const latest =
+    useCodexStructureExtractionStore.getState().projection ?? projection;
+  const proposals = latest.proposals.map((review) =>
+    byId.has(review.proposalId)
+      ? {
+          ...review,
+          status: "deferred" as const,
+          compiledOperation: null,
+          bulkApprovedExactBind: false,
+          staleBind: true,
+        }
+      : review,
+  );
+  useCodexStructureExtractionStore.getState().setProjection({
+    ...latest,
+    proposals,
+    ...recountProjection(
+      proposals,
+      latest.relationProposals,
+      latest.baseDetailProposals,
+      latest.phaseProposals,
+    ),
+  });
+  return {
+    projection: useCodexStructureExtractionStore.getState().projection!,
+    excluded,
+  };
+}
+
 export async function applyCodexStructureExtractionReview(
   input: ApplyCodexStructureExtractionInput,
 ): Promise<number> {
-  const projection = useCodexStructureExtractionStore.getState().projection;
-  if (!projection || projection.projectId !== input.projectId) {
+  const initialProjection =
+    useCodexStructureExtractionStore.getState().projection;
+  if (!initialProjection || initialProjection.projectId !== input.projectId) {
     throw new Error("No active codex structure extraction review for project");
   }
-  if (!projection.proposalSetId) {
+  if (!initialProjection.proposalSetId) {
     throw new Error("Missing proposalSetId for codex commit");
+  }
+  const { projection, excluded: excludedApprovals } =
+    await excludeStaleEntityApprovals(initialProjection, input);
+  const excludedNarrativeEntityIds = new Set(
+    projection.proposals
+      .filter((proposal) =>
+        excludedApprovals.some(
+          (item) => item.proposalId === proposal.proposalId,
+        ),
+      )
+      .map((proposal) => proposal.proposal.payload.narrativeEntityId),
+  );
+  if (excludedApprovals.length > 0) {
+    input.onEntityApprovalsExcluded?.(excludedApprovals);
   }
 
   // Preflight: rematch existing Relations so Apply never sends semantic duplicates.
@@ -3659,13 +3823,18 @@ export async function applyCodexStructureExtractionReview(
     });
   }
 
+  // 外した実体に依存する Base Detail・Phase は、実体の結び付けが無いまま compile できないので
+  // 今回の Apply から外す（承認の状態は触らない。実体を承認し直した後の Apply で通る）。
   const approvedBaseDetails = (active.baseDetailProposals ?? []).filter(
     (proposal) =>
       proposal.applicability === "applicable" &&
       proposal.status === "approved" &&
       proposal.revisionId &&
       !proposal.unbound &&
-      !proposal.application,
+      !proposal.application &&
+      !excludedNarrativeEntityIds.has(
+        proposal.proposal.payload.narrativeEntityId,
+      ),
   );
   const approvedPhases = (active.phaseProposals ?? []).filter(
     (proposal) =>
@@ -3673,7 +3842,10 @@ export async function applyCodexStructureExtractionReview(
       proposal.status === "approved" &&
       proposal.revisionId &&
       proposal.proposal.payload.binding.kind !== "unresolved" &&
-      !proposal.application,
+      !proposal.application &&
+      !excludedNarrativeEntityIds.has(
+        proposal.proposal.payload.narrativeEntityId,
+      ),
   );
 
   const phaseDetailOps = compilePhaseAndDetailOpsAfterEntities({

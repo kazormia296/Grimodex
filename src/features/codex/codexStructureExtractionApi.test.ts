@@ -3335,3 +3335,490 @@ describe("applyCodexStructureExtractionReview opaque refs", () => {
     expect(input.operations[0]?.operation.payload.entryId).toBe("entry-real");
   });
 });
+
+describe("applyCodexStructureExtractionReview: 古くなった結び付けの除外（Q4(a)）", () => {
+  const CATALOG = {
+    entities: [
+      {
+        ref: "K0003",
+        sourceKey: "entry-riku",
+        name: "リク",
+        typeRef: "T0001",
+        expectedVersion: 1,
+        aliases: [] as string[],
+      },
+      {
+        ref: "K0005",
+        sourceKey: "entry-sora",
+        name: "ソラ",
+        typeRef: "T0001",
+        expectedVersion: 1,
+        aliases: [] as string[],
+      },
+    ],
+    types: [
+      {
+        ref: "T0001",
+        sourceKey: "character",
+        slug: "character",
+        label: "character",
+      },
+    ],
+  };
+  const evidence = [
+    {
+      anchorId: "a1",
+      quote: "リク",
+      documentRef: "D1",
+      method: "exact" as const,
+    },
+  ];
+
+  beforeEach(() => {
+    resetCodexStructureExtractionStoreForTests();
+    resetCodexStructureExtractionApiCachesForTests();
+    prepareApplyMock.mockReset();
+    prepareApplyMock.mockResolvedValue({
+      prepared: {},
+      applied: {},
+      status: {},
+      commitMap: { entityBindings: {} },
+    });
+    appendHumanDecisionMock.mockReset();
+    appendHumanDecisionMock.mockResolvedValue({});
+    reviseAndDecideAsHumanMock.mockReset();
+    reviseAndDecideAsHumanMock.mockResolvedValue({
+      proposalId: "b1",
+      revisionId: "rev-b1-2",
+      revisionNumber: 2,
+      decisionId: "d2",
+      decision: "approved",
+      status: "approved",
+    });
+  });
+
+  function approvedBind(
+    proposalId: string,
+    name: string,
+    entityRef: string,
+    narrativeEntityId: string,
+    options: {
+      baseVersion: number;
+      bulk?: boolean;
+      kind?: "codex.entity.bind-existing" | "codex.entry.patch";
+    },
+  ) {
+    const entryId = entityRef === "K0003" ? "entry-riku" : "entry-sora";
+    return {
+      proposalId,
+      revisionId: `rev-${proposalId}`,
+      proposalKey: `key-${proposalId}`,
+      status: "approved" as const,
+      applicability: "applicable" as const,
+      displayTitle: name,
+      proposal: bindExistingCodexEntityProposal(
+        {
+          narrativeEntityId,
+          canonicalName: name,
+          aliases: [],
+          coarseClass: "person",
+          typeResolution: { status: "resolved", typeRef: "T0001" },
+          binding: {
+            kind: "bind-existing",
+            entityRef,
+            enrichment: { aliasesToAdd: [], summary: { kind: "leave" } },
+          },
+        },
+        { proposalId },
+      ),
+      evidence,
+      safety: buildCodexEntityProposalSafetyFlags({
+        bindingKind: "bind-existing",
+        typeStatus: "resolved",
+        evidenceMethods: ["exact"],
+        hasExistingCandidates: true,
+        hasProperNameMention: true,
+        aliasesAllExplicit: true,
+      }),
+      compiledOperation: {
+        kind: options.kind ?? "codex.entity.bind-existing",
+        payload: {
+          entryId,
+          narrativeEntityId,
+          baseVersion: options.baseVersion,
+        },
+      },
+      bulkApprovedExactBind: options.bulk ?? false,
+    };
+  }
+
+  function approvedCreate(proposalId: string, name: string) {
+    return {
+      proposalId,
+      revisionId: `rev-${proposalId}`,
+      proposalKey: `key-${proposalId}`,
+      status: "approved" as const,
+      applicability: "applicable" as const,
+      displayTitle: name,
+      proposal: createNewBindCodexEntityProposal(
+        {
+          narrativeEntityId: `ne-${proposalId}`,
+          canonicalName: name,
+          aliases: [],
+          coarseClass: "person",
+          typeResolution: { status: "resolved", typeRef: "T0001" },
+          binding: {
+            kind: "create-new",
+            entry: { name, aliases: [], summary: null },
+          },
+        },
+        { proposalId },
+      ),
+      evidence,
+      safety: buildCodexEntityProposalSafetyFlags({
+        bindingKind: "create-new",
+        typeStatus: "resolved",
+        evidenceMethods: ["exact"],
+        hasExistingCandidates: false,
+        hasProperNameMention: true,
+        aliasesAllExplicit: true,
+      }),
+      compiledOperation: {
+        kind: "codex.entry.create",
+        payload: {
+          entryId: `entry-${proposalId}`,
+          typeSlug: "character",
+          name,
+          summary: null,
+          aliases: [],
+          parentId: null,
+          content: '{"type":"doc","content":[]}',
+          narrativeEntityId: `ne-${proposalId}`,
+        },
+      },
+    };
+  }
+
+  function publish(proposals: unknown[], extra: Record<string, unknown> = {}) {
+    useCodexStructureExtractionStore.getState().setProjection({
+      runId: "run-stale",
+      projectId: "p1",
+      workspacePath: "/w",
+      openRevision: 1,
+      proposalSetId: "ps-stale",
+      status: "completed",
+      coverage: {},
+      taskCounts: {
+        queued: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+        cancelled: 0,
+      },
+      proposals: proposals as never,
+      relationProposals: [],
+      baseDetailProposals: [],
+      phaseProposals: [],
+      entityCount: proposals.length,
+      relationCount: 0,
+      baseDetailCount: 0,
+      phaseCount: 0,
+      unresolvedCount: 0,
+      approvedCount: proposals.length,
+      catalog: CATALOG,
+      ...extra,
+    });
+  }
+
+  const stored = (id: string) =>
+    useCodexStructureExtractionStore
+      .getState()
+      .projection?.proposals.find((row) => row.proposalId === id);
+
+  const LIVE = (version: number) => [
+    {
+      id: "entry-riku",
+      name: "リク",
+      aliases: null,
+      type: "character",
+      version,
+    },
+    {
+      id: "entry-sora",
+      name: "ソラ",
+      aliases: null,
+      type: "character",
+      version: 1,
+    },
+  ];
+
+  it("結び先が編集されて版が古くなった結び付けを Apply から外して報告し、承認前（保留）へ戻す。新規作成は通す", async () => {
+    publish([
+      approvedBind("b1", "リク", "K0003", "ne-b1", {
+        baseVersion: 1,
+        bulk: true,
+      }),
+      approvedCreate("c1", "ミナ"),
+    ]);
+    const excludedReport = vi.fn();
+    const applied = await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: LIVE(7),
+      onEntityApprovalsExcluded: excludedReport,
+    });
+    expect(applied).toBe(1);
+    expect(excludedReport).toHaveBeenCalledWith([
+      { proposalId: "b1", displayTitle: "リク", reason: "stale-version" },
+    ]);
+    const committed = prepareApplyMock.mock.calls[0]?.[0]?.operations ?? [];
+    expect(
+      committed.map((item: { proposalId: string }) => item.proposalId),
+    ).toEqual(["c1"]);
+    // Native にも deferred（reason = stale-bind）で残し、復元しても approved に戻らない。
+    expect(appendHumanDecisionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        proposalId: "b1",
+        revisionId: "rev-b1",
+        decision: "deferred",
+        decisionJson: { reason: "stale-bind", cause: "stale-version" },
+      }),
+    );
+    expect(stored("b1")).toMatchObject({
+      status: "deferred",
+      staleBind: true,
+      bulkApprovedExactBind: false,
+      compiledOperation: null,
+    });
+  });
+
+  it("全部が外れたら commit を呼ばず 0 件を返す", async () => {
+    publish([approvedBind("b1", "リク", "K0003", "ne-b1", { baseVersion: 1 })]);
+    const applied = await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: LIVE(2),
+    });
+    expect(applied).toBe(0);
+    expect(prepareApplyMock).not.toHaveBeenCalled();
+  });
+
+  it("結び先が今の Codex に無ければ同じ除外にする（今の一覧が空のときは読めていない可能性があるので除外しない）", async () => {
+    publish([approvedBind("b1", "ソラ", "K0005", "ne-b1", { baseVersion: 1 })]);
+    const report = vi.fn();
+    await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: [LIVE(1)[0]!],
+      onEntityApprovalsExcluded: report,
+    });
+    expect(report).toHaveBeenCalledWith([
+      { proposalId: "b1", displayTitle: "ソラ", reason: "target-missing" },
+    ]);
+
+    publish([approvedBind("b1", "ソラ", "K0005", "ne-b1", { baseVersion: 1 })]);
+    prepareApplyMock.mockClear();
+    await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: [],
+    });
+    expect(prepareApplyMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("古い patch も同じ述語で外す", async () => {
+    publish([
+      approvedBind("b1", "リク", "K0003", "ne-b1", {
+        baseVersion: 1,
+        kind: "codex.entry.patch",
+      }),
+    ]);
+    const report = vi.fn();
+    await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: LIVE(3),
+      onEntityApprovalsExcluded: report,
+    });
+    expect(report).toHaveBeenCalledWith([
+      { proposalId: "b1", displayTitle: "リク", reason: "stale-version" },
+    ]);
+  });
+
+  it("版が合っていれば外さない", async () => {
+    publish([approvedBind("b1", "リク", "K0003", "ne-b1", { baseVersion: 7 })]);
+    const report = vi.fn();
+    const applied = await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: LIVE(7),
+      onEntityApprovalsExcluded: report,
+    });
+    expect(applied).toBe(1);
+    expect(report).not.toHaveBeenCalled();
+    expect(appendHumanDecisionMock).not.toHaveBeenCalled();
+  });
+
+  it("外した実体を端点に持つ承認済みの関係は、今回の commit に入れない", async () => {
+    const relation = {
+      proposalId: "r1",
+      revisionId: "rev-r1",
+      proposalKey: "rel-key",
+      status: "approved" as const,
+      applicability: "applicable" as const,
+      displayTitle: "友人",
+      subjectLabel: "リク",
+      objectLabel: "ミナ",
+      evidence,
+      proposal: {
+        proposalId: "r1",
+        kind: "codex.relation.create",
+        target: { kind: "new", logicalRef: "rel-key" },
+        payload: {
+          subjectEntityId: "ne-b1",
+          objectEntityId: "ne-c1",
+          relation: {
+            relationType: "friend_of",
+            directionality: "symmetric",
+            forwardLabel: "友人",
+            inverseLabel: "友人",
+          },
+          validity: "current",
+        },
+        dependencies: [],
+      },
+      compiledOperation: {
+        kind: "codex.relation.create",
+        payload: { relationId: "rel-1" },
+      },
+    };
+    publish(
+      [
+        approvedBind("b1", "リク", "K0003", "ne-b1", { baseVersion: 1 }),
+        approvedCreate("c1", "ミナ"),
+      ],
+      { relationProposals: [relation], relationCount: 1 },
+    );
+    await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: LIVE(9),
+    });
+    const committed = prepareApplyMock.mock.calls[0]?.[0]?.operations ?? [];
+    expect(
+      committed.map((item: { proposalId: string }) => item.proposalId),
+    ).toEqual(["c1"]);
+  });
+
+  it("一括で通した後に依存する関係が付いた結び付けは、版が合っていても外す。手で承認した結び付けは外さない", async () => {
+    const relation = {
+      proposalId: "r1",
+      revisionId: "rev-r1",
+      proposalKey: "rel-key",
+      status: "unreviewed" as const,
+      applicability: "blocked" as const,
+      displayTitle: "友人",
+      subjectLabel: "リク",
+      objectLabel: "ソラ",
+      evidence,
+      proposal: {
+        proposalId: "r1",
+        kind: "codex.relation.create",
+        target: { kind: "new", logicalRef: "rel-key" },
+        payload: {
+          subjectEntityId: "ne-b1",
+          objectEntityId: "ne-b2",
+          relation: {
+            relationType: "friend_of",
+            directionality: "symmetric",
+            forwardLabel: "友人",
+            inverseLabel: "友人",
+          },
+          validity: "current",
+        },
+        dependencies: [],
+      },
+    };
+    publish(
+      [
+        approvedBind("b1", "リク", "K0003", "ne-b1", {
+          baseVersion: 7,
+          bulk: true,
+        }),
+        approvedBind("b2", "ソラ", "K0005", "ne-b2", { baseVersion: 1 }),
+      ],
+      { relationProposals: [relation], relationCount: 1 },
+    );
+    const report = vi.fn();
+    await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: LIVE(7),
+      onEntityApprovalsExcluded: report,
+    });
+    expect(report).toHaveBeenCalledWith([
+      { proposalId: "b1", displayTitle: "リク", reason: "dependent-added" },
+    ]);
+  });
+
+  it("名前つきの今の Codex で完全一致でなくなっていた一括の結び付けは、版が合っていても外す", async () => {
+    publish([
+      approvedBind("b1", "リク", "K0003", "ne-b1", {
+        baseVersion: 7,
+        bulk: true,
+      }),
+    ]);
+    const report = vi.fn();
+    await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: [
+        ...LIVE(7),
+        {
+          id: "entry-new",
+          name: "リク",
+          aliases: null,
+          type: "character",
+          version: 1,
+        },
+      ],
+      onEntityApprovalsExcluded: report,
+    });
+    expect(report).toHaveBeenCalledWith([
+      { proposalId: "b1", displayTitle: "リク", reason: "no-longer-exact" },
+    ]);
+  });
+
+  it("除外 → 今の版で承認し直し → Apply に入る（承認し直しは今の Codex の版で op を固定する）", async () => {
+    publish([
+      approvedBind("b1", "リク", "K0003", "ne-b1", {
+        baseVersion: 1,
+        bulk: true,
+      }),
+    ]);
+    await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: LIVE(7),
+    });
+    expect(prepareApplyMock).not.toHaveBeenCalled();
+    expect(stored("b1")?.status).toBe("deferred");
+
+    await decideCodexStructureProposal({
+      proposalId: "b1",
+      status: "approved",
+      entries: LIVE(7),
+    });
+    expect(stored("b1")).toMatchObject({
+      status: "approved",
+      staleBind: false,
+      bulkApprovedExactBind: false,
+    });
+    expect(stored("b1")?.compiledOperation?.payload.baseVersion).toBe(7);
+
+    const report = vi.fn();
+    const applied = await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: LIVE(7),
+      onEntityApprovalsExcluded: report,
+    });
+    expect(applied).toBe(1);
+    expect(report).not.toHaveBeenCalled();
+    expect(
+      prepareApplyMock.mock.calls[0]?.[0]?.operations[0]?.operation,
+    ).toMatchObject({
+      kind: "codex.entity.bind-existing",
+      payload: { baseVersion: 7 },
+    });
+  });
+});

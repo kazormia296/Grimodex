@@ -308,7 +308,7 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
     expect(restored.phaseCount).toBe(0);
   });
 
-  it("復元した結び付けにも live と同じ existingExactBind の旗を引き直し、関係を持つ実体は existingBindNoDependents を落とす", async () => {
+  it("復元した結び付けにも live と同じ existingExactBind の旗を引き直し、関係を持つ実体は existingBindNoDependents を落とす。decisionJson の印（一括で通した・承認前へ戻した）も復元する", async () => {
     setCurrentWorkspaceIdentity({ path: "/ws/bind", openRevision: 1 });
     const bind = bindExistingCodexEntityProposal(
       {
@@ -334,7 +334,13 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
         method: "exact" as const,
       },
     ];
-    const build = (withRelation: boolean) => {
+    const build = (
+      withRelation: boolean,
+      entityState?: {
+        readonly status: "approved" | "deferred";
+        readonly decisionJson: Record<string, unknown>;
+      },
+    ) => {
       getRunMock.mockResolvedValue({
         run: {
           runId: "run-bind-1",
@@ -443,14 +449,24 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
             proposalSetId: "set-bind-1",
             proposalKey: "ne-1",
             kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
-            status: "unreviewed",
+            status: entityState?.status ?? "unreviewed",
             payloadJson: buildCodexReviewRevisionEnvelope({
               reviewPayload: bind.payload,
             }) as unknown as Record<string, unknown>,
             currentRevisionId: "rev-bind-native",
             createdAt: "2026-01-01T00:00:40.000Z",
             updatedAt: "2026-01-01T00:00:50.000Z",
-            latestDecision: null,
+            latestDecision: entityState
+              ? {
+                  decisionId: "dec-bind",
+                  proposalId: "prop-bind-1",
+                  revisionId: "rev-bind-native",
+                  decision: entityState.status,
+                  decisionJson: entityState.decisionJson,
+                  createdAt: "2026-01-01T00:00:50.000Z",
+                  createdBy: "reviewer",
+                }
+              : null,
           },
           ...(withRelation
             ? [
@@ -495,6 +511,28 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
     expect(withRelation.proposals[0]?.safety.existingBindNoDependents).toBe(
       false,
     );
+
+    resetCodexStructureExtractionApiCachesForTests();
+    build(false, {
+      status: "approved",
+      decisionJson: { source: "bulk-exact-bind" },
+    });
+    const bulk = await getCodexStructureExtractionReview("run-bind-1", scope);
+    expect(bulk.proposals[0]?.bulkApprovedExactBind).toBe(true);
+
+    resetCodexStructureExtractionApiCachesForTests();
+    build(false, { status: "approved", decisionJson: {} });
+    const manual = await getCodexStructureExtractionReview("run-bind-1", scope);
+    expect(manual.proposals[0]?.bulkApprovedExactBind).toBeUndefined();
+
+    resetCodexStructureExtractionApiCachesForTests();
+    build(false, {
+      status: "deferred",
+      decisionJson: { reason: "stale-bind", cause: "stale-version" },
+    });
+    const stale = await getCodexStructureExtractionReview("run-bind-1", scope);
+    expect(stale.proposals[0]?.staleBind).toBe(true);
+    expect(stale.proposals[0]?.status).toBe("deferred");
   });
 
   it("restores Phase/Base Detail metadata with Native status, revision, and payload authority", async () => {
