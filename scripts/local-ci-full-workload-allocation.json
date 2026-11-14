@@ -13,7 +13,7 @@
     },
     {
       "path": "scripts/local-ci-full-admission.mjs",
-      "sha256": "1028f77349a6f490f29814e6a1792083c965ff2fec8cd68b3e02dc28088d2db5"
+      "sha256": "e3aba8ccbd9ec8c6dec3e163540a3bb2e71fc9ab287eae5b7e14c12a62439895"
     },
     {
       "path": "scripts/local-ci-full-filesystems.py",

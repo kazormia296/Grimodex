@@ -1147,6 +1147,18 @@ export function resolveObservedResidual(terms, samples) {
   });
 }
 
+// The DMI identity of a VM that GitHub's hosted compute provisions for one
+// standard hosted job. Azure reports a Hyper-V VM. Since 2026-11 GitHub also
+// provisions standard ubuntu-24.04 jobs on AWS (the provisioner logs
+// "Cloud: AWS"; DMI reports the EC2 instance type, e.g. "m8id.xlarge"). Only
+// virtualized EC2 sizes pass: bare-metal sizes ("*.metal", "*.metal-48xl") are
+// a whole host, not a VM, and stay refused.
+export function standardHostedVm(vendor, model) {
+  if (vendor === "Microsoft Corporation") return model === "Virtual Machine";
+  if (vendor === "Amazon EC2") return /^[a-z][a-z0-9-]*\.(?:nano|micro|small|medium|large|[1-9][0-9]*xlarge|xlarge)$/u.test(model);
+  return false;
+}
+
 async function hostedJobIsolation() {
   // Authority: this fixed ubuntu-24.04 standard hosted job receives a fresh VM
   // for ONE job (GitHub hosted-runner contract). Environment alone is not proof;
@@ -1154,7 +1166,7 @@ async function hostedJobIsolation() {
   if (process.platform !== "linux" || process.env.RUNNER_ENVIRONMENT !== "github-hosted" || !/^[1-9][0-9]*$/u.test(process.env.GITHUB_RUN_ID ?? "") || !/^[1-9][0-9]*$/u.test(process.env.GITHUB_RUN_ATTEMPT ?? "")) fail("a continuously owned standard GitHub-hosted Linux job");
   const vendor = (await readFile("/sys/class/dmi/id/sys_vendor", "utf8")).trim();
   const model = (await readFile("/sys/class/dmi/id/product_name", "utf8")).trim();
-  if (vendor !== "Microsoft Corporation" || model !== "Virtual Machine") fail(`actual standard hosted VM isolation, not a checkout lock/serial option (observed sys_vendor=${JSON.stringify(vendor)}, product_name=${JSON.stringify(model)})`);
+  if (!standardHostedVm(vendor, model)) fail(`actual standard hosted VM isolation, not a checkout lock/serial option (observed sys_vendor=${JSON.stringify(vendor)}, product_name=${JSON.stringify(model)})`);
 }
 
 async function durableJson(file, data) {
