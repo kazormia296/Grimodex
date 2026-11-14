@@ -1471,7 +1471,7 @@ test("agent operation contracts keep candidate evidence and bounded identity che
   );
   assert.match(
     trace,
-    /hosted Quick runs its immediate verify in the same job/i,
+    /hosted Quick runs as three independent part jobs \(`quick-1` to `quick-3`.*plus the `quick-aggregate` job, which assembles the single receipt, checks that the parts together ran exactly the unsplit selection, and runs the immediate verify with the same tuple; only a run whose part jobs and aggregate all succeeded is a Quick receipt/is,
   );
   assert.match(
     trace,
@@ -2822,7 +2822,7 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   );
   assert.match(
     ordinaryChecks,
-    /手順2で固定した`candidate_base`／`candidate_head`のcompleteなQuick receiptがある。ローカルのQuickは、直後の ?`pnpm ci:local:verify -- quick --base "\$candidate_base" --head "\$candidate_head"`が成功している。hosted Quickは ?dispatchしたrunの`headSha`が`candidate_head`と一致し、同じjobのverifyまで成功している/,
+    /手順2で固定した`candidate_base`／`candidate_head`のcompleteなQuick receiptがある。ローカルのQuickは、直後の ?`pnpm ci:local:verify -- quick --base "\$candidate_base" --head "\$candidate_head"`が成功している。hosted Quickは ?dispatchしたrunの`headSha`が`candidate_head`と一致し、`quick-aggregate`のverifyまで（part jobもすべて）成功している/,
   );
   // Review P2: the receipt's own pair must prove the Quick was taken on a
   // rebased candidate; the local Quick does not check ancestry by itself.

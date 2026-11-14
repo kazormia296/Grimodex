@@ -1,15 +1,15 @@
 {
   "version": "full-workload-allocation/1",
-  "registryDigest": "sha256:2619958fa8877d1a43151511c4646163ea3692f35bbfb48ea17a42d94b72aa06",
+  "registryDigest": "sha256:99aee990f2c1622d2993247231341f50b20b2639cd0ac348a494ff081bcde70b",
   "maxParallelTasks": 1,
   "sources": [
     {
       "path": ".github/workflows/canonical-ci.yml",
-      "sha256": "aa69deead673634799a4c0f12131429da3ef07b1ad8d40db9d76cbcae58f6fdc"
+      "sha256": "b114db1684242680518c520ad6fba5212aff716e369e6f504e64b81c50bcb2fa"
     },
     {
       "path": "scripts/local-ci-registry.json",
-      "sha256": "8e606822849a97b6b964e3a6ea306f4082eda84ce7ce424919beb75c74a8cbb6"
+      "sha256": "f2c068f834d34d175f1e81e00f6fe1f896c286f2f16ae4d6a65f0f7988f87e75"
     },
     {
       "path": "scripts/local-ci-full-admission.mjs",
@@ -25,7 +25,7 @@
     },
     {
       "path": "scripts/local-ci.mjs",
-      "sha256": "a6e5780c6e1e77e874a7b585b4988176d8d1216e7c7eccb6333e7436781ebb81"
+      "sha256": "74dfba6db3cad1585638e571052d2e629f379a76bc92ee01162c3da01848cb4e"
     },
     {
       "path": "scripts/local-ci-runner.mjs",

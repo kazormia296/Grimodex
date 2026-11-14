@@ -60,7 +60,7 @@ pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
 ```
 
 wrapper が Light suite を実行するため、この経路で `eval:impact -- --run` を別途重ねない。
-証跡は `.artifacts/local-ci/quick.json`、選択詳細は `.artifacts/local-ci/impact.json`。
+証跡は `.artifacts/local-ci/quick.json`、選択詳細は part ごとの `.artifacts/local-ci/impact-1.json`〜`impact-3.json`（Quick は選択された Light command を 3 つの part に分けて直列に走らせる）。
 stdout の banner を JSON として扱わない。明示的な比較 ref を使う場合も同じ固定入力を守る。
 
 ## 結果の扱い

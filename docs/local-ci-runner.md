@@ -95,6 +95,42 @@ workflow attempt: re-run all jobs, never only failed ones.
 Empty `max_parallel_tasks` selects 1 for Full parts (matching the reviewed
 allocation) and 12 for Quick.
 
+### Split hosted Quick
+
+Hosted canonical Quick runs as three part jobs (`quick-1` to `quick-3`), each on
+its own fresh `ubuntu-24.04` VM, plus the `quick-aggregate` job. The registry's
+Quick stage has three tasks, `impact.select.1` to `impact.select.3`; each runs
+`pnpm eval:impact -- --part <n>/3 ...`, so a part is the subset of the selected
+Light commands that `scripts/local-ci-impact-parts.mjs` assigns to it, run in
+selection order and serially, with the unchanged commands and `--test-threads`.
+Parts keep build trees together: part 1 is `src-tauri` cargo without extra
+features, part 2 is `src-tauri` cargo with features, part 3 is the N-API crate;
+non-cargo commands are dealt out in selection order (3, 1, 3, 2). Nothing runs
+concurrently inside a part, because serial tests carry wall-clock assertions.
+The selection rules in `impact-map.mjs` are untouched; only the assignment of
+selected commands to parts is new.
+
+Each part runs `pnpm ci:local:quick -- --part <n>` with the immutable tuple and
+writes `.artifacts/local-ci/parts/quick-<n>.json` (its task receipt, the task's
+logs and a summary of what the selector ran). `quick-aggregate` downloads every
+part, runs `pnpm ci:local:quick -- --aggregate` and the unchanged
+`pnpm ci:local:verify -- quick` with the same tuple. The aggregate recomputes the
+unsplit selection from base/head in its own checkout and refuses the receipt
+unless every part ran the same selection, exactly its assigned commands, all
+passed, and the parts together ran each selected command once. The final receipt
+has the same shape as a direct Quick plus `parts` (hash-pinned part reports);
+`verify` re-checks those hashes and the coverage. Its execution duration is the
+parts' wall-clock span. Parts, artifact names and the run id belong to one
+workflow attempt: re-run all jobs (or dispatch again), never only failed ones.
+
+A local `pnpm ci:local:quick` is unchanged in effect: the three tasks form a
+chain (`after`), so one process runs the parts one after another, and
+`pnpm ci:local:verify -- quick` needs no part reports. Only hosted Quick uses
+`--part` and `--aggregate`. Quick (not Full) also restores a cargo cache per part
+with `Swatinem/rust-cache` and sets `CARGO_PROFILE_DEV_DEBUG=0` /
+`CARGO_PROFILE_TEST_DEBUG=0`, as the Quality job does; Full's setup assessment
+must still run before any cache is restored.
+
 ### Manual GitHub connection (source preparation)
 
 `.github/workflows/canonical-ci.yml` is a thin manual/reusable adapter to the
