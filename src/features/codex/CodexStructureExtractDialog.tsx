@@ -286,6 +286,7 @@ export function CodexStructureExtractDialog({
               entityCount={projection?.entityCount ?? 0}
               relationCount={projection?.relationCount ?? 0}
               unresolvedCount={projection?.unresolvedCount ?? 0}
+              skippedRelationalTerms={projection?.skippedRelationalTerms}
             />
           )}
 

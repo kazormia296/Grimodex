@@ -1078,6 +1078,182 @@ describe("startCodexStructureExtraction product safety", () => {
       ),
     ).toBe(true);
   }, 15_000);
+
+  it("does not propose relational terms as new people and reports what it skipped", async () => {
+    const { buildNarrativeCorpusSnapshot } =
+      await import("@/features/narrative-extraction/source/buildSnapshot");
+    const snapshotResult = await buildNarrativeCorpusSnapshot({
+      snapshotId: "snapshot-relational-terms",
+      language: "ja",
+      origin: { kind: "grimodex-project", projectId: "p1" },
+      omissions: [],
+      createdAt: "2026-08-10T00:01:00.000Z",
+      documents: [
+        {
+          sourceKey: "project:scene:s1",
+          parentSourceKey: null,
+          title: "Scene",
+          orderIndex: 0,
+          proseMirrorJson: JSON.stringify({
+            type: "doc",
+            content: [
+              {
+                type: "paragraph",
+                content: [
+                  {
+                    type: "text",
+                    text: "姉ちゃんとダンナとおじいさんとライカ",
+                  },
+                ],
+              },
+            ],
+          }),
+          origin: {
+            kind: "project-node",
+            projectId: "p1",
+            nodeId: "s1",
+            sourceVersion: 1,
+            sourceUpdatedAt: "2026-08-10T00:00:00.000Z",
+            sourceUri: null,
+          },
+        },
+      ],
+    });
+    expect(snapshotResult.ok).toBe(true);
+    if (!snapshotResult.ok) return;
+    const documentRef = snapshotResult.snapshot.documents[0]!.ref;
+    buildSnapshotMock.mockResolvedValue({
+      ok: true,
+      snapshot: snapshotResult.snapshot,
+      diagnostics: [],
+    });
+    const prepassSeed = (surface: string, start: number) => ({
+      seedId: `seed-${surface}`,
+      surface,
+      normalizedSurface: surface,
+      features: {
+        occurrenceCount: 1,
+        appearsAsProperName: true,
+        appearsInDialogue: false,
+        appearsInNarration: true,
+      },
+      occurrences: [
+        {
+          sourceRef: "S0001",
+          documentRef,
+          quote: surface,
+          canonicalRange: { start, end: start + surface.length },
+          context: { prefix: "", suffix: "" },
+          evidence: {
+            id: `ea-${surface}`,
+            quote: surface,
+            documentRef,
+            method: "exact",
+          },
+        },
+      ],
+    });
+    runPrepassMock.mockResolvedValue({
+      status: "complete",
+      seeds: [
+        prepassSeed("姉ちゃん", 0),
+        prepassSeed("ダンナ", 5),
+        prepassSeed("おじいさん", 9),
+        prepassSeed("ライカ", 14),
+      ],
+      rejections: [],
+    });
+
+    const projection = await startCodexStructureExtraction({
+      projectId: "p1",
+      folderId: "f1",
+      sceneIds: ["s1"],
+      authority: {
+        projectId: "p1",
+        currentProjectId: () => "p1",
+        workspacePath: "/w",
+        workspaceOpenRevision: 1,
+      },
+      workspacePath: "/w",
+      openRevision: 1,
+      useAi: false,
+      skipNativePersist: true,
+      existingEntries: [
+        {
+          ref: "K0001",
+          sourceKey: "db:husband",
+          name: "ベルカ",
+          aliases: ["ダンナ"],
+          typeRef: "T0001",
+          expectedVersion: 1,
+        },
+      ],
+      typeCatalog: [
+        {
+          ref: "T0001",
+          sourceKey: "character",
+          slug: "character",
+          label: "character",
+          coarseClassHints: ["person"],
+          expectedVersion: 1,
+        },
+      ],
+    });
+
+    const titles = projection.proposals.map((row) => row.displayTitle);
+    expect(titles).toContain("ライカ");
+    expect(titles).toContain("ダンナ");
+    expect(titles).not.toContain("姉ちゃん");
+    expect(titles).not.toContain("おじいさん");
+    const danna = projection.proposals.find(
+      (row) => row.displayTitle === "ダンナ",
+    );
+    expect(danna?.proposal.payload.binding.kind).toBe("bind-existing");
+    expect(projection.skippedRelationalTerms).toEqual([
+      { surface: "姉ちゃん", kind: "kinship" },
+      { surface: "おじいさん", kind: "kinship" },
+    ]);
+  }, 15_000);
+
+  it("omits the skipped-terms diagnostic when no relational term was skipped", async () => {
+    runPrepassMock.mockResolvedValue({
+      status: "complete",
+      seeds: [],
+      rejections: [],
+    });
+    const { buildNarrativeCorpusSnapshot } =
+      await import("@/features/narrative-extraction/source/buildSnapshot");
+    const snapshotResult = await buildNarrativeCorpusSnapshot({
+      snapshotId: "snapshot-no-relational",
+      language: "ja",
+      origin: { kind: "grimodex-project", projectId: "p1" },
+      omissions: [],
+      createdAt: "2026-08-10T00:01:00.000Z",
+      documents: [],
+    });
+    if (!snapshotResult.ok) return;
+    buildSnapshotMock.mockResolvedValue({
+      ok: true,
+      snapshot: snapshotResult.snapshot,
+      diagnostics: [],
+    });
+    const projection = await startCodexStructureExtraction({
+      projectId: "p1",
+      folderId: "f1",
+      sceneIds: ["s1"],
+      authority: {
+        projectId: "p1",
+        currentProjectId: () => "p1",
+        workspacePath: "/w",
+        workspaceOpenRevision: 1,
+      },
+      workspacePath: "/w",
+      openRevision: 1,
+      useAi: false,
+      skipNativePersist: true,
+    });
+    expect(projection.skippedRelationalTerms).toBeUndefined();
+  });
 });
 
 describe("bulkApproveSafeCodexStructureProposals", () => {

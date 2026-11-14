@@ -1,5 +1,8 @@
 import { Loader2 } from "lucide-react";
-import type { CodexStructureExtractionCoverage } from "./codexStructureExtractionStore";
+import type {
+  CodexStructureExtractionCoverage,
+  CodexStructureSkippedRelationalTerm,
+} from "./codexStructureExtractionStore";
 import type { NarrativeExtractionTaskCounts } from "@/features/narrative-extraction/runtime/types";
 
 export interface CodexStructureExtractionProgressProps {
@@ -9,6 +12,8 @@ export interface CodexStructureExtractionProgressProps {
   readonly entityCount: number;
   readonly relationCount?: number;
   readonly unresolvedCount?: number;
+  /** 関係の呼び名として新規の提案にしなかった語（live の診断）。 */
+  readonly skippedRelationalTerms?: readonly CodexStructureSkippedRelationalTerm[];
 }
 
 /**
@@ -21,6 +26,7 @@ export function CodexStructureExtractionProgress({
   entityCount,
   relationCount = 0,
   unresolvedCount = 0,
+  skippedRelationalTerms = [],
 }: CodexStructureExtractionProgressProps) {
   const windowCount = coverage?.windowCount ?? 0;
   const completedWindows =
@@ -77,6 +83,17 @@ export function CodexStructureExtractionProgress({
             </li>
           ))}
         </ul>
+      )}
+      {skippedRelationalTerms.length > 0 && (
+        <p
+          className="text-[11px]"
+          data-testid="codex-structure-extraction-skipped-relational"
+        >
+          関係の呼び名として新しい人物の提案にしなかった語{" "}
+          {skippedRelationalTerms.length}件：
+          {skippedRelationalTerms.map((term) => `「${term.surface}」`).join("")}
+          （Codex の名前・別名に入れた語は、今までどおり既存の項目に結びます）
+        </p>
       )}
     </div>
   );

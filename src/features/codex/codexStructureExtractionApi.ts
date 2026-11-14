@@ -125,8 +125,10 @@ import {
   type CodexStructureCatalogSnapshot,
   type CodexStructureExtractionCoverage,
   type CodexStructureExtractionReviewProjection,
+  type CodexStructureSkippedRelationalTerm,
   type StartCodexStructureExtractionRequest,
 } from "./codexStructureExtractionStore";
+import { relationalTermKind } from "./extraction/relationalTerms";
 import {
   BUILTIN_CODEX_RELATION_VOCABULARY,
   buildCodexRelationSemanticKey,
@@ -1510,6 +1512,7 @@ export async function startCodexStructureExtraction(
     CodexReviewEvidenceQuote[]
   >();
   const documentTextsByRef = new Map<string, string>();
+  const skippedRelationalTerms: CodexStructureSkippedRelationalTerm[] = [];
   let coverageDocumentCount = request.sceneIds.length;
   let coverageWindowCount = Math.max(1, request.sceneIds.length);
   let snapshotDigest: string | null = null;
@@ -1577,6 +1580,20 @@ export async function startCodexStructureExtraction(
           { surfaces: [seed.surface] },
           existingCatalog,
         );
+        // 関係の呼び名（姉ちゃん・あなた 等）は名簿に当たらなければ新規の人物の提案にしない。
+        // 作者が名前・別名に入れた語は上の照合で resolved／ambiguous になり、ここでは落とさない。
+        // 黙って消さず、件数と表記を run の診断に残す。
+        const relationalKind =
+          existingResolution.status === "none"
+            ? relationalTermKind(seed.surface)
+            : null;
+        if (relationalKind) {
+          skippedRelationalTerms.push({
+            surface: seed.surface,
+            kind: relationalKind,
+          });
+          continue;
+        }
         const typeResolution = resolveEntityType({
           existingResolution,
           existingCatalog,
@@ -2392,6 +2409,7 @@ export async function startCodexStructureExtraction(
     phaseProposals: finalPhaseProposals,
     catalog: catalogSnapshot,
     existingRelations,
+    ...(skippedRelationalTerms.length > 0 ? { skippedRelationalTerms } : {}),
     ...counts,
   };
 

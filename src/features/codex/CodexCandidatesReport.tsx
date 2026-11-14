@@ -25,6 +25,7 @@ import {
 import { activeCandidates, candidateKey } from "./codexCandidates";
 import { judgeCandidates, type CandidateJudgment } from "./candidateJudgment";
 import { parseAliases } from "./codexMatcher";
+import { isRelationalTerm } from "./extraction/relationalTerms";
 import {
   loadDismissedCandidateKeys,
   saveDismissedCandidateKeys,
@@ -253,6 +254,9 @@ export function CodexCandidatesReport() {
   // 新規作成にフォールバック。重複追記は正規化キー (NFC/大小揺れ含む) で防ぐ。
   const handleRegisterAlias = useCallback(
     async (c: CodexCandidate) => {
+      // 関係の呼び名（姉ちゃん・あなた 等）は話し手で指す人が変わるので、別名にしない。
+      // 新規作成へ落とさず、何もしない（ボタンも出さない。別名は Codex の編集画面で足す）。
+      if (isRelationalTerm(c.surface)) return;
       const judgment = judgments.get(candidateKey(c.surface));
       const target = judgment?.aliasOfId
         ? entries.find((e) => e.id === judgment.aliasOfId)
@@ -353,9 +357,10 @@ export function CodexCandidatesReport() {
             <ul className="max-h-48 overflow-y-auto px-2 py-1">
               {visible.map((c) => {
                 const j = judgments.get(candidateKey(c.surface));
-                const aliasName = j?.aliasOfId
-                  ? entries.find((e) => e.id === j.aliasOfId)?.name
-                  : undefined;
+                const aliasName =
+                  j?.aliasOfId && !isRelationalTerm(c.surface)
+                    ? entries.find((e) => e.id === j.aliasOfId)?.name
+                    : undefined;
                 return (
                   <li
                     key={candidateKey(c.surface)}
