@@ -87,8 +87,8 @@ export function usdOf(pricing, usage) {
 }
 
 /**
- * 要求の本文の文字数から token を見積もる。tokenizer を持たないので保守側の比で見積もる
- * （ASCII 0.3 token／字、ASCII 以外 1.0 token／字。日本語は実測より多めに出る想定）。
+ * 要求の本文の文字数から token を見積もる。tokenizer を持たないので暫定の比で見積もる
+ * （ASCII 0.3 token／字、ASCII 以外 1.0 token／字。保守値とは呼ばない。ID を含む試走の実測で較正するまで暫定）。
  * 見積りは費用の上限の確認と、ai_usage の実測との比較（2 倍超で停止）に使う。
  */
 export function estimateInputTokens({ promptChars, promptNonAsciiChars }) {
@@ -213,6 +213,8 @@ export function createGate({
     let trialN = 0;
     let maxIn = 0;
     let maxOut = 0;
+    let maxInTokens = 0;
+    let maxOutTokens = 0;
     for (const line of readFileSync(file, "utf8").split("\n")) {
       if (!line) continue;
       const row = JSON.parse(line);
@@ -232,12 +234,17 @@ export function createGate({
         trialN++;
         maxIn = Math.max(maxIn, row.input_tokens / row.est_input_tokens);
         maxOut = Math.max(maxOut, row.output_tokens / row.est_output_tokens);
+        maxInTokens = Math.max(maxInTokens, row.input_tokens);
+        maxOutTokens = Math.max(maxOutTokens, row.output_tokens);
       }
     }
     state.total = total;
     state.byStage = byStage;
     state.billedRequests = billed;
-    state.trial = trialN > 0 ? { n: trialN, maxIn, maxOut } : null;
+    state.trial =
+      trialN > 0
+        ? { n: trialN, maxIn, maxOut, maxInTokens, maxOutTokens }
+        : null;
     if (stopped && !state.stopped) state.stopped = stopped;
   }
   loadFromFile();
@@ -420,15 +427,26 @@ export function createGate({
           failures: state.window.filter((ok) => !ok).length,
         });
       if (billed) {
-        // 試走の実測の比で較正した見積りの 2 倍超（試走自身は見積りの 2 倍超）。
+        // §9：試走の実測値の 2 倍超。(1) 試走の実測の比で較正した見積りの 2 倍（要求が試走より小さいときに
+        // 効く）と、(2) 試走の実測 token そのものの 2 倍（試走より大きい要求で §9 より緩くならない）の
+        // 先に当たった方で止める。試走自身は見積りの 2 倍。
         const calibrated =
           stage !== CALIBRATION_STAGE && state.trial
             ? state.trial
-            : { maxIn: 1, maxOut: 1 };
-        const inputLimit =
-          STOP_LINES.tokenOverFactor * estInputTokens * calibrated.maxIn;
-        const outputLimit =
-          STOP_LINES.tokenOverFactor * estOutputTokens * calibrated.maxOut;
+            : {
+                maxIn: 1,
+                maxOut: 1,
+                maxInTokens: Infinity,
+                maxOutTokens: Infinity,
+              };
+        const inputLimit = Math.min(
+          STOP_LINES.tokenOverFactor * estInputTokens * calibrated.maxIn,
+          STOP_LINES.tokenOverFactor * calibrated.maxInTokens,
+        );
+        const outputLimit = Math.min(
+          STOP_LINES.tokenOverFactor * estOutputTokens * calibrated.maxOut,
+          STOP_LINES.tokenOverFactor * calibrated.maxOutTokens,
+        );
         if (
           usage.input_tokens > inputLimit ||
           usage.output_tokens > outputLimit

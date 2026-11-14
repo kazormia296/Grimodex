@@ -440,10 +440,10 @@
 
 **直したもの**
 
-- **停止の永続化と fail-closed（gate）**：停止は台帳に STOP 行として追記し、`createGate` は STOP 行があれば停止のまま始める（解除は人が行う。本測定の launcher は STOP 行があると key を読む前に止まる）。本測定の launcher は、cell が ok でない（surface の集合・送信回数・usage の行・予算の停止・例外・出力を出せない）とき、以後の cell を送らず STOP 行を残す。累計・段の費用は、読み込みと各要求の前後に台帳から取り直す（並列の launcher の累計も見える。ただし 2 つの launcher が同時に送ると、互いの直前の要求の分は見えない。並列に走らせない運用で残る隙として記す）。
+- **停止の永続化と fail-closed（gate）**：停止は台帳に STOP 行として追記し、`createGate` は STOP 行があれば停止のまま始める（解除は人が行う。本測定の launcher は STOP 行があると key を読む前に止まる）。本測定の launcher は、cell が ok でない（surface の集合・送信回数・usage の行・予算の停止〔停止線と、上限を超える見積りの拒否の両方〕・例外・出力を出せない）とき、以後の cell を送らず STOP 行を残す。累計・段の費用は、読み込みと各要求の前後に台帳から取り直す（並列の launcher の累計も見える。ただし 2 つの launcher が同時に送ると、互いの直前の要求の分は見えない。並列に走らせない運用で残る隙として記す）。
 - **失敗した要求の課金**：`judgeCandidates` は parse の前に usage を記録するので、送信の後に失敗した要求（有効結果なしなど）でも `ai_usage` の行を読み、全行の合算を台帳に課金する。成功時も全行の合算で課金する（先頭の行だけでなく）。別の surface の行が 1 つでもあれば、課金したうえで停止（`AI_SURFACE_UNEXPECTED`）。応答があったのに行・token が読めない場合は、費用が見えないので停止（`USAGE_NOT_RECORDED`）。
-- **停止線 2 倍超の基準**：§9 の「試走の実測値の 2 倍超」に合わせ、試走の実測の比（実測 token ÷ 見積り token の最大値）で較正した見積りの 2 倍を超えたら停止（`TOKENS_OVER_TRIAL_MEASURED`）。試走自身は見積りの 2 倍。試走の行が無ければ B1／B2 は送らない（`TRIAL_REQUIRED`）。見積りが保守側なので、較正が無いと 2 倍超はほぼ起きないための変更。
-- **他の job との重なり**：各 cell の開始前に、`ps` で cargo・rustc・electron が動いていれば始めない（`OVERLAPPING_JOBS`）。cell の実行中の重なりは見ない（未実装。cell の途中で別の job が始まったら検知できない）。
+- **停止線 2 倍超の基準**：§9 の「試走の実測値の 2 倍超」に合わせ、(1) 試走の実測の比（実測 token ÷ 見積り token の最大値）で較正した見積りの 2 倍、(2) 試走の実測 token（最大値）そのものの 2 倍、の先に当たった方を超えたら停止（`TOKENS_OVER_TRIAL_MEASURED`）。(2) があるので、試走より大きい要求でも §9 の文面より緩くならない。試走自身は見積りの 2 倍。見積りの比は暫定（ID を含む試走で較正するまで保守値と呼ばない）なので、較正が無いと 2 倍超は意味を持たず、試走の行が無ければ B1／B2 は始めない（launcher は cell・key の前に `[precheck] TRIAL_REQUIRED` で止まり、STOP 行は書かない。gate の preflight も `TRIAL_REQUIRED` で送らない）。**試走は最大の B1 の要求（最も大きい作品・段）で行う**こと（小さい要求で試走すると、(2) が大きい B1 の要求を止める。これは §9 の文面どおりで、緩めない）。
+- **他の job との重なり**：各 cell の開始前に、`ps` で cargo・rustc と、Grimodex の Electron（args に dist-electron・grimodex・nir1 を含む electron）が動いていれば始めない（`OVERLAPPING_JOBS`）。この process の子孫（自分の Electron・復号の helper）と、利用者の desktop の electron アプリ（Grimodex の args でないもの）は数えない。cell の実行中の重なりは見ない（未実装。cell の途中で別の job が始まったら検知できない）。この host では他のセッションの cargo が動いていると始まらないので、本測定は他の job を止めてから行う。
 - **外挿の「残り」**：cell 内でなく計画の残り全体（後ろの cell の要求、続くモードの要求）を渡す。B2 の要求数は乾いた実行の空の名簿の N から出した上限（無ければ作品あたり 6）。
 - **分類できない失敗**：失敗の例外から HTTP status が取れない経路は未確認（試走で確かめる）。分類できない失敗（`other`）が 1 件でも出たら停止する（保守側。試走の 1 要求で例外の形を見てから、分類を直す）。
 - **key の読み込み順**：key は、名簿の検査・台帳の STOP・残骸・重なりの検査と、cell の登録・safeStorage の backend の確認が済んだ後、送信の直前に読む（cell ごとに 1 回）。signal（SIGINT・SIGTERM・SIGHUP）で、隔離 userData・workRoot・FIFO の dir を消す。起動時に前の run の key-fifo・B の cell の残りがあれば始めない。

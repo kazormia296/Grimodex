@@ -586,6 +586,11 @@ async function mainReal(options) {
     !gate.state.stopped,
     `[precheck] LEDGER_STOPPED code=${String(gate.state.stopped?.code).replace(/[^A-Za-z0-9_]/gu, "_")}`,
   );
+  // b1／b2 は試走の実測の行が台帳に無ければ始めない（cell も key も使わず、STOP 行も書かない）。
+  assert.ok(
+    options.mode === "trial" || gate.state.trial,
+    "[precheck] TRIAL_REQUIRED run --mode trial first and keep its ledger rows",
+  );
   const levels =
     options.mode === "b2"
       ? ["L2"]

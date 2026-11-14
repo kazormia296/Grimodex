@@ -526,18 +526,30 @@ test("本文の出る env（GRIMODEX_AI_WIRE_LOG・trace の RUST_LOG）も本�
   assert.doesNotThrow(() => assertNoFakeAiEnv(process.env));
 });
 
-test("他の job（cargo・rustc・electron）の重なりは測定を始めない", () => {
+test("他の job（cargo・rustc・Grimodex の electron）の重なりは測定を始めない。自分の子孫と利用者の desktop の electron は数えない", () => {
+  const me = process.pid;
   const ps = [
-    "    1 systemd",
-    "  200 cargo",
-    "  300 node",
-    "  400 electron",
-    "  500 rustc",
+    "    1     0 systemd systemd",
+    "  200     1 cargo cargo build",
+    "  300     1 node node x.mjs",
+    "  400     1 electron electron /repo/dist-electron/main.cjs",
+    "  500     1 rustc rustc --crate-name x",
+    "  600     1 electron /usr/lib/electron/electron --type=gpu-process",
+    `  700   ${me} electron electron /repo/dist-electron/main.cjs`,
+    "  710   700 electron electron --type=renderer grimodex",
+    `  800   ${me} cargo cargo run`,
   ].join("\n");
-  assert.deepEqual(findOverlappingJobs(ps), ["cargo", "electron", "rustc"]);
-  assert.deepEqual(findOverlappingJobs("  1 systemd\n  2 node"), []);
+  assert.deepEqual(findOverlappingJobs(ps, me), ["cargo", "electron", "rustc"]);
+  assert.deepEqual(
+    findOverlappingJobs("  1 0 systemd systemd\n  2 1 node n", me),
+    [],
+  );
   assert.throws(() => assertNoOverlappingJobs(() => ps), /OVERLAPPING_JOBS/u);
-  assert.doesNotThrow(() => assertNoOverlappingJobs(() => "  1 systemd"));
+  assert.doesNotThrow(() =>
+    assertNoOverlappingJobs(
+      () => `  1 0 systemd\n  600 1 electron /usr/lib/electron/electron`,
+    ),
+  );
 });
 
 test("kill された run の残り（key-fifo・B の cell）を検出し、signal の後始末は登録した処理を実行する", async () => {

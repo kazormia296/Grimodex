@@ -67,30 +67,53 @@ export function assertNoFakeAiEnv(env = process.env) {
   );
 }
 
-/** 他の job（cargo・rustc・Electron）が動いていないこと。重なりの疑いは測定を始めない（§9）。 */
-export const OVERLAP_PROCESS_NAMES = Object.freeze([
-  "cargo",
-  "rustc",
-  "electron",
-]);
-export function findOverlappingJobs(psText, ownPids = []) {
-  const own = new Set([String(process.pid), ...ownPids.map(String)]);
-  const found = [];
+/**
+ * 他の job が動いていないこと。重なりの疑いは測定を始めない（§9）。対象は cargo・rustc と、Grimodex の
+ * Electron（args に dist-electron・grimodex・nir1 を含む electron）。この process の子孫（自分の Electron・
+ * 復号の helper）は除く。利用者の desktop の electron アプリ（Grimodex の args でないもの）は数えない。
+ */
+export function findOverlappingJobs(psText, ownPid = process.pid) {
+  const rows = [];
   for (const line of String(psText).split("\n")) {
-    const match = /^\s*(\d+)\s+(\S+)/u.exec(line);
-    if (!match || own.has(match[1])) continue;
-    if (OVERLAP_PROCESS_NAMES.includes(match[2])) found.push(match[2]);
+    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*(.*)$/u.exec(line);
+    if (match)
+      rows.push({
+        pid: Number(match[1]),
+        ppid: Number(match[2]),
+        comm: match[3],
+        args: match[4],
+      });
   }
-  return found.sort();
+  const own = new Set([Number(ownPid)]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const row of rows)
+      if (!own.has(row.pid) && own.has(row.ppid)) {
+        own.add(row.pid);
+        grew = true;
+      }
+  }
+  return rows
+    .filter((row) => !own.has(row.pid))
+    .filter(
+      (row) =>
+        row.comm === "cargo" ||
+        row.comm === "rustc" ||
+        (row.comm === "electron" &&
+          /dist-electron|grimodex|nir1/iu.test(row.args)),
+    )
+    .map((row) => row.comm)
+    .sort();
 }
 export function assertNoOverlappingJobs(
-  run = () => execFileSync("ps", ["-eo", "pid,comm"], { encoding: "utf8" }),
+  run = () =>
+    execFileSync("ps", ["-eo", "pid,ppid,comm,args"], { encoding: "utf8" }),
 ) {
   const found = findOverlappingJobs(run());
   assert.equal(
     found.length,
     0,
-    `[precheck] OVERLAPPING_JOBS ${found.length} other cargo, rustc or electron processes are running`,
+    `[precheck] OVERLAPPING_JOBS ${found.length} other cargo, rustc or Grimodex electron processes are running`,
   );
 }
 

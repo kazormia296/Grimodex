@@ -548,3 +548,33 @@ test("累計は台帳から取り直す（別の gate が追記した行も見�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("2 倍超の線は、試走の実測 token の 2 倍も並べる（試走より大きい要求で §9 より緩くならない）", () => {
+  const t = gate({ requireTrial: true });
+  try {
+    t.gate.preflight({
+      stage: "trial",
+      estInputTokens: 10_000,
+      estOutputTokens: 5_000,
+    });
+    t.gate.afterRequest({
+      stage: "trial",
+      outcome: ok(5_000, 2_500),
+      estInputTokens: 10_000,
+      estOutputTokens: 5_000,
+    });
+    // 見積りが大きい要求（較正した線は 2×20k×0.5=20k）でも、実測 token の 2 倍（10k）を超えたら止める。
+    assert.throws(
+      () =>
+        t.gate.afterRequest({
+          stage: "B1",
+          outcome: ok(10_001, 1_000),
+          estInputTokens: 20_000,
+          estOutputTokens: 5_000,
+        }),
+      (e) => e.code === "TOKENS_OVER_TRIAL_MEASURED",
+    );
+  } finally {
+    rmSync(t.dir, { recursive: true, force: true });
+  }
+});
