@@ -16,6 +16,7 @@ import {
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { captureMutationAuthority } from "@/features/concurrency/mutationAuthority";
+import { CodexStructureFoldedDismissals } from "./CodexStructureFoldedDismissals";
 import { CodexStructureExtractionProgress } from "./CodexStructureExtractionProgress";
 import { CodexEntityProposalReview } from "./CodexEntityProposalReview";
 import { CodexRelationProposalReview } from "./CodexRelationProposalReview";
@@ -48,10 +49,16 @@ export function CodexStructureExtractDialog({
   open,
   onOpenChange,
   folderId: initialFolderId,
+  onRestoreDismissedCandidates,
+  dismissedCandidateKeys,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   folderId?: string;
+  /** 候補画面の却下（見送り）を外す。候補画面の状態の入口を通す（打ち手 3）。 */
+  onRestoreDismissedCandidates?: (keys: readonly string[]) => void;
+  /** 今の却下集合（候補画面の state）。畳んだ表記の「外しました」の表示に使う。 */
+  dismissedCandidateKeys?: ReadonlySet<string>;
 }) {
   const nodes = useTreeStore((s) => s.nodes);
   const projection = useCodexStructureExtractionStore((s) => s.projection);
@@ -321,6 +328,16 @@ export function CodexStructureExtractDialog({
               relationCount={projection?.relationCount ?? 0}
               unresolvedCount={projection?.unresolvedCount ?? 0}
               skippedRelationalTerms={projection?.skippedRelationalTerms}
+            />
+          )}
+
+          {projection && (
+            <CodexStructureFoldedDismissals
+              key={projection.runId}
+              surfaces={projection.foldedDismissedSurfaces}
+              unavailable={projection.dismissalsUnavailable === true}
+              onRestore={onRestoreDismissedCandidates}
+              dismissedKeys={dismissedCandidateKeys}
             />
           )}
 

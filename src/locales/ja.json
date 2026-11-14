@@ -2381,6 +2381,16 @@
       "applyBlocked": {
         "sameEntryPatch": "同じ項目に別名や要約を書く承認が重なっているため、取り込めません（{{names}}）。どれか 1 件だけを残し、他は保留か拒否にしてください",
         "surfaceAlias": "別名に足す表記が、今の Codex では足せなくなりました（{{names}}）。カードで「別名にも足す」を外してから取り込んでください"
+      },
+      "foldedDismissed": {
+        "summary": "候補の一覧で却下した {{count}} 種の表記は、新しい項目として提案していません（Codex の名前・別名に当たる表記は出しています）",
+        "restoredCount": "うち {{count}} 種は却下を外しました",
+        "restore": "却下を外す",
+        "restoreAll": "すべて外す",
+        "restored": "外しました（次の抽出から出ます）",
+        "more": "ほか {{count}} 種を表示",
+        "less": "折りたたむ",
+        "unavailable": "却下の記録を読めなかったため、却下した表記も畳まずに出しています"
       }
     },
     "candidates": {

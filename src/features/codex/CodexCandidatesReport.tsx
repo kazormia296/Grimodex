@@ -63,6 +63,8 @@ export function CodexCandidatesReport() {
   );
   const [expanded, setExpanded] = useState(false);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  // 却下の記録を読み終えたか（読み込み前・失敗時の空集合を「全部外した」と見せないため）。
+  const [dismissedLoaded, setDismissedLoaded] = useState(false);
   const [structureOpen, setStructureOpen] = useState(false);
   const structureReviewEnabled = isCodexStructureExtractionReviewEnabled();
 
@@ -111,10 +113,13 @@ export function CodexCandidatesReport() {
   useEffect(() => {
     let cancelled = false;
     commit(new Set());
+    setDismissedLoaded(false);
     if (!projectId) return;
     loadDismissedCandidateKeys(projectId)
       .then((keys) => {
-        if (!cancelled) commit(keys);
+        if (cancelled) return;
+        commit(keys);
+        setDismissedLoaded(true);
       })
       .catch(() => {
         if (!cancelled) commit(new Set());
@@ -215,6 +220,19 @@ export function CodexCandidatesReport() {
     [mutate, t],
   );
 
+  // 構造抽出で畳んだ表記を戻す（打ち手 3）。候補画面と同じ入口（mutate）を通し、
+  // 候補画面の state が古いまま残らないようにする。
+  const handleRestoreDismissedKeys = useCallback(
+    (keys: readonly string[]) => {
+      const prev = dismissedRef.current;
+      const next = new Set(prev);
+      for (const key of keys) next.delete(key);
+      if (next.size === prev.size) return;
+      mutate(next, prev, t("codex.candidates.historyRestore"));
+    },
+    [mutate, t],
+  );
+
   const handleRestoreAll = useCallback(() => {
     mutate(
       new Set(),
@@ -292,6 +310,8 @@ export function CodexCandidatesReport() {
     <CodexStructureExtractDialog
       open={structureOpen}
       onOpenChange={setStructureOpen}
+      onRestoreDismissedCandidates={handleRestoreDismissedKeys}
+      dismissedCandidateKeys={dismissedLoaded ? dismissed : undefined}
     />
   ) : null;
 

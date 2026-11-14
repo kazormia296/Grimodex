@@ -271,6 +271,13 @@ export interface CodexStructureSkippedRelationalTerm {
   readonly kind: "kinship" | "second-person" | "third-person";
 }
 
+/** 候補画面で見送り（却下）済みのため、新しい提案にしなかった表記（打ち手 3）。 */
+export interface CodexStructureFoldedDismissedSurface {
+  readonly surface: string;
+  /** 候補画面の却下集合のキー（`candidateKey(surface)`）。「戻す」で外す値。 */
+  readonly key: string;
+}
+
 export interface CodexStructureExtractionReviewProjection {
   readonly runId: string;
   readonly projectId: string;
@@ -302,6 +309,13 @@ export interface CodexStructureExtractionReviewProjection {
    * 復元した run には無い。
    */
   readonly skippedRelationalTerms?: readonly CodexStructureSkippedRelationalTerm[];
+  /**
+   * 候補画面で見送り済みで、名簿にも当たらなかったため提案にしなかった表記。
+   * live の値で、native へは保存せず、復元した run には無い。
+   */
+  readonly foldedDismissedSurfaces?: readonly CodexStructureFoldedDismissedSurface[];
+  /** 見送りの記録を読めず、畳まずに全件を出した run（live の診断）。 */
+  readonly dismissalsUnavailable?: true;
 }
 /** 新規作成の一括承認の条件（従来どおり）。 */
 export function isSafeCreateNewForCodexEntityBulkApprove(

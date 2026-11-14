@@ -2382,6 +2382,16 @@
       "applyBlocked": {
         "sameEntryPatch": "Several approvals write aliases or a summary to the same entry, so they cannot be imported ({{names}}). Keep only one and defer or reject the others",
         "surfaceAlias": "An alias to add is no longer allowed with the current Codex ({{names}}). Uncheck \"also add as an alias\" on the card, then import again"
+      },
+      "foldedDismissed": {
+        "summary": "{{count}} surface(s) you dismissed in the candidate list were not proposed as new entries (surfaces matching a Codex name or alias are still shown)",
+        "restoredCount": "{{count}} of them are no longer dismissed",
+        "restore": "Undismiss",
+        "restoreAll": "Undismiss all",
+        "restored": "Undismissed (will appear from the next extraction)",
+        "more": "Show {{count}} more",
+        "less": "Collapse",
+        "unavailable": "Could not read your dismissed candidates, so dismissed surfaces are shown as well"
       }
     },
     "candidates": {
