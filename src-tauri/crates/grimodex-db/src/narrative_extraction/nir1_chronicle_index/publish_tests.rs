@@ -408,10 +408,10 @@ fn nir1_new_scope_projection_keeps_run_binding_through_publication_and_current_p
             ..
         }
     ));
-    f.db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    f.db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         assert!(
-            super::query::current_proof(&tx, &f.runtime, f.project())?.is_some(),
+            super::query::current_proof(&mut tx, &f.runtime, f.project())?.is_some(),
             "current proof accepts the exact new D1 generation and Run-bound Source"
         );
         Ok(())
@@ -428,8 +428,8 @@ fn assert_scope_batch_matches_single_reads_after_write_and_rollback(
         dependency_edges::find_edges_by_consumer,
         restore_rebuild::{evaluate_edge_from_db, evaluate_owned_edges_from_db_in_tx},
     };
-    f.db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    f.db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         let mut edges = Vec::new();
         for revision in children {
             edges.extend(find_edges_by_consumer(
@@ -449,12 +449,12 @@ fn assert_scope_batch_matches_single_reads_after_write_and_rollback(
             2,
             "two different normal Scope projections share the batch authority"
         );
-        let single = || {
+        let single = |tx: &rusqlite::Connection| {
             edges
                 .iter()
                 .map(|edge| {
                     evaluate_edge_from_db(
-                        &tx,
+                        tx,
                         f.project(),
                         edge.owning_run_id.as_deref().unwrap_or(""),
                         edge,
@@ -462,9 +462,9 @@ fn assert_scope_batch_matches_single_reads_after_write_and_rollback(
                 })
                 .collect::<anyhow::Result<Vec<_>>>()
         };
-        let before = single()?;
+        let before = single(&tx)?;
         assert_eq!(
-            evaluate_owned_edges_from_db_in_tx(&tx, f.project(), &edges)?,
+            evaluate_owned_edges_from_db_in_tx(&mut tx, f.project(), &edges)?,
             before
         );
         tx.execute_batch("SAVEPOINT scope_batch_change")?;
@@ -472,19 +472,19 @@ fn assert_scope_batch_matches_single_reads_after_write_and_rollback(
             "UPDATE tree_nodes SET archived_at='2026-09-08T00:00:00.000Z' WHERE id=?1",
             [f.manifest["s1"].as_str().expect("anchor")],
         )?;
-        let changed = single()?;
+        let changed = single(&tx)?;
         assert_ne!(
             changed, before,
             "current reference validity must change the verdict"
         );
         assert_eq!(
-            evaluate_owned_edges_from_db_in_tx(&tx, f.project(), &edges)?,
+            evaluate_owned_edges_from_db_in_tx(&mut tx, f.project(), &edges)?,
             changed,
             "a separate batch cannot reuse pre-write authority in the same transaction"
         );
         tx.execute_batch("ROLLBACK TO scope_batch_change; RELEASE scope_batch_change")?;
         assert_eq!(
-            evaluate_owned_edges_from_db_in_tx(&tx, f.project(), &edges)?,
+            evaluate_owned_edges_from_db_in_tx(&mut tx, f.project(), &edges)?,
             before,
             "the rolled-back authority cannot escape its batch either"
         );
@@ -498,7 +498,7 @@ fn assert_scope_batch_matches_single_reads_after_write_and_rollback(
             .clone();
         wrong_run.owning_run_id = Some("unrelated-run".into());
         assert!(
-            evaluate_owned_edges_from_db_in_tx(&tx, f.project(), &[wrong_run]).is_err(),
+            evaluate_owned_edges_from_db_in_tx(&mut tx, f.project(), &[wrong_run]).is_err(),
             "shared project authority cannot substitute for each sealed Run binding"
         );
         // DR-CP4-V-5 (a): both Scope edges share one sealed Run, so the batch
@@ -528,20 +528,20 @@ fn assert_scope_batch_matches_single_reads_after_write_and_rollback(
             )?,
             1
         );
-        let corrupted = shown(single());
+        let corrupted = shown(single(&tx));
         assert_ne!(
             corrupted,
             shown(Ok(before.clone())),
             "the sealed corpus is part of the verdict"
         );
         assert_eq!(
-            shown(evaluate_owned_edges_from_db_in_tx(&tx, f.project(), &edges)),
+            shown(evaluate_owned_edges_from_db_in_tx(&mut tx, f.project(), &edges)),
             corrupted,
             "a batch after the write reads the sealed corpus again"
         );
         tx.execute_batch("ROLLBACK TO sealed_corpus_change; RELEASE sealed_corpus_change")?;
         assert_eq!(
-            evaluate_owned_edges_from_db_in_tx(&tx, f.project(), &edges)?,
+            evaluate_owned_edges_from_db_in_tx(&mut tx, f.project(), &edges)?,
             before,
             "the rolled-back corpus cannot escape its batch either"
         );
@@ -620,7 +620,9 @@ fn nir1_complete_check_shares_its_roster_read_only_with_the_eligibility_edge() {
         let digest = source::read_eligibility_source(tx, f.project())?.digest;
         let plain = evaluate_owned_edges_from_db_in_tx(tx, f.project(), &edges)?;
         let shared =
-            |digest: &str, control: &mut dyn crate::narrative_extraction::GraphWorkControl| {
+            |tx: &mut rusqlite::Connection,
+             digest: &str,
+             control: &mut dyn crate::narrative_extraction::GraphWorkControl| {
                 evaluate_owned_edges_from_db_in_tx_with_observed_eligibility(
                     tx,
                     f.project(),
@@ -630,9 +632,10 @@ fn nir1_complete_check_shares_its_roster_read_only_with_the_eligibility_edge() {
                 )
             };
         // The same read gives the same observations, field for field.
-        assert_eq!(shared(&digest, &mut ForegroundValidationControl)?, plain);
+        assert_eq!(shared(tx, &digest, &mut ForegroundValidationControl)?, plain);
         // The shared digest is what the eligibility Edge compares; nothing else moves.
         let other = shared(
+            tx,
             &format!("sha256:{}", "0".repeat(64)),
             &mut ForegroundValidationControl,
         )?;
@@ -651,7 +654,7 @@ fn nir1_complete_check_shares_its_roster_read_only_with_the_eligibility_edge() {
             error.to_string()
         };
         assert_eq!(
-            refused(shared(&digest, &mut NeverStopGraphWorkControl)),
+            refused(shared(tx, &digest, &mut NeverStopGraphWorkControl)),
             refused(evaluate_owned_edges_from_db_in_tx_with_control(
                 tx,
                 f.project(),
@@ -659,7 +662,7 @@ fn nir1_complete_check_shares_its_roster_read_only_with_the_eligibility_edge() {
                 &mut NeverStopGraphWorkControl,
             ))
         );
-        assert_stopped(shared(&digest, &mut StopAt(GraphWorkStage::Source)));
+        assert_stopped(shared(tx, &digest, &mut StopAt(GraphWorkStage::Source)));
         // Another project's eligibility key is rejected exactly as before.
         let mut foreign = edges.clone();
         foreign[eligibility].source_object_identity = source::source_key("other-project");
@@ -684,9 +687,9 @@ fn nir1_complete_check_shares_its_roster_read_only_with_the_eligibility_edge() {
         Ok(())
     })
     .expect("roster shared inside one complete check only");
-    f.db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        assert!(super::query::current_proof(&tx, &f.runtime, f.project())?.is_some());
+    f.db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        assert!(super::query::current_proof(&mut tx, &f.runtime, f.project())?.is_some());
         Ok(())
     })
     .expect("the complete check still accepts the current proof");
@@ -698,8 +701,8 @@ fn nir1_runless_republication_rejects_corrupt_registration_before_edge_writes() 
     let (plan, docs) = f.prepare();
     publish_chronicle_index_build(&f.db, &f.runtime, plan, f.outcomes(docs))
         .expect("initial publication");
-    f.db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    f.db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         let edges = super::super::dependency_edges::find_edges_by_consumer(
             &tx, f.project(), "semantic-index", INDEX_KEY,
         )?;
@@ -718,7 +721,7 @@ fn nir1_runless_republication_rejects_corrupt_registration_before_edge_writes() 
         )?;
         let before = tx.total_changes();
         let error = super::super::publish_runtime::publish_complete_runless_freshness_in_tx(
-            &tx, f.project(), "semantic-index", INDEX_KEY, &observations, &epoch,
+            &mut tx, f.project(), "semantic-index", INDEX_KEY, &observations, &epoch,
             "2026-09-08T00:00:00.000Z",
         ).expect_err("corrupt registration cannot publish even a complete set");
         assert!(error.to_string().contains("RESERVED_CONSUMER"));

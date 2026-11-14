@@ -3095,7 +3095,7 @@ fn current_schema_open_repairs_semantically_stale_creation_baseline_triggers() {
     // repeatedly dropping/recreating the same trigger definitions.
     let drop_attempted = Arc::new(AtomicBool::new(false));
     let drop_attempted_for_hook = Arc::clone(&drop_attempted);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         conn.authorizer(Some(move |context: AuthContext<'_>| match context.action {
             AuthAction::DropTrigger { trigger_name, .. }
                 if trigger_name.starts_with("timelapse_") =>
@@ -3113,7 +3113,7 @@ fn current_schema_open_repairs_semantically_stale_creation_baseline_triggers() {
         !drop_attempted.load(Ordering::SeqCst),
         "a converged second open must not recreate creation triggers"
     );
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
         assert!(grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?);
         Ok(())

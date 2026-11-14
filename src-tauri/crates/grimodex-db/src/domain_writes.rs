@@ -2334,7 +2334,7 @@ pub fn publish_scan_staging_project(
         conflict_marker: "SCAN_STAGING_PROJECT_PUBLISH_REQUEST_CONFLICT",
     };
 
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |tx| {
             if let Some(response) = load_idempotent_response(tx, &idempotency_request)? {
                 return Ok(response);
@@ -3850,7 +3850,7 @@ pub fn tree_node_patch_with_authority(
     } else {
         "tree.node.patch"
     };
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |tx| {
         if let Some(response) = load_idempotent_response(tx, &idempotency_request)? {
             return Ok(response);

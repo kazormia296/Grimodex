@@ -411,7 +411,7 @@ mod tests {
         );
     }
 
-    fn ddl_counter(conn: &Connection) -> Arc<AtomicUsize> {
+    fn ddl_counter(conn: &mut Connection) -> Arc<AtomicUsize> {
         let counter = Arc::new(AtomicUsize::new(0));
         let seen = counter.clone();
         conn.authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
@@ -453,7 +453,7 @@ mod tests {
             .expect("snapshot");
         // install を直接呼んでも、収束していれば DDL は 1 つも走らない。
         let ddl = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 let counter = ddl_counter(conn);
                 conn.execute_batch("SAVEPOINT t")?;
                 install_write_clock_in_tx(conn)?;
@@ -470,7 +470,7 @@ mod tests {
         // 2 回目の open（migrate）も schema を変えない。
         let reopened = Database::new(&path).expect("reopen");
         let ddl = reopened
-            .with_conn(|conn| Ok(ddl_counter(conn)))
+            .with_conn_mut(|conn| Ok(ddl_counter(conn)))
             .expect("hook");
         reopened.migrate().expect("migrate converged");
         assert_eq!(ddl.load(Ordering::SeqCst), 0);

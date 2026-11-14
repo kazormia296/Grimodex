@@ -49,9 +49,9 @@ fn cached_read_cannot_survive_a_temporary_repair_rolled_back_with_a_reused_seque
         })
         .expect("canonical row is no longer usable");
         assert!(!valid(&f, &batch));
-        f.db.with_conn(|conn| {
+        f.db.with_conn_mut(|conn| {
             let committed = crate::read_db_clock(conn)?.seq;
-            let tx = conn.unchecked_transaction()?;
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             if use_savepoint {
                 tx.execute_batch("SAVEPOINT temporary_repair")?;
             }
@@ -60,7 +60,7 @@ fn cached_read_cannot_survive_a_temporary_repair_rolled_back_with_a_reused_seque
                 WHERE consumer_kind='semantic-index'",
                 [],
             )?;
-            assert!(validate_chronicle_query_snapshot(&tx, &f.runtime, &batch)?);
+            assert!(validate_chronicle_query_snapshot(&mut tx, &f.runtime, &batch)?);
             assert!(
                 super::read_identity::ReadIdentity::read(&tx)?.is_none(),
                 "an uncommitted write cannot seed or hit the read cache"
@@ -71,7 +71,7 @@ fn cached_read_cannot_survive_a_temporary_repair_rolled_back_with_a_reused_seque
             if use_savepoint {
                 tx.execute_batch("ROLLBACK TO temporary_repair; RELEASE temporary_repair")?;
                 assert!(super::read_identity::ReadIdentity::read(&tx)?.is_none());
-                assert!(!validate_chronicle_query_snapshot(&tx, &f.runtime, &batch)?);
+                assert!(!validate_chronicle_query_snapshot(&mut tx, &f.runtime, &batch)?);
             }
             tx.rollback()?;
             assert_eq!(
@@ -190,7 +190,7 @@ fn schema_only_changes_cannot_reuse_a_cached_canonical_verdict() {
 fn temp_schema_changes_do_not_move_the_identity_and_runtime_revocation_is_not_hidden() {
     let (f, batch) = prepared();
     let before =
-        f.db.with_read_transaction(super::read_identity::ReadIdentity::read)
+        f.db.with_read_transaction(|conn| super::read_identity::ReadIdentity::read(conn))
             .expect("read identity");
     f.db.with_conn(|conn| {
         conn.execute_batch("CREATE TEMP TABLE proof_identity_test(value INTEGER)")?;
@@ -198,7 +198,7 @@ fn temp_schema_changes_do_not_move_the_identity_and_runtime_revocation_is_not_hi
     })
     .expect("private temp schema change");
     let after =
-        f.db.with_read_transaction(super::read_identity::ReadIdentity::read)
+        f.db.with_read_transaction(|conn| super::read_identity::ReadIdentity::read(conn))
             .expect("new read identity");
     assert_eq!(before, after);
     assert!(valid(&f, &batch), "unchanged authority passes");
@@ -239,7 +239,7 @@ fn read_identity_follows_the_clock_triggers_and_the_invariant_names_their_absenc
         })
         .expect("arrange triggers");
         let read = || {
-            f.db.with_read_transaction(super::read_identity::ReadIdentity::read)
+            f.db.with_read_transaction(|conn| super::read_identity::ReadIdentity::read(conn))
                 .expect("read identity")
         };
         let first = read();

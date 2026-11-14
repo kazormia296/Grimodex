@@ -355,14 +355,14 @@ impl Fixture {
     /// Deterministic A2/A3 usage for the seed Revision: one progress callback
     /// per SQLite VM instruction, the same unit charged against QUERY_SQL_STEPS.
     fn seed_a2_a3_usage(&self) -> Result<SeedAdmissionUsage> {
-        let conn = rusqlite::Connection::open_with_flags(
+        let mut conn = rusqlite::Connection::open_with_flags(
             self._directory.0.join("grimodex.db"),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         let steps = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let counter = Arc::clone(&steps);
         crate::set_sqlite_progress_handler(
-            &conn,
+            &mut conn,
             1,
             Some(move || {
                 counter.fetch_add(1, Ordering::Relaxed);
@@ -389,7 +389,7 @@ impl Fixture {
             MAX_GRAPH_INPUT_BYTES - a2.bytes,
         )?;
         let total_steps = steps.load(Ordering::Relaxed);
-        crate::set_sqlite_progress_handler(&conn, 0, None::<fn() -> bool>)?;
+        crate::set_sqlite_progress_handler(&mut conn, 0, None::<fn() -> bool>)?;
         Ok(SeedAdmissionUsage {
             a2_steps,
             a3_steps: total_steps - a2_steps,
@@ -623,7 +623,7 @@ fn worker_reader_restore_admitted_during_query_read_refuses_result() -> Result<(
     let triggered_for_authorizer = Arc::clone(&restore_triggered);
     let result_for_authorizer = Arc::clone(&restore_result);
     let lifecycle_for_authorizer = fixture.lifecycle.clone();
-    fixture.authority.db().with_conn(|conn| {
+    fixture.authority.db().with_conn_mut(|conn| {
         conn.authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
             if matches!(
                 context.action,
@@ -650,7 +650,7 @@ fn worker_reader_restore_admitted_during_query_read_refuses_result() -> Result<(
         &graph_request("nir1-alice"),
         Duration::from_secs(2),
     );
-    fixture.authority.db().with_conn(|conn| {
+    fixture.authority.db().with_conn_mut(|conn| {
         conn.authorizer(None::<fn(rusqlite::hooks::AuthContext<'_>) -> Authorization>)?;
         ensure!(
             conn.is_autocommit(),
@@ -1869,7 +1869,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
 
     fn maintenance<T>(
         db: &crate::Database,
-        operation: impl FnOnce(&rusqlite::Connection, &mut dyn GraphWorkControl) -> Result<T>,
+        operation: impl FnOnce(&mut rusqlite::Connection, &mut dyn GraphWorkControl) -> Result<T>,
     ) -> Result<T> {
         with_narrative_maintenance_graph_control(
             db,
@@ -2101,15 +2101,15 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
 
     let runtime = authority.nir_chronicle_index_runtime();
     let snapshot = maintenance(&authority, |conn, control| {
-        let tx = conn.unchecked_transaction()?;
-        let snapshot = prepare_graph_index_build_with_control(&tx, runtime, PROJECT, control)?;
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        let snapshot = prepare_graph_index_build_with_control(&mut tx, runtime, PROJECT, control)?;
         tx.commit()?;
         Ok(snapshot)
     })?;
     let published = maintenance(&authority, |conn, control| {
-        let tx = conn.unchecked_transaction()?;
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         let published =
-            publish_nir1_entity_relation_index_in_tx_with_control(&tx, runtime, snapshot, control)?;
+            publish_nir1_entity_relation_index_in_tx_with_control(&mut tx, runtime, snapshot, control)?;
         tx.commit()?;
         Ok(published)
     })?;
@@ -4544,8 +4544,8 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
         Arc::new(AtomicBool::new(false)),
         NarrativeMaintenanceGraphControlConfig::default(),
         |conn, control| {
-            let tx = conn.unchecked_transaction()?;
-            let snapshot = prepare_graph_index_build_with_control(&tx, runtime, PROJECT, control)?;
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            let snapshot = prepare_graph_index_build_with_control(&mut tx, runtime, PROJECT, control)?;
             tx.commit()?;
             Ok(snapshot)
         },
@@ -4559,9 +4559,9 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
         Arc::new(AtomicBool::new(false)),
         NarrativeMaintenanceGraphControlConfig::default(),
         |conn, control| {
-            let tx = conn.unchecked_transaction()?;
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let published = publish_nir1_entity_relation_index_in_tx_with_control(
-                &tx, runtime, snapshot, control,
+                &mut tx, runtime, snapshot, control,
             )?;
             tx.commit()?;
             Ok(published)
@@ -6258,7 +6258,7 @@ fn scene_join_never_reads_scene_body() -> Result<()> {
     })?;
     let reads = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
     let observed = Arc::clone(&reads);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         conn.authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
             if let AuthAction::Read {
                 table_name,
@@ -6284,7 +6284,7 @@ fn scene_join_never_reads_scene_body() -> Result<()> {
             )
             .ok())
     })?;
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         conn.authorizer(None::<fn(rusqlite::hooks::AuthContext<'_>) -> Authorization>)?;
         Ok(())
     })?;
@@ -6898,9 +6898,9 @@ fn publish_graph_index(authority: &WorkspaceAuthority) -> Result<()> {
     let runtime = authority.nir_chronicle_index_runtime();
     let snapshot = authority
         .with_read_transaction(|conn| prepare_graph_index_build(conn, runtime, PROJECT))?;
-    authority.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        publish_nir1_entity_relation_index_in_tx(&tx, runtime, snapshot)?;
+    authority.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        publish_nir1_entity_relation_index_in_tx(&mut tx, runtime, snapshot)?;
         tx.commit()?;
         Ok(())
     })

@@ -56,7 +56,7 @@ fn fixture_db() -> Database {
 
 fn graph_state_digest() -> String {
     let db = fixture_db();
-    db.with_conn(|conn| durable_graph_state_digest(conn, PROJECT_ID))
+    db.with_conn_mut(|conn| durable_graph_state_digest(conn, PROJECT_ID))
         .expect("compute fixture graph state digest")
 }
 
@@ -348,7 +348,7 @@ fn exact_contract_match_returns_skip_with_the_durable_report_digest() {
     persist_completed_run_skip_evidence(&db, RUN_ID, &evidence()).expect("persist skip evidence");
 
     let decision = db
-        .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+        .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expectation()))
         .expect("evaluate skip");
     assert_eq!(
         decision,
@@ -358,7 +358,7 @@ fn exact_contract_match_returns_skip_with_the_durable_report_digest() {
         }
     );
     let stored = db
-        .with_conn(|conn| read_completed_run_skip_evidence(conn, PROJECT_ID, "dependency-verify"))
+        .with_conn_mut(|conn| read_completed_run_skip_evidence(conn, PROJECT_ID, "dependency-verify"))
         .expect("read persisted evidence");
     assert_eq!(stored, Some(evidence()));
 
@@ -382,7 +382,7 @@ fn exact_contract_match_returns_skip_with_the_durable_report_digest() {
     })
     .expect("tamper stored evidence");
     let rejected = db
-        .with_conn(|conn| read_completed_run_skip_evidence(conn, PROJECT_ID, "dependency-verify"))
+        .with_conn_mut(|conn| read_completed_run_skip_evidence(conn, PROJECT_ID, "dependency-verify"))
         .expect("read tampered evidence");
     assert_eq!(rejected, None);
 }
@@ -435,7 +435,7 @@ fn verify_skip_evidence_requires_a_current_rebuild_contract_coordinate() {
         insert_completed_verify_run(&db, "completed", Some(outcome));
 
         let decision = db
-            .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+            .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expectation()))
             .expect("evaluate stale rebuild coordinate");
         assert!(
             matches!(decision, CompletedRunSkipDecision::Rerun { .. }),
@@ -477,7 +477,7 @@ fn equal_maximal_verify_created_at_is_ambiguous_regardless_of_run_id_order() {
             .expect("seal the successful Verify evidence");
 
         let decision = db
-            .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+            .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expectation()))
             .expect("evaluate equal-timestamp Verify candidates");
         assert_eq!(
             decision,
@@ -515,7 +515,7 @@ fn idempotent_persist_preserves_unknown_fields_and_terminal_digest_aliases() {
 
         assert_eq!(raw_outcome_summary_json(&db, RUN_ID), before);
         assert_eq!(
-            db.with_conn(|conn| read_completed_run_skip_evidence(
+            db.with_conn_mut(|conn| read_completed_run_skip_evidence(
                 conn,
                 PROJECT_ID,
                 "dependency-verify"
@@ -560,7 +560,7 @@ fn in_tx_persistence_rejects_an_autocommit_connection() {
     let db = fixture_db();
     insert_completed_verify_run(&db, "completed", Some(successful_outcome()));
     let error = db
-        .with_conn(|conn| persist_completed_run_skip_evidence_in_tx(conn, RUN_ID, &evidence()))
+        .with_conn_mut(|conn| persist_completed_run_skip_evidence_in_tx(conn, RUN_ID, &evidence()))
         .expect_err("in-tx API must require a caller-owned transaction");
     assert!(error
         .to_string()
@@ -573,7 +573,7 @@ fn in_tx_persistence_does_not_overwrite_a_concurrent_outcome_mutation() {
         "grimodex-skip-evidence-concurrency-{}.db",
         uuid::Uuid::new_v4()
     ));
-    let conn = minimal_run_connection(&path);
+    let mut conn = minimal_run_connection(&path);
     conn.execute(
         "INSERT INTO narrative_extraction_runs
             (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
@@ -614,7 +614,7 @@ fn in_tx_persistence_does_not_overwrite_a_concurrent_outcome_mutation() {
         .expect("mutate outcome concurrently");
     drop(concurrent);
 
-    let error = persist_completed_run_skip_evidence_in_tx(&conn, RUN_ID, &evidence())
+    let error = persist_completed_run_skip_evidence_in_tx(&mut conn, RUN_ID, &evidence())
         .expect_err("stale caller snapshot must not overwrite concurrent mutation");
     assert!(error
         .to_string()
@@ -671,7 +671,7 @@ fn completed_rebuild_runs_are_never_reused_by_the_skip_contract() {
     assert!(persist_completed_run_skip_evidence(&db, REBUILD_RUN_ID, &rebuild_evidence()).is_err());
 
     let decision = db
-        .with_conn(|conn| evaluate_completed_run_skip(conn, &rebuild_expectation()))
+        .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &rebuild_expectation()))
         .expect("evaluate rebuild skip");
     assert_eq!(
         decision,
@@ -730,7 +730,7 @@ fn every_contract_coordinate_is_a_skip_boundary() {
             _ => unreachable!(),
         }
         let decision = db
-            .with_conn(|conn| evaluate_completed_run_skip(conn, &current))
+            .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &current))
             .expect("evaluate mismatch");
         assert_eq!(decision, CompletedRunSkipDecision::Rerun { reason });
     }
@@ -768,7 +768,7 @@ fn missing_or_non_successful_latest_run_never_falls_back_to_an_older_success() {
     .expect("insert newer failed run");
 
     let decision = db
-        .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+        .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expectation()))
         .expect("evaluate failed latest run");
     assert_eq!(
         decision,
@@ -827,7 +827,7 @@ fn malformed_missing_and_tampered_report_evidence_fail_closed() {
         }
         insert_completed_verify_run(&db, "completed", Some(outcome));
         let decision = db
-            .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+            .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expectation()))
             .expect("evaluate malformed evidence");
         assert_eq!(
             decision,
@@ -851,7 +851,7 @@ fn tampered_report_body_with_the_old_digest_forces_a_rerun() {
     insert_completed_verify_run(&db, "completed", Some(outcome));
 
     let decision = db
-        .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+        .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expectation()))
         .expect("evaluate tampered report");
     assert_eq!(
         decision,
@@ -870,7 +870,7 @@ fn old_outcome_contract_version_forces_a_rerun_even_with_current_evidence() {
     insert_completed_verify_run(&db, "completed", Some(outcome));
 
     let decision = db
-        .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+        .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expectation()))
         .expect("evaluate old contract");
     assert_eq!(
         decision,
@@ -911,11 +911,11 @@ fn assert_verify_shape_rejected(report_value: serde_json::Value) {
     let mut current = expectation();
     current.report_digest = Some(digest);
     let decision = db
-        .with_conn(|conn| evaluate_completed_run_skip(conn, &current))
+        .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &current))
         .expect("evaluate malformed Verify shape");
     assert!(matches!(decision, CompletedRunSkipDecision::Rerun { .. }));
     assert_eq!(
-        db.with_conn(|conn| read_completed_run_skip_evidence(
+        db.with_conn_mut(|conn| read_completed_run_skip_evidence(
             conn,
             PROJECT_ID,
             "dependency-verify"
@@ -953,11 +953,11 @@ fn assert_rebuild_shape_rejected(summary_value: serde_json::Value) {
     let mut current = rebuild_expectation();
     current.report_digest = Some(digest);
     let decision = db
-        .with_conn(|conn| evaluate_completed_run_skip(conn, &current))
+        .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &current))
         .expect("evaluate malformed Rebuild shape");
     assert!(matches!(decision, CompletedRunSkipDecision::Rerun { .. }));
     assert_eq!(
-        db.with_conn(|conn| read_completed_run_skip_evidence(
+        db.with_conn_mut(|conn| read_completed_run_skip_evidence(
             conn,
             PROJECT_ID,
             "semantic-index-rebuild"
@@ -1004,7 +1004,7 @@ fn outcome_epoch_mismatch_is_rejected_for_verify_and_rebuild() {
     verify_outcome["skipEvidence"] = serde_json::to_value(evidence()).expect("evidence");
     insert_completed_verify_run(&db, "completed", Some(verify_outcome));
     let verify_decision = db
-        .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+        .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expectation()))
         .expect("evaluate Verify epoch mismatch");
     assert_eq!(
         verify_decision,
@@ -1014,7 +1014,7 @@ fn outcome_epoch_mismatch_is_rejected_for_verify_and_rebuild() {
     );
     assert!(persist_completed_run_skip_evidence(&db, RUN_ID, &evidence()).is_err());
     assert_eq!(
-        db.with_conn(|conn| read_completed_run_skip_evidence(
+        db.with_conn_mut(|conn| read_completed_run_skip_evidence(
             conn,
             PROJECT_ID,
             "dependency-verify"
@@ -1042,7 +1042,7 @@ fn outcome_epoch_mismatch_is_rejected_for_verify_and_rebuild() {
         "dependency-rebuild-derived",
     );
     let rebuild_decision = rebuild_db
-        .with_conn(|conn| evaluate_completed_run_skip(conn, &rebuild_expectation()))
+        .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &rebuild_expectation()))
         .expect("evaluate Rebuild epoch mismatch");
     assert_eq!(
         rebuild_decision,
@@ -1056,7 +1056,7 @@ fn outcome_epoch_mismatch_is_rejected_for_verify_and_rebuild() {
     );
     assert_eq!(
         rebuild_db
-            .with_conn(|conn| read_completed_run_skip_evidence(
+            .with_conn_mut(|conn| read_completed_run_skip_evidence(
                 conn,
                 PROJECT_ID,
                 "semantic-index-rebuild"
@@ -1083,7 +1083,7 @@ fn read_binds_run_identity_epoch_and_canonical_work_key_to_evidence() {
     })
     .expect("tamper Run coordinates");
     assert_eq!(
-        db.with_conn(|conn| read_completed_run_skip_evidence(
+        db.with_conn_mut(|conn| read_completed_run_skip_evidence(
             conn,
             PROJECT_ID,
             "dependency-verify"
@@ -1103,7 +1103,7 @@ fn read_binds_run_identity_epoch_and_canonical_work_key_to_evidence() {
     })
     .expect("tamper Run kind");
     assert_eq!(
-        db.with_conn(|conn| read_completed_run_skip_evidence(
+        db.with_conn_mut(|conn| read_completed_run_skip_evidence(
             conn,
             PROJECT_ID,
             "semantic-index-rebuild"
@@ -1125,7 +1125,7 @@ fn read_binds_run_identity_epoch_and_canonical_work_key_to_evidence() {
     })
     .expect("tamper Run project");
     assert_eq!(
-        db.with_conn(|conn| read_completed_run_skip_evidence(
+        db.with_conn_mut(|conn| read_completed_run_skip_evidence(
             conn,
             "project-other",
             "semantic-index-rebuild"
@@ -1161,14 +1161,14 @@ fn created_at_controls_latest_run_and_equal_timestamps_fail_closed() {
     persist_completed_run_skip_evidence(&db, "run-success-older", &evidence())
         .expect("persist older success");
     assert_eq!(
-        db.with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+        db.with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expectation()))
             .expect("evaluate timestamp ordering"),
         CompletedRunSkipDecision::Rerun {
             reason: CompletedRunSkipReason::LatestRunNotSuccessful
         }
     );
     assert_eq!(
-        db.with_conn(|conn| read_completed_run_skip_evidence(
+        db.with_conn_mut(|conn| read_completed_run_skip_evidence(
             conn,
             PROJECT_ID,
             "dependency-verify"
@@ -1203,7 +1203,7 @@ fn created_at_controls_latest_run_and_equal_timestamps_fail_closed() {
         .expect("persist tie success");
     assert_eq!(
         tie_db
-            .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+            .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expectation()))
             .expect("evaluate same-created ordering"),
         CompletedRunSkipDecision::Rerun {
             reason: CompletedRunSkipReason::AmbiguousLifecycle
@@ -1211,7 +1211,7 @@ fn created_at_controls_latest_run_and_equal_timestamps_fail_closed() {
     );
     assert_eq!(
         tie_db
-            .with_conn(|conn| read_completed_run_skip_evidence(
+            .with_conn_mut(|conn| read_completed_run_skip_evidence(
                 conn,
                 PROJECT_ID,
                 "dependency-verify"
@@ -1260,11 +1260,11 @@ fn every_digest_coordinate_requires_sha256_lowercase_hex64() {
             _ => unreachable!(),
         }
         let decision = db
-            .with_conn(|conn| evaluate_completed_run_skip(conn, &current))
+            .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &current))
             .expect("evaluate invalid digest coordinate");
         assert!(matches!(decision, CompletedRunSkipDecision::Rerun { .. }));
         assert_eq!(
-            db.with_conn(|conn| read_completed_run_skip_evidence(
+            db.with_conn_mut(|conn| read_completed_run_skip_evidence(
                 conn,
                 PROJECT_ID,
                 "dependency-verify"
@@ -1286,7 +1286,7 @@ fn same_epoch_edge_write_after_clean_verify_forces_rerun() {
     insert_completed_verify_run(&db, "completed", Some(successful_outcome()));
     persist_completed_run_skip_evidence(&db, RUN_ID, &evidence()).expect("persist skip evidence");
     let skip = db
-        .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+        .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expectation()))
         .expect("evaluate before the graph moves");
     assert!(matches!(skip, CompletedRunSkipDecision::Skip { .. }));
 
@@ -1304,7 +1304,7 @@ fn same_epoch_edge_write_after_clean_verify_forces_rerun() {
     .expect("add a same-epoch Edge after the clean Verify");
 
     let decision = db
-        .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+        .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expectation()))
         .expect("evaluate after the graph moved");
     assert_eq!(
         decision,
@@ -1313,7 +1313,7 @@ fn same_epoch_edge_write_after_clean_verify_forces_rerun() {
         }
     );
     assert_eq!(
-        db.with_conn(|conn| read_completed_run_skip_evidence(
+        db.with_conn_mut(|conn| read_completed_run_skip_evidence(
             conn,
             PROJECT_ID,
             "dependency-verify"

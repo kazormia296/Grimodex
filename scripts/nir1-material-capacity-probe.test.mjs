@@ -176,7 +176,7 @@ test("native metric claims require closed connections and exact mode-specific in
     report.process.temporaryBytes = 0;
     report.sql.lifecycleVmStepsUpperBound = 4;
     report.sql.lifecycleVmStepsMethod = 'audited-sqlite-cadence-one-progress-including-prepare-upper-bound';
-    report.sql.sqliteSourceId = '2026-06-03 19:12:13 d6e03d8c777cfa2d35e3b60d8ec3e0187f3e9f99d8e2ee9cac695fd6fcdf1a24';
+    report.sql.sqliteSourceId = '2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76';
     report.process.temporaryDisk = {
       logicalHighWaterUpperBoundBytes: 10, initialBytes: 1, successfulWriteBytes: 2,
       sqliteFileGrowthBytes: 3, sqliteShmGrowthBytes: 4, openedFiles: 1, closedFiles: 1,

@@ -196,7 +196,7 @@ pub fn narrative_extraction_prepare_commit_with_control(
     control: Option<&mut dyn GraphWorkControl>,
 ) -> anyhow::Result<Value> {
     let mut lifecycle_control = control;
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             if let Some(control) = lifecycle_control.as_mut() {
                 control.check(GraphWorkStage::Source)?;
@@ -485,7 +485,7 @@ fn digest_authority_rows(
 }
 
 fn build_source_contract(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     applications: &[(String, String)],
@@ -498,14 +498,13 @@ fn build_source_contract(
         ));
     }
     let mut validation = validation_context(conn, owner);
-    validation.ensure_connection(conn)?;
     let mut revision_rows = Vec::with_capacity(applications.len());
     let mut source_rows = Vec::new();
     let mut read_rows = Vec::new();
 
     for (proposal_id, revision_id) in applications {
         let (origin_kind, stored_digest, stored_json): (String, Option<String>, Option<String>) =
-            conn.query_row(
+            validation.connection().query_row(
                 "SELECT origin_kind, reconciliation_envelope_digest,
                         reconciliation_envelope_json
                    FROM narrative_proposal_revisions
@@ -529,7 +528,7 @@ fn build_source_contract(
         })?;
         let envelope: Value = serde_json::from_str(&stored_json)?;
         let validated =
-            validate_reconciliation_envelope(conn, project_id, run_id, Some(&envelope))?
+            validate_reconciliation_envelope(validation.connection(), project_id, run_id, Some(&envelope))?
                 .ok_or_else(|| {
                     anyhow::anyhow!("NEX_REVISION_ENVELOPE_MISSING: envelope was empty")
                 })?;
@@ -538,7 +537,7 @@ fn build_source_contract(
             "NEX_REVISION_ENVELOPE_CHANGED: persisted envelope canonical bytes do not match its digest"
         );
 
-        let persisted_source_basis = load_source_basis_rows(conn, revision_id)?;
+        let persisted_source_basis = load_source_basis_rows(validation.connection(), revision_id)?;
         ensure_source_basis_storage_matches(&validated.source_basis, &persisted_source_basis)?;
         revision_rows.push(json!({
             "proposalId": proposal_id,
@@ -939,7 +938,7 @@ pub fn narrative_extraction_apply_commit_with_control(
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let timestamp = Utc::now().timestamp_millis();
 
-    let apply_result = db.with_conn(|conn| {
+    let apply_result = db.with_conn_mut(|conn| {
         if let Some(control) = lifecycle_control.as_deref_mut() {
             control.check(GraphWorkStage::Source)?;
         }
@@ -1673,7 +1672,6 @@ pub fn narrative_extraction_apply_commit_with_control(
                         ));
                     }
                     let mut validation = validation_context(conn, owner);
-                    validation.ensure_connection(conn)?;
                     super::v2_apply_sources::load_v2_apply_sources_with_validation_context(
                         &mut validation,
                         &payload.project_id,
@@ -2028,7 +2026,7 @@ fn persist_terminal_commit_audit(
     now: &str,
     status: &str,
 ) -> anyhow::Result<()> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             conn.execute(
                 "UPDATE narrative_apply_commits
@@ -2061,7 +2059,7 @@ fn persist_failed_commit_audit(
     message: &str,
     now: &str,
 ) -> anyhow::Result<()> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             conn.execute(
                 "UPDATE narrative_apply_commits

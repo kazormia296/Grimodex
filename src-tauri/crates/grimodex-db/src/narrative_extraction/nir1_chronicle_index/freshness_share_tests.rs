@@ -183,7 +183,7 @@ impl Run {
 }
 
 fn finalize_loop(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     prepared: Prepared,
     sharing: Sharing,
@@ -245,8 +245,8 @@ struct Plan<'a> {
 /// runs in its own savepoint that is rolled back, so a write made by the
 /// control reaches only the way that made it.
 fn runs(db: &Database, project: &str, plan: Plan<'_>) -> Vec<Run> {
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         tx.execute_batch("CREATE TEMP TABLE share_probe(x)")?;
         let prepared = ALL
             .iter()
@@ -259,6 +259,7 @@ fn runs(db: &Database, project: &str, plan: Plan<'_>) -> Vec<Run> {
         if !plan.tamper_ddl.is_empty() {
             tx.execute_batch(plan.tamper_ddl)?;
         }
+        let writer = crate::test_support::same_handle_writer(&tx);
         let runs = ALL
             .iter()
             .zip(prepared)
@@ -271,10 +272,10 @@ fn runs(db: &Database, project: &str, plan: Plan<'_>) -> Vec<Run> {
                 let mut control = Observed {
                     log: Vec::new(),
                     stop_at: plan.stop_at,
-                    write: plan.write_at.map(|at| (&*tx, at, write_sql)),
+                    write: plan.write_at.map(|at| (&writer, at, write_sql)),
                 };
                 tx.execute_batch("SAVEPOINT way")?;
-                let run = finalize_loop(&tx, project, prepared, *sharing, &mut control);
+                let run = finalize_loop(&mut tx, project, prepared, *sharing, &mut control);
                 tx.execute_batch("ROLLBACK TO way; RELEASE way")?;
                 Ok(run)
             })
@@ -660,7 +661,7 @@ fn an_autocommit_connection_shares_nothing() {
             f.db.with_read_transaction(|tx| Ok(prepare(tx, &project)))
                 .expect("prepare");
         let run =
-            f.db.with_conn(|conn| {
+            f.db.with_conn_mut(|conn| {
                 assert!(conn.is_autocommit());
                 let mut control = Observed {
                     log: Vec::new(),
@@ -770,7 +771,7 @@ fn reads_first_used_for_one_project_are_not_used_for_another() {
         })
         .expect("a Scope-dependency edge");
     let resolve =
-        |conn: &Connection, project: &str, reads: Option<&mut CandidateFreshnessReads>| {
+        |conn: &mut Connection, project: &str, reads: Option<&mut CandidateFreshnessReads>| {
             let mut control = Observed {
                 log: Vec::new(),
                 stop_at: None,
@@ -819,7 +820,7 @@ fn reads_first_used_for_one_project_are_not_used_for_another() {
 /// Resolves a Scope-dependency Source as the finalize loop's edge evaluation
 /// does, with or without the loop's reads; `Err` is the error's full text.
 fn resolve_scope_dependency(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     run: &str,
     key: &str,
@@ -977,20 +978,20 @@ fn a_storage_error_in_the_shared_path_is_the_ordinary_paths_error_and_is_not_kep
         })
         .expect("a Scope-dependency edge");
     let (ordinary, ordinary_hidden, shared, reads) =
-        f.db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
-            let ordinary = resolve_scope_dependency(&tx, &project, &run, &key, None);
+        f.db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            let ordinary = resolve_scope_dependency(&mut tx, &project, &run, &key, None);
             tx.execute_batch(HIDE)?;
-            let ordinary_hidden = resolve_scope_dependency(&tx, &project, &run, &key, None);
+            let ordinary_hidden = resolve_scope_dependency(&mut tx, &project, &run, &key, None);
             tx.execute_batch(UNHIDE)?;
             let mut loop_reads = CandidateFreshnessReads::default();
             let (shared, reads) = project_read_probe::recording(|| {
                 tx.execute_batch(HIDE).expect("hide");
                 let hidden =
-                    resolve_scope_dependency(&tx, &project, &run, &key, Some(&mut loop_reads));
+                    resolve_scope_dependency(&mut tx, &project, &run, &key, Some(&mut loop_reads));
                 tx.execute_batch(UNHIDE).expect("unhide");
                 let again =
-                    resolve_scope_dependency(&tx, &project, &run, &key, Some(&mut loop_reads));
+                    resolve_scope_dependency(&mut tx, &project, &run, &key, Some(&mut loop_reads));
                 [hidden, again]
             });
             tx.rollback()?;

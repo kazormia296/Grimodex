@@ -1135,12 +1135,12 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
     })
     .expect("seed a real Edge whose derived state requires Rebuild");
     let report = db
-        .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, PROJECT_ID))
+        .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, PROJECT_ID))
         .expect("production Verify report");
     assert!(report.requires_rebuild());
     let report_value = serde_json::to_value(&report).expect("serialize production Verify report");
     let graph_state_digest = db
-        .with_conn(|conn| durable_graph_state_digest(conn, PROJECT_ID))
+        .with_conn_mut(|conn| durable_graph_state_digest(conn, PROJECT_ID))
         .expect("fixture graph state digest");
     let report_digest = format!(
         "sha256:{}",

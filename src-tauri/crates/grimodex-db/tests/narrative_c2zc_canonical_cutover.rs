@@ -195,11 +195,11 @@ fn ordinary_run_epoch_binding_follows_c2zc_cutover_authority() {
     })
     .expect("pre-cutover ordinary Run retains NULL Epoch provenance");
 
-    db.with_conn(seed_cutover_ready_application)
+    db.with_conn_mut(seed_cutover_ready_application)
         .expect("seed cutover fixture");
     let _test_guard = serialize_liveness_test();
     let evidence = scheduler_heartbeat(&db, "c2zc-run-epoch-authority", 101);
-    db.with_conn(|conn| cut_over_workspace_freshness(conn, &evidence))
+    db.with_conn_mut(|conn| cut_over_workspace_freshness(conn, &evidence))
         .expect("activate Generic Consumer Freshness");
 
     create_ordinary_run(&db, "run-c2zc-post-marker", PROJECT_ID);
@@ -267,11 +267,11 @@ fn ordinary_run_rejects_unsupported_marker_and_missing_current_epoch() {
     .expect("unsupported marker rejection is atomic");
 
     let db = fixture_db();
-    db.with_conn(seed_cutover_ready_application)
+    db.with_conn_mut(seed_cutover_ready_application)
         .expect("seed cutover fixture");
     let _test_guard = serialize_liveness_test();
     let evidence = scheduler_heartbeat(&db, "c2zc-run-epoch-missing-authority", 102);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         cut_over_workspace_freshness(conn, &evidence)?;
         conn.execute(
             "INSERT INTO projects (id, title) VALUES ('project-c2zc-no-epoch', 'No Epoch')",
@@ -318,7 +318,7 @@ fn ordinary_run_rejects_unsupported_marker_and_missing_current_epoch() {
 fn database_only_liveness_never_becomes_cutover_evidence() {
     let db = fixture_db();
 
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         let durable = inspect_workspace_cutover_readiness_with_liveness(conn, None)?;
         assert!(!durable.ready);
         assert_eq!(durable.state, ReadinessState::Incomplete);
@@ -335,7 +335,7 @@ fn database_only_liveness_never_becomes_cutover_evidence() {
 fn hidden_scan_staging_project_is_outside_cutover_scope_until_publish() {
     let _test_guard = serialize_liveness_test();
     let db = fixture_db();
-    db.with_conn(seed_cutover_ready_application)
+    db.with_conn_mut(seed_cutover_ready_application)
         .expect("seed cutover fixture");
 
     create_scan_staging_project(
@@ -349,7 +349,7 @@ fn hidden_scan_staging_project_is_outside_cutover_scope_until_publish() {
     )
     .expect("create hidden Scan staging project");
 
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         let hidden_epoch_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM narrative_semantic_epochs WHERE project_id = ?1",
             [HIDDEN_SCAN_PROJECT_ID],
@@ -372,7 +372,7 @@ fn hidden_scan_staging_project_is_outside_cutover_scope_until_publish() {
 
     let evidence = scheduler_heartbeat(&db, "c2zc-hidden-staging-authority", 90);
     assert_eq!(evidence.project_ids, vec![PROJECT_ID.to_string()]);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         let readiness = inspect_workspace_cutover_readiness_with_liveness(conn, Some(&evidence))?;
         assert!(
             readiness.ready,
@@ -397,7 +397,7 @@ fn hidden_scan_staging_project_is_outside_cutover_scope_until_publish() {
     })
     .expect("hidden staging liveness/readiness");
 
-    db.with_conn(|conn| cut_over_workspace_freshness(conn, &evidence))
+    db.with_conn_mut(|conn| cut_over_workspace_freshness(conn, &evidence))
         .expect("activate Generic Consumer Freshness with hidden staging excluded");
     create_ordinary_run(
         &db,
@@ -470,7 +470,7 @@ fn hidden_scan_staging_project_is_outside_cutover_scope_until_publish() {
     })
     .expect("published Scan Run carries current-Epoch provenance");
 
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         let marker: Option<String> = conn
             .query_row(
                 "SELECT value FROM project_settings
@@ -498,7 +498,7 @@ fn cutover_refuses_incomplete_workspace_before_any_authority_marker() {
     let db = fixture_db();
 
     let error = db
-        .with_conn(|conn| {
+        .with_conn_mut(|conn| {
             let error = cut_over_workspace_freshness(conn, &scheduler_evidence(&[PROJECT_ID]))
                 .expect_err("incomplete durable gates must block C2-ZC");
             Ok::<_, anyhow::Error>(error)
@@ -522,7 +522,7 @@ fn cutover_refuses_incomplete_workspace_before_any_authority_marker() {
 fn cutover_phase_lifecycle_uses_the_exact_shared_task_owner() {
     let _test_guard = serialize_liveness_test();
     let db = fixture_db();
-    db.with_conn(seed_cutover_ready_application)
+    db.with_conn_mut(seed_cutover_ready_application)
         .expect("seed cutover fixture");
     db.with_conn(|conn| {
         // The individual Rebuild row remains otherwise current and
@@ -540,7 +540,7 @@ fn cutover_phase_lifecycle_uses_the_exact_shared_task_owner() {
     .expect("forge wrong phase Task kind");
 
     let evidence = scheduler_heartbeat(&db, "c2zc-task-owner-authority", 1);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         let readiness = inspect_workspace_cutover_readiness_with_liveness(conn, Some(&evidence))?;
         assert!(!readiness.ready);
         assert_eq!(readiness.state, ReadinessState::Blocked);
@@ -577,7 +577,7 @@ fn canonical_read_has_no_legacy_fallback_after_generic_cutover() {
     let _test_guard = serialize_liveness_test();
     let db = fixture_db();
 
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         // The fixture deliberately calls the public cutover API only
         // after a test-owned durable fixture has satisfied the full contract.
         seed_cutover_ready_application(conn)?;
@@ -585,7 +585,7 @@ fn canonical_read_has_no_legacy_fallback_after_generic_cutover() {
     })
     .expect("seed cutover fixture");
     let evidence = scheduler_heartbeat(&db, "c2zc-test-authority", 1);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         let first = cut_over_workspace_freshness(conn, &evidence)?;
         let second = cut_over_workspace_freshness(conn, &evidence)?;
         assert_eq!(first, second, "cutover marker must be idempotent");
@@ -619,13 +619,13 @@ fn canonical_read_fails_closed_when_generic_evidence_is_missing() {
     let _test_guard = serialize_liveness_test();
     let db = fixture_db();
 
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         seed_cutover_ready_application(conn)?;
         Ok::<_, anyhow::Error>(())
     })
     .expect("seed cutover fixture");
     let evidence = scheduler_heartbeat(&db, "c2zc-test-authority", 2);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         cut_over_workspace_freshness(conn, &evidence)?;
         conn.execute(
             "DELETE FROM narrative_consumer_freshness
@@ -652,7 +652,7 @@ fn cutover_and_canonical_read_reject_idle_checkpoint_as_generic_publisher() {
     // scheduler-only idle checkpoint may prove current-Epoch liveness, but it
     // must never become the provenance of a Generic Consumer Freshness row.
     let db = fixture_db();
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         seed_cutover_ready_application_with_freshness_state(
             conn,
             "fresh",
@@ -662,7 +662,7 @@ fn cutover_and_canonical_read_reject_idle_checkpoint_as_generic_publisher() {
     })
     .expect("seed cutover fixture");
     let evidence = scheduler_heartbeat(&db, "c2zc-idle-publisher-cutover", 4);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         let error = cut_over_workspace_freshness(conn, &evidence)
             .expect_err("cutover must reject an idle checkpoint as publisher provenance");
         assert!(
@@ -682,10 +682,10 @@ fn cutover_and_canonical_read_reject_idle_checkpoint_as_generic_publisher() {
     .expect("reject idle publisher during cutover");
 
     let db = fixture_db();
-    db.with_conn(seed_cutover_ready_application)
+    db.with_conn_mut(seed_cutover_ready_application)
         .expect("seed cutover fixture");
     let evidence = scheduler_heartbeat(&db, "c2zc-idle-publisher-read", 5);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         cut_over_workspace_freshness(conn, &evidence)?;
         conn.execute(
             "UPDATE narrative_consumer_freshness
@@ -714,7 +714,7 @@ fn cutover_and_canonical_read_accept_completed_current_epoch_rebuild_publisher()
     // The durable fixture seals Backfill -> Rebuild -> confirmation Verify
     // at increasing lifecycle instants. `scheduler_heartbeat` then executes
     // the real idle Incremental Freshness cycle before the public cutover.
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         seed_cutover_ready_application_with_freshness_state(
             conn,
             "fresh",
@@ -725,7 +725,7 @@ fn cutover_and_canonical_read_accept_completed_current_epoch_rebuild_publisher()
     .expect("seed cutover fixture");
     let evidence = scheduler_heartbeat(&db, "c2zc-rebuild-publisher-authority", 3);
 
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         cut_over_workspace_freshness(conn, &evidence)
             .expect("a production Rebuild is a canonical Freshness publisher");
         let canonical = canonical_application_freshness(conn, PROJECT_ID, APPLICATION_ID)?
@@ -743,10 +743,10 @@ fn cutover_and_canonical_read_accept_completed_current_epoch_rebuild_publisher()
 fn canonical_read_rejects_non_incremental_or_stale_evaluation_run_reference() {
     let _test_guard = serialize_liveness_test();
     let db = fixture_db();
-    db.with_conn(seed_cutover_ready_application)
+    db.with_conn_mut(seed_cutover_ready_application)
         .expect("seed cutover fixture");
     let evidence = scheduler_heartbeat(&db, "c2zc-run-reference-authority", 3);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         cut_over_workspace_freshness(conn, &evidence)?;
         // This Run belongs to the project, but it is a completed Verify, not
         // a completed current-Epoch Freshness publisher.
@@ -788,7 +788,7 @@ fn canonical_read_rejects_rebuild_publisher_without_exact_maintenance_closure() 
     .enumerate()
     {
         let db = fixture_db();
-        db.with_conn(seed_cutover_ready_application)
+        db.with_conn_mut(seed_cutover_ready_application)
             .expect("seed cutover fixture");
         let evidence = scheduler_heartbeat(
             &db,
@@ -796,7 +796,7 @@ fn canonical_read_rejects_rebuild_publisher_without_exact_maintenance_closure() 
             (index + 30) as u64,
         );
 
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             cut_over_workspace_freshness(conn, &evidence)?;
             conn.execute(
                 "UPDATE narrative_consumer_freshness
@@ -926,7 +926,7 @@ fn cutover_rejects_evaluated_freshness_without_a_publisher_run() {
     .enumerate()
     {
         let db = fixture_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             seed_cutover_ready_application_with_freshness_state(conn, freshness, build_action, None)
         })
         .expect("seed runless evaluated Generic state");
@@ -936,7 +936,7 @@ fn cutover_rejects_evaluated_freshness_without_a_publisher_run() {
             (index + 10) as u64,
         );
 
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let error = cut_over_workspace_freshness(conn, &evidence).expect_err(
                 "only the deliberate unknown/manual seed may omit its Freshness publisher Run",
             );
@@ -962,11 +962,11 @@ fn cutover_rejects_evaluated_freshness_without_a_publisher_run() {
 fn cutover_rejects_fabricated_clean_verify_after_live_derived_state_deletion() {
     let _test_guard = serialize_liveness_test();
     let db = fixture_db();
-    db.with_conn(seed_cutover_ready_application)
+    db.with_conn_mut(seed_cutover_ready_application)
         .expect("seed cutover-ready fixture");
     let evidence = scheduler_heartbeat(&db, "c2zc-live-verify-tamper-authority", 40);
 
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         // Keep the Application's current state intact so the ordinary
         // cutover row validation cannot identify this mutation first. The
         // non-Application Revision Edge is still a production Verify input,
@@ -1115,14 +1115,14 @@ fn canonical_read_rejects_evaluated_freshness_without_a_publisher_run() {
     .enumerate()
     {
         let db = fixture_db();
-        db.with_conn(seed_cutover_ready_application)
+        db.with_conn_mut(seed_cutover_ready_application)
             .expect("seed cutover fixture");
         let evidence = scheduler_heartbeat(
             &db,
             &format!("c2zc-runless-read-{index}"),
             (index + 20) as u64,
         );
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             cut_over_workspace_freshness(conn, &evidence)?;
             conn.execute(
                 "UPDATE narrative_consumer_freshness
@@ -1147,7 +1147,7 @@ fn canonical_read_rejects_evaluated_freshness_without_a_publisher_run() {
     }
 }
 
-fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
+fn seed_cutover_ready_application(conn: &mut Connection) -> anyhow::Result<()> {
     seed_cutover_ready_application_with_freshness_state(
         conn,
         "fresh",
@@ -1157,7 +1157,7 @@ fn seed_cutover_ready_application(conn: &Connection) -> anyhow::Result<()> {
 }
 
 fn seed_cutover_ready_application_with_freshness_state(
-    conn: &Connection,
+    conn: &mut Connection,
     evidence_freshness: &str,
     build_action: &str,
     last_evaluated_run_id: Option<&str>,
@@ -3695,7 +3695,7 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
     );
     let pre_rebuild_readiness = opened
         .database
-        .with_conn(|conn| inspect_workspace_cutover_readiness_with_liveness(conn, None))
+        .with_conn_mut(|conn| inspect_workspace_cutover_readiness_with_liveness(conn, None))
         .expect("read readiness before production Rebuild");
     assert!(!pre_rebuild_readiness.durable.ready);
     assert!(
@@ -3789,7 +3789,7 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
 
     let readiness = opened
         .database
-        .with_conn(|conn| inspect_workspace_cutover_readiness_with_liveness(conn, Some(&evidence)))
+        .with_conn_mut(|conn| inspect_workspace_cutover_readiness_with_liveness(conn, Some(&evidence)))
         .expect("read final C2-ZC readiness");
     assert_eq!(readiness.state, ReadinessState::Passed);
     assert!(readiness.ready, "final readiness must pass: {readiness:?}");
@@ -3860,7 +3860,7 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
 
     let (first_cutover, second_cutover) = opened
         .database
-        .with_conn(|conn| {
+        .with_conn_mut(|conn| {
             let first = cut_over_workspace_freshness(conn, &evidence)?;
             let second = cut_over_workspace_freshness(conn, &evidence)?;
             Ok::<_, anyhow::Error>((first, second))
@@ -4195,10 +4195,10 @@ fn previous_release_database_composes_into_c2zc_acceptance() {
 fn prepared_apply_feed_without_locator_evaluates_only_declared_application() {
     let _test_guard = serialize_liveness_test();
     let db = fixture_db();
-    db.with_conn(seed_cutover_ready_application)
+    db.with_conn_mut(seed_cutover_ready_application)
         .expect("seed all C2-ZA durable prerequisites");
     let evidence = scheduler_heartbeat(&db, "c2zc-apply-authority", 1);
-    db.with_conn(|conn| cut_over_workspace_freshness(conn, &evidence))
+    db.with_conn_mut(|conn| cut_over_workspace_freshness(conn, &evidence))
         .expect("activate Generic Consumer Freshness");
     enable_manual_apply(&db);
 
@@ -4352,10 +4352,10 @@ fn prepared_apply_feed_without_locator_evaluates_only_declared_application() {
 fn second_temporal_node_ensure_initializes_generic_without_false_feed() {
     let _test_guard = serialize_liveness_test();
     let db = fixture_db();
-    db.with_conn(seed_cutover_ready_application)
+    db.with_conn_mut(seed_cutover_ready_application)
         .expect("seed all C2-ZA durable prerequisites");
     let evidence = scheduler_heartbeat(&db, "c2zc-temporal-authority", 1);
-    db.with_conn(|conn| cut_over_workspace_freshness(conn, &evidence))
+    db.with_conn_mut(|conn| cut_over_workspace_freshness(conn, &evidence))
         .expect("activate Generic Consumer Freshness");
     enable_manual_apply(&db);
 

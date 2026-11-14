@@ -135,133 +135,137 @@ impl<'de> Deserialize<'de> for VerifyCoverageCheck {
 /// JSON is deliberately not inspected: an inferred reference would have no
 /// durable identity or writer contract to bind it to.
 pub(crate) fn verify_application_revision_artifact_references_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<VerifyCoverageCheck> {
     check_control(control, GraphWorkStage::Coverage)?;
     let mut check = VerifyCoverageCheck::default();
     let mut applications = Vec::new();
-    let mut statement = conn.prepare(
-        "SELECT a.id, a.commit_id, a.proposal_id, a.revision_id, r.origin_kind,
-                r.proposal_id, p.proposal_set_id, c.proposal_set_id,
-                ps.project_id, c.project_id
-           FROM narrative_proposal_applications a
-           LEFT JOIN narrative_apply_commits c ON c.id = a.commit_id
-           LEFT JOIN narrative_proposals p ON p.id = a.proposal_id
-           LEFT JOIN narrative_proposal_sets ps ON ps.id = p.proposal_set_id
-           LEFT JOIN narrative_proposal_revisions r ON r.id = a.revision_id
-          WHERE c.project_id = ?1
-             OR (c.id IS NULL AND ps.project_id = ?1)
-          ORDER BY a.id ASC",
-    )?;
-    let rows = statement.query_map(params![project_id], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, Option<String>>(4)?,
-            row.get::<_, Option<String>>(5)?,
-            row.get::<_, Option<String>>(6)?,
-            row.get::<_, Option<String>>(7)?,
-            row.get::<_, Option<String>>(8)?,
-            row.get::<_, Option<String>>(9)?,
-        ))
-    })?;
-    for row in rows {
-        check_control(control, GraphWorkStage::Coverage)?;
-        let (
-            application_id,
-            commit_id,
-            proposal_id,
-            revision_id,
-            origin_kind,
-            revision_proposal_id,
-            proposal_set_id,
-            commit_proposal_set_id,
-            proposal_set_project_id,
-            commit_project_id,
-        ) = row?;
-        if commit_project_id.is_none() {
-            check.incomplete.push(format!(
-                "application:{application_id}:commit:{commit_id}:missing"
-            ));
-            continue;
-        }
-        match (proposal_set_id.as_deref(), proposal_set_project_id.as_deref()) {
-            (None, _) => check.incomplete.push(format!(
-                "application:{application_id}:proposal:{proposal_id}:proposal-set-missing"
-            )),
-            (Some(_), None) => check.incomplete.push(format!(
-                "application:{application_id}:proposal:{proposal_id}:proposal-set-row-missing"
-            )),
-            (Some(_), Some(owner)) if owner != project_id => check.issues.push(format!(
-                "application:{application_id}:proposal:{proposal_id}:proposal-set-cross-project:{owner}"
-            )),
-            (Some(_), Some(_)) => {}
-        }
-        if let (Some(commit_set), Some(proposal_set)) = (
-            commit_proposal_set_id.as_deref(),
-            proposal_set_id.as_deref(),
-        ) {
-            if commit_set != proposal_set {
-                check.issues.push(format!(
-                    "application:{application_id}:proposal:{proposal_id}:commit-proposal-set-mismatch:{commit_set}:{proposal_set}"
-                ));
-            }
-        }
-        if let Some(revision_proposal_id) = revision_proposal_id.as_deref() {
-            if revision_proposal_id != proposal_id {
-                check.issues.push(format!(
-                    "application:{application_id}:revision:{revision_id}:proposal-mismatch:{revision_proposal_id}:{proposal_id}"
-                ));
-            }
-        }
-        let Some(origin_kind) = origin_kind else {
-            check.incomplete.push(format!(
-                "application:{application_id}:revision:{revision_id}:missing"
-            ));
-            continue;
-        };
-        if !matches!(origin_kind.as_str(), "enveloped" | "legacy-unbound") {
-            check.issues.push(format!(
-                "application:{application_id}:revision:{revision_id}:origin-kind-invalid:{origin_kind}"
-            ));
-        }
-        if origin_kind == "legacy-unbound" {
-            // An applied Revision that still carries the legacy-unbound
-            // origin has no durable envelope proving the source set that was
-            // actually committed.  Treat it as an evidence hole even when a
-            // caller happened to add a basis row later; the legacy origin is
-            // itself the production writer's admission that the binding was
-            // not sealed.
-            check.incomplete.push(format!(
-                "application:{application_id}:revision:{revision_id}:legacy-unbound-applied"
-            ));
-        }
-        applications.push((application_id, revision_id, origin_kind));
-    }
-
-    for (application_id, revision_id, origin_kind) in applications {
-        let mut basis_rows = Vec::new();
-        let mut basis_statement = conn.prepare(
-            "SELECT ordinal, source_kind, source_key, revision_token
-               FROM narrative_revision_source_basis
-              WHERE revision_id = ?1
-              ORDER BY ordinal ASC",
+    {
+        let mut statement = conn.prepare(
+            "SELECT a.id, a.commit_id, a.proposal_id, a.revision_id, r.origin_kind,
+                    r.proposal_id, p.proposal_set_id, c.proposal_set_id,
+                    ps.project_id, c.project_id
+               FROM narrative_proposal_applications a
+               LEFT JOIN narrative_apply_commits c ON c.id = a.commit_id
+               LEFT JOIN narrative_proposals p ON p.id = a.proposal_id
+               LEFT JOIN narrative_proposal_sets ps ON ps.id = p.proposal_set_id
+               LEFT JOIN narrative_proposal_revisions r ON r.id = a.revision_id
+              WHERE c.project_id = ?1
+                 OR (c.id IS NULL AND ps.project_id = ?1)
+              ORDER BY a.id ASC",
         )?;
-        let rows = basis_statement.query_map(params![revision_id], |row| {
+        let rows = statement.query_map(params![project_id], |row| {
             Ok((
-                row.get::<_, i64>(0)?,
+                row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
             ))
         })?;
         for row in rows {
             check_control(control, GraphWorkStage::Coverage)?;
-            basis_rows.push(row?);
+            let (
+                application_id,
+                commit_id,
+                proposal_id,
+                revision_id,
+                origin_kind,
+                revision_proposal_id,
+                proposal_set_id,
+                commit_proposal_set_id,
+                proposal_set_project_id,
+                commit_project_id,
+            ) = row?;
+            if commit_project_id.is_none() {
+                check.incomplete.push(format!(
+                    "application:{application_id}:commit:{commit_id}:missing"
+                ));
+                continue;
+            }
+            match (proposal_set_id.as_deref(), proposal_set_project_id.as_deref()) {
+                (None, _) => check.incomplete.push(format!(
+                    "application:{application_id}:proposal:{proposal_id}:proposal-set-missing"
+                )),
+                (Some(_), None) => check.incomplete.push(format!(
+                    "application:{application_id}:proposal:{proposal_id}:proposal-set-row-missing"
+                )),
+                (Some(_), Some(owner)) if owner != project_id => check.issues.push(format!(
+                    "application:{application_id}:proposal:{proposal_id}:proposal-set-cross-project:{owner}"
+                )),
+                (Some(_), Some(_)) => {}
+            }
+            if let (Some(commit_set), Some(proposal_set)) = (
+                commit_proposal_set_id.as_deref(),
+                proposal_set_id.as_deref(),
+            ) {
+                if commit_set != proposal_set {
+                    check.issues.push(format!(
+                        "application:{application_id}:proposal:{proposal_id}:commit-proposal-set-mismatch:{commit_set}:{proposal_set}"
+                    ));
+                }
+            }
+            if let Some(revision_proposal_id) = revision_proposal_id.as_deref() {
+                if revision_proposal_id != proposal_id {
+                    check.issues.push(format!(
+                        "application:{application_id}:revision:{revision_id}:proposal-mismatch:{revision_proposal_id}:{proposal_id}"
+                    ));
+                }
+            }
+            let Some(origin_kind) = origin_kind else {
+                check.incomplete.push(format!(
+                    "application:{application_id}:revision:{revision_id}:missing"
+                ));
+                continue;
+            };
+            if !matches!(origin_kind.as_str(), "enveloped" | "legacy-unbound") {
+                check.issues.push(format!(
+                    "application:{application_id}:revision:{revision_id}:origin-kind-invalid:{origin_kind}"
+                ));
+            }
+            if origin_kind == "legacy-unbound" {
+                // An applied Revision that still carries the legacy-unbound
+                // origin has no durable envelope proving the source set that was
+                // actually committed.  Treat it as an evidence hole even when a
+                // caller happened to add a basis row later; the legacy origin is
+                // itself the production writer's admission that the binding was
+                // not sealed.
+                check.incomplete.push(format!(
+                    "application:{application_id}:revision:{revision_id}:legacy-unbound-applied"
+                ));
+            }
+            applications.push((application_id, revision_id, origin_kind));
+        }
+    }
+
+    for (application_id, revision_id, origin_kind) in applications {
+        let mut basis_rows = Vec::new();
+        {
+            let mut basis_statement = conn.prepare(
+                "SELECT ordinal, source_kind, source_key, revision_token
+                   FROM narrative_revision_source_basis
+                  WHERE revision_id = ?1
+                  ORDER BY ordinal ASC",
+            )?;
+            let rows = basis_statement.query_map(params![revision_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
+            for row in rows {
+                check_control(control, GraphWorkStage::Coverage)?;
+                basis_rows.push(row?);
+            }
         }
 
         if origin_kind == "enveloped" && basis_rows.is_empty() {
@@ -428,7 +432,7 @@ pub(crate) fn verify_application_revision_artifact_references_with_control(
 /// `_with_control` variant.
 #[cfg(test)]
 pub(crate) fn verify_semantic_index_checks(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
 ) -> anyhow::Result<(VerifyCoverageCheck, VerifyCoverageCheck)> {
     let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
@@ -436,14 +440,14 @@ pub(crate) fn verify_semantic_index_checks(
 }
 
 pub(crate) fn verify_semantic_index_checks_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<(VerifyCoverageCheck, VerifyCoverageCheck)> {
     check_control(control, GraphWorkStage::Coverage)?;
     if conn.is_autocommit() {
-        let tx = conn.unchecked_transaction()?;
-        return verify_semantic_index_checks_with_control(&tx, project_id, control);
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        return verify_semantic_index_checks_with_control(&mut tx, project_id, control);
     }
     let mut observed_counts = BTreeMap::new();
     let reserved_surfaces = [

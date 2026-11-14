@@ -54,7 +54,7 @@ fn array<'a>(envelope: &'a Value, pointer: &str) -> anyhow::Result<&'a Vec<Value
 /// context; static contracts are checked separately against the durable receipt.
 #[allow(dead_code)]
 pub(crate) fn load_v2_apply_sources(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     revision_id: &str,
@@ -77,7 +77,7 @@ pub(crate) fn load_v2_apply_sources(
 /// lifecycle stop is preserved as a typed termination rather than a stale
 /// Source result.
 pub(crate) fn load_v2_apply_sources_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     revision_id: &str,
@@ -257,15 +257,8 @@ pub(crate) fn load_v2_apply_sources_with_validation_context(
     revision_id: &str,
     envelope: &Value,
 ) -> anyhow::Result<Vec<SourceBasisRow>> {
-    let conn = context.connection();
-    load_v2_apply_sources_with_control(
-        conn,
-        project_id,
-        run_id,
-        revision_id,
-        envelope,
-        context.control(),
-    )
+    let (conn, control) = context.parts();
+    load_v2_apply_sources_with_control(conn, project_id, run_id, revision_id, envelope, control)
 }
 
 fn validate_coverage(
@@ -613,16 +606,16 @@ mod tests {
         let project = manifest["projectId"].as_str().expect("project");
         let run = manifest["runId"].as_str().expect("run");
         let load = |revision: &str| {
-            db.with_conn(|conn| {
+            db.with_conn_mut(|conn| {
                 let raw: String = conn.query_row(
                     "SELECT reconciliation_envelope_json FROM narrative_proposal_revisions WHERE id = ?1",
                     [revision],
                     |row| row.get(0),
                 )?;
                 let envelope: Value = serde_json::from_str(&raw)?;
-                let tx = conn.unchecked_transaction()?;
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
                 let before = ROOT_COVERAGE_CHECKS.with(|count| count.get());
-                let rows = load_v2_apply_sources(&tx, project, run, revision, &envelope);
+                let rows = load_v2_apply_sources(&mut tx, project, run, revision, &envelope);
                 let after = ROOT_COVERAGE_CHECKS.with(|count| count.get());
                 Ok((rows.map(|rows| rows.len()), after - before))
             })

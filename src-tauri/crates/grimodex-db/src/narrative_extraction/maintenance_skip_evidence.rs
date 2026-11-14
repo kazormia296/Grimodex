@@ -335,7 +335,7 @@ fn select_latest_run(
 /// Decide whether the latest Run for the requested project/Run Kind carries
 /// complete, current, successful skip evidence.
 pub fn evaluate_completed_run_skip(
-    conn: &Connection,
+    conn: &mut Connection,
     expected: &CompletedRunSkipExpectation,
 ) -> Result<CompletedRunSkipDecision> {
     let mut control = NeverStopGraphWorkControl;
@@ -343,7 +343,7 @@ pub fn evaluate_completed_run_skip(
 }
 
 pub(crate) fn evaluate_completed_run_skip_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     expected: &CompletedRunSkipExpectation,
     control: &mut dyn GraphWorkControl,
 ) -> Result<CompletedRunSkipDecision> {
@@ -609,7 +609,7 @@ pub(crate) fn evaluate_completed_run_skip_with_control(
 /// decision. Invalid or incomplete evidence is represented as `None`; the
 /// decision API above returns the typed re-run reason for diagnostics.
 pub fn read_completed_run_skip_evidence(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_kind: &str,
 ) -> Result<Option<CompletedRunSkipEvidence>> {
@@ -709,7 +709,7 @@ pub fn read_completed_run_skip_evidence(
 /// Edge State or Consumer Freshness row may have been deleted or become stale
 /// after the owner committed its report.
 fn live_verify_report_matches_sealed(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     sealed_report_digest: &str,
     sealed_graph_state_digest: &str,
@@ -725,7 +725,7 @@ fn live_verify_report_matches_sealed(
 }
 
 fn live_verify_report_matches_sealed_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     sealed_report_digest: &str,
     sealed_graph_state_digest: &str,
@@ -764,7 +764,7 @@ pub fn persist_completed_run_skip_evidence(
     run_id: &str,
     evidence: &CompletedRunSkipEvidence,
 ) -> Result<()> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             persist_completed_run_skip_evidence_in_tx(conn, run_id, evidence)
         })
@@ -773,7 +773,7 @@ pub fn persist_completed_run_skip_evidence(
 
 /// Transaction-composing form of [`persist_completed_run_skip_evidence`].
 pub fn persist_completed_run_skip_evidence_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     run_id: &str,
     evidence: &CompletedRunSkipEvidence,
 ) -> Result<()> {
@@ -782,7 +782,7 @@ pub fn persist_completed_run_skip_evidence_in_tx(
 }
 
 pub(crate) fn persist_completed_run_skip_evidence_in_tx_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     run_id: &str,
     evidence: &CompletedRunSkipEvidence,
     control: &mut dyn GraphWorkControl,
@@ -1222,7 +1222,7 @@ mod tests {
     fn completed_verify_fixture() -> (crate::Database, CompletedRunSkipExpectation) {
         let db = current_schema_memory().expect("current-schema fixture");
         let expectation = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 ensure_test_schema(conn)?;
                 conn.execute(
                     "INSERT INTO projects (id, title) VALUES (?1, 'skip control project')",
@@ -1305,7 +1305,7 @@ mod tests {
     fn controlled_skip_cancellation_is_not_coerced_into_a_skip() {
         let (db, expectation) = completed_verify_fixture();
         let error = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 let mut control = StopAtRebuildability {
                     digest_checks: 0,
                     stop_on_digest_check: 7,
@@ -1322,7 +1322,7 @@ mod tests {
     fn controlled_skip_foreground_preemption_is_not_coerced_into_a_skip() {
         let (db, expectation) = completed_verify_fixture();
         let error = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 let mut control = StopAtRebuildability {
                     digest_checks: 0,
                     stop_on_digest_check: 7,

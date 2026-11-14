@@ -707,7 +707,7 @@ describe("release workflow boundary", () => {
     assert.doesNotMatch(lockfile, /^ {2}http-cache-semantics@4\.[0-2]\./m);
   });
 
-  it("scopes the Rust audit exception to the bundled SQLite in libsqlite3-sys 0.38 and keeps zip out of both Cargo.lock files", async () => {
+  it("keeps the Rust audit exception list empty, libsqlite3-sys on the fixed bundled SQLite, and zip out of both Cargo.lock files", async () => {
     const config = await readFile(
       path.join(repoRoot, ".cargo/audit.toml"),
       "utf8",
@@ -715,7 +715,6 @@ describe("release workflow boundary", () => {
     const ignored = [...config.matchAll(/^\s*"(RUSTSEC-\d{4}-\d{4})"/gm)].map(
       (match) => match[1],
     );
-    const expiresAt = config.match(/^# expires-at: (\S+)$/m)?.[1];
     const packagesOf = async (lockfile) =>
       (await readFile(path.join(repoRoot, lockfile), "utf8"))
         .split("[[package]]")
@@ -730,23 +729,26 @@ describe("release workflow boundary", () => {
     const shared = await packagesOf("src-tauri/Cargo.lock");
     const native = await packagesOf("electron/native/grimodex-node/Cargo.lock");
 
-    // The only exception: RUSTSEC-2026-0459 (the bundled SQLite of
-    // libsqlite3-sys < 0.39). It is needed only while libsqlite3-sys 0.38 is
-    // locked; drop it when rusqlite >= 0.41 lands (its connection hooks take
-    // `&mut self`, so that update is its own lane). The former zip 4.x
-    // exception (RUSTSEC-2026-0367..0369) was removed by dropping the legacy
-    // shell's tauri-plugin-updater `zip` feature. A further exception needs
-    // its own scope, reason and expiry assertions here.
-    assert.deepEqual(ignored, ["RUSTSEC-2026-0459"]);
-    assert.ok(expiresAt, "the exception must carry an expires-at line");
-    assert.ok(
-      Date.now() < Date.parse(expiresAt),
-      `the libsqlite3-sys audit exception expired at ${expiresAt}`,
+    // No exception is in force. RUSTSEC-2026-0459 (the bundled SQLite of
+    // libsqlite3-sys < 0.39) was excepted until rusqlite 0.41 (libsqlite3-sys
+    // 0.39.1, SQLite 3.54.1) landed (DR-DBC-4). The former zip 4.x exception
+    // (RUSTSEC-2026-0367..0369) was removed by dropping the legacy shell's
+    // tauri-plugin-updater `zip` feature. A further exception needs its own
+    // scope, reason and expiry assertions here.
+    assert.deepEqual(ignored, []);
+    assert.doesNotMatch(
+      config,
+      /expires-at/,
+      "no exception is in force, so no expiry line remains",
     );
     for (const lock of [shared, native]) {
       assert.deepEqual(
         lock.filter((pkg) => pkg.name === "libsqlite3-sys").map((pkg) => pkg.version),
-        ["0.38.1"],
+        ["0.39.1"],
+      );
+      assert.deepEqual(
+        lock.filter((pkg) => pkg.name === "rusqlite").map((pkg) => pkg.version),
+        ["0.41.1"],
       );
       assert.equal(
         lock.some((pkg) => pkg.name === "zip"),

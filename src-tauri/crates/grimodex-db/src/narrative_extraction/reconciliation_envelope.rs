@@ -620,7 +620,7 @@ pub(crate) fn ensure_v2_proposal_payload_digest(
 /// new product envelopes carry tokens and are checked before persistence.
 #[allow(dead_code)]
 pub(crate) fn validate_envelope_source_tokens(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     envelope: &Value,
@@ -634,7 +634,7 @@ pub(crate) fn validate_envelope_source_tokens(
 /// callers, but reachable proposal/revision writers use this form so a
 /// lifecycle stop cannot be normalized into Source absence.
 pub(crate) fn validate_envelope_source_tokens_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     envelope: &Value,
@@ -730,14 +730,8 @@ pub(crate) fn validate_envelope_source_tokens_with_validation_context(
     run_id: &str,
     envelope: &Value,
 ) -> anyhow::Result<()> {
-    let conn = context.connection();
-    validate_envelope_source_tokens_with_control(
-        conn,
-        project_id,
-        run_id,
-        envelope,
-        context.control(),
-    )
+    let (conn, control) = context.parts();
+    validate_envelope_source_tokens_with_control(conn, project_id, run_id, envelope, control)
 }
 
 fn required_string<'a>(object: &'a Map<String, Value>, field: &str) -> anyhow::Result<&'a str> {

@@ -105,7 +105,7 @@ fn ensure_epoch_belongs_to_project(
 /// FK-references `narrative_dependency_edges(id)` only, so an Edge that
 /// exists but belongs to a different project would otherwise pass silently.
 fn ensure_edge_belongs_to_project(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     edge_id: &str,
 ) -> anyhow::Result<()> {
@@ -132,7 +132,7 @@ fn ensure_edge_belongs_to_project(
 }
 
 fn ensure_generic_freshness_target(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     consumer_kind: &str,
     consumer_key: &str,
@@ -173,7 +173,7 @@ fn ensure_generic_freshness_target(
 ///
 /// Callers own the surrounding `BEGIN`/`COMMIT`.
 pub(crate) fn write_edge_state_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     edge_id: &str,
     observation: &EdgeObservation,
@@ -269,7 +269,7 @@ fn write_validated_edge_state_in_tx(
 /// Callers own the surrounding `BEGIN`/`COMMIT`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_consumer_freshness_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     consumer_kind: &str,
     consumer_key: &str,
@@ -295,7 +295,7 @@ pub(crate) fn write_consumer_freshness_in_tx(
 
 #[allow(clippy::too_many_arguments)]
 fn write_consumer_freshness_in_tx_inner(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     consumer_kind: &str,
     consumer_key: &str,
@@ -375,7 +375,7 @@ fn write_consumer_freshness_in_tx_inner(
 /// for this conservative initialization; callers must not issue raw SQL for
 /// either Generic Freshness table.
 pub(crate) fn seed_consumer_freshness_unknown_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     consumer_kind: &str,
     consumer_key: &str,
@@ -425,7 +425,7 @@ pub(crate) fn seed_consumer_freshness_unknown_in_tx(
 /// whole-set Freshness with an incomplete dependency digest.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn publish_complete_runless_freshness_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     consumer_kind: &str,
     consumer_key: &str,
@@ -451,7 +451,7 @@ pub(crate) fn publish_complete_runless_freshness_in_tx(
 /// strict about registration.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn publish_complete_runless_graph_freshness_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     consumer_kind: &str,
     consumer_key: &str,
@@ -473,7 +473,7 @@ pub(crate) fn publish_complete_runless_graph_freshness_in_tx(
 
 #[allow(clippy::too_many_arguments)]
 fn publish_complete_runless_freshness_in_tx_inner(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     consumer_kind: &str,
     consumer_key: &str,
@@ -518,19 +518,22 @@ fn publish_complete_runless_freshness_in_tx_inner(
         "NEX_PUBLISH_RUNTIME_STALE_EPOCH: semantic epoch '{semantic_epoch_id}' is not current for project '{project_id}' (current '{current_epoch_id}')"
     );
 
-    let mut statement = conn.prepare(
-        "SELECT id
-           FROM narrative_dependency_edges
-          WHERE project_id = ?1
-            AND consumer_kind = ?2
-            AND consumer_key = ?3
-          ORDER BY id ASC",
-    )?;
-    let stored_edge_ids = statement
-        .query_map(params![project_id, consumer_kind, consumer_key], |row| {
-            row.get::<_, String>(0)
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let stored_edge_ids = {
+        let mut statement = conn.prepare(
+            "SELECT id
+               FROM narrative_dependency_edges
+              WHERE project_id = ?1
+                AND consumer_kind = ?2
+                AND consumer_key = ?3
+              ORDER BY id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![project_id, consumer_kind, consumer_key], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
 
     let provided_edge_ids = edges_and_observations
         .iter()
@@ -903,7 +906,7 @@ pub(crate) fn verify_publish_reservation_in_tx(
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn publish_freshness_evaluation_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     consumer_id: &str,
@@ -970,7 +973,7 @@ pub(crate) fn publish_freshness_evaluation_in_tx(
 /// adding those two steps for that flow.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn publish_freshness_evaluation_edges_only_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     consumer_kind: &str,
@@ -1241,7 +1244,7 @@ mod tests {
     /// own transaction -- the precondition every real publish call must
     /// satisfy now that [`verify_publish_reservation_in_tx`] checks it.
     fn reserve_cursor(
-        conn: &Connection,
+        conn: &mut Connection,
         project_id: &str,
         consumer_id: &str,
         epoch_id: &str,
@@ -1346,8 +1349,8 @@ mod tests {
     #[test]
     fn complete_runless_publication_rejects_inexact_sets_before_any_state_write() {
         let db = current_schema_test_db();
-        db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
+        db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let epoch = seed_epoch(&tx, "project-1");
             let foreign_epoch = seed_epoch(&tx, "project-2");
             let first = seed_edge(&tx, "project-1", RUN_CONSUMER_KIND, "one", "scene:first");
@@ -1364,7 +1367,7 @@ mod tests {
                 let values = ids.into_iter().map(|id| (id, fresh())).collect::<Vec<_>>();
                 let before = tx.total_changes();
                 let error = publish_complete_runless_freshness_in_tx(
-                    &tx, "project-1", RUN_CONSUMER_KIND, "one", &values, &epoch,
+                    &mut tx, "project-1", RUN_CONSUMER_KIND, "one", &values, &epoch,
                     "2026-09-08T00:00:00.000Z",
                 ).expect_err("only the exact complete Consumer may publish");
                 assert!(error.to_string().contains("RUNLESS_EDGE_SET_MISMATCH"));
@@ -1373,13 +1376,13 @@ mod tests {
             let values = vec![(first, fresh()), (second, stale())];
             let before = tx.total_changes();
             let error = publish_complete_runless_freshness_in_tx(
-                &tx, "project-1", RUN_CONSUMER_KIND, "one", &values, &foreign_epoch,
+                &mut tx, "project-1", RUN_CONSUMER_KIND, "one", &values, &foreign_epoch,
                 "2026-09-08T00:00:00.000Z",
             ).expect_err("foreign epoch must fail before the batch");
             assert!(error.to_string().contains("EPOCH_PROJECT_MISMATCH"));
             assert_eq!(tx.total_changes(), before);
             publish_complete_runless_freshness_in_tx(
-                &tx, "project-1", RUN_CONSUMER_KIND, "one", &values, &epoch,
+                &mut tx, "project-1", RUN_CONSUMER_KIND, "one", &values, &epoch,
                 "2026-09-08T00:00:00.000Z",
             )?;
             assert_eq!(consumer_freshness_value(&tx, "one"), "stale");
@@ -1426,7 +1429,7 @@ mod tests {
             .expect("seed reserved publisher fixture");
 
         let error = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     let epoch_id =
                         super::super::semantic_epoch::get_current_epoch(conn, "project-1")?
@@ -1511,7 +1514,7 @@ mod tests {
     fn production_publish_preserves_attention_on_harmless_epoch_rerun_and_tracks_material_changes()
     {
         let db = current_schema_test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let consumer_id = "consumer-finding-identity";
             let consumer_key = "proposal-finding-identity";
             let edge_id = seed_edge(
@@ -1723,7 +1726,7 @@ mod tests {
     #[test]
     fn single_fresh_edge_publishes_state_and_freshness_without_a_finding_observation() {
         let db = current_schema_test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
@@ -1792,7 +1795,7 @@ mod tests {
     #[test]
     fn single_stale_edge_creates_a_finding_observation() {
         let db = current_schema_test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
@@ -1846,7 +1849,7 @@ mod tests {
     #[test]
     fn worst_freshness_across_edges_wins_the_consumer_freshness_row() {
         let db = current_schema_test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
@@ -1916,7 +1919,7 @@ mod tests {
     #[test]
     fn run_and_cursor_transition_together_with_the_freshness_publish() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
@@ -1977,7 +1980,7 @@ mod tests {
     #[test]
     fn empty_edges_list_fails_closed_before_any_write() {
         let db = current_schema_test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
@@ -2032,7 +2035,7 @@ mod tests {
     #[test]
     fn a_partial_republish_does_not_roll_consumer_freshness_backwards() {
         let db = current_schema_test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
             let edge_fresh = seed_edge(
@@ -2111,7 +2114,7 @@ mod tests {
     #[test]
     fn a_prior_epochs_edge_state_does_not_contribute_to_the_rollup() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let old_epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &old_epoch_id);
             let edge_missing = seed_edge(
@@ -2181,7 +2184,7 @@ mod tests {
     #[test]
     fn a_consumer_is_not_fresh_while_one_of_its_edges_is_unevaluated() {
         let db = current_schema_test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
             let evaluated = seed_edge(
@@ -2240,7 +2243,7 @@ mod tests {
     #[test]
     fn publishing_records_the_consumers_dependency_set_digest() {
         let db = current_schema_test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
             let edge_one = seed_edge(
@@ -2304,7 +2307,7 @@ mod tests {
     #[test]
     fn publish_requires_a_caller_owned_transaction() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
@@ -2339,7 +2342,7 @@ mod tests {
     #[test]
     fn write_edge_state_fails_closed_when_edge_belongs_to_a_different_project() {
         let db = current_schema_test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             let edge_id = seed_edge(
                 conn,
@@ -2372,7 +2375,7 @@ mod tests {
     #[test]
     fn write_consumer_freshness_refuses_a_kind_carrying_the_finding_key_separator() {
         let db = current_schema_test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             let error = write_consumer_freshness_in_tx(
                 conn,
@@ -2398,7 +2401,7 @@ mod tests {
     #[test]
     fn write_consumer_freshness_fails_closed_when_epoch_belongs_to_a_different_project() {
         let db = current_schema_test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let other_epoch_id = seed_epoch(conn, "project-2");
 
             let error = write_consumer_freshness_in_tx(
@@ -2432,7 +2435,7 @@ mod tests {
     #[test]
     fn stale_run_from_a_rotated_epoch_cannot_publish_over_a_fresher_reservation() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_e1 = seed_epoch(conn, "project-1");
             seed_run(conn, "run-a", "project-1", &epoch_e1);
             seed_cursor(conn, "project-1", "consumer-a");
@@ -2533,7 +2536,7 @@ mod tests {
     #[test]
     fn publish_rejects_when_the_reservation_belongs_to_a_different_run() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-a", "project-1", &epoch_id);
             seed_run(conn, "run-b", "project-1", &epoch_id);
@@ -2575,7 +2578,7 @@ mod tests {
     #[test]
     fn publish_rejects_when_through_sequence_does_not_match_the_reservation() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-a", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
@@ -2617,7 +2620,7 @@ mod tests {
     #[test]
     fn publish_rejects_when_the_run_is_no_longer_running() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-a", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");

@@ -76,7 +76,7 @@ fn publish_chronicle_index_build_scoped(
         return Ok(NirIndexPublishRead::Stale);
     }
     let runtime_epoch = plan.runtime_epoch;
-    let publish = |conn: &Connection| {
+    let publish = |conn: &mut Connection| {
         with_immediate_transaction(conn, |conn| {
             control.check(GraphWorkStage::Publish)?;
             if runtime.current_epoch(conn)? != Ok(plan.runtime_epoch) {
@@ -102,7 +102,7 @@ fn publish_chronicle_index_build_scoped(
     };
     let proof = match participant {
         Some(participant) => db.with_participant_sql_scope(participant, publish),
-        None => db.with_conn(publish),
+        None => db.with_conn_mut(publish),
     }?;
     let Some(proof) = proof else {
         return Ok(NirIndexPublishRead::Stale);
@@ -126,7 +126,7 @@ fn publish_chronicle_index_build_scoped(
 
 // NARRATIVE_DEPENDENCY_PRODUCER: nir1-reviewed-chronicle-v1
 pub(super) fn publish_chronicle_index_build_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     runtime_epoch: u64,
     snapshot: BuildSnapshot,

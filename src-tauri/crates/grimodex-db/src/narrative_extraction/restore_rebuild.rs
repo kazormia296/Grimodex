@@ -298,7 +298,7 @@ pub fn record_maintenance_delivery_failure_wake(
     project_id: &str,
 ) -> anyhow::Result<()> {
     require_non_empty(project_id, "projectId")?;
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             let project_exists: bool = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
@@ -379,7 +379,7 @@ pub fn ensure_restore_epochs_for_workspace(
 ) -> anyhow::Result<Vec<String>> {
     let restore_identity = restore_identity.trim();
     require_non_empty(restore_identity, "restoreIdentity")?;
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             let project_ids = {
                 let mut statement = conn.prepare("SELECT id FROM projects ORDER BY id ASC")?;
@@ -552,7 +552,7 @@ pub(crate) fn resolve_edge_source_state(
 }
 
 pub(crate) fn resolve_edge_source_state_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     edge: &DependencyEdge,
@@ -564,7 +564,7 @@ pub(crate) fn resolve_edge_source_state_with_control(
 /// [`resolve_edge_source_state_with_control`] that may share the reads of one
 /// Prepare's candidate loop (DR-IRB-6).
 pub(super) fn resolve_edge_source_state_with_control_and_reads(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     edge: &DependencyEdge,
@@ -632,7 +632,7 @@ pub(crate) fn build_edge_comparison_input(
 /// The control-aware comparison input, which may share the reads of one
 /// Prepare's candidate loop (DR-IRB-6). `reads: None` is the ordinary path.
 pub(super) fn build_edge_comparison_input_with_control_and_reads(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     edge: &DependencyEdge,
@@ -687,7 +687,7 @@ pub(crate) fn evaluate_edge_from_db(
 }
 
 pub(crate) fn evaluate_edge_from_db_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     edge: &DependencyEdge,
@@ -699,7 +699,7 @@ pub(crate) fn evaluate_edge_from_db_with_control(
 /// [`evaluate_edge_from_db_with_control`] that may share the reads of one
 /// Prepare's candidate loop (DR-IRB-6).
 pub(super) fn evaluate_edge_from_db_with_control_and_reads(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     edge: &DependencyEdge,
@@ -719,7 +719,7 @@ pub(super) fn evaluate_edge_from_db_with_control_and_reads(
 /// and this loop performs no writes or callbacks between its reads.
 #[cfg(test)]
 pub(crate) fn evaluate_owned_edges_from_db_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     edges: &[DependencyEdge],
 ) -> anyhow::Result<Vec<EdgeObservation>> {
@@ -728,7 +728,7 @@ pub(crate) fn evaluate_owned_edges_from_db_in_tx(
 }
 
 pub(crate) fn evaluate_owned_edges_from_db_in_tx_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     edges: &[DependencyEdge],
     control: &mut dyn GraphWorkControl,
@@ -749,7 +749,7 @@ pub(crate) fn evaluate_owned_edges_from_db_in_tx_with_control(
 /// this call; the eligibility Edge then compares against it instead of reading
 /// the whole roster a second time. Every other check is unchanged.
 pub(crate) fn evaluate_owned_edges_from_db_in_tx_with_observed_eligibility(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     edges: &[DependencyEdge],
     observed_chronicle_eligibility_digest: String,
@@ -767,7 +767,7 @@ pub(crate) fn evaluate_owned_edges_from_db_in_tx_with_observed_eligibility(
 }
 
 fn evaluate_owned_edges_with_reads(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     edges: &[DependencyEdge],
     // Owned by value: the batch's reads end with this call (DR-CP4-V-5).
@@ -934,7 +934,7 @@ fn finalize_rebuild_run(
     semantic_epoch_id: &str,
     work_result: Result<&RebuildDerivedStateSummary, &anyhow::Error>,
 ) -> anyhow::Result<()> {
-    let stale_epoch_error = db.with_conn(|conn| {
+    let stale_epoch_error = db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             ensure_rebuild_run_identity_in_tx(conn, project_id, run_id, semantic_epoch_id)?;
             let current_epoch_id = get_current_epoch(conn, project_id)?.map(|epoch| epoch.id);
@@ -1584,7 +1584,7 @@ fn rebuild_narrative_derived_state_for_project_with_graph_control_within_capacit
     control.check(GraphWorkStage::Restore)?;
     let now = grimodex_core::now_rfc3339_millis();
 
-    let (mut created, semantic_epoch_id) = db.with_conn(|conn| {
+    let (mut created, semantic_epoch_id) = db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             control.check(GraphWorkStage::Restore)?;
             let epoch_id = get_current_epoch(conn, project_id)?
@@ -1727,7 +1727,7 @@ pub struct RebuildShadowVerificationSummary {
 /// as a V1 failure. Selectors that need a Feed position/anchor proof remain
 /// Unknown here because Rebuild has no mutation-local mapping input.
 pub(crate) fn verify_v2_shadow_for_rebuild_in_tx_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     control: &mut dyn GraphWorkControl,
@@ -1899,7 +1899,7 @@ fn rebuild_source_change_class_from_state(
 }
 
 pub(crate) fn rebuild_source_change_class_from_source_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     source_object_identity: &str,
@@ -2051,7 +2051,7 @@ fn rebuild_derived_state_edges_in_project_with_control_within_capacity(
         // Counted inside the per-Consumer closure, which cannot borrow
         // `summary` mutably alongside the counters it already updates.
         let mut skipped = 0usize;
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 control.check(GraphWorkStage::Restore)?;
                 // BEGIN IMMEDIATE serializes this validation with Epoch
@@ -2202,7 +2202,7 @@ fn edge_source_missing_from_state(
 }
 
 fn edge_source_is_missing_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     edge: &DependencyEdge,
@@ -2249,7 +2249,7 @@ fn edge_source_missing_from_state_with_control(
 /// call outside a transaction.
 #[allow(dead_code)]
 pub(crate) fn rebuild_verify_dependency_edges(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
 ) -> anyhow::Result<RebuildVerifyReport> {
@@ -2258,12 +2258,12 @@ pub(crate) fn rebuild_verify_dependency_edges(
 }
 
 pub(crate) fn rebuild_verify_dependency_edges_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<RebuildVerifyReport> {
-    nir1_capacity::with_capacity_scope(conn, None, control, |_, control| {
+    nir1_capacity::with_capacity_scope(conn, None, control, |conn, _, control| {
         super::nir1_entity_relation_index::preflight_stored_graph_capacity(conn, project_id)?;
         rebuild_verify_dependency_edges_with_control_within_capacity(
             conn, project_id, run_id, control,
@@ -2272,7 +2272,7 @@ pub(crate) fn rebuild_verify_dependency_edges_with_control(
 }
 
 fn rebuild_verify_dependency_edges_with_control_within_capacity(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     control: &mut dyn GraphWorkControl,
@@ -2576,7 +2576,7 @@ impl DependencyGraphVerifyReport {
 /// canonical JSON domain.  SQLite's `rowid` and UUID creation order are
 /// deliberately not part of the domain, so the same logical workspace state
 /// has the same fingerprint on every process.
-pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow::Result<String> {
+pub fn durable_graph_state_digest(conn: &mut Connection, project_id: &str) -> anyhow::Result<String> {
     let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
     durable_graph_state_digest_with_control(conn, project_id, &mut control)
 }
@@ -2587,18 +2587,18 @@ pub fn durable_graph_state_digest(conn: &Connection, project_id: &str) -> anyhow
 /// cancellation arriving during digest generation from being converted into a
 /// successful Verify result by a late check after serialization.
 pub(crate) fn durable_graph_state_digest_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<String> {
-    nir1_capacity::with_capacity_scope(conn, None, control, |_, control| {
+    nir1_capacity::with_capacity_scope(conn, None, control, |conn, _, control| {
         super::nir1_entity_relation_index::preflight_stored_graph_capacity(conn, project_id)?;
         durable_graph_state_digest_with_control_within_capacity(conn, project_id, control)
     })
 }
 
 fn durable_graph_state_digest_with_control_within_capacity(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<String> {
@@ -2669,6 +2669,7 @@ fn durable_graph_state_digest_with_control_within_capacity(
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
         let mut resolved = Vec::with_capacity(edge_rows.len());
         for (edge_id, consumer_kind, consumer_key, source_identity, owning_run_id) in edge_rows {
             control.check(GraphWorkStage::Edge)?;
@@ -3518,7 +3519,7 @@ impl Write for ControlledDigestSink<'_> {
 }
 
 pub(crate) fn validate_graph_state_digest(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     expected: &str,
 ) -> anyhow::Result<()> {
@@ -3527,7 +3528,7 @@ pub(crate) fn validate_graph_state_digest(
 }
 
 pub(crate) fn validate_graph_state_digest_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     expected: &str,
     control: &mut dyn GraphWorkControl,
@@ -3765,7 +3766,7 @@ fn run_dependency_verify_for_project_with_coordinates_legacy_within_capacity(
 
     let spec = json!({ "verifyContractVersion": VERIFY_CONTRACT_VERSION });
     let spec_digest = format!("sha256:{}", digest_plan(&spec));
-    let mut created = db.with_conn(|conn| {
+    let mut created = db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             create_maintenance_run_in_tx(
                 conn,
@@ -3789,7 +3790,7 @@ fn run_dependency_verify_for_project_with_coordinates_legacy_within_capacity(
         );
     }
 
-    let verification = db.with_conn(|conn| {
+    let verification = db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             let mut control = super::nir1_entity_relation_index::NeverStopGraphWorkControl;
             verify_dependency_graph_snapshot_with_control(conn, project_id, &mut control)
@@ -3810,7 +3811,7 @@ fn run_dependency_verify_for_project_with_coordinates_legacy_within_capacity(
         let outcome_digest = canonical_verify_outcome_digest(&outcome)?;
         let mut outcome = outcome;
         outcome["outcomeDigest"] = Value::String(outcome_digest);
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 validate_phase_success_outcome(
                     VERIFY_RUN_KIND,
@@ -3890,7 +3891,7 @@ fn run_dependency_verify_for_project_with_coordinates_legacy_within_capacity(
         Ok(outcome) => Ok(outcome),
         Err(error) => {
             nir1_capacity::without_attempt(|| {
-                db.with_conn(|conn| {
+                db.with_conn_mut(|conn| {
                     with_immediate_transaction(conn, |conn| {
                         record_run_outcome_in_tx(
                             conn,
@@ -3929,7 +3930,7 @@ pub(crate) fn run_maintenance_graph_phase<T, F>(
     operation: F,
 ) -> anyhow::Result<T>
 where
-    F: FnOnce(&Connection, &mut dyn GraphWorkControl) -> anyhow::Result<T>,
+    F: FnOnce(&mut Connection, &mut dyn GraphWorkControl) -> anyhow::Result<T>,
 {
     // A grant is scoped to one exact final transaction.  Clearing a stale
     // value before admission also makes this boundary fail closed if a
@@ -3951,7 +3952,7 @@ where
         config,
         |conn, graph| {
             let mut chained = MaintenanceCycleGraphControl::new(graph, Some(control));
-            nir1_capacity::with_current_attempt(conn, &mut chained, |graph| operation(conn, graph))
+            nir1_capacity::with_current_attempt(conn, &mut chained, |conn, graph| operation(conn, graph))
         },
     );
     let result = match result {
@@ -4338,7 +4339,7 @@ pub(crate) fn run_maintenance_graph_phase_for_run<T, F>(
     operation: F,
 ) -> anyhow::Result<T>
 where
-    F: FnOnce(&Connection, &mut dyn GraphWorkControl) -> anyhow::Result<T>,
+    F: FnOnce(&mut Connection, &mut dyn GraphWorkControl) -> anyhow::Result<T>,
 {
     match run_maintenance_graph_phase(db, control, operation) {
         Ok(value) => Ok(value),
@@ -4530,7 +4531,7 @@ fn record_verify_failure_controlled(
 /// drift. A changed report or graph digest aborts the transaction before the
 /// Native finalization grant is even requested.
 fn validate_verify_final_snapshot(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     semantic_epoch_id: &str,
     outcome: &Value,
@@ -5346,7 +5347,7 @@ fn durable_resolved_source_value(
 /// example the Codex catalog).
 #[allow(clippy::too_many_arguments)]
 fn durable_edge_resolution_input_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     edge_id: &str,
     consumer_kind: &str,
@@ -5423,7 +5424,7 @@ fn durable_edge_resolution_input_with_control(
 }
 
 pub fn verify_narrative_dependency_graph_for_project(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
 ) -> anyhow::Result<DependencyGraphVerifyReport> {
     // The compatibility entry point is a foreground verification owner.
@@ -5439,11 +5440,11 @@ pub fn verify_narrative_dependency_graph_for_project(
 /// therefore returned as `ValidationTerminated` instead of being normalized
 /// into a missing Source or an ordinary Verify failure.
 pub(crate) fn verify_narrative_dependency_graph_for_project_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<DependencyGraphVerifyReport> {
-    nir1_capacity::with_capacity_scope(conn, None, control, |_, control| {
+    nir1_capacity::with_capacity_scope(conn, None, control, |conn, _, control| {
         super::nir1_entity_relation_index::preflight_stored_graph_capacity(conn, project_id)?;
         verify_narrative_dependency_graph_for_project_with_control_within_capacity(
             conn, project_id, control,
@@ -5452,7 +5453,7 @@ pub(crate) fn verify_narrative_dependency_graph_for_project_with_control(
 }
 
 fn verify_narrative_dependency_graph_for_project_with_control_within_capacity(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<DependencyGraphVerifyReport> {
@@ -5606,17 +5607,17 @@ fn verify_narrative_dependency_graph_for_project_with_control_within_capacity(
 /// use this seam after acquiring the no-wait connection; it does not create a
 /// second connection or silently fall back to an uncontrolled full scan.
 pub(crate) fn verify_dependency_graph_snapshot_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<(DependencyGraphVerifyReport, String)> {
-    nir1_capacity::with_capacity_scope(conn, None, control, |_, control| {
+    nir1_capacity::with_capacity_scope(conn, None, control, |conn, _, control| {
         verify_dependency_graph_snapshot_with_control_within_capacity(conn, project_id, control)
     })
 }
 
 fn verify_dependency_graph_snapshot_with_control_within_capacity(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<(DependencyGraphVerifyReport, String)> {
@@ -6874,7 +6875,7 @@ mod tests {
     #[test]
     fn controlled_coverage_rebuild_and_skip_entrypoints_propagate_stop() -> anyhow::Result<()> {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let mut coverage_control = StopAt(GraphWorkStage::Coverage);
             let coverage_error =
                 verify_coverage::verify_application_revision_artifact_references_with_control(
@@ -6895,11 +6896,11 @@ mod tests {
             .expect_err("controlled rebuild shadow must propagate cancellation");
             assert!(is_validation_terminated(&rebuild_error));
 
-            let tx = conn.unchecked_transaction()?;
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let mut skip_control = StopAt(GraphWorkStage::ResultAssembly);
             let skip_error =
                 super::super::maintenance_skip_evidence::persist_completed_run_skip_evidence_in_tx_with_control(
-                    &tx,
+                    &mut tx,
                     "run-1",
                     &super::super::maintenance_skip_evidence::CompletedRunSkipEvidence {
                         project_id: "project-1".to_owned(),
@@ -6927,7 +6928,7 @@ mod tests {
     fn controlled_rebuild_head_lookup_does_not_normalize_stop_to_diagnostic() {
         let db = test_db();
         let error = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 conn.execute("DROP TABLE narrative_dependency_declaration_heads", [])?;
                 conn.execute(
                     "CREATE TABLE narrative_dependency_declaration_heads (broken TEXT)",
@@ -6969,7 +6970,7 @@ mod tests {
         })?;
 
         let error = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 let mut control = StopAfter {
                     stage: GraphWorkStage::Source,
                     remaining: 2,
@@ -7562,7 +7563,7 @@ mod tests {
         seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
 
         let report = db
-            .with_conn(|conn| rebuild_verify_dependency_edges(conn, "project-1", "run-1"))
+            .with_conn_mut(|conn| rebuild_verify_dependency_edges(conn, "project-1", "run-1"))
             .expect("verify run edges");
         assert_eq!(
             report,
@@ -7586,7 +7587,7 @@ mod tests {
         );
 
         let report = db
-            .with_conn(|conn| rebuild_verify_dependency_edges(conn, "project-1", "run-1"))
+            .with_conn_mut(|conn| rebuild_verify_dependency_edges(conn, "project-1", "run-1"))
             .expect("verify run edges");
         assert_eq!(report.total_edges, 2);
         assert_eq!(report.missing_sources, 1);
@@ -7600,7 +7601,7 @@ mod tests {
         let unrecognized_id = seed_run_edge(&db, "project-1", "run-1", "totally:unknown:identity");
 
         let report = db
-            .with_conn(|conn| rebuild_verify_dependency_edges(conn, "project-1", "run-1"))
+            .with_conn_mut(|conn| rebuild_verify_dependency_edges(conn, "project-1", "run-1"))
             .expect("verify run edges");
         assert_eq!(report.total_edges, 1);
         assert_eq!(report.missing_sources, 1);
@@ -7625,7 +7626,7 @@ mod tests {
         );
 
         let report = db
-            .with_conn(|conn| rebuild_verify_dependency_edges(conn, "project-1", "run-2"))
+            .with_conn_mut(|conn| rebuild_verify_dependency_edges(conn, "project-1", "run-2"))
             .expect("verify run-2 edges only");
         assert_eq!(report.total_edges, 1);
     }
@@ -8233,7 +8234,7 @@ mod tests {
         let db = test_db();
         let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
         let run_id = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     let handle = create_maintenance_run_in_tx(
                         conn,
@@ -8289,7 +8290,7 @@ mod tests {
         let db = test_db();
         let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
         let run_id = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     let handle = create_maintenance_run_in_tx(
                         conn,
@@ -8441,7 +8442,7 @@ mod tests {
         // A genuinely still-running row with its owned lifecycle pair
         // (simulating an in-flight concurrent call) IS reused.
         let in_flight_run_id = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     let handle = create_maintenance_run_in_tx(
                         conn,
@@ -8484,7 +8485,7 @@ mod tests {
         let malformed_id = seed_run_edge(&db, "project-1", "run-2", "totally:unknown:identity");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert_eq!(report.total_edges, 3);
         assert!(report.edge_ids_with_missing_source.contains(&missing_id));
@@ -8505,7 +8506,7 @@ mod tests {
         seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert_eq!(report.total_edges, 1);
         assert!(report.is_consistent());
@@ -8517,7 +8518,7 @@ mod tests {
     fn controlled_rebuildability_cancellation_happens_before_the_first_lookup() -> anyhow::Result<()>
     {
         let db = current_schema_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let report = DependencyGraphVerifyReport {
                 edge_state_ids_outside_current_epoch: vec![
                     "stale-edge-1".to_owned(),
@@ -8565,7 +8566,7 @@ mod tests {
     fn controlled_rebuildability_foreground_preemption_happens_before_the_next_lookup(
     ) -> anyhow::Result<()> {
         let db = current_schema_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             let report = DependencyGraphVerifyReport {
                 edge_state_ids_outside_current_epoch: vec![
                     "stale-edge-1".to_owned(),
@@ -8619,7 +8620,7 @@ mod tests {
     fn persisted_rebuild_required_must_match_recomputed_repairability() {
         let clean_db = current_schema_db();
         let clean_report = clean_db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("compute a clean Verify report");
         assert!(!clean_report.rebuild_required);
         let mut forged_clean_report = clean_report.clone();
@@ -8639,7 +8640,7 @@ mod tests {
             "project:scene:scene-live",
         );
         let repairable_report = repairable_db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("compute a repairable Verify report");
         assert!(repairable_report.rebuild_required);
         let mut forged_repairable_report = repairable_report;
@@ -8655,7 +8656,7 @@ mod tests {
     fn project_verify_rejects_reserved_semantic_index_checks_without_all_counts() {
         let db = current_schema_db();
         let mut report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert!(report.is_clean());
 
@@ -8700,7 +8701,7 @@ mod tests {
         .expect("seed an unrelated scene embedding chunk");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         let expected_counts = json!({
             "metadataRows": 0,
@@ -8758,7 +8759,7 @@ mod tests {
         .expect("seed typed artifact source basis");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert!(report
             .application_revision_artifact_references
@@ -8781,7 +8782,7 @@ mod tests {
         );
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert!(report
             .application_revision_artifact_references
@@ -8831,7 +8832,7 @@ mod tests {
         .expect("seed an Application whose Commit row is absent");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert!(report
             .application_revision_artifact_references
@@ -8890,7 +8891,7 @@ mod tests {
         .expect("seed project one missing-Commit Application");
 
         let project_one_before = db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest project one before foreign Application");
         db.with_conn(|conn| {
             conn.execute(
@@ -8935,7 +8936,7 @@ mod tests {
         })
         .expect("seed foreign and unattributed missing-Commit Applications");
         let project_one_report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project one");
         assert!(project_one_report
             .application_revision_artifact_references
@@ -8954,7 +8955,7 @@ mod tests {
             .any(|issue| issue.contains("application-missing-unattributed")));
 
         let project_two_report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-2"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-2"))
             .expect("verify project two");
         assert!(project_two_report
             .application_revision_artifact_references
@@ -8973,7 +8974,7 @@ mod tests {
             .any(|issue| issue.contains("application-missing-unattributed")));
 
         let project_one_after = db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest project one after foreign Application");
         assert_eq!(
             project_one_before, project_one_after,
@@ -9000,7 +9001,7 @@ mod tests {
         .expect("seed contribution with drifted commit provenance");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert!(report
             .contribution_to_application_commit_correspondence
@@ -9037,7 +9038,7 @@ mod tests {
         .expect("seed Legacy/Generic mirror rows");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert!(report
             .legacy_mirror_migration_parity
@@ -9089,7 +9090,7 @@ mod tests {
         .expect("seed feed and invalid cursor");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert!(report
             .cursor_and_feed_head_consistency
@@ -9117,7 +9118,7 @@ mod tests {
         .expect("seed Semantic Index metadata without a generation owner");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert!(report
             .semantic_index_dependency_set_digest
@@ -9189,7 +9190,7 @@ mod tests {
         .expect("seed active Semantic Index D1 head through the typed writer");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert!(report
             .semantic_index_dependency_set_digest
@@ -9234,7 +9235,7 @@ mod tests {
         .expect("seed reserved Semantic Index freshness");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         for check in [
             &report.semantic_index_dependency_set_digest,
@@ -9612,7 +9613,7 @@ mod tests {
         );
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert_eq!(
             report.edge_ids_with_unresolvable_consumer_scope,
@@ -10087,7 +10088,7 @@ mod tests {
         );
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert_eq!(
             report.edge_ids_with_unresolvable_consumer_scope,
@@ -10115,7 +10116,7 @@ mod tests {
         );
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert!(
             report.edge_ids_with_unresolvable_consumer_scope.is_empty(),
@@ -10141,7 +10142,7 @@ mod tests {
         );
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert_eq!(
             report.edge_ids_with_unresolvable_consumer_scope,
@@ -10178,7 +10179,7 @@ mod tests {
         );
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert_eq!(
             report.edge_ids_with_unresolvable_consumer_scope,
@@ -10213,7 +10214,7 @@ mod tests {
             .expect("record an edge under an unimplemented consumer kind");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
 
         assert_eq!(report.total_edges, 2);
@@ -10248,7 +10249,7 @@ mod tests {
         // Publishing stamps the digest of both Edges.
         rebuild_narrative_derived_state_for_project(&db, "project-1").expect("rebuild derived");
         let before = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert!(
             before
@@ -10268,7 +10269,7 @@ mod tests {
         .expect("drop one edge");
 
         let after = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert_eq!(
             after.consumer_keys_with_stale_dependency_set_digest,
@@ -10304,7 +10305,7 @@ mod tests {
         );
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
 
         assert!(
@@ -10349,7 +10350,7 @@ mod tests {
         }
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         let mut unresolvable = report.edge_ids_with_unresolvable_consumer_scope.clone();
         unresolvable.sort();
@@ -10430,7 +10431,7 @@ mod tests {
         );
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         let mut unresolvable = report.edge_ids_with_unresolvable_consumer_scope.clone();
         unresolvable.sort();
@@ -10476,7 +10477,7 @@ mod tests {
         .expect("Application snapshot dependency keeps the fresh Backfill owner");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify Application snapshot dependency");
         assert!(report.edge_ids_with_unresolvable_consumer_scope.is_empty());
         assert!(report.edge_ids_with_missing_source.is_empty());
@@ -10495,7 +10496,7 @@ mod tests {
         );
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert_eq!(
             report.edge_ids_with_unresolvable_consumer_scope,
@@ -10534,7 +10535,7 @@ mod tests {
         .expect("seed two dispositions");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
 
         assert_eq!(
@@ -10602,7 +10603,7 @@ mod tests {
         .expect("seed exact rehome candidates");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert_eq!(
             report.orphaned_attention_finding_keys,
@@ -10633,7 +10634,7 @@ mod tests {
         })
         .expect("seed target Attention conflict");
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify target conflict");
         let ambiguity = &report.orphaned_attention_rehome_ambiguities[0];
         assert!(ambiguity.contains("target-conflicts=proposal-revision:revision-a"));
@@ -10665,7 +10666,7 @@ mod tests {
         .expect("seed a pre-C2-2 freshness row");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert!(
             report
@@ -10709,7 +10710,7 @@ mod tests {
         .expect("seed orphaned Freshness");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert_eq!(
             report.consumer_keys_with_stale_dependency_set_digest,
@@ -10802,7 +10803,7 @@ mod tests {
         let db = test_db();
         let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
         let failure_run_id = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     let handle = create_maintenance_run_in_tx(
                         conn,
@@ -10907,7 +10908,7 @@ mod tests {
         let epoch_id = db
             .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
             .expect("create Verify epoch");
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 create_system_run_in_tx(
                     conn,
@@ -10983,7 +10984,7 @@ mod tests {
         .expect("restore must mint an epoch");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert_eq!(report.edge_state_ids_outside_current_epoch, vec![edge_id]);
         assert!(!report.is_clean());
@@ -11027,7 +11028,7 @@ mod tests {
         .expect("seed a raw cross-project Edge fixture");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert_eq!(
             report.edge_ids_with_cross_project_consumer,
@@ -11083,7 +11084,7 @@ mod tests {
         .expect("seed edge and durable terminal observations from the prior epoch");
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert_eq!(
             report.finding_observation_ids_outside_current_epoch,
@@ -11097,7 +11098,7 @@ mod tests {
         let db = current_schema_db();
         let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
         let baseline = db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest baseline graph state");
 
         let terminal_key =
@@ -11153,14 +11154,14 @@ mod tests {
         .expect("seed exact terminal output rows");
 
         let after_terminal_output = db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest graph state after terminal output");
         assert_eq!(
             after_terminal_output, baseline,
             "Verify must not invalidate itself on its terminal audit/Inbox output"
         );
         let terminal_report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify exact terminal Attention");
         assert!(terminal_report.orphaned_attention_finding_keys.is_empty());
         assert!(terminal_report
@@ -11184,11 +11185,11 @@ mod tests {
         })
         .expect("seed unlinked terminal-looking Attention");
         let after_unlinked_attention = db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest graph state after unlinked Attention");
         assert_ne!(after_unlinked_attention, after_terminal_output);
         let unlinked_report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify unlinked terminal-looking Attention");
         assert!(unlinked_report
             .orphaned_attention_finding_keys
@@ -11212,7 +11213,7 @@ mod tests {
         })
         .expect("seed ordinary consumer Finding");
         let after_ordinary_finding = db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest graph state after ordinary Finding");
         assert_ne!(
             after_ordinary_finding, after_unlinked_attention,
@@ -11240,7 +11241,7 @@ mod tests {
             })
             .expect("seed contribution with unresolved references");
         let contribution_before = contribution_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest unresolved contribution closure");
         contribution_db
             .with_conn(|conn| {
@@ -11274,7 +11275,7 @@ mod tests {
             })
             .expect("add the previously missing Application reference");
         let contribution_after = contribution_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest contribution closure after Application insertion");
         assert_ne!(
             contribution_before, contribution_after,
@@ -11297,7 +11298,7 @@ mod tests {
             })
             .expect("add the previously missing Operation reference");
         let operation_after = contribution_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest contribution closure after Operation insertion");
         assert_ne!(
             contribution_after, operation_after,
@@ -11335,7 +11336,7 @@ mod tests {
             })
             .expect("seed active cursor Run closure");
         let cursor_before = cursor_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest active cursor closure");
         cursor_db
             .with_conn(|conn| {
@@ -11348,7 +11349,7 @@ mod tests {
             })
             .expect("mutate active cursor Run project");
         let cursor_after_project = cursor_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest cursor closure after Run project mutation");
         assert_ne!(
             cursor_before, cursor_after_project,
@@ -11366,7 +11367,7 @@ mod tests {
             })
             .expect("mutate active cursor Run semantic epoch");
         let cursor_after_epoch = cursor_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest cursor closure after Run epoch mutation");
         assert_ne!(
             cursor_after_project, cursor_after_epoch,
@@ -11384,7 +11385,7 @@ mod tests {
             })
             .expect("mutate active cursor Run kind");
         let cursor_after_kind = cursor_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest cursor closure after Run kind mutation");
         assert_ne!(
             cursor_after_epoch, cursor_after_kind,
@@ -11402,7 +11403,7 @@ mod tests {
             })
             .expect("mutate active cursor Run status");
         let cursor_after_status = cursor_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest cursor closure after Run status mutation");
         assert_ne!(
             cursor_after_kind, cursor_after_status,
@@ -11420,7 +11421,7 @@ mod tests {
             })
             .expect("mutate active cursor Run work key");
         let cursor_after_work_key = cursor_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest cursor closure after Run work-key mutation");
         assert_eq!(
             cursor_after_status, cursor_after_work_key,
@@ -11446,7 +11447,7 @@ mod tests {
             })
             .expect("seed consumer Freshness closure");
         let freshness_before = freshness_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest consumer Freshness closure");
         freshness_db
             .with_conn(|conn| {
@@ -11462,7 +11463,7 @@ mod tests {
             })
             .expect("mutate consumer Freshness dependency digest");
         let freshness_after = freshness_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest consumer Freshness closure after mutation");
         assert_ne!(
             freshness_before, freshness_after,
@@ -11490,7 +11491,7 @@ mod tests {
         .expect("seed cursor read closure");
 
         let baseline = db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest cursor read closure baseline");
         db.with_conn(|conn| {
             conn.execute(
@@ -11505,7 +11506,7 @@ mod tests {
         })
         .expect("mutate cursor bookkeeping fields");
         let after_bookkeeping = db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest cursor read closure after bookkeeping mutation");
         assert_eq!(
             baseline, after_bookkeeping,
@@ -11524,7 +11525,7 @@ mod tests {
         })
         .expect("mutate semantic cursor acknowledgement");
         let after_acknowledgement = db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest cursor read closure after acknowledgement mutation");
         assert_ne!(
             baseline, after_acknowledgement,
@@ -11544,7 +11545,7 @@ mod tests {
         })
         .expect("mutate semantic cursor lease fields");
         let after_lease = db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest cursor read closure after lease mutation");
         assert_ne!(
             after_acknowledgement, after_lease,
@@ -11556,7 +11557,7 @@ mod tests {
     fn graph_state_cas_ignores_unreferenced_legacy_change_events() {
         let db = current_schema_db();
         let baseline = db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest baseline without legacy layout event");
         db.with_conn(|conn| {
             conn.execute(
@@ -11574,7 +11575,7 @@ mod tests {
         })
         .expect("seed an unreferenced legacy layout event");
         let after_layout_event = db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest after unreferenced legacy layout event");
         assert_eq!(
             baseline, after_layout_event,
@@ -11614,7 +11615,7 @@ mod tests {
         .expect("seed referenced canonical event and transaction");
 
         let baseline = db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest referenced canonical event baseline");
         db.with_conn(|conn| {
             conn.execute(
@@ -11628,7 +11629,7 @@ mod tests {
         })
         .expect("mutate referenced canonical event operation");
         let after_operation = db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest after referenced canonical operation mutation");
         assert_ne!(
             baseline, after_operation,
@@ -11647,7 +11648,7 @@ mod tests {
         })
         .expect("mutate referenced canonical event sequence");
         let after_sequence = db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest after referenced canonical sequence mutation");
         assert_ne!(
             after_operation, after_sequence,
@@ -11655,7 +11656,7 @@ mod tests {
         );
 
         let after_deletion = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 // Production schema keeps this reference RESTRICTed. Disable
                 // FK enforcement only in this corruption fixture so the
                 // digest and Verify coverage can prove that a missing
@@ -11677,7 +11678,7 @@ mod tests {
         );
 
         let report = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify missing referenced canonical event");
         assert!(
             report
@@ -11718,7 +11719,7 @@ mod tests {
             })
             .expect("seed an owned Edge and its owning Run");
         let owner_before = owner_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest owned Edge closure");
         owner_db
             .with_conn(|conn| {
@@ -11732,7 +11733,7 @@ mod tests {
             })
             .expect("mutate the owning Run project");
         let owner_project_changed = owner_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest after owning Run project mutation");
         assert_ne!(
             owner_before, owner_project_changed,
@@ -11766,7 +11767,7 @@ mod tests {
             })
             .expect("seed a second owned Edge closure");
         let owner_snapshot_before = owner_snapshot_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest owning Run snapshot input");
         owner_snapshot_db
             .with_conn(|conn| {
@@ -11780,7 +11781,7 @@ mod tests {
             })
             .expect("mutate the owning Run snapshot digest");
         let owner_snapshot_changed = owner_snapshot_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest after owning Run snapshot mutation");
         assert_ne!(
             owner_snapshot_before, owner_snapshot_changed,
@@ -11796,7 +11797,7 @@ mod tests {
             })
             .expect("delete the owning Run row");
         let owner_deleted = owner_snapshot_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest after owning Run deletion");
         assert_ne!(
             owner_snapshot_changed, owner_deleted,
@@ -11813,7 +11814,7 @@ mod tests {
             None,
         );
         let source_before = source_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest scene Source closure");
         source_db
             .with_conn(|conn| {
@@ -11828,7 +11829,7 @@ mod tests {
             })
             .expect("mutate the scene Source revision");
         let source_revision_changed = source_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest after scene Source revision mutation");
         assert_ne!(
             source_before, source_revision_changed,
@@ -11841,7 +11842,7 @@ mod tests {
             })
             .expect("delete the scene Source row");
         let source_deleted = source_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest after scene Source deletion");
         assert_ne!(
             source_revision_changed, source_deleted,
@@ -11859,7 +11860,7 @@ mod tests {
             Some("edge-snapshot-source"),
         );
         let snapshot_before = snapshot_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest snapshot Source closure");
         snapshot_db
             .with_conn(|conn| {
@@ -11873,7 +11874,7 @@ mod tests {
             })
             .expect("mutate the snapshot Source revision");
         let snapshot_changed = snapshot_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest after snapshot Source mutation");
         assert_ne!(
             snapshot_before, snapshot_changed,
@@ -11889,7 +11890,7 @@ mod tests {
             })
             .expect("delete the snapshot Source row");
         let snapshot_deleted = snapshot_db
-            .with_conn(|conn| durable_graph_state_digest(conn, "project-1"))
+            .with_conn_mut(|conn| durable_graph_state_digest(conn, "project-1"))
             .expect("digest after snapshot Source deletion");
         assert_ne!(
             snapshot_changed, snapshot_deleted,

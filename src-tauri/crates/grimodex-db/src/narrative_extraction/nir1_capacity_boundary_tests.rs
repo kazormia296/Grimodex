@@ -205,7 +205,7 @@ fn rebuild_rechecks_graph_growth_after_the_d1_snapshot() -> Result<()> {
         std::fs::create_dir(&root)?;
         let path = root.join("workspace.db");
         crate::test_support::current_schema_memory()?.with_conn(|conn| {
-            conn.backup("main", &path, None)?;
+            conn.backup("main", &path, None::<fn(rusqlite::backup::Progress)>)?;
             Ok(())
         })?;
         let db = crate::Database::new(&path)?;
@@ -220,9 +220,9 @@ fn rebuild_rechecks_graph_growth_after_the_d1_snapshot() -> Result<()> {
         let runtime = NirChronicleIndexRuntime::new(&db, 1);
         let snapshot =
             db.with_read_transaction(|conn| prepare_graph_index_build(conn, &runtime, "p"))?;
-        db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
-            publish_nir1_entity_relation_index_in_tx(&tx, &runtime, snapshot)?;
+        db.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            publish_nir1_entity_relation_index_in_tx(&mut tx, &runtime, snapshot)?;
             tx.commit()?;
             Ok(())
         })?;
@@ -323,9 +323,9 @@ fn source_byte_boundary_and_roster_projection_guard_preserve_prior_generation() 
         );
         prepare_graph_index_build(conn, &runtime, project)
     })?;
-    let binding = db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        let binding = publish_nir1_entity_relation_index_in_tx(&tx, &runtime, snapshot)?;
+    let binding = db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        let binding = publish_nir1_entity_relation_index_in_tx(&mut tx, &runtime, snapshot)?;
         tx.commit()?;
         Ok(binding)
     })?;

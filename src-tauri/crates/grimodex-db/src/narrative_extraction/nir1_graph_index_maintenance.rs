@@ -545,7 +545,7 @@ pub(crate) fn judge_graph_index_build(
         config,
         |conn, inner| {
             let mut chained = MaintenanceCycleGraphControl::new(inner, Some(control));
-            let tx = conn.unchecked_transaction()?;
+            let tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let judged = match read_build_hint(&tx, project_id, runtime, &mut chained)? {
                 HintRead::Skip(reason) => skipped(reason),
                 HintRead::Ready { scope, hint } => {
@@ -796,7 +796,7 @@ fn run_owned_attempt(
     let project_id = item.project_id.as_str();
     let observed = RefCell::new(None::<(RecordScope, GraphBuildHint)>);
     let phase_one = run_maintenance_graph_phase(db, control, |conn, graph_control| {
-        let tx = conn.unchecked_transaction()?;
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         let (scope, hint) = match read_build_hint(&tx, project_id, runtime, graph_control)? {
             HintRead::Skip(reason) => {
                 tx.rollback()?;
@@ -821,7 +821,7 @@ fn run_owned_attempt(
                 #[cfg(test)]
                 test_hooks::fire(test_hooks::TestStage::BeforeValidation, Some(&tx))?;
                 PhaseOne::Validated(cold_reopen_graph_index_with_control(
-                    &tx,
+                    &mut tx,
                     project_id,
                     graph_control,
                 )?)
@@ -833,7 +833,7 @@ fn run_owned_attempt(
                 #[cfg(test)]
                 test_hooks::fire(test_hooks::TestStage::BeforePrepare, Some(&tx))?;
                 PhaseOne::Prepared(Box::new(prepare_graph_index_build_with_control(
-                    &tx,
+                    &mut tx,
                     runtime,
                     project_id,
                     graph_control,

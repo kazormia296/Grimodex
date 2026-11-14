@@ -68,7 +68,7 @@ impl Run {
 
 /// Something to do to the registration's connection before it runs, with the
 /// flag that is set while the registration is inside its scratch scope.
-type Setup<'a> = &'a dyn Fn(&Connection, &Arc<AtomicBool>);
+type Setup<'a> = &'a dyn Fn(&mut Connection, &Arc<AtomicBool>);
 
 fn register_with(
     fixture: &Fixture,
@@ -77,9 +77,9 @@ fn register_with(
     setup: Setup<'_>,
 ) -> Result<(Run, usize)> {
     let mut reader = fixture.reader()?;
-    let conn = reader.take_owned_connection()?;
+    let mut conn = reader.take_owned_connection()?;
     let in_scope = Arc::new(AtomicBool::new(false));
-    setup(&conn, &in_scope);
+    setup(&mut conn, &in_scope);
     let mut stage = Nir1GraphRegistrationStage::Maintenance;
     let scopes = Arc::new(AtomicUsize::new(0));
     let mut scratch_scope = {
@@ -99,7 +99,7 @@ fn register_with(
     let live_before = live_statements(&conn);
     let mut run = || {
         reader.register_with_control_observed(
-            &conn,
+            &mut conn,
             PROJECT,
             &mut owner,
             Some(&mut stage),
@@ -144,7 +144,7 @@ fn register_with(
     ))
 }
 
-fn nothing(_: &Connection, _: &Arc<AtomicBool>) {}
+fn nothing(_: &mut Connection, _: &Arc<AtomicBool>) {}
 
 fn register(fixture: &Fixture, owner: CountingOwner, form: Form) -> Result<Run> {
     let callbacks = Arc::clone(&owner.callbacks);
@@ -690,7 +690,7 @@ fn a_deterministic_failure_of_the_scope_read_is_read_again_by_every_revision() -
 
 /// Refuses the first read of `table` that is prepared inside the scratch scope,
 /// once: a transient failure of one read.
-fn refuse_first_read_of(table: &'static str) -> impl Fn(&Connection, &Arc<AtomicBool>) {
+fn refuse_first_read_of(table: &'static str) -> impl Fn(&mut Connection, &Arc<AtomicBool>) {
     move |conn, in_scope| {
         let in_scope = Arc::clone(in_scope);
         let refused = Arc::new(AtomicBool::new(false));
@@ -885,7 +885,7 @@ fn a_stop_in_the_first_scope_load_ends_typed_in_both_forms() -> Result<()> {
         let stop = Arc::new(AtomicBool::new(false));
         let raise = {
             let stop = Arc::clone(&stop);
-            move |conn: &Connection, in_scope: &Arc<AtomicBool>| {
+            move |conn: &mut Connection, in_scope: &Arc<AtomicBool>| {
                 let stop = Arc::clone(&stop);
                 let in_scope = Arc::clone(in_scope);
                 conn.authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
@@ -943,7 +943,7 @@ fn the_shared_reads_are_made_inside_the_scratch_scope() -> Result<()> {
         seen.lock().unwrap().clear();
         let record = {
             let seen = Arc::clone(&seen);
-            move |conn: &Connection, in_scope: &Arc<AtomicBool>| {
+            move |conn: &mut Connection, in_scope: &Arc<AtomicBool>| {
                 let seen = Arc::clone(&seen);
                 let in_scope = Arc::clone(in_scope);
                 conn.authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
@@ -1182,7 +1182,7 @@ fn the_registration_source_read_is_alike_over_ineligible_candidates_of_every_kin
                 let (read, counts) = project_read_probe::recording(|| {
                     db.with_read_transaction(|conn| {
                         let before = live_statements(conn);
-                        let run = || {
+                        let mut run = || {
                             let mut scope = |operation: &mut dyn FnMut()| {
                                 operation();
                                 true

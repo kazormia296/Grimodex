@@ -313,9 +313,9 @@ impl OracleFixture {
         let runtime = authority.nir_chronicle_index_runtime();
         let snapshot = authority
             .with_read_transaction(|conn| prepare_graph_index_build(conn, runtime, PROJECT))?;
-        let generation = authority.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
-            let published = publish_nir1_entity_relation_index_in_tx(&tx, runtime, snapshot)?;
+        let generation = authority.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            let published = publish_nir1_entity_relation_index_in_tx(&mut tx, runtime, snapshot)?;
             tx.commit()?;
             Ok(published.generation)
         })?;

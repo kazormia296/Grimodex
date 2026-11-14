@@ -406,11 +406,11 @@ fn reason(read: &RevisionEligibilityRead) -> Option<&RevisionEligibilityReason> 
 #[test]
 fn a_three_window_proposal_is_eligible_only_after_the_last_scene_of_its_material() {
     let fixture = Fixture::new();
-    let conn = fixture.read_only();
+    let mut conn = fixture.read_only();
     let before = fixture.digest();
-    let verdict = |revision: &str, query: &str| {
-        let tx = conn.unchecked_transaction().expect("snapshot");
-        read_revision_retrieval_eligibility(&tx, fixture.project(), revision, query)
+    let mut verdict = |revision: &str, query: &str| {
+        let mut tx = grimodex_db::ScopedTransaction::begin(&mut conn).expect("snapshot");
+        read_revision_retrieval_eligibility(&mut tx, fixture.project(), revision, query)
             .expect("public Rust retrieval admission")
     };
     let after = fixture.scene("after").to_owned();
@@ -489,12 +489,11 @@ fn normal_scope_dependencies_of_the_three_window_runs_are_healthy_in_project_ver
     db.migrate()
         .expect("migrate and backfill the disposable fixture");
     drop(db);
-    let conn = fixture.read_only();
-    let tx = conn
-        .unchecked_transaction()
-        .expect("coherent Verify snapshot");
+    let mut conn = fixture.read_only();
+    let mut tx =
+        grimodex_db::ScopedTransaction::begin(&mut conn).expect("coherent Verify snapshot");
     let report = grimodex_db::narrative_extraction::verify_narrative_dependency_graph_for_project(
-        &tx,
+        &mut tx,
         fixture.project(),
     )
     .expect("production graph Verify");

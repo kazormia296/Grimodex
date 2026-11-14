@@ -66,7 +66,7 @@ use super::source_revision::{
 use crate::narrative_maintenance_connection::{
     with_narrative_maintenance_graph_control, NarrativeMaintenanceGraphControlConfig,
 };
-use crate::nir1_pinned_snapshot::with_pinned_snapshot;
+use crate::nir1_pinned_snapshot::pinned_snapshot_scope;
 use crate::state::WorkspaceAuthority;
 use crate::workspace_lifecycle::WorkspaceParticipant;
 
@@ -557,13 +557,13 @@ impl Nir1GraphReader {
         project: &str,
         owner: &mut dyn GraphWorkControl,
     ) -> Result<bool> {
-        let conn = self.take_owned_connection()?;
+        let mut conn = self.take_owned_connection()?;
         let mut current_heap = |operation: &mut dyn FnMut()| {
             operation();
             true
         };
         let result =
-            self.register_with_control_observed(&conn, project, owner, None, &mut current_heap);
+            self.register_with_control_observed(&mut conn, project, owner, None, &mut current_heap);
         self.connection = ReaderConnection::Owned(conn);
         match result {
             Ok(true) => {
@@ -583,7 +583,7 @@ impl Nir1GraphReader {
 
     fn register_with_control_observed(
         &mut self,
-        conn: &Connection,
+        conn: &mut Connection,
         project: &str,
         owner: &mut dyn GraphWorkControl,
         mut observer: Option<&mut Nir1GraphRegistrationStage>,
@@ -658,7 +658,8 @@ impl Nir1GraphReader {
             // from the cache without VM steps.  The scope ends before
             // `finish_read`'s ROLLBACK, the scratch (allocator) scope runs
             // inside it, and nothing in this range ends the transaction.
-            with_pinned_snapshot(conn, || -> Result<Option<Seal>> {
+            let _pinned = pinned_snapshot_scope(conn);
+            {
                 if !is_complete_registered_with_scratch(
                     conn,
                     project,
@@ -680,7 +681,7 @@ impl Nir1GraphReader {
                 lifecycle.check(GraphWorkStage::CompleteRegistration)?;
                 set_registration_stage(&mut observer, Nir1GraphRegistrationStage::Seal);
                 read_seal(conn, project)
-            })
+            }
         })();
         let result = self.finish_read(conn, result, owner_scope)?;
         let result = match result {
@@ -837,9 +838,9 @@ impl Nir1GraphReader {
     /// transient estimates that the product worker's fixed arena replaces.
     #[cfg(any(test, feature = "nir1-material-diagnostics"))]
     pub fn query(&mut self, request: &Nir1GraphRequest) -> Result<Nir1GraphResponse> {
-        let conn = self.take_owned_connection()?;
+        let mut conn = self.take_owned_connection()?;
         let result = self.query_with_deadline_observed(
-            &conn,
+            &mut conn,
             request,
             QUERY_DEADLINE,
             QUERY_SQL_STEPS,
@@ -855,9 +856,9 @@ impl Nir1GraphReader {
     #[cfg(any(test, feature = "nir1-material-diagnostics"))]
     #[doc(hidden)]
     pub fn query_for_worker(&mut self, request: &Nir1GraphRequest) -> Result<Nir1GraphResponse> {
-        let conn = self.take_owned_connection()?;
+        let mut conn = self.take_owned_connection()?;
         let result = self.query_with_deadline_observed(
-            &conn,
+            &mut conn,
             request,
             QUERY_DEADLINE,
             QUERY_SQL_STEPS,
@@ -917,9 +918,9 @@ impl Nir1GraphReader {
         duration: Duration,
         sql_steps: u64,
     ) -> Result<Nir1GraphResponse> {
-        let conn = self.take_owned_connection()?;
+        let mut conn = self.take_owned_connection()?;
         let result = self.query_with_deadline_observed(
-            &conn,
+            &mut conn,
             request,
             duration,
             sql_steps,
@@ -946,12 +947,12 @@ impl Nir1GraphReader {
         sql_steps: u64,
     ) -> (Result<Nir1GraphResponse>, StageObservation) {
         let mut observation = StageObservation::default();
-        let conn = match self.take_owned_connection() {
+        let mut conn = match self.take_owned_connection() {
             Ok(conn) => conn,
             Err(error) => return (Err(error), observation),
         };
         let result = self.query_with_deadline_observed(
-            &conn,
+            &mut conn,
             request,
             duration,
             sql_steps,
@@ -964,7 +965,7 @@ impl Nir1GraphReader {
 
     fn query_with_deadline_observed(
         &mut self,
-        conn: &Connection,
+        conn: &mut Connection,
         request: &Nir1GraphRequest,
         duration: Duration,
         sql_steps: u64,
@@ -1027,7 +1028,7 @@ impl Nir1GraphReader {
             conn,
             Some(Arc::clone(&budget)),
             &mut owner,
-            |_, control| {
+            |conn, _, control| {
                 #[cfg(feature = "nir1-material-diagnostics")]
                 let pre_snapshot_started = _observation.as_ref().map(|_| Instant::now());
                 let pre_snapshot_result = (|| -> Result<()> {
@@ -1079,16 +1080,15 @@ impl Nir1GraphReader {
                 // the registration's (opened in `register_with_control_observed`
                 // after its own first table read) answer table presence from
                 // it; every other reader keeps its SQL check.
-                with_pinned_snapshot(conn, || {
-                    query_in_snapshot(
-                        conn,
-                        request,
-                        &expected_seal,
-                        control,
-                        &mut _observation,
-                        worker_path,
-                    )
-                })
+                let _pinned = pinned_snapshot_scope(conn);
+                query_in_snapshot(
+                    conn,
+                    request,
+                    &expected_seal,
+                    control,
+                    &mut _observation,
+                    worker_path,
+                )
             },
         );
         let pre_cleanup_status = worker_path.then(|| {
@@ -1112,7 +1112,7 @@ impl Nir1GraphReader {
                 conn,
                 Some(Arc::clone(&budget)),
                 &mut owner,
-                |_, control| {
+                |conn, _, control| {
                     let identity = ReadIdentity::read_unpinned(conn)?;
                     control.check(GraphWorkStage::ResultAssembly)?;
                     Ok(identity)
@@ -1232,7 +1232,7 @@ impl Nir1GraphReader {
 
     fn install_owner_with_stop(
         &self,
-        conn: &Connection,
+        conn: &mut Connection,
         owner_check_stop: Option<Arc<AtomicBool>>,
         external_stop: Option<Arc<AtomicBool>>,
         external_deadline: Option<Instant>,
@@ -1262,7 +1262,7 @@ impl Nir1GraphReader {
     /// query may use it; explicit close or Drop still owns physical teardown.
     fn finish_read<T>(
         &mut self,
-        conn: &Connection,
+        conn: &mut Connection,
         result: Result<T>,
         owner_scope: nir1_capacity::ProgressOwnerRestore,
     ) -> Result<Result<T>> {

@@ -402,7 +402,7 @@ mod tests {
     #[test]
     fn re_recording_a_contribution_lets_the_projection_run_again() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 seed_application(conn, 10);
                 seed_feed_event(conn, 20, None, &["/title"], "update");
@@ -442,7 +442,7 @@ mod tests {
     #[test]
     fn a_field_edit_reaches_a_whole_object_sentinel_contribution() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 conn.execute(
                     "INSERT INTO projects (id, title) VALUES ('p1', 'Test')
@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn a_hand_edited_detail_value_reaches_its_entry_grain_contribution() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 conn.execute(
                     "INSERT INTO projects (id, title) VALUES ('p1', 'Test')
@@ -568,7 +568,7 @@ mod tests {
     #[test]
     fn an_out_of_band_edit_after_the_baseline_marks_the_field_modified() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 seed_application(conn, 10);
                 seed_feed_event(conn, 20, None, &["/title"], "update");
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn a_write_with_application_lineage_is_not_evidence() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 seed_application(conn, 10);
                 seed_feed_event(conn, 20, Some("commit-1"), &["/title"], "update");
@@ -603,7 +603,7 @@ mod tests {
     #[test]
     fn an_edit_at_or_before_the_baseline_is_not_evidence() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 seed_application(conn, 20);
                 seed_feed_event(conn, 10, None, &["/title"], "update");
@@ -618,7 +618,7 @@ mod tests {
     #[test]
     fn an_edit_to_a_different_field_leaves_this_one_alone() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 seed_application(conn, 10);
                 seed_feed_event(conn, 20, None, &["/summary"], "update");
@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn deleting_the_object_marks_the_field_missing() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 seed_application(conn, 10);
                 seed_feed_event(conn, 20, None, &["/"], "delete");
@@ -651,7 +651,7 @@ mod tests {
     #[test]
     fn replaying_the_projection_changes_nothing() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 seed_application(conn, 10);
                 seed_feed_event(conn, 20, None, &["/title"], "update");
@@ -672,7 +672,7 @@ mod tests {
     #[test]
     fn a_whole_object_path_covers_every_field() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 seed_application(conn, 10);
                 seed_feed_event(conn, 20, None, &["/"], "update");
@@ -689,7 +689,7 @@ mod tests {
     #[test]
     fn the_cursor_clears_events_that_are_not_evidence() {
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 seed_application(conn, 10);
                 // Belongs to an Application, so it is not evidence -- but it is

@@ -1876,7 +1876,7 @@ fn generation_purpose_of(purpose: PackingPurpose) -> GenerationPurpose {
 #[cfg(feature = "native-current-human-capture")]
 #[allow(clippy::too_many_arguments)] // One explicit value per input of the D-final snapshot.
 fn attach_history_in_snapshot(
-    conn: &Connection,
+    conn: &mut Connection,
     prepared: &mut NativeNir1PreparedInputs,
     scene_binding: &AttemptSceneBinding,
     purpose: PackingPurpose,
@@ -2017,7 +2017,7 @@ fn attach_history_in_snapshot(
 #[cfg(feature = "native-current-human-capture")]
 #[allow(clippy::too_many_arguments)] // One explicit value per input of the D-final snapshot.
 fn confirm_history_in_snapshot(
-    conn: &Connection,
+    conn: &mut Connection,
     expected: &NativeNir1PreparedInputs,
     history: &PreparedHistory,
     workspace: &ActiveWorkspaceSnapshot,

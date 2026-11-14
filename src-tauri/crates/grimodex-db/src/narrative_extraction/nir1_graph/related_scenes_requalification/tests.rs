@@ -224,7 +224,7 @@ impl World {
             .durable_workspace_identity()
             .expect("durable identity");
         self.db()
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |tx| {
                     let RetrievalSceneSourceRead::Available(source) =
                         read_retrieval_scene_source_bounded(
@@ -1000,7 +1000,7 @@ fn graph_only_slot_closed_makes_no_database_read_for_candidates() {
     let counted = Arc::clone(&declaration_reads);
     world
         .db()
-        .with_conn(|conn| {
+        .with_conn_mut(|conn| {
             conn.authorizer(Some(move |context: AuthContext<'_>| {
                 if matches!(context.action, AuthAction::Read { column_name, .. }
                     if column_name == "body_declaration_json")
@@ -1044,7 +1044,7 @@ fn graph_only_slot_closed_makes_no_database_read_for_candidates() {
     assert!(declaration_reads.load(Ordering::SeqCst) > 0);
     world
         .db()
-        .with_conn(|conn| {
+        .with_conn_mut(|conn| {
             conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
             Ok(())
         })

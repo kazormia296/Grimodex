@@ -49,7 +49,7 @@ fn on_reader<T>(
     f: &Fixture,
     admission: &ChronicleReaderAdmission,
     participant: &WorkspaceParticipant,
-    operation: impl FnOnce(&Connection) -> anyhow::Result<T>,
+    operation: impl FnOnce(&mut Connection) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
     let permit = f.runtime.try_acquire_reader_permit().expect("reader slot");
     f.runtime

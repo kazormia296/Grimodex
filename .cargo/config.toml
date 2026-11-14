@@ -1,0 +1,15 @@
+# Build settings every cargo invocation under this repository shares: the
+# workspace in src-tauri, the Electron native addon in electron/native/grimodex-node,
+# and the scripts that run cargo with `--manifest-path` from the repository root
+# (cargo reads this file by the current directory, not by the manifest's).
+#
+# SQLITE_ENABLE_MEMORY_MANAGEMENT (DR-DBC-4): libsqlite3-sys 0.38 compiled the
+# bundled SQLite with it and 0.39 does not. Without it SQLite keeps one page
+# cache per connection instead of one shared by all of them, and the
+# registration window W of the Graph worker in-process harness grew by 4 to 5
+# points (R1022, D2064). The master (0.38) build had it, so it is kept.
+# libsqlite3-sys appends LIBSQLITE3_FLAGS to its own flags; it removes none.
+# `sqlite_compile_options_tests` (grimodex-db) and the same test in
+# grimodex-node assert it through `PRAGMA compile_options`.
+[env]
+LIBSQLITE3_FLAGS = "-DSQLITE_ENABLE_MEMORY_MANAGEMENT"

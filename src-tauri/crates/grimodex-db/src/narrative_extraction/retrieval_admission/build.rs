@@ -178,7 +178,7 @@ pub(in crate::narrative_extraction) fn preflight_build_candidate_with_memo(
 
 #[cfg(test)]
 pub(in crate::narrative_extraction) fn finalize_build_candidate(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     authority: &NarrativeProjectScopeAuthorityV1,
     preflight: BuildCandidatePreflight,
@@ -197,7 +197,7 @@ pub(in crate::narrative_extraction) fn finalize_build_candidate(
 }
 
 pub(in crate::narrative_extraction) fn finalize_build_candidate_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     authority: &NarrativeProjectScopeAuthorityV1,
     preflight: BuildCandidatePreflight,

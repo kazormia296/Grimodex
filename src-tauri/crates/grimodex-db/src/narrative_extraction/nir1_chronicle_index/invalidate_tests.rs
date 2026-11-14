@@ -372,10 +372,10 @@ fn publish_graph(f: &Fixture) -> i64 {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &f.runtime, f.project())
         })
         .expect("Graph snapshot");
-    f.db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    f.db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-            &tx, &f.runtime, snapshot,
+            &mut tx, &f.runtime, snapshot,
         )?;
         tx.commit()?;
         Ok(binding.generation)

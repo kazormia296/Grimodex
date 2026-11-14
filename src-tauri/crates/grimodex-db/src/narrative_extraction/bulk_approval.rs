@@ -1036,7 +1036,7 @@ enum Outcome {
 /// write the child with the existing writer body, approve it with the existing
 /// decision body.
 fn approve_one(
-    conn: &Connection,
+    conn: &mut Connection,
     ctx: &BulkApprovalContext,
     target: &ChronicleBulkApproveTarget,
 ) -> anyhow::Result<Outcome> {
@@ -1182,7 +1182,7 @@ pub fn chronicle_bulk_approve(
         Ok(ctx)
     })?;
     run_targets(&payload.targets, should_stop, &mut |target| {
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             Ok(with_immediate_transaction(conn, |conn| {
                 approve_one(conn, &ctx, target)
             }))

@@ -438,7 +438,7 @@ impl Replay {
 }
 
 fn replay(fixture: &Fixture, seed: &str, query_scene: &str) -> Result<Replay> {
-    let conn = rusqlite::Connection::open_with_flags(
+    let mut conn = rusqlite::Connection::open_with_flags(
         fixture._directory.0.join("grimodex.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
@@ -448,7 +448,7 @@ fn replay(fixture: &Fixture, seed: &str, query_scene: &str) -> Result<Replay> {
     conn.execute_batch("BEGIN DEFERRED")?;
     let _: i64 = conn.query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))?;
     crate::set_sqlite_progress_handler(
-        &conn,
+        &mut conn,
         1,
         Some(move || {
             counter.fetch_add(1, Ordering::Relaxed);
@@ -596,7 +596,7 @@ fn uncapped_steps(fixture: &Fixture, seed: &str) -> Result<(String, Option<Strin
     let mut reader = fixture.worker_reader()?;
     LAST_QUERY_SQL_STEPS.take();
     let authority = Arc::clone(&reader.authority);
-    let response = authority.db().with_conn(|conn| {
+    let response = authority.db().with_conn_mut(|conn| {
         reader.query_with_deadline_observed(
             conn,
             &Nir1GraphRequest {
@@ -1494,7 +1494,7 @@ fn a_query_loads_the_scene_bindings_in_one_statement() -> Result<()> {
     let mut reader = novel.fixture.worker_reader()?;
     let reads = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
     let sink = Arc::clone(&reads);
-    novel.fixture.authority.db().with_conn(|conn| {
+    novel.fixture.authority.db().with_conn_mut(|conn| {
         conn.authorizer(Some(move |context: AuthContext<'_>| {
             if let AuthAction::Read {
                 table_name,
@@ -1510,7 +1510,7 @@ fn a_query_loads_the_scene_bindings_in_one_statement() -> Result<()> {
         Ok(())
     })?;
     let response = reader.query_for_worker_with_maintenance_deadline(&request, DEADLINE);
-    novel.fixture.authority.db().with_conn(|conn| {
+    novel.fixture.authority.db().with_conn_mut(|conn| {
         conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
         Ok(())
     })?;
@@ -2642,8 +2642,8 @@ fn measure_the_principal_rows_statement_steps() -> Result<()> {
             BARE_FLOOR_SCENES
         };
         let fixture = same_entity_product_fixture_with_shaped_scenes(1, 300_000, floor - 4, shape)?;
-        fixture.authority.with_conn(|conn| {
-            let steps = |sql: &str| -> Result<(u64, i64)> {
+        fixture.authority.with_conn_mut(|conn| {
+            let mut steps = |sql: &str| -> Result<(u64, i64)> {
                 let counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
                 let seen = std::sync::Arc::clone(&counter);
                 conn.progress_handler(
@@ -3208,7 +3208,7 @@ fn shared_bytes_equal_what_the_reads_return_on_a_product_project() -> Result<()>
 /// The (table, column) pairs `Nir1ProjectReads::load` makes SQLite authorize,
 /// each with the number of times (one for each statement preparing it).
 fn columns_read_by_one_load(
-    conn: &rusqlite::Connection,
+    conn: &mut rusqlite::Connection,
 ) -> Result<BTreeMap<(String, String), usize>> {
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     use std::sync::{Arc, Mutex};
@@ -3323,8 +3323,8 @@ fn measure_the_shared_preflight_steps() -> Result<()> {
         scenes - fixture_scenes(revisions),
         shape,
     )?;
-    fixture.authority.with_conn(|conn| {
-        let steps = |legacy: bool| -> Result<(u64, usize)> {
+    fixture.authority.with_conn_mut(|conn| {
+        let mut steps = |legacy: bool| -> Result<(u64, usize)> {
             let counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             let seen = std::sync::Arc::clone(&counter);
             conn.progress_handler(

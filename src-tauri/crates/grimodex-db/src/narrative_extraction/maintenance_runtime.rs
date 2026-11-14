@@ -999,7 +999,7 @@ pub fn complete_foreground_system_work_run(
     barrier: &ForegroundSystemWorkRun,
 ) -> anyhow::Result<()> {
     barrier.marker.validate()?;
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             let row: Option<(String, String, String, String, Option<String>, String)> = conn
                 .query_row(
@@ -2081,7 +2081,7 @@ pub fn discover_before_cutover_maintenance_work_with_coordinates(
         return Ok(discovered);
     }
 
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             if is_scan_staging_project_in_tx(conn, project_id)? {
                 return Ok(None);
@@ -2211,7 +2211,7 @@ pub fn discover_durable_maintenance_work_with_coordinates(
 ) -> anyhow::Result<Option<DesiredWork>> {
     let project_id = require_component(project_id.to_string(), "projectId")?;
     let reason = require_component(reason.to_string(), "reason")?;
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         // Keep candidate selection, Verify outcome validation, and the
         // clean-skip decision on one SQLite snapshot. A concurrent writer
         // must not change report/reportDigest/epoch between those decisions.
@@ -2416,7 +2416,7 @@ pub(crate) fn is_scan_staging_project_in_tx(
 }
 
 pub(crate) fn discover_durable_maintenance_work_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     reason: &str,
     coordinates: Option<&MaintenanceContractCoordinates>,
@@ -2432,7 +2432,7 @@ pub(crate) fn discover_durable_maintenance_work_in_tx(
 }
 
 pub(crate) fn discover_durable_maintenance_work_in_tx_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     reason: &str,
     coordinates: Option<&MaintenanceContractCoordinates>,
@@ -2730,7 +2730,7 @@ fn maintenance_rediscovery_reason(item: &DesiredWork) -> &str {
 }
 
 fn validate_discovered_verify_outcome(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     work_key: &str,
     semantic_epoch_id: &str,
@@ -2781,7 +2781,7 @@ fn validate_discovered_verify_outcome(
 }
 
 fn validate_live_verify_outcome_rebuild_requirement(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     outcome: &Value,
 ) -> anyhow::Result<()> {
@@ -3251,7 +3251,7 @@ pub fn run_system_work_cycle_with_nir1_graph_runtime(
                     .unwrap_or_default(),
                 Some(&effective_coordinates),
             )?;
-            let decision = db.with_conn(|conn| evaluate_completed_run_skip(conn, &expected))?;
+            let decision = db.with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expected))?;
             if matches!(decision, CompletedRunSkipDecision::Skip { .. }) {
                 let next = discover_cycle_work(
                     db,
@@ -6562,7 +6562,7 @@ mod tests {
             report_digest: Some(outcome.report_digest),
         };
         let decision = db
-            .with_conn(|conn| evaluate_completed_run_skip(conn, &expected))
+            .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expected))
             .expect("evaluate released Verify evidence");
         assert!(matches!(decision, CompletedRunSkipDecision::Skip { .. }));
 
@@ -7327,7 +7327,7 @@ mod tests {
         let preempt_verify_for_hook = Arc::clone(&preempt_verify);
         let preempted_for_hook = Arc::clone(&preempted);
         let waiters_for_hook = Arc::clone(&db.foreground_connection_waiters);
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(Some(move |context: AuthContext<'_>| {
                 if matches!(
                     context.action,
@@ -7398,7 +7398,7 @@ mod tests {
                 .fetch_sub(1, Ordering::SeqCst);
         }
         let (completed_backfills, verify_runs) = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
                 assert!(conn.is_autocommit(), "preemption must roll back its phase");
                 conn.query_row(
@@ -7863,7 +7863,7 @@ mod tests {
 
         let select_count = Arc::new(AtomicUsize::new(0));
         let select_count_for_hook = Arc::clone(&select_count);
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             conn.authorizer(Some(move |context: AuthContext<'_>| {
                 if matches!(context.action, AuthAction::Select) {
                     select_count_for_hook.fetch_add(1, Ordering::SeqCst);

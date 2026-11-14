@@ -605,7 +605,7 @@ fn completed_foreground_duplicate_validates_phase_outcome_before_idempotency() {
                 }
                 other => unreachable!("unknown completed outcome tamper {other}"),
             };
-            db.with_conn(|conn| {
+            db.with_conn_mut(|conn| {
                 conn.execute(
                     "UPDATE narrative_extraction_runs
                         SET outcome_summary_json = ?1
@@ -649,7 +649,7 @@ fn completed_foreground_duplicate_validates_phase_outcome_before_idempotency() {
                     report_digest: None,
                 };
                 let decision = db
-                    .with_conn(|conn| evaluate_completed_run_skip(conn, &expected))
+                    .with_conn_mut(|conn| evaluate_completed_run_skip(conn, &expected))
                     .expect("evaluate tampered completed Verify for rediscovery");
                 assert!(
                     matches!(decision, CompletedRunSkipDecision::Rerun { .. }),

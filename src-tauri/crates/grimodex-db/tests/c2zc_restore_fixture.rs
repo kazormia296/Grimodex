@@ -268,7 +268,7 @@ fn offline_restore_fixture_drives_production_verify_rebuild_verify() {
     .expect("register confirmation scheduler liveness");
     assert_c2zc_marker_count(&restore_state, 0);
     let cutover = with_db_state(&restore_state, |db| {
-        db.with_conn(|conn| cut_over_workspace_freshness(conn, &liveness))
+        db.with_conn_mut(|conn| cut_over_workspace_freshness(conn, &liveness))
     })
     .expect("cut over after confirmation Verify");
     assert_eq!(cutover.migration_id, C2_ZC_CUTOVER_MIGRATION_ID);

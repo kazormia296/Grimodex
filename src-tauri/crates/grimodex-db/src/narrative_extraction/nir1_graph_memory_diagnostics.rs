@@ -399,8 +399,8 @@ fn run_on_copy(
     );
 
     let snapshot = with_maintenance_control(&authority, |conn, control| {
-        let transaction = conn.unchecked_transaction()?;
-        match prepare_graph_index_build_with_control(&transaction, runtime, project_id, control) {
+        let mut transaction = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        match prepare_graph_index_build_with_control(&mut transaction, runtime, project_id, control) {
             Ok(snapshot) => {
                 transaction.commit()?;
                 Ok(snapshot)
@@ -414,9 +414,9 @@ fn run_on_copy(
         }
     })?;
     let published = with_maintenance_control(&authority, |conn, control| {
-        let transaction = conn.unchecked_transaction()?;
+        let mut transaction = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         match publish_nir1_entity_relation_index_in_tx_with_control(
-            &transaction,
+            &mut transaction,
             runtime,
             snapshot,
             control,
@@ -605,7 +605,7 @@ fn run_on_copy(
 
 fn with_maintenance_control<T>(
     database: &Database,
-    operation: impl FnOnce(&Connection, &mut dyn GraphWorkControl) -> Result<T>,
+    operation: impl FnOnce(&mut Connection, &mut dyn GraphWorkControl) -> Result<T>,
 ) -> Result<T> {
     let controlled = with_narrative_maintenance_graph_control(
         database,

@@ -18,6 +18,11 @@ use std::sync::{
 use std::time::Duration;
 
 pub(crate) mod background_checkpoint;
+pub(crate) mod hook_registration;
+#[cfg(test)]
+mod hook_registration_sources_tests;
+pub(crate) mod scoped_tx;
+pub use scoped_tx::ScopedTransaction;
 pub(crate) mod narrative_maintenance_connection;
 pub(crate) mod nir1_pinned_snapshot;
 pub use narrative_maintenance_connection::ParticipantSqlOperationBudget;
@@ -26,7 +31,7 @@ use narrative_maintenance_connection::ConnectionHealth;
 /// Preserve the existing SQL owner while composing a full-set capacity
 /// budget and, in the opt-in binary, noncancelling diagnostic accounting.
 pub(crate) fn set_sqlite_progress_handler<F>(
-    conn: &Connection,
+    conn: &mut Connection,
     interval: i32,
     handler: Option<F>,
 ) -> rusqlite::Result<()>
@@ -37,7 +42,7 @@ where
 }
 
 fn install_sqlite_progress_handler<F>(
-    conn: &Connection,
+    conn: &mut Connection,
     interval: i32,
     handler: Option<F>,
 ) -> rusqlite::Result<()>
@@ -50,7 +55,19 @@ where
             conn, interval, handler,
         );
     }
-    conn.progress_handler(interval, handler)
+    hook_registration::set_progress_handler(conn, interval, handler)
+}
+
+/// `PRAGMA compile_options` of the bundled SQLite. The compile flags are part of
+/// the behaviour the audits assume (for example `ENABLE_MEMORY_MANAGEMENT`,
+/// DR-DBC-4), so the crates that build SQLite assert them through this.
+pub fn sqlite_compile_options() -> rusqlite::Result<Vec<String>> {
+    let conn = Connection::open_in_memory()?;
+    let mut statement = conn.prepare("PRAGMA compile_options")?;
+    let options = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(options)
 }
 
 /// Run a foreground maintenance command under the ordinary blocking
@@ -828,11 +845,23 @@ impl Database {
     where
         F: FnOnce(&Connection) -> anyhow::Result<T>,
     {
-        let conn = self.lock_conn()?;
+        self.with_conn_mut(|conn| f(conn))
+    }
+
+    /// `with_conn` for a closure that registers or clears an SQLite hook
+    /// (authorizer, progress handler, commit hook, ...). rusqlite 0.41 takes
+    /// `&mut Connection` for every hook registration, so the closure borrows the
+    /// connection exclusively for exactly the span in which the mutex guard is
+    /// held (DR-DBC-4).
+    pub fn with_conn_mut<T, F>(&self, f: F) -> anyhow::Result<T>
+    where
+        F: FnOnce(&mut Connection) -> anyhow::Result<T>,
+    {
+        let mut conn = self.lock_conn()?;
         if narrative_extraction::nir1_capacity::attempt_active() {
-            narrative_maintenance_connection::with_capacity_connection(self, &conn, f)
+            narrative_maintenance_connection::with_capacity_connection(self, &mut conn, f)
         } else {
-            f(&conn)
+            f(&mut conn)
         }
     }
 
@@ -841,11 +870,11 @@ impl Database {
     /// Errors drop/roll back the transaction before releasing the DB lock.
     pub fn with_read_transaction<T, F>(&self, f: F) -> anyhow::Result<T>
     where
-        F: FnOnce(&Connection) -> anyhow::Result<T>,
+        F: FnOnce(&mut Connection) -> anyhow::Result<T>,
     {
-        self.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
-            let value = f(&tx)?;
+        self.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            let value = f(&mut tx)?;
             tx.commit()?;
             Ok(value)
         })

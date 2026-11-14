@@ -787,7 +787,7 @@ fn mutate_source_drift_candidates(db: &Database, source_drift_ids: &[String]) ->
 /// Freshness gate and reports `canonical-freshness-unavailable`, rather than
 /// stopping at the earlier live-Source validation gate.
 fn seed_stale_freshness_candidates(db: &Database, revision_ids: &[String]) -> Result<()> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         super::with_immediate_transaction(conn, |conn| {
             let epoch = super::get_current_epoch(conn, NIR1_CAPACITY_FIXTURE_PROJECT_ID)?
                 .context("capacity fixture has no current Semantic Epoch")?;

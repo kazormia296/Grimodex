@@ -273,14 +273,12 @@ fn normal_scope_dependencies_are_healthy_in_project_verify_before_canonical_cuto
     let db = Database::new(&fixture.path).expect("open disposable fixture through Database");
     db.migrate().expect("migrate and backfill disposable fixture");
     drop(db);
-    let conn =
+    let mut conn =
         Connection::open_with_flags(&fixture.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .expect("read only");
-    let tx = conn
-        .unchecked_transaction()
-        .expect("coherent Verify snapshot");
+    let mut tx = grimodex_db::ScopedTransaction::begin(&mut conn).expect("coherent Verify snapshot");
     let report = grimodex_db::narrative_extraction::verify_narrative_dependency_graph_for_project(
-        &tx,
+        &mut tx,
         fixture.project(),
     )
     .expect("production graph Verify");
@@ -299,7 +297,7 @@ fn normal_scope_dependencies_are_healthy_in_project_verify_before_canonical_cuto
 fn graph_verify_rejects_scope_dependency_with_missing_or_other_run_owner() {
     for missing in [true, false] {
         let fixture = Fixture::new();
-        let conn = Connection::open(&fixture.path).expect("private corruption copy");
+        let mut conn = Connection::open(&fixture.path).expect("private corruption copy");
         let child = fixture.target()["revisionId"].as_str().expect("target");
         let id: String = conn.query_row("SELECT id FROM narrative_dependency_edges WHERE consumer_key=?1 AND source_object_identity LIKE 'scope-dependency:v1:%'", [child], |r|r.get(0)).expect("scope edge");
         let other_run: String = conn
@@ -314,10 +312,10 @@ fn graph_verify_rejects_scope_dependency_with_missing_or_other_run_owner() {
             params![id, if missing { None } else { Some(other_run) }],
         )
         .expect("corrupt edge provenance");
-        let tx = conn.unchecked_transaction().expect("Verify snapshot");
+        let mut tx = grimodex_db::ScopedTransaction::begin(&mut conn).expect("Verify snapshot");
         let report =
             grimodex_db::narrative_extraction::verify_narrative_dependency_graph_for_project(
-                &tx,
+                &mut tx,
                 fixture.project(),
             )
             .expect("Verify report");

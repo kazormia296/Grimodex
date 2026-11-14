@@ -121,6 +121,9 @@ The feature-only observer now also counts every cadence-one progress callback
 from before the primary connection opens until every primary connection closes.
 The audited engine is SQLite 3.53.2 (`libsqlite3-sys` 0.38.1), source ID
 `2026-06-03 19:12:13 d6e03d8c777cfa2d35e3b60d8ec3e0187f3e9f99d8e2ee9cac695fd6fcdf1a24`.
+(2026-11-12: the audited engine moved to SQLite 3.54.1 with `libsqlite3-sys` 0.39.1 — DR-DBC-4 in
+`nir1-lane-decisions/db-connection-decisions.md` records the source diff of the interpreter and the
+COMMIT program.)
 In this interpreter `nVmStep` advances per opcode and `vdbe_return` drains the
 remaining cadence-one callbacks. This includes nested `SqlExec`/VACUUM VMs.
 Prepare and integrity-check callbacks can add counts, so the result is a

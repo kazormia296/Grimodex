@@ -344,7 +344,7 @@ impl NirChronicleIndexRuntime {
     /// and decides whether a usable proof already exists.
     pub fn chronicle_reader_admission(
         &self,
-        conn: &Connection,
+        conn: &mut Connection,
         project: &str,
         control: &mut dyn GraphWorkControl,
     ) -> Result<ChronicleReaderAdmissionRead> {
@@ -447,7 +447,7 @@ impl NirChronicleIndexRuntime {
         permit: ReaderPermit,
         admission: &ChronicleReaderAdmission,
         participant: &WorkspaceParticipant,
-        operation: impl FnOnce(&Connection) -> Result<T>,
+        operation: impl FnOnce(&mut Connection) -> Result<T>,
     ) -> Result<T> {
         // Before the open starts, dropping the permit (also by unwinding)
         // gives the slot back.

@@ -13,8 +13,8 @@ fn main() -> Result<()> {
         args.len() == 4,
         "expected DB path, project ID and query Scene ID"
     );
-    let conn = Connection::open_with_flags(&args[1], OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let tx = conn.unchecked_transaction()?;
+    let mut conn = Connection::open_with_flags(&args[1], OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut tx = grimodex_db::ScopedTransaction::begin(&mut conn)?;
     let revisions = tx
         .prepare(
             "SELECT p.current_revision_id FROM narrative_proposals p
@@ -28,7 +28,7 @@ fn main() -> Result<()> {
     let mut eligible = vec![];
     let mut unavailable = vec![];
     for revision in &revisions {
-        match read_revision_retrieval_eligibility(&tx, &args[2], revision, &args[3])? {
+        match read_revision_retrieval_eligibility(&mut tx, &args[2], revision, &args[3])? {
             RevisionEligibilityRead::Eligible(snapshot) => eligible.push(json!({
                 "revisionId": snapshot.revision_id(), "owningRunId": snapshot.owning_run_id(),
                 "envelopeDigest": snapshot.envelope_digest(), "decisionId": snapshot.current_decision_id(),

@@ -162,7 +162,7 @@ fn bind(facts: &SceneBodyDeclarationCurrentFacts) -> NarrativeSceneBodyDeclarati
 /// that it holds right after (so a later mismatch is caused by the writer).
 fn declare(db: &Database, project: &str, scene: &str) -> NarrativeSceneBodyDeclarationV1 {
     let declaration = db
-        .with_conn(|conn| {
+        .with_conn_mut(|conn| {
             with_immediate_transaction(conn, |tx| {
                 let declaration = NarrativeSceneBodyDeclarationV1::new(
                     Uuid::new_v4().to_string(),
@@ -689,7 +689,7 @@ fn bulk_and_temporal_operations_invalidate() {
     assert_expired(&db, &second, "bulk clear date");
 
     // Temporal commit writers: the Chronicle range and the story order.
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |tx| {
             let version: i64 =
                 tx.query_row("SELECT version FROM tree_nodes WHERE id = 's4'", [], |r| r.get(0))?;
@@ -706,7 +706,7 @@ fn bulk_and_temporal_operations_invalidate() {
     .unwrap();
     assert_expired(&db, &third, "temporal Chronicle metadata patch");
     let fourth = declare(&db, "p1", "s4");
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |tx| {
             let version: i64 =
                 tx.query_row("SELECT version FROM tree_nodes WHERE id = 's4'", [], |r| r.get(0))?;
@@ -956,7 +956,7 @@ fn codex_character_restore_a1_invalidation_invalidates() {
     // undo of a type change) run to reset every binding that names the
     // restored character (agent_writes.rs).
     let events = db
-        .with_conn(|conn| {
+        .with_conn_mut(|conn| {
             with_immediate_transaction(conn, |tx| {
                 invalidate_character_references_with_events_in_tx(
                     tx,

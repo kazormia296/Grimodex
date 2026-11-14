@@ -736,10 +736,16 @@ impl<'connection> HistoryAuthorityConnection<'connection> {
 impl<'connection> GenerationHistorySnapshotReader<'connection> {
     /// The current-authority view of this snapshot's read transaction (see
     /// [`HistoryAuthorityConnection`]).
-    pub(crate) fn authority_connection(&self) -> HistoryAuthorityConnection<'connection> {
+    pub(crate) fn authority_connection(&self) -> HistoryAuthorityConnection<'_> {
         HistoryAuthorityConnection {
-            connection: self.connection,
+            connection: &*self.connection,
         }
+    }
+
+    /// The snapshot's connection, exclusively, for the history run's read-only
+    /// authorizer guard (DR-DBC-4).
+    pub(crate) fn connection_mut(&mut self) -> &mut Connection {
+        &mut *self.connection
     }
 }
 

@@ -205,7 +205,7 @@ fn current_operation_mode(state: &AppState, lease: &Lease, try_only: bool) -> Re
     }
     let db = op.request.database();
     let mut control = build::RelatedScenesBuildControl::new(state, &op.request, &op.participant);
-    let read_current = |conn: &_| -> Result<bool> {
+    let read_current = |conn: &mut _| -> Result<bool> {
         let RetrievalSceneSourceRead::Available(source) =
             read_retrieval_scene_source(conn, op.source.project_id(), op.source.scene_id())?
         else {

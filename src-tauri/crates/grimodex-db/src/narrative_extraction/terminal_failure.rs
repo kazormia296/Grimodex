@@ -643,7 +643,7 @@ pub fn project_terminal_failure_for_run(
     failure_message: &str,
 ) -> anyhow::Result<TerminalFailureProjectionOutcome> {
     let observed_at = grimodex_core::now_rfc3339_millis();
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             project_terminal_failure_for_run_generated_in_tx(
                 conn,
@@ -840,7 +840,7 @@ pub(crate) fn project_manual_intervention_finding(
             "ORDER BY julianday(COALESCE(completed_at, started_at, created_at)) DESC, id ASC",
         )
     };
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             // Anchor on the latest matching Run for the work identity; the
             // Finding identity itself is run-independent.
@@ -920,7 +920,7 @@ pub(crate) fn project_manual_intervention_finding(
 /// new anchor. A later clean confirmation Verify for the same epoch-bound
 /// work key resolves the chain.
 pub(crate) fn project_graph_repair_required_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     run_id: &str,
     semantic_epoch_id: &str,
@@ -1105,7 +1105,7 @@ pub fn resolve_terminal_failure_for_run(
     run_id: &str,
 ) -> anyhow::Result<TerminalFailureResolutionOutcome> {
     let observed_at = grimodex_core::now_rfc3339_millis();
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             resolve_terminal_failure_for_run_generated_in_tx(conn, project_id, run_id, &observed_at)
         })

@@ -62,9 +62,9 @@ impl Fixture {
 
     pub fn prepare(&self) -> (NirIndexBuildPlan, Vec<ChronicleRetrievalDocument>) {
         self.db
-            .with_conn(|conn| {
-                let tx = conn.unchecked_transaction()?;
-                match prepare_chronicle_index_build(&tx, &self.runtime, self.project())? {
+            .with_conn_mut(|conn| {
+                let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+                match prepare_chronicle_index_build(&mut tx, &self.runtime, self.project())? {
                     NirIndexBuildRead::Ready { plan, documents } => Ok((plan, documents)),
                     NirIndexBuildRead::Unavailable { reason } => {
                         anyhow::bail!("unexpected preparation {reason:?}")

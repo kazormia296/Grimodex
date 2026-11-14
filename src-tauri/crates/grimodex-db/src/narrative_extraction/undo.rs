@@ -113,7 +113,7 @@ fn mutate_commit(
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let timestamp = Utc::now().timestamp_millis();
 
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         with_immediate_transaction(conn, |conn| {
             let commit = resolve_commit(conn, payload)?;

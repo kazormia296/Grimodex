@@ -73839,7 +73839,7 @@ SOFTWARE.
 ```
 </details>
 
-### libsqlite3-sys (0.38.1)
+### libsqlite3-sys (0.39.1)
 
 - License: MIT
 - Repository: https://github.com/rusqlite/rusqlite
@@ -100424,7 +100424,7 @@ SOFTWARE.
 
 - License: MIT
 
-### rusqlite (0.40.1)
+### rusqlite (0.41.1)
 
 - License: MIT
 - Repository: https://github.com/rusqlite/rusqlite

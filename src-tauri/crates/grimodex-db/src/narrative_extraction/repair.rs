@@ -519,7 +519,7 @@ fn edge_row_fingerprints_in_conn(
 /// kind, status and Epoch, its stored report and digest, and the live
 /// repair target set.
 fn revalidate_plan_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     plan: &RepairPlan,
 ) -> anyhow::Result<()> {
@@ -571,7 +571,7 @@ fn revalidate_plan_in_tx(
 /// - the live duplicate set still matches the one that Verify recorded, so
 ///   the plan describes the graph as it is now and not as it was
 pub fn seal_repair_plan(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     verify_run_id: &str,
     semantic_epoch_id: &str,
@@ -646,7 +646,7 @@ struct SealableVerifyResult {
 /// its own `NEX_REPAIR_VERIFY_*` code so a caller can tell "no such Run"
 /// from "that Run is still running" from "that Run is from a prior Epoch".
 fn load_sealable_verify_result(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     verify_run_id: &str,
     semantic_epoch_id: &str,
@@ -1151,7 +1151,7 @@ fn seal_plan_matching_digest(
             anyhow::anyhow!("NEX_REPAIR_NO_EPOCH: project '{project_id}' has no Semantic Epoch")
         })?;
     let plan =
-        db.with_conn(|conn| seal_repair_plan(conn, project_id, verify_run_id, &current_epoch_id))?;
+        db.with_conn_mut(|conn| seal_repair_plan(conn, project_id, verify_run_id, &current_epoch_id))?;
     anyhow::ensure!(
         plan.digest() == expected_plan_digest,
         "NEX_REPAIR_PLAN_DIGEST_MISMATCH: the supplied planDigest does not match the \
@@ -1250,7 +1250,7 @@ pub fn repair_narrative_dependency_declarations_for_project(
         "edgeIdsToDeactivate": plan.edge_ids_to_deactivate.len(),
     });
     let spec_digest = format!("sha256:{}", digest_plan(&spec));
-    let run = db.with_conn(|conn| {
+    let run = db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             create_system_run_in_tx(
                 conn,
@@ -1478,7 +1478,7 @@ fn finalize_repair_run(
     status: NarrativeRunStatus,
     outcome: Option<&serde_json::Value>,
 ) -> anyhow::Result<()> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             if let Some(outcome) = outcome {
                 record_run_outcome_in_tx(conn, run_id, outcome)?;
@@ -1640,7 +1640,7 @@ fn complete_noop_repair_run(db: &Database, run_id: &str) -> anyhow::Result<Repai
         "edgesDeactivated": 0,
         "backupArtifactPath": "",
     });
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             record_run_outcome_in_tx(conn, run_id, &outcome_value)?;
             transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Completed)
@@ -1672,7 +1672,7 @@ fn fail_repair_attempt(
         repair_plan_digest: plan.digest.clone(),
         active_run_id: run_id.to_string(),
     };
-    let _ = db.with_conn(|conn| {
+    let _ = db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             release_held_repair_lease_in_tx(conn, project_id, &claim, &plan.semantic_epoch_id)
         })
@@ -1714,7 +1714,7 @@ fn execute_repair_steps(
     };
 
     // 1. Epoch match + lease claim.
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             let current_epoch_id = get_current_epoch(conn, project_id)?
                 .ok_or_else(|| {
@@ -1779,7 +1779,7 @@ fn execute_repair_steps(
 
     // 4. Re-prove authority, re-validate, repair, release, record,
     //    terminalize -- atomically.
-    let edges_deactivated = db.with_conn(|conn| {
+    let edges_deactivated = db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             ensure_source_unchanged_since_backup(conn, &source_revision_before_backup)?;
             assert_repair_lease_still_held_in_tx(
@@ -2106,7 +2106,7 @@ mod tests {
 
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         assert_eq!(plan.edge_ids_to_deactivate, vec![old_id.clone()]);
         assert_eq!(plan.change_count(), 1);
@@ -2135,7 +2135,7 @@ mod tests {
 
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         assert!(plan.edge_ids_to_deactivate.is_empty());
         assert_eq!(plan.change_count(), 0);
@@ -2153,7 +2153,7 @@ mod tests {
         seed_duplicate_edges(&db);
 
         let error = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", "no-such-run", &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", "no-such-run", &epoch_id))
             .expect_err("a nonexistent Verify Run must not seal a plan");
         assert!(
             error
@@ -2181,7 +2181,7 @@ mod tests {
         );
 
         let error = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", "verify-v3", &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", "verify-v3", &epoch_id))
             .expect_err("a version-3 Verify result must not seal a version-4 Repair plan");
         assert!(
             error
@@ -2209,7 +2209,7 @@ mod tests {
         );
 
         let error = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", "verify-v4", &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", "verify-v4", &epoch_id))
             .expect_err("a version-4 Verify result must not seal a version-5 Repair plan");
         assert!(
             error
@@ -2237,7 +2237,7 @@ mod tests {
                 None,
             );
             let error = db
-                .with_conn(|conn| seal_repair_plan(conn, "project-1", &run_id, &epoch_id))
+                .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &run_id, &epoch_id))
                 .expect_err("a Verify Run that did not complete must not seal a plan");
             assert!(
                 error
@@ -2268,7 +2268,7 @@ mod tests {
         assert_ne!(other_epoch_id, epoch_id);
 
         let error = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &other_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &other_run_id, &epoch_id))
             .expect_err("another project's Verify Run must not seal this project's plan");
         assert!(
             error
@@ -2290,7 +2290,7 @@ mod tests {
             .expect("rotate epoch");
 
         let error = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &stale_run_id, &current_epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &stale_run_id, &current_epoch_id))
             .expect_err("a Verify from a prior Semantic Epoch must not seal a plan");
         assert!(
             error
@@ -2310,7 +2310,7 @@ mod tests {
         // `semantic-index-rebuild` is what `dependency-rebuild-derived`
         // actually stores (the policy's `existingRunKindColumnValue`).
         let borrowed = db
-            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .with_conn_mut(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("produce a report to borrow");
         let report_value = serde_json::to_value(&borrowed).expect("serialize report");
         seed_raw_run(
@@ -2329,7 +2329,7 @@ mod tests {
         );
 
         let error = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", "not-a-verify", &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", "not-a-verify", &epoch_id))
             .expect_err("only a dependency-verify Run may seal a plan");
         assert!(
             error
@@ -2351,7 +2351,7 @@ mod tests {
         seed_duplicate_edges(&db);
 
         let error = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect_err("a target outside the Verify result must not be sealed into a plan");
         assert!(
             error.to_string().contains("NEX_VERIFY_GRAPH_STATE_CHANGED"),
@@ -2381,7 +2381,7 @@ mod tests {
         .expect("tamper with the stored report");
 
         let error = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect_err("a report that no longer matches its digest must not seal a plan");
         assert!(
             error
@@ -2393,7 +2393,7 @@ mod tests {
         // about the tampering and not about the fixture.
         let fresh_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &fresh_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &fresh_run_id, &epoch_id))
             .expect("seal from an untampered Verify result");
         assert_eq!(plan.edge_ids_to_deactivate, vec![old_id]);
         assert!(plan.verify_report_digest.starts_with("sha256:"));
@@ -2434,7 +2434,7 @@ mod tests {
         .expect("store a fully re-digested rebuildRequired mismatch");
 
         let error = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect_err("Repair must reject a report whose stored rebuildRequired is forged");
         assert!(
             error
@@ -2484,7 +2484,7 @@ mod tests {
         .expect("store a fully re-digested reserved Semantic footprint");
 
         let error = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect_err("Repair must reject a nonzero reserved Semantic footprint");
         assert!(
             error
@@ -2504,10 +2504,10 @@ mod tests {
         assert_ne!(first_run_id, second_run_id);
 
         let first = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &first_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &first_run_id, &epoch_id))
             .expect("seal from the first Verify");
         let second = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &second_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &second_run_id, &epoch_id))
             .expect("seal from the second Verify");
 
         // Same graph, same candidates, same report digest -- but a plan is
@@ -2524,7 +2524,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         let error = repair_narrative_dependency_declarations_for_project(
@@ -2550,7 +2550,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         repair_narrative_dependency_declarations_for_project(
@@ -2608,7 +2608,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         // Rotate the Epoch so the sealed plan is stale: the repair fails at
@@ -2674,7 +2674,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         repair_narrative_dependency_declarations_for_project(
@@ -2721,7 +2721,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         repair_narrative_dependency_declarations_for_project(
@@ -2776,7 +2776,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         let first = repair_narrative_dependency_declarations_for_project(
@@ -2815,7 +2815,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         let first = repair_narrative_dependency_declarations_for_project(
@@ -2872,7 +2872,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         repair_narrative_dependency_declarations_for_project(
@@ -2915,7 +2915,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         for (request_id, actor_id) in [("", "operator-1"), ("  ", "operator-1"), ("req-1", "")] {
@@ -3038,7 +3038,7 @@ mod tests {
         let (old_id, new_id) = seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         assert_eq!(plan.edge_ids_to_deactivate, vec![old_id.clone()]);
 
@@ -3091,7 +3091,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         // Rotate to a new epoch after the plan was sealed.
         db.with_conn(|conn| create_epoch_in_tx(conn, "project-1", "migration", None))
@@ -3176,7 +3176,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let sealed = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         let before = edge_count(&db);
         // Everything real except the digest that is supposed to bind it.
@@ -3210,7 +3210,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         // The Repair lease excludes other Repairs, not ordinary Producer
@@ -3258,7 +3258,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         repair_narrative_dependency_declarations_for_project(
@@ -3300,7 +3300,7 @@ mod tests {
         let (old_id, new_id) = seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         let crashed_run_id =
             seed_crashed_repair_run(&db, "project-1", &plan, "req-crash", "test-actor");
@@ -3352,7 +3352,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         let crashed_run_id = seed_crashed_repair_run(&db, "project-1", &plan, "req-a", "actor-a");
 
@@ -3401,7 +3401,7 @@ mod tests {
         let second_old_id = seed_second_duplicate_pair(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         assert_eq!(plan.change_count(), 2, "fixture needs two repair targets");
         let crashed_run_id =
@@ -3447,12 +3447,12 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         seed_crashed_repair_run(&db, "project-1", &plan, "req-live", "test-actor");
         // A live lease means another process may still be mid-repair. There
         // is no way to prove otherwise, so recovery must not start.
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 claim_repair_lease_in_tx(
                     conn,
@@ -3508,7 +3508,7 @@ mod tests {
             .expect("epoch present")
             .id;
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("preview seals the plan the caller confirms");
         let plan_digest = plan.digest().to_string();
 
@@ -3570,7 +3570,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         let plan_digest = plan.digest().to_string();
         let crashed_run_id =
@@ -3638,7 +3638,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         let plan_digest = plan.digest().to_string();
         let crashed_run_id =
@@ -3685,14 +3685,14 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         let crashed_run_id =
             seed_crashed_repair_run(&db, "project-1", &plan, "req-race", "actor-a");
 
         // Stand in for "the other retry got there first": a live lease held
         // under this same Run by a different owner process.
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 claim_repair_lease_in_tx(
                     conn,
@@ -3749,7 +3749,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         // The first call creates the Run and takes the lease under it. Build
@@ -3757,7 +3757,7 @@ mod tests {
         // lease bound to it held by the *other* attempt's owner.
         let shared_run_id =
             seed_crashed_repair_run(&db, "project-1", &plan, "req-shared-run", "actor-a");
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 claim_repair_lease_in_tx(
                     conn,
@@ -3808,9 +3808,9 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 claim_repair_lease_in_tx(
                     conn,
@@ -3873,7 +3873,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         let base = RepairLeaseClaim {
             lease_owner: "process-1".to_string(),
@@ -3881,7 +3881,7 @@ mod tests {
             repair_plan_digest: plan.digest().to_string(),
             active_run_id: "run-a".to_string(),
         };
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 claim_repair_lease_in_tx(
                     conn,
@@ -3897,7 +3897,7 @@ mod tests {
 
         // Same owner, same Verify Run, same plan digest -- different Run.
         let error = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     claim_repair_lease_in_tx(
                         conn,
@@ -3980,7 +3980,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         let crashed_run_id =
             seed_crashed_repair_run(&db, "project-1", &plan, "req-swap", "actor-a");
@@ -4020,11 +4020,11 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         let crashed_run_id =
             seed_crashed_repair_run(&db, "project-1", &plan, "req-busy", "actor-a");
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 claim_repair_lease_in_tx(
                     conn,
@@ -4084,7 +4084,7 @@ mod tests {
         let (old_id, _new_id) = seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         let crashed_run_id =
             seed_crashed_repair_run(&db, "project-1", &plan, "req-honest", "actor-a");
@@ -4123,7 +4123,7 @@ mod tests {
             .expect("epoch present")
             .id;
         let plan_digest = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan")
             .digest()
             .to_string();
@@ -4167,14 +4167,14 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         let before = edge_count(&db);
 
         // Stand in for "A's lease expired during a long backup and B
         // re-claimed it": B owns a live lease under a different owner and
         // Run, so A's CAS must find nothing.
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 claim_repair_lease_in_tx(
                     conn,
@@ -4235,7 +4235,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         let claim = RepairLeaseClaim {
             lease_owner: "owner-a".to_string(),
@@ -4244,7 +4244,7 @@ mod tests {
             active_run_id: "run-a".to_string(),
         };
         // Claimed, then expired — exactly what a long backup produces.
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 claim_repair_lease_in_tx(
                     conn,
@@ -4276,7 +4276,7 @@ mod tests {
         seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         repair_narrative_dependency_declarations_for_project(
             &db,
@@ -4328,7 +4328,7 @@ mod tests {
         let now = "2026-08-15T00:00:00.000Z";
         let expires_at = "2099-01-01T00:00:00.000Z";
 
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 claim_repair_lease_in_tx(
                     conn,
@@ -4348,7 +4348,7 @@ mod tests {
         .expect("first claim");
 
         let error = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     claim_repair_lease_in_tx(
                         conn,
@@ -4369,7 +4369,7 @@ mod tests {
         assert!(error.to_string().starts_with("NEX_REPAIR_LEASE_HELD"));
 
         // Re-claiming the SAME plan/owner is idempotent, not rejected.
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 claim_repair_lease_in_tx(
                     conn,
@@ -4404,7 +4404,7 @@ mod tests {
             active_run_id: "run-a".to_string(),
         };
         for label in ["first claim", "re-entrant claim by the same Run"] {
-            db.with_conn(|conn| {
+            db.with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     claim_repair_lease_in_tx(
                         conn,
@@ -4438,7 +4438,7 @@ mod tests {
             repair_plan_digest: "sha256:plan-a".to_string(),
             active_run_id: "run-a".to_string(),
         };
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 claim_repair_lease_in_tx(
                     conn,
@@ -4456,7 +4456,7 @@ mod tests {
             .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "migration", None))
             .expect("rotate epoch");
         let error = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     claim_repair_lease_in_tx(
                         conn,
@@ -4480,7 +4480,7 @@ mod tests {
         let (_workspace_path, db) = test_workspace("case");
         let epoch_id = seed_epoch(&db, "project-1");
 
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 claim_repair_lease_in_tx(
                     conn,
@@ -4499,7 +4499,7 @@ mod tests {
         })
         .expect("first claim, already expired");
 
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             with_immediate_transaction(conn, |conn| {
                 claim_repair_lease_in_tx(
                     conn,
@@ -4541,7 +4541,7 @@ mod tests {
         let (old_id, _new_id) = seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         assert!(plan.edge_ids_to_deactivate().contains(&old_id));
         let before = edge_count(&db);
@@ -4599,7 +4599,7 @@ mod tests {
         .expect("seed one clean edge");
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .with_conn_mut(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal empty plan");
         assert!(plan.is_empty());
 

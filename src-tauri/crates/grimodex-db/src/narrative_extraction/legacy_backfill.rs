@@ -324,7 +324,7 @@ pub fn inject_legacy_backfill_fault_for_work(
         "NEX_MAINTENANCE_FAULT_WORK_IDENTITY_MISMATCH: at least one planner reason is required"
     );
 
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             let current_epoch_id = get_current_epoch(conn, &expected_work.project_id)?
                 .map(|epoch| epoch.id);
@@ -596,7 +596,7 @@ pub fn bootstrap_legacy_dependency_backfill_for_project_with_control(
     }
     let now = grimodex_core::now_rfc3339_millis();
 
-    let (run_id, reused) = db.with_conn(|conn| {
+    let (run_id, reused) = db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             // C2-ZB must have finished re-keying the historical Run Edges
             // before this v3 writer creates phase-1 Run state or phase-2
@@ -635,7 +635,7 @@ pub fn bootstrap_legacy_dependency_backfill_for_project_with_control(
         return Ok(LegacyBackfillBootstrapOutcome::AlreadyRun { run_id });
     }
 
-    let transform_result = db.with_conn(|conn| {
+    let transform_result = db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             backfill_project_semantic_build_graph_in_tx_for_run(conn, project_id, &now, &run_id)
         })
@@ -941,7 +941,7 @@ fn finalize_legacy_backfill_run_with_control(
     control: Option<&super::maintenance_runtime::MaintenanceCycleControl<'_>>,
     work_key: &str,
 ) -> anyhow::Result<()> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |conn| {
             if let Some(control) = control {
                 (control.should_stop)()?;
@@ -1906,7 +1906,7 @@ mod tests {
         use crate::narrative_extraction::restore_rebuild::verify_narrative_dependency_graph_for_project;
 
         let db = test_db();
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             seed_project(conn, "project-1");
             conn.execute(
                 "INSERT INTO narrative_extraction_runs
@@ -2296,7 +2296,7 @@ mod tests {
     fn backfill_owner_finalizer_survives_generic_cancel_phase_gap() {
         let db = test_db();
         let run_id = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 seed_project(conn, "project-1");
                 with_immediate_transaction(conn, |conn| {
                     let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
@@ -2487,7 +2487,7 @@ mod tests {
     fn controlled_backfill_termination_transfers_the_exact_run_owner() {
         let db = test_db();
         let run_id = db
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 seed_project(conn, "project-1");
                 with_immediate_transaction(conn, |conn| {
                     let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
@@ -2571,7 +2571,7 @@ mod tests {
         .expect("seed project");
 
         let create_backfill_run = |reuse| {
-            db.with_conn(|conn| {
+            db.with_conn_mut(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     let epoch_id = match get_current_epoch(conn, "project-1")? {
                         Some(epoch) => epoch.id,

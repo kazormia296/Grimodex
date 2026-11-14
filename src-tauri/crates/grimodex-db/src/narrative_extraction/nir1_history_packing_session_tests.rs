@@ -1235,7 +1235,7 @@ fn only_the_attempt_of_the_current_human_may_be_left_out() -> Result<()> {
 }
 
 fn run_in_with(
-    conn: &Connection,
+    conn: &mut Connection,
     current: &CurrentHistoryContext,
     budget: &mut GenerationHistoryReadBudget,
     in_flight: Option<InFlightAttempt<'_>>,
