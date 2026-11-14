@@ -77,8 +77,10 @@ master の Full（§8）は `--ref master` で dispatch し、`candidate_head` �
    ```
 
    同じQuickをhostedで行う場合は、手順3でpushしたbranchのremote HEADが`candidate_head`と一致することを確認してから、
-   同じ固定値で次をdispatchする。hosted Quickは同じjobの中で直後のverifyまで実行する。dispatchしたrunの`headSha`が
-   `candidate_head`と一致し、jobが成功したrunだけをcompleteなQuick receiptとする。
+   同じ固定値で次をdispatchする。hosted Quickは3つのpart job（`quick-1`〜`quick-3`。選択されたLight commandを直列のまま3つのVMに分ける）と
+   `quick-aggregate`で実行し、`quick-aggregate`がpartをまとめて1つのreceiptにし、partの和が分割前の選択と一致することを確かめ、直後のverifyまで実行する。
+   dispatchしたrunの`headSha`が`candidate_head`と一致し、part jobと`quick-aggregate`のすべてが成功したrunだけをcompleteなQuick receiptとする。
+   失敗したjobだけを再実行しない（集約が前のattemptのpartを読めず落ちる）。再実行が要るときは全jobを再実行するか、dispatchし直す。
 
    ```bash
    gh workflow run canonical-ci.yml --ref "$(git branch --show-current)" -f profile=quick -f candidate_base="$candidate_base" -f candidate_head="$candidate_head"
@@ -301,7 +303,7 @@ required checks、手順2のQuick receipt、review の確認は同じである�
 
 - 手順2で固定した`candidate_base`／`candidate_head`のcompleteなQuick receiptがある。ローカルのQuickは、直後の
   `pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"`が成功している。hosted Quickは
-  dispatchしたrunの`headSha`が`candidate_head`と一致し、同じjobのverifyまで成功している。
+  dispatchしたrunの`headSha`が`candidate_head`と一致し、`quick-aggregate`のverifyまで（part jobもすべて）成功している。
 - そのreceiptの`candidate_base`が`candidate_head`と`origin/master`の両方の祖先である。上の`git fetch origin master`の後に
   `git merge-base --is-ancestor "$candidate_base" "$candidate_head"`と`git merge-base --is-ancestor "$candidate_base" origin/master`の両方が成功する
   （`candidate_base`は、そのQuickの直前に`git fetch origin master`で取った`origin/master`のはずで、その後に`origin/master`が進んでいても祖先のままである。鮮度は問わない）。

@@ -46,15 +46,17 @@ permissions:
 
 jobs:
   canonical:
-    # Full runs as independent parts, one fresh hosted VM each; contracts and
-    # Quick keep the single job. The part list equals scripts/local-ci-full-parts.json.
-    name: ${{ inputs.profile == 'full' && format('full-{0}', matrix.part) || 'canonical' }}
+    # Full and Quick run as independent parts, one fresh hosted VM each; contracts
+    # keeps the single job. The Full part list equals scripts/local-ci-full-parts.json;
+    # the Quick parts are the registry's impact.select.<n> tasks (quick-aggregate
+    # assembles the receipt).
+    name: ${{ inputs.profile == 'full' && format('full-{0}', matrix.part) || inputs.profile == 'quick' && format('quick-{0}', matrix.part) || 'canonical' }}
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.profile == 'contracts' && 20 || 360 }}
     strategy:
       fail-fast: false
       matrix:
-        part: ${{ fromJSON(inputs.profile == 'full' && '["frontend","native","journeys","rust","cquery","migration","runtime"]' || '["all"]') }}
+        part: ${{ fromJSON(inputs.profile == 'full' && '["frontend","native","journeys","rust","cquery","migration","runtime"]' || inputs.profile == 'quick' && '["1","2","3"]' || '["all"]') }}
     steps:
       - name: Validate canonical selection
         env:
@@ -129,6 +131,14 @@ jobs:
           toolchain: stable
           components: clippy
 
+      # Quick only: Full must assess its setup before any cache is restored.
+      # Part 3 builds the N-API crate (own target); parts 1 and 2 build src-tauri.
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        if: inputs.profile == 'quick'
+        with:
+          workspaces: ${{ matrix.part == '3' && 'electron/native/grimodex-node' || 'src-tauri' }}
+          key: quick-part-${{ matrix.part }}
+
       - name: Canonical system dependencies
         if: inputs.profile != 'contracts'
         env:
@@ -190,6 +200,7 @@ jobs:
         env:
           PROFILE: ${{ inputs.profile }}
           FULL_PART: ${{ matrix.part }}
+          QUICK_PART: ${{ matrix.part }}
           REQUESTED_BASE: ${{ inputs.candidate_base }}
           EXPECTED_HEAD: ${{ inputs.candidate_head }}
           MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks || (inputs.profile == 'full' && '1' || '12') }}
@@ -211,8 +222,13 @@ jobs:
             : > ".artifacts/.canonical-full-part-$FULL_PART"
             pnpm ci:local:full -- --part "$FULL_PART" --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
           else
-            pnpm "ci:local:$PROFILE" -- --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
-            pnpm ci:local:verify -- "$PROFILE" --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
+            # One part of the split Quick; quick-aggregate assembles and verifies.
+            [[ "$QUICK_PART" =~ ^[1-3]$ ]]
+            mkdir -p .artifacts
+            : > ".artifacts/.canonical-quick-part-$QUICK_PART"
+            # Skip DWARF like the Quality job; panic messages and symbol names remain.
+            export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
+            pnpm ci:local:quick -- --part "$QUICK_PART" --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
           fi
 
       - name: Observe canonical local report allocation
@@ -261,11 +277,27 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # The Quick part evidence the quick-aggregate merges back under .artifacts/,
+      # bound to one attempt like Full: re-run ALL jobs, never only failed ones.
+      - name: Upload Quick part evidence
+        if: always() && inputs.profile == 'quick' && steps.canonical.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: canonical-quick-part-${{ matrix.part }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/.canonical-quick-part-${{ matrix.part }}
+            .artifacts/local-ci/parts/
+            .artifacts/local-ci/runs/
+            .artifacts/local-ci/impact-${{ matrix.part }}.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload existing canonical evidence
         if: always() && (steps.canonical.outcome != 'skipped' || steps.full_setup.outcome != 'skipped')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.profile == 'full' && format('canonical-full-diagnostics-{0}', matrix.part) || 'canonical-ci' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ inputs.profile == 'full' && format('canonical-full-diagnostics-{0}', matrix.part) || inputs.profile == 'quick' && format('canonical-quick-diagnostics-{0}', matrix.part) || 'canonical-ci' }}-${{ github.run_id }}-${{ github.run_attempt }}
           # Assessment-only attempts publish shaped setup owner/acquisition/close/
           # decision JSON. Estimate destination paths and complete query log bodies
           # stay private; ordinary canonical receipt publication is unchanged.
@@ -348,6 +380,77 @@ jobs:
             .artifacts/product-journeys/
             .artifacts/browser-ci/
             .artifacts/electron-runtime-performance/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  # Assemble the single Quick receipt from every part on a clean checkout of the
+  # same candidate, then run the unchanged immediate verify with the same tuple.
+  quick-aggregate:
+    if: inputs.profile == 'quick'
+    needs: canonical
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Validate canonical selection
+        env:
+          REQUESTED_BASE: ${{ inputs.candidate_base }}
+          EXPECTED_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks || (inputs.profile == 'full' && '1' || '12') }}
+        run: |
+          set -euo pipefail
+          [[ "$MAX_PARALLEL_TASKS" =~ ^([1-9]|1[0-2])$ ]]
+          [[ "$REQUESTED_BASE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_HEAD" == "$GITHUB_SHA" ]]
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: canonical-quick-part-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts
+          merge-multiple: true
+
+      - name: Aggregate Quick parts and immediate verify
+        id: aggregate
+        env:
+          REQUESTED_BASE: ${{ inputs.candidate_base }}
+          EXPECTED_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks || (inputs.profile == 'full' && '1' || '12') }}
+        run: |
+          set -euo pipefail
+          readonly candidate_base="$(git rev-parse "${REQUESTED_BASE}^{commit}")"
+          readonly candidate_head="$(git rev-parse "${EXPECTED_HEAD}^{commit}")"
+          [[ "$candidate_head" == "$GITHUB_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$candidate_head" ]]
+          [[ -z "$(git status --porcelain --untracked-files=all)" ]]
+          git merge-base --is-ancestor "$candidate_base" "$candidate_head"
+          pnpm ci:local:quick -- --aggregate --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
+          pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
+
+      - name: Upload existing canonical evidence
+        if: always() && steps.aggregate.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: canonical-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/local-ci/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14

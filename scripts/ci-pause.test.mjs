@@ -3347,14 +3347,20 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
   const canonical = steps.find(({ id }) => id === "canonical");
   assert.equal(selection.if, undefined);
   assert.equal(canonical.if, "inputs.profile != 'contracts'");
-  const { FULL_PART, ...canonicalEnv } = canonical.env;
+  const { FULL_PART, QUICK_PART, ...canonicalEnv } = canonical.env;
   assert.equal(FULL_PART, "${{ matrix.part }}");
+  assert.equal(QUICK_PART, "${{ matrix.part }}");
   assert.deepEqual(canonicalEnv, selection.env);
   assert.equal(selection.env.MAX_PARALLEL_TASKS, "${{ inputs.max_parallel_tasks || (inputs.profile == 'full' && '1' || '12') }}");
   assert.match(canonical.run, /readonly candidate_base=/u);
   assert.match(canonical.run, /readonly candidate_head=/u);
-  const profileStart = canonical.run.indexOf('pnpm "ci:local:$PROFILE"');
-  assert.ok(profileStart > canonical.run.indexOf('git merge-base --is-ancestor'));
+  // Full and Quick both run only their part here; assembly and verify belong to
+  // their aggregate jobs.
+  for (const profile of ["full", "quick"]) {
+    const profileStart = canonical.run.indexOf(`pnpm ci:local:${profile} -- --part`);
+    assert.ok(profileStart > canonical.run.indexOf('git merge-base --is-ancestor'), profile);
+  }
+  assert.doesNotMatch(canonical.run, /ci:local:verify/u);
   assert.doesNotMatch(canonical.run, /node scripts\/local-ci-full-admission|Full conditional admission is not yet enabled|recover-lock|unlink|^\s*(?:sudo|kill)\b/mu);
   const cli = await readFile(path.join(repoRoot, "scripts/local-ci.mjs"), "utf8");
   const main = cli.slice(cli.indexOf("async function main()"));
@@ -3364,7 +3370,7 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
   assert.ok(lock >= 0 && lock < host && host < tasks);
   assert.match(main.slice(host, tasks), /signal: cliAbort\.signal, localRunId: runId/u);
   assert.match(main, /verifyFullPrivateAdmission\(repoRoot, host\.decision\)/u);
-  assert.equal((canonical.run.match(/--base "\$candidate_base" --head "\$candidate_head" --max-parallel-tasks "\$MAX_PARALLEL_TASKS"/gu) ?? []).length, 3);
+  assert.equal((canonical.run.match(/--base "\$candidate_base" --head "\$candidate_head" --max-parallel-tasks "\$MAX_PARALLEL_TASKS"/gu) ?? []).length, 2);
   const execute = promisify(execFile);
   const temporary = await mkdtemp(path.join(tmpdir(), "canonical-ci-contract-"));
   const cwd = path.join(temporary, "checkout");
@@ -3388,25 +3394,23 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
     const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, CALLS: calls, PROFILE: "quick", REQUESTED_BASE: sha, EXPECTED_HEAD: sha, GITHUB_SHA: sha, MAX_PARALLEL_TASKS: "3", FAIL_PROFILE: "0" };
     const shell = (source, overrides = {}) => execute("bash", ["-c", source], { cwd, env: { ...env, ...overrides }, timeout: 10000 });
     for (const PROFILE of ["quick", "full"]) {
-      // Quick runs profile then verify; a Full part runs only its part and
-      // leaves assembly and verify to full-aggregate.
+      // A Full or Quick part runs only its part and leaves assembly and verify
+      // to full-aggregate / quick-aggregate.
       const run = PROFILE === "full"
         ? ["ci:local:full", "--", "--part", "journeys", "--base", sha, "--head", sha, "--max-parallel-tasks", "3"]
-        : [`ci:local:${PROFILE}`, "--", "--base", sha, "--head", sha, "--max-parallel-tasks", "3"];
+        : ["ci:local:quick", "--", "--part", "2", "--base", sha, "--head", sha, "--max-parallel-tasks", "3"];
       await writeFile(calls, "");
       await shell(selection.run, { PROFILE });
-      await shell(canonical.run, { PROFILE, FULL_PART: "journeys" });
-      assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse), PROFILE === "full" ? [run] : [
-        run,
-        ["ci:local:verify", "--", PROFILE, "--base", sha, "--head", sha, "--max-parallel-tasks", "3"],
-      ]);
-      if (PROFILE === "full") await access(path.join(cwd, ".artifacts/.canonical-full-part-journeys"));
+      await shell(canonical.run, { PROFILE, FULL_PART: "journeys", QUICK_PART: "2" });
+      assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse), [run]);
+      await access(path.join(cwd, PROFILE === "full" ? ".artifacts/.canonical-full-part-journeys" : ".artifacts/.canonical-quick-part-2"));
       await writeFile(calls, "");
-      await assert.rejects(shell(canonical.run, { PROFILE, FULL_PART: "journeys", FAIL_PROFILE: "1" }), (error) => error.code === 7 && /canonical profile gate failed/u.test(error.stderr));
+      await assert.rejects(shell(canonical.run, { PROFILE, FULL_PART: "journeys", QUICK_PART: "2", FAIL_PROFILE: "1" }), (error) => error.code === 7 && /canonical profile gate failed/u.test(error.stderr));
       assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse), [run], "a failed host/private/profile gate must not start verify");
     }
     await writeFile(calls, "");
     for (const FULL_PART of ["", "../escape", "Journeys"]) await assert.rejects(shell(canonical.run, { PROFILE: "full", FULL_PART }));
+    for (const QUICK_PART of ["", "0", "4", "all", "1/3", "../escape"]) await assert.rejects(shell(canonical.run, { PROFILE: "quick", QUICK_PART }));
     assert.equal(await readFile(calls, "utf8"), "");
     for (const overrides of [
       { REQUESTED_BASE: "$(touch injected)" },
@@ -3420,6 +3424,7 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
     await writeFile(path.join(cwd, "source.txt"), "dirty\n");
     await assert.rejects(shell(canonical.run));
     await assert.rejects(shell(canonical.run, { PROFILE: "full" }));
+    await assert.rejects(shell(canonical.run, { QUICK_PART: "1" }));
     assert.equal(await readFile(calls, "utf8"), "");
     await writeFile(path.join(cwd, "source.txt"), "public synthetic fixture\n");
     await assert.rejects(shell(canonical.run, { GITHUB_SHA: "0".repeat(40) }));

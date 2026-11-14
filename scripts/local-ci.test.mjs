@@ -718,16 +718,28 @@ test("quick and full profiles resolve deterministic command plans", async () => 
     fromStage: "security",
   });
 
-  const impactArgs = quick.stages[0].commands[0].args;
-  assert.deepEqual(impactArgs.slice(-7), [
-    "--base",
-    "origin/master",
-    "--head",
-    "HEAD",
-    "--run",
-    "--report",
-    ".artifacts/local-ci/impact.json",
-  ]);
+  // Quick is three serial parts (one process locally, three VMs when hosted);
+  // each runs one part of the selected commands and keeps its own report.
+  assert.deepEqual(
+    quick.stages[0].commands.map(({ id, after }) => [id, after]),
+    [
+      ["impact.select.1", undefined],
+      ["impact.select.2", ["impact.select.1"]],
+      ["impact.select.3", ["impact.select.2"]],
+    ],
+  );
+  for (const [index, command] of quick.stages[0].commands.entries()) {
+    assert.deepEqual(command.args.slice(0, 4), ["eval:impact", "--", "--part", `${index + 1}/3`]);
+    assert.deepEqual(command.args.slice(-7), [
+      "--base",
+      "origin/master",
+      "--head",
+      "HEAD",
+      "--run",
+      "--report",
+      `.artifacts/local-ci/impact-${index + 1}.json`,
+    ]);
+  }
 });
 
 test("local Full product stage masks both inherited journey subset selectors", async () => {
@@ -4899,28 +4911,19 @@ test("receipt plan binding rejects descriptor changes and unclean task results",
     durationMs: 10,
     registryDigest: plan.registryDigest,
     plan: createLocalCiPlanDescriptor(plan),
-    tasks: [
-      {
-        id: "impact.select",
-        status: "passed",
-        exitCode: 0,
-        signal: null,
-        cleanup: { complete: true },
-        durationMs: 1,
-        logs: {
-          stdout: {
-            path: `.artifacts/local-ci/runs/${LOCAL_CI_TEST_RUN_ID}/logs/impact.select.stdout.log`,
-            size: 0,
-            sha256: `sha256:${"0".repeat(64)}`,
-          },
-          stderr: {
-            path: `.artifacts/local-ci/runs/${LOCAL_CI_TEST_RUN_ID}/logs/impact.select.stderr.log`,
-            size: 0,
-            sha256: `sha256:${"0".repeat(64)}`,
-          },
-        },
-      },
-    ],
+    tasks: plan.tasks.map(({ id }) => ({
+      id,
+      status: "passed",
+      exitCode: 0,
+      signal: null,
+      cleanup: { complete: true },
+      durationMs: 1,
+      logs: Object.fromEntries(["stdout", "stderr"].map((stream) => [stream, {
+        path: `.artifacts/local-ci/runs/${LOCAL_CI_TEST_RUN_ID}/logs/${id}.${stream}.log`,
+        size: 0,
+        sha256: `sha256:${"0".repeat(64)}`,
+      }])),
+    })),
   };
   assert.equal(
     verifyLocalCiReceipt(receipt, { candidate, plan, profile: "quick" }),
@@ -5714,4 +5717,309 @@ test("split Full CLI roles and hosted aggregate job keep one tuple and the uncha
   const upload = workflow.jobs.canonical.steps.find(({ name }) => name === "Upload Full part evidence");
   assert.match(upload.with.path, /\.artifacts\/\.canonical-full-part-\$\{\{ matrix\.part \}\}/u);
   assert.match(upload.with.path, /matrix\.part == 'journeys' && '\.artifacts\/local-ci\/full-admission\/\*-host\/decision\.json'/u);
+});
+
+// Split canonical Quick: three parts of the selected Light commands on
+// separate hosted VMs, one aggregate receipt.
+const quickParts = await import("./local-ci-quick-parts.mjs");
+const impactParts = await import("./local-ci-impact-parts.mjs");
+const impactMap = await import("./quality/impact-map.mjs");
+
+async function splitQuickPlan() {
+  const registry = await readRegistry();
+  return buildLocalCiPlan(registry, { profile: "quick", base: "a".repeat(40), head: "b".repeat(40) });
+}
+
+const QUICK_ENV = { RUNNER_ENVIRONMENT: "github-hosted", GITHUB_RUN_ID: "9", GITHUB_RUN_ATTEMPT: "1", GITHUB_REPOSITORY: "owner/repo" };
+
+function subsetsOf(values, size) {
+  if (size === 0) return [[]];
+  return values.flatMap((value, index) => subsetsOf(values.slice(index + 1), size - 1).map((rest) => [value, ...rest]));
+}
+
+test("Quick parts together run exactly the unsplit selection, each command once", () => {
+  const definitions = impactMap.LIGHT_SUITE_DEFINITIONS;
+  const suiteIds = Object.keys(definitions);
+  const selections = [
+    suiteIds,
+    ...suiteIds.map((id) => [id]),
+    ...subsetsOf(suiteIds, 2),
+    suiteIds.slice().reverse(),
+    [],
+  ];
+  for (const ids of selections) {
+    const selection = { suiteIds: ids };
+    const all = ids.flatMap((suiteId) => definitions[suiteId].commands.map((command, stepIndex) => `${suiteId}#${stepIndex}:${JSON.stringify(command)}`));
+    const parts = impactParts.partitionImpactCommands(selection, definitions);
+    assert.equal(parts.length, impactParts.IMPACT_PART_COUNT);
+    const split = parts.flat().map(({ suiteId, stepIndex, command }) => `${suiteId}#${stepIndex}:${JSON.stringify(command)}`);
+    assert.equal(new Set(split).size, split.length, "no command is run twice");
+    assert.deepEqual([...split].sort(), [...all].sort(), `parts differ from the selection ${ids.join(",")}`);
+    // Selection order is kept inside every part.
+    for (const part of parts) {
+      const order = part.map(({ suiteId, stepIndex }) => ids.indexOf(suiteId) * 1000 + stepIndex);
+      assert.deepEqual(order, [...order].sort((left, right) => left - right));
+    }
+    assert.deepEqual(impactParts.partitionImpactCommands(selection, definitions), parts, "the assignment is deterministic");
+  }
+  const everything = impactParts.partitionImpactCommands({ suiteIds }, definitions);
+  assert.ok(everything.every((part) => part.length > 0), "every part has work when everything is selected");
+});
+
+test("Quick part assignment keeps src-tauri, src-tauri features and the N-API crate on their own build trees", () => {
+  const cargo = (manifest, ...rest) => ["cargo", "test", "--manifest-path", manifest, ...rest];
+  assert.equal(impactParts.impactCommandPart(cargo("src-tauri/Cargo.toml", "-p", "grimodex-db", "--lib"), 0), 1);
+  assert.equal(impactParts.impactCommandPart(cargo("src-tauri/crates/grimodex-db/Cargo.toml", "--lib"), 0), 1);
+  assert.equal(impactParts.impactCommandPart(cargo("src-tauri/Cargo.toml", "-p", "grimodex-db", "--features", "native-current-human-capture"), 0), 2);
+  assert.equal(impactParts.impactCommandPart(cargo("src-tauri/Cargo.toml", "--all-features"), 0), 2);
+  assert.equal(impactParts.impactCommandPart(cargo("electron/native/grimodex-node/Cargo.toml", "--lib"), 0), 3);
+  assert.equal(impactParts.impactCommandPart(cargo("electron/native/grimodex-node/Cargo.toml", "--features", "licensing"), 0), 3);
+  // Non-cargo commands are dealt out in selection order; part 3 takes every other one.
+  assert.deepEqual([0, 1, 2, 3, 4, 5].map((ordinal) => impactParts.impactCommandPart(["pnpm", "test:quality"], ordinal)), [3, 1, 3, 2, 3, 1]);
+  assert.throws(() => impactParts.impactCommandPart([], 0), /non-empty argv/u);
+  for (const bad of ["", "1", "0/3", "4/3", "1/2", "a/3", "1/3/3"]) {
+    assert.throws(() => impactParts.parseImpactPart(bad), /--part/u, bad);
+  }
+  assert.deepEqual(impactParts.parseImpactPart("2/3"), { index: 2, count: 3 });
+});
+
+test("the selector runs only its part, in selection order, and keeps fail-fast inside the part", async () => {
+  const definitions = {
+    alpha: { failureClasses: ["a"], commands: [["cargo", "test", "--manifest-path", "src-tauri/Cargo.toml"], ["node", "one"], ["cargo", "check", "--manifest-path", "electron/native/grimodex-node/Cargo.toml"]] },
+    beta: { failureClasses: ["b"], commands: [["node", "two"], ["cargo", "test", "--manifest-path", "src-tauri/Cargo.toml", "--features", "x"], ["node", "three"]] },
+  };
+  const selection = { suiteIds: ["alpha", "beta"] };
+  const ran = [];
+  const runner = async (command, args) => {
+    ran.push([command, ...args].join(" "));
+    return { status: "passed", exitCode: 0, durationMs: 1 };
+  };
+  const results = [];
+  for (const index of [1, 2, 3]) {
+    ran.length = 0;
+    const part = await impactMap.runSelectedSuites(selection, { definitions, runner, part: { index, count: 3 } });
+    results.push({ index, ran: [...ran], part });
+    for (const suite of part) {
+      assert.deepEqual(suite.steps.map((step) => step.command), suite.commands);
+      assert.equal(suite.status, "passed");
+    }
+  }
+  const everything = [];
+  const unsplit = await impactMap.runSelectedSuites(selection, { definitions, runner });
+  assert.equal(unsplit.flatMap(({ steps }) => steps).length, 6);
+  for (const { ran: commands } of results) everything.push(...commands);
+  assert.deepEqual(everything.sort(), unsplit.flatMap(({ steps }) => steps.map(({ command }) => command.join(" "))).sort());
+  assert.equal(results[0].part.map(({ suiteId }) => suiteId).includes("alpha"), true);
+  // A failing command stops the rest of its own part only.
+  const failing = await impactMap.runSelectedSuites(selection, {
+    definitions,
+    runner: async () => ({ status: "failed", exitCode: 1, durationMs: 1 }),
+    part: { index: 1, count: 3 },
+  });
+  assert.equal(failing[0].status, "failed");
+  assert.ok(failing.slice(1).every(({ status }) => status === "not-run"));
+});
+
+test("split Quick registry tasks are the three parts, chained only for the one-process local run", async () => {
+  const plan = await splitQuickPlan();
+  const parts = quickParts.quickParts(plan);
+  assert.deepEqual(parts, [
+    { id: "1", taskId: "impact.select.1" },
+    { id: "2", taskId: "impact.select.2" },
+    { id: "3", taskId: "impact.select.3" },
+  ]);
+  assert.equal(parts.length, impactParts.IMPACT_PART_COUNT);
+  assert.deepEqual(plan.tasks.map(({ after }) => after), [[], ["impact.select.1"], ["impact.select.2"]]);
+  // On its own VM a part runs alone, with no ordering edge left.
+  for (const { id } of parts) {
+    const { tasks, owned } = quickParts.buildQuickPartTasks(plan, id);
+    assert.deepEqual(tasks.map((task) => [task.id, task.after]), [[`impact.select.${id}`, []]]);
+    assert.deepEqual([...owned], [`impact.select.${id}`]);
+  }
+  assert.throws(() => quickParts.buildQuickPartTasks(plan, "4"), /Unknown Quick part/u);
+  const mutate = (change) => {
+    const changed = structuredClone(plan);
+    change(changed);
+    assert.throws(() => quickParts.quickParts(changed), /Quick/u);
+  };
+  mutate((p) => { p.tasks.pop(); });
+  mutate((p) => { p.tasks[1].command.args[p.tasks[1].command.args.indexOf("--part") + 1] = "1/3"; });
+  mutate((p) => { p.tasks[2].id = "impact.select.9"; });
+  mutate((p) => { p.tasks[0].command.args.splice(p.tasks[0].command.args.indexOf("--part"), 2); });
+  assert.throws(() => quickParts.quickParts({ ...plan, profile: "full" }), /Quick parts require/u);
+  assert.equal(parseLocalCiArgs(["quick", "--part", "2"]).part, "2");
+  assert.equal(parseLocalCiArgs(["quick", "--aggregate"]).aggregate, true);
+});
+
+test("split Quick derives its own deterministic run id and keeps Full's unchanged", () => {
+  const { canonicalGithubRunId } = fullParts;
+  const quickId = canonicalGithubRunId(QUICK_ENV, "quick");
+  assert.match(quickId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+  assert.equal(canonicalGithubRunId({ ...QUICK_ENV }, "quick"), quickId);
+  assert.notEqual(quickId, canonicalGithubRunId(QUICK_ENV));
+  assert.equal(canonicalGithubRunId(QUICK_ENV), canonicalGithubRunId(QUICK_ENV, "full"));
+  assert.throws(() => canonicalGithubRunId({ ...QUICK_ENV, RUNNER_ENVIRONMENT: "self-hosted" }, "quick"), /Quick requires a GitHub-hosted/u);
+});
+
+function quickPartFixture(plan) {
+  const definitions = {
+    alpha: { commands: [["cargo", "test", "--manifest-path", "src-tauri/Cargo.toml"], ["node", "one"], ["cargo", "check", "--manifest-path", "electron/native/grimodex-node/Cargo.toml"]] },
+    beta: { commands: [["node", "two"], ["cargo", "test", "--manifest-path", "src-tauri/Cargo.toml", "--features", "x"], ["node", "three"]] },
+  };
+  const selection = { suiteIds: ["alpha", "beta"], fallback: false };
+  const commandPlan = impactParts.planImpactCommands(selection, definitions);
+  const planDescriptor = createLocalCiPlanDescriptor(plan);
+  const runId = fullParts.canonicalGithubRunId(QUICK_ENV, "quick");
+  const candidate = completeCandidate({ requestedBase: "a".repeat(40), requestedHead: "b".repeat(40) });
+  const digest = (value) => `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+  const makeReports = () => new Map(quickParts.quickParts(plan).map(({ id, taskId }, position) => {
+    const index = Number(id);
+    const executed = quickParts.expectedQuickPartExecution(commandPlan, index).map(({ suiteId, commands }) => ({
+      suiteId, commands, status: "passed", stepStatuses: commands.map(() => "passed"),
+    }));
+    return [id, {
+      version: quickParts.QUICK_PART_REPORT_VERSION, part: id, partsDigest: quickParts.quickPartsDigest(plan),
+      registryDigest: plan.registryDigest, planDigest: digest(planDescriptor), runId, status: "passed", candidate, candidateAfter: candidate,
+      startedAt: new Date(1_000 + position).toISOString(), finishedAt: new Date(5_000 + position).toISOString(),
+      tasks: [{ id: taskId, status: "passed", durationMs: 1 }],
+      commands: { [taskId]: { id: taskId, label: taskId } },
+      impact: { part: { index, count: 3 }, selectionDigest: impactParts.impactSelectionDigest(selection), suiteIds: selection.suiteIds, executed },
+    }];
+  }));
+  return { candidate, commandPlan, makeReports, planDescriptor, runId, selection };
+}
+
+test("split Quick coverage fails on any omitted, duplicated, foreign or failed command", async () => {
+  const plan = await splitQuickPlan();
+  const { commandPlan, makeReports, selection } = quickPartFixture(plan);
+  assert.deepEqual(quickParts.checkQuickPartCoverage({ reports: makeReports(), selection, commandPlan }), { selectedCommands: 6 });
+  const reject = (mutate, pattern, overrides = {}) => {
+    const reports = makeReports();
+    mutate(reports);
+    assert.throws(() => quickParts.checkQuickPartCoverage({ reports, selection, commandPlan, ...overrides }), pattern);
+  };
+  const firstWithWork = (reports) => [...reports.values()].find(({ impact }) => impact.executed.length > 0).impact;
+  reject((r) => r.delete("2"), /Quick part 2 impact summary is missing/u);
+  reject((r) => { r.get("1").impact.part = { index: 2, count: 3 }; }, /Quick part 1 impact summary is missing or names another part/u);
+  reject((r) => { firstWithWork(r).executed[0].commands.pop(); }, /did not run exactly its assigned commands/u);
+  reject((r) => {
+    const impact = firstWithWork(r);
+    impact.executed[0].commands.push(impact.executed[0].commands[0]);
+    impact.executed[0].stepStatuses.push("passed");
+  }, /did not run exactly its assigned commands/u);
+  reject((r) => { firstWithWork(r).executed.pop(); }, /did not run exactly its assigned commands/u);
+  reject((r) => { firstWithWork(r).selectionDigest = "sha256:other"; }, /different impact selection/u);
+  reject((r) => { firstWithWork(r).suiteIds = ["alpha"]; }, /different impact selection/u);
+  reject((r) => { firstWithWork(r).executed[0].stepStatuses[0] = "failed"; }, /did not pass/u);
+  reject((r) => { firstWithWork(r).executed[0].status = "failed"; }, /did not pass/u);
+  reject(() => {}, /unselected|duplicate/u, { commandPlan: [...commandPlan, commandPlan[0]] });
+  reject(() => {}, /unselected|duplicate/u, { commandPlan: [...commandPlan, { suiteId: "gamma", stepIndex: 0, command: ["node"], part: 1 }] });
+  reject(() => {}, /unselected|unassigned/u, { commandPlan: commandPlan.map((entry, index) => (index === 0 ? { ...entry, part: 4 } : entry)) });
+  // A command dropped from the plan while every part still runs it is not the selection either.
+  reject(() => {}, /ran 6 commands but the selection has 5|did not run exactly/u, { commandPlan: commandPlan.slice(1) });
+});
+
+test("split Quick aggregate binds every part to one candidate, plan and run in plan order", async () => {
+  const plan = await splitQuickPlan();
+  const { candidate, makeReports, planDescriptor, runId } = quickPartFixture(plan);
+  const assembled = quickParts.assembleQuickFromParts({ plan, reports: makeReports(), candidate, runId, planDescriptor });
+  assert.deepEqual(assembled.tasks.map(({ id }) => id), plan.tasks.map(({ id }) => id));
+  assert.deepEqual(assembled.stages.map(({ id }) => id), ["impact"]);
+  assert.equal(assembled.stages[0].status, "passed");
+  assert.equal(assembled.executionDurationMs, 5_000 + 2 - 1_000);
+  const reject = (mutate, pattern) => {
+    const reports = makeReports();
+    mutate(reports);
+    assert.throws(() => quickParts.assembleQuickFromParts({ plan, reports, candidate, runId, planDescriptor }), pattern);
+  };
+  reject((r) => r.delete("3"), /missing, failed or bound/u);
+  reject((r) => { r.get("2").status = "failed"; }, /missing, failed or bound/u);
+  reject((r) => { r.get("2").runId = randomUUID(); }, /missing, failed or bound/u);
+  reject((r) => { r.get("1").planDigest = "sha256:other"; }, /missing, failed or bound/u);
+  reject((r) => { r.get("1").registryDigest = "sha256:other"; }, /missing, failed or bound/u);
+  reject((r) => { r.get("3").partsDigest = "sha256:other"; }, /missing, failed or bound/u);
+  reject((r) => { r.get("3").version = "local-ci-quick-part/0"; }, /missing, failed or bound/u);
+  reject((r) => { r.get("2").part = "3"; }, /missing, failed or bound/u);
+  reject((r) => { r.get("1").candidateAfter = { ...candidate, worktreeClean: false }; }, /worktreeClean/u);
+  reject((r) => { r.get("2").candidate = { ...candidate, resolvedHeadSha: "d".repeat(40) }; }, /resolvedHeadSha/u);
+  reject((r) => { r.get("1").tasks[0].id = "impact.select.2"; }, /exactly its owned task/u);
+  reject((r) => { r.get("1").tasks.push({ id: "impact.select.2", status: "passed" }); }, /exactly its owned task/u);
+  assert.throws(() => quickParts.assembleQuickFromParts({ plan, reports: makeReports(), candidate, runId: "not-a-uuid", planDescriptor }), /UUIDv4/u);
+});
+
+test("a parted Quick receipt is bound to hash-pinned part reports and the independently recomputed selection", async (t) => {
+  const { verifyPartedQuickReceipt } = await import("./local-ci.mjs");
+  const plan = await splitQuickPlan();
+  const { candidate, commandPlan, makeReports, planDescriptor, runId, selection } = quickPartFixture(plan);
+  const root = await mkdtemp(path.join(os.tmpdir(), "grimodex-quick-parts-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, ".artifacts/local-ci/parts"), { recursive: true });
+  const reports = makeReports();
+  const identities = [];
+  for (const [id, report] of reports) {
+    const file = quickParts.quickPartReportPath(id);
+    const bytes = `${JSON.stringify(report, null, 2)}\n`;
+    await writeFile(path.join(root, file), bytes);
+    identities.push({ id, report: { path: file, size: Buffer.byteLength(bytes), sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}` } });
+  }
+  const assembled = quickParts.assembleQuickFromParts({ plan, reports, candidate, runId, planDescriptor });
+  const receipt = { runId, partsDigest: quickParts.quickPartsDigest(plan), parts: identities, tasks: assembled.tasks };
+  const computeSelection = async () => ({ selection, commandPlan });
+  await verifyPartedQuickReceipt(receipt, { candidate, plan, root, computeSelection });
+  const reject = (mutated, pattern, options = {}) => assert.rejects(
+    verifyPartedQuickReceipt(mutated, { candidate, plan, root, computeSelection, ...options }), pattern);
+  await reject({ ...receipt, partsDigest: "sha256:other" }, /part partition/u);
+  await reject({ ...receipt, parts: receipt.parts.slice(1) }, /part partition/u);
+  await reject({ ...receipt, tasks: assembled.tasks.slice(1) }, /tasks differ/u);
+  await reject({ ...receipt, tasks: assembled.tasks.map((task) => ({ ...task, durationMs: 99 })) }, /tasks differ/u);
+  await reject({ ...receipt, parts: receipt.parts.map((entry, index) => (index === 0 ? { ...entry, report: { ...entry.report, sha256: `sha256:${"0".repeat(64)}` } } : entry)) }, /identity changed/u);
+  await reject(receipt, /different impact selection/u, { computeSelection: async () => ({ selection: { ...selection, fallback: true }, commandPlan }) });
+  await reject(receipt, /did not run exactly/u, { computeSelection: async () => ({ selection, commandPlan: commandPlan.map((entry) => ({ ...entry, part: entry.part === 1 ? 2 : entry.part })) }) });
+  // The part report changes after the receipt names it: identity check fails.
+  const tampered = structuredClone(reports.get("2"));
+  tampered.impact.executed = [];
+  await writeFile(path.join(root, quickParts.quickPartReportPath("2")), `${JSON.stringify(tampered)}\n`);
+  await reject(receipt, /identity changed/u);
+});
+
+test("the hosted Quick runs three part jobs and a quick-aggregate that keeps one tuple and the unchanged verify", async () => {
+  const workflow = yaml.load(await fs.promises.readFile(path.join(repoRoot, ".github/workflows/canonical-ci.yml"), "utf8"));
+  const canonical = workflow.jobs.canonical;
+  assert.equal(canonical.strategy["fail-fast"], false);
+  const matrix = canonical.strategy.matrix.part;
+  assert.match(matrix, /inputs\.profile == 'quick' && '\["1","2","3"\]'/u);
+  assert.equal(JSON.stringify(quickParts.quickParts(await splitQuickPlan()).map(({ id }) => id)), '["1","2","3"]', "workflow part list equals the registry's parts");
+  assert.match(canonical.name, /format\('quick-\{0\}', matrix\.part\)/u);
+  const part = canonical.steps.find(({ id }) => id === "canonical");
+  assert.match(part.run, /\[\[ "\$QUICK_PART" =~ \^\[1-3\]\$ \]\]/u);
+  assert.match(part.run, /pnpm ci:local:quick -- --part "\$QUICK_PART" --base "\$candidate_base" --head "\$candidate_head" --max-parallel-tasks "\$MAX_PARALLEL_TASKS"/u);
+  assert.doesNotMatch(part.run, /ci:local:verify/u, "a Quick part leaves assembly and verify to quick-aggregate");
+  assert.match(part.run, /export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0/u);
+  // rust-cache is Quick-only so Full's setup assessment stays before any cache.
+  const cache = canonical.steps.find(({ uses }) => uses?.startsWith("Swatinem/rust-cache@"));
+  assert.equal(cache.if, "inputs.profile == 'quick'");
+  assert.match(cache.with.workspaces, /matrix\.part == '3' && 'electron\/native\/grimodex-node' \|\| 'src-tauri'/u);
+  assert.ok(canonical.steps.indexOf(cache) > canonical.steps.findIndex(({ id }) => id === "full_setup"));
+  const uploads = canonical.steps.filter(({ uses }) => uses?.startsWith("actions/upload-artifact@"));
+  const names = uploads.map(({ with: { name } }) => name);
+  assert.ok(names.some((name) => /canonical-quick-part-\$\{\{ matrix\.part \}\}-/u.test(name)));
+  assert.ok(names.some((name) => /canonical-quick-diagnostics-\{0\}', matrix\.part/u.test(name)), "matrix jobs never share one artifact name");
+  const upload = uploads.find(({ name }) => name === "Upload Quick part evidence");
+  assert.match(upload.with.path, /\.artifacts\/\.canonical-quick-part-\$\{\{ matrix\.part \}\}/u);
+  assert.match(upload.with.path, /\.artifacts\/local-ci\/impact-\$\{\{ matrix\.part \}\}\.json/u);
+  const aggregate = workflow.jobs["quick-aggregate"];
+  assert.equal(aggregate.if, "inputs.profile == 'quick'");
+  assert.equal(aggregate.needs, "canonical");
+  assert.equal(aggregate["runs-on"], "ubuntu-24.04");
+  const download = aggregate.steps.find(({ uses }) => uses?.startsWith("actions/download-artifact@"));
+  assert.deepEqual(download.with, { pattern: "canonical-quick-part-*-${{ github.run_id }}-${{ github.run_attempt }}", path: ".artifacts", "merge-multiple": true });
+  const run = aggregate.steps.find(({ id }) => id === "aggregate").run;
+  const tuple = '--base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"';
+  assert.ok(run.indexOf("git merge-base --is-ancestor") < run.indexOf(`pnpm ci:local:quick -- --aggregate ${tuple}`));
+  assert.ok(run.indexOf(`pnpm ci:local:quick -- --aggregate ${tuple}`) < run.indexOf(`pnpm ci:local:verify -- quick ${tuple}`));
+  assert.match(run, /git status --porcelain --untracked-files=all/u);
+  const final = aggregate.steps.at(-1);
+  assert.equal(final.with.name, "canonical-ci-${{ github.run_id }}-${{ github.run_attempt }}", "the receipt keeps its artifact name");
+  // Full's jobs are untouched by the Quick split.
+  assert.equal(workflow.jobs["full-aggregate"].if, "inputs.profile == 'full'");
 });
