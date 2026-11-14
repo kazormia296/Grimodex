@@ -735,4 +735,12 @@ mod tests {
         assert_eq!(cands[0].count, 1);
         assert_eq!(cands[0].first_scene_id, "s2");
     }
+
+    #[test]
+    fn plaintext_of_keeps_ruby_base_for_candidate_extraction() {
+        let doc = r#"{"type":"doc","content":[{"type":"paragraph","content":[
+            {"type":"ruby","attrs":{"base":"灯里","annotation":"あかり"}},
+            {"type":"text","text":"は笑った。"}]}]}"#;
+        assert_eq!(plaintext_of(doc), "灯里は笑った。");
+    }
 }
