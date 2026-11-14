@@ -154,6 +154,25 @@ lane. A lane skipped this way was **not verified** by that pull request run: it
 is skipped, not passed. Its evidence comes from the master push run and the
 canonical Quick and Full runs. The job summary and the `ci-change-scope-*`
 artifact record each lane's reason.
+The decision is made with both the pull request's `scripts/ci-change-scope.json`
+and the base commit's copy of it (read from git, so no second checkout), and a
+lane is skipped only when both rules skip it: a pull request cannot skip a lane by
+editing the rules. If the base commit has no such file only the pull request's
+rules apply; if git fails or the base copy cannot be trusted every lane runs. The
+script itself still runs from the pull request's checkout. The Windows lane also
+keeps running for paths the installer packs (`public/**`, `LICENSING.md`,
+`experiments/lfm25-encoder-phase0/local/**`); a test derives them from
+`electron-builder.yml` and the vite config.
+When the shell falls back to running every lane, it appends a `Final outputs`
+section to the job summary (authoritative over any table above it) and rewrites
+the JSON artifact with the final values.
+`changes` is built not to fail (soft steps, a 3 minute step timeout on the
+checkout, an 8 minute job timeout): a skipped `changes` job leaves empty outputs,
+which run every lane, but if the `changes` job itself fails as a whole the shard,
+aggregate and runtime-performance jobs are skipped by their implicit `success()`
+and the journeys evidence of that run is lost.
+After the merge, compare the time from the start of a run until each lane starts,
+before and after the introduction.
 
 For a separately reviewed real-worker lane, `canonical_profile=c-query-workers`
 selects **only the existing Linux/macOS/Windows `nir1-c-query-worker` matrix**.

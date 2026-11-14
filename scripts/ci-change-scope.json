@@ -61,6 +61,7 @@
         "scripts/quality/run-nir1-retrieval.mjs",
         "scripts/quality/nir1-retrieval/**",
         "scripts/quality/nir1-graph-eval/**",
+        "scripts/quality/nir1-packing/**",
         "scripts/local-ci*"
       ],
       "gatedJobs": ["electron-native"]
@@ -73,7 +74,12 @@
     "windows": {
       "mode": "neutral",
       "neutral": ["docs", "ci-and-ai"],
-      "neverNeutral": ["LICENSING.md", "scripts/local-ci*"],
+      "neverNeutral": [
+        "LICENSING.md",
+        "public/**",
+        "experiments/lfm25-encoder-phase0/local/**",
+        "scripts/local-ci*"
+      ],
       "gatedJobs": ["electron-windows-installer-contract"]
     },
     "browser": {

@@ -179,14 +179,16 @@ jobs:
   # Pull requests only: skip heavy lanes whose inputs the diff cannot reach.
   # Deny by default. Every other event, an empty or incomplete diff, an
   # unclassified path, or any failure here leaves all lanes running. This job
-  # never fails (every step that can fail has continue-on-error), because a
-  # failed need would also skip the unchanged shard/aggregate jobs downstream.
-  # An empty or missing lane output counts as "run" in each dependent's if.
+  # is not meant to fail (every step that can fail has continue-on-error, and
+  # the checkout has its own step timeout), because a job-level failure would
+  # make the unchanged shard/aggregate/runtime-performance jobs skip through
+  # their implicit success(). An empty or missing lane output counts as "run"
+  # in each dependent's if, which covers a skipped `changes` job only.
   changes:
     name: Change scope
     if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     outputs:
       journeys: ${{ steps.scope.outputs.journeys }}
       rust: ${{ steps.scope.outputs.rust }}
@@ -200,6 +202,7 @@ jobs:
       - name: Check out the pull request for its diff
         if: github.event_name == 'pull_request'
         continue-on-error: true
+        timeout-minutes: 3
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
@@ -232,16 +235,40 @@ jobs:
             [ "$count" = "1" ] || valid=0
           done
           [ "$(printf '%s\n' "$decision" | grep -c .)" = "8" ] || valid=0
+          fallback=0
           if [ "$valid" != "1" ]; then
+            fallback=1
             decision=""
             for lane in $lanes; do decision="${decision}${lane}=true"$'\n'; done
+          fi
+          # The outputs come first: nothing after this may change what the jobs read.
+          printf '%s' "$decision" >> "$GITHUB_OUTPUT"
+          if [ "$fallback" = "1" ]; then
             {
               echo "## Change scope"
               echo
-              echo "Every lane runs: this is not a pull request, or the scope decision was unavailable."
+              echo "Every lane runs: this is not a pull request, or the scope decision was unavailable or invalid."
+              echo "Anything the script wrote above this line was discarded."
             } >> "$GITHUB_STEP_SUMMARY"
+            if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+              # A script that failed may have left a stale record behind; replace it with the final values.
+              lane_json=""
+              for lane in $lanes; do
+                lane_json="${lane_json}${lane_json:+,}\"${lane}\":{\"run\":true,\"reason\":\"shell fallback\"}"
+              done
+              printf '{"version":1,"event":"pull_request","allSelected":true,"reasonKind":"shell-fallback","reason":"The scope decision was unavailable or invalid; every lane runs.","lanes":{%s}}\n' "$lane_json" > "$RUNNER_TEMP/ci-change-scope.json"
+            fi
           fi
-          printf '%s' "$decision" >> "$GITHUB_OUTPUT"
+          {
+            echo
+            echo "### Final outputs"
+            echo
+            echo "These lines are what the jobs read. They are authoritative over any table above."
+            echo
+            echo '```'
+            printf '%s\n' "${decision%$'\n'}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload change scope evidence
         if: github.event_name == 'pull_request'

@@ -5,22 +5,30 @@
 // lane's neutral sets, or (trigger lanes) when NO changed path is a trigger.
 // Unclassified paths, forced-all paths, an empty or incomplete diff, an unsafe
 // path, an exception, and every event other than pull_request run all lanes.
+// The decision is made with the head's rules and, when the base commit has the
+// file, with the base commit's copy of the rules too; a lane is skipped only
+// when both skip it, so a pull request cannot skip a lane by editing the rules.
 //
 // Only Node built-ins plus scripts/impact/core.mjs are used, so the workflow
 // job needs no dependency installation. stdout carries exactly one
 // `lane=true|false` line per lane and nothing else; the workflow validates it.
+import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import {
   collectChangedPaths,
   compileGlob,
   resolveSafeAll,
 } from "./impact/core.mjs";
 
+const execFileAsync = promisify(execFile);
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_RULES_PATH = path.join(SCRIPT_DIR, "ci-change-scope.json");
+// The same rules as the base commit has them, relative to the repository root.
+export const BASE_RULES_RELATIVE_PATH = "scripts/ci-change-scope.json";
 export const PULL_REQUEST_EVENT = "pull_request";
 const LANE_NAME = /^[a-z][a-z0-9]*$/u;
 const MAX_LISTED_PATHS = 50;
@@ -120,6 +128,46 @@ export function compileScopeRules(raw) {
 
 export async function loadScopeRules(rulesPath = DEFAULT_RULES_PATH) {
   return compileScopeRules(JSON.parse(await readFile(rulesPath, "utf8")));
+}
+
+async function gitText(repoRoot, args) {
+  const result = await execFileAsync("git", args, {
+    cwd: repoRoot,
+    encoding: "utf8",
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  return result.stdout;
+}
+
+/**
+ * The rules file as the base commit has it, so a pull request that edits the
+ * rules cannot use its own edit to skip a lane. Resolves to null only when git
+ * succeeds and the base commit has no such file. Everything else (git failing,
+ * a symlink or a non-regular entry, JSON or rules that do not compile) throws,
+ * and the caller then runs every lane.
+ */
+export async function loadBaseScopeRules({
+  repoRoot = process.cwd(),
+  base,
+  relativePath = BASE_RULES_RELATIVE_PATH,
+}) {
+  if (typeof base !== "string" || base === "" || base.startsWith("-")) {
+    throw new Error("base must be a commit reference");
+  }
+  const listing = await gitText(repoRoot, [
+    "ls-tree",
+    "-z",
+    "--full-tree",
+    `${base}^{commit}`,
+    "--",
+    relativePath,
+  ]);
+  if (listing === "") return null;
+  const entry = /^(100644|100755) blob ([0-9a-f]{40,64})\t([^\0]+)\0$/u.exec(listing);
+  if (!entry || entry[3] !== relativePath) {
+    throw new Error(`base commit entry for ${relativePath} is not a plain file`);
+  }
+  return compileScopeRules(JSON.parse(await gitText(repoRoot, ["cat-file", "blob", entry[2]])));
 }
 
 export function laneNames(rules) {
@@ -227,6 +275,44 @@ export function decideScope({ rules, changedPaths, incompleteReason }) {
 }
 
 /**
+ * A lane is skipped only when the head rules and the base commit's rules both
+ * skip it. A lane the base rules do not know runs. `base` and `head` decisions
+ * come from the same path list.
+ */
+export function mergeDecisions(rules, headDecision, baseDecision) {
+  const lanes = {};
+  for (const lane of rules.lanes) {
+    const own = headDecision.lanes[lane.name];
+    const prior = baseDecision.lanes[lane.name];
+    if (own.run) {
+      lanes[lane.name] = own;
+    } else if (prior === undefined) {
+      lanes[lane.name] = {
+        run: true,
+        reason: "The base commit's rules do not know this lane, so it runs.",
+      };
+    } else if (prior.run) {
+      lanes[lane.name] = { run: true, reason: `Base commit rules: ${prior.reason}` };
+    } else {
+      lanes[lane.name] = {
+        run: false,
+        reason: `${own.reason} The base commit's rules agree.`,
+      };
+    }
+  }
+  const from = headDecision.allSelected || !baseDecision.allSelected ? headDecision : baseDecision;
+  return {
+    allSelected: headDecision.allSelected || baseDecision.allSelected,
+    reasonKind: from.reasonKind,
+    reason: from === baseDecision ? `Base commit rules: ${from.reason}` : from.reason,
+    changedPaths: headDecision.changedPaths,
+    forcedPaths: [...new Set([...headDecision.forcedPaths, ...baseDecision.forcedPaths])].sort(),
+    baseRules: "combined",
+    lanes,
+  };
+}
+
+/**
  * Event gate. Only pull_request looks at a diff; every other event (push,
  * schedule, workflow_dispatch, workflow_call) runs all lanes without touching
  * git. Any failure while deciding also runs all lanes.
@@ -238,6 +324,7 @@ export async function decideForEvent({
   head,
   repoRoot = process.cwd(),
   collect = collectChangedPaths,
+  loadBaseRules = loadBaseScopeRules,
 }) {
   if (event !== PULL_REQUEST_EVENT) {
     return allLanesRun(
@@ -251,11 +338,16 @@ export async function decideForEvent({
   }
   try {
     const changed = await collect({ repoRoot, base: base.trim(), head: head.trim() });
-    return decideScope({
-      rules,
+    const input = {
       changedPaths: changed.paths,
       incompleteReason: changed.complete ? "" : changed.reason || "diff incomplete",
-    });
+    };
+    const own = decideScope({ rules, ...input });
+    // Nothing to combine when the head rules already run every lane.
+    if (own.allSelected) return { ...own, baseRules: "not-needed" };
+    const baseRules = await loadBaseRules({ repoRoot, base: base.trim() });
+    if (baseRules === null) return { ...own, baseRules: "absent" };
+    return mergeDecisions(rules, own, decideScope({ rules: baseRules, ...input }));
   } catch (error) {
     return allLanesRun(
       rules,
@@ -281,6 +373,7 @@ export function buildRecord({ rules, decision, event, base, head }) {
     allSelected: decision.allSelected,
     reasonKind: decision.reasonKind,
     reason: decision.reason,
+    baseRules: decision.baseRules ?? "not-used",
     changedPathCount: decision.changedPaths.length,
     forcedPaths: decision.forcedPaths,
     changedPaths: decision.changedPaths,
@@ -298,6 +391,14 @@ export function buildRecord({ rules, decision, event, base, head }) {
   };
 }
 
+const BASE_RULES_NOTES = {
+  combined:
+    "Rules: the head's `scripts/ci-change-scope.json` combined with the base commit's copy. A lane is skipped only when both skip it.",
+  absent: "Rules: the base commit has no `scripts/ci-change-scope.json`, so only the head's rules applied.",
+  "not-needed": "Rules: the head's rules already run every lane, so the base commit's copy was not consulted.",
+  "not-used": "Rules: the base commit's copy of the rules was not used for this decision.",
+};
+
 export function formatSummary(rules, record) {
   const lines = [
     "## Change scope",
@@ -305,6 +406,8 @@ export function formatSummary(rules, record) {
     `Event: \`${record.event ?? "unknown"}\`. Changed paths: ${record.changedPathCount}. Decision: ${record.reasonKind}.`,
     "",
     record.reason,
+    "",
+    BASE_RULES_NOTES[record.baseRules] ?? BASE_RULES_NOTES["not-used"],
     "",
     "| Lane | Run | Jobs | Reason |",
     "| --- | --- | --- | --- |",

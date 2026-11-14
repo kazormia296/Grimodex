@@ -36,11 +36,14 @@ export function laneByGatedJob(rules) {
 /**
  * Evaluates the restricted expression subset ci.yml uses. `changes` maps lane
  * names to the `changes` job outputs; the default (no outputs) models a
- * skipped or failed `changes` job. GitHub string equality is case-insensitive.
+ * `changes` job that was skipped. It does not model a job-level failure: a
+ * failed `changes` also skips the dependents that rely on the implicit
+ * `success()`. GitHub string equality is case-insensitive, so every compared
+ * operand (inputs, github and needs) is lowercased.
  */
 export function evaluateIf(expression, { inputs = {}, event = "workflow_dispatch", changes = {} } = {}) {
   const body = unwrapIf(expression).replace(
-    /(inputs\.\w+|github\.\w+)\s*([!=]=)\s*('[^']*')/gu,
+    /(inputs\.\w+|github\.\w+|needs\.[\w.]+)\s*([!=]=)\s*('[^']*')/gu,
     "String($1 ?? '').toLowerCase() $2 $3",
   );
   const needs = { changes: { outputs: { ...changes } } };
