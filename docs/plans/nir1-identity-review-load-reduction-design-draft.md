@@ -195,7 +195,7 @@ IPC・保存・AI 送信・脅威モデル・閾値は動かない。触れる�
 | 旗の 4 か所の食い違い（画面を開き直すと対象が変わる） | 純関数 1 つに寄せる。live と復元の同値の試験。編集後の旗の固定も直す |
 | 依存の旗が live で死んでいる | (e) の再計算を必須にし、`existingExactBind` の側だけに効かせる（新規作成の一括の `noRelationDeps` は変えない） |
 | run の後に Entry が増減・改名される | 実行時の再検査（§3.2 の 6）。版の検査だけでは足りない |
-| 承認から Apply までのあいだに結び先 Entry が編集され、Apply の commit が丸ごと失敗する（今の 1 件ずつの承認にもある。打ち手 2 で件数が増える） | 本線：Apply の前に、固定した版と今の版を比べ、古い結び付けを Apply から外して報告し、新しい版で承認し直せるようにする。Apply の直前に op だけ組み直す案は採らない（commit は固定した版の payload と照合するので、組み直した op は `NEX_PROPOSAL_PAYLOAD_MISMATCH` で拒否される）。純粋な bind から `baseVersion` を省く案は挙動の契約の変更なので Q4 で伺う。実機の検査に「一括承認の後に別画面で Entry を編集して Apply」を足す |
+| 承認から Apply までのあいだに結び先 Entry が編集され、Apply の commit が丸ごと失敗する（今の 1 件ずつの承認にもある。打ち手 2 で件数が増える） | 本線（§13 で実装）：Apply の前に、固定した op の `baseVersion` と今の Codex の版を比べ、古い結び付け・patch を Apply から外して報告し、Native の decision を deferred（`decisionJson.reason = stale-bind`）に戻して、今の版で承認し直せるようにする。承認し直しは今の Codex の版で op を固定する。Apply の直前に op だけ組み直す案は採らない（commit は固定した版の payload と照合するので、組み直した op は `NEX_PROPOSAL_PAYLOAD_MISMATCH` で拒否される）。純粋な bind から `baseVersion` を省く案は挙動の契約の変更なので採らない（Q4 は (a)）。実機の検査に「一括承認の後に別画面で Entry を編集して Apply」を足す |
 | 一括承認のループの途中失敗 | 今と同じ（続行して失敗を数えて報告）。失敗の主な場所はループではなく Apply の commit（上の行）。ループでの版の不一致はここでは起きない（承認は commit を呼ばない） |
 | 「安全な提案をまとめて承認」の意味が広がる | 件数を分けて見せる。作者に確認する（Q3） |
 | 結び付けが保存の後に誰に読まれるか未確認 | §3.2 の 10。確かめるまで着手しない。「害は小さい」とは書かない |
@@ -516,3 +516,34 @@ bind-existing を含む commit の Undo が、作者の既存 Entry を create �
 - 判定は `journal_op_kind_is_bind`（`JOURNAL_OP_KIND_BIND`）に集め、undo.rs の 3 か所・change_feed.rs・commit.rs で共有する。
 - Undo は applications・Field Authority（`/narrativeEntityId`）・依存・freshness・commit map の結び付けを動かさない（create／patch と同じ既存の規則）。bind だけの commit では、Undo は commit の状態を undone にするだけで見える効果は無く、同じ commit は ALREADY_APPLIED で再適用できない。
 - 未確認（作者の確認が要る点）：上の「Undo 後も ledger が残る」ことを、読み手（取り込み・IR・Graph。項 10 の未確認の部分）が許容するか。許容しない場合は、ledger を巻き戻す別 lane の設計にする。
+
+## 13. 打ち手 2 の実装の判断と、未解決（2026-11-14、枝 claude/exact-bind-bulk）
+
+実装は `extraction/entityBulkSafety.ts`（判定の純関数・依存・旗の引き直し）、`extraction/existingEntityMatcher.ts`
+（`inspectExactEntityMatch`）、`codexStructureExtractionStore.ts`（旗の二股化）、`codexStructureExtractionApi.ts`
+（一括承認の再検査・Apply の前の除外）、`CodexEntityProposalReview.tsx` ほか（画面）。新しい IPC・schema・保存先・AI 送信は無い。
+作者の確認は §10（Q3 はい、Q4 は (a)）。作者は 2026-11-14 に「読まずに通した誤った結び付けを外す手段は無い（内部の記録が残るだけ、
+Codex の行は変わらない、次の抽出では元どおり出る）」と知った上で「このまま進める」と答えた。
+
+- **旗**：`existingExactBind`（照合の (a)(b)(c)(f)(g)(h)、catalog から）と `existingBindNoDependents`（(e)）を足し、`isSafeForCodexEntityBulkApprove` を
+  「新規作成の 7 つの旗」または「`existingExactBind` かつ根拠が全件完全一致かつ依存なし」の二股にした。(e) は結び付けの側だけに効かせ、
+  新規作成の `noRelationDeps` は変えない（関係を持つ新規作成は今までどおり対象。試験で固定）。依存に数える提案の状態は問わない（保守側）。
+  旗は `refreshEntityBindSafety` が `setProjection`・`resolveBinding`・`reviseProposalFields`・live と復元の組み立ての最後で引き直す。
+  `reviseProposalFields` の別名の旗は payload の確認状態から作る形に直した。呼び出しの無い `deriveEntityReviewPresentation` は消した。
+- **(g)**：人物の型は slug `character` だけ。catalog では型の一覧に無い type の Entry が先頭の型に落ちるので、静的な旗は暫定で、
+  決め手は実行時の再検査（今の Codex の `entry.type`）。判定できない・未知の型は対象外。
+- **実行時の再検査**：`bulkApproveSafeCodexStructureProposals` は結び付けがあるとき今の Codex を 1 回読み直し（(b)(g)(h)）、外したものを
+  `excluded` で報告する。承認の直前には件ごとに最新の projection から旗を引き直す（Codex の読み直しは 1 回の一括につき 1 回）。
+  読めなければ結び付けだけ外し、新規作成は通す。compile が bind-existing にならない組は外す。承認で固定する op の版は今の Codex の版。
+  一括で通した印は `decisionJson.source = "bulk-exact-bind"` に残し、復元でも読む。
+- **Q4(a)**：Apply の前に、承認で固定した op（bind-existing と、同じ述語で patch）の `baseVersion` と今の Codex の版を比べ、違う（または結び先が無い）
+  ものを外して報告し、Native の decision を deferred（`reason = stale-bind`）へ戻し、store でも保留にする。復元しても approved に戻らず、
+  カードの「承認」で今の版の op に固定し直せる。今の一覧が空のときは読めていない可能性があるので削除とは判断しない。一括で通した結び付けは、
+  Apply の直前に (e)（依存する提案が付いた）と、名前つきの今の Codex での完全一致も確かめ直し、外れたら同じ扱い。外した実体に依存する
+  Base Detail・Phase は今回の commit に入れず、関係は再評価が止める。全部が外れて 0 件のときは review を残す。
+- **画面**：結び先の名前（カード）、件数の分割、一括で通した結び付けを見返す一覧（既存の review の中の details）、承認し直しが要る旨、外した件数の報告。
+- **未解決**：(1) 承認し直しのカードの結び先の名前は run 時点の catalog の名前（今の名前でない）。(2) `decisionJson` は Native が不透明に保存し
+  `latestDecision.decisionJson` で戻す経路を既存のコード（already-satisfied）で使っているが、実機の往復は未確認（vitest は mock）。
+  戻らなければ見返す一覧は開いている間だけになる。(3) 取り込み・IR・Graph など bind の残りの読み手が Undo 後も残る記録を許容するかは §12 のまま。
+  (4) 実機の検査（名簿のあるプロジェクトで一括承認 → 別画面で結び先を編集 → Apply）と、§3.7 の測定は未実施。(5) `explicitProperName` は永続する
+  出どころが無く、live は seed の form、復元は true 固定のまま（結び付けの条件には使わない）。
