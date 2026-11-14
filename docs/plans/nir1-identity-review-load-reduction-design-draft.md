@@ -178,7 +178,7 @@ IPC・保存・AI 送信・脅威モデル・閾値は動かない。触れる�
 7. 画面：(i) カードに結び先の名前（`catalogEntityDisplayName`）を出す（1 件ずつの確認にも効く）、(ii) 一括の件数を「新規作成」と「既存への結び付け」に分けて出す（`CodexEntityProposalReview.tsx:128-148`）、(iii) 通した結び付けを見返す一覧を出す（T3）。
 8. 判定の置き場。画面の純関数と、実行時の再検査の 2 か所で行い、Native の新しい command にはしない。Chronicle の BAO/1 は、対象かの判定を Native だけに置き、画面は計算しない形にした（台帳 `docs/plans/nir1-l6-l9-execution-plan.md` の BAO/1 の行。その理由の文面は読んでいない）。ここで renderer に置く根拠：書く範囲が Codex の行を書かない bind だけで、1 件ずつの承認と同じ command を繰り返す。Native に置くと新しい command ＝新しい契約になる。画面の判定と Native の検査の食い違いは、Native が版と所属の検査を必ず行うこと（`codex_operations.rs:691-708`）と、実行時の再検査で限る。これは draft の技術判断の提案（T2）。
 9. コメントの「never bulk-safe」と「spec §22」を更新する。
-10. bind-existing が保存の後に誰に読まれるかを、実装の前に確かめる。読んだ範囲では、承認で commit map に登録され（`codexCommitCoordinator.ts:179-184`、`commit.rs:1217-1237`）、変更 feed に op が `bind` として残る（`commit.rs:1226-1237`。redo の再生は `undo.rs:442` で読み、undo／redo の preflight と巻き戻しは bind を Entry に触れず扱う。§11）。それ以降の読み手（取り込み・IR・Graph など）は未確認。読み手が Codex の行・関係・Phase だけであることを確かめるまで着手しない。
+10. bind-existing が保存の後に誰に読まれるかを、実装の前に確かめる。読んだ範囲では、承認で commit map に登録され（`codexCommitCoordinator.ts:179-184`、`commit.rs:1217-1237`）、変更 feed に op が `bind` として残る（`commit.rs:1226-1237`。redo の再生は `undo.rs:442` で読み、undo／redo の preflight と巻き戻しは bind を Entry に触れず扱う。§12）。それ以降の読み手（取り込み・IR・Graph など）は未確認。読み手が Codex の行・関係・Phase だけであることを確かめるまで着手しない。
 
 ### 3.3 条件
 
