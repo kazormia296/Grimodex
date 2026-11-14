@@ -1551,6 +1551,317 @@ describe("bulkApproveSafeCodexStructureProposals", () => {
         ?.compiledOperation,
     ).toBeTruthy();
   });
+
+  describe("完全一致の既存への結び付け", () => {
+    const BIND_CATALOG = {
+      entities: [
+        {
+          ref: "K0003",
+          sourceKey: "entry-riku",
+          name: "リク",
+          typeRef: "T0001",
+          expectedVersion: 1,
+          aliases: [] as string[],
+        },
+        {
+          ref: "K0005",
+          sourceKey: "entry-sora",
+          name: "ソラ",
+          typeRef: "T0001",
+          expectedVersion: 1,
+          aliases: [] as string[],
+        },
+      ],
+      types: [
+        {
+          ref: "T0001",
+          sourceKey: "character",
+          slug: "character",
+          label: "character",
+        },
+      ],
+    };
+    const LIVE_ENTRIES = [
+      {
+        id: "entry-riku",
+        name: "リク",
+        aliases: null,
+        type: "character",
+        version: 7,
+      },
+      {
+        id: "entry-sora",
+        name: "ソラ",
+        aliases: null,
+        type: "character",
+        version: 2,
+      },
+    ];
+    const evidence = [
+      {
+        anchorId: "a1",
+        quote: "リク",
+        documentRef: "D1",
+        method: "exact" as const,
+      },
+    ];
+
+    function bindRow(
+      proposalId: string,
+      name: string,
+      entityRef: string,
+      narrativeEntityId: string,
+    ) {
+      return {
+        proposalId,
+        revisionId: `rev-${proposalId}`,
+        proposalKey: `key-${proposalId}`,
+        status: "unreviewed" as const,
+        applicability: "applicable" as const,
+        displayTitle: name,
+        proposal: bindExistingCodexEntityProposal(
+          {
+            narrativeEntityId,
+            canonicalName: name,
+            aliases: [],
+            coarseClass: "person",
+            typeResolution: { status: "resolved", typeRef: "T0001" },
+            binding: {
+              kind: "bind-existing",
+              entityRef,
+              enrichment: { aliasesToAdd: [], summary: { kind: "leave" } },
+            },
+          },
+          { proposalId },
+        ),
+        evidence,
+        safety: buildCodexEntityProposalSafetyFlags({
+          bindingKind: "bind-existing",
+          typeStatus: "resolved",
+          evidenceMethods: ["exact"],
+          hasExistingCandidates: true,
+          hasProperNameMention: true,
+          aliasesAllExplicit: true,
+        }),
+      };
+    }
+
+    function createRow(proposalId: string, name: string) {
+      return {
+        proposalId,
+        revisionId: `rev-${proposalId}`,
+        proposalKey: `key-${proposalId}`,
+        status: "unreviewed" as const,
+        applicability: "applicable" as const,
+        displayTitle: name,
+        proposal: createNewBindCodexEntityProposal(
+          {
+            narrativeEntityId: `ne-${proposalId}`,
+            canonicalName: name,
+            aliases: [],
+            coarseClass: "person",
+            typeResolution: { status: "resolved", typeRef: "T0001" },
+            binding: {
+              kind: "create-new",
+              entry: { name, aliases: [], summary: null },
+            },
+          },
+          { proposalId },
+        ),
+        evidence,
+        safety: buildCodexEntityProposalSafetyFlags({
+          bindingKind: "create-new",
+          typeStatus: "resolved",
+          evidenceMethods: ["exact"],
+          hasExistingCandidates: false,
+          hasProperNameMention: true,
+          aliasesAllExplicit: true,
+        }),
+      };
+    }
+
+    function publish(
+      proposals: ReturnType<typeof bindRow | typeof createRow>[],
+    ) {
+      useCodexStructureExtractionStore.getState().setProjection({
+        runId: "run-1",
+        projectId: "p1",
+        workspacePath: "/w",
+        openRevision: 1,
+        proposalSetId: "ps-1",
+        status: "completed",
+        coverage: {
+          mode: "complete",
+          documentCount: 1,
+          windowCount: 1,
+          completedWindows: 1,
+          gaps: [],
+        },
+        taskCounts: {
+          queued: 0,
+          running: 0,
+          completed: 1,
+          failed: 0,
+          cancelled: 0,
+        },
+        proposals,
+        relationProposals: [],
+        baseDetailProposals: [],
+        phaseProposals: [],
+        catalog: BIND_CATALOG,
+        entityCount: proposals.length,
+        relationCount: 0,
+        baseDetailCount: 0,
+        phaseCount: 0,
+        unresolvedCount: proposals.length,
+        approvedCount: 0,
+      });
+    }
+
+    const stored = (id: string) =>
+      useCodexStructureExtractionStore
+        .getState()
+        .projection?.proposals.find((row) => row.proposalId === id);
+
+    it("新規作成と結び付けを一緒に通し、件数を分けて数え、結び付けの op は今の版で固定して decisionJson に印を残す", async () => {
+      publish([
+        createRow("c1", "ミナ"),
+        bindRow("b1", "リク", "K0003", "ne-b1"),
+      ]);
+      const result = await bulkApproveSafeCodexStructureProposals({
+        entries: LIVE_ENTRIES,
+      });
+      expect(result).toMatchObject({
+        approved: 2,
+        approvedCreateNew: 1,
+        approvedBindExisting: 1,
+        failed: [],
+        excluded: [],
+      });
+      const bindCall = reviseAndDecideAsHumanMock.mock.calls.find(
+        ([payload]) => payload.proposalId === "b1",
+      )?.[0];
+      expect(bindCall.decisionJson).toEqual({ source: "bulk-exact-bind" });
+      const createCall = reviseAndDecideAsHumanMock.mock.calls.find(
+        ([payload]) => payload.proposalId === "c1",
+      )?.[0];
+      expect(createCall.decisionJson).toBeUndefined();
+      expect(stored("b1")?.compiledOperation).toEqual({
+        kind: "codex.entity.bind-existing",
+        payload: {
+          entryId: "entry-riku",
+          narrativeEntityId: "ne-b1",
+          // run 時点の catalog（1）でなく、今の Codex の版（7）で固定する。
+          baseVersion: 7,
+        },
+      });
+      expect(stored("b1")?.bulkApprovedExactBind).toBe(true);
+      expect(stored("c1")?.bulkApprovedExactBind).toBe(false);
+    });
+
+    it("run の後に同名の別 Entry が足されていたら結び付けを外して報告し、新規作成は通す", async () => {
+      publish([
+        createRow("c1", "ミナ"),
+        bindRow("b1", "リク", "K0003", "ne-b1"),
+        bindRow("b2", "ソラ", "K0005", "ne-b2"),
+      ]);
+      const result = await bulkApproveSafeCodexStructureProposals({
+        entries: [
+          ...LIVE_ENTRIES,
+          {
+            id: "entry-new",
+            name: "リク",
+            aliases: null,
+            type: "character",
+            version: 1,
+          },
+        ],
+      });
+      expect(result.approvedCreateNew).toBe(1);
+      expect(result.approvedBindExisting).toBe(1);
+      expect(result.excluded).toEqual([
+        { proposalId: "b1", reason: "multiple-exact" },
+      ]);
+      expect(stored("b1")?.status).toBe("unreviewed");
+      expect(stored("b2")?.status).toBe("approved");
+    });
+
+    it("結び先が今の Codex で改名・型変更・削除されていたら外す", async () => {
+      publish([
+        bindRow("b1", "リク", "K0003", "ne-b1"),
+        bindRow("b2", "ソラ", "K0005", "ne-b2"),
+      ]);
+      const result = await bulkApproveSafeCodexStructureProposals({
+        entries: [
+          { ...LIVE_ENTRIES[0]!, name: "リクト" },
+          // ソラは削除（entries に無い）
+        ],
+      });
+      expect(result.approved).toBe(0);
+      expect(result.excluded).toEqual([
+        { proposalId: "b1", reason: "no-exact-match" },
+        { proposalId: "b2", reason: "target-missing" },
+      ]);
+    });
+
+    it("今の Codex を読めなければ結び付けだけ外し、新規作成は通して報告する", async () => {
+      publish([
+        createRow("c1", "ミナ"),
+        bindRow("b1", "リク", "K0003", "ne-b1"),
+      ]);
+      const result = await bulkApproveSafeCodexStructureProposals({
+        readEntries: async () => {
+          throw new Error("db unavailable");
+        },
+      });
+      expect(result.approvedCreateNew).toBe(1);
+      expect(result.approvedBindExisting).toBe(0);
+      expect(result.excluded).toEqual([
+        { proposalId: "b1", reason: "codex-unreadable" },
+      ]);
+    });
+
+    it("承認の直前に最新の projection から旗を引き直す（途中の編集で対象外になった結び付けは通さない）", async () => {
+      publish([
+        bindRow("b1", "リク", "K0003", "ne-b1"),
+        bindRow("b2", "ソラ", "K0005", "ne-b2"),
+      ]);
+      reviseAndDecideAsHumanMock.mockImplementationOnce(async () => {
+        // 1 件目の承認の途中で、2 件目に要約が足された（patch になる）。
+        useCodexStructureExtractionStore
+          .getState()
+          .reviseProposalFields("b2", { summary: "少年" });
+        return {
+          proposalId: "b1",
+          revisionId: "rev-2",
+          revisionNumber: 2,
+          decisionId: "d1",
+          decision: "approved",
+          status: "approved",
+        };
+      });
+      const result = await bulkApproveSafeCodexStructureProposals({
+        entries: LIVE_ENTRIES,
+      });
+      expect(result.approvedBindExisting).toBe(1);
+      expect(result.excluded).toEqual([
+        { proposalId: "b2", reason: "no-longer-safe" },
+      ]);
+      expect(stored("b2")?.status).toBe("unreviewed");
+    });
+
+    it("手で承認し直した結び付けには、一括の印を付けない", async () => {
+      publish([bindRow("b1", "リク", "K0003", "ne-b1")]);
+      await bulkApproveSafeCodexStructureProposals({ entries: LIVE_ENTRIES });
+      expect(stored("b1")?.bulkApprovedExactBind).toBe(true);
+      await decideCodexStructureProposal({
+        proposalId: "b1",
+        status: "approved",
+        entries: LIVE_ENTRIES,
+      });
+      expect(stored("b1")?.bulkApprovedExactBind).toBe(false);
+    });
+  });
 });
 
 describe("reviseCodexStructureProposal concurrency", () => {

@@ -20,6 +20,12 @@ import { isRelationalTerm } from "./relationalTerms";
  * 別名の追加か要約の fill が 1 件でもあれば `codex.entry.patch` になり、Codex の行を書くので一括の対象外。
  */
 
+/** 一括承認で通した完全一致の結び付けの印（decision の `decisionJson.source`）。 */
+export const BULK_EXACT_BIND_DECISION_SOURCE = "bulk-exact-bind";
+
+/** Apply の前に古い・条件が変わった結び付けを承認前へ戻したときの理由（`decisionJson.reason`）。 */
+export const STALE_BIND_DECISION_REASON = "stale-bind";
+
 /** 人物の型。`coarseClassForSlug` が person を返す slug はこれだけ。 */
 export const PERSON_TYPE_SLUG = "character";
 
@@ -141,7 +147,7 @@ export function evaluateExactBindFromCatalog(
 export interface CurrentCodexEntryRecord {
   readonly id: string;
   readonly name: string | null;
-  readonly aliases: string | readonly string[] | null;
+  readonly aliases: string | null;
   readonly type: string;
   readonly version: number;
 }
@@ -167,7 +173,7 @@ export function recheckExactBindAgainstEntries(
     entries.map((entry) => ({
       key: entry.id,
       name: entry.name ?? "",
-      aliases: entry.aliases as readonly string[] | string | null,
+      aliases: entry.aliases,
       typeSlug: entry.type || null,
     })),
     targetKey,

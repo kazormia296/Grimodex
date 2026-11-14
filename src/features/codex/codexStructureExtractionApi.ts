@@ -79,7 +79,7 @@ import { captureCodexCatalogRevision } from "./codexCatalogRevision";
 import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
 import { sha256Digest } from "@/features/narrative-extraction/source/digest";
 import { parseAliases } from "./codexMatcher";
-import { BUILTIN_CODEX_TYPES } from "./api";
+import { BUILTIN_CODEX_TYPES, listCodexEntries } from "./api";
 import {
   runEntityCandidatePrepass,
   type EntityCandidateOccurrence,
@@ -141,7 +141,14 @@ import {
   rematchCodexRelationProposals,
   relationEndpointsReady,
 } from "./extraction/relationApplicability";
-import { refreshEntityBindSafety } from "./extraction/entityBulkSafety";
+import {
+  BULK_EXACT_BIND_DECISION_SOURCE,
+  STALE_BIND_DECISION_REASON,
+  recheckExactBindAgainstEntries,
+  refreshEntityBindSafety,
+  type CurrentCodexEntryRecord,
+  type ExactBindDecline,
+} from "./extraction/entityBulkSafety";
 import {
   matchExistingCodexRelation,
   type ExistingRelationCatalogRecord,
@@ -2891,6 +2898,28 @@ function rebuildEntityFromNative(args: {
         : undefined,
     compiledOperation,
     application: applicationFromNative(args.native),
+    ...bindDecisionMarksFromNative(args.native),
+  };
+}
+
+/** decision の記録（decisionJson）から、一括で通した印と、承認前へ戻された印を復元する。 */
+function bindDecisionMarksFromNative(
+  native: ReviewBundleProposal,
+): Pick<CodexEntityReviewProposal, "bulkApprovedExactBind" | "staleBind"> {
+  const decision = native.latestDecision;
+  if (!decision || decision.revisionId !== native.currentRevisionId) {
+    return {};
+  }
+  const json = decision.decisionJson;
+  return {
+    ...(native.status === "approved" &&
+    json?.source === BULK_EXACT_BIND_DECISION_SOURCE
+      ? { bulkApprovedExactBind: true }
+      : {}),
+    ...(native.status === "deferred" &&
+    json?.reason === STALE_BIND_DECISION_REASON
+      ? { staleBind: true }
+      : {}),
   };
 }
 
@@ -3724,7 +3753,10 @@ export async function applyCodexStructureExtractionReview(
 function compileEntityOperationForReview(
   review: CodexEntityReviewProposal,
   catalog: CodexStructureCatalogSnapshot | null | undefined,
-  input?: ApplyCodexStructureExtractionInput,
+  input?: Pick<
+    ApplyCodexStructureExtractionInput,
+    "entries" | "resolveTypeSlug"
+  >,
 ): CodexDomainOperationV1 | null {
   const binding = review.proposal.payload.binding;
   const narrativeEntityId = review.proposal.payload.narrativeEntityId;
@@ -3787,6 +3819,13 @@ export async function decideCodexStructureProposal(args: {
   readonly proposalId: string;
   readonly status: NarrativeProposalStatus;
   readonly kind?: "entity" | "relation";
+  /**
+   * 今の Codex の Entry。渡すと、承認で固定する op の baseVersion・既存の別名は run 時点の
+   * catalog でなく今の値から取る（承認し直しが古い版を持ち越さない）。
+   */
+  readonly entries?: ApplyCodexStructureExtractionInput["entries"];
+  /** 一括承認で通した完全一致の結び付け。decision の記録（decisionJson）に印を残す。 */
+  readonly bulkExactBind?: boolean;
 }): Promise<void> {
   return enqueueProposalEdit(args.proposalId, async () => {
     const projection = useCodexStructureExtractionStore.getState().projection;
@@ -3849,6 +3888,7 @@ export async function decideCodexStructureProposal(args: {
           const operation = compileEntityOperationForReview(
             entity,
             projection.catalog,
+            args.entries ? { entries: args.entries } : undefined,
           );
           if (!operation) {
             throw new Error(
@@ -3954,6 +3994,9 @@ export async function decideCodexStructureProposal(args: {
                 }
               : undefined,
             decision,
+            ...(args.bulkExactBind && kind === "entity"
+              ? { decisionJson: { source: BULK_EXACT_BIND_DECISION_SOURCE } }
+              : {}),
             createdBy: "codex-structure-extract-dialog",
           });
           revisionId = result.revisionId;
@@ -4020,6 +4063,9 @@ export async function decideCodexStructureProposal(args: {
                 revisionId,
                 compiledOperation:
                   args.status === "approved" ? compiledOperation : null,
+                bulkApprovedExactBind:
+                  args.status === "approved" && args.bulkExactBind === true,
+                staleBind: false,
               }
             : item,
         ),
@@ -4060,39 +4106,164 @@ export async function decideCodexStructureProposal(args: {
 }
 
 export interface BulkApproveSafeCodexStructureResult {
+  /** 承認できた件数（新規作成と既存への結び付けの合計）。 */
   readonly approved: number;
+  readonly approvedCreateNew: number;
+  readonly approvedBindExisting: number;
   readonly failed: readonly {
     readonly proposalId: string;
     readonly error: string;
   }[];
+  /**
+   * 一括の対象だったが、実行時の再検査で外した結び付け。承認せず 1 件ずつの確認に残す。
+   * `codex-unreadable` は今の Codex を読めなかったもの（新規作成は通す）。
+   */
+  readonly excluded: readonly {
+    readonly proposalId: string;
+    readonly reason:
+      | ExactBindDecline
+      | "codex-unreadable"
+      | "not-bind-operation"
+      | "no-longer-safe";
+  }[];
+}
+
+export interface BulkApproveSafeCodexStructureOptions {
+  /** 今の Codex の Entry。渡さなければ結び付けがあるときだけ DB から読み直す。 */
+  readonly entries?: readonly CurrentCodexEntryRecord[];
+  /** 今の Codex の読み出し（既定は DB）。試験と呼び出し側の差し替え用。 */
+  readonly readEntries?: (
+    projectId: string,
+  ) => Promise<readonly CurrentCodexEntryRecord[]>;
+}
+
+async function readCurrentCodexEntries(
+  projectId: string,
+): Promise<readonly CurrentCodexEntryRecord[]> {
+  const rows = await listCodexEntries(projectId);
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    aliases: row.aliases,
+    type: row.type,
+    version: row.version,
+  }));
 }
 
 /**
  * Persist-aware bulk approve for safe Entity proposals.
  * Loops decideCodexStructureProposal (revision + decision + Relation re-eval).
  * Continues after individual failures and reports them.
+ *
+ * 対象は新規作成と、完全一致の既存への結び付け（設計 §3）。結び付けは、実行時に今の Codex を
+ * 1 回読み直して (b)(g)(h) を引き直し、変わっていたものを外して報告する。承認の直前には
+ * 件ごとに最新の projection から旗を引き直す（run の中の編集・候補の選び直しを拾う）。
  */
-export async function bulkApproveSafeCodexStructureProposals(): Promise<BulkApproveSafeCodexStructureResult> {
+export async function bulkApproveSafeCodexStructureProposals(
+  options: BulkApproveSafeCodexStructureOptions = {},
+): Promise<BulkApproveSafeCodexStructureResult> {
   const projection = useCodexStructureExtractionStore.getState().projection;
   if (!projection) {
     throw new Error("No active codex structure extraction review");
   }
-  const targets = projection.proposals.filter(
-    (proposal) =>
-      proposal.applicability === "applicable" &&
-      proposal.status === "unreviewed" &&
-      isSafeForCodexEntityBulkApprove(proposal.safety),
+  const isTarget = (proposal: CodexEntityReviewProposal) =>
+    proposal.applicability === "applicable" &&
+    proposal.status === "unreviewed" &&
+    !proposal.application &&
+    isSafeForCodexEntityBulkApprove(proposal.safety);
+  const targets = projection.proposals.filter(isTarget);
+  const bindsExist = targets.some(
+    (proposal) => proposal.proposal.payload.binding.kind === "bind-existing",
   );
-  let approved = 0;
+
+  let entries: readonly CurrentCodexEntryRecord[] | null = null;
+  if (bindsExist) {
+    try {
+      entries =
+        options.entries ??
+        (await (options.readEntries ?? readCurrentCodexEntries)(
+          projection.projectId,
+        ));
+    } catch {
+      entries = null;
+    }
+  }
+
+  let approvedCreateNew = 0;
+  let approvedBindExisting = 0;
   const failed: { proposalId: string; error: string }[] = [];
-  for (const proposal of targets) {
+  const excluded: {
+    proposalId: string;
+    reason: BulkApproveSafeCodexStructureResult["excluded"][number]["reason"];
+  }[] = [];
+  const scope = captureReviewEditScope(projection);
+
+  for (const initial of targets) {
+    const latest = useCodexStructureExtractionStore.getState().projection;
+    if (!latest || !reviewEditScopeMatches(latest, scope)) break;
+    const proposal = latest.proposals.find(
+      (item) => item.proposalId === initial.proposalId,
+    );
+    if (!proposal || !isTarget(proposal)) {
+      excluded.push({
+        proposalId: initial.proposalId,
+        reason: "no-longer-safe",
+      });
+      continue;
+    }
+    const isBind = proposal.proposal.payload.binding.kind === "bind-existing";
+    if (isBind) {
+      if (!entries) {
+        excluded.push({
+          proposalId: proposal.proposalId,
+          reason: "codex-unreadable",
+        });
+        continue;
+      }
+      const verdict = recheckExactBindAgainstEntries(
+        proposal.proposal.payload,
+        latest.catalog,
+        entries,
+      );
+      if (!verdict.ok) {
+        excluded.push({
+          proposalId: proposal.proposalId,
+          reason: verdict.reason,
+        });
+        continue;
+      }
+      // 通すのは Codex の行を書かない bind だけ。patch に compile される組は外す。
+      let operationKind: string | undefined;
+      try {
+        operationKind = compileEntityOperationForReview(
+          proposal,
+          latest.catalog,
+          { entries },
+        )?.kind;
+      } catch (error) {
+        failed.push({
+          proposalId: proposal.proposalId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        continue;
+      }
+      if (operationKind !== "codex.entity.bind-existing") {
+        excluded.push({
+          proposalId: proposal.proposalId,
+          reason: "not-bind-operation",
+        });
+        continue;
+      }
+    }
     try {
       await decideCodexStructureProposal({
         proposalId: proposal.proposalId,
         status: "approved",
         kind: "entity",
+        ...(isBind && entries ? { entries, bulkExactBind: true } : {}),
       });
-      approved += 1;
+      if (isBind) approvedBindExisting += 1;
+      else approvedCreateNew += 1;
     } catch (error) {
       failed.push({
         proposalId: proposal.proposalId,
@@ -4100,7 +4271,13 @@ export async function bulkApproveSafeCodexStructureProposals(): Promise<BulkAppr
       });
     }
   }
-  return { approved, failed };
+  return {
+    approved: approvedCreateNew + approvedBindExisting,
+    approvedCreateNew,
+    approvedBindExisting,
+    failed,
+    excluded,
+  };
 }
 
 export async function reviseCodexStructureProposal(args: {

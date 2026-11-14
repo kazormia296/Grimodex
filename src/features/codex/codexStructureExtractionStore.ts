@@ -126,6 +126,16 @@ export interface CodexEntityReviewProposal {
   readonly compiledOperation?: CodexCompiledDomainOperation | null;
   /** Set after Native Apply; cold-start must not re-send these proposals. */
   readonly application?: CodexReviewProposalApplication | null;
+  /**
+   * 一括承認で、読まずに通した完全一致の結び付け。decision の記録（decisionJson）から復元できる。
+   * 作者が 1 件ずつ承認し直すと外れる。見返す一覧（T3）の対象。
+   */
+  readonly bulkApprovedExactBind?: boolean;
+  /**
+   * Apply の前に、結び先の版が古い・条件が変わったとして承認前へ戻された。作者が今の版で
+   * 承認し直すまで Apply に入らない。decision の記録（decisionJson）から復元できる。
+   */
+  readonly staleBind?: boolean;
 }
 
 export interface CodexRelationReviewProposal {
