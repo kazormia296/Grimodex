@@ -44,6 +44,14 @@ evidence for a release PR and the release tag. The rule and its procedure live i
 [GDX-TRACE-001](../policies/quality/iron-laws.md#GDX-TRACE-001) and the
 `ship-branch` skill.
 
+Two narrow exceptions let an ordinary PR merge without waiting for the `ci.yml`
+of its candidate head: a head that only merges `origin/master` into a head whose
+`ci.yml` already succeeded (no hand-resolved conflict, disjoint changed files),
+and a docs-only PR. Both still need the complete Quick and a local Node 22
+`pnpm -s verify:quality`, a docs-only PR dispatches no master Full after its
+merge, and neither applies to a release PR. GDX-TRACE-001 is the source of truth
+for the conditions.
+
 ### Split hosted Full
 
 Hosted canonical Full runs as independent parts, each on its own fresh

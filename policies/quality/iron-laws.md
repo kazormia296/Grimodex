@@ -307,7 +307,8 @@ on the branch, narrows the Quick's changed-path selection to part of the PR diff
 candidate is unchanged, and the Quick is taken again after the branch is brought up to date.
 
 The ordinary `ci.yml` PR checks must have succeeded on the same head with none pending or failing, and the review gate
-must hold (no requested changes, no unresolved thread, no P2+ finding). Merge with
+must hold (no requested changes, no unresolved thread, no P2+ finding). The same-head `ci.yml` requirement has two
+exceptions, stated after the merge rules of this path. Merge with
 `gh pr merge --squash --match-head-commit` and the candidate head. The current base is not required to equal a recorded
 base immediately before merge, and this path does not use `approved_merge_base`: if `origin/master` advanced after the
 Quick, GitHub reports the PR mergeable without conflict, and the PR HEAD still equals `candidate_head`, neither the
@@ -316,6 +317,47 @@ fetch and verify that the merge commit is included in `origin/master`; a squash 
 (`<merge-sha>^1`) differs from `candidate_base` may be recorded but is not a failure on this path. Canonical Full is not
 an ordinary PR merge condition, and no Full is dispatched for an ordinary PR.
 
+Two exceptions relax the same-head `ci.yml` requirement for an ordinary PR: the merge-in-only head exception and the
+docs-only PR exception. Neither applies to a release PR, which keeps the Full-based evidence below. Each is an explicit
+exception to the rule above that older receipts are invalid and are not reused, and to the reuse rule in the agent
+validation scope: the `ci.yml` success of an earlier head, or a merge before the candidate head's `ci.yml` finishes,
+counts only under the conditions stated here. Neither relaxes the complete Quick of the rebased candidate (including the
+`candidate_base` ancestry checks above and the immediate verify), the review gate, the required checks of the
+repository, the master-red rule below, or the `--match-head-commit` merge. If any condition does not hold, or the
+merge-in needed any change to the candidate, the exception is unavailable and the ordinary rule above applies:
+`ci.yml` is taken again on the candidate head.
+
+The merge-in-only head exception. The ordinary `ci.yml` PR checks have succeeded on a head `H1` of the PR with none
+pending or failing, and the candidate head `H2` (`candidate_head`) is `H1` plus `origin/master` merged in by merge
+commits and nothing else. It holds only when all of the following are true. (1) `H1` is an ancestor of `H2`
+(`git merge-base --is-ancestor "$H1" "$H2"`) and `git rev-list --no-merges "$H1..$H2" ^origin/master` is empty; a
+rebase with a force push never qualifies, because `H1` is then no longer an ancestor. (2) No merge commit that took
+`origin/master` in resolved a conflict or was edited by hand: for each commit `M` listed by
+`git rev-list --merges "$H1..$H2" ^origin/master`, `git merge-tree --write-tree "$M^1" "$M^2"` exits 0 and the tree it
+prints equals `git rev-parse "$M^{tree}"`.
+(3) The files the PR changes and the files `origin/master` changed since then are disjoint: with
+`base0=$(git merge-base "$H1" origin/master)`, the names listed by `git diff --name-only --no-renames "$base0" "$H1"`
+and by `git diff --name-only --no-renames "$base0" origin/master` have nothing in common (`--no-renames` makes both
+names of a rename count). (4) The complete Quick of `H2` meets the ordinary conditions above, and a local
+`pnpm -s verify:quality` on Node 22 succeeds on `H2`: the Quick does not include `verify:quality`, so it cannot catch a
+digest, catalog, or lock that must agree across files that the two sides changed separately. The `ci.yml` of `H2` need
+not be awaited, but the PR is not merged when that run has failed, been cancelled, or timed out. The `ci.yml`
+concurrency group of a PR cancels its running `ci.yml` when a newer head is pushed, and a cancelled run is not a
+success, so the merge-in is pushed only after the `ci.yml` of `H1` has completed successfully.
+
+The docs-only PR exception. A PR is docs-only when the list printed by
+`git diff --name-only --no-renames origin/master...HEAD` is not empty (`--no-renames` makes both names of a rename
+count), every path in it matches `^docs/.+\.md$`, and no path is one of these eight files, which are operational rules
+or documents whose wording a test checks: `docs/local-ci-runner.md`, `docs/DEVELOPMENT_SETUP.md`,
+`docs/communication-style-guide.md`, `docs/AI経路検証.md`, `docs/plans/nir1-continuation-2026-10.md`,
+`docs/plans/nir1-l6-l9-execution-plan.md`, `docs/plans/nir1-post-b-execution-plan.md`, and
+`docs/plans/narrative-ir-nir1-implementation-plan.md`. A PR that changes the `package.json` `version` is a release PR and
+is never docs-only. A docs-only PR merges on the complete Quick of its rebased candidate, a local
+`pnpm -s verify:quality` on Node 22 that succeeds on the candidate head, and the review gate; it need not await the
+`ci.yml` of the candidate head. When that `ci.yml` has failed, the PR is merged only after it is confirmed that the
+failure has nothing to do with the docs change. This is not the release path's narrow editorial docs/ADR-only
+upstream-base exception, which has its own conditions and keeps the Full-based evidence.
+
 The party that merged an ordinary PR then dispatches a hosted canonical Full on the `origin/master` head (`--ref master`,
 `candidate_head` the master head, `candidate_base` the master commit that last passed a complete Full, or the merge
 commit's first parent when that is unknown), and the next merge does not wait for it. If a canonical Full for `master` is
@@ -323,7 +365,9 @@ already running, dispatch nothing now; after it finishes, dispatch one Full on t
 merges share one Full. A party that cannot wait for that one dispatch reports it as pending and hands it to its caller
 (the integrator, or the user who requested the work), who first checks that no Full already covers the latest master
 head. The party that dispatched a Full watches it to completion and starts the red handling below if it fails; a party
-that cannot wait reports the run id and hands the watching to its caller.
+that cannot wait reports the run id and hands the watching to its caller. After the merge of a docs-only PR (defined
+above) no Full is dispatched, because the `master` push runs `ci.yml`; the dispatch rule above is unchanged for every
+other ordinary PR.
 
 A master Full follows the same Full rules as any other Full: the resource-isolation preflight, all part jobs plus
 `full-aggregate`, re-running all jobs, and no local Full as evidence. A run that stopped at the dispatch's selection
@@ -439,6 +483,7 @@ Choose validation from the requested work and the affected contracts before star
 - Commit only: Focused validation and the requested candidate commit; no Quick or merge-readiness claim
 - PR/release evidence with CI allowed: Clean candidate Quick plus immediate verify under GDX-TRACE-001
 - Ordinary PR merge with CI allowed: Rebased clean candidate Quick plus immediate verify, and success of the same-head PR checks, under GDX-TRACE-001; the canonical Full runs on master after the merge
+- Merge-in-only head or docs-only PR merge with CI allowed: The ordinary Quick conditions, plus a local `verify:quality` on Node 22 and the exception's own checks under GDX-TRACE-001; the candidate head's `ci.yml` need not be awaited, and a docs-only PR dispatches no master Full
 - Release PR merge or release tag with CI allowed: Full and verify under GDX-TRACE-001, including applicable preflight
 
 Instruction and policy changes are behavior changes, even when stored in Markdown. Reuse a successful

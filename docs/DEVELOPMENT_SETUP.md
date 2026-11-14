@@ -207,6 +207,10 @@ canonical Fullは通常のPRのmerge条件ではなく、merge後にmasterのhea
 優先して対応します）。release PRのmerge前と、release tag前（squash前のbranch証跡は再利用せず、
 merge後のrelease commitそのもの）には、cleanな現在HEADでFullを最初のstageから実行します。
 規則の正本は[GDX-TRACE-001](../policies/quality/iron-laws.md#GDX-TRACE-001)です。
+例外として、`ci.yml`が成功したheadに`origin/master`をmergeで取り込んだだけのhead（競合の手編集がなく、
+変更ファイルが交わらない場合）と、docs-onlyのPRは、候補headの`ci.yml`の完了を待たずにmergeできます。
+どちらもcompleteなQuickに加えて、Node 22のローカルの`pnpm -s verify:quality`の成功が必要で、
+docs-onlyのPRではmerge後のmasterのFullをdispatchしません。release PRには適用しません。条件の詳細は同じ正本に従います。
 Fullは依存audit、Rust/N-API、Browser/WebGL/Storybook、Electron performance、全product journeyを
 含むため、初回は長時間かかります。`uv`、Rust toolchain、`cargo-audit`、Playwrightと
 Electronのホスト依存を先に導入してください。Fullを証跡にできるのは、GitHub-hostedの
