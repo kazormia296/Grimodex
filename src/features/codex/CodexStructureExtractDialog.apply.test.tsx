@@ -11,12 +11,14 @@ const toastMocks = vi.hoisted(() => ({
 vi.mock("sonner", () => ({ toast: toastMocks }));
 
 const applyMock = vi.hoisted(() => vi.fn());
+const readEntriesMock = vi.hoisted(() => vi.fn());
 vi.mock("./codexStructureExtractionApi", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("./codexStructureExtractionApi")>();
   return {
     ...actual,
     applyCodexStructureExtractionReview: applyMock,
+    readCurrentCodexEntries: readEntriesMock,
     restoreCodexStructureExtractionReview: vi.fn(async () => null),
   };
 });
@@ -105,6 +107,24 @@ describe("CodexStructureExtractDialog の適用", () => {
   beforeEach(() => {
     resetCodexStructureExtractionStoreForTests();
     applyMock.mockReset();
+    readEntriesMock.mockReset();
+    // 画面の store は絞り込まれうるので、Apply には DB から読んだ全体を渡す。
+    readEntriesMock.mockResolvedValue([
+      {
+        id: "entry-riku",
+        name: "リク",
+        aliases: null,
+        type: "character",
+        version: 7,
+      },
+      {
+        id: "entry-sora",
+        name: "ソラ",
+        aliases: null,
+        type: "character",
+        version: 2,
+      },
+    ]);
     toastMocks.warning.mockClear();
     toastMocks.success.mockClear();
     useCodexStore.setState({
@@ -148,15 +168,17 @@ describe("CodexStructureExtractDialog の適用", () => {
     );
     fireEvent.click(screen.getByTestId("codex-structure-apply"));
     await waitFor(() => expect(applyMock).toHaveBeenCalledTimes(1));
-    expect(applyMock.mock.calls[0]?.[0].entries).toEqual([
-      {
-        id: "entry-riku",
-        name: "リク",
-        version: 7,
-        aliases: null,
-        type: "character",
-      },
-    ]);
+    expect(readEntriesMock).toHaveBeenCalledWith("p1");
+    // store（リクだけ）でなく、DB から読んだ全体（ソラも）を名前つきで渡す。
+    expect(
+      applyMock.mock.calls[0]?.[0].entries.map(
+        (entry: { id: string }) => entry.id,
+      ),
+    ).toEqual(["entry-riku", "entry-sora"]);
+    expect(applyMock.mock.calls[0]?.[0].entries[0]).toMatchObject({
+      name: "リク",
+      version: 7,
+    });
     await waitFor(() => expect(toastMocks.warning).toHaveBeenCalledTimes(1));
     expect(toastMocks.warning.mock.calls[0]?.[0]).toContain("承認し直して");
     expect(toastMocks.success).not.toHaveBeenCalled();

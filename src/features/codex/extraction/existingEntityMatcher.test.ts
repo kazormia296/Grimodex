@@ -225,6 +225,15 @@ describe("inspectExactEntityMatch", () => {
     expect(result.partialOtherRefs).toEqual(["K0002"]);
   });
 
+  it("名前の無い Entry が名簿にあっても、他の表記の部分一致には数えない", () => {
+    const result = inspectExactEntityMatch("リク", [
+      entry({ ref: "K0001", name: "リク" }),
+      entry({ ref: "K0002", name: "", aliases: [] }),
+      entry({ ref: "K0003", name: "  " }),
+    ]);
+    expect(result).toEqual({ exactRefs: ["K0001"], partialOtherRefs: [] });
+  });
+
   it("空の表記は何にも当たらない", () => {
     expect(
       inspectExactEntityMatch("  ", [entry({ ref: "K0001", name: "" })]),

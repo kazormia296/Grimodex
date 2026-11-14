@@ -79,7 +79,7 @@ import { captureCodexCatalogRevision } from "./codexCatalogRevision";
 import type { NarrativeProposalStatus } from "@/features/narrative-extraction/runtime/types";
 import { sha256Digest } from "@/features/narrative-extraction/source/digest";
 import { parseAliases } from "./codexMatcher";
-import { BUILTIN_CODEX_TYPES, listCodexEntries } from "./api";
+import { BUILTIN_CODEX_TYPES, listCodexContextMetadata } from "./api";
 import {
   runEntityCandidatePrepass,
   type EntityCandidateOccurrence,
@@ -3612,46 +3612,54 @@ async function excludeStaleEntityApprovals(
   }
   if (excluded.length === 0) return { projection, excluded };
 
-  const byId = new Map(excluded.map((item) => [item.proposalId, item]));
-  for (const review of projection.proposals) {
-    const item = byId.get(review.proposalId);
-    if (!item) continue;
-    await appendHumanDecision({
-      runId: projection.runId,
-      projectId: projection.projectId,
-      proposalId: review.proposalId,
-      revisionId: review.revisionId!,
-      decision: "deferred",
-      decisionJson: {
-        reason: STALE_BIND_DECISION_REASON,
-        cause: item.reason,
-      },
-      createdBy: "codex-structure-extract-dialog",
+  const scope = captureReviewEditScope(projection);
+  // 1 件ずつ Native → store の順に進める。途中で失敗しても、済んだ分は Native と store が揃い、
+  // 失敗したときは Native から組み直して store を合わせる。
+  for (const item of excluded) {
+    const review = projection.proposals.find(
+      (row) => row.proposalId === item.proposalId,
+    )!;
+    try {
+      await appendHumanDecision({
+        runId: projection.runId,
+        projectId: projection.projectId,
+        proposalId: review.proposalId,
+        revisionId: review.revisionId!,
+        decision: "deferred",
+        decisionJson: {
+          reason: STALE_BIND_DECISION_REASON,
+          cause: item.reason,
+        },
+        createdBy: "codex-structure-extract-dialog",
+      });
+    } catch (error) {
+      await resyncReviewAfterEditFailure(scope);
+      throw error;
+    }
+    const latest =
+      useCodexStructureExtractionStore.getState().projection ?? projection;
+    const proposals = latest.proposals.map((row) =>
+      row.proposalId === item.proposalId
+        ? {
+            ...row,
+            status: "deferred" as const,
+            compiledOperation: null,
+            bulkApprovedExactBind: false,
+            staleBind: true,
+          }
+        : row,
+    );
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...latest,
+      proposals,
+      ...recountProjection(
+        proposals,
+        latest.relationProposals,
+        latest.baseDetailProposals,
+        latest.phaseProposals,
+      ),
     });
   }
-  const latest =
-    useCodexStructureExtractionStore.getState().projection ?? projection;
-  const proposals = latest.proposals.map((review) =>
-    byId.has(review.proposalId)
-      ? {
-          ...review,
-          status: "deferred" as const,
-          compiledOperation: null,
-          bulkApprovedExactBind: false,
-          staleBind: true,
-        }
-      : review,
-  );
-  useCodexStructureExtractionStore.getState().setProjection({
-    ...latest,
-    proposals,
-    ...recountProjection(
-      proposals,
-      latest.relationProposals,
-      latest.baseDetailProposals,
-      latest.phaseProposals,
-    ),
-  });
   return {
     projection: useCodexStructureExtractionStore.getState().projection!,
     excluded,
@@ -4309,10 +4317,15 @@ export interface BulkApproveSafeCodexStructureOptions {
   ) => Promise<readonly CurrentCodexEntryRecord[]>;
 }
 
-async function readCurrentCodexEntries(
+/**
+ * 今の Codex の Entry（プロジェクト全体。検索・種別の絞り込みの影響を受けない）を DB から読む。
+ * 本文・アイコンを読まない軽い投影。一括承認の再検査・承認の op の版・Apply の前の古さの検査は
+ * どれも、画面の store（絞り込まれうる）でなくこれを使う。
+ */
+export async function readCurrentCodexEntries(
   projectId: string,
 ): Promise<readonly CurrentCodexEntryRecord[]> {
-  const rows = await listCodexEntries(projectId);
+  const rows = await listCodexContextMetadata(projectId);
   return rows.map((row) => ({
     id: row.id,
     name: row.name,

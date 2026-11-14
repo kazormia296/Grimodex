@@ -299,7 +299,9 @@ export function inspectExactEntityMatch(
   const exactRefs: KnowledgeEntityRef[] = [];
   const partialOtherRefs: KnowledgeEntityRef[] = [];
   for (const entry of catalog) {
-    const entryNameKey = candidateKey(entry.name);
+    // 名前の無い Entry は、空文字列が全部の表記に prefix で当たってしまうので、名前側では
+    // 何にも当たらないようにする（別名は別に数える）。matchExistingEntity は変えていない。
+    const entryNameKey = candidateKey(entry.name) || "\u0000";
     const aliasKeys = parseAliases(
       entry.aliases as string[] | string | null | undefined,
     )

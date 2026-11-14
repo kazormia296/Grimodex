@@ -541,8 +541,13 @@ Codex の行は変わらない、次の抽出では元どおり出る）」と�
   カードの「承認」で今の版の op に固定し直せる。今の一覧が空のときは読めていない可能性があるので削除とは判断しない。一括で通した結び付けは、
   Apply の直前に (e)（依存する提案が付いた）と、名前つきの今の Codex での完全一致も確かめ直し、外れたら同じ扱い。外した実体に依存する
   Base Detail・Phase は今回の commit に入れず、関係は再評価が止める。全部が外れて 0 件のときは review を残す。
+- **「今の Codex」の出どころ**：一括の再検査・カードの承認の op の版・Apply の前の古さの検査の 3 か所とも、DB から読んだプロジェクト全体
+  （`readCurrentCodexEntries`、本文を読まない `listCodexContextMetadata`）に揃えた。画面の `useCodexStore.entries` は検索・種別で絞られる
+  （`search`／`loadEntries` が `entries` を置き換える）ので、重複名・結び先の有無の判定に使うと取りこぼす。外部（standalone MCP など）の編集も、
+  読む時点の DB で拾える。読めなければ、一括は結び付けだけ外し、承認は run 時点の版のまま、Apply は検査を飛ばす（従来どおり commit が失敗しうる）。
+  既存の指摘（今回の範囲外・未修正）：`handleAnalyze` の catalog は同じ store の `entries` から組むので、絞り込み中に解析すると名簿が不完全になる。
 - **画面**：結び先の名前（カード）、件数の分割、一括で通した結び付けを見返す一覧（既存の review の中の details）、承認し直しが要る旨、外した件数の報告。
-- **未解決**：(1) 承認し直しのカードの結び先の名前は run 時点の catalog の名前（今の名前でない）。(2) `decisionJson` は Native が不透明に保存し
+- **未解決**：(0) 結び先が削除された結び付けは、承認し直しても今の版が引けず（catalog の版に落ちる）毎回 Apply で外れ、カードの文言も「編集された」のまま。見返す一覧は取り込み前だけ（適用済みは出さない）。(e) は却下済み・already-satisfied の関係も数えるので、関係が co-mention から広く作られる実際の run では、一括に残る結び付けは少ない見込み（§3.7 の測定項目：一括で通る結び付けの件数と、(e) で落ちた件数）。名前の無い Entry は matcher の既存の挙動（空の名前が全部に prefix で当たる）を `inspectExactEntityMatch` の中でだけ避けた（`matchExistingEntity` は変えていない）。(1) 承認し直しのカードの結び先の名前は run 時点の catalog の名前（今の名前でない）。(2) `decisionJson` は Native が不透明に保存し
   `latestDecision.decisionJson` で戻す経路を既存のコード（already-satisfied）で使っているが、実機の往復は未確認（vitest は mock）。
   戻らなければ見返す一覧は開いている間だけになる。(3) 取り込み・IR・Graph など bind の残りの読み手が Undo 後も残る記録を許容するかは §12 のまま。
   (4) 実機の検査（名簿のあるプロジェクトで一括承認 → 別画面で結び先を編集 → Apply）と、§3.7 の測定は未実施。(5) `explicitProperName` は永続する

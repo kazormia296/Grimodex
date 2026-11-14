@@ -3780,6 +3780,43 @@ describe("applyCodexStructureExtractionReview: 古くなった結び付けの除
     ]);
   });
 
+  it("2 件目の decision の保存が失敗したら、済んだ 1 件目は Native と store が揃い、失敗は投げ直す", async () => {
+    publish([
+      approvedBind("b1", "リク", "K0003", "ne-b1", { baseVersion: 1 }),
+      approvedBind("b2", "ソラ", "K0005", "ne-b2", { baseVersion: 1 }),
+    ]);
+    appendHumanDecisionMock
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error("native down"));
+    await expect(
+      applyCodexStructureExtractionReview({
+        projectId: "p1",
+        entries: [
+          {
+            id: "entry-riku",
+            name: "リク",
+            aliases: null,
+            type: "character",
+            version: 7,
+          },
+          {
+            id: "entry-sora",
+            name: "ソラ",
+            aliases: null,
+            type: "character",
+            version: 8,
+          },
+        ],
+      }),
+    ).rejects.toThrow("native down");
+    expect(appendHumanDecisionMock).toHaveBeenCalledTimes(2);
+    // 1 件目は Native が deferred になった分だけ store も保留。2 件目は承認のまま。
+    expect(stored("b1")?.status).toBe("deferred");
+    expect(stored("b1")?.staleBind).toBe(true);
+    expect(stored("b2")?.status).toBe("approved");
+    expect(prepareApplyMock).not.toHaveBeenCalled();
+  });
+
   it("除外 → 今の版で承認し直し → Apply に入る（承認し直しは今の Codex の版で op を固定する）", async () => {
     publish([
       approvedBind("b1", "リク", "K0003", "ne-b1", {

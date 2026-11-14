@@ -7,7 +7,10 @@ import {
 } from "@/features/narrative-extraction/proposals/bindCodexEntityProposal";
 import { CodexEntityProposalReview } from "./CodexEntityProposalReview";
 import { CodexStructureExtractionProgress } from "./CodexStructureExtractionProgress";
-import { bulkApproveSafeCodexStructureProposals } from "./codexStructureExtractionApi";
+import {
+  bulkApproveSafeCodexStructureProposals,
+  decideCodexStructureProposal,
+} from "./codexStructureExtractionApi";
 import {
   buildCodexEntityProposalSafetyFlags,
   resetCodexStructureExtractionStoreForTests,
@@ -32,6 +35,7 @@ vi.mock("./codexStructureExtractionApi", async (importOriginal) => {
     await importOriginal<typeof import("./codexStructureExtractionApi")>();
   return {
     ...actual,
+    decideCodexStructureProposal: vi.fn(async () => {}),
     bulkApproveSafeCodexStructureProposals: vi.fn(async () => {
       const { useCodexStructureExtractionStore } =
         await import("./codexStructureExtractionStore");
@@ -364,7 +368,7 @@ describe("CodexEntityProposalReview: 完全一致の既存への結び付け", (
     ).toHaveTextContent("結び先が編集されたため");
   });
 
-  it("一括承認に今の Codex の Entry を渡し、外した件数を報告する", async () => {
+  it("一括承認に今の Codex の読み出しを渡し、外した件数を報告する", async () => {
     vi.mocked(bulkApproveSafeCodexStructureProposals).mockResolvedValueOnce({
       approved: 1,
       approvedCreateNew: 0,
@@ -376,19 +380,11 @@ describe("CodexEntityProposalReview: 完全一致の既存への結び付け", (
       ],
     });
     publish([bindProposal()]);
-    const liveEntries = [
-      {
-        id: "entry-riku",
-        name: "リク",
-        aliases: null,
-        type: "character",
-        version: 4,
-      },
-    ];
-    render(<CodexEntityProposalReview liveEntries={liveEntries} />);
+    const readEntries = vi.fn(async () => []);
+    render(<CodexEntityProposalReview readEntries={readEntries} />);
     fireEvent.click(screen.getByTestId("codex-bulk-approve-safe"));
     expect(bulkApproveSafeCodexStructureProposals).toHaveBeenCalledWith({
-      entries: liveEntries,
+      readEntries,
     });
     await waitFor(() => {
       expect(toastMocks.success).toHaveBeenCalled();
@@ -398,5 +394,41 @@ describe("CodexEntityProposalReview: 完全一致の既存への結び付け", (
       "今の Codex を読めなかったため、結び付け 1 件は一括から外しました",
       "1 件の結び付けは、今の Codex では一括の条件を満たさないため、1 件ずつの確認に残しました",
     ]);
+  });
+
+  it("既存 Entry への結び付けを手で承認するときは、今の Codex を読んで今の版で承認する（読めなければ run 時点の版のまま）", async () => {
+    publish([bindProposal({ status: "deferred", staleBind: true })]);
+    const entries = [
+      {
+        id: "entry-riku",
+        name: "リク",
+        aliases: null,
+        type: "character",
+        version: 9,
+      },
+    ];
+    const readEntries = vi
+      .fn()
+      .mockResolvedValueOnce(entries)
+      .mockRejectedValueOnce(new Error("db down"));
+    render(<CodexEntityProposalReview readEntries={readEntries} />);
+    fireEvent.click(screen.getByRole("button", { name: "承認" }));
+    await waitFor(() =>
+      expect(decideCodexStructureProposal).toHaveBeenCalledWith({
+        proposalId: "bind-1",
+        status: "approved",
+        entries,
+      }),
+    );
+    expect(readEntries).toHaveBeenCalledWith("project-a");
+
+    vi.mocked(decideCodexStructureProposal).mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "承認" }));
+    await waitFor(() =>
+      expect(decideCodexStructureProposal).toHaveBeenCalledWith({
+        proposalId: "bind-1",
+        status: "approved",
+      }),
+    );
   });
 });

@@ -7,6 +7,7 @@ import { CodexEntityResolutionPicker } from "./CodexEntityResolutionPicker";
 import {
   catalogEntityDisplayName,
   bulkApproveSafeCodexStructureProposals,
+  readCurrentCodexEntries,
   decideCodexStructureProposal,
   reviseCodexStructureProposal,
   resolveCodexStructureBinding,
@@ -27,10 +28,12 @@ export interface CodexEntityProposalReviewProps {
   /** When true, reads/writes the codexStructureExtractionStore. */
   readonly boundToStore?: boolean;
   /**
-   * 今の Codex の Entry。一括承認の再検査と、承認で固定する op の版に使う（run 時点の版でなく
-   * 今の版）。渡さなければ一括承認が DB から読み直す。
+   * 今の Codex の Entry の読み出し（プロジェクト全体）。一括承認の再検査と、承認で固定する op の版に
+   * 使う（run 時点の版でなく今の版）。既定は DB。画面の store は検索・種別で絞られるので使わない。
    */
-  readonly liveEntries?: readonly CurrentCodexEntryRecord[];
+  readonly readEntries?: (
+    projectId: string,
+  ) => Promise<readonly CurrentCodexEntryRecord[]>;
 }
 
 /**
@@ -42,7 +45,7 @@ export function CodexEntityProposalReview({
   onSelectProposal,
   onEvidenceClick,
   boundToStore = true,
-  liveEntries,
+  readEntries = readCurrentCodexEntries,
 }: CodexEntityProposalReviewProps) {
   const { t } = useTranslation();
   const storeProjection = useCodexStructureExtractionStore((s) => s.projection);
@@ -160,16 +163,14 @@ export function CodexEntityProposalReview({
               disabled={safeCount === 0 || bulkApproving}
               onClick={() => {
                 setBulkApproving(true);
-                void bulkApproveSafeCodexStructureProposals(
-                  liveEntries ? { entries: liveEntries } : {},
-                )
+                void bulkApproveSafeCodexStructureProposals({ readEntries })
                   .then((result) => {
                     if (result.failed.length > 0) {
                       toast.error(
                         `${result.failed.length}件の提案を承認できませんでした`,
                       );
                     }
-                    if ((result.approvedBindExisting ?? 0) > 0) {
+                    if (result.approvedBindExisting > 0) {
                       toast.success(
                         t("codex.structureReview.bulkApproved", {
                           count: result.approved,
@@ -178,7 +179,7 @@ export function CodexEntityProposalReview({
                         }),
                       );
                     }
-                    const excluded = result.excluded ?? [];
+                    const excluded = result.excluded;
                     const unreadable = excluded.filter(
                       (item) => item.reason === "codex-unreadable",
                     ).length;
@@ -253,10 +254,33 @@ export function CodexEntityProposalReview({
                 onSelect={() => handleSelect(proposal.proposalId)}
                 onDecide={(status) => {
                   if (!boundToStore) return;
-                  void decideCodexStructureProposal({
-                    proposalId: proposal.proposalId,
-                    status,
-                    ...(liveEntries ? { entries: liveEntries } : {}),
+                  void (async () => {
+                    // 既存 Entry への結び付けの承認は、今の Codex の版で op を固定する。
+                    // 読めなければ run 時点の版のまま承認し、古ければ Apply の前に外れる。
+                    let entries: readonly CurrentCodexEntryRecord[] | undefined;
+                    if (
+                      status === "approved" &&
+                      proposal.proposal.payload.binding.kind ===
+                        "bind-existing" &&
+                      storeProjection
+                    ) {
+                      try {
+                        entries = await readEntries(storeProjection.projectId);
+                      } catch {
+                        entries = undefined;
+                      }
+                    }
+                    await decideCodexStructureProposal({
+                      proposalId: proposal.proposalId,
+                      status,
+                      ...(entries ? { entries } : {}),
+                    });
+                  })().catch((error) => {
+                    toast.error(
+                      error instanceof Error
+                        ? error.message
+                        : "承認の保存に失敗しました",
+                    );
                   });
                 }}
               />
