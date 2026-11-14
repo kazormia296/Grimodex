@@ -124,10 +124,13 @@ import {
   type CodexStructureCatalogSnapshot,
   type CodexStructureExtractionCoverage,
   type CodexStructureExtractionReviewProjection,
+  type CodexStructureFoldedDismissedSurface,
   type CodexStructureSkippedRelationalTerm,
   type StartCodexStructureExtractionRequest,
 } from "./codexStructureExtractionStore";
 import { relationalTermKind } from "./extraction/relationalTerms";
+import { loadDismissedCandidateKeys } from "./codexCandidateDismissals";
+import { candidateKey } from "./codexCandidates";
 import {
   BUILTIN_CODEX_RELATION_VOCABULARY,
   buildCodexRelationSemanticKey,
@@ -1479,13 +1482,19 @@ async function resyncReviewAfterEditFailure(
     }
     // Native から組み直した projection には live の診断が無いので、同じ run の分を引き継ぐ。
     const skippedRelationalTerms = current?.skippedRelationalTerms;
-    useCodexStructureExtractionStore
-      .getState()
-      .setProjection(
-        skippedRelationalTerms && skippedRelationalTerms.length > 0
-          ? { ...refreshed, skippedRelationalTerms }
-          : refreshed,
-      );
+    const foldedDismissedSurfaces = current?.foldedDismissedSurfaces;
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...refreshed,
+      ...(skippedRelationalTerms && skippedRelationalTerms.length > 0
+        ? { skippedRelationalTerms }
+        : {}),
+      ...(foldedDismissedSurfaces && foldedDismissedSurfaces.length > 0
+        ? { foldedDismissedSurfaces }
+        : {}),
+      ...(current?.dismissalsUnavailable
+        ? { dismissalsUnavailable: true as const }
+        : {}),
+    });
   } catch {
     // Leave local state untouched; do not resurrect a cleared/foreign projection.
   }
@@ -1534,6 +1543,8 @@ export async function startCodexStructureExtraction(
   >();
   const documentTextsByRef = new Map<string, string>();
   const skippedRelationalTerms: CodexStructureSkippedRelationalTerm[] = [];
+  const foldedDismissedSurfaces: CodexStructureFoldedDismissedSurface[] = [];
+  let dismissalsUnavailable = false;
   let coverageDocumentCount = request.sceneIds.length;
   let coverageWindowCount = Math.max(1, request.sceneIds.length);
   let snapshotDigest: string | null = null;
@@ -1602,6 +1613,14 @@ export async function startCodexStructureExtraction(
       documentTextsByRef.set(document.ref, document.canonical.text);
     }
 
+    // 打ち手 3：候補画面で見送った表記は、名簿に当たらなければ構造抽出でも提案にしない。
+    // 読み出しの失敗で抽出を止めない（畳まずに全件を出し、そのことを run に残す）。
+    let dismissedKeys: ReadonlySet<string> = new Set();
+    try {
+      dismissedKeys = await loadDismissedCandidateKeys(request.projectId);
+    } catch {
+      dismissalsUnavailable = true;
+    }
     const prepass = await runEntityCandidatePrepass({
       snapshot,
       sourceViews,
@@ -1626,6 +1645,19 @@ export async function startCodexStructureExtraction(
           skippedRelationalTerms.push({
             surface: seed.surface,
             kind: relationalKind,
+          });
+          continue;
+        }
+        // 名簿にまったく当たらない表記だけを畳む（敬称・接頭・部分一致で当たるものは畳まない）。
+        // 黙って消さず、表記を run に残して画面から戻せるようにする。
+        const surfaceKey = candidateKey(seed.surface);
+        if (
+          existingResolution.status === "none" &&
+          dismissedKeys.has(surfaceKey)
+        ) {
+          foldedDismissedSurfaces.push({
+            surface: seed.surface,
+            key: surfaceKey,
           });
           continue;
         }
@@ -2446,6 +2478,8 @@ export async function startCodexStructureExtraction(
     catalog: catalogSnapshot,
     existingRelations,
     ...(skippedRelationalTerms.length > 0 ? { skippedRelationalTerms } : {}),
+    ...(foldedDismissedSurfaces.length > 0 ? { foldedDismissedSurfaces } : {}),
+    ...(dismissalsUnavailable ? { dismissalsUnavailable: true as const } : {}),
     ...counts,
   };
 

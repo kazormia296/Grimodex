@@ -215,6 +215,19 @@ export function CodexCandidatesReport() {
     [mutate, t],
   );
 
+  // 構造抽出で畳んだ表記を戻す（打ち手 3）。候補画面と同じ入口（mutate）を通し、
+  // 候補画面の state が古いまま残らないようにする。
+  const handleRestoreDismissedKeys = useCallback(
+    (keys: readonly string[]) => {
+      const prev = dismissedRef.current;
+      const next = new Set(prev);
+      for (const key of keys) next.delete(key);
+      if (next.size === prev.size) return;
+      mutate(next, prev, t("codex.candidates.historyRestore"));
+    },
+    [mutate, t],
+  );
+
   const handleRestoreAll = useCallback(() => {
     mutate(
       new Set(),
@@ -292,6 +305,7 @@ export function CodexCandidatesReport() {
     <CodexStructureExtractDialog
       open={structureOpen}
       onOpenChange={setStructureOpen}
+      onRestoreDismissedCandidates={handleRestoreDismissedKeys}
     />
   ) : null;
 
