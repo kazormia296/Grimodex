@@ -500,7 +500,8 @@ pub use models::{
     NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
     NarrativeMaintenanceInboxListPayload, PrepareCommitPayload, ProposalSeed,
     RebuildNarrativeDerivedStatePayload, ReconciliationEnvelopeInheritance,
-    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
+    RepairNarrativeDependencyDeclarationsPayload, ResolveCodexCatalogRevisionPayload,
+    ResolveCodexCatalogRevisionResult, RetryNarrativeLegacyBackfillPayload,
     ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, TrustedHumanDerivationScope,
     TrustedRevealBasis, TrustedScopeBoundary, TrustedScopeInterval, TrustedUnresolvedConstraint,
     UndoCommitPayload, VerifyNarrativeDependencyGraphPayload,
@@ -613,6 +614,35 @@ pub fn narrative_extraction_is_run_resumable_for_review(
     payload: IsRunResumableForReviewPayload,
 ) -> anyhow::Result<IsRunResumableForReviewResult> {
     repository::is_run_resumable_for_review(db, payload)
+}
+
+/// The current Native revision token of the Project's Codex catalog Source
+/// (`project:codex-catalog:<projectId>`), read with the same resolver that
+/// `save_proposal_set` and Apply use to check a ReadSet (DR-CSX-1). Read-only.
+pub fn narrative_extraction_resolve_codex_catalog_revision(
+    db: &Database,
+    payload: ResolveCodexCatalogRevisionPayload,
+) -> anyhow::Result<ResolveCodexCatalogRevisionResult> {
+    let project_id = payload.project_id;
+    anyhow::ensure!(
+        !project_id.is_empty() && project_id.trim() == project_id,
+        "NEX_SOURCE_KEY_INVALID: projectId must be a non-empty exact string"
+    );
+    let source_key = format!("project:codex-catalog:{project_id}");
+    let current = db.with_conn(|conn| {
+        source_revision::resolve_source_revision(
+            conn,
+            &project_id,
+            "",
+            "codex-catalog",
+            &source_key,
+        )
+    })?;
+    Ok(ResolveCodexCatalogRevisionResult {
+        source_kind: "codex-catalog".to_owned(),
+        source_key,
+        revision_token: current.revision_token,
+    })
 }
 
 pub fn narrative_extraction_list_chronicle_task_resume_candidates(

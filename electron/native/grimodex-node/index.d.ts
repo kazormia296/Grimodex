@@ -1048,6 +1048,11 @@ export declare class Backend {
    */
   narrativeExtractionCaptureWorkspaceBinding(expectedWorkspacePath: string): Promise<string>
   narrativeExtractionCreateRun(payload: any, workspaceBinding: any): Promise<string>
+  /**
+   * Read-only: the Native `codex-catalog` Source revision token, pinned to
+   * the captured extraction workspace authority (DR-CSX-1).
+   */
+  narrativeExtractionResolveCodexCatalogRevision(payload: any, workspaceBinding: any): Promise<string>
   narrativeExtractionGetRun(payload: any): Promise<string>
   narrativeExtractionListResumableRuns(payload: any): Promise<string>
   narrativeExtractionIsRunResumableForReview(payload: any): Promise<string>
