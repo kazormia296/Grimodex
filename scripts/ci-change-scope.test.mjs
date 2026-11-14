@@ -299,11 +299,16 @@ test("the docs set matches the product journey catalog's neutral rules, and its 
   assert.equal(lanesFor(["CLAUDE.md", "README.md"]).journeys, false);
 });
 
+// Files only: a recursive readdir also lists directories, and a directory whose
+// name matches the pattern (a build or test output named like `x.spec.ts/`)
+// must not become an entry (it failed Full 43604272959 with EISDIR).
 async function listFiles(directory, pattern) {
   const root = path.join(repoRoot, directory);
-  return (await readdir(root, { recursive: true }))
+  const matches = (await readdir(root, { recursive: true }))
     .filter((name) => pattern.test(name.split(path.sep).join("/")))
     .map((name) => path.join(root, name));
+  const kept = await Promise.all(matches.map((file) => isFile(file)));
+  return matches.filter((_, index) => kept[index]);
 }
 
 const SOURCE_FILE = /\.(?:mjs|cjs|js|jsx|mts|cts|ts|tsx)$/u;
