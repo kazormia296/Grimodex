@@ -30,7 +30,7 @@ describe("CodexStructureFoldedDismissals", () => {
     const note = screen.getByTestId(
       "codex-structure-folded-dismissed-unavailable",
     );
-    expect(note.textContent).toContain("見送りの記録を読めなかった");
+    expect(note.textContent).toContain("却下の記録を読めなかった");
     expect(screen.queryByTestId("codex-structure-folded-dismissed")).toBeNull();
   });
 
@@ -55,7 +55,7 @@ describe("CodexStructureFoldedDismissals", () => {
     );
     expect(onRestore).toHaveBeenCalledTimes(1);
     expect(onRestore).toHaveBeenCalledWith(["alice"]);
-    expect(items[1]!.textContent).toContain("戻しました");
+    expect(items[1]!.textContent).toContain("外しました");
     expect(
       items[1]!.querySelector(
         '[data-testid="codex-structure-folded-dismissed-restore"]',
@@ -146,7 +146,7 @@ describe("CodexStructureFoldedDismissals", () => {
       "codex-structure-folded-dismissed",
     ).textContent;
     expect(text).toContain("12 種");
-    expect(text).toContain("ほか 2 種");
+    expect(text).toContain("ほか 2 種を表示");
     expect(text).not.toContain("呼び10");
   });
 
@@ -180,5 +180,84 @@ describe("CodexStructureFoldedDismissals", () => {
     expect(
       screen.queryByTestId("codex-structure-folded-dismissed-restore-all"),
     ).toBeNull();
+  });
+
+  it("11 種以上は展開で全件を出し、表示外だった種も 1 件ずつ外せる", async () => {
+    const user = userEvent.setup();
+    const onRestore = vi.fn();
+    render(
+      <CodexStructureFoldedDismissals
+        surfaces={Array.from({ length: 12 }, (_, i) => surface(`呼び${i}`))}
+        onRestore={onRestore}
+      />,
+    );
+    await user.click(
+      screen.getByTestId("codex-structure-folded-dismissed-toggle"),
+    );
+    const items = screen.getAllByTestId(
+      "codex-structure-folded-dismissed-item",
+    );
+    expect(items).toHaveLength(12);
+    const last = items[11]!;
+    expect(last.textContent).toContain("呼び11");
+    await user.click(
+      last.querySelector(
+        "[data-testid='codex-structure-folded-dismissed-restore']",
+      )!,
+    );
+    expect(onRestore).toHaveBeenCalledWith([surface("呼び11").key]);
+    await user.click(
+      screen.getByTestId("codex-structure-folded-dismissed-toggle"),
+    );
+    expect(
+      screen.getAllByTestId("codex-structure-folded-dismissed-item"),
+    ).toHaveLength(10);
+  });
+
+  it("却下集合を渡したときは、その集合から「外しました」を決める（保存の失敗・Undo の後に合わせる）", async () => {
+    const user = userEvent.setup();
+    const a = surface("ミナト");
+    const b = surface("ライカ");
+    const onRestore = vi.fn();
+    const { rerender } = render(
+      <CodexStructureFoldedDismissals
+        surfaces={[a, b]}
+        onRestore={onRestore}
+        dismissedKeys={new Set([a.key, b.key])}
+      />,
+    );
+    await user.click(
+      screen.getAllByTestId("codex-structure-folded-dismissed-restore")[0]!,
+    );
+    expect(onRestore).toHaveBeenCalledWith([a.key]);
+    // 親の集合がまだ変わらなければ（保存の失敗で読み直した等）、表示も外さない。
+    expect(
+      screen.getAllByTestId("codex-structure-folded-dismissed-restore"),
+    ).toHaveLength(2);
+    rerender(
+      <CodexStructureFoldedDismissals
+        surfaces={[a, b]}
+        onRestore={onRestore}
+        dismissedKeys={new Set([b.key])}
+      />,
+    );
+    const items = screen.getAllByTestId(
+      "codex-structure-folded-dismissed-item",
+    );
+    expect(items[0]!.textContent).toContain("外しました");
+    expect(
+      screen.getByTestId("codex-structure-folded-dismissed").textContent,
+    ).toContain("うち 1 種は却下を外しました");
+    // Undo で却下に戻れば、また外せる表示に戻る。
+    rerender(
+      <CodexStructureFoldedDismissals
+        surfaces={[a, b]}
+        onRestore={onRestore}
+        dismissedKeys={new Set([a.key, b.key])}
+      />,
+    );
+    expect(
+      screen.getAllByTestId("codex-structure-folded-dismissed-restore"),
+    ).toHaveLength(2);
   });
 });

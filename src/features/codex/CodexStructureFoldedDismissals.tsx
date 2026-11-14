@@ -14,6 +14,11 @@ export interface CodexStructureFoldedDismissalsProps {
    * 渡されないときは戻す操作を出さない。
    */
   readonly onRestore?: (keys: readonly string[]) => void;
+  /**
+   * 今の却下集合（候補画面の state）。渡されたときは「外しました」をこの集合から決める
+   * （保存の失敗で読み直した後や Undo の後も、実際の状態に合わせる）。
+   */
+  readonly dismissedKeys?: ReadonlySet<string>;
 }
 
 /**
@@ -24,9 +29,16 @@ export function CodexStructureFoldedDismissals({
   surfaces = [],
   unavailable = false,
   onRestore,
+  dismissedKeys,
 }: CodexStructureFoldedDismissalsProps) {
   const { t } = useTranslation();
-  const [restored, setRestored] = useState<ReadonlySet<string>>(new Set());
+  // dismissedKeys が無いときだけ使う、この画面の中の控え。
+  const [locallyRestored, setLocallyRestored] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
+  const [expanded, setExpanded] = useState(false);
+  const isRestored = (key: string) =>
+    dismissedKeys ? !dismissedKeys.has(key) : locallyRestored.has(key);
 
   // 同じキーは 1 種にまとめる（出現の数ではなく表記の種類）。
   const unique: CodexStructureFoldedDismissedSurface[] = [];
@@ -49,12 +61,17 @@ export function CodexStructureFoldedDismissals({
   }
   if (unique.length === 0) return null;
 
-  const pending = unique.filter((item) => !restored.has(item.key));
+  const pending = unique.filter((item) => !isRestored(item.key));
+  const restoredCount = unique.length - pending.length;
   const restore = (keys: readonly string[]) => {
     if (!onRestore || keys.length === 0) return;
     onRestore(keys);
-    setRestored((prev) => new Set([...prev, ...keys]));
+    if (!dismissedKeys) {
+      setLocallyRestored((prev) => new Set([...prev, ...keys]));
+    }
   };
+  // 畳んだ表記はすべて見せる（既定は先頭だけ、残りは展開で全件。1 件ずつ外せる）。
+  const shown = expanded ? unique : unique.slice(0, FOLDED_DISPLAY_LIMIT);
 
   return (
     <div
@@ -66,6 +83,10 @@ export function CodexStructureFoldedDismissals({
           {t("codex.structureReview.foldedDismissed.summary", {
             count: unique.length,
           })}
+          {restoredCount > 0 &&
+            `（${t("codex.structureReview.foldedDismissed.restoredCount", {
+              count: restoredCount,
+            })}）`}
         </span>
         {onRestore && pending.length > 0 && unique.length > 1 && (
           <button
@@ -79,8 +100,8 @@ export function CodexStructureFoldedDismissals({
         )}
       </div>
       <ul className="flex flex-wrap gap-1">
-        {unique.slice(0, FOLDED_DISPLAY_LIMIT).map((item) => {
-          const isRestored = restored.has(item.key);
+        {shown.map((item) => {
+          const restoredItem = isRestored(item.key);
           return (
             <li
               key={item.key}
@@ -88,7 +109,7 @@ export function CodexStructureFoldedDismissals({
               data-testid="codex-structure-folded-dismissed-item"
             >
               <span>「{item.surface}」</span>
-              {isRestored ? (
+              {restoredItem ? (
                 <span className="text-[10px]">
                   {t("codex.structureReview.foldedDismissed.restored")}
                 </span>
@@ -108,10 +129,20 @@ export function CodexStructureFoldedDismissals({
           );
         })}
         {unique.length > FOLDED_DISPLAY_LIMIT && (
-          <li className="px-1 py-0.5">
-            {t("codex.structureReview.foldedDismissed.more", {
-              count: unique.length - FOLDED_DISPLAY_LIMIT,
-            })}
+          <li>
+            <button
+              type="button"
+              className="rounded px-1 py-0.5 text-primary hover:bg-accent"
+              aria-expanded={expanded}
+              onClick={() => setExpanded((prev) => !prev)}
+              data-testid="codex-structure-folded-dismissed-toggle"
+            >
+              {expanded
+                ? t("codex.structureReview.foldedDismissed.less")
+                : t("codex.structureReview.foldedDismissed.more", {
+                    count: unique.length - FOLDED_DISPLAY_LIMIT,
+                  })}
+            </button>
           </li>
         )}
       </ul>

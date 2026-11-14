@@ -50,12 +50,15 @@ export function CodexStructureExtractDialog({
   onOpenChange,
   folderId: initialFolderId,
   onRestoreDismissedCandidates,
+  dismissedCandidateKeys,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   folderId?: string;
   /** 候補画面の却下（見送り）を外す。候補画面の状態の入口を通す（打ち手 3）。 */
   onRestoreDismissedCandidates?: (keys: readonly string[]) => void;
+  /** 今の却下集合（候補画面の state）。畳んだ表記の「外しました」の表示に使う。 */
+  dismissedCandidateKeys?: ReadonlySet<string>;
 }) {
   const nodes = useTreeStore((s) => s.nodes);
   const projection = useCodexStructureExtractionStore((s) => s.projection);
@@ -334,6 +337,7 @@ export function CodexStructureExtractDialog({
               surfaces={projection.foldedDismissedSurfaces}
               unavailable={projection.dismissalsUnavailable === true}
               onRestore={onRestoreDismissedCandidates}
+              dismissedKeys={dismissedCandidateKeys}
             />
           )}
 

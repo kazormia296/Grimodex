@@ -306,6 +306,7 @@ export function CodexCandidatesReport() {
       open={structureOpen}
       onOpenChange={setStructureOpen}
       onRestoreDismissedCandidates={handleRestoreDismissedKeys}
+      dismissedCandidateKeys={dismissed}
     />
   ) : null;
 
