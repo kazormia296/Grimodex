@@ -31,6 +31,7 @@ vi.mock("@/application/narrative-extraction/runRepository", () => ({
 
 import { resetNarrativeArtifactIndexForTests } from "@/application/narrative-extraction/artifactRepository";
 import {
+  bindExistingCodexEntityProposal,
   CODEX_ENTITY_BIND_PROPOSAL_KIND,
   createNewBindCodexEntityProposal,
 } from "@/features/narrative-extraction/proposals/bindCodexEntityProposal";
@@ -305,6 +306,195 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
     expect(restored.phaseProposals).toEqual([]);
     expect(restored.baseDetailCount).toBe(0);
     expect(restored.phaseCount).toBe(0);
+  });
+
+  it("復元した結び付けにも live と同じ existingExactBind の旗を引き直し、関係を持つ実体は existingBindNoDependents を落とす", async () => {
+    setCurrentWorkspaceIdentity({ path: "/ws/bind", openRevision: 1 });
+    const bind = bindExistingCodexEntityProposal(
+      {
+        narrativeEntityId: "ne-1",
+        canonicalName: "リク",
+        aliases: [],
+        coarseClass: "person",
+        typeResolution: { status: "resolved", typeRef: "T0001" },
+        binding: {
+          kind: "bind-existing",
+          entityRef: "K0003",
+          enrichment: { aliasesToAdd: [], summary: { kind: "leave" } },
+        },
+      },
+      { proposalId: "prop-bind-1" },
+    );
+    const relation = sampleRelationProposal("prop-rel-bind", ["prop-bind-1"]);
+    const evidence = [
+      {
+        anchorId: "a1",
+        quote: "リク",
+        documentRef: "doc:scene-1",
+        method: "exact" as const,
+      },
+    ];
+    const build = (withRelation: boolean) => {
+      getRunMock.mockResolvedValue({
+        run: {
+          runId: "run-bind-1",
+          projectId: "project-bind",
+          surfacePathId: CODEX_STRUCTURE_EXTRACT_SURFACE_PATH,
+          scopeJson: { folderId: "folder-bind", sceneIds: ["s1"] },
+          specJson: {},
+          specDigest: "spec",
+          snapshotDigest: null,
+          catalogDigest: null,
+          registryDigest: null,
+          status: "completed",
+          coverageJson: {
+            mode: "complete",
+            documentCount: 1,
+            windowCount: 1,
+            completedWindows: 1,
+            gaps: [],
+          },
+          outcomeSummaryJson: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          completedAt: "2026-01-01T00:01:00.000Z",
+          version: 1,
+        },
+        tasks: [],
+        taskCounts: {
+          queued: 0,
+          running: 0,
+          completed: 1,
+          failed: 0,
+          cancelled: 0,
+        },
+      });
+      getRunReviewBundleMock.mockResolvedValue({
+        runId: "run-bind-1",
+        projectId: "project-bind",
+        artifacts: [
+          {
+            artifactId: "art-review",
+            runId: "run-bind-1",
+            taskId: "task-1",
+            attemptId: "attempt-1",
+            artifactKind: CODEX_STRUCTURE_REVIEW_ARTIFACT_KIND,
+            payloadStorage: "inline-json",
+            payloadJson: {
+              proposalSetId: "set-bind-1",
+              evidenceByProposalId: {
+                "prop-bind-1": evidence,
+                "prop-rel-bind": evidence,
+              },
+              relationLabelsByProposalId: {
+                "prop-rel-bind": {
+                  subjectLabel: "リク",
+                  objectLabel: "ベルカ",
+                },
+              },
+            },
+            payloadRef: null,
+            payloadDigest: null,
+            createdAt: "2026-01-01T00:00:30.000Z",
+          },
+        ],
+        proposalSet: {
+          proposalSetId: "set-bind-1",
+          runId: "run-bind-1",
+          projectId: "project-bind",
+          setKind: CODEX_STRUCTURE_PROPOSAL_SET_KIND,
+          status: "draft",
+          summaryJson: {
+            proposalCount: 2,
+            catalog: {
+              entities: [
+                {
+                  ref: "K0003",
+                  sourceKey: "entry-riku",
+                  name: "リク",
+                  typeRef: "T0001",
+                  expectedVersion: 1,
+                  aliases: [],
+                },
+              ],
+              types: [
+                {
+                  ref: "T0001",
+                  sourceKey: "character",
+                  slug: "character",
+                  label: "character",
+                },
+              ],
+            },
+            existingRelations: [],
+            relationDependencies: {
+              "prop-rel-bind": [
+                { kind: "requires-resolution", proposalId: "prop-bind-1" },
+              ],
+            },
+          },
+          createdAt: "2026-01-01T00:00:40.000Z",
+          updatedAt: "2026-01-01T00:00:40.000Z",
+          version: 0,
+        },
+        proposals: [
+          {
+            proposalId: "prop-bind-1",
+            proposalSetId: "set-bind-1",
+            proposalKey: "ne-1",
+            kind: CODEX_ENTITY_BIND_PROPOSAL_KIND,
+            status: "unreviewed",
+            payloadJson: buildCodexReviewRevisionEnvelope({
+              reviewPayload: bind.payload,
+            }) as unknown as Record<string, unknown>,
+            currentRevisionId: "rev-bind-native",
+            createdAt: "2026-01-01T00:00:40.000Z",
+            updatedAt: "2026-01-01T00:00:50.000Z",
+            latestDecision: null,
+          },
+          ...(withRelation
+            ? [
+                {
+                  proposalId: "prop-rel-bind",
+                  proposalSetId: "set-bind-1",
+                  proposalKey: "rel-ne-1-ne-2",
+                  kind: CODEX_RELATION_CREATE_PROPOSAL_KIND,
+                  status: "unreviewed",
+                  payloadJson: buildCodexReviewRevisionEnvelope({
+                    reviewPayload: relation.payload,
+                  }) as unknown as Record<string, unknown>,
+                  currentRevisionId: "rev-rel-native",
+                  createdAt: "2026-01-01T00:00:40.000Z",
+                  updatedAt: "2026-01-01T00:00:40.000Z",
+                  latestDecision: null,
+                },
+              ]
+            : []),
+        ],
+      });
+    };
+    const scope = {
+      projectId: "project-bind",
+      workspacePath: "/ws/bind",
+      openRevision: 1,
+      folderId: "folder-bind",
+    };
+
+    build(false);
+    const alone = await getCodexStructureExtractionReview("run-bind-1", scope);
+    expect(alone.proposals[0]?.safety.existingExactBind).toBe(true);
+    expect(alone.proposals[0]?.safety.existingBindNoDependents).toBe(true);
+
+    resetCodexStructureExtractionApiCachesForTests();
+    build(true);
+    const withRelation = await getCodexStructureExtractionReview(
+      "run-bind-1",
+      scope,
+    );
+    expect(withRelation.proposals[0]?.safety.existingExactBind).toBe(true);
+    expect(withRelation.proposals[0]?.safety.existingBindNoDependents).toBe(
+      false,
+    );
   });
 
   it("restores Phase/Base Detail metadata with Native status, revision, and payload authority", async () => {
@@ -1551,6 +1741,8 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
             noExistingCandidates: true,
             explicitProperName: true,
             explicitAliasesOnly: true,
+            existingExactBind: false,
+            existingBindNoDependents: false,
             noRelationDeps: true,
             createNew: true,
           },

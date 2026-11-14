@@ -141,6 +141,7 @@ import {
   rematchCodexRelationProposals,
   relationEndpointsReady,
 } from "./extraction/relationApplicability";
+import { refreshEntityBindSafety } from "./extraction/entityBulkSafety";
 import {
   matchExistingCodexRelation,
   type ExistingRelationCatalogRecord,
@@ -2431,7 +2432,7 @@ export async function startCodexStructureExtraction(
   };
 
   // Intentionally do not setProjection — Dialog publishes after generation checks.
-  return projection;
+  return refreshEntityBindSafety(projection);
 }
 
 export function getCodexStructureReview(): CodexStructureExtractionReviewProjection | null {
@@ -3373,7 +3374,7 @@ export async function getCodexStructureExtractionReview(
 
   lastRunId = runId;
   // Intentionally do not setProjection — Dialog publishes after generation checks.
-  return projection;
+  return refreshEntityBindSafety(projection);
 }
 
 /**

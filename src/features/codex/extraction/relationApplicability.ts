@@ -1,4 +1,3 @@
-import type { BindCodexEntityProposal } from "@/features/narrative-extraction/proposals/bindCodexEntityProposal";
 import type { CreateCodexRelationProposal } from "@/features/narrative-extraction/proposals/createCodexRelationProposal";
 import { buildCodexRelationSemanticKey } from "./relationVocabulary";
 import {
@@ -184,54 +183,4 @@ export function rematchCodexRelationProposals(args: {
       catalog: args.catalog,
     }),
   );
-}
-
-/** Recompute Entity displayTitle / applicability / safety from latest Bind payload. */
-export function deriveEntityReviewPresentation(
-  proposal: BindCodexEntityProposal,
-  evidenceMethods: readonly (
-    | "exact"
-    | "exact-with-context"
-    | "fragmented"
-    | "unknown"
-  )[],
-  previous?: Pick<
-    CodexEntityReviewProposal,
-    "safety" | "blockedReason" | "displayTitle"
-  >,
-): Pick<
-  CodexEntityReviewProposal,
-  "displayTitle" | "applicability" | "blockedReason" | "safety"
-> {
-  const binding = proposal.payload.binding;
-  const typeStatus = proposal.payload.typeResolution.status;
-  const typeResolved = typeStatus === "resolved";
-  const applicability =
-    binding.kind === "unresolved" ||
-    (binding.kind === "create-new" && !typeResolved)
-      ? ("blocked" as const)
-      : ("applicable" as const);
-  return {
-    displayTitle: proposal.payload.canonicalName,
-    applicability,
-    blockedReason:
-      applicability === "blocked"
-        ? binding.kind === "unresolved"
-          ? "Binding が未解決です"
-          : "Codex Type が未解決です"
-        : undefined,
-    safety: {
-      evidenceExact:
-        evidenceMethods.length > 0 &&
-        evidenceMethods.every(
-          (method) => method === "exact" || method === "exact-with-context",
-        ),
-      typeResolved,
-      noExistingCandidates: binding.kind === "create-new",
-      explicitProperName: previous?.safety.explicitProperName ?? true,
-      explicitAliasesOnly: previous?.safety.explicitAliasesOnly ?? true,
-      noRelationDeps: previous?.safety.noRelationDeps ?? true,
-      createNew: binding.kind === "create-new",
-    },
-  };
 }

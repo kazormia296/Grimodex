@@ -120,6 +120,7 @@ import {
 } from "./codexStructureExtractionApi";
 import {
   buildCodexEntityProposalSafetyFlags,
+  isSafeForCodexEntityBulkApprove,
   resetCodexStructureExtractionStoreForTests,
   useCodexStructureExtractionStore,
 } from "./codexStructureExtractionStore";
@@ -1342,6 +1343,87 @@ describe("startCodexStructureExtraction product safety", () => {
       "ライカ",
     ]);
     expect(projection.skippedRelationalTerms).toBeUndefined();
+  });
+
+  it("live の結び付けの提案に existingExactBind の旗が立ち、別名の追加がある結び付けには立たない", async () => {
+    const start = (
+      seeds: Parameters<
+        typeof startCodexStructureExtraction
+      >[0]["heuristicSeeds"],
+    ) =>
+      startCodexStructureExtraction({
+        projectId: "p1",
+        folderId: "f1",
+        sceneIds: ["s1"],
+        authority: {
+          projectId: "p1",
+          currentProjectId: () => "p1",
+          workspacePath: "/w",
+          workspaceOpenRevision: 1,
+        },
+        workspacePath: "/w",
+        openRevision: 1,
+        useAi: false,
+        skipNativePersist: true,
+        typeCatalog: [
+          {
+            ref: "T0001",
+            sourceKey: "character",
+            slug: "character",
+            label: "character",
+            coarseClassHints: ["person"],
+            expectedVersion: 1,
+          },
+        ],
+        existingEntries: [
+          {
+            ref: "K0003",
+            sourceKey: "entry-riku",
+            name: "リク",
+            aliases: [],
+            typeRef: "T0001",
+            expectedVersion: 4,
+          },
+        ],
+        heuristicSeeds: seeds,
+      });
+    const exactEvidence = [
+      {
+        anchorId: "a1",
+        quote: "リク",
+        documentRef: "D000001",
+        method: "exact" as const,
+      },
+    ];
+    const plain = await start([
+      {
+        surface: "リク",
+        typeRef: "T0001",
+        existingRef: "K0003",
+        evidence: exactEvidence,
+      },
+    ]);
+    expect(plain.proposals[0]?.proposal.payload.binding.kind).toBe(
+      "bind-existing",
+    );
+    expect(plain.proposals[0]?.safety.existingExactBind).toBe(true);
+    expect(isSafeForCodexEntityBulkApprove(plain.proposals[0]!.safety)).toBe(
+      true,
+    );
+
+    const withAlias = await start([
+      {
+        surface: "リク",
+        typeRef: "T0001",
+        existingRef: "K0003",
+        aliases: [{ surface: "りっくん", status: "explicit" }],
+        evidence: exactEvidence,
+      },
+    ]);
+    expect(withAlias.proposals[0]?.safety.existingExactBind).toBe(false);
+    expect(
+      isSafeForCodexEntityBulkApprove(withAlias.proposals[0]!.safety),
+    ).toBe(false);
   });
 });
 

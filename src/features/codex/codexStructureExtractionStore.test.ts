@@ -492,3 +492,243 @@ describe("codexStructureExtractionStore", () => {
     expect(swapped?.status).toBe("unreviewed");
   });
 });
+
+describe("完全一致の既存への結び付けの一括承認（旗と store）", () => {
+  const catalog = {
+    entities: [
+      {
+        ref: "K0003",
+        sourceKey: "entry-riku",
+        name: "リク",
+        typeRef: "T0001",
+        expectedVersion: 1,
+        aliases: [] as string[],
+      },
+    ],
+    types: [
+      {
+        ref: "T0001",
+        sourceKey: "character",
+        slug: "character",
+        label: "人物",
+      },
+    ],
+  };
+
+  function exactBindProposal(
+    overrides: Partial<CodexEntityReviewProposal> = {},
+    name = "リク",
+  ): CodexEntityReviewProposal {
+    return safeCreateProposal({
+      proposalId: "bind-1",
+      displayTitle: name,
+      proposal: bindExistingCodexEntityProposal(
+        {
+          ...basePayloadFields,
+          narrativeEntityId: "ne-bind",
+          canonicalName: name,
+          binding: {
+            kind: "bind-existing",
+            entityRef: "K0003",
+            enrichment: { aliasesToAdd: [], summary: { kind: "leave" } },
+          },
+        },
+        { proposalId: "bind-1" },
+      ),
+      safety: buildCodexEntityProposalSafetyFlags({
+        bindingKind: "bind-existing",
+        typeStatus: "resolved",
+        evidenceMethods: ["exact"],
+        hasExistingCandidates: true,
+        hasProperNameMention: true,
+        aliasesAllExplicit: true,
+      }),
+      ...overrides,
+    });
+  }
+
+  function currentRow(index = 0): CodexEntityReviewProposal {
+    return useCodexStructureExtractionStore.getState().projection!.proposals[
+      index
+    ]!;
+  }
+
+  beforeEach(() => {
+    resetCodexStructureExtractionStoreForTests();
+  });
+
+  it("setProjection が catalog から旗を引き直し、完全一致の結び付けは一括の対象になる", () => {
+    useCodexStructureExtractionStore
+      .getState()
+      .setProjection({ ...projection([exactBindProposal()]), catalog });
+    const row = currentRow();
+    expect(row.safety.existingExactBind).toBe(true);
+    expect(isSafeForCodexEntityBulkApprove(row.safety)).toBe(true);
+  });
+
+  it("根拠が全件完全一致でなければ対象外（(d)）", () => {
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...projection([
+        exactBindProposal({
+          safety: buildCodexEntityProposalSafetyFlags({
+            bindingKind: "bind-existing",
+            typeStatus: "resolved",
+            evidenceMethods: ["exact", "fragmented"],
+            hasExistingCandidates: true,
+            hasProperNameMention: true,
+            aliasesAllExplicit: true,
+          }),
+        }),
+      ]),
+      catalog,
+    });
+    expect(isSafeForCodexEntityBulkApprove(currentRow().safety)).toBe(false);
+  });
+
+  it("結び付け 1 件と新規作成 1 件が混ざった一括の件数を数える", () => {
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...projection([exactBindProposal(), safeCreateProposal()]),
+      catalog,
+    });
+    expect(useCodexStructureExtractionStore.getState().bulkApproveSafe()).toBe(
+      2,
+    );
+  });
+
+  it("関係が端点に持つ実体の結び付けは対象外、関係を持つ新規作成は今までどおり対象", () => {
+    const bind = exactBindProposal();
+    const create = safeCreateProposal({
+      proposalId: "create-1",
+      proposal: createNewBindCodexEntityProposal(
+        {
+          ...basePayloadFields,
+          narrativeEntityId: "ne-create",
+          canonicalName: "ソラ",
+          binding: {
+            kind: "create-new",
+            entry: { name: "ソラ", aliases: [], summary: null },
+          },
+        },
+        { proposalId: "create-1" },
+      ),
+    });
+    const relation = {
+      proposalId: "rel-1",
+      kind: "codex.relation.create",
+      target: { kind: "new", logicalRef: "rel-key" },
+      payload: {
+        subjectEntityId: "ne-bind",
+        objectEntityId: "ne-create",
+        relation: {
+          relationType: "friend_of",
+          directionality: "symmetric",
+          forwardLabel: "友人",
+          inverseLabel: "友人",
+        },
+        validity: "current",
+      },
+      dependencies: [],
+    };
+    useCodexStructureExtractionStore.getState().setProjection({
+      ...projection([bind, create]),
+      relationProposals: [
+        {
+          proposalId: "rel-1",
+          revisionId: "rev-rel",
+          proposalKey: "rel-key",
+          status: "unreviewed",
+          applicability: "blocked",
+          displayTitle: "友人",
+          proposal: relation as never,
+          evidence: [],
+          subjectLabel: "リク",
+          objectLabel: "ソラ",
+        },
+      ],
+      catalog,
+    });
+    expect(isSafeForCodexEntityBulkApprove(currentRow(0).safety)).toBe(false);
+    expect(currentRow(0).safety.existingBindNoDependents).toBe(false);
+    expect(isSafeForCodexEntityBulkApprove(currentRow(1).safety)).toBe(true);
+  });
+
+  it("候補を選んだ後の結び付けも、同じ旗の作り方で一括の対象になる（表記が結び先に完全一致するとき）", () => {
+    const unresolved = safeCreateProposal({
+      proposalId: "unres-1",
+      proposal: unresolvedBindCodexEntityProposal(
+        {
+          ...basePayloadFields,
+          canonicalName: "リク",
+          binding: { kind: "unresolved", candidates: [], allowCreateNew: true },
+        },
+        { proposalId: "unres-1" },
+      ),
+      applicability: "blocked",
+      safety: buildCodexEntityProposalSafetyFlags({
+        bindingKind: "unresolved",
+        typeStatus: "resolved",
+        evidenceMethods: ["exact"],
+        hasExistingCandidates: true,
+        hasProperNameMention: true,
+        aliasesAllExplicit: true,
+      }),
+    });
+    useCodexStructureExtractionStore
+      .getState()
+      .setProjection({ ...projection([unresolved]), catalog });
+    useCodexStructureExtractionStore
+      .getState()
+      .resolveBinding("unres-1", { kind: "bind-existing", entityRef: "K0003" });
+    expect(currentRow().safety.existingExactBind).toBe(true);
+    expect(isSafeForCodexEntityBulkApprove(currentRow().safety)).toBe(true);
+  });
+
+  it("編集で要約を足した結び付け・名前を変えた結び付けは、編集の後は一括の対象外", () => {
+    useCodexStructureExtractionStore
+      .getState()
+      .setProjection({ ...projection([exactBindProposal()]), catalog });
+    useCodexStructureExtractionStore
+      .getState()
+      .reviseProposalFields("bind-1", { summary: "少年" });
+    expect(currentRow().safety.existingExactBind).toBe(false);
+    expect(isSafeForCodexEntityBulkApprove(currentRow().safety)).toBe(false);
+
+    useCodexStructureExtractionStore
+      .getState()
+      .setProjection({ ...projection([exactBindProposal()]), catalog });
+    useCodexStructureExtractionStore
+      .getState()
+      .reviseProposalFields("bind-1", { canonicalName: "リクト" });
+    expect(isSafeForCodexEntityBulkApprove(currentRow().safety)).toBe(false);
+  });
+
+  it("未確認の別名を持つ新規作成は、別名を編集しない編集の後も対象外のまま", () => {
+    const withUnconfirmed = safeCreateProposal();
+    const payload = withUnconfirmed.proposal.payload;
+    useCodexStructureExtractionStore.getState().setProjection(
+      projection([
+        {
+          ...withUnconfirmed,
+          proposal: {
+            ...withUnconfirmed.proposal,
+            payload: {
+              ...payload,
+              aliases: [
+                {
+                  surface: "あの子",
+                  status: "user-confirmation-required",
+                },
+              ],
+            },
+          },
+          safety: { ...withUnconfirmed.safety, explicitAliasesOnly: false },
+        },
+      ]),
+    );
+    useCodexStructureExtractionStore
+      .getState()
+      .reviseProposalFields("safe-1", { summary: "騎士団の一員" });
+    expect(currentRow().safety.explicitAliasesOnly).toBe(false);
+    expect(isSafeForCodexEntityBulkApprove(currentRow().safety)).toBe(false);
+  });
+});
