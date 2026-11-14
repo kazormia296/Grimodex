@@ -1154,7 +1154,7 @@ async function hostedJobIsolation() {
   if (process.platform !== "linux" || process.env.RUNNER_ENVIRONMENT !== "github-hosted" || !/^[1-9][0-9]*$/u.test(process.env.GITHUB_RUN_ID ?? "") || !/^[1-9][0-9]*$/u.test(process.env.GITHUB_RUN_ATTEMPT ?? "")) fail("a continuously owned standard GitHub-hosted Linux job");
   const vendor = (await readFile("/sys/class/dmi/id/sys_vendor", "utf8")).trim();
   const model = (await readFile("/sys/class/dmi/id/product_name", "utf8")).trim();
-  if (vendor !== "Microsoft Corporation" || model !== "Virtual Machine") fail("actual standard hosted VM isolation, not a checkout lock/serial option");
+  if (vendor !== "Microsoft Corporation" || model !== "Virtual Machine") fail(`actual standard hosted VM isolation, not a checkout lock/serial option (observed sys_vendor=${JSON.stringify(vendor)}, product_name=${JSON.stringify(model)})`);
 }
 
 async function durableJson(file, data) {
