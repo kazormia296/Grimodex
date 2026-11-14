@@ -20,6 +20,12 @@ import {
   formatImpactMarkdown,
   resolveSafeAll,
 } from "../impact/core.mjs";
+import {
+  impactCommandKey,
+  parseImpactPart,
+  partitionImpactCommands,
+  planImpactCommands,
+} from "../local-ci-impact-parts.mjs";
 
 export {
   classifyChangedPaths,
@@ -1622,15 +1628,76 @@ function runCommand(command, args, cwd, { routeStdoutToStderr = false } = {}) {
   });
 }
 
+/**
+ * The suite definitions as they actually run for `selection`: a docs-only
+ * change narrows every suite's commands (docsMarkdownOnlyCommands). The single source
+ * for both runSelectedSuites and the Quick command plan, so part assignment,
+ * `stepIndex` and the coverage check all index the narrowed commands.
+ */
+export function effectiveSuiteDefinitions(selection, definitions) {
+  if (!selection.docsMarkdownOnly) return definitions;
+  const effective = {};
+  for (const suiteId of selection.suiteIds) {
+    const definition = definitions[suiteId];
+    if (definition) {
+      effective[suiteId] = {
+        ...definition,
+        commands: docsMarkdownOnlyCommands(definition.commands),
+      };
+    }
+  }
+  return effective;
+}
+
+/** Every command that runs for `selection`, with the Quick part that runs it. */
+export function planSelectedCommands(
+  selection,
+  definitions = LIGHT_SUITE_DEFINITIONS,
+) {
+  return planImpactCommands(
+    selection,
+    effectiveSuiteDefinitions(selection, definitions),
+  );
+}
+
+// `part` ({ index, count }, 1-based) runs only that part of the selected
+// commands (hosted Quick split); omitted, every selected command runs. In part
+// mode a suite with no command in this part is left out of the report: the
+// aggregate coverage check compares reports with the command plan, which lists
+// commands only, so a docs-only suite with nothing to run is not reported (it
+// would otherwise be a "skipped" entry that no part is assigned).
 export async function runSelectedSuites(
   selection,
-  { repoRoot = DEFAULT_REPO_ROOT, routeStdoutToStderr = false } = {},
+  {
+    repoRoot = DEFAULT_REPO_ROOT,
+    routeStdoutToStderr = false,
+    part = null,
+    definitions = LIGHT_SUITE_DEFINITIONS,
+    runner = runCommand,
+  } = {},
 ) {
   const results = [];
   let previousFailure = null;
+  const effective = effectiveSuiteDefinitions(selection, definitions);
+  const assigned = part
+    ? new Set(
+        partitionImpactCommands(selection, effective, part.count)[
+          part.index - 1
+        ].map(impactCommandKey),
+      )
+    : null;
   for (const suiteId of selection.suiteIds) {
-    const definition = LIGHT_SUITE_DEFINITIONS[suiteId];
-    if (!definition) throw new Error(`No static command for suite ${suiteId}`);
+    const fullDefinition = effective[suiteId];
+    if (!fullDefinition) throw new Error(`No static command for suite ${suiteId}`);
+    const definition = assigned
+      ? {
+          ...fullDefinition,
+          commands: fullDefinition.commands.filter((_, stepIndex) =>
+            assigned.has(impactCommandKey({ suiteId, stepIndex })),
+          ),
+        }
+      : fullDefinition;
+    if (assigned && definition.commands.length === 0) continue;
     if (previousFailure) {
       results.push({
         suiteId,
@@ -1646,9 +1713,7 @@ export async function runSelectedSuites(
       });
       continue;
     }
-    const commands = selection.docsMarkdownOnly
-      ? docsMarkdownOnlyCommands(definition.commands)
-      : definition.commands;
+    const commands = definition.commands;
     if (commands.length === 0) {
       results.push({
         suiteId,
@@ -1679,7 +1744,7 @@ export async function runSelectedSuites(
         continue;
       }
       const [command, ...args] = staticCommand;
-      const step = await runCommand(command, args, repoRoot, {
+      const step = await runner(command, args, repoRoot, {
         routeStdoutToStderr,
       });
       steps.push({ command: staticCommand, ...step });
@@ -1712,7 +1777,7 @@ export async function runSelectedSuites(
 }
 
 function parseArgs(argv) {
-  const result = { changedFiles: [], format: "markdown", run: false };
+  const result = { changedFiles: [], format: "markdown", run: false, part: null, commandPlan: false };
   const readValue = (option, index) => {
     const value = argv[index + 1];
     if (!value || value.startsWith("--")) {
@@ -1730,6 +1795,9 @@ function parseArgs(argv) {
       result.changedFiles.push(readValue(arg, index++));
     else if (arg === "--format") result.format = readValue(arg, index++);
     else if (arg === "--report") result.report = readValue(arg, index++);
+    else if (arg === "--part")
+      result.part = parseImpactPart(readValue(arg, index++));
+    else if (arg === "--command-plan") result.commandPlan = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
   if (!["markdown", "json"].includes(result.format))
@@ -1784,6 +1852,7 @@ async function main() {
   const execution = args.run
     ? await runSelectedSuites(selection, {
         routeStdoutToStderr: args.format === "json",
+        part: args.part,
       })
     : [];
   const report = {
@@ -1796,6 +1865,12 @@ async function main() {
       arch: process.arch,
     },
     selection,
+    ...(args.part ? { part: args.part } : {}),
+    // Every selected command with the Quick part that runs it (the aggregate
+    // job recomputes this independently of the parts).
+    ...(args.commandPlan
+      ? { commandPlan: planSelectedCommands(selection) }
+      : {}),
     execution,
     heavy: deferredHeavy(selection, heavyEvaluations),
     blocked: selectedBlockedEvaluations(selection, blockedEvaluations),

@@ -52,6 +52,8 @@ rules:
       - .github/workflows/**
       - docs/DEVELOPMENT_SETUP.md
       - scripts/local-ci.mjs
+      - scripts/local-ci-impact-parts.mjs
+      - scripts/local-ci-quick-parts.mjs
       - scripts/local-ci-registry.json
       - scripts/local-ci-full-workload-allocation.json
       - scripts/local-ci.test.mjs

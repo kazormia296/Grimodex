@@ -270,8 +270,13 @@ ordinary `ci.yml` checks automatically. Ordinary checks are not a canonical Quic
 the absence of hosted PR checks is not evidence of a passing gate; a pending or missing check,
 `no checks reported`, or a green ordinary run never replaces the canonical receipt. Canonical Quick
 and Full run as a hosted `canonical-ci.yml` `workflow_dispatch` with `profile`, `candidate_base`,
-and `candidate_head`; the dispatched ref's head must equal `candidate_head`. A hosted Quick runs its
-immediate verify in the same job. Full runs as independent part jobs plus the `full-aggregate` job,
+and `candidate_head`; the dispatched ref's head must equal `candidate_head`. A hosted Quick runs as
+three independent part jobs (`quick-1` to `quick-3`, each a serial subset of the selected Light
+commands on its own VM, with the same commands and `--test-threads` as the unsplit selection) plus
+the `quick-aggregate` job, which assembles the single receipt, checks that the parts together ran
+exactly the unsplit selection, and runs the immediate verify with the same tuple; only a run whose
+part jobs and aggregate all succeeded is a Quick receipt, and a re-run re-runs all jobs, never only
+failed ones. Full runs as independent part jobs plus the `full-aggregate` job,
 which assembles the single receipt and runs the immediate verify with the same tuple; a re-run
 re-runs all jobs, never only failed ones. Full admission refuses a local `pnpm ci:local:full`
 outside a standard GitHub-hosted job, so a local Full is never merge evidence. Windows NSIS final
