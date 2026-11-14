@@ -45,7 +45,7 @@
     },
     {
       "path": "pnpm-lock.yaml",
-      "sha256": "ea07b2ae3954559ef69b5717cc20a5058903af14bcded8306f732e935817533a"
+      "sha256": "628e164415d3fab9dfa5b32fc2e0c47584b0a188e40076556829eef0dea49d15"
     },
     {
       "path": "src-tauri/Cargo.toml",
