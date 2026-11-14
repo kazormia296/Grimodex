@@ -1133,6 +1133,43 @@ test("CI runs the diff gate with full history and selected light suites", async 
   assert.match(workflow, /fetch-depth:\s*0/);
   assert.match(workflow, /pnpm eval:impact/);
   assert.match(workflow, /--run/);
+
+  // Q (2026-11-15): the impact step does not run on a pull request, because the
+  // canonical Quick already ran the same selection on the candidate head (the
+  // PR's ci.yml itself measures the merge ref). Every other event (master push,
+  // manual dispatch) still runs it with `--run`; a reusable call inherits the
+  // caller's event, and Gate B2 accepts only the events that run it.
+  const quality = yaml.load(workflow).jobs.quality;
+  const impactSteps = quality.steps.filter(
+    (step) => step.name === "Impact-selected light gates",
+  );
+  assert.equal(impactSteps.length, 1);
+  const [impact] = impactSteps;
+  assert.equal(impact.if, "github.event_name != 'pull_request'");
+  assert.match(impact.run, /pnpm eval:impact -- --base "\$QUALITY_BASE_SHA" --head "\$QUALITY_HEAD_SHA" --run/);
+  assert.match(impact.run, /pnpm eval:impact -- --head "\$QUALITY_HEAD_SHA" --run/);
+  assert.equal(
+    quality.steps.filter((step) => /eval:impact/.test(step.run ?? "")).length,
+    1,
+    "no other Quality step runs the impact gate unconditionally",
+  );
+  // The check that PRs still run, and the job name Gate B2 requires.
+  assert.ok(
+    quality.steps.some(
+      (step) => step.run === "pnpm verify:quality" && step.if === undefined,
+    ),
+  );
+  assert.equal(
+    quality.name,
+    "Quality (traceability / impact-selected light gates)",
+  );
+  const gateB2 = yaml.load(await read("evals/certifications/gate-b2.yaml"));
+  assert.ok(gateB2.fullCi.acceptedEvents.includes("push"));
+  assert.ok(!gateB2.fullCi.acceptedEvents.includes("pull_request"));
+  assert.ok(gateB2.fullCi.requiredJobs.includes(quality.name));
+  // The canonical Quick profile still runs the impact stage.
+  const registry = JSON.parse(await read("scripts/local-ci-registry.json"));
+  assert.deepEqual(registry.profiles.quick, ["impact"]);
 });
 
 test("repo routing points AI behavior authoring and diff evaluation to narrow skills", async () => {

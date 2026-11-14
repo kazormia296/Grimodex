@@ -278,6 +278,26 @@ outside a standard GitHub-hosted job, so a local Full is never merge evidence. W
 compilation remains a separate manual Full CI / tag-release obligation; an unavailable release-only
 check is never passed.
 
+What the ordinary `ci.yml` runs depends on the event. On a pull request its Quality job does not repeat the
+impact-selected Light suites (the canonical Quick, which the merge needs on the same candidate, already runs that
+selection) and its C-query worker matrix runs on Linux only; the `master` push and a manual dispatch run both in
+full (the impact step of a push that changes only docs Markdown is narrowed by the docs-markdown-only selection below), the worker on Linux, macOS and Windows (a reusable call inherits its caller's event and follows it). The `ci.yml`
+of a pull request measures the merge ref (`github.sha`), while the Quick measures the candidate head, and impact does not
+check the combination with master changes that landed after the Quick until the `master` push. A pull request run is
+therefore not evidence for the impact-selected suites or for the macOS and Windows workers: a failure that only those
+show is found after the merge, in the `ci.yml` of the `master` push, and is handled as a red `master`. The merge
+condition itself is unchanged: the rebased candidate's complete Quick plus the `ci.yml` of the candidate head.
+
+Docs-markdown-only selection (a rule of the impact selector, separate from the docs-only PR exception below, which
+decides merge conditions). When every changed path matches `^docs/.+\.md$`, work records included, the Light suites
+drop every cargo command and every other command that cannot read `docs/`; only the Node tests that read documents
+(`pnpm test:quality`, `pnpm test:narrative:*`, `node --test ...` and the one electron vitest file that reads `docs/`)
+remain. A suite left with no command is reported as `skipped`, which is not a failure and not a pass of those commands.
+The suite selection, requirements and Heavy reports are unchanged. This also reaches the Light run of Gate B2
+(`scripts/quality/certify-gate-b2.mjs`), which reads only the exit code, so it is harmless there. A `master` push of
+such a change is narrowed in the same way. The docs-only PR exception below is narrower (it excludes
+operational-rule documents and documents named by path) and is not implied by this selection.
+
 Before any canonical Quick/Full evidence, focused validation finishes first. If a completion commit is in scope,
 the candidate commit is created before any PR/release evidence; the candidate must be clean. Only when PR/release evidence is requested
 and CI is allowed does the clean candidate run local Quick or the hosted canonical Quick; the Quick is immediately verified with the same fixed base/head

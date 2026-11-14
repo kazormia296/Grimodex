@@ -346,7 +346,16 @@ jobs:
           GATE_B2_WORKTREE_SMOKE: "1"
         run: pnpm verify:quality
 
+      # Pull requests do not run this step: the canonical Quick already ran the
+      # same impact selection on the candidate head (2026-11-15). The PR's
+      # ci.yml measures the merge ref (`github.sha`), not the candidate head,
+      # so the combination with master changes that landed after the Quick is
+      # not checked by impact until the master push. A master push and a manual
+      # dispatch still run it; a reusable call inherits the caller's
+      # `github.event_name`, so it follows its caller. Gate B2 accepts only the
+      # events that run it.
       - name: Impact-selected light gates
+        if: github.event_name != 'pull_request'
         env:
           QUALITY_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           QUALITY_HEAD_SHA: ${{ github.sha }}
@@ -1766,7 +1775,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle') && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+        # A pull request runs the real-worker tests on Linux only (2026-11-15);
+        # the master push and a manual dispatch (a reusable call follows its
+        # caller's event) keep the three-OS matrix, so a macOS- or Windows-only failure is found by the
+        # `ci.yml` of the master push after the merge.
+        os: ${{ fromJSON((inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-lifecycle' || github.event_name == 'pull_request') && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:

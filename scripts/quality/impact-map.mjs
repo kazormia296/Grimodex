@@ -1269,6 +1269,60 @@ export function parseImpactMap(source, options = {}) {
   return map;
 }
 
+// A docs-markdown-only selection: every changed path is Markdown under docs/
+// (`^docs/.+\.md$`), work records included. This is NOT the docs-only PR
+// exception of GDX-TRACE-001 / ship-branch (a narrower merge-condition rule
+// that excludes operational-rule documents and documents named by path from
+// code); it only decides which Light commands run. No Rust code, build script
+// or manifest reads docs/, so such a selection gets no cargo command; of the
+// Node commands only the ones that can read docs/ are kept. The suite selection
+// itself (requirements, heavy and blocked reports) is unchanged. Keep
+// DOCS_READER_VITEST_FILES in step with the vitest files that read docs/
+// (impact-map.test.mjs scans for new ones).
+const DOCS_MARKDOWN_ONLY_PATH = /^docs\/.+\.md$/u;
+export const DOCS_READER_VITEST_FILES = Object.freeze([
+  "electron/main/rendererContainmentGOpenRecord.test.ts",
+]);
+
+export function isDocsMarkdownOnlyChange(changedPaths) {
+  return (
+    changedPaths.length > 0 &&
+    changedPaths.every((candidate) => DOCS_MARKDOWN_ONLY_PATH.test(candidate))
+  );
+}
+
+/**
+ * The commands of one Light suite that still run for a docs-markdown-only
+ * selection (a suite left with no command is reported as skipped, not failed).
+ * Kept: `pnpm test:quality`, `pnpm test:narrative:*` and `node --test ...`
+ * (Node-only readers of docs/), and the vitest run narrowed to the electron
+ * test that reads docs/. Dropped: every cargo command and every other command.
+ */
+export function docsMarkdownOnlyCommands(commands) {
+  const kept = [];
+  for (const command of commands) {
+    const [executable, script, flag, ...rest] = command;
+    if (executable === "node" && script === "--test") {
+      kept.push(command);
+    } else if (
+      executable === "pnpm" &&
+      (script === "test:quality" || script?.startsWith("test:narrative:"))
+    ) {
+      kept.push(command);
+    } else if (
+      executable === "pnpm" &&
+      script === "test:electron" &&
+      flag === "--run"
+    ) {
+      const files = rest.filter((file) =>
+        DOCS_READER_VITEST_FILES.includes(file),
+      );
+      if (files.length > 0) kept.push([executable, script, flag, ...files]);
+    }
+  }
+  return kept;
+}
+
 function isInvariantAllPath(candidate) {
   return (
     candidate === "AGENTS.md" ||
@@ -1312,6 +1366,7 @@ export function selectImpact(map, changedPaths, options = {}) {
   const requirementIds = allSelected
     ? allRequirementIds
     : unique(matchedRules.flatMap((rule) => rule.requirements));
+  const docsMarkdownOnly = !forcedReason && isDocsMarkdownOnlyChange(paths);
   const reason = forcedReason
     ? forcedReason
     : paths.length === 0
@@ -1337,7 +1392,10 @@ export function selectImpact(map, changedPaths, options = {}) {
     suiteIds,
     fallback,
     allSelected,
-    reason,
+    docsMarkdownOnly,
+    reason: docsMarkdownOnly
+      ? `${reason} Docs-markdown-only selection: cargo and commands that cannot read docs/ are not run.`
+      : reason,
   };
 }
 
@@ -1357,6 +1415,7 @@ export function formatImpactSummary(selection, execution = []) {
       if (entry.status === "not-run") {
         return `; classification=not-run; candidates=${entry.candidateFailureClasses.join(", ")}; reason=${entry.reason}`;
       }
+      if (entry.status === "skipped") return `; reason=${entry.reason}`;
       return "";
     })();
     return `${entry.suiteId}: ${entry.status}${timing}${classification}`;
@@ -1587,10 +1646,28 @@ export async function runSelectedSuites(
       });
       continue;
     }
+    const commands = selection.docsMarkdownOnly
+      ? docsMarkdownOnlyCommands(definition.commands)
+      : definition.commands;
+    if (commands.length === 0) {
+      results.push({
+        suiteId,
+        failureClass: null,
+        candidateFailureClasses: definition.failureClasses,
+        classificationStatus: "not-applicable",
+        commands,
+        steps: [],
+        status: "skipped",
+        exitCode: null,
+        reason: "Docs-markdown-only selection: no command of this suite can read docs/.",
+        durationMs: 0,
+      });
+      continue;
+    }
     const started = performance.now();
     const steps = [];
     let failedCommand = null;
-    for (const staticCommand of definition.commands) {
+    for (const staticCommand of commands) {
       if (failedCommand) {
         steps.push({
           command: staticCommand,
@@ -1621,7 +1698,7 @@ export async function runSelectedSuites(
           ? "classified"
           : "pending-triage"
         : "not-applicable",
-      commands: definition.commands,
+      commands,
       steps,
       status: failedStep ? "failed" : "passed",
       exitCode: failedStep ? failedStep.exitCode : 0,
@@ -1741,7 +1818,11 @@ async function main() {
       `${JSON.stringify(report, null, 2)}\n`,
     );
   }
-  if (execution.some((entry) => entry.status !== "passed"))
+  if (
+    execution.some(
+      (entry) => entry.status !== "passed" && entry.status !== "skipped",
+    )
+  )
     process.exitCode = 1;
 }
 

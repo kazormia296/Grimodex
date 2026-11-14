@@ -8,10 +8,14 @@ import test from "node:test";
 import yaml from "js-yaml";
 
 import {
+  DOCS_READER_VITEST_FILES,
   LIGHT_SUITE_DEFINITIONS,
   collectChangedPaths,
+  docsMarkdownOnlyCommands,
   formatImpactSummary,
+  isDocsMarkdownOnlyChange,
   parseImpactMap,
+  runSelectedSuites,
   selectImpact,
   validateAcceptanceGateRegistration,
 } from "./impact-map.mjs";
@@ -1970,3 +1974,206 @@ test("CP-4 S5-B diagnostics and frozen trace assets are registered, selected and
   for (const testPath of tests)
     assert.ok(commandLines.some((command) => command.includes(testPath)), testPath);
 });
+
+// B1 (2026-11-15): a docs-markdown-only selection runs no cargo command and only the
+// commands that can read docs/.
+async function loadImpactMap() {
+  return parseImpactMap(
+    await readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+  );
+}
+
+const keptDocsMarkdownOnlyCommands = () =>
+  Object.values(LIGHT_SUITE_DEFINITIONS).flatMap((definition) =>
+    docsMarkdownOnlyCommands(definition.commands),
+  );
+
+test("a docs-markdown-only selection keeps the suite selection but drops every cargo command", async () => {
+  const map = await loadImpactMap();
+  for (const changed of [
+    ["docs/plans/nir1-continuation-2026-10.md"],
+    ["docs/some-new-note.md", "docs/plans/nir1-c-scene-connection-candidate.md"],
+    ["docs/adr/005-narrative-semantic-core-boundary.md"],
+  ]) {
+    const selection = selectImpact(map, changed);
+    assert.equal(selection.docsMarkdownOnly, true, changed.join(","));
+    // The suite, requirement, heavy and blocked reporting is not narrowed.
+    assert.ok(selection.suiteIds.length > 0, "suites stay selected as before");
+    assert.match(selection.reason, /Docs-markdown-only selection/);
+  }
+  const allSelection = selectImpact(map, ["docs/some-new-note.md"]);
+  assert.deepEqual(allSelection.suiteIds, [...map.allSuites]);
+
+  const cargoBefore = Object.values(LIGHT_SUITE_DEFINITIONS)
+    .flatMap((definition) => definition.commands)
+    .filter(([executable]) => executable === "cargo");
+  assert.ok(cargoBefore.length > 0, "the full suites do contain cargo commands");
+  const kept = keptDocsMarkdownOnlyCommands();
+  assert.deepEqual(
+    kept.filter(([executable]) => executable === "cargo"),
+    [],
+  );
+  // No kept pnpm script reaches cargo through package.json either.
+  const packageJson = JSON.parse(
+    await readFile(new URL("../../package.json", import.meta.url), "utf8"),
+  );
+  for (const [executable, script] of kept) {
+    if (executable !== "pnpm") continue;
+    assert.doesNotMatch(
+      packageJson.scripts[script] ?? "",
+      /cargo/,
+      `${script} must not run cargo`,
+    );
+  }
+});
+
+test("a docs-markdown-only selection still runs the Node tests that read docs/", () => {
+  const kept = keptDocsMarkdownOnlyCommands().map((command) => command.join(" "));
+  const keptText = kept.join("\n");
+  assert.ok(kept.includes("pnpm test:quality"));
+  assert.ok(kept.includes("pnpm test:narrative:execution-state"));
+  assert.ok(kept.includes("pnpm test:narrative:semantic-contract"));
+  assert.match(keptText, /scripts\/quality\/nir1-graph\/observation-prep\.test\.mjs/);
+  assert.match(keptText, /electron\/scripts\/webrtc-block-probe-nc1\.test\.mjs/);
+  assert.match(keptText, /scripts\/quality\/nir1-graph-eval\/admission\.test\.mjs/);
+  assert.match(keptText, /scripts\/quality\/nir1-graph\/contract\.test\.mjs/);
+  assert.ok(
+    kept.includes(
+      "pnpm test:electron --run electron/main/rendererContainmentGOpenRecord.test.ts",
+    ),
+    "the electron vitest run is narrowed to the test that reads docs/",
+  );
+  assert.equal(
+    kept.filter((command) => command.startsWith("pnpm test:electron")).length,
+    1,
+  );
+});
+
+test("the vitest files that read docs/ are all accounted for", async () => {
+  const { readdir } = await import("node:fs/promises");
+  const root = new URL("../../", import.meta.url);
+  const found = [];
+  const walk = async (directory) => {
+    for (const entry of await readdir(new URL(directory, root), {
+      withFileTypes: true,
+    })) {
+      if (entry.name === "node_modules" || entry.name === "target") continue;
+      const relative = `${directory}${entry.name}`;
+      if (entry.isDirectory()) await walk(`${relative}/`);
+      else if (/\.(?:test|spec)\.tsx?$/u.test(entry.name)) {
+        const text = await readFile(new URL(relative, root), "utf8");
+        const code = text
+          .split("\n")
+          .filter((line) => !/^\s*(?:\/\/|\*|\/\*)/u.test(line));
+        if (code.some((line) => /["'`/]docs(?:[/"'`])/u.test(line))) {
+          found.push(relative);
+        }
+      }
+    }
+  };
+  await walk("src/");
+  await walk("electron/");
+  // Files that name docs/ but do not read Markdown under it (a fake mount
+  // root, a user's own folder, the LP page and screenshot directory).
+  const notMarkdownReaders = [
+    "electron/main/stateFileReach.integration.test.ts",
+    "src/lib/importFile.electron.test.ts",
+    "src/screenshot-scenes/captureManifest.test.ts",
+    "src/screenshot-scenes/lpPublicLinks.test.ts",
+    "src/screenshot-scenes/lpScreenshotContract.test.ts",
+  ];
+  const unaccounted = found.filter(
+    (file) =>
+      !DOCS_READER_VITEST_FILES.includes(file) &&
+      !notMarkdownReaders.includes(file),
+  );
+  assert.deepEqual(
+    unaccounted,
+    [],
+    "a vitest file that reads docs/*.md must be added to DOCS_READER_VITEST_FILES, or here if it only names a path",
+  );
+  for (const file of DOCS_READER_VITEST_FILES) {
+    assert.ok(found.includes(file), `${file} still reads docs/`);
+  }
+});
+
+test("no Rust source embeds a file under docs/ (cargo is dropped for docs-markdown-only)", async () => {
+  // P2 guard: the docs-markdown-only selection drops every cargo command, which
+  // is only safe while no Rust code compiles in a document through
+  // include_str!/include_bytes!. If one starts to, either keep cargo for it or
+  // add the crate to the selection rule. (A runtime fs read of docs/ is not
+  // visible to this scan; it is guarded by review of DOCS_READER_VITEST_FILES.)
+  const { readdir } = await import("node:fs/promises");
+  const root = new URL("../../", import.meta.url);
+  const offenders = [];
+  const walk = async (directory) => {
+    for (const entry of await readdir(new URL(directory, root), {
+      withFileTypes: true,
+    })) {
+      if (
+        entry.name === "node_modules" ||
+        entry.name === "target" ||
+        entry.name === ".git"
+      )
+        continue;
+      const relative = `${directory}${entry.name}`;
+      if (entry.isDirectory()) await walk(`${relative}/`);
+      else if (entry.name.endsWith(".rs")) {
+        const text = await readFile(new URL(relative, root), "utf8");
+        if (/include_(?:str|bytes)!\s*\([^)]*docs\//u.test(text)) {
+          offenders.push(relative);
+        }
+      }
+    }
+  };
+  await walk("src-tauri/");
+  await walk("electron/native/");
+  assert.deepEqual(
+    offenders,
+    [],
+    "a Rust file embeds docs/ through include_str!/include_bytes!; cargo must not be dropped for a docs-markdown-only selection",
+  );
+});
+
+test("a change that is not only Markdown under docs/ keeps every command", async () => {
+  const map = await loadImpactMap();
+  for (const changed of [
+    ["docs/some-new-note.md", "src-tauri/crates/grimodex-db/src/lib.rs"],
+    ["docs/some-new-note.md", "AGENTS.md"],
+    ["docs/some-new-note.md", "README.md"],
+    ["docs/lp/lp-variant-h.jsx"],
+    ["docs/screenshots/generated/a.png"],
+    ["docsx/a.md"],
+    ["scripts/quality/impact-map.mjs"],
+    [],
+  ]) {
+    assert.equal(isDocsMarkdownOnlyChange(changed), false, changed.join(","));
+    assert.equal(selectImpact(map, changed).docsMarkdownOnly, false, changed.join(","));
+  }
+  // An incomplete diff is never a docs-markdown-only selection, whatever its paths.
+  assert.equal(
+    selectImpact(map, ["docs/a.md"], { forceAllReason: "diff incomplete" })
+      .docsMarkdownOnly,
+    false,
+  );
+});
+
+test("docs-markdown-only execution reports a suite with nothing to run as skipped, not passed", async () => {
+  const map = await loadImpactMap();
+  const selection = selectImpact(map, ["docs/some-new-note.md"]);
+  const results = await runSelectedSuites({
+    ...selection,
+    suiteIds: ["ai-routing", "tool-policy", "prompt-contract", "narrative-extraction"],
+  });
+  assert.deepEqual(
+    results.map((entry) => [entry.suiteId, entry.status, entry.steps.length]),
+    [
+      ["ai-routing", "skipped", 0],
+      ["tool-policy", "skipped", 0],
+      ["prompt-contract", "skipped", 0],
+      ["narrative-extraction", "skipped", 0],
+    ],
+  );
+  assert.match(formatImpactSummary(selection, results), /ai-routing: skipped/);
+});
+
