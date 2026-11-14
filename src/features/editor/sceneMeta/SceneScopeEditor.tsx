@@ -11,6 +11,7 @@ import { SceneScopePrincipals } from "./SceneScopePrincipals";
 import { SceneScopeDefaultActions } from "./SceneScopeDefaultActions";
 import { isBodyDeclarationUiEnabled } from "./bodyDeclaration/bodyDeclarationAvailability";
 import { UNSAVED_SCENE_EDITS } from "./bodyDeclaration/useUnsavedSceneEdits";
+import { SceneBodyDeclarationBoundary } from "./bodyDeclaration/SceneBodyDeclarationBoundary";
 import type {
   Binding,
   Constraint,
@@ -22,7 +23,9 @@ import type {
 // The body declaration UI (CB-3) is closed by a constant until PUB-G, so it is
 // kept out of the startup JS graph: the chunk is requested only when the
 // constant is on and the section is rendered (DR-CB3-35). While the constant is
-// false nothing below references or fetches it.
+// false nothing below references or fetches it. A failure to load or render it
+// is caught by SceneBodyDeclarationBoundary and hides only the section
+// (DR-PUBG-40-1).
 const SceneBodyDeclarationSection = lazy(() =>
   import("./bodyDeclaration/SceneBodyDeclarationSection").then((m) => ({
     default: m.SceneBodyDeclarationSection,
@@ -569,14 +572,16 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
         </fieldset>
       )}
       {isBodyDeclarationUiEnabled() && (
-        <Suspense fallback={null}>
-          <SceneBodyDeclarationSection
-            node={node}
-            workspacePath={workspacePath}
-            refreshKey={declarationRefreshKey}
-            unsavedEdits={UNSAVED_SCENE_EDITS}
-          />
-        </Suspense>
+        <SceneBodyDeclarationBoundary>
+          <Suspense fallback={null}>
+            <SceneBodyDeclarationSection
+              node={node}
+              workspacePath={workspacePath}
+              refreshKey={declarationRefreshKey}
+              unsavedEdits={UNSAVED_SCENE_EDITS}
+            />
+          </Suspense>
+        </SceneBodyDeclarationBoundary>
       )}
     </div>
   );
