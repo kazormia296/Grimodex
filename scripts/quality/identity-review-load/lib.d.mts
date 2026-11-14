@@ -15,6 +15,7 @@ export function planNestedFolders(sceneCount: number): {
   folders: NestedFolderPlan[];
 };
 export function expectedSceneText(paragraphs: readonly string[]): string;
+export function expectedCanonicalText(paragraphs: readonly string[]): string;
 export function scenesFromWork(work: {
   scenes: { index: number; paragraphs: string[] }[];
 }): { index: number; paragraphs: string[] }[];
@@ -38,7 +39,7 @@ export function surfaceOverlapCounts(surfaces: readonly string[]): {
   distinct: number;
   honorificStrippable: number;
   honorificOverlap: number;
-  substringOfOther: number;
+  substringWithinSet: number;
 };
 export function summarizeSeedInventory(
   seeds: readonly {
@@ -70,3 +71,40 @@ export function assertOutputClean(
   output: unknown,
   scenesTexts: readonly string[],
 ): void;
+
+export function buildAsciiTokenSet(
+  texts: readonly string[],
+  minLength?: number,
+): Set<string>;
+export function countAsciiTokenHits(
+  output: unknown,
+  tokens: ReadonlySet<string>,
+  minLength?: number,
+): number;
+export const EXTERNAL_COMMANDS: readonly string[];
+export function findAiCommands(commandNames: readonly string[]): string[];
+export function sanitizeError(text: string): string;
+export function safeErrorSummary(error: unknown): {
+  name: string;
+  tag: string;
+  codes: string[];
+  pairs: string[];
+};
+export function isBulkApprovableRow(row: {
+  applicability: string;
+  status: string;
+  safe: boolean;
+}): boolean;
+export function countBulkApprovable(
+  rows: readonly { applicability: string; status: string; safe: boolean }[],
+): number;
+export function compareHashSets(
+  left: Iterable<string>,
+  right: Iterable<string>,
+): {
+  left: number;
+  right: number;
+  both: number;
+  leftOnly: number;
+  rightOnly: number;
+};

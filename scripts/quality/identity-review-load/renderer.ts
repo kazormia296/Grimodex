@@ -2,6 +2,10 @@
 // AI は呼ばない（startCodexStructureExtraction は useAi:false 固定）。
 // window.identityLoad.* の戻り値は「件数・ID・hash（sha256 先頭 16 桁）」だけで、
 // 原稿の本文・題・表記の文字列・引用を返さない。
+// 範囲（records に書く）：workspace は製品の open lifecycle（workspaceOpenLifecycle）を通らず、
+// open_workspace と setCurrentWorkspaceIdentity で開く（store の hydrate・lifecycle proof・
+// quiescence lease は通らない）。(d) の live projection は保存なしの seam（skipNativePersist）で読む：
+// 保存後の revisionId・application・restore 経路・永続化の時間は含まない。
 // このファイルは tsc の対象外（scripts/）で、Vite が評価時に直接読み込む。
 import { generateNKeysBetween } from "fractional-indexing";
 import { invoke } from "@/lib/tauri";
@@ -44,10 +48,14 @@ import type {
   NarrativeSourceView,
 } from "@/features/narrative-extraction/source/types";
 import {
+  compareHashSets,
+  countBulkApprovable,
   countTextMismatches,
   crossSetCounts,
+  expectedCanonicalText,
   expectedSceneText,
   hashSurface,
+  isBulkApprovableRow,
   planNestedFolders,
   scenesFromWork,
   summarizeCandidateInventory,
@@ -64,7 +72,8 @@ interface Active {
   sceneIds: string[]; // scenes JSON の並び
   folderIds: Record<string, string>; // "25" | "50" | "75" | "100"
   expectedTexts: string[];
-  sceneIdByIndexKey: Map<string, number>;
+  expectedCanonicalTexts: string[];
+  sceneIndexById: Map<string, number>; // 1 始まりの場面 index
 }
 let openRevision = 0;
 let active: Active | null = null;
@@ -213,7 +222,10 @@ async function buildNestedWork(input: {
     sceneIds,
     folderIds,
     expectedTexts,
-    sceneIdByIndexKey: new Map(sceneIds.map((id, i) => [id, i])),
+    expectedCanonicalTexts: scenes.map((scene) =>
+      expectedCanonicalText(scene.paragraphs),
+    ),
+    sceneIndexById: new Map(sceneIds.map((id, i) => [id, i + 1])),
   };
   return {
     workKey: input.workKey,
@@ -303,6 +315,93 @@ function tally<T>(rows: readonly T[], key: (row: T) => string) {
   return counts;
 }
 
+interface SeedMapped {
+  surface: string;
+  occurrenceCount: number;
+  sceneIds: string[];
+  appearsAsProperName: boolean;
+}
+
+/**
+ * 製品と同じ prepass の入口（snapshot → window → source view → prepass。最小出現 1）で seed を読み、
+ * 本文の突合（snapshot の canonical.text と、作った本文の期待値）も数える。
+ * inventory と extractStructure の両方が、同じ process でこれを使う。
+ */
+async function readSeeds(a: Active, folderId: string, sceneIds: string[]) {
+  const authority = captureMutationAuthority(a.projectId, getCurrentProjectId);
+  const snapshotResult = await buildProjectNarrativeSnapshot({
+    projectId: a.projectId,
+    folderId,
+    language: "ja",
+    sceneIds,
+    authority,
+  });
+  if (!snapshotResult.ok) {
+    return {
+      ok: false as const,
+      diagnostics: snapshotResult.diagnostics.map((d) => String(d.code)),
+    };
+  }
+  const snapshot = snapshotResult.snapshot;
+  const windowPlan = planExtractionWindows(snapshot);
+  const sourceViews = await buildSourceViewsForPlan(snapshot, windowPlan);
+
+  // snapshot の canonical.text（抽出器が実際に読む本文）と、作った本文の期待値の突合。
+  const sceneOfDocument = new Map<string, string>();
+  let canonicalMatched = 0;
+  let canonicalMismatched = 0;
+  const seenIndexes = new Set<number>();
+  for (const document of snapshot.documents) {
+    if (document.origin.kind !== "project-node") continue;
+    sceneOfDocument.set(document.ref, document.origin.nodeId);
+    const index = a.sceneIndexById.get(document.origin.nodeId);
+    if (index === undefined || seenIndexes.has(index)) {
+      canonicalMismatched++;
+      continue;
+    }
+    seenIndexes.add(index);
+    if (document.canonical.text === a.expectedCanonicalTexts[index - 1])
+      canonicalMatched++;
+    else canonicalMismatched++;
+  }
+  const canonicalText = {
+    documentCount: snapshot.documents.length,
+    expectedSceneCount: a.expectedTexts.length,
+    matched: canonicalMatched,
+    mismatched: canonicalMismatched,
+    missingScenes: a.expectedTexts.length - seenIndexes.size,
+  };
+
+  const prepass = await runEntityCandidatePrepass({
+    snapshot,
+    sourceViews,
+    minimumOccurrenceCount: 1,
+    createEvidenceAnchorId: () => crypto.randomUUID(),
+  });
+  const seeds = prepass.status === "complete" ? prepass.seeds : [];
+  const mapped: SeedMapped[] = seeds.map((seed) => ({
+    surface: seed.surface as string,
+    occurrenceCount: seed.occurrences.length as number,
+    sceneIds: seed.occurrences.map(
+      (o) => sceneOfDocument.get(o.documentRef) ?? "unknown",
+    ) as string[],
+    appearsAsProperName: Boolean(seed.features.appearsAsProperName),
+  }));
+  return {
+    ok: true as const,
+    mapped,
+    canonicalText,
+    prepass: {
+      status: String(prepass.status),
+      seedCount: seeds.length,
+      rejectionCount: prepass.rejections.length,
+      sourceViewCount: sourceViews.length,
+      windowCount: windowPlan.windows.length,
+      documentCount: snapshot.documents.length,
+    },
+  };
+}
+
 /** (d) startCodexStructureExtraction（useAi:false）を指定 folder に対して呼び、projection を件数で返す。 */
 async function extractStructure(input: {
   folderPercent: number;
@@ -322,7 +421,12 @@ async function extractStructure(input: {
   if (sceneNodes.length === 0) throw new Error("[precheck] empty folder");
   const authority = captureMutationAuthority(projectId, getCurrentProjectId);
   const catalog = await buildCatalogRequest(projectId);
-  const startedAt = performance.now();
+  // 同じ process で seed を独立に読む（製品の skip 経路の coverage は固定値で、観測にならない）。
+  const observedSeeds = await readSeeds(
+    a,
+    folderId,
+    sceneNodes.map((scene) => scene.id),
+  );
   const projection = await startCodexStructureExtraction({
     projectId,
     folderId,
@@ -336,7 +440,6 @@ async function extractStructure(input: {
     typeCatalog: catalog.typeCatalog,
     existingRelations: catalog.existingRelations,
   });
-  const durationMs = performance.now() - startedAt;
 
   const rows = [];
   for (const proposal of projection.proposals) {
@@ -349,18 +452,58 @@ async function extractStructure(input: {
         binding.kind === "unresolved" ? binding.candidates.length : 0,
       allowCreateNew:
         binding.kind === "unresolved" ? binding.allowCreateNew : null,
+      applicability: String(proposal.applicability),
+      status: String(proposal.status),
       blocked: proposal.applicability === "blocked",
-      bulkApprovable: isSafeForCodexEntityBulkApprove(proposal.safety),
+      safe: isSafeForCodexEntityBulkApprove(proposal.safety),
       typeStatus: payload.typeResolution.status,
       form: proposal.safety.explicitProperName ? "proper-name" : "alias",
       evidenceCount: proposal.evidence.length,
     });
   }
+  // 製品の画面（safeCount）・一括承認と同じ 3 条件で数える。
+  const rowsWithBulk = rows.map((row) => ({
+    ...row,
+    bulkApprovable: isBulkApprovableRow(row),
+  }));
+  // seed の hash 集合と提案の hash 集合の突合。prepass が complete なのに差があれば失敗。
+  let observed: Record<string, unknown>;
+  if (observedSeeds.ok) {
+    const seedVsProposal = compareHashSets(
+      await Promise.all(
+        observedSeeds.mapped.map((m) => hashSurface(m.surface)),
+      ),
+      rows.map((r) => r.surfaceHash),
+    );
+    observed = {
+      prepass: observedSeeds.prepass,
+      canonicalText: observedSeeds.canonicalText,
+      seedVsProposal,
+    };
+    if (
+      observedSeeds.prepass.status === "complete" &&
+      (seedVsProposal.leftOnly > 0 || seedVsProposal.rightOnly > 0)
+    ) {
+      throw new Error(
+        `[artifact] SEED_PROPOSAL_SET_DIFFERS seed and proposal hash sets differ: seedOnly=${seedVsProposal.leftOnly} proposalOnly=${seedVsProposal.rightOnly}`,
+      );
+    }
+  } else {
+    observed = {
+      prepass: { status: "snapshot-failed" },
+      diagnostics: observedSeeds.diagnostics,
+    };
+  }
   return {
     folderPercent: input.folderPercent,
     persisted: input.persist,
     sceneCount: sceneNodes.length,
-    durationMs,
+    scope: [
+      "no-product-open-lifecycle",
+      "live-projection-without-persist-seam",
+      "no-restore-column-no-persist-time",
+    ],
+    observed,
     runStatus: projection.status,
     entryCountInCatalog: catalog.entryCount,
     typeCountInCatalog: catalog.typeCount,
@@ -368,7 +511,8 @@ async function extractStructure(input: {
     relationProposalCount: projection.relationProposals.length,
     baseDetailProposalCount: projection.baseDetailProposals.length,
     phaseProposalCount: projection.phaseProposals.length,
-    coverage: {
+    // 製品が skip 経路で返す固定値（prepass の状態とは無関係）。観測としては使わない。
+    coverageReportedByProduct: {
       mode: projection.coverage.mode ?? null,
       documentCount: projection.coverage.documentCount ?? null,
       windowCount: projection.coverage.windowCount ?? null,
@@ -378,15 +522,18 @@ async function extractStructure(input: {
       bindingKind: tally(rows, (r) => r.bindingKind),
       typeStatus: tally(rows, (r) => r.typeStatus),
       form: tally(rows, (r) => r.form),
+      applicability: tally(rows, (r) => r.applicability),
+      reviewStatus: tally(rows, (r) => r.status),
       blocked: rows.filter((r) => r.blocked).length,
-      bulkApprovable: rows.filter((r) => r.bulkApprovable).length,
+      safe: rows.filter((r) => r.safe).length,
+      bulkApprovable: countBulkApprovable(rows),
       unresolvedWithCandidates: rows.filter(
         (r) => r.bindingKind === "unresolved" && r.candidateCount > 0,
       ).length,
       candidateTotal: rows.reduce((acc, r) => acc + r.candidateCount, 0),
       withoutEvidence: rows.filter((r) => r.evidenceCount === 0).length,
     },
-    rows,
+    rows: rowsWithBulk,
   };
 }
 
@@ -419,134 +566,124 @@ async function buildSourceViewsForPlan(
 
 /**
  * (e) 0 回目の目録。AI なし。
- * - seed：製品と同じ prepass の入口（snapshot → window → source view → prepass。最小出現 1）
- * - 候補画面の候補：extract_codex_candidates を IPC で直接（ラッパは失敗を [] に潰す）
- * 戻り値は件数と、表記ごとの hash・出現数だけ。
+ * - seed：製品と同じ prepass の入口（readSeeds。最小出現 1）
+ * - 候補画面の候補：extract_codex_candidates を IPC で直接（ラッパは失敗を [] に潰す）。
+ *   Rust は scope なしの project 全体を読むので、F100（全場面が入る folder）のときだけ取る。
+ * 戻り値は件数と、表記ごとの hash・出現数・場面 index だけ（surfaces は launcher が
+ * repo 外の 0600 の file にだけ書く走査用で、検査対象の出力には入れない）。
  */
 async function inventory(input: { folderPercent: number }) {
   const a = requireActive();
   const folderId = a.folderIds[String(input.folderPercent)];
-  const projectId = a.projectId;
   const sceneNodes = getDescendantScenesInOrder(
     useTreeStore.getState().nodes,
     folderId,
   );
-  const authority = captureMutationAuthority(projectId, getCurrentProjectId);
-  const snapshotResult = await buildProjectNarrativeSnapshot({
-    projectId,
+  const read = await readSeeds(
+    a,
     folderId,
-    language: "ja",
-    sceneIds: sceneNodes.map((scene) => scene.id),
-    authority,
-  });
-  if (!snapshotResult.ok) {
+    sceneNodes.map((scene) => scene.id),
+  );
+  if (!read.ok) {
     return {
-      seed: {
-        status: "snapshot-failed",
-        diagnostics: snapshotResult.diagnostics.map((d) => String(d.code)),
-      },
+      seed: { status: "snapshot-failed", diagnostics: read.diagnostics },
     };
   }
-  const snapshot = snapshotResult.snapshot;
-  const windowPlan = planExtractionWindows(snapshot);
-  const sourceViews = await buildSourceViewsForPlan(snapshot, windowPlan);
-  let seedSection: Record<string, unknown>;
-  let seedRows: {
-    surfaceHash: string;
-    occurrenceCount: number;
-    sceneCount: number;
-    properName: boolean;
-  }[] = [];
-  let seedSurfaces: string[] = [];
-  try {
-    const prepass = await runEntityCandidatePrepass({
-      snapshot,
-      sourceViews,
-      minimumOccurrenceCount: 1,
-      createEvidenceAnchorId: () => crypto.randomUUID(),
-    });
-    const sceneOfDocument = new Map<string, string>();
-    for (const document of snapshot.documents) {
-      if (document.origin.kind === "project-node")
-        sceneOfDocument.set(document.ref, document.origin.nodeId);
-    }
-    const seeds = prepass.status === "complete" ? prepass.seeds : [];
-    const mapped = seeds.map((seed) => ({
-      surface: seed.surface as string,
-      occurrenceCount: seed.occurrences.length as number,
-      sceneIds: seed.occurrences.map(
-        (o) => sceneOfDocument.get(o.documentRef) ?? "unknown",
-      ) as string[],
-      appearsAsProperName: Boolean(seed.features.appearsAsProperName),
-    }));
-    seedSurfaces = mapped.map((m) => m.surface);
-    seedRows = await Promise.all(
-      mapped.map(async (m) => ({
+  const mapped = read.mapped;
+  const sceneIndexOf = (sceneId: string) => a.sceneIndexById.get(sceneId) ?? 0;
+  const seedSurfaces = mapped.map((m) => m.surface);
+  const seedRows = await Promise.all(
+    mapped.map(async (m) => {
+      const perScene = new Map<number, number>();
+      for (const sceneId of m.sceneIds) {
+        const index = sceneIndexOf(sceneId);
+        perScene.set(index, (perScene.get(index) ?? 0) + 1);
+      }
+      return {
         surfaceHash: await hashSurface(m.surface),
         occurrenceCount: m.occurrenceCount,
-        sceneCount: new Set(m.sceneIds).size,
+        sceneCount: perScene.size,
+        // 出現場面：[場面 index（1 始まり）, その場面での出現数]（index 昇順）。
+        scenes: [...perScene.entries()].sort((x, y) => x[0] - y[0]),
         properName: m.appearsAsProperName,
-      })),
-    );
-    seedSection = {
-      status: prepass.status,
-      sourceViewCount: sourceViews.length,
-      windowCount: windowPlan.windows.length,
-      documentCount: snapshot.documents.length,
-      rejectionCount: prepass.rejections.length,
-      ...summarizeSeedInventory(mapped),
-    };
-  } catch (error) {
-    seedSection = {
-      status: "prepass-threw",
-      errorName: error instanceof Error ? error.name : "unknown",
-    };
-  }
+      };
+    }),
+  );
+  const seedSection: Record<string, unknown> = {
+    ...read.prepass,
+    ...summarizeSeedInventory(mapped),
+  };
 
-  // 候補画面の候補：IPC を直接。minCount は既定（null → Rust 側の既定）と 1 の両方。
   const candidateSections: Record<string, unknown> = {};
   let defaultCandidateSurfaces: string[] = [];
-  let candidateRows: { surfaceHash: string; count: number }[] = [];
-  for (const [label, minCount] of [
-    ["default", null],
-    ["min1", 1],
-  ] as const) {
-    try {
-      const raw = (await invoke("extract_codex_candidates", {
-        projectId,
-        minCount,
-      })) as { surface: string; count: number }[];
-      candidateSections[label] = {
-        status: "ok",
-        ...summarizeCandidateInventory(raw),
-      };
-      if (label === "default") {
-        defaultCandidateSurfaces = raw.map((c) => c.surface);
-        candidateRows = await Promise.all(
-          raw.map(async (c) => ({
-            surfaceHash: await hashSurface(c.surface),
-            count: c.count,
-          })),
-        );
+  let candidateRows: {
+    surfaceHash: string;
+    count: number;
+    firstSceneIndex: number;
+  }[] = [];
+  let seedVsCandidateDefault: ReturnType<typeof crossSetCounts> | null = null;
+  let occurrenceCrossCheck: Record<string, unknown> | null = null;
+  if (input.folderPercent !== 100) {
+    candidateSections.status = "skipped-not-f100";
+  } else {
+    let min1Occurrences: number | null = null;
+    for (const [label, minCount] of [
+      ["default", null],
+      ["min1", 1],
+    ] as const) {
+      try {
+        const raw = (await invoke("extract_codex_candidates", {
+          projectId: a.projectId,
+          minCount,
+        })) as { surface: string; count: number; firstSceneId: string }[];
+        const summary = summarizeCandidateInventory(raw);
+        candidateSections[label] = { status: "ok", ...summary };
+        if (label === "min1")
+          min1Occurrences = summary.occurrenceCount as number;
+        if (label === "default") {
+          defaultCandidateSurfaces = raw.map((c) => c.surface);
+          candidateRows = await Promise.all(
+            raw.map(async (c) => ({
+              surfaceHash: await hashSurface(c.surface),
+              count: c.count,
+              firstSceneIndex: sceneIndexOf(c.firstSceneId),
+            })),
+          );
+        }
+      } catch (error) {
+        candidateSections[label] = {
+          status: "failed",
+          errorName: error instanceof Error ? error.name : "unknown",
+        };
       }
-    } catch (error) {
-      candidateSections[label] = {
-        status: "failed",
-        errorName: error instanceof Error ? error.name : "unknown",
-      };
     }
+    seedVsCandidateDefault = crossSetCounts(
+      seedSurfaces,
+      defaultCandidateSurfaces,
+    );
+    // 候補の出現数（min1）と seed の出現数の合計の突合（差は記録するだけ。成否には使わない）。
+    const seedOccurrences = mapped.reduce(
+      (acc, m) => acc + m.occurrenceCount,
+      0,
+    );
+    occurrenceCrossCheck = {
+      seedOccurrences,
+      candidateMin1Occurrences: min1Occurrences,
+      equal: min1Occurrences === seedOccurrences,
+    };
   }
   return {
     folderPercent: input.folderPercent,
     sceneCount: sceneNodes.length,
+    scope: ["no-product-open-lifecycle"],
     seed: seedSection,
+    canonicalText: read.canonicalText,
     candidates: candidateSections,
-    seedVsCandidateDefault: crossSetCounts(
-      seedSurfaces,
-      defaultCandidateSurfaces,
-    ),
+    seedVsCandidateDefault,
+    occurrenceCrossCheck,
     seedRows,
     candidateRows,
+    surfaces: { seed: seedSurfaces, candidate: defaultCandidateSurfaces },
   };
 }
 

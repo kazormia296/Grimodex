@@ -57,6 +57,14 @@ export function expectedSceneText(paragraphs) {
   return paragraphs.map((paragraph) => `${paragraph}\n`).join("");
 }
 
+/**
+ * 抽出器が読む snapshot の canonical.text（proseMirrorSerializer の assembleCanonical）の期待値：
+ * 段落を "\n" で区切り、末尾に改行を付けない（prosemirrorToText とは形が違う）。
+ */
+export function expectedCanonicalText(paragraphs) {
+  return paragraphs.join("\n");
+}
+
 /** scenes JSON から場面（index 昇順）を取り出す。本文はそのまま持つ（出力には出さない）。 */
 export function scenesFromWork(work) {
   if (!work || !Array.isArray(work.scenes)) {
@@ -167,7 +175,8 @@ function distribution(values) {
  * - distinct：candidateKey で潰した表記の数
  * - honorificOverlap：敬称を外した形が、集合の別の表記として在る表記の数
  * - honorificStrippable：敬称を外せる表記の数（外した形が集合に在るかは問わない）
- * - substringOfOther：他の（より長い）表記の部分文字列になる表記の数（2 文字以上）
+ * - substringWithinSet：同じ集合の別の（より長い）表記の部分文字列になる表記の数（2 文字以上）。
+ *   製品の部分一致・前方一致（seed と名簿の間、score floor 80）とは別物の代理指標
  */
 export function surfaceOverlapCounts(surfaces) {
   const keys = [
@@ -183,14 +192,14 @@ export function surfaceOverlapCounts(surfaces) {
       if (keySet.has(stripped)) honorificOverlap++;
     }
   }
-  let substringOfOther = 0;
+  let substringWithinSet = 0;
   const byLength = [...keys].sort((a, b) => b.length - a.length);
   for (const key of keys) {
     if ([...key].length < 2) continue;
     for (const other of byLength) {
       if (other.length <= key.length) break;
       if (other.includes(key)) {
-        substringOfOther++;
+        substringWithinSet++;
         break;
       }
     }
@@ -199,7 +208,7 @@ export function surfaceOverlapCounts(surfaces) {
     distinct: keys.length,
     honorificStrippable,
     honorificOverlap,
-    substringOfOther,
+    substringWithinSet,
   };
 }
 
@@ -221,6 +230,8 @@ export function summarizeSeedInventory(seeds) {
   }
   return {
     seedCount: seeds.length,
+    // 全 seed が固有名詞形なら、敬称で終わる表記は構造上 0 になりうる（観測した不在ではない）。
+    honorificStructurallyZero: properName === seeds.length,
     occurrenceCount: occurrences,
     properNameSeedCount: properName,
     aliasFormSeedCount: seeds.length - properName,
@@ -303,22 +314,150 @@ export function countShingleHits(output, shingles, size = 8) {
   return hits;
 }
 
+/** 原稿の ASCII の語（先頭が英字、4 文字以上。小文字化）。短いラテン字の人名・型番の検出用。 */
+export function buildAsciiTokenSet(texts, minLength = 4) {
+  const set = new Set();
+  const pattern = new RegExp(`[A-Za-z][A-Za-z0-9]{${minLength - 1},}`, "gu");
+  for (const text of texts) {
+    for (const match of text.matchAll(pattern)) set.add(match[0].toLowerCase());
+  }
+  return set;
+}
+
+/** 出力の文字列（値と key）に現れる、原稿の ASCII の語の数。 */
+export function countAsciiTokenHits(output, tokens, minLength = 4) {
+  const pattern = new RegExp(`[A-Za-z][A-Za-z0-9]{${minLength - 1},}`, "gu");
+  let hits = 0;
+  const visit = (value) => {
+    if (typeof value === "string") {
+      for (const match of value.matchAll(pattern)) {
+        if (tokens.has(match[0].toLowerCase())) hits++;
+      }
+    } else if (Array.isArray(value)) value.forEach(visit);
+    else if (value && typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) {
+        visit(key);
+        visit(item);
+      }
+    }
+  };
+  visit(output);
+  return hits;
+}
+
 /**
- * 出力の JSON を、(1) 文字列の欄の拒否、(2) 原稿との shingle 走査、の両方で検査する。
- * 失敗時は件数と JSON path だけを持つ Error を投げる（値は載せない）。
+ * 出力の JSON を、(1) 文字列の欄の拒否、(2) 原稿との shingle 走査（8 文字）、
+ * (3) 原稿の ASCII の語の走査（4 文字以上）で検査する。(2)(3) は (1) より先に数えるので、
+ * ASCII の短い表記が (1) を通る場合も別に検出する。失敗時は件数だけを持つ Error を投げる
+ * （値は載せない）。
  */
 export function assertOutputClean(output, scenesTexts) {
   const unsafe = findUnsafeStrings(output);
-  if (unsafe.length > 0) {
-    throw new Error(
-      `[artifact] output has ${unsafe.length} unsafe string field(s)`,
-    );
-  }
-  const hits = countShingleHits(
+  const shingleHits = countShingleHits(
     JSON.stringify(output),
     buildShingleSet(scenesTexts),
   );
-  if (hits > 0) {
-    throw new Error(`[artifact] output has ${hits} manuscript shingle hit(s)`);
+  const tokenHits = countAsciiTokenHits(
+    output,
+    buildAsciiTokenSet(scenesTexts),
+  );
+  if (unsafe.length > 0 || shingleHits > 0 || tokenHits > 0) {
+    throw new Error(
+      `[artifact] output unclean: unsafe=${unsafe.length} shingle=${shingleHits} asciiToken=${tokenHits}`,
+    );
   }
+}
+
+// ---- AI／外部通信の command と、エラーの要約 ---------------------------------
+
+/**
+ * AI／外部通信の command の判定（electron/main/profileEgress.ts の DENIED_COMMANDS の全 key
+ * ＝route 不問、LICENSE_CONTROL_COMMANDS、key の設定、semantic のモデル取得）。
+ * 停止だけの abort_* は含めない。一覧と source の一致は lib.test.mjs が検査する。
+ */
+export const EXTERNAL_COMMANDS = Object.freeze([
+  "narrative_extraction_claim_task",
+  "nir1_pack_context",
+  "get_ai_settings",
+  "save_ai_settings",
+  "semantic_download_model",
+  "activate_license",
+  "revalidate_license",
+  "deactivate_license",
+]);
+const AI_COMMAND =
+  /^(send_|codex_app_|start_post_effect_run|.*_cli_|.*_cli$|list_ai_models|test_ai_connection|get_mcp_config|nir1_local_generation|nir1_local_conversation|ai_(?!audit_read_snapshot$|audit_verify$)|.*judg|vivliostyle_)/u;
+export function findAiCommands(commandNames) {
+  return [...new Set(commandNames)]
+    .filter((name) => AI_COMMAND.test(name) || EXTERNAL_COMMANDS.includes(name))
+    .sort();
+}
+
+/** エラー文は ASCII の識別子の形だけ残して切る（本文・表記が混ざっても残らない）。 */
+export function sanitizeError(text) {
+  return String(text)
+    .replace(/[^A-Za-z0-9_.:/+=\- ]/gu, "_")
+    .slice(0, 400);
+}
+
+/**
+ * エラーを出力に載せる形に要約する。自由文は載せず、名前（ASCII の識別子だけ）、
+ * [precheck]／[artifact] の印、大文字の code（NEX_READ_SET_STALE など）、key=数値 の対だけ残す。
+ */
+export function safeErrorSummary(error) {
+  const name =
+    error && typeof error === "object" && typeof error.name === "string"
+      ? error.name
+      : "NonError";
+  const message =
+    error && typeof error === "object" && typeof error.message === "string"
+      ? error.message
+      : "";
+  // Playwright は "page.evaluate: Error: [artifact] ..." のように包むので、先頭に限らず探す。
+  const tag = /\[(precheck|artifact)\]/u.exec(message)?.[1] ?? "none";
+  const pairs = [...message.matchAll(/\b([A-Za-z]{1,30})=(\d{1,9})\b/gu)]
+    .slice(0, 6)
+    .map((m) => `${m[1]}=${m[2]}`);
+  const codes = [
+    ...new Set(
+      [...message.matchAll(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/gu)].map((m) =>
+        m[0].slice(0, 60),
+      ),
+    ),
+  ].slice(0, 5);
+  return {
+    name: /^[A-Za-z0-9_]{1,60}$/u.test(name) ? name : "Error",
+    tag,
+    codes,
+    pairs,
+  };
+}
+
+// ---- 一括承認可・集合の突合 -------------------------------------------------
+
+/** 製品の画面（safeCount）と bulkApproveSafeCodexStructureProposals の 3 条件。 */
+export function isBulkApprovableRow(row) {
+  return (
+    row.applicability === "applicable" &&
+    row.status === "unreviewed" &&
+    row.safe === true
+  );
+}
+export function countBulkApprovable(rows) {
+  return rows.filter(isBulkApprovableRow).length;
+}
+
+/** 二つの hash の集合の差（件数だけ）。 */
+export function compareHashSets(left, right) {
+  const a = new Set(left);
+  const b = new Set(right);
+  let both = 0;
+  for (const hash of a) if (b.has(hash)) both++;
+  return {
+    left: a.size,
+    right: b.size,
+    both,
+    leftOnly: a.size - both,
+    rightOnly: b.size - both,
+  };
 }
