@@ -140,8 +140,8 @@ master の Full（§8）は `--ref master` で dispatch し、`candidate_head` �
     - 例外1の候補head: completedで`conclusion`が`success`でないrunが1件でもあればmergeしない。pendingだけなら待たずにmergeできる。
     - 例外2の候補head: completedで`conclusion`が`failure`のrunは、docsの変更と関係ないと確かめた場合だけmergeできる。`failure`以外で`success`でない結論
       （`cancelled`、`timed_out`、`startup_failure`、`action_required`など）は`ci.yml`を取り直し、新しいattemptを同じ規則で扱う。pendingだけなら待たずにmergeできる。
-    - docsの変更と関係ないことの材料は、ログを読んだうえで次のどれかが成り立つこと: 失敗したjobや試験が変更したpathを読まない（`git grep`で確かめる）、
-      同じ失敗がmasterの最新のpushの`ci.yml`にもある、再実行で通る。確かめた材料は完了報告に書く。確かめられなければmergeしない。
+    - docsの変更と関係ないことの材料は、ログを読んだうえで次のどれかが成り立つこと: 同じ失敗がmasterの最新のpushの`ci.yml`にもある、
+      再実行で通る。変更したpathを読む所が`git grep`で見つからないことは材料にならない（docs-onlyの定義が既にそれを保証するため）。確かめた材料は完了報告に書く。確かめられなければmergeしない。
 
     - 例外1（masterの取込みだけのhead）: 取込みの前の、PRの変更を含む最後のhead`ci_head`で、通常の`ci.yml`（pull_request）が上の成功である。
       その後の`candidate_head`は、`ci_head`に`origin/master`をmergeで取り込んだだけである（rebaseとforce pushでは使えない）。
@@ -158,6 +158,8 @@ master の Full（§8）は `--ref master` で dispatch し、`candidate_head` �
         git fetch origin master || no "fetchが失敗"
         candidate_head="$(git rev-parse 'HEAD^{commit}')" || no "HEADを解決できない"
         [ -n "$ci_head" ] && [ -n "$candidate_head" ] || no "SHAが空"
+        ci_head="$(git rev-parse --verify --quiet "$ci_head^{commit}")" || no "ci_headをcommitに解決できない"
+        [ "$ci_head" != "$candidate_head" ] || no "ci_headが候補と同じ（取込みが無い）"
         base0="$(git merge-base "$ci_head" origin/master)" && [ -n "$base0" ] || no "merge-baseを求められない（base0が空）"
         # (a) 取込みだけである
         git merge-base --is-ancestor "$ci_head" "$candidate_head" || no "ci_headが候補の祖先でない"

@@ -340,9 +340,9 @@ that is not completed is pending.
   conclusion that is not `success` (cancelled, timed out, startup failure, action required, and the like) means that
   `ci.yml` is taken again, and the new attempt is judged by these same rules. When the runs are only pending, the PR may
   be merged without waiting.
-- A failure has nothing to do with the docs change when, from the logs, at least one of these holds: the failed job or
-  test does not read any changed path (confirmed with `git grep`), the same failure is in the `ci.yml` of the latest
-  `master` push, or a re-run passes. The material is written in the completion report, and a failure that cannot be
+- A failure has nothing to do with the docs change when, from the logs, at least one of these holds: the same failure is
+  in the `ci.yml` of the latest `master` push, or a re-run passes. A `git grep` that finds no reader of the changed path is
+  not such evidence, because the docs-only definition already guarantees it. The material is written in the completion report, and a failure that cannot be
   shown unrelated blocks the merge.
 
 The merge-in-only head exception. The candidate head `H2` (`candidate_head`) is a head `H1` of the PR plus

@@ -1585,7 +1585,7 @@ test("agent operation contracts keep candidate evidence and bounded identity che
   );
   assert.match(
     trace,
-    /A failure has nothing to do with the docs change when, from the logs, at least one of these holds: the failed job or test does not read any changed path \(confirmed with `git grep`\), the same failure is in the `ci\.yml` of the latest `master` push, or a re-run passes/i,
+    /A failure has nothing to do with the docs change when, from the logs, at least one of these holds: the same failure is in the `ci\.yml` of the latest `master` push, or a re-run passes\. A `git grep` that finds no reader of the changed path is not such evidence/i,
   );
   // The merge-in-only head exception.
   assert.match(
@@ -2168,7 +2168,7 @@ test("agent operation contracts keep candidate evidence and bounded identity che
   );
   assert.match(
     ship210,
-    /docsの変更と関係ないことの材料は、ログを読んだうえで次のどれかが成り立つこと: 失敗したjobや試験が変更したpathを読まない（`git grep`で確かめる）、 ?同じ失敗がmasterの最新のpushの`ci\.yml`にもある、再実行で通る/,
+    /docsの変更と関係ないことの材料は、ログを読んだうえで次のどれかが成り立つこと: 同じ失敗がmasterの最新のpushの`ci\.yml`にもある、 ?再実行で通る。変更したpathを読む所が`git grep`で見つからないことは材料にならない/,
   );
   // The exception 1 text and its shell check.
   assert.match(
@@ -6426,6 +6426,19 @@ test(
         SHIP_GATE_MERGE_IN_OK,
         "a clean merge-in",
       );
+      // ci_head is normalized to a commit SHA: a ref name resolves to the same
+      // commit, and the candidate itself (no merge-in at all) does not qualify.
+      assertShipGatePass(
+        check(clean, `${cleanCi}^0`),
+        SHIP_GATE_MERGE_IN_OK,
+        "a ci_head given as a revision expression",
+      );
+      assertShipGateFail(
+        check(clean, clean.git("rev-parse", "HEAD").trim()),
+        SHIP_GATE_MERGE_IN_OK,
+        reason("ci_headが候補と同じ"),
+        "a ci_head equal to the candidate",
+      );
 
       // Two merge-ins in a row, the second after master advanced again.
       const twice = await buildBase("twice");
@@ -6586,7 +6599,7 @@ test(
       assertShipGateFail(
         runShipGateBlock(mergeInBlock, clean.work),
         SHIP_GATE_MERGE_IN_OK,
-        reason("merge-baseを求められない"),
+        reason("ci_headをcommitに解決できない"),
         "an unreplaced ci_head placeholder",
       );
       assertShipGateFail(
