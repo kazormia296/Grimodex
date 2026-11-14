@@ -178,7 +178,7 @@ IPC・保存・AI 送信・脅威モデル・閾値は動かない。触れる�
 7. 画面：(i) カードに結び先の名前（`catalogEntityDisplayName`）を出す（1 件ずつの確認にも効く）、(ii) 一括の件数を「新規作成」と「既存への結び付け」に分けて出す（`CodexEntityProposalReview.tsx:128-148`）、(iii) 通した結び付けを見返す一覧を出す（T3）。
 8. 判定の置き場。画面の純関数と、実行時の再検査の 2 か所で行い、Native の新しい command にはしない。Chronicle の BAO/1 は、対象かの判定を Native だけに置き、画面は計算しない形にした（台帳 `docs/plans/nir1-l6-l9-execution-plan.md` の BAO/1 の行。その理由の文面は読んでいない）。ここで renderer に置く根拠：書く範囲が Codex の行を書かない bind だけで、1 件ずつの承認と同じ command を繰り返す。Native に置くと新しい command ＝新しい契約になる。画面の判定と Native の検査の食い違いは、Native が版と所属の検査を必ず行うこと（`codex_operations.rs:691-708`）と、実行時の再検査で限る。これは draft の技術判断の提案（T2）。
 9. コメントの「never bulk-safe」と「spec §22」を更新する。
-10. bind-existing が保存の後に誰に読まれるかを、実装の前に確かめる。読んだ範囲では、承認で commit map に登録され（`codexCommitCoordinator.ts:179-184`、`commit.rs:1217-1237`）、変更 feed に op が `bind` として残る（`commit.rs:1226-1237`。redo の再生は `undo.rs:442` で読み、undo／redo の preflight と巻き戻しは bind を Entry に触れず扱う。§11）。それ以降の読み手（取り込み・IR・Graph など）は未確認。読み手が Codex の行・関係・Phase だけであることを確かめるまで着手しない。
+10. bind-existing が保存の後に誰に読まれるかを、実装の前に確かめる。読んだ範囲では、承認で commit map に登録され（`codexCommitCoordinator.ts:179-184`、`commit.rs:1217-1237`）、変更 feed に op が `bind` として残る（`commit.rs:1226-1237`。redo の再生は `undo.rs:442` で読み、undo／redo の preflight と巻き戻しは bind を Entry に触れず扱う。§12）。それ以降の読み手（取り込み・IR・Graph など）は未確認。読み手が Codex の行・関係・Phase だけであることを確かめるまで着手しない。
 
 ### 3.3 条件
 
@@ -493,7 +493,21 @@ NIR-1 の委任や decisions 文書を前提にしない通常作業の範囲で
 
 **T1 の測定の一部（測定 A の試走、AI なし。測定の結果としては使わない値）**：4 作品（AI 原稿 3 本と青空文庫 1 本）の構造抽出の提案に、関係の呼び名（名簿で関係の呼び名とした表記）は 1 件も出なかった（seed は固有名詞だけ）。打ち手 4 のうち構造抽出の側の効果は、この試しでは 0 件。効果が見込めるのは候補画面の側（AI の判定と別名ボタン）。
 
-## 11. bind-existing の Undo／Redo の確定した扱い（2026-11-14、修正 claude/bind-undo-fix）
+## 11. 打ち手 4 の実装の判断と、レビュー指摘への対応（2026-11-14）
+
+実装は `relationalTerms.ts`（一覧と判定）、`existingEntityMatcher.ts`（呼び名は完全一致だけ）、`codexStructureExtractionApi.ts`（種のループ）、`CodexCandidatesReport.tsx`（別名ボタン）、`CodexStructureExtractionProgress.tsx`（除外の表示）。レビューの指摘への対応は次のとおり。
+
+- 接頭（お／ご／御）の取り外しは続柄の語幹にだけ効かせる。「お君」「おきみ」「おやつ」「お彼」は呼び名にしない。「お前」「おまえ」「おぬし」は語幹の一覧に持つ。
+- 「君」「きみ」は二人称として残す。作者の確認（Q2）が二人称を入れるものであり、名簿に結んだ語は落とさず、落とした語は診断に表記が残るため。名前と衝突しやすい片仮名の「キミ」は、片仮名は明示した形だけという方針に合わせて外した。
+- 頻度の高い取りこぼし（おっかさん・お袋・奥さん・あなた様・ねーちゃん・兄者・ちちうえ・彼等）を一覧に足した。置き場は `relationalTerms.ts` の 1 か所のまま。
+- 別名ボタンの早期 return は、UI から到達できず冗長なので外した（入口はボタンだけで、呼び名の行ではボタンを出さない）。呼び名の行で AI が別名を勧めたときは、理由を 1 行（`codex.candidates.relationalAliasNote`）で出す。
+- 除外の表記の表示は、同じ表記を 1 件にまとめ、先頭 10 件と「ほか N 件」にした。件数は表記の種類の数。文言は「話し手で指す人が変わる呼び方」とした。
+- matcher は共有関数なので、AI 照合（`runEntityResolutionTask`）と `entityClustering` の候補も、呼び名に当たる表記では完全一致だけに狭まる。AI 経路は製品では未接続で実害は今は無い。構造抽出と違い、AI 経路は種を落とさないので、候補が減っても新規の提案は残る。この狭まりは意図どおりとし、matcher の試験で固定した。
+- 種を落とすのは名簿に当たらない（`none`）ときだけ。完全一致が重複する（`ambiguous`）ものは作者が入れた語なので残す（設計 §2 の「resolved でない種」より狭い。Q1 の確認は「作者が名前・別名に入れた語は結ぶ」）。落とした種は新規提案にならないため、co-mention から作る関係の提案もその分減る（診断には出さない）。
+- T1 の切替フラグは追加していない。測定の基準線の前後は、事前登録の側で別に決める。
+- Q2 で作者が求めた「戻す」手段は、この変更では未実装。
+
+## 12. bind-existing の Undo／Redo の確定した扱い（2026-11-14、修正 claude/bind-undo-fix）
 
 bind-existing を含む commit の Undo が、作者の既存 Entry を create 扱いで消そうとして必ず失敗していた不具合を直した。確定した扱い：
 

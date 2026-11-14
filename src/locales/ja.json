@@ -2367,6 +2367,7 @@
       "acceptAlias": "「{{name}}」の別名として登録",
       "acceptNew": "別名にせず新規エントリとして作成",
       "aliasHint": "「{{name}}」の別名?",
+      "relationalAliasNote": "「{{surface}}」は話し手で指す人が変わる呼び方なので、別名の登録は Codex の編集画面から行ってください",
       "type": {
         "character": "人物",
         "location": "場所",

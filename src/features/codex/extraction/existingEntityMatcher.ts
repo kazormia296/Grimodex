@@ -1,5 +1,6 @@
 import { candidateKey } from "../codexCandidates";
 import { parseAliases } from "../codexMatcher";
+import { isRelationalTerm } from "./relationalTerms";
 import type {
   EntityBindingCandidate,
   EntityBindingMatchMethod,
@@ -56,6 +57,7 @@ function scoreAgainstEntry(
   strippedKey: string,
   entryNameKey: string,
   aliasKeys: readonly string[],
+  exactOnly: boolean,
 ): { score: number; methods: EntityBindingMatchMethod[] } {
   const methods: EntityBindingMatchMethod[] = [];
   let score = 0;
@@ -68,6 +70,9 @@ function scoreAgainstEntry(
     methods.push("exact-alias");
     score = Math.max(score, 95);
   }
+  // 関係の呼び名（姉ちゃん・あなた 等）は話し手で指す人が変わる。作者が名前・別名に
+  // 入れた語の完全一致だけを残し、敬称除去・prefix・substring の候補は作らない。
+  if (exactOnly) return { score, methods };
   if (
     strippedKey.length > 0 &&
     strippedKey !== surfaceKey &&
@@ -180,6 +185,7 @@ export function matchExistingEntity(
   for (const surface of input.surfaces) {
     const surfaceKey = candidateKey(surface);
     if (!surfaceKey) continue;
+    const exactOnly = isRelationalTerm(surface);
     const strippedKey = candidateKey(stripHonorific(surface));
 
     for (const entry of catalog) {
@@ -194,6 +200,7 @@ export function matchExistingEntity(
         strippedKey,
         entryNameKey,
         aliasKeys,
+        exactOnly,
       );
       if (methods.length === 0) continue;
       const candidate: EntityBindingCandidate = {

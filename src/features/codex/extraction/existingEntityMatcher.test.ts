@@ -91,4 +91,68 @@ describe("matchExistingEntity", () => {
       method: "explicit-identity",
     });
   });
+
+  describe("relational terms (kinship / second / third person)", () => {
+    it("does not strip honorifics from a relational term to reach a roster name", () => {
+      const result = matchExistingEntity({ surfaces: ["姉ちゃん"] }, [
+        entry({ ref: "K0001", name: "姉" }),
+      ]);
+      expect(result).toEqual({ status: "none" });
+    });
+
+    it("emits no prefix or substring candidates for a relational term", () => {
+      expect(
+        matchExistingEntity({ surfaces: ["おじいさん"] }, [
+          entry({ ref: "K0001", name: "ライカ", aliases: ["じい"] }),
+        ]),
+      ).toEqual({ status: "none" });
+      expect(
+        matchExistingEntity({ surfaces: ["彼女"] }, [
+          entry({ ref: "K0001", name: "彼女の影" }),
+        ]),
+      ).toEqual({ status: "none" });
+    });
+
+    it("still resolves a relational term the author put in a name or alias", () => {
+      expect(
+        matchExistingEntity({ surfaces: ["姉ちゃん"] }, [
+          entry({ ref: "K0001", name: "ライカ", aliases: ["姉ちゃん"] }),
+        ]),
+      ).toEqual({ status: "resolved", ref: "K0001", method: "exact-alias" });
+      expect(
+        matchExistingEntity({ surfaces: ["ダンナ"] }, [
+          entry({ ref: "K0002", name: "ダンナ" }),
+        ]),
+      ).toEqual({ status: "resolved", ref: "K0002", method: "exact-name" });
+    });
+
+    it("keeps ambiguous for duplicate exact hits of a relational term", () => {
+      const result = matchExistingEntity({ surfaces: ["姉ちゃん"] }, [
+        entry({ ref: "K0001", name: "ライカ", aliases: ["姉ちゃん"] }),
+        entry({ ref: "K0002", name: "ベルカ", aliases: ["姉ちゃん"] }),
+      ]);
+      expect(result.status).toBe("ambiguous");
+    });
+
+    it("narrows to exact only per surface when AI-style input mixes a relational term and an ordinary one (shared by AI resolution and clustering)", () => {
+      const catalog = [entry({ ref: "K0001", name: "ライカ" })];
+      expect(
+        matchExistingEntity({ surfaces: ["姉ちゃん", "ライカ"] }, catalog),
+      ).toEqual({ status: "resolved", ref: "K0001", method: "exact-name" });
+      expect(
+        matchExistingEntity({ surfaces: ["姉ちゃん"] }, [
+          entry({ ref: "K0002", name: "姉ちゃんの影" }),
+        ]),
+      ).toEqual({ status: "none" });
+    });
+
+    it("still strips ordinary honorifics from a non-relational surface", () => {
+      const result = matchExistingEntity({ surfaces: ["ライカさん"] }, [
+        entry({ ref: "K0001", name: "ライカ" }),
+      ]);
+      expect(result.status).toBe("ambiguous");
+      if (result.status !== "ambiguous") return;
+      expect(result.candidates[0]?.methods).toContain("honorific-strip");
+    });
+  });
 });

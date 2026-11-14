@@ -25,6 +25,7 @@ import {
 import { activeCandidates, candidateKey } from "./codexCandidates";
 import { judgeCandidates, type CandidateJudgment } from "./candidateJudgment";
 import { parseAliases } from "./codexMatcher";
+import { isRelationalTerm } from "./extraction/relationalTerms";
 import {
   loadDismissedCandidateKeys,
   saveDismissedCandidateKeys,
@@ -353,9 +354,14 @@ export function CodexCandidatesReport() {
             <ul className="max-h-48 overflow-y-auto px-2 py-1">
               {visible.map((c) => {
                 const j = judgments.get(candidateKey(c.surface));
-                const aliasName = j?.aliasOfId
-                  ? entries.find((e) => e.id === j.aliasOfId)?.name
-                  : undefined;
+                // 関係の呼び名（姉ちゃん・あなた 等）は話し手で指す人が変わるので、
+                // AI が別名を勧めても別名ボタン（handleRegisterAlias への唯一の入口）を出さない。
+                const relationalAliasSuppressed =
+                  !!j?.aliasOfId && isRelationalTerm(c.surface);
+                const aliasName =
+                  j?.aliasOfId && !relationalAliasSuppressed
+                    ? entries.find((e) => e.id === j.aliasOfId)?.name
+                    : undefined;
                 return (
                   <li
                     key={candidateKey(c.surface)}
@@ -380,6 +386,15 @@ export function CodexCandidatesReport() {
                       {j && aliasName ? (
                         <span className="block truncate text-[10px] text-amber-700 dark:text-amber-300">
                           {t("codex.candidates.aliasHint", { name: aliasName })}
+                        </span>
+                      ) : relationalAliasSuppressed ? (
+                        <span
+                          className="block truncate text-[10px] text-sky-700/70 dark:text-sky-300/70"
+                          data-testid="codex-candidates-relational-note"
+                        >
+                          {t("codex.candidates.relationalAliasNote", {
+                            surface: c.surface,
+                          })}
                         </span>
                       ) : j && j.summary ? (
                         <span className="block truncate text-[10px] text-sky-700/70 dark:text-sky-300/70">

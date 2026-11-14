@@ -231,6 +231,12 @@ export interface CodexPhaseReviewProposal {
   readonly application?: CodexReviewProposalApplication | null;
 }
 
+/** 関係の呼び名として新規の人物の提案にしなかった種（live の診断。保存しない）。 */
+export interface CodexStructureSkippedRelationalTerm {
+  readonly surface: string;
+  readonly kind: "kinship" | "second-person" | "third-person";
+}
+
 export interface CodexStructureExtractionReviewProjection {
   readonly runId: string;
   readonly projectId: string;
@@ -256,6 +262,12 @@ export interface CodexStructureExtractionReviewProjection {
   readonly catalog: CodexStructureCatalogSnapshot | null;
   /** Existing Codex Relations for late already-satisfied rematch. */
   readonly existingRelations?: readonly ExistingRelationCatalogRecord[];
+  /**
+   * 関係の呼び名（続柄・二人称・三人称）に当たり、名簿にも結ばれなかった語。新規の人物の
+   * 提案にしなかった分で、画面と診断にだけ出す。live の値で、native へは保存せず、
+   * 復元した run には無い。
+   */
+  readonly skippedRelationalTerms?: readonly CodexStructureSkippedRelationalTerm[];
 }
 export function isSafeForCodexEntityBulkApprove(
   flags: CodexEntityProposalSafetyFlags,

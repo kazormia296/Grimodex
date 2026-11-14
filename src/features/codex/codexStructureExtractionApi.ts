@@ -123,8 +123,10 @@ import {
   type CodexStructureCatalogSnapshot,
   type CodexStructureExtractionCoverage,
   type CodexStructureExtractionReviewProjection,
+  type CodexStructureSkippedRelationalTerm,
   type StartCodexStructureExtractionRequest,
 } from "./codexStructureExtractionStore";
+import { relationalTermKind } from "./extraction/relationalTerms";
 import {
   BUILTIN_CODEX_RELATION_VOCABULARY,
   buildCodexRelationSemanticKey,
@@ -1452,15 +1454,19 @@ async function resyncReviewAfterEditFailure(
       },
       { forceNative: true },
     );
-    if (
-      !reviewEditScopeMatches(
-        useCodexStructureExtractionStore.getState().projection,
-        scope,
-      )
-    ) {
+    const current = useCodexStructureExtractionStore.getState().projection;
+    if (!reviewEditScopeMatches(current, scope)) {
       return;
     }
-    useCodexStructureExtractionStore.getState().setProjection(refreshed);
+    // Native から組み直した projection には live の診断が無いので、同じ run の分を引き継ぐ。
+    const skippedRelationalTerms = current?.skippedRelationalTerms;
+    useCodexStructureExtractionStore
+      .getState()
+      .setProjection(
+        skippedRelationalTerms && skippedRelationalTerms.length > 0
+          ? { ...refreshed, skippedRelationalTerms }
+          : refreshed,
+      );
   } catch {
     // Leave local state untouched; do not resurrect a cleared/foreign projection.
   }
@@ -1508,6 +1514,7 @@ export async function startCodexStructureExtraction(
     CodexReviewEvidenceQuote[]
   >();
   const documentTextsByRef = new Map<string, string>();
+  const skippedRelationalTerms: CodexStructureSkippedRelationalTerm[] = [];
   let coverageDocumentCount = request.sceneIds.length;
   let coverageWindowCount = Math.max(1, request.sceneIds.length);
   let snapshotDigest: string | null = null;
@@ -1589,6 +1596,20 @@ export async function startCodexStructureExtraction(
           { surfaces: [seed.surface] },
           existingCatalog,
         );
+        // 関係の呼び名（姉ちゃん・あなた 等）は名簿に当たらなければ新規の人物の提案にしない。
+        // 作者が名前・別名に入れた語は上の照合で resolved／ambiguous になり、ここでは落とさない。
+        // 黙って消さず、件数と表記を run の診断に残す。
+        const relationalKind =
+          existingResolution.status === "none"
+            ? relationalTermKind(seed.surface)
+            : null;
+        if (relationalKind) {
+          skippedRelationalTerms.push({
+            surface: seed.surface,
+            kind: relationalKind,
+          });
+          continue;
+        }
         const typeResolution = resolveEntityType({
           existingResolution,
           existingCatalog,
@@ -2405,6 +2426,7 @@ export async function startCodexStructureExtraction(
     phaseProposals: finalPhaseProposals,
     catalog: catalogSnapshot,
     existingRelations,
+    ...(skippedRelationalTerms.length > 0 ? { skippedRelationalTerms } : {}),
     ...counts,
   };
 

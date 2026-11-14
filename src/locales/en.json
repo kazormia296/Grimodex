@@ -2368,6 +2368,7 @@
       "acceptAlias": "Register as an alias of \"{{name}}\"",
       "acceptNew": "Create as a new entry instead",
       "aliasHint": "alias of \"{{name}}\"?",
+      "relationalAliasNote": "\"{{surface}}\" refers to different people depending on the speaker, so add aliases from the Codex edit screen instead",
       "type": {
         "character": "Character",
         "location": "Location",
