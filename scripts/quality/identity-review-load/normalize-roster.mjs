@@ -77,7 +77,7 @@ export function normalizeRoster(roster, scenes) {
       } else counts.nameUnresolvedHonorific++;
     }
     // 2b. 名前が本文に出ず、敬称の形から敬称を外した表記が本文に出るなら、それを名前にする（元の名前は捨てる）。
-    if (typeof e.name === "string" && !inText(e.name)) {
+    if (typeof e.name === "string" && !inText(e.name) && e.review?.verdict !== "名前を直す") {
       const fromHonorific = e.honorificSurfaces.map((h) => stripHonorific(h)).find((s) => s && inText(s));
       if (fromHonorific) {
         e.name = fromHonorific;

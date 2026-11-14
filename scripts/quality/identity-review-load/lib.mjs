@@ -1204,7 +1204,8 @@ export function checkSurfacesAgainstScenes(roster, scenes) {
     if (!entity || typeof entity !== "object") continue;
     const entityId = String(entity.id);
     const fields = {
-      name: strings([entity.name]),
+      // 作者が確認の表で直した名前（review.verdict が「名前を直す」）は、本文にそのまま出なくてよい（作者の Codex の名前）。
+      name: entity?.review?.verdict === "名前を直す" ? [] : strings([entity.name]),
       alias: strings(
         Array.isArray(entity.aliases)
           ? entity.aliases.map((alias) => alias?.surface)
