@@ -54,6 +54,19 @@ master Full after its merge and has the `ci.yml` of its `master` push watched
 instead, and neither applies to a release PR. GDX-TRACE-001 is the source of
 truth for the conditions.
 
+### Docs-markdown-only impact selection
+
+Separately from the docs-only PR exception above (a merge-condition rule), the
+impact selector narrows the Light suites when every changed path matches
+`^docs/.+\.md$`, work records included: every cargo command and every command
+that cannot read `docs/` is dropped, and only the Node tests that read documents
+remain. A suite left with no command is `skipped`, not failed. This also applies
+to the Light run of Gate B2 (`scripts/quality/certify-gate-b2.mjs`), which reads
+only the exit code, so it does no harm there. The `ci.yml` of a pull request
+measures the merge ref and the Quick measures the candidate head, so master
+changes that landed after the Quick are first checked by impact on the `master`
+push.
+
 ### Split hosted Full
 
 Hosted canonical Full runs as independent parts, each on its own fresh
@@ -154,7 +167,8 @@ skips heavy lanes when every changed path is neutral for them. The rules are
 `scripts/ci-change-scope.json`; `scripts/ci-change-scope.mjs` decides from the
 `base...head` diff and needs no dependency installation. The lanes are journeys
 (the two journey roots; the shards, the aggregate and runtime performance skip
-through `needs`), Rust (shared crates and the three-OS C-query worker), native,
+through `needs`), Rust (shared crates and the C-query worker, which a pull request
+runs on Linux only: macOS and Windows run in the `master` push), native,
 migration, windows, browser (Browser, WebGL, Storybook), LFM and security.
 Quality, Frontend and Electron always run. Selection is deny by default: an
 unclassified path, a forced-all path (workflows, lockfiles, manifests,
