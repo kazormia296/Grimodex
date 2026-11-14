@@ -8,12 +8,13 @@ import { promisify } from "node:util";
 import yaml from "js-yaml";
 import { checkExistingOsSuitability } from "./existing-os-suitability.mjs";
 import { runLocalCiCommand } from "./local-ci-process-supervisor.mjs";
+import { evaluateIf } from "./ci-change-scope.test-support.mjs";
 
 const ci = yaml.load(await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
 const owner = ci.jobs["existing-os-suitability"];
-const evaluate = (expression, inputs) => new Function("inputs", "github", "startsWith", `return (${expression
-  .replace(/^\$\{\{\s*|\s*\}\}$/gu, "")
-  .replace(/(inputs\.\w+|github\.\w+)\s*([!=]=)\s*('[^']*')/gu, "String($1 ?? '').toLowerCase() $2 $3")});`)(inputs, { event_name: "workflow_dispatch" }, (value, prefix) => String(value ?? "").toLowerCase().startsWith(prefix));
+// `changes` outputs stay empty here (a skipped `changes` job), so every
+// change-scope-gated job is admitted exactly as it was before the gate.
+const evaluate = (expression, inputs) => evaluateIf(expression, { inputs, event: "workflow_dispatch" });
 const defaults = Object.fromEntries(Object.entries(ci.on.workflow_dispatch.inputs).map(([key, input]) => [key, input.default ?? ""]));
 const admitted = (inputs) => Object.entries(ci.jobs).filter(([, job]) => evaluate(job.if, inputs)).map(([key]) => key);
 
@@ -48,8 +49,9 @@ test("existing OS suitability is the sole fail-closed owner before setup for mal
     await assert.rejects(validate({ ...defaults, canonical_profile: value }));
     await assert.rejects(validate({ ...defaults, canonical_profile: value, candidate_head: "b".repeat(40), independent_gates: true }));
   }
-  assert.equal(admitted(defaults).length, 18);
-  assert.equal(admitted({ product_journey_mode: "all" }).length, 18);
+  // 18 product jobs plus the pull-request `changes` job.
+  assert.equal(admitted(defaults).length, 19);
+  assert.equal(admitted({ product_journey_mode: "all" }).length, 19);
   assert.deepEqual(admitted({ ...defaults, canonical_profile: "contracts" }), ["canonical"]);
 });
 

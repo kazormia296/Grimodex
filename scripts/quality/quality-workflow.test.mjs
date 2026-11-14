@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -84,6 +85,39 @@ async function assertLocalMarkdownLink(sourcePath, targetPath, anchor) {
     );
   }
   return source;
+}
+
+// 2026-11-14 (user decision): the docs-only PR exception of GDX-TRACE-001 excludes
+// these eight operational-rule documents. Documents that code or a test outside
+// docs/ names by path are excluded by a mechanical search, not by this list. The
+// policy, the ship-branch skill and its shell check must all list exactly this
+// set; the comparison is of sets, so a ninth file or a missing one fails.
+const DOCS_ONLY_EXCLUDED = [
+  "docs/local-ci-runner.md",
+  "docs/DEVELOPMENT_SETUP.md",
+  "docs/communication-style-guide.md",
+  "docs/AI経路検証.md",
+  "docs/plans/nir1-continuation-2026-10.md",
+  "docs/plans/nir1-l6-l9-execution-plan.md",
+  "docs/plans/nir1-post-b-execution-plan.md",
+  "docs/plans/narrative-ir-nir1-implementation-plan.md",
+];
+
+// The `docs/...md` file names written in backticks inside one slice of a
+// document, sorted, so that two lists can be compared as sets.
+function backtickedDocsPaths(slice) {
+  return [...slice.matchAll(/`(docs\/[^`\s]+\.md)`/g)]
+    .map((match) => match[1])
+    .sort();
+}
+
+// The text between two markers; both markers must exist.
+function between(text, startMarker, endMarker) {
+  const start = text.indexOf(startMarker);
+  assert.ok(start >= 0, `${startMarker} must exist`);
+  const end = text.indexOf(endMarker, start + startMarker.length);
+  assert.ok(end >= 0, `${endMarker} must follow ${startMarker}`);
+  return text.slice(start + startMarker.length, end);
 }
 
 function commandBindings(section, command, label) {
@@ -1271,6 +1305,39 @@ test("validation scope preserves instruction gates and conditional CI without ro
     releaseMerge,
     /^Release PR merge or release tag with CI allowed: Full and verify under GDX-TRACE-001, including applicable preflight/i,
   );
+  // 2026-11-14: the two exceptions have their own bullet; the ordinary and the
+  // release bullets above keep their wording and never mention the exceptions.
+  const exceptionMerge = validationBullets.find((bullet) =>
+    bullet.startsWith("Merge-in-only head or docs-only PR merge"),
+  );
+  assert.ok(
+    exceptionMerge,
+    "the validation scope must list the merge-in-only head and docs-only PR merges",
+  );
+  assert.match(
+    exceptionMerge,
+    /with CI allowed: The ordinary Quick conditions, plus a local `verify:quality` on Node 22 and the exception's own checks under GDX-TRACE-001/i,
+  );
+  assert.match(exceptionMerge, /`ci\.yml` .*need not be awaited/i);
+  assert.match(
+    exceptionMerge,
+    /a docs-only PR dispatches no master Full and has the `ci\.yml` of its `master` push watched/i,
+  );
+  assert.doesNotMatch(
+    exceptionMerge,
+    /Full and verify|release tag/i,
+    "the exceptions never require Full and verify",
+  );
+  assert.doesNotMatch(
+    ordinaryMerge,
+    /docs-only|merge-in-only/i,
+    "the ordinary PR merge bullet is unchanged",
+  );
+  assert.doesNotMatch(
+    releaseMerge,
+    /docs-only|merge-in-only/i,
+    "a release PR merge never uses the two exceptions",
+  );
   assert.ok(
     !validationBullets.some((bullet) =>
       bullet.startsWith("Merge or release tag"),
@@ -1470,6 +1537,196 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     trace,
     /The ordinary `ci\.yml` PR checks must have succeeded on the same head with none pending or failing, and the review gate must hold \(no requested changes, no unresolved thread, no P2\+ finding\)/i,
   );
+  // 2026-11-14 (user decision): two exceptions relax only the same-head `ci.yml`
+  // requirement of the ordinary path. The sentence above stays as it is; the
+  // exceptions are stated after the merge rules of the path.
+  assert.match(
+    trace,
+    /The same-head `ci\.yml` requirement has two exceptions, stated after the merge rules of this path/i,
+  );
+  assert.match(
+    trace,
+    /Two exceptions relax the same-head `ci\.yml` requirement for an ordinary PR: the merge-in-only head exception and the docs-only PR exception\. Neither applies to a release PR, which keeps the Full-based evidence below/i,
+  );
+  assert.match(
+    trace,
+    /Each is an explicit exception to the rule above that older receipts are invalid and are not reused, and to the reuse rule in the agent validation scope/i,
+  );
+  // The conditions that neither exception relaxes, one by one (the
+  // parenthetical explanations are not bound).
+  for (const unrelaxed of [
+    /Neither relaxes the complete Quick of the rebased candidate/i,
+    /the review gate, the required checks of the repository, the master-red rule below, or the `--match-head-commit` merge/i,
+    /the `candidate_base` ancestry checks above and the immediate verify/i,
+  ]) {
+    assert.match(trace, unrelaxed);
+  }
+  assert.match(
+    trace,
+    /If any condition does not hold, or the merge-in needed any change to the candidate, the exception is unavailable and the ordinary rule above applies: `ci\.yml` is taken again on the candidate head/i,
+  );
+  // How the exceptions read the `ci.yml` of a head. Both exceptions use the
+  // same state words; the policy and the ship-branch skill must agree.
+  assert.match(
+    trace,
+    /How the two exceptions read the `ci\.yml` of a head\. The runs are selected by the commit SHA, for example with `gh run list --workflow ci\.yml --event pull_request --commit "\$SHA" --json databaseId,status,conclusion,attempt`\. A run that is not completed is pending/i,
+  );
+  assert.match(
+    trace,
+    /Success: there is at least one run and every run is completed with the conclusion `success`\. No run at all is not a success/i,
+  );
+  assert.match(
+    trace,
+    /Candidate head, merge-in-only head exception: the PR is not merged when a run has completed with a conclusion other than `success`\. When the runs are only pending, the PR may be merged without waiting/i,
+  );
+  assert.match(
+    trace,
+    /Candidate head, docs-only PR exception: a run that has completed with the conclusion `failure` allows the merge only when it is confirmed that the failure has nothing to do with the docs change\. A run that has completed with any other conclusion that is not `success` \(cancelled, timed out, startup failure, action required, and the like\) means that `ci\.yml` is taken again/i,
+  );
+  assert.match(
+    trace,
+    /A failure has nothing to do with the docs change when, from the logs, at least one of these holds: the same failure is in the `ci\.yml` of the latest `master` push, or a re-run passes\. A `git grep` that finds no reader of the changed path is not such evidence/i,
+  );
+  // The merge-in-only head exception.
+  assert.match(
+    trace,
+    /The merge-in-only head exception\. The candidate head `H2` \(`candidate_head`\) is a head `H1` of the PR plus `origin\/master` merged in by merge commits and nothing else\. `H1` is the last head before the merge-in that contains the PR's changes, and its `ci\.yml` is a success as defined above/i,
+  );
+  const mergeInRule = between(
+    trace,
+    "The merge-in-only head exception.",
+    "The checks of the first three bullets fail closed",
+  );
+  assert.match(
+    mergeInRule,
+    /`H1` is an ancestor of `H2` \(`git merge-base --is-ancestor "\$H1" "\$H2"`\) and `git rev-list --no-merges "\$H1\.\.\$H2" \^origin\/master` is empty/i,
+  );
+  assert.match(
+    mergeInRule,
+    /A rebase with a force push never qualifies, because `H1` is then no longer an ancestor, and neither does a PR commit made before or after the merge-in, or a merge of a branch other than `origin\/master`/i,
+  );
+  assert.match(
+    mergeInRule,
+    /for each commit `M` listed by `git rev-list --merges "\$H1\.\.\$H2" \^origin\/master`, `git merge-tree --write-tree "\$M\^1" "\$M\^2"` exits 0 and the tree it prints equals `git rev-parse "\$M\^\{tree\}"`/i,
+  );
+  assert.match(
+    mergeInRule,
+    /with `base0=\$\(git merge-base "\$H1" origin\/master\)`, the names listed by `git -c core\.quotePath=false diff --name-only --no-renames "\$base0" "\$H1"` and by `git -c core\.quotePath=false diff --name-only --no-renames "\$base0" origin\/master` have nothing in common/i,
+  );
+  assert.match(mergeInRule, /sorted and compared under `LC_ALL=C`/i);
+  assert.match(
+    mergeInRule,
+    /a local `pnpm -s verify:quality` on Node 22 succeeds on `H2`/i,
+  );
+  assert.match(
+    mergeInRule,
+    /The `ci\.yml` concurrency group of a PR cancels its running `ci\.yml` when a newer head is pushed, and a cancelled run is not a success, so the merge-in is pushed only after the `ci\.yml` of `H1` has completed successfully/i,
+  );
+  assert.equal(
+    mergeInRule.split(/ - /).length - 1,
+    5,
+    "the merge-in-only conditions are five bullets",
+  );
+  assert.match(
+    trace,
+    /The checks of the first three bullets fail closed: a command that fails \(including the `git fetch origin master` that precedes the checks\), an empty `base0`, or an empty output is a failed check and never a pass, and the check holds only when it prints its positive result \(`merge-in-only: ok` in the ship-branch skill\)/i,
+  );
+  // The docs-only PR exception.
+  const docsOnlyRule = between(
+    trace,
+    "The docs-only PR exception.",
+    "A PR that changes the `package.json` `version` is a release PR",
+  );
+  assert.ok(
+    docsOnlyRule.includes("`^docs/.+\\.md$`"),
+    "the docs-only PR exception names its path pattern",
+  );
+  assert.match(
+    docsOnlyRule,
+    /A docs-only PR changes only Markdown under `docs\/`, and neither an operational-rule document nor a document that code or a test outside `docs\/` names by path/i,
+  );
+  assert.match(
+    docsOnlyRule,
+    /A PR is docs-only when the list printed by `git -c core\.quotePath=false diff --name-only --no-renames origin\/master\.\.\.HEAD` is not empty and every path in it/i,
+  );
+  assert.match(
+    docsOnlyRule,
+    /and neither the path nor any parent directory of it that has at least three components \(`docs\/a\/b` for `docs\/a\/b\/c\.md`; a two-component directory such as `docs\/plans` is not searched\) appears as a string in any file outside `docs\/`/i,
+  );
+  assert.match(
+    docsOnlyRule,
+    /`git grep -qF -e "\$path" HEAD origin\/master -- ':!docs\/'`/i,
+  );
+  assert.ok(
+    docsOnlyRule.includes("`docs/user-guide/ja/Install-and-update.md`"),
+    "the policy names the example that the eight-file list alone missed",
+  );
+  assert.match(
+    docsOnlyRule,
+    /A path that code builds from parts, or a two-component directory that code reads in bulk, never appears as a string and this search does not catch it/i,
+  );
+  assert.match(
+    docsOnlyRule,
+    /a failing command \(including the `git fetch origin master` that precedes the search\) or an empty output is not a docs-only result, and the check holds only when it prints its positive result \(`docs-only: ok` in the ship-branch skill\)/i,
+  );
+  const excludedInTrace = between(
+    docsOnlyRule,
+    "which are these eight files:",
+    "; and neither the path nor any parent directory",
+  );
+  assert.deepEqual(
+    backtickedDocsPaths(excludedInTrace),
+    [...DOCS_ONLY_EXCLUDED].sort(),
+    "the policy must list exactly the eight operational-rule documents",
+  );
+  for (const excluded of DOCS_ONLY_EXCLUDED) {
+    await read(excluded);
+  }
+  assert.match(
+    trace,
+    /A PR that changes the `package\.json` `version` is a release PR and is never docs-only/i,
+  );
+  assert.match(
+    trace,
+    /A docs-only PR merges on the complete Quick of its rebased candidate, a local `pnpm -s verify:quality` on Node 22 that succeeds on the candidate head, and the review gate; the `ci\.yml` of the candidate head is handled as stated above \(docs-only PR exception\)/i,
+  );
+  assert.match(
+    trace,
+    /This is not the release path's narrow editorial docs\/ADR-only upstream-base exception, which has its own conditions and keeps the Full-based evidence/i,
+  );
+  // After a docs-only merge nobody dispatches a Full, so the `master` push's
+  // `ci.yml` is the only post-merge evidence: its run id is reported, the
+  // watching is handed over, and a failure is a red master.
+  assert.match(
+    trace,
+    /After the merge of a docs-only PR \(defined above\) no Full is dispatched, because the `master` push runs `ci\.yml`; the dispatch rule above is unchanged for every other ordinary PR/i,
+  );
+  assert.match(
+    trace,
+    /the party that merged a docs-only PR finds the `ci\.yml` run that the `master` push of the merge commit started \(for example `gh run list --workflow ci\.yml --event push --branch master --commit "\$MERGE_SHA" --json databaseId,status,conclusion,attempt`\) and writes its run id in the completion report\. It watches that run to completion, or, when it cannot wait, hands the watching to its caller/i,
+  );
+  assert.match(
+    trace,
+    /a run that does not succeed \(it failed, was cancelled, or timed out\) is a red master, handled below/i,
+  );
+  assert.match(
+    trace,
+    /The `ci\.yml` run of the `master` push of a docs-only merge that does not succeed is also a red master and is handled by the same rules/i,
+  );
+  // The release path keeps its Full-based evidence untouched by the exceptions.
+  const releaseParagraph = trace.slice(
+    trace.indexOf("A release PR's initial merge Full first confirms"),
+    trace.indexOf("Receipts bind the requested and resolved base and head"),
+  );
+  assert.ok(
+    releaseParagraph.includes("A release tag requires a new complete Full run"),
+    "the release path paragraph must be found",
+  );
+  assert.doesNotMatch(
+    releaseParagraph,
+    /merge-in-only|docs-only PR|same-head/i,
+    "the release path paragraph must not use the two exceptions",
+  );
   assert.match(
     trace,
     /Merge with `gh pr merge --squash --match-head-commit` and the candidate head\. The current base is not required to equal a recorded base immediately before merge/i,
@@ -1655,6 +1912,23 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     normalizeSection(runbook),
     /An ordinary PR merges on its rebased clean candidate's complete Quick plus the same-head `ci\.yml` checks, so canonical Full is not an ordinary-PR merge condition\. Full runs on `master` after such a merge, and it remains the merge evidence for a release PR and the release tag/,
   );
+  const runbookExceptions = normalizeSection(runbook);
+  assert.match(
+    runbookExceptions,
+    /Two narrow exceptions let an ordinary PR merge without waiting for the `ci\.yml` of its candidate head/,
+  );
+  assert.match(
+    runbookExceptions,
+    /a head that only merges `origin\/master` into a head whose `ci\.yml` already succeeded/,
+  );
+  assert.match(
+    runbookExceptions,
+    /and a docs-only PR \(it changes no operational-rule document and no document that code or a test outside `docs\/` names by path\)/,
+  );
+  assert.match(
+    runbookExceptions,
+    /Both still need the complete Quick and a local Node 22 `pnpm -s verify:quality`, a docs-only PR dispatches no master Full after its merge and has the `ci\.yml` of its `master` push watched instead, and neither applies to a release PR\. GDX-TRACE-001 is the source of truth for the conditions/,
+  );
   await assertLocalMarkdownLink(
     "docs/local-ci-runner.md",
     "policies/quality/iron-laws.md",
@@ -1668,6 +1942,19 @@ test("agent operation contracts keep candidate evidence and bounded identity che
   assert.match(
     normalizeSection(setupGuide),
     /release PRのmerge前と、release tag前.*には、cleanな現在HEADでFullを最初のstageから実行します/,
+  );
+  const setupExceptions = normalizeSection(setupGuide);
+  assert.match(
+    setupExceptions,
+    /例外として、`ci\.yml`が成功したheadに`origin\/master`をmergeで取り込んだだけのhead/,
+  );
+  assert.match(
+    setupExceptions,
+    /docs-onlyのPR（運用の規則の文書と、docsの外のコードや試験がpathを名指しで読む文書を ?含まないもの）は、候補headの`ci\.yml`の完了を待たずにmergeできます/,
+  );
+  assert.match(
+    setupExceptions,
+    /どちらもcompleteなQuickに加えて、Node 22のローカルの`pnpm -s verify:quality`の成功が必要で、 ?docs-onlyのPRではmerge後のmasterのFullをdispatchせず、そのmerge commitのmasterのpushの`ci\.yml`を見届けます。 ?release PRには適用しません。条件の詳細は同じ正本に従います/,
   );
   assert.doesNotMatch(
     setupGuide,
@@ -1813,6 +2100,208 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     shipFlat,
     /通常のPRのmerge証跡は、上記のcompleteなQuick receipt（`candidate_base`が`candidate_head`と`origin\/master`の両方の祖先であるもの。確認は§6）と、同じheadの通常PR checks（`ci\.yml`）の成功である。 ?その祖先条件を満たさないQuick（PR作成だけがゴールのときに祖先確認なしで取ったQuickなど）は、候補が変わっていなくてもmerge証跡にせず、 ?branchを同期して§2\.3から取り直す。 ?canonical Fullは通常のPRの ?merge条件ではなく、通常のPRのためにFullをdispatchしない/,
   );
+  // 2026-11-14: the two exceptions to the same-head ci.yml requirement. The
+  // sentences above stay as they are; §2.10 is a new item (the numbering of the
+  // other items is bound by the references to §2.3, §2.5 and §2.8), and it is the
+  // only place that says how the conclusion of the candidate head's ci.yml is
+  // read. The opening sentence only points to §2.10.
+  assert.match(
+    shipFlat,
+    /マージまでがゴールなら、通常のPRでは merge 後の master の Full の dispatch（§8）まで含む。base branch へ直接 push しない。失敗・pending・競合・未解決レビュー・HEAD 不一致がある状態ではマージしない。通常のPRの2つの例外（master の取込みだけの head、docs-only PR）は §2\.10 に従う/,
+  );
+  assert.doesNotMatch(
+    ship.split("\n").find((line) => line.startsWith("現在の作業ブランチを")),
+    /failed|cancelled|timed out|pending のまま/,
+    "the opening sentence must not repeat the conclusion rules of §2.10",
+  );
+  assert.match(
+    shipFlat,
+    /例外として、master の取込みだけの head（§2\.10 の例外1）と docs-only PR（§2\.10 の例外2）は、§2\.10 の条件で候補 head の `ci\.yml` の完了を待たずに merge できる。どちらも release PR には使わない/,
+  );
+  assert.match(
+    shipFlat,
+    /release PR でない通常のPRが §2\.10 の例外1・例外2 に当たるかは、§2\.10 の判定で決める/,
+  );
+  assert.match(
+    shipFlat,
+    /同じheadの`ci\.yml`の成功には、§2\.10の2つの例外がある/,
+  );
+  const ship210 = between(
+    shipFlat,
+    "10. 通常のPRには、同じheadの`ci.yml`の成功を求めない例外が2つある",
+    "## 3. Branch を push する",
+  );
+  assert.match(
+    ship210,
+    /規則の正本は ?\[GDX-TRACE-001\]\(\.\.\/\.\.\/\.\.\/policies\/quality\/iron-laws\.md#GDX-TRACE-001\)。どちらもrelease PRには使わない/,
+  );
+  assert.match(
+    ship210,
+    /判定のどれかが外れた場合、または取込みの結果に候補の変更が要った場合は例外を使わず、§2\.5のとおり候補headで`ci\.yml`の成功を取り直す/,
+  );
+  assert.match(
+    ship210,
+    /この項が、2つの例外での`ci\.yml`の結論の扱いの唯一の置き場である（冒頭、§5、§6、停止条件、完了報告はこの項を参照する）/,
+  );
+  // How the ci.yml runs of a head are read, in the same words as the policy.
+  assert.match(
+    ship210,
+    /`ci\.yml`のrunはSHAで絞って読む。`gh run list --workflow ci\.yml --event pull_request --commit "\$sha" --json databaseId,status,conclusion,attempt`の ?各runについて、`status`がcompletedでなければpending、completedなら`conclusion`で見る/,
+  );
+  assert.ok(
+    ship210.includes(
+      `--jq 'length > 0 and all(.[]; .status == "completed" and .conclusion == "success")'`,
+    ),
+    "the success of a head is one jq expression over the runs of its SHA",
+  );
+  assert.match(
+    ship210,
+    /成功: 1件以上あり、全部がcompletedかつ`conclusion`が`success`/,
+  );
+  assert.match(
+    ship210,
+    /例外1の候補head: completedで`conclusion`が`success`でないrunが1件でもあればmergeしない。pendingだけなら待たずにmergeできる/,
+  );
+  assert.match(
+    ship210,
+    /例外2の候補head: completedで`conclusion`が`failure`のrunは、docsの変更と関係ないと確かめた場合だけmergeできる。`failure`以外で`success`でない結論 ?（`cancelled`、`timed_out`、`startup_failure`、`action_required`など）は`ci\.yml`を取り直し、新しいattemptを同じ規則で扱う/,
+  );
+  assert.match(
+    ship210,
+    /docsの変更と関係ないことの材料は、ログを読んだうえで次のどれかが成り立つこと: 同じ失敗がmasterの最新のpushの`ci\.yml`にもある、 ?再実行で通る。変更したpathを読む所が`git grep`で見つからないことは材料にならない/,
+  );
+  // The exception 1 text and its shell check.
+  assert.match(
+    ship210,
+    /例外1（masterの取込みだけのhead）: 取込みの前の、PRの変更を含む最後のhead`ci_head`で、通常の`ci\.yml`（pull_request）が上の成功である。 ?その後の`candidate_head`は、`ci_head`に`origin\/master`をmergeで取り込んだだけである（rebaseとforce pushでは使えない）/,
+  );
+  assert.match(
+    ship210,
+    /`ci\.yml`のconcurrency（`ci-pr-<番号>`、cancel-in-progress）は、新しいheadをpushすると走っているrunを取り消し、取り消されたrunは成功の根拠にならない。 ?取込みをpushする前に/,
+  );
+  assert.match(
+    ship210,
+    /完了を待ってから取り込む。判定は次のとおりで、\(a\)〜\(c\)のどれかが不成立ならこの例外は使えない/,
+  );
+  const shipMergeInBlock = ship
+    .split("```")
+    .find((block) => block.includes("# (a) 取込みだけである"));
+  assert.ok(shipMergeInBlock, "the merge-in-only shell check must be written");
+  for (const command of [
+    /set -o pipefail/,
+    /export LC_ALL=C/,
+    /git fetch origin master \|\| no "fetchが失敗"/,
+    /candidate_head="\$\(git rev-parse 'HEAD\^\{commit\}'\)" \|\| no/,
+    /git merge-base --is-ancestor "\$ci_head" "\$candidate_head"/,
+    /git rev-list --no-merges "\$ci_head\.\.\$candidate_head" \^origin\/master/,
+    /git rev-list --merges "\$ci_head\.\.\$candidate_head" \^origin\/master/,
+    /tree="\$\(git merge-tree --write-tree "\$m\^1" "\$m\^2"\)" && \[ "\$tree" = "\$\(git rev-parse "\$m\^\{tree\}"\)" \]/,
+    /base0="\$\(git merge-base "\$ci_head" origin\/master\)" && \[ -n "\$base0" \]/,
+    /git -c core\.quotePath=false diff --name-only --no-renames "\$base0" "\$ci_head" \| LC_ALL=C sort/,
+    /git -c core\.quotePath=false diff --name-only --no-renames "\$base0" origin\/master \| LC_ALL=C sort/,
+    /LC_ALL=C comm -12/,
+    /echo "merge-in-only: ok"/,
+  ]) {
+    assert.match(shipMergeInBlock, command);
+  }
+  assert.doesNotMatch(
+    shipMergeInBlock,
+    /<\(git |for m in \$\(git /,
+    "a command inside <( ) or a for-in $( ) never reports its exit, so its failure would pass",
+  );
+  assert.match(
+    ship210,
+    /出力がちょうど`merge-in-only: ok`の1行のときだけ成立で、空の出力、ほかの出力、commandの失敗は全て不成立である（fail-closed）/,
+  );
+  assert.match(
+    ship210,
+    /`git diff-tree --cc`や`git show --cc`は、片方の親を採る解決を出さないので手編集の判定に使わない/,
+  );
+  assert.match(
+    ship210,
+    /`candidate_head`では、completeなQuick receiptに加えて、ローカルのNode 22で`pnpm -s verify:quality`が成功している必要がある/,
+  );
+  assert.match(
+    ship210,
+    /`candidate_head`の`ci\.yml`は、上の「例外1の候補head」で扱う/,
+  );
+  // The exception 2 text and its shell check.
+  assert.match(
+    ship210,
+    /例外2（docs-only PR）: docs配下のMarkdownだけを変え、運用の規則の文書と、docsの外のコードや試験がpathを名指しで読む文書は変えないPRである。 ?差分は/,
+  );
+  assert.match(
+    ship210,
+    /差分は`git -c core\.quotePath=false diff --name-only --no-renames origin\/master\.\.\.HEAD`で見る。空ならdocs-onlyではない/,
+  );
+  assert.match(ship210, /1\. `\^docs\/\.\+\\\.md\$`に一致する/);
+  assert.match(
+    ship210,
+    /3\. docsの外のファイルに、そのpathと、そのpathの上位directoryのうち3階層以上のもの（`docs\/a\/b\/c\.md`なら`docs\/a\/b`。`docs\/plans`のような2階層は調べない）が ?文字列として現れない（リポジトリのrootから、HEADと`origin\/master`の両方のtreeを`git grep -qF`で調べる）/,
+  );
+  assert.ok(
+    ship210.includes("`docs/user-guide/ja/Install-and-update.md`"),
+    "the skill names the example that the eight-file list alone missed",
+  );
+  assert.match(
+    ship210,
+    /この確認では拾えない。その取りこぼしはmerge後のmasterのpushの`ci\.yml`で見つかる（§8の冒頭）/,
+  );
+  assert.match(
+    ship210,
+    /出力がちょうど`docs-only: ok`の1行のときだけ成立で、空の出力、ほかの出力、commandの失敗は全て不成立である（fail-closed）/,
+  );
+  assert.match(
+    ship210,
+    /release PRの判定（§1\.9。`package\.json`の`version`）に当たるPRは、docs-onlyにならない。名前が似ているが、release pathの ?editorial docs\/ADR-only exception（§2\.8）とは別で、混ぜない/,
+  );
+  assert.match(
+    ship210,
+    /条件は、completeなQuick receipt、ローカルのNode 22での`pnpm -s verify:quality`の成功、review gateである。 ?`candidate_head`の`ci\.yml`は、上の「例外2の候補head」で扱う/,
+  );
+  assert.match(
+    ship210,
+    /mergeの後にmasterのFullをdispatchしない（§8の冒頭）。かわりに、そのmerge commitのmasterのpushの`ci\.yml`のrun idを完了報告に書いて見届けを引き継ぎ、 ?success以外で終われば§8\.5の赤として扱う/,
+  );
+  // The excluded set is the same in the skill's prose, in its shell check and in
+  // the policy; the three are compared as sets.
+  const shipDocsOnlyBlock = ship
+    .split("```")
+    .find((block) => block.includes('echo "docs-only: ok"'));
+  assert.ok(shipDocsOnlyBlock, "the docs-only shell check must be written");
+  const excludedInShell = between(shipDocsOnlyBlock, "excluded=(", ")");
+  assert.deepEqual(
+    excludedInShell
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .sort(),
+    [...DOCS_ONLY_EXCLUDED].sort(),
+    "the shell check must exclude exactly the eight files of the policy",
+  );
+  assert.deepEqual(
+    backtickedDocsPaths(
+      between(
+        ship210,
+        "運用の規則の文書である次の8ファイルに当たらない:",
+        "3. docsの外のファイルに",
+      ),
+    ),
+    [...DOCS_ONLY_EXCLUDED].sort(),
+    "the skill's prose must list exactly the eight files of the policy",
+  );
+  for (const command of [
+    /set -o pipefail/,
+    /export LC_ALL=C/,
+    /\[\[ "\$p" =~ \^docs\/\.\+\\\.md\$ \]\]/,
+    /git -c core\.quotePath=false diff --name-only --no-renames origin\/master\.\.\.HEAD/,
+    /git fetch origin master \|\| no "fetchが失敗"/,
+    /git -c core\.quotePath=false grep -qF -e "\$d" HEAD origin\/master -- ':!docs\/'/,
+    /d="\$\{d%\/\*\}"\n\s+\[\[ "\$d" == \*\/\*\/\* \]\] \|\| break/,
+    /echo "docs-only: ok"/,
+  ]) {
+    assert.match(shipDocsOnlyBlock, command);
+  }
   assert.match(
     shipFlat,
     /通常のPRではmerge直前にcurrent baseが`candidate_base`と一致することを要求せず、 ?`approved_merge_base`も使わない/,
@@ -2373,6 +2862,44 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     /pnpm ci:local:verify -- full|full-aggregate/,
     "the ordinary path must not require a Full receipt",
   );
+  // 2026-11-14: the exceptions replace only the `ci.yml` part of the common
+  // checks, and only on the ordinary path; neither the common part nor the
+  // release path part may mention them.
+  assert.match(
+    ordinaryChecks,
+    /例外1または例外2（§2\.10）を使う場合は、上の共通部の「同じ head の通常 PR checks（`ci\.yml`）が成功している」と「pending／failed checks がない」のうち/,
+  );
+  assert.match(
+    ordinaryChecks,
+    /`ci\.yml` に関する部分だけを、次で置き換える。required checks、master の赤の確認、requested changes と未解決 review thread の確認は置き換えない/,
+  );
+  assert.match(
+    ordinaryChecks,
+    /（required checks が設定されていて success でなければ GitHub が merge を拒否する。例外でも回避しない）/,
+  );
+  assert.match(
+    ordinaryChecks,
+    /例外1: §2\.10 の \(a\)〜\(c\) が `candidate_head` で全て成り立ち（`merge-in-only: ok`）、`ci_head` の `ci\.yml` が成功している。`candidate_head` の Quick と、 ?Node 22 のローカルの `pnpm -s verify:quality` が成功している。`candidate_head` の `ci\.yml` は §2\.10 の「例外1の候補head」で扱う/,
+  );
+  assert.match(
+    ordinaryChecks,
+    /例外2: §2\.10 の docs-only の判定が `candidate_head` で成り立つ（`docs-only: ok`）。`candidate_head` の Quick と、Node 22 のローカルの `pnpm -s verify:quality` が成功している。 ?`candidate_head` の `ci\.yml` は §2\.10 の「例外2の候補head」で扱う/,
+  );
+  assert.doesNotMatch(
+    ordinaryChecks,
+    /failed／cancelled／timed out|pending でも/,
+    "the conclusion rules of the candidate head's ci.yml live only in §2.10",
+  );
+  for (const [label, chunk] of [
+    ["common", commonPrecheck],
+    ["release", releaseChecks],
+  ]) {
+    assert.doesNotMatch(
+      chunk,
+      /例外1|例外2|§2\.10|docs-only|取込みだけ/,
+      `the ${label} part of the pre-merge snapshot must not mention the two exceptions`,
+    );
+  }
   assert.match(
     releaseChecks,
     /exactly oneの`approved_merge_base` commitを記録する/,
@@ -2411,6 +2938,18 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     /required check が設定されていない場合も、同じ head の通常 PR checks（`ci\.yml`）の成功（pending や failure がない）と、 ?手順2のcompleteなQuick receiptが有効であることを確認してから次へ進む。release PR では、これに加えて ?手順2のcompleteなhosted Full receipt（同じtupleの`full-aggregate`成功）が有効であることを確認する/,
   );
 
+  // 2026-11-14: the wait gate lets the two exceptions go on while the candidate
+  // head's ci.yml is pending, and resolves the "fail means no merge" rule.
+  assert.match(
+    shipWait,
+    /例外1・例外2（§2\.10）では、候補 head の `ci\.yml` の扱いは §2\.10 に従う（pending の `ci\.yml` は待たない。success でない結論の扱いは、例外ごとに §2\.10 が決める）。 ?required checks、手順2のQuick receipt、review の確認は同じである。 ?本節5の「マージしない」は、§2\.10 が merge を認める場合に限って、その確認で解消する/,
+  );
+  assert.doesNotMatch(
+    shipWait,
+    /failed／cancelled／timed out の場合|ログで確かめられた場合だけ/,
+    "the conclusion rules of the candidate head's ci.yml live only in §2.10",
+  );
+
   // Section 8 (new): after an ordinary merge, dispatch one hosted Full on
   // master, coalesce while one is running, and handle a red result first.
   const shipMasterFull = normalizeSection(
@@ -2430,6 +2969,24 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   assert.match(
     shipMasterFull,
     /dispatch の `candidate_base` 入力（下の `master_base`）には、直前にcompleteなFull ?（全part jobと`full-aggregate`が成功）を通した master の commit を使う.*分からなければ ?merge commit のfirst parent（`<merge-sha>\^1`）を使う/,
+  );
+  // 2026-11-14: a docs-only PR dispatches no master Full; the red handling
+  // (§8.5, §8.6) still applies to every other merge.
+  assert.match(
+    shipMasterFull,
+    /docs-only PR（§2\.10の例外2）をmergeした場合は、masterへのpushで`ci\.yml`が走るため、本節1〜4のmasterのFullをdispatchしない。 ?かわりに、そのmerge commitのmasterのpushで走った`ci\.yml`のrunを、`gh run list --workflow ci\.yml --event push --branch master --commit <merge-sha> --json databaseId,status,conclusion,attempt`で特定し、 ?run idを完了報告に書く。/,
+  );
+  assert.match(
+    shipMasterFull,
+    /見届けは、終わるまで待てる担当ならこの担当、待てない担当（短命のsubagentなど）なら呼び出し元（integratorまたは依頼したユーザー）に引き継ぐ。 ?そのrunがsuccess以外（failure、cancelled、timed outなど）で終わったら、masterの赤として本節5〜6に従う。/,
+  );
+  assert.match(
+    shipMasterFull,
+    /本節5〜6の赤の判定と対応は、docs-only PRの後も他のPRのmergeに今のまま適用する/,
+  );
+  assert.match(
+    shipMasterFull,
+    /その赤は、そのrunの再実行の成功、より新しいmasterのpushの`ci\.yml`の成功、または原因の修正かrevertが`origin\/master`に入ったときに解ける。 ?無関係なflakeの例外とその記録の要件は、本節5と同じである/,
   );
   // Review P3: queued runs have no jobs yet, so a run that cannot be proven to
   // be something else is treated as a Full; a Full on the latest master head
@@ -2558,11 +3115,19 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   const shipStops = normalizeSection(sectionFromHeading(ship, "## 停止条件"));
   assert.match(
     shipStops,
+    /local CI／CI failure: failしたstageまたはcheckと原因調査結果を報告し、修正後に本フローを再開する。ただし例外1・例外2の候補 head の `ci\.yml` は §2\.10 に従う/,
+  );
+  assert.match(
+    shipStops,
     /master の Full が未解決の赤（判定は§8\.5）: その修正またはrevertだけを先にmergeし、それ以外のPRはmergeせず停止する（§8\.6）/,
   );
   assert.match(
     normalizeSection(sectionFromHeading(ship, "## 完了報告")),
     /Quick／Full receiptの結果（通常のPRはQuickと同じheadのPR checks、release PRはFull）.*master Fullの扱い（dispatchしたrunのidとその見届け先、実行中のため未dispatchとその引き継ぎ先、判定済みの赤とその対応）/,
+  );
+  assert.match(
+    normalizeSection(sectionFromHeading(ship, "## 完了報告")),
+    /§2\.10の例外1・例外2を使った場合は、どちらを使ったか、判定の結果、ローカルの`pnpm -s verify:quality`の結果、候補 head の `ci\.yml` の状態（完了を待たずにmergeしたか）も報告する。 ?例外2では、docsの変更と関係ないと確かめた失敗があればその材料と、merge commitのmasterのpushの`ci\.yml`のrun idと見届け先（§8の冒頭）も報告する/,
   );
   assert.match(
     ship,
@@ -5658,5 +6223,791 @@ test("the acceptance ledger and the HOLD table record the proposal/7 outcome wit
   );
   for (const id of ["DR-CQL-5", "DR-CQL-6"]) {
     assert.ok(decisions.includes(`| ${id} |`), `${id} must be recorded`);
+  }
+});
+
+// 2026-11-14 (user decision): the ship-branch skill carries the shell checks of
+// the merge-in-only head exception and the docs-only PR exception of
+// GDX-TRACE-001. Run them against real throwaway repositories so that the
+// commands, not only their wording, are bound. Both checks print a positive line
+// (`merge-in-only: ok`, `docs-only: ok`) and nothing else counts as a pass, so
+// every case here compares the exact output and the reason line of a failure.
+const SHIP_GATE_LOCALE_VARIABLES = (name) =>
+  name === "LANG" || name === "LANGUAGE" || name.startsWith("LC_");
+
+function shipGateEnv(locale) {
+  const env = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: os.devNull,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "ship gate test",
+    GIT_AUTHOR_EMAIL: "ship-gate-test@example.invalid",
+    GIT_COMMITTER_NAME: "ship gate test",
+    GIT_COMMITTER_EMAIL: "ship-gate-test@example.invalid",
+  };
+  for (const name of Object.keys(env)) {
+    if (SHIP_GATE_LOCALE_VARIABLES(name)) {
+      delete env[name];
+    }
+  }
+  for (const name of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"]) {
+    delete env[name];
+  }
+  if (locale) {
+    env.LC_ALL = locale;
+  }
+  return env;
+}
+
+function shipGateGit(cwd, ...args) {
+  const result = spawnSync("git", args, {
+    cwd,
+    env: shipGateEnv(),
+    encoding: "utf8",
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, `git ${args.join(" ")}: ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+async function makeShipGateRepo(root) {
+  await mkdir(root, { recursive: true });
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  shipGateGit(root, "init", "-q", "--bare", "-b", "master", origin);
+  shipGateGit(root, "init", "-q", "-b", "master", work);
+  shipGateGit(root, "-C", work, "remote", "add", "origin", origin);
+  return {
+    work,
+    origin,
+    git: (...args) => shipGateGit(work, ...args),
+    async write(file, content) {
+      await mkdir(path.dirname(path.join(work, file)), { recursive: true });
+      await writeFile(path.join(work, file), content);
+    },
+    commit(message, ...files) {
+      if (files.length > 0) {
+        shipGateGit(work, "add", "--", ...files);
+      }
+      shipGateGit(work, "commit", "-q", "-m", message);
+      return shipGateGit(work, "rev-parse", "HEAD");
+    },
+  };
+}
+
+// Runs a shell block of the skill. The parent's locale variables are never
+// inherited; a case that needs a locale passes it explicitly.
+function runShipGateBlock(block, cwd, { replacements = [], locale } = {}) {
+  let script = block.replace(/^bash\n/, "");
+  for (const [from, to] of replacements) {
+    assert.ok(script.includes(from), `${from} must be in the shell block`);
+    script = script.replace(from, to);
+  }
+  const result = spawnSync("bash", ["-c", script], {
+    cwd,
+    env: shipGateEnv(locale),
+    encoding: "utf8",
+  });
+  assert.ifError(result.error);
+  return { stdout: result.stdout.trim(), status: result.status };
+}
+
+// The check passes only when it prints exactly its positive line and exits 0.
+function assertShipGatePass(result, okLine, label) {
+  assert.deepEqual(
+    result,
+    { stdout: okLine, status: 0 },
+    `${label}: must print only ${okLine}`,
+  );
+}
+
+// A failure prints its reason line, never the positive line, and exits non-zero.
+function assertShipGateFail(result, okLine, reason, label) {
+  assert.notEqual(result.status, 0, `${label}: must exit non-zero`);
+  assert.ok(
+    !result.stdout.split("\n").includes(okLine),
+    `${label}: must not print ${okLine}`,
+  );
+  assert.match(result.stdout, reason, `${label}: reason line`);
+}
+
+// The locale to run the order-sensitive cases in: en_US.UTF-8 when installed,
+// else C.UTF-8. C.UTF-8 sorts like C, so with it those cases cannot tell a
+// missing LC_ALL=C from a present one; they still run, and without either
+// locale the cases are skipped.
+function shipGateNonCLocale() {
+  const listed = spawnSync("locale", ["-a"], { encoding: "utf8" });
+  if (listed.error || listed.status !== 0) {
+    return null;
+  }
+  const installed = new Set(
+    listed.stdout
+      .split("\n")
+      .map((name) => name.trim().toLowerCase().replace("utf-8", "utf8")),
+  );
+  return (
+    ["en_US.UTF-8", "C.UTF-8"].find((name) =>
+      installed.has(name.toLowerCase().replace("utf-8", "utf8")),
+    ) ?? null
+  );
+}
+
+const SHIP_GATE_MERGE_IN_OK = "merge-in-only: ok";
+const SHIP_GATE_DOCS_ONLY_OK = "docs-only: ok";
+
+async function shipGateBlocks() {
+  const ship = await read(".agents/skills/ship-branch/SKILL.md");
+  const blocks = ship.split("```");
+  const mergeInBlock = blocks.find((block) =>
+    block.includes("# (a) 取込みだけである"),
+  );
+  const docsOnlyBlock = blocks.find((block) =>
+    block.includes('echo "docs-only: ok"'),
+  );
+  assert.ok(mergeInBlock, "the merge-in-only shell check must be written");
+  assert.ok(docsOnlyBlock, "the docs-only shell check must be written");
+  return { mergeInBlock, docsOnlyBlock };
+}
+
+test(
+  "the ship-branch merge-in-only check passes only a clean merge-in and fails closed",
+  { skip: process.platform === "win32" },
+  async () => {
+    const { mergeInBlock } = await shipGateBlocks();
+    const placeholder = 'ci_head="<ci.ymlが成功したheadのSHA>"';
+    const root = await mkdtemp(path.join(os.tmpdir(), "grimodex-ship-gate-"));
+    try {
+      const lines = Array.from({ length: 10 }, (_, i) => `line ${i + 1}\n`);
+      const prLines = ["PR line 1\n", ...lines.slice(1)].join("");
+      const masterLines = [...lines.slice(0, 9), "master line 10\n"].join("");
+      // The base has a.txt/b.txt/Docs.md with ten lines each, so that the PR (line
+      // 1) and master (line 10) can change the same file without a conflict.
+      async function buildBase(name) {
+        const repo = await makeShipGateRepo(path.join(root, name));
+        for (const file of ["a.txt", "b.txt", "Docs.md", "z.txt"]) {
+          await repo.write(file, lines.join(""));
+        }
+        repo.commit("base", "a.txt", "b.txt", "Docs.md", "z.txt");
+        repo.git("push", "-q", "origin", "master");
+        repo.git("switch", "-q", "-c", "feature");
+        return repo;
+      }
+      async function prChange(repo, files, content = prLines) {
+        for (const file of files) {
+          await repo.write(file, content);
+        }
+        return repo.commit("pr change", ...files);
+      }
+      async function masterAdvance(repo, files, message = "master advances") {
+        repo.git("switch", "-q", "master");
+        for (const file of files) {
+          await repo.write(file, masterLines);
+        }
+        const sha = repo.commit(message, ...files);
+        repo.git("push", "-q", "origin", "master");
+        repo.git("switch", "-q", "feature");
+        repo.git("fetch", "-q", "origin", "master");
+        return sha;
+      }
+      const check = (repo, ciHead, options = {}) =>
+        runShipGateBlock(mergeInBlock, repo.work, {
+          replacements: [[placeholder, `ci_head="${ciHead}"`]],
+          ...options,
+        });
+      const reason = (text) => new RegExp(`^merge-in-only: no: ${text}`, "m");
+
+      // A clean merge-in of disjoint files qualifies.
+      const clean = await buildBase("clean");
+      const cleanCi = await prChange(clean, ["a.txt"]);
+      await masterAdvance(clean, ["b.txt"]);
+      clean.git("merge", "-q", "--no-ff", "--no-edit", "origin/master");
+      assertShipGatePass(
+        check(clean, cleanCi),
+        SHIP_GATE_MERGE_IN_OK,
+        "a clean merge-in",
+      );
+      // ci_head is normalized to a commit SHA: a ref name resolves to the same
+      // commit, and the candidate itself (no merge-in at all) does not qualify.
+      assertShipGatePass(
+        check(clean, `${cleanCi}^0`),
+        SHIP_GATE_MERGE_IN_OK,
+        "a ci_head given as a revision expression",
+      );
+      assertShipGateFail(
+        check(clean, clean.git("rev-parse", "HEAD").trim()),
+        SHIP_GATE_MERGE_IN_OK,
+        reason("ci_headが候補と同じ"),
+        "a ci_head equal to the candidate",
+      );
+
+      // Two merge-ins in a row, the second after master advanced again.
+      const twice = await buildBase("twice");
+      const twiceCi = await prChange(twice, ["a.txt"]);
+      await masterAdvance(twice, ["b.txt"]);
+      twice.git("merge", "-q", "--no-ff", "--no-edit", "origin/master");
+      await masterAdvance(twice, ["z.txt"], "master advances again");
+      twice.git("merge", "-q", "--no-ff", "--no-edit", "origin/master");
+      assertShipGatePass(
+        check(twice, twiceCi),
+        SHIP_GATE_MERGE_IN_OK,
+        "two clean merge-ins",
+      );
+
+      // A merge commit with a hand edit (a file added while resolving).
+      const edited = await buildBase("hand-edited");
+      const editedCi = await prChange(edited, ["a.txt"]);
+      await masterAdvance(edited, ["b.txt"]);
+      edited.git("merge", "-q", "--no-ff", "--no-commit", "origin/master");
+      await edited.write("d.txt", "added while resolving\n");
+      edited.git("add", "--", "d.txt");
+      edited.git("commit", "-q", "-m", "merge with a hand edit");
+      assertShipGateFail(
+        check(edited, editedCi),
+        SHIP_GATE_MERGE_IN_OK,
+        reason(`手編集あり: ${edited.git("rev-parse", "HEAD")}`),
+        "a hand edit",
+      );
+
+      // `-s ours` takes none of master's changes although the files are
+      // disjoint, so only the merge-tree comparison (b) can see it.
+      const ours = await buildBase("ours");
+      const oursCi = await prChange(ours, ["a.txt"]);
+      await masterAdvance(ours, ["b.txt"]);
+      ours.git(
+        "merge",
+        "-q",
+        "--no-ff",
+        "-s",
+        "ours",
+        "-m",
+        "ours",
+        "origin/master",
+      );
+      assertShipGateFail(
+        check(ours, oursCi),
+        SHIP_GATE_MERGE_IN_OK,
+        reason("手編集あり"),
+        "a merge that keeps only one side with disjoint files",
+      );
+
+      // A conflict resolved by taking one side.
+      const oneSide = await buildBase("one-side");
+      const oneSideCi = await prChange(
+        oneSide,
+        ["a.txt"],
+        "PR\n" + lines.slice(1).join(""),
+      );
+      oneSide.git("switch", "-q", "master");
+      await oneSide.write("a.txt", "master\n" + lines.slice(1).join(""));
+      oneSide.commit("master edits the same line", "a.txt");
+      oneSide.git("push", "-q", "origin", "master");
+      oneSide.git("switch", "-q", "feature");
+      oneSide.git("fetch", "-q", "origin", "master");
+      const conflicted = spawnSync(
+        "git",
+        ["merge", "--no-edit", "origin/master"],
+        {
+          cwd: oneSide.work,
+          env: shipGateEnv(),
+          encoding: "utf8",
+        },
+      );
+      assert.notEqual(conflicted.status, 0, "the merge must conflict");
+      oneSide.git("checkout", "--ours", "a.txt");
+      oneSide.git("add", "--", "a.txt");
+      oneSide.git("commit", "-q", "--no-edit");
+      assertShipGateFail(
+        check(oneSide, oneSideCi),
+        SHIP_GATE_MERGE_IN_OK,
+        reason("手編集あり"),
+        "a conflict resolved by taking one side",
+      );
+
+      // A clean merge whose files overlap the PR changes.
+      const overlap = await buildBase("overlap");
+      const overlapCi = await prChange(overlap, ["a.txt"]);
+      await masterAdvance(overlap, ["a.txt"]);
+      overlap.git("merge", "-q", "--no-ff", "--no-edit", "origin/master");
+      assertShipGateFail(
+        check(overlap, overlapCi),
+        SHIP_GATE_MERGE_IN_OK,
+        reason("変更ファイルが交わる: a\\.txt$"),
+        "overlapping files",
+      );
+
+      // A rebase with a force push: ci_head is no longer an ancestor.
+      const rebased = await buildBase("rebased");
+      const rebasedCi = await prChange(rebased, ["a.txt"]);
+      await masterAdvance(rebased, ["b.txt"]);
+      rebased.git("rebase", "-q", "origin/master");
+      assertShipGateFail(
+        check(rebased, rebasedCi),
+        SHIP_GATE_MERGE_IN_OK,
+        reason("ci_headが候補の祖先でない"),
+        "a rebase",
+      );
+
+      // A PR commit after the merge-in.
+      const after = await buildBase("pr-after");
+      const afterCi = await prChange(after, ["a.txt"]);
+      await masterAdvance(after, ["b.txt"]);
+      after.git("merge", "-q", "--no-ff", "--no-edit", "origin/master");
+      await after.write("e.txt", "e\n");
+      const afterCommit = after.commit("pr change after the merge-in", "e.txt");
+      assertShipGateFail(
+        check(after, afterCi),
+        SHIP_GATE_MERGE_IN_OK,
+        reason(`取込み以外のcommitがある: ${afterCommit}`),
+        "a PR commit after the merge-in",
+      );
+
+      // A PR commit before the merge-in, on top of ci_head.
+      const before = await buildBase("pr-before");
+      const beforeCi = await prChange(before, ["a.txt"]);
+      await before.write("e.txt", "e\n");
+      const beforeCommit = before.commit(
+        "pr change before the merge-in",
+        "e.txt",
+      );
+      await masterAdvance(before, ["b.txt"]);
+      before.git("merge", "-q", "--no-ff", "--no-edit", "origin/master");
+      assertShipGateFail(
+        check(before, beforeCi),
+        SHIP_GATE_MERGE_IN_OK,
+        reason(`取込み以外のcommitがある: ${beforeCommit}`),
+        "a PR commit before the merge-in",
+      );
+
+      // A merge of a branch other than origin/master, with a commit of its own.
+      const other = await buildBase("other-branch");
+      const otherCi = await prChange(other, ["a.txt"]);
+      other.git("switch", "-q", "-c", "side", "master");
+      await other.write("s.txt", "s\n");
+      const sideCommit = other.commit("a commit on another branch", "s.txt");
+      other.git("push", "-q", "origin", "side");
+      other.git("switch", "-q", "feature");
+      other.git("fetch", "-q", "origin", "side");
+      other.git("merge", "-q", "--no-ff", "--no-edit", "origin/side");
+      assertShipGateFail(
+        check(other, otherCi),
+        SHIP_GATE_MERGE_IN_OK,
+        reason(`取込み以外のcommitがある: ${sideCommit}`),
+        "a merge of a branch other than origin/master",
+      );
+
+      // The placeholder that nobody replaced, and an empty ci_head, fail closed.
+      assertShipGateFail(
+        runShipGateBlock(mergeInBlock, clean.work),
+        SHIP_GATE_MERGE_IN_OK,
+        reason("ci_headをcommitに解決できない"),
+        "an unreplaced ci_head placeholder",
+      );
+      assertShipGateFail(
+        check(clean, ""),
+        SHIP_GATE_MERGE_IN_OK,
+        reason("SHAが空"),
+        "an empty ci_head",
+      );
+
+      // A failing `git fetch` must not pass the check with a stale origin/master.
+      const noFetch = await buildBase("no-fetch");
+      const noFetchCi = await prChange(noFetch, ["a.txt"]);
+      await masterAdvance(noFetch, ["b.txt"]);
+      noFetch.git("merge", "-q", "--no-ff", "--no-edit", "origin/master");
+      noFetch.git(
+        "remote",
+        "set-url",
+        "origin",
+        path.join(root, "no-fetch", "missing.git"),
+      );
+      assertShipGateFail(
+        check(noFetch, noFetchCi),
+        SHIP_GATE_MERGE_IN_OK,
+        reason("fetchが失敗"),
+        "a failing git fetch",
+      );
+
+      // A shallow history in which merge-base finds nothing used to print
+      // nothing and pass. Make origin/master a shallow root of this clone.
+      const shallow = await buildBase("shallow");
+      const shallowCi = await prChange(shallow, ["a.txt"]);
+      const shallowMaster = await masterAdvance(shallow, ["b.txt"]);
+      shallow.git("merge", "-q", "--no-ff", "--no-edit", "origin/master");
+      assertShipGatePass(
+        check(shallow, shallowCi),
+        SHIP_GATE_MERGE_IN_OK,
+        "the shallow case before the history is cut",
+      );
+      await writeFile(
+        path.join(shallow.work, ".git", "shallow"),
+        `${shallowMaster}\n`,
+      );
+      assertShipGateFail(
+        check(shallow, shallowCi),
+        SHIP_GATE_MERGE_IN_OK,
+        reason("merge-baseを求められない"),
+        "a shallow history without a merge base",
+      );
+
+      // Locale: the file names below sort differently in C and in en_US, and
+      // several files overlap. With comm run in en_US the old check printed
+      // "not in sorted order" on stderr, an empty stdout, and passed.
+      const locale = shipGateNonCLocale();
+      if (locale) {
+        const sorted = await buildBase("locale");
+        const sortedCi = await prChange(sorted, ["Docs.md", "a.txt", "b.txt"]);
+        await masterAdvance(sorted, ["a.txt", "b.txt", "z.txt"]);
+        sorted.git("merge", "-q", "--no-ff", "--no-edit", "origin/master");
+        assertShipGateFail(
+          check(sorted, sortedCi, { locale }),
+          SHIP_GATE_MERGE_IN_OK,
+          reason("変更ファイルが交わる: a\\.txt b\\.txt$"),
+          `several overlapping files under ${locale}`,
+        );
+        const apart = await buildBase("locale-apart");
+        const apartCi = await prChange(apart, ["Docs.md", "a.txt", "b.txt"]);
+        await masterAdvance(apart, ["z.txt"]);
+        apart.git("merge", "-q", "--no-ff", "--no-edit", "origin/master");
+        assertShipGatePass(
+          check(apart, apartCi, { locale }),
+          SHIP_GATE_MERGE_IN_OK,
+          `disjoint files under ${locale}`,
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "the ship-branch docs-only check passes only docs no outside code names, and fails closed",
+  { skip: process.platform === "win32" },
+  async () => {
+    const { docsOnlyBlock } = await shipGateBlocks();
+    const root = await mkdtemp(path.join(os.tmpdir(), "grimodex-ship-gate-"));
+    try {
+      const referenced = "docs/user-guide/ja/Install-and-update.md";
+      const docs = await makeShipGateRepo(path.join(root, "docs-only"));
+      const baseFiles = [
+        "docs/a.md",
+        "docs/b.md",
+        "docs/local-ci-runner.md",
+        "docs/AI経路検証.md",
+        referenced,
+        "docs/user-guide/ja/Other.md",
+        "docs/plans/foo.md",
+        "docs/plans/bar.md",
+        "docs/records/set1/README.md",
+        "docs/records/set1/named.md",
+        "docs/records/set1/sub/deep.md",
+        "docs/records/set2/x.md",
+        "README.md",
+      ];
+      for (const file of baseFiles) {
+        await docs.write(file, "base\n");
+      }
+      // docs/ may name docs/a.md: that is not a reference from outside docs/.
+      await docs.write("docs/index.md", "see docs/a.md and docs/b.md\n");
+      // The release workflow test names the user guide, as in the repository.
+      await docs.write(
+        "scripts/release-workflows.test.mjs",
+        `const guide = "${referenced}";\n`,
+      );
+      // A test that names one document of docs/plans, one record of a set, and
+      // another set only by its directory.
+      await docs.write(
+        "scripts/records.test.mjs",
+        'const named = ["docs/plans/foo.md", "docs/records/set1/named.md"];\n' +
+          'const bulk = "docs/records/set2";\n',
+      );
+      docs.commit(
+        "base",
+        ...baseFiles,
+        "docs/index.md",
+        "scripts/release-workflows.test.mjs",
+        "scripts/records.test.mjs",
+      );
+      docs.git("push", "-q", "origin", "master");
+      const classify = async (name, change, cwd = docs.work) => {
+        docs.git("switch", "-q", "-c", name, "master");
+        await change();
+        const result = runShipGateBlock(docsOnlyBlock, cwd);
+        docs.git("switch", "-q", "master");
+        return result;
+      };
+      const edit =
+        (file, content = "changed\n") =>
+        async () => {
+          await docs.write(file, content);
+          docs.commit(`change ${file}`, file);
+        };
+      const remove =
+        (...files) =>
+        async () => {
+          docs.git("rm", "-q", "--", ...files);
+          docs.commit(`remove ${files.join(" ")}`);
+        };
+      const rename = (from, to) => async () => {
+        docs.git("mv", from, to);
+        docs.commit(`rename ${from}`);
+      };
+      const reason = (text) => new RegExp(`^docs-only: no: ${text}`, "m");
+      const cases = [
+        ["md", edit("docs/a.md"), "pass"],
+        ["new-md", edit("docs/plans/new-plan.md"), "pass"],
+        ["ja-md", edit("docs/日本語.md"), "pass"],
+        [
+          "two-md",
+          async () => {
+            await docs.write("docs/a.md", "changed\n");
+            await docs.write("docs/b.md", "changed\n");
+            docs.commit("change two", "docs/a.md", "docs/b.md");
+          },
+          "pass",
+        ],
+        ["delete-md", remove("docs/a.md"), "pass"],
+        ["rename-md", rename("docs/a.md", "docs/c.md"), "pass"],
+        // The directory of a named document (three components or more) is
+        // bound as a whole: a README beside a named record, a file in a
+        // directory that is only named, and a file below a named directory.
+        [
+          "neighbour",
+          edit("docs/user-guide/ja/Other.md"),
+          reason(
+            "docsの外が名指しする、または確かめられない: docs/user-guide/ja",
+          ),
+        ],
+        [
+          "readme-beside-record",
+          edit("docs/records/set1/README.md"),
+          reason(
+            "docsの外が名指しする、または確かめられない: docs/records/set1",
+          ),
+        ],
+        [
+          "below-named-directory",
+          edit("docs/records/set1/sub/deep.md"),
+          reason(
+            "docsの外が名指しする、または確かめられない: docs/records/set1",
+          ),
+        ],
+        [
+          "directory-named-only",
+          edit("docs/records/set2/x.md"),
+          reason(
+            "docsの外が名指しする、または確かめられない: docs/records/set2",
+          ),
+        ],
+        // A two-component directory is not searched: docs/plans/foo.md is
+        // named, docs/plans/bar.md is not.
+        ["two-component-directory", edit("docs/plans/bar.md"), "pass"],
+        [
+          "named-in-two-component-directory",
+          edit("docs/plans/foo.md"),
+          reason(
+            "docsの外が名指しする、または確かめられない: docs/plans/foo\\.md",
+          ),
+        ],
+        [
+          "image",
+          edit("docs/diagram.png"),
+          reason("docs/配下の\\.md以外: docs/diagram\\.png"),
+        ],
+        [
+          "json",
+          edit("docs/data.json", "{}\n"),
+          reason("docs/配下の\\.md以外"),
+        ],
+        [
+          "outside",
+          edit("README.md"),
+          reason("docs/配下の\\.md以外: README\\.md"),
+        ],
+        [
+          "upper-md",
+          edit("docs/Upper.MD"),
+          reason("docs/配下の\\.md以外: docs/Upper\\.MD"),
+        ],
+        [
+          "excluded",
+          edit("docs/local-ci-runner.md"),
+          reason("運用の規則の文書: docs/local-ci-runner\\.md"),
+        ],
+        [
+          "excluded-ja",
+          edit("docs/AI経路検証.md"),
+          reason("運用の規則の文書: docs/AI経路検証\\.md"),
+        ],
+        [
+          "delete-excluded",
+          remove("docs/local-ci-runner.md"),
+          reason("運用の規則の文書"),
+        ],
+        [
+          "md-and-excluded",
+          async () => {
+            await docs.write("docs/a.md", "changed\n");
+            await docs.write("docs/local-ci-runner.md", "changed\n");
+            docs.commit("change both", "docs/a.md", "docs/local-ci-runner.md");
+          },
+          reason("運用の規則の文書: docs/local-ci-runner\\.md"),
+        ],
+        [
+          "rename-out",
+          rename("docs/a.md", "src-a.md"),
+          reason("docs/配下の\\.md以外: src-a\\.md"),
+        ],
+        [
+          "rename-excluded",
+          rename("docs/local-ci-runner.md", "docs/moved.md"),
+          reason("運用の規則の文書: docs/local-ci-runner\\.md"),
+        ],
+        ["empty", async () => {}, reason("差分が空")],
+        // A document that a test outside docs/ names by path. The eight-file list
+        // alone passed it, although only the ci.yml release tests read it.
+        [
+          "referenced",
+          edit(referenced),
+          reason(`docsの外が名指しする、または確かめられない: ${referenced}`),
+        ],
+        [
+          "referenced-and-plain",
+          async () => {
+            await docs.write("docs/a.md", "changed\n");
+            await docs.write(referenced, "changed\n");
+            docs.commit("change two", "docs/a.md", referenced);
+          },
+          reason(`docsの外が名指しする、または確かめられない: ${referenced}`),
+        ],
+        [
+          "delete-referenced",
+          remove(referenced),
+          reason("docsの外が名指しする"),
+        ],
+        [
+          "rename-referenced",
+          rename(referenced, "docs/user-guide/ja/Moved.md"),
+          reason(`docsの外が名指しする、または確かめられない: ${referenced}`),
+        ],
+      ];
+      for (const [name, change, expected] of cases) {
+        const result = await classify(name, change);
+        if (expected === "pass") {
+          assertShipGatePass(result, SHIP_GATE_DOCS_ONLY_OK, name);
+        } else {
+          assertShipGateFail(result, SHIP_GATE_DOCS_ONLY_OK, expected, name);
+        }
+      }
+      // Run from a subdirectory, the search still covers the whole repository.
+      assertShipGateFail(
+        await classify(
+          "from-subdirectory",
+          edit(referenced),
+          path.join(docs.work, "docs"),
+        ),
+        SHIP_GATE_DOCS_ONLY_OK,
+        reason("docsの外が名指しする"),
+        "a referenced document, from a subdirectory",
+      );
+
+      // A failing `git fetch` must not pass the check with a stale origin/master.
+      const noFetchDocs = await makeShipGateRepo(path.join(root, "no-fetch"));
+      await noFetchDocs.write("docs/a.md", "base\n");
+      noFetchDocs.commit("base", "docs/a.md");
+      noFetchDocs.git("push", "-q", "origin", "master");
+      noFetchDocs.git("switch", "-q", "-c", "feature");
+      await noFetchDocs.write("docs/a.md", "changed\n");
+      noFetchDocs.commit("change the doc", "docs/a.md");
+      assertShipGatePass(
+        runShipGateBlock(docsOnlyBlock, noFetchDocs.work),
+        SHIP_GATE_DOCS_ONLY_OK,
+        "before the remote goes away",
+      );
+      noFetchDocs.git(
+        "remote",
+        "set-url",
+        "origin",
+        path.join(root, "no-fetch", "missing.git"),
+      );
+      assertShipGateFail(
+        runShipGateBlock(docsOnlyBlock, noFetchDocs.work),
+        SHIP_GATE_DOCS_ONLY_OK,
+        reason("fetchが失敗"),
+        "a failing git fetch",
+      );
+
+      // A reference that arrives with origin/master after the PR branched: the
+      // PR branch does not have the file, origin/master does.
+      const late = await makeShipGateRepo(path.join(root, "late"));
+      await late.write("docs/late.md", "base\n");
+      await late.write("README.md", "base\n");
+      late.commit("base", "docs/late.md", "README.md");
+      late.git("push", "-q", "origin", "master");
+      late.git("switch", "-q", "-c", "feature");
+      await late.write("docs/late.md", "changed\n");
+      late.commit("change the doc", "docs/late.md");
+      assertShipGatePass(
+        runShipGateBlock(docsOnlyBlock, late.work),
+        SHIP_GATE_DOCS_ONLY_OK,
+        "before master names the document",
+      );
+      late.git("switch", "-q", "master");
+      await late.write(
+        "scripts/late.test.mjs",
+        'const doc = "docs/late.md";\n',
+      );
+      late.commit("a test names the document", "scripts/late.test.mjs");
+      late.git("push", "-q", "origin", "master");
+      late.git("switch", "-q", "feature");
+      assertShipGateFail(
+        runShipGateBlock(docsOnlyBlock, late.work),
+        SHIP_GATE_DOCS_ONLY_OK,
+        reason("docsの外が名指しする、または確かめられない: docs/late\\.md"),
+        "a reference that only origin/master has",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test("the ship-branch ci.yml success of a head is one jq expression over the runs of its SHA", async () => {
+  const jq = spawnSync("jq", ["--version"], { encoding: "utf8" });
+  if (jq.error || jq.status !== 0) {
+    return;
+  }
+  const ship = await read(".agents/skills/ship-branch/SKILL.md");
+  const expression = ship.match(/--jq '([^']+)'/)?.[1];
+  assert.ok(expression, "the success expression must be written");
+  const run = (status, conclusion) => ({ status, conclusion });
+  for (const [label, runs, expected] of [
+    ["no run", [], "false"],
+    ["one success", [run("completed", "success")], "true"],
+    [
+      "two successes",
+      [run("completed", "success"), run("completed", "success")],
+      "true",
+    ],
+    [
+      "a run still going",
+      [run("completed", "success"), run("in_progress", "")],
+      "false",
+    ],
+    ["only queued", [run("queued", "")], "false"],
+    ["a failure", [run("completed", "failure")], "false"],
+    [
+      "a cancelled run",
+      [run("completed", "success"), run("completed", "cancelled")],
+      "false",
+    ],
+    ["a skipped run", [run("completed", "skipped")], "false"],
+  ]) {
+    const result = spawnSync("jq", ["-r", expression], {
+      input: JSON.stringify(runs),
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, `${label}: ${result.stderr}`);
+    assert.equal(result.stdout.trim(), expected, label);
   }
 });
