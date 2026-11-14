@@ -164,6 +164,37 @@ fn a_registration_that_runs_out_of_memory_leaves_no_hook() {
     assert!(is_nomem(&error), "{error:?}");
     fire_hooks(&conn);
     assert_eq!(PROGRESS_CALLS.load(Ordering::SeqCst), 0);
+
+    // A handler registered by raw FFI (no clientdata entry, like the opt-in
+    // diagnostics' meter installed at open) is not left enabled either when the
+    // reservation fails.
+    let mut raw = Connection::open_in_memory().expect("open");
+    unsafe extern "C" fn raw_meter(_: *mut std::ffi::c_void) -> std::ffi::c_int {
+        PROGRESS_CALLS.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+    // SAFETY: a live connection and a callback that ignores its argument.
+    unsafe {
+        ffi::sqlite3_progress_handler(raw.handle(), 1, Some(raw_meter), std::ptr::null_mut())
+    };
+    reset_counters();
+    fire_hooks(&raw);
+    assert!(
+        PROGRESS_CALLS.load(Ordering::SeqCst) > 0,
+        "premise: the raw meter fires"
+    );
+    reset_counters();
+    let error = without_sqlite_memory(|| {
+        hook_registration::set_progress_handler(&mut raw, 1, Some(count_progress))
+    })
+    .expect_err("the entry cannot be reserved");
+    assert!(is_nomem(&error), "{error:?}");
+    fire_hooks(&raw);
+    assert_eq!(
+        PROGRESS_CALLS.load(Ordering::SeqCst),
+        0,
+        "no progress handler (neither the new one nor the raw meter) is enabled after the failure"
+    );
 }
 
 fn the_reserved_entry_is_the_one_rusqlite_replaces() {
