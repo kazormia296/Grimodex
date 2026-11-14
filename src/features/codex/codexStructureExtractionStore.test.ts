@@ -585,14 +585,28 @@ describe("完全一致の既存への結び付けの一括承認（旗と store�
     expect(isSafeForCodexEntityBulkApprove(currentRow().safety)).toBe(false);
   });
 
-  it("結び付け 1 件と新規作成 1 件が混ざった一括の件数を数える", () => {
+  it("store の bulkApproveSafe（試験用の局所反転）は新規作成だけを反転し、結び付けは承認にしない", () => {
     useCodexStructureExtractionStore.getState().setProjection({
       ...projection([exactBindProposal(), safeCreateProposal()]),
       catalog,
     });
+    // Phase タブのボタンもこれを呼ぶ。結び付けは今の Codex での再検査と Native の decision を
+    // 通る bulkApproveSafeCodexStructureProposals だけが承認する。
     expect(useCodexStructureExtractionStore.getState().bulkApproveSafe()).toBe(
-      2,
+      1,
     );
+    const proposals =
+      useCodexStructureExtractionStore.getState().projection!.proposals;
+    expect(
+      proposals.find(
+        (row) => row.proposal.payload.binding.kind === "bind-existing",
+      )?.status,
+    ).toBe("unreviewed");
+    expect(
+      proposals.find(
+        (row) => row.proposal.payload.binding.kind === "create-new",
+      )?.status,
+    ).toBe("approved");
   });
 
   it("関係が端点に持つ実体の結び付けは対象外、関係を持つ新規作成は今までどおり対象", () => {

@@ -105,6 +105,7 @@ import { buildCodexReviewRevisionEnvelope } from "./extraction/reviewRevisionEnv
 import { buildCodexRelationSemanticKey } from "./extraction/relationVocabulary";
 import {
   applyCodexStructureExtractionReview,
+  BulkExactBindNoLongerSafeError,
   buildCodexStructureCatalogs,
   buildRelationCoMentionQuote,
   bulkApproveSafeCodexStructureProposals,
@@ -1850,6 +1851,62 @@ describe("bulkApproveSafeCodexStructureProposals", () => {
       expect(stored("b2")?.status).toBe("unreviewed");
     });
 
+    it("一括の承認は編集キューの中で最新の提案に条件をかけ直す（先にキューに入った編集で一括の条件を外れた結び付けは通さない）", async () => {
+      publish([bindRow("b1", "リク", "K0003", "ne-b1")]);
+      // 今の Codex では結び先が改名されていて、表記は完全一致でなくなった。
+      const renamed = [
+        { ...LIVE_ENTRIES[0]!, name: "リクト" },
+        LIVE_ENTRIES[1]!,
+      ];
+      await expect(
+        decideCodexStructureProposal({
+          proposalId: "b1",
+          status: "approved",
+          entries: renamed,
+          bulkExactBind: true,
+        }),
+      ).rejects.toBeInstanceOf(BulkExactBindNoLongerSafeError);
+      expect(reviseAndDecideAsHumanMock).not.toHaveBeenCalled();
+      expect(stored("b1")?.status).toBe("unreviewed");
+
+      // 一括の再検査の後、decide より先に 1 件ずつの編集（名前の変更）がキューへ入った場合。
+      publish([bindRow("b1", "リク", "K0003", "ne-b1")]);
+      appendRevisionMock.mockResolvedValue({ revisionId: "rev-edited" });
+      reviseAndDecideAsHumanMock.mockClear();
+      const result = await bulkApproveSafeCodexStructureProposals({
+        readEntries: async () => {
+          void reviseCodexStructureProposal({
+            proposalId: "b1",
+            patch: { canonicalName: "ソラ" },
+          });
+          return LIVE_ENTRIES;
+        },
+      });
+      expect(result.approved).toBe(0);
+      expect(result.excluded).toEqual([
+        { proposalId: "b1", reason: "no-longer-safe" },
+      ]);
+      expect(reviseAndDecideAsHumanMock).not.toHaveBeenCalled();
+      expect(stored("b1")?.status).toBe("unreviewed");
+    });
+
+    it("編集で承認前へ戻したときは、一括で通した印と承認前へ戻された印を持ち越さない", async () => {
+      publish([bindRow("b1", "リク", "K0003", "ne-b1")]);
+      await bulkApproveSafeCodexStructureProposals({ entries: LIVE_ENTRIES });
+      expect(stored("b1")?.bulkApprovedExactBind).toBe(true);
+      appendRevisionMock.mockResolvedValue({ revisionId: "rev-edited" });
+      await reviseCodexStructureProposal({
+        proposalId: "b1",
+        patch: { canonicalName: "リク" },
+      });
+      expect(stored("b1")).toMatchObject({
+        status: "unreviewed",
+        revisionId: "rev-edited",
+        bulkApprovedExactBind: false,
+        staleBind: false,
+      });
+    });
+
     it("手で承認し直した結び付けには、一括の印を付けない", async () => {
       publish([bindRow("b1", "リク", "K0003", "ne-b1")]);
       await bulkApproveSafeCodexStructureProposals({ entries: LIVE_ENTRIES });
@@ -3589,6 +3646,87 @@ describe("applyCodexStructureExtractionReview: 古くなった結び付けの除
       bulkApprovedExactBind: false,
       compiledOperation: null,
     });
+  });
+
+  it("同じ Entry に向く patch と bind-existing は、bind を先に並べる（patch の後だと版違いで commit 全体が落ちる）", async () => {
+    publish([
+      approvedBind("p1", "リク", "K0003", "ne-p1", {
+        baseVersion: 1,
+        kind: "codex.entry.patch",
+      }),
+      approvedBind("b1", "リクくん", "K0003", "ne-b1", { baseVersion: 1 }),
+      approvedCreate("c1", "ミナ"),
+    ]);
+    await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: LIVE(1),
+    });
+    const committed = prepareApplyMock.mock.calls[0]?.[0]?.operations ?? [];
+    expect(
+      committed.map(
+        (item: { proposalId: string; operation: { kind: string } }) => [
+          item.proposalId,
+          item.operation.kind,
+        ],
+      ),
+    ).toEqual([
+      ["b1", "codex.entity.bind-existing"],
+      ["p1", "codex.entry.patch"],
+      ["c1", "codex.entry.create"],
+    ]);
+    // 固定した payload は変えない（revision の digest と照合される）。
+    expect(committed[0].operation.payload).toMatchObject({
+      entryId: "entry-riku",
+      baseVersion: 1,
+    });
+  });
+
+  it("外す途中で失敗したときは、済んだ分を報告してから投げ直し、commit はしない", async () => {
+    publish([
+      approvedBind("b1", "リク", "K0003", "ne-b1", { baseVersion: 1 }),
+      approvedBind("b2", "ソラ", "K0005", "ne-b2", { baseVersion: 0 }),
+    ]);
+    appendHumanDecisionMock
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error("native down"));
+    const report = vi.fn();
+    await expect(
+      applyCodexStructureExtractionReview({
+        projectId: "p1",
+        entries: LIVE(7),
+        onEntityApprovalsExcluded: report,
+      }),
+    ).rejects.toThrow("native down");
+    expect(report).toHaveBeenCalledWith([
+      { proposalId: "b1", displayTitle: "リク", reason: "stale-version" },
+    ]);
+    expect(prepareApplyMock).not.toHaveBeenCalled();
+    expect(stored("b1")?.status).toBe("deferred");
+  });
+
+  it("外す前に作者が拒否した提案は、外した報告に含めない（キューの中で最新の状態を読む）", async () => {
+    publish([
+      approvedBind("b1", "リク", "K0003", "ne-b1", { baseVersion: 1 }),
+      approvedBind("b2", "ソラ", "K0005", "ne-b2", { baseVersion: 0 }),
+    ]);
+    appendHumanDecisionMock.mockImplementationOnce(async () => {
+      // 1 件目を外している間に、2 件目を作者が拒否した。
+      useCodexStructureExtractionStore
+        .getState()
+        .updateProposalStatus("b2", "rejected");
+      return {};
+    });
+    const report = vi.fn();
+    await applyCodexStructureExtractionReview({
+      projectId: "p1",
+      entries: LIVE(7),
+      onEntityApprovalsExcluded: report,
+    });
+    expect(report).toHaveBeenCalledWith([
+      { proposalId: "b1", displayTitle: "リク", reason: "stale-version" },
+    ]);
+    expect(stored("b2")?.status).toBe("rejected");
+    expect(appendHumanDecisionMock).toHaveBeenCalledTimes(1);
   });
 
   it("全部が外れたら commit を呼ばず 0 件を返す", async () => {

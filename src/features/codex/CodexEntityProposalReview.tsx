@@ -279,7 +279,7 @@ export function CodexEntityProposalReview({
                     toast.error(
                       error instanceof Error
                         ? error.message
-                        : "承認の保存に失敗しました",
+                        : t("codex.structureReview.errorSave"),
                     );
                   });
                 }}

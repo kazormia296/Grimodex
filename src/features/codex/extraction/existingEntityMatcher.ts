@@ -283,6 +283,35 @@ export interface ExactEntityMatchInspection {
   readonly partialOtherRefs: readonly KnowledgeEntityRef[];
 }
 
+const entryKeyCache = new WeakMap<
+  ExistingEntityCatalogRecord,
+  { readonly entryNameKey: string; readonly aliasKeys: readonly string[] }
+>();
+
+/**
+ * Entry の正規化済みの名前・別名キー。同じ record 参照では 1 回だけ作って使い回す
+ * （一括の再検査が提案ごとに全 Entry の別名を JSON.parse し直さないため）。
+ * 名前の無い Entry は、空文字列が全部の表記に prefix で当たってしまうので、名前側では
+ * 何にも当たらないようにする（別名は別に数える）。matchExistingEntity は変えていない。
+ */
+function entryKeysOf(entry: ExistingEntityCatalogRecord): {
+  readonly entryNameKey: string;
+  readonly aliasKeys: readonly string[];
+} {
+  const cached = entryKeyCache.get(entry);
+  if (cached) return cached;
+  const keys = {
+    entryNameKey: candidateKey(entry.name) || "\u0000",
+    aliasKeys: parseAliases(
+      entry.aliases as string[] | string | null | undefined,
+    )
+      .map(candidateKey)
+      .filter((key) => key.length > 0),
+  };
+  entryKeyCache.set(entry, keys);
+  return keys;
+}
+
 /**
  * 表記 1 つが名簿のどの Entry に当たるかを、{@link matchExistingEntity} と同じ走査で数える。
  * 一括承認の条件（完全一致が 1 Entry だけ・他に部分一致が無い）の判定に使う。
@@ -299,14 +328,7 @@ export function inspectExactEntityMatch(
   const exactRefs: KnowledgeEntityRef[] = [];
   const partialOtherRefs: KnowledgeEntityRef[] = [];
   for (const entry of catalog) {
-    // 名前の無い Entry は、空文字列が全部の表記に prefix で当たってしまうので、名前側では
-    // 何にも当たらないようにする（別名は別に数える）。matchExistingEntity は変えていない。
-    const entryNameKey = candidateKey(entry.name) || "\u0000";
-    const aliasKeys = parseAliases(
-      entry.aliases as string[] | string | null | undefined,
-    )
-      .map(candidateKey)
-      .filter((key) => key.length > 0);
+    const { entryNameKey, aliasKeys } = entryKeysOf(entry);
     const { methods } = scoreAgainstEntry(
       surfaceKey,
       strippedKey,

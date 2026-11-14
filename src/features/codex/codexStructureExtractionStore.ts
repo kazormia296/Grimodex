@@ -57,6 +57,8 @@ export interface CodexStructureExtractionCoverage {
  *
  * 一括承認の対象は 2 通り（{@link isSafeForCodexEntityBulkApprove}）：
  * 新規作成（下の 7 つの旗）と、完全一致の既存への結び付け（`existingExactBind` ほか）。
+ * 結び付けを承認できるのは `bulkApproveSafeCodexStructureProposals`（Native の revision・decision と
+ * 今の Codex での再検査を通る）だけ。この store の `bulkApproveSafe` は新規作成だけを反転する。
  */
 export interface CodexEntityProposalSafetyFlags {
   readonly evidenceExact: boolean;
@@ -136,6 +138,8 @@ export interface CodexEntityReviewProposal {
    * 承認し直すまで Apply に入らない。decision の記録（decisionJson）から復元できる。
    */
   readonly staleBind?: boolean;
+  /** `staleBind` の原因（decisionJson.cause）。結び先が見つからないときは文言を分ける。 */
+  readonly staleBindCause?: string;
 }
 
 export interface CodexRelationReviewProposal {
@@ -778,6 +782,14 @@ export const useCodexStructureExtractionStore =
       const proposals = replaceProposal(projection.proposals, proposalId, {
         ...current,
         status,
+        // 状態を変えたら、一括で通した印・承認前へ戻された印は外す（decide が必要なら付け直す）。
+        ...(status !== current.status
+          ? {
+              bulkApprovedExactBind: false,
+              staleBind: false,
+              staleBindCause: undefined,
+            }
+          : {}),
       });
       const relationProposals = reevaluateRelationProposals(
         projection,
@@ -906,6 +918,10 @@ export const useCodexStructureExtractionStore =
           applicability === "blocked" ? "Codex Type が未解決です" : undefined,
         revisionId: current.revisionId,
         status: "unreviewed",
+        // 承認前へ戻すので、一括で通した印・承認前へ戻された印は持ち越さない。
+        bulkApprovedExactBind: false,
+        staleBind: false,
+        staleBindCause: undefined,
         safety: buildCodexEntityProposalSafetyFlags({
           bindingKind: nextProposal.payload.binding.kind,
           typeStatus: nextProposal.payload.typeResolution.status,
@@ -1024,6 +1040,9 @@ export const useCodexStructureExtractionStore =
         displayTitle: nextProposal.payload.canonicalName,
         revisionId: current.revisionId,
         status: "unreviewed",
+        bulkApprovedExactBind: false,
+        staleBind: false,
+        staleBindCause: undefined,
         applicability,
         blockedReason:
           applicability === "blocked"
@@ -1463,7 +1482,9 @@ export const useCodexStructureExtractionStore =
         if (
           proposal.applicability !== "applicable" ||
           proposal.status !== "unreviewed" ||
-          !isSafeForCodexEntityBulkApprove(proposal.safety)
+          // 完全一致の結び付けは、今の Codex での再検査と Native の revision・decision・op の固定を
+          // 通る bulkApproveSafeCodexStructureProposals だけが承認する（ここでは対象にしない）。
+          !isSafeCreateNewForCodexEntityBulkApprove(proposal.safety)
         ) {
           return proposal;
         }

@@ -228,6 +228,7 @@ export function CodexStructureExtractDialog({
           toast.warning(
             t("codex.structureReview.applyExcluded", {
               count: excluded.length,
+              names: excluded.map((item) => item.displayTitle).join(", "),
             }),
           );
         },

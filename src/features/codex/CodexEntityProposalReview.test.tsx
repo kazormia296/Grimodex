@@ -296,7 +296,9 @@ describe("CodexEntityProposalReview: 完全一致の既存への結び付け", (
       "(2)",
     );
     expect(
-      screen.getByText("完全一致の既存への結び付け（一括承認の対象）"),
+      screen.getByText(
+        "完全一致の既存への結び付け（一括承認の対象の見込み。承認の直前に今の Codex で確かめ直します）",
+      ),
     ).toBeInTheDocument();
   });
 
@@ -366,6 +368,20 @@ describe("CodexEntityProposalReview: 完全一致の既存への結び付け", (
     expect(
       screen.getByTestId("codex-entity-stale-bind-note"),
     ).toHaveTextContent("結び先が編集されたため");
+  });
+
+  it("結び先が見つからないために戻された結び付けは、承認し直しでなく選び直し・却下へ誘導する", () => {
+    publish([
+      bindProposal({
+        status: "deferred",
+        staleBind: true,
+        staleBindCause: "target-missing",
+      }),
+    ]);
+    render(<CodexEntityProposalReview />);
+    expect(
+      screen.getByTestId("codex-entity-stale-bind-note"),
+    ).toHaveTextContent("結び先の Entry が見つかりません");
   });
 
   it("一括承認に今の Codex の読み出しを渡し、外した件数を報告する", async () => {

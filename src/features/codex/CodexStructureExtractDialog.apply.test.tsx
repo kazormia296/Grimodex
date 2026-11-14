@@ -180,7 +180,7 @@ describe("CodexStructureExtractDialog の適用", () => {
       version: 7,
     });
     await waitFor(() => expect(toastMocks.warning).toHaveBeenCalledTimes(1));
-    expect(toastMocks.warning.mock.calls[0]?.[0]).toContain("承認し直して");
+    expect(toastMocks.warning.mock.calls[0]?.[0]).toContain("承認し直せ");
     expect(toastMocks.success).not.toHaveBeenCalled();
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
     expect(
@@ -217,6 +217,9 @@ describe("CodexStructureExtractDialog の適用", () => {
     fireEvent.click(screen.getByTestId("codex-structure-apply"));
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
     expect(toastMocks.warning).toHaveBeenCalledTimes(1);
+    // 外れた提案名と、開き直せば承認し直せることを伝える（review は閉じる）。
+    expect(toastMocks.warning.mock.calls[0]?.[0]).toContain("リク");
+    expect(toastMocks.warning.mock.calls[0]?.[0]).toContain("開き直す");
     expect(toastMocks.success).toHaveBeenCalledTimes(1);
   });
 });

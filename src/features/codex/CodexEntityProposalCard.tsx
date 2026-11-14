@@ -94,7 +94,9 @@ export function CodexEntityProposalCard({
               className="block text-[10px] text-amber-700 dark:text-amber-400"
               data-testid="codex-entity-stale-bind-note"
             >
-              {t("codex.structureReview.staleBind")}
+              {proposal.staleBindCause === "target-missing"
+                ? t("codex.structureReview.staleBindTargetMissing")
+                : t("codex.structureReview.staleBind")}
             </span>
           )}
           {safeHint && (

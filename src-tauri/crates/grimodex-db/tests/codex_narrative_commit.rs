@@ -2520,3 +2520,101 @@ fn bind_existing_undo_succeeds_even_if_author_deleted_the_entry_after_apply() {
     assert_eq!(undone["status"], "undone");
     assert!(entry_row_fingerprint(&db, "entry-bind-pd").is_none());
 }
+
+fn same_entry_patch_op(entry_id: &str, narrative_entity_id: &str, base_version: i64) -> Value {
+    json!({
+        "entryId": entry_id,
+        "baseVersion": base_version,
+        "aliases": { "kind": "set", "values": ["旧", "別名"] },
+        "summary": { "kind": "leave" },
+        "name": { "kind": "leave" },
+        "typeSlug": { "kind": "leave" },
+        "parentId": { "kind": "leave" },
+        "narrativeEntityId": narrative_entity_id
+    })
+}
+
+/// 同じ Entry に向く patch（版を上げる）と bind-existing（承認時の版を再検査する）は、
+/// commit の中で並んだ順に適用される。bind を先に並べれば通り、patch を先に並べると
+/// bind が NEX_CODEX_VERSION_MISMATCH で落ちて commit 全体が失敗する。
+/// Apply は bind を先に並べる（TS の orderBindExistingBeforePatch）。
+#[test]
+fn same_entry_bind_before_patch_commits_and_patch_before_bind_fails_whole_commit() {
+    let ok_db = migrated_db();
+    seed_existing_entry(&ok_db, "entry-same", 3);
+    let items = [
+        (
+            "codex.entity.bind-existing",
+            bind_op("entry-same", "ent:same-bind", 3),
+        ),
+        (
+            "codex.entry.patch",
+            same_entry_patch_op("entry-same", "ent:same-patch", 3),
+        ),
+    ];
+    let pairs = seed_approved_proposals(&ok_db, "run-same-ok", "set-same-ok", &items);
+    let applied = prepare_and_apply(
+        &ok_db,
+        build_prepare(
+            "req-same-ok",
+            "dg-same-ok",
+            "set-same-ok",
+            "run-same-ok",
+            ops_from_pairs(&pairs, &items),
+            vec![
+                existing_binding("ent:same-bind", "entry-same"),
+                existing_binding("ent:same-patch", "entry-same"),
+            ],
+        ),
+    );
+    assert_eq!(applied["status"], "applied");
+    assert_eq!(
+        count_rows(
+            &ok_db,
+            "SELECT version FROM codex_entries WHERE id = 'entry-same'"
+        ),
+        4,
+        "patch raises the version once; bind does not"
+    );
+
+    let failing_db = migrated_db();
+    seed_existing_entry(&failing_db, "entry-same", 3);
+    let items = [
+        (
+            "codex.entry.patch",
+            same_entry_patch_op("entry-same", "ent:same-patch", 3),
+        ),
+        (
+            "codex.entity.bind-existing",
+            bind_op("entry-same", "ent:same-bind", 3),
+        ),
+    ];
+    let pairs = seed_approved_proposals(&failing_db, "run-same-ng", "set-same-ng", &items);
+    let err = prepare_then_apply(
+        &failing_db,
+        build_prepare(
+            "req-same-ng",
+            "dg-same-ng",
+            "set-same-ng",
+            "run-same-ng",
+            ops_from_pairs(&pairs, &items),
+            vec![
+                existing_binding("ent:same-bind", "entry-same"),
+                existing_binding("ent:same-patch", "entry-same"),
+            ],
+        ),
+    )
+    .expect_err("patch before bind on the same entry must fail the whole commit");
+    assert!(
+        format!("{err:#}").contains("NEX_CODEX_VERSION_MISMATCH"),
+        "unexpected error: {err:#}"
+    );
+    assert_eq!(
+        count_rows(
+            &failing_db,
+            "SELECT version FROM codex_entries WHERE id = 'entry-same'"
+        ),
+        3,
+        "the failed commit rolled back"
+    );
+}

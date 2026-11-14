@@ -41,7 +41,7 @@
 - 手間がどう減るか。名簿を整えるほど増えていた「1 件ずつ確かめる」件が、一括で通る。
 - 危険。読まずに通る範囲が広がる。同姓の別人が名簿に 1 人だけいると、原稿の別人を結び先の確認なしに結ぶ誤りが入りうる。Codex の行は書き換わらない。関係・Phase の端点になる結び付けは一括から外す。
 - 危険。承認してから Apply までのあいだに、結び先の Entry を別の画面で編集すると、Apply が丸ごと失敗する。今の 1 件ずつの承認にもある。一括で件数が増えると目立つ。対策は Q4 で伺う。
-- 未確認。結び付けが保存された後に誰に読まれるかを、まだ確かめていない。確かめるまで着手しない。
+- 確認済み（2026-11-14、§10・§12）。結び付けが保存された後の読み手は §3.2 の 10 に書いた。作者は、読まずに通した誤った結び付けを外す手段が無いと知った上で「このまま進める」と答えた。
 
 ### 打ち手 1：作者が選んだ結び先の表記を、確認つきで別名に残す
 
@@ -70,6 +70,7 @@
 ### 1.1 呼び名の一覧（打ち手 4 が作り、1・2 が読む）
 
 置き場は 1 か所：`src/features/codex/extraction/relationalTerms.ts`（新規、純関数、保存しない）。
+
 - `isRelationalTerm(surface)`：`candidateKey` で正規化し、「（お／ご）＋語幹＋（さん・ちゃん・様 などの語尾）」を、語幹の一覧との**完全一致**で判定する。部分一致は使わない。
 - 語幹は kind を持つ：続柄／二人称／三人称。5 が後で同じ一覧を使える。
 - `candidateKey` は全角・半角・かなの揺れを吸収しない（`codexCandidates.ts:25-30`）。一覧は漢字・平仮名・片仮名の形を持つ。
@@ -148,7 +149,7 @@ IPC・保存・AI 送信・脅威モデル・閾値は動かない。触れる�
 
 ### 3.1 今の挙動
 
-- 一括の条件 `isSafeForCodexEntityBulkApprove`（`codexStructureExtractionStore.ts:260-272`）は 7 つの旗の全部を要る。`createNew`（:64）と `noExistingCandidates`（:361）が既存への結び付けを必ず落とす。コメントに「existing bind / enrichment is never bulk-safe」とある。この規則を定めた文書は repo の docs・ADR・policies に無く、コード内の約束事だけ（確認済み）。
+- 一括の条件 `isSafeForCodexEntityBulkApprove`（`codexStructureExtractionStore.ts:260-272`）は 7 つの旗の全部を要る。`createNew`（:64）と `noExistingCandidates`（:361）が既存への結び付けを必ず落とす。コメントに「existing bind / enrichment is never bulk-safe」とあった（変更前の状態。§13 で二股にし、コメントも更新した）。この規則を定めた文書は repo の docs・ADR・policies に無く、コード内の約束事だけ（確認済み）。
 - 旗を組む場所は 4 つで、値の作り方が違う：live（`codexStructureExtractionApi.ts` の実体の提案を作る箇所）、復元（`rebuildEntityFromNative`）、候補を選んだ後（Store の `resolveBinding`）、編集後（Store の `reviseProposalFields`）。復元は `hasProperNameMention` を常に true にし、`hasRelationDeps` を渡さない。関係の再評価（`relationApplicability.ts`）は旗を組まず、関係の applicability を引き直すだけ。同じファイルの `deriveEntityReviewPresentation` は呼び出しの無い死んだ関数で、5 か所目ではない（実装で消す）。旗を読む側は 4 か所：store の `bulkApproveSafe`、カードの `safeHint`、review の `safeCount`、`bulkApproveSafeCodexStructureProposals` の対象選び。いずれも `isSafeForCodexEntityBulkApprove` を呼ぶ。編集後の経路は `aliasesAllExplicit` を true に固定する。行番号は版によって 10〜25 行ずれるので、実装時に当て直す。
 - 関係の依存の旗は live では実質いつも「なし」。実体の提案の `dependencies` は planner が `createId` しか渡さず常に []（`extraction/proposalPlanner.ts:113-135`）。実際の依存は関係の提案側が持つ（subject・object の 2 つの提案 id、`relationApplicability.ts:33-40`）。Phase の提案も実体に依存する（`phaseProposalPlanner.ts:201`）。
 - 種：prepass が返す種は全部、形態素解析で「固有名詞」と付いた語（`entity_seeds.rs:702`）。`appearsAsProperName` は種ごとに常に true（:870）で、種の型の hint（`coarseClass`）は常に person になる。つまり「固有名詞らしい表記か」は種からは分からず、区別の材料にならない。
@@ -172,13 +173,14 @@ IPC・保存・AI 送信・脅威モデル・閾値は動かない。触れる�
    - (g) 結び先 Entry の型が人物の型。種の `coarseClass` は常に person なので、結び先の型と突き合わせる。型が結び先から決まるため、今の「型が resolved」の旗は完全一致で必ず真になり、防御にならない（`extraction/entityResolver.ts` の `resolveEntityType`）。人物の型は slug が `character` のものだけ（`coarseClassForSlug` が person を返すのは `character` だけ）。永続・復元される catalog のスナップショットの型は slug だけを持ち、hint は落ちる。型の一覧に無い type の Entry は catalog を組む時点で先頭の型に落ちるので、スナップショットからは見分けられない。このため旗の静的な値は暫定で、決め手は実行時の再検査で読み直した今の Codex の `entry.type`。判定できない・未知の型・今の Codex を読めない場合は一括の対象外にする（新規作成の一括は通す）。
    - (h) 照合の (ii) で、語の一部だけが当たる他の Entry が無い。1 つでも当たるなら 1 件ずつの確認のままにする。
    「固有名詞らしい表記か」の条件は置かない。種は全部固有名詞と解析された語なので、区別の材料にならない（§3.1）。名簿に完全一致した語は、作者が名簿に入れた宣言なので、役職の呼称や一般語でも一括に入りうる（§3.4）。
-4. `isSafeForCodexEntityBulkApprove` を「今の create-new の条件」または「`existingExactBind` の条件」の二股にする。store の `bulkApproveSafe`・カードの `safeHint`・review の `safeCount` は、この関数を呼ぶので自動で追随する。試験で同値を固定する（§3.6）。
+4. `isSafeForCodexEntityBulkApprove` を「今の create-new の条件」または「`existingExactBind` の条件」の二股にする。カードの `safeHint`・review の `safeCount`・`bulkApproveSafeCodexStructureProposals` の対象選びは、この関数を呼ぶので追随する。store の `bulkApproveSafe`（試験用の局所反転。Phase タブのボタンも呼ぶ）は追随させない：Native の revision・decision・今の Codex での再検査・op の固定を通らず、Apply が NEX_PROPOSAL_NOT_APPROVED で commit 全体を拒否するので、結び付けは新規作成の述語（`isSafeCreateNewForCodexEntityBulkApprove`）だけで反転し、結び付けは永続する経路だけが承認する。試験で固定する（§3.6）。
 5. 依存の旗 (e) は旗の作り直しだけでは足りない。関係・Phase・Base Detail を組んだ後（live の最後・復元の最後・`reevaluateRelationProposals` の後・各 action の後）に、実体ごとに「この実体を端点・依存に持つ提案があるか」を埋め直す。今は死んでいる経路（live の `hasRelationDeps` は常に false）を、この計算に置き換える。**(e) は `existingExactBind` の側だけに効かせる**：新規作成の一括は今までどおり `noRelationDeps`（live では常に true）で通り、関係を持つ新規作成は今までどおり対象のまま（関係は co-mention から広く作られるので、実の依存を `noRelationDeps` に入れると新規作成の一括がほぼ消える）。依存に数える提案の状態は問わない（却下済み・already-satisfied も数える。保守側）。
 6. 一括承認の実行時（`bulkApproveSafeCodexStructureProposals`）に、現在の Codex の Entry を読み直して (b)(g)(h) を引き直す。変わっていたものは外し、件数を報告する。対象は最初に 1 回だけ決まるので、承認 1 件ごとの直前に最新の projection から旗を引き直す。引き直しが要る理由：run の中の編集・候補の選び直し・Codex の catalog の変化（関係の再評価は実体の旗を変えない）。Codex の読み直しは 1 回の一括につき 1 回（件ごとには読まない。承認は Native の commit を呼ばないので、読んでから承認し終えるまでの窓は短い）。run の後に作者が同名の別 Entry を足した場合や、名前・別名・型を変えた場合を、この再検査で閉じる。結び先の版（`base_version`）が守るのは版だけで、「他に該当が無い」ことは守らない。一括で通した印は decision の記録（`decisionJson`）に残す（新しい schema は作らない）。bind（`codex.entity.bind-existing`）は Codex の行を書かない op で、compile の結果が bind-existing でなく patch になったものは外す。
 7. 画面：(i) カードに結び先の名前（`catalogEntityDisplayName`）を出す（1 件ずつの確認にも効く）、(ii) 一括の件数を「新規作成」と「既存への結び付け」に分けて出す（`CodexEntityProposalReview.tsx:128-148`）、(iii) 通した結び付けを見返す一覧を出す（T3）。
 8. 判定の置き場。画面の純関数と、実行時の再検査の 2 か所で行い、Native の新しい command にはしない。Chronicle の BAO/1 は、対象かの判定を Native だけに置き、画面は計算しない形にした（台帳 `docs/plans/nir1-l6-l9-execution-plan.md` の BAO/1 の行。その理由の文面は読んでいない）。ここで renderer に置く根拠：書く範囲が Codex の行を書かない bind だけで、1 件ずつの承認と同じ command を繰り返す。Native に置くと新しい command ＝新しい契約になる。画面の判定と Native の検査の食い違いは、Native が版と所属の検査を必ず行うこと（`codex_operations.rs:691-708`）と、実行時の再検査で限る。これは draft の技術判断の提案（T2）。
-9. コメントの「never bulk-safe」と「spec §22」を更新する。
+9. コメントの「never bulk-safe」と「spec §22」を更新する（実装済み。store.ts の §22 は新規作成の一括の出どころとして残し、結び付けの承認が永続する経路だけである旨を足した）。
 10. bind-existing が保存の後に誰に読まれるか。読んだ範囲（2026-11-14）：承認で commit map に登録され、Field Authority の `/narrativeEntityId`、Contribution、Change Feed（op が `bind` として残る）、freshness、受領書にも載る。Codex の行・関係・Phase だけではない。ただし一括承認は 1 件ずつの承認と同じ op（`codex.entity.bind-existing`）を繰り返すだけで、新しい種類の書き込みは無い。freshness は bind の後も Fresh のまま（試験で確認済み）。作者は 2026-11-14 に「読まずに通した誤った結び付けを外す手段は無い（内部の記録が残るだけ、Codex の行は変わらない、次の抽出では元どおり出る）」と知った上で「このまま進める」と答えた（§10）。取り込み・IR・Graph など残りの読み手が Undo 後も残る記録を許容するかは §12 の未確認の点のまま。
+
 ### 3.3 条件
 
 §3.2 の 3 の (a)〜(h) の全部。1 つでも外れる結び付けは 1 件ずつの確認のまま。
@@ -198,7 +200,10 @@ IPC・保存・AI 送信・脅威モデル・閾値は動かない。触れる�
 | 承認から Apply までのあいだに結び先 Entry が編集され、Apply の commit が丸ごと失敗する（今の 1 件ずつの承認にもある。打ち手 2 で件数が増える） | 本線（§13 で実装）：Apply の前に、固定した op の `baseVersion` と今の Codex の版を比べ、古い結び付け・patch を Apply から外して報告し、Native の decision を deferred（`decisionJson.reason = stale-bind`）に戻して、今の版で承認し直せるようにする。承認し直しは今の Codex の版で op を固定する。Apply の直前に op だけ組み直す案は採らない（commit は固定した版の payload と照合するので、組み直した op は `NEX_PROPOSAL_PAYLOAD_MISMATCH` で拒否される）。純粋な bind から `baseVersion` を省く案は挙動の契約の変更なので採らない（Q4 は (a)）。実機の検査に「一括承認の後に別画面で Entry を編集して Apply」を足す |
 | 一括承認のループの途中失敗 | 今と同じ（続行して失敗を数えて報告）。失敗の主な場所はループではなく Apply の commit（上の行）。ループでの版の不一致はここでは起きない（承認は commit を呼ばない） |
 | 「安全な提案をまとめて承認」の意味が広がる | 件数を分けて見せる。作者に確認する（Q3） |
-| 結び付けが保存の後に誰に読まれるか未確認 | §3.2 の 10。確かめるまで着手しない。「害は小さい」とは書かない |
+| 結び付けが保存の後に誰に読まれるか | 確認済み（2026-11-14、§3.2 の 10・§10）。読み手は広いが、新しい種類の書き込みは無く、作者は外す手段が無いと知った上で進めると答えた。「害は小さい」とは書かない |
+| 1 字の表記（蓮と蓮司）で、語の一部だけが当たる他の Entry を照合が数えない | 1 字の表記は (h) が働かないので一括の対象外（`single-char`）。閾値を緩めず狭める方向 |
+| 同じ Entry に向く patch と bind-existing が 1 回の commit に並び、先の patch が版を上げて後の bind が落ちる | Apply の ops は bind-existing を先に並べる（payload は変えない）。Rust の統合試験で、bind→patch は通り patch→bind は NEX_CODEX_VERSION_MISMATCH で commit 全体が失敗することを固定。patch 同士が同じ Entry に向く場合は従来どおり（未対応、§13） |
+| store の `bulkApproveSafe`（Phase タブのボタン）が結び付けを再検査なしで承認に反転する | 結び付けは対象外にした（新規作成だけ反転）。試験で固定 |
 | seed の引き方が index（:1666-1672）でずれうる | `hypothesisId` で引く。今の seed では飛ばされない見込み（推測） |
 
 ### 3.5 契約と作者の確認が要る点
@@ -220,7 +225,9 @@ IPC・保存・AI 送信・脅威モデル・閾値は動かない。触れる�
 
 ### 3.7 測ること
 
-評価の写し（Codex を整えた L0〜L3 の段）で、一括で通る件数と 1 件ずつの件数を測り直す。事前登録に「一括で通る既存への結び付け」の列を足す。
+評価の写し（Codex を整えた L0〜L3 の段）で、一括で通る件数と 1 件ずつの件数を測り直す。事前登録に「一括で通る既存への結び付け」の列を足す。一括で通った件のうち、役職の呼称・一人称（先生・僕など、名簿に作者が入れた語）の件数を必ず数える（これが唯一の防御。実測で多ければ (f) に足す）。
+
+測りたい性能：一括の再検査と Apply の前の検査は、提案 P 件 × Entry N 件の走査（Entry の正規化済みキーは 1 回だけ作って使い回す）。数千 Entry・数百件の規模での所要時間は未測定。
 
 ---
 
@@ -367,6 +374,7 @@ IPC・保存・AI 送信・脅威モデル・閾値は動かない。触れる�
 ### 6.2 作るなら（3 段）
 
 **段 1：mark を同定が読む（手で結ぶ。AI なし、新しい保存なし）**
+
 - 言及の範囲と本文 JSON の mark の範囲を突き合わせる関数（`semanticLinks.ts` の歩き方と `source/textProjection.ts` の `projectCanonicalRange` を再利用。ruby は親文字）。
 - 照合に「作者が本文で結んだ」を最初の段として足す。入力を表記の束から「言及ごと（表記＋範囲＋場面の ref）」に広げるのが本体の変更。cluster の中で結果が割れたら未解決に戻して見せる。
 - review に「本文で作者が結んだ」と根拠を出し、選び直せるようにする。
@@ -374,11 +382,13 @@ IPC・保存・AI 送信・脅威モデル・閾値は動かない。触れる�
 - 打ち手 1 が呼び名を別名に残さないので、mark が「この出現だけ結ぶ」行き場になる。
 
 **段 2：話者推定そのもの（作者が決めるまで作らない）**
+
 - 決定的な基線（AI なし）：括弧の外の直前・直後の人名、視点人物、場面に出ている人物の名簿の絞り込みだけで話し手の候補を出す。送信は増えない。これで足りる割合を先に測るのが安い。
 - AI の推定：台詞の前後と場面の人物名を送る。改訂案の★3 の「新しい送信」に当たる。Codex の名前の送信は 2026-11-05 に了承済みだが、「場面と人物の対応」を送る目的は含まれない。事前登録 §15 の送信の承認は identity-load の測定に限られ、話者推定には及ばない。GDX-PRECHECK-001（external-egress）を編集・送信の前に適用する。
 - Matrix を保存するなら新しい保存範囲（★2 と同種）で、確認まで作らない。保存しない案は `codex_relations` の `forwardLabel`／`inverseLabel` から引く形だが、実際の呼びかけは関係の型から決まらない可能性が高い（推測）。
 
 **段 3：当たり具合を測る**
+
 - mark は用例になるが、付けるのは作者が必要と思った出現だけなので偏る。当たり具合の一般値としては言えない。
 - 今の事前登録の写し（作者が確認するのは名簿だけ、原稿は AI が書いた）には、台詞ごとの話し手の正解が無い（§16）。別に正解表と新しい事前登録が要る。identity-load の事前登録（§17 は別の枝）に混ぜない。正解表の作り手が AI だと系列の癖を共有する。
 
@@ -443,11 +453,12 @@ mark が付いた作品が実際にどれだけあるか、作者が実際に使
 はい・いいえで答えられる形。推奨を付ける。契約・保存・送信・公開・「安全」の意味に触れるものだけを置く。
 
 **打ち手 4**
+
 1. 呼び名の語では、新しい人物の提案を出さず、敬称を外して名簿の人に近づける処理と、語の一部だけが当たる候補（「おじいさん」が別名「じい」に当たる類い）も出さなくてよいか。作者が別名に入れた語は今までどおり結ぶ。これは、敬称を外す規則の適用を呼び名に限って狭める変更。推奨：はい（雑音はこちらのほうが大きい見込み）。
 2. 呼び名の一覧に、二人称・三人称（あなた・彼・あいつ）を入れてよいか。役職の呼称（先生・隊長）は入れない。あわせて、落とした件数と表記を構造抽出の画面に出してよいか。候補画面の別名ボタンが呼び名の語で消え、その別名は Codex の編集画面で足すことになる点は、受け入れてよいか。推奨：すべてはい。
 
 **打ち手 2**
-3. 次の条件を全部満たす結び付けを、読まずに一括で通してよいか。完全一致、該当が 1 つの Entry、結び先が人物の Entry、語の一部だけが当たる他の Entry が無い、別名の追加が無い、関係・Phase の依存が無い。承認を実行するとき、その時点の Codex で条件を確かめ直す。今の「既存への結び付けは読まずに通さない」という約束を外す変更。推奨：はい（Codex の行は書き換わらない。ただし結び付けが保存の後に誰に読まれるかを確かめるまで着手しない）。
+3. 次の条件を全部満たす結び付けを、読まずに一括で通してよいか。（確認済み 2026-11-14、§10：はい）完全一致、該当が 1 つの Entry、結び先が人物の Entry、語の一部だけが当たる他の Entry が無い、別名の追加が無い、関係・Phase の依存が無い。承認を実行するとき、その時点の Codex で条件を確かめ直す。今の「既存への結び付けは読まずに通さない」という約束を外す変更。推奨：はい（Codex の行は書き換わらない。読み手の確認は §3.2 の 10 で済み、作者が了承した）。
 4. 承認の後に結び先の Entry を別の画面で編集すると、Apply が丸ごと失敗する（今もそうで、一括で件数が増えると目立つ）。直し方は、(a) 古くなった結び付けだけを Apply から外して報告し、承認し直してもらう、(b) 結び付けの版の検査を外して通す、のどちらか。(b) は、結び先を見て承認した後に Entry が変わっても通る挙動になる。推奨：(a)。
 
 **打ち手 1**
@@ -549,6 +560,21 @@ Codex の行は変わらない、次の抽出では元どおり出る）」と�
 - **画面**：結び先の名前（カード）、件数の分割、一括で通した結び付けを見返す一覧（既存の review の中の details）、承認し直しが要る旨、外した件数の報告。
 - **未解決**：(0) 結び先が削除された結び付けは、承認し直しても今の版が引けず（catalog の版に落ちる）毎回 Apply で外れ、カードの文言も「編集された」のまま。見返す一覧は取り込み前だけ（適用済みは出さない）。(e) は却下済み・already-satisfied の関係も数えるので、関係が co-mention から広く作られる実際の run では、一括に残る結び付けは少ない見込み（§3.7 の測定項目：一括で通る結び付けの件数と、(e) で落ちた件数）。名前の無い Entry は matcher の既存の挙動（空の名前が全部に prefix で当たる）を `inspectExactEntityMatch` の中でだけ避けた（`matchExistingEntity` は変えていない）。(1) 承認し直しのカードの結び先の名前は run 時点の catalog の名前（今の名前でない）。(2) `decisionJson` は Native が不透明に保存し
   `latestDecision.decisionJson` で戻す経路を既存のコード（already-satisfied）で使っているが、実機の往復は未確認（vitest は mock）。
-  戻らなければ見返す一覧は開いている間だけになる。(3) 取り込み・IR・Graph など bind の残りの読み手が Undo 後も残る記録を許容するかは §12 のまま。
+  戻らなければ見返す一覧は開いている間だけになる。
+  （追記：Rust と IPC を読んで成立を確認した。`AppendDecisionPayload.decision_json` は保存され（`repository.rs`）、`latestDecision.decisionJson` に戻り、IPC は payload を素通しする。`derive_decision_authority` は actorKind・authorityScope・override 系のキーだけを見るので `source`・`reason` は拒否されない。`reason = stale-bind` を使う既存の SQL は無い。残る未確認は Electron での実行だけ。）(3) 取り込み・IR・Graph など bind の残りの読み手が Undo 後も残る記録を許容するかは §12 のまま。
   (4) 実機の検査（名簿のあるプロジェクトで一括承認 → 別画面で結び先を編集 → Apply）と、§3.7 の測定は未実施。(5) `explicitProperName` は永続する
   出どころが無く、live は seed の form、復元は true 固定のまま（結び付けの条件には使わない）。
+
+### 13.1 レビュー指摘への対応（2026-11-14、2 回目）
+
+- **store の `bulkApproveSafe`**：Phase タブの「安全な提案をまとめて承認」も呼ぶ試験用の局所反転が、結び付けを再検査・Native の decision・op の固定なしで approved にしていた（Apply が `NEX_PROPOSAL_NOT_APPROVED` で commit 全体を拒否）。結び付けを対象外にし、新規作成の述語だけで反転する。新規作成の旧来の穴（同じ局所反転が Native を通らない）は変えていない。
+- **同じ Entry の patch と bind**：Rust の統合試験で、patch が先だと bind が `NEX_CODEX_VERSION_MISMATCH` で commit 全体が落ちること、bind が先なら通って版は 1 つだけ上がることを確認した。Apply の ops は bind-existing を先に並べる（固定した payload は変えない）。patch 同士が同じ Entry に向く場合は従来どおり（未対応。作者が同じ Entry に 2 つの patch を承認すると落ちる）。
+- **一括の編集キュー**：一括の `decide` は、キューの中で最新の提案に (a)〜(h) と compile の種類をもう一度かける。再検査の後で先にキューに入った 1 件ずつの編集があっても、編集後の内容を一括の印つきで通さない（`no-longer-safe` などで報告）。review の scope が途中で変わったときは、残りを `no-longer-safe` で報告する。
+- **Apply の前の除外**：各提案の編集キューの中で最新の状態を読み直し（先に作者が拒否・承認し直したものは外さない）、途中で失敗したときは保留に戻した分を報告してから投げ直す。一部だけが外れて取り込めたときは review を閉じ、報告に外れた提案名と「構造抽出を開き直すと承認し直せる」を出す（取り込み済みの提案が store で承認のままなので、開いたままだと 2 回目の Apply で二重に送る恐れがあるため）。結び先が見つからない（`target-missing`）ときはカードの文言を「選び直すか却下」に分ける（`decisionJson.cause` から復元）。
+- **承認前へ戻すときの印**：編集（`reviseProposalFields`・`reviseCodexStructureProposal`）・候補の選び直し・`updateProposalStatus` で状態が変わるとき、`bulkApprovedExactBind`・`staleBind`・`staleBindCause` を持ち越さない。
+- **1 字の表記**：(h) は照合の prefix・substring が長さ 2 以上なので、1 字の名前（蓮と蓮司）では働かない。1 字の表記は一括の対象外（`single-char`）にした。名簿の別名が 1 字でも、表記が 2 字以上なら通る。
+- **性能**：Entry の正規化済みの名前・別名キーと、判定用の索引を同じ配列・catalog の参照で 1 回だけ作る。提案ごとに全 Entry の別名を JSON.parse し直さない。測定は §3.7。
+- **範囲の記録（利用者に見える挙動）**：(1) カードで 1 件ずつ承認する bind-existing も、DB を読んで op の版と既存の別名を今の値に固定する（run 時点の版でなくなる）。(2) Apply の前の除外は、一括で通したものだけでなく、手で承認した bind・patch の版の古さにも効く。(3) 一括の印がある結び付けの `no-longer-exact`・`dependent-added` の除外は、Q4(a) の「古い bind」の外で足した再検査。(4) 外した先は deferred で、画面では保留と同じ扱いに見える（「承認し直しが要る」は decision の `reason = stale-bind` とカードの注意書きで示す）。いずれも新しい IPC・schema・保存先は作っていない。
+- **前向きの bind が Codex の行を書かない保証**：TS の試験は compile の種類（bind-existing と patch）を固定するだけ。行を書かないことは Rust の `bind_existing_undo_redo_never_touches_entry_row` が、apply 直後の行の指紋（`updated_at`・`version`・別名・要約）が変わらないことで固定している。
+- **件数表示**：型の一覧に無い独自 type の Entry は catalog では先頭の型に落ちるので、画面の「一括承認の対象」は見込み（文言を「見込み」に変えた）。実際に承認する件数は実行時の再検査の後で、外れた件数は報告する。catalog に型の slug 本体を持たせる直し方は保存形式の変更なので別 lane。
+- **commit の trailer**：8 commit の trailer は Claude Sonnet 5.5（セッションの attribution に合わせた）。commit 3（`be6b8bdc`）の message は「次の commit」で再検査を入れると書くが、述語の二股化はこの commit に入っている。push 前に整理するなら squash か message の修正（履歴の書き換えが要るので、この枝で push する前にだけ）。

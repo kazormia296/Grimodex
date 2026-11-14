@@ -8,6 +8,7 @@ import {
   inspectExactEntityMatch,
   type ExistingEntityCatalogRecord,
 } from "./existingEntityMatcher";
+import { candidateKey } from "../codexCandidates";
 import { isRelationalTerm } from "./relationalTerms";
 
 /**
@@ -36,6 +37,11 @@ export type ExactBindDecline =
   | "enrichment"
   /** 呼び名（続柄・二人称・三人称）に当たる表記。 */
   | "relational-term"
+  /**
+   * 表記が 1 字。1 字の名前は、語の一部だけが当たる他の Entry（蓮と蓮司）を照合が数えないので、
+   * (h) の防御が働かない。読まずには通さない。
+   */
+  | "single-char"
   /** 結び先が名簿に無い（削除された・catalog に無い）。 */
   | "target-missing"
   /** 表記が結び先の名前・別名に完全一致しない（改名・別名の削除を含む）。 */
@@ -60,9 +66,31 @@ interface BindTargetRecord {
   readonly typeSlug: string | null;
 }
 
+/** 判定に使う Entry 群の索引。同じ参照では 1 回だけ作り、提案ごとの全 Entry の作り直しを避ける。 */
+interface PreparedBindRecords {
+  readonly byKey: ReadonlyMap<string, BindTargetRecord>;
+  readonly asCatalog: readonly ExistingEntityCatalogRecord[];
+}
+
+function prepareBindRecords(
+  records: readonly BindTargetRecord[],
+): PreparedBindRecords {
+  return {
+    byKey: new Map(records.map((record) => [record.key, record] as const)),
+    asCatalog: records.map((record) => ({
+      ref: record.key,
+      sourceKey: record.key,
+      name: record.name,
+      aliases: record.aliases,
+      typeRef: "",
+      expectedVersion: 0,
+    })),
+  };
+}
+
 function evaluateExactBind(
   payload: BindCodexEntityPayload,
-  records: readonly BindTargetRecord[],
+  prepared: PreparedBindRecords,
   targetKey: string | null,
 ): ExactBindVerdict {
   const binding = payload.binding;
@@ -79,21 +107,16 @@ function evaluateExactBind(
   if (isRelationalTerm(payload.canonicalName)) {
     return { ok: false, reason: "relational-term" };
   }
-  const target =
-    targetKey === null
-      ? undefined
-      : records.find((record) => record.key === targetKey);
+  if (Array.from(candidateKey(payload.canonicalName)).length < 2) {
+    return { ok: false, reason: "single-char" };
+  }
+  const target = targetKey === null ? undefined : prepared.byKey.get(targetKey);
   if (!target) return { ok: false, reason: "target-missing" };
 
-  const asCatalog: ExistingEntityCatalogRecord[] = records.map((record) => ({
-    ref: record.key,
-    sourceKey: record.key,
-    name: record.name,
-    aliases: record.aliases,
-    typeRef: "",
-    expectedVersion: 0,
-  }));
-  const inspection = inspectExactEntityMatch(payload.canonicalName, asCatalog);
+  const inspection = inspectExactEntityMatch(
+    payload.canonicalName,
+    prepared.asCatalog,
+  );
   if (!inspection.exactRefs.includes(target.key)) {
     return { ok: false, reason: "no-exact-match" };
   }
@@ -108,6 +131,15 @@ function evaluateExactBind(
   }
   return { ok: true };
 }
+
+const preparedByCatalog = new WeakMap<
+  CodexStructureCatalogSnapshot,
+  PreparedBindRecords
+>();
+const preparedByEntries = new WeakMap<
+  readonly CurrentCodexEntryRecord[],
+  PreparedBindRecords
+>();
 
 function recordsFromCatalog(
   catalog: CodexStructureCatalogSnapshot,
@@ -136,17 +168,18 @@ export function evaluateExactBindFromCatalog(
     return { ok: false, reason: "not-bind-existing" };
   }
   if (!catalog) return { ok: false, reason: "target-missing" };
-  return evaluateExactBind(
-    payload,
-    recordsFromCatalog(catalog),
-    payload.binding.entityRef,
-  );
+  let prepared = preparedByCatalog.get(catalog);
+  if (!prepared) {
+    prepared = prepareBindRecords(recordsFromCatalog(catalog));
+    preparedByCatalog.set(catalog, prepared);
+  }
+  return evaluateExactBind(payload, prepared, payload.binding.entityRef);
 }
 
 /** 今の Codex の Entry（`listCodexEntries` の行の必要な列）。 */
 export interface CurrentCodexEntryRecord {
   readonly id: string;
-  readonly name: string | null;
+  readonly name?: string | null;
   readonly aliases: string | null;
   readonly type: string;
   readonly version: number;
@@ -168,16 +201,20 @@ export function recheckExactBindAgainstEntries(
   const targetKey =
     catalog?.entities.find((entity) => entity.ref === entityRef)?.sourceKey ??
     entityRef;
-  return evaluateExactBind(
-    payload,
-    entries.map((entry) => ({
-      key: entry.id,
-      name: entry.name ?? "",
-      aliases: entry.aliases,
-      typeSlug: entry.type || null,
-    })),
-    targetKey,
-  );
+  // 同じ entries の配列（一括・Apply の前の検査のループ）では、索引と正規化済みのキーを使い回す。
+  let prepared = preparedByEntries.get(entries);
+  if (!prepared) {
+    prepared = prepareBindRecords(
+      entries.map((entry) => ({
+        key: entry.id,
+        name: entry.name ?? "",
+        aliases: entry.aliases,
+        typeSlug: entry.type || null,
+      })),
+    );
+    preparedByEntries.set(entries, prepared);
+  }
+  return evaluateExactBind(payload, prepared, targetKey);
 }
 
 // ---------------------------------------------------------------------------

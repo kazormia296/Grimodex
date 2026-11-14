@@ -111,6 +111,7 @@ import {
   buildCodexEntityProposalSafetyFlags,
   buildCodexPhaseProposalSafetyFlags,
   emptyCodexTaskCounts,
+  isSafeExistingExactBindForCodexEntityBulkApprove,
   isSafeForCodexEntityBulkApprove,
   useCodexStructureExtractionStore,
   type CodexCompiledDomainOperation,
@@ -2906,7 +2907,10 @@ function rebuildEntityFromNative(args: {
 /** decision の記録（decisionJson）から、一括で通した印と、承認前へ戻された印を復元する。 */
 function bindDecisionMarksFromNative(
   native: ReviewBundleProposal,
-): Pick<CodexEntityReviewProposal, "bulkApprovedExactBind" | "staleBind"> {
+): Pick<
+  CodexEntityReviewProposal,
+  "bulkApprovedExactBind" | "staleBind" | "staleBindCause"
+> {
   const decision = native.latestDecision;
   if (!decision || decision.revisionId !== native.currentRevisionId) {
     return {};
@@ -2919,7 +2923,12 @@ function bindDecisionMarksFromNative(
       : {}),
     ...(native.status === "deferred" &&
     json?.reason === STALE_BIND_DECISION_REASON
-      ? { staleBind: true }
+      ? {
+          staleBind: true,
+          ...(typeof json.cause === "string"
+            ? { staleBindCause: json.cause }
+            : {}),
+        }
       : {}),
   };
 }
@@ -3528,6 +3537,21 @@ function defaultEncodePhaseWrite(
 }
 
 /**
+ * 実体の op のうち bind-existing を、同じ Entry に向く patch より先に並べる（安定な並べ替え）。
+ * 順序は commit の適用順だけに効き、各 op の payload（revision の digest と照合される）は変えない。
+ */
+export function orderBindExistingBeforePatch<
+  T extends { readonly operation: CodexDomainOperationV1 },
+>(operations: readonly T[]): T[] {
+  const rank = (item: T) =>
+    item.operation.kind === "codex.entity.bind-existing" ? 0 : 1;
+  return operations
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => rank(a.item) - rank(b.item) || a.index - b.index)
+    .map(({ item }) => item);
+}
+
+/**
  * Compile approved Bind + Relation + Base Detail + Phase proposals and apply
  * via codexCommitCoordinator (entity bindings first, then Phase/Detail via CommitMap).
  * Prefer operation payloads locked at approve time (`compiledOperation`) so Native
@@ -3546,6 +3570,8 @@ async function excludeStaleEntityApprovals(
 ): Promise<{
   readonly projection: CodexStructureExtractionReviewProjection;
   readonly excluded: readonly ApplyExcludedEntityApproval[];
+  /** 外す途中の失敗。済んだ分（`excluded`）は報告してから投げ直す。 */
+  readonly failure?: unknown;
 }> {
   const entries = input.entries;
   const named =
@@ -3613,56 +3639,80 @@ async function excludeStaleEntityApprovals(
   if (excluded.length === 0) return { projection, excluded };
 
   const scope = captureReviewEditScope(projection);
-  // 1 件ずつ Native → store の順に進める。途中で失敗しても、済んだ分は Native と store が揃い、
-  // 失敗したときは Native から組み直して store を合わせる。
+  // 1 件ずつ、その提案の編集キューの中で Native → store の順に進める（カードの承認・拒否と
+  // 競合しない）。キューの中で最新の状態を読み直し、作者が先に承認し直し・拒否したものは外さない。
+  // 途中で失敗しても、済んだ分は Native と store が揃い、報告できるよう `failure` に分けて返す。
+  const done: ApplyExcludedEntityApproval[] = [];
+  let failure: unknown = null;
   for (const item of excluded) {
-    const review = projection.proposals.find(
-      (row) => row.proposalId === item.proposalId,
-    )!;
     try {
-      await appendHumanDecision({
-        runId: projection.runId,
-        projectId: projection.projectId,
-        proposalId: review.proposalId,
-        revisionId: review.revisionId!,
-        decision: "deferred",
-        decisionJson: {
-          reason: STALE_BIND_DECISION_REASON,
-          cause: item.reason,
-        },
-        createdBy: "codex-structure-extract-dialog",
+      const applied = await enqueueProposalEdit(item.proposalId, async () => {
+        const current = useCodexStructureExtractionStore
+          .getState()
+          .projection?.proposals.find(
+            (row) => row.proposalId === item.proposalId,
+          );
+        if (
+          !current ||
+          current.status !== "approved" ||
+          current.application ||
+          !current.revisionId
+        ) {
+          return false;
+        }
+        try {
+          await appendHumanDecision({
+            runId: projection.runId,
+            projectId: projection.projectId,
+            proposalId: current.proposalId,
+            revisionId: current.revisionId,
+            decision: "deferred",
+            decisionJson: {
+              reason: STALE_BIND_DECISION_REASON,
+              cause: item.reason,
+            },
+            createdBy: "codex-structure-extract-dialog",
+          });
+        } catch (error) {
+          await resyncReviewAfterEditFailure(scope);
+          throw error;
+        }
+        const latest =
+          useCodexStructureExtractionStore.getState().projection ?? projection;
+        const proposals = latest.proposals.map((row) =>
+          row.proposalId === item.proposalId
+            ? {
+                ...row,
+                status: "deferred" as const,
+                compiledOperation: null,
+                bulkApprovedExactBind: false,
+                staleBind: true,
+                staleBindCause: item.reason,
+              }
+            : row,
+        );
+        useCodexStructureExtractionStore.getState().setProjection({
+          ...latest,
+          proposals,
+          ...recountProjection(
+            proposals,
+            latest.relationProposals,
+            latest.baseDetailProposals,
+            latest.phaseProposals,
+          ),
+        });
+        return true;
       });
+      if (applied) done.push(item);
     } catch (error) {
-      await resyncReviewAfterEditFailure(scope);
-      throw error;
+      failure = error;
+      break;
     }
-    const latest =
-      useCodexStructureExtractionStore.getState().projection ?? projection;
-    const proposals = latest.proposals.map((row) =>
-      row.proposalId === item.proposalId
-        ? {
-            ...row,
-            status: "deferred" as const,
-            compiledOperation: null,
-            bulkApprovedExactBind: false,
-            staleBind: true,
-          }
-        : row,
-    );
-    useCodexStructureExtractionStore.getState().setProjection({
-      ...latest,
-      proposals,
-      ...recountProjection(
-        proposals,
-        latest.relationProposals,
-        latest.baseDetailProposals,
-        latest.phaseProposals,
-      ),
-    });
   }
   return {
     projection: useCodexStructureExtractionStore.getState().projection!,
-    excluded,
+    excluded: done,
+    failure,
   };
 }
 
@@ -3677,8 +3727,11 @@ export async function applyCodexStructureExtractionReview(
   if (!initialProjection.proposalSetId) {
     throw new Error("Missing proposalSetId for codex commit");
   }
-  const { projection, excluded: excludedApprovals } =
-    await excludeStaleEntityApprovals(initialProjection, input);
+  const {
+    projection,
+    excluded: excludedApprovals,
+    failure: excludeFailure,
+  } = await excludeStaleEntityApprovals(initialProjection, input);
   const excludedNarrativeEntityIds = new Set(
     projection.proposals
       .filter((proposal) =>
@@ -3691,6 +3744,8 @@ export async function applyCodexStructureExtractionReview(
   if (excludedApprovals.length > 0) {
     input.onEntityApprovalsExcluded?.(excludedApprovals);
   }
+  // 外す途中で失敗したときは、保留に戻した分を報告した上で投げ直す（Apply はしない）。
+  if (excludeFailure) throw excludeFailure;
 
   // Preflight: rematch existing Relations so Apply never sends semantic duplicates.
   const rematchedRelations = rematchCodexRelationProposals({
@@ -3809,6 +3864,14 @@ export async function applyCodexStructureExtractionReview(
       revisionId,
     });
   }
+  // 同じ Entry に向く patch（Entry の版を上げる）と bind-existing（承認時の版を再検査する）が
+  // 1 回の commit に並ぶと、順に適用されるので、先の patch の後に bind が版違いで落ちる。
+  // bind は行を書かず版も変えないので、bind を先に並べれば通る。固定した payload は変えない。
+  operations.splice(
+    0,
+    operations.length,
+    ...orderBindExistingBeforePatch(operations),
+  );
 
   const approvedRelations = active.relationProposals.filter(
     (proposal) =>
@@ -3995,6 +4058,46 @@ function compileEntityOperationForReview(
   return null;
 }
 
+/** 一括承認の編集キューの中で、結び付けが一括の条件を満たさなくなっていたことを示す。 */
+export class BulkExactBindNoLongerSafeError extends Error {
+  constructor(
+    readonly reason: ExactBindDecline | "no-longer-safe" | "not-bind-operation",
+  ) {
+    super(`bulk exact-bind no longer safe: ${reason}`);
+    this.name = "BulkExactBindNoLongerSafeError";
+  }
+}
+
+function assertBulkExactBindStillSafe(
+  entity: CodexEntityReviewProposal,
+  catalog: CodexStructureCatalogSnapshot | null | undefined,
+  entries: ApplyCodexStructureExtractionInput["entries"] | undefined,
+): void {
+  if (
+    entity.applicability !== "applicable" ||
+    entity.status !== "unreviewed" ||
+    entity.application ||
+    entity.proposal.payload.binding.kind !== "bind-existing" ||
+    !isSafeExistingExactBindForCodexEntityBulkApprove(entity.safety) ||
+    !entries
+  ) {
+    throw new BulkExactBindNoLongerSafeError("no-longer-safe");
+  }
+  const verdict = recheckExactBindAgainstEntries(
+    entity.proposal.payload,
+    catalog,
+    entries,
+  );
+  if (!verdict.ok) throw new BulkExactBindNoLongerSafeError(verdict.reason);
+  // 通すのは Codex の行を書かない bind だけ。patch に compile される組は外す。
+  if (
+    compileEntityOperationForReview(entity, catalog, { entries })?.kind !==
+    "codex.entity.bind-existing"
+  ) {
+    throw new BulkExactBindNoLongerSafeError("not-bind-operation");
+  }
+}
+
 export async function decideCodexStructureProposal(args: {
   readonly proposalId: string;
   readonly status: NarrativeProposalStatus;
@@ -4065,6 +4168,15 @@ export async function decideCodexStructureProposal(args: {
       if (args.status === "approved") {
         if (kind === "entity") {
           const entity = proposal as CodexEntityReviewProposal;
+          // 一括の結び付けは、編集キューの中の最新の提案にもう一度条件をかける（一括の再検査の後に
+          // 1 件ずつの編集が先にキューへ入っていても、編集後の内容をそのまま通さない）。
+          if (args.bulkExactBind) {
+            assertBulkExactBindStillSafe(
+              entity,
+              projection.catalog,
+              args.entries,
+            );
+          }
           const operation = compileEntityOperationForReview(
             entity,
             projection.catalog,
@@ -4246,6 +4358,7 @@ export async function decideCodexStructureProposal(args: {
                 bulkApprovedExactBind:
                   args.status === "approved" && args.bulkExactBind === true,
                 staleBind: false,
+                staleBindCause: undefined,
               }
             : item,
         ),
@@ -4385,7 +4498,16 @@ export async function bulkApproveSafeCodexStructureProposals(
 
   for (const initial of targets) {
     const latest = useCodexStructureExtractionStore.getState().projection;
-    if (!latest || !reviewEditScopeMatches(latest, scope)) break;
+    if (!latest || !reviewEditScopeMatches(latest, scope)) {
+      // review が別の run・scope に変わった。残りは承認せず、報告だけ残す。
+      for (const rest of targets.slice(targets.indexOf(initial))) {
+        excluded.push({
+          proposalId: rest.proposalId,
+          reason: "no-longer-safe",
+        });
+      }
+      break;
+    }
     const proposal = latest.proposals.find(
       (item) => item.proposalId === initial.proposalId,
     );
@@ -4450,6 +4572,13 @@ export async function bulkApproveSafeCodexStructureProposals(
       if (isBind) approvedBindExisting += 1;
       else approvedCreateNew += 1;
     } catch (error) {
+      if (error instanceof BulkExactBindNoLongerSafeError) {
+        excluded.push({
+          proposalId: proposal.proposalId,
+          reason: error.reason,
+        });
+        continue;
+      }
       failed.push({
         proposalId: proposal.proposalId,
         error: error instanceof Error ? error.message : String(error),
@@ -4523,7 +4652,14 @@ export async function reviseCodexStructureProposal(args: {
       ...mid,
       proposals: mid.proposals.map((proposal) =>
         proposal.proposalId === args.proposalId
-          ? { ...proposal, revisionId: result.revisionId, status: "unreviewed" }
+          ? {
+              ...proposal,
+              revisionId: result.revisionId,
+              status: "unreviewed",
+              bulkApprovedExactBind: false,
+              staleBind: false,
+              staleBindCause: undefined,
+            }
           : proposal,
       ),
     });

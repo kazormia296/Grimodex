@@ -45,7 +45,7 @@ const CATALOG: CodexStructureCatalogSnapshot = {
       name: "リク",
       typeRef: "T0001",
       expectedVersion: 1,
-      aliases: ["陸"],
+      aliases: ["陸", "陸斗"],
     },
     {
       ref: "K0005",
@@ -113,8 +113,38 @@ describe("evaluateExactBindFromCatalog（設計 §3.2 の 3）", () => {
 
   it("別名に完全一致しても、結び先と同じ 1 Entry なら通す", () => {
     expect(
-      evaluateExactBindFromCatalog(bindPayload("陸", "K0003"), CATALOG),
+      evaluateExactBindFromCatalog(bindPayload("陸斗", "K0003"), CATALOG),
     ).toEqual({ ok: true });
+  });
+
+  it("1 字の表記は、完全一致でも読まずには通さない（蓮と蓮司のような部分一致を照合が数えない）", () => {
+    expect(
+      evaluateExactBindFromCatalog(bindPayload("陸", "K0003"), CATALOG),
+    ).toEqual({ ok: false, reason: "single-char" });
+    const catalog: CodexStructureCatalogSnapshot = {
+      ...CATALOG,
+      entities: [
+        {
+          ref: "K0010",
+          sourceKey: "entry-ren",
+          name: "蓮",
+          typeRef: "T0001",
+          expectedVersion: 1,
+          aliases: [],
+        },
+        {
+          ref: "K0011",
+          sourceKey: "entry-renji",
+          name: "蓮司",
+          typeRef: "T0001",
+          expectedVersion: 1,
+          aliases: [],
+        },
+      ],
+    };
+    expect(
+      evaluateExactBindFromCatalog(bindPayload("蓮", "K0010"), catalog),
+    ).toEqual({ ok: false, reason: "single-char" });
   });
 
   it("(a) create-new・unresolved は対象外", () => {
@@ -347,6 +377,10 @@ describe("recheckExactBindAgainstEntries（今の Codex での再検査）", () 
   });
 });
 
+// ここで固定するのは compile の種類（別名・要約の追加が無ければ bind-existing、あれば patch）だけ。
+// 「bind-existing は Codex の行を書かない」こと自体は、Rust の統合試験
+// `bind_existing_undo_redo_never_touches_entry_row`（grimodex-db/tests/codex_narrative_commit.rs）が、
+// apply 直後の Entry の行の指紋が変わらないことで保証する。
 describe("bind-existing は Codex の行を書かない op（判定の前提）", () => {
   it("別名の追加も要約の fill も無ければ codex.entity.bind-existing になり、あれば patch になる", () => {
     const base = {
