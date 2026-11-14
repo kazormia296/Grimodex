@@ -24,7 +24,10 @@ permissions:
 jobs:
   certify:
     name: Gate B2 first attempt
-    runs-on: ubuntu-latest
+    # ubuntu-latest の一部の runner が 26.04 になり、Playwright 1.60 は 26.04 の chromium を入れられない
+    # （"Playwright does not support chromium on ubuntu26.04-x64"。cache が外れた run だけ落ちる）。
+    # Browser job（#732）と同じく image を明示し、26.04 への移行は Playwright の対応後に意図して行う。
+    runs-on: ubuntu-24.04
     timeout-minutes: 240
     env:
       GATE_B2_CANDIDATE_SHA: ${{ inputs.candidate_sha }}

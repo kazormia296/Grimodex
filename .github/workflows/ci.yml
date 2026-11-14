@@ -372,7 +372,10 @@ jobs:
   webgl:
     name: WebGL (deterministic SwiftShader)
     if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
-    runs-on: ubuntu-latest
+    # ubuntu-latest の一部の runner が 26.04 になり、Playwright 1.60 は 26.04 の chromium を入れられない
+    # （"Playwright does not support chromium on ubuntu26.04-x64"。cache が外れた run だけ落ちる）。
+    # Browser job（#732）と同じく image を明示し、26.04 への移行は Playwright の対応後に意図して行う。
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -424,7 +427,10 @@ jobs:
   storybook:
     name: Storybook (Vitest browser)
     if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
-    runs-on: ubuntu-latest
+    # ubuntu-latest の一部の runner が 26.04 になり、Playwright 1.60 は 26.04 の chromium を入れられない
+    # （"Playwright does not support chromium on ubuntu26.04-x64"。cache が外れた run だけ落ちる）。
+    # Browser job（#732）と同じく image を明示し、26.04 への移行は Playwright の対応後に意図して行う。
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
