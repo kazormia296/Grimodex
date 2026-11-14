@@ -575,6 +575,23 @@ pub struct IsRunResumableForReviewResult {
     pub resumable: bool,
 }
 
+/// Read of the Native `codex-catalog` Source revision (DR-CSX-1). The token is
+/// the one `source_revision::resolve_codex_catalog` computes from the DB, so a
+/// caller that binds a Proposal to the Codex catalog never derives it itself.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolveCodexCatalogRevisionPayload {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolveCodexCatalogRevisionResult {
+    pub source_kind: String,
+    pub source_key: String,
+    pub revision_token: String,
+}
+
 /// Project-scoped discovery input for interrupted current Chronicle DAGs.
 /// This is deliberately separate from [`ListResumableRunsPayload`], whose
 /// contract is Review restoration for Runs that already own a ProposalSet.
