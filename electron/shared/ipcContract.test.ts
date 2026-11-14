@@ -709,6 +709,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
         '[{"runId":"r1","projectId":"p1","surfacePathId":"chronicle.extract","status":"completed","snapshotDigest":null,"createdAt":"2026-01-01T00:00:00.000Z","startedAt":null,"completedAt":null}]',
       ),
     ) as never,
+    narrativeExtractionResolveCodexCatalogRevision: record(
+      "narrativeExtractionResolveCodexCatalogRevision",
+      Promise.resolve(
+        '{"sourceKind":"codex-catalog","sourceKey":"project:codex-catalog:p1","revisionToken":"sha256:00"}',
+      ),
+    ) as never,
     narrativeExtractionIsRunResumableForReview: record(
       "narrativeExtractionIsRunResumableForReview",
       Promise.resolve(
@@ -771,7 +777,9 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     ) as never,
     narrativeExtractionChronicleBulkApprove: record(
       "narrativeExtractionChronicleBulkApprove",
-      Promise.resolve('{"approved":[],"skipped":[],"failed":[],"stopped":false}'),
+      Promise.resolve(
+        '{"approved":[],"skipped":[],"failed":[],"stopped":false}',
+      ),
     ) as never,
     narrativeExtractionReviseAndDecide: record(
       "narrativeExtractionReviseAndDecide",
@@ -1177,6 +1185,86 @@ describe("dispatchInvoke", () => {
         args: [{ projectId: "project-resume", limit: 5 }],
       },
     ]);
+  });
+
+  it("Codex catalog revision forwards only the Project and the workspace binding (DR-CSX-1)", async () => {
+    const { backend, calls } = fakeBackend();
+    const result = await dispatchInvoke(
+      "narrative_extraction_resolve_codex_catalog_revision",
+      {
+        payload: { projectId: "p1" },
+        workspaceBinding: extractionWorkspaceBinding,
+      },
+      { backend, shell: noShell },
+    );
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        sourceKind: "codex-catalog",
+        sourceKey: "project:codex-catalog:p1",
+        revisionToken: "sha256:00",
+      },
+    });
+    expect(calls).toEqual([
+      {
+        method: "narrativeExtractionResolveCodexCatalogRevision",
+        args: [{ projectId: "p1" }, extractionWorkspaceBinding],
+      },
+    ]);
+  });
+
+  it("Codex catalog revision rejects malformed payloads, bindings and backend skew", async () => {
+    const { backend, calls } = fakeBackend();
+    for (const args of [
+      { workspaceBinding: extractionWorkspaceBinding },
+      { payload: null, workspaceBinding: extractionWorkspaceBinding },
+      { payload: {}, workspaceBinding: extractionWorkspaceBinding },
+      {
+        payload: { projectId: "" },
+        workspaceBinding: extractionWorkspaceBinding,
+      },
+      {
+        payload: { projectId: " p1" },
+        workspaceBinding: extractionWorkspaceBinding,
+      },
+      {
+        payload: { projectId: "p1", sourceKey: "project:scene:s1" },
+        workspaceBinding: extractionWorkspaceBinding,
+      },
+      { payload: { projectId: "p1" } },
+      {
+        payload: { projectId: "p1" },
+        workspaceBinding: extractionWorkspaceBinding,
+        extra: true,
+      },
+    ]) {
+      const result = await dispatchInvoke(
+        "narrative_extraction_resolve_codex_catalog_revision",
+        args,
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+    expect(calls).toHaveLength(0);
+
+    const missingMethod = await dispatchInvoke(
+      "narrative_extraction_resolve_codex_catalog_revision",
+      {
+        payload: { projectId: "p1" },
+        workspaceBinding: extractionWorkspaceBinding,
+      },
+      {
+        backend: {
+          ...backend,
+          narrativeExtractionResolveCodexCatalogRevision: undefined,
+        },
+        shell: noShell,
+      },
+    );
+    expect(missingMethod).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeExtractionResolveCodexCatalogRevision`,
+    });
   });
 
   it("exact Review resumability forwards all durable Run coordinates", async () => {
@@ -6593,6 +6681,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_list_resumable_runs",
       "narrative_extraction_prepare_commit",
       "narrative_extraction_redo_commit",
+      "narrative_extraction_resolve_codex_catalog_revision",
       "narrative_extraction_revise_and_decide",
       "narrative_extraction_revise_and_decide_as_human",
       "narrative_extraction_save_proposal_set",
