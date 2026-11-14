@@ -14,7 +14,10 @@ import {
   surfaceAliasVerdictForReview,
   CodexSurfaceAliasNotAllowedError,
 } from "./codexStructureExtractionApi";
-import type { CurrentCodexEntryRecord } from "./extraction/entityBulkSafety";
+import {
+  PERSON_TYPE_SLUG,
+  type CurrentCodexEntryRecord,
+} from "./extraction/entityBulkSafety";
 import {
   hasSurfaceAlias,
   type SurfaceAliasDecline,
@@ -172,7 +175,18 @@ export function CodexEntityProposalReview({
     ) {
       return null;
     }
-    const on = hasSurfaceAlias(selected.proposal.payload);
+    const payload = selected.proposal.payload;
+    // AI の明示の別名に同じ表記があれば、既に足される（チェックは効かない）ので出さない。
+    if (
+      payload.aliases.some(
+        (alias) =>
+          alias.status === "explicit" &&
+          alias.surface === payload.canonicalName.trim(),
+      )
+    ) {
+      return null;
+    }
+    const on = hasSurfaceAlias(payload);
     const base = surfaceAliasVerdictForReview(
       selected,
       storeProjection,
@@ -186,11 +200,23 @@ export function CodexEntityProposalReview({
       ? undefined
       : SURFACE_ALIAS_NOTE_KEYS[verdict.reason];
     if (!on && !verdict.ok && !noteKey) return null;
+    // 一括承認（打ち手 2）は結び先が人物の型のときだけなので、連鎖の文言もそのときだけ出す。
+    const binding = payload.binding;
+    const targetTypeRef =
+      binding.kind === "bind-existing"
+        ? storeProjection.catalog?.entities.find(
+            (entity) => entity.ref === binding.entityRef,
+          )?.typeRef
+        : undefined;
+    const targetIsPerson =
+      storeProjection.catalog?.types.find((type) => type.ref === targetTypeRef)
+        ?.slug === PERSON_TYPE_SLUG;
     return {
       on,
       verdict,
       noteKey,
-      surface: selected.proposal.payload.canonicalName,
+      targetIsPerson,
+      surface: payload.canonicalName,
       name: targetNameOf(selected) ?? "",
     };
   })();
@@ -339,9 +365,11 @@ export function CodexEntityProposalReview({
                     });
                   })().catch((error) => {
                     toast.error(
-                      error instanceof Error
-                        ? error.message
-                        : t("codex.structureReview.errorSave"),
+                      error instanceof CodexSurfaceAliasNotAllowedError
+                        ? surfaceAliasErrorMessage(error)
+                        : error instanceof Error
+                          ? error.message
+                          : t("codex.structureReview.errorSave"),
                     );
                   });
                 }}
@@ -545,10 +573,15 @@ export function CodexEntityProposalReview({
                     })}
                   </label>
                   <span className="text-muted-foreground">
-                    {t("codex.structureReview.surfaceAlias.hint", {
-                      surface: surfaceAlias.surface,
-                      name: surfaceAlias.name,
-                    })}
+                    {t(
+                      surfaceAlias.targetIsPerson
+                        ? "codex.structureReview.surfaceAlias.hint"
+                        : "codex.structureReview.surfaceAlias.hintNoBulk",
+                      {
+                        surface: surfaceAlias.surface,
+                        name: surfaceAlias.name,
+                      },
+                    )}
                   </span>
                   {surfaceAlias.on && !surfaceAlias.verdict.ok && (
                     <span

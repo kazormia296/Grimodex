@@ -335,6 +335,30 @@ describe("reviseCodexStructureProposal: 別名に足す印（打ち手 1）", ()
   });
 });
 
+describe("reviseCodexStructureProposal: 何も変わらない切替", () => {
+  it("印が既に入っている提案に true、入っていない提案に false を送っても、revision を作らず状態も変えない", async () => {
+    publish([
+      bindRow("s1", "リクさん", {
+        status: "approved",
+        aliasesToAdd: ["リクさん"],
+      }),
+      bindRow("s2", "リクさん", { status: "approved" }),
+    ]);
+    await reviseCodexStructureProposal({
+      proposalId: "s1",
+      patch: { addSurfaceAlias: true },
+      readEntries: vi.fn().mockResolvedValue(liveEntries()),
+    });
+    await reviseCodexStructureProposal({
+      proposalId: "s2",
+      patch: { addSurfaceAlias: false },
+    });
+    expect(appendRevisionMock).not.toHaveBeenCalled();
+    expect(stored("s1")?.status).toBe("approved");
+    expect(stored("s2")?.status).toBe("approved");
+  });
+});
+
 describe("reviseCodexStructureProposal: 今の Codex での判定", () => {
   it("結び先の除外語が表記を含むと CodexSurfaceAliasNotAllowedError（excluded）で、appendRevision を呼ばない", async () => {
     publish([bindRow("s1", "リクさん")]);

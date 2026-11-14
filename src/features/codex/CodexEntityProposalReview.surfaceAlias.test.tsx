@@ -5,6 +5,7 @@ import { bindExistingCodexEntityProposal } from "@/features/narrative-extraction
 import { CodexEntityProposalReview } from "./CodexEntityProposalReview";
 import {
   CodexSurfaceAliasNotAllowedError,
+  decideCodexStructureProposal,
   reviseCodexStructureProposal,
 } from "./codexStructureExtractionApi";
 import {
@@ -310,5 +311,70 @@ describe("CodexEntityProposalReview: 別名にも足す", () => {
     await waitFor(() => {
       expect(toastMocks.error).toHaveBeenCalledWith("disk full");
     });
+  });
+
+  it("承認が CodexSurfaceAliasNotAllowedError で失敗したら、理由の文言で toast.error を出す", async () => {
+    vi.mocked(decideCodexStructureProposal).mockRejectedValueOnce(
+      new CodexSurfaceAliasNotAllowedError("excluded"),
+    );
+    publish([
+      bindProposal({
+        proposalId: "p1",
+        surface: "リクさん",
+        aliasesToAdd: ["リクさん"],
+      }),
+    ]);
+    render(<CodexEntityProposalReview readEntries={async () => []} />);
+    fireEvent.click(screen.getByRole("button", { name: "承認" }));
+    await waitFor(() => {
+      expect(toastMocks.error).toHaveBeenCalledWith(
+        "結び先の除外語がこの表記を含むので、別名に足しても効きません",
+      );
+    });
+  });
+
+  it("AI の明示の別名に同じ表記がある提案では、チェックを出さない", () => {
+    const proposal = bindProposal({
+      proposalId: "p1",
+      surface: "リクさん",
+      aliasesToAdd: ["リクさん"],
+    });
+    publish([
+      {
+        ...proposal,
+        proposal: {
+          ...proposal.proposal,
+          payload: {
+            ...proposal.proposal.payload,
+            aliases: [{ surface: "リクさん", status: "explicit" }],
+          },
+        },
+      },
+    ]);
+    render(<CodexEntityProposalReview />);
+    expect(screen.queryByTestId("codex-surface-alias")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("codex-surface-alias-note"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("結び先が人物の型でなければ、一括承認の文を出さない", () => {
+    const catalog = catalogWith();
+    publish([bindProposal({ proposalId: "p1", surface: "リクさん" })], {
+      ...catalog,
+      types: [{ ...catalog.types[0]!, slug: "location", label: "場所" }],
+    });
+    render(<CodexEntityProposalReview />);
+    const row = screen.getByTestId("codex-surface-alias");
+    expect(row).toHaveTextContent("自動で「リク」に結ばれます");
+    expect(row).not.toHaveTextContent("まとめて承認");
+  });
+
+  it("結び先が人物の型なら、一括承認の文を出す", () => {
+    publish([bindProposal({ proposalId: "p1", surface: "リクさん" })]);
+    render(<CodexEntityProposalReview />);
+    expect(screen.getByTestId("codex-surface-alias")).toHaveTextContent(
+      "まとめて承認でも通ります",
+    );
   });
 });

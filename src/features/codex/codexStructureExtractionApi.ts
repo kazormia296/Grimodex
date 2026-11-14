@@ -4814,6 +4814,18 @@ export async function reviseCodexStructureProposal(args: {
       current.proposal.payload,
       args.patch,
     );
+    // 印の切替だけで何も変わらない（AI の明示の別名と同じ表記など）ときは、revision を作らない
+    // （作ると承認が戻るだけになる）。
+    const binding = current.proposal.payload.binding;
+    if (
+      Object.keys(args.patch).every((key) => key === "addSurfaceAlias") &&
+      binding.kind === "bind-existing" &&
+      nextPayload.binding.kind === "bind-existing" &&
+      JSON.stringify(nextPayload.binding.enrichment.aliasesToAdd) ===
+        JSON.stringify(binding.enrichment.aliasesToAdd)
+    ) {
+      return;
+    }
     // 別名に足す印を入れるときは、今の Codex（除外語を含む）で足してよい表記かを確かめる。
     // Native には何も書いていないので、失敗時の再同期の外で投げる。
     if (args.patch.addSurfaceAlias === true && hasSurfaceAlias(nextPayload)) {

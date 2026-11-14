@@ -2369,6 +2369,7 @@
       "surfaceAlias": {
         "label": "Also add \"{{surface}}\" as an alias of \"{{name}}\"",
         "hint": "An alias applies in every scene of the work. In later extractions \"{{surface}}\" is bound to \"{{name}}\" automatically and passes bulk approval. If it is wrong, remove it from the aliases in the Codex editor.",
+        "hintNoBulk": "An alias applies in every scene of the work. In later extractions \"{{surface}}\" is bound to \"{{name}}\" automatically. If it is wrong, remove it from the aliases in the Codex editor.",
         "saveFailed": "Failed to save the alias setting",
         "notAllowed": {
           "sameEntryPatch": "Another proposal already adds aliases or a summary to the same entry, so this one cannot add an alias (the import would fail as a whole)",
