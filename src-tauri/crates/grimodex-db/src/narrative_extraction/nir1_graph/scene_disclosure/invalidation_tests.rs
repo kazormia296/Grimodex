@@ -546,7 +546,7 @@ fn e3_bulk_and_temporal_operations_expire() {
     );
     assert_expired(&env, "b2", &second, "bulk clear date");
 
-    env.with_conn(|conn| {
+    env.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |tx| {
             let version: i64 =
                 tx.query_row("SELECT version FROM tree_nodes WHERE id = 'b3'", [], |r| r.get(0))?;
@@ -563,7 +563,7 @@ fn e3_bulk_and_temporal_operations_expire() {
     assert_expired(&env, "b3", &third, "temporal Chronicle metadata patch");
 
     let fourth = arm(&env, "b3");
-    env.with_conn(|conn| {
+    env.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |tx| {
             let version: i64 =
                 tx.query_row("SELECT version FROM tree_nodes WHERE id = 'b3'", [], |r| r.get(0))?;
@@ -755,7 +755,7 @@ fn e4_codex_character_restore_invalidating_a1_expires() {
     set_query_holder_to_character(&env);
     let declared = arm(&env, SCENE);
 
-    let events = env.with_conn(|conn| {
+    let events = env.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |tx| {
             invalidate_character_references_with_events_in_tx(tx, "p1", "c1", T2)
         })

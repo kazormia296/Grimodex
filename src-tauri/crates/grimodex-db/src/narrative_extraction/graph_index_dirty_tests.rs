@@ -81,10 +81,10 @@ fn publish_graph(db: &Database, runtime: &NirChronicleIndexRuntime) -> Result<i6
     let snapshot = db.with_read_transaction(|conn| {
         nir1_entity_relation_index::prepare_graph_index_build(conn, runtime, PROJECT)
     })?;
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-            &tx, runtime, snapshot,
+            &mut tx, runtime, snapshot,
         )?;
         tx.commit()?;
         Ok(binding.generation)
@@ -1237,10 +1237,10 @@ fn x15_a_lent_registration_survives_a_body_save_but_not_a_graph_input_write() ->
     assert_eq!(graph(&fx.db)?, before);
     assert!(graph_complete(&fx.db)?, "the registration is still usable");
     // A snapshot sealed before the save still describes B's input.
-    let republished = fx.db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    let republished = fx.db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-            &tx,
+            &mut tx,
             &fx.runtime,
             snapshot,
         )?;
@@ -1256,10 +1256,10 @@ fn x15_a_lent_registration_survives_a_body_save_but_not_a_graph_input_write() ->
         !graph_complete(&fx.db)?,
         "the same commit made the registration unusable"
     );
-    let error = fx.db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    let error = fx.db.with_conn_mut(|conn| {
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         let outcome = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
-            &tx,
+            &mut tx,
             &fx.runtime,
             stale,
         );
@@ -1315,7 +1315,7 @@ fn scope_columns(db: &Database) -> Result<Vec<Vec<rusqlite::types::Value>>> {
 fn tables_written(db: &Database, write: impl FnOnce() -> Result<()>) -> Result<BTreeSet<String>> {
     let written = Arc::new(Mutex::new(BTreeSet::new()));
     let sink = Arc::clone(&written);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         conn.update_hook(Some(
             move |_: rusqlite::hooks::Action, _: &str, table: &str, _: i64| {
                 sink.lock().expect("hook sink").insert(table.to_owned());
@@ -1324,7 +1324,7 @@ fn tables_written(db: &Database, write: impl FnOnce() -> Result<()>) -> Result<B
         Ok(())
     })?;
     let outcome = write();
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         conn.update_hook(None::<fn(rusqlite::hooks::Action, &str, &str, i64)>)?;
         Ok(())
     })?;

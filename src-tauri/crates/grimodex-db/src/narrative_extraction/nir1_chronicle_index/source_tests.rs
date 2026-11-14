@@ -842,7 +842,7 @@ fn nir1_scope_sql_failures_propagate_from_both_readers() {
     // material preload with SourceNotBeforeQuery.
     let query_scene_id = f.manifest["s2"].as_str().expect("query scene").to_owned();
     crate::narrative_extraction::MATERIAL_SCOPE_PRELOAD_QUERY_COUNT.with(|count| count.set(0));
-    f.db.with_conn(|conn| {
+    f.db.with_conn_mut(|conn| {
         conn.authorizer(Some(|context: AuthContext<'_>| {
             if matches!(
                 context.action,
@@ -859,8 +859,8 @@ fn nir1_scope_sql_failures_propagate_from_both_readers() {
             }
         }))?;
         let snapshot_result = {
-            let tx = conn.unchecked_transaction()?;
-            let result = super::build::read_snapshot(&tx, &project_id);
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            let result = super::build::read_snapshot(&mut tx, &project_id);
             anyhow::ensure!(
                 result.is_err(),
                 "scope-table authorizer failure must escape read_snapshot"
@@ -870,9 +870,9 @@ fn nir1_scope_sql_failures_propagate_from_both_readers() {
         drop(snapshot_result);
         crate::narrative_extraction::MATERIAL_SCOPE_PRELOAD_QUERY_COUNT.with(|count| count.set(0));
         let eligibility_result = {
-            let tx = conn.unchecked_transaction()?;
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
             let result = crate::narrative_extraction::read_revision_retrieval_eligibility(
-                &tx,
+                &mut tx,
                 &project_id,
                 &revision_id,
                 &query_scene_id,

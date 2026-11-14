@@ -9,7 +9,7 @@ description = "Shared post-effect orchestration for the Tauri and Electron backe
 [dependencies]
 anyhow = "1"
 hex = "0.4"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.11"
@@ -23,7 +23,7 @@ grimodex-db = { path = "../grimodex-db" }
 grimodex-lint = { path = "../grimodex-lint" }
 
 [dev-dependencies]
-rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+rusqlite = { version = "0.41", features = ["bundled", "backup"] }
 # 送信前の監査 commit が FULL で行われることを試験で確かめる（試験専用の feature）。
 grimodex-db = { path = "../grimodex-db", features = ["ai-audit-commit-test-probe"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

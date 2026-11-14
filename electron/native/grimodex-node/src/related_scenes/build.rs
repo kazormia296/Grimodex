@@ -566,7 +566,7 @@ fn prepare_on_reader_with_mode(
         )));
     };
     let read_admission =
-        |conn: &_| runtime.chronicle_reader_admission(conn, project, &mut *control);
+        |conn: &mut _| runtime.chronicle_reader_admission(conn, project, &mut *control);
     let admission_read = match mode {
         TickMode::Foreground => db
             .with_participant_read_transaction(participant, read_admission)

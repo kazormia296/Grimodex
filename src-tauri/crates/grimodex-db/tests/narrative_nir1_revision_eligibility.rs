@@ -89,11 +89,9 @@ impl Drop for Fixture {
     }
 }
 
-fn assert_unavailable(conn: &Connection, fixture: &Fixture, case: &str) {
-    let tx = conn
-        .unchecked_transaction()
-        .expect("coherent unavailable read");
-    let actual = read_revision_canonical_freshness(&tx, fixture.project(), fixture.child())
+fn assert_unavailable(conn: &mut Connection, fixture: &Fixture, case: &str) {
+    let mut tx = grimodex_db::ScopedTransaction::begin(conn).expect("coherent unavailable read");
+    let actual = read_revision_canonical_freshness(&mut tx, fixture.project(), fixture.child())
         .expect("missing or inconsistent Freshness has a typed result");
     assert!(
         matches!(actual, RevisionFreshnessRead::Unavailable { .. }),
@@ -102,14 +100,12 @@ fn assert_unavailable(conn: &Connection, fixture: &Fixture, case: &str) {
 }
 
 fn assert_unavailable_reason(
-    conn: &Connection,
+    conn: &mut Connection,
     fixture: &Fixture,
     expected: RevisionFreshnessReason,
 ) {
-    let tx = conn
-        .unchecked_transaction()
-        .expect("exact rejection read snapshot");
-    let actual = read_revision_canonical_freshness(&tx, fixture.project(), fixture.child())
+    let mut tx = grimodex_db::ScopedTransaction::begin(conn).expect("exact rejection read snapshot");
+    let actual = read_revision_canonical_freshness(&mut tx, fixture.project(), fixture.child())
         .expect("typed exact rejection");
     let RevisionFreshnessRead::Unavailable { reason } = actual else {
         panic!("expected {expected:?}, got {actual:?}");
@@ -390,7 +386,7 @@ fn pending_coordinates(conn: &Connection, fixture: &Fixture) -> (i64, i64) {
 }
 
 fn append_native_unrelated_two_event_transaction(db: &Database, fixture: &Fixture) -> i64 {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         let tx = conn.unchecked_transaction()?;
         let object_key = json!({"kind":"scene","sceneId":fixture.scene("s2")});
         let (version, digest): (Option<i64>, Option<String>) = tx.query_row(
@@ -468,9 +464,9 @@ fn private_acknowledge_head(conn: &Connection, fixture: &Fixture) {
 fn exact_cold_human_child_has_legitimate_runless_current_epoch_freshness() {
     let fixture = Fixture::new();
     let before = fixture.digest();
-    let conn = fixture.read_only();
-    let tx = conn.unchecked_transaction().expect("read snapshot");
-    let actual = read_revision_canonical_freshness(&tx, fixture.project(), fixture.child())
+    let mut conn = fixture.read_only();
+    let mut tx = grimodex_db::ScopedTransaction::begin(&mut conn).expect("read snapshot");
+    let actual = read_revision_canonical_freshness(&mut tx, fixture.project(), fixture.child())
         .expect("canonical revision read");
     let RevisionFreshnessRead::Fresh(snapshot) = actual else {
         panic!("normal UI current child must have complete canonical Freshness: {actual:?}");
@@ -514,13 +510,11 @@ fn exact_cold_human_child_has_legitimate_runless_current_epoch_freshness() {
 #[test]
 fn canonical_freshness_requires_a_read_snapshot_and_matching_project() {
     let fixture = Fixture::new();
-    let conn = fixture.read_only();
-    assert!(read_revision_canonical_freshness(&conn, fixture.project(), fixture.child()).is_err());
-    let tx = conn
-        .unchecked_transaction()
-        .expect("project-scoped read snapshot");
+    let mut conn = fixture.read_only();
+    assert!(read_revision_canonical_freshness(&mut conn, fixture.project(), fixture.child()).is_err());
+    let mut tx = grimodex_db::ScopedTransaction::begin(&mut conn).expect("project-scoped read snapshot");
     assert!(matches!(
-        read_revision_canonical_freshness(&tx, "different-project", fixture.child())
+        read_revision_canonical_freshness(&mut tx, "different-project", fixture.child())
             .expect("wrong project is typed unavailable"),
         RevisionFreshnessRead::Unavailable { .. }
     ));
@@ -534,7 +528,7 @@ fn every_edge_requires_fresh_none_without_a_reason_including_later_edges() {
         ("stale", "none", None),
     ] {
         let fixture = Fixture::new();
-        let conn = fixture.corruption_connection();
+        let mut conn = fixture.corruption_connection();
         let edges = selected_edges(&conn, &fixture);
         assert_eq!(edges.len(), 3);
         assert_eq!(conn.execute(
@@ -558,7 +552,7 @@ fn every_edge_requires_fresh_none_without_a_reason_including_later_edges() {
         assert_eq!(canonical["freshness"], "fresh");
         assert_eq!(canonical["action"], "none");
         assert_unavailable(
-            &conn,
+            &mut conn,
             &fixture,
             &format!("later edge {freshness}/{action}/{reason:?}"),
         );
@@ -569,7 +563,7 @@ fn every_edge_requires_fresh_none_without_a_reason_including_later_edges() {
 fn a_nonfresh_or_actionable_canonical_row_cannot_be_overridden_by_fresh_edges() {
     for (freshness, action) in [("stale", "none"), ("fresh", "revalidate-exact")] {
         let fixture = Fixture::new();
-        let conn = fixture.corruption_connection();
+        let mut conn = fixture.corruption_connection();
         assert_eq!(
             conn.execute(
                 "UPDATE narrative_consumer_freshness SET evidence_freshness = ?3, build_action = ?4
@@ -579,7 +573,7 @@ fn a_nonfresh_or_actionable_canonical_row_cannot_be_overridden_by_fresh_edges() 
             .expect("corrupt canonical summary only"),
             1
         );
-        assert_unavailable(&conn, &fixture, "canonical row disagrees with fresh edges");
+        assert_unavailable(&mut conn, &fixture, "canonical row disagrees with fresh edges");
     }
 }
 
@@ -592,9 +586,9 @@ fn missing_canonical_row_edge_state_edge_or_d1_head_is_unavailable() {
         ("D1 head", "DELETE FROM narrative_dependency_declaration_heads WHERE consumer_kind = 'proposal-revision' AND consumer_key = ?1"),
     ] {
         let fixture = Fixture::new();
-        let conn = fixture.corruption_connection();
+        let mut conn = fixture.corruption_connection();
         assert_eq!(conn.execute(sql, [fixture.child()]).expect(case), 1);
-        assert_unavailable(&conn, &fixture, &format!("missing {case}"));
+        assert_unavailable(&mut conn, &fixture, &format!("missing {case}"));
     }
 }
 
@@ -602,7 +596,7 @@ fn missing_canonical_row_edge_state_edge_or_d1_head_is_unavailable() {
 fn canonical_or_edge_state_from_an_older_epoch_is_unavailable() {
     for old_binding in ["canonical", "later-edge"] {
         let fixture = Fixture::new();
-        let conn = fixture.corruption_connection();
+        let mut conn = fixture.corruption_connection();
         let original_epoch: String = conn.query_row(
             "SELECT semantic_epoch_id FROM narrative_consumer_freshness WHERE consumer_key = ?1",
             [fixture.child()], |row| row.get(0),
@@ -632,7 +626,7 @@ fn canonical_or_edge_state_from_an_older_epoch_is_unavailable() {
                 .expect(old_binding),
             1
         );
-        assert_unavailable(&conn, &fixture, &format!("old Epoch on {old_binding}"));
+        assert_unavailable(&mut conn, &fixture, &format!("old Epoch on {old_binding}"));
     }
 }
 
@@ -644,9 +638,9 @@ fn missing_or_mismatched_dependency_and_declaration_digests_are_unavailable() {
         ("wrong sealed D1 digest", "UPDATE narrative_dependency_declaration_sets SET dependency_set_digest = 'sha256:' || printf('%064d', 0) WHERE consumer_key = ?1"),
     ] {
         let fixture = Fixture::new();
-        let conn = fixture.corruption_connection();
+        let mut conn = fixture.corruption_connection();
         assert_eq!(conn.execute(sql, [fixture.child()]).expect(case), 1);
-        assert_unavailable(&conn, &fixture, case);
+        assert_unavailable(&mut conn, &fixture, case);
     }
 }
 
@@ -654,7 +648,7 @@ fn missing_or_mismatched_dependency_and_declaration_digests_are_unavailable() {
 fn a_named_evaluation_run_must_be_a_real_compatible_publisher() {
     for run_id in ["missing-evaluation-run", "interpretation"] {
         let fixture = Fixture::new();
-        let conn = fixture.corruption_connection();
+        let mut conn = fixture.corruption_connection();
         let run = if run_id == "interpretation" {
             fixture.manifest["runId"]
                 .as_str()
@@ -666,7 +660,7 @@ fn a_named_evaluation_run_must_be_a_real_compatible_publisher() {
             "UPDATE narrative_consumer_freshness SET last_evaluated_run_id = ?2 WHERE consumer_key = ?1",
             params![fixture.child(), run],
         ).expect("corrupt only the named evaluator Run"), 1);
-        assert_unavailable(&conn, &fixture, "invalid named publisher Run");
+        assert_unavailable(&mut conn, &fixture, "invalid named publisher Run");
     }
 }
 
@@ -699,7 +693,7 @@ fn native_source_or_scope_changes_block_immediately_and_after_a_forged_ack() {
             )
         };
         native_patch(&db, &fixture, scene, patch, false);
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             assert_eq!(saved_state(conn, &fixture), before_saved);
             assert_saved_fresh_none(conn, &fixture);
             let current = if source == "scene-body" {
@@ -720,22 +714,20 @@ fn native_source_or_scope_changes_block_immediately_and_after_a_forged_ack() {
         })
         .expect("no scheduler delay permits admission after a Native change");
         drop(db);
-        let conn = fixture.corruption_connection();
+        let mut conn = fixture.corruption_connection();
         private_acknowledge_head(&conn, &fixture);
         let (ack, head) = pending_coordinates(&conn, &fixture);
         assert_eq!(ack, head);
         assert_saved_fresh_none(&conn, &fixture);
         if source == "scene-body" {
             assert_unavailable(
-                &conn,
+                &mut conn,
                 &fixture,
                 "current Native token differs even with a forged ACK",
             );
         } else {
-            let tx = conn
-                .unchecked_transaction()
-                .expect("projection token read after forged ACK");
-            let actual = read_revision_canonical_freshness(&tx, fixture.project(), fixture.child())
+            let mut tx = grimodex_db::ScopedTransaction::begin(&mut conn).expect("projection token read after forged ACK");
+            let actual = read_revision_canonical_freshness(&mut tx, fixture.project(), fixture.child())
                 .expect("scope story-order remains a complete read");
             assert!(
                 matches!(actual, RevisionFreshnessRead::Fresh(_)),
@@ -766,7 +758,7 @@ fn same_saved_freshness_and_same_source_token_still_reject_relevant_pending_feed
         json!({"title": "Relevant pending metadata"}),
         true,
     );
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         assert_eq!(scene_token(conn, fixture.scene("s1")), before_token);
         assert_eq!(saved_state(conn, &fixture), before_saved);
         assert_saved_fresh_none(conn, &fixture);
@@ -796,15 +788,15 @@ fn bounded_unrelated_native_pending_feed_preserves_freshness_with_ack_behind_hea
         })
         .expect("unchanged selected dependencies");
     append_native_unrelated_two_event_transaction(&db, &fixture);
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    db.with_conn_mut(|conn| {
+        let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
         assert_eq!(saved_state(&tx, &fixture), before_saved);
         assert_eq!(live_scope_token(&tx, &fixture), before_scope);
         assert_eq!(scene_token(&tx, fixture.scene("s1")), before_source);
         assert_saved_fresh_none(&tx, &fixture);
         let (ack, head) = pending_coordinates(&tx, &fixture);
         assert!(ack < head);
-        let actual = read_revision_canonical_freshness(&tx, fixture.project(), fixture.child())?;
+        let actual = read_revision_canonical_freshness(&mut tx, fixture.project(), fixture.child())?;
         let RevisionFreshnessRead::Fresh(snapshot) = actual else {
             panic!("a completely scanned unrelated Native event must not block: {actual:?}");
         };
@@ -853,14 +845,14 @@ fn native_save_body(db: &Database, fixture: &Fixture, scene: &str, text: &str) {
 }
 
 fn assert_pending_but_fresh(db: &Database, fixture: &Fixture, case: &str) {
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
+    db.with_conn_mut(|conn| {
+        let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
         let (ack, head) = pending_coordinates(&tx, fixture);
         assert!(
             ack < head,
             "{case}: the write must leave a pending Feed range"
         );
-        let actual = read_revision_canonical_freshness(&tx, fixture.project(), fixture.child())?;
+        let actual = read_revision_canonical_freshness(&mut tx, fixture.project(), fixture.child())?;
         assert!(
             matches!(actual, RevisionFreshnessRead::Fresh(_)),
             "{case}: an unrelated Scene's event must not block the Revision: {actual:?}"
@@ -914,7 +906,7 @@ fn body_and_display_events_do_not_block_the_revision_but_a_scope_event_does() {
         false,
     );
     assert_eq!(scope_events(&db), baseline_scope_events + 1);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         assert_unavailable(conn, &fixture, "a Scope-affecting event is pending");
         Ok(())
     })
@@ -942,7 +934,7 @@ fn global_or_unknown_pending_feed_cannot_reuse_the_same_saved_fresh_rows() {
             false,
         );
         drop(db);
-        let conn = fixture.corruption_connection();
+        let mut conn = fixture.corruption_connection();
         let before_saved = saved_state(&conn, &fixture);
         let (ack, pending_sequence) = pending_coordinates(&conn, &fixture);
         assert!(ack < pending_sequence);
@@ -988,7 +980,7 @@ fn global_or_unknown_pending_feed_cannot_reuse_the_same_saved_fresh_rows() {
         reseal_private_transaction(&conn, &fixture, pending_sequence);
         assert_saved_fresh_none(&conn, &fixture);
         assert_unavailable_reason(
-            &conn,
+            &mut conn,
             &fixture,
             if matches!(case, "component-schema" | "project-reset") {
                 RevisionFreshnessReason::PendingGlobalChange
@@ -1016,7 +1008,7 @@ fn missing_or_ahead_of_head_cursor_and_incomplete_feed_storage_are_unavailable()
         let db = Database::new(&fixture.path).expect("Native private fixture");
         native_patch(&db, &fixture, fixture.scene("s2"), json!({"storyTimeOrder": "nir1-feed-storage-seed"}), false);
         drop(db);
-        let conn = fixture.corruption_connection();
+        let mut conn = fixture.corruption_connection();
         let (ack, pending_sequence) = pending_coordinates(&conn, &fixture);
         assert!(ack < pending_sequence);
         if case == "missing pending Feed transaction" {
@@ -1042,7 +1034,7 @@ fn missing_or_ahead_of_head_cursor_and_incomplete_feed_storage_are_unavailable()
             assert_eq!(retained_events, 2);
         }
         assert_saved_fresh_none(&conn, &fixture);
-        assert_unavailable(&conn, &fixture, case);
+        assert_unavailable(&mut conn, &fixture, case);
     }
 }
 
@@ -1051,12 +1043,12 @@ fn a_missing_trailing_event_cannot_match_the_native_multi_event_transaction_seal
     let fixture = Fixture::new();
     let db = Database::new(&fixture.path).expect("Native private fixture");
     let sequence = append_native_unrelated_two_event_transaction(&db, &fixture);
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         assert_native_transaction_seal(conn, &fixture, sequence);
         let (_, _, input) = stored_transaction_input(conn, &fixture, sequence);
         assert_eq!(input.events.len(), 2);
-        let tx = conn.unchecked_transaction()?;
-        let actual = read_revision_canonical_freshness(&tx, fixture.project(), fixture.child())?;
+        let mut tx = grimodex_db::ScopedTransaction::begin(conn)?;
+        let actual = read_revision_canonical_freshness(&mut tx, fixture.project(), fixture.child())?;
         assert!(
             matches!(actual, RevisionFreshnessRead::Fresh(_)),
             "Native two-event baseline: {actual:?}"
@@ -1065,7 +1057,7 @@ fn a_missing_trailing_event_cannot_match_the_native_multi_event_transaction_seal
     })
     .expect("complete Native unrelated multi-event transaction is Fresh");
     drop(db);
-    let conn = fixture.corruption_connection();
+    let mut conn = fixture.corruption_connection();
     let before_saved = saved_state(&conn, &fixture);
     let (_, original_seal, _) = stored_transaction_input(&conn, &fixture, sequence);
     assert_eq!(
@@ -1082,7 +1074,7 @@ fn a_missing_trailing_event_cannot_match_the_native_multi_event_transaction_seal
     assert_eq!(retained_seal, original_seal);
     assert_ne!(native_input_digest(&surviving_input), retained_seal);
     assert_saved_fresh_none(&conn, &fixture);
-    assert_unavailable_reason(&conn, &fixture, RevisionFreshnessReason::PendingUnknown);
+    assert_unavailable_reason(&mut conn, &fixture, RevisionFreshnessReason::PendingUnknown);
     assert_eq!(saved_state(&conn, &fixture), before_saved);
 }
 
@@ -1092,7 +1084,7 @@ fn pending_event_budget_exhaustion_cannot_treat_a_partial_scan_as_unrelated() {
     let db = Database::new(&fixture.path).expect("Native private fixture");
     append_native_unrelated_two_event_transaction(&db, &fixture);
     drop(db);
-    let conn = fixture.corruption_connection();
+    let mut conn = fixture.corruption_connection();
     let (ack, pending_sequence) = pending_coordinates(&conn, &fixture);
     assert!(ack < pending_sequence);
     // Keep one canonical sequence with 4097 event rows: head equality alone
@@ -1120,7 +1112,7 @@ fn pending_event_budget_exhaustion_cannot_treat_a_partial_scan_as_unrelated() {
     ).expect("expand only the private Feed budget corruption copy"), 4095);
     assert_saved_fresh_none(&conn, &fixture);
     assert_unavailable(
-        &conn,
+        &mut conn,
         &fixture,
         "4097 pending events exceed the complete-scan budget",
     );
@@ -1132,7 +1124,7 @@ fn pending_sequence_budget_exhaustion_cannot_treat_a_partial_scan_as_unrelated()
     let db = Database::new(&fixture.path).expect("Native private fixture");
     append_native_unrelated_two_event_transaction(&db, &fixture);
     drop(db);
-    let conn = fixture.corruption_connection();
+    let mut conn = fixture.corruption_connection();
     let (ack, pending_sequence) = pending_coordinates(&conn, &fixture);
     assert!(ack < pending_sequence);
     let sequence_base: i64 = conn
@@ -1201,7 +1193,7 @@ fn pending_sequence_budget_exhaustion_cannot_treat_a_partial_scan_as_unrelated()
         (ack, sequence_base + 1024)
     );
     assert_saved_fresh_none(&conn, &fixture);
-    assert_unavailable_reason(&conn, &fixture, RevisionFreshnessReason::PendingUnknown);
+    assert_unavailable_reason(&mut conn, &fixture, RevisionFreshnessReason::PendingUnknown);
 }
 
 #[test]
@@ -1212,11 +1204,11 @@ fn canonical_freshness_sql_failures_remain_errors() {
         "narrative_change_events",
     ] {
         let fixture = Fixture::new();
-        let conn = fixture.corruption_connection();
+        let mut conn = fixture.corruption_connection();
         conn.execute_batch(&format!("DROP TABLE {table}"))
             .expect("private SQL-error copy");
-        let tx = conn.unchecked_transaction().expect("SQL-error snapshot");
-        let error = read_revision_canonical_freshness(&tx, fixture.project(), fixture.child())
+        let mut tx = grimodex_db::ScopedTransaction::begin(&mut conn).expect("SQL-error snapshot");
+        let error = read_revision_canonical_freshness(&mut tx, fixture.project(), fixture.child())
             .expect_err("SQL failure must not become a typed unavailable result or Fresh");
         assert!(
             error.downcast_ref::<rusqlite::Error>().is_some(),

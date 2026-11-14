@@ -59,7 +59,7 @@ fn same_project_receipt_cannot_cross_database_authority() {
     let evidence = scheduler_heartbeat(&authority_a, "authority-a", 1);
 
     authority_b
-        .with_conn(|conn| {
+        .with_conn_mut(|conn| {
             let readiness =
                 inspect_workspace_cutover_readiness_with_liveness(conn, Some(&evidence))?;
             assert_eq!(readiness.state, ReadinessState::Blocked);
@@ -116,7 +116,7 @@ fn authority_generation_replacement_rejects_the_previous_receipt() {
     let previous = scheduler_heartbeat(&db, "authority-a", 1);
     let _current = scheduler_heartbeat(&db, "authority-b", 2);
 
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         let readiness = inspect_workspace_cutover_readiness_with_liveness(conn, Some(&previous))?;
         assert_eq!(readiness.state, ReadinessState::Blocked);
         assert!(readiness

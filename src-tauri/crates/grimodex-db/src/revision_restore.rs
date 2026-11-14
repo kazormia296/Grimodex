@@ -727,7 +727,7 @@ mod tests {
     };
 
     fn declare_scene(db: &Database) {
-        db.with_conn(|conn| {
+        db.with_conn_mut(|conn| {
             crate::narrative_extraction::with_immediate_transaction(conn, |conn| {
                 let declaration = test_declaration(conn, PROJECT, "scene-1")?;
                 set_scene_body_declaration_for_test(conn, &declaration)

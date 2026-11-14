@@ -181,7 +181,7 @@ fn seed_acknowledged_cursor(db: &Database, acknowledged: i64, epoch_id: Option<&
 }
 
 fn incremental_readiness(db: &Database) -> (ReadinessState, Vec<String>) {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         let readiness = inspect_project_cutover_readiness(conn, PROJECT_ID)?;
         Ok((
             readiness.incremental_runtime.state,

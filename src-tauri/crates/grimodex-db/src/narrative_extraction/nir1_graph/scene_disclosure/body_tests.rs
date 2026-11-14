@@ -63,7 +63,7 @@ pub(super) fn try_place_real(
 ) -> anyhow::Result<NarrativeSceneBodyDeclarationV1> {
     let workspace = GraphDisclosureWorkspace::from_snapshot(&env.snapshot());
     let parts = workspace.parts().expect("workspace values");
-    env.with_conn(|conn| {
+    env.with_conn_mut(|conn| {
         Ok(with_immediate_transaction(conn, |tx| {
             let RetrievalSceneSourceRead::Available(source) = read_retrieval_scene_source_bounded(
                 tx,
@@ -532,7 +532,7 @@ fn c6_the_excerpt_comes_from_the_text_the_writer_and_the_preview_read() {
 
     // The bounded read (the writer's and the reader's) and the unbounded read
     // give byte-identical canonical text, and the declaration holds its digest.
-    env.with_conn(|conn| {
+    env.with_conn_mut(|conn| {
         with_immediate_transaction(conn, |tx| {
             let RetrievalSceneSourceRead::Available(bounded) = read_retrieval_scene_source_bounded(
                 tx,

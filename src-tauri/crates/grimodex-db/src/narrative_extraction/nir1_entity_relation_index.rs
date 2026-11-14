@@ -653,7 +653,7 @@ fn sort_roster_with_control(
 /// object/token roster.
 #[allow(dead_code)]
 pub(crate) fn read_eligibility_source(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
 ) -> Result<GraphEligibilitySource> {
     // This compatibility entry point represents the foreground Graph owner.
@@ -664,11 +664,11 @@ pub(crate) fn read_eligibility_source(
 }
 
 pub(crate) fn read_eligibility_source_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     control: &mut dyn GraphWorkControl,
 ) -> Result<GraphEligibilitySource> {
-    with_capacity_scope(conn, None, control, |_, control| {
+    with_capacity_scope(conn, None, control, |conn, _, control| {
         read_eligibility_source_bounded(conn, project, None, Some(control))
     })
 }
@@ -676,13 +676,13 @@ pub(crate) fn read_eligibility_source_with_control(
 /// `registration_a2_limit` is `Some` only for the worker's registration. B's
 /// build, publish, Verify and Rebuild pass `None` and behave as before.
 pub(crate) fn read_eligibility_source_with_control_and_scratch(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     control: &mut dyn GraphWorkControl,
     scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
     registration_a2_limit: Option<usize>,
 ) -> Result<GraphEligibilitySource> {
-    with_capacity_scope(conn, None, control, |_, control| {
+    with_capacity_scope(conn, None, control, |conn, _, control| {
         read_eligibility_source_counted(
             conn,
             project,
@@ -724,15 +724,15 @@ fn read_eligibility_source_for_native_build(
 /// Test-only helper exercising SQL cancellation cadences.
 #[cfg(test)]
 fn with_graph_sql_cancellation<T, F>(
-    conn: &Connection,
+    conn: &mut Connection,
     cancellation_epoch: Option<(&Arc<AtomicU64>, u64)>,
     operation: F,
 ) -> Result<T>
 where
-    F: FnOnce() -> Result<T>,
+    F: FnOnce(&mut Connection) -> Result<T>,
 {
     let Some((cancellation_epoch, expected_epoch)) = cancellation_epoch else {
-        return operation();
+        return operation(conn);
     };
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancelled_for_hook = Arc::clone(&cancelled);
@@ -748,7 +748,7 @@ where
             false
         }),
     )?;
-    let result = operation();
+    let result = operation(conn);
     let reset = crate::set_sqlite_progress_handler(conn, 0, None::<fn() -> bool>);
     if let Err(error) = reset {
         return Err(anyhow::anyhow!(
@@ -761,9 +761,9 @@ where
     result
 }
 
-fn with_graph_no_wait<T, F>(conn: &Connection, operation: F) -> Result<T>
+fn with_graph_no_wait<T, F>(conn: &mut Connection, operation: F) -> Result<T>
 where
-    F: FnOnce() -> Result<T>,
+    F: FnOnce(&mut Connection) -> Result<T>,
 {
     let original_timeout_ms: i64 =
         conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
@@ -772,7 +772,7 @@ where
         "SQLite returned a negative busy_timeout"
     );
     conn.busy_timeout(Duration::ZERO)?;
-    let operation_result = operation();
+    let operation_result = operation(conn);
     let restore_result = conn.busy_timeout(Duration::from_millis(original_timeout_ms as u64));
     match (operation_result, restore_result) {
         (Err(error), _) => Err(error),
@@ -942,7 +942,21 @@ impl<'conn> ReusedStatement<'conn> {
         // copy that SQLite keeps until the next bind, and a Revision id can be
         // up to the input limit long, so release the copies too: between uses a
         // slot holds its compiled program and nothing the last Revision named.
-        statement.clear_bindings();
+        // Bind NULL to every parameter instead of `sqlite3_clear_bindings`: since
+        // SQLite 3.54 the planner registers a parameter of an extra `x = ?` term
+        // for reprepare-on-bind (only a change to or from the integers 0 and 1
+        // expires the statement), and `sqlite3_clear_bindings` expires every such
+        // statement, which would reprepare it at each use and undo the reuse
+        // (DR-DBC-4). A bind of NULL frees the copy and keeps the program. A bind
+        // that fails only leaves the previous copy until the next use.
+        // This is weaker than it reads: 3.54 also expires the statement when the
+        // value being overwritten is the integer 0 or 1 (the bind sees a change
+        // from 0/1 to NULL). Every slot here binds a Revision id (text) only, so
+        // no parameter ever holds 0 or 1; a slot that bound such an integer would
+        // reprepare at this call instead of at the next use (DR-DBC-4, P3-8).
+        for index in 1..=statement.parameter_count() {
+            let _ = statement.raw_bind_parameter(index, rusqlite::types::Null);
+        }
         #[cfg(test)]
         if fresh_statements() {
             // The oracle form: one statement per use, finalized right after it.
@@ -2108,13 +2122,13 @@ fn preflight_live_source_lengths<'conn>(
 }
 
 #[cfg(feature = "nir1-material-diagnostics")]
-pub(crate) fn source_capacity_usage(conn: &Connection, project: &str) -> Result<(usize, usize)> {
+pub(crate) fn source_capacity_usage(conn: &mut Connection, project: &str) -> Result<(usize, usize)> {
     let mut usage = SourceCapacity::default();
     with_capacity_scope(
         conn,
         None,
         &mut ForegroundValidationControl,
-        |_, control| {
+        |conn, _, control| {
             read_eligibility_source_counted(conn, project, None, Some(control), None, &mut usage)
         },
     )?;
@@ -2256,12 +2270,12 @@ fn append_revision_roster(
 /// Capacity-diagnostics-only binding read: production readers enter through
 /// `read_with_control` so cancellation and foreground preemption stay owned.
 #[cfg(any(test, feature = "nir1-material-diagnostics"))]
-pub(crate) fn read(conn: &Connection, project: &str) -> Result<BindingRead> {
+pub(crate) fn read(conn: &mut Connection, project: &str) -> Result<BindingRead> {
     read_internal(conn, project, true, true, None)
 }
 
 fn read_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     control: &mut dyn GraphWorkControl,
 ) -> Result<BindingRead> {
@@ -2273,7 +2287,7 @@ fn read_with_control(
 /// exists. This narrow admission recognizes only that exact in-progress
 /// binding; all ordinary registration, Verify, Restore, and query reads still
 /// require the Freshness row.
-pub(crate) fn is_publish_target(conn: &Connection, project: &str, key: &str) -> Result<bool> {
+pub(crate) fn is_publish_target(conn: &mut Connection, project: &str, key: &str) -> Result<bool> {
     if key != INDEX_KEY
         || conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))? < 35
     {
@@ -2342,7 +2356,7 @@ pub(crate) fn preflight_stored_graph_capacity(conn: &Connection, project: &str) 
 }
 
 fn read_internal(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     require_freshness: bool,
     require_current_freshness: bool,
@@ -2356,7 +2370,7 @@ fn read_internal(
         conn,
         None,
         control.unwrap_or(&mut structural),
-        |_, control| {
+        |conn, _, control| {
             read_internal_bounded(
                 conn,
                 project,
@@ -2561,21 +2575,21 @@ fn read_internal_bounded(
     }))
 }
 
-pub(crate) fn is_registered(conn: &Connection, project: &str, key: &str) -> Result<bool> {
+pub(crate) fn is_registered(conn: &mut Connection, project: &str, key: &str) -> Result<bool> {
     let mut control = NeverStopGraphWorkControl;
     is_registered_with_control(conn, project, key, &mut control)
 }
 
 pub(crate) fn is_registered_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     key: &str,
     control: &mut dyn GraphWorkControl,
 ) -> Result<bool> {
     control.check(GraphWorkStage::Coverage)?;
     if conn.is_autocommit() {
-        let tx = conn.unchecked_transaction()?;
-        return is_registered_with_control(&tx, project, key, control);
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+        return is_registered_with_control(&mut tx, project, key, control);
     }
     if key != INDEX_KEY
         || conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))? < 35
@@ -2591,7 +2605,7 @@ pub(crate) fn is_registered_with_control(
 
 /// Check whether the exact Graph binding is completely registered and live
 /// across the whole project.
-pub fn is_complete_registered(conn: &Connection, project: &str, key: &str) -> Result<bool> {
+pub fn is_complete_registered(conn: &mut Connection, project: &str, key: &str) -> Result<bool> {
     let mut control = ForegroundValidationControl;
     is_complete_registered_with_control(conn, project, key, &mut control)
 }
@@ -2601,7 +2615,7 @@ pub fn is_complete_registered(conn: &Connection, project: &str, key: &str) -> Re
 /// this path re-resolves the exact roster and live freshness under the caller
 /// owned control.
 pub(crate) fn is_complete_registered_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     key: &str,
     control: &mut dyn GraphWorkControl,
@@ -2617,7 +2631,7 @@ pub(crate) fn is_complete_registered_with_control(
 /// `registration_a2_limit` is `Some` only for the Graph reader's registration
 /// (CQ-LIM-2); every other caller passes `None`.
 pub(crate) fn is_complete_registered_with_scratch(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     key: &str,
     control: &mut dyn GraphWorkControl,
@@ -2625,9 +2639,9 @@ pub(crate) fn is_complete_registered_with_scratch(
     registration_a2_limit: Option<usize>,
 ) -> Result<bool> {
     if conn.is_autocommit() {
-        let tx = conn.unchecked_transaction()?;
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         return is_complete_registered_with_scratch(
-            &tx,
+            &mut tx,
             project,
             key,
             control,
@@ -2635,7 +2649,7 @@ pub(crate) fn is_complete_registered_with_scratch(
             registration_a2_limit,
         );
     }
-    with_capacity_scope(conn, None, control, |_, control| {
+    with_capacity_scope(conn, None, control, |conn, _, control| {
         is_complete_registered_with_control_unmetered(
             conn,
             project,
@@ -2648,7 +2662,7 @@ pub(crate) fn is_complete_registered_with_scratch(
 }
 
 fn is_complete_registered_with_control_unmetered(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     key: &str,
     control: &mut dyn GraphWorkControl,
@@ -2659,9 +2673,9 @@ fn is_complete_registered_with_control_unmetered(
         return Ok(false);
     }
     if conn.is_autocommit() {
-        let tx = conn.unchecked_transaction()?;
+        let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
         return is_complete_registered_with_scratch(
-            &tx,
+            &mut tx,
             project,
             key,
             control,
@@ -2856,7 +2870,7 @@ fn canonical_instant(value: &str) -> bool {
 
 /// Prepare an opaque, bounded Graph snapshot in a caller-owned read transaction.
 pub fn prepare_graph_index_build(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     project: &str,
 ) -> Result<GraphIndexBuildSnapshot> {
@@ -2867,18 +2881,18 @@ pub fn prepare_graph_index_build(
 }
 
 pub(crate) fn prepare_graph_index_build_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     project: &str,
     control: &mut dyn GraphWorkControl,
 ) -> Result<GraphIndexBuildSnapshot> {
-    with_capacity_scope(conn, None, control, |budget, control| {
+    with_capacity_scope(conn, None, control, |conn, budget, control| {
         prepare_graph_index_build_in_tx(conn, runtime, project, control, Arc::clone(budget))
     })
 }
 
 fn prepare_graph_index_build_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     project: &str,
     control: &mut dyn GraphWorkControl,
@@ -2974,7 +2988,7 @@ fn input_edges_with_control(
 }
 
 fn snapshot_current_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     snapshot: &GraphIndexBuildSnapshot,
     control: &mut dyn GraphWorkControl,
@@ -3022,12 +3036,12 @@ fn ensure_snapshot_edges_are_sealed_with_control(
 /// Publish a sealed Graph snapshot in a caller-owned write transaction.
 // NARRATIVE_DEPENDENCY_PRODUCER: nir1-reviewed-entity-relation-v1
 pub fn publish_nir1_entity_relation_index_in_tx(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     snapshot: GraphIndexBuildSnapshot,
 ) -> Result<StoredBinding> {
     let mut control = ForegroundValidationControl;
-    with_graph_no_wait(conn, || {
+    with_graph_no_wait(conn, |conn| {
         publish_nir1_entity_relation_index_in_tx_inner(conn, runtime, snapshot, &mut control)
     })
 }
@@ -3036,7 +3050,7 @@ pub fn publish_nir1_entity_relation_index_in_tx(
 /// capacity diagnostics. The caller owns the write transaction, the no-wait
 /// connection scope and the finalization grant; this writer is unchanged.
 pub(crate) fn publish_nir1_entity_relation_index_in_tx_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     snapshot: GraphIndexBuildSnapshot,
     control: &mut dyn GraphWorkControl,
@@ -3051,7 +3065,7 @@ pub(crate) fn publish_nir1_entity_relation_index_in_tx_with_control(
 /// Used by the gated maintenance route (closed until PUB-G) and the capacity
 /// diagnostics. No query or renderer path reaches it.
 pub(crate) fn cold_reopen_graph_index_with_control(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     control: &mut dyn GraphWorkControl,
 ) -> Result<bool> {
@@ -3060,13 +3074,13 @@ pub(crate) fn cold_reopen_graph_index_with_control(
 }
 
 fn publish_nir1_entity_relation_index_in_tx_inner(
-    conn: &Connection,
+    conn: &mut Connection,
     runtime: &NirChronicleIndexRuntime,
     snapshot: GraphIndexBuildSnapshot,
     control: &mut dyn GraphWorkControl,
 ) -> Result<StoredBinding> {
     let budget = Arc::clone(&snapshot.capacity);
-    with_capacity_scope(conn, Some(budget), control, |_, control| {
+    with_capacity_scope(conn, Some(budget), control, |conn, _, control| {
         ensure!(
             !conn.is_autocommit(),
             "NIR1 Graph publication requires a write transaction"
@@ -4130,14 +4144,14 @@ mod tests {
 
     #[test]
     fn graph_sql_cancellation_clears_the_progress_handler_without_a_build_budget() -> Result<()> {
-        let connection = Connection::open_in_memory()?;
+        let mut connection = Connection::open_in_memory()?;
         let query = "WITH RECURSIVE sequence(value) AS (
                          SELECT 1
                          UNION ALL
                          SELECT value + 1 FROM sequence WHERE value < 1000000
                      )
                      SELECT sum(value) FROM sequence";
-        with_graph_sql_cancellation(&connection, None, || {
+        with_graph_sql_cancellation(&mut connection, None, |connection| {
             connection
                 .query_row(query, [], |row| row.get::<_, i64>(0))
                 .map(|sum| assert_eq!(sum, 500_000_500_000))
@@ -4146,7 +4160,7 @@ mod tests {
 
         let cancellation_epoch = Arc::new(AtomicU64::new(2));
         let cancellation_error =
-            with_graph_sql_cancellation(&connection, Some((&cancellation_epoch, 1)), || {
+            with_graph_sql_cancellation(&mut connection, Some((&cancellation_epoch, 1)), |connection| {
                 connection
                     .query_row(query, [], |row| row.get::<_, i64>(0))
                     .map(|_| ())
@@ -4170,7 +4184,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let result = (|| -> Result<()> {
-            let primary = Connection::open(&path)?;
+            let mut primary = Connection::open(&path)?;
             let locker = Connection::open(&path)?;
             primary.busy_timeout(Duration::from_millis(5_000))?;
             primary.execute_batch(
@@ -4180,7 +4194,7 @@ mod tests {
             locker.execute_batch("BEGIN EXCLUSIVE;")?;
 
             let started = std::time::Instant::now();
-            let error = with_graph_no_wait(&primary, || {
+            let error = with_graph_no_wait(&mut primary, |primary| {
                 primary
                     .execute(
                         "INSERT INTO graph_no_wait_test (value) VALUES ('blocked')",
@@ -4284,9 +4298,9 @@ mod tests {
         let runtime = authority.nir_chronicle_index_runtime();
         let snapshot = authority
             .with_read_transaction(|conn| prepare_graph_index_build(conn, runtime, PROJECT))?;
-        authority.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
-            publish_nir1_entity_relation_index_in_tx(&tx, runtime, snapshot)?;
+        authority.with_conn_mut(|conn| {
+            let mut tx = crate::scoped_tx::ScopedTransaction::begin(conn)?;
+            publish_nir1_entity_relation_index_in_tx(&mut tx, runtime, snapshot)?;
             tx.commit()?;
             Ok(())
         })?;

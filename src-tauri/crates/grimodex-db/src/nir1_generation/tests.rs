@@ -554,7 +554,7 @@ fn history_snapshot_sql_budget_is_shared_across_direct_calls_and_rejects_n_plus_
 
 #[test]
 fn history_snapshot_in_tx_shares_sql_ledger_and_restores_outer_progress_owner() -> Result<()> {
-    let conn = Connection::open_in_memory()?;
+    let mut conn = Connection::open_in_memory()?;
     // Load the schema first so every measured call runs the same VM program.
     conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
         row.get::<_, i64>(0)
@@ -563,7 +563,7 @@ fn history_snapshot_in_tx_shares_sql_ledger_and_restores_outer_progress_owner() 
     let outer_calls = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&outer_calls);
     crate::set_sqlite_progress_handler(
-        &conn,
+        &mut conn,
         1,
         Some(move || {
             observed.fetch_add(1, Ordering::Relaxed);
@@ -572,8 +572,8 @@ fn history_snapshot_in_tx_shares_sql_ledger_and_restores_outer_progress_owner() 
     )?;
     let cancellation =
         GenerationHistorySnapshotCancellation::from_control(&ParticipantSqlControl::default());
-    let select = |budget: &mut GenerationHistoryReadBudget, value: i64| {
-        with_generation_history_snapshot_in_tx(&conn, &cancellation, budget, |reader, _| {
+    let mut select = |budget: &mut GenerationHistoryReadBudget, value: i64| {
+        with_generation_history_snapshot_in_tx(&mut conn, &cancellation, budget, |reader, _| {
             Ok(reader
                 .connection
                 .query_row(&format!("SELECT {value}"), [], |row| row.get::<_, i64>(0))?)
@@ -603,7 +603,7 @@ fn history_snapshot_in_tx_shares_sql_ledger_and_restores_outer_progress_owner() 
     conn.query_row("SELECT 3", [], |row| row.get::<_, i64>(0))?;
     assert!(outer_calls.load(Ordering::Relaxed) > before);
     conn.execute_batch("ROLLBACK")?;
-    crate::set_sqlite_progress_handler(&conn, 0, None::<fn() -> bool>)?;
+    crate::set_sqlite_progress_handler(&mut conn, 0, None::<fn() -> bool>)?;
     Ok(())
 }
 
@@ -611,12 +611,12 @@ fn assert_in_tx_rejects_before_sql(
     budget: &mut GenerationHistoryReadBudget,
     control: ParticipantSqlControl,
 ) -> anyhow::Error {
-    let conn = Connection::open_in_memory().expect("open fixture db");
+    let mut conn = Connection::open_in_memory().expect("open fixture db");
     conn.execute_batch("BEGIN").expect("begin snapshot");
     let progress_calls = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&progress_calls);
     crate::set_sqlite_progress_handler(
-        &conn,
+        &mut conn,
         1,
         Some(move || {
             observed.fetch_add(1, Ordering::Relaxed);
@@ -627,7 +627,7 @@ fn assert_in_tx_rejects_before_sql(
     let cancellation = GenerationHistorySnapshotCancellation::from_control(&control);
     let started = AtomicBool::new(false);
     let error =
-        with_generation_history_snapshot_in_tx(&conn, &cancellation, budget, |reader, _| {
+        with_generation_history_snapshot_in_tx(&mut conn, &cancellation, budget, |reader, _| {
             started.store(true, Ordering::Relaxed);
             reader
                 .connection
@@ -638,7 +638,7 @@ fn assert_in_tx_rejects_before_sql(
     assert!(!started.load(Ordering::Relaxed));
     assert_eq!(progress_calls.load(Ordering::Relaxed), 0, "no SQL ran");
     conn.execute_batch("ROLLBACK").expect("rollback fixture");
-    crate::set_sqlite_progress_handler(&conn, 0, None::<fn() -> bool>)
+    crate::set_sqlite_progress_handler(&mut conn, 0, None::<fn() -> bool>)
         .expect("clear test progress owner");
     error
 }
@@ -863,7 +863,7 @@ fn history_snapshot_applies_and_restores_caller_busy_wait_bound() -> Result<()> 
 
 #[test]
 fn history_snapshot_reader_requires_its_exact_active_capacity_scope() -> Result<()> {
-    let conn = Connection::open_in_memory()?;
+    let mut conn = Connection::open_in_memory()?;
     let owned = CapacityBudget::new(1_000_000, Instant::now() + Duration::from_secs(30));
     let other = CapacityBudget::new(1_000_000, Instant::now() + Duration::from_secs(30));
     let cancellation =
@@ -872,7 +872,7 @@ fn history_snapshot_reader_requires_its_exact_active_capacity_scope() -> Result<
 
     // Holding the Arc alone is not proof that the scope is installed.
     let mut outside =
-        GenerationHistorySnapshotReader::new(&conn, cancellation.clone(), Arc::clone(&owned));
+        GenerationHistorySnapshotReader::new(&mut conn, cancellation.clone(), Arc::clone(&owned));
     let error = outside
         .read_attempt(&mut caller_budget, "attempt")
         .expect_err("reader outside its scope refuses");
@@ -883,15 +883,15 @@ fn history_snapshot_reader_requires_its_exact_active_capacity_scope() -> Result<
     assert_eq!(caller_budget.max_attempts, 8, "refused before any debit");
 
     with_capacity_scope(
-        &conn,
+        &mut conn,
         Some(Arc::clone(&owned)),
         &mut NeverStopGraphWorkControl,
-        |active, _| {
+        |conn, active, _| {
             assert!(Arc::ptr_eq(active, &owned));
-            check_active_capacity(&conn, &owned)?;
+            check_active_capacity(conn, &owned)?;
             // Another active scope on the connection is not this reader's.
             let mut wrong = GenerationHistorySnapshotReader::new(
-                &conn,
+                &mut *conn,
                 cancellation.clone(),
                 Arc::clone(&other),
             );
@@ -903,7 +903,7 @@ fn history_snapshot_reader_requires_its_exact_active_capacity_scope() -> Result<
                 "{error:#}"
             );
             let exact = GenerationHistorySnapshotReader::new(
-                &conn,
+                &mut *conn,
                 cancellation.clone(),
                 Arc::clone(&owned),
             );
@@ -917,12 +917,12 @@ fn history_snapshot_reader_requires_its_exact_active_capacity_scope() -> Result<
     // An active but exhausted exact budget is refused at the checkpoint.
     let tiny = CapacityBudget::new(1, Instant::now() + Duration::from_secs(30));
     let error = with_capacity_scope(
-        &conn,
+        &mut conn,
         Some(Arc::clone(&tiny)),
         &mut NeverStopGraphWorkControl,
-        |_, _| {
+        |conn, _, _| {
             let _ = conn.query_row(HEAVY_HISTORY_SQL, [], |row| row.get::<_, i64>(0));
-            GenerationHistorySnapshotReader::new(&conn, cancellation.clone(), Arc::clone(&tiny))
+            GenerationHistorySnapshotReader::new(&mut *conn, cancellation.clone(), Arc::clone(&tiny))
                 .checkpoint()
         },
     )
@@ -2878,7 +2878,7 @@ mod bounded {
             })
             .expect("participant scope");
         db.db()
-            .with_conn(|conn| {
+            .with_conn_mut(|conn| {
                 crate::narrative_maintenance_connection::with_capacity_connection(
                     db.db(),
                     conn,

@@ -14,13 +14,13 @@ fn main() -> Result<()> {
         args.len() == 4,
         "expected DB path, project ID and revision ID"
     );
-    let conn = Connection::open_with_flags(&args[1], OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut conn = Connection::open_with_flags(&args[1], OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut results = vec![];
     for arm in ["membership", "canonical"] {
         let mut samples = vec![];
         for iteration in 0..105 {
             let start = Instant::now();
-            let tx = conn.unchecked_transaction()?;
+            let mut tx = grimodex_db::ScopedTransaction::begin(&mut conn)?;
             if arm == "membership" {
                 ensure!(
                     matches!(
@@ -32,7 +32,7 @@ fn main() -> Result<()> {
             } else {
                 ensure!(
                     matches!(
-                        read_revision_canonical_freshness(&tx, &args[2], &args[3])?,
+                        read_revision_canonical_freshness(&mut tx, &args[2], &args[3])?,
                         RevisionFreshnessRead::Fresh(_)
                     ),
                     "canonical state must be fresh in every sample"

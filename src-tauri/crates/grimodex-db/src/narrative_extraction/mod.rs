@@ -242,6 +242,8 @@ mod semantic_bindings;
 mod semantic_epoch;
 mod semantic_index_diagnostics;
 mod source_revision;
+#[cfg(test)]
+mod reprepare_cost_tests;
 #[allow(unused_imports)]
 pub(crate) use source_revision::{
     resolve_current_source_state_with_control, resolve_source_revision_with_control,
@@ -827,7 +829,7 @@ pub fn narrative_extraction_set_human_field_lock(
     db: &Database,
     payload: HumanFieldLockPayload,
 ) -> anyhow::Result<Value> {
-    db.with_conn(|conn| {
+    db.with_conn_mut(|conn| {
         crate::narrative_runtime_policy::require_narrative_extraction_allowed(conn)?;
         task_leases::with_immediate_transaction(conn, |conn| {
             field_authority::set_human_field_lock_in_tx(conn, &payload)

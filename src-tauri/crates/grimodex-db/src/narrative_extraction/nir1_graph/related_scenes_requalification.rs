@@ -419,7 +419,7 @@ impl fmt::Debug for GraphRequalificationInput<'_> {
 pub fn with_graph_requalification_read<T>(
     workspace: &ActiveWorkspaceSnapshot,
     budget: ParticipantSqlOperationBudget,
-    operation: impl FnOnce(&Connection) -> Result<T>,
+    operation: impl FnOnce(&mut Connection) -> Result<T>,
 ) -> Result<T> {
     workspace.db().with_participant_read_transaction_bounded(
         workspace.participant(),
@@ -949,7 +949,7 @@ pub fn requalify_graph_only_click(
 /// [`GraphDisclosureWorkspace::is_quarantined`] once more and drop an
 /// `Eligible` when it is true (DR-CB4-12 (4)).
 pub fn requalify_graph_for_related_scenes(
-    conn: &Connection,
+    conn: &mut Connection,
     input: &GraphRequalificationInput<'_>,
     check: &mut dyn FnMut() -> Result<()>,
 ) -> Result<GraphRequalification> {
@@ -1127,7 +1127,7 @@ fn attach_paths(
 /// over the text limit) is a Graph-only failure like any other: the Scene is
 /// not appended and nothing else changes.
 fn graph_only<'a>(
-    conn: &Connection,
+    conn: &mut Connection,
     input: &GraphRequalificationInput<'a>,
     evaluator: &RefCell<Evaluator<'a>>,
     check: &mut dyn FnMut() -> Result<()>,
@@ -1177,7 +1177,7 @@ fn graph_only_row<'a>(
 }
 
 fn judge_graph_only<'a>(
-    conn: &Connection,
+    conn: &mut Connection,
     input: &GraphRequalificationInput<'a>,
     evaluator: &RefCell<Evaluator<'a>>,
     check: &mut dyn FnMut() -> Result<()>,
