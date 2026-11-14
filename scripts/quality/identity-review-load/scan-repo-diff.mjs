@@ -15,12 +15,13 @@ import {
   WORKS,
   buildShingleSet,
   expectedSceneText,
+  rubyBaseText,
   scenesFromWork,
 } from "./lib.mjs";
+import { resolveWorkSource } from "./sources.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "../../..");
 const DEFAULT_OUTPUT = "/home/grimodex/identity-review-load-2026-11";
-const DEFAULT_DATA_DIR = "/home/grimodex/fusion-eval-data/pd-2026-11/scenes";
 
 /**
  * text を走査して件数だけ返す（一致の中身は返さない）。
@@ -84,10 +85,16 @@ function addedLines(diff) {
 function loadMaterial(output, dataDir) {
   const texts = [];
   for (const key of Object.keys(WORKS)) {
-    const file = path.join(dataDir, `${key}.json`);
+    const file = resolveWorkSource(key, dataDir || null);
     if (!existsSync(file)) continue;
     const work = scenesFromWork(JSON.parse(readFileSync(file, "utf8")));
     texts.push(...work.map((scene) => expectedSceneText(scene.paragraphs)));
+    // ルビ記法を親文字だけにした形でも走査する（ルビのある作品は、記法の有無で別の連続になる）。
+    texts.push(
+      ...work.map((scene) =>
+        expectedSceneText(scene.paragraphs.map(rubyBaseText)),
+      ),
+    );
   }
   const surfaces = new Set();
   const surfaceDir = path.join(output, "surfaces");
@@ -98,6 +105,29 @@ function loadMaterial(output, dataDir) {
       );
       for (const surface of [...(data.seed ?? []), ...(data.candidate ?? [])])
         if ([...surface].length >= 2) surfaces.add(surface);
+    }
+  }
+  // 名簿（repo 外）の名前・別名も、原稿由来の表記として走査する。
+  const rosterRoot = path.join(output, "roster");
+  if (existsSync(rosterRoot)) {
+    for (const work of readdirSync(rosterRoot)) {
+      const dir = path.join(rosterRoot, work);
+      for (const name of readdirSync(dir)) {
+        if (!/^roster-.*\.json$/u.test(name)) continue;
+        try {
+          const roster = JSON.parse(readFileSync(path.join(dir, name), "utf8"));
+          for (const entity of roster.entities ?? [])
+            for (const surface of [
+              entity.name,
+              ...(entity.aliases ?? []).map((a) => a.surface),
+              ...(entity.honorificSurfaces ?? []),
+            ])
+              if (typeof surface === "string" && [...surface].length >= 2)
+                surfaces.add(surface);
+        } catch {
+          // 読めない名簿は無視（作りかけ）。
+        }
+      }
     }
   }
   const hashes = new Set();
@@ -124,7 +154,7 @@ function main(argv) {
   const options = {
     base: "origin/master",
     output: DEFAULT_OUTPUT,
-    "data-dir": DEFAULT_DATA_DIR,
+    "data-dir": "",
     extra: [],
   };
   for (let i = 0; i < argv.length; i += 2) {

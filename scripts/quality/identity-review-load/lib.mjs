@@ -3,13 +3,20 @@
 // （hash は globalThis.crypto.subtle）。原稿の本文・表記は、この module の戻り値に
 // 「件数」「hash」「ID」としてしか出さない。
 
-/** 作品 key → 場面数（事前登録 §2。凍結前に scenes JSON から再測する）。 */
+/**
+ * 作品 key → 場面数（事前登録 §2・§16。2026-11-14 に作品を変更：新しい 3 本は各 60 場面、
+ * m-ja-2 は 117 場面。凍結前に scenes JSON から再測する）。
+ * 旧 4 作（m-ja-1・m-ja-3・g-ja-1）は本測定の対象外。
+ */
 export const WORKS = Object.freeze({
-  "m-ja-1": 110,
+  "g-ja-2": 60,
+  "g-ja-3": 60,
+  "g-ja-4": 60,
   "m-ja-2": 117,
-  "m-ja-3": 34,
-  "g-ja-1": 117,
 });
+
+/** 作者が名簿を確認する作品（§16：m-ja-2 は確認しない＝名簿は未確認のまま）。 */
+export const REVIEWED_WORKS = Object.freeze(["g-ja-2", "g-ja-3", "g-ja-4"]);
 
 /** 入れ子 folder の刻み（F25 ⊂ F50 ⊂ F75 ⊂ F100）。 */
 export const FOLDER_PERCENTS = Object.freeze([25, 50, 75, 100]);
@@ -460,4 +467,560 @@ export function compareHashSets(left, right) {
     leftOnly: a.size - both,
     rightOnly: b.size - both,
   };
+}
+
+// ---- ルビ（｜親文字《読み》）と ProseMirror 本文 -------------------------------
+
+/**
+ * 段落の「ルビ記法を親文字だけにした」文字列。製品の取り込み（kakuyomuBodyToProseMirror）が
+ * 作る ruby node の base を、TS の canonical が本文として読む形（proseMirrorSerializer の
+ * ruby 分岐）に合わせる。`《《強調》》` は強調の中身、`｜` は落とし、`《読み》` を除く。
+ */
+export function rubyBaseText(paragraph) {
+  return paragraph
+    .replace(/《《([^》]*)》》/gu, "$1")
+    .replace(/｜/gu, "")
+    .replace(/《[^》]*》/gu, "");
+}
+
+/** 段落の列に含まれるルビ記法（《読み》）の数。強調の《《》》は数えない。 */
+export function countRubyNotations(paragraphs) {
+  let count = 0;
+  for (const paragraph of paragraphs) {
+    const stripped = paragraph.replace(/《《([^》]*)》》/gu, "$1");
+    count += (stripped.match(/《[^》]*》/gu) ?? []).length;
+  }
+  return count;
+}
+
+/**
+ * 段落を [{ base, reading }] に分ける（reading は無ければ null）。作者向けの抜粋の表示用で、
+ * 取り込みの変換とは別の簡易版：`｜親文字《読み》` と、直前の漢字の自動ルビ。強調の《《》》は
+ * 中身だけにする。
+ */
+export function paragraphSegments(paragraph) {
+  const text = paragraph.replace(/《《([^》]*)》》/gu, "$1");
+  const segments = [];
+  const kanji = /[一-鿿々〆〤ヶ]/u;
+  let plain = "";
+  const flush = () => {
+    if (plain) segments.push({ base: plain, reading: null });
+    plain = "";
+  };
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === "｜") {
+      const open = text.indexOf("《", i + 1);
+      const close = open === -1 ? -1 : text.indexOf("》", open + 1);
+      const base = open === -1 ? "" : text.slice(i + 1, open);
+      const reading = close === -1 ? "" : text.slice(open + 1, close);
+      if (base && reading) {
+        flush();
+        segments.push({ base, reading });
+        i = close + 1;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (text[i] === "《") {
+      const close = text.indexOf("》", i + 1);
+      const reading = close === -1 ? "" : text.slice(i + 1, close);
+      let start = plain.length;
+      while (start > 0 && kanji.test(plain[start - 1])) start--;
+      const base = plain.slice(start);
+      if (reading && base) {
+        plain = plain.slice(0, start);
+        flush();
+        segments.push({ base, reading });
+        i = close + 1;
+        continue;
+      }
+      plain += "《";
+      i++;
+      continue;
+    }
+    plain += text[i];
+    i++;
+  }
+  flush();
+  return segments;
+}
+
+/**
+ * 保存した場面の ProseMirror JSON から、段落ごとの本文（ruby は親文字を読む）と、
+ * ruby node の数・親文字（重複あり）を取り出す。prosemirrorToText は ruby を落とす
+ * （text も content も無い node）ので、ルビのある作品の本文一致はこちらで行う。
+ */
+export function proseMirrorParagraphTexts(content) {
+  const doc = typeof content === "string" ? JSON.parse(content) : content;
+  const paragraphs = [];
+  const rubyBases = [];
+  let nonParagraphBlocks = 0;
+  const inline = (node) => {
+    if (!node || typeof node !== "object") return "";
+    if (node.type === "text")
+      return typeof node.text === "string" ? node.text : "";
+    if (node.type === "ruby") {
+      const base = node.attrs?.base;
+      if (typeof base === "string") rubyBases.push(base);
+      return typeof base === "string" ? base : "";
+    }
+    if (node.type === "hardBreak") return "\n";
+    return Array.isArray(node.content) ? node.content.map(inline).join("") : "";
+  };
+  for (const block of Array.isArray(doc?.content) ? doc.content : []) {
+    if (block?.type === "paragraph") {
+      paragraphs.push(
+        Array.isArray(block.content) ? block.content.map(inline).join("") : "",
+      );
+    } else nonParagraphBlocks++;
+  }
+  return {
+    paragraphs,
+    rubyCount: rubyBases.length,
+    rubyBases,
+    nonParagraphBlocks,
+  };
+}
+
+/**
+ * 保存した本文と scenes JSON の段落の突合（件数だけ）。段落数・本文・ruby node 数の
+ * 3 つを場面ごとに比べる。expectedParagraphs は記法つきの段落（scenes JSON のまま）。
+ */
+export function comparePersistedScene(expectedParagraphs, content) {
+  const actual = proseMirrorParagraphTexts(content);
+  const expectedTexts = expectedParagraphs.map(rubyBaseText);
+  const paragraphCountOk =
+    actual.paragraphs.length === expectedParagraphs.length &&
+    actual.nonParagraphBlocks === 0;
+  const textOk =
+    paragraphCountOk &&
+    expectedTexts.every((t, i) => t === actual.paragraphs[i]);
+  const rubyOk = actual.rubyCount === countRubyNotations(expectedParagraphs);
+  return {
+    paragraphCountOk,
+    textOk,
+    rubyOk,
+    rubyCount: actual.rubyCount,
+    rubyBases: actual.rubyBases,
+  };
+}
+
+/**
+ * ルビの親文字の集合（candidateKey で潰す）と、表記の集合の関係（件数と、一致した表記の
+ * hash を作るための表記の列）。
+ * - exact：candidateKey が親文字のどれかに等しい表記
+ * - containing：親文字（2 文字以上）のどれかを含み、等しくない表記
+ */
+export function rubySurfaceRelation(rubyBaseKeys, surfaces) {
+  const bases = new Set(rubyBaseKeys.filter((k) => k.length > 0));
+  const longBases = [...bases].filter((k) => [...k].length >= 2);
+  const exactSurfaces = [];
+  let containing = 0;
+  for (const surface of new Set(surfaces.map(candidateKey))) {
+    if (bases.has(surface)) exactSurfaces.push(surface);
+    else if (longBases.some((base) => surface.includes(base))) containing++;
+  }
+  return { exact: exactSurfaces.length, containing, exactSurfaces };
+}
+
+// ---- 名簿（roster）の形式（事前登録 §3） ---------------------------------------
+
+export const ROSTER_SCHEMA = "identity-roster/1";
+export const ENTITY_TYPES = Object.freeze(["character", "location", "other"]);
+export const ALIAS_LEVELS = Object.freeze(["L1", "L2", "L3"]);
+/** 作った系統：A（実体系）・B（表記系）・adjudicated（調停）。 */
+export const LINEAGES = Object.freeze(["A", "B", "adjudicated"]);
+export const REVIEW_STATUSES = Object.freeze([
+  "unconfirmed",
+  "confirmed",
+  "edited",
+  "flagged",
+]);
+/** 作者の応答の固定語彙（§4）。 */
+export const REVIEW_VERDICTS = Object.freeze([
+  "そのまま",
+  "名前を直す",
+  "別名を足す",
+  "別名を外す",
+  "別人が混ざる",
+  "分けるべき",
+  "わからない",
+]);
+/** 応答の語彙の ASCII の印（標準出力・集計用。語彙の順と対応）。 */
+export const REVIEW_VERDICT_CODES = Object.freeze({
+  そのまま: "keep",
+  名前を直す: "rename",
+  別名を足す: "add-alias",
+  別名を外す: "remove-alias",
+  別人が混ざる: "mixed",
+  分けるべき: "split",
+  わからない: "unknown",
+});
+
+/**
+ * 名簿の 1 行（実体）の形：
+ * {
+ *   id: "rt-<作品>-NNN", type: "character"|"location"|"other",
+ *   name: 正式な名前（役職でしか呼ばれない人物は最も確定的な呼称。nameIsRole を付ける）,
+ *   nameIsRole?: boolean, frequentSurface?: string（最頻形。別列）,
+ *   aliases: [{ surface, level: "L1"|"L2"|"L3" }]（L0 は name だけ。敬称付きの形は入れない）,
+ *   honorificSurfaces: [string]（敬称の対応表。表記→この実体。別名としては登録しない）,
+ *   ambiguousSurfaces: [{ surface, sceneRanges: [[from, to], ...] }]（場面で指す実体が変わる表記。
+ *     この実体を指す場面の範囲。別名に入れない）,
+ *   evidence: [{ scene, paragraph }]（根拠。1 始まり。1 件以上）,
+ *   lineage: "A"|"B"|"adjudicated", origin?: { A?: [id], B?: [id] }, packets?: [packet id]（調停した packet）,
+ *   review?: { status, verdict?, note? }（作者の確認の結果。確認前は無い）
+ * }
+ * 名簿：{ schemaVersion, work, lineage, entities, reviewSummary? }
+ */
+const ID_PATTERN = (work) => new RegExp(`^rt-${work}-\\d{3,}$`, "u");
+const PACKET_PATTERN = (work) => new RegExp(`^pk-${work}-\\d{3,}$`, "u");
+
+function isPlainString(value) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value === value.trim() &&
+    !value.includes("\n")
+  );
+}
+function isPositiveInt(value) {
+  return Number.isSafeInteger(value) && value >= 1;
+}
+
+/** 敬称付きの形（X＋接尾辞。接尾辞だけの単独の表記は含まない）。 */
+export function isHonorificForm(surface) {
+  const key = candidateKey(surface);
+  const stripped = candidateKey(stripHonorific(key));
+  return stripped !== key && stripped.length > 0;
+}
+
+/** 実体の名前と別名の candidateKey の集合（name も含む）。 */
+export function entityKeys(entity) {
+  return [entity.name, ...(entity.aliases ?? []).map((a) => a.surface)]
+    .filter((s) => typeof s === "string")
+    .map(candidateKey);
+}
+
+/**
+ * 名簿の検査。違反は { code, entityId, path } の列（表記の文字列は載せない）。
+ * options: { sceneCount?, paragraphCounts?: 場面ごとの段落数（index 0 が場面 1） }
+ */
+export function validateRoster(roster, options = {}) {
+  const errors = [];
+  const add = (code, entityId, path) => errors.push({ code, entityId, path });
+  if (!roster || typeof roster !== "object") {
+    return {
+      ok: false,
+      errors: [{ code: "ROSTER_NOT_OBJECT", entityId: null, path: "$" }],
+    };
+  }
+  if (roster.schemaVersion !== ROSTER_SCHEMA)
+    add("SCHEMA_VERSION", null, "$.schemaVersion");
+  const work = roster.work;
+  if (!(typeof work === "string" && work in WORKS))
+    add("UNKNOWN_WORK", null, "$.work");
+  if (!LINEAGES.includes(roster.lineage))
+    add("ROSTER_LINEAGE", null, "$.lineage");
+  if (!Array.isArray(roster.entities)) {
+    add("ENTITIES_NOT_ARRAY", null, "$.entities");
+    return { ok: false, errors };
+  }
+  const sceneCount =
+    options.sceneCount ?? (work in WORKS ? WORKS[work] : undefined);
+  const idPattern = typeof work === "string" ? ID_PATTERN(work) : /^$/u;
+  const packetPattern = typeof work === "string" ? PACKET_PATTERN(work) : /^$/u;
+  const ids = new Set();
+  const nameKeys = new Map(); // candidateKey → entity id（名前）
+  const aliasKeys = new Set();
+  roster.entities.forEach((entity, index) => {
+    const id = typeof entity?.id === "string" ? entity.id : `#${index}`;
+    const at = (field) => `$.entities[${index}].${field}`;
+    if (!entity || typeof entity !== "object") {
+      add("ENTITY_NOT_OBJECT", id, `$.entities[${index}]`);
+      return;
+    }
+    if (!idPattern.test(id)) add("ENTITY_ID_FORMAT", id, at("id"));
+    if (ids.has(id)) add("ENTITY_ID_DUPLICATE", id, at("id"));
+    ids.add(id);
+    if (!ENTITY_TYPES.includes(entity.type)) add("ENTITY_TYPE", id, at("type"));
+    if (!isPlainString(entity.name)) add("NAME_INVALID", id, at("name"));
+    else {
+      nameKeys.set(candidateKey(entity.name), id);
+      if (isHonorificForm(entity.name))
+        add("NAME_IS_HONORIFIC_FORM", id, at("name"));
+    }
+    if (
+      entity.nameIsRole !== undefined &&
+      typeof entity.nameIsRole !== "boolean"
+    )
+      add("NAME_IS_ROLE_TYPE", id, at("nameIsRole"));
+    if (
+      entity.frequentSurface !== undefined &&
+      !isPlainString(entity.frequentSurface)
+    )
+      add("FREQUENT_SURFACE_INVALID", id, at("frequentSurface"));
+    if (!LINEAGES.includes(entity.lineage))
+      add("ENTITY_LINEAGE", id, at("lineage"));
+    if (entity.packets !== undefined) {
+      if (
+        !Array.isArray(entity.packets) ||
+        entity.packets.some((p) => !packetPattern.test(p))
+      )
+        add("PACKET_ID_FORMAT", id, at("packets"));
+    }
+    // 別名
+    const ownKeys = new Set(
+      isPlainString(entity.name) ? [candidateKey(entity.name)] : [],
+    );
+    if (!Array.isArray(entity.aliases))
+      add("ALIASES_NOT_ARRAY", id, at("aliases"));
+    else
+      entity.aliases.forEach((alias, i) => {
+        const where = `${at("aliases")}[${i}]`;
+        if (!alias || !isPlainString(alias.surface)) {
+          add("ALIAS_SURFACE_INVALID", id, where);
+          return;
+        }
+        if (!ALIAS_LEVELS.includes(alias.level)) add("ALIAS_LEVEL", id, where);
+        const key = candidateKey(alias.surface);
+        if (ownKeys.has(key)) add("ALIAS_DUPLICATE_IN_ENTITY", id, where);
+        ownKeys.add(key);
+        aliasKeys.add(key);
+        if (isHonorificForm(alias.surface))
+          add("ALIAS_IS_HONORIFIC_FORM", id, where);
+      });
+    // 敬称の対応表
+    const honorifics = entity.honorificSurfaces ?? [];
+    if (!Array.isArray(honorifics))
+      add("HONORIFICS_NOT_ARRAY", id, at("honorificSurfaces"));
+    else {
+      const seen = new Set();
+      honorifics.forEach((surface, i) => {
+        const where = `${at("honorificSurfaces")}[${i}]`;
+        if (!isPlainString(surface))
+          add("HONORIFIC_SURFACE_INVALID", id, where);
+        else {
+          if (!isHonorificForm(surface))
+            add("HONORIFIC_NOT_HONORIFIC_FORM", id, where);
+          const key = candidateKey(surface);
+          if (seen.has(key)) add("HONORIFIC_DUPLICATE_IN_ENTITY", id, where);
+          seen.add(key);
+        }
+      });
+    }
+    // 場面で指す実体が変わる表記
+    const ambiguous = entity.ambiguousSurfaces ?? [];
+    if (!Array.isArray(ambiguous))
+      add("AMBIGUOUS_NOT_ARRAY", id, at("ambiguousSurfaces"));
+    else
+      ambiguous.forEach((item, i) => {
+        const where = `${at("ambiguousSurfaces")}[${i}]`;
+        if (!item || !isPlainString(item.surface)) {
+          add("AMBIGUOUS_SURFACE_INVALID", id, where);
+          return;
+        }
+        if (ownKeys.has(candidateKey(item.surface)))
+          add("AMBIGUOUS_IN_ALIAS", id, where);
+        const ranges = item.sceneRanges;
+        if (
+          !Array.isArray(ranges) ||
+          ranges.length === 0 ||
+          ranges.some(
+            (r) =>
+              !Array.isArray(r) ||
+              r.length !== 2 ||
+              !isPositiveInt(r[0]) ||
+              !isPositiveInt(r[1]) ||
+              r[0] > r[1] ||
+              (sceneCount !== undefined && r[1] > sceneCount),
+          )
+        )
+          add("AMBIGUOUS_RANGE_INVALID", id, `${where}.sceneRanges`);
+      });
+    // 根拠
+    if (!Array.isArray(entity.evidence) || entity.evidence.length === 0)
+      add("EVIDENCE_MISSING", id, at("evidence"));
+    else
+      entity.evidence.forEach((ev, i) => {
+        const where = `${at("evidence")}[${i}]`;
+        if (!ev || !isPositiveInt(ev.scene) || !isPositiveInt(ev.paragraph)) {
+          add("EVIDENCE_INVALID", id, where);
+          return;
+        }
+        if (sceneCount !== undefined && ev.scene > sceneCount)
+          add("EVIDENCE_SCENE_RANGE", id, where);
+        else if (
+          options.paragraphCounts &&
+          ev.paragraph > (options.paragraphCounts[ev.scene - 1] ?? 0)
+        )
+          add("EVIDENCE_PARAGRAPH_RANGE", id, where);
+      });
+    if (
+      entity.review !== undefined &&
+      !REVIEW_STATUSES.includes(entity.review?.status)
+    )
+      add("REVIEW_STATUS", id, at("review"));
+  });
+  // 敬称の対応表と、名前・別名の重なり（機械検査。作者の確認には回さない）
+  const owners = new Set([...nameKeys.keys(), ...aliasKeys]);
+  roster.entities.forEach((entity, index) => {
+    for (const [i, surface] of (Array.isArray(entity?.honorificSurfaces)
+      ? entity.honorificSurfaces
+      : []
+    ).entries()) {
+      if (typeof surface === "string" && owners.has(candidateKey(surface)))
+        add(
+          "HONORIFIC_OVERLAPS_ALIAS",
+          String(entity.id),
+          `$.entities[${index}].honorificSurfaces[${i}]`,
+        );
+    }
+  });
+  // 同じ表記の「場面で変わる」宣言が、別の実体と場面の範囲で重なる
+  const rangesByKey = new Map();
+  roster.entities.forEach((entity) => {
+    for (const item of Array.isArray(entity?.ambiguousSurfaces)
+      ? entity.ambiguousSurfaces
+      : []) {
+      if (
+        !item ||
+        typeof item.surface !== "string" ||
+        !Array.isArray(item.sceneRanges)
+      )
+        continue;
+      const key = candidateKey(item.surface);
+      if (!rangesByKey.has(key)) rangesByKey.set(key, []);
+      for (const range of item.sceneRanges)
+        if (Array.isArray(range) && range.length === 2)
+          rangesByKey
+            .get(key)
+            .push({ id: String(entity.id), from: range[0], to: range[1] });
+    }
+  });
+  for (const list of rangesByKey.values()) {
+    for (let a = 0; a < list.length; a++)
+      for (let b = a + 1; b < list.length; b++)
+        if (
+          list[a].id !== list[b].id &&
+          list[a].from <= list[b].to &&
+          list[b].from <= list[a].to
+        )
+          add(
+            "AMBIGUOUS_RANGE_OVERLAP",
+            list[a].id,
+            "$.entities.ambiguousSurfaces",
+          );
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+/**
+ * 名前・別名の衝突（§3）。key は表記の candidateKey（原稿由来なので、報告には出さない）。
+ * - kind "ambiguous"（i）：同じ表記が 2 つ以上の実体の別名、または 2 つ以上の実体の名前になる。
+ *   構造抽出は ambiguous を出す。
+ * - kind "name-over-alias"（ii）：ある実体の名前（1 件だけ）が別の実体の別名と同じ。名前が 1 件だけ
+ *   一致すれば、その実体へ即 resolved になり、別名側は見られない。resolvesTo は名前の側。
+ * entityIds は関わる実体（名前の側が先）。declared は、関わる全実体が同じ表記を
+ * ambiguousSurfaces に宣言しているか。
+ */
+export function findCollisions(roster) {
+  const byKey = new Map();
+  const touch = (key) => {
+    if (!byKey.has(key)) byKey.set(key, { nameOwners: [], aliasOwners: [] });
+    return byKey.get(key);
+  };
+  for (const entity of roster.entities) {
+    if (typeof entity.name === "string") {
+      const slot = touch(candidateKey(entity.name));
+      if (!slot.nameOwners.includes(entity.id)) slot.nameOwners.push(entity.id);
+    }
+    for (const alias of entity.aliases ?? []) {
+      if (typeof alias.surface !== "string") continue;
+      const slot = touch(candidateKey(alias.surface));
+      if (
+        !slot.nameOwners.includes(entity.id) &&
+        !slot.aliasOwners.includes(entity.id)
+      )
+        slot.aliasOwners.push(entity.id);
+    }
+  }
+  const declaredBy = new Map();
+  for (const entity of roster.entities)
+    for (const item of entity.ambiguousSurfaces ?? [])
+      if (typeof item.surface === "string") {
+        const key = candidateKey(item.surface);
+        if (!declaredBy.has(key)) declaredBy.set(key, new Set());
+        declaredBy.get(key).add(entity.id);
+      }
+  const collisions = [];
+  for (const [key, slot] of byKey) {
+    const involved = [...slot.nameOwners, ...slot.aliasOwners];
+    if (involved.length < 2) continue;
+    const declared = involved.every((id) => declaredBy.get(key)?.has(id));
+    if (slot.nameOwners.length === 1)
+      collisions.push({
+        kind: "name-over-alias",
+        key,
+        entityIds: involved,
+        resolvesTo: slot.nameOwners[0],
+        declared,
+      });
+    else
+      collisions.push({
+        kind: "ambiguous",
+        key,
+        entityIds: involved,
+        declared,
+      });
+  }
+  return collisions.sort((a, b) => a.key.localeCompare(b.key));
+}
+
+/**
+ * 名簿から、段ごとの登録用の実体を作る（registerRoster に渡す形）。
+ * L0：name だけ／L1／L2／L3／"L2-1char"：L2 から 1 字の別名を除く。
+ */
+export const ROSTER_LEVELS = Object.freeze([
+  "L0",
+  "L1",
+  "L2",
+  "L3",
+  "L2-1char",
+]);
+export function rosterAtLevel(roster, level) {
+  if (!ROSTER_LEVELS.includes(level))
+    throw new RangeError("unknown roster level");
+  const max = level === "L2-1char" ? 2 : Number(level.slice(1));
+  return roster.entities.map((entity) => ({
+    id: entity.id,
+    type: entity.type,
+    name: entity.name,
+    aliases: (entity.aliases ?? [])
+      .filter((alias) => Number(alias.level.slice(1)) <= max)
+      .filter((alias) => level !== "L2-1char" || [...alias.surface].length > 1)
+      .map((alias) => alias.surface),
+  }));
+}
+
+/** 実体の初出場面（根拠の最小の場面。無ければ null）。 */
+export function firstSceneOf(entity) {
+  const scenes = (entity.evidence ?? [])
+    .map((ev) => ev.scene)
+    .filter(isPositiveInt);
+  return scenes.length ? Math.min(...scenes) : null;
+}
+
+/** Wilson 95％の上側限界（k：検出した誤り、n：行数）。0/10 は約 0.278。 */
+export function wilsonUpper(k, n, z = 1.96) {
+  if (!Number.isSafeInteger(n) || n < 1 || k < 0 || k > n)
+    throw new RangeError("invalid k or n");
+  const p = k / n;
+  const z2 = z * z;
+  return (
+    (p + z2 / (2 * n) + z * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n))) /
+    (1 + z2 / n)
+  );
 }

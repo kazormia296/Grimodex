@@ -44,15 +44,17 @@ import {
   surfaceOverlapCounts,
 } from "./lib.mjs";
 import { countAiRows, precheckEnvironment } from "./run-inventory.mjs";
+import { resolveWorkSource } from "./sources.mjs";
 
 const NON_ASCII = /[^ -~\n\r\t]/u;
 const ROOT = path.resolve(import.meta.dirname, "../../..");
-const DATA_DIR = "/home/grimodex/fusion-eval-data/pd-2026-11/scenes";
+const DATA_DIR = resolveWorkSource("m-ja-2");
 
 test("入れ子 folder の累積の場面数は ceil(N×k%)", () => {
   assert.deepEqual(nestedFolderSceneCounts(110), [28, 55, 83, 110]);
   assert.deepEqual(nestedFolderSceneCounts(117), [30, 59, 88, 117]);
   assert.deepEqual(nestedFolderSceneCounts(34), [9, 17, 26, 34]);
+  assert.deepEqual(nestedFolderSceneCounts(60), [15, 30, 45, 60]);
   assert.deepEqual([...FOLDER_PERCENTS], [25, 50, 75, 100]);
   assert.throws(() => nestedFolderSceneCounts(0));
   assert.throws(() => nestedFolderSceneCounts(1.5));
@@ -477,7 +479,7 @@ test("launcher：壊れた原稿 JSON（日本語入り）でも stdout・stderr
     mkdirSync(path.join(out, "tmp"), { mode: 0o700 });
     mkdirSync(data);
     writeFileSync(
-      path.join(data, "m-ja-3.json"),
+      path.join(data, "m-ja-2.json"),
       '{"scenes":[{"index":1,"paragraphs":["架空の人物サンプル太郎が走った"],,,',
     );
     const env = {
@@ -496,7 +498,7 @@ test("launcher：壊れた原稿 JSON（日本語入り）でも stdout・stderr
       [
         path.join(import.meta.dirname, "run-inventory.mjs"),
         "--works",
-        "m-ja-3",
+        "m-ja-2",
         "--output",
         out,
         "--data-dir",
@@ -508,7 +510,7 @@ test("launcher：壊れた原稿 JSON（日本語入り）でも stdout・stderr
     assert.equal(NON_ASCII.test(run.stdout + run.stderr), false);
     // 入力の断片が ASCII 側にも出ない。
     assert.equal((run.stdout + run.stderr).includes("paragraphs"), false);
-    assert.ok(existsSync(path.join(out, "inventory", "m-ja-3.failed.json")));
+    assert.ok(existsSync(path.join(out, "inventory", "m-ja-2.failed.json")));
     for (const dirName of ["inventory"])
       for (const name of readdirSync(path.join(out, dirName))) {
         const text = readFileSync(path.join(out, dirName, name), "utf8");
@@ -544,9 +546,7 @@ test(
   { skip: !existsSync(DATA_DIR) },
   async () => {
     for (const [key, count] of Object.entries(WORKS)) {
-      const work = JSON.parse(
-        readFileSync(path.join(DATA_DIR, `${key}.json`), "utf8"),
-      );
+      const work = JSON.parse(readFileSync(resolveWorkSource(key), "utf8"));
       const scenes = scenesFromWork(work);
       assert.equal(scenes.length, count, `${key} scene count`);
       const texts = scenes.map((scene) => expectedSceneText(scene.paragraphs));

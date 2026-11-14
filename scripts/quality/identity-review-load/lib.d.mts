@@ -108,3 +108,90 @@ export function compareHashSets(
   leftOnly: number;
   rightOnly: number;
 };
+
+export const REVIEWED_WORKS: readonly string[];
+export function rubyBaseText(paragraph: string): string;
+export function countRubyNotations(paragraphs: readonly string[]): number;
+export function paragraphSegments(
+  paragraph: string,
+): { base: string; reading: string | null }[];
+export function proseMirrorParagraphTexts(content: string | object): {
+  paragraphs: string[];
+  rubyCount: number;
+  rubyBases: string[];
+  nonParagraphBlocks: number;
+};
+export function comparePersistedScene(
+  expectedParagraphs: readonly string[],
+  content: string | object,
+): {
+  paragraphCountOk: boolean;
+  textOk: boolean;
+  rubyOk: boolean;
+  rubyCount: number;
+  rubyBases: string[];
+};
+export function rubySurfaceRelation(
+  rubyBaseKeys: readonly string[],
+  surfaces: readonly string[],
+): { exact: number; containing: number; exactSurfaces: string[] };
+
+export const ROSTER_SCHEMA: string;
+export const ENTITY_TYPES: readonly string[];
+export const ALIAS_LEVELS: readonly string[];
+export const LINEAGES: readonly string[];
+export const REVIEW_STATUSES: readonly string[];
+export const REVIEW_VERDICTS: readonly string[];
+export const REVIEW_VERDICT_CODES: Readonly<Record<string, string>>;
+export const ROSTER_LEVELS: readonly string[];
+
+export interface RosterAlias {
+  surface: string;
+  level: "L1" | "L2" | "L3";
+}
+export interface RosterEntity {
+  id: string;
+  type: "character" | "location" | "other";
+  name: string;
+  nameIsRole?: boolean;
+  frequentSurface?: string;
+  aliases: RosterAlias[];
+  honorificSurfaces?: string[];
+  ambiguousSurfaces?: { surface: string; sceneRanges: [number, number][] }[];
+  evidence: { scene: number; paragraph: number }[];
+  lineage: "A" | "B" | "adjudicated";
+  origin?: { A?: string[]; B?: string[] };
+  packets?: string[];
+  review?: { status: string; verdict?: string; note?: string };
+}
+export interface Roster {
+  schemaVersion: string;
+  work: string;
+  lineage: "A" | "B" | "adjudicated";
+  entities: RosterEntity[];
+  reviewSummary?: unknown;
+}
+export interface RosterViolation {
+  code: string;
+  entityId: string | null;
+  path: string;
+}
+export function isHonorificForm(surface: string): boolean;
+export function entityKeys(entity: RosterEntity): string[];
+export function validateRoster(
+  roster: unknown,
+  options?: { sceneCount?: number; paragraphCounts?: readonly number[] },
+): { ok: boolean; errors: RosterViolation[] };
+export function findCollisions(roster: Roster): {
+  kind: "ambiguous" | "name-over-alias";
+  key: string;
+  entityIds: string[];
+  resolvesTo?: string;
+  declared: boolean;
+}[];
+export function rosterAtLevel(
+  roster: Roster,
+  level: string,
+): { id: string; type: string; name: string; aliases: string[] }[];
+export function firstSceneOf(entity: RosterEntity): number | null;
+export function wilsonUpper(k: number, n: number, z?: number): number;

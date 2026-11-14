@@ -24,7 +24,7 @@ import {
   useTreeStore,
 } from "@/features/tree/treeStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
-import { prosemirrorToText } from "@/lib/prosemirror";
+import { kakuyomuBodyToProseMirror } from "@/features/import/kakuyomuMarkup";
 import { captureMutationAuthority } from "@/features/concurrency/mutationAuthority";
 import { createCodexEntry, listCodexEntries } from "@/features/codex/api";
 import { listCodexTypes } from "@/features/codex/typeApi";
@@ -48,15 +48,18 @@ import type {
   NarrativeSourceView,
 } from "@/features/narrative-extraction/source/types";
 import {
+  candidateKey,
+  comparePersistedScene,
   compareHashSets,
   countBulkApprovable,
-  countTextMismatches,
+  countRubyNotations,
   crossSetCounts,
   expectedCanonicalText,
-  expectedSceneText,
   hashSurface,
   isBulkApprovableRow,
   planNestedFolders,
+  rubyBaseText,
+  rubySurfaceRelation,
   scenesFromWork,
   summarizeCandidateInventory,
   summarizeSeedInventory,
@@ -71,8 +74,12 @@ interface Active {
   workKey: string;
   sceneIds: string[]; // scenes JSON の並び
   folderIds: Record<string, string>; // "25" | "50" | "75" | "100"
-  expectedTexts: string[];
+  /** 場面ごとの段落数（ルビ記法を親文字だけにした本文の段落）。 */
+  paragraphCounts: number[];
   expectedCanonicalTexts: string[];
+  /** ルビの親文字（candidateKey。重複を潰した集合）。ルビの付いた表記の seed／候補の突合に使う。 */
+  rubyBaseKeys: string[];
+  rubyNodeCount: number;
   sceneIndexById: Map<string, number>; // 1 始まりの場面 index
 }
 let openRevision = 0;
@@ -111,7 +118,10 @@ async function openProject(input: {
 
 /**
  * (a)(b) scenes JSON から、入れ子 folder（F25⊂F50⊂F75⊂F100）に場面を置いた project を作る。
- * 1 段落 = 1 paragraph。作成した本文と scenes JSON の一致を検査し、不一致は件数で返す。
+ * 1 段落 = 1 paragraph。段落は製品の取り込みと同じ変換（kakuyomuBodyToProseMirror）で
+ * ProseMirror にする（`｜親文字《読み》` は ruby node）。変換の入力は段落ごと（段落の数は
+ * 変わらない）。作成した本文と scenes JSON の一致（段落数・本文〔ルビは親文字を読む〕・
+ * ruby node 数）を検査し、不一致は件数で返す。
  */
 async function buildNestedWork(input: {
   projectId: string;
@@ -158,13 +168,17 @@ async function buildNestedWork(input: {
     }
     for (const sceneIndex of folder.addedSceneIndexes) {
       const scene = scenes[sceneIndex];
-      const content = JSON.stringify({
-        type: "doc",
-        content: scene.paragraphs.map((text) => ({
-          type: "paragraph",
-          content: [{ type: "text", text }],
-        })),
+      const blocks = scene.paragraphs.map((text) => {
+        const converted = JSON.parse(kakuyomuBodyToProseMirror(text)) as {
+          content?: unknown[];
+        };
+        if (converted.content?.length !== 1)
+          throw new Error(
+            "[artifact] PARAGRAPH_SPLIT markup conversion changed the paragraph count",
+          );
+        return converted.content[0];
       });
+      const content = JSON.stringify({ type: "doc", content: blocks });
       await createNode({
         id: sceneIds[sceneIndex],
         projectId,
@@ -182,14 +196,43 @@ async function buildNestedWork(input: {
     .getState()
     .reloadTreeOrThrow(projectId, identity?.openRevision ?? openRevision);
 
-  // 本文の一致検査（件数だけ返す）。
-  const expectedTexts = scenes.map((scene) =>
-    expectedSceneText(scene.paragraphs),
-  );
-  const actualTexts: string[] = [];
-  for (const id of sceneIds)
-    actualTexts.push(prosemirrorToText(await loadSceneContent(id)));
-  const text = countTextMismatches(expectedTexts, actualTexts);
+  // 本文の一致検査（件数だけ返す）。prosemirrorToText は ruby を落とすので使わない。
+  let sceneMismatched = 0;
+  let paragraphCountMismatched = 0;
+  let textMismatched = 0;
+  let rubyMismatched = 0;
+  let rubyNodeCount = 0;
+  const rubyBaseKeys = new Set<string>();
+  for (let i = 0; i < sceneIds.length; i++) {
+    const check = comparePersistedScene(
+      scenes[i].paragraphs,
+      await loadSceneContent(sceneIds[i]),
+    );
+    if (!check.paragraphCountOk) paragraphCountMismatched++;
+    if (!check.textOk) textMismatched++;
+    if (!check.rubyOk) rubyMismatched++;
+    if (!(check.paragraphCountOk && check.textOk && check.rubyOk))
+      sceneMismatched++;
+    rubyNodeCount += check.rubyCount;
+    for (const base of check.rubyBases) rubyBaseKeys.add(candidateKey(base));
+  }
+  const text = {
+    expected: scenes.length,
+    actual: sceneIds.length,
+    mismatched: sceneMismatched,
+    paragraphCountMismatched,
+    textMismatched,
+    rubyMismatched,
+  };
+  const allParagraphs = scenes.flatMap((scene) => scene.paragraphs);
+  const ruby = {
+    nodeCount: rubyNodeCount,
+    notationCount: countRubyNotations(allParagraphs),
+    distinctBaseCount: rubyBaseKeys.size,
+    scenesWithRuby: scenes.filter(
+      (scene) => countRubyNotations(scene.paragraphs) > 0,
+    ).length,
+  };
 
   // folder ごとの場面の列が期待どおりか（derivePersistedNarrativeSceneScope と treeStore の両方）。
   const folderChecks: Record<string, unknown> = {};
@@ -221,10 +264,12 @@ async function buildNestedWork(input: {
     workKey: input.workKey,
     sceneIds,
     folderIds,
-    expectedTexts,
+    paragraphCounts: scenes.map((scene) => scene.paragraphs.length),
     expectedCanonicalTexts: scenes.map((scene) =>
-      expectedCanonicalText(scene.paragraphs),
+      expectedCanonicalText(scene.paragraphs.map(rubyBaseText)),
     ),
+    rubyBaseKeys: [...rubyBaseKeys],
+    rubyNodeCount,
     sceneIndexById: new Map(sceneIds.map((id, i) => [id, i + 1])),
   };
   return {
@@ -234,6 +279,7 @@ async function buildNestedWork(input: {
     nodeCount: nodes.length,
     folderSceneCounts: plan.counts,
     text,
+    ruby,
     folderChecks,
   };
 }
@@ -366,10 +412,10 @@ async function readSeeds(a: Active, folderId: string, sceneIds: string[]) {
   }
   const canonicalText = {
     documentCount: snapshot.documents.length,
-    expectedSceneCount: a.expectedTexts.length,
+    expectedSceneCount: a.expectedCanonicalTexts.length,
     matched: canonicalMatched,
     mismatched: canonicalMismatched,
-    missingScenes: a.expectedTexts.length - seenIndexes.size,
+    missingScenes: a.expectedCanonicalTexts.length - seenIndexes.size,
   };
 
   const prepass = await runEntityCandidatePrepass({
@@ -672,10 +718,42 @@ async function inventory(input: { folderPercent: number }) {
       equal: min1Occurrences === seedOccurrences,
     };
   }
+  // ルビの付いた表記：親文字の集合と、seed（TS の canonical＝親文字を読む）・候補画面の候補
+  // （Rust の本文＝ruby を落とす）の突合。表記の文字列は出さず、hash の集合で比べる。
+  const seedRuby = rubySurfaceRelation(a.rubyBaseKeys, seedSurfaces);
+  const candidateRuby = rubySurfaceRelation(
+    a.rubyBaseKeys,
+    defaultCandidateSurfaces,
+  );
+  const seedExactHashes = await Promise.all(
+    seedRuby.exactSurfaces.map(hashSurface),
+  );
+  const candidateExactHashes = await Promise.all(
+    candidateRuby.exactSurfaces.map(hashSurface),
+  );
+  const rubySection = {
+    nodeCount: a.rubyNodeCount,
+    distinctBaseCount: a.rubyBaseKeys.length,
+    seedExact: seedRuby.exact,
+    seedContaining: seedRuby.containing,
+    candidateExact: candidateRuby.exact,
+    candidateContaining: candidateRuby.containing,
+    exactCompare:
+      input.folderPercent === 100
+        ? compareHashSets(seedExactHashes, candidateExactHashes)
+        : null,
+  };
+  const rubyRows = {
+    baseHashes: await Promise.all(a.rubyBaseKeys.map(hashSurface)),
+    seedExactHashes,
+    candidateExactHashes,
+  };
   return {
     folderPercent: input.folderPercent,
     sceneCount: sceneNodes.length,
     scope: ["no-product-open-lifecycle"],
+    ruby: rubySection,
+    rubyRows,
     seed: seedSection,
     canonicalText: read.canonicalText,
     candidates: candidateSections,

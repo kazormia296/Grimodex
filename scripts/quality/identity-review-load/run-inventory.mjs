@@ -37,6 +37,7 @@ import {
 import { execFileSync, spawn } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { resolveWorkSource } from "./sources.mjs";
 import {
   WORKS,
   assertOutputClean,
@@ -49,14 +50,14 @@ import {
 const ROOT = path.resolve(import.meta.dirname, "../../..");
 const require = createRequire(import.meta.url);
 const DEFAULT_OUTPUT = "/home/grimodex/identity-review-load-2026-11";
-const DEFAULT_DATA_DIR = "/home/grimodex/fusion-eval-data/pd-2026-11/scenes";
 
 function parseArgs(args) {
   const options = {
     works: Object.keys(WORKS).join(","),
     mode: "inventory",
     output: DEFAULT_OUTPUT,
-    "data-dir": DEFAULT_DATA_DIR,
+    // 既定は作品ごとの所在（sources.mjs）。渡したときは dir/<key>.json（試験用）。
+    "data-dir": "",
     // 製品の保存経路（Native への Run/ProposalSet の保存）も試す。既定では試さない：
     // 保存経路は narrative_extraction_claim_task（DENIED の plaintext-publication route）を呼ぶ。
     "persist-attempt": "false",
@@ -331,6 +332,33 @@ export function sampleEgress(rootPid, destinations) {
   }
 }
 
+/**
+ * 測定した製品の版（git の HEAD、取り込んだ origin/master の commit、製品の source
+ * [src・electron・src-tauri] の未 commit の変更の数）。ID だけで、本文は含まない。
+ */
+export function productVersion() {
+  const git = (args) =>
+    execFileSync("git", args, { cwd: ROOT, encoding: "utf8" }).trim();
+  const head = git(["rev-parse", "HEAD"]);
+  let master = "unknown";
+  try {
+    master = git(["rev-parse", "refs/remotes/origin/master"]);
+  } catch {
+    // origin/master が無い。
+  }
+  const dirty = git([
+    "status",
+    "--porcelain",
+    "--",
+    "src",
+    "electron",
+    "src-tauri",
+  ])
+    .split("\n")
+    .filter(Boolean).length;
+  return { head, originMaster: master, productSourceDirtyFiles: dirty };
+}
+
 function outputDir(output, mode) {
   return path.join(
     output,
@@ -371,11 +399,12 @@ async function runWork(workKey, options, vite, busAddress) {
     rmSync(path.join(dir, name), { force: true });
 
   const result = {
-    schemaVersion: "identity-load-inventory/2",
+    schemaVersion: "identity-load-inventory/3",
     mode: options.mode,
     work: workKey,
     status: "blocked",
     errors: [],
+    product: productVersion(),
   };
   let scenesTexts = [];
   let app;
@@ -385,7 +414,10 @@ async function runWork(workKey, options, vite, busAddress) {
   const started = Date.now();
   try {
     const work = JSON.parse(
-      readFileSync(path.join(options["data-dir"], `${workKey}.json`), "utf8"),
+      readFileSync(
+        resolveWorkSource(workKey, options["data-dir"] || null),
+        "utf8",
+      ),
     );
     const scenes = scenesFromWork(work);
     assert.equal(
@@ -531,11 +563,13 @@ async function runWork(workKey, options, vite, busAddress) {
       rows = {
         seedRows: inventory.seedRows,
         candidateRows: inventory.candidateRows,
+        rubyRows: inventory.rubyRows,
       };
       surfaces = inventory.surfaces;
       result.inventory = { ...inventory };
       delete result.inventory.seedRows;
       delete result.inventory.candidateRows;
+      delete result.inventory.rubyRows;
       delete result.inventory.surfaces;
     } else {
       // 空の名簿（Entry 0 件）で構造抽出。F100 に対して 1 回。
