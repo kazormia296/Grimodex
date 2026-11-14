@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   buildRuntimePerformanceAttemptPaths,
   classifyTransientPerformanceRetry,
+  createGpuChannelFailureScanner,
+  describeRecoveredPerformanceRetry,
   runRuntimePerformanceWithRetry,
 } from "../electron/scripts/runtime-performance-retry.mjs";
 import { parsePerformanceBenchmarkArguments } from "../electron/scripts/performance-benchmark.mjs";
@@ -334,4 +336,130 @@ test("measurement errors, mixed regressions, and disabled policy never retry", (
     assert.equal(result.attemptCount, 1);
     assert.equal(attemptCount, 1);
   }
+});
+
+// Observed on an AWS-hosted runner (ci.yml 43551562907, 2026-11-14): coldStart
+// 4106.8 ms, first frame 4102.9 ms, two GPU channel failure lines.
+const GPU_CHANNEL_FAILURE =
+  "[3341:1114/041239.926553:ERROR:gpu/ipc/client/command_buffer_proxy_impl.cc:285] ContextResult::kTransientFailure: Failed to send GpuControl.CreateCommandBuffer.";
+
+function buildColdStartMetrics({
+  coldStartMs = 4_106.799999999988,
+  firstFrameMs = 4_102.9,
+  count = 2,
+} = {}) {
+  return {
+    coldStartMs,
+    coldStartFirstFrameMs: firstFrameMs,
+    coldStartGpuChannelFailureCount: count,
+  };
+}
+
+function buildColdStartEvaluation(extraFailedChecks = []) {
+  return {
+    ok: false,
+    checks: [
+      { name: "fixture.id", ok: true },
+      { name: "coldStartMs", ok: false },
+      { name: "projectOpenMs", ok: true },
+      ...extraFailedChecks.map((name) => ({ name, ok: false })),
+    ],
+  };
+}
+
+test("a first-frame-bound cold start after a GPU channel failure is retryable", () => {
+  const decision = classifyTransientPerformanceRetry(
+    buildColdStartMetrics(),
+    buildColdStartEvaluation(),
+  );
+  assert.deepEqual(decision, {
+    eligible: true,
+    reason: "coldstart-gpu-channel-first-frame",
+    gpuChannelFailureCount: 2,
+    coldStartMs: 4_106.799999999988,
+    firstFrameMs: 4_102.9,
+    firstFrameShare: 4_102.9 / 4_106.799999999988,
+  });
+  assert.equal(
+    describeRecoveredPerformanceRetry(decision),
+    "Recovered after one transient performance retry: coldStart 4106.799999999988ms with first frame at 4102.9ms after 2 GPU channel failure(s). Both attempt artifacts were retained.",
+  );
+});
+
+test("cold starts without the GPU evidence, not bound by the first frame, or mixed are not retryable", () => {
+  const cases = [
+    [buildColdStartMetrics({ count: 0 }), buildColdStartEvaluation(), "coldstart-without-gpu-channel-failure"],
+    [buildColdStartMetrics({ count: null }), buildColdStartEvaluation(), "coldstart-evidence-incomplete"],
+    [buildColdStartMetrics({ count: 1.5 }), buildColdStartEvaluation(), "coldstart-evidence-incomplete"],
+    [buildColdStartMetrics({ firstFrameMs: null }), buildColdStartEvaluation(), "coldstart-evidence-incomplete"],
+    [buildColdStartMetrics({ firstFrameMs: 4_200 }), buildColdStartEvaluation(), "coldstart-evidence-incomplete"],
+    [buildColdStartMetrics({ firstFrameMs: 1_093.5 }), buildColdStartEvaluation(), "coldstart-not-first-frame-bound"],
+    [buildColdStartMetrics(), buildColdStartEvaluation(["projectOpenMs"]), "non-longtask-budget-failure"],
+    [buildColdStartMetrics(), buildColdStartEvaluation(["memory.peakBytes"]), "non-longtask-budget-failure"],
+  ];
+  for (const [metrics, evaluation, reason] of cases) {
+    const decision = classifyTransientPerformanceRetry(metrics, evaluation);
+    assert.equal(decision.eligible, false, reason);
+    assert.equal(decision.reason, reason);
+  }
+});
+
+test("an eligible cold start retries once and cannot rescue a second failure", () => {
+  const first = {
+    status: 1,
+    phase: "budget",
+    metrics: buildColdStartMetrics(),
+    evaluation: buildColdStartEvaluation(),
+  };
+  const attempts = [];
+  const result = runRuntimePerformanceWithRetry({
+    outputPath: "/tmp/runtime-metrics.json",
+    retryTransientOnce: true,
+    executeAttempt: (attempt) => {
+      attempts.push(attempt.attempt);
+      return first;
+    },
+    copyMetrics: () => {},
+    onRecovered: () => assert.fail("a second failure is not a recovery"),
+  });
+  assert.deepEqual(attempts, [1, 2]);
+  assert.equal(result.status, 1);
+  assert.equal(result.attemptCount, 2);
+  assert.equal(result.recovered, false);
+  assert.equal(result.retryDecision.reason, "coldstart-gpu-channel-first-frame");
+});
+
+test("the Long Task recovery wording is unchanged", () => {
+  assert.equal(
+    describeRecoveredPerformanceRetry({
+      reason: "single-unattributed-gesture-longtask",
+      interaction: "chroniclePan",
+      durationMs: 6_736,
+      unattributedRatio: 6_735.8 / 6_736,
+    }),
+    "Recovered after one transient performance retry: chroniclePan 6736ms Long Task, 100.00% unattributed. Both attempt artifacts were retained.",
+  );
+});
+
+test("the GPU channel scanner counts one signature across split and joined chunks", () => {
+  const scanner = createGpuChannelFailureScanner();
+  const line = `${GPU_CHANNEL_FAILURE}\n`;
+  scanner.scan("stderr", line.slice(0, 60));
+  assert.equal(scanner.count, 0, "a partial line is not counted yet");
+  scanner.scan("stderr", line.slice(60) + line);
+  assert.equal(scanner.count, 2, "a split line and a joined line");
+  scanner.scan("stdout", line);
+  assert.equal(scanner.count, 3, "stdout is scanned too");
+  // A partial stdout line must not join a stderr chunk.
+  scanner.scan("stdout", GPU_CHANNEL_FAILURE.slice(0, 40));
+  scanner.scan("stderr", `${GPU_CHANNEL_FAILURE.slice(40)}\n`);
+  assert.equal(scanner.count, 3);
+  for (const healthy of [
+    "[3248:1114/033303.278940:ERROR:gpu/command_buffer/service/context_group.cc:148] ContextResult::kFatalFailure: WebGL2 blocklisted",
+    "[3729:1114/041341.962393:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:395] SharedImageManager::ProduceMemory: Trying to Produce a Memory representation from a non-existent mailbox.",
+    "[grimodex-electron] renderer loaded: app://bundle/index.html",
+  ]) {
+    scanner.scan("stderr", `${healthy}\n`);
+  }
+  assert.equal(scanner.count, 3, "other GPU lines never qualify");
 });

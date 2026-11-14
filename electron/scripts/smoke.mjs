@@ -25,6 +25,7 @@ import { _electron } from "playwright";
 
 import { rootDir } from "./build.mjs";
 import { closeElectronAppWithDiagnostics } from "./close-electron-app.mjs";
+import { createGpuChannelFailureScanner } from "./runtime-performance-retry.mjs";
 import {
   aggregateAppProcessMemory,
   appMemoryMeasurement,
@@ -225,6 +226,8 @@ const performanceMetrics = {
     actualCardinality: null,
   },
   coldStartMs: null,
+  coldStartFirstFrameMs: null,
+  coldStartGpuChannelFailureCount: null,
   projectOpenMs: null,
   editorInput: null,
   autosave: null,
@@ -279,6 +282,7 @@ const runtimeContext = {
   app: null,
   page: null,
   memorySampler: null,
+  launchGpuChannelFailures: null,
   memoryStopPromise: null,
   closePromise: null,
   foreground: null,
@@ -539,11 +543,16 @@ async function launchApp(phase, { deferMemorySampler = false } = {}) {
       ? startMemorySampler(app, phase)
       : null;
   runtimeContext.memorySampler = memorySampler;
-  // main プロセスの標準出力を prefix 付きで透過（CI 調査用）
+  // main プロセスの標準出力を prefix 付きで透過（CI 調査用）。起動ごとに GPU の
+  // 通信路の失敗を数え、coldStart のやり直しの判定に使う（runtime-performance-retry）。
+  const gpuChannelFailures = createGpuChannelFailureScanner();
+  runtimeContext.launchGpuChannelFailures = gpuChannelFailures;
   app.process().stdout?.on("data", (d) => {
+    gpuChannelFailures.scan("stdout", d);
     process.stdout.write(`  [main] ${String(d)}`);
   });
   app.process().stderr?.on("data", (d) => {
+    gpuChannelFailures.scan("stderr", d);
     process.stderr.write(`  [main] ${String(d)}`);
   });
 
@@ -2699,7 +2708,16 @@ async function phaseWrite() {
       const editorReadyHandle = await page.waitForFunction(
         (markName) => {
           const mark = performance.getEntriesByName(markName, "mark").at(-1);
-          return mark ? { startTime: mark.startTime } : false;
+          // 同じ起動の最初のフレームの印も一緒に取る（coldStart のやり直しの判定用）。
+          const firstFrame = performance
+            .getEntriesByName("grimodex:renderer-first-frame", "mark")
+            .at(-1);
+          return mark
+            ? {
+                startTime: mark.startTime,
+                firstFrameStartTime: firstFrame ? firstFrame.startTime : null,
+              }
+            : false;
         },
         EDITOR_INPUT_READY_MARK,
         { timeout: 30_000 },
@@ -2709,6 +2727,13 @@ async function phaseWrite() {
         throw new Error("seed scene editor input-ready mark is invalid");
       }
       performanceMetrics.coldStartMs = editorReadyTiming.startTime;
+      performanceMetrics.coldStartFirstFrameMs = Number.isFinite(
+        editorReadyTiming.firstFrameStartTime,
+      )
+        ? editorReadyTiming.firstFrameStartTime
+        : null;
+      performanceMetrics.coldStartGpuChannelFailureCount =
+        runtimeContext.launchGpuChannelFailures?.count ?? 0;
       log("  seed scene editor が入力可能（coldStart完了）");
       performanceMetrics.openEvidence = await collectRuntimeOpenEvidence({
         app,

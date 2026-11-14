@@ -10,12 +10,103 @@ export const TRANSIENT_PERFORMANCE_RETRY_POLICY = Object.freeze({
   minimumUnattributedRatio: 0.95,
 });
 
+/**
+ * Cold start retry (2026-11-14 user decision): some GitHub-hosted runners
+ * (AWS) lose the GPU process channel while the first frame is pending. The
+ * renderer then waits ~2.8 s for a new channel, and the first-frame and
+ * editor-ready marks land near 4.1 s instead of ~1.1 s. The 4,000 ms budget
+ * is unchanged; only a cold start whose time is the first-frame wait and that
+ * coincides with this exact Chromium signature may be sampled once more.
+ */
+export const COLD_START_GPU_RETRY_POLICY = Object.freeze({
+  minimumFirstFrameShare: 0.9,
+});
+
+// One signature only. "WebGL2 blocklisted" (kFatalFailure) and SharedImageManager
+// lines appear on healthy runs too and must never qualify.
+const GPU_CHANNEL_FAILURE_LINE =
+  /gpu\/ipc\/client\/command_buffer_proxy_impl\.cc:\d+\] ContextResult::kTransientFailure: Failed to send GpuControl\.CreateCommandBuffer\./u;
+const MAX_PENDING_LINE_CHARS = 16_384;
+
+/**
+ * Count GPU channel failure lines in one Electron launch's stdout/stderr.
+ * Chunks may split or join lines, so each stream keeps its partial line.
+ */
+export function createGpuChannelFailureScanner() {
+  const pending = new Map();
+  let count = 0;
+  return Object.freeze({
+    scan(stream, chunk) {
+      const lines = `${pending.get(stream) ?? ""}${String(chunk)}`.split("\n");
+      const rest = lines.pop();
+      pending.set(stream, rest.slice(-MAX_PENDING_LINE_CHARS));
+      for (const line of lines) {
+        if (GPU_CHANNEL_FAILURE_LINE.test(line)) count += 1;
+      }
+    },
+    get count() {
+      return count;
+    },
+  });
+}
+
 function rejected(reason) {
   return Object.freeze({ eligible: false, reason });
 }
 
 function finite(value) {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+function classifyColdStartGpuChannelRetry(metrics, failedChecks) {
+  if (!failedChecks.every((check) => check.name === "coldStartMs")) return null;
+  // Measured values only (captured with coldStartMs in the same renderer
+  // read); the informational open evidence never gates.
+  const count = metrics.coldStartGpuChannelFailureCount;
+  const coldStartMs = metrics.coldStartMs;
+  const firstFrameMs = metrics.coldStartFirstFrameMs;
+  if (
+    !Number.isInteger(count) ||
+    count < 0 ||
+    !finite(coldStartMs) ||
+    coldStartMs <= 0 ||
+    !finite(firstFrameMs) ||
+    firstFrameMs < 0 ||
+    firstFrameMs > coldStartMs
+  ) {
+    return rejected("coldstart-evidence-incomplete");
+  }
+  if (count === 0) return rejected("coldstart-without-gpu-channel-failure");
+  const firstFrameShare = firstFrameMs / coldStartMs;
+  if (firstFrameShare < COLD_START_GPU_RETRY_POLICY.minimumFirstFrameShare) {
+    return rejected("coldstart-not-first-frame-bound");
+  }
+  return Object.freeze({
+    eligible: true,
+    reason: "coldstart-gpu-channel-first-frame",
+    gpuChannelFailureCount: count,
+    coldStartMs,
+    firstFrameMs,
+    firstFrameShare,
+  });
+}
+
+/** The recovery warning for a retry decision (wording per reason). */
+export function describeRecoveredPerformanceRetry(decision) {
+  if (decision.reason === "coldstart-gpu-channel-first-frame") {
+    return (
+      `Recovered after one transient performance retry: ` +
+      `coldStart ${decision.coldStartMs}ms with first frame at ${decision.firstFrameMs}ms ` +
+      `after ${decision.gpuChannelFailureCount} GPU channel failure(s). ` +
+      `Both attempt artifacts were retained.`
+    );
+  }
+  return (
+    `Recovered after one transient performance retry: ` +
+    `${decision.interaction} ${decision.durationMs}ms Long Task, ` +
+    `${(decision.unattributedRatio * 100).toFixed(2)}% unattributed. ` +
+    `Both attempt artifacts were retained.`
+  );
 }
 
 /**
@@ -33,6 +124,9 @@ export function classifyTransientPerformanceRetry(metrics, evaluation) {
   if (failedChecks.length === 0) {
     return rejected("performance-failure-unclassified");
   }
+
+  const coldStart = classifyColdStartGpuChannelRetry(metrics, failedChecks);
+  if (coldStart) return coldStart;
 
   const interaction = RETRYABLE_GESTURE_INTERACTIONS.find((candidate) => {
     const prefix = `interactions.${candidate}`;
