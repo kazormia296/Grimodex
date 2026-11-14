@@ -119,6 +119,7 @@ export function proseMirrorParagraphTexts(content: string | object): {
   paragraphs: string[];
   rubyCount: number;
   rubyBases: string[];
+  rubyPairs: { base: string; annotation: string }[];
   nonParagraphBlocks: number;
 };
 export function comparePersistedScene(
@@ -128,6 +129,7 @@ export function comparePersistedScene(
   paragraphCountOk: boolean;
   textOk: boolean;
   rubyOk: boolean;
+  rubyPairMismatchCount: number;
   rubyCount: number;
   rubyBases: string[];
 };
@@ -135,6 +137,26 @@ export function rubySurfaceRelation(
   rubyBaseKeys: readonly string[],
   surfaces: readonly string[],
 ): { exact: number; containing: number; exactSurfaces: string[] };
+export function seedMissingFromCandidates(
+  rubyBaseKeys: readonly string[],
+  seedOccurrence: readonly (readonly [string, number])[],
+  candidateOccurrence: readonly (readonly [string, number])[],
+): {
+  seedDistinct: number;
+  candidateDistinct: number;
+  missing: number;
+  presentOccurrenceDiff: number;
+  classes: {
+    exact: { surfaces: number; occurrences: number; keys: string[] };
+    containing: {
+      surfaces: number;
+      occurrences: number;
+      keys: string[];
+      shortOnly: number;
+    };
+    other: { surfaces: number; occurrences: number; keys: string[] };
+  };
+};
 
 export const ROSTER_SCHEMA: string;
 export const ENTITY_TYPES: readonly string[];
@@ -195,3 +217,12 @@ export function rosterAtLevel(
 ): { id: string; type: string; name: string; aliases: string[] }[];
 export function firstSceneOf(entity: RosterEntity): number | null;
 export function wilsonUpper(k: number, n: number, z?: number): number;
+
+export function checkRosterAgainstScenes(
+  roster: unknown,
+  scenes: readonly { paragraphs: readonly string[] }[],
+): { code: string; entityId: string; count: number }[];
+
+export function scenesTextsForScan(
+  scenes: readonly { paragraphs: readonly string[] }[],
+): string[];

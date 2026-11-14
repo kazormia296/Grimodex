@@ -65,6 +65,18 @@ export function expectedSceneText(paragraphs) {
 }
 
 /**
+ * 出力の混入検査（assertOutputClean・shingle 走査）の材料：記法つきの本文と、ルビ記法を親文字だけに
+ * した本文の両方（ルビのある作品は、記法の有無で別の連続になる）。rubyBaseText は後方で定義される
+ * 関数宣言なので、ここから呼べる。
+ */
+export function scenesTextsForScan(scenes) {
+  return scenes.flatMap((scene) => [
+    expectedSceneText(scene.paragraphs),
+    expectedSceneText(scene.paragraphs.map(rubyBaseText)),
+  ]);
+}
+
+/**
  * 抽出器が読む snapshot の canonical.text（proseMirrorSerializer の assembleCanonical）の期待値：
  * 段落を "\n" で区切り、末尾に改行を付けない（prosemirrorToText とは形が違う）。
  */
@@ -556,6 +568,7 @@ export function proseMirrorParagraphTexts(content) {
   const doc = typeof content === "string" ? JSON.parse(content) : content;
   const paragraphs = [];
   const rubyBases = [];
+  const rubyPairs = [];
   let nonParagraphBlocks = 0;
   const inline = (node) => {
     if (!node || typeof node !== "object") return "";
@@ -564,6 +577,13 @@ export function proseMirrorParagraphTexts(content) {
     if (node.type === "ruby") {
       const base = node.attrs?.base;
       if (typeof base === "string") rubyBases.push(base);
+      rubyPairs.push({
+        base: typeof base === "string" ? base : "",
+        annotation:
+          typeof node.attrs?.annotation === "string"
+            ? node.attrs.annotation
+            : "",
+      });
       return typeof base === "string" ? base : "";
     }
     if (node.type === "hardBreak") return "\n";
@@ -580,6 +600,7 @@ export function proseMirrorParagraphTexts(content) {
     paragraphs,
     rubyCount: rubyBases.length,
     rubyBases,
+    rubyPairs,
     nonParagraphBlocks,
   };
 }
@@ -598,10 +619,32 @@ export function comparePersistedScene(expectedParagraphs, content) {
     paragraphCountOk &&
     expectedTexts.every((t, i) => t === actual.paragraphs[i]);
   const rubyOk = actual.rubyCount === countRubyNotations(expectedParagraphs);
+  // 親文字と読み（annotation）の並びの一致。期待側は製品と別実装の簡易分割（paragraphSegments）。
+  // 読みは抽出に使われないので致命にせず、不一致の ruby の数だけを返す。
+  const expectedPairs = expectedParagraphs.flatMap((paragraph) =>
+    paragraphSegments(paragraph)
+      .filter((segment) => segment.reading !== null)
+      .map((segment) => ({
+        base: segment.base,
+        annotation: segment.reading,
+      })),
+  );
+  let rubyPairMismatchCount = Math.abs(
+    expectedPairs.length - actual.rubyPairs.length,
+  );
+  const common = Math.min(expectedPairs.length, actual.rubyPairs.length);
+  for (let i = 0; i < common; i++) {
+    if (
+      expectedPairs[i].base !== actual.rubyPairs[i].base ||
+      expectedPairs[i].annotation !== actual.rubyPairs[i].annotation
+    )
+      rubyPairMismatchCount++;
+  }
   return {
     paragraphCountOk,
     textOk,
     rubyOk,
+    rubyPairMismatchCount,
     rubyCount: actual.rubyCount,
     rubyBases: actual.rubyBases,
   };
@@ -611,18 +654,82 @@ export function comparePersistedScene(expectedParagraphs, content) {
  * ルビの親文字の集合（candidateKey で潰す）と、表記の集合の関係（件数と、一致した表記の
  * hash を作るための表記の列）。
  * - exact：candidateKey が親文字のどれかに等しい表記
- * - containing：親文字（2 文字以上）のどれかを含み、等しくない表記
+ * - containing：親文字（1 字以上）のどれかを含み、等しくない表記
+ *   （1 字の親文字の偽陽性は、「seed のうち min1 の候補に無い表記」に限る seedMissingFromCandidates で抑える）
  */
 export function rubySurfaceRelation(rubyBaseKeys, surfaces) {
   const bases = new Set(rubyBaseKeys.filter((k) => k.length > 0));
-  const longBases = [...bases].filter((k) => [...k].length >= 2);
   const exactSurfaces = [];
   let containing = 0;
   for (const surface of new Set(surfaces.map(candidateKey))) {
     if (bases.has(surface)) exactSurfaces.push(surface);
-    else if (longBases.some((base) => surface.includes(base))) containing++;
+    else if ([...bases].some((base) => surface.includes(base))) containing++;
   }
   return { exact: exactSurfaces.length, containing, exactSurfaces };
+}
+
+/**
+ * 「seed のうち候補（min1 の raw）に無い表記」を直接数え、ルビの親文字との関係で 3 分類する
+ * （主指標。閾値の影響を混ぜないため、候補は minCount=1 の集合を渡す）。
+ * - exact：candidateKey が親文字に等しい
+ * - containing：親文字（1 字以上）を含み、等しくない。そのうち 1 字の親文字だけで該当する数を
+ *   containingShortOnly に分ける（偽陽性の余地）
+ * - other：どちらでもない（ルビ以外の理由）
+ * 出現数は seedOccurrence（表記 → seed の出現数）と candidateOccurrence（表記 → 候補の count）の
+ * 差（seed − 候補）を、表記の分類ごと（欠落した表記は candidate 0）に合計する。両方にある表記の
+ * 出現数の食い違いは presentOccurrenceDiff に分ける。
+ */
+export function seedMissingFromCandidates(
+  rubyBaseKeys,
+  seedOccurrence,
+  candidateOccurrence,
+) {
+  const bases = new Set(rubyBaseKeys.filter((k) => k.length > 0));
+  const seedMap = new Map();
+  for (const [surface, count] of seedOccurrence) {
+    const key = candidateKey(surface);
+    seedMap.set(key, (seedMap.get(key) ?? 0) + count);
+  }
+  const candMap = new Map();
+  for (const [surface, count] of candidateOccurrence) {
+    const key = candidateKey(surface);
+    candMap.set(key, (candMap.get(key) ?? 0) + count);
+  }
+  const classes = {
+    exact: { surfaces: 0, occurrences: 0, keys: [] },
+    containing: { surfaces: 0, occurrences: 0, keys: [], shortOnly: 0 },
+    other: { surfaces: 0, occurrences: 0, keys: [] },
+  };
+  let presentOccurrenceDiff = 0;
+  let missing = 0;
+  for (const [key, seedCount] of seedMap) {
+    if (candMap.has(key)) {
+      presentOccurrenceDiff += seedCount - candMap.get(key);
+      continue;
+    }
+    missing++;
+    let cls = "other";
+    let shortOnly = false;
+    if (bases.has(key)) cls = "exact";
+    else {
+      const hit = [...bases].filter((base) => key.includes(base));
+      if (hit.length > 0) {
+        cls = "containing";
+        shortOnly = hit.every((base) => [...base].length < 2);
+      }
+    }
+    classes[cls].surfaces++;
+    classes[cls].occurrences += seedCount;
+    classes[cls].keys.push(key);
+    if (cls === "containing" && shortOnly) classes.containing.shortOnly++;
+  }
+  return {
+    seedDistinct: seedMap.size,
+    candidateDistinct: candMap.size,
+    missing,
+    presentOccurrenceDiff,
+    classes,
+  };
 }
 
 // ---- 名簿（roster）の形式（事前登録 §3） ---------------------------------------
@@ -669,6 +776,8 @@ export const REVIEW_VERDICT_CODES = Object.freeze({
  *   honorificSurfaces: [string]（敬称の対応表。表記→この実体。別名としては登録しない）,
  *   ambiguousSurfaces: [{ surface, sceneRanges: [[from, to], ...] }]（場面で指す実体が変わる表記。
  *     この実体を指す場面の範囲。別名に入れない）,
+ *   firstScene: 初出場面（1 始まり。必須。evidence に含まれ、evidence のどの場面より後でない。
+ *     name・別名のうち最も早く本文に現れる場面と一致することを checkRosterAgainstScenes が検査する）,
  *   evidence: [{ scene, paragraph }]（根拠。1 始まり。1 件以上）,
  *   lineage: "A"|"B"|"adjudicated", origin?: { A?: [id], B?: [id] }, packets?: [packet id]（調停した packet）,
  *   review?: { status, verdict?, note? }（作者の確認の結果。確認前は無い）
@@ -840,6 +949,11 @@ export function validateRoster(roster, options = {}) {
         )
           add("AMBIGUOUS_RANGE_INVALID", id, `${where}.sceneRanges`);
       });
+    // 初出場面（必須）
+    const hasFirstScene = isPositiveInt(entity.firstScene);
+    if (!hasFirstScene) add("FIRST_SCENE_INVALID", id, at("firstScene"));
+    else if (sceneCount !== undefined && entity.firstScene > sceneCount)
+      add("FIRST_SCENE_RANGE", id, at("firstScene"));
     // 根拠
     if (!Array.isArray(entity.evidence) || entity.evidence.length === 0)
       add("EVIDENCE_MISSING", id, at("evidence"));
@@ -858,6 +972,18 @@ export function validateRoster(roster, options = {}) {
         )
           add("EVIDENCE_PARAGRAPH_RANGE", id, where);
       });
+    if (hasFirstScene && Array.isArray(entity.evidence)) {
+      const evidenceScenes = entity.evidence
+        .map((ev) => ev?.scene)
+        .filter(isPositiveInt);
+      if (
+        evidenceScenes.length > 0 &&
+        !evidenceScenes.includes(entity.firstScene)
+      )
+        add("FIRST_SCENE_NOT_IN_EVIDENCE", id, at("firstScene"));
+      if (evidenceScenes.some((scene) => scene < entity.firstScene))
+        add("FIRST_SCENE_AFTER_EVIDENCE", id, at("firstScene"));
+    }
     if (
       entity.review !== undefined &&
       !REVIEW_STATUSES.includes(entity.review?.status)
@@ -1005,8 +1131,50 @@ export function rosterAtLevel(roster, level) {
   }));
 }
 
-/** 実体の初出場面（根拠の最小の場面。無ければ null）。 */
+/**
+ * 名簿の初出場面を、本文（ルビ記法を親文字だけにした形）で機械検査する（原稿の文字列は返さない）。
+ * 実体ごとに name と全別名（L1〜L3）を調べ、
+ * - FIRST_SCENE_SURFACE_ABSENT：どの表記も firstScene の本文に無い
+ * - FIRST_SCENE_SURFACE_EARLIER：いずれかの表記が firstScene より前の場面に現れる（件数は実体ごとの前の場面の数）
+ * を { code, entityId, count } で返す。表記は candidateKey ではなく本文への単純な部分一致で数える。
+ */
+export function checkRosterAgainstScenes(roster, scenes) {
+  const texts = scenes.map((scene) =>
+    scene.paragraphs.map(rubyBaseText).join("\n"),
+  );
+  const errors = [];
+  for (const entity of Array.isArray(roster?.entities) ? roster.entities : []) {
+    if (!isPositiveInt(entity?.firstScene) || entity.firstScene > texts.length)
+      continue;
+    const surfaces = [
+      entity.name,
+      ...(Array.isArray(entity.aliases)
+        ? entity.aliases.map((alias) => alias?.surface)
+        : []),
+    ].filter((surface) => typeof surface === "string" && surface.length > 0);
+    const inScene = (index) =>
+      surfaces.some((surface) => texts[index].includes(surface));
+    if (!inScene(entity.firstScene - 1))
+      errors.push({
+        code: "FIRST_SCENE_SURFACE_ABSENT",
+        entityId: String(entity.id),
+        count: 1,
+      });
+    let earlier = 0;
+    for (let i = 0; i < entity.firstScene - 1; i++) if (inScene(i)) earlier++;
+    if (earlier > 0)
+      errors.push({
+        code: "FIRST_SCENE_SURFACE_EARLIER",
+        entityId: String(entity.id),
+        count: earlier,
+      });
+  }
+  return errors;
+}
+
+/** 実体の初出場面（firstScene。古い形の名簿は根拠の最小の場面。無ければ null）。 */
 export function firstSceneOf(entity) {
+  if (isPositiveInt(entity.firstScene)) return entity.firstScene;
   const scenes = (entity.evidence ?? [])
     .map((ev) => ev.scene)
     .filter(isPositiveInt);

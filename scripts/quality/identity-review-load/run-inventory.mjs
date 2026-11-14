@@ -41,10 +41,10 @@ import { resolveWorkSource } from "./sources.mjs";
 import {
   WORKS,
   assertOutputClean,
-  expectedSceneText,
   findAiCommands,
   safeErrorSummary,
   scenesFromWork,
+  scenesTextsForScan,
 } from "./lib.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "../../..");
@@ -425,7 +425,7 @@ async function runWork(workKey, options, vite, busAddress) {
       WORKS[workKey],
       `[precheck] SCENE_COUNT_DIFFERS scene count differs from registered`,
     );
-    scenesTexts = scenes.map((scene) => expectedSceneText(scene.paragraphs));
+    scenesTexts = scenesTextsForScan(scenes);
 
     // keyring を読まない・既定の設定を使う（nir1-retrieval と同じ）。
     writeFileSync(

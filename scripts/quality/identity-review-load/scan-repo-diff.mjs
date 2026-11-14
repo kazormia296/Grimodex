@@ -107,29 +107,34 @@ function loadMaterial(output, dataDir) {
         if ([...surface].length >= 2) surfaces.add(surface);
     }
   }
-  // 名簿（repo 外）の名前・別名も、原稿由来の表記として走査する。
+  // 名簿（repo 外）の配下の *.json（名簿・chunk の index・packet・作者の応答・途中の名簿）の、
+  // 非 ASCII を含む文字列を全部、原稿由来の表記として走査する（名前・別名・敬称・場面で変わる表記・
+  // 最頻形・メモなど欄を問わない）。読めない JSON は黙って捨てず、件数だけ数える。
+  let unreadableJson = 0;
   const rosterRoot = path.join(output, "roster");
-  if (existsSync(rosterRoot)) {
-    for (const work of readdirSync(rosterRoot)) {
-      const dir = path.join(rosterRoot, work);
-      for (const name of readdirSync(dir)) {
-        if (!/^roster-.*\.json$/u.test(name)) continue;
+  const collect = (value) => {
+    if (typeof value === "string") {
+      // eslint-disable-next-line no-control-regex
+      if (/[^\x00-\x7F]/u.test(value) && [...value].length >= 2)
+        surfaces.add(value);
+    } else if (Array.isArray(value)) for (const item of value) collect(item);
+    else if (value && typeof value === "object")
+      for (const item of Object.values(value)) collect(item);
+  };
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(file);
+      else if (entry.name.endsWith(".json")) {
         try {
-          const roster = JSON.parse(readFileSync(path.join(dir, name), "utf8"));
-          for (const entity of roster.entities ?? [])
-            for (const surface of [
-              entity.name,
-              ...(entity.aliases ?? []).map((a) => a.surface),
-              ...(entity.honorificSurfaces ?? []),
-            ])
-              if (typeof surface === "string" && [...surface].length >= 2)
-                surfaces.add(surface);
+          collect(JSON.parse(readFileSync(file, "utf8")));
         } catch {
-          // 読めない名簿は無視（作りかけ）。
+          unreadableJson++;
         }
       }
     }
-  }
+  };
+  if (existsSync(rosterRoot)) walk(rosterRoot);
   const hashes = new Set();
   for (const dirName of ["inventory", "extract-empty"]) {
     const dir = path.join(output, dirName);
@@ -147,6 +152,7 @@ function loadMaterial(output, dataDir) {
     surfaces,
     hashes,
     textCount: texts.length,
+    unreadableJson,
   };
 }
 
@@ -179,6 +185,7 @@ function main(argv) {
     manuscriptSceneCount: material.textCount,
     surfaceCount: material.surfaces.size,
     hashCount: material.hashes.size,
+    unreadableJsonCount: material.unreadableJson,
     sources: {},
   };
   let total = 0;

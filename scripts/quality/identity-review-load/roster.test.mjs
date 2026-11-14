@@ -4,19 +4,24 @@ import assert from "node:assert/strict";
 import {
   existsSync,
   mkdirSync,
+  chmodSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
+import process from "node:process";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
   REVIEW_VERDICTS,
   WORKS,
   assertOutputClean,
+  checkRosterAgainstScenes,
   comparePersistedScene,
   countRubyNotations,
   expectedSceneText,
@@ -28,6 +33,8 @@ import {
   rubyBaseText,
   rubySurfaceRelation,
   scenesFromWork,
+  scenesTextsForScan,
+  seedMissingFromCandidates,
   validateRoster,
   wilsonUpper,
 } from "./lib.mjs";
@@ -46,7 +53,7 @@ import {
   sharedBoundaryCount,
 } from "./roster-tools.mjs";
 import { resolveWorkSource } from "./sources.mjs";
-import { runCommand } from "./roster-cli.mjs";
+import { assertSafeRoot, runCommand } from "./roster-cli.mjs";
 
 const WORK = "g-ja-2";
 
@@ -69,6 +76,7 @@ function entity(n, overrides = {}) {
     aliases: [],
     honorificSurfaces: [],
     ambiguousSurfaces: [],
+    firstScene: 1,
     evidence: [{ scene: 1, paragraph: 1 }],
     lineage: "A",
     ...overrides,
@@ -140,6 +148,29 @@ test("ルビ：ProseMirror の段落・ruby node の数え方と、保存本文�
   );
 });
 
+test("ルビ：読み（annotation）の取り違えは件数で記録される（本文は一致のまま）", () => {
+  const doc = (annotation) => ({
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [
+          { type: "ruby", attrs: { base: "暁子", annotation } },
+          { type: "text", text: "が走る。" },
+        ],
+      },
+    ],
+  });
+  const ok = comparePersistedScene(["｜暁子《あきこ》が走る。"], doc("あきこ"));
+  assert.equal(ok.rubyPairMismatchCount, 0);
+  const swapped = comparePersistedScene(
+    ["｜暁子《あきこ》が走る。"],
+    doc("ぎょうし"),
+  );
+  assert.deepEqual([swapped.textOk, swapped.rubyOk], [true, true]);
+  assert.equal(swapped.rubyPairMismatchCount, 1);
+});
+
 test("ルビ：抜粋用の分割（親文字つき・自動ルビ・強調）", () => {
   assert.deepEqual(paragraphSegments("前｜暁子《あきこ》後"), [
     { base: "前", reading: null },
@@ -151,14 +182,57 @@ test("ルビ：抜粋用の分割（親文字つき・自動ルビ・強調）",
   ]);
 });
 
-test("ルビの付いた表記の関係：親文字に等しい／含む表記を数える", () => {
+test("ルビの付いた表記の関係：親文字に等しい／含む表記を数える（1 字の親文字も含む判定に入れる）", () => {
   const r = rubySurfaceRelation(
-    ["暁子", "港"],
-    ["暁子", "暁子さん", "港", "別の語"],
+    ["暁子", "架空港", "東"],
+    ["暁子", "暁子さん", "架空港", "別の語", "東京"],
   );
   assert.equal(r.exact, 2);
-  assert.equal(r.containing, 1);
-  assert.deepEqual([...r.exactSurfaces].sort(), ["暁子", "港"].sort());
+  assert.equal(r.containing, 2); // 暁子さん（2 字）と 東京（1 字の親文字）
+  assert.deepEqual([...r.exactSurfaces].sort(), ["暁子", "架空港"].sort());
+});
+
+test("seed のうち min1 の候補に無い表記：等しい／含む／どちらでもないに 3 分類し、出現数の差を分ける", () => {
+  const r = seedMissingFromCandidates(
+    ["暁子", "東"],
+    [
+      ["暁子", 5], // 親文字に等しい。候補に無い
+      ["暁子さん", 2], // 親文字を含む（2 字）。候補に無い
+      ["東京", 3], // 1 字の親文字だけで含む。候補に無い
+      ["別の語", 4], // どちらでもない。候補に無い
+      ["共通", 10], // 両方にある（出現数が違う）
+    ],
+    [["共通", 7]],
+  );
+  assert.equal(r.seedDistinct, 5);
+  assert.equal(r.candidateDistinct, 1);
+  assert.equal(r.missing, 4);
+  assert.equal(r.presentOccurrenceDiff, 3);
+  assert.deepEqual(
+    [r.classes.exact.surfaces, r.classes.exact.occurrences],
+    [1, 5],
+  );
+  assert.deepEqual(
+    [
+      r.classes.containing.surfaces,
+      r.classes.containing.occurrences,
+      r.classes.containing.shortOnly,
+    ],
+    [2, 5, 1],
+  );
+  assert.deepEqual(
+    [r.classes.other.surfaces, r.classes.other.occurrences],
+    [1, 4],
+  );
+});
+
+test("出力の混入検査の材料：記法つきと親文字だけの両方の本文", () => {
+  const texts = scenesTextsForScan([
+    { paragraphs: ["｜暁子《あきこ》が走る。"] },
+  ]);
+  assert.equal(texts.length, 2);
+  assert.ok(texts[0].includes("《あきこ》"));
+  assert.equal(texts[1], "暁子が走る。\n");
 });
 
 test("作品の入力元：新しい 3 本は測定 dir、m-ja-2 は評価データ、--data-dir は上書き", () => {
@@ -260,6 +334,21 @@ test("名簿の検査：正しい名簿は通り、各違反は固有の code �
       "EVIDENCE_SCENE_RANGE",
       roster([entity(1, { evidence: [{ scene: 61, paragraph: 1 }] })]),
     ],
+    ["FIRST_SCENE_INVALID", roster([entity(1, { firstScene: undefined })])],
+    ["FIRST_SCENE_RANGE", roster([entity(1, { firstScene: 61 })])],
+    ["FIRST_SCENE_NOT_IN_EVIDENCE", roster([entity(1, { firstScene: 2 })])],
+    [
+      "FIRST_SCENE_AFTER_EVIDENCE",
+      roster([
+        entity(1, {
+          firstScene: 2,
+          evidence: [
+            { scene: 1, paragraph: 1 },
+            { scene: 2, paragraph: 1 },
+          ],
+        }),
+      ]),
+    ],
     ["ENTITY_LINEAGE", roster([entity(1, { lineage: "C" })])],
     ["REVIEW_STATUS", roster([entity(1, { review: { status: "x" } })])],
   ];
@@ -302,6 +391,39 @@ function findUnsafeStringsFree(errors) {
     ),
   );
 }
+
+test("初出場面の機械検査：表記が初出場面に無い／より前の場面に出る、を code と件数で返す", () => {
+  const scenes = [
+    { paragraphs: ["前置き。"] },
+    { paragraphs: ["｜名前一《なまえ》が来た。"] },
+    { paragraphs: ["名前一と別名甲。"] },
+  ];
+  const e = (id, firstScene, name, aliases = []) => ({
+    id,
+    firstScene,
+    name,
+    aliases: aliases.map((surface) => ({ surface, level: "L2" })),
+  });
+  const result = checkRosterAgainstScenes(
+    {
+      entities: [
+        e("a", 2, "名前一"), // 良い（ルビ記法の中の親文字で見る）
+        e("b", 3, "別名甲"), // 良い
+        e("c", 1, "名前一"), // 初出の場面に無い
+        e("d", 3, "名前一", ["別名甲"]), // 名前が場面 2 に先に出る
+      ],
+    },
+    scenes,
+  );
+  assert.deepEqual(
+    result.map((r) => `${r.code}:${r.entityId}:${r.count}`).sort(),
+    [
+      "FIRST_SCENE_SURFACE_ABSENT:c:1",
+      "FIRST_SCENE_SURFACE_EARLIER:d:1",
+    ].sort(),
+  );
+  assert.ok(findUnsafeStringsFree(result));
+});
 
 test("敬称の形：X＋接尾辞だけ。接尾辞だけの単独の表記は敬称付きの形ではない", () => {
   assert.equal(isHonorificForm("甲さん"), true);
@@ -616,6 +738,28 @@ test("確認の表：A と B の一致の印・層・実体 ID・系統は HTML 
   );
   assert.match(html, /^<!doctype html>/u);
   assert.doesNotMatch(html, /<script[^>]+src=|<link[^>]+href=|https?:\/\//u); // 自己完結
+  // 外部資源の禁止（CSP）と、ブラウザに下書きを残さないこと。
+  assert.match(html, /Content-Security-Policy[^>]*default-src 'none'/u);
+  assert.equal(html.includes("localStorage"), false);
+  // script への埋め込みは < を \u003c にし、</script> で閉じられない。
+  const hostile = renderReviewHtml({
+    roster: r,
+    scenes: syntheticScenes(60, 3, 30),
+    rows: sel.rows,
+    sheetId: "x</script><!--",
+  });
+  assert.equal(hostile.includes("x</script>"), false);
+  assert.ok(hostile.includes("x\\u003c/script>\\u003c!--"));
+  assert.throws(
+    () =>
+      renderReviewHtml({
+        roster: { ...r, work: "bad" },
+        scenes: syntheticScenes(60, 3, 30),
+        rows: sel.rows,
+        sheetId: "s",
+      }),
+    /UNKNOWN_WORK/u,
+  );
   // 隠すべき印が混じった HTML は検査で落ちる。
   assert.throws(
     () =>
@@ -716,6 +860,17 @@ test("応答の取り込み：直しを反映し、確認しなかった行は�
   assert.equal(summary.edits.aliasAddSkipped, 1);
   assert.equal(summary.random.rows, 3);
   assert.equal(summary.random.errors, 3);
+  // 判定できた行の分母・応答の無い行・わからない行の有無を併記する。
+  assert.equal(summary.random.keyRows >= summary.random.rows, true);
+  assert.equal(
+    summary.random.unanswered,
+    summary.random.keyRows - summary.random.rows,
+  );
+  assert.equal(
+    summary.random.determinateRows,
+    summary.random.rows - summary.random.unknown,
+  );
+  assert.equal(summary.random.unknownPresent, summary.random.unknown > 0);
   assert.equal(summary.byAgreement.disagreed.errors, 1);
   assert.ok(findUnsafeFree(summary));
   // 入力の名簿は変えない。
@@ -848,6 +1003,195 @@ test("CLI：chunks の要約に原稿が混ざらず、書いた dir・file は 
     const file = path.join(out, "roster", "g-ja-3", "chunks-A", "chunk-01.txt");
     assert.equal(statSync(file).mode & 0o077, 0);
     assert.equal(statSync(path.join(out, "roster", "g-ja-3")).mode & 0o077, 0);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("CLI：出力 root は repo の内側・0700 でない場所を拒む", () => {
+  const base = mkdtempSync(path.join(os.tmpdir(), "idl-root-"));
+  try {
+    const open = path.join(base, "open");
+    mkdirSync(open, { mode: 0o755 });
+    chmodSync(open, 0o755);
+    assert.throws(() => assertSafeRoot(open), /ROOT_MODE_NOT_0700/u);
+    assert.throws(
+      () => assertSafeRoot(path.join(import.meta.dirname, "out")),
+      /ROOT_INSIDE_REPO/u,
+    );
+    const fine = path.join(base, "fine");
+    assert.doesNotThrow(() => assertSafeRoot(fine)); // 無ければ 0700 で作る
+    assert.equal(statSync(fine).mode & 0o077, 0);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("CLI：sheet の key は sheet と別の dir、ingest は root の外の応答 file を 0600 で取り込む", () => {
+  const base = mkdtempSync(path.join(os.tmpdir(), "idl-sheet-"));
+  try {
+    const dataDir = path.join(base, "data");
+    const out = path.join(base, "out");
+    mkdirSync(dataDir, { recursive: true });
+    mkdirSync(out, { recursive: true, mode: 0o700 });
+    const scenes = Array.from({ length: 60 }, (_, i) => ({
+      index: i + 1,
+      size: 0,
+      paragraphs: [`名前${i + 1}が来た。`, "何もない段落。"],
+    }));
+    writeFileSync(
+      path.join(dataDir, "g-ja-2.json"),
+      JSON.stringify({ scenes }),
+    );
+    const input = roster(
+      Array.from({ length: 40 }, (_, i) =>
+        entity(i + 1, {
+          firstScene: i + 1,
+          evidence: [{ scene: i + 1, paragraph: 1 }],
+        }),
+      ),
+    );
+    const rosterFile = path.join(base, "roster.json");
+    writeFileSync(rosterFile, JSON.stringify(input));
+    const options = { work: WORK, root: out, "data-dir": dataDir };
+    const checked = runCommand("check", { ...options, roster: rosterFile });
+    assert.equal(checked.ok, true);
+    // 初出場面が合わない名簿は check で落ちる。
+    const bad = JSON.parse(JSON.stringify(input));
+    bad.entities[0].firstScene = 2;
+    bad.entities[0].evidence = [{ scene: 2, paragraph: 1 }];
+    const badFile = path.join(base, "bad.json");
+    writeFileSync(badFile, JSON.stringify(bad));
+    assert.equal(
+      runCommand("check", { ...options, roster: badFile }).ok,
+      false,
+    );
+    const sheet = runCommand("sheet", {
+      ...options,
+      roster: rosterFile,
+      seed: "s1",
+    });
+    const workDir = path.join(out, "roster", WORK);
+    assert.equal(
+      existsSync(path.join(workDir, "review-sheet", "sheet.html")),
+      true,
+    );
+    assert.equal(
+      existsSync(path.join(workDir, "review-key", "review-key.json")),
+      true,
+    );
+    assert.equal(
+      existsSync(path.join(workDir, "review-sheet", "review-key.json")),
+      false,
+    );
+    assert.equal(
+      sheet.key,
+      path.join(workDir, "review-key", "review-key.json"),
+    );
+    const key = JSON.parse(readFileSync(sheet.key, "utf8"));
+    const downloads = path.join(base, "downloads");
+    mkdirSync(downloads);
+    const responsesFile = path.join(downloads, "review-responses-g-ja-2.json");
+    writeFileSync(
+      responsesFile,
+      JSON.stringify({
+        schemaVersion: "identity-review-responses/1",
+        work: WORK,
+        responses: key.rows.map((row) => ({
+          rowId: row.rowId,
+          verdict: "そのまま",
+        })),
+      }),
+      { mode: 0o644 },
+    );
+    const ingested = runCommand("ingest", {
+      ...options,
+      roster: rosterFile,
+      responses: responsesFile,
+    });
+    assert.equal(ingested.responsesImported, true);
+    assert.equal(ingested.originalToDelete, realpathSync(responsesFile));
+    assert.equal(statSync(ingested.responsesFile).mode & 0o077, 0);
+    assert.equal(ingested.validationOk, true);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("CLI：壊れた名簿・日本語の work 名・repo 内の root でも、標準出力・標準エラーは ASCII だけで入力の断片を含まない", () => {
+  const base = mkdtempSync(path.join(os.tmpdir(), "idl-failclosed-"));
+  try {
+    const dataDir = path.join(base, "data");
+    const out = path.join(base, "out");
+    mkdirSync(dataDir, { recursive: true });
+    mkdirSync(out, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      path.join(dataDir, "g-ja-3.json"),
+      JSON.stringify({
+        scenes: Array.from({ length: 60 }, (_, i) => ({
+          index: i + 1,
+          size: 0,
+          paragraphs: [`架空${i + 1}の秘密の一節。`],
+        })),
+      }),
+    );
+    const brokenRoster = path.join(base, "broken.json");
+    writeFileSync(brokenRoster, '{"entities": [{"name": "秘密の断片"');
+    const cli = path.join(import.meta.dirname, "roster-cli.mjs");
+    const run = (...args) =>
+      spawnSync(process.execPath, [cli, ...args], { encoding: "utf8" });
+    const cases = [
+      [
+        "check",
+        "--work",
+        "g-ja-3",
+        "--roster",
+        brokenRoster,
+        "--root",
+        out,
+        "--data-dir",
+        dataDir,
+      ],
+      ["check", "--work", "日本語の作品", "--root", out, "--data-dir", dataDir],
+      [
+        "chunks",
+        "--work",
+        "g-ja-3",
+        "--root",
+        path.join(import.meta.dirname, "outside-test-root"),
+        "--data-dir",
+        dataDir,
+      ],
+    ];
+    for (const args of cases) {
+      const result = run(...args);
+      assert.notEqual(result.status, 0);
+      for (const text of [result.stdout, result.stderr]) {
+        assert.doesNotMatch(text, /[^\t\n\r -~]/u);
+        assert.equal(text.includes("秘密"), false);
+      }
+    }
+    assert.equal(
+      existsSync(path.join(import.meta.dirname, "outside-test-root")),
+      false,
+    );
+    // 正常な chunks は 0600 で書く。
+    const ok = run(
+      "chunks",
+      "--work",
+      "g-ja-3",
+      "--root",
+      out,
+      "--data-dir",
+      dataDir,
+    );
+    assert.equal(ok.status, 0);
+    assert.doesNotMatch(ok.stdout, /[^\t\n\r -~]/u);
+    assert.equal(
+      statSync(path.join(out, "roster", "g-ja-3", "chunks-A", "chunk-01.txt"))
+        .mode & 0o077,
+      0,
+    );
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

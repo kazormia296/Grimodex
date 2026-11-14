@@ -60,6 +60,7 @@ import {
   planNestedFolders,
   rubyBaseText,
   rubySurfaceRelation,
+  seedMissingFromCandidates,
   scenesFromWork,
   summarizeCandidateInventory,
   summarizeSeedInventory,
@@ -201,6 +202,7 @@ async function buildNestedWork(input: {
   let paragraphCountMismatched = 0;
   let textMismatched = 0;
   let rubyMismatched = 0;
+  let rubyPairMismatched = 0;
   let rubyNodeCount = 0;
   const rubyBaseKeys = new Set<string>();
   for (let i = 0; i < sceneIds.length; i++) {
@@ -211,6 +213,7 @@ async function buildNestedWork(input: {
     if (!check.paragraphCountOk) paragraphCountMismatched++;
     if (!check.textOk) textMismatched++;
     if (!check.rubyOk) rubyMismatched++;
+    rubyPairMismatched += check.rubyPairMismatchCount;
     if (!(check.paragraphCountOk && check.textOk && check.rubyOk))
       sceneMismatched++;
     rubyNodeCount += check.rubyCount;
@@ -223,6 +226,8 @@ async function buildNestedWork(input: {
     paragraphCountMismatched,
     textMismatched,
     rubyMismatched,
+    // 親文字・読みの並びが期待と違う ruby の数（致命にしない。記録のみ）。
+    rubyPairMismatched,
   };
   const allParagraphs = scenes.flatMap((scene) => scene.paragraphs);
   const ruby = {
@@ -662,6 +667,8 @@ async function inventory(input: { folderPercent: number }) {
 
   const candidateSections: Record<string, unknown> = {};
   let defaultCandidateSurfaces: string[] = [];
+  // min1（minCount=1 の raw）の候補の表記と出現数。ルビの突合の主指標に使う（既定の閾値と混ぜない）。
+  let min1CandidateOccurrence: [string, number][] | null = null;
   let candidateRows: {
     surfaceHash: string;
     count: number;
@@ -684,8 +691,272 @@ async function inventory(input: { folderPercent: number }) {
         })) as { surface: string; count: number; firstSceneId: string }[];
         const summary = summarizeCandidateInventory(raw);
         candidateSections[label] = { status: "ok", ...summary };
-        if (label === "min1")
+        if (label === "min1") {
           min1Occurrences = summary.occurrenceCount as number;
+          min1CandidateOccurrence = raw.map(
+            (c) => [c.surface, c.count] as [string, number],
+          );
+        }
+        if (label === "default") {
+          defaultCandidateSurfaces = raw.map((c) => c.surface);
+          candidateRows = await Promise.all(
+            raw.map(async (c) => ({
+              surfaceHash: await hashSurface(c.surface),
+              count: c.count,
+              firstSceneIndex: sceneIndexOf(c.firstSceneId),
+            })),
+          );
+        }
+      } catch (error) {
+        candidateSections[label] = {
+          status: "failed",
+          errorName: error instanceof Error ? error.name : "unknown",
+        };
+      }
+    }
+    seedVsCandidateDefault = crossSetCounts(
+      seedSurfaces,
+      defaultCandidateSurfaces,
+    );
+    // 候補の出現数（min1）と seed の出現数の合計の突合（差は記録するだけ。成否には使わない）。
+    const seedOccurrences = mapped.reduce(
+      (acc, m) => acc + m.occurrenceCount,
+      0,
+    );
+    occurrenceCrossCheck = {
+      seedOccurrences,
+      candidateMin1Occurrences: min1Occurrences,
+      equal: min1Occurrences === seedOccurrences,
+    };
+  }
+  // ルビの付いた表記：親文字の集合と、seed（TS の canonical＝親文字を読む）・候補画面の候補
+  // （Rust の本文＝ruby を落とす）の突合。表記の文字列は出さず、hash の集合で比べる。
+  const seedRuby = rubySurfaceRelation(a.rubyBaseKeys, seedSurfaces);
+  const candidateRuby = rubySurfaceRelation(
+    a.rubyBaseKeys,
+    defaultCandidateSurfaces,
+  );
+  const seedExactHashes = await Promise.all(
+    seedRuby.exactSurfaces.map(hashSurface),
+  );
+  const candidateExactHashes = await Promise.all(
+    candidateRuby.exactSurfaces.map(hashSurface),
+  );
+  // 主指標：seed のうち min1 の候補に無い表記を直接数え、親文字との関係で 3 分類する。
+  // 閾値（min-count）の影響を混ぜないため、既定の候補ではなく min1 を使う。
+  let min1Missing: ReturnType<typeof seedMissingFromCandidates> | null = null;
+  const min1MissingHashes: Record<string, string[]> = {
+    exact: [],
+    containing: [],
+    other: [],
+  };
+  if (input.folderPercent === 100 && min1CandidateOccurrence !== null) {
+    min1Missing = seedMissingFromCandidates(
+      a.rubyBaseKeys,
+      mapped.map((m) => [m.surface, m.occurrenceCount] as [string, number]),
+      min1CandidateOccurrence,
+    );
+    for (const cls of ["exact", "containing", "other"] as const)
+      min1MissingHashes[cls] = await Promise.all(
+        min1Missing.classes[cls].keys.map(hashSurface),
+      );
+  }
+  const min1MissingCounts = min1Missing
+    ? {
+        seedDistinct: min1Missing.seedDistinct,
+        candidateDistinct: min1Missing.candidateDistinct,
+        missing: min1Missing.missing,
+        presentOccurrenceDiff: min1Missing.presentOccurrenceDiff,
+        exact: {
+          surfaces: min1Missing.classes.exact.surfaces,
+          occurrences: min1Missing.classes.exact.occurrences,
+        },
+        containing: {
+          surfaces: min1Missing.classes.containing.surfaces,
+          occurrences: min1Missing.classes.containing.occurrences,
+          shortOnly: min1Missing.classes.containing.shortOnly,
+        },
+        other: {
+          surfaces: min1Missing.classes.other.surfaces,
+          occurrences: min1Missing.classes.other.occurrences,
+        },
+      }
+    : null;
+  const rubySection = {
+    nodeCount: a.rubyNodeCount,
+    distinctBaseCount: a.rubyBaseKeys.length,
+    // 主指標（min1 の候補との差）。
+    seedMissingFromMin1Candidates: min1MissingCounts,
+    // 既定の閾値での値（閾値の影響が混ざる。参考）。
+    defaultThreshold: {
+      seedExact: seedRuby.exact,
+      seedContaining: seedRuby.containing,
+      candidateExact: candidateRuby.exact,
+      candidateContaining: candidateRuby.containing,
+      exactCompare:
+        input.folderPercent === 100
+          ? compareHashSets(seedExactHashes, candidateExactHashes)
+          : null,
+    },
+  };
+  const rubyRows = {
+    baseHashes: await Promise.all(a.rubyBaseKeys.map(hashSurface)),
+    seedExactHashes,
+    candidateExactHashes,
+    min1MissingHashes,
+  };
+  return {
+    folderPercent: input.folderPercent,
+    persisted: input.persist,
+    sceneCount: sceneNodes.length,
+    scope: [
+      "no-product-open-lifecycle",
+      "live-projection-without-persist-seam",
+      "no-restore-column-no-persist-time",
+    ],
+    observed,
+    runStatus: projection.status,
+    entryCountInCatalog: catalog.entryCount,
+    typeCountInCatalog: catalog.typeCount,
+    entityProposalCount: projection.proposals.length,
+    relationProposalCount: projection.relationProposals.length,
+    baseDetailProposalCount: projection.baseDetailProposals.length,
+    phaseProposalCount: projection.phaseProposals.length,
+    // 製品が skip 経路で返す固定値（prepass の状態とは無関係）。観測としては使わない。
+    coverageReportedByProduct: {
+      mode: projection.coverage.mode ?? null,
+      documentCount: projection.coverage.documentCount ?? null,
+      windowCount: projection.coverage.windowCount ?? null,
+      gapCount: projection.coverage.gaps?.length ?? 0,
+    },
+    counts: {
+      bindingKind: tally(rows, (r) => r.bindingKind),
+      typeStatus: tally(rows, (r) => r.typeStatus),
+      form: tally(rows, (r) => r.form),
+      applicability: tally(rows, (r) => r.applicability),
+      reviewStatus: tally(rows, (r) => r.status),
+      blocked: rows.filter((r) => r.blocked).length,
+      safe: rows.filter((r) => r.safe).length,
+      bulkApprovable: countBulkApprovable(rows),
+      unresolvedWithCandidates: rows.filter(
+        (r) => r.bindingKind === "unresolved" && r.candidateCount > 0,
+      ).length,
+      candidateTotal: rows.reduce((acc, r) => acc + r.candidateCount, 0),
+      withoutEvidence: rows.filter((r) => r.evidenceCount === 0).length,
+    },
+    rows: rowsWithBulk,
+  };
+}
+
+/** 製品の buildSourceViewsForPlan と同じ（非 export のため写し）。 */
+async function buildSourceViewsForPlan(
+  snapshot: NarrativeCorpusSnapshot,
+  plan: WindowPlan,
+): Promise<NarrativeSourceView[]> {
+  const documentByRef = new Map(
+    snapshot.documents.map((document) => [document.ref, document] as const),
+  );
+  const views: NarrativeSourceView[] = [];
+  for (const window of plan.windows) {
+    const document = documentByRef.get(window.documentRef);
+    if (!document) continue;
+    const ranges = [...window.ownedRanges, ...window.contextRanges];
+    views.push(
+      await buildNarrativeSourceView({
+        ref: window.sourceRef,
+        document,
+        documentRange: {
+          start: Math.min(...ranges.map((range) => range.start)),
+          end: Math.max(...ranges.map((range) => range.end)),
+        },
+      }),
+    );
+  }
+  return views;
+}
+
+/**
+ * (e) 0 回目の目録。AI なし。
+ * - seed：製品と同じ prepass の入口（readSeeds。最小出現 1）
+ * - 候補画面の候補：extract_codex_candidates を IPC で直接（ラッパは失敗を [] に潰す）。
+ *   Rust は scope なしの project 全体を読むので、F100（全場面が入る folder）のときだけ取る。
+ * 戻り値は件数と、表記ごとの hash・出現数・場面 index だけ（surfaces は launcher が
+ * repo 外の 0600 の file にだけ書く走査用で、検査対象の出力には入れない）。
+ */
+async function inventory(input: { folderPercent: number }) {
+  const a = requireActive();
+  const folderId = a.folderIds[String(input.folderPercent)];
+  const sceneNodes = getDescendantScenesInOrder(
+    useTreeStore.getState().nodes,
+    folderId,
+  );
+  const read = await readSeeds(
+    a,
+    folderId,
+    sceneNodes.map((scene) => scene.id),
+  );
+  if (!read.ok) {
+    return {
+      seed: { status: "snapshot-failed", diagnostics: read.diagnostics },
+    };
+  }
+  const mapped = read.mapped;
+  const sceneIndexOf = (sceneId: string) => a.sceneIndexById.get(sceneId) ?? 0;
+  const seedSurfaces = mapped.map((m) => m.surface);
+  const seedRows = await Promise.all(
+    mapped.map(async (m) => {
+      const perScene = new Map<number, number>();
+      for (const sceneId of m.sceneIds) {
+        const index = sceneIndexOf(sceneId);
+        perScene.set(index, (perScene.get(index) ?? 0) + 1);
+      }
+      return {
+        surfaceHash: await hashSurface(m.surface),
+        occurrenceCount: m.occurrenceCount,
+        sceneCount: perScene.size,
+        // 出現場面：[場面 index（1 始まり）, その場面での出現数]（index 昇順）。
+        scenes: [...perScene.entries()].sort((x, y) => x[0] - y[0]),
+        properName: m.appearsAsProperName,
+      };
+    }),
+  );
+  const seedSection: Record<string, unknown> = {
+    ...read.prepass,
+    ...summarizeSeedInventory(mapped),
+  };
+
+  const candidateSections: Record<string, unknown> = {};
+  let defaultCandidateSurfaces: string[] = [];
+  // min1（minCount=1 の raw）の候補の表記と出現数。ルビの突合の主指標に使う（既定の閾値と混ぜない）。
+  let min1CandidateOccurrence: [string, number][] | null = null;
+  let candidateRows: {
+    surfaceHash: string;
+    count: number;
+    firstSceneIndex: number;
+  }[] = [];
+  let seedVsCandidateDefault: ReturnType<typeof crossSetCounts> | null = null;
+  let occurrenceCrossCheck: Record<string, unknown> | null = null;
+  if (input.folderPercent !== 100) {
+    candidateSections.status = "skipped-not-f100";
+  } else {
+    let min1Occurrences: number | null = null;
+    for (const [label, minCount] of [
+      ["default", null],
+      ["min1", 1],
+    ] as const) {
+      try {
+        const raw = (await invoke("extract_codex_candidates", {
+          projectId: a.projectId,
+          minCount,
+        })) as { surface: string; count: number; firstSceneId: string }[];
+        const summary = summarizeCandidateInventory(raw);
+        candidateSections[label] = { status: "ok", ...summary };
+        if (label === "min1") {
+          min1Occurrences = summary.occurrenceCount as number;
+          min1CandidateOccurrence = raw.map(
+            (c) => [c.surface, c.count] as [string, number],
+          );
+        }
         if (label === "default") {
           defaultCandidateSurfaces = raw.map((c) => c.surface);
           candidateRows = await Promise.all(

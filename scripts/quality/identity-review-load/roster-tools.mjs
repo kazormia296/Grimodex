@@ -3,6 +3,7 @@
 // repo 外の 0600 の file にだけ書く。件数・ID・列名だけを返す関数は summary と名付ける。
 import { createHash } from "node:crypto";
 import {
+  WORKS,
   REVIEW_VERDICTS,
   REVIEW_VERDICT_CODES,
   ALIAS_LEVELS,
@@ -427,6 +428,11 @@ export function excerptHtml(paragraph, surfaces, radius = 40) {
 const TYPE_LABEL = { character: "人物", location: "場所", other: "その他" };
 const MAX_EXCERPTS = 3;
 
+/** <script> に埋め込む JSON（< を \\u003c にして、</script> や <!-- で閉じられないようにする）。 */
+function scriptJson(value) {
+  return JSON.stringify(value).replace(/</gu, "\\u003c");
+}
+
 /**
  * 作者向けの確認の表（自己完結の HTML。外部の資源を読まない）。表に出すのは、実体の行（名前・型・
  * 別名・敬称付きの形・場面で変わる表記）・根拠の場面と段落の番号・短い抜粋・応答の固定語彙の
@@ -434,6 +440,8 @@ const MAX_EXCERPTS = 3;
  * 戻り値は文字列。原稿の抜粋を含むので repo 外の 0600 の file にだけ書く。
  */
 export function renderReviewHtml({ roster, scenes, rows, sheetId }) {
+  if (!(typeof roster.work === "string" && roster.work in WORKS))
+    throw new Error("[precheck] UNKNOWN_WORK");
   const byId = new Map(roster.entities.map((e) => [e.id, e]));
   const sceneByIndex = new Map(scenes.map((s) => [s.index, s]));
   const sections = rows.map((row, position) => {
@@ -498,6 +506,7 @@ ${list(
   const rowIds = rows.map((r) => r.rowId);
   return `<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <title>名簿の確認 ${esc(roster.work)}</title>
 <style>
 :root{--bg:#fafaf7;--fg:#222;--muted:#666;--line:#d8d6cf;--accent:#1f5f8b;--mark:#fff1a8}
@@ -518,13 +527,13 @@ textarea,input[type=text]{width:100%;box-sizing:border-box;font:inherit;backgrou
 button{font:inherit;padding:.4rem 1rem;border-radius:6px;border:1px solid var(--accent);background:var(--accent);color:var(--bg)}
 </style></head><body><main>
 <h1>名簿の確認（${esc(roster.work)}）</h1>
-<p>各行の実体（人物・場所など）が、原稿の中でその名前・別名で正しく扱われているかを見てください。抜粋は原稿から取った短い部分です。判定は固定の選択肢から選び、必要なら直しとメモを書いてください。1 回 60 分を目安に、途中で保存して区切れます。</p>
+<p>各行の実体（人物・場所など）が、原稿の中でその名前・別名で正しく扱われているかを見てください。抜粋は原稿から取った短い部分です。判定は固定の選択肢から選び、必要なら直しとメモを書いてください。1 回 60 分を目安に、ページを開いたまま回答し、終わったら下の保存ボタンで応答を file に保存してください（ブラウザには下書きを残しません）。</p>
 ${sections.join("\n")}
 </main>
 <div class="bar"><span id="progress"></span><button type="button" id="save">応答をファイルに保存</button></div>
 <script>
 (function(){
-var SHEET=${JSON.stringify(sheetId)},WORK=${JSON.stringify(roster.work)},ROWS=${JSON.stringify(rowIds)};
+var SHEET=${scriptJson(sheetId)},WORK=${scriptJson(roster.work)},ROWS=${scriptJson(rowIds)};
 var answeredAt={};
 function el(n){return document.getElementsByName(n);}
 function verdictOf(r){var v=el(r+"-verdict");for(var i=0;i<v.length;i++)if(v[i].checked)return v[i].value;return null;}
@@ -539,8 +548,7 @@ function collect(){var out=[];ROWS.forEach(function(r){var v=verdictOf(r);if(!v)
   addLevel:el(r+"-addLevel")[0].value,aliasesToRemove:rem,note:(el(r+"-note")[0].value||"").trim(),answeredAt:answeredAt[r]||null});});
  return {schemaVersion:"identity-review-responses/1",sheetId:SHEET,work:WORK,savedAt:new Date().toISOString(),responses:out};}
 document.addEventListener("change",function(e){var n=e.target.name||"";var r=n.split("-").slice(0,2).join("-");
- if(ROWS.indexOf(r)>=0&&!answeredAt[r]&&n===r+"-verdict")answeredAt[r]=new Date().toISOString();refresh();
- try{localStorage.setItem("review-draft-"+SHEET,JSON.stringify(collect()));}catch(_){}});
+ if(ROWS.indexOf(r)>=0&&!answeredAt[r]&&n===r+"-verdict")answeredAt[r]=new Date().toISOString();refresh();});
 document.getElementById("save").addEventListener("click",function(){var blob=new Blob([JSON.stringify(collect(),null,2)],{type:"application/json"});
  var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="review-responses-"+WORK+".json";document.body.appendChild(a);a.click();a.remove();});
 refresh();
@@ -751,10 +759,24 @@ export function ingestReview({ roster, key, responses }) {
     ...stats,
     random: {
       ...random,
+      // 表に出した乱数の行の数と、応答の無い行の数（未回答は分母から落ちるので併記する）。
+      keyRows: key.rows.filter((r) => r.group === "random").length,
+      unanswered:
+        key.rows.filter((r) => r.group === "random").length - random.rows,
+      // 応答のあった全行を分母にした上限（わからない行を含むので、強すぎる値になりうる）。
       wilsonUpper95:
         random.rows > 0
           ? Math.round(wilsonUpper(random.errors, random.rows) * 1000) / 1000
           : null,
+      // 判定できた行（応答のあった行 − わからない）を分母にした上限（こちらを §4 の主指標に使う）。
+      determinateRows: random.rows - random.unknown,
+      wilsonUpper95Determinate:
+        random.rows - random.unknown > 0
+          ? Math.round(
+              wilsonUpper(random.errors, random.rows - random.unknown) * 1000,
+            ) / 1000
+          : null,
+      unknownPresent: random.unknown > 0,
     },
     full: tally((r) => r.group === "full"),
     stratified: tally((r) => !["random", "full"].includes(r.group)),
