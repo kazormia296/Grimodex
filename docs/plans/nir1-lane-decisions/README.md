@@ -69,6 +69,7 @@
 | [chronicle-apply-secret-decisions.md](chronicle-apply-secret-decisions.md) | 取り込みは年表の出来事を secret で作る（DR-CAS-1〜8。8 は実装後の追記：今の製品では編集した版は取り込めず、この PR は挙動を変えない防御である。画面側と Native の組み立てを同時に改める、Native の検証で出来事の作成の操作に secret を要求する、Undo／Redo と既存の出来事は変えない、準備済みの計画は拒む、範囲外、試験の形、経路ごとの影響の表） | ユーザーが 2026-11-11 に確認した規則と脅威モデル（`nir1-chronicle-apply-keeps-secret-proposal/1`）の中の技術判断。NIR-1 の残レーンの委任の外（mutation の前の記録） |
 | [chronicle-edited-revision-apply-decisions.md](chronicle-edited-revision-apply-decisions.md) | 作者が編集した年表の提案を取り込めるようにする（DR-ERA-1〜7。版の種類の検査、編集した版の読み込みの順〔系譜の検証、最初の AI の版での受領書と文脈の検査、取り込む版での材料の照合〕、系譜の検証の入口、エラーコード、変えない検査、試験、範囲外、経路ごとの影響の表。PR-1 は Native と試験、PR-2 は画面の案内と実機の検査） | ユーザーが 2026-11-11 に確認した規則と脅威モデル（`nir1-chronicle-edited-revision-apply-proposal/1`、台帳の ERA/1）の中の技術判断。NIR-1 の残レーンの委任の外（mutation の前の記録） |
 | [chronicle-review-reasons-recheck-record.md](chronicle-review-reasons-recheck-record.md) | 見せる理由の条件（台帳の RR/1）を開ける前の確かめの記録。条件の付かない 1,086 件を AI が再判定し、場面の中で起きたことではない提案は 11 件（1.0%）。1 回目の確かめ（86 件）は、判定の定義が製品の抽出の指示より広かったため取り下げた。ユーザーの判断は「まとめて承認に入って構いません」 | 2026-11-11 の確かめと、ユーザーの回答の記録（契約の確認ではない） |
+| [codex-structure-catalog-revision-decisions.md](codex-structure-catalog-revision-decisions.md) | Codex 構造抽出の保存が codex-catalog の印の食い違いで必ず `NEX_READ_SET_STALE` になる件（DR-CSX-1。印は Native の内容の digest を正とし、読み取り専用の IPC で受け取る）と、一括承認の可否の live と restore の違いの記録 | 実装と同じ commit に記録 |
 
 復元した7本は、2026-10-14 の worktree の片付けで、gitignore の対象（`.ralph/`）の置き場所ごと消えたものである。PROVENANCE.md に、ファイルごとの最終版の根拠、確からしさ、PR 本文との差を書いた。PR 本文との差は、decisions 文書が最後に書かれた後の修正か、PR の側の書き足しによるもので、復元の誤りではない。
 
