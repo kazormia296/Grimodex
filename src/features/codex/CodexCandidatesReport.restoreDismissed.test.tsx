@@ -23,10 +23,19 @@ vi.mock("./codexCandidateDismissals", () => ({
 vi.mock("./CodexStructureExtractDialog", () => ({
   CodexStructureExtractDialog: ({
     onRestoreDismissedCandidates,
+    dismissedCandidateKeys,
   }: {
     onRestoreDismissedCandidates?: (keys: readonly string[]) => void;
+    dismissedCandidateKeys?: ReadonlySet<string>;
   }) => (
-    <div>
+    <div
+      data-testid="fake-dialog"
+      data-keys={
+        dismissedCandidateKeys
+          ? [...dismissedCandidateKeys].sort().join(",")
+          : "none"
+      }
+    >
       <button
         type="button"
         data-testid="fake-dialog-restore-a"
@@ -137,5 +146,29 @@ describe("CodexCandidatesReport: 構造抽出から却下を戻す（打ち手 3
     await useGlobalHistoryStore.getState().undo();
     await waitFor(() => expect(mockSaveDismissed).toHaveBeenCalledTimes(2));
     expect(lastSaved()).toEqual(["かんな", "ふみ"]);
+  });
+
+  it("読み込んだ却下集合をダイアログに渡し、外すと渡す集合も変わる", async () => {
+    const user = await openReport();
+    expect(screen.getAllByTestId("fake-dialog")[0]!.dataset.keys).toBe(
+      "かんな,ふみ",
+    );
+    await user.click(screen.getByTestId("fake-dialog-restore-a"));
+    await waitFor(() =>
+      expect(screen.getAllByTestId("fake-dialog")[0]!.dataset.keys).toBe(
+        "ふみ",
+      ),
+    );
+  });
+
+  it("却下の記録を読めなかったときは、空集合を渡さない（全部外したように見せない）", async () => {
+    mockLoadDismissed.mockRejectedValue(new Error("read failed"));
+    const user = userEvent.setup();
+    render(<CodexCandidatesReport />);
+    await user.click(await screen.findByTestId("codex-candidates-toggle"));
+    await waitFor(() =>
+      expect(screen.getAllByRole("listitem")).toHaveLength(3),
+    );
+    expect(screen.getAllByTestId("fake-dialog")[0]!.dataset.keys).toBe("none");
   });
 });

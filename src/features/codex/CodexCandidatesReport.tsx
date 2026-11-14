@@ -63,6 +63,8 @@ export function CodexCandidatesReport() {
   );
   const [expanded, setExpanded] = useState(false);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  // 却下の記録を読み終えたか（読み込み前・失敗時の空集合を「全部外した」と見せないため）。
+  const [dismissedLoaded, setDismissedLoaded] = useState(false);
   const [structureOpen, setStructureOpen] = useState(false);
   const structureReviewEnabled = isCodexStructureExtractionReviewEnabled();
 
@@ -111,10 +113,13 @@ export function CodexCandidatesReport() {
   useEffect(() => {
     let cancelled = false;
     commit(new Set());
+    setDismissedLoaded(false);
     if (!projectId) return;
     loadDismissedCandidateKeys(projectId)
       .then((keys) => {
-        if (!cancelled) commit(keys);
+        if (cancelled) return;
+        commit(keys);
+        setDismissedLoaded(true);
       })
       .catch(() => {
         if (!cancelled) commit(new Set());
@@ -306,7 +311,7 @@ export function CodexCandidatesReport() {
       open={structureOpen}
       onOpenChange={setStructureOpen}
       onRestoreDismissedCandidates={handleRestoreDismissedKeys}
-      dismissedCandidateKeys={dismissed}
+      dismissedCandidateKeys={dismissedLoaded ? dismissed : undefined}
     />
   ) : null;
 
