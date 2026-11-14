@@ -2347,6 +2347,23 @@
       "allHidden": "整合性の指摘 {{count}} 件を非表示中",
       "show": "再表示"
     },
+    "structureReview": {
+      "bindingExisting": "既存 · {{name}}",
+      "safeHintCreate": "安全一括承認の対象",
+      "safeHintBind": "完全一致の既存への結び付け（一括承認の対象）",
+      "bulkBreakdown": "新規作成 {{createCount}} 件・既存への結び付け {{bindCount}} 件",
+      "bulkApproved": "{{count}} 件を承認しました（新規作成 {{createCount}} 件・既存への結び付け {{bindCount}} 件）",
+      "bulkExcluded": "{{count}} 件の結び付けは、今の Codex では一括の条件を満たさないため、1 件ずつの確認に残しました",
+      "bulkCodexUnreadable": "今の Codex を読めなかったため、結び付け {{count}} 件は一括から外しました",
+      "bulkNoLongerSafe": "{{count}} 件は承認の直前に条件が変わったため、一括から外しました",
+      "staleBind": "結び先が編集されたため、今の版で承認し直してください",
+      "applyExcluded": "{{count}} 件の結び付けは、承認の後に結び先が変わったため取り込まず、保留に戻しました。今の版で承認し直してください",
+      "boundList": {
+        "title": "一括で通した結び付け（{{count}}）",
+        "hint": "表記が結び先の名前と同じ人を指しているか確かめてください。違うものは選んで拒否か保留にできます。取り込んでも Codex の行は書き換わりません。",
+        "item": "{{surface}} → {{target}}"
+      }
+    },
     "candidates": {
       "title": "未確定の固有名詞候補",
       "occurrences": "{{count}} 回",

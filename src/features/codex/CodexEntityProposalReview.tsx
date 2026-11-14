@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { CodexExtractionEvidencePane } from "./CodexExtractionEvidencePane";
 import { CodexEntityProposalCard } from "./CodexEntityProposalCard";
@@ -10,6 +11,7 @@ import {
   reviseCodexStructureProposal,
   resolveCodexStructureBinding,
 } from "./codexStructureExtractionApi";
+import type { CurrentCodexEntryRecord } from "./extraction/entityBulkSafety";
 import {
   isSafeForCodexEntityBulkApprove,
   useCodexStructureExtractionStore,
@@ -24,6 +26,11 @@ export interface CodexEntityProposalReviewProps {
   readonly onEvidenceClick?: (evidence: CodexReviewEvidenceQuote) => void;
   /** When true, reads/writes the codexStructureExtractionStore. */
   readonly boundToStore?: boolean;
+  /**
+   * 今の Codex の Entry。一括承認の再検査と、承認で固定する op の版に使う（run 時点の版でなく
+   * 今の版）。渡さなければ一括承認が DB から読み直す。
+   */
+  readonly liveEntries?: readonly CurrentCodexEntryRecord[];
 }
 
 /**
@@ -35,7 +42,9 @@ export function CodexEntityProposalReview({
   onSelectProposal,
   onEvidenceClick,
   boundToStore = true,
+  liveEntries,
 }: CodexEntityProposalReviewProps) {
+  const { t } = useTranslation();
   const storeProjection = useCodexStructureExtractionStore((s) => s.projection);
   const storeSelected = useCodexStructureExtractionStore(
     (s) => s.selectedProposalId,
@@ -89,12 +98,24 @@ export function CodexEntityProposalReview({
     else if (boundToStore) selectProposal(proposalId);
   };
 
-  const safeCount = proposals.filter(
+  const safeProposals = proposals.filter(
     (proposal) =>
       proposal.applicability === "applicable" &&
       proposal.status === "unreviewed" &&
       isSafeForCodexEntityBulkApprove(proposal.safety),
+  );
+  const safeCount = safeProposals.length;
+  const safeBindCount = safeProposals.filter(
+    (proposal) => proposal.proposal.payload.binding.kind === "bind-existing",
   ).length;
+  const safeCreateCount = safeCount - safeBindCount;
+  // 一括で通した結び付け（取り込み前）。作者が見返す一覧（T3）。
+  const bulkBound = proposals.filter(
+    (proposal) =>
+      proposal.bulkApprovedExactBind === true &&
+      proposal.status === "approved" &&
+      !proposal.application,
+  );
 
   const applied = Boolean(selected?.application);
   const unresolvedBinding =
@@ -113,6 +134,15 @@ export function CodexEntityProposalReview({
     );
   }, [storeProjection?.catalog]);
 
+  const targetNameOf = (proposal: CodexEntityReviewProposal) => {
+    const binding = proposal.proposal.payload.binding;
+    if (binding.kind !== "bind-existing") return undefined;
+    return catalogEntityDisplayName(
+      binding.entityRef,
+      storeProjection?.catalog,
+    );
+  };
+
   return (
     <div
       className="grid min-h-[220px] grid-cols-1 gap-2 overflow-hidden rounded border border-border md:grid-cols-[minmax(180px,38%)_1fr]"
@@ -130,11 +160,52 @@ export function CodexEntityProposalReview({
               disabled={safeCount === 0 || bulkApproving}
               onClick={() => {
                 setBulkApproving(true);
-                void bulkApproveSafeCodexStructureProposals()
+                void bulkApproveSafeCodexStructureProposals(
+                  liveEntries ? { entries: liveEntries } : {},
+                )
                   .then((result) => {
                     if (result.failed.length > 0) {
                       toast.error(
                         `${result.failed.length}件の提案を承認できませんでした`,
+                      );
+                    }
+                    if ((result.approvedBindExisting ?? 0) > 0) {
+                      toast.success(
+                        t("codex.structureReview.bulkApproved", {
+                          count: result.approved,
+                          createCount: result.approvedCreateNew,
+                          bindCount: result.approvedBindExisting,
+                        }),
+                      );
+                    }
+                    const excluded = result.excluded ?? [];
+                    const unreadable = excluded.filter(
+                      (item) => item.reason === "codex-unreadable",
+                    ).length;
+                    const noLongerSafe = excluded.filter(
+                      (item) => item.reason === "no-longer-safe",
+                    ).length;
+                    const rechecked =
+                      excluded.length - unreadable - noLongerSafe;
+                    if (unreadable > 0) {
+                      toast.warning(
+                        t("codex.structureReview.bulkCodexUnreadable", {
+                          count: unreadable,
+                        }),
+                      );
+                    }
+                    if (rechecked > 0) {
+                      toast.warning(
+                        t("codex.structureReview.bulkExcluded", {
+                          count: rechecked,
+                        }),
+                      );
+                    }
+                    if (noLongerSafe > 0) {
+                      toast.warning(
+                        t("codex.structureReview.bulkNoLongerSafe", {
+                          count: noLongerSafe,
+                        }),
                       );
                     }
                   })
@@ -156,6 +227,17 @@ export function CodexEntityProposalReview({
             </button>
           )}
         </div>
+        {boundToStore && safeCount > 0 && (
+          <p
+            className="border-b border-border px-2 py-1 text-[10px] text-muted-foreground"
+            data-testid="codex-bulk-approve-breakdown"
+          >
+            {t("codex.structureReview.bulkBreakdown", {
+              createCount: safeCreateCount,
+              bindCount: safeBindCount,
+            })}
+          </p>
+        )}
         <div className="min-h-0 flex-1 overflow-y-auto">
           {proposals.length === 0 ? (
             <p className="px-3 py-3 text-xs text-muted-foreground">
@@ -167,16 +249,50 @@ export function CodexEntityProposalReview({
                 key={proposal.proposalId}
                 proposal={proposal}
                 selected={proposal.proposalId === selectedProposalId}
+                targetName={targetNameOf(proposal)}
                 onSelect={() => handleSelect(proposal.proposalId)}
                 onDecide={(status) => {
                   if (!boundToStore) return;
                   void decideCodexStructureProposal({
                     proposalId: proposal.proposalId,
                     status,
+                    ...(liveEntries ? { entries: liveEntries } : {}),
                   });
                 }}
               />
             ))
+          )}
+          {bulkBound.length > 0 && (
+            <details
+              className="border-t border-border px-2 py-1.5"
+              data-testid="codex-bulk-bound-list"
+            >
+              <summary className="cursor-pointer text-[11px] font-medium text-foreground">
+                {t("codex.structureReview.boundList.title", {
+                  count: bulkBound.length,
+                })}
+              </summary>
+              <p className="py-1 text-[10px] text-muted-foreground">
+                {t("codex.structureReview.boundList.hint")}
+              </p>
+              <ul className="flex flex-col gap-0.5">
+                {bulkBound.map((proposal) => (
+                  <li key={proposal.proposalId}>
+                    <button
+                      type="button"
+                      className="w-full truncate rounded px-1 py-0.5 text-left text-[11px] hover:bg-accent/40"
+                      onClick={() => handleSelect(proposal.proposalId)}
+                      data-testid={`codex-bulk-bound-item-${proposal.proposalId}`}
+                    >
+                      {t("codex.structureReview.boundList.item", {
+                        surface: proposal.proposal.payload.canonicalName,
+                        target: targetNameOf(proposal) ?? "",
+                      })}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </details>
           )}
         </div>
       </div>

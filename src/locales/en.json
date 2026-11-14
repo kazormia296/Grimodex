@@ -2348,6 +2348,23 @@
       "allHidden": "{{count}} integrity issue(s) hidden",
       "show": "Show"
     },
+    "structureReview": {
+      "bindingExisting": "Existing · {{name}}",
+      "safeHintCreate": "Eligible for safe bulk approval",
+      "safeHintBind": "Exact-match binding to an existing entry (eligible for bulk approval)",
+      "bulkBreakdown": "{{createCount}} new · {{bindCount}} bound to existing",
+      "bulkApproved": "Approved {{count}} ({{createCount}} new, {{bindCount}} bound to existing)",
+      "bulkExcluded": "{{count}} binding(s) no longer meet the bulk conditions in the current Codex and were left for one-by-one review",
+      "bulkCodexUnreadable": "Could not read the current Codex, so {{count}} binding(s) were left out of the bulk approval",
+      "bulkNoLongerSafe": "{{count}} proposal(s) changed just before approval and were left out of the bulk approval",
+      "staleBind": "The bound entry was edited. Approve again against the current version",
+      "applyExcluded": "{{count}} binding(s) were not applied because the bound entry changed after approval. They were set back to deferred; approve them again against the current version",
+      "boundList": {
+        "title": "Bindings approved in bulk ({{count}})",
+        "hint": "Check that each surface refers to the same person as the bound entry. Select one to reject or defer it. Applying does not rewrite the Codex entry.",
+        "item": "{{surface}} → {{target}}"
+      }
+    },
     "candidates": {
       "title": "Proper-noun candidates",
       "occurrences": "{{count}}×",

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -56,6 +57,19 @@ export function CodexStructureExtractDialog({
     (s) => s.setProjection,
   );
   const entries = useCodexStore((s) => s.entries);
+  const { t } = useTranslation();
+  // 今の Codex の Entry（一括承認の再検査と、承認で固定する op の版に使う）。
+  const liveEntries = useMemo(
+    () =>
+      entries.map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        aliases: entry.aliases,
+        type: entry.type,
+        version: entry.version,
+      })),
+    [entries],
+  );
 
   const folders = useMemo(
     () => nodes.filter((node) => node.nodeType === "folder"),
@@ -211,15 +225,27 @@ export function CodexStructureExtractDialog({
     setApplying(true);
     setError(null);
     try {
+      let excludedCount = 0;
       const applied = await applyCodexStructureExtractionReview({
         projectId,
         entries: entries.map((entry) => ({
           id: entry.id,
+          name: entry.name,
           version: entry.version,
           aliases: entry.aliases,
           type: entry.type,
         })),
+        onEntityApprovalsExcluded: (excluded) => {
+          excludedCount = excluded.length;
+          toast.warning(
+            t("codex.structureReview.applyExcluded", {
+              count: excluded.length,
+            }),
+          );
+        },
       });
+      // 全部が外れて何も取り込まなかったときは、承認し直せるように review を残す。
+      if (applied === 0 && excludedCount > 0) return;
       toast.success(`Codex 構造を ${applied} 件取り込みました`);
       generationRef.current += 1;
       clearProjection();
@@ -334,7 +360,10 @@ export function CodexStructureExtractDialog({
                 </button>
               </div>
               {reviewTab === "entity" ? (
-                <CodexEntityProposalReview boundToStore />
+                <CodexEntityProposalReview
+                  boundToStore
+                  liveEntries={liveEntries}
+                />
               ) : reviewTab === "relation" ? (
                 <CodexRelationProposalReview boundToStore />
               ) : (
