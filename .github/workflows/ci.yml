@@ -176,6 +176,83 @@ jobs:
       candidate_head: ${{ inputs.candidate_head || '' }}
       max_parallel_tasks: ${{ inputs.max_parallel_tasks || '' }}
 
+  # Pull requests only: skip heavy lanes whose inputs the diff cannot reach.
+  # Deny by default. Every other event, an empty or incomplete diff, an
+  # unclassified path, or any failure here leaves all lanes running. This job
+  # never fails (every step that can fail has continue-on-error), because a
+  # failed need would also skip the unchanged shard/aggregate jobs downstream.
+  # An empty or missing lane output counts as "run" in each dependent's if.
+  changes:
+    name: Change scope
+    if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      journeys: ${{ steps.scope.outputs.journeys }}
+      rust: ${{ steps.scope.outputs.rust }}
+      native: ${{ steps.scope.outputs.native }}
+      migration: ${{ steps.scope.outputs.migration }}
+      windows: ${{ steps.scope.outputs.windows }}
+      browser: ${{ steps.scope.outputs.browser }}
+      lfm: ${{ steps.scope.outputs.lfm }}
+      security: ${{ steps.scope.outputs.security }}
+    steps:
+      - name: Check out the pull request for its diff
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js for the scope script
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Decide which lanes run
+        id: scope
+        continue-on-error: true
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -u
+          lanes="journeys rust native migration windows browser lfm security"
+          decision=""
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] && [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ]; then
+            decision="$(node scripts/ci-change-scope.mjs --event "$GITHUB_EVENT_NAME" --base "$BASE_SHA" --head "$HEAD_SHA" --summary "$GITHUB_STEP_SUMMARY" --json "$RUNNER_TEMP/ci-change-scope.json")" || decision=""
+          fi
+          valid=1
+          for lane in $lanes; do
+            count="$(printf '%s\n' "$decision" | grep -Ecx "$lane=(true|false)")" || count=0
+            [ "$count" = "1" ] || valid=0
+          done
+          [ "$(printf '%s\n' "$decision" | grep -c .)" = "8" ] || valid=0
+          if [ "$valid" != "1" ]; then
+            decision=""
+            for lane in $lanes; do decision="${decision}${lane}=true"$'\n'; done
+            {
+              echo "## Change scope"
+              echo
+              echo "Every lane runs: this is not a pull request, or the scope decision was unavailable."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          printf '%s' "$decision" >> "$GITHUB_OUTPUT"
+
+      - name: Upload change scope evidence
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-change-scope-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-change-scope.json
+          if-no-files-found: ignore
+          retention-days: 14
+
   quality:
     name: Quality (traceability / impact-selected light gates)
     if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
@@ -293,7 +370,8 @@ jobs:
 
   lfm-encoder-phase0:
     name: LFM Encoder Phase 0 (contracts / offline unit tests)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.lfm != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -319,7 +397,8 @@ jobs:
 
   browser:
     name: Browser (Vitest browser)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.browser != 'false' }}
     # ubuntu-latest が 26.04 に移った 2026-10-26 から、related-scenes の幅の試験（上限 3000 ms）が
     # 4〜13 秒かかって落ちた（24.04 では 0.4〜1.8 秒。同じ commit のローカル実行は通る）。
     # image を明示し、26.04 への移行は試験の時間を測り直して意図して行う。
@@ -371,7 +450,8 @@ jobs:
 
   webgl:
     name: WebGL (deterministic SwiftShader)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.browser != 'false' }}
     # ubuntu-latest の一部の runner が 26.04 になり、Playwright 1.60 は 26.04 の chromium を入れられない
     # （"Playwright does not support chromium on ubuntu26.04-x64"。cache が外れた run だけ落ちる）。
     # Browser job（#732）と同じく image を明示し、26.04 への移行は Playwright の対応後に意図して行う。
@@ -426,7 +506,8 @@ jobs:
 
   storybook:
     name: Storybook (Vitest browser)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.browser != 'false' }}
     # ubuntu-latest の一部の runner が 26.04 になり、Playwright 1.60 は 26.04 の chromium を入れられない
     # （"Playwright does not support chromium on ubuntu26.04-x64"。cache が外れた run だけ落ちる）。
     # Browser job（#732）と同じく image を明示し、26.04 への移行は Playwright の対応後に意図して行う。
@@ -478,7 +559,8 @@ jobs:
 
   security:
     name: Security (audit)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.security != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -844,7 +926,8 @@ jobs:
   # merge into the unchanged canonical v5 result.
   electron-product-journeys-build:
     name: Electron product journeys build (N-API / app / MCP)
-    if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates }}
+    needs: [changes]
+    if: ${{ !cancelled() && (!inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) && needs.changes.outputs.journeys != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
@@ -984,7 +1067,8 @@ jobs:
 
   electron-product-journeys-c2zc:
     name: Electron product journeys C2-ZC evidence (Rust receipt / restore fixture)
-    if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates }}
+    needs: [changes]
+    if: ${{ !cancelled() && (!inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) && needs.changes.outputs.journeys != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
@@ -1288,7 +1372,8 @@ jobs:
 
   electron-windows-installer-contract:
     name: Electron Windows (unit test / NSIS migration contract)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    needs: [changes]
+    if: ${{ !cancelled() && (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) && needs.changes.outputs.windows != 'false' }}
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -1402,7 +1487,8 @@ jobs:
 
   electron-native:
     name: Electron native (N-API / release features / MCP)
-    if: ${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-release-tests' || inputs.canonical_profile == 'native-licensed-mcp' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) }}
+    needs: [changes]
+    if: ${{ !cancelled() && (inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-release-tests' || inputs.canonical_profile == 'native-licensed-mcp' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates)) && needs.changes.outputs.native != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -1537,7 +1623,8 @@ jobs:
 
   rust:
     name: Shared Rust crates (check / clippy / test)
-    if: ${{ inputs.canonical_profile == 'shared-rust' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) }}
+    needs: [changes]
+    if: ${{ !cancelled() && (inputs.canonical_profile == 'shared-rust' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates)) && needs.changes.outputs.rust != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -1641,7 +1728,8 @@ jobs:
 
   nir1-c-query-worker:
     name: C-query worker (${{ matrix.os }})
-    if: ${{ inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-terminal-refusals' || inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-frame-lifecycle' || inputs.canonical_profile == 'c-query-lifecycle' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) }}
+    needs: [changes]
+    if: ${{ !cancelled() && (inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-terminal-refusals' || inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-frame-lifecycle' || inputs.canonical_profile == 'c-query-lifecycle' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks)) && needs.changes.outputs.rust != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1725,7 +1813,8 @@ jobs:
 
   migration-recovery-gate:
     name: Migration recovery gate (Gate A2)
-    if: ${{ inputs.canonical_profile == 'migration-crash' || inputs.canonical_profile == 'migration-safe-mode' || inputs.canonical_profile == 'migration-library' || inputs.canonical_profile == 'migration-remaining' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) }}
+    needs: [changes]
+    if: ${{ !cancelled() && (inputs.canonical_profile == 'migration-crash' || inputs.canonical_profile == 'migration-safe-mode' || inputs.canonical_profile == 'migration-library' || inputs.canonical_profile == 'migration-remaining' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates)) && needs.changes.outputs.migration != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

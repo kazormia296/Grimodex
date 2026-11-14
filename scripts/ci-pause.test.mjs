@@ -10,6 +10,10 @@ import { promisify } from "node:util";
 
 import yaml from "js-yaml";
 import { buildLocalCiPlan } from "./local-ci.mjs";
+import { evaluateIf, laneByGatedJob, stripScopeGate, unwrapIf } from "./ci-change-scope.test-support.mjs";
+// The pull-request change-scope tests run wherever this file runs (verify:quality,
+// local Quick/Full) without adding a test file to package.json or the registry.
+import "./ci-change-scope.test.mjs";
 import { normalizedDestination } from "./local-ci-setup-observation.mjs";
 import {
   acquireWorkloadInput,
@@ -350,13 +354,20 @@ test("registered CI exposes only opt-in canonical source contracts without gener
   assert.equal(input.default, false);
   assert.equal(ci.on.workflow_call.inputs.source_canonical_contracts, undefined);
   // Invalid canonical=true/focused=false must not admit parallel ordinary jobs.
+  // The pull-request change-scope gate wraps some guards; peel it off and keep
+  // pinning the original expressions. `changes` itself uses the journey guard.
+  const scopeRules = JSON.parse(await readFile(path.join(repoRoot, "scripts/ci-change-scope.json"), "utf8"));
+  const scopeLane = laneByGatedJob(scopeRules);
   for (const [id, job] of Object.entries(ci.jobs)) {
     if (id === "electron" || id === "canonical" || id === "existing-os-suitability") continue;
     const canonicalExclusion = " && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks";
-    const independentExclusion = ["electron-runtime-performance", ...PRODUCT_JOURNEY_JOB_IDS, "electron-native", "rust", "migration-recovery-gate"].includes(id)
+    const independentExclusion = ["changes", "electron-runtime-performance", ...PRODUCT_JOURNEY_JOB_IDS, "electron-native", "rust", "migration-recovery-gate"].includes(id)
       ? " && !inputs.independent_gates" : "";
     const ordinaryCondition = `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
-    assert.equal(job.if, PRODUCT_JOURNEY_JOB_IDS.includes(id)
+    const gate = stripScopeGate(job.if);
+    assert.equal(gate.lane, scopeLane[id], `${id} change-scope lane`);
+    if (gate.gated) assert.deepEqual(job.needs, ["changes"], `${id} needs the change scope`);
+    assert.equal(unwrapIf(gate.gated ? gate.original : job.if), unwrapIf(PRODUCT_JOURNEY_JOB_IDS.includes(id) || id === "changes"
       ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion} }}`
       : id === "electron-native"
         ? `\${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-release-tests' || inputs.canonical_profile == 'native-licensed-mcp' || (${ordinaryCondition}) }}`
@@ -366,7 +377,7 @@ test("registered CI exposes only opt-in canonical source contracts without gener
         ? `\${{ inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition}) }}`
         : id === "migration-recovery-gate"
           ? `\${{ inputs.canonical_profile == 'migration-crash' || inputs.canonical_profile == 'migration-safe-mode' || inputs.canonical_profile == 'migration-library' || inputs.canonical_profile == 'migration-remaining' || (${ordinaryCondition}) }}`
-          : ordinaryCondition, id);
+          : ordinaryCondition), id);
   }
   const steps = ci.jobs.electron.steps;
   const selectionIndex = steps.findIndex(({ name }) => name === "Validate canonical contracts selection");
@@ -439,13 +450,15 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.equal(owner.with.max_parallel_tasks, "${{ inputs.max_parallel_tasks || '' }}");
   // Only this workflow's boolean/string-equality expression subset; GitHub
   // string equality is case-insensitive. Actual reusable dispatch is hosted proof.
-  const value = (expression, inputs, event = "workflow_dispatch") => new Function("inputs", "github", "startsWith", `return (${expression
-    .replace(/^\$\{\{\s*|\s*\}\}$/gu, "")
-    .replace(/(inputs\.\w+|github\.\w+)\s*([!=]=)\s*('[^']*')/gu, "String($1 ?? '').toLowerCase() $2 $3")});`)(inputs, { event_name: event }, (value, prefix) => String(value ?? "").toLowerCase().startsWith(prefix));
+  // The change-scope gate adds `!cancelled()` and `needs.changes.outputs.*`;
+  // evaluateIf stubs both. With no `changes` outputs (a skipped or failed
+  // `changes` job) every gated job must stay admitted exactly as before.
+  const value = (expression, inputs, event = "workflow_dispatch", changes = {}) => evaluateIf(expression, { inputs, event, changes });
   const defaults = Object.fromEntries(Object.entries(dispatch).map(([name, input]) => [name, input.default ?? ""]));
   const ordinary = Object.keys(ci.jobs).filter((id) => id !== "canonical" && id !== "existing-os-suitability");
-  assert.equal(ordinary.length, 18);
-  const admitted = (inputs, event) => Object.entries(ci.jobs).filter(([, job]) => value(job.if, inputs, event)).map(([id]) => id);
+  // 18 product jobs plus the pull-request `changes` job.
+  assert.equal(ordinary.length, 19);
+  const admitted = (inputs, event, changes) => Object.entries(ci.jobs).filter(([, job]) => value(job.if, inputs, event, changes)).map(([id]) => id);
   assert.deepEqual(admitted(defaults), ordinary);
   assert.deepEqual(admitted({ product_journey_mode: "all" }, "workflow_call"), ordinary);
   assert.deepEqual(admitted({ ...defaults, source_focused: true }), ["electron"]);

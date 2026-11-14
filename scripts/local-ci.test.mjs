@@ -471,10 +471,13 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
     "electron-product-journeys-c2zc",
     "electron-product-journeys-aggregate",
   ];
+  // `changes` is the pull-request-only change-scope job. It is not a Full CI
+  // stage, so it is deliberately absent from registry.hostedJobs.
   const ordinaryJobs = Object.keys(workflow.jobs).filter(
     (id) =>
       id !== "canonical" &&
       id !== "existing-os-suitability" &&
+      id !== "changes" &&
       !productJourneySplitJobs.includes(id),
   );
   assert.equal(ordinaryJobs.length, 15);

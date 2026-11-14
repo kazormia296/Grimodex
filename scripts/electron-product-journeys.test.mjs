@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 
 import yaml from "js-yaml";
 
+import { stripScopeGate, unwrapIf } from "./ci-change-scope.test-support.mjs";
 import { closeElectronAppWithDiagnostics } from "../electron/scripts/close-electron-app.mjs";
 import { FIXED_PRODUCT_JOURNEY_SHARDS } from "../electron/scripts/product-journey-shards.mjs";
 import {
@@ -4958,16 +4959,28 @@ test("paused CI keeps every product journey job definition available", async () 
       assert.equal(job.if, "${{ startsWith(inputs.canonical_profile, 'os-') }}");
       continue;
     }
-    if (productJourneyJobIds.includes(jobId)) {
+    // The pull-request change scope runs wherever the journeys run, so a
+    // failed or skipped `changes` can never be what skips a journey root.
+    if (jobId === "changes") {
       assert.equal(job.if, PRODUCT_JOURNEY_GUARD, jobId);
+      continue;
+    }
+    // Only the two journey roots carry the change-scope gate; the shards, the
+    // aggregate and runtime-performance keep their guard and skip through needs.
+    const gate = stripScopeGate(job.if);
+    if (productJourneyJobIds.includes(jobId)) {
+      const isRoot = ["electron-product-journeys-build", "electron-product-journeys-c2zc"].includes(jobId);
+      assert.equal(gate.lane, isRoot ? "journeys" : undefined, jobId);
+      assert.equal(unwrapIf(gate.original), unwrapIf(PRODUCT_JOURNEY_GUARD), jobId);
       continue;
     }
     const independentExclusion = ["electron-runtime-performance", "electron-native", "rust", "migration-recovery-gate"].includes(jobId)
       ? " && !inputs.independent_gates" : "";
     // A job may additionally be selected by its own exact canonical profiles;
-    // its ordinary guard must still be the exact grouped alternative.
-    const selected = /^\$\{\{ ((?:inputs\.canonical_profile == '[a-z0-9-]+' \|\| )+)\((.+)\) \}\}$/u.exec(job.if ?? "");
-    const ordinaryGuard = selected ? selected[2] : job.if;
+    // its ordinary guard must still be the exact grouped alternative. The
+    // change-scope gate, when present, is peeled off first.
+    const selected = /^\$\{\{ ((?:inputs\.canonical_profile == '[a-z0-9-]+' \|\| )+)\((.+)\) \}\}$/u.exec(gate.gated ? `\${{ ${gate.original} }}` : job.if ?? "");
+    const ordinaryGuard = selected ? selected[2] : unwrapIf(gate.gated ? gate.original : job.if);
     assert.equal(
       ordinaryGuard,
       jobId === "electron"
