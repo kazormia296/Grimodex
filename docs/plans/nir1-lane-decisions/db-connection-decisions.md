@@ -962,11 +962,12 @@ P1 は 0 件。直したものと判断は次のとおり。
 
 ### 項目 C（品質判定 v3 の 4 項目）の実装の読みの開示（2026-11-16。独立レビューの推奨 9）
 
-v3（`quality-verdict-prereg-v3.md`、contracts `160f5fa5`、SHA-256 `b6166ed2…`）の定義は変えていない。実装で字義から決まらず読みを置いた点のうち、**観測の後に読みを変えた 1 点**を開示する（正本の一覧は作業記録の項目 C の実装記録）。
+v3（`quality-verdict-prereg-v3.md`、contracts `160f5fa5`、SHA-256 `b6166ed2…`）の定義は変えていない。実装で字義から決まらず読みを置いた点のうち、**観測の後に読みを変えた 1 点**を開示する（実装の読みの一覧は PR 本文の項目 C の節）。
 
 - **`raw-excerpt-unchanged` の「比べられる sample」（v3 §2.3）**：最初の実装（`d1b21a16`）は、親と子の世代の関係を「子の `queryGeneration` ＝ 親 ＋ 1」と読んだ。**contracts の過去の Gold（s7r2 の G-02、follow-up 2 件）を read-only で見たところ、実際の子の世代は親の ＋2** だった（loading の effect が挟まる）。そのため `22e2fc29` で「子の世代 ＞ 親の世代」に直した。
   - **観測の後の変更である**：＋1 の読みでは、観測した G-02 の follow-up 2 件が「比べられない」（`hold`）になり、実際の世代の関係では `pass` になる経路が無かった。読みを直したことで `pass` になりうる側へ動いたため、**緩和に当たりうる**ものとして開示する。
   - **何が緩むか**：親と子の `sceneId`・`seed` が同じで、親の IR が `ir-ready`、子の `origin` が `graph-ready` という他の条件は変えていない。世代の差が 2 以上でも「同じ query の取り直し」とみなす。差が大きい（途中に別の query が挟まる）場合の取り違えは、`sceneId`・`seed` の一致で防ぐ（別の query なら一致しない）。
   - **v3 の定義の側の事実**：§2.3 の field 名は S2 に回されており、世代の差の字義は定義に無い。直すなら v4（確認を要する変更）。この読みは実装の読みで、v3 の本文は不変。
   - **判定への影響**：first-render の sample は、この項目を `hold` にする読み（字義どおり）を変えていない。子が混じる variant（G-02・G-05・G-07）だけがこの読みの影響を受ける。
-- **v3 の判定 file を直した独立レビューの修正（2026-11-16）**：`quality-evidence-items.mjs` は、page が返さなかった値（null の hash・範囲・ID）を `fail` でなく `hold` に、path の終端の判定を edge の並びに依存させず、`settings.seed.runtime` が無い受領書を `hold` にした。いずれも v3 の定義（§2.0 の `hold` の条件）の内側の実装の修正で、定義は変えていない。`K67_QUALITY_VERDICT_V3.implementationCommit` はこの修正の commit に取り直した。
+- **v3 の判定 file を直した独立レビューの修正（2026-11-16）**：`quality-evidence-items.mjs` は、page が返さなかった値（null の hash・範囲・ID）を `fail` でなく `hold` に、path の終端の判定を edge の並びに依存させず、`settings.seed.runtime` が無い受領書を `hold` にした。いずれも v3 の定義（§2.0 の `hold` の条件）の内側の実装の修正で、定義は変えていない。
+  - **1 点だけ、`fail` を `hold` に動かす読み**：`utf16-range`（v3 §2.1）の (iii)「各端点に (i) を満たす行が 1 件以上ある」は、その edge の Evidence 行に読めない行（hash・範囲が null）が混じるとき判定しない（その行が端点を満たしていたかが分からない）。v3 §2.0 の E8「観測が取れていなければ `hold`」に従い、その edge では (iii) の `fail` を出さず、読めない行の `hold` を残す。他の行が (i) に反すれば（`evidence-id-not-in-revision`、`evidence-row-matches-no-endpoint-text`）従来どおり `fail`。**null の hash は実際の受領書では出ない**（node 側が文字列の hash を必ず作る）ので、影響する範囲は欠けた field を持つ受領書に限られ、`pass` にはならない。v3 §2.1 の `hold` の列挙に「読めない行」は無く、E8 の一般則からの読みである。`K67_QUALITY_VERDICT_V3.implementationCommit` はこの修正の commit に取り直した。

@@ -270,9 +270,44 @@ function list(shape, value, at) {
   return value.flatMap((row, index) => check(shape, row, `${at}[${index}]`));
 }
 
-/** The errors of every new field of a receipt (shapes only; no fixture). */
-export function evidenceFieldErrors(receipt) {
+/**
+ * The page-only fields that carry plain text (`graphEvidenceOf`'s
+ * `evidenceRaw`, `rowTextsOf`'s `rowTexts`): Node replaces them with their
+ * hashes (`hashFetchEvidence`), so a key of this name anywhere in a receipt
+ * means the plain value escaped the hashing.
+ */
+const PAGE_ONLY_KEYS = Object.freeze(["evidenceRaw", "rowTexts"]);
+
+/**
+ * The errors of every page-only plain field (`evidenceRaw`, `rowTexts`) key
+ * anywhere in a receipt, whatever its value. It needs no fixture text, so
+ * `evidenceFieldErrors` (called by every validator) carries it: a validator
+ * that has no needles to scan with still refuses an escaped plain field.
+ */
+export function pageOnlyFieldErrors(receipt) {
   const errors = [];
+  const stack = [{ node: receipt, at: "$" }];
+  const seen = new Set();
+  while (stack.length > 0) {
+    const { node, at } = stack.pop();
+    if (node === null || typeof node !== "object" || seen.has(node)) continue;
+    seen.add(node);
+    for (const [index, [key, child]] of Object.entries(node).entries()) {
+      const where = `${at}.${keyForMessage(key, index)}`;
+      if (PAGE_ONLY_KEYS.includes(key))
+        errors.push(`${where} is a page-only plain field (never hashed)`);
+      stack.push({ node: child, at: where });
+    }
+  }
+  return errors;
+}
+
+/**
+ * The errors of every new field of a receipt (shapes only; no fixture) and of
+ * a page-only plain field anywhere in it.
+ */
+export function evidenceFieldErrors(receipt) {
+  const errors = [...pageOnlyFieldErrors(receipt)];
   // `null` is "not observed" (a negative run, a variant that does not read):
   // the verdict holds on it, and the shape check has nothing to look at. Only
   // a value that is there is checked (an `undefined` and a `null` are the
@@ -328,14 +363,6 @@ export function plaintextNeedlesOf(fixture) {
     add(variant?.expectations?.addedScene?.sceneExcerpt?.body);
   return [...needles];
 }
-
-/**
- * The page-only fields that carry plain text (`graphEvidenceOf`'s
- * `evidenceRaw`, `rowTextsOf`'s `rowTexts`): Node replaces them with their
- * hashes (`hashFetchEvidence`), so a key of this name anywhere in a receipt
- * means the plain value escaped the hashing.
- */
-const PAGE_ONLY_KEYS = Object.freeze(["evidenceRaw", "rowTexts"]);
 
 /**
  * Prereg v3 §4: the errors of a receipt that carries plain text. (ii) any

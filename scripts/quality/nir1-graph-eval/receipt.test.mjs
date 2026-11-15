@@ -1712,6 +1712,19 @@ test("品質 v3 §4（Q6）: 受領書の 4 項目の field は範囲・hash・�
     errorsOf(receipt({ evidenceObservation: text })),
     /quoteSha256 does not have the shape/u,
   );
+  // A page-only plain field (`rowTexts`, `evidenceRaw`) anywhere in the
+  // receipt is refused whether or not the caller hands fixture texts to scan
+  // for (review: the key check must not depend on the needles).
+  for (const key of ["rowTexts", "evidenceRaw"]) {
+    const escaped = receipt({
+      settings: { ...receipt().settings, nested: [{ [key]: [] }] },
+    });
+    assert.match(
+      validateCp4Receipt(escaped, BOUND()).join(" | "),
+      /page-only plain field/u,
+      key,
+    );
+  }
   // The scan for the fixture's texts runs when the caller hands them.
   const needles = ["Mira folded the blue cloth into a square"];
   const leaked = receipt({
