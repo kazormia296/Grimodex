@@ -24,6 +24,10 @@ import {
   normalizeAskUserSpec,
 } from "@/features/chat/agent/askUser";
 import { finalizeChatTurnPayload } from "./chatTurnPayload";
+import {
+  MAX_UI_OPERATIONS_PER_TURN,
+  UI_OPERATION_TOOL_NAMES,
+} from "@/features/chat/agent/uiOperationTools";
 
 type SendAgentMessage =
   typeof import("@/features/chat/chatApi").sendAgentMessage;
@@ -314,5 +318,31 @@ export function alreadyInjectedCodexEntryResult(
     content,
     summary: "Already injected (short-circuited)",
     tokensUsed: countTokens(JSON.stringify(content)),
+  };
+}
+
+/**
+ * 1 回の agent の応答で UI 操作ツール（run_app_command／apply_layout_preset）を呼べる回数の上限。
+ * 一般の tool 呼び出し上限は 1 バッチの中の呼び出しを数えず全ツール合計なので、操作の連打を別に絞る。
+ * 呼び出しの試行を数える（失敗した呼び出しも 1 回）。上限を超えた呼び出しは実行せず error を返す。
+ * ターンごとに作る（closure のカウンタ）。「続行」で始まる新しいターンは新しい枠になる。
+ */
+export function createUiOperationLimitHandler(
+  maxOperations: number = MAX_UI_OPERATIONS_PER_TURN,
+) {
+  let attempts = 0;
+  return (name: string, toolCallId: string): ToolResult | null => {
+    if (!UI_OPERATION_TOOL_NAMES.includes(name)) return null;
+    attempts += 1;
+    if (attempts <= maxOperations) return null;
+    const msg = `UI operation limit reached (${maxOperations} per response). Do not operate the UI further; tell the user what you did and that they can undo it from the tool result.`;
+    return {
+      toolCallId,
+      name,
+      content: { error: msg },
+      summary: msg,
+      tokensUsed: countTokens(JSON.stringify({ error: msg })),
+      error: msg,
+    };
   };
 }

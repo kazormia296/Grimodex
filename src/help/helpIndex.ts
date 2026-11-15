@@ -28,6 +28,15 @@ import {
   type HelpCommandFacts,
 } from "./helpCatalog";
 import { readUiState } from "./uiState";
+import {
+  getAppCommand,
+  isAgentRunnable,
+} from "@/features/commands/appCommandRegistry";
+
+function isAssistantRunnable(commandId: string): boolean {
+  const command = getAppCommand(commandId);
+  return command !== undefined && isAgentRunnable(command);
+}
 
 export type HelpKind = "command" | "panel" | "settingsCategory" | "topic";
 
@@ -349,6 +358,8 @@ export function getHelpDetail(id: string): Record<string, unknown> | null {
       customized: facts.customized,
       os: currentOs(),
       availableOnThisOS: facts.availableOnThisOS,
+      // run_app_command でアシスタントが代わりに実行できるか（registry の agent かつ view）。
+      assistantRunnable: isAssistantRunnable(key),
       ...(facts.macUnavailable && !facts.availableOnThisOS
         ? { note: i18next.t("help.macUnavailable") }
         : {}),

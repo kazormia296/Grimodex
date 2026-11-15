@@ -180,6 +180,7 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
   const EXPECTED_MUTATING_NAMES = [
     "add_event_relation",
     "apply_ai_tree_plan",
+    "apply_layout_preset",
     "create_codex_entry",
     "create_event",
     "create_foreshadow",
@@ -187,6 +188,7 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
     "delete_event",
     "propose_scene_body",
     "remove_event_relation",
+    "run_app_command",
     "set_event_participants",
     "stamp_scene_event",
     "unstamp_scene_event",

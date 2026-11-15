@@ -9,7 +9,9 @@ import {
 } from "@/features/settings/keybindings";
 import {
   getAppCommand,
+  isAgentRunnable,
   isAppCommandAvailable,
+  listAgentRunnableCommandIds,
   listAppCommands,
   matchesFixedKey,
   runAppCommand,
@@ -70,8 +72,56 @@ describe("コマンド registry の定義", () => {
     }
   });
 
-  it("PR1 では agent に出すコマンドは無い", () => {
-    expect(listAppCommands().filter((command) => command.agent)).toEqual([]);
+  it("agent に出すコマンドは、画面の表示だけで layout の退避で戻せる view の一覧に固定されている", () => {
+    // 増やすときは、利用者のデータを変えないこと・元に戻せること・prompt injection で誘導されて
+    // 困らないことを確かめたうえで、この表と toolDefinitions の enum（AGENT_RUNNABLE_COMMAND_IDS）を揃える。
+    expect(listAgentRunnableCommandIds()).toEqual([
+      "toggleLeftOverlay",
+      "toggleRightOverlay",
+      "searchWorkspace",
+      "focusScenes",
+      "focusCodex",
+      "focusChatHistory",
+      "focusSnippets",
+      "focusAttribution",
+      "focusCodexQuick",
+      "focusTimeline",
+      "focusChronicle",
+      "focusMap",
+      "focusKouetsu",
+      "focusForeshadow",
+      "focusTrashBin",
+      "focusGrid",
+      "focusMatrix",
+      "focusWritingStats",
+      "openSettings",
+    ]);
+  });
+
+  it("agent: true は risk が view のものだけ。実行してよいかは agent と view の両方で決まる", () => {
+    for (const command of listAppCommands()) {
+      if (command.agent) expect(command.risk).toBe("view");
+    }
+    // agent フラグだけ立っていても、view でなければ実行してよい対象にならない。
+    expect(
+      isAgentRunnable({ ...getAppCommand("openSettings")!, risk: "blocked" }),
+    ).toBe(false);
+    expect(
+      isAgentRunnable({ ...getAppCommand("openSettings")!, agent: false }),
+    ).toBe(false);
+  });
+
+  it("agent に出さないもの: export（blocked）、tab の分割・切替（戻せない）、Chat パネル（今動いているパネル）", () => {
+    for (const id of [
+      "toggleExport",
+      "splitVertical",
+      "splitHorizontal",
+      "nextTab",
+      "prevTab",
+      "focusChat",
+    ]) {
+      expect(isAgentRunnable(getAppCommand(id)!), id).toBe(false);
+    }
   });
 
   it("export は agent に出せない段（blocked）にしている", () => {

@@ -6832,5 +6832,12 @@
     "unbound": "unassigned",
     "refUnavailableHere": "not available on this OS",
     "settingsCategoryRef": "the \"{{category}}\" category in Settings"
+  },
+  "agentUiOps": {
+    "undo": "Undo",
+    "undoAria": "Restore the screen to how it was before this operation",
+    "undone": "Undone",
+    "undoFailed": "Couldn't undo (the screen size changed, so the earlier layout can't be restored now)",
+    "superseded": "Can't undo: a later operation changed the screen"
   }
 }

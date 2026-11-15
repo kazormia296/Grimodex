@@ -43,7 +43,11 @@ export interface AppCommand {
   /** getCommands() の id と同じ（ユーザーのキー割当の保存と互換）。固定キーは独自の id。 */
   id: string;
   risk: CommandRisk;
-  /** agent に出すか。PR1 では全部 false（PR3 で決める）。 */
+  /**
+   * agent（Chat の run_app_command）に出すか。`risk: "view"` で、利用者のデータを変えず、
+   * 画面の表示だけの操作で、layout の退避（uiOperationUndo）で元に戻せるものだけ true にする。
+   * 実際に実行してよいかは `isAgentRunnable`（agent && view）で判定する。
+   */
   agent: boolean;
   /** パネルの表示・トグルのコマンドが対象とするパネル。 */
   panel?: PanelId;
@@ -68,7 +72,8 @@ function overlayCommand(
   return {
     id,
     risk: "view",
-    agent: false,
+    // layout store の transient な openOverlay だけを変える。退避で戻せる。
+    agent: true,
     isAvailable: (ctx) =>
       !ctx.phoneWorkspace &&
       getOverlays(useLayoutStore.getState().layout)[side].panel !== null,
@@ -101,7 +106,8 @@ const exportCommand: AppCommand = {
 const searchCommand: AppCommand = {
   id: "searchWorkspace",
   risk: "view",
-  agent: false,
+  // 検索パネルを出して入力欄にフォーカスするだけ（検索語は入れない）。layout の退避で戻せる。
+  agent: true,
   fixedKey: {
     binding: "Mod+Shift+F",
     matches: (event) =>
@@ -139,7 +145,9 @@ function panelCommand(id: string, panel: PanelId): AppCommand {
   return {
     id,
     risk: "view",
-    agent: false,
+    // パネルの表示の切替。layout の退避で戻せる。Chat は agent が今まさに動いているパネルで、
+    // 閉じると「元に戻す」の表示ごと隠れるので、agent には出さない（利用者のキー操作は従来どおり）。
+    agent: panel !== "chat",
     panel,
     run: (ctx) => {
       if (ctx.phoneWorkspace) {
@@ -171,7 +179,8 @@ function panelCommand(id: string, panel: PanelId): AppCommand {
 const openSettingsCommand: AppCommand = {
   id: "openSettings",
   risk: "view",
-  agent: false,
+  // Settings 画面を開くだけ（何も変更しない）。閉じるのは利用者の通常の操作で、layout の退避には含まれない。
+  agent: true,
   run: (ctx) => {
     ctx.onOpenSettings();
     return OK;
@@ -185,6 +194,7 @@ function splitCommand(
   return {
     id,
     risk: "view",
+    // tab の model（第 2 グループ）を変える。layout の退避では戻せないので agent には出さない。
     agent: false,
     run: (ctx) => {
       // phone は単一文書の投影で、隠れた desktop の tab model を変えない。
@@ -207,6 +217,8 @@ function tabSwitchCommand(
   return {
     id,
     risk: "view",
+    // 開いている場面（active scene）を切り替える。layout の退避では戻せず、編集中の画面が替わるので、
+    // agent には出さない。
     agent: false,
     isAvailable: (ctx) => !ctx.phoneWorkspace,
     run: (ctx) => {
@@ -275,6 +287,16 @@ export function listAppCommands(): readonly AppCommand[] {
 
 export function getAppCommand(id: string): AppCommand | undefined {
   return APP_COMMANDS_BY_ID.get(id);
+}
+
+/** Chat の agent が実行してよいか（view で、agent に出すと決めたコマンドだけ）。 */
+export function isAgentRunnable(command: AppCommand): boolean {
+  return command.agent && command.risk === "view";
+}
+
+/** agent が実行してよいコマンドの id（定義順）。 */
+export function listAgentRunnableCommandIds(): string[] {
+  return APP_COMMANDS.filter(isAgentRunnable).map((command) => command.id);
 }
 
 /** 固定キー（再割当不可）のコマンドに、この keydown が当たるか。 */

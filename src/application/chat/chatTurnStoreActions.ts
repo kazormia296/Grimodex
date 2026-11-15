@@ -31,6 +31,7 @@ import { maybeRunSummarization } from "./chatSummarization";
 import {
   alreadyInjectedCodexEntryResult,
   createAskUserToolHandler,
+  createUiOperationLimitHandler,
   createChatResearchSubagentHandler,
 } from "./chatAgentToolHandlers";
 import {
@@ -1171,6 +1172,8 @@ function createChatTurnStoreActions(
             getSessionId: () => sessionIdForPersist ?? activeSessionId,
             dismissNote: agentControl.userDismissMessage,
           });
+          // UI 操作ツールの 1 応答あたりの上限（ターンごとのカウンタ）。
+          const limitUiOperation = createUiOperationLimitHandler();
           const guardedExecuteTool: typeof executeTool = async (
             name,
             toolCallId,
@@ -1193,6 +1196,8 @@ function createChatTurnStoreActions(
               fullyInjectedIds,
             );
             if (injectedEntryResult) return injectedEntryResult;
+            const uiOperationLimitResult = limitUiOperation(name, toolCallId);
+            if (uiOperationLimitResult) return uiOperationLimitResult;
             return authorization
               ? executeTool(name, toolCallId, params, {
                   ...authorization,
