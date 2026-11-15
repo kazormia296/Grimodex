@@ -25,7 +25,9 @@
 
 - S4b は候補の祖先です。
 - 許可リストは `(f2f99b13…, 29a120dd…)` です（`allow-list-s7r2-s4-f2f99b13-candidate-29a120dd.json`）。
-- worktree は clean な detach で、場所は `/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2` です。run の直前に、`HEAD` が候補であることと、`git status --porcelain` が空であることを確かめました。
+- worktree は clean な detach で、場所は `/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2` です。
+  - `prep-builds.sh` が build の前に、`HEAD` が候補であることと、`git status --porcelain --untracked-files=all` が空であることを確かめました。build の後にも clean であることを確かめています。
+  - `chain.sh` も起動時に同じ 2 点を確かめ、どちらも通りました（違えば `stop` する作り）。
 - master の Full（43697442942）は、候補 `29a120dd` で success でした。Full は待たずに run へ進み、run の後に結果を確かめました。
 
 ### 補足：手順の正本
@@ -115,8 +117,9 @@ setup の後、Gold の前に、`v10-check.mjs` で次の 3 点を確かめま�
 - **測定の窓**
   - 窓の間は、build、試験、cargo、vitest、他の Electron、Xvfb、HDD 全体の走査を走らせていません。
   - dev の HDD の測定（prepay-impl-ab）は、PR #909 の merge の前に終わっていました。
-  - Desktop セッション（長音符テンプレート追加）には、build の前に窓の予定（約 09:10〜13:30Z）を連絡しました。
-  - 窓の後、11:10Z を過ぎてから解除を連絡しました（時刻は session の記録の timestamp による）。
+  - build の前に、2 つのセッションへ窓の予定（約 09:10〜13:30Z）を連絡しました。相手は Desktop セッション（長音符テンプレート追加）と grimodex-77 です。
+  - 窓の後、11:10Z を過ぎてから、長音符テンプレート追加に解除を連絡しました（時刻は session の記録の timestamp による）。
+  - grimodex-77 への解除の連絡は届きませんでした。そのセッションはもう終了していて、宛先が見つかりませんでした。
 
 ## 置き場
 

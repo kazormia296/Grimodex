@@ -98,6 +98,7 @@ s7r1 と同じです。
   - keep test は、全 run の後、窓の外で走らせました。
 - q1（親の return から Graph の到着まで）の max は、editing 48.5 ms、browsing 88.4 ms です。いずれも `T_late` 100 ms 以内です。
 - C7 による除外（`i-chronicle-stop`）は 0 件で、C7 は働いていません。
+- 境界（`boundaryDisagreement`）は、editing と browsing のどちらも `not-joined-in-time` が 1、`joined-late-within-tolerance` が 0 です。定常状態の pool は 0 です。
 - 取り直しはありません。両 trace とも attempt 1 で、stall もありません。
 
 ### (c) SP-P4・parity・negative・G-01 診断
@@ -136,7 +137,10 @@ s7r1 と同じです。
 5. **parity が通ったことは、Gold の worker が READY になる証拠ではありません。** parity は Graph arm を測らないためです。
 6. **dev の測定は、この集計に入れていません。** 対象は prepay-impl-ab、outliers、dev 予行などで、いずれも凍結外の fixture です。
 7. **受領書の読み先**
-   - 受領書は contracts の写しから読みました。`.artifacts/cp4/` の受領書と byte 一致することは、Gold の 13 件で `cmp` により確かめました。
+   - 受領書は `.artifacts/cp4/`（候補の worktree。読むだけ）から読みました。
+   - 台帳は contracts の `attempts-final-s7r2/` から読みました。`.artifacts/cp4/attempts/` との byte 一致は script が確かめています。
+   - G-01 の診断の記録は、contracts の `g01-e2e-s7r2-1/` と `g01-e2e-s7r2-1-report/` から読みました。
+   - `.artifacts` の受領書 31 件（SP-P4 1、trace 2、parity 12、Gold 13、negative 3）は、contracts の写しと `cmp` で byte 一致しました。
    - 各 dir の `files.sha256` もすべて一致しました。
    - 台帳の開始時の sha256（`priorAttempts.thisAttempt.fileSha256AtStart`）は、parity、Gold、N2〜N4 で contracts の `attempts/<run>.json` と一致しました。
 8. **実行環境**：Node v24.18.0（fnm の既定）で実行しました。同じ入力から 2 回実行し、`s6-aggregation.json` が byte 一致することを確かめています。

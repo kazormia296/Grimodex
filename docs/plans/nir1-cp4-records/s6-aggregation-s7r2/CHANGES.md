@@ -1,4 +1,6 @@
-# s6-aggregation-s7r2/scripts：s7r1 の script からの置き換え一覧（下書き。未実行）
+# s6-aggregation-s7r2/scripts：s7r1 の script からの置き換え一覧
+
+> **2026-11-15 の run の後に追記**：この一覧は run の前に下書きとして書いたもので、下の本文はその時点の記述のまま残しています。その後、script を contracts のこの dir に写して実行しました（`s6-aggregation.json`。`[precheck]` では止まっていません）。同じ入力で 2 回実行し、出力が byte 一致することも確かめました。B の 3 の「空配列」の読みは、実際の受領書で確かめました。Gold の 13 receipt の `priorAttempts.gold` は、すべて空配列でした（`gold1Disclosure.goldReceiptsWithEmptyPriorAttemptsGold`＝13）。
 
 元：`docs/plans/nir1-cp4-records/s6-aggregation-s7r1/scripts/` の 3 本（contracts の worktree `claude-nir1-contracts-results`。読むだけで、書き込んでいない）。
 今回（s7r2）：S4b `f2f99b13`（再凍結なし）、候補 `29a120ddd3dd8ec5a43845a76cbda837e9b20f6a`（PR #909 の merge commit）、worktree `/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2`。
@@ -26,7 +28,7 @@ s7r1 の script は、台帳 9 件（`gold-s7r1-1` stopped＋`gold-s7r1-2` compl
    - `goldPrior` の受領書の読みは null なら空（:81）。元の `goldPrior.length !== 3` の検査は削除（`3` は s7r1 の停止点＝4 番目の variant の手前、に固有の数。取り直しの停止点は run ごとに違う）。
    - SOURCE_PINS の `reportFiles` は `GOLD_PRIOR` があるときだけ載せる（:142。`pinBad` の `run !== GOLD_PRIOR` は null で安全）。
    - 3c の開示（`gold1Disclosure`）は、既定では「取り直し無し」の短い記録だけ（:227-233）。取り直しのときは s7r1 と同じ中身（:234-258）。
-   - **新しい検査（:111-116）**：取り直し無しのとき、Gold の 13 receipt の `priorAttempts.gold` が空配列でなければ `[precheck]`。根拠：`frozen-k64-run.mjs` の `listAttemptsFn` は `startAttemptFn` の前に呼ばれ、同じ (candidate, s4Commit, runKind) の前の試行だけを返す（s7r1 の `gold-s7r1-2` は 1 件、今回の `gold-s7r2-1` は 0 件のはず）。**この「空配列」の読みは、candidate worktree の `frozen-k64-run.mjs:1675-1700` を読んだだけで、実際の受領書では確かめていない**。run の後に最初に見る行。
+   - **新しい検査（:111-116）**：取り直し無しのとき、Gold の 13 receipt の `priorAttempts.gold` が空配列でなければ `[precheck]`。根拠：`frozen-k64-run.mjs` の `listAttemptsFn` は `startAttemptFn` の前に呼ばれ、同じ (candidate, s4Commit, runKind) の前の試行だけを返す（s7r1 の `gold-s7r1-2` は 1 件、今回の `gold-s7r2-1` は 0 件のはず）。（run の前の時点では、`frozen-k64-run.mjs:1675-1700` を読んだだけでした。run の後に、実際の受領書でも 13 件すべて空配列であることを確かめました。）
 4. **`sideBySide` の key 名（:254）**：`goldS7r1_1_notCounted`／`goldS7r1_2_counted` → `goldPriorRunNotCounted`／`goldRunCounted`（run 名を含まない一般形。取り直しのときだけ出る）。
 5. **前回候補の Gold の開示欄を追加（:259-278、`previousCandidateGoldDisclosure`）**：前回 s7r1 の `gold-s7r1-1`（stopped。V-10）と `gold-s7r1-2`（completed）は別候補 `3f333a83` の試行で、台帳の key が (candidate, S4) なので、s7r2 の台帳にも `priorAttempts.gold` にも**自動では出ない**。contracts の `attempts-final-s7r1/` の 2 つの台帳を読み、status・開始と終了・候補・`sameKeyAsThisRun`（false のはず）・sha256 を載せる。読めなければ `readError` を載せて続ける。集計にも判定にも数えない。定数 `PREVIOUS_CANDIDATE`（:34）に前回候補の 40 桁と run 名を持つ。
 6. **parity の `note`（:206）**：「`gold-s7r2-1` の V-10」（機械置換でできる偽の文）を、「前回 s7r1〔別候補 `3f333a83`〕の `gold-s7r1-1` の V-10 は parity が通った後に起きた」に直した。
