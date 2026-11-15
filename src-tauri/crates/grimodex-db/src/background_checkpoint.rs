@@ -11,38 +11,74 @@
 //!   （[`WAL_CHECKPOINT_PAGES`]。既定の autocheckpoint と同じ 1000 page）以上のとき
 //!   背景のスレッドへ「回せ」と知らせるだけで、I/O も長い lock も行わない。
 //! - 背景のスレッドは、checkpoint 専用の接続を 1 回ごとに開き、
-//!   `PRAGMA wal_checkpoint(PASSIVE)` を回して閉じる。TEMP 表・ReadIdentity・stamp には
-//!   関わらない（別の接続・別の TEMP・何も commit しない）。PASSIVE は書き手も読み手も
-//!   待たず、WAL の先頭へ戻す（restart）のは次の書き手が行うので、本体の
-//!   `data_version` ・`total_changes` ・schema_version は動かない（試験で確かめる）。
+//!   `PRAGMA wal_checkpoint(PASSIVE)` を回して閉じる。この専用の接続は何も commit せず、
+//!   TEMP 表・ReadIdentity・stamp にも関わらない（別の接続・別の TEMP）。PASSIVE は書き手も
+//!   読み手も待たず、WAL の先頭へ戻す（restart）のは次の書き手が行う。
+//! - **先払い（DR-DBC-6）**：PASSIVE が WAL を全部書き戻して終わった run の直後、背景の
+//!   スレッドは**本体の接続の上で**、同値の `PRAGMA application_id` を 1 回 commit する
+//!   （[`prepay`]）。WAL が全部書き戻されていると、次の書き手の最初の commit は WAL を先頭から
+//!   書き直し（restart）、WAL header の書込みと fsync を払う（回転 HDD で約 45 ms）。それを
+//!   前景の書き手でなく背景が先に払う。値は変わらず、schema・user_version・clock の
+//!   seq（trigger が無い）・[`ReadIdentity`](crate::narrative_extraction::nir1_chronicle_index::read_identity::ReadIdentity)
+//!   は動かない。
+//!   - 取得は `ConnectionCore` の `try_lock_conn_with_check`（待たない。foreground の waiter・
+//!     finalization の予約・quarantine・poison を既存の規則で見る）だけで、待つ `lock()` は
+//!     使わない（hook の `enter_sync` が run の終了を待つので、待つ形にすると互いに待つ）。
+//!     取れなければ何もしない（現状と同じく、次の書き手が払う）。
+//!   - 別の接続では先払いしない。別の接続の commit は、前景の deferred transaction
+//!     （`BEGIN; SELECT; INSERT`）を `SQLITE_BUSY_SNAPSHOT` で失敗させる（実測）。
+//!   - `busy_timeout` は 0 にして commit し、`ConnectionCore::with_busy_timeout_on` が元へ戻す
+//!     （戻せなければ既存の規則で接続を quarantine する）。
+//!   - 先払いは `running = false` にした後で行う。先払いの commit が呼ぶ wal hook は、
+//!     この thread の thread-local の旗（[`PrepayScope`]）で、page 数を記録するだけにする
+//!     （`request()`・`enter_sync`・同期の checkpoint をしない）。読み手が WAL の先頭へ戻る
+//!     のを止めていると先払いは restart せず frame を 1 つ足す（page 数が閾値以上になりうる）が、
+//!     それで run が連鎖しない・4000 page 超でも自分の run や Mutex を待たない。
+//!   - 失敗・飛ばしは `consecutive_failures` に数えない（先払いは最善努力で、無くても現状に
+//!     戻るだけ）。成否は stats に数える（`prepay_restarted`／`prepay_not_restarted`／
+//!     `prepay_skipped`／`prepay_failed`）。
+//!   - **観測の変化**：`PRAGMA data_version` は**別の接続から見て** 1 回の先払いにつき動く。
+//!     本体の接続の `PRAGMA data_version`・`total_changes`・schema_version・user_version・
+//!     `ReadIdentity`（lineage・seq・schema_version・user_version）は動かない（試験で確かめる）。
+//!     `SQLITE_FCNTL_DATA_VERSION`（`nir1_pinned_snapshot` の pin の鍵）は自分の commit でも動く
+//!     が、pin はその接続が read snapshot を持つ間だけ答え、先払いは主接続が autocommit のとき
+//!     しか commit しない（read transaction の中の接続には書かない）。別の接続の値は read
+//!     transaction の中では動かない（SQLite の性質）。
 //! - 背景が使えない間（止めた後・失敗が続いた後）は、hook が既定の autocheckpoint と
-//!   同じ同期の checkpoint に戻る。上限の保証は失われない。
+//!   同じ同期の checkpoint に戻る。上限の保証は失われない（このとき先払いはしない）。
 //!
 //! lifecycle：開く（`WorkspaceAuthority::new`）で始め、閉じる・workspace の切替え・
 //! restore・recovery では `Database` の drop か明示の [`Database::stop_background_checkpoint`]
 //! で止める。停止は、実行中の checkpoint を `sqlite3_interrupt` で中断し（待ちの間、打ち直す）、
-//! 上限（[`STOP_WAIT`]）まで、スレッドの終了の証拠を待つ。
+//! 上限（[`STOP_WAIT`]）まで、スレッドの終了の証拠を待つ。先払いの commit（fsync）は中断できない
+//! ので、停止の上限は変えない（約 45 ms。disk が止まれば長い）。
 //!
 //! 上限までに終了の証拠が取れない（`StopOutcome::TimedOut`）とき、restore は中止して
 //! 元の authority を戻し、recovery の retire は `Err` を返す（fail-closed）。専用の接続は
 //! `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` で開くので、最後の接続として閉じても `-wal`／`-shm` を
-//! 消さない。停止の要求の後は、専用の接続を新しく開かない。
+//! 消さない。停止の要求の後は、専用の接続を新しく開かず、先払いも始めない（Mutex を取った
+//! 後にもう一度確かめる）。
+//!
+//! 所有：スレッドは `Weak<ConnectionCore>` だけを持ち、先払いの間だけ upgrade する。`Database` の
+//! drop は、背景を止めた後に**主接続を自分で閉じる**（`TimedOut` でスレッドがまだ upgrade した
+//! `Arc` を持っていても、主接続の close と `-wal`／`-shm` の削除は drop が戻る前に済む）。
 //!
 //! 背景が追いつかないとき（commit が続く burst）の上限は [`MAX_WAL_PAGES_BEFORE_SYNC`]：
 //! それ以上では hook が同期の checkpoint に戻る。
 
+use std::cell::Cell;
 use std::os::raw::{c_char, c_int, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use rusqlite::{config::DbConfig, ffi, Connection, InterruptHandle, OpenFlags};
 
 use crate::open_wal::{sqlite_wal_checkpoint, OpenWalCheckpointMode, WalCheckpointState};
-use crate::Database;
+use crate::{ConnectionCore, Database};
 
 /// 背景の checkpoint を起こす WAL の page 数。SQLite の既定の autocheckpoint（1000）と
 /// 同じ値で、変えない（DR-DBC-1）。
@@ -99,6 +135,9 @@ struct Control {
     stop: bool,
     /// スレッドが終わった。
     exited: bool,
+    /// run の PASSIVE が終わって `running` を下ろした後、先払いと run の結果の集計が終わるまで
+    /// true（`wait_idle` が先払いの前に戻らないようにする。`enter_sync`・`begin_run` は見ない）。
+    prepaying: bool,
 }
 
 struct Shared {
@@ -118,6 +157,15 @@ struct Shared {
     /// 同期の checkpoint が背景の run の終了を待ち切れず諦めた回数。
     sync_wait_timeouts: AtomicU64,
     last_log_frames: AtomicI64,
+    /// 先払い（DR-DBC-6）の結果。PASSIVE が全部書き戻した run の後だけ commit する。
+    /// restart まで済ませた（commit 後の WAL が 1 frame）。
+    prepay_restarted: AtomicU64,
+    /// commit したが restart されなかった（読み手が WAL の先頭へ戻るのを止めている）。
+    prepay_not_restarted: AtomicU64,
+    /// 条件を満たさない・取れない・止める途中などで何もしなかった。
+    prepay_skipped: AtomicU64,
+    /// commit が失敗した（`consecutive_failures` には数えない）。
+    prepay_failed: AtomicU64,
     stop_wait_ms: AtomicU64,
     sync_wait_ms: AtomicU64,
     /// 試験用の注入点：true の間、run は停止の要求を無視して専用の接続を開く前で止まる。
@@ -128,7 +176,26 @@ struct Shared {
     hold_after_open: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     holding: std::sync::atomic::AtomicBool,
+    /// 試験用の注入点：true の間、先払いをしない（restart を前景が払う対照）。
+    #[cfg(test)]
+    prepay_disabled: std::sync::atomic::AtomicBool,
+    /// 試験用の注入点：先払いが `PREPAY_HOLD_*` の位置で止まる（0 で解放）。
+    #[cfg(test)]
+    prepay_hold: AtomicU8,
+    /// 試験用：先払いが今止まっている位置（0 は止まっていない）。
+    #[cfg(test)]
+    prepay_holding: AtomicU8,
 }
+
+/// 試験用：先払いの注入点の位置。
+#[cfg(test)]
+pub(crate) const PREPAY_HOLD_NONE: u8 = 0;
+/// `Weak` を upgrade した後、Mutex を取る前（Mutex を握らない）。
+#[cfg(test)]
+pub(crate) const PREPAY_HOLD_BEFORE_LOCK: u8 = 1;
+/// Mutex を握った後、commit の前（Mutex を握ったまま止まる）。
+#[cfg(test)]
+pub(crate) const PREPAY_HOLD_LOCKED: u8 = 2;
 
 impl Shared {
     fn new(threshold: i64) -> Self {
@@ -145,6 +212,16 @@ impl Shared {
             sync_incomplete: AtomicU64::new(0),
             sync_wait_timeouts: AtomicU64::new(0),
             last_log_frames: AtomicI64::new(-1),
+            prepay_restarted: AtomicU64::new(0),
+            prepay_not_restarted: AtomicU64::new(0),
+            prepay_skipped: AtomicU64::new(0),
+            prepay_failed: AtomicU64::new(0),
+            #[cfg(test)]
+            prepay_disabled: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            prepay_hold: AtomicU8::new(PREPAY_HOLD_NONE),
+            #[cfg(test)]
+            prepay_holding: AtomicU8::new(PREPAY_HOLD_NONE),
             stop_wait_ms: AtomicU64::new(u64::try_from(STOP_WAIT.as_millis()).unwrap_or(u64::MAX)),
             sync_wait_ms: AtomicU64::new(u64::try_from(SYNC_WAIT.as_millis()).unwrap_or(u64::MAX)),
             #[cfg(test)]
@@ -227,6 +304,13 @@ unsafe extern "C" fn wal_hook(
     pages: c_int,
 ) -> c_int {
     let _ = catch_unwind(AssertUnwindSafe(|| {
+        // 先払いの commit が呼んだ hook（この thread の thread-local の旗）。page 数を記録する
+        // だけで、`request()`・`enter_sync`・同期の checkpoint をしない（B.2-6。読み手が restart を
+        // 止めていて page 数が閾値以上でも、run が連鎖せず、自分の run を待たない）。
+        if PREPAY_PAGES.with(Cell::get).is_some() {
+            PREPAY_PAGES.with(|cell| cell.set(Some(i64::from(pages))));
+            return;
+        }
         // SAFETY: `client_data` は `Database` が持つ `Shared` の `Arc::as_ptr`。`Database` の
         // drop が先に背景を止め、`Shared` は接続の close より後に解放される（field の順）。
         let shared = unsafe { &*client_data.cast::<Shared>() };
@@ -301,6 +385,174 @@ fn begin_run(shared: &Shared) -> bool {
     control.running = true;
     control.run_gen += 1;
     true
+}
+
+thread_local! {
+    /// この thread が先払いの commit の中にいる間 `Some`。値は、直近の wal hook が受け取った
+    /// page 数（まだ hook が呼ばれていなければ -1）。
+    static PREPAY_PAGES: Cell<Option<i64>> = const { Cell::new(None) };
+}
+
+/// 先払いの commit の間だけ、wal hook を「記録するだけ」にする（drop で必ず戻す）。
+struct PrepayScope;
+
+impl PrepayScope {
+    fn enter() -> Self {
+        PREPAY_PAGES.with(|cell| cell.set(Some(-1)));
+        Self
+    }
+
+    fn pages(&self) -> i64 {
+        PREPAY_PAGES.with(Cell::get).unwrap_or(-1)
+    }
+}
+
+impl Drop for PrepayScope {
+    fn drop(&mut self) {
+        PREPAY_PAGES.with(|cell| cell.set(None));
+    }
+}
+
+/// `Control::prepaying` を、先払いと run の結果の集計が終わる（`return`・panic を含む）まで立てる。
+struct PrepayingFlag<'a>(&'a Shared);
+
+impl Drop for PrepayingFlag<'_> {
+    fn drop(&mut self) {
+        lock(&self.0.control).prepaying = false;
+        self.0.wake.notify_all();
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrepayOutcome {
+    /// commit し、WAL が先頭へ戻った。
+    Restarted,
+    /// commit したが、読み手が止めていて WAL は先頭へ戻らなかった。
+    NotRestarted,
+    Skipped(&'static str),
+    Failed,
+}
+
+/// PASSIVE が全部書き戻した run の後だけ先払いする（restart が保留されているときだけ意味がある）。
+fn prepay_eligible(state: &WalCheckpointState) -> bool {
+    state.busy == 0 && state.checkpointed_frames == state.log_frames && state.log_frames > 0
+}
+
+/// 先払い（DR-DBC-6）。`running = false` にした後、スレッドが 1 回の run につき最大 1 回行う。
+/// 本体の接続を `try_lock_conn_with_check` で取れたときだけ、`busy_timeout` 0 で
+/// `BEGIN IMMEDIATE; PRAGMA application_id=<現在値>; COMMIT` を行う。
+fn prepay(
+    shared: &Shared,
+    weak: &Weak<ConnectionCore>,
+    state: &WalCheckpointState,
+) -> PrepayOutcome {
+    #[cfg(test)]
+    if shared.prepay_disabled.load(Ordering::SeqCst) {
+        return PrepayOutcome::Skipped("disabled");
+    }
+    if !prepay_eligible(state) {
+        return PrepayOutcome::Skipped("not-fully-written-back");
+    }
+    if shared.stop_requested() || shared.mode.load(Ordering::SeqCst) != MODE_RUNNING {
+        return PrepayOutcome::Skipped("stopping");
+    }
+    let Some(core) = weak.upgrade() else {
+        return PrepayOutcome::Skipped("connection-gone");
+    };
+    #[cfg(test)]
+    prepay_hold_at(shared, PREPAY_HOLD_BEFORE_LOCK);
+    // 停止・foreground の waiter は、Mutex を取る前と取った後の両方で確かめる（check は
+    // `try_lock_conn_with_check` が前後で呼ぶ）。Mutex を取った後の stop の確認が、drop が
+    // 接続を差し替えた後に書かないことを保証する。
+    let mut check = || -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !shared.stop_requested() && shared.mode.load(Ordering::SeqCst) == MODE_RUNNING,
+            "BACKGROUND_PREPAY_STOPPING"
+        );
+        anyhow::ensure!(
+            core.foreground_connection_waiters.load(Ordering::SeqCst) == 0,
+            "BACKGROUND_PREPAY_FOREGROUND_WAITING"
+        );
+        Ok(())
+    };
+    let guard = match core
+        .try_lock_conn_with_check(Some(&mut check as &mut dyn FnMut() -> anyhow::Result<()>))
+    {
+        Ok(Some(guard)) => guard,
+        Ok(None) => return PrepayOutcome::Skipped("connection-busy"),
+        Err(_) => return PrepayOutcome::Skipped("not-acquirable"),
+    };
+    if !guard.is_autocommit() {
+        return PrepayOutcome::Skipped("in-transaction");
+    }
+    #[cfg(test)]
+    prepay_hold_at(shared, PREPAY_HOLD_LOCKED);
+    // guard より後に宣言する（guard より先に drop され、guard の間に hook が戻る）。
+    let scope = PrepayScope::enter();
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        core.with_busy_timeout_on(&guard, Duration::ZERO, same_value_application_id_commit)
+    }));
+    let pages = scope.pages();
+    drop(scope);
+    let outcome = match result {
+        Ok(Ok(())) if pages == 1 => PrepayOutcome::Restarted,
+        Ok(Ok(())) => PrepayOutcome::NotRestarted,
+        Ok(Err(error)) => {
+            tracing::warn!("WAL restart prepay failed: {error}");
+            PrepayOutcome::Failed
+        }
+        Err(_) => {
+            // panic は、この共有の接続にとって terminal（maintenance の panic と同じ規則）。
+            core.quarantine_connection("WAL restart prepay panicked");
+            PrepayOutcome::Failed
+        }
+    };
+    if !guard.is_autocommit() {
+        // 失敗の後始末で ROLLBACK できていない接続を、guard を放す前に使えない状態にする。
+        core.quarantine_connection("WAL restart prepay left a transaction open");
+    }
+    drop(guard);
+    outcome
+}
+
+/// `application_id` に今の値を書き直す（同値でも page 1 が dirty になり、1 frame の commit になる）。
+/// 失敗したら、開いた transaction を ROLLBACK する。
+fn same_value_application_id_commit(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let write = (|| -> anyhow::Result<()> {
+        let id: i64 = conn.pragma_query_value(None, "application_id", |row| row.get(0))?;
+        conn.execute_batch(&format!("PRAGMA application_id={id}"))?;
+        conn.execute_batch("COMMIT")?;
+        Ok(())
+    })();
+    if write.is_err() && !conn.is_autocommit() {
+        let _ = conn.execute_batch("ROLLBACK");
+    }
+    write
+}
+
+#[cfg(test)]
+fn prepay_hold_at(shared: &Shared, position: u8) {
+    if shared.prepay_hold.load(Ordering::SeqCst) != position {
+        return;
+    }
+    shared.prepay_holding.store(position, Ordering::SeqCst);
+    while shared.prepay_hold.load(Ordering::SeqCst) == position {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    shared
+        .prepay_holding
+        .store(PREPAY_HOLD_NONE, Ordering::SeqCst);
+}
+
+fn count_prepay(shared: &Shared, outcome: PrepayOutcome) {
+    let counter = match outcome {
+        PrepayOutcome::Restarted => &shared.prepay_restarted,
+        PrepayOutcome::NotRestarted => &shared.prepay_not_restarted,
+        PrepayOutcome::Skipped(_) => &shared.prepay_skipped,
+        PrepayOutcome::Failed => &shared.prepay_failed,
+    };
+    counter.fetch_add(1, Ordering::SeqCst);
 }
 
 fn run_once(shared: &Shared, db_path: &PathBuf) -> anyhow::Result<WalCheckpointState> {
@@ -383,7 +635,7 @@ fn sleep_unless_stopped(shared: &Shared, duration: Duration) -> bool {
     }
 }
 
-fn checkpointer_main(shared: Arc<Shared>, db_path: PathBuf) {
+fn checkpointer_main(shared: Arc<Shared>, db_path: PathBuf, core: Weak<ConnectionCore>) {
     let _exit = ExitGuard(Arc::clone(&shared));
     let mut last_run: Option<Instant> = None;
     let mut consecutive_failures = 0_u32;
@@ -422,8 +674,23 @@ fn checkpointer_main(shared: Arc<Shared>, db_path: PathBuf) {
             return;
         }
         let result = run_once(&shared, &db_path);
-        lock(&shared.control).running = false;
+        // `running` を下ろすのと同じ critical section で `prepaying` を立てる（`wait_idle` が
+        // 先払いの前に戻らない）。先払いは `running = false` の後なので、wal hook が
+        // `enter_sync` で自分の run を待つことは構造的に起きない。
+        let _prepaying = {
+            let mut control = lock(&shared.control);
+            control.running = false;
+            control.prepaying = true;
+            PrepayingFlag(&shared)
+        };
         shared.wake.notify_all();
+        let prepaid = match &result {
+            Ok(state) => Some(prepay(&shared, &core, state)),
+            Err(_) => None,
+        };
+        if let Some(outcome) = prepaid {
+            count_prepay(&shared, outcome);
+        }
         last_run = Some(Instant::now());
         match result {
             Ok(state) => {
@@ -499,15 +766,19 @@ pub(crate) struct BackgroundCheckpointStats {
     pub(crate) sync_incomplete: u64,
     pub(crate) sync_wait_timeouts: u64,
     pub(crate) last_log_frames: i64,
+    pub(crate) prepay_restarted: u64,
+    pub(crate) prepay_not_restarted: u64,
+    pub(crate) prepay_skipped: u64,
+    pub(crate) prepay_failed: u64,
 }
 
 impl BackgroundCheckpointer {
-    fn spawn(db_path: PathBuf, threshold: i64) -> anyhow::Result<Self> {
+    fn spawn(db_path: PathBuf, threshold: i64, core: Weak<ConnectionCore>) -> anyhow::Result<Self> {
         let shared = Arc::new(Shared::new(threshold));
         let thread_shared = Arc::clone(&shared);
         let handle = std::thread::Builder::new()
             .name("grimodex-wal-checkpoint".to_string())
-            .spawn(move || checkpointer_main(thread_shared, db_path))?;
+            .spawn(move || checkpointer_main(thread_shared, db_path, core))?;
         Ok(Self {
             shared,
             thread: Mutex::new(Some(handle)),
@@ -533,6 +804,10 @@ impl BackgroundCheckpointer {
             sync_incomplete: self.shared.sync_incomplete.load(Ordering::SeqCst),
             sync_wait_timeouts: self.shared.sync_wait_timeouts.load(Ordering::SeqCst),
             last_log_frames: self.shared.last_log_frames.load(Ordering::SeqCst),
+            prepay_restarted: self.shared.prepay_restarted.load(Ordering::SeqCst),
+            prepay_not_restarted: self.shared.prepay_not_restarted.load(Ordering::SeqCst),
+            prepay_skipped: self.shared.prepay_skipped.load(Ordering::SeqCst),
+            prepay_failed: self.shared.prepay_failed.load(Ordering::SeqCst),
         }
     }
 
@@ -618,7 +893,7 @@ impl BackgroundCheckpointProbe {
     pub(crate) fn wait_idle(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         let mut control = lock(&self.shared.control);
-        while control.pending || control.running {
+        while control.pending || control.running || control.prepaying {
             if control.exited {
                 break;
             }
@@ -704,6 +979,55 @@ impl BackgroundCheckpointProbe {
     pub(crate) fn stats_runs(&self) -> u64 {
         self.shared.runs.load(Ordering::SeqCst)
     }
+
+    pub(crate) fn set_prepay_disabled(&self, disabled: bool) {
+        self.shared
+            .prepay_disabled
+            .store(disabled, Ordering::SeqCst);
+    }
+
+    /// 先払いを `PREPAY_HOLD_*` の位置で止める（`PREPAY_HOLD_NONE` で解放）。
+    pub(crate) fn set_prepay_hold(&self, position: u8) {
+        self.shared.prepay_hold.store(position, Ordering::SeqCst);
+    }
+
+    pub(crate) fn wait_prepay_holding(&self, position: u8, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if self.shared.prepay_holding.load(Ordering::SeqCst) == position {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        false
+    }
+
+    /// 先払いの 4 つの計数（restarted, not_restarted, skipped, failed）。
+    pub(crate) fn prepay_counts(&self) -> (u64, u64, u64, u64) {
+        (
+            self.shared.prepay_restarted.load(Ordering::SeqCst),
+            self.shared.prepay_not_restarted.load(Ordering::SeqCst),
+            self.shared.prepay_skipped.load(Ordering::SeqCst),
+            self.shared.prepay_failed.load(Ordering::SeqCst),
+        )
+    }
+
+    pub(crate) fn sync_fallbacks(&self) -> u64 {
+        self.shared.sync_fallbacks.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn sync_wait_timeouts(&self) -> u64 {
+        self.shared.sync_wait_timeouts.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn is_pending(&self) -> bool {
+        lock(&self.shared.control).pending
+    }
+
+    /// 停止の要求が立ったか（`stop` が slot を握ったまま待つので、stats の代わりに使う）。
+    pub(crate) fn stop_requested(&self) -> bool {
+        self.shared.stop_requested()
+    }
 }
 
 impl Database {
@@ -739,8 +1063,11 @@ impl Database {
         if !journal_mode.eq_ignore_ascii_case("wal") {
             return Ok(BackgroundCheckpointStart::NotApplicable("not-wal"));
         }
-        let checkpointer =
-            BackgroundCheckpointer::spawn(PathBuf::from(path), WAL_CHECKPOINT_PAGES)?;
+        let checkpointer = BackgroundCheckpointer::spawn(
+            PathBuf::from(path),
+            WAL_CHECKPOINT_PAGES,
+            Arc::downgrade(&self.core),
+        )?;
         // SAFETY: `conn` は Mutex の guard が守る生きた接続。`Shared` は `slot` に入れる
         // `checkpointer` が持ち、`Database::drop` が背景を止めてから、接続の close より後に
         // 解放する。hook は `PRAGMA wal_autocheckpoint` に上書きされることがあるが、その場合は
@@ -825,10 +1152,49 @@ impl Drop for Database {
     fn drop(&mut self) {
         // 本体の接続を閉じる前に背景を止める。最後の接続の close が WAL を畳めるように、
         // checkpoint 専用の接続を残さない。`Shared` は field として、この後に解放される。
-        let slot = lock(&self.background_checkpoint);
-        if let Some(checkpointer) = slot.as_ref() {
-            checkpointer.stop(checkpointer.shared.stop_wait());
+        let started = {
+            let slot = lock(&self.background_checkpoint);
+            match slot.as_ref() {
+                Some(checkpointer) => {
+                    checkpointer.stop(checkpointer.shared.stop_wait());
+                    true
+                }
+                None => false,
+            }
+        };
+        if started {
+            self.close_connection_after_background_stop();
         }
+    }
+}
+
+impl Database {
+    /// 背景を止めた後、主接続を自分で閉じる（DR-DBC-6）。`stop` が `TimedOut` のとき、スレッドは
+    /// 先払いのために upgrade した `Arc<ConnectionCore>` を持ったまま残りうる。drop の後に最後の
+    /// `Arc` がスレッド側で落ちると、接続の close と `-wal`／`-shm` の削除が drop より後になる
+    /// （open の quiesce・restore が、drop の後に同じ file を扱う）。それを避けるため、retire と同じく
+    /// Mutex の下で `mem::replace` で実接続を取り出し、自分で close する。
+    ///
+    /// - 先払いがその最中に Mutex を握っていれば、その commit（fsync 1 回）が終わるまで待つ。
+    ///   先払いは Mutex を `try_lock` でだけ取るので、互いに待つことは無い。
+    /// - 差し替えの後に先払いが Mutex を取れても、`stop` の要求を取得の後に確かめるので書かない。
+    ///   念のため、接続を使えない状態（quarantine）にしておく。
+    /// - 背景を始めていない接続（standalone MCP の `from_connection` など）には何もしない。
+    fn close_connection_after_background_stop(&self) {
+        let mut conn = self
+            .core
+            .conn
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.core
+            .quarantine_connection("closed by Database drop after the background stop");
+        let Ok(replacement) = Connection::open_in_memory() else {
+            return;
+        };
+        let retired = std::mem::replace(&mut *conn, replacement);
+        drop(conn);
+        // 失敗は drop と同じく捨てる（返ってきた接続の drop が最後の手段）。
+        let _ = retired.close();
     }
 }
 

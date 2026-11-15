@@ -1,8 +1,10 @@
-//! DR-DBC-1: 背景の WAL checkpoint の lifecycle・上限・識別の試験。
+//! DR-DBC-1／DR-DBC-6: 背景の WAL checkpoint の lifecycle・上限・識別と、
+//! 書戻しの後の WAL の restart の先払いの試験。
 
 use super::background_checkpoint::{
     BackgroundCheckpointMode, BackgroundCheckpointProbe, BackgroundCheckpointStart, StopOutcome,
-    MAX_WAL_PAGES_BEFORE_SYNC, WAL_CHECKPOINT_PAGES,
+    MAX_WAL_PAGES_BEFORE_SYNC, PREPAY_HOLD_BEFORE_LOCK, PREPAY_HOLD_LOCKED, PREPAY_HOLD_NONE,
+    WAL_CHECKPOINT_PAGES,
 };
 use super::narrative_extraction::nir1_chronicle_index::read_identity::ReadIdentity;
 use super::open_wal::{sqlite_wal_checkpoint, OpenWalCheckpointMode, OpenWalPreparationOutcome};
@@ -97,6 +99,28 @@ fn started(db: &Database) -> BackgroundCheckpointProbe {
 fn pragma_autocheckpoint(db: &Database) -> i64 {
     db.with_conn(|conn| Ok(conn.pragma_query_value(None, "wal_autocheckpoint", |row| row.get(0))?))
         .expect("read autocheckpoint")
+}
+
+/// `-wal` の header の（checkpoint の通番、salt-1、salt-2）。restart の後、最初の frame を書く接続が
+/// 書き直すので、「誰が restart したか」を記憶媒体の速さに依らず決定的に見られる。
+fn wal_header(fixture: &Fixture) -> (u32, u32, u32) {
+    use std::io::Read;
+    let mut file = std::fs::File::open(fixture.wal_path()).expect("open the WAL");
+    let mut header = [0_u8; 32];
+    file.read_exact(&mut header).expect("read the WAL header");
+    let word = |at: usize| u32::from_be_bytes(header[at..at + 4].try_into().expect("4 bytes"));
+    (word(12), word(16), word(20))
+}
+
+/// 手動で 1 回走らせ、その先払いまでの終了を待つ（`runs` は先払いの集計の後に進む）。
+fn run_and_settle(probe: &BackgroundCheckpointProbe) {
+    let before = probe.stats_runs();
+    probe.request_run();
+    assert!(
+        probe.wait_runs_at_least(before + 1, WAIT),
+        "run must finish"
+    );
+    assert!(probe.wait_idle(WAIT), "prepay must settle");
 }
 
 #[test]
@@ -200,22 +224,600 @@ fn background_checkpoint_keeps_the_wal_near_the_threshold() {
     assert_eq!(integrity, "ok");
 }
 
-/// 大きい commit の書戻しは、背景の接続（別 thread）が PASSIVE で行う。
+/// 大きい commit の書戻しは、背景の接続（別 thread）が PASSIVE で行い、その後の WAL の restart
+/// （header の書直しと fsync）は、前景でなく背景のスレッドが先払いする（DR-DBC-6）。
 #[test]
-fn a_large_commit_is_written_back_by_the_background_connection() {
+fn a_large_commit_is_written_back_and_restarted_by_the_background_thread() {
     let fixture = Fixture::new("not-inline");
     let db = fixture.open();
     let probe = started(&db);
     let before = probe.stats_runs();
+    // 背景の run を止めておき、前景の commit が書いた header を先に取る。
+    probe.set_stall(true);
     append_pages(&db, 3 * WAL_CHECKPOINT_PAGES);
+    let foreground_header = wal_header(&fixture);
+    probe.set_stall(false);
     assert!(probe.wait_runs_at_least(before + 1, WAIT));
     assert!(probe.wait_idle(WAIT));
-    let state = wal_state(&db);
-    assert!(state.log_frames >= 3 * WAL_CHECKPOINT_PAGES);
-    assert_eq!(
-        state.checkpointed_frames, state.log_frames,
-        "PASSIVE from the background connection wrote the WAL back"
+
+    let stats = db.background_checkpoint_stats().expect("stats");
+    assert!(
+        stats.last_log_frames >= 3 * WAL_CHECKPOINT_PAGES,
+        "the PASSIVE run saw the whole commit: {stats:?}"
     );
+    assert_eq!(
+        (
+            stats.prepay_restarted,
+            stats.prepay_not_restarted,
+            stats.prepay_skipped,
+            stats.prepay_failed
+        ),
+        (1, 0, 0, 0),
+        "PASSIVE wrote everything back, so the background restarted the WAL: {stats:?}"
+    );
+    // restart の証拠：WAL が先頭へ戻り（1 frame）、header の通番と salt が背景の commit で変わった。
+    let state = wal_state(&db);
+    assert_eq!(state.log_frames, 1, "the WAL was restarted: {state:?}");
+    assert_eq!(state.checkpointed_frames, 0);
+    let background_header = wal_header(&fixture);
+    assert_eq!(background_header.0, foreground_header.0 + 1);
+    assert_ne!(background_header.1, foreground_header.1);
+    let rows: i64 = db
+        .with_conn(|conn| Ok(conn.query_row("SELECT count(*) FROM payload", [], |row| row.get(0))?))
+        .expect("count");
+    assert_eq!(rows, 3 * WAL_CHECKPOINT_PAGES);
+    // 先払いの commit は hook を呼ぶが run を起こさない（連鎖しない）。
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(probe.stats_runs(), before + 1);
+    assert!(!probe.is_pending());
+}
+
+/// 次の前景の commit は restart を払わない（header を書き直さない）。先払いを止めた対照では、
+/// 前景の最初の commit が header を書き直す。記憶媒体の速さに依らない決定的な確認。
+#[test]
+fn the_next_foreground_commit_does_not_restart_the_wal_after_a_prepay() {
+    let scenario = |prepay: bool| {
+        let fixture = Fixture::new(if prepay { "prepay-on" } else { "prepay-off" });
+        let db = fixture.open();
+        let probe = started(&db);
+        probe.set_prepay_disabled(!prepay);
+        probe.set_stall(true);
+        append_pages(&db, 2 * WAL_CHECKPOINT_PAGES);
+        let before_run = wal_header(&fixture);
+        probe.set_stall(false);
+        assert!(probe.wait_runs_at_least(1, WAIT));
+        assert!(probe.wait_idle(WAIT));
+        let after_run = wal_header(&fixture);
+        // 前景の次の commit（閾値未満なので run は起きない）。
+        append_pages(&db, 5);
+        let after_foreground = wal_header(&fixture);
+        (before_run, after_run, after_foreground)
+    };
+    let (before_run, after_run, after_foreground) = scenario(true);
+    assert_ne!(after_run, before_run, "the background rewrote the header");
+    assert_eq!(
+        after_foreground, after_run,
+        "the foreground commit appended without restarting the WAL"
+    );
+    let (before_run, after_run, after_foreground) = scenario(false);
+    assert_eq!(
+        after_run, before_run,
+        "control: nothing restarted the WAL yet"
+    );
+    assert_ne!(
+        after_foreground, after_run,
+        "control: without the prepay the foreground commit restarts the WAL"
+    );
+}
+
+/// 先払いは、値（`application_id`・`user_version`・`schema_version`・clock の seq・ReadIdentity）と
+/// 本体の接続の `data_version`・`total_changes` を動かさない。別の接続の `data_version` は動く（陽性の対照）。
+#[test]
+fn a_prepay_changes_no_value_and_no_counter_of_the_main_connection() {
+    let fixture = Fixture::new("prepay-invariants");
+    let db = fixture.open();
+    db.with_conn(|conn| {
+        conn.execute_batch("PRAGMA application_id=1234567; PRAGMA user_version=7;")?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        crate::write_clock::install_write_clock_in_tx(conn)?;
+        conn.execute_batch("COMMIT")?;
+        Ok(())
+    })
+    .expect("seed the header values and the write clock");
+    let probe = started(&db);
+    let observer = rusqlite::Connection::open(&fixture.path).expect("observer");
+    let observed_version = |conn: &rusqlite::Connection| -> i64 {
+        conn.query_row("PRAGMA data_version", [], |row| row.get(0))
+            .expect("observer data_version")
+    };
+    let main_values = |db: &Database| {
+        db.with_conn(|conn| {
+            let pragma = |name: &str| -> i64 {
+                conn.pragma_query_value(None, name, |row| row.get(0))
+                    .expect("pragma")
+            };
+            Ok((
+                pragma("data_version"),
+                conn.total_changes(),
+                pragma("schema_version"),
+                pragma("user_version"),
+                pragma("application_id"),
+                read_db_clock(conn)?,
+                ReadIdentity::read_unpinned(conn)?,
+            ))
+        })
+        .expect("main connection values")
+    };
+
+    probe.set_stall(true);
+    append_pages(&db, 2 * WAL_CHECKPOINT_PAGES);
+    let baseline = main_values(&db);
+    let observer_before = observed_version(&observer);
+    probe.set_stall(false);
+    assert!(probe.wait_runs_at_least(1, WAIT));
+    assert!(probe.wait_idle(WAIT));
+    assert_eq!(
+        db.background_checkpoint_stats()
+            .expect("stats")
+            .prepay_restarted,
+        1
+    );
+    assert_eq!(
+        main_values(&db),
+        baseline,
+        "a prepay is invisible to the main connection"
+    );
+    assert_eq!(baseline.4, 1_234_567, "the value was written back as is");
+    let observer_after = observed_version(&observer);
+    assert_ne!(
+        observer_after, observer_before,
+        "control: another connection does see a commit"
+    );
+
+    // 2 回目（WAL は 1 frame・書戻し済み）も同じ。
+    run_and_settle(&probe);
+    assert_eq!(
+        db.background_checkpoint_stats()
+            .expect("stats")
+            .prepay_restarted,
+        2
+    );
+    assert_eq!(main_values(&db), baseline);
+    assert_ne!(observed_version(&observer), observer_after);
+}
+
+/// 先払いは、前景の deferred transaction を失敗させない（別の接続で commit する案は、
+/// `SQLITE_BUSY_SNAPSHOT` で失敗した）。先払いが何度も走る間、前景の
+/// `BEGIN; SELECT; INSERT; COMMIT` はすべて成功する。
+#[test]
+fn a_prepay_never_fails_a_foreground_deferred_transaction() {
+    let fixture = Fixture::new("prepay-deferred");
+    let db = std::sync::Arc::new(fixture.open());
+    let probe = started(&db);
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer = {
+        let db = std::sync::Arc::clone(&db);
+        let done = std::sync::Arc::clone(&done);
+        std::thread::spawn(move || {
+            let mut failures = Vec::new();
+            for index in 0..400 {
+                let result = db.with_conn(|conn| {
+                    conn.execute_batch("BEGIN")?;
+                    let _: i64 =
+                        conn.query_row("SELECT count(*) FROM payload", [], |row| row.get(0))?;
+                    conn.execute("INSERT INTO payload (body) VALUES (zeroblob(3000))", [])?;
+                    conn.execute_batch("COMMIT")?;
+                    Ok(())
+                });
+                if let Err(error) = result {
+                    failures.push(format!("commit {index}: {error}"));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+            failures
+        })
+    };
+    let deadline = std::time::Instant::now() + WAIT;
+    while !done.load(std::sync::atomic::Ordering::SeqCst) && std::time::Instant::now() < deadline {
+        probe.request_run();
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    let failures = writer.join().expect("writer thread");
+    assert!(failures.is_empty(), "foreground failures: {failures:?}");
+    assert!(probe.wait_idle(WAIT));
+    let stats = db.background_checkpoint_stats().expect("stats");
+    assert_eq!(stats.failures, 0);
+    assert_eq!(stats.prepay_failed, 0, "{stats:?}");
+    assert!(
+        stats.prepay_restarted + stats.prepay_not_restarted >= 1,
+        "prepays must have happened while the writer ran: {stats:?}"
+    );
+}
+
+/// 先払いを飛ばす条件。どれも commit が起きず、`prepay_skipped` だけが増え、背景は Running のまま。
+#[test]
+fn a_prepay_is_skipped_unless_it_can_be_made_without_waiting() {
+    let fixture = Fixture::new("prepay-skip");
+    let db = fixture.open();
+    let probe = started(&db);
+    append_pages(&db, 400);
+    let skipped = |expected: u64| {
+        let stats = db.background_checkpoint_stats().expect("stats");
+        assert_eq!(stats.mode, BackgroundCheckpointMode::Running);
+        assert_eq!(
+            (
+                stats.prepay_restarted,
+                stats.prepay_not_restarted,
+                stats.prepay_failed
+            ),
+            (0, 0, 0)
+        );
+        assert_eq!(stats.prepay_skipped, expected, "{stats:?}");
+    };
+
+    // 本体の接続が explicit transaction の中（別の呼び出しをまたぐ BEGIN）。
+    db.with_conn(|conn| {
+        conn.execute_batch("BEGIN")?;
+        let _: i64 = conn.query_row("SELECT count(*) FROM payload", [], |row| row.get(0))?;
+        Ok(())
+    })
+    .expect("open a deferred transaction on the main connection");
+    run_and_settle(&probe);
+    skipped(1);
+    db.with_conn(|conn| {
+        conn.execute("INSERT INTO payload (body) VALUES (zeroblob(10))", [])?;
+        conn.execute_batch("COMMIT")?;
+        Ok(())
+    })
+    .expect("the deferred transaction still commits");
+
+    // 前景が Mutex を握っている（待たずに諦める）。
+    {
+        let held = db.lock_conn().expect("hold the main connection");
+        let before = probe.stats_runs();
+        probe.request_run();
+        assert!(probe.wait_runs_at_least(before + 1, WAIT));
+        assert!(probe.wait_idle(WAIT));
+        drop(held);
+    }
+    skipped(2);
+
+    // 前景が待っている（譲る）。
+    {
+        let _waiter = super::ForegroundConnectionWaiter::new(&db.foreground_connection_waiters);
+        run_and_settle(&probe);
+    }
+    skipped(3);
+
+    // 古い snapshot の読み手がいる（PASSIVE が全部は書き戻せない）。
+    let reader = rusqlite::Connection::open(&fixture.path).expect("reader");
+    reader.execute_batch("BEGIN").expect("begin");
+    let _: i64 = reader
+        .query_row("SELECT count(*) FROM payload", [], |row| row.get(0))
+        .expect("pin the snapshot");
+    append_pages(&db, 200);
+    run_and_settle(&probe);
+    skipped(4);
+    let state = wal_state(&db);
+    assert!(state.checkpointed_frames < state.log_frames, "{state:?}");
+    drop(reader);
+
+    // 全部が揃うと先払いする（対照）。
+    run_and_settle(&probe);
+    let stats = db.background_checkpoint_stats().expect("stats");
+    assert_eq!(stats.prepay_restarted, 1, "{stats:?}");
+    assert_eq!(stats.prepay_skipped, 4);
+    assert_eq!(wal_state(&db).log_frames, 1);
+
+    // 先払いを止める注入点（対照のための旗）。
+    probe.set_prepay_disabled(true);
+    append_pages(&db, 50);
+    run_and_settle(&probe);
+    assert_eq!(
+        db.background_checkpoint_stats()
+            .expect("stats")
+            .prepay_skipped,
+        5
+    );
+}
+
+/// 先払いの失敗（別の接続が書込みの lock を持つ）は `consecutive_failures` に数えない：
+/// 3 回を超えて続いても背景は Running のまま。`busy_timeout` は元の値に戻り、接続は使える。
+#[test]
+fn a_failed_prepay_is_not_a_checkpoint_failure_and_restores_the_busy_timeout() {
+    let fixture = Fixture::new("prepay-failure");
+    let db = fixture.open();
+    let probe = started(&db);
+    append_pages(&db, 300);
+    let busy_timeout = |db: &Database| -> i64 {
+        db.with_conn(|conn| Ok(conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?))
+            .expect("busy_timeout")
+    };
+    let configured = busy_timeout(&db);
+    assert!(configured > 0);
+
+    let other = rusqlite::Connection::open(&fixture.path).expect("other writer");
+    other
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("hold the write lock");
+    for _ in 0..5 {
+        run_and_settle(&probe);
+    }
+    let stats = db.background_checkpoint_stats().expect("stats");
+    assert_eq!(stats.prepay_failed, 5, "{stats:?}");
+    assert_eq!(
+        stats.failures, 0,
+        "a prepay failure is not a checkpoint failure"
+    );
+    assert_eq!(
+        stats.mode,
+        BackgroundCheckpointMode::Running,
+        "five failures in a row must not disable the background: {stats:?}"
+    );
+    assert_eq!(busy_timeout(&db), configured);
+    assert!(db.connection_reusable());
+    assert!(db.lock_conn().expect("lock").is_autocommit());
+    other.execute_batch("ROLLBACK").expect("release");
+    drop(other);
+
+    run_and_settle(&probe);
+    assert_eq!(
+        db.background_checkpoint_stats()
+            .expect("stats")
+            .prepay_restarted,
+        1
+    );
+}
+
+/// 読み手が最新の snapshot を握ったまま WAL の先頭へ戻るのを止めている間、先払いは restart せず
+/// frame を 1 つ足す（`not_restarted`）。そのとき hook は run を起こさない（連鎖しない）。読み手が去った後の
+/// 次の commit で run が起き、先払いが restart する。
+#[test]
+fn a_prepay_that_cannot_restart_does_not_chain_runs() {
+    let fixture = Fixture::new("prepay-reader");
+    let db = fixture.open();
+    let probe = started(&db);
+    let runs0 = probe.stats_runs();
+    probe.set_stall(true);
+    append_pages(&db, WAL_CHECKPOINT_PAGES + 500);
+    // 最新の frame を握る読み手（checkpoint の前の snapshot）。PASSIVE は止まらないが restart は止まる。
+    let reader = rusqlite::Connection::open(&fixture.path).expect("reader");
+    reader.execute_batch("BEGIN").expect("begin");
+    let _: i64 = reader
+        .query_row("SELECT count(*) FROM payload", [], |row| row.get(0))
+        .expect("pin the latest snapshot");
+    probe.set_stall(false);
+    assert!(probe.wait_runs_at_least(runs0 + 1, WAIT));
+    assert!(probe.wait_idle(WAIT));
+    let stats = db.background_checkpoint_stats().expect("stats");
+    assert_eq!(
+        (stats.prepay_restarted, stats.prepay_not_restarted),
+        (0, 1),
+        "{stats:?}"
+    );
+    let frames_after_prepay = wal_state(&db).log_frames;
+    assert_eq!(frames_after_prepay, stats.last_log_frames + 1);
+    assert!(frames_after_prepay >= WAL_CHECKPOINT_PAGES);
+
+    // 先払いの commit の page 数は閾値以上だが、run は連鎖しない。
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(probe.stats_runs(), runs0 + 1, "no chained run");
+    assert!(!probe.is_pending());
+
+    // 読み手が去り、前景の commit が閾値以上の hook で run を起こす。今度は restart する。
+    reader.execute_batch("ROLLBACK").expect("rollback");
+    drop(reader);
+    append_pages(&db, 1);
+    assert!(probe.wait_runs_at_least(runs0 + 2, WAIT));
+    assert!(probe.wait_idle(WAIT));
+    let stats = db.background_checkpoint_stats().expect("stats");
+    assert_eq!(stats.prepay_restarted, 1, "{stats:?}");
+    assert_eq!(wal_state(&db).log_frames, 1);
+}
+
+/// 4000 page を超える WAL を読み手が止めていても、先払いの commit の hook は同期の checkpoint にも
+/// `enter_sync` にも入らず、Mutex を握ったまま待たない。
+#[test]
+fn a_prepay_over_the_hard_limit_never_waits_while_holding_the_connection() {
+    let fixture = Fixture::new("prepay-over-limit");
+    let db = fixture.open();
+    let probe = started(&db);
+    probe.set_sync_wait(Duration::from_millis(100));
+    let runs0 = probe.stats_runs();
+    probe.set_stall(true);
+    append_pages(&db, MAX_WAL_PAGES_BEFORE_SYNC - 1_000);
+    // 古い snapshot の読み手 A：次の commit が上限を超えたときの同期の checkpoint が全部を書き戻せない
+    // ようにして、B が slot 1 以上の read mark を持てる（全部書き戻された後の新しい読み手は slot 0 を使い、
+    // restart を止めない）状態を作る。
+    let old_reader = rusqlite::Connection::open(&fixture.path).expect("old reader");
+    old_reader.execute_batch("BEGIN").expect("begin");
+    let _: i64 = old_reader
+        .query_row("SELECT count(*) FROM payload", [], |row| row.get(0))
+        .expect("pin the old snapshot");
+    append_pages(&db, 1_200);
+    // 読み手 B：最新の snapshot。A が去れば PASSIVE は全部書き戻せるが、restart は B が止める。
+    let reader = rusqlite::Connection::open(&fixture.path).expect("reader");
+    reader.execute_batch("BEGIN").expect("begin");
+    let _: i64 = reader
+        .query_row("SELECT count(*) FROM payload", [], |row| row.get(0))
+        .expect("pin the latest snapshot");
+    old_reader.execute_batch("ROLLBACK").expect("release A");
+    drop(old_reader);
+    let fallbacks = probe.sync_fallbacks();
+    let timeouts = probe.sync_wait_timeouts();
+    probe.set_stall(false);
+    assert!(probe.wait_runs_at_least(runs0 + 1, WAIT));
+    assert!(probe.wait_idle(WAIT));
+    let stats = db.background_checkpoint_stats().expect("stats");
+    assert_eq!(stats.prepay_not_restarted, 1, "{stats:?}");
+    assert!(
+        stats.last_log_frames + 1 >= MAX_WAL_PAGES_BEFORE_SYNC,
+        "the prepay frame crossed the hard limit: {stats:?}"
+    );
+    assert_eq!(
+        (probe.sync_fallbacks(), probe.sync_wait_timeouts()),
+        (fallbacks, timeouts),
+        "the prepay's own hook must not fall back to a synchronous checkpoint or wait"
+    );
+    // 先払いが終わったとき、前景は待たずに Mutex を取れる。
+    assert!(db
+        .try_lock_conn_with_check(None)
+        .expect("acquire")
+        .is_some());
+    drop(reader);
+}
+
+/// 先払いが Mutex を握っている間、no-wait の呼び手（maintenance、nir1 store の try 経路）は
+/// 待たずに譲り、前景の blocking の呼び手は終わるまで待って成功する（DR-DBC-6 の窓）。
+#[test]
+fn callers_that_do_not_wait_yield_while_a_prepay_holds_the_connection() {
+    let fixture = Fixture::new("prepay-window");
+    let db = fixture.open();
+    let probe = started(&db);
+    append_pages(&db, 300);
+    probe.set_prepay_hold(PREPAY_HOLD_LOCKED);
+    probe.request_run();
+    assert!(probe.wait_prepay_holding(PREPAY_HOLD_LOCKED, WAIT));
+
+    {
+        let _no_wait = db.enter_maintenance_connection_no_wait();
+        let error = db.lock_conn().expect_err("maintenance must not wait");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_MAINTENANCE_CONNECTION_PREEMPTED"),
+            "{error}"
+        );
+    }
+    assert!(
+        db.try_lock_conn_with_check(None)
+            .expect("try acquisition")
+            .is_none(),
+        "the waiter-free acquisition (DR-MPS-15) reports busy"
+    );
+    std::thread::scope(|scope| {
+        let blocked = scope.spawn(|| {
+            db.with_conn(|conn| {
+                let rows: i64 =
+                    conn.query_row("SELECT count(*) FROM payload", [], |row| row.get(0))?;
+                Ok(rows)
+            })
+        });
+        // 呼び手が waiter として並んでから確かめる（待ちは、先払いを解放するまで終わらない）。
+        let deadline = std::time::Instant::now() + WAIT;
+        while db.foreground_connection_waiter_count() == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(db.foreground_connection_waiter_count(), 1);
+        assert!(
+            !blocked.is_finished(),
+            "the blocking caller waits for the prepay"
+        );
+        probe.set_prepay_hold(PREPAY_HOLD_NONE);
+        assert_eq!(blocked.join().expect("join").expect("read"), 300);
+    });
+    assert!(probe.wait_idle(WAIT));
+    assert_eq!(
+        db.background_checkpoint_stats()
+            .expect("stats")
+            .prepay_restarted,
+        1
+    );
+}
+
+/// 停止の要求は、先払いの前（Mutex を取る前）に来ても、その結果を取得の後に確かめるので書かない。
+#[test]
+fn a_stop_that_arrives_before_the_prepay_takes_the_connection_skips_it() {
+    let fixture = Fixture::new("prepay-stop");
+    let db = fixture.open();
+    let probe = started(&db);
+    append_pages(&db, 300);
+    let header = wal_header(&fixture);
+    probe.set_prepay_hold(PREPAY_HOLD_BEFORE_LOCK);
+    probe.request_run();
+    assert!(probe.wait_prepay_holding(PREPAY_HOLD_BEFORE_LOCK, WAIT));
+    let outcome = std::thread::scope(|scope| {
+        let stopper = scope.spawn(|| db.stop_background_checkpoint());
+        // 停止の要求が立ってから解放する（先払いが「停止の後」に取得を試みる状態を決定的にする）。
+        let deadline = std::time::Instant::now() + WAIT;
+        while !probe.stop_requested() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(probe.stop_requested(), "the stop request must be raised");
+        probe.set_prepay_hold(PREPAY_HOLD_NONE);
+        stopper.join().expect("stopper")
+    });
+    assert_eq!(outcome, StopOutcome::Joined);
+    let stats = db.background_checkpoint_stats().expect("stats");
+    assert_eq!(
+        (stats.prepay_restarted, stats.prepay_skipped, stats.failures),
+        (0, 1, 0),
+        "{stats:?}"
+    );
+    assert_eq!(wal_header(&fixture), header, "nothing was committed");
+}
+
+/// `stop` が `TimedOut`（スレッドが `Weak` を upgrade したまま残る）でも、`Database` の drop は
+/// 主接続を自分で閉じる：drop が戻った時点で `-wal` が畳まれて消えている。スレッドは
+/// その後、停止の要求を見て何も書かずに終わる。
+#[test]
+fn drop_closes_the_main_connection_even_when_the_stop_times_out() {
+    let fixture = Fixture::new("prepay-drop");
+    let db = fixture.open();
+    let probe = started(&db);
+    probe.set_stop_wait(Duration::from_millis(150));
+    append_pages(&db, 300);
+    probe.set_prepay_hold(PREPAY_HOLD_BEFORE_LOCK);
+    probe.request_run();
+    assert!(probe.wait_prepay_holding(PREPAY_HOLD_BEFORE_LOCK, WAIT));
+    assert!(fixture.wal_path().exists());
+
+    drop(db);
+    assert!(
+        !probe.thread_exited(),
+        "the thread is still alive with its upgraded handle"
+    );
+    assert!(
+        !fixture.wal_path().exists(),
+        "the main connection was closed by the drop itself (last connection: the WAL is removed)"
+    );
+
+    probe.set_prepay_hold(PREPAY_HOLD_NONE);
+    let deadline = std::time::Instant::now() + WAIT;
+    while !probe.thread_exited() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(probe.thread_exited());
+    assert_eq!(
+        probe.prepay_counts(),
+        (0, 0, 1, 0),
+        "after the drop the late prepay must not write"
+    );
+    let conn = rusqlite::Connection::open(&fixture.path).expect("reopen");
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .expect("integrity");
+    assert_eq!(integrity, "ok");
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM payload", [], |row| row.get(0))
+        .expect("count");
+    assert_eq!(rows, 300);
+}
+
+/// standalone MCP の `from_connection` は背景を始めず、core の型の変更で挙動は変わらない。
+#[test]
+fn an_adopted_connection_has_no_background_and_no_prepay() {
+    let fixture = Fixture::new("adopted");
+    drop(fixture.open());
+    let conn = rusqlite::Connection::open(&fixture.path).expect("adopted connection");
+    let db = Database::from_connection(conn);
+    assert!(db.background_checkpoint_stats().is_none());
+    assert!(db.background_checkpoint_probe().is_none());
+    append_pages(&db, 20);
+    assert_eq!(db.stop_background_checkpoint(), StopOutcome::AlreadyStopped);
+    assert!(db.connection_reusable());
+    drop(db);
 }
 
 /// checkpoint は write clock（lineage・seq）・schema・ReadIdentity を動かさない（DR-DBC-5）。
