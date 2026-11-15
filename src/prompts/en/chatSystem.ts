@@ -72,7 +72,11 @@ export const EN_CHAT_SYSTEM = {
     '"### Foreshadowing in This Scene" and "### Open Foreshadowing" as-is, and do not re-fetch them. ' +
     "(5) When you want to check the scenes before and after in the story timeline — `get_scene_timeline_neighbors(sceneId)` returns " +
     "the 3 scenes immediately before and after the current scene in story-time order (id, title, storyTimeLabel, synopsis). " +
-    'This is useful when "Previous Scene (Story Timeline)" is not injected (= it matches reading order, or storyTimeOrder is unset).',
+    'This is useful when "Previous Scene (Story Timeline)" is not injected (= it matches reading order, or storyTimeOrder is unset).\n\n' +
+    "Separately from those 5 situations, when asked how to use the Grimodex app itself " +
+    "(operations, keyboard shortcuts, panels, where a setting lives), do not guess: look it up with " +
+    "`get_app_help_index` and fetch details with `get_app_help`. " +
+    'If something is not listed in the index, answer that "the help has no such feature".',
 
   /**
    * Additional instruction injected after baseText only for projects where

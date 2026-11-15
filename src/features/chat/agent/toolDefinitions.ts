@@ -695,6 +695,55 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     },
   },
 
+  // ── アプリの使い方ヘルプ（read 専用。設定値・本文・秘密は返さない）──────────
+  {
+    name: "get_app_help_index",
+    description:
+      "List help entries about using the Grimodex app itself (keyboard-shortcut commands, panels, settings categories, how-to topics), one line each: id, title, kind. Use `query` to narrow. Call this first when the user asks how to do something in the app; if nothing relevant is listed, the feature is not documented, so say so instead of guessing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description:
+            "Optional keywords (any language) to narrow the list. Omit to list everything.",
+        },
+        kind: {
+          type: "string",
+          enum: ["command", "panel", "settingsCategory", "topic"],
+          description: "Optional: only entries of this kind.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "get_app_help",
+    description:
+      "Get one help entry by the id from get_app_help_index (e.g. `command:focusChat`, `panel:scenes`, `settings:keys`, `topic:layout.presets`). A command returns the user's actual key binding and whether it works on this OS; a topic returns the how-to text. Never returns setting values.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description:
+            "Entry id exactly as listed by get_app_help_index (kind-prefixed).",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "get_ui_state",
+    description:
+      "Current Grimodex UI state: open panels, focused panel, applied layout preset, whether Settings is open, viewport profile (phone width or not), and the active scene's id and title. Never returns scene text, secrets, or provider settings.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+
   // ── サブエージェント委譲 ──────────────────────────────────────────────────
   {
     name: "run_research",

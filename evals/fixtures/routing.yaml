@@ -237,3 +237,47 @@ cases:
       freshness: current-project
       requiredEvidence: [audit-start-failure, provider-not-dispatched]
       outputValidators: [failure-class, no-side-effect]
+
+  - id: eval-route-app-help
+    suiteId: tool-policy
+    requirementIds: [GDX-ROUTE-001, GDX-TOOL-001]
+    fixture:
+      runId: route-app-help
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-11-16T09:00:00+09:00"
+      channel: agent
+      grantedPolicies: []
+      availableTools:
+        - {
+            name: get_app_help_index,
+            schemaRef: "agent-tool-manifest.json#tool:get_app_help_index",
+          }
+        - {
+            name: get_app_help,
+            schemaRef: "agent-tool-manifest.json#tool:get_app_help",
+          }
+      state:
+        {
+          conversationId: route-app-help-conversation,
+          workspaceId: route-app-help-workspace,
+          artifactRoot: route-app-help-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "エディタを分割するには？",
+        attemptedTools: [get_app_help_index, get_app_help],
+        executedTools: [get_app_help_index, get_app_help],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: [get_app_help_index, get_app_help]
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence: [tool-result, help-entry-id]
+      outputValidators: [tool-result-linked, source-attribution]

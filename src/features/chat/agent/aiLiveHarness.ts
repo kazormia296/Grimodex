@@ -654,6 +654,16 @@ export function createMockReadOnlyExecutor(
         // MockWorld に年表データを持たないため空のスタブ。
         r = okResult(name, [], "0 events found");
         break;
+      // アプリの使い方ヘルプ: MockWorld は UI を持たないため、索引は空・詳細は無しのスタブ。
+      case "get_app_help_index":
+        r = okResult(name, { total: 0, items: [] }, "0 of 0 help entries");
+        break;
+      case "get_app_help":
+        r = notFound(name);
+        break;
+      case "get_ui_state":
+        r = okResult(name, { openPanels: [], focusedPanel: null }, "ui state");
+        break;
       default:
         r = {
           toolCallId: "",

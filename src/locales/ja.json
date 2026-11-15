@@ -6770,5 +6770,42 @@
       "next": "次: {{title}} →",
       "nextAria": "次: {{title}}を{{destination}}で開く"
     }
+  },
+  "help": {
+    "commands": {
+      "focusScenes": "Scenes パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。",
+      "focusCodex": "Codex パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。",
+      "focusChatHistory": "Chat History パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。",
+      "focusChat": "Chat パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。",
+      "focusSnippets": "Snippets パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。",
+      "focusAttribution": "Attribution パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。",
+      "focusCodexQuick": "Scene Context パネルを開く。すでに開いていても閉じない。",
+      "focusTimeline": "Timeline パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。",
+      "focusChronicle": "作中年表 パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。",
+      "focusMap": "Map パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。",
+      "focusKouetsu": "校閲 パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。",
+      "focusForeshadow": "伏線 パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。",
+      "focusTrashBin": "ゴミ箱 パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。",
+      "focusGrid": "Grid パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。",
+      "focusMatrix": "Matrix パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。",
+      "focusWritingStats": "執筆統計 パネルの表示を切り替える（閉じていれば開き、開いていれば閉じる）。",
+      "toggleLeftOverlay": "画面の左端のオーバーレイを開閉する。オーバーレイにパネルが置かれていないときと、狭い画面（phone 幅）では何も起きない。",
+      "toggleRightOverlay": "画面の右端のオーバーレイを開閉する。オーバーレイにパネルが置かれていないときと、狭い画面（phone 幅）では何も起きない。",
+      "openSettings": "Settings 画面を開く。最初に表示されるカテゴリは Project。",
+      "splitVertical": "エディタを左右に分ける。現在のタブを右側の第2グループで開く（タブが無いときは空のグループを作る）。狭い画面（phone 幅）では何も起きない。",
+      "splitHorizontal": "エディタを上下に分ける。現在のタブを下側の第2グループで開く（タブが無いときは空のグループを作る）。狭い画面（phone 幅）では何も起きない。",
+      "nextTab": "現在のタブグループで次のタブへ移動する。最後のタブからは最初のタブへ戻る。タブが 2 つ未満のときと、狭い画面（phone 幅）では何も起きない。",
+      "prevTab": "現在のタブグループで前のタブへ移動する。最初のタブからは最後のタブへ戻る。タブが 2 つ未満のときと、狭い画面（phone 幅）では何も起きない。",
+      "find": "エディタにフォーカスがあるとき、本文の検索バーを開く。Scenes のツリーにフォーカスがあるときは、シーンの絞り込み欄にフォーカスする。",
+      "findReplace": "エディタの検索と置換のバーを開く。Windows と Linux だけで使える（macOS では ⌘H が OS の「アプリを隠す」と重なるため、割り当てが無効）。",
+      "save": "エディタにフォーカスがあるとき、編集中の内容を今すぐ保存する。シーンでは手動保存の履歴（リビジョン）も残る。",
+      "inlineAiPalette": "エディタでインライン AI のパレットを開く。Settings の Editor カテゴリでこのショートカットを無効にでき、無効のときは何も起きない。"
+    },
+    "settingsOpenGuide": "Settings 画面を開き、カテゴリ一覧から「{{category}}」を選ぶ。Settings 画面は {{shortcut}} で開ける（画面上部の設定ボタンからも開ける）。",
+    "settingsOpenGuideNoShortcut": "Settings 画面を開き、カテゴリ一覧から「{{category}}」を選ぶ。Settings 画面は画面上部の設定ボタンから開ける。",
+    "macUnavailable": "macOS では使えない",
+    "unbound": "割り当てなし",
+    "refUnavailableHere": "この OS では使えない",
+    "settingsCategoryRef": "Settings の「{{category}}」カテゴリ"
   }
 }
