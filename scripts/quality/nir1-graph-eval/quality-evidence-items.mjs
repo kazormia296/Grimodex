@@ -420,11 +420,22 @@ function rawSample({ sample, side }) {
   // side, are compared in the same sample (the only relative invariant).
   if (side.firstRender)
     return { problems: [hold("first-render-has-no-child-to-compare")] };
+  // "The same parent's follow-up of the same query, the parent's IR complete"
+  // (§2.3): the child is the graph-ready refresh of the same query Scene and
+  // seed, started later than the parent (the generation counter moves by more
+  // than 1 between them in a real run: the loading effect), and the parent's
+  // IR returned `ir-ready`. A Raw recovery, an `index-ready` or IR-retry
+  // child, or a parent whose IR timed out answers another query: hold.
   if (
     sample.irOutcome !== "ir-ready" ||
-    !Number.isSafeInteger(parent?.queryGeneration) ||
-    !Number.isSafeInteger(child?.queryGeneration) ||
-    child.queryGeneration !== parent.queryGeneration + 1
+    child?.origin !== "graph-ready" ||
+    !isId(parent?.sceneId) ||
+    parent.sceneId !== child.sceneId ||
+    !isId(parent.seed) ||
+    parent.seed !== child.seed ||
+    !Number.isSafeInteger(parent.queryGeneration) ||
+    !Number.isSafeInteger(child.queryGeneration) ||
+    child.queryGeneration <= parent.queryGeneration
   )
     return { problems: [hold("child-is-not-comparable-with-the-parent")] };
   if (!rowsWellFormed(parent.rowExcerpts) || !rowsWellFormed(child.rowExcerpts))

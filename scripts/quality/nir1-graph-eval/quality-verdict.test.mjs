@@ -251,9 +251,10 @@ function v3Base(variant, expectation) {
       typedRevisions: [...typedRevisions.values()],
       readAfterSamples: true,
     },
-    parent: { queryGeneration: 1, rowExcerpts: rows(hybrid) },
+    parent: { queryGeneration: 41, rowExcerpts: rows(hybrid) },
     child: {
-      queryGeneration: 2,
+      // A real run's follow-up is two generations after its parent.
+      queryGeneration: 43,
       evidence: {
         graphOnly,
         pathAttachments: contributions
@@ -3016,15 +3017,32 @@ test("品質 v3 §2.3 raw-excerpt-unchanged: 同じ sample の親と子の R+IR 
     "pass",
   );
   // Not comparable in the same sample: a hold, not a fail.
-  const generation = run(
-    v3({
-      [key]: (data) => {
-        data.child.queryGeneration = 3;
-        return data;
-      },
-    }),
-  );
-  assert.equal(rawOf(generation).status, "hold");
+  for (const mutate of [
+    (data) => {
+      // Not later than the parent's generation.
+      data.child.queryGeneration = data.parent.queryGeneration;
+    },
+    (data) => {
+      // Another query Scene (a different query), or a Raw recovery.
+      data.child.sceneId = "another-scene";
+    },
+    (data) => {
+      data.child.origin = "raw-recovery";
+    },
+    (data) => {
+      data.child.seed = "another-seed";
+    },
+  ]) {
+    const other = run(
+      v3({
+        [key]: (data) => {
+          mutate(data);
+          return data;
+        },
+      }),
+    );
+    assert.equal(rawOf(other).status, "hold");
+  }
   const irNotComplete = run(
     v3({ [key]: (data) => data }, (k) =>
       k === key
@@ -3318,8 +3336,11 @@ test("品質 v3 §2.0 skip と D8: 子が無い・graph-ready でない sample �
     irOutcome: "ir-ready",
     graph: { outcome: "graph-late" },
     followUp: {
-      parent: clone(base.parent),
+      parent: { ...clone(base.parent), sceneId: "scene-q", seed: "seed-q" },
       child: {
+        origin: "graph-ready",
+        sceneId: "scene-q",
+        seed: "seed-q",
         outcome: "graph-ready",
         materialRevision: material,
         ...clone(base.child),
