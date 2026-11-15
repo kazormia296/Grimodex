@@ -10,6 +10,7 @@
  */
 import type { PanelId } from "@/features/layout/panelIds";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { isPanelWindow } from "@/features/layout/multiwindow/panelWindow";
 import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import {
@@ -25,6 +26,8 @@ export interface UiPanelRef {
 }
 
 export interface UiStateSnapshot {
+  /** パネルを切り出した別ウィンドウか。そうなら配置と Settings の項目は主画面の状態でないので null */
+  isPanelWindow: boolean;
   /** 窓幅の区分。DOM の印（data-viewport-profile）が無いとき null */
   viewportProfile: "wide" | "compact" | "phone" | null;
   /** 狭い画面（phone 幅）か。不明なとき null */
@@ -41,7 +44,7 @@ export interface UiStateSnapshot {
   maximizedPanel: UiPanelRef | null;
   /** 開いているオーバーレイ */
   openOverlay: "left" | "right" | null;
-  layoutLocked: boolean;
+  layoutLocked: boolean | null;
   settings: {
     /** Settings 画面が開いているか。不明なとき null */
     open: boolean | null;
@@ -67,6 +70,8 @@ function readFocusedPanel(root: Document): PanelId | null {
   if (!active || typeof active.closest !== "function") return null;
   const slot = active.closest("[data-slot-panel]");
   if (slot) return asPanelId(slot.getAttribute("data-slot-panel"));
+  // ダイアログ内の入力欄は、エディタとして数えない。
+  if (active.closest('[role="dialog"]')) return null;
   if (active.closest(".ProseMirror")) return "editor";
   return null;
 }
@@ -75,6 +80,8 @@ export function readUiState(
   root: Document | null = typeof document === "undefined" ? null : document,
 ): UiStateSnapshot {
   const layout = useLayoutStore.getState();
+  // 別ウィンドウの配置は主画面のものではない。断定せず null で返す。
+  const panelWindow = isPanelWindow();
 
   const shell = root?.querySelector("[data-viewport-profile]") ?? null;
   const profileAttr = shell?.getAttribute("data-viewport-profile");
@@ -112,6 +119,7 @@ export function readUiState(
       : tree.nodes.find((node) => node.id === tree.activeSceneId);
 
   return {
+    isPanelWindow: panelWindow,
     viewportProfile,
     isPhoneWidth,
     phoneSurface:
@@ -119,20 +127,21 @@ export function readUiState(
         ? useCompactNavigationStore.getState().activeSurface
         : null,
     openPanels:
-      isPhoneWidth === true
+      isPhoneWidth === true || panelWindow
         ? null
         : allPanelIds()
             .filter((id) => layout.isPanelActive(id))
             .map(panelRef),
     focusedPanel: focusedPanelId ? panelRef(focusedPanelId) : null,
-    layoutPreset,
-    maximizedPanel: layout.maximizedPanelId
-      ? panelRef(layout.maximizedPanelId)
-      : null,
-    openOverlay: layout.openOverlay,
-    layoutLocked: layout.layoutLocked,
+    layoutPreset: panelWindow ? null : layoutPreset,
+    maximizedPanel:
+      layout.maximizedPanelId && !panelWindow
+        ? panelRef(layout.maximizedPanelId)
+        : null,
+    openOverlay: panelWindow ? null : layout.openOverlay,
+    layoutLocked: panelWindow ? null : layout.layoutLocked,
     settings: {
-      open: shell === null ? null : settingsContent !== null,
+      open: shell === null || panelWindow ? null : settingsContent !== null,
       category: settingsCategory,
     },
     activeScene: sceneNode

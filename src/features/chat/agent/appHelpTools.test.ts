@@ -114,6 +114,7 @@ describe("get_ui_state", () => {
     expect(Object.keys(result.content as object).sort()).toEqual([
       "activeScene",
       "focusedPanel",
+      "isPanelWindow",
       "isPhoneWidth",
       "layoutLocked",
       "layoutPreset",

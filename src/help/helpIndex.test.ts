@@ -105,7 +105,7 @@ describe("ずれの検出: ヘルプ文書", () => {
     expect(findBrokenRefs("{{command:focusChat}}")).toEqual([]);
   });
 
-  it("本文にキーの組み合わせや UI の名前を直書きしていない（参照で書く）", () => {
+  it("本文にキーの組み合わせ（Ctrl+… や ⌘S のような形）を直書きしていない（参照で書く）", () => {
     const keyCombo = /\b(?:Ctrl|Cmd|Alt|Option|Shift)\s*\+/;
     for (const topic of getHelpTopics()) {
       const prose = topic.body.replace(/\{\{[^}]*\}\}/g, "");
@@ -218,6 +218,8 @@ describe("詳細: コマンド", () => {
     expect(getHelpDetail("command:nextTab")!["keys"]).toBe("⌃Tab");
     const replace = getHelpDetail("command:findReplace")!;
     expect(replace["availableOnThisOS"]).toBe(false);
+    expect(replace["keys"]).toBeNull();
+    expect(replace["defaultKeys"]).toBeNull();
     expect(replace["os"]).toBe("macOS");
     expect(replace["note"]).toEqual(expect.any(String));
 

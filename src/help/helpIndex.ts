@@ -323,8 +323,9 @@ export function getHelpDetail(id: string): Record<string, unknown> | null {
       kind,
       title: facts.label,
       description: facts.description,
-      keys: facts.display,
-      defaultKeys: facts.defaultDisplay,
+      // 今の OS で使えないコマンドは、キーを返さない（案内してしまわないように）。
+      keys: facts.availableOnThisOS ? facts.display : null,
+      defaultKeys: facts.availableOnThisOS ? facts.defaultDisplay : null,
       customized: facts.customized,
       os: currentOs(),
       availableOnThisOS: facts.availableOnThisOS,

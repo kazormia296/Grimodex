@@ -14,6 +14,7 @@ const SECRET = "SECRET-BODY-OR-KEY-31c9";
 const ALLOWED_KEYS = [
   "activeScene",
   "focusedPanel",
+  "isPanelWindow",
   "isPhoneWidth",
   "layoutLocked",
   "layoutPreset",
@@ -61,6 +62,7 @@ beforeEach(() => {
 
 afterEach(() => {
   document.body.innerHTML = "";
+  window.history.replaceState({}, "", "/");
 });
 
 describe("readUiState — allowlist", () => {
@@ -188,5 +190,47 @@ describe("readUiState — DOM の印", () => {
     expect(readUiState(document).focusedPanel).toBeNull();
     document.getElementById("in-editor")!.focus();
     expect(readUiState(document).focusedPanel?.id).toBe("editor");
+  });
+
+  it("ダイアログの中の ProseMirror はエディタにフォーカスがあるとは数えない", () => {
+    document.body.innerHTML = `
+      <div data-viewport-profile="wide">
+        <div role="dialog"><div class="ProseMirror" tabindex="0" id="in-dialog"></div></div>
+      </div>`;
+    document.getElementById("in-dialog")!.focus();
+    expect(readUiState(document).focusedPanel).toBeNull();
+  });
+
+  it("slot のパネルの中の ProseMirror は、そのパネルとして返す（editor にしない）", () => {
+    document.body.innerHTML = `
+      <div data-viewport-profile="wide">
+        <section data-slot-panel="codex"><div class="ProseMirror" tabindex="0" id="in-codex"></div></section>
+      </div>`;
+    document.getElementById("in-codex")!.focus();
+    expect(readUiState(document).focusedPanel?.id).toBe("codex");
+  });
+});
+
+describe("readUiState — パネルの別ウィンドウ", () => {
+  it("別ウィンドウでは主画面の配置・Settings を断定せず null で返す", () => {
+    useLayoutStore.getState().showPanel("chat");
+    useLayoutStore.setState({
+      activePresetId: "builtin:plan",
+      layoutLocked: true,
+    });
+    window.history.replaceState({}, "", "/?window=panel&panel=chat");
+    document.body.innerHTML = `<div data-viewport-profile="wide"></div>`;
+    const state = readUiState(document);
+    expect(state.isPanelWindow).toBe(true);
+    expect(state.openPanels).toBeNull();
+    expect(state.layoutPreset).toBeNull();
+    expect(state.maximizedPanel).toBeNull();
+    expect(state.openOverlay).toBeNull();
+    expect(state.layoutLocked).toBeNull();
+    expect(state.settings.open).toBeNull();
+  });
+
+  it("主画面では isPanelWindow が false", () => {
+    expect(readUiState(document).isPanelWindow).toBe(false);
   });
 });
