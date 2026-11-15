@@ -2079,3 +2079,105 @@ test("DR-CP4-T-4: graph-held-unusable は V-10 の READY の probe を呼ばず�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("品質 v3 §4（Q6）: 観測（hash 済み）に fixture の本文が平文で残っていれば、receipt も samples.json も書かず [precheck] で拒む。形の外の evidence field も同じ", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "cp4-v3-plaintext-"));
+  try {
+    const key = "G-02/base";
+    const fixture = JSON.parse(
+      readFileSync(
+        path.join(REPO_ROOT, "evals/nir1-graph/g02-directed-relation.v1.json"),
+        "utf8",
+      ),
+    );
+    const body = fixture.scenes[0].body;
+    assert.ok(body.length > 20);
+    const hybridRows = [];
+    for (const [phase, count] of [
+      ["warmup", 5],
+      ["measured", 30],
+    ])
+      for (let repeat = 0; repeat < count; repeat += 1)
+        hybridRows.push({
+          variantKey: key,
+          arm: "hybrid",
+          phase,
+          repeat,
+          trigger: "user-operation",
+          seeded: false,
+          graphEnabled: false,
+          d2aMode: "unrestricted",
+          tFetch: 1,
+          tRawReady: 5,
+          tReturn: 9,
+          status: "completed",
+          irOutcome: "ready",
+          irCompletion: "ir-ready",
+          rawSceneIds: [QUERY],
+          finalSceneIds: [QUERY],
+        });
+    const make = (name, samples, extra = {}) => {
+      const input = recordInput(dir, key, {
+        arms: ["hybrid"],
+        d2aMode: "unrestricted",
+      });
+      input.ctx.variantDir = path.join(dir, name);
+      return {
+        input,
+        run: () =>
+          writeVariantRecord({
+            ...input,
+            runKind: "parity",
+            result: { status: "measured", samples, probes: [], ...extra },
+          }),
+      };
+    };
+    // A clean observation is written as before.
+    const clean = make("clean", hybridRows);
+    assert.notEqual((await clean.run()).status, "receipt-refused");
+    assert.ok(
+      existsSync(path.join(clean.input.ctx.variantDir, "receipt.json")),
+    );
+    // The Scene's body in a sample's field: refused, nothing written.
+    const leaking = make(
+      "leaking",
+      hybridRows.map((row, at) => (at === 0 ? { ...row, note: body } : row)),
+    );
+    const refused = await leaking.run();
+    assert.equal(refused.status, "receipt-refused");
+    assert.equal(refused.valid, false);
+    assert.equal(
+      existsSync(path.join(leaking.input.ctx.variantDir, "receipt.json")),
+      false,
+    );
+    assert.equal(
+      existsSync(path.join(leaking.input.ctx.variantDir, "samples.json")),
+      false,
+    );
+    assert.match(
+      leaking.input.problems.join("\n"),
+      /\[precheck\].*fixture text in clear/u,
+    );
+    // A malformed evidence field (a `quote` key) is refused too.
+    const quoted = make("quoted", hybridRows, {
+      evidenceObservation: {
+        readAfterSamples: true,
+        samplesBeforeRead: 35,
+        typedRevisions: [
+          {
+            logicalRevisionId: "r",
+            runtimeRevisionId: "rt",
+            evidence: [{ evidenceId: "e", quote: "plain" }],
+          },
+        ],
+      },
+    });
+    assert.equal((await quoted.run()).status, "receipt-refused");
+    assert.equal(
+      existsSync(path.join(quoted.input.ctx.variantDir, "receipt.json")),
+      false,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

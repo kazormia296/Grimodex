@@ -239,6 +239,9 @@ export function assembleK64Receipt({
   settings,
   declaration = null,
   measurementWorkspace = null,
+  // Prereg v3: the Evidence ranges read once after the samples (hashes,
+  // ranges and IDs; evidence-fields.mjs). Absent when none was read.
+  evidenceObservation = null,
   samples,
   checks,
 }) {
@@ -280,6 +283,7 @@ export function assembleK64Receipt({
     },
     declaration,
     measurementWorkspace,
+    ...(evidenceObservation ? { evidenceObservation } : {}),
     samples,
     requeries: [],
     checks,

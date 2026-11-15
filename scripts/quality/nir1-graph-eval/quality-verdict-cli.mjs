@@ -5,11 +5,14 @@
 //   node scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs \
 //     --gold-dir <dir> --allow-list <json> [--parity-dir <dir>] [--ledger <json>] \
 //     --out <verdict.json> [--summary <summary.md>] \
-//     --v2-file <path> --v2-commit <sha> --impl-commit <sha> \
+//     --v2-file <path> --v2-commit <sha> --v3-file <path> --v3-commit <sha> \
+//     --impl-commit <sha> \
 //     --remote-time-record <json> --sp-p4-dir <dir> --trace-dir <dir> \
 //     --negative-dir <dir> --g01-diagnostic-dir <dir>
-//     (v2 §0: the first formal run must start after both commits were on the
-//     remote; the command line refuses ([precheck]) without these inputs.
+//     (v2 §0, applied to v3 as well: the first formal run must start after the
+//     v2 and v3 final texts and the implementation were on the remote; the
+//     implementation is bound by its commit, not by a branch name; the
+//     command line refuses ([precheck]) without these inputs.
 //     --gold-dir and --parity-dir are the Gold and parity kinds of that check.)
 //   node scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs --verify <verdict.json>
 //     (the allow list is read by file name from the verdict file's directory)
@@ -51,6 +54,7 @@ export const PROCEDURE_FILE =
 const PROCEDURE_VERSION = "v2";
 const CODE_FILES = Object.freeze([
   "scripts/quality/nir1-graph-eval/quality-verdict.mjs",
+  "scripts/quality/nir1-graph-eval/quality-evidence-items.mjs",
   "scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs",
   "scripts/quality/nir1-graph-eval/followup.mjs",
   "scripts/quality/nir1-graph-eval/receipt.mjs",
@@ -117,6 +121,160 @@ function metricsOf(expectations, key) {
   return metrics;
 }
 
+const EVIDENCE_REQUIREMENT_OF = Object.freeze({
+  "utf16-range": "node-entity-evidence",
+  "explicit-pin-association": "explicit-pin-association",
+  "raw-excerpt-unchanged": "raw-excerpt-unchanged",
+  "added-scene-body-anchor": "added-scene-body-anchor",
+});
+
+/**
+ * Prereg v3 §2.1: the current text set of every fixture Entity as measured in
+ * `variantId`: { label, summary } with each `codex-entry-summary-edit`
+ * mutation applied to its Entity in `setupTimeline` order (a mutation with
+ * `onlyInVariants` applies only to the variants it names). A mutation whose
+ * `from` is not the summary it edits is not definable: `[precheck]`.
+ */
+export function currentEntityTexts(fixture, variantId, key) {
+  const summaries = new Map(
+    (fixture.entities ?? []).map((row) => [row.id, row.summary]),
+  );
+  const labels = new Map(
+    (fixture.entities ?? []).map((row) => [row.id, row.label]),
+  );
+  const mutations = new Map(
+    (fixture.mutations ?? []).map((row) => [row.id, row]),
+  );
+  for (const step of fixture.setupTimeline ?? []) {
+    if (step?.kind !== "mutation") continue;
+    const mutation = mutations.get(step.id);
+    if (!mutation)
+      throw precheck(
+        `${key}: setupTimeline names an unknown mutation ${step.id}`,
+      );
+    if (mutation.kind !== "codex-entry-summary-edit") continue;
+    if (
+      Array.isArray(mutation.onlyInVariants) &&
+      !mutation.onlyInVariants.includes(variantId)
+    )
+      continue;
+    if (summaries.get(mutation.entityId) !== mutation.from)
+      throw precheck(
+        `${key}: mutation ${mutation.id} does not continue the summary of ${mutation.entityId}`,
+      );
+    summaries.set(mutation.entityId, mutation.to);
+  }
+  return Object.fromEntries(
+    [...summaries].map(([id, summary]) => [id, [labels.get(id), summary]]),
+  );
+}
+
+function assertPinned(fixture, sceneId, entryId, key) {
+  if (
+    !(fixture.pins ?? []).some(
+      (pin) => pin.sceneId === sceneId && pin.entryId === entryId,
+    )
+  )
+    throw precheck(
+      `${key}: the fixture has no pin of ${sceneId} to ${entryId} (an explicit pin is required)`,
+    );
+}
+
+/**
+ * Prereg v3 §2.1〜§2.4 expectations of one variant, from the fixture and its
+ * README rules only (never a receipt's own values).
+ */
+function evidencePlanOf({ fixture, variant, expected }) {
+  const key = variant.key;
+  if (variant.caseId === "G-01") {
+    const graphPath = fixture.expectations?.graphPath;
+    const excerpt = fixture.expectations?.sceneExcerpt;
+    if (!graphPath || !excerpt?.body || !excerpt?.canonicalUtf16Range)
+      throw precheck(`${key}: the fixture has no graphPath or sceneExcerpt`);
+    assertPinned(fixture, graphPath.sceneId, graphPath.targetEntityId, key);
+    return {
+      // G-01 has no `evidence.requirements`; the user's answer A applies
+      // three items (no path attachment: `raw-excerpt-unchanged` is n/a).
+      applies: {
+        "utf16-range": true,
+        "explicit-pin-association": true,
+        "raw-excerpt-unchanged": false,
+        "added-scene-body-anchor": true,
+      },
+      entityTexts: Object.fromEntries(
+        [fixture.entitySeed, fixture.targetEntity].map((row) => [
+          row.id,
+          [row.label, row.summary],
+        ]),
+      ),
+      graphOnly: {
+        sceneId: graphPath.sceneId,
+        pinEntityId: graphPath.targetEntityId,
+        hop: graphPath.hop,
+      },
+      attachments: [],
+      sceneExcerpt: {
+        sceneId: excerpt.sceneId,
+        body: excerpt.body,
+        range: excerpt.canonicalUtf16Range,
+      },
+    };
+  }
+  const required = new Set(expected.evidence?.requirements ?? []);
+  const applies = Object.fromEntries(
+    Object.entries(EVIDENCE_REQUIREMENT_OF).map(([id, name]) => [
+      id,
+      required.has(name),
+    ]),
+  );
+  const added = expected.addedScene ?? null;
+  const graphOnly = added?.path
+    ? {
+        sceneId: added.sceneId,
+        pinEntityId: added.path.targetEntityId,
+        hop: added.path.hop,
+      }
+    : null;
+  if (graphOnly)
+    assertPinned(fixture, graphOnly.sceneId, graphOnly.pinEntityId, key);
+  const attachments = (expected.pathAttachments ?? []).map((row) => {
+    assertPinned(fixture, row.sceneId, row.path.targetEntityId, key);
+    return {
+      sceneId: row.sceneId,
+      targetEntityId: row.path.targetEntityId,
+      hop: row.path.hop,
+    };
+  });
+  const texts = currentEntityTexts(fixture, variant.variantId, key);
+  // G-05 states the current text of one Entity: the derived one must agree.
+  for (const row of expected.evidence?.assertions ?? [])
+    if (
+      row.kind === "current-entity-evidence" &&
+      !(texts[row.entityId] ?? []).includes(row.currentText)
+    )
+      throw precheck(
+        `${key}: the derived current text of ${row.entityId} differs from the fixture's currentText`,
+      );
+  const excerpt = added?.sceneExcerpt ?? null;
+  if (applies["added-scene-body-anchor"] && !excerpt)
+    throw precheck(
+      `${key}: the fixture requires a body anchor but has no sceneExcerpt`,
+    );
+  return {
+    applies,
+    entityTexts: texts,
+    graphOnly,
+    attachments,
+    sceneExcerpt: excerpt
+      ? {
+          sceneId: excerpt.sceneId,
+          body: excerpt.body,
+          range: excerpt.canonicalUtf16Range,
+        }
+      : null,
+  };
+}
+
 /** Normalized fixture expectations of the 13 catalog variants. */
 export function loadExpectations({ root, graphManifest }) {
   const predeclared = (graphManifest?.cases ?? []).filter(
@@ -167,6 +325,7 @@ export function loadExpectations({ root, graphManifest }) {
           },
         ],
         metrics: metricsOf(fixture.expectations, variant.key),
+        evidence: evidencePlanOf({ fixture, variant, expected: null }),
       };
       continue;
     }
@@ -202,6 +361,7 @@ export function loadExpectations({ root, graphManifest }) {
       ),
       expectedContributions: contributions,
       metrics: metricsOf(expected, variant.key),
+      evidence: evidencePlanOf({ fixture, variant, expected }),
     };
   }
   return {
@@ -399,10 +559,20 @@ const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
 export const V2_FILE_PATH =
   "docs/plans/nir1-cp4-records/quality-verdict-prereg-v2.md";
 export const V2_BRANCH = "claude/nir1-contracts";
+/** The v3 final text (prereg v3, the four evidence items) and its branch. */
+export const V3_FILE_PATH =
+  "docs/plans/nir1-cp4-records/quality-verdict-prereg-v3.md";
+export const V3_BRANCH = "claude/nir1-contracts";
+/**
+ * v2 §0 named the implementation's branch. Prereg v3 §12 (4) binds it by its
+ * commit instead (the branch moves with rebases): with a v3 commit given,
+ * the implementation's remote entry may be on any branch.
+ */
 export const IMPLEMENTATION_BRANCH = "claude/k66-harness";
 /** The running verdict code `--impl-commit` is bound to (bytes at that commit). */
 export const IMPLEMENTATION_FILES = Object.freeze([
   "scripts/quality/nir1-graph-eval/quality-verdict.mjs",
+  "scripts/quality/nir1-graph-eval/quality-evidence-items.mjs",
   "scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs",
 ]);
 
@@ -471,7 +641,8 @@ function remoteRecordOf(records, commit, label, branch) {
     throw precheck(
       `v2 §0: the remote time record has no entry for the ${label} commit ${commit}`,
     );
-  const rows = all.filter((row) => row.branch === branch);
+  const rows =
+    branch === null ? all : all.filter((row) => row.branch === branch);
   if (rows.length === 0)
     throw precheck(
       `v2 §0: the remote time record of the ${label} commit ${commit} names no entry on the branch ${branch}`,
@@ -508,12 +679,16 @@ function remoteRecordOf(records, commit, label, branch) {
 export function checkFirstRunPrecheck({
   v2Commit,
   v2Sha256,
+  v3Commit = null,
+  v3Sha256 = null,
   implCommit,
   remoteRecords,
   firstRun,
 }) {
+  const withV3 = v3Commit !== null;
   for (const [label, commit] of [
     ["v2", v2Commit],
+    ...(withV3 ? [["v3", v3Commit]] : []),
     ["implementation", implCommit],
   ])
     if (!COMMIT_PATTERN.test(String(commit)))
@@ -521,14 +696,19 @@ export function checkFirstRunPrecheck({
   if (!Array.isArray(remoteRecords))
     throw precheck("v2 §0: the remote time record is not a list");
   const v2 = remoteRecordOf(remoteRecords, v2Commit, "v2", V2_BRANCH);
+  const v3 = withV3
+    ? remoteRecordOf(remoteRecords, v3Commit, "v3", V3_BRANCH)
+    : null;
   const implementation = remoteRecordOf(
     remoteRecords,
     implCommit,
     "implementation",
-    IMPLEMENTATION_BRANCH,
+    // v3: bound by the commit; v2: by the branch name.
+    withV3 ? null : IMPLEMENTATION_BRANCH,
   );
   for (const [label, record] of [
     ["v2", v2],
+    ...(withV3 ? [["v3", v3]] : []),
     ["implementation", implementation],
   ])
     if (!(record.atMs < firstRun.atMs))
@@ -538,6 +718,7 @@ export function checkFirstRunPrecheck({
   const strip = ({ atMs: _atMs, ...rest }) => rest;
   return {
     v2: { ...strip(v2), sha256: v2Sha256 },
+    ...(withV3 ? { v3: { ...strip(v3), sha256: v3Sha256 } } : {}),
     implementation: strip(implementation),
     firstFormalRun: strip(firstRun),
   };
@@ -653,6 +834,10 @@ function readFirstRunDir(dir) {
 export function loadFirstRunInputs({
   v2File,
   v2Commit,
+  // Prereg v3 (the four evidence items): optional here, required by the
+  // command line. Both or neither.
+  v3File = null,
+  v3Commit = null,
   implCommit,
   remoteTimeRecordPath,
   dirs,
@@ -669,6 +854,8 @@ export function loadFirstRunInputs({
     ["remote time record", remoteTimeRecordPath],
   ])
     if (!value) throw precheck(`v2 §0: the ${name} input is missing`);
+  if ((v3File === null) !== (v3Commit === null))
+    throw precheck("prereg v3: the v3 file and the v3 commit go together");
   const v2Bytes = readBytes(v2File);
   const v2Sha256 = sha256(v2Bytes);
   const v2Blob = gitBlobOf(v2File, v2Commit);
@@ -680,6 +867,20 @@ export function loadFirstRunInputs({
     throw precheck(
       `v2 §0: ${v2File} differs from the bytes of that path at the v2 commit ${v2Commit}`,
     );
+  let v3Sha256 = null;
+  if (v3File !== null) {
+    const v3Bytes = readBytes(v3File);
+    v3Sha256 = sha256(v3Bytes);
+    const v3Blob = gitBlobOf(v3File, v3Commit);
+    if (v3Blob.relative !== V3_FILE_PATH)
+      throw precheck(
+        `prereg v3: the v3 file is ${v3Blob.relative}, not ${V3_FILE_PATH}`,
+      );
+    if (v3Blob.sha256 !== v3Sha256)
+      throw precheck(
+        `prereg v3: ${v3File} differs from the bytes of that path at the v3 commit ${v3Commit}`,
+      );
+  }
   const implementationFiles = assertImplementationBound({
     implCommit,
     running,
@@ -705,6 +906,8 @@ export function loadFirstRunInputs({
   const result = checkFirstRunPrecheck({
     v2Commit,
     v2Sha256,
+    v3Commit,
+    v3Sha256,
     implCommit,
     remoteRecords,
     firstRun,
@@ -716,6 +919,9 @@ export function loadFirstRunInputs({
     },
     bindings: {
       v2File: { path: path.resolve(v2File), sha256: v2Sha256 },
+      ...(v3File !== null
+        ? { v3File: { path: path.resolve(v3File), sha256: v3Sha256 } }
+        : {}),
       remoteTimeRecord: {
         path: path.resolve(remoteTimeRecordPath),
         sha256: sha256(recordBytes),
@@ -770,6 +976,7 @@ export function verifyBindings(
     ...(b.parityReceipts ?? []),
     b.ledger,
     b.v2File,
+    b.v3File,
     b.remoteTimeRecord,
     ...(b.manifests ?? []),
     ...(b.fixtures ?? []),
@@ -827,10 +1034,35 @@ export function renderSummary(output) {
   lines.push(
     `| Hybrid p95 ≤ ${p.limitMs} ms | ${SYMBOL[p.status]} | R+IR arm ${fixed(p.hybridArm.p95Ms, 2)} ms（n=${p.hybridArm.n}）、Graph arm ${fixed(p.graphArm.p95Ms, 2)} ms（n=${p.graphArm.n}）。G-case の母集団で、P の 24 query ではない |`,
   );
-  const e = c["evidence-validity"].components["edge-binding"];
+  const ec = c["evidence-validity"].components;
+  const e = ec["edge-binding"];
+  const item = (id) => {
+    const part = ec[id];
+    if (!part) return `${id}：-`;
+    const counts =
+      part.status === "n/a" || part.status === "not-evaluable"
+        ? ""
+        : `（${part.variants} variant、検査 ${part.checked} sample、検査せず ${part.skipped}）`;
+    return `${id}：${SYMBOL[part.status]}${counts}`;
+  };
   lines.push(
-    `| Evidence 100％ | ${SYMBOL[c["evidence-validity"].status]} | edge の束縛だけ：${SYMBOL[e.status]}（${e.variants} variant、検査 ${e.checked} sample、検査できず ${e.skipped}）、D8 親の合流の寄与：${SYMBOL[c["evidence-validity"].components["graph-contributed-parent-counted"]?.status ?? "hold"]}。残りは not-evaluable |`,
+    `| Evidence 100％ | ${SYMBOL[c["evidence-validity"].status]} | edge の束縛：${SYMBOL[e.status]}（${e.variants} variant、検査 ${e.checked} sample、検査できず ${e.skipped}）、D8 親の合流の寄与：${SYMBOL[ec["graph-contributed-parent-counted"]?.status ?? "hold"]}、v3 の 4 項目 ${[
+      "utf16-range",
+      "explicit-pin-association",
+      "raw-excerpt-unchanged",
+      "added-scene-body-anchor",
+    ]
+      .map(item)
+      .join("、")} |`,
   );
+  const range = ec["utf16-range"]?.disclosure;
+  if (range) {
+    lines.push("");
+    lines.push(
+      `v3 の開示（条件に数えない）：utf16-range の Evidence 行 ${range.rows} 行のうち範囲が全長の行 ${range.fullRange}、そうでない行 ${range.notFullRange}、長さ 1 の行 ${range.lengthOne}。sourceRef の値は variant ごとに ${range.distinctSourceRefsPerVariant.join("／") || "-"} 通り（行 ${range.sourceRefRows}）。`,
+    );
+    lines.push("");
+  }
   const fa = c["forbidden-contribution"].components;
   lines.push(
     `| 禁止寄与 0 | ${SYMBOL[c["forbidden-contribution"].status]} | (a) 禁止 Scene・blocked 候補：${SYMBOL[fa["a-forbidden-scene-or-blocked-candidate"].status]}（違反 ${fa["a-forbidden-scene-or-blocked-candidate"].violatingSamples} sample）、(b) 遅れた Graph：${SYMBOL[fa["b-late-graph-in-display"].status]}（違反 ${fa["b-late-graph-in-display"].violatingSamples} sample）、D3 の index-ready の取り直し：${SYMBOL[fa["a2-index-ready-requery-forbidden"].status]}。(c) は not-evaluable |`,
@@ -884,6 +1116,8 @@ function main() {
       root: { type: "string" },
       "v2-file": { type: "string" },
       "v2-commit": { type: "string" },
+      "v3-file": { type: "string" },
+      "v3-commit": { type: "string" },
       "impl-commit": { type: "string" },
       "remote-time-record": { type: "string" },
       "sp-p4-dir": { type: "string", multiple: true },
@@ -913,6 +1147,8 @@ function main() {
   for (const name of [
     "v2-file",
     "v2-commit",
+    "v3-file",
+    "v3-commit",
     "impl-commit",
     "remote-time-record",
     "sp-p4-dir",
@@ -932,6 +1168,8 @@ function main() {
     firstRun: {
       v2File: values["v2-file"],
       v2Commit: values["v2-commit"],
+      v3File: values["v3-file"],
+      v3Commit: values["v3-commit"],
       implCommit: values["impl-commit"],
       remoteTimeRecordPath: values["remote-time-record"],
       dirs: {

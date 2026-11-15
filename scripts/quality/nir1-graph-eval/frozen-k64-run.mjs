@@ -66,6 +66,12 @@ import {
   loadDevGraphCasePlans,
   loadFrozenSetupPlans,
 } from "./frozen-setup-plan.mjs";
+import {
+  evidenceFieldErrors,
+  hashRevisionRead,
+  plaintextErrors,
+  plaintextNeedlesOf,
+} from "./evidence-fields.mjs";
 import { k64GraphSampleRow, r2Record } from "./k64-record.mjs";
 import {
   K64_DEV_PREVIEW_PURPOSE,
@@ -1016,7 +1022,13 @@ async function measureSteady(ctx) {
     }
     ctx.run.finishedAtMs = Date.now();
     proc.checks.releases = releases;
-    return { status: "measured", samples, probes, proc };
+    // Prereg v3 §2.1: read once, after the last sample (the Gold run's Graph
+    // arm only: v3 judges the Gold receipts; a negative run has none).
+    const evidenceObservation =
+      arms.includes("graph") && !ctx.negative
+        ? await readEvidenceObservation({ ctx, proc, samples })
+        : null;
+    return { status: "measured", samples, probes, proc, evidenceObservation };
   } finally {
     ctx.windowSamples = ctx.windowSampler?.stop() ?? [];
     ctx.windowSampler = null;
@@ -1025,6 +1037,49 @@ async function measureSteady(ctx) {
         (error) => ({ problems: [`stop: ${error?.stack ?? error}`] }),
       );
   }
+}
+
+/**
+ * Prereg v3 §2.1: the typed Revisions' Evidence ranges, read once after the
+ * variant's samples and before its session stops (never per sample: the
+ * p95 is not touched). Each Revision is read through the product's review
+ * read (`nir1_entity_relation_revision_read`); node replaces every quote by
+ * its sha256 at once (evidence-fields.mjs `hashRevisionRead`) and keeps the
+ * range, the Evidence ID and the source reference. A Revision that cannot be
+ * read is recorded `unavailable` (the verdict holds on it), never an error
+ * text. Prereg v3 §8 (2), (6): that this read leaves the maintenance and
+ * the cache alone is not established here (dev rehearsal).
+ */
+async function readEvidenceObservation({ ctx, proc, samples }) {
+  const rows = [];
+  for (const [logicalRevisionId, row] of Object.entries(
+    ctx.ids.typedRevisions ?? {},
+  )) {
+    const runtimeRevisionId = row?.revisionId;
+    if (typeof runtimeRevisionId !== "string") continue;
+    let read;
+    try {
+      read = await ctx.page.evaluate(
+        ([name, input]) => window.cp4Harness.call(name, input),
+        [
+          "nir1_entity_relation_revision_read",
+          {
+            expectedWorkspacePath: proc.workspacePath,
+            projectId: ctx.ids.projectId,
+            revisionId: runtimeRevisionId,
+          },
+        ],
+      );
+    } catch {
+      read = { ok: false };
+    }
+    rows.push(hashRevisionRead({ logicalRevisionId, runtimeRevisionId, read }));
+  }
+  return {
+    readAfterSamples: true,
+    samplesBeforeRead: samples.length,
+    typedRevisions: rows,
+  };
 }
 
 /**
@@ -1267,6 +1322,8 @@ async function measureG01Fallback(ctx) {
       row.result.probes.map((probe) => ({ ...probe, armProcess: row.label })),
     ),
     proc: graph.result.proc,
+    // Prereg v3: the Graph arm's own process read the Revisions.
+    evidenceObservation: graph.result.evidenceObservation ?? null,
     evidences: [
       hybrid.result.proc?.evidence,
       graph.result.proc?.evidence,
@@ -1369,6 +1426,38 @@ export async function writeVariantRecord({
       valid: true,
     };
   }
+  // Prereg v3 §4 (Q6): nothing is written while the observation (hashed by
+  // now) carries a fixture text in clear or a field outside its shape. The
+  // scan's texts are the fixture's; a fixture with none cannot be called free
+  // of plain text (`[precheck]`).
+  const leaks = [
+    ...evidenceFieldErrors({
+      samples: result.samples,
+      evidenceObservation: result.evidenceObservation,
+    }),
+    ...plaintextErrors(
+      {
+        samples: result.samples,
+        probes: result.probes ?? [],
+        processes: result.processes ?? null,
+        evidenceObservation: result.evidenceObservation ?? null,
+      },
+      plaintextNeedlesOf(
+        JSON.parse(readFileSync(path.join(ROOT, plan.fixturePath), "utf8")),
+      ),
+    ),
+  ];
+  if (leaks.length > 0) {
+    problems.push(
+      `${spec.variantKey}: [precheck] plain text or a malformed evidence field in the observation; nothing was written: ${leaks.slice(0, 3).join("; ")}`,
+    );
+    return {
+      status: "receipt-refused",
+      samples: result.samples.length,
+      valid: false,
+      error: String(leaks[0]).split("\n")[0],
+    };
+  }
   const environment = environmentOf({
     ctx,
     evidences: result.evidences ?? [result.proc?.evidence].filter(Boolean),
@@ -1450,6 +1539,7 @@ export async function writeVariantRecord({
       },
       declaration: result.proc?.declaration ?? null,
       measurementWorkspace: result.proc?.measurementWorkspace ?? null,
+      evidenceObservation: result.evidenceObservation ?? null,
       samples: result.samples,
       checks: {
         status: result.status,
@@ -1484,9 +1574,27 @@ export async function writeVariantRecord({
       error: String(error?.message ?? error).split("\n")[0],
     };
   }
+  // Prereg v3 §4: the whole assembled receipt is scanned for the fixture's
+  // texts before any byte of it is written.
+  const needles = plaintextNeedlesOf(
+    JSON.parse(readFileSync(path.join(ROOT, plan.fixturePath), "utf8")),
+  );
+  const wholeLeaks = plaintextErrors(receipt, needles);
+  if (wholeLeaks.length > 0) {
+    problems.push(
+      `${spec.variantKey}: [precheck] the receipt carries a fixture text in clear; nothing was written: ${wholeLeaks.slice(0, 3).join("; ")}`,
+    );
+    return {
+      status: "receipt-refused",
+      samples: result.samples.length,
+      valid: false,
+      error: String(wholeLeaks[0]).split("\n")[0],
+    };
+  }
   const errors = validateCp4Receipt(receipt, {
     ratification5: admitted.ratification5,
     procedure: admitted.procedure,
+    plaintextNeedles: needles,
   });
   await writeFile(
     path.join(variantDir, "receipt.json"),

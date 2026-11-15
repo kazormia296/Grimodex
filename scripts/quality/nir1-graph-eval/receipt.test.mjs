@@ -1672,3 +1672,65 @@ test("E-16: launch の env の DBUS_SESSION_BUS_ADDRESS は run の dir の存�
       String(address),
     );
 });
+
+test("品質 v3 §4（Q6）: 受領書の 4 項目の field は範囲・hash・長さ・ID だけ。形の外の key や平文は validate が拒否し、fixture の本文を渡せば受領書のどこにあっても拒否する。欠けた受領書は拒否しない（判定側が hold）", () => {
+  const good = {
+    readAfterSamples: true,
+    samplesBeforeRead: 69,
+    typedRevisions: [
+      {
+        logicalRevisionId: "r1",
+        runtimeRevisionId: "rt-r1",
+        evidence: [
+          {
+            evidenceId: "ev-1",
+            sourceRef: "codex:e-1",
+            startUtf16: 0,
+            endUtf16: 5,
+            quoteSha256: H64("a"),
+          },
+        ],
+      },
+    ],
+  };
+  // Without the fields, or with well-formed ones: only (E-1).
+  for (const overrides of [{}, { evidenceObservation: good }]) {
+    const errors = validateCp4Receipt(receipt(overrides), BOUND());
+    assert.equal(errors.length, 1, errors.join(" | "));
+    assert.match(errors[0], TEST_ONLY_EVIDENCE);
+  }
+  // A plain quote in the observation, or a key outside the record.
+  const quote = JSON.parse(JSON.stringify(good));
+  quote.typedRevisions[0].evidence[0].quote = "Orin is a courier.";
+  assert.match(
+    errorsOf(receipt({ evidenceObservation: quote })),
+    /evidenceObservation\.typedRevisions\[0\]\.evidence\[0\]\.quote is not a field/u,
+  );
+  const text = JSON.parse(JSON.stringify(good));
+  text.typedRevisions[0].evidence[0].quoteSha256 = "Orin is a courier.";
+  assert.match(
+    errorsOf(receipt({ evidenceObservation: text })),
+    /quoteSha256 does not have the shape/u,
+  );
+  // The scan for the fixture's texts runs when the caller hands them.
+  const needles = ["Mira folded the blue cloth into a square"];
+  const leaked = receipt({
+    settings: {
+      ...receipt().settings,
+      note: "Mira folded the blue cloth into a square and",
+    },
+  });
+  assert.match(
+    validateCp4Receipt(leaked, { ...BOUND(), plaintextNeedles: needles }).join(
+      " | ",
+    ),
+    /settings\.note contains a fixture text in clear/u,
+  );
+  // No texts to scan for is not "clean".
+  assert.match(
+    validateCp4Receipt(receipt(), { ...BOUND(), plaintextNeedles: [] }).join(
+      " | ",
+    ),
+    /no fixture texts to look for/u,
+  );
+});
