@@ -787,3 +787,46 @@ test("K6/6 FR-7（dev の予行）: dev の preview は parentMaterialContributi
   );
   assert.equal(formal.followUp.parent.contribution.expectedContribution, false);
 });
+
+test("品質 v3: 親と子の fetch の evidence・rowExcerpts（hash 済み）は followUp.parent・followUp.child の記録に載る。無い観測（trace の probe など）の記録の形は変えない", () => {
+  const evidence = {
+    graphOnly: {
+      sceneId: "u-1",
+      hop: 1,
+      pinEntityId: "e-1",
+      canonicalRange: { start: 0, end: 10 },
+      excerptSha256: "a".repeat(64),
+      excerptUtf16Length: 10,
+      edges: [],
+    },
+    pathAttachments: [],
+  };
+  const rows = [
+    {
+      sceneId: "u-1",
+      kind: "raw",
+      excerptSha256: "b".repeat(64),
+      excerptUtf16Length: 3,
+    },
+  ];
+  const plain = k64GraphSampleRow(input());
+  assert.equal("evidence" in plain.followUp.parent, false);
+  assert.equal("rowExcerpts" in plain.followUp.child, false);
+  const row = k64GraphSampleRow(
+    input({
+      observation: observation({
+        parent: { evidence: null, rowExcerpts: rows },
+        child: { evidence, rowExcerpts: [...rows, ...rows] },
+      }),
+    }),
+  );
+  assert.equal(row.followUp.parent.evidence, null);
+  assert.deepEqual(row.followUp.parent.rowExcerpts, rows);
+  assert.deepEqual(row.followUp.child.evidence, evidence);
+  assert.equal(row.followUp.child.rowExcerpts.length, 2);
+  // Everything else of the records is what it was.
+  const { evidence: _e, rowExcerpts: _r, ...parentRest } = row.followUp.parent;
+  assert.deepEqual(parentRest, plain.followUp.parent);
+  const { evidence: _ce, rowExcerpts: _cr, ...childRest } = row.followUp.child;
+  assert.deepEqual(childRest, plain.followUp.child);
+});

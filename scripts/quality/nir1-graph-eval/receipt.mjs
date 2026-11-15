@@ -40,6 +40,7 @@ import {
   variantByKey,
 } from "./constants.mjs";
 import { isCollectedFacts } from "./admission-facts.mjs";
+import { evidenceFieldErrors, plaintextErrors } from "./evidence-fields.mjs";
 import { F6_FORMAL_BASIS, assessCandidateRegime } from "./followup.mjs";
 import {
   PROCEDURE_VERSION,
@@ -1103,6 +1104,14 @@ export function validateCp4Receipt(receipt, bound = {}, deps = {}) {
     }
   }
   if (!receipt?.verdict?.outcome) errors.push("verdict.outcome is required");
+  // Prereg v3 §4 (Q6): the four evidence items' fields are ranges, hashes,
+  // lengths and IDs only; a receipt that carries plain text is refused. The
+  // shapes are always checked; the scan for the fixture's texts runs when the
+  // caller hands them (`bound.plaintextNeedles`; the formal writer always
+  // does). A field that is missing is not an error here (the verdict holds).
+  errors.push(...evidenceFieldErrors(receipt));
+  if (bound.plaintextNeedles !== undefined)
+    errors.push(...plaintextErrors(receipt, bound.plaintextNeedles));
   return errors;
 }
 

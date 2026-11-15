@@ -224,6 +224,103 @@ export function graphPathsOf(value: Nir1RelatedScenesFetchResult) {
   };
 }
 
+/**
+ * Prereg v3: the Graph payload's rows with what the four evidence items need
+ * and the page alone can read — the Graph-only row's pin Entity, hop, range
+ * and excerpt, the attachments' hop, and every edge's ends and Evidence. The
+ * excerpt and the quotes are in clear here only: Node hashes them right after
+ * the export (`hashObservationPaths` → evidence-fields.mjs `hashGraphEvidence`)
+ * and never writes them. A separate field from `paths`, so the trace probe's
+ * records stay as they were.
+ */
+export function graphEvidenceOf(value: Nir1RelatedScenesFetchResult) {
+  const graph = value.graph ?? null;
+  if (!graph) return null;
+  type Edge = (typeof graph.pathAttachments)[number]["edges"][number];
+  const edges = (list: readonly Edge[]) =>
+    list.map((edge) => ({
+      from: { entityId: edge.from.entityId },
+      to: { entityId: edge.to.entityId },
+      evidence: edge.evidence.map((row) => ({
+        evidenceId: row.evidenceId,
+        quote: row.quote,
+      })),
+    }));
+  return {
+    graphOnly: graph.graphOnly
+      ? {
+          sceneId: graph.graphOnly.sceneId,
+          hop: graph.graphOnly.path.hop,
+          pinEntityId: graph.graphOnly.path.pinEntityId,
+          canonicalRange: {
+            start: graph.graphOnly.canonicalRange.start,
+            end: graph.graphOnly.canonicalRange.end,
+          },
+          excerpt: graph.graphOnly.excerpt,
+          edges: edges(graph.graphOnly.path.edges),
+        }
+      : null,
+    pathAttachments: graph.pathAttachments.map((row) => ({
+      sceneId: row.sceneId,
+      hop: row.hop,
+      edges: edges(row.edges),
+    })),
+  };
+}
+
+/**
+ * Prereg v3 §2.3: the displayed rows' texts, one entry per source of a row
+ * (a Raw row's `chunkText` as `raw`, an IR row's `validatedEvidence.excerpt`
+ * as `ir`, the displayed Graph-only row's excerpt as `graph-only`), in the
+ * display order. In clear here only; Node hashes them (`hashRowTexts`).
+ */
+export function rowTextsOf(
+  value: Nir1RelatedScenesFetchResult,
+  sceneId: string,
+) {
+  const fused = value.graphOutcome
+    ? fuseNir1RelatedScenesGraph({
+        result: value.result,
+        queryBinding: value.queryBinding,
+        querySceneId: sceneId,
+        graphOutcome: value.graphOutcome,
+        ...(value.graph ? { graph: value.graph } : {}),
+      })
+    : null;
+  const out: {
+    sceneId: string;
+    kind: "raw" | "ir" | "graph-only";
+    text: string;
+  }[] = [];
+  const result = value.result;
+  if (result.kind === "raw")
+    for (const raw of result.scenes)
+      out.push({ sceneId: raw.sceneId, kind: "raw", text: raw.chunkText });
+  else
+    for (const scene of result.scenes) {
+      if (scene.kind !== "ir")
+        out.push({
+          sceneId: scene.sceneId,
+          kind: "raw",
+          text: scene.raw.chunkText,
+        });
+      if (scene.kind !== "raw")
+        out.push({
+          sceneId: scene.sceneId,
+          kind: "ir",
+          text: scene.ir.validatedEvidence.excerpt,
+        });
+    }
+  const graphOnly = fused?.rows.find((row) => row.kind === "graph-only");
+  if (graphOnly && graphOnly.kind === "graph-only")
+    out.push({
+      sceneId: graphOnly.sceneId,
+      kind: "graph-only",
+      text: graphOnly.graphOnly.excerpt,
+    });
+  return out;
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The Graph continue's wrapper command (run-sample.mjs `GRAPH_CONTINUE`). */
@@ -361,6 +458,9 @@ async function sample(input: {
       failed: row.failed,
       result: row.value ? summarize(row.value, row.sceneId) : null,
       paths: row.value ? graphPathsOf(row.value) : null,
+      // Prereg v3: plain in the page only; Node hashes both (and drops them).
+      evidenceRaw: row.value ? graphEvidenceOf(row.value) : null,
+      rowTexts: row.value ? rowTextsOf(row.value, row.sceneId) : null,
     })),
     commits: log,
     notices: notices

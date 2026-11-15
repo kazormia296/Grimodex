@@ -455,6 +455,7 @@ export function buildFollowUpRecord({
       lateGraphInDisplay: lateGraphShown(view, parent, GRAPH_EVAL_D_MS),
       rSceneIds: parentResult.rawSceneIds,
       irSceneIds: parentResult.irSceneIds,
+      ...evidenceFieldsOf(parent),
       ticket: ticketOf(parentRecord),
       irRetryTimer: irRetryTimerOf(parentResult),
       // K6/6 FR-7: the parent's own contribution, the same unit as F6's
@@ -553,6 +554,21 @@ function contributionOf(view, child, result) {
   };
 }
 
+/**
+ * Prereg v3: what the four evidence items read of one fetch (hashes, ranges,
+ * lengths and IDs only; `hashObservationPaths` already dropped the plain
+ * texts). Absent for an observation that carries none (a (b) trace's, an
+ * older one): the verdict holds the items, the record is not refused.
+ */
+function evidenceFieldsOf(fetch) {
+  return {
+    ...(fetch?.evidence !== undefined ? { evidence: fetch.evidence } : {}),
+    ...(fetch?.rowExcerpts !== undefined
+      ? { rowExcerpts: fetch.rowExcerpts }
+      : {}),
+  };
+}
+
 function childRecordOf(view, child, records, aligned) {
   const result = child.result;
   const rows = view.rowsOf(child);
@@ -606,6 +622,7 @@ function childRecordOf(view, child, records, aligned) {
       rSceneIds: result?.rawSceneIds ?? [],
       irSceneIds: result?.irSceneIds ?? [],
       finalSceneIds: result?.finalSceneIds ?? [],
+      ...evidenceFieldsOf(child),
     },
     q4: {
       beginMs: nsToMs(native.record?.tBeginNs, native.record?.tReturnedNs),
