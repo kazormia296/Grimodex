@@ -10,5 +10,6 @@ keywords: スマホ, 狭い画面, phone, モバイル, 画面切り替え, ナ�
 
 パネルを開くコマンドは、対応する画面へ切り替える。
 たとえば {{command:focusScenes}} は「{{t:mobileWorkspace.navigation.scenes}}」へ、{{command:focusCodex}} は「{{t:mobileWorkspace.navigation.codex}}」へ、{{command:focusChat}} は「{{t:mobileWorkspace.navigation.ai}}」へ切り替える。
+{{command:focusCodexQuick}} は「{{t:mobileWorkspace.navigation.codex}}」へ、{{command:focusChatHistory}} は「{{t:mobileWorkspace.navigation.ai}}」へ切り替える。
 それ以外のパネルのコマンドは「{{t:mobileWorkspace.navigation.more}}」へ切り替える。
 エディタの分割（{{command:splitVertical}}、{{command:splitHorizontal}}）、タブの切り替え（{{command:nextTab}}、{{command:prevTab}}）、左右のオーバーレイの開閉は、狭い画面では何も起きない。

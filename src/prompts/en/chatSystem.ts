@@ -76,7 +76,7 @@ export const EN_CHAT_SYSTEM = {
     "Separately from those 5 situations, when asked how to use the Grimodex app itself " +
     "(operations, keyboard shortcuts, panels, where a setting lives), do not guess: look it up with " +
     "`get_app_help_index` and fetch details with `get_app_help`. " +
-    'If something is not listed in the index, answer that "the help has no such feature".',
+    'If something is not listed in the index, answer that "the help does not cover it", and do not claim the feature itself does not exist.',
 
   /**
    * Additional instruction injected after baseText only for projects where

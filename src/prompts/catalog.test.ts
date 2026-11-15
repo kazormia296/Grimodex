@@ -139,9 +139,15 @@ describe("chat agentInstruction: アプリの使い方の誘導（ja/en）", () 
       expect(TOOL_MAP.has("get_app_help_index")).toBe(true);
       expect(TOOL_MAP.has("get_app_help")).toBe(true);
     }
-    expect(JA_CHAT_SYSTEM.agentInstruction).toContain("ヘルプには無い");
+    expect(JA_CHAT_SYSTEM.agentInstruction).toContain("ヘルプには載っていない");
+    expect(JA_CHAT_SYSTEM.agentInstruction).toContain(
+      "存在しないとは言い切らない",
+    );
     expect(EN_CHAT_SYSTEM.agentInstruction).toContain(
-      "the help has no such feature",
+      "the help does not cover it",
+    );
+    expect(EN_CHAT_SYSTEM.agentInstruction).toContain(
+      "do not claim the feature itself does not exist",
     );
   });
 });

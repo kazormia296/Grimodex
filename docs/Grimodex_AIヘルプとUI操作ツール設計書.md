@@ -160,7 +160,7 @@ panels: []
 |---|---|---|
 | `get_app_help_index` | read | 項目の一覧（ID、題、種類）を返す。`query` を受け取って絞り込める |
 | `get_app_help` | read | 1 項目の詳細を返す。コマンドは実際のキー割当・OS での可否、設定は現在値と範囲、文書は本文（参照を展開した後） |
-| `get_ui_state` | read | 開いているパネル、フォーカス、適用中のプリセット、設定画面の開閉、現在の場面の ID。本文は返さない |
+| `get_ui_state` | read | 開いているパネル、フォーカス、適用中のプリセット、設定画面の開閉、現在の場面の ID と題（`activeScene: { id, title }`。題は既存の `get_scene` 等と同じ開示範囲）。本文は返さない |
 | `run_app_command` | ui（新設） | `agent: true` のコマンドを実行する。`risk: view` だけ |
 | `apply_layout_preset` | ui（新設） | 組み込み・ユーザー定義のプリセットを適用する。直前の配置を 1 回元に戻せる |
 | `propose_setting_change` | write | 目録の設定を変える提案。Chat に前後の値を示すカードを出し、利用者が適用する（§6） |

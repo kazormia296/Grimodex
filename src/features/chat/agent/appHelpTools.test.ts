@@ -44,13 +44,41 @@ describe("get_app_help_index", () => {
     expect(ids.every((id) => id.startsWith("command:"))).toBe(true);
   });
 
-  it("載っていない機能は 0 件と「無いと答える」案内を返す", async () => {
+  it("載っていない語は 0 件で、機能が存在しないとは断定しない案内を返す", async () => {
     const result = await getAppHelpIndexTool({
       query: "ブロックチェーン",
     });
     const content = result.content as { total: number; hint?: string };
     expect(content.total).toBe(0);
-    expect(content.hint).toContain("not documented");
+    expect(content.hint).toContain("help does not cover it");
+    expect(content.hint).toContain("do not claim the feature does not exist");
+    expect(content.hint).not.toMatch(/tell the user it does not exist/i);
+  });
+
+  it("「スナップショット」は無関係な項目を返さず、0 件の案内も断定しない", async () => {
+    const result = await getAppHelpIndexTool({ query: "スナップショット" });
+    const content = result.content as {
+      total: number;
+      items: unknown[];
+      hint?: string;
+    };
+    expect(content.total).toBe(0);
+    expect(content.items).toEqual([]);
+    expect(content.hint).toContain("do not claim the feature does not exist");
+  });
+
+  it("長すぎる query は error（索引を引かない）", async () => {
+    const result = await getAppHelpIndexTool({ query: "あ".repeat(201) });
+    expect(result.error).toContain("too long");
+    expect(
+      (await getAppHelpIndexTool({ query: "あ".repeat(200) })).error,
+    ).toBeUndefined();
+  });
+
+  it("未知の kind を summary に写すときは切り詰める", async () => {
+    const result = await getAppHelpIndexTool({ kind: "x".repeat(5000) });
+    expect(result.error).toContain("Unknown kind");
+    expect(result.summary.length).toBeLessThan(120);
   });
 
   it("未知の kind は error", async () => {
@@ -100,6 +128,12 @@ describe("get_app_help", () => {
     ).suggestions;
     expect(suggestions.map((s) => s.id)).toContain("command:focusChat");
     expect((await getAppHelpTool({})).error).toContain("Unknown help id");
+    const long = await getAppHelpTool({ id: `command:${"a".repeat(5000)}` });
+    expect(long.error).toContain("too long");
+    expect(long.summary.length).toBeLessThan(120);
+    const unknown = await getAppHelpTool({ id: `command:${"b".repeat(150)}` });
+    expect(unknown.error).toContain("Unknown help id");
+    expect(unknown.error!.length).toBeLessThan(120);
     expect((await getAppHelpTool({ id: 42 })).error).toBeTruthy();
   });
 });

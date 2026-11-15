@@ -125,8 +125,14 @@ function relatedIds(topic: HelpTopic): string[] {
 // ── 索引と検索 ───────────────────────────────────────────────────────────
 
 interface IndexEntry extends HelpIndexItem {
+  /** 題・id・keywords など、強い手がかり */
   haystack: string;
+  /** 文書の本文（参照展開後）。題・keywords より弱い手がかりとして使う */
+  bodyHaystack: string;
 }
+
+/** 本文だけに当たった語の重み（題・keywords に当たった語を 1 とする）。 */
+const BODY_MATCH_FACTOR = 0.4;
 
 function normalize(text: string): string {
   return text.normalize("NFKC").toLowerCase();
@@ -148,6 +154,7 @@ function buildEntries(): IndexEntry[] {
       haystack: normalize(
         [topic.id, topic.title, ...topic.keywords, ...topic.headings].join(" "),
       ),
+      bodyHaystack: normalize(expandRefs(topic.body, resolveRef)),
     });
   }
   for (const category of settingsCategoryList()) {
@@ -156,6 +163,7 @@ function buildEntries(): IndexEntry[] {
       title: category.label,
       kind: "settingsCategory",
       haystack: normalize(`${category.id} ${category.label}`),
+      bodyHaystack: "",
     });
   }
   for (const id of allPanelIds()) {
@@ -165,6 +173,7 @@ function buildEntries(): IndexEntry[] {
       title,
       kind: "panel",
       haystack: normalize(`${id} ${title} ${jaText(`layout.panel.${id}`)}`),
+      bodyHaystack: "",
     });
   }
   for (const id of allCommandIds()) {
@@ -184,6 +193,7 @@ function buildEntries(): IndexEntry[] {
           facts.defaultBinding,
         ].join(" "),
       ),
+      bodyHaystack: "",
     });
   }
   return entries;
@@ -193,6 +203,8 @@ const HIRAGANA = /^[ぁ-ゟ]$/;
 const MAX_QUERY_RESULTS = 25;
 /** 検索語そのものの一致の重み（2 文字の組は 1）。 */
 const WHOLE_TOKEN_WEIGHT = 3;
+/** 2 文字の組が当たる項目は、組の総数のこの割合以上（ただし 2 組以上）が当たること。 */
+const PAIR_MATCH_RATIO = 0.5;
 /** 先頭の項目の点の何割に満たないものを外すか。 */
 const RELATIVE_CUTOFF = 0.35;
 
@@ -240,7 +252,10 @@ export function listHelpIndex(
 
   // 語ごとに、当たる項目が少ないほど重く数える（どこにでもある語で順位が決まらないように）。
   const terms = queryTerms(query).map(({ term, weight }) => {
-    const df = all.filter((entry) => entry.haystack.includes(term)).length;
+    const df = all.filter(
+      (entry) =>
+        entry.haystack.includes(term) || entry.bodyHaystack.includes(term),
+    ).length;
     return {
       term,
       weight: df === 0 ? 0 : weight * Math.log(1 + all.length / df),
@@ -248,17 +263,22 @@ export function listHelpIndex(
     };
   });
   const pairCount = terms.filter((t) => !t.whole).length;
-  // 語そのものが当たるか、2 文字の組が 2 つ以上当たること（「ーン」だけが「シーン」に当たる、
-  // のような 1 組だけの偶然の一致は載せない）。組が 1 つしかない問い合わせは 1 つで足りる。
-  const requiredPairs = Math.min(2, pairCount);
+  // 語そのものが当たるか、2 文字の組が 2 つ以上、かつ組の総数の半分以上当たること
+  // （「ーン」だけが「シーン」に当たる、のような少数の偶然の一致は載せない）。
+  // 組が 1 つしかない問い合わせは 1 つで足りる。
+  const requiredPairs = Math.min(
+    pairCount,
+    Math.max(2, Math.ceil(pairCount * PAIR_MATCH_RATIO)),
+  );
   const scored = entries
     .map((entry, order) => {
       let score = 0;
       let wholeHit = false;
       let pairHits = 0;
       for (const { term, weight, whole } of terms) {
-        if (!entry.haystack.includes(term)) continue;
-        score += weight;
+        const inHaystack = entry.haystack.includes(term);
+        if (!inHaystack && !entry.bodyHaystack.includes(term)) continue;
+        score += inHaystack ? weight : weight * BODY_MATCH_FACTOR;
         if (whole) wholeHit = true;
         else pairHits += 1;
       }

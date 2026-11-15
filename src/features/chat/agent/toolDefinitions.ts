@@ -699,7 +699,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "get_app_help_index",
     description:
-      "List help entries about using the Grimodex app itself (keyboard-shortcut commands, panels, settings categories, how-to topics), one line each: id, title, kind. Use `query` to narrow. Call this first when the user asks how to do something in the app; if nothing relevant is listed, the feature is not documented, so say so instead of guessing.",
+      "List help entries about using the Grimodex app itself (keyboard-shortcut commands, panels, settings categories, how-to topics), one line each: id, title, kind. Use `query` to narrow. Call this first when the user asks how to do something in the app; if nothing relevant is listed, say the help does not cover it, but do not claim the feature does not exist, and do not guess.",
     inputSchema: {
       type: "object",
       properties: {

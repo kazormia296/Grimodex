@@ -179,8 +179,27 @@ describe("索引", () => {
     ).toContain("command:focusChat");
   });
 
-  it("載っていない機能は 0 件になる（無いと答えるため）", () => {
+  it("載っていない機能は 0 件になる", () => {
     expect(listHelpIndex({ query: "ブロックチェーン" }).total).toBe(0);
+  });
+
+  it("本文にだけ出る語（題・keywords・見出しに無い語）でも文書が当たる", () => {
+    const word = "集中モード";
+    const topic = getHelpTopics().find((t) => t.id === "layout.panels")!;
+    const head = `${topic.id} ${topic.title} ${topic.keywords.join(" ")} ${topic.headings.join(" ")}`;
+    expect(head).not.toContain(word);
+    expect(topic.body).toContain(word);
+    const hits = listHelpIndex({ query: word }).items.map((i) => i.id);
+    expect(hits).toContain("topic:layout.panels");
+    // 本文だけの一致は、題・keywords の一致より下に並ぶ（重みが低い）。
+    const ranked = listHelpIndex({ query: "プリセット" }).items.map(
+      (i) => i.id,
+    );
+    expect(ranked[0]).toBe("topic:layout.presets");
+  });
+
+  it("2 文字の組が少し重なるだけの無関係な語は返さない（スナップショット）", () => {
+    expect(listHelpIndex({ query: "スナップショット" }).items).toEqual([]);
   });
 
   it("存在しない ID に近い項目を案内する", () => {
