@@ -141,6 +141,22 @@ function beginCall(ipc) {
   return (ipc ?? []).find((entry) => entry.cmd === BEGIN) ?? null;
 }
 
+/**
+ * The revalidation of a joined Graph result. With the Native's ticket record
+ * (K6/7 (ii-b)) the observed requalification decides: `passed` is `passed`,
+ * an `unavailable` for `invalidated` is `invalidated`, anything else
+ * (`error`, `not-reached`, another reason) is unknown (`null`). Without a
+ * ticket the contract's inference `inferred` stands.
+ */
+function revalidationOf(native, inferred) {
+  const requal = native?.ticket?.requalification;
+  if (requal === undefined || requal === null) return inferred;
+  if (requal.result === "passed") return "passed";
+  if (requal.result === "unavailable" && requal.reason === "invalidated")
+    return "invalidated";
+  return null;
+}
+
 /** `graphOutcome` of the product's join → the S1b `graph` record. */
 export function graphRecord({ measure, arrival, native }) {
   const outcome = measure.graphOutcome;
@@ -153,11 +169,13 @@ export function graphRecord({ measure, arrival, native }) {
       ? arrival.resolvedAt
       : null;
   if (outcome === "graph-ready") {
-    // P3-12: the product joins a Graph result only after the return-time
-    // requalification (`assemble`), so "passed" is inferred from the join
-    // contract; what this checks is that the requalified Graph payload (with
-    // its edge count) reached the renderer. Without it the revalidation is
-    // unknown and classifyJoin stops on the joined row.
+    // K6/7 (ii-b): a ticket's requalification is observed by the Native
+    // (`native.ticket.requalification`), not inferred. A result that has no
+    // ticket (a `Cached` origin or a trace row, which the Native does not
+    // note) keeps P3-12's reading: "passed" is inferred from the join
+    // contract, and what this checks is that the requalified Graph payload
+    // (with its edge count) reached the renderer. Without the payload the
+    // revalidation is unknown and classifyJoin stops on the joined row.
     const payload =
       measure.graph !== null &&
       typeof measure.graph === "object" &&
@@ -168,7 +186,7 @@ export function graphRecord({ measure, arrival, native }) {
       reason: null,
       joined: true,
       arrivedAt: arrivedAvailable,
-      revalidation: payload ? "passed" : null,
+      revalidation: payload ? revalidationOf(native, "passed") : null,
       edgeCount: payload ? measure.graph.edgeCount : null,
       ...base,
     };
@@ -293,7 +311,6 @@ export function sampleRow({
     snapshot: snapshotOf({ measure, nativeRecord }),
     a3AtStart: a3AtStartOf(a3),
     startSlot: native.startSlot,
-    freshnessStamp: native.freshnessStamp,
     recordRead: a3 ? recordReadFromA3(a3) : null,
     graph: graphRecord({ measure, arrival, native }),
     nativeBegin: {
@@ -371,8 +388,7 @@ function k66Reading(sample, next) {
  * unavailable reasons, then — for a row with the R7 record (K6/6) — the
  * first-render sub-condition that dropped it (`first-render:<a|b|c|FR1〜FR7>:…`,
  * R-6 (a)〜(c), 変える点 1 and 3) or, for a row without it (the S1b runner,
- * K6/2 reading), not a new READY at the start, stamp mismatch, stamp without
- * comparison; then worker late (matched stamp, late), the boundary
+ * K6/2 reading), not a new READY at the start; then worker late, the boundary
  * disagreement, other. `next` is the next Graph arm sample of the phase
  * (`nextGraphArmOf`), needed for a row with the R7 record.
  */
@@ -392,9 +408,6 @@ export function windowOutCause(sample, next) {
     return "other";
   }
   if (sample.startSlot?.readyFresh !== true) return "not-ready-at-start";
-  if (sample.freshnessStamp?.matched === false) return "stamp-mismatch";
-  if (sample.freshnessStamp?.matched !== true)
-    return "stamp-without-comparison";
   if (graph.outcome === "graph-late") return "worker-late";
   if (classifyJoin(sample).disagreement) return "boundary-disagreement";
   return "other";
@@ -439,12 +452,6 @@ export function previewSummary({ samples, variant }) {
     notReadyAtStart: measured.filter(
       (row) => row.startSlot?.readyFresh !== true,
     ).length,
-    stampMismatch: measured.filter(
-      (row) => row.freshnessStamp?.matched === false,
-    ).length,
-    stampWithoutComparison: measured.filter(
-      (row) => row.freshnessStamp && row.freshnessStamp.matched === null,
-    ).length,
     busy: countBy(
       measured.filter((row) => row.graph.reason === "busy"),
       (row) => row.graph.busyCause ?? "unrecorded",
@@ -455,8 +462,7 @@ export function previewSummary({ samples, variant }) {
       (row) =>
         row.graph.outcome === "graph-late" &&
         row.graph.source === "worker" &&
-        row.startSlot?.readyFresh === true &&
-        row.freshnessStamp?.matched === true,
+        row.startSlot?.readyFresh === true,
     ).length,
     // K6/6 変える点 5: rows read by the /6 rule and rows left on K6/2's literal
     // reading (no R7 record).

@@ -34,6 +34,7 @@ import {
   K64_W_F_MS,
   K65_FREEZE,
   K66_FREEZE,
+  K67_FREEZE,
   WINDOW_SAMPLE_INTERVAL_MS,
   devVariant,
   variantByKey,
@@ -421,6 +422,7 @@ export function receiptHeadErrors(
   freeze = K64_FREEZE,
   freeze65 = K65_FREEZE,
   freeze66 = K66_FREEZE,
+  freeze67 = K67_FREEZE,
 ) {
   const errors = [];
   if (head?.k62?.freezeCommit !== K62_FREEZE.commit)
@@ -475,6 +477,27 @@ export function receiptHeadErrors(
       else if (head?.k66?.freezeCommit !== freeze66.freezeCommit)
         errors.push(
           "head.k66.freezeCommit must be the pinned K6/6 freeze commit (K6/6-N9)",
+        );
+    }
+  }
+  // K6/7 変える点 8 / K6/7-N9′: the /7 row stands on the /4, /5 and /6 bytes,
+  // so a formal Graph receipt's head also carries the K6/7 freeze commit and
+  // bytes (`head.k67`, the pinned K67_FREEZE). A receipt without it, or one
+  // started before the /7 freeze (s6r1, s7r1 and s7r2 included), is refused.
+  // A descriptor whose `freezeCommit` is `null` refuses every formal receipt
+  // (fail closed).
+  if (formalGraph || head?.k67 !== undefined) {
+    if (head?.k67?.sha256 !== freeze67.sha256)
+      errors.push("head.k67.sha256 must be the K6/7 bytes (K6/7-N9′)");
+    commitErrors(errors, head?.k67?.freezeCommit, "head.k67.freezeCommit");
+    if (formalGraph) {
+      if (freeze67.freezeCommit === null)
+        errors.push(
+          "[precheck] the K6/7 freeze commit is not pinned (変える点 8); a formal Graph receipt is refused",
+        );
+      else if (head?.k67?.freezeCommit !== freeze67.freezeCommit)
+        errors.push(
+          "head.k67.freezeCommit must be the pinned K6/7 freeze commit (K6/7-N9′)",
         );
     }
   }
@@ -782,9 +805,10 @@ function k64SettingsErrors(errors, value, bound = {}) {
  * `assertCp4Receipt` throws them as `[precheck]`.
  */
 export function validateCp4Receipt(receipt, bound = {}, deps = {}) {
-  // `deps.freeze66` is the K6/6 freeze descriptor, for the tests only (the
-  // default is the pinned K66_FREEZE).
-  const { freeze66 = K66_FREEZE } = deps;
+  // `deps.freeze66` and `deps.freeze67` are the K6/6 and K6/7 freeze
+  // descriptors, for the tests only (the defaults are the pinned K66_FREEZE
+  // and K67_FREEZE).
+  const { freeze66 = K66_FREEZE, freeze67 = K67_FREEZE } = deps;
   const errors = [];
   if (receipt?.schemaVersion !== CP4_RECEIPT_SCHEMA)
     errors.push(`schemaVersion must be ${CP4_RECEIPT_SCHEMA}`);
@@ -827,6 +851,7 @@ export function validateCp4Receipt(receipt, bound = {}, deps = {}) {
       K64_FREEZE,
       K65_FREEZE,
       freeze66,
+      freeze67,
     ),
   );
 

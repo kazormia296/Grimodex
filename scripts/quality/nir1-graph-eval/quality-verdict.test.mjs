@@ -23,6 +23,7 @@ import {
   GRAPH_EVAL_VARIANTS,
   K65_FREEZE,
   K66_FREEZE,
+  K67_FREEZE,
 } from "./constants.mjs";
 import {
   DEFAULT_ROOT,
@@ -93,14 +94,27 @@ const S4 = git(PROC_REPO, "rev-parse", "HEAD");
 // (the same bytes, a synthetic freeze commit). The pinned default refuses a
 // receipt with that synthetic head (last test).
 const TEST_K66 = { ...K66_FREEZE, freezeCommit: "6".repeat(40) };
+// K6/7 変える点 8: and the /7 freeze, held the same way.
+const TEST_K67 = { ...K67_FREEZE, freezeCommit: "7".repeat(40) };
 const buildQualityVerdict = (options) =>
-  buildVerdict({ procedureRoot: PROC_REPO, freeze66: TEST_K66, ...options });
+  buildVerdict({
+    procedureRoot: PROC_REPO,
+    freeze66: TEST_K66,
+    freeze67: TEST_K67,
+    ...options,
+  });
 const loadQualityInputs = (options) =>
-  loadInputs({ procedureRoot: PROC_REPO, freeze66: TEST_K66, ...options });
+  loadInputs({
+    procedureRoot: PROC_REPO,
+    freeze66: TEST_K66,
+    freeze67: TEST_K67,
+    ...options,
+  });
 const verifyBindings = (output, options) =>
   verifyBindingsOf(output, {
     procedureRoot: PROC_REPO,
     freeze66: TEST_K66,
+    freeze67: TEST_K67,
     ...options,
   });
 const CANDIDATE = H40("c");
@@ -124,6 +138,10 @@ const K65_HEAD = {
 const K66_HEAD = {
   freezeCommit: TEST_K66.freezeCommit,
   sha256: TEST_K66.sha256,
+};
+const K67_HEAD = {
+  freezeCommit: TEST_K67.freezeCommit,
+  sha256: TEST_K67.sha256,
 };
 
 /** The predeclared R+IR and R+IR+Graph lists of each catalog variant. */
@@ -245,6 +263,7 @@ function buildReceipts(expectations, edit = () => ({})) {
         observationPrep: { commit: S4 },
         k65: K65_HEAD,
         k66: K66_HEAD,
+        k67: K67_HEAD,
       },
       candidate: { commit: CANDIDATE },
       environment: { windowSamples: WINDOW, ownPids: [] },
@@ -1006,6 +1025,52 @@ test("K6/5 変える点 7: 手順のファイルは正式の loader で S4 の c
       /\[precheck\].*head\.k66 is not the K6\/6 freeze/u,
       name,
     );
+  // K6/7-N9′: head.k67 が無い（s6r1・s7r1・s7r2 など /7 の凍結の前に始めた run）、別の commit、別の bytes、K6/6 の凍結は /7 の行で判定しない。
+  const withK67 = (k67) =>
+    buildReceipts(expectations, (key) =>
+      key === "G-03/base"
+        ? {
+            receipt: {
+              head: {
+                observationPrep: { commit: S4 },
+                k65: K65_HEAD,
+                k66: K66_HEAD,
+                ...k67,
+              },
+            },
+          }
+        : {},
+    );
+  for (const [name, head] of [
+    [
+      "head.k67 が無い（/7 の凍結の前に始めた run。s6r1・s7r1・s7r2 を含む）",
+      {},
+    ],
+    ["別の凍結の commit", { k67: { ...K67_HEAD, freezeCommit: H40("1") } }],
+    ["別の bytes", { k67: { ...K67_HEAD, sha256: "0".repeat(64) } }],
+    ["K6/6 の凍結", { k67: K66_HEAD }],
+  ])
+    assert.throws(
+      () => verdictOf(withK67(head)),
+      /\[precheck\].*head\.k67 is not the K6\/7 freeze/u,
+      name,
+    );
+  // 既定の K67_FREEZE は固定した /7 の凍結で、試験の合成の head.k67 の receipt は判定しない。
+  assert.throws(
+    () => verdictOf(buildReceipts(expectations), { freeze67: K67_FREEZE }),
+    new RegExp(
+      `\\[precheck\\].*head\\.k67 is not the K6/7 freeze \\(${K67_FREEZE.freezeCommit}\\)`,
+      "u",
+    ),
+  );
+  // descriptor の freezeCommit が null なら、どの receipt も判定しない（fail closed）。
+  assert.throws(
+    () =>
+      verdictOf(buildReceipts(expectations), {
+        freeze67: { ...K67_FREEZE, freezeCommit: null },
+      }),
+    /\[precheck\].*head\.k67 is not the K6\/7 freeze \(null\)/u,
+  );
   // 既定の K66_FREEZE は固定した /6 の凍結で、試験の合成の head.k66 の receipt は判定しない。
   assert.throws(
     () => verdictOf(buildReceipts(expectations), { freeze66: K66_FREEZE }),

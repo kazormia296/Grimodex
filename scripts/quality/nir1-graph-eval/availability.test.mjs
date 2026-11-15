@@ -8,6 +8,7 @@ import {
   graphCaseScheduleKeys,
   joinedWithinWindow,
   mainReason,
+  readMainReason,
   k62SteadyStateInWindow,
   summarizeSteadyState,
   summarizeTrace,
@@ -89,25 +90,24 @@ test("P-4: in window = joined and arrived by t_raw_ready + D inclusive", () => {
   assert.throws(() => classifyJoin(sample(), 11), /only the sample/);
 });
 
-test("P1-4 / N-7: (a) counts only worker results that started on a fresh READY with a matching stamp", () => {
+test("P1-4 / N-7: (a) counts only worker results that started on a fresh READY (K6/7 変える点 4: no stamp clause)", () => {
   assert.equal(k62SteadyStateInWindow(sample()), true);
   assert.equal(
     k62SteadyStateInWindow(sample({ graph: { source: "cache" } })),
     false,
   );
-  // Joined in time, but the slot was not a new READY / the stamp differed.
+  // Joined in time, but the slot was not a new READY.
   assert.equal(
     k62SteadyStateInWindow(sample({ startSlot: { readyFresh: false } })),
     false,
   );
-  assert.equal(
-    k62SteadyStateInWindow(
-      sample({
-        freshnessStamp: { result: "stale", matched: false, attemptedAtNs: 95 },
-      }),
-    ),
-    false,
-  );
+  // N-g: a stamp key of an old-form record is not read (no effect either way).
+  for (const freshnessStamp of [
+    { result: "stale", matched: false, attemptedAtNs: 95 },
+    { result: "stamp0-missing", matched: null, attemptedAtNs: 95 },
+    { result: "fresh", matched: true, attemptedAtNs: 95 },
+  ])
+    assert.equal(k62SteadyStateInWindow(sample({ freshnessStamp })), true);
   assert.equal(k62SteadyStateInWindow(sample({ startSlot: null })), false);
 });
 
@@ -195,7 +195,7 @@ test("P-5: (a) pools every available variant; case rates are disclosed only", ()
   assert.equal(summarize(three).pool.exceeds, true);
 });
 
-test("P1-4: not-READY or stamp-mismatched samples joined in time are out of window and kept", () => {
+test("P1-4: not-READY samples joined in time are out of window and kept", () => {
   const rows = steadyRun((variant, repeat) =>
     variant.key !== "G-06/base"
       ? {}
@@ -203,27 +203,20 @@ test("P1-4: not-READY or stamp-mismatched samples joined in time are out of wind
         ? { graph: { source: "cache" } }
         : repeat === 2
           ? { startSlot: { readyFresh: false } }
-          : repeat === 3
-            ? {
-                freshnessStamp: {
-                  result: "stale",
-                  matched: false,
-                  attemptedAtNs: 95,
-                },
-              }
-            : {},
+          : {},
   );
   const g06 = summarize(rows).cases.find(
     (row) => row.variantKey === "G-06/base",
   );
   assert.equal(g06.n, 30);
-  assert.equal(g06.outOfWindow, 4);
+  assert.equal(g06.outOfWindow, 3);
   assert.equal(g06.cacheOrigin, 2);
   assert.equal(g06.notReadyAtStart, 1);
-  assert.equal(g06.stampMismatch, 1);
+  assert.equal(Object.hasOwn(g06, "stampMismatch"), false);
+  assert.equal(Object.hasOwn(g06, "stampResults"), false);
 });
 
-test("DR-CP4-S1C1-8: (a) counts a stamp without comparison apart and never in window", () => {
+test("K6/7 N-g: a stamp key of an old-form record does not move the (a) count", () => {
   const rows = steadyRun((variant, repeat) =>
     variant.key === "G-06/base" && repeat < 2
       ? {
@@ -238,15 +231,16 @@ test("DR-CP4-S1C1-8: (a) counts a stamp without comparison apart and never in wi
   const g06 = summarize(rows).cases.find(
     (row) => row.variantKey === "G-06/base",
   );
-  assert.equal(g06.outOfWindow, 2);
-  assert.equal(g06.stampMismatch, 2);
-  assert.equal(g06.stampWithoutComparison, 2);
+  assert.equal(g06.outOfWindow, 0);
   const retired = steadyRun((variant, repeat) =>
     variant.key === "G-06/base" && repeat === 0
       ? late("busy", { busyCause: "freshness-stamp-read-failed" })
       : {},
   );
-  assert.throws(() => summarize(retired), /never answers Busy/);
+  // DR-DBC-7: the stamp read is gone, so the cause is no longer special-cased
+  // here (an old `.node`'s record stops earlier, at native-sample.mjs, where
+  // the cause is outside the Native's vocabulary).
+  assert.doesNotThrow(() => summarize(retired));
 });
 
 test("a case with no in-window sample is quality HOLD", () => {
@@ -400,11 +394,6 @@ function trace(kind, n, mutate = () => ({})) {
         tReturn: t0 + 30,
         // Native ns (a different clock from the renderer ms above).
         recordRead: { startedAtNs: t0 * 1e6 + 1, finishedAtNs: t0 * 1e6 + 2 },
-        freshnessStamp: {
-          result: "fresh",
-          matched: true,
-          attemptedAtNs: t0 * 1e6 + 5,
-        },
         ...rest,
         graph: { arrivedAt: t0 + 15, ...graph },
       });
@@ -477,13 +466,16 @@ test("P-9 rule 7, third example: stale 12 of 20 is a freshness majority", () => 
   assert.equal(result.lapseExceeds, false);
   assert.equal(result.outOfWindowExceeds, true);
   assert.deepEqual(result.categories, { lapse: 1, other: 7, freshness: 12 });
-  assert.equal(result.mainReason, "freshness");
+  // K6/7 変える点 7 (b): rule 5's majority is "freshness"; rule 6 reads "other".
+  assert.equal(result.mainReasonBeforeReading, "freshness");
+  assert.equal(result.mainReason, "other");
 });
 
 test("P-9 rule 7, fourth example: other exactly half is no main reason", () => {
   const result = traceOf(ruleSevenThird(6, 4, 9));
   assert.deepEqual(result.categories, { lapse: 1, other: 10, freshness: 9 });
   assert.equal(result.mainReason, "none");
+  assert.equal(result.mainReasonBeforeReading, "none");
   assert.equal(mainReason({ lapse: 0, other: 10, freshness: 10 }, 20), "none");
   assert.equal(
     mainReason({ lapse: 0, other: 0, freshness: 11 }, 20),
@@ -526,97 +518,160 @@ test("U = 0 never satisfies the yardstick; Q = 199 is a trace defect, Q = 200 is
   assert.equal(traceOf(trace("browsing", 200)).status, "valid");
 });
 
-const unavailableStamp = (t0) => ({
-  ...late("graph-late"),
-  freshnessStamp: {
-    result: "unavailable",
-    matched: null,
-    attemptedAtNs: t0 * 1e6 + 5,
-  },
+test("K6/7 N-h1・N-g: a graph-late is read by the start slot alone (readyFresh false is freshness, true is other); a stamp key never moves a category", () => {
+  const stale = traceOf(
+    trace("browsing", 200, (at) =>
+      at === 7
+        ? { ...late("graph-late"), startSlot: { readyFresh: false } }
+        : {},
+    ),
+  );
+  assert.equal(stale.categories.freshness, 1);
+  assert.equal(stale.reasons["graph-late:stale-start"], 1);
+  const fresh = traceOf(
+    trace("browsing", 200, (at) =>
+      at === 7
+        ? { ...late("graph-late"), startSlot: { readyFresh: true } }
+        : {},
+    ),
+  );
+  assert.equal(fresh.categories.other, 1);
+  assert.equal(fresh.reasons["graph-late:fresh-start"], 1);
+  const missing = traceOf(
+    trace("browsing", 200, (at) =>
+      at === 7 ? { ...late("graph-late"), startSlot: null } : {},
+    ),
+  );
+  assert.equal(missing.reasons["graph-late:start-record-missing"], 1);
+  // N-g: an old-form stamp key (any result) changes neither the category nor
+  // the reason, and the record keeps no stamp field.
+  for (const freshnessStamp of [
+    { result: "unavailable", matched: null, attemptedAtNs: 1 },
+    { result: "stamp0-missing", matched: null, attemptedAtNs: 1 },
+    { result: "stale", matched: false, attemptedAtNs: 1 },
+    { result: "fresh", matched: true, attemptedAtNs: 1 },
+  ]) {
+    const withKey = traceOf(
+      trace("browsing", 200, (at) =>
+        at === 7
+          ? {
+              ...late("graph-late"),
+              startSlot: { readyFresh: false },
+              freshnessStamp,
+            }
+          : {},
+      ),
+    );
+    assert.deepEqual(withKey.categories, stale.categories);
+    assert.deepEqual(withKey.reasons, stale.reasons);
+    assert.equal(Object.hasOwn(withKey, "stampWithoutComparison"), false);
+  }
 });
 
-test("rule 4 / DR-CP4-S1C1-8: a stamp read failure is other on its own, never freshness", () => {
-  const clear = traceOf(
-    trace("browsing", 200, (at, t0) =>
-      at === 7
-        ? { ...unavailableStamp(t0), startSlot: { readyFresh: false } }
-        : {},
-    ),
-  );
-  // readyFresh false would make a compared stale start freshness; without a
-  // comparison it stays "other".
-  assert.equal(clear.categories.freshness, 0);
-  assert.equal(clear.categories.other, 1);
-  assert.equal(clear.stampWithoutComparison.unavailable.clear, 1);
-  assert.equal(clear.reasons["freshness-stamp-unavailable:clear"], 1);
-  const overlapped = traceOf(
-    trace("browsing", 200, (at, t0) =>
-      at === 7
-        ? {
-            ...unavailableStamp(t0),
-            recordRead: {
-              startedAtNs: t0 * 1e6 + 4,
-              finishedAtNs: t0 * 1e6 + 6,
-            },
-          }
-        : {},
-    ),
-  );
-  assert.equal(overlapped.categories.other, 1);
-  assert.equal(overlapped.stampWithoutComparison.unavailable.overlapped, 1);
-  // A re-query's record read also counts (rule 4: any sample of the trace).
-  const viaRequery = trace("browsing", 200, (at, t0) =>
-    at === 7 ? unavailableStamp(t0) : {},
-  );
-  viaRequery.queries.push(
-    sample({
-      queryId: "r1",
-      trigger: "graph-ready-requery",
-      recordRead: { startedAtNs: 7000e6 + 4, finishedAtNs: 7000e6 + 6 },
-    }),
-  );
-  assert.equal(
-    traceOf(viaRequery).stampWithoutComparison.unavailable.overlapped,
-    1,
-  );
-  const requeryMissing = trace("browsing", 200, (at, t0) =>
-    at === 7 ? unavailableStamp(t0) : {},
-  );
-  requeryMissing.queries.push(
-    sample({ queryId: "r2", trigger: "graph-ready-requery", recordRead: null }),
-  );
-  assert.equal(
-    traceOf(requeryMissing).stampWithoutComparison.unavailable[
-      "overlap-record-missing"
-    ],
-    1,
-  );
-  // stamp0-missing (no READY stamp to compare) is handled the same way.
-  const stamp0 = traceOf(
-    trace("browsing", 200, (at, t0) =>
-      at === 3
-        ? {
-            ...late("graph-late"),
-            startSlot: { readyFresh: false },
-            freshnessStamp: {
-              result: "stamp0-missing",
-              matched: null,
-              attemptedAtNs: t0 * 1e6 + 5,
-            },
-          }
-        : {},
-    ),
-  );
-  assert.equal(stamp0.categories.freshness, 0);
-  assert.equal(stamp0.stampWithoutComparison["stamp0-missing"].clear, 1);
+test("K6/7 N-h2: a majority of freshness is read as other, and rule 6 does not use the last branch", () => {
+  // stale 12 of 20, the lapse rate within the yardstick: main reason freshness
+  // before the reading, other after it.
+  const freshness = traceOf(ruleSevenThird(5, 2, 12));
+  assert.equal(freshness.categories.freshness, 12);
+  assert.equal(freshness.mainReasonBeforeReading, "freshness");
+  assert.equal(freshness.mainReason, "other");
+  const decision = evaluateDiagnosticCondition({
+    kind: "ii",
+    steadyState: VALID_A,
+    traces: [freshness, traceOf(ruleSevenThird(5, 2, 12))],
+  });
+  assert.equal(decision.result, "row-not-used");
+  assert.equal(decision.reason, "main-reason-other");
+  assert.deepEqual(decision.mains, ["other", "other"]);
+  assert.deepEqual(decision.mainsBeforeReading, ["freshness", "freshness"]);
 });
 
-test("DR-CP4-S1C1-8: a Busy for a stamp read is not a product answer and stops", () => {
+/**
+ * A trace of 1,200 queries (so that the lapses stay within the 1% yardstick
+ * and rule 6 reaches the main reasons) with `lapse` lapses (invalidated cache
+ * results), then `freshness` stale and `other` timeouts out of window.
+ */
+function mixedTrace({ lapse, freshness, other }) {
+  return trace("browsing", 1200, (at) => {
+    if (at < lapse)
+      return late("invalidated", {
+        source: "cache",
+        revalidation: "invalidated",
+      });
+    if (at < lapse + freshness) return late("stale");
+    if (at < lapse + freshness + other) return late("timeout");
+    return {};
+  });
+}
+
+test("K6/7 攻撃 33: 規則 6 は要約の主な理由「鮮度」（手組み・旧形）も「その他」と読み、最後の枝（条件成立）に届かない", () => {
+  const handBuilt = {
+    ...quietTrace("editing"),
+    Q: 200,
+    U: 200,
+    outOfWindowU: 20,
+    outOfWindowExceeds: true,
+    mainReason: "freshness",
+  };
+  const decision = evaluateDiagnosticCondition({
+    kind: "ii",
+    steadyState: VALID_A,
+    traces: [handBuilt, quietTrace("browsing")],
+  });
+  assert.equal(decision.result, "row-not-used");
+  assert.equal(decision.reason, "main-reason-other");
+  assert.deepEqual(decision.mains, ["other"]);
+  assert.deepEqual(decision.mainsBeforeReading, ["freshness"]);
+  // The reading is idempotent and only moves "freshness".
+  for (const [before, after] of [
+    ["freshness", "other"],
+    ["other", "other"],
+    ["lapse", "lapse"],
+    ["none", "none"],
+    [null, null],
+  ])
+    assert.equal(readMainReason(before), after);
+});
+
+test("K6/7 N-h5: freshness 9, other 8, lapse 3 has no majority; the reading does not fold freshness into other first", () => {
+  const result = traceOf(mixedTrace({ lapse: 3, freshness: 9, other: 8 }));
+  assert.equal(result.outOfWindow, 20);
+  assert.deepEqual(result.categories, { lapse: 3, other: 8, freshness: 9 });
+  assert.equal(result.mainReasonBeforeReading, "none");
+  assert.equal(result.mainReason, "none");
+  const decision = evaluateDiagnosticCondition({
+    kind: "ii",
+    steadyState: VALID_A,
+    traces: [result, traceOf(trace("browsing", 200))],
+  });
+  assert.equal(decision.result, "precheck");
+  assert.equal(decision.reason, "main-reason-lapse-or-none");
+  assert.deepEqual(decision.mains, ["none"]);
+});
+
+test("K6/7 N-h6: lapse 11 and other 9 is a lapse majority; a lapse is never folded into other", () => {
+  const result = traceOf(mixedTrace({ lapse: 11, freshness: 0, other: 9 }));
+  assert.equal(result.outOfWindow, 20);
+  assert.deepEqual(result.categories, { lapse: 11, other: 9, freshness: 0 });
+  assert.equal(result.mainReason, "lapse");
+  assert.equal(result.mainReasonBeforeReading, "lapse");
+  const decision = evaluateDiagnosticCondition({
+    kind: "ii",
+    steadyState: VALID_A,
+    traces: [result, traceOf(trace("browsing", 200))],
+  });
+  assert.equal(decision.result, "precheck");
+  assert.equal(decision.reason, "main-reason-lapse-or-none");
+  assert.deepEqual(decision.mains, ["lapse"]);
+});
+
+test("a Busy is category other whatever its cause (no stamp-read special case since DR-DBC-7)", () => {
   const retired = late("busy", { busyCause: "freshness-stamp-read-failed" });
-  assert.throws(
-    () => traceOf(trace("browsing", 200, (at) => (at === 7 ? retired : {}))),
-    /never answers Busy for a stamp read/,
+  const result = traceOf(
+    trace("browsing", 200, (at) => (at === 7 ? retired : {})),
   );
+  assert.equal(result.categories.other, 1);
+  assert.equal(result.categories.freshness, 0);
   // Other Busy causes stay "other".
   const busy = traceOf(
     trace("browsing", 200, (at) =>
@@ -630,33 +685,9 @@ test("DR-CP4-S1C1-8: a Busy for a stamp read is not a product answer and stops",
 test("DR-CP4-S1C1-10: the Native ns fields never move the window", () => {
   const base = sample();
   const shifted = sample({
-    freshnessStamp: {
-      result: "fresh",
-      matched: true,
-      attemptedAtNs: 9_999_999_999,
-    },
     recordRead: { startedAtNs: 1, finishedAtNs: 9_999_999_999 },
   });
   assert.deepEqual(classifyJoin(shifted), classifyJoin(base));
-  // A ms value in a Ns field is not a Native time: the overlap is undecidable.
-  const msInNs = traceOf(
-    trace("browsing", 200, (at, t0) =>
-      at === 7
-        ? {
-            ...unavailableStamp(t0),
-            freshnessStamp: {
-              result: "unavailable",
-              matched: null,
-              attemptedAtNs: t0 + 5.5,
-            },
-          }
-        : {},
-    ),
-  );
-  assert.equal(
-    msInNs.stampWithoutComparison.unavailable["overlap-record-missing"],
-    1,
-  );
 });
 
 test("K6/2 の文のまま（批准 5 を欠く候補、変える点 12）: graph-late は開始時の slot と stamp で分ける。K6/4 の候補では使わない（followup.test.mjs の N33）", () => {
@@ -883,10 +914,8 @@ test("rule 6: lapse-rate precheck happens only inside a diagnostic, in order", (
   const none = traceOf(ruleSevenThird(6, 4, 9));
   const diagnose = (traces, steadyState = VALID_A) =>
     evaluateDiagnosticCondition({ kind: "ii", steadyState, traces }).result;
-  assert.equal(
-    diagnose([freshness, browsing]),
-    "condition-met-confirmation-required",
-  );
+  // K6/7 変える点 7 (b): the freshness majority is read as "other".
+  assert.equal(diagnose([freshness, browsing]), "row-not-used");
   assert.equal(diagnose([freshness, none]), "precheck");
   const other = traceOf(ruleSevenThird(9, 6, 4));
   assert.equal(other.mainReason, "other");

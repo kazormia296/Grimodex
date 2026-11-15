@@ -1123,6 +1123,8 @@ test("再レビュー P3: 正式の run は --variant と --dev-g01-fallback を
     "k",
     "--k66-commit",
     "k",
+    "--k67-commit",
+    "k",
     "--product-receipt",
     "pr.json",
     // S5-B (DR-CP4-O-16): a formal Graph-arm run names ④'s SP-P4 receipt.
@@ -1298,6 +1300,8 @@ test("S5-B 統合: Graph を要求する run の種類（gold、negative）は �
     "k",
     "--k66-commit",
     "k",
+    "--k67-commit",
+    "k",
     "--product-receipt",
     "pr.json",
   ];
@@ -1458,6 +1462,8 @@ function formalArgs(run, extra = []) {
     "4".repeat(40),
     "--k66-commit",
     "4".repeat(40),
+    "--k67-commit",
+    "4".repeat(40),
     "--product-receipt",
     path.join(inputs, "pr.json"),
     "--sp-p4-receipt",
@@ -1486,6 +1492,10 @@ function formalDeps(log, overrides = {}) {
     },
     readK66Head: () => {
       log.push("k66");
+      return {};
+    },
+    readK67Head: () => {
+      log.push("k67");
       return {};
     },
     admitFormal: () => {
@@ -1609,6 +1619,7 @@ test("レビュー P2-β (a): 13 variant の gold と negative は ④ の SP-P4
     "k64",
     "k65",
     "k66",
+    "k67",
     "admit",
     "gate",
   ]);

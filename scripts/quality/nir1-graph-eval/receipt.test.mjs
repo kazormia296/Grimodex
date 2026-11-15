@@ -11,6 +11,7 @@ import {
   K64_FREEZE,
   K65_FREEZE,
   K66_FREEZE,
+  K67_FREEZE,
   variantByKey,
 } from "./constants.mjs";
 import {
@@ -148,10 +149,16 @@ const K66_HEAD = {
   freezeCommit: TEST_K66.freezeCommit,
   sha256: TEST_K66.sha256,
 };
+/** K6/7 変える点 8: the same, for the /7 freeze (a synthetic freeze commit). */
+const TEST_K67 = { ...K67_FREEZE, freezeCommit: H40("7") };
+const K67_HEAD = {
+  freezeCommit: TEST_K67.freezeCommit,
+  sha256: TEST_K67.sha256,
+};
 const validateCp4Receipt = (value, bound) =>
-  validateReceipt(value, bound, { freeze66: TEST_K66 });
+  validateReceipt(value, bound, { freeze66: TEST_K66, freeze67: TEST_K67 });
 const assertCp4Receipt = (value, bound) =>
-  assertReceipt(value, bound, { freeze66: TEST_K66 });
+  assertReceipt(value, bound, { freeze66: TEST_K66, freeze67: TEST_K67 });
 /** E-1: the error the test-only 批准 5 evidence always gives. */
 const TEST_ONLY_EVIDENCE = /test-only evidence \(test-support\.mjs\)/;
 /**
@@ -192,6 +199,7 @@ function receipt(overrides = {}, { recompute = true } = {}) {
       k64: K64_HEAD,
       k65: K65_HEAD,
       k66: K66_HEAD,
+      k67: K67_HEAD,
       runStartedAtUtc: "2026-10-25T01:02:03.456Z",
       observationPrep: { commit: H40("a"), freezeRecordSha256: H64("b") },
       traceFile: null,
@@ -456,6 +464,69 @@ test("K6/6-N9: 正式の Graph の receipt の先頭は /6 の凍結（head.k66�
   assert.deepEqual(
     receiptHeadErrors(noK66, "g-case-gold", "dev").filter((error) =>
       /k66|K6\/6/u.test(error),
+    ),
+    [],
+  );
+});
+
+test("K6/7-N9′: 正式の Graph の receipt の先頭は /7 の凍結（head.k67）を持ち、無い・違う・/7 の凍結の前に始めた run（s6r1・s7r1・s7r2 を含む）の receipt は拒む。既定は固定した /7 の凍結で、null の descriptor はどの正式の receipt も拒む", () => {
+  const head = receipt().head;
+  const { k67, ...noK67 } = head;
+  assert.deepEqual(k67, K67_HEAD);
+  assert.equal(
+    K67_FREEZE.freezeCommit,
+    "b9559a220c88eb2e7073b016244a9c45edf9b3be",
+    "/7 is confirmed and frozen",
+  );
+  // /6 の凍結までの先頭（s7r1・s7r2 の receipt の形）。
+  assert.match(errorsOf(receipt({ head: noK67 })), /head\.k67\.sha256/);
+  assert.match(
+    errorsOf(receipt({ head: { ...head, k67: { ...k67, sha256: H64("0") } } })),
+    /K6\/7 bytes/,
+  );
+  for (const other of [H40("4"), K66_FREEZE.freezeCommit])
+    assert.match(
+      errorsOf(
+        receipt({ head: { ...head, k67: { ...k67, freezeCommit: other } } }),
+      ),
+      /must be the pinned K6\/7 freeze commit/,
+    );
+  const k67Errors = (value, freeze67) =>
+    receiptHeadErrors(
+      value,
+      "g-case-gold",
+      "frozen",
+      K64_FREEZE,
+      K65_FREEZE,
+      TEST_K66,
+      freeze67,
+    ).filter((error) => /k67|K6\/7/u.test(error));
+  // 既定（固定した /7 の凍結）: 試験の合成の commit の head は拒む。
+  assert.match(
+    k67Errors(head).join(" | "),
+    /head\.k67\.freezeCommit must be the pinned K6\/7 freeze commit/,
+  );
+  // 固定した凍結そのものを書いた head は通る。
+  assert.deepEqual(
+    k67Errors({
+      ...head,
+      k67: {
+        freezeCommit: K67_FREEZE.freezeCommit,
+        sha256: K67_FREEZE.sha256,
+      },
+    }),
+    [],
+  );
+  // descriptor の freezeCommit が null なら fail closed。
+  assert.match(
+    k67Errors(head, { ...K67_FREEZE, freezeCommit: null }).join(" | "),
+    /\[precheck\] the K6\/7 freeze commit is not pinned/,
+  );
+  assert.deepEqual(k67Errors(head, TEST_K67), []);
+  // 予告（dev）は /7 の先頭を要しない。
+  assert.deepEqual(
+    receiptHeadErrors(noK67, "g-case-gold", "dev").filter((error) =>
+      /k67|K6\/7/u.test(error),
     ),
     [],
   );

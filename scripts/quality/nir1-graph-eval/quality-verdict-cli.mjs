@@ -32,6 +32,7 @@ import {
   K62_FREEZE,
   K65_FREEZE,
   K66_FREEZE,
+  K67_FREEZE,
 } from "./constants.mjs";
 import { loadProcedureFile } from "./procedure-file.mjs";
 import {
@@ -263,6 +264,9 @@ export function loadQualityInputs({
   // The K6/6 freeze the receipts' head.k66 is held to (the tests' descriptor;
   // the default is the pinned K66_FREEZE).
   freeze66 = K66_FREEZE,
+  // The K6/7 freeze the receipts' head.k67 is held to (the tests' descriptor;
+  // the default is the pinned K67_FREEZE).
+  freeze67 = K67_FREEZE,
 }) {
   const graphManifest = readJson(path.join(root, GRAPH_MANIFEST));
   const retrievalManifest = readJson(path.join(root, RETRIEVAL_MANIFEST));
@@ -313,6 +317,18 @@ export function loadQualityInputs({
     )
       throw precheck(
         `${receipt.runId}: the receipt's head.k66 is not the K6/6 freeze (${String(freeze66.freezeCommit)}); a run that started before the /6 freeze is not judged by the /6 row`,
+      );
+    // K6/7 変える点 8 / K6/7-N9′: and the K6/7 freeze (K67_FREEZE). The /7 row
+    // judges only a run that started after the /7 freeze (s6r1, s7r1 and
+    // s7r2 are not judged; a receipt without head.k67 is refused); a `null`
+    // freezeCommit matches nothing (fail closed).
+    if (
+      freeze67.freezeCommit === null ||
+      receipt.head?.k67?.freezeCommit !== freeze67.freezeCommit ||
+      receipt.head?.k67?.sha256 !== freeze67.sha256
+    )
+      throw precheck(
+        `${receipt.runId}: the receipt's head.k67 is not the K6/7 freeze (${String(freeze67.freezeCommit)}); a run that started before the /7 freeze is not judged by the /7 row`,
       );
   }
   let blocked = null;

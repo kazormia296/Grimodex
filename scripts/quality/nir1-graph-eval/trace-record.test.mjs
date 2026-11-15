@@ -140,11 +140,6 @@ function queryParts(index, { child = true, extraBegin = false } = {}) {
         ...k64NativeRecord().ticket,
         tTicketNs: ns(B + 15.5),
         tSettledNs: ns(B + 64),
-        freshnessStamp: {
-          attemptedAtNs: ns(B + 15.2),
-          result: "fresh",
-          matched: true,
-        },
       },
     }),
   ];
@@ -436,7 +431,7 @@ module.exports = {
   nir1GraphEvalClockNs() { t += 10; return String(t); },
   nir1GraphEvalDiagnostics() {
     calls += 1; if (calls === 3) late += 1; t += 5;
-    return JSON.stringify({ begins: 2, cacheHits: 0, lateCached: late, quarantines: 0, deferredReleased: 0, deferredExpired: 0, deferredDropped: 0, staleReadyRetired: 0, prepareFailures: 0, driftAtQuery: 0, stamp0Missing: 0, clockNs: t });
+    return JSON.stringify({ begins: 2, cacheHits: 0, lateCached: late, quarantines: 0, deferredReleased: 0, deferredExpired: 0, deferredDropped: 0, staleReadyRetired: 0, prepareFailures: 0, driftAtQuery: 0, clockNs: t });
   },
 };`,
   );

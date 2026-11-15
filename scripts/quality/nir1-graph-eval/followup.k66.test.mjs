@@ -5,8 +5,9 @@
 // FR-1〜FR-8 の下位条件を、R1 の下の現実の形の記録で期待どおりに分けることを
 // 求める。記録はすべて作り物で、凍結した G-case の材料は読まない。基の形は
 // test-support.mjs の `k66Sample`（`startSlot.kind: empty`、`readyFresh: false`、
-// stamp `stamp0-missing`、begin `["pending"]`）で、K6/5-P1 の記録
-// （`readyFresh: true`、`fresh`。R1 の下では起きない）は使わない。
+// begin `["pending"]`。K6/7 で stamp の key は無く、ticket は (ii-b) の記録を持つ）で、K6/5-P1 の記録
+// （`readyFresh: true`。R1 の下では起きない）は使わない。K6/7（親の鮮度 stamp の削除）の負例
+// N-e*・N-f*・N-g もこのファイルに置く。
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
@@ -64,13 +65,19 @@ const FOLLOW_UP_CHILD = () => k64Sample().followUp.child;
 
 // ---- Positive ---------------------------------------------------------------
 
-test("K6/6-P1: R1 の下の現実の形（slot empty、readyFresh false、begin [pending]、counter の差分 1、通知・子・IR の再試行なし）の親は、stamp が fresh でも stamp0-missing でも first-render の窓内で、子は出ない", () => {
+test("K6/6-P1・K6/7 N-g: R1 の下の現実の形（slot empty、readyFresh false、begin [pending]、counter の差分 1、通知・子・IR の再試行なし）の親は first-render の窓内で、子は出ない。旧形の stamp の key は結果を変えない", () => {
   for (const arrivedAt of [100 + 11, 100 + 25, 100 + GRAPH_EVAL_D_MS])
     for (const freshnessStamp of [
+      undefined,
       { result: "fresh", matched: true, attemptedAtNs: 95_000 },
       { result: "stamp0-missing", matched: null, attemptedAtNs: 95_000 },
+      { result: "unavailable", matched: null, attemptedAtNs: 95_000 },
+      { result: "stale", matched: false, attemptedAtNs: 95_000 },
     ]) {
-      const row = k66Sample({ graph: { arrivedAt }, freshnessStamp });
+      const row = k66Sample({
+        graph: { arrivedAt },
+        ...(freshnessStamp === undefined ? {} : { freshnessStamp }),
+      });
       assert.equal(row.startSlot.readyFresh, false);
       assert.equal(row.startSlot.kind, "empty");
       const result = counted(row);
@@ -165,13 +172,13 @@ test("K6/6-P4: phase の最後の Graph arm の sample は (c) を当てられ�
   );
 });
 
-test("K6/6-P5: trace の record（dPrimeCounters が従来の 7 key で preparesStarted・preparesReady を持たない）は X10 の記録の欠けにならない。定常状態では欠けになる", () => {
+test("K6/6-P5: trace の record（dPrimeCounters が従来の 6 key〔K6/7 で stamp0Missing を外した〕で preparesStarted・preparesReady を持たない）は X10 の記録の欠けにならない。定常状態では欠けになる", () => {
   const sevenKeys = Object.fromEntries(
     Object.entries(followUpRecord().dPrimeCounters).filter(
       ([key]) => key !== "preparesStarted" && key !== "preparesReady",
     ),
   );
-  assert.equal(Object.keys(sevenKeys).length, 7);
+  assert.equal(Object.keys(sevenKeys).length, 6);
   const trace = k64Sample({}, { dPrimeCounters: sevenKeys });
   assert.deepEqual(missingR7(trace, "trace"), []);
   assert.deepEqual(
@@ -248,70 +255,142 @@ test("K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady
   );
 });
 
-test("K6/6-N3a: stamp が unavailable の親は数えない（分母に残る）", () => {
+/** (ii-b) の記録を持つ親の ticket（available、clear、passed、returned）。 */
+const parentTicket = (overrides = {}) => ({
+  settled: true,
+  outcome: "available",
+  reason: null,
+  disposition: "used",
+  busyCause: null,
+  workerDrift: { result: "clear", cause: null },
+  requalification: { result: "passed", reason: null, returned: true },
+  ...overrides,
+});
+const withTicket = (overrides) =>
+  k66Sample({}, { parent: { ticket: parentTicket(overrides) } });
+/** (ii-b) の key を持たない ticket（旧 .node の形）。 */
+const ticketWithout = (...keys) => {
+  const ticket = parentTicket();
+  for (const key of keys) delete ticket[key];
+  return k66Sample({}, { parent: { ticket } });
+};
+
+test("K6/7 N-e1（N3c′）: 親の ticket が available でない記録は FR3:ticket-not-available で数えない（合流した親では起きない空の検査。②-1 の ticket の項目）", () => {
   notCounted(
-    k66Sample({
-      freshnessStamp: {
-        result: "unavailable",
-        matched: null,
-        attemptedAtNs: 95_000,
-      },
+    withTicket({
+      outcome: "unavailable",
+      reason: "invalidated",
+      disposition: null,
     }),
-    "FR3:stamp-unavailable",
-  );
-});
-
-test("K6/6-N3b: stamp の記録が null の親は数えない", () => {
-  notCounted(k66Sample({ freshnessStamp: null }), "FR3:stamp-missing");
-});
-
-test("K6/6-N3c: stamp0-missing で親の ticket が available でない記録は数えない（合流した親では起きない空の検査。記録の誤りを見つけるために置く）", () => {
-  notCounted(
-    k66Sample(
-      {},
-      {
-        parent: {
-          ticket: {
-            settled: true,
-            outcome: "unavailable",
-            reason: "invalidated",
-            disposition: null,
-            busyCause: null,
-          },
-        },
-      },
-    ),
     "FR3:ticket-not-available",
   );
 });
 
-test("K6/6-N3d: stamp0-missing で窓内に合流しても Graph の outcome が graph-ready でない記録（joined なのに graph-late）は数えない（② の合流の項目。first-render の下位条件としては FR-3 だけを欠く）", () => {
-  const result = run(k66Sample({ graph: { outcome: "graph-late" } }));
-  assert.equal(result.firstRender, false);
-  assert.deepEqual(result.firstRenderFails, ["FR3:not-joined"]);
-});
-
-test("K6/6-N3e: stamp0-missing で edgeCount が整数でない親は数えない（② の項目。FR-7 の no-edge も同時に落ちるので理由は 2 つ）", () => {
-  const result = run(k66Sample({ graph: { edgeCount: null } }));
-  assert.equal(result.firstRender, false);
-  assert.ok(result.firstRenderFails.includes("FR3:edge-count-not-integer"));
-  assert.ok(result.firstRenderFails.includes("FR7:no-edge"));
-});
-
-test("K6/6-N4: 窓内に合流した親の stamp が stale なら [artifact]（製品は stale で query を投げず、合流させない）", () => {
+test("K6/7 N-e2・N4′: 窓内に合流した親の worker の drift の検査が「検出」なら [artifact]（製品は drift で合流させない）", () => {
   assert.throws(
     () =>
       run(
-        k66Sample({
-          freshnessStamp: {
-            result: "stale",
-            matched: false,
-            attemptedAtNs: 95_000,
-          },
+        withTicket({
+          workerDrift: { result: "drift", cause: "registration-drift" },
         }),
       ),
-    /\[artifact\].*stale/u,
+    /\[artifact\].*worker drift check `drift`/u,
   );
+});
+
+test("K6/7 N-e3: 窓内に合流した親の再検証が unavailable・error・not-reached なら [artifact]（FR3 の理由では数えない）", () => {
+  for (const result of ["unavailable", "error", "not-reached"])
+    assert.throws(
+      () =>
+        run(
+          withTicket({
+            requalification: {
+              result,
+              reason: result === "unavailable" ? "invalidated" : null,
+              returned: false,
+            },
+          }),
+        ),
+      /\[artifact\].*requalification/u,
+      result,
+    );
+});
+
+test("K6/7 N-e4: 宣言が used でない・graph-ready で joined でない・edgeCount が整数でない親は FR3:declaration-not-used／FR3:not-joined／FR3:edge-count-not-integer", () => {
+  const unused = run(k66Sample({}, { parent: { declaration: "unused" } }));
+  assert.ok(unused.firstRenderFails.includes("FR3:declaration-not-used"));
+  const late = run(k66Sample({ graph: { outcome: "graph-late" } }));
+  assert.equal(late.firstRender, false);
+  assert.deepEqual(late.firstRenderFails, ["FR3:not-joined"]);
+  const edge = run(k66Sample({ graph: { edgeCount: null } }));
+  assert.equal(edge.firstRender, false);
+  assert.ok(edge.firstRenderFails.includes("FR3:edge-count-not-integer"));
+  assert.ok(edge.firstRenderFails.includes("FR7:no-edge"));
+});
+
+test("K6/7 N-e5: 窓内に合流した親の worker の drift の検査が not-evaluated・not-reached なら [artifact]（clear でない）", () => {
+  for (const result of ["not-evaluated", "not-reached"])
+    assert.throws(
+      () =>
+        run(
+          withTicket({ workerDrift: { result, cause: "worker-unavailable" } }),
+        ),
+      /\[artifact\].*worker drift check/u,
+      result,
+    );
+});
+
+test("K6/7 N-e6: 再検証の記録の returned が true でない合流した親は [artifact]（result は passed）", () => {
+  assert.throws(
+    () =>
+      run(
+        withTicket({
+          requalification: { result: "passed", reason: null, returned: false },
+        }),
+      ),
+    /\[artifact\].*payload did not go out/u,
+  );
+});
+
+test("K6/7 N-f1・N3b′: (ii-b) の記録が窓内に合流した親に無い（片方でも）なら [artifact]", () => {
+  for (const keys of [
+    ["workerDrift"],
+    ["requalification"],
+    ["workerDrift", "requalification"],
+  ])
+    assert.throws(
+      () => run(ticketWithout(...keys)),
+      /\[artifact\].*lacks/u,
+      keys.join("+"),
+    );
+});
+
+test("K6/7 N-f2: (ii-b) の記録の形が違う（語彙の外、cause・reason が null でも文字列でもない、returned が boolean でない）なら [artifact]", () => {
+  for (const overrides of [
+    { workerDrift: { result: "stale", cause: null } },
+    { workerDrift: { result: "clear", cause: 7 } },
+    { workerDrift: { result: "clear" } },
+    { requalification: { result: "ok", reason: null, returned: true } },
+    { requalification: { result: "passed", reason: 5, returned: true } },
+    { requalification: { result: "passed", reason: null, returned: "yes" } },
+    { requalification: { result: "passed", reason: null } },
+  ])
+    assert.throws(() => run(withTicket(overrides)), /\[artifact\]/u);
+});
+
+test("K6/7 N-g: 旧形の record（stamp の key がある。fresh・stamp0-missing・unavailable・stale）は stamp の key を読まず、(ii-b) の field が無ければ [artifact]", () => {
+  for (const freshnessStamp of [
+    { result: "fresh", matched: true, attemptedAtNs: 95_000 },
+    { result: "stamp0-missing", matched: null, attemptedAtNs: 95_000 },
+    { result: "unavailable", matched: null, attemptedAtNs: 95_000 },
+    { result: "stale", matched: false, attemptedAtNs: 95_000 },
+  ]) {
+    // (ii-b) あり: stamp の key は結果を変えない。
+    counted(k66Sample({ freshnessStamp }));
+    // (ii-b) なし（旧 .node の形）: [artifact]。
+    const old = ticketWithout("workerDrift", "requalification");
+    assert.throws(() => run({ ...old, freshnessStamp }), /\[artifact\]/u);
+  }
 });
 
 test("K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない", () => {
@@ -458,20 +537,7 @@ test("K6/6-N11b: FR-1 joined なのに revalidation が null なら classifyJoin
   );
 });
 
-test("K6/6-N12a: FR-5 宣言が used でなければ数えない（stamp が fresh なら FR-5 だけを欠く。stamp0-missing では FR-3 ② の宣言の検査も同時に落ちる）", () => {
-  notCounted(
-    k66Sample(
-      {
-        freshnessStamp: {
-          result: "fresh",
-          matched: true,
-          attemptedAtNs: 95_000,
-        },
-      },
-      { parent: { declaration: "unused" } },
-    ),
-    "FR5:declaration-unused",
-  );
+test("K6/6-N12a: FR-5 宣言が used でなければ数えない（K6/7 では FR-3 ② の宣言の検査も同時に落ちる）", () => {
   const both = run(k66Sample({}, { parent: { declaration: "unused" } }));
   assert.equal(both.firstRender, false);
   assert.deepEqual(both.firstRenderFails, [
@@ -501,7 +567,7 @@ test("K6/6-N12c: FR-5 親の窓が 40 ms でなければ [precheck]", () => {
 
 // ---- 集計と品質 --------------------------------------------------------------
 
-test("K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-render）は欠落 0 で、開示に K6/2 の字義の件数と stamp の内訳を載せる", () => {
+test("K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-render）は欠落 0 で、開示に K6/2 の字義の件数を載せる。stamp の内訳は載せない（K6/7）", () => {
   const summary = summarizeK64(k66Run());
   assert.equal(summary.status, "valid", JSON.stringify(summary.invalid));
   assert.equal(summary.regime, "k64");
@@ -512,7 +578,8 @@ test("K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 meas
     // K6/2 の字義では R1 の下では 1 件も数えられない（開示）。
     assert.equal(entry.inWindow, 0);
     assert.equal(entry.notReadyAtStart, entry.n);
-    assert.equal(entry.stampResults["stamp0-missing"], entry.n);
+    assert.equal(Object.hasOwn(entry, "stampResults"), false);
+    assert.equal(Object.hasOwn(entry, "stampMismatch"), false);
     assert.equal(entry.k64.firstRenderCandidates, entry.n);
     assert.equal(entry.k64.firstRenderNotCounted, 0);
     assert.equal(entry.k64.contributedNotCounted, 0);
@@ -546,14 +613,16 @@ test("K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条
           ]
         : repeat === 4
           ? [
+              {},
               {
-                freshnessStamp: {
-                  result: "unavailable",
-                  matched: null,
-                  attemptedAtNs: 95_000,
+                parent: {
+                  ticket: parentTicket({
+                    outcome: "unavailable",
+                    reason: "invalidated",
+                    disposition: null,
+                  }),
                 },
               },
-              {},
             ]
           : [{}, {}],
     ),
@@ -584,7 +653,7 @@ test("K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条
   assert.equal(summary.k64.k62OutOfWindowRate, 1);
 });
 
-test("K6/6-N8: 窓内に合流した stamp0-missing の親だけを分母から外した samples は拒否する（(iii′)）", () => {
+test("K6/6-N8・K6/7 N8′: 窓内に合流した親のうち ② を満たした親だけを分母から外した samples は拒否する（(iii′)）", () => {
   const rows = k66Run().filter(
     (row) =>
       !(

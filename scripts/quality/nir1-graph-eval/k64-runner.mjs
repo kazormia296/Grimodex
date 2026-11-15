@@ -202,6 +202,7 @@ export function admitK64Run(input) {
       k64Commit: input.k64Commit,
       k65Commit: input.k65Commit,
       k66Commit: input.k66Commit,
+      k67Commit: input.k67Commit,
       // P2-4: the keep test ran before (async) and its evidence is sealed.
       ...(input.ratification5 !== undefined
         ? { ratification5: input.ratification5 }

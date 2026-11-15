@@ -49,6 +49,9 @@ test("R7: hook の消費者の観測から、分類器が F1〜F7 を判定で�
     reason: null,
     disposition: "unused",
     busyCause: null,
+    // K6/7 (ii-b): the Native's observation, carried as recorded.
+    workerDrift: { result: "clear", cause: null },
+    requalification: { result: "passed", reason: null, returned: true },
   });
   // 子: 契機の印と窓は製品の timing、到着は wrapper の層の時刻、commit は React。
   assert.equal(child.generation, 2);
@@ -647,11 +650,6 @@ function firstRenderInput(overrides = {}) {
         ticket: {
           ...nativeRecord().ticket,
           disposition: "used",
-          freshnessStamp: {
-            attemptedAtNs: 15_000_000,
-            result: "stamp0-missing",
-            matched: null,
-          },
         },
       }),
     ],
