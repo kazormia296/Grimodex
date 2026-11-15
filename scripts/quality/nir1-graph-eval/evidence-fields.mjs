@@ -28,19 +28,28 @@ export function sha256Text(text) {
   return createHash("sha256").update(String(text), "utf8").digest("hex");
 }
 
-const utf16Length = (text) => String(text).length;
+/**
+ * The hash and the length of a text the page returned. A value that is not a
+ * string (a field the page did not return) is `null`, never the hash of an
+ * empty text: the verdict holds on a `null`, and a made-up `sha256("")` would
+ * read as a measured value (prereg v3 §2.0 hold).
+ */
+const hashOf = (text) => (typeof text === "string" ? sha256Text(text) : null);
+const lengthOf = (text) => (typeof text === "string" ? text.length : null);
+/** `undefined` (a field the page did not return) is a `null` in the receipt. */
+const orNull = (value) => (value === undefined ? null : value);
 
 // ---------------------------------------------------------------------------
 // node side: the page's plain values → hashes (the plain text is dropped here)
 
 function hashEdges(list) {
   return (Array.isArray(list) ? list : []).map((edge) => ({
-    from: edge?.from?.entityId ?? null,
-    to: edge?.to?.entityId ?? null,
+    from: orNull(edge?.from?.entityId),
+    to: orNull(edge?.to?.entityId),
     evidence: (Array.isArray(edge?.evidence) ? edge.evidence : []).map(
       (row) => ({
-        evidenceId: row?.evidenceId ?? null,
-        quoteSha256: sha256Text(row?.quote ?? ""),
+        evidenceId: orNull(row?.evidenceId),
+        quoteSha256: hashOf(row?.quote),
       }),
     ),
   }));
@@ -57,15 +66,15 @@ export function hashGraphEvidence(raw) {
   return {
     graphOnly: only
       ? {
-          sceneId: only.sceneId,
-          hop: only.hop,
-          pinEntityId: only.pinEntityId,
+          sceneId: orNull(only.sceneId),
+          hop: orNull(only.hop),
+          pinEntityId: orNull(only.pinEntityId),
           canonicalRange: {
-            start: only.canonicalRange?.start,
-            end: only.canonicalRange?.end,
+            start: orNull(only.canonicalRange?.start),
+            end: orNull(only.canonicalRange?.end),
           },
-          excerptSha256: sha256Text(only.excerpt ?? ""),
-          excerptUtf16Length: utf16Length(only.excerpt ?? ""),
+          excerptSha256: hashOf(only.excerpt),
+          excerptUtf16Length: lengthOf(only.excerpt),
           edges: hashEdges(only.edges),
         }
       : null,
@@ -73,9 +82,9 @@ export function hashGraphEvidence(raw) {
       ? raw.pathAttachments
       : []
     ).map((row) => ({
-      sceneId: row.sceneId,
-      hop: row.hop,
-      edges: hashEdges(row.edges),
+      sceneId: orNull(row?.sceneId),
+      hop: orNull(row?.hop),
+      edges: hashEdges(row?.edges),
     })),
   };
 }
@@ -84,10 +93,10 @@ export function hashGraphEvidence(raw) {
 export function hashRowTexts(rows) {
   if (!Array.isArray(rows)) return null;
   return rows.map((row) => ({
-    sceneId: row.sceneId,
-    kind: row.kind,
-    excerptSha256: sha256Text(row.text ?? ""),
-    excerptUtf16Length: utf16Length(row.text ?? ""),
+    sceneId: orNull(row?.sceneId),
+    kind: orNull(row?.kind),
+    excerptSha256: hashOf(row?.text),
+    excerptUtf16Length: lengthOf(row?.text),
   }));
 }
 
@@ -119,13 +128,17 @@ export function hashRevisionRead({
     ...head,
     evidence: entities.flatMap((entity) =>
       (Array.isArray(entity?.evidence) ? entity.evidence : []).map((row) => ({
-        evidenceId: row.evidenceId,
-        sourceRef: SOURCE_REF.test(String(row.sourceRef))
-          ? row.sourceRef
-          : "unrepresentable",
-        startUtf16: row.startUtf16,
-        endUtf16: row.endUtf16,
-        quoteSha256: sha256Text(row.quote ?? ""),
+        evidenceId: orNull(row?.evidenceId),
+        sourceRef:
+          row?.sourceRef == null
+            ? null
+            : typeof row.sourceRef === "string" &&
+                SOURCE_REF.test(row.sourceRef)
+              ? row.sourceRef
+              : "unrepresentable",
+        startUtf16: orNull(row?.startUtf16),
+        endUtf16: orNull(row?.endUtf16),
+        quoteSha256: hashOf(row?.quote),
       })),
     ),
   };
@@ -260,7 +273,11 @@ function list(shape, value, at) {
 /** The errors of every new field of a receipt (shapes only; no fixture). */
 export function evidenceFieldErrors(receipt) {
   const errors = [];
-  if (receipt?.evidenceObservation !== undefined)
+  // `null` is "not observed" (a negative run, a variant that does not read):
+  // the verdict holds on it, and the shape check has nothing to look at. Only
+  // a value that is there is checked (an `undefined` and a `null` are the
+  // same absence).
+  if (receipt?.evidenceObservation != null)
     errors.push(
       ...check(
         "observation",
@@ -313,29 +330,41 @@ export function plaintextNeedlesOf(fixture) {
 }
 
 /**
+ * The page-only fields that carry plain text (`graphEvidenceOf`'s
+ * `evidenceRaw`, `rowTextsOf`'s `rowTexts`): Node replaces them with their
+ * hashes (`hashFetchEvidence`), so a key of this name anywhere in a receipt
+ * means the plain value escaped the hashing.
+ */
+const PAGE_ONLY_KEYS = Object.freeze(["evidenceRaw", "rowTexts"]);
+
+/**
  * Prereg v3 §4: the errors of a receipt that carries plain text. (ii) any
  * string anywhere in the receipt contains one of `needles` as a substring;
  * (iii) an Evidence JSON (an object with both `evidenceId` and `quote`)
- * appears anywhere. The shapes of the new fields (i) are `evidenceFieldErrors`.
- * `needles` is required: a caller that has none cannot call the receipt
- * clean.
+ * appears anywhere; and a page-only plain field (`evidenceRaw`, `rowTexts`)
+ * appears anywhere as a key, whatever its value. The shapes of the new fields
+ * (i) are `evidenceFieldErrors`. `needles` is required: a caller that has
+ * none cannot call the receipt clean (the key and Evidence-JSON checks still
+ * run).
  */
 export function plaintextErrors(receipt, needles) {
-  if (!Array.isArray(needles) || needles.length === 0)
-    return [
-      "[precheck] the plain-text scan has no fixture texts to look for (the receipt cannot be called free of plain text)",
-    ];
   const errors = [];
+  const hasNeedles = Array.isArray(needles) && needles.length > 0;
+  if (!hasNeedles)
+    errors.push(
+      "[precheck] the plain-text scan has no fixture texts to look for (the receipt cannot be called free of plain text)",
+    );
   const stack = [{ node: receipt, at: "$" }];
   const seen = new Set();
   while (stack.length > 0) {
     const { node, at } = stack.pop();
     if (typeof node === "string") {
-      for (const needle of needles)
-        if (node.includes(needle)) {
-          errors.push(`${at} contains a fixture text in clear`);
-          break;
-        }
+      if (hasNeedles)
+        for (const needle of needles)
+          if (node.includes(needle)) {
+            errors.push(`${at} contains a fixture text in clear`);
+            break;
+          }
       continue;
     }
     if (node === null || typeof node !== "object" || seen.has(node)) continue;
@@ -348,8 +377,10 @@ export function plaintextErrors(receipt, needles) {
       errors.push(`${at} is an Evidence record with its quote in clear`);
     for (const [index, [key, child]] of Object.entries(node).entries()) {
       const where = `${at}.${keyForMessage(key, index)}`;
+      if (PAGE_ONLY_KEYS.includes(key))
+        errors.push(`${where} is a page-only plain field (never hashed)`);
       // A key can carry text too (an object keyed by a text).
-      if (needles.some((needle) => key.includes(needle)))
+      if (hasNeedles && needles.some((needle) => key.includes(needle)))
         errors.push(`${where} (a key) contains a fixture text in clear`);
       stack.push({ node: child, at: where });
     }

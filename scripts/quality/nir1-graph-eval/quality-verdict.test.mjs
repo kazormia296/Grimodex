@@ -3416,3 +3416,116 @@ test("品質 v3 §2.0 skip と D8: 子が無い・graph-ready でない sample �
     assert.equal(firstRender[id].status, "pass", id);
   assert.equal(firstRender["raw-excerpt-unchanged"].status, "hold");
 });
+
+test("品質 v3 §2.2（レビュー推奨 6）: path の終端は edge の並びに依存しない。端点で繋がらない edge の組・複数の終端は fail のまま", () => {
+  const key = "G-06/base";
+  const pinOf = (output) =>
+    variantItems(output, key)["explicit-pin-association"];
+  // The baseline attachment with two edges is read in the other order.
+  const reversed = run(
+    v3({
+      [key]: (data) => {
+        const rows = data.child.evidence.pathAttachments;
+        assert.ok(rows.some((row) => row.edges.length >= 2));
+        for (const row of rows) row.edges.reverse();
+        return data;
+      },
+    }),
+  );
+  assert.equal(pinOf(reversed).status, "pass");
+  // An edge that does not continue the walk is still a fail.
+  const broken = run(
+    v3({
+      [key]: (data) => {
+        const row = data.child.evidence.pathAttachments.find(
+          (entry) => entry.edges.length >= 2,
+        );
+        const used = new Set(row.edges.flatMap((edge) => [edge.from, edge.to]));
+        const [other, another] = Object.values(data.entities).filter(
+          (runtime) => !used.has(runtime),
+        );
+        row.edges[1] = { ...row.edges[1], from: other, to: another };
+        return data;
+      },
+    }),
+  );
+  assert.equal(pinOf(broken).status, "fail");
+});
+
+test("品質 v3 §2.2（レビュー推奨 7）: settings.seed.runtime が受領書に無いときは fail でなく hold（seed から終端をたどれない）", () => {
+  const key = "G-06/base";
+  const held = run(
+    v3({
+      [key]: (data) => {
+        data.seed = null;
+        return data;
+      },
+    }),
+  );
+  const pin = variantItems(held, key)["explicit-pin-association"];
+  assert.equal(pin.status, "hold");
+  assert.ok(
+    pin.problems.some((entry) => entry.code === "seed-runtime-missing"),
+  );
+  assert.ok(
+    pin.problems.every((entry) => entry.code !== "attachment-terminal-differs"),
+  );
+});
+
+test("品質 v3（レビュー推奨 4・5）: page が返さなかった値は null で来る。hash の欄が null の行は pass にならず hold（空文字の hash を仮の値にしない）", () => {
+  const key = "G-06/base";
+  const itemOf = (output, id) => variantItems(output, key)[id];
+  // An edge's displayed Evidence row without its quote hash.
+  const quote = run(
+    v3({
+      [key]: (data) => {
+        data.child.evidence.pathAttachments[0].edges[0].evidence[0].quoteSha256 =
+          null;
+        return data;
+      },
+    }),
+  );
+  assert.equal(itemOf(quote, "utf16-range").status, "hold");
+  // A Graph-only anchor with null hash, null range, null Scene.
+  const key02 = "G-02/base";
+  for (const mutate of [
+    (only) => (only.excerptSha256 = null),
+    (only) => (only.excerptUtf16Length = null),
+    (only) => (only.canonicalRange.start = null),
+    (only) => (only.sceneId = null),
+  ]) {
+    const anchor = run(
+      v3({
+        [key02]: (data) => {
+          mutate(data.child.evidence.graphOnly);
+          return data;
+        },
+      }),
+    );
+    assert.equal(
+      variantItems(anchor, key02)["added-scene-body-anchor"].status,
+      "hold",
+    );
+  }
+  // A path row without its Scene is a hold (not a thrown [precheck]).
+  const noScene = run(
+    v3({
+      [key]: (data) => {
+        data.child.evidence.pathAttachments[0].sceneId = null;
+        return data;
+      },
+    }),
+  );
+  assert.equal(itemOf(noScene, "explicit-pin-association").status, "hold");
+  assert.equal(itemOf(noScene, "utf16-range").status, "hold");
+  // A row excerpt without its hash.
+  const rowHash = run(
+    v3({
+      [key]: (data) => {
+        data.child.rowExcerpts[0].excerptSha256 = null;
+        return data;
+      },
+    }),
+  );
+  assert.equal(itemOf(rowHash, "raw-excerpt-unchanged").status, "hold");
+});

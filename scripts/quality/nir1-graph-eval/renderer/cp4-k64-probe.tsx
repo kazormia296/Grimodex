@@ -224,19 +224,37 @@ export function graphPathsOf(value: Nir1RelatedScenesFetchResult) {
   };
 }
 
+/** The product's display rows of one fetched result (the screen's own fusion). */
+function fusedRowsOf(value: Nir1RelatedScenesFetchResult, sceneId: string) {
+  return fuseNir1RelatedScenesGraph({
+    result: value.result,
+    queryBinding: value.queryBinding,
+    querySceneId: sceneId,
+    ...(value.graphOutcome ? { graphOutcome: value.graphOutcome } : {}),
+    ...(value.graph ? { graph: value.graph } : {}),
+  }).rows;
+}
+
 /**
- * Prereg v3: the Graph payload's rows with what the four evidence items need
+ * Prereg v3: the displayed Graph rows with what the four evidence items need
  * and the page alone can read — the Graph-only row's pin Entity, hop, range
  * and excerpt, the attachments' hop, and every edge's ends and Evidence. The
- * excerpt and the quotes are in clear here only: Node hashes them right after
- * the export (`hashObservationPaths` → evidence-fields.mjs `hashGraphEvidence`)
- * and never writes them. A separate field from `paths`, so the trace probe's
- * records stay as they were.
+ * rows are the product's fused display rows (`fuseNir1RelatedScenesGraph`):
+ * a Graph-only row or an attachment the fusion dropped is not "displayed" and
+ * is not reported. The excerpt and the quotes are in clear here only: Node
+ * hashes them right after the export (`hashObservationPaths` →
+ * evidence-fields.mjs `hashGraphEvidence`) and never writes them. A separate
+ * field from `paths`, so the trace probe's records stay as they were.
+ * `null` when the fetch had no Graph.
  */
-export function graphEvidenceOf(value: Nir1RelatedScenesFetchResult) {
-  const graph = value.graph ?? null;
-  if (!graph) return null;
-  type Edge = (typeof graph.pathAttachments)[number]["edges"][number];
+export function graphEvidenceOf(
+  value: Nir1RelatedScenesFetchResult,
+  sceneId: string,
+) {
+  if (!value.graph) return null;
+  type Edge = NonNullable<
+    NonNullable<typeof value.graph>["graphOnly"]
+  >["path"]["edges"][number];
   const edges = (list: readonly Edge[]) =>
     list.map((edge) => ({
       from: { entityId: edge.from.entityId },
@@ -246,25 +264,36 @@ export function graphEvidenceOf(value: Nir1RelatedScenesFetchResult) {
         quote: row.quote,
       })),
     }));
+  const rows = fusedRowsOf(value, sceneId);
+  const only = rows.find((row) => row.kind === "graph-only");
+  const pathAttachments: {
+    sceneId: string;
+    hop: number;
+    edges: ReturnType<typeof edges>;
+  }[] = [];
+  for (const row of rows)
+    if (row.kind === "base" && row.path)
+      pathAttachments.push({
+        sceneId: row.sceneId,
+        hop: row.path.hop,
+        edges: edges(row.path.edges),
+      });
   return {
-    graphOnly: graph.graphOnly
-      ? {
-          sceneId: graph.graphOnly.sceneId,
-          hop: graph.graphOnly.path.hop,
-          pinEntityId: graph.graphOnly.path.pinEntityId,
-          canonicalRange: {
-            start: graph.graphOnly.canonicalRange.start,
-            end: graph.graphOnly.canonicalRange.end,
-          },
-          excerpt: graph.graphOnly.excerpt,
-          edges: edges(graph.graphOnly.path.edges),
-        }
-      : null,
-    pathAttachments: graph.pathAttachments.map((row) => ({
-      sceneId: row.sceneId,
-      hop: row.hop,
-      edges: edges(row.edges),
-    })),
+    graphOnly:
+      only && only.kind === "graph-only"
+        ? {
+            sceneId: only.sceneId,
+            hop: only.graphOnly.path.hop,
+            pinEntityId: only.graphOnly.path.pinEntityId,
+            canonicalRange: {
+              start: only.graphOnly.canonicalRange.start,
+              end: only.graphOnly.canonicalRange.end,
+            },
+            excerpt: only.graphOnly.excerpt,
+            edges: edges(only.graphOnly.path.edges),
+          }
+        : null,
+    pathAttachments,
   };
 }
 
@@ -272,52 +301,42 @@ export function graphEvidenceOf(value: Nir1RelatedScenesFetchResult) {
  * Prereg v3 §2.3: the displayed rows' texts, one entry per source of a row
  * (a Raw row's `chunkText` as `raw`, an IR row's `validatedEvidence.excerpt`
  * as `ir`, the displayed Graph-only row's excerpt as `graph-only`), in the
- * display order. In clear here only; Node hashes them (`hashRowTexts`).
+ * display order. The rows are the product's fused rows (`fuseNir1RelatedScenesGraph`,
+ * the one the screen shows): a Graph-only row the fusion dropped is not
+ * counted and a base row is read from its own `raw`/`ir`. In clear here
+ * only; Node hashes them (`hashRowTexts`).
  */
 export function rowTextsOf(
   value: Nir1RelatedScenesFetchResult,
   sceneId: string,
 ) {
-  const fused = value.graphOutcome
-    ? fuseNir1RelatedScenesGraph({
-        result: value.result,
-        queryBinding: value.queryBinding,
-        querySceneId: sceneId,
-        graphOutcome: value.graphOutcome,
-        ...(value.graph ? { graph: value.graph } : {}),
-      })
-    : null;
   const out: {
     sceneId: string;
     kind: "raw" | "ir" | "graph-only";
     text: string;
   }[] = [];
-  const result = value.result;
-  if (result.kind === "raw")
-    for (const raw of result.scenes)
-      out.push({ sceneId: raw.sceneId, kind: "raw", text: raw.chunkText });
-  else
-    for (const scene of result.scenes) {
-      if (scene.kind !== "ir")
-        out.push({
-          sceneId: scene.sceneId,
-          kind: "raw",
-          text: scene.raw.chunkText,
-        });
-      if (scene.kind !== "raw")
-        out.push({
-          sceneId: scene.sceneId,
-          kind: "ir",
-          text: scene.ir.validatedEvidence.excerpt,
-        });
+  for (const row of fusedRowsOf(value, sceneId)) {
+    if (row.kind === "graph-only") {
+      out.push({
+        sceneId: row.sceneId,
+        kind: "graph-only",
+        text: row.graphOnly.excerpt,
+      });
+      continue;
     }
-  const graphOnly = fused?.rows.find((row) => row.kind === "graph-only");
-  if (graphOnly && graphOnly.kind === "graph-only")
-    out.push({
-      sceneId: graphOnly.sceneId,
-      kind: "graph-only",
-      text: graphOnly.graphOnly.excerpt,
-    });
+    if (row.raw)
+      out.push({
+        sceneId: row.sceneId,
+        kind: "raw",
+        text: row.raw.chunkText,
+      });
+    if (row.ir)
+      out.push({
+        sceneId: row.sceneId,
+        kind: "ir",
+        text: row.ir.validatedEvidence.excerpt,
+      });
+  }
   return out;
 }
 
@@ -459,7 +478,7 @@ async function sample(input: {
       result: row.value ? summarize(row.value, row.sceneId) : null,
       paths: row.value ? graphPathsOf(row.value) : null,
       // Prereg v3: plain in the page only; Node hashes both (and drops them).
-      evidenceRaw: row.value ? graphEvidenceOf(row.value) : null,
+      evidenceRaw: row.value ? graphEvidenceOf(row.value, row.sceneId) : null,
       rowTexts: row.value ? rowTextsOf(row.value, row.sceneId) : null,
     })),
     commits: log,

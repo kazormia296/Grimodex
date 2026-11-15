@@ -37,6 +37,7 @@ import {
   K66_FREEZE,
   K67_FREEZE,
 } from "./constants.mjs";
+import { K67_QUALITY_VERDICT_V3 } from "../nir1-graph/observation-prep.mjs";
 import { loadProcedureFile } from "./procedure-file.mjs";
 import {
   QUALITY_VERDICT_SCHEMA,
@@ -784,6 +785,68 @@ export function assertImplementationBound({ implCommit, running, readBlob }) {
   return bound;
 }
 
+/**
+ * The commit that last changed the three implementation files, as seen from
+ * the checkout at `root` (`git log -1 -- <files>` on HEAD). The implementation
+ * is bound by that commit (prereg v3 §0, §10 (5)): a later change to any of
+ * the files moves it.
+ */
+export function gitLastChangeReader(root) {
+  return (files) => {
+    try {
+      return gitIn(root, ["log", "-1", "--format=%H", "HEAD", "--", ...files])
+        .toString("utf8")
+        .trim();
+    } catch (error) {
+      throw precheck(
+        `prereg v3: cannot read the last change of the implementation files (${String(error.message).split("\n")[0]})`,
+      );
+    }
+  };
+}
+
+/**
+ * Prereg v3 §0·§10: the v3 file and the implementation named on the command
+ * line are the ones the user confirmed and the code fixed before any
+ * observation. `expected` is `K67_QUALITY_VERDICT_V3`: the v3 commit and
+ * SHA-256 (contracts 160f5fa5, b6166ed2…), and the implementation's commit.
+ * `--impl-commit` must also be the commit that last changed the three
+ * implementation files (a later change to a file moves it, and the constant
+ * must be taken again). Anything else is `[precheck]`.
+ */
+export function assertV3Bound({
+  v3Commit,
+  v3Sha256,
+  implCommit,
+  expected = K67_QUALITY_VERDICT_V3,
+  lastChangeOf,
+}) {
+  if (v3Commit !== expected.v3.commit)
+    throw precheck(
+      `prereg v3: the v3 commit ${v3Commit} is not the confirmed ${expected.v3.commit}`,
+    );
+  if (v3Sha256 !== expected.v3.sha256)
+    throw precheck(
+      `prereg v3: the v3 file's SHA-256 ${v3Sha256} is not the confirmed ${expected.v3.sha256}`,
+    );
+  if (
+    JSON.stringify([...expected.implementationFiles]) !==
+    JSON.stringify([...IMPLEMENTATION_FILES])
+  )
+    throw precheck(
+      "prereg v3: the implementation files the constant fixes are not the files the CLI binds",
+    );
+  if (implCommit !== expected.implementationCommit)
+    throw precheck(
+      `prereg v3: the implementation commit ${implCommit} is not the fixed ${expected.implementationCommit}`,
+    );
+  const last = lastChangeOf([...IMPLEMENTATION_FILES]);
+  if (last !== implCommit)
+    throw precheck(
+      `prereg v3: the implementation commit ${implCommit} is not the commit that last changed the verdict files (${last})`,
+    );
+}
+
 /** The running verdict code's bytes, by repository path. */
 function runningImplementation() {
   return Object.fromEntries(
@@ -846,6 +909,10 @@ export function loadFirstRunInputs({
   // hand their own; the defaults are this checkout's files and git).
   running = runningImplementation(),
   readBlob = gitBlobReader(DEFAULT_ROOT),
+  // Prereg v3's fixed values and the reader of the files' last change (the
+  // tests hand their own; the defaults are the constant and this checkout).
+  expectedV3 = K67_QUALITY_VERDICT_V3,
+  lastChangeOf = gitLastChangeReader(DEFAULT_ROOT),
 }) {
   for (const [name, value] of [
     ["v2 file", v2File],
@@ -880,6 +947,13 @@ export function loadFirstRunInputs({
       throw precheck(
         `prereg v3: ${v3File} differs from the bytes of that path at the v3 commit ${v3Commit}`,
       );
+    assertV3Bound({
+      v3Commit,
+      v3Sha256,
+      implCommit,
+      expected: expectedV3,
+      lastChangeOf,
+    });
   }
   const implementationFiles = assertImplementationBound({
     implCommit,

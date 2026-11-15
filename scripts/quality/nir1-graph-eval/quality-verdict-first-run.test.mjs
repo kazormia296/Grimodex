@@ -19,11 +19,13 @@ import {
   V3_BRANCH,
   V3_FILE_PATH,
   assertImplementationBound,
+  assertV3Bound,
   checkFirstRunPrecheck,
   firstFormalRunOf,
   loadFirstRunInputs,
   sha256,
 } from "./quality-verdict-cli.mjs";
+import { K67_QUALITY_VERDICT_V3 } from "../nir1-graph/observation-prep.mjs";
 import { H40 } from "./test-support.mjs";
 
 const git = (cwd, ...args) =>
@@ -551,6 +553,58 @@ test("prereg v3 §0: the v3 commit and the implementation (any branch) are on th
   );
 });
 
+const EXPECTED_V3 = {
+  v3: { commit: V3_COMMIT, sha256: V3_SHA },
+  implementationFiles: IMPLEMENTATION_FILES,
+  implementationCommit: IMPL_COMMIT,
+};
+
+test("prereg v3 §0（レビュー必須 3）: assertV3Bound は v3 の commit・SHA-256・実装 commit が確認済みの固定値と一致し、実装 commit が判定 file を最後に変えた commit であることを求める", () => {
+  const ok = {
+    v3Commit: V3_COMMIT,
+    v3Sha256: V3_SHA,
+    implCommit: IMPL_COMMIT,
+    expected: EXPECTED_V3,
+    lastChangeOf: () => IMPL_COMMIT,
+  };
+  assert.doesNotThrow(() => assertV3Bound(ok));
+  const other = "b".repeat(40);
+  assert.throws(
+    () => assertV3Bound({ ...ok, v3Commit: other }),
+    /v3 commit .* is not the confirmed/u,
+  );
+  assert.throws(
+    () => assertV3Bound({ ...ok, v3Sha256: "c".repeat(64) }),
+    /SHA-256 .* is not the confirmed/u,
+  );
+  assert.throws(
+    () =>
+      assertV3Bound({ ...ok, implCommit: other, lastChangeOf: () => other }),
+    /implementation commit .* is not the fixed/u,
+  );
+  // The files changed after the fixed commit: the constant must be taken again.
+  assert.throws(
+    () => assertV3Bound({ ...ok, lastChangeOf: () => other }),
+    /is not the commit that last changed the verdict files/u,
+  );
+  assert.throws(
+    () =>
+      assertV3Bound({
+        ...ok,
+        expected: { ...EXPECTED_V3, implementationFiles: ["other.mjs"] },
+      }),
+    /implementation files the constant fixes/u,
+  );
+  // The real constant and the real checkout: the fixed values are what the
+  // CLI binds (K67_QUALITY_VERDICT_V3 is read by the validator itself).
+  assert.equal(K67_QUALITY_VERDICT_V3.v3.commit.length, 40);
+  assert.match(K67_QUALITY_VERDICT_V3.v3.sha256, /^b6166ed2/u);
+  assert.deepEqual(
+    [...K67_QUALITY_VERDICT_V3.implementationFiles],
+    [...IMPLEMENTATION_FILES],
+  );
+});
+
 test("prereg v3 §0: loadFirstRunInputs binds the v3 file to its commit's blob at the fixed path; both v3 inputs go together", () => {
   const dirs = {};
   for (const kind of FIRST_RUN_RECEIPT_KINDS) {
@@ -581,6 +635,9 @@ test("prereg v3 §0: loadFirstRunInputs binds the v3 file to its commit's blob a
     remoteTimeRecordPath: recordPath,
     dirs,
     allowList: ALLOW,
+    // The fixed values (K67_QUALITY_VERDICT_V3) and the files' last change.
+    expectedV3: EXPECTED_V3,
+    lastChangeOf: () => IMPL_COMMIT,
   };
   const loaded = loadFirstRunInputs(base);
   assert.equal(loaded.result.v3.sha256, V3_SHA);
@@ -597,6 +654,23 @@ test("prereg v3 §0: loadFirstRunInputs binds the v3 file to its commit's blob a
   assert.throws(
     () => loadFirstRunInputs({ ...base, v3File: null }),
     /v3 file and the v3 commit go together/u,
+  );
+  // The v3 file the command line names must be the confirmed one, and the
+  // implementation commit the one that last changed the verdict files.
+  assert.throws(
+    () =>
+      loadFirstRunInputs({
+        ...base,
+        expectedV3: {
+          ...EXPECTED_V3,
+          v3: { commit: V3_COMMIT, sha256: "d".repeat(64) },
+        },
+      }),
+    /is not the confirmed/u,
+  );
+  assert.throws(
+    () => loadFirstRunInputs({ ...base, lastChangeOf: () => "e".repeat(40) }),
+    /not the commit that last changed the verdict files/u,
   );
   // The file's bytes differ from the commit's blob.
   writeFileSync(path.join(REPO, V3_FILE_PATH), "# v3 edited\n");

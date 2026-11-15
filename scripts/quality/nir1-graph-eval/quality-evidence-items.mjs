@@ -204,6 +204,10 @@ function utf16RangeSample({ side, ctx }) {
   };
   const observed = Array.isArray(material?.observed) ? material.observed : [];
   for (const path of paths) {
+    if (!isId(path.sceneId)) {
+      problems.push(hold("path-scene-field-missing", { path: path.kind }));
+      continue;
+    }
     const logicalScene = ctx.maps.logicalScene(path.sceneId);
     const entry = observed.find(
       (row) => row?.kind === path.kind && row.sceneId === logicalScene,
@@ -245,6 +249,10 @@ function utf16RangeSample({ side, ctx }) {
             `${ctx.variantKey}: the fixture has no current text for entity ${logical}`,
           );
       const satisfied = new Set();
+      // A row that could not be read (a null hash, a malformed range) leaves
+      // its edge's endpoints undecided: the hold stands and (iii) is not
+      // judged on the rows that were readable.
+      let undecided = false;
       const shownRows = Array.isArray(edge.evidence) ? edge.evidence : null;
       if (shownRows === null) {
         problems.push(hold("edge-evidence-rows-missing"));
@@ -253,6 +261,7 @@ function utf16RangeSample({ side, ctx }) {
       for (const shown of shownRows) {
         if (!isId(shown?.evidenceId) || !isHex(shown?.quoteSha256)) {
           problems.push(hold("evidence-row-malformed"));
+          undecided = true;
           continue;
         }
         const read = rows.get(shown.evidenceId);
@@ -271,6 +280,7 @@ function utf16RangeSample({ side, ctx }) {
           !isHex(read.quoteSha256)
         ) {
           problems.push(hold("read-evidence-row-malformed"));
+          undecided = true;
           continue;
         }
         let first = null;
@@ -307,11 +317,12 @@ function utf16RangeSample({ side, ctx }) {
         }
       }
       // (iii) each endpoint has at least one valid row (0 rows is a fail).
-      for (const logical of endpoints)
-        if (!satisfied.has(logical))
-          problems.push(
-            fail("endpoint-without-valid-evidence", { entity: logical }),
-          );
+      if (!undecided)
+        for (const logical of endpoints)
+          if (!satisfied.has(logical))
+            problems.push(
+              fail("endpoint-without-valid-evidence", { entity: logical }),
+            );
     }
   }
   return { problems, disclosure };
@@ -322,17 +333,34 @@ function utf16RangeSample({ side, ctx }) {
 
 /**
  * The terminal Entity of a path walked from the seed along the displayed
- * edges (each edge's other end), or `null` when an edge does not continue the
- * walk. Runtime IDs.
+ * edges (each edge's other end), or `null` when the edges are not one walk
+ * from the seed that uses every edge once, or when two such walks end at
+ * different Entities. Runtime IDs. The walk does not depend on the order the
+ * edges are listed in: an edge is taken when it touches the current node
+ * (v3 §2.2 reads the terminal of the path, not of an array).
  */
 function terminalOf(seed, edges) {
-  let node = seed;
-  for (const edge of edges) {
-    if (edge?.from === node) node = edge.to;
-    else if (edge?.to === node) node = edge.from;
-    else return null;
-  }
-  return node;
+  if (!isId(seed) || !Array.isArray(edges) || edges.length === 0) return null;
+  const used = new Array(edges.length).fill(false);
+  const ends = new Set();
+  const walk = (node, left) => {
+    if (left === 0) {
+      ends.add(node);
+      return;
+    }
+    for (let at = 0; at < edges.length; at += 1) {
+      if (used[at]) continue;
+      const edge = edges[at];
+      const next =
+        edge?.from === node ? edge.to : edge?.to === node ? edge.from : null;
+      if (next === null || next === undefined) continue;
+      used[at] = true;
+      walk(next, left - 1);
+      used[at] = false;
+    }
+  };
+  walk(seed, edges.length);
+  return ends.size === 1 ? [...ends][0] : null;
 }
 
 function pinSample({ side, ctx }) {
@@ -349,7 +377,11 @@ function pinSample({ side, ctx }) {
     return { problems: [hold("path-attachments-field-missing")] };
   // Graph-only row.
   if (graphOnly) {
-    if (!isId(graphOnly.pinEntityId) || !isUint(graphOnly.hop))
+    if (
+      !isId(graphOnly.pinEntityId) ||
+      !isUint(graphOnly.hop) ||
+      !isId(graphOnly.sceneId)
+    )
       problems.push(hold("graph-only-pin-or-hop-field-missing"));
     else {
       const scene = ctx.maps.logicalScene(graphOnly.sceneId);
@@ -367,7 +399,7 @@ function pinSample({ side, ctx }) {
   // Path attachment rows.
   const wanted = new Map(expected.attachments.map((row) => [row.sceneId, row]));
   for (const row of attachments) {
-    if (!isUint(row?.hop) || !Array.isArray(row.edges)) {
+    if (!isUint(row?.hop) || !Array.isArray(row.edges) || !isId(row.sceneId)) {
       problems.push(hold("attachment-hop-or-edges-field-missing"));
       continue;
     }
@@ -376,6 +408,12 @@ function pinSample({ side, ctx }) {
     if (!want) {
       // Includes `scenesWithoutPath` and a name-inferred association.
       problems.push(fail("attachment-outside-expectation", { scene }));
+      continue;
+    }
+    // The walk starts at the seed: a receipt that does not carry it cannot
+    // be judged (a hold, not a fail: the seed is the receipt's own record).
+    if (!isId(ctx.seedRuntime)) {
+      problems.push(hold("seed-runtime-missing"));
       continue;
     }
     const terminal = terminalOf(ctx.seedRuntime, row.edges);

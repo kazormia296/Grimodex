@@ -2138,6 +2138,25 @@ test("品質 v3 §4（Q6）: 観測（hash 済み）に fixture の本文が平�
     assert.ok(
       existsSync(path.join(clean.input.ctx.variantDir, "receipt.json")),
     );
+    // Parity and negative runs measure no Graph arm: their `result` carries
+    // `evidenceObservation: null` (frozen-k64-run `measureSteady`), which is
+    // "not observed" and not a malformed field (review: every parity and
+    // negative receipt had been refused).
+    const notObserved = make("not-observed", hybridRows, {
+      evidenceObservation: null,
+    });
+    const notObservedRow = await notObserved.run();
+    assert.notEqual(notObservedRow.status, "receipt-refused");
+    assert.ok(
+      existsSync(path.join(notObserved.input.ctx.variantDir, "receipt.json")),
+    );
+    // A page-only plain field (`rowTexts`) that escaped the hashing is refused
+    // wherever it sits in the sample, whatever its value.
+    const escaped = make(
+      "escaped",
+      hybridRows.map((row, at) => (at === 0 ? { ...row, rowTexts: [] } : row)),
+    );
+    assert.equal((await escaped.run()).status, "receipt-refused");
     // The Scene's body in a sample's field: refused, nothing written.
     const leaking = make(
       "leaking",

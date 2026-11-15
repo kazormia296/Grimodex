@@ -414,3 +414,113 @@ test("v3 §4: 実物の ID の形（Evidence の ID は nir1:evidence:codex:<Ent
   receipt.samples[0].followUp.child.evidence.graphOnly.pinEntityId = uuid;
   assert.deepEqual(evidenceFieldErrors(receipt), []);
 });
+
+test("レビュー必須 1: evidenceObservation の null／undefined は「観測していない」で形の誤りにしない。値がある形の誤りは拒否する", () => {
+  assert.deepEqual(evidenceFieldErrors({ samples: [] }), []);
+  assert.deepEqual(
+    evidenceFieldErrors({ samples: [], evidenceObservation: null }),
+    [],
+  );
+  assert.deepEqual(
+    evidenceFieldErrors({ samples: [], evidenceObservation: undefined }),
+    [],
+  );
+  assert.notDeepEqual(
+    evidenceFieldErrors({ samples: [], evidenceObservation: "text" }),
+    [],
+  );
+  assert.notDeepEqual(
+    evidenceFieldErrors({
+      samples: [],
+      evidenceObservation: { readAfterSamples: "yes" },
+    }),
+    [],
+  );
+});
+
+test("レビュー推奨 4・5: page が返さなかった文字列は空文字の hash でなく null、undefined は null に揃える", () => {
+  const hashed = hashGraphEvidence({
+    graphOnly: {
+      sceneId: "u-s1",
+      hop: 1,
+      pinEntityId: "e-mira",
+      canonicalRange: { start: 0 },
+      edges: [
+        {
+          from: { entityId: "e-a" },
+          to: {},
+          evidence: [{ evidenceId: "ev-1" }, { quote: "q" }],
+        },
+      ],
+    },
+    pathAttachments: [{ sceneId: "u-s2", edges: [] }, {}],
+  });
+  assert.equal(hashed.graphOnly.excerptSha256, null);
+  assert.equal(hashed.graphOnly.excerptUtf16Length, null);
+  assert.equal(hashed.graphOnly.canonicalRange.end, null);
+  assert.equal(hashed.graphOnly.edges[0].to, null);
+  assert.equal(hashed.graphOnly.edges[0].evidence[0].quoteSha256, null);
+  assert.equal(hashed.graphOnly.edges[0].evidence[1].evidenceId, null);
+  assert.equal(
+    hashed.graphOnly.edges[0].evidence[1].quoteSha256,
+    sha256Text("q"),
+  );
+  assert.equal(hashed.pathAttachments[0].hop, null);
+  assert.equal(hashed.pathAttachments[1].sceneId, null);
+  // An empty text is a text (its hash is a measured value); a missing one is not.
+  assert.equal(
+    hashRowTexts([{ sceneId: "s", kind: "raw", text: "" }])[0].excerptSha256,
+    sha256Text(""),
+  );
+  assert.deepEqual(hashRowTexts([{ sceneId: "s", kind: "raw" }]), [
+    {
+      sceneId: "s",
+      kind: "raw",
+      excerptSha256: null,
+      excerptUtf16Length: null,
+    },
+  ]);
+  const read = hashRevisionRead({
+    logicalRevisionId: "r",
+    runtimeRevisionId: "rt",
+    read: {
+      ok: true,
+      value: {
+        status: "available",
+        result: { entities: [{ evidence: [{ evidenceId: "ev-1" }] }] },
+      },
+    },
+  });
+  assert.equal(read.evidence[0].quoteSha256, null);
+  assert.equal(read.evidence[0].startUtf16, null);
+  // Every one of these is a shape the receipt check accepts (a null leaf), and
+  // none carries text.
+  assert.deepEqual(
+    evidenceFieldErrors({
+      samples: [{ followUp: { child: { evidence: hashed } } }],
+      evidenceObservation: {
+        readAfterSamples: true,
+        samplesBeforeRead: 1,
+        typedRevisions: [read],
+      },
+    }),
+    [],
+  );
+});
+
+test("レビュー推奨 10: evidenceRaw・rowTexts の key は受領書のどこにあっても拒否する（値が空でも）。needle が無くても key は見る", () => {
+  const needles = ["Mira folded the blue cloth"];
+  assert.deepEqual(plaintextErrors({ a: { b: [{ c: 1 }] } }, needles), []);
+  for (const key of ["evidenceRaw", "rowTexts"]) {
+    const errors = plaintextErrors(
+      { samples: [{ fetches: [{ [key]: [] }] }] },
+      needles,
+    );
+    assert.equal(errors.length, 1, key);
+    assert.match(errors[0], /page-only plain field/u);
+    assert.ok(!errors[0].includes("Mira"), "the message carries no text");
+  }
+  const noNeedles = plaintextErrors({ rowTexts: null }, []);
+  assert.equal(noNeedles.length, 2);
+  assert.match(noNeedles[0], /\[precheck\]/u);
+});
