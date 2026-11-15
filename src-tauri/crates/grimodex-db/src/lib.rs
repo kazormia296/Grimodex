@@ -107,10 +107,14 @@ impl Drop for BackgroundConnectionPriorityGuard {
 #[must_use = "a maintenance no-wait guard must stay alive for the scoped work"]
 pub struct MaintenanceConnectionNoWaitGuard {
     _thread_affine: std::marker::PhantomData<*mut ()>,
+    /// 生きている guard の数（`ConnectionCore::maintenance_no_wait_guards`）。背景の先払いが、
+    /// 別 thread から「maintenance が cycle の中にいる」ことを見るために数える。
+    alive: std::sync::Arc<AtomicUsize>,
 }
 
 impl Drop for MaintenanceConnectionNoWaitGuard {
     fn drop(&mut self) {
+        self.alive.fetch_sub(1, Ordering::SeqCst);
         MAINTENANCE_NO_WAIT_DEPTH.with(|depth| {
             depth.set(depth.get().saturating_sub(1));
         });
@@ -647,12 +651,18 @@ impl Database {
     /// its scheduler-owned ledger work.  The returned guard is the only
     /// authority exposed to that caller: it changes no database state and
     /// merely makes nested connection acquisition fail fast while it is alive.
+    /// The guard also counts itself in `ConnectionCore::maintenance_no_wait_guards`
+    /// so the background WAL restart prepay (DR-DBC-6) yields while a
+    /// maintenance cycle is inside its no-wait scope.
     pub fn enter_maintenance_connection_no_wait(&self) -> MaintenanceConnectionNoWaitGuard {
         MAINTENANCE_NO_WAIT_DEPTH.with(|depth| {
             depth.set(depth.get().saturating_add(1));
         });
+        self.maintenance_no_wait_guards
+            .fetch_add(1, Ordering::SeqCst);
         MaintenanceConnectionNoWaitGuard {
             _thread_affine: std::marker::PhantomData,
+            alive: std::sync::Arc::clone(&self.maintenance_no_wait_guards),
         }
     }
 

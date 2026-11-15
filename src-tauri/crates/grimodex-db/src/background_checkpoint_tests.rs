@@ -3,8 +3,8 @@
 
 use super::background_checkpoint::{
     BackgroundCheckpointMode, BackgroundCheckpointProbe, BackgroundCheckpointStart, StopOutcome,
-    MAX_WAL_PAGES_BEFORE_SYNC, PREPAY_HOLD_BEFORE_LOCK, PREPAY_HOLD_LOCKED, PREPAY_HOLD_NONE,
-    WAL_CHECKPOINT_PAGES,
+    MAX_WAL_PAGES_BEFORE_SYNC, PREPAY_HOLD_AFTER_LOCK, PREPAY_HOLD_BEFORE_LOCK, PREPAY_HOLD_LOCKED,
+    PREPAY_HOLD_NONE, WAL_CHECKPOINT_PAGES,
 };
 use super::narrative_extraction::nir1_chronicle_index::read_identity::ReadIdentity;
 use super::open_wal::{sqlite_wal_checkpoint, OpenWalCheckpointMode, OpenWalPreparationOutcome};
@@ -426,12 +426,16 @@ fn a_prepay_never_fails_a_foreground_deferred_transaction() {
     let failures = writer.join().expect("writer thread");
     assert!(failures.is_empty(), "foreground failures: {failures:?}");
     assert!(probe.wait_idle(WAIT));
+    // writer が終わった後に 1 回、決定的に走らせる（writer の間に先払いが 1 回も起きなかった
+    // 場合でも、先払いが起き、失敗しないことを確かめる）。writer は join 済みで waiter・transaction
+    // は無く、WAL には writer の frame が残っているので、PASSIVE は全部書き戻し、先払いは commit する。
+    run_and_settle(&probe);
     let stats = db.background_checkpoint_stats().expect("stats");
     assert_eq!(stats.failures, 0);
     assert_eq!(stats.prepay_failed, 0, "{stats:?}");
     assert!(
         stats.prepay_restarted + stats.prepay_not_restarted >= 1,
-        "prepays must have happened while the writer ran: {stats:?}"
+        "a prepay must have happened: {stats:?}"
     );
 }
 
@@ -668,8 +672,10 @@ fn a_prepay_over_the_hard_limit_never_waits_while_holding_the_connection() {
     drop(reader);
 }
 
-/// 先払いが Mutex を握っている間、no-wait の呼び手（maintenance、nir1 store の try 経路）は
-/// 待たずに譲り、前景の blocking の呼び手は終わるまで待って成功する（DR-DBC-6 の窓）。
+/// 先払いが Mutex を握っている間（maintenance の no-wait guard が**無い瞬間**に先払いが握った場合）、
+/// no-wait の呼び手（maintenance、nir1 store の try 経路）は待たずに譲り、前景の blocking の呼び手は
+/// 終わるまで待って成功する（DR-DBC-6 の窓）。guard が生きている間は先払いがそもそも握らない
+/// （下の 2 本）ので、この窓は guard が無い間に起きた先払いに限られる。
 #[test]
 fn callers_that_do_not_wait_yield_while_a_prepay_holds_the_connection() {
     let fixture = Fixture::new("prepay-window");
@@ -726,7 +732,93 @@ fn callers_that_do_not_wait_yield_while_a_prepay_holds_the_connection() {
     );
 }
 
-/// 停止の要求は、先払いの前（Mutex を取る前）に来ても、その結果を取得の後に確かめるので書かない。
+/// maintenance の no-wait guard が生きている間は、先払いは本体の接続を握らず飛ばす（cycle の途中で
+/// `NEX_MAINTENANCE_CONNECTION_PREEMPTED` に当たらない）。guard の drop の後は、同じ run の状態から
+/// 先払いが行われる（RAII で数が戻る）。
+#[test]
+fn a_prepay_yields_while_a_maintenance_no_wait_guard_is_alive() {
+    let fixture = Fixture::new("prepay-maintenance");
+    let db = fixture.open();
+    let probe = started(&db);
+    append_pages(&db, 300);
+    let header = wal_header(&fixture);
+    {
+        // この thread は no-wait mode になるので、guard の間は probe だけを触る（db を使わない）。
+        let _no_wait = db.enter_maintenance_connection_no_wait();
+        run_and_settle(&probe);
+        run_and_settle(&probe);
+        // (restarted, not_restarted, skipped, failed)
+        assert_eq!(probe.prepay_counts(), (0, 0, 2, 0));
+    }
+    assert_eq!(wal_header(&fixture), header, "nothing was committed");
+    // 別の guard が入れ子で生きている間も、1 つ drop しただけでは譲り続ける。
+    let outer = db.enter_maintenance_connection_no_wait();
+    drop(db.enter_maintenance_connection_no_wait());
+    run_and_settle(&probe);
+    assert_eq!(probe.prepay_counts(), (0, 0, 3, 0));
+    drop(outer);
+    run_and_settle(&probe);
+    assert_eq!(probe.prepay_counts(), (1, 0, 3, 0));
+    assert_ne!(wal_header(&fixture), header, "the prepay restarted the WAL");
+}
+
+/// 先払いが入口の確認の後・Mutex を取った後に maintenance の guard が入っても、取得の後の確認で
+/// 譲る（Mutex は放し、何も commit しない）。
+#[test]
+fn a_maintenance_guard_that_enters_after_the_prepay_took_the_connection_makes_it_yield() {
+    let fixture = Fixture::new("prepay-maintenance-after-lock");
+    let db = fixture.open();
+    let probe = started(&db);
+    append_pages(&db, 300);
+    let header = wal_header(&fixture);
+    probe.set_prepay_hold(PREPAY_HOLD_AFTER_LOCK);
+    probe.request_run();
+    assert!(probe.wait_prepay_holding(PREPAY_HOLD_AFTER_LOCK, WAIT));
+    let no_wait = db.enter_maintenance_connection_no_wait();
+    probe.set_prepay_hold(PREPAY_HOLD_NONE);
+    assert!(probe.wait_idle(WAIT));
+    assert_eq!(probe.prepay_counts(), (0, 0, 1, 0));
+    drop(no_wait);
+    assert_eq!(wal_header(&fixture), header, "nothing was committed");
+    // 譲った後に Mutex が放されている（前景の取得が通る）。
+    db.with_conn(|conn| Ok(conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?))
+        .expect("the connection was released");
+}
+
+/// 停止の要求が、先払いが Mutex を取った**後**に来ても、取得の後の確認で飛ばして何も書かない
+/// （入口の確認では捕まらない位置。取得の後の確認を外すと落ちる）。
+#[test]
+fn a_stop_that_arrives_after_the_prepay_took_the_connection_skips_it() {
+    let fixture = Fixture::new("prepay-stop-after-lock");
+    let db = fixture.open();
+    let probe = started(&db);
+    append_pages(&db, 300);
+    let header = wal_header(&fixture);
+    probe.set_prepay_hold(PREPAY_HOLD_AFTER_LOCK);
+    probe.request_run();
+    assert!(probe.wait_prepay_holding(PREPAY_HOLD_AFTER_LOCK, WAIT));
+    let outcome = std::thread::scope(|scope| {
+        let stopper = scope.spawn(|| db.stop_background_checkpoint());
+        let deadline = std::time::Instant::now() + WAIT;
+        while !probe.stop_requested() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(probe.stop_requested(), "the stop request must be raised");
+        probe.set_prepay_hold(PREPAY_HOLD_NONE);
+        stopper.join().expect("stopper")
+    });
+    assert_eq!(outcome, StopOutcome::Joined);
+    let stats = db.background_checkpoint_stats().expect("stats");
+    assert_eq!(
+        (stats.prepay_restarted, stats.prepay_skipped, stats.failures),
+        (0, 1, 0),
+        "{stats:?}"
+    );
+    assert_eq!(wal_header(&fixture), header, "nothing was committed");
+}
+
+/// 停止の要求が、先払いの前（Mutex を取る前）に来たときは、入口の確認で飛ばして何も書かない
+/// （取得の後の確認は、上の試験が別に固定する）。
 #[test]
 fn a_stop_that_arrives_before_the_prepay_takes_the_connection_skips_it() {
     let fixture = Fixture::new("prepay-stop");

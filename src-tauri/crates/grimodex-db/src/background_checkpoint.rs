@@ -25,6 +25,16 @@
 //!     finalization の予約・quarantine・poison を既存の規則で見る）だけで、待つ `lock()` は
 //!     使わない（hook の `enter_sync` が run の終了を待つので、待つ形にすると互いに待つ）。
 //!     取れなければ何もしない（現状と同じく、次の書き手が払う）。
+//!   - **maintenance に譲る**：maintenance の cycle は no-wait の guard
+//!     （`Database::enter_maintenance_connection_no_wait`）で全体を覆う。先払いが握っている間に
+//!     その cycle の取得が当たると `NEX_MAINTENANCE_CONNECTION_PREEMPTED` で Run が cancelled になる
+//!     （DR-MP-8 の backoff に積まれる）。そこで `ConnectionCore` がその guard の生きている数を
+//!     数え（RAII。先払いは別の thread なので thread-local は見えない）、0 でない間、先払いは
+//!     取得の前と後の両方で確かめて飛ばす（理由 `maintenance-active`）。cycle の外の短い no-wait
+//!     （nir1 store・C-query の freshness の try 経路）は cycle を覆わず、当たっても既存の
+//!     busy の経路（`ConnectionBusy`・`None`）で fail-closed。`with_background_connection_priority`
+//!     は待つ取得（foreground の waiter に譲るだけ）なので、先払いに当たっても 1 回ぶん待つだけで
+//!     失敗しない（対象外）。
 //!   - 別の接続では先払いしない。別の接続の commit は、前景の deferred transaction
 //!     （`BEGIN; SELECT; INSERT`）を `SQLITE_BUSY_SNAPSHOT` で失敗させる（実測）。
 //!   - `busy_timeout` は 0 にして commit し、`ConnectionCore::with_busy_timeout_on` が元へ戻す
@@ -36,7 +46,10 @@
 //!     それで run が連鎖しない・4000 page 超でも自分の run や Mutex を待たない。
 //!   - 失敗・飛ばしは `consecutive_failures` に数えない（先払いは最善努力で、無くても現状に
 //!     戻るだけ）。成否は stats に数える（`prepay_restarted`／`prepay_not_restarted`／
-//!     `prepay_skipped`／`prepay_failed`）。
+//!     `prepay_skipped`／`prepay_failed`）。`prepay_not_restarted` は「commit し、commit 後の WAL が
+//!     1 frame でなかった」場合で、読み手が restart を止めていた場合のほか、PASSIVE の後に前景の
+//!     書き手が先に commit して restart を払った場合も含む（commit 後の page 数だけでは、この 2 つを
+//!     確実には区別できない）。
 //!   - **観測の変化**：`PRAGMA data_version` は**別の接続から見て** 1 回の先払いにつき動く。
 //!     本体の接続の `PRAGMA data_version`・`total_changes`・schema_version・user_version・
 //!     `ReadIdentity`（lineage・seq・schema_version・user_version）は動かない（試験で確かめる）。
@@ -50,8 +63,9 @@
 //! lifecycle：開く（`WorkspaceAuthority::new`）で始め、閉じる・workspace の切替え・
 //! restore・recovery では `Database` の drop か明示の [`Database::stop_background_checkpoint`]
 //! で止める。停止は、実行中の checkpoint を `sqlite3_interrupt` で中断し（待ちの間、打ち直す）、
-//! 上限（[`STOP_WAIT`]）まで、スレッドの終了の証拠を待つ。先払いの commit（fsync）は中断できない
-//! ので、停止の上限は変えない（約 45 ms。disk が止まれば長い）。
+//! 上限（[`STOP_WAIT`]、5 s）まで、スレッドの終了の証拠を待つ。先払いの commit（fsync）は中断できない
+//! ので、停止は先払いの 1 回（回転 HDD で約 45 ms、SSD で約 1 ms）が終わるまで待ちうる。待ちの
+//! 上限は `STOP_WAIT` のまま変えない（disk が止まれば `StopOutcome::TimedOut`）。
 //!
 //! 上限までに終了の証拠が取れない（`StopOutcome::TimedOut`）とき、restore は中止して
 //! 元の authority を戻し、recovery の retire は `Err` を返す（fail-closed）。専用の接続は
@@ -160,7 +174,8 @@ struct Shared {
     /// 先払い（DR-DBC-6）の結果。PASSIVE が全部書き戻した run の後だけ commit する。
     /// restart まで済ませた（commit 後の WAL が 1 frame）。
     prepay_restarted: AtomicU64,
-    /// commit したが restart されなかった（読み手が WAL の先頭へ戻るのを止めている）。
+    /// commit したが、commit 後の WAL が 1 frame でなかった（読み手が WAL の先頭へ戻るのを止めて
+    /// いた、または PASSIVE の後に前景の書き手が先に commit して restart を払っていた。区別しない）。
     prepay_not_restarted: AtomicU64,
     /// 条件を満たさない・取れない・止める途中などで何もしなかった。
     prepay_skipped: AtomicU64,
@@ -196,6 +211,10 @@ pub(crate) const PREPAY_HOLD_BEFORE_LOCK: u8 = 1;
 /// Mutex を握った後、commit の前（Mutex を握ったまま止まる）。
 #[cfg(test)]
 pub(crate) const PREPAY_HOLD_LOCKED: u8 = 2;
+/// Mutex を取った直後、取得の後の確認（停止・maintenance の guard・foreground の waiter）の前
+/// （Mutex を握ったまま止まる）。取得の後の確認を、入口の確認と別に固定するための位置。
+#[cfg(test)]
+pub(crate) const PREPAY_HOLD_AFTER_LOCK: u8 = 3;
 
 impl Shared {
     fn new(threshold: i64) -> Self {
@@ -427,7 +446,8 @@ impl Drop for PrepayingFlag<'_> {
 enum PrepayOutcome {
     /// commit し、WAL が先頭へ戻った。
     Restarted,
-    /// commit したが、読み手が止めていて WAL は先頭へ戻らなかった。
+    /// commit したが、commit 後の WAL が 1 frame でなかった（読み手が止めていた、または前景が
+    /// 先に restart を払っていた）。
     NotRestarted,
     Skipped(&'static str),
     Failed,
@@ -459,15 +479,36 @@ fn prepay(
     let Some(core) = weak.upgrade() else {
         return PrepayOutcome::Skipped("connection-gone");
     };
+    // maintenance の cycle は no-wait の guard で全体を覆う。先払いが握っている間に取得に当たると
+    // `NEX_MAINTENANCE_CONNECTION_PREEMPTED` で Run が cancelled になるので、guard が生きている間は
+    // 譲る（先払いは最善努力で、飛ばしても次の書き手が払うだけ）。
+    if core.maintenance_no_wait_guard_alive() {
+        return PrepayOutcome::Skipped("maintenance-active");
+    }
     #[cfg(test)]
     prepay_hold_at(shared, PREPAY_HOLD_BEFORE_LOCK);
-    // 停止・foreground の waiter は、Mutex を取る前と取った後の両方で確かめる（check は
-    // `try_lock_conn_with_check` が前後で呼ぶ）。Mutex を取った後の stop の確認が、drop が
-    // 接続を差し替えた後に書かないことを保証する。
+    // 停止・maintenance の guard・foreground の waiter は、Mutex を取る前と取った後の両方で確かめる
+    // （check は `try_lock_conn_with_check` が前後で呼ぶ）。Mutex を取った後の確認が、drop が接続を
+    // 差し替えた後に書かないこと、先払いの途中で入った maintenance の取得に不要に当たらないことを
+    // 保証する。
+    #[cfg(test)]
+    let check_calls = Cell::new(0_u8);
     let mut check = || -> anyhow::Result<()> {
+        #[cfg(test)]
+        {
+            // 2 回目の呼び出しが「Mutex を取った後」の確認（`try_lock_conn_with_check` の仕様）。
+            check_calls.set(check_calls.get() + 1);
+            if check_calls.get() == 2 {
+                prepay_hold_at(shared, PREPAY_HOLD_AFTER_LOCK);
+            }
+        }
         anyhow::ensure!(
             !shared.stop_requested() && shared.mode.load(Ordering::SeqCst) == MODE_RUNNING,
             "BACKGROUND_PREPAY_STOPPING"
+        );
+        anyhow::ensure!(
+            !core.maintenance_no_wait_guard_alive(),
+            "BACKGROUND_PREPAY_MAINTENANCE_ACTIVE"
         );
         anyhow::ensure!(
             core.foreground_connection_waiters.load(Ordering::SeqCst) == 0,
@@ -480,7 +521,18 @@ fn prepay(
     {
         Ok(Some(guard)) => guard,
         Ok(None) => return PrepayOutcome::Skipped("connection-busy"),
-        Err(_) => return PrepayOutcome::Skipped("not-acquirable"),
+        Err(error) => {
+            let message = error.to_string();
+            return PrepayOutcome::Skipped(if message.contains("BACKGROUND_PREPAY_STOPPING") {
+                "stopping"
+            } else if message.contains("BACKGROUND_PREPAY_MAINTENANCE_ACTIVE") {
+                "maintenance-active"
+            } else if message.contains("BACKGROUND_PREPAY_FOREGROUND_WAITING") {
+                "foreground-waiting"
+            } else {
+                "not-acquirable"
+            });
+        }
     };
     if !guard.is_autocommit() {
         return PrepayOutcome::Skipped("in-transaction");

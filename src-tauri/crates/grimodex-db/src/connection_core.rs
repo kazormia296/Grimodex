@@ -11,7 +11,7 @@
 
 use crate::narrative_maintenance_connection::ConnectionHealth;
 use rusqlite::Connection;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub struct ConnectionCore {
@@ -22,6 +22,11 @@ pub struct ConnectionCore {
     pub(crate) retired_connections: Mutex<Vec<Connection>>,
     pub(crate) foreground_connection_waiters: Arc<AtomicUsize>,
     pub(crate) maintenance_finalization_reserved: Arc<AtomicBool>,
+    /// 生きている maintenance の no-wait guard（`enter_maintenance_connection_no_wait`）の数。
+    /// guard の生成で増え、drop で減る（RAII。thread をまたいで数える）。背景の先払いは、
+    /// 0 でない間は譲る（maintenance は cycle 全体をこの guard で覆い、先払いが握っている間に
+    /// 取得に当たると `NEX_MAINTENANCE_CONNECTION_PREEMPTED` で Run が cancelled になる）。
+    pub(crate) maintenance_no_wait_guards: Arc<AtomicUsize>,
     pub(crate) connection_health: ConnectionHealth,
 }
 
@@ -32,7 +37,13 @@ impl ConnectionCore {
             retired_connections: Mutex::new(Vec::new()),
             foreground_connection_waiters: Arc::new(AtomicUsize::new(0)),
             maintenance_finalization_reserved: Arc::new(AtomicBool::new(false)),
+            maintenance_no_wait_guards: Arc::new(AtomicUsize::new(0)),
             connection_health: ConnectionHealth::new(),
         }
+    }
+
+    /// 生きている maintenance の no-wait guard があるか（先払いが譲る条件）。
+    pub(crate) fn maintenance_no_wait_guard_alive(&self) -> bool {
+        self.maintenance_no_wait_guards.load(Ordering::SeqCst) > 0
     }
 }
