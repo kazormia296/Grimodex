@@ -1564,3 +1564,23 @@ DR-CP4-S6-3（S4b''''・候補 `cbf33077`）の後の S6 の記録。直前の�
 | ID | 日付 | レーン／PR | 判断 | 信頼境界 | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
 |---|---|---|---|---|---|---|---|---|---|
 | DR-CP4-S6-5 | 2026-11-15 | CP-4／8 回目の S4 の前の dev 予行（A＝`3f333a83`／B＝`663d6da6`、dev fixture） | p95 の外れ値は背景 PASSIVE checkpoint の後の最初の commit が WAL header の fsync で約 45 ms 止まるもの。先払いは製品側（背景）で行い、契約変更を含みうるので `[precheck]` の後に別 PR、正式 run はその後。凍結は変えない | 凍結外の dev fixture のみ。新しい送信先・保存範囲・閾値の変更なし | ①測定を tmpfs/SSD ③audit commit を return の後へ ④WAL 量削減 ⑤harness で前払い | 別 PR の `[precheck]` で諮る（予定） | なし（本記録は測定と決定の記録のみ） | 変更なし（先払いの PR で扱う、予定） | 記録済み。先払いの PR は予定 |
+
+## S6／S7（S4b `f2f99b13`・候補 `29a120dd` の正式 run s7r2。2026-11-15）
+
+8 回目の S4 は再凍結せず（ユーザー決定「凍結はそのまま」）、S4b `f2f99b13` のまま、候補 `29a120ddd3dd8ec5a43845a76cbda837e9b20f6a`（#909、DR-DBC-6 の WAL restart の先払いの merge commit）で正式 run（s7r2）を走らせた記録です。契約は K6/6 のままです。contracts の記録は、受領書が `18b745d5`、S6／品質判定／実施記録／S7 が `64f9006f`・`c1eced67`、ユーザーの回答が `4ada831e` です（`docs/plans/nir1-cp4-records/` の `*-s7r2*`）。
+
+- **run**：2026-11-15 09:33〜11:09Z。SP-P4、trace 2 本、parity、Gold、N2〜N4、G-01 の診断の全 8 run が、1 回で completed になりました（Gold の取り直しなし、V-10 なし）。setup 13 件は 1 回で setup-complete、V-10 の予防の確認は 13/13 ok でした。
+- **S6 の規則の当てはめ**：HOLD にも `[precheck]` にも当たりません（K6/4 の読み、trace は再計算）。
+  - Gold の pool の欠落は 0／270（first-render 244、follow-up 26）、`contributedNotCounted` は 0 です。
+  - trace の失効と窓外は、editing と browsing のどちらも 0／201 です。
+  - K6/2 の字義では、pool の窓外が 270／270、trace の窓外が editing 16・browsing 152 で、HOLD に当たります（開示）。
+- **品質判定 v2（補助）**：hold（unverified-required-items）。Hybrid p95 は R+IR arm 26.10 ms、Graph arm 60.10 ms（上限 94.2 ms。前回 s7r1 は 92.70 ms）。not-evaluable の 6 項目は前回と同じです。
+- **開示**：pool の stamp は `stamp0-missing` 266・`fresh` 4・`unavailable` 0 です。前回の `G-03/frontier-exceeded` の Suspended の連鎖は起きていません。p95 が下がった機構は確かめていません（候補は前回から 69 commit 進んでいます）。
+- **ユーザーの回答（2026-11-15T11:23Z ごろ、AskUserQuestion）**
+  - 「今回も確定する (Recommended)」：s7r2 の結果で「CP-4 の Graph arm は可用性を満たした」を確定し、K6/2:621 の Lane unlocked をこの候補にも当てます。製品の公開と PUB-G の承認は含みません。
+  - 「不要として閉じる (Recommended)」：(g)（LP-GATE を維持の cycle にも広げる）には着手しません。
+- **残り**：PUB-G #15（s7r2 の合格を PR-3 の後の候補に持ち越せるか）は、DB 段 1 の PR-3 の質問で別に伺います。not-evaluable の受領書の拡張は、PR-3 と一緒に次の S4 で行います。
+
+| ID | 日付 | レーン／PR | 判断 | 信頼境界 | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
+|---|---|---|---|---|---|---|---|---|---|
+| DR-CP4-S6-6 | 2026-11-15 | CP-4／正式 run s7r2（S4b `f2f99b13`・候補 `29a120dd`・K6/6） | 規則の当てはめは HOLD にも `[precheck]` にも当たらない（K6/4 の読み。K6/2 の字義では HOLD を開示）。集計の Gold は `gold-s7r2-1`（取り直しなし）。trace は前例どおり K6/4 の読みへ再計算。判定外の variant の扱いは前回と同じ。ユーザーが可用性の確定と (g) を閉じることを回答 | 受領書・閾値・Gold・fixture・契約は不変。新しい送信先・保存範囲の変更なし | 再凍結して測る（ユーザーが「凍結はそのまま」を選択）、Gold の取り直し（不要） | advisor で記録の記述を照合（受領書の読み先、31 件の cmp、frontier の outcome） | 該当なし（閾値の緩和・Gold の変更なし。確定はユーザー本人の回答） | 変更なし | 記録済み。ユーザー回答済み |
