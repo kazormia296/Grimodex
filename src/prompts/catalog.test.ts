@@ -13,6 +13,7 @@ import { JA_CHAT_SYSTEM } from "./ja/chatSystem";
 import { JA_POST_EFFECT } from "./ja/postEffect";
 import { EN_POST_EFFECT } from "./en/postEffect";
 import { KOUETSU_JSON_DELIMITER } from "@/features/post-effect/customInstruction";
+import { TOOL_MAP } from "@/features/chat/agent/toolDefinitions";
 
 describe("getPromptCatalog en wiring", () => {
   const en = getPromptCatalog("en");
@@ -123,5 +124,30 @@ describe("getPromptCatalog en wiring", () => {
     );
     expect(EN_POST_EFFECT.typoSystem).toContain('empty "issues" array');
     expect(EN_POST_EFFECT.intraSystem).toContain('empty "pairs" array');
+  });
+});
+
+describe("chat agentInstruction: アプリの使い方の誘導（ja/en）", () => {
+  it("使い方を聞かれたら索引で調べ、載っていないことは無いと答えるよう 1〜2 文で誘導する", () => {
+    for (const instruction of [
+      JA_CHAT_SYSTEM.agentInstruction,
+      EN_CHAT_SYSTEM.agentInstruction,
+    ]) {
+      expect(instruction).toContain("get_app_help_index");
+      expect(instruction).toContain("get_app_help`");
+      // 誘導が参照するツールは、実在する定義でなければならない。
+      expect(TOOL_MAP.has("get_app_help_index")).toBe(true);
+      expect(TOOL_MAP.has("get_app_help")).toBe(true);
+    }
+    expect(JA_CHAT_SYSTEM.agentInstruction).toContain("ヘルプには載っていない");
+    expect(JA_CHAT_SYSTEM.agentInstruction).toContain(
+      "存在しないとは言い切らない",
+    );
+    expect(EN_CHAT_SYSTEM.agentInstruction).toContain(
+      "the help does not cover it",
+    );
+    expect(EN_CHAT_SYSTEM.agentInstruction).toContain(
+      "do not claim the feature itself does not exist",
+    );
   });
 });

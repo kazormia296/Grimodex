@@ -96,6 +96,7 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/chat/agent/agentPrivacy.test.ts",
         "src/features/chat/agent/agentTextBatcher.test.ts",
         "src/features/chat/agent/aiLiveHarness.test.ts",
+        "src/features/chat/agent/appHelpTools.test.ts",
         "src/features/chat/agent/askUser.test.ts",
         "src/features/chat/agent/chronicleReadTools.test.ts",
         "src/features/chat/agent/chronicleToolCache.test.ts",
@@ -107,6 +108,8 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/chat/agent/toolExecutors.test.ts",
         "src/features/chat/agent/toolTurnCache.test.ts",
         "src/features/chat/toolProtocolParse.test.ts",
+        "src/help/helpIndex.test.ts",
+        "src/help/uiState.test.ts",
       ],
       [
         "cargo",
@@ -1688,7 +1691,8 @@ export async function runSelectedSuites(
     : null;
   for (const suiteId of selection.suiteIds) {
     const fullDefinition = effective[suiteId];
-    if (!fullDefinition) throw new Error(`No static command for suite ${suiteId}`);
+    if (!fullDefinition)
+      throw new Error(`No static command for suite ${suiteId}`);
     const definition = assigned
       ? {
           ...fullDefinition,
@@ -1724,7 +1728,8 @@ export async function runSelectedSuites(
         steps: [],
         status: "skipped",
         exitCode: null,
-        reason: "Docs-markdown-only selection: no command of this suite can read docs/.",
+        reason:
+          "Docs-markdown-only selection: no command of this suite can read docs/.",
         durationMs: 0,
       });
       continue;
@@ -1777,7 +1782,13 @@ export async function runSelectedSuites(
 }
 
 function parseArgs(argv) {
-  const result = { changedFiles: [], format: "markdown", run: false, part: null, commandPlan: false };
+  const result = {
+    changedFiles: [],
+    format: "markdown",
+    run: false,
+    part: null,
+    commandPlan: false,
+  };
   const readValue = (option, index) => {
     const value = argv[index + 1];
     if (!value || value.startsWith("--")) {

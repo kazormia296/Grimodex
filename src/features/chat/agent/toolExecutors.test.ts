@@ -152,6 +152,8 @@ afterEach(() => {
 describe("EXECUTORS — read-only allowlist invariant", () => {
   const EXPECTED_READ_ONLY_NAMES = [
     "find_related_entries",
+    "get_app_help",
+    "get_app_help_index",
     "get_chapter_summaries",
     "get_character_timeline",
     "get_chronicle_state",
@@ -161,6 +163,7 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
     "get_scene",
     "get_scene_timeline_neighbors",
     "get_thread_scenes",
+    "get_ui_state",
     "list_chapters",
     "list_codex_by_type",
     "list_codex_tags",

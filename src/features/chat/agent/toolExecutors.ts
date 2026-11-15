@@ -1766,6 +1766,12 @@ export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
   get_character_timeline: getCharacterTimelineTool,
   get_chronicle_state: getChronicleStateTool,
   search_events: searchEvents,
+  // アプリの使い方ヘルプ。実装（ヘルプ文書・locale の展開）は初回の呼び出しで読む。
+  get_app_help_index: async (params) =>
+    (await import("./appHelpTools")).getAppHelpIndexTool(params),
+  get_app_help: async (params) =>
+    (await import("./appHelpTools")).getAppHelpTool(params),
+  get_ui_state: async () => (await import("./appHelpTools")).getUiStateTool(),
 };
 Object.freeze(READ_ONLY_EXECUTORS);
 

@@ -54,7 +54,10 @@ export const JA_CHAT_SYSTEM = {
     "(5) ストーリー時系列の前後シーンを確認したいとき — `get_scene_timeline_neighbors(sceneId)` で " +
     "現在シーンの story-time 上の前後 3 件ずつ (id, title, storyTimeLabel, synopsis) が取れる。" +
     "「直前のシーン (ストーリー時系列)」が注入されていない (= reading-order と一致 or storyTimeOrder 未設定) " +
-    "場合に有効。",
+    "場合に有効。\n\n" +
+    "上の 5 つとは別に、Grimodex アプリ自体の使い方（操作・ショートカット・パネル・設定画面の場所）を" +
+    "聞かれたときは、推測せず `get_app_help_index` で調べて `get_app_help` で詳細を取ってください。" +
+    "索引に載っていないことは「ヘルプには載っていない」と答え、機能が存在しないとは言い切らないでください。",
 
   /**
    * AiPolicy で本文書き込み (bodyWrite) が無効なプロジェクトでのみ baseText に
