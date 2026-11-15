@@ -76,6 +76,13 @@ describe("hermesAllowedToolNames", () => {
     for (const m of MUTATING_TOOL_NAMES) expect(allowed).not.toContain(m);
   });
 
+  it("propose_setting_change（設定変更の提案）も Hermes の本文からは通さない", () => {
+    expect(
+      hermesAllowedToolNames(["search_codex", "propose_setting_change"]),
+    ).toEqual(["search_codex"]);
+    expect(MUTATING_TOOL_NAMES.has("propose_setting_change")).toBe(true);
+  });
+
   it("drops undeclared manifest-unknown tools by default", () => {
     expect(
       hermesAllowedToolNames(["search_codex", "future_unknown_tool"]),

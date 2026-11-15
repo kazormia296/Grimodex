@@ -1,6 +1,30 @@
 import type { AgentToolDefinition } from "./agentTypes";
+import {
+  AGENT_SETTING_CATALOG,
+  AGENT_SETTING_KEYS,
+} from "@/../electron/shared/agentSettingCatalog";
 import { READ_ONLY_TOOL_NAMES } from "./toolManifest";
 export { READ_ONLY_TOOL_NAMES } from "./toolManifest";
+
+/** propose_setting_change の説明。範囲は目録（設定画面と共有する定数）から作り、二重に持たない。 */
+const PROPOSE_SETTING_DESCRIPTION = (() => {
+  const numeric = AGENT_SETTING_CATALOG.filter(
+    (entry) => entry.type === "number" && entry.range,
+  ).map(
+    (entry) =>
+      `${entry.key} ${entry.range!.min}-${entry.range!.max} step ${entry.range!.step}`,
+  );
+  const toggles = AGENT_SETTING_CATALOG.filter(
+    (entry) => entry.type === "boolean",
+  ).map((entry) => entry.key);
+  return (
+    "Propose a change to one of the user's personal editor/display settings. This does NOT change anything: the chat shows the user a card (current value -> proposed value, with Apply and Dismiss), and only the user's click applies it, so never say a setting has already been changed. Use it only when the user asks to change one of these settings. " +
+    `Numbers (exact values only, nothing is rounded): ${numeric.join("; ")} (editor sizes are px; display.codexHighlightOpacity is shown to the user as value x 10%). ` +
+    `editor.fontFamily: exactly one of the font picker's values (\`serif\`, \`monospace\`, or a quoted family such as \`"Noto Serif JP"\`). ` +
+    `true/false: ${toggles.join(", ")}. ` +
+    "Anything else (API keys, providers, endpoints, sending or export options, other settings) cannot be proposed: tell the user where it is in the settings screen instead (get_app_help_index)."
+  );
+})();
 
 /** エージェントが使用できる全ツール定義 */
 export const AGENT_TOOLS: AgentToolDefinition[] = [
@@ -808,6 +832,33 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
         },
       },
       required: ["questions"],
+    },
+  },
+
+  // ── 設定変更の提案（write・確認あり。設定は変えず、カードを出すだけ）────────
+  {
+    name: "propose_setting_change",
+    description: PROPOSE_SETTING_DESCRIPTION,
+    inputSchema: {
+      type: "object",
+      properties: {
+        key: {
+          type: "string",
+          enum: [...AGENT_SETTING_KEYS],
+          description: "The setting to change. Only these keys are accepted.",
+        },
+        value: {
+          type: "string",
+          description:
+            'The proposed value as text: a number such as "20", "1.8", or "true"/"false", or an exact font family value for editor.fontFamily. Out-of-range, off-step and unlisted values are rejected, never rounded.',
+        },
+        reason: {
+          type: "string",
+          description:
+            "Optional short reason shown to the user on the card (max 200 characters).",
+        },
+      },
+      required: ["key", "value"],
     },
   },
 ];

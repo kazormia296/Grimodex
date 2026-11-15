@@ -38,6 +38,7 @@ import { COMMENT_REBUILD_META } from "./CommentDecorationPlugin";
 import { GUTTER_REBUILD_META } from "./GutterMarksPlugin";
 import { LINT_REBUILD_META } from "./LintDecorationPlugin";
 import { countMarkRuns } from "./layerCounts";
+import { agentSettingRange } from "@/../electron/shared/agentSettingCatalog";
 
 function LayerSwitch({
   checked,
@@ -449,9 +450,7 @@ export function LayersPopover({
                 </span>
                 <input
                   type="range"
-                  min={5}
-                  max={25}
-                  step={1}
+                  {...agentSettingRange("display.codexHighlightOpacity")}
                   value={codexOpacity}
                   onChange={(e) => setCodexOpacity(Number(e.target.value))}
                   aria-label={t("editor.layers.codexOpacity")}

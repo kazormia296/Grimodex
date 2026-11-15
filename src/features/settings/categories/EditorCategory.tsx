@@ -12,6 +12,7 @@ import { SettingNumberInput } from "../components/SettingNumberInput";
 import { SettingDropdown } from "../components/SettingDropdown";
 import { FontFamilySelect } from "../components/FontFamilySelect";
 import { useSettingBoolean } from "../useSettingControl";
+import { agentSettingRange } from "@/../electron/shared/agentSettingCatalog";
 
 export function EditorCategory() {
   const { t } = useTranslation();
@@ -111,9 +112,7 @@ export function EditorCategory() {
         <SettingRow label={t("settings.editor.fontSize")}>
           <SettingSlider
             settingKey="editor.fontSize"
-            min={14}
-            max={24}
-            step={1}
+            {...agentSettingRange("editor.fontSize")}
             defaultValue={18}
             format={(v) => `${v}px`}
           />
@@ -121,9 +120,7 @@ export function EditorCategory() {
         <SettingRow label={t("settings.editor.lineHeight")}>
           <SettingSlider
             settingKey="editor.lineHeight"
-            min={1.2}
-            max={3.0}
-            step={0.1}
+            {...agentSettingRange("editor.lineHeight")}
             defaultValue={2.0}
             format={(v) => v.toFixed(1)}
           />
@@ -131,9 +128,7 @@ export function EditorCategory() {
         <SettingRow label={t("settings.editor.maxWidth")}>
           <SettingSlider
             settingKey="editor.maxContentWidth"
-            min={480}
-            max={960}
-            step={40}
+            {...agentSettingRange("editor.maxContentWidth")}
             defaultValue={720}
             format={(v) => `${v}px`}
           />
@@ -141,9 +136,7 @@ export function EditorCategory() {
         <SettingRow label={t("settings.editor.paragraphSpacing")}>
           <SettingSlider
             settingKey="editor.paragraphSpacing"
-            min={0}
-            max={24}
-            step={2}
+            {...agentSettingRange("editor.paragraphSpacing")}
             defaultValue={8}
             format={(v) => `${v}px`}
           />

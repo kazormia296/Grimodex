@@ -552,3 +552,85 @@ describe("runAgentLoop — configurable limits & stoppedReason", () => {
     expect(res.stoppedReason).toBe("limit_calls");
   });
 });
+
+describe("runAgentLoop — settingProposal（propose_setting_change）", () => {
+  const proposal = {
+    id: "proposal-1",
+    key: "editor.fontSize",
+    value: "20",
+  };
+
+  it("成功した提案だけを record に載せ、モデルへの tool_result には載せない", async () => {
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValueOnce(
+        toolUseResponse("propose_setting_change", "tool-1", {
+          key: "editor.fontSize",
+          value: "20",
+        }),
+      )
+      .mockResolvedValueOnce(endResponse());
+    const onToolComplete = vi.fn();
+    const executeTool = vi.fn(async () =>
+      toolResult({
+        name: "propose_setting_change",
+        content: { status: "proposed" },
+        settingProposal: proposal,
+      }),
+    );
+    const res = await runAgentLoop(
+      baseOptions({
+        sendToLLM,
+        executeTool,
+        onToolComplete,
+        tools: [tool("propose_setting_change")],
+      }),
+    );
+    expect(res.toolCallRecords[0]).toMatchObject({
+      name: "propose_setting_change",
+      settingProposal: proposal,
+    });
+    expect(onToolComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ settingProposal: proposal }),
+    );
+    const secondCall = sendToLLM.mock.calls[1]![0];
+    expect(JSON.stringify(secondCall)).not.toContain("proposal-1");
+  });
+
+  it("error の結果・宣言外の呼び出しの record には提案を載せない（カードを出さない）", async () => {
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValueOnce({
+        blocks: [
+          {
+            type: "tool_use",
+            id: "tool-1",
+            name: "propose_setting_change",
+            input: {},
+          },
+          { type: "tool_use", id: "tool-2", name: "undeclared", input: {} },
+        ],
+        stopReason: "tool_use",
+      })
+      .mockResolvedValueOnce(endResponse());
+    const executeTool = vi.fn(async () =>
+      toolResult({
+        name: "propose_setting_change",
+        content: null,
+        error: "Invalid value",
+        settingProposal: proposal,
+      }),
+    );
+    const res = await runAgentLoop(
+      baseOptions({
+        sendToLLM,
+        executeTool,
+        tools: [tool("propose_setting_change")],
+      }),
+    );
+    expect(res.toolCallRecords).toHaveLength(2);
+    for (const record of res.toolCallRecords) {
+      expect(record.settingProposal).toBeUndefined();
+    }
+  });
+});

@@ -23,6 +23,7 @@ import { useSettingsStore } from "@/features/settings/settingsStore";
 import { MessageBadge } from "./MessageBadge";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { AnsweredQuestionBlock } from "./AnsweredQuestionBlock";
+import { SettingProposalCard } from "./SettingProposalCard";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { SummaryBlock } from "./SummaryBlock";
 import { CodexItemList } from "./CodexItemList";
@@ -250,6 +251,12 @@ function ChatMessageImpl({
                 {toolCalls.map((record, i) =>
                   record.name === "ask_user" ? (
                     <AnsweredQuestionBlock key={i} record={record} />
+                  ) : record.name === "propose_setting_change" &&
+                    record.settingProposal ? (
+                    <div key={i}>
+                      <ToolCallBlock record={record} />
+                      <SettingProposalCard proposal={record.settingProposal} />
+                    </div>
                   ) : (
                     <ToolCallBlock key={i} record={record} />
                   ),

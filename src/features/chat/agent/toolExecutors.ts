@@ -2119,6 +2119,10 @@ export const MUTATING_EXECUTORS: Record<string, Executor> = {
   set_event_participants: setEventParticipantsTool,
   add_event_relation: addEventRelationTool,
   remove_event_relation: removeEventRelationTool,
+  // 設定変更の提案。設定は変えず、検証済みの提案を返す（適用は利用者のカードのクリック）。
+  // 実装は初回の呼び出しまで読み込まない。DURABLE_MUTATION_TOOLS には入れない（DB を書かない）。
+  propose_setting_change: async (params) =>
+    (await import("./settingProposalTools")).proposeSettingChangeTool(params),
 };
 Object.freeze(MUTATING_EXECUTORS);
 

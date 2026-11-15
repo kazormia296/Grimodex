@@ -13,6 +13,10 @@ vi.mock("@/lib/platform", async (importOriginal) => ({
 }));
 
 import { getCommands } from "@/features/settings/keybindings";
+import {
+  AGENT_SETTING_CATALOG,
+  AGENT_SETTING_KEYS,
+} from "@/../electron/shared/agentSettingCatalog";
 import { DEFAULT_SETTINGS } from "@/features/settings/types";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useLicenseStore } from "@/features/license/store";
@@ -360,5 +364,50 @@ describe("設定の値を返さない", () => {
     ]);
     expect(dump).not.toContain(sentinel);
     expect(items.length).toBeGreaterThan(40);
+  });
+});
+
+describe("設定カテゴリの「変更を提案できる設定」", () => {
+  it("editor／display だけに目録のキー・label・型・範囲を出し、現在値は出さない", () => {
+    const sentinel = "SENTINEL-PROPOSABLE-3c1d";
+    const poisoned = defaultSettingsCache();
+    for (const key of AGENT_SETTING_KEYS) poisoned[key] = sentinel;
+    useSettingsStore.setState({ cache: poisoned });
+
+    const editor = getHelpDetail("settings:editor") as {
+      proposableSettings: Array<{
+        key: string;
+        label: string;
+        type: string;
+        range?: { min: number; max: number; step: number };
+      }>;
+      proposeWith: string;
+    };
+    const display = getHelpDetail("settings:display") as typeof editor;
+    expect(editor.proposeWith).toBe("propose_setting_change");
+    expect(editor.proposableSettings.map((s) => s.key)).toEqual(
+      AGENT_SETTING_CATALOG.filter((e) => e.categoryId === "editor").map(
+        (e) => e.key,
+      ),
+    );
+    expect(display.proposableSettings.map((s) => s.key)).toEqual(
+      AGENT_SETTING_CATALOG.filter((e) => e.categoryId === "display").map(
+        (e) => e.key,
+      ),
+    );
+    expect(
+      editor.proposableSettings.find((s) => s.key === "editor.fontSize"),
+    ).toMatchObject({
+      label: "フォントサイズ",
+      type: "number",
+      range: { min: 14, max: 24, step: 1 },
+    });
+    expect(JSON.stringify([editor, display])).not.toContain(sentinel);
+    // それ以外のカテゴリ（API key・endpoint を含む ai など）には出さない。
+    for (const id of ["ai", "keys", "data", "codex"]) {
+      expect(getHelpDetail(`settings:${id}`)).not.toHaveProperty(
+        "proposableSettings",
+      );
+    }
   });
 });

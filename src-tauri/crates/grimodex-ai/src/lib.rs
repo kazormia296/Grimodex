@@ -7232,6 +7232,7 @@ mod tests {
             "create_snippet",
             "delete_event",
             "propose_scene_body",
+            "propose_setting_change",
             "remove_event_relation",
             "set_event_participants",
             "stamp_scene_event",

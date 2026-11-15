@@ -23,6 +23,10 @@
 // envelope
 // ─────────────────────────────────────────────────────────────────────────────
 
+import {
+  containsAgentSettingKey,
+  findInvalidAgentSettingChanges,
+} from "./agentSettingCatalog.js";
 import { nir1LocalAuditReservedField } from "./nir1LocalAuditNamespace.js";
 import {
   PROFILE_ACTIVATION_REQUEST_COMMAND,
@@ -6686,6 +6690,38 @@ function parseWire(json: string): unknown {
 }
 
 /**
+ * `save_global_settings` は GlobalSettings 全体の read-modify-write で、UI の設定変更も agent の
+ * 「設定変更の提案」の適用も同じ経路を通る。agent に変更を提案させてよい 16 キー
+ * （`agentSettingCatalog`）は、保存済みの値から**変わったもの**だけを、UI と同じ範囲・step・型で
+ * 再検証する。変わっていない値は見ない（旧版の範囲外の値や移行値が 1 つあっても、他の設定の保存を
+ * 妨げない）。font は main に選択肢が無いので、CSS font-family として安全な文字列かだけを見る。
+ */
+async function assertAgentSettingChangesValid(
+  b: NapiBackendLike,
+  settings: unknown,
+): Promise<void> {
+  const incoming =
+    typeof settings === "object" && settings !== null
+      ? (settings as { userPreferences?: unknown }).userPreferences
+      : undefined;
+  if (!containsAgentSettingKey(incoming)) return;
+  const current = parseWire(await b.getGlobalSettings()) as {
+    userPreferences?: unknown;
+  } | null;
+  const invalid = findInvalidAgentSettingChanges(
+    incoming,
+    current?.userPreferences,
+  );
+  if (invalid.length > 0) {
+    throw new Error(
+      `invalid settings for \`save_global_settings\`: ${invalid
+        .map((entry) => `${entry.key}: ${entry.message}`)
+        .join("; ")}`,
+    );
+  }
+}
+
+/**
  * `reply_to_annotation` commits a local DB row, but Native's read-back row
  * contains the reply body and other annotation plaintext.  Keep the local
  * mutation usable while returning only the opaque generated id over IPC.
@@ -9385,9 +9421,9 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   save_global_settings: {
     // Tauri の unit 返りコマンドは null を resolve する（ワイヤ同形）
     run: async (b, a) => {
-      await b.saveGlobalSettings(
-        requirePresent(a, "settings", "save_global_settings"),
-      );
+      const settings = requirePresent(a, "settings", "save_global_settings");
+      await assertAgentSettingChangesValid(b, settings);
+      await b.saveGlobalSettings(settings);
       return null;
     },
   },
