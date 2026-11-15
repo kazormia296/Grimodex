@@ -7827,7 +7827,7 @@ test("lane timeout owns late Electron cleanup before publishing one artifact", a
     path.join(os.tmpdir(), "grimodex-product-lane-late-owned-"),
   );
   const child = new EventEmitter();
-  child.pid = 424251;
+  child.pid = 0x7ffffff3;
   child.exitCode = null;
   child.signalCode = null;
   child.killSignals = [];
@@ -7991,7 +7991,7 @@ test("late Electron close rejection is retained as a fatal diagnostic", async (t
     path.join(os.tmpdir(), "grimodex-product-late-close-reject-"),
   );
   const child = new EventEmitter();
-  child.pid = 424252;
+  child.pid = 0x7ffffff4;
   child.exitCode = null;
   child.signalCode = null;
   child.killSignals = [];
@@ -8083,7 +8083,7 @@ test("late Electron close hang is bounded and retained as a fatal diagnostic", a
     path.join(os.tmpdir(), "grimodex-product-late-close-hang-"),
   );
   const child = new EventEmitter();
-  child.pid = 424253;
+  child.pid = 0x7ffffff0;
   child.exitCode = null;
   child.signalCode = null;
   child.killSignals = [];
@@ -8153,19 +8153,39 @@ test("late Electron close hang is bounded and retained as a fatal diagnostic", a
     ),
   );
   assert.equal(artifactDiagnostics.cleanPass, false);
-  assert.equal(artifactDiagnostics.closeDiagnostics.length, 2);
-  const closeDiagnostic = artifactDiagnostics.closeDiagnostics.find(
-    (issue) => issue.errorName === "ProductJourneyOperationTimeoutError",
+  // 負荷の高い runner では late cleanup の完了が awaitLateElectronLaunches の期限
+  // (failureCleanupBudget + 250ms) に競り負け、期限競合の fatal
+  // (ElectronChildProcessCaptureError "Late Electron cleanup did not settle") が
+  // 3 件目として入りうる。件数は固定せず、必須の 2 種が各 1 件、全件 fatal、
+  // 許す追加は期限競合の 1 種だけ、と確かめる。
+  const diagnosticsJson = JSON.stringify(artifactDiagnostics);
+  const closeDiagnostics = artifactDiagnostics.closeDiagnostics;
+  const watchdogDiagnostics = closeDiagnostics.filter(
+    (issue) => issue.errorName === "ProductJourneyLaneWatchdogError",
   );
-  assert.ok(closeDiagnostic, JSON.stringify(artifactDiagnostics));
-  assert.equal(closeDiagnostic.fatal, true);
-  assert.match(closeDiagnostic.message, /after 500ms/u);
+  const closeTimeoutDiagnostics = closeDiagnostics.filter(
+    (issue) =>
+      issue.errorName === "ProductJourneyOperationTimeoutError" &&
+      /after 500ms/u.test(issue.message),
+  );
+  assert.equal(watchdogDiagnostics.length, 1, diagnosticsJson);
+  assert.equal(closeTimeoutDiagnostics.length, 1, diagnosticsJson);
   assert.ok(
-    artifactDiagnostics.closeDiagnostics.some(
-      (issue) => issue.errorName === "ProductJourneyLaneWatchdogError",
-    ),
-    JSON.stringify(artifactDiagnostics),
+    closeDiagnostics.every((issue) => issue.fatal === true),
+    diagnosticsJson,
   );
+  const deadlineRaceDiagnostics = closeDiagnostics.filter(
+    (issue) =>
+      issue.errorName === "ElectronChildProcessCaptureError" &&
+      /Late Electron cleanup did not settle/u.test(issue.message),
+  );
+  assert.ok(deadlineRaceDiagnostics.length <= 1, diagnosticsJson);
+  assert.equal(
+    closeDiagnostics.length,
+    2 + deadlineRaceDiagnostics.length,
+    diagnosticsJson,
+  );
+  const closeDiagnostic = closeTimeoutDiagnostics[0];
   assert.match(closeDiagnostic.message, /timed out/u);
   assert.deepEqual(child.killSignals, ["SIGTERM"]);
 });
@@ -8184,7 +8204,7 @@ test("late Electron child kill false or throw is fatal and preserves tracking", 
       path.join(os.tmpdir(), `grimodex-product-late-kill-${label}-`),
     );
     const child = new EventEmitter();
-    child.pid = label === "false" ? 424254 : 424255;
+    child.pid = label === "false" ? 0x7ffffff1 : 0x7ffffff2;
     child.exitCode = null;
     child.signalCode = null;
     child.killSignals = [];
