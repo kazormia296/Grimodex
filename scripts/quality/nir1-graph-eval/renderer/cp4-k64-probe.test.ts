@@ -4,16 +4,17 @@ import type {
   RelatedScenesGraphPathAttachment,
   RelatedScenesGraphPathEdge,
 } from "@/../electron/shared/relatedScenesSearchWire";
-import type { Nir1RelatedScenesResult } from "./nir1RelatedScenesResult";
+import type { Nir1RelatedScenesResult } from "@/features/related-scenes/nir1RelatedScenesResult";
 import type {
   Nir1RelatedScenesFetchResult,
   Nir1RelatedScenesGraphPayload,
-} from "./nir1RelatedScenesFetchTypes";
-import {
-  graphEvidenceOf,
-  rowTextsOf,
-} from "../../../scripts/quality/nir1-graph-eval/renderer/cp4-k64-probe";
+} from "@/features/related-scenes/nir1RelatedScenesFetchTypes";
+import { graphEvidenceOf, rowTextsOf } from "./cp4-k64-probe";
 
+// Run by `cp4-k64-probe-vitest.test.mjs` (vitest.probe.config.ts): the product's
+// vitest config only includes `src`, and the product source never names the
+// eval renderer (renderer-build.test.mjs D11 / T-2).
+//
 // CP-4 quality verdict v3 (§2.3, §2.0): the rows the probe reports are the
 // product's fused display rows, not the raw result and not the Graph payload.
 
