@@ -500,7 +500,6 @@ fn the_join_ends_a_cache_hits_window_right_after_its_requalification() {
 /// join, the requalification is noted right after its result is in hand and
 /// before the result is classified, and `returned` is noted last, after the
 /// handle of the Graph-only row is kept and before the payload leaves.
-#[cfg(feature = "nir1-graph-eval")]
 #[test]
 fn the_requalification_hooks_sit_at_the_result_and_at_the_return() {
     let source = include_str!("graph.rs");
