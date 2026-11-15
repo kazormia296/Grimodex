@@ -43,6 +43,7 @@ import {
   K66_FREEZE_SOURCE,
   K66_LIMIT_WORDS,
   K66_QUALITY_VERDICT_V2,
+  K67_QUALITY_VERDICT_V3,
   K66_RULE_WORDS,
   K66_S3_REVIEW,
   G01_E2E_NOT_COUNTED_AS,
@@ -8139,23 +8140,71 @@ test("S2 追補 #16: the K6/6 records hold the committed bytes at their commits 
   );
   assert.ok(record.includes(CONTRACTS.k66.freezeCommit));
   assert.ok(record.includes(CONTRACTS.k66.sha256));
-  // The implementation commit holds the verdict's two files, and they are
-  // the worktree's bytes (S2 追補 #16 and S4a do not change them).
+  // The v2 implementation commit holds the verdict's two files. They are no
+  // longer the worktree's bytes: prereg v3 replaced the implementation (its
+  // commit and bytes are K67_QUALITY_VERDICT_V3's, checked below).
   for (const file of [
     "scripts/quality/nir1-graph-eval/quality-verdict.mjs",
     "scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs",
   ])
+    assert.ok(
+      execFileSync(
+        "git",
+        ["show", `${K66_QUALITY_VERDICT_V2.implementationCommit}:${file}`],
+        { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 },
+      ).length > 0,
+      file,
+    );
+});
+
+test("品質判定 v3: 確定版（contracts 160f5fa5、SHA-256 b6166ed2…）と確認の記録の path・commit・sha256 を固定し、実装 commit の 3 file の bytes は worktree のものと一致する", () => {
+  const { v3, confirmationRecord, implementationFiles, implementationCommit } =
+    K67_QUALITY_VERDICT_V3;
+  assert.equal(
+    v3.path,
+    "docs/plans/nir1-cp4-records/quality-verdict-prereg-v3.md",
+  );
+  assert.equal(v3.commit, "160f5fa50e3434f03d253afcf872566f775a7641");
+  assert.match(v3.sha256, /^b6166ed2/u);
+  assert.equal(confirmationRecord.commit, v3.commit);
+  assert.match(confirmationRecord.sha256, /^d6db5d3a/u);
+  // The three files the CLI binds (`IMPLEMENTATION_FILES`) are the ones fixed.
+  assert.deepEqual(
+    [...implementationFiles],
+    [
+      "scripts/quality/nir1-graph-eval/quality-verdict.mjs",
+      "scripts/quality/nir1-graph-eval/quality-evidence-items.mjs",
+      "scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs",
+    ],
+  );
+  // The implementation commit holds them, and they are the worktree's bytes
+  // (S2 追補 and S4a do not change them; a rebase takes the commit again).
+  for (const file of implementationFiles)
     assert.equal(
       sha256(
-        execFileSync(
-          "git",
-          ["show", `${K66_QUALITY_VERDICT_V2.implementationCommit}:${file}`],
-          { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 },
-        ),
+        execFileSync("git", ["show", `${implementationCommit}:${file}`], {
+          cwd: repoRoot,
+          maxBuffer: 64 * 1024 * 1024,
+        }),
       ),
       sha256(readFileSync(path.join(repoRoot, file))),
       file,
     );
+  // The contracts commit, when this checkout has it, holds the confirmed bytes
+  // (a clone without the contracts branch skips this: the pinned digest above
+  // is what the formal gate checks).
+  const contracts = (() => {
+    try {
+      return execFileSync("git", ["show", `${v3.commit}:${v3.path}`], {
+        cwd: repoRoot,
+        maxBuffer: 64 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    } catch {
+      return null;
+    }
+  })();
+  if (contracts !== null) assert.equal(sha256(contracts), v3.sha256);
 });
 
 test("S2 追補 #16: parseK66Freeze reads the three fields once each from the K66_FREEZE literal only, and the worktree's constants.mjs parses to CONTRACTS.k66", () => {

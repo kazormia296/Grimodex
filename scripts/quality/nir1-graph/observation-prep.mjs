@@ -204,6 +204,35 @@ export const K66_QUALITY_VERDICT_V2 = Object.freeze({
   // running bytes to it.
   implementationCommit: "7652a86e2252eec55a22143921c33f81a481e48c",
 });
+/**
+ * Prereg v3 (the four evidence items of condition 4; contracts 160f5fa5): the
+ * final text the user confirmed by its SHA-256 (the confirmation record names
+ * `quality-verdict-prereg-v3.md` as byte-identical to the confirmed draft), the
+ * record of that confirmation, and the implementation — `quality-verdict.mjs`,
+ * `quality-evidence-items.mjs` and `quality-verdict-cli.mjs` — whose commit is
+ * fixed here and bound to the running bytes by the CLI's `--impl-commit`
+ * (prereg v3 §0·§10: by its commit, not by a branch name). The files are
+ * outside the bytes pins, as v2's are. A rebase of the implementation's
+ * branch changes this commit; S4a takes it again (S2 追補).
+ */
+export const K67_QUALITY_VERDICT_V3 = Object.freeze({
+  v3: Object.freeze({
+    path: "docs/plans/nir1-cp4-records/quality-verdict-prereg-v3.md",
+    commit: "160f5fa50e3434f03d253afcf872566f775a7641",
+    sha256: "b6166ed2b3cb79cb4484b35233098b87288addd1e7b908fc7f01c097c61d6696",
+  }),
+  confirmationRecord: Object.freeze({
+    path: "docs/plans/nir1-cp4-records/user-confirmation-2026-11-16-quality-verdict-v3.md",
+    commit: "160f5fa50e3434f03d253afcf872566f775a7641",
+    sha256: "d6db5d3ae6330613df0664db2421c71ae2b7c575fab62ef64fcc537e321c6881",
+  }),
+  implementationFiles: Object.freeze([
+    "scripts/quality/nir1-graph-eval/quality-verdict.mjs",
+    "scripts/quality/nir1-graph-eval/quality-evidence-items.mjs",
+    "scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs",
+  ]),
+  implementationCommit: "22e2fc29811796f4e34df9c8951f9c9ce7c91d8c",
+});
 export const K66_DEV_REHEARSALS = Object.freeze({
   commit: "8eb23fa67fea1cec8c9bf9930f473abcfe238e89",
   directory: "docs/plans/nir1-cp4-records/k66-dev-rehearsals-2026-11-08/",
