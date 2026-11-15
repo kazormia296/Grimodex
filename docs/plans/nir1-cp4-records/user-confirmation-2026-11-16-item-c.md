@@ -48,3 +48,23 @@ PUB-G #11 は、このうち 2 件分が残ります。
 
 - 4 件の定義の中身、utf16-range の対応づけ、G-01 の扱い。
 - 出す時期は、v3 の草案の段で、測る前です。
+
+## 追記：品質判定 v3 の起案の前の選択（2026-11-15T15:32Z ごろ、AskUserQuestion）
+
+材料は 2 つです。いずれも contracts の外にあります。
+- 設計：`item-c-design.md` 改訂 2、sha256 `ef4ee692…`
+- 骨子：`quality-verdict-prereg-v3-draft-outline.md`、sha256 `b45995fc…`
+
+この追記は v3 の確認ではありません。v3 の最終確認は、全文の SHA-256 を名指しして別に行います。
+
+### その 1：utf16-range の対応づけ
+
+- 回答：**「node-entity-evidence と読む (Recommended)」**
+- 読み方：README:53 の「Entity の名前／要約の exact UTF-16 範囲」に当てて読む。
+- 期待値：fixture の現在の名前／要約の [start,end) の hash を期待値にする。
+
+### その 2：G-01 の扱い
+
+- 回答：**「A：他の variant と同じ規則 (Recommended)」**
+- 当てる項目：utf16-range、explicit-pin-association、added-scene-body-anchor の 3 件。
+- 当てない項目：raw-excerpt-unchanged。G-01 には path attachment が無いので、対象外とする。
