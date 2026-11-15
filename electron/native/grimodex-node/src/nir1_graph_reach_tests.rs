@@ -188,9 +188,6 @@ fn outcome_label(outcome: DFinalGraphOutcome) -> String {
         DFinalGraphOutcome::NotRequested => "not-requested".into(),
         DFinalGraphOutcome::Unavailable { reason, busy_cause } => match busy_cause {
             Some(GraphBusyCause::SlotInUse) => format!("{}:slot-in-use", reason.as_str()),
-            Some(GraphBusyCause::StampUnreadable) => {
-                format!("{}:stamp-unreadable", reason.as_str())
-            }
             None => reason.as_str().to_owned(),
         },
         DFinalGraphOutcome::WaitExpired(GraphWaitKind::Warming) => "wait-expired:warming".into(),
@@ -224,10 +221,6 @@ fn diagnostics_json(d: crate::nir1_graph_product::GraphOwnerDiagnostics) -> Valu
         "preparesStarted": d.prepares_started,
         "preparesReady": d.prepares_ready,
         "prepareFailures": d.prepare_failures,
-        "stamp0Missing": d.stamp0_missing,
-        "stampFresh": d.stamp_fresh,
-        "stampStale": d.stamp_stale,
-        "stampUnavailable": d.stamp_unavailable,
         "driftAtQuery": d.drift_at_query,
         "quarantines": d.quarantines,
         "lateCached": d.late_cached,
@@ -235,7 +228,7 @@ fn diagnostics_json(d: crate::nir1_graph_product::GraphOwnerDiagnostics) -> Valu
 }
 
 /// The threads of this process by name and state, read from `/proc`: the
-/// evidence a stamp miss is investigated with (who could hold the connection).
+/// evidence a held main connection is investigated with (who could hold it).
 fn thread_listing() -> Vec<Value> {
     let mut threads = Vec::new();
     if let Ok(entries) = std::fs::read_dir("/proc/self/task") {
@@ -349,15 +342,57 @@ fn run_trial(kind: WorkerKind, case: Case) -> anyhow::Result<Value> {
 
     // The capture is the last write; D-final follows at once (interval 0).
     let submission = fixture.add_human_message("reach", "Continue after the rain.")?;
+    // DR-DBC-7: the evidence that D-final's wait holds nothing on the main
+    // connection, which the owner's freshness-stamp counters used to give. A
+    // sampler takes the wait-0 probe every few milliseconds from the owner's
+    // first begin of this request (after D-final's own seed read) until the
+    // next READY (the wait for the build, with a stale READY's query inside
+    // it). A sample that finds the connection held or in a transaction counts.
+    let workspace = grimodex_db::state::active_workspace_snapshot(&fixture.state.ws)?;
+    let begins_before = owner.diagnostics().begins;
+    let ready_before = owner.diagnostics().prepares_ready;
+    let done = AtomicBool::new(false);
     let started = Instant::now();
-    let selected = prepare_selected_local_chat_request(
-        Arc::clone(&fixture.state),
-        fixture.caller.clone(),
-        SCENE_ID,
-        &submission,
-        NO_UNSUPPORTED_INPUTS,
-        LocalGenerationIntent::writing_for_test(),
-    )?;
+    let (selected, (samples, held_samples)) = thread::scope(|scope| {
+        let sampler = scope.spawn(|| {
+            let (mut samples, mut held) = (0u64, 0u64);
+            while !done.load(Ordering::SeqCst) {
+                let d = owner.diagnostics();
+                if d.begins > begins_before {
+                    if d.prepares_ready > ready_before {
+                        break;
+                    }
+                    samples += 1;
+                    // A probe can meet another probe (the fake worker's own, in
+                    // `prepare`) for a few microseconds. Only a connection that
+                    // stays held across three probes a millisecond apart counts.
+                    let free = (0..3).any(|attempt| {
+                        if attempt > 0 {
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        workspace.db().db().main_connection_is_free_for_test()
+                    });
+                    if !free {
+                        held += 1;
+                    }
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            (samples, held)
+        });
+        let selected = prepare_selected_local_chat_request(
+            Arc::clone(&fixture.state),
+            fixture.caller.clone(),
+            SCENE_ID,
+            &submission,
+            NO_UNSUPPORTED_INPUTS,
+            LocalGenerationIntent::writing_for_test(),
+        );
+        done.store(true, Ordering::SeqCst);
+        (selected, sampler.join().unwrap_or((0, 0)))
+    });
+    let selected = selected?;
+    drop(workspace);
     let dfinal_ms = started.elapsed().as_millis();
     let outcome = selected.graph_outcome();
     let diagnostics = owner.diagnostics();
@@ -365,7 +400,7 @@ fn run_trial(kind: WorkerKind, case: Case) -> anyhow::Result<Value> {
     let graph_inputs = handoff
         .graph_binding()
         .map_or(0, |binding| binding.inputs().len());
-    let missed_stamp = diagnostics.stamp0_missing > 0 || diagnostics.stamp_unavailable > 0;
+    let connection_held = held_samples > 0;
     let mut record = json!({
         "worker": kind.name(),
         "case": case.name(),
@@ -376,9 +411,10 @@ fn run_trial(kind: WorkerKind, case: Case) -> anyhow::Result<Value> {
         "dfinalMs": dfinal_ms,
         "preparedMs": prepared_ms,
         "diagnostics": diagnostics_json(diagnostics),
-        "stampMiss": missed_stamp,
+        "mainConnectionSamples": samples,
+        "mainConnectionHeld": held_samples,
     });
-    if missed_stamp {
+    if connection_held {
         record["threads"] = json!(thread_listing());
     }
     if let Some(plan) = plan {
@@ -473,14 +509,14 @@ fn run_child(kind: WorkerKind, case: Case) -> Value {
 }
 
 /// The record of a series of trials: how many reached, and why the others did
-/// not, with the stamp and S0 misses counted apart.
+/// not, with the trials whose wait held the main connection counted apart.
 fn summarize(records: &[Value]) -> Value {
     let mut reasons = std::collections::BTreeMap::<String, usize>::new();
     let mut reached = 0usize;
     let mut errors = 0usize;
-    let mut stamp_misses = 0usize;
-    let mut s0_misses = 0u64;
-    let mut stamp_failures = 0u64;
+    let mut held_trials = 0usize;
+    let mut held_samples = 0u64;
+    let mut samples = 0u64;
     let mut waits = Vec::new();
     for record in records {
         if record.get("error").is_some() {
@@ -493,13 +529,12 @@ fn summarize(records: &[Value]) -> Value {
             let label = record["outcome"].as_str().unwrap_or("unknown").to_owned();
             *reasons.entry(label).or_default() += 1;
         }
-        if record["stampMiss"] == json!(true) {
-            stamp_misses += 1;
+        let held = record["mainConnectionHeld"].as_u64().unwrap_or(0);
+        if held > 0 {
+            held_trials += 1;
         }
-        s0_misses += record["diagnostics"]["stamp0Missing"].as_u64().unwrap_or(0);
-        stamp_failures += record["diagnostics"]["stampUnavailable"]
-            .as_u64()
-            .unwrap_or(0);
+        held_samples += held;
+        samples += record["mainConnectionSamples"].as_u64().unwrap_or(0);
         if let Some(ms) = record["dfinalMs"].as_u64() {
             waits.push(ms);
         }
@@ -512,9 +547,9 @@ fn summarize(records: &[Value]) -> Value {
         "notReached": records.len() - reached - errors,
         "errors": errors,
         "reasons": reasons,
-        "trialsWithAStampMiss": stamp_misses,
-        "s0Misses": s0_misses,
-        "stampReadFailures": stamp_failures,
+        "trialsWithAHeldConnection": held_trials,
+        "mainConnectionSamples": samples,
+        "mainConnectionHeldSamples": held_samples,
         "dfinalMs": {
             "min": waits.first(),
             "median": pick(50),
@@ -534,7 +569,7 @@ fn run_series(kind: WorkerKind, case: Case, count: usize) -> (Vec<Value>, Value)
         summary
     );
     for record in &records {
-        if record.get("error").is_some() || record["stampMiss"] == json!(true) {
+        if record.get("error").is_some() || record["mainConnectionHeld"].as_u64().unwrap_or(0) > 0 {
             eprintln!("DI-1a reach investigate: {record}");
         }
     }
@@ -548,17 +583,18 @@ fn run_series(kind: WorkerKind, case: Case, count: usize) -> (Vec<Value>, Value)
 /// A-7 (CI lane, a fake worker): the protocol of the cold-process trial and the
 /// position of the request. Each trial is a new process whose slot starts
 /// Empty; D-final waits outside every database lock, the owner is asked once
-/// and the Graph reaches the request, with no stamp or S0 miss. This checks the
+/// and the Graph reaches the request, with the main connection never found
+/// held during the wait. This checks the
 /// harness and the position; it is not the evidence of the reach (the real
 /// worker's lane below is).
 #[test]
-fn a7_a_cold_process_with_a_fake_worker_reaches_the_graph_without_a_stamp_miss() {
+fn a7_a_cold_process_with_a_fake_worker_reaches_the_graph() {
     let (records, summary) = run_series(WorkerKind::Fake, Case::Small, 2);
     assert_eq!(summary["errors"], json!(0), "{summary}");
     for record in &records {
         assert_eq!(record["reached"], json!(true), "{record}");
         assert_eq!(record["outcome"], json!("used"), "{record}");
-        assert_eq!(record["stampMiss"], json!(false), "{record}");
+        assert_eq!(record["mainConnectionHeld"], json!(0), "{record}");
         // The slot started Empty: the first answer was `warming`, and the
         // wait for READY (not a retry loop) brought the Graph.
         assert_eq!(record["diagnostics"]["unavailable"]["warming"], json!(1));
@@ -611,7 +647,7 @@ const REACH_TRIALS: usize = 30;
 
 /// A-8 (opt-in lane, the real worker): N_R cold-process trials, each in a new
 /// process. The record is the count of reached trials over N_R and the count
-/// of the others by reason; there is no lower bound. A stamp or S0 miss in any
+/// of the others by reason; there is no lower bound. A held main connection in any
 /// trial is printed with the thread listing for the investigation. Only the
 /// stop condition fails the test: no trial of N_R reached the Graph.
 ///
@@ -932,10 +968,10 @@ fn rig_over_real_b(two_revisions: bool) -> (Rig, Option<String>) {
 /// It follows a D-final request whose query makes the owner rebuild, so it
 /// first waits for that rebuild to end. What stays transient after that is
 /// retried within a bound: a `begin` answered Warming or Busy (the slot is
-/// between phases) and a query answered Stale (the rebuild's S0 stamp was
-/// taken before a commit of the request that ended just before; the owner
-/// retires that build and rebuilds). Anything else, or no available Graph
-/// within the bound, fails: a ready slot with a fresh stamp takes the query.
+/// between phases) and a query answered Stale (the worker found a commit of
+/// the request that ended just before; the owner retires that build and
+/// rebuilds). Anything else, or no available Graph within the bound, fails: a
+/// ready slot takes the query.
 fn fill_the_cache_like_related_scenes(rig: &Rig) {
     let state = &rig.fixture.state;
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -961,12 +997,12 @@ fn fill_the_cache_like_related_scenes(rig: &Rig) {
             }
             GraphBegin::Unavailable(reason) => {
                 panic!(
-                    "a ready slot with a fresh stamp takes the query, not {}",
+                    "a ready slot takes the query, not {}",
                     reason.as_str()
                 )
             }
             GraphBegin::Cached(_) => {
-                panic!("a ready slot with a fresh stamp takes the query, not the cache")
+                panic!("a ready slot takes the query, not the cache")
             }
         };
         let outcome = ticket
@@ -984,7 +1020,7 @@ fn fill_the_cache_like_related_scenes(rig: &Rig) {
             other => panic!("the query of a ready slot is available: {other:?}"),
         }
     }
-    panic!("a ready slot with a fresh stamp takes the query (last: {last})");
+    panic!("a ready slot takes the query (last: {last})");
 }
 
 /// The inject of DI-1c's table, except the index generation, which here is a

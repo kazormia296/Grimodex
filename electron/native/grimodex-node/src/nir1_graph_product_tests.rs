@@ -483,32 +483,27 @@ fn first_query_warms_then_ready_serves_next_query_after_retirement() {
 }
 
 #[test]
-fn stale_stamp_retires_without_query_and_rebuilds() {
+fn a_worker_drift_retires_the_queried_worker_and_rebuilds() {
+    // DR-DBC-7: the parent no longer pre-reads a freshness value. A commit
+    // after READY is found by the worker's own drift check, which runs at the
+    // query: the worker is queried once, answers `RegistrationDrift`, maps to
+    // `Stale`, retires and the session rebuilds.
     let fixture = ProductFixture::new();
     fixture.warm();
-    fixture
-        .authority
-        .db()
-        .with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO projects(id,title) VALUES ('stale-probe','Probe')",
-                [],
-            )?;
-            Ok(())
-        })
-        .expect("commit after READY");
+    *lock(&fixture.plan.query_mode) = QueryMode::Unavailable(UnavailableReason::RegistrationDrift);
     let ticket = pending(fixture.begin("entity"));
     assert!(matches!(
         ticket.wait_timeout(Duration::from_secs(2)),
         Some(GraphTicketOutcome::Unavailable(GraphUnavailable::Stale))
     ));
-    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 0);
-    // The verdict is delivered first; the unused worker retires right after it.
-    wait_until("stale worker retired", || {
+    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.diagnostics().drift_at_query, 1);
+    // The verdict is delivered first; the queried worker retires right after it.
+    wait_until("drifted worker retired", || {
         fixture.plan.retires.load(Ordering::SeqCst) == 1
     });
-    assert_eq!(fixture.diagnostics().stamp_stale, 1);
     ticket.finish(GraphTicketUse::Used);
+    *lock(&fixture.plan.query_mode) = QueryMode::Ok;
     wait_until("rebuilt READY", || {
         fixture.plan.creates.load(Ordering::SeqCst) == 2 && fixture.kind() == GraphSlotKind::Ready
     });
@@ -517,36 +512,6 @@ fn stale_stamp_retires_without_query_and_rebuilds() {
         next.wait_timeout(Duration::from_secs(2)),
         Some(GraphTicketOutcome::Available(_))
     ));
-}
-
-#[test]
-fn unavailable_stamp_still_queries_and_worker_drift_maps_to_stale() {
-    let fixture = ProductFixture::new();
-    fixture.warm();
-    *lock(&fixture.plan.query_mode) = QueryMode::Unavailable(UnavailableReason::RegistrationDrift);
-    let authority = Arc::clone(&fixture.authority);
-    let blocker = thread::spawn(move || {
-        authority.db().with_conn(|_| {
-            thread::sleep(Duration::from_secs(2));
-            Ok(())
-        })
-    });
-    thread::sleep(Duration::from_millis(50));
-    let started = Instant::now();
-    let ticket = pending(fixture.begin("entity"));
-    assert!(started.elapsed() < Duration::from_secs(1));
-    assert!(matches!(
-        ticket.wait_timeout(Duration::from_secs(3)),
-        Some(GraphTicketOutcome::Unavailable(GraphUnavailable::Stale))
-    ));
-    let diagnostics = fixture.diagnostics();
-    assert_eq!(diagnostics.stamp_unavailable, 1);
-    assert_eq!(diagnostics.drift_at_query, 1);
-    ticket.finish(GraphTicketUse::Used);
-    blocker
-        .join()
-        .expect("blocker thread")
-        .expect("blocker commit");
 }
 
 #[test]
@@ -1443,22 +1408,6 @@ fn preparing_edge_discards_the_worker_once_prepare_returns() {
     assert_eq!(fixture.diagnostics().prepares_ready, 0);
 }
 
-#[test]
-fn cancel_before_the_freshness_read_never_queries() {
-    let fixture = ProductFixture::new();
-    fixture.warm();
-    // Holding the workspace slot blocks the owner at the S1 read, before the query.
-    let held = lock_workspace_slot(&fixture.state);
-    let ticket = pending(fixture.begin("entity"));
-    ticket.finish(GraphTicketUse::Cancelled);
-    drop(held);
-    wait_until("back to READY after cancel", || {
-        fixture.kind() == GraphSlotKind::Ready
-    });
-    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 0);
-    assert_eq!(fixture.plan.retires.load(Ordering::SeqCst), 0);
-}
-
 /// Admits a Restore transition, then drains the owner through physical
 /// exclusion on another thread and completes the transition. Returns the
 /// status published by the completed transition.
@@ -1848,23 +1797,13 @@ fn open_relabel_requires_quarantine_conflict_and_active_operation() {
 fn stale_retirement_that_quarantines_never_rebuilds() {
     let fixture = ProductFixture::new();
     fixture.warm();
-    // The unused worker's retirement cannot prove its cleanup. The stale verdict
-    // must end the session in Quarantined, not start a second prepare.
+    // The queried worker's retirement cannot prove its cleanup. The worker's
+    // drift verdict (stale) must end the session in Quarantined, not start a second prepare.
     fixture
         .plan
         .retire_quarantines
         .store(true, Ordering::SeqCst);
-    fixture
-        .authority
-        .db()
-        .with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO projects(id,title) VALUES ('stale-quarantine','Probe')",
-                [],
-            )?;
-            Ok(())
-        })
-        .expect("commit after READY");
+    *lock(&fixture.plan.query_mode) = QueryMode::Unavailable(UnavailableReason::RegistrationDrift);
     let ticket = pending(fixture.begin("entity"));
     assert!(matches!(
         ticket.wait_timeout(Duration::from_secs(2)),
@@ -1877,7 +1816,7 @@ fn stale_retirement_that_quarantines_never_rebuilds() {
     thread::sleep(Duration::from_millis(200));
     assert_eq!(fixture.kind(), GraphSlotKind::Quarantined);
     assert_eq!(fixture.plan.prepares.load(Ordering::SeqCst), 1);
-    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 1);
     assert!(fixture.state.nir1_graph.is_quarantined());
     assert!(fixture
         .state
@@ -2231,26 +2170,6 @@ fn assert_ticket_answer_is_announced_by_the_rebuilt_ready(
         vec![PROJECT.to_string(), PROJECT.to_string()]
     );
     ticket.finish(GraphTicketUse::Used);
-}
-
-#[test]
-fn stale_stamp_answered_through_a_ticket_is_announced_by_the_rebuilt_ready() {
-    assert_ticket_answer_is_announced_by_the_rebuilt_ready(
-        |fixture| {
-            fixture
-                .authority
-                .db()
-                .with_conn(|conn| {
-                    conn.execute(
-                        "INSERT INTO projects(id,title) VALUES ('announce-probe','Probe')",
-                        [],
-                    )?;
-                    Ok(())
-                })
-                .expect("commit after READY");
-        },
-        GraphUnavailable::Stale,
-    );
 }
 
 #[test]
