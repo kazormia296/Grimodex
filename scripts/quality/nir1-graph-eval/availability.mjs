@@ -589,8 +589,17 @@ export function mainReason(categories, outOfWindow) {
  * read over. The record keeps both values.
  */
 export function readMainReason(main) {
+  // An unset or unknown value is an artifact: reading it through would send
+  // rule 6's last branch (condition met) a main reason nobody decided. `null`
+  // is rule 5's "no out-of-window query" and stays.
+  if (main !== null && !MAIN_REASONS.has(main))
+    throw new Error(
+      `[artifact] the main reason is not one of lapse, other, freshness or none: ${String(main)}`,
+    );
   return main === "freshness" ? "other" : main;
 }
+
+const MAIN_REASONS = new Set(["lapse", "other", "freshness", "none"]);
 
 function invalidTrace(trace, invalid, Q, requeries, violations = []) {
   return {
@@ -1254,6 +1263,18 @@ export function evaluateDiagnosticCondition(input) {
   // The reading is applied here too (idempotent): a summary that carries a
   // "freshness" main reason (a hand-built or older one) is read the same way
   // and never reaches the last branch (K6/7 攻撃 33).
+  // A trace over the out-of-window yardstick has out-of-window queries, so its
+  // main reason is one of the four values; a missing or unknown one (or a
+  // `null`) is an artifact, never the last branch.
+  for (const trace of exceeding)
+    for (const value of [
+      trace.mainReason,
+      trace.mainReasonBeforeReading ?? trace.mainReason,
+    ])
+      if (!MAIN_REASONS.has(value))
+        throw new Error(
+          `[artifact] a trace over the out-of-window yardstick has no known main reason: ${String(value)}`,
+        );
   const mainsBeforeReading = exceeding.map(
     (trace) => trace.mainReasonBeforeReading ?? trace.mainReason,
   );

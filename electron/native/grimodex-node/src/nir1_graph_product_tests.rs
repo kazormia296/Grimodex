@@ -583,6 +583,12 @@ fn cancelled_ticket_never_publishes_or_caches() {
     *lock(&fixture.plan.query_mode) = QueryMode::Hold;
     let ticket = pending(fixture.begin("entity"));
     let waiter = ticket.waiter();
+    // The cancellation must land while the worker is inside its query. Without
+    // this wait the owner may see the flag first (no query, and the worker is
+    // then retired by the idle limit instead), which passed this test too.
+    wait_until("query started", || {
+        fixture.plan.queries.load(Ordering::SeqCst) == 1
+    });
     ticket.finish(GraphTicketUse::Cancelled);
     fixture.plan.release.store(true, Ordering::SeqCst);
     assert!(matches!(
@@ -592,8 +598,58 @@ fn cancelled_ticket_never_publishes_or_caches() {
     wait_until("worker retired", || {
         fixture.plan.retires.load(Ordering::SeqCst) == 1
     });
+    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.diagnostics().retired_idle, 0);
     assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+/// DR-DBC-7: replaces `cancel_before_the_freshness_read_never_queries`, which
+/// held the workspace slot to stop the owner at the S1 read (deleted with the
+/// stamp). The same property, a cancellation that lands before the owner has
+/// looked at the query never reaches the worker, is fixed by stopping the owner
+/// in the READY notifier instead: `notify_ready` runs on the owner thread after
+/// READY is published and before it receives from its command queue.
+#[test]
+fn cancel_before_the_owner_receives_the_query_never_queries() {
+    let fixture = ProductFixture::new();
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let release_rx = Mutex::new(release_rx);
+    assert!(fixture.state.nir1_graph.set_graph_ready_notifier(Arc::new(
+        move |_notice: &GraphReadyNotice| {
+            let _ = entered_tx.send(());
+            // Returns on the release, or when the test drops the sender.
+            let _ = lock(&release_rx).recv();
+        }
+    )));
+    // A Warming begin leaves the demand unserved, so the owner announces READY.
+    assert!(matches!(
+        fixture.begin("entity"),
+        GraphBegin::Unavailable(GraphUnavailable::Warming)
+    ));
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the owner thread is inside the READY notifier");
+    assert_eq!(fixture.kind(), GraphSlotKind::Ready);
+    let ticket = pending(fixture.begin("entity"));
+    let waiter = ticket.waiter();
+    assert_eq!(fixture.kind(), GraphSlotKind::InUse);
+    ticket.finish(GraphTicketUse::Cancelled);
+    // The owner is still inside the notifier: it has not seen the query.
+    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 0);
+    release_tx.send(()).expect("release the notifier");
+    wait_until("back to READY after the cancel", || {
+        fixture.kind() == GraphSlotKind::Ready
+    });
+    assert!(matches!(
+        waiter.wait_timeout(Duration::from_secs(2)),
+        Some(GraphTicketOutcome::Unavailable(GraphUnavailable::Cancelled))
+    ));
+    assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.plan.retires.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.diagnostics().retired_idle, 0);
+    assert_eq!(fixture.kind(), GraphSlotKind::Ready);
 }
 
 #[test]

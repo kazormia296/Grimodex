@@ -633,6 +633,36 @@ test("K6/7 攻撃 33: 規則 6 は要約の主な理由「鮮度」（手組み�
     assert.equal(readMainReason(before), after);
 });
 
+test("K6/7 N-h7: 主な理由が未設定・未知・null の超過 trace と readMainReason は [artifact] で、最後の枝（条件成立）に落ちない", () => {
+  for (const bad of [undefined, "unknown", "", "Freshness", 0])
+    assert.throws(
+      () => readMainReason(bad),
+      /\[artifact\]/,
+      `readMainReason(${String(bad)})`,
+    );
+  assert.equal(readMainReason(null), null);
+  for (const bad of [undefined, "unknown", "", null]) {
+    const built = {
+      ...quietTrace("editing"),
+      Q: 200,
+      U: 200,
+      outOfWindowU: 20,
+      outOfWindowExceeds: true,
+    };
+    if (bad !== undefined) built.mainReason = bad;
+    assert.throws(
+      () =>
+        evaluateDiagnosticCondition({
+          kind: "ii",
+          steadyState: VALID_A,
+          traces: [built, quietTrace("browsing")],
+        }),
+      /\[artifact\]/,
+      `a trace whose main reason is ${String(bad)}`,
+    );
+  }
+});
+
 test("K6/7 N-h5: freshness 9, other 8, lapse 3 has no majority; the reading does not fold freshness into other first", () => {
   const result = traceOf(mixedTrace({ lapse: 3, freshness: 9, other: 8 }));
   assert.equal(result.outOfWindow, 20);

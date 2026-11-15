@@ -324,6 +324,11 @@ fn run_trial(kind: WorkerKind, case: Case) -> anyhow::Result<Value> {
             .into_d_transport_handoff();
             let candidates = graph_candidates_for(control.authority_bindings(), generation)?;
             let fake = Arc::new(Plan::default());
+            // A stand-in for the registration the real worker spends here. With
+            // an instant prepare the wait is shorter than the sampler's period
+            // and the probe would run zero times: the lane then proves nothing
+            // about the main connection (found in review of DR-DBC-7).
+            fake.prepare_delay_ms.store(60, Ordering::SeqCst);
             *lock(&fake.candidates) = Some(candidates);
             owner.install_worker_factory_for_test(Arc::new(FakeFactory(Arc::clone(&fake))));
             plan = Some(fake);
@@ -595,6 +600,11 @@ fn a7_a_cold_process_with_a_fake_worker_reaches_the_graph() {
         assert_eq!(record["reached"], json!(true), "{record}");
         assert_eq!(record["outcome"], json!("used"), "{record}");
         assert_eq!(record["mainConnectionHeld"], json!(0), "{record}");
+        // The probe ran during the wait; zero samples would be a vacuous pass.
+        assert!(
+            record["mainConnectionSamples"].as_u64().unwrap_or(0) > 0,
+            "{record}"
+        );
         // The slot started Empty: the first answer was `warming`, and the
         // wait for READY (not a retry loop) brought the Graph.
         assert_eq!(record["diagnostics"]["unavailable"]["warming"], json!(1));
@@ -615,11 +625,14 @@ fn a7_a_cold_process_with_a_fake_worker_reaches_the_graph() {
 #[ignore = "opt-in: needs NIR1_C_QUERY_WORKER_BIN (the packaged worker binary)"]
 fn a7_a_cold_process_with_the_real_worker_reaches_the_graph() {
     let mut reached = 0usize;
+    let mut samples = 0u64;
     for case in [Case::Small, Case::Two] {
         let (_, summary) = run_series(WorkerKind::Real, case, 1);
         assert_eq!(summary["errors"], json!(0), "{summary}");
         reached += summary["reached"].as_u64().unwrap_or(0) as usize;
+        samples += summary["mainConnectionSamples"].as_u64().unwrap_or(0);
     }
+    assert!(samples > 0, "the main-connection probe never ran");
     assert!(
         reached >= 1,
         "[precheck] D-final reached the Graph in none of the cold-process cases"
@@ -635,6 +648,10 @@ fn a7_a_cold_process_with_the_real_worker_reaches_the_graph() {
 fn a8_supplement_the_stale_path_of_the_real_worker_is_recorded() {
     let (_, summary) = run_series(WorkerKind::Real, Case::SmallWarm, 10);
     assert_eq!(summary["errors"], json!(0), "{summary}");
+    assert!(
+        summary["mainConnectionSamples"].as_u64().unwrap_or(0) > 0,
+        "the main-connection probe never ran: {summary}"
+    );
     assert!(
         summary["reached"].as_u64().unwrap_or(0) > 0,
         "[precheck] the stale path reached the Graph in none of 10 trials: {summary}"
@@ -658,6 +675,10 @@ const REACH_TRIALS: usize = 30;
 fn a8_the_reach_of_the_real_worker_is_recorded() {
     let (_, summary) = run_series(WorkerKind::Real, Case::Small, REACH_TRIALS);
     assert_eq!(summary["errors"], json!(0), "{summary}");
+    assert!(
+        summary["mainConnectionSamples"].as_u64().unwrap_or(0) > 0,
+        "the main-connection probe never ran: {summary}"
+    );
     assert!(
         summary["reached"].as_u64().unwrap_or(0) > 0,
         "[precheck] the Graph reached D-final in none of {REACH_TRIALS} trials: {summary}"

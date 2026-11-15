@@ -909,6 +909,27 @@ P1 は 0 件。直したものと判断は次のとおり。
 8. harness：`followup.k66.test.mjs`（試験名 N3a〜N3e・N4・N8・N12a・P1 の書き換え。**`N3d`・`N3e` は harness の試験名で、K6/6 の契約の負例ではない**〔契約の負例は N3a〜N3c〕）、`availability.test.mjs`、`native-sample.test.mjs`、`k64-record.test.mjs`、`trace-record.test.mjs`、`native-architecture.test.mjs`（`:360-365` の mutation を busy の hook に差し替え）、`observation-prep.test.mjs`（bytes pin、`S4_PROCEDURE_WORDS`、`K66_LIMIT_WORDS`）。
 9. `fnm exec --using=22 pnpm -s verify:quality`（Node 22）、`cargo test -p grimodex-db --lib`（nir1_graph）と node crate。レイアウトには触れない。
 
+### 試験の追補（実装の後のコードレビュー。2026-11-16）
+
+**消した試験と代わりの試験**：
+- 削除：`cancel_before_the_freshness_read_never_queries`（`origin/master` `3948eeb2` の `nir1_graph_product_tests.rs:1447`）。workspace slot を握って owner を S1 の読み（query の前）で止め、その間の cancel が query に届かないことを見る試験で、S1 の読みが無くなったので前提ごと消えた。
+- 代わり：`cancel_before_the_owner_receives_the_query_never_queries`（同 file）。止める場所を READY の notifier に移した。`notify_ready` は owner thread で同期に呼ばれ（`nir1_graph_product.rs:690-697`）、READY の公開の後・`serve_until_retired` の recv の前（`:2316-2326`）に当たる。手順は、Warming の begin で未応答の印を付ける → notifier に入るのを待つ → 2 回目の begin（Pending、slot は InUse）→ `finish(Cancelled)` → notifier を放す。確認は、放す前に `queries == 0`、放した後に READY へ戻り、outcome が Cancelled、`queries == 0`・`retires == 0`・`retired_idle == 0`。`serve_query` の cancel の検査を外す mutation で `queries` が 1 になって落ちることを確かめた（一時的な変更で、戻した）。
+- 同じ範囲の被覆は 2 本で分ける。この試験は「owner が query を見る前の cancel」、残した `cancelled_ticket_never_publishes_or_caches` は「worker が query の中にいる間の cancel」。
+
+**`cancelled_ticket_never_publishes_or_caches` は偽陽性の形だった**（直した）：旧版は begin の直後に `finish(Cancelled)` し、`retires == 1` を待っていた。`finish(Cancelled)` は ticket の outcome をその場で Cancelled にするので outcome の assert は owner の動きを見ない。owner が cancel の旗を先に見ると query は 0 回で、worker は 300 ms の idle 退役で retire され、`retires == 1` はそれでも満たされる。40 回の実測で、`queries=0・retired_idle=1`（先に見た）が 28 回、`queries=1・retired_idle=0`（query の中）が 12 回で、どちらの順でも通っていた。直しは `queries == 1` を待ってから `finish(Cancelled)` し、`queries == 1`・`retired_idle == 0` を assert すること。
+
+**`i_a_a_commit_after_the_release_and_before_the_registration_is_taken_in` の強化**：create の commit の行数（1）、別接続（観測用）の `data_version` が commit の前後で動くこと、worker の registration が commit の後の状態（scene の title が commit した値）で取られたこと、`prepares == 1` を assert する。【未確認のまま】削除前の checkout で同じ構成が `Stale` になることは実測していない。この区間（S0 の後・registration の前の commit）で、削除後は stale を返さないことの根拠は、registration が commit の後の状態で取られることをこの試験が固定している点と、コードの読み（worker の drift の検査は registration の読みと query の読みの比較だけ）であり、削除前の動作との比較は読みだけに依る。
+
+**reach の sampler**：`mainConnectionSamples` が 0 のまま通る形だった（fake の lane は prepare が即時で、sampler の周期 2 ms より待ちが短く、実測で 0 だった）。fake の worker の prepare に 60 ms を入れて（registration の stand-in）sample を取り、fake の a7 に record ごとの `mainConnectionSamples > 0`、real の a7／a8 に合計の `> 0` を足した。
+
+**未知の主な理由**：`availability.mjs` の `readMainReason` と規則 6 は、未設定・未知・（規則 6 では）null の主な理由を `[artifact]` で止める。以前は規則 6 の最後の枝（`condition-met-confirmation-required`）に落ちた。負例は `availability.test.mjs` の N-h7。
+
+**持ち越し**（PR 本文に書く）：
+1. `await_request` を通る (ii-b) ②-2 の試験が無い。②-2 は accessor を直接呼ぶ試験（`ii_b_*` 3 本）だけで固定している。
+2. HEAD の評価 build での dev run（dev-shape の g06 を、base と head の対で）は未実施。`drift_at_query`・Stale・late・W の gate（上の gate の節）はこの run の後に判断する。
+3. `scripts/nir1-c-query-worker-ci.sh lifecycle` は実行していない（release build が worktree に無く、cold の release build と 8 case の逐次実行が 15 分に収まらないため）。この PR の grimodex-db の変更は probe（`main_connection_is_free_for_test`）と試験で、worker の process の停止・再起動・cutover には触れない。PR の前に CI 側（または時間のある実行）で確かめる。
+4. opt-in の real worker 試験は debug の worker（`NIR1_C_QUERY_WORKER_BIN`）で 2026-11-16 に実行した：`i_b_the_real_worker_…`、`a7_…real_worker`（`mainConnectionSamples` は small 25・two-revisions 31）、`a8_supplement_…`（10/10 reached、samples 4831）、`a8_the_reach_…`（30/30 reached、samples 791、held 0）はすべて成功。
+
 ### gate（測るもの。数値の線は置かない）
 
 - 動作の同等：dev の A/B（凍結外の fixture。base＝PR-3 の無い master、head＝PR-3。DR-DBC-6 の A/B と同じく交互に各 3 run 以上。回転 HDD と tmpfs の両方。測定環境が結果に効く）で、**`Stale`（base は `stamp_stale + drift_at_query`、head は `drift_at_query`）、late（`graph-late`）、`drift_at_query`、begin→query の時間、registration の窓 W が悪化しない**こと。**新しい閾値は置かない**。悪化の判断は、base の run 間の幅を記録し、head がその幅の外で悪い方へ出たら止まって報告する（C8 のとおり、未達は止まって再相談）。線は「悪化しない」の記録で、置く場合はユーザーに確認する。

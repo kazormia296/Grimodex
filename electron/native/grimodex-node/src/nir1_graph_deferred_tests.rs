@@ -16,7 +16,7 @@ use grimodex_semantic::audit::{
     TokenizerIdentity,
 };
 use serde_json::json;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicI64, AtomicUsize};
 
 fn begin_deferred(fixture: &ProductFixture, seed: &str) -> GraphBegin {
     fixture
@@ -816,6 +816,15 @@ struct DriftPlan {
     /// A commit made by `create`, after the admission and before the worker
     /// registers (the window the parent's pre-read freshness check used to turn into `stale`).
     create_hook_commits: AtomicBool,
+    /// What `create`'s commit did, seen from another connection: the rows it
+    /// changed, and `PRAGMA data_version` of an observer connection (the kind
+    /// of connection the worker's drift check uses) before and after it.
+    create_commit_rows: AtomicUsize,
+    create_data_version_before: AtomicI64,
+    create_data_version_after: AtomicI64,
+    /// The scene title the worker's own connection saw when its registration
+    /// began (`prepare`): the state the registration was taken on.
+    registered_title: Mutex<Option<String>>,
 }
 
 struct DriftFactory {
@@ -839,17 +848,22 @@ impl GraphWorkerFactory for DriftFactory {
     fn create(&self, start: GraphWorkerStart) -> Box<dyn GraphWorker> {
         self.plan.creates.fetch_add(1, Ordering::SeqCst);
         if self.plan.create_hook_commits.load(Ordering::SeqCst) {
-            start
+            let observer = grimodex_db::Database::new(&self.db_path).expect("observer connection");
+            let before = data_version(&observer).expect("data_version before the commit");
+            let rows = start
                 .snapshot
                 .db()
                 .with_conn(|conn| {
-                    conn.execute(
+                    Ok(conn.execute(
                         "UPDATE tree_nodes SET title=?1 WHERE id=?2",
                         ("Edited before the registration", SCENE),
-                    )?;
-                    Ok(())
+                    )?)
                 })
                 .expect("commit before the registration");
+            let after = data_version(&observer).expect("data_version after the commit");
+            self.plan.create_commit_rows.store(rows, Ordering::SeqCst);
+            self.plan.create_data_version_before.store(before, Ordering::SeqCst);
+            self.plan.create_data_version_after.store(after, Ordering::SeqCst);
         }
         Box::new(DriftWorker {
             db_path: self.db_path.clone(),
@@ -866,6 +880,14 @@ impl GraphWorker for DriftWorker {
         self.plan.prepares.fetch_add(1, Ordering::SeqCst);
         let db = grimodex_db::Database::new(&self.db_path)?;
         let before = data_version(&db)?;
+        let title = db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT title FROM tree_nodes WHERE id=?1",
+                [SCENE],
+                |row| row.get::<_, String>(0),
+            )?)
+        })?;
+        *lock(&self.plan.registered_title) = Some(title);
         self.plan.registering.store(true, Ordering::SeqCst);
         thread::sleep(Duration::from_millis(
             self.plan.registration_ms.load(Ordering::SeqCst),
@@ -1113,6 +1135,21 @@ fn i_a_a_commit_after_the_release_and_before_the_registration_is_taken_in() {
     ticket.finish(GraphTicketUse::Used);
     let diagnostics = fixture.diagnostics();
     assert_eq!(plan.creates.load(Ordering::SeqCst), 1);
+    // The commit happened (one row), and a connection that was open across it
+    // saw the data version move: a stale verdict on a moved version is what a
+    // freshness read taken before it would have made.
+    assert_eq!(plan.create_commit_rows.load(Ordering::SeqCst), 1);
+    assert_ne!(
+        plan.create_data_version_before.load(Ordering::SeqCst),
+        plan.create_data_version_after.load(Ordering::SeqCst),
+        "the commit moved data_version"
+    );
+    // The registration was taken after it, on the committed state.
+    assert_eq!(
+        lock(&plan.registered_title).as_deref(),
+        Some("Edited before the registration")
+    );
+    assert_eq!(plan.prepares.load(Ordering::SeqCst), 1);
     assert_eq!(plan.queries.load(Ordering::SeqCst), 1);
     assert_eq!(plan.drifted.load(Ordering::SeqCst), 0);
     assert_eq!(plan.refused.load(Ordering::SeqCst), 0);
