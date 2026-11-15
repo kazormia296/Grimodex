@@ -16,6 +16,8 @@ import {
   IMPLEMENTATION_FILES,
   V2_BRANCH,
   V2_FILE_PATH,
+  V3_BRANCH,
+  V3_FILE_PATH,
   assertImplementationBound,
   checkFirstRunPrecheck,
   firstFormalRunOf,
@@ -460,4 +462,171 @@ test("v2 §0: assertImplementationBound compares the running bytes with the impl
       /differs from its bytes/u,
       file,
     );
+});
+
+// Prereg v3: the v3 final text and the implementation (bound by its commit,
+// on any branch) must be on the remote before the first formal run, and the
+// v3 file's bytes must be its commit's blob at the fixed path.
+const V3_BYTES = "# v3 final\n";
+mkdirSync(path.join(REPO, path.dirname(V3_FILE_PATH)), { recursive: true });
+writeFileSync(path.join(REPO, V3_FILE_PATH), V3_BYTES);
+git(REPO, "add", V3_FILE_PATH);
+git(
+  REPO,
+  "-c",
+  "user.name=t",
+  "-c",
+  "user.email=t@example.invalid",
+  "commit",
+  "-q",
+  "-m",
+  "v3",
+);
+const V3_COMMIT = git(REPO, "rev-parse", "HEAD");
+const V3_SHA = sha256(V3_BYTES);
+const V3_RECORDS = [
+  ...RECORDS,
+  remote(V3_COMMIT, "2026-11-09T01:30:00Z", "repository-activity", V3_BRANCH),
+];
+
+test("prereg v3 §0: the v3 commit and the implementation (any branch) are on the remote strictly before the first formal run", () => {
+  const firstRun = firstFormalRunOf(byKind(STARTS), ALLOW);
+  const check = (records, extra = {}) =>
+    checkFirstRunPrecheck({
+      v2Commit: V2_COMMIT,
+      v2Sha256: V2_SHA,
+      v3Commit: V3_COMMIT,
+      v3Sha256: V3_SHA,
+      implCommit: IMPL_COMMIT,
+      remoteRecords: records,
+      firstRun,
+      ...extra,
+    });
+  const out = check(V3_RECORDS);
+  assert.equal(out.v3.commit, V3_COMMIT);
+  assert.equal(out.v3.sha256, V3_SHA);
+  assert.equal(out.v3.branch, V3_BRANCH);
+  // The implementation is bound by its commit: a rebased branch's name does
+  // not matter with v3 (it did with v2 alone).
+  const renamed = V3_RECORDS.map((row) =>
+    row.commit === IMPL_COMMIT ? { ...row, branch: "claude/s4-9-itemc" } : row,
+  );
+  assert.equal(check(renamed).implementation.branch, "claude/s4-9-itemc");
+  assert.throws(
+    () =>
+      checkFirstRunPrecheck({
+        v2Commit: V2_COMMIT,
+        v2Sha256: V2_SHA,
+        implCommit: IMPL_COMMIT,
+        remoteRecords: renamed,
+        firstRun,
+      }),
+    /names no entry on the branch/u,
+  );
+  // The v3 commit must be on the contracts branch and before the first run.
+  assert.throws(
+    () =>
+      check(
+        V3_RECORDS.map((row) =>
+          row.commit === V3_COMMIT ? { ...row, branch: "claude/other" } : row,
+        ),
+      ),
+    /v3 commit .* names no entry on the branch/u,
+  );
+  assert.throws(
+    () =>
+      check(
+        V3_RECORDS.map((row) =>
+          row.commit === V3_COMMIT
+            ? { ...row, remoteTimeUtc: STARTS["sp-p4"] }
+            : row,
+        ),
+      ),
+    /v3 commit .* not before the first formal run/u,
+  );
+  assert.throws(() => check(RECORDS), /no entry for the v3 commit/u);
+  assert.throws(
+    () => check(V3_RECORDS, { v3Commit: "abc" }),
+    /full commit ID/u,
+  );
+});
+
+test("prereg v3 §0: loadFirstRunInputs binds the v3 file to its commit's blob at the fixed path; both v3 inputs go together", () => {
+  const dirs = {};
+  for (const kind of FIRST_RUN_RECEIPT_KINDS) {
+    const dir = path.join(ROOT, `receipts-v3-${kind}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(
+        dir,
+        kind === "g01-diagnostic" ? "g01-e2e-run.json" : `${kind}.receipt.json`,
+      ),
+      JSON.stringify(receipt(kind, STARTS[kind])),
+    );
+    dirs[kind] = dir;
+  }
+  const recordPath = path.join(ROOT, "remote-record-v3.json");
+  writeFileSync(recordPath, JSON.stringify(V3_RECORDS));
+  const RUNNING = Object.fromEntries(
+    IMPLEMENTATION_FILES.map((file) => [file, Buffer.from(`code of ${file}`)]),
+  );
+  const base = {
+    running: RUNNING,
+    readBlob: (_commit, file) => Buffer.from(RUNNING[file]),
+    v2File: path.join(REPO, V2_FILE_PATH),
+    v2Commit: V2_COMMIT,
+    v3File: path.join(REPO, V3_FILE_PATH),
+    v3Commit: V3_COMMIT,
+    implCommit: IMPL_COMMIT,
+    remoteTimeRecordPath: recordPath,
+    dirs,
+    allowList: ALLOW,
+  };
+  const loaded = loadFirstRunInputs(base);
+  assert.equal(loaded.result.v3.sha256, V3_SHA);
+  assert.equal(loaded.bindings.v3File.sha256, V3_SHA);
+  assert.ok(
+    IMPLEMENTATION_FILES.some((file) =>
+      file.endsWith("quality-evidence-items.mjs"),
+    ),
+  );
+  assert.throws(
+    () => loadFirstRunInputs({ ...base, v3Commit: null }),
+    /v3 file and the v3 commit go together/u,
+  );
+  assert.throws(
+    () => loadFirstRunInputs({ ...base, v3File: null }),
+    /v3 file and the v3 commit go together/u,
+  );
+  // The file's bytes differ from the commit's blob.
+  writeFileSync(path.join(REPO, V3_FILE_PATH), "# v3 edited\n");
+  assert.throws(
+    () => loadFirstRunInputs(base),
+    /differs from the bytes of that path at the v3 commit/u,
+  );
+  writeFileSync(path.join(REPO, V3_FILE_PATH), V3_BYTES);
+  // The v3 path is fixed.
+  const other = path.join(REPO, "other-v3.md");
+  writeFileSync(other, V3_BYTES);
+  git(REPO, "add", "other-v3.md");
+  git(
+    REPO,
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@example.invalid",
+    "commit",
+    "-q",
+    "-m",
+    "other v3 path",
+  );
+  assert.throws(
+    () =>
+      loadFirstRunInputs({
+        ...base,
+        v3File: other,
+        v3Commit: git(REPO, "rev-parse", "HEAD"),
+      }),
+    /not docs\/plans\/nir1-cp4-records\/quality-verdict-prereg-v3\.md/u,
+  );
 });
