@@ -379,3 +379,38 @@ test("v3 §4 (ii): 凍結の fixture（G-01〜G-08 の 13 variant の 9 file）�
     ).includes("Xan carries a copper lamp on night watch."),
   );
 });
+
+test("v3 §4: 拒否のエラー文は拒否した平文を運ばない（key が本文でも [key#n] に置き換える）。run-report と validation に書かれるため", () => {
+  const needles = ["Mira folded the blue cloth into a square"];
+  const text = "Mira folded the blue cloth into a square and more";
+  const keyed = { ...goodReceipt(), map: { [text]: 1 } };
+  const errors = plaintextErrors(keyed, needles);
+  assert.ok(errors.length > 0);
+  assert.ok(errors.every((error) => !error.includes("Mira folded")));
+  assert.match(errors.join(), /map\.\[key#0\] \(a key\)/u);
+  // A value's text never reaches the message either.
+  const valued = { ...goodReceipt(), note: text };
+  assert.ok(
+    plaintextErrors(valued, needles).every((error) => !error.includes("Mira")),
+  );
+  // An unknown key of a new field, a text as a key, and a prototype name.
+  const bad = goodReceipt();
+  bad.samples[0].followUp.child.rowExcerpts[0][text] = "x";
+  bad.samples[0].followUp.child.rowExcerpts[0].constructor = "x";
+  const shaped = evidenceFieldErrors(bad);
+  assert.ok(shaped.length >= 2);
+  assert.ok(shaped.every((error) => !error.includes("Mira folded")));
+  assert.match(shaped.join("\n"), /\[key#\d+\] is not a field/u);
+  assert.match(shaped.join("\n"), /\.constructor is not a field/u);
+});
+
+test("v3 §4: 実物の ID の形（Evidence の ID は nir1:evidence:codex:<Entity の UUID>、sourceRef は codex:<UUID>）は新 field の ID の形に入る", () => {
+  const uuid = "129faf50-ac4c-4fff-9639-6e1704270127";
+  const receipt = goodReceipt();
+  const row = receipt.evidenceObservation.typedRevisions[0].evidence[0];
+  row.evidenceId = `nir1:evidence:codex:${uuid}`;
+  row.sourceRef = `codex:${uuid}`;
+  receipt.samples[0].followUp.child.evidence.graphOnly.edges[0].evidence[0].evidenceId = `nir1:evidence:codex:${uuid}`;
+  receipt.samples[0].followUp.child.evidence.graphOnly.pinEntityId = uuid;
+  assert.deepEqual(evidenceFieldErrors(receipt), []);
+});

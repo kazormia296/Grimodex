@@ -1022,10 +1022,12 @@ async function measureSteady(ctx) {
     }
     ctx.run.finishedAtMs = Date.now();
     proc.checks.releases = releases;
-    // Prereg v3 §2.1: read once, after the last sample (a Graph arm only).
-    const evidenceObservation = arms.includes("graph")
-      ? await readEvidenceObservation({ ctx, proc, samples })
-      : null;
+    // Prereg v3 §2.1: read once, after the last sample (the Gold run's Graph
+    // arm only: v3 judges the Gold receipts; a negative run has none).
+    const evidenceObservation =
+      arms.includes("graph") && !ctx.negative
+        ? await readEvidenceObservation({ ctx, proc, samples })
+        : null;
     return { status: "measured", samples, probes, proc, evidenceObservation };
   } finally {
     ctx.windowSamples = ctx.windowSampler?.stop() ?? [];

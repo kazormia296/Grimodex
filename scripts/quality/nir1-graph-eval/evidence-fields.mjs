@@ -160,6 +160,16 @@ const id = (value) => typeof value === "string" && ID_SHAPE.test(value);
 const rowKinds = ["raw", "ir", "graph-only"];
 
 /**
+ * A key as it may appear in an error message: an identifier-like key as it is,
+ * any other (a key that is itself a text) as `[key#<position>]`. The messages
+ * are written to the run report and the validation file, so they never carry
+ * a text the receipt was refused for.
+ */
+function keyForMessage(key, index) {
+  return /^[A-Za-z0-9_-]{1,64}$/u.test(key) ? key : `[key#${index}]`;
+}
+
+/**
  * Key → value check of the new fields. A key outside a record's own list, or
  * a value outside its shape (an integer, a 64-hex, an ID, a fixed word, a
  * boolean), is an error: a plain-text value cannot take any of these shapes
@@ -225,13 +235,13 @@ function check(shape, value, at) {
     return [`${at} must be an object`];
   const errors = [];
   const rules = SHAPES[shape];
-  for (const [key, child] of Object.entries(value)) {
-    const rule = rules[key];
+  for (const [index, [key, child]] of Object.entries(value).entries()) {
+    const rule = Object.hasOwn(rules, key) ? rules[key] : undefined;
+    const where = `${at}.${keyForMessage(key, index)}`;
     if (!rule) {
-      errors.push(`${at}.${key} is not a field of the ${shape} record`);
+      errors.push(`${where} is not a field of the ${shape} record`);
       continue;
     }
-    const where = `${at}.${key}`;
     // A rule is a predicate (a leaf) or a checker that returns the errors.
     const result = rule(child, where);
     if (Array.isArray(result)) errors.push(...result);
@@ -336,11 +346,12 @@ export function plaintextErrors(receipt, needles) {
       Object.hasOwn(node, "quote")
     )
       errors.push(`${at} is an Evidence record with its quote in clear`);
-    for (const [key, child] of Object.entries(node)) {
+    for (const [index, [key, child]] of Object.entries(node).entries()) {
+      const where = `${at}.${keyForMessage(key, index)}`;
       // A key can carry text too (an object keyed by a text).
       if (needles.some((needle) => key.includes(needle)))
-        errors.push(`${at}.${key} (a key) contains a fixture text in clear`);
-      stack.push({ node: child, at: `${at}.${key}` });
+        errors.push(`${where} (a key) contains a fixture text in clear`);
+      stack.push({ node: child, at: where });
     }
   }
   return errors;
