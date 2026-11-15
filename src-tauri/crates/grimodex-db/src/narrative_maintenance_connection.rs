@@ -1207,6 +1207,16 @@ fn map_interrupted_error(error: anyhow::Error, latch: &TerminationLatch) -> anyh
     }
 }
 
+impl crate::ConnectionCore {
+    pub(crate) fn ensure_connection_reusable(&self) -> Result<()> {
+        self.connection_health.ensure_reusable()
+    }
+
+    pub(crate) fn quarantine_connection(&self, reason: impl Into<String>) {
+        self.connection_health.mark_unusable(reason);
+    }
+}
+
 impl Database {
     /// Observe an existing workspace participant while SQLite is executing,
     /// including work before its first row. Ordinary mutex/busy-timeout
@@ -1871,14 +1881,6 @@ impl Database {
             )));
         }
         Ok(())
-    }
-
-    pub(crate) fn ensure_connection_reusable(&self) -> Result<()> {
-        self.connection_health.ensure_reusable()
-    }
-
-    pub(crate) fn quarantine_connection(&self, reason: impl Into<String>) {
-        self.connection_health.mark_unusable(reason);
     }
 
     /// Read the process-local cleanup/quarantine state without acquiring the

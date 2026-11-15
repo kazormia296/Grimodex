@@ -12,12 +12,14 @@ use serde_json::Value;
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
     Mutex, MutexGuard, TryLockError,
 };
 use std::time::Duration;
 
 pub(crate) mod background_checkpoint;
+mod connection_core;
+pub(crate) use connection_core::ConnectionCore;
 pub(crate) mod hook_registration;
 #[cfg(test)]
 mod hook_registration_sources_tests;
@@ -26,7 +28,6 @@ pub use scoped_tx::ScopedTransaction;
 pub(crate) mod narrative_maintenance_connection;
 pub(crate) mod nir1_pinned_snapshot;
 pub use narrative_maintenance_connection::ParticipantSqlOperationBudget;
-use narrative_maintenance_connection::ConnectionHealth;
 
 /// Preserve the existing SQL owner while composing a full-set capacity
 /// budget and, in the opt-in binary, noncancelling diagnostic accounting.
@@ -145,20 +146,21 @@ pub struct BatchStatement {
 }
 
 pub struct Database {
-    conn: Mutex<Connection>,
-    /// Connections whose close returned the owned handle for an explicit
-    /// retry. They never re-enter normal access; the owner keeps them here
-    /// until a close succeeds and only then emits retirement proof.
-    retired_connections: Mutex<Vec<Connection>>,
-    foreground_connection_waiters: std::sync::Arc<AtomicUsize>,
-    maintenance_finalization_reserved: std::sync::Arc<AtomicBool>,
-    connection_health: ConnectionHealth,
+    core: std::sync::Arc<ConnectionCore>,
     /// renderer の SQL で発火してよい clock の trigger 名の集合（接続ごとの cache）。
     clock_accessor_cache: execute::ClockAccessorCache,
     /// 本体の接続の WAL checkpoint を背景へ移す所有者（DR-DBC-1）。この field は
     /// 必ず最後に置く：`Database::drop` が背景を止め、接続の close の後に解放する
     /// （wal hook が指す `Shared` を、接続より長く生かすため）。
     background_checkpoint: Mutex<Option<background_checkpoint::BackgroundCheckpointer>>,
+}
+
+impl std::ops::Deref for Database {
+    type Target = ConnectionCore;
+
+    fn deref(&self) -> &ConnectionCore {
+        &self.core
+    }
 }
 
 /// Process-local finalization reservation held for one exact terminal
@@ -280,11 +282,7 @@ impl Database {
     /// preserving the existing connection for all read tools.
     pub fn from_connection(conn: Connection) -> Self {
         Self {
-            conn: Mutex::new(conn),
-            retired_connections: Mutex::new(Vec::new()),
-            foreground_connection_waiters: std::sync::Arc::new(AtomicUsize::new(0)),
-            maintenance_finalization_reserved: std::sync::Arc::new(AtomicBool::new(false)),
-            connection_health: ConnectionHealth::new(),
+            core: std::sync::Arc::new(ConnectionCore::new(conn)),
             clock_accessor_cache: execute::ClockAccessorCache::default(),
             background_checkpoint: Mutex::new(None),
         }
@@ -348,11 +346,7 @@ impl Database {
              PRAGMA analysis_limit=400;",
         )?;
         Ok(Self {
-            conn: Mutex::new(conn),
-            retired_connections: Mutex::new(Vec::new()),
-            foreground_connection_waiters: std::sync::Arc::new(AtomicUsize::new(0)),
-            maintenance_finalization_reserved: std::sync::Arc::new(AtomicBool::new(false)),
-            connection_health: ConnectionHealth::new(),
+            core: std::sync::Arc::new(ConnectionCore::new(conn)),
             clock_accessor_cache: execute::ClockAccessorCache::default(),
             background_checkpoint: Mutex::new(None),
         })
@@ -364,6 +358,19 @@ impl Database {
         operation: impl FnOnce(&Connection) -> anyhow::Result<T>,
     ) -> anyhow::Result<T> {
         let conn = self.lock_conn()?;
+        self.with_busy_timeout_on(&conn, timeout, operation)
+    }
+}
+
+impl ConnectionCore {
+    /// 取得済みの接続の `busy_timeout` を `timeout` にして `operation` を行い、元へ戻す。
+    /// 戻せなかったら接続を quarantine する（`with_busy_timeout` と先払いが同じ規則を使う）。
+    pub(crate) fn with_busy_timeout_on<T>(
+        &self,
+        conn: &Connection,
+        timeout: Duration,
+        operation: impl FnOnce(&Connection) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
         let original_timeout_ms: i64 =
             conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
         anyhow::ensure!(
@@ -371,7 +378,7 @@ impl Database {
             "SQLite returned a negative busy_timeout"
         );
         conn.busy_timeout(timeout)?;
-        let operation_result = operation(&conn);
+        let operation_result = operation(conn);
         let restore_result = conn.busy_timeout(Duration::from_millis(original_timeout_ms as u64));
 
         match (operation_result, restore_result) {
@@ -580,7 +587,9 @@ impl Database {
         }
         Ok(Some(conn))
     }
+}
 
+impl Database {
     pub(crate) fn try_reserve_maintenance_finalization(
         &self,
     ) -> Option<MaintenanceFinalizationReservation<'_>> {
