@@ -1,14 +1,16 @@
-import { useTreeStore } from "@/features/tree/treeStore";
 import {
   getMergedBindings,
   matchesBinding,
 } from "@/features/settings/keybindings";
+import { resolveCommandContext } from "@/features/commands/commandContext";
+import { runAppCommand } from "@/features/commands/appCommandRegistry";
 import { isMac } from "@/lib/platform";
-import { useTabStore } from "./tabStore";
 
 /**
  * Handles desktop editor-tab cycling. Phone workspaces deliberately project a
  * single active document and must never mutate the hidden desktop tab model.
+ *
+ * キーの照合だけを持つ。タブを切り替える動作は registry の nextTab／prevTab。
  */
 export function handleEditorTabSwitchKeydown(
   event: KeyboardEvent,
@@ -23,37 +25,9 @@ export function handleEditorTabSwitchKeydown(
   if (!isPrevious && !isNext) return false;
   event.preventDefault();
 
-  const {
-    activeGroupIndex,
-    tabs,
-    activeTabId,
-    secondaryTabs,
-    secondaryActiveTabId,
-    setActiveTab,
-    setSecondaryActiveTab,
-  } = useTabStore.getState();
-  const currentTabs = activeGroupIndex === 0 ? tabs : secondaryTabs;
-  const currentActiveId =
-    activeGroupIndex === 0 ? activeTabId : secondaryActiveTabId;
-
-  if (currentTabs.length < 2) return true;
-  const currentIndex = currentTabs.findIndex(
-    (tab) => tab.nodeId === currentActiveId,
+  runAppCommand(
+    isPrevious ? "prevTab" : "nextTab",
+    resolveCommandContext({ phoneWorkspace }),
   );
-  if (currentIndex === -1) return true;
-
-  const nextIndex = isPrevious
-    ? (currentIndex - 1 + currentTabs.length) % currentTabs.length
-    : (currentIndex + 1) % currentTabs.length;
-  const nextTab = currentTabs[nextIndex]!;
-
-  if (activeGroupIndex === 0) {
-    setActiveTab(nextTab.nodeId);
-  } else {
-    setSecondaryActiveTab(nextTab.nodeId);
-  }
-  if (nextTab.contentType === "scene") {
-    useTreeStore.getState().setActiveScene(nextTab.nodeId);
-  }
   return true;
 }
