@@ -959,3 +959,14 @@ P1 は 0 件。直したものと判断は次のとおり。
 - 製品の gate の A/B（`lock_conn` の待ち分布は PR-3 では対象外だが、base／head の `Stale`・late・`drift_at_query` は未測定）。
 - (ii-b)：run 上の `drift`・`requalification` の `unavailable`・`error`（dev の試作では 0 件。Rust の試験だけ）、競合で `requalification` が `not-reached` のまま写る頻度、`await_request` 経由で `unavailable` を出す試験（K6/7 の確かめられなかったこと 11・13）。
 - macOS／Windows での挙動（親の `try_lock` の削除は OS に依らない。【推測】）。
+
+### 項目 C（品質判定 v3 の 4 項目）の実装の読みの開示（2026-11-16。独立レビューの推奨 9）
+
+v3（`quality-verdict-prereg-v3.md`、contracts `160f5fa5`、SHA-256 `b6166ed2…`）の定義は変えていない。実装で字義から決まらず読みを置いた点のうち、**観測の後に読みを変えた 1 点**を開示する（正本の一覧は作業記録の項目 C の実装記録）。
+
+- **`raw-excerpt-unchanged` の「比べられる sample」（v3 §2.3）**：最初の実装（`d1b21a16`）は、親と子の世代の関係を「子の `queryGeneration` ＝ 親 ＋ 1」と読んだ。**contracts の過去の Gold（s7r2 の G-02、follow-up 2 件）を read-only で見たところ、実際の子の世代は親の ＋2** だった（loading の effect が挟まる）。そのため `22e2fc29` で「子の世代 ＞ 親の世代」に直した。
+  - **観測の後の変更である**：＋1 の読みでは、観測した G-02 の follow-up 2 件が「比べられない」（`hold`）になり、実際の世代の関係では `pass` になる経路が無かった。読みを直したことで `pass` になりうる側へ動いたため、**緩和に当たりうる**ものとして開示する。
+  - **何が緩むか**：親と子の `sceneId`・`seed` が同じで、親の IR が `ir-ready`、子の `origin` が `graph-ready` という他の条件は変えていない。世代の差が 2 以上でも「同じ query の取り直し」とみなす。差が大きい（途中に別の query が挟まる）場合の取り違えは、`sceneId`・`seed` の一致で防ぐ（別の query なら一致しない）。
+  - **v3 の定義の側の事実**：§2.3 の field 名は S2 に回されており、世代の差の字義は定義に無い。直すなら v4（確認を要する変更）。この読みは実装の読みで、v3 の本文は不変。
+  - **判定への影響**：first-render の sample は、この項目を `hold` にする読み（字義どおり）を変えていない。子が混じる variant（G-02・G-05・G-07）だけがこの読みの影響を受ける。
+- **v3 の判定 file を直した独立レビューの修正（2026-11-16）**：`quality-evidence-items.mjs` は、page が返さなかった値（null の hash・範囲・ID）を `fail` でなく `hold` に、path の終端の判定を edge の並びに依存させず、`settings.seed.runtime` が無い受領書を `hold` にした。いずれも v3 の定義（§2.0 の `hold` の条件）の内側の実装の修正で、定義は変えていない。`K67_QUALITY_VERDICT_V3.implementationCommit` はこの修正の commit に取り直した。

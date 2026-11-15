@@ -8190,6 +8190,18 @@ test("品質判定 v3: 確定版（contracts 160f5fa5、SHA-256 b6166ed2…）�
       sha256(readFileSync(path.join(repoRoot, file))),
       file,
     );
+  // The implementation commit is the commit that last changed the three files
+  // (the CLI refuses any other `--impl-commit`: assertV3Bound). A later change
+  // to one of them moves it, and this constant is taken again in the last
+  // commit of the branch (a commit that does not touch the three files).
+  assert.equal(
+    execFileSync(
+      "git",
+      ["log", "-1", "--format=%H", "HEAD", "--", ...implementationFiles],
+      { cwd: repoRoot, encoding: "utf8" },
+    ).trim(),
+    implementationCommit,
+  );
   // The contracts commit, when this checkout has it, holds the confirmed bytes
   // (a clone without the contracts branch skips this: the pinned digest above
   // is what the formal gate checks).
