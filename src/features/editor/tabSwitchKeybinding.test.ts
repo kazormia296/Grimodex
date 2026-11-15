@@ -53,4 +53,63 @@ describe("handleEditorTabSwitchKeydown", () => {
     expect(useTabStore.getState().activeTabId).toBe("scene-2");
     expect(useTreeStore.getState().activeSceneId).toBe("scene-2");
   });
+
+  it("returns false and leaves the event alone when no tab binding matches", () => {
+    const event = new KeyboardEvent("keydown", {
+      key: "a",
+      code: "KeyA",
+      ctrlKey: true,
+      cancelable: true,
+    });
+
+    expect(handleEditorTabSwitchKeydown(event, false)).toBe(false);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("cycles backwards with Control+Shift+Tab and wraps to the last tab", () => {
+    const event = new KeyboardEvent("keydown", {
+      key: "Tab",
+      code: "Tab",
+      ctrlKey: true,
+      shiftKey: true,
+      cancelable: true,
+    });
+
+    expect(handleEditorTabSwitchKeydown(event, false)).toBe(true);
+    expect(event.defaultPrevented).toBe(true);
+    expect(useTabStore.getState().activeTabId).toBe("scene-2");
+  });
+
+  it("consumes the key but changes nothing when the active tab is unknown", () => {
+    useTabStore.setState({ activeTabId: "missing" });
+    const event = new KeyboardEvent("keydown", {
+      key: "Tab",
+      code: "Tab",
+      ctrlKey: true,
+      cancelable: true,
+    });
+
+    expect(handleEditorTabSwitchKeydown(event, false)).toBe(true);
+    expect(event.defaultPrevented).toBe(true);
+    expect(useTabStore.getState().activeTabId).toBe("missing");
+  });
+
+  it("does not touch the tree's active scene for a non-scene tab", () => {
+    useTabStore.setState({
+      tabs: [
+        { nodeId: "scene-1", contentType: "scene", isPreview: false },
+        { nodeId: "codex-1", contentType: "codex", isPreview: false },
+      ],
+    });
+    const event = new KeyboardEvent("keydown", {
+      key: "Tab",
+      code: "Tab",
+      ctrlKey: true,
+      cancelable: true,
+    });
+
+    expect(handleEditorTabSwitchKeydown(event, false)).toBe(true);
+    expect(useTabStore.getState().activeTabId).toBe("codex-1");
+    expect(useTreeStore.getState().activeSceneId).toBe("scene-1");
+  });
 });

@@ -1,25 +1,26 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 
 import type { RuntimeCapabilities } from "@/runtime/runtimeCapabilities";
-import { useResultsPanelStore } from "@/features/commandCenter";
-import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
-import { useLayoutStore } from "@/features/layout/layoutStore";
 import {
-  findOverlayOfPanel,
-  getOverlays,
-} from "@/features/layout/layoutStateUtils";
+  isAppCommandAvailable,
+  matchesFixedKey,
+  runAppCommand,
+} from "@/features/commands/appCommandRegistry";
+import {
+  registerCommandContext,
+  type CommandContext,
+} from "@/features/commands/commandContext";
 import {
   PANEL_COMMANDS,
   getMergedBindings,
   matchesBinding,
 } from "@/features/settings/keybindings";
-import { useTabStore } from "@/features/editor/tabStore";
 import { handleEditorTabSwitchKeydown } from "@/features/editor/tabSwitchKeybinding";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import i18next from "@/lib/i18n";
-import { isMac, matchesMod } from "@/lib/platform";
+import { isMac } from "@/lib/platform";
 
 interface GlobalCommandHostProps {
   phoneWorkspace: boolean;
@@ -28,13 +29,29 @@ interface GlobalCommandHostProps {
   onOpenSettings: () => void;
 }
 
+/**
+ * 全体に効くキーの host。どのキーがどのコマンドかを決め（照合の優先順、固定キー、
+ * defaultPrevented、phone で preventDefault するか）、動作は registry の run に任せる。
+ */
 export function GlobalCommandHost({
   phoneWorkspace,
   runtimeCapabilities,
   onToggleExport,
   onOpenSettings,
 }: GlobalCommandHostProps) {
-  const togglePanel = useLayoutStore((state) => state.togglePanel);
+  const genericProjectTransfer = runtimeCapabilities.genericProjectTransfer;
+  const ctx = useMemo<CommandContext>(
+    () => ({
+      phoneWorkspace,
+      runtimeCapabilities: { genericProjectTransfer },
+      onToggleExport,
+      onOpenSettings,
+    }),
+    [phoneWorkspace, genericProjectTransfer, onToggleExport, onOpenSettings],
+  );
+
+  // キー以外の呼び出し元（agent 等）が同じ文脈で run できるように登録する。
+  useEffect(() => registerCommandContext(ctx), [ctx]);
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
@@ -43,49 +60,36 @@ export function GlobalCommandHost({
 
       // オーバーレイの開閉。layout を変えない（揮発の状態だけ）ので、
       // 静止待ちの guard より前に処理する。phone 幅と空の overlay では何もしない。
-      const overlay = matchesBinding(event, merged.toggleLeftOverlay ?? "", mac)
-        ? "left"
+      const overlayCommandId = matchesBinding(
+        event,
+        merged.toggleLeftOverlay ?? "",
+        mac,
+      )
+        ? "toggleLeftOverlay"
         : matchesBinding(event, merged.toggleRightOverlay ?? "", mac)
-          ? "right"
+          ? "toggleRightOverlay"
           : null;
-      if (overlay !== null) {
-        if (phoneWorkspace) return;
-        const layoutStore = useLayoutStore.getState();
-        if (getOverlays(layoutStore.layout)[overlay].panel === null) return;
+      if (overlayCommandId !== null) {
+        if (!isAppCommandAvailable(overlayCommandId, ctx)) return;
         event.preventDefault();
-        // zoom 中の解除は store の開く側が担う。
-        layoutStore.toggleOverlay(overlay);
+        runAppCommand(overlayCommandId, ctx);
         return;
       }
 
       if (!canScheduleQuiescenceMutation()) return;
       if (
-        runtimeCapabilities.genericProjectTransfer &&
-        matchesMod(event) &&
-        event.shiftKey &&
-        event.key.toLowerCase() === "e"
+        isAppCommandAvailable("toggleExport", ctx) &&
+        matchesFixedKey("toggleExport", event)
       ) {
         event.preventDefault();
-        onToggleExport();
+        runAppCommand("toggleExport", ctx);
         return;
       }
 
-      if (
-        matchesMod(event) &&
-        event.shiftKey &&
-        event.key.toLowerCase() === "f"
-      ) {
+      if (matchesFixedKey("searchWorkspace", event)) {
         if (event.defaultPrevented) return;
         event.preventDefault();
-        if (phoneWorkspace) {
-          useCompactNavigationStore.getState().openSurface("search");
-          requestAnimationFrame(() => {
-            useResultsPanelStore.getState().requestFocus();
-          });
-          return;
-        }
-        useLayoutStore.getState().showPanel("command-center-results");
-        useResultsPanelStore.getState().requestFocus();
+        runAppCommand("searchWorkspace", ctx);
         return;
       }
 
@@ -94,74 +98,31 @@ export function GlobalCommandHost({
           continue;
         }
         event.preventDefault();
-        if (phoneWorkspace) {
-          const surface =
-            panelCommand.panel === "editor"
-              ? "editor"
-              : panelCommand.panel === "scenes"
-                ? "scenes"
-                : panelCommand.panel === "codex" ||
-                    panelCommand.panel === "codex-quick"
-                  ? "codex"
-                  : panelCommand.panel === "chat" ||
-                      panelCommand.panel === "chat-history"
-                    ? "ai"
-                    : "more";
-          useCompactNavigationStore.getState().openSurface(surface);
-          return;
-        }
-        // overlay にあるパネルは、トグルすると閉じてすぐ開き直すので、開く側だけ呼ぶ。
-        if (
-          panelCommand.panel === "codex-quick" &&
-          findOverlayOfPanel(
-            useLayoutStore.getState().layout,
-            "codex-quick",
-          ) !== null
-        ) {
-          useLayoutStore.getState().showPanel("codex-quick");
-          return;
-        }
-        togglePanel(panelCommand.panel);
-        if (panelCommand.panel === "codex-quick") {
-          requestAnimationFrame(() => {
-            useLayoutStore.getState().showPanel("codex-quick");
-          });
-        }
+        runAppCommand(panelCommand.id, ctx);
         return;
       }
 
       if (matchesBinding(event, merged.openSettings ?? "", mac)) {
         event.preventDefault();
-        onOpenSettings();
+        runAppCommand("openSettings", ctx);
         return;
       }
 
-      const splitDirection = matchesBinding(
+      const splitCommandId = matchesBinding(
         event,
         merged.splitVertical ?? "",
         mac,
       )
-        ? "right"
+        ? "splitVertical"
         : matchesBinding(event, merged.splitHorizontal ?? "", mac)
-          ? "below"
+          ? "splitHorizontal"
           : null;
-      if (!splitDirection) return;
+      if (!splitCommandId) return;
+      // phone でも consume する（run 側で phone は何もしない）。
       event.preventDefault();
-      if (phoneWorkspace) return;
-      const tabs = useTabStore.getState();
-      if (tabs.activeTabId) {
-        tabs.openInSecondaryGroupDirectional(tabs.activeTabId, splitDirection);
-      } else {
-        tabs.createEmptySecondaryGroup(splitDirection);
-      }
+      runAppCommand(splitCommandId, ctx);
     },
-    [
-      onOpenSettings,
-      onToggleExport,
-      phoneWorkspace,
-      runtimeCapabilities.genericProjectTransfer,
-      togglePanel,
-    ],
+    [ctx],
   );
 
   useEffect(() => {
