@@ -1,4 +1,4 @@
-# ユーザーの回答の記録：PR-3 の 2 回目の 3 問（Q5〜Q7）（2026-11-16）
+# ユーザーの回答の記録：PR-3 の 2 回目の 3 問（Q5〜Q7）（2026-11-16 JST）
 
 - 材料：`/home/grimodex/fusion-eval-data/cp4-dev-latency-ratio-2026-11-15/formal-run-prep/drafts/pr3-questions.md`（contracts の外）
 - 1 回目の 3 問（Q2〜Q4、2026-11-15）と K6/7 の確認（`user-confirmation-2026-11-15-k67-graph-eval-procedure.md`）の後に伺った。
@@ -46,4 +46,4 @@
 
 ## 日時
 
-- 2026-11-16（UTC）、回答の直後に読んだ時計の値。正確な値は commit の時刻を見る。
+- 2026-11-15T15:05Z ごろ（2026-11-16 00:05 JST ごろ）。回答の直後に読んだ時計の値。
