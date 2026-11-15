@@ -31,13 +31,13 @@ B′（DR-DBC-2）の基点は `origin/master` の `5344067d`、branch は `clau
 
 | ID | 日付 | 判断 | 信頼境界 | 代替案 | 状態 |
 |---|---|---|---|---|---|
-| DR-DBC-1 | 2026-11-08 | **公開した workspace の本体の接続（`WorkspaceAuthority::new` が受け取る `Database`）の autocheckpoint を、wal hook に置き換え、WAL の page 数が閾値（`WAL_CHECKPOINT_PAGES`＝1000。既定の autocheckpoint と同じ値で、変えない）以上のとき背景のスレッドへ知らせるだけにする。** 背景のスレッド（`grimodex-wal-checkpoint`）は、1 回ごとに checkpoint 専用の接続（`READ_WRITE`、作成なし、busy_timeout 250 ms）を開き、`PRAGMA wal_checkpoint(PASSIVE)` を回して閉じる。TEMP 表・ReadIdentity・stamp には関わらず、何も commit しない。背景が使えない間（止めた後・失敗が 3 回続いた後）は、hook が SQLite の既定と同じ同期の PASSIVE checkpoint に戻る（スレッドが作れないときは hook を入れず autocheckpoint のまま）。**背景が追いつかないとき（commit が続く burst、読み手が止めている間）の上限は、閾値の 4 倍（`MAX_WAL_PAGES_BEFORE_SYNC`＝4000 page、4 KiB page で約 16 MB）**：それ以上では hook が、背景の run が終わるのを最大 5 s 待ってから、同期の PASSIVE checkpoint を行う（レビュー指摘 major-2）。理由：PASSIVE は開始時点の末尾までしか書き戻さず、WAL の先頭へ戻すのは「書き手が始まる時に全部書き戻し済み」のときだけなので、書込みが速い burst では背景の 1 回の run が追いつく前に WAL が伸び続ける（試験で、150 page を 1 ms で 300 回書くと、背景だけでは 46000 frame まで伸びた）。また PASSIVE は checkpoint の lock を持つ別の接続（背景）がいると何もせず BUSY で戻るので、同期の checkpoint は背景の run と重ならないよう待ち、その間は背景が新しい run を始めない。4000 page は、既定の autocheckpoint の実測の最大（3622 page、約 15 MB）と同じ程度で、WAL の最大を今と変えない。この待ちは前景への back-pressure で、上限を超えたときだけ起こる。待ちが 5 s を過ぎる（背景の run が止まらない異常）ときは、その run には**二度と待たず**（run に世代番号を持たせ、待ちを諦めた世代を覚える。止まった run に上限を超えた commit が毎回、本体の Mutex を握ったまま 5 s 払うのを避ける）、同期の PASSIVE を試すだけにする。止まった run が checkpoint の lock を持つ（専用の接続を開いた後で止まる）と PASSIVE は BUSY で進まず、WAL の上限は保証しない。実装は `grimodex-db/src/background_checkpoint.rs` | 信頼する：Electron main の native（`WorkspaceAuthority` の所有者）。信頼しない：renderer（SQL は従来どおり authorizer の下の本体の接続。checkpoint の接続は renderer から到達できず SQL を受けない）、他の process（standalone MCP は別の接続で、従来どおり自分の autocheckpoint）。受信先・送信先・保存範囲は変わらない（同じ file への checkpoint だけ）。防御：PASSIVE だけ（RESTART／TRUNCATE は使わない）なので書き手・読み手を待たせず、WAL の先頭へ戻すのは次の書き手 | (a) `wal_autocheckpoint=0` のまま背景だけ（背景が止まると WAL が無限に伸びる。却下）(b) polling（commit の知らせが無く、idle で起き続ける。却下）(c) 専用接続を常駐（file handle が restore・Windows の置換の邪魔になる。却下。1 回ごとに開閉する）(d) RESTART／TRUNCATE（読み手・書き手を待つ。却下） | 実装済み（Draft PR） |
+| DR-DBC-1 | 2026-11-08 | **公開した workspace の本体の接続（`WorkspaceAuthority::new` が受け取る `Database`）の autocheckpoint を、wal hook に置き換え、WAL の page 数が閾値（`WAL_CHECKPOINT_PAGES`＝1000。既定の autocheckpoint と同じ値で、変えない）以上のとき背景のスレッドへ知らせるだけにする。** 背景のスレッド（`grimodex-wal-checkpoint`）は、1 回ごとに checkpoint 専用の接続（`READ_WRITE`、作成なし、busy_timeout 250 ms）を開き、`PRAGMA wal_checkpoint(PASSIVE)` を回して閉じる。TEMP 表・ReadIdentity・stamp には関わらず、専用の接続は何も commit しない（**2026-11-15 に DR-DBC-6 が改訂**：PASSIVE が WAL を全部書き戻した run の直後だけ、背景のスレッドが**本体の接続の上で**、同値の `application_id` を 1 回 commit して WAL の restart を先払いする。専用の接続の性質は変わらない）。背景が使えない間（止めた後・失敗が 3 回続いた後）は、hook が SQLite の既定と同じ同期の PASSIVE checkpoint に戻る（スレッドが作れないときは hook を入れず autocheckpoint のまま）。**背景が追いつかないとき（commit が続く burst、読み手が止めている間）の上限は、閾値の 4 倍（`MAX_WAL_PAGES_BEFORE_SYNC`＝4000 page、4 KiB page で約 16 MB）**：それ以上では hook が、背景の run が終わるのを最大 5 s 待ってから、同期の PASSIVE checkpoint を行う（レビュー指摘 major-2）。理由：PASSIVE は開始時点の末尾までしか書き戻さず、WAL の先頭へ戻すのは「書き手が始まる時に全部書き戻し済み」のときだけなので、書込みが速い burst では背景の 1 回の run が追いつく前に WAL が伸び続ける（試験で、150 page を 1 ms で 300 回書くと、背景だけでは 46000 frame まで伸びた）。また PASSIVE は checkpoint の lock を持つ別の接続（背景）がいると何もせず BUSY で戻るので、同期の checkpoint は背景の run と重ならないよう待ち、その間は背景が新しい run を始めない。4000 page は、既定の autocheckpoint の実測の最大（3622 page、約 15 MB）と同じ程度で、WAL の最大を今と変えない。この待ちは前景への back-pressure で、上限を超えたときだけ起こる。待ちが 5 s を過ぎる（背景の run が止まらない異常）ときは、その run には**二度と待たず**（run に世代番号を持たせ、待ちを諦めた世代を覚える。止まった run に上限を超えた commit が毎回、本体の Mutex を握ったまま 5 s 払うのを避ける）、同期の PASSIVE を試すだけにする。止まった run が checkpoint の lock を持つ（専用の接続を開いた後で止まる）と PASSIVE は BUSY で進まず、WAL の上限は保証しない。実装は `grimodex-db/src/background_checkpoint.rs` | 信頼する：Electron main の native（`WorkspaceAuthority` の所有者）。信頼しない：renderer（SQL は従来どおり authorizer の下の本体の接続。checkpoint の接続は renderer から到達できず SQL を受けない）、他の process（standalone MCP は別の接続で、従来どおり自分の autocheckpoint）。受信先・送信先・保存範囲は変わらない（同じ file への checkpoint だけ）。防御：PASSIVE だけ（RESTART／TRUNCATE は使わない）なので書き手・読み手を待たせず、WAL の先頭へ戻すのは次の書き手 | (a) `wal_autocheckpoint=0` のまま背景だけ（背景が止まると WAL が無限に伸びる。却下）(b) polling（commit の知らせが無く、idle で起き続ける。却下）(c) 専用接続を常駐（file handle が restore・Windows の置換の邪魔になる。却下。1 回ごとに開閉する）(d) RESTART／TRUNCATE（読み手・書き手を待つ。却下） | 実装済み（Draft PR） |
 | DR-DBC-1a | 2026-11-08 | **open の WAL 準備（`open_wal.rs`）の「`wal_autocheckpoint` が正」の検査の意図を確かめ、単位の出所を直す。** 意図：`prepare_wal_for_open` は、前の process が残した WAL が閾値の 3/4 以上なら RESTART で畳み、閾値を超えていたら同期の checkpoint の仕事量が大きすぎるので畳まず（`DeferredWorkLimit`）、公開前の checkpoint の仕事を「設定された autocheckpoint の 1 周期」以下に抑える。検査は、その 1 周期（page 数）が正であることを求める。つまり安全の検査というより、仕事量の単位が実際に誰かが守る正の上限であることの検査（0＝何も上限が無いなら、単位が無い）。背景が上限を守る形では pragma が 0 になる（wal hook を置くと `PRAGMA wal_autocheckpoint` は 0 を返す）。そこで、単位を `wal_cycle_pages(pragma, background)` で決める：pragma が正ならそれ、0 で背景の checkpointer が動いているならその閾値、どちらも無ければ今までどおり `OPEN_WAL_AUTOCHECKPOINT_MUST_BE_POSITIVE` で拒否する。背景の閾値を単位にしてよいのは、wal hook が実際に背景のものであると確かめられたときだけ（レビュー指摘 minor-2）：`background_checkpoint_bound` が `sqlite3_wal_hook` を同じ callback と引数で入れ直し、戻り値（直前の引数）が背景の `Shared` と一致するかを見る。一致しなければ（hook が別のものに置き換わっている）入れ直した上で上限なしとして拒否する。pragma の値は準備の前後で変えない（`verify_connection_settings` は生の値を比べる）。公開の経路では、準備は背景を始める前（`WorkspaceAuthority::new` の前）に走るので、単位は今までどおり pragma の 1000 になり、振る舞いは変わらない | 検査を外す案ではなく、上限の保証を「autocheckpoint か背景」のどちらかが必ず持つ形にした。fail-closed は保つ | (a) 検査を削除（上限が無い接続を黙って通す。却下）(b) 準備の前に背景を始める（準備の RESTART が背景の接続と競合しうる。却下） | 実装済み |
 | DR-DBC-2 | 2026-11-08 | **監査の hash chain の検証を、結果を変えずに速くする。(1) S1：payload を `Value` に parse した後、全 object の key が昇順なら `canonical_json_value` の clone と整列を省き、そのまま直列化した bytes の sha256 を取る（昇順でなければ従来の経路）。(2) 上限つきの並列：行ごとの計算（parse・契約の検証・payload の sha256・`compute_hash`）を、最大 4 thread（`min(4, 論理 CPU 数 / 2)`、最低 1）の `std::thread::scope` で並列に行い、連番と `prev_hash` の連結の判定は行の順に呼び出し側の thread で行う。行は「1,024 行、または payload の合計 4 MiB」の先に当たる方で batch に切って読み、次の batch の読み出しを今の batch の計算と重ねる（memory は batch の大きさに比例し、行数にも payload の大きさの偏りにも比例しない）。行数が 1,024 行以下なら逐次。thread を作れないとき（OS の資源の枯渇）は panic せず、その chunk を呼び出し側の thread で逐次に計算する。payload 以外の列を読む順は従来と同じ（payload を先に読んで parse し、他の列の error はその後）。** 実装は `grimodex-db/src/ai_audit.rs`（`verify_stored_chain` ほか）、試験は `ai_audit/verify_tests.rs` | 信頼する：Electron main の native が持つ本体の接続（読むのは今と同じ行・同じ列）。信頼しない：保存された監査の行（DB を書き換えられる攻撃者が作りうる。今と同じく全行を検証する）。thread は `thread::scope` の中だけで、戻る前に必ず join する（常駐・detach・新しい受信先・送信先は無い）。`Connection` は呼び出し側の thread から出ない（worker は読み出し済みの文字列だけを見る） | (a) 検証を publish の tx の外へ（窓ができ、同一性の証明が要る。却下。ユーザーの選択）(b) 生 bytes の sha256 が一致すれば正規化を省く（正規形でない生 bytes に合わせて `payload_sha256` と chain を計算し直した改ざんを通す。強さが変わる。却下）(c) 生 bytes の sha256 一致かつ生 bytes が正規形のときだけ通す（同値だが、S1 より約 4% 速いだけで論証と試験が増える。採らない）(d) 契約の 4 項目だけ読む parse（範囲外の数値で error の有無が変わる。却下）(e) rayon（製品の依存を増やさない）(f) Merkle・差分の検証（Q4 で決める） | 実装済み（Draft PR） |
 
 ## 3. owner／lifecycle matrix（GDX-PRECHECK-001。background work なので mutation の前に置く）
 
-owner は `Database` が 1 つだけ持つ `BackgroundCheckpointer`（スレッドの JoinHandle と共有状態 `Shared`）。スレッドは `Arc<Database>` や authority を持たず、path と `Shared` だけを持つので、`wait_for_sole_owner` の数に入らない。
+owner は `Database` が 1 つだけ持つ `BackgroundCheckpointer`（スレッドの JoinHandle と共有状態 `Shared`）。スレッドは `Arc<Database>` や authority を持たず、path と `Shared` だけを持つので、`wait_for_sole_owner` の数に入らない。（**DR-DBC-6 の改訂**：先払いのため、スレッドは `Weak<ConnectionCore>`〔主接続・waiter・reservation・health だけの core。`Database` でも authority でもない〕を持つ。`Weak` は数に入らず、先払いの間だけ upgrade し、run の中で必ず放す。）
 
 | 区分 | 条件 |
 |---|---|
@@ -79,6 +79,7 @@ lifecycle の各場面：
 - **閾値は 1000 page のまま**（`PRAGMA wal_autocheckpoint=1000` と同じ値。`Database::new` の既定は変えない。試験で同じ値を固定）。`journal_size_limit`（64 MiB）、`synchronous=NORMAL`、WAL mode。
 - `Database::new` の既定、migration・recovery・backup の staged DB、maintenance の別接続（`new_for_workspace_maintenance`。前景の Mutex を握らない背景の接続なので、その autocheckpoint は残す）、c-query worker の読取専用の接続は autocheckpoint のまま。
 - ReadIdentity・stamp・data_version・Freshness の判定（checkpoint はこれらを動かさない。試験で確かめる）。PASSIVE は wal-index の header（mxFrame・salt）を変えないので `data_version` は動かず、WAL を先頭へ戻すのは次の書き手。
+  - **DR-DBC-6 の改訂**：PASSIVE（専用の接続）自体は変わらない。その後の先払いの commit は、本体の接続の `data_version`・`total_changes`・schema_version・user_version・ReadIdentity を動かさない（試験で確かめる）が、**別の接続から見た `data_version` は 1 回につき動く**。
 - IPC・preload・N-API・schema・依存・契約・送信先・保存範囲。
 - MCP（standalone の別 process）。
 
@@ -93,7 +94,7 @@ lifecycle の各場面：
 - 閾値が既定の autocheckpoint と同じ 1000 であること。
 - 開始：autocheckpoint が hook に置き換わる、2 回目は `AlreadyRunning`、memory・読取専用は対象外（autocheckpoint のまま）。
 - WAL が上限の近くに保たれる：対照（autocheckpoint も背景も無い）は閾値の 4 倍を超えて伸び、背景があると「閾値＋最後の 1 tx」以内（対照の 1/3 未満）、integrity_check が ok。
-- checkpoint が data_version・total_changes・schema_version・ReadIdentity を動かさない（実行中・終了後・別の接続の PASSIVE・読み手の snapshot の中）。対照として、別の接続の commit では data_version が進む。
+- checkpoint が data_version・total_changes・schema_version・ReadIdentity を動かさない（実行中・終了後・別の接続の PASSIVE・読み手の snapshot の中）。対照として、別の接続の commit では data_version が進む。（DR-DBC-6 の後は、先払いの commit についても本体の接続の値が動かないことを `a_prepay_changes_no_value_and_no_counter_of_the_main_connection` が確かめる。）
 - 停止：冪等、停止後は同期の checkpoint に戻って WAL が畳まれる、始め直せる。**専用の接続を開いて interrupt の handle を登録した後（run の最中。注入点）に止めても、その状態にいることを観測した上で、上限の中に終了の証拠が取れ、file が壊れない。上限未満の大きい WAL（3500 page）の直後に止めても同じ。**
 - **`TimedOut`（注入点で run を止める）**：スレッドと JoinHandle が残り、次の stop が同じスレッドを待て、停止の要求は失敗に数えられない。restore は中止して元の authority を戻し（live は未変更）、背景が止まれば同じ restore が通る。retire は `Err` で何も変えず（接続は reusable のまま）、止まれば成功する。
 - 専用の接続は最後の接続として閉じても `-wal` を消さない（対照：普通の接続は消す）。停止の要求の後の run は接続を開かない。
@@ -680,3 +681,84 @@ P1 は 0 件。直したものと判断は次のとおり。
 - 0.41 で `workspace.rs` の audit hook の登録が `with_conn_mut` になり、`scripts/quality/nir1-packing/final-request/architecture.mjs` の「`with_conn` は 1 回だけ」の検査がそれを数えなくなった（数は 0）。
 - 検査器を直すと CP-4 の S4 の bytes pin（`dp-h-unknown-scope`）が外れ、pin の表は凍結済みの `evals/nir1-graph/observation-prep.v1.json` と一致する必要があるため、直すには S4 の再凍結が要る。
 - ユーザーの選択で、検査器は今は変えず、`architecture.test.mjs` の「2 回以上」の確認を `with_conn` 2 つの追加で行う形にした。**次の S4 まで、harness が `with_conn_mut` を 2 回以上使っても検査は気づかない**（品質規則の一時的な緩和）。検査器の直し（`/\.with_conn(?:_mut)?\(/`）は次の S4 の枝で入れる。
+
+## DR-DBC-6 WAL の restart の先払いを背景のスレッドが本体の接続の上で行う（DR-DBC-1 の改訂。2026-11-15）
+
+枝 `claude/wal-restart-prepay`（基点 `origin/master` の `14cc0b68`）。設計の草案と dev の測定は `fusion-eval-data/cp4-dev-latency-ratio-2026-11-15/`（`prepay-design.md`、`prepay-review-opus.md`、`prepay-ab/`）。この節は、その草案を実装の結果に合わせて書き直したもの（草案の B.4・B.6 の誤りは「草案からの訂正」に挙げた）。
+
+**番号について**：`origin/master` の最大は DR-DBC-5。docs 全体の grep で DR-DBC-6 の既存の使用は無い（2026-11-15 確認）。
+
+### 承認と範囲
+
+- ユーザーが 2026-11-15 に DR-DBC-1 の改訂を承認した（AskUserQuestion「認める。形は任せる」）。改訂の中身：「背景の checkpoint は何も commit しない」→「背景は PASSIVE が全部書き戻した後、**主接続で**同値の `application_id` を 1 回 commit して、次の前景の commit が払っていた WAL header の fsync を先に払う」。形（所有・取得・試験）は実装に任された。この lane は NIR-1 の事前委任の外の DB 接続の lane で、事前委任を根拠にしない。
+- 根拠：CP-4 の Graph arm の p95 の外れ値（75 ms 以上、1 run 約 2 件）の調査。回転 HDD で、背景の PASSIVE が WAL を全部書き戻した後の最初の書き手の commit が、WAL を先頭から書き直し（restart）、WAL header の書込みと fsync（約 45 ms）を払う。dev の A/B（HDD、各 3 run）で、p95 の外れ値の件数は 2.00 件/run → 0 件/run、graph の p95 は 78.0 → 52.8 ms だった（`prepay-ab/results.txt`。**dev の一時 DB。製品の gate の測定ではない**）。
+- 範囲：`grimodex-db` の `background_checkpoint.rs`、主接続の所有（`Database.conn` ほかを `ConnectionCore` へ）、`with_busy_timeout` の分離。renderer・IPC・preload・N-API・MCP・schema・migration は変えない。`SCHEMA_VERSION` は上げない。
+- **信頼境界は変えない**：actor（Electron main の native が信頼、renderer・他の process は信頼しない）、受信先・送信先、保存範囲（新しい情報を保存しない。`application_id` は既存の header の欄に同じ値を書き直すだけで、一時的に WAL に 1 frame が増え、次の checkpoint で消える）、secret、閾値（`WAL_CHECKPOINT_PAGES`＝1000、`MAX_WAL_PAGES_BEFORE_SYNC`＝4000）は不変。変わるのは「背景のスレッドが、先払いの間だけ主接続を書込みに使う」点だけで、その書込みは renderer から到達できず、SQL を受けない固定の文字列（`BEGIN IMMEDIATE; PRAGMA application_id=<現在値>; COMMIT`）。耐久性の防御（WAL header の fsync、`synchronous=NORMAL`）は弱めない（先払いがそれを払う）。
+
+### 判断
+
+1. **先払い**：背景のスレッドは、run の PASSIVE が `busy==0 && checkpointed==log && log>0` で終わったときだけ、**`running=false` にした後**で、主接続の上で `BEGIN IMMEDIATE; PRAGMA application_id=<現在値>; COMMIT` を 1 回行う（run につき最大 1 回。`running=false` の後なので、先払いの commit が呼ぶ wal hook が `enter_sync` で自分の run を待つことは構造的に起きない）。同値でも `PRAGMA application_id` は page 1 を dirty にし、1 frame の commit になる（SQLite 3.54.1 の `OP_SetCookie`）。`application_id` は repo のどこも読まない（grep 済み）。`user_version` は migration と `ReadIdentity` が読む authority なので使わない。
+2. **取得は既存の関数だけ**：`Database` の `try_lock_conn_with_check`（DR-MPS-15 の waiter なしの 1 回の取得。health・poison・foreground の waiter・finalization の予約・maintenance の no-wait を既存の規則で見る）を再実装せず使う。待つ `lock()` は使わない（hook の `enter_sync` との相互待ちと、前景を待たせる経路を作らない）。取れなければ何もしない（現状と同じく次の書き手が払う）。`check` に「停止の要求・`mode≠Running`・foreground の waiter」を入れ、Mutex の取得の前後の両方で確かめる。
+3. **`busy_timeout` は 0**：別 process の書き手を Mutex の下で待たない。設定と復元は、`with_busy_timeout` を「取得済みの接続を受け取る内側の関数 `with_busy_timeout_on`」と薄い wrapper に分け、先払いは内側を使う（`with_busy_timeout` は `lock_conn()`＝待つ lock と waiter の announce をするので、そのままは使えない）。**復元の失敗は既存の規則（接続の quarantine）に従う**。
+4. **所有**：主接続・foreground の待ち・finalization の予約・健全性（`ConnectionHealth`）・退役した接続を `Arc<ConnectionCore>` にまとめた。`Database` は `core` を持ち、`Deref<Target=ConnectionCore>` で見せる（`db.conn`・`db.lock_conn()` などの呼び出しは変わらない）。取得関数（`lock_conn`・`lock_conn_with_check`・`try_lock_conn_with_check`）・`ensure_connection_reusable`・`quarantine_connection`・`with_busy_timeout_on` は core の method。背景のスレッドは `Weak<ConnectionCore>` だけを持ち、先払いの間だけ upgrade し、Mutex の guard と `Arc` は run の中で必ず放す。`Database` は持たない（`wait_for_sole_owner` の数に入らない）。`from_connection`（standalone MCP）は背景を始めず、挙動は変わらない。
+5. **Drop・stop（Opus の必須 1）**：`Database::drop` は、背景を止めた後（slot の guard を放してから）、`stop` が `TimedOut` であっても、Mutex の下で `mem::replace` により実接続を取り出して**自分で close する**（`retire_connection_for_recovery` と同じ形）。スレッドが upgrade した `Arc` を持ったまま残っても、drop が戻った時点で主接続の close と `-wal`／`-shm` の削除が済む（open の quiesce・restore が drop の後に同じ file を扱う前提を保つ）。差し替えた後に先払いが Mutex を取れても、停止の要求を**取得の後**に確かめるので書かない（念のため drop は接続を quarantine する）。先払いは Mutex を `try_lock` でだけ取るので、drop の `lock()` と互いに待つことは無い（先払いが fsync の最中なら、その 1 回が終わるまで drop が待つ）。背景を始めていない接続には何もしない。
+6. **wal hook の再入（Opus の他）**：先払いの commit も wal hook を呼ぶ。thread-local の旗（RAII の `PrepayScope`。この thread が先払いの commit の中にいる間だけ）で、hook は page 数を記録するだけにする（`request()`・`enter_sync`・同期の checkpoint をしない）。別の thread の commit には影響しない。読み手が WAL の先頭へ戻るのを止めていると、先払いは restart せず frame を 1 つ足す（page 数 N+1 が閾値以上になりうる）が、それで run が連鎖せず、4000 page 超でも自分の run や Mutex を待たない。
+7. **成否を数える**：stats に `prepay_restarted`（commit 後の WAL が 1 frame）・`prepay_not_restarted`（commit したが restart されず）・`prepay_skipped`（条件を満たさない・取れない・停止の途中・先払いの無効化）・`prepay_failed`（commit の失敗）。**失敗・飛ばしは `consecutive_failures` に数えない**（先払いは最善努力で、無くても現状に戻るだけ。背景を止めて同期の checkpoint に戻す理由にしない）。panic は、主接続を quarantine する（maintenance の panic と同じ規則）。`running=false` の後、`Control::prepaying` を run の結果の集計が終わるまで立て、`wait_idle` が先払いの前に戻らないようにする（`runs` は先払いの集計の後に進む）。
+8. **別の接続・`synchronous=OFF` では先払いしない**：別の接続の commit は、前景の deferred transaction（`BEGIN; SELECT; INSERT`。`domain_writes.rs`・`agent_writes.rs` ほか多数）を、commit の窓の中でどの開始時刻でも 0.1〜0.8 ms で `SQLITE_BUSY_SNAPSHOT` により失敗させた（dev の micro `prepay3`）。`synchronous=OFF` は WAL header の fsync を飛ばす（`syncHeader`＝restart の後の順序外の書込みによる破損への防御）ので、耐久性の防御の弱化として却下。
+
+### 契約の改訂（DR-DBC-1 の記述）
+
+- 旧：背景は何も commit しない。本体の `data_version`・`total_changes`・schema_version は動かない。
+- 新：専用の checkpoint 接続は何も commit しない。PASSIVE が全部書き戻した run の直後に、背景のスレッドが本体の接続の上で同値の `application_id` を 1 回 commit する。**本体の接続の `PRAGMA data_version`・`total_changes`・schema_version・user_version・clock の seq（trigger が無い）・`ReadIdentity`（lineage・seq・schema_version・user_version）は動かない**（`a_prepay_changes_no_value_and_no_counter_of_the_main_connection`）。**別の接続（Graph worker の reader・probe・MCP・harness の観測者）から見た `PRAGMA data_version` は 1 回につき 1 つ動く**（陽性の対照も同じ試験）。`SQLITE_FCNTL_DATA_VERSION`（`nir1_pinned_snapshot` の pin の鍵）は、**自分の commit でも動く**。pin は、その接続が read snapshot を持つ間（read transaction の中）だけ答える（`current_pin`）。先払いは主接続が autocommit のときしか commit しないので、本体の接続の read snapshot の最中には書かない。別の接続の値は read transaction の中では動かない（SQLite の性質）。pin を開く呼び手（Graph の registration／query の scope。`nir1_graph.rs`）を全数は確かめていないが、どの接続の上で開いても上の 2 点が成り立つので、結論は呼び手に依らない。
+
+### 草案からの訂正
+
+- 草案 B.6「`InterruptHandle` は先払いの間も登録したまま」は誤り：run の `InterruptHandle` は PASSIVE の後に外す。**interrupt は主接続に届かない**。主接続の commit（fsync）は中断できず、停止の上限は `STOP_WAIT`（5 s）のまま。
+- 草案 B.6「`TimedOut` のとき、スレッドが最後の `Arc` を落として接続を閉じる」は、drop の後に主接続の close が遅れる問題を持つ（Opus の必須 1）。判断 5 で、drop が自分で閉じる形に変えた。
+- 草案 B.4「`nir1_pinned_snapshot` は主接続の自分の commit では動かない」は誤り（上記）。
+- 草案の状態「確認待ち」は、2026-11-15 のユーザーの承認で解消した。
+
+### owner／lifecycle matrix の差分（GDX-PRECHECK-001。DR-DBC-1 の §3 に対する差分）
+
+| 区分 | 変更 |
+|---|---|
+| entry／start | 変更なし。スレッドが `Weak<ConnectionCore>` を受け取る（`from_connection` では背景は始まらない） |
+| pending start | 変更なし。先払いは `pending` を立ても消しもしない（run の間に hook が立てた `pending` は、先払いの後に次の run を起こす） |
+| retry／reentrant | 先払いは run の最後の 1 回。連続 2 回の run は 100 ms 以上あくので先払いも同じ。先払いの commit の hook は記録だけで run を起こさない（試験で固定） |
+| admission closure | 停止の要求の後は先払いを始めず、Mutex を取った後にもう一度確かめる。`mode≠Running` も同じ |
+| active handle ownership | 先払いの間だけ、スレッドが主接続の Mutex の guard と upgrade した `Arc` を持つ。run の中で必ず放す。drop は `TimedOut` でも主接続を自分で close する |
+| cancellation | 専用の接続の interrupt は先払いに届かない。先払いの前後と Mutex の取得の後に停止を確かめる。fsync は中断できない |
+| bounded wait | 先払いは待たない（`try_lock`）。drop が先払いの fsync の 1 回ぶん待ちうる。over-limit の hook の `enter_sync`（5 s）は先払いの間は入らない |
+| termination evidence | 変更なし（`exited`＋join） |
+| error／timeout | 先払いの失敗は `consecutive_failures` に数えない。`busy_timeout` の復元の失敗・commit 後に autocommit に戻らない・panic は接続を quarantine する |
+| persisted restart state | なし。`application_id` は同値 |
+| PASSIVE と先払いの間の停止 | 先払いを飛ばして run を終える（WAL は restart 保留のまま。現状どおり）。停止の確認は、upgrade の前・Mutex の取得の前後で行う（試験 `a_stop_that_arrives_before_the_prepay_takes_the_connection_skips_it`） |
+| 同期の fallback との順序 | 背景が使えない間・over-limit の hook の同期の PASSIVE は、前景の commit の中（主接続の Mutex を握ったまま）で走る。そのとき先払いの `try_lock` は失敗して飛ばす。同期の PASSIVE の間は `sync_active` で背景の run が始まらない。先払いは行わず、次の書き手が払う（現状どおり） |
+
+### 危険（残るもの）と対処
+
+| 危険 | 内容 | 対処・状態 |
+|---|---|---|
+| 前景が窓に当たる | 先払いの窓（HDD で約 45 ms。SSD は約 1 ms）に到着した前景の操作（読みも）が Mutex で待つ。現状は書き手の最初の 1 回が必ず払う | `try_lock`（前景が先ならやらない）。**製品の gate の A/B（`lock_conn` の待ち分布）は未測定**。dev の A/B では前景の fetch が窓に重なった例は 0 件、次の fetch は窓の約 1 s 後だった |
+| 窓の中の no-wait の呼び手（Opus の必須 3） | 窓の中で no-wait の取得が当たると、呼び手ごとに結果が違う。(1) `lock_conn` の no-wait mode（maintenance の phase の取得・discovery）は `NEX_MAINTENANCE_CONNECTION_PREEMPTED` を返す。Run は**失敗でなく cancelled**（`cancel_maintenance_run_for_preemption_in_tx`。crash の retry 予算を消費せず、同じ WorkKey が次の durable wake で新しい Run として requeue される）。discovery の 2 か所（`maintenance_runtime.rs`）は PREEMPTED で bail する。(2) `try_lock_narrative_maintenance` の入口は `Ok(None)`（Deferred）で、Run を cancel しない。(3) nir1 store は `ConnectionBusy`、(4) C-query の freshness stamp（`try_read_c_query_freshness_stamp`）は `None`。いずれも既存の「busy」の経路で、失敗の方向は fail-closed（古いものを新しいと誤らない） | 試験 `callers_that_do_not_wait_yield_while_a_prepay_holds_the_connection`（(1) の PREEMPTED・waiter なしの取得が busy・blocking の呼び手が待って成功）。**窓は無作為に来ない**：1000 page 以上の commit の後の run の直後に来る。大きい commit を続けるのは maintenance 自身（IR の publish・backfill）なので、phase の間の no-wait 取得と重なりやすい相関がある。dev の A/B は maintenance を走らせていないので、**PREEMPTED の件数と DR-MP-8 の backoff への影響は未測定（頻度が低いとは言えない）。dev の A/B に maintenance を走らせる条件を入れる** |
+| 読み手が restart を止める | 最新の frame を slot 1 以上で持つ読み手がいると、先払いは restart せず frame を 1 つ足す。前景の commit も append になるので払いは増えない | 判断 6。`not_restarted` として数える。連鎖しない・4000 page 超でも待たない（試験 2 本） |
+| disk が止まる | fsync が止まると先払いの間 Mutex を握る（現状は前景の書き手自身が止まる）。読みも止まる。drop も 1 回ぶん待ちうる | `STOP_WAIT` は変えない。異常のときの測定は未実施 |
+| 契約の逆戻り | 「背景は何も commit しない」を前提にした将来の変更 | この節・DR-DBC-1 の記述・module の doc・試験を同時に直した |
+| 他の OS・FS | 測ったのは Linux ext4 の回転 HDD と tmpfs だけ。macOS／Windows の sync の実装での時間は未測定 | 挙動（restart を先に済ませる）は同じ。時間の効果は未確認 |
+| 失われる性質 | `data_version` を「別の接続が commit したときだけ動く」物差しとして使う harness の記録（`scripts/quality/nir1-graph-eval/` の `sampleCommitRate`・`commitBetweenReadyAndQuery` ほか）に、checkpoint の後の 1 回／run の commit が「あった」と数えられる | 記録（disclosure）だけで gate は無い。**CP-4 の判定（contracts 側）がこの旗を読むかは、凍結物を読まないので未確認**。8 回目の S4 の候補に入れるときに確かめる |
+
+### 試験
+
+`background_checkpoint_tests.rs`（grimodex-db の lib）：
+
+- 書き換え：`a_large_commit_is_written_back_and_restarted_by_the_background_thread`（`-wal` の header の通番と salt で、restart を背景が済ませたことを決定的に確認。WAL は 1 frame・書戻し 0）、`checkpoint_does_not_move_the_write_clock_or_read_identity`（既存。本体の接続が Mutex を握ったまま run を待つ箇所は、先払いが `try_lock` で飛ばすので通る）。
+- 新規：`the_next_foreground_commit_does_not_restart_the_wal_after_a_prepay`（前景の commit は header を書き直さない。先払いを止めた対照では書き直す）、`a_prepay_changes_no_value_and_no_counter_of_the_main_connection`（不変条件と、別の接続の `data_version` が動く陽性の対照）、`a_prepay_never_fails_a_foreground_deferred_transaction`（先払いが何度も走る間、前景の `BEGIN; SELECT; INSERT; COMMIT` が 400 回 0 件失敗）、`a_prepay_is_skipped_unless_it_can_be_made_without_waiting`（explicit transaction・Mutex を前景が握っている・foreground の waiter・古い snapshot の読み手・先払いの無効化）、`a_failed_prepay_is_not_a_checkpoint_failure_and_restores_the_busy_timeout`（別の接続が書込みの lock を持つ間、5 回失敗しても背景は Running、`busy_timeout` は元の値）、`a_prepay_that_cannot_restart_does_not_chain_runs`、`a_prepay_over_the_hard_limit_never_waits_while_holding_the_connection`、`callers_that_do_not_wait_yield_while_a_prepay_holds_the_connection`、`a_stop_that_arrives_before_the_prepay_takes_the_connection_skips_it`、`drop_closes_the_main_connection_even_when_the_stop_times_out`（drop が戻った時点で `-wal` が消え、スレッドは生きたまま、解放後は何も書かない）、`an_adopted_connection_has_no_background_and_no_prepay`。
+- 変異の確認：drop の close と hook の thread-local の旗を無効にすると、drop の試験・連鎖の試験・over-limit の試験が落ちる（この試験が検出できることを確かめた）。
+- 実装で分かったこと：4000 page 超の試験は、「全部書き戻された後に始まる読み手は slot 0 を使い、restart を止めない」ため、古い snapshot の読み手 A を挟んで同期の checkpoint が全部を書き戻せないようにし、その後に最新の読み手 B を始めて A を放す形にした。
+
+### 未確認・未実施
+
+- 製品の gate の A/B（`lock_conn` の待ち分布、PREEMPTED の件数、DR-MP-8 の backoff への影響、前景の読みの p99）。
+- CP-4 の判定が `commitBetweenReadyAndQuery` などの旗を読むか。8 回目の S4 の候補に先払いを入れるか、候補の凍結の後に PR にするかの順序。
+- macOS／Windows での時間。disk が止まる異常のときの測定。
+- 先払いの retry（`try_lock` が失敗したときに数回再試行）は入れていない。`prepay_skipped` の割合を dev の A/B で見て決める。
