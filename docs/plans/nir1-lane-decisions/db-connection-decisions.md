@@ -918,7 +918,7 @@ P1 は 0 件。直したものと判断は次のとおり。
 
 **`cancelled_ticket_never_publishes_or_caches` は偽陽性の形だった**（直した）：旧版は begin の直後に `finish(Cancelled)` し、`retires == 1` を待っていた。`finish(Cancelled)` は ticket の outcome をその場で Cancelled にするので outcome の assert は owner の動きを見ない。owner が cancel の旗を先に見ると query は 0 回で、worker は 300 ms の idle 退役で retire され、`retires == 1` はそれでも満たされる。40 回の実測で、`queries=0・retired_idle=1`（先に見た）が 28 回、`queries=1・retired_idle=0`（query の中）が 12 回で、どちらの順でも通っていた。直しは `queries == 1` を待ってから `finish(Cancelled)` し、`queries == 1`・`retired_idle == 0` を assert すること。
 
-**`i_a_a_commit_after_the_release_and_before_the_registration_is_taken_in` の強化**：create の commit の行数（1）、別接続（観測用）の `data_version` が commit の前後で動くこと、worker の registration が commit の後の状態（scene の title が commit した値）で取られたこと、`prepares == 1` を assert する。【未確認のまま】削除前の checkout で同じ構成が `Stale` になることは実測していない。この区間（S0 の後・registration の前の commit）で、削除後は stale を返さないことの根拠は、registration が commit の後の状態で取られることをこの試験が固定している点と、コードの読み（worker の drift の検査は registration の読みと query の読みの比較だけ）であり、削除前の動作との比較は読みだけに依る。
+**`i_a_a_commit_after_the_release_and_before_the_registration_is_taken_in` の強化**：create の commit の行数（1）、別接続（観測用）の `data_version` が commit の前後で動くこと、worker の registration が commit の後の状態（scene の title が commit した値）で取られたこと、`prepares == 1` を assert する。`registered`（`PRAGMA data_version` の値）そのものは比べない：`data_version` は接続ごとの値で、別の接続（観測用・worker）の値とは比べられないため、worker の接続が registration の開始時に読んだ title で「commit の後の状態」を見た。【未確認のまま】削除前の checkout で同じ構成が `Stale` になることは実測していない。この区間（S0 の後・registration の前の commit）で、削除後は stale を返さないことの根拠は、registration が commit の後の状態で取られることをこの試験が固定している点と、コードの読み（worker の drift の検査は registration の読みと query の読みの比較だけ）であり、削除前の動作との比較は読みだけに依る。
 
 **reach の sampler**：`mainConnectionSamples` が 0 のまま通る形だった（fake の lane は prepare が即時で、sampler の周期 2 ms より待ちが短く、実測で 0 だった）。fake の worker の prepare に 60 ms を入れて（registration の stand-in）sample を取り、fake の a7 に record ごとの `mainConnectionSamples > 0`、real の a7／a8 に合計の `> 0` を足した。
 
@@ -927,7 +927,7 @@ P1 は 0 件。直したものと判断は次のとおり。
 **持ち越し**（PR 本文に書く）：
 1. `await_request` を通る (ii-b) ②-2 の試験が無い。②-2 は accessor を直接呼ぶ試験（`ii_b_*` 3 本）だけで固定している。
 2. HEAD の評価 build での dev run（dev-shape の g06 を、base と head の対で）は未実施。`drift_at_query`・Stale・late・W の gate（上の gate の節）はこの run の後に判断する。
-3. `scripts/nir1-c-query-worker-ci.sh lifecycle` は実行していない（release build が worktree に無く、cold の release build と 8 case の逐次実行が 15 分に収まらないため）。この PR の grimodex-db の変更は probe（`main_connection_is_free_for_test`）と試験で、worker の process の停止・再起動・cutover には触れない。PR の前に CI 側（または時間のある実行）で確かめる。
+3. `scripts/nir1-c-query-worker-ci.sh lifecycle` は実行していない。省いた理由は見込みで、測っていない：script は `src-tauri/target/release` 固定（`CARGO_TARGET_DIR` を外した cold の release build）で、この worktree に release の成果物は無く、debug の `grimodex-db --lib` 全件だけで 1291 秒かかったため、release build と 8 case の逐次実行が 15 分に収まるとは見込めない。この PR は grimodex-db の `c_query_freshness.rs`（と mod 行）の削除と probe（`main_connection_is_free_for_test`）の追加を含み、worker の process の停止・再起動・cutover の code には触れないが、lifecycle の lane はその削除の後の grimodex-db では走らせていない。PR の前に CI 側（または時間のある実行）で確かめる。
 4. opt-in の real worker 試験は debug の worker（`NIR1_C_QUERY_WORKER_BIN`）で 2026-11-16 に実行した：`i_b_the_real_worker_…`、`a7_…real_worker`（`mainConnectionSamples` は small 25・two-revisions 31）、`a8_supplement_…`（10/10 reached、samples 4831）、`a8_the_reach_…`（30/30 reached、samples 791、held 0）はすべて成功。
 
 ### gate（測るもの。数値の線は置かない）
