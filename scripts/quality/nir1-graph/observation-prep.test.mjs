@@ -18,7 +18,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { NIR1_GRAPH_FREEZE_PATH } from "./contract.mjs";
-import { K66_FREEZE } from "../nir1-graph-eval/constants.mjs";
+import { K66_FREEZE, K67_FREEZE } from "../nir1-graph-eval/constants.mjs";
 import {
   SEED_PIN_ADDENDUM_PATH,
   SEED_PIN_ADDENDUM_V1,
@@ -46,10 +46,15 @@ import {
   K67_QUALITY_VERDICT_V3,
   K66_RULE_WORDS,
   K66_S3_REVIEW,
+  K67_CONFIRMATION_RECORDS,
+  K67_FREEZE_SOURCE,
+  K67_LIMIT_WORDS,
+  K67_RULE_WORDS,
   G01_E2E_NOT_COUNTED_AS,
   TP1_C7_WORDS,
   k65FormalRows,
   k66FormalRows,
+  k67FormalRows,
   parseRecordReference,
   K65_FREEZE_SOURCE,
   OBSERVATION_PREP_FILES,
@@ -70,6 +75,7 @@ import {
   parseK64FreezeCommit,
   parseK65Freeze,
   parseK66Freeze,
+  parseK67Freeze,
   sourcePinGitErrors,
   formalReferenceErrors,
   formalReferenceRows,
@@ -140,6 +146,7 @@ const S4_TOKEN_FIELDS = Object.freeze([
   ],
   ["k65-detection-record", (p, t) => (p.r5Gate.k65DetectionRecord = t)],
   ["k66-detection-record", (p, t) => (p.r5Gate.k66DetectionRecord = t)],
+  ["k67-detection-record", (p, t) => (p.r5Gate.k67DetectionRecord = t)],
   ["sp1-bytes-commit", (p, t) => (p.contracts.sp1.bytesCommit = t)],
   ["r5-check-record", (p, t) => (p.r5Gate.r5CheckRecord = t)],
 ]);
@@ -200,21 +207,21 @@ test("the committed observation-prep files validate (draft: S4b''' 60bf9dc4 revo
   assert.deepEqual(result.errors, []);
   assert.equal(result.status, "passed");
   assert.equal(result.formalReady, false);
-  assert.equal(result.placeholders.length, 22);
+  assert.equal(result.placeholders.length, 23);
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   assert.equal(prep.review, null);
   assert.equal(prep.status, "draft-awaiting-s3-review-and-s4-freeze");
 });
 
 test("the draft copy of the committed S2 validates as a draft (S4 tokens, not formal)", async () => {
-  assert.equal(S4_TOKEN_FIELDS.length, 22);
+  assert.equal(S4_TOKEN_FIELDS.length, 23);
   const root = rootWithPrep(await draftPrep());
   try {
     const result = await validateNir1ObservationPrep({ repoRoot: root });
     assert.deepEqual(result.errors, []);
     assert.equal(result.status, "passed");
     assert.equal(result.formalReady, false);
-    assert.equal(result.placeholders.length, 22);
+    assert.equal(result.placeholders.length, 23);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -954,6 +961,7 @@ async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
   filled.r5Gate.r5CheckRecord = located("r5-check");
   filled.r5Gate.k65DetectionRecord = located("k65-detection");
   filled.r5Gate.k66DetectionRecord = located("k66-detection");
+  filled.r5Gate.k67DetectionRecord = located("k67-detection");
   // S2 追補 #17 (S3's B2-1): S2's review is the 9th S3 record, while the
   // procedure file v2's review (above, formal.review) stays the 6th's — the
   // two are not held equal.
@@ -988,9 +996,22 @@ async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
         confirmedAt: "2026-11-08",
         source: row.record,
       })),
+      {
+        contract: "K6/7",
+        draftRef: CONTRACTS.k67.draftRef,
+        contractId: CONTRACTS.k67.contractId,
+        sha256: CONTRACTS.k67.sha256,
+        confirmedAt: "2026-11-15",
+        source: K67_CONFIRMATION_RECORDS.graphEvalProcedure.path,
+      },
+      ...K67_CONFIRMATION_RECORDS.additional.map((row) => ({
+        contract: "K6/7 の後の回答",
+        confirmedAt: "2026-11-16",
+        source: row.record,
+      })),
     ],
     userConfirmationsScope:
-      "K6/5 の確認の範囲（R-1〜R-5 を含む）。0600ec04 と 6b47c177 の確認。K6/6 の確認の範囲（R-6、R-7 を含む）。82119012 の確認（R5 の記録の再利用の 1 点）",
+      "K6/5 の確認の範囲（R-1〜R-5 を含む）。0600ec04 と 6b47c177 の確認。K6/6 の確認の範囲（R-6、R-7 を含む）。82119012 の確認（R5 の記録の再利用の 1 点）。K6/7 の確認の範囲（R-8、R-9、R-10、R-12、R-13 の 5 つと FR-8 の検査の削除を含む）。fd1f69ce、f7ea87a6、235e0c67、7a03eaf9 の回答",
   };
   // S2 追補: S3 decides each reviewer question before S4b.
   for (const question of filled.reviewerQuestions ?? [])
@@ -1016,6 +1037,13 @@ async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
     harnessK66Freeze: {
       ...parseK66Freeze(
         readFileSync(path.join(repoRoot, K66_FREEZE_SOURCE.path), "utf8"),
+      ),
+      source: ctx.harnessK64Freeze.source,
+    },
+    // S2 追補 #18: the same for K67_FREEZE.
+    harnessK67Freeze: {
+      ...parseK67Freeze(
+        readFileSync(path.join(repoRoot, K67_FREEZE_SOURCE.path), "utf8"),
       ),
       source: ctx.harnessK64Freeze.source,
     },
@@ -1101,6 +1129,23 @@ test("K6/6: CONTRACTS.k66 は constants.mjs の K66_FREEZE と同じ値（確認
   );
   assert.match(CONTRACTS.k66.confirmedCommit, /^[0-9a-f]{40}$/u);
   assert.match(CONTRACTS.k66.freezeCommit, /^[0-9a-f]{40}$/u);
+});
+
+test("K6/7: CONTRACTS.k67 は constants.mjs の K67_FREEZE と同じ値（確認・凍結の commit を含む）", () => {
+  assert.deepEqual(
+    { ...CONTRACTS.k67 },
+    {
+      draftRef: K67_FREEZE.draftRef,
+      contractId: K67_FREEZE.contractId,
+      path: K67_FREEZE.path,
+      sha256: K67_FREEZE.sha256,
+      confirmedCommit: K67_FREEZE.confirmedCommit,
+      freezeCommit: K67_FREEZE.freezeCommit,
+    },
+  );
+  assert.match(CONTRACTS.k67.confirmedCommit, /^[0-9a-f]{40}$/u);
+  assert.match(CONTRACTS.k67.freezeCommit, /^[0-9a-f]{40}$/u);
+  assert.notEqual(CONTRACTS.k67.confirmedCommit, CONTRACTS.k67.freezeCommit);
 });
 
 test("K6/5 版の P3-3: contracts.k65 is the pinned constants.mjs K65_FREEZE (sha256, confirmedCommit, freezeCommit), as K64_FREEZE is for contracts.k64", async () => {
@@ -3407,7 +3452,7 @@ test("S2 追補 #2: S3's decisions are recorded, and P-S2-5 (the harness's block
 test("S2 追補 #2 P3-3: a draft keeps exactly the S4 placeholder tokens", async () => {
   const ctx = await context();
   const prep = await draftPrep();
-  assert.equal(prep.placeholders.length, 22);
+  assert.equal(prep.placeholders.length, 23);
   const check = (copy) => observationPrepErrors(copy, ctx);
   detects(
     prep,
@@ -5820,7 +5865,8 @@ test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge comm
   // S2 追補 #9（DR-CP4-S4-5）: (e) the re-freeze. S2 追補 #10（DR-CP4-S4-6）:
   // (f) the third re-freeze. S2 追補 #11（DR-CP4-S4-7）: (g) the fourth.
   // S2 追補 #12（DR-CP4-S4-8）: (h) the fifth. S2 追補 #14（DR-CP4-S4-9）: (i)
-  // the sixth. S2 追補 #16（DR-CP4-S4-10）: (j) the seventh.
+  // the sixth. S2 追補 #16（DR-CP4-S4-10）: (j) the seventh. S2 追補 #18
+  // （DR-CP4-S4-11）: (k) the ninth (the eighth did not re-freeze, DR-CP4-S6-6).
   assert.deepEqual(Object.keys(S4_PROCEDURE_WORDS), [
     "a",
     "b",
@@ -5832,6 +5878,7 @@ test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge comm
     "h",
     "i",
     "j",
+    "k",
   ]);
   let mutated = 0;
   for (const [item, words] of Object.entries(S4_PROCEDURE_WORDS))
@@ -5845,7 +5892,7 @@ test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge comm
       );
       mutated += 1;
     }
-  assert.equal(mutated, 60);
+  assert.equal(mutated, 75);
   detects(
     prep,
     (copy) => observationPrepErrors(copy, ctx),
@@ -6232,7 +6279,7 @@ test("S2 追補 #12（DR-CP4-P-8）: S2 binds the setup addendum v3, the two pin
   assert.ok(prep.setupReadings.status.includes("追補 #12"));
   // S2 はまだ draft（S4b'''' が placeholder を埋める）。
   assert.equal(prep.status, "draft-awaiting-s3-review-and-s4-freeze");
-  assert.equal(prep.placeholders.length, 22);
+  assert.equal(prep.placeholders.length, 23);
   assert.equal(prep.boundFiles[0].commit, "S4:setup-addendum-commit");
   assert.equal(prep.boundFiles[0].sha256, "S4:setup-addendum-sha256");
   // 変異: setup の葉を v2 に戻す（d1、診断の run、boundFiles）。
@@ -6497,7 +6544,7 @@ test("S2 追補 #14（DR-CP4-P-9）: S2 binds K6/5 (contracts.k65 and its confir
   assert.deepEqual(check(prep), []);
   // S4a の後も S2 は draft で、旧 S4b'''' の freeze record は失効している。
   assert.equal(prep.status, "draft-awaiting-s3-review-and-s4-freeze");
-  assert.deepEqual(prep.placeholders.length, 22);
+  assert.deepEqual(prep.placeholders.length, 23);
   assert.equal(prep.review, null);
   assert.equal(
     prep.placeholders.some((row) => row.token.includes("k64-procedure-v1")),
@@ -7410,7 +7457,7 @@ test("S2 追補 #16（DR-CP4-P-10）: S2 binds K6/6 (contracts.k66 and its confi
   assert.deepEqual(check(prep), []);
   assert.equal(prep.status, "draft-awaiting-s3-review-and-s4-freeze");
   assert.equal(prep.review, null);
-  assert.equal(prep.placeholders.length, 22);
+  assert.equal(prep.placeholders.length, 23);
   // The /6 row: the committed bytes, the commit that last changed them, the
   // freeze; the same values as the pinned harness's K66_FREEZE (a test holds
   // the validator's CONTRACTS.k66 and the harness constants together).
@@ -8226,5 +8273,461 @@ test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6
     declaration.graphRuntimeOutputObserved,
     false,
     "the declaration is the S2 author's, not the builder's",
+  );
+});
+
+test("S2 追補 #18（DR-CP4-P-11）: S2 binds K6/7 (contracts.k67 and its confirmation, the freeze record, the four answers after it), k67Readings disclose (a)〜(l), s4StagesRule carries (k), the values stay K6/5's, and S2 is still a draft", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  assert.deepEqual(check(prep), []);
+  assert.equal(prep.status, "draft-awaiting-s3-review-and-s4-freeze");
+  assert.equal(prep.review, null);
+  assert.equal(prep.placeholders.length, 23);
+  // The /7 row: the committed bytes, the commit that last changed them, the
+  // freeze; the same values as the harness's K67_FREEZE (a test holds the
+  // validator's CONTRACTS.k67 and the harness constants together).
+  const k67 = prep.contracts.k67;
+  for (const field of [
+    "draftRef",
+    "contractId",
+    "path",
+    "sha256",
+    "confirmedCommit",
+    "freezeCommit",
+  ])
+    assert.equal(k67[field], CONTRACTS.k67[field], field);
+  for (const field of ["path", "sha256", "draftRef", "contractId"])
+    assert.equal(k67[field], K67_FREEZE[field], field);
+  assert.equal(k67.confirmedCommit, K67_FREEZE.confirmedCommit);
+  assert.equal(k67.freezeCommit, K67_FREEZE.freezeCommit);
+  // /7 stands on /4, /5 and /6 (all stay; K6/7 does not change a value).
+  assert.equal(prep.contracts.k66.sha256, CONTRACTS.k66.sha256);
+  assert.equal(prep.contracts.k65.sha256, CONTRACTS.k65.sha256);
+  assert.equal(prep.contracts.k64.sha256, CONTRACTS.k64.sha256);
+  for (const mutate of [
+    (p) => delete p.contracts.k67,
+    (p) => (p.contracts.k67.sha256 = flip(k67.sha256)),
+    (p) => (p.contracts.k67.draftRef = "nir1-final-request-eval-proposal/6"),
+    (p) => (p.contracts.k67.contractId = "other"),
+    (p) => (p.contracts.k67.path = "docs/plans/x.md"),
+    (p) => (p.contracts.k67.confirmedCommit = k67.freezeCommit),
+    (p) => (p.contracts.k67.freezeCommit = k67.confirmedCommit),
+    (p) => (p.contracts.k67.freezeCommit = null),
+  ])
+    detects(prep, check, mutate, /contracts\.k67 must be the K6\/7 bytes/u);
+  // The confirmation record (at the freeze commit) and the freeze record, each
+  // bound by file, commit and SHA-256.
+  const confirmation = k67.confirmation;
+  assert.equal(confirmation.contract, "K6/7");
+  for (const word of [
+    K67_CONFIRMATION_RECORDS.graphEvalProcedure.path,
+    K67_CONFIRMATION_RECORDS.graphEvalProcedure.commit,
+    K67_CONFIRMATION_RECORDS.graphEvalProcedure.sha256,
+  ])
+    assert.ok(confirmation.record.includes(word), word);
+  for (const word of [
+    K67_CONFIRMATION_RECORDS.freezeRecord.path,
+    K67_CONFIRMATION_RECORDS.freezeRecord.commit,
+    CONTRACTS.k67.freezeCommit,
+  ])
+    assert.ok(confirmation.freezeRecord.includes(word), word);
+  assert.equal(
+    K67_CONFIRMATION_RECORDS.graphEvalProcedure.commit,
+    CONTRACTS.k67.freezeCommit,
+    "the K6/7 confirmation record's commit is the freeze commit",
+  );
+  for (const mutate of [
+    (p) => delete p.contracts.k67.confirmation,
+    (p) => (p.contracts.k67.confirmation.contract = "K6/6"),
+    (p) => delete p.contracts.k67.confirmation.confirmedAt,
+    (p) =>
+      (p.contracts.k67.confirmation.record =
+        p.contracts.k67.confirmation.record.replace("b9559a22", "00000000")),
+    (p) =>
+      (p.contracts.k67.confirmation.record =
+        p.contracts.k67.confirmation.record.replace(
+          /SHA-256 7eb40f8c/u,
+          "SHA-256 0000000",
+        )),
+    (p) =>
+      (p.contracts.k67.confirmation.record =
+        p.contracts.k67.confirmation.record.replace(
+          "user-confirmation-2026-11-15-k67-graph-eval-procedure.md",
+          "x.md",
+        )),
+    (p) =>
+      (p.contracts.k67.confirmation.freezeRecord =
+        p.contracts.k67.confirmation.freezeRecord.replace(
+          "k67-freeze-record.md",
+          "x.md",
+        )),
+    (p) =>
+      (p.contracts.k67.confirmation.freezeRecord =
+        p.contracts.k67.confirmation.freezeRecord.replace(
+          "ba1e1a05",
+          "00000000",
+        )),
+    (p) => (p.contracts.k67.confirmation.intoReview = ""),
+  ])
+    detects(prep, check, mutate, /contracts\.k67\.confirmation must name/u);
+  // The four answers after K6/7: file, commit, SHA-256, topic and date.
+  assert.equal(confirmation.additional.length, 4);
+  assert.deepEqual(
+    confirmation.additional.map((row) => row.commit.slice(0, 8)),
+    ["fd1f69ce", "f7ea87a6", "235e0c67", "7a03eaf9"],
+  );
+  for (const mutate of [
+    (p) => p.contracts.k67.confirmation.additional.pop(),
+    (p) => (p.contracts.k67.confirmation.additional[0].sha256 = "0".repeat(64)),
+    (p) => (p.contracts.k67.confirmation.additional[1].commit = "0".repeat(40)),
+    (p) =>
+      (p.contracts.k67.confirmation.additional[2].record = "docs/plans/x.md"),
+    (p) => delete p.contracts.k67.confirmation.additional[3].topic,
+    (p) => delete p.contracts.k67.confirmation.additional[0].confirmedAt,
+    (p) => delete p.contracts.k67.confirmation.additionalNote,
+  ])
+    detects(
+      prep,
+      check,
+      mutate,
+      /contracts\.k67\.confirmation\.additional must be the four answers/u,
+    );
+  // k67Readings: the rule and the limits (a)〜(l).
+  detects(prep, check, (p) => delete p.k67Readings, /k67Readings is required/u);
+  detects(
+    prep,
+    check,
+    (p) => (p.k67Readings.status = " "),
+    /k67Readings\.rule must bind/u,
+  );
+  for (const word of K67_RULE_WORDS) {
+    assert.ok(prep.k67Readings.rule.includes(word), word);
+    detects(
+      prep,
+      check,
+      (p) => (p.k67Readings.rule = p.k67Readings.rule.replaceAll(word, "")),
+      /k67Readings\.rule must bind/u,
+    );
+  }
+  assert.equal(K67_LIMIT_WORDS.length, 64);
+  for (const word of K67_LIMIT_WORDS) {
+    assert.ok(prep.k67Readings.limits.includes(word), word);
+    detects(
+      prep,
+      check,
+      (p) => (p.k67Readings.limits = p.k67Readings.limits.replaceAll(word, "")),
+      /k67Readings\.limits must disclose/u,
+    );
+  }
+  for (const letter of "abcdefghijkl")
+    assert.ok(
+      prep.k67Readings.limits.includes(` (${letter}) `) ||
+        prep.k67Readings.limits.startsWith(`(${letter}) `),
+      letter,
+    );
+  // The five loosenings are five (R-11 does not exist): the limits quote
+  // "R-8〜R-13" only to say it is not six.
+  assert.ok(prep.k67Readings.limits.includes("6 つではない"));
+  // The procedure: (k) the ninth re-freeze, and the K6/7 exception to "only
+  // narrowing after an observation".
+  assert.ok(prep.s4StagesRule.includes("(k) 9 回目の凍結のやり直し"));
+  assert.ok(prep.k64Procedure.promotion[2].includes("K6/7 もこの規則の例外"));
+  // No value changed: K6/7 keeps the v2 procedure file's values.
+  assert.equal(prep.k64Procedure.formal.version, "v2");
+  assert.equal(prep.k64Procedure.values.dMs, 40);
+  assert.equal(prep.k64Procedure.values.bMs, 54.2);
+  assert.equal(prep.k64Procedure.values.hybridP95LimitMs, 94.2);
+  // The placeholders: the new K6/7 detection record token, and the fills for
+  // the records say the ninth S4 retakes (the seventh's records no longer hold).
+  const fill = (token) =>
+    prep.placeholders.find((row) => row.token === token).fill;
+  assert.ok(fill("S4:k67-detection-record").includes("9 回目"));
+  assert.ok(fill("S4:sp-synthetic-detection-record").includes("9 回目"));
+  assert.ok(fill("S4:k65-detection-record").includes("9 回目"));
+  assert.ok(fill("S4:k66-detection-record").includes("9 回目"));
+  assert.ok(fill("S4:r5-check-record").includes("7a03eaf9"));
+  assert.ok(fill("S4:r5-check-record").includes("11 file"));
+  assert.ok(fill("S4:author-declaration-sha256").includes("9 回目"));
+  // The K6/7 detection record is a placeholder in a draft and bound.
+  assert.equal(prep.r5Gate.k67DetectionRecord, "S4:k67-detection-record");
+  for (const mutate of [
+    (p) => (p.r5Gate.k67DetectionRecord = ""),
+    (p) => (p.r5Gate.k67DetectionRecord = "S4:other-record"),
+    (p) => delete p.r5Gate.k67DetectionRecord,
+    (p) => delete p.r5Gate.k67DetectionRecordRule,
+  ])
+    detects(
+      prep,
+      check,
+      mutate,
+      /r5Gate\.k67DetectionRecord must locate the K6\/7 detection-power record/u,
+    );
+  // The G-01 diagnostic's rule carries the head.k67 sentence (and still the
+  // K6/6 words an earlier test holds).
+  const g01 = prep.diagnosticRuns.find((row) => row.id === "G01-E2E");
+  for (const word of ["--k67-commit", "head.k67", "--k66-commit"])
+    assert.ok(g01.rule.includes(word), word);
+});
+
+test("S2 追補 #18: a frozen record carries the K6/7 row and scope and compares contracts.k67 with the pinned K67_FREEZE; the formal rows hold K6/7's records", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const { fixed, frozenCtx } = await frozenRecord(ctx);
+  const frozenCheck = (copy) => observationPrepErrors(copy, frozenCtx);
+  assert.deepEqual(frozenCheck(fixed), []);
+  // K6/7's row in review.userConfirmations.
+  detects(
+    fixed,
+    frozenCheck,
+    (p) =>
+      (p.review.userConfirmations = p.review.userConfirmations.filter(
+        (row) => row.contract !== "K6/7",
+      )),
+    /review\.userConfirmations must carry the K6\/7 row/u,
+  );
+  const at67 = (p) =>
+    p.review.userConfirmations.find((row) => row.contract === "K6/7");
+  for (const mutate of [
+    (p) => (at67(p).sha256 = "a".repeat(64)),
+    (p) => (at67(p).draftRef = "nir1-final-request-eval-proposal/6"),
+    (p) => (at67(p).contractId = "other"),
+    (p) => (at67(p).source = "docs/plans/x.md"),
+    (p) => delete at67(p).confirmedAt,
+  ])
+    detects(
+      fixed,
+      frozenCheck,
+      mutate,
+      /review\.userConfirmations must carry the K6\/7 row/u,
+    );
+  for (const word of ["K6/7", "R-8", "R-9", "R-10", "R-12", "R-13", "FR-8"])
+    detects(
+      fixed,
+      frozenCheck,
+      (p) =>
+        (p.review.userConfirmationsScope =
+          p.review.userConfirmationsScope.replaceAll(word, "")),
+      /userConfirmationsScope must state the K6\/7 confirmation's scope/u,
+    );
+  // The four answers after K6/7 are rows and the scope names them.
+  for (const row of K67_CONFIRMATION_RECORDS.additional) {
+    detects(
+      fixed,
+      frozenCheck,
+      (p) =>
+        (p.review.userConfirmations = p.review.userConfirmations.filter(
+          (entry) => !String(entry.source).includes(row.record),
+        )),
+      new RegExp(
+        `review\\.userConfirmations must carry the confirmation ${row.commit.slice(0, 8)}`,
+        "u",
+      ),
+    );
+    detects(
+      fixed,
+      frozenCheck,
+      (p) =>
+        (p.review.userConfirmationsScope =
+          p.review.userConfirmationsScope.replaceAll(
+            row.commit.slice(0, 8),
+            "",
+          )),
+      new RegExp(
+        `review\\.userConfirmations must carry the confirmation ${row.commit.slice(0, 8)}`,
+        "u",
+      ),
+    );
+  }
+  // contracts.k67 is the pinned constants.mjs K67_FREEZE, field by field.
+  const harness = frozenCtx.harnessK67Freeze;
+  assert.deepEqual(
+    {
+      sha256: fixed.contracts.k67.sha256,
+      confirmedCommit: fixed.contracts.k67.confirmedCommit,
+      freezeCommit: fixed.contracts.k67.freezeCommit,
+    },
+    {
+      sha256: harness.sha256,
+      confirmedCommit: harness.confirmedCommit,
+      freezeCommit: harness.freezeCommit,
+    },
+  );
+  for (const field of K67_FREEZE_SOURCE.fields)
+    assert.ok(
+      observationPrepErrors(fixed, {
+        ...frozenCtx,
+        harnessK67Freeze: {
+          ...harness,
+          [field]: field === "sha256" ? "e".repeat(64) : "e".repeat(40),
+        },
+      }).some((e) =>
+        e.includes(
+          `contracts.k67.${field} must be the pinned harness's K67_FREEZE`,
+        ),
+      ),
+      field,
+    );
+  // Unreadable pinned bytes (the pin predates K67_FREEZE) close the check; a
+  // draft is not compared (S4b re-pins constants.mjs). The committed draft's
+  // context has no K67_FREEZE at the pin yet, so it is exactly this case.
+  assert.ok(
+    observationPrepErrors(fixed, {
+      ...frozenCtx,
+      harnessK67Freeze: null,
+    }).some((e) => /K67_FREEZE.*unreadable/u.test(e)),
+  );
+  assert.ok(
+    observationPrepErrors(fixed, {
+      ...frozenCtx,
+      harnessK67Freeze: {
+        ...harness,
+        source: { ...harness.source, sha256: "d".repeat(64) },
+      },
+    }).some((e) => /constants\.mjs must be the bytes/u.test(e)),
+  );
+  assert.deepEqual(
+    observationPrepErrors(prep, { ...ctx, harnessK67Freeze: null }).filter(
+      (e) => /K67_FREEZE/u.test(e),
+    ),
+    [],
+  );
+  // The K6/7 detection record is located when frozen.
+  for (const text of [
+    "docs/plans/x.md",
+    "docs/plans/x.md（commit abc、file の SHA-256 def）",
+    `（commit ${"a".repeat(40)}、file の SHA-256 ${"c".repeat(64)}）`,
+  ])
+    detects(
+      fixed,
+      frozenCheck,
+      (p) => (p.r5Gate.k67DetectionRecord = text),
+      /r5Gate\.k67DetectionRecord must start with/u,
+    );
+  detects(
+    fixed,
+    frozenCheck,
+    (p) => (p.r5Gate.k67DetectionRecord = "S4:k67-detection-record"),
+    /r5Gate\.k67DetectionRecord must locate/u,
+  );
+  // The formal gate's rows: the K6/7 draft at the freeze commit, the
+  // confirmation and freeze records, the quality verdict v3 and its fixing
+  // record, the four answers, and the located detection record.
+  const rows = k67FormalRows(fixed);
+  assert.deepEqual(
+    rows.slice(0, 5).map((row) => [row.path, row.commit.slice(0, 8)]),
+    [
+      ["docs/plans/nir1-final-request-eval-proposal-7-draft.md", "b9559a22"],
+      [K67_CONFIRMATION_RECORDS.graphEvalProcedure.path, "b9559a22"],
+      [K67_CONFIRMATION_RECORDS.freezeRecord.path, "ba1e1a05"],
+      [K67_QUALITY_VERDICT_V3.v3.path, "160f5fa5"],
+      [K67_QUALITY_VERDICT_V3.confirmationRecord.path, "160f5fa5"],
+    ],
+  );
+  assert.equal(rows.length, 5 + 4 + 1);
+  assert.equal(rows[0].sha256, CONTRACTS.k67.sha256);
+  assert.equal(
+    k67FormalRows(prep).length,
+    5 + 4,
+    "a draft has no located record",
+  );
+  const all = formalReferenceRows(fixed, {});
+  for (const row of rows)
+    assert.ok(
+      all.some(
+        (entry) =>
+          entry.path === row.path &&
+          entry.commit === row.commit &&
+          entry.sha256 === row.sha256,
+      ),
+      row.path,
+    );
+});
+
+test("S2 追補 #18: parseK67Freeze reads the three fields once each from the K67_FREEZE literal only, and the worktree's constants.mjs parses to CONTRACTS.k67", () => {
+  const rows = {
+    sha256: `  sha256: "${"1".repeat(64)}",`,
+    confirmedCommit: `  confirmedCommit: "${"2".repeat(40)}",`,
+    freezeCommit: `  freezeCommit: "${"3".repeat(40)}",`,
+  };
+  const text = [
+    "export const K67_FREEZE = Object.freeze({",
+    '  path: "docs/plans/x.md",',
+    rows.sha256,
+    "  /** a comment */",
+    rows.confirmedCommit,
+    rows.freezeCommit,
+    "});",
+  ].join("\n");
+  assert.deepEqual(parseK67Freeze(text), {
+    sha256: "1".repeat(64),
+    confirmedCommit: "2".repeat(40),
+    freezeCommit: "3".repeat(40),
+  });
+  for (const changed of [
+    text.replace("K67_FREEZE", "K66_FREEZE"),
+    text.replace("confirmedCommit", "confirmed"),
+    text.replace(
+      rows.freezeCommit,
+      `${rows.freezeCommit}\n${rows.freezeCommit}`,
+    ),
+    text.replace("2".repeat(40), "2".repeat(39)),
+    text.replace("1".repeat(64), "1".repeat(63)),
+    `export const K66_FREEZE = Object.freeze({\n${rows.sha256}\n${rows.confirmedCommit}\n${rows.freezeCommit}\n});\n${text.replace(`${rows.freezeCommit}\n`, "")}`,
+  ])
+    assert.equal(parseK67Freeze(changed), undefined, changed);
+  // The worktree's constants.mjs: K67_FREEZE parses and equals CONTRACTS.k67.
+  const parsed = parseK67Freeze(
+    readFileSync(path.join(repoRoot, K67_FREEZE_SOURCE.path), "utf8"),
+  );
+  assert.deepEqual(parsed, {
+    sha256: CONTRACTS.k67.sha256,
+    confirmedCommit: CONTRACTS.k67.confirmedCommit,
+    freezeCommit: CONTRACTS.k67.freezeCommit,
+  });
+});
+
+test("S2 追補 #18: the K6/7 records hold the committed bytes at their commits (contracts); a checkout without the contracts commits skips, and the commits become strict ancestors of the head only at the contracts merge (③)", async (t) => {
+  const git = (...args) =>
+    execFileSync("git", args, {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  try {
+    git(
+      "cat-file",
+      "-e",
+      `${K67_CONFIRMATION_RECORDS.additional.at(-1).commit}^{commit}`,
+    );
+    git(
+      "cat-file",
+      "-e",
+      `${K67_CONFIRMATION_RECORDS.freezeRecord.commit}^{commit}`,
+    );
+  } catch {
+    t.skip("shallow clone, or the contracts commits are not fetched");
+    return;
+  }
+  for (const row of k67FormalRows()) {
+    const bytes = execFileSync("git", ["show", `${row.commit}:${row.path}`], {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.equal(sha256(bytes), row.sha256, `${row.path} at ${row.commit}`);
+  }
+  // The freeze record names the freeze commit and the draft's SHA-256, and the
+  // freeze commit is the confirmation record's commit.
+  const record = git(
+    "show",
+    `${K67_CONFIRMATION_RECORDS.freezeRecord.commit}:${K67_CONFIRMATION_RECORDS.freezeRecord.path}`,
+  );
+  assert.ok(record.includes(CONTRACTS.k67.freezeCommit));
+  assert.ok(record.includes(CONTRACTS.k67.sha256));
+  assert.equal(
+    git("show", `${CONTRACTS.k67.freezeCommit}:${CONTRACTS.k67.path}`).length >
+      0,
+    true,
   );
 });
