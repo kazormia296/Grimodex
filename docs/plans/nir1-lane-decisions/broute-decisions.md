@@ -699,6 +699,23 @@
 3. 判断 1 の検査が src の走査であること（型で const に縛れない代わり）。
 4. 判断 5 で記録の上限を置かない根拠。
 
+**実装の結果（PR-1、2026-11-17。枝 `claude/pubg-5-pr1`。PR は作らず、merge は次の S4（9 回目）の後）**
+- commit：`6376de4d`（この DR）、`8d8dd908`（db：token・gate・wake・V0 と解除条件の試験）、`d5785dc8`（Native：token・封じ込め・試験）。
+- 公開した名前：db に `Nir1GraphProductPublication`、`nir1_graph_index_build_wakes_main_discovery_with_product`、`discover_maintenance_project_for_main_with_product`、`run_system_work_cycle_with_nir1_graph_runtime_and_product`、`is_project_local_discovery_failure`。Native に `maintenance_product_publication()`（`nir1_graph_product.rs`）と `discover_all_with_product`。既存の関数は無変更。
+- 判断との差：
+  - 判断 1 の検査 (c) は、`--features nir1-graph-eval` で Native の試験を走らせて確かめた（token は `None` のまま）。
+  - 判断 5 の試験は、同じ入力の拒否が試験 hook の `BeforePrepare`・`BeforeValidation` に届かず、SQL の使用量が拒否した試行の 1/10 以下であることで固定した。seam と token の両方の gate で走らせた。
+- V0 の観測との差：`05-v0.md` の dev probe では、(a)（保存 edge 超過）の 1 回目の discovery が Err だった。この試験の流れ（published → 超過 → B を dispatch → wake）では、discovery は Verify の work を返し、cycle の Verify が `capacity-exceeded` で失敗した。原因は未特定（`complete_registered` を前後に読む、`judge` を先に呼ぶ、discovery だけを先に呼ぶ形は試したが再現しなかった）。固定した試験は、どちらの形でも成り立つ不変条件にした（失敗が capacity-exceeded であること、Verify の Run が 1 件 failed、Finding が 1 件、その後は新しい Run が無いこと、discovery が Err のときは project 単位の失敗であること）。
+- 検証（すべて `CARGO_BUILD_JOBS=4`、node は 22）：
+  - `grimodex-db --lib` の `nir1_graph_index_maintenance`（41 件）と `maintenance`・`nir1_entity_relation_index`・`nir1_capacity`・`restore`（440 件）。`--test narrative_maintenance_contracts`・`narrative_maintenance_route_registry`・`narrative_maintenance_runtime`・`narrative_maintenance_lifecycle_runtime`（4＋1＋30＋9 件）。すべて成功。
+  - Native `--lib` 全件（816 件成功、7 件 ignore）。`--features nir1-graph-eval` で `narrative_maintenance::tests` と token の 2 試験（16 件成功）。
+  - `cargo clippy --all-targets -- -D warnings`：`grimodex-db`（既定 feature）と Native は成功。`--features nir1-material-diagnostics` は、PR-1 が触れない file（`nir1_graph.rs`、`nir1_graph/input.rs`、`nir1_graph_memory_diagnostics.rs`）の既存の指摘 11 件で失敗する（PR-1 の変更の指摘は無い）。
+  - pin 済みの `native-architecture.mjs` を変えず、`runArchitectureChecks` を作業 tree に対して実行して違反 0。
+- PR-2 と PUB-G への引き継ぎ：
+  - 定数を切り替えると discovery の応答に `wakeProjectIds` が載る。main は `acceptGraphIndexBuildWakes` が無いとその応答を拒否する（`normalizeDiscoveryResponse` の `allowedKeys`）。PR-1 だけで定数を切り替えてはならない。main が product の gate でも `wakeProjectIds` を受ける変更は PR-2（W2 と同じ範囲）で行う。
+  - (iii)（拒否のときに binding を退かせる）の契約の起案は、この PR とは別。実装されると V0 の試験の期待が意図して変わる。
+  - 封じ込めた project の失敗は、main からは見えない（wire は変わらない）。見せるなら main の変更と契約が要るので、PR-2 以降で扱う。
+
 ### 実装の段取り（閉じた gate の内側まで。merge は S4（9 回目）の PR の merge の後）
 
 | PR | 中身 | 検証 |
