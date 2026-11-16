@@ -927,14 +927,39 @@ P1 は 0 件。直したものと判断は次のとおり。
 **持ち越し**（PR 本文に書く）：
 1. `await_request` を通る (ii-b) ②-2 の試験が無い。②-2 は accessor を直接呼ぶ試験（`ii_b_*` 3 本）だけで固定している。
 2. HEAD の評価 build での dev run（dev-shape の g06 を、base と head の対で）は未実施。`drift_at_query`・Stale・late・W の gate（上の gate の節）はこの run の後に判断する。
+   **→ 2026-11-16 に実施した**（dev の gate を 3 回、real worker の R-10 を 1 回。結果と読みは下の「gate の結果」の節）。**registration の窓 W と begin→query の時間は未測のまま**で、ユーザーの回答（「悪化なしとして進める」）により、数値の gate でなく開示として持ち越す。
 3. `scripts/nir1-c-query-worker-ci.sh lifecycle` は実行していない。省いた理由は見込みで、測っていない：script は `src-tauri/target/release` 固定（`CARGO_TARGET_DIR` を外した cold の release build）で、この worktree に release の成果物は無く、debug の `grimodex-db --lib` 全件だけで 1291 秒かかったため、release build と 8 case の逐次実行が 15 分に収まるとは見込めない。この PR は grimodex-db の `c_query_freshness.rs`（と mod 行）の削除と probe（`main_connection_is_free_for_test`）の追加を含み、worker の process の停止・再起動・cutover の code には触れないが、lifecycle の lane はその削除の後の grimodex-db では走らせていない。PR の前に CI 側（または時間のある実行）で確かめる。
 4. opt-in の real worker 試験は debug の worker（`NIR1_C_QUERY_WORKER_BIN`）で 2026-11-16 に実行した：`i_b_the_real_worker_…`、`a7_…real_worker`（`mainConnectionSamples` は small 25・two-revisions 31）、`a8_supplement_…`（10/10 reached、samples 4831）、`a8_the_reach_…`（30/30 reached、samples 791、held 0）はすべて成功。
+5. R-10 の real worker での確認（dev、head `Available`・base `Stale` が各 1 回）は dev 枝（`claude/dev-s4-9-r10`、`claude/dev-s4-9-r10-base`）にあり、push していない。`create` の中の commit だけで、②（preflight〜postflight の間）の commit は試していない（上の「gate の結果」）。
+6. 1 回目の `g03h2` の late 2 件の `requalification=error(cancelled)` と、3 回目の `hd-g03h2` の診断 `driftAtQuery` 1（dPrime の最大値 0 との食い違い）は、原因を確かめていない（上の「gate の結果」）。
 
 ### gate（測るもの。数値の線は置かない）
 
 - 動作の同等：dev の A/B（凍結外の fixture。base＝PR-3 の無い master、head＝PR-3。DR-DBC-6 の A/B と同じく交互に各 3 run 以上。回転 HDD と tmpfs の両方。測定環境が結果に効く）で、**`Stale`（base は `stamp_stale + drift_at_query`、head は `drift_at_query`）、late（`graph-late`）、`drift_at_query`、begin→query の時間、registration の窓 W が悪化しない**こと。**新しい閾値は置かない**。悪化の判断は、base の run 間の幅を記録し、head がその幅の外で悪い方へ出たら止まって報告する（C8 のとおり、未達は止まって再相談）。線は「悪化しない」の記録で、置く場合はユーザーに確認する。
 - 削除した検査が実害を出さないこと：dev の run で `drift_at_query` の件数が、base の `stamp_stale + drift_at_query` の和と同程度であること。(S0, registration の preflight] の commit が `Available` になること（base では `Stale`、または stamp が読めず `Available`）を、real worker で 1 回確かめる。
 - maintenance を走らせる条件を入れる（DR-DBC-6 の g06 は maintenance が無かった）。ただし PR-3 は親の `try_lock` を減らすだけなので、maintenance との重なりは減る方向（【推測】）。
+
+### gate の結果（dev、2026-11-16。実施した事実と読み。記録は `fusion-eval-data/db-stage1-pr3-2026-11-15/` の `dev-gate/`・`probe-gc/`・`dev-gate2/`・`dev-gate3/`・`r10-real-worker.md`）
+
+すべて dev 専用・非判定（凍結の fixture・受領書・Gold は使わず、dev-shape の `dev-shape-g06.v1.json`・`dev-shape-g03.v1.json` だけ）。base は `origin/master` `3948eeb2`、head は `977d30be`（評価 build は両側とも clean、`eval-build.json` の `resolvedHeadSha` と一致）。**base→head の差は PR-3 だけではない**（項目 B・C、(ii-b) の hook、判定 file を含む 19 commit）ので、時間の差が出ても PR-3 単独には帰せない。新しい閾値は置いていない。判断は上の gate の節のとおり「base の run 間の幅を記録し、head が幅の外で悪い方へ出たら止まって報告する」で、ユーザーに伺いながら 3 回取った。
+
+1. **1 回目（`dev-gate/`、各 shape で base 2 run・head 2 run）**：g03/base で head の裾が base の幅の外に出た（head の late 2/60、base 0/60。p95 は head 52.2・71.0、base 46.3・48.7。最大は head 222.7・83.4、base 46.9・52.1）。止まって報告し、ユーザーは「本数を足して真因も採る」を選んだ。
+   - head の遅い sample は 4 run のうち 3 run で rep22 にあった（base は 0）。2 run では偶然かどうか判断できなかった。
+   - **項目 C の probe は原因ではない**（`probe-gc/`。probe の evidence 計算を on／off した 4 run で、off でも同じ遅れが出た。計算は 1 sample あたり 0.0〜0.2 ms、longtask は 0 件。n=4）。遅れは native 側（`nativeWorkerMs`）も約 120 ms 延びていて、renderer だけの停止ではない。本当の原因は未特定（推測）。
+2. **2 回目（`dev-gate2/`、32 run）**：HDD→tmpfs、各媒体で g06→g03、各 shape で base 4 run・head 4 run。**約 100 s の遅れは再現しなかった**。head が base の run 間の幅の外に悪い方へ出た run が HDD に 2 本（`hd-g06h1`、`hd-g03h3`）あり、いずれも別 session の負荷（CPU 圧、ext4 journal の書き込み待ち〔`hd-g03h3`：main の tokio-rt-worker が `do_get_write_access` で約 150 ms 止まり、その間 sda が連続 busy〕）が同居していた。stall は HDD が base 0・head 1、tmpfs が base 2・head 3。**head ≥ base の非対称は隠さない**（70 ms 超を含む run は base 1/16、head 4/16。測定 tree 自身の CPU は同じ）が、本数が少なく悪化を示すものではない。「別 session が原因」は有力だが process は未記録。PR-3 のコードの差は、データから示せない。ユーザーは「静かな時間帯に取り直す」を選んだ（HDD だけ、base・head 各 4 run、ps の確認、load 待ちが時間切れなら打ち切る）。
+3. **3 回目（`dev-gate3/`、静かな時間帯・HDD だけ。16 run、各 shape で base 4 run・head 4 run）**：stall は base 0・head 0。head が base の run 間の幅の外に悪い方へ出たのは **3 件**（`hd-g03h2` の g03/base の最大 59.5>53.5＝+6.0 ms、`hd-g06h3` の g06/base の p50 46.6>46.4＝+0.2 ms、`hd-g06h4` の g06/base の p95 51.7>50.8＝+0.9 ms）。**逆向きの外れもあった**（base 側の `hd-g03b3` の frontier-exceeded の最大 84.2、`hd-g06b4` の g06/base の最大 63.6）。late は g03/base・g06/base とも head 0 件（base は g06b4 の 1 件）。Stale は pooled の `stampStale`・`driftAtQuery`（dPrime の最大値）が全群で 0。ただし head の `hd-g03h2`（g03/base）だけ、診断 JSON の末尾の累積値 `driftAtQuery` が 1 で、dPrime の最大値の 0 と食い違う。**原因は確かめていない**（開示）。
+
+**「4 run の最大」の規則の読み**：「head の run 別の値が base の run 別の最大を超えたか」は、base と head が同じ分布でも、各 4 run なら 8 個のうち最大が head 側にある確率が 1/2 なので、約半分の確率で何か 1 つの指標が超える。幅の外に出たことだけで悪化と読めず、出なかったことも悪化なしの証明にならない。数値の線を置いていないので、この規則は止まる合図として使い、判断は差の大きさと原因で行った。
+
+**ユーザーの回答**：3 回目の結果を報告し、ユーザーは 2026-11-16 に「**悪化なしとして進める**」と回答した（新しい閾値の設定でも、悪化の否定の保証でもなく、上の事実を示した上での進行の判断。結果は 3 回とも `fusion-eval-data` に残る）。
+
+**R-10 の real worker での確認**（`r10-real-worker.md`。dev 枝 `claude/dev-s4-9-r10` `615fea68`〔head 側。`977d30be` から〕、`claude/dev-s4-9-r10-base` `72518d39`〔base 側。`3948eeb2` から〕。どちらも push していない）：製品の `ProcessGraphWorkerFactory`（real worker `nir1-c-query-worker` の process）を包む factory の `create`（admit の後・worker の registration の前）で、製品の接続から audit の commit を 1 回行う。**head（PR-3）では ticket が `Available`（`prepares_ready` 1、`drift_at_query` 0）、base では `Stale`（`stamp_stale` 1。parent の stamp の不一致で、worker の drift ではない）**だった。commit なしの対照は両側とも `Available`。各側・各条件 1 回。限界：commit は audit の append 1 回（edit の save や別接続の commit ではない）、`create` の中（S0 の後・worker の process の起動の前）で、worker の preflight の直前・直後や ②（preflight〜postflight の間）の commit は試していない。worker は debug build で、時間は比較に使えない。
+
+**未測として開示するもの**（ユーザーの回答により、数値の gate ではなく開示とする）：
+- **registration の窓 W と begin→query の時間は測っていない**。receipt に query 単独の時刻が無く、`registeredAtNs` が 1 つあるだけで W を導けない。dev の gate は fetch→return と ticket→settled の p50／p95／max で見た。
+- 「消した検査が実害を出さない」の dev での実証は、base でも `stampStale` が 0 だったため得られていない（base でも stamp は stale にならなかった）。実 worker での確認は R-10 の 1 回だけ。
+
+**所見：`ticket available` と `requalification=error(cancelled)` の late 2 件**（1 回目の `g03h2` の rep12・rep22。`dev-gate/README.md` 3 節）：ticket は `available`・`disposition=unused` で、(ii-b) の `requalification` が `{result: error, reason: cancelled, returned: false}`。`related_scenes/graph.rs` の `eval_note_requalification` は `graph_response::assemble` が `Err` を返した場合を `error` と `classify(err)` で記録する作りで、ここでは `classify` が `cancelled` になっている。**「renderer が窓の後に unused と宣言して lease が cancel された」という読みは推定で、cancel の発生順は run で確かめていない**。proto README が予告した競合（宣言が先で記録が `not-reached` のまま）とは別の形。FR-3 の ②-2 の `[artifact]`（`followup.mjs` の `iiB.requalification.result !== "passed"`）は合流した親だけに当たるので、この 2 件は合流しない late であり、`[artifact]` にはならないと読める（【推測】。実 run の受領書に FR-3 を当てては確かめていない）。実 run で `error(cancelled)` が出うることは K6/7 の確かめられなかったこと 11・13（`await_request` 経由で `unavailable`・`error` を出す試験が無い）の隣にある所見として、S3 に渡す。
 
 ### 危険（残るもの）と対処
 
