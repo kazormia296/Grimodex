@@ -589,3 +589,15 @@ API の差分は `chat_messages_delete` の `messageIds` の件数の上限だ�
 
 - **Full での feature 付きの試験**（DR-DA2-57）：`native-current-human-capture` の grimodex-db の試験（今回の 3 binary と既存の lib の試験）は Quick（impact の light suite）でだけ走り、Full の `rust` stage では走らない。Full に足すかは registry と配分の変更を伴うので integrator の判断。
 - **sticky と pin の RETURNING 外し**（DR-DA2-55）：O-2 の開放への依存を受け入れること（integrator が受け入れ済み。ユーザーへの開示は最終報告）。
+
+## PUB-G #32 の追補（左下の表示の置き場所。2026-11-16）
+
+### DR-PUBG-32-1（pill を editor の status bar と phone の nav の上へ置く）
+
+DR-DA2-63 の未解決（実 `EditorPaneStatusBar` の scene の状態の button を restricted の pill が覆う、phone 幅の nav との交わりが未測定）を、定数を false のまま、表示の置き場所だけで閉じた。技術判断は AGENTS.md の範囲内（新しい送信先・保存・契約・閾値・文言は無い）。
+
+- **測り直し**（#849・#867 の layout 変更の後、実 Chromium、1200x800、全 panel を畳んだ layout）：status bar は y 710〜739（高さ 29 px）、scene の状態の button は y 715〜735、pill は y 712.5〜739。pill は bar の全幅の左端をそのまま覆っていた（`it.fails` が示した重なりは今も実在）。
+- **直し**：wide／compact（720 以上）は下を 61 → 100 px（stripe の外の 61 px に `EDITOR_STATUS_BAR_CLEARANCE_PX` 39＝bar 29＋余白 10 を足す）。phone（720 未満、stripe も editor の status bar も無い）は左 12 px、下 76 px＋safe area（nav 68 px＋8 px）。切替は inline style でなく Tailwind の `max-[719px]:`（`VIEWPORT_BREAKPOINTS.phoneMaxExclusive` と同じ 720）で、class は literal で置く（Tailwind が走査するため）。`profileEgressStatusPlacement.test.ts` が数値と literal の一致、clearance が bar の高さより大きいこと、phone の下が `phoneWorkspace.css` の nav の高さより大きいことを守る。`PROFILE_EGRESS_STATUS_POSITION` は最大幅だけを持つ。
+- **試験**：`layoutInvariants.browser.test.tsx` の `it.fails` を外し、実 `EditorPaneStatusBar` を置いて bar の矩形全体（button・badge・統計）と pill が交わらないことを、全状態（restricted、activating、unavailable の 8 理由）× 3 layout × 2 viewport（1200x800、768x600）で測る。phone は実 `PhoneWorkspaceChrome` を `data-profile="phone"` の shell に置き、nav の矩形の上端より pill の下端が上にあることと画面内に収まることを、360x640 と 719x700 で測る。位置を元（61 px、phone も 61 px）に戻す変異で 5 件が落ちることを確認した。
+- **未検証・残り**：実機の safe area（`env(safe-area-inset-bottom)` は browser 試験で 0）、phone の software keyboard（pill は layout viewport の下端基準、nav は visual viewport 基準。keyboard 中の位置は未確認）、bottom region を開いた layout で pill が panel の中身（stripe・splitter 以外）に乗ること（従来と同じ。操作要素の invariant は通る）。editor status bar の高さは中身（badge）で変わりうるので、高さを変える変更では clearance の再測定が要る。
+- **変えないもの**：表示の中身・文言・状態の規則・IPC・閉鎖・定数（`PROFILE_ACTIVATION_UI_ENABLED` は false のまま）。
