@@ -268,4 +268,69 @@ describe("Electron main Graph Index build wakes in a production launch", () => {
     runtime.coordinator?.dispose();
     runtime.scheduler?.dispose();
   });
+
+  it("an accepted demand-wake cycle asks a live discovery chain for one more rediscovery, as every accepted cycle does (bootstrap's onCycleAccepted)", async () => {
+    async function run(withDemand: boolean) {
+      let releaseFirst: (value: string) => void = () => {};
+      const discoverNarrativeMaintenanceWork = vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise<string>((resolve) => {
+              releaseFirst = resolve;
+            }),
+        )
+        .mockResolvedValue(
+          JSON.stringify({ workspaceBinding: binding, pages: [] }),
+        );
+      const runNarrativeMaintenanceCycle = vi
+        .fn()
+        .mockResolvedValue(
+          JSON.stringify({ status: "accepted", hasMore: false }),
+        );
+      let onEvent: ((channel: unknown, payload: unknown) => void) | null = null;
+      const backend = {
+        getNarrativeMaintenanceWorkspaceBinding: vi.fn(() =>
+          JSON.stringify(binding),
+        ),
+        discoverNarrativeMaintenanceWork,
+        runNarrativeMaintenanceCycle,
+        onEvent(callback: (channel: unknown, payload: unknown) => void) {
+          onEvent = callback;
+        },
+      } as unknown as NarrativeMaintenanceBackendLike & NapiBackendLike;
+      const emit = (channel: unknown, payload: unknown) =>
+        onEvent?.(channel, payload);
+      const runtime = bootstrapNarrativeMaintenance(backend, productionSeam());
+      registerEventBus(backend, (channel, eventPayload) => {
+        runtime.coordinator?.handleBackendEvent(channel, eventPayload);
+      });
+      // The chain is alive with its first discovery in flight.
+      emit("workspace:opened", {});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledOnce();
+      if (withDemand) {
+        emit(
+          "narrative-maintenance:graph-index-demand",
+          '{"projectId":"project-electron-route"}',
+        );
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+      }
+      releaseFirst(JSON.stringify({ workspaceBinding: binding, pages: [] }));
+      await vi.runAllTimersAsync();
+      const discoveries = discoverNarrativeMaintenanceWork.mock.calls.length;
+      runtime.coordinator?.dispose();
+      runtime.scheduler?.dispose();
+      return discoveries;
+    }
+
+    // The demand's cycle is accepted like any other, so the bootstrap asks the
+    // coordinator for a rediscovery (one attempt of its budget of three) while
+    // the chain is alive; with the chain ended that request is a no-op. This
+    // coupling is the existing wiring, which a Graph Index wake (W1 or W2)
+    // joins (DR-PUBG-5-14 reviews it).
+    expect(await run(false)).toBe(1);
+    expect(await run(true)).toBe(2);
+  });
 });

@@ -335,6 +335,31 @@ describe("Graph Index demand wakes (DR-PUBG-5-14)", () => {
     expect(h.wakes).toHaveBeenCalledTimes(2);
   });
 
+  it("frees a full table after a backwards clock step once 60 s of real quiet have passed", async () => {
+    const h = harness();
+    for (
+      let index = 0;
+      index < NARRATIVE_MAINTENANCE_GRAPH_DEMAND_MAX_KEYS;
+      index += 1
+    ) {
+      h.demand(`project-${index}`);
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.wakes).toHaveBeenCalledTimes(
+      NARRATIVE_MAINTENANCE_GRAPH_DEMAND_MAX_KEYS,
+    );
+    vi.setSystemTime(Date.now() - 10 * 60_000);
+    // Still full: the new pair is dropped (and the old ones are re-anchored).
+    h.demand("project-new");
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(
+      NARRATIVE_MAINTENANCE_GRAPH_DEMAND_MAX_INTERVAL_MS,
+    );
+    h.demand("project-new");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.wakes).toHaveBeenLastCalledWith(["project-new"], FIRST);
+  });
+
   it("shows a waiting demand to the quiescence writer and settles when it fires", async () => {
     const h = harness();
     const before = h.coordinator.getQuiescenceState?.();

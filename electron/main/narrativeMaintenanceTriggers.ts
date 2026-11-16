@@ -964,6 +964,12 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     // spacing, so the table frees itself without a timer of its own.
     for (const [existingKey, existing] of graphDemands) {
       if (existing.timer !== null || existing.lastFiredAtMs === null) continue;
+      if (nowMs < existing.lastFiredAtMs) {
+        // The wall clock moved backwards: re-anchor, so the pair is forgotten
+        // after the longest spacing of real quiet instead of never (DR-MPS-2).
+        existing.lastFiredAtMs = nowMs;
+        continue;
+      }
       if (
         nowMs - existing.lastFiredAtMs >=
         NARRATIVE_MAINTENANCE_GRAPH_DEMAND_MAX_INTERVAL_MS

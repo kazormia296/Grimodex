@@ -763,6 +763,7 @@
 
 **判断 5：main の需要 wake は、discovery の chain から独立した小さな状態にする**
 - 既存の discovery の chain（`armTimer`、`chainGeneration`、`lastWakeReason`、outbox の ACK）には乗せず、触れない。5 つ目の wake reason は足さない。`scheduler.requestGraphIndexBuildWakesWithBinding` を直接呼ぶ。
+- ただし 1 点だけ chain とつながる（実装の後の訂正。レビューの前に確かめた）：bootstrap の `onCycleAccepted` は、受理された cycle のたびに `coordinator.requestRediscovery()` を呼ぶ。需要の wake の cycle も受理されれば同じで、chain が生きている間は rediscovery を 1 回（上限 3 回のうち 1 回）消費する。chain が終わっていれば（`lastWakeReason` が null）no-op。W1（discovery の `wakeProjectIds`）と、seam の B の wake も同じ既存の配線。この配線は変えない（変えるなら、wake だけの cycle では rediscovery を呼ばない、などの別の判断になり、cutover の準備の chain の既存の挙動に触れる）。試験で今の挙動を固定した（要レビュー）。
 - 状態は (binding, project) ごとに `{ timer, lastFiredAtMs, firedInRun }`。
 - 受信：未 dispose、option が true、payload が妥当、current binding が取れる、のときだけ。binding は受信時に束縛し、key の一部にする。
 - 合流：key に pending の timer があれば何もしない。最短間隔の内側の需要は捨てずに、`lastFiredAt + interval` の 1 つの timer に畳む（末尾の 1 回に合流）。捨てると、直後の需要が受けられず liveness を失う。両端（間隔の内側で合流する、間隔の後で新しく発火する）を試験する。
@@ -780,7 +781,8 @@
 
 **信頼境界と threat model の差分（PR-2）**
 - 変わらない：actor、受信先、保存、受入れ。renderer は B を名指しできず、新しい IPC・`#[napi]` の入口は無い。event は main 専用で、payload は project ID だけ。
-- 新しい攻撃（DR-PUBG-5-10 の具体化）：untrusted な renderer が seed 付きの begin を繰り返す（project ID は renderer が選べる）と、owner の prepare の失敗と Suspended の begin が event になり、main の B の wake（B の判定または build と、その project の `durable-wake` discovery 全体）を誘発できる。
+- 新しい攻撃（DR-PUBG-5-10 の具体化）：untrusted な renderer が seed 付きの begin を繰り返すと、owner の prepare の失敗と Suspended の begin が event になり、main の B の wake（B の判定または build と、その project の `durable-wake` discovery 全体）を誘発できる。renderer が選べる project は、workspace に実在するものに限られる（begin は `read_retrieval_scene_source` が project と scene の組を読めなければ失敗し、owner に届かない。読んで確かめた）。実在しない ID で表を埋める攻撃は成り立たない。
+- 受理された wake の cycle は、chain が生きている間、rediscovery の budget を 1 回消費する（判断 5）。renderer が需要を続けると、before-cutover の chain の budget（3 回）が早く尽き、Freshness の NOT_READY による再開（5 s から 60 s の cooldown）まで cutover の準備が遅れうる。失敗や永続の変化ではなく遅れで、間隔（判断 5）で有界。
 - 防御：
   1. owner の既存の rebuild window・backoff・Suspended。
   2. main の key ごとの pending 1 つ、最短間隔 2 s から 60 s、key の上限 8、満杯なら捨てる。最悪でも、最初の 1 分に key あたり 6 回、定常で key あたり 1 回／分。
@@ -795,6 +797,7 @@
 2. 判断 4：main の独立した拒否が外れること（const が false の間は挙動が変わらない）。
 3. 判断 5：key の上限 8 と「満杯なら捨てる」、末尾の 1 回への合流、timer を coordinator が持つこと（DR-PUBG-5-9 との差）。
 4. 判断 2：`cfg(test)` の token の注入が、PR-1 の「構築箇所は 1 つ」の走査と矛盾しないこと。
+5. 判断 5 の訂正：需要の wake の cycle が、bootstrap の `onCycleAccepted` を通して、生きている chain の rediscovery の budget を消費すること（既存の配線。変えていない）。cutover の準備の chain を、renderer の需要が間隔の範囲で早く尽きさせうる。
 
 **実装の結果（PR-2、2026-11-17。枝 `claude/pubg-5-pr2`。PR は作らず、merge は次の S4（9 回目）の後）**
 - commit：`05754538`（この DR）、`71cdf9bf`（main：event の観測・coordinator の需要 wake・bootstrap・試験）、`086a228d`（Native：owner の通知・event・試験、db：(j) の試験）。
@@ -802,13 +805,14 @@
 - 判断との差：
   - 判断 2 の「`--features nir1-graph-eval` でも通知 0」：eval feature の cfg を使う試験は置けない（pin 済みの `native-architecture.mjs` の `eval-feature-allowlist` が、allowlist 外の file の eval の cfg と `_for_eval` を違反にする。置いた試験で確かめて外した）。代わりに、owner の gate が開いていて token が `None` の試験（`a_refused_registration_raises_nothing_while_the_product_token_is_closed`）を、同じ試験ごと eval feature の build でも走らせた（下の検証）。eval の flag で owner を開く形そのものは試験していない。
   - 判断 6 の db 試験：seam の gate では、B の publish が `work_completed` に 1 回届き no-op に落ちないことが既存の試験（`open_gate_cycle_builds_publishes_and_reader_is_available`）で固定されていた。足したのは、product の token の下で同じことと、validation・typed refusal・current な binding・閉じた gate では届かないこと。
-  - 判断 5 の数値の動き（試験で固定）：持続する需要の下で、1 つの key の wake は 0、+2、+6、+14、+30、+62、+122 s（以後 60 s 間隔）。60 s の静止の後は直ちに発火し、run は 2 s から始まり直す。key の上限は 8、満杯なら新しい key は捨てる（60 s の静止の後は受ける）。
+  - 判断 5 の数値の動き（試験で固定）：持続する需要の下で、1 つの key の wake は 0、+2、+6、+14、+30、+62、+122 s（以後 60 s 間隔）。60 s の静止の後は直ちに発火し、run は 2 s から始まり直す。key の上限は 8、満杯なら新しい key は捨てる（60 s の静止の後は受ける）。時計が戻った場合も、発火済みの pair の掃除を再 anchor するので、表が埋まったままにならない（レビューの指摘で直した。試験あり）。
+  - 判断 5 の chain との接続：production の bootstrap と実 scheduler の試験で、chain の最初の discovery が実行中のとき、需要の wake の受理が rediscovery を 1 回足す（discovery 1 回が 2 回）ことを固定した。chain が終わっていれば足さない（`narrativeMaintenance.electronRoute.test.ts`）。
 - 検証（node 22、`CARGO_BUILD_JOBS=4`）：
   - Native `--lib` 全件：823 件成功、7 件 ignore（PR-1 の 816 に、新しい 7 件）。`--features nir1-graph-eval`：`narrative_maintenance::tests`・新しい 7 件・token の 2 試験の計 23 件成功。
   - 試験の効き（変異）：token の確認を外す、`build_worker` と `demand` の理由の絞りを外す、`demand_deferred` の絞りを外す、の 3 通りで、対応する試験がそれぞれ落ちることを確かめて戻した。
   - db `--lib` の `nir1_graph_index_maintenance`：42 件成功。
   - clippy（`--all-targets -- -D warnings`）：Native と db（既定 feature）で成功。
-  - electron の vitest（`vitest.electron.config.ts`、`electron/main` と `electron/shared`）：103 files・2,432 件成功。新しい coordinator の試験は 15 件、bootstrap の試験は意図して直した（全 launch で受ける）、end-to-end の経路（production の bootstrap、event bus、coordinator、scheduler）に 2 件。`tsc -p electron/tsconfig.json` 成功。eslint は変えた file で base と同じ件数（base が持つ prettier・no-useless-assignment の指摘は直していない）。
+  - electron の vitest（`vitest.electron.config.ts`、`electron/main` と `electron/shared`）：103 files・2,434 件成功。`tsc -p electron/tsconfig.json` も成功（vitest は型を見ないので別に回した）。新しい coordinator の試験は 16 件、bootstrap の試験は意図して直した（全 launch で受ける）、end-to-end の経路（production の bootstrap、event bus、coordinator、scheduler）に 3 件。eslint は変えた file で base と同じ件数（base が持つ prettier・no-useless-assignment の指摘は直していない）。
   - pin 済みの `native-architecture.mjs`（`node scripts/quality/nir1-graph-eval/native-architecture.mjs`）：作業 tree で ok。
   - `verify:quality`（node 22）：成功。
 - 未確認：
