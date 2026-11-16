@@ -281,6 +281,15 @@ export const K67_CONFIRMATION_RECORDS = Object.freeze({
       sha256:
         "9173e5e54f49a0ab8e1de1b9f788bbc19829c224537e8fc7714ae35de6239560",
     }),
+    // S2 追補 #20: asked after 7361041f — setup's quiesce goes into the ninth
+    // S4 (DR-CP4-L-27: 「記録だけ」→「止める」) and PUB-G's (A) items are begun.
+    Object.freeze({
+      record:
+        "docs/plans/nir1-cp4-records/user-confirmation-2026-11-16-setup-quiesce-and-pubg-a.md",
+      commit: "337ff239476c99ae26d420613732995b9b0fc56e",
+      sha256:
+        "ad89ebfb4d04d324d2b022526f4c7aaa83bb8c12c4f0e8a88de6ecc4083803d1",
+    }),
   ]),
 });
 /**
@@ -1260,7 +1269,9 @@ export const S4_PROCEDURE_WORDS = Object.freeze({
     "7361041f",
     "11 file の外",
     "4aa34626",
-    "古い Graph を返す経路は無い",
+    "drift の枝は Graph を返さない",
+    "337ff239",
+    "maintenance-quiesce",
     "frozen の S2 が HEAD で正式の門を通る",
   ],
 });
@@ -2179,7 +2190,7 @@ const READINGS_AFTER_DEV = Object.freeze([
   "k66-harness-and-rehearsal-choices",
   // S4a（9 回目の凍結のやり直し、S2 追補 #18）: K6/7 の読み（R-8・R-9・R-10・R-12・
   // R-13、FR-8 の検査の削除。s6r1・s7r1・s7r2 と PR-3 の調査の後に起案）、品質判定 v3
-  // の読み（s7r2・s7r1 の後に起案。観測の後に変えた読み 2 点）、PR-3 の dev の gate の
+  // の読み（s7r2・s7r1 の後に起案。観測の後に変えた読み 1 点＋fail→hold 2 点）、PR-3 の dev の gate の
   // 手順と harness の形（gate の 1 回目を見た後に本数と時間帯を変えた）。
   "k67-readings-after-s7r2",
   "k67-quality-verdict-v3-design",
@@ -4593,7 +4604,8 @@ function k66ReadingErrors(errors, readings) {
  * counted, (f) the reviews that were not blind, (g) the dev rehearsals and
  * PR-3's dev gate (not judged; W and begin→query unmeasured; the late 2 with
  * a cancelled requalification), (h) the quality verdict v3 outside the pins
- * with the two readings changed after an observation, (i) the harness
+ * with the one reading changed after an observation (and the fail→hold
+ * readings), (i) the harness
  * (PR-3), (j) item B, (k) item C's harness change, (l) what remains before
  * S4b (pins, six detection-power records, the R5 closure that grew past the
  * ten files the user was shown and was then reconfirmed for eleven, the S3
@@ -4668,7 +4680,15 @@ export const K67_LIMIT_WORDS = Object.freeze([
   "11d5e430",
   "path 単位",
   "v3:98",
-  "古い Graph が renderer に返る経路は無い",
+  "drift の枝は Graph を返さない",
+  "requalify は読んでいない",
+  "edge 単位",
+  "relationEndpoints",
+  "edge-revision-unresolved",
+  "1dd6fb35",
+  "337ff239",
+  "maintenance-quiesce",
+  "MAINTENANCE_QUIESCE_REOPENS",
   "dependency-verify",
   "別の lane の課題",
   "queryGeneration",
@@ -4692,7 +4712,7 @@ export const K67_RULE_WORDS = Object.freeze([
 
 /**
  * S2 追補 #18（DR-CP4-P-11）: K6/7's readings — the rule binding the v2
- * procedure file's values and K67_FREEZE, and the limits (a)〜(l).
+ * procedure file's values and K67_FREEZE, and the limits (a)〜(n).
  */
 function k67ReadingErrors(errors, readings) {
   if (!isObject(readings)) {
@@ -5505,7 +5525,7 @@ export function observationPrepErrors(prep, ctx) {
     !nonBlank(k67Confirmation?.additionalNote)
   )
     errors.push(
-      "contracts.k67.confirmation.additional must be the five answers after K6/7 (item C, Q5〜Q7, PR-3's dev gate, the re-freeze and R5 reuse, the R5 closure's 11 files and the gate's drift_at_query), each with its file, commit, SHA-256, topic and date (S2 追補 #18)",
+      "contracts.k67.confirmation.additional must be the six answers after K6/7 (item C, Q5〜Q7, PR-3's dev gate, the re-freeze and R5 reuse, the R5 closure's 11 files and the gate's drift_at_query, setup's quiesce and PUB-G's (A) items), each with its file, commit, SHA-256, topic and date (S2 追補 #18)",
     );
   const formal = procedure.formal ?? {};
   if (formal.version !== "v2" || formal.path !== PROCEDURE_V2)
