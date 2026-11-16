@@ -67,9 +67,13 @@ export function readAgentSettingValue(key: string): string {
 
 function writeThroughMirrors(key: string, value: string): void {
   if (key === "editor.focusMode") {
-    useCursorSettingsStore.setState({ focusMode: value === "true" });
+    useCursorSettingsStore
+      .getState()
+      .syncModeFromSetting("focusMode", value === "true");
   } else if (key === "editor.typewriterMode") {
-    useCursorSettingsStore.setState({ typewriterMode: value === "true" });
+    useCursorSettingsStore
+      .getState()
+      .syncModeFromSetting("typewriterMode", value === "true");
   } else if (key === "display.codexHighlight") {
     useCodexHighlightStore
       .getState()
