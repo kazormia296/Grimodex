@@ -2840,6 +2840,21 @@ test("品質 v3 §2.1 utf16-range（S3 10 回目 B1-2）: 読めない Revision�
       (entry) => entry.code === "evidence-row-matches-no-endpoint-text",
     ),
   );
+  // (a2) the same with the violation on the read side (a range past the end
+  // of the text in the readable Revision): a real receipt's displayed hash
+  // that differs would stop at the edge's resolution, this one does not.
+  const a2 = item((data) => {
+    unread(data, 0);
+    for (const row of data.observation.typedRevisions[1].evidence)
+      row.endUtf16 += 5;
+    return data;
+  });
+  assert.equal(a2.status, "fail");
+  assert.ok(
+    a2.problems.some(
+      (entry) => entry.code === "evidence-row-matches-no-endpoint-text",
+    ),
+  );
   // (b) one Revision unread and nothing else wrong: hold.
   const b = item((data) => {
     unread(data, 0);
@@ -2864,6 +2879,15 @@ test("品質 v3 §2.1 utf16-range（S3 10 回目 B1-2）: 読めない Revision�
   assert.ok(
     c.problems.some((entry) => entry.code === "evidence-row-malformed"),
   );
+  // (c2) a row that could not be read + a read-side violation in the other
+  // Revision: fail.
+  const c2 = item((data) => {
+    shownRows(data)[0].quoteSha256 = null;
+    for (const row of data.observation.typedRevisions[1].evidence)
+      row.endUtf16 += 5;
+    return data;
+  });
+  assert.equal(c2.status, "fail");
   // (d) a row that could not be read and nothing else wrong: hold, never pass.
   const d = item((data) => {
     shownRows(data)[0].quoteSha256 = null;
