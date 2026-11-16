@@ -140,11 +140,8 @@ function nativeRecord(overrides = {}) {
             reason: null,
             disposition: "used",
             busyCause: null,
-            freshnessStamp: {
-              attemptedAtNs: 1_003_000,
-              result: "fresh",
-              matched: true,
-            },
+            workerDrift: { result: "clear", cause: null },
+            requalification: { result: "passed", reason: null, returned: true },
             ...ticket,
           },
   };
@@ -315,6 +312,59 @@ test("P3-12: graph-ready の再検証は、requalify された Graph の内容�
   assert.equal(ready.revalidation, "passed");
 });
 
+test("K6/7 (ii-b): a ticket's revalidation is the Native's observed requalification, not an inference from the payload", () => {
+  const record = (requalification) =>
+    graphRecord({
+      measure: measure(),
+      arrival: { resolvedAt: 121, status: "available" },
+      native: {
+        source: "worker",
+        busyCause: null,
+        ticket: { requalification },
+      },
+    });
+  const observed = (result, reason = null, returned = true) =>
+    record({ result, reason, returned }).revalidation;
+  assert.equal(observed("passed"), "passed");
+  assert.equal(observed("unavailable", "invalidated", false), "invalidated");
+  // Anything else is unknown: classifyJoin stops on a joined row.
+  assert.equal(observed("unavailable", "failed", false), null);
+  assert.equal(observed("error", null, false), null);
+  assert.equal(observed("not-reached", null, false), null);
+  // A payload that reached the renderer does not make an unobserved failure pass.
+  assert.throws(
+    () =>
+      classifyJoin({
+        tFetch: 100,
+        tRawReady: 120,
+        tReturn: 125,
+        graph: record({ result: "error", reason: null, returned: false }),
+      }),
+    /revalidation/,
+  );
+  // Through the whole sample row: the Native record decides.
+  const row = sampleRow({
+    variantKey: VARIANT.key,
+    arm: "graph",
+    phase: "measured",
+    repeat: 0,
+    d2aMode: "restricted",
+    measure: measure(),
+    nativeRecord: nativeRecord(),
+    a3: A3,
+  });
+  assert.equal(row.graph.revalidation, "passed");
+  assert.deepEqual(row.nativeBegin.ticket.requalification, {
+    result: "passed",
+    reason: null,
+    returned: true,
+  });
+  assert.deepEqual(row.nativeBegin.ticket.workerDrift, {
+    result: "clear",
+    cause: null,
+  });
+});
+
 test("a seeded sample needs its Native record and the timing shim's begin", () => {
   const base = {
     variantKey: VARIANT.key,
@@ -400,6 +450,7 @@ test("each window-out sample has one cause in the fixed order", () => {
     ),
     "not-ready-at-start",
   );
+  // K6/7 N-g: an old-form stamp key does not change the cause.
   assert.equal(
     windowOutCause(
       with_(
@@ -407,7 +458,7 @@ test("each window-out sample has one cause in the fixed order", () => {
         { freshnessStamp: { matched: false } },
       ),
     ),
-    "stamp-mismatch",
+    "worker-late",
   );
   assert.equal(
     windowOutCause(with_({ outcome: "graph-late", joined: false })),

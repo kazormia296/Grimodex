@@ -166,6 +166,18 @@ export const INDEX_BUILD_WAIT_MS = 120_000;
  */
 export const FRESHNESS_SETTLE_WAIT_MS = 60_000;
 export const FRESHNESS_SETTLE_INTERVAL_MS = 250;
+/**
+ * DR-CP4-L-27 (the user's answer of 2026-11-16, contracts `337ff239`): a
+ * complete setup copies its cold DB only from a closed workspace in which no
+ * maintenance run is `running` and no retry is planned. A workspace that is
+ * not (a run left `running` by a session that was killed, or an interrupted
+ * run whose retry is scheduled) is reopened — the product's startup recovery
+ * closes the interrupted run and the retry completes — and waited on until
+ * maintenance is still, at most this many times. The wait is the
+ * Freshness wait's length. Fixed constants (the tests pin them).
+ */
+export const MAINTENANCE_QUIESCE_REOPENS = 2;
+export const MAINTENANCE_QUIESCE_WAIT_MS = 60_000;
 const SETTLE_BEFORE_EXECUTORS = new Set([
   "chronicle-index",
   "measurement-point",
@@ -184,7 +196,10 @@ async function settleFreshness(ctx, point, { maintenance = true } = {}) {
     // DR-CP4-T-5: the measurement point and a session's end also wait for
     // maintenance to be still (after-maintenance-current).
     readActivity: maintenance
-      ? () => readMaintenanceActivity(file, ctx.ids.projectId)
+      ? () =>
+          readMaintenanceActivity(file, ctx.ids.projectId, {
+            nowIso: ctx.now?.(),
+          })
       : null,
     limitMs: ctx.limits?.freshnessSettleMs ?? FRESHNESS_SETTLE_WAIT_MS,
     intervalMs: FRESHNESS_SETTLE_INTERVAL_MS,
@@ -1608,6 +1623,60 @@ async function prepareRevision(ctx, revision) {
 }
 
 /**
+ * DR-CP4-L-27: a quiesce session — no step. It reopens the workspace (the
+ * product's startup recovery closes a run a killed session left `running` and
+ * the retry it schedules runs) and waits until the Freshness has processed
+ * the feed and maintenance is still (two consecutive reads, no run `running`,
+ * no retry planned). The wait that runs out does not throw: the caller reads
+ * the closed DB and reopens or stops (`MAINTENANCE_QUIESCE_REOPENS`).
+ */
+export async function runQuiesceSession({
+  plan,
+  page,
+  workspacePath,
+  ids,
+  session,
+  ctx: carried = {},
+  uuid = randomUUID,
+  sleep = delay,
+  now = () => new Date().toISOString(),
+}) {
+  const ctx = Object.assign(carried, {
+    plan,
+    page,
+    workspacePath,
+    ids,
+    uuid,
+    sleep,
+    now,
+  });
+  ctx.session = session;
+  ctx.sessionStepsDone = 0;
+  await pageCall(ctx, "openWorkspace", {
+    workspacePath,
+    projectId: ids.projectId,
+    activeSceneId: runtimeOf(ids.scenes, plan.querySceneId, "the query Scene"),
+  });
+  ctx.workspaceOpen = true;
+  const file = path.join(workspacePath, "grimodex.db");
+  const settle = await waitFreshnessSettled({
+    read: () => readFreshnessFeed(file, ids.projectId),
+    readActivity: () =>
+      readMaintenanceActivity(file, ids.projectId, { nowIso: ctx.now() }),
+    requireQuiet: true,
+    limitMs:
+      ctx.limits?.quiesceMs ??
+      ctx.limits?.freshnessSettleMs ??
+      MAINTENANCE_QUIESCE_WAIT_MS,
+    intervalMs: FRESHNESS_SETTLE_INTERVAL_MS,
+    sleep: ctx.sleep,
+  });
+  ctx.freshnessSettles ??= [];
+  ctx.freshnessSettles.push({ session, point: "quiesce", settle });
+  return settle;
+}
+
+/**
  * Runs the plan's steps of one session in order, through `plan.stopIndex`,
  * recording each phase with the state before and after it. `executors` and
  * `readState` replace the page-backed ones (tests).
@@ -2386,6 +2455,7 @@ export async function setupFrozenVariant({
     extraEnv = {},
     setupMain = null,
     dirLabel = label,
+    { quiesce = false } = {},
   ) => {
     const handle = await start({
       runDir: setupDir,
@@ -2403,7 +2473,7 @@ export async function setupFrozenVariant({
     try {
       if (handle.evidence?.problems?.length > 0)
         throw new Error(handle.evidence.problems.join("; "));
-      await runFrozenSetupSteps({
+      await (quiesce ? runQuiesceSession : runFrozenSetupSteps)({
         plan: runPlan,
         page: handle.page,
         workspacePath,
@@ -2614,6 +2684,54 @@ export async function setupFrozenVariant({
     }
     // The cold DB: the workspace closed with no WAL left, copied once.
     const live = path.join(workspacePath, "grimodex.db");
+    // DR-CP4-L-27 (the user's answer of 2026-11-16, contracts `337ff239`): the
+    // closed workspace is copied only when no maintenance run is `running` and
+    // no retry is planned, and its last session ended by `app.close()` (no
+    // signal). Otherwise the workspace is reopened to be quiesced, at most
+    // `MAINTENANCE_QUIESCE_REOPENS` times, and the setup stops after that.
+    if (!partialRun(plan)) {
+      const endedByClose = (evidence) =>
+        evidence?.stop?.closed !== false &&
+        (evidence?.stop?.signalled?.length ?? 0) === 0;
+      const indexBefore = readIndexMetadata(live, ids.projectId);
+      receipt.quiesce = { reopens: [], final: null };
+      for (let reopen = 0; ; reopen++) {
+        const activity = readMaintenanceActivity(live, ids.projectId, {
+          nowIso: now(),
+        });
+        const closed = endedByClose(receipt.sessions.at(-1));
+        if (activity.running === 0 && activity.retryPending === 0 && closed) {
+          receipt.quiesce.final = { activity, endedByClose: true };
+          break;
+        }
+        if (reopen >= MAINTENANCE_QUIESCE_REOPENS) {
+          receipt.quiesce.final = { activity, endedByClose: closed };
+          fail(
+            "maintenance-quiesce",
+            `${plan.variantKey}: the closed workspace is not quiet after ${reopen} reopen(s) (running ${activity.running}, retry planned ${activity.retryPending}, last session ended by ${closed ? "app.close()" : "a signal"})`,
+          );
+        }
+        const dirLabel = `quiesce-${reopen + 1}`;
+        await session("quiesce", {}, null, dirLabel, { quiesce: true });
+        receipt.quiesce.reopens.push({
+          attempt: reopen + 1,
+          dirLabel,
+          before: activity,
+          beforeEndedByClose: closed,
+          settle: ctx.freshnessSettles.at(-1)?.settle ?? null,
+        });
+      }
+      // A reopening must not move what the measurement point probed.
+      if (
+        receipt.quiesce.reopens.length > 0 &&
+        JSON.stringify(readIndexMetadata(live, ids.projectId)) !==
+          JSON.stringify(indexBefore)
+      )
+        fail(
+          "maintenance-quiesce",
+          `${plan.variantKey}: the quiesce reopening changed the Index metadata the measurement point probed`,
+        );
+    }
     const wal = `${live}-wal`;
     if (existsSync(wal) && statSync(wal).size > 0)
       throw new Error(
@@ -2708,13 +2826,23 @@ export async function setupFrozenVariant({
           "freshness-settle",
           `${plan.variantKey}: the cold DB's feed is not processed (cursor ${receipt.readBack.freshnessFeed.acknowledged}, head ${receipt.readBack.freshnessFeed.head})`,
         );
-      // DR-CP4-T-5 (disclosure): the maintenance runs the cold DB keeps in
-      // progress (a Verify the product preempts without end is the
-      // product's, DR-CP4-L-27; it is recorded, not a stop).
+      // DR-CP4-L-27 (the user's answer of 2026-11-16, contracts `337ff239`):
+      // the cold DB keeps no run `running` and no planned retry (it was
+      // copied from the quiet workspace above). This was a record only; it
+      // is a stop now.
       receipt.readBack.maintenance = readMaintenanceActivity(
         cold,
         ids.projectId,
+        { nowIso: now() },
       );
+      if (
+        receipt.readBack.maintenance.running !== 0 ||
+        receipt.readBack.maintenance.retryPending !== 0
+      )
+        fail(
+          "maintenance-quiesce",
+          `${plan.variantKey}: the cold DB keeps maintenance work (running ${receipt.readBack.maintenance.running}, retry planned ${receipt.readBack.maintenance.retryPending})`,
+        );
       receipt.readBack.relationStaleness = assertRelationStaleOnCold({
         cold,
         ids,

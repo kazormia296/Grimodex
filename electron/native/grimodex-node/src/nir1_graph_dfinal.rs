@@ -4,9 +4,9 @@
 //!
 //! D-final asks the product owner (CP-2a) for the Graph of the query Scene's
 //! seed **before** it opens the participant read, holding no database mutex,
-//! SQLite transaction, profile or lifecycle lock. The freshness stamp of the
-//! owner is a wait-0 read of the parent's main connection; a request made
-//! from inside a participant read would always find it held.
+//! SQLite transaction, profile or lifecycle lock. The owner never holds the
+//! parent's main connection for its own freshness (DR-DBC-7 removed the
+//! pre-read it once made there); the request is still made outside the participant read.
 //!
 //! The wait is rule (i) of K6/2: a `warming` or `stale` answer waits for a
 //! READY up to the budget W and asks once more per READY signal; everything
@@ -81,16 +81,12 @@ impl Default for GraphWaitPlan {
     }
 }
 
-/// Why a `busy` answer was given (DR-DI1A-8). The owner never turns an
-/// unreadable freshness stamp into `busy` by itself; this is the diagnostic
-/// correlation the reach investigation reads.
+/// Why a `busy` answer was given (DR-DI1A-8). DR-DBC-7 removed the owner's
+/// parent-side freshness read, and with it the inference of a second cause.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GraphBusyCause {
     /// The slot was in use, retiring or preparing for another key.
     SlotInUse,
-    /// The owner's freshness-stamp counters moved during this request: a stamp
-    /// could not be read.
-    StampUnreadable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -295,7 +291,6 @@ pub(crate) fn request_graph(
     let started = Instant::now();
     let deadline = started + plan.budget;
     let edge_epoch = owner.edge_epoch();
-    let stamp_misses_before = stamp_misses(owner.diagnostics());
     let cancelled = || {
         context.stop.load(Ordering::SeqCst)
             || context
@@ -309,7 +304,7 @@ pub(crate) fn request_graph(
     };
     let unavailable = |reason: GraphUnavailable| {
         let busy_cause = (reason == GraphUnavailable::Busy)
-            .then(|| busy_cause_of(stamp_misses_before, stamp_misses(owner.diagnostics())));
+            .then_some(GraphBusyCause::SlotInUse);
         Ok((
             GraphRequest::Skipped(DFinalGraphOutcome::Unavailable { reason, busy_cause }),
             None,
@@ -401,27 +396,6 @@ fn reached(
             None,
         ),
     })
-}
-
-/// Pure: a `busy` answer while the owner's stamp counters moved is attributed
-/// to an unreadable stamp; otherwise to the slot.
-///
-/// This is an inference from the owner's counters, not a cause the owner
-/// reports: a stamp miss of another consumer's query in the same interval is
-/// counted too. The reach record (S4, A-8) takes the cause from the owner's
-/// diagnostics, and DD-1 does not take this value as evidence of a cause.
-fn busy_cause_of(stamp_misses_before: u64, stamp_misses_after: u64) -> GraphBusyCause {
-    if stamp_misses_after > stamp_misses_before {
-        GraphBusyCause::StampUnreadable
-    } else {
-        GraphBusyCause::SlotInUse
-    }
-}
-
-fn stamp_misses(diagnostics: crate::nir1_graph_product::GraphOwnerDiagnostics) -> u64 {
-    diagnostics
-        .stamp0_missing
-        .saturating_add(diagnostics.stamp_unavailable)
 }
 
 enum TicketWait {

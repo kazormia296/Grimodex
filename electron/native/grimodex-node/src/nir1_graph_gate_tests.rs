@@ -1,6 +1,6 @@
 //! LP-GATE (DR-CQD-GATE-3〜6, 10): the Graph window of a held query, on the
 //! owner with the fake worker. The window opens after the rebuild window and
-//! before the admission (the S0 stamp), waits for a Freshness section in
+//! before the admission, waits for a Freshness section in
 //! flight, and ends wherever the answer is joined, cached or discarded.
 use super::*;
 
@@ -51,7 +51,7 @@ fn enter(fixture: &ProductFixture) -> FreshnessSection {
     }
 }
 
-/// Records the live windows at every admission (the S0 stamp).
+/// Records the live windows at every admission.
 fn windows_at_admit(fixture: &ProductFixture) -> Arc<Mutex<Vec<usize>>> {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let gate = gate(fixture);
@@ -90,7 +90,7 @@ fn a_held_query_opens_its_window_before_the_admission_and_keeps_it_until_used() 
     assert_eq!(
         *lock(&at_admit),
         vec![1],
-        "the S0 stamp is read inside the window"
+        "the admission is made inside the window"
     );
     assert_eq!(
         live(&fixture),

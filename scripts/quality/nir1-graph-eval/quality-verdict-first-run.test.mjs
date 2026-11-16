@@ -16,12 +16,16 @@ import {
   IMPLEMENTATION_FILES,
   V2_BRANCH,
   V2_FILE_PATH,
+  V3_BRANCH,
+  V3_FILE_PATH,
   assertImplementationBound,
+  assertV3Bound,
   checkFirstRunPrecheck,
   firstFormalRunOf,
   loadFirstRunInputs,
   sha256,
 } from "./quality-verdict-cli.mjs";
+import { K67_QUALITY_VERDICT_V3 } from "../nir1-graph/observation-prep.mjs";
 import { H40 } from "./test-support.mjs";
 
 const git = (cwd, ...args) =>
@@ -460,4 +464,243 @@ test("v2 §0: assertImplementationBound compares the running bytes with the impl
       /differs from its bytes/u,
       file,
     );
+});
+
+// Prereg v3: the v3 final text and the implementation (bound by its commit,
+// on any branch) must be on the remote before the first formal run, and the
+// v3 file's bytes must be its commit's blob at the fixed path.
+const V3_BYTES = "# v3 final\n";
+mkdirSync(path.join(REPO, path.dirname(V3_FILE_PATH)), { recursive: true });
+writeFileSync(path.join(REPO, V3_FILE_PATH), V3_BYTES);
+git(REPO, "add", V3_FILE_PATH);
+git(
+  REPO,
+  "-c",
+  "user.name=t",
+  "-c",
+  "user.email=t@example.invalid",
+  "commit",
+  "-q",
+  "-m",
+  "v3",
+);
+const V3_COMMIT = git(REPO, "rev-parse", "HEAD");
+const V3_SHA = sha256(V3_BYTES);
+const V3_RECORDS = [
+  ...RECORDS,
+  remote(V3_COMMIT, "2026-11-09T01:30:00Z", "repository-activity", V3_BRANCH),
+];
+
+test("prereg v3 §0: the v3 commit and the implementation (any branch) are on the remote strictly before the first formal run", () => {
+  const firstRun = firstFormalRunOf(byKind(STARTS), ALLOW);
+  const check = (records, extra = {}) =>
+    checkFirstRunPrecheck({
+      v2Commit: V2_COMMIT,
+      v2Sha256: V2_SHA,
+      v3Commit: V3_COMMIT,
+      v3Sha256: V3_SHA,
+      implCommit: IMPL_COMMIT,
+      remoteRecords: records,
+      firstRun,
+      ...extra,
+    });
+  const out = check(V3_RECORDS);
+  assert.equal(out.v3.commit, V3_COMMIT);
+  assert.equal(out.v3.sha256, V3_SHA);
+  assert.equal(out.v3.branch, V3_BRANCH);
+  // The implementation is bound by its commit: a rebased branch's name does
+  // not matter with v3 (it did with v2 alone).
+  const renamed = V3_RECORDS.map((row) =>
+    row.commit === IMPL_COMMIT ? { ...row, branch: "claude/s4-9-itemc" } : row,
+  );
+  assert.equal(check(renamed).implementation.branch, "claude/s4-9-itemc");
+  assert.throws(
+    () =>
+      checkFirstRunPrecheck({
+        v2Commit: V2_COMMIT,
+        v2Sha256: V2_SHA,
+        implCommit: IMPL_COMMIT,
+        remoteRecords: renamed,
+        firstRun,
+      }),
+    /names no entry on the branch/u,
+  );
+  // The v3 commit must be on the contracts branch and before the first run.
+  assert.throws(
+    () =>
+      check(
+        V3_RECORDS.map((row) =>
+          row.commit === V3_COMMIT ? { ...row, branch: "claude/other" } : row,
+        ),
+      ),
+    /v3 commit .* names no entry on the branch/u,
+  );
+  assert.throws(
+    () =>
+      check(
+        V3_RECORDS.map((row) =>
+          row.commit === V3_COMMIT
+            ? { ...row, remoteTimeUtc: STARTS["sp-p4"] }
+            : row,
+        ),
+      ),
+    /v3 commit .* not before the first formal run/u,
+  );
+  assert.throws(() => check(RECORDS), /no entry for the v3 commit/u);
+  assert.throws(
+    () => check(V3_RECORDS, { v3Commit: "abc" }),
+    /full commit ID/u,
+  );
+});
+
+const EXPECTED_V3 = {
+  v3: { commit: V3_COMMIT, sha256: V3_SHA },
+  implementationFiles: IMPLEMENTATION_FILES,
+  implementationCommit: IMPL_COMMIT,
+};
+
+test("prereg v3 §0（レビュー必須 3）: assertV3Bound は v3 の commit・SHA-256・実装 commit が確認済みの固定値と一致し、実装 commit が判定 file を最後に変えた commit であることを求める", () => {
+  const ok = {
+    v3Commit: V3_COMMIT,
+    v3Sha256: V3_SHA,
+    implCommit: IMPL_COMMIT,
+    expected: EXPECTED_V3,
+    lastChangeOf: () => IMPL_COMMIT,
+  };
+  assert.doesNotThrow(() => assertV3Bound(ok));
+  const other = "b".repeat(40);
+  assert.throws(
+    () => assertV3Bound({ ...ok, v3Commit: other }),
+    /v3 commit .* is not the confirmed/u,
+  );
+  assert.throws(
+    () => assertV3Bound({ ...ok, v3Sha256: "c".repeat(64) }),
+    /SHA-256 .* is not the confirmed/u,
+  );
+  assert.throws(
+    () =>
+      assertV3Bound({ ...ok, implCommit: other, lastChangeOf: () => other }),
+    /implementation commit .* is not the fixed/u,
+  );
+  // The files changed after the fixed commit: the constant must be taken again.
+  assert.throws(
+    () => assertV3Bound({ ...ok, lastChangeOf: () => other }),
+    /is not the commit that last changed the verdict files/u,
+  );
+  assert.throws(
+    () =>
+      assertV3Bound({
+        ...ok,
+        expected: { ...EXPECTED_V3, implementationFiles: ["other.mjs"] },
+      }),
+    /implementation files the constant fixes/u,
+  );
+  // The real constant and the real checkout: the fixed values are what the
+  // CLI binds (K67_QUALITY_VERDICT_V3 is read by the validator itself).
+  assert.equal(K67_QUALITY_VERDICT_V3.v3.commit.length, 40);
+  assert.match(K67_QUALITY_VERDICT_V3.v3.sha256, /^b6166ed2/u);
+  assert.deepEqual(
+    [...K67_QUALITY_VERDICT_V3.implementationFiles],
+    [...IMPLEMENTATION_FILES],
+  );
+});
+
+test("prereg v3 §0: loadFirstRunInputs binds the v3 file to its commit's blob at the fixed path; both v3 inputs go together", () => {
+  const dirs = {};
+  for (const kind of FIRST_RUN_RECEIPT_KINDS) {
+    const dir = path.join(ROOT, `receipts-v3-${kind}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(
+        dir,
+        kind === "g01-diagnostic" ? "g01-e2e-run.json" : `${kind}.receipt.json`,
+      ),
+      JSON.stringify(receipt(kind, STARTS[kind])),
+    );
+    dirs[kind] = dir;
+  }
+  const recordPath = path.join(ROOT, "remote-record-v3.json");
+  writeFileSync(recordPath, JSON.stringify(V3_RECORDS));
+  const RUNNING = Object.fromEntries(
+    IMPLEMENTATION_FILES.map((file) => [file, Buffer.from(`code of ${file}`)]),
+  );
+  const base = {
+    running: RUNNING,
+    readBlob: (_commit, file) => Buffer.from(RUNNING[file]),
+    v2File: path.join(REPO, V2_FILE_PATH),
+    v2Commit: V2_COMMIT,
+    v3File: path.join(REPO, V3_FILE_PATH),
+    v3Commit: V3_COMMIT,
+    implCommit: IMPL_COMMIT,
+    remoteTimeRecordPath: recordPath,
+    dirs,
+    allowList: ALLOW,
+    // The fixed values (K67_QUALITY_VERDICT_V3) and the files' last change.
+    expectedV3: EXPECTED_V3,
+    lastChangeOf: () => IMPL_COMMIT,
+  };
+  const loaded = loadFirstRunInputs(base);
+  assert.equal(loaded.result.v3.sha256, V3_SHA);
+  assert.equal(loaded.bindings.v3File.sha256, V3_SHA);
+  assert.ok(
+    IMPLEMENTATION_FILES.some((file) =>
+      file.endsWith("quality-evidence-items.mjs"),
+    ),
+  );
+  assert.throws(
+    () => loadFirstRunInputs({ ...base, v3Commit: null }),
+    /v3 file and the v3 commit go together/u,
+  );
+  assert.throws(
+    () => loadFirstRunInputs({ ...base, v3File: null }),
+    /v3 file and the v3 commit go together/u,
+  );
+  // The v3 file the command line names must be the confirmed one, and the
+  // implementation commit the one that last changed the verdict files.
+  assert.throws(
+    () =>
+      loadFirstRunInputs({
+        ...base,
+        expectedV3: {
+          ...EXPECTED_V3,
+          v3: { commit: V3_COMMIT, sha256: "d".repeat(64) },
+        },
+      }),
+    /is not the confirmed/u,
+  );
+  assert.throws(
+    () => loadFirstRunInputs({ ...base, lastChangeOf: () => "e".repeat(40) }),
+    /not the commit that last changed the verdict files/u,
+  );
+  // The file's bytes differ from the commit's blob.
+  writeFileSync(path.join(REPO, V3_FILE_PATH), "# v3 edited\n");
+  assert.throws(
+    () => loadFirstRunInputs(base),
+    /differs from the bytes of that path at the v3 commit/u,
+  );
+  writeFileSync(path.join(REPO, V3_FILE_PATH), V3_BYTES);
+  // The v3 path is fixed.
+  const other = path.join(REPO, "other-v3.md");
+  writeFileSync(other, V3_BYTES);
+  git(REPO, "add", "other-v3.md");
+  git(
+    REPO,
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@example.invalid",
+    "commit",
+    "-q",
+    "-m",
+    "other v3 path",
+  );
+  assert.throws(
+    () =>
+      loadFirstRunInputs({
+        ...base,
+        v3File: other,
+        v3Commit: git(REPO, "rev-parse", "HEAD"),
+      }),
+    /not docs\/plans\/nir1-cp4-records\/quality-verdict-prereg-v3\.md/u,
+  );
 });

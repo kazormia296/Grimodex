@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  COLD_START_GPU_RETRY_POLICY,
   buildRuntimePerformanceAttemptPaths,
   classifyTransientPerformanceRetry,
   createGpuChannelFailureScanner,
   describeRecoveredPerformanceRetry,
+  describeStartedPerformanceRetry,
+  TRANSIENT_PERFORMANCE_RETRY_POLICY,
   runRuntimePerformanceWithRetry,
 } from "../electron/scripts/runtime-performance-retry.mjs";
+import { DEFAULT_RUNTIME_BUDGETS } from "./runtime-performance-budget.mjs";
 import { parsePerformanceBenchmarkArguments } from "../electron/scripts/performance-benchmark.mjs";
 
 function buildGestureMetrics(
@@ -400,14 +404,9 @@ test("a cold start held at the first frame by a GPU channel failure is retryable
   );
 });
 
-test("cold starts without time-bound GPU evidence, with a slow bootstrap, or mixed failures are not retryable", () => {
+test("cold starts with a slow bootstrap, incomplete evidence, or mixed failures are not retryable", () => {
   const healthyRegression = 2_900; // a regression added to the healthy shape
   const cases = [
-    [buildColdStartMetrics({ offsets: [] }), "coldstart-without-gpu-channel-failure"],
-    // The same line also appears harmlessly right after launch.
-    [buildColdStartMetrics({ offsets: [-3_800] }), "coldstart-gpu-channel-failure-not-near-first-frame"],
-    [buildColdStartMetrics({ offsets: [-1_000.1, 500.1] }), "coldstart-gpu-channel-failure-not-near-first-frame"],
-    [buildColdStartMetrics({ offsets: null }), "coldstart-evidence-incomplete"],
     [buildColdStartMetrics({ offsets: [Number.NaN] }), "coldstart-evidence-incomplete"],
     [buildColdStartMetrics({ offsets: ["-41"] }), "coldstart-evidence-incomplete"],
     [buildColdStartMetrics({ firstFrameMs: null }), "coldstart-evidence-incomplete"],
@@ -458,6 +457,152 @@ test("cold starts without time-bound GPU evidence, with a slow bootstrap, or mix
     assert.equal(decision.eligible, false, extra);
     assert.equal(decision.reason, "non-longtask-budget-failure", extra);
   }
+});
+
+// 2026-11-17 investigation (ci.yml, AWS-hosted runners; fusion-eval-data/
+// ci-perf-2026-11-17.md): the failed attempt 1 values per job. Boot ~0.28 s,
+// first frame 4.1-8.4 s, coldStart within 5 ms of the first frame, projectOpen
+// within budget (except #921, see below), no GPU line near the first frame.
+const OBSERVED_FIRST_FRAME_STALLS = [
+  { coldStartMs: 8_366, firstFrameMs: 8_362 }, // 43871338713
+  { coldStartMs: 6_270, firstFrameMs: 6_266 }, // 43874617679
+  { coldStartMs: 7_026, firstFrameMs: 7_021 }, // 43898208278
+  { coldStartMs: 5_247, firstFrameMs: 5_243 }, // 43615358091 (2026-11-14)
+  { coldStartMs: 5_814, firstFrameMs: 5_810 }, // 43591421889 (2026-11-14)
+  { coldStartMs: 6_793, firstFrameMs: 6_789 }, // 43589812705 (Azure)
+  { coldStartMs: 4_107, firstFrameMs: 4_103 }, // 43551562907
+];
+
+test("an observed first-frame stall without a GPU line near the first frame is retryable (DR-PIS-9)", () => {
+  for (const { coldStartMs, firstFrameMs } of OBSERVED_FIRST_FRAME_STALLS) {
+    for (const offsets of [[], null, [-3_800], [-1_000.1, 500.1]]) {
+      const metrics = buildColdStartMetrics({
+        coldStartMs,
+        firstFrameMs,
+        bootstrapMs: 280,
+        offsets,
+      });
+      const decision = classifyTransientPerformanceRetry(
+        metrics,
+        buildColdStartEvaluation(),
+      );
+      assert.equal(decision.eligible, true, JSON.stringify(metrics));
+      assert.equal(decision.reason, "coldstart-first-frame-stall");
+      assert.equal(decision.gpuChannelFailureCount, 0);
+      assert.equal(decision.coldStartMs, coldStartMs);
+      assert.equal(decision.bootstrapMs, 280);
+      assert.equal(decision.firstFrameMs, firstFrameMs);
+    }
+  }
+  const decision = classifyTransientPerformanceRetry(
+    buildColdStartMetrics({
+      coldStartMs: 8_366,
+      firstFrameMs: 8_362,
+      bootstrapMs: 280,
+      offsets: [],
+    }),
+    buildColdStartEvaluation(),
+  );
+  assert.equal(
+    describeRecoveredPerformanceRetry(decision),
+    "Recovered after one transient performance retry: coldStart 8366ms with first frame at 8362ms and bootstrap 280ms (first-frame stall). Both attempt artifacts were retained.",
+  );
+  assert.equal(
+    describeStartedPerformanceRetry(decision),
+    "Retrying once (coldstart-first-frame-stall): first attempt coldStart 8366ms, bootstrap 280ms, first frame 8362ms (share 99.95%), 0 GPU channel failure(s) near the first frame.",
+  );
+});
+
+test("a GPU line near the first frame keeps its own reason; the first attempt values are logged", () => {
+  const decision = classifyTransientPerformanceRetry(
+    buildColdStartMetrics(),
+    buildColdStartEvaluation(),
+  );
+  assert.equal(decision.reason, "coldstart-gpu-channel-first-frame");
+  assert.match(
+    describeStartedPerformanceRetry(decision),
+    /first attempt coldStart 4106\.8ms, bootstrap 280\.5ms, first frame 4102\.9ms .* 2 GPU channel failure\(s\)/u,
+  );
+});
+
+test("a slow start in another segment is not retried even when the first frame dominates (DR-PIS-9)", () => {
+  const cases = [
+    // Slow bootstrap (bundle/bootstrap regression): the line is 1,000 ms.
+    [buildColdStartMetrics({ bootstrapMs: 1_000.1, firstFrameMs: 7_000, coldStartMs: 7_004, offsets: [] }), "coldstart-not-first-frame-wait"],
+    // A slow tail after the first frame (the first frame is under 90%).
+    [buildColdStartMetrics({ bootstrapMs: 280, firstFrameMs: 3_000, coldStartMs: 4_500, offsets: [] }), "coldstart-not-first-frame-bound"],
+    // A mild first-frame delay below the 2,000 ms wait line.
+    [buildColdStartMetrics({ bootstrapMs: 900, firstFrameMs: 2_800, coldStartMs: 4_100, offsets: [] }), "coldstart-not-first-frame-wait"],
+  ];
+  for (const [metrics, reason] of cases) {
+    const decision = classifyTransientPerformanceRetry(
+      metrics,
+      buildColdStartEvaluation(),
+    );
+    assert.equal(decision.eligible, false, reason);
+    assert.equal(decision.reason, reason);
+  }
+  // ci.yml 43889839188 (#921): projectOpenMs failed with coldStartMs, so the
+  // rest of the start was not normal.
+  for (const extra of ["projectOpenMs", "frameP95Ms"]) {
+    const decision = classifyTransientPerformanceRetry(
+      buildColdStartMetrics({ coldStartMs: 7_167, firstFrameMs: 7_163, bootstrapMs: 280, offsets: [] }),
+      buildColdStartEvaluation([extra]),
+    );
+    assert.equal(decision.eligible, false, extra);
+    assert.equal(decision.reason, "non-longtask-budget-failure");
+  }
+});
+
+test("a cold start stall retries at most once in total and judges the second sample against the same budget (DR-PIS-9)", () => {
+  assert.equal(TRANSIENT_PERFORMANCE_RETRY_POLICY.maximumRetries, 1);
+  assert.deepEqual(COLD_START_GPU_RETRY_POLICY, {
+    minimumFirstFrameShare: 0.9,
+    maximumBootstrapMs: 1_000,
+    minimumBootstrapToFirstFrameMs: 2_000,
+    gpuFailureWindowBeforeFirstFrameMs: 1_000,
+    gpuFailureWindowAfterFirstFrameMs: 500,
+  });
+  assert.equal(DEFAULT_RUNTIME_BUDGETS.coldStartMs, 4_000);
+  const stall = buildColdStartMetrics({
+    coldStartMs: 7_026,
+    firstFrameMs: 7_021,
+    bootstrapMs: 280,
+    offsets: [],
+  });
+  const attempts = [];
+  const started = [];
+  const result = runRuntimePerformanceWithRetry({
+    outputPath: "/tmp/runtime-metrics.json",
+    retryTransientOnce: true,
+    executeAttempt: ({ attempt }) => {
+      attempts.push(attempt);
+      return coldStartFailure(stall);
+    },
+    copyMetrics: () => {},
+    onRetry: (decision) => started.push(decision.reason),
+    onRecovered: () => assert.fail("a second failure is not a recovery"),
+  });
+  assert.deepEqual(attempts, [1, 2]);
+  assert.deepEqual(started, ["coldstart-first-frame-stall"]);
+  assert.equal(result.status, 1);
+  assert.equal(result.attemptCount, 2);
+  assert.equal(result.recovered, false);
+
+  // The first sample is kept next to the second, and a recovery is reported.
+  const copies = [];
+  const recovered = [];
+  const ok = runRuntimePerformanceWithRetry({
+    outputPath: "/tmp/runtime-metrics.json",
+    retryTransientOnce: true,
+    executeAttempt: ({ attempt }) =>
+      attempt === 1 ? coldStartFailure(stall) : passingAttempt,
+    copyMetrics: (from, to) => copies.push([from, to]),
+    onRecovered: (decision) => recovered.push(decision.reason),
+  });
+  assert.equal(ok.recovered, true);
+  assert.deepEqual(recovered, ["coldstart-first-frame-stall"]);
+  assert.equal(copies.length, 2);
 });
 
 test("the cold start thresholds are inclusive at their edges", () => {
