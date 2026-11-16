@@ -1096,6 +1096,7 @@ fn configure_and_resume_are_explicit_and_bounded() {
         slot.phase = Phase::Suspended {
             ready_generation: 0,
             reason: GraphUnavailable::WorkerUnavailable,
+            refused_project: None,
         };
         slot.rebuild.consecutive_failures = 5;
         slot.rebuild.last_failure = Some(GraphUnavailable::WorkerUnavailable);
@@ -2840,6 +2841,10 @@ fn the_product_token_has_one_production_construction_site() {
 /// CQ-DEFER: the held Related Scenes query (`begin_deferred`).
 #[path = "nir1_graph_deferred_tests.rs"]
 mod deferred;
+
+/// DR-PUBG-5-14: a refused registration asks Main for the Graph Index build.
+#[path = "nir1_graph_index_demand_tests.rs"]
+mod index_demand;
 
 /// LP-GATE: the Graph window gate on the held query's path.
 #[path = "nir1_graph_gate_tests.rs"]

@@ -623,6 +623,7 @@
 - gated route を production の `ROUTE_REGISTRY` に移すこと（DR-PUBG-5-2 の 2 段目）。
 - policy の行を `wired` で入れること。schema の件数・enum、新しい語彙（`durableRun`、`writes` の `declared-index-binding`）、validator、parity 試験を変える（DR-PUBG-5-3）。
 - `PRODUCT_GRAPH_PUBLISHED` の切替。B の product gate も同じ const で開く（DR-PUBG-5-8）。`native-architecture.mjs` の期待の変更も、この PR で行う。
+- main 側の独立した拒否が外れたことの確認（DR-PUBG-5-14 の判断 4。点検 R5）：bootstrap は全 launch で `acceptGraphIndexBuildWakes: true` を渡すので、seam の B の launch 以外で `wakeProjectIds` を載せた応答を main が拒否する防御（DR-BSEAM-1）は無い。定数が false の間は Native が wake も event も出さないので不活性。切替の PR では、定数以外の原因で `wakeProjectIds` が出ないことを Native 側の gate（token・discovery の判定・cycle の dispatch の再検査）で確かめる。DR-PUBG-5-8 の 2 により、独立の switch は増やさない。
 - 開示の文案の候補：容量の拒否（U1）、Q1 の答え、Q2b の答え（製品の wake の下の B の挙動は測っていないこと）、DR-BSEAM-5。
 - 一覧の新しい項目の候補：DR-BSEAM-5（Chronicle の sealed binding で、製品の Main の discovery が失敗しうる）。
 
@@ -731,6 +732,139 @@
 - 未確認：
   - 1 回目の wake の cycle が `capacity-exceeded` の Err を返す（V0 の (a)、(b) の open gate）。複数 project の work を載せた 1 つの request が、1 つの project の Verify の失敗で一緒に落ちるかは見ていない。`discover_all` の範囲の外。
   - Native の試験が mac／Win の CI で走るかは確かめていない。token の構築箇所の走査は、root と path と改行を正規化してあるが、Linux 以外では走らせていない。
+
+### DR-PUBG-5-14：PR-2（main と Native、閉じた gate）の実装判断（2026-11-17）
+
+- 位置づけ：PR-2 に入る前の判断と信頼境界の記録。この判断を残す commit ではコード・policy・定数を変えない。`PRODUCT_GRAPH_PUBLISHED` は false のまま。
+- 委任と停止点：DR-PUBG-5-13 と同じ（C-product の worker／owner／lifecycle の技術判断、委任の内の技術的な threat model の改訂）。枝 `claude/pubg-5-pr2`（基点は PR-1 の head `d8f06dad`）に push するが、PR は作らず merge しない。merge は次の S4（9 回目）の後（DR-PUBG-5-11 の 1）。
+- 範囲：W2（需要からの wake）、coalesce・最短間隔・dispose、main が product でも `wakeProjectIds` を受ける変更（PR-1 の引き継ぎ）、CP2a-D47 の hook が B の publish の後に届くことの試験（(j)）。入れないもの：registry の production 表、policy の行の実体、定数の切替、文言、(iii)、W3、定期の timer、画面での知らせ。
+- 材料：PR-1 の引き継ぎ（DR-PUBG-5-13 の末尾）、precheck §3.3・§4・§5、`ipc.ts` と `nir1_graph_product.rs` の読み（下の「読んで確かめたこと」）。
+
+**読んで確かめたこと（`d8f06dad`）**
+- main は `related_scenes_begin` の応答から `ir`（pending の ticket）だけを読み、`graph` の理由は読まない（`ipc.ts` の ticket 追跡）。`related_scenes_graph_continue` の応答は main が読まず、project ID も持たない。
+- `registration-unavailable` は owner thread の prepare の失敗（worker が canonical registration を `Ok(false)` で拒否し、`CQueryFailure::StartupRegistrationRefused` に分類される）で生まれる。Related Scenes は `begin_deferred` を通り、最初の begin は `Pending`（または `warming`）を返す。begin が理由を即答するのは、5 回失敗して Suspended になった後だけ。
+- B の publish は `Completed` を返し、cycle が `work_completed` を呼ぶ（`maintenance_runtime.rs` の `mark_completed`）。refused・validated・skip は `CompletedWithoutFinalization` で `work_noop_completed` に落ち、hook は呼ばれない。hook は `lib.rs` の `work_completed` の先頭の文（source の試験で固定済み）。
+
+**判断 1：需要は Native の owner で観測する。対象は `RegistrationUnavailable` だけ**
+- begin の応答（main の `ipc.ts`）では観測しない。理由は上のとおり、最初の begin は理由を返さず、main は読まず、project ID も持たない。renderer が受ける応答の読みに依存しない。
+- 出す場所は 3 か所で、いずれも理由が `RegistrationUnavailable` のときだけ。
+  1. `build_worker` の prepare の失敗（効果が `Count` のもの）。
+  2. `demand` の Suspended の枝。
+  3. `demand_deferred` の Suspended の枝。
+- epoch の照合（点検 R2 の反映）：event に binding は載せない（payload は project ID だけ）ので、workspace の切替の後に終わった旧 workspace の refusal が、新しい workspace の同名の project（`default-project` など）の wake にならないよう、Native の側で通知の前に epoch を照合する。`build_worker` の prepare 失敗の枝は、`edge_or_closed(&shared, epoch)` が真なら通知しない（試験：lifecycle edge の後に終わる refusal は通知 0、edge なしの対照は 1 回）。`demand`・`demand_deferred` の Suspended の枝は、lock の下で `ready_generation` の一致を見てから通知するので、この問題の外。残る隙は、照合と emit の間に edge が入る場合で、main が受信時の live binding に束縛するため、害は B の判定 1 回（`RefusedUnchanged` なら SQL だけ）に有界。
+- 2 と 3 を落とすと、5 回失敗して Suspended になった slot は、B の publish が唯一の出口なのに B を起こす源が無くなる（(j)・(k) の「W2 が Suspended を解く」が成り立たない）。
+- 名指す project（レビュー R-A の反映）：Suspended の slot は project を持たない。そこで、slot が Suspended になったときの refused project（`build_worker` の key の project）を `Phase::Suspended` に記録し、2 と 3 は「需要した側」ではなく、その refused project を名指す。同じ workspace の別の project の begin が Suspended の slot に当たっても、B が直せるのは refusal を起こした project なので、そちらを起こす。需要した側の project は名指さない（その project の B は、この refusal と関係が無い）。記録が無い（test が組んだ phase）ときだけ、需要した側へ戻す。単一 project の挙動は変わらない。
+- 広げない：`Stale`・`Warming`・`Busy`・`Timeout`・`Failed`・`WorkerUnavailable` は出さない。頻度が桁で変わる（`Warming`・`Busy` は編集と query のたびに出る）。要レビュー。
+- 読みの注記（要確認）：`StartupRegistrationRefused`（worker の registration が `Ok(false)`）を「B の binding が current でない」の代理として扱う。`Ok(false)` になる全原因は追跡していない。B が skip した（current だった）場合、wake の費用は B の判定の SQL（PK・EXISTS・MAX の読み）だけで、最短間隔（判断 5）で有界。
+- owner の `unserved` 集合は重複抑止に使わない。`unserved` は READY まで再通知されないので、「次の需要が再試行を起こす」が壊れる。抑止の正本は main の 1 か所（判断 5）。
+
+**判断 2：gate は const の token だけに結ぶ**
+- 通知の入口（owner の `request_index_build`）の先頭で、token（`maintenance_product_publication()`）が `None` なら何もしない。`publication_open()` にも seam にも結ばない（DR-PUBG-5-8 の 1）。CP-4 の eval build や unit test が `publication_open()` を開いても、B の wake は開かない（Q2b の回答）。
+- const が false の間：event 0、main の timer 0、wake 0。
+- 試験で固定する：owner の test gate を開いても通知 0、`--features nir1-graph-eval` でも通知 0。開いた token は試験 module（`*_tests.rs`）が `cfg(test)` の field に注入する。production の構築箇所は 1 つのまま（PR-1 の走査の試験が固定。`from_const` は production code に増やさない）。
+
+**判断 3：通知は observer-only の event。新しい `#[napi]` も renderer 向けの入口も足さない**
+- channel は `narrative-maintenance:graph-index-demand`、payload は `{"projectId": …}` だけ。Native は既存の `EventQueue` に emit する。
+- `epoch-rotated` と同じ扱い：main の `handleBackendEvent` は observer にだけ渡し、renderer へ broadcast しない。renderer 向けの allowlist（`ipcContract.ts`）にも入れない。
+- main は payload を厳格に検証する：Record で、key は `projectId` だけ、文字列、空でなく、前後に空白がなく、NUL を含まず、長さは上限以下。違えば warn（固定文言。ID は出さない）して捨てる。
+- 閉じた理由の集合（Native の 14 個、renderer の allowlist）は変えない。
+
+**判断 4：main の bootstrap は常に `acceptGraphIndexBuildWakes: true` を渡す（要レビュー）**
+- main が product の gate を知る経路は、main 側の定数（独立の switch で DR-PUBG-5-8 の 2 に反する）か、新しい `#[napi]` の getter（「足さずに済まない場合」に当たらない）のどちらかになる。どちらも採らない。
+- const が false の間、Native は discovery の応答に `wakeProjectIds` を載せず（PR-1 の試験）、判断 3 の event も出さない。よって製品の挙動は変わらない。
+- 外れるもの：「seam の B の launch 以外では、`wakeProjectIds` を載せた応答を main が拒否する」独立の防御（DR-BSEAM-1）。残る防御は Native 側の gate（discovery の wake の判定、cycle の dispatch の再検査、token）。
+- coordinator の option `acceptGraphIndexBuildWakes` と、option が無いときの拒否の試験は残す（coordinator 単体の契約）。bootstrap の既存の試験の期待（seam の B 以外は第 3 引数なし）は、意図して変える。
+
+**判断 5：main の需要 wake は、discovery の chain の timer・世代・理由・ACK に乗らない小さな状態にする（rediscovery の budget は chain と共有する）**
+- 既存の discovery の chain の timer・世代・wake reason・outbox の ACK（`armTimer`、`chainGeneration`、`lastWakeReason`）には乗せず、触れない。ただし rediscovery の budget は chain と共有する（次の項）。5 つ目の wake reason は足さない。`scheduler.requestGraphIndexBuildWakesWithBinding` を直接呼ぶ。
+- ただし 1 点だけ chain とつながる（実装の後の訂正。レビューの前に確かめた）：bootstrap の `onCycleAccepted` は、受理された cycle のたびに `coordinator.requestRediscovery()` を呼ぶ。需要の wake の cycle も受理されれば同じで、chain が生きている間は rediscovery を 1 回（上限 3 回のうち 1 回）消費する。chain が終わっていれば（`lastWakeReason` が null）no-op。W1（discovery の `wakeProjectIds`）と、seam の B の wake も同じ既存の配線。この配線は変えない（変えるなら、wake だけの cycle では rediscovery を呼ばない、などの別の判断になり、cutover の準備の chain の既存の挙動に触れる）。試験で今の挙動を固定した（要レビュー）。
+- 状態は (binding, project) ごとに `{ timer, lastFiredAtMs, firedInRun }`。
+- 受信：未 dispose、option が true、payload が妥当、current binding が取れる、のときだけ。binding は受信時に束縛し、key の一部にする。
+- 合流：key に pending の timer があれば何もしない。最短間隔の内側の需要は捨てずに、`lastFiredAt + interval` の 1 つの timer に畳む（末尾の 1 回に合流）。捨てると、直後の需要が受けられず liveness を失う。両端（間隔の内側で合流する、間隔の後で新しく発火する）を試験する。
+- 間隔：発火から数えて `interval(k) = min(2 s × 2^(k-1), 60 s)`（k は直前の発火から 60 s 以内に続けて発火した数）。静止が 60 s を越えたら k を 0 に戻す。初回は遅延 0。数値は Graph owner の backoff（CP2a-D14）にそろえた初期案で、実測で決めて記録する。時計が戻ったら elapsed を 0 とみなして再 anchor する（DR-MPS-2 と同じ）。
+- 上限：追跡する key は最大 8（owner の `MAX_UNSERVED_PROJECTS` と同数）。満杯なら新しい key の要求を捨てる。古いものを追い出す形にしない（追い出すと、renderer が project ID を回して最短間隔を迂回できる）。pending が無く、最後の発火から 60 s の静止を過ぎた key は、次の受信のときに lazy に捨てる（timer は足さない）。
+- 発火：timer の callback で、未 dispose と、live な binding が key の binding と同じことを確かめてから呼ぶ。不一致・例外は捨てる（自動の再試行は無い、永続しない）。
+- lifecycle：dispose と `workspace:opened`（restore を含む）で、全 timer を clear して全 key を捨てる。dispose の後は受けない。
+- 観測：timer の arm・clear・発火で `noteMutation()` する。`getQuiescenceState` と `onDiscoverySettled` の `timerScheduled` に含める。
+- DR-PUBG-5-9 の matrix との差：matrix は「最短間隔の timer は scheduler が持つ」だったが、実装は coordinator が持つ。scheduler の queue は work の identity と delivery の記録、preempt の backoff の state を持つので、需要の間隔制御を持ち込むと干渉する。coordinator は binding の検証と dispose の lifecycle を既に持つ。scheduler の `requestGraphIndexBuildWakesWithBinding` は (project, binding) の Map で既に coalesce するので、その手前に一段の間隔制御を足すだけになる。
+
+**判断 6：(j) の試験**
+- db：開いた gate（token）の下の実 cycle で、B の publish が `work_completed` を B の item で 1 回呼ぶこと。refused・validated・skip・閉じた gate では `work_completed` を呼ばず、`work_noop_completed` に落ちること（hook が呼ばれないこと）。
+- Native：Suspended の理由が `RegistrationUnavailable` のとき、B の item で hook を呼ぶと Empty に戻り、再試行が 1 回になる（CP2a-D49）こと。
+- 全 process の journey（実際の Electron で B が publish されて Suspended が解けること）は PUB-G の前の dev の journey で確かめる。この PR では確かめていない。
+
+**信頼境界と threat model の差分（PR-2）**
+- 変わらない：actor、受信先、保存、受入れ。renderer は B を名指しできず、新しい IPC・`#[napi]` の入口は無い。event は main 専用で、payload は project ID だけ。
+- 新しい攻撃（DR-PUBG-5-10 の具体化）：untrusted な renderer が seed 付きの begin を繰り返すと、owner の prepare の失敗と Suspended の begin が event になり、main の B の wake（B の判定または build と、その project の `durable-wake` discovery 全体）を誘発できる。renderer が選べる project は、workspace に実在するものに限られる（begin は `read_retrieval_scene_source` が project と scene の組を読めなければ失敗し、owner に届かない。読んで確かめた）。実在しない ID で表を埋める攻撃は成り立たない。
+- 受理された wake の cycle は、chain が生きている間、rediscovery の budget を 1 回消費する（判断 5）。renderer が需要を続けると、before-cutover の chain の budget（3 回）が早く尽き、Freshness の NOT_READY による再開（5 s から 60 s の cooldown）まで cutover の準備が遅れうる。失敗や永続の変化ではなく遅れで、間隔（判断 5）で有界。この結合は PUB-G の切替の前に決める項目として残す（下の「切替の前に決める項目」）。
+- 防御：
+  1. owner の既存の rebuild window・backoff・Suspended。
+  2. main の key ごとの pending 1 つ、最短間隔 2 s から 60 s、key の上限 8、満杯なら捨てる。頻度は実装の列（0、+2、+6、+14、+30 s の 5 回、次は +62 s）で、最初の 60 s は key あたり 5 回。需要が持続する間の定常は key あたり 1 回／分。静止が 60 s を越えると run が 2 s から新しく始まるので、5 回の後に 60 s 止めて再開する形（5 回／90 s）が最悪で、約 3.3 回／分／key、8 key で最大約 27 回／分。reset の条件は変えない。B は single-flight と `RefusedUnchanged` で有界なので害は小さく、数値は PUB-G の前の dev の journey の実測で決める。
+  3. B の attempt の上限（600,000,000 counts、180 s）と `RefusedUnchanged` の抑止。
+  4. renderer は B を名指しできない。
+  5. const が false の間は event 0。
+- 受信先・保存：増えない。wake の cycle の失敗が既存の `persistDeliveryFailure`（scope `wake`）に乗る場合の書込みの回数は、最短間隔で有界（DR-PUBG-5-9 の error の行のまま）。
+- 受入れ：製品の既定（const false）では、event 0、main の timer 0、wake 0、B の判定の SQL 0。
+
+**切替の前に決める項目（PUB-G の PR の前。挙動は PR-2 では変えない）**
+- 需要の wake の cycle が before-cutover の chain の rediscovery の budget を消費する結合（判断 5 の訂正）。PR-1 は BeforeCutover を fail-closed に保ったのに対し、需要の wake が chain の budget を減らせるのは不釣り合い。決め方の例：需要の wake の cycle では `requestRediscovery` を呼ばない（bootstrap の `onCycleAccepted` の配線の変更になり、cutover の準備の chain の既存の挙動に触れるので、別の判断）。
+- wake の頻度の数値（間隔 2 s から 60 s、key の上限 8、reset の 60 s）は、dev の journey の実測で決める（R3）。
+- Suspended の出口（R-A の残り。設計の変更が要る）：refused project の B が skip する（current）か `RefusedUnchanged` で publish が無いと、slot は Suspended のままで、出口は lifecycle の edge と再起動だけになる。これは単一 project でも同じ（DR の「`Ok(false)` の代理が外れる」場合）。直すなら、Suspended を project ごとにする、または需要の key が違えば Suspended を見ずに rebuild へ回す（owner の契約の変更）。別の project の B の publish が Suspended を解く挙動（逆向き）は、1 回の再試行（CP2a-D49）が空振りして Suspended に戻るので自己修復し、害は小さい。PR-2 では変えない。
+- 旧 workspace の需要の event が新 workspace の binding で束縛される隙（R-B）：窓は、読みによる限り実質無い。理由と、確かめていない部分は下の「レビューの反映」に記す。残る極小の窓（owner thread が epoch の確認と emit の間で切替の全期間止まる場合）を閉じるなら、payload に owner の世代を載せて main で照合する（判断 3 の payload の変更）。PR-2 では変えない。
+
+**要レビュー（レビューで見てほしい点）**
+1. 判断 1：対象を `RegistrationUnavailable` だけにしたこと（`Stale` などへ広げない）と、その読み（`Ok(false)` を「binding が current でない」の代理にしたこと）。
+2. 判断 4：main の独立した拒否が外れること（const が false の間は挙動が変わらない）。
+3. 判断 5：key の上限 8 と「満杯なら捨てる」、末尾の 1 回への合流、timer を coordinator が持つこと（DR-PUBG-5-9 との差）。
+4. 判断 2：`cfg(test)` の token の注入が、PR-1 の「構築箇所は 1 つ」の走査と矛盾しないこと。
+5. 判断 5 の訂正：需要の wake の cycle が、bootstrap の `onCycleAccepted` を通して、生きている chain の rediscovery の budget を消費すること（既存の配線。変えていない）。cutover の準備の chain を、renderer の需要が間隔の範囲で早く尽きさせうる。
+
+**実装の結果（PR-2、2026-11-17。枝 `claude/pubg-5-pr2`。PR は作らず、merge は次の S4（9 回目）の後）**
+- commit：`05754538`（この DR）、`71cdf9bf`（main：event の観測・coordinator の需要 wake・bootstrap・試験）、`086a228d`（Native：owner の通知・event・試験、db：(j) の試験）。
+- 公開した名前：Native に `GRAPH_INDEX_DEMAND_EVENT`、`GraphIndexDemandNotice`、`set_graph_index_demand_notifier`（`nir1_graph_product.rs`）、`graph_index_demand_notifier`（`state.rs`）。main に `NARRATIVE_MAINTENANCE_GRAPH_INDEX_DEMAND_EVENT`（`events.ts`）、`NARRATIVE_MAINTENANCE_GRAPH_DEMAND_*` の 4 定数と `narrativeMaintenanceGraphDemandIntervalMs`（`narrativeMaintenanceTriggers.ts`）。新しい `#[napi]` の入口・IPC の channel・wire の field・閉じた理由は足していない。`native-architecture.mjs` と `scripts/quality/nir1-graph-eval*/` は無変更。
+- 判断との差：
+  - 判断 2 の「`--features nir1-graph-eval` でも通知 0」：eval feature の cfg を使う試験は置けない（pin 済みの `native-architecture.mjs` の `eval-feature-allowlist` が、allowlist 外の file の eval の cfg と `_for_eval` を違反にする。置いた試験で確かめて外した）。代わりに、owner の gate が開いていて token が `None` の試験（`a_refused_registration_raises_nothing_while_the_product_token_is_closed`）を、同じ試験ごと eval feature の build でも走らせた（下の検証）。eval の flag で owner を開く形そのものは試験していない。
+  - 判断 6 の db 試験：seam の gate では、B の publish が `work_completed` に 1 回届き no-op に落ちないことが既存の試験（`open_gate_cycle_builds_publishes_and_reader_is_available`）で固定されていた。足したのは、product の token の下で同じことと、validation・typed refusal・current な binding・閉じた gate では届かないこと。
+  - 判断 5 の数値の動き（試験で固定）：持続する需要の下で、1 つの key の wake は 0、+2、+6、+14、+30、+62、+122 s（以後 60 s 間隔）。60 s の静止の後は直ちに発火し、run は 2 s から始まり直す。key の上限は 8、満杯なら新しい key は捨てる（60 s の静止の後は受ける）。時計が戻った場合も、発火済みの pair の掃除を再 anchor するので、表が埋まったままにならない（レビューの指摘で直した。試験あり）。
+  - 判断 5 の chain との接続：production の bootstrap と実 scheduler の試験で、chain の最初の discovery が実行中のとき、需要の wake の受理が rediscovery を 1 回足す（discovery 1 回が 2 回）ことを固定した。chain が終わっていれば足さない（`narrativeMaintenance.electronRoute.test.ts`）。
+- 検証（node 22、`CARGO_BUILD_JOBS=4`）：
+  - Native `--lib` 全件：823 件成功、7 件 ignore（PR-1 の 816 に、新しい 7 件）。`--features nir1-graph-eval`：`narrative_maintenance::tests`・新しい 7 件・token の 2 試験の計 23 件成功。
+  - 試験の効き（変異）：token の確認を外す、`build_worker` と `demand` の理由の絞りを外す、`demand_deferred` の絞りを外す、の 3 通りで、対応する試験がそれぞれ落ちることを確かめて戻した。
+  - db `--lib` の `nir1_graph_index_maintenance`：42 件成功。
+  - clippy（`--all-targets -- -D warnings`）：Native と db（既定 feature）で成功。
+  - electron の vitest（`vitest.electron.config.ts`、`electron/main` と `electron/shared`）：103 files・2,434 件成功。`tsc -p electron/tsconfig.json` も成功（vitest は型を見ないので別に回した）。新しい coordinator の試験は 16 件、bootstrap の試験は意図して直した（全 launch で受ける）、end-to-end の経路（production の bootstrap、event bus、coordinator、scheduler）に 3 件。eslint は変えた file で base と同じ件数（base が持つ prettier・no-useless-assignment の指摘は直していない）。
+  - pin 済みの `native-architecture.mjs`（`node scripts/quality/nir1-graph-eval/native-architecture.mjs`）：作業 tree で ok。
+  - `verify:quality`（node 22）：成功。
+- 点検（read-only、`05-impl-check.md`）の反映と検証の追補（点検の反映の後の head。node は 22、`CARGO_BUILD_JOBS=4`）：
+  - M1：PR-1 から封じ込めを外した（DR-PUBG-5-13 の判断 7）ので、PR-1 の head（`251d811a`）を取り込んだ。R2：`build_worker` の prepare 失敗の枝で epoch を照合した（判断 1）。R3・R4・R5：DR を直した（防御の頻度の数字、切替の前に決める項目、DR-PUBG-5-12 の確認の 1 行）。`narrativeMaintenanceTriggers.ts` のコメントも直した（挙動は無変更）。
+  - R7（既知のずれ）：この PR の `nir1_graph_product.rs` の追加（91 行）で、凍結した S2 の prose や `constants.mjs:53` のコメントの `nir1_graph_product.rs:NN` の行番号は、さらに実際の位置からずれる。S2 は凍結されていて変えられないので直さない（DR-PUBG-5-13 の実装の結果に同じ記述）。
+  - Native `--lib` 全件：820 件成功、7 件 ignore（封じ込めの試験 4 件を外し〔812〕、PR-2 の新しい 7 件と R2 の試験 1 件を足した）。`--features nir1-graph-eval` の `narrative_maintenance`・token の 2 試験・`index_demand`：80 件成功。db `--lib` の `nir1_graph_index_maintenance`：41 件成功。
+  - R2 の試験の効き：`edge_or_closed` の照合を外すと `a_refusal_that_ends_after_a_lifecycle_edge_asks_for_nothing` が落ちる（通知 1 件、期待 0 件）ことを確かめて戻した。
+  - clippy（`--all-targets -- -D warnings`）：Native と db で成功。electron の vitest（`electron/main`・`electron/shared`）は 103 files・2,434 件成功、`tsc -p electron/tsconfig.json` は成功。
+- レビュー（Opus、read-only、`05-impl-review-opus.md`）の反映（2026-11-17）：
+  - R-A（推奨）：局所的に直した。上の判断 1 の「名指す project」のとおり、`Phase::Suspended` に `refused_project` を足し、Suspended の枝の 2 か所（`demand`・`demand_deferred`）が、需要した側ではなくその project を名指す。試験：`a_suspended_begin_of_another_project_names_the_refused_project`（project A の refusal で Suspended にした後、project B の `begin` と `begin_deferred` の event が A を名指し、B を含まない）。refused project の B が publish しない場合の出口は設計の変更なので、「切替の前に決める項目」に書いた。
+  - R-B（推奨）：窓は、読んだ範囲では実質無いと見た。コードは変えず、試験も足していない（既存の `workspace:opened` で需要が消える試験が、同じ drain の順序を固定している）。根拠（読みによる。実行して確かめたものではない）：
+    - 需要の event（E1）と `workspace:opened`（E2）は、同じ `EventQueue`（TSFN は 1 本、`max_queue_size = 0`）を通るので、E1 が先に emit されていれば main は E1 を先に処理する。E1 を emit する側は、`build_worker` では `edge_or_closed` の確認の直後、`demand`・`demand_deferred` では workspace operation の下にあり、切替が新しい authority を公開してから E2 を emit するまでの間に E1 を emit する経路は見つからなかった。
+    - 切替で E2 が emit されるのは Native の open の中（`lib.rs` の `state.events.emit("workspace:opened", …)`）で、lifecycle が ready に戻る（`publish_workspace_lifecycle_from_workspace_off_runtime`）より前。binding の getter は、遷移の間は `None` か `WORKSPACE_SWITCHING` で捨てる。E1 と E2 が両方 queue に溜まっていれば、TSFN は 1 回の drain で順に処理し、E1 が作る `setTimeout(0)` は、同じ drain の中の E2（`clearGraphDemands`）より先には走れない。
+    - 残る窓は、owner thread が `edge_or_closed` の確認から emit までの数命令の間で、切替の全期間（数百 ms 以上）止まる場合だけ。実用上は無いと見るが、止まらないことを保証する仕組みは無い。
+    - 確かめていない：切替の経路が上のとおりであること（`open` と restore の 2 経路と、`discover` の経路までは追っていない）、TSFN の drain の挙動（Node の実装の読みであり、実測していない）、存在しない project の wake が cycle の FK で落ちた後に、retry と `persistDeliveryFailure` がどう終わるか。害の上限は、同名の project が新 workspace にあれば B の判定 1 回（`RefusedUnchanged` なら SQL だけ）という DR の記述のまま。存在しない project のときの終わり方は未確認。
+  - R-C：PR-1 の新しい head（`f4dff667`）を取り込んだ、この反映の head で走らせた（検証の追補 2）。
+  - m-1（直さない）：需要の event ごとに、合流の判定の前に同期の binding の getter（lifecycle の snapshot と workspace operation の lease を取り、失敗すると throw）を呼ぶ費用は、DR の「O(8) の lazy な掃除と map の参照」より重い。直さない理由：pending の timer がある key の判定を binding の読みより前にすると、binding が変わった後の需要（key が別になる）を落とす。頻度は Suspended の slot への begin（renderer の query の頻度）で、lease は短く、warn は固定文言で ID を出さない。測っていない（上の未確認のとおり）。
+  - m-3：PR-1 の DR-PUBG-5-13 で、launch の gate で判定する helper にした（試験は PR-1 の側）。
+- 検証の追補 2（レビューの反映の後。PR-1 の head `f4dff667` を取り込んだ head。node は 22、`CARGO_BUILD_JOBS=4`）：
+  - Native `--lib` 全件：821 件成功、7 件 ignore（exit 0。820 に R-A の新しい 1 件）。`--features nir1-graph-eval` の `narrative_maintenance::tests`・`index_demand`・token：26 件成功。
+  - R-A の試験の効き：`demand` の Suspended の枝を需要した側の project に戻すと、`a_suspended_begin_of_another_project_names_the_refused_project` が落ちる（戻した）。
+  - db `--lib` の `nir1_graph_index_maintenance`：41 件成功。clippy（`--all-targets -- -D warnings`）：Native と db で成功。
+  - electron の vitest（`electron/main`・`electron/shared`）：103 files・2,434 件成功。`tsc -p electron/tsconfig.json --noEmit`：成功。
+  - `verify:quality`（node 22）：成功（exit 0。この追補を足す前の head `9d7d499e` で走らせた。この追補だけを足した commit では再実行していない）。
+- 未確認：
+  - 全 process の journey（実際の Electron で、registration が拒否された Graph の demand → event → B の wake → publish → Suspended が解ける、が一続きで起きること）。この PR は部品ごとに確かめた（owner の event、coordinator の wake、cycle の `work_completed`、owner の hook）。PUB-G の前の dev の journey で確かめる（DR-PUBG-5-11 の 2）。
+  - worker の registration が `Ok(false)` になる全原因。「binding が current でない」の代理が外れるのは、B が skip しても registration が拒否される場合で、そのときの wake の費用は B の判定の SQL だけ（間隔で有界）。
+  - 間隔の数値（2 s から 60 s、key の上限 8）の実測。初期案のまま。
+  - Suspended の slot への begin のたびに event が出る頻度（renderer の query の頻度）。main の合流で wake は有界だが、event の受信と payload の検証は query ごとに走る（O(8) の lazy な掃除と map の参照）。
+  - wake の cycle が失敗するとき、既存の `persistDeliveryFailure` への書込みの回数（V0 の (a) の状態では wake のたびに Verify の失敗が出る）。最短間隔で有界とした根拠は読みで、測っていない。
+  - Native の試験と eval feature の試験が mac／Win の CI で走るか。
+- PUB-G への引き継ぎ：定数を切り替えると、Native は discovery の応答に `wakeProjectIds` を載せ（PR-1）、registration が拒否された需要の event を出し（PR-2）、main は受ける（PR-2）。#5 の閉じた実装は、PR-1 と PR-2 で完了した。残るのは registry の production 表、policy の行の実体、定数の切替、文言、(iii)（Q1 の回答で起案）、W3（測ってから）で、すべて PUB-G の PR か別の lane。切替の前に、dev の journey で上の全 process の流れと、wake の頻度（B の build の回数、DB の取り合い、registration の窓）を測って記録する。
 
 ### 実装の段取り（閉じた gate の内側まで。merge は S4（9 回目）の PR の merge の後）
 

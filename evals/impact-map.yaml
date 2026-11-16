@@ -329,6 +329,7 @@ rules:
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
       - electron/main/narrativeMaintenanceTriggers.stall.test.ts
+      - electron/main/narrativeMaintenanceTriggers.graphDemand.test.ts
       - src-tauri/crates/grimodex-db/tests/narrative_terminal_failure_projection.rs
       - src-tauri/crates/grimodex-db/tests/narrative_scope_authority_runtime.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
@@ -1349,6 +1350,7 @@ rules:
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
       - electron/main/narrativeMaintenanceTriggers.stall.test.ts
+      - electron/main/narrativeMaintenanceTriggers.graphDemand.test.ts
       - electron/main/narrativeFreshness.ts
       - electron/main/narrativeFreshness.test.ts
       - electron/main/ipc.ts
