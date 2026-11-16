@@ -317,6 +317,20 @@ pub(crate) struct GraphReadyNotice {
 
 pub(crate) type GraphReadyNotifier = Arc<dyn Fn(&GraphReadyNotice) + Send + Sync>;
 
+/// The event channel of the Graph Index demand (DR-PUBG-5-14). Main consumes it
+/// only; it is never broadcast to a window and is not in the renderer's
+/// allowlist.
+pub(crate) const GRAPH_INDEX_DEMAND_EVENT: &str = "narrative-maintenance:graph-index-demand";
+
+/// A demand the Graph could not serve because its registration was refused
+/// (`registration-unavailable`): the project's Graph Index build (B) may be
+/// able to fix that. The project ID only (DR-PUBG-5-14).
+pub(crate) struct GraphIndexDemandNotice {
+    pub(crate) project_id: String,
+}
+
+pub(crate) type GraphIndexDemandNotifier = Arc<dyn Fn(&GraphIndexDemandNotice) + Send + Sync>;
+
 /// Everything a worker needs at creation. The product owner never sends it
 /// across a thread: the worker is created, prepared, and retired on one owner
 /// thread.
@@ -518,6 +532,13 @@ struct Shared {
     next_thread_id: AtomicU64,
     worker: OnceLock<Arc<dyn GraphWorkerFactory>>,
     notifier: Mutex<Option<GraphReadyNotifier>>,
+    /// DR-PUBG-5-14: where a refused registration asks for B (a leaf lock, read
+    /// outside every other lock of this owner).
+    index_demand_notifier: Mutex<Option<GraphIndexDemandNotifier>>,
+    /// Test-only: the product token a test injects (a test module builds an
+    /// open one; production code never does).
+    #[cfg(test)]
+    index_demand_product_for_test: Mutex<Option<Nir1GraphProductPublication>>,
     cache: Mutex<Option<CacheEntry>>,
     config: Mutex<GraphOwnerConfig>,
     /// D-final's wait budget and step. The constants in production; a test
@@ -565,6 +586,9 @@ impl Shared {
             next_thread_id: AtomicU64::new(1),
             worker: OnceLock::new(),
             notifier: Mutex::new(None),
+            index_demand_notifier: Mutex::new(None),
+            #[cfg(test)]
+            index_demand_product_for_test: Mutex::new(None),
             cache: Mutex::new(None),
             config: Mutex::new(GraphOwnerConfig::default()),
             dfinal_wait: Mutex::new(GraphWaitPlan::default()),
@@ -713,6 +737,43 @@ impl Shared {
             notifier(&GraphReadyNotice {
                 project_id: project_id.to_owned(),
             });
+        }
+    }
+
+    /// DR-PUBG-5-14: a demand met a refused registration, so B may be able to
+    /// fix it. Asks main for a Graph Index build wake of this project, only
+    /// while the product token exists (`PRODUCT_GRAPH_PUBLISHED`, false until
+    /// PUB-G): never through `publication_open()`, which an evaluation build or
+    /// a unit test opens, and never through the journey seam. Runs outside
+    /// every lock of this owner.
+    fn request_index_build(&self, project_id: &str) {
+        #[cfg(test)]
+        {
+            let injected = *lock(&self.index_demand_product_for_test);
+            if injected.is_some() {
+                self.request_index_build_for(injected, project_id);
+                return;
+            }
+        }
+        self.request_index_build_for(maintenance_product_publication(), project_id);
+    }
+
+    fn request_index_build_for(
+        &self,
+        product: Option<Nir1GraphProductPublication>,
+        project_id: &str,
+    ) {
+        if product.is_none() {
+            return;
+        }
+        let notifier = lock(&self.index_demand_notifier).clone();
+        if let Some(notifier) = notifier {
+            // A sink that panics must not take the owner thread or a begin down.
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                notifier(&GraphIndexDemandNotice {
+                    project_id: project_id.to_owned(),
+                });
+            }));
         }
     }
 
@@ -1376,6 +1437,18 @@ impl Nir1GraphProductOwner {
         true
     }
 
+    /// DR-PUBG-5-14: `AppState` connects the Graph Index demand to the
+    /// EventQueue once. A second call is refused; under test it replaces the
+    /// connection.
+    pub(crate) fn set_graph_index_demand_notifier(&self, notifier: GraphIndexDemandNotifier) -> bool {
+        let mut slot = lock(&self.shared.index_demand_notifier);
+        if slot.is_some() && !cfg!(test) {
+            return false;
+        }
+        *slot = Some(notifier);
+        true
+    }
+
     /// CP2a-D47: the maintenance cycle calls this after each work it completed
     /// (after the work's final transaction committed). Only the Graph Index
     /// build leaves Suspended; the process worker stays gated until PUB-G.
@@ -1714,6 +1787,7 @@ impl Shared {
         config: GraphOwnerConfig,
     ) -> (GraphBegin, Vec<JoinHandle<()>>) {
         let project_id = demand.key.project_id.clone();
+        let mut index_demand = false;
         let mut slot = lock(&self.slot);
         let finished = take_finished(&mut slot.exited);
         let phase = slot.phase.clone();
@@ -1725,6 +1799,9 @@ impl Shared {
                 reason,
             } => {
                 if ready_generation == self.ready_generation.load(Ordering::SeqCst) {
+                    // DR-PUBG-5-14: a Suspended slot's only exit is B's
+                    // publish, so this demand asks for B (after the lock).
+                    index_demand = reason == GraphUnavailable::RegistrationUnavailable;
                     self.unserved(reason, &demand.key.project_id)
                 } else {
                     slot.phase = Phase::Empty;
@@ -1765,6 +1842,9 @@ impl Shared {
         };
         note_held_unserved(&mut slot, &result, &project_id);
         drop(slot);
+        if index_demand {
+            self.request_index_build(&project_id);
+        }
         (result, finished)
     }
 
@@ -1880,6 +1960,7 @@ impl Shared {
     ) -> (GraphBegin, Vec<JoinHandle<()>>) {
         let limit = *lock(&self.deferred_limit);
         let project_id = demand.key.project_id.clone();
+        let mut index_demand = false;
         let mut slot = lock(&self.slot);
         let finished = take_finished(&mut slot.exited);
         let phase = slot.phase.clone();
@@ -1891,6 +1972,8 @@ impl Shared {
                 reason,
             } => {
                 if ready_generation == self.ready_generation.load(Ordering::SeqCst) {
+                    // DR-PUBG-5-14: as in `demand`.
+                    index_demand = reason == GraphUnavailable::RegistrationUnavailable;
                     self.unserved(reason, &demand.key.project_id)
                 } else {
                     slot.phase = Phase::Empty;
@@ -1935,6 +2018,9 @@ impl Shared {
         };
         note_held_unserved(&mut slot, &result, &project_id);
         drop(slot);
+        if index_demand {
+            self.request_index_build(&project_id);
+        }
         (result, finished)
     }
 
@@ -2411,6 +2497,11 @@ fn build_worker(
                 } else {
                     Phase::Empty
                 });
+                // DR-PUBG-5-14: the registration was refused, which B may be
+                // able to fix. No lock of this owner is held here.
+                if reason == GraphUnavailable::RegistrationUnavailable {
+                    shared.request_index_build(&key.project_id);
+                }
             }
             return Built::Exit(reason);
         }

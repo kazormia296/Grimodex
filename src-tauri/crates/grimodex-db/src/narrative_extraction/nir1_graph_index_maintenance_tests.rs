@@ -3225,3 +3225,99 @@ fn v0_candidate_overflow_without_a_binding_stops_nothing() -> Result<()> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// J. CP2a-D47 (DR-PUBG-5-14 (j)): the completion callback under the product gate
+// ---------------------------------------------------------------------------
+
+/// One wake cycle under a launch's gate with its own recorder. The recorder's
+/// `completed` list is what Native's hook sees: Native calls
+/// `note_maintenance_work_completed` (the Suspended Graph owner's only exit)
+/// from the cycle's `work_completed` callback alone.
+fn product_wake_cycle(
+    fixture: &Fixture,
+    product: Option<Nir1GraphProductPublication>,
+    recorder: &Recorder,
+) -> Result<MaintenanceCycleResult> {
+    with_control(recorder, |control| {
+        run_system_work_cycle_with_nir1_graph_runtime_and_product(
+            fixture.db(),
+            &wake_request(),
+            |_| RecoveryMode::SameProcessLive,
+            None,
+            None,
+            Some(control),
+            Some(fixture.runtime()),
+            product,
+        )
+    })
+}
+
+/// Under the product token the cycle calls `work_completed` for B's publish,
+/// once, with B's own item (so the hook leaves a Suspended Graph owner). A
+/// validation, a typed refusal, a current binding and a closed gate never reach
+/// it: they settle as a no-op (or are not planned), and a hook that fired for
+/// them would let a refused build wake the owner for nothing.
+#[test]
+fn product_gate_calls_the_completion_hook_for_a_publish_and_for_nothing_else() -> Result<()> {
+    let _serial = serial();
+
+    // A publish: one B work, finalized through its grant, completed once.
+    let fixture = Fixture::new()?;
+    let recorder = Recorder::default();
+    let result = product_wake_cycle(&fixture, product_token(), &recorder)?;
+    assert_eq!(result, MaintenanceCycleResult::accepted(false));
+    let epoch = fixture.current_epoch()?;
+    let key = format!(
+        "narrative-maintenance:v1/nir1-graph-index-build/{PROJECT}/nir1-graph-index-build/epoch/{epoch}"
+    );
+    assert_eq!(Recorder::graph(&recorder.completed), vec![key.clone()]);
+    assert_eq!(Recorder::graph(&recorder.grants), vec![key.clone()]);
+    assert!(Recorder::graph(&recorder.noop).is_empty());
+    assert_eq!(fixture.record(), Some(RecordedOutcome::Published));
+    assert_eq!(generation(fixture.db())?, Some(1));
+
+    // A current binding: nothing is planned, so no callback.
+    let recorder = Recorder::default();
+    product_wake_cycle(&fixture, product_token(), &recorder)?;
+    assert!(Recorder::graph(&recorder.registered).is_empty());
+    assert!(Recorder::graph(&recorder.completed).is_empty());
+    assert!(Recorder::graph(&recorder.noop).is_empty());
+
+    // A cold-reopen validation publishes nothing: a no-op, not a completion.
+    let mut fixture = Fixture::published()?;
+    fixture.reopen()?;
+    let recorder = Recorder::default();
+    product_wake_cycle(&fixture, product_token(), &recorder)?;
+    assert_eq!(Recorder::graph(&recorder.noop).len(), 1);
+    assert!(Recorder::graph(&recorder.completed).is_empty());
+    assert!(Recorder::graph(&recorder.grants).is_empty());
+    assert_eq!(fixture.record(), Some(RecordedOutcome::Validated));
+
+    // A typed refusal (an approved Revision over the limit): a no-op as well.
+    let fixture = Fixture::published()?;
+    let created =
+        add_revision_with_oversized_payload(fixture.db(), "nir1:review:oversized-approved")?;
+    approve_typed_revision(fixture.db(), "nir1-run", &created)?;
+    fixture.mark_dirty()?;
+    let recorder = Recorder::default();
+    product_wake_cycle(&fixture, product_token(), &recorder)?;
+    assert_eq!(Recorder::graph(&recorder.noop).len(), 1);
+    assert!(Recorder::graph(&recorder.completed).is_empty());
+    assert!(Recorder::graph(&recorder.grants).is_empty());
+    assert_eq!(
+        fixture.record(),
+        refused_capacity("persisted-revision-component-bytes")
+    );
+
+    // A closed gate (no seam, no token): B is never planned.
+    let fixture = Fixture::new()?;
+    let recorder = Recorder::default();
+    product_wake_cycle(&fixture, None, &recorder)?;
+    assert!(Recorder::graph(&recorder.registered).is_empty());
+    assert!(Recorder::graph(&recorder.started).is_empty());
+    assert!(Recorder::graph(&recorder.completed).is_empty());
+    assert!(Recorder::graph(&recorder.noop).is_empty());
+    assert_eq!(generation(fixture.db())?, None);
+    Ok(())
+}

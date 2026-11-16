@@ -2750,6 +2750,10 @@ fn the_product_token_has_one_production_construction_site() {
 #[path = "nir1_graph_deferred_tests.rs"]
 mod deferred;
 
+/// DR-PUBG-5-14: a refused registration asks Main for the Graph Index build.
+#[path = "nir1_graph_index_demand_tests.rs"]
+mod index_demand;
+
 /// LP-GATE: the Graph window gate on the held query's path.
 #[path = "nir1_graph_gate_tests.rs"]
 mod gate;
