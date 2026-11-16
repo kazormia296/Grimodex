@@ -927,6 +927,13 @@ X1 /3(… SHA-256 bf01f7bd…52f)を確認しますか?本文だけの保存で�
 
 - `nir1-graph-dirty-binding-verify-proposal/1#graph-limited-binding`（GDV/1、K-2は(b)）の確認: 記録は `claude/nir1-contracts` の commit `9b6eab1958a94510d2247d04640a2e76a381843e` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-17-gdv1-graph-limited-binding.md`（この枝は master に merge しないので hash で引く）、draft は [nir1-graph-dirty-binding-verify-proposal-1-draft.md](nir1-graph-dirty-binding-verify-proposal-1-draft.md)（SHA-256 `b1fa766b2cd37a24777f953b1b823f5541223f7f8bac2208939201d0c4ff660a`、byte 同一）、台帳は [L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の 2026-11-17補足（GDV/1。DMS/1 の補足の後、確認台帳の表の前）、`GDV/1-1` の行、一覧表の `graph-limited-binding` の GDV/1 の行（/7 の 2 行の下）、`#### graph-limited-binding (GDV/1 confirmed contract)` の節（proposal/6 の節の後）。案 C の DR の形は実装の PR の DR（DR-PUBG-5-n）で決める。
 
+### 10.14. 凍結と正式 run は公開の直前の 1 回を正とする（2026-11-17）
+
+- ユーザーの決定（契約の確認ではなく段取りの決定）。記録は `claude/nir1-contracts` の commit `ee391d50230b153dca8ab7aac3dcacf4e0e4b628` の `docs/plans/nir1-cp4-records/user-confirmation-2026-11-17-freeze-once-before-publication.md`。2026-11-16 の Q7（次の S4 の run を正とする）を上書きする。
+- 9 回目の凍結（#923）の下の正式 run は 1 回だけ行い、結果は参考とする（PUB-G の判定に使わない）。以後、PUB-G の最終候補が固まるまで、凍結のやり直しも正式 run の取り直しもしない。製品の PR は凍結を理由に待たせない。途中で要る数え方の改訂（K6 の新しい draftRef）と pin された道具の直しはためておき、公開の直前に凍結と正式 run を 1 回行って、それを正とする。
+- 変えないもの：公開の条件、閾値、Gold、契約の条文、確認台帳の行、正式 run の入口の検査、凍結した fixture を dev で使わないこと。
+- 未決：9 回目の正式 run の開始の時期（機械を占有するので開始の前に伺う）と、#5・GDV/1 の実装との前後。
+
 ## 11. 未解決事項
 
 - `[precheck]` DT-2 の再試行の上限（sweep の recover の再試行 0 回→最大2回、送信していない終端の書込みの再試行 1 回→最大3回。K1b の規則7の再確認の対象）の再確認は、Session B1 の9文のどれにも含まれず、未解決である。手段は DSN §9 のとおり（新しい draftRef を起案するか、1件1回への締め直し）。台帳の残 HOLD 表の D-transport の行（DT-1〜3）からここへ向ける。
