@@ -791,7 +791,6 @@ export const SOURCE_PINS = Object.freeze(
         "launcher.mjs",
         "session.mjs",
         "setup-main-build.mjs",
-        "setup-receipt.mjs",
       ],
     ],
     // S2 追補 #10（DR-CP4-P-6）: renderer/cp4-trace-probe.tsx and
@@ -810,11 +809,7 @@ export const SOURCE_PINS = Object.freeze(
     ["startup-gate-io-settle", "26764b433e6299db960f608bb99e4332949d39a3", []],
     // S2 追補 #9（DR-CP4-P-5）: frozen-k64-plan.mjs and workspace-db.mjs moved
     // to the T-1〜T-5 pins.
-    [
-      "s5a-graph-arm-runner",
-      "2c9316848ce028565c4d8e8af2d2779c3fd7e187",
-      ["material-revision.mjs", "renderer/cp4-k64-probe.tsx"],
-    ],
+    ["s5a-graph-arm-runner", "2c9316848ce028565c4d8e8af2d2779c3fd7e187", []],
     [
       "maintenance-ownership-release",
       "3f3d9999225007417708ab471bea307331f7e8a2",
@@ -865,7 +860,7 @@ export const SOURCE_PINS = Object.freeze(
     [
       "t3-t5-setup-freshness-settle",
       "b0df31f076ea1e11fd187c5c6fdf179d0df337b5",
-      ["frozen-setup-driver.mjs", "workspace-db.mjs"],
+      [],
     ],
     [
       "t1-t4-measurement-settle-ready",
@@ -947,11 +942,7 @@ export const SOURCE_PINS = Object.freeze(
     // S2 追補 #15: frozen-k64-admission.mjs moved to the k65-harness-d40 pin
     // (ancestor).
     ["s4-5-addendum-v3-paths", "ee43c197bcdadc9c630c8d3a68a156b741a75f0d", []],
-    [
-      "pr1-native-eval-feature",
-      "3739dbedb762ada8961f509c1b4d6885a11c3099",
-      ["native-architecture.mjs"],
-    ],
+    ["pr1-native-eval-feature", "3739dbedb762ada8961f509c1b4d6885a11c3099", []],
     // S2 追補 #10（DR-CP4-P-6）: followup.mjs moved to the V-4 pin.
     [
       "p1-harness-core",
@@ -959,7 +950,6 @@ export const SOURCE_PINS = Object.freeze(
       [
         "admission-facts.mjs",
         "egress.mjs",
-        "native-sample.mjs",
         "q4.mjs",
         "stats.mjs",
         "scripts/quality/nir1-retrieval/standard-build-receipt.mjs",
@@ -970,7 +960,6 @@ export const SOURCE_PINS = Object.freeze(
       "a4e65b66006dec7101f93340cdca70fcafabfc5d",
       [
         "dev-fixture.mjs",
-        "dprime-check.mjs",
         "eval-native-build.mjs",
         "keep-test.mjs",
         "observer-core.mjs",
@@ -1022,11 +1011,7 @@ export const SOURCE_PINS = Object.freeze(
     // S2 追補 #11（DR-CP4-P-7）: nir1-graph/contract.mjs moved to the G-04 v2
     // pin, so this pin only checks the ancestor (like s1j2-blocked-map).
     ["cq-lim-graph-limits", "a789039a779eb4df0dec2b8b3be5e29d2bff5a5c", []],
-    [
-      "dp-h-unknown-scope",
-      "e2d22b89c92b9de9585d273349e516e9df6ee5b7",
-      ["scripts/quality/nir1-packing/final-request/architecture.mjs"],
-    ],
+    ["dp-h-unknown-scope", "e2d22b89c92b9de9585d273349e516e9df6ee5b7", []],
     // S2 追補 #15（6 回目の S4、DR-CP4-S4-9。S3 の 8 回目、M1・M2）: the
     // harness files K6/5 (D=40 ms, B, the Hybrid p95 limit; PR #827 on the
     // branch claude/k65-harness), C7 (#826) and the G-01 diagnostic changed
@@ -1049,11 +1034,7 @@ export const SOURCE_PINS = Object.freeze(
     ["k65-n2-n3-enforcement", "2699314238504e12aa28ba74e1b319f6dff5821d", []],
     ["k65-freeze-source", "f24dc704cd3a424f94c5fc6ade42950fdcc938d3", []],
     ["k65-g01-e2e-admission", "94d3e1333ec72a8ffd625d5c3d582ddabd60a4bb", []],
-    [
-      "c7-chronicle-stop",
-      "a1492815eaddb1dc8f66941e282799d3d37b244c",
-      ["trace-record.mjs"],
-    ],
+    ["c7-chronicle-stop", "a1492815eaddb1dc8f66941e282799d3d37b244c", []],
     ["k65-merge-followup", "8489ae57d147f029117b0e4a4c9f08b53565f453", []],
 
     // 7 回目の S4（DR-CP4-S4-10 (4)）: the harness files K6/6 (PR #840, branch
@@ -1068,33 +1049,87 @@ export const SOURCE_PINS = Object.freeze(
     [
       "k66-harness-import",
       "00f9c99981c0bf67a3f98b00b5a1dfb5462547a1",
+      ["outcome.mjs"],
+    ],
+    ["k66-freeze-and-d3d", "1fdeed6f9b6fb3e069fb6aa894b1d1de36d342f8", []],
+    ["k66-g01-diagnostic-head", "99699dda79a882d029b1fce9c87fe7c45eff60b1", []],
+    ["k66-followup-requeries", "bf5ec2170edf763ede1027ed8408ce1cb1c9f35d", []],
+
+    // 9 回目の S4（DR-CP4-S4-11 (4)、⑥）: the harness files DB 段 1 の PR-3
+    // (DR-DBC-7／K6/7, branch claude/s4-9-pr3), item B (a4e26ea7), item C
+    // (quality verdict v3's evidence receipts) and the setup's quiesce
+    // (DR-CP4-L-27, 39b89bc3) changed after the earlier pins, each held at the
+    // commit that last changed it. They are branch commits that S4's PR
+    // brings to master with its merge commit (gh pr merge --merge), never a
+    // squash. The earlier pins keep their roles and commits (ancestor, or the
+    // files they still hold). evidence-fields.mjs is new in the R5 closure;
+    // workspace-db.mjs and frozen-setup-driver.mjs carry the constants the
+    // validator reads (MAINTENANCE_QUIESCE_REOPENS／_WAIT_MS,
+    // RETRY_DISPATCH_GRACE_MS) from the pinned bytes.
+    [
+      "k67-pr3-harness",
+      "4e71d1006b323f8cb6a634ff4fe391b29ea05410",
       [
-        "k64-record.mjs",
+        "native-sample.mjs",
+        "dprime-check.mjs",
+        "trace-record.mjs",
         "join.mjs",
         "run-sample.mjs",
-        "outcome.mjs",
-        "k64-runner.mjs",
         "diagnostic-runner.mjs",
-        "frozen-k64-run.mjs",
         "trace-runner.mjs",
         "trace-frozen.mjs",
         "frozen-k64-admission.mjs",
+        "constants.mjs",
+        "admission.mjs",
+        "frozen-diagnostics.mjs",
+        "pubg16-e2e-run.mjs",
+        "followup.mjs",
       ],
     ],
     [
-      "k66-freeze-and-d3d",
-      "1fdeed6f9b6fb3e069fb6aa894b1d1de36d342f8",
-      ["availability.mjs", "receipt.mjs", "constants.mjs", "admission.mjs"],
+      "k67-pr3-native-architecture",
+      "f9d93b4c38679432c76ef6ea786f58c9da3a3a5e",
+      ["native-architecture.mjs"],
     ],
     [
-      "k66-g01-diagnostic-head",
-      "99699dda79a882d029b1fce9c87fe7c45eff60b1",
-      ["frozen-diagnostics.mjs", "pubg16-e2e-run.mjs"],
+      "k67-pr3-review-fix",
+      "2f434310e965f8ae428941f058ad346c680d25e1",
+      ["availability.mjs"],
     ],
     [
-      "k66-followup-requeries",
-      "bf5ec2170edf763ede1027ed8408ce1cb1c9f35d",
-      ["followup.mjs"],
+      "k67-item-c-receipt-fields",
+      "c3262f495b010cd31787b82cf24adedaa53297ff",
+      [
+        "material-revision.mjs",
+        "k64-record.mjs",
+        "k64-runner.mjs",
+        "receipt.mjs",
+      ],
+    ],
+    [
+      "k67-item-c-review-fix",
+      "db7c12349ba8dd6085218fad7b8fe39c7a4197a0",
+      ["renderer/cp4-k64-probe.tsx"],
+    ],
+    [
+      "k67-item-c-no-plaintext",
+      "533018d933ac797540c9d3b6fd845f9a4e00a98b",
+      ["frozen-k64-run.mjs"],
+    ],
+    [
+      "k67-item-c-page-only",
+      "19bf11a27453daa8ae1c24c3a7084cfd81e75adf",
+      ["evidence-fields.mjs"],
+    ],
+    [
+      "k67-setup-quiesce",
+      "39b89bc3ecfae8419260cc7690de9268553f2711",
+      ["setup-receipt.mjs", "frozen-setup-driver.mjs", "workspace-db.mjs"],
+    ],
+    [
+      "k67-dbc4-checker",
+      "a4e26ea7aad5b89ab9b8d1254693164d5e4c88e6",
+      ["scripts/quality/nir1-packing/final-request/architecture.mjs"],
     ],
   ].map(([role, commit, names]) =>
     Object.freeze({
@@ -6423,21 +6458,15 @@ async function readHarnessReadyProbe({ repoRoot, read }) {
 
 /**
  * The three DR-CP4-L-27 constants (MAINTENANCE_QUIESCE_REOPENS／_WAIT_MS,
- * RETRY_DISPATCH_GRACE_MS) are in HARNESS_CONSTANTS but may be absent from the
- * pinned bytes until the pins are retaken (S4b の前の ⑥): an absent one does
- * not null the whole read, and S2's value is then held by the validator's
- * literal only. Once a pin carries the constant, S2's value must equal it.
+ * RETRY_DISPATCH_GRACE_MS) are in HARNESS_CONSTANTS and read from the pinned
+ * bytes like the others (9 回目の S4 の ⑥ で k67-setup-quiesce の pin が
+ * frozen-setup-driver.mjs と workspace-db.mjs を持った。⑥ の前の「pin の bytes が
+ * まだ持たない間は読込み全体の失敗にしない」緩めは消した)：読めなければ
+ * 読込み全体が null になり、S2 の値が pin の値と違えば validator が拒む。
  */
-const HARNESS_CONSTANTS_UNTIL_REPINNED = Object.freeze(
-  new Set([
-    "MAINTENANCE_QUIESCE_REOPENS",
-    "MAINTENANCE_QUIESCE_WAIT_MS",
-    "RETRY_DISPATCH_GRACE_MS",
-  ]),
-);
-/** S2's value agrees with the pinned constant (an absent pinned one is not yet held). */
+/** S2's value equals the pinned constant (an unreadable pinned one never agrees). */
 export const pinnedAgrees = (pinned, s2Value) =>
-  pinned === undefined || s2Value === pinned;
+  Number.isInteger(pinned) && s2Value === pinned;
 /**
  * S2 追補 #4: HARNESS_CONSTANTS from the pinned bytes; null on any miss.
  * S2 追補 #9: and HARNESS_MODULE_CONSTANTS under their `as` names.
@@ -6461,8 +6490,6 @@ async function readHarnessConstants({ repoRoot, read }) {
     const text = pinned.bytes.toString("utf8");
     for (const { name, as, parse } of names) {
       const value = parse(text, name);
-      if (value === undefined && HARNESS_CONSTANTS_UNTIL_REPINNED.has(name))
-        continue;
       if (value === undefined || Object.hasOwn(values, as)) return null;
       values[as] = value;
     }
