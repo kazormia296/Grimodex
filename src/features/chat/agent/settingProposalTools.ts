@@ -5,6 +5,9 @@
  * 設定は変えない。chat のカードが前後の値と「適用」「却下」を出し、適用は利用者のクリックだけで行う。
  * `ai.autoAcceptBodyProposals` など自動適用の設定には影響されない（この経路は自動適用を持たない）。
  *
+ * font の値は形だけ検証し、端末のフォント（システムフォント）は参照しない。モデルへの成功・失敗が
+ * 端末の状態で変わって provider へ漏れないようにするためで、選択肢との照合は適用の時点で行う。
+ *
  * 実行の前に AI ポリシーの chat が off なら拒否する。実装本体（目録・フォント列挙・適用）は
  * 初回の呼び出しまで読み込まない。
  */
@@ -42,7 +45,8 @@ export async function proposeSettingChangeTool(
   const { validateSettingProposal } =
     await import("@/features/settings/agentSettingApply");
   const key = params["key"];
-  const verdict = await validateSettingProposal(key, params["value"]);
+  // font は形だけ検証する（端末のフォントと照合しない）。選択肢との照合は利用者の「適用」の時点。
+  const verdict = validateSettingProposal(key, params["value"]);
   if (!verdict.ok) {
     return fail(
       verdict.code === "unknown-key"

@@ -15,7 +15,7 @@ import { DEFAULT_SETTINGS, KEY_SCOPE, SETTINGS_CATEGORIES } from "./types";
 import ja from "@/locales/ja.json";
 import en from "@/locales/en.json";
 
-/** ユーザーが承認した 16 件（2026-11-16）。これ以外は一切受け付けない。 */
+/** ユーザーが承認した 15 件（2026-11-16。showWordCount は読み手が無く効かないので外した）。これ以外は一切受け付けない。 */
 const APPROVED_KEYS = [
   "editor.fontSize",
   "editor.lineHeight",
@@ -29,7 +29,6 @@ const APPROVED_KEYS = [
   "editor.bubbleMenu",
   "editor.autoPairBrackets",
   "editor.smartQuotes",
-  "display.showWordCount",
   "display.reduceMotion",
   "display.codexHighlight",
   "display.codexHighlightOpacity",
@@ -52,9 +51,9 @@ function read(path: string): string {
 }
 
 describe("目録の内容", () => {
-  it("承認済みの 16 キーだけで、すべて global scope", () => {
+  it("承認済みの 15 キーだけで、すべて global scope", () => {
     expect([...AGENT_SETTING_KEYS].sort()).toEqual([...APPROVED_KEYS].sort());
-    expect(new Set(AGENT_SETTING_KEYS).size).toBe(16);
+    expect(new Set(AGENT_SETTING_KEYS).size).toBe(15);
     for (const entry of AGENT_SETTING_CATALOG) {
       expect(entry.scope).toBe("global");
       expect(KEY_SCOPE[entry.key], entry.key).toBe(entry.scope);
@@ -91,6 +90,13 @@ describe("目録の内容", () => {
         true,
       );
     }
+  });
+
+  it("読み手が無く適用しても効かない display.showWordCount は載せない", () => {
+    expect(AGENT_SETTING_KEYS).not.toContain("display.showWordCount");
+    expect(
+      validateAgentSettingValue("display.showWordCount", "true"),
+    ).toMatchObject({ ok: false, code: "unknown-key" });
   });
 
   it("秘密・送信先・provider に関わるキーは載せない", () => {

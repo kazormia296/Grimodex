@@ -92,8 +92,15 @@ export function SettingProposalCard({ proposal }: SettingProposalCardProps) {
           applied: result.applied,
         });
       } else {
+        // モデルには返さない。font が端末に無いときは利用者向けの文言を出す。
         setError(
-          t("chat.settingProposal.applyFailed", { message: result.message }),
+          result.reason === "font-unavailable"
+            ? t("chat.settingProposal.fontUnavailable", {
+                font: fontLabel(proposal.value),
+              })
+            : t("chat.settingProposal.applyFailed", {
+                message: result.message,
+              }),
         );
       }
     } finally {

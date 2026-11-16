@@ -1,7 +1,7 @@
 /**
  * agent（アプリ内 Chat）が「変更を提案できる」設定の目録と、値の検証（設計書 §4.2・§6）。
  *
- * - 目録に載るのは、利用者が承認した個人の表示・エディタ設定 16 件だけ（すべて global scope）。
+ * - 目録に載るのは、利用者が承認した個人の表示・エディタ設定 15 件だけ（すべて global scope）。
  *   API key・endpoint・provider・送信先・保存範囲・データの削除・export などは載せない。
  * - 検証は丸めない。範囲外・step 外・選択肢外・型違いは拒否し、受け入れた値だけを
  *   設定の保存形式（`settingsStore` の文字列）へ正規化して返す。
@@ -59,7 +59,7 @@ export function agentSettingRange(
   return RANGES[key];
 }
 
-/** 並びは設計書の承認済み一覧（editor 11 件、display 5 件）に合わせる。 */
+/** 並びは設計書の承認済み一覧（editor 12 件、display 3 件）に合わせる。 */
 export const AGENT_SETTING_CATALOG: readonly AgentSettingEntry[] =
   Object.freeze([
     {
@@ -161,13 +161,6 @@ export const AGENT_SETTING_CATALOG: readonly AgentSettingEntry[] =
       scope: "global",
     },
     {
-      key: "display.showWordCount",
-      type: "boolean",
-      categoryId: "display",
-      labelKey: "settings.display.showWordCount",
-      scope: "global",
-    },
-    {
       key: "display.reduceMotion",
       type: "boolean",
       categoryId: "display",
@@ -227,7 +220,8 @@ export type AgentSettingValidation =
 export interface AgentSettingValidationOptions {
   /**
    * font の許可値（FontFamilySelect の選択肢の value。`"Noto Serif JP"`、`serif` など）。
-   * `"shape-only"` は選択肢を列挙できない main 用で、CSS font-family として安全な文字列かだけを見る。
+   * `"shape-only"` は選択肢を列挙できない main と、提案の時点（端末のフォントに依存させない）用で、
+   * CSS font-family として安全な文字列かだけを見る。
    * 省略した font の検証は拒否する（選択肢が分からないまま通さない）。
    */
   readonly fontFamilies?: readonly string[] | "shape-only";

@@ -9,7 +9,7 @@ import {
 
 /**
  * `save_global_settings` は GlobalSettings 全体の read-modify-write で、設定画面の変更も agent の提案の
- * 適用も同じ経路を通る。agent に提案させてよい 16 キーは、保存済みの値から変わったものだけを main で
+ * 適用も同じ経路を通る。agent に提案させてよい 15 キーは、保存済みの値から変わったものだけを main で
  * 再検証する（UI の範囲と同じ検証。UI を壊さない）。
  */
 function setup(stored: Record<string, string> | undefined) {

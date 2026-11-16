@@ -2029,6 +2029,7 @@
       "on": "オン",
       "off": "オフ",
       "applyFailed": "設定を変更できませんでした: {{message}}",
+      "fontUnavailable": "このフォント（{{font}}）はこの端末に見つからないため、適用できませんでした。",
       "undoFailed": "元に戻せませんでした。",
       "aria": "設定の変更提案: {{label}}"
     },

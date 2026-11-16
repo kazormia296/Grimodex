@@ -30,8 +30,19 @@ export async function listFontFamilyChoices(): Promise<string[]> {
   ];
 }
 
-/** 目録の検証（font は今の選択肢で）。 */
-export async function validateSettingProposal(
+/**
+ * 提案の時点の検証。font は形だけ（制御文字・`; { } < > \`・200 字超の拒否）で、端末に入っている
+ * フォントとは照合しない。モデルへの成功・失敗が端末のフォントで変わらず、provider へ漏れないようにする。
+ */
+export function validateSettingProposal(
+  key: unknown,
+  value: unknown,
+): AgentSettingValidation {
+  return validateAgentSettingValue(key, value, { fontFamilies: "shape-only" });
+}
+
+/** 適用の直前の検証。font は今の選択肢（FontFamilySelect と同じ）と完全一致するものだけ。 */
+async function validateSettingForApply(
   key: unknown,
   value: unknown,
 ): Promise<AgentSettingValidation> {
@@ -73,7 +84,12 @@ function writeVerified(key: string, value: string): boolean {
 
 export type AgentSettingApplyResult =
   | { readonly ok: true; readonly previous: string; readonly applied: string }
-  | { readonly ok: false; readonly message: string };
+  | {
+      readonly ok: false;
+      readonly message: string;
+      /** カードの失敗表示の出し分け。font がこの端末の選択肢に無い場合は "font-unavailable"。 */
+      readonly reason: "font-unavailable" | "invalid" | "write-failed";
+    };
 
 /**
  * 利用者の「適用」。目録で再検証し、通った値だけを既存の経路で書く。
@@ -83,11 +99,21 @@ export async function applyAgentSettingChange(
   key: string,
   value: string,
 ): Promise<AgentSettingApplyResult> {
-  const verdict = await validateSettingProposal(key, value);
-  if (!verdict.ok) return { ok: false, message: verdict.message };
+  const verdict = await validateSettingForApply(key, value);
+  if (!verdict.ok) {
+    return {
+      ok: false,
+      message: verdict.message,
+      reason: verdict.code === "not-an-option" ? "font-unavailable" : "invalid",
+    };
+  }
   const previous = readAgentSettingValue(key);
   if (!writeVerified(key, verdict.value)) {
-    return { ok: false, message: "the setting could not be written right now" };
+    return {
+      ok: false,
+      message: "the setting could not be written right now",
+      reason: "write-failed",
+    };
   }
   return { ok: true, previous, applied: verdict.value };
 }

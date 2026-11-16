@@ -2030,6 +2030,7 @@
       "on": "On",
       "off": "Off",
       "applyFailed": "Could not change the setting: {{message}}",
+      "fontUnavailable": "The font \"{{font}}\" is not installed on this device, so it could not be applied.",
       "undoFailed": "Could not undo.",
       "aria": "Suggested setting change: {{label}}"
     },

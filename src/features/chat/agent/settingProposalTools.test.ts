@@ -167,9 +167,10 @@ describe("propose_setting_change", () => {
       ["display.codexHighlightOpacity", 30],
       ["editor.bubbleMenu", "yes"],
       ["editor.bubbleMenu", 1],
-      ["editor.fontFamily", "Comic Sans MS"],
-      ["editor.fontFamily", '"Not Installed"'],
       ["editor.fontFamily", ""],
+      ["editor.fontFamily", '"A";color:red'],
+      ["editor.fontFamily", "serif{}"],
+      ["editor.fontFamily", "a".repeat(201)],
       ["editor.fontSize", undefined],
     ];
     for (const [key, value] of cases) {
@@ -181,13 +182,15 @@ describe("propose_setting_change", () => {
     }
   });
 
-  it("editor.fontFamily は FontFamilySelect の選択肢だけ（同梱・基本・システム）", async () => {
+  it("editor.fontFamily は形だけ検証し、端末のフォントに入っていなくても提案は成功する", async () => {
     for (const value of [
       "serif",
       "monospace",
       '"Literata"',
       '"Noto Serif JP"',
       '"Yu Mincho"',
+      '"Not Installed"',
+      "Comic Sans MS",
     ]) {
       const result = await proposeSettingChangeTool({
         key: "editor.fontFamily",
@@ -196,23 +199,31 @@ describe("propose_setting_change", () => {
       expect(result.error, value).toBeUndefined();
       expect(result.settingProposal!.value).toBe(value);
     }
-    fonts.system = [];
-    expect(
-      (
-        await proposeSettingChangeTool({
-          key: "editor.fontFamily",
-          value: '"Yu Mincho"',
-        })
-      ).error,
-    ).toBeTruthy();
+  });
+
+  it("font の提案のモデルへの返り値は、端末にフォントがあってもなくても同じ形・同じ内容", async () => {
+    const outcomes = [];
+    for (const system of [["Yu Mincho"], [], ["SENTINEL-FONT-A"]]) {
+      fonts.system = system;
+      const result = await proposeSettingChangeTool({
+        key: "editor.fontFamily",
+        value: '"Yu Mincho"',
+      });
+      const { settingProposal, ...forModel } = result;
+      expect(settingProposal).toBeDefined();
+      outcomes.push(JSON.stringify(forModel));
+    }
+    expect(new Set(outcomes).size).toBe(1);
+    expect(outcomes[0]).not.toContain("SENTINEL-FONT");
   });
 
   it("エラー文にシステムフォントの一覧を載せない", async () => {
     fonts.system = ["SENTINEL-FONT-A", "SENTINEL-FONT-B"];
     const result = await proposeSettingChangeTool({
       key: "editor.fontFamily",
-      value: '"Nope"',
+      value: '"Nope";',
     });
+    expect(result.error).toBeTruthy();
     expect(JSON.stringify(result)).not.toContain("SENTINEL-FONT");
   });
 

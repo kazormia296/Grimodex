@@ -176,7 +176,35 @@ describe("SettingProposalCard", () => {
     expect(setting("editor.fontFamily")).toBe(
       DEFAULT_SETTINGS["editor.fontFamily"],
     );
-    expect(screen.getByRole("alert")).toHaveTextContent("applyFailed");
+    // 端末に無い font は、利用者向けの失敗表示（モデルには返さない）。
+    expect(screen.getByRole("alert")).toHaveTextContent("fontUnavailable");
+    expect(screen.getByRole("alert")).toHaveTextContent("Not Installed");
+    expect(screen.queryByText("chat.settingProposal.undo")).toBeNull();
+  });
+
+  it("端末に入っているフォントは適用でき、無いフォントで適用に失敗しても設定は変わらない", async () => {
+    fonts.system = ["Yu Mincho"];
+    const { rerender } = render(
+      <SettingProposalCard
+        proposal={proposalOf("editor.fontFamily", '"Yu Mincho"')}
+      />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByText("chat.settingProposal.apply"));
+    });
+    expect(setting("editor.fontFamily")).toBe('"Yu Mincho"');
+    const before = setting("editor.fontFamily");
+    fonts.system = [];
+    rerender(
+      <SettingProposalCard
+        proposal={proposalOf("editor.fontFamily", '"Gone Font"')}
+      />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByText("chat.settingProposal.apply"));
+    });
+    expect(setting("editor.fontFamily")).toBe(before);
+    expect(screen.getByRole("alert")).toHaveTextContent("fontUnavailable");
   });
 
   it("設定が書けない状態（静止中）では適用に失敗を表示し、適用済みにしない", async () => {
@@ -232,7 +260,7 @@ describe("SettingProposalCard", () => {
     expect(useCodexHighlightStore.getState().enabled).toBe(true);
   });
 
-  it("目録の 16 件それぞれを適用で変更でき、元に戻せる（既存の書込み経路）", async () => {
+  it("目録の 15 件それぞれを適用で変更でき、元に戻せる（既存の書込み経路）", async () => {
     const proposals: Record<string, string> = {
       "editor.fontSize": "20",
       "editor.lineHeight": "1.8",
@@ -246,7 +274,6 @@ describe("SettingProposalCard", () => {
       "editor.bubbleMenu": "false",
       "editor.autoPairBrackets": "false",
       "editor.smartQuotes": "true",
-      "display.showWordCount": "false",
       "display.reduceMotion": "true",
       "display.codexHighlight": "false",
       "display.codexHighlightOpacity": "15",
@@ -282,6 +309,7 @@ describe("SettingProposalCard", () => {
       "on",
       "off",
       "applyFailed",
+      "fontUnavailable",
       "undoFailed",
       "aria",
     ];
