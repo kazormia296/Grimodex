@@ -493,3 +493,146 @@
 - rustfmt：新規の2ファイルは `rustfmt --check` が通る。既存の変更ファイルの未整形箇所は HEAD から残るもので、追加行とは重ならない（行番号で照合）。
 - `git diff --check` は tracked の変更でも新規ファイルでも問題なし。
 - root checkout（`/home/grimodex/Grimodex`）は変更していない。`git diff` の sha256 が前回記録と一致する。
+
+## 13. PUB-G の前提 #5（B の製品経路）の判断（2026-11-16。DR-PUBG-5-1〜12）
+
+- 位置づけ：§9.4 の 5 点（registry、wake と頻度、再封印の省略、refusal の UX、stale な Graph と Verify）と、関係する残りの点の技術判断を残す。この節は判断の記録だけで、コード・policy・定数は変えない。`PRODUCT_GRAPH_PUBLISHED` は false のまま。
+- 委任：NIR-1 の C-product レーン（worker／owner／lifecycle の技術判断、委任の内の技術的な threat model の改訂）。続行計画の「B の製品 activation は PUB-G の承認（Session C-1）で扱う」は変えない。
+- 基点：origin/master `cea3988b`。上の §1〜§12 の行番号は B-ROUTE の base `a153743b` のもの。この節の「確認済み」は `cea3988b` で読み直したもの。「broute 引用」は §11 の記述をそのまま引いたもので、今のコードと照らし直していない。
+- GDX-PRECHECK-001：長期・高リスク、background／async-lifecycle、subprocess（間接）、security-sensitive の threat model（委任の内の改訂）に当たる。external-egress には当たらない。編集の前に、ユーザーへ 4 点（Q1、Q2a、Q2b、Q3）を伺い、3 点の回答を得た（DR-PUBG-5-11）。
+- 材料：`/home/grimodex/fusion-eval-data/pubg-a/05-precheck.md`（contracts の外）。
+
+### DR-PUBG-5-1：#5 が「済み」になる条件
+
+- この節の判断（DR-PUBG-5-1〜12）を decisions に残し、作業記録に索引する。
+- そのうえで、閉じた gate の内側の実装を merge する（PR-1：Rust と Native、PR-2：main と Native。段取りは下の「実装の段取り」）。
+- 製品の registry への登録、policy の行の実体、定数の切替、開示の文案は、PUB-G の PR（Session C-1 の承認の後）に置く。#5 の範囲ではない（DR-PUBG-5-12）。
+- 実装の merge は、次の S4（9 回目）の PR の merge の後（ユーザーの回答。DR-PUBG-5-11）。正式 run の候補には入れない。
+
+### DR-PUBG-5-2：production registry の形（R1：2 段）
+
+- #5 の段：B の route は別表の gated route のまま。gate を「journey seam か product gate」の 2 経路にするだけで、registry の集合は変えない。production の `ROUTE_REGISTRY` は 3 本のまま。
+- PUB-G の段：gated route を production の `ROUTE_REGISTRY` へ移す（4 本）。policy の行と parity 試験（`tests/narrative_maintenance_route_registry.rs`）も 4 本にする。これは委任の外で、PUB-G の PR で確認する。
+- ledgerless（Run を作らない）：`run_kind` の CHECK（v24）に値を入れず、schema は変えない（§5 の方針を保つ）。表し方は policy の行の側で決める（DR-PUBG-5-3）。
+- 採らない案：R2（別表を恒久化。policy の形の変更なので委任の外）、R3（今 4 本目に入れる。parity が policy の行を要するので委任の外）。
+
+### DR-PUBG-5-3：policy の行（P1：文案だけ今、実体は PUB-G）
+
+- 文案（PUB-G の PR で `wired` として入れる）：
+  - `runKind: "nir1-graph-index-build"`
+  - `existingRunKindColumnValue: null` に、新しい field `durableRun: false` を足す（null の意味は未確認なので、null だけで ledgerless を表さない）
+  - `trigger: "automatic-when-derived-state-absent-or-invalid"`（既存の値）
+  - `epochBound: true`、`periodic: false`
+  - `writes`：B は D1・V1・metadata・Freshness を書く。既存の 3 値のどれにも正確には当たらないので、新しい値 `declared-index-binding` が要る
+  - `autoRetryableFailureClasses` と `manualOnlyFailureClasses` を書く。容量の拒否は manual にせず、process-local で抑止する（DR-PUBG-5-6）
+  - `runtimeRoute`：PUB-G で付ける
+- schema の enum・件数・新しい field の変更、validator（`scripts/quality/validate-run-kind-policy.mjs`）、parity 試験の変更は、policy が動作契約なので PUB-G の PR で品質の gate を通す。新しい語彙が「新しい契約」に当たるかは、その束で確認する（DR-PUBG-5-12）。
+- `periodic: const false` があるので、周期の wake は採らない（DR-PUBG-5-4）。
+- 採らない案：P2（今 `unwired-blocked` で入れる。PUB-G の前に契約の形を変える）、P3（policy に書かない。validator の原則に反する）。
+
+### DR-PUBG-5-4：wake の源（W1＋W2。W3 は測ってから）
+
+- 前提（確認済み）：main の wake の理由は 4 つ（`workspace-opened`、`restore-completed`、`semantic-epoch-rotated`、`before-cutover`。`narrativeMaintenanceTriggers.ts:10-14`）。discovery が B の wake を返すのは seam の下だけ（`maintenance_runtime.rs:2291-2300`、:2326-2350）。Graph を dirty にする経路は X1-5 の後に絞られている（`nir1_chronicle_index/invalidate.rs`）。§9.4 の「Freshness の publisher が変わるだけで dirty」は X1-5 より前の記述で、今は「Graph 側の入力が変わったとき」と読む。
+- 採る：
+  - W1：既存の wake（open／restore／epoch）の discovery で、product gate の下でも `GraphIndexBuildWake` を返す（seam と同じ規則）。
+  - W2：需要からの wake。Related Scenes の seed 付き begin が、binding が current でないために Graph unavailable になったら、その project の maintenance の wake を 1 つ要求する。根拠は l6-l9 :508（reopen／query の行）と :516（後続の query だけが current sealed binding を使う）。1 回目の query は unavailable（R＋IR）で、作り直しの後の query から Graph を使う。
+  - W2 の実装の形は 2 案で、実装時に選ぶ。(a) Native の Graph owner が持つ「満たされなかった需要」の集合（`MAX_UNSERVED_PROJECTS = 8`、`nir1_graph_product.rs:72-74`）を discovery の判定に渡し、既存の Native→main の通知の経路で wake を起こす。(b) main の begin の handler で理由を見る。main が begin の応答から Graph の理由を読んでいるかは未確認。どちらでも、renderer 向けの新しい IPC・`#[napi]` の入口は足さない。足さずに済まない場合は、main 専用の入口として decisions に追記する。
+- 採らない：
+  - W3（Graph 側の入力の commit の後の debounce した wake）：DR-BSEAM-3 が実機の結果を見てからとした案。W2 の後に、B の build の回数・DB の取り合い・registration の窓（DR-GRW）を測ってから別の判断にする。決定・A2 が続くたびに build（最悪 180 s）が走りうる。
+  - W4（定期の timer）：`periodic: const false` と衝突する。委任の外。
+  - W5（dirty の源を絞る）：`KNOWN_NON_GRAPH_REVISION_KINDS` に組を足す変更は、コードのコメントが新しい確認済み契約を要すると明記している。委任の外。
+- 頻度の防御（委任の内。`nir1-defensive-resource-limits` の規則 1〜8 の下）：
+  - 1 project につき同時に 1 つ。
+  - 拒否されたら、入力（hint の tuple）が変わるまで再試行しない（§3.5 のまま）。
+  - 需要からの wake の最短間隔は、Graph owner の backoff と同じ 2 s から 60 s（CP2a-D14）にそろえる初期案。値は実測で決めて記録する。
+- 受け入れる：共有の runtime epoch の回転（embedding generation の bind）で、進行中の B が stale で拒否され、次の wake で再試行する（§9.5）。W2 の下では、次の需要が再試行を起こす。
+- (a′)（refused を drift と incomplete に分け、drift では Suspended にしない）との関係：W2 があると、registration の拒否が続いたときも、B の publish と CP2a-D47 の hook（`cp2a-decisions.md:231`、:260）で Suspended が解ける。(a′) が要るかは W2 の後に測り直す。(a′) 自体は契約の変更として保留のまま（`graph-registration-window-decisions.md:85`）で、#5 では触れない。hook が製品で B の publish の後に届くことの試験は、PR-2 に置く。
+
+### DR-PUBG-5-5：再封印の省略は #5 でしない
+
+- 毎回、新しい generation を publish する（今のまま）。
+- 省略するには、generation を進めずに dirty を 0 に戻す新しい publish の経路が要る。これは POL-SC の metadata binding（generation は active sealed D1 head の generation と等しい）と、CP2a-D7（ReadyPublished で worker を退役させる）の読みに関わる難しい判断で、B の build の回数もまだ測っていない。
+- 進め方：W2 の後に、build の回数と worker の退役の費用を測る。要るなら read-only の advisor に諮る別の判断にする。契約の読みが割れれば `[precheck]` に戻す。
+
+### DR-PUBG-5-6：refusal の UX（U1）と解除条件
+
+- U1：画面は変えない。拒否は process-local の記録と debug log に残す（code と limit だけ。本文・ID は出さない。§11.17）。Graph は今の理由（`registration-unavailable` など）で unavailable になり、R＋IR に戻る。新しい理由・文言・保存は無い。
+- 採らない：U2（Related Scenes に「Graph を作れない」行を出す。閉じた理由の集合への追加と新しい文言。K6 の分類器への影響は未確認）、U3（Inbox の durable な Finding。保存範囲の拡大）。どちらも委任の外。ユーザーの回答でも、画面では知らせず開示だけにする（DR-PUBG-5-11）。
+- 解除条件の見直し（委任の内）：今の条件は、成功、tuple の変化（A2 の watermark を含む）、runtime epoch の変化、process の再起動の 4 つ（§3.5、§11.5）。W2 を足すので、需要からの wake では、判定の SQL（PK・EXISTS・MAX(rowid) の読み）だけで `RefusedUnchanged` を返し、重い prepare に入らないことを試験で固定する。
+- process-local の記録の上限：今は owner の単調性で古い entry を捨てている。複数の project を開き直す使い方で増えるなら、防御の上限を置く。実装時に、数値と根拠を追記する。
+
+### DR-PUBG-5-7：stale な Graph と Verify、残る制限（f・g・h）
+
+- 訂正（f）：§9.4 の 5「stale な Graph があると Verify は incomplete で待ち続ける」は、§11.16 が事実と違うと訂正している。`cea3988b` で確かめたのは次の 3 点（確認済み）。
+  - Verify（`restore_rebuild.rs:5476-5490`）は、reserved な semantic-index consumer の binding が `is_complete_registered_with_control` でなければ、その edge を全部 `edge_ids_with_unresolvable_consumer_scope` に入れる。
+  - discovery の manual 修復の分岐（`maintenance_runtime.rs:2635-2665`）は `project_graph_repair_required_in_tx` を呼び、durable な Finding（semantic-graph-requires-repair）を projection してから `Ok(None)` を返す。コードの注記は「Automatic maintenance halts here on every wake」。
+  - projection は `durable_graph_state_digest` を計算する（`terminal_failure.rs:922-960`）。
+  - よって (f) は「待つ」ではなく、「manual の分岐に入り、その project の自動 maintenance が止まる」と読む。
+- Q1（stale な binding の再構築が拒否されたとき）：ユーザーには、V0 の調査の後に伺う（DR-PUBG-5-11）。選択肢は (i) 今の挙動のまま開示する、(ii) Verify が stale な Graph binding を manual としない読み（`dirty-pending-semantics`）を新しい契約として起案する、(iii) 拒否のときに binding を退かせる案を起案する（l6-l9 :506「成功時だけ sealed head を更新する」の読みの変更）。(ii)(iii) は委任の外。
+- V0（委任の内。read-only の調査と Rust の試験）：stale＋Refused の project で、(1) 止まる maintenance の範囲、(2) 利用者に見える Finding、(3) projection が Err になるか（§11.16）、(4) Verify 自身が容量で落ちる経路（§11.18）、(5) Err や停止が wake の回数に縛られること、を確かめる。結果は `/home/grimodex/fusion-eval-data/pubg-a/05-v0.md`（contracts の外）に書き、Q1 の問いに添える。
+- V4（h の対処、PR-1）：product gate の下でも、制御なしの discovery が `context-unavailable` のときに wake を返す（DR-BSEAM-2 と同じ規則を product gate に広げる）。
+- 注（h）：DR-BSEAM-5 が報告した「Chronicle の sealed binding で、製品の Main の discovery が失敗しうる」件は、#5 の前から製品にある（`maintenance_runtime.rs:2310-2324` の注記が同じ失敗を述べている。製品で起きた回数は未確認）。V4 は B の gate が開いたときだけ効くので Chronicle の件は直らない。#5 では直さず、新しい項目の候補として報告する。
+
+### DR-PUBG-5-8：product gate の結び方
+
+1. B の product gate は `PRODUCT_GRAPH_PUBLISHED`（const）だけから作る。`publication_open()` には結ばない。`publication_open()` は「const → `nir1-graph-eval` の flag → cfg(test)」の順で開く（`nir1_graph_product.rs:576-592`、確認済み）。これに結ぶと、CP-4 の評価 build で製品の wake が開き、seam の下の測定の挙動が変わる。
+2. PUB-G で一緒に切り替える一覧（一覧 #2）に、独立の switch を増やさない。B の gate は同じ const に従う。
+3. pin 済みの `scripts/quality/nir1-graph-eval/native-architecture.mjs` を変えない。この検査は `publication_open` の本体（`FIXED_BODIES`）と、`lib.rs`・`nir1_graph_product.rs` での eval feature の使い方を固定している（確認済み）。token は、`publication_open` にも eval の cfg にも触れずに const から作る。「B の gate は const からしか作れない」の検査は、pin されていない場所（Rust の型と試験、または新しい検査 script）に置く。`native-architecture.mjs` の期待を変えるのは PUB-G の PR でだけ行う（一覧 #1）。
+4. gate の型は field を private にしたまま保つ（§3.2）。生成の経路は `closed()`、`from_journey_seam(..)`、`from_product_publication(token)`（token は Native の const からしか作れない型）、`open_for_test()` の 4 つだけ。
+5. gate が閉じている間は、判定は SQL を読まずに `Skip{GateClosed}` を返し、discovery は wake を返さない。A2 の試験を product gate でも持つ。
+
+### DR-PUBG-5-9：owner／lifecycle matrix（新しく足す wake の源。B の attempt の内側は §4 のまま）
+
+| 項目 | 扱い |
+|---|---|
+| entry | (W1) 既存の wake の discovery。(W2) 需要の記録（Native の Graph owner の begin が、binding の未登録で unavailable）から、main の scheduler へ wake を要求する。renderer は B を名指しできない（wire の B は `normalized_work` が拒否、§3.1(3)） |
+| start | product gate が開いているときだけ、scheduler が (binding, project) の wake を登録する。cycle は既存の permit と spawn_blocking |
+| retry | 自動の再試行は無い。次の需要か次の既存の wake で、最短間隔（DR-PUBG-5-4）と `RefusedUnchanged` の抑止を通ってから |
+| reentrant | (binding, project) ごとに pending は 1 つ。既に pending か実行中なら合流し、新しい timer を作らない |
+| admission closure | product gate が閉じていれば要求を受けない（timer を作らない）。workspace binding が違えば捨てる。shutdown の開始の後は受けない（既存の scheduler の dispose） |
+| pending start | 最短間隔の timer は scheduler が持つ。workspace の切替と shutdown で clear し、dispose の記録で確かめる。未開始の wake は永続しない |
+| active handle | cycle の worker（既存の permit）。B の attempt の handle は §4.1 のまま |
+| cancel | 既存の permit の stop と attempt の cancel（§4.2） |
+| 有限待機 | 待ちは無い（no-wait の接続、busy 0）。timer の上限は最短間隔の上限（初期案 60 s） |
+| 終了の証拠 | timer の clear と scheduler の dispose の receipt。cycle は既存の receipt と permit の Join。kill・error・Promise の reject だけでは終了とみなさない |
+| error／timeout／onClosed | wake の cycle の失敗は、既存の `persistDeliveryFailure`（scope `wake`。DR-BSEAM-6 (4)）に乗る。DR-PUBG-5-7 の Err が続く場合、この receipt の書込みは wake の回数だけ増える。新しい保存範囲ではないが、回数は V0 で測る |
+| 子 process | B の publish は ReadyPublished で C-query worker を退役させる（CP2a-D7）。spawn の回数は publish の回数に比例する。worker の lifecycle は変えない |
+| 再起動時の状態 | 永続する状態は無い。process-local の記録は消え、cold reopen では `ColdReopenValidation` を 1 回行う（§3.6） |
+
+### DR-PUBG-5-10：threat model の差分（委任の内の技術的な改訂）
+
+確認済みの actor・防御・受信先・受入れは変えない。
+- 新しい攻撃：
+  - untrusted な renderer が seed 付きの begin を繰り返し、B の build を誘発して、CPU・IO・DB の接続を消費する（自分の機械の上の資源の枯渇）。
+  - W2 と DR-PUBG-5-7 の状態（stale＋Refused）が重なると、renderer は cycle の停止や Err と、既存の delivery failure の receipt の DB への書込みも誘発できる。回数は最短間隔で有界。
+- 防御：(binding, project) ごとの coalesce と最短間隔、`RefusedUnchanged` の抑止、B の attempt の上限（600,000,000 counts、180 s。B-close の数値は変えない）、前景の preempt（no-wait、foreground waiter）、renderer は B を名指しできない。
+- 受信先・保存：どちらも増えない。debug log は code と limit だけ。delivery failure の receipt は既存の書き先と形のまま。
+- 受入れ：製品の既定（const false）では、wake 0、B の判定の SQL 0、Graph の surface への書込み 0。
+- 委任の外に当たるもの（上記の判断で避けたもの）：policy の固定値の変更、runtime activation、閉じた理由の集合への追加、durable な行の追加、POL-SC の `unapprovedDecisions` を実装で決めること、「成功時だけ sealed head を更新する」に反する書込み、Graph を dirty にする入力を絞ること。
+
+### DR-PUBG-5-11：ユーザーの回答（2026-11-16、precheck への 3 問）
+
+記録：contracts `4bc41c28` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-16-pubg-5-precheck.md`。
+1. 判断の docs は今 merge し、実装は S4（9 回目）の PR の merge の後に merge する（Q2a）。正式 run の候補には入れない。
+2. 製品の wake（需要からの wake など）の下での B の挙動は、CP-4 の評価の経路（別の seam）では測らず、開示に回す（Q2b）。S2 と harness は変えない。効果は PUB-G の前の dev の journey（凍結の外）で確かめて記録する。
+3. 容量の拒否は、画面では知らせず、開示だけにする（Q3。DR-PUBG-5-6 の U1）。
+4. Q1 は未回答。V0 の調査の後に、結果を添えて伺う（DR-PUBG-5-7）。
+
+### DR-PUBG-5-12：PUB-G の PR（C-1）へ持ち越す確認（#5 の作業は止めない）
+
+- gated route を production の `ROUTE_REGISTRY` に移すこと（DR-PUBG-5-2 の 2 段目）。
+- policy の行を `wired` で入れること。schema の件数・enum、新しい語彙（`durableRun`、`writes` の `declared-index-binding`）、validator、parity 試験を変える（DR-PUBG-5-3）。
+- `PRODUCT_GRAPH_PUBLISHED` の切替。B の product gate も同じ const で開く（DR-PUBG-5-8）。`native-architecture.mjs` の期待の変更も、この PR で行う。
+- 開示の文案の候補：容量の拒否（U1）、Q1 の答え、Q2b の答え（製品の wake の下の B の挙動は測っていないこと）、DR-BSEAM-5。
+- 一覧の新しい項目の候補：DR-BSEAM-5（Chronicle の sealed binding で、製品の Main の discovery が失敗しうる）。
+
+### 実装の段取り（閉じた gate の内側まで。merge は S4（9 回目）の PR の merge の後）
+
+| PR | 中身 | 検証 |
+|---|---|---|
+| PR-1（Rust と Native） | product gate の型（DR-PUBG-5-8）、discovery の wake を product gate にも広げる（W1・V4）、解除条件の試験（DR-PUBG-5-6）、V0 の試験。`native-architecture.mjs` は変えない | §6 E の cargo test と clippy。pin 済みの `native-architecture.mjs` を変えずに通る。gate が閉じていれば SQL 0・wake 0。seam の下の挙動が変わらない（既存の B-ROUTE／BSEAM の試験が無変更で通る） |
+| PR-2（main と Native） | 需要からの wake（W2）、coalesce、最短間隔、dispose。CP2a-D47 の hook が B の publish の後に Suspended を解く試験 | vitest（`narrativeMaintenanceTriggers*.test.ts` に lifecycle の試験）、Native の `cargo test`、Quick |
+
+- PR-1 と PR-2 は分ける。PR-2 は PR-1 の product gate に依存する。W3 は PR-2 に入れない。
+- 役割：integrator が判断の記録と統合、実装者は Sonnet、途中のレビューは Opus、候補に触れない独立の受入れは Fable high。難しい判断（DR-PUBG-5-5 の再封印の省略、W3 の採否）は read-only の advisor に諮ってから決める。
+- 未確認：s7r2 の trace での B の build の回数、main が begin の応答から Graph の理由を読めるか、9 回目の S4 の pin の一覧、閉じた理由の集合を変えたときの K6 の分類器への影響、`existingRunKindColumnValue: null` の意味。
