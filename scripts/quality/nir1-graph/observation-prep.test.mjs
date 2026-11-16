@@ -8290,8 +8290,9 @@ test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6
   // (S3 10th's reflection) a third and S2 追補 #20 (the S3 recheck and setup's
   // quiesce) a fourth and S2 追補 #21 (the S3 third recheck) a fifth and
   // S2 追補 #22 (the S3 fourth recheck) a sixth and the merges' row (②③④) a
-  // seventh and a correction row (after the push) an eighth.
-  assert.equal(declaration.revisions.at(-9), rows1108[3]);
+  // seventh and a correction row (after the push) an eighth and the ⑤-before
+  // correction row a ninth.
+  assert.equal(declaration.revisions.at(-10), rows1108[3]);
   for (const word of [
     "S2 追補 #16",
     "DR-CP4-S4-10",
@@ -8959,8 +8960,8 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
   const rows1116 = declaration.revisions.filter(
     (row) => row.at === "2026-11-16",
   );
-  assert.equal(rows1116.length, 8);
-  assert.equal(declaration.revisions.at(-1), rows1116[7]);
+  assert.equal(rows1116.length, 9);
+  assert.equal(declaration.revisions.at(-1), rows1116[8]);
   for (const word of [
     "S2 追補 #18",
     "DR-CP4-S4-11",
@@ -9110,11 +9111,14 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
     "追補の作者の申告ではない",
   ])
     assert.ok(rows1116[6].reason.includes(word), word);
+  // revisions[37] is back as it was at 068cf3a6 (never edit): its (13) is the
+  // pre-merge wording and the correction row below records what it lost.
   assert.ok(
     declaration.revisions[37].reason.includes(
-      "(13) master と contracts の取り込み（②③。実施済み。",
+      "(13) master と contracts の取り込み（②③）で入る製品の変更は S4 の枝の HEAD に含まれず",
     ),
   );
+  assert.ok(!declaration.revisions[37].reason.includes("（②③。実施済み。"));
   // The correction row: the exception to "never edit" is the builder's reading
   // (not confirmed), and the unread facts stay disclosed.
   for (const word of [
@@ -9128,24 +9132,40 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
     "読んでいないもの",
   ])
     assert.ok(rows1116[7].reason.includes(word), word);
+  // The ⑤-before correction row: revisions[37] restored to its 068cf3a6 bytes,
+  // and the reopen values (2 times, 60 s, 5 s) are the integrator's technical
+  // decision inside the delegated range (the builder set the values).
+  for (const word of [
+    "068cf3a6 の時点の bytes に戻した",
+    "never edit",
+    "builder が置いた値である",
+    "統合者が決めた",
+    "ユーザーが事前に委任した範囲の中",
+    "ユーザーが個別に確認した値ではない",
+    "DR-CP4-P-11／S4-11 の追記 6",
+    "追補の作者の申告ではない",
+    "読んでいないもの",
+  ])
+    assert.ok(rows1116[8].reason.includes(word), word);
   const chosen = declaration.readingsChosenAfterDevObservation.find(
     (row) => row.id === "setup-quiesce-after-dev",
   );
   assert.ok(chosen.chosenBy.includes("setup-quiesce-design.md"));
   assert.ok(chosen.chosenBy.includes("builder が置いた値"));
   assert.ok(!chosen.chosenBy.includes("統合者が案 B"));
-  // One policy for the rows: only revisions[37] (S4a's limits row) is a live
-  // row that mirrors the limits' latest state; every other earlier row stays
-  // as written (the new rows add, never edit). S2 追補 #21 had edited
-  // revisions[39] (S2 追補 #20's row); that parenthetical is back as it was.
+  // One policy for the rows: every earlier row stays as written (the new rows
+  // add, never edit). S2 追補 #21 had edited revisions[39] (S2 追補 #20's row)
+  // and later passes had edited revisions[37]; both are back as they were
+  // (revisions[39] at 67cf9453, revisions[37] at 068cf3a6).
   assert.ok(
     declaration.revisions[37].reason.includes("S4a（9 回目）で開示する限界"),
   );
   assert.ok(
     declaration.revisions[37].reason.includes(
-      "frozen の受領書で running／retry の予定のある cold を弾く。dev の受領書はこの検査の対象外",
+      "測定の入口も running／retry の予定のある cold を弾く）",
     ),
   );
+  assert.ok(!declaration.revisions[37].reason.includes("この検査の対象外"));
   assert.ok(declaration.revisions[39].reason.startsWith("S2 追補 #20"));
   assert.ok(
     declaration.revisions[39].reason.includes(
@@ -9163,7 +9183,7 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
   );
   assert.equal(
     declaration.revisions.length,
-    44,
-    "36 rows before S4a (9th) plus its two, S2 追補 #19's, #20's, #21's and #22's one each, the merges' one and the correction row",
+    45,
+    "36 rows before S4a (9th) plus its two, S2 追補 #19's, #20's, #21's and #22's one each, the merges' one and the two correction rows",
   );
 });
