@@ -8290,8 +8290,8 @@ test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6
   // (S3 10th's reflection) a third and S2 追補 #20 (the S3 recheck and setup's
   // quiesce) a fourth and S2 追補 #21 (the S3 third recheck) a fifth and
   // S2 追補 #22 (the S3 fourth recheck) a sixth and the merges' row (②③④) a
-  // seventh.
-  assert.equal(declaration.revisions.at(-8), rows1108[3]);
+  // seventh and a correction row (after the push) an eighth.
+  assert.equal(declaration.revisions.at(-9), rows1108[3]);
   for (const word of [
     "S2 追補 #16",
     "DR-CP4-S4-10",
@@ -8959,8 +8959,8 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
   const rows1116 = declaration.revisions.filter(
     (row) => row.at === "2026-11-16",
   );
-  assert.equal(rows1116.length, 7);
-  assert.equal(declaration.revisions.at(-1), rows1116[6]);
+  assert.equal(rows1116.length, 8);
+  assert.equal(declaration.revisions.at(-1), rows1116[7]);
   for (const word of [
     "S2 追補 #18",
     "DR-CP4-S4-11",
@@ -9115,6 +9115,25 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
       "(13) master と contracts の取り込み（②③。実施済み。",
     ),
   );
+  // The correction row: the exception to "never edit" is the builder's reading
+  // (not confirmed), and the unread facts stay disclosed.
+  for (const word of [
+    "からの逸脱で、builder の読みである",
+    "builder の読みである（統合者の確認を経ていない）",
+    "67cf9453 の bytes と完全に一致",
+    "84 path",
+    "R5 の閉包 44 file は再計算していない",
+    "observation-prep.test.mjs が行う",
+    "追補の作者の申告ではない",
+    "読んでいないもの",
+  ])
+    assert.ok(rows1116[7].reason.includes(word), word);
+  const chosen = declaration.readingsChosenAfterDevObservation.find(
+    (row) => row.id === "setup-quiesce-after-dev",
+  );
+  assert.ok(chosen.chosenBy.includes("setup-quiesce-design.md"));
+  assert.ok(chosen.chosenBy.includes("builder が置いた値"));
+  assert.ok(!chosen.chosenBy.includes("統合者が案 B"));
   // One policy for the rows: only revisions[37] (S4a's limits row) is a live
   // row that mirrors the limits' latest state; every other earlier row stays
   // as written (the new rows add, never edit). S2 追補 #21 had edited
@@ -9144,7 +9163,7 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
   );
   assert.equal(
     declaration.revisions.length,
-    43,
-    "36 rows before S4a (9th) plus its two, S2 追補 #19's, #20's, #21's and #22's one each and the merges' one",
+    44,
+    "36 rows before S4a (9th) plus its two, S2 追補 #19's, #20's, #21's and #22's one each, the merges' one and the correction row",
   );
 });
