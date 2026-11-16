@@ -691,6 +691,20 @@ describe("NIR1 Graph join wiring (CP-3a)", () => {
     expect(h.graphSettle).toHaveBeenCalledExactlyOnceWith("ticket-a", "used");
   });
 
+  it("reports a Graph over the frontier limit as unavailable `limit` and keeps R+IR (PUB-G #48)", async () => {
+    h.begin.mockResolvedValue(pendingBegin());
+    h.graphContinue.mockResolvedValue({
+      status: "unavailable",
+      reason: "limit",
+    });
+    const response = await fetchHybrid(seeded());
+    expect(response.graphOutcome).toBe("graph-unavailable:limit");
+    // The whole Graph is refused: no partial attachments, no Graph-only rows.
+    expect(response).not.toHaveProperty("graph");
+    expect(response.result.kind).toBe("fused");
+    expect(h.graphSettle).toHaveBeenCalledExactlyOnceWith("ticket-a", "used");
+  });
+
   it("uses exact R and cancels the Graph ticket when IR is unavailable", async () => {
     h.begin.mockResolvedValue(pendingBegin());
     h.continue.mockResolvedValue({ status: "unavailable", reason: "failed" });
