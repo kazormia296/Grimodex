@@ -42,6 +42,7 @@ pub mod nir1_graph;
 #[cfg(feature = "nir1-graph-eval")]
 pub mod nir1_graph_eval;
 mod nir1_graph_index_maintenance;
+pub use nir1_graph_index_maintenance::Nir1GraphProductPublication;
 pub use bulk_approval::{
     BulkApprovalReason, BulkApprovalVerdict,
     ChronicleBulkApprovePayload, ChronicleBulkApproveTarget, BULK_APPROVE_MAX_TARGETS,
@@ -377,8 +378,10 @@ pub use maintenance_runtime::{
     discover_before_cutover_maintenance_work_with_coordinates, discover_durable_maintenance_work,
     discover_durable_maintenance_work_with_config,
     discover_durable_maintenance_work_with_coordinates, discover_maintenance_project_for_main,
-    effective_maintenance_coordinates, is_transient_maintenance_preemption,
-    nir1_graph_index_build_wakes_main_discovery, plan_maintenance_trigger,
+    discover_maintenance_project_for_main_with_product, effective_maintenance_coordinates,
+    is_project_local_discovery_failure, is_transient_maintenance_preemption,
+    nir1_graph_index_build_wakes_main_discovery,
+    nir1_graph_index_build_wakes_main_discovery_with_product, plan_maintenance_trigger,
     preflight_maintenance_cycle_request, read_run_ledger, read_run_ledger_for_epoch,
     recovery_canonical_key, retry_backoff_ms, terminalize_interrupted_runs,
     terminalize_interrupted_runs_for_epoch, terminalize_stale_interrupted_runs,
