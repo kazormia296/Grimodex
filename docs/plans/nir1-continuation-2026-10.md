@@ -923,6 +923,10 @@ X1 /3(… SHA-256 bf01f7bd…52f)を確認しますか?本文だけの保存で�
 - 凍結: 事前登録の凍結は済んでいる（凍結の commit は `b9559a220c88eb2e7073b016244a9c45edf9b3be`、記録は `claude/nir1-contracts` の `docs/plans/nir1-cp4-records/k67-freeze-record.md`、commit `ba1e1a05`）。
 - 残り（この記録では行わない）: 製品の PR-3、harness の実装、試験と検出力の記録、S2 追補、S3 の独立レビュー、次の S4（9 回目）の凍結、取り直しの正式 run。/7 の判定に使えるのは凍結の後に始めた run だけ。Graph の公開（PUB-G）と Session C-1 の承認は含まない。
 
+### 10.13. GDV/1（2026-11-17）
+
+- `nir1-graph-dirty-binding-verify-proposal/1#graph-limited-binding`（GDV/1、K-2は(b)）の確認: 記録は `claude/nir1-contracts` の commit `9b6eab1958a94510d2247d04640a2e76a381843e` の `docs/plans/nir1-pubg-records/user-confirmation-2026-11-17-gdv1-graph-limited-binding.md`（この枝は master に merge しないので hash で引く）、draft は [nir1-graph-dirty-binding-verify-proposal-1-draft.md](nir1-graph-dirty-binding-verify-proposal-1-draft.md)（SHA-256 `b1fa766b2cd37a24777f953b1b823f5541223f7f8bac2208939201d0c4ff660a`、byte 同一）、台帳は [L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の 2026-11-17補足（GDV/1。DMS/1 の補足の後、確認台帳の表の前）、`GDV/1-1` の行、一覧表の `graph-limited-binding` の GDV/1 の行（/7 の 2 行の下）、`#### graph-limited-binding (GDV/1 confirmed contract)` の節（proposal/6 の節の後）。案 C の DR の形は実装の PR の DR（DR-PUBG-5-n）で決める。
+
 ## 11. 未解決事項
 
 - `[precheck]` DT-2 の再試行の上限（sweep の recover の再試行 0 回→最大2回、送信していない終端の書込みの再試行 1 回→最大3回。K1b の規則7の再確認の対象）の再確認は、Session B1 の9文のどれにも含まれず、未解決である。手段は DSN §9 のとおり（新しい draftRef を起案するか、1件1回への締め直し）。台帳の残 HOLD 表の D-transport の行（DT-1〜3）からここへ向ける。
