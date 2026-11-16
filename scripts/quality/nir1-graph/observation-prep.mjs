@@ -222,8 +222,10 @@ export const K66_QUALITY_VERDICT_V2 = Object.freeze({
 /**
  * S2 追補 #18（DR-CP4-P-11）: the records the S2 binds for K6/7 — the user's
  * K6/7 confirmation and the integrator's freeze record (contracts
- * `claude/nir1-contracts`), and the four answers the user gave after it
- * (item C, PR-3's Q5〜Q7, PR-3's dev gate, and the re-freeze / R5 reuse).
+ * `claude/nir1-contracts`), and the five answers the user gave after it
+ * (item C, PR-3's Q5〜Q7, PR-3's dev gate, the re-freeze / R5 reuse, and the
+ * R5 closure's growth to 11 files with the dev gate's drift_at_query 1;
+ * S3's 10th B1-1).
  * Each is held to its commit's bytes and to the head's ancestry by the formal
  * gate (k67FormalRows). The freeze record is bound at the freeze's own commit
  * (ba1e1a05); contracts 235e0c67 later appended the (α) PushEvent retake
@@ -269,7 +271,28 @@ export const K67_CONFIRMATION_RECORDS = Object.freeze({
       sha256:
         "54e3a8af488448a6c6b5f22bffaeb420c2ffea5c73d4792c59f7b34361afbd95",
     }),
+    // S2 追補 #19（S3 の 10 回目の B1-1）: asked after 7a03eaf9 — the R5
+    // closure (44 files, 11 changed) is reused ("11 file で前回の記録を使う"),
+    // and the dev gate's drift_at_query 1 that the third question did not show.
+    Object.freeze({
+      record:
+        "docs/plans/nir1-cp4-records/user-confirmation-2026-11-16-r5-11files-and-gate-drift.md",
+      commit: "7361041f62cff482f34fd76e0f9a14a8cfbbf93e",
+      sha256:
+        "9173e5e54f49a0ab8e1de1b9f788bbc19829c224537e8fc7714ae35de6239560",
+    }),
   ]),
+});
+/**
+ * S2 追補 #19（S3 の 10 回目の B2-1）: the S3 (10th, K6/7) independent
+ * review's record (an agent's report, not a user confirmation). A frozen S2's
+ * review.record cites it (the 9th's K66_S3_REVIEW stays as K6/6's history, a
+ * k66FormalRows row); the formal gate holds its commit's bytes and ancestry.
+ */
+export const K67_S3_REVIEW = Object.freeze({
+  path: "docs/plans/nir1-cp4-records/s3-review-k67-2026-11-16.md",
+  commit: "4aa34626d42d67d692e591188c6ad95d0a280178",
+  sha256: "fba38a31130057959eee7dd6447619a7ffbd8604712130a802284702baa28d28",
 });
 /**
  * Prereg v3 (the four evidence items of condition 4; contracts 160f5fa5): the
@@ -1108,7 +1131,14 @@ export function isSharedClosureBoundary(file) {
 export const S4_PROCEDURE_WORDS = Object.freeze({
   a: ["origin/claude/nir1-contracts", "merge commit", "①", "②'", "真の祖先"],
   b: ["gh pr merge --merge", "squash", "rebase"],
-  c: ["assertObservationPrepFormal", "S4b の commit", "integrator"],
+  c: [
+    "assertObservationPrepFormal",
+    "S4b の commit",
+    "integrator",
+    // S2 追補 #19 (S3 10th's B2-7): the runtime entry runs the first half only.
+    "readAdmittedObservationPrep",
+    "formalReferenceRows",
+  ],
   d: ["DR-CP4-S4-1", "freeze record", "sha256", "readAdmittedObservationPrep"],
   // S2 追補 #9（DR-CP4-S4-5）: (e) the re-freeze — a revocation commit deletes
   // the old S4b's record and S4b' introduces the new one at the same path
@@ -1226,6 +1256,12 @@ export const S4_PROCEDURE_WORDS = Object.freeze({
     "閉包を再計算",
     "S4:k67-detection-record",
     "k64Procedure.formal.review は v2 の file の review のままでよい",
+    // S2 追補 #19 (S3 10th's B1-1・B2-1・B2-6・B2-7).
+    "7361041f",
+    "11 file の外",
+    "4aa34626",
+    "古い Graph を返す経路は無い",
+    "frozen の S2 が HEAD で正式の門を通る",
   ],
 });
 /**
@@ -4560,7 +4596,11 @@ function k66ReadingErrors(errors, readings) {
  * with the two readings changed after an observation, (i) the harness
  * (PR-3), (j) item B, (k) item C's harness change, (l) what remains before
  * S4b (pins, six detection-power records, the R5 closure that grew past the
- * ten files the user was shown).
+ * ten files the user was shown and was then reconfirmed for eleven, the S3
+ * (10th) record), (m) the v3 fields that read §2.3 (S2 追補 #19, S3 10th's
+ * B1-3), (n) setup may copy the DB while maintenance runs (the drift_at_query
+ * finding's 1b). S2 追補 #19 also answers S3 10th's B2-5 ((a) R-12 under the
+ * k62 regime), B2-2 ((f)), B1-2 and the B3 notes ((b), (h), (l)).
  */
 export const K67_LIMIT_WORDS = Object.freeze([
   "R-8",
@@ -4622,6 +4662,20 @@ export const K67_LIMIT_WORDS = Object.freeze([
   "44 file",
   "11 file",
   "7a03eaf9",
+  "7361041f",
+  "11 file の外",
+  "k62 の regime",
+  "11d5e430",
+  "path 単位",
+  "v3:98",
+  "古い Graph が renderer に返る経路は無い",
+  "dependency-verify",
+  "別の lane の課題",
+  "queryGeneration",
+  "irOutcome",
+  "fetches[1]",
+  "K67_S3_REVIEW",
+  "4aa34626",
   "S4:k67-detection-record",
   "head.k67",
   "K67_FREEZE",
@@ -5404,7 +5458,7 @@ export function observationPrepErrors(prep, ctx) {
       "contracts.k66.confirmation.additional must be the R5 reuse confirmation (82119012), with its file, commit, SHA-256, topic and date (S2 追補 #17)",
     );
   // S2 追補 #18 (K6/7): the user's K6/7 confirmation and the freeze record
-  // are bound by file, commit and SHA-256, the four answers given after it are
+  // are bound by file, commit and SHA-256, the five answers given after it are
   // bound like K6/6's additional, and S4b carries the row into review.
   const k67Confirmation = k67?.confirmation;
   if (
@@ -5451,7 +5505,7 @@ export function observationPrepErrors(prep, ctx) {
     !nonBlank(k67Confirmation?.additionalNote)
   )
     errors.push(
-      "contracts.k67.confirmation.additional must be the four answers after K6/7 (item C, Q5〜Q7, PR-3's dev gate, the re-freeze and R5 reuse), each with its file, commit, SHA-256, topic and date (S2 追補 #18)",
+      "contracts.k67.confirmation.additional must be the five answers after K6/7 (item C, Q5〜Q7, PR-3's dev gate, the re-freeze and R5 reuse, the R5 closure's 11 files and the gate's drift_at_query), each with its file, commit, SHA-256, topic and date (S2 追補 #18)",
     );
   const formal = procedure.formal ?? {};
   if (formal.version !== "v2" || formal.path !== PROCEDURE_V2)
@@ -5765,10 +5819,12 @@ export function observationPrepErrors(prep, ctx) {
         errors.push(
           `review.userConfirmations must carry the confirmation ${row.commit.slice(0, 8)} (${row.record}) as a row, and userConfirmationsScope must name it (S2 追補 #18)`,
         );
-    // S2 追補 #17 (S3's B2-1): K6/6's review is the 9th S3 record.
-    if (!String(review?.record ?? "").includes(K66_S3_REVIEW.path))
+    // S2 追補 #19 (S3 10th's B2-1): a frozen S2 stands under K6/7, so its
+    // review is the 10th S3 record (K66_S3_REVIEW stays K6/6's history: a
+    // k66FormalRows row, no longer what review.record must cite).
+    if (!String(review?.record ?? "").includes(K67_S3_REVIEW.path))
       errors.push(
-        `review.record must cite the S3 (9th, K6/6) review record ${K66_S3_REVIEW.path} (S2 追補 #17)`,
+        `review.record must cite the S3 (10th, K6/7) review record ${K67_S3_REVIEW.path} (S2 追補 #19)`,
       );
   } else if (prep.review !== null)
     errors.push("review must be null until S3 reviews");
@@ -6661,10 +6717,10 @@ export function k66FormalRows(prep) {
 /**
  * S2 追補 #18: the rows for K6/7 — the draft at its freeze commit, the user's
  * confirmation record, the freeze record, the quality verdict v3 and its
- * fixing record, the four answers after K6/7 and the K6/7 detection-power
- * record S4b locates (`prep`), so that the contracts commits are strict
- * ancestors of the head (S4's branch merges contracts). S3's (10th) review
- * record is added when it exists.
+ * fixing record, the five answers after K6/7, the S3 (10th) review record
+ * (S2 追補 #19) and the K6/7 detection-power record S4b locates (`prep`), so
+ * that the contracts commits are strict ancestors of the head (S4's branch
+ * merges contracts).
  */
 export function k67FormalRows(prep) {
   const located = [prep?.r5Gate?.k67DetectionRecord]
@@ -6685,6 +6741,7 @@ export function k67FormalRows(prep) {
       commit: row.commit,
       sha256: row.sha256,
     })),
+    K67_S3_REVIEW,
     ...located,
   ].map(({ path: file, commit, sha256: digest }) => ({
     path: file,
@@ -6709,7 +6766,8 @@ export function formalReferenceRows(prep, addenda) {
     // verdict v2 and the dev rehearsals' record.
     ...k66FormalRows(prep),
     // S2 追補 #18: K6/7's draft, confirmation, freeze record, the quality
-    // verdict v3, the four answers after K6/7 and the detection-power record.
+    // verdict v3, the five answers after K6/7, the S3 (10th) review record
+    // and the detection-power record.
     ...k67FormalRows(prep),
     // The v1 bytes each new addendum version supersedes (B2b-1 review P3-2).
     ...supersededReferences(addenda),
