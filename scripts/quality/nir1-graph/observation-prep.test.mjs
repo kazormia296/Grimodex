@@ -8698,7 +8698,7 @@ test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6
   // S2 追補 #22 (the S3 fourth recheck) a sixth and the merges' row (②③④) a
   // seventh and a correction row (after the push) an eighth and the ⑤-before
   // correction row a ninth.
-  assert.equal(declaration.revisions.at(-11), rows1108[3]);
+  assert.equal(declaration.revisions.at(-12), rows1108[3]);
   for (const word of [
     "S2 追補 #16",
     "DR-CP4-S4-10",
@@ -9479,8 +9479,8 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
   const rows1116 = declaration.revisions.filter(
     (row) => row.at === "2026-11-16",
   );
-  assert.equal(rows1116.length, 10);
-  assert.equal(declaration.revisions.at(-1), rows1116[9]);
+  assert.equal(rows1116.length, 11);
+  assert.equal(declaration.revisions.at(-1), rows1116[10]);
   for (const word of [
     "S2 追補 #18",
     "DR-CP4-S4-11",
@@ -9700,6 +9700,28 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
   // stay in revisions[42] and [43].
   assert.ok(rows1116[6].reason.includes("82 file"));
   assert.ok(rows1116[7].reason.includes("84 path"));
+  // The ⑧-before row (R5's 14 files, the second merge of master, the rows'
+  // policy extends to readingsChosenAfterDevObservation).
+  for (const word of [
+    "9 回目の S4 の ⑧ の前",
+    "14 file で前回の記録を使う",
+    "448a5956",
+    "5becc8cda99f92c2c7036d1951d4cfb38b43a19ef30965302cddaa3f32b186c7",
+    "33abaad1",
+    "cea3988b",
+    "b391981b",
+    "#919・#920",
+    "12 file",
+    "git diff --name-only が 0 件",
+    "14 file の外が変わっていたら改めて伺う",
+    "never edit は readingsChosenAfterDevObservation にも及ぶ",
+    "既存の行は書き換えず、訂正は新しい行で行う",
+    "2d70fa10",
+    "追補の作者の申告ではない",
+    "読んでいないもの",
+    "bytes を変えていないもの",
+  ])
+    assert.ok(rows1116[10].reason.includes(word), word);
   const chosen = declaration.readingsChosenAfterDevObservation.find(
     (row) => row.id === "setup-quiesce-after-dev",
   );
@@ -9736,7 +9758,7 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
   );
   assert.equal(
     declaration.revisions.length,
-    46,
-    "36 rows before S4a (9th) plus its two, S2 追補 #19's, #20's, #21's and #22's one each, the merges' one, the two correction rows and the ⑥ row",
+    47,
+    "36 rows before S4a (9th) plus its two, S2 追補 #19's, #20's, #21's and #22's one each, the merges' one, the two correction rows, the ⑥ row and the ⑧-before row",
   );
 });
