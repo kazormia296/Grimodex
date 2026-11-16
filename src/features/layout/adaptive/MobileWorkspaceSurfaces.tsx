@@ -431,6 +431,18 @@ function ConnectedAiSurface({
     setChatActiveSceneId(nextSceneId);
   }, [activeSceneId, setChatActiveSceneId]);
 
+  // DR-PUBG-35-1: this surface can send a chat message without the chat
+  // panel's chunk (which registers the strings of the profile activation's AI
+  // terminals, DR-DA2-34, DR-DA2-37) having loaded. Register them here, from a
+  // lazy chunk, so the toast of a terminal that arrives during a send is the
+  // fixed sentence and not the raw `D2A_EGRESS_DENIED` code. A chunk that
+  // fails to load keeps the old behavior (`aiFailureText` answers null).
+  useEffect(() => {
+    void import("@/features/profile-egress/profileEgressAiStopText")
+      .then((module) => module.ensureProfileEgressAiStopTranslations())
+      .catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     let stale = false;
     if (!aiSurfaceActive || sceneScopeWithoutScene) return undefined;

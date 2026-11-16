@@ -25,7 +25,12 @@
  * Below 720 px the app shows the phone workspace: there are no stripes and no
  * editor status bar, and the bottom nav (`phone-workspace-chrome__nav`, 68 px
  * plus the bottom safe area, `phoneWorkspace.css`) spans the full width. The
- * display then sits 8 px above the nav, from the left margin. The variant is
+ * display then sits 8 px above the nav, from the left margin, and, while the
+ * AI surface's composer is showing (`data-phone-chat-composer` in the visible,
+ * non-inert `data-mobile-surface`; `phoneWorkspace.css` gives it the
+ * `--phone-chat-composer` anchor), 8 px above the composer's top edge instead
+ * (DR-PUBG-35-1: the composer is as high as 90 px and its height changes, so a
+ * fixed offset could not clear it). The variant is
  * `width < 719.98px` (Tailwind 4 `max-[..]` is exclusive), so a 719 px window is
  * phone as in `VIEWPORT_BREAKPOINTS.phoneMaxExclusive` (720).
  *
@@ -43,6 +48,11 @@ export const STATUS_BAR_GAP_PX = 10;
 export const PROFILE_EGRESS_STATUS_PHONE_LEFT_PX = 12;
 export const PROFILE_EGRESS_STATUS_PHONE_BOTTOM_PX = 76;
 export const PROFILE_EGRESS_STATUS_RIGHT_MARGIN_PX = 12;
+/** The phone nav's height (`--phone-workspace-nav-height`, `phoneWorkspace.css`). */
+export const PHONE_NAV_HEIGHT_PX = 68;
+export const PHONE_COMPOSER_GAP_PX = 8;
+/** The `anchor-name` `phoneWorkspace.css` gives the visible AI composer. */
+export const PHONE_CHAT_COMPOSER_ANCHOR = "--phone-chat-composer";
 /** The `anchor-name` that `EditorPaneStatusBar` sets on its root. */
 export const EDITOR_STATUS_BAR_ANCHOR = "--editor-status-bar";
 
@@ -53,4 +63,4 @@ export const EDITOR_STATUS_BAR_ANCHOR = "--editor-status-bar";
  * placement minus the offset added after it.
  */
 export const PROFILE_EGRESS_STATUS_PLACEMENT_CLASS =
-  "left-[calc(anchor(--editor-status-bar_left,-78px)+140px)] bottom-[calc(anchor(--editor-status-bar_top,51px)+10px)] max-w-[calc(100vw-74px)] max-[719.98px]:left-[12px] max-[719.98px]:bottom-[calc(76px+env(safe-area-inset-bottom))] max-[719.98px]:max-w-[calc(100vw-24px)]";
+  "left-[calc(anchor(--editor-status-bar_left,-78px)+140px)] bottom-[calc(anchor(--editor-status-bar_top,51px)+10px)] max-w-[calc(100vw-74px)] max-[719.98px]:left-[12px] max-[719.98px]:bottom-[calc(anchor(--phone-chat-composer_top,calc(68px+env(safe-area-inset-bottom)))+8px)] max-[719.98px]:max-w-[calc(100vw-24px)]";

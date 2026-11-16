@@ -11,6 +11,9 @@ import {
   STATUS_BAR_GAP_PX,
   PROFILE_EGRESS_STATUS_BOTTOM_PX,
   PROFILE_EGRESS_STATUS_LEFT_PX,
+  PHONE_CHAT_COMPOSER_ANCHOR,
+  PHONE_COMPOSER_GAP_PX,
+  PHONE_NAV_HEIGHT_PX,
   PROFILE_EGRESS_STATUS_PHONE_BOTTOM_PX,
   PROFILE_EGRESS_STATUS_RIGHT_MARGIN_PX,
   PROFILE_EGRESS_STATUS_PHONE_LEFT_PX,
@@ -60,7 +63,7 @@ describe("profile egress status placement", () => {
       `max-[719.98px]:left-[${PROFILE_EGRESS_STATUS_PHONE_LEFT_PX}px]`,
     );
     expect(cls).toContain(
-      `max-[719.98px]:bottom-[calc(${PROFILE_EGRESS_STATUS_PHONE_BOTTOM_PX}px+env(safe-area-inset-bottom))]`,
+      `max-[719.98px]:bottom-[calc(anchor(${PHONE_CHAT_COMPOSER_ANCHOR}_top,calc(${PHONE_NAV_HEIGHT_PX}px+env(safe-area-inset-bottom)))+${PHONE_COMPOSER_GAP_PX}px)]`,
     );
   });
 
@@ -70,11 +73,32 @@ describe("profile egress status placement", () => {
     );
   });
 
+  it("anchors to the visible AI composer (DR-PUBG-35-1)", () => {
+    expect(PHONE_NAV_HEIGHT_PX + PHONE_COMPOSER_GAP_PX).toBe(
+      PROFILE_EGRESS_STATUS_PHONE_BOTTOM_PX,
+    );
+    expect(phoneCss).toMatch(
+      new RegExp(
+        String.raw`\[data-mobile-surface\]:not\(\[inert\]\) \[data-phone-chat-composer\] \{\s*anchor-name: ${PHONE_CHAT_COMPOSER_ANCHOR};`,
+      ),
+    );
+    expect(
+      readFileSync(
+        new URL(
+          "../layout/adaptive/mobile/PhoneChatSurface.tsx",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ).toContain("data-phone-chat-composer");
+  });
+
   it("sits above the phone workspace nav (68 px plus the safe area)", () => {
     const nav = /--phone-workspace-nav-height:\s*(\d+)px/.exec(phoneCss);
     expect(nav).not.toBeNull();
     expect(PROFILE_EGRESS_STATUS_PHONE_BOTTOM_PX).toBeGreaterThan(
       Number(nav![1]),
     );
+    expect(PHONE_NAV_HEIGHT_PX).toBe(Number(nav![1]));
   });
 });
