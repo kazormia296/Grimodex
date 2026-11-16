@@ -2800,6 +2800,85 @@ test("品質 v3 §2.1 utf16-range: 読み取り済みの Evidence が無い・sa
   assert.equal(mixed.status, "fail");
 });
 
+test("品質 v3 §2.1 utf16-range（S3 10 回目 B1-2）: 読めない Revision・行があっても、読めた Revision・行の (i) 違反は fail、読めない分だけなら hold（pass にならない）", () => {
+  // G-03 is a two-hop path: each displayed edge's rows are in its own typed
+  // Revision, so one path has a readable and an unreadable Revision.
+  const key = "G-03/base";
+  const item = (mutate) =>
+    variantItems(run(v3({ [key]: mutate })), key)["utf16-range"];
+  const wrongHash = textSha256("a hash that is no endpoint's text");
+  const idsOf = (revision) => revision.evidence.map((row) => row.evidenceId);
+  const unread = (data, index) => {
+    const row = data.observation.typedRevisions[index];
+    data.observation.typedRevisions[index] = {
+      logicalRevisionId: row.logicalRevisionId,
+      runtimeRevisionId: row.runtimeRevisionId,
+      unavailable: "not-found",
+    };
+    return idsOf(row);
+  };
+  const shownRows = (data) =>
+    data.child.evidence.pathAttachments.flatMap((path) =>
+      path.edges.flatMap((edge) => edge.evidence),
+    );
+  // (a) one Revision unread + a readable Revision's row whose hash differs: fail.
+  const a = item((data) => {
+    // The fixture's path has at least two edges in separate Revisions.
+    assert.ok(data.observation.typedRevisions.length >= 2);
+    unread(data, 0);
+    const readable = new Set(idsOf(data.observation.typedRevisions[1]));
+    for (const shown of shownRows(data))
+      if (readable.has(shown.evidenceId)) shown.quoteSha256 = wrongHash;
+    return data;
+  });
+  assert.equal(a.status, "fail");
+  assert.ok(
+    a.problems.some((entry) => entry.code === "typed-revision-not-read"),
+  );
+  assert.ok(
+    a.problems.some(
+      (entry) => entry.code === "evidence-row-matches-no-endpoint-text",
+    ),
+  );
+  // (b) one Revision unread and nothing else wrong: hold.
+  const b = item((data) => {
+    unread(data, 0);
+    return data;
+  });
+  assert.equal(b.status, "hold");
+  assert.ok(!b.problems.some((entry) => entry.kind === "fail"));
+  // The unread Revision's own displayed rows leave (iii) undecided (no fail).
+  assert.ok(
+    b.problems.some(
+      (entry) => entry.code === "evidence-id-in-no-read-revision",
+    ),
+  );
+  // (c) a row that could not be read + a readable row with a differing hash: fail.
+  const c = item((data) => {
+    const rows = shownRows(data);
+    rows[0].quoteSha256 = null;
+    rows[rows.length - 1].quoteSha256 = wrongHash;
+    return data;
+  });
+  assert.equal(c.status, "fail");
+  assert.ok(
+    c.problems.some((entry) => entry.code === "evidence-row-malformed"),
+  );
+  // (d) a row that could not be read and nothing else wrong: hold, never pass.
+  const d = item((data) => {
+    shownRows(data)[0].quoteSha256 = null;
+    return data;
+  });
+  assert.equal(d.status, "hold");
+  assert.ok(!d.problems.some((entry) => entry.kind === "fail"));
+  // With no Revision unread, a row in no Revision stays a fail (v3 §2.1 (ii)).
+  const known = item((data) => {
+    shownRows(data)[0].evidenceId = "ev-in-no-revision";
+    return data;
+  });
+  assert.equal(known.status, "fail");
+});
+
 test("品質 v3 §2.2 explicit-pin-association: 期待の外の Scene への path（G-06 の名前の言及）・pin・終端・hop の食い違いは fail、field が無いのは hold、G-01 は attachment が付けば fail", () => {
   const key = "G-06/base";
   const fixture = readJson("evals/nir1-graph/g06-evidence-anchor-path.v1.json");

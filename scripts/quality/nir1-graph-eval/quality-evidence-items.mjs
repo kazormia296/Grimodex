@@ -220,18 +220,22 @@ function utf16RangeSample({ side, ctx }) {
       ...new Set(entry.pairs.map((pair) => String(pair).split("|")[0])),
     ];
     const rows = new Map();
-    let readable = true;
+    // A Revision that could not be read leaves a hold (v3 §2.1: the
+    // corresponding typed Revision's row is unreadable), but only the rows
+    // whose own Revision is the unread one stay undecided: a displayed row
+    // whose `evidenceId` is in a readable Revision is judged on that
+    // Revision's row, and an (i) violation there is a fail (v3:96).
+    let unreadRevisions = 0;
     for (const revision of revisions) {
       const read = ctx.observation.index.get(revision);
       if (!read || read.unavailable) {
-        readable = false;
+        unreadRevisions += 1;
         problems.push(hold("typed-revision-not-read", { revision }));
         continue;
       }
       for (const [id, value] of read.rows)
         if (!rows.has(id)) rows.set(id, value);
     }
-    if (!readable) continue;
     for (const edge of path.edges) {
       if (!isId(edge?.from) || !isId(edge?.to)) {
         problems.push(hold("edge-endpoint-missing"));
@@ -265,6 +269,17 @@ function utf16RangeSample({ side, ctx }) {
           continue;
         }
         const read = rows.get(shown.evidenceId);
+        if (!read && unreadRevisions > 0) {
+          // Its Revision may be one that was not read: (ii) cannot be
+          // decided, and (iii) is not judged on this edge.
+          problems.push(
+            hold("evidence-id-in-no-read-revision", {
+              evidenceId: shown.evidenceId,
+            }),
+          );
+          undecided = true;
+          continue;
+        }
         if (!read) {
           // (ii) the displayed `evidenceId` is not in the read Revision.
           problems.push(
