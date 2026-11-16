@@ -7,7 +7,10 @@ use crate::nir1_graph_product::{
     GraphQuery, GraphTicket, GraphTicketOutcome, GraphWorker, GraphWorkerFactory, GraphWorkerStart,
 };
 use grimodex_db::narrative_extraction::nir1_graph::{
-    c_query_worker::CQueryRetirement, worker_projection::Nir1GraphProjection, Nir1QualifiedGraph,
+    c_query_worker::{CQueryRetirement, CQueryWorkerUnavailable},
+    worker_frame::UnavailableReason,
+    worker_projection::Nir1GraphProjection,
+    Nir1QualifiedGraph,
 };
 use grimodex_db::narrative_extraction::Nir1GraphRequest;
 use std::sync::atomic::AtomicBool;
@@ -37,11 +40,28 @@ struct EchoFactory;
 struct EchoWorker {
     /// Set: the query waits (at most 5 s) until the flag is cleared.
     hold: Option<Arc<AtomicBool>>,
+    /// Set: the query ends with the worker's `unavailable` reason.
+    fail_with: Option<UnavailableReason>,
+}
+
+/// A worker whose queries end with one `unavailable` reason.
+struct FailFactory(UnavailableReason);
+
+impl GraphWorkerFactory for FailFactory {
+    fn create(&self, _start: GraphWorkerStart) -> Box<dyn GraphWorker> {
+        Box::new(EchoWorker {
+            hold: None,
+            fail_with: Some(self.0),
+        })
+    }
 }
 
 impl GraphWorkerFactory for EchoFactory {
     fn create(&self, _start: GraphWorkerStart) -> Box<dyn GraphWorker> {
-        Box::new(EchoWorker { hold: None })
+        Box::new(EchoWorker {
+            hold: None,
+            fail_with: None,
+        })
     }
 }
 
@@ -52,6 +72,7 @@ impl GraphWorkerFactory for HoldFactory {
     fn create(&self, _start: GraphWorkerStart) -> Box<dyn GraphWorker> {
         Box::new(EchoWorker {
             hold: Some(Arc::clone(&self.0)),
+            fail_with: None,
         })
     }
 }
@@ -71,6 +92,9 @@ impl GraphWorker for EchoWorker {
             while hold.load(std::sync::atomic::Ordering::SeqCst) && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(1));
             }
+        }
+        if let Some(reason) = self.fail_with {
+            return Err(CQueryWorkerUnavailable { reason }.into());
         }
         Ok(Nir1GraphProjection {
             project_id: request.project_id.clone(),
@@ -175,6 +199,12 @@ impl OwnerFixture {
                 seed_entity_id: seed.into(),
             },
         )
+    }
+
+    fn install_failing_worker(&self, reason: UnavailableReason) {
+        self.state
+            .nir1_graph
+            .install_worker_factory_for_test(Arc::new(FailFactory(reason)));
     }
 
     fn install_echo_worker(&self) {
@@ -300,16 +330,8 @@ fn begin_records_carry_the_slot_the_outcome_and_the_settlement() {
     assert_eq!(pending["startSlot"]["readyFresh"], true, "the first READY is new");
     assert!(pending["startSlot"]["preparesReady"].as_u64() >= Some(1));
     assert!(pending["busyCause"].is_null());
-    // The owner thread tried the second stamp between the hand-over and the
-    // settlement, on the eval clock.
-    let stamp = &pending["ticket"]["freshnessStamp"];
-    let attempted = stamp["attemptedAtNs"].as_u64().expect("stamp attempt");
-    let result = stamp["result"].as_str().expect("stamp result");
-    assert!(
-        ["fresh", "stale", "unavailable", "stamp0-missing"].contains(&result),
-        "{stamp}"
-    );
-    assert_eq!(stamp["matched"].is_boolean(), ["fresh", "stale"].contains(&result));
+    // The worker answered the query: its drift check is `clear` (DR-DBC-7).
+    assert_eq!(pending["ticket"]["workerDrift"]["result"], "clear");
     assert_eq!(pending["begin"], "pending");
     assert!(pending["reason"].is_null());
     assert_eq!(pending["ticket"]["settled"], true);
@@ -321,7 +343,6 @@ fn begin_records_carry_the_slot_the_outcome_and_the_settlement() {
         .as_u64()
         .expect("settle time");
     assert!(begun <= returned && returned <= settled + 1_000_000_000);
-    assert!(begun <= attempted && attempted <= settled);
     assert!(records[0]["seq"].as_u64() < records[1]["seq"].as_u64());
     // Records carry no identifier of the query.
     let text = samples_json().to_string();
@@ -782,7 +803,7 @@ fn a_settled_ticket_is_kept_as_its_summary() {
     assert_eq!(first["disposition"], "used");
     assert_eq!(first["outcome"], "available");
     assert_eq!(first["tSettledNs"], open["tSettledNs"]);
-    assert_eq!(first["freshnessStamp"], open["freshnessStamp"]);
+    assert_eq!(first["workerDrift"], open["workerDrift"]);
     clear_samples();
 }
 
@@ -835,5 +856,102 @@ fn a_held_begin_is_recorded_and_its_release_is_counted() {
     assert_eq!(delta("staleReadyRetired"), 0, "{after}");
     assert_eq!(delta("preparesReady"), 1, "{after}");
     assert_eq!(after["slot"], "empty");
+    clear_samples();
+}
+
+// ---- K6/7 (ii-b): the worker's drift check and the requalification ----------
+
+/// A ticket that did not reach the worker or the requalification still names
+/// both steps, so a missing key (an older `.node`) is not mistaken for it.
+#[test]
+fn ii_b_a_ticket_always_names_both_steps() {
+    let _serial = serial();
+    let fixture = OwnerFixture::new(true);
+    fixture.install_echo_worker();
+    record_registration(&fixture.state, WorkerSetup::NotAttempted);
+    clear_samples();
+    let ticket = fixture.pending_after_warm();
+    assert!(ticket.wait_timeout(Duration::from_secs(2)).is_some());
+    let notes = samples_json()["records"][1]["ticket"].clone();
+    assert_eq!(notes["workerDrift"], json!({"result": "clear", "cause": null}));
+    assert_eq!(
+        notes["requalification"],
+        json!({"result": "not-reached", "reason": null, "returned": false}),
+        "no requalification ran"
+    );
+    ticket.finish(GraphTicketUse::Used);
+    clear_samples();
+}
+
+#[test]
+fn ii_b_a_worker_drift_is_recorded_as_drift_and_any_other_failure_as_not_evaluated() {
+    let _serial = serial();
+    for (reason, result, cause) in [
+        (
+            UnavailableReason::RegistrationDrift,
+            "drift",
+            "registration-drift",
+        ),
+        (
+            UnavailableReason::QueryInvalidated,
+            "not-evaluated",
+            "worker-unavailable",
+        ),
+    ] {
+        let fixture = OwnerFixture::new(true);
+        fixture.install_failing_worker(reason);
+        record_registration(&fixture.state, WorkerSetup::NotAttempted);
+        clear_samples();
+        let ticket = fixture.pending_after_warm();
+        assert!(matches!(
+            ticket.wait_timeout(Duration::from_secs(2)),
+            Some(GraphTicketOutcome::Unavailable(_))
+        ));
+        let notes = samples_json()["records"][1]["ticket"].clone();
+        assert_eq!(
+            notes["workerDrift"],
+            json!({"result": result, "cause": cause}),
+            "{reason:?}"
+        );
+        ticket.finish(GraphTicketUse::Used);
+        clear_samples();
+    }
+}
+
+/// The case of the review: the ticket is `available` (the owner answered), and
+/// the requalification where the response leaves drops it. The note says both.
+#[test]
+fn ii_b_a_requalification_drop_is_recorded_while_the_ticket_stays_available() {
+    let _serial = serial();
+    let fixture = OwnerFixture::new(true);
+    fixture.install_echo_worker();
+    record_registration(&fixture.state, WorkerSetup::NotAttempted);
+    clear_samples();
+    let ticket = fixture.pending_after_warm();
+    assert!(matches!(
+        ticket.wait_timeout(Duration::from_secs(2)),
+        Some(GraphTicketOutcome::Available(_))
+    ));
+    // `related_scenes/graph.rs` keeps a clone of the await plan's waiter.
+    let waiter = ticket.waiter().clone_for_eval();
+    waiter.note_requalification_for_eval("unavailable", Some(GraphUnavailable::Invalidated));
+    let dropped = samples_json()["records"][1]["ticket"].clone();
+    assert_eq!(dropped["outcome"], "available");
+    assert_eq!(
+        dropped["requalification"],
+        json!({"result": "unavailable", "reason": "invalidated", "returned": false})
+    );
+    // A passed requalification that left: `returned`. It is kept past the
+    // declaration, which turns the open record into its summary.
+    waiter.note_requalification_for_eval("passed", None);
+    waiter.note_requalification_returned_for_eval();
+    ticket.finish(GraphTicketUse::Used);
+    let settled = samples_json()["records"][1]["ticket"].clone();
+    assert_eq!(settled["disposition"], "used");
+    assert_eq!(
+        settled["requalification"],
+        json!({"result": "passed", "reason": null, "returned": true})
+    );
+    assert_eq!(settled["workerDrift"]["result"], "clear");
     clear_samples();
 }

@@ -78,6 +78,8 @@ use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
 use crate::Database;
 
 mod project_reads;
+#[cfg(test)]
+mod a3_axis_reason_tests;
 use project_reads::{load_a3_query_context, A3QueryOutcome, SceneScopes};
 #[cfg(feature = "native-current-human-capture")]
 pub(crate) use project_reads::{

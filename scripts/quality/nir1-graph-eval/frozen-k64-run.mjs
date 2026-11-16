@@ -4,7 +4,7 @@
 //   TMPDIR=<short scratch> node scripts/local-ci-xvfb.mjs node \
 //     scripts/quality/nir1-graph-eval/frozen-k64-run.mjs --run <name> \
 //     --candidate <sha> --prep-commit <S4 commit> --k62-commit <K6/2 freeze> \
-//     --k64-commit <K6/4 freeze> --k65-commit <K6/5 freeze> --k66-commit <K6/6 freeze> --product-receipt <standard build receipt> \
+//     --k64-commit <K6/4 freeze> --k65-commit <K6/5 freeze> --k66-commit <K6/6 freeze> --k67-commit <K6/7 freeze> --product-receipt <standard build receipt> \
 //     --setups <variantKey → complete setup receipt の JSON> \
 //     --ja-model <pinned> --en-model <pinned> [--variant <key>] \
 //     [--d2a-mode unrestricted]  (d10 の parity の run: R+IR だけ)
@@ -35,6 +35,7 @@ import {
   readK64FreezeHead,
   readK65FreezeHead,
   readK66FreezeHead,
+  readK67FreezeHead,
 } from "./admission.mjs";
 import { checkRunnerBuildReceipts } from "./build-receipt-check.mjs";
 import { K64_W_F_MS, devVariant, variantByKey } from "./constants.mjs";
@@ -65,6 +66,12 @@ import {
   loadDevGraphCasePlans,
   loadFrozenSetupPlans,
 } from "./frozen-setup-plan.mjs";
+import {
+  evidenceFieldErrors,
+  hashRevisionRead,
+  plaintextErrors,
+  plaintextNeedlesOf,
+} from "./evidence-fields.mjs";
 import { k64GraphSampleRow, r2Record } from "./k64-record.mjs";
 import {
   K64_DEV_PREVIEW_PURPOSE,
@@ -199,6 +206,7 @@ export function parseArgs(argv) {
         "k64-commit",
         "k65-commit",
         "k66-commit",
+        "k67-commit",
         "product-receipt",
       ];
   for (const name of required)
@@ -1014,7 +1022,13 @@ async function measureSteady(ctx) {
     }
     ctx.run.finishedAtMs = Date.now();
     proc.checks.releases = releases;
-    return { status: "measured", samples, probes, proc };
+    // Prereg v3 §2.1: read once, after the last sample (the Gold run's Graph
+    // arm only: v3 judges the Gold receipts; a negative run has none).
+    const evidenceObservation =
+      arms.includes("graph") && !ctx.negative
+        ? await readEvidenceObservation({ ctx, proc, samples })
+        : null;
+    return { status: "measured", samples, probes, proc, evidenceObservation };
   } finally {
     ctx.windowSamples = ctx.windowSampler?.stop() ?? [];
     ctx.windowSampler = null;
@@ -1023,6 +1037,49 @@ async function measureSteady(ctx) {
         (error) => ({ problems: [`stop: ${error?.stack ?? error}`] }),
       );
   }
+}
+
+/**
+ * Prereg v3 §2.1: the typed Revisions' Evidence ranges, read once after the
+ * variant's samples and before its session stops (never per sample: the
+ * p95 is not touched). Each Revision is read through the product's review
+ * read (`nir1_entity_relation_revision_read`); node replaces every quote by
+ * its sha256 at once (evidence-fields.mjs `hashRevisionRead`) and keeps the
+ * range, the Evidence ID and the source reference. A Revision that cannot be
+ * read is recorded `unavailable` (the verdict holds on it), never an error
+ * text. Prereg v3 §8 (2), (6): that this read leaves the maintenance and
+ * the cache alone is not established here (dev rehearsal).
+ */
+async function readEvidenceObservation({ ctx, proc, samples }) {
+  const rows = [];
+  for (const [logicalRevisionId, row] of Object.entries(
+    ctx.ids.typedRevisions ?? {},
+  )) {
+    const runtimeRevisionId = row?.revisionId;
+    if (typeof runtimeRevisionId !== "string") continue;
+    let read;
+    try {
+      read = await ctx.page.evaluate(
+        ([name, input]) => window.cp4Harness.call(name, input),
+        [
+          "nir1_entity_relation_revision_read",
+          {
+            expectedWorkspacePath: proc.workspacePath,
+            projectId: ctx.ids.projectId,
+            revisionId: runtimeRevisionId,
+          },
+        ],
+      );
+    } catch {
+      read = { ok: false };
+    }
+    rows.push(hashRevisionRead({ logicalRevisionId, runtimeRevisionId, read }));
+  }
+  return {
+    readAfterSamples: true,
+    samplesBeforeRead: samples.length,
+    typedRevisions: rows,
+  };
 }
 
 /**
@@ -1265,6 +1322,8 @@ async function measureG01Fallback(ctx) {
       row.result.probes.map((probe) => ({ ...probe, armProcess: row.label })),
     ),
     proc: graph.result.proc,
+    // Prereg v3: the Graph arm's own process read the Revisions.
+    evidenceObservation: graph.result.evidenceObservation ?? null,
     evidences: [
       hybrid.result.proc?.evidence,
       graph.result.proc?.evidence,
@@ -1367,6 +1426,38 @@ export async function writeVariantRecord({
       valid: true,
     };
   }
+  // Prereg v3 §4 (Q6): nothing is written while the observation (hashed by
+  // now) carries a fixture text in clear or a field outside its shape. The
+  // scan's texts are the fixture's; a fixture with none cannot be called free
+  // of plain text (`[precheck]`).
+  const leaks = [
+    ...evidenceFieldErrors({
+      samples: result.samples,
+      evidenceObservation: result.evidenceObservation,
+    }),
+    ...plaintextErrors(
+      {
+        samples: result.samples,
+        probes: result.probes ?? [],
+        processes: result.processes ?? null,
+        evidenceObservation: result.evidenceObservation ?? null,
+      },
+      plaintextNeedlesOf(
+        JSON.parse(readFileSync(path.join(ROOT, plan.fixturePath), "utf8")),
+      ),
+    ),
+  ];
+  if (leaks.length > 0) {
+    problems.push(
+      `${spec.variantKey}: [precheck] plain text or a malformed evidence field in the observation; nothing was written: ${leaks.slice(0, 3).join("; ")}`,
+    );
+    return {
+      status: "receipt-refused",
+      samples: result.samples.length,
+      valid: false,
+      error: String(leaks[0]).split("\n")[0],
+    };
+  }
   const environment = environmentOf({
     ctx,
     evidences: result.evidences ?? [result.proc?.evidence].filter(Boolean),
@@ -1448,6 +1539,7 @@ export async function writeVariantRecord({
       },
       declaration: result.proc?.declaration ?? null,
       measurementWorkspace: result.proc?.measurementWorkspace ?? null,
+      evidenceObservation: result.evidenceObservation ?? null,
       samples: result.samples,
       checks: {
         status: result.status,
@@ -1482,9 +1574,27 @@ export async function writeVariantRecord({
       error: String(error?.message ?? error).split("\n")[0],
     };
   }
+  // Prereg v3 §4: the whole assembled receipt is scanned for the fixture's
+  // texts before any byte of it is written.
+  const needles = plaintextNeedlesOf(
+    JSON.parse(readFileSync(path.join(ROOT, plan.fixturePath), "utf8")),
+  );
+  const wholeLeaks = plaintextErrors(receipt, needles);
+  if (wholeLeaks.length > 0) {
+    problems.push(
+      `${spec.variantKey}: [precheck] the receipt carries a fixture text in clear; nothing was written: ${wholeLeaks.slice(0, 3).join("; ")}`,
+    );
+    return {
+      status: "receipt-refused",
+      samples: result.samples.length,
+      valid: false,
+      error: String(wholeLeaks[0]).split("\n")[0],
+    };
+  }
   const errors = validateCp4Receipt(receipt, {
     ratification5: admitted.ratification5,
     procedure: admitted.procedure,
+    plaintextNeedles: needles,
   });
   await writeFile(
     path.join(variantDir, "receipt.json"),
@@ -1520,6 +1630,7 @@ export async function runFrozenK64(argv, deps = {}) {
     readK64Head = readK64FreezeHead,
     readK65Head = readK65FreezeHead,
     readK66Head = readK66FreezeHead,
+    readK67Head = readK67FreezeHead,
     admitFormal = admitFormalK64Run,
     readGate = readSpP4Gate,
     planRun = formalRunPlan,
@@ -1563,6 +1674,7 @@ export async function runFrozenK64(argv, deps = {}) {
       readK64Head({ root: ROOT, commit: options["k64-commit"] });
       readK65Head({ root: ROOT, commit: options["k65-commit"] });
       readK66Head({ root: ROOT, commit: options["k66-commit"] });
+      readK67Head({ root: ROOT, commit: options["k67-commit"] });
       const readJson = (file) => JSON.parse(readFileSync(file, "utf8"));
       const ratification5 = options["keep-test-worktree"]
         ? await collectRatification5EvidenceWithKeepTest({
@@ -1580,6 +1692,7 @@ export async function runFrozenK64(argv, deps = {}) {
         k64Commit: options["k64-commit"],
         k65Commit: options["k65-commit"],
         k66Commit: options["k66-commit"],
+        k67Commit: options["k67-commit"],
         buildReceipt: readJson(path.join(evalDir, "eval-build.json")),
         productReceipt: readJson(path.resolve(options["product-receipt"])),
         defaultAddonSha256: defaultAddonSha256Of(),

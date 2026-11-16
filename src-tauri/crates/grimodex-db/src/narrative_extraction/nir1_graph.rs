@@ -11,7 +11,6 @@
 //! product query is the isolated worker (`open_for_worker`,
 //! `query_for_worker_with_maintenance`).
 
-pub mod c_query_freshness;
 pub mod c_query_worker;
 mod candidates;
 mod input;

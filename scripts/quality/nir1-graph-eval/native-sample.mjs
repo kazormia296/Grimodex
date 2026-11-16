@@ -5,9 +5,8 @@
 //   - renderer `performance.now()` ms: tFetch, tRawReady, tReturn,
 //     graph.arrivedAt. The window (classifyJoin) reads only these.
 //   - the evaluation Native clock (`Instant`, ns since the first anchor):
-//     freshnessStamp.attemptedAtNs, recordRead.startedAtNs / finishedAtNs.
-//     Used only for order and attribution (rule 4 overlap), never for the
-//     window. There is no conversion between the two clocks.
+//     recordRead.startedAtNs / finishedAtNs. Used only for order and
+//     attribution (rule 4 overlap), never for the window. There is no conversion between the two clocks.
 //
 // Pure module: no Electron, no Native, no file.
 
@@ -58,12 +57,6 @@ const SLOT_KINDS = new Set([
   "quarantined",
   "closed",
 ]);
-const STAMP_MATCH = Object.freeze({
-  fresh: true,
-  stale: false,
-  unavailable: null,
-  "stamp0-missing": null,
-});
 const BEGIN_BUSY_CAUSES = new Set([
   "preparing-other-key",
   "in-use",
@@ -79,30 +72,55 @@ const TICKET_BUSY_CAUSES = new Set([
   "unrecorded",
 ]);
 
-/** The Native stamp attempt → the sample's `freshnessStamp`. */
-export function freshnessStampFromNative(stamp) {
-  if (stamp === null || stamp === undefined) return null;
-  if (!Object.hasOwn(STAMP_MATCH, stamp.result))
-    throw new Error(
-      `[artifact] unknown freshness stamp result ${stamp.result}`,
-    );
-  if (stamp.matched !== STAMP_MATCH[stamp.result])
-    throw new Error(
-      `[artifact] freshness stamp ${stamp.result} must carry matched=${STAMP_MATCH[stamp.result]}`,
-    );
+const WORKER_DRIFT_RESULTS = new Set([
+  "not-reached",
+  "clear",
+  "drift",
+  "not-evaluated",
+]);
+const REQUALIFICATION_RESULTS = new Set([
+  "not-reached",
+  "passed",
+  "unavailable",
+  "error",
+]);
+
+/**
+ * K6/7 (ii-b): the Native's drift check of the worker (2-1) and the
+ * requalification of the response (2-2). Every ticket names both (an explicit
+ * `not-reached` when the step did not run); a missing or ill-formed field is a
+ * mismatch between the build and the harness, so `[artifact]`. The check
+ * runs for every pending begin, not only for a parent that joined (K6/7
+ * N-f3): an older `.node` without the fields stops the run even when no
+ * parent joined in the window.
+ */
+export function iiBFieldsFromNativeTicket(ticket) {
+  const drift = ticket?.workerDrift;
+  if (!drift || !WORKER_DRIFT_RESULTS.has(drift.result))
+    throw new Error("[artifact] a ticket lacks its worker drift result");
+  if (drift.cause !== null && typeof drift.cause !== "string")
+    throw new Error("[artifact] the worker drift cause is ill-formed");
+  const requal = ticket?.requalification;
+  if (!requal || !REQUALIFICATION_RESULTS.has(requal.result))
+    throw new Error("[artifact] a ticket lacks its requalification result");
+  if (
+    (requal.reason !== null && typeof requal.reason !== "string") ||
+    typeof requal.returned !== "boolean"
+  )
+    throw new Error("[artifact] the requalification record is ill-formed");
   return {
-    result: stamp.result,
-    matched: stamp.matched,
-    attemptedAtNs: nativeNs(
-      stamp.attemptedAtNs,
-      "freshnessStamp.attemptedAtNs",
-    ),
+    workerDrift: { result: drift.result, cause: drift.cause },
+    requalification: {
+      result: requal.result,
+      reason: requal.reason,
+      returned: requal.returned,
+    },
   };
 }
 
 /**
  * One `nir1GraphEvalSamples` record → the S1b sample fields it owns:
- * the start slot, the stamp attempt, the result's source and the Busy cause
+ * the start slot, the result's source and the Busy cause
  * (S1a table: the begin's cause when the begin answered Busy, the ticket's
  * when the ticket did). Identifiers are not in the record; the caller pairs a
  * record with its sample by order (one record per sample, the log cleared
@@ -132,7 +150,6 @@ export function sampleFieldsFromNativeRecord(record) {
       throw new Error("[artifact] a cached begin carries no ticket");
     return {
       startSlot,
-      freshnessStamp: null,
       source: "cache",
       busyCause: null,
       timing,
@@ -150,7 +167,7 @@ export function sampleFieldsFromNativeRecord(record) {
       busyCause = record.busyCause;
     } else if (record.busyCause !== null)
       throw new Error("[artifact] only a Busy begin names a Busy cause");
-    return { startSlot, freshnessStamp: null, source: null, busyCause, timing };
+    return { startSlot, source: null, busyCause, timing };
   }
   if (record.begin !== "pending")
     throw new Error(`[artifact] unknown begin answer ${record.begin}`);
@@ -168,10 +185,10 @@ export function sampleFieldsFromNativeRecord(record) {
     throw new Error("[artifact] only a Busy ticket names a Busy cause");
   return {
     startSlot,
-    freshnessStamp: freshnessStampFromNative(ticket.freshnessStamp),
     source: ticket.outcome === "available" ? "worker" : null,
     busyCause,
     ticket: {
+      ...iiBFieldsFromNativeTicket(ticket),
       settled: ticket.settled,
       outcome: ticket.outcome ?? null,
       reason: ticket.reason ?? null,

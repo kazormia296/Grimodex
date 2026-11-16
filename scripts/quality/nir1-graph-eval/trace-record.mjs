@@ -68,7 +68,6 @@ export const TRACE_COUNTER_KEYS = Object.freeze([
   "staleReadyRetired",
   "prepareFailures",
   "driftAtQuery",
-  "stamp0Missing",
 ]);
 /** The Main poller's interval (a harness value, not a K6/4 value). */
 export const COUNTER_POLL_INTERVAL_MS = 5;

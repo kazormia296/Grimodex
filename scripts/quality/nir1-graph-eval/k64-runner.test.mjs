@@ -347,8 +347,19 @@ test("receipt: dev の予告は hook の消費者の runner の receipt で、�
       reauthorization: { mode: "restricted" },
       setupReceipt: { logicalToRuntime: { projectId: "p" } },
     },
+    // Prereg v3: the Evidence ranges read once after the samples.
+    evidenceObservation: {
+      readAfterSamples: true,
+      samplesBeforeRead: samples.length,
+      typedRevisions: [],
+    },
     samples,
     checks: {},
+  });
+  assert.deepEqual(receipt.evidenceObservation, {
+    readAfterSamples: true,
+    samplesBeforeRead: samples.length,
+    typedRevisions: [],
   });
   assert.equal(receipt.runnerKind, "k64-hook-consumer");
   assert.equal(receipt.preview, true);

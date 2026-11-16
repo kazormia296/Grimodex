@@ -17,8 +17,10 @@ use crate::nir1_prepared_request::{
 use grimodex_core::narrative_nir1::{
     EntityInput, EvidenceInput, GraphEdgeInput, ScopeBinding, ScopeValue,
 };
-use grimodex_db::narrative_extraction::nir1_graph::c_query_freshness::try_read_c_query_freshness_stamp;
-use grimodex_db::narrative_extraction::nir1_graph::c_query_worker::CQueryRetirement;
+use grimodex_db::narrative_extraction::nir1_graph::c_query_worker::{
+    CQueryRetirement, CQueryWorkerUnavailable,
+};
+use grimodex_db::narrative_extraction::nir1_graph::worker_frame::UnavailableReason;
 use grimodex_db::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
 use grimodex_db::narrative_extraction::nir1_graph::{
     Nir1GraphEdge, Nir1GraphMaterialBinding, Nir1GraphNode, Nir1GraphSceneAssociation,
@@ -70,17 +72,19 @@ struct Plan {
     queries: AtomicUsize,
     /// How long `prepare` takes (milliseconds), interrupted by `release`.
     prepare_delay_ms: AtomicU64,
-    /// The first `prepare` commits a write on the parent connection after the
-    /// owner's S0 stamp, so the first query is answered `stale`.
-    commit_in_first_prepare: AtomicBool,
+    /// The first worker (index 0) answers its query with the worker's own
+    /// `RegistrationDrift` (DR-DBC-7: the fake does not read the database, so
+    /// the drift a real worker would find after a commit is stood in for), so
+    /// the first query is answered `stale`.
+    drift_in_first_worker: AtomicBool,
     prepare_error: Mutex<Option<&'static str>>,
     query_error: Mutex<Option<&'static str>>,
     /// Holds `query` until released.
     hold_query: AtomicBool,
     release: AtomicBool,
     prepare_threads: Mutex<Vec<ThreadId>>,
-    /// Whether the parent's main connection could be read without waiting
-    /// (the S0 premise) at each `prepare`.
+    /// Whether the parent's main connection could be taken without waiting at
+    /// each `prepare` (the wait-0 probe `main_connection_is_free_for_test`).
     prepare_saw_free_connection: Mutex<Vec<bool>>,
     /// True while `prepare` only sleeps: after its own read of the main
     /// connection (and the commit), until the delay ends. A sampler of the
@@ -99,8 +103,9 @@ struct FakeFactory(Arc<Plan>);
 
 impl GraphWorkerFactory for FakeFactory {
     fn create(&self, start: GraphWorkerStart) -> Box<dyn GraphWorker> {
-        self.0.creates.fetch_add(1, Ordering::SeqCst);
+        let index = self.0.creates.fetch_add(1, Ordering::SeqCst);
         Box::new(FakeWorker {
+            index,
             plan: Arc::clone(&self.0),
             snapshot: Some(start.snapshot),
             _binding: start.binding,
@@ -110,6 +115,7 @@ impl GraphWorkerFactory for FakeFactory {
 }
 
 struct FakeWorker {
+    index: usize,
     plan: Arc<Plan>,
     snapshot: Option<grimodex_db::state::ActiveWorkspaceSnapshot>,
     _binding: LiveBinding,
@@ -247,18 +253,12 @@ impl FakeWorker {
 
 impl GraphWorker for FakeWorker {
     fn prepare(&mut self, _project_id: &str) -> anyhow::Result<()> {
-        let index = self.plan.prepares.fetch_add(1, Ordering::SeqCst);
+        self.plan.prepares.fetch_add(1, Ordering::SeqCst);
         lock(&self.plan.prepare_threads).push(thread::current().id());
         let snapshot = self.snapshot.as_ref().expect("snapshot until retired");
-        // S0's premise: while D-final waits, nothing holds the main connection.
+        // While D-final waits, nothing holds the main connection.
         lock(&self.plan.prepare_saw_free_connection)
-            .push(try_read_c_query_freshness_stamp(snapshot.db().db()).is_some());
-        if index == 0 && self.plan.commit_in_first_prepare.load(Ordering::SeqCst) {
-            snapshot.db().db().with_conn(|conn| {
-                conn.execute("UPDATE chat_sessions SET title = title || '.'", [])?;
-                Ok(())
-            })?;
-        }
+            .push(snapshot.db().db().main_connection_is_free_for_test());
         self.plan.preparing.store(true, Ordering::SeqCst);
         self.sleep_interruptibly(Duration::from_millis(
             self.plan.prepare_delay_ms.load(Ordering::SeqCst),
@@ -291,6 +291,12 @@ impl GraphWorker for FakeWorker {
         self.plan.querying.store(false, Ordering::SeqCst);
         if let Some(hook) = lock(&self.plan.on_query).as_ref() {
             hook();
+        }
+        if self.index == 0 && self.plan.drift_in_first_worker.load(Ordering::SeqCst) {
+            return Err(CQueryWorkerUnavailable {
+                reason: UnavailableReason::RegistrationDrift,
+            }
+            .into());
         }
         if let Some(text) = *lock(&self.plan.query_error) {
             return Err(anyhow::anyhow!(text));
@@ -573,8 +579,7 @@ fn a5_a_warming_graph_is_waited_for_outside_the_database_and_reaches_the_request
     rig.open();
     rig.plan.prepare_delay_ms.store(150, Ordering::SeqCst);
     // The owner's counters as the worker answers, while D-final still waits for
-    // the ticket: after the query the owner rebuilds, and that build's S0 may
-    // meet D-final's own reads after the wait, which is not the wait's S0.
+    // the ticket: after the query the owner rebuilds, which is not the wait's.
     let at_query = Arc::new(Mutex::new(None));
     {
         let state = Arc::downgrade(&rig.fixture.state);
@@ -605,14 +610,10 @@ fn a5_a_warming_graph_is_waited_for_outside_the_database_and_reaches_the_request
     assert_eq!(rig.plan.queries.load(Ordering::SeqCst), 1);
     // The owner's thread prepared; D-final's thread did not.
     assert_ne!(lock(&rig.plan.prepare_threads)[0], d_final_thread);
-    // S0's premise held during the wait: the main connection was free and in
-    // autocommit, so the freshness stamp was readable, at S0 and at the query.
+    // The main connection was free and in autocommit during the wait.
     assert!(lock(&rig.plan.prepare_saw_free_connection)[0]);
     let at_query = lock(&at_query).expect("the query ran during the wait");
     assert_eq!(at_query.prepares_started, 1, "only the wait's build ran");
-    assert_eq!(at_query.stamp0_missing, 0);
-    assert_eq!(at_query.stamp_unavailable, 0);
-    assert_eq!(at_query.stamp_fresh, 1);
     // The query asked for the pinned Entity of the query Scene.
     assert_eq!(
         *lock(&rig.plan.requests),
@@ -629,7 +630,7 @@ fn a5_a_stale_graph_waits_for_the_rebuild_and_asks_again() {
     let rig = Rig::new();
     rig.open();
     rig.plan
-        .commit_in_first_prepare
+        .drift_in_first_worker
         .store(true, Ordering::SeqCst);
     let selected = rig.request().expect("request");
     assert!(
@@ -637,11 +638,11 @@ fn a5_a_stale_graph_waits_for_the_rebuild_and_asks_again() {
         "{:?}",
         selected.graph_outcome()
     );
-    // Two builds served the request: the first was stale at its query, so no
-    // query reached the worker until the rebuild.
+    // Two builds served the request: the first worker answered its query with
+    // its own drift (stale), the rebuild's worker answered the second.
     assert!(rig.plan.prepares.load(Ordering::SeqCst) >= 2);
-    assert_eq!(rig.plan.queries.load(Ordering::SeqCst), 1);
-    assert_eq!(rig.owner().diagnostics().stamp_stale, 1);
+    assert_eq!(rig.plan.queries.load(Ordering::SeqCst), 2);
+    assert_eq!(rig.owner().diagnostics().drift_at_query, 1);
     assert_eq!(
         lock(&rig.plan.prepare_saw_free_connection)[..2],
         [true, true]
@@ -671,7 +672,7 @@ fn sample_main_connection(
     let started = Instant::now();
     let (mut samples, mut free) = (0usize, 0usize);
     while started.elapsed() < window {
-        let was_free = try_read_c_query_freshness_stamp(workspace.db().db()).is_some();
+        let was_free = workspace.db().db().main_connection_is_free_for_test();
         if !during() {
             break;
         }
@@ -1303,13 +1304,6 @@ fn a12_each_kind_of_result_is_a_value_of_the_preparation() {
         }
     );
     assert_eq!(rig.owner().diagnostics().begins, 0);
-}
-
-#[test]
-fn a12_busy_names_its_cause() {
-    // The cause is the owner's stamp counters moving during the request.
-    assert_eq!(busy_cause_of(10, 10), GraphBusyCause::SlotInUse);
-    assert_eq!(busy_cause_of(10, 11), GraphBusyCause::StampUnreadable);
 }
 
 // ---------------------------------------------------------------------------

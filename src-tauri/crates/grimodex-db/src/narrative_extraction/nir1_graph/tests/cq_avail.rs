@@ -2844,7 +2844,7 @@ fn native_worker_registers_multiple_product_shaped_revisions() -> Result<()> {
 }
 
 // DI-1a (DR-DI1A-5b): what D-final's wait for a READY costs. A rebuild after a
-// capture's commit is a new worker child's `prepare` (S0 stamp, spawn,
+// capture's commit is a new worker child's `prepare` (admission, spawn,
 // registration) followed by one query; this prints each repetition's two
 // durations for a typical project and for projects near the practical
 // capacity, so the budget W of the wait is chosen from measurements. It

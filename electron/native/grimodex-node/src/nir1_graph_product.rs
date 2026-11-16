@@ -32,7 +32,6 @@ use grimodex_core::narrative_nir1::MAX_GRAPH_SCENES;
 use grimodex_db::{
     narrative_extraction::{
         nir1_graph::{
-            c_query_freshness::{try_read_c_query_freshness_stamp, CQueryFreshnessStamp},
             c_query_worker::{
                 classify_c_query_failure, CQueryFailure, CQueryRetirement, CQueryWorkerOwner,
                 REQUEST_BYTES,
@@ -42,7 +41,7 @@ use grimodex_db::{
         },
         Nir1GraphProductPublication, Nir1GraphRequest,
     },
-    state::{active_database, active_workspace_snapshot, ActiveWorkspaceSnapshot},
+    state::{active_workspace_snapshot, ActiveWorkspaceSnapshot},
     workspace_lifecycle::{
         LifecycleEdge, LifecycleState, LiveBinding, WorkspaceLifecycleCore,
         WorkspaceLifecycleObserver,
@@ -442,10 +441,6 @@ pub(crate) struct GraphOwnerDiagnostics {
     pub(crate) prepares_started: u64,
     pub(crate) prepares_ready: u64,
     pub(crate) prepare_failures: u64,
-    pub(crate) stamp0_missing: u64,
-    pub(crate) stamp_fresh: u64,
-    pub(crate) stamp_stale: u64,
-    pub(crate) stamp_unavailable: u64,
     pub(crate) drift_at_query: u64,
     pub(crate) retired_idle: u64,
     pub(crate) retired_edge: u64,
@@ -477,10 +472,6 @@ struct DiagnosticCounters {
     prepares_started: AtomicU64,
     prepares_ready: AtomicU64,
     prepare_failures: AtomicU64,
-    stamp0_missing: AtomicU64,
-    stamp_fresh: AtomicU64,
-    stamp_stale: AtomicU64,
-    stamp_unavailable: AtomicU64,
     drift_at_query: AtomicU64,
     retired_idle: AtomicU64,
     retired_edge: AtomicU64,
@@ -993,7 +984,8 @@ struct TicketShared {
     edge_epoch: u64,
     begun_at: Instant,
     owner: Arc<Shared>,
-    /// CP-4 S1a: the stamp attempt and the Busy cause of this ticket.
+    /// CP-4 S1a: the Busy cause of this ticket (DR-DBC-7 adds the worker's
+    /// drift check and the requalification result).
     #[cfg(feature = "nir1-graph-eval")]
     eval_notes: crate::nir1_graph_eval::TicketNotes,
     /// CQ-DEFER: the ticket of a held Related Scenes query. Its cancellation
@@ -1582,10 +1574,6 @@ impl Nir1GraphProductOwner {
             prepares_started: read(&d.prepares_started),
             prepares_ready: read(&d.prepares_ready),
             prepare_failures: read(&d.prepare_failures),
-            stamp0_missing: read(&d.stamp0_missing),
-            stamp_fresh: read(&d.stamp_fresh),
-            stamp_stale: read(&d.stamp_stale),
-            stamp_unavailable: read(&d.stamp_unavailable),
             drift_at_query: read(&d.drift_at_query),
             retired_idle: read(&d.retired_idle),
             retired_edge: read(&d.retired_edge),
@@ -1734,6 +1722,28 @@ impl Nir1GraphProductOwner {
 impl GraphTicketWaiter {
     pub(crate) fn begun_at_for_eval(&self) -> Instant {
         self.shared.begun_at
+    }
+
+    /// Another waiter on the same ticket (the requalification hook in
+    /// `related_scenes/graph.rs` keeps one: the await plan moves away).
+    pub(crate) fn clone_for_eval(&self) -> GraphTicketWaiter {
+        GraphTicketWaiter {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
+    pub(crate) fn note_requalification_for_eval(
+        &self,
+        result: &'static str,
+        reason: Option<GraphUnavailable>,
+    ) {
+        self.shared
+            .eval_notes
+            .requalification(result, reason.map(GraphUnavailable::as_str));
+    }
+
+    pub(crate) fn note_requalification_returned_for_eval(&self) {
+        self.shared.eval_notes.requalification_returned();
     }
 
     pub(crate) fn notes_for_eval(&self) -> crate::nir1_graph_eval::TicketNoteSnapshot {
@@ -2383,7 +2393,7 @@ fn run_session(guard: &mut SessionGuard, context: &SessionContext) {
 enum Built {
     /// The worker is prepared on this thread and not yet queried; the slot is
     /// not yet published as READY.
-    Ready(Option<CQueryFreshnessStamp>),
+    Ready,
     /// The thread must exit; the reason is what a held query is told.
     Exit(GraphUnavailable),
 }
@@ -2395,10 +2405,10 @@ fn build_and_serve(
     epoch: &mut u64,
 ) -> Next {
     let shared = Arc::clone(&context.shared);
-    let stamp = match build_worker(guard, context, key, *epoch, None) {
-        Built::Ready(stamp) => stamp,
+    match build_worker(guard, context, key, *epoch, None) {
+        Built::Ready => {}
         Built::Exit(_) => return Next::Exit,
-    };
+    }
     {
         let mut slot = lock(&shared.slot);
         slot.phase = Phase::Ready;
@@ -2410,10 +2420,10 @@ fn build_and_serve(
     if shared.take_unserved(&key.project_id) {
         shared.notify_ready(&key.project_id);
     }
-    serve_until_retired(guard, context, key, epoch, stamp)
+    serve_until_retired(guard, context, key, epoch)
 }
 
-/// The rebuild window, the admission (with the S0 stamp), the worker's
+/// The rebuild window, the admission, the worker's
 /// creation and its prepare, with the failure ledger. Ends at READY, which the
 /// caller publishes (or not) itself.
 fn build_worker(
@@ -2432,7 +2442,7 @@ fn build_worker(
         });
     }
     // LP-GATE (DR-CQD-GATE-3, 4): a held query's window opens here, before the
-    // S0 stamp, once no Freshness cycle is in flight. The window then follows
+    // admission, once no Freshness cycle is in flight. The window then follows
     // the answer to its join. Past the wait budget the query goes on without
     // one, as before the gate; a cancellation or an edge is caught below.
     if let Some(ticket) = held {
@@ -2443,7 +2453,7 @@ fn build_worker(
             ticket.attach_window(window);
         }
     }
-    let Some((snapshot, core, stamp)) = admit(context, key, epoch) else {
+    let Some((snapshot, core)) = admit(context, key, epoch) else {
         return Built::Exit(GraphUnavailable::Invalidated);
     };
     // CQ-DEFER: a held query cancelled meanwhile creates no worker.
@@ -2518,7 +2528,7 @@ fn build_worker(
         retire_current(guard);
         return Built::Exit(GraphUnavailable::Invalidated);
     }
-    Built::Ready(stamp)
+    Built::Ready
 }
 
 /// What the owner thread takes out of the slot once the begin released it.
@@ -2552,15 +2562,15 @@ fn run_deferred(
     // Until it is answered the held query is this thread's in-flight ticket,
     // so a panic settles it too.
     guard.in_flight = Some(Arc::clone(&held.ticket));
-    let stamp = match build_worker(guard, context, key, *epoch, Some(&held.ticket)) {
-        Built::Ready(stamp) => stamp,
+    match build_worker(guard, context, key, *epoch, Some(&held.ticket)) {
+        Built::Ready => {}
         Built::Exit(reason) => {
             if let Some(ticket) = guard.in_flight.take() {
                 ticket.deliver(GraphTicketOutcome::Unavailable(reason));
             }
             return;
         }
-    };
+    }
     if held.ticket.cancel.load(Ordering::SeqCst) {
         // Settled as cancelled already: nothing is queried.
         guard.in_flight = None;
@@ -2578,7 +2588,6 @@ fn run_deferred(
         guard,
         context,
         *epoch,
-        stamp.as_ref(),
         held.request,
         held.ticket,
         true,
@@ -2755,13 +2764,13 @@ fn rekey(shared: &Shared, guard: &mut SessionGuard, key: &mut GraphKey, epoch: &
     }
 }
 
-/// Checks the admission conditions and takes the S0 freshness stamp. The
+/// Checks the admission conditions. The
 /// workspace pin is kept only for prepare; the Native lock is never held here.
 fn admit(
     context: &SessionContext,
     key: &GraphKey,
     epoch: u64,
-) -> Option<(ActiveWorkspaceSnapshot, WorkspaceLifecycleCore, Option<CQueryFreshnessStamp>)> {
+) -> Option<(ActiveWorkspaceSnapshot, WorkspaceLifecycleCore)> {
     let shared = &context.shared;
     if edge_or_closed(shared, epoch) {
         return None;
@@ -2786,16 +2795,12 @@ fn admit(
     {
         return None;
     }
-    let stamp = try_read_c_query_freshness_stamp(snapshot.db().db());
-    if stamp.is_none() {
-        bump(&shared.diagnostics.stamp0_missing);
-    }
     let core = state.ws.lifecycle_core();
     drop(state);
     if edge_or_closed(shared, epoch) {
         return None;
     }
-    Some((snapshot, core, stamp))
+    Some((snapshot, core))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2812,7 +2817,6 @@ fn serve_until_retired(
     context: &SessionContext,
     key: &mut GraphKey,
     epoch: &mut u64,
-    stamp0: Option<CQueryFreshnessStamp>,
 ) -> Next {
     let shared = Arc::clone(&context.shared);
     loop {
@@ -2872,7 +2876,6 @@ fn serve_until_retired(
                     guard,
                     context,
                     *epoch,
-                    stamp0.as_ref(),
                     request,
                     ticket,
                     false,
@@ -2923,7 +2926,6 @@ fn serve_query(
     guard: &mut SessionGuard,
     context: &SessionContext,
     epoch: u64,
-    stamp0: Option<&CQueryFreshnessStamp>,
     request: Nir1GraphRequest,
     ticket: Arc<TicketShared>,
     held: bool,
@@ -2944,39 +2946,14 @@ fn serve_query(
         }
         return ServeNext::Ready;
     }
-    #[cfg(feature = "nir1-graph-eval")]
-    let eval_stamp_attempted_at = Instant::now();
-    let stamp1 = read_stamp_for_query(context, &guard.binding);
-    #[cfg(feature = "nir1-graph-eval")]
-    ticket.eval_notes.stamp(eval_stamp_attempted_at, stamp0, stamp1.as_ref());
-    match (stamp0, stamp1.as_ref()) {
-        (Some(before), Some(after)) if before != after => {
-            bump(&shared.diagnostics.stamp_stale);
-            ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Stale));
-            guard.in_flight = None;
-            retire_current(guard);
-            if guard.quarantined {
-                return ServeNext::Exit;
-            }
-            return ServeNext::Rebuild;
-        }
-        (Some(_), Some(_)) => bump(&shared.diagnostics.stamp_fresh),
-        _ => bump(&shared.diagnostics.stamp_unavailable),
-    }
-    if ticket.cancel.load(Ordering::SeqCst) {
-        ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Cancelled));
-        guard.in_flight = None;
-        if !held {
-            return_to_ready(shared);
-        }
-        return ServeNext::Ready;
-    }
     let Some(worker) = guard.worker.as_mut() else {
         ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Failed));
         guard.in_flight = None;
         return ServeNext::Exit;
     };
     let result = worker.query(&request, &ticket.cancel);
+    #[cfg(feature = "nir1-graph-eval")]
+    ticket.eval_notes.worker_check(result.as_ref().err().map(classify_c_query_failure));
     let worker = guard.worker.take();
     let quarantined = worker.as_ref().is_some_and(|worker| worker.quarantined());
     let retirement = worker.map(|worker| worker.retire());
@@ -3032,15 +3009,6 @@ fn serve_query(
 
 fn return_to_ready(shared: &Shared) {
     lock(&shared.slot).phase = Phase::Ready;
-}
-
-fn read_stamp_for_query(context: &SessionContext, binding: &LiveBinding) -> Option<CQueryFreshnessStamp> {
-    let state = context.state.upgrade()?;
-    let db = active_database(&state.ws).ok()?;
-    if db.identity() != binding.authority_instance {
-        return None;
-    }
-    try_read_c_query_freshness_stamp(db.db())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

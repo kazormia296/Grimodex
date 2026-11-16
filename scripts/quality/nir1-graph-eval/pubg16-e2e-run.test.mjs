@@ -227,7 +227,7 @@ const g01Base = [
   "ja",
   "--en-model",
   "en",
-  ...["s4", "k62", "k64", "k65", "k66"].flatMap((name) => [
+  ...["s4", "k62", "k64", "k65", "k66", "k67"].flatMap((name) => [
     name === "s4" ? "--s4-commit" : `--${name}-commit`,
     "a".repeat(40),
   ]),
@@ -339,6 +339,7 @@ test("the G-01 diagnostic's head is the other receipts' head: freeze heads, the 
     k64: { freezeCommit: "3".repeat(40), sha256: "4".repeat(64) },
     k65: { freezeCommit: "5".repeat(40), sha256: "6".repeat(64) },
     k66: { freezeCommit: "7".repeat(40), sha256: "8".repeat(64) },
+    k67: { freezeCommit: "b".repeat(40), sha256: "c".repeat(64) },
     observationPrep: {
       commit: "9".repeat(40),
       freezeRecordSha256: "a".repeat(64),
@@ -350,7 +351,7 @@ test("the G-01 diagnostic's head is the other receipts' head: freeze heads, the 
   assert.equal(head.observationPrep.commit, "9".repeat(40));
   assert.equal(head.observationPrep.freezeRecordSha256, "a".repeat(64));
   assert.equal(head.runStartedAtUtc, "2026-11-09T01:02:03.000Z");
-  for (const name of ["k62", "k64", "k65", "k66"])
+  for (const name of ["k62", "k64", "k65", "k66", "k67"])
     assert.deepEqual(head[name], parts[name]);
   assert.equal(head.traces, undefined);
   for (const name of Object.keys(parts))

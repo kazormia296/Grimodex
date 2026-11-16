@@ -89,6 +89,14 @@ function completeSetupFields(value) {
           outcome: row?.outcome ?? null,
         }))
       : null,
+    // DR-CP4-L-27: what the cold DB keeps of maintenance (read back after it
+    // was copied). A receipt that does not carry it is not read as quiet.
+    maintenanceReadBack: value?.readBack?.maintenance
+      ? {
+          running: value.readBack.maintenance.running ?? null,
+          retryPending: value.readBack.maintenance.retryPending ?? null,
+        }
+      : null,
   };
 }
 
@@ -127,6 +135,13 @@ function completeSetupProblems(fields) {
     maintenance.at(-1).outcome !== "reached"
   )
     problems.push("maintenanceAttempts");
+  // DR-CP4-L-27 (the user's answer of 2026-11-16, contracts `337ff239`): a
+  // cold DB that keeps a run `running` or a planned retry is not a quiet
+  // starting point; the measurement does not start on it (the setup stops on
+  // the same, so this is the second guard, on the receipt itself).
+  const quiet = fields?.maintenanceReadBack;
+  if (!quiet || quiet.running !== 0 || quiet.retryPending !== 0)
+    problems.push("maintenanceQuiet");
   if (fields?.hasHoldSession && !fields?.preMutationIndexState)
     problems.push("preMutationIndexState");
   return problems;
@@ -266,7 +281,7 @@ export function assertCompleteSetupReceipt(sealed) {
     const problems = completeSetupProblems(sealed.completeSetup);
     if (problems.length > 0)
       throw new Error(
-        `[precheck] the setup receipt ${sealed.path} is not a complete setup with its measurement point, seal openings, maintenance openings and setup-only Main (${problems.join(", ")})`,
+        `[precheck] the setup receipt ${sealed.path} is not a complete setup with its measurement point, seal openings, maintenance openings, quiet maintenance and setup-only Main (${problems.join(", ")})`,
       );
   }
   return sealed;

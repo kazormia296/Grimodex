@@ -63,10 +63,9 @@ const DPRIME_COUNTER_KEYS = Object.freeze([
   "staleReadyRetired",
   "prepareFailures",
   "driftAtQuery",
-  "stamp0Missing",
   // K6/6 変える点 7: R-6 (b) reads these two. The evaluation Native already
   // reports them (`nir1_graph_eval/mod.rs`); a record whose counters carry no
-  // such key (a (b) trace, `trace-record.mjs`) keeps the seven keys above.
+  // such key (a (b) trace, `trace-record.mjs`) keeps the six keys above.
   "preparesStarted",
   "preparesReady",
 ]);
@@ -371,6 +370,11 @@ function ticketOf(record) {
     reason: ticket.reason ?? null,
     disposition: ticket.disposition ?? null,
     busyCause: ticket.busyCause ?? null,
+    // K6/7 (ii-b): the Native's worker drift check and requalification of
+    // this ticket, carried as observed (`null` for a record that lacks them,
+    // which followup.mjs stops on for a parent that joined: N-f1).
+    workerDrift: ticket.workerDrift ?? null,
+    requalification: ticket.requalification ?? null,
   };
 }
 
@@ -451,6 +455,7 @@ export function buildFollowUpRecord({
       lateGraphInDisplay: lateGraphShown(view, parent, GRAPH_EVAL_D_MS),
       rSceneIds: parentResult.rawSceneIds,
       irSceneIds: parentResult.irSceneIds,
+      ...evidenceFieldsOf(parent),
       ticket: ticketOf(parentRecord),
       irRetryTimer: irRetryTimerOf(parentResult),
       // K6/6 FR-7: the parent's own contribution, the same unit as F6's
@@ -549,6 +554,21 @@ function contributionOf(view, child, result) {
   };
 }
 
+/**
+ * Prereg v3: what the four evidence items read of one fetch (hashes, ranges,
+ * lengths and IDs only; `hashObservationPaths` already dropped the plain
+ * texts). Absent for an observation that carries none (a (b) trace's, an
+ * older one): the verdict holds the items, the record is not refused.
+ */
+function evidenceFieldsOf(fetch) {
+  return {
+    ...(fetch?.evidence !== undefined ? { evidence: fetch.evidence } : {}),
+    ...(fetch?.rowExcerpts !== undefined
+      ? { rowExcerpts: fetch.rowExcerpts }
+      : {}),
+  };
+}
+
 function childRecordOf(view, child, records, aligned) {
   const result = child.result;
   const rows = view.rowsOf(child);
@@ -602,6 +622,7 @@ function childRecordOf(view, child, records, aligned) {
       rSceneIds: result?.rawSceneIds ?? [],
       irSceneIds: result?.irSceneIds ?? [],
       finalSceneIds: result?.finalSceneIds ?? [],
+      ...evidenceFieldsOf(child),
     },
     q4: {
       beginMs: nsToMs(native.record?.tBeginNs, native.record?.tReturnedNs),

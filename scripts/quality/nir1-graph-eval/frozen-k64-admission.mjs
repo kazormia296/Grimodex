@@ -29,12 +29,14 @@ import {
   readK64FreezeHead,
   readK65FreezeHead,
   readK66FreezeHead,
+  readK67FreezeHead,
 } from "./admission.mjs";
 import {
   FROZEN_FIXTURE_SHA256,
   K64_FREEZE,
   K65_FREEZE,
   K66_FREEZE,
+  K67_FREEZE,
   rejectOverrides,
 } from "./constants.mjs";
 import { loadProcedureFile } from "./procedure-file.mjs";
@@ -233,6 +235,7 @@ export function admitFormalK64Run(input, deps = {}) {
     "k64Commit",
     "k65Commit",
     "k66Commit",
+    "k67Commit",
     "buildReceipt",
     "productReceipt",
     "defaultAddonSha256",
@@ -242,6 +245,7 @@ export function admitFormalK64Run(input, deps = {}) {
     freeze = K64_FREEZE,
     freeze65 = K65_FREEZE,
     freeze66 = K66_FREEZE,
+    freeze67 = K67_FREEZE,
     admitGraphCase = admitGraphCaseRun,
   } = deps;
   const { root } = input;
@@ -249,6 +253,9 @@ export function admitFormalK64Run(input, deps = {}) {
   const k64 = readK64FreezeHead({ root, commit: input.k64Commit }, freeze);
   const k65 = readK65FreezeHead({ root, commit: input.k65Commit }, freeze65);
   const k66 = readK66FreezeHead({ root, commit: input.k66Commit }, freeze66);
+  // K6/7-N9′: no /7 freeze commit (a run that started before the /7 freeze)
+  // is not admitted.
+  const k67 = readK67FreezeHead({ root, commit: input.k67Commit }, freeze67);
   if (!input.prepCommit)
     throw new Error("[precheck] S5 admission: the S4 commit is not given");
   const s2 = readS2AtCommit({
@@ -282,6 +289,7 @@ export function admitFormalK64Run(input, deps = {}) {
     k64Commit: input.k64Commit,
     k65Commit: input.k65Commit,
     k66Commit: input.k66Commit,
+    k67Commit: input.k67Commit,
     ...(input.ratification5 !== undefined
       ? { ratification5: input.ratification5 }
       : {}),
@@ -291,6 +299,7 @@ export function admitFormalK64Run(input, deps = {}) {
     k64,
     k65,
     k66,
+    k67,
     s2,
     pins,
     procedure,

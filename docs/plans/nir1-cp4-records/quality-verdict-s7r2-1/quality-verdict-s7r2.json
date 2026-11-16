@@ -1,0 +1,2668 @@
+{
+  "schema": "nir1-cp4-quality-verdict/1",
+  "positioning": "outside-procedure-supplementary-record",
+  "allowList": {
+    "s4Commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+    "candidate": "29a120ddd3dd8ec5a43845a76cbda837e9b20f6a"
+  },
+  "policy": {
+    "percentile": 0.95,
+    "b": 54.2,
+    "d": 40,
+    "limit": 94.2,
+    "source": {
+      "B": "Raw-only p95(t_return-t_fetch), actual Electron IPC route only",
+      "D": "min(100ms, 0.20*B)",
+      "hybridP95Limit": "B+D",
+      "percentileRule": "nearest-rank sorted[ceil(p*N)-1]; pooled equal query counts",
+      "procedureFile": "values.bMs, values.hybridP95LimitMs, values.dMs"
+    },
+    "metricTolerance": 1e-12
+  },
+  "blockedDetermination": "ledger",
+  "variants": [
+    {
+      "variantKey": "G-01/v1",
+      "caseId": "G-01",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "requeryRowsWithoutVariantKey": 0,
+      "requeryRowsUnknownVariantKey": 0,
+      "displayed": {
+        "firstRender": 30,
+        "followUp": 0,
+        "notDisplayed": 0
+      },
+      "notDisplayedFailures": [],
+      "indexReadyRequery": {
+        "eligible": 0,
+        "graphShown": 0,
+        "graphEdgeCount": 0,
+        "outsideExpectationAdded": 0,
+        "outOfD3": 0,
+        "outOfD3Rows": [],
+        "problems": []
+      },
+      "lists": {
+        "rPlusIr": [
+          "g01-question"
+        ],
+        "graph": [
+          "g01-question",
+          "g01-mira"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.6309297535714575
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.6309297535714574
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 46.20000001788139,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 55.599999994039536,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "pass",
+          "improved": true,
+          "matchesPredeclared": true,
+          "rPlusIr": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          },
+          "graph": {
+            "recallAt8": 1,
+            "ndcgAt8": 0.6309297535714575
+          },
+          "predeclared": {
+            "rPlusIr": {
+              "recallAt8": 0,
+              "ndcgAt8": 0
+            },
+            "rPlusIrPlusGraph": {
+              "recallAt8": 1,
+              "ndcgAt8": 0.6309297535714574
+            }
+          }
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 1,
+          "deltaNdcgAt8": 0.6309297535714575
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "graph-contributed-parent-counted": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "a2-index-ready-requery-forbidden": {
+              "status": "n/a",
+              "eligible": 0,
+              "graphShown": 0,
+              "graphEdgeCount": 0,
+              "outsideExpectationAdded": 0,
+              "outOfD3": 0,
+              "outOfD3Rows": [],
+              "problems": []
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-02/base",
+      "caseId": "G-02",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "requeryRowsWithoutVariantKey": 0,
+      "requeryRowsUnknownVariantKey": 0,
+      "displayed": {
+        "firstRender": 28,
+        "followUp": 2,
+        "notDisplayed": 0
+      },
+      "notDisplayedFailures": [],
+      "indexReadyRequery": {
+        "eligible": 0,
+        "graphShown": 0,
+        "graphEdgeCount": 0,
+        "outsideExpectationAdded": 0,
+        "outOfD3": 0,
+        "outOfD3Rows": [],
+        "problems": []
+      },
+      "lists": {
+        "rPlusIr": [
+          "g02-attach",
+          "g02-probe"
+        ],
+        "graph": [
+          "g02-attach",
+          "g02-probe",
+          "g02-tamsin-first"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 20.19999998807907,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 59.70000001788139,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 1,
+          "deltaNdcgAt8": 0.5
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "graph-contributed-parent-counted": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "a2-index-ready-requery-forbidden": {
+              "status": "n/a",
+              "eligible": 0,
+              "graphShown": 0,
+              "graphEdgeCount": 0,
+              "outsideExpectationAdded": 0,
+              "outOfD3": 0,
+              "outOfD3Rows": [],
+              "problems": []
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-03/base",
+      "caseId": "G-03",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "requeryRowsWithoutVariantKey": 0,
+      "requeryRowsUnknownVariantKey": 0,
+      "displayed": {
+        "firstRender": 30,
+        "followUp": 0,
+        "notDisplayed": 0
+      },
+      "notDisplayedFailures": [],
+      "indexReadyRequery": {
+        "eligible": 0,
+        "graphShown": 0,
+        "graphEdgeCount": 0,
+        "outsideExpectationAdded": 0,
+        "outOfD3": 0,
+        "outOfD3Rows": [],
+        "problems": []
+      },
+      "lists": {
+        "rPlusIr": [
+          "g03-c4",
+          "g03-c3",
+          "g03-c2",
+          "g03-c1",
+          "g03-c7",
+          "g03-c6",
+          "g03-c5",
+          "g03-c8"
+        ],
+        "graph": [
+          "g03-c4",
+          "g03-c3",
+          "g03-c2",
+          "g03-c1",
+          "g03-c7",
+          "g03-c6",
+          "g03-c5",
+          "g03-c8"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 24,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 49.80000001192093,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0,
+          "deltaNdcgAt8": 0
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "graph-contributed-parent-counted": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "a2-index-ready-requery-forbidden": {
+              "status": "n/a",
+              "eligible": 0,
+              "graphShown": 0,
+              "graphEdgeCount": 0,
+              "outsideExpectationAdded": 0,
+              "outOfD3": 0,
+              "outOfD3Rows": [],
+              "problems": []
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-03/frontier-exceeded",
+      "caseId": "G-03",
+      "expectedGraph": "unavailable",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "requeryRowsWithoutVariantKey": 0,
+      "requeryRowsUnknownVariantKey": 0,
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 0,
+        "notDisplayed": 0
+      },
+      "notDisplayedFailures": [],
+      "indexReadyRequery": {
+        "eligible": 0,
+        "graphShown": 0,
+        "graphEdgeCount": 0,
+        "outsideExpectationAdded": 0,
+        "outOfD3": 0,
+        "outOfD3Rows": [],
+        "problems": []
+      },
+      "lists": {
+        "rPlusIr": [
+          "g03-c4",
+          "g03-c3",
+          "g03-c2",
+          "g03-c1",
+          "g03-c7",
+          "g03-c6",
+          "g03-c5",
+          "g03-c8"
+        ],
+        "graph": [
+          "g03-c4",
+          "g03-c3",
+          "g03-c2",
+          "g03-c1",
+          "g03-c7",
+          "g03-c6",
+          "g03-c5",
+          "g03-c8"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 23.700000017881393,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 63.80000001192093,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "n/a",
+        "checked": 0,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0,
+          "deltaNdcgAt8": 0
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "n/a"
+            },
+            "graph-contributed-parent-counted": {
+              "status": "n/a"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "a2-index-ready-requery-forbidden": {
+              "status": "n/a",
+              "eligible": 0,
+              "graphShown": 0,
+              "graphEdgeCount": 0,
+              "outsideExpectationAdded": 0,
+              "outOfD3": 0,
+              "outOfD3Rows": [],
+              "problems": []
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-04/base",
+      "caseId": "G-04",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "requeryRowsWithoutVariantKey": 0,
+      "requeryRowsUnknownVariantKey": 0,
+      "displayed": {
+        "firstRender": 25,
+        "followUp": 5,
+        "notDisplayed": 0
+      },
+      "notDisplayedFailures": [],
+      "indexReadyRequery": {
+        "eligible": 0,
+        "graphShown": 0,
+        "graphEdgeCount": 0,
+        "outsideExpectationAdded": 0,
+        "outOfD3": 0,
+        "outOfD3Rows": [],
+        "problems": []
+      },
+      "lists": {
+        "rPlusIr": [
+          "g04-control"
+        ],
+        "graph": [
+          "g04-control",
+          "g04-lio-landing"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 0.5,
+          "ndcgAt8": 0.4966392596877323
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0.5,
+          "ndcgAt8": 0.4966392596877323
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 19.5,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 59.80000001192093,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0.5,
+          "deltaNdcgAt8": 0.4966392596877323
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "graph-contributed-parent-counted": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "a2-index-ready-requery-forbidden": {
+              "status": "n/a",
+              "eligible": 0,
+              "graphShown": 0,
+              "graphEdgeCount": 0,
+              "outsideExpectationAdded": 0,
+              "outOfD3": 0,
+              "outOfD3Rows": [],
+              "problems": []
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-05/base",
+      "caseId": "G-05",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "requeryRowsWithoutVariantKey": 0,
+      "requeryRowsUnknownVariantKey": 0,
+      "displayed": {
+        "firstRender": 29,
+        "followUp": 1,
+        "notDisplayed": 0
+      },
+      "notDisplayedFailures": [],
+      "indexReadyRequery": {
+        "eligible": 0,
+        "graphShown": 0,
+        "graphEdgeCount": 0,
+        "outsideExpectationAdded": 0,
+        "outOfD3": 0,
+        "outOfD3Rows": [],
+        "problems": []
+      },
+      "lists": {
+        "rPlusIr": [
+          "g05-control",
+          "g05-xan-watch"
+        ],
+        "graph": [
+          "g05-control",
+          "g05-xan-watch"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0.5,
+          "ndcgAt8": 0.4966392596877323
+        },
+        "graph": {
+          "recallAt8": 0.5,
+          "ndcgAt8": 0.4966392596877323
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0.5,
+          "ndcgAt8": 0.4966392596877323
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0.5,
+          "ndcgAt8": 0.4966392596877323
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 18.700000017881393,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 54.70000001788139,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0,
+          "deltaNdcgAt8": 0
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "graph-contributed-parent-counted": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "a2-index-ready-requery-forbidden": {
+              "status": "n/a",
+              "eligible": 0,
+              "graphShown": 0,
+              "graphEdgeCount": 0,
+              "outsideExpectationAdded": 0,
+              "outOfD3": 0,
+              "outOfD3Rows": [],
+              "problems": []
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-06/base",
+      "caseId": "G-06",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "requeryRowsWithoutVariantKey": 0,
+      "requeryRowsUnknownVariantKey": 0,
+      "displayed": {
+        "firstRender": 30,
+        "followUp": 0,
+        "notDisplayed": 0
+      },
+      "notDisplayedFailures": [],
+      "indexReadyRequery": {
+        "eligible": 0,
+        "graphShown": 0,
+        "graphEdgeCount": 0,
+        "outsideExpectationAdded": 0,
+        "outOfD3": 0,
+        "outOfD3Rows": [],
+        "problems": []
+      },
+      "lists": {
+        "rPlusIr": [
+          "g06-c1",
+          "g06-c7",
+          "g06-c2",
+          "g06-c5",
+          "g06-c6",
+          "g06-c4",
+          "g06-c8",
+          "g06-c3"
+        ],
+        "graph": [
+          "g06-c1",
+          "g06-c7",
+          "g06-c2",
+          "g06-c5",
+          "g06-c6",
+          "g06-c4",
+          "g06-c8",
+          "g06-c3"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 24.30000001192093,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 48.400000005960464,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0,
+          "deltaNdcgAt8": 0
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "graph-contributed-parent-counted": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "a2-index-ready-requery-forbidden": {
+              "status": "n/a",
+              "eligible": 0,
+              "graphShown": 0,
+              "graphEdgeCount": 0,
+              "outsideExpectationAdded": 0,
+              "outOfD3": 0,
+              "outOfD3Rows": [],
+              "problems": []
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-07/base",
+      "caseId": "G-07",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "requeryRowsWithoutVariantKey": 0,
+      "requeryRowsUnknownVariantKey": 0,
+      "displayed": {
+        "firstRender": 12,
+        "followUp": 18,
+        "notDisplayed": 0
+      },
+      "notDisplayedFailures": [],
+      "indexReadyRequery": {
+        "eligible": 0,
+        "graphShown": 0,
+        "graphEdgeCount": 0,
+        "outsideExpectationAdded": 0,
+        "outOfD3": 0,
+        "outOfD3Rows": [],
+        "problems": []
+      },
+      "lists": {
+        "rPlusIr": [
+          "g07-attach",
+          "g07-probe"
+        ],
+        "graph": [
+          "g07-attach",
+          "g07-probe",
+          "g07-pell-dock"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 21,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 59.900000005960464,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 1,
+          "deltaNdcgAt8": 0.5
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "graph-contributed-parent-counted": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "a2-index-ready-requery-forbidden": {
+              "status": "n/a",
+              "eligible": 0,
+              "graphShown": 0,
+              "graphEdgeCount": 0,
+              "outsideExpectationAdded": 0,
+              "outOfD3": 0,
+              "outOfD3Rows": [],
+              "problems": []
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "caseId": "G-08",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "requeryRowsWithoutVariantKey": 0,
+      "requeryRowsUnknownVariantKey": 0,
+      "displayed": {
+        "firstRender": 30,
+        "followUp": 0,
+        "notDisplayed": 0
+      },
+      "notDisplayedFailures": [],
+      "indexReadyRequery": {
+        "eligible": 0,
+        "graphShown": 0,
+        "graphEdgeCount": 0,
+        "outsideExpectationAdded": 0,
+        "outOfD3": 0,
+        "outOfD3Rows": [],
+        "problems": []
+      },
+      "lists": {
+        "rPlusIr": [
+          "g08-control",
+          "g08-attach"
+        ],
+        "graph": [
+          "g08-control",
+          "g08-attach",
+          "g08-cass-attic"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 21.5,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 53.30000001192093,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 1,
+          "deltaNdcgAt8": 0.5
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "graph-contributed-parent-counted": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "a2-index-ready-requery-forbidden": {
+              "status": "n/a",
+              "eligible": 0,
+              "graphShown": 0,
+              "graphEdgeCount": 0,
+              "outsideExpectationAdded": 0,
+              "outOfD3": 0,
+              "outOfD3Rows": [],
+              "problems": []
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-08/graph-index-unusable",
+      "caseId": "G-08",
+      "expectedGraph": "unavailable",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "requeryRowsWithoutVariantKey": 0,
+      "requeryRowsUnknownVariantKey": 0,
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 0,
+        "notDisplayed": 0
+      },
+      "notDisplayedFailures": [],
+      "indexReadyRequery": {
+        "eligible": 0,
+        "graphShown": 0,
+        "graphEdgeCount": 0,
+        "outsideExpectationAdded": 0,
+        "outOfD3": 0,
+        "outOfD3Rows": [],
+        "problems": []
+      },
+      "lists": {
+        "rPlusIr": [
+          "g08-control",
+          "g08-attach"
+        ],
+        "graph": [
+          "g08-control",
+          "g08-attach"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 19.599999994039536,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 29.5,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "n/a",
+        "checked": 0,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0,
+          "deltaNdcgAt8": 0
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "n/a"
+            },
+            "graph-contributed-parent-counted": {
+              "status": "n/a"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "a2-index-ready-requery-forbidden": {
+              "status": "n/a",
+              "eligible": 0,
+              "graphShown": 0,
+              "graphEdgeCount": 0,
+              "outsideExpectationAdded": 0,
+              "outOfD3": 0,
+              "outOfD3Rows": [],
+              "problems": []
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-08/graph-recovered",
+      "caseId": "G-08",
+      "expectedGraph": "available",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "requeryRowsWithoutVariantKey": 0,
+      "requeryRowsUnknownVariantKey": 0,
+      "displayed": {
+        "firstRender": 30,
+        "followUp": 0,
+        "notDisplayed": 0
+      },
+      "notDisplayedFailures": [],
+      "indexReadyRequery": {
+        "eligible": 0,
+        "graphShown": 0,
+        "graphEdgeCount": 0,
+        "outsideExpectationAdded": 0,
+        "outOfD3": 0,
+        "outOfD3Rows": [],
+        "problems": []
+      },
+      "lists": {
+        "rPlusIr": [
+          "g08-control",
+          "g08-attach"
+        ],
+        "graph": [
+          "g08-control",
+          "g08-attach",
+          "g08-cass-attic"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.5
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 22.099999994039536,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 50.80000001192093,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "pass",
+        "checked": 30,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 1,
+          "deltaNdcgAt8": 0.5
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "pass"
+            },
+            "graph-contributed-parent-counted": {
+              "status": "pass"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "a2-index-ready-requery-forbidden": {
+              "status": "n/a",
+              "eligible": 0,
+              "graphShown": 0,
+              "graphEdgeCount": 0,
+              "outsideExpectationAdded": 0,
+              "outOfD3": 0,
+              "outOfD3Rows": [],
+              "problems": []
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-08/chronicle-index-unusable",
+      "caseId": "G-08",
+      "expectedGraph": "unavailable",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "requeryRowsWithoutVariantKey": 0,
+      "requeryRowsUnknownVariantKey": 0,
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 0,
+        "notDisplayed": 0
+      },
+      "notDisplayedFailures": [],
+      "indexReadyRequery": {
+        "eligible": 30,
+        "graphShown": 30,
+        "graphEdgeCount": 30,
+        "outsideExpectationAdded": 0,
+        "outOfD3": 0,
+        "outOfD3Rows": [],
+        "problems": []
+      },
+      "lists": {
+        "rPlusIr": [
+          "g08-control",
+          "g08-attach"
+        ],
+        "graph": [
+          "g08-control",
+          "g08-attach"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 24,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 23,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "n/a",
+        "checked": 0,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0,
+          "deltaNdcgAt8": 0
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "n/a"
+            },
+            "graph-contributed-parent-counted": {
+              "status": "n/a"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "a2-index-ready-requery-forbidden": {
+              "status": "pass",
+              "eligible": 30,
+              "graphShown": 30,
+              "graphEdgeCount": 30,
+              "outsideExpectationAdded": 0,
+              "outOfD3": 0,
+              "outOfD3Rows": [],
+              "problems": []
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variantKey": "G-08/both-indexes-unusable",
+      "caseId": "G-08",
+      "expectedGraph": "unavailable",
+      "blocked": null,
+      "pairs": {
+        "graph": 30,
+        "hybrid": 30,
+        "ok": true
+      },
+      "holdReasons": [],
+      "requeryRowsWithoutVariantKey": 0,
+      "requeryRowsUnknownVariantKey": 0,
+      "displayed": {
+        "firstRender": 0,
+        "followUp": 0,
+        "notDisplayed": 0
+      },
+      "notDisplayedFailures": [],
+      "indexReadyRequery": {
+        "eligible": 0,
+        "graphShown": 0,
+        "graphEdgeCount": 0,
+        "outsideExpectationAdded": 0,
+        "outOfD3": 0,
+        "outOfD3Rows": [],
+        "problems": []
+      },
+      "lists": {
+        "rPlusIr": [
+          "g08-control",
+          "g08-attach"
+        ],
+        "graph": [
+          "g08-control",
+          "g08-attach"
+        ]
+      },
+      "metrics": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "graph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectedMetrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        }
+      },
+      "expectationMatch": {
+        "rPlusIr": true,
+        "graph": true
+      },
+      "latency": {
+        "hybrid": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 20.19999998807907,
+          "status": "pass"
+        },
+        "graph": {
+          "n": 30,
+          "failedCount": 0,
+          "p95Ms": 21.100000023841858,
+          "status": "pass"
+        },
+        "countsInVerdict": false
+      },
+      "edgeBinding": {
+        "status": "n/a",
+        "checked": 0,
+        "skipped": 0,
+        "problems": []
+      },
+      "forbidden": {
+        "a": {
+          "violations": [],
+          "baseline": [],
+          "outsideExpectation": []
+        },
+        "b": {
+          "violations": []
+        }
+      },
+      "conditions": {
+        "g01-predeclared-improvement": {
+          "status": "n/a"
+        },
+        "macro-non-regression": {
+          "status": "pass",
+          "deltaRecallAt8": 0,
+          "deltaNdcgAt8": 0
+        },
+        "hybrid-p95": {
+          "status": "pass",
+          "countsInVerdict": false
+        },
+        "evidence-validity": {
+          "status": "not-evaluable",
+          "components": {
+            "edge-binding": {
+              "status": "n/a"
+            },
+            "graph-contributed-parent-counted": {
+              "status": "n/a"
+            },
+            "utf16-range": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "explicit-pin-association": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "raw-excerpt-unchanged": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            },
+            "added-scene-body-anchor": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        },
+        "forbidden-contribution": {
+          "status": "not-evaluable",
+          "components": {
+            "a-forbidden-scene-or-blocked-candidate": {
+              "status": "pass",
+              "violations": 0
+            },
+            "b-late-graph-in-display": {
+              "status": "pass",
+              "violations": 0
+            },
+            "a2-index-ready-requery-forbidden": {
+              "status": "n/a",
+              "eligible": 0,
+              "graphShown": 0,
+              "graphEdgeCount": 0,
+              "outsideExpectationAdded": 0,
+              "outOfD3": 0,
+              "outOfD3Rows": [],
+              "problems": []
+            },
+            "c-existing-24-graph-appearance-and-dto": {
+              "status": "not-evaluable",
+              "reason": "not-in-the-receipt"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "conditions": {
+    "g01-predeclared-improvement": {
+      "status": "pass",
+      "improved": true,
+      "matchesPredeclared": true,
+      "rPlusIr": {
+        "recallAt8": 0,
+        "ndcgAt8": 0
+      },
+      "graph": {
+        "recallAt8": 1,
+        "ndcgAt8": 0.6309297535714575
+      },
+      "predeclared": {
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.6309297535714574
+        }
+      },
+      "variantKey": "G-01/v1"
+    },
+    "macro-non-regression": {
+      "status": "not-evaluable",
+      "components": {
+        "g-case": {
+          "status": "pass",
+          "variants": 13,
+          "recallAt8": {
+            "rPlusIr": 0.038461538461538464,
+            "graph": 0.46153846153846156
+          },
+          "ndcgAt8": {
+            "rPlusIr": 0.038203019975979406,
+            "graph": 0.27878525176514785
+          }
+        },
+        "existing-24-graph-arm": {
+          "status": "not-evaluable",
+          "reason": "no-graph-arm-receipt-for-the-existing-24-queries"
+        }
+      }
+    },
+    "hybrid-p95": {
+      "status": "pass",
+      "populationNote": "G-case measured samples of the gold receipts, pooled per arm; not the 24-query P population",
+      "limitMs": 94.2,
+      "percentile": 0.95,
+      "hybridArm": {
+        "arm": "hybrid",
+        "n": 390,
+        "failedCount": 0,
+        "p95Ms": 26.099999994039536,
+        "status": "pass"
+      },
+      "graphArm": {
+        "arm": "graph",
+        "n": 390,
+        "failedCount": 0,
+        "p95Ms": 60.099999994039536,
+        "status": "pass"
+      },
+      "parityHybridDisclosure": {
+        "n": 360,
+        "failedCount": 0,
+        "p95Ms": 22.399999976158142,
+        "status": "pass",
+        "countsInVerdict": false
+      }
+    },
+    "evidence-validity": {
+      "status": "not-evaluable",
+      "components": {
+        "edge-binding": {
+          "status": "pass",
+          "variants": 9,
+          "checked": 270,
+          "skipped": 0
+        },
+        "graph-contributed-parent-counted": {
+          "status": "pass"
+        },
+        "utf16-range": {
+          "status": "not-evaluable",
+          "reason": "not-in-the-receipt"
+        },
+        "explicit-pin-association": {
+          "status": "not-evaluable",
+          "reason": "not-in-the-receipt"
+        },
+        "raw-excerpt-unchanged": {
+          "status": "not-evaluable",
+          "reason": "not-in-the-receipt"
+        },
+        "added-scene-body-anchor": {
+          "status": "not-evaluable",
+          "reason": "not-in-the-receipt"
+        }
+      }
+    },
+    "forbidden-contribution": {
+      "status": "not-evaluable",
+      "components": {
+        "a-forbidden-scene-or-blocked-candidate": {
+          "status": "pass",
+          "violatingSamples": 0,
+          "baselineForbiddenSamples": 0,
+          "outsideExpectationSamples": 0
+        },
+        "b-late-graph-in-display": {
+          "status": "pass",
+          "violatingSamples": 0
+        },
+        "a2-index-ready-requery-forbidden": {
+          "status": "pass",
+          "eligibleChildren": 30,
+          "graphShownChildren": 30,
+          "graphEdgeCount": 30,
+          "outsideExpectationAdded": 0,
+          "keptAsChildren": 0,
+          "keptAsChildrenMissing": [],
+          "problems": []
+        },
+        "a3-requery-row-unattributable": {
+          "status": "n/a",
+          "rowsWithoutVariantKey": 0,
+          "rowsWithUnknownVariantKey": 0
+        },
+        "c-existing-24-graph-appearance-and-dto": {
+          "status": "not-evaluable",
+          "reason": "not-in-the-receipt"
+        }
+      }
+    }
+  },
+  "verdict": {
+    "verdict": "hold",
+    "reasons": [
+      "unverified-required-items"
+    ],
+    "failed": [],
+    "held": [],
+    "unverified": [
+      "macro-non-regression",
+      "evidence-validity",
+      "forbidden-contribution"
+    ]
+  },
+  "notEvaluable": [
+    {
+      "condition": "macro-non-regression",
+      "component": "existing-24-graph-arm",
+      "reason": "no-graph-arm-receipt-for-the-existing-24-queries"
+    },
+    {
+      "condition": "evidence-validity",
+      "component": "utf16-range",
+      "reason": "not-in-the-receipt"
+    },
+    {
+      "condition": "evidence-validity",
+      "component": "explicit-pin-association",
+      "reason": "not-in-the-receipt"
+    },
+    {
+      "condition": "evidence-validity",
+      "component": "raw-excerpt-unchanged",
+      "reason": "not-in-the-receipt"
+    },
+    {
+      "condition": "evidence-validity",
+      "component": "added-scene-body-anchor",
+      "reason": "not-in-the-receipt"
+    },
+    {
+      "condition": "forbidden-contribution",
+      "component": "c-existing-24-graph-appearance-and-dto",
+      "reason": "not-in-the-receipt"
+    }
+  ],
+  "firstRunPrecheck": {
+    "v2": {
+      "commit": "8b2a5dafc22bd344f7572b4adbfb3018f7363245",
+      "branch": "claude/nir1-contracts",
+      "remoteTimeUtc": "2026-11-08T10:49:28Z",
+      "source": "repository-activity",
+      "sha256": "2bb071968281523e4f79d076f7e3e06e1f3404238dfbe93885690f030bc8024a"
+    },
+    "implementation": {
+      "commit": "7652a86e2252eec55a22143921c33f81a481e48c",
+      "branch": "claude/k66-harness",
+      "remoteTimeUtc": "2026-11-08T10:47:05Z",
+      "source": "repository-activity",
+      "files": [
+        {
+          "path": "scripts/quality/nir1-graph-eval/quality-verdict.mjs",
+          "sha256": "2b259ce41d4d55cb6a2cdff75e24d3910fa593b9d6fb90d8d5525853a95be603"
+        },
+        {
+          "path": "scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs",
+          "sha256": "2f1975126a19335c31c5a226dc74bc5c8ac3a60a8f87a3de4611660c949f09b2"
+        }
+      ]
+    },
+    "firstFormalRun": {
+      "atUtc": "2026-11-15T09:34:07.928Z",
+      "kind": "sp-p4",
+      "runId": "sp-p4-s7r2-1",
+      "receipt": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/sp-p4-s7r2-1/sp-p4-s7r2-1.receipt.json",
+      "receiptCounts": {
+        "sp-p4": 1,
+        "trace": 2,
+        "parity": 12,
+        "gold": 13,
+        "negative": 3,
+        "g01-diagnostic": 1
+      }
+    }
+  },
+  "bindings": {
+    "script": [
+      {
+        "path": "scripts/quality/nir1-graph-eval/quality-verdict.mjs",
+        "sha256": "2b259ce41d4d55cb6a2cdff75e24d3910fa593b9d6fb90d8d5525853a95be603"
+      },
+      {
+        "path": "scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs",
+        "sha256": "2f1975126a19335c31c5a226dc74bc5c8ac3a60a8f87a3de4611660c949f09b2"
+      },
+      {
+        "path": "scripts/quality/nir1-graph-eval/followup.mjs",
+        "sha256": "10ffcfa1c369d9525dd049ff785b503ed571f19d58496dde587e67b99e7ad3f3"
+      },
+      {
+        "path": "scripts/quality/nir1-graph-eval/receipt.mjs",
+        "sha256": "6ea0e13f2bb71b07e1aa819a14a2ab715b8f5de1702caf2389353a42c19bc265"
+      },
+      {
+        "path": "scripts/quality/nir1-graph-eval/constants.mjs",
+        "sha256": "97ff7860bb23ffc145ac50297d85395a64f0aa21f0702b1f845c2f27b3946eb1"
+      },
+      {
+        "path": "scripts/quality/nir1-graph-eval/join.mjs",
+        "sha256": "42d9df22571bc4a6b677fd32a5919d419c321ede67a1e0d75f5ef0c829fc3bfc"
+      },
+      {
+        "path": "scripts/quality/nir1-retrieval/contract.mjs",
+        "sha256": "ec6a73277f3b26075c71bdfab945b2c2b83d9883067da4139d60d6cad090f963"
+      }
+    ],
+    "receipts": [
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s7r2-1/G-01_v1.receipt.json",
+        "sha256": "c75d35c6b6f79ca1052c484deec5b566da3809e96a46c9f5e3eb988d93466a33"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s7r2-1/G-02_base.receipt.json",
+        "sha256": "7c518da73da6dc7e872d97df479c294c0e2d7da612276aafbc1dfeb9a3d7c868"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s7r2-1/G-03_base.receipt.json",
+        "sha256": "90918241fa3dcfcafb7f68683060d20d472558687889a76e29384e9f9a6ffefa"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s7r2-1/G-03_frontier-exceeded.receipt.json",
+        "sha256": "86476e04e4c9308b3e8fb8e8e47ce978a1d6935d783e5d2c6652e27934fb10c0"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s7r2-1/G-04_base.receipt.json",
+        "sha256": "e4c08fdee081fe5e104438c096398e09ea45c36ee6c6f1277d15a9f2a3b3afb7"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s7r2-1/G-05_base.receipt.json",
+        "sha256": "c812a0b781332ce3f35f20157988b05f85f2e33752692dc98705243e9d6a347f"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s7r2-1/G-06_base.receipt.json",
+        "sha256": "a146a956043c9ad80a0381912ce1ee4dd4e2b8ffaf1753593d5e127fd6d3d4ea"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s7r2-1/G-07_base.receipt.json",
+        "sha256": "bc387de0b97c315398fd100e1a0129fb0e58dbbc2e7ba73fa72b71246949f988"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s7r2-1/G-08_base-usable.receipt.json",
+        "sha256": "37fec18e0ac2e94aa971ef3948764c205782cdab7acb1f441677bcfd0a1ec0b5"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s7r2-1/G-08_both-indexes-unusable.receipt.json",
+        "sha256": "72e462f33c3a981877f71137610743486262c6fb755299b7465dbded7ac3ed8c"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s7r2-1/G-08_chronicle-index-unusable.receipt.json",
+        "sha256": "fa578388cad9e6d56b2fa40e71d9e245c5f2134db74008afb5f186a40855bb40"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s7r2-1/G-08_graph-index-unusable.receipt.json",
+        "sha256": "677c99ac2636bcbd867555ed8aca7fea755200a9023b263e88bc7c9efa0d7953"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/gold-s7r2-1/G-08_graph-recovered.receipt.json",
+        "sha256": "e23b785272ed065deb263783b2a5ff61b5084eabdeec73d4310e898122072fdd"
+      }
+    ],
+    "parityReceipts": [
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s7r2-1/G-02_base.receipt.json",
+        "sha256": "43414e44e902e2c84f0595288e17b6d3306c94540bbcbed91470f83788ecc51f"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s7r2-1/G-03_base.receipt.json",
+        "sha256": "846206027b301219a54239ddb71379dfe3cef1394dd38ce57c37f17840bb8315"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s7r2-1/G-03_frontier-exceeded.receipt.json",
+        "sha256": "dad360904cb04f6932e55072851d77f316310e84f55600aa61ac2e216a683fbe"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s7r2-1/G-04_base.receipt.json",
+        "sha256": "57dd49caf20ac4493ab4f51bb76ad2d6f6c3ab2a666d0d20dc5e56514ac2b1f4"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s7r2-1/G-05_base.receipt.json",
+        "sha256": "0b8496a0ae242e0964aaf4418810083d064bf73260d77276f38bd7cdac4903b0"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s7r2-1/G-06_base.receipt.json",
+        "sha256": "37cf00390548a1e30bd09e04b5186da45dbc31fa323c3d756012e8c4c03965a4"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s7r2-1/G-07_base.receipt.json",
+        "sha256": "2d25fab1468b9fe59d3d704b09665121a688739d44893a440ba36d2f97ff6970"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s7r2-1/G-08_base-usable.receipt.json",
+        "sha256": "4ff6b79919ca37a034afc361850689ddc674076432c642dcbba173a70e30cb62"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s7r2-1/G-08_both-indexes-unusable.receipt.json",
+        "sha256": "4402932ce81916fe4a13f031743a681e6ea9fb2baf5a645c76ba6e4d1a135a16"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s7r2-1/G-08_chronicle-index-unusable.receipt.json",
+        "sha256": "75226d15097a6e1828239b2172da865cee40afa919049c3e7e5d6455410708e9"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s7r2-1/G-08_graph-index-unusable.receipt.json",
+        "sha256": "1a428f6e744fb1c7bd3a55e520fe27e1ce0c7ce5989343acb0b20a70c9a599ce"
+      },
+      {
+        "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/parity-s7r2-1/G-08_graph-recovered.receipt.json",
+        "sha256": "e41ce04d387eb5f0e017d39226b6cb3563bf7bd76e8e9b28a2fb4bca73c1e303"
+      }
+    ],
+    "allowList": {
+      "path": "allow-list-s7r2-s4-f2f99b13-candidate-29a120dd.json",
+      "sha256": "2eeb7010381667063e8d2d6907319f8d2bdd6942ded4abb4bd6b33e8d5500b1a"
+    },
+    "ledger": {
+      "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/attempts-final-s7r2/gold-s7r2-1.json",
+      "sha256": "9ef793c2b727383d924ca7837db74db4e365362d4e08f03eb7d20ae6ac806e20"
+    },
+    "procedure": {
+      "path": "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v2.json",
+      "sha256": "491f19f7c54ecc7f93ec078a1d4379b1e6730c123c5c8ae5dd0a5dd02d5a2ca0"
+    },
+    "manifests": [
+      {
+        "path": "evals/nir1-graph/manifest.v1.json",
+        "sha256": "6860d10445260a5677524f002dd994a009cc97d36d4fa4114acfb50c5974e966"
+      },
+      {
+        "path": "evals/nir1-retrieval/manifest.json",
+        "sha256": "fbc6ac25a0171aac48bee27a859d2b582ed748f82adc1b5ccd28057110c950f3"
+      }
+    ],
+    "fixtures": [
+      {
+        "path": "evals/nir1-g01/fixture.v1.json",
+        "sha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79"
+      },
+      {
+        "path": "evals/nir1-graph/g02-directed-relation.v1.json",
+        "sha256": "c9e9ea0c41e6818d19722d6e2c4255cac96b54cd55f0808f88357ad74416946c"
+      },
+      {
+        "path": "evals/nir1-graph/g03-bounded-two-hop.v1.json",
+        "sha256": "39aec43a66f3ede60249cc74f5524fbe8201ca20ff629c98d54fc05cc360f76d"
+      },
+      {
+        "path": "evals/nir1-graph/g04-scope-exact-unknown.v2.json",
+        "sha256": "96d44ec362f30352d6cb971c208f2ab71aed944d008cab9eb65ca2ab57c218e1"
+      },
+      {
+        "path": "evals/nir1-graph/g05-current-revision-freshness.v1.json",
+        "sha256": "52c5ac72bf5886bcc6fc1c901575bc91e36a17c7d236191a610d5dcb31093c28"
+      },
+      {
+        "path": "evals/nir1-graph/g06-evidence-anchor-path.v1.json",
+        "sha256": "acb55cbd352949ced010dbbc2e3b06fed4dad9144488172cbe76cd6105d7b40a"
+      },
+      {
+        "path": "evals/nir1-graph/g07-reading-before-reveal.v1.json",
+        "sha256": "385eaa732f48c10417a775430615ee4b0e245818e87b525ce7c1509ea83d12d0"
+      },
+      {
+        "path": "evals/nir1-graph/g08-graph-index-fallback.v1.json",
+        "sha256": "0415561e3834eff5c1f04d1a66e49177209b6755c79015d3b7944f374600a4c9"
+      }
+    ],
+    "k62": {
+      "path": "docs/plans/nir1-final-request-eval-proposal-2-draft.md",
+      "sha256": "4ccca08314c022fd969308fa969e6fcb3e2c439fe12757bfec0e901b905676f8",
+      "text": "同じ許容誤差 1e-12"
+    },
+    "v2File": {
+      "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/quality-verdict-prereg-v2.md",
+      "sha256": "2bb071968281523e4f79d076f7e3e06e1f3404238dfbe93885690f030bc8024a"
+    },
+    "remoteTimeRecord": {
+      "path": "/home/grimodex/worktrees/Grimodex/claude-nir1-contracts-results/docs/plans/nir1-cp4-records/quality-verdict-s7r2-1/remote-time-record.json",
+      "sha256": "6d899b6755d6db00f6cc83da539ef750c7d59e15296ebf5e18ed220862e4496a"
+    }
+  }
+}
