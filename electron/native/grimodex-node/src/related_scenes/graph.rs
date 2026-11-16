@@ -695,6 +695,8 @@ async fn await_request(
         }
         Claim::Await(plan) => plan,
     };
+    #[cfg(feature = "nir1-graph-eval")]
+    let eval_waiter = eval_waiter_of(&plan);
     // LP-GATE: the window of a cache hit ends with this join, on every exit.
     let window = CachedWindowRelease(lease.clone());
     let waiting = {
@@ -750,6 +752,8 @@ async fn await_request(
     };
     // The live requalification has read what it compares: the window ends.
     drop(window);
+    #[cfg(feature = "nir1-graph-eval")]
+    eval_note_requalification(eval_waiter.as_ref(), &assembled);
     let assembled = match assembled {
         Ok(Ok(assembled)) => assembled,
         Ok(Err(error)) => {
@@ -780,7 +784,49 @@ async fn await_request(
         return stopped(&state, &ticket, &lease, GraphUnavailable::Invalidated);
     }
     graph_response::keep_click(&lease.data.graph, click);
+    #[cfg(feature = "nir1-graph-eval")]
+    eval_note_requalification_returned(eval_waiter.as_ref());
     Ok(wire)
+}
+
+/// K6/7 (ii-b) (2-2): the evaluation build keeps a waiter on the ticket, so
+/// the requalification below is noted on the ticket of the query it ran for.
+/// A cache hit has no ticket and no note.
+#[cfg(feature = "nir1-graph-eval")]
+fn eval_waiter_of(plan: &AwaitPlan) -> Option<GraphTicketWaiter> {
+    match &plan.source {
+        AwaitSource::Ticket(waiter) => Some(waiter.clone_for_eval()),
+        AwaitSource::Cached(_) => None,
+    }
+}
+
+#[cfg(feature = "nir1-graph-eval")]
+fn eval_note_requalification(
+    waiter: Option<&GraphTicketWaiter>,
+    assembled: &std::result::Result<Result<graph_response::Assembled>, tokio::task::JoinError>,
+) {
+    let Some(waiter) = waiter else {
+        return;
+    };
+    match assembled {
+        Ok(Ok(graph_response::Assembled::Available { .. })) => {
+            waiter.note_requalification_for_eval("passed", None);
+        }
+        Ok(Ok(graph_response::Assembled::Unavailable(reason))) => {
+            waiter.note_requalification_for_eval("unavailable", Some(*reason));
+        }
+        Ok(Err(error)) => {
+            waiter.note_requalification_for_eval("error", Some(graph_response::classify(error)));
+        }
+        Err(_) => waiter.note_requalification_for_eval("error", Some(GraphUnavailable::Failed)),
+    }
+}
+
+#[cfg(feature = "nir1-graph-eval")]
+fn eval_note_requalification_returned(waiter: Option<&GraphTicketWaiter>) {
+    if let Some(waiter) = waiter {
+        waiter.note_requalification_returned_for_eval();
+    }
 }
 
 /// LP-GATE: ends the Graph window of a cache hit when its join is over.

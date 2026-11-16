@@ -357,12 +357,12 @@ test("an owner hook outside the feature, or a Busy answer without its hook, is r
     `                    crate::nir1_graph_eval::note_busy_cause("command-queue");`,
   );
   assert.ok(checkEvalFeatureAllowlist(busy).length > 0);
-  const stamp = mutate(
+  const workerCheck = mutate(
     PATHS.nodeProduct,
-    `    #[cfg(feature = "${EVAL_FEATURE}")]\n    ticket.eval_notes.stamp(`,
-    "    ticket.eval_notes.stamp(",
+    `    #[cfg(feature = "${EVAL_FEATURE}")]\n    ticket.eval_notes.worker_check(`,
+    "    ticket.eval_notes.worker_check(",
   );
-  assert.ok(checkEvalFeatureAllowlist(stamp).length > 0);
+  assert.ok(checkEvalFeatureAllowlist(workerCheck).length > 0);
   const unhooked = mutate(
     PATHS.nodeProduct,
     `                    #[cfg(feature = "${EVAL_FEATURE}")]\n                    crate::nir1_graph_eval::note_busy_cause("command-queue");\n`,

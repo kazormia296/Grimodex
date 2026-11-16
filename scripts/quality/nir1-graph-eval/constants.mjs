@@ -126,6 +126,31 @@ export const K66_FREEZE = Object.freeze({
 });
 
 /**
+ * The K6/7 bytes (`nir1-final-request-eval-proposal/7`, contractId
+ * `graph-eval-procedure`; the user confirmed this SHA-256 on 2026-11-15, the
+ * confirmation record is `docs/plans/nir1-cp4-records/user-confirmation-2026-11-15-k67-graph-eval-procedure.md`).
+ * The draft's bytes were last changed at `08b168c9…` (revision 5, the one the
+ * user confirmed; `confirmedCommit`); the integrator froze them on
+ * `claude/nir1-contracts` at `b9559a22…` (the confirmation record's commit,
+ * the first push after the confirmation, pushed 2026-11-15T14:08:45Z; the
+ * freeze record is `docs/plans/nir1-cp4-records/k67-freeze-record.md`).
+ * `K66_FREEZE`, `K65_FREEZE` and `K64_FREEZE` stay: a /7 receipt names all
+ * four (K6/7 変える点 8: 「/6・/5・/4 の凍結も併せて書く」). A receipt of a run
+ * that started before this freeze (no `head.k67`; s6r1, s7r1 and s7r2
+ * included) is refused (K6/7-N9′).
+ */
+export const K67_FREEZE = Object.freeze({
+  path: "docs/plans/nir1-final-request-eval-proposal-7-draft.md",
+  sha256: "7b8f81c71a2d7edca9dbef8bdfb7c81120d3873346289b156fc92fdc1d40424d",
+  draftRef: "nir1-final-request-eval-proposal/7",
+  contractId: "graph-eval-procedure",
+  /** The commit that last changed the draft's bytes (revision 5). Not the freeze commit. */
+  confirmedCommit: "08b168c9562ff13c314a77f2d03b8a4550774d7f",
+  /** The freeze commit on `claude/nir1-contracts` (K6/7 変える点 8), pinned. */
+  freezeCommit: "b9559a220c88eb2e7073b016244a9c45edf9b3be",
+});
+
+/**
  * K6/5 変える点 6 (a narrowing defense): the /5 row applies only to a
  * candidate whose product first-display D is 40 ms: the candidate has
  * `a7e96946` (#802) as an ancestor and its `relatedScenesConfig.ts` sets

@@ -28,6 +28,7 @@ import {
 import {
   buildRuntimePerformanceAttemptPaths,
   describeRecoveredPerformanceRetry,
+  describeStartedPerformanceRetry,
   runRuntimePerformanceWithRetry,
 } from "./runtime-performance-retry.mjs";
 import {
@@ -483,6 +484,11 @@ export function runPerformanceBenchmark(argv = process.argv) {
     retryTransientOnce: options.retryTransientOnce,
     executeAttempt,
     copyMetrics: copyFileSync,
+    onRetry: (decision) => {
+      console.warn(
+        `[electron:perf] WARNING ${describeStartedPerformanceRetry(decision)}`,
+      );
+    },
     onRecovered: (decision) => {
       const message = describeRecoveredPerformanceRetry(decision);
       console.warn(`[electron:perf] WARNING ${message}`);
@@ -491,6 +497,11 @@ export function runPerformanceBenchmark(argv = process.argv) {
       }
     },
   });
+  if (result.attemptCount === 2 && !result.recovered) {
+    console.error(
+      `[electron:perf] retry did not recover (${result.retryDecision.reason}); both attempt artifacts were retained`,
+    );
+  }
   if (result.retryDecision && !result.retryDecision.eligible) {
     console.error(
       `[electron:perf] not retried: ${result.retryDecision.reason}`,

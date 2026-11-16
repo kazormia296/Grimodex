@@ -13,6 +13,8 @@
 //
 // Existing pinned modules are imported only (followup.mjs, receipt.mjs,
 // constants.mjs, nir1-retrieval/contract.mjs); none of them is changed.
+// Prereg v3 (quality-verdict-prereg-v3.md) adds the four evidence items of
+// condition 4 (quality-evidence-items.mjs); v1 and v2 stay as they were.
 
 import {
   GRAPH_EVAL_B_MS,
@@ -22,6 +24,12 @@ import {
 } from "./constants.mjs";
 import { MEASURED_RUNS_PER_ARM } from "./constants.mjs";
 import { classifyFollowUp, nextGraphArmOf } from "./followup.mjs";
+import {
+  EVIDENCE_ITEM_IDS,
+  aggregateEvidenceItems,
+  evaluateEvidenceItems,
+  heldEvidenceItems,
+} from "./quality-evidence-items.mjs";
 import { selectReceiptsForAggregation } from "./receipt.mjs";
 import { nearestRank, scoreQuery } from "../nir1-retrieval/contract.mjs";
 
@@ -540,12 +548,15 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
     problems: [],
   };
   const nexts = nextGraphArmOf(graph);
+  // Prereg v3: the four evidence items read each sample's display-side record.
+  const evidenceInputs = [];
   for (const sample of graph) {
     const pair = pairList.get(sample.repeat);
     const result = classifyFollowUp(sample, {
       context: "steady",
       next: nexts.get(sample),
     });
+    evidenceInputs.push({ sample, result });
     if (result.violations.length > 0)
       violationsB.push({
         repeat: sample.repeat,
@@ -810,6 +821,12 @@ function evaluateVariant({ variant, receipt, expectation, policy, tolerance }) {
     graph: latencyOf(graph, policy),
     countsInVerdict: false,
   };
+  row.items = evaluateEvidenceItems({
+    variantKey: key,
+    expectation,
+    receipt,
+    inputs: evidenceInputs,
+  });
   row.edgeBinding = {
     status:
       expectation.expectedContributions.length === 0
@@ -844,6 +861,10 @@ function finishHeldRow(row, expectation) {
   row.expectationMatch = null;
   row.latency = null;
   row.edgeBinding = { status: "hold", checked: 0, skipped: 0, problems: [] };
+  row.items = heldEvidenceItems(
+    expectation,
+    "measured-graph-and-r-plus-ir-samples-are-not-30-pairs",
+  );
   row.forbidden = { a: null, b: null };
   row.conditions = {
     "g01-predeclared-improvement": {
@@ -857,16 +878,16 @@ function finishHeldRow(row, expectation) {
   return row;
 }
 
-function evidenceComponents(edgeStatus, contributionStatus = "n/a") {
-  const missing = (reason) => ({ status: "not-evaluable", reason });
+/**
+ * The condition 4 components. `items` are the four prereg v3 items (one
+ * variant's, or the aggregate over the variants).
+ */
+function evidenceComponents(edgeStatus, contributionStatus, items) {
   return {
     "edge-binding": { status: edgeStatus },
     // Prereg v2 D8: a Graph that reached a display without being counted.
     "graph-contributed-parent-counted": { status: contributionStatus },
-    "utf16-range": missing("not-in-the-receipt"),
-    "explicit-pin-association": missing("not-in-the-receipt"),
-    "raw-excerpt-unchanged": missing("not-in-the-receipt"),
-    "added-scene-body-anchor": missing("not-in-the-receipt"),
+    ...Object.fromEntries(EVIDENCE_ITEM_IDS.map((id) => [id, items[id]])),
   };
 }
 
@@ -925,6 +946,7 @@ function finishRow(row, expectation, tolerance) {
       : notDisplayedFail
         ? "fail"
         : "pass",
+    row.items,
   );
   const indexReady = row.indexReadyRequery;
   const indexReadyStatus =
@@ -1183,7 +1205,7 @@ export function evaluateQualityVerdict({
         : null,
   };
 
-  // 4. Evidence validity (edge binding only).
+  // 4. Evidence validity: the edge binding, D8, and prereg v3's four items.
   const edgeRows = live.filter((row) => row.edgeBinding.status !== "n/a");
   const edgeStatus =
     edgeRows.length === 0
@@ -1199,6 +1221,10 @@ export function evaluateQualityVerdict({
           ]?.status ?? "n/a",
       ),
     ),
+    // Prereg v3 §2.0: over all 13 catalog variants (a blocked variant has no
+    // items; an item whose applicable variants are all blocked is
+    // `not-evaluable`).
+    aggregateEvidenceItems(variants, expectations),
   );
   evidenceParts["edge-binding"].variants = edgeRows.length;
   evidenceParts["edge-binding"].checked = edgeRows.reduce(

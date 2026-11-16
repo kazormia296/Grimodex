@@ -591,6 +591,20 @@ impl ConnectionCore {
         }
         Ok(Some(conn))
     }
+
+    /// Test only (DR-DBC-7). A wait-0 probe of the main connection: true when
+    /// it can be taken without waiting and is in autocommit. D-final's tests
+    /// use it to show the wait never holds the main connection (the parent's
+    /// freshness stamp, whose wait-0 read used to be that probe, is gone).
+    /// Never announces a waiter. No product caller; not in a release build.
+    #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+    #[doc(hidden)]
+    pub fn main_connection_is_free_for_test(&self) -> bool {
+        matches!(
+            self.try_lock_conn_with_check(None),
+            Ok(Some(conn)) if conn.is_autocommit()
+        )
+    }
 }
 
 impl Database {

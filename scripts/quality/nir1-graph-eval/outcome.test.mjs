@@ -322,7 +322,6 @@ function qualitySamples(variantKey, graphRows) {
       tRawReady: 10,
       tReturn: 30,
       startSlot: { readyFresh: true },
-      freshnessStamp: { matched: true },
       finalSceneIds: ["dev-a", "dev-b", "dev-added"],
       graph: {
         joined: true,
@@ -375,6 +374,37 @@ function boundQuality(variantKey, variantRows, regime) {
 
 const quality = (key, rows) =>
   boundQuality(key, qualitySamples(key, rows), "k62");
+
+test("K6/7 R-12（変える点 4）: k62 の regime の窓内の集合は stamp の句を外しても変わらない。stamp の key の値（fresh・stale・stamp0-missing・unavailable・無し）は結果を動かさず、開始時に READY でない（R1 の下の）sample は窓内にならない", () => {
+  const baseline = quality("G-02/base", () => ({}));
+  assert.equal(baseline.status, "measurable");
+  for (const freshnessStamp of [
+    undefined,
+    { result: "fresh", matched: true },
+    { result: "stale", matched: false },
+    { result: "stamp0-missing", matched: null },
+    { result: "unavailable", matched: null },
+  ])
+    assert.deepEqual(
+      quality("G-02/base", () =>
+        freshnessStamp === undefined ? {} : { freshnessStamp },
+      ),
+      baseline,
+    );
+  // R1 の下では開始時の slot が READY でない（readyFresh false）ので、worker の
+  // 結果が窓内に合流しても k62 の読みでは窓内にならない（集合は拡がらない）。
+  assert.deepEqual(
+    quality("G-02/base", () => ({ startSlot: { readyFresh: false } })),
+    { variantKey: "G-02/base", status: "hold", reason: "no-in-window-sample" },
+  );
+  assert.deepEqual(
+    quality("G-02/base", () => ({
+      startSlot: { readyFresh: false },
+      freshnessStamp: { result: "fresh", matched: true },
+    })),
+    { variantKey: "G-02/base", status: "hold", reason: "no-in-window-sample" },
+  );
+});
 
 test("K6/2 step 8: in-window samples agree, unjoined samples equal R+IR, none in window is HOLD", () => {
   assert.equal(

@@ -1,0 +1,133 @@
+{
+  "schema": "nir1-cp4-trace-run-report/1",
+  "run": "trace-browsing-s7r1-1",
+  "attempt": 1,
+  "problems": [],
+  "sessions": {
+    "prep": {
+      "problems": [],
+      "stop": {
+        "closed": true,
+        "closeMs": 615,
+        "signalled": [],
+        "remaining": []
+      }
+    },
+    "measure": {
+      "problems": [],
+      "stop": {
+        "closed": true,
+        "closeMs": 474,
+        "signalled": [],
+        "remaining": []
+      }
+    }
+  },
+  "checks": {
+    "productBuild": {
+      "checked": true,
+      "productReceiptHead": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+      "productReceiptTree": "24da8524888b764bdf6cb71bb9b5d1c5bc5c96fb",
+      "evalReceiptHead": "3f333a83554d4dba6c54417d500d3af6f0e985c5",
+      "evalReceiptTree": "24da8524888b764bdf6cb71bb9b5d1c5bc5c96fb",
+      "artifacts": {
+        "dist/index.html": "7b429dca450ae5c85cb51ceb070657713d07ca3a97d828a9ac8e66be2fa92462",
+        "dist-electron/main.cjs": "f8fa2f7503da342fe8c390a2950d00dba4f8089ee91c6b01babfee1e3cc64b89",
+        "dist-electron/preload.cjs": "1c828b7a67940528b263239830664725881b00ef7b29a073697316fbb67e1e47",
+        "electron/native/grimodex-node/grimodex-node.node": "1ce532bef995460b9085963b5852501d29dee6227fe664c58fd9209a4fae8be8"
+      }
+    },
+    "rendererBuild": {
+      "alias": {
+        "from": "src/features/related-scenes/nir1GraphAvailability.ts",
+        "to": "scripts/quality/nir1-graph-eval/renderer/nir1GraphAvailability.eval.ts",
+        "importers": [
+          "src/features/related-scenes/RelatedScenesSection.tsx",
+          "src/features/related-scenes/useNir1RelatedScenes.ts"
+        ],
+        "stubSha256": "01b009b3a5cc25899536703d81a400f8bdc09de4be70a9a04c2067c2f322c1cd",
+        "pluginSha256": "72340cde5709837a9f770ee6ea8ec0c29b2208820944437ab11ce9425436f13f"
+      },
+      "timingShim": {
+        "from": "src/features/related-scenes/nir1RelatedScenesApi.ts",
+        "to": "scripts/quality/nir1-graph-eval/renderer/nir1RelatedScenesApi.timing.ts",
+        "importers": [
+          "scripts/quality/nir1-graph-eval/renderer/cp4-diagnostic-probe.ts",
+          "scripts/quality/nir1-graph-eval/renderer/cp4-harness.ts",
+          "scripts/quality/nir1-graph-eval/renderer/cp4-hook-probe.tsx",
+          "scripts/quality/nir1-graph-eval/renderer/cp4-k64-probe.tsx",
+          "scripts/quality/nir1-graph-eval/renderer/cp4-trace-probe.tsx",
+          "src/features/related-scenes/fetchNir1RelatedScenes.ts",
+          "src/features/related-scenes/fetchNir1RelatedScenesGraph.ts",
+          "src/features/related-scenes/nir1EvidenceNavigation.ts",
+          "src/features/related-scenes/nir1RelatedScenesSession.ts",
+          "src/features/related-scenes/useNir1EvidenceNavigation.ts",
+          "src/features/related-scenes/useNir1RelatedScenes.ts"
+        ],
+        "shimSha256": "bf67fd28982c0560d8488250f769295569145292e82480325d7464046d3cb3fd"
+      },
+      "fetchTiming": {
+        "from": "src/features/related-scenes/fetchRelatedScenes.ts",
+        "to": "scripts/quality/nir1-graph-eval/renderer/fetchRelatedScenes.timing.ts",
+        "importers": [
+          "scripts/quality/nir1-graph-eval/renderer/cp4-diagnostic-probe.ts",
+          "scripts/quality/nir1-graph-eval/renderer/cp4-harness.ts",
+          "src/features/related-scenes/useNir1RelatedScenes.ts"
+        ],
+        "shimSha256": "ed89754939755608a5d13ca19c2757bfeefeeef1d52368860dfd484daec03c6c"
+      },
+      "rendererBundleSha256": "3a163ce386d131c23e4b680c331be1d9dbcefb64b9e1671b6e178c37fbe30bf7"
+    },
+    "prepIndex": {
+      "durationMs": 89.60000002384186,
+      "probes": 2
+    },
+    "seedPins": {
+      "caseId": "G-02",
+      "variantId": "base",
+      "querySceneId": "debc85f0-b944-4af9-a707-5e009fd35637",
+      "productSeed": "e94ae5a7-f367-4e6d-b5f8-9a1bd1011332",
+      "expectedSeed": "e94ae5a7-f367-4e6d-b5f8-9a1bd1011332",
+      "expectedSeedLogical": "g02-orla",
+      "pinCount": 1,
+      "status": "match"
+    },
+    "maintenanceSeam": {
+      "envNames": [
+        "CI",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER"
+      ],
+      "trigger": "nir1-graph-index-build",
+      "nonceSha256": "16035dad7585fcf6aaf0f0de876eebe4a160cca4997e5c76d8d4bfaf11e7beaf"
+    },
+    "measureIndex": {
+      "durationMs": 1184.5,
+      "probes": 14
+    },
+    "counterPoll": {
+      "install": {
+        "installed": true,
+        "intervalMs": 5
+      },
+      "stop": {
+        "stopped": true,
+        "polls": 40247
+      }
+    },
+    "clearSamples": {
+      "cleared": 0,
+      "clockNs": 2891736383
+    },
+    "editor": {
+      "ok": true,
+      "at": 2544.1999999284744
+    }
+  },
+  "trace": {
+    "stalled": null,
+    "operations": 1003
+  },
+  "partialLog": null
+}

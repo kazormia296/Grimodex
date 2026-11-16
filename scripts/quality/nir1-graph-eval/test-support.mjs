@@ -44,6 +44,7 @@ import {
   K65_CANDIDATE_REQUIREMENTS,
   K65_FREEZE,
   K66_FREEZE,
+  K67_FREEZE,
   OBSERVATION_PREP_RECORD_PATH,
   OBSERVATION_PREP_RECORD_SCHEMA,
 } from "./constants.mjs";
@@ -72,7 +73,6 @@ export function sample(overrides = {}) {
     irOutcome: "ir-ready",
     a3AtStart: { eligible: true, reasons: [] },
     startSlot: { readyFresh: true },
-    freshnessStamp: { result: "fresh", matched: true, attemptedAtNs: 95_000 },
     recordRead: { startedAtNs: 80_000, finishedAtNs: 85_000 },
     expectedMaterials: ["rev-a"],
     finalSceneIds: ["dev-a", "dev-b", "dev-added"],
@@ -205,8 +205,7 @@ export function followUpRecord({ parent = {}, child = {}, ...rest } = {}) {
       staleReadyRetired: 0,
       prepareFailures: 0,
       driftAtQuery: 0,
-      stamp0Missing: 0,
-      // K6/6 変える点 7: the steady state's two (a (b) trace has the seven).
+      // K6/6 変える点 7: the steady state's two (a (b) trace has the six).
       preparesStarted: 1,
       preparesReady: 1,
     },
@@ -281,8 +280,8 @@ export function k64Sample(overrides = {}, followUp = {}) {
  * K6/6: a steady-state R+IR+Graph sample **as R1 and the D′ owner record it**:
  * the parent joined its worker's Graph inside the D window (arrival 5 ms after
  * Raw-ready), the slot was `empty` at the start (never a new READY:
- * `readyFresh: false`), the stamp is `stamp0-missing` (S0 is read at admit and
- * almost never available), the begin record is exactly `["pending"]`, one
+ * `readyFresh: false`), the Native's (ii-b) record is `clear` and `passed`
+ * (K6/7 変える点 5), the begin record is exactly `["pending"]`, one
  * prepare started and became ready for this sample, and nothing follows the
  * parent (no notice, no child, no IR retry timer). `startSlot.preparesReady`
  * is 10 so that the next Graph arm sample of the phase (11) differs by 1.
@@ -314,11 +313,6 @@ export function k66Sample(overrides = {}, followUp = {}) {
   };
   return sample({
     startSlot: { kind: "empty", readyFresh: false, preparesReady: 10 },
-    freshnessStamp: {
-      result: "stamp0-missing",
-      matched: null,
-      attemptedAtNs: 95_000,
-    },
     finalSceneIds: ["dev-a", "dev-b", "dev-added"],
     followUp: {
       ...base,
@@ -333,6 +327,8 @@ export function k66Sample(overrides = {}, followUp = {}) {
           reason: null,
           disposition: "used",
           busyCause: null,
+          workerDrift: { result: "clear", cause: null },
+          requalification: { result: "passed", reason: null, returned: true },
         },
         // FR-7: matched on the materials' Revisions, every edge resolved.
         contribution: {
@@ -916,11 +912,8 @@ export function k64NativeRecord(overrides = {}) {
       reason: null,
       disposition: "unused",
       busyCause: null,
-      freshnessStamp: {
-        attemptedAtNs: 15_000_000,
-        result: "fresh",
-        matched: true,
-      },
+      workerDrift: { result: "clear", cause: null },
+      requalification: { result: "passed", reason: null, returned: true },
     },
     ...overrides,
   };
@@ -951,7 +944,6 @@ export const k64Diagnostics = (begins, cacheHits, lateCached, extra = {}) => ({
   staleReadyRetired: 0,
   prepareFailures: 0,
   driftAtQuery: 0,
-  stamp0Missing: 0,
   // K6/6 変える点 7: the evaluation Native reports these two as well.
   preparesStarted: 0,
   preparesReady: 0,
@@ -1018,6 +1010,10 @@ export const COMPLETE_SETUP_FIELDS = Object.freeze({
   sealAttempts: [{ session: "seal", attempt: 0, outcome: "sealed" }],
   maintenanceAttempts: [{ attempt: 0, outcome: "reached" }],
   setupMain: { sha256: "e".repeat(64) },
+  // DR-CP4-L-27: the cold DB keeps no run `running` and no planned retry.
+  readBack: {
+    maintenance: { runs: 0, lastCreatedAt: null, running: 0, retryPending: 0 },
+  },
 });
 
 export function seedPinWorkspace(spec) {
@@ -1537,7 +1533,8 @@ export function completeSetupExtension({
   freshness = null,
   // DR-CP4-T-5: a maintenance Verify that is `running` when a session in
   // `verify.sessions` begins; the tests' sleep completes it unless
-  // `verify.settles` is false.
+  // `verify.settles` is false. DR-CP4-L-27: with `verify.recoversOnReopen` the
+  // quiesce session's opening completes the run a session left running.
   verify = null,
 }) {
   return ({ db, at }) => {
@@ -1761,6 +1758,19 @@ export function completeSetupExtension({
           maybeCutover();
         // A seam session's workspace-opened wake publishes B.
         const projectId = projectOf();
+        // DR-CP4-L-27: the product's startup recovery closes a run a killed
+        // session left `running` (and its retry completes) when the quiesce
+        // session reopens the workspace.
+        if (verify?.recoversOnReopen && session.label.startsWith("quiesce"))
+          run(
+            "UPDATE narrative_extraction_runs SET status = 'completed' WHERE surface_path_id = 'dependency-verify' AND status = 'running'",
+          );
+        // DR-CP4-L-27: a quiesce reopening that moves an Index's metadata (the
+        // setup must stop: it would move what the measurement point probed).
+        if (verify?.movesIndexOnReopen && session.label.startsWith("quiesce"))
+          run(
+            "UPDATE narrative_semantic_index_metadata SET generation = generation + 1",
+          );
         // DR-CP4-T-5: a Verify the session's opening leaves running.
         if (verifyPending && projectId) {
           verifyPending = false;
@@ -2076,6 +2086,7 @@ export const S4_REHEARSAL_G02_DECLARED = "g02-tamsin-first";
 const S4_REHEARSAL_K64_TEXT = "K6/4 frozen text (rehearsal)\n";
 const S4_REHEARSAL_K65_TEXT = "K6/5 frozen text (rehearsal)\n";
 const S4_REHEARSAL_K66_TEXT = "K6/6 frozen text (rehearsal)\n";
+const S4_REHEARSAL_K67_TEXT = "K6/7 frozen text (rehearsal)\n";
 
 function rehearsalProcedureText() {
   const base = JSON.parse(
@@ -2141,6 +2152,7 @@ export function s4RehearsalRepository({
   put(K64_FREEZE.path, S4_REHEARSAL_K64_TEXT);
   put(K65_FREEZE.path, S4_REHEARSAL_K65_TEXT);
   put(K66_FREEZE.path, S4_REHEARSAL_K66_TEXT);
+  put(K67_FREEZE.path, S4_REHEARSAL_K67_TEXT);
   const base = commit("① frozen material");
   const F = S4_REHEARSAL_FILES;
   const frozenBytes = {
@@ -2246,6 +2258,12 @@ export function s4RehearsalRepository({
     k66Freeze: {
       ...K66_FREEZE,
       sha256: sha(S4_REHEARSAL_K66_TEXT),
+      freezeCommit: base,
+    },
+    // K6/7: the same shape (a throwaway repository's freeze).
+    k67Freeze: {
+      ...K67_FREEZE,
+      sha256: sha(S4_REHEARSAL_K67_TEXT),
       freezeCommit: base,
     },
     cleanup: () => rmSync(repo, { recursive: true, force: true }),

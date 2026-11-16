@@ -52,6 +52,7 @@ import {
   K65_CANDIDATE_REQUIREMENTS,
   K65_FREEZE,
   K66_FREEZE,
+  K67_FREEZE,
   OBSERVATION_PREP_RECORD_PATH,
   OBSERVATION_PREP_REMOTE_REF,
   rejectOverrides,
@@ -637,6 +638,38 @@ export function readK66FreezeHead({ root, commit }, freeze = K66_FREEZE) {
 }
 
 /**
+ * K6/7 変える点 8: the K6/7 freeze head, read from the freeze commit pinned in
+ * K67_FREEZE (the same shape as readK66FreezeHead). A /7 receipt writes the
+ * /4, /5, /6 and /7 heads (「/6・/5・/4 の凍結も併せて書く」). `freeze`
+ * defaults to K67_FREEZE (the user confirmed /7 on 2026-11-15; the
+ * integrator froze it at `b9559a22…`). A descriptor whose `freezeCommit` is
+ * `null` writes no formal receipt (fail closed). Only the tests pass another
+ * descriptor.
+ */
+export function readK67FreezeHead({ root, commit }, freeze = K67_FREEZE) {
+  if (freeze.freezeCommit === null)
+    throw new Error(
+      "[precheck] the K6/7 freeze commit is not pinned (変える点 8: /7 is not confirmed and frozen); no formal receipt is written",
+    );
+  if (!commit)
+    throw new Error(
+      "[precheck] the K6/7 freeze commit is not given; no receipt is written",
+    );
+  const resolved = resolveCommit(root, commit);
+  const bytes = blob(root, resolved, freeze.path);
+  if (bytes === null)
+    throw new Error(
+      "[precheck] K6/7 cannot be read from the freeze commit; no receipt is written",
+    );
+  const digest = sha256(bytes);
+  if (resolved !== freeze.freezeCommit || digest !== freeze.sha256)
+    throw new Error(
+      "[precheck] K6/7 freeze commit or bytes differ; no receipt is written",
+    );
+  return { freezeCommit: resolved, sha256: digest };
+}
+
+/**
  * §15.2 (positive form): the default addon path holds exactly the product
  * standard-build `.node` of the candidate, and never the evaluation addon.
  */
@@ -752,6 +785,7 @@ export function admitGraphCaseRun(input, deps = {}) {
     "k64Commit",
     "k65Commit",
     "k66Commit",
+    "k67Commit",
     "ratification5",
   ]);
   // `deps` holds the three freeze descriptors, for the tests only (a
@@ -762,6 +796,7 @@ export function admitGraphCaseRun(input, deps = {}) {
     freeze64 = K64_FREEZE,
     freeze65 = K65_FREEZE,
     freeze66 = K66_FREEZE,
+    freeze67 = K67_FREEZE,
   } = deps;
   const { root } = input;
   const fixtures = Array.isArray(input.fixtures) ? input.fixtures : [];
@@ -809,6 +844,9 @@ export function admitGraphCaseRun(input, deps = {}) {
   const k64 = readK64FreezeHead({ root, commit: input.k64Commit }, freeze64);
   const k65 = readK65FreezeHead({ root, commit: input.k65Commit }, freeze65);
   const k66 = readK66FreezeHead({ root, commit: input.k66Commit }, freeze66);
+  // K6/7-N9′: no /7 freeze head (a run that started before the /7 freeze)
+  // writes no formal receipt.
+  const k67 = readK67FreezeHead({ root, commit: input.k67Commit }, freeze67);
   // K6/5 変える点 6: the candidate's product D must be 40 ms (before any run).
   assertDFortyAdmits(ratification5);
   const sealed = Object.freeze({
@@ -819,6 +857,7 @@ export function admitGraphCaseRun(input, deps = {}) {
       k64,
       k65,
       k66,
+      k67,
       observationPrep: Object.freeze({
         commit: observationPrep.commit,
         freezeRecordSha256: observationPrep.recordSha256AtCommit,
@@ -1054,6 +1093,7 @@ export function assertReceiptHeadBound(input, deps = {}) {
     freeze64 = K64_FREEZE,
     freeze65 = K65_FREEZE,
     freeze66 = K66_FREEZE,
+    freeze67 = K67_FREEZE,
   } = deps;
   const { root, receipt } = input;
   const head = receipt?.head;
@@ -1098,6 +1138,15 @@ export function assertReceiptHeadBound(input, deps = {}) {
   );
   if (k66.sha256 !== head.k66.sha256)
     throw new Error("[precheck] head.k66 differs from the K6/6 freeze");
+  // K6/7-N9′: a receipt without head.k67 (a run that started before the /7
+  // freeze: s6r1, s7r1 and s7r2 included) is refused, never judged by the /7
+  // row.
+  const k67 = readK67FreezeHead(
+    { root, commit: head?.k67?.freezeCommit },
+    freeze67,
+  );
+  if (k67.sha256 !== head.k67.sha256)
+    throw new Error("[precheck] head.k67 differs from the K6/7 freeze");
   // K6/5-N2: a receipt of a candidate whose product D is not 40 ms is not
   // judged by the /5 row. A receipt with head.k65 is a /5 receipt, so it must
   // record the 批准 5 evidence (its D=40 ms evidence): without it the D check
@@ -1116,6 +1165,7 @@ export function assertReceiptHeadBound(input, deps = {}) {
     k64,
     k65,
     k66,
+    k67,
     ratification5,
     procedure,
   };

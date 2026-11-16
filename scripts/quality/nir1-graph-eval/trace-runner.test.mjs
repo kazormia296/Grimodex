@@ -980,11 +980,6 @@ function oneQueryRun() {
         ...k64NativeRecord().ticket,
         tTicketNs: nsOf(B0 + 15.5),
         tSettledNs: nsOf(B0 + 64),
-        freshnessStamp: {
-          attemptedAtNs: nsOf(B0 + 15.2),
-          result: "fresh",
-          matched: true,
-        },
       },
     }),
     k64NativeRecord({

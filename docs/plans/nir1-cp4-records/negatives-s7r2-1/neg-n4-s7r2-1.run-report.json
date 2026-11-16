@@ -1,0 +1,2719 @@
+{
+  "schema": "nir1-cp4-frozen-k64-run/1",
+  "run": "neg-n4-s7r2-1",
+  "mode": "formal",
+  "runKind": "negative",
+  "d2aMode": "restricted",
+  "problems": [],
+  "checks": {
+    "spP4": {
+      "summary": {
+        "id": "SP-P4",
+        "status": "passed",
+        "problems": [],
+        "variants": [
+          {
+            "variantKey": "G-01/v1",
+            "same": true,
+            "differences": 0
+          },
+          {
+            "variantKey": "G-02/base",
+            "same": true,
+            "differences": 0
+          },
+          {
+            "variantKey": "G-03/base",
+            "same": true,
+            "differences": 0
+          },
+          {
+            "variantKey": "G-04/base",
+            "same": true,
+            "differences": 0
+          },
+          {
+            "variantKey": "G-05/base",
+            "same": true,
+            "differences": 0
+          },
+          {
+            "variantKey": "G-06/base",
+            "same": true,
+            "differences": 0
+          },
+          {
+            "variantKey": "G-07/base",
+            "same": true,
+            "differences": 0
+          },
+          {
+            "variantKey": "G-08/base-usable",
+            "same": true,
+            "differences": 0
+          }
+        ],
+        "notCountedAs": [
+          "g01-eval-revision-receipt",
+          "k3-parity-run",
+          "g-case-parity-unrestricted",
+          "case-judgement"
+        ]
+      },
+      "receiptSha256": "5c02b87e30dbe8abcb4aa9de31c2b76e1e11beb3d0c40b445d6799fbcba4ac07"
+    },
+    "sourcePins": [
+      {
+        "role": "s1j2-blocked-map",
+        "check": "ancestor",
+        "commit": "b1a87b0b81fbdce7f3d280e0671bced51306be1d"
+      },
+      {
+        "role": "s1j2-complete-setup",
+        "check": "bytes",
+        "commit": "3a6e65e400cac5d72e761f58eb1ae8eaec514e18",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/electron-observer.entry.mjs",
+            "sha256": "39e6827940b0235859d6ec9f1bd9a8e3348acddfe43c0fd6c95d5784bd4bd120"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-setup-plan.mjs",
+            "sha256": "2ac6bb9d8c4fe238938b4bec959f12d86e47e9a687ad8c811139c9225549da71"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/launcher.mjs",
+            "sha256": "41653af87884ac89fa135c19d51eaee6b74dc677b21a5037f348056bc0c3b671"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/session.mjs",
+            "sha256": "9e69cb076b2e3101586d3ea2aa477bee027bc093fdc21b8b37dcac92454c6354"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/setup-main-build.mjs",
+            "sha256": "0b4fec10416404849f3e8aca9dcec36ee17ca5a954d30be62f85115d473925ef"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/setup-receipt.mjs",
+            "sha256": "dcc742371fe2328a2a88eaa048ff0a7ab428b4343fe7d25f65ecd32a4c8259d3"
+          }
+        ]
+      },
+      {
+        "role": "trace-runner",
+        "check": "bytes",
+        "commit": "35537447b4e38c31a2dc9463b2d6fe8ccb54e4ba",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/build-receipt-check.mjs",
+            "sha256": "29db8ed5a7d9e1ba2e2825c96f9465e5f4bb56b03d99ce9b304e228ed43f5520"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/trace-cycle.ts",
+            "sha256": "bef2fde68e64175ae42b30edb9e1ae4eec62051cfd534d6cee25f6bd5a89ed4c"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/trace-seal.mjs",
+            "sha256": "d4459c38654eac64a71b5af3339bcc45a0f36ef6965bc7fd4c1aa2a9c6294f79"
+          }
+        ]
+      },
+      {
+        "role": "b-route-seam-fix",
+        "check": "ancestor",
+        "commit": "c06dc17ec86fa968c87176aece12b4a1d67e2105"
+      },
+      {
+        "role": "t14-k64-freeze",
+        "check": "ancestor",
+        "commit": "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f"
+      },
+      {
+        "role": "freshness-requeue-fix",
+        "check": "ancestor",
+        "commit": "02837f02bb9df82da6dc65b3d237bf17840ad775"
+      },
+      {
+        "role": "startup-gate-io-settle",
+        "check": "ancestor",
+        "commit": "26764b433e6299db960f608bb99e4332949d39a3"
+      },
+      {
+        "role": "s5a-graph-arm-runner",
+        "check": "bytes",
+        "commit": "2c9316848ce028565c4d8e8af2d2779c3fd7e187",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/material-revision.mjs",
+            "sha256": "ac2f1f794dbc640d5ff910f7f74a3d5438ed8ce01402cc8895944aefd7c853a5"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-k64-probe.tsx",
+            "sha256": "d05bb4a1955994a67233d9dc2aa78d6203393731a8af731246fc0fb4240d0c6c"
+          }
+        ]
+      },
+      {
+        "role": "maintenance-ownership-release",
+        "check": "ancestor",
+        "commit": "3f3d9999225007417708ab471bea307331f7e8a2"
+      },
+      {
+        "role": "s5b-diagnostics-wiring",
+        "check": "bytes",
+        "commit": "950751d040b29b6d78a067a003dc19b196cfb692",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-diagnostic-probe.ts",
+            "sha256": "422a241d645eb9fa5b695d37c4f1b7ab1f0bde92bdff44c267dd9bee44a6b878"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-harness.ts",
+            "sha256": "9f0229918e0f4839b9908d792bd93a1842d683bafdfa31ae057089e5af6e0be4"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/nir1RelatedScenesApi.timing.ts",
+            "sha256": "bf67fd28982c0560d8488250f769295569145292e82480325d7464046d3cb3fd"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/window.mjs",
+            "sha256": "2a378aa4d16ef80341f70bb3c71d4907c38df266003214d5e5d16ce5a54f121a"
+          }
+        ]
+      },
+      {
+        "role": "sp-p4-ir-timeout",
+        "check": "ancestor",
+        "commit": "43e3f40b5d653c62d5aca4ca795917b67310992c"
+      },
+      {
+        "role": "s4-rehearsal-admission",
+        "check": "bytes",
+        "commit": "82d427465b16a12809c6f93adad74ac97859c85a",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-retrieval/contract.mjs",
+            "sha256": "ec6a73277f3b26075c71bdfab945b2c2b83d9883067da4139d60d6cad090f963"
+          }
+        ]
+      },
+      {
+        "role": "sp-p4-ir-pair-limit",
+        "check": "ancestor",
+        "commit": "906da641befb8dfbb445e05ce5df814bf5b16c35"
+      },
+      {
+        "role": "t3-t5-setup-freshness-settle",
+        "check": "bytes",
+        "commit": "b0df31f076ea1e11fd187c5c6fdf179d0df337b5",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-setup-driver.mjs",
+            "sha256": "0ea96056614b7af6b8227d9fd2444f070ec1e75eaa84117098748b781e4b1dc3"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/workspace-db.mjs",
+            "sha256": "e61cb4fcbec2fd019fccab0c77f5e4f331bc01f3e19ee359681873b5d0638b41"
+          }
+        ]
+      },
+      {
+        "role": "t1-t4-measurement-settle-ready",
+        "check": "bytes",
+        "commit": "354b1ba6a997bc464fb2ee9d7a2276c9f7d0bc78",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-k64-plan.mjs",
+            "sha256": "faa7fd4d6541b5b6896568ac7e958f181fd6eb19094b5692ffeb37ba83b6e81d"
+          }
+        ]
+      },
+      {
+        "role": "v2-trace-probe-paths",
+        "check": "bytes",
+        "commit": "262be7a9f53834a8d2b2f4d2751757519b94c9d1",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-trace-probe.tsx",
+            "sha256": "6c66bf8ec02811cc77cceb093d70110c26a563d92366d3e006c89fb29d160faf"
+          }
+        ]
+      },
+      {
+        "role": "v4-trace-record-requery",
+        "check": "ancestor",
+        "commit": "527589b6ca374d8c4e3933f6ec0b35632ca7cd2d"
+      },
+      {
+        "role": "v4-followup-cancelled-match",
+        "check": "ancestor",
+        "commit": "2854aa31da9b172b3e6d5a847267fbc76b9accf6"
+      },
+      {
+        "role": "v4-trace-runner-quote-guard",
+        "check": "ancestor",
+        "commit": "759a4679a7b90d25c13bc9a8517f8a64df43adda"
+      },
+      {
+        "role": "g4-b1-post-observation-freeze",
+        "check": "bytes",
+        "commit": "7bd785fe084d0d370fb3c23860f68b31688684ed",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph/contract.mjs",
+            "sha256": "ef60007ae9fd28ac08692a78c5930f2dd7cf4146b4c3308c8541cbdebd25739d"
+          }
+        ]
+      },
+      {
+        "role": "g4-b1-freeze-v2-constants",
+        "check": "ancestor",
+        "commit": "d06f080e5966e81949317e673c47620d44d51d42"
+      },
+      {
+        "role": "g4-b2a-declaration-v2-path",
+        "check": "ancestor",
+        "commit": "2bf48fad6d29fc60af2255bacab292031ff15725"
+      },
+      {
+        "role": "g4-b2b1-addendum-v2-paths",
+        "check": "ancestor",
+        "commit": "c5b46714054c040cbe5c270ad657f6252b82eaeb"
+      },
+      {
+        "role": "s4-5-g01-reseal-current",
+        "check": "bytes",
+        "commit": "f31d99e07a81acdebe949f22225e19ec5f39cc76",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/g01-negative-preview.mjs",
+            "sha256": "1679051d739f578fffac8d819c0d85e857b465b09407f9768fcf8a98ed09c749"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/g01-negative-run.mjs",
+            "sha256": "c134e680b25a79f1b1b7429b8cea15c1ae7d654bc4a71f22a06089da8dc06caa"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/g01-negatives.mjs",
+            "sha256": "800ba4a427c7d21e48db27de13e48704fb8478f961f2f86d25581bb3f4a01a31"
+          }
+        ]
+      },
+      {
+        "role": "s4-5-addendum-v3-paths",
+        "check": "ancestor",
+        "commit": "ee43c197bcdadc9c630c8d3a68a156b741a75f0d"
+      },
+      {
+        "role": "pr1-native-eval-feature",
+        "check": "bytes",
+        "commit": "3739dbedb762ada8961f509c1b4d6885a11c3099",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/native-architecture.mjs",
+            "sha256": "0e18a7ddcbe4cd24beba5da0b46c8676676f33ccb821d8a82460cfe15824efb6"
+          }
+        ]
+      },
+      {
+        "role": "p1-harness-core",
+        "check": "bytes",
+        "commit": "865a3e2bad1ada5f6e5648e50c6902052b9b2a3c",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/admission-facts.mjs",
+            "sha256": "420cbdf4d9949cd1117c3f3eed6eb5a312b622f7a79fa629369cd9b5a0e7c468"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/egress.mjs",
+            "sha256": "77c0aa177007d9bb8c0da5f0ad5a23c09b4dac02f2d5d5b718089edbb8dcac54"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/native-sample.mjs",
+            "sha256": "ec8d3cbaae613b6cba02eef2732b26550fb95ccf0f05f9b48e31e67896349fb9"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/q4.mjs",
+            "sha256": "862475877f49b8b202ef1cbf9c1702c4f13f50a37141241f25b5f43f4c1306ef"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/stats.mjs",
+            "sha256": "6790e2d12de8839ef431196f4b5d02dfa98c269b65b8c551341079162f735f5b"
+          },
+          {
+            "path": "scripts/quality/nir1-retrieval/standard-build-receipt.mjs",
+            "sha256": "24f49e86d09e2243f5ba4b0528ed6b3fffb9d88aeea6d5b38ef3689e207416e9"
+          }
+        ]
+      },
+      {
+        "role": "p2p3-harness-admission",
+        "check": "bytes",
+        "commit": "a4e65b66006dec7101f93340cdca70fcafabfc5d",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/dev-fixture.mjs",
+            "sha256": "e087f40275b203a30618a5fe4c2a5c14fc86dd545a49383da54116998b3eac89"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/dprime-check.mjs",
+            "sha256": "df1c40e3bdb17cd5b86bcebd16a4f84d3c823144d7a5685fc1bedbe19b3828d6"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/eval-native-build.mjs",
+            "sha256": "85fe0785ec6436f750d6872fcf244aee4a89975f477fe592fb6454fc19d89af3"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/keep-test.mjs",
+            "sha256": "fa103a56d1d992193e79cba3b82207deb25331540728774a274916687235f62c"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/observer-core.mjs",
+            "sha256": "3c4e9e470d5271d09d8d9c90f088103529461d0aa3f33eb161db203d3fa539c7"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer-build.mjs",
+            "sha256": "72340cde5709837a9f770ee6ea8ec0c29b2208820944437ab11ce9425436f13f"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-harness.html",
+            "sha256": "c2e5c77f00a1df6560b0bf8ac98a303090617e582aedc7a5aae44d1880581f30"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/cp4-hook-probe.tsx",
+            "sha256": "050e3db7476c2631cb07fa300d4f527825e0b78e3516eb7e8df2eec13fe2e7c1"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/fetchRelatedScenes.timing.ts",
+            "sha256": "ed89754939755608a5d13ca19c2757bfeefeeef1d52368860dfd484daec03c6c"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/nir1GraphAvailability.eval.ts",
+            "sha256": "01b009b3a5cc25899536703d81a400f8bdc09de4be70a9a04c2067c2f322c1cd"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/renderer/shell.timing.ts",
+            "sha256": "5b4c4f26fff22d0b5ac179b5aa4cc79561da1d7aed6e976a83d7680654b1d018"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/signal-cleanup.mjs",
+            "sha256": "bd67b721168c780c3111462f79aa3e4f157aeb38295b421ab0582786608dd69d"
+          },
+          {
+            "path": "scripts/quality/nir1-retrieval/standard-build.mjs",
+            "sha256": "fed1a24fead2b8fed522e681a648324f5e347a01aa271543bfe3cb907f0d1e35"
+          }
+        ]
+      },
+      {
+        "role": "p4-setup-driver-seed-pin",
+        "check": "bytes",
+        "commit": "7a2669ead5262cc1a1126a7ab52bf808afeb98ff",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/r5-check-runner.mjs",
+            "sha256": "ad327cb7ce418f6a2e628648320f02103c49271c6a0264c48e82f3fc36255648"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/seed-pin-setup.mjs",
+            "sha256": "b694ac8bfa735bc3169c3678275bc1f80b64d42b8470a623e295d360757646ab"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/seed-pin.mjs",
+            "sha256": "4ef057a3b1eb3c65195a28fbc08aef8184deffb8a1af295c8b23c8ce5289816b"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/setup-driver.mjs",
+            "sha256": "e3426fa0b799cf4a485248b2a38ada386a6b1acfff31d2f855c08047ec6d203c"
+          }
+        ]
+      },
+      {
+        "role": "nir1-retrieval-ir-base",
+        "check": "bytes",
+        "commit": "ffa3c0adc56e9af0b385c0379b63a69278242240",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-retrieval/acceptance-policy.mjs",
+            "sha256": "bc7c63310bde90f9b2f6de74ad64b17f699bdb0dc2410da1ad4c02f265aa3afe"
+          },
+          {
+            "path": "scripts/quality/nir1-retrieval/candidate-policy.mjs",
+            "sha256": "05cb3f5142e3297cb521870bf9cfc9fa177f3084948e5af13a773e29e1f8ce67"
+          }
+        ]
+      },
+      {
+        "role": "cp0-graph-eval-freeze",
+        "check": "bytes",
+        "commit": "6bdf61e99f80debd8c2c0c56f2c892e21534f924",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph/porter.mjs",
+            "sha256": "21c418de4ee17d6e337a7dd6fcc3791d4824394e70a13bf6802c43844ceb5026"
+          },
+          {
+            "path": "scripts/quality/nir1-retrieval/paired.mjs",
+            "sha256": "116c066e75a726449273ad3ecd9aeca5d23b9c9d88706de604d955346bb0aed6"
+          }
+        ]
+      },
+      {
+        "role": "da1-route-isolation",
+        "check": "bytes",
+        "commit": "2b68fd4df67599ca2f277fc94f94956de463381e",
+        "files": [
+          {
+            "path": "scripts/quality/run-nir1-retrieval.mjs",
+            "sha256": "7c9b0763c5d6f7c873f4c7658dff356505359ede8442255e3141d1f4bccdf7b2"
+          }
+        ]
+      },
+      {
+        "role": "cq-lim-graph-limits",
+        "check": "ancestor",
+        "commit": "a789039a779eb4df0dec2b8b3be5e29d2bff5a5c"
+      },
+      {
+        "role": "dp-h-unknown-scope",
+        "check": "bytes",
+        "commit": "e2d22b89c92b9de9585d273349e516e9df6ee5b7",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-packing/final-request/architecture.mjs",
+            "sha256": "13621af323993eebd9345d83de5cc5f3f12b52691a64a6ac23f5488d71cecc64"
+          }
+        ]
+      },
+      {
+        "role": "k65-receipt-p95-head",
+        "check": "ancestor",
+        "commit": "e6abddd2feb0ad4022153edef2243fce4767cb57"
+      },
+      {
+        "role": "k65-harness-d40",
+        "check": "bytes",
+        "commit": "bf0b4f75b9eab40009b115cc27df53298a9cef2a",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/procedure-file.mjs",
+            "sha256": "31a71cc2b22ce824db770cd87694080f211bdbd1a92a4386fad14cf183103fd4"
+          }
+        ]
+      },
+      {
+        "role": "k65-n2-n3-enforcement",
+        "check": "ancestor",
+        "commit": "2699314238504e12aa28ba74e1b319f6dff5821d"
+      },
+      {
+        "role": "k65-freeze-source",
+        "check": "ancestor",
+        "commit": "f24dc704cd3a424f94c5fc6ade42950fdcc938d3"
+      },
+      {
+        "role": "k65-g01-e2e-admission",
+        "check": "ancestor",
+        "commit": "94d3e1333ec72a8ffd625d5c3d582ddabd60a4bb"
+      },
+      {
+        "role": "c7-chronicle-stop",
+        "check": "bytes",
+        "commit": "a1492815eaddb1dc8f66941e282799d3d37b244c",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/trace-record.mjs",
+            "sha256": "7b25f1fc9f5c9277a1da7c84e0d91836d2f213176f41723986ff916e3c8bfe8b"
+          }
+        ]
+      },
+      {
+        "role": "k65-merge-followup",
+        "check": "ancestor",
+        "commit": "8489ae57d147f029117b0e4a4c9f08b53565f453"
+      },
+      {
+        "role": "k66-harness-import",
+        "check": "bytes",
+        "commit": "00f9c99981c0bf67a3f98b00b5a1dfb5462547a1",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/k64-record.mjs",
+            "sha256": "04031c469c590e978d674352b63745190e2365aef8518713f621d44de660d6b3"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/join.mjs",
+            "sha256": "42d9df22571bc4a6b677fd32a5919d419c321ede67a1e0d75f5ef0c829fc3bfc"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/run-sample.mjs",
+            "sha256": "b59698ce7713313df249b50d4adb972d9f0c227f89ccc57616655cb5cbfcde19"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/outcome.mjs",
+            "sha256": "f568f17bf7f2c1307d229c94e9c4aefde876e0bd59b5941d9bd4356012dc87bc"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/k64-runner.mjs",
+            "sha256": "d8be4eead38ef845b760d7bb275440cf34b2f2ab5623eeb3a399f528150b2517"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/diagnostic-runner.mjs",
+            "sha256": "a605b66c73e75040e6767c6511d425cea4540c4d78ade627456d0ad1fd1c34a3"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-k64-run.mjs",
+            "sha256": "6b610a293f84164dfc54f4b04d79bafffb4dad263adda8c7780a200af1911e5e"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/trace-runner.mjs",
+            "sha256": "0c56205682a7e8015b0dab3bcf0f61f89e1139e81a50d95044405d374ac0532f"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/trace-frozen.mjs",
+            "sha256": "97e75a635a10966ddd948c9831b498a9952b40bc4f04e6b2fe3eb69ca6fba653"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs",
+            "sha256": "eabef5fb620e495cbd0a3e30e52010dd402f4209a3a99ee70eb822c805538a09"
+          }
+        ]
+      },
+      {
+        "role": "k66-freeze-and-d3d",
+        "check": "bytes",
+        "commit": "1fdeed6f9b6fb3e069fb6aa894b1d1de36d342f8",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/availability.mjs",
+            "sha256": "afaa32bca6113713d961c484ad51af42f4d8819c6942ae3cc5e9afa3ab6394e2"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/receipt.mjs",
+            "sha256": "6ea0e13f2bb71b07e1aa819a14a2ab715b8f5de1702caf2389353a42c19bc265"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/constants.mjs",
+            "sha256": "97ff7860bb23ffc145ac50297d85395a64f0aa21f0702b1f845c2f27b3946eb1"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/admission.mjs",
+            "sha256": "e8202431139debf146c49e5a91fe371fc2ae2c08cbfb616a6a10228d4448c046"
+          }
+        ]
+      },
+      {
+        "role": "k66-g01-diagnostic-head",
+        "check": "bytes",
+        "commit": "99699dda79a882d029b1fce9c87fe7c45eff60b1",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs",
+            "sha256": "0e9227a31bd6dd554bad16ab656d9b1474db0515c6a2d9c360522bf2743368af"
+          },
+          {
+            "path": "scripts/quality/nir1-graph-eval/pubg16-e2e-run.mjs",
+            "sha256": "dcbbfaa54869303220e2fac818b63023fca193d7b6cf65a211374c070d0d063e"
+          }
+        ]
+      },
+      {
+        "role": "k66-followup-requeries",
+        "check": "bytes",
+        "commit": "bf5ec2170edf763ede1027ed8408ce1cb1c9f35d",
+        "files": [
+          {
+            "path": "scripts/quality/nir1-graph-eval/followup.mjs",
+            "sha256": "10ffcfa1c369d9525dd049ff785b503ed571f19d58496dde587e67b99e7ad3f3"
+          }
+        ]
+      }
+    ],
+    "s2": {
+      "observationPrep": {
+        "path": "evals/nir1-graph/observation-prep.v1.json",
+        "sha256": "67b78f8deb2c56fea8023c091a57683992eadbd7cfc4f4acc56e20c965d9f9d9",
+        "commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b"
+      },
+      "declarationAddendum": {
+        "path": "evals/nir1-graph/declaration-addendum.v2.json",
+        "sha256": "bbe3379fc519ae4d67fc7b79a6458c46c92efedbd530aa8b788a66a9f3e80699",
+        "commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b"
+      },
+      "g01Addendum": {
+        "path": "evals/nir1-g01/setup-addendum.v3.json",
+        "sha256": "dd1fb8721e5cf084025e22e4912912c5da7685074380cc14d9d824ff57a8082c",
+        "commit": "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b"
+      }
+    },
+    "priorAttempts": {
+      "negative": [
+        {
+          "runName": "neg-n2-s7r2-1",
+          "runKind": "negative",
+          "status": "completed",
+          "startedAtUtc": "2026-11-15T10:59:21.429Z",
+          "finishedAtUtc": "2026-11-15T11:01:44.192Z",
+          "fileSha256": "a3c6f33e5ee69d1621d8aa361b57b8363acad993d8241a37b4329f751a02826b"
+        },
+        {
+          "runName": "neg-n3-s7r2-1",
+          "runKind": "negative",
+          "status": "completed",
+          "startedAtUtc": "2026-11-15T11:02:38.555Z",
+          "finishedAtUtc": "2026-11-15T11:04:59.172Z",
+          "fileSha256": "1a38291e710e68ff88489eccfd8be153a31152e766ec98e488b0f4db82334d9e"
+        }
+      ],
+      "thisAttempt": {
+        "runName": "neg-n4-s7r2-1",
+        "fileSha256AtStart": "362c200510af0260af3e93479cd9a99285f2127ee10d050caf3d7c25947e2bad"
+      }
+    },
+    "seedPinGate": {
+      "status": "match",
+      "plan": "frozen",
+      "rows": [
+        {
+          "caseId": "G-01",
+          "variantId": "v1",
+          "querySceneId": "940c5ef5-ab3c-4619-a46e-a3883dc6a2eb",
+          "productSeed": "a1a52f90-64c8-45b7-8eb9-f53ec1a27759",
+          "expectedSeed": "a1a52f90-64c8-45b7-8eb9-f53ec1a27759",
+          "expectedSeedLogical": "g01-orin",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "5fccda4dad7eb4903f3d3c95a80fdf97624204137321c7123dd24a471b21eb87",
+          "db": "/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2/.artifacts/cp4/s7r2-g-01-v1/setup/G-01/v1/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-02",
+          "variantId": "base",
+          "querySceneId": "d837e2d7-677a-4a7b-8eb0-5aa46496ea05",
+          "productSeed": "129faf50-ac4c-4fff-9639-6e1704270127",
+          "expectedSeed": "129faf50-ac4c-4fff-9639-6e1704270127",
+          "expectedSeedLogical": "g02-orla",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "1e8541374751dbde4565a7d28d04af238ef9f30a39b6c5eb06c610f4fb0b6b30",
+          "db": "/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2/.artifacts/cp4/s7r2-g-02-base/setup/G-02/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-03",
+          "variantId": "base",
+          "querySceneId": "3c93ebac-9043-4446-b6dd-45da63c2a54f",
+          "productSeed": "fa8fc3b7-b0f8-428f-82d5-1fae530e898e",
+          "expectedSeed": "fa8fc3b7-b0f8-428f-82d5-1fae530e898e",
+          "expectedSeedLogical": "g03-wren",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "d7025e7079083f326519e44c1ea0602f62ad3118519307101a3a48faceaef0b3",
+          "db": "/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2/.artifacts/cp4/s7r2-g-03-base/setup/G-03/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-03",
+          "variantId": "frontier-exceeded",
+          "querySceneId": "38168945-1133-4a76-bf31-c36081e10bdf",
+          "productSeed": "aa800cfc-72c4-47c5-9bb9-5d9a25d330dc",
+          "expectedSeed": "aa800cfc-72c4-47c5-9bb9-5d9a25d330dc",
+          "expectedSeedLogical": "g03-wren",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "548d0f04072d9572d2366e6206a08302daccde0f23d992e83acf49f09e268bc2",
+          "db": "/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2/.artifacts/cp4/s7r2-g-03-frontier-exceeded/setup/G-03/frontier-exceeded/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-04",
+          "variantId": "base",
+          "querySceneId": "31efc75e-ce74-4b21-8c1d-c4b5d99b8ae9",
+          "productSeed": "f5fdcc05-50b3-4a84-a839-222a2e104078",
+          "expectedSeed": "f5fdcc05-50b3-4a84-a839-222a2e104078",
+          "expectedSeedLogical": "g04-bren",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "68e1da94c8932d92fa805cf59098265c337237e1798aa5bd3007e3bd4fc06fc5",
+          "db": "/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2/.artifacts/cp4/s7r2-g-04-base/setup/G-04/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-05",
+          "variantId": "base",
+          "querySceneId": "77641260-2268-41f5-8a0b-b0c4448df2db",
+          "productSeed": "60a91b3a-8715-44cc-a455-6cb484980c6e",
+          "expectedSeed": "60a91b3a-8715-44cc-a455-6cb484980c6e",
+          "expectedSeedLogical": "g05-hale",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "aec7523e3e55fca028295d5d422af67096e05373edbdc4ab0babed2625da93b6",
+          "db": "/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2/.artifacts/cp4/s7r2-g-05-base/setup/G-05/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-06",
+          "variantId": "base",
+          "querySceneId": "f707dc4e-554c-4dcd-bacc-8d4e62b6bda7",
+          "productSeed": "6b94bbdc-4ffa-414c-9d91-0193a8840c33",
+          "expectedSeed": "6b94bbdc-4ffa-414c-9d91-0193a8840c33",
+          "expectedSeedLogical": "g06-maro",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "cd508718dbefcc85f21c49ae90829fde43aa520c33b460f7b8b7dee21dca02e9",
+          "db": "/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2/.artifacts/cp4/s7r2-g-06-base/setup/G-06/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-07",
+          "variantId": "base",
+          "querySceneId": "4a0c8ccf-0cd7-4523-afdd-d871de072aba",
+          "productSeed": "5e313f19-bada-4e9a-b688-bbd4af36955b",
+          "expectedSeed": "5e313f19-bada-4e9a-b688-bbd4af36955b",
+          "expectedSeedLogical": "g07-vesna",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "038442f465ff0e3c2048d268b73d9b582310801d10d93fd41a6151523d32fa3c",
+          "db": "/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2/.artifacts/cp4/s7r2-g-07-base/setup/G-07/base/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-08",
+          "variantId": "base-usable",
+          "querySceneId": "bb8a492b-9f69-4ce2-9985-30236a90b88b",
+          "productSeed": "e7364302-547d-4e9e-a4a9-4efe45316bde",
+          "expectedSeed": "e7364302-547d-4e9e-a4a9-4efe45316bde",
+          "expectedSeedLogical": "g08-odile",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "405b717172789ccf66ccb0279166c46d957933941b5382cd891c09d86d360d35",
+          "db": "/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2/.artifacts/cp4/s7r2-g-08-base-usable/setup/G-08/base-usable/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-08",
+          "variantId": "graph-index-unusable",
+          "querySceneId": "ad53e675-9951-4902-a2d8-4eee723642ee",
+          "productSeed": "84cab4d4-df3f-4264-9989-08c76d21ba50",
+          "expectedSeed": "84cab4d4-df3f-4264-9989-08c76d21ba50",
+          "expectedSeedLogical": "g08-odile",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "e32ebbd5a772cecbb65a2607ca43f1406e8d52e852d10c16669db224967b3990",
+          "db": "/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2/.artifacts/cp4/s7r2-g-08-graph-index-unusable/setup/G-08/graph-index-unusable/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-08",
+          "variantId": "graph-recovered",
+          "querySceneId": "4ee51416-5dcb-49d5-894d-1b259078690b",
+          "productSeed": "118b8bb9-ab7a-4bc8-a71c-09f8ff063f56",
+          "expectedSeed": "118b8bb9-ab7a-4bc8-a71c-09f8ff063f56",
+          "expectedSeedLogical": "g08-odile",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "f51baf527834f1e7132b4ff4e8f5169cb38bfaab2692649010d7b0d3d20a9342",
+          "db": "/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2/.artifacts/cp4/s7r2-g-08-graph-recovered/setup/G-08/graph-recovered/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-08",
+          "variantId": "chronicle-index-unusable",
+          "querySceneId": "7d33e1fe-5aad-45da-9c46-570f38a0334d",
+          "productSeed": "747cdcb2-3cfc-43e8-97da-4dc4b10d1407",
+          "expectedSeed": "747cdcb2-3cfc-43e8-97da-4dc4b10d1407",
+          "expectedSeedLogical": "g08-odile",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "fc79096711a832145956268de5dae02da5aede8a448306ffd7c8d72f574338bc",
+          "db": "/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2/.artifacts/cp4/s7r2-g-08-chronicle-index-unusable/setup/G-08/chronicle-index-unusable/cold-workspace/grimodex.db"
+        },
+        {
+          "caseId": "G-08",
+          "variantId": "both-indexes-unusable",
+          "querySceneId": "19f6ef2e-7324-4822-b047-49589abd9a31",
+          "productSeed": "b79a38d7-93e0-4b37-af07-55e85d5fa025",
+          "expectedSeed": "b79a38d7-93e0-4b37-af07-55e85d5fa025",
+          "expectedSeedLogical": "g08-odile",
+          "pinCount": 1,
+          "status": "match",
+          "setupReceiptSha256": "ce28118d358eafe81dc4d1f198f3c9714d8ee4ecd31e0bae92c08c37b8e7753b",
+          "db": "/home/grimodex/worktrees/Grimodex/cp4-formal-s7r2/.artifacts/cp4/s7r2-g-08-both-indexes-unusable/setup/G-08/both-indexes-unusable/cold-workspace/grimodex.db"
+        }
+      ]
+    },
+    "productBuild": {
+      "checked": true,
+      "productReceiptHead": "29a120ddd3dd8ec5a43845a76cbda837e9b20f6a",
+      "productReceiptTree": "97ae2b7ad21ab0db7c47dd9d17b404ed0cabc282",
+      "evalReceiptHead": "29a120ddd3dd8ec5a43845a76cbda837e9b20f6a",
+      "evalReceiptTree": "97ae2b7ad21ab0db7c47dd9d17b404ed0cabc282",
+      "artifacts": {
+        "dist/index.html": "1506a5ea2452fae3c5505d546138c3e16c7282c0162172e7aa92caa33a6096cc",
+        "dist-electron/main.cjs": "1c72f8ab3ce44a637c6f360e92f2f09970f361ba6d58e67aaada4b309a103c72",
+        "dist-electron/preload.cjs": "1c828b7a67940528b263239830664725881b00ef7b29a073697316fbb67e1e47",
+        "electron/native/grimodex-node/grimodex-node.node": "0c2e22d77f287cef565ba76cfae6379c91a8b7bb43e82567df0a4d060cb137b9"
+      }
+    }
+  },
+  "variants": {
+    "G-01/v1": {
+      "status": "measured",
+      "samples": 70,
+      "valid": true,
+      "errors": [],
+      "verdict": {
+        "outcome": "recorded"
+      },
+      "negative": {
+        "samples": [
+          {
+            "phase": "measured",
+            "repeat": 0,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 1,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 2,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 3,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 4,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 5,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 6,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 7,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 8,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 9,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 10,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 11,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 12,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 13,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 14,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 15,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 16,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 17,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 18,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 19,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 20,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 21,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 22,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 23,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 24,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 25,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 26,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 27,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 28,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 29,
+            "arm": "graph",
+            "seedRequested": "g01-orin",
+            "frameReached": true,
+            "returnedSceneIds": [
+              "g01-question"
+            ],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          }
+        ],
+        "assessment": {
+          "id": "K24-G01-N4",
+          "mutation": "restore-different-bytes-body-version",
+          "countsInCaseJudgement": false,
+          "outcome": "established",
+          "reasons": [],
+          "returnedIn": []
+        },
+        "control": {
+          "status": "reached",
+          "decided": true,
+          "decidedAt": 0,
+          "answer": {
+            "status": "completed",
+            "graphOutcome": "graph-ready",
+            "graphOnly": {
+              "sceneId": "cff0972a-7787-4d65-b802-9268db83a00a",
+              "pinEntityId": "0679cbd3-4cd6-43a4-85cb-e0a5afee0b3f",
+              "hop": 1,
+              "edges": [
+                {
+                  "from": "a1a52f90-64c8-45b7-8eb9-f53ec1a27759",
+                  "to": "0679cbd3-4cd6-43a4-85cb-e0a5afee0b3f",
+                  "relationType": "delivered-key-to"
+                }
+              ]
+            },
+            "pathAttachments": [],
+            "finalSceneIds": [
+              "02f8a9ba-24d8-456d-af3e-6ca3bc68d19f",
+              "cff0972a-7787-4d65-b802-9268db83a00a"
+            ],
+            "timing": {
+              "tFetchMs": 2862.4000000059605,
+              "tRawReadyMs": 2884,
+              "tReturnMs": 2909.5999999940395
+            },
+            "completion": {
+              "outcome": "ir-ready",
+              "deadlineExceeded": false
+            }
+          },
+          "tries": [
+            {
+              "at": 0,
+              "kind": "ready",
+              "outcome": "graph-ready",
+              "parentOutcome": "graph-ready",
+              "childOutcome": null,
+              "cached": false,
+              "counters": {
+                "begins": 1,
+                "cacheHits": 0,
+                "lateCached": 0
+              },
+              "durationMs": 50,
+              "timing": {
+                "parent": {
+                  "tFetchMs": 2862.4000000059605,
+                  "tRawReadyMs": 2884,
+                  "tReturnMs": 2909.5999999940395
+                },
+                "child": null,
+                "readyMarkAfterMs": null
+              },
+              "error": null
+            }
+          ],
+          "retry": {
+            "limit": 60,
+            "gapMs": 250
+          },
+          "graphInputs": "00e27eeb6eeb76397f18f76a84b8d9b0682ccc98bedaf30c88fababb93813406",
+          "bIndex": {
+            "generation": 1,
+            "dirty": false,
+            "sourceDigest": "sha256:6cf4d38442e664933e06de85395367faf0ae75fdb57c0de09fc38b809ca1dd68",
+            "dependencySetDigest": "sha256:78cdcc3235f6b182ece758c0f358812ce64a5c77276efe48138657f8e5c38a3c",
+            "producerId": "nir1-reviewed-entity-relation-v1",
+            "producerVersion": "nir1-reviewed-entity-relation/v1"
+          },
+          "limit": "the control and the measurement share the Graph's relational input (Codex entries, Relations, pins); the B index digest is disclosed, not compared"
+        },
+        "step": {
+          "id": "K24-G01-N4",
+          "mutation": {
+            "revisionId": "b4e652b9-8a31-498c-b0bf-8a826269a8f3",
+            "version": 3,
+            "replayed": false,
+            "afterSha256": "fdd2431a824348c0198c2024a539d85679089833cda60f42be38a0edef3cd923",
+            "restoredSha256": "fdd2431a824348c0198c2024a539d85679089833cda60f42be38a0edef3cd923"
+          },
+          "indexBefore": {
+            "b": {
+              "generation": 1,
+              "dirty": false,
+              "sourceDigest": "sha256:6cf4d38442e664933e06de85395367faf0ae75fdb57c0de09fc38b809ca1dd68",
+              "dependencySetDigest": "sha256:78cdcc3235f6b182ece758c0f358812ce64a5c77276efe48138657f8e5c38a3c",
+              "producerId": "nir1-reviewed-entity-relation-v1",
+              "producerVersion": "nir1-reviewed-entity-relation/v1"
+            },
+            "chronicle": {
+              "generation": 2,
+              "dirty": false,
+              "sourceDigest": "sha256:aea59ffbfac92f0cb492aa36c3d18ecd5c853c414e228143d694a56c0927aba0",
+              "dependencySetDigest": "sha256:12c7c16b5e8ee07583adc6d860737100a6c92c02e3d1c686483f87ac41fec454",
+              "producerId": "nir1-reviewed-chronicle-v1",
+              "producerVersion": "nir1-reviewed-chronicle/v1"
+            }
+          },
+          "feedAfterMutation": null,
+          "sealAttempts": [
+            {
+              "session": "measure",
+              "attempt": 0,
+              "dirLabel": "measure-reopen-0",
+              "outcome": "sealed",
+              "published": true,
+              "waitedMs": 513,
+              "metadata": {
+                "b": {
+                  "generation": 2,
+                  "dirty": false,
+                  "sourceDigest": "sha256:6cf4d38442e664933e06de85395367faf0ae75fdb57c0de09fc38b809ca1dd68",
+                  "dependencySetDigest": "sha256:78cdcc3235f6b182ece758c0f358812ce64a5c77276efe48138657f8e5c38a3c",
+                  "producerId": "nir1-reviewed-entity-relation-v1",
+                  "producerVersion": "nir1-reviewed-entity-relation/v1"
+                },
+                "chronicle": {
+                  "generation": 2,
+                  "dirty": true,
+                  "sourceDigest": "sha256:aea59ffbfac92f0cb492aa36c3d18ecd5c853c414e228143d694a56c0927aba0",
+                  "dependencySetDigest": "sha256:12c7c16b5e8ee07583adc6d860737100a6c92c02e3d1c686483f87ac41fec454",
+                  "producerId": "nir1-reviewed-chronicle-v1",
+                  "producerVersion": "nir1-reviewed-chronicle/v1"
+                }
+              },
+              "sealBranch": "new-generation",
+              "freshnessSettle": null,
+              "settleCoversMutation": null,
+              "chronicle": {
+                "build": {
+                  "ok": true
+                },
+                "metadata": {
+                  "b": {
+                    "generation": 2,
+                    "dirty": false,
+                    "sourceDigest": "sha256:6cf4d38442e664933e06de85395367faf0ae75fdb57c0de09fc38b809ca1dd68",
+                    "dependencySetDigest": "sha256:78cdcc3235f6b182ece758c0f358812ce64a5c77276efe48138657f8e5c38a3c",
+                    "producerId": "nir1-reviewed-entity-relation-v1",
+                    "producerVersion": "nir1-reviewed-entity-relation/v1"
+                  },
+                  "chronicle": {
+                    "generation": 3,
+                    "dirty": false,
+                    "sourceDigest": "sha256:aea59ffbfac92f0cb492aa36c3d18ecd5c853c414e228143d694a56c0927aba0",
+                    "dependencySetDigest": "sha256:12c7c16b5e8ee07583adc6d860737100a6c92c02e3d1c686483f87ac41fec454",
+                    "producerId": "nir1-reviewed-chronicle-v1",
+                    "producerVersion": "nir1-reviewed-chronicle/v1"
+                  }
+                },
+                "usable": true,
+                "recheckBranch": "new-generation"
+              }
+            }
+          ],
+          "spP1Recheck": {
+            "status": "match",
+            "productSeed": "a1a52f90-64c8-45b7-8eb9-f53ec1a27759",
+            "pinCount": 1
+          },
+          "graphInputs": "00e27eeb6eeb76397f18f76a84b8d9b0682ccc98bedaf30c88fababb93813406",
+          "blocked": null
+        },
+        "beforeDeclaration": {
+          "prepared": {
+            "kind": "draft-then-original",
+            "revisionId": "b4e652b9-8a31-498c-b0bf-8a826269a8f3",
+            "created": true,
+            "draftSha256": "fdd2431a824348c0198c2024a539d85679089833cda60f42be38a0edef3cd923",
+            "originalSha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491",
+            "afterSha256": "0ebe4ef00dfab86be4b9fc888ed3918e1b2f65529e587381001ed2a5ceef0491"
+          },
+          "blocked": null
+        },
+        "beforeDeclarationSealAttempts": [
+          {
+            "session": "before-declaration",
+            "attempt": 0,
+            "dirLabel": "before-declaration-reopen-0",
+            "outcome": "sealed",
+            "published": true,
+            "waitedMs": 1056,
+            "metadata": {
+              "b": {
+                "generation": 1,
+                "dirty": false,
+                "sourceDigest": "sha256:6cf4d38442e664933e06de85395367faf0ae75fdb57c0de09fc38b809ca1dd68",
+                "dependencySetDigest": "sha256:78cdcc3235f6b182ece758c0f358812ce64a5c77276efe48138657f8e5c38a3c",
+                "producerId": "nir1-reviewed-entity-relation-v1",
+                "producerVersion": "nir1-reviewed-entity-relation/v1"
+              },
+              "chronicle": {
+                "generation": 1,
+                "dirty": true,
+                "sourceDigest": "sha256:aea59ffbfac92f0cb492aa36c3d18ecd5c853c414e228143d694a56c0927aba0",
+                "dependencySetDigest": "sha256:12c7c16b5e8ee07583adc6d860737100a6c92c02e3d1c686483f87ac41fec454",
+                "producerId": "nir1-reviewed-chronicle-v1",
+                "producerVersion": "nir1-reviewed-chronicle/v1"
+              }
+            },
+            "sealBranch": "unchanged",
+            "freshnessSettle": {
+              "settled": true,
+              "waitedMs": 1048,
+              "polls": 5,
+              "limitMs": 60000,
+              "intervalMs": 250,
+              "initial": {
+                "consumerId": "narrative-incremental-freshness/v1",
+                "head": 19,
+                "cursor": true,
+                "acknowledged": 17,
+                "activeRun": false,
+                "reserved": false,
+                "pendingEvents": 2,
+                "pendingSequences": 2
+              },
+              "final": {
+                "consumerId": "narrative-incremental-freshness/v1",
+                "head": 19,
+                "cursor": true,
+                "acknowledged": 19,
+                "activeRun": false,
+                "reserved": false,
+                "pendingEvents": 0,
+                "pendingSequences": 0
+              }
+            },
+            "settleCoversMutation": true,
+            "chronicle": {
+              "build": {
+                "ok": true
+              },
+              "metadata": {
+                "b": {
+                  "generation": 1,
+                  "dirty": false,
+                  "sourceDigest": "sha256:6cf4d38442e664933e06de85395367faf0ae75fdb57c0de09fc38b809ca1dd68",
+                  "dependencySetDigest": "sha256:78cdcc3235f6b182ece758c0f358812ce64a5c77276efe48138657f8e5c38a3c",
+                  "producerId": "nir1-reviewed-entity-relation-v1",
+                  "producerVersion": "nir1-reviewed-entity-relation/v1"
+                },
+                "chronicle": {
+                  "generation": 2,
+                  "dirty": false,
+                  "sourceDigest": "sha256:aea59ffbfac92f0cb492aa36c3d18ecd5c853c414e228143d694a56c0927aba0",
+                  "dependencySetDigest": "sha256:12c7c16b5e8ee07583adc6d860737100a6c92c02e3d1c686483f87ac41fec454",
+                  "producerId": "nir1-reviewed-chronicle-v1",
+                  "producerVersion": "nir1-reviewed-chronicle/v1"
+                }
+              },
+              "usable": true,
+              "recheckBranch": "unchanged"
+            }
+          }
+        ],
+        "beforeDeclarationFeedAfterSaves": {
+          "consumerId": "narrative-incremental-freshness/v1",
+          "head": 19,
+          "cursor": true,
+          "acknowledged": 17,
+          "activeRun": false,
+          "reserved": false,
+          "pendingEvents": 2,
+          "pendingSequences": 2
+        },
+        "graphTries": [
+          {
+            "phase": "warmup",
+            "repeat": 0,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3424,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "warmup",
+            "repeat": 1,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3457,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "warmup",
+            "repeat": 2,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3395,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "warmup",
+            "repeat": 3,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3458,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "warmup",
+            "repeat": 4,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3415,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 0,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3442,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 1,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3456,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 2,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3405,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 3,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3463,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 4,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3394,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 5,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3457,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 6,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3393,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 7,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3463,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 8,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3400,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 9,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3465,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 10,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3407,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 11,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3455,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 12,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3396,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 13,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3460,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 14,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3392,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 15,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3460,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 16,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3398,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 17,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3458,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 18,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3399,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 19,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3454,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 20,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3407,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 21,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3458,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 22,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3398,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 23,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3479,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 24,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3404,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 25,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3459,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 26,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3394,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 27,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3461,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 28,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3402,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          },
+          {
+            "phase": "measured",
+            "repeat": 29,
+            "decided": true,
+            "tries": [
+              {
+                "at": 0,
+                "kind": "ready",
+                "outcome": "graph-ready",
+                "parentOutcome": "graph-ready",
+                "childOutcome": null,
+                "cached": false,
+                "counters": {
+                  "begins": 1,
+                  "cacheHits": 0,
+                  "lateCached": 0
+                },
+                "durationMs": 3473,
+                "timing": {
+                  "parent": null,
+                  "child": null,
+                  "readyMarkAfterMs": null
+                },
+                "error": null
+              }
+            ],
+            "discardedTakes": 0,
+            "discarded": [],
+            "retry": {
+              "limit": 60,
+              "gapMs": 250
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,905 @@
+[
+  {
+    "id": "K67-N-e1-ticket",
+    "spn": "K6/7 N-e1 (N3c')",
+    "file": "followup.mjs",
+    "find": "if (ticket.outcome !== \"available\") no(\"FR3\", \"ticket-not-available\");",
+    "replace": "void 0;",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 278,
+        "titlePrefix": "K6/7 N-e1（N3c′）: 親の ticket が available でない記録は FR3:ticket-not"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 630,
+        "titlePrefix": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）"
+      }
+    ],
+    "note": "K66-FR3-ticket の後継（find を直した）。ID を K67 に移す",
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67-N-e1-ticket-null",
+    "spn": "K6/7 N-e1",
+    "file": "followup.mjs",
+    "find": "if (ticket === null) no(\"FR3\", \"ticket-not-available\");",
+    "replace": "if (ticket === null) void 0;",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 289,
+        "titlePrefix": "K6/7 N-e1（検出力の取り直し）: 親の ticket が無い（null。Cached の origin）記録も "
+      }
+    ],
+    "note": "等価の疑い（FR1 の source が先に落とす）。run で確かめ、等価なら理由を書く。Cached の親で iiBFieldsFromNativeTicket(null) が throw するなら [artifact] で落ちる",
+    "gapTest": true
+  },
+  {
+    "id": "K67-N-e2-drift",
+    "spn": "K6/7 N-e2",
+    "file": "followup.mjs",
+    "find": "if (iiB.workerDrift.result !== \"clear\")",
+    "replace": "if (iiB.workerDrift.result === \"not-evaluated\" || iiB.workerDrift.result === \"not-reached\")",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 298,
+        "titlePrefix": "K6/7 N-e2・N4′: 窓内に合流した親の worker の drift の検査が「検出」なら [artifact"
+      }
+    ],
+    "note": "drift を通す"
+  },
+  {
+    "id": "K67-N-e5-not-clear",
+    "spn": "K6/7 N-e5",
+    "file": "followup.mjs",
+    "find": "if (iiB.workerDrift.result !== \"clear\")",
+    "replace": "if (iiB.workerDrift.result === \"drift\")",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 358,
+        "titlePrefix": "K6/7 N-e5: 窓内に合流した親の worker の drift の検査が not-evaluated・not-r"
+      }
+    ],
+    "note": "not-evaluated・not-reached を通す"
+  },
+  {
+    "id": "K67-N-e3-requal",
+    "spn": "K6/7 N-e3",
+    "file": "followup.mjs",
+    "find": "if (iiB.requalification.result !== \"passed\")",
+    "replace": "if (false)",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 328,
+        "titlePrefix": "K6/7 N-e3（検出力の取り直し）: returned が true でも、窓内に合流した親の再検証が passed"
+      }
+    ],
+    "note": "旧 K66-FR3-revalidation（等価）の後継",
+    "gapTest": true
+  },
+  {
+    "id": "K67-N-e6-returned",
+    "spn": "K6/7 N-e6",
+    "file": "followup.mjs",
+    "find": "if (iiB.requalification.returned !== true)",
+    "replace": "if (false)",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 370,
+        "titlePrefix": "K6/7 N-e6: 再検証の記録の returned が true でない合流した親は [artifact]（resu"
+      }
+    ]
+  },
+  {
+    "id": "K67-N-f1-drift-missing",
+    "spn": "K6/7 N-f1 (N3b')",
+    "file": "native-sample.mjs",
+    "find": "if (!drift || !WORKER_DRIFT_RESULTS.has(drift.result))",
+    "replace": "if (false)",
+    "testFile": "native-sample.test.mjs",
+    "expected": [
+      {
+        "file": "native-sample.test.mjs",
+        "line": 185,
+        "titlePrefix": "K6/7 N-f1〜N-f3: every pending ticket names the worker drift "
+      }
+    ],
+    "note": "欠けると TypeError で message が違う。failed[].error で区別"
+  },
+  {
+    "id": "K67-N-f1-requal-missing",
+    "spn": "K6/7 N-f1",
+    "file": "native-sample.mjs",
+    "find": "if (!requal || !REQUALIFICATION_RESULTS.has(requal.result))",
+    "replace": "if (false)",
+    "testFile": "native-sample.test.mjs",
+    "expected": [
+      {
+        "file": "native-sample.test.mjs",
+        "line": 185,
+        "titlePrefix": "K6/7 N-f1〜N-f3: every pending ticket names the worker drift "
+      }
+    ]
+  },
+  {
+    "id": "K67-N-f2-returned",
+    "spn": "K6/7 N-f2",
+    "file": "native-sample.mjs",
+    "find": "typeof requal.returned !== \"boolean\"",
+    "replace": "false",
+    "testFile": "native-sample.test.mjs",
+    "expected": [
+      {
+        "file": "native-sample.test.mjs",
+        "line": 185,
+        "titlePrefix": "K6/7 N-f1〜N-f3: every pending ticket names the worker drift "
+      }
+    ]
+  },
+  {
+    "id": "K67-N-f2-cause",
+    "spn": "K6/7 N-f2",
+    "file": "native-sample.mjs",
+    "find": "if (drift.cause !== null && typeof drift.cause !== \"string\")",
+    "replace": "if (false)",
+    "testFile": "native-sample.test.mjs",
+    "expected": [
+      {
+        "file": "native-sample.test.mjs",
+        "line": 185,
+        "titlePrefix": "K6/7 N-f1〜N-f3: every pending ticket names the worker drift "
+      }
+    ]
+  },
+  {
+    "id": "K67-N-f2-reason",
+    "spn": "K6/7 N-f2",
+    "file": "native-sample.mjs",
+    "find": "(requal.reason !== null && typeof requal.reason !== \"string\") ||",
+    "replace": "false ||",
+    "testFile": "native-sample.test.mjs",
+    "expected": [
+      {
+        "file": "native-sample.test.mjs",
+        "line": 185,
+        "titlePrefix": "K6/7 N-f1〜N-f3: every pending ticket names the worker drift "
+      }
+    ]
+  },
+  {
+    "id": "K67-N-f3-all-pending",
+    "spn": "K6/7 N-f3",
+    "file": "native-sample.mjs",
+    "find": "...iiBFieldsFromNativeTicket(ticket),",
+    "replace": "",
+    "testFile": "native-sample.test.mjs",
+    "expected": [
+      {
+        "file": "native-sample.test.mjs",
+        "line": 185,
+        "titlePrefix": "K6/7 N-f1〜N-f3: every pending ticket names the worker drift "
+      }
+    ],
+    "note": "pending の ticket の (ii-b) を検査しない。spread の削除。落ちる試験は推測"
+  },
+  {
+    "id": "K67-N-g-stale-read",
+    "spn": "K6/7 N-g",
+    "file": "followup.mjs",
+    "find": "if (counters.driftAtQuery !== 0 || counters.prepareFailures !== 0)",
+    "replace": "if (sample.freshnessStamp?.result === \"stale\" || counters.driftAtQuery !== 0 || counters.prepareFailures !== 0)",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 68,
+        "titlePrefix": "K6/6-P1・K6/7 N-g: R1 の下の現実の形（slot empty、readyFresh false、beg"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 408,
+        "titlePrefix": "K6/7 N-g: 旧形の record（stamp の key がある。fresh・stamp0-missing・un"
+      }
+    ],
+    "note": "FR-8 の stale の検査の戻し（旧 K66-N-d-stale の廃止の対）。find の行が 1 行か run で確認"
+  },
+  {
+    "id": "K67-N-g-key-followup",
+    "spn": "K6/7 N-g",
+    "file": "followup.mjs",
+    "find": "  \"driftAtQuery\",\n]);\n/**\n * K6/6 変える点 7",
+    "replace": "  \"driftAtQuery\",\n  \"stamp0Missing\",\n]);\n/**\n * K6/6 変える点 7",
+    "testFile": "followup.k66.test.mjs",
+    "expected": [
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 68,
+        "titlePrefix": "K6/6-P1・K6/7 N-g: R1 の下の現実の形（slot empty、readyFresh false、beg"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 94,
+        "titlePrefix": "K6/6-P1: 間に hybrid arm の sample を挟んでも、同じ phase の次の Graph arm"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 140,
+        "titlePrefix": "K6/6-P3: follow-up の sample（begin [pending, cached]、F1〜F7 を満"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 165,
+        "titlePrefix": "K6/6-P4: phase の最後の Graph arm の sample は (c) を当てられず、(b) の co"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 175,
+        "titlePrefix": "K6/6-P5: trace の record（dPrimeCounters が従来の 6 key〔K6/7 で sta"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 195,
+        "titlePrefix": "K6/6-N1a: R1 の reachedQuiet が false なら first-render に数えず、X10"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 203,
+        "titlePrefix": "K6/6-N1b: R1 の 4 項目の計算し直しが自己申告と合わなければ数えず、X10"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 211,
+        "titlePrefix": "K6/6-N2a: 親の begin の記録が [pending] でなければ数えない"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 219,
+        "titlePrefix": "K6/6-N2b: startSlot.kind が empty でなければ数えない"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 228,
+        "titlePrefix": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 241,
+        "titlePrefix": "K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady の"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 278,
+        "titlePrefix": "K6/7 N-e1（N3c′）: 親の ticket が available でない記録は FR3:ticket-not"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 289,
+        "titlePrefix": "K6/7 N-e1（検出力の取り直し）: 親の ticket が無い（null。Cached の origin）記録も "
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 298,
+        "titlePrefix": "K6/7 N-e2・N4′: 窓内に合流した親の worker の drift の検査が「検出」なら [artifact"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 310,
+        "titlePrefix": "K6/7 N-e3: 窓内に合流した親の再検証が unavailable・error・not-reached なら [a"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 328,
+        "titlePrefix": "K6/7 N-e3（検出力の取り直し）: returned が true でも、窓内に合流した親の再検証が passed"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 346,
+        "titlePrefix": "K6/7 N-e4: 宣言が used でない・graph-ready で joined でない・edgeCount が"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 358,
+        "titlePrefix": "K6/7 N-e5: 窓内に合流した親の worker の drift の検査が not-evaluated・not-r"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 370,
+        "titlePrefix": "K6/7 N-e6: 再検証の記録の returned が true でない合流した親は [artifact]（resu"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 382,
+        "titlePrefix": "K6/7 N-f1・N3b′: (ii-b) の記録が窓内に合流した親に無い（片方でも）なら [artifact]"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 395,
+        "titlePrefix": "K6/7 N-f2: (ii-b) の記録の形が違う（語彙の外、cause・reason が null でも文字列でもな"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 408,
+        "titlePrefix": "K6/7 N-g: 旧形の record（stamp の key がある。fresh・stamp0-missing・un"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 423,
+        "titlePrefix": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で "
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 459,
+        "titlePrefix": "K6/6-N6a: 窓内に合流した親の後に graph-ready の通知があれば数えず、開示する"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 466,
+        "titlePrefix": "K6/6-N6b: 子（origin が index-ready の例）があれば数えず、開示する"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 473,
+        "titlePrefix": "K6/6-N6c: 親の IR の再試行の timer が動いていれば数えず、開示する"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 480,
+        "titlePrefix": "K6/6-N6d: followUp.requeries の行が 1 つでもある親（定常状態の key。v2 C6）は数"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 494,
+        "titlePrefix": "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unres"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 547,
+        "titlePrefix": "K6/6-N10a・N10b: 窓内に合流した親で driftAtQuery か prepareFailures の差分"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 556,
+        "titlePrefix": "K6/6-N11a: FR-1 出所が Cached の窓内の親は数えない（K6/4-N39）"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 567,
+        "titlePrefix": "K6/6-N12a: FR-5 宣言が used でなければ数えない（K6/7 では FR-3 ② の宣言の検査も同時に"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 576,
+        "titlePrefix": "K6/6-N12b: FR-5 publishCount が 2 なら数えず、K6/4-N1 の FAIL"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 584,
+        "titlePrefix": "K6/6-N12c: FR-5 親の窓が 40 ms でなければ [precheck]"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 597,
+        "titlePrefix": "K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-ren"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 630,
+        "titlePrefix": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）"
+      },
+      {
+        "file": "followup.k66.test.mjs",
+        "line": 696,
+        "titlePrefix": "K6/6 R-6 (c) の開示: 背景の再準備が次の sample の前に走った親は数えられず、欠落になる（残余 (3"
+      }
+    ],
+    "note": "dPrimeCounters の key の一覧に stamp0Missing を戻す。落ちる試験は推測",
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67-N-g-key-k64",
+    "spn": "K6/7 N-g",
+    "file": "k64-record.mjs",
+    "find": "  \"driftAtQuery\",\n",
+    "replace": "  \"driftAtQuery\",\n  \"stamp0Missing\",\n",
+    "testFile": "k64-record.test.mjs",
+    "expected": [
+      {
+        "file": "k64-record.test.mjs",
+        "line": 754,
+        "titlePrefix": "K6/7 N-g（検出力の取り直し）: 旧形の counters の stamp0Missing は dPrimeCou"
+      }
+    ],
+    "note": "k64-record.test.mjs に該当の題が見当たらない。落ちる試験は run で決める（落ちなければ検出不能として開示）",
+    "gapTest": true
+  },
+  {
+    "id": "K67-N-g-key-trace",
+    "spn": "K6/7 N-g",
+    "file": "trace-record.mjs",
+    "find": "  \"driftAtQuery\",\n]);",
+    "replace": "  \"driftAtQuery\",\n  \"stamp0Missing\",\n]);",
+    "testFile": "trace-record.test.mjs",
+    "expected": [
+      {
+        "file": "trace-record.test.mjs",
+        "line": 69,
+        "titlePrefix": "K6/7 N-g（検出力の取り直し）: 旧形の poll の counters の stamp0Missing は co"
+      }
+    ],
+    "note": "落ちる試験は run で決める（trace-record.test.mjs の TRACE_COUNTER_KEYS 利用箇所も候補）",
+    "gapTest": true
+  },
+  {
+    "id": "K67-R12-readyfresh-stamp",
+    "spn": "K6/7 R-12",
+    "file": "join.mjs",
+    "find": "    sample.startSlot?.readyFresh === true\n  );",
+    "replace": "    sample.startSlot?.readyFresh === true &&\n    sample.freshnessStamp?.matched === true\n  );",
+    "testFile": "outcome.test.mjs",
+    "expected": [
+      {
+        "file": "outcome.test.mjs",
+        "line": 378,
+        "titlePrefix": "K6/7 R-12（変える点 4）: k62 の regime の窓内の集合は stamp の句を外しても変わらない。s"
+      },
+      {
+        "file": "outcome.test.mjs",
+        "line": 409,
+        "titlePrefix": "K6/2 step 8: in-window samples agree, unjoined samples equal"
+      }
+    ],
+    "note": "stamp の句を戻す",
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67-N-g-category-stamp",
+    "spn": "K6/7 N-g",
+    "file": "availability.mjs",
+    "find": "const fresh = query.startSlot?.readyFresh === true;",
+    "replace": "const fresh = query.startSlot?.readyFresh === true && query.freshnessStamp?.matched !== false;",
+    "testFile": "availability.test.mjs",
+    "expected": [
+      {
+        "file": "availability.test.mjs",
+        "line": 521,
+        "titlePrefix": "K6/7 N-h1・N-g: a graph-late is read by the start slot alone "
+      }
+    ],
+    "gapTest": true
+  },
+  {
+    "id": "K67-N-h1-stale-start",
+    "spn": "K6/7 N-h1",
+    "file": "availability.mjs",
+    "find": "return { category: \"freshness\", reason: \"graph-late:stale-start\" };",
+    "replace": "return { category: \"other\", reason: \"graph-late:stale-start\" };",
+    "testFile": "availability.test.mjs",
+    "expected": [
+      {
+        "file": "availability.test.mjs",
+        "line": 521,
+        "titlePrefix": "K6/7 N-h1・N-g: a graph-late is read by the start slot alone "
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 744,
+        "titlePrefix": "K6/2 の文のまま（批准 5 を欠く候補、変える点 12）: graph-late は開始時の slot と stam"
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67-N-h1-fresh-start",
+    "spn": "K6/7 N-h1",
+    "file": "availability.mjs",
+    "find": "if (fresh) return { category: \"other\", reason: \"graph-late:fresh-start\" };",
+    "replace": "if (fresh) return { category: \"freshness\", reason: \"graph-late:fresh-start\" };",
+    "testFile": "availability.test.mjs",
+    "expected": [
+      {
+        "file": "availability.test.mjs",
+        "line": 521,
+        "titlePrefix": "K6/7 N-h1・N-g: a graph-late is read by the start slot alone "
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 744,
+        "titlePrefix": "K6/2 の文のまま（批准 5 を欠く候補、変える点 12）: graph-late は開始時の slot と stam"
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 780,
+        "titlePrefix": "boundary disagreements in (b): joined-late within tolerance "
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67-N-h2-reading",
+    "spn": "K6/7 N-h2",
+    "file": "availability.mjs",
+    "find": "return main === \"freshness\" ? \"other\" : main;",
+    "replace": "return main;",
+    "testFile": "availability.test.mjs",
+    "expected": [
+      {
+        "file": "availability.test.mjs",
+        "line": 462,
+        "titlePrefix": "P-9 rule 7, third example: stale 12 of 20 is a freshness maj"
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 592,
+        "titlePrefix": "K6/7 N-h2: a majority of freshness is read as other, and rul"
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 628,
+        "titlePrefix": "K6/7 攻撃 33: 規則 6 は要約の主な理由「鮮度」（手組み・旧形）も「その他」と読み、最後の枝（条件成立）に届か"
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 948,
+        "titlePrefix": "rule 6: lapse-rate precheck happens only inside a diagnostic"
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67-N-h2-branch",
+    "spn": "K6/7 N-h2",
+    "file": "availability.mjs",
+    "find": "if (mains.some((main) => main === \"other\"))",
+    "replace": "if (false)",
+    "testFile": "availability.test.mjs",
+    "expected": [
+      {
+        "file": "availability.test.mjs",
+        "line": 592,
+        "titlePrefix": "K6/7 N-h2: a majority of freshness is read as other, and rul"
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 628,
+        "titlePrefix": "K6/7 攻撃 33: 規則 6 は要約の主な理由「鮮度」（手組み・旧形）も「その他」と読み、最後の枝（条件成立）に届か"
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 948,
+        "titlePrefix": "rule 6: lapse-rate precheck happens only inside a diagnostic"
+      }
+    ],
+    "note": "find は 1 回当たるか check で確認",
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67-N-h5-fold-before",
+    "spn": "K6/7 N-h5",
+    "file": "availability.mjs",
+    "find": "if ((categories[name] ?? 0) * 2 > outOfWindow) return name;",
+    "replace": "if (((categories[name] ?? 0) + (name === \"other\" ? categories.freshness ?? 0 : 0)) * 2 > outOfWindow) return name;",
+    "testFile": "availability.test.mjs",
+    "expected": [
+      {
+        "file": "availability.test.mjs",
+        "line": 462,
+        "titlePrefix": "P-9 rule 7, third example: stale 12 of 20 is a freshness maj"
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 474,
+        "titlePrefix": "P-9 rule 7, fourth example: other exactly half is no main re"
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 592,
+        "titlePrefix": "K6/7 N-h2: a majority of freshness is read as other, and rul"
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 687,
+        "titlePrefix": "K6/7 N-h5: freshness 9, other 8, lapse 3 has no majority; th"
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 948,
+        "titlePrefix": "rule 6: lapse-rate precheck happens only inside a diagnostic"
+      }
+    ],
+    "note": "過半数の前に freshness を other に畳む",
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67-N-h7-unknown-a",
+    "spn": "K6/7 N-h7",
+    "file": "availability.mjs",
+    "find": "if (main !== null && !MAIN_REASONS.has(main))",
+    "replace": "if (false)",
+    "testFile": "availability.test.mjs",
+    "expected": [
+      {
+        "file": "availability.test.mjs",
+        "line": 657,
+        "titlePrefix": "K6/7 N-h7: 主な理由が未設定・未知・null の超過 trace と readMainReason は [ar"
+      }
+    ]
+  },
+  {
+    "id": "K67-N-h7-unknown-b",
+    "spn": "K6/7 N-h7",
+    "file": "availability.mjs",
+    "find": "if (!MAIN_REASONS.has(value))",
+    "replace": "if (false)",
+    "testFile": "availability.test.mjs",
+    "expected": [
+      {
+        "file": "availability.test.mjs",
+        "line": 657,
+        "titlePrefix": "K6/7 N-h7: 主な理由が未設定・未知・null の超過 trace と readMainReason は [ar"
+      }
+    ]
+  },
+  {
+    "id": "K67-N-h-before-record",
+    "spn": "K6/7 N-h2",
+    "file": "availability.mjs",
+    "find": "mainReasonBeforeReading: before,",
+    "replace": "mainReasonBeforeReading: null,",
+    "testFile": "availability.test.mjs",
+    "expected": [
+      {
+        "file": "availability.test.mjs",
+        "line": 462,
+        "titlePrefix": "P-9 rule 7, third example: stale 12 of 20 is a freshness maj"
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 474,
+        "titlePrefix": "P-9 rule 7, fourth example: other exactly half is no main re"
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 592,
+        "titlePrefix": "K6/7 N-h2: a majority of freshness is read as other, and rul"
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 687,
+        "titlePrefix": "K6/7 N-h5: freshness 9, other 8, lapse 3 has no majority; th"
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 703,
+        "titlePrefix": "K6/7 N-h6: lapse 11 and other 9 is a lapse majority; a lapse"
+      }
+    ],
+    "note": "落ちる試験は推測",
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67-N-h-lapse-none",
+    "spn": "K6/7 N-h5",
+    "file": "availability.mjs",
+    "find": "if (mains.some((main) => main === \"lapse\" || main === \"none\"))",
+    "replace": "if (mains.some((main) => main === \"lapse\"))",
+    "testFile": "availability.test.mjs",
+    "expected": [
+      {
+        "file": "availability.test.mjs",
+        "line": 687,
+        "titlePrefix": "K6/7 N-h5: freshness 9, other 8, lapse 3 has no majority; th"
+      },
+      {
+        "file": "availability.test.mjs",
+        "line": 948,
+        "titlePrefix": "rule 6: lapse-rate precheck happens only inside a diagnostic"
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67-N-h3-ticket-freshness",
+    "spn": "K6/7 N-h3",
+    "file": "followup.mjs",
+    "find": "if (FRESHNESS_REASONS.has(reason)) return \"freshness\";",
+    "replace": "return \"other\";",
+    "testFile": "followup.test.mjs",
+    "expected": [
+      {
+        "file": "followup.test.mjs",
+        "line": 1171,
+        "titlePrefix": "K6/4-N34: follow-up の失敗は失敗した段の理由で区分する（stale は鮮度、registration"
+      },
+      {
+        "file": "followup.test.mjs",
+        "line": 1265,
+        "titlePrefix": "K6/7 N-h3・N-g: K6/4 の regime で表示されなかった query の失敗した段の X1（親の t"
+      },
+      {
+        "file": "followup.test.mjs",
+        "line": 1308,
+        "titlePrefix": "K6/7 N-h4: 失敗した段の「失効」（registration-unavailable・invalidated）は"
+      },
+      {
+        "file": "followup.test.mjs",
+        "line": 1352,
+        "titlePrefix": "K6/7 N-h6: 親の失効 8 と失敗した段の失効 3（合わせて失効 11）とその他 9 は「失効」が過半数で、失敗"
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67-N-h6-ticket-lapse",
+    "spn": "K6/7 N-h6",
+    "file": "followup.mjs",
+    "find": "if (LAPSE_TICKET_REASONS.has(reason)) return \"lapse\";",
+    "replace": "return \"other\";",
+    "testFile": "followup.test.mjs",
+    "expected": [
+      {
+        "file": "followup.test.mjs",
+        "line": 1171,
+        "titlePrefix": "K6/4-N34: follow-up の失敗は失敗した段の理由で区分する（stale は鮮度、registration"
+      },
+      {
+        "file": "followup.test.mjs",
+        "line": 1308,
+        "titlePrefix": "K6/7 N-h4: 失敗した段の「失効」（registration-unavailable・invalidated）は"
+      },
+      {
+        "file": "followup.test.mjs",
+        "line": 1352,
+        "titlePrefix": "K6/7 N-h6: 親の失効 8 と失敗した段の失効 3（合わせて失効 11）とその他 9 は「失効」が過半数で、失敗"
+      }
+    ],
+    "expectedRewritten": true
+  },
+  {
+    "id": "K67-N-h4-setup",
+    "spn": "K6/7 N-h4",
+    "file": "followup.mjs",
+    "find": "if (SETUP_DEFECT_REASONS.has(reason)) return \"setup-defect\";",
+    "replace": "return \"other\";",
+    "testFile": "followup.test.mjs",
+    "expected": [
+      {
+        "file": "followup.test.mjs",
+        "line": 1308,
+        "titlePrefix": "K6/7 N-h4: 失敗した段の「失効」（registration-unavailable・invalidated）は"
+      }
+    ]
+  },
+  {
+    "id": "K67-N-h4-setup-row",
+    "spn": "K6/7 N-h4",
+    "file": "followup.mjs",
+    "find": "if (setup) return { category: \"setup-defect\", reason: setup.detail };",
+    "replace": "if (false) return { category: \"setup-defect\", reason: setup.detail };",
+    "testFile": "followup.test.mjs",
+    "expected": [
+      {
+        "file": "followup.test.mjs",
+        "line": 1308,
+        "titlePrefix": "K6/7 N-h4: 失敗した段の「失効」（registration-unavailable・invalidated）は"
+      }
+    ]
+  },
+  {
+    "id": "K67-N9-receipt-sha",
+    "spn": "K6/7 N9'",
+    "file": "receipt.mjs",
+    "find": "head?.k67?.sha256 !== freeze67.sha256",
+    "replace": "false",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 472,
+        "titlePrefix": "K6/7-N9′: 正式の Graph の receipt の先頭は /7 の凍結（head.k67）を持ち、無い・違う"
+      }
+    ]
+  },
+  {
+    "id": "K67-N9-receipt-commit",
+    "spn": "K6/7 N9'",
+    "file": "receipt.mjs",
+    "find": "head?.k67?.freezeCommit !== freeze67.freezeCommit",
+    "replace": "false",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 472,
+        "titlePrefix": "K6/7-N9′: 正式の Graph の receipt の先頭は /7 の凍結（head.k67）を持ち、無い・違う"
+      }
+    ]
+  },
+  {
+    "id": "K67-N9-receipt-null-descriptor",
+    "spn": "K6/7 N9'",
+    "file": "receipt.mjs",
+    "find": "if (freeze67.freezeCommit === null)",
+    "replace": "if (false)",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 472,
+        "titlePrefix": "K6/7-N9′: 正式の Graph の receipt の先頭は /7 の凍結（head.k67）を持ち、無い・違う"
+      }
+    ]
+  },
+  {
+    "id": "K67-N9-receipt-required",
+    "spn": "K6/7 N9'",
+    "file": "receipt.mjs",
+    "find": "if (formalGraph || head?.k67 !== undefined) {",
+    "replace": "if (head?.k67 !== undefined) {",
+    "testFile": "receipt.test.mjs",
+    "expected": [
+      {
+        "file": "receipt.test.mjs",
+        "line": 472,
+        "titlePrefix": "K6/7-N9′: 正式の Graph の receipt の先頭は /7 の凍結（head.k67）を持ち、無い・違う"
+      }
+    ],
+    "note": "head.k67 の無い run（s6r1・s7r1・s7r2）を含む"
+  },
+  {
+    "id": "K67-N9-admission-commit",
+    "spn": "K6/7 N9'",
+    "file": "admission.mjs",
+    "find": "if (resolved !== freeze.freezeCommit || digest !== freeze.sha256)\n    throw new Error(\n      \"[precheck] K6/7 freeze commit or bytes differ",
+    "replace": "if (false)\n    throw new Error(\n      \"[precheck] K6/7 freeze commit or bytes differ",
+    "testFile": "admission.test.mjs",
+    "expected": [
+      {
+        "file": "admission.test.mjs",
+        "line": 1162,
+        "titlePrefix": "K6/7 変える点 8・K6/7-N9′: admitGraphCaseRun と assertReceiptHeadB"
+      }
+    ]
+  },
+  {
+    "id": "K67-N9-admission-null",
+    "spn": "K6/7 N9'",
+    "file": "admission.mjs",
+    "find": "if (freeze.freezeCommit === null)\n    throw new Error(\n      \"[precheck] the K6/7 freeze commit is not pinned",
+    "replace": "if (false)\n    throw new Error(\n      \"[precheck] the K6/7 freeze commit is not pinned",
+    "testFile": "admission.test.mjs",
+    "expected": [
+      {
+        "file": "admission.test.mjs",
+        "line": 1162,
+        "titlePrefix": "K6/7 変える点 8・K6/7-N9′: admitGraphCaseRun と assertReceiptHeadB"
+      }
+    ]
+  },
+  {
+    "id": "K67-N9-admission-bound",
+    "spn": "K6/7 N9'",
+    "file": "admission.mjs",
+    "find": "if (k67.sha256 !== head.k67.sha256)",
+    "replace": "if (false)",
+    "testFile": "admission.test.mjs",
+    "expected": [
+      {
+        "file": "admission.test.mjs",
+        "line": 1162,
+        "titlePrefix": "K6/7 変える点 8・K6/7-N9′: admitGraphCaseRun と assertReceiptHeadB"
+      }
+    ]
+  }
+]
