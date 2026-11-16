@@ -39,6 +39,7 @@ import { createPortal } from "react-dom";
 import { useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/react";
 import { useTranslation } from "react-i18next";
+import { agentSettingRange } from "@/../electron/shared/agentSettingCatalog";
 import { cn } from "@/lib/utils";
 import { formatShortcut, isMac } from "@/lib/platform";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
@@ -926,36 +927,28 @@ export function Toolbar({
             <TypographySliderRow
               label={t("settings.editor.fontSize")}
               displayValue={`${fontSize}px`}
-              min={14}
-              max={24}
-              step={1}
+              {...agentSettingRange("editor.fontSize")}
               value={fontSize}
               onChange={setFontSize}
             />
             <TypographySliderRow
               label={t("settings.editor.lineHeight")}
               displayValue={lineHeight.toFixed(1)}
-              min={1.2}
-              max={3.0}
-              step={0.1}
+              {...agentSettingRange("editor.lineHeight")}
               value={lineHeight}
               onChange={setLineHeight}
             />
             <TypographySliderRow
               label={t("settings.editor.maxWidth")}
               displayValue={`${maxContentWidth}px`}
-              min={480}
-              max={960}
-              step={40}
+              {...agentSettingRange("editor.maxContentWidth")}
               value={maxContentWidth}
               onChange={setMaxContentWidth}
             />
             <TypographySliderRow
               label={t("settings.editor.paragraphSpacing")}
               displayValue={`${paragraphSpacing}px`}
-              min={0}
-              max={24}
-              step={2}
+              {...agentSettingRange("editor.paragraphSpacing")}
               value={paragraphSpacing}
               onChange={setParagraphSpacing}
             />

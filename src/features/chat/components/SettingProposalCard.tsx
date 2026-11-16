@@ -89,6 +89,7 @@ export function SettingProposalCard({ proposal }: SettingProposalCardProps) {
         record(proposal.id, {
           status: "applied",
           previous: result.previous,
+          previousExplicit: result.previousExplicit,
           applied: result.applied,
         });
       } else {
@@ -114,6 +115,7 @@ export function SettingProposalCard({ proposal }: SettingProposalCardProps) {
       proposal.key,
       outcome.applied,
       outcome.previous,
+      outcome.previousExplicit,
     );
     if (result.ok) {
       setError(null);

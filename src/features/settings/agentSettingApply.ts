@@ -17,7 +17,12 @@ import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { BUNDLED_FONTS } from "./bundledFonts";
 import { fetchSystemFonts } from "./hooks/useSystemFonts";
-import { readRuntimeSetting, writeRuntimeSetting } from "./runtimeSettings";
+import {
+  clearRuntimeSetting,
+  hasExplicitRuntimeSetting,
+  readRuntimeSetting,
+  writeRuntimeSetting,
+} from "./runtimeSettings";
 
 /** FontFamilySelect の選択肢と同じ値（basic ＋ 同梱 ＋ システム）。移行注入の current は数えない。 */
 export async function listFontFamilyChoices(): Promise<string[]> {
@@ -31,7 +36,7 @@ export async function listFontFamilyChoices(): Promise<string[]> {
 }
 
 /**
- * 提案の時点の検証。font は形だけ（制御文字・`; { } < > \`・200 字超の拒否）で、端末に入っている
+ * 提案の時点の検証。font は形だけ（制御文字・200 字超の拒否）で、端末に入っている
  * フォントとは照合しない。モデルへの成功・失敗が端末のフォントで変わらず、provider へ漏れないようにする。
  */
 export function validateSettingProposal(
@@ -83,7 +88,16 @@ function writeVerified(key: string, value: string): boolean {
 }
 
 export type AgentSettingApplyResult =
-  | { readonly ok: true; readonly previous: string; readonly applied: string }
+  | {
+      readonly ok: true;
+      readonly previous: string;
+      /**
+       * 適用の前に、保存先の層へ明示値として有ったか。false なら `previous` は既定値（言語別の上書きを
+       * 含む実効値）で、「元に戻す」は値を書かず明示値を消す（既定値を明示値として固定しない）。
+       */
+      readonly previousExplicit: boolean;
+      readonly applied: string;
+    }
   | {
       readonly ok: false;
       readonly message: string;
@@ -93,7 +107,7 @@ export type AgentSettingApplyResult =
 
 /**
  * 利用者の「適用」。目録で再検証し、通った値だけを既存の経路で書く。
- * 返す `previous` は書く前の値で、「元に戻す」に使う。
+ * 返す `previous`／`previousExplicit` は書く前の実効値と明示値の有無で、「元に戻す」に使う。
  */
 export async function applyAgentSettingChange(
   key: string,
@@ -108,6 +122,7 @@ export async function applyAgentSettingChange(
     };
   }
   const previous = readAgentSettingValue(key);
+  const previousExplicit = hasExplicitRuntimeSetting(key);
   if (!writeVerified(key, verdict.value)) {
     return {
       ok: false,
@@ -115,7 +130,7 @@ export async function applyAgentSettingChange(
       reason: "write-failed",
     };
   }
-  return { ok: true, previous, applied: verdict.value };
+  return { ok: true, previous, previousExplicit, applied: verdict.value };
 }
 
 export type AgentSettingRevertResult =
@@ -123,19 +138,30 @@ export type AgentSettingRevertResult =
   | { readonly ok: false; readonly reason: "changed" | "failed" };
 
 /**
- * 利用者の「元に戻す」。今の値が適用した値のままのときだけ、前の値を書き戻す
- * （その後に利用者が変えた値を上書きしない）。
+ * 利用者の「元に戻す」。今の値が適用した値のままのときだけ戻す
+ * （その後に利用者が変えた値を上書きしない）。適用前に明示値が無かった（`previousExplicit` が false）
+ * ときは、前の実効値を書かずに明示値を消し、既定値・言語別の上書きが再び効くようにする。
  */
 export function revertAgentSettingChange(
   key: string,
   applied: string,
   previous: string,
+  previousExplicit = true,
 ): AgentSettingRevertResult {
   if (!getAgentSettingEntry(key)) return { ok: false, reason: "failed" };
   if (!agentSettingValuesEqual(key, readRuntimeSetting(key), applied)) {
     return { ok: false, reason: "changed" };
   }
+  if (!previousExplicit) return clearThroughMirrors(key);
   return writeVerified(key, previous)
     ? { ok: true }
     : { ok: false, reason: "failed" };
+}
+
+/** 明示値を消す。消えたこと（層に無いこと）を読み戻して確かめてから、実行時 store を実効値に合わせる。 */
+function clearThroughMirrors(key: string): AgentSettingRevertResult {
+  clearRuntimeSetting(key);
+  if (hasExplicitRuntimeSetting(key)) return { ok: false, reason: "failed" };
+  writeThroughMirrors(key, readRuntimeSetting(key));
+  return { ok: true };
 }

@@ -14,11 +14,17 @@ vi.mock("./api", () => ({
   setSetting: vi.fn(async () => {}),
 }));
 const updateUserPreferenceSpy = vi.hoisted(() => vi.fn(async () => {}));
+const patchSpy = vi.hoisted(() =>
+  vi.fn(
+    async (_updater: (current: Record<string, unknown>) => unknown) => ({}),
+  ),
+);
 vi.mock("@/lib/globalSettings/repository", () => ({
   globalSettingsRepository: {
     read: vi.fn(async () => ({ userPreferences: {} })),
     write: vi.fn(async () => {}),
     updateUserPreference: updateUserPreferenceSpy,
+    patch: patchSpy,
   },
 }));
 
@@ -330,5 +336,28 @@ describe("デバウンス中の loadAll と pending の整合（設定ダイア�
     ).resolves.toBeUndefined();
     expect(api.setProjectSetting).toHaveBeenCalledTimes(2);
     expect(useSettingsStore.getState()._pending.size).toBe(0);
+  });
+  it("unset は層とキャッシュから明示値を消して既定値に戻し、保存先からもキーを消す", async () => {
+    const store = useSettingsStore.getState();
+    store.set("editor.lineHeight", "1.4");
+    await store.flushPending();
+    patchSpy.mockClear();
+
+    useSettingsStore.getState().unset("editor.lineHeight");
+    const state = useSettingsStore.getState();
+    expect(Object.hasOwn(state.layers.global, "editor.lineHeight")).toBe(false);
+    expect(state.get("editor.lineHeight")).toBe(
+      DEFAULT_SETTINGS["editor.lineHeight"],
+    );
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(patchSpy).toHaveBeenCalledTimes(1);
+    const updater = patchSpy.mock.calls[0]![0];
+    expect(
+      updater({ userPreferences: { "editor.lineHeight": "1.4", a: "b" } }),
+    ).toEqual({ userPreferences: { a: "b" } });
+    // 既に無いなら保存しない（同一参照を返す）。
+    const unchanged = { userPreferences: { a: "b" } };
+    expect(updater(unchanged)).toBe(unchanged);
   });
 });

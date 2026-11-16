@@ -168,8 +168,7 @@ describe("propose_setting_change", () => {
       ["editor.bubbleMenu", "yes"],
       ["editor.bubbleMenu", 1],
       ["editor.fontFamily", ""],
-      ["editor.fontFamily", '"A";color:red'],
-      ["editor.fontFamily", "serif{}"],
+      ["editor.fontFamily", "a\nb"],
       ["editor.fontFamily", "a".repeat(201)],
       ["editor.fontSize", undefined],
     ];
@@ -221,7 +220,7 @@ describe("propose_setting_change", () => {
     fonts.system = ["SENTINEL-FONT-A", "SENTINEL-FONT-B"];
     const result = await proposeSettingChangeTool({
       key: "editor.fontFamily",
-      value: '"Nope";',
+      value: '"Nope"\n',
     });
     expect(result.error).toBeTruthy();
     expect(JSON.stringify(result)).not.toContain("SENTINEL-FONT");

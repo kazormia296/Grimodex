@@ -74,6 +74,11 @@ describe("save_global_settings の目録キーの再検証", () => {
       '"Yu Mincho"',
       '"游明朝"',
       '"Noto Serif JP", serif',
+      // システムフォント名にあり得る文字。UI からの保存を main が拒否しない。
+      '"A;B"',
+      '"Font {Pro}"',
+      '"Font <1>"',
+      '"Back\\slash"',
     ]) {
       const { save, saveGlobalSettings } = setup({});
       expect(await save({ "editor.fontFamily": value })).toMatchObject({
@@ -92,7 +97,8 @@ describe("save_global_settings の目録キーの再検証", () => {
       ["editor.maxContentWidth", "700"],
       ["display.codexHighlightOpacity", "30"],
       ["editor.bubbleMenu", "yes"],
-      ["editor.fontFamily", '"A";color:red'],
+      ["editor.fontFamily", "a\nb"],
+      ["editor.fontFamily", "x".repeat(201)],
     ] as const) {
       const { save, saveGlobalSettings } = setup({});
       const result = await save({ [key]: value });

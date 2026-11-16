@@ -70,6 +70,30 @@ describe("migrateAppSettingsToScopedStores", () => {
     });
   });
 
+  it("目録のキーの値が目録の検証を通らないときは、その値だけを落として移行を続ける", async () => {
+    const { setSetting, getSetting } = await import("./api");
+    await setSetting("editor.fontSize", "99"); // 範囲外
+    await setSetting("editor.lineHeight", "1.25"); // step 外
+    await setSetting("editor.bubbleMenu", "yes"); // 型違い
+    await setSetting("editor.fontFamily", "bad\nfont"); // 制御文字
+    await setSetting("editor.maxContentWidth", "800"); // 有効
+    await setSetting("editor.autoSaveDelay", "abc"); // 目録外のキーは検証しない
+
+    const { migrateAppSettingsToScopedStores } = await import("./migration");
+    await expect(migrateAppSettingsToScopedStores()).resolves.toBeUndefined();
+
+    const prefs = (
+      globalSettingsHarness.getSettings() as {
+        userPreferences: Record<string, string>;
+      }
+    ).userPreferences;
+    expect(prefs).toEqual({
+      "editor.maxContentWidth": "800",
+      "editor.autoSaveDelay": "abc",
+    });
+    expect(await getSetting("meta.settingsSchemaVersion")).toBe("1");
+  });
+
   it("migrates project keys to project_settings", async () => {
     const { setSetting, getProjectSetting } = await import("./api");
     await setSetting("export.format", "docx");

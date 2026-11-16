@@ -137,6 +137,22 @@ describe("設定画面の範囲との一致", () => {
       expect(props, key).toContain(`{...agentSettingRange("${key}")}`);
       expect(props, key).not.toMatch(/\b(min|max|step)=\{/);
     }
+    // ツールバーの文字サイズ・行組みポップオーバーも同じ範囲を使う（直書きしない）。
+    const toolbar = read("src/features/editor/Toolbar.tsx");
+    for (const key of [
+      "editor.fontSize",
+      "editor.lineHeight",
+      "editor.maxContentWidth",
+      "editor.paragraphSpacing",
+    ] as const) {
+      const marker = `{...agentSettingRange("${key}")}`;
+      expect(toolbar, key).toContain(marker);
+      const row = toolbar.slice(
+        toolbar.lastIndexOf("<TypographySliderRow", toolbar.indexOf(marker)),
+      );
+      const props = row.slice(0, row.indexOf("/>"));
+      expect(props, key).not.toMatch(/\b(min|max|step)=\{/);
+    }
     // Layers ポップオーバーの Codex 濃度スライダーも同じ範囲を使う。
     const layers = read("src/features/editor/LayersPopover.tsx");
     expect(layers).toContain(
@@ -407,14 +423,8 @@ describe("main の save_global_settings 用の差分検証", () => {
     expect(containsAgentSettingKey(null)).toBe(false);
   });
 
-  it("font は main では形だけを見る（制御文字・区切りを含む値を拒否）", () => {
-    for (const value of [
-      '"A";color:red',
-      "a{b}",
-      "a\nb",
-      "x".repeat(201),
-      "",
-    ]) {
+  it("font は main では形だけを見る（制御文字・200 字超・空を拒否。`; { } < > \\` は拒否しない）", () => {
+    for (const value of ["a\nb", "a\u0000b", "a\u007fb", "x".repeat(201), ""]) {
       expect(
         findInvalidAgentSettingChanges({ "editor.fontFamily": value }, {}),
         JSON.stringify(value),
@@ -426,6 +436,26 @@ describe("main の save_global_settings 用の差分検証", () => {
         {},
       ),
     ).toEqual([]);
+    // システムフォント名にあり得る文字（UI からの保存を拒否しない）。
+    for (const value of [
+      '"A;B"',
+      '"Font {Pro}"',
+      '"Font <1>"',
+      '"Back\\slash"',
+      '"A";color:red',
+      "serif{}",
+    ]) {
+      expect(
+        findInvalidAgentSettingChanges({ "editor.fontFamily": value }, {}),
+        value,
+      ).toEqual([]);
+      expect(
+        validateAgentSettingValue("editor.fontFamily", value, {
+          fontFamilies: "shape-only",
+        }),
+        value,
+      ).toMatchObject({ ok: true, value });
+    }
   });
 
   it('数値の同値判定（"2" と "2.0"）', () => {

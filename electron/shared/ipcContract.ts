@@ -6691,10 +6691,10 @@ function parseWire(json: string): unknown {
 
 /**
  * `save_global_settings` は GlobalSettings 全体の read-modify-write で、UI の設定変更も agent の
- * 「設定変更の提案」の適用も同じ経路を通る。agent に変更を提案させてよい 16 キー
+ * 「設定変更の提案」の適用も同じ経路を通る。agent に変更を提案させてよい 15 キー
  * （`agentSettingCatalog`）は、保存済みの値から**変わったもの**だけを、UI と同じ範囲・step・型で
  * 再検証する。変わっていない値は見ない（旧版の範囲外の値や移行値が 1 つあっても、他の設定の保存を
- * 妨げない）。font は main に選択肢が無いので、CSS font-family として安全な文字列かだけを見る。
+ * 妨げない）。font は main に選択肢が無いので、制御文字・200 字超でないかだけを見る。
  */
 async function assertAgentSettingChangesValid(
   b: NapiBackendLike,

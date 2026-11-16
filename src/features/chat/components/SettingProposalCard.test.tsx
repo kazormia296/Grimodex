@@ -24,11 +24,17 @@ vi.mock("@/features/settings/api", () => ({
   setProjectSetting: vi.fn(async () => {}),
   setSetting: vi.fn(async () => {}),
 }));
+const repo = vi.hoisted(() => ({
+  patch: vi.fn(
+    async (_updater: (current: Record<string, unknown>) => unknown) => ({}),
+  ),
+}));
 vi.mock("@/lib/globalSettings/repository", () => ({
   globalSettingsRepository: {
     read: vi.fn(async () => ({ userPreferences: {} })),
     write: vi.fn(async () => {}),
     updateUserPreference: vi.fn(async () => {}),
+    patch: repo.patch,
   },
 }));
 
@@ -61,7 +67,9 @@ beforeEach(() => {
   useSettingsStore.setState({
     cache: { ...DEFAULT_SETTINGS },
     layers: { legacy: {}, project: {}, global: {} },
+    projectLanguage: "ja",
   });
+  repo.patch.mockClear();
   useSettingsStore.getState()._pending.clear();
   useSettingProposalStore.setState({ outcomes: {} });
   useCursorSettingsStore.setState({ focusMode: false, typewriterMode: false });
@@ -115,6 +123,77 @@ describe("SettingProposalCard", () => {
     expect(
       screen.getByText("chat.settingProposal.reverted"),
     ).toBeInTheDocument();
+  });
+
+  it("未設定だった設定の「元に戻す」は既定値を明示値として固定せず、言語別の既定値が再び効く", async () => {
+    // en のプロジェクト: editor.lineHeight は未設定で、言語別の既定 1.6 が効いている。
+    act(() => {
+      useSettingsStore.getState().applyProjectLanguage("en");
+    });
+    expect(setting("editor.lineHeight")).toBe("1.6");
+    render(
+      <SettingProposalCard proposal={proposalOf("editor.lineHeight", "1.8")} />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByText("chat.settingProposal.apply"));
+    });
+    expect(setting("editor.lineHeight")).toBe("1.8");
+    expect(
+      Object.hasOwn(
+        useSettingsStore.getState().layers.global,
+        "editor.lineHeight",
+      ),
+    ).toBe(true);
+
+    fireEvent.click(screen.getByText("chat.settingProposal.undo"));
+    expect(setting("editor.lineHeight")).toBe("1.6");
+    expect(
+      Object.hasOwn(
+        useSettingsStore.getState().layers.global,
+        "editor.lineHeight",
+      ),
+    ).toBe(false);
+    // 言語を ja にすると ja の既定（2.0）になる（1.6 が global に残っていない）。
+    act(() => {
+      useSettingsStore.getState().applyProjectLanguage("ja");
+    });
+    expect(setting("editor.lineHeight")).toBe("2.0");
+
+    // 保存先からもキーが消える（他のキーは残る）。
+    await act(async () => {
+      await useSettingsStore.getState().flushPending();
+    });
+    const updater = repo.patch.mock.calls.at(-1)?.[0];
+    expect(updater).toBeDefined();
+    expect(
+      updater!({
+        uiScale: 100,
+        userPreferences: {
+          "editor.lineHeight": "1.8",
+          "editor.fontSize": "20",
+        },
+      }),
+    ).toEqual({ uiScale: 100, userPreferences: { "editor.fontSize": "20" } });
+  });
+
+  it("明示値が有った設定の「元に戻す」は、従来どおりその値へ戻る", async () => {
+    act(() => {
+      useSettingsStore.getState().applyProjectLanguage("en");
+      useSettingsStore.getState().set("editor.lineHeight", "1.4");
+    });
+    render(
+      <SettingProposalCard proposal={proposalOf("editor.lineHeight", "1.8")} />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByText("chat.settingProposal.apply"));
+    });
+    expect(setting("editor.lineHeight")).toBe("1.8");
+    fireEvent.click(screen.getByText("chat.settingProposal.undo"));
+    expect(setting("editor.lineHeight")).toBe("1.4");
+    expect(useSettingsStore.getState().layers.global["editor.lineHeight"]).toBe(
+      "1.4",
+    );
+    expect(repo.patch).not.toHaveBeenCalled();
   });
 
   it("「却下」では設定を変えず、適用のボタンも消える", () => {

@@ -221,7 +221,7 @@ export interface AgentSettingValidationOptions {
   /**
    * font の許可値（FontFamilySelect の選択肢の value。`"Noto Serif JP"`、`serif` など）。
    * `"shape-only"` は選択肢を列挙できない main と、提案の時点（端末のフォントに依存させない）用で、
-   * CSS font-family として安全な文字列かだけを見る。
+   * font-family として妥当な形（空でない・200 字以下・制御文字なし）かだけを見る。
    * 省略した font の検証は拒否する（選択肢が分からないまま通さない）。
    */
   readonly fontFamilies?: readonly string[] | "shape-only";
@@ -231,9 +231,11 @@ export interface AgentSettingValidationOptions {
 const STEP_TOLERANCE = 1e-9;
 const NUMERIC_TEXT = /^\d+(?:\.\d+)?$/;
 const MAX_FONT_VALUE_LENGTH = 200;
-// 制御文字・CSS の区切り・タグを含む値は font-family として保存しない。
+// 制御文字を含む値は font-family として保存しない。`\ ; { } < >` は拒否しない: システムフォント名に
+// 現れ得て、設定画面からの保存を main が拒否する回帰になる。font は style object 経由で CSS に入る
+// （文字列連結で stylesheet を組まない）ので、これらの文字で注入にならない。
 // eslint-disable-next-line no-control-regex
-const UNSAFE_FONT_CHARS = /[\u0000-\u001f\u007f;{}<>\\]/;
+const UNSAFE_FONT_CHARS = /[\u0000-\u001f\u007f]/;
 
 function stepDecimals(step: number): number {
   const text = String(step);
