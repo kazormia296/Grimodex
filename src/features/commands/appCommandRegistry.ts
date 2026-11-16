@@ -152,7 +152,10 @@ function panelCommand(id: string, panel: PanelId): AppCommand {
     // 表示ごと見えなくなるので、agent には出さない（利用者のキー操作は従来どおり）。
     // それでも、利用者が同じ slot に置いた別のパネルやプリセットで Chat が隠れることはある（受け入れる。
     // 退避は会話の履歴のカードに残る。設計書 §7.4）。
-    agent: panel !== "chat" && panel !== "chat-history",
+    // TrashBin は mount 時と 1 時間ごとに、期限切れの項目を DB から永久削除する（pruneTrashItems）。
+    // 開くだけで確認なしの削除が起きるので、agent には出さない（利用者のキー操作は従来どおり）。
+    agent:
+      panel !== "chat" && panel !== "chat-history" && panel !== "trash-bin",
     panel,
     run: (ctx) => {
       if (ctx.phoneWorkspace) {

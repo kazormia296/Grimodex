@@ -115,8 +115,12 @@ interface AppCommand {
 - `fixedKey`（再割当不可のキー。`searchWorkspace`、`toggleExport`）、`panel`、`isAvailable`（今 `run` できるか）を足した。
 - agent が実行してよいかは `isAgentRunnable`（`agent: true` かつ `risk: "view"`）で決め、registry の一覧（`listAgentRunnableCommandIds`）がツールの許可の正本になる。`agent: true` は、利用者のデータを変えない画面の表示だけの操作に限る。
   layout が変わるものは layout の退避で元に戻せる。例外は `openSettings`（Settings を開くだけで、利用者が閉じれば戻る。退避には含まれず、結果は `undoable: false`）。
+  `agent: true` の一部のパネルは、mount したときに派生データや初期データを書く（Matrix の mention 索引の backfill、Map の "Main" board の作成、Codex の `ensureBuiltinTypes`）。
+  どれも利用者の既存のデータを消したり変えたりはしないので「データを変えない」の範囲として受け入れる（索引・初期の board・組み込みの型を補うだけで、本文・Codex の項目・board の内容には触れない）。
+  これと区別して、利用者のデータを消すものは出さない（次の TrashBin）。
   agent に出さないもの: `toggleExport`（blocked）、`splitVertical`／`splitHorizontal`／`nextTab`／`prevTab`（tab の model と開いている場面を変え、layout の退避では戻せない。active scene の切替が chat の scope に与える影響は未確認）、
-  `focusChat`／`focusChatHistory`（agent が今動いているパネル。既定の配置では同じ slot で、片方を出すともう片方が隠れ、「元に戻す」の表示ごと見えなくなる）。
+  `focusChat`／`focusChatHistory`（agent が今動いているパネル。既定の配置では同じ slot で、片方を出すともう片方が隠れ、「元に戻す」の表示ごと見えなくなる）、
+  `focusTrashBin`（`TrashBinPanel` が mount 時と 1 時間ごとに `pruneTrashItems` で保持期間を過ぎた項目を DB から永久に削除するので、agent が開くと確認なしの削除が起きる。2026-11-16 に独立レビューの指摘で `agent: false` にした。利用者のキー操作は従来どおり）。
 - キー以外の呼び出し元は、host が `commandContext` に登録した文脈を使う（`runRegisteredAppCommand`）。登録は後勝ちの 1 枠で、host は 1 つだけの前提（§7）。
 
 ### 4.2 agent に許可する設定の目録
@@ -182,7 +186,13 @@ panels: []
   あわせて `layoutChanged`、`undoable`（元に戻せるか）を返す。layout が変わらなかった操作と、layout の退避に含まれない操作（Settings を開く等）は `undoable: false` で、元に戻せるとは言わない。
 - 元に戻す: 実行の直前の表示状態（layout store の配置・プリセット・非表示の Stripe・最大化・オーバーレイと、phone 幅の画面切替）をメモリ上に退避し、chat の tool 結果（`ToolCallBlock`）に「元に戻す」ボタンを出す（確認は求めない）。
   message metadata（DB）に保存するのは `undoId` だけで、配置の写しは保存しない。再読込・再起動後は退避が無いのでボタンは出ない。戻せるのは 1 回で、先の操作を戻すと、それより後の操作の退避は無効になる。
-  inline AI の未確定の結果があるときは戻さない（本文を守る）。
+  退避には、操作の直前の写しのほかに、操作の直後の写し（`after`。比較の範囲は退避と同じ）と、登録のときの phone 幅かどうかも持たせる。「元に戻す」を押した時点で次のどれかなら、何も変えずに戻さず、カードに理由を出す（`failed`）:
+  - 画面の幅の profile（phone か否か）が登録のときと違う →「画面の幅が変わったため戻せません」
+  - 今の状態が操作の直後と違う（利用者や別の操作が後で配置を変えた）→「その後に配置が変わったため戻せません」
+  - 写しの配置を今の画面で復元できない（store が棄却する）。
+  このため、複数の操作を戻すときは後の操作から順に戻す（後の操作を戻して状態が先の操作の直後と同じになれば、先の操作も戻せる）。
+  inline AI の未確定の結果があるときも戻さない（本文を守る。`blocked`）。
+  `openSettings` は退避に含まれず `undoable: false`（Settings は利用者が閉じれば戻る）。
 - 1 応答（agent loop 1 回）で UI 操作ツールを実行できる回数は 10 回まで（`MAX_UI_OPERATIONS_PER_TURN`。失敗も数える）。一般の tool 呼び出し上限は 1 バッチの中の呼び出しを数えず全ツールの合計なので、別に設けた。「続行」で始まる新しい応答は新しい枠。
 - 新しいツールは `agent-tool-manifest.json` に足すので、どれも `grimodex-ai` の build.rs（Rust の parser）に取り込まれる。
   read だけの PR でも Rust の build と試験を通す。`ui` の capability は新設しない（§10.1）ので Rust 側の型は変わらない。ただし write のツールは `HERMES_BLOCKED_TOOL_NAMES`（build.rs が manifest から生成）に入るため、Rust の試験 `hermes_blocked_tool_names_are_frozen` の一覧に足す。
@@ -232,17 +242,19 @@ panels: []
    未知の id、agent に出さないもの、blocked、今は使えない状態は、副作用なしで error を返す。モデルが作った id は実行しない。ツールの inputSchema の enum も registry と一致させる（試験で固定）。
 4. agent に出さないもの: export、ファイル書出し、外部送信、AI 設定（provider・key・endpoint）の変更。registry では export が blocked、設定は PR4 の目録に載せない。
 5. 連打の抑止: 1 応答で UI 操作ツールは 10 回まで。
-6. 取り返せること: 実行前に表示状態を退避し、chat の tool 結果から 1 回で元に戻せる。戻せない操作は、戻せるとは言わない（`undoable: false`。Settings を開く）か、agent に出さない（tab の分割・切替）。
+6. 取り返せること: 実行前に表示状態を退避し、chat の tool 結果から 1 回で元に戻せる。操作の後に配置が変わった場合と画面の幅が変わった場合は戻さない（後の手作業を巻き戻さない）。戻せない操作は、戻せるとは言わない（`undoable: false`。Settings は利用者が閉じれば戻る）か、agent に出さない（tab の分割・切替）。
 7. 実行できない場所: host が無い（no-host）とパネルの別ウィンドウ（host は別ウィンドウでも mount されるので、`isPanelWindow()` で拒否する）は、両ツールを拒否する。phone 幅とレイアウトのロック中は `apply_layout_preset` を拒否する。
 8. host は 1 つの前提: `commandContext` の登録は後勝ちの 1 枠で、host が 2 つ以上同時に mount されると、後の host が外れた時点で登録が空になる。その場合は no-host の error として扱い、推測で実行しない。
 9. 研究サブエージェントは read だけ（`executeReadOnlyTool` が write のツールを拒否する）。宣言していないツールは agent loop が拒否する。
 10. 秘密: `get_app_help`／`get_ui_state`／UI 操作の結果は、秘密の値（API key 等）と endpoint の URL を返さない。返すのは「設定済みかどうか」の真偽だけ。
-11. PR4（設定変更）: 提案だけで、適用は利用者が押す。適用できるのは承認済みの 16 キー（§10.1）で、global のみ。renderer と main の両方で検証する。
+11. PR4（設定変更）: 提案だけで、適用は利用者が押す。適用できるのは承認済みの 15 キー（§10.1）で、global のみ。renderer と main の両方で検証する。
 
 ### 7.4 受け入れること
 
 - 本文などの指示で、パネルの開閉・プリセットの切替・Settings の表示が確認なしで起こりうる。表示だけで、データ・外部送信・設定は変わらず、10 回の上限と「元に戻す」で収まる範囲として受け入れる。
-- 元に戻すは layout の表示状態だけで、メモリ上にある。再読込後は出ない。元に戻すと、その後に利用者が手で変えた配置も、操作前の状態に戻る。
+- 元に戻すは layout の表示状態だけで、メモリ上にある。再読込後は出ない。操作の後に配置が変わった場合（利用者の手作業を含む）や画面の幅が変わった場合は戻さず、カードに理由を出す。後の変更を巻き戻さないための判断で、複数の操作は後のものから順に戻す。
+- `agent: true` のパネルの一部は mount 時に派生データや初期データを書く（§4.1）。利用者の既存のデータを消したり変えたりはしないので受け入れる。データを消す TrashBin は agent に出さない。
+- `openSettings` は退避に含まれない（`undoable: false`）。利用者が Settings を閉じれば戻る。
 - Chat が見えなくなる操作は、`focusChat`／`focusChatHistory` を外しても残る（利用者が Chat と同じ slot に置いた別のパネル、Chat を含まないプリセット）。
   その場合も「元に戻す」は会話の履歴のカードに残るので、Chat を開き直せば押せる。拒否はしない（プリセットは利用者が頼んだ配置のため）。
 - Hermes と低信頼の native provider では UI 操作が使えない（§7.2）。
@@ -299,15 +311,16 @@ panels: []
 - PR3／PR4 のツールの権限: manifest の capability は `write`（`ui` は新設しない）、`requiredPolicy` は `chat`（AiPolicy の新しい区分は作らない）、
   `allowedChannels` は agent と native（hermes は入れない）。Hermes の経路には出さない（受入れ済みの制限）。実行の前に AI ポリシーで chat が off なら拒否する。
 - PR3（UI 操作）は確認なし＋元に戻す（`requiresUserConfirmation: false`）。
-- PR4（設定変更）は提案だけで、適用は利用者が押す。承認済みの 16 キーだけ、global のみ、renderer と main の両方で検証する:
+- PR4（設定変更）は提案だけで、適用は利用者が押す。対象のキーは **15 件**、global のみ、renderer と main の両方で検証する。
+  ユーザーは 2026-11-16 に推奨の 16 件を承認し、そのうえで統合者が、読み手がコードに無く適用しても効かない `display.showWordCount` を 1 件外した（承認した範囲を狭めただけで、広げていない）:
   `editor.fontSize`、`editor.lineHeight`、`editor.maxContentWidth`、`editor.paragraphSpacing`、`editor.fontFamily`（選択肢のみ）、`editor.typewriterMode`、`editor.focusMode`、
   `editor.showInvisibles`、`editor.showStickies`、`editor.bubbleMenu`、`editor.autoPairBrackets`、`editor.smartQuotes`、
-  `display.showWordCount`、`display.reduceMotion`、`display.codexHighlight`、`display.codexHighlightOpacity`。
+  `display.reduceMotion`、`display.codexHighlight`、`display.codexHighlightOpacity`。
 - export、ファイル書出し、外部送信、AI 設定の変更は、agent に出さない。
 
 ### 10.2 未決（着手時に決める）
 
-1.・2. は 2026-11-16 に決定し、§10.1 に移した（personal の設定キーは承認済みの 16 キー。`ui` の capability は新設せず `write`、requiredPolicy は `chat`、native は許可し hermes は入れない）。
+1.・2. は 2026-11-16 に決定し、§10.1 に移した（personal の設定キーは承認済みの 15 キー（推奨 16 件から効かない 1 件を外した。§10.1）。`ui` の capability は新設せず `write`、requiredPolicy は `chat`、native は許可し hermes は入れない）。
 3. （決定済み・2026-11-16）ヘルプ文書の言語は **ja だけ**。人が読む画面を作らないので、ja だけで書き、agent が利用者の言語で答える。
    コマンド・パネル・設定カテゴリの UI の名前とキーは文書に直書きせず、`{{command:<id>}}`・`{{panel:<id>}}`・`{{settings:<id>}}` などの参照で書き、
    返すときに UI 言語のラベルと実際のキー割当に展開する（ja だけで書いても en の UI と食い違わない）。存在しない ID への参照は試験で落とす。

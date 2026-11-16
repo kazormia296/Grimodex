@@ -8,8 +8,13 @@
  * 退避はメモリ上だけ。chat の tool 結果（ToolCallRecord）は message metadata として DB に保存されるが、
  * 保存するのは `undoId` だけで、配置の写しは保存しない。再読込・再起動後は「元に戻す」は出ない。
  * 戻せるのは 1 回だけで、先の操作を戻すと、それより後の操作の退避は無効にする（古い配置で上書きしない）。
+ *
+ * 後の変更を巻き戻さないために、退避には操作の直後の写し（after）と登録時の phone 幅かどうかも持たせる。
+ * 「元に戻す」を押した時点の状態が after と違う（利用者や別の操作が後で配置を変えた）か、画面の幅の
+ * profile が変わっていたときは、何も変えずに failed を返す（理由は entry.failure に残す）。
  */
 import { create } from "zustand";
+import { getRegisteredCommandContext } from "@/features/commands/commandContext";
 import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
 import {
   applyValidatedLayout,
@@ -71,6 +76,39 @@ export function uiSnapshotsDiffer(
   );
 }
 
+/** 配置は不変更新なので参照が同じなら同じ。違うときだけ中身を比べる（再 clamp などの参照だけの差し替えを変更とみなさない）。 */
+function layoutsEqual(a: UiOperationSnapshot, b: UiOperationSnapshot) {
+  if (a.layout === b.layout) return true;
+  try {
+    return JSON.stringify(a.layout) === JSON.stringify(b.layout);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `after`（操作の直後の写し）から、今の状態が変わっているか。比較の範囲は退避と同じ
+ * （配置・プリセット・非表示の Stripe・最大化・オーバーレイ・phone の画面）。
+ */
+export function uiStateChangedSince(
+  after: UiOperationSnapshot,
+  current: UiOperationSnapshot = captureUiSnapshot(),
+): boolean {
+  return (
+    !layoutsEqual(after, current) ||
+    after.activePresetId !== current.activePresetId ||
+    !setsEqual(after.hiddenStripePanels, current.hiddenStripePanels) ||
+    after.maximizedPanelId !== current.maximizedPanelId ||
+    after.openOverlay !== current.openOverlay ||
+    after.phoneSurface !== current.phoneSurface
+  );
+}
+
+/** 今が phone 幅の workspace か（host の文脈。host が無ければ false）。 */
+function currentPhoneWorkspace(): boolean {
+  return getRegisteredCommandContext()?.phoneWorkspace ?? false;
+}
+
 /**
  * 写しの状態へ戻す。inline AI が pending のときは本文を守るため戻さず "blocked"
  * （配置の差し替えで editor が消える経路があるため）。画面幅の変化などで写しの配置が
@@ -118,10 +156,22 @@ export function restoreUiSnapshot(
 
 export type UiUndoStatus = "available" | "undone" | "superseded";
 
+/**
+ * 戻せなかった理由（card に出す）。viewport＝登録のときと画面の幅の profile（phone か否か）が違う、
+ * changed＝操作の後に配置が変わった、layout＝写しの配置を今の画面で復元できない。
+ */
+export type UiUndoFailure = "viewport" | "changed" | "layout";
+
 interface UiUndoEntry {
   snapshot: UiOperationSnapshot;
+  /** 操作の直後の写し。これと今が違えば、後の変更を巻き戻さないよう戻さない。 */
+  after: UiOperationSnapshot;
+  /** 登録のときに phone 幅だったか。 */
+  phoneWorkspace: boolean;
   status: UiUndoStatus;
   seq: number;
+  /** 直近の戻しが failed だったときの理由。 */
+  failure?: UiUndoFailure;
 }
 
 /** 退避を持つ操作の数の上限（古いものから捨てる）。 */
@@ -129,11 +179,15 @@ const MAX_UNDO_ENTRIES = 20;
 
 interface UiUndoState {
   entries: Record<string, UiUndoEntry>;
-  /** 操作の直前の写しを登録して、chat の tool 結果に載せる id を返す。 */
-  register: (snapshot: UiOperationSnapshot) => string;
+  /** 操作の直前（snapshot）と直後（after）の写しを登録して、chat の tool 結果に載せる id を返す。 */
+  register: (
+    snapshot: UiOperationSnapshot,
+    after: UiOperationSnapshot,
+  ) => string;
   /**
    * 戻した結果。unavailable＝id が無い／すでに戻した／後の操作で無効、blocked＝inline AI の
-   * 未確定の結果があり今は戻せない、failed＝写しの配置を今の画面で復元できなかった。
+   * 未確定の結果があり今は戻せない、failed＝画面の幅が変わった・操作の後に配置が変わった・
+   * 写しの配置を今の画面で復元できなかった（理由は entry.failure。どれも何も変えない）。
    */
   undo: (id: string) => "restored" | "unavailable" | "blocked" | "failed";
 }
@@ -142,13 +196,19 @@ let seqCounter = 0;
 
 export const useUiUndoStore = create<UiUndoState>((set, get) => ({
   entries: {},
-  register: (snapshot) => {
+  register: (snapshot, after) => {
     const id = crypto.randomUUID();
     seqCounter += 1;
     set((state) => {
       const entries = {
         ...state.entries,
-        [id]: { snapshot, status: "available" as const, seq: seqCounter },
+        [id]: {
+          snapshot,
+          after,
+          phoneWorkspace: currentPhoneWorkspace(),
+          status: "available" as const,
+          seq: seqCounter,
+        },
       };
       const ids = Object.keys(entries);
       if (ids.length > MAX_UNDO_ENTRIES) {
@@ -164,13 +224,26 @@ export const useUiUndoStore = create<UiUndoState>((set, get) => ({
   undo: (id) => {
     const entry = get().entries[id];
     if (!entry || entry.status !== "available") return "unavailable";
+    const fail = (failure: UiUndoFailure) => {
+      set((state) => ({
+        entries: { ...state.entries, [id]: { ...entry, failure } },
+      }));
+      return "failed" as const;
+    };
+    // 幅の profile が違うと、写しの配置・phone の画面がそのまま使えない。
+    if (entry.phoneWorkspace !== currentPhoneWorkspace()) {
+      return fail("viewport");
+    }
+    // 操作の後に配置が変わっているなら、後の変更（利用者の手作業を含む）を巻き戻さない。
+    if (uiStateChangedSince(entry.after)) return fail("changed");
     const restored = restoreUiSnapshot(entry.snapshot);
+    if (restored === "failed") return fail("layout");
     if (restored !== "restored") return restored;
     set((state) => {
       const entries = { ...state.entries };
       for (const [otherId, other] of Object.entries(entries)) {
         if (otherId === id) {
-          entries[otherId] = { ...other, status: "undone" };
+          entries[otherId] = { ...other, status: "undone", failure: undefined };
         } else if (other.seq > entry.seq && other.status === "available") {
           entries[otherId] = { ...other, status: "superseded" };
         }

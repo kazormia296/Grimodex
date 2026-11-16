@@ -160,9 +160,10 @@ export async function runAppCommandTool(
     );
   }
   await settleFrame();
-  const changed = uiSnapshotsDiffer(before, captureUiSnapshot());
+  const after = captureUiSnapshot();
+  const changed = uiSnapshotsDiffer(before, after);
   const undoId = changed
-    ? useUiUndoStore.getState().register(before)
+    ? useUiUndoStore.getState().register(before, after)
     : undefined;
   return succeed(
     name,
@@ -266,9 +267,10 @@ export async function applyLayoutPresetTool(
         "The preset was not applied (for example, unsaved inline AI edits are pending in the editor). Nothing was changed.",
     });
   }
-  const changed = uiSnapshotsDiffer(before, captureUiSnapshot());
+  const after = captureUiSnapshot();
+  const changed = uiSnapshotsDiffer(before, after);
   const undoId = changed
-    ? useUiUndoStore.getState().register(before)
+    ? useUiUndoStore.getState().register(before, after)
     : undefined;
   const preset = listPresets().find((candidate) => candidate.id === id);
   return succeed(

@@ -38,7 +38,6 @@ export const AGENT_RUNNABLE_COMMAND_IDS: readonly string[] = Object.freeze([
   "focusMap",
   "focusKouetsu",
   "focusForeshadow",
-  "focusTrashBin",
   "focusGrid",
   "focusMatrix",
   "focusWritingStats",

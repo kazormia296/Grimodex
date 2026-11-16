@@ -157,6 +157,7 @@ describe("manifest と定義（Hermes・権限）", () => {
       "splitVertical",
       "focusChat",
       "focusChatHistory",
+      "focusTrashBin",
     ]) {
       expect(AGENT_RUNNABLE_COMMAND_IDS).not.toContain(id);
     }
@@ -191,13 +192,15 @@ describe("run_app_command の拒否は副作用なし", () => {
     }
   });
 
-  it("agent に出さないコマンド（tab 切替・Chat と Chat History）は実行しない", async () => {
+  it("agent に出さないコマンド（tab 切替・Chat と Chat History・ゴミ箱）は実行しない", async () => {
+    // ゴミ箱は mount 時に期限切れの項目を DB から永久削除するので、開くだけでも出さない。
     const before = layoutOf();
     for (const command of [
       "nextTab",
       "splitVertical",
       "focusChat",
       "focusChatHistory",
+      "focusTrashBin",
     ]) {
       const result = await runAppCommandTool({ command });
       expect(result.error, command).toContain("not allowed");
@@ -320,15 +323,89 @@ describe("run_app_command の実行と元に戻す", () => {
     expect(useCompactNavigationStore.getState().backStack).toEqual([]);
   });
 
-  it("先の操作を戻すと、後の操作の退避は無効になり、古い配置で上書きしない", async () => {
+  it("後の操作があるときは、先の操作を戻さない（後の変更を巻き戻さない）。後の操作から順に戻せる", async () => {
     const first = await runAppCommandTool({ command: "toggleLeftOverlay" });
     const second = await runAppCommandTool({ command: "focusScenes" });
     expect(first.undoId && second.undoId).toBeTruthy();
-    expect(useUiUndoStore.getState().undo(first.undoId!)).toBe("restored");
-    expect(useUiUndoStore.getState().entries[second.undoId!]?.status).toBe(
-      "superseded",
+    const afterSecond = layoutOf();
+    expect(useUiUndoStore.getState().undo(first.undoId!)).toBe("failed");
+    expect(useUiUndoStore.getState().entries[first.undoId!]?.failure).toBe(
+      "changed",
     );
-    expect(useUiUndoStore.getState().undo(second.undoId!)).toBe("unavailable");
+    expect(layoutOf()).toEqual(afterSecond);
+    expect(useUiUndoStore.getState().entries[first.undoId!]?.status).toBe(
+      "available",
+    );
+
+    expect(useUiUndoStore.getState().undo(second.undoId!)).toBe("restored");
+    expect(useUiUndoStore.getState().undo(first.undoId!)).toBe("restored");
+    expect(useLayoutStore.getState().openOverlay).toBeNull();
+  });
+});
+
+describe("元に戻すの前提（画面の幅・操作の後の変更）", () => {
+  it("操作の後に利用者が配置を変えたら戻さず failed（理由 changed）で、配置は今のまま", async () => {
+    const result = await runAppCommandTool({ command: "focusScenes" });
+    // 利用者が後で別のパネルを手で切り替えた。
+    useLayoutStore.getState().togglePanel("codex");
+    const now = layoutOf();
+    expect(useUiUndoStore.getState().undo(result.undoId!)).toBe("failed");
+    expect(layoutOf()).toEqual(now);
+    expect(useUiUndoStore.getState().entries[result.undoId!]).toMatchObject({
+      status: "available",
+      failure: "changed",
+    });
+  });
+
+  it("操作の後に overlay を開閉した・最大化した場合も、戻さない", async () => {
+    const result = await runAppCommandTool({ command: "focusScenes" });
+    useLayoutStore.setState({ openOverlay: "left" });
+    expect(useUiUndoStore.getState().undo(result.undoId!)).toBe("failed");
+    expect(useLayoutStore.getState().openOverlay).toBe("left");
+    useLayoutStore.setState({ openOverlay: null, maximizedPanelId: "editor" });
+    expect(useUiUndoStore.getState().undo(result.undoId!)).toBe("failed");
+    expect(useLayoutStore.getState().maximizedPanelId).toBe("editor");
+  });
+
+  it("利用者が変えてから元の状態に戻した場合は、操作の直後と同じなので戻せる", async () => {
+    const result = await runAppCommandTool({ command: "toggleLeftOverlay" });
+    useLayoutStore.setState({ openOverlay: null });
+    expect(useUiUndoStore.getState().undo(result.undoId!)).toBe("failed");
+    useLayoutStore.setState({ openOverlay: "left" });
+    expect(useUiUndoStore.getState().undo(result.undoId!)).toBe("restored");
+    expect(useLayoutStore.getState().openOverlay).toBeNull();
+  });
+
+  it("apply_layout_preset の後に配置が変わっても同じ（戻さない）", async () => {
+    const result = await applyLayoutPresetTool({ preset: "builtin:plan" });
+    expect(result.undoId).toBeTruthy();
+    useLayoutStore.getState().togglePanel("scenes");
+    const now = layoutOf();
+    expect(useUiUndoStore.getState().undo(result.undoId!)).toBe("failed");
+    expect(layoutOf()).toEqual(now);
+  });
+
+  it("画面の幅の profile（phone か否か）が登録のときと違えば、戻さず failed（理由 viewport）", async () => {
+    const result = await runAppCommandTool({ command: "focusScenes" });
+    const now = layoutOf();
+    useHost({ phoneWorkspace: true });
+    expect(useUiUndoStore.getState().undo(result.undoId!)).toBe("failed");
+    expect(layoutOf()).toEqual(now);
+    expect(useUiUndoStore.getState().entries[result.undoId!]).toMatchObject({
+      status: "available",
+      failure: "viewport",
+    });
+    // 幅が元に戻れば、戻せる。
+    useHost({ phoneWorkspace: false });
+    expect(useUiUndoStore.getState().undo(result.undoId!)).toBe("restored");
+  });
+
+  it("phone 幅で登録した退避を desktop 幅で戻そうとしても戻さない", async () => {
+    useHost({ phoneWorkspace: true });
+    const result = await runAppCommandTool({ command: "focusCodex" });
+    useHost({ phoneWorkspace: false });
+    expect(useUiUndoStore.getState().undo(result.undoId!)).toBe("failed");
+    expect(useCompactNavigationStore.getState().activeSurface).toBe("codex");
   });
 });
 
@@ -498,7 +575,7 @@ describe("元に戻せない場合（本文の保護・復元の棄却）", () =
       layout: invalid,
       activePresetId: "builtin:plan",
     };
-    const id = useUiUndoStore.getState().register(broken);
+    const id = useUiUndoStore.getState().register(broken, captureUiSnapshot());
     const current = useLayoutStore.getState().layout;
     const seq = useLayoutStore.getState().layoutReplaceSeq;
     expect(useUiUndoStore.getState().undo(id)).toBe("failed");

@@ -58,7 +58,7 @@ describe("ToolCallBlock — 元に戻す", () => {
     const wasActive = useLayoutStore.getState().isPanelActive("scenes");
     useLayoutStore.getState().togglePanel("scenes");
     expect(useLayoutStore.getState().isPanelActive("scenes")).toBe(!wasActive);
-    const id = useUiUndoStore.getState().register(before);
+    const id = useUiUndoStore.getState().register(before, captureUiSnapshot());
 
     render(<ToolCallBlock record={record({ undoId: id })} />);
     const button = screen.getByRole("button", {
@@ -73,5 +73,30 @@ describe("ToolCallBlock — 元に戻す", () => {
       }),
     ).toBeNull();
     expect(screen.getByText(/元に戻しました|Undone/)).toBeTruthy();
+  });
+
+  it("操作の後に配置が変わっていたら戻さず、カードに理由を出す（ボタンは残る）", () => {
+    const before = captureUiSnapshot();
+    useLayoutStore.getState().togglePanel("scenes");
+    const id = useUiUndoStore.getState().register(before, captureUiSnapshot());
+    // 利用者が後で別のパネルを切り替えた。
+    useLayoutStore.getState().togglePanel("codex");
+    const layoutNow = useLayoutStore.getState().layout;
+
+    render(<ToolCallBlock record={record({ undoId: id })} />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /この操作の前の画面|Restore the screen/,
+      }),
+    );
+
+    expect(useLayoutStore.getState().layout).toBe(layoutNow);
+    expect(
+      screen.getByText(
+        /その後に配置が変わったため戻せません|layout was changed/,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/元に戻しました|Undone/)).toBeNull();
+    expect(useUiUndoStore.getState().entries[id]?.status).toBe("available");
   });
 });

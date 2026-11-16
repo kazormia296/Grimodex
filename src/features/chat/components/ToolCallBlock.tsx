@@ -16,6 +16,7 @@ interface ToolCallBlockProps {
 function UiUndoControl({ undoId }: { undoId: string }) {
   const { t } = useTranslation();
   const status = useUiUndoStore((state) => state.entries[undoId]?.status);
+  const failure = useUiUndoStore((state) => state.entries[undoId]?.failure);
   if (status === undefined) return null;
   if (status === "undone") {
     return (
@@ -32,19 +33,28 @@ function UiUndoControl({ undoId }: { undoId: string }) {
     );
   }
   return (
-    <button
-      type="button"
-      aria-label={t("agentUiOps.undoAria")}
-      onClick={() => {
-        if (useUiUndoStore.getState().undo(undoId) === "failed") {
-          toast.error(t("agentUiOps.undoFailed"));
-        }
-      }}
-      className="ml-2 inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-foreground hover:bg-muted"
-    >
-      <Undo2 className="h-3 w-3" aria-hidden />
-      {t("agentUiOps.undo")}
-    </button>
+    <>
+      <button
+        type="button"
+        aria-label={t("agentUiOps.undoAria")}
+        onClick={() => {
+          if (useUiUndoStore.getState().undo(undoId) === "failed") {
+            const reason =
+              useUiUndoStore.getState().entries[undoId]?.failure ?? "layout";
+            toast.error(t(`agentUiOps.undoFailed.${reason}`));
+          }
+        }}
+        className="ml-2 inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-foreground hover:bg-muted"
+      >
+        <Undo2 className="h-3 w-3" aria-hidden />
+        {t("agentUiOps.undo")}
+      </button>
+      {failure !== undefined && (
+        <span role="status" className="ml-2 text-muted-foreground">
+          {t(`agentUiOps.undoFailed.${failure}`)}
+        </span>
+      )}
+    </>
   );
 }
 

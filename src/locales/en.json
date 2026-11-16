@@ -6837,7 +6837,11 @@
     "undo": "Undo",
     "undoAria": "Restore the screen to how it was before this operation",
     "undone": "Undone",
-    "undoFailed": "Couldn't undo (the screen size changed, so the earlier layout can't be restored now)",
+    "undoFailed": {
+      "viewport": "Can't undo: the screen width changed",
+      "changed": "Can't undo: the layout was changed after this operation",
+      "layout": "Couldn't undo (the earlier layout can't be restored on this screen now)"
+    },
     "superseded": "Can't undo: a later operation changed the screen"
   }
 }
