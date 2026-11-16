@@ -43,6 +43,7 @@
     { "name": "run_research", "capability": "read", "requiredPolicy": null, "allowedChannels": ["agent", "hermes", "native"], "requiresUserConfirmation": false },
     { "name": "ask_user", "capability": "read", "requiredPolicy": null, "allowedChannels": ["agent", "hermes", "native"], "requiresUserConfirmation": false },
     { "name": "run_app_command", "capability": "write", "requiredPolicy": "chat", "allowedChannels": ["agent", "native"], "requiresUserConfirmation": false },
-    { "name": "apply_layout_preset", "capability": "write", "requiredPolicy": "chat", "allowedChannels": ["agent", "native"], "requiresUserConfirmation": false }
+    { "name": "apply_layout_preset", "capability": "write", "requiredPolicy": "chat", "allowedChannels": ["agent", "native"], "requiresUserConfirmation": false },
+    { "name": "propose_setting_change", "capability": "write", "requiredPolicy": "chat", "allowedChannels": ["agent", "native"], "requiresUserConfirmation": true }
   ]
 }

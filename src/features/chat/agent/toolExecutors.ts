@@ -2124,6 +2124,10 @@ export const MUTATING_EXECUTORS: Record<string, Executor> = {
     (await import("./appUiTools")).runAppCommandTool(params),
   apply_layout_preset: async (params) =>
     (await import("./appUiTools")).applyLayoutPresetTool(params),
+  // 設定変更の提案。設定は変えず、検証済みの提案を返す（適用は利用者のカードのクリック）。
+  // 実装は初回の呼び出しまで読み込まない。DURABLE_MUTATION_TOOLS には入れない（DB を書かない）。
+  propose_setting_change: async (params) =>
+    (await import("./settingProposalTools")).proposeSettingChangeTool(params),
 };
 Object.freeze(MUTATING_EXECUTORS);
 

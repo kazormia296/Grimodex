@@ -330,6 +330,9 @@ export async function runAgentLoop(
         resultSummary: toolRes.summary,
         tokensUsed: toolRes.tokensUsed,
         ...(toolRes.undoId ? { undoId: toolRes.undoId } : {}),
+        ...(toolRes.settingProposal && !toolRes.error
+          ? { settingProposal: toolRes.settingProposal }
+          : {}),
       };
       toolCallRecords.push(record);
       onToolComplete?.(record);

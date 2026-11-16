@@ -15,6 +15,11 @@ interface CursorSettingsState {
   toggleFocusMode: () => void;
   typewriterMode: boolean;
   toggleTypewriterMode: () => void;
+  /** 設定に書いた後の実行時の値だけを合わせる（設定への書込みはしない。AI 提案の適用・元に戻すで使う）。 */
+  syncModeFromSetting: (
+    mode: "focusMode" | "typewriterMode",
+    on: boolean,
+  ) => void;
   zenMode: boolean;
   setZenMode: (active: boolean) => void;
   toggleZenMode: () => void;
@@ -92,6 +97,9 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
         writeRuntimeSetting("editor.typewriterMode", String(next));
         return { typewriterMode: next };
       }),
+
+    syncModeFromSetting: (mode, on) =>
+      set(mode === "focusMode" ? { focusMode: on } : { typewriterMode: on }),
 
     zenMode: false,
     setZenMode: (active) => set({ zenMode: active }),

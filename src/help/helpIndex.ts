@@ -8,6 +8,7 @@
  * 設定の値は返さない。書いていないことは「無い」と答えるため、存在しない ID は null を返す。
  */
 import i18next from "@/lib/i18n";
+import { AGENT_SETTING_CATALOG } from "@/../electron/shared/agentSettingCatalog";
 import type { PanelId } from "@/features/layout/panelIds";
 import { getHelpTopics, type HelpTopic } from "./helpDocs";
 import {
@@ -335,6 +336,42 @@ function shortcutOf(commandId: string): Record<string, unknown> | null {
   };
 }
 
+/**
+ * agent が変更を提案できる設定（設定の目録）。key・label・型・範囲だけで、現在値は返さない。
+ * 提案は propose_setting_change で行い、適用は利用者がカードで行う。
+ */
+function proposableSettingsOf(categoryId: string): {
+  proposableSettings?: Array<{
+    key: string;
+    label: string;
+    type: string;
+    range?: { min: number; max: number; step: number };
+  }>;
+  proposeWith?: string;
+} {
+  const entries = AGENT_SETTING_CATALOG.filter(
+    (entry) => entry.categoryId === categoryId,
+  );
+  if (entries.length === 0) return {};
+  return {
+    proposableSettings: entries.map((entry) => ({
+      key: entry.key,
+      label: i18next.t(entry.labelKey),
+      type: entry.type,
+      ...(entry.range
+        ? {
+            range: {
+              min: entry.range.min,
+              max: entry.range.max,
+              step: entry.range.step,
+            },
+          }
+        : {}),
+    })),
+    proposeWith: "propose_setting_change",
+  };
+}
+
 /** 1 項目の詳細。存在しない id は null。設定の値は返さない。 */
 export function getHelpDetail(id: string): Record<string, unknown> | null {
   const parsed = parseEntryId(id);
@@ -402,6 +439,7 @@ export function getHelpDetail(id: string): Record<string, unknown> | null {
             category: category.label,
           }),
       note: "Setting values are not available through this tool. Guide the user to the settings screen instead of guessing a value.",
+      ...proposableSettingsOf(category.id),
     };
   }
 

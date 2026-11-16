@@ -153,6 +153,12 @@ rules:
       - src/features/chat/toolProtocolParse.ts
       - src/features/commands/**
       - src/help/**
+      - electron/shared/agentSettingCatalog.ts
+      - electron/shared/agentSettingGlobalSettingsIpc.test.ts
+      - src/features/settings/agentSettingApply.ts
+      - src/features/settings/agentSettingCatalog.test.ts
+      - src/features/chat/components/SettingProposalCard.tsx
+      - src/features/chat/components/SettingProposalCard.test.tsx
       - src-tauri/crates/grimodex-ai/build.rs
     requirements:
       - GDX-PRECHECK-001
