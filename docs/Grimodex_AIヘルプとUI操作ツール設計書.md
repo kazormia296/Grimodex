@@ -1,6 +1,6 @@
 # Grimodex AI ヘルプと UI 操作ツール 設計書（草稿）
 
-- 状態: 草稿（2026-11-15）。未承認。実装は未着手。
+- 状態: 草稿（2026-11-15）。PR1（コマンド registry）と PR2（read ツール）は master に merge 済み。PR3（UI の操作ツール）は 2026-11-16 に実装し、§4〜§7・§10 を実装に合わせて更新した。PR4（設定変更の提案）は未着手。
 - 対象: Grimodex 本体の操作ヘルプと、アプリ内 Chat agent が UI を操作するツール。
 - 基点: 本書の現状記述は `origin/master`（2026-11-15 時点）で確認した。確認していない点は §2 の「未確認」に分けた。
 - 関連文書: [AIエージェント設計書](Grimodex_AIエージェント設計書.md)（Chat のツール定義・書き込み系の AiPolicy ゲート）、
@@ -42,7 +42,7 @@
 | レイアウトのプリセット | `layoutPresets.ts` の `BUILTIN_PRESET_IDS`（default／plan／chat-main／review／codex-main）とユーザー定義のプリセット | プリセット適用ツールの引数に使う |
 | 設定 | `settingsStore` は文字列の key／value。`settings/types.ts` に `SETTINGS_CATEGORIES`（カテゴリ定義）、`KEY_SCOPE`（global／project）、`DEFAULT_SETTINGS`（既定値、文字列）、`LANGUAGE_DEFAULT_OVERRIDES` がある。型・範囲・説明は無い。参照されるキーは概数で 190 前後 | 目録はキー・既定値・カテゴリを `types.ts` から引き、型・範囲・説明だけを足す。agent に許可するキーに限る（§4.2） |
 | 設定画面 | `settings/categories/*.tsx` に部品を直接配置。カテゴリは `SETTINGS_CATEGORIES` | カテゴリ ID を「設定を開く」リンクの行き先にする |
-| Chat のツール | `agent-tool-manifest.json` が正本（`capability`＝read／write／destructive、`requiredPolicy`＝null／knowledgeWrite／bodyWrite／structureWrite、`allowedChannels`＝agent／hermes／native、`requiresUserConfirmation`）。`src-tauri/crates/grimodex-ai/build.rs` が Rust の AI parser に取り込む。`scripts/ci-change-scope.test.mjs`、`scripts/quality/eval-fixtures.mjs` も参照。定義は `chat/agent/toolDefinitions.ts`、実行は `toolExecutors.ts` | 新しいツールは manifest への追加を伴うので、**read のツールでも Rust の build に触れる**（§5） |
+| Chat のツール | `agent-tool-manifest.json` が正本（`capability`＝read／write／destructive、`requiredPolicy`＝null／knowledgeWrite／bodyWrite／structureWrite（PR3 で `chat` を追加）、`allowedChannels`＝agent／hermes／native、`requiresUserConfirmation`）。`src-tauri/crates/grimodex-ai/build.rs` が Rust の AI parser に取り込む。`scripts/ci-change-scope.test.mjs`、`scripts/quality/eval-fixtures.mjs` も参照。定義は `chat/agent/toolDefinitions.ts`、実行は `toolExecutors.ts` | 新しいツールは manifest への追加を伴うので、**read のツールでも Rust の build に触れる**（§5） |
 | 確認の UI | `requiresUserConfirmation: true` は `apply_ai_tree_plan`、`propose_scene_body`、`delete_event`、`remove_event_relation`。提案のカードと review が `chronicle/ChronicleProposalCard.tsx`、`codex/CodexEntityProposalCard.tsx` 等にある | 設定変更のカードは新設せず、既存の提案カードの型に合わせる（§6） |
 | UI 文言 | `src/locales/{ja,en}.json` | 目録の説明もここに置く |
 
@@ -106,6 +106,22 @@ interface AppCommand {
 - `run` は既存の store の操作（`layoutStore`、`settingsStore` 等）を呼ぶ。新しい IPC は作らない見込み。
 - 既存の 25 件に加え、キーの無い操作（プリセットの適用、設定のカテゴリを開く、特定のパネルを表示）も登録する。
   本書に出てくる `applyLayoutPreset` などのコマンド ID は仮の名前で、今は存在しない。
+  （PR3 の実装では、プリセットの適用はコマンドではなく専用のツール `apply_layout_preset` にした。§5）
+
+実装（`src/features/commands/appCommandRegistry.ts`、PR1・PR3）が上の案と違う点:
+
+- `run` は同期で、`CommandResult`（`{ ok: true }` か `{ ok: false, reason }`）を返す（キー処理のタイミングを変えないため）。文脈は `run(ctx)` に明示して渡す。
+- ラベルと説明は `AppCommand` に持たず、`getCommands()` の label と locales の `help.commands.<id>` を使う。`args` は PR3 の時点でどのコマンドにも無く、`run_app_command` の入力は command id だけ。
+- `fixedKey`（再割当不可のキー。`searchWorkspace`、`toggleExport`）、`panel`、`isAvailable`（今 `run` できるか）を足した。
+- agent が実行してよいかは `isAgentRunnable`（`agent: true` かつ `risk: "view"`）で決め、registry の一覧（`listAgentRunnableCommandIds`）がツールの許可の正本になる。`agent: true` は、利用者のデータを変えない画面の表示だけの操作に限る。
+  layout が変わるものは layout の退避で元に戻せる。例外は `openSettings`（Settings を開くだけで、利用者が閉じれば戻る。退避には含まれず、結果は `undoable: false`）。
+  `agent: true` の一部のパネルは、mount したときに派生データや初期データを書く（Matrix の mention 索引の backfill、Map の "Main" board の作成、Codex の `ensureBuiltinTypes`）。
+  どれも利用者の既存のデータを消したり変えたりはしないので「データを変えない」の範囲として受け入れる（索引・初期の board・組み込みの型を補うだけで、本文・Codex の項目・board の内容には触れない）。
+  これと区別して、利用者のデータを消すものは出さない（次の TrashBin）。
+  agent に出さないもの: `toggleExport`（blocked）、`splitVertical`／`splitHorizontal`／`nextTab`／`prevTab`（tab の model と開いている場面を変え、layout の退避では戻せない。active scene の切替が chat の scope に与える影響は未確認）、
+  `focusChat`／`focusChatHistory`（agent が今動いているパネル。既定の配置では同じ slot で、片方を出すともう片方が隠れ、「元に戻す」の表示ごと見えなくなる）、
+  `focusTrashBin`（`TrashBinPanel` が mount 時と 1 時間ごとに `pruneTrashItems` で保持期間を過ぎた項目を DB から永久に削除するので、agent が開くと確認なしの削除が起きる。2026-11-16 に独立レビューの指摘で `agent: false` にした。利用者のキー操作は従来どおり）。
+- キー以外の呼び出し元は、host が `commandContext` に登録した文脈を使う（`runRegisteredAppCommand`）。登録は後勝ちの 1 枠で、host は 1 つだけの前提（§7）。
 
 ### 4.2 agent に許可する設定の目録
 
@@ -160,28 +176,41 @@ panels: []
 |---|---|---|
 | `get_app_help_index` | read | 項目の一覧（ID、題、種類）を返す。`query` を受け取って絞り込める |
 | `get_app_help` | read | 1 項目の詳細を返す。コマンドは実際のキー割当・OS での可否、設定は現在値と範囲、文書は本文（参照を展開した後） |
-| `get_ui_state` | read | 開いているパネル、フォーカス、適用中のプリセット、設定画面の開閉、現在の場面の ID。本文は返さない |
-| `run_app_command` | ui（新設） | `agent: true` のコマンドを実行する。`risk: view` だけ |
-| `apply_layout_preset` | ui（新設） | 組み込み・ユーザー定義のプリセットを適用する。直前の配置を 1 回元に戻せる |
+| `get_ui_state` | read | 開いているパネル、フォーカス、適用中のプリセット、設定画面の開閉、現在の場面の ID と題（`activeScene: { id, title }`。題は既存の `get_scene` 等と同じ開示範囲）。本文は返さない |
+| `run_app_command` | write（§10.1。`ui` は新設しない） | registry の `agent: true` かつ `risk: view` のコマンドだけ実行する。入力は command id（enum は registry と試験で一致を固定） |
+| `apply_layout_preset` | write（同上） | 組み込み・利用者の保存済みのプリセットの既存 id だけ適用する。ロック中・phone 幅・パネルの別ウィンドウでは拒否 |
 | `propose_setting_change` | write | 目録の設定を変える提案。Chat に前後の値を示すカードを出し、利用者が適用する（§6） |
 
 - 返却は短くする（索引は 1 項目 1 行）。
-- 実行系のツールは、結果とともに更新後の UI 状態を返す。利用者の操作で状態がずれた場合に気づけるようにするため。
+- 実行系のツールは、結果とともに更新後の UI 状態を返す（`ui`。`get_ui_state` と同じ組み立て）。利用者の操作で状態がずれた場合に気づけるようにするため。
+  あわせて `layoutChanged`、`undoable`（元に戻せるか）を返す。layout が変わらなかった操作と、layout の退避に含まれない操作（Settings を開く等）は `undoable: false` で、元に戻せるとは言わない。
+- 元に戻す: 実行の直前の表示状態（layout store の配置・プリセット・非表示の Stripe・最大化・オーバーレイと、phone 幅の画面切替）をメモリ上に退避し、chat の tool 結果（`ToolCallBlock`）に「元に戻す」ボタンを出す（確認は求めない）。
+  message metadata（DB）に保存するのは `undoId` だけで、配置の写しは保存しない。再読込・再起動後は退避が無いのでボタンは出ない。戻せるのは 1 回で、先の操作を戻すと、それより後の操作の退避は無効になる。
+  退避には、操作の直前の写しのほかに、操作の直後の写し（`after`。比較の範囲は退避と同じ）と、登録のときの phone 幅かどうかも持たせる。「元に戻す」を押した時点で次のどれかなら、何も変えずに戻さず、カードに理由を出す（`failed`）:
+  - 画面の幅の profile（phone か否か）が登録のときと違う →「画面の幅が変わったため戻せません」
+  - 今の状態が操作の直後と違う（利用者や別の操作が後で配置を変えた）→「その後に配置が変わったため戻せません」。
+    配置・プリセット・非表示の Stripe は直後と厳密に比べる。最大化・overlay・phone の画面は transient で、「元に戻す」を押す前に自然に変わる
+    （overlay はボタンの pointerdown で閉じ、phone ではボタンのある ai の画面へ戻る）ので、今の値が直後と同じ、または操作前と同じなら変更とみなさない（戻す向きの変化は後の手作業ではない）。
+  - 写しの配置を今の画面で復元できない（store が棄却する）。
+  このため、複数の操作を戻すときは後の操作から順に戻す（後の操作を戻して状態が先の操作の直後と同じになれば、先の操作も戻せる）。
+  inline AI の未確定の結果があるときも戻さない（本文を守る。`blocked`）。
+  `openSettings` は退避に含まれず `undoable: false`（Settings は利用者が閉じれば戻る）。
+- 1 応答（agent loop 1 回）で UI 操作ツールを実行できる回数は 10 回まで（`MAX_UI_OPERATIONS_PER_TURN`。失敗も数える）。一般の tool 呼び出し上限は 1 バッチの中の呼び出しを数えず全ツールの合計なので、別に設けた。「続行」で始まる新しい応答は新しい枠。
 - 新しいツールは `agent-tool-manifest.json` に足すので、どれも `grimodex-ai` の build.rs（Rust の parser）に取り込まれる。
-  read だけの PR でも Rust の build と試験を通す。`ui` の capability を新設する場合は Rust 側の型も変わるので、`refactor-cross-boundaries` の影響表を作る。
-- manifest の各項目の案（`requiredPolicy` と `allowedChannels` は §10 で決める）:
+  read だけの PR でも Rust の build と試験を通す。`ui` の capability は新設しない（§10.1）ので Rust 側の型は変わらない。ただし write のツールは `HERMES_BLOCKED_TOOL_NAMES`（build.rs が manifest から生成）に入るため、Rust の試験 `hermes_blocked_tool_names_are_frozen` の一覧に足す。
+- manifest の各項目（`requiredPolicy` と `allowedChannels` は §10.1 で決定。PR3 の 2 本は実装済み）:
 
 | ツール | capability | requiredPolicy | allowedChannels | requiresUserConfirmation |
 |---|---|---|---|---|
 | `get_app_help_index`／`get_app_help`／`get_ui_state` | read | null | agent／hermes／native | false |
-| `run_app_command`／`apply_layout_preset` | ui または write | 新設（例: `uiControl`）または null | agent（native は要検討） | false |
-| `propose_setting_change` | write | 新設（例: `settingsWrite`） | agent | true |
+| `run_app_command`／`apply_layout_preset` | write | `chat`（PR3 で実装済み） | agent／native（hermes は入れない） | false（元に戻すで補う） |
+| `propose_setting_change` | write | PR4 で決める（AiPolicy の新しい区分は作らない方針で、`chat` が基本） | agent／native（hermes は入れない） | PR4 で決める（提案だけで、適用は利用者が押す） |
 
 ## 6. 危険度と確認
 
 | 段 | 例 | 扱い |
 |---|---|---|
-| view | パネルの表示・フォーカス、プリセットの適用、設定画面の該当カテゴリを開く、場面への移動 | 確認なしで実行。Chat のツール表示に「元に戻す」を出す（プリセット・配置） |
+| view | パネルの表示・フォーカス、オーバーレイの開閉、検索パネルを開く、Settings を開く、プリセットの適用（PR3 で実装済み）。設定画面の特定カテゴリを開く（未実装） | 確認なしで実行。layout が変わるものは Chat のツール表示に「元に戻す」を出す。tab の分割・切替と場面への移動は、layout の退避で戻せず開いている場面が替わるので、agent には出さない |
 | personal | フォント、表示、エディタの挙動など、目録に載った個人の設定 | `propose_setting_change` で前後の値のカードを出し、利用者が「適用」を押す。適用後も 1 回元に戻せる |
 | blocked | API key・endpoint、provider の選択、ライセンス、MCP／IME の連携、バックアップの復元・削除、送信先や保存範囲に関わる設定、データの削除 | ツールに出さない。設定画面へのリンクだけを返す |
 
@@ -191,19 +220,52 @@ panels: []
 
 ## 7. 信頼境界と脅威
 
-- **境界**: ツールの実行は renderer 内で完結する見込み。新しい IPC・外部送信先・保存範囲は作らない。
-  ただし manifest は Rust の parser と共有なので、ツールの定義は renderer の外にも届く（§5）。
-  設定の変更は既存の `settingsStore.set` の経路を通す。Main 側でどこまで再検証されるかは未確認（§2）。
-- **prompt injection**: Chat は場面の本文、Codex、ツールの結果を読む。そこに書かれた指示で設定が変わるのを防ぐため、
-  personal の段は必ず利用者の操作を要する。view の段は、元に戻せて外部への影響が無いので、確認しない。
-- **秘密**: `get_app_help` と `get_ui_state` は、秘密の値（API key 等）と endpoint の URL を返さない。
-  それらについて返すのは「設定済みかどうか」の真偽だけとする。
-- **偽の機能**: 存在しない ID への呼び出しは、エラーと索引への案内を返す。モデルが作った ID は実行しない。
-- **low-trust parser**: Hermes の経路は read のツールだけを通す（`HERMES_ALLOWED_TOOL_NAMES`）。ヘルプの read は使えるが、UI 操作は使えない。
-  Hermes の経路は、OpenAI 互換の HTTP provider でモデル名に `hermes` を含むか、ツールの呼び出し方式を Hermes に設定した場合に使われる
-  （`grimodex-ai` の `resolve_tool_protocol`）。本文の `<tool_call>` を拾って実行するので、Web 検索の結果や本文に紛れた疑似の呼び出しと
-  本物を見分けられない。初版はこの経路で書き込み系を一律に除く既存の規則に従い、ヘルプの read だけを使えるようにする。
-  この経路で UI 操作が使えないことは、制限として受け入れる（2026-11-15 ユーザー判断）。
+脅威モデルは 2026-11-16 にユーザーが確定した（§10.1）。
+
+### 7.1 想定する相手
+
+- Chat は場面の本文、Codex、Web 検索の結果、取り込んだファイルを読む。そこに仕込まれた指示（間接 prompt injection）で agent が誘導されることを想定する。
+  利用者本人は信頼する。誘導で起こしたい結果は、画面を勝手に動かす・隠す、設定を黙って変える、外へ送らせる、データを消させる、の 4 種類として扱う。
+
+### 7.2 範囲内と範囲外
+
+- 範囲内: PR3 の UI 操作ツール（view の表示操作）、PR4 の設定変更の提案。
+- 範囲外（受け入れ済みの制限）:
+  - Hermes の経路。OpenAI 互換の HTTP provider でモデル名に `hermes` を含む、またはツールの呼び出し方式を Hermes に設定した場合に使われる（`grimodex-ai` の `resolve_tool_protocol`）。
+    本文の `<tool_call>` を拾うので、Web 検索の結果や本文に紛れた疑似の呼び出しと本物を見分けられない。
+    write のツールは `HERMES_BLOCKED_TOOL_NAMES` に入り、低信頼の native provider（Ollama、OpenAI 互換、AiNovelist）でも塞がれる。ヘルプの read だけが使える。
+  - 外部 agent 向けの `grimodex-mcp`（§1.2）と、renderer 自体の侵害。
+
+### 7.3 必須の防御
+
+1. 権限（manifest）: `capability: "write"`、`requiredPolicy: "chat"`、`allowedChannels` は agent と native（hermes を入れない）。`requiresUserConfirmation` は PR3 が false（元に戻すで補う）。PR4 は提案だけで、適用は利用者が押す。
+2. AI ポリシー: 実行の前に `blockIfPolicyOff("chat")` で、chat が off なら拒否する（ターンの途中で policy が変わった場合の防御）。
+3. 許可の範囲: 実行できるのは registry の `agent: true` かつ `risk: "view"` のコマンドと、既存のプリセットの id だけ。
+   未知の id、agent に出さないもの、blocked、今は使えない状態は、副作用なしで error を返す。モデルが作った id は実行しない。ツールの inputSchema の enum も registry と一致させる（試験で固定）。
+4. agent に出さないもの: export、ファイル書出し、外部送信、AI 設定（provider・key・endpoint）の変更。registry では export が blocked、設定は PR4 の目録に載せない。
+5. 連打の抑止: 1 応答で UI 操作ツールは 10 回まで。
+6. 取り返せること: 実行前に表示状態を退避し、chat の tool 結果から 1 回で元に戻せる。操作の後に配置が変わった場合と画面の幅が変わった場合は戻さない（後の手作業を巻き戻さない）。戻せない操作は、戻せるとは言わない（`undoable: false`。Settings は利用者が閉じれば戻る）か、agent に出さない（tab の分割・切替）。
+7. 実行できない場所: host が無い（no-host）とパネルの別ウィンドウ（host は別ウィンドウでも mount されるので、`isPanelWindow()` で拒否する）は、両ツールを拒否する。phone 幅とレイアウトのロック中は `apply_layout_preset` を拒否する。
+8. host は 1 つの前提: `commandContext` の登録は後勝ちの 1 枠で、host が 2 つ以上同時に mount されると、後の host が外れた時点で登録が空になる。その場合は no-host の error として扱い、推測で実行しない。
+9. 研究サブエージェントは read だけ（`executeReadOnlyTool` が write のツールを拒否する）。宣言していないツールは agent loop が拒否する。
+10. 秘密: `get_app_help`／`get_ui_state`／UI 操作の結果は、秘密の値（API key 等）と endpoint の URL を返さない。返すのは「設定済みかどうか」の真偽だけ。
+11. PR4（設定変更）: 提案だけで、適用は利用者が押す。適用できるのは承認済みの 15 キー（§10.1）で、global のみ。renderer と main の両方で検証する。
+
+### 7.4 受け入れること
+
+- 本文などの指示で、パネルの開閉・プリセットの切替・Settings の表示が確認なしで起こりうる。表示だけで、データ・外部送信・設定は変わらず、10 回の上限と「元に戻す」で収まる範囲として受け入れる。
+- 元に戻すは layout の表示状態だけで、メモリ上にある。再読込後は出ない。操作の後に配置が変わった場合（利用者の手作業を含む）や画面の幅が変わった場合は戻さず、カードに理由を出す。後の変更を巻き戻さないための判断で、複数の操作は後のものから順に戻す。
+- `agent: true` のパネルの一部は mount 時に派生データや初期データを書く（§4.1）。利用者の既存のデータを消したり変えたりはしないので受け入れる。データを消す TrashBin は agent に出さない。
+- `openSettings` は退避に含まれない（`undoable: false`）。利用者が Settings を閉じれば戻る。
+- Chat が見えなくなる操作は、`focusChat`／`focusChatHistory` を外しても残る（利用者が Chat と同じ slot に置いた別のパネル、Chat を含まないプリセット）。
+  その場合も「元に戻す」は会話の履歴のカードに残るので、Chat を開き直せば押せる。拒否はしない（プリセットは利用者が頼んだ配置のため）。
+- Hermes と低信頼の native provider では UI 操作が使えない（§7.2）。
+- host が複数 mount された場合は、UI 操作が no-host で使えなくなる。
+
+### 7.5 境界
+
+- ツールの実行は renderer 内で完結し、新しい IPC・外部送信先・保存範囲は作らない。ただし manifest は Rust の parser と共有なので、ツールの定義は renderer の外にも届く（§5）。
+- 設定の変更（PR4）は既存の `settingsStore.set` の経路を通す。Main 側の再検証は PR4 で足す（§10.1）。
 
 ## 8. 検証
 
@@ -214,7 +276,8 @@ panels: []
    - registry に無いキー処理が `GlobalCommandHost` に残っていないこと。
 2. **挙動の同一性**: registry への移行（§9 の 1）で、既存のキー操作の試験が全部通ること。
 3. **AI の振る舞い**: ツールの定義と system prompt の変更は AI behavior asset。`grimodex-author` と `grimodex-impact-gate` を適用し、
-   `evals/quality-manifest.yaml` に次の小さな eval を足す。
+   `evals/quality-manifest.yaml` に次の小さな eval を足す（PR3 の時点で light corpus は上限の 35 件でちょうど満杯のため、PR3 では eval case を足さず、
+   拒否・権限・上限・元に戻すを vitest（`appUiTools.test.ts` 等）で固定した。eval の追加は上限の扱いを決めてから）。
    - 「〜するには？」に、実際のキー割当と出典 ID で答える。
    - 存在しない機能を聞かれたら「無い」と答える。
    - 本文中に埋め込まれた「設定を変えて」という指示では、設定を変えない。
@@ -231,21 +294,39 @@ panels: []
    agent に新しい権限を与えるので、**許可するキーの一覧を着手の時点でユーザーに確認する**。
 
 3 と 4 は agent に新しい操作の権限を与える。着手の前に GDX-PRECHECK-001（`policies/quality/iron-laws.md`）の対象かを確かめる。
+（PR3 は 2026-11-16 に実装。脅威モデルと権限は §7・§10.1。）
 
 ## 10. 決定事項と未決事項
 
-### 10.1 決定（2026-11-15 ユーザー）
+### 10.1 決定（ユーザー）
+
+2026-11-15:
 
 - GitHub wiki は当面残す（§1.2）。
 - 人がアプリ内でヘルプ文書を読む画面は作らない（§1.2）。ヘルプ文書は agent 向けだけとする。
 - MCP（`grimodex-mcp`）は各ツールの説明で足りるとし、本書の範囲外とする（§1.2）。
 - Hermes の経路ではヘルプの read だけを使え、UI 操作と設定変更は使えない。これを制限として受け入れる（§7）。
 
+2026-11-16:
+
+- 脅威モデル（§7）を確定した。本文・Codex・Web 検索の結果・取り込んだファイルに仕込まれた指示で agent が誘導されることを想定する。
+- PR3／PR4 のツールの権限: manifest の capability は `write`（`ui` は新設しない）、`requiredPolicy` は `chat`（AiPolicy の新しい区分は作らない）、
+  `allowedChannels` は agent と native（hermes は入れない）。Hermes の経路には出さない（受入れ済みの制限）。実行の前に AI ポリシーで chat が off なら拒否する。
+- PR3（UI 操作）は確認なし＋元に戻す（`requiresUserConfirmation: false`）。
+- PR4（設定変更）は提案だけで、適用は利用者が押す。対象のキーは **15 件**、global のみ、renderer と main の両方で検証する。
+  ユーザーは 2026-11-16 に推奨の 16 件を承認し、そのうえで統合者が、読み手がコードに無く適用しても効かない `display.showWordCount` を 1 件外した（承認した範囲を狭めただけで、広げていない）:
+  `editor.fontSize`、`editor.lineHeight`、`editor.maxContentWidth`、`editor.paragraphSpacing`、`editor.fontFamily`（選択肢のみ）、`editor.typewriterMode`、`editor.focusMode`、
+  `editor.showInvisibles`、`editor.showStickies`、`editor.bubbleMenu`、`editor.autoPairBrackets`、`editor.smartQuotes`、
+  `display.reduceMotion`、`display.codexHighlight`、`display.codexHighlightOpacity`。
+- export、ファイル書出し、外部送信、AI 設定の変更は、agent に出さない。
+
 ### 10.2 未決（着手時に決める）
 
-1. 目録に入れる personal の設定キーの一覧（§9 の 4 の着手時。ユーザー確認）。
-2. `ui` の capability を manifest に新設するか、既存の `write` に入れるか。UI 操作と設定変更の `requiredPolicy`（AiPolicy の新しい区分を作るか）と、native の経路で許可するか（技術判断。§9 の 3 の前）。
-3. ヘルプ文書の言語。人が読む画面を作らないので、ja だけで書き、agent が利用者の言語で答える形にできる。en も置くかは §9 の 2 で決める。
+1.・2. は 2026-11-16 に決定し、§10.1 に移した（personal の設定キーは承認済みの 15 キー（推奨 16 件から効かない 1 件を外した。§10.1）。`ui` の capability は新設せず `write`、requiredPolicy は `chat`、native は許可し hermes は入れない）。
+3. （決定済み・2026-11-16）ヘルプ文書の言語は **ja だけ**。人が読む画面を作らないので、ja だけで書き、agent が利用者の言語で答える。
+   コマンド・パネル・設定カテゴリの UI の名前とキーは文書に直書きせず、`{{command:<id>}}`・`{{panel:<id>}}`・`{{settings:<id>}}` などの参照で書き、
+   返すときに UI 言語のラベルと実際のキー割当に展開する（ja だけで書いても en の UI と食い違わない）。存在しない ID への参照は試験で落とす。
+   コマンドの説明文は文書ではなく locales の `help.commands.<id>`（ja／en の両方）に置き、`getCommands()` の全件に付ける。
 4. 将来、同じ索引を `grimodex-mcp` に出すか。MCP は renderer の実行時状態が見えないため、出せるのは静的な部分だけになる。
 
 ## 11. 参考（2026-11-15 に Exa で調査）

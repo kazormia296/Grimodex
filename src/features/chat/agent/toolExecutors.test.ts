@@ -113,6 +113,13 @@ vi.mock("@/features/codex/prosemirrorTextExtractor", () => ({
 vi.mock("../contextBuilder", () => ({
   countTokens: (s: string) => (s ? s.length : 0),
 }));
+// propose_setting_change の本体は settingProposalTools.test.ts で検証する。ここは dispatch だけ。
+const { mockProposeSettingChange } = vi.hoisted(() => ({
+  mockProposeSettingChange: vi.fn(),
+}));
+vi.mock("./settingProposalTools", () => ({
+  proposeSettingChangeTool: mockProposeSettingChange,
+}));
 
 import {
   executeTool,
@@ -152,6 +159,8 @@ afterEach(() => {
 describe("EXECUTORS — read-only allowlist invariant", () => {
   const EXPECTED_READ_ONLY_NAMES = [
     "find_related_entries",
+    "get_app_help",
+    "get_app_help_index",
     "get_chapter_summaries",
     "get_character_timeline",
     "get_chronicle_state",
@@ -161,6 +170,7 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
     "get_scene",
     "get_scene_timeline_neighbors",
     "get_thread_scenes",
+    "get_ui_state",
     "list_chapters",
     "list_codex_by_type",
     "list_codex_tags",
@@ -177,13 +187,16 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
   const EXPECTED_MUTATING_NAMES = [
     "add_event_relation",
     "apply_ai_tree_plan",
+    "apply_layout_preset",
     "create_codex_entry",
     "create_event",
     "create_foreshadow",
     "create_snippet",
     "delete_event",
     "propose_scene_body",
+    "propose_setting_change",
     "remove_event_relation",
+    "run_app_command",
     "set_event_participants",
     "stamp_scene_event",
     "unstamp_scene_event",
@@ -1011,5 +1024,44 @@ describe("search_codex hybrid fusion (段階3)", () => {
     expect(res.error).toBeUndefined();
     const ids = (res.content as { id: string }[]).map((r) => r.id);
     expect(ids).toEqual(["e-sparse"]);
+  });
+});
+
+describe("executeTool — propose_setting_change の dispatch", () => {
+  beforeEach(() => {
+    mockProposeSettingChange.mockReset();
+    mockProjectId.mockReset();
+  });
+
+  it("DB を書く mutation ではないので request id・project authority を作らず、検証済みの提案を結果に載せる", async () => {
+    const proposal = { id: "p1", key: "editor.fontSize", value: "20" };
+    mockProposeSettingChange.mockResolvedValue({
+      name: "propose_setting_change",
+      content: { status: "proposed" },
+      summary: "Proposed",
+      tokensUsed: 3,
+      settingProposal: proposal,
+    });
+    const params = { key: "editor.fontSize", value: "20" };
+    const result = await executeTool(
+      "propose_setting_change",
+      "call-p",
+      params,
+    );
+    expect(mockProposeSettingChange).toHaveBeenCalledWith(params);
+    expect(mockProjectId).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      toolCallId: "call-p",
+      name: "propose_setting_change",
+      settingProposal: proposal,
+    });
+    expect(result.error).toBeUndefined();
+  });
+
+  it("executor が投げたら error の結果になり、提案は載らない", async () => {
+    mockProposeSettingChange.mockRejectedValue(new Error("boom"));
+    const result = await executeTool("propose_setting_change", "call-q", {});
+    expect(result.error).toBe("boom");
+    expect(result.settingProposal).toBeUndefined();
   });
 });

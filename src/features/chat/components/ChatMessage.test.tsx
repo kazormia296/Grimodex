@@ -42,6 +42,11 @@ vi.mock("./ChatMessageActions", () => ({
 }));
 vi.mock("./MessageBadge", () => ({ MessageBadge: () => null }));
 vi.mock("./ToolCallBlock", () => ({ ToolCallBlock: () => null }));
+vi.mock("./SettingProposalCard", () => ({
+  SettingProposalCard: ({ proposal }: { proposal: { id: string } }) => (
+    <div data-testid={`proposal-card-${proposal.id}`} />
+  ),
+}));
 vi.mock("./ThinkingBlock", () => ({ ThinkingBlock: () => null }));
 vi.mock("./SummaryBlock", () => ({ SummaryBlock: () => null }));
 // Surface the SelectionToolbar's onCopy callback as a clickable button so we
@@ -216,5 +221,60 @@ describe("ChatMessage — 擬似ツール記法の除去", () => {
     const bubble = screen.getByTestId("chat-message-m2");
     // user メッセージは加工せずそのまま（万一の貼り付け内容を壊さない）。
     expect(bubble.textContent).toContain("これは原文");
+  });
+});
+
+describe("ChatMessage — 設定変更の提案カード", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const record = (over: Record<string, unknown>) => ({
+    name: "propose_setting_change",
+    params: { key: "editor.fontSize", value: "20" },
+    resultSummary: "Proposed",
+    tokensUsed: 1,
+    ...over,
+  });
+
+  it("検証済みの提案（settingProposal）がある呼び出しだけカードを出す", () => {
+    renderMsg({
+      metadata: JSON.stringify({
+        tool_calls: [
+          record({
+            settingProposal: {
+              id: "ok-1",
+              key: "editor.fontSize",
+              value: "20",
+            },
+          }),
+        ],
+      }),
+    });
+    expect(screen.getByTestId("proposal-card-ok-1")).toBeInTheDocument();
+  });
+
+  it("提案の無い呼び出し（失敗・宣言外・params だけが同じ）にはカードを出さない", () => {
+    renderMsg({
+      metadata: JSON.stringify({
+        tool_calls: [
+          record({ resultSummary: "Invalid value: editor.fontSize must be" }),
+          record({ settingProposal: undefined }),
+        ],
+      }),
+    });
+    expect(screen.queryByTestId(/^proposal-card-/)).toBeNull();
+  });
+
+  it("別のツールの record に settingProposal が付いていてもカードを出さない", () => {
+    renderMsg({
+      metadata: JSON.stringify({
+        tool_calls: [
+          record({
+            name: "search_codex",
+            settingProposal: { id: "x", key: "editor.fontSize", value: "20" },
+          }),
+        ],
+      }),
+    });
+    expect(screen.queryByTestId(/^proposal-card-/)).toBeNull();
   });
 });

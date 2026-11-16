@@ -7232,6 +7232,7 @@ mod tests {
             "create_snippet",
             "delete_event",
             "propose_scene_body",
+            "propose_setting_change",
             "remove_event_relation",
             "set_event_participants",
             "stamp_scene_event",
@@ -7239,6 +7240,8 @@ mod tests {
             "update_codex_entry",
             "update_event",
             "update_foreshadow",
+            "run_app_command",
+            "apply_layout_preset",
         ];
         want.sort_unstable();
         assert_eq!(got, want);

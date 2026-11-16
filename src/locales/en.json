@@ -2016,6 +2016,24 @@
     "codexApprovalDiff": "Proposed changes",
     "codexApprovalAccept": "Allow",
     "codexApprovalDecline": "Decline",
+    "settingProposal": {
+      "title": "Suggested setting change",
+      "apply": "Apply",
+      "dismiss": "Dismiss",
+      "undo": "Undo",
+      "applied": "Applied.",
+      "dismissed": "Dismissed.",
+      "reverted": "Reverted.",
+      "alreadySet": "The setting already has this value.",
+      "changedSince": "The setting was changed after you applied this, so it cannot be undone here.",
+      "reason": "Reason",
+      "on": "On",
+      "off": "Off",
+      "applyFailed": "Could not change the setting: {{message}}",
+      "fontUnavailable": "The font \"{{font}}\" is not installed on this device, so it could not be applied.",
+      "undoFailed": "Could not undo.",
+      "aria": "Suggested setting change: {{label}}"
+    },
     "sendTitle": "Send / Right-click: copy prompt",
     "stopTitle": "Stop generation (Esc)",
     "stopAriaLabel": "Stop generation",
@@ -6795,5 +6813,53 @@
       "next": "Next: {{title}} →",
       "nextAria": "Next: open {{title}} in {{destination}}"
     }
+  },
+  "help": {
+    "commands": {
+      "focusScenes": "Toggles the Scenes panel (opens it if closed, closes it if open). On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "focusCodex": "Toggles the Codex panel (opens it if closed, closes it if open). On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "focusChatHistory": "Toggles the Chat History panel (opens it if closed, closes it if open). On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "focusChat": "Toggles the Chat panel (opens it if closed, closes it if open). On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "focusSnippets": "Toggles the Snippets panel (opens it if closed, closes it if open). On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "focusAttribution": "Toggles the Attribution panel (opens it if closed, closes it if open). On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "focusCodexQuick": "Opens the Scene Context panel. It stays open if it was already open. On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "focusTimeline": "Toggles the Timeline panel (opens it if closed, closes it if open). On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "focusChronicle": "Toggles the Chronicle panel (opens it if closed, closes it if open). On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "focusMap": "Toggles the Map panel (opens it if closed, closes it if open). On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "focusKouetsu": "Toggles the Proofread panel (opens it if closed, closes it if open). On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "focusForeshadow": "Toggles the Foreshadow panel (opens it if closed, closes it if open). On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "focusTrashBin": "Toggles the Trash panel (opens it if closed, closes it if open). On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "focusGrid": "Toggles the Grid panel (opens it if closed, closes it if open). On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "focusMatrix": "Toggles the Matrix panel (opens it if closed, closes it if open). On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "focusWritingStats": "Toggles the Writing Stats panel (opens it if closed, closes it if open). On a narrow (phone-width) screen it switches to the matching screen instead of toggling.",
+      "toggleLeftOverlay": "Opens or closes the overlay on the left edge of the screen. Does nothing when no panel is placed in that overlay, or on a narrow (phone-width) screen.",
+      "toggleRightOverlay": "Opens or closes the overlay on the right edge of the screen. Does nothing when no panel is placed in that overlay, or on a narrow (phone-width) screen.",
+      "openSettings": "Opens the Settings screen. It opens on the Project category.",
+      "splitVertical": "Splits the editor into left and right. Opens the current tab in a second group on the right (creates an empty group if there is no tab). Does nothing on a narrow (phone-width) screen.",
+      "splitHorizontal": "Splits the editor into top and bottom. Opens the current tab in a second group below (creates an empty group if there is no tab). Does nothing on a narrow (phone-width) screen.",
+      "nextTab": "Moves to the next tab in the current tab group, wrapping from the last tab to the first. Does nothing with fewer than 2 tabs, or on a narrow (phone-width) screen.",
+      "prevTab": "Moves to the previous tab in the current tab group, wrapping from the first tab to the last. Does nothing with fewer than 2 tabs, or on a narrow (phone-width) screen.",
+      "find": "Opens the find bar for the text when the editor has focus. When the Scenes tree has focus, it focuses the scene filter field instead.",
+      "findReplace": "Opens the editor's find-and-replace bar. Windows and Linux only (on macOS the binding is disabled because ⌘H is the OS \"Hide Application\" shortcut).",
+      "save": "Saves what you are editing right now when the editor has focus. For a scene, it also records a manual-save revision.",
+      "inlineAiPalette": "Opens the inline AI palette in the editor. This shortcut can be turned off in Settings > Editor; while off, nothing happens."
+    },
+    "settingsOpenGuide": "Open Settings and pick \"{{category}}\" in the category list. Settings opens with {{shortcut}} (or from the settings button at the top of the screen).",
+    "settingsOpenGuideNoShortcut": "Open Settings and pick \"{{category}}\" in the category list. Settings opens from the settings button at the top of the screen.",
+    "macUnavailable": "Not available on macOS",
+    "unbound": "unassigned",
+    "refUnavailableHere": "not available on this OS",
+    "settingsCategoryRef": "the \"{{category}}\" category in Settings"
+  },
+  "agentUiOps": {
+    "undo": "Undo",
+    "undoAria": "Restore the screen to how it was before this operation",
+    "undone": "Undone",
+    "undoFailed": {
+      "viewport": "Can't undo: the screen width changed",
+      "changed": "Can't undo: the layout was changed after this operation",
+      "layout": "Couldn't undo (the earlier layout can't be restored on this screen now)"
+    },
+    "superseded": "Can't undo: a later operation changed the screen"
   }
 }

@@ -34,6 +34,7 @@ import type { ProfileEgressStatusView } from "@/lib/profileEgressStatus";
 import { PROFILE_EGRESS_UNAVAILABLE_REASONS } from "@/../electron/shared/profileEgressStatusWire";
 import ProfileEgressStatusIndicator from "@/features/profile-egress/ProfileEgressStatusIndicator";
 import { EditorPaneStatusBar } from "@/features/editor/EditorPaneStatusBar";
+import { PhoneWorkspaceChrome } from "@/features/layout/adaptive/PhoneWorkspaceChrome";
 
 const { egressView, editorStatusBar } = vi.hoisted(() => ({
   egressView: { current: { state: "restricted" } as ProfileEgressStatusView },
@@ -1232,63 +1233,148 @@ describe("profile egress status display vs LayoutShell controls (real Chromium)"
     }
   }
 
-  // KNOWN GAP (DR-DA2-63, left for C-1／PUB-G): the restricted pill is placed at
-  // the center's lower-left corner, which is where the real EditorPaneStatusBar
-  // draws the scene status button, so in the default layout the pill covers it.
-  // The sibling tests above stub the editor, so they cannot see this. `fails`
-  // keeps the suite green while the gap exists and turns red when a placement
-  // change closes it: then delete `.fails`. The state constant is false, so no
-  // user sees the pill meanwhile.
-  it.fails(
-    "does not cover the real editor status bar's scene status button at 1200x800",
-    async () => {
-      await page.viewport(1200, 800);
-      editorStatusBar.current = true;
-      try {
-        useLayoutStore.setState({
-          layout: buildDefaultLayoutState({ allInactive: true }),
-        });
-        const { container } = render(
-          <div
-            className="app-shell"
-            data-shell-host
-            style={{
-              position: "fixed",
-              top: 0,
-              left: 0,
-              width: 1200,
-              height: 800,
-            }}
-          >
-            <LayoutShell />
-          </div>,
-        );
-        await new Promise((r) => requestAnimationFrame(() => r(null)));
-        const statusButton = container.querySelector<HTMLElement>(
-          "[data-editor-tool-surface] button",
-        );
-        expect(statusButton).not.toBeNull();
-        egressView.current = { state: "restricted" };
-        render(<ProfileEgressStatusIndicator />);
+  // The real EditorPaneStatusBar sits on the center's bottom edge, where the
+  // pill used to be (DR-DA2-63 recorded the cover with `it.fails`; DR-PUBG-32-1
+  // lifted the pill above it). The sibling tests above stub the editor, so this
+  // one draws the real bar and checks the whole bar rectangle (the scene status
+  // button, the badges, the stats), for every state and layout.
+  for (const viewport of [
+    { width: 1200, height: 800 },
+    { width: 768, height: 600 },
+  ]) {
+    for (const layoutCase of LAYOUTS) {
+      it(`keeps clear of the real editor status bar at ${viewport.width}x${viewport.height}: ${layoutCase.name}`, async () => {
+        await page.viewport(viewport.width, viewport.height);
+        editorStatusBar.current = true;
+        try {
+          layoutCase.apply();
+          const { container } = render(
+            <div
+              className="app-shell"
+              data-shell-host
+              style={{
+                position: "fixed",
+                top: 0,
+                left: 0,
+                width: viewport.width,
+                height: viewport.height,
+              }}
+            >
+              <LayoutShell />
+            </div>,
+          );
+          await new Promise((r) => requestAnimationFrame(() => r(null)));
+          const bar = container.querySelector<HTMLElement>(
+            "[data-editor-tool-surface]",
+          );
+          expect(bar).not.toBeNull();
+          const statusButton = bar!.querySelector<HTMLElement>("button");
+          expect(statusButton).not.toBeNull();
+          const barRect = bar!.getBoundingClientRect();
+          expect(barRect.width).toBeGreaterThan(0);
+          // Open the scene status menu: it grows upward from the button, so a
+          // display lifted above the bar can still cover it.
+          await act(async () => {
+            statusButton!.click();
+          });
+          const menuButtons = [
+            ...bar!.querySelectorAll<HTMLElement>(
+              "[class*='bottom-full'] button",
+            ),
+          ];
+          expect(menuButtons.length).toBe(5);
+          const rects = [
+            { name: "the editor status bar", rect: barRect },
+            ...menuButtons.map((button, index) => ({
+              name: `status menu item ${index}`,
+              rect: button.getBoundingClientRect(),
+            })),
+          ];
+          for (const next of VIEWS) {
+            egressView.current = next;
+            const { unmount } = render(<ProfileEgressStatusIndicator />);
+            await act(async () => {});
+            const display = await screen.findByTestId("profile-egress-status");
+            const d = display.getBoundingClientRect();
+            for (const { name, rect } of rects) {
+              const overlapX =
+                Math.min(d.right, rect.right) - Math.max(d.left, rect.left);
+              const overlapY =
+                Math.min(d.bottom, rect.bottom) - Math.max(d.top, rect.top);
+              expect(
+                overlapX <= 0.5 || overlapY <= 0.5,
+                `${JSON.stringify(next)}: the status display overlaps ${name}`,
+              ).toBe(true);
+            }
+            unmount();
+          }
+        } finally {
+          editorStatusBar.current = false;
+        }
+      });
+    }
+  }
+});
+
+/**
+ * Below 720 px the app shows the phone workspace: no stripes, no editor status
+ * bar, and a full-width bottom nav (`phone-workspace-chrome__nav`). The pill
+ * must stay clear of the real nav (DR-PUBG-32-1; the nav was left unmeasured by
+ * DR-DA2-63).
+ */
+describe("profile egress status display vs the phone workspace nav (real Chromium)", () => {
+  const VIEWS: ProfileEgressStatusView[] = [
+    { state: "restricted" },
+    { state: "activating" },
+    ...PROFILE_EGRESS_UNAVAILABLE_REASONS.map(
+      (reason): ProfileEgressStatusView => ({ state: "unavailable", reason }),
+    ),
+  ];
+  for (const viewport of [
+    { width: 360, height: 640 },
+    { width: 719, height: 700 },
+  ]) {
+    it(`never overlaps the nav at ${viewport.width}x${viewport.height}`, async () => {
+      await page.viewport(viewport.width, viewport.height);
+      const { container } = render(
+        <div
+          data-adaptive-workspace-shell
+          data-profile="phone"
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            display: "flex",
+            width: viewport.width,
+            height: viewport.height,
+          }}
+        >
+          <PhoneWorkspaceChrome active />
+        </div>,
+      );
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      const nav = container.querySelector<HTMLElement>(
+        ".phone-workspace-chrome__nav",
+      );
+      expect(nav).not.toBeNull();
+      const navRect = nav!.getBoundingClientRect();
+      expect(navRect.height).toBeGreaterThan(0);
+      for (const next of VIEWS) {
+        egressView.current = next;
+        const { unmount } = render(<ProfileEgressStatusIndicator />);
         await act(async () => {});
         const display = await screen.findByTestId("profile-egress-status");
         const d = display.getBoundingClientRect();
-        const b = statusButton!.getBoundingClientRect();
-        const left = Math.max(d.left, b.left);
-        const right = Math.min(d.right, b.right);
-        const top = Math.max(d.top, b.top);
-        const bottom = Math.min(d.bottom, b.bottom);
-        // The geometry only matters when the two rectangles meet.
-        if (right - left > 0.5 && bottom - top > 0.5) {
-          const hit = document.elementFromPoint(
-            (left + right) / 2,
-            (top + bottom) / 2,
-          );
-          expect(hit !== null && statusButton!.contains(hit)).toBe(true);
-        }
-      } finally {
-        editorStatusBar.current = false;
+        expect(d.width).toBeGreaterThan(0);
+        // The phone variant (left 12 px) is in force, not the wide one.
+        expect(d.left).toBeCloseTo(12, 0);
+        expect(d.right).toBeLessThanOrEqual(viewport.width);
+        expect(
+          d.bottom <= navRect.top,
+          `${JSON.stringify(next)}: the status display overlaps the phone nav`,
+        ).toBe(true);
+        unmount();
       }
-    },
-  );
+    });
+  }
 });

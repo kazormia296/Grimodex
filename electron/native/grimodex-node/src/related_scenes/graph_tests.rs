@@ -1319,6 +1319,50 @@ fn a_graph_that_failed_is_reported_with_its_own_reason() {
     }
 }
 
+/// PUB-G #48: a Graph over the frontier limit (more than 50 Entities, or more
+/// than 512 edges) is refused as a whole. The worker names the limit it met in
+/// its allowlisted reason, in the form the real worker emits it (the one that
+/// the `nir1_graph` star-49 and edges-513 shapes pin on the frame); the Native
+/// ticket then ends as exactly `limit`, the await is not `Ready` (no partial
+/// Graph reaches the join), and the wire answer is the closed `limit` reason.
+#[test]
+fn a_graph_over_the_frontier_limit_is_refused_whole_as_limit() {
+    use grimodex_db::narrative_extraction::nir1_graph::worker_frame::UnavailableReason;
+    for text in [
+        "query-worker-work-node-limit-pre-cleanup-work-failed-node-limit",
+        "query-worker-work-edge-limit-pre-cleanup-work-failed-edge-limit",
+        "query-worker-work-node-limit",
+        "query-worker-work-edge-limit",
+    ] {
+        let reason = UnavailableReason::parse(text).expect("allowlisted worker reason");
+        let fixture = Fixture::new();
+        fixture.warm();
+        set_mode(&fixture.plan, QueryMode::Unavailable(reason));
+        let graph = GraphState::default();
+        start_released(&graph, &fixture.state);
+        graph.set_dense_scene_ids(dense(&[]));
+        let plan = plan_of(graph.claim(&[]));
+        let outcome = await_graph(
+            &fixture.state,
+            &graph,
+            &plan,
+            Duration::from_secs(2),
+            live_ir(IrState::Available),
+        );
+        match outcome {
+            GraphAwait::Unavailable(reason) => {
+                assert_eq!(reason, GraphUnavailable::Limit, "{text}");
+                assert_eq!(
+                    graph_unavailable(reason),
+                    json!({"status": "unavailable", "reason": "limit"}),
+                    "{text}"
+                );
+            }
+            GraphAwait::Ready(_) => panic!("{text}: an over-limit Graph is not ready"),
+        }
+    }
+}
+
 #[test]
 fn shutdown_and_a_lifecycle_edge_end_the_await_in_finite_time() {
     // N-16: the epoch moves, the await returns invalidated within a step.

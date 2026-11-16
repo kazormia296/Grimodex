@@ -22,6 +22,9 @@
     { "name": "get_event_detail", "capability": "read", "requiredPolicy": null, "allowedChannels": ["agent", "hermes", "native"], "requiresUserConfirmation": false },
     { "name": "get_character_timeline", "capability": "read", "requiredPolicy": null, "allowedChannels": ["agent", "hermes", "native"], "requiresUserConfirmation": false },
     { "name": "get_chronicle_state", "capability": "read", "requiredPolicy": null, "allowedChannels": ["agent", "hermes", "native"], "requiresUserConfirmation": false },
+    { "name": "get_app_help_index", "capability": "read", "requiredPolicy": null, "allowedChannels": ["agent", "hermes", "native"], "requiresUserConfirmation": false },
+    { "name": "get_app_help", "capability": "read", "requiredPolicy": null, "allowedChannels": ["agent", "hermes", "native"], "requiresUserConfirmation": false },
+    { "name": "get_ui_state", "capability": "read", "requiredPolicy": null, "allowedChannels": ["agent", "hermes", "native"], "requiresUserConfirmation": false },
     { "name": "create_codex_entry", "capability": "write", "requiredPolicy": "knowledgeWrite", "allowedChannels": ["agent", "native"], "requiresUserConfirmation": false },
     { "name": "update_codex_entry", "capability": "write", "requiredPolicy": "knowledgeWrite", "allowedChannels": ["agent", "native"], "requiresUserConfirmation": false },
     { "name": "create_foreshadow", "capability": "write", "requiredPolicy": "knowledgeWrite", "allowedChannels": ["agent", "native"], "requiresUserConfirmation": false },
@@ -38,6 +41,9 @@
     { "name": "add_event_relation", "capability": "write", "requiredPolicy": "knowledgeWrite", "allowedChannels": ["agent", "native"], "requiresUserConfirmation": false },
     { "name": "remove_event_relation", "capability": "destructive", "requiredPolicy": "knowledgeWrite", "allowedChannels": ["agent", "native"], "requiresUserConfirmation": true },
     { "name": "run_research", "capability": "read", "requiredPolicy": null, "allowedChannels": ["agent", "hermes", "native"], "requiresUserConfirmation": false },
-    { "name": "ask_user", "capability": "read", "requiredPolicy": null, "allowedChannels": ["agent", "hermes", "native"], "requiresUserConfirmation": false }
+    { "name": "ask_user", "capability": "read", "requiredPolicy": null, "allowedChannels": ["agent", "hermes", "native"], "requiresUserConfirmation": false },
+    { "name": "run_app_command", "capability": "write", "requiredPolicy": "chat", "allowedChannels": ["agent", "native"], "requiresUserConfirmation": false },
+    { "name": "apply_layout_preset", "capability": "write", "requiredPolicy": "chat", "allowedChannels": ["agent", "native"], "requiresUserConfirmation": false },
+    { "name": "propose_setting_change", "capability": "write", "requiredPolicy": "chat", "allowedChannels": ["agent", "native"], "requiresUserConfirmation": true }
   ]
 }

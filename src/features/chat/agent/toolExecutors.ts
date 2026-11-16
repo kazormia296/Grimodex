@@ -1766,6 +1766,12 @@ export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
   get_character_timeline: getCharacterTimelineTool,
   get_chronicle_state: getChronicleStateTool,
   search_events: searchEvents,
+  // アプリの使い方ヘルプ。実装（ヘルプ文書・locale の展開）は初回の呼び出しで読む。
+  get_app_help_index: async (params) =>
+    (await import("./appHelpTools")).getAppHelpIndexTool(params),
+  get_app_help: async (params) =>
+    (await import("./appHelpTools")).getAppHelpTool(params),
+  get_ui_state: async () => (await import("./appHelpTools")).getUiStateTool(),
 };
 Object.freeze(READ_ONLY_EXECUTORS);
 
@@ -2113,6 +2119,15 @@ export const MUTATING_EXECUTORS: Record<string, Executor> = {
   set_event_participants: setEventParticipantsTool,
   add_event_relation: addEventRelationTool,
   remove_event_relation: removeEventRelationTool,
+  // アプリの UI 操作（view のみ）。実装（layout／tab の store）は初回の呼び出しで読む。
+  run_app_command: async (params) =>
+    (await import("./appUiTools")).runAppCommandTool(params),
+  apply_layout_preset: async (params) =>
+    (await import("./appUiTools")).applyLayoutPresetTool(params),
+  // 設定変更の提案。設定は変えず、検証済みの提案を返す（適用は利用者のカードのクリック）。
+  // 実装は初回の呼び出しまで読み込まない。DURABLE_MUTATION_TOOLS には入れない（DB を書かない）。
+  propose_setting_change: async (params) =>
+    (await import("./settingProposalTools")).proposeSettingChangeTool(params),
 };
 Object.freeze(MUTATING_EXECUTORS);
 

@@ -56,6 +56,7 @@ requirements:
       - eval-route-search-scenes
       - eval-route-list-chapters
       - eval-route-character-timeline
+      - eval-route-app-help
   - id: GDX-AI-AUDIT-001
     title: Every observable generative and inference execution is durably audited before dispatch.
     definedIn: policies/quality/iron-laws.md#GDX-AI-AUDIT-001
@@ -231,10 +232,25 @@ requirements:
       - agent-tool-manifest.json
       - src/features/chat/agent/toolManifest.ts
       - src/features/chat/agent/toolDefinitions.ts
+      - src/features/chat/agent/appHelpTools.ts
+      - src/help/helpCatalog.ts
+      - src/help/helpDocs.ts
+      - src/help/helpIndex.ts
+      - src/help/helpRefs.ts
+      - src/help/uiState.ts
+      - src/features/chat/agent/appUiTools.ts
+      - src/features/chat/agent/uiOperationTools.ts
+      - src/features/commands/appCommandRegistry.ts
+      - src/features/commands/uiOperationUndo.ts
       - src-tauri/crates/grimodex-ai/build.rs
     lightTests:
       - src/features/chat/agent/toolDefinitions.test.ts
       - src/features/chat/agent/toolExecutors.test.ts
+      - src/features/chat/agent/appHelpTools.test.ts
+      - src/help/helpIndex.test.ts
+      - src/help/uiState.test.ts
+      - src/features/chat/agent/appUiTools.test.ts
+      - src/features/commands/appCommandRegistry.test.ts
       - scripts/quality/impact-map.mjs
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
@@ -243,6 +259,9 @@ requirements:
       - eval-tool-unknown
       - eval-tool-research
       - eval-tool-hermes-write
+      - eval-tool-app-help-hermes
+      - eval-route-app-help
+      - eval-ground-app-help-absent
   - id: GDX-POLICY-001
     title: Mutating and destructive tools enforce policy and confirmation without silent retry.
     definedIn: policies/quality/iron-laws.md#GDX-POLICY-001
@@ -884,6 +903,7 @@ requirements:
       - eval-ground-get-scene
       - eval-ground-foreshadow
       - eval-tool-research
+      - eval-ground-app-help-absent
   - id: GDX-ARTIFACT-001
     title: Structured and generated outputs pass schema and provenance validation.
     definedIn: policies/quality/iron-laws.md#GDX-ARTIFACT-001

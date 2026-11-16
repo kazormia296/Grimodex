@@ -200,3 +200,43 @@ cases:
       freshness: current-project
       requiredEvidence: [tool-result]
       outputValidators: [schema, artifact-link, failure-class]
+
+  - id: eval-ground-app-help-absent
+    suiteId: retrieval-grounding
+    requirementIds: [GDX-GROUND-001, GDX-TOOL-001]
+    fixture:
+      runId: ground-app-help-absent
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-11-16T09:20:00+09:00"
+      channel: agent
+      grantedPolicies: []
+      availableTools:
+        - {
+            name: get_app_help_index,
+            schemaRef: "agent-tool-manifest.json#tool:get_app_help_index",
+          }
+      state:
+        {
+          conversationId: ground-app-help-absent-conversation,
+          workspaceId: ground-app-help-absent-workspace,
+          artifactRoot: ground-app-help-absent-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "原稿をブロックチェーンへ自動で公開する機能はある？",
+        attemptedTools: [get_app_help_index],
+        executedTools: [get_app_help_index],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: [get_app_help_index]
+      forbiddenTools: [get_app_help]
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence: [tool-result, index-miss]
+      outputValidators: [tool-result-linked, source-attribution]
