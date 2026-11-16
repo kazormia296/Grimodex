@@ -44,8 +44,10 @@ export interface AppCommand {
   id: string;
   risk: CommandRisk;
   /**
-   * agent（Chat の run_app_command）に出すか。`risk: "view"` で、利用者のデータを変えず、
-   * 画面の表示だけの操作で、layout の退避（uiOperationUndo）で元に戻せるものだけ true にする。
+   * agent（Chat の run_app_command）に出すか。`risk: "view"` で、利用者のデータを変えない、
+   * 画面の表示だけの操作に限る。layout が変わるものは layout の退避（uiOperationUndo）で元に戻せる。
+   * 例外は `openSettings`（Settings を開くだけで、利用者が閉じれば戻る。退避には含まれない）。
+   * tab の model や開いている場面を変えるもの（分割・タブ切替）は出さない。
    * 実際に実行してよいかは `isAgentRunnable`（agent && view）で判定する。
    */
   agent: boolean;
@@ -145,9 +147,12 @@ function panelCommand(id: string, panel: PanelId): AppCommand {
   return {
     id,
     risk: "view",
-    // パネルの表示の切替。layout の退避で戻せる。Chat は agent が今まさに動いているパネルで、
-    // 閉じると「元に戻す」の表示ごと隠れるので、agent には出さない（利用者のキー操作は従来どおり）。
-    agent: panel !== "chat",
+    // パネルの表示の切替。layout の退避で戻せる。Chat と Chat History は agent が今まさに動いている
+    // パネル（既定の配置では同じ slot で、片方を出すともう片方が隠れる）で、隠れると「元に戻す」の
+    // 表示ごと見えなくなるので、agent には出さない（利用者のキー操作は従来どおり）。
+    // それでも、利用者が同じ slot に置いた別のパネルやプリセットで Chat が隠れることはある（受け入れる。
+    // 退避は会話の履歴のカードに残る。設計書 §7.4）。
+    agent: panel !== "chat" && panel !== "chat-history",
     panel,
     run: (ctx) => {
       if (ctx.phoneWorkspace) {
@@ -179,7 +184,8 @@ function panelCommand(id: string, panel: PanelId): AppCommand {
 const openSettingsCommand: AppCommand = {
   id: "openSettings",
   risk: "view",
-  // Settings 画面を開くだけ（何も変更しない）。閉じるのは利用者の通常の操作で、layout の退避には含まれない。
+  // Settings 画面を開くだけ（何も変更しない）。layout の退避には含まれず、閉じるのは利用者の通常の操作
+  // （「元に戻す」は出さない。結果は undoable: false）。
   agent: true,
   run: (ctx) => {
     ctx.onOpenSettings();
@@ -194,7 +200,8 @@ function splitCommand(
   return {
     id,
     risk: "view",
-    // tab の model（第 2 グループ）を変える。layout の退避では戻せないので agent には出さない。
+    // tab の model（第 2 グループ）を変える。layout の退避では戻せず、開いている場面の表示も替わるので、
+    // agent には出さない。
     agent: false,
     run: (ctx) => {
       // phone は単一文書の投影で、隠れた desktop の tab model を変えない。
@@ -218,7 +225,7 @@ function tabSwitchCommand(
     id,
     risk: "view",
     // 開いている場面（active scene）を切り替える。layout の退避では戻せず、編集中の画面が替わるので、
-    // agent には出さない。
+    // agent には出さない（chat の scope への影響は未確認）。
     agent: false,
     isAvailable: (ctx) => !ctx.phoneWorkspace,
     run: (ctx) => {

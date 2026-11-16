@@ -42,7 +42,7 @@
 | レイアウトのプリセット | `layoutPresets.ts` の `BUILTIN_PRESET_IDS`（default／plan／chat-main／review／codex-main）とユーザー定義のプリセット | プリセット適用ツールの引数に使う |
 | 設定 | `settingsStore` は文字列の key／value。`settings/types.ts` に `SETTINGS_CATEGORIES`（カテゴリ定義）、`KEY_SCOPE`（global／project）、`DEFAULT_SETTINGS`（既定値、文字列）、`LANGUAGE_DEFAULT_OVERRIDES` がある。型・範囲・説明は無い。参照されるキーは概数で 190 前後 | 目録はキー・既定値・カテゴリを `types.ts` から引き、型・範囲・説明だけを足す。agent に許可するキーに限る（§4.2） |
 | 設定画面 | `settings/categories/*.tsx` に部品を直接配置。カテゴリは `SETTINGS_CATEGORIES` | カテゴリ ID を「設定を開く」リンクの行き先にする |
-| Chat のツール | `agent-tool-manifest.json` が正本（`capability`＝read／write／destructive、`requiredPolicy`＝null／knowledgeWrite／bodyWrite／structureWrite、`allowedChannels`＝agent／hermes／native、`requiresUserConfirmation`）。`src-tauri/crates/grimodex-ai/build.rs` が Rust の AI parser に取り込む。`scripts/ci-change-scope.test.mjs`、`scripts/quality/eval-fixtures.mjs` も参照。定義は `chat/agent/toolDefinitions.ts`、実行は `toolExecutors.ts` | 新しいツールは manifest への追加を伴うので、**read のツールでも Rust の build に触れる**（§5） |
+| Chat のツール | `agent-tool-manifest.json` が正本（`capability`＝read／write／destructive、`requiredPolicy`＝null／knowledgeWrite／bodyWrite／structureWrite（PR3 で `chat` を追加）、`allowedChannels`＝agent／hermes／native、`requiresUserConfirmation`）。`src-tauri/crates/grimodex-ai/build.rs` が Rust の AI parser に取り込む。`scripts/ci-change-scope.test.mjs`、`scripts/quality/eval-fixtures.mjs` も参照。定義は `chat/agent/toolDefinitions.ts`、実行は `toolExecutors.ts` | 新しいツールは manifest への追加を伴うので、**read のツールでも Rust の build に触れる**（§5） |
 | 確認の UI | `requiresUserConfirmation: true` は `apply_ai_tree_plan`、`propose_scene_body`、`delete_event`、`remove_event_relation`。提案のカードと review が `chronicle/ChronicleProposalCard.tsx`、`codex/CodexEntityProposalCard.tsx` 等にある | 設定変更のカードは新設せず、既存の提案カードの型に合わせる（§6） |
 | UI 文言 | `src/locales/{ja,en}.json` | 目録の説明もここに置く |
 
@@ -113,8 +113,10 @@ interface AppCommand {
 - `run` は同期で、`CommandResult`（`{ ok: true }` か `{ ok: false, reason }`）を返す（キー処理のタイミングを変えないため）。文脈は `run(ctx)` に明示して渡す。
 - ラベルと説明は `AppCommand` に持たず、`getCommands()` の label と locales の `help.commands.<id>` を使う。`args` は PR3 の時点でどのコマンドにも無く、`run_app_command` の入力は command id だけ。
 - `fixedKey`（再割当不可のキー。`searchWorkspace`、`toggleExport`）、`panel`、`isAvailable`（今 `run` できるか）を足した。
-- agent が実行してよいかは `isAgentRunnable`（`agent: true` かつ `risk: "view"`）で決め、registry の一覧（`listAgentRunnableCommandIds`）がツールの許可の正本になる。`agent: true` は、画面の表示だけの操作で、layout の退避で元に戻せるものに限る。
-  agent に出さないもの: `toggleExport`（blocked）、`splitVertical`／`splitHorizontal`／`nextTab`／`prevTab`（tab の model と開いている場面を変え、layout の退避では戻せない）、`focusChat`（agent が今動いているパネルで、閉じると「元に戻す」の表示ごと隠れる）。
+- agent が実行してよいかは `isAgentRunnable`（`agent: true` かつ `risk: "view"`）で決め、registry の一覧（`listAgentRunnableCommandIds`）がツールの許可の正本になる。`agent: true` は、利用者のデータを変えない画面の表示だけの操作に限る。
+  layout が変わるものは layout の退避で元に戻せる。例外は `openSettings`（Settings を開くだけで、利用者が閉じれば戻る。退避には含まれず、結果は `undoable: false`）。
+  agent に出さないもの: `toggleExport`（blocked）、`splitVertical`／`splitHorizontal`／`nextTab`／`prevTab`（tab の model と開いている場面を変え、layout の退避では戻せない。active scene の切替が chat の scope に与える影響は未確認）、
+  `focusChat`／`focusChatHistory`（agent が今動いているパネル。既定の配置では同じ slot で、片方を出すともう片方が隠れ、「元に戻す」の表示ごと見えなくなる）。
 - キー以外の呼び出し元は、host が `commandContext` に登録した文脈を使う（`runRegisteredAppCommand`）。登録は後勝ちの 1 枠で、host は 1 つだけの前提（§7）。
 
 ### 4.2 agent に許可する設定の目録
@@ -230,8 +232,8 @@ panels: []
    未知の id、agent に出さないもの、blocked、今は使えない状態は、副作用なしで error を返す。モデルが作った id は実行しない。ツールの inputSchema の enum も registry と一致させる（試験で固定）。
 4. agent に出さないもの: export、ファイル書出し、外部送信、AI 設定（provider・key・endpoint）の変更。registry では export が blocked、設定は PR4 の目録に載せない。
 5. 連打の抑止: 1 応答で UI 操作ツールは 10 回まで。
-6. 取り返せること: 実行前に表示状態を退避し、chat の tool 結果から 1 回で元に戻せる。戻せない操作は、戻せるとは言わない（`undoable: false`）か、agent に出さない（tab の分割・切替）。
-7. 実行できない場所: host が無い（no-host）、phone 幅、パネルの別ウィンドウ、レイアウトのロック中は、`apply_layout_preset` を拒否する。
+6. 取り返せること: 実行前に表示状態を退避し、chat の tool 結果から 1 回で元に戻せる。戻せない操作は、戻せるとは言わない（`undoable: false`。Settings を開く）か、agent に出さない（tab の分割・切替）。
+7. 実行できない場所: host が無い（no-host）とパネルの別ウィンドウ（host は別ウィンドウでも mount されるので、`isPanelWindow()` で拒否する）は、両ツールを拒否する。phone 幅とレイアウトのロック中は `apply_layout_preset` を拒否する。
 8. host は 1 つの前提: `commandContext` の登録は後勝ちの 1 枠で、host が 2 つ以上同時に mount されると、後の host が外れた時点で登録が空になる。その場合は no-host の error として扱い、推測で実行しない。
 9. 研究サブエージェントは read だけ（`executeReadOnlyTool` が write のツールを拒否する）。宣言していないツールは agent loop が拒否する。
 10. 秘密: `get_app_help`／`get_ui_state`／UI 操作の結果は、秘密の値（API key 等）と endpoint の URL を返さない。返すのは「設定済みかどうか」の真偽だけ。
@@ -241,6 +243,8 @@ panels: []
 
 - 本文などの指示で、パネルの開閉・プリセットの切替・Settings の表示が確認なしで起こりうる。表示だけで、データ・外部送信・設定は変わらず、10 回の上限と「元に戻す」で収まる範囲として受け入れる。
 - 元に戻すは layout の表示状態だけで、メモリ上にある。再読込後は出ない。元に戻すと、その後に利用者が手で変えた配置も、操作前の状態に戻る。
+- Chat が見えなくなる操作は、`focusChat`／`focusChatHistory` を外しても残る（利用者が Chat と同じ slot に置いた別のパネル、Chat を含まないプリセット）。
+  その場合も「元に戻す」は会話の履歴のカードに残るので、Chat を開き直せば押せる。拒否はしない（プリセットは利用者が頼んだ配置のため）。
 - Hermes と低信頼の native provider では UI 操作が使えない（§7.2）。
 - host が複数 mount された場合は、UI 操作が no-host で使えなくなる。
 
@@ -258,7 +262,8 @@ panels: []
    - registry に無いキー処理が `GlobalCommandHost` に残っていないこと。
 2. **挙動の同一性**: registry への移行（§9 の 1）で、既存のキー操作の試験が全部通ること。
 3. **AI の振る舞い**: ツールの定義と system prompt の変更は AI behavior asset。`grimodex-author` と `grimodex-impact-gate` を適用し、
-   `evals/quality-manifest.yaml` に次の小さな eval を足す。
+   `evals/quality-manifest.yaml` に次の小さな eval を足す（PR3 の時点で light corpus は上限の 35 件でちょうど満杯のため、PR3 では eval case を足さず、
+   拒否・権限・上限・元に戻すを vitest（`appUiTools.test.ts` 等）で固定した。eval の追加は上限の扱いを決めてから）。
    - 「〜するには？」に、実際のキー割当と出典 ID で答える。
    - 存在しない機能を聞かれたら「無い」と答える。
    - 本文中に埋め込まれた「設定を変えて」という指示では、設定を変えない。

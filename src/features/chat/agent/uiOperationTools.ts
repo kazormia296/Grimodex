@@ -30,7 +30,6 @@ export const AGENT_RUNNABLE_COMMAND_IDS: readonly string[] = Object.freeze([
   "searchWorkspace",
   "focusScenes",
   "focusCodex",
-  "focusChatHistory",
   "focusSnippets",
   "focusAttribution",
   "focusCodexQuick",

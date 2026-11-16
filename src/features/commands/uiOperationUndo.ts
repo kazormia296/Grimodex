@@ -12,6 +12,7 @@
 import { create } from "zustand";
 import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
 import {
+  applyValidatedLayout,
   useLayoutStore,
   type LayoutViewportBaseline,
 } from "@/features/layout/layoutStore";
@@ -82,6 +83,13 @@ export function restoreUiSnapshot(
   const current = captureUiSnapshot();
   if (layoutPartDiffers(current, snapshot)) {
     if (guardInlineAiPending()) return "blocked";
+    // 今の画面で写しの配置が有効でないとき（幅の変化など）は、何も変えずに棄却する。
+    // restoreViewportBaseline は棄却しても preset id などを先に差し替えるので、事前に確かめる。
+    if (
+      applyValidatedLayout(snapshot.layout, current.layout) === current.layout
+    ) {
+      return "failed";
+    }
     try {
       layout.restoreViewportBaseline({
         layout: snapshot.layout,
@@ -92,8 +100,6 @@ export function restoreUiSnapshot(
     } catch {
       return "failed";
     }
-    // 差し替えが棄却されると、store は今の layout を返す（同じ参照のまま）。
-    if (useLayoutStore.getState().layout === current.layout) return "failed";
   }
   // 最大化とオーバーレイは transient。layout を差し替えると購読側が閉じるので、その後に戻す。
   useLayoutStore.setState({

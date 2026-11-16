@@ -81,7 +81,6 @@ describe("コマンド registry の定義", () => {
       "searchWorkspace",
       "focusScenes",
       "focusCodex",
-      "focusChatHistory",
       "focusSnippets",
       "focusAttribution",
       "focusCodexQuick",
@@ -111,7 +110,7 @@ describe("コマンド registry の定義", () => {
     ).toBe(false);
   });
 
-  it("agent に出さないもの: export（blocked）、tab の分割・切替（戻せない）、Chat パネル（今動いているパネル）", () => {
+  it("agent に出さないもの: export（blocked）、tab の分割・切替（戻せない）、Chat と Chat History（今動いているパネル）", () => {
     for (const id of [
       "toggleExport",
       "splitVertical",
@@ -119,6 +118,7 @@ describe("コマンド registry の定義", () => {
       "nextTab",
       "prevTab",
       "focusChat",
+      "focusChatHistory",
     ]) {
       expect(isAgentRunnable(getAppCommand(id)!), id).toBe(false);
     }

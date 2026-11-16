@@ -156,6 +156,7 @@ describe("manifest と定義（Hermes・権限）", () => {
       "nextTab",
       "splitVertical",
       "focusChat",
+      "focusChatHistory",
     ]) {
       expect(AGENT_RUNNABLE_COMMAND_IDS).not.toContain(id);
     }
@@ -190,9 +191,14 @@ describe("run_app_command の拒否は副作用なし", () => {
     }
   });
 
-  it("agent に出さないコマンド（tab 切替・Chat パネル）は実行しない", async () => {
+  it("agent に出さないコマンド（tab 切替・Chat と Chat History）は実行しない", async () => {
     const before = layoutOf();
-    for (const command of ["nextTab", "splitVertical", "focusChat"]) {
+    for (const command of [
+      "nextTab",
+      "splitVertical",
+      "focusChat",
+      "focusChatHistory",
+    ]) {
       const result = await runAppCommandTool({ command });
       expect(result.error, command).toContain("not allowed");
     }
@@ -229,6 +235,19 @@ describe("run_app_command の拒否は副作用なし", () => {
     second(); // 後勝ちの枠が空になる（先の host が残っていても）
     const result = await runAppCommandTool({ command: "focusScenes" });
     expect(result.error).toContain("No command host");
+  });
+
+  it("パネルの別ウィンドウ（host は mount される）では、その窓の layout を変えず error", async () => {
+    const before = layoutOf();
+    window.history.replaceState({}, "", "/?window=panel&panel=codex");
+    try {
+      const result = await runAppCommandTool({ command: "focusScenes" });
+      expect(result.error).toContain("detached panel window");
+      expect(result.undoId).toBeUndefined();
+    } finally {
+      window.history.replaceState({}, "", "/");
+    }
+    expect(layoutOf()).toEqual(before);
   });
 
   it("AI ポリシーで chat が off なら、実行の前に拒否する", async () => {
@@ -474,11 +493,19 @@ describe("元に戻せない場合（本文の保護・復元の棄却）", () =
     // Snippets が slot と overlay の両方にある（validate が棄却する）配置を写しに入れる。
     const invalid = buildDefaultLayoutState({ editorOpen: true });
     invalid.overlays = { left: { panel: "snippets" }, right: { panel: null } };
-    const broken = { ...before, layout: invalid };
+    const broken = {
+      ...before,
+      layout: invalid,
+      activePresetId: "builtin:plan",
+    };
     const id = useUiUndoStore.getState().register(broken);
     const current = useLayoutStore.getState().layout;
+    const seq = useLayoutStore.getState().layoutReplaceSeq;
     expect(useUiUndoStore.getState().undo(id)).toBe("failed");
     expect(useLayoutStore.getState().layout).toBe(current);
+    // 棄却したときは、preset id なども含めて何も変わらない。
+    expect(useLayoutStore.getState().activePresetId).toBe("builtin:default");
+    expect(useLayoutStore.getState().layoutReplaceSeq).toBe(seq);
     expect(useUiUndoStore.getState().entries[id]?.status).toBe("available");
   });
 });

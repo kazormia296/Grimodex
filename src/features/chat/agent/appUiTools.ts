@@ -7,7 +7,7 @@
  * 信頼境界（設計書 §7）: 本文・Codex・Web 検索の結果・取り込んだファイルに仕込まれた指示で
  * agent が誘導されうる。だから実行できる範囲を、データを変えず画面の表示だけで layout の退避で
  * 戻せるものに絞り、確認は求めない代わりに「元に戻す」を chat の tool 結果に出す（undoId）。
- * 未知の id・agent に出さないもの・blocked・今は使えない状態・host なし・phone 幅・パネルの別ウィンドウは、
+ * 未知の id・agent に出さないもの・blocked・今は使えない状態・host なし・パネルの別ウィンドウ（と、プリセットでは phone 幅・ロック中）は、
  * 副作用なしで error を返す。AI ポリシーで chat が off なら、実行の前に拒否する。
  * export・ファイル書出し・外部送信・AI 設定の変更は registry でも agent に出していない。
  *
@@ -137,6 +137,14 @@ export async function runAppCommandTool(
     return fail(name, "No command host is available", {
       error:
         "The app's command host is not available right now (no-host). Nothing was changed.",
+    });
+  }
+
+  if (isPanelWindow()) {
+    // 別ウィンドウでも host は mount される。そこの layout store を変えると、主画面の配置の保存を上書きしうる。
+    return fail(name, "Commands are not available in a detached panel window", {
+      error:
+        "This is a detached panel window, not the main window. Nothing was changed.",
     });
   }
 
