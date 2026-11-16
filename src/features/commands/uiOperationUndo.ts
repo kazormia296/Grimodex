@@ -22,6 +22,7 @@ import {
   type LayoutViewportBaseline,
 } from "@/features/layout/layoutStore";
 import type { OverlayId } from "@/features/layout/layoutTypes";
+import { restoreTransientUiState } from "@/features/layout/restoreTransientUiState";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 
 export interface UiOperationSnapshot extends LayoutViewportBaseline {
@@ -146,17 +147,17 @@ export function restoreUiSnapshot(
     }
   }
   // 最大化とオーバーレイは transient。layout を差し替えると購読側が閉じるので、その後に戻す。
-  useLayoutStore.setState({
+  restoreTransientUiState({
     maximizedPanelId: snapshot.maximizedPanelId,
-    openOverlay:
-      snapshot.maximizedPanelId === null ? snapshot.openOverlay : null,
+    openOverlay: snapshot.openOverlay,
+    phoneSurface:
+      current.phoneSurface !== snapshot.phoneSurface
+        ? {
+            activeSurface: snapshot.phoneSurface,
+            backStack: snapshot.phoneBackStack,
+          }
+        : undefined,
   });
-  if (current.phoneSurface !== snapshot.phoneSurface) {
-    useCompactNavigationStore.setState({
-      activeSurface: snapshot.phoneSurface,
-      backStack: [...snapshot.phoneBackStack],
-    });
-  }
   return "restored";
 }
 

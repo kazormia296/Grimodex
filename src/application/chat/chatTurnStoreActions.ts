@@ -31,7 +31,7 @@ import { maybeRunSummarization } from "./chatSummarization";
 import {
   alreadyInjectedCodexEntryResult,
   createAskUserToolHandler,
-  createUiOperationLimitHandler,
+  withUiOperationLimit,
   createChatResearchSubagentHandler,
 } from "./chatAgentToolHandlers";
 import {
@@ -1172,8 +1172,6 @@ function createChatTurnStoreActions(
             getSessionId: () => sessionIdForPersist ?? activeSessionId,
             dismissNote: agentControl.userDismissMessage,
           });
-          // UI 操作ツールの 1 応答あたりの上限（ターンごとのカウンタ）。
-          const limitUiOperation = createUiOperationLimitHandler();
           const guardedExecuteTool: typeof executeTool = async (
             name,
             toolCallId,
@@ -1183,12 +1181,8 @@ function createChatTurnStoreActions(
             assertTurnAuthority();
             const askUserResult = handleAskUserTool(name, toolCallId, params);
             if (askUserResult) return askUserResult;
-            const researchResult = runResearchSubagent(
-              name,
-              toolCallId,
-              params,
-            );
-            if (researchResult) return researchResult;
+            const research = runResearchSubagent(name, toolCallId, params);
+            if (research) return research;
             const injectedEntryResult = alreadyInjectedCodexEntryResult(
               name,
               toolCallId,
@@ -1196,8 +1190,6 @@ function createChatTurnStoreActions(
               fullyInjectedIds,
             );
             if (injectedEntryResult) return injectedEntryResult;
-            const uiOperationLimitResult = limitUiOperation(name, toolCallId);
-            if (uiOperationLimitResult) return uiOperationLimitResult;
             return authorization
               ? executeTool(name, toolCallId, params, {
                   ...authorization,
@@ -1334,7 +1326,7 @@ function createChatTurnStoreActions(
                 );
                 return response;
               },
-              executeTool: guardedExecuteTool,
+              executeTool: withUiOperationLimit(guardedExecuteTool),
               onProgress: (progress) => {
                 if (isCurrentTurn() && !sendControl.aborted) {
                   set({ agentProgress: progress });

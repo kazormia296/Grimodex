@@ -4,6 +4,7 @@
  * 拒否（未知・agent に出さない・blocked・今は使えない・policy off・no-host・phone・ロック）が
  * 副作用なしであること、実行後の「元に戻す」で表示が戻ること、manifest の権限、1 応答あたりの上限。
  */
+import type { ToolResult } from "@/features/chat/agent/agentTypes";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/tauri", () => ({
@@ -20,7 +21,10 @@ vi.mock("@/features/ai-policy/policyGuard", () => ({
   isAiFeatureBlockedByPolicy: () => policy.off,
 }));
 
-import { createUiOperationLimitHandler } from "@/application/chat/chatAgentToolHandlers";
+import {
+  createUiOperationLimitHandler,
+  withUiOperationLimit,
+} from "@/application/chat/chatAgentToolHandlers";
 import { listAgentRunnableCommandIds } from "@/features/commands/appCommandRegistry";
 import {
   registerCommandContext,
@@ -581,6 +585,35 @@ describe("1 応答あたりの UI 操作の上限", () => {
     expect(
       createUiOperationLimitHandler(2)(RUN_APP_COMMAND_TOOL, "d"),
     ).toBeNull();
+  });
+});
+
+describe("withUiOperationLimit（送信ターンの executeTool を包む）", () => {
+  it("上限を超えた UI 操作は包んだ executeTool を呼ばず error を返し、他のツールは素通しする", async () => {
+    const execute = vi.fn(
+      async (name: string, toolCallId: string): Promise<ToolResult> => ({
+        toolCallId,
+        name,
+        content: { ok: true },
+        summary: "ok",
+        tokensUsed: 1,
+      }),
+    );
+    const guarded = withUiOperationLimit(execute);
+    for (let i = 0; i < MAX_UI_OPERATIONS_PER_TURN; i += 1) {
+      expect(
+        (await guarded(RUN_APP_COMMAND_TOOL, `c${i}`)).error,
+      ).toBeUndefined();
+    }
+    const over = await guarded(APPLY_LAYOUT_PRESET_TOOL, "over");
+    expect(over.error).toContain("limit reached");
+    expect(execute).toHaveBeenCalledTimes(MAX_UI_OPERATIONS_PER_TURN);
+    expect((await guarded("get_scene", "r")).error).toBeUndefined();
+    expect(execute).toHaveBeenCalledTimes(MAX_UI_OPERATIONS_PER_TURN + 1);
+    // 包み直す（次のターン）と新しい枠になる。
+    expect(
+      (await withUiOperationLimit(execute)(RUN_APP_COMMAND_TOOL, "next")).error,
+    ).toBeUndefined();
   });
 });
 

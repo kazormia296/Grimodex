@@ -346,3 +346,23 @@ export function createUiOperationLimitHandler(
     };
   };
 }
+
+/**
+ * 送信ターンの executeTool を包み、UI 操作ツールの上限を実行の前にかける。呼ぶたびに新しい
+ * カウンタを作るので、ターンの中（runAgentLoop に渡す所）で呼ぶ。
+ */
+export function withUiOperationLimit<
+  Execute extends (
+    name: string,
+    toolCallId: string,
+    ...rest: never[]
+  ) => Promise<ToolResult>,
+>(execute: Execute): Execute {
+  const limit = createUiOperationLimitHandler();
+  return ((name: string, toolCallId: string, ...rest: never[]) => {
+    const limited = limit(name, toolCallId);
+    return limited
+      ? Promise.resolve(limited)
+      : execute(name, toolCallId, ...rest);
+  }) as Execute;
+}
