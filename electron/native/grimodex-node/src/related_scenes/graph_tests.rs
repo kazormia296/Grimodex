@@ -494,6 +494,45 @@ fn the_join_ends_a_cache_hits_window_right_after_its_requalification() {
     assert!(claim < guard && guard < assemble && assemble < release && release < classify);
 }
 
+/// K6/7 (ii-b) (2-2): the evaluation build's three hooks in `await_request`
+/// sit where the record needs them (source order, for the same reason as the
+/// test above): the waiter is taken before the plan moves into the blocking
+/// join, the requalification is noted right after its result is in hand and
+/// before the result is classified, and `returned` is noted last, after the
+/// handle of the Graph-only row is kept and before the payload leaves.
+#[test]
+fn the_requalification_hooks_sit_at_the_result_and_at_the_return() {
+    let source = include_str!("graph.rs");
+    let body = &source[source
+        .find("async fn await_request(")
+        .expect("await_request")..];
+    let body = &body[..body.find("\n}\n").expect("end of await_request")];
+    let claim = body.find("Claim::Await(plan) => plan,").expect("claim");
+    let waiter = body
+        .find("let eval_waiter = eval_waiter_of(&plan);")
+        .expect("the waiter hook");
+    let join = body.find("tokio::task::spawn_blocking(move || {").expect("the join");
+    let assemble = body
+        .find("graph_response::assemble(&state, &lease, &projection, &raw_scene_ids)")
+        .expect("assemble");
+    let noted = body
+        .find("eval_note_requalification(eval_waiter.as_ref(), &assembled);")
+        .expect("the requalification hook");
+    let classify = body
+        .find("let assembled = match assembled {")
+        .expect("classify");
+    let kept = body
+        .find("graph_response::keep_click(&lease.data.graph, click);")
+        .expect("keep_click");
+    let returned = body
+        .find("eval_note_requalification_returned(eval_waiter.as_ref());")
+        .expect("the returned hook");
+    let leaves = body.find("Ok(wire)").expect("the payload");
+    assert!(claim < waiter && waiter < join);
+    assert!(assemble < noted && noted < classify);
+    assert!(kept < returned && returned < leaves);
+}
+
 // ---- RS-JOIN: the IR arrival and the IR continue (DR-RSJ-3, DR-RSJ-4) -------
 
 /// A `Cached` slot of a second operation, as the child query of H5 has.

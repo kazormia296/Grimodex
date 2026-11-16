@@ -1,7 +1,7 @@
 //! LP-GATE (DR-CQD-GATE-1〜10): the Graph window gate.
 //!
 //! A held Related Scenes query (CQ-DEFER, D′) reads the main database at three
-//! points: the S0 stamp and the worker's registration, the query, and the
+//! points: the worker's registration, the query, and the
 //! join's live requalification. Any commit on the main connection between
 //! them drifts the answer (DR-CQD-8, F10). The background incremental
 //! Freshness cycle is such a committer, and nothing kept it out of the window

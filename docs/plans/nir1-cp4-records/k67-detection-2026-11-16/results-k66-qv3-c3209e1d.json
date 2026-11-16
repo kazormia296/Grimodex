@@ -1,0 +1,3676 @@
+{
+  "tool": "spn-k65-synthetic-detection-mutation",
+  "startedAt": "2026-11-16T13:49:03.441Z",
+  "node": "v22.23.3",
+  "worktree": "/home/grimodex/worktrees/Grimodex/s4-9-pr3",
+  "candidate": {
+    "commit": "c3209e1d0881fdee1acead14e20645d9b7e87494",
+    "tree": "99def299b86e8d346f0e5197f62a6e8c227e5433"
+  },
+  "statusBefore": "",
+  "ignoredBefore": "!! .artifacts/cp4/\n!! dist-electron/\n!! electron/native/grimodex-node/grimodex-node.node\n!! node_modules/\n!! packages/scan-contract/dist/\n!! packages/scan-contract/node_modules/\n!! packages/scan-core/dist/\n!! packages/scan-core/node_modules/\n!! src-tauri/target/",
+  "baselineTarget": {
+    "label": "baseline-target",
+    "command": "node --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs scripts/quality/nir1-graph-eval/quality-verdict.test.mjs scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs scripts/quality/nir1-graph-eval/pubg16-e2e-run.test.mjs",
+    "started": "2026-11-16T13:49:03.673Z",
+    "finished": "2026-11-16T13:49:15.654Z",
+    "exitCode": 0,
+    "signal": null,
+    "stderrTail": "",
+    "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/baseline-target.tap",
+    "tapSha256": "6a4a7d73a59739480e712bb3c99d9426337adaf218c63af23fc36ad14f8634e9",
+    "tests": [
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-P1・K6/7 N-g: R1 の下の現実の形（slot empty、readyFresh false、begin [pending]、counter の差分 1、通知・子・IR の再試行なし）の親は first-render の窓内で、子は出ない。旧形の stamp の key は結果を変えない",
+        "directive": null,
+        "line": "ok 1 - K6/6-P1・K6/7 N-g: R1 の下の現実の形（slot empty、readyFresh false、begin [pending]、counter の差分 1、通知・子・IR の再試行なし）の親は first-render の窓内で、子は出ない。旧形の stamp の key は結果を変えない",
+        "rawLine": "ok 1 - K6/6-P1・K6/7 N-g: R1 の下の現実の形（slot empty、readyFresh false、begin [pending]、counter の差分 1、通知・子・IR の再試行なし）の親は first-render の窓内で、子は出ない。旧形の stamp の key は結果を変えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-P1: 間に hybrid arm の sample を挟んでも、同じ phase の次の Graph arm の sample との差が 1 なら数える",
+        "directive": null,
+        "line": "ok 2 - K6/6-P1: 間に hybrid arm の sample を挟んでも、同じ phase の次の Graph arm の sample との差が 1 なら数える",
+        "rawLine": "ok 2 - K6/6-P1: 間に hybrid arm の sample を挟んでも、同じ phase の次の Graph arm の sample との差が 1 なら数える",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "nextGraphArmOf は variant と phase ごとに次の Graph arm の sample を引き、warm-up と measured、別の variant を混ぜない",
+        "directive": null,
+        "line": "ok 3 - nextGraphArmOf は variant と phase ごとに次の Graph arm の sample を引き、warm-up と measured、別の variant を混ぜない",
+        "rawLine": "ok 3 - nextGraphArmOf は variant と phase ごとに次の Graph arm の sample を引き、warm-up と measured、別の variant を混ぜない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-P3: follow-up の sample（begin [pending, cached]、F1〜F7 を満たす）は R-6 の (b) を当てずに follow-up の成功に数える",
+        "directive": null,
+        "line": "ok 4 - K6/6-P3: follow-up の sample（begin [pending, cached]、F1〜F7 を満たす）は R-6 の (b) を当てずに follow-up の成功に数える",
+        "rawLine": "ok 4 - K6/6-P3: follow-up の sample（begin [pending, cached]、F1〜F7 を満たす）は R-6 の (b) を当てずに follow-up の成功に数える",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-P4: phase の最後の Graph arm の sample は (c) を当てられず、(b) の counter の差分で判定する（他の条件を満たせば数える）",
+        "directive": null,
+        "line": "ok 5 - K6/6-P4: phase の最後の Graph arm の sample は (c) を当てられず、(b) の counter の差分で判定する（他の条件を満たせば数える）",
+        "rawLine": "ok 5 - K6/6-P4: phase の最後の Graph arm の sample は (c) を当てられず、(b) の counter の差分で判定する（他の条件を満たせば数える）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-P5: trace の record（dPrimeCounters が従来の 6 key〔K6/7 で stamp0Missing を外した〕で preparesStarted・preparesReady を持たない）は X10 の記録の欠けにならない。定常状態では欠けになる",
+        "directive": null,
+        "line": "ok 6 - K6/6-P5: trace の record（dPrimeCounters が従来の 6 key〔K6/7 で stamp0Missing を外した〕で preparesStarted・preparesReady を持たない）は X10 の記録の欠けにならない。定常状態では欠けになる",
+        "rawLine": "ok 6 - K6/6-P5: trace の record（dPrimeCounters が従来の 6 key〔K6/7 で stamp0Missing を外した〕で preparesStarted・preparesReady を持たない）は X10 の記録の欠けにならない。定常状態では欠けになる",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N1a: R1 の reachedQuiet が false なら first-render に数えず、X10",
+        "directive": null,
+        "line": "ok 7 - K6/6-N1a: R1 の reachedQuiet が false なら first-render に数えず、X10",
+        "rawLine": "ok 7 - K6/6-N1a: R1 の reachedQuiet が false なら first-render に数えず、X10",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N1b: R1 の 4 項目の計算し直しが自己申告と合わなければ数えず、X10",
+        "directive": null,
+        "line": "ok 8 - K6/6-N1b: R1 の 4 項目の計算し直しが自己申告と合わなければ数えず、X10",
+        "rawLine": "ok 8 - K6/6-N1b: R1 の 4 項目の計算し直しが自己申告と合わなければ数えず、X10",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N2a: 親の begin の記録が [pending] でなければ数えない",
+        "directive": null,
+        "line": "ok 9 - K6/6-N2a: 親の begin の記録が [pending] でなければ数えない",
+        "rawLine": "ok 9 - K6/6-N2a: 親の begin の記録が [pending] でなければ数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N2b: startSlot.kind が empty でなければ数えない",
+        "directive": null,
+        "line": "ok 10 - K6/6-N2b: startSlot.kind が empty でなければ数えない",
+        "rawLine": "ok 10 - K6/6-N2b: startSlot.kind が empty でなければ数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない",
+        "directive": null,
+        "line": "ok 11 - K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない",
+        "rawLine": "ok 11 - K6/6-N2c〜N2g: preparesStarted・preparesReady・deferredReleased（0 も 2 も）・staleReadyRetired の差分が合わなければ数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady の差が 2（間に hybrid arm を挟む）なら数えず、理由を開示する。差が 0 でも、次が記録なしでも数えない",
+        "directive": null,
+        "line": "ok 12 - K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady の差が 2（間に hybrid arm を挟む）なら数えず、理由を開示する。差が 0 でも、次が記録なしでも数えない",
+        "rawLine": "ok 12 - K6/6-N2h: 次の同じ phase の Graph arm の sample との preparesReady の差が 2（間に hybrid arm を挟む）なら数えず、理由を開示する。差が 0 でも、次が記録なしでも数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/7 N-e1（N3c′）: 親の ticket が available でない記録は FR3:ticket-not-available で数えない（合流した親では起きない空の検査。②-1 の ticket の項目）",
+        "directive": null,
+        "line": "ok 13 - K6/7 N-e1（N3c′）: 親の ticket が available でない記録は FR3:ticket-not-available で数えない（合流した親では起きない空の検査。②-1 の ticket の項目）",
+        "rawLine": "ok 13 - K6/7 N-e1（N3c′）: 親の ticket が available でない記録は FR3:ticket-not-available で数えない（合流した親では起きない空の検査。②-1 の ticket の項目）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/7 N-e1（検出力の取り直し）: 親の ticket が無い（null。Cached の origin）記録も FR3:ticket-not-available を理由に持ち、数えない",
+        "directive": null,
+        "line": "ok 14 - K6/7 N-e1（検出力の取り直し）: 親の ticket が無い（null。Cached の origin）記録も FR3:ticket-not-available を理由に持ち、数えない",
+        "rawLine": "ok 14 - K6/7 N-e1（検出力の取り直し）: 親の ticket が無い（null。Cached の origin）記録も FR3:ticket-not-available を理由に持ち、数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/7 N-e2・N4′: 窓内に合流した親の worker の drift の検査が「検出」なら [artifact]（製品は drift で合流させない）",
+        "directive": null,
+        "line": "ok 15 - K6/7 N-e2・N4′: 窓内に合流した親の worker の drift の検査が「検出」なら [artifact]（製品は drift で合流させない）",
+        "rawLine": "ok 15 - K6/7 N-e2・N4′: 窓内に合流した親の worker の drift の検査が「検出」なら [artifact]（製品は drift で合流させない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/7 N-e3: 窓内に合流した親の再検証が unavailable・error・not-reached なら [artifact]（FR3 の理由では数えない）",
+        "directive": null,
+        "line": "ok 16 - K6/7 N-e3: 窓内に合流した親の再検証が unavailable・error・not-reached なら [artifact]（FR3 の理由では数えない）",
+        "rawLine": "ok 16 - K6/7 N-e3: 窓内に合流した親の再検証が unavailable・error・not-reached なら [artifact]（FR3 の理由では数えない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/7 N-e3（検出力の取り直し）: returned が true でも、窓内に合流した親の再検証が passed でなければ [artifact]（result の検査は returned の検査と別）",
+        "directive": null,
+        "line": "ok 17 - K6/7 N-e3（検出力の取り直し）: returned が true でも、窓内に合流した親の再検証が passed でなければ [artifact]（result の検査は returned の検査と別）",
+        "rawLine": "ok 17 - K6/7 N-e3（検出力の取り直し）: returned が true でも、窓内に合流した親の再検証が passed でなければ [artifact]（result の検査は returned の検査と別）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/7 N-e4: 宣言が used でない・graph-ready で joined でない・edgeCount が整数でない親は FR3:declaration-not-used／FR3:not-joined／FR3:edge-count-not-integer",
+        "directive": null,
+        "line": "ok 18 - K6/7 N-e4: 宣言が used でない・graph-ready で joined でない・edgeCount が整数でない親は FR3:declaration-not-used／FR3:not-joined／FR3:edge-count-not-integer",
+        "rawLine": "ok 18 - K6/7 N-e4: 宣言が used でない・graph-ready で joined でない・edgeCount が整数でない親は FR3:declaration-not-used／FR3:not-joined／FR3:edge-count-not-integer",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/7 N-e5: 窓内に合流した親の worker の drift の検査が not-evaluated・not-reached なら [artifact]（clear でない）",
+        "directive": null,
+        "line": "ok 19 - K6/7 N-e5: 窓内に合流した親の worker の drift の検査が not-evaluated・not-reached なら [artifact]（clear でない）",
+        "rawLine": "ok 19 - K6/7 N-e5: 窓内に合流した親の worker の drift の検査が not-evaluated・not-reached なら [artifact]（clear でない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/7 N-e6: 再検証の記録の returned が true でない合流した親は [artifact]（result は passed）",
+        "directive": null,
+        "line": "ok 20 - K6/7 N-e6: 再検証の記録の returned が true でない合流した親は [artifact]（result は passed）",
+        "rawLine": "ok 20 - K6/7 N-e6: 再検証の記録の returned が true でない合流した親は [artifact]（result は passed）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/7 N-f1・N3b′: (ii-b) の記録が窓内に合流した親に無い（片方でも）なら [artifact]",
+        "directive": null,
+        "line": "ok 21 - K6/7 N-f1・N3b′: (ii-b) の記録が窓内に合流した親に無い（片方でも）なら [artifact]",
+        "rawLine": "ok 21 - K6/7 N-f1・N3b′: (ii-b) の記録が窓内に合流した親に無い（片方でも）なら [artifact]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/7 N-f2: (ii-b) の記録の形が違う（語彙の外、cause・reason が null でも文字列でもない、returned が boolean でない）なら [artifact]",
+        "directive": null,
+        "line": "ok 22 - K6/7 N-f2: (ii-b) の記録の形が違う（語彙の外、cause・reason が null でも文字列でもない、returned が boolean でない）なら [artifact]",
+        "rawLine": "ok 22 - K6/7 N-f2: (ii-b) の記録の形が違う（語彙の外、cause・reason が null でも文字列でもない、returned が boolean でない）なら [artifact]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/7 N-g: 旧形の record（stamp の key がある。fresh・stamp0-missing・unavailable・stale）は stamp の key を読まず、(ii-b) の field が無ければ [artifact]",
+        "directive": null,
+        "line": "ok 23 - K6/7 N-g: 旧形の record（stamp の key がある。fresh・stamp0-missing・unavailable・stale）は stamp の key を読まず、(ii-b) の field が無ければ [artifact]",
+        "rawLine": "ok 23 - K6/7 N-g: 旧形の record（stamp の key がある。fresh・stamp0-missing・unavailable・stale）は stamp の key を読まず、(ii-b) の field が無ければ [artifact]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない",
+        "directive": null,
+        "line": "ok 24 - K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない",
+        "rawLine": "ok 24 - K6/6-N5a〜N5d: owner の counter の差分（after と afterRelease の両方で begins 1・lateCached 0・cacheHits 0）を block ごと・key ごとに単独で破ると数えず、R2 の終わりの cache が空でなくても数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N6a: 窓内に合流した親の後に graph-ready の通知があれば数えず、開示する",
+        "directive": null,
+        "line": "ok 25 - K6/6-N6a: 窓内に合流した親の後に graph-ready の通知があれば数えず、開示する",
+        "rawLine": "ok 25 - K6/6-N6a: 窓内に合流した親の後に graph-ready の通知があれば数えず、開示する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N6b: 子（origin が index-ready の例）があれば数えず、開示する",
+        "directive": null,
+        "line": "ok 26 - K6/6-N6b: 子（origin が index-ready の例）があれば数えず、開示する",
+        "rawLine": "ok 26 - K6/6-N6b: 子（origin が index-ready の例）があれば数えず、開示する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N6c: 親の IR の再試行の timer が動いていれば数えず、開示する",
+        "directive": null,
+        "line": "ok 27 - K6/6-N6c: 親の IR の再試行の timer が動いていれば数えず、開示する",
+        "rawLine": "ok 27 - K6/6-N6c: 親の IR の再試行の timer が動いていれば数えず、開示する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N6d: followUp.requeries の行が 1 つでもある親（定常状態の key。v2 C6）は数えず、list でない値も数えない。空の list は何も無い",
+        "directive": null,
+        "line": "ok 28 - K6/6-N6d: followUp.requeries の行が 1 つでもある親（定常状態の key。v2 C6）は数えず、list でない値も数えない。空の list は何も無い",
+        "rawLine": "ok 28 - K6/6-N6d: followUp.requeries の行が 1 つでもある親（定常状態の key。v2 C6）は数えず、list でない値も数えない。空の list は何も無い",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない",
+        "directive": null,
+        "line": "ok 29 - K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない",
+        "rawLine": "ok 29 - K6/6-N7a〜N7e: 親の寄与の記録（FR-7）が無い、基準が scene-level-preview、unresolvedEdges が 1 以上、edge が 0 件、期待寄与の材料からの寄与が無い親は数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N10a・N10b: 窓内に合流した親で driftAtQuery か prepareFailures の差分が 1 なら [artifact]",
+        "directive": null,
+        "line": "ok 30 - K6/6-N10a・N10b: 窓内に合流した親で driftAtQuery か prepareFailures の差分が 1 なら [artifact]",
+        "rawLine": "ok 30 - K6/6-N10a・N10b: 窓内に合流した親で driftAtQuery か prepareFailures の差分が 1 なら [artifact]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N11a: FR-1 出所が Cached の窓内の親は数えない（K6/4-N39）",
+        "directive": null,
+        "line": "ok 31 - K6/6-N11a: FR-1 出所が Cached の窓内の親は数えない（K6/4-N39）",
+        "rawLine": "ok 31 - K6/6-N11a: FR-1 出所が Cached の窓内の親は数えない（K6/4-N39）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N11b: FR-1 joined なのに revalidation が null なら classifyJoin が止める（[artifact]）",
+        "directive": null,
+        "line": "ok 32 - K6/6-N11b: FR-1 joined なのに revalidation が null なら classifyJoin が止める（[artifact]）",
+        "rawLine": "ok 32 - K6/6-N11b: FR-1 joined なのに revalidation が null なら classifyJoin が止める（[artifact]）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N12a: FR-5 宣言が used でなければ数えない（K6/7 では FR-3 ② の宣言の検査も同時に落ちる）",
+        "directive": null,
+        "line": "ok 33 - K6/6-N12a: FR-5 宣言が used でなければ数えない（K6/7 では FR-3 ② の宣言の検査も同時に落ちる）",
+        "rawLine": "ok 33 - K6/6-N12a: FR-5 宣言が used でなければ数えない（K6/7 では FR-3 ② の宣言の検査も同時に落ちる）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N12b: FR-5 publishCount が 2 なら数えず、K6/4-N1 の FAIL",
+        "directive": null,
+        "line": "ok 34 - K6/6-N12b: FR-5 publishCount が 2 なら数えず、K6/4-N1 の FAIL",
+        "rawLine": "ok 34 - K6/6-N12b: FR-5 publishCount が 2 なら数えず、K6/4-N1 の FAIL",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N12c: FR-5 親の窓が 40 ms でなければ [precheck]",
+        "directive": null,
+        "line": "ok 35 - K6/6-N12c: FR-5 親の窓が 40 ms でなければ [precheck]",
+        "rawLine": "ok 35 - K6/6-N12c: FR-5 親の窓が 40 ms でなければ [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-render）は欠落 0 で、開示に K6/2 の字義の件数を載せる。stamp の内訳は載せない（K6/7）",
+        "directive": null,
+        "line": "ok 36 - K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-render）は欠落 0 で、開示に K6/2 の字義の件数を載せる。stamp の内訳は載せない（K6/7）",
+        "rawLine": "ok 36 - K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-render）は欠落 0 で、開示に K6/2 の字義の件数を載せる。stamp の内訳は載せない（K6/7）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）",
+        "directive": null,
+        "line": "ok 37 - K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）",
+        "rawLine": "ok 37 - K6/6 の開示: 数えられなかった親を (a)(b)(c)・FR の下位条件ごとに数える（1 つの親が複数に載りうる）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6-N8・K6/7 N8′: 窓内に合流した親のうち ② を満たした親だけを分母から外した samples は拒否する（(iii′)）",
+        "directive": null,
+        "line": "ok 38 - K6/6-N8・K6/7 N8′: 窓内に合流した親のうち ② を満たした親だけを分母から外した samples は拒否する（(iii′)）",
+        "rawLine": "ok 38 - K6/6-N8・K6/7 N8′: 窓内に合流した親のうち ② を満たした親だけを分母から外した samples は拒否する（(iii′)）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6 R-6 (c) の開示: 背景の再準備が次の sample の前に走った親は数えられず、欠落になる（残余 (3)）",
+        "directive": null,
+        "line": "ok 39 - K6/6 R-6 (c) の開示: 背景の再準備が次の sample の前に走った親は数えられず、欠落になる（残余 (3)）",
+        "rawLine": "ok 39 - K6/6 R-6 (c) の開示: 背景の再準備が次の sample の前に走った親は数えられず、欠落になる（残余 (3)）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "summarizeSteadyState は K6/6 の R1 の下の記録でも、K6/2 の時代（candidate なし）の要約を変えない",
+        "directive": null,
+        "line": "ok 40 - summarizeSteadyState は K6/6 の R1 の下の記録でも、K6/2 の時代（candidate なし）の要約を変えない",
+        "rawLine": "ok 40 - summarizeSteadyState は K6/6 の R1 の下の記録でも、K6/2 の時代（candidate なし）の要約を変えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/6 (c): nextGraphArmOf は user-operation でない行（再 query）を『次の Graph arm の sample』に数えない",
+        "directive": null,
+        "line": "ok 41 - K6/6 (c): nextGraphArmOf は user-operation でない行（再 query）を『次の Graph arm の sample』に数えない",
+        "rawLine": "ok 41 - K6/6 (c): nextGraphArmOf は user-operation でない行（再 query）を『次の Graph arm の sample』に数えない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "the runner takes name-value arguments and a known mode",
+        "directive": null,
+        "line": "ok 42 - the runner takes name-value arguments and a known mode",
+        "rawLine": "ok 42 - the runner takes name-value arguments and a known mode",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "the dev fixture declares the Scene whose body makes the Graph-only row",
+        "directive": null,
+        "line": "ok 43 - the dev fixture declares the Scene whose body makes the Graph-only row",
+        "rawLine": "ok 43 - the dev fixture declares the Scene whose body makes the Graph-only row",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "every stage reached is allReached, in the stage order",
+        "directive": null,
+        "line": "ok 44 - every stage reached is allReached, in the stage order",
+        "rawLine": "ok 44 - every stage reached is allReached, in the stage order",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "no Graph-only row stops at the continue stage (fixture side)",
+        "directive": null,
+        "line": "ok 45 - no Graph-only row stops at the continue stage (fixture side)",
+        "rawLine": "ok 45 - no Graph-only row stops at the continue stage (fixture side)",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "an unavailable click is not a reach, and neither is a missing cached begin",
+        "directive": null,
+        "line": "ok 46 - an unavailable click is not a reach, and neither is a missing cached begin",
+        "rawLine": "ok 46 - an unavailable click is not a reach, and neither is a missing cached begin",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "an empty page result reaches nothing and carries no row text",
+        "directive": null,
+        "line": "ok 47 - an empty page result reaches nothing and carries no row text",
+        "rawLine": "ok 47 - an empty page result reaches nothing and carries no row text",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "not-activated is the unavailable answer with that reason only",
+        "directive": null,
+        "line": "ok 48 - not-activated is the unavailable answer with that reason only",
+        "rawLine": "ok 48 - not-activated is the unavailable answer with that reason only",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "used settle is reached only when its answer is settled",
+        "directive": null,
+        "line": "ok 49 - used settle is reached only when its answer is settled",
+        "rawLine": "ok 49 - used settle is reached only when its answer is settled",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "g01-frozen takes the frozen setups, never a dev setup, and never the product .node",
+        "directive": null,
+        "line": "ok 50 - g01-frozen takes the frozen setups, never a dev setup, and never the product .node",
+        "rawLine": "ok 50 - g01-frozen takes the frozen setups, never a dev setup, and never the product .node",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "the G-01 record counts for no judgement, whatever the reach, and shows the lease path",
+        "directive": null,
+        "line": "ok 51 - the G-01 record counts for no judgement, whatever the reach, and shows the lease path",
+        "rawLine": "ok 51 - the G-01 record counts for no judgement, whatever the reach, and shows the lease path",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "the G-01 diagnostic's head is the other receipts' head: freeze heads, the S4 commit with its record's SHA-256 and the start time; a missing part stops the run",
+        "directive": null,
+        "line": "ok 52 - the G-01 diagnostic's head is the other receipts' head: freeze heads, the S4 commit with its record's SHA-256 and the start time; a missing part stops the run",
+        "rawLine": "ok 52 - the G-01 diagnostic's head is the other receipts' head: freeze heads, the S4 commit with its record's SHA-256 and the start time; a missing part stops the run",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "v2 §0: the first formal run is the earliest head.runStartedAtUtc over all six kinds of the judged pair",
+        "directive": null,
+        "line": "ok 53 - v2 §0: the first formal run is the earliest head.runStartedAtUtc over all six kinds of the judged pair",
+        "rawLine": "ok 53 - v2 §0: the first formal run is the earliest head.runStartedAtUtc over all six kinds of the judged pair",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "v2 §0: both commits must be on the remote strictly before the first formal run; a missing record or time is [precheck]",
+        "directive": null,
+        "line": "ok 54 - v2 §0: both commits must be on the remote strictly before the first formal run; a missing record or time is [precheck]",
+        "rawLine": "ok 54 - v2 §0: both commits must be on the remote strictly before the first formal run; a missing record or time is [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "v2 §0: loadFirstRunInputs reads the six directories, the record and the v2 bytes at the v2 commit; a missing input or a differing v2 file is [precheck]",
+        "directive": null,
+        "line": "ok 55 - v2 §0: loadFirstRunInputs reads the six directories, the record and the v2 bytes at the v2 commit; a missing input or a differing v2 file is [precheck]",
+        "rawLine": "ok 55 - v2 §0: loadFirstRunInputs reads the six directories, the record and the v2 bytes at the v2 commit; a missing input or a differing v2 file is [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "v2 §0: the command line refuses a verdict without the first-run inputs",
+        "directive": null,
+        "line": "ok 56 - v2 §0: the command line refuses a verdict without the first-run inputs",
+        "rawLine": "ok 56 - v2 §0: the command line refuses a verdict without the first-run inputs",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "v2 §0: a receipt of a kind's directory that lacks the pair's keys or names another pair is [precheck], never dropped",
+        "directive": null,
+        "line": "ok 57 - v2 §0: a receipt of a kind's directory that lacks the pair's keys or names another pair is [precheck], never dropped",
+        "rawLine": "ok 57 - v2 §0: a receipt of a kind's directory that lacks the pair's keys or names another pair is [precheck], never dropped",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "v2 §0: the remote time record must name each commit on its branch (v2 on claude/nir1-contracts, the implementation on claude/k66-harness)",
+        "directive": null,
+        "line": "ok 58 - v2 §0: the remote time record must name each commit on its branch (v2 on claude/nir1-contracts, the implementation on claude/k66-harness)",
+        "rawLine": "ok 58 - v2 §0: the remote time record must name each commit on its branch (v2 on claude/nir1-contracts, the implementation on claude/k66-harness)",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "v2 §0: assertImplementationBound compares the running bytes with the implementation commit's blobs",
+        "directive": null,
+        "line": "ok 59 - v2 §0: assertImplementationBound compares the running bytes with the implementation commit's blobs",
+        "rawLine": "ok 59 - v2 §0: assertImplementationBound compares the running bytes with the implementation commit's blobs",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "prereg v3 §0: the v3 commit and the implementation (any branch) are on the remote strictly before the first formal run",
+        "directive": null,
+        "line": "ok 60 - prereg v3 §0: the v3 commit and the implementation (any branch) are on the remote strictly before the first formal run",
+        "rawLine": "ok 60 - prereg v3 §0: the v3 commit and the implementation (any branch) are on the remote strictly before the first formal run",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "prereg v3 §0（レビュー必須 3）: assertV3Bound は v3 の commit・SHA-256・実装 commit が確認済みの固定値と一致し、実装 commit が判定 file を最後に変えた commit であることを求める",
+        "directive": null,
+        "line": "ok 61 - prereg v3 §0（レビュー必須 3）: assertV3Bound は v3 の commit・SHA-256・実装 commit が確認済みの固定値と一致し、実装 commit が判定 file を最後に変えた commit であることを求める",
+        "rawLine": "ok 61 - prereg v3 §0（レビュー必須 3）: assertV3Bound は v3 の commit・SHA-256・実装 commit が確認済みの固定値と一致し、実装 commit が判定 file を最後に変えた commit であることを求める",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "prereg v3 §0: loadFirstRunInputs binds the v3 file to its commit's blob at the fixed path; both v3 inputs go together",
+        "directive": null,
+        "line": "ok 62 - prereg v3 §0: loadFirstRunInputs binds the v3 file to its commit's blob at the fixed path; both v3 inputs go together",
+        "rawLine": "ok 62 - prereg v3 §0: loadFirstRunInputs binds the v3 file to its commit's blob at the fixed path; both v3 inputs go together",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "the baseline: five conditions on lists built from the fixtures' own predeclared expectations",
+        "directive": null,
+        "line": "ok 63 - the baseline: five conditions on lists built from the fixtures' own predeclared expectations",
+        "rawLine": "ok 63 - the baseline: five conditions on lists built from the fixtures' own predeclared expectations",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "condition 1 (G-01): fail when the late child does not change the list, hold when it improves differently",
+        "directive": null,
+        "line": "ok 64 - condition 1 (G-01): fail when the late child does not change the list, hold when it improves differently",
+        "rawLine": "ok 64 - condition 1 (G-01): fail when the late child does not change the list, hold when it improves differently",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "condition 2 (macro): the G-case mean fails when the Graph display loses what R+IR showed",
+        "directive": null,
+        "line": "ok 65 - condition 2 (macro): the G-case mean fails when the Graph display loses what R+IR showed",
+        "rawLine": "ok 65 - condition 2 (macro): the G-case mean fails when the Graph display loses what R+IR showed",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5-N4（条件 3）: Hybrid p95 の判定の境界は 94.2 ms で、65.04 ms と 240 ms ではない。arm ごとに pool し、どちらかに failed があれば fail",
+        "directive": null,
+        "line": "ok 66 - K6/5-N4（条件 3）: Hybrid p95 の判定の境界は 94.2 ms で、65.04 ms と 240 ms ではない。arm ごとに pool し、どちらかに failed があれば fail",
+        "rawLine": "ok 66 - K6/5-N4（条件 3）: Hybrid p95 の判定の境界は 94.2 ms で、65.04 ms と 240 ms ではない。arm ごとに pool し、どちらかに failed があれば fail",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "condition 3 (p95): tReturn - tFetch, nearest-rank, both arms, limit from the manifest",
+        "directive": null,
+        "line": "ok 67 - condition 3 (p95): tReturn - tFetch, nearest-rank, both arms, limit from the manifest",
+        "rawLine": "ok 67 - condition 3 (p95): tReturn - tFetch, nearest-rank, both arms, limit from the manifest",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "condition 4 (Evidence): the edge binding fails on an unresolved or unexpected edge, and the rest stays not-evaluable",
+        "directive": null,
+        "line": "ok 68 - condition 4 (Evidence): the edge binding fails on an unresolved or unexpected edge, and the rest stays not-evaluable",
+        "rawLine": "ok 68 - condition 4 (Evidence): the edge binding fails on an unresolved or unexpected edge, and the rest stays not-evaluable",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "condition 5 (forbidden contribution): (a) a forbidden Scene the Graph adds, (b) a late Graph in a display",
+        "directive": null,
+        "line": "ok 69 - condition 5 (forbidden contribution): (a) a forbidden Scene the Graph adds, (b) a late Graph in a display",
+        "rawLine": "ok 69 - condition 5 (forbidden contribution): (a) a forbidden Scene the Graph adds, (b) a late Graph in a display",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "an expected-unavailable variant fails when the display list differs from the paired R+IR (prereg 3)",
+        "directive": null,
+        "line": "ok 70 - an expected-unavailable variant fails when the display list differs from the paired R+IR (prereg 3)",
+        "rawLine": "ok 70 - an expected-unavailable variant fails when the display list differs from the paired R+IR (prereg 3)",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "a variant marked blocked in the ledger leaves macro and p95; a missing receipt without a record stops",
+        "directive": null,
+        "line": "ok 71 - a variant marked blocked in the ledger leaves macro and p95; a missing receipt without a record stops",
+        "rawLine": "ok 71 - a variant marked blocked in the ledger leaves macro and p95; a missing receipt without a record stops",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "stops with [precheck]: allow list, procedure, unmapped ID, missing expectation, tampered receipt",
+        "directive": null,
+        "line": "ok 72 - stops with [precheck]: allow list, procedure, unmapped ID, missing expectation, tampered receipt",
+        "rawLine": "ok 72 - stops with [precheck]: allow list, procedure, unmapped ID, missing expectation, tampered receipt",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "bindings: a changed receipt, allow list, procedure or script is found by verify",
+        "directive": null,
+        "line": "ok 73 - bindings: a changed receipt, allow list, procedure or script is found by verify",
+        "rawLine": "ok 73 - bindings: a changed receipt, allow list, procedure or script is found by verify",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "K6/5 変える点 7: 手順のファイルは正式の loader で S4 の commit から読み、receipt の head.k65 は K65_FREEZE と一致しなければ [precheck]",
+        "directive": null,
+        "line": "ok 74 - K6/5 変える点 7: 手順のファイルは正式の loader で S4 の commit から読み、receipt の head.k65 は K65_FREEZE と一致しなければ [precheck]",
+        "rawLine": "ok 74 - K6/5 変える点 7: 手順のファイルは正式の loader で S4 の commit から読み、receipt の head.k65 は K65_FREEZE と一致しなければ [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "no threshold is written in the verdict code; the manifest and the K6/2 text decide",
+        "directive": null,
+        "line": "ok 75 - no threshold is written in the verdict code; the manifest and the K6/2 text decide",
+        "rawLine": "ok 75 - no threshold is written in the verdict code; the manifest and the K6/2 text decide",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v2 D6: first-render で表示された sample の edge の束縛は親の寄与の記録（FR-7）で検査する",
+        "directive": null,
+        "line": "ok 76 - 品質 v2 D6: first-render で表示された sample の edge の束縛は親の寄与の記録（FR-7）で検査する",
+        "rawLine": "ok 76 - 品質 v2 D6: first-render で表示された sample の edge の束縛は親の寄与の記録（FR-7）で検査する",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v2 D8（K6/6-N13a・N13b）: 窓内に合流して Graph が表示に寄与したのに first-render の条件を欠いた親は、Scene の一覧が R+IR と違っても同じでも fail（hold に留めない）",
+        "directive": null,
+        "line": "ok 77 - 品質 v2 D8（K6/6-N13a・N13b）: 窓内に合流して Graph が表示に寄与したのに first-render の条件を欠いた親は、Scene の一覧が R+IR と違っても同じでも fail（hold に留めない）",
+        "rawLine": "ok 77 - 品質 v2 D8（K6/6-N13a・N13b）: 窓内に合流して Graph が表示に寄与したのに first-render の条件を欠いた親は、Scene の一覧が R+IR と違っても同じでも fail（hold に留めない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v2 D8: 表示されなかった sample の Scene の一覧が R+IR と違うのは hold でなく fail（v1 の実装は K6/4:171 より弱かった）",
+        "directive": null,
+        "line": "ok 78 - 品質 v2 D8: 表示されなかった sample の Scene の一覧が R+IR と違うのは hold でなく fail（v1 の実装は K6/4:171 より弱かった）",
+        "rawLine": "ok 78 - 品質 v2 D8: 表示されなかった sample の Scene の一覧が R+IR と違うのは hold でなく fail（v1 の実装は K6/4:171 より弱かった）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v2 D8: Graph が合流したが edgeCount 0 の親は『寄与した』に当たらず fail にしない",
+        "directive": null,
+        "line": "ok 79 - 品質 v2 D8: Graph が合流したが edgeCount 0 の親は『寄与した』に当たらず fail にしない",
+        "rawLine": "ok 79 - 品質 v2 D8: Graph が合流したが edgeCount 0 の親は『寄与した』に当たらず fail にしない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+        "directive": null,
+        "line": "ok 80 - 品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+        "rawLine": "ok 80 - 品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v2 D3 (d): 最新の typed Revision は凍結の fixture の配列の順の最後の行。prepare で拒まれた行だけ数えず、decision で拒まれた行は数える",
+        "directive": null,
+        "line": "ok 81 - 品質 v2 D3 (d): 最新の typed Revision は凍結の fixture の配列の順の最後の行。prepare で拒まれた行だけ数えず、decision で拒まれた行は数える",
+        "rawLine": "ok 81 - 品質 v2 D3 (d): 最新の typed Revision は凍結の fixture の配列の順の最後の行。prepare で拒まれた行だけ数えず、decision で拒まれた行は数える",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v2 D4: 受領書の最上位の requeries（user-operation でない行）が Scene の一覧を持てば、R+IR に足した禁止 Scene・blocked 候補は条件 5 (a) の fail。一覧の無い行は関係しない",
+        "directive": null,
+        "line": "ok 82 - 品質 v2 D4: 受領書の最上位の requeries（user-operation でない行）が Scene の一覧を持てば、R+IR に足した禁止 Scene・blocked 候補は条件 5 (a) の fail。一覧の無い行は関係しない",
+        "rawLine": "ok 82 - 品質 v2 D4: 受領書の最上位の requeries（user-operation でない行）が Scene の一覧を持てば、R+IR に足した禁止 Scene・blocked 候補は条件 5 (a) の fail。一覧の無い行は関係しない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount によらず観測した path と unresolvedEdges を検査する。Graph を出したかもしれない子に記録が無ければ hold",
+        "directive": null,
+        "line": "ok 83 - 品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount によらず観測した path と unresolvedEdges を検査する。Graph を出したかもしれない子に記録が無ければ hold",
+        "rawLine": "ok 83 - 品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount によらず観測した path と unresolvedEdges を検査する。Graph を出したかもしれない子に記録が無ければ hold",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-ready の子と欠けた条件を出力に残す",
+        "directive": null,
+        "line": "ok 84 - 品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-ready の子と欠けた条件を出力に残す",
+        "rawLine": "ok 84 - 品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-ready の子と欠けた条件を出力に残す",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P1-1（品質 v2 C8）: 表示が 0 件の variant（Graph が寄与したのに first-render に数えない 30 件）があっても条件 2 は TypeError にならず fail を返す",
+        "directive": null,
+        "line": "ok 85 - P1-1（品質 v2 C8）: 表示が 0 件の variant（Graph が寄与したのに first-render に数えない 30 件）があっても条件 2 は TypeError にならず fail を返す",
+        "rawLine": "ok 85 - P1-1（品質 v2 C8）: 表示が 0 件の variant（Graph が寄与したのに first-render に数えない 30 件）があっても条件 2 は TypeError にならず fail を返す",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-1（v2 C4）: Graph を出したかもしれない子の空の記録（probe が paths を出さない形）は D3 (b)(d) を素通りせず hold",
+        "directive": null,
+        "line": "ok 86 - P2-1（v2 C4）: Graph を出したかもしれない子の空の記録（probe が paths を出さない形）は D3 (b)(d) を素通りせず hold",
+        "rawLine": "ok 86 - P2-1（v2 C4）: Graph を出したかもしれない子の空の記録（probe が paths を出さない形）は D3 (b)(d) を素通りせず hold",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P3-2（v2 C4）: Scene が論理 ID に無い path（sceneId null）は捨てずに hold",
+        "directive": null,
+        "line": "ok 87 - P3-2（v2 C4）: Scene が論理 ID に無い path（sceneId null）は捨てずに hold",
+        "rawLine": "ok 87 - P3-2（v2 C4）: Scene が論理 ID に無い path（sceneId null）は捨てずに hold",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P2-2（v2 C6）: 定常状態の followUp.requeries の行は first-render にせず（FR-6）、N29・N32 と条件 5 の (a) で見る",
+        "directive": null,
+        "line": "ok 88 - P2-2（v2 C6）: 定常状態の followUp.requeries の行は first-render にせず（FR-6）、N29・N32 と条件 5 の (a) で見る",
+        "rawLine": "ok 88 - P2-2（v2 C6）: 定常状態の followUp.requeries の行は first-render にせず（FR-6）、N29・N32 と条件 5 の (a) で見る",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P3-2（v2 C5）: variantKey の無い再 query の行は黙って捨てず、すべての variant の条件 5 を hold にする。R+IR arm の行は対象外",
+        "directive": null,
+        "line": "ok 89 - P3-2（v2 C5）: variantKey の無い再 query の行は黙って捨てず、すべての variant の条件 5 を hold にする。R+IR arm の行は対象外",
+        "rawLine": "ok 89 - P3-2（v2 C5）: variantKey の無い再 query の行は黙って捨てず、すべての variant の条件 5 を hold にする。R+IR arm の行は対象外",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば fail）。他の variant の index-ready の子は D3 の対象にしない",
+        "directive": null,
+        "line": "ok 90 - P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば fail）。他の variant の index-ready の子は D3 の対象にしない",
+        "rawLine": "ok 90 - P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば fail）。他の variant の index-ready の子は D3 の対象にしない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P3-1: G-08/both-indexes-unusable の子が Graph を出せば fail（D3 の対象は chronicle-index-unusable だけ）",
+        "directive": null,
+        "line": "ok 91 - P3-1: G-08/both-indexes-unusable の子が Graph を出せば fail（D3 の対象は chronicle-index-unusable だけ）",
+        "rawLine": "ok 91 - P3-1: G-08/both-indexes-unusable の子が Graph を出せば fail（D3 の対象は chronicle-index-unusable だけ）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR に足す）は fail、既に R+IR に在る Scene は足したことにならない",
+        "directive": null,
+        "line": "ok 92 - P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR に足す）は fail、既に R+IR に在る Scene は足したことにならない",
+        "rawLine": "ok 92 - P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR に足す）は fail、既に R+IR に在る Scene は足したことにならない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3: 4 項目の fields を持つ受領書は、fixture の期待と一致すれば 4 項目とも pass（適用 9／9／6／6 variant）。全体は 24 件と (c) が残るので hold",
+        "directive": null,
+        "line": "ok 93 - 品質 v3: 4 項目の fields を持つ受領書は、fixture の期待と一致すれば 4 項目とも pass（適用 9／9／6／6 variant）。全体は 24 件と (c) が残るので hold",
+        "rawLine": "ok 93 - 品質 v3: 4 項目の fields を持つ受領書は、fixture の期待と一致すれば 4 項目とも pass（適用 9／9／6／6 variant）。全体は 24 件と (c) が残るので hold",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3 §2.1 utf16-range: 古い text（G-05 の copper）・別の text の hash・端点に行が無い edge は fail、範囲が 1 文字でも hash が current に一致すれば pass（開示に数える）",
+        "directive": null,
+        "line": "ok 94 - 品質 v3 §2.1 utf16-range: 古い text（G-05 の copper）・別の text の hash・端点に行が無い edge は fail、範囲が 1 文字でも hash が current に一致すれば pass（開示に数える）",
+        "rawLine": "ok 94 - 品質 v3 §2.1 utf16-range: 古い text（G-05 の copper）・別の text の hash・端点に行が無い edge は fail、範囲が 1 文字でも hash が current に一致すれば pass（開示に数える）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3 §2.1 utf16-range: 読み取り済みの Evidence が無い・sample の後に読んでいない・Revision を読めない・field が無いのは hold（fail でも pass でもない）",
+        "directive": null,
+        "line": "ok 95 - 品質 v3 §2.1 utf16-range: 読み取り済みの Evidence が無い・sample の後に読んでいない・Revision を読めない・field が無いのは hold（fail でも pass でもない）",
+        "rawLine": "ok 95 - 品質 v3 §2.1 utf16-range: 読み取り済みの Evidence が無い・sample の後に読んでいない・Revision を読めない・field が無いのは hold（fail でも pass でもない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3 §2.1 utf16-range（S3 10 回目 B1-2）: 読めない Revision・行があっても、読めた Revision・行の (i) 違反は fail、読めない分だけなら hold（pass にならない）",
+        "directive": null,
+        "line": "ok 96 - 品質 v3 §2.1 utf16-range（S3 10 回目 B1-2）: 読めない Revision・行があっても、読めた Revision・行の (i) 違反は fail、読めない分だけなら hold（pass にならない）",
+        "rawLine": "ok 96 - 品質 v3 §2.1 utf16-range（S3 10 回目 B1-2）: 読めない Revision・行があっても、読めた Revision・行の (i) 違反は fail、読めない分だけなら hold（pass にならない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3 §2.1 utf16-range（S3 10 回目の再確認 必須 1）: Evidence ID が Entity 単位で Revision をまたいで重なる製品の形でも、edge ごとに自分の Revision の行で判定する（fail→pass・fail→hold・hold→fail の 3 つの差を無くす）",
+        "directive": null,
+        "line": "ok 97 - 品質 v3 §2.1 utf16-range（S3 10 回目の再確認 必須 1）: Evidence ID が Entity 単位で Revision をまたいで重なる製品の形でも、edge ごとに自分の Revision の行で判定する（fail→pass・fail→hold・hold→fail の 3 つの差を無くす）",
+        "rawLine": "ok 97 - 品質 v3 §2.1 utf16-range（S3 10 回目の再確認 必須 1）: Evidence ID が Entity 単位で Revision をまたいで重なる製品の形でも、edge ごとに自分の Revision の行で判定する（fail→pass・fail→hold・hold→fail の 3 つの差を無くす）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3 §2.2 explicit-pin-association: 期待の外の Scene への path（G-06 の名前の言及）・pin・終端・hop の食い違いは fail、field が無いのは hold、G-01 は attachment が付けば fail",
+        "directive": null,
+        "line": "ok 98 - 品質 v3 §2.2 explicit-pin-association: 期待の外の Scene への path（G-06 の名前の言及）・pin・終端・hop の食い違いは fail、field が無いのは hold、G-01 は attachment が付けば fail",
+        "rawLine": "ok 98 - 品質 v3 §2.2 explicit-pin-association: 期待の外の Scene への path（G-06 の名前の言及）・pin・終端・hop の食い違いは fail、field が無いのは hold、G-01 は attachment が付けば fail",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3 §2.3 raw-excerpt-unchanged: 同じ sample の親と子の R+IR の行（membership・順序・excerpt の hash と長さ）が違えば fail、比べられない（IR 未完・世代の食い違い・field 無し）は hold、Graph-only 行は比べない",
+        "directive": null,
+        "line": "ok 99 - 品質 v3 §2.3 raw-excerpt-unchanged: 同じ sample の親と子の R+IR の行（membership・順序・excerpt の hash と長さ）が違えば fail、比べられない（IR 未完・世代の食い違い・field 無し）は hold、Graph-only 行は比べない",
+        "rawLine": "ok 99 - 品質 v3 §2.3 raw-excerpt-unchanged: 同じ sample の親と子の R+IR の行（membership・順序・excerpt の hash と長さ）が違えば fail、比べられない（IR 未完・世代の食い違い・field 無し）は hold、Graph-only 行は比べない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3 §2.4 added-scene-body-anchor: Graph-only 行の Scene・範囲・excerpt の hash と長さが fixture の期待（範囲と本文）と 1 つでも違えば fail、field が無い・期待の行が無いのは hold",
+        "directive": null,
+        "line": "ok 100 - 品質 v3 §2.4 added-scene-body-anchor: Graph-only 行の Scene・範囲・excerpt の hash と長さが fixture の期待（範囲と本文）と 1 つでも違えば fail、field が無い・期待の行が無いのは hold",
+        "rawLine": "ok 100 - 品質 v3 §2.4 added-scene-body-anchor: Graph-only 行の Scene・範囲・excerpt の hash と長さが fixture の期待（範囲と本文）と 1 つでも違えば fail、field が無い・期待の行が無いのは hold",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3 §2.0: 適用する variant がすべて blocked の項目は n/a でなく not-evaluable（条件 4 を pass にしない）。blocked でない variant の fail は blocked に隠れない",
+        "directive": null,
+        "line": "ok 101 - 品質 v3 §2.0: 適用する variant がすべて blocked の項目は n/a でなく not-evaluable（条件 4 を pass にしない）。blocked でない variant の fail は blocked に隠れない",
+        "rawLine": "ok 101 - 品質 v3 §2.0: 適用する variant がすべて blocked の項目は n/a でなく not-evaluable（条件 4 を pass にしない）。blocked でない variant の fail は blocked に隠れない",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3 §2.0: 受領書に無い runtime ID（端点の Entity・Scene）は [precheck]、fixture の current の text が定まらない mutation も [precheck]",
+        "directive": null,
+        "line": "ok 102 - 品質 v3 §2.0: 受領書に無い runtime ID（端点の Entity・Scene）は [precheck]、fixture の current の text が定まらない mutation も [precheck]",
+        "rawLine": "ok 102 - 品質 v3 §2.0: 受領書に無い runtime ID（端点の Entity・Scene）は [precheck]、fixture の current の text が定まらない mutation も [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3 §2.1: 期待の current の text は fixture の mutation を setupTimeline の順に当てる（onlyInVariants は variant ごと）。継がない mutation は [precheck]",
+        "directive": null,
+        "line": "ok 103 - 品質 v3 §2.1: 期待の current の text は fixture の mutation を setupTimeline の順に当てる（onlyInVariants は variant ごと）。継がない mutation は [precheck]",
+        "rawLine": "ok 103 - 品質 v3 §2.1: 期待の current の text は fixture の mutation を setupTimeline の順に当てる（onlyInVariants は variant ごと）。継がない mutation は [precheck]",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3 §2.0 skip と D8: 子が無い・graph-ready でない sample は検査せず件数を開示する。親の合流が表示に寄与したのに first-render でない sample は raw-excerpt-unchanged では hold（他の 3 件は skip）。first-render は親の記録を表示側として読む",
+        "directive": null,
+        "line": "ok 104 - 品質 v3 §2.0 skip と D8: 子が無い・graph-ready でない sample は検査せず件数を開示する。親の合流が表示に寄与したのに first-render でない sample は raw-excerpt-unchanged では hold（他の 3 件は skip）。first-render は親の記録を表示側として読む",
+        "rawLine": "ok 104 - 品質 v3 §2.0 skip と D8: 子が無い・graph-ready でない sample は検査せず件数を開示する。親の合流が表示に寄与したのに first-render でない sample は raw-excerpt-unchanged では hold（他の 3 件は skip）。first-render は親の記録を表示側として読む",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3 §2.1 utf16-range（検出力の取り直し）: 1 つの edge の行のうち 1 つだけが (i)(ii) に違反し、他の行が有効なら、違反は fail の problem のまま status は fail（hold に落とさない）。表示の hash が合っても読み取った行の hash が違えば fail",
+        "directive": null,
+        "line": "ok 105 - 品質 v3 §2.1 utf16-range（検出力の取り直し）: 1 つの edge の行のうち 1 つだけが (i)(ii) に違反し、他の行が有効なら、違反は fail の problem のまま status は fail（hold に落とさない）。表示の hash が合っても読み取った行の hash が違えば fail",
+        "rawLine": "ok 105 - 品質 v3 §2.1 utf16-range（検出力の取り直し）: 1 つの edge の行のうち 1 つだけが (i)(ii) に違反し、他の行が有効なら、違反は fail の problem のまま status は fail（hold に落とさない）。表示の hash が合っても読み取った行の hash が違えば fail",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3 §2.1 utf16-range（検出力の取り直し）: 同じ端点をつなぐ relation が path に 2 つ以上ある edge は Revision を名指せず hold（先頭の候補で判定して pass にしない）",
+        "directive": null,
+        "line": "ok 106 - 品質 v3 §2.1 utf16-range（検出力の取り直し）: 同じ端点をつなぐ relation が path に 2 つ以上ある edge は Revision を名指せず hold（先頭の候補で判定して pass にしない）",
+        "rawLine": "ok 106 - 品質 v3 §2.1 utf16-range（検出力の取り直し）: 同じ端点をつなぐ relation が path に 2 つ以上ある edge は Revision を名指せず hold（先頭の候補で判定して pass にしない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3 §2.2（レビュー推奨 6）: path の終端は edge の並びに依存しない。端点で繋がらない edge の組・複数の終端は fail のまま",
+        "directive": null,
+        "line": "ok 107 - 品質 v3 §2.2（レビュー推奨 6）: path の終端は edge の並びに依存しない。端点で繋がらない edge の組・複数の終端は fail のまま",
+        "rawLine": "ok 107 - 品質 v3 §2.2（レビュー推奨 6）: path の終端は edge の並びに依存しない。端点で繋がらない edge の組・複数の終端は fail のまま",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3 §2.2（レビュー推奨 7）: settings.seed.runtime が受領書に無いときは fail でなく hold（seed から終端をたどれない）",
+        "directive": null,
+        "line": "ok 108 - 品質 v3 §2.2（レビュー推奨 7）: settings.seed.runtime が受領書に無いときは fail でなく hold（seed から終端をたどれない）",
+        "rawLine": "ok 108 - 品質 v3 §2.2（レビュー推奨 7）: settings.seed.runtime が受領書に無いときは fail でなく hold（seed から終端をたどれない）",
+        "type": "test"
+      },
+      {
+        "depth": 0,
+        "status": "ok",
+        "title": "品質 v3（レビュー推奨 4・5）: page が返さなかった値は null で来る。hash の欄が null の行は pass にならず hold（空文字の hash を仮の値にしない）",
+        "directive": null,
+        "line": "ok 109 - 品質 v3（レビュー推奨 4・5）: page が返さなかった値は null で来る。hash の欄が null の行は pass にならず hold（空文字の hash を仮の値にしない）",
+        "rawLine": "ok 109 - 品質 v3（レビュー推奨 4・5）: page が返さなかった値は null で来る。hash の欄が null の行は pass にならず hold（空文字の hash を仮の値にしない）",
+        "type": "test"
+      }
+    ],
+    "summary": {
+      "tests": 109,
+      "suites": 0,
+      "pass": 109,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "okLinesSha256": "f258afb6639fa962f1b2677b45f51eef1c731c3ff0635b11e9790a803cc88965",
+    "okLinesRawSha256": "f258afb6639fa962f1b2677b45f51eef1c731c3ff0635b11e9790a803cc88965",
+    "okLineCount": 109,
+    "failed": []
+  },
+  "positiveControls": [
+    {
+      "file": "followup.k66.test.mjs",
+      "line": 68,
+      "lineHasTitle": true,
+      "title": "K6/6-P1・K6/7 N-g: R1 の下の現実の形（slot empty、readyFresh false、begin [pending]、counter の差分 1、通知・子・IR の再試行なし）の親は first-render の窓内で、子は出ない。旧形の stamp の key は結果を変えない",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "followup.k66.test.mjs",
+      "line": 94,
+      "lineHasTitle": true,
+      "title": "K6/6-P1: 間に hybrid arm の sample を挟んでも、同じ phase の次の Graph arm の sample との差が 1 なら数える",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "followup.k66.test.mjs",
+      "line": 140,
+      "lineHasTitle": true,
+      "title": "K6/6-P3: follow-up の sample（begin [pending, cached]、F1〜F7 を満たす）は R-6 の (b) を当てずに follow-up の成功に数える",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "followup.k66.test.mjs",
+      "line": 165,
+      "lineHasTitle": true,
+      "title": "K6/6-P4: phase の最後の Graph arm の sample は (c) を当てられず、(b) の counter の差分で判定する（他の条件を満たせば数える）",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "followup.k66.test.mjs",
+      "line": 175,
+      "lineHasTitle": true,
+      "title": "K6/6-P5: trace の record（dPrimeCounters が従来の 6 key〔K6/7 で stamp0Missing を外した〕で preparesStarted・preparesReady を持たない）は X10 の記録の欠けにならない。定常状態では欠けになる",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "followup.k66.test.mjs",
+      "line": 597,
+      "lineHasTitle": true,
+      "title": "K6/6 の集計: R1 の下の現実の形の Gold（全 variant の全 measured が first-render）は欠落 0 で、開示に K6/2 の字義の件数を載せる。stamp の内訳は載せない（K6/7）",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "quality-verdict.test.mjs",
+      "line": 1597,
+      "lineHasTitle": true,
+      "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "quality-verdict.test.mjs",
+      "line": 1855,
+      "lineHasTitle": true,
+      "title": "品質 v2 D3 (d): 最新の typed Revision は凍結の fixture の配列の順の最後の行。prepare で拒まれた行だけ数えず、decision で拒まれた行は数える",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "quality-verdict.test.mjs",
+      "line": 2504,
+      "lineHasTitle": true,
+      "title": "P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR に足す）は fail、既に R+IR に在る Scene は足したことにならない",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "quality-verdict-first-run.test.mjs",
+      "line": 110,
+      "lineHasTitle": true,
+      "title": "v2 §0: the first formal run is the earliest head.runStartedAtUtc over all six kinds of the judged pair",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "quality-verdict-first-run.test.mjs",
+      "line": 162,
+      "lineHasTitle": true,
+      "title": "v2 §0: both commits must be on the remote strictly before the first formal run; a missing record or time is [precheck]",
+      "matches": 1,
+      "status": "ok"
+    },
+    {
+      "file": "pubg16-e2e-run.test.mjs",
+      "line": 336,
+      "lineHasTitle": true,
+      "title": "the G-01 diagnostic's head is the other receipts' head: freeze heads, the S4 commit with its record's SHA-256 and the start time; a missing part stops the run",
+      "matches": 1,
+      "status": "ok"
+    }
+  ],
+  "baselinePerFile": [
+    {
+      "file": "quality-verdict.test.mjs",
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 47,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "3e3a5342fa817e662ad68c42b9cf6deb013fdf0043162c2c4f7d8516e8a9a5c6"
+    },
+    {
+      "file": "followup.k66.test.mjs",
+      "summary": {
+        "tests": 41,
+        "suites": 0,
+        "pass": 41,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "773b6f6429fa8e928dfaef482a620ff411daac54c67ba8cece240ed3399959c7"
+    },
+    {
+      "file": "quality-verdict-first-run.test.mjs",
+      "summary": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 10,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "1f6eb34b9beaa3ff9e79fa490bcc66cf645bea7e0c4a75984d6d2b1ef1b7e9a5"
+    },
+    {
+      "file": "pubg16-e2e-run.test.mjs",
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 11,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "exitCode": 0,
+      "failed": [],
+      "okLinesSha256": "cb993e66cbafe0f850d04d51f90e9e6d855ab7ea800c66e0df831522cd9e5132"
+    }
+  ],
+  "probe": [
+    {
+      "file": "quality-verdict.mjs",
+      "testFile": "quality-verdict.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 47,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "followup.mjs",
+      "testFile": "followup.k66.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 41,
+        "suites": 0,
+        "pass": 41,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "quality-verdict-cli.mjs",
+      "testFile": "quality-verdict.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 47,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "quality-verdict-cli.mjs",
+      "testFile": "quality-verdict-first-run.test.mjs",
+      "loads": 2,
+      "pids": 2,
+      "summary": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 10,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "pubg16-e2e-run.mjs",
+      "testFile": "pubg16-e2e-run.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 11,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    },
+    {
+      "file": "frozen-diagnostics.mjs",
+      "testFile": "pubg16-e2e-run.test.mjs",
+      "loads": 1,
+      "pids": 1,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 11,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "ok": true
+    }
+  ],
+  "mutationsStartedAt": "2026-11-16T13:49:49.753Z",
+  "mutations": [
+    {
+      "id": "QV3-P1-notdisplayed-first",
+      "spn": "P1-1 / C8",
+      "file": "quality-verdict.mjs",
+      "find": "  if (notDisplayedRows.length > 0) {\n    gcase = {",
+      "replace": "  if (false && notDisplayedRows.length > 0) {\n    gcase = {",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:49:49.753Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 44,
+        "fail": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D8（K6/6-N13a・N13b）: 窓内に合流して Graph が表示に寄与したのに first-render の条件を欠いた親は、Scene の一覧が R+IR と違っても同じでも fail（hold に留めない）",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1494,
+          "depth": 0,
+          "type": "test",
+          "error": "R+IR と同じ"
+        },
+        {
+          "title": "P1-1（品質 v2 C8）: 表示が 0 件の variant（Graph が寄与したのに first-render に数えない 30 件）があっても条件 2 は TypeError にならず fail を返す",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2230,
+          "depth": 0,
+          "type": "test",
+          "error": "\"Cannot read properties of null (reading 'recallAt8')\""
+        },
+        {
+          "title": "P2-2（v2 C6）: 定常状態の followUp.requeries の行は first-render にせず（FR-6）、N29・N32 と条件 5 の (a) で見る",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2323,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1494",
+        "quality-verdict.test.mjs:2230",
+        "quality-verdict.test.mjs:2323"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-P1-notdisplayed-first.tap"
+    },
+    {
+      "id": "QV3-P21-empty-observed",
+      "spn": "P2-1 / C4",
+      "file": "quality-verdict.mjs",
+      "find": "if (mayHaveShownGraph && observedEntries.length === 0)",
+      "replace": "if (false)",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:49:59.966Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 45,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount によらず観測した path と unresolvedEdges を検査する。Graph を出したかもしれない子に記録が無ければ hold",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1965,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "P2-1（v2 C4）: Graph を出したかもしれない子の空の記録（probe が paths を出さない形）は D3 (b)(d) を素通りせず hold",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2266,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1965",
+        "quality-verdict.test.mjs:2266"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-P21-empty-observed.tap"
+    },
+    {
+      "id": "QV3-P32a-scene-null",
+      "spn": "P3-2 / C4",
+      "file": "quality-verdict.mjs",
+      "find": "if (observedEntries.some((entry) => typeof entry?.sceneId !== \"string\"))",
+      "replace": "if (false)",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:50:10.096Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 45,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount によらず観測した path と unresolvedEdges を検査する。Graph を出したかもしれない子に記録が無ければ hold",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1965,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "P3-2（v2 C4）: Scene が論理 ID に無い path（sceneId null）は捨てずに hold",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2297,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1965",
+        "quality-verdict.test.mjs:2297"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-P32a-scene-null.tap"
+    },
+    {
+      "id": "QV3-C3-record-missing-only-graph",
+      "spn": "§3 字義",
+      "file": "quality-verdict.mjs",
+      "find": "  if (!hasRecord)\n    out.push({ kind: \"hold\", code: \"b-material-revision-record-missing\" });",
+      "replace": "  if (!hasRecord && mayHaveShownGraph)\n    out.push({ kind: \"hold\", code: \"b-material-revision-record-missing\" });",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:50:20.608Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 45,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount によらず観測した path と unresolvedEdges を検査する。Graph を出したかもしれない子に記録が無ければ hold",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1965,
+          "depth": 0,
+          "type": "test",
+          "error": "\"Cannot read properties of undefined (reading 'observed')\""
+        },
+        {
+          "title": "P2-1（v2 C4）: Graph を出したかもしれない子の空の記録（probe が paths を出さない形）は D3 (b)(d) を素通りせず hold",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2266,
+          "depth": 0,
+          "type": "test",
+          "error": "\"Cannot read properties of undefined (reading 'observed')\""
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1965",
+        "quality-verdict.test.mjs:2266"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-C3-record-missing-only-graph.tap"
+    },
+    {
+      "id": "QV3-P22-requeries-N29-N32",
+      "spn": "P2-2 / C6",
+      "file": "quality-verdict.mjs",
+      "find": "      ...(Array.isArray(sample.followUp?.requeries)\n        ? sample.followUp.requeries\n        : []),\n    ])\n      if (",
+      "replace": "    ])\n      if (",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:50:31.537Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "P2-2（v2 C6）: 定常状態の followUp.requeries の行は first-render にせず（FR-6）、N29・N32 と条件 5 の (a) で見る",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2323,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"lateGraphInDisplay\":true,\"publishCount\":1}"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:2323"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-P22-requeries-N29-N32.tap"
+    },
+    {
+      "id": "QV3-P22-requeries-a",
+      "spn": "P2-2 / C6 (ii)",
+      "file": "quality-verdict.mjs",
+      "find": "if (!Array.isArray(requery?.finalSceneIds)) continue;",
+      "replace": "continue;",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:50:41.942Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "P2-2（v2 C6）: 定常状態の followUp.requeries の行は first-render にせず（FR-6）、N29・N32 と条件 5 の (a) で見る",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2323,
+          "depth": 0,
+          "type": "test",
+          "error": "\"Cannot read properties of undefined (reading 'sceneIds')\""
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:2323"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-P22-requeries-a.tap"
+    },
+    {
+      "id": "QV3-P22-FR6-rows",
+      "spn": "P2-2 / C6 (i)",
+      "file": "followup.mjs",
+      "find": "else if (record.requeries.length > 0)",
+      "replace": "else if (false)",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-16T13:50:52.314Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 41,
+        "suites": 0,
+        "pass": 40,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N6d: followUp.requeries の行が 1 つでもある親（定常状態の key。v2 C6）は数えず、list でない値も数えない。空の list は何も無い",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 480,
+          "depth": 0,
+          "type": "test",
+          "error": "{\"context\":\"steady\",\"firstRender\":true,\"firstRenderFails\":[],\"parentContributed\":true,\"followUp\":false,\"displayed\":true,\"display\":\"first-render\",\"displayedSceneIds\":[\"dev-a\",\"dev-b\",\"dev-added\"],\"x\":{},\"stages\":[],\"failedStage\":null,\"violations\":[],\"ratification12\":[],\"q\":{\"q1\":null,\"q2\":null,\"q3\":null},\"loadingSwitched\":false,\"boundary\":null}"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:480"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-P22-FR6-rows.tap"
+    },
+    {
+      "id": "QV3-P22-FR6-not-list",
+      "spn": "P2-2 / C6 (i)",
+      "file": "followup.mjs",
+      "find": "if (!Array.isArray(record.requeries)) no(\"FR6\", \"requeries-not-a-list\");",
+      "replace": "if (false) no(\"FR6\", \"requeries-not-a-list\");",
+      "testFile": "followup.k66.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+      "started": "2026-11-16T13:50:52.669Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 41,
+        "suites": 0,
+        "pass": 40,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "K6/6-N6d: followUp.requeries の行が 1 つでもある親（定常状態の key。v2 C6）は数えず、list でない値も数えない。空の list は何も無い",
+          "file": "scripts/quality/nir1-graph-eval/followup.k66.test.mjs",
+          "line": 480,
+          "depth": 0,
+          "type": "test",
+          "error": "FR6:requeries-not-a-list in [\"FR6:requeries-4\"]"
+        }
+      ],
+      "expected": [
+        "followup.k66.test.mjs:480"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-P22-FR6-not-list.tap"
+    },
+    {
+      "id": "QV3-C5-no-variantkey",
+      "spn": "P3-2 / C5",
+      "file": "quality-verdict.mjs",
+      "find": "row.requeryRowsWithoutVariantKey += 1;",
+      "replace": "row.requeryRowsWithoutVariantKey += 0;",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:50:53.023Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "P3-2（v2 C5）: variantKey の無い再 query の行は黙って捨てず、すべての variant の条件 5 を hold にする。R+IR arm の行は対象外",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2375,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:2375"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-C5-no-variantkey.tap"
+    },
+    {
+      "id": "QV3-C5-hybrid-row",
+      "spn": "P3-2 / C5",
+      "file": "quality-verdict.mjs",
+      "find": "      requery.arm === \"hybrid\" ||\n",
+      "replace": "      false ||\n",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:51:03.065Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D4: 受領書の最上位の requeries（user-operation でない行）が Scene の一覧を持てば、R+IR に足した禁止 Scene・blocked 候補は条件 5 (a) の fail。一覧の無い行は関係しない",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1888,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1888"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-C5-hybrid-row.tap"
+    },
+    {
+      "id": "QV3-C1-key-order",
+      "spn": "P3-3 / C1",
+      "file": "quality-verdict.mjs",
+      "find": "for (const id of Array.isArray(order) ? order : []) {",
+      "replace": "for (const id of Object.keys(typedRevisions ?? {})) {",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:51:13.122Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 45,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1597,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "品質 v2 D3 (d): 最新の typed Revision は凍結の fixture の配列の順の最後の行。prepare で拒まれた行だけ数えず、decision で拒まれた行は数える",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1855,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1597",
+        "quality-verdict.test.mjs:1855"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-C1-key-order.tap"
+    },
+    {
+      "id": "QV3-C1-refused-any",
+      "spn": "P3-3 / C1 (iii)",
+      "file": "quality-verdict.mjs",
+      "find": "row.refusedAtSetup === \"prepare\"",
+      "replace": "row.refusedAtSetup",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:51:23.042Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 45,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1597,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "品質 v2 D3 (d): 最新の typed Revision は凍結の fixture の配列の順の最後の行。prepare で拒まれた行だけ数えず、decision で拒まれた行は数える",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1855,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1597",
+        "quality-verdict.test.mjs:1855"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-C1-refused-any.tap"
+    },
+    {
+      "id": "QV3-C1-order-not-in-fixture",
+      "spn": "P3-3 / C1",
+      "file": "quality-verdict.mjs",
+      "find": "    Object.keys(typedRevisions).some((id) => !ordered.has(id))",
+      "replace": "    false",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:51:32.668Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1597,
+          "depth": 0,
+          "type": "test",
+          "error": "The expression evaluated to a falsy value:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1597"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-C1-order-not-in-fixture.tap"
+    },
+    {
+      "id": "QV3-C1-order-empty",
+      "spn": "P3-3 / C1",
+      "file": "quality-verdict.mjs",
+      "find": "    ordered.size === 0 ||\n",
+      "replace": "",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:51:42.610Z",
+      "exitCode": 0,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 47,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [],
+      "expected": [],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": true,
+      "equivalentReason": "order が空なら ordered は空集合で、setup の記録に 1 つでも Revision（直前の hasSetup の検査で 1 つ以上ある）があれば `some((id) => !ordered.has(id))` が真になり同じ hold（d-revision-order-unavailable）になる。`ordered.size === 0` は単独では判定を変えない（読みによる）。",
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-C1-order-empty.tap"
+    },
+    {
+      "id": "QV3-C1-loader-order",
+      "spn": "P3-3 / C1",
+      "file": "quality-verdict-cli.mjs",
+      "find": "typedRevisionOrder: (Array.isArray(fixture.revisions)",
+      "replace": "typedRevisionOrder: (false",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:51:52.824Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 43,
+        "fail": 4,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1597,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "P2-1（v2 C4）: Graph を出したかもしれない子の空の記録（probe が paths を出さない形）は D3 (b)(d) を素通りせず hold",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2266,
+          "depth": 0,
+          "type": "test",
+          "error": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "P3-2（v2 C4）: Scene が論理 ID に無い path（sceneId null）は捨てずに hold",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2297,
+          "depth": 0,
+          "type": "test",
+          "error": "The expression evaluated to a falsy value:"
+        },
+        {
+          "title": "P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR に足す）は fail、既に R+IR に在る Scene は足したことにならない",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2504,
+          "depth": 0,
+          "type": "test",
+          "error": "The expression evaluated to a falsy value:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1597",
+        "quality-verdict.test.mjs:2266",
+        "quality-verdict.test.mjs:2297",
+        "quality-verdict.test.mjs:2504"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-C1-loader-order.tap"
+    },
+    {
+      "id": "QV3-D3-3-refreshTrigger",
+      "spn": "P3-1 D3 (3)",
+      "file": "quality-verdict.mjs",
+      "find": "if (child.refreshTrigger === \"graph-ready\") missing.push(3);",
+      "replace": "",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:52:02.203Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 45,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-ready の子と欠けた条件を出力に残す",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2060,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば fail）。他の variant の index-ready の子は D3 の対象にしない",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2428,
+          "depth": 0,
+          "type": "test",
+          "error": "(3) refreshTrigger"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:2060",
+        "quality-verdict.test.mjs:2428"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D3-3-refreshTrigger.tap"
+    },
+    {
+      "id": "QV3-D3-4-chronicle-usable",
+      "spn": "P3-1 D3 (4)",
+      "file": "quality-verdict.mjs",
+      "find": "sample.snapshot?.chronicleIndexUsable !== false ||\n",
+      "replace": "false ||\n",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:52:12.057Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば fail）。他の variant の index-ready の子は D3 の対象にしない",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2428,
+          "depth": 0,
+          "type": "test",
+          "error": "(4) 親の Chronicle Index が使えた"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:2428"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D3-4-chronicle-usable.tap"
+    },
+    {
+      "id": "QV3-D3-4-ir-outcome",
+      "spn": "P3-1 D3 (4)",
+      "file": "quality-verdict.mjs",
+      "find": "sample.irOutcome !== \"index-unavailable\"\n  )\n    missing.push(4);",
+      "replace": "false\n  )\n    missing.push(4);",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:52:21.927Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 45,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-ready の子と欠けた条件を出力に残す",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2060,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば fail）。他の variant の index-ready の子は D3 の対象にしない",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2428,
+          "depth": 0,
+          "type": "test",
+          "error": "(4) 親の IR が index-unavailable でない"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:2060",
+        "quality-verdict.test.mjs:2428"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D3-4-ir-outcome.tap"
+    },
+    {
+      "id": "QV3-D3-5-graph-usable",
+      "spn": "P3-1 D3 (5)",
+      "file": "quality-verdict.mjs",
+      "find": "if (sample.snapshot?.usable !== true) missing.push(5);",
+      "replace": "",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:52:31.853Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 45,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-ready の子と欠けた条件を出力に残す",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2060,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        },
+        {
+          "title": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば fail）。他の variant の index-ready の子は D3 の対象にしない",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2428,
+          "depth": 0,
+          "type": "test",
+          "error": "(5) 親の Graph Index が使えなかった"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:2060",
+        "quality-verdict.test.mjs:2428"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D3-5-graph-usable.tap"
+    },
+    {
+      "id": "QV3-D3-2-origin",
+      "spn": "P3-1 D3 (2)",
+      "file": "quality-verdict.mjs",
+      "find": "if (child.origin !== \"index-ready\") missing.push(2);",
+      "replace": "",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:52:41.645Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1597,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1597"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D3-2-origin.tap"
+    },
+    {
+      "id": "QV3-D3-6-child-chronicle",
+      "spn": "P3-1 D3 (6)",
+      "file": "quality-verdict.mjs",
+      "find": "if (child.chronicleIndexUsable !== true) missing.push(6);",
+      "replace": "",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:52:50.978Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 45,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1597,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-ready の子と欠けた条件を出力に残す",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2060,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1597",
+        "quality-verdict.test.mjs:2060"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D3-6-child-chronicle.tap"
+    },
+    {
+      "id": "QV3-D3-1-variant",
+      "spn": "P3-1 D3 (1) / D2",
+      "file": "quality-verdict.mjs",
+      "find": "    const d3 =\n      variant.key === \"G-08/chronicle-index-unusable\" &&\n      d3Eligible(sample, child);",
+      "replace": "    const d3 = d3Eligible(sample, child);",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:53:00.308Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "P3-1: D3 の (3)(4)(5) をそれぞれ単独で欠く子は D3 の対象にならず子のまま（Graph を出せば fail）。他の variant の index-ready の子は D3 の対象にしない",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2428,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:2428"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D3-1-variant.tap"
+    },
+    {
+      "id": "QV3-D2-eligible-stays-child",
+      "spn": "D2",
+      "file": "quality-verdict.mjs",
+      "find": "if (child && child.publishCount > 0 && !d3)",
+      "replace": "if (child && child.publishCount > 0)",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:53:09.993Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-ready の子と欠けた条件を出力に残す",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2060,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:2060"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D2-eligible-stays-child.tap"
+    },
+    {
+      "id": "QV3-D2-unavailable-not-d3",
+      "spn": "D2",
+      "file": "quality-verdict.mjs",
+      "find": "          !d3 &&\n",
+      "replace": "",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:53:19.791Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 45,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1597,
+          "depth": 0,
+          "type": "test",
+          "error": "an eligible index-ready child is not 'a child that showed a Graph'"
+        },
+        {
+          "title": "品質 v2 D3 の開示: Graph を出した子の数と edge の件数、期待の外の追加、D2 に残った index-ready の子と欠けた条件を出力に残す",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2060,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1597",
+        "quality-verdict.test.mjs:2060"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D2-unavailable-not-d3.tap"
+    },
+    {
+      "id": "QV3-D3a-added-list",
+      "spn": "P3-1 D3 (a)",
+      "file": "quality-verdict.mjs",
+      "find": "const hit = added.filter(bad);",
+      "replace": "const hit = [];",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:53:28.980Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR に足す）は fail、既に R+IR に在る Scene は足したことにならない",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2504,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:2504"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D3a-added-list.tap"
+    },
+    {
+      "id": "QV3-D3a-blocked",
+      "spn": "P3-1 D3 (a)",
+      "file": "quality-verdict.mjs",
+      "find": "const bad = (id) => forbidden.has(id) || blocked.has(id);",
+      "replace": "const bad = (id) => forbidden.has(id);",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:53:38.907Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "P3-1: D3 (a) の一覧の追加（禁止 Scene・blocked 候補を R+IR に足す）は fail、既に R+IR に在る Scene は足したことにならない",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2504,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:2504"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D3a-blocked.tap"
+    },
+    {
+      "id": "QV3-D3b-forbidden-path",
+      "spn": "D3 (b)",
+      "file": "quality-verdict.mjs",
+      "find": "const hit = sceneIds.filter(bad);",
+      "replace": "const hit = [];",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:53:48.691Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 45,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1597,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "品質 v2 D3 (b)(d): materialRevision の記録が在れば outcome・edgeCount によらず観測した path と unresolvedEdges を検査する。Graph を出したかもしれない子に記録が無ければ hold",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1965,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1597",
+        "quality-verdict.test.mjs:1965"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D3b-forbidden-path.tap"
+    },
+    {
+      "id": "QV3-D8b-not-displayed-differs",
+      "spn": "P3-1 D8 (b)",
+      "file": "quality-verdict.mjs",
+      "find": "else if (!sameList(lists(sample.finalSceneIds), pair))",
+      "replace": "else if (false)",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:53:57.983Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D8: 表示されなかった sample の Scene の一覧が R+IR と違うのは hold でなく fail（v1 の実装は K6/4:171 より弱かった）",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1545,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly deep-equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1545"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D8b-not-displayed-differs.tap"
+    },
+    {
+      "id": "QV3-D7-not-before-equal",
+      "spn": "D7",
+      "file": "quality-verdict-cli.mjs",
+      "find": "if (!(record.atMs < firstRun.atMs))",
+      "replace": "if (!(record.atMs <= firstRun.atMs))",
+      "testFile": "quality-verdict-first-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+      "started": "2026-11-16T13:54:07.834Z",
+      "exitCode": 1,
+      "loads": 2,
+      "counts": [
+        1,
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 8,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "v2 §0: both commits must be on the remote strictly before the first formal run; a missing record or time is [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 162,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        },
+        {
+          "title": "prereg v3 §0: the v3 commit and the implementation (any branch) are on the remote strictly before the first formal run",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 494,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        }
+      ],
+      "expected": [
+        "quality-verdict-first-run.test.mjs:162",
+        "quality-verdict-first-run.test.mjs:494"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D7-not-before-equal.tap"
+    },
+    {
+      "id": "QV3-D7-earliest-run",
+      "spn": "D7",
+      "file": "quality-verdict-cli.mjs",
+      "find": "if (first === null || at < first.at)",
+      "replace": "if (first === null || at > first.at)",
+      "testFile": "quality-verdict-first-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+      "started": "2026-11-16T13:54:08.367Z",
+      "exitCode": 1,
+      "loads": 2,
+      "counts": [
+        1,
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 6,
+        "fail": 4,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "v2 §0: the first formal run is the earliest head.runStartedAtUtc over all six kinds of the judged pair",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 110,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "v2 §0: both commits must be on the remote strictly before the first formal run; a missing record or time is [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 162,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "v2 §0: loadFirstRunInputs reads the six directories, the record and the v2 bytes at the v2 commit; a missing input or a differing v2 file is [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 220,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        },
+        {
+          "title": "prereg v3 §0: the v3 commit and the implementation (any branch) are on the remote strictly before the first formal run",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 494,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        }
+      ],
+      "expected": [
+        "quality-verdict-first-run.test.mjs:110",
+        "quality-verdict-first-run.test.mjs:162",
+        "quality-verdict-first-run.test.mjs:220",
+        "quality-verdict-first-run.test.mjs:494"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D7-earliest-run.tap"
+    },
+    {
+      "id": "QV3-D7-kind-empty",
+      "spn": "D7",
+      "file": "quality-verdict-cli.mjs",
+      "find": "    if (rows.length === 0)\n      throw precheck(\n        `v2 §0: no ${kind}",
+      "replace": "    if (false)\n      throw precheck(\n        `v2 §0: no ${kind}",
+      "testFile": "quality-verdict-first-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+      "started": "2026-11-16T13:54:08.838Z",
+      "exitCode": 1,
+      "loads": 2,
+      "counts": [
+        1,
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 9,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "v2 §0: the first formal run is the earliest head.runStartedAtUtc over all six kinds of the judged pair",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 110,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception: sp-p4"
+        }
+      ],
+      "expected": [
+        "quality-verdict-first-run.test.mjs:110"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D7-kind-empty.tap"
+    },
+    {
+      "id": "QV3-D7-remote-earliest",
+      "spn": "D7",
+      "file": "quality-verdict-cli.mjs",
+      "find": "if (best === null || at < best.at)",
+      "replace": "if (best === null || at > best.at)",
+      "testFile": "quality-verdict-first-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+      "started": "2026-11-16T13:54:09.377Z",
+      "exitCode": 1,
+      "loads": 2,
+      "counts": [
+        1,
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 9,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "v2 §0: both commits must be on the remote strictly before the first formal run; a missing record or time is [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 162,
+          "depth": 0,
+          "type": "test",
+          "error": "[precheck] v2 §0: the v2 commit 419020433531e391ff423ec6ce7fe0cf10d3599a was on the remote at 2026-11-09T09:00:00Z, not before the first formal run (2026-11-09T03:00:00.000Z)"
+        }
+      ],
+      "expected": [
+        "quality-verdict-first-run.test.mjs:162"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D7-remote-earliest.tap"
+    },
+    {
+      "id": "QV3-D7-source",
+      "spn": "D7",
+      "file": "quality-verdict-cli.mjs",
+      "find": "if (!REMOTE_TIME_SOURCES.has(row.source))",
+      "replace": "if (false)",
+      "testFile": "quality-verdict-first-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+      "started": "2026-11-16T13:54:09.885Z",
+      "exitCode": 1,
+      "loads": 2,
+      "counts": [
+        1,
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 9,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "v2 §0: both commits must be on the remote strictly before the first formal run; a missing record or time is [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 162,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        }
+      ],
+      "expected": [
+        "quality-verdict-first-run.test.mjs:162"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D7-source.tap"
+    },
+    {
+      "id": "QV3-D7-v2-bytes",
+      "spn": "D7",
+      "file": "quality-verdict-cli.mjs",
+      "find": "if (v2Blob.sha256 !== v2Sha256)",
+      "replace": "if (false)",
+      "testFile": "quality-verdict-first-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+      "started": "2026-11-16T13:54:10.415Z",
+      "exitCode": 1,
+      "loads": 2,
+      "counts": [
+        1,
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 9,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "v2 §0: loadFirstRunInputs reads the six directories, the record and the v2 bytes at the v2 commit; a missing input or a differing v2 file is [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 220,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        }
+      ],
+      "expected": [
+        "quality-verdict-first-run.test.mjs:220"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D7-v2-bytes.tap"
+    },
+    {
+      "id": "QV3-D7-cli-required",
+      "spn": "D7",
+      "file": "quality-verdict-cli.mjs",
+      "find": "if (!values[name] || values[name].length === 0)",
+      "replace": "if (false)",
+      "testFile": "quality-verdict-first-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+      "started": "2026-11-16T13:54:10.942Z",
+      "exitCode": 1,
+      "loads": 2,
+      "counts": [
+        1,
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 9,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "v2 §0: the command line refuses a verdict without the first-run inputs",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 347,
+          "depth": 0,
+          "type": "test",
+          "error": "The input did not match the regular expression /\\[precheck\\] v2 §0: --v2-file is required/u. Input:"
+        }
+      ],
+      "expected": [
+        "quality-verdict-first-run.test.mjs:347"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3-D7-cli-required.tap"
+    },
+    {
+      "id": "QV3b-P21-unaccounted",
+      "spn": "再レビュー P2-1 / C1",
+      "file": "quality-verdict.mjs",
+      "find": "if (unaccounted.length > 0)",
+      "replace": "if (false)",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:54:11.518Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1597,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1597"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3b-P21-unaccounted.tap"
+    },
+    {
+      "id": "QV3b-P21-refused-any-stage",
+      "spn": "再レビュー P2-1 / C1",
+      "file": "quality-verdict.mjs",
+      "find": ".filter((row) => row?.stage === \"prepare\")",
+      "replace": ".filter((row) => row?.stage !== undefined)",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:54:21.313Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "品質 v2 D2・D3: G-08/chronicle-index-unusable の index-ready の子は、6 条件を満たせば子から外して D3 で検査し、1 つでも欠けば子のまま（fail closed）",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 1597,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:1597"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3b-P21-refused-any-stage.tap"
+    },
+    {
+      "id": "QV3b-P33-unknown-variant",
+      "spn": "再レビュー P3-3 / C5",
+      "file": "quality-verdict.mjs",
+      "find": "else if (!GRAPH_EVAL_VARIANTS.some((v) => v.key === requery.variantKey))",
+      "replace": "else if (false)",
+      "testFile": "quality-verdict.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+      "started": "2026-11-16T13:54:31.092Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 47,
+        "suites": 0,
+        "pass": 46,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "P3-2（v2 C5）: variantKey の無い再 query の行は黙って捨てず、すべての variant の条件 5 を hold にする。R+IR arm の行は対象外",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict.test.mjs",
+          "line": 2375,
+          "depth": 0,
+          "type": "test",
+          "error": "Expected values to be strictly equal:"
+        }
+      ],
+      "expected": [
+        "quality-verdict.test.mjs:2375"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3b-P33-unknown-variant.tap"
+    },
+    {
+      "id": "QV3b-P31-pair-observationPrep",
+      "spn": "再レビュー P3-1",
+      "file": "quality-verdict-cli.mjs",
+      "find": "receipt?.head?.observationPrep?.commit !== allowList?.s4Commit ||",
+      "replace": "false ||",
+      "testFile": "quality-verdict-first-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+      "started": "2026-11-16T13:54:40.900Z",
+      "exitCode": 1,
+      "loads": 2,
+      "counts": [
+        1,
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 9,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "v2 §0: a receipt of a kind's directory that lacks the pair's keys or names another pair is [precheck], never dropped",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 377,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception: sp-p4"
+        }
+      ],
+      "expected": [
+        "quality-verdict-first-run.test.mjs:377"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3b-P31-pair-observationPrep.tap"
+    },
+    {
+      "id": "QV3b-P31-pair-candidate",
+      "spn": "再レビュー P3-1",
+      "file": "quality-verdict-cli.mjs",
+      "find": "        receipt?.candidate?.commit !== allowList?.candidate\n      )\n        throw precheck(\n          `v2 §0: the ${kind} receipt ${file}",
+      "replace": "        false\n      )\n        throw precheck(\n          `v2 §0: the ${kind} receipt ${file}",
+      "testFile": "quality-verdict-first-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+      "started": "2026-11-16T13:54:41.443Z",
+      "exitCode": 1,
+      "loads": 2,
+      "counts": [
+        1,
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 8,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "v2 §0: the first formal run is the earliest head.runStartedAtUtc over all six kinds of the judged pair",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 110,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception: sp-p4"
+        },
+        {
+          "title": "v2 §0: a receipt of a kind's directory that lacks the pair's keys or names another pair is [precheck], never dropped",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 377,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception: sp-p4"
+        }
+      ],
+      "expected": [
+        "quality-verdict-first-run.test.mjs:110",
+        "quality-verdict-first-run.test.mjs:377"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3b-P31-pair-candidate.tap"
+    },
+    {
+      "id": "QV3b-P32-branch",
+      "spn": "再レビュー P3-2",
+      "file": "quality-verdict-cli.mjs",
+      "find": "branch === null ? all : all.filter((row) => row.branch === branch);",
+      "replace": "all;",
+      "testFile": "quality-verdict-first-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+      "started": "2026-11-16T13:54:41.965Z",
+      "exitCode": 1,
+      "loads": 2,
+      "counts": [
+        1,
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 8,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "v2 §0: the remote time record must name each commit on its branch (v2 on claude/nir1-contracts, the implementation on claude/k66-harness)",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 410,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        },
+        {
+          "title": "prereg v3 §0: the v3 commit and the implementation (any branch) are on the remote strictly before the first formal run",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 494,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        }
+      ],
+      "expected": [
+        "quality-verdict-first-run.test.mjs:410",
+        "quality-verdict-first-run.test.mjs:494"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3b-P32-branch.tap"
+    },
+    {
+      "id": "QV3b-P32-impl-bound",
+      "spn": "再レビュー P3-2",
+      "file": "quality-verdict-cli.mjs",
+      "find": "if (sha256(onDisk) !== sha256(atCommit))",
+      "replace": "if (false)",
+      "testFile": "quality-verdict-first-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+      "started": "2026-11-16T13:54:42.495Z",
+      "exitCode": 1,
+      "loads": 2,
+      "counts": [
+        1,
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 8,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "v2 §0: loadFirstRunInputs reads the six directories, the record and the v2 bytes at the v2 commit; a missing input or a differing v2 file is [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 220,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        },
+        {
+          "title": "v2 §0: assertImplementationBound compares the running bytes with the implementation commit's blobs",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 442,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception: scripts/quality/nir1-graph-eval/quality-verdict.mjs"
+        }
+      ],
+      "expected": [
+        "quality-verdict-first-run.test.mjs:220",
+        "quality-verdict-first-run.test.mjs:442"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3b-P32-impl-bound.tap"
+    },
+    {
+      "id": "QV3b-P32-v2-path",
+      "spn": "再レビュー P3-2",
+      "file": "quality-verdict-cli.mjs",
+      "find": "if (v2Blob.relative !== V2_FILE_PATH)",
+      "replace": "if (false)",
+      "testFile": "quality-verdict-first-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+      "started": "2026-11-16T13:54:43.057Z",
+      "exitCode": 1,
+      "loads": 2,
+      "counts": [
+        1,
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 9,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "v2 §0: loadFirstRunInputs reads the six directories, the record and the v2 bytes at the v2 commit; a missing input or a differing v2 file is [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 220,
+          "depth": 0,
+          "type": "test",
+          "error": "[precheck] v2 §0: the remote time record has no entry for the v2 commit 8d8e3acebe3cebb5f6a3fec2faf45a6de237379f"
+        }
+      ],
+      "expected": [
+        "quality-verdict-first-run.test.mjs:220"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3b-P32-v2-path.tap"
+    },
+    {
+      "id": "QV3b-P32-g01-json-dir",
+      "spn": "再レビュー P3-1 / P1-1",
+      "file": "quality-verdict-cli.mjs",
+      "find": "list.flatMap((dir) => readFirstRunDir(dir))",
+      "replace": "list.flatMap((dir) => readReceiptDir(dir))",
+      "testFile": "quality-verdict-first-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+      "started": "2026-11-16T13:54:43.589Z",
+      "exitCode": 1,
+      "loads": 2,
+      "counts": [
+        1,
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 8,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "v2 §0: loadFirstRunInputs reads the six directories, the record and the v2 bytes at the v2 commit; a missing input or a differing v2 file is [precheck]",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 220,
+          "depth": 0,
+          "type": "test",
+          "error": "[precheck] /tmp/qv-first-run-yU5U9n/receipts-g01-diagnostic holds no receipt"
+        },
+        {
+          "title": "prereg v3 §0: loadFirstRunInputs binds the v3 file to its commit's blob at the fixed path; both v3 inputs go together",
+          "file": "scripts/quality/nir1-graph-eval/quality-verdict-first-run.test.mjs",
+          "line": 608,
+          "depth": 0,
+          "type": "test",
+          "error": "[precheck] /tmp/qv-first-run-yU5U9n/receipts-v3-g01-diagnostic holds no receipt"
+        }
+      ],
+      "expected": [
+        "quality-verdict-first-run.test.mjs:220",
+        "quality-verdict-first-run.test.mjs:608"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3b-P32-g01-json-dir.tap"
+    },
+    {
+      "id": "QV3b-P11-g01-head-kind",
+      "spn": "再レビュー P1-1",
+      "file": "pubg16-e2e-run.mjs",
+      "find": "buildRunHead({ ...input, kind: \"g01-diagnostic\" }, deps)",
+      "replace": "buildRunHead({ ...input, kind: \"trace\" }, deps)",
+      "testFile": "pubg16-e2e-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/pubg16-e2e-run.test.mjs",
+      "started": "2026-11-16T13:54:43.997Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 10,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "the G-01 diagnostic's head is the other receipts' head: freeze heads, the S4 commit with its record's SHA-256 and the start time; a missing part stops the run",
+          "file": "scripts/quality/nir1-graph-eval/pubg16-e2e-run.test.mjs",
+          "line": 336,
+          "depth": 0,
+          "type": "test",
+          "error": "[precheck] S5-B head: the receipt head is not complete (traces); the measurement does not start"
+        }
+      ],
+      "expected": [
+        "pubg16-e2e-run.test.mjs:336"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3b-P11-g01-head-kind.tap"
+    },
+    {
+      "id": "QV3b-P11-head-kind-traces",
+      "spn": "再レビュー P1-1",
+      "file": "frozen-diagnostics.mjs",
+      "find": "\"g01-diagnostic\": { traces: false },",
+      "replace": "\"g01-diagnostic\": { traces: true },",
+      "testFile": "pubg16-e2e-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/pubg16-e2e-run.test.mjs",
+      "started": "2026-11-16T13:54:44.603Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 10,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "the G-01 diagnostic's head is the other receipts' head: freeze heads, the S4 commit with its record's SHA-256 and the start time; a missing part stops the run",
+          "file": "scripts/quality/nir1-graph-eval/pubg16-e2e-run.test.mjs",
+          "line": 336,
+          "depth": 0,
+          "type": "test",
+          "error": "[precheck] S5-B head: the receipt head is not complete (traces); the measurement does not start"
+        }
+      ],
+      "expected": [
+        "pubg16-e2e-run.test.mjs:336"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3b-P11-head-kind-traces.tap"
+    },
+    {
+      "id": "QV3b-P11-frozen-requires-head",
+      "spn": "再レビュー P1-1",
+      "file": "pubg16-e2e-run.mjs",
+      "find": "  if (frozen)\n    for (const name of G01_HEAD_OPTIONS)\n      if (!options[name]) throw new Error(`--${name} is required`);",
+      "replace": "  if (false)\n    for (const name of G01_HEAD_OPTIONS)\n      if (!options[name]) throw new Error(`--${name} is required`);",
+      "testFile": "pubg16-e2e-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/pubg16-e2e-run.test.mjs",
+      "started": "2026-11-16T13:54:45.250Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 10,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "g01-frozen takes the frozen setups, never a dev setup, and never the product .node",
+          "file": "scripts/quality/nir1-graph-eval/pubg16-e2e-run.test.mjs",
+          "line": 236,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        }
+      ],
+      "expected": [
+        "pubg16-e2e-run.test.mjs:236"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3b-P11-frozen-requires-head.tap"
+    },
+    {
+      "id": "QV3b-P11-dev-refuses-head",
+      "spn": "再レビュー P1-1",
+      "file": "pubg16-e2e-run.mjs",
+      "find": "  if (!frozen)\n    for (const name of G01_HEAD_OPTIONS)\n      if (options[name] !== undefined)",
+      "replace": "  if (false)\n    for (const name of G01_HEAD_OPTIONS)\n      if (options[name] !== undefined)",
+      "testFile": "pubg16-e2e-run.test.mjs",
+      "command": "node --import /home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tools/register.mjs --test --test-reporter=tap scripts/quality/nir1-graph-eval/pubg16-e2e-run.test.mjs",
+      "started": "2026-11-16T13:54:45.883Z",
+      "exitCode": 1,
+      "loads": 1,
+      "counts": [
+        1
+      ],
+      "hitOk": true,
+      "summary": {
+        "tests": 11,
+        "suites": 0,
+        "pass": 10,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "failed": [
+        {
+          "title": "g01-frozen takes the frozen setups, never a dev setup, and never the product .node",
+          "file": "scripts/quality/nir1-graph-eval/pubg16-e2e-run.test.mjs",
+          "line": 236,
+          "depth": 0,
+          "type": "test",
+          "error": "Missing expected exception."
+        }
+      ],
+      "expected": [
+        "pubg16-e2e-run.test.mjs:236"
+      ],
+      "missingExpected": [],
+      "extraFailed": [],
+      "equivalent": false,
+      "equivalentReason": null,
+      "asExpected": true,
+      "exact": true,
+      "tapFile": "/home/grimodex/fusion-eval-data/db-stage1-pr3-2026-11-15/detection-run/tap-qv3/mut-QV3b-P11-dev-refuses-head.tap"
+    }
+  ],
+  "mutationsFinishedAt": "2026-11-16T13:54:46.533Z",
+  "statusAfter": "",
+  "ignoredAfter": "!! .artifacts/cp4/\n!! dist-electron/\n!! electron/native/grimodex-node/grimodex-node.node\n!! node_modules/\n!! packages/scan-contract/dist/\n!! packages/scan-contract/node_modules/\n!! packages/scan-core/dist/\n!! packages/scan-core/node_modules/\n!! src-tauri/target/",
+  "headAfter": "c3209e1d0881fdee1acead14e20645d9b7e87494",
+  "verdict": {
+    "clean": true,
+    "ignoredUnchanged": true,
+    "baselineTargetPass": true,
+    "baselinePerFilePass": true,
+    "baselineAllPass": null,
+    "positiveControlsOk": true,
+    "probeOk": true,
+    "mutationCount": 48,
+    "allHitOnce": true,
+    "allAsExpected": true,
+    "exactCount": 48
+  },
+  "finishedAt": "2026-11-16T13:54:46.755Z"
+}

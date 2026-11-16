@@ -776,23 +776,23 @@ export function checkHarness(sources) {
     if (/\.execute(?:_batch)?\(/.test(codeWithoutStrings)) {
       fail(file, "a direct `execute` call in the setup");
     }
-    connectionUses += [...codeWithoutStrings.matchAll(/\.with_conn\(/g)].length;
+    connectionUses += [...codeWithoutStrings.matchAll(/\.with_conn(?:_mut)?\(/g)].length;
     if (
-      /\.with_conn\(/.test(codeWithoutStrings) &&
+      /\.with_conn(?:_mut)?\(/.test(codeWithoutStrings) &&
       !file.endsWith("/workspace.rs")
     ) {
       fail(
         file,
-        "a direct connection (`with_conn`) outside the workspace module",
+        "a direct connection (`with_conn`/`with_conn_mut`) outside the workspace module",
       );
     }
   }
-  // The single `with_conn` installs the write-audit hook; reads use
+  // The single `with_conn_mut` installs the write-audit hook; reads use
   // `with_read_transaction`.
   if (connectionUses > 1) {
     fail(
       PATHS.nodeHarnessDir,
-      "`with_conn` is used more than once (only the audit hook is installed through it)",
+      "`with_conn`/`with_conn_mut` is used more than once (only the audit hook is installed through it)",
     );
   }
   checkFreezeOrder(sources, files, fail);

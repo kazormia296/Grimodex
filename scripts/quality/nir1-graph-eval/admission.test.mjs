@@ -31,6 +31,7 @@ import {
   readK64FreezeHead,
   readK65FreezeHead,
   readK66FreezeHead,
+  readK67FreezeHead,
   assertDFortyAdmits,
   readAdmittedObservationPrep,
   readFreezeBoundFile,
@@ -64,6 +65,7 @@ import {
   K65_CANDIDATE_REQUIREMENTS,
   K65_FREEZE,
   K66_FREEZE,
+  K67_FREEZE,
   OBSERVATION_PREP_RECORD_PATH,
   OBSERVATION_PREP_RECORD_SCHEMA,
 } from "./constants.mjs";
@@ -882,6 +884,7 @@ async function k65EnforcementRepository() {
   await put(repo, K64_FREEZE.path, "K6/4 test bytes\n");
   await put(repo, K65_FREEZE.path, "K6/5 test bytes\n");
   await put(repo, K66_FREEZE.path, "K6/6 test bytes\n");
+  await put(repo, K67_FREEZE.path, "K6/7 test bytes\n");
   const freezeCommit = commit(repo, "freezes");
   // The same bytes at another commit: the commit, not only the bytes, is pinned.
   git(repo, "commit", "-q", "--no-gpg-sign", "--allow-empty", "-m", "later");
@@ -905,6 +908,11 @@ async function k65EnforcementRepository() {
     ...K66_FREEZE,
     freezeCommit,
     sha256: sha256Of("K6/6 test bytes\n"),
+  };
+  const freeze67 = {
+    ...K67_FREEZE,
+    freezeCommit,
+    sha256: sha256Of("K6/7 test bytes\n"),
   };
   git(repo, "checkout", "-q", "-b", "ten", prep);
   await put(
@@ -931,6 +939,7 @@ async function k65EnforcementRepository() {
       k64Commit: freezeCommit,
       k65Commit: freezeCommit,
       k66Commit: freezeCommit,
+      k67Commit: freezeCommit,
       ...extra,
     };
   };
@@ -941,7 +950,7 @@ async function k65EnforcementRepository() {
     tenHead,
     freezeCommit,
     laterCommit,
-    freezes: { freeze62, freeze64, freeze65, freeze66 },
+    freezes: { freeze62, freeze64, freeze65, freeze66, freeze67 },
     input,
   };
 }
@@ -1150,6 +1159,136 @@ test("K6/6 変える点 8・K6/6-N9: admitGraphCaseRun と assertReceiptHeadBoun
   }
 });
 
+test("K6/7 変える点 8・K6/7-N9′: admitGraphCaseRun と assertReceiptHeadBound は /7 の凍結の head（commit と bytes）を /4・/5・/6 に加えて照合する。既定は固定した /7 の凍結で、/7 の凍結の前の run（head.k67 が無い）と null の descriptor は拒む", async () => {
+  const r = await k65EnforcementRepository();
+  try {
+    const admit = (input, freezes = r.freezes) =>
+      admitGraphCaseRun(input, freezes);
+    // /7 の凍結の head が無い（commit を渡さない）。
+    assert.throws(
+      () => admit(r.input(r.head, { k67Commit: undefined })),
+      /\[precheck\] the K6\/7 freeze commit is not given/u,
+    );
+    // 別の commit（bytes が同じでも拒む）と、凍結の file が無い commit。
+    assert.throws(
+      () => admit(r.input(r.head, { k67Commit: r.laterCommit })),
+      /\[precheck\] K6\/7 freeze commit or bytes differ/u,
+    );
+    assert.throws(
+      () => admit(r.input(r.head, { k67Commit: r.prep })),
+      /\[precheck\] K6\/7 cannot be read from the freeze commit/u,
+    );
+    // bytes が違う。
+    assert.throws(
+      () =>
+        admit(r.input(r.head), {
+          ...r.freezes,
+          freeze67: { ...r.freezes.freeze67, sha256: H64("0") },
+        }),
+      /\[precheck\] K6\/7 freeze commit or bytes differ/u,
+    );
+    // 既定の K67_FREEZE は確認・凍結された /7（2026-11-15）に固定されている。
+    assert.deepEqual(
+      { ...K67_FREEZE },
+      {
+        path: "docs/plans/nir1-final-request-eval-proposal-7-draft.md",
+        sha256:
+          "7b8f81c71a2d7edca9dbef8bdfb7c81120d3873346289b156fc92fdc1d40424d",
+        draftRef: "nir1-final-request-eval-proposal/7",
+        contractId: "graph-eval-procedure",
+        confirmedCommit: "08b168c9562ff13c314a77f2d03b8a4550774d7f",
+        freezeCommit: "b9559a220c88eb2e7073b016244a9c45edf9b3be",
+      },
+    );
+    // 既定の descriptor は試験の repo の commit を /7 の凍結として読まない。
+    assert.throws(
+      () =>
+        admit(r.input(r.head), {
+          freeze62: r.freezes.freeze62,
+          freeze64: r.freezes.freeze64,
+          freeze65: r.freezes.freeze65,
+          freeze66: r.freezes.freeze66,
+        }),
+      /\[precheck\] K6\/7 (freeze commit or bytes differ|cannot be read)/u,
+    );
+    assert.throws(
+      () => readK67FreezeHead({ root: r.repo, commit: r.freezeCommit }),
+      /\[precheck\] K6\/7 (freeze commit or bytes differ|cannot be read)/u,
+    );
+    // descriptor の freezeCommit が null なら、どの正式の receipt も書かない（fail closed）。
+    assert.throws(
+      () =>
+        readK67FreezeHead(
+          { root: r.repo, commit: r.freezeCommit },
+          { ...r.freezes.freeze67, freezeCommit: null },
+        ),
+      /\[precheck\] the K6\/7 freeze commit is not pinned/u,
+    );
+    assert.deepEqual(
+      readK67FreezeHead(
+        { root: r.repo, commit: r.freezeCommit },
+        r.freezes.freeze67,
+      ),
+      { freezeCommit: r.freezeCommit, sha256: r.freezes.freeze67.sha256 },
+    );
+    // receipt の先頭: head.k67 が無い receipt（/7 の凍結の前に始めた run。s6r1・s7r1・s7r2 を含む）。
+    const facts = collectObservationPrepFacts({
+      root: r.repo,
+      commit: r.prep,
+      candidateHead: r.head,
+    });
+    const { freeze62, freeze64, freeze65, freeze66 } = r.freezes;
+    const head = {
+      k62: { freezeCommit: r.freezeCommit, sha256: freeze62.sha256 },
+      k64: { freezeCommit: r.freezeCommit, sha256: freeze64.sha256 },
+      k65: { freezeCommit: r.freezeCommit, sha256: freeze65.sha256 },
+      k66: { freezeCommit: r.freezeCommit, sha256: freeze66.sha256 },
+      observationPrep: {
+        commit: r.prep,
+        freezeRecordSha256: facts.recordSha256AtCommit,
+      },
+    };
+    const candidate = {
+      commit: r.head,
+      ratification5: JSON.parse(
+        JSON.stringify(
+          collectRatification5Evidence({
+            root: r.repo,
+            candidateHead: r.head,
+          }),
+        ),
+      ),
+    };
+    assert.throws(
+      () =>
+        assertReceiptHeadBound(
+          { root: r.repo, receipt: { head, candidate } },
+          r.freezes,
+        ),
+      /\[precheck\] the K6\/7 freeze commit is not given/u,
+    );
+    assert.throws(
+      () =>
+        assertReceiptHeadBound(
+          {
+            root: r.repo,
+            receipt: {
+              head: {
+                ...head,
+                k67: { freezeCommit: r.freezeCommit, sha256: H64("0") },
+              },
+              candidate,
+            },
+          },
+          r.freezes,
+        ),
+      /\[precheck\] head\.k67 differs from the K6\/7 freeze/u,
+    );
+  } finally {
+    await rm(r.repo, { recursive: true, force: true });
+  }
+});
+
 test("K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を凍結と照合し、ratification5 を必須にして D=40 ms を強制する", async () => {
   const r = await k65EnforcementRepository();
   try {
@@ -1158,7 +1297,7 @@ test("K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を
       commit: r.prep,
       candidateHead: r.head,
     });
-    const { freeze62, freeze64, freeze65, freeze66 } = r.freezes;
+    const { freeze62, freeze64, freeze65, freeze66, freeze67 } = r.freezes;
     const collected = (head) =>
       JSON.parse(
         JSON.stringify(
@@ -1169,6 +1308,7 @@ test("K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を
       candidateHead = r.head,
       k65,
       k66,
+      k67,
       ratification5,
     } = {}) => ({
       head: {
@@ -1179,6 +1319,11 @@ test("K6/5-N2・N3: assertReceiptHeadBound は head.k65（commit と bytes）を
           : k66 === null
             ? {}
             : { k66 }),
+        ...(k67 === undefined
+          ? { k67: { freezeCommit: r.freezeCommit, sha256: freeze67.sha256 } }
+          : k67 === null
+            ? {}
+            : { k67 }),
         ...(k65 === undefined
           ? {
               k65: { freezeCommit: r.freezeCommit, sha256: freeze65.sha256 },
@@ -1849,6 +1994,7 @@ test("DR-CP4-S4-1 予行: S4a→S4b の記録を、admission → S2 の検証つ
       k64: { freezeCommit: r.k64Freeze.freezeCommit, sha256: H64("4") },
       k65: { freezeCommit: r.k65Freeze.freezeCommit, sha256: H64("5") },
       k66: { freezeCommit: r.k66Freeze.freezeCommit, sha256: H64("6") },
+      k67: { freezeCommit: r.k67Freeze.freezeCommit, sha256: H64("7") },
       observationPrep: {
         commit: facts.commit,
         freezeRecordSha256: facts.recordSha256AtCommit,
@@ -1886,6 +2032,7 @@ test("DR-CP4-S4-1 予行: S4a→S4b の記録を、admission → S2 の検証つ
         k64Commit: r.k64Freeze.freezeCommit,
         k65Commit: r.k65Freeze.freezeCommit,
         k66Commit: r.k66Freeze.freezeCommit,
+        k67Commit: r.k67Freeze.freezeCommit,
         buildReceipt: { kind: "eval" },
         productReceipt: { kind: "product" },
         defaultAddonSha256: H64("0"),
@@ -1894,6 +2041,7 @@ test("DR-CP4-S4-1 予行: S4a→S4b の記録を、admission → S2 の検証つ
         freeze: r.k64Freeze,
         freeze65: r.k65Freeze,
         freeze66: r.k66Freeze,
+        freeze67: r.k67Freeze,
         admitGraphCase: (value) => {
           calls.push(value);
           return Object.freeze({ stub: true });

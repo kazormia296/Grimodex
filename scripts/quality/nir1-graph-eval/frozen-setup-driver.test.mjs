@@ -725,6 +725,31 @@ test("setup の受領書の loader: frozen は frozen の schema と停止位置
     // Re-review P3 (b): a variant with a hold session and no index state
     // before its first mutation.
     { plan: { sessions: [{ label: "author" }, { label: "hold" }] } },
+    // DR-CP4-L-27 (the user's answer of 2026-11-16, contracts `337ff239`): a
+    // cold DB that keeps a run `running`, a planned retry, or no read-back
+    // of maintenance at all is not a quiet starting point.
+    {
+      readBack: {
+        maintenance: {
+          ...COMPLETE_SETUP_FIELDS.readBack.maintenance,
+          running: 1,
+        },
+      },
+    },
+    {
+      readBack: {
+        maintenance: {
+          ...COMPLETE_SETUP_FIELDS.readBack.maintenance,
+          retryPending: 1,
+        },
+      },
+    },
+    {
+      readBack: {
+        maintenance: { runs: 0, lastCreatedAt: null, running: 0 },
+      },
+    },
+    { readBack: {} },
     // P-5: the author session's maintenance openings.
     { maintenanceAttempts: undefined },
     { maintenanceAttempts: [{ attempt: 0, outcome: "not-reached" }] },

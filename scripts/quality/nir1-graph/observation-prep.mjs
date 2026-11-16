@@ -112,6 +112,21 @@ export const CONTRACTS = Object.freeze({
     confirmedCommit: "324c804f360b4bb7c87cb8f1fb94d24f134b6d78",
     freezeCommit: "56fb4fad2eb1eb2e021dfd121ea073f9d263cb4d",
   }),
+  // K6/7 (変える点 8): the first-render reading after the parent's freshness
+  // stamp is gone (R-8, R-9, R-10, R-12, R-13 loosen; FR-8's stale check is
+  // deleted). The user confirmed /7 (revision 5) on 2026-11-15 and the
+  // integrator froze it: `confirmedCommit` is the commit that last changed the
+  // bytes, `freezeCommit` the freeze on `claude/nir1-contracts`. Both equal
+  // constants.mjs's K67_FREEZE (a test holds the two together). `k64`, `k65`
+  // and `k66` stay: the /7 row stands on them.
+  k67: Object.freeze({
+    draftRef: "nir1-final-request-eval-proposal/7",
+    contractId: "graph-eval-procedure",
+    path: "docs/plans/nir1-final-request-eval-proposal-7-draft.md",
+    sha256: "7b8f81c71a2d7edca9dbef8bdfb7c81120d3873346289b156fc92fdc1d40424d",
+    confirmedCommit: "08b168c9562ff13c314a77f2d03b8a4550774d7f",
+    freezeCommit: "b9559a220c88eb2e7073b016244a9c45edf9b3be",
+  }),
 });
 
 /**
@@ -203,6 +218,188 @@ export const K66_QUALITY_VERDICT_V2 = Object.freeze({
   // outside the bytes pins; its commit is fixed here and §0 of v2 binds the
   // running bytes to it.
   implementationCommit: "7652a86e2252eec55a22143921c33f81a481e48c",
+});
+/**
+ * S2 追補 #18（DR-CP4-P-11）: the records the S2 binds for K6/7 — the user's
+ * K6/7 confirmation and the integrator's freeze record (contracts
+ * `claude/nir1-contracts`), and the five answers the user gave after it
+ * (item C, PR-3's Q5〜Q7, PR-3's dev gate, the re-freeze / R5 reuse, and the
+ * R5 closure's growth to 11 files with the dev gate's drift_at_query 1;
+ * S3's 10th B1-1).
+ * Each is held to its commit's bytes and to the head's ancestry by the formal
+ * gate (k67FormalRows). The freeze record is bound at the freeze's own commit
+ * (ba1e1a05); contracts 235e0c67 later appended the (α) PushEvent retake
+ * without changing the freeze commit, the SHA-256 or the push time.
+ */
+export const K67_CONFIRMATION_RECORDS = Object.freeze({
+  graphEvalProcedure: Object.freeze({
+    path: "docs/plans/nir1-cp4-records/user-confirmation-2026-11-15-k67-graph-eval-procedure.md",
+    commit: "b9559a220c88eb2e7073b016244a9c45edf9b3be",
+    sha256: "7eb40f8c84fecfb1f737480cf7a7f95a3904d0ee1694a37c4d7e230e0649c413",
+  }),
+  freezeRecord: Object.freeze({
+    path: "docs/plans/nir1-cp4-records/k67-freeze-record.md",
+    commit: "ba1e1a05ccf8502ff59174b0c4ec9d35e0ccc179",
+    sha256: "d38376e7192d8a4d9360ae4529c29a087bc09f1384ccd0ef036d479d2ccd4b5e",
+  }),
+  additional: Object.freeze([
+    Object.freeze({
+      record:
+        "docs/plans/nir1-cp4-records/user-confirmation-2026-11-16-item-c.md",
+      commit: "fd1f69cee739915a94b26c29d35d2411a59b7706",
+      sha256:
+        "53cb5e7f45d1f64729db8998ed301eac60311c87de87ba8099d8982362cbd3af",
+    }),
+    Object.freeze({
+      record:
+        "docs/plans/nir1-cp4-records/user-confirmation-2026-11-16-pr3-q5-q7.md",
+      commit: "f7ea87a6bf943ae2b00394e8190f1ac3ac3310ae",
+      sha256:
+        "eb27e35e0169826db1d32e842c4bf1d69cb3447ca61c229b3c57351dfdd8937a",
+    }),
+    Object.freeze({
+      record:
+        "docs/plans/nir1-cp4-records/user-confirmation-2026-11-16-pr3-dev-gate.md",
+      commit: "235e0c67431c222be6b4c6e0dfd7912cc1463d88",
+      sha256:
+        "c718acaaf707e609f41a9d18c68100a086e41176441ac9c07fec21fe8b397664",
+    }),
+    Object.freeze({
+      record:
+        "docs/plans/nir1-cp4-records/user-confirmation-2026-11-16-refreeze-9th-and-r5.md",
+      commit: "7a03eaf92a98eef4b4444bcbfda7f88c31f5e4e2",
+      sha256:
+        "54e3a8af488448a6c6b5f22bffaeb420c2ffea5c73d4792c59f7b34361afbd95",
+    }),
+    // S2 追補 #19（S3 の 10 回目の B1-1）: asked after 7a03eaf9 — the R5
+    // closure (44 files, 11 changed) is reused ("11 file で前回の記録を使う"),
+    // and the dev gate's drift_at_query 1 that the third question did not show.
+    Object.freeze({
+      record:
+        "docs/plans/nir1-cp4-records/user-confirmation-2026-11-16-r5-11files-and-gate-drift.md",
+      commit: "7361041f62cff482f34fd76e0f9a14a8cfbbf93e",
+      sha256:
+        "9173e5e54f49a0ab8e1de1b9f788bbc19829c224537e8fc7714ae35de6239560",
+    }),
+    // S2 追補 #20: asked after 7361041f — setup's quiesce goes into the ninth
+    // S4 (DR-CP4-L-27: 「記録だけ」→「止める」) and PUB-G's (A) items are begun.
+    Object.freeze({
+      record:
+        "docs/plans/nir1-cp4-records/user-confirmation-2026-11-16-setup-quiesce-and-pubg-a.md",
+      commit: "337ff239476c99ae26d420613732995b9b0fc56e",
+      sha256:
+        "ad89ebfb4d04d324d2b022526f4c7aaa83bb8c12c4f0e8a88de6ecc4083803d1",
+    }),
+    // 9 回目の S4 の ⑥（⑤ の検出力の欠け 11 件）: asked after 337ff239 — the
+    // eleven K6/7 mutations that no test caught are closed by adding tests
+    // (「試験を足して、検出力を取り直す」), contracts 516bb3fe.
+    Object.freeze({
+      record:
+        "docs/plans/nir1-cp4-records/user-confirmation-2026-11-16-detection-gaps.md",
+      commit: "516bb3fe2a517ecdea54aa4acf32ba448e4a6c5c",
+      sha256:
+        "f70e443a8aac4c660bd334dfddb5bd33f7e152d981125b79707ec9a3c4424d98",
+    }),
+    // 9 回目の S4 の ⑧ の前: the R5 closure grew to 14 files (setup's quiesce,
+    // 39b89bc3) and the user chose "14 file で前回の記録を使う", contracts 448a5956.
+    Object.freeze({
+      record:
+        "docs/plans/nir1-cp4-records/user-confirmation-2026-11-16-r5-14files.md",
+      commit: "448a595691ad0773013877d00521d16d5790d56d",
+      sha256:
+        "5becc8cda99f92c2c7036d1951d4cfb38b43a19ef30965302cddaa3f32b186c7",
+    }),
+  ]),
+});
+/**
+ * S2 追補 #19（S3 の 10 回目の B2-1）: the S3 (10th, K6/7) independent
+ * review's record (an agent's report, not a user confirmation). A frozen S2's
+ * review.record cites it (the 9th's K66_S3_REVIEW stays as K6/6's history, a
+ * k66FormalRows row); the formal gate holds its commit's bytes and ancestry.
+ */
+export const K67_S3_REVIEW = Object.freeze({
+  path: "docs/plans/nir1-cp4-records/s3-review-k67-2026-11-16.md",
+  commit: "4aa34626d42d67d692e591188c6ad95d0a280178",
+  sha256: "fba38a31130057959eee7dd6447619a7ffbd8604712130a802284702baa28d28",
+  /**
+   * 9 回目の S4 の ⑥（S3 の 5 回目の確認の推奨 6）: the 2nd〜5th checks of the
+   * same S3 review (agents' reports, not user confirmations), placed in
+   * contracts 74e4d8df byte-identically (the sha256 is that of the
+   * fusion-eval-data file of the same bytes). `requestCarriedConclusion`: the
+   * 3rd check's request carried the builder's conclusion (案 (A)、edge 単位), so
+   * it is not fully blind (its record says so); the 4th and 5th records say the
+   * request carried none (the subject files S2・宣言・DR still state conclusions);
+   * the 2nd record says nothing about it (null).
+   * A frozen review.record cites each; the formal gate holds each to its
+   * commit's bytes and to the head's ancestry (k67FormalRows).
+   */
+  rechecks: Object.freeze([
+    Object.freeze({
+      round: 2,
+      range: "55885c62..140bdda2",
+      path: "docs/plans/nir1-cp4-records/s3-review-k67-2026-11-16-check2.md",
+      commit: "74e4d8df74d8e2741a1f3a15558710c4bb33386a",
+      sha256:
+        "ef32aa0ec62fe48036c7d9ced6f02fcf7d2fe370b8991a486606c8d220b0406e",
+      requestCarriedConclusion: null,
+    }),
+    Object.freeze({
+      round: 3,
+      range: "140bdda2..67cf9453",
+      path: "docs/plans/nir1-cp4-records/s3-review-k67-2026-11-16-check3.md",
+      commit: "74e4d8df74d8e2741a1f3a15558710c4bb33386a",
+      sha256:
+        "891b9a77216c40fa525c8b3bb7f22f930acef047e169e9d9269baebeb8000f3b",
+      requestCarriedConclusion: true,
+    }),
+    Object.freeze({
+      round: 4,
+      range: "67cf9453..068cf3a6",
+      path: "docs/plans/nir1-cp4-records/s3-review-k67-2026-11-16-check4.md",
+      commit: "74e4d8df74d8e2741a1f3a15558710c4bb33386a",
+      sha256:
+        "8aadebe8780fe70f7198957e0ca4119b479653fb3b212d4d931f1322b431c9e4",
+      requestCarriedConclusion: false,
+    }),
+    Object.freeze({
+      round: 5,
+      range: "068cf3a6..dee4d00e",
+      path: "docs/plans/nir1-cp4-records/s3-review-k67-2026-11-16-check5.md",
+      commit: "74e4d8df74d8e2741a1f3a15558710c4bb33386a",
+      sha256:
+        "306a31f0eadf8c72183b7629642c85c223cde24d598e1151dda507f877657334",
+      requestCarriedConclusion: false,
+    }),
+  ]),
+});
+/**
+ * Prereg v3 (the four evidence items of condition 4; contracts 160f5fa5): the
+ * final text the user confirmed by its SHA-256 (the confirmation record names
+ * `quality-verdict-prereg-v3.md` as byte-identical to the confirmed draft), the
+ * record of that confirmation, and the implementation — `quality-verdict.mjs`,
+ * `quality-evidence-items.mjs` and `quality-verdict-cli.mjs` — whose commit is
+ * fixed here and bound to the running bytes by the CLI's `--impl-commit`
+ * (prereg v3 §0·§10: by its commit, not by a branch name). The files are
+ * outside the bytes pins, as v2's are. A rebase of the implementation's
+ * branch changes this commit; S4a takes it again (S2 追補).
+ */
+export const K67_QUALITY_VERDICT_V3 = Object.freeze({
+  v3: Object.freeze({
+    path: "docs/plans/nir1-cp4-records/quality-verdict-prereg-v3.md",
+    commit: "160f5fa50e3434f03d253afcf872566f775a7641",
+    sha256: "b6166ed2b3cb79cb4484b35233098b87288addd1e7b908fc7f01c097c61d6696",
+  }),
+  confirmationRecord: Object.freeze({
+    path: "docs/plans/nir1-cp4-records/user-confirmation-2026-11-16-quality-verdict-v3.md",
+    commit: "160f5fa50e3434f03d253afcf872566f775a7641",
+    sha256: "d6db5d3ae6330613df0664db2421c71ae2b7c575fab62ef64fcc537e321c6881",
+  }),
+  implementationFiles: Object.freeze([
+    "scripts/quality/nir1-graph-eval/quality-verdict.mjs",
+    "scripts/quality/nir1-graph-eval/quality-evidence-items.mjs",
+    "scripts/quality/nir1-graph-eval/quality-verdict-cli.mjs",
+  ]),
+  implementationCommit: "1dd6fb35f9b11816f2a90903b07afc0e83279166",
 });
 export const K66_DEV_REHEARSALS = Object.freeze({
   commit: "8eb23fa67fea1cec8c9bf9930f473abcfe238e89",
@@ -663,7 +860,6 @@ export const SOURCE_PINS = Object.freeze(
         "launcher.mjs",
         "session.mjs",
         "setup-main-build.mjs",
-        "setup-receipt.mjs",
       ],
     ],
     // S2 追補 #10（DR-CP4-P-6）: renderer/cp4-trace-probe.tsx and
@@ -682,11 +878,7 @@ export const SOURCE_PINS = Object.freeze(
     ["startup-gate-io-settle", "26764b433e6299db960f608bb99e4332949d39a3", []],
     // S2 追補 #9（DR-CP4-P-5）: frozen-k64-plan.mjs and workspace-db.mjs moved
     // to the T-1〜T-5 pins.
-    [
-      "s5a-graph-arm-runner",
-      "2c9316848ce028565c4d8e8af2d2779c3fd7e187",
-      ["material-revision.mjs", "renderer/cp4-k64-probe.tsx"],
-    ],
+    ["s5a-graph-arm-runner", "2c9316848ce028565c4d8e8af2d2779c3fd7e187", []],
     [
       "maintenance-ownership-release",
       "3f3d9999225007417708ab471bea307331f7e8a2",
@@ -737,7 +929,7 @@ export const SOURCE_PINS = Object.freeze(
     [
       "t3-t5-setup-freshness-settle",
       "b0df31f076ea1e11fd187c5c6fdf179d0df337b5",
-      ["frozen-setup-driver.mjs", "workspace-db.mjs"],
+      [],
     ],
     [
       "t1-t4-measurement-settle-ready",
@@ -819,11 +1011,7 @@ export const SOURCE_PINS = Object.freeze(
     // S2 追補 #15: frozen-k64-admission.mjs moved to the k65-harness-d40 pin
     // (ancestor).
     ["s4-5-addendum-v3-paths", "ee43c197bcdadc9c630c8d3a68a156b741a75f0d", []],
-    [
-      "pr1-native-eval-feature",
-      "3739dbedb762ada8961f509c1b4d6885a11c3099",
-      ["native-architecture.mjs"],
-    ],
+    ["pr1-native-eval-feature", "3739dbedb762ada8961f509c1b4d6885a11c3099", []],
     // S2 追補 #10（DR-CP4-P-6）: followup.mjs moved to the V-4 pin.
     [
       "p1-harness-core",
@@ -831,7 +1019,6 @@ export const SOURCE_PINS = Object.freeze(
       [
         "admission-facts.mjs",
         "egress.mjs",
-        "native-sample.mjs",
         "q4.mjs",
         "stats.mjs",
         "scripts/quality/nir1-retrieval/standard-build-receipt.mjs",
@@ -842,7 +1029,6 @@ export const SOURCE_PINS = Object.freeze(
       "a4e65b66006dec7101f93340cdca70fcafabfc5d",
       [
         "dev-fixture.mjs",
-        "dprime-check.mjs",
         "eval-native-build.mjs",
         "keep-test.mjs",
         "observer-core.mjs",
@@ -894,11 +1080,7 @@ export const SOURCE_PINS = Object.freeze(
     // S2 追補 #11（DR-CP4-P-7）: nir1-graph/contract.mjs moved to the G-04 v2
     // pin, so this pin only checks the ancestor (like s1j2-blocked-map).
     ["cq-lim-graph-limits", "a789039a779eb4df0dec2b8b3be5e29d2bff5a5c", []],
-    [
-      "dp-h-unknown-scope",
-      "e2d22b89c92b9de9585d273349e516e9df6ee5b7",
-      ["scripts/quality/nir1-packing/final-request/architecture.mjs"],
-    ],
+    ["dp-h-unknown-scope", "e2d22b89c92b9de9585d273349e516e9df6ee5b7", []],
     // S2 追補 #15（6 回目の S4、DR-CP4-S4-9。S3 の 8 回目、M1・M2）: the
     // harness files K6/5 (D=40 ms, B, the Hybrid p95 limit; PR #827 on the
     // branch claude/k65-harness), C7 (#826) and the G-01 diagnostic changed
@@ -921,11 +1103,7 @@ export const SOURCE_PINS = Object.freeze(
     ["k65-n2-n3-enforcement", "2699314238504e12aa28ba74e1b319f6dff5821d", []],
     ["k65-freeze-source", "f24dc704cd3a424f94c5fc6ade42950fdcc938d3", []],
     ["k65-g01-e2e-admission", "94d3e1333ec72a8ffd625d5c3d582ddabd60a4bb", []],
-    [
-      "c7-chronicle-stop",
-      "a1492815eaddb1dc8f66941e282799d3d37b244c",
-      ["trace-record.mjs"],
-    ],
+    ["c7-chronicle-stop", "a1492815eaddb1dc8f66941e282799d3d37b244c", []],
     ["k65-merge-followup", "8489ae57d147f029117b0e4a4c9f08b53565f453", []],
 
     // 7 回目の S4（DR-CP4-S4-10 (4)）: the harness files K6/6 (PR #840, branch
@@ -940,33 +1118,87 @@ export const SOURCE_PINS = Object.freeze(
     [
       "k66-harness-import",
       "00f9c99981c0bf67a3f98b00b5a1dfb5462547a1",
+      ["outcome.mjs"],
+    ],
+    ["k66-freeze-and-d3d", "1fdeed6f9b6fb3e069fb6aa894b1d1de36d342f8", []],
+    ["k66-g01-diagnostic-head", "99699dda79a882d029b1fce9c87fe7c45eff60b1", []],
+    ["k66-followup-requeries", "bf5ec2170edf763ede1027ed8408ce1cb1c9f35d", []],
+
+    // 9 回目の S4（DR-CP4-S4-11 (4)、⑥）: the harness files DB 段 1 の PR-3
+    // (DR-DBC-7／K6/7, branch claude/s4-9-pr3), item B (a4e26ea7), item C
+    // (quality verdict v3's evidence receipts) and the setup's quiesce
+    // (DR-CP4-L-27, 39b89bc3) changed after the earlier pins, each held at the
+    // commit that last changed it. They are branch commits that S4's PR
+    // brings to master with its merge commit (gh pr merge --merge), never a
+    // squash. The earlier pins keep their roles and commits (ancestor, or the
+    // files they still hold). evidence-fields.mjs is new in the R5 closure;
+    // workspace-db.mjs and frozen-setup-driver.mjs carry the constants the
+    // validator reads (MAINTENANCE_QUIESCE_REOPENS／_WAIT_MS,
+    // RETRY_DISPATCH_GRACE_MS) from the pinned bytes.
+    [
+      "k67-pr3-harness",
+      "4e71d1006b323f8cb6a634ff4fe391b29ea05410",
       [
-        "k64-record.mjs",
+        "native-sample.mjs",
+        "dprime-check.mjs",
+        "trace-record.mjs",
         "join.mjs",
         "run-sample.mjs",
-        "outcome.mjs",
-        "k64-runner.mjs",
         "diagnostic-runner.mjs",
-        "frozen-k64-run.mjs",
         "trace-runner.mjs",
         "trace-frozen.mjs",
         "frozen-k64-admission.mjs",
+        "constants.mjs",
+        "admission.mjs",
+        "frozen-diagnostics.mjs",
+        "pubg16-e2e-run.mjs",
+        "followup.mjs",
       ],
     ],
     [
-      "k66-freeze-and-d3d",
-      "1fdeed6f9b6fb3e069fb6aa894b1d1de36d342f8",
-      ["availability.mjs", "receipt.mjs", "constants.mjs", "admission.mjs"],
+      "k67-pr3-native-architecture",
+      "f9d93b4c38679432c76ef6ea786f58c9da3a3a5e",
+      ["native-architecture.mjs"],
     ],
     [
-      "k66-g01-diagnostic-head",
-      "99699dda79a882d029b1fce9c87fe7c45eff60b1",
-      ["frozen-diagnostics.mjs", "pubg16-e2e-run.mjs"],
+      "k67-pr3-review-fix",
+      "2f434310e965f8ae428941f058ad346c680d25e1",
+      ["availability.mjs"],
     ],
     [
-      "k66-followup-requeries",
-      "bf5ec2170edf763ede1027ed8408ce1cb1c9f35d",
-      ["followup.mjs"],
+      "k67-item-c-receipt-fields",
+      "c3262f495b010cd31787b82cf24adedaa53297ff",
+      [
+        "material-revision.mjs",
+        "k64-record.mjs",
+        "k64-runner.mjs",
+        "receipt.mjs",
+      ],
+    ],
+    [
+      "k67-item-c-review-fix",
+      "db7c12349ba8dd6085218fad7b8fe39c7a4197a0",
+      ["renderer/cp4-k64-probe.tsx"],
+    ],
+    [
+      "k67-item-c-no-plaintext",
+      "533018d933ac797540c9d3b6fd845f9a4e00a98b",
+      ["frozen-k64-run.mjs"],
+    ],
+    [
+      "k67-item-c-page-only",
+      "19bf11a27453daa8ae1c24c3a7084cfd81e75adf",
+      ["evidence-fields.mjs"],
+    ],
+    [
+      "k67-setup-quiesce",
+      "39b89bc3ecfae8419260cc7690de9268553f2711",
+      ["setup-receipt.mjs", "frozen-setup-driver.mjs", "workspace-db.mjs"],
+    ],
+    [
+      "k67-dbc4-checker",
+      "a4e26ea7aad5b89ab9b8d1254693164d5e4c88e6",
+      ["scripts/quality/nir1-packing/final-request/architecture.mjs"],
     ],
   ].map(([role, commit, names]) =>
     Object.freeze({
@@ -1012,7 +1244,14 @@ export function isSharedClosureBoundary(file) {
 export const S4_PROCEDURE_WORDS = Object.freeze({
   a: ["origin/claude/nir1-contracts", "merge commit", "①", "②'", "真の祖先"],
   b: ["gh pr merge --merge", "squash", "rebase"],
-  c: ["assertObservationPrepFormal", "S4b の commit", "integrator"],
+  c: [
+    "assertObservationPrepFormal",
+    "S4b の commit",
+    "integrator",
+    // S2 追補 #19 (S3 10th's B2-7): the runtime entry runs the first half only.
+    "readAdmittedObservationPrep",
+    "formalReferenceRows",
+  ],
   d: ["DR-CP4-S4-1", "freeze record", "sha256", "readAdmittedObservationPrep"],
   // S2 追補 #9（DR-CP4-S4-5）: (e) the re-freeze — a revocation commit deletes
   // the old S4b's record and S4b' introduces the new one at the same path
@@ -1105,6 +1344,40 @@ export const S4_PROCEDURE_WORDS = Object.freeze({
     "S4:k66-detection-record",
     "k64Procedure.formal.review は v2 の file の review のままでよい",
   ],
+  // S2 追補 #18（DR-CP4-S4-11、DR-CP4-P-11）: (k) the ninth re-freeze — the
+  // 7th S4b (f2f99b13) is revoked after K6/7 (the first-render reading after
+  // the parent's freshness stamp is gone; R-8, R-9, R-10, R-12, R-13 loosen),
+  // the quality verdict v3, PR-3, item B and item C changed the harness files.
+  // Unlike (i) and (j) the user confirmed the revocation and the new S4b
+  // individually (a record in contracts), together with the scope "through
+  // the S4 PR's merge" and the R5 record's reuse; only the new S4's results
+  // are used, and what S4b needs before it (S3's review, the contracts merge,
+  // the pins, the retaken records, the R5 closure's recomputation).
+  k: [
+    "DR-CP4-S4-11",
+    "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+    "user-confirmation-2026-11-15-k67-graph-eval-procedure.md",
+    "user-confirmation-2026-11-16-pr3-q5-q7.md",
+    "user-confirmation-2026-11-16-refreeze-9th-and-r5.md",
+    "7a03eaf92a98eef4b4444bcbfda7f88c31f5e4e2",
+    "失効して進める",
+    "S4 の PR の merge まで一括",
+    "新しい S4 の結果だけ",
+    "S6 の許可リストは新しい S4b だけ",
+    "bytes の pin の取り直し",
+    "前回の記録を使う",
+    "閉包を再計算",
+    "S4:k67-detection-record",
+    "k64Procedure.formal.review は v2 の file の review のままでよい",
+    // S2 追補 #19 (S3 10th's B1-1・B2-1・B2-6・B2-7).
+    "7361041f",
+    "11 file の外",
+    "4aa34626",
+    "drift の枝は Graph を返さない",
+    "337ff239",
+    "maintenance-quiesce",
+    "frozen の S2 が HEAD で正式の門を通る",
+  ],
 });
 /**
  * S2 追補 #5（P-S2-9 (b)）: the formal entries whose harness closure the
@@ -1157,6 +1430,14 @@ export const HARNESS_CONSTANTS = Object.freeze({
     "B_SEAL_WAIT_MS",
     "FRESHNESS_SETTLE_WAIT_MS",
     "FRESHNESS_SETTLE_INTERVAL_MS",
+    // DR-CP4-L-27 (⑤ の前): the quiesce reopening's limits, read from the
+    // pinned bytes like the other setup constants.
+    "MAINTENANCE_QUIESCE_REOPENS",
+    "MAINTENANCE_QUIESCE_WAIT_MS",
+  ]),
+  // DR-CP4-L-27 (⑤ の前): a retry's grace (the planned-retry reading).
+  [`${HARNESS_DIR}workspace-db.mjs`]: Object.freeze([
+    "RETRY_DISPATCH_GRACE_MS",
   ]),
   [`${HARNESS_DIR}g01-negatives.mjs`]: Object.freeze([
     "G01_CONTROL_ATTEMPTS",
@@ -1280,6 +1561,29 @@ const REOPEN_LIMITS = Object.freeze({
   reseal: { openings: 3, reopens: 2, waitMs: 120_000 },
 });
 const REOPEN_TOTAL = 9;
+/**
+ * DR-CP4-L-27 (S2 追補 #21): the quiesce reopening after the last session —
+ * a frame outside L-24's closed set (no trigger, no blocked name). The
+ * harness constants (MAINTENANCE_QUIESCE_REOPENS / _WAIT_MS) are in
+ * HARNESS_CONSTANTS and read from the pinned bytes; `reopens` / `waitMs` here
+ * are the values S2 must state, and `reopenErrors` requires them to equal the
+ * pinned constants.
+ */
+const REOPEN_QUIESCE = Object.freeze({
+  sessions: Object.freeze(["quiesce"]),
+  reopens: 2,
+  waitMs: 60_000,
+  dirLabel: "quiesce-<n>",
+  nonce: false,
+  onExhausted: "[precheck] S1i maintenance-quiesce",
+  blocked: false,
+  indexMetadataMoved: "[precheck] S1i maintenance-quiesce",
+  receiptField: "quiesce",
+});
+const REOPEN_TOTAL_WITH_QUIESCE = REOPEN_TOTAL + REOPEN_QUIESCE.reopens;
+/** What S2's `reopen.quiesce.harnessConstants` says (the constants the pinned bytes carry). */
+const REOPEN_QUIESCE_CONSTANTS_TEXT =
+  "MAINTENANCE_QUIESCE_REOPENS＝2、MAINTENANCE_QUIESCE_WAIT_MS＝60000（frozen-setup-driver.mjs。validator は pin の bytes から読み、S2 の reopens・waitMs と照合する。harness の試験も固定する）";
 /** DR-CP4-L-27 (P-6). */
 const INDEX_BUILD = Object.freeze({
   intervalMs: 500,
@@ -1302,6 +1606,26 @@ const RECEIPT_FIELDS = Object.freeze({
   "measurementPoint.freshnessFeed": null,
   "readBack.freshnessFeed": null,
   "readBack.maintenance": null,
+  // DR-CP4-L-27 (S2 追補 #21): the quiesce reopenings and the last read.
+  quiesce: null,
+});
+/** DR-CP4-L-27 (S2 追補 #21): the fields the two maintenance receipts carry. */
+const MAINTENANCE_RECEIPT_FIELDS = Object.freeze({
+  "readBack.maintenance": Object.freeze([
+    "runs",
+    "lastCreatedAt",
+    "running",
+    "retryPending",
+  ]),
+  quiesce: Object.freeze([
+    "reopens[].attempt",
+    "reopens[].dirLabel",
+    "reopens[].before",
+    "reopens[].beforeEndedByClose",
+    "reopens[].settle",
+    "final.activity",
+    "final.endedByClose",
+  ]),
 });
 /**
  * S2 追補 #9（DR-CP4-T-1、T-3、T-5。harness b0df31f0 と 354b1ba6）: the waits
@@ -1322,20 +1646,37 @@ const FRESHNESS_SETTLE = Object.freeze({
     r5CheckWaits: false,
     beforeExecutors: Object.freeze(["chronicle-index", "measurement-point"]),
     sessionEnd: true,
+    // The quiesce session (DR-CP4-L-27) also waits for stillness
+    // (requireQuiet) at its own point; the frame is REOPEN_QUIESCE.
     maintenanceStillAt: Object.freeze([
       "before:measurement-point",
       "session-end",
+      "quiesce",
     ]),
     maintenanceStillWhen: Object.freeze([
       "no-running-run",
+      "no-planned-retry",
       "same-run-count-and-newest-created-at-on-two-consecutive-reads",
     ]),
+    // DR-CP4-L-27: a retry's gap is not stillness (workspace-db.mjs).
+    plannedRetryWhen:
+      "failed-retryable-attempt-with-next-attempt-at-later-than-now-minus-grace-and-no-later-run-of-its-work-key",
+    plannedRetryGraceMs: 5000,
+    // The harness constant the grace is (workspace-db.mjs). It is in
+    // HARNESS_CONSTANTS: `freshnessSettleErrors` requires
+    // `plannedRetryGraceMs` to equal it in the pinned bytes.
+    plannedRetryGraceConstant: "RETRY_DISPATCH_GRACE_MS",
     onExhausted: "[precheck] S1i freshness-settle",
     maintenanceOnExhausted: "disclosed",
+    // DR-CP4-L-27: the last session's closed workspace is reopened to be
+    // quiet (REOPEN_QUIESCE) and the cold DB keeps no work; both stop.
+    closedWorkspaceNotQuiet:
+      "reopen-quiesce-then-[precheck] S1i maintenance-quiesce",
     blocked: false,
     reopenTrigger: false,
     coldDbNotSettled: "[precheck] S1i freshness-settle",
-    coldDbRunningRuns: "disclosed",
+    coldDbRunningRuns: "[precheck] S1i maintenance-quiesce",
+    coldDbRetryPending: "[precheck] S1i maintenance-quiesce",
   }),
   measurement: Object.freeze({
     at: "open-process-after-open-before-negative-hook-declaration-raw-index",
@@ -1816,6 +2157,7 @@ const S4_PLACEHOLDERS = Object.freeze(
     "sp-synthetic-detection-record",
     "k65-detection-record",
     "k66-detection-record",
+    "k67-detection-record",
     "sp1-bytes-commit",
     "r5-check-record",
   ].map((name) => `S4:${name}`),
@@ -2018,6 +2360,18 @@ const READINGS_AFTER_DEV = Object.freeze([
   "k66-readings-after-s6r1",
   "k66-quality-verdict-v2-after-s6r1",
   "k66-harness-and-rehearsal-choices",
+  // S4a（9 回目の凍結のやり直し、S2 追補 #18）: K6/7 の読み（R-8・R-9・R-10・R-12・
+  // R-13、FR-8 の検査の削除。s6r1・s7r1・s7r2 と PR-3 の調査の後に起案）、品質判定 v3
+  // の読み（s7r2・s7r1 の後に起案。観測の後に変えた読み 1 点＋fail→hold 2 点〔db7c1234 の読めない行の
+  // hold と edge-revision-unresolved。後者は凍結の fixture では到達しない〕）、PR-3 の dev の gate の
+  // 手順と harness の形（gate の 1 回目を見た後に本数と時間帯を変えた）。
+  "k67-readings-after-s7r2",
+  "k67-quality-verdict-v3-design",
+  "k67-harness-and-dev-ab-choices",
+  // S2 追補 #22: setup の静止（DR-CP4-L-27。ユーザーの回答 contracts 337ff239）。
+  // 定数と止め方は hd-g03h2 の drift_at_query を見た後に置き、dev の 3 回の後に
+  // 変えていない。向きは止まる側。
+  "setup-quiesce-after-dev",
 ]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -3530,7 +3884,7 @@ function setupReadingErrors(errors, readings, ctx) {
     errors.push(
       "setupReadings.measurementSpecs must be steady-state, graph-held-unusable and one-shot (fresh cold copy, one query, no warm-up, no seam) per measurementPoint (DR-CP4-L-4)",
     );
-  reopenErrors(errors, readings);
+  reopenErrors(errors, readings, ctx);
   freshnessSettleErrors(errors, readings, ctx);
   readyProbeErrors(errors, readings, ctx);
   const pins = readings.source?.pins ?? [];
@@ -3592,6 +3946,7 @@ function setupReadingErrors(errors, readings, ctx) {
     ...(ctx.harnessK64Freeze ? [ctx.harnessK64Freeze.source] : []),
     ...(ctx.harnessK65Freeze ? [ctx.harnessK65Freeze.source] : []),
     ...(ctx.harnessK66Freeze ? [ctx.harnessK66Freeze.source] : []),
+    ...(ctx.harnessK67Freeze ? [ctx.harnessK67Freeze.source] : []),
     ...(ctx.harnessReadyProbe ? [ctx.harnessReadyProbe.source] : []),
   ]) {
     const role = harnessPinOf(source.path)?.role;
@@ -3615,10 +3970,17 @@ function setupReadingErrors(errors, readings, ctx) {
       ([key, outcomes]) =>
         outcomes !== null && !same(fields[key]?.outcomes, outcomes),
     ) ||
-    !same(fields.blocked?.fields, RECEIPT_BLOCKED_FIELDS)
+    !same(fields.blocked?.fields, RECEIPT_BLOCKED_FIELDS) ||
+    Object.entries(MAINTENANCE_RECEIPT_FIELDS).some(
+      ([key, names]) =>
+        !same(fields[key]?.fields, names) ||
+        !String(fields[key]?.acceptance ?? "").includes(
+          "[precheck] S1i maintenance-quiesce",
+        ),
+    )
   )
     errors.push(
-      `setupReadings.receiptFields must be ${Object.keys(RECEIPT_FIELDS).join(", ")} with the closed outcome sets (DR-CP4-L-24)`,
+      `setupReadings.receiptFields must be ${Object.keys(RECEIPT_FIELDS).join(", ")} with the closed outcome sets (DR-CP4-L-24), and readBack.maintenance (running and retryPending 0) and quiesce stop with [precheck] S1i maintenance-quiesce (DR-CP4-L-27)`,
     );
   const judgement = readings.blockedCaseJudgement ?? {};
   const judged = (judgement.rows ?? []).map((row) => [
@@ -3759,6 +4121,7 @@ function freshnessSettleErrors(errors, readings, ctx) {
     !Number.isInteger(c.FRESHNESS_SETTLE_INTERVAL_MS) ||
     setup.waitMs !== c.FRESHNESS_SETTLE_WAIT_MS ||
     setup.intervalMs !== c.FRESHNESS_SETTLE_INTERVAL_MS ||
+    !pinnedAgrees(c.RETRY_DISPATCH_GRACE_MS, setup.plannedRetryGraceMs) ||
     !same(setup.harnessConstants, [
       "FRESHNESS_SETTLE_WAIT_MS",
       "FRESHNESS_SETTLE_INTERVAL_MS",
@@ -3776,7 +4139,7 @@ function freshnessSettleErrors(errors, readings, ctx) {
     !nonBlank(measurement.rule)
   )
     errors.push(
-      `setupReadings.freshnessSettle must wait read-only for the product's Freshness (cursor at the feed head, no run, no reservation) in a complete setup before chronicle-index and measurement-point and at each session's end (maintenance still before measurement-point and at the end; ${String(c.FRESHNESS_SETTLE_WAIT_MS)} ms / ${String(c.FRESHNESS_SETTLE_INTERVAL_MS)} ms, [precheck] when the Freshness runs out, the maintenance disclosed) and in each measurement process before the declaration step (${String(c.RUN_FRESHNESS_SETTLE_LIMIT_MS)} ms / ${String(c.RUN_FRESHNESS_SETTLE_INTERVAL_MS)} ms, index-build-timeout when it runs out), with the pinned harness's constants (DR-CP4-T-1、T-3、T-5)`,
+      `setupReadings.freshnessSettle must wait read-only for the product's Freshness (cursor at the feed head, no run, no reservation) in a complete setup before chronicle-index and measurement-point and at each session's end (maintenance still before measurement-point and at the end; ${String(c.FRESHNESS_SETTLE_WAIT_MS)} ms / ${String(c.FRESHNESS_SETTLE_INTERVAL_MS)} ms, [precheck] when the Freshness runs out, the maintenance wait disclosed inside a session; the last session's closed workspace is quiesced by reopening and the cold DB keeps no running run or planned retry, [precheck] S1i maintenance-quiesce, DR-CP4-L-27) and in each measurement process before the declaration step (${String(c.RUN_FRESHNESS_SETTLE_LIMIT_MS)} ms / ${String(c.RUN_FRESHNESS_SETTLE_INTERVAL_MS)} ms, index-build-timeout when it runs out), with the pinned harness's constants (DR-CP4-T-1、T-3、T-5)`,
     );
   // The measurement's exhaustion is the existing index-build-timeout rows of
   // the blocked table (DR-CP4-L-28 (8)(9)); the table gains no row.
@@ -3828,8 +4191,9 @@ function readyProbeErrors(errors, readings, ctx) {
 }
 
 /** S2 追補 #2（DR-CP4-L-24）: the closed set of reopen triggers and the limits. */
-function reopenErrors(errors, readings) {
+function reopenErrors(errors, readings, ctx) {
   const reopen = readings.reopen ?? {};
+  const c = ctx?.harnessConstants ?? {};
   const triggers = (reopen.triggers ?? []).map((row) => [
     row?.id,
     row?.sessions,
@@ -3843,6 +4207,16 @@ function reopenErrors(errors, readings) {
     (reopen.triggers ?? []).some((row) => !nonBlank(row?.condition)) ||
     !same(reopen.limits, REOPEN_LIMITS) ||
     reopen.totalReopenableOpenings !== REOPEN_TOTAL ||
+    reopen.totalOpeningsWithQuiesce !== REOPEN_TOTAL_WITH_QUIESCE ||
+    !Object.entries(REOPEN_QUIESCE).every(([key, value]) =>
+      same(reopen.quiesce?.[key], value),
+    ) ||
+    !pinnedAgrees(c.MAINTENANCE_QUIESCE_REOPENS, reopen.quiesce?.reopens) ||
+    !pinnedAgrees(c.MAINTENANCE_QUIESCE_WAIT_MS, reopen.quiesce?.waitMs) ||
+    !same(reopen.quiesce?.harnessConstants, REOPEN_QUIESCE_CONSTANTS_TEXT) ||
+    !nonBlank(reopen.quiesce?.decision) ||
+    !nonBlank(reopen.quiesce?.step) ||
+    !nonBlank(reopen.quiesce?.condition) ||
     REOPEN_TOTAL !==
       ["author", "seal", "reseal"].reduce(
         (sum, label) => sum + REOPEN_LIMITS[label].openings,
@@ -3852,7 +4226,7 @@ function reopenErrors(errors, readings) {
     !nonBlank(reopen.otherFailures)
   )
     errors.push(
-      `setupReadings.reopen must be L-24's closed set (${REOPEN_TRIGGERS.map(([id]) => id).join(", ")}), author/seal/reseal 3 openings each (${REOPEN_TOTAL} in all), ir and hold never reopened`,
+      `setupReadings.reopen must be L-24's closed set (${REOPEN_TRIGGERS.map(([id]) => id).join(", ")}), author/seal/reseal 3 openings each (${REOPEN_TOTAL} in all), ir and hold never reopened, and the quiesce frame outside the set (${REOPEN_QUIESCE.reopens} reopenings of ${REOPEN_QUIESCE.waitMs} ms, ${REOPEN_TOTAL_WITH_QUIESCE} openings in all, [precheck] S1i maintenance-quiesce, DR-CP4-L-27)`,
     );
 }
 
@@ -4418,6 +4792,169 @@ function k66ReadingErrors(errors, readings) {
 }
 
 /**
+ * S2 追補 #18（DR-CP4-P-11）: the words k67Readings.limits carries — (a) the
+ * observation-after revision with the five loosenings (R-8, R-9, R-10, R-12,
+ * R-13; R-11 does not exist), (b) the deleted check (FR-8's stale; no
+ * substitute), (c) R-8's effect, (d) the narrowing items and what the drafter
+ * decided without the user's choice (7a〜7d), (e) s6r1・s7r1・s7r2 are not
+ * counted, (f) the reviews that were not blind, (g) the dev rehearsals and
+ * PR-3's dev gate (not judged; W and begin→query unmeasured; the late 2 with
+ * a cancelled requalification), (h) the quality verdict v3 outside the pins
+ * with the one reading changed after an observation (and the two fail→hold
+ * readings: db7c1234's unreadable rows and edge-revision-unresolved, which the
+ * frozen fixtures do not reach; plus the existing revision-of-path-unresolved
+ * hold of an edge whose displayed hash differs), (i) the harness
+ * (PR-3), (j) item B, (k) item C's harness change, (l) what remains before
+ * S4b (pins, six detection-power records, the R5 closure that grew past the
+ * ten files the user was shown and was then reconfirmed for eleven, the S3
+ * (10th) record), (m) the v3 fields that read §2.3 (S2 追補 #19, S3 10th's
+ * B1-3), (n) setup may copy the DB while maintenance runs (the drift_at_query
+ * finding's 1b). S2 追補 #19 also answers S3 10th's B2-5 ((a) R-12 under the
+ * k62 regime), B2-2 ((f)), B1-2 and the B3 notes ((b), (h), (l)).
+ */
+export const K67_LIMIT_WORDS = Object.freeze([
+  "R-8",
+  "R-9",
+  "R-10",
+  "R-12",
+  "R-13",
+  "R-11 は欠番",
+  "観測の後の改訂",
+  "s6r1",
+  "s7r1",
+  "s7r2",
+  "b9559a22",
+  "08b168c9",
+  "5bbd6ebb",
+  "f628efb2",
+  "問 2",
+  "FR-8",
+  "代替は無い",
+  "DR-CQD-8",
+  "実質無条件",
+  "コードの読み",
+  "K6/7-N9′",
+  "ユーザーの選択を経ていない",
+  "7a（",
+  "7b（",
+  "7c（",
+  "7d（",
+  "決めた点」1",
+  "完全な盲検ではなかった",
+  "判定に使わない",
+  "PR-3 単独には帰せない",
+  "悪化なしとして進める",
+  "235e0c67",
+  "615fea68",
+  "72518d39",
+  "W と begin→query",
+  "drift_at_query 1",
+  "reason cancelled",
+  "品質判定 v3",
+  "160f5fa5",
+  "b6166ed2",
+  "pin の外",
+  "db7c1234",
+  "utf16-range",
+  "explicit-pin-association",
+  "raw-excerpt-unchanged",
+  "added-scene-body-anchor",
+  "d1b21a16",
+  "22e2fc29",
+  "読めない行",
+  "(ii-b)",
+  "await_request",
+  "a4e26ea7",
+  "dp-h-unknown-scope",
+  "e2d22b89",
+  "with_conn_mut",
+  "evidence-fields.mjs",
+  "44 file",
+  "11 file",
+  "7a03eaf9",
+  "7361041f",
+  "11 file の外",
+  "k62 の regime",
+  "11d5e430",
+  "path 単位",
+  "v3:98",
+  "drift の枝は Graph を返さない",
+  "requalify は読んでいない",
+  "edge 単位",
+  "relationEndpoints",
+  "edge-revision-unresolved",
+  "1dd6fb35",
+  "337ff239",
+  "maintenance-quiesce",
+  "MAINTENANCE_QUIESCE_REOPENS",
+  "dependency-verify",
+  "別の lane の課題",
+  "queryGeneration",
+  "irOutcome",
+  "fetches[1]",
+  "K67_S3_REVIEW",
+  "4aa34626",
+  "S4:k67-detection-record",
+  "head.k67",
+  "K67_FREEZE",
+  "新しい S4 の結果だけ",
+  "S6 の許可リストは新しい S4b だけ",
+  // S4 の段取り ②③④: the merges and the product changes they brought.
+  "f4fe9f25",
+  "d73e2986",
+  "92ca2e24",
+  "#912〜#918",
+  // 9 回目の S4 の ⑥（S3 の 5 回目の確認の推奨 1〜3・6）: the count is 92 files
+  // (製品 82 and 品質ゲートの資産 10), the pins' 73 paths are 73 + 5 + 6 = 84 paths with
+  // the closure exclusions and the bound files (85 after ⑥), the three files both
+  // sides changed, and the S3 2nd〜5th checks' records (the 3rd not fully blind).
+  "92 file",
+  "品質ゲートの資産 10",
+  "85 path",
+  "3-way",
+  "74e4d8df",
+  "完全な盲検でない",
+  // The R5 closure's 14 files and the user's answer (contracts 448a5956), and the
+  // second merge of master (cea3988b, #919・#920).
+  "14 file",
+  "448a5956",
+  "cea3988b",
+  "b391981b",
+]);
+/** S2 追補 #18: what k67Readings.rule binds. */
+export const K67_RULE_WORDS = Object.freeze([
+  "k64-procedure.v2.json",
+  "K67_FREEZE",
+  "head.k67",
+  "K64_VALUES",
+]);
+
+/**
+ * S2 追補 #18（DR-CP4-P-11）: K6/7's readings — the rule binding the v2
+ * procedure file's values and K67_FREEZE, and the limits (a)〜(n).
+ */
+function k67ReadingErrors(errors, readings) {
+  if (!isObject(readings)) {
+    errors.push("k67Readings is required (S2 追補 #18、DR-CP4-P-11)");
+    return;
+  }
+  const unnamed = K67_RULE_WORDS.filter(
+    (word) => !String(readings.rule ?? "").includes(word),
+  );
+  if (!nonBlank(readings.status) || unnamed.length > 0)
+    errors.push(
+      `k67Readings.rule must bind ${K67_RULE_WORDS.join(", ")} (S2 追補 #18)`,
+    );
+  const missing = K67_LIMIT_WORDS.filter(
+    (word) => !String(readings.limits ?? "").includes(word),
+  );
+  if (missing.length > 0)
+    errors.push(
+      `k67Readings.limits must disclose ${missing.join(", ")} (S2 追補 #18、DR-CP4-P-11)`,
+    );
+}
+
+/**
  * S2 追補 #15 (S3 minor): every name G01-E2E's notCountedAs carries — the two
  * the first check left out (g-case-diagnostic-negative, sp-p4-seed-pin-parity)
  * included.
@@ -4522,7 +5059,7 @@ export function observationPrepErrors(prep, ctx) {
   const frozen = prep.status === PREP_FROZEN;
   if (prep.graphRuntimeObservedBeforeAuthoring !== false)
     errors.push("graphRuntimeObservedBeforeAuthoring must be false");
-  const { k24, k62, k64, k65, k66 } = prep.contracts ?? {};
+  const { k24, k62, k64, k65, k66, k67 } = prep.contracts ?? {};
   if (k24?.sha256 !== CONTRACTS.k24.sha256 || k24?.path !== CONTRACTS.k24.path)
     errors.push("contracts.k24 must be the K2/4 bytes");
   if (
@@ -4567,6 +5104,28 @@ export function observationPrepErrors(prep, ctx) {
       if (k66?.[field] !== ctx.harnessK66Freeze?.[field])
         errors.push(
           `contracts.k66.${field} must be the pinned harness's K66_FREEZE.${field} (${String(ctx.harnessK66Freeze?.[field] ?? "unreadable")}, ${K66_FREEZE_SOURCE.path} at its pin)`,
+        );
+  // S2 追補 #18: the /7 row stands on the /4, /5 and /6 bytes (all stay) and
+  // adds K6/7's bytes, the commit that last changed them and the freeze.
+  if (
+    k67?.sha256 !== CONTRACTS.k67.sha256 ||
+    k67?.draftRef !== CONTRACTS.k67.draftRef ||
+    k67?.contractId !== CONTRACTS.k67.contractId ||
+    k67?.path !== CONTRACTS.k67.path ||
+    k67?.confirmedCommit !== CONTRACTS.k67.confirmedCommit ||
+    k67?.freezeCommit !== CONTRACTS.k67.freezeCommit
+  )
+    errors.push(
+      "contracts.k67 must be the K6/7 bytes, confirmed commit and freeze commit (S2 追補 #18)",
+    );
+  // S2 追補 #18 (K66_FREEZE と同じ形): a frozen record's contracts.k67 is the
+  // pinned harness's K67_FREEZE, field by field. Unreadable pinned bytes (the
+  // pin predates K67_FREEZE) close the check; S4b re-pins.
+  if (frozen)
+    for (const field of K67_FREEZE_SOURCE.fields)
+      if (k67?.[field] !== ctx.harnessK67Freeze?.[field])
+        errors.push(
+          `contracts.k67.${field} must be the pinned harness's K67_FREEZE.${field} (${String(ctx.harnessK67Freeze?.[field] ?? "unreadable")}, ${K67_FREEZE_SOURCE.path} at its pin)`,
         );
   const sp1 = prep.contracts?.sp1;
   if (
@@ -4676,6 +5235,7 @@ export function observationPrepErrors(prep, ctx) {
   g04RevisionReadingErrors(errors, prep.g04RevisionReadings);
   k65ReadingErrors(errors, prep.k65Readings);
   k66ReadingErrors(errors, prep.k66Readings);
+  k67ReadingErrors(errors, prep.k67Readings);
   g01E2eDiagnosticErrors(errors, prep, ctx);
   reviewerQuestionErrors(errors, prep.reviewerQuestions, frozen);
 
@@ -4931,6 +5491,19 @@ export function observationPrepErrors(prep, ctx) {
     errors.push(
       "r5Gate.k66DetectionRecord must locate the K6/6 detection-power record (S4:k66-detection-record in a draft, filled when frozen) with its rule (S2 追補 #17)",
     );
+  // S2 追補 #18: the K6/7 detection-power record is bound the same way
+  // (S4:k67-detection-record in a draft, a located record when frozen).
+  const k67DetectionRecord = prep.r5Gate?.k67DetectionRecord;
+  if (
+    typeof k67DetectionRecord !== "string" ||
+    k67DetectionRecord.trim() === "" ||
+    (k67DetectionRecord.startsWith("S4:") &&
+      (k67DetectionRecord !== "S4:k67-detection-record" || frozen)) ||
+    !nonBlank(prep.r5Gate?.k67DetectionRecordRule)
+  )
+    errors.push(
+      "r5Gate.k67DetectionRecord must locate the K6/7 detection-power record (S4:k67-detection-record in a draft, filled when frozen) with its rule (S2 追補 #18)",
+    );
   if (frozen)
     for (const [label, text] of [
       ["r5Gate.r5CheckRecord", prep.r5Gate?.r5CheckRecord],
@@ -4940,6 +5513,7 @@ export function observationPrepErrors(prep, ctx) {
       ],
       ["r5Gate.k65DetectionRecord", k65DetectionRecord],
       ["r5Gate.k66DetectionRecord", k66DetectionRecord],
+      ["r5Gate.k67DetectionRecord", k67DetectionRecord],
     ])
       if (parseRecordReference(text) === null)
         errors.push(
@@ -5121,6 +5695,56 @@ export function observationPrepErrors(prep, ctx) {
   )
     errors.push(
       "contracts.k66.confirmation.additional must be the R5 reuse confirmation (82119012), with its file, commit, SHA-256, topic and date (S2 追補 #17)",
+    );
+  // S2 追補 #18 (K6/7): the user's K6/7 confirmation and the freeze record
+  // are bound by file, commit and SHA-256, the five answers given after it are
+  // bound like K6/6's additional, and S4b carries the row into review.
+  const k67Confirmation = k67?.confirmation;
+  if (
+    !isObject(k67Confirmation) ||
+    k67Confirmation.contract !== "K6/7" ||
+    !nonBlank(k67Confirmation.confirmedAt) ||
+    !String(k67Confirmation.record ?? "").includes(
+      K67_CONFIRMATION_RECORDS.graphEvalProcedure.path,
+    ) ||
+    !String(k67Confirmation.record ?? "").includes(
+      K67_CONFIRMATION_RECORDS.graphEvalProcedure.commit,
+    ) ||
+    !String(k67Confirmation.record ?? "").includes(
+      `SHA-256 ${K67_CONFIRMATION_RECORDS.graphEvalProcedure.sha256}`,
+    ) ||
+    !String(k67Confirmation.freezeRecord ?? "").includes(
+      K67_CONFIRMATION_RECORDS.freezeRecord.path,
+    ) ||
+    !String(k67Confirmation.freezeRecord ?? "").includes(
+      K67_CONFIRMATION_RECORDS.freezeRecord.commit,
+    ) ||
+    !String(k67Confirmation.freezeRecord ?? "").includes(
+      CONTRACTS.k67.freezeCommit,
+    ) ||
+    !String(k67Confirmation.intoReview ?? "").includes(
+      "review.userConfirmations",
+    )
+  )
+    errors.push(
+      "contracts.k67.confirmation must name the user's K6/7 confirmation record (its file, commit and SHA-256, and the date), the freeze record (its file, commit and the freeze commit) and the S4b step that carries it into review.userConfirmations (S2 追補 #18)",
+    );
+  if (
+    !same(
+      (k67Confirmation?.additional ?? []).map(({ record, commit, sha256 }) => ({
+        record,
+        commit,
+        sha256,
+      })),
+      K67_CONFIRMATION_RECORDS.additional,
+    ) ||
+    (k67Confirmation?.additional ?? []).some(
+      (row) => !nonBlank(row?.topic) || !nonBlank(row?.confirmedAt),
+    ) ||
+    !nonBlank(k67Confirmation?.additionalNote)
+  )
+    errors.push(
+      "contracts.k67.confirmation.additional must be the eight answers after K6/7 (item C, Q5〜Q7, PR-3's dev gate, the re-freeze and R5 reuse, the R5 closure's 11 files and the gate's drift_at_query, setup's quiesce and PUB-G's (A) items, the detection-power gaps' closing by added tests, the R5 closure's 14 files), each with its file, commit, SHA-256, topic and date (S2 追補 #18、9 回目の S4 の ⑥)",
     );
   const formal = procedure.formal ?? {};
   if (formal.version !== "v2" || formal.path !== PROCEDURE_V2)
@@ -5401,11 +6025,52 @@ export function observationPrepErrors(prep, ctx) {
         errors.push(
           `review.userConfirmations must carry the confirmation ${row.commit.slice(0, 8)} (${row.record}) as a row, and userConfirmationsScope must name it (S2 追補 #17)`,
         );
-    // S2 追補 #17 (S3's B2-1): K6/6's review is the 9th S3 record.
-    if (!String(review?.record ?? "").includes(K66_S3_REVIEW.path))
+    // S2 追補 #18: the K6/7 row, its scope (the five loosenings R-8, R-9,
+    // R-10, R-12, R-13 and the deleted FR-8 check) and the four later answers.
+    const k67Row = rows.find((row) => row?.contract === "K6/7");
+    if (
+      !k67Row ||
+      k67Row.draftRef !== CONTRACTS.k67.draftRef ||
+      k67Row.contractId !== CONTRACTS.k67.contractId ||
+      k67Row.sha256 !== CONTRACTS.k67.sha256 ||
+      !String(k67Row.source ?? "").includes(
+        K67_CONFIRMATION_RECORDS.graphEvalProcedure.path,
+      ) ||
+      !nonBlank(k67Row.confirmedAt)
+    )
       errors.push(
-        `review.record must cite the S3 (9th, K6/6) review record ${K66_S3_REVIEW.path} (S2 追補 #17)`,
+        "review.userConfirmations must carry the K6/7 row (draftRef, contractId, the K6/7 SHA-256, date, and the confirmation record as source) when frozen (S2 追補 #18)",
       );
+    for (const word of ["K6/7", "R-8", "R-9", "R-10", "R-12", "R-13", "FR-8"])
+      if (!String(review?.userConfirmationsScope ?? "").includes(word))
+        errors.push(
+          `review.userConfirmationsScope must state the K6/7 confirmation's scope (${word}) when frozen (S2 追補 #18)`,
+        );
+    for (const row of K67_CONFIRMATION_RECORDS.additional)
+      if (
+        !rows.some((entry) =>
+          String(entry?.source ?? "").includes(row.record),
+        ) ||
+        !String(review?.userConfirmationsScope ?? "").includes(
+          row.commit.slice(0, 8),
+        )
+      )
+        errors.push(
+          `review.userConfirmations must carry the confirmation ${row.commit.slice(0, 8)} (${row.record}) as a row, and userConfirmationsScope must name it (S2 追補 #18)`,
+        );
+    // S2 追補 #19 (S3 10th's B2-1): a frozen S2 stands under K6/7, so its
+    // review is the 10th S3 record (K66_S3_REVIEW stays K6/6's history: a
+    // k66FormalRows row, no longer what review.record must cite).
+    if (!String(review?.record ?? "").includes(K67_S3_REVIEW.path))
+      errors.push(
+        `review.record must cite the S3 (10th, K6/7) review record ${K67_S3_REVIEW.path} (S2 追補 #19)`,
+      );
+    // 9 回目の S4 の ⑥: and the 2nd〜5th checks' records (K67_S3_REVIEW.rechecks).
+    for (const row of K67_S3_REVIEW.rechecks)
+      if (!String(review?.record ?? "").includes(row.path))
+        errors.push(
+          `review.record must cite the S3 (10th, K6/7) check ${row.round}'s record ${row.path} (9 回目の S4 の ⑥、S3 の 5 回目の確認の推奨 6)`,
+        );
   } else if (prep.review !== null)
     errors.push("review must be null until S3 reviews");
   return errors;
@@ -5741,6 +6406,67 @@ async function readHarnessK66Freeze({ repoRoot, read }) {
   };
 }
 
+/**
+ * S2 追補 #18: the K6/7 freeze S2's contracts.k67 must equal, read from the
+ * pinned bytes of the harness's constants.mjs (never imported or run), as
+ * K66_FREEZE is. The pin predates K67_FREEZE until S4b re-pins constants.mjs
+ * (the check closes as unreadable until then; a draft is not compared).
+ */
+export const K67_FREEZE_SOURCE = Object.freeze({
+  path: `${HARNESS_DIR}constants.mjs`,
+  name: "K67_FREEZE",
+  fields: Object.freeze(["sha256", "confirmedCommit", "freezeCommit"]),
+});
+
+/**
+ * S2 追補 #18: K67_FREEZE's sha256 (64-hex), confirmedCommit and freezeCommit
+ * (40-hex) in the harness's constants.mjs text, each exactly once inside the
+ * object literal; undefined when the literal or a field is absent or repeated.
+ */
+export function parseK67Freeze(text) {
+  const block =
+    /^export const K67_FREEZE = Object\.freeze\(\{\n([\s\S]*?)\n\}\);$/mu.exec(
+      String(text),
+    );
+  if (!block) return undefined;
+  const out = {};
+  for (const [field, digits] of [
+    ["sha256", 64],
+    ["confirmedCommit", 40],
+    ["freezeCommit", 40],
+  ]) {
+    const rows = [
+      ...block[1].matchAll(
+        new RegExp(`^ {2}${field}: "([0-9a-f]{${digits}})",$`, "gmu"),
+      ),
+    ];
+    if (rows.length !== 1) return undefined;
+    out[field] = rows[0][1];
+  }
+  return out;
+}
+
+/** S2 追補 #18: K67_FREEZE from the pinned bytes; null on a miss. */
+async function readHarnessK67Freeze({ repoRoot, read }) {
+  const pinned = await readPinnedHarnessFile({
+    repoRoot,
+    read,
+    file: K67_FREEZE_SOURCE.path,
+  });
+  if (!pinned) return null;
+  const values = parseK67Freeze(pinned.bytes.toString("utf8"));
+  if (values === undefined) return null;
+  return {
+    ...values,
+    source: {
+      path: K67_FREEZE_SOURCE.path,
+      commit: pinned.commit,
+      from: pinned.from,
+      sha256: pinned.sha256,
+    },
+  };
+}
+
 /** S4 の最終関門の P3-3: K64_FREEZE.freezeCommit from the pinned bytes; null on a miss. */
 async function readHarnessK64Freeze({ repoRoot, read }) {
   const pinned = await readPinnedHarnessFile({
@@ -5820,6 +6546,17 @@ async function readHarnessReadyProbe({ repoRoot, read }) {
   };
 }
 
+/**
+ * The three DR-CP4-L-27 constants (MAINTENANCE_QUIESCE_REOPENS／_WAIT_MS,
+ * RETRY_DISPATCH_GRACE_MS) are in HARNESS_CONSTANTS and read from the pinned
+ * bytes like the others (9 回目の S4 の ⑥ で k67-setup-quiesce の pin が
+ * frozen-setup-driver.mjs と workspace-db.mjs を持った。⑥ の前の「pin の bytes が
+ * まだ持たない間は読込み全体の失敗にしない」緩めは消した)：読めなければ
+ * 読込み全体が null になり、S2 の値が pin の値と違えば validator が拒む。
+ */
+/** S2's value equals the pinned constant (an unreadable pinned one never agrees). */
+export const pinnedAgrees = (pinned, s2Value) =>
+  Number.isInteger(pinned) && s2Value === pinned;
 /**
  * S2 追補 #4: HARNESS_CONSTANTS from the pinned bytes; null on any miss.
  * S2 追補 #9: and HARNESS_MODULE_CONSTANTS under their `as` names.
@@ -5983,11 +6720,13 @@ export async function loadObservationPrepContext({ repoRoot }) {
   const k64Freeze = await readHarnessK64Freeze({ repoRoot, read });
   const k65Freeze = await readHarnessK65Freeze({ repoRoot, read });
   const k66Freeze = await readHarnessK66Freeze({ repoRoot, read });
+  const k67Freeze = await readHarnessK67Freeze({ repoRoot, read });
   const readyProbe = await readHarnessReadyProbe({ repoRoot, read });
   return {
     harnessK64Freeze: k64Freeze,
     harnessK65Freeze: k65Freeze,
     harnessK66Freeze: k66Freeze,
+    harnessK67Freeze: k67Freeze,
     harnessReadyProbe: readyProbe,
     harnessBlockedTable: blocked?.table ?? null,
     harnessBlockedTableSource: blocked?.source ?? null,
@@ -6232,6 +6971,44 @@ export function k66FormalRows(prep) {
 }
 
 /**
+ * S2 追補 #18: the rows for K6/7 — the draft at its freeze commit, the user's
+ * confirmation record, the freeze record, the quality verdict v3 and its
+ * fixing record, the five answers after K6/7, the S3 (10th) review record
+ * (S2 追補 #19) and the K6/7 detection-power record S4b locates (`prep`), so
+ * that the contracts commits are strict ancestors of the head (S4's branch
+ * merges contracts).
+ */
+export function k67FormalRows(prep) {
+  const located = [prep?.r5Gate?.k67DetectionRecord]
+    .map((text) => parseRecordReference(text))
+    .filter((reference) => reference !== null);
+  return [
+    {
+      path: CONTRACTS.k67.path,
+      commit: CONTRACTS.k67.freezeCommit,
+      sha256: CONTRACTS.k67.sha256,
+    },
+    K67_CONFIRMATION_RECORDS.graphEvalProcedure,
+    K67_CONFIRMATION_RECORDS.freezeRecord,
+    K67_QUALITY_VERDICT_V3.v3,
+    K67_QUALITY_VERDICT_V3.confirmationRecord,
+    ...K67_CONFIRMATION_RECORDS.additional.map((row) => ({
+      path: row.record,
+      commit: row.commit,
+      sha256: row.sha256,
+    })),
+    K67_S3_REVIEW,
+    // 9 回目の S4 の ⑥: the 2nd〜5th checks of the S3 review.
+    ...K67_S3_REVIEW.rechecks,
+    ...located,
+  ].map(({ path: file, commit, sha256: digest }) => ({
+    path: file,
+    commit,
+    sha256: digest,
+  }));
+}
+
+/**
  * The (path, commit, sha256) rows the formal gate checks against git: the
  * traces, S2's boundFiles, the superseded v1 addenda, the K6/4 procedure, the
  * SP/1 bytes, K6/5's rows and K6/6's rows.
@@ -6246,6 +7023,10 @@ export function formalReferenceRows(prep, addenda) {
     // S2 追補 #16: K6/6's draft, confirmation, freeze record, the quality
     // verdict v2 and the dev rehearsals' record.
     ...k66FormalRows(prep),
+    // S2 追補 #18: K6/7's draft, confirmation, freeze record, the quality
+    // verdict v3, the five answers after K6/7, the S3 (10th) review record
+    // and the detection-power record.
+    ...k67FormalRows(prep),
     // The v1 bytes each new addendum version supersedes (B2b-1 review P3-2).
     ...supersededReferences(addenda),
     {

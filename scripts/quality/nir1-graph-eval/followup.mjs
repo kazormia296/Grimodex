@@ -47,14 +47,13 @@ import {
 import {
   BOUNDARY_DISAGREEMENTS,
   FRESHNESS_REASONS,
-  RETIRED_FRESHNESS_STAMP_BUSY,
   SETUP_DEFECT_REASONS,
-  assertNoRetiredBusy,
   classifyJoin,
   finite,
   lapseKind,
   USER_OPERATION,
 } from "./join.mjs";
+import { iiBFieldsFromNativeTicket } from "./native-sample.mjs";
 
 export const FOLLOW_UP_CONTEXTS = Object.freeze(["steady", "trace"]);
 /** R5: the only issuer whose queries K6/4 judges (N16). */
@@ -78,11 +77,10 @@ const DPRIME_COUNTER_KEYS = Object.freeze([
   "staleReadyRetired",
   "prepareFailures",
   "driftAtQuery",
-  "stamp0Missing",
 ]);
 /**
  * K6/6 変える点 7: the two counters the first-render condition (R-6 (b)) reads.
- * Required in the steady state only; a (b) trace record keeps the seven keys
+ * Required in the steady state only; a (b) trace record keeps the six keys
  * above (K6/6-P5; `trace-record.mjs` is not changed).
  */
 const DPRIME_STEADY_ONLY_KEYS = Object.freeze([
@@ -538,10 +536,8 @@ export function firstRenderOf(sample, join, next) {
   const counters = record.dPrimeCounters;
 
   // FR-8 / N-d: records the product's own rules rule out.
-  if (sample.freshnessStamp?.result === "stale")
-    throw new Error(
-      "[artifact] K6/6 FR-8: a parent that joined its Graph in the window has a `stale` freshness stamp (the product never queries on Stale)",
-    );
+  // K6/7 変える点 3: the `stale` stamp check is gone with the stamp (no
+  // substitute; the drift record check below and `driftAtQuery` remain).
   if (counters.driftAtQuery !== 0 || counters.prepareFailures !== 0)
     throw new Error(
       `[artifact] K6/6 FR-8: a parent that joined its Graph in the window recorded driftAtQuery=${counters.driftAtQuery}, prepareFailures=${counters.prepareFailures}`,
@@ -587,20 +583,36 @@ export function firstRenderOf(sample, join, next) {
       no("c", `next-prepares-ready-diff-${there - here}`);
   }
 
-  // R-7 (ii′), FR-3.
-  const stamp = sample.freshnessStamp?.result ?? null;
-  if (stamp === "fresh") {
-    // counted
-  } else if (stamp === "stamp0-missing") {
-    // The ② items a record can show (a joined parent has them all).
-    if (parent.ticket?.outcome !== "available")
-      no("FR3", "ticket-not-available");
-    if (parent.declaration !== "used") no("FR3", "declaration-not-used");
-    if (!(graph.outcome === "graph-ready" && graph.joined === true))
-      no("FR3", "not-joined");
-    if (graph.revalidation !== "passed") no("FR3", "revalidation-not-passed");
-    if (!Number.isInteger(graph.edgeCount)) no("FR3", "edge-count-not-integer");
-  } else no("FR3", `stamp-${stamp === null ? "missing" : stamp}`);
+  // FR-3 (K6/7 変える点 2): the ② items, every sample, no stamp. A parent
+  // that joined in the window has the product's own values for (②-1) the
+  // worker drift check and (②-2) the requalification (a drift, a failed
+  // requalification, a payload that did not go out are never joined): any
+  // other value is a record the product cannot have made, `[artifact]`
+  // (N-e2, N-e3, N-e5, N-e6). A missing or ill-formed (ii-b) record is an
+  // `[artifact]` too (N-f1, N-f2). A parent with no ticket (a `Cached`
+  // origin) has nothing to check; FR1 already fails it.
+  const ticket = parent.ticket ?? null;
+  if (ticket === null) no("FR3", "ticket-not-available");
+  else {
+    const iiB = iiBFieldsFromNativeTicket(ticket);
+    if (iiB.workerDrift.result !== "clear")
+      throw new Error(
+        `[artifact] K6/7 (②-1): a parent that joined its Graph in the window has the worker drift check \`${iiB.workerDrift.result}\` (the product joins only after a clear check)`,
+      );
+    if (iiB.requalification.result !== "passed")
+      throw new Error(
+        `[artifact] K6/7 (②-2): a parent that joined its Graph in the window has the requalification \`${iiB.requalification.result}\` (the product joins only a passed requalification)`,
+      );
+    if (iiB.requalification.returned !== true)
+      throw new Error(
+        "[artifact] K6/7 (②-2): a parent that joined its Graph in the window has a requalification whose payload did not go out",
+      );
+    if (ticket.outcome !== "available") no("FR3", "ticket-not-available");
+  }
+  if (parent.declaration !== "used") no("FR3", "declaration-not-used");
+  if (!(graph.outcome === "graph-ready" && graph.joined === true))
+    no("FR3", "not-joined");
+  if (!Number.isInteger(graph.edgeCount)) no("FR3", "edge-count-not-integer");
 
   // FR-4: owner counters, over the whole sample and after the release wait.
   const delta = (block) =>
@@ -699,7 +711,6 @@ export function classifyFollowUp(sample, options) {
     throw new Error(
       "[precheck] classifyFollowUp needs context steady or trace",
     );
-  assertNoRetiredBusy(sample);
   const join = classifyJoin(sample);
   // (b): K6/2 rule 2 read through K6/4:165 — a parent that joined as
   // `Cached` within D is not displayed (D-5, the strict reading). The steady
@@ -847,10 +858,6 @@ export function classifyFollowUp(sample, options) {
     const ticket = parent.ticket;
     if (ticket === null) add("parent", "X1", "no-ticket");
     else if (ticket.outcome !== "available") {
-      if (ticket.busyCause === RETIRED_FRESHNESS_STAMP_BUSY)
-        throw new Error(
-          "[artifact] the product owner never answers Busy for a stamp read; record it as freshnessStamp.result unavailable",
-        );
       add("parent", "X1", ticket.reason ?? ticket.outcome);
     } else if (!(ticket.settled && ticket.disposition === "unused"))
       add("parent", "X1", "not-cached");
@@ -1043,7 +1050,7 @@ function ticketReasonCategory(reason) {
   if (FRESHNESS_REASONS.has(reason)) return "freshness";
   if (LAPSE_TICKET_REASONS.has(reason)) return "lapse";
   if (SETUP_DEFECT_REASONS.has(reason)) return "setup-defect";
-  // busy (its cause is not a stamp read; that cause is retired and throws),
+  // busy,
   // timeout, limit, failed, cancelled, no ticket, not cached: :109 「ここに
   // 挙げていない X1 の理由は…「その他」」 / K6/2 720.
   return "other";
@@ -1074,13 +1081,14 @@ function codeCategory(row) {
 
 /**
  * (b) category of one query that was not displayed (変える点 15, K6/4:109).
- * K6/2 rule 4 first (失効, the boundary disagreement, the setup defect; and,
- * when the caller computed it, a stamp without comparison is 「その他」,
- * DR-CP4-S1C1-8). The D′ structural graph-late itself is never a reason
- * (N33): the category is that of the stage where the follow-up failed, with
- * K6/2 rule 4's order inside the stage.
+ * K6/2 rule 4 first (失効, the boundary disagreement, the setup defect). The
+ * D′ structural graph-late itself is never a reason (N33): the category is
+ * that of the stage where the follow-up failed, with K6/2 rule 4's order
+ * inside the stage. K6/7 変える点 7 (a): no stamp argument (the stamp is gone,
+ * DR-DBC-7); the reading does not depend on the presence of any stamp key
+ * (N-g).
  */
-export function followUpFailureCategory(sample, result, stampReason = null) {
+export function followUpFailureCategory(sample, result) {
   // A query whose B was not usable at its start is out of U whatever its
   // display (K6/2 rule 3 (i)); it is a lapse.
   const kind = lapseKind(sample, false);
@@ -1096,7 +1104,6 @@ export function followUpFailureCategory(sample, result, stampReason = null) {
     sample.graph.outcome === "graph-unavailable" ? sample.graph.reason : null;
   if (SETUP_DEFECT_REASONS.has(parentReason))
     return { category: "setup-defect", reason: parentReason };
-  if (stampReason !== null) return { category: "other", reason: stampReason };
   const failed = result.failedStage;
   if (!failed)
     return { category: "other", reason: "follow-up:no-failed-stage" };

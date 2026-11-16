@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  freshnessStampFromNative,
+  iiBFieldsFromNativeTicket,
   nativeDurationMs,
   nativeNs,
   recordReadFromA3,
@@ -29,43 +29,6 @@ test("nativeDurationMs divides ns by 1e6 and only for disclosure", () => {
   assert.throws(() => nativeDurationMs(5, 4), /ends before/);
 });
 
-const stamp = (result, matched, attemptedAtNs = 42) => ({
-  result,
-  matched,
-  attemptedAtNs,
-});
-
-test("freshness stamps keep result and matched consistent with the Native", () => {
-  assert.deepEqual(freshnessStampFromNative(stamp("fresh", true)), {
-    result: "fresh",
-    matched: true,
-    attemptedAtNs: 42,
-  });
-  assert.equal(freshnessStampFromNative(stamp("stale", false)).matched, false);
-  assert.equal(
-    freshnessStampFromNative(stamp("unavailable", null)).matched,
-    null,
-  );
-  assert.equal(
-    freshnessStampFromNative(stamp("stamp0-missing", null)).result,
-    "stamp0-missing",
-  );
-  assert.equal(freshnessStampFromNative(null), null);
-  assert.throws(
-    () => freshnessStampFromNative(stamp("unavailable", false)),
-    /matched=null/,
-  );
-  assert.throws(
-    () => freshnessStampFromNative(stamp("fresh", null)),
-    /matched=true/,
-  );
-  assert.throws(() => freshnessStampFromNative(stamp("busy", null)), /unknown/);
-  assert.throws(
-    () => freshnessStampFromNative(stamp("fresh", true, 4.2)),
-    /integer ns/,
-  );
-});
-
 function record(overrides = {}) {
   return {
     seq: 1,
@@ -89,7 +52,8 @@ function record(overrides = {}) {
       reason: null,
       disposition: "used",
       busyCause: null,
-      freshnessStamp: stamp("fresh", true, 130),
+      workerDrift: { result: "clear", cause: null },
+      requalification: { result: "passed", reason: null, returned: true },
     },
     ...overrides,
   };
@@ -105,11 +69,7 @@ test("a pending worker record maps to the S1a table", () => {
   });
   assert.equal(fields.source, "worker");
   assert.equal(fields.busyCause, null);
-  assert.deepEqual(fields.freshnessStamp, {
-    result: "fresh",
-    matched: true,
-    attemptedAtNs: 130,
-  });
+  assert.equal(Object.hasOwn(fields, "freshnessStamp"), false);
   assert.deepEqual(fields.timing, { beginNs: 100, returnedNs: 150 });
   assert.equal(fields.ticket.settledNs, 900);
 });
@@ -172,7 +132,7 @@ test("a cached begin is the cache source and has no ticket", () => {
     record({ begin: "cached", ticket: null }),
   );
   assert.equal(fields.source, "cache");
-  assert.equal(fields.freshnessStamp, null);
+  assert.equal(Object.hasOwn(fields, "freshnessStamp"), false);
   assert.throws(
     () => sampleFieldsFromNativeRecord(record({ begin: "cached" })),
     /no ticket/,
@@ -220,4 +180,67 @@ test("the A3 record must be the read-only own connection", () => {
   );
   assert.throws(() => recordReadFromA3({ ...a3, tFinishedNs: 5 }), /before/);
   assert.throws(() => recordReadFromA3({ ...a3, schema: "x" }), /not an A3/);
+});
+
+test("K6/7 N-f1〜N-f3: every pending ticket names the worker drift and the requalification, or the record is an [artifact]", () => {
+  const base = record();
+  const fields = sampleFieldsFromNativeRecord(base).ticket;
+  assert.deepEqual(fields.workerDrift, { result: "clear", cause: null });
+  assert.deepEqual(fields.requalification, {
+    result: "passed",
+    reason: null,
+    returned: true,
+  });
+  // A ticket that never reached a step names it explicitly (not a missing key).
+  assert.deepEqual(
+    iiBFieldsFromNativeTicket({
+      workerDrift: { result: "not-reached", cause: null },
+      requalification: { result: "not-reached", reason: null, returned: false },
+    }),
+    {
+      workerDrift: { result: "not-reached", cause: null },
+      requalification: { result: "not-reached", reason: null, returned: false },
+    },
+  );
+  const without = (key) => {
+    const { [key]: _gone, ...ticket } = base.ticket;
+    return record({ ticket });
+  };
+  // N-f1: an older .node (neither key) and a half-present ticket stop.
+  for (const key of ["workerDrift", "requalification"])
+    assert.throws(
+      () => sampleFieldsFromNativeRecord(without(key)),
+      /\[artifact\]/,
+    );
+  const ill = (patch) => record({ ticket: { ...base.ticket, ...patch } });
+  // N-f2: an unknown result, a missing cause or a non-boolean returned.
+  for (const patch of [
+    { workerDrift: { result: "stale", cause: null } },
+    { workerDrift: { result: "clear" } },
+    { workerDrift: { result: "clear", cause: 3 } },
+    { requalification: { result: "passed", reason: null } },
+    { requalification: { result: "passed", reason: null, returned: "yes" } },
+    { requalification: { result: "ok", reason: null, returned: true } },
+    { requalification: { result: "unavailable", reason: 5, returned: false } },
+  ])
+    assert.throws(
+      () => sampleFieldsFromNativeRecord(ill(patch)),
+      /\[artifact\]/,
+    );
+  // N-f3: the check is not conditional on a parent that joined: a ticket that
+  // never settled as available and a Busy ticket are checked too.
+  assert.throws(
+    () =>
+      sampleFieldsFromNativeRecord(
+        record({
+          ticket: {
+            ...without("workerDrift").ticket,
+            outcome: "unavailable",
+            reason: "stale",
+            disposition: "unused",
+          },
+        }),
+      ),
+    /\[artifact\]/,
+  );
 });

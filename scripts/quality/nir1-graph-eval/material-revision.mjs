@@ -14,6 +14,7 @@
 
 import { createHash } from "node:crypto";
 import { F6_FORMAL_BASIS } from "./followup.mjs";
+import { hashFetchEvidence } from "./evidence-fields.mjs";
 
 const sha256 = (text) =>
   createHash("sha256").update(String(text), "utf8").digest("hex");
@@ -202,15 +203,23 @@ export function hashGraphPaths(paths) {
   };
 }
 
-/** Hashes every fetch's path quotes in one k64 observation (in place copy). */
+/**
+ * Hashes every fetch's path quotes in one k64 observation (in place copy).
+ * Prereg v3: a fetch the k64 probe returned also carries the page-only plain
+ * fields `evidenceRaw` (the Graph rows' excerpt and quotes) and `rowTexts`
+ * (the displayed rows' excerpts); they become `evidence` and `rowExcerpts`
+ * (hashes, ranges, lengths, IDs) here and are never kept (evidence-fields.mjs).
+ */
 export function hashObservationPaths(observation) {
   if (!observation || !Array.isArray(observation.fetches)) return observation;
   return {
     ...observation,
     fetches: observation.fetches.map((fetch) =>
-      fetch?.paths === undefined
-        ? fetch
-        : { ...fetch, paths: hashGraphPaths(fetch.paths) },
+      hashFetchEvidence(
+        fetch?.paths === undefined
+          ? fetch
+          : { ...fetch, paths: hashGraphPaths(fetch.paths) },
+      ),
     ),
   };
 }
