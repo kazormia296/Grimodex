@@ -3585,6 +3585,11 @@ test("S2 追補 #2 P3-1 / P3-2: forbidden paths are found anywhere in the path; 
     "k66-readings-after-s6r1",
     "k66-quality-verdict-v2-after-s6r1",
     "k66-harness-and-rehearsal-choices",
+    // S4a（9 回目、S2 追補 #18）: the K6/7 readings chosen after s7r2, the
+    // quality verdict v3 design and the dev gate's choices.
+    "k67-readings-after-s7r2",
+    "k67-quality-verdict-v3-design",
+    "k67-harness-and-dev-ab-choices",
   ]) {
     const without = clone(declaration);
     without.readingsChosenAfterDevObservation =
@@ -8165,7 +8170,8 @@ test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6
     (row) => row.at === "2026-11-08",
   );
   assert.equal(rows1108.length, 4);
-  assert.equal(declaration.revisions.at(-1), rows1108[3]);
+  // S4a（9 回目）adds two rows dated 2026-11-16 after these.
+  assert.equal(declaration.revisions.at(-3), rows1108[3]);
   for (const word of [
     "S2 追補 #16",
     "DR-CP4-S4-10",
@@ -8260,12 +8266,12 @@ test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6
   // Earlier rows stay as written (the new rows add, never edit).
   assert.ok(
     declaration.revisions
-      .slice(0, -4)
+      .slice(0, -6)
       .some((row) => row.reason.includes("確認の台帳の形の記録ではない")),
   );
   assert.ok(
     declaration.revisions
-      .slice(0, -4)
+      .slice(0, -6)
       .some((row) => row.reason.includes("S4a（6 回目）で開示する限界")),
   );
   // S2's bound author declaration is the file this test reads.
@@ -8729,5 +8735,124 @@ test("S2 追補 #18: the K6/7 records hold the committed bytes at their commits 
     git("show", `${CONTRACTS.k67.freezeCommit}:${CONTRACTS.k67.path}`).length >
       0,
     true,
+  );
+});
+
+test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7's readings chosen after s7r2, the quality verdict v3 design and the dev gate's choices, the facts of this re-freeze and the limits, and the earlier rows stay", async () => {
+  const declaration = await json(OBSERVATION_PREP_FILES.authorDeclaration);
+  assert.deepEqual(authorDeclarationErrors(declaration), []);
+  assert.equal(declaration.graphRuntimeOutputObserved, false);
+  const rows = Object.fromEntries(
+    declaration.readingsChosenAfterDevObservation.map((row) => [row.id, row]),
+  );
+  const expected = {
+    "k67-readings-after-s7r2": [
+      "5bbd6ebb",
+      "f628efb2",
+      "b9559a22",
+      "ユーザーの選択を経ていない",
+      "R-13",
+    ],
+    "k67-quality-verdict-v3-design": [
+      "160f5fa5",
+      "db7c1234",
+      "22e2fc29",
+      "3f977b32",
+      "fd1f69ce",
+      "ユーザーの選択を経ていない",
+      "緩和に当たりうる",
+    ],
+    "k67-harness-and-dev-ab-choices": [
+      "235e0c67",
+      "数値の線を置かず",
+      "K6/7-N9′",
+    ],
+  };
+  for (const [id, words] of Object.entries(expected)) {
+    const text = `${rows[id].reading} ${rows[id].chosenBy} ${rows[id].basis}`;
+    for (const word of words) assert.ok(text.includes(word), `${id} ${word}`);
+    assert.ok(rows[id].basis.includes("見た後"), id);
+    for (const field of ["chosenBy", "basis"]) {
+      const mutated = clone(declaration);
+      mutated.readingsChosenAfterDevObservation.find((row) => row.id === id)[
+        field
+      ] = " ";
+      assert.ok(
+        authorDeclarationErrors(mutated).some((e) =>
+          /readingsChosenAfterDevObservation must list/u.test(e),
+        ),
+        `${id} ${field}`,
+      );
+    }
+  }
+  // The two rows dated 2026-11-16: the facts of this re-freeze and what was
+  // read, and the limits (1)〜(13).
+  const rows1116 = declaration.revisions.filter(
+    (row) => row.at === "2026-11-16",
+  );
+  assert.equal(rows1116.length, 2);
+  assert.equal(declaration.revisions.at(-1), rows1116[1]);
+  for (const word of [
+    "S2 追補 #18",
+    "DR-CP4-S4-11",
+    "2a28e1a2c940ccf2b553c62f90cde074e87ac97a",
+    "f2f99b13e18bcf4dd84ff6778de56189a3e1ef9b",
+    "7a03eaf92a98eef4b4444bcbfda7f88c31f5e4e2",
+    "追補の作者の申告ではない",
+    "bytes を変えていないもの",
+    "読んでいないもの",
+    "製品のコードは不変ではない",
+    "445 file",
+    "db7c1234",
+    "44 file",
+    "11 file",
+    "evidence-fields.mjs",
+    "S3 は K6/7 の追補",
+    "s4a-draft.md",
+    "draft の調査による",
+  ])
+    assert.ok(rows1116[0].reason.includes(word), word);
+  for (const word of [
+    "S4a（9 回目）で開示する限界",
+    "R-8",
+    "R-9",
+    "R-10",
+    "R-12",
+    "R-13",
+    "R-11 は欠番",
+    "FR-8",
+    "7a〜7d",
+    "完全な盲検ではなかった",
+    "PR-3 単独には帰せない",
+    "+6.0",
+    "悪化なしとして進める",
+    "drift_at_query 1",
+    "W と begin→query は未測",
+    "db7c1234",
+    "(13)",
+    "前の限界",
+  ])
+    assert.ok(rows1116[1].reason.includes(word), word);
+  // The scope names the ninth re-freeze's observations.
+  for (const word of [
+    "DR-CP4-S4-11",
+    "s7r1",
+    "s7r2",
+    "k67-*",
+    "graphRuntimeObservedBeforeFreeze: false",
+    "gold-s7r2-1",
+    "CP-4 の結果に数えない",
+  ])
+    assert.ok(declaration.graphRuntimeOutputObservedScope.includes(word), word);
+  // Earlier rows stay as written (the new rows add, never edit).
+  assert.ok(
+    declaration.revisions
+      .slice(0, -2)
+      .some((row) => row.reason.includes("S4a（7 回目）で開示する限界")),
+  );
+  assert.equal(
+    declaration.revisions.length,
+    38,
+    "36 rows before S4a (9th) plus its two",
   );
 });

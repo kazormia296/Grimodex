@@ -2141,6 +2141,13 @@ const READINGS_AFTER_DEV = Object.freeze([
   "k66-readings-after-s6r1",
   "k66-quality-verdict-v2-after-s6r1",
   "k66-harness-and-rehearsal-choices",
+  // S4a（9 回目の凍結のやり直し、S2 追補 #18）: K6/7 の読み（R-8・R-9・R-10・R-12・
+  // R-13、FR-8 の検査の削除。s6r1・s7r1・s7r2 と PR-3 の調査の後に起案）、品質判定 v3
+  // の読み（s7r2・s7r1 の後に起案。観測の後に変えた読み 2 点）、PR-3 の dev の gate の
+  // 手順と harness の形（gate の 1 回目を見た後に本数と時間帯を変えた）。
+  "k67-readings-after-s7r2",
+  "k67-quality-verdict-v3-design",
+  "k67-harness-and-dev-ab-choices",
 ]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
