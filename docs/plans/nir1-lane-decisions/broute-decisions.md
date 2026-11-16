@@ -623,6 +623,7 @@
 - gated route を production の `ROUTE_REGISTRY` に移すこと（DR-PUBG-5-2 の 2 段目）。
 - policy の行を `wired` で入れること。schema の件数・enum、新しい語彙（`durableRun`、`writes` の `declared-index-binding`）、validator、parity 試験を変える（DR-PUBG-5-3）。
 - `PRODUCT_GRAPH_PUBLISHED` の切替。B の product gate も同じ const で開く（DR-PUBG-5-8）。`native-architecture.mjs` の期待の変更も、この PR で行う。
+- main 側の独立した拒否が外れたことの確認（DR-PUBG-5-14 の判断 4。点検 R5）：bootstrap は全 launch で `acceptGraphIndexBuildWakes: true` を渡すので、seam の B の launch 以外で `wakeProjectIds` を載せた応答を main が拒否する防御（DR-BSEAM-1）は無い。定数が false の間は Native が wake も event も出さないので不活性。切替の PR では、定数以外の原因で `wakeProjectIds` が出ないことを Native 側の gate（token・discovery の判定・cycle の dispatch の再検査）で確かめる。DR-PUBG-5-8 の 2 により、独立の switch は増やさない。
 - 開示の文案の候補：容量の拒否（U1）、Q1 の答え、Q2b の答え（製品の wake の下の B の挙動は測っていないこと）、DR-BSEAM-5。
 - 一覧の新しい項目の候補：DR-BSEAM-5（Chronicle の sealed binding で、製品の Main の discovery が失敗しうる）。
 
@@ -737,6 +738,7 @@
   1. `build_worker` の prepare の失敗（効果が `Count` のもの）。
   2. `demand` の Suspended の枝。
   3. `demand_deferred` の Suspended の枝。
+- epoch の照合（点検 R2 の反映）：event に binding は載せない（payload は project ID だけ）ので、workspace の切替の後に終わった旧 workspace の refusal が、新しい workspace の同名の project（`default-project` など）の wake にならないよう、Native の側で通知の前に epoch を照合する。`build_worker` の prepare 失敗の枝は、`edge_or_closed(&shared, epoch)` が真なら通知しない（試験：lifecycle edge の後に終わる refusal は通知 0、edge なしの対照は 1 回）。`demand`・`demand_deferred` の Suspended の枝は、lock の下で `ready_generation` の一致を見てから通知するので、この問題の外。残る隙は、照合と emit の間に edge が入る場合で、main が受信時の live binding に束縛するため、害は B の判定 1 回（`RefusedUnchanged` なら SQL だけ）に有界。
 - 2 と 3 を落とすと、5 回失敗して Suspended になった slot は、B の publish が唯一の出口なのに B を起こす源が無くなる（(j)・(k) の「W2 が Suspended を解く」が成り立たない）。
 - 広げない：`Stale`・`Warming`・`Busy`・`Timeout`・`Failed`・`WorkerUnavailable` は出さない。頻度が桁で変わる（`Warming`・`Busy` は編集と query のたびに出る）。要レビュー。
 - 読みの注記（要確認）：`StartupRegistrationRefused`（worker の registration が `Ok(false)`）を「B の binding が current でない」の代理として扱う。`Ok(false)` になる全原因は追跡していない。B が skip した（current だった）場合、wake の費用は B の判定の SQL（PK・EXISTS・MAX の読み）だけで、最短間隔（判断 5）で有界。
@@ -759,8 +761,8 @@
 - 外れるもの：「seam の B の launch 以外では、`wakeProjectIds` を載せた応答を main が拒否する」独立の防御（DR-BSEAM-1）。残る防御は Native 側の gate（discovery の wake の判定、cycle の dispatch の再検査、token）。
 - coordinator の option `acceptGraphIndexBuildWakes` と、option が無いときの拒否の試験は残す（coordinator 単体の契約）。bootstrap の既存の試験の期待（seam の B 以外は第 3 引数なし）は、意図して変える。
 
-**判断 5：main の需要 wake は、discovery の chain から独立した小さな状態にする**
-- 既存の discovery の chain（`armTimer`、`chainGeneration`、`lastWakeReason`、outbox の ACK）には乗せず、触れない。5 つ目の wake reason は足さない。`scheduler.requestGraphIndexBuildWakesWithBinding` を直接呼ぶ。
+**判断 5：main の需要 wake は、discovery の chain の timer・世代・理由・ACK に乗らない小さな状態にする（rediscovery の budget は chain と共有する）**
+- 既存の discovery の chain の timer・世代・wake reason・outbox の ACK（`armTimer`、`chainGeneration`、`lastWakeReason`）には乗せず、触れない。ただし rediscovery の budget は chain と共有する（次の項）。5 つ目の wake reason は足さない。`scheduler.requestGraphIndexBuildWakesWithBinding` を直接呼ぶ。
 - ただし 1 点だけ chain とつながる（実装の後の訂正。レビューの前に確かめた）：bootstrap の `onCycleAccepted` は、受理された cycle のたびに `coordinator.requestRediscovery()` を呼ぶ。需要の wake の cycle も受理されれば同じで、chain が生きている間は rediscovery を 1 回（上限 3 回のうち 1 回）消費する。chain が終わっていれば（`lastWakeReason` が null）no-op。W1（discovery の `wakeProjectIds`）と、seam の B の wake も同じ既存の配線。この配線は変えない（変えるなら、wake だけの cycle では rediscovery を呼ばない、などの別の判断になり、cutover の準備の chain の既存の挙動に触れる）。試験で今の挙動を固定した（要レビュー）。
 - 状態は (binding, project) ごとに `{ timer, lastFiredAtMs, firedInRun }`。
 - 受信：未 dispose、option が true、payload が妥当、current binding が取れる、のときだけ。binding は受信時に束縛し、key の一部にする。
@@ -780,15 +782,19 @@
 **信頼境界と threat model の差分（PR-2）**
 - 変わらない：actor、受信先、保存、受入れ。renderer は B を名指しできず、新しい IPC・`#[napi]` の入口は無い。event は main 専用で、payload は project ID だけ。
 - 新しい攻撃（DR-PUBG-5-10 の具体化）：untrusted な renderer が seed 付きの begin を繰り返すと、owner の prepare の失敗と Suspended の begin が event になり、main の B の wake（B の判定または build と、その project の `durable-wake` discovery 全体）を誘発できる。renderer が選べる project は、workspace に実在するものに限られる（begin は `read_retrieval_scene_source` が project と scene の組を読めなければ失敗し、owner に届かない。読んで確かめた）。実在しない ID で表を埋める攻撃は成り立たない。
-- 受理された wake の cycle は、chain が生きている間、rediscovery の budget を 1 回消費する（判断 5）。renderer が需要を続けると、before-cutover の chain の budget（3 回）が早く尽き、Freshness の NOT_READY による再開（5 s から 60 s の cooldown）まで cutover の準備が遅れうる。失敗や永続の変化ではなく遅れで、間隔（判断 5）で有界。
+- 受理された wake の cycle は、chain が生きている間、rediscovery の budget を 1 回消費する（判断 5）。renderer が需要を続けると、before-cutover の chain の budget（3 回）が早く尽き、Freshness の NOT_READY による再開（5 s から 60 s の cooldown）まで cutover の準備が遅れうる。失敗や永続の変化ではなく遅れで、間隔（判断 5）で有界。この結合は PUB-G の切替の前に決める項目として残す（下の「切替の前に決める項目」）。
 - 防御：
   1. owner の既存の rebuild window・backoff・Suspended。
-  2. main の key ごとの pending 1 つ、最短間隔 2 s から 60 s、key の上限 8、満杯なら捨てる。最悪でも、最初の 1 分に key あたり 6 回、定常で key あたり 1 回／分。
+  2. main の key ごとの pending 1 つ、最短間隔 2 s から 60 s、key の上限 8、満杯なら捨てる。頻度は実装の列（0、+2、+6、+14、+30 s の 5 回、次は +62 s）で、最初の 60 s は key あたり 5 回。需要が持続する間の定常は key あたり 1 回／分。静止が 60 s を越えると run が 2 s から新しく始まるので、5 回の後に 60 s 止めて再開する形（5 回／90 s）が最悪で、約 3.3 回／分／key、8 key で最大約 27 回／分。reset の条件は変えない。B は single-flight と `RefusedUnchanged` で有界なので害は小さく、数値は PUB-G の前の dev の journey の実測で決める。
   3. B の attempt の上限（600,000,000 counts、180 s）と `RefusedUnchanged` の抑止。
   4. renderer は B を名指しできない。
   5. const が false の間は event 0。
 - 受信先・保存：増えない。wake の cycle の失敗が既存の `persistDeliveryFailure`（scope `wake`）に乗る場合の書込みの回数は、最短間隔で有界（DR-PUBG-5-9 の error の行のまま）。
 - 受入れ：製品の既定（const false）では、event 0、main の timer 0、wake 0、B の判定の SQL 0。
+
+**切替の前に決める項目（PUB-G の PR の前。挙動は PR-2 では変えない）**
+- 需要の wake の cycle が before-cutover の chain の rediscovery の budget を消費する結合（判断 5 の訂正）。PR-1 は BeforeCutover を fail-closed に保ったのに対し、需要の wake が chain の budget を減らせるのは不釣り合い。決め方の例：需要の wake の cycle では `requestRediscovery` を呼ばない（bootstrap の `onCycleAccepted` の配線の変更になり、cutover の準備の chain の既存の挙動に触れるので、別の判断）。
+- wake の頻度の数値（間隔 2 s から 60 s、key の上限 8、reset の 60 s）は、dev の journey の実測で決める（R3）。
 
 **要レビュー（レビューで見てほしい点）**
 1. 判断 1：対象を `RegistrationUnavailable` だけにしたこと（`Stale` などへ広げない）と、その読み（`Ok(false)` を「binding が current でない」の代理にしたこと）。
