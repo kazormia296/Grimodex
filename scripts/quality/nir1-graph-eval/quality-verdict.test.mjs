@@ -2862,11 +2862,9 @@ test("品質 v3 §2.1 utf16-range（S3 10 回目 B1-2）: 読めない Revision�
   });
   assert.equal(b.status, "hold");
   assert.ok(!b.problems.some((entry) => entry.kind === "fail"));
-  // The unread Revision's own displayed rows leave (iii) undecided (no fail).
+  // The unread Revision's own edge is not judged (no (iii) fail on it).
   assert.ok(
-    b.problems.some(
-      (entry) => entry.code === "evidence-id-in-no-read-revision",
-    ),
+    b.problems.some((entry) => entry.code === "typed-revision-not-read"),
   );
   // (c) a row that could not be read + a readable row with a differing hash: fail.
   const c = item((data) => {
@@ -2901,6 +2899,143 @@ test("品質 v3 §2.1 utf16-range（S3 10 回目 B1-2）: 読めない Revision�
     return data;
   });
   assert.equal(known.status, "fail");
+});
+
+test("品質 v3 §2.1 utf16-range（S3 10 回目の再確認 必須 1）: Evidence ID が Entity 単位で Revision をまたいで重なる製品の形でも、edge ごとに自分の Revision の行で判定する（fail→pass・fail→hold・hold→fail の 3 つの差を無くす）", () => {
+  // G-03/base's two-hop path: `has-sister` (wren→ivy) and `treated-by`
+  // (ivy→hollis) are in separate typed Revisions here, and the middle Entity
+  // `ivy` is an endpoint of both. The product's Evidence ID is per Entity
+  // (`nir1:evidence:codex:{entity}`), so the same ID is in both Revisions.
+  const key = "G-03/base";
+  const item = (mutate) =>
+    variantItems(
+      run(
+        v3({
+          [key]: (data) => {
+            const toEntityId = new Map();
+            for (const revision of data.observation.typedRevisions)
+              for (const row of revision.evidence)
+                toEntityId.set(
+                  row.evidenceId,
+                  `nir1:evidence:codex:${row.sourceRef.slice("codex:".length)}`,
+                );
+            for (const revision of data.observation.typedRevisions)
+              for (const row of revision.evidence)
+                row.evidenceId = toEntityId.get(row.evidenceId);
+            for (const path of data.child.evidence.pathAttachments)
+              for (const edge of path.edges)
+                for (const shown of edge.evidence)
+                  shown.evidenceId = toEntityId.get(shown.evidenceId);
+            return mutate(data);
+          },
+        }),
+      ),
+      key,
+    )["utf16-range"];
+  const ivy = "nir1:evidence:codex:e-g03-ivy";
+  const revisionOf = (data, relation) =>
+    data.observation.typedRevisions.find(
+      (row) => row.logicalRevisionId === `rev-of-${relation}`,
+    );
+  const unread = (data, relation) => {
+    const at = data.observation.typedRevisions.indexOf(
+      revisionOf(data, relation),
+    );
+    const row = data.observation.typedRevisions[at];
+    data.observation.typedRevisions[at] = {
+      logicalRevisionId: row.logicalRevisionId,
+      runtimeRevisionId: row.runtimeRevisionId,
+      unavailable: "not-found",
+    };
+  };
+  const wrongHash = textSha256("a hash that is no endpoint's text");
+  // The shape is the product's: the middle Entity's ID is in two Revisions.
+  const baseline = item((data) => {
+    const holders = data.observation.typedRevisions.filter((row) =>
+      row.evidence.some((entry) => entry.evidenceId === ivy),
+    );
+    assert.equal(holders.length, 2);
+    return data;
+  });
+  assert.equal(baseline.status, "pass");
+  // (i) fail→pass: every Revision is read and only the later Revision's row
+  // of the shared ID differs. The edge `treated-by` is judged on its own
+  // Revision's row (a first-wins merge by ID judged it on the earlier one).
+  const later = item((data) => {
+    const row = revisionOf(data, "g03-treated-by").evidence.find(
+      (entry) => entry.evidenceId === ivy,
+    );
+    row.endUtf16 += 5;
+    return data;
+  });
+  assert.equal(later.status, "fail");
+  assert.ok(
+    later.problems.some(
+      (entry) => entry.code === "evidence-row-matches-no-endpoint-text",
+    ),
+  );
+  // The earlier Revision's own row differs: the edge `has-sister` fails too.
+  const earlier = item((data) => {
+    revisionOf(data, "g03-has-sister").evidence.find(
+      (entry) => entry.evidenceId === ivy,
+    ).endUtf16 += 5;
+    return data;
+  });
+  assert.equal(earlier.status, "fail");
+  // (ii) fail→hold: the edge's own Revision is read and does not hold the
+  // displayed ID, while another Revision is unread: the ID is in no Revision
+  // of that edge, a fail (not a hold on the other Revision's account).
+  const missing = item((data) => {
+    unread(data, "g03-has-sister");
+    const own = revisionOf(data, "g03-treated-by");
+    own.evidence = own.evidence.filter((entry) => entry.evidenceId !== ivy);
+    return data;
+  });
+  assert.equal(missing.status, "fail");
+  assert.ok(
+    missing.problems.some(
+      (entry) => entry.code === "evidence-id-not-in-revision",
+    ),
+  );
+  assert.ok(
+    missing.problems.some((entry) => entry.code === "typed-revision-not-read"),
+  );
+  // (iii) hold→fail: the edge's own Revision is unread and its displayed row
+  // differs from the read row of the same ID in another Revision. The edge is
+  // not judged (a hold), never judged on the other Revision's row.
+  const unreadOwn = item((data) => {
+    unread(data, "g03-has-sister");
+    for (const edge of data.child.evidence.pathAttachments.flatMap(
+      (path) => path.edges,
+    ))
+      if (edge.to === "e-g03-ivy")
+        for (const shown of edge.evidence)
+          if (shown.evidenceId === ivy) shown.quoteSha256 = wrongHash;
+    return data;
+  });
+  assert.equal(unreadOwn.status, "hold");
+  assert.ok(!unreadOwn.problems.some((entry) => entry.kind === "fail"));
+  // An unread Revision with every other row fine is a hold, never a pass.
+  const onlyUnread = item((data) => {
+    unread(data, "g03-treated-by");
+    return data;
+  });
+  assert.equal(onlyUnread.status, "hold");
+  // An edge that no relation of the path runs between (a direction that the
+  // path's `pairs` cannot name) is not judged: a hold.
+  const reversed = item((data) => {
+    const edge = data.child.evidence.pathAttachments
+      .flatMap((path) => path.edges)
+      .find((row) => row.to === "e-g03-ivy");
+    [edge.from, edge.to] = [edge.to, edge.from];
+    return data;
+  });
+  assert.equal(reversed.status, "hold");
+  assert.ok(
+    reversed.problems.some(
+      (entry) => entry.code === "edge-revision-unresolved",
+    ),
+  );
 });
 
 test("品質 v3 §2.2 explicit-pin-association: 期待の外の Scene への path（G-06 の名前の言及）・pin・終端・hop の食い違いは fail、field が無いのは hold、G-01 は attachment が付けば fail", () => {
