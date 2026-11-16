@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
-import { Toaster } from "sonner";
 
 import { WorkspaceViewHost } from "@/features/workspace/WorkspaceViewHost";
+import { AppToaster } from "@/components/AppToaster";
 import { LiveRegion } from "@/components/a11y/LiveRegion";
 import { CloseSaveFailureDialog } from "@/components/CloseSaveFailureDialog";
 import { ApplicationDialogs } from "@/components/ApplicationDialogs";
@@ -27,7 +27,7 @@ function App() {
           <CloseSaveFailureDialog {...dialogProps} />
         )}
       />
-      <Toaster position="bottom-right" richColors />
+      <AppToaster />
       <LiveRegion />
       <LifecycleStatus />
       <WorkspaceViewHost />
