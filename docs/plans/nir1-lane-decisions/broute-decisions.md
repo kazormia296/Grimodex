@@ -680,7 +680,8 @@
 - 問題：`discover_all` は project ごとの discovery の Err を `?` で返すので、1 つの project の失敗で workspace 全体の discovery が Err になり、他の project の work が返らない（V0 の読み）。
 - 採る規則：
   - 対象は、BeforeCutover でない wake（open・restore・epoch）の project ごとの discovery だけ。BeforeCutover は fail-closed のまま `?` で返す（cutover の安全の経路で、失敗した project を「work なし」にすると cutover が進みうる）。
-  - 封じ込めるのは、allowlist の 2 種類の typed な失敗だけ。`ValidationTerminated` の `ContextUnavailable` と `CapacityExceeded`（V0 で観測された 2 つ。どちらも project の状態で決まり、再試行しても変わらない）。判定は `grimodex-db` に `pub` で置き、単体試験を付ける。
+  - 封じ込めるのは、allowlist の 2 種類の typed な失敗だけ。`ValidationTerminated` の `ContextUnavailable` と `CapacityExceeded`（どちらも project の状態で決まり、再試行しても変わらない）。判定は `grimodex-db` に `pub` で置き、単体試験を付ける。
+  - 観測の程度（実装の後の訂正）：main の（制御なしの）discovery の段で実際に観測した Err は `ContextUnavailable` だけ（V0 の (b)、gate が閉じているとき。DR-BSEAM-5 の Chronicle も同じ型）。`CapacityExceeded` は cycle の Verify の Err として観測したもので、discovery の段では観測していない。`05-v0.md` が (a) で「1 回目の discovery が Err」とした記述は、probe（`9b510f50` の `v0_wakes`）が discovery と cycle の Err を同じ「ERR」で出していたための読み違いと見る（呼び出し列に出た `verify_dependency_graph_snapshot` も Verify の Run の経路）。`CapacityExceeded` の腕は、discovery が状態の digest を計算する経路で出うる typed な失敗として残すが、discovery の段では未観測なので、fail-closed を観測より広く緩める。要レビュー。外すなら allowlist の 1 行と試験（db 1、Native 2）を直す。
   - 他は全て今までどおり伝播する。preempt、cancel、timeout、closed、workspace-generation-changed、busy・locked などの retryable、未知の SQL 失敗は、project の失敗ではなく workspace や時の失敗として main が再試行・警告する経路を保つ。「retryable でも control でもないもの」で絞らないのは、`ValidationTerminated` の非 capacity が control に数えられて `ContextUnavailable` が外れること、未分類の SQL 失敗が隠れることのため。
   - 封じ込めた project は「work なし」として返す。1 つも成功した project がなければ（全て封じ込め）、最初の Err を返す。単一 project の workspace の挙動と、全 project が壊れる systemic な失敗の見え方は、今のまま。
   - log は code だけ（`tracing`、本文・project ID・path は出さない）。
@@ -698,23 +699,27 @@
 2. 判断 7 の「全 project が封じ込めなら Err」の規則（project 数による非単調さ）。
 3. 判断 1 の検査が src の走査であること（型で const に縛れない代わり）。
 4. 判断 5 で記録の上限を置かない根拠。
+5. 判断 7 の `CapacityExceeded` の腕が discovery の段では未観測であること。封じ込めが実際に効く観測済みの経路は、今の製品では DR-BSEAM-5（Chronicle の `context-unavailable`）だけで、gate が開けば V4 が先に wake に変える。
 
 **実装の結果（PR-1、2026-11-17。枝 `claude/pubg-5-pr1`。PR は作らず、merge は次の S4（9 回目）の後）**
 - commit：`6376de4d`（この DR）、`8d8dd908`（db：token・gate・wake・V0 と解除条件の試験）、`d5785dc8`（Native：token・封じ込め・試験）。
 - 公開した名前：db に `Nir1GraphProductPublication`、`nir1_graph_index_build_wakes_main_discovery_with_product`、`discover_maintenance_project_for_main_with_product`、`run_system_work_cycle_with_nir1_graph_runtime_and_product`、`is_project_local_discovery_failure`。Native に `maintenance_product_publication()`（`nir1_graph_product.rs`）と `discover_all_with_product`。既存の関数は無変更。
 - 判断との差：
   - 判断 1 の検査 (c) は、`--features nir1-graph-eval` で Native の試験を走らせて確かめた（token は `None` のまま）。
-  - 判断 5 の試験は、同じ入力の拒否が試験 hook の `BeforePrepare`・`BeforeValidation` に届かず、SQL の使用量が拒否した試行の 1/10 以下であることで固定した。seam と token の両方の gate で走らせた。
-- V0 の観測との差：`05-v0.md` の dev probe では、(a)（保存 edge 超過）の 1 回目の discovery が Err だった。この試験の流れ（published → 超過 → B を dispatch → wake）では、discovery は Verify の work を返し、cycle の Verify が `capacity-exceeded` で失敗した。原因は未特定（`complete_registered` を前後に読む、`judge` を先に呼ぶ、discovery だけを先に呼ぶ形は試したが再現しなかった）。固定した試験は、どちらの形でも成り立つ不変条件にした（失敗が capacity-exceeded であること、Verify の Run が 1 件 failed、Finding が 1 件、その後は新しい Run が無いこと、discovery が Err のときは project 単位の失敗であること）。
+  - 判断 5 の試験は、同じ入力の拒否が試験 hook の `BeforePrepare`・`BeforeValidation` に届かず、SQL の使用量が拒否した試行の 1/10 以下であることで固定した（測った値：拒否した試行は約 26 万 step、同じ入力の判定は約 280 step。拒否した試行が 1 万 step 以上であることも assert して、比較が空振りしないようにした）。seam と token の両方の gate で走らせた。
+- V0 の観測との差：`05-v0.md` は (a)（保存 edge 超過）の 1 回目の discovery が Err だったとしたが、この試験では 1 回目の wake は「discovery が Verify の work を返し、cycle の Verify が `capacity-exceeded` で失敗する」。dev probe の `v0_wakes` は discovery と cycle の Err を区別せずに出していたので、05-v0.md の記述は cycle の Err を discovery の Err と読んだものと見る。`complete_registered` を前後に読む、`judge` を先に呼ぶ、discovery だけを先に呼ぶ形でも discovery の Err は再現しなかった。固定した試験は、どちらの形でも成り立つ不変条件にした（失敗が capacity-exceeded であること、Verify の Run が 1 件 failed、Finding が 1 件、その後は新しい Run が無いこと、discovery が Err のときは project 単位の失敗であること）。
 - 検証（すべて `CARGO_BUILD_JOBS=4`、node は 22）：
   - `grimodex-db --lib` の `nir1_graph_index_maintenance`（41 件）と `maintenance`・`nir1_entity_relation_index`・`nir1_capacity`・`restore`（440 件）。`--test narrative_maintenance_contracts`・`narrative_maintenance_route_registry`・`narrative_maintenance_runtime`・`narrative_maintenance_lifecycle_runtime`（4＋1＋30＋9 件）。すべて成功。
   - Native `--lib` 全件（816 件成功、7 件 ignore）。`--features nir1-graph-eval` で `narrative_maintenance::tests` と token の 2 試験（16 件成功）。
-  - `cargo clippy --all-targets -- -D warnings`：`grimodex-db`（既定 feature）と Native は成功。`--features nir1-material-diagnostics` は、PR-1 が触れない file（`nir1_graph.rs`、`nir1_graph/input.rs`、`nir1_graph_memory_diagnostics.rs`）の既存の指摘 11 件で失敗する（PR-1 の変更の指摘は無い）。
+  - `cargo clippy --all-targets -- -D warnings`：`grimodex-db`（既定 feature）と Native は成功。`--features nir1-material-diagnostics` は、PR-1 が触れない file（`nir1_graph.rs`、`nir1_graph/input.rs`、`nir1_graph_memory_diagnostics.rs`）の指摘 11 件（lib。lib test は 7 件）で失敗する。base（`87937140`）で同じ command を回して同じ件数・同じ file であることを確かめた（PR-1 の変更の指摘は無い）。
   - pin 済みの `native-architecture.mjs` を変えず、`runArchitectureChecks` を作業 tree に対して実行して違反 0。
 - PR-2 と PUB-G への引き継ぎ：
   - 定数を切り替えると discovery の応答に `wakeProjectIds` が載る。main は `acceptGraphIndexBuildWakes` が無いとその応答を拒否する（`normalizeDiscoveryResponse` の `allowedKeys`）。PR-1 だけで定数を切り替えてはならない。main が product の gate でも `wakeProjectIds` を受ける変更は PR-2（W2 と同じ範囲）で行う。
   - (iii)（拒否のときに binding を退かせる）の契約の起案は、この PR とは別。実装されると V0 の試験の期待が意図して変わる。
   - 封じ込めた project の失敗は、main からは見えない（wire は変わらない）。見せるなら main の変更と契約が要るので、PR-2 以降で扱う。
+- 未確認：
+  - 1 回目の wake の cycle が `capacity-exceeded` の Err を返す（V0 の (a)、(b) の open gate）。複数 project の work を載せた 1 つの request が、1 つの project の Verify の失敗で一緒に落ちるかは見ていない。`discover_all` の範囲の外。
+  - Native の試験が mac／Win の CI で走るかは確かめていない。token の構築箇所の走査は、root と path と改行を正規化してあるが、Linux 以外では走らせていない。
 
 ### 実装の段取り（閉じた gate の内側まで。merge は S4（9 回目）の PR の merge の後）
 

@@ -2677,7 +2677,9 @@ fn the_maintenance_product_token_ignores_the_owners_publication_gate() {
 /// gate stays untouched). Production code builds the token at exactly one
 /// site, in this file, from `PRODUCT_GRAPH_PUBLISHED`. Test modules (a
 /// `*_tests.rs` file, a `tests` directory or an inline `mod tests`) may build
-/// an open token.
+/// an open token. Both scan roots come from one canonical repository root, and
+/// paths and line endings are normalized, so the scan does not depend on the
+/// platform.
 #[test]
 fn the_product_token_has_one_production_construction_site() {
     fn collect(directory: &Path, files: &mut Vec<PathBuf>) {
@@ -2696,18 +2698,26 @@ fn the_product_token_has_one_production_construction_site() {
             }
         }
     }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let repository = manifest
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../..")
         .canonicalize()
         .expect("repository root");
     let mut files = Vec::new();
-    collect(&manifest.join("src"), &mut files);
+    collect(
+        &repository
+            .join("electron")
+            .join("native")
+            .join("grimodex-node")
+            .join("src"),
+        &mut files,
+    );
     collect(&repository.join("src-tauri"), &mut files);
     assert!(files.len() > 50, "the scan found {} files", files.len());
     let mut sites = Vec::new();
     for file in files {
-        let text = std::fs::read_to_string(&file).expect("read source");
+        let text = std::fs::read_to_string(&file)
+            .expect("read source")
+            .replace("\r\n", "\n");
         // Everything from an inline test module on is test code.
         let production = text
             .split("#[cfg(test)]\nmod ")
@@ -2716,13 +2726,14 @@ fn the_product_token_has_one_production_construction_site() {
         for line in production.lines() {
             let line = line.trim();
             if !line.starts_with("//") && line.contains("from_const::<") {
-                sites.push((
-                    file.strip_prefix(&repository)
-                        .expect("under the repository")
-                        .to_string_lossy()
-                        .into_owned(),
-                    line.to_string(),
-                ));
+                let relative = file
+                    .strip_prefix(&repository)
+                    .expect("under the repository")
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                sites.push((relative, line.to_string()));
             }
         }
     }

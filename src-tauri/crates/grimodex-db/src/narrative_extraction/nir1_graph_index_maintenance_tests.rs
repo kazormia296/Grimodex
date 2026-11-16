@@ -2879,10 +2879,16 @@ fn a_refusal_is_released_by_input_changes_and_not_by_a_repeated_wake() -> Result
             Ok((outcome, budget.sql_steps_used()))
         };
 
-        // The first attempt prepares and is refused.
+        // The first attempt prepares and is refused. It does real work (about
+        // 260,000 SQL steps here), so the comparison below cannot pass for
+        // lack of a measurement.
         let (outcome, refused_steps) = dispatch(&fixture)?;
         assert_eq!(outcome, no_finalization(false), "{launch:?}");
         assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
+        assert!(
+            refused_steps >= 10_000,
+            "{launch:?}: the refused attempt used only {refused_steps} SQL steps"
+        );
 
         // A repeated wake with the same inputs never prepares or validates.
         let reached = Arc::new(AtomicBool::new(false));
@@ -2900,7 +2906,7 @@ fn a_refusal_is_released_by_input_changes_and_not_by_a_repeated_wake() -> Result
             let (outcome, steps) = dispatch(&fixture)?;
             assert_eq!(outcome, no_finalization(false), "{launch:?}");
             assert!(
-                steps * 10 <= refused_steps.max(10),
+                steps * 10 <= refused_steps,
                 "{launch:?}: judgement used {steps} SQL steps, the refused attempt {refused_steps}"
             );
         }
