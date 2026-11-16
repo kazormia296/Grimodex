@@ -856,7 +856,7 @@
   - R-A の試験の効き：`demand` の Suspended の枝を需要した側の project に戻すと、`a_suspended_begin_of_another_project_names_the_refused_project` が落ちる（戻した）。
   - db `--lib` の `nir1_graph_index_maintenance`：41 件成功。clippy（`--all-targets -- -D warnings`）：Native と db で成功。
   - electron の vitest（`electron/main`・`electron/shared`）：103 files・2,434 件成功。`tsc -p electron/tsconfig.json --noEmit`：成功。
-  - `verify:quality`（node 22）：下の commit の後の head で走らせた結果を、最終の報告に記す。
+  - `verify:quality`（node 22）：成功（exit 0。この追補を足す前の head `9d7d499e` で走らせた。この追補だけを足した commit では再実行していない）。
 - 未確認：
   - 全 process の journey（実際の Electron で、registration が拒否された Graph の demand → event → B の wake → publish → Suspended が解ける、が一続きで起きること）。この PR は部品ごとに確かめた（owner の event、coordinator の wake、cycle の `work_completed`、owner の hook）。PUB-G の前の dev の journey で確かめる（DR-PUBG-5-11 の 2）。
   - worker の registration が `Ok(false)` になる全原因。「binding が current でない」の代理が外れるのは、B が skip しても registration が拒否される場合で、そのときの wake の費用は B の判定の SQL だけ（間隔で有界）。
