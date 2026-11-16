@@ -229,3 +229,20 @@ s7r1（S4b `f2f99b13`・候補 `3f333a83`・K6/6）の結果（`docs/plans/nir1-
 3. **#11・#15 の「S4 の失効・再凍結は個別にユーザー確認」**：確認は済んでいる。`user-confirmation-2026-11-16-refreeze-9th-and-r5.md`（`7a03eaf9`）の「失効して進める」「S4 の PR の merge まで一括」。
 
 あわせて、(A) の 8 件（#5、#6、#30、#32、#35、#38、#41、#48）への着手を、ユーザーが 2026-11-16 に回答した（`user-confirmation-2026-11-16-setup-quiesce-and-pubg-a.md`、`337ff239`）。残りの件数は、各件が閉じたときに更新する。
+
+## 2026-11-16 追記 3：(A) の着手の結果（ユーザーの回答 `337ff239` に基づく）
+
+状態の読み替え（本文の表は書き換えず、ここで更新する）：
+
+| # | 新しい状態 | 根拠 | 残り |
+|---|---|---|---|
+| 48 | **済み**（試験） | PR #917（master `bac5ea4a`）。Native と renderer の全体拒否の試験を足した | 正式の Gold で `limit` は観測されない（Graph の答えが join の窓に約 46 ms 遅れる）。範囲の外 |
+| 32 | **済み**（実装と試験） | PR #918（master `f4fe9f25`）、DR-PUBG-32-1。pill を CSS anchor で status bar の上に置いた | 実機の safe area と keyboard は C-1／PUB-G |
+| 35 | **済み**（実装と試験） | PR #919（master `753aa4b1`）、DR-PUBG-35-1。phone の停止の文言の chunk を登録し、toast を phone だけ上端に置いた。pill を composer の上に置いた（#32 の残りも閉じた） | 実機の safe area と keyboard、上端の toast が上端の内容を一時的に覆うこと |
+| 38 | **済み**（判断） | PR #920（master `cea3988b`）、DR-PUBG-38-1。restart-required の案内は必須にせず、今の挙動を確定した | — |
+| 6 | **(C) ユーザーの判断**（不明から移す） | s7r2 の受領書の A3 の理由は 5 種だけ。POV・phase・story-scope・auto-scope・query の軸は未演習 | 製品の経路で測るには G-case の追加（凍結の変更）が要る。Rust の試験（#598）で足りるとみなすかは、ユーザーが決める |
+| 30 | **測定済み**（CI の照合待ち） | 3 定数を true にした差分は raw +1,581、gzip +566。CI の false の値に足した推定の余裕は raw 94,909、gzip 34,319 | 確定は PUB-G の PR の CI で行う |
+
+新しい候補（C-1、文言が要る）：quarantine の下で Open／Restore を試すと、`nir1-graph-restart-required` の拒否が生の英語の文や error で出て、「再起動が必要」という案内が無い（#38 の調査で見つかった。案は `/home/grimodex/fusion-eval-data/pubg-a/38.md`）。
+
+件数：残り 19 件のうち、済み 4 件（#48、#32、#35、#38）。#6 は不明から (C) へ移した。残りは 15 件（#30 は測定済み・確定待ちで、残りに数える）。(A) で手を付けていないのは #41 と #5（2026-11-16 に着手）。
