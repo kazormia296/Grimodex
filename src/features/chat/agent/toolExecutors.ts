@@ -2119,6 +2119,11 @@ export const MUTATING_EXECUTORS: Record<string, Executor> = {
   set_event_participants: setEventParticipantsTool,
   add_event_relation: addEventRelationTool,
   remove_event_relation: removeEventRelationTool,
+  // アプリの UI 操作（view のみ）。実装（layout／tab の store）は初回の呼び出しで読む。
+  run_app_command: async (params) =>
+    (await import("./appUiTools")).runAppCommandTool(params),
+  apply_layout_preset: async (params) =>
+    (await import("./appUiTools")).applyLayoutPresetTool(params),
 };
 Object.freeze(MUTATING_EXECUTORS);
 

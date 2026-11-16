@@ -211,6 +211,33 @@ describe("runAgentLoop", () => {
     expect(hasCallLimit).toBe(false);
   });
 
+  it("UI 操作ツールの結果の undoId を tool 呼び出しの記録に写す（無い結果には付けない）", async () => {
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValueOnce(toolUseResponse("run_app_command", "u1"))
+      .mockResolvedValueOnce(toolUseResponse("search_codex", "u2"))
+      .mockResolvedValue(endResponse());
+    const executeTool = vi.fn(async (name: string, id: string) =>
+      toolResult({
+        toolCallId: id,
+        name,
+        ...(name === "run_app_command" ? { undoId: "undo-1" } : {}),
+      }),
+    );
+    const result = await runAgentLoop(
+      baseOptions({
+        sendToLLM,
+        executeTool,
+        tools: [tool("run_app_command"), tool("search_codex")],
+      }),
+    );
+    expect(result.toolCallRecords[0]).toMatchObject({
+      name: "run_app_command",
+      undoId: "undo-1",
+    });
+    expect(result.toolCallRecords[1]).not.toHaveProperty("undoId");
+  });
+
   it("counts data tools toward MAX_TOOL_CALLS", async () => {
     const sendToLLM = vi
       .fn<AgentLoopOptions["sendToLLM"]>()

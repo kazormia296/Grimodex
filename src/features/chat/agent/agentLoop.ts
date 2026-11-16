@@ -329,6 +329,7 @@ export async function runAgentLoop(
         params: tu.input,
         resultSummary: toolRes.summary,
         tokensUsed: toolRes.tokensUsed,
+        ...(toolRes.undoId ? { undoId: toolRes.undoId } : {}),
       };
       toolCallRecords.push(record);
       onToolComplete?.(record);

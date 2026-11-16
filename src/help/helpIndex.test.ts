@@ -210,6 +210,26 @@ describe("索引", () => {
 });
 
 describe("詳細: コマンド", () => {
+  it("assistantRunnable: run_app_command で代わりに実行できるコマンドだけ true", () => {
+    expect(getHelpDetail("command:focusCodex")!["assistantRunnable"]).toBe(
+      true,
+    );
+    expect(getHelpDetail("command:openSettings")!["assistantRunnable"]).toBe(
+      true,
+    );
+    for (const id of [
+      "focusChat",
+      "nextTab",
+      "splitVertical",
+      "find",
+      "save",
+    ]) {
+      expect(getHelpDetail(`command:${id}`)!["assistantRunnable"], id).toBe(
+        false,
+      );
+    }
+  });
+
   it("実際のキー割当（ユーザーの上書き反映）と既定、今の OS での可否を返す", () => {
     const base = getHelpDetail("command:focusChat")!;
     expect(base["keys"]).toBe("Ctrl+Alt+C");

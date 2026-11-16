@@ -159,6 +159,8 @@ export interface ToolResult {
   summary: string;
   tokensUsed: number;
   error?: string;
+  /** UI 操作ツールが、操作の直前の表示状態を退避した id（「元に戻す」の鍵）。 */
+  undoId?: string;
 }
 
 // メッセージmetadataに保存するツール呼び出し記録
@@ -167,6 +169,8 @@ export interface ToolCallRecord {
   params: Record<string, unknown>;
   resultSummary: string;
   tokensUsed: number;
+  /** 保存するのは id だけ。退避した表示状態はメモリ上にあり、再読込後は「元に戻す」は出ない。 */
+  undoId?: string;
 }
 
 // エージェントループ進捗（UIコールバック用）

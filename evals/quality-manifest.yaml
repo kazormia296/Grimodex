@@ -238,6 +238,10 @@ requirements:
       - src/help/helpIndex.ts
       - src/help/helpRefs.ts
       - src/help/uiState.ts
+      - src/features/chat/agent/appUiTools.ts
+      - src/features/chat/agent/uiOperationTools.ts
+      - src/features/commands/appCommandRegistry.ts
+      - src/features/commands/uiOperationUndo.ts
       - src-tauri/crates/grimodex-ai/build.rs
     lightTests:
       - src/features/chat/agent/toolDefinitions.test.ts
@@ -245,6 +249,8 @@ requirements:
       - src/features/chat/agent/appHelpTools.test.ts
       - src/help/helpIndex.test.ts
       - src/help/uiState.test.ts
+      - src/features/chat/agent/appUiTools.test.ts
+      - src/features/commands/appCommandRegistry.test.ts
       - scripts/quality/impact-map.mjs
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
