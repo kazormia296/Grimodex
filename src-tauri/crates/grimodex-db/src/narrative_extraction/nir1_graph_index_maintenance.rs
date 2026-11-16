@@ -11,9 +11,11 @@
 //!   production route registry and the policy parity set, and its work kind is
 //!   never persisted as a Run.
 //! * [`Nir1GraphIndexBuildGate`] is closed by default. Only the validated,
-//!   unpackaged CI journey seam (`trigger = nir1-graph-index-build`) or a unit
-//!   test opens it. Database content never opens it. With the gate closed the
-//!   judgement executes no SQL and dispatch refuses before it acquires a
+//!   unpackaged CI journey seam (`trigger = nir1-graph-index-build`), the
+//!   product publication token ([`Nir1GraphProductPublication`], which exists
+//!   only while Native's `PRODUCT_GRAPH_PUBLISHED` constant is `true`) or a
+//!   unit test opens it. Database content never opens it. With the gate closed
+//!   the judgement executes no SQL and dispatch refuses before it acquires a
 //!   connection.
 //! * One dispatched work is one owned attempt (one B-close budget). Phase 1 is
 //!   a read transaction that re-judges the project and runs either the owned
@@ -75,10 +77,39 @@ const GRAPH_BINDING_SCHEMA_VERSION: i64 = 35;
 const JUDGEMENT_PROGRESS_INTERVAL: i32 = 1_000;
 const TRACE_TARGET: &str = "narrative.nir1_graph_index_build";
 
+/// Compile-time evidence that Native's `PRODUCT_GRAPH_PUBLISHED` constant is
+/// `true` (DR-PUBG-5-8, DR-PUBG-5-13).
+///
+/// The only constructor takes the constant as a const generic argument, so a
+/// runtime value, database content, an IPC value or an environment variable
+/// cannot produce it. It is deliberately not derived from the Graph owner's
+/// `publication_open()`, which an evaluation build or a unit test can open.
+/// A type cannot confine the argument to that one constant across crates;
+/// Native's tests pin the single construction site.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Nir1GraphProductPublication {
+    _private: (),
+}
+
+impl Nir1GraphProductPublication {
+    /// `Some` only when `PUBLISHED` is `true`. Product code passes
+    /// `{ PRODUCT_GRAPH_PUBLISHED }`; with the constant `false` this is
+    /// `None` and nothing downstream opens.
+    pub const fn from_const<const PUBLISHED: bool>() -> Option<Self> {
+        if PUBLISHED {
+            Some(Self { _private: () })
+        } else {
+            None
+        }
+    }
+}
+
 /// Activation gate for the pre-PUB-G Graph Index build route.
 ///
 /// The field is private and the only constructors are [`Self::closed`],
-/// [`Self::from_journey_seam`] and a unit-test constructor. No database
+/// [`Self::from_journey_seam`], [`Self::from_product_publication`] and a
+/// unit-test constructor. [`Self::for_launch`] only combines the first three
+/// (open when either the seam or the product token opens it). No database
 /// content, runtime policy, renderer or IPC value can open it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Nir1GraphIndexBuildGate {
@@ -101,6 +132,23 @@ impl Nir1GraphIndexBuildGate {
             Self { open: true }
         } else {
             Self::closed()
+        }
+    }
+
+    /// Open only while the product publication token exists (the Native
+    /// constant is `true`).
+    pub(crate) const fn from_product_publication(_token: Nir1GraphProductPublication) -> Self {
+        Self { open: true }
+    }
+
+    /// The gate of one launch: the journey seam's or the product token's.
+    pub(crate) fn for_launch(
+        config: Option<&NarrativeMaintenanceCiConfig>,
+        product: Option<Nir1GraphProductPublication>,
+    ) -> Self {
+        match product {
+            Some(token) => Self::from_product_publication(token),
+            None => Self::from_journey_seam(config),
         }
     }
 

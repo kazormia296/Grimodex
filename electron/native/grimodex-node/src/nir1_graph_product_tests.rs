@@ -2624,6 +2624,219 @@ fn a_lifecycle_edge_moves_the_ready_signal_and_the_edge_epoch() {
     assert_ne!(owner.edge_epoch(), epoch);
 }
 
+/// DR-PUBG-5-8, DR-PUBG-5-13: the Graph Index build's maintenance gate token
+/// follows `PRODUCT_GRAPH_PUBLISHED` alone. The owner's test gate
+/// (`publication_open()`, which the evaluation arm opens the same way) does
+/// not open it, so a measurement build keeps B's wake closed.
+#[test]
+fn the_maintenance_product_token_ignores_the_owners_publication_gate() {
+    const _: () = assert!(!PRODUCT_GRAPH_PUBLISHED);
+    let fixture = ProductFixture::with(true, true, false);
+    assert!(
+        fixture.state.nir1_graph.shared.publication_open(),
+        "precondition: the test gate is open"
+    );
+    assert!(maintenance_product_publication().is_none());
+    // The closed token leaves discovery's gate closed.
+    assert!(
+        !grimodex_db::narrative_extraction::nir1_graph_index_build_wakes_main_discovery_with_product(
+            None,
+            maintenance_product_publication(),
+            "workspace-opened"
+        )
+    );
+}
+
+/// The lines of `text` that are not inside an inline test module. A test
+/// module is `#[cfg(test)]` (optionally followed by more attributes) and then
+/// `mod <name> {`; it ends at the first line that is the same indentation plus
+/// `}`. Everything after it is production code again, and a `mod <name>;`
+/// declaration (whose body lives in another file, which a `*_tests.rs` rule
+/// excludes) removes nothing. Any other `#[cfg(test)]` item stays scanned,
+/// which can only over-report.
+fn without_inline_test_modules(text: &str) -> Vec<&str> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut kept = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        if line.trim() == "#[cfg(test)]" {
+            let indent = &line[..line.len() - line.trim_start().len()];
+            let mut head = index + 1;
+            while head < lines.len() && lines[head].trim_start().starts_with("#[") {
+                head += 1;
+            }
+            let opens_module = lines.get(head).is_some_and(|candidate| {
+                let candidate = candidate.trim_start();
+                let candidate = candidate
+                    .strip_prefix("pub(crate) ")
+                    .or_else(|| candidate.strip_prefix("pub "))
+                    .unwrap_or(candidate);
+                candidate.starts_with("mod ") && candidate.trim_end().ends_with('{')
+            });
+            if opens_module {
+                let close = format!("{indent}}}");
+                index = (head + 1..lines.len())
+                    .find(|&at| lines[at].trim_end() == close)
+                    .map_or(lines.len(), |at| at + 1);
+                continue;
+            }
+        }
+        kept.push(line);
+        index += 1;
+    }
+    kept
+}
+
+/// The production lines of `text` that can construct the product token: a
+/// `from_const::<..>` call, a one-line struct literal (the field is private, so
+/// only `grimodex-db` can write one), or a
+/// `zeroed`/`transmute`/`assume_init`/`MaybeUninit`/`Default` that names the
+/// type (the token is zero-sized, so those build it too).
+fn token_construction_lines(text: &str) -> Vec<String> {
+    const TYPE_NAME: &str = "Nir1GraphProductPublication";
+    without_inline_test_modules(text)
+        .into_iter()
+        .map(str::trim)
+        .filter(|line| !line.starts_with("//"))
+        .filter(|line| {
+            let defines = line.starts_with("pub struct ")
+                || line.starts_with("struct ")
+                || line.starts_with("impl ")
+                || line.starts_with("impl<");
+            line.contains("from_const::<")
+                || line.contains("{ _private: () }")
+                || (!defines && line.contains(&format!("{TYPE_NAME} {{")))
+                || (line.contains(TYPE_NAME)
+                    && ["zeroed", "transmute", "assume_init", "MaybeUninit", "Default"]
+                        .iter()
+                        .any(|word| line.contains(word)))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// The scan's own logic, checked on text shaped like Native's `lib.rs`: a
+/// test module declared in another file, an inline test module with production
+/// code after it, and constructions in both places.
+#[test]
+fn the_token_scan_sees_production_code_after_test_modules() {
+    let source = "\
+#[cfg(test)]
+mod body_tests;
+#[cfg(test)]
+#[allow(dead_code)]
+mod inline_tests {
+    fn built() {
+        let _ = Nir1GraphProductPublication::from_const::<true>();
+    }
+}
+fn production() {
+    let _ = Nir1GraphProductPublication::from_const::<true>();
+    let _ = Nir1GraphProductPublication { _private: () };
+    let _ = unsafe { std::mem::zeroed::<Nir1GraphProductPublication>() };
+}
+mod nested {
+    #[cfg(test)]
+    mod tests {
+        fn built() {
+            let _ = Nir1GraphProductPublication::from_const::<true>();
+        }
+    }
+    fn later() {
+        // Nir1GraphProductPublication::from_const::<true>()
+        let _ = Nir1GraphProductPublication::from_const::<false>();
+    }
+}
+pub struct Nir1GraphProductPublication {
+impl Nir1GraphProductPublication {
+";
+    assert_eq!(
+        token_construction_lines(source),
+        [
+            "let _ = Nir1GraphProductPublication::from_const::<true>();",
+            "let _ = Nir1GraphProductPublication { _private: () };",
+            "let _ = unsafe { std::mem::zeroed::<Nir1GraphProductPublication>() };",
+            "let _ = Nir1GraphProductPublication::from_const::<false>();",
+        ]
+    );
+}
+
+/// The type cannot confine the token's constructor to one constant across
+/// crates, so this scan does (the architecture check of the pinned evaluation
+/// gate stays untouched). Production code builds the token at exactly one
+/// site, in this file, from `PRODUCT_GRAPH_PUBLISHED`, plus the type's own
+/// constructor in `grimodex-db`. Test code (a `*_tests.rs` file, a `tests`
+/// directory or an inline test module) may build an open token. Both scan
+/// roots come from one canonical repository root, and paths and line endings
+/// are normalized, so the scan does not depend on the platform.
+#[test]
+fn the_product_token_has_one_production_construction_site() {
+    fn collect(directory: &Path, files: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(directory).expect("source directory") {
+            let path = entry.expect("directory entry").path();
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if path.is_dir() {
+                if !matches!(name, "target" | "node_modules" | ".git" | "tests") {
+                    collect(&path, files);
+                }
+            } else if name.ends_with(".rs") && !name.ends_with("_tests.rs") && name != "tests.rs" {
+                files.push(path);
+            }
+        }
+    }
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .expect("repository root");
+    let mut files = Vec::new();
+    collect(
+        &repository
+            .join("electron")
+            .join("native")
+            .join("grimodex-node")
+            .join("src"),
+        &mut files,
+    );
+    collect(&repository.join("src-tauri"), &mut files);
+    assert!(files.len() > 50, "the scan found {} files", files.len());
+    let mut sites = Vec::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file)
+            .expect("read source")
+            .replace("\r\n", "\n");
+        let relative = file
+            .strip_prefix(&repository)
+            .expect("under the repository")
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        for line in token_construction_lines(&text) {
+            sites.push((relative.clone(), line));
+        }
+    }
+    sites.sort();
+    assert_eq!(
+        sites,
+        [
+            (
+                "electron/native/grimodex-node/src/nir1_graph_product.rs".to_string(),
+                "Nir1GraphProductPublication::from_const::<{ PRODUCT_GRAPH_PUBLISHED }>()"
+                    .to_string()
+            ),
+            (
+                "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph_index_maintenance.rs"
+                    .to_string(),
+                "Some(Self { _private: () })".to_string()
+            ),
+        ]
+    );
+}
+
 /// CQ-DEFER: the held Related Scenes query (`begin_deferred`).
 #[path = "nir1_graph_deferred_tests.rs"]
 mod deferred;

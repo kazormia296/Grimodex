@@ -9,9 +9,9 @@ use serde::Serialize;
 
 use grimodex_db::narrative_extraction::{
     discover_before_cutover_maintenance_work_with_coordinates,
-    discover_maintenance_project_for_main, effective_maintenance_coordinates, DesiredWork,
-    MaintenanceProjectDiscovery, MaintenanceWorkRequest, MaintenanceWorkspaceBinding,
-    NarrativeMaintenanceCiConfig, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
+    discover_maintenance_project_for_main_with_product, effective_maintenance_coordinates,
+    DesiredWork, MaintenanceProjectDiscovery, MaintenanceWorkRequest, MaintenanceWorkspaceBinding,
+    NarrativeMaintenanceCiConfig, Nir1GraphProductPublication, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
 };
 use grimodex_db::Database;
 
@@ -74,6 +74,18 @@ fn work_request(work: DesiredWork) -> MaintenanceWorkRequest {
     }
 }
 
+/// [`discover_all_with_product`] without the product publication token (the
+/// seam-only form that the existing B-ROUTE and BSEAM tests use).
+#[cfg(test)]
+pub(crate) fn discover_all(
+    db: &Database,
+    binding: MaintenanceWorkspaceBinding,
+    reason: WakeReason,
+    ci_config: Option<&NarrativeMaintenanceCiConfig>,
+) -> anyhow::Result<DiscoveryResult> {
+    discover_all_with_product(db, binding, reason, ci_config, None)
+}
+
 /// Discover all bounded pages from the exact live Database authority.
 ///
 /// Stable project-id ordering makes the result deterministic. Project ids are
@@ -84,15 +96,20 @@ fn work_request(work: DesiredWork) -> MaintenanceWorkRequest {
 /// one pinned authority for every planner call, and JavaScript receives the
 /// complete result before any queue mutation occurs.
 ///
-/// Under the B-ROUTE seam a project can also be returned as a wake
-/// (`wake_project_ids`, DR-BSEAM-1): main then starts an empty-work cycle for
-/// it, and that controlled cycle judges the gated Graph Index build. Without
-/// the seam the list is always empty and is omitted from the wire.
-pub(crate) fn discover_all(
+/// Under the B-ROUTE seam or the product publication token (DR-PUBG-5-13) a
+/// project can also be returned as a wake (`wake_project_ids`, DR-BSEAM-1):
+/// main then starts an empty-work cycle for it, and that controlled cycle
+/// judges the gated Graph Index build. Without either the list is always empty
+/// and is omitted from the wire.
+///
+/// Production passes `nir1_graph_product::maintenance_product_publication()`
+/// (`None` while `PRODUCT_GRAPH_PUBLISHED` is `false`).
+pub(crate) fn discover_all_with_product(
     db: &Database,
     binding: MaintenanceWorkspaceBinding,
     reason: WakeReason,
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
+    product: Option<Nir1GraphProductPublication>,
 ) -> anyhow::Result<DiscoveryResult> {
     let project_ids = db.with_conn(|conn| {
         let mut statement = conn.prepare(
@@ -125,12 +142,13 @@ pub(crate) fn discover_all(
                 &project_id,
                 Some(&effective_coordinates),
             )?,
-            _ => match discover_maintenance_project_for_main(
+            _ => match discover_maintenance_project_for_main_with_product(
                 db,
                 &project_id,
                 reason.durable_reason(),
                 Some(&effective_coordinates),
                 ci_config,
+                product,
             )? {
                 MaintenanceProjectDiscovery::Work(work) => Some(work),
                 MaintenanceProjectDiscovery::Idle => None,
@@ -730,5 +748,44 @@ mod tests {
         );
         assert_eq!(work[0].run_kind, AutomaticRunKind::Verify);
         assert_eq!(work[0].semantic_epoch_id.as_deref(), Some("epoch-1"));
+    }
+
+    // DR-PUBG-5-13 (PR-1): the product gate's discovery wake.
+
+    /// Under the product token an idle project is woken for the Graph build
+    /// (W1), except in the BeforeCutover flow; with no token nothing changes.
+    #[test]
+    fn product_gate_discovery_wakes_an_idle_project_like_the_seam() {
+        let db = idle_durable_chain_database();
+        let token = Nir1GraphProductPublication::from_const::<true>();
+        for reason in [
+            WakeReason::WorkspaceOpened,
+            WakeReason::RestoreCompleted,
+            WakeReason::SemanticEpochRotated,
+        ] {
+            let discovered = discover_all_with_product(&db, test_binding(), reason, None, token)
+                .expect("product-gate discovery");
+            assert!(discovered.pages.is_empty(), "{reason:?}");
+            let wire = serde_json::to_value(&discovered).expect("serialize discovery");
+            assert_eq!(
+                wire.get("wakeProjectIds"),
+                Some(&json!(["default-project"])),
+                "{reason:?}: {wire}"
+            );
+            let closed = serde_json::to_string(
+                &discover_all_with_product(&db, test_binding(), reason, None, None)
+                    .expect("closed discovery"),
+            )
+            .expect("serialize closed discovery");
+            assert_eq!(
+                closed,
+                r#"{"workspaceBinding":{"authorityId":"authority:test","generation":1},"pages":[]}"#,
+                "{reason:?}"
+            );
+        }
+        let before_cutover =
+            discover_all_with_product(&db, test_binding(), WakeReason::BeforeCutover, None, token)
+                .expect("before-cutover discovery");
+        assert!(before_cutover.wake_project_ids.is_empty());
     }
 }

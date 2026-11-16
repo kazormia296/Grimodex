@@ -46,7 +46,8 @@ use super::nir1_entity_relation_index::{
     GraphProgressCallback, GraphWorkControl, GraphWorkStage,
 };
 use super::nir1_graph_index_maintenance::{
-    Nir1GraphCycleContext, Nir1GraphIndexBuildGate, NIR1_GRAPH_INDEX_BUILD_WORK_KEY,
+    Nir1GraphCycleContext, Nir1GraphIndexBuildGate, Nir1GraphProductPublication,
+    NIR1_GRAPH_INDEX_BUILD_WORK_KEY,
 };
 use super::restore_rebuild::{
     is_canonical_graph_state_digest, validate_canonical_verify_outcome_digest,
@@ -2292,9 +2293,21 @@ pub fn nir1_graph_index_build_wakes_main_discovery(
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
     reason: &str,
 ) -> bool {
+    nir1_graph_index_build_wakes_main_discovery_with_product(ci_config, None, reason)
+}
+
+/// [`nir1_graph_index_build_wakes_main_discovery`] with the product
+/// publication token (DR-PUBG-5-13). The product gate follows the same rule as
+/// the seam: no wake for the BeforeCutover flow, a wake otherwise. With no
+/// token (the product constant is `false`) the answer is the seam's.
+pub fn nir1_graph_index_build_wakes_main_discovery_with_product(
+    ci_config: Option<&NarrativeMaintenanceCiConfig>,
+    product: Option<Nir1GraphProductPublication>,
+    reason: &str,
+) -> bool {
     reason != "before-cutover"
         && reason != BEFORE_CUTOVER_FOLLOW_UP_REASON
-        && Nir1GraphIndexBuildGate::from_journey_seam(ci_config).is_open()
+        && Nir1GraphIndexBuildGate::for_launch(ci_config, product).is_open()
 }
 
 pub(crate) fn is_context_unavailable_termination(error: &anyhow::Error) -> bool {
@@ -2330,7 +2343,29 @@ pub fn discover_maintenance_project_for_main(
     coordinates: Option<&MaintenanceContractCoordinates>,
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
 ) -> anyhow::Result<MaintenanceProjectDiscovery> {
-    let graph_wake = nir1_graph_index_build_wakes_main_discovery(ci_config, reason);
+    discover_maintenance_project_for_main_with_product(
+        db,
+        project_id,
+        reason,
+        coordinates,
+        ci_config,
+        None,
+    )
+}
+
+/// [`discover_maintenance_project_for_main`] with the product publication
+/// token (DR-PUBG-5-13): the product gate wakes and re-judges exactly like the
+/// seam (W1, V4), and with no token the answer is the seam's.
+pub fn discover_maintenance_project_for_main_with_product(
+    db: &Database,
+    project_id: &str,
+    reason: &str,
+    coordinates: Option<&MaintenanceContractCoordinates>,
+    ci_config: Option<&NarrativeMaintenanceCiConfig>,
+    product: Option<Nir1GraphProductPublication>,
+) -> anyhow::Result<MaintenanceProjectDiscovery> {
+    let graph_wake =
+        nir1_graph_index_build_wakes_main_discovery_with_product(ci_config, product, reason);
     match discover_durable_maintenance_work_with_coordinates(db, project_id, reason, coordinates) {
         Ok(Some(work)) => Ok(MaintenanceProjectDiscovery::Work(work)),
         Ok(None) if graph_wake => Ok(MaintenanceProjectDiscovery::GraphIndexBuildWake),
@@ -3027,9 +3062,36 @@ pub fn run_system_work_cycle_with_nir1_graph_runtime(
     request: &MaintenanceCycleRequest,
     mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
+    foreground_owner: Option<&ForegroundSystemWorkRun>,
+    control: Option<&MaintenanceCycleControl<'_>>,
+    nir1_graph_runtime: Option<&NirChronicleIndexRuntime>,
+) -> anyhow::Result<MaintenanceCycleResult> {
+    run_system_work_cycle_with_nir1_graph_runtime_and_product(
+        db,
+        request,
+        mode_for,
+        ci_config,
+        foreground_owner,
+        control,
+        nir1_graph_runtime,
+        None,
+    )
+}
+
+/// [`run_system_work_cycle_with_nir1_graph_runtime`] with the product
+/// publication token (DR-PUBG-5-13): the gate opens for the validated journey
+/// seam or the token. With no token (the product constant is `false`) the
+/// cycle is the seam-only form above.
+#[allow(clippy::too_many_arguments)]
+pub fn run_system_work_cycle_with_nir1_graph_runtime_and_product(
+    db: &Database,
+    request: &MaintenanceCycleRequest,
+    mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
+    ci_config: Option<&NarrativeMaintenanceCiConfig>,
     _foreground_owner: Option<&ForegroundSystemWorkRun>,
     control: Option<&MaintenanceCycleControl<'_>>,
     nir1_graph_runtime: Option<&NirChronicleIndexRuntime>,
+    product: Option<Nir1GraphProductPublication>,
 ) -> anyhow::Result<MaintenanceCycleResult> {
     if let Some(control) = control {
         (control.should_stop)()?;
@@ -3039,7 +3101,7 @@ pub fn run_system_work_cycle_with_nir1_graph_runtime(
         binding.validate()?;
     }
     let graph = Nir1GraphCycleContext::new(
-        Nir1GraphIndexBuildGate::from_journey_seam(ci_config),
+        Nir1GraphIndexBuildGate::for_launch(ci_config, product),
         nir1_graph_runtime,
     );
     let mut work = preflight_maintenance_cycle_request(request)?;
