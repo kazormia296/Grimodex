@@ -1449,6 +1449,24 @@ const REOPEN_LIMITS = Object.freeze({
   reseal: { openings: 3, reopens: 2, waitMs: 120_000 },
 });
 const REOPEN_TOTAL = 9;
+/**
+ * DR-CP4-L-27 (S2 追補 #21): the quiesce reopening after the last session —
+ * a frame outside L-24's closed set (no trigger, no blocked name). The
+ * harness constants (MAINTENANCE_QUIESCE_REOPENS / _WAIT_MS) are held here as
+ * literals: the pinned bytes this validator reads do not carry them.
+ */
+const REOPEN_QUIESCE = Object.freeze({
+  sessions: Object.freeze(["quiesce"]),
+  reopens: 2,
+  waitMs: 60_000,
+  dirLabel: "quiesce-<n>",
+  nonce: false,
+  onExhausted: "[precheck] S1i maintenance-quiesce",
+  blocked: false,
+  indexMetadataMoved: "[precheck] S1i maintenance-quiesce",
+  receiptField: "quiesce",
+});
+const REOPEN_TOTAL_WITH_QUIESCE = REOPEN_TOTAL + REOPEN_QUIESCE.reopens;
 /** DR-CP4-L-27 (P-6). */
 const INDEX_BUILD = Object.freeze({
   intervalMs: 500,
@@ -1471,6 +1489,26 @@ const RECEIPT_FIELDS = Object.freeze({
   "measurementPoint.freshnessFeed": null,
   "readBack.freshnessFeed": null,
   "readBack.maintenance": null,
+  // DR-CP4-L-27 (S2 追補 #21): the quiesce reopenings and the last read.
+  quiesce: null,
+});
+/** DR-CP4-L-27 (S2 追補 #21): the fields the two maintenance receipts carry. */
+const MAINTENANCE_RECEIPT_FIELDS = Object.freeze({
+  "readBack.maintenance": Object.freeze([
+    "runs",
+    "lastCreatedAt",
+    "running",
+    "retryPending",
+  ]),
+  quiesce: Object.freeze([
+    "reopens[].attempt",
+    "reopens[].dirLabel",
+    "reopens[].before",
+    "reopens[].beforeEndedByClose",
+    "reopens[].settle",
+    "final.activity",
+    "final.endedByClose",
+  ]),
 });
 /**
  * S2 追補 #9（DR-CP4-T-1、T-3、T-5。harness b0df31f0 と 354b1ba6）: the waits
@@ -1497,14 +1535,24 @@ const FRESHNESS_SETTLE = Object.freeze({
     ]),
     maintenanceStillWhen: Object.freeze([
       "no-running-run",
+      "no-planned-retry",
       "same-run-count-and-newest-created-at-on-two-consecutive-reads",
     ]),
+    // DR-CP4-L-27: a retry's gap is not stillness (workspace-db.mjs).
+    plannedRetryWhen:
+      "failed-retryable-attempt-with-next-attempt-at-later-than-now-minus-grace-and-no-later-run-of-its-work-key",
+    plannedRetryGraceMs: 5000,
     onExhausted: "[precheck] S1i freshness-settle",
     maintenanceOnExhausted: "disclosed",
+    // DR-CP4-L-27: the last session's closed workspace is reopened to be
+    // quiet (REOPEN_QUIESCE) and the cold DB keeps no work; both stop.
+    closedWorkspaceNotQuiet:
+      "reopen-quiesce-then-[precheck] S1i maintenance-quiesce",
     blocked: false,
     reopenTrigger: false,
     coldDbNotSettled: "[precheck] S1i freshness-settle",
-    coldDbRunningRuns: "disclosed",
+    coldDbRunningRuns: "[precheck] S1i maintenance-quiesce",
+    coldDbRetryPending: "[precheck] S1i maintenance-quiesce",
   }),
   measurement: Object.freeze({
     at: "open-process-after-open-before-negative-hook-declaration-raw-index",
@@ -2190,7 +2238,8 @@ const READINGS_AFTER_DEV = Object.freeze([
   "k66-harness-and-rehearsal-choices",
   // S4a（9 回目の凍結のやり直し、S2 追補 #18）: K6/7 の読み（R-8・R-9・R-10・R-12・
   // R-13、FR-8 の検査の削除。s6r1・s7r1・s7r2 と PR-3 の調査の後に起案）、品質判定 v3
-  // の読み（s7r2・s7r1 の後に起案。観測の後に変えた読み 1 点＋fail→hold 2 点）、PR-3 の dev の gate の
+  // の読み（s7r2・s7r1 の後に起案。観測の後に変えた読み 1 点＋fail→hold 2 点〔db7c1234 の読めない行の
+  // hold と edge-revision-unresolved。後者は凍結の fixture では到達しない〕）、PR-3 の dev の gate の
   // 手順と harness の形（gate の 1 回目を見た後に本数と時間帯を変えた）。
   "k67-readings-after-s7r2",
   "k67-quality-verdict-v3-design",
@@ -3793,10 +3842,17 @@ function setupReadingErrors(errors, readings, ctx) {
       ([key, outcomes]) =>
         outcomes !== null && !same(fields[key]?.outcomes, outcomes),
     ) ||
-    !same(fields.blocked?.fields, RECEIPT_BLOCKED_FIELDS)
+    !same(fields.blocked?.fields, RECEIPT_BLOCKED_FIELDS) ||
+    Object.entries(MAINTENANCE_RECEIPT_FIELDS).some(
+      ([key, names]) =>
+        !same(fields[key]?.fields, names) ||
+        !String(fields[key]?.acceptance ?? "").includes(
+          "[precheck] S1i maintenance-quiesce",
+        ),
+    )
   )
     errors.push(
-      `setupReadings.receiptFields must be ${Object.keys(RECEIPT_FIELDS).join(", ")} with the closed outcome sets (DR-CP4-L-24)`,
+      `setupReadings.receiptFields must be ${Object.keys(RECEIPT_FIELDS).join(", ")} with the closed outcome sets (DR-CP4-L-24), and readBack.maintenance (running and retryPending 0) and quiesce stop with [precheck] S1i maintenance-quiesce (DR-CP4-L-27)`,
     );
   const judgement = readings.blockedCaseJudgement ?? {};
   const judged = (judgement.rows ?? []).map((row) => [
@@ -3954,7 +4010,7 @@ function freshnessSettleErrors(errors, readings, ctx) {
     !nonBlank(measurement.rule)
   )
     errors.push(
-      `setupReadings.freshnessSettle must wait read-only for the product's Freshness (cursor at the feed head, no run, no reservation) in a complete setup before chronicle-index and measurement-point and at each session's end (maintenance still before measurement-point and at the end; ${String(c.FRESHNESS_SETTLE_WAIT_MS)} ms / ${String(c.FRESHNESS_SETTLE_INTERVAL_MS)} ms, [precheck] when the Freshness runs out, the maintenance disclosed) and in each measurement process before the declaration step (${String(c.RUN_FRESHNESS_SETTLE_LIMIT_MS)} ms / ${String(c.RUN_FRESHNESS_SETTLE_INTERVAL_MS)} ms, index-build-timeout when it runs out), with the pinned harness's constants (DR-CP4-T-1、T-3、T-5)`,
+      `setupReadings.freshnessSettle must wait read-only for the product's Freshness (cursor at the feed head, no run, no reservation) in a complete setup before chronicle-index and measurement-point and at each session's end (maintenance still before measurement-point and at the end; ${String(c.FRESHNESS_SETTLE_WAIT_MS)} ms / ${String(c.FRESHNESS_SETTLE_INTERVAL_MS)} ms, [precheck] when the Freshness runs out, the maintenance wait disclosed inside a session; the last session's closed workspace is quiesced by reopening and the cold DB keeps no running run or planned retry, [precheck] S1i maintenance-quiesce, DR-CP4-L-27) and in each measurement process before the declaration step (${String(c.RUN_FRESHNESS_SETTLE_LIMIT_MS)} ms / ${String(c.RUN_FRESHNESS_SETTLE_INTERVAL_MS)} ms, index-build-timeout when it runs out), with the pinned harness's constants (DR-CP4-T-1、T-3、T-5)`,
     );
   // The measurement's exhaustion is the existing index-build-timeout rows of
   // the blocked table (DR-CP4-L-28 (8)(9)); the table gains no row.
@@ -4021,6 +4077,13 @@ function reopenErrors(errors, readings) {
     (reopen.triggers ?? []).some((row) => !nonBlank(row?.condition)) ||
     !same(reopen.limits, REOPEN_LIMITS) ||
     reopen.totalReopenableOpenings !== REOPEN_TOTAL ||
+    reopen.totalOpeningsWithQuiesce !== REOPEN_TOTAL_WITH_QUIESCE ||
+    !Object.entries(REOPEN_QUIESCE).every(([key, value]) =>
+      same(reopen.quiesce?.[key], value),
+    ) ||
+    !nonBlank(reopen.quiesce?.decision) ||
+    !nonBlank(reopen.quiesce?.step) ||
+    !nonBlank(reopen.quiesce?.condition) ||
     REOPEN_TOTAL !==
       ["author", "seal", "reseal"].reduce(
         (sum, label) => sum + REOPEN_LIMITS[label].openings,
@@ -4030,7 +4093,7 @@ function reopenErrors(errors, readings) {
     !nonBlank(reopen.otherFailures)
   )
     errors.push(
-      `setupReadings.reopen must be L-24's closed set (${REOPEN_TRIGGERS.map(([id]) => id).join(", ")}), author/seal/reseal 3 openings each (${REOPEN_TOTAL} in all), ir and hold never reopened`,
+      `setupReadings.reopen must be L-24's closed set (${REOPEN_TRIGGERS.map(([id]) => id).join(", ")}), author/seal/reseal 3 openings each (${REOPEN_TOTAL} in all), ir and hold never reopened, and the quiesce frame outside the set (${REOPEN_QUIESCE.reopens} reopenings of ${REOPEN_QUIESCE.waitMs} ms, ${REOPEN_TOTAL_WITH_QUIESCE} openings in all, [precheck] S1i maintenance-quiesce, DR-CP4-L-27)`,
     );
 }
 
@@ -4604,8 +4667,10 @@ function k66ReadingErrors(errors, readings) {
  * counted, (f) the reviews that were not blind, (g) the dev rehearsals and
  * PR-3's dev gate (not judged; W and begin→query unmeasured; the late 2 with
  * a cancelled requalification), (h) the quality verdict v3 outside the pins
- * with the one reading changed after an observation (and the fail→hold
- * readings), (i) the harness
+ * with the one reading changed after an observation (and the two fail→hold
+ * readings: db7c1234's unreadable rows and edge-revision-unresolved, which the
+ * frozen fixtures do not reach; plus the existing revision-of-path-unresolved
+ * hold of an edge whose displayed hash differs), (i) the harness
  * (PR-3), (j) item B, (k) item C's harness change, (l) what remains before
  * S4b (pins, six detection-power records, the R5 closure that grew past the
  * ten files the user was shown and was then reconfirmed for eleven, the S3

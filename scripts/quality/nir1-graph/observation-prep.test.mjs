@@ -3247,6 +3247,28 @@ test("S2 追補 #2 P2-1: setupReadings pin master commits and copy L-24's closed
     (p) => (p.setupReadings.reopen.closedSet = false),
     /setupReadings\.reopen/u,
   );
+  // DR-CP4-L-27 (S2 追補 #21): the quiesce reopening is a frame outside the
+  // closed set (no trigger, no blocked name): 2 reopenings of 60 s, 11
+  // openings in all, [precheck] S1i maintenance-quiesce.
+  assert.equal(readings.reopen.totalReopenableOpenings, 9);
+  assert.equal(readings.reopen.totalOpeningsWithQuiesce, 11);
+  assert.equal(readings.reopen.quiesce.reopens, 2);
+  assert.equal(readings.reopen.quiesce.waitMs, 60000);
+  assert.equal(readings.reopen.quiesce.blocked, false);
+  assert.ok(!readings.blocked.some((row) => /quiesce/u.test(row.name)));
+  for (const mutate of [
+    (p) => delete p.setupReadings.reopen.quiesce,
+    (p) => (p.setupReadings.reopen.quiesce.reopens = 3),
+    (p) => (p.setupReadings.reopen.quiesce.waitMs = 120_000),
+    (p) => (p.setupReadings.reopen.quiesce.blocked = true),
+    (p) =>
+      (p.setupReadings.reopen.quiesce.onExhausted =
+        "blocked:maintenance-enabled"),
+    (p) => (p.setupReadings.reopen.quiesce.indexMetadataMoved = "disclosed"),
+    (p) => (p.setupReadings.reopen.quiesce.nonce = true),
+    (p) => (p.setupReadings.reopen.totalOpeningsWithQuiesce = 9),
+  ])
+    detects(prep, check, mutate, /setupReadings\.reopen/u);
   detects(
     prep,
     check,
@@ -6341,8 +6363,35 @@ test("S2 追補 #9（DR-CP4-T-1、T-3、T-5）: freshnessSettle copies the pinne
     (p) => p.setupReadings.freshnessSettle.settledWhen.pop(),
     (p) => (p.setupReadings.freshnessSettle.readOnly = false),
     (p) => (p.setupReadings.freshnessSettle.setup.harnessConstants = []),
+    // DR-CP4-L-27 (S2 追補 #21): a retry's gap is not stillness, the cold DB
+    // keeps no running run or planned retry, and the closed workspace is
+    // quiesced by reopening (none of them a disclosure any more).
+    (p) =>
+      p.setupReadings.freshnessSettle.setup.maintenanceStillWhen.splice(
+        p.setupReadings.freshnessSettle.setup.maintenanceStillWhen.indexOf(
+          "no-planned-retry",
+        ),
+        1,
+      ),
+    (p) => (p.setupReadings.freshnessSettle.setup.plannedRetryGraceMs = 1000),
+    (p) =>
+      (p.setupReadings.freshnessSettle.setup.coldDbRunningRuns = "disclosed"),
+    (p) =>
+      (p.setupReadings.freshnessSettle.setup.coldDbRetryPending = "disclosed"),
+    (p) =>
+      (p.setupReadings.freshnessSettle.setup.closedWorkspaceNotQuiet =
+        "disclosed"),
   ])
     detects(prep, check, mutate, word);
+  assert.deepEqual(settle.setup.maintenanceStillWhen, [
+    "no-running-run",
+    "no-planned-retry",
+    "same-run-count-and-newest-created-at-on-two-consecutive-reads",
+  ]);
+  assert.equal(
+    settle.setup.coldDbRunningRuns,
+    "[precheck] S1i maintenance-quiesce",
+  );
   // 定数は pin の bytes から読む（読めなければ照合できず落ちる）。
   const unread = { ...ctx, harnessConstants: { ...ctx.harnessConstants } };
   delete unread.harnessConstants.RUN_FRESHNESS_SETTLE_LIMIT_MS;
@@ -6367,6 +6416,8 @@ test("S2 追補 #9（DR-CP4-T-1、T-3、T-5）: freshnessSettle copies the pinne
     "measurementPoint.freshnessFeed",
     "readBack.freshnessFeed",
     "readBack.maintenance",
+    // DR-CP4-L-27 (S2 追補 #21).
+    "quiesce",
   ])
     detects(
       prep,
@@ -6374,6 +6425,27 @@ test("S2 追補 #9（DR-CP4-T-1、T-3、T-5）: freshnessSettle copies the pinne
       (p) => delete p.setupReadings.receiptFields[key],
       /setupReadings\.receiptFields/u,
     );
+  // The maintenance receipts stop (not disclose) and carry retryPending.
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.setupReadings.receiptFields["readBack.maintenance"].acceptance =
+        "開示（running の run が残っても止めない）"),
+    /setupReadings\.receiptFields/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => p.setupReadings.receiptFields["readBack.maintenance"].fields.pop(),
+    /setupReadings\.receiptFields/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => p.setupReadings.receiptFields.quiesce.fields.pop(),
+    /setupReadings\.receiptFields/u,
+  );
   // graph-index-unusable の C の作り直しは Freshness の処理の後（T-3）。
   detects(
     prep,
@@ -8180,8 +8252,8 @@ test("S4a（7 回目、S2 追補 #16）: the author's declaration discloses K6/6
   assert.equal(rows1108.length, 4);
   // S4a（9 回目）adds two rows dated 2026-11-16 after these, S2 追補 #19
   // (S3 10th's reflection) a third and S2 追補 #20 (the S3 recheck and setup's
-  // quiesce) a fourth.
-  assert.equal(declaration.revisions.at(-5), rows1108[3]);
+  // quiesce) a fourth and S2 追補 #21 (the S3 third recheck) a fifth.
+  assert.equal(declaration.revisions.at(-6), rows1108[3]);
   for (const word of [
     "S2 追補 #16",
     "DR-CP4-S4-10",
@@ -8839,8 +8911,8 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
   const rows1116 = declaration.revisions.filter(
     (row) => row.at === "2026-11-16",
   );
-  assert.equal(rows1116.length, 4);
-  assert.equal(declaration.revisions.at(-1), rows1116[3]);
+  assert.equal(rows1116.length, 5);
+  assert.equal(declaration.revisions.at(-1), rows1116[4]);
   for (const word of [
     "S2 追補 #18",
     "DR-CP4-S4-11",
@@ -8938,15 +9010,31 @@ test("S4a（9 回目、S2 追補 #18）: the author's declaration discloses K6/7
     "drift-ownerready.md",
   ])
     assert.ok(declaration.graphRuntimeOutputObservedScope.includes(word), word);
+  // S2 追補 #21's row: the S3 third recheck's reflection and the open-again
+  // run on the dev branch.
+  for (const word of [
+    "S2 追補 #21",
+    "s3-review-10-recheck2.md",
+    "changes-required",
+    "reopen.quiesce",
+    "完全な盲検ではない",
+    "結論を渡さない",
+    "edge-revision-unresolved",
+    "revision-of-path-unresolved",
+    "追補の作者の申告ではない",
+    "読んでいないもの",
+    "bytes を変えていないもの",
+  ])
+    assert.ok(rows1116[4].reason.includes(word), word);
   // Earlier rows stay as written (the new rows add, never edit).
   assert.ok(
     declaration.revisions
-      .slice(0, -4)
+      .slice(0, -5)
       .some((row) => row.reason.includes("S4a（7 回目）で開示する限界")),
   );
   assert.equal(
     declaration.revisions.length,
-    40,
-    "36 rows before S4a (9th) plus its two, S2 追補 #19's one and S2 追補 #20's one",
+    41,
+    "36 rows before S4a (9th) plus its two, S2 追補 #19's, #20's and #21's one each",
   );
 });
